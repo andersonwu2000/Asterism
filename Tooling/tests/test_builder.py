@@ -291,6 +291,64 @@ class TestTWall:
 
         assert db.execute("SELECT count(*) FROM dead_attempts").fetchone()[0] == 0
 
+    def test_twall_breaks_mid_loop(self, db, tmp_path):
+        """T_wall triggered after N tactics tried (acceptance #8 真實情境):
+        rfl + simp run (both exhausted), then T_wall trips before decide.
+        dead_attempts has 2 rows; timed_out=True; lake called twice."""
+        strategy_lean = tmp_path / "strat.lean"
+        strategy_lean.write_text(_lean_source(), encoding="utf-8")
+        goal_lean = tmp_path / "goal.lean"
+        goal_lean.write_text("placeholder", encoding="utf-8")
+        _, strategy_id = _make_rows(db, strategy_lean, goal_lean)
+
+        # monotonic call sequence:
+        #   call 1 (_start)        : 0.0
+        #   call 2 (rfl entry)     : 0.5  (< 2s, enter)
+        #   call 3 (simp entry)    : 1.5  (< 2s, enter)
+        #   call 4 (decide entry)  : 3.0  (>= 2s, break)
+        mono_seq = iter([0.0, 0.5, 1.5, 3.0])
+
+        with patch("Tooling.pipelines.builder.time") as mock_time:
+            mock_time.monotonic.side_effect = lambda: next(mono_seq)
+            with patch(
+                "Tooling.pipelines.builder.run_lean",
+                return_value=_exhausted_result(),
+            ) as mock_lake:
+                config = BuilderConfig(t_wall=2.0, base_dir=str(tmp_path))
+                result = Builder(strategy_id, db, config).run()
+
+        assert result.outcome == "exhausted"
+        assert result.timed_out is True
+        assert mock_lake.call_count == 2
+        assert db.execute("SELECT count(*) FROM dead_attempts").fetchone()[0] == 2
+
+    def test_twall_clamps_per_call_timeout(self, db, tmp_path):
+        """run_lean receives min(lake_timeout, remaining T_wall) — fix #1."""
+        strategy_lean = tmp_path / "strat.lean"
+        strategy_lean.write_text(_lean_source(), encoding="utf-8")
+        goal_lean = tmp_path / "goal.lean"
+        goal_lean.write_text("placeholder", encoding="utf-8")
+        _, strategy_id = _make_rows(db, strategy_lean, goal_lean)
+
+        # call 1 _start=0.0, call 2 rfl entry elapsed=1.5 → remaining=0.5
+        mono_seq = iter([0.0, 1.5])
+        captured: list[float] = []
+
+        def fake_run(lean_file: str, cwd: str, timeout: float = 600.0) -> LakeResult:
+            captured.append(timeout)
+            return _proved_result()
+
+        with patch("Tooling.pipelines.builder.time") as mock_time:
+            mock_time.monotonic.side_effect = lambda: next(mono_seq)
+            with patch("Tooling.pipelines.builder.run_lean", side_effect=fake_run):
+                config = BuilderConfig(
+                    t_wall=2.0, lake_timeout=600.0, base_dir=str(tmp_path)
+                )
+                Builder(strategy_id, db, config).run()
+
+        # remaining = 2.0 - 1.5 = 0.5 < lake_timeout=600 → clamp to 0.5
+        assert captured == [0.5]
+
 
 # ---------------------------------------------------------------------------
 # 5. commit success path
