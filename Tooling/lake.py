@@ -7,6 +7,7 @@ decision tree to produce a structured LakeResult.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -64,7 +65,19 @@ def run_lean(lean_file: str, cwd: str, timeout: float = 600.0) -> LakeResult:
       rc != 0                     → outcome=exhausted
       rc == 0 + kind=hasSorry     → outcome=exhausted
       rc == 0, no error/sorry     → outcome=proved
+
+    Test hooks (set env vars before spawning subprocess tests):
+      LAKE_MOCK_PROVED=1          → immediately return proved (no lake call)
+      LAKE_MOCK_SORRY=1           → immediately return exhausted+hasSorry
     """
+    if os.environ.get("LAKE_MOCK_PROVED") == "1":
+        return LakeResult(outcome="proved")
+    if os.environ.get("LAKE_MOCK_SORRY") == "1":
+        return LakeResult(
+            outcome="exhausted",
+            messages=[{"kind": "hasSorry", "data": "declaration uses `sorry`"}],
+        )
+
     cmd = ["lake", "env", "lean", "--json", lean_file]
     proc = subprocess.Popen(
         cmd,

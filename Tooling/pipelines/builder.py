@@ -77,6 +77,18 @@ class Builder:
         self._writer = CommitWriter(conn)
         self._start: float = 0.0
 
+    def _resolve_path(self, lean_path: str) -> Path:
+        """Resolve lean_path against base_dir if not absolute.
+
+        CLI stores paths relative to the workspace root (e.g. Problems/ex/...).
+        In-process calls where CWD != base_dir need this resolution; subprocess
+        calls already run with CWD=workspace so both absolute and relative work.
+        """
+        p = Path(lean_path)
+        if not p.is_absolute():
+            return Path(self.config.base_dir) / p
+        return p
+
     def run(self) -> BuilderResult:
         self._start = time.monotonic()
         p_uuid = str(uuid.uuid4())
@@ -88,7 +100,7 @@ class Builder:
         staging_dir = self._staging_dir(goal, p_uuid)
         staging_dir.mkdir(parents=True, exist_ok=True)
 
-        source_content = Path(strategy["lean_path"]).read_text(encoding="utf-8")
+        source_content = self._resolve_path(strategy["lean_path"]).read_text(encoding="utf-8")
         proved_tactic: str | None = None
         proved_staging: Path | None = None
         dead: list[dict[str, Any]] = []
@@ -177,7 +189,7 @@ class Builder:
 
     def _commit_success(self, strategy: dict[str, Any], staging_lean: Path) -> None:
         self._writer.begin("strategies", "update", row_id=self.strategy_id)
-        self._writer.stage_file(staging_lean, strategy["lean_path"])
+        self._writer.stage_file(staging_lean, self._resolve_path(strategy["lean_path"]))
         self._writer.finalize("strategies", self.strategy_id, {"status": "succeeded"})
 
     def _record_dead_attempts(

@@ -227,7 +227,8 @@ class CommitWriter:
         """
         recovered: dict[str, list[int]] = {"goals": [], "strategies": []}
 
-        for table in ("goals", "strategies"):
+        # strategies first: FK goal_id → goals; must remove child rows before parent
+        for table in ("strategies", "goals"):
             rows = self.conn.execute(
                 f"SELECT id, lean_path, prior_state_snapshot "
                 f"FROM {table} WHERE commit_state = 'pending'"
