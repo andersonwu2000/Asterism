@@ -3,9 +3,10 @@
 -- Unused columns are nullable; no ALTER TABLE migration needed in future phases.
 -- SQLite enums are enforced via CHECK constraints.
 -- JSON columns are TEXT; timestamps are TEXT ISO8601.
-
-PRAGMA foreign_keys = ON;
-PRAGMA journal_mode = WAL;
+-- PRAGMA foreign_keys / journal_mode are set per-connection in Tooling/db/connect.py
+-- (no-op inside executescript, so kept out of this file).
+-- Indexes are deferred to P3 (cache/query subsystem cycle); SQLite full-table
+-- scans are acceptable at P1 scale.
 
 -- ──────────────────────────────────────────────────────────────
 -- goals
@@ -69,7 +70,8 @@ CREATE TABLE IF NOT EXISTS strategy_subgoals (
     strategy_id  INTEGER NOT NULL REFERENCES strategies(id),
     subgoal_id   INTEGER NOT NULL REFERENCES goals(id),
     position     INTEGER NOT NULL,
-    PRIMARY KEY (strategy_id, subgoal_id)
+    PRIMARY KEY (strategy_id, subgoal_id),
+    UNIQUE      (strategy_id, position)        -- ordered AND-group: position unique per strategy
 );
 
 -- ──────────────────────────────────────────────────────────────
@@ -103,7 +105,7 @@ CREATE TABLE IF NOT EXISTS dead_attempts (
     target_id      TEXT    NOT NULL,
     target_kind    TEXT    NOT NULL
                        CHECK(target_kind IN ('Goal','Strategy','forward')),
-    pipeline_id    TEXT    REFERENCES pipelines(id),
+    pipeline_id    TEXT    NOT NULL REFERENCES pipelines(id),
     pipeline_kind  TEXT    NOT NULL
                        CHECK(pipeline_kind IN (
                            'Builder','Backward','Refuter','Forward',
@@ -132,6 +134,10 @@ CREATE TABLE IF NOT EXISTS queue (
 
 -- ──────────────────────────────────────────────────────────────
 -- events  (audit log)
+-- spec §9.1 (line 752) declares kind as open-ended ("..."). We close it
+-- to the 6 currently-known kinds (5 spec + 'fatal' from phase1_skeleton).
+-- Cost: any future event kind (e.g. 'task_failed', 'cascade_failed') will
+-- require a schema_v2.sql migration that rebuilds the CHECK list.
 -- ──────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS events (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -21,7 +21,8 @@ from Tooling.db.connect import connect, init_schema
 def db() -> sqlite3.Connection:
     conn = connect(":memory:")
     init_schema(conn)
-    return conn
+    yield conn
+    conn.close()
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
@@ -169,6 +170,16 @@ class TestNotNull:
                 (1, "proposed", "live", NOW),
             )
 
+    def test_dead_attempts_pipeline_id_required(self, db):
+        # Spec §9.1: dead_attempts.pipeline_id has no nullable marker; every
+        # row originates from some pipeline run, so NULL is a real schema bug.
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO dead_attempts(target_id,target_kind,pipeline_kind,outcome,reason_summary,ts)"
+                " VALUES(?,?,?,?,?,?)",
+                ("G1", "Goal", "Builder", "exhausted", "no pipeline_id", NOW),
+            )
+
 
 # ──────────────────────────────────────────────────────────────
 # 4. UNIQUE constraints
@@ -224,6 +235,28 @@ class TestCompositePK:
             db.execute(
                 "INSERT INTO strategy_subgoals(strategy_id,subgoal_id,position) VALUES(?,?,?)",
                 (1, 2, 1),
+            )
+
+    def test_strategy_subgoals_position_unique_per_strategy(self, db):
+        # AND-group ordering: two distinct subgoals under one strategy may not
+        # share the same position. Composite PK alone (strategy_id, subgoal_id)
+        # does not enforce this; UNIQUE(strategy_id, position) does.
+        _insert_goal(db, 1)
+        _insert_goal(db, 2)
+        _insert_goal(db, 3)
+        db.execute(
+            "INSERT INTO strategies(id,goal_id,lean_path,status,commit_state,created_at)"
+            " VALUES(?,?,?,?,?,?)",
+            (1, 1, "st.lean", "proposed", "live", NOW),
+        )
+        db.execute(
+            "INSERT INTO strategy_subgoals(strategy_id,subgoal_id,position) VALUES(?,?,?)",
+            (1, 2, 0),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO strategy_subgoals(strategy_id,subgoal_id,position) VALUES(?,?,?)",
+                (1, 3, 0),
             )
 
     def test_library_index_composite_pk(self, db):
@@ -362,3 +395,46 @@ class TestValidInserts:
             " VALUES(?,?,?,?)",
             ("localhost", 1234, NOW, NOW),
         )
+
+    def test_insert_continuous_task(self, db):
+        # P5+ schema; smoke insert ensures column names did not drift.
+        _insert_pipeline(db)
+        db.execute(
+            "INSERT INTO continuous_tasks(pipeline_id,checkpoint_state,last_checkpoint_at,"
+            "budget_tokens,budget_wall_clock_sec,consumed_tokens,consumed_wall_clock_sec,lifecycle_state)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (PIPELINE_ID, '{"generation":0}', NOW, 100000, 14400, 0, 0, "running"),
+        )
+        row = db.execute(
+            "SELECT lifecycle_state,consumed_tokens FROM continuous_tasks WHERE pipeline_id=?",
+            (PIPELINE_ID,),
+        ).fetchone()
+        assert row == ("running", 0)
+
+    def test_insert_construction_attempt(self, db):
+        # P5+ schema; smoke insert ensures column names did not drift.
+        _insert_pipeline(db)
+        db.execute(
+            "INSERT INTO construction_attempts(pipeline_id,generation,parent_attempt_id,"
+            "candidate_lean_path,score,created_at)"
+            " VALUES(?,?,?,?,?,?)",
+            (PIPELINE_ID, 1, None, "Tasks/abc/candidates/c1.lean", 0.42, NOW),
+        )
+        row = db.execute(
+            "SELECT generation,score FROM construction_attempts WHERE pipeline_id=?",
+            (PIPELINE_ID,),
+        ).fetchone()
+        assert row == (1, 0.42)
+
+    def test_insert_library_index(self, db):
+        # P6+ schema; smoke insert ensures column names did not drift.
+        _insert_goal(db)
+        db.execute(
+            "INSERT INTO library_index(layer,name,path,source_root_id,committed_at)"
+            " VALUES(?,?,?,?,?)",
+            ("Theorems", "ex.add_zero", "Library/Theorems/proved.lean", 1, NOW),
+        )
+        row = db.execute(
+            "SELECT layer,name FROM library_index"
+        ).fetchone()
+        assert row == ("Theorems", "ex.add_zero")
