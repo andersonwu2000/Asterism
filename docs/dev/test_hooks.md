@@ -16,6 +16,7 @@
 | Phase | Env hook | Mode / value | 用途 |
 |---|---|---|---|
 | P1 | `COMMIT_FAULT` | `after_step1` / `after_step2` / `after_step3` | CommitWriter 在指定 step 後 raise，給 recovery scan acceptance 用 |
+| P1 | `LAKE_MOCK` | `proved` / `sorry` | run_lean 入口跳過真實 `lake env lean --json`、直接返 LakeResult；給 AC#0 subprocess test + CI 不需 lean toolchain 用 |
 | P3 | `SEARCH_MOCK` | `record_calls` / `force_miss` / `force_hit` | search subsystem 行為控制（cache acceptance 計次 / 強制 cache miss-hit 路徑） |
 | P3 | `BACKWARD_FORCE` | `exhausted` / `unproductive` / `succeed` | Backward pipeline 強制走特定 outcome（給通用 N=5 trigger acceptance 用） |
 | P4 | `COUNTEREXAMPLE_FORCE` | `silver` / `evidence_only` / `unproductive` | Counterexample 強制走特定 outcome（給 silver-skip race acceptance 用） |

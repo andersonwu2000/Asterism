@@ -3,17 +3,19 @@
 Covers phase1_skeleton.md §Acceptance criteria in order.
 Each class maps to one acceptance criterion.
 
-Lake calls are mocked (LAKE_MOCK_PROVED/SORRY env vars or unittest.mock)
-so the suite runs in CI without a Lean/lake installation.
+Lake calls are mocked (LAKE_MOCK env var or unittest.mock) so the suite
+runs in CI without a Lean/lake installation.
 
 Caveat for #0 and #6: real lake integration requires `lake env lean` in PATH
 and Mathlib in the lake environment. Those scenarios are tested with mock
-hooks here; for manual verification run the demo bash with real lake env.
+hooks here; manual real-lake demo verification is the P1→P2 transition gate
+(see devlog C8 R3 manual verification record).
 """
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -36,6 +38,7 @@ from Tooling.scheduler import FatalError, Reactor, ReactorConfig
 
 _REPO_ROOT = Path(__file__).parent.parent.parent  # D:/Asterism (or wherever)
 _FIXTURES = Path(__file__).parent / "fixtures"
+_DEMO_LEAN = _FIXTURES / "demo_add_zero_simple.lean"
 _NOW = "2026-01-01T00:00:00+00:00"
 
 
@@ -123,6 +126,15 @@ class TestAC0DemoSubprocess:
     and cascade rule end-to-end without needing a live Lean installation.
     """
 
+    def _cli_cmd(self) -> list[str]:
+        """Prefer the installed `asterism` console script (validates pip install -e .
+        path); fall back to `python -m Tooling.cli` for environments without -e install.
+        """
+        asterism = shutil.which("asterism")
+        if asterism:
+            return [asterism]
+        return [sys.executable, "-m", "Tooling.cli"]
+
     def _run(self, args: list[str], tmp_path: Path, extra_env: dict) -> subprocess.CompletedProcess:
         env = {
             **os.environ,
@@ -130,7 +142,7 @@ class TestAC0DemoSubprocess:
             **extra_env,
         }
         return subprocess.run(
-            [sys.executable, "-m", "Tooling.cli"] + args,
+            self._cli_cmd() + args,
             cwd=str(tmp_path),
             env=env,
             capture_output=True,
@@ -138,20 +150,16 @@ class TestAC0DemoSubprocess:
         )
 
     def test_demo_init_to_goal_show_proved(self, tmp_path: Path) -> None:
-        env = {"LAKE_MOCK_PROVED": "1"}
+        env = {"LAKE_MOCK": "proved"}
 
         # 1. init
         r = self._run(["init", "--problem", "example"], tmp_path, env)
         assert r.returncode == 0, f"init failed (rc={r.returncode}): {r.stderr}"
         assert (tmp_path / "Problems" / "example" / "META.md").exists()
 
-        # 2. Write leaf strategy (by simp)
+        # 2. Copy demo leaf strategy fixture (single source of truth — see _DEMO_LEAN)
         strat_file = tmp_path / "strat.lean"
-        strat_file.write_text(
-            "import Mathlib\n"
-            "theorem add_zero_simple (n : Nat) : n + 0 = n := by simp\n",
-            encoding="utf-8",
-        )
+        strat_file.write_text(_DEMO_LEAN.read_text(encoding="utf-8"), encoding="utf-8")
 
         # 3. goal add
         r = self._run([
@@ -417,13 +425,9 @@ class TestAC6LakeIntegrationPass:
     def test_full_reactor_run_proves_goal(self, tmp_path: Path) -> None:
         db_path, conn = _make_db(tmp_path)
 
-        # Write leaf strategy file with `by simp` (demo theorem content)
+        # Use demo fixture (single source of truth — see _DEMO_LEAN)
         strategy_lean = tmp_path / "strat.lean"
-        strategy_lean.write_text(
-            "import Mathlib\n"
-            "theorem add_zero_simple (n : Nat) : n + 0 = n := by simp\n",
-            encoding="utf-8",
-        )
+        strategy_lean.write_text(_DEMO_LEAN.read_text(encoding="utf-8"), encoding="utf-8")
         goal_lean = tmp_path / "goal.lean"
         goal_lean.write_text("-- goal placeholder\n", encoding="utf-8")
 
@@ -570,13 +574,9 @@ class TestAC9CliChain:
         cmd_init(_args(problem="example"), base_dir=tmp_path)
         assert (tmp_path / "Problems" / "example" / "META.md").exists()
 
-        # 2. Write leaf strategy and goal add
+        # 2. Copy demo fixture and goal add (single source of truth — see _DEMO_LEAN)
         leaf = tmp_path / "leaf.lean"
-        leaf.write_text(
-            "import Mathlib\n"
-            "theorem add_zero_simple (n : Nat) : n + 0 = n := by simp\n",
-            encoding="utf-8",
-        )
+        leaf.write_text(_DEMO_LEAN.read_text(encoding="utf-8"), encoding="utf-8")
         cmd_goal_add(
             _args(problem="example", slug="add_zero_simple",
                   kind="theorem", leaf_strategy=str(leaf)),
@@ -713,3 +713,9 @@ class TestAC11CascadeFatalHalt:
         assert reactor.conn.execute(
             "SELECT id FROM goals WHERE id=?", (g_id,)
         ).fetchone() is not None, "goal row must be preserved on fatal halt"
+
+        # working dir 保留: lean files on disk must not be cleaned up
+        # (vacuously true in P1 — no cleanup path exists; assert guards future regressions
+        # if P2+ adds cleanup logic to fatal halt path)
+        assert strategy_lean.exists(), "strategy lean file must be preserved on fatal halt"
+        assert goal_lean.exists(), "goal lean file must be preserved on fatal halt"

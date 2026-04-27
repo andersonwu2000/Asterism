@@ -66,13 +66,14 @@ def run_lean(lean_file: str, cwd: str, timeout: float = 600.0) -> LakeResult:
       rc == 0 + kind=hasSorry     → outcome=exhausted
       rc == 0, no error/sorry     → outcome=proved
 
-    Test hooks (set env vars before spawning subprocess tests):
-      LAKE_MOCK_PROVED=1          → immediately return proved (no lake call)
-      LAKE_MOCK_SORRY=1           → immediately return exhausted+hasSorry
+    Test hook (mutually exclusive spec — see docs/dev/test_hooks.md):
+      LAKE_MOCK=proved            → immediately return proved (no lake call)
+      LAKE_MOCK=sorry             → immediately return exhausted+hasSorry
     """
-    if os.environ.get("LAKE_MOCK_PROVED") == "1":
+    _mock = os.environ.get("LAKE_MOCK")
+    if _mock == "proved":
         return LakeResult(outcome="proved")
-    if os.environ.get("LAKE_MOCK_SORRY") == "1":
+    if _mock == "sorry":
         return LakeResult(
             outcome="exhausted",
             messages=[{"kind": "hasSorry", "data": "declaration uses `sorry`"}],
