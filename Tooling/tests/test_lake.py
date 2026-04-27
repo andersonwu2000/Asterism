@@ -61,11 +61,20 @@ class TestRunLean:
         with patch("Tooling.lake.subprocess.Popen") as mock_popen:
             mock_popen.return_value = _mock_proc("", 0)
             result = run_lean(
-                str(FIXTURES / "spike003_type_error_nolib.lean"), "fake_cwd"
+                str(FIXTURES / "spike003_sorry_nolib.lean"), "fake_cwd"
             )
         assert result.outcome == "proved"
         assert result.messages == []
         assert not result.timed_out
+
+    def test_popen_isolates_session(self):
+        """POSIX safety: Popen must use start_new_session=True so kill_tree
+        does not reach the parent Python interpreter via shared pgid."""
+        with patch("Tooling.lake.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = _mock_proc("", 0)
+            run_lean(str(FIXTURES / "spike003_sorry_nolib.lean"), "fake_cwd")
+        _, kwargs = mock_popen.call_args
+        assert kwargs.get("start_new_session") is True
 
     def test_type_error(self):
         """rc=1 → exhausted regardless of message content."""

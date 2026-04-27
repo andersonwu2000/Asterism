@@ -20,7 +20,14 @@ class LakeResult:
 
 
 def _kill_tree(pid: int) -> None:
-    """Kill process and its entire child tree (Windows-safe)."""
+    """Kill process and its entire child tree.
+
+    Windows: ``taskkill /F /T /PID`` walks the descendant tree.
+    POSIX: relies on ``subprocess.Popen(..., start_new_session=True)`` placing
+    the child in a fresh session/pgid so ``killpg`` cannot reach the parent
+    Python interpreter. Strict descendant-tree kill (grandchildren that re-
+    setsid themselves) deferred to P3+ when psutil dependency lands.
+    """
     if sys.platform == "win32":
         subprocess.run(
             ["taskkill", "/F", "/T", "/PID", str(pid)],
@@ -64,6 +71,7 @@ def run_lean(lean_file: str, cwd: str, timeout: float = 600.0) -> LakeResult:
         cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        start_new_session=True,
     )
     try:
         stdout_bytes, _ = proc.communicate(timeout=timeout)
