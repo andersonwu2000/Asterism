@@ -42,9 +42,10 @@ def db():
 
 def _make_reactor(db: sqlite3.Connection, tmp_path: Path) -> Reactor:
     """Build a Reactor with conn already injected (bypasses startup)."""
-    reactor = Reactor.__new__(Reactor)
-    reactor.db_path = tmp_path / "test.db"
-    reactor.config = ReactorConfig(base_dir=str(tmp_path))
+    reactor = Reactor(
+        str(tmp_path / "test.db"),
+        ReactorConfig(base_dir=str(tmp_path)),
+    )
     reactor.conn = db
     return reactor
 
@@ -187,10 +188,18 @@ class TestDispatch:
     def test_dispatch_unknown_kind_raises_fatal(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
+        """Unknown kind: FatalError raised AND fatal event emitted (R2 #3)."""
         reactor = _make_reactor(db, tmp_path)
         task = {"id": 1, "kind": "Backward", "target_id": "1", "payload": None}
         with pytest.raises(FatalError):
             reactor._dispatch(task)
+
+        event = db.execute(
+            "SELECT kind, payload FROM events WHERE kind = 'fatal'"
+        ).fetchone()
+        assert event is not None
+        payload = json.loads(event[1])
+        assert "Backward" in payload["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +353,54 @@ class TestFatalHalt:
                 reactor._run_loop()
 
         assert exc_info.value.code == 1
+
+    def test_cascade_fatal_end_to_end(self, tmp_path: Path) -> None:
+        """Acceptance #11 end-to-end (R2 #4):
+        queue → _pop_queue → _dispatch (Builder mock proved) → _cascade
+        (real SQL fail) → fatal event in DB + SystemExit(1) + DB 現場保留.
+        """
+        db_path = tmp_path / "test.db"
+
+        # Pre-populate DB before reactor.startup() opens its own connection.
+        setup_conn = sqlite3.connect(str(db_path))
+        setup_conn.execute("PRAGMA foreign_keys = ON")
+        init_schema(setup_conn)
+        strategy_lean = tmp_path / "strat.lean"
+        strategy_lean.write_text("theorem t : True := by trivial", "utf-8")
+        goal_lean = tmp_path / "goal.lean"
+        goal_lean.write_text("placeholder", "utf-8")
+        goal_id, strategy_id = _make_rows(setup_conn, strategy_lean, goal_lean)
+        _enqueue(setup_conn, "Builder", str(strategy_id))
+        setup_conn.close()
+
+        reactor = Reactor(str(db_path), ReactorConfig(base_dir=str(tmp_path)))
+
+        with patch("Tooling.scheduler.Builder") as MockBuilder:
+            MockBuilder.return_value.run.return_value = BuilderResult(outcome="proved")
+            reactor.startup()
+            with patch.object(
+                reactor,
+                "_update_goal_proved",
+                side_effect=sqlite3.IntegrityError("UNIQUE constraint failed"),
+            ):
+                with pytest.raises(SystemExit) as exc_info:
+                    reactor._run_loop()
+
+        assert exc_info.value.code == 1
+
+        event = reactor.conn.execute(
+            "SELECT kind, payload FROM events WHERE kind = 'fatal'"
+        ).fetchone()
+        assert event is not None
+        assert "UNIQUE constraint failed" in json.loads(event[1])["error"]
+
+        # DB 現場保留: strategy + goal rows still present.
+        assert reactor.conn.execute(
+            "SELECT id FROM strategies WHERE id = ?", (strategy_id,)
+        ).fetchone() is not None
+        assert reactor.conn.execute(
+            "SELECT id FROM goals WHERE id = ?", (goal_id,)
+        ).fetchone() is not None
 
 
 # ---------------------------------------------------------------------------

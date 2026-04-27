@@ -15,6 +15,7 @@ P2+ will implement true daemon blocking on event_bus.
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -102,14 +103,27 @@ class Reactor:
             result = Builder(strategy_id, self.conn, cfg).run()
             self._cascade(strategy_id, result)
         else:
-            raise FatalError(f"Unsupported task kind: {task['kind']!r}")
+            msg = f"Unsupported task kind: {task['kind']!r}"
+            self._emit_fatal(msg)
+            raise FatalError(msg)
 
     # ------------------------------------------------------------------
     # Cascade
     # ------------------------------------------------------------------
 
     def _cascade(self, strategy_id: int, result: BuilderResult) -> None:
-        """Single cascade rule: strategies.succeeded → goal proved + answer_data."""
+        """Single cascade rule: strategies.succeeded → goal proved + answer_data.
+
+        P1 trigger uses BuilderResult.outcome=='proved' rather than re-querying
+        strategies.status=='succeeded' (phase1_skeleton.md ## Scope ## In line 27
+        is DB-driven). Functionally equivalent in P1: Builder is the only
+        producer and only emits BuilderResult after CommitWriter has UPDATE'd
+        strategies.status='succeeded' in the same step (builder._commit_success).
+
+        P2+ revisit: when Backward / Refuter / other pipelines may modify
+        strategies.status independently, switch this trigger to a DB read of
+        strategies.status to stay aligned with phase doc 字面 ground-truth.
+        """
         if result.outcome != "proved":
             return
 
@@ -131,7 +145,12 @@ class Reactor:
                     "rule": "succeeded→proved",
                 },
             )
-        except Exception as exc:
+        except sqlite3.Error as exc:
+            # phase1_skeleton.md ## Scope ## In: cascade SQL fail
+            # (unique constraint / FK / json format) → fatal halt. P1 cascade
+            # has no json.loads path; sqlite3.Error covers the realistic set.
+            # Programming bugs (TypeError / AttributeError) intentionally
+            # propagate uncaught for fast debugging in P1.
             self._emit_fatal(str(exc))
             raise FatalError(str(exc)) from exc
 
