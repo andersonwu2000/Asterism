@@ -8,6 +8,7 @@ points rather than the full pipeline.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +16,7 @@ import pytest
 
 from Tooling.cli import (
     _parse_goal_id,
+    _resolve_goal_id,
     build_parser,
     cmd_db_recover,
     cmd_goal_add,
@@ -222,6 +224,34 @@ class TestGoalAdd:
             )
         assert exc.value.code == 1
 
+    def test_commit_fault_after_step1_exits_2_friendly(self, tmp_path, capsys, monkeypatch):
+        """COMMIT_FAULT injection → exit 2 with friendly stderr message (not Python traceback).
+
+        DB state after fault: goals row is 'pending' (recoverable via `db recover`).
+        """
+        db_path = _db(tmp_path)
+        leaf = self._leaf(tmp_path)
+        monkeypatch.setenv("COMMIT_FAULT", "after_step1")
+        with pytest.raises(SystemExit) as exc:
+            cmd_goal_add(
+                _args(problem="ex", slug="foo", kind="theorem", leaf_strategy=str(leaf)),
+                db_path=db_path, base_dir=tmp_path,
+            )
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "COMMIT_FAULT" in err
+        assert "db recover" in err
+        # Pending row should still exist for recovery.
+        conn = connect(db_path)
+        try:
+            row = conn.execute(
+                "SELECT commit_state FROM goals WHERE slug='foo'"
+            ).fetchone()
+            assert row is not None
+            assert row[0] == "pending"
+        finally:
+            conn.close()
+
 
 # ──────────────────────────────────────────────────────────────
 # run
@@ -352,6 +382,28 @@ class TestGoalShow:
         assert exc.value.code == 1
 
     def test_invalid_goal_id_format_exits_1(self, tmp_path):
+        """Truly invalid format (not 'root' alias, not integer) → exit 1."""
+        db_path = _db(tmp_path)
+        with pytest.raises(SystemExit) as exc:
+            cmd_goal_show(_args(goal_id="xyz"), db_path=db_path)
+        assert exc.value.code == 1
+
+    def test_root_alias_resolves_to_origin_root(self, tmp_path, capsys):
+        """phase1_skeleton.md ## Demo line 76: `asterism goal show G_root` must work."""
+        db_path = _db(tmp_path)
+        conn = connect(db_path)
+        g_id = self._insert_goal(conn, slug="rootgoal", status="open")
+        conn.close()
+        # Both 'G_root' and 'root' aliases should resolve to the unique origin='root' goal.
+        cmd_goal_show(_args(goal_id="G_root"), db_path=db_path)
+        out = capsys.readouterr().out
+        assert "rootgoal" in out
+        cmd_goal_show(_args(goal_id="root"), db_path=db_path)
+        out = capsys.readouterr().out
+        assert "rootgoal" in out
+
+    def test_root_alias_with_no_root_goal_exits_1(self, tmp_path):
+        """No origin='root' goal exists → root alias cannot resolve → exit 1."""
         db_path = _db(tmp_path)
         with pytest.raises(SystemExit) as exc:
             cmd_goal_show(_args(goal_id="G_root"), db_path=db_path)
@@ -427,3 +479,89 @@ class TestParser:
                             if "add" in sub_action._name_parser_map:
                                 goal_parser_help = sub_action._name_parser_map["add"].format_help()
         assert "P1" in goal_parser_help or "testing-only" in goal_parser_help or "P2" in goal_parser_help
+
+
+# ──────────────────────────────────────────────────────────────
+# End-to-end integration (init → goal add → run → goal show)
+# ──────────────────────────────────────────────────────────────
+
+
+class TestEndToEnd:
+    """Acceptance #9 path: init → goal add → run → goal show one-shot.
+
+    Builder.run is mocked to return BuilderResult(outcome='proved') and write
+    the strategies.status='succeeded' UPDATE that the cascade rule expects.
+    Verifies CLI commands compose: init builds the dirs, goal add stages the
+    queue, run drains queue + cascades to goal status='proved', goal show
+    displays the proved state.
+    """
+
+    def test_init_goal_add_run_show_proved(self, tmp_path, capsys, monkeypatch):
+        from datetime import datetime, timezone
+        from Tooling.pipelines.builder import BuilderResult
+
+        # 1. init
+        cmd_init(_args(problem="ex"), base_dir=tmp_path)
+
+        # 2. goal add (real CommitWriter path)
+        leaf = tmp_path / "leaf.lean"
+        leaf.write_text("theorem t : True := by trivial\n", encoding="utf-8")
+        db_path = tmp_path / "asterism.db"
+        cmd_goal_add(
+            _args(problem="ex", slug="t", kind="theorem", leaf_strategy=str(leaf)),
+            db_path=db_path, base_dir=tmp_path,
+        )
+
+        # Confirm queue has 1 task before run.
+        conn = connect(db_path)
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM queue").fetchone()[0] == 1
+            (g_id,) = conn.execute("SELECT id FROM goals WHERE slug='t'").fetchone()
+            (s_id,) = conn.execute("SELECT id FROM strategies WHERE goal_id=?",
+                                    (g_id,)).fetchone()
+        finally:
+            conn.close()
+
+        # 3. run — mock Builder.run to simulate proved outcome + UPDATE
+        # strategies.status='succeeded' (what real Builder.run does on proved).
+        def fake_builder_factory(strategy_id, conn, cfg):
+            mock_b = MagicMock()
+            def fake_run():
+                with conn:
+                    conn.execute(
+                        "UPDATE strategies SET status='succeeded' WHERE id=?",
+                        (strategy_id,),
+                    )
+                return BuilderResult(outcome="proved", tactic="trivial")
+            mock_b.run.side_effect = fake_run
+            return mock_b
+
+        with patch("Tooling.scheduler.Builder", side_effect=fake_builder_factory):
+            with pytest.raises(SystemExit) as exc:
+                cmd_run(_args(once=True, daemon=False),
+                        db_path=db_path, base_dir=tmp_path)
+            assert exc.value.code == 0  # empty queue clean exit
+
+        # Confirm cascade ran: goal proved + answer_data.
+        conn = connect(db_path)
+        try:
+            row = conn.execute(
+                "SELECT status, answer_data FROM goals WHERE id=?", (g_id,)
+            ).fetchone()
+            assert row[0] == "proved"
+            ad = json.loads(row[1])
+            assert ad["type"] == "classical"
+            assert "lean_path" in ad
+            assert conn.execute("SELECT COUNT(*) FROM queue").fetchone()[0] == 0
+        finally:
+            conn.close()
+
+        # 4. goal show — display proved status + answer_data
+        cmd_goal_show(_args(goal_id=str(g_id)), db_path=db_path)
+        out = capsys.readouterr().out
+        assert "proved" in out
+        assert "classical" in out
+        # And via root alias (acceptance #2 demo path).
+        cmd_goal_show(_args(goal_id="G_root"), db_path=db_path)
+        out = capsys.readouterr().out
+        assert "proved" in out

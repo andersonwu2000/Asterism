@@ -1,3 +1,6 @@
 spike_temp/
 *.pyc
 __pycache__/
+
+# pip install -e build artifacts
+*.egg-info/

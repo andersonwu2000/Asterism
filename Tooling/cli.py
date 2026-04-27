@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from Tooling.commit import CommitWriter
+from Tooling.commit import CommitFault, CommitWriter
 from Tooling.db.connect import connect, init_schema
 from Tooling.scheduler import Reactor, ReactorConfig
 
@@ -42,7 +42,8 @@ Verify with `#print axioms <theorem_name>` after each proof.
 
 ## Goals
 
-(Populated automatically as goals are added via `asterism goal add`.)
+(List goals manually here, or query `asterism goal show <id>` / `sqlite3 asterism.db`
+for live state. P1 does not auto-rewrite this file.)
 """
 
 
@@ -115,63 +116,74 @@ def cmd_goal_add(
     tmp_id = str(uuid.uuid4())
 
     conn = connect(db)
-    init_schema(conn)
-    writer = CommitWriter(conn)
+    try:
+        init_schema(conn)
+        writer = CommitWriter(conn)
 
-    # Step 1a: INSERT goals (pending) — placeholder lean_path avoids needing
-    # the auto-increment ID up-front. finalize() will set the canonical path.
-    tmp_goal_lean = f"Problems/{p}/Goals/_pending_{tmp_id}/{slug}.lean"
-    goal_id = writer.begin("goals", "insert", {
-        "problem": p,
-        "slug": slug,
-        "lean_path": tmp_goal_lean,
-        "origin": "root",
-        "kind": kind,
-        "status": "open",
-    })
+        # Step 1a: INSERT goals (pending) — placeholder lean_path avoids needing
+        # the auto-increment ID up-front. finalize() will set the canonical path.
+        tmp_goal_lean = f"Problems/{p}/Goals/_pending_{tmp_id}/{slug}.lean"
+        goal_id = writer.begin("goals", "insert", {
+            "problem": p,
+            "slug": slug,
+            "lean_path": tmp_goal_lean,
+            "origin": "root",
+            "kind": kind,
+            "status": "open",
+        })
 
-    # Now we know goal_id — compute canonical paths.
-    g_folder = f"{goal_id}_{slug}"
-    real_goal_lean = f"Problems/{p}/Goals/{g_folder}/{slug}.lean"
+        # Now we know goal_id — compute canonical paths.
+        g_folder = f"{goal_id}_{slug}"
+        real_goal_lean = f"Problems/{p}/Goals/{g_folder}/{slug}.lean"
 
-    # Step 1b: INSERT strategies (pending)
-    tmp_strategy_lean = f"Problems/{p}/Goals/{g_folder}/Strategies/_pending_{tmp_id}.lean"
-    strategy_id = writer.begin("strategies", "insert", {
-        "goal_id": goal_id,
-        "lean_path": tmp_strategy_lean,
-        "status": "proposed",
-    })
+        # Step 1b: INSERT strategies (pending)
+        tmp_strategy_lean = f"Problems/{p}/Goals/{g_folder}/Strategies/_pending_{tmp_id}.lean"
+        strategy_id = writer.begin("strategies", "insert", {
+            "goal_id": goal_id,
+            "lean_path": tmp_strategy_lean,
+            "status": "proposed",
+        })
 
-    real_strategy_lean = f"Problems/{p}/Goals/{g_folder}/Strategies/{strategy_id}_{slug}.lean"
+        real_strategy_lean = f"Problems/{p}/Goals/{g_folder}/Strategies/{strategy_id}_{slug}.lean"
 
-    # Create goal directory and goal lean file (empty statement placeholder).
-    goal_lean_path = base / real_goal_lean
-    goal_lean_path.parent.mkdir(parents=True, exist_ok=True)
-    if not goal_lean_path.exists():
-        goal_lean_path.write_text(f"-- Goal: {slug}\n", encoding="utf-8")
+        # Create goal directory and goal lean file (empty statement placeholder).
+        goal_lean_path = base / real_goal_lean
+        goal_lean_path.parent.mkdir(parents=True, exist_ok=True)
+        if not goal_lean_path.exists():
+            goal_lean_path.write_text(f"-- Goal: {slug}\n", encoding="utf-8")
 
-    # Create strategies directory (stage_file will mkdir parents anyway, but be explicit).
-    strategy_lean_path = base / real_strategy_lean
-    strategy_lean_path.parent.mkdir(parents=True, exist_ok=True)
+        # Create strategies directory (stage_file will mkdir parents anyway, but be explicit).
+        strategy_lean_path = base / real_strategy_lean
+        strategy_lean_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Step 2: mv leaf-strategy → canonical strategy lean_path.
-    writer.stage_file(leaf, strategy_lean_path)
+        # Step 2: mv leaf-strategy → canonical strategy lean_path.
+        writer.stage_file(leaf, strategy_lean_path)
 
-    # Step 3: finalize both rows with canonical lean_paths.
-    writer.finalize("goals", goal_id, {"lean_path": real_goal_lean})
-    writer.finalize("strategies", strategy_id, {"lean_path": real_strategy_lean})
+        # Step 3: finalize both rows with canonical lean_paths.
+        writer.finalize("goals", goal_id, {"lean_path": real_goal_lean})
+        writer.finalize("strategies", strategy_id, {"lean_path": real_strategy_lean})
 
-    # Enqueue Builder task (outside CommitWriter — queue is append-only, no recovery needed).
-    with conn:
-        conn.execute(
-            "INSERT INTO queue (kind, target_id, priority, created_at) VALUES (?, ?, ?, ?)",
-            ("Builder", str(strategy_id), 0, _now()),
-        )
+        # Enqueue Builder task (outside CommitWriter — queue is append-only, no recovery needed).
+        with conn:
+            conn.execute(
+                "INSERT INTO queue (kind, target_id, priority, created_at) VALUES (?, ?, ?, ?)",
+                ("Builder", str(strategy_id), 0, _now()),
+            )
 
-    print(f"goal add: goal_id={goal_id} slug={slug!r} strategy_id={strategy_id}")
-    print(f"  lean_path:          {real_goal_lean}")
-    print(f"  strategy lean_path: {real_strategy_lean}")
-    print(f"  queued Builder task for strategy {strategy_id}")
+        print(f"goal add: goal_id={goal_id} slug={slug!r} strategy_id={strategy_id}")
+        print(f"  lean_path:          {real_goal_lean}")
+        print(f"  strategy lean_path: {real_strategy_lean}")
+        print(f"  queued Builder task for strategy {strategy_id}")
+    except CommitFault as exc:
+        # COMMIT_FAULT env injection (test/acceptance path only). Print a friendly
+        # message and exit 2 instead of raising a Python traceback. The pending
+        # row(s) are intentionally left in 'pending' state so `db recover` can
+        # clean them up (acceptance #3 path).
+        print(f"goal add: interrupted by COMMIT_FAULT ({exc}); "
+              f"run `asterism db recover` to clean up", file=sys.stderr)
+        sys.exit(2)
+    finally:
+        conn.close()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -207,15 +219,18 @@ def cmd_db_recover(
     """Run CommitWriter.recover_scan and report results."""
     db = db_path or _DEFAULT_DB
     conn = connect(db)
-    init_schema(conn)
-    recovered = CommitWriter(conn).recover_scan()
-    total = sum(len(ids) for ids in recovered.values())
-    if total == 0:
-        print("recover: no pending rows found — DB is clean")
-    else:
-        for table, ids in recovered.items():
-            if ids:
-                print(f"recover: {table} rows recovered: {ids}")
+    try:
+        init_schema(conn)
+        recovered = CommitWriter(conn).recover_scan()
+        total = sum(len(ids) for ids in recovered.values())
+        if total == 0:
+            print("recover: no pending rows found — DB is clean")
+        else:
+            for table, ids in recovered.items():
+                if ids:
+                    print(f"recover: {table} rows recovered: {ids}")
+    finally:
+        conn.close()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -224,7 +239,7 @@ def cmd_db_recover(
 
 
 def _parse_goal_id(raw: str) -> int | None:
-    """Parse 'G_1', 'G1', or '1' → int. Returns None on failure."""
+    """Parse 'G_1', 'G1', or '1' → int. Returns None on failure (including 'root' aliases)."""
     s = raw
     if s.upper().startswith("G_"):
         s = s[2:]
@@ -236,6 +251,32 @@ def _parse_goal_id(raw: str) -> int | None:
         return None
 
 
+def _resolve_goal_id(raw: str, conn: Any) -> int | None:
+    """Resolve raw → goal_id, supporting integer formats and 'root' / 'G_root' alias.
+
+    phase1_skeleton.md ## Demo line 76 uses `asterism goal show G_root` — phase
+    doc is read-only, so the CLI must accept this literal. P1 always has exactly
+    one root goal per problem (Backward not yet implemented), so the alias maps
+    to the unique origin='root' row. With multiple root goals (P2+ multi-Problem
+    demo), this should be disambiguated; a warning is emitted in that case.
+    """
+    parsed = _parse_goal_id(raw)
+    if parsed is not None:
+        return parsed
+    if raw.lower() in ("root", "g_root"):
+        rows = conn.execute(
+            "SELECT id FROM goals WHERE origin = 'root' ORDER BY id"
+        ).fetchall()
+        if not rows:
+            return None
+        if len(rows) > 1:
+            print(f"warning: multiple root goals exist {[r[0] for r in rows]}; "
+                  f"showing earliest (use integer id to disambiguate)",
+                  file=sys.stderr)
+        return rows[0][0]
+    return None
+
+
 def cmd_goal_show(
     args: Any,
     db_path: Path | None = None,
@@ -243,48 +284,52 @@ def cmd_goal_show(
     """Display goal status, answer_data, lean_path, and linked strategies."""
     db = db_path or _DEFAULT_DB
     conn = connect(db)
-    init_schema(conn)
+    try:
+        init_schema(conn)
 
-    goal_id = _parse_goal_id(args.goal_id)
-    if goal_id is None:
-        print(f"error: cannot parse goal id {args.goal_id!r} (expected integer or G_N)",
-              file=sys.stderr)
-        sys.exit(1)
+        goal_id = _resolve_goal_id(args.goal_id, conn)
+        if goal_id is None:
+            print(f"error: cannot resolve goal id {args.goal_id!r} "
+                  f"(expected integer, G_N, or 'root' / 'G_root' for the root goal)",
+                  file=sys.stderr)
+            sys.exit(1)
 
-    row = conn.execute(
-        "SELECT id, slug, problem, kind, status, answer_data, lean_path, depth "
-        "FROM goals WHERE id = ?",
-        (goal_id,),
-    ).fetchone()
+        row = conn.execute(
+            "SELECT id, slug, problem, kind, status, answer_data, lean_path, depth "
+            "FROM goals WHERE id = ?",
+            (goal_id,),
+        ).fetchone()
 
-    if row is None:
-        print(f"error: goal not found: {args.goal_id!r}", file=sys.stderr)
-        sys.exit(1)
+        if row is None:
+            print(f"error: goal not found: {args.goal_id!r}", file=sys.stderr)
+            sys.exit(1)
 
-    g_id, slug, problem, kind, status, answer_data, lean_path, depth = row
-    print(f"goal {g_id} ({slug})")
-    print(f"  problem:   {problem}")
-    print(f"  kind:      {kind}")
-    print(f"  status:    {status}")
-    print(f"  lean_path: {lean_path}")
-    if depth is not None:
-        print(f"  depth:     {depth}")
-    if answer_data:
-        ad = json.loads(answer_data)
-        print(f"  answer_data:")
-        for k, v in ad.items():
-            print(f"    {k}: {v}")
+        g_id, slug, problem, kind, status, answer_data, lean_path, depth = row
+        print(f"goal {g_id} ({slug})")
+        print(f"  problem:   {problem}")
+        print(f"  kind:      {kind}")
+        print(f"  status:    {status}")
+        print(f"  lean_path: {lean_path}")
+        if depth is not None:
+            print(f"  depth:     {depth}")
+        if answer_data:
+            ad = json.loads(answer_data)
+            print(f"  answer_data:")
+            for k, v in ad.items():
+                print(f"    {k}: {v}")
 
-    strats = conn.execute(
-        "SELECT id, lean_path, status, commit_state "
-        "FROM strategies WHERE goal_id = ? ORDER BY id",
-        (g_id,),
-    ).fetchall()
-    if strats:
-        print(f"  strategies ({len(strats)}):")
-        for s_id, s_path, s_status, s_cs in strats:
-            print(f"    [{s_id}] status={s_status} commit_state={s_cs}")
-            print(f"          {s_path}")
+        strats = conn.execute(
+            "SELECT id, lean_path, status, commit_state "
+            "FROM strategies WHERE goal_id = ? ORDER BY id",
+            (g_id,),
+        ).fetchall()
+        if strats:
+            print(f"  strategies ({len(strats)}):")
+            for s_id, s_path, s_status, s_cs in strats:
+                print(f"    [{s_id}] status={s_status} commit_state={s_cs}")
+                print(f"          {s_path}")
+    finally:
+        conn.close()
 
 
 # ──────────────────────────────────────────────────────────────
