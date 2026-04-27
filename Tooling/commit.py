@@ -73,13 +73,14 @@ class CommitWriter:
                 fields.setdefault("updated_at", now)
             cols = ", ".join(fields.keys())
             placeholders = ", ".join("?" * len(fields))
-            cur = self.conn.execute(
-                f"INSERT INTO {table} ({cols}) VALUES ({placeholders})",
-                list(fields.values()),
-            )
-            self.conn.commit()
+            with self.conn:
+                cur = self.conn.execute(
+                    f"INSERT INTO {table} ({cols}) VALUES ({placeholders})",
+                    list(fields.values()),
+                )
+                new_id = cur.lastrowid
             _check_fault("after_step1")
-            return cur.lastrowid  # type: ignore[return-value]
+            return new_id  # type: ignore[return-value]
 
         elif op == "update":
             if row_id is None:
@@ -99,10 +100,11 @@ class CommitWriter:
                 set_parts.append("updated_at = ?")
                 params.append(now)
             params.append(row_id)
-            self.conn.execute(
-                f"UPDATE {table} SET {', '.join(set_parts)} WHERE id = ?", params
-            )
-            self.conn.commit()
+            with self.conn:
+                self.conn.execute(
+                    f"UPDATE {table} SET {', '.join(set_parts)} WHERE id = ?",
+                    params,
+                )
             _check_fault("after_step1")
             return row_id
 
@@ -202,11 +204,11 @@ class CommitWriter:
         if table in _TABLES_WITH_UPDATED_AT:
             updates["updated_at"] = now
         set_clause = ", ".join(f"{k} = ?" for k in updates)
-        self.conn.execute(
-            f"UPDATE {table} SET {set_clause} WHERE id = ?",
-            list(updates.values()) + [row_id],
-        )
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute(
+                f"UPDATE {table} SET {set_clause} WHERE id = ?",
+                list(updates.values()) + [row_id],
+            )
         _check_fault("after_step3")
 
     # ------------------------------------------------------------------
@@ -236,16 +238,22 @@ class CommitWriter:
                 lean_exists = lean_path_obj is not None and lean_path_obj.exists()
 
                 if lean_exists:
-                    # Step 2 done; just finalize with no extra field changes.
+                    # Step 2 done; the file is already at lean_path. Spec §1.3
+                    # rule 1 says "重跑 mv（idempotent）" but the staging-source
+                    # path is not stored in the schema, so we cannot literally
+                    # re-invoke stage_file here. shutil.move/os.replace is atomic,
+                    # so dst-exists implies step 2 succeeded — we go straight to
+                    # finalize for the equivalent terminal state. P2+ would need
+                    # a staging_path column to restore the literal "rerun mv".
                     self.finalize(table, row_id, {})
                     recovered[table].append(row_id)
 
                 elif snapshot is None:
                     # INSERT interrupted before step 2: delete pending row.
-                    self.conn.execute(
-                        f"DELETE FROM {table} WHERE id = ?", (row_id,)
-                    )
-                    self.conn.commit()
+                    with self.conn:
+                        self.conn.execute(
+                            f"DELETE FROM {table} WHERE id = ?", (row_id,)
+                        )
                     recovered[table].append(row_id)
 
                 else:
@@ -256,11 +264,11 @@ class CommitWriter:
                     if table in _TABLES_WITH_UPDATED_AT:
                         snap["updated_at"] = _now()
                     set_clause = ", ".join(f"{k} = ?" for k in snap)
-                    self.conn.execute(
-                        f"UPDATE {table} SET {set_clause} WHERE id = ?",
-                        list(snap.values()) + [row_id],
-                    )
-                    self.conn.commit()
+                    with self.conn:
+                        self.conn.execute(
+                            f"UPDATE {table} SET {set_clause} WHERE id = ?",
+                            list(snap.values()) + [row_id],
+                        )
                     recovered[table].append(row_id)
 
         return recovered

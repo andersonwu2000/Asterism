@@ -200,7 +200,7 @@ class TestRecoverUpdate:
         sid = _insert_live_strategy(db, gid, str(strat_lean))
         return gid, sid
 
-    def test_update_after_step1_restores_row(
+    def test_update_after_step1_finalizes_via_lean_exists(
         self,
         db: sqlite3.Connection,
         cw: CommitWriter,
@@ -208,7 +208,11 @@ class TestRecoverUpdate:
         monkeypatch,
         live_strat,
     ) -> None:
-        """Crash after step 1 (pending + snapshot, file not moved): restore original."""
+        """Step 1 crash with lean_path already on disk (fixture pre-populated):
+        recover walks the `lean_exists → finalize` branch, NOT restore-from-snapshot.
+        Status equals pre-begin original because step 1 doesn't mutate business
+        fields and finalize is invoked with empty final_fields.
+        """
         _, sid = live_strat
 
         monkeypatch.setenv("COMMIT_FAULT", "after_step1")
@@ -234,6 +238,57 @@ class TestRecoverUpdate:
         assert row[0] == "live"
         assert row[1] == original_status
         assert row[2] is None  # snapshot cleared
+
+    def test_update_after_step1_restores_from_snapshot(
+        self, db: sqlite3.Connection, cw: CommitWriter, tmp_path
+    ) -> None:
+        """Restore branch: pending row + snapshot set + lean_path NOT on disk.
+        recover_scan walks the `else` branch and restores all fields from
+        prior_state_snapshot. Covers phase1 acceptance #4 + impl §1.3 rule 3.
+        """
+        goal_lean = tmp_path / "goals" / "g.lean"
+        goal_lean.parent.mkdir()
+        goal_lean.write_text("-- goal")
+        gid = _insert_live_goal(db, str(goal_lean))
+
+        # lean_path that does NOT exist on disk – simulates step 1 crash where
+        # the staging file was wiped before step 2 ran.
+        strat_lean = tmp_path / "missing_strat.lean"
+        sid = _insert_live_strategy(db, gid, str(strat_lean))
+
+        # Manually transition row → pending + snapshot, mutating status to a
+        # "midflight" value distinct from the original to verify restore.
+        snapshot_payload = {
+            "id": sid,
+            "goal_id": gid,
+            "lean_path": str(strat_lean),
+            "status": "proposed",
+            "commit_state": "live",
+            "prior_state_snapshot": None,
+            "parent_subgoal_max_similarity": None,
+            "created_by": None,
+            "created_at": NOW,
+        }
+        db.execute(
+            "UPDATE strategies SET commit_state='pending', "
+            "status='in_progress', prior_state_snapshot=? WHERE id=?",
+            (json.dumps(snapshot_payload), sid),
+        )
+        db.commit()
+
+        assert not strat_lean.exists()
+
+        result = cw.recover_scan()
+
+        # Snapshot restored: original status, live, snapshot cleared.
+        row = db.execute(
+            "SELECT commit_state, status, prior_state_snapshot FROM strategies WHERE id=?",
+            (sid,),
+        ).fetchone()
+        assert row[0] == "live"
+        assert row[1] == "proposed"  # restored from snapshot, not the midflight 'in_progress'
+        assert row[2] is None
+        assert sid in result["strategies"]
 
     def test_update_after_step2_finalizes_row(
         self,
@@ -600,3 +655,19 @@ class TestStageFile:
 
         cw.stage_file(src, dst)  # should be a no-op, not raise
         assert dst.read_bytes() == b"already here"
+
+    def test_overwrites_when_dst_exists_diff_hash(
+        self, cw: CommitWriter, tmp_path
+    ) -> None:
+        """Both src and dst exist with different content → overwrite dst with src.
+        shutil.move on existing dst maps to os.replace (atomic overwrite).
+        """
+        src = tmp_path / "src.lean"
+        src.write_bytes(b"new content")
+        dst = tmp_path / "dst.lean"
+        dst.write_bytes(b"old content")
+
+        cw.stage_file(src, dst)
+
+        assert dst.read_bytes() == b"new content"
+        assert not src.exists()
