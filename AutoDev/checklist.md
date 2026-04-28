@@ -5,6 +5,12 @@
 
 **每個步驟執行前，先唸出指令再行動**
 
+> **Hybrid mode 預設**：R1 Implement + R3 Fix 由 orchestrator 本體（Opus 4.7）直接執行，**不 spawn Sonnet subprocess**。R2 Review 永遠 spawn 獨立 Auditor subprocess。詳見 `orchestrator.md ## Hybrid mode`。
+>
+> 下方 R1 / R3 「呼叫 Executor」+ `claude -p ... --session-id` block 為**模板殘留**——hybrid mode 下 orchestrator 直接做、不執行 spawn 指令。`state.md ## Sessions` Executor 欄位寫「（由 orchestrator 直接做）」。
+>
+> 例外：user 明確指示「這個 cycle spawn sonnet」才走 subprocess 流程。orchestrator 不自行判斷「量大改 spawn」。
+
 ---
 
 ## Round 0：Cycle 起點

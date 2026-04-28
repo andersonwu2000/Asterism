@@ -11,6 +11,10 @@ Cycle 開發流程：
 2. R2 Review: Auditor
 3. R3 Fix: Executor（你也可能在此 round 做修復）
 
+> **Hybrid mode 註**：本角色預設由 orchestrator (Opus 4.7) 內聯執行、不 spawn 為獨立 subprocess（見 `orchestrator.md ## Hybrid mode`）。本檔內容仍適用——orchestrator 內聯時依本檔列的 Step 1/2/3 流程做。
+>
+> 例外場景：user 明確指示「這個 cycle spawn sonnet」時 orchestrator 才 spawn 本角色為 claude subprocess、本檔讀者為 Sonnet。
+
 立即依序完成以下 Step：
 
 ---
