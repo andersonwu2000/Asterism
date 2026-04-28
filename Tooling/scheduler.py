@@ -408,6 +408,12 @@ class Reactor:
                         "status_changed_at = ? WHERE id = ?",
                         (_now(), goal_id),
                     )
+                # P3 C21 cache invalidation hook (impl §2.3): goals UPDATE
+                # → kill local_goals + dedupe cache rows. Re-raise on SQL
+                # error per silent-failure red line — this UPDATE block
+                # already raises sqlite3.Error to outer handler.
+                from Tooling.subsystems.cache import invalidate_for_goals_write
+                invalidate_for_goals_write(self.conn)
                 self._emit_event(
                     "cascade",
                     {"goal_id": goal_id, "rule": "all_strategies_dead→shelved"},
@@ -570,6 +576,9 @@ class Reactor:
                             "status_changed_at = ? WHERE id = ?",
                             (_now(), goal_id),
                         )
+                    # P3 C21 cache invalidation hook (impl §2.3)
+                    from Tooling.subsystems.cache import invalidate_for_goals_write
+                    invalidate_for_goals_write(self.conn)
                 except sqlite3.Error:
                     pass
                 continue
@@ -858,13 +867,21 @@ class Reactor:
         answer_data: str,
         trust_set_json: str | None = None,
     ) -> None:
-        """Write proved status to goals row (separated for testability)."""
+        """Write proved status to goals row (separated for testability).
+
+        P3 C21 cache invalidation hook (impl §2.3): a Goal flipping to proved
+        changes both local_goals search results (proved Goals are search
+        candidates) and dedupe results (proved Goal types now match against
+        future candidates). Kill both scopes.
+        """
         with self.conn:
             self.conn.execute(
                 "UPDATE goals SET status = 'proved', answer_data = ?, "
                 "trust_set = ?, status_changed_at = ? WHERE id = ?",
                 (answer_data, trust_set_json, _now(), goal_id),
             )
+        from Tooling.subsystems.cache import invalidate_for_goals_write
+        invalidate_for_goals_write(self.conn)
 
     def _record_accept_reject_dead_attempt(
         self,

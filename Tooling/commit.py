@@ -240,7 +240,11 @@ class CommitWriter:
     def finalize(
         self, table: str, row_id: int, final_fields: dict[str, Any]
     ) -> None:
-        """Step 3: set commit_state='live', apply final_fields, clear snapshot."""
+        """Step 3: set commit_state='live', apply final_fields, clear snapshot.
+
+        After the row goes live, P3 mutation invalidation hook (impl §2.3)
+        kills cache rows on goals writes. See Tooling/subsystems/cache.py.
+        """
         now = _now()
         updates = dict(final_fields)
         updates["commit_state"] = "live"
@@ -254,6 +258,13 @@ class CommitWriter:
                 list(updates.values()) + [row_id],
             )
         _check_fault("after_step3")
+
+        if table == "goals":
+            # Local import: avoid circular dependency at module load time
+            # (cache.py is part of the subsystems package which itself may
+            # import from commit indirectly via tests/fixtures).
+            from Tooling.subsystems.cache import invalidate_for_goals_write
+            invalidate_for_goals_write(self.conn)
 
     # ------------------------------------------------------------------
     # Recovery
