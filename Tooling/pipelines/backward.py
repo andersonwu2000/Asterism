@@ -557,6 +557,10 @@ class Backward:
                                           acceptance #0.
           BACKWARD_FORCE=exhausted     → return exhausted immediately
           BACKWARD_FORCE=unproductive  → return unproductive immediately
+          BACKWARD_FORCE=succeed       → return success with no strategy_id
+                                          (test fixtures own the rows; used
+                                          by P3 acceptance #6a generic-N=5
+                                          trigger tests)
 
         Naming convention (test_hooks.md §規則): `*_MOCK=spec` replaces real
         behavior; `*_FORCE=value` forces a specific outcome. Splitting these
@@ -577,10 +581,16 @@ class Backward:
             return BackwardResult(outcome="exhausted")
         if force == "unproductive":
             return BackwardResult(outcome="unproductive")
+        if force == "succeed":
+            # P3 C26: minimal success-shell. No strategy_id / subgoal_ids
+            # written — fixture / test seeds those rows when relevant.
+            # (Contrast BACKWARD_MOCK=success_leaf which DOES write a stub
+            #  strategy + .lean file end-to-end.)
+            return BackwardResult(outcome="success")
         if force is not None:
             raise ValueError(
                 f"unknown BACKWARD_FORCE value: {force!r}; "
-                "valid: 'exhausted' | 'unproductive'."
+                "valid: 'exhausted' | 'unproductive' | 'succeed'."
             )
 
         try:

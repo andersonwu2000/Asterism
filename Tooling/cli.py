@@ -103,10 +103,24 @@ def cmd_goal_add(
     base = base_dir or _DEFAULT_BASE
 
     spec = getattr(args, "spec", None)
+    spec_file = getattr(args, "spec_file", None)
     leaf_arg = getattr(args, "leaf_strategy", None)
 
+    # P3 C26: --spec-file reads --spec contents from file (long statements
+    # that don't fit on the CLI). Mutually exclusive with --spec inline.
+    if spec_file is not None:
+        spec_file_path = Path(spec_file)
+        if not spec_file_path.exists():
+            print(f"error: --spec-file not found: {spec_file_path}", file=sys.stderr)
+            sys.exit(1)
+        spec = spec_file_path.read_text(encoding="utf-8").strip()
+        if not spec:
+            print(f"error: --spec-file is empty: {spec_file_path}", file=sys.stderr)
+            sys.exit(1)
+
     if spec is None and leaf_arg is None:
-        print("error: must provide either --spec or --leaf-strategy", file=sys.stderr)
+        print("error: must provide either --spec, --spec-file, or --leaf-strategy",
+              file=sys.stderr)
         sys.exit(1)
     if spec is not None and leaf_arg is not None:
         print("error: --spec and --leaf-strategy are mutually exclusive", file=sys.stderr)
@@ -362,6 +376,57 @@ def _resolve_goal_id(raw: str, conn: Any) -> int | None:
     return None
 
 
+def cmd_goal_unblock(
+    args: Any,
+    db_path: Path | None = None,
+) -> None:
+    """[P3] manually remove pipeline_kind(s) from goal's blocked_pipelines.
+
+    Usage:
+        asterism goal unblock <goal_id> <pipeline_kind>
+        asterism goal unblock <goal_id> --all
+
+    Used as a manual rescue path when an automated block (5 fails / IH-trap)
+    fires on a goal the human knows is still salvageable.
+    """
+    from Tooling.subsystems.blocked_pipelines import (
+        get_blocked_pipelines,
+        unblock_pipeline,
+    )
+
+    db = db_path or _DEFAULT_DB
+    conn = connect(db)
+    try:
+        init_schema(conn)
+        goal_id = _resolve_goal_id(args.goal_id, conn)
+        if goal_id is None:
+            print(f"error: cannot resolve goal id {args.goal_id!r}",
+                  file=sys.stderr)
+            sys.exit(1)
+
+        before = get_blocked_pipelines(conn, goal_id)
+        if getattr(args, "unblock_all", False):
+            removed = unblock_pipeline(conn, goal_id, None)
+            print(f"goal {goal_id}: unblocked all ({removed} entries removed)")
+            print(f"  before: {before}")
+            print(f"  after:  []")
+        else:
+            kind = args.pipeline_kind
+            if kind is None:
+                print("error: must provide pipeline_kind or --all", file=sys.stderr)
+                sys.exit(1)
+            removed = unblock_pipeline(conn, goal_id, kind)
+            after = get_blocked_pipelines(conn, goal_id)
+            if removed:
+                print(f"goal {goal_id}: unblocked {kind!r}")
+            else:
+                print(f"goal {goal_id}: {kind!r} was not in blocked_pipelines (no-op)")
+            print(f"  before: {before}")
+            print(f"  after:  {after}")
+    finally:
+        conn.close()
+
+
 def cmd_goal_show(
     args: Any,
     db_path: Path | None = None,
@@ -449,6 +514,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Lean theorem statement (e.g. \"∀ m n : Nat, m + n = n + m\"); enqueues Backward",
     )
     spec_group.add_argument(
+        "--spec-file", default=None, dest="spec_file", metavar="PATH",
+        help="[P3] read --spec from file (for long statements that don't fit on the CLI)",
+    )
+    spec_group.add_argument(
         "--leaf-strategy", default=None, dest="leaf_strategy", metavar="FILE",
         help="[P1 legacy] pre-written leaf strategy .lean file; enqueues Builder directly",
     )
@@ -456,6 +525,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_show = goal_sub.add_parser("show", help="show goal status and strategies")
     p_show.add_argument("goal_id", metavar="GOAL_ID",
                         help="integer ID or G_N format")
+
+    # ── goal unblock ───────────────────────────────────────────
+    p_unblock = goal_sub.add_parser(
+        "unblock",
+        help="[P3] manual rescue: remove pipeline_kind(s) from goal's blocked_pipelines",
+    )
+    p_unblock.add_argument("goal_id", metavar="GOAL_ID",
+                           help="integer ID or G_N format")
+    unblock_group = p_unblock.add_mutually_exclusive_group(required=True)
+    unblock_group.add_argument(
+        "pipeline_kind", nargs="?", default=None,
+        choices=["Builder", "Backward", "Refuter", "Forward",
+                 "Generalizer", "Counterexample", "ConstructionSearch", "Strategist"],
+        help="single pipeline_kind to unblock",
+    )
+    unblock_group.add_argument(
+        "--all", action="store_true", default=False,
+        dest="unblock_all",
+        help="unblock all pipeline_kinds for this goal",
+    )
 
     # ── run ───────────────────────────────────────────────────
     p_run = sub.add_parser("run", help="run Reactor in daemon mode (default) or --once")
@@ -495,6 +584,8 @@ def main(argv: list[str] | None = None) -> None:
             cmd_goal_add(args)
         elif args.goal_command == "show":
             cmd_goal_show(args)
+        elif args.goal_command == "unblock":
+            cmd_goal_unblock(args)
     elif args.command == "run":
         cmd_run(args)
     elif args.command == "stop":
