@@ -8,6 +8,11 @@ Most P3 acceptance items have unit tests in test_blocked_pipelines.py /
 test_cascade.py / test_dedupe.py / test_search.py / test_scheduler.py;
 this file exercises the same public APIs as a phase-level smoke gate so
 that CI catches cross-cycle regressions on the full P3 contract.
+
+AC #8 P2 regression coverage: verified indirectly — test_phase2_acceptance.py
+runs green in the same CI suite, so the cascade-table refactor (C25) plus
+all P3 changes introduced zero P2 regression. No aggregator class in this
+file.
 """
 from __future__ import annotations
 
@@ -116,25 +121,14 @@ class TestAC0DemosManualGate:
 
 
 class TestAC1CacheHit:
-    def test_repeat_query_within_ttl_uses_cache(self, db, monkeypatch) -> None:
-        """Spec: repeat query within TTL → 2nd call reads cache, no subprocess.
-        Verified via SEARCH_MOCK=record_calls call counter."""
-        monkeypatch.setenv("SEARCH_MOCK", "record_calls")
-        from Tooling.subsystems.search import (
-            get_recorded_calls,
-            reset_recorded_calls,
-            search,
-        )
-        reset_recorded_calls()
-        # SEARCH_MOCK=record_calls bypasses cache+subprocess; verify call count
-        # increments per invocation as the test infra contract.
-        search("q", scope="mathlib", kind="find_lemmas", conn=db)
-        search("q", scope="mathlib", kind="find_lemmas", conn=db)
-        assert len(get_recorded_calls()) == 2
-
     def test_real_cache_hit_path(self, db, tmp_path) -> None:
-        """When SEARCH_MOCK is unset, repeat search within TTL hits cache
-        (from_cache=True on second call)."""
+        """Spec AC #1: repeat query within TTL → 2nd call reads cache,
+        no subprocess. Verified via subprocess.run mock + from_cache flag.
+
+        (LOW-1 R3: removed the prior test_repeat_query_within_ttl_uses_cache
+        that used SEARCH_MOCK=record_calls — record_calls bypasses the
+        cache layer entirely, so the call counter wasn't an oracle for
+        cache hit. test_real_cache_hit_path below is the real oracle.)"""
         from unittest.mock import MagicMock, patch
 
         from Tooling.subsystems.search import search
@@ -216,15 +210,20 @@ class TestAC3DedupeLeanExeManualGate:
 
 
 class TestAC4DedupeElabFailNovel:
-    def test_dedupe_force_miss_returns_novel(self, db, tmp_path) -> None:
-        """Spec §7.1 fix in C20 R3: candidate elab fail → NOVEL on stdout
-        (容錯不報錯). Wrapper passes through as outcome='novel'."""
+    def test_wrapper_passes_through_novel(self, db, tmp_path) -> None:
+        """Spec AC #4 wrapper smoke gate: when dedupe.lean reports NOVEL
+        (which it does on elab failure per spec §7.1 R3 fix), the Python
+        wrapper returns outcome='novel'.
+
+        This test verifies the wrapper's mock pass-through; the real
+        elab-fail-on-sorry-candidate path requires lake env and is gated
+        as a manual demo run (analogous to AC #3). cross-ref test_dedupe.py
+        for fuller subprocess-mock coverage of dedupe.lean's stdout shape.
+        """
         from Tooling.subsystems.dedupe import dedupe
         cand = tmp_path / "cand.lean"
         cand.write_text("theorem _c : True := sorry\n", encoding="utf-8")
 
-        # Real dedupe.lean returns NOVEL on elab fail; we simulate via the
-        # mock which represents the NOVEL outcome path.
         import os
         os.environ["DEDUPE_MOCK"] = "force_miss"
         try:
@@ -252,10 +251,40 @@ class TestAC5FailureReplayDrives:
         rows = failure_replay(db, gid, "Goal", k_digest=5)
         assert len(rows) == 2
 
-    @pytest.mark.skip(reason="full agent-prompt integration needs LLM-shaped "
-                              "Backward.run; covered manually via P3 demo D1.")
-    def test_third_run_prompt_includes_dead_attempts(self) -> None:
-        pass
+    def test_prompt_embeds_dead_attempts_summary(self, db, tmp_path) -> None:
+        """Spec AC #5 字面: Backward agent prompt must include dead_attempts
+        summary on the third run. Verified by calling Backward._build_prompt
+        directly with seeded dead_attempts (no LLM needed — spec line 124
+        prompt-falldown test design)."""
+        from unittest.mock import MagicMock
+        from Tooling.pipelines.backward import Backward, BackwardConfig
+
+        gid = _insert_goal(db, slug="fr_g_prompt", question="True")
+        # Two prior failures the third run should "remember"
+        _insert_dead_attempt(db, target_id=gid, pipeline_kind="Backward",
+                              outcome="exhausted",
+                              ts="2026-01-01T00:00:01")
+        _insert_dead_attempt(db, target_id=gid, pipeline_kind="Backward",
+                              outcome="unproductive",
+                              ts="2026-01-01T00:00:02")
+
+        config = BackwardConfig(base_dir=str(tmp_path),
+                                 lake_cwd=str(tmp_path))
+        bw = Backward(db, MagicMock(), config)
+
+        # failure_replay returns the recent dead_attempts (target_kind='Goal')
+        rows = bw.failure_replay(gid)
+        assert len(rows) == 2
+
+        goal = {
+            "id": gid, "problem": "ex", "slug": "fr_g_prompt",
+            "question": "True",
+        }
+        prompt = bw._build_prompt(goal, rows)
+        # Spec: "比對含 dead_attempts summary 字串" — the rows' reason fields
+        # land in the prompt's {{DEAD_ATTEMPTS}} placeholder.
+        assert "exhausted" in prompt
+        assert "unproductive" in prompt
 
 
 # ─────────────────────────────────────────────────────────────
@@ -358,10 +387,10 @@ class TestAC8CascadeDispatchTable:
         for action in DISPATCH_TABLE.values():
             assert action.target_ids == ()
 
-    @pytest.mark.skip(reason="P2 regression covered by full pytest run; "
-                              "no separate aggregator needed beyond CI.")
-    def test_p2_regression_zero(self) -> None:
-        pass
+    # AC #8 P2 regression: verified indirectly — test_phase2_acceptance.py
+    # runs in the same CI suite; if the dispatch table refactor introduced
+    # a regression, that file would fail. No aggregator class here.
+    # (LOW-4 R3: removed the prior skip stub.)
 
 
 # ─────────────────────────────────────────────────────────────
