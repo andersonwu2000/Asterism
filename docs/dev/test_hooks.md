@@ -18,8 +18,10 @@
 | P1 | `COMMIT_FAULT` | `after_step1` / `after_step2` / `after_step3` | CommitWriter 在指定 step 後 raise，給 recovery scan acceptance 用 |
 | P1 | `LAKE_MOCK` | `proved` / `sorry` | run_lean 入口跳過真實 `lake env lean --json`、直接返 LakeResult；給 AC#0 subprocess test + CI 不需 lean toolchain 用 |
 | P2 | `PRINT_AXIOMS_MOCK` | `none` / `<axiom>,<axiom>...` | trust.print_axioms 跳過真實 `lake env lean -e '#print axioms ...'`、直接返指定 axiom name list；給 unit test + CI 不需 lean toolchain 用 |
+| P2 | `BACKWARD_MOCK` | `success_leaf` | Backward.run 入口替換真實 agent；寫 trivial leaf strategy `theorem ... := by sorry` + INSERT strategies row。配合 LAKE_MOCK=proved 給 AC#0 demo subprocess test 跑 init→spec→run→show 端到端 |
+| P2 | `BACKWARD_FORCE` | `exhausted` / `unproductive` | Backward pipeline 強制走特定 outcome（C18 引入；語意凍結） |
 | P3 | `SEARCH_MOCK` | `record_calls` / `force_miss` / `force_hit` | search subsystem 行為控制（cache acceptance 計次 / 強制 cache miss-hit 路徑） |
-| P3 | `BACKWARD_FORCE` | `exhausted` / `unproductive` / `succeed` | Backward pipeline 強制走特定 outcome（給通用 N=5 trigger acceptance 用） |
+| P3 | `BACKWARD_FORCE` | `succeed` (extended) | P2 `BACKWARD_FORCE` 擴 `succeed` 值；用於通用 N=5 trigger acceptance（與 `BACKWARD_MOCK=success_leaf` 不同：force succeed 不寫 strategy row，只回 outcome=success 殼；test 自己造 fixture rows） |
 | P4 | `COUNTEREXAMPLE_FORCE` | `silver` / `evidence_only` / `unproductive` | Counterexample 強制走特定 outcome（給 silver-skip race acceptance 用） |
 | P4 | `CASCADE_FAULT` | `unique_violation` / `dual_proved` / `fk_invalid` | 強制 cascade SQL 失敗（給 fatal halt acceptance 用） |
 | P4 | `REFUTER_FAST_PATH` | boolean | 模擬 Refuter→Builder 鏈快速通過（給 race acceptance #6 用） |

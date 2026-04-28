@@ -449,21 +449,39 @@ class Backward:
     def run(self, goal_id: int) -> BackwardResult:
         """Run the full Backward stage sequence for the given goal.
 
-        Test hook (mutually exclusive — see docs/dev/test_hooks.md):
-          BACKWARD_MOCK=success_leaf  → bypass agent, write a trivial leaf
-                                         strategy with `theorem ... := by sorry`
-                                         (Builder + LAKE_MOCK=proved closes it
-                                         end-to-end). Used by P2 acceptance #0.
-          BACKWARD_MOCK=exhausted     → return exhausted immediately
-          BACKWARD_MOCK=unproductive  → return unproductive immediately
+        Test hooks (mutually exclusive — see docs/dev/test_hooks.md):
+          BACKWARD_MOCK=success_leaf   → bypass agent, write a trivial leaf
+                                          strategy with `theorem ... := by
+                                          sorry` (Builder + LAKE_MOCK=proved
+                                          closes it end-to-end). Used by P2
+                                          acceptance #0.
+          BACKWARD_FORCE=exhausted     → return exhausted immediately
+          BACKWARD_FORCE=unproductive  → return unproductive immediately
+
+        Naming convention (test_hooks.md §規則): `*_MOCK=spec` replaces real
+        behavior; `*_FORCE=value` forces a specific outcome. Splitting these
+        avoids C18/P3 collision (P3 plans BACKWARD_FORCE for failure-path
+        coverage tests).
         """
         mock = os.environ.get("BACKWARD_MOCK")
-        if mock == "exhausted":
-            return BackwardResult(outcome="exhausted")
-        if mock == "unproductive":
-            return BackwardResult(outcome="unproductive")
         if mock == "success_leaf":
             return self._mock_success_leaf(goal_id)
+        if mock is not None:
+            raise ValueError(
+                f"unknown BACKWARD_MOCK value: {mock!r}; "
+                "valid: 'success_leaf'. For outcome forcing, use BACKWARD_FORCE."
+            )
+
+        force = os.environ.get("BACKWARD_FORCE")
+        if force == "exhausted":
+            return BackwardResult(outcome="exhausted")
+        if force == "unproductive":
+            return BackwardResult(outcome="unproductive")
+        if force is not None:
+            raise ValueError(
+                f"unknown BACKWARD_FORCE value: {force!r}; "
+                "valid: 'exhausted' | 'unproductive'."
+            )
 
         try:
             goal = _row_as_dict(self.conn, "goals", goal_id)
