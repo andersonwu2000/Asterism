@@ -47,6 +47,21 @@ from Tooling.agent.provider import AgentResponse, FallbackChain, ModelResolver
 _VALID_COMBINATORS: frozenset[str] = frozenset({"And", "Or", "Exists", "Leaf"})
 
 
+def _is_decompose_required(goal: dict) -> bool:
+    """P6.x patch 24: read per-Goal `decompose_required` flag from
+    goals.evidence JSON. When True, Backward MUST produce Path B —
+    Leaf proposals are rejected by the parser as if malformed.
+    """
+    ev_raw = goal.get("evidence")
+    if not ev_raw:
+        return False
+    try:
+        ev = json.loads(ev_raw) if isinstance(ev_raw, str) else ev_raw
+    except json.JSONDecodeError:
+        return False
+    return bool(ev.get("decompose_required", False)) if isinstance(ev, dict) else False
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -144,13 +159,30 @@ class Backward:
     def _build_prompt(self, goal: dict, dead_attempts: list[dict]) -> str:
         template = self._load_prompt_template()
         dead_str = json.dumps(dead_attempts, indent=2) if dead_attempts else "[]"
-        return (
+        prompt = (
             template
             .replace("{{GOAL_PROBLEM}}", goal.get("problem") or "")
             .replace("{{GOAL_SLUG}}", goal.get("slug") or "")
             .replace("{{GOAL_STATEMENT}}", goal.get("question") or "")
             .replace("{{DEAD_ATTEMPTS}}", dead_str)
         )
+        # P6.x patch 24: per-Goal `decompose_required` framework hard
+        # limit (stored in goals.evidence JSON). When set, prepend a
+        # directive so the agent ONLY produces Path B (decomposition);
+        # _parse_proposal rejects `combinator: "Leaf"` further down so
+        # the constraint is doubly enforced.
+        if _is_decompose_required(goal):
+            prompt = (
+                "## FRAMEWORK CONSTRAINT (hard, non-negotiable)\n\n"
+                "This Goal is marked `decompose_required: true`. You MUST"
+                " produce a Path B decomposition (combinator And / Or /"
+                " Exists with non-empty `subgoals`). Path A (Leaf) is"
+                " REJECTED by the framework parser regardless of what"
+                " you propose. Even if you believe Mathlib has a one-"
+                "shot proof, do NOT use Leaf — propose 2-8 sub-goals.\n\n"
+                + prompt
+            )
+        return prompt
 
     def _run_agent(
         self,
@@ -174,16 +206,19 @@ class Backward:
     # Stage: parse PROPOSAL from agent output
     # ------------------------------------------------------------------
 
-    def _parse_proposal(self, output: str) -> dict | None:
+    def _parse_proposal(self, output: str, goal: dict | None = None) -> dict | None:
         """Extract + schema-validate PROPOSAL from agent output.
 
         Requires a ```json ... ``` code block as specified in backward.md.
         Returns None (→ caller retries) if any of:
           - no JSON code block / malformed JSON
           - top-level not a dict
-          - combinator not in {And, Or, Exists}
+          - combinator not in {And, Or, Exists, Leaf}
           - subgoals not a list
           - any sub-goal not a dict, or missing non-empty 'slug' / 'statement'
+
+        P6.x patch 24: when *goal* has `decompose_required: true` in
+        evidence, additionally reject `combinator: "Leaf"` (force Path B).
         """
         m = re.search(r'```(?:json)?\s*([\s\S]*?)```', output)
         if not m:
@@ -198,6 +233,10 @@ class Backward:
             return None
         # P6.x patch 3: Leaf path requires `proof` field, no subgoals.
         if obj.get("combinator") == "Leaf":
+            # P6.x patch 24: framework hard limit — reject Leaf when
+            # the Goal has `decompose_required: true` in evidence.
+            if goal is not None and _is_decompose_required(goal):
+                return None
             proof = obj.get("proof")
             if not isinstance(proof, str) or not proof.strip():
                 return None
@@ -318,6 +357,12 @@ class Backward:
             / "Goals" / f"{goal['id']}_{goal['slug']}"
             / "SubGoals"
         )
+        # P6.x patch 25: subgoal staging .lean files must import the
+        # per-Problem Defs so validator's runFrontend can elaborate them
+        # (subgoal statements typically reference Mathlib types like ℕ,
+        # ℝ, Function.Surjective; without `import Problems.<p>.Defs`
+        # which transitively imports Mathlib, runFrontend fails).
+        problem = goal["problem"]
         result = []
         for sg in subgoals:
             slug = sg["slug"]
@@ -325,7 +370,9 @@ class Backward:
             fname = f"{slug}.lean"
             staging_path = staging / fname
             staging_path.write_text(
-                f"-- {statement}\ntheorem {slug} : {statement} := by\n  sorry\n",
+                f"import Problems.{problem}.Defs\n"
+                f"-- {statement}\n"
+                f"theorem {slug} : {statement} := by\n  sorry\n",
                 encoding="utf-8",
             )
             result.append({
@@ -699,7 +746,7 @@ class Backward:
                                       "agent_no_response")
                 return BackwardResult(outcome="exhausted")
 
-            proposal = self._parse_proposal(response.output)
+            proposal = self._parse_proposal(response.output, goal=goal)
             if proposal is None:
                 self._emit_stage_fail(goal, pipeline_id, _attempt,
                                       "parse_proposal_fail",
