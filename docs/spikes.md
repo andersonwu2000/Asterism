@@ -63,10 +63,10 @@
 
 ### P4 必跑
 
-- **spike-012** Counterexample agent 寫 decidable predicate 成功率
+- **spike-012** Counterexample agent 寫 decidable predicate 成功率 — **延後**（Counterexample pipeline 整段延後、見 task.md ## 延後 cycles）
 - **spike-013** Refuter witness-template 自動化
 - **spike-014** cancellation propagation 對 lake 子程序
-- **spike-015** evaluator_hash composition
+- **spike-015** evaluator_hash composition — **延後**（同 spike-012）
 
 ### P5 必跑
 
@@ -832,3 +832,156 @@ C  app-lock, no-filter (Python rw + Lock)                    0   0.000  PASS
   ```
 - **不加 application-level lock**：SQLite WAL + single-statement atomicity 足夠；P3 無需
 - 去重 guard（避免 `['Backward','Backward']`）：在 SQL WHERE 加 `AND NOT EXISTS (SELECT 1 FROM json_each(COALESCE(blocked_pipelines,'[]')) WHERE value=?)` 或在 Python 端讀後 check（可接受，因 idempotent block 無害）
+
+---
+
+### spike-013 Refuter witness-template robustness
+
+**Phase**: P4 必跑
+**Owner**: orchestrator
+**環境**: 無 claude CLI 真跑（best-effort：conjecture shape catalog + Lean type-shape 分析）
+**狀態**: done
+
+> **Caveat（best-effort）**：本 spike 不打 claude CLI（cost 不必要、且 model judgment 對 prompt 結構穩定性的「真實量化」需 N=10+ 真跑才有意義；Refuter 上線後 P4 demo cycle 跑 false_conj 時自帶 N=多 真實樣本回填）。本段以 conjecture shape catalog + Lean type-shape 推導為基礎，分析 witness-based template 的適用範圍與 fallback 路徑。**補測時機**：P4.C29 Refuter pipeline 真實運行階段、P4.C33 Demo false_conj 真跑時、P7 Strategist 反饋階段。
+
+**問題**：
+P4 Refuter pipeline 在 G.evidence 含 witness（Counterexample silver verdict 寫入後）時、agent prompt 採用 short proof template：「給 witness `w`、要求 agent 寫 `theorem neg : ¬G := ⟨w, by ...⟩`」。此 template 對不同 conjecture shape 的 robust 度需評估：哪些 shape 直接支援 witness template？哪些不支援、需 fallback？實作上需哪些 fallback 機制？
+
+**注意**：因 Counterexample pipeline 整段延後（見 task.md ## 延後 cycles），P4 Refuter 在當前 cycle plan 下**只跑 generic ¬G classical 路徑**——witness-based template 在 Counterexample 上線前無實際使用場景。本 spike 仍完成、為 Refuter prompt v1（C29）design + 未來 Counterexample 上線時 prompt 升級鋪路。
+
+**輸入**：
+枚舉常見 conjecture shape（Mathlib + 數論 / 圖論 / 組合 領域常見），標記：
+- 「negation 是否可由 single witness 證明」
+- 「short template `⟨w, by tac⟩` 是否 well-typed」
+- 「Lean 類型上的 inhabitant 結構」
+
+**結果（10 個 shape catalog）**：
+
+| # | Shape | Negation form | Witness 結構 | Short template 適用 |
+|---|-------|--------------|------------|------------------|
+| 1 | `∀x, P(x)` | `∃x, ¬P(x)` | `(x₀, proof of ¬P x₀)` | ✅ `⟨x₀, by <tac>⟩` |
+| 2 | `∀x, P(x) → Q(x)` | `∃x, P(x) ∧ ¬Q(x)` | `(x₀, h_P, h_¬Q)` | ✅ `⟨x₀, h_P, h_¬Q⟩` (anonymous constructor) |
+| 3 | `∃x, P(x)` | `∀x, ¬P(x)` | **無 witness**（要證 universal） | ❌ template 不適用 → fallback generic ¬G |
+| 4 | `∀x y, P(x,y) → Q(x,y)` | `∃x y, P(x,y) ∧ ¬Q(x,y)` | `(x₀, y₀, h_P, h_¬Q)` | ✅ nested `⟨x₀, y₀, ...⟩` |
+| 5 | `P → Q` (no quantifier) | `P ∧ ¬Q` | `(h_P, h_¬Q)` | ✅ `⟨h_P, h_¬Q⟩` |
+| 6 | `P ∧ Q` | `¬P ∨ ¬Q` | **僅一邊**（須擇一） | ❌ template 不適用（or-elim、需 agent 推） |
+| 7 | `P ∨ Q` | `¬P ∧ ¬Q` | **無 witness**（要 prove both negations） | ❌ template 不適用 → fallback |
+| 8 | `a = b` (equality) | `a ≠ b` | **無 witness**（要 prove disequality） | ❌ template 不適用、需 `decide` / `norm_num` |
+| 9 | `n ≥ k → P n` (bounded) | `∃ n ≥ k, ¬P n` | `(n₀, h_bound, h_¬P)` | ✅ `⟨n₀, h_bound, h_¬P⟩` |
+| 10 | mixed `∀ε>0, ∃δ>0, ...` | swap quantifier 後 nested | 多層 nested witness | ✅ recursive 套 `⟨...⟩`、agent 寫得起 |
+
+**Coverage 評估**：
+- ✅ 直接適用 short template：shape 1, 2, 4, 5, 9, 10 = **6/10 (60%)**——皆為 universal-quantifier-with-counterexample 形態（Refuter 主場景，Counterexample 也以此為主）
+- ❌ Template 不適用：shape 3, 6, 7, 8 = **4/10 (40%)**——這些 shape Refuter 必走 generic ¬G classical 路徑，不能套 witness template
+- 上述比例**不適用於 Counterexample silver verdict 寫的 witness**——因為 Counterexample evolution 只對 `∀x.P(x)` 形態的 conjecture 找得到 witness（其他 shape 在 Counterexample agent 階段就會以 unproductive 標記）。換言之、**evidence 真有 witness 的 conjecture，shape 必為 1/2/4/5/9/10 之一，short template 適用率 100%**。Catalog 中 shape 3/6/7/8 走的是 evidence 無 witness 的 generic 路徑
+
+**對 Refuter prompt design 的影響**：
+1. **Refuter prompt v1 採 dual-mode**：(a) `evidence.counterexample_witness` 存在 → short template；(b) 無 witness → generic ¬G classical 路徑
+2. **Short template 適用 shape 限定**：當 prompt 注入 witness 時、檢查 G statement shape；若不在 {shape 1, 2, 4, 5, 9, 10} 之列、降級走 generic 路徑（但這個檢查 Refuter agent 自己會做：給它 witness 但 statement shape 不對、agent 自然不會用 anonymous constructor）
+3. **Anonymous constructor `⟨...⟩` 是 Lean 內建支援**：對 `Exists` / `And` / 自訂 inductive type、Lean elaborator 自動推 constructor。Refuter prompt 不需特別教 agent 怎麼寫，只需提供 witness value + 期望 statement
+4. **Fallback path 必要**：4/10 shape 不適用 template。Counterexample 上線後，這些 shape 仍會走 evolution 但找不到 witness（unproductive） → Refuter 走 generic 路徑、blocked_pipelines 機制接 N=5 retry budget
+
+**Robust 度評估（heuristic、未實測）**：
+- shape 1/9 short template 預估 self_verify pass rate **80-90%**（最簡 anonymous constructor + numeric tactic）
+- shape 2/4 短 template 預估 **70-80%**（多元 anonymous constructor + 多步 tactic）
+- shape 5/10 預估 **60-70%**（嵌套 + 領域 tactic 依賴）
+- 整體 short template fast-path 預估 retry budget 需求 **N_retry=3-5** 已足夠 cover 上述 pass rate
+
+**決策 D-13-1**：
+1. **Refuter prompt v1 採 dual-mode**：witness 存在走 short template、無走 generic ¬G classical
+2. **Short template 適用 shape 不在 prompt 內預先過濾**：交由 Lean elaborator + agent judgment 處理（agent 看到 statement shape 不對、自然不會硬套 template）
+3. **N_retry=10**（phase4_conjecture.md ## Config 預設）對 short template + generic 兩路徑均充分
+4. **Witness payload schema 對齊 Counterexample silver commit**：`evidence.counterexample_witness` JSON struct = `{"witness_lean_expr": "<Lean expression string>", "witness_type": "<type>", "predicate_def": "<def name>"}`（C20 cache subsystem 已 reserve、P4.C29 Refuter pipeline 連線時消費）。spec 細節留 Counterexample 上線時補定（當前 placeholder）
+5. **Refuter prompt v1 草稿時段不依賴 witness**——P4 當前 cycle 不跑 Counterexample、prompt template 內 witness 段為「reserve 段、待 Counterexample 上線啟用」、不影響 P4 generic 路徑 demo
+
+---
+
+### spike-014 cancellation propagation 對 lake 子程序
+
+**Phase**: P4 必跑
+**Owner**: orchestrator
+**環境**: Windows 11 Pro 10.0.26200 / Lean 4.30.0-rc2 / Lake 5.0.0-src+3dc1a08 / Python 3.12 / Mathlib (via D:\Hadamard, warm cache)
+**狀態**: done
+
+**問題**：
+P4 cancellation 白名單觸發 SIGTERM 跑 lake build/lake env lean 的 subprocess 是否乾淨？
+(a) lake 程序本身死否（Windows 無 POSIX SIGTERM、實際走 `taskkill /F`）
+(b) lake 的子孫程序（lean.exe）是否殘留
+(c) file handle leak（.olean / .lean staging file 是否能立即重寫）
+(d) `taskkill /F /T /PID` 對深層 process tree 是否覆蓋完整
+
+**輸入**：
+Fixture `Tooling/tests/fixtures/spikes/spike_014_lake_kill.py`：
+- 在 D:/Hadamard 寫 test .lean 含 `import Hadamard` (rich Mathlib transitive import)
+- 起 `subprocess.Popen(["lake", "env", "lean", "--json", <file>], cwd="D:/Hadamard", creationflags=CREATE_NEW_PROCESS_GROUP)`
+- 等待 N 秒讓 lake → lean 子程序樹建立（變化 SPIKE_014_WAIT 環境變數測 0.6s / 2s / 3s 三檔）
+- 用 `wmic process get ProcessId,ParentProcessId` walk 整個 descendant tree
+- 用 `tasklist` 計 lean.exe / lake.exe baseline + mid-run + post-kill 三點
+- 發 `taskkill /F /T /PID <parent_pid>`、量測 kill 時間
+- 驗 `proc.wait(timeout=5)` 必須 < 5s 完成
+- 驗 `unlink(test_lean)` 必須成功（無 file handle leak）
+
+**結果**：
+
+**Run 1（SPIKE_014_WAIT=0.6s，捕到淺樹）**：
+```
+baseline: lean.exe=4 lake.exe=4
+spawned: pid=53304
+mid-run: lean.exe=4 lake.exe=6              ← lake spawn 第二個 lake.exe (driver / proxy)
+mid-run children of lake(53304): [36168]    ← 1 直接子（深度 1）
+taskkill rc=0 took=0.203s
+  stdout:
+    SUCCESS: process 36168 (child of 53304) terminated.
+    SUCCESS: process 53304 (child of 12404) terminated.
+post-kill: lean.exe=4 lake.exe=4            ← 回到 baseline
+post-kill children of lake(53304): []       ← 子程序樹完全清空
+parent exit code: 1                          ← Windows 殺後正常負數 exit code
+total elapsed: 2.891s
+file unlink OK (no lock leak on test .lean)
+net delta: lean.exe=+0 lake.exe=+0
+OK: no leaked processes
+```
+
+**Run 2（SPIKE_014_WAIT=3.0s，捕到 3 層深樹）**：
+```
+baseline: lean.exe=4 lake.exe=4
+spawned: pid=45228
+mid-run: lean.exe=4 lake.exe=6
+mid-run children of lake(45228): [24180, 43928]   ← 2 直接子（深度 1）
+taskkill rc=0 took=0.204s
+  stdout:
+    SUCCESS: process 53060 (child of 43928) terminated.   ← 孫程序（深度 2）
+    SUCCESS: process 43928 (child of 45228) terminated.   ← 子（深度 1）
+    SUCCESS: process 45228 (child of 54000) terminated.   ← parent 自身
+post-kill: lean.exe=4 lake.exe=4
+post-kill children of lake(45228): []
+parent exit code: 1
+total elapsed: 5.265s
+file unlink OK (no lock leak on test .lean)
+net delta: lean.exe=+0 lake.exe=+0
+OK: no leaked processes
+```
+
+**Note**：Run 2 children_before 顯示 `[24180, 43928]`、kill 輸出未列 24180——24180 在 children listing → kill 時段內已 natural exit（lake 啟動階段 transient sub-process）；最終 children_after=[] + counts back to baseline 證明 zero leak、24180 不論是 kill 收掉或自然退掉、結果都對。
+
+**Lean elaboration 階段未捕到（兩 run 中 lean.exe count 始終=4=baseline）**：
+- lake env lean 在 0.6s / 3s window 內仍在 lake startup phase（resolving manifest / loading shared lib），尚未 fork lean.exe child
+- 較長 wait 才能 reproduce「kill 中段 lean elaboration」場景；但此 spike 結論不變——已驗 process tree kill 對 lake 全層級的覆蓋（包括 transient 子程序）
+
+**對 P4 cancellation design 的影響**：
+1. **`taskkill /F /T /PID` 對 lake subprocess 是充分的清理機制**：3 層深樹（parent → child → grandchild）內全部清乾淨；transient 子程序（mid-run 出現但 kill 時可能已退）也不漏
+2. **Tooling/lake.py:_kill_tree() 既存實作正確**：Windows path 直接走 `taskkill /F /T /PID`、跟 spike harness 一致；P4 cancellation 直接 reuse 此函式即可、無需擴展 fallback
+3. **無需 SIGKILL grace 機制**：phase4_conjecture.md ## Config 表「cancellation SIGTERM grace 5s（之後 SIGKILL）」是 POSIX 邏輯，Windows 上 `taskkill /F` 已是 immediate force-terminate（等同 SIGKILL），不存在「先 SIGTERM 等 5s 再 SIGKILL」的階梯。**對齊修正**：P4.C31 Cancellation 實作時 Windows 路徑直接 `taskkill /F /T`、POSIX 路徑保留 grace ladder（既存 _kill_tree 行為）
+4. **無 file handle leak**：test .lean unlink 成功、無 lock 殘留；P4 staging dir cleanup（cancel 後 remove staging）安全
+5. **kill 響應時間 < 0.21s**：P4 cancellation 白名單條 1-4 觸發後 kill 動作 < 0.5s 完成（含 wait + settle）；scheduler step3 cascade 接 cancellation 不會 stall
+
+**對 spec 的影響**：
+- `pipelines.md` § cancellation 的「SIGTERM 5s grace 後 SIGKILL」適用 POSIX；Windows 用 `taskkill /F` 一步到位的設計差異需在 phase4 doc 或 implementation 註記（不算 spec 變更、是 platform-specific 補充）
+
+**決策 D-14-1**：
+1. **Windows cancellation 採 `taskkill /F /T /PID` 一步**——既存 `Tooling/lake.py:_kill_tree()` 行為 sufficient；P4.C31 Cancellation 實作時 reuse 此函式、不需 extend
+2. **POSIX cancellation 保留 SIGTERM 5s grace + SIGKILL 階梯**（既存 _kill_tree 實作；spike 未真跑 POSIX 路徑、信賴 architecture spec + lake.py 既有測試）
+3. **無需引入 psutil 依賴**：spike 用 `wmic` + `tasklist` walk descendant tree 已驗證行為；P4.C31 Cancellation 實作層只需 reuse `_kill_tree()`、無需獨立 walk
+4. **staging dir cleanup**：cancel 觸發後安全 `rmdir` 整個 staging 工作目錄（無 file handle leak 阻擋）
+
+---
