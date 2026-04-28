@@ -223,6 +223,42 @@ P1 schema 已建全 schema（codex review #12 決策）。**P6 不擴 schema**�
 - Library/Counterexamples + Constructions index INSERT（P4/P5 寫 json + P6 補 index）
 - Per-Problem proved.lean append on any proved Goal
 
+### META.md `forbidden_lemmas` blacklist（P6.x patch 21）
+
+per-Problem META.md 可宣告：
+
+```yaml
+forbidden_lemmas:
+  - <FullyQualifiedLemmaName>
+  - ...
+```
+
+**硬閘門**（不是 prompt 軟提示）：cascade 在 trust_set + accept_rule 之後 grep strategy file 文字、若任一 forbidden lemma 出現 → mark strategy dead + 寫 `dead_attempts.outcome='forbidden_lemma_used'`、UPDATE goal status='open' 強制 BFS 重派 Backward。下次 Backward 的 `failure_replay` 撈到此 entry、agent prompt 看到 `forbidden_lemma_used: <names>` → 不二犯。
+
+對 prompt 是 hint、對 framework 是硬限制。給 Hadamard-style「人為設計拆解結構」用：禁直接同名 lemma → agent 必須走 Path B decomposition。
+
+實現：text grep（word-boundary regex）、不是 Lean walker。注意點：
+- 名稱在 comment 也會 match（false positive）
+- substring match 收斂用 `(?<![\w.])lemma(?![\w])` lookahead 避免誤抓 `Real.uncountable_univ` 當 `Real.uncountable` 命中
+- `by simp` / `by decide` 等 tactic 內部用 forbidden lemma 不會被 grep 抓（proof term 不在 .lean 文字內）— 是已知限制、未來可升級成 Lean walker walk transitive 引用
+
+### Strategy file 為 staging、Goal file 為 canonical（P6.x patch 22 + 23 two-phase commit）
+
+Backward Path A leaf-bypass 不直接寫 goal `<slug>.lean`、而寫 sibling `_strategy_<pid>.lean`（自己的 namespace `Problems.<p>.Goals.<id_seg>._strategy_<pid>`、不撞 goal namespace）。Goal file 整 daemon lifecycle 維持 `:= by sorry` 直到：
+
+1. Builder 驗 strategy file pass
+2. trust_set 構造 + accept_rule pass
+3. forbidden_lemmas 檢查 pass
+
+三閘門全綠後 cascade `_finalize_goal_file_from_strategy`：
+- 從 strategy file regex 抽 proof body
+- 寫 canonical content（namespace `Problems.<p>.Goals.<id_seg>` + theorem `<slug>`）到 `<goal>.lean.tmp`
+- `os.replace(.tmp, <goal>.lean)` atomic rename
+- 刪 strategy file
+- UPDATE strategies.lean_path = goal_lean_path
+
+Goal file 從此是 canonical proven artifact、proved.lean re-export 從 goal file path 引、後續 sibling Goal 的 strategy 直接 `import Problems.<p>.Goals.<id_seg>.<slug>`。任一閘門 fail：strategy file 留檔給 operator inspection、goal file 不動（仍 sorry）、BFS 重派 Backward。
+
 ### Config
 
 | key | P6 預設 |
@@ -230,6 +266,7 @@ P1 schema 已建全 schema（codex review #12 決策）。**P6 不擴 schema**�
 | `Library.whitelist` | `{propext, Quot.sound, Classical.choice}` |
 | schedulers heartbeat 間隔 | 30s |
 | schedulers stale threshold | 90s |
+| `forbidden_lemmas` （per-Problem META.md） | `[]`（無黑名單） |
 
 ## 任務序列
 

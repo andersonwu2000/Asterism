@@ -47,7 +47,15 @@
 Stages：
 
 ```
-1. tactic_try        (pure)   常見 tactic 暴力試
+0. verify_as_is      (pure)   [P6.x patch 19] 若 source_content 不含 `sorry`
+                              （Backward Path A leaf-bypass 已寫入完整 proof）
+                              直接 lake build source 驗。
+                              [pass → proved（跳 stage 1-6）]
+                              [fail → 進 stage 1，但 tactic_try 不會把 valid proof
+                                       覆寫掉，因 stage 1 只 fire 在 source 含 sorry]
+1. tactic_try        (pure)   常見 tactic 暴力試（rfl/simp/decide/norm_num/ring）
+                              **僅 source 仍含 `sorry` 時跑** — 對已含 proof 的
+                              leaf-bypass strategy 不破壞既有 body
                               [pass → success]
 2. failure_replay    (pure)   讀 dead_attempts（target=該 Strategy）
 3. find_lemmas       (pure)   找候選 lemma
@@ -94,30 +102,50 @@ bad_goal        — agent 早退（缺條件 / 看似為假）
 | 對外 cancel | 無 |
 | `unproductive` outcome | 寫 dead_attempts；P3 通用 N=5 機制累計後寫 `goals.blocked_pipelines += ['Backward']`；IH-trap special-case 連 ≥ 2 次 unproductive AND `parent_subgoal_max_similarity ≥ 閾值` → 立即寫入（不等 N=5，v3 §7.5） |
 
+PROPOSAL combinator：
+
+| combinator | 語意 | 後續路徑 |
+|---|---|---|
+| `And` / `Or` / `Exists` | 拆 2-8 sub-Goal（**Path B**） | 跑 stage 5-8（dedupe / validator / self_verify / commit） |
+| `Leaf` | 一發證（**Path A**, P6.x patch 3 leaf-bypass） | 跳 stage 5-7、直接 commit 一個無 sub-Goal 的 strategy file 含 agent 給的 `proof: by <tactic>` 字串、enqueue Builder |
+
 Stages：
 
 ```
 1. failure_replay    (pure)   讀 dead_attempts（target=該 Goal）
+                              失敗類型 surface 在 prompt：accept_rule_rejected、
+                              forbidden_lemma_used（P6.x patch 21）等、agent 看完
+                              steer 改寫 — 同失敗不二犯
 2. find_lemmas       (pure)   找候選 lemma
 3. find_subgoals     (pure)   列現有孤兒 Goal（Backward-only search 包裝），鼓勵 claim
                               既有而非重新拆出語意重複的 sub-Goal
-4. agent             (agent)  生 PROPOSAL：combinator + 新 sub-Goal + claim 候選
-5. dedupe (local)    (pure)   每個新 sub-Goal vs goals table 全 dedupe
+4. agent             (agent)  生 PROPOSAL：combinator (And/Or/Exists/Leaf)
+                              + 新 sub-Goal + claim 候選 + (Leaf 時) proof tactic
+5. dedupe (local)    (pure)   [僅 Path B] 每個新 sub-Goal vs goals table 全 dedupe
                               hit → 改 combinator reference 到既有 Goal、跳過建檔
                               miss → 保留為新 sub-Goal
-6. validator         (pure)   hypothesis carry / slug collision / sub-Goal 數量
+6. validator         (pure)   [僅 Path B] hypothesis carry / slug collision / sub-Goal 數量
                               （hypothesis carry 走 Lean meta；禁 regex parse Lean 源碼，
                                詳 v3 §7.4）
                               [fail → retry from step 4]
-7. self_verify (multi)(pure)  驗多檔協同
+7. self_verify (multi)(pure)  [僅 Path B] 驗多檔協同
                               [pass → success]
                               [fail → retry from step 4]
-8. commit            (pure)   INSERT goals (新 sub-Goals) + INSERT strategies + INSERT strategy_subgoals
-                              + mv staging .lean 到正式位置
-                              + 對每個新 sub-Goal 算 similarity vs 父 Goal，存進
+8. commit            (pure)   Path B：INSERT goals (新 sub-Goals) + INSERT strategies +
+                                INSERT strategy_subgoals + mv staging .lean 到正式位置
+                                + 對每個新 sub-Goal 算 similarity vs 父 Goal、存進
                                 strategies.parent_subgoal_max_similarity（給 Strategist
                                 偵測 IH-trap，v3 §7.5）
+                              Path A：寫 strategy file（不是 goal file，**P6.x patch 22**）
+                                到 sibling `_strategy_<pid>.lean` 含 agent 給的完整 proof、
+                                strategy.lean_path 指向 strategy file、enqueue Builder。
+                                Goal file 整個 daemon lifecycle 維持 `:= by sorry` 直到
+                                cascade 確認全綠後 finalize（**P6.x patch 23** two-phase
+                                commit：strategy → goal file atomic replace + 刪 strategy
+                                file）。
 ```
+
+每 retry 在 fail 路徑寫 events.cascade `backward_stage_fail` 含 stage 名（**P6.x patch 10** 觀察性）— operator 從 events 看哪 stage exhaust（agent_no_response / parse_proposal_fail / subgoals_empty / dedupe_collapsed / validator_fail / self_verify_fail / max_retries_exhausted）。
 
 Outcome：
 
