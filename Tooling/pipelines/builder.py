@@ -431,8 +431,39 @@ class Builder:
         proved_tactic: str | None = None
         proved_staging: Path | None = None
 
-        # Stage 1: tactic_try
+        # P6.x patch 19: verify-as-is path. When source already has a
+        # non-sorry proof body (e.g. Backward leaf-bypass wrote a real
+        # proof), DON'T run tactic_try (which replaces the body with
+        # simple tactics, corrupting the actual proof). Just lake-build
+        # the source as-is and treat success as proved.
+        if "sorry" not in source_content:
+            staging_lean = staging_dir / "verify_as_is.lean"
+            staging_lean.write_text(source_content, encoding="utf-8")
+            elapsed = time.monotonic() - self._start
+            remaining = max(0.0, self.config.t_wall - elapsed)
+            per_call_timeout = min(self.config.lake_timeout, remaining)
+            lake_result = run_lean(
+                str(staging_lean),
+                self.config.base_dir,
+                timeout=per_call_timeout,
+            )
+            if lake_result.outcome == "proved":
+                proved_tactic = "<inline-proof>"
+                proved_staging = staging_lean
+            elif lake_result.timed_out:
+                timed_out = True
+            else:
+                tactic_dead.append({
+                    "tactic": "<inline-proof>",
+                    "timed_out": False,
+                    "messages": lake_result.messages,
+                })
+
+        # Stage 1: tactic_try (only when source has `by sorry` placeholder
+        # to fill in, OR when verify-as-is failed — skip on success)
         for tactic in TACTICS:
+            if proved_tactic is not None:
+                break
             elapsed = time.monotonic() - self._start
             if elapsed >= self.config.t_wall:
                 timed_out = True
