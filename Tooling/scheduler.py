@@ -403,12 +403,48 @@ class Reactor:
             )
             return True
 
-        # Other kinds (Refuter / Forward / Counterexample / etc) reach P3 only
-        # via misroute; treat as non-stale (caller's other steps handle).
+        if target_kind == "Refuter":
+            # P4 C31: extend stale filter to cover Refuter (LOW-1 from
+            # C30 R2). Refuter target_kind='Goal' — same checks as Backward
+            # because both target a Goal and both should be dropped if
+            # the Goal entered terminal status (proved/shelved/refuted)
+            # before the pipeline finished.
+            row = self.conn.execute(
+                "SELECT status, commit_state FROM goals WHERE id = ?",
+                (target_id,),
+            ).fetchone()
+            if row is None:
+                reason = "goal_missing"
+            elif row[1] != "live":
+                reason = f"goal_not_live (commit_state={row[1]})"
+            elif row[0] in ("proved", "shelved", "refuted"):
+                reason = f"goal_terminal_status (status={row[0]})"
+            else:
+                return False
+            self._emit_event(
+                "cascade",
+                {"rule": "stale_filter", "task": task, "reason": reason},
+            )
+            return True
+
+        # Other kinds (Forward / Counterexample / Generalizer / etc) reach
+        # P4.C31 only via misroute; treat as non-stale (caller's other steps
+        # handle). Filters land when those pipelines ship (P5+ / Counterexample
+        # un-defer).
         return False
 
     def _run_step2_cancellation(self, task: dict, result: Any) -> None:
-        """Cancel same-Goal running pipelines when Builder proves the goal."""
+        """Cancellation white-list per architecture.md §6 (P4 C31).
+
+        Replaces P2/P3's "kill all on goal_id" simplification with the
+        verdict-aware white-list (Tooling/cancellation.py).
+
+        Trigger: Builder.proved → cond 1 'goal_proved' verdict (cancel any
+        kind on G). Other conditions fire from cascade hooks:
+          cond 2 'twin_refuted' — _cascade_twin_to_refuted (post twin flip)
+          cond 3 'counterexample_silver' — DEFERRED (Counterexample defer)
+          cond 4 'strategy_dead'   — _mark_strategy_dead
+        """
         if not (hasattr(result, "outcome") and result.outcome == "proved"):
             return
         if task.get("kind") != "Builder":
@@ -419,7 +455,15 @@ class Reactor:
         ).fetchone()
         if row is None:
             return
-        self._cancel_running_for_goal(str(row[0]))
+        from Tooling.cancellation import (
+            CancellationVerdict,
+            cancel_for_verdict,
+        )
+        cancel_for_verdict(
+            self.conn,
+            CancellationVerdict(kind="goal_proved", goal_id=int(row[0])),
+            emit_event=self._emit_event,
+        )
 
     def _run_step3_cascade(self, task: dict, result: Any) -> None:
         """Cascade rules: Builder proved / dead; Backward success / exhausted.
@@ -496,7 +540,12 @@ class Reactor:
                 archive_check(self.conn, int(row[0]), "Builder")
 
     def _mark_strategy_dead(self, strategy_id: int) -> None:
-        """Mark strategy dead; shelve parent goal if all strategies are dead."""
+        """Mark strategy dead; shelve parent goal if all strategies are dead.
+
+        P4 C31: trigger cond 4 'strategy_dead' cancellation verdict — cancel
+        Builder/Backward whose target_id == strategy_id (same-Strategy scope;
+        other strategies on the same Goal continue unaffected).
+        """
         row = self.conn.execute(
             "SELECT goal_id FROM strategies WHERE id = ?", (strategy_id,)
         ).fetchone()
@@ -509,6 +558,18 @@ class Reactor:
                     "UPDATE strategies SET status = 'dead' WHERE id = ?",
                     (strategy_id,),
                 )
+            # P4 C31: cond 4 white-list cancellation (visibility event).
+            from Tooling.cancellation import (
+                CancellationVerdict,
+                cancel_for_verdict,
+            )
+            cancel_for_verdict(
+                self.conn,
+                CancellationVerdict(
+                    kind="strategy_dead", strategy_id=strategy_id,
+                ),
+                emit_event=self._emit_event,
+            )
             non_dead = self.conn.execute(
                 "SELECT count(*) FROM strategies "
                 "WHERE goal_id = ? AND status != 'dead'",
@@ -766,19 +827,36 @@ class Reactor:
     # ------------------------------------------------------------------
 
     def _run_structural_refill(self) -> None:
-        """BFS goals: enqueue Backward for open goals; Builder for all-proved strategies."""
+        """BFS goals: enqueue Backward for open goals; Builder for all-proved strategies.
+
+        P4 C31: open `kind=conjecture` goals also get Refuter dispatched
+        in addition to Backward (three-line attack per architecture.md
+        §6 task queue, structural refill rules). Counterexample line is
+        deferred (task.md ## 延後 cycles); only Backward + Refuter fire
+        on conjecture goals in the current cycle.
+        """
         self._bfs_enqueue_backward()
+        self._bfs_enqueue_refuter_for_conjecture()
         self._bfs_enqueue_builder()
 
     def _bfs_enqueue_backward(self) -> None:
-        """Enqueue Backward for open theorem Goals, respecting D_max + stop-gap.
+        """Enqueue Backward for open theorem + conjecture Goals (P4 C31),
+        respecting D_max + stop-gap.
 
         R3 fix MED-2: filter commit_state='live' so mid-commit pending rows
         (impl §1.3 commit protocol) are not picked up before stage_file completes.
+
+        P4 C31: extends to kind='conjecture' as well — Backward attacks
+        conjecture goals just as it attacks theorem goals (architecture.md
+        §6 structural refill: kind=conjecture → Backward + Refuter +
+        Counterexample three-line attack; Backward stays in this method,
+        Refuter moves to _bfs_enqueue_refuter_for_conjecture, Counterexample
+        deferred per task.md ## 延後 cycles).
         """
         rows = self.conn.execute(
             "SELECT id, depth FROM goals "
-            "WHERE status = 'open' AND kind = 'theorem' "
+            "WHERE status = 'open' "
+            "AND kind IN ('theorem', 'conjecture') "
             "AND commit_state = 'live'"
         ).fetchall()
         for goal_id, depth in rows:
@@ -813,6 +891,32 @@ class Reactor:
             if self._is_already_dispatched(goal_id_s, "Backward"):
                 continue
             self._enqueue_task("Backward", goal_id_s, priority=0)
+
+    def _bfs_enqueue_refuter_for_conjecture(self) -> None:
+        """Enqueue Refuter for open conjecture Goals (P4 C31, three-line attack).
+
+        Architecture.md §6 structural refill rules — `kind=conjecture` goal
+        gets Backward + Refuter + Counterexample queued in parallel. C31
+        wires Refuter; Counterexample deferred per task.md ## 延後 cycles.
+
+        Filter discipline mirrors _bfs_enqueue_backward:
+          - commit_state='live' (avoid mid-commit pending rows)
+          - blocked_pipelines does not include 'Refuter'
+          - not already dispatched (idempotent across BFS ticks)
+        """
+        rows = self.conn.execute(
+            "SELECT id FROM goals "
+            "WHERE status = 'open' AND kind = 'conjecture' "
+            "AND commit_state = 'live'"
+        ).fetchall()
+        from Tooling.subsystems.blocked_pipelines import is_blocked
+        for (goal_id,) in rows:
+            goal_id_s = str(goal_id)
+            if is_blocked(self.conn, int(goal_id), "Refuter"):
+                continue
+            if self._is_already_dispatched(goal_id_s, "Refuter"):
+                continue
+            self._enqueue_task("Refuter", goal_id_s, priority=0)
 
     def _bfs_enqueue_builder(self) -> None:
         """Enqueue Builder for proposed strategies whose sub-goals are all proved.
@@ -1215,6 +1319,25 @@ class Reactor:
         except sqlite3.Error as exc:
             self._emit_fatal(str(exc))
             raise FatalError(str(exc)) from exc
+
+        # P4 C31: trigger cond 2 'twin_refuted' verdict cancellation.
+        # Cancels any pipeline kind on either G or ¬G (architecture.md §6
+        # cancellation table). Selection emits a cascade event for audit;
+        # actual thread SIGTERM remains no-op for thread-pool runtime per
+        # cancellation.py module docstring.
+        from Tooling.cancellation import (
+            CancellationVerdict,
+            cancel_for_verdict,
+        )
+        cancel_for_verdict(
+            self.conn,
+            CancellationVerdict(
+                kind="twin_refuted",
+                goal_id=twin_id,
+                twin_id=proved_goal_id,
+            ),
+            emit_event=self._emit_event,
+        )
 
     def _record_accept_reject_dead_attempt(
         self,

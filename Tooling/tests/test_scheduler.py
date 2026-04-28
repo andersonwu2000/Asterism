@@ -117,8 +117,9 @@ def _insert_open_goal(
     slug: str = "g",
     depth: int = 0,
     problem: str = "ex",
+    kind: str = "theorem",
 ) -> int:
-    """Insert a minimal open theorem goal; return goal_id."""
+    """Insert a minimal open goal (default kind=theorem); return goal_id."""
     lean = tmp_path / f"{slug}.lean"
     lean.write_text("placeholder", "utf-8")
     now = "2026-01-01T00:00:00+00:00"
@@ -127,7 +128,7 @@ def _insert_open_goal(
             "INSERT INTO goals (problem, slug, lean_path, origin, kind, status, "
             "commit_state, depth, created_at, updated_at) VALUES "
             "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (problem, slug, str(lean), "root", "theorem", "open", "live",
+            (problem, slug, str(lean), "root", kind, "open", "live",
              depth, now, now),
         )
     return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -850,6 +851,79 @@ class TestStructuralRefill:
         ).fetchone()[0]
         assert count == 1
 
+    def test_bfs_enqueues_backward_for_open_conjecture(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """P4 C31: kind='conjecture' goals also get Backward enqueued
+        (was theorem-only in P3)."""
+        goal_id = _insert_open_goal(
+            db, tmp_path, slug="conj1", kind="conjecture")
+        reactor = _make_reactor(db, tmp_path)
+        reactor._bfs_enqueue_backward()
+        row = db.execute(
+            "SELECT target_id FROM queue WHERE kind='Backward'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == str(goal_id)
+
+    def test_bfs_enqueues_refuter_for_open_conjecture(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """P4 C31: kind='conjecture' goals also get Refuter enqueued
+        (three-line attack per architecture.md §6 structural refill).
+        Counterexample line deferred per task.md ## 延後 cycles."""
+        goal_id = _insert_open_goal(
+            db, tmp_path, slug="conj2", kind="conjecture")
+        reactor = _make_reactor(db, tmp_path)
+        reactor._bfs_enqueue_refuter_for_conjecture()
+        row = db.execute(
+            "SELECT target_id FROM queue WHERE kind='Refuter'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == str(goal_id)
+
+    def test_bfs_no_refuter_for_theorem(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Theorem goals only get Backward (Refuter is conjecture-only)."""
+        _insert_open_goal(db, tmp_path, slug="thm_only", kind="theorem")
+        reactor = _make_reactor(db, tmp_path)
+        reactor._bfs_enqueue_refuter_for_conjecture()
+        count = db.execute(
+            "SELECT count(*) FROM queue WHERE kind='Refuter'"
+        ).fetchone()[0]
+        assert count == 0
+
+    def test_bfs_skips_refuter_when_blocked(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Refuter blocked_pipelines filter."""
+        from Tooling.subsystems.blocked_pipelines import block_pipeline
+        goal_id = _insert_open_goal(
+            db, tmp_path, slug="conj_blocked", kind="conjecture")
+        block_pipeline(db, goal_id, "Refuter")
+        reactor = _make_reactor(db, tmp_path)
+        reactor._bfs_enqueue_refuter_for_conjecture()
+        count = db.execute(
+            "SELECT count(*) FROM queue WHERE kind='Refuter'"
+        ).fetchone()[0]
+        assert count == 0
+
+    def test_bfs_no_dup_refuter(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Refuter dispatch is idempotent across BFS ticks."""
+        goal_id = _insert_open_goal(
+            db, tmp_path, slug="conj_dup", kind="conjecture")
+        reactor = _make_reactor(db, tmp_path)
+        reactor._bfs_enqueue_refuter_for_conjecture()
+        reactor._bfs_enqueue_refuter_for_conjecture()
+        count = db.execute(
+            "SELECT count(*) FROM queue WHERE kind='Refuter' AND target_id=?",
+            (str(goal_id),),
+        ).fetchone()[0]
+        assert count == 1
+
 
 # ---------------------------------------------------------------------------
 # 12. N_block_after_failures stop-gap
@@ -942,11 +1016,16 @@ class TestCascadeV2:
         ).fetchone()[0]
         assert status == "shelved"
 
-        event = db.execute(
+        # P4 C31: _mark_strategy_dead now emits two cascade events —
+        # one for cond 4 cancellation, one for the "all_strategies_dead→
+        # shelved" rule. Match on any event having the shelved rule.
+        events = db.execute(
             "SELECT payload FROM events WHERE kind='cascade'"
-        ).fetchone()
-        assert event is not None
-        assert "all_strategies_dead" in json.loads(event[0]).get("rule", "")
+        ).fetchall()
+        assert any(
+            "all_strategies_dead" in json.loads(payload).get("rule", "")
+            for (payload,) in events
+        )
 
     def test_not_all_dead_leaves_goal_open(
         self, db: sqlite3.Connection, tmp_path: Path
@@ -1176,7 +1255,8 @@ class TestCancellationStep2:
     def test_step2_cancel_called_on_proved(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
-        """Builder proved → _cancel_running_for_goal called with goal_id."""
+        """P4 C31: Builder proved → cancel_for_verdict called with
+        goal_proved verdict on goal_id (replaces P3 _cancel_running_for_goal)."""
         strategy_lean = tmp_path / "strat.lean"
         strategy_lean.write_text("placeholder", "utf-8")
         goal_lean = tmp_path / "goal.lean"
@@ -1186,19 +1266,24 @@ class TestCancellationStep2:
         reactor = _make_reactor(db, tmp_path)
         task = {"kind": "Builder", "target_id": str(strategy_id)}
 
-        with patch.object(reactor, "_cancel_running_for_goal") as mock_cancel:
+        with patch("Tooling.cancellation.cancel_for_verdict") as mock_cancel:
             reactor._run_step2_cancellation(task, BuilderResult(outcome="proved"))
 
-        mock_cancel.assert_called_once_with(str(goal_id))
+        assert mock_cancel.call_count == 1
+        called_args, called_kwargs = mock_cancel.call_args
+        # First positional: conn; second: verdict
+        verdict = called_args[1]
+        assert verdict.kind == "goal_proved"
+        assert verdict.goal_id == goal_id
 
     def test_step2_no_cancel_on_exhausted(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
-        """Builder exhausted → _cancel_running_for_goal NOT called."""
+        """Builder exhausted → cancel_for_verdict NOT called."""
         reactor = _make_reactor(db, tmp_path)
         task = {"kind": "Builder", "target_id": "1"}
 
-        with patch.object(reactor, "_cancel_running_for_goal") as mock_cancel:
+        with patch("Tooling.cancellation.cancel_for_verdict") as mock_cancel:
             reactor._run_step2_cancellation(task, BuilderResult(outcome="exhausted"))
 
         mock_cancel.assert_not_called()
@@ -1483,6 +1568,47 @@ class TestHookPlaceholders:
             task, BuilderResult(outcome="exhausted")
         )
         assert is_stale is True
+
+    def test_step1_drops_refuter_on_terminal_goal(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """P4 C31 (covering C30 R2 LOW-1): step1 stale filter extends to
+        Refuter target_kind. A Refuter pipeline result for a Goal that
+        flipped to refuted/proved/shelved before the result arrived
+        should be dropped (cascade does not re-act)."""
+        import json as _json
+        gid = _insert_open_goal(db, tmp_path, slug="conj_terminal",
+                                kind="conjecture")
+        with db:
+            db.execute(
+                "UPDATE goals SET status='refuted' WHERE id=?", (gid,),
+            )
+        reactor = _make_reactor(db, tmp_path)
+        task = {"kind": "Refuter", "target_id": str(gid)}
+        from Tooling.pipelines.refuter import RefuterResult
+        is_stale = reactor._run_step1_stale_filter(
+            task, RefuterResult(outcome="exhausted")
+        )
+        assert is_stale is True
+        rows = db.execute(
+            "SELECT payload FROM events WHERE kind = 'cascade'"
+        ).fetchall()
+        rules = [_json.loads(r[0]).get("rule") for r in rows]
+        assert "stale_filter" in rules
+
+    def test_step1_refuter_passes_through_for_open_goal(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """P4 C31: Refuter result on still-open Goal flows through."""
+        gid = _insert_open_goal(db, tmp_path, slug="conj_open",
+                                kind="conjecture")
+        reactor = _make_reactor(db, tmp_path)
+        task = {"kind": "Refuter", "target_id": str(gid)}
+        from Tooling.pipelines.refuter import RefuterResult
+        is_stale = reactor._run_step1_stale_filter(
+            task, RefuterResult(outcome="success")
+        )
+        assert is_stale is False
 
     def test_step1_handles_malformed_target_id(
         self, db: sqlite3.Connection, tmp_path: Path
