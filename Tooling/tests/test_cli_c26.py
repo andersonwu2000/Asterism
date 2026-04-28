@@ -85,6 +85,12 @@ class TestParserUnblock:
         with pytest.raises(SystemExit):
             parser.parse_args(["goal", "unblock", "5"])
 
+    def test_unblock_kind_and_all_mutex(self) -> None:
+        """C26 R3 LOW-5: argparse mutex prevents giving both pipeline_kind and --all."""
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["goal", "unblock", "5", "Backward", "--all"])
+
 
 class TestParserSpecFile:
     def test_spec_file_parses(self) -> None:
@@ -177,6 +183,32 @@ class TestUnblockCommand:
             )
         assert exc.value.code == 1
 
+    def test_unblock_all_on_empty_list_is_noop(self, db_path, capsys) -> None:
+        """C26 R3 LOW-5: --all on already-empty blocked_pipelines prints
+        '0 entries removed' (idempotent, parallel to specific-kind no-op test)."""
+        gid = _seed_goal(db_path, slug="g_empty_all")
+        cmd_goal_unblock(
+            _args(goal_id=str(gid), pipeline_kind=None, unblock_all=True),
+            db_path=db_path,
+        )
+        out = capsys.readouterr().out
+        assert "unblocked all (0 entries removed)" in out
+
+    def test_unblock_g_root_alias(self, db_path, capsys) -> None:
+        """C26 R3 LOW-5: G_root alias works (origin='root' resolution)."""
+        gid = _seed_goal(db_path, slug="g_alias_root")  # origin='root'
+        conn = connect(db_path)
+        try:
+            block_pipeline(conn, gid, "Backward")
+        finally:
+            conn.close()
+        cmd_goal_unblock(
+            _args(goal_id="G_root", pipeline_kind="Backward", unblock_all=False),
+            db_path=db_path,
+        )
+        out = capsys.readouterr().out
+        assert "unblocked 'Backward'" in out
+
 
 # ---------------------------------------------------------------------------
 # cmd_goal_add --spec-file
@@ -225,6 +257,46 @@ class TestSpecFile:
                 db_path=db_path, base_dir=tmp_path,
             )
         assert exc.value.code == 1
+
+    def test_spec_file_directory_path_handled(self, db_path, tmp_path) -> None:
+        """C26 R3 LOW-5: directory path → friendly exit 1, not IsADirectoryError traceback."""
+        with pytest.raises(SystemExit) as exc:
+            cmd_goal_add(
+                _args(problem="sg", slug="g", kind="theorem", spec=None,
+                      spec_file=str(tmp_path), leaf_strategy=None),
+                db_path=db_path, base_dir=tmp_path,
+            )
+        assert exc.value.code == 1
+
+    def test_spec_file_non_utf8_handled(self, db_path, tmp_path) -> None:
+        """C26 R3 LOW-5: non-UTF8 bytes → friendly exit 1, not UnicodeDecodeError traceback."""
+        spec_file = tmp_path / "binary.bin"
+        spec_file.write_bytes(b"\xff\xfe\x00\x00 not valid utf-8")
+        with pytest.raises(SystemExit) as exc:
+            cmd_goal_add(
+                _args(problem="sg", slug="g", kind="theorem", spec=None,
+                      spec_file=str(spec_file), leaf_strategy=None),
+                db_path=db_path, base_dir=tmp_path,
+            )
+        assert exc.value.code == 1
+
+    def test_inline_spec_strip_symmetric_with_spec_file(
+        self, db_path, tmp_path, capsys
+    ) -> None:
+        """C26 R3 LOW-2: inline --spec also gets .strip() (was asymmetric)."""
+        cmd_goal_add(
+            _args(problem="sg", slug="strip_g", kind="theorem",
+                  spec="  True  \n", spec_file=None, leaf_strategy=None),
+            db_path=db_path, base_dir=tmp_path,
+        )
+        conn = connect(db_path)
+        try:
+            row = conn.execute(
+                "SELECT question FROM goals WHERE slug = 'strip_g'"
+            ).fetchone()
+            assert row[0] == "True"
+        finally:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------

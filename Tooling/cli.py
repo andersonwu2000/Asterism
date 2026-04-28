@@ -1,12 +1,15 @@
-"""Asterism CLI (P1).
+"""Asterism CLI (P1+P2+P3).
 
 Entry point: python -m Tooling.cli <subcommand> [args]
 
 Subcommands:
   init  --problem <name>
-  goal  add  --problem P --slug S --kind K --leaf-strategy FILE
-  goal  show <GOAL_ID>
-  run   [--once|--daemon]
+  goal  add     --problem P --slug S --kind K
+                (--spec STMT | --spec-file PATH | --leaf-strategy FILE)
+  goal  show    <GOAL_ID>
+  goal  unblock <GOAL_ID> (<pipeline_kind> | --all)   [P3 manual rescue]
+  run   [--once] [--daemon]                           [P2: daemon default]
+  stop  [--signal pause|resume|shutdown] [--all]      [P2 control IPC]
   db    recover
 """
 from __future__ import annotations
@@ -106,14 +109,27 @@ def cmd_goal_add(
     spec_file = getattr(args, "spec_file", None)
     leaf_arg = getattr(args, "leaf_strategy", None)
 
+    # P3 C26 R3 LOW-2: strip inline --spec for symmetry with --spec-file
+    # (which strips read_text() trailing newlines). Avoids surprise
+    # whitespace landing in goals.question + the .lean template.
+    if spec is not None:
+        spec = spec.strip()
+
     # P3 C26: --spec-file reads --spec contents from file (long statements
     # that don't fit on the CLI). Mutually exclusive with --spec inline.
+    # R3 LOW-5: handle directory / non-UTF8 binary gracefully.
     if spec_file is not None:
         spec_file_path = Path(spec_file)
-        if not spec_file_path.exists():
-            print(f"error: --spec-file not found: {spec_file_path}", file=sys.stderr)
+        if not spec_file_path.is_file():
+            print(f"error: --spec-file not a regular file: {spec_file_path}",
+                  file=sys.stderr)
             sys.exit(1)
-        spec = spec_file_path.read_text(encoding="utf-8").strip()
+        try:
+            spec = spec_file_path.read_text(encoding="utf-8").strip()
+        except UnicodeDecodeError as exc:
+            print(f"error: --spec-file not valid UTF-8: {spec_file_path}: {exc}",
+                  file=sys.stderr)
+            sys.exit(1)
         if not spec:
             print(f"error: --spec-file is empty: {spec_file_path}", file=sys.stderr)
             sys.exit(1)
@@ -407,9 +423,10 @@ def cmd_goal_unblock(
         before = get_blocked_pipelines(conn, goal_id)
         if getattr(args, "unblock_all", False):
             removed = unblock_pipeline(conn, goal_id, None)
+            after = get_blocked_pipelines(conn, goal_id)
             print(f"goal {goal_id}: unblocked all ({removed} entries removed)")
             print(f"  before: {before}")
-            print(f"  after:  []")
+            print(f"  after:  {after}")
         else:
             kind = args.pipeline_kind
             if kind is None:
