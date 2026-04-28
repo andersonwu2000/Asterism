@@ -21,6 +21,7 @@
 | P2 | `BACKWARD_MOCK` | `success_leaf` | Backward.run 入口替換真實 agent；寫 trivial leaf strategy `theorem ... := by sorry` + INSERT strategies row。配合 LAKE_MOCK=proved 給 AC#0 demo subprocess test 跑 init→spec→run→show 端到端 |
 | P2 | `BACKWARD_FORCE` | `exhausted` / `unproductive` | Backward pipeline 強制走特定 outcome（C18 引入；語意凍結） |
 | P3 | `SEARCH_MOCK` | `record_calls` / `force_miss` / `force_hit` | search subsystem 行為控制（cache acceptance 計次 / 強制 cache miss-hit 路徑） |
+| P3 | `DEDUPE_MOCK` | `force_hit` / `force_miss` / `force_timeout` | dedupe subsystem 行為控制（C20 引入；`force_hit` 回 entry list 第一筆 id；`force_miss` 回 NOVEL；`force_timeout` 回 timeout outcome）。bypass cache + subprocess |
 | P3 | `BACKWARD_FORCE` | `succeed` (extended) | P2 `BACKWARD_FORCE` 擴 `succeed` 值；用於通用 N=5 trigger acceptance（與 `BACKWARD_MOCK=success_leaf` 不同：force succeed 不寫 strategy row，只回 outcome=success 殼；test 自己造 fixture rows） |
 | P4 | `COUNTEREXAMPLE_FORCE` | `silver` / `evidence_only` / `unproductive` | Counterexample 強制走特定 outcome（給 silver-skip race acceptance 用） |
 | P4 | `CASCADE_FAULT` | `unique_violation` / `dual_proved` / `fk_invalid` | 強制 cascade SQL 失敗（給 fatal halt acceptance 用） |
