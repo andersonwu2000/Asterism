@@ -4,6 +4,64 @@
 
 ## Commit：
 
+**C20 R1 — Cache subsystem 實作 (dedupe.lean + search.lean + Python wrappers)**
+
+Hash: `3b789dc` — P3 C20 R1: dedupe.lean + search.lean + Python wrappers.
+
+### 改動摘要（8 file 新增、1 file 補 row）
+
+- **`tools/dedupe.lean`**（impl §7.1）：CLI `dedupe --candidate <stmt> --against <entries.json> --mode <strict|iff_lite>`。strict mode 走 `Lean.Elab.runFrontend` + `Lean.Meta.isDefEq`（候選 env、cross-env caveat 對 P3 demo 級 OK）；iff_lite mode 為 C20 stub 等同 strict（C23 接 Backward integration 後再補 simp/decide/norm_num/ring_nf）。JSON 輸出 `result ∈ {"hit","novel","elab_failed"}`。不 import Mathlib（subprocess overhead ~2s per spike-009 D-09-1）。
+
+- **`tools/search.lean`**：CLI `search --query <text> --scope <mathlib|library> --kind <find_*>`。P3 stub 回 `{"results": []}`（mathlib full impl 留 P5、library 留 P6 promotion）。Wire-up + interface freeze 完成、Python wrapper 可正常呼叫不需動。
+
+- **`Tooling/subsystems/dedupe.py`**：subprocess wrapper + search_cache 整合。Cache key SHA256(mode + candidate text + sorted entry ids)、TTL default 3600s。`DEDUPE_MOCK` env hook（force_hit / force_miss / force_timeout）bypass cache + subprocess。Silent-failure 紅線：rc != 0 + 無 JSON output → `RuntimeError`、unknown result kind → raise、hit 缺 entry_id → raise、unknown mock value → `ValueError`（對齊 C18 R3 BACKWARD_MOCK fix pattern）。Timeout outcome 不寫 cache（避免 transient poison）。
+
+- **`Tooling/subsystems/search.py`**：subprocess wrapper + 直 SQL（local_goals scope）+ search_cache 整合。3 scope：mathlib/library 走 subprocess、local_goals 走 `SELECT ... FROM goals WHERE commit_state='live' AND (slug LIKE ? OR lean_path LIKE ?)`。TTL defaults：mathlib/library=3600s、local_goals=300s（phase3 §Config）。`SEARCH_MOCK`（record_calls / force_miss / force_hit）bypass cache + subprocess。Silent-failure 紅線同 dedupe。
+
+- **`Tooling/subsystems/__init__.py`**：空 init、新 package marker。
+
+- **`Tooling/tests/test_dedupe.py`** + **`test_search.py`**：+34 tests（dedupe 16: TestDedupeMock x5 / TestModeValidation x1 / TestSubprocessSuccess x3 / TestSubprocessFailureModes x4 / TestCacheIntegration x3；search 18: TestArgValidation x3 / TestSearchMock x4 / TestMathlibScope x4 / TestLibraryScope x1 / TestLocalGoalsScope x3 / TestCacheIntegration x3 / 1 skipped real lake gate）。覆蓋 mock hook、subprocess success path、subprocess failure red lines、cache hit/miss/TTL 過期 / write back / 不 cache transient outcome、SQL filter commit_state='live' 邊界。
+
+- **`docs/dev/test_hooks.md`**：DEDUPE_MOCK 註冊新 row（P3 phase tag、3 valid values + 用途）。
+
+### Hybrid mode
+
+R1 由 orchestrator (Opus 4.7) inline 完成。先前 C19+C20 R1 spawn Sonnet 違反 hybrid mode 約定、user 點名後改回 + 將 hybrid mode formalize 進 AutoDev 框架文件（commit 779091d：orchestrator.md / checklist.md / executor.md）。Co-Authored-By: Claude Opus 4.7。
+
+### Caveats
+
+- 全套 454 pass + 3 skipped（420 + 2 → 454 + 3 = +34 tests / +1 skipped real lake gate）、0 regression。
+- `tools/dedupe.lean` cross-env isDefEq 對 Lean core 類型 OK；entry references constants only in entry env 會誤判 false（容錯邊界）。Real Mathlib-aware dedupe 留 C23 + spike-009 follow-up 真實量化 isDefEq cost 後決定要不要走 concat-then-elab 重設計。
+- `tools/search.lean` 兩 scope 都是 stub 回 empty。phase3 doc 字面允許（"P3 stub 回 empty list 並標 caveat"）。
+- iff_lite mode 是 C20 stub 等同 strict、C23 真實接 simp/decide/norm_num/ring_nf。
+
+---
+
+
+
+**C19 R3 — Fix R2 audit findings (spike doc cleanup)**
+
+Hash: `3302cf4` — P3 C19 R3: fix R2 audit findings.
+
+### 改動摘要
+
+- **MED-1**: spike-011 D-11-1 SQL example 移除 buggy `AND NOT json_type(blocked_pipelines, '$[0]') IS NULL` guard（對空 list 永遠 false、第一次 append 永失敗）。下方 plain-text 描述的 `json_each EXISTS` 正確 dedup 仍保留。
+- **MED-2**: spike-009 Lean4 Issue #2441 placeholder URL 移除；改寫成「Lean4 社群常見 issue 反饋的 worst case 數量級」+ caveat 標 C20 dedupe.lean 觀測到 retry storm 時補 reference。
+- **LOW-3**: spike-008「跑法」case 分類敘述對齊 fixture（5 IH-trap + boundary-2 = 6 positive；5 非 IH + boundary-1 = 6 negative）。
+- **LOW-4**: spike-009/010 caveat 加 actionable next-step：「補測時機 = P3 demo cycle (C27) 跑 D2 (spike-009) / D1 (spike-010) 時順帶量、回填 D-09-1 / D-10-1」。
+
+### Hybrid mode
+
+R3 由 orchestrator (Opus 4.7) 直接做。R2 已點名 silent-failure pattern 未重犯（Sonnet R1 做對）、無 HIGH 必修。Co-Authored-By: Claude Opus 4.7。
+
+### Caveats
+
+- 全套 420 pass + 2 skipped、0 regression（doc-only change）。
+
+---
+
+
+
 **C19 R1 — P3 spike batch (spike-008/009/010/011)**
 
 Hash: `70d1c54`
