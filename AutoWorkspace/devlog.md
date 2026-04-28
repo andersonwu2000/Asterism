@@ -4,6 +4,322 @@
 
 ## Commit：
 
+**C35 R1 — gemini provider implementation**
+
+Hash: `d930c8e` — P5 C35 R1: gemini provider implementation.
+
+### 改動摘要
+
+- **Tooling/agent/providers/gemini.py 全新 195 行**: GeminiProvider mirrors ClaudeProvider 與 spike-019 D-19-1 mapping 對齊：`--include-directories <csv>` / `--approval-mode auto_edit` / `-m <model_id>`；no fresh `--session-id` flag (gemini auto-id); `gc_session` no-op for C35; `check_scope` reuses claude pattern。
+- **GEMINI_MODEL_MAP**: haiku→flash / sonnet→pro / opus→pro alias (per D-20-1)。
+- **Tooling/tests/test_provider_gemini.py 全新 269 行 / 26 tests**: TestModelMap (3) / TestBuildCmd (7、驗 --approval-mode auto_edit + --include-directories csv + 無 claude flag leakage) / TestGeminiInvoke (8) / TestGcSession (2) / TestCheckScope (5)。
+
+### CI
+
+675 → 701 pass (+26) / 16 skipped / 1 xfailed。
+
+### 並行執行紀錄
+
+C35 R1 與 C34 R2 audit 平行（user-confirmed）。C34 R2 完成、發現 MED-1（codex --add-dir flag 漏抓）→ C34 R3 commit `e0ad2c2` 修。C35 R1 commit `d930c8e` 緊跟。兩 cycle 改 file 不重疊（C34 = docs/spikes.md / C35 = gemini provider + test）、git no conflict。
+
+### 範圍邊界
+
+- gemini provider as island module（無 production caller in pipelines）；C36 fallback chain dispatch 才接通
+- model_map opus alias to pro 為 D-20-1 簡化、P5.x patch 視 demo 結果決定是否補
+
+---
+
+**C34 R3 — Fix R2 audit (codex --add-dir + claude permission-mode listing)**
+
+Hash: `e0ad2c2` — P5 C34 R3: fix R2 audit MED-1 + LOW polish.
+
+### 改動摘要
+
+- **MED-1（必修）codex --add-dir flag 漏抓**: 獨立跑 `codex exec --help` 證明 codex 0.121.0 直接有 `-C, --cd <DIR>` + `--add-dir <DIR>` flags。spike-019 mapping table、flag set 段、D-19-1 #1 + #4 全字面修。codex provider 首選 path 從 config-based 降為 `--add-dir` 多 flag pattern（與 claude 字面對齊、簡單）。**首次 R2 audit「rerun user-named verification command」instruction 抓到 R1 真實 gap 的 cycle**——auditor 自跑 codex exec --help 字面 evidence 直接打臉 R1 spike claim。
+- **LOW-1（cosmetic）**: claude permission-mode 6 mode 全列（補 auto / dontAsk）
+- **LOW-2（cosmetic）**: gemini --include-directories 兩形式 (csv / multi-flag) 都註明
+- **LOW-3 / LOW-4 部分對齊**: D-19-1 #6 explicit 區別「真打 model evil prompt」(spike 補測) vs「PROVIDER_MOCK mock hook」(acceptance #14)；Refuter-stage backfill timing 留 P5.x
+
+### CI
+
+字面 0 影響（純 docs）。
+
+---
+
+**C34 R1 — P5 C34 spike-019 + spike-020 (multi-provider)**
+
+Hash: `4a00c8c` — P5 C34 R1: spike-019 + spike-020 multi-provider scope-isolation + quality compare.
+
+### 改動摘要
+
+- **docs/spikes.md +187/-3**: 加 spike-019 (real test 三家 CLI flag probe — gemini/codex 都 0.36/0.121 已裝 + claude 已 spike-004 驗) + spike-020 (best-effort per-provider quality 設計分析、未跑 real benchmark)；spike-016/017/018 標延後（ConstructionSearch / Milestone A 整段延後 per task.md ## 延後 cycles）
+- **D-19-1**: P5.C36 Provider.invoke 統一 scope_dirs: list[str] 介面，三家 mapping (claude --add-dir multi-flag / gemini --include-directories csv / codex cwd-based + writable_roots config)；auto-approve flag 三家 converge on edit-on-staging auto / outside reject
+- **D-20-1**: fallback chain `[claude, gemini, codex]` 順序 fixed；single-chain schema 採 phase5 spec line 68 字面、dict-of-list patch 留 P5.x；model_map 三家 simplified (claude full-tier / gemini three-tier / codex single-tier)；per-stage quality 量化 P5.C38 demo 真跑後 backfill
+
+### CI
+
+字面 0 影響（純 docs/spikes.md 改動，無 test、無 production code）。
+
+### 平行執行紀錄
+
+本 cycle R1 與 C33 R2 audit 平行進行（user-confirmed per task.md ## 並行策略 #2 「長 wall-clock + 下個 phase spike 並行」pattern；不同 file、no conflict）。C34 R1 完成 commit 時 C33 R2 仍 running、隨後完成（pure clean pass）。
+
+---
+
+**C33 R1 — P4 acceptance tests #0a-#10 (Counterexample-deferred subset)**
+
+Hash: `b40686c` — P4 C33 R1: P4 acceptance tests.
+
+### 改動摘要
+
+- **Tooling/tests/test_phase4_acceptance.py 全新 464 行**: 12 active gates + 9 skipped (manual + Counterexample-deferred)
+  - AC #1 (2): BFS three-line dispatch verifies Backward + Refuter (Counterexample 第三線缺、deferred)
+  - AC #3 (2): cancellation cond 1 production shape (Builder via strategies JOIN) + cond 3 deferred raise
+  - AC #4 (3): Refuter prompt EVIDENCE_WITNESS slot + populate / null behavior
+  - AC #9 (4): DISPATCH_TABLE Refuter entries + acknowledge-only success + CASCADE_FAULT 兩 mode
+  - Twin smoke (1): _update_goal_proved twin cascade end-to-end
+- **Skipped manual gates**: AC #0a/#0b/#7a/#7b (real lake env)
+- **Skipped Counterexample-deferred**: AC #2/#5/#5a/#6/#8/#10
+
+### CI
+
+663 → 675 pass (+12) / 7 → 16 skipped (+9) / 1 xfailed。零 regression。
+
+### 範圍邊界
+
+- 1 file new test、無 production code 改動
+- C33 為 P4 cycle 終點；下個 cycle = C34 (P5 spike-019/020)
+
+### Hybrid mode 觀察
+
+R1 inline 完成 1 file 464 行純 test。silent-failure pattern 連 19 cycle 紅線觀察、純 test 應 0 變種風險。
+
+---
+
+**C32 R3 — Fix R2 audit (silent-failure red line — blocked_pipelines loud surface)**
+
+Hash: `49c85cb` — P4 C32 R3: fix R2 audit.
+
+### 改動摘要
+
+- **MED-1（必修）silent-failure 19 cycle 紅線變種**: cmd_goal_show blocked_pipelines try/except json.JSONDecodeError silent skip → stderr loud surface + sys.exit(1)。Goal id + exception message 清楚。
+- **LOW-3（連帶 MED-1）**: test_blocked_malformed_json_loud — UPDATE corrupt blocked_pipelines + capsys assert SystemExit + stderr 含「malformed JSON」+「blocked_pipelines」。
+- LOW-1 (commit_state filter)、LOW-2 (--leaf-strategy path UX gap)、LOW-4 (三線並攻字面 stamp): defer。
+
+### CI
+
+662 → 663 pass (+1)。
+
+### Hybrid mode 觀察
+
+silent-failure 紅線連 18 cycle 第 7 cycle 變種——同 module 異常 surface 一致性 invariant 在 cli.py blocked_pipelines parse 上初次踩、與 C29 R3 _extract_witness_block 同 pattern 反向延伸到 CLI display path。Auditor R2 抓到、紅線守住。
+
+---
+
+**C32 R1 — CLI extensions (--kind conjecture print + goal show twin/silver-or-gold)**
+
+Hash: `5f61054` — P4 C32 R1: CLI extensions.
+
+### 改動摘要
+
+- **cli.py cmd_goal_show 擴**: SELECT 加 twin_of + blocked_pipelines；display 加 (a) twin_of 解析顯示 G{id} ({slug}) [kind=K status=S] 含 dangling pointer fallback；(b) verdict_strength 從 answer_data.type 推 gold (classical) / silver (witness/construction)；(c) blocked_pipelines comma-joined 顯示
+- **cli.py cmd_goal_add --spec path**: 加 'kind:' line + conjecture mode 提示 BFS 下個 tick 會 enqueue Refuter（Counterexample 延後）
+- **test_cli_c32.py 全新 12 tests**: goal show twin (3 cases) + verdict_strength (4 cases) + blocked (2 cases) + goal add conjecture (3 cases)
+
+### CI
+
+650 → 662 pass (+12) / 7 skipped / 1 xfailed。零 P3+P4-prior regression。
+
+### 範圍邊界
+
+- REFUTER_FAST_PATH: 仍 NotImplementedError（C29 R3 reserve）
+- CASCADE_FAULT: 已 wire C30
+- COUNTEREXAMPLE_FORCE: 延後（task.md ## 延後 cycles）
+
+### Hybrid mode 觀察
+
+R1 inline 完成 cli.py +51 行 + 218 行新 test。範圍小、純 CLI display 增強、無 schema / scheduler / cascade 動。silent-failure 紅線連 18 cycle 紅線觀察。
+
+---
+
+**C31 R3 — Fix R2 audit (white-list spec literal alignment + dead code + symmetry)**
+
+Hash: `42ce0f4` — P4 C31 R3: fix R2 audit.
+
+### 改動摘要
+
+- **MED-1（必修）spec L429 字面對齊**: cond 1/2 SQL 從 `target_kind='Goal'` 單路擴成「Goal-targeted (Backward/Refuter/Counterexample/ConstructionSearch) UNION Strategy-targeted Builder」雙路；新增 `_select_for_goals` helper 用 strategies.goal_id JOIN 找 G 的 Builder pipelines。Test fixture default target_kind 改用 production shape（Builder='Strategy'、others='Goal'）。
+- **MED-2（必修）spec L435 保守原則**: `_COND1_KINDS` / `_COND2_KINDS` 從 8 kinds (`_ALL_PIPELINE_KINDS`) 收緊為 spec 列的 5 kinds。Forward / Generalizer / Strategist 不在 cond 1/2 white-list（P7 上線時 explicit add）。
+- **MED-3（建議）cond 4 移除 Backward**: `_COND4_KINDS = ('Builder',)`。Backward.target_kind='Goal' 不直接 hit cond 4 SQL；step1_stale_filter 在 Goal shelve 後 post-hoc drop。Test 改寫 `test_backward_not_cancelled_by_strategy_dead` lock 設計。
+- **LOW-1（cosmetic）刪 dead code**: `_cancel_running_for_goal` 22 行 0 callers。
+- **LOW-3（cosmetic）verdict docstring**: twin_refuted goal_id vs twin_id naming 字面澄清（cancellation symmetric、audit-trail asymmetric）。
+- **LOW-4（建議）try/except 對稱性**: cond 2 `cancel_for_verdict` 移進 `_cascade_twin_to_refuted` try/except 內、verdict raise 也走 `_emit_fatal` 寫 events table。
+- **LOW-2（保留）**: 0-match 仍 emit cascade event（audit trail > noise reduction）。
+
+### CI
+
+647 → 650 pass (+3 新 test: builder via strategy join / non-whitelist kind filter / backward not cancelled by strategy_dead) / 7 skipped / 1 xfailed。
+
+### Hybrid mode 觀察
+
+R3 inline 完成 cancellation.py 重寫（_select_for_goals 雙 SQL 路徑 union）+ 4 處 docstring + 2 處 scheduler edit。R2 auditor 給的 3 MED 全是 spec literal alignment 失誤——pipelines 表 target_kind 真實 shape vs spec 字面想像的脫節。**Test fixture 用 default target_kind 掩蓋 production bug 是強警示**——R3 改寫 fixture 為 production shape default、未來類似 bug 直接寫 test 就會撞牆。silent-failure 紅線連 17 cycle 持平清白（C30 + C31 R1 / R3 三 cycle 連續無 silent-failure 變種）。
+
+---
+
+**C31 R1 — Cancellation white-list + BFS conjecture dispatch + Refuter stale filter**
+
+Hash: `bfbd0ab` — P4 C31 R1: Cancellation white-list + BFS conjecture dispatch + Refuter stale filter.
+
+### 改動摘要
+
+- **Tooling/cancellation.py 全新 156 行**: CancellationVerdict + select_pipelines_to_cancel + cancel_for_verdict；4 條 white-list（cond 1 goal_proved / cond 2 twin_refuted / cond 3 counterexample_silver - **DEFERRED raise NotImplementedError** / cond 4 strategy_dead）；thread-pool SIGTERM 為 no-op、視覺化靠 cascade event + step1_stale_filter post-hoc drop
+- **Tooling/scheduler.py 改動**: (a) `_run_step2_cancellation` cond 1 verdict 取代 `_cancel_running_for_goal`；(b) `_cascade_twin_to_refuted` 末尾 cond 2 verdict；(c) `_mark_strategy_dead` 末尾 cond 4 verdict；(d) `_run_step1_stale_filter` 加 Refuter target_kind 處理（cover C30 R2 LOW-1）；(e) `_run_structural_refill` 加 `_bfs_enqueue_refuter_for_conjecture`；(f) `_bfs_enqueue_backward` 擴 kind IN ('theorem', 'conjecture')
+- **Tooling/tests/test_cancellation.py 全新 209 行 / 12 tests**: verdict validation 5 + cond 1/2/4 各 case + cancel_for_verdict event emission 3 + counterexample_silver deferred raise
+- **Tooling/tests/test_scheduler.py +148 行**: BFS conjecture dispatch (Backward + Refuter + dup + blocked filter) 5 tests + step1 Refuter (terminal drop + open passthrough) 2 tests + 既有 step2 cancellation tests 改用 cancel_for_verdict assert + test_all_strategies_dead 容忍兩 cascade event
+
+### CI
+
+626 → 647 pass (+21 = 12 cancellation + 7 scheduler + 2 step1) / 7 skipped / 1 xfailed。零 P3+P4-prior regression。
+
+### 範圍邊界
+
+- silver-stuck stop-gap hard rule: **延後**（Counterexample 依賴）
+- Cond 3 counterexample_silver: forward-compat hook only（raise）
+- REFUTER_FAST_PATH active behavior: 仍 NotImplementedError（C29 R3）
+- CLI --kind conjecture + goal show twin: C32
+
+### Hybrid mode 觀察
+
+R1 inline 完成 4 file +659 行 / +20 LOC scheduler refactor + 全新 cancellation module。Cancellation as pure-function module + emit_event callback 設計、scheduler 用 callback inject 自己 _emit_event 連到 events table。Verdict validation 用 raise ValueError 守紅線（unknown kind 不 silent skip）。連 15 cycle silent-failure 紅線觀察。
+
+---
+
+**C30 R1 — Cascade table extension + twin cascade + dual-proved fatal halt**
+
+Hash: `3eab05a` — P4 C30 R1: Cascade table extension + twin cascade + dual-proved fatal halt.
+
+### 改動摘要
+
+- **Tooling/cascade.py +63 行**: DISPATCH_TABLE 加 (Refuter, success) + (Refuter, exhausted) 兩 entry；新增 `check_cascade_fault(mode)` helper + `CascadeFault` exception 集中 CASCADE_FAULT env hook 處理（dual_proved 已 wire / unique_violation + fk_invalid 為 reserve name）
+- **Tooling/scheduler.py +166 行**: `_run_step3_cascade` 加 Refuter dispatch；`_cascade_refuter` (success no-op, exhausted dead_attempts + archive_check)；`_record_refuter_failure` (FK orphan path FatalError 守紅線)；`_update_goal_proved` 末尾接 `_cascade_twin_to_refuted`；`_cascade_twin_to_refuted` 處理 (a) 正常 twin 翻 refuted with classical (b) dual-proved invariant 偵測 fatal halt (c) dangling twin pointer 防禦 emit event no-crash (d) CASCADE_FAULT=dual_proved force fatal
+- **Tooling/tests/test_cascade.py +71 行**: 8 expected_keys 對齊 + Refuter dispatch + 5 CASCADE_FAULT tests
+- **Tooling/tests/test_cascade_twin.py 新增 369 行 / 14 tests**: twin cascade 三 path + dual-proved 三 case + dangling pointer + Refuter dispatch 四 case + step3 routing
+
+### CI
+
+607 → 626 pass (+19 = 5 cascade + 14 twin) / 7 skipped / 1 xfailed。零 P3+P4 regression。
+
+### 設計筆記
+
+silver→gold (Counterexample-source) 在 C30 為 reserved branch — twin status='refuted' + type='witness' 時應升 classical（Counterexample 上線後啟動）；當前 Counterexample 延後、twin 永不進 silver state、code 視為 idempotent no-op。
+
+### Hybrid mode 觀察
+
+R1 inline 完成 4 file 改動連 663 行（含 369 行新 test）一氣呵成。Twin cascade 是 spec literal 對齊高風險點（arch.md §6 line 330「Builder/Backward 鏈成功 → twin (若有) status=refuted」字面要求），刻意把 _update_goal_proved 末尾接 _cascade_twin_to_refuted 而非把整個 cascade 邏輯散在多處——一個 entry point 容易 audit。
+
+### 範圍邊界
+
+- Cancellation 白名單 4 條: C31
+- CLI --kind conjecture + goal show twin: C32
+- REFUTER_FAST_PATH active: C30 reserve name only（仍 NotImplementedError）
+- Counterexample silver→gold trust_set 升級: P9 / Counterexample cycles
+
+---
+
+**C29 R3 — Fix R2 audit (silent-failure red line + dead param + caveats)**
+
+Hash: `75a7fb7` — P4 C29 R3: fix R2 audit (silent-failure red line + dead param + caveats).
+
+### 改動摘要
+
+- **MED-1（必修）silent-failure 14 cycle 紅線變種**: `_extract_witness_block` malformed evidence JSON 從 silent return 改成 stderr loud surface（goal id + exception），與 `_dedupe_against_existing` timeout surface 對稱。Test 加 `capsys` assertion 鎖定 loud。
+- **LOW-1（建議）dead parameter 移除**: `_commit_novel` `pipeline_id: str` 參數 function body 內 0 use、刪除。Caller 同步停止 passing。Refuter 與 Backward 設計差異（Backward 有 strategy 殼用 pipeline_id 寫 created_by；Refuter 純 ¬G goal 無對應欄位）。
+- **LOW-2（建議）多 G 共享 ¬G 邊界場景**: `_commit_dup` docstring 加 caveat 段——兩個 α-equiv 但 Backward.dedupe 漏抓的 G 同時 hit 既有 ¬G 時、bidirectional twin_of 1-1 invariant 會破壞。嚴格 fix 留 C30 cascade 上線時 align spec。
+- **LOW-3（cosmetic）REFUTER_FAST_PATH reserve only**: env 設了原本 silent ignore；改成 raise NotImplementedError 與 silent-failure 紅線一致。+1 test pin raise。
+
+### CI
+
+606 → 607 pass (+1 fast-path raise test) / 7 skipped / 1 xfailed。
+
+### Hybrid mode 觀察
+
+R3 inline 完成、4 處改動一氣呵成。R2 Auditor 找出的 MED-1 是 silent-failure 第 14 cycle 紅線變種——本 cycle 是「Counterexample-only deferred slot」邊界 surface 設計不一致（_extract_witness_block silent vs _dedupe loud）。Auditor 強化「同 module 內異常 surface 一致性」這條 implicit invariant、值得進 orchestrator note 觀察列。R2 cost ~$4.36（cache_read 3.9M tokens、output 32K tokens）— 大型 cycle 因 source code 細查 cost 偏高。
+
+---
+
+**C29 R1 — P4 Refuter pipeline runtime + agent prompt v1**
+
+Hash: `6af1b87` — P4 C29 R1: Refuter pipeline runtime + agent prompt v1.
+
+### 改動摘要
+
+- **Tooling/pipelines/refuter.py 新增 547 行**: 完整 stage sequence (failure_replay → agent → self_verify → dedupe (local) → commit)；commit 處理 novel (insert ¬G + bidirectional twin_of UPDATE) + dup (twin_of only, no file write) 兩 path；REFUTER_MOCK=success_negation + REFUTER_FORCE=exhausted/succeed env hook
+- **docs/prompts/refuter.md 新增 49 行**: dual-mode prompt — generic ¬G classical (active) + witness short-template (reserved per D-13-1、Counterexample 上線前 EVIDENCE_WITNESS 段讀 "(none)" 自然落入 generic)
+- **Tooling/agent/provider.py FRAMEWORK_MODEL_DEFAULTS** 加 `refuter.agent` = `sonnet`（parity with backward.agent）
+- **docs/dev/test_hooks.md**: 加 P4 REFUTER_MOCK + REFUTER_FORCE 兩條（C29 引入語意凍結）；COUNTEREXAMPLE_FORCE 標延後；REFUTER_FAST_PATH 標 C30 cascade 上線連帶
+- **Tooling/tests/test_refuter.py 新增 568 行 / 37 test**: parser + witness extraction + prompt build + self_verify decision tree + dedupe (force_miss/force_hit/problem-scope filter) + commit_novel (twin_of bidirectional + file move) + commit_dup (twin_of only) + MOCK/FORCE hooks + end-to-end novel + dup paths + pipelines table parity
+
+### CI
+
+569 → 606 pass (+37 = test_refuter.py) / 7 skipped / 1 xfailed。R3 baseline 維持、零 regression。
+
+### 範圍邊界
+
+- Cascade 表擴行（Refuter ¬G proved → G refuted）: C30
+- Cancellation 白名單 4 條: C31
+- REFUTER_FAST_PATH active behavior: C30
+- Counterexample evolution + witness population: P9 / Counterexample cycles (per task.md ## 延後 cycles)
+
+---
+
+**C28 R3 — Fix R2 audit (MED-1/2/3 + LOW-2 polish)**
+
+Hash: `feaef0c` — P4 C28 R3: fix R2 audit (POSIX SIGTERM grace gap + spike caveats).
+
+### 改動摘要
+
+- **MED-1（必修）docs/spikes.md spike-014**: D-14-1 #2 + 「對 P4 cancellation design 的影響」#3 + 「對 spec 的影響」三段全改寫——明示 `Tooling/lake.py:_kill_tree()` POSIX 分支為 `os.killpg(SIGKILL)` 單步、不滿足 phase4 spec § Config「SIGTERM 5s grace 之後 SIGKILL」要求。P4.C31 Cancellation 必須在 _kill_tree 之上 extend SIGTERM-wait-SIGKILL wrapper、不可直接 reuse。原版錯誤陳述「POSIX 路徑保留 grace ladder（既存 _kill_tree 行為）」是 spec / 實作字面對齊出錯——不算 spec 漂移、是 P1 lake.py 實作未 cover P4 grace 要求；P4.C31 修。
+- **MED-2（建議）docs/spikes.md spike-014 Note 段**: 補「補測時機」line——P4.C31 真實實作後跑端對端 test 用 `import Mathlib` 重 transitive .lean 觸發 lean.exe child >30s elaboration、mid-elaboration 下 cancel 補驗 + POSIX 路徑同時驗。原本 Note 段已自承「lake env lean 在 0.6s/3s window 內仍在 lake startup phase、未 fork lean.exe」、補測時機段把 inference-vs-direct-evidence 缺口寫白。
+- **MED-3（必修）docs/spikes.md spike-013 line 875-876**: 「適用率 100%」軟化為「若 Counterexample evolution 行為符合 design 預期、則推論為適用、待 N≥10 真實樣本回填驗」。明示循環推論依賴的兩個未驗前提（Counterexample agent shape filter + Refuter prompt + Lean elaborator well-typed）。
+- **MED-3（必修）docs/spikes.md spike-013 line 884 Robust 度評估段頭**: 整段加警示 blockquote「警示：以下比例皆為 catalog 推論、無真實 Refuter agent 樣本支撐。不應作為下游 cycle 的 budget 計算 / acceptance criteria 硬數值依據」+ 補 backfill 時機（P4.C29 + P4.C33）。**LOW-1 cover by 此修**。
+- **LOW-2（cosmetic）spike_014_lake_kill.py:148-153**: finally cleanup `except OSError: pass` 加 1 行 comment「step 6 already reported leak; this is best-effort cleanup」、區隔 step 6 loud unlink oracle vs cleanup best-effort。
+
+### CI
+
+569 pass + 7 skipped + 1 xfailed（與 R1 baseline 對齊、純 docs+comment 修無退化）。
+
+### Hybrid mode 觀察
+
+R3 由 orchestrator (Opus 4.7) inline 完成、5 處 Edit 一次性貼齊。R2 Auditor 找出 spec/實作字面對齊的 MED-1（POSIX SIGTERM grace ladder）+ 字面循環推論的 MED-3（100% 適用率）兩處實質性 gap——R1 階段 hybrid Opus 仍漏 spec literal 對齊（C20 §7.1 elab_failed / C25 §1 commit_state / 本 R1 § Config grace ladder），**「字面對齊 spec」這條失誤路徑跨越 P3-P4 出現第 4 次、orchestrator note 候選**。R2 獨立 review 第 12 cycle 守住紅線。
+
+---
+
+**C28 R1 — P4 spike batch (spike-013 + spike-014)**
+
+Hash: `fdc46a6` — P4 C28 R1: spike-013 + spike-014 (Refuter prep, Counterexample spikes deferred).
+
+### 改動摘要
+
+- **spike-014 真跑** (`Tooling/tests/fixtures/spikes/spike_014_lake_kill.py` 新增): spawn `lake env lean` on D:/Hadamard 含 Mathlib transitive import、wait 0.6s/3s 兩變體、`taskkill /F /T /PID` kill descendant tree、檢驗 process leak / file handle leak。**結果**: kill rc=0、3 層深樹全清、無 lean.exe / lake.exe leak、無 file lock、kill 動作 < 0.21s、wait < 5s。**D-14-1**: Windows path 直接 `taskkill /F /T` 一步、POSIX path 保留 SIGTERM grace 階梯（既存 `Tooling/lake.py:_kill_tree()` 行為足夠、P4.C31 reuse、無需 psutil 引入）
+- **spike-013 best-effort** (docs/spikes.md 新段): conjecture shape catalog 10 種、標 short witness template `⟨w, by ...⟩` 適用率。**結果**: 6/10 shape 直接適用（universal-counterexample 形態）、4/10 不適用（∃/∧/∨/equality）走 generic ¬G 路徑。**D-13-1**: Refuter prompt v1 dual-mode（witness 存在走 short / 無走 generic）、N_retry=10 對兩路徑均充分、Counterexample 上線前 witness 段 reserve 不依賴
+- **task.md 修正**: C28 line 對齊 — spike-012 + spike-015 兩 Counterexample-only spike 同時延後（pre-compact 漏 spike-012、本 cycle 補正）；延後 cycles 段 bullets 補上 spike-012
+- **state.md ## Step + ## P4 progress 起頭**: C28 R1 in progress、初始化 P4 progress 段
+- **docs/spikes.md ### P4 必跑 索引**: spike-012 / spike-015 標「延後」、spike-013 / spike-014 加結果段
+
+### CI
+
+569 pass + 7 skipped (manual gates) + 1 xfailed (P6 schema gap)。與 P3 baseline 一致、零退化。
+
+### Hybrid mode 觀察
+
+R1 全由 orchestrator (Opus 4.7) inline 完成。Spike batch 行為（C19 vs 本 cycle）對比：C19 跑 4 spike、有真實 isDefEq best-effort + multiprocessing real test；本 cycle 因 Counterexample 兩 spike 延後、剩 2 spike 工作量縮減。spike-014 真跑驗證 Tooling/lake.py 既有 _kill_tree() 設計正確、P4.C31 cancellation 實作可省 psutil dependency 引入。
+
+## 指令：無
+
+---
+
+
+
 **C21 R3 — Fix R2 audit (silent-failure regression x1 + doc accuracy)**
 
 Hash: `6b26e74` — P3 C21 R3: fix R2 audit findings.

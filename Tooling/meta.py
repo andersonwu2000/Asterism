@@ -186,3 +186,104 @@ def validate_meta(meta: MetaConfig) -> None:
             "META.md must declare at least one axiom in the 'axioms' field; "
             "no default axiom set is inherited from the framework"
         )
+
+
+# ---------------------------------------------------------------------------
+# Multi-Problem scan (P6 C42)
+# ---------------------------------------------------------------------------
+
+def scan_all_problems(base_dir: str | Path) -> dict[str, MetaConfig]:
+    """Scan ``base_dir/Problems/*`` for valid META.md files.
+
+    Returns a mapping ``{problem_name: MetaConfig}``. Directories whose
+    META.md fails validation (missing / malformed / empty axioms) are
+    SKIPPED with no exception — `scan_all_problems` is a startup
+    discovery helper used by the multi-Problem reactor and the
+    library check-deps tool, both of which should keep running on
+    valid Problems while reporting the bad ones.
+
+    Skipped Problems are recorded under the ``MetaConfig._scan_errors``
+    sidecar dict (test seam for callers that want to surface the
+    skipped list).
+
+    Spec phase6_library.md ## In line 33-36 字面: "scheduler 啟動時對
+    每個 Problem 解析 META.md、驗 axioms 欄位存在；缺則 reject load +
+    emit alert". P6 C42 first cut: skip-and-report rather than abort —
+    a single bad META.md must not block other Problems' scheduling.
+    The reactor wires its own emit_alert path; check_deps.run_check
+    calls scan_all_problems then reports the skipped names alongside
+    coverage violations.
+
+    `problem_name` keys come from the directory name, not the META.md
+    `problem_name:` field, because spec line 33 字面 "scheduler 啟動
+    時對每個 Problem" iterates by directory.
+    """
+    base = Path(base_dir)
+    problems_dir = base / "Problems"
+    result: dict[str, MetaConfig] = {}
+    if not problems_dir.exists():
+        return result
+    for entry in sorted(problems_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+        try:
+            meta = parse_meta(entry)
+        except MetaError:
+            # Skip-and-report (caller can detect by entry name absent
+            # from result dict); reactor emits alert per spec line 35.
+            continue
+        result[entry.name] = meta
+    return result
+
+
+def scan_all_problems(
+    base_dir: str | Path,
+) -> dict[str, MetaConfig]:
+    """Scan `base_dir/Problems/*/META.md` and return a {problem_name: meta} map.
+
+    P6 C42 (multi-Problem support): scheduler startup (and CLI
+    `asterism problem list` / `library check-deps`) walks every
+    Problem directory and parses its META.md. Errors are NOT raised
+    here — the function returns successful entries and the caller
+    decides how to surface failures (e.g. emit alert + skip the
+    Problem instead of refusing to start the daemon).
+
+    Returns:
+        Map from problem_name (directory name) to MetaConfig. Problems
+        whose META.md is missing or invalid are silently skipped (the
+        per-Problem scheduler enforcement layer + library check-deps
+        report failures); call `scan_all_problems_with_errors` for the
+        loud variant when caller wants explicit failure visibility.
+    """
+    successes, _errors = scan_all_problems_with_errors(base_dir)
+    return successes
+
+
+def scan_all_problems_with_errors(
+    base_dir: str | Path,
+) -> tuple[dict[str, MetaConfig], dict[str, MetaError]]:
+    """Loud variant of `scan_all_problems`: returns (successes, errors).
+
+    Errors keyed by problem dirname so callers (CLI / daemon startup)
+    can emit alerts per-Problem and continue. Used by P6.C44
+    `asterism problem list` to flag broken Problem directories.
+    """
+    base = Path(base_dir)
+    problems_root = base / "Problems"
+    successes: dict[str, MetaConfig] = {}
+    errors: dict[str, MetaError] = {}
+    if not problems_root.exists():
+        return successes, errors
+    for problem_dir in sorted(problems_root.iterdir()):
+        if not problem_dir.is_dir():
+            continue
+        # Skip hidden / underscore-prefixed (e.g. _pending_*)
+        if problem_dir.name.startswith((".", "_")):
+            continue
+        try:
+            meta = parse_meta(problem_dir)
+        except MetaError as exc:
+            errors[problem_dir.name] = exc
+            continue
+        successes[problem_dir.name] = meta
+    return successes, errors
