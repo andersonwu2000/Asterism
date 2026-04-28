@@ -159,10 +159,10 @@ def _run_lean_dedupe(
         entries_path = Path(f.name)
 
     try:
+        # P6.x patch: drop `--` separator (lake v4.30 forwards it into argv).
         cmd = [
             "lake", "env", "lean",
             "--run", str(_DEDUPE_LEAN),
-            "--",
             "--candidate", str(candidate_path),
             "--against", str(entries_path),
             "--mode", mode,

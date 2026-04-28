@@ -111,10 +111,11 @@ def check_hyp_carry(
     *lake_cwd* must be a directory with a usable lake environment
     (e.g. D:/Hadamard for the Mathlib-backed cache).
     """
+    # P6.x patch (Round-2 演習): drop the `--` separator. lake/lean v4.30
+    # forwards `--` into argv and parseArgs rejects.
     cmd = [
         "lake", "env", "lean",
         "--run", str(_VALIDATOR_LEAN),
-        "--",
         "hypothesis_carry",
         "--parent", str(parent_lean_path),
         "--subgoals", *[str(sg["lean_path"]) for sg in subgoals],

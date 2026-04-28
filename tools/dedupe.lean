@@ -76,9 +76,11 @@ def findUserTheorem (env : Environment) : Option Name :=
     Errors propagate as `Except String`.
     P6.x patch 8 (Lean v4.30 toolchain drift): `runFrontend` returns
     `IO (Option Environment)` — `none` means errors, no separate Bool. -/
-def fileTheoremType (path : String) : IO (Except String (Environment × Expr)) := do
+unsafe def fileTheoremType (path : String) : IO (Except String (Environment × Expr)) := do
   try
     let content ← IO.FS.readFile path
+    -- v4.30: must be called before EACH runFrontend, not just once.
+    Lean.enableInitializersExecution
     let env? ← Lean.Elab.runFrontend content {} path `_AsterismDedupe
     match env? with
     | none => return .error s!"runFrontend reported errors in {path}"
@@ -151,7 +153,11 @@ where
 -- Main
 -- ================================================================
 
-def main (raw : List String) : IO UInt32 := do
+unsafe def main (raw : List String) : IO UInt32 := do
+  -- P6.x patch (Lean v4.30): runFrontend now requires this to be called
+  -- before importModules. enableInitializersExecution is unsafe so it must
+  -- live in an `unsafe` main; we don't otherwise rely on unsafe semantics.
+  Lean.enableInitializersExecution
   match parseArgs raw with
   | none =>
       IO.eprintln "usage: dedupe --candidate <file> --against <entries.json> --mode <strict|iff_lite>"
@@ -164,7 +170,7 @@ def main (raw : List String) : IO UInt32 := do
           -- spec §7.1: "elaborate 失敗 → NOVEL, 容錯不報錯"
           IO.eprintln s!"warn: candidate elab failed: {err}"
           let out : DedupeOutput := { result := "novel" }
-          IO.println (toString (toJson out))
+          IO.println (toJson out).compress
           pure 0
       | .ok (candEnv, candType) =>
           -- Parse entries JSON
@@ -175,7 +181,7 @@ def main (raw : List String) : IO UInt32 := do
               -- entries malformed → no entries to compare → NOVEL
               IO.eprintln s!"warn: entries.json parse: {err}"
               let out : DedupeOutput := { result := "novel" }
-              IO.println (toString (toJson out))
+              IO.println (toJson out).compress
               pure 0
           | .ok entries =>
               -- Loop entries; first hit wins
@@ -192,12 +198,12 @@ def main (raw : List String) : IO UInt32 := do
               match hitId with
               | some id =>
                   let out : DedupeOutput := { result := "hit", entry_id := some id }
-                  IO.println (toString (toJson out))
+                  IO.println (toJson out).compress
               | none =>
                   -- iff_lite mode: P3 C20 stub returns same as strict.
                   -- TODO C23: wire `theorem _check : c ↔ e := by simp; ...`
                   -- per impl §7.1 once Backward integration measures real cost.
                   let _ := args.mode  -- silence unused-variable warning until C23
                   let out : DedupeOutput := { result := "novel" }
-                  IO.println (toString (toJson out))
+                  IO.println (toJson out).compress
               pure 0

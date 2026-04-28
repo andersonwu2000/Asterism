@@ -681,7 +681,13 @@ class Backward:
             shutil.rmtree(staging_dir, ignore_errors=True)
             Path(staging_dir).mkdir(parents=True, exist_ok=True)
 
-            response = self._run_agent(goal, dead_attempts, session_id, staging_dir)
+            # P6.x patch 11: claude CLI rejects reused --session-id with
+            # "already in use". Mint a fresh UUID per retry. The
+            # pipeline-level session_id (stored in pipelines.session_id)
+            # remains the original for cross-retry traceability.
+            retry_session_id = str(uuid.uuid4()) if _attempt > 0 else session_id
+            response = self._run_agent(goal, dead_attempts, retry_session_id,
+                                       staging_dir)
             if response is None:
                 self._emit_stage_fail(goal, pipeline_id, _attempt,
                                       "agent_no_response")

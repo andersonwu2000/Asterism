@@ -69,6 +69,11 @@ class ClaudeProvider(Provider):
         self.claude_bin = claude_bin
         self.invoke_timeout = invoke_timeout
         self.repo_root = Path(repo_root) if repo_root else Path.cwd()
+        # P6.x patch 7: snapshot of git status BEFORE invoke (keyed by
+        # resolved staging_dir). check_scope compares post-invoke status
+        # against this baseline so pre-existing working-tree changes do
+        # not count as scope violations.
+        self._scope_baseline: dict[str, set[str]] = {}
 
     # ------------------------------------------------------------------
     # Provider interface
@@ -99,6 +104,11 @@ class ClaudeProvider(Provider):
 
         model_id = self.resolve_model_id(model_tier)
         effective_cwd = cwd or scope_dirs[0]
+
+        # P6.x patch 7: snapshot baseline before invoke so check_scope can
+        # compute delta. Key by resolved staging_dir.
+        staging_key = str(Path(scope_dirs[0]).resolve())
+        self._scope_baseline[staging_key] = self._capture_git_status()
 
         cmd = self._build_cmd(model_id, prompt, scope_dirs, session_id)
 
@@ -191,13 +201,19 @@ class ClaudeProvider(Provider):
             # If git is unavailable, fail safe (deny).
             return False
 
-        if not result.stdout.strip():
-            return True  # clean working tree → pass
+        # P6.x patch 7: filter against baseline snapshot taken before invoke.
+        # Only NEW status entries (post-invoke) count as scope violations.
+        current_lines = {
+            ln.rstrip() for ln in result.stdout.splitlines() if ln.strip()
+        }
+        baseline = self._scope_baseline.pop(str(staging), set())
+        delta_lines = current_lines - baseline
+
+        if not delta_lines:
+            return True  # no new changes since invoke
 
         outside: list[str] = []
-        for line in result.stdout.splitlines():
-            if not line.strip():
-                continue
+        for line in delta_lines:
             # porcelain v1: "XY path" or "XY orig -> path"
             parts = line[3:].strip()
             path_str = parts.split(" -> ")[-1].strip().strip('"')
@@ -208,6 +224,25 @@ class ClaudeProvider(Provider):
                 outside.append(str(abs_path))
 
         return len(outside) == 0
+
+    def _capture_git_status(self) -> set[str]:
+        """P6.x patch 7: capture git status --porcelain output as a set of
+        lines for baseline comparison. Empty set on git failure (the
+        check_scope path will still run and treat current state as the
+        delta — fail-safe upstream)."""
+        try:
+            result = subprocess.run(
+                ["git", "status", "--porcelain"],
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                cwd=self.repo_root,
+                timeout=_GIT_TIMEOUT,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return set()
+        return {
+            ln.rstrip() for ln in result.stdout.splitlines() if ln.strip()
+        }
 
     # ------------------------------------------------------------------
     # Internal helpers

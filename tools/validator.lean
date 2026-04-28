@@ -76,9 +76,11 @@ def findUserTheorem (env : Environment) : Option Name :=
     Errors propagate as `Except String`.
     P6.x patch 9 (Lean v4.30 toolchain drift): runFrontend returns
     `IO (Option Environment)` — `none` means errors. -/
-def fileBinders (path : String) : IO (Except String (Array Name)) := do
+unsafe def fileBinders (path : String) : IO (Except String (Array Name)) := do
   try
     let content ← IO.FS.readFile path
+    -- v4.30: must be called before EACH runFrontend, not just once.
+    Lean.enableInitializersExecution
     let env? ← Lean.Elab.runFrontend content {} path `_AsterismValidator
     match env? with
     | none => return .error s!"runFrontend reported errors in {path}"
@@ -118,7 +120,10 @@ where
 -- Main
 -- ================================================================
 
-def main (raw : List String) : IO UInt32 := do
+unsafe def main (raw : List String) : IO UInt32 := do
+  -- P6.x patch (Lean v4.30): runFrontend requires
+  -- enableInitializersExecution before importModules.
+  Lean.enableInitializersExecution
   match parseArgs raw with
   | none =>
       IO.eprintln
@@ -129,7 +134,7 @@ def main (raw : List String) : IO UInt32 := do
       match parentRes with
       | .error err =>
           let out : ValidatorOutput := { parent_error := some err }
-          IO.println (toString (toJson out))
+          IO.println (toJson out).compress
           pure 2
       | .ok parentBnds =>
           let mut results : Array SubgoalResult := #[]
@@ -144,5 +149,5 @@ def main (raw : List String) : IO UInt32 := do
                 results := results.push
                   { subgoal := sub, missing_binders := missing.map (·.toString) }
           let out : ValidatorOutput := { subgoals := results }
-          IO.println (toString (toJson out))
+          IO.println (toJson out).compress
           pure 0
