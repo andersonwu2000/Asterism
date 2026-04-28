@@ -1,5 +1,14 @@
 """
-spike-004 extended: test claude --add-dir with legitimate write + path traversal
+spike-004 [HISTORICAL — Test 1 + path traversal, model judgment evidence]:
+Second-iteration runner: legitimate-write prompt + path-traversal prompt under
+plain `claude -p --add-dir` (still NO --permission-mode acceptEdits).
+Demonstrates (a) model refuses path traversal, (b) plain -p mode also blocks
+legitimate writes to staging — driving the discovery that --permission-mode
+acceptEdits is required.
+
+Final design uses spike004_runner3.py (acceptEdits + dual-write tool-layer test).
+
+See docs/spikes.md spike-004 §結果 Test 1 / Test A for results.
 """
 
 import subprocess

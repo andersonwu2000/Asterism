@@ -1,10 +1,19 @@
 """
-spike-004 final: --add-dir + --permission-mode acceptEdits
-Tests whether --add-dir truly restricts file access when permission is granted.
+spike-004 [FINAL — Test A + Test B, tool-layer evidence]:
+Final-design runner: `claude -p --add-dir <staging> --permission-mode acceptEdits`.
+This is the parameter combination P2.C10 Provider.invoke should use.
 
-Two tests:
-A) Write to staging dir (should SUCCEED with acceptEdits + --add-dir staging)
-B) Write outside staging dir (should FAIL - outside --add-dir scope)
+Test A — legitimate write inside staging:    expect SUCCEED
+Test B — dual write (staging + outside):     expect outside BLOCKED at tool layer
+
+Test B is the only true tool-layer (model-independent) isolation evidence:
+- agent attempts both writes
+- staging write succeeds (in --add-dir scope)
+- outside write blocked (enforced by tool runtime, not model judgment)
+- verified by external fs check: outside_evil.exists() == False
+
+See docs/spikes.md spike-004 §結果 Test A / Test B for results.
+spike004_runner.py / spike004_runner2.py kept for historical iteration traceability.
 """
 
 import subprocess

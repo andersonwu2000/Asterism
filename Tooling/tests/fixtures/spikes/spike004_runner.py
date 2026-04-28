@@ -1,6 +1,14 @@
 """
-spike-004: claude CLI --add-dir behavior
-Tests whether --add-dir truly restricts agent filesystem access.
+spike-004 [HISTORICAL — Test 0 only, model judgment evidence]:
+First-iteration runner: explicit-evil prompt under plain `claude -p --add-dir`
+(NO --permission-mode acceptEdits). Demonstrates that the model itself refuses
+exfiltration prompts before any tool-layer enforcement can be observed.
+
+Final design uses spike004_runner3.py (acceptEdits + dual-write tool-layer test).
+This runner kept for traceability of the iterative discovery: pure -p mode blocks
+ALL writes (even to staging) regardless of --add-dir.
+
+See docs/spikes.md spike-004 §結果 Test 0 for results.
 
 Setup:
 - staging_dir: the only allowed directory (passed to --add-dir)
