@@ -1282,6 +1282,30 @@ class Reactor:
             )
         invalidate_for_goals_write(self.conn)
         self._cascade_twin_to_refuted(goal_id, trust_set_json)
+        # P6 C41: Library promotion hook. promote_to_library handles
+        # qualification (origin / type / trust_set whitelist) internally
+        # and skips when the goal doesn't qualify. Lake build verify is
+        # a noop default in C41 (operator runs `lake build` manually
+        # per spike-021 D-21-1 「P6 demo bash 起手預熱」); P6.C45 will
+        # wire the real verifier with LIBRARY_BUILD_FAULT env hook.
+        from Tooling.library.promotion import promote_to_library
+        try:
+            promote_to_library(
+                self.conn, goal_id, self.config.base_dir,
+                emit_event=self._emit_event,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Library promotion is best-effort in C41 — the proved goal
+            # is the source-of-truth. Emit a cascade event so operators
+            # see the failure on next library audit but do not raise.
+            self._emit_event(
+                "cascade",
+                {
+                    "rule": "library_promotion_failed",
+                    "goal_id": goal_id,
+                    "error": str(exc),
+                },
+            )
 
     def _cascade_twin_to_refuted(
         self, proved_goal_id: int, trust_set_json: str | None
