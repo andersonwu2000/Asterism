@@ -817,10 +817,28 @@ class Reactor:
             raise FatalError(f"Unsupported task kind in thread: {kind!r}")
 
     def _make_fallback_chain(self) -> Any:
-        """Create a claude FallbackChain. Tests mock Builder/Backward directly."""
+        """Create the default multi-provider FallbackChain.
+
+        P5 C36: chain = [claude, gemini, codex] per phase5_construction.md
+        ## In line 68 + spike-020 D-20-1. Each provider's `check_scope`
+        method is git-diff backstop and provider-agnostic (spike-004 design),
+        so a single ClaudeProvider instance is reused as `validate_scope`.
+
+        FallbackChain.run iterates providers in order, retries each up to
+        n_retry on ProviderError or scope violation, falls through to the
+        next provider when one is exhausted. dict-of-list per-stage chains
+        deferred to P5.x patch (spec line 71). Tests mock pipelines
+        directly so this method is exercised only in P5+ smoke gates.
+        """
         from Tooling.agent.provider import FallbackChain
         from Tooling.agent.providers.claude import ClaudeProvider
-        return FallbackChain(providers=[ClaudeProvider()])
+        from Tooling.agent.providers.gemini import GeminiProvider
+        from Tooling.agent.providers.codex import CodexProvider
+        backstop = ClaudeProvider()
+        return FallbackChain(
+            providers=[backstop, GeminiProvider(), CodexProvider()],
+            validate_scope=backstop.check_scope,
+        )
 
     # ------------------------------------------------------------------
     # Structural refill BFS

@@ -1501,6 +1501,48 @@ class TestBFSCommitStateFilter:
         assert count == 0
 
 
+class TestMakeFallbackChain:
+    """P5 C36 R3: pin _make_fallback_chain composition + provider order.
+
+    Spec phase5_construction.md ## In line 68: P5 single chain
+    [claude, gemini, codex]. Caught by C36 R2 audit HIGH-1 — the original
+    C36 R1 commit message described the wire-up but only codex.py +
+    test_provider_codex.py landed in the commit; scheduler.py edit was
+    in working tree but never staged. This test pins the wired chain so
+    the gap is caught directly if it regresses.
+    """
+
+    def test_chain_has_three_providers(self, db, tmp_path):
+        from Tooling.agent.providers.claude import ClaudeProvider
+        from Tooling.agent.providers.gemini import GeminiProvider
+        from Tooling.agent.providers.codex import CodexProvider
+        reactor = _make_reactor(db, tmp_path)
+        chain = reactor._make_fallback_chain()
+        assert len(chain.providers) == 3
+        assert isinstance(chain.providers[0], ClaudeProvider)
+        assert isinstance(chain.providers[1], GeminiProvider)
+        assert isinstance(chain.providers[2], CodexProvider)
+
+    def test_chain_order_claude_gemini_codex(self, db, tmp_path):
+        """Spec line 68: chain[0]=claude (leader), chain[1]=gemini,
+        chain[2]=codex (last retry). Order pinned because order
+        determines which provider absorbs which retry budget."""
+        reactor = _make_reactor(db, tmp_path)
+        chain = reactor._make_fallback_chain()
+        names = [p.name for p in chain.providers]
+        assert names == ["claude", "gemini", "codex"]
+
+    def test_validate_scope_uses_provider_check_scope(self, db, tmp_path):
+        """validate_scope is callable (model-independent git status backstop
+        per spike-004). C36 R1 wired ClaudeProvider.check_scope as the
+        chain's validate_scope; any provider's check_scope would be
+        equivalent — the assertion is just "non-None and callable"."""
+        reactor = _make_reactor(db, tmp_path)
+        chain = reactor._make_fallback_chain()
+        assert chain._validate_scope is not None
+        assert callable(chain._validate_scope)
+
+
 class TestHookPlaceholders:
     def test_step1_stale_filter_emits_event_for_orphan_target(
         self, db: sqlite3.Connection, tmp_path: Path
