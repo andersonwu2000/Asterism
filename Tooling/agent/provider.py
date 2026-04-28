@@ -18,11 +18,19 @@ Framework model defaults (P2):
 Model resolution order (two layers; Strategist third layer留P7):
   1. Problem META.md models.<pipeline_kind>.<stage>  (per-problem override)
   2. framework agent.model_defaults.<pipeline_kind>.<stage>
+
+P5 C37 PROVIDER_MOCK_<NAME> env hook (test-only, see test_hooks.md):
+  - PROVIDER_MOCK_CLAUDE / PROVIDER_MOCK_GEMINI / PROVIDER_MOCK_CODEX
+  - mode = fail_always | fail_after_<N> | evil_write
+  - handled by Provider._maybe_apply_mock at the top of each subclass's
+    invoke() so the real subprocess never runs when the hook is set
 """
 from __future__ import annotations
 
 import abc
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 
@@ -53,6 +61,11 @@ class Provider(abc.ABC):
 
     # tier vocab → provider-specific model id
     model_map: dict[str, str] = {}
+
+    # PROVIDER_MOCK_<NAME>=fail_after_<N> per-instance counter; not class-level
+    # so concurrent providers don't share state. Initialised lazily in
+    # _maybe_apply_mock (avoids forcing every Provider subclass to call super().__init__).
+    _mock_call_count: int = 0
 
     @abc.abstractmethod
     def invoke(
@@ -90,6 +103,86 @@ class Provider(abc.ABC):
         model_map keys), return it unchanged — lets META.md specify exact ids.
         """
         return self.model_map.get(model_tier, model_tier)
+
+    def _maybe_apply_mock(
+        self,
+        scope_dirs: list[str],
+        session_id: str,
+    ) -> "AgentResponse | None":
+        """P5 C37: PROVIDER_MOCK_<NAME> env-hook handler.
+
+        Returns an AgentResponse (mock success path), raises ProviderError
+        (mock failure path), or returns None (no mock — caller proceeds
+        with the real subprocess invocation).
+
+        Modes (env value):
+          fail_always       — every call raises ProviderError
+          fail_after_<N>    — after N successful mock returns, raise
+                              ProviderError on the (N+1)-th call
+          evil_write        — write a sentinel file OUTSIDE scope_dirs[0]
+                              (in cwd) so a downstream check_scope catches
+                              the leak; returns success otherwise
+        """
+        env_var = f"PROVIDER_MOCK_{self.name.upper()}"
+        mode = os.environ.get(env_var)
+        if not mode:
+            return None
+
+        if mode == "fail_always":
+            raise ProviderError(
+                f"{self.name} PROVIDER_MOCK={mode} simulated failure"
+            )
+
+        if mode.startswith("fail_after_"):
+            try:
+                n = int(mode.removeprefix("fail_after_"))
+            except ValueError as exc:
+                raise ValueError(
+                    f"invalid {env_var} value {mode!r}: "
+                    "expected fail_after_<integer>"
+                ) from exc
+            self._mock_call_count += 1
+            if self._mock_call_count > n:
+                raise ProviderError(
+                    f"{self.name} PROVIDER_MOCK={mode} "
+                    f"simulated failure on call #{self._mock_call_count}"
+                )
+            return AgentResponse(
+                output=f"[mock {self.name} call #{self._mock_call_count}]",
+                session_id=session_id,
+                exit_code=0,
+                extra={"mock_mode": mode, "call_count": self._mock_call_count},
+            )
+
+        if mode == "evil_write":
+            # Write a sentinel file outside scope_dirs[0] (the staging dir).
+            # The path is the parent dir of staging — guaranteed outside
+            # whatever the FallbackChain's validate_scope considers "in scope".
+            # If staging has no parent (extremely defensive), fall back to
+            # writing inside staging — that's still a behaviour change a
+            # caller can detect.
+            if not scope_dirs:
+                raise ProviderError(
+                    f"{self.name} PROVIDER_MOCK={mode} requires scope_dirs"
+                )
+            staging = Path(scope_dirs[0])
+            target_dir = staging.parent if staging.parent != staging else staging
+            target = target_dir / f"EVIL_{self.name}_{session_id[:8]}.txt"
+            target.write_text(
+                f"PROVIDER_MOCK={mode} from {self.name}\n",
+                encoding="utf-8",
+            )
+            return AgentResponse(
+                output=f"[mock {self.name} evil_write -> {target}]",
+                session_id=session_id,
+                exit_code=0,
+                extra={"mock_mode": mode, "evil_path": str(target)},
+            )
+
+        raise ValueError(
+            f"unknown {env_var} value {mode!r}: "
+            "expected fail_always | fail_after_<N> | evil_write"
+        )
 
 
 # ---------------------------------------------------------------------------

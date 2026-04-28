@@ -561,6 +561,54 @@ def cmd_goal_show(
 # ──────────────────────────────────────────────────────────────
 
 
+def cmd_agent_test(args: Any) -> None:
+    """P5 C37: invoke a single provider with a one-shot test prompt.
+
+    Used by operators to smoke-test a freshly-installed CLI (e.g. just
+    after `npm install gemini` or `pip install codex-cli`). Prints the
+    provider's stdout to terminal and exits with the provider's returncode.
+
+    Uses a fresh tempdir as the staging scope; subprocess cwd = tempdir.
+    Session id is a fresh UUID. PROVIDER_MOCK_<NAME> env hook (added by
+    later C37 step) still applies — operators can dry-run with
+    PROVIDER_MOCK_CLAUDE=fail_always to verify the env hook plumbing.
+    """
+    import tempfile
+    from Tooling.agent.provider import ProviderError
+    provider_name = args.provider
+    if provider_name == "claude":
+        from Tooling.agent.providers.claude import ClaudeProvider
+        provider = ClaudeProvider()
+    elif provider_name == "gemini":
+        from Tooling.agent.providers.gemini import GeminiProvider
+        provider = GeminiProvider()
+    elif provider_name == "codex":
+        from Tooling.agent.providers.codex import CodexProvider
+        provider = CodexProvider()
+    else:
+        print(f"error: unknown provider {provider_name!r}", file=sys.stderr)
+        sys.exit(1)
+
+    session = str(uuid.uuid4())
+    with tempfile.TemporaryDirectory(prefix="asterism_agent_test_") as tmp:
+        try:
+            response = provider.invoke(
+                args.model_tier, args.prompt, [tmp], session,
+            )
+        except ProviderError as exc:
+            print(f"agent test: {provider_name} ProviderError: {exc}",
+                  file=sys.stderr)
+            sys.exit(2)
+        print(f"agent test: {provider_name} (model={response.extra.get('model_id', '?')})")
+        print(f"  session_id: {session}")
+        print(f"  exit_code:  {response.exit_code}")
+        print("  output:")
+        # Indent output for readability
+        for line in response.output.splitlines() or [""]:
+            print(f"    {line}")
+        sys.exit(response.exit_code)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="asterism",
@@ -644,6 +692,36 @@ def build_parser() -> argparse.ArgumentParser:
     db_sub = p_db.add_subparsers(dest="db_command", required=True)
     db_sub.add_parser("recover", help="run CommitWriter.recover_scan")
 
+    # ── agent ─────────────────────────────────────────────────
+    # P5 C37: manual provider smoke test, e.g.
+    #   asterism agent test --provider claude --prompt "say hi"
+    # Sends a single prompt to one provider with a temporary staging dir
+    # as scope_dirs[0]; prints the response stdout. Used by operators to
+    # verify a freshly-installed CLI (gemini / codex) works before
+    # PROVIDER_MOCK fallback testing.
+    p_agent = sub.add_parser(
+        "agent", help="agent / provider utilities (P5)",
+    )
+    agent_sub = p_agent.add_subparsers(dest="agent_command", required=True)
+    p_test = agent_sub.add_parser(
+        "test", help="invoke a single provider with a test prompt",
+    )
+    p_test.add_argument(
+        "--provider", required=True,
+        choices=["claude", "gemini", "codex"],
+        help="which provider to invoke",
+    )
+    p_test.add_argument(
+        "--prompt", required=True, metavar="STR",
+        help="prompt text to send",
+    )
+    p_test.add_argument(
+        "--model-tier", default="sonnet",
+        choices=["haiku", "sonnet", "opus"],
+        metavar="TIER",
+        help="model tier (default: sonnet)",
+    )
+
     return parser
 
 
@@ -667,6 +745,9 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "db":
         if args.db_command == "recover":
             cmd_db_recover(args)
+    elif args.command == "agent":
+        if args.agent_command == "test":
+            cmd_agent_test(args)
 
 
 if __name__ == "__main__":

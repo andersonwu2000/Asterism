@@ -92,6 +92,11 @@ class ClaudeProvider(Provider):
         if not scope_dirs:
             raise ProviderError("scope_dirs must not be empty")
 
+        # P5 C37: PROVIDER_MOCK_CLAUDE env hook (test-only).
+        mock_resp = self._maybe_apply_mock(scope_dirs, session_id)
+        if mock_resp is not None:
+            return mock_resp
+
         model_id = self.resolve_model_id(model_tier)
         effective_cwd = cwd or scope_dirs[0]
 
