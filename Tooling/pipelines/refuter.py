@@ -125,7 +125,17 @@ class Refuter:
             return "(none)"
         try:
             ev = json.loads(ev_raw) if isinstance(ev_raw, str) else ev_raw
-        except (json.JSONDecodeError, TypeError):
+        except (json.JSONDecodeError, TypeError) as e:
+            # Loud surface — malformed evidence JSON would otherwise hide a
+            # Counterexample writer bug behind silent generic-path fallback.
+            # Mirrors _dedupe_against_existing timeout surface for parity
+            # (silent-failure red line, C20–C28 cumulative).
+            import sys
+            print(
+                f"[refuter._extract_witness_block] malformed evidence JSON "
+                f"for goal id={goal.get('id', '?')}: {e}; treated as no-witness",
+                file=sys.stderr,
+            )
             return "(none)"
         if not isinstance(ev, dict):
             return "(none)"
@@ -276,7 +286,6 @@ class Refuter:
         self,
         goal: dict,
         neg_file: dict,
-        pipeline_id: str,
     ) -> int:
         """Insert ¬G as new Goal; bidirectional twin_of UPDATE.
 
@@ -344,6 +353,16 @@ class Refuter:
         Two UPDATEs (¬G + G) wrapped in a begin_batch / finalize pair.
         No staging file write — ¬G's .lean is already on disk from prior
         commit. We do not modify that .lean file content.
+
+        Edge case (multi-G shared ¬G — caveat per C29 R2 LOW-2):
+        If two distinct conjectures G1 and G2 are α-equivalent but were not
+        merged at Backward.dedupe, both can dedupe-hit the same existing
+        ¬G. The second `_commit_dup(G2, existing_neg)` overwrites
+        `existing_neg.twin_of` from G1 to G2, breaking the bidirectional
+        1-1 invariant the spec assumes (architecture_pipelines.md §3:
+        "與 G 互設 twin_of"). C30 cascade then cannot reach G1 when ¬G is
+        proved. Strict fix (defensive single-direction update) deferred to
+        C30 cascade landing where multi-G semantics get pinned.
         """
         writer = CommitWriter(self.conn)
         ops: list[dict[str, Any]] = [
@@ -400,10 +419,16 @@ class Refuter:
           REFUTER_FORCE=succeed          → return success with no goal_id
               (test fixtures own the rows; P4 acceptance #1 enqueue test
               needs to assert pipeline outcome without writing rows).
-          REFUTER_FAST_PATH=1            → reserved for P4 acceptance #6
-              (Refuter→Builder fast path race). C29 acknowledges the env
-              name; behavior added when cascade lands (C30).
+          REFUTER_FAST_PATH=1            → **reserved name only** in C29.
+              Setting this env will RAISE NotImplementedError to avoid
+              silent ignore (silent-failure red line). Real fast-path
+              behavior lands with C30 cascade table extension.
         """
+        if os.environ.get("REFUTER_FAST_PATH") is not None:
+            raise NotImplementedError(
+                "REFUTER_FAST_PATH is reserved but not yet implemented; "
+                "ships with C30 cascade table extension."
+            )
         mock = os.environ.get("REFUTER_MOCK")
         if mock == "success_negation":
             return self._mock_success_negation(goal_id)
@@ -537,7 +562,7 @@ class Refuter:
                     deduped=True,
                 )
 
-            neg_id = self._commit_novel(goal, neg_file, pipeline_id)
+            neg_id = self._commit_novel(goal, neg_file)
             return RefuterResult(
                 outcome="success",
                 negation_goal_id=neg_id,

@@ -158,9 +158,17 @@ class TestEvidenceWitnessBlock:
         assert "Nat" in block
         assert "myPred" in block
 
-    def test_malformed_json_evidence_fallthrough(self, db, tmp_base):
+    def test_malformed_json_evidence_fallthrough(self, db, tmp_base, capsys):
+        """C29 R3 MED-1: malformed evidence JSON falls back to "(none)" but
+        ALSO surfaces to stderr (silent-failure red line, parity with
+        _dedupe_against_existing timeout surface)."""
         r = _make_refuter(db, base_dir=tmp_base)
-        assert r._extract_witness_block({"evidence": "{not json"}) == "(none)"
+        assert r._extract_witness_block(
+            {"id": 42, "evidence": "{not json"}
+        ) == "(none)"
+        captured = capsys.readouterr()
+        assert "[refuter._extract_witness_block]" in captured.err
+        assert "id=42" in captured.err
 
     def test_witness_missing_expr_returns_none(self, db, tmp_base):
         r = _make_refuter(db, base_dir=tmp_base)
@@ -328,7 +336,7 @@ class TestCommitNovel:
             "negation_slug": "neg_g_root",
             "negation_statement": "∃ n, ¬ P n",
             "staging_path": str(staging_path),
-        }, pipeline_id="pid_x")
+        })
 
         # ¬G goal exists with origin='refuter_negation', kind='theorem',
         # twin_of=G.id, status='open', commit_state='live'
@@ -359,7 +367,7 @@ class TestCommitNovel:
             "negation_slug": "neg_g",
             "negation_statement": "False",
             "staging_path": str(staging_path),
-        }, pipeline_id="pid_y")
+        })
         # staging moved
         assert not staging_path.exists()
         final = Path(tmp_base) / "Problems" / "P" / "Goals" / "neg_g.lean"
@@ -420,6 +428,15 @@ class TestRunHooks:
         monkeypatch.setenv("REFUTER_MOCK", "bogus")
         r = _make_refuter(db, base_dir=tmp_base)
         with pytest.raises(ValueError, match="unknown REFUTER_MOCK"):
+            r.run(goal_id=1)
+
+    def test_fast_path_env_raises(self, db, tmp_base, monkeypatch):
+        """C29 R3 LOW-3: REFUTER_FAST_PATH is reserved-name-only in C29;
+        setting it must raise NotImplementedError loudly rather than silent
+        ignore (silent-failure red line)."""
+        monkeypatch.setenv("REFUTER_FAST_PATH", "1")
+        r = _make_refuter(db, base_dir=tmp_base)
+        with pytest.raises(NotImplementedError, match="REFUTER_FAST_PATH"):
             r.run(goal_id=1)
 
     def test_mock_success_negation(self, db, tmp_base, monkeypatch):
