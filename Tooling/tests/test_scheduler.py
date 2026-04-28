@@ -335,7 +335,12 @@ class TestBackwardDispatch:
 
 
 class TestCascadeProved:
-    def test_goal_status_set_proved(self, db: sqlite3.Connection, tmp_path: Path) -> None:
+    def test_goal_status_set_proved(
+        self, db: sqlite3.Connection, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # PRINT_AXIOMS_MOCK=none: trust_set=[] (trivial proof) → cascade proceeds.
+        monkeypatch.setenv("PRINT_AXIOMS_MOCK", "none")
         strategy_lean = tmp_path / "strat.lean"
         strategy_lean.write_text("theorem t : True := by trivial", "utf-8")
         goal_lean = tmp_path / "goal.lean"
@@ -349,7 +354,11 @@ class TestCascadeProved:
         row = db.execute("SELECT status FROM goals WHERE id = ?", (goal_id,)).fetchone()
         assert row[0] == "proved"
 
-    def test_answer_data_written(self, db: sqlite3.Connection, tmp_path: Path) -> None:
+    def test_answer_data_written(
+        self, db: sqlite3.Connection, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("PRINT_AXIOMS_MOCK", "none")
         strategy_lean = tmp_path / "strat.lean"
         strategy_lean.write_text("theorem t : True := by trivial", "utf-8")
         goal_lean = tmp_path / "goal.lean"
@@ -365,7 +374,11 @@ class TestCascadeProved:
         assert answer["type"] == "classical"
         assert answer["lean_path"] == str(strategy_lean)
 
-    def test_cascade_event_emitted(self, db: sqlite3.Connection, tmp_path: Path) -> None:
+    def test_cascade_event_emitted(
+        self, db: sqlite3.Connection, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("PRINT_AXIOMS_MOCK", "none")
         strategy_lean = tmp_path / "strat.lean"
         strategy_lean.write_text("theorem t : True := by trivial", "utf-8")
         goal_lean = tmp_path / "goal.lean"
@@ -424,9 +437,11 @@ class TestCascadeExhausted:
 
 class TestFatalHalt:
     def test_cascade_sql_error_emits_fatal_event(
-        self, db: sqlite3.Connection, tmp_path: Path
+        self, db: sqlite3.Connection, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """SQL error in _update_goal_proved → fatal event written to events table."""
+        monkeypatch.setenv("PRINT_AXIOMS_MOCK", "none")
         strategy_lean = tmp_path / "strat.lean"
         strategy_lean.write_text("theorem t : True := by trivial", "utf-8")
         goal_lean = tmp_path / "goal.lean"
@@ -450,9 +465,11 @@ class TestFatalHalt:
         assert "UNIQUE constraint failed" in payload["error"]
 
     def test_cascade_sql_error_raises_fatal_error(
-        self, db: sqlite3.Connection, tmp_path: Path
+        self, db: sqlite3.Connection, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """SQL error in cascade → FatalError is raised (not swallowed)."""
+        monkeypatch.setenv("PRINT_AXIOMS_MOCK", "none")
         strategy_lean = tmp_path / "strat.lean"
         strategy_lean.write_text("theorem t : True := by trivial", "utf-8")
         goal_lean = tmp_path / "goal.lean"
@@ -481,11 +498,14 @@ class TestFatalHalt:
 
         assert exc_info.value.code == 1
 
-    def test_cascade_fatal_end_to_end(self, tmp_path: Path) -> None:
+    def test_cascade_fatal_end_to_end(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """Acceptance #11 end-to-end (R2 #4):
         queue → _pop_queue → _dispatch (Builder mock proved) → _cascade
         (real SQL fail) → fatal event in DB + SystemExit(1) + DB 現場保留.
         """
+        monkeypatch.setenv("PRINT_AXIOMS_MOCK", "none")
         db_path = tmp_path / "test.db"
 
         # Pre-populate DB before reactor.startup() opens its own connection.
@@ -1020,20 +1040,83 @@ class TestTrustSetAndAccept:
         assert event is not None
         assert json.loads(event[0]).get("rule") == "accept_rule_rejected"
 
-    def test_trust_set_null_when_lake_unavailable(
+    def test_trust_set_construction_failure_strict_is_fail_shut(
         self,
         db: sqlite3.Connection,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """lake not available (OSError) → trust_set=null but goal is still proved."""
+        """R3 fix MED-1: print_axioms failure on the P2 daemon path
+        (strict_trust_set=True, reached via _cascade_builder) → fail-shut.
+
+        Goal must NOT be marked proved. Cascade emits a
+        'trust_set_construction_failed' event AND a pause control_signal
+        so the daemon halts spawning new pipelines for human review.
+        Silent fallback to `trust_set=None + still proved` was the
+        silent-PASS pattern flagged by R2 audit.
+        """
         monkeypatch.delenv("PRINT_AXIOMS_MOCK", raising=False)
+
+        def _raise(*args, **kwargs):
+            raise RuntimeError("print_axioms('t') exit 1: stderr='unknown'")
+
+        monkeypatch.setattr("Tooling.scheduler.print_axioms", _raise)
+
         strategy_lean = tmp_path / "strat.lean"
         strategy_lean.write_text("theorem t : True := by trivial", "utf-8")
         goal_lean = tmp_path / "goal.lean"
         goal_lean.write_text("placeholder", "utf-8")
         goal_id, strategy_id = _make_rows(db, strategy_lean, goal_lean)
 
+        reactor = _make_reactor(db, tmp_path)
+        # Daemon path enters via _cascade_builder which sets strict_trust_set=True
+        reactor._cascade_builder(strategy_id, BuilderResult(outcome="proved"))
+
+        status = db.execute(
+            "SELECT status FROM goals WHERE id = ?", (goal_id,)
+        ).fetchone()[0]
+        assert status != "proved"
+
+        event = db.execute(
+            "SELECT payload FROM events WHERE kind = 'cascade'"
+        ).fetchone()
+        assert event is not None
+        assert json.loads(event[0]).get("rule") == "trust_set_construction_failed"
+
+        events: list = []
+        while not reactor._event_queue.empty():
+            events.append(reactor._event_queue.get_nowait())
+        assert ("control_signal", "pause") in events
+
+    def test_trust_set_construction_failure_lenient_silent_fallback(
+        self,
+        db: sqlite3.Connection,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """R3 fix MED-1: print_axioms failure on the P1 sync path
+        (strict_trust_set=False, reached via _dispatch / _cascade direct)
+        intentionally retains silent fallback for P1 acceptance compat.
+
+        P1 acceptance suite (test_phase1_acceptance.py) runs `--once` mode
+        with lake misconfigured; tests expect goals to still prove since P1
+        had no accept-rule contract. We honor that path WITHOUT re-introducing
+        silent-PASS in production (P2 daemon path is fail-shut, see test above).
+        """
+        monkeypatch.delenv("PRINT_AXIOMS_MOCK", raising=False)
+
+        def _raise(*args, **kwargs):
+            raise RuntimeError("print_axioms('t') exit 1: stderr='unknown'")
+
+        monkeypatch.setattr("Tooling.scheduler.print_axioms", _raise)
+
+        strategy_lean = tmp_path / "strat.lean"
+        strategy_lean.write_text("theorem t : True := by trivial", "utf-8")
+        goal_lean = tmp_path / "goal.lean"
+        goal_lean.write_text("placeholder", "utf-8")
+        goal_id, strategy_id = _make_rows(db, strategy_lean, goal_lean)
+
+        # P1 sync path: _cascade with default strict_trust_set=False
         _make_reactor(db, tmp_path)._cascade(
             strategy_id, BuilderResult(outcome="proved")
         )
@@ -1041,11 +1124,11 @@ class TestTrustSetAndAccept:
         status = db.execute(
             "SELECT status FROM goals WHERE id = ?", (goal_id,)
         ).fetchone()[0]
-        assert status == "proved"
+        assert status == "proved"  # P1 compat: still proved
         trust_raw = db.execute(
             "SELECT trust_set FROM goals WHERE id = ?", (goal_id,)
         ).fetchone()[0]
-        assert trust_raw is None
+        assert trust_raw is None  # trust_set null on lenient fallback
 
 
 # ---------------------------------------------------------------------------
@@ -1121,6 +1204,180 @@ class TestControlSignal:
 # ---------------------------------------------------------------------------
 # 17. Hook placeholder no-ops (step 1 / step 5)
 # ---------------------------------------------------------------------------
+
+
+class TestThreadFatalRouting:
+    def test_thread_unknown_kind_emits_fatal_event_to_queue(
+        self, tmp_path: Path
+    ) -> None:
+        """R3 HIGH-1: FatalError from _execute_task_with_conn → ('fatal', ...) on _event_queue.
+
+        Without this routing the daemon never halts — _execute_task_with_conn
+        raises FatalError for unsupported kinds, but R1 silently re-classified
+        it as BuilderResult(exhausted) and only wrote a DB event row, which
+        _handle_fatal_event never sees.
+        """
+        db_path = tmp_path / "test.db"
+        reactor = Reactor(str(db_path), ReactorConfig(base_dir=str(tmp_path)))
+        reactor.startup()
+        task = {"id": 1, "kind": "Refuter", "target_id": "1", "payload": None}
+        pid = "test-pid-1"
+        reactor._running[pid] = (task["target_id"], task["kind"])
+
+        # Run thread body directly (FatalError path)
+        reactor._run_pipeline_thread(pid, task)
+
+        events = []
+        while not reactor._event_queue.empty():
+            events.append(reactor._event_queue.get_nowait())
+
+        fatal_events = [e for e in events if e[0] == "fatal"]
+        assert len(fatal_events) >= 1
+        assert "Refuter" in fatal_events[0][1]
+        # FatalError path: pipeline_finished must NOT be emitted
+        assert not any(e[0] == "pipeline_finished" for e in events)
+
+    def test_thread_internal_exception_emits_fatal_and_pipeline_finished(
+        self, tmp_path: Path
+    ) -> None:
+        """R3 HIGH-1: non-FatalError Exception → ('fatal', ...) + pipeline_finished with typed result."""
+        db_path = tmp_path / "test.db"
+        reactor = Reactor(str(db_path), ReactorConfig(base_dir=str(tmp_path)))
+        reactor.startup()
+        task = {"id": 1, "kind": "Backward", "target_id": "1", "payload": None}
+        pid = "test-pid-2"
+        reactor._running[pid] = (task["target_id"], task["kind"])
+
+        with patch.object(
+            reactor,
+            "_execute_task_with_conn",
+            side_effect=ValueError("boom"),
+        ):
+            reactor._run_pipeline_thread(pid, task)
+
+        events = []
+        while not reactor._event_queue.empty():
+            events.append(reactor._event_queue.get_nowait())
+
+        assert any(e[0] == "fatal" and "boom" in e[1] for e in events)
+        # pipeline_finished should be emitted with typed BackwardResult
+        finished = [e for e in events if e[0] == "pipeline_finished"]
+        assert len(finished) == 1
+        assert finished[0][2].outcome == "exhausted"
+        assert isinstance(finished[0][2], BackwardResult)
+
+
+class TestAcceptRuleReject:
+    def test_accept_rule_reject_writes_dead_attempts_and_emits_pause(
+        self,
+        db: sqlite3.Connection,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """R3 HIGH-2: accept rule reject → dead_attempts INSERT + pause control_signal.
+
+        spec architecture.md line 480 + acceptance #7: rejected trust_set must
+        leave dead_attempts row + emit pause for human review (not just an
+        info-level cascade event).
+        """
+        monkeypatch.setenv("PRINT_AXIOMS_MOCK", "Classical.choice")
+        problems_dir = tmp_path / "Problems" / "example"
+        problems_dir.mkdir(parents=True)
+        (problems_dir / "META.md").write_text(
+            "---\nproblem_name: example\naxioms:\n  - propext\n---\n",
+            encoding="utf-8",
+        )
+        strategy_lean = tmp_path / "strat.lean"
+        strategy_lean.write_text("placeholder", "utf-8")
+        goal_lean = tmp_path / "goal.lean"
+        goal_lean.write_text("placeholder", "utf-8")
+        goal_id, strategy_id = _make_rows(db, strategy_lean, goal_lean)
+
+        # Pre-insert a Builder pipeline row so dead_attempts.pipeline_id FK resolves.
+        with db:
+            db.execute(
+                "INSERT INTO pipelines (id, kind, runtime, target_id, target_kind, "
+                "status, started_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("pid-test-rej", "Builder", "atomic", str(strategy_id),
+                 "Strategy", "running", "2026-01-01T00:00:00+00:00"),
+            )
+
+        config = ReactorConfig(base_dir=str(tmp_path))
+        reactor = Reactor(str(tmp_path / "test.db"), config)
+        reactor.conn = db
+        reactor._cascade(strategy_id, BuilderResult(outcome="proved"))
+
+        # Goal NOT proved
+        status = db.execute(
+            "SELECT status FROM goals WHERE id = ?", (goal_id,)
+        ).fetchone()[0]
+        assert status != "proved"
+
+        # dead_attempts row written with rejected axiom name in summary
+        row = db.execute(
+            "SELECT reason_summary, target_kind, pipeline_kind, outcome "
+            "FROM dead_attempts WHERE target_id = ?",
+            (str(goal_id),),
+        ).fetchone()
+        assert row is not None
+        assert "Classical.choice" in row[0]
+        assert row[1] == "Goal"
+        assert row[2] == "Builder"
+        assert row[3] == "trust_set_rejected"
+
+        # pause control_signal emitted to in-memory queue
+        events: list = []
+        while not reactor._event_queue.empty():
+            events.append(reactor._event_queue.get_nowait())
+        assert ("control_signal", "pause") in events
+
+
+class TestBFSCommitStateFilter:
+    def test_bfs_skips_pending_commit_state_goal(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """R3 MED-2: BFS Backward enqueue must filter commit_state='live'."""
+        lean = tmp_path / "pend.lean"
+        lean.write_text("placeholder", "utf-8")
+        now = "2026-01-01T00:00:00+00:00"
+        with db:
+            db.execute(
+                "INSERT INTO goals (problem, slug, lean_path, origin, kind, status, "
+                "commit_state, depth, created_at, updated_at) VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("ex", "pend_g", str(lean), "root", "theorem", "open", "pending",
+                 0, now, now),
+            )
+
+        reactor = _make_reactor(db, tmp_path)
+        reactor._bfs_enqueue_backward()
+
+        assert db.execute("SELECT count(*) FROM queue").fetchone()[0] == 0
+
+    def test_bfs_skips_pending_commit_state_strategy(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """R3 MED-2: BFS Builder enqueue must filter strategies.commit_state='live'."""
+        goal_id = _insert_open_goal(db, tmp_path, slug="pend_g_for_strat")
+        # Insert pending strategy (commit_state='pending')
+        lean = tmp_path / "pend_s.lean"
+        lean.write_text("placeholder", "utf-8")
+        now = "2026-01-01T00:00:00+00:00"
+        with db:
+            db.execute(
+                "INSERT INTO strategies (goal_id, lean_path, status, commit_state, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (goal_id, str(lean), "proposed", "pending", now),
+            )
+
+        reactor = _make_reactor(db, tmp_path)
+        reactor._bfs_enqueue_builder()
+
+        # No Builder enqueued for the pending strategy
+        count = db.execute(
+            "SELECT count(*) FROM queue WHERE kind = 'Builder'"
+        ).fetchone()[0]
+        assert count == 0
 
 
 class TestHookPlaceholders:

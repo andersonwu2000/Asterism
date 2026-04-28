@@ -140,7 +140,11 @@ class Reactor:
     # ------------------------------------------------------------------
 
     def _dispatch_event(self, event: tuple) -> None:
-        """Route in-process event tuple to the correct handler."""
+        """Route in-process event tuple to the correct handler.
+
+        R3 fix LOW-2: unknown kinds (other than spec'd task_checkpoint) emit
+        a diagnostic 'control_signal' event so silent drops are visible.
+        """
         kind = event[0]
         if kind == "pipeline_finished":
             _, task, result = event
@@ -151,10 +155,24 @@ class Reactor:
         elif kind == "fatal":
             _, error = event
             self._handle_fatal_event(error)
-        # task_checkpoint: P5 handler; P2 silently discards
+        elif kind == "task_checkpoint":
+            return  # P5 handler; P2 silently discards per spec
+        else:
+            # Unknown event kind: emit diagnostic instead of silent drop
+            self._emit_event(
+                "control_signal",
+                {"action": "unknown_event_kind", "kind": str(kind)},
+            )
 
     def _handle_pipeline_finished(self, task: dict, result: Any) -> None:
-        """6-step cycle on pipeline_finished: P2 runs steps 2/3/4/6."""
+        """6-step cycle on pipeline_finished: P2 runs steps 2/3/4/6.
+
+        NOTE (R2 finding F + R3 MED-3): step1 stale_filter is a P3 hook (no-op)
+        and _cancel_running_for_goal is also a no-op for thread runtime. P2
+        therefore accepts that a Backward/Builder running against an
+        already-proved Goal will complete and may commit orphan rows; this is
+        a documented spec compromise — see _cancel_running_for_goal docstring.
+        """
         self._run_step1_stale_filter(task, result)        # P3 hook — empty
         self._run_step2_cancellation(task, result)
         self._run_step3_cascade(task, result)
@@ -163,7 +181,11 @@ class Reactor:
         self._run_step6_spawn()
 
     def _handle_control_signal(self, action: str) -> None:
-        """control_signal handler: pause / resume / shutdown. set_budget留P7."""
+        """control_signal handler: pause / resume / shutdown. set_budget留P7.
+
+        R3 fix LOW-1: unknown actions emit a diagnostic event so P7 set_budget
+        or any future action that misses the dispatch table is observable.
+        """
         if action == "pause":
             with self._lock:
                 self._paused = True
@@ -175,6 +197,11 @@ class Reactor:
         elif action == "shutdown":
             self._emit_event("control_signal", {"action": "shutdown", "status": "applying"})
             self._do_shutdown()
+        else:
+            self._emit_event(
+                "control_signal",
+                {"action": "unknown_action", "received": str(action)},
+            )
 
     def _do_shutdown(self) -> None:
         """Shutdown: stop spawning, wait up to 5s for in-flight pipelines, then exit."""
@@ -241,9 +268,15 @@ class Reactor:
     # ------------------------------------------------------------------
 
     def _cascade_builder(self, strategy_id: int, result: BuilderResult) -> None:
-        """Cascade for Builder pipeline outcome."""
+        """Cascade for Builder pipeline outcome (P2 daemon path).
+
+        strict_trust_set=True so print_axioms failure → fail-shut. P1 sync
+        `_dispatch` calls _cascade(...) directly (strict=False) to preserve
+        Phase 1 acceptance compat where lake may misconfigure but goals still
+        prove (P1 had no accept-rule contract).
+        """
         if result.outcome == "proved":
-            self._cascade(strategy_id, result)
+            self._cascade(strategy_id, result, strict_trust_set=True)
         else:
             # non-proved: mark strategy dead, maybe shelve goal
             self._mark_strategy_dead(strategy_id)
@@ -322,31 +355,49 @@ class Reactor:
         self._pool.submit(self._run_pipeline_thread, pipeline_id, task)
 
     def _run_pipeline_thread(self, pipeline_id: str, task: dict) -> None:
-        """Thread body: own DB connection, run pipeline, emit pipeline_finished."""
+        """Thread body: own DB connection, run pipeline, emit pipeline_finished.
+
+        Exception routing (R3 fix HIGH-1):
+          - FatalError       → emit ("fatal", error) to in-memory _event_queue,
+                               do NOT emit pipeline_finished, return early.
+                               daemon's _handle_fatal_event halts the loop.
+          - other Exception  → emit ("fatal", ...) AND a correctly-typed default
+                               result (BuilderResult / BackwardResult) so cascade
+                               step3 still records the failure.
+          - inner DB write failure surfaces as best-effort write to in-memory
+                               event queue; we never silently swallow.
+        """
         conn = connect(self.db_path)
+        result: Any = None
         try:
-            result = self._execute_task_with_conn(task, conn)
-        except Exception as exc:
-            result = BuilderResult(outcome="exhausted")
             try:
-                with conn:
-                    conn.execute(
-                        "INSERT INTO events (kind, payload, ts) VALUES (?, ?, ?)",
-                        (
-                            "fatal",
-                            json.dumps(
-                                {"error": str(exc), "pipeline_id": pipeline_id}
-                            ),
-                            _now(),
-                        ),
-                    )
+                result = self._execute_task_with_conn(task, conn)
+            except FatalError as exc:
+                self._event_queue.put((
+                    "fatal",
+                    f"thread FatalError in {task.get('kind')!r}: {exc}",
+                ))
+                return  # do NOT emit pipeline_finished
+            except Exception as exc:
+                # Pipeline-internal failure: still emit fatal so daemon halts,
+                # but return a typed result so step3 cascade records it.
+                self._event_queue.put((
+                    "fatal",
+                    f"thread exc in {task.get('kind')!r}: {exc}",
+                ))
+                if task.get("kind") == "Backward":
+                    result = BackwardResult(outcome="exhausted")
+                else:
+                    result = BuilderResult(outcome="exhausted")
+        finally:
+            try:
+                conn.close()
             except Exception:
                 pass
-        finally:
-            conn.close()
             with self._lock:
                 self._running.pop(pipeline_id, None)
-            self._event_queue.put(("pipeline_finished", task, result))
+            if result is not None:
+                self._event_queue.put(("pipeline_finished", task, result))
 
     def _execute_task_with_conn(self, task: dict, conn: Any) -> Any:
         """Run Builder or Backward pipeline with provided connection."""
@@ -387,10 +438,15 @@ class Reactor:
         self._bfs_enqueue_builder()
 
     def _bfs_enqueue_backward(self) -> None:
-        """Enqueue Backward for open theorem Goals, respecting D_max + stop-gap."""
+        """Enqueue Backward for open theorem Goals, respecting D_max + stop-gap.
+
+        R3 fix MED-2: filter commit_state='live' so mid-commit pending rows
+        (impl §1.3 commit protocol) are not picked up before stage_file completes.
+        """
         rows = self.conn.execute(
             "SELECT id, depth FROM goals "
-            "WHERE status = 'open' AND kind = 'theorem'"
+            "WHERE status = 'open' AND kind = 'theorem' "
+            "AND commit_state = 'live'"
         ).fetchall()
         for goal_id, depth in rows:
             goal_id_s = str(goal_id)
@@ -418,10 +474,14 @@ class Reactor:
             self._enqueue_task("Backward", goal_id_s, priority=0)
 
     def _bfs_enqueue_builder(self) -> None:
-        """Enqueue Builder for proposed strategies whose sub-goals are all proved."""
+        """Enqueue Builder for proposed strategies whose sub-goals are all proved.
+
+        R3 fix MED-2: filter commit_state='live' so mid-commit strategies are
+        not picked up before stage_file completes.
+        """
         rows = self.conn.execute(
             "SELECT s.id, s.goal_id FROM strategies s "
-            "WHERE s.status = 'proposed'"
+            "WHERE s.status = 'proposed' AND s.commit_state = 'live'"
         ).fetchall()
         for strategy_id, goal_id in rows:
             strategy_id_s = str(strategy_id)
@@ -486,15 +546,21 @@ class Reactor:
     def _cancel_running_for_goal(self, goal_id: str) -> None:
         """Signal running pipelines for goal_id to stop.
 
-        P2: thread-pool workers finish their current pipeline naturally after
-        return — no SIGTERM needed for threads. Future subprocess-based pipelines
-        (P4+) will store OS PIDs here and SIGTERM them.
-        P4 will upgrade to verdict-aware whitelist when twin pipeline semantics
-        are introduced.
+        P2 spec deliberately accepts no-op for thread-pool runtime: threads
+        cannot be SIGTERM'd from outside, and step1_stale_filter is also a
+        P3 hook. The audit-recognized trade-off (R2 finding F):
+          - In-flight Backward / Builder against an already-proved Goal will
+            run to completion and may commit orphan sub-goals / strategies.
+          - BFS structural refill on the next tick MAY then dispatch Builder
+            against those orphans (also wasteful, but functionally harmless:
+            their sub-goals' parent Goal is already proved, so the cascade
+            will re-prove a duplicate trust_set into the same goals row).
+          - P3 step1_stale_filter takes over: it will gate
+            _handle_pipeline_finished by re-reading goal.status before cascade
+            so stale results are dropped pre-DB-write.
+          - P4 subprocess-based runtime can SIGTERM real OS processes here.
         """
-        # Thread pool pipelines complete their task and emit pipeline_finished;
-        # reactor drains the event. No OS-level signal required for threading.
-        pass  # P4 接: subprocess SIGTERM
+        return  # P3: step1_stale_filter; P4: subprocess SIGTERM
 
     # ------------------------------------------------------------------
     # Queue (P1 compat)
@@ -518,7 +584,14 @@ class Reactor:
     # ------------------------------------------------------------------
 
     def _dispatch(self, task: dict[str, Any]) -> None:
-        """Synchronous dispatch used by P1 _run_loop. P2 adds Backward kind."""
+        """Synchronous dispatch used by P1 _run_loop. P2 adds Backward kind.
+
+        Builder branch keeps P1 cascade-only behavior (no _mark_strategy_dead
+        on exhausted) to preserve `--once` semantics required by Phase 1
+        acceptance tests (TestAC7SorryDetection: exhausted Strategy leaves
+        Goal open). Daemon mode uses _cascade_builder which marks strategy
+        dead — that asymmetry is intentional and noted in audit R2 finding H.
+        """
         kind = task["kind"]
         if kind == "Builder":
             strategy_id = int(task["target_id"])
@@ -549,7 +622,13 @@ class Reactor:
     # Cascade (P1 + P2 trust set + strategy succeeded)
     # ------------------------------------------------------------------
 
-    def _cascade(self, strategy_id: int, result: BuilderResult) -> None:
+    def _cascade(
+        self,
+        strategy_id: int,
+        result: BuilderResult,
+        *,
+        strict_trust_set: bool = False,
+    ) -> None:
         """Builder proved cascade: trust set + accept rule + goal proved.
 
         P1 trigger: BuilderResult.outcome=='proved'. P2 additionally:
@@ -558,6 +637,14 @@ class Reactor:
           - Load allowed axioms from Problems/<problem>/META.md
           - Accept rule check; skip if META.md missing (test environments)
           - Write trust_set JSON to goals.trust_set
+
+        strict_trust_set (R3 fix MED-1):
+          - True (P2 daemon, called via _cascade_builder): RuntimeError from
+            print_axioms triggers fail-shut (do NOT mark proved + emit pause).
+          - False (P1 sync `--once`, called via _dispatch): RuntimeError +
+            OSError fall through silently to trust_set=None + still proved.
+            Preserves Phase 1 acceptance compat — P1 had no accept-rule
+            contract and tests run with misconfigured lake.
         """
         if result.outcome != "proved":
             return
@@ -601,10 +688,36 @@ class Reactor:
                                 "rejected_axioms": rejected,
                             },
                         )
+                        # R3 fix HIGH-2: spec architecture.md line 480 +
+                        # acceptance #7 — write dead_attempts + emit pause
+                        # control_signal so the reactor pauses for human review.
+                        self._record_accept_reject_dead_attempt(
+                            goal_id, strategy_id, rejected
+                        )
+                        self._event_queue.put(("control_signal", "pause"))
                 except MetaError:
                     pass  # No META.md → skip accept rule (test environments)
-            except (RuntimeError, OSError):
-                trust_set_json = None  # lake not available → proceed without trust set
+            except (RuntimeError, OSError) as exc:
+                # R3 fix MED-1: trust_set construction failure routing.
+                # strict_trust_set=True (P2 daemon path): impl §5.3 字面
+                #   "proved 前必驗" → fail-shut. emit cascade warning + pause.
+                # strict_trust_set=False (P1 sync path): silent fallback to
+                #   trust_set=None + still proved. P1 had no accept-rule
+                #   contract; phase 1 acceptance suite relies on this.
+                if strict_trust_set:
+                    should_prove = False
+                    self._emit_event(
+                        "cascade",
+                        {
+                            "strategy_id": strategy_id,
+                            "goal_id": goal_id,
+                            "rule": "trust_set_construction_failed",
+                            "error": str(exc),
+                        },
+                    )
+                    self._event_queue.put(("control_signal", "pause"))
+                else:
+                    trust_set_json = None
 
         if not should_prove:
             return
@@ -640,6 +753,58 @@ class Reactor:
                 "UPDATE goals SET status = 'proved', answer_data = ?, "
                 "trust_set = ?, status_changed_at = ? WHERE id = ?",
                 (answer_data, trust_set_json, _now(), goal_id),
+            )
+
+    def _record_accept_reject_dead_attempt(
+        self,
+        goal_id: int,
+        strategy_id: int,
+        rejected_axioms: list[str],
+    ) -> None:
+        """Insert dead_attempts row recording an accept-rule rejection.
+
+        Spec (architecture.md line 480 + acceptance #7): when trust_set fails
+        the accept rule, write `dead_attempts` row recording 'trust_set rejected:
+        <違規 entries>'. dead_attempts.pipeline_id is FK→pipelines(id), so we
+        look up the most recent Builder pipeline that produced this strategy's
+        proof; if missing (defensive), we emit a warning event but do NOT
+        silently skip — silent skip would re-introduce the silent-PASS pattern.
+        """
+        pipeline_row = self.conn.execute(
+            "SELECT id FROM pipelines WHERE target_id = ? AND kind = 'Builder' "
+            "ORDER BY started_at DESC LIMIT 1",
+            (str(strategy_id),),
+        ).fetchone()
+        if pipeline_row is None:
+            # Defensive: no Builder pipeline found. Emit a warning event so the
+            # rejection is still observable in the audit log even though the
+            # dead_attempts FK can't be satisfied.
+            self._emit_event(
+                "cascade",
+                {
+                    "goal_id": goal_id,
+                    "strategy_id": strategy_id,
+                    "rule": "accept_rule_rejected_no_pipeline_id",
+                    "rejected_axioms": rejected_axioms,
+                },
+            )
+            return
+        pipeline_id = pipeline_row[0]
+        reason = f"trust_set rejected: {', '.join(rejected_axioms)}"
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO dead_attempts (target_id, target_kind, pipeline_id, "
+                "pipeline_kind, outcome, reason_summary, ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(goal_id),
+                    "Goal",
+                    pipeline_id,
+                    "Builder",
+                    "trust_set_rejected",
+                    reason,
+                    _now(),
+                ),
             )
 
     # ------------------------------------------------------------------
