@@ -6,7 +6,7 @@
 
 **C19 R1 — P3 spike batch (spike-008/009/010/011)**
 
-Hash: `（待 commit）`
+Hash: `70d1c54`
 
 ### 改動摘要
 
