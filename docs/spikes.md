@@ -1184,3 +1184,253 @@ P5.C36 fallback chain `[claude, gemini, codex]` schema 是 single-chain（spec p
 6. **Asterism prompt template 為 model-agnostic baseline**——當前 docs/prompts/{backward,refuter,builder_tactic_llm}.md 三檔對所有 provider 共用、不分叉 per-provider variants（P5 不做、P5.x patch 視 demo 結果決定）
 
 ---
+
+### spike-021 lake build Library 子模組速度
+
+**Phase**: P6 開工前必跑
+**Owner**: orchestrator
+**環境**: best-effort（無真實 Library/ 子模組可量、Library/Theorems/proved.lean 等檔 P6 才寫）
+**狀態**: done
+
+> **Caveat（best-effort）**：本 spike 無實 Library/ 子模組可 build。以下分析基於 (a) spike-001/006 lake env lean warm/cold cache 數據外推 (b) spec impl §3.1 字面要求 + (c) Library promotion 寫入 frequency 推估。**真實量化** 留 P6.C46 真實 Demo Problem A/B 跨 Problem 跑通時 backfill。
+
+**問題**：
+P6 Library promotion 在每次 root Goal 證成時 append 一行到 `Library/Theorems/proved.lean` 並跑 `lake build` verify（impl §3.1 字面要求 「lake build verify；fail → revert」）。需估：
+(a) lake build 整個 Library 子模組所需 wall-clock（cold vs warm cache）
+(b) build 失敗的 revert 路徑時間成本
+(c) 是否需要 incremental build（只 build 改動的 entry）vs 全 rebuild
+
+**輸入**：
+- spike-001 / spike-006 已驗 `lake env lean <single>` 成本（warm cache ~22s 含 Mathlib import；cold cache ~75s/single）
+- impl §3.1 字面：「`Library/Theorems/proved.lean` 對每筆 entry append `theorem <problem>.<slug> := <fully-qualified-source-name>` re-export 行」
+- 假設 P6 demo Problem A + Problem B 共 ~5 root theorem entries
+
+**結果（best-effort 設計分析）**：
+
+**`lake build` Library 子模組成本估算**：
+- `Library/Theorems/proved.lean` 是純 re-export 檔、每個 theorem 一行 `theorem <problem>.<slug> := <fully-qualified-source-name>`、不含實 proof body
+- elab 成本 ≈ N × (resolve theorem name + type-check rfl) ≈ N × 0.05s（pure re-export 語法樹很淺）
+- 加 `lake build` overhead（build cache resolve / dep graph walk）≈ 5-10s warm cache、~30s cold cache
+- 5 entries warm cache：~5-10s + 5 × 0.05 ≈ 5-10s（dominated by lake startup）
+- 5 entries cold cache：~30s + 5 × 0.05 ≈ 30s
+- 即便 N=50 entries 也 < 13s warm（線性 scaling 不顯著、lake 啟動成本 dominate）
+
+**Build 失敗 revert 成本**：
+- impl §3.1 「fail → revert（刪 append + DELETE row + 父 Goal status 退 attempting + dead_attempts）」字面為 4 步 atomic 動作
+- 4 步皆為 SQL UPDATE / DELETE + file truncate（最後一行）、~10ms total
+- revert 時不重 build（只回滾 DB + 檔案末行）→ revert 成本 << build 成本
+
+**Incremental vs full rebuild**：
+- `lake build` 自帶 incremental（依 modules 改動偵測 stale + 只重 build 改動）；P6 不需自己加 logic
+- 但 `Library/Theorems/proved.lean` 整檔每次 append 都 invalidate `proved.olean`，所以「append + lake build」必 rebuild proved.olean 一次（5-10s warm）
+- N entries promotion 累積 wall-clock ≈ N × 5-10s warm（每 entry promotion 跑一次 lake build）→ P6 demo N=5 ≈ 25-50s 總 promotion 開銷
+
+**對 P6 設計的影響**：
+1. **lake build verify per promotion 在 wall-clock budget 內可接受**：5-10s/entry warm cache、5 entries demo ≈ 25-50s（vs 整個 P6 demo budget 30 min 內 < 3% 開銷）
+2. **revert 路徑 << build 成本、無需特別優化**：失敗時 4 步 SQL+file 動作 ~10ms、不重 build
+3. **無需 incremental promotion 設計**：lake 自帶 incremental + P6 demo N=5 規模、累積開銷在預算內
+4. **Cold cache 風險點**：N=50 entries cold cache ~25 min、首次跑 P6 demo（無 olean cache）會有 perceptible 啟動成本；建議 P6 demo bash 起手 `lake build` 一次預熱再跑 promotion
+
+**決策 D-21-1**：
+1. **每 promotion 跑一次 `lake build` verify**——對齊 impl §3.1 字面、N=5 demo 開銷可接受
+2. **無 incremental promotion 設計**——lake 自帶夠用
+3. **revert 路徑採 spec 字面 4 步**（刪 append + DELETE row + Goal status 退 + dead_attempts）；不重 build
+4. **P6 demo bash 起手預熱**：`asterism run --once` 或顯式 `lake build` 跑一次再 trigger promotion、避免 cold cache 串到第一個 entry promotion
+5. **真實量化 backfill 時機**：P6.C46 Demo Problem A + Problem B 跨 Problem import demo 真跑時、收 wall-clock + olean cache hit metrics、回填本段
+
+---
+
+### spike-022 fcntl on Windows
+
+**Phase**: P6 開工前必跑
+**Owner**: orchestrator
+**環境**: Windows 11 / Python 3.12.0 / sqlite 3.42.0
+**狀態**: done
+
+**問題**：
+P6 兩個 file-locking 觸發點：
+(a) `Library/Theorems/proved.lean` append 跨 reactor 並發保護（impl §3.1「file lock：fcntl on Unix、sqlite advisory lock 跨 OS」字面）
+(b) `schedulers` table liveness 啟動時防雙實例 (impl §6 + P1 schema schedulers.last_heartbeat)
+Windows Python 無 `fcntl` module、需替代。Decision: 用哪個 primitive (msvcrt.locking / portalocker / sqlite advisory)？
+
+**輸入**：
+Fixture `Tooling/tests/fixtures/spikes/spike_022_windows_lock.py`：
+- probe Python `import fcntl` on Windows
+- probe `msvcrt.locking` availability + 真跑 NB lock + unlock cycle on tempfile
+- probe `sqlite3 BEGIN EXCLUSIVE` 對第二 connection 是否 block
+
+**結果（real test on Windows 11）**：
+
+```
+platform: Windows 11
+python:   (3, 12, 0)
+
+fcntl:               {available: False, error: No module named 'fcntl'}
+msvcrt.locking:      {available: True, lock_works: True}
+sqlite BEGIN EXCLUSIVE:
+                     {available: True,
+                      exclusive_blocks_other_connection: True,
+                      error_msg: 'database is locked',
+                      sqlite_version: 3.42.0}
+```
+
+三條 primitive 結論：
+1. **`fcntl` 在 Windows 不可用** — `import fcntl` raise ImportError（Python 3.12.0 stdlib 標準行為、跨 minor version 一致）
+2. **`msvcrt.locking` 可用 + 真跑 OK**：`msvcrt.LK_NBLCK` (non-blocking lock) + `msvcrt.LK_UNLCK` 對 tempfile 完整 lock+unlock cycle 通過、無 OSError。**限制**：region-level 鎖（指定 byte range）、不是 whole-file；對 `proved.lean` append 場景需 lock from current EOF 到 append 後 EOF（複雜）
+3. **`sqlite3 BEGIN EXCLUSIVE` 跨 OS 可用**：第二 connection 嘗試 `BEGIN EXCLUSIVE` raise `sqlite3.OperationalError: database is locked`、字面對齊 spec 「sqlite advisory lock 跨 OS」要求；無 platform-conditional code
+
+**對 P6 設計的影響**：
+1. **`Library/Theorems/proved.lean` append 採 SQLite advisory lock**：impl §3.1 字面已支援、無需 platform 分叉。具體 pattern：
+   ```python
+   with conn:  # SQLite BEGIN IMMEDIATE / EXCLUSIVE
+       conn.execute("INSERT INTO library_index ...")
+       # file append inside same SQL TX scope
+       with open("Library/Theorems/proved.lean", "a") as f:
+           f.write("theorem <problem>.<slug> := ...\n")
+   ```
+   SQLite advisory 含 INSERT 一起、file append 在 same SQL TX 內、第二 reactor 因 BEGIN 失敗而 retry。**不需 fcntl 也不需 msvcrt**
+2. **`schedulers` liveness 啟動 check 採 SQLite UPSERT + heartbeat**：P1 已建 schedulers.last_heartbeat、startup 時 INSERT (id=hostname+pid, last_heartbeat=now) ON CONFLICT UPDATE last_heartbeat=now WHERE last_heartbeat < now - 60s；race 透過 SQLite 寫入 atomicity 解決、無需 file lock
+3. **避開 msvcrt.locking 路徑**：region-level 鎖對「append-end-of-file」用例不直觀（需先 seek 取 EOF、lock from EOF 到 EOF+N）；SQLite advisory 抽象層次更高、不需手動 byte range
+4. **無 portalocker / 第三方 dependency**：spec 字面允許 sqlite advisory、stdlib only
+5. **真寫入 race protection 多一層保險**：spec 「first-write-wins + warning event」字面對齊 P6 設計；library_index UNIQUE constraint 命中既有 name → 接 ON CONFLICT 邏輯
+
+**決策 D-22-1**：
+1. **Cross-OS file locking 採 SQLite BEGIN EXCLUSIVE / IMMEDIATE 抽象層**——無 platform conditional、無第三方 dep
+2. **`Tooling/locks.py` 為 simple wrapper**：context manager `with library_lock(conn): ...`，內部 `conn.execute("BEGIN IMMEDIATE")` + `conn.commit()`；P6.C40 真實實作該 module
+3. **schedulers liveness check 採 UPSERT + 60s heartbeat 過期判斷**——同 SQLite atomicity 路徑
+4. **fcntl 路徑廢棄**：spec impl §3.1 「fcntl on Unix」字面段在 Python 多平台環境下不必要；P6.C40 實作時 directly 走 sqlite path、impl docstring 註明 fcntl 為「early design exploration、deferred to OS-level fallback if sqlite contention 真成 bottleneck（P7+）」
+5. **msvcrt.locking 為冷儲備**：若未來 P7+ 出現「file 須跨 process lock 但 SQLite 不在路徑」場景（罕見）、再回頭用 msvcrt（Windows）+ fcntl（POSIX）
+
+---
+
+### spike-023 跨 Problem import 行為
+
+**Phase**: P6 開工前必跑
+**Owner**: orchestrator
+**環境**: best-effort（無真實 Problems/A 與 Problems/B 兩個 Problem 跑驗、留 P6.C46 demo backfill）
+**狀態**: done
+
+> **Caveat（best-effort）**：本 spike 無實 multi-Problem demo 可跑、P5 結束時 Asterism 仍 single-Problem。以下分析基於 lake/Lean import 機制 + Asterism `Problems/<n>/` layout + spec impl §3.1 / §6.5 字面。**真實量化** 留 P6.C46 Demo Problem A → Problem B import 跑通時 backfill（lake build cross-Problem dep resolve wall-clock + import path semantics）。
+
+**問題**：
+P6 Multi-Problem 啟用後、Problem B 透過 `import Problems.A.Proved` 取用 A 的 lemma。需驗：
+(a) lake build 對跨 Problem import 的 dep resolution 行為
+(b) 兩 Problem 各自 META.md 不同 axioms（B.axioms ⊃ A.axioms 才合法）下 import 是否跑通
+(c) Problem A 的 olean cache 對 Problem B 的 build 是否被 reuse
+
+**輸入**：
+- Asterism Problems layout: `Problems/<n>/{META.md, Defs.lean, Root.lean, proved.lean}`
+- impl §3.1 「Library/Theorems/proved.lean: theorem <problem>.<slug> := <fully-qualified-source-name>」字面格式
+- impl §3.1 「per-Problem `Problems/<n>/proved.lean` re-export 該 Problem 內所有 origin 的 status='proved' Goal」
+- lake build dep graph resolve 機制（lake / Lake.lean 內建）
+- spec line 96-100 Demo bash: `import Problems.A.Proved`（Problem B 的 Defs.lean 內）
+
+**結果（best-effort 設計分析）**：
+
+**lake build 跨 Problem import 行為**：
+- Lake 把 Problems/A/, Problems/B/, Library/ 全視為單 lakefile 下的 Lean modules、`Problems.A.Proved` 是合法 module path
+- lake 自動 resolve `import Problems.A.Proved` → 找 `Problems/A/Proved.lean`（嚴 Lean 慣例 module name = file path）
+- A 先 build → 產 `.lake/build/lib/Problems/A/Proved.olean` → B build 時 lake 偵測 dep + reuse A 的 olean
+- 跨 Problem rebuild trigger：A 的 Proved.olean 改動 → B 的 Proved.olean stale + rebuild
+
+**META.md axiom 一致性檢查（impl §6.5 + §8.2）**：
+- 此 check 是 framework-level、不在 lake build 階段（P6 字面留 CLI 手動觸發 `asterism library check-deps`）
+- A.lemma 用了 axiom S_A、B import A.lemma → 框架要求 B.axioms ⊇ S_A 內 mathematical 層 axiom
+- Lean 自身**不**檢查跨 Problem axiom basis：lean elab 只查語法 + type 對齊、import 過去就過去；axiom basis 對齊是 framework discipline、走 #print axioms 比對
+- 不一致案例：A.axioms = {三公理 + Some_extra}, B.axioms = {三公理}, B import A.lemma_using_Some_extra → lake build pass、但 framework reject + emit alert
+- Spec line 38 字面：「reviewer 不要寫 lake plugin」——確認此 check 不掛 lake hook、純 CLI tool
+
+**Olean cache reuse 跨 Problem**：
+- Lake build 內建 olean cache reuse（同 lakefile 下、改動偵測 + incremental rebuild）
+- A 的 olean → B 的 build：reuse、無重 build A
+- Wall-clock 估：B build 含 Problem A.Proved import + Mathlib import ≈ warm cache ~22s（Mathlib dominate）；A 的 olean reuse 為毫秒級 overhead
+- Cold cache 場景（首次 multi-Problem demo）：A 完整 build ~75s + B 完整 build ~75s；但 A 的 build 結果在 B build 期間 reuse、總 wall-clock ~150s（不重複 import Mathlib elab、僅 link）
+
+**對 P6 設計的影響**：
+1. **lake / Lean 字面支援跨 Problem import**：`import Problems.A.Proved` 標準 lean module path、lake build 自動 dep resolve、無需 framework 額外設計
+2. **Olean cache 自動 reuse**：A → B build 無重複 elab Mathlib、warm cache 跨 Problem 開銷可接受（demo 30 min budget）
+3. **META.md axiom 一致性檢查為 framework-level、不掛 lake**：P6.C42 / C44 CLI `asterism library check-deps` 跑 `tools/check_axiom_coverage.lean` exe 比對；不寫 lake plugin（spec line 38 字面對齊）
+4. **跨 Problem rebuild trigger 自動**：A.Proved 改動 → B 的 stale 偵測 + rebuild、無需 framework 介入
+5. **Dependent build wall-clock 估**：Problem A + Problem B demo 跨 Problem 跑、warm cache 多 Mathlib ~22s + Problem A.olean 載入毫秒級 ≈ ~25s overhead；P6 demo 30 min budget 內無壓力
+
+**決策 D-23-1**：
+1. **跨 Problem import 走 standard lean module path**——`Problems.A.Proved` 字面格式對齊 spec line 100 Demo bash
+2. **lake / Lean 自帶 olean cache reuse**——P6 不寫額外 cache 邏輯
+3. **META.md axiom 一致性檢查為 CLI 手動 + 純 Lean exe**（P6.C42-C44 實作）、不掛 lake build hook（spec line 38-39 字面對齊）
+4. **真實量化 wall-clock backfill 時機**：P6.C46 Demo Problem A + Problem B 跨 Problem import 真跑時、收 build wall-clock metric 回填本段
+
+---
+
+### spike-024 跨 Problem theorem name 解析
+
+**Phase**: P6 開工前必跑
+**Owner**: orchestrator
+**環境**: best-effort（無實 multi-Problem 跑、留 P6.C41 Library promotion 真實實作 backfill）
+**狀態**: done
+
+> **Caveat（best-effort）**：本 spike 無實 cross-Problem theorem name resolve 跑驗、留 P6.C41 真實 Library promotion 實作時 backfill cross-Problem name conflict + namespace path 解析行為。
+
+**問題**：
+P6 `Library/Theorems/proved.lean` re-export 行字面格式：
+```
+theorem <problem>.<slug> := <fully-qualified-source-name>
+```
+impl §3.1 spec 字面 + Demo bash line 93 字面範例：`list_lemmas.append_nil_eq_self`。需驗：
+(a) `<fully-qualified-source-name>` 真實格式是什麼（lean elab 生 namespace path）
+(b) 兩 Problem 同 slug 衝突（`Problems.A.foo` vs `Problems.B.foo`）時 framework 如何 resolve
+(c) Lean 端 namespace + theorem path 對「`theorem A.foo := B.foo`」這類 alias 的解析行為
+
+**輸入**：
+- Asterism Goal `.lean` file 慣例：`Problems/<n>/Goals/<id>_<slug>/<slug>.lean` 含 `theorem <slug> : <statement> := by ...`
+- 不顯式設 namespace（Lean 預設 namespace = file 模組路徑、即 `Problems.<n>.Goals.<id>_<slug>.<slug>`）
+- spec line 93 Demo: `theorem list_lemmas.append_nil_eq_self := <source>` 是 user-facing alias name
+- Lean 4 namespace + theorem 路徑解析 (qualified name resolution)
+
+**結果（best-effort 設計分析）**：
+
+**Lean 4 elab 預設 namespace path**：
+- `Problems/<n>/Goals/<id>_<slug>/<slug>.lean` 內 `theorem <slug> : ...` 字面、無 explicit `namespace`、Lean 4 預設 namespace = file 路徑（駝峰 + dotted path）
+- Goal `.lean` file 內若 user 寫 `theorem add_zero_simple : ...` 不加 namespace prefix、qualified name 在 Lean 內為 `Problems.list_lemmas.Goals.<id>_add_zero_simple.add_zero_simple`（深 5 層 module path）
+- 對 P6 re-export 行 `theorem <problem>.<slug> := <source>`、`<source>` 必須是 `Problems.list_lemmas.Goals.<id>_add_zero_simple.add_zero_simple` 全路徑
+
+**字面長度估**：
+- `<source>` 長度 ≈ `Problems.<problem>.Goals.<id>_<slug>.<slug>` ≈ 40-80 chars per entry
+- `Library/Theorems/proved.lean` 每行：`theorem <problem>.<slug> := <40-80-char source>` ≈ ~80-120 chars total
+- 5 entries 總 file size ~600 bytes、無壓力
+
+**name conflict 跨 Problem 行為**：
+- `Library/Theorems/proved.lean` 用 `<problem>.<slug>` 作 re-export name、internally Lean parser 把這當作 namespace `<problem>` 內 theorem `<slug>`、無歧義（既然 `<problem>` 是 Problem name 必 unique）
+- 兩 Problem 同 slug `foo`：`Problems.A.foo` 跟 `Problems.B.foo` 在 Library 為 `theorem A.foo := <Problems.A...source>` 跟 `theorem B.foo := <Problems.B...source>`、兩條獨立 entry、無衝突
+- library_index `(layer, name)` composite PK 字面：layer='Theorems', name='A.foo' / 'B.foo' 各自 unique row、無 PK 衝突
+- impl §3.1 spec「first-write-wins + warning event」字面是針對「**同 layer + 同 name** 命中既有 entry」場景—— 兩 Problem 同 slug 因 `<problem>` 不同、不觸此 case；觸發 case 是 P6.x 之後同 Problem 重命名導致 cross-Problem 同 name（罕見）
+
+**namespace 命名建議**：
+- spec Demo bash 字面 `list_lemmas.append_nil_eq_self`、`<problem>.<slug>` 格式對齊 Lean 慣例 namespace dot path
+- 實作建議 P6.C41 Library promotion 寫 re-export 時、不需 explicit `namespace <problem>` block、直接 `theorem <problem>.<slug> := ...` 一行用 dotted name 即可—— Lean 4 接受 dotted theorem name as syntactic sugar for namespace + name
+- alternative pattern（更顯式）：
+  ```lean
+  namespace list_lemmas
+    theorem append_nil_eq_self := Problems.list_lemmas.Goals.42_append_nil_eq_self.append_nil_eq_self
+  end list_lemmas
+  ```
+  但 dotted single-line 更精簡、適合自動生成
+
+**對 P6 設計的影響**：
+1. **`<source>` 為 4-5 層 module path full qualified name**——自動生成需 walk goal `.lean` file path、字面格式 `Problems.<problem>.Goals.<id>_<slug>.<slug>`
+2. **dotted theorem name（無 explicit namespace block）為 promotion 寫入字面格式**——精簡、Lean 4 支援
+3. **跨 Problem 同 slug 不衝突**——`<problem>.<slug>` 字面包 problem name、library_index PK unique
+4. **first-write-wins + warning 觸發 case 罕見**——僅同 Problem 內 slug 重命名 corner case、P6.x 補
+5. **Promotion 寫入字面範本**：
+   ```python
+   re_export_line = f"theorem {goal.problem}.{goal.slug} := Problems.{goal.problem}.Goals.{goal.id}_{goal.slug}.{goal.slug}\n"
+   ```
+6. **真實 cross-Problem name resolution 行為 backfill**：P6.C41 Library promotion 真跑、第一條 entry 寫成 + lake build verify pass、回填本段「實測 lake build accepts dotted-name theorem alias」
+
+**決策 D-24-1**：
+1. **`<source>` 格式為 `Problems.<problem>.Goals.<id>_<slug>.<slug>` 5 層 dotted path**——對齊 Asterism Goal layout 字面
+2. **re-export 行採 dotted theorem name single-line 格式**——`theorem <problem>.<slug> := <source>`、無 explicit namespace block
+3. **library_index `(layer='Theorems', name='<problem>.<slug>')` composite PK**——天然解 cross-Problem 同 slug name
+4. **first-write-wins + warning event 對 same-Problem 重命名場景**——P6.x 補、不阻 P6 demo
+5. **真實 lake build accept dotted alias 行為**——P6.C41 真實 promotion 跑通時 backfill；若 Lean 4 syntax 不支援 dotted theorem alias inline、退而採 explicit namespace block format（impl 自動偵測 + fallback）
+
+---
