@@ -4,6 +4,66 @@
 
 ## Commit：
 
+**C44 R1 — CLI 擴 + per-Problem pause daemon hook + bypass startup**
+
+Hash: pending — P6 C44 R1: CLI extension cluster (problem / library / scheduler) + scheduler.py daemon hooks for per-Problem pause + bypass-startup-check.
+
+### 改動摘要
+
+- **Tooling/cli.py +470 行 / -8 行**: 新 7 subcommands — `problem list/pause/resume`, `library list/check-deps/reindex/audit`, `scheduler force-clear`. `goal add --imports CSV` flag (extra Lean imports prepended after `import Problems.<p>.Defs`)。`run --bypass-startup-check` flag (operator escape hatch when previous instance crashed without unregistering)。
+- **Tooling/scheduler.py +200 行**:
+  - `Reactor._paused_problems: set[str]` in-memory per-Problem pause set
+  - `_handle_control_signal` 接受 tuple `(action, problem)` for `problem_pause` / `problem_resume`
+  - `_poll_db_control_signals` forward 上述 actions as tuple
+  - `_pop_queue` rewrite — paused-set 非空時走 filtered scan path（priority order, LIMIT 200）跳過 paused Problem 的 row、留 row 在 queue 等 resume；fast-path 保留 single SELECT...LIMIT 1 在無 paused 情況
+  - `_task_problem_in_set` helper：Backward → goals.problem / Builder → strategies → goals.problem JOIN
+  - `ReactorConfig.bypass_startup_check` flag；`_register_scheduler` bypass branch DELETE 全 schedulers row + emit `startup_bypass` audit event
+- **Tooling/tests/test_cli_c44.py +400 行 / 29 tests**: parser 7 + problem list 6 + pause/resume 3 + library 5 + scheduler force-clear 4 + goal add imports 3 + run bypass 1。
+- **Tooling/tests/test_scheduler_c44.py +280 行 / 16 tests**: pop_queue paused filter 5 + handle_control_signal per-Problem 4 + poll_db_control_signals per-Problem 4 + bypass_startup_check 3。
+
+### CI
+
+834 → 879 pass (+45) / 30 skipped / 1 xfailed / 0 regression。
+
+### 範圍邊界
+
+- `library reindex` / `library audit` 留為 stub（明確訊息指 C45）— spec phase6_library.md ## In line 79 + line 38-39 字面要求 lake exe 與 migration 工具，two of them shipping with C45 `LIBRARY_BUILD_FAULT` env hook。
+- per-Problem pause 為 in-memory only；daemon 重啟不持久化。`problem list` 的「paused」 status 由 events 表重建（最近 applied event 為準），未持久化到 schedulers 行——足夠 P6 demo 用，重啟後 operator 重發 pause。
+- `_pop_queue` filtered scan 限 200 row ceiling — large queue 全 paused 時不致 burn spawn loop。
+
+### orchestrator 紀錄
+
+- C44 R1 規模中等（~870 行 net），hybrid Opus inline 完成。R2 audit 跑 fresh Opus subprocess 即可（C41 R2 變種高峰之後紅線監控 23 cycle）。
+- `git show --stat` 自驗 staged file vs commit message claim 已執行於 commit 前（per orchestrator note candidate #2）。
+
+---
+
+**Paused per user (compact prep) after C41 R3 commit `fb73a9a`.**
+
+P6 5/9 cycles done. P5 5/5 fully done. P4 6/6 fully done. CI 834 pass / 30 skipped / 1 xfailed (P3 baseline 569 → +265 tests, 0 regression).
+
+Latest cycle list (in chronological commit order):
+- C35 R1 `d930c8e` / R3 `f7818b8` (gemini provider)
+- C36 R1 `2e999f3` / R3 `0317dbd` (codex + chain wire)
+- C37 R1 `34b6a07` / R3 `a28fce7` (PROVIDER_MOCK + agent test CLI)
+- C38 R1 `ad1fca8` / R3 `3c565c6` (Milestone B acceptance)
+- C39 R1 `7c0d3cc` / R3 `ab3a085` (P6 spikes 021-024)
+- C40 R1 `2aa36ec` / R3 `2ccacfd` (locks + liveness)
+- C41 R1 `001e262` / R1.1 `8180a22` / R3 `fb73a9a` (Library promotion)
+- C42 R1 `2ba93eb` (META scan + check_deps)
+- C43 R1 `79e09cf` (library cache invalidation)
+
+Next cycle on resume = C44 R1 (CLI extensions: problem list/pause/resume + library list/check-deps/reindex/audit + scheduler force-clear + goal add --imports + --bypass-startup-check).
+
+silent-failure 紅線連 22 cycle 監控。8 個 R1 變種抓到 R3 全修。C41 R2 是單 cycle 變種數高峰（3 HIGH + 4 MED 全為紅線變種、auditor 建議 fresh Sonnet R3、實際 hybrid inline 完成）。
+
+orchestrator note candidates 新增：
+1. 「Executor R1 引 spec line / section 必 grep 驗」（C39/C40/C41 連續三 cycle spec citation drift）
+2. 「commit 前 `git show --stat HEAD` 自驗 staged file 與 commit message claim 一致」（C36 R1 + C41 R1 兩次 commit message 撒謊變種）
+3. 「hybrid Opus R1 對大型 cycle 變種率高、考慮 fresh Sonnet R3」（C41 R2 explicit 建議）
+
+---
+
 **C35 R1 — gemini provider implementation**
 
 Hash: `d930c8e` — P5 C35 R1: gemini provider implementation.

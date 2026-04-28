@@ -1,16 +1,26 @@
-"""Asterism CLI (P1+P2+P3).
+"""Asterism CLI (P1+P2+P3+P5+P6).
 
 Entry point: python -m Tooling.cli <subcommand> [args]
 
 Subcommands:
-  init  --problem <name>
-  goal  add     --problem P --slug S --kind K
-                (--spec STMT | --spec-file PATH | --leaf-strategy FILE)
-  goal  show    <GOAL_ID>
-  goal  unblock <GOAL_ID> (<pipeline_kind> | --all)   [P3 manual rescue]
-  run   [--once] [--daemon]                           [P2: daemon default]
-  stop  [--signal pause|resume|shutdown] [--all]      [P2 control IPC]
-  db    recover
+  init       --problem <name>
+  goal       add     --problem P --slug S --kind K
+                     (--spec STMT | --spec-file PATH | --leaf-strategy FILE)
+                     [--imports CSV]                     [P6 C44]
+  goal       show    <GOAL_ID>
+  goal       unblock <GOAL_ID> (<pipeline_kind> | --all)   [P3 manual rescue]
+  run        [--once] [--daemon] [--bypass-startup-check]   [P2 daemon default + P6 C44]
+  stop       [--signal pause|resume|shutdown] [--all]       [P2 control IPC]
+  db         recover
+  agent      test    --provider P --prompt STR              [P5]
+  problem    list                                            [P6 C44]
+  problem    pause   --problem NAME                         [P6 C44]
+  problem    resume  --problem NAME                         [P6 C44]
+  library    list                                            [P6 C44]
+  library    check-deps                                      [P6 C44]
+  library    reindex                                         [P6 C44 stub → C45]
+  library    audit                                           [P6 C44 stub]
+  scheduler  force-clear [--force]                           [P6 C44]
 """
 from __future__ import annotations
 
@@ -18,7 +28,7 @@ import argparse
 import json
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -182,9 +192,21 @@ def cmd_goal_add(
             # ── P2 --spec path: write theorem template, enqueue Backward ──
             goal_lean_path = base / real_goal_lean
             goal_lean_path.parent.mkdir(parents=True, exist_ok=True)
+            # P6 C44: --imports prepends extra import lines after the
+            # default `import Problems.<p>.Defs` so consumers can pull
+            # Library re-exports / cross-Problem deps without editing
+            # the .lean file by hand. Comma-separated, whitespace
+            # trimmed; empty entries dropped (operator typo tolerance).
+            imports_arg = getattr(args, "imports", None) or ""
+            extra_imports = [
+                imp.strip() for imp in imports_arg.split(",") if imp.strip()
+            ]
+            import_lines = [f"import Problems.{p}.Defs"]
+            import_lines.extend(f"import {imp}" for imp in extra_imports)
             template = (
-                f"import Problems.{p}.Defs\n\n"
-                f"theorem {slug} : {spec} := by sorry\n"
+                "\n".join(import_lines)
+                + "\n\n"
+                + f"theorem {slug} : {spec} := by sorry\n"
             )
             goal_lean_path.write_text(template, encoding="utf-8")
 
@@ -271,7 +293,8 @@ def cmd_run(
     """
     db = db_path or _DEFAULT_DB
     base = str(base_dir or _DEFAULT_BASE)
-    cfg = ReactorConfig(base_dir=base)
+    bypass = getattr(args, "bypass_startup_check", False)
+    cfg = ReactorConfig(base_dir=base, bypass_startup_check=bypass)
     reactor = Reactor(db, cfg)
     if getattr(args, "once", False):
         reactor.run()
@@ -561,6 +584,333 @@ def cmd_goal_show(
 # ──────────────────────────────────────────────────────────────
 
 
+# ──────────────────────────────────────────────────────────────
+# problem list / pause / resume (P6 C44)
+# ──────────────────────────────────────────────────────────────
+
+
+def cmd_problem_list(
+    args: Any,
+    db_path: Path | None = None,
+    base_dir: Path | None = None,
+) -> None:
+    """List discovered Problems with axiom set + counts + paused state.
+
+    Walks `Problems/*` via meta.scan_all_problems_with_errors so broken
+    META.md surfaces as a SKIPPED row instead of crashing the listing.
+    Pulls per-Problem goal/strategy counts from the DB. Paused state is
+    DB-derivable only when an active scheduler emits
+    `control_signal:problem_pause` events; the CLI walks the events
+    table for the most recent action per Problem.
+    """
+    from Tooling.meta import scan_all_problems_with_errors
+
+    db = db_path or _DEFAULT_DB
+    base = base_dir or _DEFAULT_BASE
+    successes, errors = scan_all_problems_with_errors(base)
+
+    conn = connect(db)
+    try:
+        init_schema(conn)
+
+        # Compute current paused-Problem set from event history. Walk
+        # control_signal events in chronological order; latest action
+        # wins per Problem. (Only daemon-applied events are kept; CLI-
+        # source pause events represent ops requests not necessarily
+        # acted on, so we filter on payload.status='applied'.)
+        paused: set[str] = set()
+        try:
+            event_rows = conn.execute(
+                "SELECT payload FROM events "
+                "WHERE kind = 'control_signal' "
+                "ORDER BY id ASC"
+            ).fetchall()
+        except Exception:
+            event_rows = []
+        for (payload_json,) in event_rows:
+            try:
+                pl = json.loads(payload_json) if payload_json else {}
+            except json.JSONDecodeError:
+                continue
+            action = pl.get("action")
+            problem = pl.get("problem")
+            status = pl.get("status")
+            if status != "applied" or not isinstance(problem, str):
+                continue
+            if action == "problem_pause":
+                paused.add(problem)
+            elif action == "problem_resume":
+                paused.discard(problem)
+
+        # Goal counts per Problem (use SQL aggregate).
+        rows = conn.execute(
+            "SELECT problem, status, COUNT(*) FROM goals "
+            "WHERE commit_state = 'live' "
+            "GROUP BY problem, status"
+        ).fetchall()
+        counts: dict[str, dict[str, int]] = {}
+        for prob, status, n in rows:
+            counts.setdefault(prob, {})[status] = n
+
+        if not successes and not errors:
+            print("no Problems found under Problems/ directory")
+            return
+
+        print(f"{'PROBLEM':<24} {'STATUS':<8} {'AXIOMS':<32} GOALS")
+        for name in sorted(successes):
+            meta = successes[name]
+            axiom_str = ",".join(sorted(meta.axioms))
+            if len(axiom_str) > 30:
+                axiom_str = axiom_str[:27] + "..."
+            status_tag = "paused" if name in paused else "active"
+            c = counts.get(name, {})
+            goal_str = (
+                f"open={c.get('open', 0)} proved={c.get('proved', 0)} "
+                f"shelved={c.get('shelved', 0)} refuted={c.get('refuted', 0)}"
+            )
+            print(f"{name:<24} {status_tag:<8} {axiom_str:<32} {goal_str}")
+        for name in sorted(errors):
+            err = errors[name]
+            print(f"{name:<24} {'SKIPPED':<8} (META.md error: {err})")
+    finally:
+        conn.close()
+
+
+def cmd_problem_pause(
+    args: Any,
+    db_path: Path | None = None,
+    base_dir: Path | None = None,
+) -> None:
+    """Emit a control_signal event so the running daemon adds the Problem
+    to its in-memory paused-set. Returns 0 even if no daemon is running
+    (the event row is the request; daemon-side state catches up on next
+    startup that polls events). Refuses unknown problem names by
+    cross-checking meta.scan_all_problems."""
+    from Tooling.meta import scan_all_problems
+
+    db = db_path or _DEFAULT_DB
+    base = base_dir or _DEFAULT_BASE
+    name = args.problem
+    known = scan_all_problems(base)
+    if name not in known:
+        print(
+            f"error: unknown problem {name!r} "
+            f"(known: {sorted(known) or 'none'})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    conn = connect(db)
+    try:
+        init_schema(conn)
+        payload = json.dumps(
+            {"action": "problem_pause", "source": "cli", "problem": name}
+        )
+        with conn:
+            conn.execute(
+                "INSERT INTO events (kind, payload, ts) VALUES (?, ?, ?)",
+                ("control_signal", payload, _now()),
+            )
+        print(f"problem pause: queued pause for {name!r}")
+    finally:
+        conn.close()
+
+
+def cmd_problem_resume(
+    args: Any,
+    db_path: Path | None = None,
+    base_dir: Path | None = None,
+) -> None:
+    """Symmetric of `cmd_problem_pause` — emits problem_resume."""
+    from Tooling.meta import scan_all_problems
+
+    db = db_path or _DEFAULT_DB
+    base = base_dir or _DEFAULT_BASE
+    name = args.problem
+    known = scan_all_problems(base)
+    if name not in known:
+        print(
+            f"error: unknown problem {name!r} "
+            f"(known: {sorted(known) or 'none'})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    conn = connect(db)
+    try:
+        init_schema(conn)
+        payload = json.dumps(
+            {"action": "problem_resume", "source": "cli", "problem": name}
+        )
+        with conn:
+            conn.execute(
+                "INSERT INTO events (kind, payload, ts) VALUES (?, ?, ?)",
+                ("control_signal", payload, _now()),
+            )
+        print(f"problem resume: queued resume for {name!r}")
+    finally:
+        conn.close()
+
+
+# ──────────────────────────────────────────────────────────────
+# library list / check-deps / reindex / audit (P6 C44)
+# ──────────────────────────────────────────────────────────────
+
+
+def cmd_library_list(
+    args: Any,
+    db_path: Path | None = None,
+) -> None:
+    """List library_index rows (layer, name, source goal, committed_at)."""
+    db = db_path or _DEFAULT_DB
+    conn = connect(db)
+    try:
+        init_schema(conn)
+        rows = conn.execute(
+            "SELECT layer, name, path, source_root_id, committed_at "
+            "FROM library_index ORDER BY layer, name"
+        ).fetchall()
+        if not rows:
+            print("library: no entries")
+            return
+        print(f"{'LAYER':<16} {'NAME':<40} {'SRC_GOAL':<8} COMMITTED_AT")
+        for layer, name, path, src_id, committed in rows:
+            src_str = f"G{src_id}" if src_id is not None else "-"
+            print(f"{layer:<16} {name:<40} {src_str:<8} {committed}")
+            print(f"  → {path}")
+    finally:
+        conn.close()
+
+
+def cmd_library_check_deps(
+    args: Any,
+    db_path: Path | None = None,
+    base_dir: Path | None = None,
+) -> None:
+    """Run check_axiom_coverage and surface violations + skipped Problems."""
+    from Tooling.library.check_deps import check_axiom_coverage
+
+    db = db_path or _DEFAULT_DB
+    base = base_dir or _DEFAULT_BASE
+    conn = connect(db)
+    try:
+        init_schema(conn)
+        result = check_axiom_coverage(conn, base)
+        print(
+            f"library check-deps: scanned {result.entries_checked} "
+            f"library entries × {result.n_problems} Problems"
+        )
+        if result.skipped_problems:
+            print(
+                f"  skipped problems: {sorted(result.skipped_problems)} "
+                "(broken META.md — fix and rerun)"
+            )
+        if not result.violations:
+            print("  no axiom-coverage violations")
+            return
+        print(f"  {len(result.violations)} violation(s):")
+        for v in result.violations:
+            print(
+                f"  - {v.consumer_problem} consumes {v.entry_name!r}"
+            )
+            print(f"      axioms_used:     {sorted(v.axioms_used)}")
+            print(f"      consumer_axioms: {sorted(v.consumer_axioms)}")
+            print(f"      missing:         {sorted(v.missing)}")
+        sys.exit(2)
+    finally:
+        conn.close()
+
+
+def cmd_library_reindex(args: Any, db_path: Path | None = None) -> None:
+    """C44 stub for the reindex migration; full impl lands in C45.
+
+    spec phase6_library.md ## In line 79 字面: 「Library reindex
+    migration（跑過 P4/P5 既有 json 補 INSERT library_index row）」.
+    Stub prints the planned scope so operators know what to expect.
+    """
+    print("library reindex: deferred to P6.C45")
+    print("  scope (planned):")
+    print("    - walk Library/Theorems/proved.lean lines")
+    print("    - walk per-Problem proved.lean files")
+    print("    - INSERT into library_index for any line not already indexed")
+    print("    - emit reconciliation event for entries pre-existing in DB")
+    print("  (stub: no rows touched in C44)")
+
+
+def cmd_library_audit(args: Any, db_path: Path | None = None) -> None:
+    """C44 stub for the lake-driven audit tool.
+
+    spec phase6_library.md ## In line 38-39 字面: 「reviewer 不要寫 lake
+    plugin」 + 「`tools/check_axiom_coverage.lean` Lean exe」. Real
+    audit binding requires the Lean exe + lake env (P6.C45 wiring).
+    """
+    print("library audit: deferred (Lean exe binding lands with C45)")
+    print("  for now use `library check-deps` (Python-side approximation)")
+
+
+# ──────────────────────────────────────────────────────────────
+# scheduler force-clear (P6 C44)
+# ──────────────────────────────────────────────────────────────
+
+
+def cmd_scheduler_force_clear(
+    args: Any,
+    db_path: Path | None = None,
+) -> None:
+    """DELETE schedulers rows so a new instance can register.
+
+    Without --force: refuses to delete rows whose last_heartbeat is within
+    HEARTBEAT_TTL_SEC (default 90s, per Reactor.HEARTBEAT_TTL_SEC). The
+    rationale is to make accidental clears impossible while a daemon is
+    actually live; --force overrides the check (operator's risk: if the
+    other daemon is alive, both will compete for the queue).
+    """
+    from Tooling.scheduler import Reactor
+
+    db = db_path or _DEFAULT_DB
+    conn = connect(db)
+    try:
+        init_schema(conn)
+        ttl = Reactor.HEARTBEAT_TTL_SEC
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=ttl)
+        ).isoformat()
+        rows = conn.execute(
+            "SELECT id, host, pid, started_at, last_heartbeat FROM schedulers"
+        ).fetchall()
+        if not rows:
+            print("scheduler force-clear: schedulers table empty (no-op)")
+            return
+
+        live = [r for r in rows if r[4] > cutoff]
+        force = getattr(args, "force", False)
+        if live and not force:
+            print(
+                f"error: refusing to clear: {len(live)} live scheduler "
+                f"row(s) (heartbeat within {ttl}s):",
+                file=sys.stderr,
+            )
+            for r in live:
+                print(
+                    f"  id={r[0]} host={r[1]} pid={r[2]} "
+                    f"last_heartbeat={r[4]}",
+                    file=sys.stderr,
+                )
+            print(
+                "  pass --force to override (only if you know the daemon "
+                "is actually dead).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        with conn:
+            cur = conn.execute("DELETE FROM schedulers")
+        print(
+            f"scheduler force-clear: deleted {cur.rowcount} row(s)"
+            + (f" ({len(live)} were live — --force used)" if live else "")
+        )
+    finally:
+        conn.close()
+
+
 def cmd_agent_test(args: Any) -> None:
     """P5 C37: invoke a single provider with a one-shot test prompt.
 
@@ -644,6 +994,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--leaf-strategy", default=None, dest="leaf_strategy", metavar="FILE",
         help="[P1 legacy] pre-written leaf strategy .lean file; enqueues Builder directly",
     )
+    p_add.add_argument(
+        "--imports", default=None, metavar="CSV",
+        help="[P6 C44] comma-separated extra Lean imports prepended after "
+             "`import Problems.<p>.Defs` in the generated theorem template "
+             "(e.g. \"Library.Theorems.proved,Problems.A.proved\")",
+    )
 
     p_show = goal_sub.add_parser("show", help="show goal status and strategies")
     p_show.add_argument("goal_id", metavar="GOAL_ID",
@@ -675,6 +1031,13 @@ def build_parser() -> argparse.ArgumentParser:
                        help="[P1 legacy] drain queue then exit (default: daemon mode)")
     p_run.add_argument("--daemon", action="store_true", default=False,
                        help="[P1 legacy alias; daemon is default since P2] no-op for forward-compat")
+    p_run.add_argument(
+        "--bypass-startup-check", action="store_true", default=False,
+        dest="bypass_startup_check",
+        help="[P6 C44] DELETE all schedulers rows (live or stale) before "
+             "registering. Operator escape hatch — emits a startup_bypass "
+             "control_signal event for audit trail.",
+    )
 
     # ── stop ──────────────────────────────────────────────────
     p_stop = sub.add_parser("stop", help="send control signal to running daemon")
@@ -723,6 +1086,64 @@ def build_parser() -> argparse.ArgumentParser:
         help="model tier (default: sonnet)",
     )
 
+    # ── problem (P6 C44) ──────────────────────────────────────
+    p_problem = sub.add_parser(
+        "problem", help="[P6 C44] multi-Problem listing + pause/resume",
+    )
+    problem_sub = p_problem.add_subparsers(dest="problem_command", required=True)
+
+    problem_sub.add_parser(
+        "list",
+        help="list Problems with axiom set + goal counts + paused state",
+    )
+
+    p_pause = problem_sub.add_parser(
+        "pause", help="pause spawning new pipelines for one Problem",
+    )
+    p_pause.add_argument("--problem", required=True, metavar="NAME")
+
+    p_resume = problem_sub.add_parser(
+        "resume", help="resume spawning for a previously paused Problem",
+    )
+    p_resume.add_argument("--problem", required=True, metavar="NAME")
+
+    # ── library (P6 C44) ──────────────────────────────────────
+    p_library = sub.add_parser(
+        "library",
+        help="[P6 C44] Library re-export inspection / cross-Problem deps check",
+    )
+    library_sub = p_library.add_subparsers(dest="library_command", required=True)
+
+    library_sub.add_parser(
+        "list", help="list library_index rows (layer, name, source goal)",
+    )
+    library_sub.add_parser(
+        "check-deps",
+        help="cross-Problem axiom-coverage check (Python-side; exit 2 on violations)",
+    )
+    library_sub.add_parser(
+        "reindex", help="[stub → C45] reindex migration for pre-P6 proved.lean files",
+    )
+    library_sub.add_parser(
+        "audit", help="[stub → C45] lake-driven library audit (Lean exe binding)",
+    )
+
+    # ── scheduler (P6 C44) ────────────────────────────────────
+    p_scheduler = sub.add_parser(
+        "scheduler", help="[P6 C44] scheduler liveness controls",
+    )
+    scheduler_sub = p_scheduler.add_subparsers(
+        dest="scheduler_command", required=True,
+    )
+    p_force_clear = scheduler_sub.add_parser(
+        "force-clear",
+        help="DELETE schedulers rows so a new instance can register",
+    )
+    p_force_clear.add_argument(
+        "--force", action="store_true", default=False,
+        help="override the live-row safety check (DELETE even if heartbeat fresh)",
+    )
+
     return parser
 
 
@@ -749,6 +1170,25 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "agent":
         if args.agent_command == "test":
             cmd_agent_test(args)
+    elif args.command == "problem":
+        if args.problem_command == "list":
+            cmd_problem_list(args)
+        elif args.problem_command == "pause":
+            cmd_problem_pause(args)
+        elif args.problem_command == "resume":
+            cmd_problem_resume(args)
+    elif args.command == "library":
+        if args.library_command == "list":
+            cmd_library_list(args)
+        elif args.library_command == "check-deps":
+            cmd_library_check_deps(args)
+        elif args.library_command == "reindex":
+            cmd_library_reindex(args)
+        elif args.library_command == "audit":
+            cmd_library_audit(args)
+    elif args.command == "scheduler":
+        if args.scheduler_command == "force-clear":
+            cmd_scheduler_force_clear(args)
 
 
 if __name__ == "__main__":

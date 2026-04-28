@@ -62,6 +62,14 @@ class ReactorConfig:
     n_block_after_failures: int = 5  # threshold consumed by failure_archive
                                       # (C24 persistent block; in-memory dict
                                       # removed in C25)
+    bypass_startup_check: bool = False  # P6 C44: when True, _register_scheduler
+                                          # DELETEs any pre-existing schedulers
+                                          # rows (live OR stale) before INSERT.
+                                          # Operator escape hatch for cases where
+                                          # a previous instance crashed without
+                                          # cleanup AND `scheduler force-clear`
+                                          # is not viable (e.g. cron-driven first
+                                          # boot). Logs a startup_bypass event.
 
 
 class Reactor:
@@ -82,6 +90,11 @@ class Reactor:
         self._shutdown_flag: bool = False
         self._scheduler_id: int | None = None
         self._last_seen_ctrl_id: int = 0
+        # P6 C44: per-Problem pause set. Updated by _handle_control_signal
+        # actions {problem_pause, problem_resume}; consulted in _pop_queue
+        # so paused-Problem tasks stay queued (re-spawn on resume). In-memory
+        # only — daemon restart resets to empty (operators re-issue pause).
+        self._paused_problems: set[str] = set()
 
     # ------------------------------------------------------------------
     # Startup
@@ -216,12 +229,43 @@ class Reactor:
         self._run_step5_strategist_trigger(task, result)  # P7 hook — empty
         self._run_step6_spawn()
 
-    def _handle_control_signal(self, action: str) -> None:
-        """control_signal handler: pause / resume / shutdown. set_budget留P7.
+    def _handle_control_signal(self, action: Any) -> None:
+        """control_signal handler: pause / resume / shutdown / problem_pause /
+        problem_resume. set_budget 留 P7.
+
+        Action shapes:
+          - str: legacy global pause/resume/shutdown.
+          - tuple[str, str]: per-Problem (action_name, problem_name) for
+            'problem_pause' / 'problem_resume' (P6 C44).
 
         R3 fix LOW-1: unknown actions emit a diagnostic event so P7 set_budget
         or any future action that misses the dispatch table is observable.
         """
+        if isinstance(action, tuple):
+            name, problem = action
+            if name == "problem_pause":
+                with self._lock:
+                    self._paused_problems.add(problem)
+                self._emit_event(
+                    "control_signal",
+                    {"action": "problem_pause", "problem": problem,
+                     "status": "applied"},
+                )
+                return
+            if name == "problem_resume":
+                with self._lock:
+                    self._paused_problems.discard(problem)
+                self._emit_event(
+                    "control_signal",
+                    {"action": "problem_resume", "problem": problem,
+                     "status": "applied"},
+                )
+                return
+            self._emit_event(
+                "control_signal",
+                {"action": "unknown_action", "received": str(action)},
+            )
+            return
         if action == "pause":
             with self._lock:
                 self._paused = True
@@ -278,36 +322,60 @@ class Reactor:
         here — operators run `asterism scheduler force-clear` (P6.C44)
         to clean them. Auto-delete on startup would mask crashes where
         a scheduler exited without _unregister_scheduler running.
+
+        P6 C44 `bypass_startup_check=True`: skip the live check AND
+        DELETE all existing schedulers rows before INSERT. Operator
+        escape hatch (logged via startup_bypass event for audit
+        trail).
         """
         now = _now()
         # Cutoff = now - TTL; ISO timestamps sort lexicographically.
         cutoff = (
             datetime.now(timezone.utc) - timedelta(seconds=self.HEARTBEAT_TTL_SEC)
         ).isoformat()
-        try:
-            live = self.conn.execute(
-                "SELECT id, host, pid, started_at, last_heartbeat "
-                "FROM schedulers WHERE last_heartbeat > ?",
-                (cutoff,),
-            ).fetchall()
-        except sqlite3.Error as exc:
-            self._event_queue.put(
-                ("fatal", f"_register_scheduler liveness query fail: {exc}")
-            )
-            raise FatalError(f"_register_scheduler fail: {exc}") from exc
 
-        if live:
-            details = ", ".join(
-                f"id={r[0]} host={r[1]} pid={r[2]} last_heartbeat={r[4]}"
-                for r in live
+        if self.config.bypass_startup_check:
+            try:
+                with self.conn:
+                    deleted = self.conn.execute(
+                        "DELETE FROM schedulers"
+                    ).rowcount
+            except sqlite3.Error as exc:
+                self._event_queue.put(
+                    ("fatal", f"_register_scheduler bypass DELETE fail: {exc}")
+                )
+                raise FatalError(f"_register_scheduler fail: {exc}") from exc
+            self._emit_event(
+                "control_signal",
+                {"action": "startup_bypass", "rows_cleared": deleted,
+                 "source": "register"},
             )
-            msg = (
-                f"scheduler already running ({len(live)} live row(s)): "
-                f"{details}. Run `asterism scheduler force-clear` to "
-                f"reset stale rows manually."
-            )
-            self._event_queue.put(("fatal", msg))
-            raise FatalError(msg)
+        else:
+            try:
+                live = self.conn.execute(
+                    "SELECT id, host, pid, started_at, last_heartbeat "
+                    "FROM schedulers WHERE last_heartbeat > ?",
+                    (cutoff,),
+                ).fetchall()
+            except sqlite3.Error as exc:
+                self._event_queue.put(
+                    ("fatal", f"_register_scheduler liveness query fail: {exc}")
+                )
+                raise FatalError(f"_register_scheduler fail: {exc}") from exc
+
+            if live:
+                details = ", ".join(
+                    f"id={r[0]} host={r[1]} pid={r[2]} last_heartbeat={r[4]}"
+                    for r in live
+                )
+                msg = (
+                    f"scheduler already running ({len(live)} live row(s)): "
+                    f"{details}. Run `asterism scheduler force-clear` to "
+                    f"reset stale rows manually, or pass "
+                    f"--bypass-startup-check to override."
+                )
+                self._event_queue.put(("fatal", msg))
+                raise FatalError(msg)
 
         try:
             with self.conn:
@@ -396,6 +464,15 @@ class Reactor:
             action = payload.get("action", "")
             if action in ("pause", "resume", "shutdown"):
                 self._event_queue.put(("control_signal", action))
+            elif action in ("problem_pause", "problem_resume"):
+                # P6 C44: per-Problem action carries the problem name in
+                # payload['problem']. Forward as tuple so _handle_control_signal
+                # routes to the per-Problem branch.
+                problem = payload.get("problem")
+                if isinstance(problem, str) and problem:
+                    self._event_queue.put(
+                        ("control_signal", (action, problem))
+                    )
 
     # ------------------------------------------------------------------
     # 6-step cycle steps (P2)
@@ -1074,17 +1151,83 @@ class Reactor:
     # ------------------------------------------------------------------
 
     def _pop_queue(self) -> dict[str, Any] | None:
-        """Pop highest-priority (then oldest) task. Returns None if empty."""
-        row = self.conn.execute(
+        """Pop highest-priority (then oldest) task. Returns None if empty.
+
+        P6 C44 per-Problem pause: skip rows whose target's Problem is in
+        self._paused_problems (re-queue stays — task is left in DB,
+        spawn loop short-circuits next tick after `problem_resume`).
+        Implementation walks queue in priority order until either an
+        unpaused task is found or the queue exhausts; paused-row cursor
+        position is via an in-memory `_skipped_q_ids` exclusion set so
+        the scan does not re-touch the same row repeatedly within one
+        spawn-loop iteration.
+        """
+        with self._lock:
+            paused = frozenset(self._paused_problems)
+        if not paused:
+            row = self.conn.execute(
+                "SELECT id, kind, target_id, payload FROM queue "
+                "ORDER BY priority DESC, id ASC LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return None
+            q_id, kind, target_id, payload = row
+            with self.conn:
+                self.conn.execute("DELETE FROM queue WHERE id = ?", (q_id,))
+            return {"id": q_id, "kind": kind, "target_id": target_id,
+                    "payload": payload}
+
+        # Filtered scan: skip rows whose Problem is paused.
+        # Walks queue in priority order; first hit wins. Bound results
+        # to a sane scan ceiling so a queue of 10k all-paused rows
+        # doesn't burn the spawn loop tick.
+        rows = self.conn.execute(
             "SELECT id, kind, target_id, payload FROM queue "
-            "ORDER BY priority DESC, id ASC LIMIT 1"
-        ).fetchone()
+            "ORDER BY priority DESC, id ASC LIMIT 200"
+        ).fetchall()
+        for q_id, kind, target_id, payload in rows:
+            if self._task_problem_in_set(kind, target_id, paused):
+                continue
+            with self.conn:
+                self.conn.execute("DELETE FROM queue WHERE id = ?", (q_id,))
+            return {"id": q_id, "kind": kind, "target_id": target_id,
+                    "payload": payload}
+        return None
+
+    def _task_problem_in_set(
+        self,
+        kind: str,
+        target_id: str,
+        paused: frozenset[str],
+    ) -> bool:
+        """Return True if `task`'s Problem is in `paused`.
+
+        Lookup table:
+          - Backward (target_id = goal_id) → goals.problem
+          - Builder (target_id = strategy_id) → strategies → goals.problem
+        Unknown kinds default to False (don't pause unknowns; visible via
+        _dispatch_event diagnostic path if mis-routed).
+        """
+        try:
+            tid = int(target_id)
+        except (TypeError, ValueError):
+            return False
+        if kind == "Backward":
+            row = self.conn.execute(
+                "SELECT problem FROM goals WHERE id = ?", (tid,)
+            ).fetchone()
+        elif kind == "Builder":
+            row = self.conn.execute(
+                "SELECT g.problem FROM strategies s "
+                "JOIN goals g ON g.id = s.goal_id "
+                "WHERE s.id = ?",
+                (tid,),
+            ).fetchone()
+        else:
+            return False
         if row is None:
-            return None
-        q_id, kind, target_id, payload = row
-        with self.conn:
-            self.conn.execute("DELETE FROM queue WHERE id = ?", (q_id,))
-        return {"id": q_id, "kind": kind, "target_id": target_id, "payload": payload}
+            return False
+        return row[0] in paused
 
     # ------------------------------------------------------------------
     # P1 synchronous dispatch (+ P2 Backward support)
