@@ -432,10 +432,21 @@ class Reactor:
                    when there are no sub-goals to wait on (leaf strategy);
                    when sub-goals exist, BFS in daemon mode handles cascade
                    upward after they are proved.
-        'exhausted' / 'unproductive': increment stop-gap failure count.
+        'exhausted' / 'unproductive': increment stop-gap failure count +
+                                       INSERT dead_attempts row + run
+                                       failure_archive checks (N=5 generic
+                                       and IH-trap special-case).
         """
         if result.outcome != "success":
             self._inc_failure_count(str(goal_id), "Backward")
+            self._record_backward_failure(goal_id, result.outcome)
+            # P3 C24: persistent blocked_pipelines via failure_archive.
+            from Tooling.stages.failure_archive import (
+                archive_check,
+                archive_ih_trap,
+            )
+            archive_check(self.conn, goal_id, "Backward")
+            archive_ih_trap(self.conn, goal_id, "Backward")
             return
         # Inline Builder enqueue for leaf-strategy success (no sub-goals).
         # Without this, sync mode never builds the new strategy.
@@ -446,6 +457,46 @@ class Reactor:
                     "VALUES (?, ?, ?, ?)",
                     ("Builder", str(result.strategy_id), 0, _now()),
                 )
+
+    def _record_backward_failure(self, goal_id: int, outcome: str) -> None:
+        """INSERT dead_attempts row for Backward exhausted/unproductive outcome.
+
+        Looks up the most recent Backward pipeline for this goal to satisfy
+        the dead_attempts.pipeline_id FK. If no pipeline row found
+        (defensive — Backward.run always inserts one), emit a cascade
+        warning and skip without raising (analogous to
+        _record_accept_reject_dead_attempt).
+        """
+        pipeline_row = self.conn.execute(
+            "SELECT id FROM pipelines WHERE target_id = ? AND kind = 'Backward' "
+            "ORDER BY started_at DESC LIMIT 1",
+            (str(goal_id),),
+        ).fetchone()
+        if pipeline_row is None:
+            self._emit_event(
+                "cascade",
+                {
+                    "goal_id": goal_id,
+                    "rule": "backward_failure_no_pipeline_id",
+                    "outcome": outcome,
+                },
+            )
+            return
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO dead_attempts (target_id, target_kind, pipeline_id, "
+                "pipeline_kind, outcome, reason_summary, ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(goal_id),
+                    "Goal",
+                    pipeline_row[0],
+                    "Backward",
+                    outcome,
+                    f"Backward outcome={outcome}",
+                    _now(),
+                ),
+            )
 
     # ------------------------------------------------------------------
     # Atomic pool: spawn from queue
@@ -589,10 +640,18 @@ class Reactor:
                     invalidate_for_goals_write(self.conn)
                 continue
             # Stop-gap: skip if Backward has failed n_block_after_failures times
+            # (in-memory; P3 C25 will remove this in favor of persistent
+            # goals.blocked_pipelines).
             if (
                 self._get_failure_count(goal_id_s, "Backward")
                 >= self.config.n_block_after_failures
             ):
+                continue
+            # P3 C24: persistent blocked_pipelines filter (impl §6.X /
+            # phase3_cache.md §In). Survives scheduler restart unlike
+            # in-memory _failure_count.
+            from Tooling.subsystems.blocked_pipelines import is_blocked
+            if is_blocked(self.conn, int(goal_id), "Backward"):
                 continue
             # Avoid duplicate dispatch
             if self._is_already_dispatched(goal_id_s, "Backward"):
@@ -616,6 +675,10 @@ class Reactor:
                 self._get_failure_count(str(goal_id), "Builder")
                 >= self.config.n_block_after_failures
             ):
+                continue
+            # P3 C24: persistent blocked_pipelines filter for Builder too.
+            from Tooling.subsystems.blocked_pipelines import is_blocked
+            if is_blocked(self.conn, int(goal_id), "Builder"):
                 continue
             if self._is_already_dispatched(strategy_id_s, "Builder"):
                 continue
