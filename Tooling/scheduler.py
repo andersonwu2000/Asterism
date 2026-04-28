@@ -47,6 +47,24 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _restore_goal_template(
+    goal_lean_path: Path,
+    problem: str,
+    slug: str,
+    statement: str,
+) -> None:
+    """P6.x patch 21: rewrite the goal .lean back to its `:= by sorry`
+    template so a forbidden-lemma rejection rolls back the leaf-bypass
+    overwrite. Next Backward attempt then has a clean canvas.
+    """
+    goal_lean_path.parent.mkdir(parents=True, exist_ok=True)
+    template = (
+        f"import Problems.{problem}.Defs\n\n"
+        f"theorem {slug} : {statement} := by sorry\n"
+    )
+    goal_lean_path.write_text(template, encoding="utf-8")
+
+
 class FatalError(Exception):
     """Unrecoverable cascade SQL failure. Causes reactor to exit(1)."""
 
@@ -1325,19 +1343,26 @@ class Reactor:
         if goal_row is not None:
             problem = goal_row[0]
             thm_name = Path(lean_path).stem
-            # P6.x patch 6: build module_path for print_axioms so it can
-            # `lake build` the .olean and import it before #print axioms.
-            # Module path mirrors filesystem layout with french-quote
-            # wrapping for numeric-prefix segments (spike-024 D-24-1 #6).
-            lean_dir = Path(lean_path).parent
-            id_segment = lean_dir.name  # e.g. "1_reverse_length"
-            if id_segment[:1].isdigit():
-                id_segment_lean = f"«{id_segment}»"
-            else:
-                id_segment_lean = id_segment
-            module_path = (
-                f"Problems.{problem}.Goals.{id_segment_lean}.{thm_name}"
-            )
+            # P6.x patch 22: with leaf-bypass strategies as separate files,
+            # `lean_path` here is the STRATEGY file path. Build module_path
+            # by walking the path from "Problems" down, applying the
+            # french-quote rule to numeric-prefix segments. This is the
+            # canonical module path of the proven theorem.
+            from pathlib import Path as _P
+            parts = list(_P(lean_path).parts)
+            try:
+                idx = parts.index("Problems")
+            except ValueError:
+                idx = 0
+            mod_segs: list[str] = []
+            for seg in parts[idx:]:
+                if seg.endswith(".lean"):
+                    seg = seg[:-5]
+                if seg[:1].isdigit():
+                    mod_segs.append(f"«{seg}»")
+                else:
+                    mod_segs.append(seg)
+            module_path = ".".join(mod_segs)
             try:
                 axioms = print_axioms(thm_name, self.config.base_dir,
                                       module_path=module_path)
@@ -1367,6 +1392,69 @@ class Reactor:
                             goal_id, strategy_id, rejected
                         )
                         self._event_queue.put(("control_signal", "pause"))
+
+                    # P6.x patch 21: per-Problem forbidden_lemmas blacklist.
+                    # Hard constraint enforced post-Builder. If the proof
+                    # references any blacklisted lemma name, reject the
+                    # proof (goal stays open) + record dead_attempts so
+                    # Backward's failure_replay surfaces the violation in
+                    # the next agent prompt.
+                    if accepted and meta.forbidden_lemmas:
+                        from Tooling.library.forbidden_check import (
+                            check_forbidden,
+                        )
+                        proof_path = (
+                            Path(self.config.base_dir) / lean_path
+                        )
+                        used_forbidden = check_forbidden(
+                            proof_path, meta.forbidden_lemmas,
+                        )
+                        if used_forbidden:
+                            should_prove = False
+                            self._emit_event(
+                                "cascade",
+                                {
+                                    "strategy_id": strategy_id,
+                                    "goal_id": goal_id,
+                                    "rule": "forbidden_lemma_used",
+                                    "violations": used_forbidden,
+                                },
+                            )
+                            self._record_forbidden_dead_attempt(
+                                goal_id, strategy_id, used_forbidden,
+                            )
+                            # Mark strategy dead so BFS re-enqueues
+                            # Backward — a fresh agent attempt sees the
+                            # forbidden_lemma_used dead_attempts entry
+                            # in failure_replay and steers around it.
+                            self._mark_strategy_dead(strategy_id)
+                            # `_mark_strategy_dead` shelves the goal when
+                            # all strategies are dead; for forbidden-lemma
+                            # rejections we want the goal to remain open
+                            # so BFS re-spawns Backward. Force-open here
+                            # to override the cancellation-driven shelve.
+                            # P6.x patch 22: we do NOT touch any .lean
+                            # files here — the strategy file (which
+                            # contains the rejected proof) stays put for
+                            # operator inspection; the goal file was
+                            # never modified to begin with.
+                            try:
+                                with self.conn:
+                                    self.conn.execute(
+                                        "UPDATE goals SET status = 'open',"
+                                        " status_changed_at = ? "
+                                        "WHERE id = ?",
+                                        (_now(), goal_id),
+                                    )
+                            except sqlite3.Error as exc:
+                                self._emit_event(
+                                    "cascade",
+                                    {
+                                        "goal_id": goal_id,
+                                        "rule": "forbidden_open_revert_fail",
+                                        "error": str(exc),
+                                    },
+                                )
                 except MetaError:
                     pass  # No META.md → skip accept rule (test environments)
             except (RuntimeError, OSError) as exc:
@@ -1659,6 +1747,64 @@ class Reactor:
                     pipeline_id,
                     "Builder",
                     "trust_set_rejected",
+                    reason,
+                    _now(),
+                ),
+            )
+
+    def _goal_question(self, goal_id: int) -> str | None:
+        """P6.x patch 21 helper: fetch goal.question for proof-template
+        regeneration when a forbidden_lemma rejection rolls back the
+        leaf-bypass overwrite."""
+        row = self.conn.execute(
+            "SELECT question FROM goals WHERE id = ?", (goal_id,),
+        ).fetchone()
+        return row[0] if row else None
+
+    def _record_forbidden_dead_attempt(
+        self,
+        goal_id: int,
+        strategy_id: int,
+        forbidden_used: list[str],
+    ) -> None:
+        """P6.x patch 21: insert dead_attempts row recording a
+        forbidden_lemmas blacklist violation.
+
+        Backward's failure_replay walks dead_attempts and surfaces the
+        reasons in the next agent prompt — when the proof named e.g.
+        Cardinal.mk_real on a Problem that lists it forbidden, the
+        next Backward attempt sees `forbidden_lemma_used: Cardinal.mk_real`
+        in DEAD_ATTEMPTS and steers around it.
+        """
+        pipeline_row = self.conn.execute(
+            "SELECT id FROM pipelines WHERE target_id = ? AND kind = 'Builder' "
+            "ORDER BY started_at DESC LIMIT 1",
+            (str(strategy_id),),
+        ).fetchone()
+        if pipeline_row is None:
+            self._emit_event(
+                "cascade",
+                {
+                    "goal_id": goal_id,
+                    "strategy_id": strategy_id,
+                    "rule": "forbidden_lemma_used_no_pipeline_id",
+                    "violations": forbidden_used,
+                },
+            )
+            return
+        pipeline_id = pipeline_row[0]
+        reason = f"forbidden_lemma_used: {', '.join(forbidden_used)}"
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO dead_attempts (target_id, target_kind, pipeline_id, "
+                "pipeline_kind, outcome, reason_summary, ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(goal_id),
+                    "Goal",
+                    pipeline_id,
+                    "Builder",
+                    "forbidden_lemma_used",
                     reason,
                     _now(),
                 ),

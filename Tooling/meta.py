@@ -24,6 +24,13 @@ class MetaConfig:
     problem_name: str | None = None
     axioms: frozenset[str] = field(default_factory=frozenset)
     models: dict[str, str] = field(default_factory=dict)
+    # P6.x patch 21: per-Problem blacklist of Mathlib (or any) theorem
+    # names whose presence in a proved theorem's source rejects the
+    # proof. Lets operators force the framework to surface decomposition
+    # for theorems that Mathlib already provides — without weakening the
+    # Backward prompt globally (the prompt is a soft constraint; this
+    # field is the hard one).
+    forbidden_lemmas: frozenset[str] = field(default_factory=frozenset)
 
 
 # ---------------------------------------------------------------------------
@@ -165,10 +172,17 @@ def parse_meta(problem_dir: str | Path) -> MetaConfig:
     models_raw = data.get("models", {})
     models: dict[str, str] = models_raw if isinstance(models_raw, dict) else {}
 
+    forbidden_raw = data.get("forbidden_lemmas", [])
+    forbidden_lemmas = (
+        frozenset(str(n) for n in forbidden_raw)
+        if isinstance(forbidden_raw, list) else frozenset()
+    )
+
     meta = MetaConfig(
         problem_name=data.get("problem_name"),
         axioms=axioms,
         models=models,
+        forbidden_lemmas=forbidden_lemmas,
     )
     validate_meta(meta)
     return meta

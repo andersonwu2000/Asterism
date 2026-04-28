@@ -119,31 +119,71 @@ class PromotionResult:
     lines_written: list[str] = field(default_factory=list)
 
 
+def _strategy_module_path(strategy_lean_path: str | Path) -> tuple[str, str]:
+    """P6.x patch 22: derive (module_path, theorem_full_name) for a
+    strategy file at `strategy_lean_path`. Both numeric-prefix and
+    underscore-prefix segments get french-quote wrapping when needed.
+
+    Example:
+      strategy_lean_path = .../Problems/foo/Goals/1_bar/_strategy_abc.lean
+      module_path = "Problems.foo.Goals.«1_bar»._strategy_abc"
+      theorem_full_name = "Problems.foo.Goals.«1_bar»._strategy_abc.bar"
+        (assuming the strategy declares `theorem bar` under its namespace
+         — caller composes the slug separately)
+    """
+    p = Path(strategy_lean_path)
+    # Find the "Problems" segment in the path. Convert all subsequent
+    # segments into module-path components, applying french-quote wrap to
+    # any segment that starts with a digit or underscore (Lean 4
+    # identifier rule).
+    parts = list(p.parts)
+    try:
+        idx = parts.index("Problems")
+    except ValueError:
+        # Fallback: assume the whole path is module-relative.
+        idx = 0
+    module_parts: list[str] = []
+    for seg in parts[idx:]:
+        if seg.endswith(".lean"):
+            seg = seg[:-5]
+        if seg[:1].isdigit():
+            module_parts.append(f"«{seg}»")
+        else:
+            module_parts.append(seg)
+    return ".".join(module_parts), ""
+
+
 def _re_export_line(goal: dict) -> str:
     """Format the re-export line per spike-024 D-24-1.
 
     Schema: `theorem <problem>.<slug> : <type> := <source>`
-    where source = `Problems.<problem>.Goals.<id_segment>.<slug>` and
-    `<id_segment>` is `<id>_<slug>` with french-quote wrapping when it
-    starts with a digit.
+    where source = the strategy module's qualified theorem name.
 
-    P6.x patch 5 (Round-2 演習):
-      - Lean 4 `theorem` requires explicit `: <type>` annotation; the
-        bare `:=` shorthand only applies to `def`.
-      - Numeric-prefix directory segments (`1_add_zero`) must be wrapped
-        in french quotes `«1_add_zero»` to be valid Lean identifiers
-        (spike-024 D-24-1 #6 fix).
+    P6.x patch 22: source comes from the succeeded strategy's file path
+    (not the goal file). Goal file stays `:= by sorry` until promotion;
+    the canonical proven artifact lives in the strategy file under a
+    strategy-specific namespace.
     """
     p = goal["problem"]
-    g_id = goal["id"]
     slug = goal["slug"]
     statement = goal.get("question") or "True"
-    id_segment = f"{g_id}_{slug}"
-    if id_segment[:1].isdigit():
-        id_segment_lean = f"«{id_segment}»"
+    strategy_path = goal.get("_strategy_lean_path")
+    if strategy_path:
+        module_path, _ = _strategy_module_path(strategy_path)
+        # The strategy file declares `theorem <slug>` under
+        # namespace == module_path, so theorem fully-qualified name
+        # equals `<module_path>.<slug>`.
+        source = f"{module_path}.{slug}"
     else:
-        id_segment_lean = id_segment
-    source = f"Problems.{p}.Goals.{id_segment_lean}.{slug}"
+        # Legacy path (pre-patch-22) — shouldn't happen post-22 but
+        # preserved for unit tests that hand-construct goal dicts.
+        g_id = goal["id"]
+        id_segment = f"{g_id}_{slug}"
+        if id_segment[:1].isdigit():
+            id_segment_lean = f"«{id_segment}»"
+        else:
+            id_segment_lean = id_segment
+        source = f"Problems.{p}.Goals.{id_segment_lean}.{slug}"
     return f"theorem {p}.{slug} : {statement} := {source}\n"
 
 
@@ -267,9 +307,14 @@ def _append_line(path: Path, line: str) -> None:
 
 
 def _import_line_for(goal: dict) -> str:
-    """P6.x patch 18: produce the `import Problems.<p>.Goals.<id_seg>.<slug>`
-    line that resolves the source theorem referenced by `_re_export_line`.
-    Mirrors the french-quote rule for numeric-prefix segments."""
+    """P6.x patch 18 + 22: import line that resolves the strategy module
+    referenced by `_re_export_line`. Source is the succeeded strategy
+    file's module path (not the goal file)."""
+    strategy_path = goal.get("_strategy_lean_path")
+    if strategy_path:
+        module_path, _ = _strategy_module_path(strategy_path)
+        return f"import {module_path}\n"
+    # Legacy fallback for pre-patch-22 callers.
     p = goal["problem"]
     g_id = goal["id"]
     slug = goal["slug"]
@@ -374,6 +419,24 @@ def promote_to_library(
         return result
     cols = [d[0] for d in cur.description]
     goal = dict(zip(cols, row))
+
+    # P6.x patch 22: re-export source is the SUCCEEDED strategy file (not
+    # the goal file — goal file stays `:= by sorry` until promotion lands).
+    # Pull the most recent succeeded strategy's lean_path; the strategy
+    # file's module path becomes the import target for proved.lean.
+    strat_row = conn.execute(
+        "SELECT lean_path FROM strategies "
+        "WHERE goal_id = ? AND status = 'succeeded' "
+        "ORDER BY id DESC LIMIT 1",
+        (goal_id,),
+    ).fetchone()
+    if strat_row is None:
+        result.skipped_reason = (
+            f"goal {goal_id}: no succeeded strategy — cannot derive "
+            "re-export source"
+        )
+        return result
+    goal["_strategy_lean_path"] = strat_row[0]
 
     line = _re_export_line(goal)
 

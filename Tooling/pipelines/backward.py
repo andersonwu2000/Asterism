@@ -774,56 +774,77 @@ class Backward:
         pipeline_id: str,
         staging_dir: str,
     ) -> int:
-        """P6.x patch 3: commit a leaf-path strategy with no subgoals.
+        """P6.x patch 3 + 22: commit a leaf-path strategy.
 
-        Writes the agent's proof directly into the goal file (overwriting
-        the `:= by sorry` template). The strategy row's `lean_path` points
-        at the goal file so Builder lake-builds the same canonical file
-        that proved.lean's re-export references — no double declaration of
-        the same theorem name in the same directory namespace.
+        Writes the agent's proof to a SEPARATE strategy file (sibling of
+        the goal file in the same directory) with a strategy-specific
+        namespace. The goal file is never touched — it stays at the
+        original `:= by sorry` template until promotion.
+
+        This avoids two concrete bugs that the inline-overwrite approach
+        had:
+          1. **Race vs Builder**: Builder runs `lake env lean <file>`
+             possibly concurrently with cascade post-checks. If post-
+             check rolls back the goal file, an in-flight Builder reads
+             a partial state.
+          2. **Rollback on forbidden_lemmas / accept-rule rejection**:
+             Restoring the `:= by sorry` template after a failed
+             post-verify is a destructive write that races with anything
+             else reading the goal file (proved.lean, sibling strategy
+             files, BFS).
+
+        Architecture: strategy file declares the theorem under its own
+        namespace `Problems.<p>.Goals.<id_seg>._strategy_<pid_short>`,
+        so it never collides with the goal-file namespace. promote_to_library
+        re-exports from the strategy module after all checks pass.
         """
-        # `lean_path` field on goal can have either forward or backslash
-        # separators; resolve through Path for cross-platform safety.
-        goal_lean_path = str(Path(self.config.base_dir) / goal["lean_path"])
         writer = CommitWriter(self.conn)
         goal_id = goal["id"]
         goal_slug = goal["slug"]
         statement = goal.get("question") or ""
         problem = goal["problem"]
 
-        # Stage the rewritten goal file: replace `:= by sorry` body with
-        # the agent's proof tactic. We rewrite the whole file rather than
-        # patching to keep the `import Problems.<p>.Defs` line + the
-        # canonical `theorem <slug> :` header.
-        # P6.x patch 18: wrap the theorem in a namespace matching the
-        # module path so the fully-qualified name `Problems.<p>.Goals.<id_seg>.<slug>`
-        # actually resolves after `import` from proved.lean. Without the
-        # namespace, the theorem is bare-named (`reverse_length`) and
-        # the re-export's qualified ref is unknown.
+        # Strategy-specific namespace — different from the goal-file
+        # namespace, so the strategy file never collides with the goal
+        # file when both live in the same directory.
         id_segment = f"{goal_id}_{goal_slug}"
         if id_segment[:1].isdigit():
             id_segment_lean = f"«{id_segment}»"
         else:
             id_segment_lean = id_segment
-        ns = f"Problems.{problem}.Goals.{id_segment_lean}"
+        pid_short = pipeline_id.replace("-", "_")[:16]
+        strategy_module_segment = f"_strategy_{pid_short}"
+        ns = (
+            f"Problems.{problem}.Goals."
+            f"{id_segment_lean}.{strategy_module_segment}"
+        )
+
         proven_content = (
             f"import Problems.{problem}.Defs\n\n"
             f"namespace {ns}\n\n"
             f"theorem {goal_slug} : {statement} := {proof}\n\n"
             f"end {ns}\n"
         )
+
         Path(staging_dir).mkdir(parents=True, exist_ok=True)
         leaf_staging = str(
-            Path(staging_dir) / f"_leaf_{pipeline_id}_{goal_slug}.lean"
+            Path(staging_dir) / f"{strategy_module_segment}.lean"
         )
         Path(leaf_staging).write_text(proven_content, encoding="utf-8")
+
+        # Strategy file lives in the goal directory (a sibling of the
+        # goal file). Same parent dir so the module hierarchy lines up.
+        goal_dir = Path(self.config.base_dir) / Path(
+            goal["lean_path"]
+        ).parent
+        strategy_lean_path = str(goal_dir / f"{strategy_module_segment}.lean")
 
         ops = [{
             "table": "strategies",
             "op": "insert",
             "data": {
                 "goal_id": goal_id,
-                "lean_path": goal_lean_path,
+                "lean_path": strategy_lean_path,
                 "status": "proposed",
                 "created_by": pipeline_id,
                 "parent_subgoal_max_similarity": 0.0,
@@ -832,9 +853,8 @@ class Backward:
         ids = writer.begin_batch(ops)
         strategy_id = ids[0]
 
-        # stage_file overwrites; the goal file's `:= by sorry` template
-        # gets replaced with the proven version atomically.
-        writer.stage_file(leaf_staging, goal_lean_path)
+        goal_dir.mkdir(parents=True, exist_ok=True)
+        writer.stage_file(leaf_staging, strategy_lean_path)
         writer.finalize("strategies", strategy_id, {})
 
         # Enqueue Builder for the strategy.
