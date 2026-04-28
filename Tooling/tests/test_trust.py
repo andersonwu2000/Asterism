@@ -60,7 +60,9 @@ class TestPrintAxiomsSubprocess:
         monkeypatch.delenv("PRINT_AXIOMS_MOCK", raising=False)
 
         fake_result = MagicMock()
+        fake_result.returncode = 0
         fake_result.stdout = "'Nat.add_comm' does not depend on any axioms"
+        fake_result.stderr = ""
 
         with patch("subprocess.run", return_value=fake_result) as mock_run:
             print_axioms("Nat.add_comm", "/some/cwd")
@@ -76,6 +78,38 @@ class TestPrintAxiomsSubprocess:
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=[], timeout=60)):
             with pytest.raises(RuntimeError, match="timed out"):
                 print_axioms("slow_thm", "/cwd")
+
+    def test_nonzero_returncode_raises(self, monkeypatch):
+        """Reject silent-PASS: lake error / unknown identifier must not parse to []."""
+        monkeypatch.delenv("PRINT_AXIOMS_MOCK", raising=False)
+        fake_result = MagicMock()
+        fake_result.returncode = 1
+        fake_result.stdout = ""
+        fake_result.stderr = "error: unknown identifier 'NonExistent.thm'"
+        with patch("subprocess.run", return_value=fake_result):
+            with pytest.raises(RuntimeError, match="exit 1"):
+                print_axioms("NonExistent.thm", "/cwd")
+
+    def test_nonzero_returncode_includes_stderr(self, monkeypatch):
+        """Stderr context propagated into RuntimeError message."""
+        monkeypatch.delenv("PRINT_AXIOMS_MOCK", raising=False)
+        fake_result = MagicMock()
+        fake_result.returncode = 2
+        fake_result.stdout = ""
+        fake_result.stderr = "lake: build failed"
+        with patch("subprocess.run", return_value=fake_result):
+            with pytest.raises(RuntimeError, match="lake: build failed"):
+                print_axioms("foo", "/cwd")
+
+    def test_zero_returncode_no_brackets_returns_empty(self, monkeypatch):
+        """rc=0 + 'does not depend on any axioms' is a legitimate trivial proof."""
+        monkeypatch.delenv("PRINT_AXIOMS_MOCK", raising=False)
+        fake_result = MagicMock()
+        fake_result.returncode = 0
+        fake_result.stdout = "'Nat.add_zero' does not depend on any axioms"
+        fake_result.stderr = ""
+        with patch("subprocess.run", return_value=fake_result):
+            assert print_axioms("Nat.add_zero", "/cwd") == []
 
 
 # ---------------------------------------------------------------------------

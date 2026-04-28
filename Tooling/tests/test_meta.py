@@ -152,6 +152,38 @@ class TestParseMetaErrors:
         with pytest.raises(MetaError, match="no YAML frontmatter"):
             parse_meta(tmp_path)
 
+    def test_parse_meta_raises_on_missing_axioms(self, tmp_path):
+        """Spec §5.0 字面：parse_meta 在缺 axioms 時直接 raise（單階段 gate）."""
+        _write_meta(tmp_path, """\
+            ---
+            problem_name: foo
+            ---
+        """)
+        with pytest.raises(MetaError, match="axioms"):
+            parse_meta(tmp_path)
+
+    def test_parse_meta_raises_on_empty_axioms_list(self, tmp_path):
+        """axioms 宣告為空 block → parse_meta raise（不該 silently 拿 empty frozenset）."""
+        _write_meta(tmp_path, """\
+            ---
+            problem_name: foo
+            axioms:
+            ---
+        """)
+        with pytest.raises(MetaError, match="axioms"):
+            parse_meta(tmp_path)
+
+    def test_parse_meta_raises_on_inline_list(self, tmp_path):
+        """Inline list `axioms: [a, b]` 不該被沉默變空、要顯式報格式錯."""
+        _write_meta(tmp_path, """\
+            ---
+            problem_name: foo
+            axioms: [propext, Quot.sound]
+            ---
+        """)
+        with pytest.raises(MetaError, match="block list"):
+            parse_meta(tmp_path)
+
 
 # ---------------------------------------------------------------------------
 # validate_meta

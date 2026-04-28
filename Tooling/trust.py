@@ -62,6 +62,15 @@ def print_axioms(theorem_name: str, cwd: str) -> list[str]:
             f"print_axioms timed out for '{theorem_name}' after {_TIMEOUT}s"
         )
 
+    # Reject silent-failure path: lake build error / unknown identifier / toolchain
+    # missing all surface as rc != 0.  Without this, an empty stdout would parse
+    # to [] and check_accept_rule would vacuously accept the Goal as proved.
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"print_axioms('{theorem_name}') exit {result.returncode}: "
+            f"stderr={result.stderr[:500].strip()!r}"
+        )
+
     return _parse_print_axioms_output(result.stdout)
 
 

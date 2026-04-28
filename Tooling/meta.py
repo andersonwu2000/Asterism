@@ -132,10 +132,14 @@ def _parse_yaml_simple(yaml_text: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def parse_meta(problem_dir: str | Path) -> MetaConfig:
-    """Parse META.md YAML frontmatter from *problem_dir*.
+    """Parse + validate META.md YAML frontmatter from *problem_dir*.
 
-    Raises MetaError if META.md is missing or has no valid frontmatter.
-    Does NOT raise on missing axioms — call validate_meta() for that check.
+    Per impl §5.0: 未宣告 axioms → META.md 解析失敗、scheduler 拒絕載入。
+    parse_meta is a single-stage gate; it raises MetaError on:
+      - missing file
+      - no frontmatter delimiters
+      - axioms field declared as inline list (unsupported by minimal parser)
+      - axioms field missing or empty (delegated to validate_meta)
     """
     path = Path(problem_dir) / "META.md"
     if not path.exists():
@@ -148,24 +152,34 @@ def parse_meta(problem_dir: str | Path) -> MetaConfig:
 
     data = _parse_yaml_simple(fm)
 
+    # Reject inline-list / quoted-string forms with an explicit message rather
+    # than silently producing an empty frozenset and surfacing as "axioms missing".
     axioms_raw = data.get("axioms", [])
+    if axioms_raw and not isinstance(axioms_raw, list):
+        raise MetaError(
+            "axioms field must be a YAML block list (one '- name' per line); "
+            f"inline lists / scalars are not supported: got {axioms_raw!r}"
+        )
     axioms = frozenset(str(a) for a in axioms_raw) if isinstance(axioms_raw, list) else frozenset()
 
     models_raw = data.get("models", {})
     models: dict[str, str] = models_raw if isinstance(models_raw, dict) else {}
 
-    return MetaConfig(
+    meta = MetaConfig(
         problem_name=data.get("problem_name"),
         axioms=axioms,
         models=models,
     )
+    validate_meta(meta)
+    return meta
 
 
 def validate_meta(meta: MetaConfig) -> None:
     """Raise MetaError if *meta* is invalid.
 
     Currently enforces: axioms field must declare at least one axiom.
-    Scheduler calls this before accepting a Problem for scheduling.
+    Exposed as a standalone API for programmatic test fixtures; parse_meta
+    calls this internally to enforce single-stage failure per spec §5.0.
     """
     if not meta.axioms:
         raise MetaError(
