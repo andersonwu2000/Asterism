@@ -27,21 +27,50 @@ import re
 from pathlib import Path
 
 
+def _entry_to_pattern(entry: str) -> "re.Pattern[str]":
+    """Compile a forbidden_lemmas entry into a regex.
+
+    Two modes:
+      - Exact name (no `*`): word-boundary match. `Cardinal.mk_real`
+        catches `Cardinal.mk_real` but not `Cardinal.mk_realInfinite`
+        and not `Real.uncountable_univ` either way (separate identifier).
+      - Glob (contains `*`): each `*` becomes `[\\w.]*` (zero or more
+        identifier / dot characters). Lets operators block whole
+        Mathlib subtrees:
+            `Cardinal.*` → catches `Cardinal.mk_real`, `Cardinal.aleph0`,
+                            `Cardinal.SubMul.foo`, ...
+            `Real.uncountable*` → catches `Real.uncountable`,
+                            `Real.uncountable_univ`, `Real.uncountableSubmodule`
+            `Mathlib.SetTheory.Cardinal.*` → catches the full prefix
+                            (only useful when proof file uses fully-
+                            qualified names; bare `Cardinal.*` is the
+                            common Lean style)
+    """
+    if "*" in entry:
+        parts = entry.split("*")
+        body = r"[\w.]*".join(re.escape(p) for p in parts)
+    else:
+        body = re.escape(entry)
+    # Look-around for Lean-style dotted identifier boundary: dot does
+    # NOT count as a word break, so we treat dotted paths as contiguous.
+    return re.compile(r"(?<![\w.])" + body + r"(?![\w])")
+
+
 def check_forbidden(
     proof_path: str | Path,
     forbidden_lemmas: frozenset[str] | set[str] | list[str],
 ) -> list[str]:
     """Return the list of forbidden lemma names referenced in the proof.
 
-    Word-boundary match: `Cardinal.mk_real` does not match
-    `Cardinal.mk_realInfinite` (different identifier). Inverse-direction
-    issue: a forbidden name like `Real.uncountable` won't catch
-    `Real.uncountable_univ` (different lemma). Operators list explicitly.
+    Each entry in *forbidden_lemmas* is either an exact name or a glob
+    (`*` wildcards expanding to `[\\w.]*`). A glob match reports as
+    `"<actual_name> (glob: <pattern>)"` so dead_attempts surfaces the
+    specific name in addition to the rule that caught it.
 
     Comment-string false positives: a forbidden name embedded in a
     comment (e.g. ``-- could try Real.uncountable here``) is still a
-    match. Caller documentation guides users to keep blacklisted names
-    out of comments inside .lean files, or upgrade to the Lean-walker.
+    match. Operators should keep blacklisted names out of comments
+    inside .lean files, or upgrade to the Lean-walker (P7+).
     """
     if not forbidden_lemmas:
         return []
@@ -50,14 +79,19 @@ def check_forbidden(
         return []
     text = p.read_text(encoding="utf-8", errors="replace")
     found: list[str] = []
+    seen: set[str] = set()
     for lemma in forbidden_lemmas:
-        # `\b` doesn't quite line up with Lean's identifier grammar
-        # (dots aren't word boundaries) — use look-around so the match
-        # fails when surrounded by `\w` or `.` (treat the dotted path as
-        # one contiguous identifier).
-        pattern = re.compile(
-            r"(?<![\w.])" + re.escape(lemma) + r"(?![\w])"
-        )
-        if pattern.search(text):
-            found.append(lemma)
+        pattern = _entry_to_pattern(lemma)
+        matches = pattern.findall(text)
+        if not matches:
+            continue
+        # Dedup matches per-pattern so a name appearing 3 times reports once.
+        for actual in dict.fromkeys(matches):  # preserves first-seen order
+            if "*" in lemma and actual != lemma:
+                key = f"{actual} (glob: {lemma})"
+            else:
+                key = lemma
+            if key not in seen:
+                found.append(key)
+                seen.add(key)
     return found

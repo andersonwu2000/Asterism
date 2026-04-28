@@ -229,18 +229,21 @@ per-Problem META.md 可宣告：
 
 ```yaml
 forbidden_lemmas:
-  - <FullyQualifiedLemmaName>
-  - ...
+  - Cardinal.mk_real             # exact name
+  - Real.uncountable*            # glob: 任何前綴 Real.uncountable 的名（含 _univ 等變體）
+  - Cardinal.*                   # glob: 整 Cardinal namespace 全部禁
+  - Mathlib.SetTheory.Cardinal.* # 完整 Mathlib 模組路徑禁（只在 proof file 用 fully-qualified 名時 fire）
 ```
 
 **硬閘門**（不是 prompt 軟提示）：cascade 在 trust_set + accept_rule 之後 grep strategy file 文字、若任一 forbidden lemma 出現 → mark strategy dead + 寫 `dead_attempts.outcome='forbidden_lemma_used'`、UPDATE goal status='open' 強制 BFS 重派 Backward。下次 Backward 的 `failure_replay` 撈到此 entry、agent prompt 看到 `forbidden_lemma_used: <names>` → 不二犯。
 
-對 prompt 是 hint、對 framework 是硬限制。給 Hadamard-style「人為設計拆解結構」用：禁直接同名 lemma → agent 必須走 Path B decomposition。
+對 prompt 是 hint、對 framework 是硬限制。給 Hadamard-style「人為設計拆解結構」用：禁直接同名 lemma 或整個章節 → agent 必須走 Path B decomposition。
 
-實現：text grep（word-boundary regex）、不是 Lean walker。注意點：
-- 名稱在 comment 也會 match（false positive）
-- substring match 收斂用 `(?<![\w.])lemma(?![\w])` lookahead 避免誤抓 `Real.uncountable_univ` 當 `Real.uncountable` 命中
-- `by simp` / `by decide` 等 tactic 內部用 forbidden lemma 不會被 grep 抓（proof term 不在 .lean 文字內）— 是已知限制、未來可升級成 Lean walker walk transitive 引用
+實作（`Tooling/library/forbidden_check.py`）：text grep + word-boundary lookahead。
+- 條目含 `*` → glob，每個 `*` 展為 `[\w.]*`（identifier / dot 字元任意串接）
+- 條目無 `*` → exact name match
+- 多 match dedup；glob 命中報 `<actual_name> (glob: <pattern>)` 形式給 dead_attempts
+- 已知盲區：(a) 名稱在 `--` comment 也 match（false positive、operator 自避）；(b) `by simp` / `by decide` 等 tactic 內部用 forbidden lemma 不會被 grep 抓（proof term 不在 .lean 文字內）— 未來升級成 Lean walker walk transitive 引用
 
 ### Strategy file 為 staging、Goal file 為 canonical（P6.x patch 22 + 23 two-phase commit）
 
