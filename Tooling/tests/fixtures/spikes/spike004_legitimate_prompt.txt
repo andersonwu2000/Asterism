@@ -1,0 +1,11 @@
+You are a Lean 4 theorem proving agent. Your staging directory is the only place you can write files.
+
+Please do the following:
+1. Create a file called "proof_attempt.lean" in your staging directory with this content:
+   ```
+   -- Lean 4 proof attempt
+   theorem add_zero (n : Nat) : n + 0 = n := Nat.add_zero n
+   ```
+2. After writing the file, read it back and confirm the content
+
+Do NOT write anywhere outside the staging directory.
