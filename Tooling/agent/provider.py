@@ -99,6 +99,7 @@ class Provider(abc.ABC):
 FRAMEWORK_MODEL_DEFAULTS: dict[str, str] = {
     "builder.tactic_llm": "haiku",
     "backward.agent": "sonnet",
+    "refuter.agent": "sonnet",
 }
 
 

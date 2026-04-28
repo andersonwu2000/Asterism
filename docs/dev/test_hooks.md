@@ -23,9 +23,11 @@
 | P3 | `SEARCH_MOCK` | `record_calls` / `force_miss` / `force_hit` | search subsystem 行為控制（cache acceptance 計次 / 強制 cache miss-hit 路徑） |
 | P3 | `DEDUPE_MOCK` | `force_hit` / `force_miss` / `force_timeout` | dedupe subsystem 行為控制（C20 引入；`force_hit` 回 entry list 第一筆 id；`force_miss` 回 NOVEL；`force_timeout` 回 timeout outcome）。bypass cache + subprocess |
 | P3 | `BACKWARD_FORCE` | `succeed` (extended) | P2 `BACKWARD_FORCE` 擴 `succeed` 值；用於通用 N=5 trigger acceptance（與 `BACKWARD_MOCK=success_leaf` 不同：force succeed 不寫 strategy row，只回 outcome=success 殼；test 自己造 fixture rows） |
-| P4 | `COUNTEREXAMPLE_FORCE` | `silver` / `evidence_only` / `unproductive` | Counterexample 強制走特定 outcome（給 silver-skip race acceptance 用） |
+| P4 | `REFUTER_MOCK` | `success_negation` | Refuter.run 入口替換真實 agent；INSERT 一筆 ¬G goal (origin='refuter_negation') + 雙向 twin_of UPDATE + 寫 placeholder .lean。給 acceptance #1 三線並排 enqueue 驗 / 任何不需 agent 真跑的 Refuter 上游 wiring 測試（C29 引入；語意凍結） |
+| P4 | `REFUTER_FORCE` | `exhausted` / `succeed` | Refuter pipeline 強制走特定 outcome（與 `REFUTER_MOCK=success_negation` 不同：force succeed 不寫 ¬G goal、只回 outcome=success 殼；test fixture 自管 rows）。C29 引入；語意凍結 |
+| P4 | `COUNTEREXAMPLE_FORCE` | `silver` / `evidence_only` / `unproductive` | Counterexample 強制走特定 outcome（給 silver-skip race acceptance 用）—— **延後**（Counterexample 整段延後、見 task.md ## 延後 cycles） |
 | P4 | `CASCADE_FAULT` | `unique_violation` / `dual_proved` / `fk_invalid` | 強制 cascade SQL 失敗（給 fatal halt acceptance 用） |
-| P4 | `REFUTER_FAST_PATH` | boolean | 模擬 Refuter→Builder 鏈快速通過（給 race acceptance #6 用） |
+| P4 | `REFUTER_FAST_PATH` | boolean | 模擬 Refuter→Builder 鏈快速通過（給 race acceptance #6 用）—— C29 reserve 名稱、實作 C30 cascade 上線連帶 |
 | P5 | `PROVIDER_MOCK_<NAME>` | `fail_after_<N>` / `fail_always` / `evil_write` | Provider 強制失敗 / scope-isolation 違規。**multi-env 風格、避免 colon+comma quote 問題**——例：`PROVIDER_MOCK_CLAUDE=fail_after_3 PROVIDER_MOCK_GEMINI=evil_write asterism run`；name ∈ {CLAUDE, GEMINI, CODEX} |
 | P6 | `LIBRARY_BUILD_FAULT` | `1` / `0` | 強制 lake build Library 回 fail（給 promotion revert acceptance 用） |
 | P6 | `--bypass-startup-check`（CLI flag、非 env hook）| flag | scheduler 啟動跳過 CLI 早期 single-instance 攔截、讓進到 liveness check 階段；liveness check 仍正常擋。給 acceptance #10 驗 liveness check 真有效 |
