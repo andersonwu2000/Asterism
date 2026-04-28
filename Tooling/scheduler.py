@@ -734,11 +734,13 @@ class Reactor:
         other strategies on the same Goal continue unaffected).
         """
         row = self.conn.execute(
-            "SELECT goal_id FROM strategies WHERE id = ?", (strategy_id,)
+            "SELECT goal_id, lean_path FROM strategies WHERE id = ?",
+            (strategy_id,),
         ).fetchone()
         if row is None:
             return
         goal_id = row[0]
+        strategy_lean_path = row[1]
         try:
             with self.conn:
                 self.conn.execute(
@@ -757,6 +759,25 @@ class Reactor:
                 ),
                 emit_event=self._emit_event,
             )
+            # P6.x patch 22-fix-2: delete the strategy .lean file when the
+            # strategy goes dead. Leftover broken strategy files in the
+            # goal directory cause subsequent `lake build` calls (e.g.
+            # print_axioms's pre-step) to fail when the lib glob picks
+            # them up. Skip when strategy.lean_path == goal.lean_path
+            # (post-finalize state from patch 23: deleting the goal file
+            # would lose the canonical proven artifact).
+            try:
+                goal_path = self.conn.execute(
+                    "SELECT lean_path FROM goals WHERE id = ?", (goal_id,),
+                ).fetchone()
+                if (strategy_lean_path
+                        and goal_path
+                        and strategy_lean_path != goal_path[0]):
+                    full = Path(self.config.base_dir) / strategy_lean_path
+                    full.unlink(missing_ok=True)
+            except (OSError, sqlite3.Error):
+                pass  # Best-effort; surfaced via cascade events on
+                       # subsequent print_axioms / promote failures.
             non_dead = self.conn.execute(
                 "SELECT count(*) FROM strategies "
                 "WHERE goal_id = ? AND status != 'dead'",

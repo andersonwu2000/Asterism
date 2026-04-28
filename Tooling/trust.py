@@ -59,11 +59,33 @@ def print_axioms(theorem_name: str, cwd: str,
         return [a.strip() for a in mock.split(",") if a.strip()]
 
     if module_path is not None:
-        # P6.x patch 23 fix: skip pre-`lake build <module>`. lake build
-        # pulls in the whole `Problems.<p>.Goals.<id_seg>.*` glob, which
-        # fails when ANY sibling strategy file (a dead variant left
-        # over from a rejected attempt) has elab errors. `lake env lean
-        # <tempfile>` lazily compiles only the needed import chain.
+        # P6.x patch 23-fix-fix: `lake build <specific.module>` IS required
+        # so the .olean materializes to disk for the tempfile's `import`
+        # to resolve. (`lake env lean <file>` compiles in-process but
+        # does not write the .olean — subsequent imports fail with
+        # "object file ... does not exist".) Targeting a specific module
+        # path triggers only that target's transitive imports — sibling
+        # broken strategy files in the same directory glob are NOT
+        # pulled in unless they're explicitly imported. Stale dead-
+        # strategy files get cleaned up by _mark_strategy_dead so the
+        # directory only contains live strategies + the goal file.
+        try:
+            build = subprocess.run(
+                ["lake", "build", module_path],
+                cwd=cwd, capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"lake build {module_path!r} timed out after {_TIMEOUT}s"
+            )
+        if build.returncode != 0:
+            raise RuntimeError(
+                f"lake build {module_path!r} exit {build.returncode}: "
+                f"stderr={(build.stderr or build.stdout)[:500].strip()!r}"
+            )
+
         # Strategy file (patch 22) declares `theorem <slug>` under
         # namespace == module_path (file path), so theorem fully-
         # qualified name = module_path + "." + theorem_name (= slug).
