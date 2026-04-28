@@ -59,7 +59,9 @@ class ReactorConfig:
     pool_size: int = 4                # P: atomic pool cap
     tick_interval: float = 30.0      # seconds between structural refill ticks
     d_max: int = 12                   # D_max depth limit (shelve if depth >= d_max)
-    n_block_after_failures: int = 5  # stop-gap retry cap (in-memory)
+    n_block_after_failures: int = 5  # threshold consumed by failure_archive
+                                      # (C24 persistent block; in-memory dict
+                                      # removed in C25)
 
 
 class Reactor:
@@ -73,11 +75,9 @@ class Reactor:
         self._lock = threading.Lock()
         # pipeline_id → (target_id, kind); target_id as string
         self._running: dict[str, tuple[str, str]] = {}
-        # (goal_or_strategy_id_str, pipeline_kind) → failure_count; in-memory stop-gap
-        # P2 in-memory retry cap removed in C25; persistent
-        # goals.blocked_pipelines (C24) is the canonical block source.
-        # `_failure_count` dict + _inc_failure_count + _get_failure_count
-        # all deleted; BFS filters on blocked_pipelines via is_blocked().
+        # P2 in-memory retry cap (was self._failure_count dict) removed in
+        # C25; persistent goals.blocked_pipelines (C24) is the canonical
+        # block source.
         self._paused: bool = False
         self._shutdown_flag: bool = False
         self._scheduler_id: int | None = None
@@ -198,13 +198,15 @@ class Reactor:
     def _handle_pipeline_finished(self, task: dict, result: Any) -> None:
         """6-step cycle on pipeline_finished: P2 runs steps 2/3/4/6.
 
-        NOTE (R2 finding F + R3 MED-3): step1 stale_filter is a P3 hook (no-op)
-        and _cancel_running_for_goal is also a no-op for thread runtime. P2
-        therefore accepts that a Backward/Builder running against an
-        already-proved Goal will complete and may commit orphan rows; this is
-        a documented spec compromise — see _cancel_running_for_goal docstring.
+        P3 C25 R3: step1 liveness check now drops stale events early per
+        spec phase3 #12 + acceptance #9 字面 "丟棄、無多餘 cascade". When
+        step1 detects a stale event (proved/shelved/refuted goal, dead
+        strategy, missing row, malformed payload), subsequent steps are
+        skipped — orphan dead_attempts / re-shelve / re-mark-dead writes
+        are prevented.
         """
-        self._run_step1_stale_filter(task, result)        # P3 hook — empty
+        if self._run_step1_stale_filter(task, result):
+            return  # event dropped per spec #12; no downstream cascade
         self._run_step2_cancellation(task, result)
         self._run_step3_cascade(task, result)
         self._run_step4_trust_set(task, result)           # integrated into step 3
@@ -324,50 +326,86 @@ class Reactor:
     # 6-step cycle steps (P2)
     # ------------------------------------------------------------------
 
-    def _run_step1_stale_filter(self, task: dict, result: Any) -> None:
-        """P3 C25: liveness check — filter results from stale pipeline rows.
+    def _run_step1_stale_filter(self, task: dict, result: Any) -> bool:
+        """P3 C25 R3: liveness check — return True iff the event should be DROPPED.
 
-        A pipeline row is "stale" when its target row has commit_state !=
-        'live' (e.g. recovered after a CommitFault left the row pending) or
-        when the target row no longer exists at all. Such results should not
-        propagate into cascade — they would mark a deleted strategy
-        succeeded or write dead_attempts against an orphan goal.
+        spec phase3_cache.md #12 + acceptance #9 字面要求 "對應 Goal/Strategy
+        已被 cascade 標 dead/refuted 的事件丟棄、被主動 kill 的 pipeline 結果丟棄".
 
-        Currently raises ValueError on detection (caller in _dispatch_event
-        does not yet branch on this — reserved hook). For P3 the filter is
-        defensive only; production silent_filter integration lands in P4
-        when cancellation cascades produce more stale-pipeline corner cases.
+        Stale conditions:
+          Backward (target_kind='Backward', target_id=goal_id):
+            - goal row missing
+            - goal.commit_state != 'live'
+            - goal.status ∈ {'proved', 'shelved', 'refuted'}
+          Builder (target_kind='Builder', target_id=strategy_id):
+            - strategy row missing
+            - strategy.commit_state != 'live'
+            - strategy.status == 'dead'
+
+        Caller `_handle_pipeline_finished` returns early when this returns
+        True — cascade step2-6 do NOT run for stale events (per spec
+        "丟棄、無多餘 cascade").
+
+        Malformed task payload (target_id not int-castable) is also treated
+        as stale (defensive — daemon stays up, malformed event observable
+        via the cascade event).
         """
         target_kind = task.get("kind")
-        target_id = task.get("target_id")
+        target_id_raw = task.get("target_id")
+        try:
+            target_id = int(target_id_raw)
+        except (TypeError, ValueError):
+            self._emit_event(
+                "cascade",
+                {
+                    "rule": "stale_filter",
+                    "task": task,
+                    "reason": "malformed_target_id",
+                },
+            )
+            return True
+
         if target_kind == "Backward":
             row = self.conn.execute(
-                "SELECT commit_state FROM goals WHERE id = ?",
-                (int(target_id),),
+                "SELECT status, commit_state FROM goals WHERE id = ?",
+                (target_id,),
             ).fetchone()
-            if row is None or row[0] != "live":
-                self._emit_event(
-                    "cascade",
-                    {
-                        "rule": "stale_filter",
-                        "task": task,
-                        "reason": "goal_not_live_or_missing",
-                    },
-                )
-        elif target_kind == "Builder":
+            if row is None:
+                reason = "goal_missing"
+            elif row[1] != "live":
+                reason = f"goal_not_live (commit_state={row[1]})"
+            elif row[0] in ("proved", "shelved", "refuted"):
+                reason = f"goal_terminal_status (status={row[0]})"
+            else:
+                return False
+            self._emit_event(
+                "cascade",
+                {"rule": "stale_filter", "task": task, "reason": reason},
+            )
+            return True
+
+        if target_kind == "Builder":
             row = self.conn.execute(
-                "SELECT commit_state FROM strategies WHERE id = ?",
-                (int(target_id),),
+                "SELECT status, commit_state FROM strategies WHERE id = ?",
+                (target_id,),
             ).fetchone()
-            if row is None or row[0] != "live":
-                self._emit_event(
-                    "cascade",
-                    {
-                        "rule": "stale_filter",
-                        "task": task,
-                        "reason": "strategy_not_live_or_missing",
-                    },
-                )
+            if row is None:
+                reason = "strategy_missing"
+            elif row[1] != "live":
+                reason = f"strategy_not_live (commit_state={row[1]})"
+            elif row[0] == "dead":
+                reason = "strategy_dead"
+            else:
+                return False
+            self._emit_event(
+                "cascade",
+                {"rule": "stale_filter", "task": task, "reason": reason},
+            )
+            return True
+
+        # Other kinds (Refuter / Forward / Counterexample / etc) reach P3 only
+        # via misroute; treat as non-stale (caller's other steps handle).
+        return False
 
     def _run_step2_cancellation(self, task: dict, result: Any) -> None:
         """Cancel same-Goal running pipelines when Builder proves the goal."""
@@ -384,8 +422,29 @@ class Reactor:
         self._cancel_running_for_goal(str(row[0]))
 
     def _run_step3_cascade(self, task: dict, result: Any) -> None:
-        """Cascade rules: Builder proved / dead; Backward success / exhausted."""
+        """Cascade rules: Builder proved / dead; Backward success / exhausted.
+
+        C25 R3 HIGH-3: lookup Tooling.cascade.DISPATCH_TABLE for the
+        (pipeline_kind, outcome) action so cascade.py is a true production
+        caller (not an island module). Unknown combinations emit a
+        diagnostic event so P4+ pipeline outcomes (Refuter / Counterexample)
+        are observable when first wired in. Inline if/else dispatch retained
+        — P4 will move handlers into cascade.py callables.
+        """
+        from Tooling.cascade import get_action
         kind = task.get("kind")
+        outcome = getattr(result, "outcome", None)
+        action = get_action(str(kind), str(outcome)) if outcome is not None else None
+        if action is None:
+            self._emit_event(
+                "cascade",
+                {
+                    "rule": "unknown_cascade_combination",
+                    "task": task,
+                    "outcome": outcome,
+                },
+            )
+            return
         if kind == "Builder":
             self._cascade_builder(int(task["target_id"]), result)
         elif kind == "Backward":
@@ -752,14 +811,6 @@ class Reactor:
                 "VALUES (?, ?, ?, ?)",
                 (kind, target_id, priority, _now()),
             )
-
-    # ------------------------------------------------------------------
-    # Stop-gap failure count (in-memory; P3 持久化接手)
-    # ------------------------------------------------------------------
-
-    # _get_failure_count / _inc_failure_count removed in C25
-    # (P3 §任務序列 #10 字面 「移除 P2 in-memory retry cap」).
-    # Persistent goals.blocked_pipelines (C24) is the canonical replacement.
 
     # ------------------------------------------------------------------
     # Cancellation

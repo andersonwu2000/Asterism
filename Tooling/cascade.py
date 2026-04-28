@@ -32,11 +32,16 @@ class CascadeAction:
     Currently descriptive metadata only; scheduler matches on `name` to
     pick a handler. P4/P5 will turn `handler` into a callable when the
     table grows beyond the hand-written branches.
+
+    `target_ids` is forward-compat for P4 twin propagation — P3 actions are
+    all single-target and leave it as `()`; P4 Refuter / Counterexample
+    cancel cascades will populate (G.id, ¬G.id) tuples per spec §In line 44.
     """
     name: str
     description: str
     handler: str = ""  # Reactor method name; empty = no handler (P4+ wiring)
     side_effects: tuple[str, ...] = field(default_factory=tuple)
+    target_ids: tuple[int, ...] = ()  # forward-compat: P4 twin propagation
 
 
 # (pipeline_kind, outcome) → CascadeAction

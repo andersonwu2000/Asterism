@@ -1427,12 +1427,102 @@ class TestHookPlaceholders:
         import json as _json
         reactor = _make_reactor(db, tmp_path)
         task = {"kind": "Builder", "target_id": "9999"}  # no strategy 9999
-        reactor._run_step1_stale_filter(task, BuilderResult(outcome="exhausted"))
+        is_stale = reactor._run_step1_stale_filter(
+            task, BuilderResult(outcome="exhausted")
+        )
+        assert is_stale is True
         rows = db.execute(
             "SELECT payload FROM events WHERE kind = 'cascade'"
         ).fetchall()
         rules = [_json.loads(r[0]).get("rule") for r in rows]
         assert "stale_filter" in rules
+
+    def test_step1_returns_false_for_live_target(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Non-stale event flows through to subsequent steps."""
+        gid = _insert_open_goal(db, tmp_path, slug="live_g")
+        reactor = _make_reactor(db, tmp_path)
+        task = {"kind": "Backward", "target_id": str(gid)}
+        is_stale = reactor._run_step1_stale_filter(
+            task, BackwardResult(outcome="exhausted")
+        )
+        assert is_stale is False
+
+    def test_step1_drops_proved_goal_event(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """C25 R3 HIGH-1+2 (acceptance #9 gate): event for already-proved goal
+        is dropped — caller skips downstream cascade.
+        """
+        gid = _insert_open_goal(db, tmp_path, slug="proved_g")
+        with db:
+            db.execute(
+                "UPDATE goals SET status='proved' WHERE id=?", (gid,),
+            )
+        reactor = _make_reactor(db, tmp_path)
+        task = {"kind": "Backward", "target_id": str(gid)}
+        is_stale = reactor._run_step1_stale_filter(
+            task, BackwardResult(outcome="exhausted")
+        )
+        assert is_stale is True
+
+    def test_step1_drops_dead_strategy_event(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """C25 R3 HIGH-1+2: event for already-dead strategy is dropped."""
+        gid = _insert_open_goal(db, tmp_path, slug="g_for_dead_s")
+        sid = _insert_strategy(db, tmp_path, gid, slug="dead_s")
+        with db:
+            db.execute(
+                "UPDATE strategies SET status='dead' WHERE id=?", (sid,),
+            )
+        reactor = _make_reactor(db, tmp_path)
+        task = {"kind": "Builder", "target_id": str(sid)}
+        is_stale = reactor._run_step1_stale_filter(
+            task, BuilderResult(outcome="exhausted")
+        )
+        assert is_stale is True
+
+    def test_step1_handles_malformed_target_id(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """C25 R3 MED-2: malformed payload doesn't crash dispatch — treated as stale."""
+        reactor = _make_reactor(db, tmp_path)
+        task = {"kind": "Backward", "target_id": "N/A"}
+        is_stale = reactor._run_step1_stale_filter(
+            task, BackwardResult(outcome="exhausted")
+        )
+        assert is_stale is True
+
+    def test_handle_pipeline_finished_skips_cascade_for_stale(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """C25 R3 HIGH-1 (acceptance #9 字面): stale event → no downstream
+        cascade, no orphan dead_attempts written."""
+        gid = _insert_open_goal(db, tmp_path, slug="stale_proved")
+        with db:
+            db.execute(
+                "UPDATE goals SET status='proved' WHERE id=?", (gid,),
+            )
+        reactor = _make_reactor(db, tmp_path)
+        # Pre-insert a Backward pipeline so cascade WOULD have something to write
+        with db:
+            db.execute(
+                "INSERT INTO pipelines "
+                "(id, kind, runtime, target_id, target_kind, status, started_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                ("pipe-stale", "Backward", "atomic", str(gid), "Goal",
+                 "succeeded", "2026-01-01T00:00:00+00:00"),
+            )
+        task = {"kind": "Backward", "target_id": str(gid)}
+        reactor._handle_pipeline_finished(task, BackwardResult(outcome="exhausted"))
+        # No dead_attempts row written (cascade skipped)
+        count = db.execute(
+            "SELECT COUNT(*) FROM dead_attempts WHERE target_id=? AND pipeline_kind='Backward'",
+            (str(gid),),
+        ).fetchone()[0]
+        assert count == 0
 
     def test_step5_strategist_trigger_is_noop(
         self, db: sqlite3.Connection, tmp_path: Path

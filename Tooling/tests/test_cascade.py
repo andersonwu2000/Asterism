@@ -58,3 +58,9 @@ class TestDispatchTable:
             ("Backward", "unproductive"),
         }
         assert set(DISPATCH_TABLE.keys()) == expected_keys
+
+    def test_target_ids_default_empty_tuple(self) -> None:
+        """C25 R3 HIGH-4: forward-compat field for P4 twin propagation
+        defaults to empty tuple; P3 actions are all single-target."""
+        for action in DISPATCH_TABLE.values():
+            assert action.target_ids == ()
