@@ -9,15 +9,18 @@ should reference it rather than duplicate.
 Public API:
     find_subgoals(conn, goal) -> list[dict]
 
-Returns sub-goal candidates from local_goals scope (current Problem only).
-Each entry: {"id": int, "slug": str, "lean_path": str, "statement_hash":
-str|None}.
+Returns sub-goal candidates from local_goals scope. Each entry:
+    {"id": int, "slug": str, "lean_path": str, "statement_hash": str|None}.
 
-Cross-Problem search is intentionally excluded (impl §2.2: local_goals
-scope hash key participates in problem to prevent A INSERT collisions
-wiping B cache). Library scope (Library/Theorems/proved.lean) IS reachable
-once P6 lands but for P3 returns []; that's the find_lemmas concern, not
-find_subgoals.
+Self-exclusion: when goal['id'] is provided, the parent goal itself is
+filtered out of results (it cannot be its own sub-goal).
+
+Cache key isolates Problem (problem_scope param feeds into hash) but the
+underlying SQL filter by Problem is **deferred to P6**:
+search.py:_search_local_goals queries `WHERE commit_state='live'` only —
+cross-Problem rows leak through under P6 multi-Problem until search_cache
+schema gets a problem_scope column (see C20 R3 MED-3, state.md:46). P3
+single-Problem demo OK; P6 must amend schema or accept the leak.
 """
 from __future__ import annotations
 
@@ -33,7 +36,9 @@ def find_subgoals(
 ) -> list[dict]:
     """Return existing local Goals matching the candidate decomposition query.
 
-    `goal` should have at least 'slug' and 'problem'.
+    `goal` should have at least 'slug' and 'problem'. If 'id' is present,
+    the parent goal itself is excluded (cannot be its own sub-goal — would
+    be a no-op self-loop in the proof graph).
     """
     query = str(goal.get("slug", "")).strip()
     problem = str(goal.get("problem", "")).strip()
@@ -47,4 +52,7 @@ def find_subgoals(
         conn=conn,
         problem_scope=problem,
     )
-    return result.results
+    parent_id = goal.get("id")
+    if parent_id is None:
+        return result.results
+    return [r for r in result.results if r.get("id") != parent_id]

@@ -197,3 +197,86 @@ class TestFindSubgoals:
 
     def test_empty_query_returns_empty(self, db) -> None:
         assert find_subgoals(db, {"slug": "", "problem": "ex"}) == []
+
+    def test_excludes_self(self, db) -> None:
+        """C22 R3 HIGH-3: parent goal must not appear in its own sub-goal list."""
+        gid = _insert_goal(db, slug="parent_g")
+        result = find_subgoals(db, {"id": gid, "slug": "parent_g", "problem": "ex"})
+        ids = [r["id"] for r in result]
+        assert gid not in ids
+
+    @pytest.mark.xfail(
+        reason="P6 schema gap: search_cache lacks problem_scope column; "
+               "_search_local_goals does not filter by problem (state.md:46 caveat)",
+        strict=True,
+    )
+    def test_does_not_leak_across_problems(self, db) -> None:
+        """C22 R3 LOW-1: cross-Problem isolation via SQL filter — currently leaks."""
+        _insert_goal(db, slug="match_a", problem="A")
+        _insert_goal(db, slug="match_b", problem="B")
+        result = find_subgoals(db, {"slug": "match", "problem": "A"})
+        # Expect only Problem A row to come back
+        problems = {r.get("slug")[-1] for r in result}  # 'a' or 'b'
+        assert problems == {"a"}, f"cross-Problem leak: {result}"
+
+
+# ---------------------------------------------------------------------------
+# Additional find_lemmas tests (C22 R3 LOW-1)
+# ---------------------------------------------------------------------------
+
+
+class TestFindLemmasExtra:
+    def test_query_construction_handles_none_question(
+        self, db, monkeypatch
+    ) -> None:
+        """goal['question'] is None (most P2 goals) → query is just slug."""
+        monkeypatch.setenv("SEARCH_MOCK", "record_calls")
+        from Tooling.subsystems.search import (
+            get_recorded_calls,
+            reset_recorded_calls,
+        )
+        reset_recorded_calls()
+        find_lemmas(db, {"slug": "g_test", "question": None})
+        calls = get_recorded_calls()
+        assert all(call["query"] == "g_test" for call in calls)
+
+    def test_query_construction_appends_question(
+        self, db, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("SEARCH_MOCK", "record_calls")
+        from Tooling.subsystems.search import (
+            get_recorded_calls,
+            reset_recorded_calls,
+        )
+        reset_recorded_calls()
+        find_lemmas(db, {"slug": "g_test", "question": "True"})
+        calls = get_recorded_calls()
+        assert all(call["query"] == "g_test True" for call in calls)
+
+    def test_mathlib_results_appear_before_library(
+        self, db, monkeypatch
+    ) -> None:
+        """find_lemmas docstring says mathlib first then library; verify ordering."""
+        # Use side_effect with a counter so the two scopes return distinct results
+        from Tooling.subsystems import search as search_mod
+        original = search_mod.search
+
+        def fake(query, scope, kind, **kwargs):
+            from Tooling.subsystems.search import SearchResult
+            if scope == "mathlib":
+                return SearchResult(results=[{"name": "M_first"}])
+            if scope == "library":
+                return SearchResult(results=[{"name": "L_second"}])
+            return original(query, scope=scope, kind=kind, **kwargs)
+
+        monkeypatch.setattr(search_mod, "search", fake)
+        # Re-import find_lemmas to pick up patched search (it imports at module load)
+        import importlib
+        import Tooling.stages.find_lemmas as fl
+        importlib.reload(fl)
+        try:
+            results = fl.find_lemmas(db, {"slug": "g"})
+            names = [r["name"] for r in results]
+            assert names == ["M_first", "L_second"]
+        finally:
+            importlib.reload(fl)  # restore real search reference

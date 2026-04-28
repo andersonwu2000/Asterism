@@ -108,10 +108,17 @@ class Backward:
     def find_lemmas(self, goal: dict) -> list[str]:
         """Return candidate lemma names from mathlib + library scopes.
 
-        P3 search.lean stubs return [] for both scopes; results list will
-        populate when P5/P6 wire real declaration walkers. Returns string
-        names for Backward agent prompt compatibility (the stage module
-        returns dicts; we project the 'name' field here).
+        **P3 status**: stub-only. search.lean returns [] for both scopes
+        (full Mathlib walker deferred to P5; Library scope deferred to P6).
+        The return shape (list[str]) is reserved for prompt wiring — the
+        Backward agent prompt template (docs/prompts/backward.md) does NOT
+        currently include a `{{CANDIDATE_LEMMAS}}` placeholder; that wire
+        lands when search.lean produces real results in P5/P6 and
+        `_build_prompt` gains the corresponding parameter.
+
+        Returns the projection to list[str] of names so the upcoming
+        prompt-wiring change is a 1-line addition rather than re-shaping
+        the stage's return type later.
         """
         results = _stage_find_lemmas(self.conn, goal,
                                      lake_cwd=self.config.lake_cwd)

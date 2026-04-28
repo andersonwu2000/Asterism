@@ -35,6 +35,8 @@ import sqlite3
 
 from Tooling.commit import CommitWriter
 from Tooling.lake import run_lean
+from Tooling.stages.failure_replay import failure_replay as _stage_failure_replay
+from Tooling.stages.find_lemmas import find_lemmas as _stage_find_lemmas
 from Tooling.agent.provider import AgentResponse, FallbackChain, ModelResolver
 
 
@@ -132,8 +134,7 @@ class Builder:
         Delegates to Tooling.stages.failure_replay (P3 C22 unified module).
         Strategy-scoped (vs Backward.failure_replay which is Goal-scoped).
         """
-        from Tooling.stages.failure_replay import failure_replay
-        return failure_replay(
+        return _stage_failure_replay(
             self.conn,
             self.strategy_id,
             "Strategy",
@@ -141,11 +142,21 @@ class Builder:
         )
 
     # ------------------------------------------------------------------
-    # Stage: find_lemmas (stub — P3 search subsystem)
+    # Stage: find_lemmas (P3 C22 — delegates to Tooling.stages module)
     # ------------------------------------------------------------------
 
     def _find_lemmas(self, goal: dict) -> list[str]:
-        return []
+        """Delegate to Tooling.stages.find_lemmas (mirrors Backward.find_lemmas).
+
+        P3 search.lean stubs return [] for both scopes; results populate when
+        P5/P6 wire real declaration walkers. Project to list[str] of names
+        for tactic_llm prompt compatibility.
+        """
+        # Builder doesn't have lake_cwd in its config; pass None so subprocess
+        # uses cwd of the test/runtime caller (subprocess timeout will surface
+        # if a real lake invocation is attempted without proper cwd).
+        results = _stage_find_lemmas(self.conn, goal, lake_cwd=None)
+        return [r.get("name", "") for r in results if r.get("name")]
 
     # ------------------------------------------------------------------
     # Stage: tactic_llm (agent)
