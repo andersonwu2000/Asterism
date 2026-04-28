@@ -122,14 +122,29 @@ class PromotionResult:
 def _re_export_line(goal: dict) -> str:
     """Format the re-export line per spike-024 D-24-1.
 
-    Schema: theorem <problem>.<slug> := <fully-qualified-source-path>
-    where source = Problems.<problem>.Goals.<id>_<slug>.<slug>.
+    Schema: `theorem <problem>.<slug> : <type> := <source>`
+    where source = `Problems.<problem>.Goals.<id_segment>.<slug>` and
+    `<id_segment>` is `<id>_<slug>` with french-quote wrapping when it
+    starts with a digit.
+
+    P6.x patch 5 (Round-2 演習):
+      - Lean 4 `theorem` requires explicit `: <type>` annotation; the
+        bare `:=` shorthand only applies to `def`.
+      - Numeric-prefix directory segments (`1_add_zero`) must be wrapped
+        in french quotes `«1_add_zero»` to be valid Lean identifiers
+        (spike-024 D-24-1 #6 fix).
     """
     p = goal["problem"]
     g_id = goal["id"]
     slug = goal["slug"]
-    source = f"Problems.{p}.Goals.{g_id}_{slug}.{slug}"
-    return f"theorem {p}.{slug} := {source}\n"
+    statement = goal.get("question") or "True"
+    id_segment = f"{g_id}_{slug}"
+    if id_segment[:1].isdigit():
+        id_segment_lean = f"«{id_segment}»"
+    else:
+        id_segment_lean = id_segment
+    source = f"Problems.{p}.Goals.{id_segment_lean}.{slug}"
+    return f"theorem {p}.{slug} : {statement} := {source}\n"
 
 
 def _qualifies_for_library_theorems(
@@ -294,7 +309,7 @@ def promote_to_library(
 
     cur = conn.execute(
         "SELECT id, problem, slug, origin, status, answer_data, "
-        "trust_set, lean_path "
+        "trust_set, lean_path, question "
         "FROM goals WHERE id = ?",
         (goal_id,),
     )
@@ -346,9 +361,21 @@ def promote_to_library(
     with library_lock(conn):
         try:
             if pp_ok:
-                _append_line(pp_path, line)
-                written_pp = True
-                result.lines_written.append(f"{pp_path}:{line.rstrip()}")
+                # P6.x patch 17: per-Problem idempotency. If the exact
+                # same re-export line already exists in proved.lean,
+                # skip the append. Re-runs of Builder against the same
+                # leaf strategy fire promotion repeatedly; without this
+                # check we accumulate duplicate declarations.
+                if pp_path.exists() and line in pp_path.read_text(
+                    encoding="utf-8"
+                ):
+                    pass  # already present — no-op
+                else:
+                    _append_line(pp_path, line)
+                    written_pp = True
+                    result.lines_written.append(
+                        f"{pp_path}:{line.rstrip()}"
+                    )
             if lt_ok:
                 # C41 R3 HIGH-3: SELECT existence BEFORE _append_line so
                 # first-write-wins literally means no file append on

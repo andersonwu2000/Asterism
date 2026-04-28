@@ -44,7 +44,7 @@ from Tooling.subsystems.similarity import parent_subgoal_max_similarity
 from Tooling.agent.provider import AgentResponse, FallbackChain, ModelResolver
 
 
-_VALID_COMBINATORS: frozenset[str] = frozenset({"And", "Or", "Exists"})
+_VALID_COMBINATORS: frozenset[str] = frozenset({"And", "Or", "Exists", "Leaf"})
 
 
 def _now() -> str:
@@ -196,6 +196,12 @@ class Backward:
             return None
         if obj.get("combinator") not in _VALID_COMBINATORS:
             return None
+        # P6.x patch 3: Leaf path requires `proof` field, no subgoals.
+        if obj.get("combinator") == "Leaf":
+            proof = obj.get("proof")
+            if not isinstance(proof, str) or not proof.strip():
+                return None
+            return obj
         subgoals = obj.get("subgoals")
         if not isinstance(subgoals, list):
             return None
@@ -701,6 +707,20 @@ class Backward:
                                               if response.output else ""))
                 continue
 
+            # P6.x patch 3: Leaf path — agent claims goal is directly
+            # provable by a single tactic block. Skip decomposition,
+            # write a leaf strategy, commit with empty subgoals so BFS
+            # treats it as ready for Builder verification.
+            if proposal.get("combinator") == "Leaf":
+                strategy_id = self._commit_leaf(
+                    goal, proposal["proof"], pipeline_id, staging_dir,
+                )
+                return BackwardResult(
+                    outcome="success",
+                    strategy_id=strategy_id,
+                    subgoal_ids=[],
+                )
+
             subgoals_raw = proposal.get("subgoals", [])
             if not subgoals_raw:
                 self._emit_stage_fail(goal, pipeline_id, _attempt,
@@ -746,6 +766,73 @@ class Backward:
         self._emit_stage_fail(goal, pipeline_id, self.config.max_retries,
                               "max_retries_exhausted")
         return BackwardResult(outcome="exhausted")
+
+    def _commit_leaf(
+        self,
+        goal: dict,
+        proof: str,
+        pipeline_id: str,
+        staging_dir: str,
+    ) -> int:
+        """P6.x patch 3: commit a leaf-path strategy with no subgoals.
+
+        Writes the agent's proof directly into the goal file (overwriting
+        the `:= by sorry` template). The strategy row's `lean_path` points
+        at the goal file so Builder lake-builds the same canonical file
+        that proved.lean's re-export references — no double declaration of
+        the same theorem name in the same directory namespace.
+        """
+        # `lean_path` field on goal can have either forward or backslash
+        # separators; resolve through Path for cross-platform safety.
+        goal_lean_path = str(Path(self.config.base_dir) / goal["lean_path"])
+        writer = CommitWriter(self.conn)
+        goal_id = goal["id"]
+        goal_slug = goal["slug"]
+        statement = goal.get("question") or ""
+        problem = goal["problem"]
+
+        # Stage the rewritten goal file: replace `:= by sorry` body with
+        # the agent's proof tactic. We rewrite the whole file rather than
+        # patching to keep the `import Problems.<p>.Defs` line + the
+        # canonical `theorem <slug> :` header.
+        proven_content = (
+            f"import Problems.{problem}.Defs\n\n"
+            f"theorem {goal_slug} : {statement} := {proof}\n"
+        )
+        Path(staging_dir).mkdir(parents=True, exist_ok=True)
+        leaf_staging = str(
+            Path(staging_dir) / f"_leaf_{pipeline_id}_{goal_slug}.lean"
+        )
+        Path(leaf_staging).write_text(proven_content, encoding="utf-8")
+
+        ops = [{
+            "table": "strategies",
+            "op": "insert",
+            "data": {
+                "goal_id": goal_id,
+                "lean_path": goal_lean_path,
+                "status": "proposed",
+                "created_by": pipeline_id,
+                "parent_subgoal_max_similarity": 0.0,
+            },
+        }]
+        ids = writer.begin_batch(ops)
+        strategy_id = ids[0]
+
+        # stage_file overwrites; the goal file's `:= by sorry` template
+        # gets replaced with the proven version atomically.
+        writer.stage_file(leaf_staging, goal_lean_path)
+        writer.finalize("strategies", strategy_id, {})
+
+        # Enqueue Builder for the strategy.
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO queue (kind, target_id, priority, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                ("Builder", str(strategy_id), 0, _now()),
+            )
+
+        return strategy_id
 
     def _emit_stage_fail(
         self,
