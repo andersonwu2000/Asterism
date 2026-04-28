@@ -176,14 +176,20 @@ class TestAC13ProviderFallbackChain:
         assert outcome == "exhausted"
         assert resp is None
 
-    def test_claude_fail_after_3_then_gemini(self, tmp_path, monkeypatch):
-        """Spec literal: PROVIDER_MOCK_CLAUDE=fail_after_3 — claude
-        succeeds 3 times then fails on the 4th. With validate_scope
-        gating each success too, the 4th attempt fails over.
-
-        For this test we set fail_after_0 so claude raises immediately
-        (full literal fail_after_3 needs validate_scope_failures to
-        consume the 3 successes; covered by the next test)."""
+    def test_claude_immediate_fail_then_codex_via_gemini_immediate_fail(
+        self, tmp_path, monkeypatch,
+    ):
+        """C38 R3 MED-1 rename: spec line 161's literal `fail_after_3`
+        env value is **not** what this test exercises — it uses
+        fail_after_0 (≡ immediate-fail). Renamed to reflect actual
+        coverage. The literal fail_after_3 → 3 successes-then-fail
+        path is covered by test_provider_mock_hook.py
+        TestFailAfterN.test_claude_fail_after_2 at the unit layer; in
+        acceptance scope, exercising fail_after_3 across the chain
+        requires validate_scope to also reject those 3 mock-success
+        responses, and the chain semantics for that combination remain
+        a P5.x patch detail (audit LOW from C38 R2 also flagged this).
+        """
         monkeypatch.setenv("PROVIDER_MOCK_CLAUDE", "fail_after_0")
         monkeypatch.setenv("PROVIDER_MOCK_GEMINI", "fail_after_0")
         chain = FallbackChain(
@@ -301,6 +307,54 @@ class TestAC14ProviderScopeIsolation:
         resp = gemini.invoke("sonnet", "p", [str(staging)], "abc12345")
         assert resp.extra["mock_mode"] == "evil_write"
         assert "EVIL_gemini_" in resp.extra["evil_path"]
+
+    def test_evil_write_chain_switches_to_clean_provider(
+        self, tmp_path, monkeypatch,
+    ):
+        """C38 R3 LOW-1/2/3: AC #14 spec line 162「retry 切下一家」+「對
+        每個 provider」coverage. Chain `[claude, gemini, codex]` —
+        claude+gemini both PROVIDER_MOCK=evil_write (writes outside);
+        codex uncontaminated. validate_scope cleans up the EVIL_*
+        sentinels per attempt so each provider's check is isolated.
+        Expected: claude rejected → gemini rejected → codex succeeds."""
+        monkeypatch.setenv("PROVIDER_MOCK_CLAUDE", "evil_write")
+        monkeypatch.setenv("PROVIDER_MOCK_GEMINI", "evil_write")
+        # PROVIDER_MOCK_CODEX intentionally unset → codex runs the real
+        # subprocess.run path which we patch to succeed.
+
+        staging = tmp_path / "staging"
+        staging.mkdir()
+
+        def per_attempt_validate(staging_dir, session_id):
+            """Pretend EVIL_* leakage is detected, then sweep it so the
+            next provider's attempt starts clean. Mirrors what a real
+            git status reset would do between retries — but we keep it
+            in-memory to avoid actual git ops in the test."""
+            evil = list(tmp_path.glob("EVIL_*"))
+            for f in evil:
+                f.unlink()
+            return not evil  # had any → False; clean → True
+
+        chain = FallbackChain(
+            providers=[
+                ClaudeProvider(repo_root=tmp_path),
+                GeminiProvider(repo_root=tmp_path),
+                CodexProvider(repo_root=tmp_path),
+            ],
+            n_retry=1,
+            validate_scope=per_attempt_validate,
+        )
+        with patch(
+            "subprocess.run",
+            return_value=_mock_subprocess_success("from codex (clean)"),
+        ):
+            resp, outcome = chain.run(
+                "sonnet", "p", [str(staging)], "session1234",
+                staging_dir=str(staging),
+            )
+        assert outcome == "success"
+        assert resp is not None
+        assert resp.output == "from codex (clean)"
 
 
 # ─────────────────────────────────────────────────────────────
