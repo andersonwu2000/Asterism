@@ -18,18 +18,30 @@ Choose ONE of two response paths:
 
 ### Path A — Direct proof (LEAF)
 
-If the goal is **directly provable** by a single tactic block (e.g. `by simp`, `by rfl`, `by induction l <;> simp [*]`, `by exact List.length_reverse l`), use:
+ONLY use this path when the goal is provable by a **trivial decision-procedure tactic block** with NO non-trivial Mathlib library lemma reference. Permitted:
+
+- `by rfl`, `by trivial`, `by decide`, `by simp` (no extra args), `by omega`, `by norm_num`
+- `by induction <var> <;> simp [*]` (induction with trivial cases)
+- Composition of the above (e.g. `by intro h; rfl`, `by simp [<simp_lemmas_only>]`)
+
+**FORBIDDEN in Path A** — these are the kind of moves the framework wants to surface as decomposition:
+
+- `by exact <SomeMathlib.Lemma> ...` — naming a specific big-name lemma directly
+- `by rw [<Mathlib.Lemma>]; ...` followed by closing — chaining via library lemmas
+- Any tactic that's "I happen to know Mathlib has this exact statement"
+
+If the goal is non-trivial mathematics and the only way you'd prove it is by citing a Mathlib lemma, **do NOT use Path A — go to Path B and decompose**.
 
 ```json
 {
   "combinator": "Leaf",
-  "proof": "by <tactic_block>",
+  "proof": "by <trivial_tactic_block>",
   "subgoals": [],
   "leaf_claims": []
 }
 ```
 
-The framework will use your `proof` field to construct `theorem {{GOAL_SLUG}} : {{GOAL_STATEMENT}} := <proof>` and verify via `lake build`. **Prefer this path** for goals that Mathlib already proves or that one-tactic-finishers (`simp`, `decide`, `rfl`, `omega`, `aesop`, `exact <mathlib_lemma>`) can close.
+The framework will use your `proof` field to construct `theorem {{GOAL_SLUG}} : {{GOAL_STATEMENT}} := <proof>` and verify via `lake build`.
 
 ### Path B — Decomposition (And/Or/Exists)
 
