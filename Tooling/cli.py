@@ -819,20 +819,51 @@ def cmd_library_check_deps(
         conn.close()
 
 
-def cmd_library_reindex(args: Any, db_path: Path | None = None) -> None:
-    """C44 stub for the reindex migration; full impl lands in C45.
+def cmd_library_reindex(
+    args: Any,
+    db_path: Path | None = None,
+    base_dir: Path | None = None,
+) -> None:
+    """C45: walk Library/Theorems/proved.lean + INSERT missing
+    library_index rows. Per-Problem proved.lean files are NOT indexed
+    (they're not framework-global); operator inspection covers them.
 
     spec phase6_library.md ## In line 79 字面: 「Library reindex
     migration（跑過 P4/P5 既有 json 補 INSERT library_index row）」.
-    Stub prints the planned scope so operators know what to expect.
+    Outputs: inserted / already_indexed / unresolved / unparsed
+    counts so operators can spot file-vs-DB drift.
     """
-    print("library reindex: deferred to P6.C45")
-    print("  scope (planned):")
-    print("    - walk Library/Theorems/proved.lean lines")
-    print("    - walk per-Problem proved.lean files")
-    print("    - INSERT into library_index for any line not already indexed")
-    print("    - emit reconciliation event for entries pre-existing in DB")
-    print("  (stub: no rows touched in C44)")
+    from Tooling.library.reindex import reindex_library
+
+    db = db_path or _DEFAULT_DB
+    base = base_dir or _DEFAULT_BASE
+    conn = connect(db)
+    try:
+        init_schema(conn)
+        result = reindex_library(conn, base)
+        print(f"library reindex: scanned {result.n_lines_scanned} line(s)")
+        print(f"  source: {result.library_file}")
+        if result.inserted:
+            print(f"  inserted ({len(result.inserted)}):")
+            for n in result.inserted:
+                print(f"    + {n}")
+        if result.already_indexed:
+            print(f"  already indexed: {len(result.already_indexed)} entries")
+        if result.unresolved:
+            print(
+                f"  unresolved ({len(result.unresolved)}, no proved "
+                f"goal matched):"
+            )
+            for n in result.unresolved:
+                print(f"    ? {n}")
+        if result.unparsed:
+            print(f"  unparsed ({len(result.unparsed)}, hand-edits?):")
+            for line in result.unparsed:
+                print(f"    ! {line}")
+        if not (result.inserted or result.unresolved or result.unparsed):
+            print("  no changes (file ⊆ index)")
+    finally:
+        conn.close()
 
 
 def cmd_library_audit(args: Any, db_path: Path | None = None) -> None:

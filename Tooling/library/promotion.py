@@ -215,15 +215,23 @@ def _resolve_lake_verify(
 ) -> Callable[[Path], bool]:
     """C41 R3 HIGH-2 fix: refuse to noop silently.
 
-    Resolution order:
-      1. Explicit `lake_verify` argument (test fixture or P6.C45+
-         production verifier) — used as-is.
-      2. `LIBRARY_VERIFY_NOOP=1` env (set by scheduler hook in C41
+    Resolution order (P6 C45: LIBRARY_BUILD_FAULT supersedes NOOP):
+      1. `LIBRARY_BUILD_FAULT=1` env (P6 C45 test hook per
+         docs/dev/test_hooks.md row 32) — return always-False so the
+         caller hits the revert path. Takes precedence over an
+         explicit lake_verify argument because the test purpose is to
+         simulate a verifier rejection regardless of which verifier is
+         in use.
+      2. Explicit `lake_verify` argument (test fixture or production
+         verifier) — used as-is.
+      3. `LIBRARY_VERIFY_NOOP=1` env (set by scheduler hook in C41
          while the real verifier hasn't shipped) — return always-True
          WITH an audit-trail emit by the caller (handled separately).
-      3. Otherwise raise NotImplementedError so a production caller
+      4. Otherwise raise NotImplementedError so a production caller
          that forgot to wire a verifier doesn't silently pass.
     """
+    if os.environ.get("LIBRARY_BUILD_FAULT") == "1":
+        return lambda _path: False
     if lake_verify is not None:
         return lake_verify
     if os.environ.get("LIBRARY_VERIFY_NOOP") == "1":

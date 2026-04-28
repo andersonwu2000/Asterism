@@ -4,9 +4,37 @@
 
 ## Commit：
 
+**C45 R1 — LIBRARY_BUILD_FAULT env hook + library reindex migration**
+
+Hash: pending — P6 C45 R1: env hook + reindex tool, both behind the previously-stub `library reindex` CLI binding.
+
+### 改動摘要
+
+- **Tooling/library/promotion.py** `_resolve_lake_verify` precedence rewrite: `LIBRARY_BUILD_FAULT=1` now precedes both explicit lake_verify argument and `LIBRARY_VERIFY_NOOP=1`. Forces revert path during acceptance + integration tests; documented in docstring resolution-order block (1→2→3→4)。
+- **Tooling/library/reindex.py 全新 ~140 行 / 1 module**: `reindex_library(conn, base_dir) -> ReindexResult`。Walks `Library/Theorems/proved.lean`、parse spike-024 D-24-1 schema regex、INSERT 缺漏 row、resolve `source_root_id` via lowest-id `goals(problem,slug,status='proved')` JOIN。Skip per-Problem proved.lean（不在 library_index 範圍）。idempotent。surfaces unresolved / unparsed lists for operator inspection。
+- **Tooling/cli.py** `cmd_library_reindex`: 從 stub 改實接 reindex_library；output 印 inserted / already_indexed / unresolved / unparsed counts。signature 新加 `base_dir` kwarg。
+- **Tooling/tests/test_library_c45.py 全新 / 14 tests**: TestLibraryBuildFaultEnvHook (5、_resolve_lake_verify precedence + end-to-end revert) + TestReindexLibrary (7、insert/skip/unresolved/unparsed/blank/idempotent) + TestCmdLibraryReindex (2 CLI smoke)。
+- **Tooling/tests/test_cli_c44.py** 一 test 改名（`test_reindex_stub` → `test_reindex_runs`）— 因 C45 已實 stub。
+
+### CI
+
+879 → 893 pass (+14) / 30 skipped / 1 xfailed / 0 regression。
+
+### 範圍邊界
+
+- `LIBRARY_BUILD_FAULT` 為 P6 C45 docs/dev/test_hooks.md row 32 凍結 hook、`1`/`0` 二值（行頭 `1` always-fail）。設「supersedes explicit lake_verify」字面違反 `_resolve_lake_verify` 的 #1 條，這是預期 — env hook test purpose 即是「不論 verifier 在哪都模擬 fail」。
+- reindex 只 walk `Library/Theorems/proved.lean`；per-Problem `Problems/<p>/proved.lean` 不 index（spec 與 promotion.py 一致：per-Problem 檔案非 framework-global）。
+- reindex 不 DELETE 既有 row（已 indexed 但檔案無對應行可能來自其他 layer / 延後 source）。
+
+### orchestrator note candidate 新增 #4
+
+「auditor 跑 background subprocess 同 workdir 會 git stash 我 in-progress 改動 — C45 R1 半路被 stash@{0} 攔下、git stash pop 救回」→ 教訓：parallel cycle 的 R1 改動先 commit、再 spawn auditor；或用 worktree 隔離。
+
+---
+
 **C44 R1 — CLI 擴 + per-Problem pause daemon hook + bypass startup**
 
-Hash: pending — P6 C44 R1: CLI extension cluster (problem / library / scheduler) + scheduler.py daemon hooks for per-Problem pause + bypass-startup-check.
+Hash: `b3e3c10` — P6 C44 R1: CLI extension cluster (problem / library / scheduler) + scheduler.py daemon hooks for per-Problem pause + bypass-startup-check.
 
 ### 改動摘要
 

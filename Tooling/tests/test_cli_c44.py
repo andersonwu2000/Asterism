@@ -383,10 +383,13 @@ class TestLibraryCheckDeps:
 
 
 class TestLibraryStubs:
-    def test_reindex_stub(self, db_path, capsys):
-        cmd_library_reindex(_args(), db_path=db_path)
+    # C45 lifted reindex out of stub status; the reindex tests now live
+    # in test_library_c45.py. We keep one CLI invocation here as a smoke
+    # check that the wiring still parses + runs without raising.
+    def test_reindex_runs(self, db_path, tmp_path, capsys):
+        cmd_library_reindex(_args(), db_path=db_path, base_dir=tmp_path)
         out = capsys.readouterr().out
-        assert "deferred" in out
+        assert "library reindex:" in out
 
     def test_audit_stub(self, db_path, capsys):
         cmd_library_audit(_args(), db_path=db_path)
