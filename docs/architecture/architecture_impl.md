@@ -325,6 +325,14 @@ models:                        # 選擇性：覆寫框架 agent.model_defaults
 
 Library/Counterexamples/ promotion 對 computational entry 額外檢 metadata 完整（evaluator_hash + range + seed 都在）。
 
+### 5.3.x Forbidden lemmas blacklist（P6.x patch 21）
+
+獨立於 axioms whitelist 的 per-Problem 硬閘門：META.md `forbidden_lemmas: [...]` 列禁用的全限定 theorem 名。Cascade 在 trust_set + accept_rule 之後 grep strategy file 文字、若任一 forbidden lemma 出現 → 不 promote、mark strategy dead、寫 `dead_attempts.outcome='forbidden_lemma_used'`。
+
+axioms whitelist 限「公理」、forbidden_lemmas 限「具名 theorem」。前者是哲學門檻（可信公理基礎）、後者是工程門檻（防 agent 用 Mathlib 完整 proof 秒殺、強制框架走拆解）。兩者**互補**而非替代：whitelist 不夠擋 simp 內部用任何 lemma；blacklist 不夠擋 axioms 不一致。實戰兩個都要列。
+
+實作：text grep + word-boundary lookahead（`(?<![\w.])<lemma>(?![\w])`），在 strategy file 文字層面看引用。已知盲區：proof term 內部用 forbidden lemma（如 `by simp` 内部走 forbidden lemma 但 .lean 文字只有 `by simp`）grep 不到 — 未來可升級成 Lean walker 走 transitive constants。
+
 ---
 
 ## 6. Stage 實作補充
