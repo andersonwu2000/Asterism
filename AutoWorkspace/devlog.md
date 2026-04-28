@@ -4,6 +4,42 @@
 
 ## Commit：
 
+**C20 R3 — Fix R2 audit findings (spec §7.1 NOVEL + cache mode='dedupe')**
+
+Hash: `72258af` — P3 C20 R3: fix R2 audit findings.
+
+### 改動摘要
+
+- **HIGH-1 [§7.1 字面]**: `tools/dedupe.lean` strict elab fail 改回 NOVEL 對齊 spec「elaborate 失敗 → NOVEL 容錯不報錯」。實作：candidate elab fail 印 `IO.eprintln s!"warn: candidate elab failed: {err}"` 到 stderr + 印 `{"result": "novel"}` 到 stdout、rc=0；entries.json parse fail 同處理。`DedupeOutput` struct 移除 `error` field、移除 `elab_failed` result 種類。Python `DedupeResult.outcome` enum {hit, novel, timeout}（去掉 elab_failed）。`_run_lean_dedupe` 移除 elab_failed 路徑。
+- **HIGH-2 [§2.3 字面]**: `dedupe.py` search_cache row 寫入 `mode='strict'` 改 `mode='dedupe'`（scope 也 'dedupe'）。spec §2.3 line 112 字面要求 C21 mutation invalidation hook 用 `WHERE mode='dedupe'` 篩 dedupe row；不修則 C21 hook silent miss 全部 dedupe row → P3 demo D1 跑時 cache poisoning。
+- **MED-3 [§2.2 字面 + spec gap]**: `search.py` `_cache_key` + `search()` 加 `problem_scope: str = ""` 參數對齊 spec §2.2 「key = SHA256(scope + "|" + mode + "|" + query + "|" + problem_or_empty)」。Schema column `problem_scope` 缺為 P1 spec gap（search_cache 只有 query_hash/scope/mode/results/expires_at）；orchestrator 決定走 hash-only 防碰撞（多 Problem 跨 Goal 不踩同 hash key）、SQL filter by problem 留 P6 視需要 migration。docstring 明標 spec gap caveat。
+- **MED-4 [§2.1 字面]**: dedupe TTL `_DEFAULT_CACHE_TTL_SECS = 3600.0` 改 `86400 * 365`（1 年）對齊 spec「dedupe 不靠 TTL」。真實 invalidation 由 C21 mutation hook 處理；TTL 只防意外永久殘留。docstring 加註明。
+- **LOW-5**: `test_dedupe.py` 加 `TestMockBypassesCache` class 2 tests（mock bypasses cache lookup + mock outcome 不寫 cache）。
+- **LOW-6**: `dedupe.py` module docstring 加 timeout asymmetry 註：dedupe 回 outcome='timeout' 是 documented；search 端 raise（無對應 outcome 值）。
+
+### Hybrid mode
+
+R3 由 orchestrator (Opus 4.7) inline 完成。**R2 audit 抓到 HIGH-1 / HIGH-2 兩條 spec 字面違反**——hybrid R1 即便 Opus 直接做仍漏 spec 字面細節（dedupe.lean 加了 `elab_failed` 第三類 outcome 違反 §7.1；cache mode='strict' 違反 §2.3）。R2 獨立 Opus auditor 抓到、R3 我修。**證明 R2 Audit 即便 hybrid mode 仍不可省**——hybrid R1 第二次（C18 R1 BACKWARD_MOCK fallback、C20 R1 spec 字面 2 處）有獨立 review 才修。
+
+### MED-3 spec gap escalation
+
+search_cache schema 缺 `problem_scope` column 為 P1 schema gap。3 選項：
+- (A) amend schema_v1 → 違反 task.md「schema 一次到位」
+- (B) P6 補 migration → defer
+- (C) 接受 forward-compat 限定（hash key only、SQL 不 filter）→ **C20 R3 採用**
+
+User 後續可推翻；當前 caveat 已 search.py docstring + state.md ## P3 progress 記錄。
+
+### Caveats
+
+- 全套 456 pass + 3 skipped、0 regression。
+- iff_lite mode 仍 stub（C23 真實接 simp/decide/norm_num/ring_nf）。
+- dedupe.lean cross-env isDefEq 對 Lean core OK / Mathlib 類型 false negative（C23 follow-up）。
+
+---
+
+
+
 **C20 R1 — Cache subsystem 實作 (dedupe.lean + search.lean + Python wrappers)**
 
 Hash: `3b789dc` — P3 C20 R1: dedupe.lean + search.lean + Python wrappers.
