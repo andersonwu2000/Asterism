@@ -1088,6 +1088,17 @@ class Reactor:
         line 330: "Builder/Backward 鏈成功 → Goal status=proved, twin (若有)
         status=refuted"). Symmetric: works whether the proved goal is a
         user conjecture (G) or a Refuter-spawned negation (¬G).
+
+        TX caveat (C30 R2 LOW-2): the G-UPDATE and twin-cascade UPDATE land
+        in **separate** transactions — the `with self.conn` block here
+        commits before _cascade_twin_to_refuted opens its own. Spec §6
+        line 324 calls for single-TX cascade; this codebase's existing
+        pattern (mirrors `_mark_strategy_dead` line 506-535) uses
+        sequential TXs and the realignment is deferred to a P5+ scheduler
+        refactor. Concrete failure mode: if twin UPDATE raises sqlite3.Error
+        after G is committed, FatalError halts but DB shows G='proved' +
+        twin='open' — operator sees the inconsistency on resume rather
+        than a clean rollback.
         """
         with self.conn:
             self.conn.execute(
@@ -1169,9 +1180,13 @@ class Reactor:
             raise FatalError(msg)
 
         if twin_status == "refuted":
-            # Idempotent: twin already refuted (e.g. cascade replayed).
-            # Counterexample silver→gold path would land here once that
-            # pipeline is undeferred; for C30 this is a no-op.
+            # Idempotent **while Counterexample is deferred**: under current
+            # scope the only refuted-writer is this cascade, so twin already
+            # refuted means type='classical' is already in place — no-op is
+            # correct. When Counterexample lands (task.md ## 延後 cycles),
+            # this branch must inspect twin_answer_data ->> '$.type'; if
+            # 'witness' (silver verdict), upgrade trust_set to classical
+            # lean_axioms inherited from ¬G (silver → gold, acceptance #5).
             return
 
         # Flip twin to refuted (classical type, with cross-reference back
