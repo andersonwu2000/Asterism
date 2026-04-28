@@ -286,15 +286,16 @@ class TestSubprocessInvocation:
             )
 
         argv = mock.call_args[0][0]
-        # lake env lean --run <validator.lean> -- hypothesis_carry --parent <p> --subgoals <s1> <s2>
+        # P6.x patch 14 (Round-2 演習): drop `--` separator. lake/lean
+        # v4.30 forwards `--` into argv and parseArgs rejects.
+        # lake env lean --run <validator.lean> hypothesis_carry --parent <p> --subgoals <s1> <s2>
         assert argv[0:3]   == ["lake", "env", "lean"]
         assert argv[3]     == "--run"
-        assert argv[5]     == "--"
-        assert argv[6]     == "hypothesis_carry"
-        assert argv[7]     == "--parent"
-        assert argv[8]     == "/tmp/parent.lean"
-        assert argv[9]     == "--subgoals"
-        assert argv[10:12] == ["/tmp/sub0.lean", "/tmp/sub1.lean"]
+        assert argv[5]     == "hypothesis_carry"
+        assert argv[6]     == "--parent"
+        assert argv[7]     == "/tmp/parent.lean"
+        assert argv[8]     == "--subgoals"
+        assert argv[9:11]  == ["/tmp/sub0.lean", "/tmp/sub1.lean"]
         assert mock.call_args[1]["cwd"] == "/tmp/lake"
 
 

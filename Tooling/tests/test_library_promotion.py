@@ -101,9 +101,19 @@ def _seed_proved_other(conn, *, origin: str, slug: str = "g",
 
 class TestReExportLine:
     def test_format_per_spike_024(self):
-        goal = {"id": 42, "problem": "demo", "slug": "add_comm"}
+        """P6.x patch 5 + 22: theorem requires explicit `: <type>`
+        annotation (Lean 4 syntax); numeric-prefix segment wrapped in
+        french quotes; source derived from strategy lean_path module
+        path (legacy fallback uses goal-file path when no strategy)."""
+        goal = {
+            "id": 42,
+            "problem": "demo",
+            "slug": "add_comm",
+            "question": "1 + 2 = 2 + 1",
+        }
         assert _re_export_line(goal) == (
-            "theorem demo.add_comm := Problems.demo.Goals.42_add_comm.add_comm\n"
+            "theorem demo.add_comm : 1 + 2 = 2 + 1 := "
+            "Problems.demo.Goals.«42_add_comm».add_comm\n"
         )
 
 

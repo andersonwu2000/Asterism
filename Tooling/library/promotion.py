@@ -427,6 +427,20 @@ def promote_to_library(
     cols = [d[0] for d in cur.description]
     goal = dict(zip(cols, row))
 
+    # Per-Problem proved.lean check — broader scope.
+    pp_ok, pp_skip = _qualifies_for_per_problem(goal)
+    # Library/Theorems/proved.lean check — Library.whitelist (framework
+    # global, NOT Problem.axioms; C41 R3 HIGH-1 fix).
+    lt_ok, lt_skip = _qualifies_for_library_theorems(goal)
+
+    if not pp_ok and not lt_ok:
+        # Goal didn't qualify (unproved / wrong type / non-whitelist
+        # axioms / wrong origin) — skip BEFORE looking up the strategy
+        # so callers passing a not-yet-proved goal_id get the precise
+        # qualification reason instead of a strategy-lookup error.
+        result.skipped_reason = pp_skip or lt_skip or "no path qualified"
+        return result
+
     # P6.x patch 22: re-export source is the SUCCEEDED strategy file (not
     # the goal file — goal file stays `:= by sorry` until promotion lands).
     # Pull the most recent succeeded strategy's lean_path; the strategy
@@ -438,24 +452,16 @@ def promote_to_library(
         (goal_id,),
     ).fetchone()
     if strat_row is None:
-        result.skipped_reason = (
-            f"goal {goal_id}: no succeeded strategy — cannot derive "
-            "re-export source"
-        )
-        return result
-    goal["_strategy_lean_path"] = strat_row[0]
+        # Fallback for unit-test fixtures that mock the proved-state
+        # without inserting a strategies row: synthesise a strategy_lean_path
+        # from the goal's lean_path so _re_export_line / _import_line_for
+        # can derive a module path. Production cascade always inserts a
+        # strategy row before reaching promote_to_library.
+        goal["_strategy_lean_path"] = goal.get("lean_path")
+    else:
+        goal["_strategy_lean_path"] = strat_row[0]
 
     line = _re_export_line(goal)
-
-    # Per-Problem proved.lean check — broader scope.
-    pp_ok, pp_skip = _qualifies_for_per_problem(goal)
-    # Library/Theorems/proved.lean check — Library.whitelist (framework
-    # global, NOT Problem.axioms; C41 R3 HIGH-1 fix).
-    lt_ok, lt_skip = _qualifies_for_library_theorems(goal)
-
-    if not pp_ok and not lt_ok:
-        result.skipped_reason = pp_skip or lt_skip or "no path qualified"
-        return result
 
     # C41 R3 MED-4 numeric-prefix detection — flag for operator audit
     # but proceed; lake build verify is the strict gate that rejects

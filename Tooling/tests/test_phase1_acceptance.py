@@ -530,8 +530,12 @@ class TestAC8TWallTimeout:
         _, conn = _make_db(tmp_path)
 
         strategy_lean = tmp_path / "strat.lean"
+        # P6.x patch 19: source must contain `sorry` so verify-as-is path
+        # is skipped and tactic_try runs (test exercises T_wall break in
+        # the tactic_try loop, which only fires when the body still has
+        # the by-sorry placeholder).
         strategy_lean.write_text(
-            "theorem foo (n : Nat) : n + 0 = n := by simp\n", encoding="utf-8"
+            "theorem foo (n : Nat) : n + 0 = n := by sorry\n", encoding="utf-8"
         )
         goal_lean = tmp_path / "goal.lean"
         goal_lean.write_text("-- goal\n", encoding="utf-8")

@@ -173,7 +173,12 @@ class TestModeValidation:
 
     def test_no_env_runs_real_path(self, tmp_path, monkeypatch):
         """When env is not set, _maybe_apply_mock returns None and invoke
-        proceeds to the real subprocess.run path."""
+        proceeds to the real subprocess.run path.
+
+        P6.x patch 7: invoke now also runs `git status --porcelain` once
+        as the baseline snapshot for check_scope's delta comparison, so
+        subprocess.run is called twice (baseline + claude) per invoke.
+        """
         monkeypatch.delenv("PROVIDER_MOCK_CLAUDE", raising=False)
         p = ClaudeProvider(repo_root=tmp_path)
         with patch(
@@ -183,7 +188,9 @@ class TestModeValidation:
             ),
         ) as mock_run:
             resp = p.invoke("sonnet", "p", [str(tmp_path)], "s1")
-        mock_run.assert_called_once()
+        # 2 calls: baseline git status + actual claude invocation.
+        assert mock_run.call_count == 2
+        # Last call (claude) returns "real".
         assert resp.output == "real"
 
     def test_empty_env_treated_as_no_mock(self, tmp_path, monkeypatch):
