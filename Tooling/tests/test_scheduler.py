@@ -1,6 +1,6 @@
 """Unit tests for Tooling.scheduler.Reactor.
 
-Covered cases:
+Existing coverage (20 tests):
   1. startup: recover_scan triggered; DB schema created
   2. queue pop: task returned + row deleted; None when empty; priority/FIFO order
   3. dispatch: Builder spawned with correct strategy_id; unknown kind raises FatalError
@@ -9,19 +9,35 @@ Covered cases:
   6. fatal halt: cascade SQL error → fatal event emitted + FatalError raised
   7. run loop: FatalError → sys.exit(1); empty queue → sys.exit(0)
 
-lake / Builder fully mocked; no real subprocess.
+New coverage (34 tests):
+  8.  Backward dispatch
+  9.  Daemon mode: run_daemon exits on shutdown, creates pool
+  10. Event dispatch: 4-event kind dispatch
+  11. Atomic pool: cap, pause, _running tracking
+  12. Structural refill BFS: open goals, D_max, leaf strategy, all-proved, no-dup
+  13. N_block_after_failures stop-gap
+  14. Cascade V2: strategy dead → shelved; not-all-dead; backward failure count
+  15. Trust set + accept rule
+  16. Cancellation step 2
+  17. Control signal: pause / resume / shutdown
+  18. Hook placeholder no-ops (step 1 / step 5)
+
+lake / Builder / Backward fully mocked; no real subprocess.
 """
 from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+import time
 from pathlib import Path
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
 from Tooling.commit import CommitWriter
 from Tooling.db.connect import init_schema
+from Tooling.pipelines.backward import BackwardResult
 from Tooling.pipelines.builder import BuilderResult
 from Tooling.scheduler import FatalError, Reactor, ReactorConfig
 
@@ -92,6 +108,82 @@ def _enqueue(
             (kind, target_id, priority, now),
         )
     return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+def _insert_open_goal(
+    conn: sqlite3.Connection,
+    tmp_path: Path,
+    *,
+    slug: str = "g",
+    depth: int = 0,
+    problem: str = "ex",
+) -> int:
+    """Insert a minimal open theorem goal; return goal_id."""
+    lean = tmp_path / f"{slug}.lean"
+    lean.write_text("placeholder", "utf-8")
+    now = "2026-01-01T00:00:00+00:00"
+    with conn:
+        conn.execute(
+            "INSERT INTO goals (problem, slug, lean_path, origin, kind, status, "
+            "commit_state, depth, created_at, updated_at) VALUES "
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (problem, slug, str(lean), "root", "theorem", "open", "live",
+             depth, now, now),
+        )
+    return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+def _insert_strategy(
+    conn: sqlite3.Connection,
+    tmp_path: Path,
+    goal_id: int,
+    *,
+    slug: str = "s",
+    status: str = "proposed",
+) -> int:
+    """Insert a strategy row; return strategy_id."""
+    lean = tmp_path / f"{slug}.lean"
+    lean.write_text("placeholder", "utf-8")
+    now = "2026-01-01T00:00:00+00:00"
+    with conn:
+        conn.execute(
+            "INSERT INTO strategies (goal_id, lean_path, status, commit_state, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (goal_id, str(lean), status, "live", now),
+        )
+    return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+def _insert_proved_goal(
+    conn: sqlite3.Connection,
+    tmp_path: Path,
+    *,
+    slug: str = "pg",
+) -> int:
+    """Insert a proved sub-goal; return goal_id."""
+    lean = tmp_path / f"{slug}.lean"
+    lean.write_text("placeholder", "utf-8")
+    now = "2026-01-01T00:00:00+00:00"
+    with conn:
+        conn.execute(
+            "INSERT INTO goals (problem, slug, lean_path, origin, kind, status, "
+            "commit_state, depth, created_at, updated_at) VALUES "
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("ex", slug, str(lean), "backward", "theorem", "proved", "live",
+             1, now, now),
+        )
+    return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+def _link_subgoal(
+    conn: sqlite3.Connection, strategy_id: int, subgoal_id: int, position: int = 0
+) -> None:
+    with conn:
+        conn.execute(
+            "INSERT INTO strategy_subgoals (strategy_id, subgoal_id, position) "
+            "VALUES (?, ?, ?)",
+            (strategy_id, subgoal_id, position),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +258,7 @@ class TestQueuePop:
 
 
 # ---------------------------------------------------------------------------
-# 3. dispatch
+# 3. dispatch (Builder + updated unknown-kind test)
 # ---------------------------------------------------------------------------
 
 
@@ -190,7 +282,7 @@ class TestDispatch:
     ) -> None:
         """Unknown kind: FatalError raised AND fatal event emitted (R2 #3)."""
         reactor = _make_reactor(db, tmp_path)
-        task = {"id": 1, "kind": "Backward", "target_id": "1", "payload": None}
+        task = {"id": 1, "kind": "Refuter", "target_id": "1", "payload": None}
         with pytest.raises(FatalError):
             reactor._dispatch(task)
 
@@ -199,11 +291,46 @@ class TestDispatch:
         ).fetchone()
         assert event is not None
         payload = json.loads(event[1])
-        assert "Backward" in payload["error"]
+        assert "Refuter" in payload["error"]
 
 
 # ---------------------------------------------------------------------------
-# 4. cascade: proved
+# 3b. Backward dispatch (P2 new)
+# ---------------------------------------------------------------------------
+
+
+class TestBackwardDispatch:
+    def test_backward_spawned_with_correct_goal_id(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """_dispatch with Backward calls Backward(conn, chain, cfg).run(goal_id)."""
+        reactor = _make_reactor(db, tmp_path)
+        task = {"id": 1, "kind": "Backward", "target_id": "99", "payload": None}
+
+        with patch("Tooling.scheduler.Backward") as MockBackward, \
+             patch.object(reactor, "_make_fallback_chain", return_value=MagicMock()):
+            MockBackward.return_value.run.return_value = BackwardResult(outcome="exhausted")
+            reactor._dispatch(task)
+
+        MockBackward.return_value.run.assert_called_once_with(99)
+
+    def test_backward_exhausted_increments_failure_count(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Backward exhausted in _dispatch → failure_count incremented."""
+        reactor = _make_reactor(db, tmp_path)
+        task = {"id": 1, "kind": "Backward", "target_id": "77", "payload": None}
+
+        with patch("Tooling.scheduler.Backward") as MockBackward, \
+             patch.object(reactor, "_make_fallback_chain", return_value=MagicMock()):
+            MockBackward.return_value.run.return_value = BackwardResult(outcome="exhausted")
+            reactor._dispatch(task)
+
+        assert reactor._get_failure_count("77", "Backward") == 1
+
+
+# ---------------------------------------------------------------------------
+# 4. cascade proved
 # ---------------------------------------------------------------------------
 
 
@@ -425,3 +552,592 @@ class TestQueueEmptyExit:
         with pytest.raises(SystemExit) as exc_info:
             reactor.run()
         assert exc_info.value.code == 0
+
+
+# ---------------------------------------------------------------------------
+# 8. Daemon mode (P2)
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonMode:
+    def test_run_daemon_exits_on_shutdown(self, tmp_path: Path) -> None:
+        """run_daemon exits cleanly when shutdown control_signal is received."""
+        db_path = tmp_path / "test.db"
+        reactor = Reactor(str(db_path), ReactorConfig(tick_interval=10.0))
+
+        def _send_shutdown() -> None:
+            time.sleep(0.05)
+            reactor._event_queue.put(("control_signal", "shutdown"))
+
+        t = threading.Thread(target=_send_shutdown)
+        t.start()
+        reactor.run_daemon()
+        t.join(timeout=2.0)
+        assert reactor._shutdown_flag
+
+    def test_run_daemon_creates_thread_pool(self, tmp_path: Path) -> None:
+        """run_daemon creates a ThreadPoolExecutor before the event loop."""
+        db_path = tmp_path / "test.db"
+        reactor = Reactor(str(db_path), ReactorConfig(tick_interval=10.0))
+
+        def _shutdown_soon() -> None:
+            time.sleep(0.05)
+            reactor._event_queue.put(("control_signal", "shutdown"))
+
+        t = threading.Thread(target=_shutdown_soon)
+        t.start()
+        reactor.run_daemon()
+        t.join(timeout=2.0)
+        assert reactor._pool is not None
+
+
+# ---------------------------------------------------------------------------
+# 9. Event dispatch (P2)
+# ---------------------------------------------------------------------------
+
+
+class TestEventDispatch:
+    def test_pipeline_finished_routes_to_handler(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """pipeline_finished event → _handle_pipeline_finished called."""
+        reactor = _make_reactor(db, tmp_path)
+        task = {"kind": "Builder", "target_id": "1"}
+        result = BuilderResult(outcome="exhausted")
+
+        with patch.object(reactor, "_handle_pipeline_finished") as mock_h:
+            reactor._dispatch_event(("pipeline_finished", task, result))
+
+        mock_h.assert_called_once_with(task, result)
+
+    def test_control_signal_routes_to_handler(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """control_signal event → _handle_control_signal called with action."""
+        reactor = _make_reactor(db, tmp_path)
+
+        with patch.object(reactor, "_handle_control_signal") as mock_h:
+            reactor._dispatch_event(("control_signal", "pause"))
+
+        mock_h.assert_called_once_with("pause")
+
+    def test_fatal_event_routes_to_handler(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """fatal event → _handle_fatal_event called."""
+        reactor = _make_reactor(db, tmp_path)
+
+        with patch.object(reactor, "_handle_fatal_event") as mock_h:
+            reactor._dispatch_event(("fatal", "something went wrong"))
+
+        mock_h.assert_called_once_with("something went wrong")
+
+    def test_task_checkpoint_silently_discarded(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """task_checkpoint: P5 handler; P2 discards without error or event."""
+        reactor = _make_reactor(db, tmp_path)
+        # Should not raise
+        reactor._dispatch_event(("task_checkpoint", {"data": "ignored"}))
+        assert db.execute("SELECT count(*) FROM events").fetchone()[0] == 0
+
+    def test_pipeline_finished_calls_all_6_steps(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """_handle_pipeline_finished invokes all 6 step methods in order."""
+        reactor = _make_reactor(db, tmp_path)
+        task = {"kind": "Builder", "target_id": "1"}
+        result = BuilderResult(outcome="exhausted")
+        call_order: list[str] = []
+
+        def _record(name: str):
+            def _inner(*a, **kw):
+                call_order.append(name)
+            return _inner
+
+        with patch.object(reactor, "_run_step1_stale_filter", side_effect=_record("s1")), \
+             patch.object(reactor, "_run_step2_cancellation", side_effect=_record("s2")), \
+             patch.object(reactor, "_run_step3_cascade", side_effect=_record("s3")), \
+             patch.object(reactor, "_run_step4_trust_set", side_effect=_record("s4")), \
+             patch.object(reactor, "_run_step5_strategist_trigger", side_effect=_record("s5")), \
+             patch.object(reactor, "_run_step6_spawn", side_effect=_record("s6")):
+            reactor._handle_pipeline_finished(task, result)
+
+        assert call_order == ["s1", "s2", "s3", "s4", "s5", "s6"]
+
+
+# ---------------------------------------------------------------------------
+# 10. Atomic pool
+# ---------------------------------------------------------------------------
+
+
+class TestAtomicPool:
+    def test_submit_task_adds_to_running(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """_submit_task registers (target_id, kind) in _running before thread starts."""
+        reactor = _make_reactor(db, tmp_path)
+        reactor._pool = MagicMock()
+        task = {"kind": "Builder", "target_id": "42", "payload": None}
+
+        reactor._submit_task(task)
+
+        with reactor._lock:
+            entries = list(reactor._running.values())
+        assert any(tid == "42" and k == "Builder" for tid, k in entries)
+
+    def test_try_spawn_respects_pool_cap(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """_try_spawn_from_queue does not pop when pool is at capacity."""
+        reactor = _make_reactor(db, tmp_path)
+        reactor.config = ReactorConfig(pool_size=1)
+        reactor._pool = MagicMock()
+        reactor._running["fake"] = ("1", "Builder")  # pool at cap
+        _enqueue(db, "Builder", "2")
+
+        with patch.object(reactor, "_submit_task") as mock_submit:
+            reactor._try_spawn_from_queue()
+
+        mock_submit.assert_not_called()
+        assert db.execute("SELECT count(*) FROM queue").fetchone()[0] == 1
+
+    def test_try_spawn_skips_when_paused(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """_try_spawn_from_queue does not pop tasks when reactor is paused."""
+        reactor = _make_reactor(db, tmp_path)
+        reactor._pool = MagicMock()
+        reactor._paused = True
+        _enqueue(db, "Builder", "1")
+
+        with patch.object(reactor, "_submit_task") as mock_submit:
+            reactor._try_spawn_from_queue()
+
+        mock_submit.assert_not_called()
+        assert db.execute("SELECT count(*) FROM queue").fetchone()[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# 11. Structural refill BFS
+# ---------------------------------------------------------------------------
+
+
+class TestStructuralRefill:
+    def test_bfs_enqueues_backward_for_open_goal(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Open theorem goal → Backward enqueued in queue table."""
+        goal_id = _insert_open_goal(db, tmp_path, slug="thm1")
+        reactor = _make_reactor(db, tmp_path)
+        reactor._bfs_enqueue_backward()
+
+        row = db.execute(
+            "SELECT kind, target_id FROM queue WHERE kind='Backward'"
+        ).fetchone()
+        assert row is not None
+        assert row[1] == str(goal_id)
+
+    def test_bfs_shelves_goal_at_d_max(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Goal at depth >= D_max → shelved, NOT enqueued."""
+        goal_id = _insert_open_goal(db, tmp_path, slug="deep", depth=12)
+        reactor = _make_reactor(db, tmp_path)
+        reactor._bfs_enqueue_backward()
+
+        status = db.execute(
+            "SELECT status FROM goals WHERE id = ?", (goal_id,)
+        ).fetchone()[0]
+        assert status == "shelved"
+        assert db.execute("SELECT count(*) FROM queue").fetchone()[0] == 0
+
+    def test_bfs_enqueues_builder_for_leaf_strategy(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Strategy with no sub-goals (leaf) → Builder enqueued."""
+        goal_id = _insert_open_goal(db, tmp_path, slug="leaf_g")
+        strat_id = _insert_strategy(db, tmp_path, goal_id, slug="leaf_s")
+        reactor = _make_reactor(db, tmp_path)
+        reactor._bfs_enqueue_builder()
+
+        row = db.execute(
+            "SELECT kind, target_id FROM queue WHERE kind='Builder'"
+        ).fetchone()
+        assert row is not None
+        assert row[1] == str(strat_id)
+
+    def test_bfs_enqueues_builder_for_all_proved_subgoals(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Strategy with all sub-goals proved → Builder enqueued (cascade upward)."""
+        goal_id = _insert_open_goal(db, tmp_path, slug="parent_g")
+        strat_id = _insert_strategy(db, tmp_path, goal_id, slug="parent_s")
+        sg_id = _insert_proved_goal(db, tmp_path, slug="proved_sg")
+        _link_subgoal(db, strat_id, sg_id, position=0)
+
+        reactor = _make_reactor(db, tmp_path)
+        reactor._bfs_enqueue_builder()
+
+        row = db.execute(
+            "SELECT kind, target_id FROM queue WHERE kind='Builder'"
+        ).fetchone()
+        assert row is not None
+        assert row[1] == str(strat_id)
+
+    def test_bfs_no_dup_when_already_queued(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """BFS does not double-enqueue a goal already in the queue."""
+        goal_id = _insert_open_goal(db, tmp_path, slug="dup_g")
+        reactor = _make_reactor(db, tmp_path)
+        reactor._bfs_enqueue_backward()  # first pass
+        reactor._bfs_enqueue_backward()  # second pass — must not add again
+
+        count = db.execute(
+            "SELECT count(*) FROM queue WHERE kind='Backward' AND target_id=?",
+            (str(goal_id),),
+        ).fetchone()[0]
+        assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# 12. N_block_after_failures stop-gap
+# ---------------------------------------------------------------------------
+
+
+class TestFailureCountStopGap:
+    def test_bfs_skips_backward_after_n_failures(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """After N_block_after_failures Backward failures, BFS skips the goal."""
+        goal_id = _insert_open_goal(db, tmp_path, slug="blocked")
+        reactor = _make_reactor(db, tmp_path)
+        for _ in range(reactor.config.n_block_after_failures):
+            reactor._inc_failure_count(str(goal_id), "Backward")
+
+        reactor._bfs_enqueue_backward()
+
+        assert db.execute("SELECT count(*) FROM queue").fetchone()[0] == 0
+
+    def test_bfs_skips_builder_after_n_failures(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """After N_block_after_failures Builder failures on goal, BFS skips strategies."""
+        goal_id = _insert_open_goal(db, tmp_path, slug="bcap_g")
+        _insert_strategy(db, tmp_path, goal_id, slug="bcap_s")
+        reactor = _make_reactor(db, tmp_path)
+        for _ in range(reactor.config.n_block_after_failures):
+            reactor._inc_failure_count(str(goal_id), "Builder")
+
+        reactor._bfs_enqueue_builder()
+
+        assert db.execute("SELECT count(*) FROM queue").fetchone()[0] == 0
+
+    def test_failure_count_resets_on_new_instance(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """In-memory failure count is not persisted; new Reactor starts from 0."""
+        goal_id = _insert_open_goal(db, tmp_path, slug="reset_g")
+        r1 = _make_reactor(db, tmp_path)
+        for _ in range(r1.config.n_block_after_failures):
+            r1._inc_failure_count(str(goal_id), "Backward")
+        r1._bfs_enqueue_backward()
+        assert db.execute("SELECT count(*) FROM queue").fetchone()[0] == 0
+
+        # New reactor: failure_count starts empty → goal is enqueued again
+        r2 = _make_reactor(db, tmp_path)
+        r2._bfs_enqueue_backward()
+        assert db.execute("SELECT count(*) FROM queue").fetchone()[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# 13. Cascade V2: strategy dead / goal shelved
+# ---------------------------------------------------------------------------
+
+
+class TestCascadeV2:
+    def test_mark_strategy_dead_updates_status(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """_mark_strategy_dead sets strategy.status = 'dead'."""
+        strategy_lean = tmp_path / "strat.lean"
+        strategy_lean.write_text("placeholder", "utf-8")
+        goal_lean = tmp_path / "goal.lean"
+        goal_lean.write_text("placeholder", "utf-8")
+        _, strategy_id = _make_rows(db, strategy_lean, goal_lean)
+
+        _make_reactor(db, tmp_path)._mark_strategy_dead(strategy_id)
+
+        status = db.execute(
+            "SELECT status FROM strategies WHERE id = ?", (strategy_id,)
+        ).fetchone()[0]
+        assert status == "dead"
+
+    def test_all_strategies_dead_shelves_goal(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """When all strategies are dead, goal.status → shelved + cascade event."""
+        strategy_lean = tmp_path / "strat.lean"
+        strategy_lean.write_text("placeholder", "utf-8")
+        goal_lean = tmp_path / "goal.lean"
+        goal_lean.write_text("placeholder", "utf-8")
+        goal_id, strategy_id = _make_rows(db, strategy_lean, goal_lean)
+
+        _make_reactor(db, tmp_path)._mark_strategy_dead(strategy_id)
+
+        status = db.execute(
+            "SELECT status FROM goals WHERE id = ?", (goal_id,)
+        ).fetchone()[0]
+        assert status == "shelved"
+
+        event = db.execute(
+            "SELECT payload FROM events WHERE kind='cascade'"
+        ).fetchone()
+        assert event is not None
+        assert "all_strategies_dead" in json.loads(event[0]).get("rule", "")
+
+    def test_not_all_dead_leaves_goal_open(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """With two strategies, killing one still leaves goal open."""
+        now = "2026-01-01T00:00:00+00:00"
+        goal_lean = tmp_path / "goal.lean"
+        goal_lean.write_text("placeholder", "utf-8")
+        s1_lean = tmp_path / "s1.lean"
+        s1_lean.write_text("placeholder", "utf-8")
+        s2_lean = tmp_path / "s2.lean"
+        s2_lean.write_text("placeholder", "utf-8")
+
+        with db:
+            db.execute(
+                "INSERT INTO goals (problem, slug, lean_path, origin, kind, status, "
+                "commit_state, created_at, updated_at) VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("ex", "two_s", str(goal_lean), "root", "theorem", "open", "live", now, now),
+            )
+            goal_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            db.execute(
+                "INSERT INTO strategies (goal_id, lean_path, status, commit_state, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (goal_id, str(s1_lean), "proposed", "live", now),
+            )
+            s1_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            db.execute(
+                "INSERT INTO strategies (goal_id, lean_path, status, commit_state, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (goal_id, str(s2_lean), "proposed", "live", now),
+            )
+
+        _make_reactor(db, tmp_path)._mark_strategy_dead(s1_id)
+
+        status = db.execute(
+            "SELECT status FROM goals WHERE id = ?", (goal_id,)
+        ).fetchone()[0]
+        assert status == "open"
+
+    def test_cascade_backward_increments_failure_on_exhausted(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Backward exhausted/unproductive → failure_count incremented; success → no change."""
+        reactor = _make_reactor(db, tmp_path)
+        reactor._cascade_backward(42, BackwardResult(outcome="exhausted"))
+        assert reactor._get_failure_count("42", "Backward") == 1
+
+        reactor._cascade_backward(42, BackwardResult(outcome="unproductive"))
+        assert reactor._get_failure_count("42", "Backward") == 2
+
+        reactor._cascade_backward(42, BackwardResult(outcome="success"))
+        assert reactor._get_failure_count("42", "Backward") == 2  # success: no change
+
+
+# ---------------------------------------------------------------------------
+# 14. Trust set + accept rule
+# ---------------------------------------------------------------------------
+
+
+class TestTrustSetAndAccept:
+    def test_trust_set_written_when_print_axioms_succeeds(
+        self,
+        db: sqlite3.Connection,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """trust_set JSON written to goal when print_axioms returns axioms."""
+        monkeypatch.setenv("PRINT_AXIOMS_MOCK", "propext,Classical.choice")
+        strategy_lean = tmp_path / "strat.lean"
+        strategy_lean.write_text("theorem t : True := by trivial", "utf-8")
+        goal_lean = tmp_path / "goal.lean"
+        goal_lean.write_text("placeholder", "utf-8")
+        goal_id, strategy_id = _make_rows(db, strategy_lean, goal_lean)
+
+        _make_reactor(db, tmp_path)._cascade(
+            strategy_id, BuilderResult(outcome="proved")
+        )
+
+        raw = db.execute(
+            "SELECT trust_set FROM goals WHERE id = ?", (goal_id,)
+        ).fetchone()[0]
+        assert raw is not None
+        trust = json.loads(raw)
+        names = {e["name"] for e in trust}
+        assert "propext" in names
+        assert "Classical.choice" in names
+
+    def test_accept_rule_rejects_forbidden_axiom(
+        self,
+        db: sqlite3.Connection,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Accept rule reject: goal not proved + cascade event with rule='accept_rule_rejected'."""
+        monkeypatch.setenv("PRINT_AXIOMS_MOCK", "Classical.choice")
+        problems_dir = tmp_path / "Problems" / "example"
+        problems_dir.mkdir(parents=True)
+        (problems_dir / "META.md").write_text(
+            "---\nproblem_name: example\naxioms:\n  - propext\n---\n",
+            encoding="utf-8",
+        )
+        strategy_lean = tmp_path / "strat.lean"
+        strategy_lean.write_text("placeholder", "utf-8")
+        goal_lean = tmp_path / "goal.lean"
+        goal_lean.write_text("placeholder", "utf-8")
+        goal_id, strategy_id = _make_rows(db, strategy_lean, goal_lean)
+
+        config = ReactorConfig(base_dir=str(tmp_path))
+        reactor = Reactor(str(tmp_path / "test.db"), config)
+        reactor.conn = db
+        reactor._cascade(strategy_id, BuilderResult(outcome="proved"))
+
+        status = db.execute(
+            "SELECT status FROM goals WHERE id = ?", (goal_id,)
+        ).fetchone()[0]
+        assert status != "proved"
+
+        event = db.execute(
+            "SELECT payload FROM events WHERE kind='cascade'"
+        ).fetchone()
+        assert event is not None
+        assert json.loads(event[0]).get("rule") == "accept_rule_rejected"
+
+    def test_trust_set_null_when_lake_unavailable(
+        self,
+        db: sqlite3.Connection,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """lake not available (OSError) → trust_set=null but goal is still proved."""
+        monkeypatch.delenv("PRINT_AXIOMS_MOCK", raising=False)
+        strategy_lean = tmp_path / "strat.lean"
+        strategy_lean.write_text("theorem t : True := by trivial", "utf-8")
+        goal_lean = tmp_path / "goal.lean"
+        goal_lean.write_text("placeholder", "utf-8")
+        goal_id, strategy_id = _make_rows(db, strategy_lean, goal_lean)
+
+        _make_reactor(db, tmp_path)._cascade(
+            strategy_id, BuilderResult(outcome="proved")
+        )
+
+        status = db.execute(
+            "SELECT status FROM goals WHERE id = ?", (goal_id,)
+        ).fetchone()[0]
+        assert status == "proved"
+        trust_raw = db.execute(
+            "SELECT trust_set FROM goals WHERE id = ?", (goal_id,)
+        ).fetchone()[0]
+        assert trust_raw is None
+
+
+# ---------------------------------------------------------------------------
+# 15. Step 2: cancellation
+# ---------------------------------------------------------------------------
+
+
+class TestCancellationStep2:
+    def test_step2_cancel_called_on_proved(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Builder proved → _cancel_running_for_goal called with goal_id."""
+        strategy_lean = tmp_path / "strat.lean"
+        strategy_lean.write_text("placeholder", "utf-8")
+        goal_lean = tmp_path / "goal.lean"
+        goal_lean.write_text("placeholder", "utf-8")
+        goal_id, strategy_id = _make_rows(db, strategy_lean, goal_lean)
+
+        reactor = _make_reactor(db, tmp_path)
+        task = {"kind": "Builder", "target_id": str(strategy_id)}
+
+        with patch.object(reactor, "_cancel_running_for_goal") as mock_cancel:
+            reactor._run_step2_cancellation(task, BuilderResult(outcome="proved"))
+
+        mock_cancel.assert_called_once_with(str(goal_id))
+
+    def test_step2_no_cancel_on_exhausted(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Builder exhausted → _cancel_running_for_goal NOT called."""
+        reactor = _make_reactor(db, tmp_path)
+        task = {"kind": "Builder", "target_id": "1"}
+
+        with patch.object(reactor, "_cancel_running_for_goal") as mock_cancel:
+            reactor._run_step2_cancellation(task, BuilderResult(outcome="exhausted"))
+
+        mock_cancel.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 16. Control signal: pause / resume / shutdown
+# ---------------------------------------------------------------------------
+
+
+class TestControlSignal:
+    def test_pause_sets_paused_flag(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """control_signal pause → reactor._paused = True."""
+        reactor = _make_reactor(db, tmp_path)
+        assert not reactor._paused
+        reactor._handle_control_signal("pause")
+        assert reactor._paused
+
+    def test_resume_clears_paused_flag(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """control_signal resume → reactor._paused = False."""
+        reactor = _make_reactor(db, tmp_path)
+        reactor._paused = True
+        reactor._handle_control_signal("resume")
+        assert not reactor._paused
+
+    def test_shutdown_sets_shutdown_flag(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """control_signal shutdown → reactor._shutdown_flag = True."""
+        reactor = _make_reactor(db, tmp_path)
+        reactor._handle_control_signal("shutdown")
+        assert reactor._shutdown_flag
+
+
+# ---------------------------------------------------------------------------
+# 17. Hook placeholder no-ops (step 1 / step 5)
+# ---------------------------------------------------------------------------
+
+
+class TestHookPlaceholders:
+    def test_step1_stale_filter_is_noop(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """_run_step1_stale_filter does nothing; no exception raised."""
+        reactor = _make_reactor(db, tmp_path)
+        task = {"kind": "Builder", "target_id": "1"}
+        reactor._run_step1_stale_filter(task, BuilderResult(outcome="exhausted"))
+        assert db.execute("SELECT count(*) FROM events").fetchone()[0] == 0
+
+    def test_step5_strategist_trigger_is_noop(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """_run_step5_strategist_trigger does nothing; no exception raised."""
+        reactor = _make_reactor(db, tmp_path)
+        task = {"kind": "Builder", "target_id": "1"}
+        reactor._run_step5_strategist_trigger(task, BuilderResult(outcome="proved"))
+        assert db.execute("SELECT count(*) FROM events").fetchone()[0] == 0
