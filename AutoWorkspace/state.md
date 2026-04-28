@@ -33,7 +33,40 @@
 - 整個 Asterism repo 是 fresh repo（C1 前無 commit）—— framework + spec 該獨立 commit、不混進 phase commit
 
 ## Step
-**P6 ✅ done — paused per user request after C44 R3** (commit `74884cc`).
+**P6 ✅ done + P6.x patch series 24 patches** (latest `459525a`). Real runtime演習 round 1 (reverse_length) + round 2 (non_denumerable) drove patches 1-23 + 22-fix.
+
+**P6.x patch series**（演習-driven、bug-first 修復、所有 patches inline orchestrator）：
+
+| # | commit | 內容 |
+|---|---|---|
+| 1 | `38ae844` | cp950 stdout print fix + lakefile + lean-toolchain |
+| 2 | `fe3ce4f` | subprocess utf-8 encoding (cp950 host) |
+| - | `b2cb3a3` | gitignore演習 transient state + lake-manifest |
+| 8/9/10 | `5097566` | dedupe.lean + validator.lean v4.30 toolchain drift + Backward observability |
+| 7+11+14+15 | `d3de889` | check_scope baseline / fresh session_id / drop `--` separator / enableInitializersExecution |
+| 3+5+17 | `4ca2fe3` | Backward Path A leaf-bypass / proved.lean format / per-Problem idempotency |
+| 19 | `8f12f4d` | Builder verify-as-is for non-sorry source |
+| 4+6+18 | `f26017a` | lake auto-build init / trust_set wiring / proved.lean imports |
+| 21+22 | `994317b` | forbidden_lemmas blacklist + separate strategy file |
+| 23+23-fix | `9fe1cc3` | two-phase commit goal file + skip lake build pre-step |
+| 21.1 | `8b39732` | forbidden_lemmas glob `Cardinal.*` 支援 |
+| ripple | `595a6f4` | tests update for new semantics |
+| 22-fix | `459525a` | print_axioms theorem_name = goal.slug (not file stem) |
+| docs | `279f84a` + `e155f96` | architecture_pipelines + impl §5.3.x + phase6_library forbidden_lemmas / two-phase commit |
+
+CI: 905 pass / 35 skip / 1 xfailed / 0 regression（P6 closure baseline 維持）。
+
+演習結果：
+- **Round 1 reverse_length proved 全鏈** ✓ (real claude + real lake)
+- **Round 2 non_denumerable proved 全鏈** ✓（無 forbidden_lemmas 時用 Cardinal 秒殺）
+- **Round 3 non_denumerable + forbidden_lemmas blacklist** — 進行中（驗 forbidden 真擋下 Cardinal 秒殺）
+
+**P7 預備留尚未測**（P7 不會自動解決、P7 上面是空中樓閣）：
+- 非 leaf 拆分鏈完整端到端（Backward Path B → 真 subgoals → 各自 prove → 父合成）
+- subgoal staging .lean Mathlib import 整合
+- find_lemmas / 跨 goal 引用 proved sibling
+
+**Paused per user request after C44 R3** (commit `74884cc`).
 
 P5 progress: ✅ done (C34-C38, 5/5 cycles, 9 commits)
 

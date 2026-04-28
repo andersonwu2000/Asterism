@@ -459,10 +459,15 @@ class Builder:
                     "messages": lake_result.messages,
                 })
 
-        # Stage 1: tactic_try (only when source has `by sorry` placeholder
-        # to fill in, OR when verify-as-is failed — skip on success)
+        # Stage 1: tactic_try fires only when the source has the `by sorry`
+        # placeholder. If source already had a real proof (Backward leaf-
+        # bypass) and verify-as-is failed, tactic_try would corrupt the
+        # strategy file by replacing the agent's proof with a simpler
+        # tactic that almost certainly won't close the same goal. Mark
+        # exhausted instead — Backward retry produces a new strategy.
+        skip_tactic_try = "sorry" not in source_content
         for tactic in TACTICS:
-            if proved_tactic is not None:
+            if proved_tactic is not None or skip_tactic_try:
                 break
             elapsed = time.monotonic() - self._start
             if elapsed >= self.config.t_wall:
