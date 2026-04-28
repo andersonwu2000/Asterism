@@ -1,12 +1,30 @@
-"""Builder pipeline (P1 simplified).
+"""Builder pipeline (P2).
 
-stages: tactic_try → commit
-Hardcoded tactics: [rfl, simp, decide, norm_num, ring]
-T_wall enforcement: force outcome=exhausted if wall-clock >= t_wall
+stages: tactic_try → failure_replay → find_lemmas → tactic_llm → self_verify → commit
+
+tactic_try hardcoded list: [rfl, simp, decide, norm_num, ring]
+  - pass → commit directly (skip tactic_llm)
+  - exhausted → write dead_attempts → move to failure_replay + tactic_llm loop
+
+failure_replay: reads dead_attempts from DB (target=strategy, K_digest=5, newest first)
+
+find_lemmas: stub — returns empty list (P3 search subsystem)
+
+tactic_llm (agent stage): dispatches to one of three outcomes:
+  a) tactic_proof   → self_verify (single file) → proved | retry
+  b) needs_decomp   → early exit
+  c) bad_goal       → write dead_attempts + early exit
+
+self_verify (single file): lake build staging .lean — outcome MUST be 'proved'.
+  Silent-failure guard: any outcome other than 'proved' (error, timeout, hasSorry)
+  returns False and triggers retry from tactic_llm.
+
+T_wall enforcement: preserved from P1.
 """
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -17,10 +35,12 @@ import sqlite3
 
 from Tooling.commit import CommitWriter
 from Tooling.lake import run_lean
+from Tooling.agent.provider import AgentResponse, FallbackChain, ModelResolver
 
 
 TACTICS: list[str] = ["rfl", "simp", "decide", "norm_num", "ring"]
-DEFAULT_T_WALL: float = 30 * 60.0  # 30 minutes
+DEFAULT_T_WALL: float = 30 * 60.0
+K_DIGEST: int = 5
 
 
 def _now() -> str:
@@ -55,11 +75,13 @@ class BuilderConfig:
     t_wall: float = DEFAULT_T_WALL
     lake_timeout: float = 600.0
     base_dir: str = "."
+    k_digest: int = K_DIGEST
+    max_retries: int = 3  # tactic_llm + self_verify retry cap
 
 
 @dataclass
 class BuilderResult:
-    outcome: str  # "proved" | "exhausted"
+    outcome: str  # "proved" | "exhausted" | "needs_decomp" | "bad_goal"
     tactic: str | None = None
     timed_out: bool = False
 
@@ -70,10 +92,14 @@ class Builder:
         strategy_id: int,
         conn: sqlite3.Connection,
         config: BuilderConfig | None = None,
+        chain: FallbackChain | None = None,
+        resolver: ModelResolver | None = None,
     ) -> None:
         self.strategy_id = strategy_id
         self.conn = conn
         self.config = config or BuilderConfig()
+        self.chain = chain
+        self.resolver = resolver or ModelResolver()
         self._writer = CommitWriter(conn)
         self._start: float = 0.0
 
@@ -89,6 +115,213 @@ class Builder:
             return Path(self.config.base_dir) / p
         return p
 
+    # ------------------------------------------------------------------
+    # Stage: failure_replay — read dead_attempts from DB
+    # ------------------------------------------------------------------
+
+    def _failure_replay(self) -> list[dict]:
+        """Read up to K_digest most recent dead_attempts for this strategy."""
+        rows = self.conn.execute(
+            "SELECT reason_summary, outcome, ts FROM dead_attempts "
+            "WHERE target_id = ? AND target_kind = 'Strategy' "
+            "ORDER BY ts DESC LIMIT ?",
+            (str(self.strategy_id), self.config.k_digest),
+        ).fetchall()
+        return [{"reason": r[0], "outcome": r[1], "ts": r[2]} for r in rows]
+
+    # ------------------------------------------------------------------
+    # Stage: find_lemmas (stub — P3 search subsystem)
+    # ------------------------------------------------------------------
+
+    def _find_lemmas(self, goal: dict) -> list[str]:
+        return []
+
+    # ------------------------------------------------------------------
+    # Stage: tactic_llm (agent)
+    # ------------------------------------------------------------------
+
+    def _load_prompt_template(self) -> str:
+        prompt_path = (
+            Path(__file__).parents[2] / "docs" / "prompts" / "builder_tactic_llm.md"
+        )
+        return prompt_path.read_text(encoding="utf-8")
+
+    def _build_prompt(
+        self, goal: dict, dead_attempts: list[dict], lemmas: list[str]
+    ) -> str:
+        template = self._load_prompt_template()
+        dead_str = json.dumps(dead_attempts, indent=2) if dead_attempts else "[]"
+        lemmas_str = "\n".join(f"- {lem}" for lem in lemmas) if lemmas else "(none)"
+        return (
+            template
+            .replace("{{GOAL_PROBLEM}}", goal.get("problem") or "")
+            .replace("{{GOAL_SLUG}}", goal.get("slug") or "")
+            .replace("{{GOAL_STATEMENT}}", goal.get("question") or "")
+            .replace("{{DEAD_ATTEMPTS}}", dead_str)
+            .replace("{{CANDIDATE_LEMMAS}}", lemmas_str)
+        )
+
+    def _run_tactic_llm(
+        self,
+        goal: dict,
+        dead_attempts: list[dict],
+        lemmas: list[str],
+        session_id: str,
+        staging_dir: str,
+    ) -> AgentResponse | None:
+        assert self.chain is not None
+        model_tier = self.resolver.resolve("builder", "tactic_llm")
+        prompt = self._build_prompt(goal, dead_attempts, lemmas)
+        response, outcome = self.chain.run(
+            model_tier=model_tier,
+            prompt=prompt,
+            scope_dirs=[staging_dir],
+            session_id=session_id,
+            staging_dir=staging_dir,
+        )
+        return response if outcome == "success" else None
+
+    def _parse_tactic_response(self, output: str) -> dict | None:
+        """Parse agent JSON output. Returns None (→ retry) if:
+          - no JSON code block and body is not parseable JSON
+          - parsed value is not a dict
+          - dict lacks all three expected keys
+        """
+        m = re.search(r'```(?:json)?\s*([\s\S]*?)```', output)
+        text = m.group(1).strip() if m else output.strip()
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(obj, dict):
+            return None
+        valid_keys = {"tactic_proof", "needs_decomposition", "bad_goal"}
+        if not (valid_keys & obj.keys()):
+            return None
+        return obj
+
+    # ------------------------------------------------------------------
+    # Stage: self_verify (single file)
+    # ------------------------------------------------------------------
+
+    def _self_verify(self, staging_path: Path, timeout: float) -> bool:
+        """Verify staging file with lake. Returns True only if outcome == 'proved'.
+
+        Silent-failure guard: any outcome other than 'proved' (elaboration error,
+        timeout, hasSorry, or any other non-proved result) returns False and
+        forces a retry from tactic_llm. Never silently pass an unverified proof.
+        """
+        result = run_lean(str(staging_path), self.config.base_dir, timeout)
+        return result.outcome == "proved"
+
+    # ------------------------------------------------------------------
+    # bad_goal: write dead_attempts for this goal + parent goal
+    # ------------------------------------------------------------------
+
+    def _record_bad_goal(
+        self, goal: dict, pipeline_id: str, reason: str
+    ) -> None:
+        now = _now()
+        goal_id = goal["id"]
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO dead_attempts "
+                "(target_id, target_kind, pipeline_id, pipeline_kind, "
+                "outcome, reason_summary, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(goal_id), "Goal", pipeline_id, "Builder",
+                    "bad_goal", f"Builder reviewed bad: {reason}", now,
+                ),
+            )
+        # Best-effort: find parent goal via strategy_subgoals and record there too
+        parent_row = self.conn.execute(
+            "SELECT s.goal_id FROM strategies s "
+            "JOIN strategy_subgoals ss ON ss.strategy_id = s.id "
+            "WHERE ss.subgoal_id = ?",
+            (goal_id,),
+        ).fetchone()
+        if parent_row is not None:
+            parent_goal_id = parent_row[0]
+            with self.conn:
+                self.conn.execute(
+                    "INSERT INTO dead_attempts "
+                    "(target_id, target_kind, pipeline_id, pipeline_kind, "
+                    "outcome, reason_summary, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        str(parent_goal_id), "Goal", pipeline_id, "Builder",
+                        "bad_goal",
+                        f"prior decomp produced bad sub-Goal {goal_id}: {reason}",
+                        now,
+                    ),
+                )
+
+    # ------------------------------------------------------------------
+    # tactic_llm loop (stages 4+5 with retry)
+    # ------------------------------------------------------------------
+
+    def _tactic_llm_loop(
+        self,
+        strategy: dict[str, Any],
+        goal: dict[str, Any],
+        pipeline_id: str,
+        staging_dir: Path,
+        session_id: str,
+        dead_attempts: list[dict],
+        lemmas: list[str],
+        source_content: str,
+    ) -> BuilderResult:
+        for _attempt in range(self.config.max_retries):
+            elapsed = time.monotonic() - self._start
+            if elapsed >= self.config.t_wall:
+                return BuilderResult(outcome="exhausted", timed_out=True)
+
+            response = self._run_tactic_llm(
+                goal, dead_attempts, lemmas, session_id, str(staging_dir)
+            )
+            if response is None:
+                # chain exhausted (all providers/retries failed)
+                return BuilderResult(outcome="exhausted")
+
+            parsed = self._parse_tactic_response(response.output)
+            if parsed is None:
+                # malformed JSON → retry agent
+                continue
+
+            if "needs_decomposition" in parsed:
+                return BuilderResult(outcome="needs_decomp")
+
+            if "bad_goal" in parsed:
+                reason = str(parsed.get("bad_goal") or "")
+                self._record_bad_goal(goal, pipeline_id, reason)
+                return BuilderResult(outcome="bad_goal")
+
+            if "tactic_proof" in parsed:
+                tactic_code = str(parsed["tactic_proof"])
+                staging_lean = staging_dir / "tactic_llm.lean"
+                staging_lean.write_text(
+                    _replace_proof_body(source_content, tactic_code),
+                    encoding="utf-8",
+                )
+
+                elapsed = time.monotonic() - self._start
+                if elapsed >= self.config.t_wall:
+                    return BuilderResult(outcome="exhausted", timed_out=True)
+
+                remaining = self.config.t_wall - elapsed
+                per_call_timeout = min(self.config.lake_timeout, remaining)
+
+                # Stage 5: self_verify — MUST return proved; anything else retries
+                if self._self_verify(staging_lean, per_call_timeout):
+                    self._commit_success(strategy, staging_lean)
+                    return BuilderResult(outcome="proved", tactic=tactic_code)
+                # self_verify failed → retry from tactic_llm (spec §1 step 5)
+
+        return BuilderResult(outcome="exhausted")
+
+    # ------------------------------------------------------------------
+    # Main orchestration
+    # ------------------------------------------------------------------
+
     def run(self) -> BuilderResult:
         self._start = time.monotonic()
         p_uuid = str(uuid.uuid4())
@@ -100,20 +333,47 @@ class Builder:
         staging_dir = self._staging_dir(goal, p_uuid)
         staging_dir.mkdir(parents=True, exist_ok=True)
 
-        source_content = self._resolve_path(strategy["lean_path"]).read_text(encoding="utf-8")
+        source_content = self._resolve_path(strategy["lean_path"]).read_text(
+            encoding="utf-8"
+        )
+
+        result = self._run_all_stages(
+            strategy, goal, pipeline_id, staging_dir, source_content
+        )
+
+        self._finish_pipeline(pipeline_id, result.outcome)
+        self._emit_event(
+            "pipeline_finished",
+            {
+                "pipeline_id": pipeline_id,
+                "strategy_id": self.strategy_id,
+                "outcome": result.outcome,
+            },
+        )
+        return result
+
+    def _run_all_stages(
+        self,
+        strategy: dict[str, Any],
+        goal: dict[str, Any],
+        pipeline_id: str,
+        staging_dir: Path,
+        source_content: str,
+    ) -> BuilderResult:
+        """Execute all stages; returns BuilderResult.
+        Caller is responsible for _finish_pipeline + _emit_event.
+        """
+        tactic_dead: list[dict[str, Any]] = []
+        timed_out = False
         proved_tactic: str | None = None
         proved_staging: Path | None = None
-        dead: list[dict[str, Any]] = []
-        timed_out = False
 
+        # Stage 1: tactic_try
         for tactic in TACTICS:
             elapsed = time.monotonic() - self._start
             if elapsed >= self.config.t_wall:
                 timed_out = True
                 break
-            # Clamp per-call timeout to remaining T_wall budget so a slow lake
-            # call cannot escape T_wall (acceptance #8: 2s after T_wall start,
-            # pipeline must end regardless of in-progress lake work).
             remaining = self.config.t_wall - elapsed
             per_call_timeout = min(self.config.lake_timeout, remaining)
 
@@ -133,7 +393,7 @@ class Builder:
                 proved_staging = staging_lean
                 break
             else:
-                dead.append(
+                tactic_dead.append(
                     {
                         "tactic": tactic,
                         "timed_out": lake_result.timed_out,
@@ -142,19 +402,38 @@ class Builder:
                 )
 
         if proved_tactic and proved_staging:
+            # tactic_try pass → commit directly; no tactic_llm needed
             self._commit_success(strategy, proved_staging)
-            outcome = "proved"
-        else:
-            self._record_dead_attempts(dead, pipeline_id)
-            outcome = "exhausted"
+            return BuilderResult(outcome="proved", tactic=proved_tactic)
 
-        self._finish_pipeline(pipeline_id, outcome)
-        self._emit_event(
-            "pipeline_finished",
-            {"pipeline_id": pipeline_id, "strategy_id": self.strategy_id, "outcome": outcome},
+        # Record dead_attempts for tactic_try failures (whether T_wall or exhausted)
+        self._record_dead_attempts(tactic_dead, pipeline_id)
+
+        if timed_out:
+            return BuilderResult(outcome="exhausted", timed_out=True)
+
+        # No agent chain → P1 fallback (tactic_try only)
+        if self.chain is None:
+            return BuilderResult(outcome="exhausted")
+
+        # Stage 2: failure_replay (reads dead_attempts including tactic_try just written)
+        dead_attempts = self._failure_replay()
+
+        # Stage 3: find_lemmas (stub)
+        lemmas = self._find_lemmas(goal)
+
+        # Stages 4+5: tactic_llm + self_verify retry loop
+        session_id = str(uuid.uuid4())
+        return self._tactic_llm_loop(
+            strategy,
+            goal,
+            pipeline_id,
+            staging_dir,
+            session_id,
+            dead_attempts,
+            lemmas,
+            source_content,
         )
-
-        return BuilderResult(outcome=outcome, tactic=proved_tactic, timed_out=timed_out)
 
     # ------------------------------------------------------------------
     # Internal helpers
