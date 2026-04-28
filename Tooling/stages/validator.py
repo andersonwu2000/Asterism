@@ -103,11 +103,11 @@ def check_hyp_carry(
     parent_lean_path: str,
     subgoals: list[dict[str, Any]],
     lake_cwd: str,
-    timeout: float = 300.0,  # P6.x patch 26: bumped from 60s to 300s.
-                              # Subgoal staging files import Mathlib (patch 25),
-                              # which transitively elaborates ~30-60s per file
-                              # × 2-8 sub-goals can easily exceed 60s. Real-
-                              # runtime演習 hit timeout at validator stage.
+    timeout: float = 600.0,  # P6.x patch 27: bump 300→600s.
+                              # validator.lean uses enableInitializersExecution
+                              # per call (patch 15) which triggers full Mathlib
+                              # init even with .olean cache. Per-file
+                              # runFrontend still 60-120s × N subgoals.
 ) -> list[ValidatorError]:
     """Invoke tools/validator.lean and translate its JSON into ValidatorErrors.
 
