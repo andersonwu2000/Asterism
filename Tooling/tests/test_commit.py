@@ -616,6 +616,359 @@ class TestBeginBatch:
 
 
 # ──────────────────────────────────────────────────────────────
+# begin_batch – junction tables (strategy_subgoals)
+# ──────────────────────────────────────────────────────────────
+
+
+class TestBeginBatchJunction:
+    """begin_batch supports junction-table inserts via junction_ops_factory."""
+
+    def test_junction_factory_inserts_in_same_tx(
+        self, db: sqlite3.Connection, cw: CommitWriter, tmp_path
+    ) -> None:
+        goal_lean = tmp_path / "g.lean"
+        goal_lean.parent.mkdir(parents=True, exist_ok=True)
+        gid = _insert_live_goal(db, str(goal_lean))
+
+        strat_lean = tmp_path / "strat.lean"
+        sub_g_lean = tmp_path / "sub_g.lean"
+
+        def make_junction(ids: list[int]) -> list[dict]:
+            strat_id, sub_g_id = ids
+            return [{
+                "table": "strategy_subgoals",
+                "op": "insert",
+                "data": {
+                    "strategy_id": strat_id,
+                    "subgoal_id": sub_g_id,
+                    "position": 0,
+                },
+            }]
+
+        ids = cw.begin_batch(
+            [
+                {
+                    "table": "strategies",
+                    "op": "insert",
+                    "data": dict(
+                        goal_id=gid,
+                        lean_path=str(strat_lean),
+                        status="proposed",
+                    ),
+                },
+                {
+                    "table": "goals",
+                    "op": "insert",
+                    "data": dict(
+                        problem="test",
+                        slug="sub_g",
+                        lean_path=str(sub_g_lean),
+                        origin="backward",
+                        kind="theorem",
+                        status="open",
+                    ),
+                },
+            ],
+            junction_ops_factory=make_junction,
+        )
+        strat_id, sub_g_id = ids
+
+        # Both main rows pending.
+        assert db.execute(
+            "SELECT commit_state FROM strategies WHERE id=?", (strat_id,)
+        ).fetchone()[0] == "pending"
+        assert db.execute(
+            "SELECT commit_state FROM goals WHERE id=?", (sub_g_id,)
+        ).fetchone()[0] == "pending"
+
+        # Junction row exists with correct linkage.
+        row = db.execute(
+            "SELECT strategy_id, subgoal_id, position FROM strategy_subgoals "
+            "WHERE strategy_id=?",
+            (strat_id,),
+        ).fetchone()
+        assert row == (strat_id, sub_g_id, 0)
+
+    def test_junction_table_in_main_ops_raises(
+        self, db: sqlite3.Connection, cw: CommitWriter, tmp_path
+    ) -> None:
+        with pytest.raises(ValueError, match="junction table"):
+            cw.begin_batch([
+                {
+                    "table": "strategy_subgoals",
+                    "op": "insert",
+                    "data": {"strategy_id": 1, "subgoal_id": 1, "position": 0},
+                },
+            ])
+
+    def test_junction_factory_non_junction_table_raises(
+        self, db: sqlite3.Connection, cw: CommitWriter, tmp_path
+    ) -> None:
+        goal_lean = tmp_path / "g.lean"
+        gid = _insert_live_goal(db, str(goal_lean))
+
+        def bad_factory(ids: list[int]) -> list[dict]:
+            return [{
+                "table": "goals",  # not a junction table
+                "op": "insert",
+                "data": _goal_data(str(tmp_path / "x.lean")),
+            }]
+
+        with pytest.raises(ValueError, match="non-junction"):
+            cw.begin_batch(
+                [
+                    {
+                        "table": "goals",
+                        "op": "insert",
+                        "data": dict(
+                            problem="test",
+                            slug="x",
+                            lean_path=str(tmp_path / "y.lean"),
+                            origin="root",
+                            kind="theorem",
+                            status="open",
+                        ),
+                    },
+                ],
+                junction_ops_factory=bad_factory,
+            )
+
+        # Main op also rolled back.
+        count = db.execute(
+            "SELECT COUNT(*) FROM goals WHERE slug='x'"
+        ).fetchone()[0]
+        assert count == 0
+
+    def test_junction_factory_non_insert_op_raises(
+        self, db: sqlite3.Connection, cw: CommitWriter, tmp_path
+    ) -> None:
+        goal_lean = tmp_path / "g.lean"
+        gid = _insert_live_goal(db, str(goal_lean))
+
+        def bad_factory(ids: list[int]) -> list[dict]:
+            return [{
+                "table": "strategy_subgoals",
+                "op": "update",  # only insert allowed
+                "data": {},
+            }]
+
+        with pytest.raises(ValueError, match="must be 'insert'"):
+            cw.begin_batch(
+                [
+                    {
+                        "table": "strategies",
+                        "op": "insert",
+                        "data": dict(
+                            goal_id=gid,
+                            lean_path=str(tmp_path / "s.lean"),
+                            status="proposed",
+                        ),
+                    },
+                ],
+                junction_ops_factory=bad_factory,
+            )
+
+    def test_junction_atomicity_main_op_fails(
+        self, db: sqlite3.Connection, cw: CommitWriter, tmp_path
+    ) -> None:
+        """If a main op fails (e.g. UPDATE with bad id), junction ops must not
+        leak into DB."""
+        goal_lean = tmp_path / "g.lean"
+        gid = _insert_live_goal(db, str(goal_lean))
+
+        def make_junction(ids: list[int]) -> list[dict]:
+            return [{
+                "table": "strategy_subgoals",
+                "op": "insert",
+                "data": {"strategy_id": ids[0], "subgoal_id": gid, "position": 0},
+            }]
+
+        with pytest.raises(ValueError, match="not found"):
+            cw.begin_batch(
+                [
+                    {
+                        "table": "strategies",
+                        "op": "insert",
+                        "data": dict(
+                            goal_id=gid,
+                            lean_path=str(tmp_path / "s.lean"),
+                            status="proposed",
+                        ),
+                    },
+                    {
+                        "table": "strategies",
+                        "op": "update",
+                        "id": 99999,  # non-existent
+                    },
+                ],
+                junction_ops_factory=make_junction,
+            )
+
+        # Both main and junction should be rolled back.
+        assert db.execute(
+            "SELECT COUNT(*) FROM strategies WHERE lean_path LIKE '%s.lean'"
+        ).fetchone()[0] == 0
+        assert db.execute(
+            "SELECT COUNT(*) FROM strategy_subgoals"
+        ).fetchone()[0] == 0
+
+
+# ──────────────────────────────────────────────────────────────
+# recover_scan – cascade cleanup of strategy_subgoals
+# ──────────────────────────────────────────────────────────────
+
+
+class TestRecoverCascade:
+    """recover_scan must cascade-delete junction rows when a pending strategy
+    or goal is rolled back, otherwise FK constraints crash on parent DELETE."""
+
+    def test_pending_strategy_delete_cascades_junction(
+        self, db: sqlite3.Connection, cw: CommitWriter, tmp_path
+    ) -> None:
+        # Setup: pending strategy + pending goal, junction linking them, no files.
+        goal_lean = tmp_path / "g.lean"
+        gid = _insert_live_goal(db, str(goal_lean))
+
+        strat_lean = tmp_path / "strat.lean"  # NOT on disk
+        sub_g_lean = tmp_path / "sub_g.lean"  # NOT on disk
+
+        def make_junction(ids: list[int]) -> list[dict]:
+            return [{
+                "table": "strategy_subgoals",
+                "op": "insert",
+                "data": {
+                    "strategy_id": ids[0],
+                    "subgoal_id": ids[1],
+                    "position": 0,
+                },
+            }]
+
+        ids = cw.begin_batch(
+            [
+                {
+                    "table": "strategies",
+                    "op": "insert",
+                    "data": dict(
+                        goal_id=gid,
+                        lean_path=str(strat_lean),
+                        status="proposed",
+                    ),
+                },
+                {
+                    "table": "goals",
+                    "op": "insert",
+                    "data": dict(
+                        problem="test",
+                        slug="sub_g",
+                        lean_path=str(sub_g_lean),
+                        origin="backward",
+                        kind="theorem",
+                        status="open",
+                    ),
+                },
+            ],
+            junction_ops_factory=make_junction,
+        )
+        strat_id, sub_g_id = ids
+
+        # Sanity: junction row exists, files don't exist.
+        assert db.execute(
+            "SELECT COUNT(*) FROM strategy_subgoals"
+        ).fetchone()[0] == 1
+        assert not strat_lean.exists()
+        assert not sub_g_lean.exists()
+
+        # recover_scan should DELETE strategy + sub-goal + junction without FK error.
+        result = cw.recover_scan()
+
+        # All rows cleaned up; live goal pre-existing remains.
+        assert db.execute(
+            "SELECT COUNT(*) FROM strategies WHERE id=?", (strat_id,)
+        ).fetchone()[0] == 0
+        assert db.execute(
+            "SELECT COUNT(*) FROM goals WHERE id=?", (sub_g_id,)
+        ).fetchone()[0] == 0
+        assert db.execute(
+            "SELECT COUNT(*) FROM strategy_subgoals"
+        ).fetchone()[0] == 0
+        # Pre-existing live goal untouched.
+        assert db.execute(
+            "SELECT commit_state FROM goals WHERE id=?", (gid,)
+        ).fetchone()[0] == "live"
+        assert strat_id in result["strategies"]
+        assert sub_g_id in result["goals"]
+
+    def test_pending_strategy_with_partial_files_consistent(
+        self, db: sqlite3.Connection, cw: CommitWriter, tmp_path
+    ) -> None:
+        """COMMIT_FAULT=after_step2 mid-flow simulation: strategy file moved,
+        sub-goal file not. recover_scan finalizes strategy and DELETEs sub-goal,
+        cascading the junction row tied to that sub-goal — no FK error."""
+        goal_lean = tmp_path / "g.lean"
+        gid = _insert_live_goal(db, str(goal_lean))
+
+        strat_lean = tmp_path / "strat.lean"
+        strat_lean.write_text("-- strategy stub")  # exists
+        sub_g_lean = tmp_path / "sub_g.lean"  # NOT on disk
+
+        def make_junction(ids: list[int]) -> list[dict]:
+            return [{
+                "table": "strategy_subgoals",
+                "op": "insert",
+                "data": {
+                    "strategy_id": ids[0],
+                    "subgoal_id": ids[1],
+                    "position": 0,
+                },
+            }]
+
+        ids = cw.begin_batch(
+            [
+                {
+                    "table": "strategies",
+                    "op": "insert",
+                    "data": dict(
+                        goal_id=gid,
+                        lean_path=str(strat_lean),
+                        status="proposed",
+                    ),
+                },
+                {
+                    "table": "goals",
+                    "op": "insert",
+                    "data": dict(
+                        problem="test",
+                        slug="sub_g",
+                        lean_path=str(sub_g_lean),
+                        origin="backward",
+                        kind="theorem",
+                        status="open",
+                    ),
+                },
+            ],
+            junction_ops_factory=make_junction,
+        )
+        strat_id, sub_g_id = ids
+
+        cw.recover_scan()
+
+        # Strategy: file exists → finalize live.
+        assert db.execute(
+            "SELECT commit_state FROM strategies WHERE id=?", (strat_id,)
+        ).fetchone()[0] == "live"
+        # Sub-goal: file missing → DELETE'd.
+        assert db.execute(
+            "SELECT COUNT(*) FROM goals WHERE id=?", (sub_g_id,)
+        ).fetchone()[0] == 0
+        # Junction row referencing the dropped sub-goal cascaded.
+        assert db.execute(
+            "SELECT COUNT(*) FROM strategy_subgoals "
+            "WHERE subgoal_id=?",
+            (sub_g_id,),
+        ).fetchone()[0] == 0
+
+
+# ──────────────────────────────────────────────────────────────
 # stage_file idempotence
 # ──────────────────────────────────────────────────────────────
 

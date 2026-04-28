@@ -17,11 +17,16 @@ import shutil
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 # Only goals has updated_at; strategies does not.
 _TABLES_WITH_UPDATED_AT: frozenset[str] = frozenset({"goals"})
+
+# Junction tables: composite-PK only, no commit_state / prior_state_snapshot /
+# created_at columns. begin_batch handles these via junction_ops_factory; their
+# rows must be cleaned up by recover_scan when the parent row is DELETE'd.
+_TABLES_WITHOUT_COMMIT_STATE: frozenset[str] = frozenset({"strategy_subgoals"})
 
 
 class CommitFault(Exception):
@@ -111,12 +116,23 @@ class CommitWriter:
         else:
             raise ValueError(f"Unknown op: {op!r}")
 
-    def begin_batch(self, ops: list[dict[str, Any]]) -> list[int]:
+    def begin_batch(
+        self,
+        ops: list[dict[str, Any]],
+        junction_ops_factory: Callable[[list[int]], list[dict[str, Any]]] | None = None,
+    ) -> list[int]:
         """Step 1 (multi-row): multiple begin ops in a single TX.
 
         Each op: {'table': str, 'op': 'insert'|'update', 'data': dict}
               or {'table': str, 'op': 'update', 'id': int}
         Returns list of row IDs in ops order.
+
+        junction_ops_factory: optional callable that takes the IDs returned by
+        the main ops and returns a list of junction-table inserts. These run
+        inside the same TX after main ops (atomicity), letting callers express
+        FK-dependent rows whose values are only known once auto-increment IDs
+        are assigned. Junction ops must target tables in
+        _TABLES_WITHOUT_COMMIT_STATE (strategy_subgoals) and must use op='insert'.
         """
         now = _now()
         ids: list[int] = []
@@ -125,6 +141,12 @@ class CommitWriter:
             for op_spec in ops:
                 table = op_spec["table"]
                 op = op_spec["op"]
+
+                if table in _TABLES_WITHOUT_COMMIT_STATE:
+                    raise ValueError(
+                        f"main op cannot target junction table {table!r}; "
+                        f"use junction_ops_factory instead"
+                    )
 
                 if op == "insert":
                     fields = dict(op_spec.get("data", {}))
@@ -166,6 +188,28 @@ class CommitWriter:
 
                 else:
                     raise ValueError(f"Unknown op: {op!r}")
+
+            # Junction ops: in same TX as main ops; depend on IDs from main ops.
+            if junction_ops_factory is not None:
+                junction_ops = junction_ops_factory(ids)
+                for j_op in junction_ops:
+                    j_table = j_op["table"]
+                    if j_table not in _TABLES_WITHOUT_COMMIT_STATE:
+                        raise ValueError(
+                            f"junction_ops_factory returned op for non-junction "
+                            f"table {j_table!r}"
+                        )
+                    if j_op.get("op") != "insert":
+                        raise ValueError(
+                            f"junction op must be 'insert', got {j_op.get('op')!r}"
+                        )
+                    j_fields = dict(j_op["data"])
+                    j_cols = ", ".join(j_fields.keys())
+                    j_placeholders = ", ".join("?" * len(j_fields))
+                    self.conn.execute(
+                        f"INSERT INTO {j_table} ({j_cols}) VALUES ({j_placeholders})",
+                        list(j_fields.values()),
+                    )
 
         _check_fault("after_step1")
         return ids
@@ -223,6 +267,10 @@ class CommitWriter:
           lean_path absent + snapshot NULL  → DELETE row  (INSERT, step 1 only)
           lean_path absent + snapshot set   → restore from snapshot (UPDATE)
 
+        Cascade cleanup: when DELETing a pending row, junction rows in
+        strategy_subgoals that reference it are deleted first to satisfy
+        FK constraints (PRAGMA foreign_keys = ON in connect.py).
+
         Returns {table: [recovered_row_ids]}.
         """
         recovered: dict[str, list[int]] = {"goals": [], "strategies": []}
@@ -250,8 +298,21 @@ class CommitWriter:
                     recovered[table].append(row_id)
 
                 elif snapshot is None:
-                    # INSERT interrupted before step 2: delete pending row.
+                    # INSERT interrupted before step 2: delete pending row,
+                    # cascading to junction rows that reference it.
                     with self.conn:
+                        if table == "strategies":
+                            self.conn.execute(
+                                "DELETE FROM strategy_subgoals "
+                                "WHERE strategy_id = ?",
+                                (row_id,),
+                            )
+                        elif table == "goals":
+                            self.conn.execute(
+                                "DELETE FROM strategy_subgoals "
+                                "WHERE subgoal_id = ?",
+                                (row_id,),
+                            )
                         self.conn.execute(
                             f"DELETE FROM {table} WHERE id = ?", (row_id,)
                         )
