@@ -1353,12 +1353,18 @@ class Reactor:
         ).fetchone()
         if goal_row is not None:
             problem = goal_row[0]
-            thm_name = Path(lean_path).stem
-            # P6.x patch 22: with leaf-bypass strategies as separate files,
-            # `lean_path` here is the STRATEGY file path. Build module_path
-            # by walking the path from "Problems" down, applying the
-            # french-quote rule to numeric-prefix segments. This is the
-            # canonical module path of the proven theorem.
+            # P6.x patch 22 + 23: with leaf-bypass strategies as separate
+            # files (`_strategy_<pid>.lean`), the file stem is NOT the
+            # theorem name. The theorem inside the strategy/goal file is
+            # always declared as `theorem <goal.slug>`. Pull the slug from
+            # the goals row directly.
+            slug_row = self.conn.execute(
+                "SELECT slug FROM goals WHERE id = ?", (goal_id,),
+            ).fetchone()
+            thm_name = slug_row[0] if slug_row else Path(lean_path).stem
+            # Build module_path by walking the strategy file path from
+            # "Problems" down, applying the french-quote rule to numeric-
+            # prefix segments. This is the canonical module path.
             from pathlib import Path as _P
             parts = list(_P(lean_path).parts)
             try:
