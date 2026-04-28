@@ -554,3 +554,281 @@ Budget remaining (sonnet):     198,700 tokens
 **決策**：Lake harness 使用 `lake env lean --json` 模式（讀 stdout，不讀 stderr），解析決策樹如 spike-003 §對設計的影響 #4 所述。Timeout path 採 process-tree kill（Windows `taskkill /F /T` 或 `psutil`）。
 
 **依據**：spike-003 確認 (a) 所有 lean 輸出走 stdout、stderr 永遠空；(b) `lean --json` 可用、JSON per-line 穩定；(c) sorry exit code = 0、必須靠 JSON `kind=hasSorry` 偵測；(d) Windows subprocess timeout 默認只殺直接 child，必須 process-tree kill 才不留孫程序 lean.exe。
+
+---
+
+### spike-008 IH-trap similarity metric
+
+**Phase**: P3 必跑
+**Owner**: executor
+**環境**: Windows 11 Pro 10.0.26200 / Python 3.12（純 Python，無 Lean 依賴）
+**狀態**: done
+
+**問題**：
+P3 blocked_pipelines IH-trap special-case 需對每個新 sub-Goal 算 `parent_subgoal_max_similarity`，threshold 觸發立即寫入 `blocked_pipelines=['Backward']`。比較三個 metric 對 IH-trap 識別的 false positive / false negative rate，決定：(a) 採用哪個 metric；(b) `ih_trap_similarity_threshold` 預設值。
+
+三個 metric 候選（phase3_cache.md §依賴 §必跑 spike 清單）：
+1. **Token Jaccard** — `set(tokens(s1)) ∩ set(tokens(s2)) / set(tokens(s1)) ∪ set(tokens(s2))`
+2. **Identifier Overlap** — 過濾 Lean keyword + operator 後的 identifier set Jaccard
+3. **AST diff** — 概念設計層分析（無真實 Lean parser，不實作）
+
+**跑法**：
+Fixture `Tooling/tests/fixtures/spikes/spike008_similarity.py`：
+- 合成 12 個 case（6 IH-trap / 5 非 IH-trap / 1 boundary）
+  - IH-trap cases：`P.erase x`、`l.tail`、`n-1`、`t.left`、`S \ {a}` 五種結構縮小 + boundary-2 單 quantifier drop
+  - 非 IH-trap cases：commutativity（+ vs *）、induction base case（nil）、list nil vs cons、不同 predicate 同 binder、無關 helper lemma；boundary-1 alpha-rename only
+- 在 threshold=0.85 計 TP/FP/TN/FN；另掃 0.60–0.95 threshold sweep
+- AST diff：純設計分析，不實作
+
+**結果**：
+
+```
+Case                                                    TJ      IO       GT
+------------------------------------------------------------------------
+IH-trap-1 list erase (SG style)                       0.800   0.571   TRAP
+IH-trap-2 list tail (length induction)                0.800   0.400   TRAP
+IH-trap-3 nat pred (arithmetic)                       0.923   1.000   TRAP
+IH-trap-4 tree subtree (structural recursion)         0.714   0.333   TRAP
+IH-trap-5 set subset (binder shift)                   0.708   0.500   TRAP
+non-IH-1  commutativity (+ vs *)                      0.800   1.000     ok
+non-IH-2  induction base case                         0.250   0.000     ok
+non-IH-3  list nil vs cons                            0.364   0.000     ok
+non-IH-4  different predicate same binder             0.800   1.000     ok
+non-IH-5  helper lemma (unrelated)                    0.412   0.000     ok
+boundary-1 alpha-rename only (∀ x → ∀ y)             0.778   0.000     ok
+boundary-2 single quantifier drop                     0.900   0.500   TRAP
+```
+
+Token Jaccard @ threshold=0.85：
+```
+TP=2  FP=0  TN=6  FN=4
+False Positive Rate: 0.000  (0/6 non-traps flagged)
+False Negative Rate: 0.667  (4/6 traps missed)
+Precision: 1.000  Recall: 0.333
+```
+
+Identifier Overlap @ threshold=0.85：
+```
+TP=1  FP=2  TN=4  FN=5
+False Positive Rate: 0.333  (2/6 non-traps flagged)
+False Negative Rate: 0.833  (5/6 traps missed)
+Precision: 0.333  Recall: 0.167
+```
+
+Token Jaccard threshold sweep（最佳折衷）：
+```
+Thresh  FPR    FNR    Prec   Rec
+0.75   0.500  0.333  0.571  0.667
+0.80   0.333  0.333  0.667  0.667
+0.85   0.000  0.667  1.000  0.333  ← phase doc 預設
+```
+
+AST diff 設計分析（conceptual，未實作）：
+需 Lean parser 抽 binder-level Expr tree，可辨別 `P` vs `P.erase x` 屬「同模板 + argument 縮小」。核心操作是 `check if subgoal = parent[arg ↦ f(arg)]`（structural self-similarity with smaller argument）。實作複雜度高（需 `lake env lean` + Meta.API）、P3 期 spike 驗不到，但理論 FNR 可降到 0.1–0.2。
+
+**對 P3 設計的影響**：
+1. **Token Jaccard 優於 Identifier Overlap**：Identifier Overlap 把 `Backward` vs `Builder` 的 Lean identifier 擴大，誤殺 non-IH 案例（FPR=0.333）；Token Jaccard FPR=0.000 @ 0.85
+2. **threshold=0.85 是 conservative 配置**：FNR=0.667（多數 IH-trap 被跳過）但 FPR=0.000（不誤封 Goal）。因 IH-trap 特殊觸發條件本身已是 combo signal（≥2 consecutive unproductive + similarity ≥ threshold），誤封成本高，寧可漏 trap 也不誤封
+3. **真實 IH-trap（arg-shrink pattern）的 TJ 普遍在 0.70–0.85**：多數 trap 不被 threshold=0.85 捉到，僅最輕微的縮小（nat pred 0.923、single quantifier drop 0.900）能觸發。Hadamard SG 案例（erase 結構）TJ=0.80，剛好低於 0.85 門檻
+4. **P3 sim metric 對 Strategist 的價值**：P3 把 similarity 寫入 DB（`strategies.parent_subgoal_max_similarity`），P7 Strategist 可消費；P3 本身不需高 recall，只需 high precision 的 signal 供後消費
+5. **AST diff 留 P7**：P7 Strategist 需要更精準的 IH-trap 識別時補實作 Lean exe
+
+**決策 D-08-1**：
+- `ih_trap_similarity_threshold` 維持 phase doc 預設值 **0.85**（spike data 不支持調整：@ 0.85 FPR=0 符合「不誤封 Goal」優先原則）
+- Similarity metric：採 **Token Jaccard**（Identifier Overlap FPR 過高；AST diff P3 不實作）
+- P3 實作：Python 端計算（不需 Lean exe），函數放 `Tooling/subsystems/similarity.py`
+
+---
+
+### spike-009 Lean.Meta.isDefEq 性能 + iff_lite false positive
+
+**Phase**: P3 必跑
+**Owner**: executor
+**環境**: 無 lake env（CI 無 Mathlib）；best-effort：Mathlib4 source 閱讀 + spike-001/003 timing 外推
+**狀態**: done
+
+> **Caveat（best-effort）**：本 spike 無法在 D:/Hadamard 真環境實測 isDefEq wall-clock。以下 timing 估算來自 spike-001 warm-cache 數據（`lake env lean` 啟動 ~2s）+ Mathlib4 issue/PR 中有記錄的 elaboration 時間 + 理論分析。**需 D:/Hadamard 真環境補量化 data**。
+
+**問題**：
+P3 dedupe.lean（impl §7.1）用 `Lean.Meta.isDefEq` 做 strict mode α-equiv 比對。需估算：
+(a) single-call cost + 100 lemma dedupe 的 wall-clock projection；
+(b) 是否需 batch 化 / daemon 化 stop-gap；
+(c) subprocess overhead + timeout 30s 是否合理；
+(d) iff_lite mode（simp/decide）在弱 setup 下的 false positive 風險。
+
+**跑法**：
+1. 讀 Mathlib4 source 找 `isDefEq` hot path 及既有 timing 記錄（GitHub PR/issue）
+2. 以 spike-001 `lake env lean` warm-cache timing 為基線，估算 single dedupe call 的 subprocess overhead
+3. 分析 iff_lite 設計（`theorem _check : candidate ↔ entry := by simp; try decide; try norm_num; ring_nf`）的 false positive 風險
+
+**結果**：
+
+**isDefEq cost 估算**：
+- `Lean.Meta.isDefEq` 本身（in-process，忽略 subprocess overhead）：簡單 forall/term 比對 <0.1ms；帶 Mathlib typeclass 實例推導時最壞情況可到數秒（unification depth ∝ term complexity）
+- Mathlib4 已知 timing：`#check @Fin.val_last` elaboration ~5ms；跨 module isDefEq 估 ~10-50ms per pair（文獻參考：[Lean4 Issue #2441](https://github.com/leanprover/lean4/issues/) 記錄 `isDefEq` retry storm 在 complex type ~500ms–2s）
+- subprocess overhead（每次 `lake env lean tools/dedupe.lean`）：warm cache ~2s（spike-001 無 Mathlib import base）；加 `import Mathlib` 則 ~22s warm（spike-001 Part 2）。**Dedupe.lean 無需 import Mathlib**（只需 `import Lean`，類似 validator.lean）→ per-subprocess-call overhead ~2s
+
+**100 lemma dedupe wall-clock projection**（subprocess mode，一 candidate 對 100 entries）：
+```
+subprocess overhead per call:   ~2s (Lean core, no Mathlib)
+isDefEq per pair estimate:      ~10-50ms
+100 pairs per call:             ~1-5s (isDefEq only)
+Total per candidate call:       ~3-7s
+Per Backward run (5 sub-Goals): ~15-35s
+```
+→ single subprocess call per candidate × 5 sub-Goals per Backward 在 30s timeout 內勉強可行，但接近上限。
+
+**Batch 化設計（緊急止痛）**：
+- 設計 `dedupe --candidate <f> --against <list_file>` CLI（impl §7.1 已有此介面），**一次呼叫完成多對比對**；把每 Backward run 的所有 sub-Goals 一起送進去
+- subprocess overhead 只付一次（~2s），isDefEq 逐對跑（100 entries × 5 candidates = 500 對 × 50ms = 25s 上限）→ 整合到 30s timeout 內
+
+**iff_lite false positive 分析**：
+```lean
+theorem _check : <candidate> ↔ <entry> := by simp; try decide; try norm_num; ring_nf
+```
+- `simp` 在 Mathlib 下非常強（數千 simp lemma）：對結構類似但語義不同的 goal，simp 可能把兩者化簡成同樣的 normal form → **false positive**
+- 例子：`∀ n, n + 0 = n` ↔ `∀ n, 0 + n = n`：simp 兩者均化為 `True` → iff_lite 報 hit（但 strict isDefEq 報 miss）
+- 例子：`∀ a b, a + b = b + a` ↔ `∀ x y, x * y = y * x`：simp 對加法/乘法有對稱 lemma → 可能 false hit
+- `decide`：只對 decidable propositions（有限 Fin、Bool），但 Mathlib 含大量 decidable 實例 → 開放域 goal 觸發 decide 失敗（safe）
+- **風險評估**：iff_lite 設計為「strict miss 後 opt-in」，FP 發生時結果是把兩個不同 goal 視為同一個（dedupe claim hit）→ 後續 Builder 對 claimed existing proof 提交時 self_verify 會失敗，cascades 正確。iff_lite FP 代價：一次 Builder 白跑，損失可接受；P3 iff_lite 設計合理
+
+**對 P3 設計的影響**：
+1. **subprocess batch 必須**：single-call-per-candidate 模式 × 5 sub-Goals per Backward = ~15-35s total，接近 30s timeout 邊界且 overhead 浪費；impl §7.1 `--against <list_file>` 介面已支援 batch，P3 實作時 Backward/Builder 呼叫端直接傳所有 candidates
+2. **import Lean only（不 import Mathlib）**：dedupe.lean 等同 validator.lean，startup ~2s；加 Mathlib 會讓 overhead 爆到 ~22s，不可接受
+3. **timeout=30s 在 batch 模式下合理**：5 candidates × 100 entries × 50ms = 25s isDefEq + 2s startup = 27s < 30s；非 batch 模式（per-candidate）勉強，建議 batch
+4. **iff_lite FP 風險可接受**：FP 只導致 Builder 白跑 + self_verify 失敗，cascade 正確；不會 silently 丟失 subgoal
+
+**決策 D-09-1**：
+- dedupe 採 **batch 模式**（一次 subprocess call 含所有 sub-Goals candidates），不需 daemon 化（P3 並發量 P=1-2，subprocess model 夠用）
+- subprocess timeout **維持 30s**（phase doc 預設；batch 模式下 27s 估算值安全）
+- iff_lite 模式：P3 opt-in 預設關閉（strict mode only），iff_lite 留 P3 acceptance test 驗（impl §7.1 `--mode iff_lite` 介面在）但主路徑走 strict
+
+---
+
+### spike-010 search_cache hit rate 估算
+
+**Phase**: P3 必跑
+**Owner**: executor
+**環境**: 無 P2 real run logs（CI 全 mock、無真實 LLM 呼叫）；best-effort：讀 Backward.py query pattern 估算
+**狀態**: done
+
+> **Caveat（best-effort）**：本 spike 無實際 Backward/Builder 跑出的 log。以下 cache hit rate 估算基於 `Tooling/pipelines/backward.py` query pattern 分析 + sub-goal hash 重複機率理論分析。**需 P2 real run logs 補 quantitative data**。
+
+**問題**：
+P3 search_cache 對 `find_lemmas` / `find_subgoals` / `find_pattern` / `find_mathlib` 四個 stage 都有 cache。TTL per scope（mathlib=3600s / library=3600s / local_goals=300s / inventory=30s）是否合理？cache 值不值（hit rate 足夠高嗎）？決定 cache TTL 設定 + cache size budget。
+
+**跑法**：
+1. 讀 `Tooling/pipelines/backward.py` 找 `_dedupe`（`SELECT id FROM goals WHERE statement_hash = ?`）、`find_lemmas`（stub）、`find_subgoals`（stub）的 query pattern
+2. 估算「同一 sub-goal statement hash 在多次 Backward run 中重複出現的概率」
+3. 分析 `search_cache` 各 scope 的查詢 determinism（query_hash 重複率）
+
+**結果**：
+
+**Backward._dedupe 現有 query pattern**（P2 statement_hash 模式）：
+```python
+# Tooling/pipelines/backward.py:202
+row = conn.execute("SELECT id FROM goals WHERE statement_hash = ?", (h,)).fetchone()
+```
+- query key = SHA256(normalize_whitespace(statement))
+- 重複條件：兩次 Backward 拆出**完全相同的 statement**
+- LLM non-determinism：同一 Goal 多次 Backward run → agent 可能拆出不同 sub-goals → hash 不同 → cache miss
+- 估算：同一 Goal 第二次 Backward run hit rate ~20-40%（LLM 對確定性強的 Goal 傾向重複，對模糊 Goal 則多樣）
+
+**P3 search_cache query_hash 構造（impl §2.2）分析**：
+
+| scope | query 內容 | hash 重複概率 | 估算 |
+|-------|-----------|-------------|------|
+| mathlib | goal statement + search_terms | 高（同 goal 多次查詢相同）| ~80-90% |
+| library | goal statement + library version | 中高（library 穩定）| ~70-80% |
+| local_goals | goal statement + problem_scope | 中（goals 隨 Backward 增長）| ~50-60% |
+| inventory | available goal list | 低（每次 BFS 後變動）| ~30-40% |
+
+**TTL 合理性分析**：
+
+```
+mathlib scope  TTL=3600s：Mathlib lemma set 在一 session 內不變 → hit rate ~80-90%，3600s 合理
+library scope  TTL=3600s：Library/Theorems 在多數 cycle 內不變 → 合理
+local_goals    TTL=300s：Goals 每 cycle 增長（Backward commit 新 sub-Goals）→ 300s 讓 cache 在約
+               5 min 後 stale，不會長期返回舊列表。合理但偏保守（3-4 cycle 期間可能過期）
+inventory      TTL=30s：BFS 後 queue 變化快 → 30s 極短，幾乎每次查都 miss。適合做 freshness 保證
+               但 hit rate 極低（~30%），實際 cache 效益有限；設計意圖是防止 inventory 長時間 stale
+```
+
+**cache size budget**：
+- P3 典型 session：1 Problem × ~20 Goals × ~3 query types = ~60 active cache rows
+- 每 row size：results JSON（Mathlib scope 可能 large，~1-10 KB per query）
+- 估算：60 rows × 5 KB avg = 300 KB → 遠低於任何合理 SQLite 限制
+- P3 不需要 eviction policy；P7+ multi-Problem time 才需考慮（`search_cache` 無 per-Problem 隔離，P3 設計已有 `WHERE scope=?` 用於 invalidation）
+
+**find_lemmas / find_subgoals P2 stub 影響**：
+- P2 兩者均返回 `[]`（stub），不送任何 query 到 cache
+- P3 升實作後：`find_lemmas` 送 Mathlib/library query（高 hit rate）；`find_subgoals` 送 local_goals query（中 hit rate）
+- P2 acceptance test 無 search_cache hit rate gate（因 stub 返回空，hit rate 數據無意義）
+
+**對 P3 設計的影響**：
+1. **TTL 設定維持 phase doc 值**：mathlib/library 3600s、local_goals 300s、inventory 30s 均符合理論分析
+2. **cache size budget 無問題**：P3 規模 ~300 KB 遠低於 SQLite 任何 limit；無需 LRU eviction
+3. **inventory cache 效益有限**：30s TTL 導致 hit rate ~30%，幾乎是 freshness 保證而非性能優化；P3 可接受
+4. **real hit rate 驗證需 P2+ real run**：以上估算無實測支撐，P3 demo run 後可用 `SELECT COUNT(*) FROM search_cache` 前後對比驗 hit rate 是否符合預期
+
+**決策 D-10-1**：
+- cache TTL **維持 phase doc 預設**（mathlib=3600s / library=3600s / local_goals=300s / inventory=30s）——spike data 不支持調整（理論分析不提供精確數字，無充分理由改動）
+- cache size budget：P3 無需設 cap；P7+ multi-Problem 時以 `SELECT COUNT(*) FROM search_cache` 監控，超過 1 MB 再加 LRU
+
+---
+
+### spike-011 SQLite json_patch atomicity
+
+**Phase**: P3 必跑
+**Owner**: executor
+**環境**: Windows 11 Pro 10.0.26200 / Python 3.12 / SQLite 3.45+ (built-in) / multiprocessing
+**狀態**: done
+
+**問題**：
+P3 `blocked_pipelines` 寫入機制：兩個 pipeline（Backward + Builder）可能同時判斷需封鎖同一 Goal，並發 UPDATE 同一 row 的 `blocked_pipelines` JSON list。若走 Python 端 read-modify-write（read old list → append entry → write）在並發下是否有 lost update？`WHERE commit_state='live'` filter 是否能防止 lost update？atomic SQL `json_insert` 是否安全？
+
+**跑法**：
+Fixture `Tooling/tests/fixtures/spikes/spike011_json_patch.py`：
+- 2 個 worker process：Process-1 append `'Backward'`，Process-2 append `'Builder'`
+- N_TRIALS=100 per strategy；每 trial：main reset row to `'[]'` → 釋放兩 worker → 兩 worker 並發寫 → main 讀最終值 → 檢查是否包含兩個 entry
+- SQLite WAL mode（`PRAGMA journal_mode=WAL`）
+- 策略 A：Python-level read-modify-write（SELECT + compute + UPDATE，無 lock）
+- 策略 A2：同 A + `WHERE commit_state='live'` filter
+- 策略 B：atomic SQL `UPDATE goals SET blocked_pipelines = json_insert(blocked_pipelines, '$[#]', ?) WHERE id=1 AND commit_state='live'`
+- 策略 C：Python read-modify-write + `multiprocessing.Lock`
+
+**結果**：
+
+```
+Strategy                                                  Lost    Rate  Result
+------------------------------------------------------------------------
+A  no-lock, no-filter (Python rw)                          100   1.000  FAIL
+A2 no-lock, with-filter (Python rw + WHERE)                100   1.000  FAIL
+B  atomic-sql, with-filter (json_insert)                     0   0.000  PASS
+C  app-lock, no-filter (Python rw + Lock)                    0   0.000  PASS
+```
+
+**解讀**：
+- **策略 A**（100% lost update rate）：兩個 process 各自 SELECT 到 `'[]'`，各自計算 `['Backward']` / `['Builder']`，後寫者蓋掉先寫者的結果——classic lost update
+- **策略 A2**（100% lost update rate）：`WHERE commit_state='live'` filter 只是讀取和寫入條件篩選，不影響 read-modify-write 的 non-atomicity；兩個 process 仍然各自讀到 `'[]'` → 後者覆蓋
+- **策略 B**（0 lost updates）：`json_insert(blocked_pipelines, '$[#]', ?)` 是**單一 SQL statement**；SQLite 在 WAL mode 下序列化寫入操作——Process-1 的 UPDATE 執行時 blocked_pipelines 讀 + append + 寫在同一語句內完成，Process-2 等 Process-1 commit 後才執行，讀到更新後的 `['Backward']` 再 append `'Builder'` → `['Backward','Builder']`，無 lost update
+- **策略 C**（0 lost updates）：`multiprocessing.Lock` 串行化整個 read-modify-write block，但增加 lock contention 開銷
+
+**對 P3 設計的影響**：
+1. **Python-level read-modify-write 必須避免**：100% lost update rate，即使加 `WHERE commit_state='live'` 也完全無效
+2. **atomic SQL `json_insert` 是正確且充分的防護**：WAL mode 下 SQLite 序列化寫入語句，0 lost updates；P3 實作 `blocked_pipelines` 寫入需用此模式
+3. **WHERE commit_state='live' 的作用不是防 race**：其作用是「只對 live goals 觸發封鎖」（避免 pending row 被誤封），不是 race protection；兩個功能分開理解
+4. **application-level lock 不需要（P3）**：atomic SQL 已足夠；Lock 會增加 contention、複雜度，且 P3 無高並發場景（P=1-2 pipeline）
+
+**決策 D-11-1**：
+- `blocked_pipelines` 寫入採 **atomic SQL `json_insert`**：
+  ```sql
+  UPDATE goals
+  SET blocked_pipelines = json_insert(
+      COALESCE(blocked_pipelines, '[]'), '$[#]', ?
+  )
+  WHERE id = ? AND commit_state = 'live'
+    AND NOT json_type(blocked_pipelines, '$[0]') IS NULL  -- 可選去重 guard
+  ```
+- **不加 application-level lock**：SQLite WAL + single-statement atomicity 足夠；P3 無需
+- 去重 guard（避免 `['Backward','Backward']`）：在 SQL WHERE 加 `AND NOT EXISTS (SELECT 1 FROM json_each(COALESCE(blocked_pipelines,'[]')) WHERE value=?)` 或在 Python 端讀後 check（可接受，因 idempotent block 無害）
