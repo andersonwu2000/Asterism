@@ -198,8 +198,15 @@ def cmd_goal_add(
 
             print(f"goal add: goal_id={goal_id} slug={slug!r}")
             print(f"  lean_path:    {real_goal_lean}")
+            print(f"  kind:         {kind}")
             print(f"  spec:         {spec}")
             print(f"  queued Backward task for goal {goal_id}")
+            if kind == "conjecture":
+                # P4 C32: structural refill BFS will additionally enqueue
+                # Refuter on next tick (architecture.md §6 三線並攻).
+                # Counterexample (third line) deferred per task.md ## 延後 cycles.
+                print(f"  conjecture mode: Refuter will be enqueued by "
+                      f"the next BFS tick; Counterexample line is deferred")
         else:
             # ── P1 legacy --leaf-strategy path: pre-built strategy, enqueue Builder ──
             tmp_strategy_lean = f"Problems/{p}/Goals/{g_folder}/Strategies/_pending_{tmp_id}.lean"
@@ -448,7 +455,18 @@ def cmd_goal_show(
     args: Any,
     db_path: Path | None = None,
 ) -> None:
-    """Display goal status, answer_data, lean_path, and linked strategies."""
+    """Display goal status, answer_data, lean_path, twin/silver-gold (P4 C32),
+    blocked_pipelines, and linked strategies.
+
+    P4 C32 extensions:
+      - twin_of: resolved to G{id} ({slug}) line; from architecture.md §6
+        this is set by Refuter pipeline (bidirectional G ↔ ¬G link)
+      - silver-or-gold: when answer_data.type ∈ {'witness','construction'}
+        the goal is in 'silver' state; type='classical' is 'gold'. Shown as
+        an explicit silver/gold tag so operators can spot upgrade candidates
+      - blocked_pipelines: surfaced when non-empty so the user can run
+        `asterism goal unblock` to release the block
+    """
     db = db_path or _DEFAULT_DB
     conn = connect(db)
     try:
@@ -462,7 +480,8 @@ def cmd_goal_show(
             sys.exit(1)
 
         row = conn.execute(
-            "SELECT id, slug, problem, kind, status, answer_data, lean_path, depth "
+            "SELECT id, slug, problem, kind, status, answer_data, lean_path, "
+            "depth, twin_of, blocked_pipelines "
             "FROM goals WHERE id = ?",
             (goal_id,),
         ).fetchone()
@@ -471,7 +490,8 @@ def cmd_goal_show(
             print(f"error: goal not found: {args.goal_id!r}", file=sys.stderr)
             sys.exit(1)
 
-        g_id, slug, problem, kind, status, answer_data, lean_path, depth = row
+        (g_id, slug, problem, kind, status, answer_data, lean_path, depth,
+         twin_of, blocked_pipelines) = row
         print(f"goal {g_id} ({slug})")
         print(f"  problem:   {problem}")
         print(f"  kind:      {kind}")
@@ -484,6 +504,31 @@ def cmd_goal_show(
             print(f"  answer_data:")
             for k, v in ad.items():
                 print(f"    {k}: {v}")
+            # Silver / gold tag (architecture.md §6 silver→gold mechanic).
+            ad_type = ad.get("type")
+            if ad_type == "classical":
+                print(f"    verdict_strength: gold (classical proof)")
+            elif ad_type in ("witness", "construction"):
+                print(f"    verdict_strength: silver ({ad_type}-only — "
+                      "upgrade pending)")
+        if twin_of is not None:
+            twin_row = conn.execute(
+                "SELECT slug, status, kind FROM goals WHERE id = ?",
+                (twin_of,),
+            ).fetchone()
+            if twin_row is None:
+                print(f"  twin_of:   G{twin_of} <missing>")
+            else:
+                t_slug, t_status, t_kind = twin_row
+                print(f"  twin_of:   G{twin_of} ({t_slug}) "
+                      f"[kind={t_kind} status={t_status}]")
+        if blocked_pipelines:
+            try:
+                bp_list = json.loads(blocked_pipelines)
+            except json.JSONDecodeError:
+                bp_list = None
+            if bp_list:
+                print(f"  blocked:   {', '.join(bp_list)}")
 
         strats = conn.execute(
             "SELECT id, lean_path, status, commit_state "
