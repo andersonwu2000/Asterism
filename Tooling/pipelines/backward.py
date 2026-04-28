@@ -672,6 +672,9 @@ class Backward:
         staging_dir: str,
         dead_attempts: list[dict],
     ) -> BackwardResult:
+        # P6.x patch 10: per-stage observability. Every retry exit path emits
+        # a 'cascade' event so operators can see why Backward exhausted (was
+        # it parse fail / dedupe collapse / validator / self_verify?).
         for _attempt in range(self.config.max_retries):
             # Fresh staging dir each retry — avoid cross-attempt leftover files
             # confusing validator/self_verify on a different sub-goal slug set.
@@ -680,28 +683,48 @@ class Backward:
 
             response = self._run_agent(goal, dead_attempts, session_id, staging_dir)
             if response is None:
+                self._emit_stage_fail(goal, pipeline_id, _attempt,
+                                      "agent_no_response")
                 return BackwardResult(outcome="exhausted")
 
             proposal = self._parse_proposal(response.output)
             if proposal is None:
+                self._emit_stage_fail(goal, pipeline_id, _attempt,
+                                      "parse_proposal_fail",
+                                      detail=(response.output[:300]
+                                              if response.output else ""))
                 continue
 
             subgoals_raw = proposal.get("subgoals", [])
             if not subgoals_raw:
+                self._emit_stage_fail(goal, pipeline_id, _attempt,
+                                      "subgoals_empty")
                 return BackwardResult(outcome="unproductive")
 
             subgoals = self._dedupe(subgoals_raw, staging_dir, goal)
             if not subgoals:
+                self._emit_stage_fail(goal, pipeline_id, _attempt,
+                                      "dedupe_collapsed",
+                                      detail=f"all {len(subgoals_raw)} dedupe'd")
                 return BackwardResult(outcome="unproductive")
 
             subgoals = self._write_staging_files(subgoals, staging_dir, goal)
 
             errors = self._validate(goal, subgoals)
             if errors:
+                self._emit_stage_fail(goal, pipeline_id, _attempt,
+                                      "validator_fail",
+                                      detail=f"{len(errors)} errors: "
+                                             + "; ".join(
+                                                 f"{e.check}={e.detail}"
+                                                 for e in errors[:3]
+                                             ))
                 continue
 
             all_pass, subgoals = self._self_verify_per_file(subgoals)
             if not all_pass:
+                self._emit_stage_fail(goal, pipeline_id, _attempt,
+                                      "self_verify_fail")
                 # pipelines.md §2 stage 7 [fail → retry from step 4]
                 continue
 
@@ -714,4 +737,37 @@ class Backward:
                 subgoal_ids=subgoal_ids,
             )
 
+        self._emit_stage_fail(goal, pipeline_id, self.config.max_retries,
+                              "max_retries_exhausted")
         return BackwardResult(outcome="exhausted")
+
+    def _emit_stage_fail(
+        self,
+        goal: dict,
+        pipeline_id: str,
+        attempt: int,
+        stage: str,
+        detail: str = "",
+    ) -> None:
+        """P6.x patch 10: emit a 'cascade' event row so operators can
+        diagnose Backward exhaustion mode without code instrumentation.
+        Best-effort: SQL fail does not propagate (event log is observable
+        side-channel, not part of the Backward outcome contract)."""
+        import json as _json
+        try:
+            payload = _json.dumps({
+                "rule": "backward_stage_fail",
+                "pipeline_id": pipeline_id,
+                "goal_id": goal.get("id"),
+                "attempt": attempt,
+                "stage": stage,
+                "detail": detail,
+            })
+            with self.conn:
+                self.conn.execute(
+                    "INSERT INTO events (kind, payload, ts) VALUES "
+                    "(?, ?, ?)",
+                    ("cascade", payload, _now()),
+                )
+        except sqlite3.Error:
+            pass

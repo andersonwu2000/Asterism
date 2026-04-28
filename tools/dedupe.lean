@@ -73,19 +73,22 @@ def findUserTheorem (env : Environment) : Option Name :=
     | _          => none
 
 /-- Elaborate `path` and return (env, theorem-type-Expr).
-    Errors propagate as `Except String`. -/
+    Errors propagate as `Except String`.
+    P6.x patch 8 (Lean v4.30 toolchain drift): `runFrontend` returns
+    `IO (Option Environment)` — `none` means errors, no separate Bool. -/
 def fileTheoremType (path : String) : IO (Except String (Environment × Expr)) := do
   try
     let content ← IO.FS.readFile path
-    let (env, ok) ← Lean.Elab.runFrontend content {} path `_AsterismDedupe
-    if !ok then
-      return .error s!"runFrontend reported errors in {path}"
-    match findUserTheorem env with
-    | none => return .error s!"no user theorem found in {path}"
-    | some thmName =>
-      match env.find? thmName with
-      | none    => return .error s!"theorem {thmName} not in env after runFrontend"
-      | some ci => return .ok (env, ci.type)
+    let env? ← Lean.Elab.runFrontend content {} path `_AsterismDedupe
+    match env? with
+    | none => return .error s!"runFrontend reported errors in {path}"
+    | some env =>
+      match findUserTheorem env with
+      | none => return .error s!"no user theorem found in {path}"
+      | some thmName =>
+        match env.find? thmName with
+        | none    => return .error s!"theorem {thmName} not in env after runFrontend"
+        | some ci => return .ok (env, ci.type)
   catch e =>
     return .error s!"IO error on {path}: {e.toString}"
 
@@ -103,7 +106,9 @@ def runIsDefEq (candEnv : Environment) (candType entryType : Expr) : IO Bool := 
   let coreCtx : Core.Context := { fileName := "_dedupe", fileMap := default }
   let coreState : Core.State := { env := candEnv }
   try
-    let metaResult ← (Meta.isDefEq candType entryType).run'.toIO coreCtx coreState
+    -- P6.x patch 8 (Lean v4.30): CoreM.toIO returns IO (α × Core.State);
+    -- extract .fst for the Bool result.
+    let (metaResult, _) ← (Meta.isDefEq candType entryType).run'.toIO coreCtx coreState
     return metaResult
   catch _ =>
     -- isDefEq crashed (likely missing constants in env); treat as no match

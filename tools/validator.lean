@@ -73,19 +73,22 @@ def findUserTheorem (env : Environment) : Option Name :=
     | _          => none
 
 /-- Elaborate file at `path` and return its theorem's binder names.
-    Errors propagate as `Except String`. -/
+    Errors propagate as `Except String`.
+    P6.x patch 9 (Lean v4.30 toolchain drift): runFrontend returns
+    `IO (Option Environment)` — `none` means errors. -/
 def fileBinders (path : String) : IO (Except String (Array Name)) := do
   try
     let content ← IO.FS.readFile path
-    let (env, ok) ← Lean.Elab.runFrontend content {} path `_AsterismValidator
-    if !ok then
-      return .error s!"runFrontend reported errors in {path}"
-    match findUserTheorem env with
-    | none => return .error s!"no user theorem found in {path}"
-    | some thmName =>
-      match env.find? thmName with
-      | none    => return .error s!"theorem {thmName} not in env after runFrontend"
-      | some ci => return .ok (collectForallBinders ci.type)
+    let env? ← Lean.Elab.runFrontend content {} path `_AsterismValidator
+    match env? with
+    | none => return .error s!"runFrontend reported errors in {path}"
+    | some env =>
+      match findUserTheorem env with
+      | none => return .error s!"no user theorem found in {path}"
+      | some thmName =>
+        match env.find? thmName with
+        | none    => return .error s!"theorem {thmName} not in env after runFrontend"
+        | some ci => return .ok (collectForallBinders ci.type)
   catch e =>
     return .error s!"IO error on {path}: {e.toString}"
 
