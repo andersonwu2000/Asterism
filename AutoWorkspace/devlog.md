@@ -4,9 +4,38 @@
 
 ## Commit：
 
+**C46 R1 — P6 #0 sanity gate + multi-Problem BFS + roll-up acceptance**
+
+Hash: pending — P6 C46 R1: Tooling/tests/test_phase6_acceptance.py (16 tests) covering AC#0a/0b/0c manual gates + AC#1-#11 in-process roll-up.
+
+### 改動摘要
+
+- **Tooling/tests/test_phase6_acceptance.py 全新 ~430 行 / 16 tests**: 5 manual gates (AC#0a/0b/0c demo A+B/C/D + AC#1a stress + AC#3 cross-Problem import) + 11 in-process AC tests:
+  - AC#1 Multi-Problem BFS — Reactor._run_structural_refill enqueues Backward across multiple Problems in one tick
+  - AC#2 + AC#5 + AC#6 Library promotion roll-up — classical proved 進 Library/Theorems + per-Problem proved.lean + library_index INSERT；first-write-wins 對 dup lib_name emit event 不 append
+  - AC#4a/4b axiom coverage check via check_deps（pass/reject）
+  - AC#7 Promotion fail revert（LIBRARY_BUILD_FAULT=1 觸發 revert + library_index DELETE）
+  - AC#8 reindex inserts pre-existing proved.lean lines 進 library_index
+  - AC#9 Library.whitelist 過濾 RH-dependent goals（per-Problem 寫、Library/Theorems 不寫）
+  - AC#10 schedulers liveness 拒第二實例 / `bypass_startup_check=True` 真覆蓋
+  - AC#11 scheduler force-clear 清 stale row
+
+### CI
+
+893 → 904 pass (+11 in-process AC tests passing) / 35 skipped (+5 phase6 manual gates) / 1 xfailed / 0 regression。
+
+### 範圍邊界
+
+- AC#0a/0b/0c demo（cross-Problem real-lake end-to-end）為 manual gate；spec 已記入 phase6_library.md ## Demo + ## Acceptance criteria 字面、本檔未複製 bash 序列。
+- AC#1a 5-Problem stress 30-min 為 manual gate。
+- AC#3 Backward find_lemmas via search (library scope) cross-Problem import 需真 lake；in-process 留 manual gate。
+- C47 N/A: P5 Milestone A 延後使 `--statement` deprecated alias 從未引入；本 cycle 無對應 work。phase 6 收尾任務全併入 C46 acceptance。
+
+---
+
 **C45 R1 — LIBRARY_BUILD_FAULT env hook + library reindex migration**
 
-Hash: pending — P6 C45 R1: env hook + reindex tool, both behind the previously-stub `library reindex` CLI binding.
+Hash: `ad8df1a` — P6 C45 R1: env hook + reindex tool, both behind the previously-stub `library reindex` CLI binding.
 
 ### 改動摘要
 
