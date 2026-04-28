@@ -1287,12 +1287,16 @@ class Reactor:
         invalidate_for_goals_write(self.conn)
         self._cascade_twin_to_refuted(goal_id, trust_set_json)
         # P6 C41: Library promotion hook. promote_to_library handles
-        # qualification (origin / type / trust_set whitelist) internally
-        # and skips when the goal doesn't qualify. Lake build verify is
-        # a noop default in C41 (operator runs `lake build` manually
-        # per spike-021 D-21-1 「P6 demo bash 起手預熱」); P6.C45 will
-        # wire the real verifier with LIBRARY_BUILD_FAULT env hook.
+        # qualification (origin / type / trust_set whitelist) internally.
+        # C41 R3 HIGH-2 fix: real lake build verify lands in P6.C45;
+        # until then the production hook explicitly opts into the noop
+        # verifier via LIBRARY_VERIFY_NOOP=1 (set per-call so unit-test
+        # processes that don't promote are unaffected). promote_to_library
+        # emits a `library_verify_skipped` cascade event for every
+        # promotion under noop so the audit trail makes the gap visible.
         from Tooling.library.promotion import promote_to_library
+        prev_noop_env = os.environ.get("LIBRARY_VERIFY_NOOP")
+        os.environ["LIBRARY_VERIFY_NOOP"] = "1"
         try:
             promote_to_library(
                 self.conn, goal_id, self.config.base_dir,
@@ -1310,6 +1314,11 @@ class Reactor:
                     "error": str(exc),
                 },
             )
+        finally:
+            if prev_noop_env is None:
+                os.environ.pop("LIBRARY_VERIFY_NOOP", None)
+            else:
+                os.environ["LIBRARY_VERIFY_NOOP"] = prev_noop_env
 
     def _cascade_twin_to_refuted(
         self, proved_goal_id: int, trust_set_json: str | None
