@@ -307,13 +307,17 @@ class Reactor:
     # 解析 META.md...」 + impl §6 schedulers liveness 字面.
     # ------------------------------------------------------------------
 
-    HEARTBEAT_TTL_SEC: int = 60  # rows older than this are considered stale
+    HEARTBEAT_TTL_SEC: int = 90  # rows older than this are considered stale
+                                  # (phase6_library.md:232 Config table:
+                                  # schedulers stale threshold = 90s; C44 R3
+                                  # MED-4 fix — C40 R3 commit message claimed
+                                  # 60→90 bump but code stayed 60)
 
     def _register_scheduler(self) -> None:
         """Reject if a live scheduler row exists; otherwise INSERT.
 
         P6 C40: a live scheduler row is one whose last_heartbeat is
-        within HEARTBEAT_TTL_SEC of now (default 60s — matches the
+        within HEARTBEAT_TTL_SEC of now (default 90s — matches the
         daemon's structural-refill tick + 2× cushion). If found, raise
         FatalError so the second instance fails to start (visible to
         the operator + scheduler row preserved as evidence).
@@ -323,10 +327,14 @@ class Reactor:
         to clean them. Auto-delete on startup would mask crashes where
         a scheduler exited without _unregister_scheduler running.
 
-        P6 C44 `bypass_startup_check=True`: skip the live check AND
-        DELETE all existing schedulers rows before INSERT. Operator
-        escape hatch (logged via startup_bypass event for audit
-        trail).
+        P6 C44 R3 HIGH-1 fix: `bypass_startup_check=True` is a no-op
+        on the liveness check per phase6_library.md:218 + acceptance
+        #10 字面: "scheduler 啟動跳過 CLI 早期 single-instance 攔截、
+        讓進到 liveness check 階段；liveness check 仍正常擋". The
+        flag was originally designed to bypass an "earlier" CLI-side
+        single-instance gate that this phase has not yet introduced;
+        the liveness check below stays. We emit a startup_bypass
+        audit event so operators see the no-op for the audit trail.
         """
         now = _now()
         # Cutoff = now - TTL; ISO timestamps sort lexicographically.
@@ -335,47 +343,45 @@ class Reactor:
         ).isoformat()
 
         if self.config.bypass_startup_check:
-            try:
-                with self.conn:
-                    deleted = self.conn.execute(
-                        "DELETE FROM schedulers"
-                    ).rowcount
-            except sqlite3.Error as exc:
-                self._event_queue.put(
-                    ("fatal", f"_register_scheduler bypass DELETE fail: {exc}")
-                )
-                raise FatalError(f"_register_scheduler fail: {exc}") from exc
+            # No-op on the liveness check per spec line 218 + AC#10.
+            # The flag is reserved for a future CLI-side early gate
+            # (a file-lock-style attempt before the DB lookup); the
+            # liveness check is the only existing gate today and must
+            # NOT be bypassed because it is the canonical safeguard
+            # against double-scheduler corruption (architecture.md:284).
             self._emit_event(
                 "control_signal",
-                {"action": "startup_bypass", "rows_cleared": deleted,
+                {"action": "startup_bypass",
+                 "note": "phase6 has no CLI early gate to bypass; "
+                         "liveness check still applies — use "
+                         "`scheduler force-clear` for stale rows",
                  "source": "register"},
             )
-        else:
-            try:
-                live = self.conn.execute(
-                    "SELECT id, host, pid, started_at, last_heartbeat "
-                    "FROM schedulers WHERE last_heartbeat > ?",
-                    (cutoff,),
-                ).fetchall()
-            except sqlite3.Error as exc:
-                self._event_queue.put(
-                    ("fatal", f"_register_scheduler liveness query fail: {exc}")
-                )
-                raise FatalError(f"_register_scheduler fail: {exc}") from exc
 
-            if live:
-                details = ", ".join(
-                    f"id={r[0]} host={r[1]} pid={r[2]} last_heartbeat={r[4]}"
-                    for r in live
-                )
-                msg = (
-                    f"scheduler already running ({len(live)} live row(s)): "
-                    f"{details}. Run `asterism scheduler force-clear` to "
-                    f"reset stale rows manually, or pass "
-                    f"--bypass-startup-check to override."
-                )
-                self._event_queue.put(("fatal", msg))
-                raise FatalError(msg)
+        try:
+            live = self.conn.execute(
+                "SELECT id, host, pid, started_at, last_heartbeat "
+                "FROM schedulers WHERE last_heartbeat > ?",
+                (cutoff,),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            self._event_queue.put(
+                ("fatal", f"_register_scheduler liveness query fail: {exc}")
+            )
+            raise FatalError(f"_register_scheduler fail: {exc}") from exc
+
+        if live:
+            details = ", ".join(
+                f"id={r[0]} host={r[1]} pid={r[2]} last_heartbeat={r[4]}"
+                for r in live
+            )
+            msg = (
+                f"scheduler already running ({len(live)} live row(s)): "
+                f"{details}. Run `asterism scheduler force-clear` to "
+                f"reset stale rows manually."
+            )
+            self._event_queue.put(("fatal", msg))
+            raise FatalError(msg)
 
         try:
             with self.conn:
@@ -1156,11 +1162,13 @@ class Reactor:
         P6 C44 per-Problem pause: skip rows whose target's Problem is in
         self._paused_problems (re-queue stays — task is left in DB,
         spawn loop short-circuits next tick after `problem_resume`).
-        Implementation walks queue in priority order until either an
-        unpaused task is found or the queue exhausts; paused-row cursor
-        position is via an in-memory `_skipped_q_ids` exclusion set so
-        the scan does not re-touch the same row repeatedly within one
-        spawn-loop iteration.
+        Implementation: when the paused set is empty take the fast path
+        (single SELECT...LIMIT 1). Otherwise scan up to LIMIT 200 rows
+        in priority order and return the first whose Problem is not in
+        the set. If all 200 belong to paused Problems, return None
+        (caller treats as empty queue, re-tries next tick). The 200 row
+        ceiling is a starvation-safety guard for very large queues —
+        P6 demo + acceptance ranges (~15 goals) stay well below.
         """
         with self._lock:
             paused = frozenset(self._paused_problems)

@@ -276,7 +276,11 @@ class TestPollDbControlSignalsPerProblem:
 
 
 class TestBypassStartupCheck:
-    def test_bypass_clears_existing_rows(self, db, tmp_path):
+    def test_bypass_does_not_override_liveness(self, db, tmp_path):
+        """C44 R3 HIGH-1 fix: bypass_startup_check=True skips the
+        (currently nonexistent) CLI-side early gate but the liveness
+        check stays. Spec phase6_library.md:218 + AC#10 字面.
+        """
         fresh = datetime.now(timezone.utc).isoformat()
         with db:
             db.execute(
@@ -285,14 +289,10 @@ class TestBypassStartupCheck:
                 (fresh, fresh),
             )
         reactor = _make_reactor(db, tmp_path, bypass=True)
-        # _register_scheduler should not raise + should DELETE old rows
-        reactor._register_scheduler()
-        rows = db.execute(
-            "SELECT COUNT(*) FROM schedulers"
-        ).fetchone()[0]
-        # Exactly one row (the freshly registered one)
-        assert rows == 1
-        # And startup_bypass event recorded for audit trail
+        # Liveness still rejects fresh row even with bypass=True
+        with pytest.raises(FatalError):
+            reactor._register_scheduler()
+        # Audit-trail event emitted for the bypass attempt
         events = db.execute(
             "SELECT payload FROM events WHERE kind='control_signal'"
         ).fetchall()
@@ -319,3 +319,22 @@ class TestBypassStartupCheck:
             "SELECT COUNT(*) FROM schedulers"
         ).fetchone()[0]
         assert rows == 1
+
+    def test_bypass_succeeds_when_only_stale(self, db, tmp_path):
+        """Bypass with only stale rows: liveness query empty → INSERT
+        proceeds. (Operator should normally use `scheduler force-clear`
+        beforehand; this test just verifies bypass doesn't break the
+        no-live-rows path.)"""
+        from datetime import timedelta as _td
+        stale = (datetime.now(timezone.utc) - _td(seconds=600)).isoformat()
+        with db:
+            db.execute(
+                "INSERT INTO schedulers (host, pid, started_at, "
+                "last_heartbeat) VALUES ('h', 1, ?, ?)",
+                (stale, stale),
+            )
+        reactor = _make_reactor(db, tmp_path, bypass=True)
+        reactor._register_scheduler()
+        # Stale row + new row both present (force-clear is a separate path)
+        count = db.execute("SELECT COUNT(*) FROM schedulers").fetchone()[0]
+        assert count == 2

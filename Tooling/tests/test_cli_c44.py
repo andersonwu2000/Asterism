@@ -391,10 +391,15 @@ class TestLibraryStubs:
         out = capsys.readouterr().out
         assert "library reindex:" in out
 
-    def test_audit_stub(self, db_path, capsys):
-        cmd_library_audit(_args(), db_path=db_path)
-        out = capsys.readouterr().out
-        assert "deferred" in out
+    def test_audit_stub_exits_1_with_p7_message(self, db_path, capsys):
+        """C44 R3 HIGH-2 fix: spec phase6_library.md:62 字面 'P6 預留
+        stub exit 1 + 印「not implemented; tracked in P7+」'."""
+        with pytest.raises(SystemExit) as exc:
+            cmd_library_audit(_args(), db_path=db_path)
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "not implemented" in err
+        assert "P7+" in err
 
 
 # ---------------------------------------------------------------------------

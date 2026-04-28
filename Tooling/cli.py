@@ -618,6 +618,10 @@ def cmd_problem_list(
         # wins per Problem. (Only daemon-applied events are kept; CLI-
         # source pause events represent ops requests not necessarily
         # acted on, so we filter on payload.status='applied'.)
+        # C44 R3 HIGH-3 fix: narrow exception + emit stderr warning so
+        # query failures (events table corruption / DB lock) are not
+        # silently swallowed (silent-failure red line).
+        import sqlite3 as _sqlite3
         paused: set[str] = set()
         try:
             event_rows = conn.execute(
@@ -625,7 +629,12 @@ def cmd_problem_list(
                 "WHERE kind = 'control_signal' "
                 "ORDER BY id ASC"
             ).fetchall()
-        except Exception:
+        except _sqlite3.Error as exc:
+            print(
+                f"warning: events table query failed ({exc}); "
+                "paused state may be stale",
+                file=sys.stderr,
+            )
             event_rows = []
         for (payload_json,) in event_rows:
             try:
@@ -828,8 +837,11 @@ def cmd_library_reindex(
     library_index rows. Per-Problem proved.lean files are NOT indexed
     (they're not framework-global); operator inspection covers them.
 
-    spec phase6_library.md ## In line 79 字面: 「Library reindex
-    migration（跑過 P4/P5 既有 json 補 INSERT library_index row）」.
+    spec phase6_library.md ## In line 58 (CLI binding) + ## 任務序列
+    line 249 字面: 「Library reindex migration（跑過 P4/P5 既有 json
+    補 INSERT library_index row）」. (C44 R3 MED-2 fix: previous
+    citation pointed at line 79 which is the demo bash block.)
+
     Outputs: inserted / already_indexed / unresolved / unparsed
     counts so operators can spot file-vs-DB drift.
     """
@@ -867,14 +879,21 @@ def cmd_library_reindex(
 
 
 def cmd_library_audit(args: Any, db_path: Path | None = None) -> None:
-    """C44 stub for the lake-driven audit tool.
+    """C44 stub per phase6_library.md ## In line 62 字面: 「P6 預留
+    stub exit 1 + 印『not implemented; tracked in P7+』+ TODO；避免
+    P7 忘記」.
 
-    spec phase6_library.md ## In line 38-39 字面: 「reviewer 不要寫 lake
-    plugin」 + 「`tools/check_axiom_coverage.lean` Lean exe」. Real
-    audit binding requires the Lean exe + lake env (P6.C45 wiring).
+    Real implementation: Mathlib upgrade audit (重跑 #print axioms 對
+    所有 Library entry 比對 trust_set snapshot) — defer until the
+    Mathlib upgrade flow is defined.
     """
-    print("library audit: deferred (Lean exe binding lands with C45)")
-    print("  for now use `library check-deps` (Python-side approximation)")
+    # TODO(P7+): bind lake-driven Mathlib upgrade audit per
+    # phase6_library.md:62.
+    print(
+        "library audit: not implemented; tracked in P7+",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 # ──────────────────────────────────────────────────────────────

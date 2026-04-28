@@ -4,9 +4,43 @@
 
 ## Commit：
 
+**C44 R3 — fix R2 audit (3 HIGH + 4 MED + 3 LOW; 7 fixable 全修)**
+
+Hash: pending — P6 C44 R3: fix C44 R2 audit findings (3 HIGH + 4 MED).
+
+### 改動摘要
+
+- **HIGH-1 fix scheduler.py `_register_scheduler` bypass branch**: spec phase6_library.md:218 + AC#10 字面要求 `--bypass-startup-check` 跳過 CLI 早期 single-instance check 但 liveness check 仍正常擋。R1 反向實作（DELETE 全 row）會 break AC#10 + 移除 architecture.md:284 唯一 backstop。R3 改 bypass 為 no-op (current phase has no CLI early gate to bypass) + emit `startup_bypass` audit event。**spec 字面違反第一次以「acceptance 完全相反語意」型出現、紅線監控延伸進新類型**。
+- **HIGH-2 fix cmd_library_audit**: spec line 62 字面要求 stub exit 1 + 印「not implemented; tracked in P7+」+ TODO marker。R1 寫成 `print(...)` return 0 — silent-success 變種、operator Mathlib upgrade flow 跑此 cmd 會誤以為 audit pass。R3 改 stderr print + sys.exit(1) + `# TODO(P7+):` inline marker。**silent-failure 紅線連 23 cycle 監控第 9 次變種**。
+- **HIGH-3 fix cmd_problem_list bare except Exception**: events table query 用 bare `except Exception: event_rows = []` 吞所有 SQL/IO 例外、無 stderr 提示、operator 看 `problem list` 全 active 不知 query fail。R3 narrow 為 `sqlite3.Error` + emit stderr warning。**silent-failure 紅線第 10 次變種**。
+- **MED-1 fix _pop_queue docstring drift**: docstring 描述「`_skipped_q_ids` exclusion set」不存在於 code、實際是 LIMIT 200 + linear scan。R3 重寫 docstring 與 code 對齊（fast path / scan path / 200-row ceiling）。
+- **MED-2 fix spec citation drift**: cmd_library_reindex docstring 引「line 79」實際是 demo bash；改引「line 58 + 任務序列 line 249」（reindex 真實位置）。cmd_library_audit 已隨 HIGH-2 改至 line 62 字面正確位置。
+- **MED-4 fix HEARTBEAT_TTL_SEC=60→90**: phase6_library.md:232 Config table 字面 90s。C40 R3 commit message 字面 claim 60→90 fix 但 code 實際沒改（C40 R3 silent regression）— 本次 R3 一併修進 scheduler.py:310 `HEARTBEAT_TTL_SEC: int = 90` + cli.py:861 docstring 已對齊「default 90s」。
+- **HIGH-1 連帶 test 改寫**: test_scheduler_c44.py::TestBypassStartupCheck — `test_bypass_clears_existing_rows`（鎖死錯誤 semantics）改寫為 `test_bypass_does_not_override_liveness`（驗 bypass=True + fresh row 仍 raise FatalError）+ 新增 `test_bypass_succeeds_when_only_stale`（驗 stale row 場景）。test_phase6_acceptance.py::TestSchedulerLiveness::test_bypass_overrides_liveness_check 同步改寫為 `test_bypass_does_not_override_liveness`。
+- **HIGH-2 連帶 test 改寫**: test_cli_c44.py::TestLibraryStubs::test_audit_stub 改寫為 `test_audit_stub_exits_1_with_p7_message`（驗 SystemExit code=1 + stderr 含「not implemented」+「P7+」）。
+
+### MED-3 + LOW deferral
+
+- **MED-3 (per-Problem control_signal payload schema drift)**: spec line 61 字面 `action=pause + scope=problem + target=<p>` vs code 實 `action=problem_pause + problem=<p>`。功能等價、字面 drift。test 已綁 code schema、改 schema 影響 16 tests。orchestrator 接受 deferral：spec patch 留 P7 doc-cleanup（添加 ack note 進 docstring 留 follow-up）。
+- **LOW-1 (_pop_queue starvation 200-row ceiling)**: P6 demo + acceptance 範圍（~15 goals）遠不踩；P7 重壓再優化。
+- **LOW-2 (paused snapshot SQL race)**: race window 一個 fetchone、monotonic within tick、spec 無 conflict、不修。
+- **LOW-3 (_task_problem_in_set unknown kind)**: P6 兩 kind 完整、P7 必須 extend、TODO marker 留待 C49+。
+
+### CI
+
+904 → 905 pass (+1) / 35 skipped / 1 xfailed / 0 regression。R2 audit 列 3 HIGH 全修、4 MED 修 3 + 1 deferred、3 LOW 接受 deferral。
+
+### orchestrator 紀錄
+
+- silent-failure 紅線連 23 cycle 監控、本 R1 抓到 2 個變種（HIGH-2 + HIGH-3）— 第 9 + 第 10 個。R2 audit 獨立 review 不可省再次驗證（hybrid Opus R1 仍踩）。
+- `--bypass-startup-check` HIGH-1 是 spec 字面違反新型「acceptance 完全相反 semantics」；orchestrator note candidate 「test 鎖死 R1 錯誤行為」（test_bypass_clears_existing_rows pattern）值得升級 — 寫 test 必先用 spec 字面驗 expected behavior、不可從 code 倒推 test。
+- HEARTBEAT_TTL_SEC=60 對齊 90 順道修了 C40 R3 silent regression（commit message 字面 claim fix 但 code 沒動）— 本 R3 趁機處理該 follow-up。
+
+---
+
 **C46 R1 — P6 #0 sanity gate + multi-Problem BFS + roll-up acceptance**
 
-Hash: pending — P6 C46 R1: Tooling/tests/test_phase6_acceptance.py (16 tests) covering AC#0a/0b/0c manual gates + AC#1-#11 in-process roll-up.
+Hash: `40085d7` — P6 C46 R1: Tooling/tests/test_phase6_acceptance.py (16 tests) covering AC#0a/0b/0c manual gates + AC#1-#11 in-process roll-up.
 
 ### 改動摘要
 

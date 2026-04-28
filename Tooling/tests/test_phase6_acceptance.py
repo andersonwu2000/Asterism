@@ -431,7 +431,9 @@ class TestSchedulerLiveness:
         finally:
             conn.close()
 
-    def test_bypass_overrides_liveness_check(self, db_path, tmp_path):
+    def test_bypass_does_not_override_liveness(self, db_path, tmp_path):
+        """AC#10 字面: 「liveness check 仍正常擋」. Bypass flag does NOT
+        let a second instance through when the first is alive."""
         conn = connect(db_path)
         try:
             fresh = datetime.now(timezone.utc).isoformat()
@@ -447,11 +449,13 @@ class TestSchedulerLiveness:
                               bypass_startup_check=True),
             )
             r.conn = conn
-            r._register_scheduler()  # must NOT raise
+            with pytest.raises(FatalError):
+                r._register_scheduler()
+            # First instance row preserved
             count = conn.execute(
                 "SELECT COUNT(*) FROM schedulers"
             ).fetchone()[0]
-            assert count == 1  # old row gone, new row present
+            assert count == 1
         finally:
             conn.close()
 
