@@ -6,9 +6,14 @@ Public API:
     dedupe(candidate_path, entries, conn, mode='strict', timeout=30.0,
            lake_cwd=None) -> DedupeResult
 
-DedupeResult.outcome ∈ {"hit", "novel", "timeout", "elab_failed"}
+DedupeResult.outcome ∈ {"hit", "novel", "timeout"}
 DedupeResult.entry_id: int | None  (set iff outcome == "hit")
 DedupeResult.from_cache: bool
+
+Spec §7.1: dedupe.lean returns NOVEL on candidate elab failure (容錯不報錯);
+the wrapper does not surface a separate `elab_failed` outcome — diagnostics
+go to stderr in dedupe.lean and surface via subprocess stderr if the caller
+wants them.
 
 Cache key: sha256("dedupe|" + mode + "|" + candidate_text + "|" +
                   json.dumps(sorted entry ids))
@@ -25,6 +30,12 @@ Silent-failure red lines (continues C13–C18 discipline):
       NOT silently fall back to NOVEL); caller must observe the failure.
     - JSON parse failure → raise RuntimeError.
     - Unknown DEDUPE_MOCK value → raise ValueError (matches C18 R3 pattern).
+
+Timeout vs subprocess error asymmetry: subprocess.TimeoutExpired returns
+DedupeResult(outcome='timeout') so the caller can surface it as a documented
+outcome and decide retry policy. Search.py (sibling module) raises on timeout
+because it has no equivalent outcome enum value — the asymmetry is intentional
+and documented in both modules' docstrings.
 """
 from __future__ import annotations
 
@@ -40,15 +51,18 @@ from pathlib import Path
 from typing import Any
 
 _DEDUPE_LEAN = Path(__file__).parents[2] / "tools" / "dedupe.lean"
-_DEFAULT_CACHE_TTL_SECS: float = 3600.0
+# Spec §2.1: dedupe cache walks via mutation invalidation (C21 hook), not TTL.
+# Use 1-year TTL as a soft floor — the real freshness guarantee comes from
+# CommitWriter.finalize() killing dedupe rows on goals INSERT/UPDATE; TTL only
+# bounds permanent residue if invalidation ever fails.
+_DEFAULT_CACHE_TTL_SECS: float = 86400.0 * 365
 
 
 @dataclass
 class DedupeResult:
-    outcome: str                     # "hit" | "novel" | "timeout" | "elab_failed"
+    outcome: str                     # "hit" | "novel" | "timeout"
     entry_id: int | None = None
     from_cache: bool = False
-    error: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +109,11 @@ def _write_cache(
     payload: dict,
     ttl_secs: float,
 ) -> None:
+    """Write a dedupe row.  Both scope and mode columns are 'dedupe' so the
+    C21 mutation invalidation hook (`WHERE mode='dedupe'` per spec §2.3)
+    actually matches.  Without this, dedupe cache rows would never be
+    invalidated by goals INSERT/UPDATE — a silent staleness bug at demo
+    time."""
     expires = (
         datetime.now(timezone.utc) + timedelta(seconds=ttl_secs)
     ).isoformat()
@@ -103,7 +122,7 @@ def _write_cache(
             "INSERT OR REPLACE INTO search_cache "
             "(query_hash, scope, mode, results, expires_at) "
             "VALUES (?, ?, ?, ?, ?)",
-            (query_hash, "dedupe", "strict", json.dumps(payload), expires),
+            (query_hash, "dedupe", "dedupe", json.dumps(payload), expires),
         )
 
 
@@ -176,11 +195,6 @@ def _run_lean_dedupe(
             return DedupeResult(outcome="hit", entry_id=entry_id)
         if kind == "novel":
             return DedupeResult(outcome="novel")
-        if kind == "elab_failed":
-            return DedupeResult(
-                outcome="elab_failed",
-                error=parsed.get("error", ""),
-            )
         raise RuntimeError(f"dedupe.lean unknown result kind: {kind!r}")
     finally:
         entries_path.unlink(missing_ok=True)
@@ -260,7 +274,6 @@ def dedupe(
                 outcome=cached["outcome"],
                 entry_id=cached.get("entry_id"),
                 from_cache=True,
-                error=cached.get("error"),
             )
 
     # 3. Subprocess.
@@ -271,11 +284,10 @@ def dedupe(
     )
 
     # 4. Cache write (skip transient outcomes that may resolve next time).
-    if conn is not None and result.outcome in ("hit", "novel", "elab_failed"):
+    if conn is not None and result.outcome in ("hit", "novel"):
         _write_cache(conn, cache_key, {
             "outcome": result.outcome,
             "entry_id": result.entry_id,
-            "error": result.error,
         }, cache_ttl_secs)
 
     return result

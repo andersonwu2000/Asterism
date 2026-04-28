@@ -81,7 +81,19 @@ def get_recorded_calls() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def _cache_key(query: str, scope: str, kind: str) -> str:
+def _cache_key(query: str, scope: str, kind: str, problem_scope: str = "") -> str:
+    """Compose a cache key. ``problem_scope`` participates per spec §2.2 line 102:
+    ``key = SHA256(scope_tuple + "|" + mode + "|" + query + "|" + problem_or_empty)``.
+
+    Empty string for non-Problem-scoped queries (mathlib / library / inventory).
+    Required for local_goals to prevent Problem A INSERT collisions wiping
+    Problem B cached results once multi-Problem (P6) lands.
+
+    Schema gap caveat: the search_cache table has no ``problem_scope`` column
+    (P1 schema gap noted in C20 R2 audit MED-3); P3 includes problem_scope
+    in the hash key only — there is no SQL filter by problem until P6 either
+    amends the schema or accepts the hash-only collision-prevention.
+    """
     h = hashlib.sha256()
     h.update(b"search|")
     h.update(scope.encode("utf-8"))
@@ -89,6 +101,8 @@ def _cache_key(query: str, scope: str, kind: str) -> str:
     h.update(kind.encode("utf-8"))
     h.update(b"|")
     h.update(query.encode("utf-8"))
+    h.update(b"|")
+    h.update(problem_scope.encode("utf-8"))
     return h.hexdigest()
 
 
@@ -253,6 +267,7 @@ def search(
     lake_cwd: str | Path | None = None,
     ttl_secs: float | None = None,
     timeout: float = 30.0,
+    problem_scope: str = "",
 ) -> SearchResult:
     """Search across mathlib / library (subprocess) or local_goals (SQL).
 
@@ -264,6 +279,9 @@ def search(
       lake_cwd: working dir for lake subprocess. None → cwd().
       ttl_secs: override default TTL for cache write.
       timeout: subprocess wall-clock cap.
+      problem_scope: Problem name for local_goals scope; participates in cache
+        key per spec §2.2 to prevent cross-Problem cache collisions. Empty
+        string for non-Problem-scoped queries.
     """
     if scope not in _VALID_SCOPES:
         raise ValueError(
@@ -280,7 +298,7 @@ def search(
         return mock_result
 
     # 2. Cache lookup.
-    cache_key = _cache_key(query, scope, kind)
+    cache_key = _cache_key(query, scope, kind, problem_scope)
     if conn is not None:
         cached = _read_cache(conn, cache_key)
         if cached is not None:

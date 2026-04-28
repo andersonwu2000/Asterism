@@ -127,17 +127,20 @@ class TestSubprocessSuccess:
         assert result.outcome == "novel"
         assert result.entry_id is None
 
-    def test_elab_failed_outcome_parsed(
+    def test_elab_failed_returns_novel(
         self, candidate_lean, two_entries, tmp_path
     ) -> None:
+        """Spec §7.1 fix (C20 R3 HIGH-1): elab failure → NOVEL on stdout
+        (容錯不報錯), warn to stderr. dedupe.lean now writes the spec-compliant
+        novel JSON; the wrapper passes it through as outcome='novel'."""
         fake = MagicMock()
-        fake.returncode = 2
-        fake.stdout = json.dumps({"result": "elab_failed", "error": "bad syntax"})
-        fake.stderr = ""
+        fake.returncode = 0
+        fake.stdout = json.dumps({"result": "novel"})
+        fake.stderr = "warn: candidate elab failed: bad syntax"
         with patch("Tooling.subsystems.dedupe.subprocess.run", return_value=fake):
             result = dedupe(candidate_lean, two_entries, lake_cwd=tmp_path)
-        assert result.outcome == "elab_failed"
-        assert result.error == "bad syntax"
+        assert result.outcome == "novel"
+        assert result.entry_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -226,20 +229,22 @@ class TestCacheIntegration:
     def test_cache_miss_then_write(
         self, db, candidate_lean, two_entries, tmp_path
     ) -> None:
+        """C20 R3 HIGH-2: cache row must use mode='dedupe' so the C21 mutation
+        invalidation hook (`WHERE mode='dedupe'` per spec §2.3) actually
+        matches."""
         fake = MagicMock()
         fake.returncode = 0
         fake.stdout = json.dumps({"result": "novel"})
         fake.stderr = ""
         with patch("Tooling.subsystems.dedupe.subprocess.run", return_value=fake):
             dedupe(candidate_lean, two_entries, conn=db, lake_cwd=tmp_path)
-        # search_cache row exists.
         rows = db.execute(
             "SELECT scope, mode, results FROM search_cache"
         ).fetchall()
         assert len(rows) == 1
         scope, mode, results = rows[0]
         assert scope == "dedupe"
-        assert mode == "strict"
+        assert mode == "dedupe"  # spec §2.3 line 112; C21 mutation filter target
         payload = json.loads(results)
         assert payload["outcome"] == "novel"
 
@@ -252,5 +257,34 @@ class TestCacheIntegration:
             side_effect=subprocess.TimeoutExpired(cmd="lake", timeout=30.0),
         ):
             dedupe(candidate_lean, two_entries, conn=db, lake_cwd=tmp_path)
+        rows = db.execute("SELECT COUNT(*) FROM search_cache").fetchone()
+        assert rows[0] == 0
+
+
+class TestMockBypassesCache:
+    """C20 R3 LOW-5: DEDUPE_MOCK must bypass cache lookup AND cache write."""
+
+    def test_mock_bypasses_cache_lookup(
+        self, db, candidate_lean, two_entries, tmp_path, monkeypatch
+    ) -> None:
+        """Pre-write a cache row that says hit→entry_id=2; with mock active,
+        the mock's force_miss must win (proving cache lookup is bypassed)."""
+        # Pre-populate cache to say "hit, entry_id=2"
+        from Tooling.subsystems.dedupe import _cache_key, _write_cache
+        candidate_text = candidate_lean.read_text(encoding="utf-8")
+        key = _cache_key(candidate_text, two_entries, "strict")
+        _write_cache(db, key, {"outcome": "hit", "entry_id": 2}, 3600.0)
+
+        monkeypatch.setenv("DEDUPE_MOCK", "force_miss")
+        result = dedupe(candidate_lean, two_entries, conn=db, lake_cwd=tmp_path)
+        assert result.outcome == "novel"
+        assert result.from_cache is False  # mock returned, not cache
+
+    def test_mock_does_not_write_cache(
+        self, db, candidate_lean, two_entries, tmp_path, monkeypatch
+    ) -> None:
+        """Mock outcome must not be persisted to cache (would poison real runs)."""
+        monkeypatch.setenv("DEDUPE_MOCK", "force_hit")
+        dedupe(candidate_lean, two_entries, conn=db, lake_cwd=tmp_path)
         rows = db.execute("SELECT COUNT(*) FROM search_cache").fetchone()
         assert rows[0] == 0

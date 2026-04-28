@@ -15,14 +15,19 @@
 --
 -- Output (stdout, single line, JSON):
 --   {"result": "hit", "entry_id": <int>}        -- first matching entry's id
---   {"result": "novel"}                         -- no entry matched
---   {"result": "elab_failed", "error": "..."}   -- candidate failed to elaborate
+--   {"result": "novel"}                         -- no entry matched OR
+--                                                  candidate failed to elaborate
+--                                                  (spec §7.1: "elaborate 失敗
+--                                                  → NOVEL, 容錯不報錯")
 --
 -- Exit codes:
---   0 success (any of the three result kinds is "success" — operational layer
---     interprets the JSON, not the rc).
+--   0 success.
 --   1 CLI argument parse error.
---   2 candidate file failed to elaborate (still returns a JSON line on stdout).
+--
+-- Diagnostics: when candidate (or entries.json) fails to load/elaborate,
+-- a `warn: ...` line is written to stderr for debugging; stdout still gets
+-- the spec-compliant `{"result": "novel"}` so callers don't have to handle
+-- a third outcome kind.
 --
 -- Mode behavior (impl §7.1):
 --   strict:    elaborate candidate; on success, for each entry elaborate +
@@ -48,9 +53,8 @@ open Lean Lean.Meta Lean.Elab
 -- ================================================================
 
 structure DedupeOutput where
-  result   : String         -- "hit" | "novel" | "elab_failed"
+  result   : String         -- "hit" | "novel"
   entry_id : Option Int := none
-  error    : Option String := none
 deriving ToJson
 
 -- ================================================================
@@ -152,19 +156,22 @@ def main (raw : List String) : IO UInt32 := do
       let candRes ← fileTheoremType args.candidate
       match candRes with
       | .error err =>
-          let out : DedupeOutput := { result := "elab_failed", error := some err }
+          -- spec §7.1: "elaborate 失敗 → NOVEL, 容錯不報錯"
+          IO.eprintln s!"warn: candidate elab failed: {err}"
+          let out : DedupeOutput := { result := "novel" }
           IO.println (toString (toJson out))
-          pure 2
+          pure 0
       | .ok (candEnv, candType) =>
           -- Parse entries JSON
           let entriesText ← (try IO.FS.readFile args.against
                               catch _ => pure "[]")
           match parseEntries entriesText with
           | .error err =>
-              let out : DedupeOutput := { result := "elab_failed",
-                                          error := some s!"entries.json parse: {err}" }
+              -- entries malformed → no entries to compare → NOVEL
+              IO.eprintln s!"warn: entries.json parse: {err}"
+              let out : DedupeOutput := { result := "novel" }
               IO.println (toString (toJson out))
-              pure 2
+              pure 0
           | .ok entries =>
               -- Loop entries; first hit wins
               let mut hitId : Option Int := none
