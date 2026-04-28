@@ -27,23 +27,20 @@ _DEFAULT_DB = Path("asterism.db")
 _DEFAULT_BASE = Path(".")
 
 _META_TEMPLATE = """\
-# META
+---
+problem_name: {problem_name}
+axioms:
+  - propext
+  - Quot.sound
+  - Classical.choice
+# models:           # optional: override framework model defaults (architecture §8.3)
+#   backward.agent: opus
+#   builder.tactic_llm: sonnet
+---
 
-## Axioms
+# META — {problem_name}
 
-All proved theorems in this problem must reduce to (and only to) the three
-foundational axioms accepted by Mathlib / Lean 4:
-
-  - `propext`          - propositional extensionality
-  - `Quot.sound`       - quotient soundness
-  - `Classical.choice` - classical (non-constructive) choice
-
-Verify with `#print axioms <theorem_name>` after each proof.
-
-## Goals
-
-(List goals manually here, or query `asterism goal show <id>` / `sqlite3 asterism.db`
-for live state. P1 does not auto-rewrite this file.)
+(Goals are managed by the scheduler. Query `asterism goal show <id>` for live state.)
 """
 
 
@@ -64,7 +61,7 @@ def cmd_init(args: Any, base_dir: Path | None = None) -> None:
 
     meta = prob_dir / "META.md"
     if not meta.exists():
-        meta.write_text(_META_TEMPLATE, encoding="utf-8")
+        meta.write_text(_META_TEMPLATE.format(problem_name=args.problem), encoding="utf-8")
 
     defs = prob_dir / "Defs.lean"
     if not defs.exists():
