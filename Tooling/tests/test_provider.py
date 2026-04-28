@@ -322,6 +322,21 @@ class TestClaudeInvoke:
         kwargs = mock_run.call_args[1]
         assert kwargs["stderr"] is subprocess.STDOUT
 
+    def test_extra_redacts_prompt(self, tmp_path):
+        # AgentResponse.extra.argv should replace the prompt string with
+        # "<PROMPT>" placeholder to avoid retention of full prompt text.
+        p = ClaudeProvider(repo_root=tmp_path)
+        prompt_text = "secret-prompt-content-xyz"
+        with patch("subprocess.run", return_value=_mock_completed()):
+            resp = p.invoke("sonnet", prompt_text, [str(tmp_path)], "sess1")
+        argv = resp.extra["argv"]
+        assert prompt_text not in argv
+        assert "<PROMPT>" in argv
+        # Other args (flags, model id, session id) must still be present.
+        assert "--permission-mode" in argv
+        assert "acceptEdits" in argv
+        assert "sess1" in argv
+
 
 # ---------------------------------------------------------------------------
 # 7. ClaudeProvider.check_scope — git status backstop
@@ -441,3 +456,9 @@ class TestGcSession:
         p = ClaudeProvider()
         with patch("pathlib.Path.home", return_value=tmp_path):
             p.gc_session("nonexistent-session")  # should not raise
+
+    def test_gc_empty_session_id_raises(self, tmp_path):
+        # Empty session_id would expand glob to "*.jsonl" and wipe everything.
+        p = ClaudeProvider()
+        with pytest.raises(ValueError, match="session_id must be non-empty"):
+            p.gc_session("")

@@ -26,11 +26,7 @@ Subprocess invocation pattern:
 """
 from __future__ import annotations
 
-import json
-import os
-import re
 import subprocess
-import sys
 from pathlib import Path
 
 from Tooling.agent.provider import AgentResponse, Provider, ProviderError
@@ -48,9 +44,6 @@ DEFAULT_INVOKE_TIMEOUT: float = 600.0
 
 # Timeout for the git status backstop check (seconds)
 _GIT_TIMEOUT: float = 30.0
-
-# Pattern for modified/added/deleted files in `git status --porcelain`
-_PORCELAIN_CHANGED = re.compile(r"^[MADRCU?!]", re.MULTILINE)
 
 
 class ClaudeProvider(Provider):
@@ -122,11 +115,15 @@ class ClaudeProvider(Provider):
             raise ProviderError(f"claude binary not found: {self.claude_bin!r}") from exc
 
         output = result.stdout or ""
+        # Redact the prompt from the argv echo so AgentResponse.extra
+        # stays small if a caller serializes it (P2.C13 commit batch /
+        # events row).  The full prompt is recoverable from session jsonl.
+        argv_redacted = ["<PROMPT>" if c is prompt else c for c in cmd]
         return AgentResponse(
             output=output,
             session_id=session_id,
             exit_code=result.returncode,
-            extra={"model_id": model_id, "cmd": cmd},
+            extra={"model_id": model_id, "argv": argv_redacted},
         )
 
     def gc_session(self, session_id: str) -> None:
@@ -136,8 +133,15 @@ class ClaudeProvider(Provider):
           ~/.claude/projects/<encoded_path>/<session_id>.jsonl
 
         We scan all projects dirs and remove any file whose stem starts with
-        session_id.  Silently skips if files are not found.
+        session_id.  The trailing `*` in the glob is intentional: it catches
+        claude CLI variants such as fork / branched session jsonls (e.g.
+        `<session_id>-fork.jsonl`).  Silently skips if files are not found.
+
+        Raises ValueError on empty session_id — empty string would expand to
+        `*.jsonl` and wipe every session under ~/.claude/projects/.
         """
+        if not session_id:
+            raise ValueError("session_id must be non-empty")
         claude_dir = Path.home() / ".claude" / "projects"
         if not claude_dir.exists():
             return
@@ -158,6 +162,11 @@ class ClaudeProvider(Provider):
         Runs `git status --porcelain` from repo_root and checks that every
         changed path is under staging_dir.  Untracked files outside staging
         are also flagged.
+
+        `session_id` is unused here but kept in the signature to match
+        FallbackChain.validate_scope(staging_dir, session_id) callable.
+        Other providers (gemini / codex, P5) may use it for per-session
+        tracking.
 
         This is the per-provider 'last line of defence' required by impl §6.5.
         """
@@ -215,28 +224,3 @@ class ClaudeProvider(Provider):
         for d in scope_dirs:
             cmd += ["--add-dir", str(d)]
         return cmd
-
-
-# ------------------------------------------------------------------
-# Process-tree kill helper (Windows + POSIX)
-# ------------------------------------------------------------------
-
-def _kill_tree(proc: subprocess.Popen | None) -> None:
-    """Kill a process and all its children (best-effort)."""
-    if proc is None:
-        return
-    try:
-        import psutil
-        parent = psutil.Process(proc.pid)
-        for child in parent.children(recursive=True):
-            child.kill()
-        parent.kill()
-    except Exception:
-        # Fallback: platform kill
-        if sys.platform == "win32":
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                capture_output=True,
-            )
-        else:
-            os.killpg(os.getpgid(proc.pid), 9)
