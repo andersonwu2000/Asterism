@@ -99,7 +99,14 @@ class Reactor:
         self._run_loop()
 
     def _run_loop(self) -> None:
-        """Pop → dispatch loop. Exits 0 on empty queue, 1 on fatal."""
+        """Pop → dispatch loop. Exits 0 on empty queue, 1 on fatal.
+
+        Cascade routing handles Backward.success → Builder enqueue inline
+        (see _cascade_backward); sync mode does NOT call _run_structural_refill
+        because BFS would re-enqueue Backward for any open goal whose Builder
+        already exhausted in the same run, causing an unintended retry loop
+        in P1-style single-shot scenarios.
+        """
         try:
             while True:
                 task = self._pop_queue()
@@ -412,12 +419,27 @@ class Reactor:
     def _cascade_backward(self, goal_id: int, result: BackwardResult) -> None:
         """Cascade for Backward pipeline outcome.
 
-        'success': sub-goals + strategy already committed by Backward.run();
-                   structural refill (step 6) picks up new open sub-goals.
+        'success': sub-goals + strategy already committed by Backward.run().
+                   Daemon mode picks up via _run_structural_refill (30s tick
+                   or step 6 of pipeline_finished cycle). Sync mode (--once)
+                   needs an inline enqueue of Builder for the new strategy
+                   when there are no sub-goals to wait on (leaf strategy);
+                   when sub-goals exist, BFS in daemon mode handles cascade
+                   upward after they are proved.
         'exhausted' / 'unproductive': increment stop-gap failure count.
         """
         if result.outcome != "success":
             self._inc_failure_count(str(goal_id), "Backward")
+            return
+        # Inline Builder enqueue for leaf-strategy success (no sub-goals).
+        # Without this, sync mode never builds the new strategy.
+        if result.strategy_id is not None and not result.subgoal_ids:
+            with self.conn:
+                self.conn.execute(
+                    "INSERT INTO queue (kind, target_id, priority, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    ("Builder", str(result.strategy_id), 0, _now()),
+                )
 
     # ------------------------------------------------------------------
     # Atomic pool: spawn from queue

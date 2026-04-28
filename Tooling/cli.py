@@ -102,10 +102,22 @@ def cmd_goal_add(
     db = db_path or _DEFAULT_DB
     base = base_dir or _DEFAULT_BASE
 
-    leaf = Path(args.leaf_strategy)
-    if not leaf.exists():
-        print(f"error: --leaf-strategy file not found: {leaf}", file=sys.stderr)
+    spec = getattr(args, "spec", None)
+    leaf_arg = getattr(args, "leaf_strategy", None)
+
+    if spec is None and leaf_arg is None:
+        print("error: must provide either --spec or --leaf-strategy", file=sys.stderr)
         sys.exit(1)
+    if spec is not None and leaf_arg is not None:
+        print("error: --spec and --leaf-strategy are mutually exclusive", file=sys.stderr)
+        sys.exit(1)
+
+    leaf = None
+    if leaf_arg is not None:
+        leaf = Path(leaf_arg)
+        if not leaf.exists():
+            print(f"error: --leaf-strategy file not found: {leaf}", file=sys.stderr)
+            sys.exit(1)
 
     p = args.problem
     slug = args.slug
@@ -120,57 +132,78 @@ def cmd_goal_add(
         # Step 1a: INSERT goals (pending) — placeholder lean_path avoids needing
         # the auto-increment ID up-front. finalize() will set the canonical path.
         tmp_goal_lean = f"Problems/{p}/Goals/_pending_{tmp_id}/{slug}.lean"
-        goal_id = writer.begin("goals", "insert", {
+        goal_insert = {
             "problem": p,
             "slug": slug,
             "lean_path": tmp_goal_lean,
             "origin": "root",
             "kind": kind,
             "status": "open",
-        })
+        }
+        if spec is not None:
+            goal_insert["question"] = spec
+        goal_id = writer.begin("goals", "insert", goal_insert)
 
         # Now we know goal_id — compute canonical paths.
         g_folder = f"{goal_id}_{slug}"
         real_goal_lean = f"Problems/{p}/Goals/{g_folder}/{slug}.lean"
 
-        # Step 1b: INSERT strategies (pending)
-        tmp_strategy_lean = f"Problems/{p}/Goals/{g_folder}/Strategies/_pending_{tmp_id}.lean"
-        strategy_id = writer.begin("strategies", "insert", {
-            "goal_id": goal_id,
-            "lean_path": tmp_strategy_lean,
-            "status": "proposed",
-        })
-
-        real_strategy_lean = f"Problems/{p}/Goals/{g_folder}/Strategies/{strategy_id}_{slug}.lean"
-
-        # Create goal directory and goal lean file (empty statement placeholder).
-        goal_lean_path = base / real_goal_lean
-        goal_lean_path.parent.mkdir(parents=True, exist_ok=True)
-        if not goal_lean_path.exists():
-            goal_lean_path.write_text(f"-- Goal: {slug}\n", encoding="utf-8")
-
-        # Create strategies directory (stage_file will mkdir parents anyway, but be explicit).
-        strategy_lean_path = base / real_strategy_lean
-        strategy_lean_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Step 2: mv leaf-strategy → canonical strategy lean_path.
-        writer.stage_file(leaf, strategy_lean_path)
-
-        # Step 3: finalize both rows with canonical lean_paths.
-        writer.finalize("goals", goal_id, {"lean_path": real_goal_lean})
-        writer.finalize("strategies", strategy_id, {"lean_path": real_strategy_lean})
-
-        # Enqueue Builder task (outside CommitWriter — queue is append-only, no recovery needed).
-        with conn:
-            conn.execute(
-                "INSERT INTO queue (kind, target_id, priority, created_at) VALUES (?, ?, ?, ?)",
-                ("Builder", str(strategy_id), 0, _now()),
+        if spec is not None:
+            # ── P2 --spec path: write theorem template, enqueue Backward ──
+            goal_lean_path = base / real_goal_lean
+            goal_lean_path.parent.mkdir(parents=True, exist_ok=True)
+            template = (
+                f"import Problems.{p}.Defs\n\n"
+                f"theorem {slug} : {spec} := by sorry\n"
             )
+            goal_lean_path.write_text(template, encoding="utf-8")
 
-        print(f"goal add: goal_id={goal_id} slug={slug!r} strategy_id={strategy_id}")
-        print(f"  lean_path:          {real_goal_lean}")
-        print(f"  strategy lean_path: {real_strategy_lean}")
-        print(f"  queued Builder task for strategy {strategy_id}")
+            writer.finalize("goals", goal_id, {"lean_path": real_goal_lean})
+
+            with conn:
+                conn.execute(
+                    "INSERT INTO queue (kind, target_id, priority, created_at) VALUES (?, ?, ?, ?)",
+                    ("Backward", str(goal_id), 0, _now()),
+                )
+
+            print(f"goal add: goal_id={goal_id} slug={slug!r}")
+            print(f"  lean_path:    {real_goal_lean}")
+            print(f"  spec:         {spec}")
+            print(f"  queued Backward task for goal {goal_id}")
+        else:
+            # ── P1 legacy --leaf-strategy path: pre-built strategy, enqueue Builder ──
+            tmp_strategy_lean = f"Problems/{p}/Goals/{g_folder}/Strategies/_pending_{tmp_id}.lean"
+            strategy_id = writer.begin("strategies", "insert", {
+                "goal_id": goal_id,
+                "lean_path": tmp_strategy_lean,
+                "status": "proposed",
+            })
+
+            real_strategy_lean = f"Problems/{p}/Goals/{g_folder}/Strategies/{strategy_id}_{slug}.lean"
+
+            goal_lean_path = base / real_goal_lean
+            goal_lean_path.parent.mkdir(parents=True, exist_ok=True)
+            if not goal_lean_path.exists():
+                goal_lean_path.write_text(f"-- Goal: {slug}\n", encoding="utf-8")
+
+            strategy_lean_path = base / real_strategy_lean
+            strategy_lean_path.parent.mkdir(parents=True, exist_ok=True)
+
+            writer.stage_file(leaf, strategy_lean_path)
+
+            writer.finalize("goals", goal_id, {"lean_path": real_goal_lean})
+            writer.finalize("strategies", strategy_id, {"lean_path": real_strategy_lean})
+
+            with conn:
+                conn.execute(
+                    "INSERT INTO queue (kind, target_id, priority, created_at) VALUES (?, ?, ?, ?)",
+                    ("Builder", str(strategy_id), 0, _now()),
+                )
+
+            print(f"goal add: goal_id={goal_id} slug={slug!r} strategy_id={strategy_id}")
+            print(f"  lean_path:          {real_goal_lean}")
+            print(f"  strategy lean_path: {real_strategy_lean}")
+            print(f"  queued Builder task for strategy {strategy_id}")
     except CommitFault as exc:
         # COMMIT_FAULT env injection (test/acceptance path only). Print a friendly
         # message and exit 2 instead of raising a Python traceback. The pending
@@ -405,14 +438,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_goal = sub.add_parser("goal", help="goal management")
     goal_sub = p_goal.add_subparsers(dest="goal_command", required=True)
 
-    p_add = goal_sub.add_parser("add", help="add a root goal with a leaf strategy")
+    p_add = goal_sub.add_parser("add", help="add a root goal (--spec for P2 Backward; --leaf-strategy for P1 legacy)")
     p_add.add_argument("--problem", required=True, metavar="NAME")
     p_add.add_argument("--slug", required=True, metavar="SLUG")
     p_add.add_argument("--kind", required=True,
                        choices=["theorem", "conjecture", "construction"])
-    p_add.add_argument(
-        "--leaf-strategy", required=True, dest="leaf_strategy", metavar="FILE",
-        help="[P1 testing-only; P2 removes this flag — Backward will auto-generate leaf strategies]",
+    spec_group = p_add.add_mutually_exclusive_group(required=True)
+    spec_group.add_argument(
+        "--spec", default=None, metavar="STMT",
+        help="Lean theorem statement (e.g. \"∀ m n : Nat, m + n = n + m\"); enqueues Backward",
+    )
+    spec_group.add_argument(
+        "--leaf-strategy", default=None, dest="leaf_strategy", metavar="FILE",
+        help="[P1 legacy] pre-written leaf strategy .lean file; enqueues Builder directly",
     )
 
     p_show = goal_sub.add_parser("show", help="show goal status and strategies")

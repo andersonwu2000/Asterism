@@ -107,10 +107,9 @@ def _make_rows(
 
 
 def _args(**kwargs):
-    ns = MagicMock()
-    for k, v in kwargs.items():
-        setattr(ns, k, v)
-    return ns
+    """argparse-style namespace; not MagicMock so getattr defaults work."""
+    import argparse as _argparse
+    return _argparse.Namespace(**kwargs)
 
 
 # ─────────────────────────────────────────────────────────────

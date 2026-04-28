@@ -7,6 +7,7 @@ points rather than the full pipeline.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -42,11 +43,13 @@ def _db(tmp_path: Path):
 
 
 def _args(**kwargs):
-    """Tiny namespace builder for argparse-style args."""
-    ns = MagicMock()
-    for k, v in kwargs.items():
-        setattr(ns, k, v)
-    return ns
+    """Tiny namespace builder for argparse-style args.
+
+    Uses argparse.Namespace so that getattr(ns, name, default) returns the
+    default for unset attributes (MagicMock would return a child MagicMock,
+    breaking any `arg is None` checks downstream).
+    """
+    return argparse.Namespace(**kwargs)
 
 
 # ──────────────────────────────────────────────────────────────

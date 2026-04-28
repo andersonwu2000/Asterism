@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import uuid
@@ -446,7 +447,24 @@ class Backward:
     # ------------------------------------------------------------------
 
     def run(self, goal_id: int) -> BackwardResult:
-        """Run the full Backward stage sequence for the given goal."""
+        """Run the full Backward stage sequence for the given goal.
+
+        Test hook (mutually exclusive — see docs/dev/test_hooks.md):
+          BACKWARD_MOCK=success_leaf  → bypass agent, write a trivial leaf
+                                         strategy with `theorem ... := by sorry`
+                                         (Builder + LAKE_MOCK=proved closes it
+                                         end-to-end). Used by P2 acceptance #0.
+          BACKWARD_MOCK=exhausted     → return exhausted immediately
+          BACKWARD_MOCK=unproductive  → return unproductive immediately
+        """
+        mock = os.environ.get("BACKWARD_MOCK")
+        if mock == "exhausted":
+            return BackwardResult(outcome="exhausted")
+        if mock == "unproductive":
+            return BackwardResult(outcome="unproductive")
+        if mock == "success_leaf":
+            return self._mock_success_leaf(goal_id)
+
         try:
             goal = _row_as_dict(self.conn, "goals", goal_id)
         except ValueError:
@@ -470,6 +488,53 @@ class Backward:
         result = self._run_loop(goal, pipeline_id, session_id, staging_dir, dead_attempts)
         self._finish_pipeline(pipeline_id, result.outcome)
         return result
+
+    def _mock_success_leaf(self, goal_id: int) -> BackwardResult:
+        """Test-only (BACKWARD_MOCK=success_leaf): write trivial leaf strategy.
+
+        Insert a strategies row pointing to a stub .lean file containing
+        `theorem <slug> : <question> := by sorry`. No sub-goals. Builder runs
+        next; with LAKE_MOCK=proved it closes the proof end-to-end. Used by
+        P2 acceptance #0 demo subprocess test.
+        """
+        try:
+            goal = _row_as_dict(self.conn, "goals", goal_id)
+        except ValueError:
+            return BackwardResult(outcome="exhausted")
+
+        pipeline_id = str(uuid.uuid4())
+        session_id = str(uuid.uuid4())
+        self._insert_pipeline(pipeline_id, goal_id, session_id)
+
+        problem = goal["problem"]
+        goal_slug = goal["slug"]
+        statement = goal.get("question") or "True"
+        strategy_lean_path = str(
+            Path(self.config.base_dir)
+            / "Problems" / problem
+            / "Goals" / f"{goal_id}_{goal_slug}"
+            / f"backward_mock_{pipeline_id[:8]}.lean"
+        )
+        Path(strategy_lean_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(strategy_lean_path).write_text(
+            f"import Problems.{problem}.Defs\n\n"
+            f"theorem {goal_slug} : {statement} := by sorry\n",
+            encoding="utf-8",
+        )
+
+        writer = CommitWriter(self.conn)
+        strategy_id = writer.begin("strategies", "insert", {
+            "goal_id": goal_id,
+            "lean_path": strategy_lean_path,
+            "status": "proposed",
+            "created_by": pipeline_id,
+        })
+        writer.finalize("strategies", strategy_id, {})
+
+        self._finish_pipeline(pipeline_id, "success")
+        return BackwardResult(
+            outcome="success", strategy_id=strategy_id, subgoal_ids=[],
+        )
 
     def _run_loop(
         self,
