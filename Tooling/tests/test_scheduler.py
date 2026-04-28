@@ -186,6 +186,27 @@ def _link_subgoal(
         )
 
 
+def _insert_pipeline_row(
+    conn: sqlite3.Connection,
+    *,
+    pid: str = "pipe-test",
+    kind: str = "Backward",
+    target_id: str = "0",
+    target_kind: str = "Goal",
+    started_at: str = "2026-01-01T00:00:00+00:00",
+) -> str:
+    """C24 R3 MED-3: pre-insert a pipelines row so _record_backward_failure
+    can satisfy the dead_attempts.pipeline_id FK without raising FatalError."""
+    with conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO pipelines "
+            "(id, kind, runtime, target_id, target_kind, status, started_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (pid, kind, "atomic", target_id, target_kind, "succeeded", started_at),
+        )
+    return pid
+
+
 # ---------------------------------------------------------------------------
 # 1. startup
 # ---------------------------------------------------------------------------
@@ -305,6 +326,8 @@ class TestBackwardDispatch:
     ) -> None:
         """_dispatch with Backward calls Backward(conn, chain, cfg).run(goal_id)."""
         reactor = _make_reactor(db, tmp_path)
+        # C24 R3 MED-3: cascade now requires Backward pipeline row for FK.
+        _insert_pipeline_row(db, pid="pipe-99", target_id="99")
         task = {"id": 1, "kind": "Backward", "target_id": "99", "payload": None}
 
         with patch("Tooling.scheduler.Backward") as MockBackward, \
@@ -319,6 +342,7 @@ class TestBackwardDispatch:
     ) -> None:
         """Backward exhausted in _dispatch → failure_count incremented."""
         reactor = _make_reactor(db, tmp_path)
+        _insert_pipeline_row(db, pid="pipe-77", target_id="77")
         task = {"id": 1, "kind": "Backward", "target_id": "77", "payload": None}
 
         with patch("Tooling.scheduler.Backward") as MockBackward, \
@@ -961,6 +985,8 @@ class TestCascadeV2:
     ) -> None:
         """Backward exhausted/unproductive → failure_count incremented; success → no change."""
         reactor = _make_reactor(db, tmp_path)
+        # C24 R3 MED-3: cascade now requires Backward pipeline row for FK.
+        _insert_pipeline_row(db, pid="pipe-42", target_id="42")
         reactor._cascade_backward(42, BackwardResult(outcome="exhausted"))
         assert reactor._get_failure_count("42", "Backward") == 1
 

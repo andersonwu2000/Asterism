@@ -100,8 +100,11 @@ class TestBlockPipeline:
             block_pipeline(db, gid, "BogusPipeline")
 
     def test_pending_goal_not_updated(self, db):
-        """Spec §1 commit protocol: only live rows affected."""
-        # Insert pending goal directly
+        """Spec §1 commit protocol: only live rows affected.
+
+        C24 R3 HIGH-1 fix: block_pipeline now correctly returns False (was
+        True) when target is pending — UPDATE 0 rows under atomic SQL.
+        """
         db.execute(
             "INSERT INTO goals (problem, slug, lean_path, origin, kind, status, "
             "commit_state, created_at, updated_at) "
@@ -111,10 +114,35 @@ class TestBlockPipeline:
         )
         db.commit()
         gid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        # block_pipeline issues UPDATE WHERE commit_state='live' → no-op
-        block_pipeline(db, gid, "Backward")
+        # block_pipeline returns False (rowcount == 0)
+        assert block_pipeline(db, gid, "Backward") is False
         # get_blocked_pipelines also filters live — won't see it
         assert get_blocked_pipelines(db, gid) == []
+
+    def test_corrupt_json_raises(self, db):
+        """C24 R3 MED-2: silent-failure red line — corrupt JSON raises ValueError
+        rather than silently returning []."""
+        gid = _insert_goal(db)
+        # Manually inject corrupt JSON
+        with db:
+            db.execute(
+                "UPDATE goals SET blocked_pipelines = 'not valid json {{{' "
+                "WHERE id = ?",
+                (gid,),
+            )
+        with pytest.raises(ValueError, match="JSON corrupt"):
+            get_blocked_pipelines(db, gid)
+
+    def test_non_list_json_raises(self, db):
+        """JSON parses OK but isn't a list — also raises (schema invariant)."""
+        gid = _insert_goal(db)
+        with db:
+            db.execute(
+                "UPDATE goals SET blocked_pipelines = ? WHERE id = ?",
+                (json.dumps({"not": "a list"}), gid),
+            )
+        with pytest.raises(ValueError, match="not a JSON list"):
+            get_blocked_pipelines(db, gid)
 
 
 class TestIsBlocked:
@@ -329,3 +357,77 @@ class TestSchedulerCascadeBackwardHook:
             reactor._cascade_backward(gid, BackwardResult(outcome="exhausted"))
 
         assert is_blocked(db, gid, "Backward") is True
+
+    def test_missing_pipeline_id_raises_fatal(self, db, tmp_path):
+        """C24 R3 MED-3: orphan Backward cascade (no Backward pipeline row)
+        is an invariant violation — must emit fatal + raise FatalError, not
+        silently skip the dead_attempts INSERT."""
+        from Tooling.pipelines.backward import BackwardResult
+        from Tooling.scheduler import FatalError, Reactor, ReactorConfig
+        gid = _insert_goal(db, slug="orphan_cascade")
+        # NO _insert_pipeline call — orphan cascade
+
+        reactor = Reactor(str(tmp_path / "asterism.db"),
+                          ReactorConfig(base_dir=str(tmp_path)))
+        reactor.conn = db
+        with pytest.raises(FatalError, match="backward_failure_no_pipeline_id"):
+            reactor._cascade_backward(gid,
+                                       BackwardResult(outcome="exhausted"))
+
+
+class TestSchedulerCascadeBuilderHook:
+    """C24 R3 MED-1: Builder cascade also triggers archive_check (phase3 §In
+    line 37 字面 "Backward / Builder 都會觸發")."""
+
+    def test_5th_builder_exhausted_blocks(self, db, tmp_path):
+        from Tooling.pipelines.builder import BuilderResult
+        from Tooling.scheduler import Reactor, ReactorConfig
+        gid = _insert_goal(db, slug="builder_block")
+        # Insert a strategy + 5 dead_attempts for it
+        db.execute(
+            "INSERT INTO strategies "
+            "(goal_id, lean_path, status, commit_state, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (gid, "path/s.lean", "proposed", "live", _NOW),
+        )
+        db.commit()
+        sid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        # Pre-seed Goal-side dead_attempts for Builder (real flow has these
+        # written by Builder._record_dead_attempts at strategy granularity;
+        # archive_check counts target_kind='Goal' so we seed those here).
+        for _ in range(N_BLOCK_AFTER_FAILURES):
+            _insert_dead_attempt(db, target_id=gid,
+                                  pipeline_kind="Builder",
+                                  outcome="exhausted")
+
+        reactor = Reactor(str(tmp_path / "asterism.db"),
+                          ReactorConfig(base_dir=str(tmp_path)))
+        reactor.conn = db
+        # Trigger _cascade_builder with non-proved outcome
+        reactor._cascade_builder(sid, BuilderResult(outcome="exhausted"))
+
+        assert is_blocked(db, gid, "Builder") is True
+
+
+class TestAtomicWriteRaceSafety:
+    """C24 R3 HIGH-1: block_pipeline now uses atomic SQL json_insert with
+    json_each NOT EXISTS dedup. Verify rowcount-based idempotence."""
+
+    def test_concurrent_distinct_kinds_both_persist(self, db):
+        """Two distinct kinds blocked back-to-back: both persist (was the
+        spec failure mode in the Python read-modify-write strategy A2)."""
+        gid = _insert_goal(db, slug="atomic_g")
+        a = block_pipeline(db, gid, "Backward")
+        b = block_pipeline(db, gid, "Builder")
+        assert a is True and b is True
+        result = get_blocked_pipelines(db, gid)
+        assert set(result) == {"Backward", "Builder"}
+
+    def test_idempotent_same_kind_returns_false_second_time(self, db):
+        gid = _insert_goal(db, slug="idem_g")
+        first = block_pipeline(db, gid, "Backward")
+        second = block_pipeline(db, gid, "Backward")
+        assert first is True
+        assert second is False
+        assert get_blocked_pipelines(db, gid) == ["Backward"]

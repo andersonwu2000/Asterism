@@ -30,6 +30,9 @@ from Tooling.subsystems.blocked_pipelines import block_pipeline, is_blocked
 
 N_BLOCK_AFTER_FAILURES: int = 5
 _COUNTABLE_OUTCOMES: tuple[str, ...] = ("exhausted", "unproductive")
+# spike-008 D-08-1; phase3 §Config 行 170 lists this as `ih_trap_similarity_threshold`.
+# Hoisted to module level so P7 Strategist tuning is one grep away.
+IH_TRAP_SIMILARITY_THRESHOLD: float = 0.85
 
 
 def archive_check(
@@ -74,22 +77,33 @@ def archive_ih_trap(
     goal_id: int,
     pipeline_kind: str = "Backward",
 ) -> bool:
-    """IH-trap special case: block pipeline_kind immediately when the most
-    recent two dead_attempts on this goal+kind both have outcome='unproductive'
-    AND the most recent strategies row carries
-    parent_subgoal_max_similarity >= ih_trap_similarity_threshold.
+    """IH-trap special case: block pipeline_kind immediately when the goal
+    has 2 consecutive recent unproductive Backward outcomes AND the most
+    recent strategies row carries parent_subgoal_max_similarity >=
+    IH_TRAP_SIMILARITY_THRESHOLD.
 
     spec phase3_cache.md §In line 116-118: "Strategy 連續 ≥ 2 次 unproductive
     AND parent_subgoal_max_similarity ≥ threshold → 立即 UPDATE
     blocked_pipelines (不等 N=5)".
 
-    Returns True if newly blocked. ih_trap_similarity_threshold = 0.85
-    per spike-008 D-08-1.
+    Spec literal interpretation (R3 audit MED-4 clarification):
+      - Spec subject is "Strategy" but the unproductive *outcome* is recorded
+        per Backward pipeline run with target_kind='Goal' (the strategy
+        itself stays in 'proposed' status when its parent decomposition is
+        unproductive — there is no Strategy-side outcome row in this flow).
+        So we read the goal-side dead_attempts as the proxy for "Strategy's
+        outcome".
+      - "Strategy similarity ≥ threshold" is interpreted as the most recent
+        live strategy's parent_subgoal_max_similarity column (the new
+        proposal that's currently exhibiting the IH-trap pattern). If a
+        later strategy proves successful with low similarity, this trigger
+        does not fire (mixed-outcome streak breaks the 2-unproductive run).
+
+    Returns True if newly blocked. Threshold = IH_TRAP_SIMILARITY_THRESHOLD
+    (module constant, spike-008 D-08-1).
     """
     if is_blocked(conn, goal_id, pipeline_kind):
         return False
-
-    threshold_similarity = 0.85  # spike-008 D-08-1
 
     # Last 2 dead_attempts for this goal+pipeline_kind.
     last_two = conn.execute(
@@ -113,7 +127,7 @@ def archive_ih_trap(
     ).fetchone()
     if sim_row is None or sim_row[0] is None:
         return False
-    if sim_row[0] < threshold_similarity:
+    if sim_row[0] < IH_TRAP_SIMILARITY_THRESHOLD:
         return False
 
     return block_pipeline(conn, goal_id, pipeline_kind)

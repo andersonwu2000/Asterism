@@ -11,15 +11,19 @@ when enqueueing. P3 introduces two write triggers:
        AND parent_subgoal_max_similarity ≥ ih_trap_similarity_threshold)
        → block 'Backward' immediately, before N=5.
 
-Spike-011 D-11-1 confirmed SQLite WAL + single-statement json_insert is
-atomic enough — no application-level lock needed. The
+Spike-011 D-11-1 atomicity: WRITE goes through SQLite atomic SQL using
+`json_insert` + `json_each NOT EXISTS` dedup guard, all inside one
+single-statement UPDATE. Spike A2 (Python read-modify-write + plain
+UPDATE) had 100% lost-update rate; only strategy B (atomic SQL with
+single-statement json_insert) was race-safe. The
 `commit_state = 'live'` filter prevents writes against pending rows
 (impl §1 commit protocol).
 
 Public API:
-    block_pipeline(conn, goal_id, pipeline_kind) -> bool  # added or already in
+    block_pipeline(conn, goal_id, pipeline_kind) -> bool  # newly added
     get_blocked_pipelines(conn, goal_id) -> list[str]
     is_blocked(conn, goal_id, pipeline_kind) -> bool
+    unblock_pipeline(conn, goal_id, pipeline_kind=None) -> int
 """
 from __future__ import annotations
 
@@ -40,8 +44,13 @@ def block_pipeline(
 ) -> bool:
     """Add `pipeline_kind` to goals.blocked_pipelines for `goal_id`.
 
-    Returns True if newly added (not already present), False if no-op.
-    Idempotent: re-adding does not produce duplicates.
+    Atomic SQL per spike-011 D-11-1: single-statement json_insert with a
+    json_each NOT EXISTS dedup guard. No race window, no read-modify-write.
+    Idempotent: re-block returns False (UPDATE 0 rows because guard fails).
+
+    Returns True iff a row was actually mutated (newly blocked AND target
+    goal was live). False on either: pipeline_kind already in list, or
+    goal_id has commit_state != 'live', or goal_id missing.
 
     Raises:
         ValueError: pipeline_kind not in schema CHECK enum.
@@ -52,19 +61,19 @@ def block_pipeline(
             f"unknown pipeline_kind: {pipeline_kind!r}; "
             f"valid: {sorted(_VALID_PIPELINE_KINDS)}"
         )
-
-    current = get_blocked_pipelines(conn, goal_id)
-    if pipeline_kind in current:
-        return False
-
-    new_list = current + [pipeline_kind]
     with conn:
-        conn.execute(
-            "UPDATE goals SET blocked_pipelines = ? "
-            "WHERE id = ? AND commit_state = 'live'",
-            (json.dumps(new_list), goal_id),
+        cursor = conn.execute(
+            """UPDATE goals
+               SET blocked_pipelines = json_insert(
+                   COALESCE(blocked_pipelines, '[]'), '$[#]', ?)
+               WHERE id = ? AND commit_state = 'live'
+                 AND NOT EXISTS (
+                     SELECT 1 FROM json_each(
+                         COALESCE(blocked_pipelines, '[]'))
+                     WHERE value = ?)""",
+            (pipeline_kind, goal_id, pipeline_kind),
         )
-    return True
+    return cursor.rowcount > 0
 
 
 def get_blocked_pipelines(
@@ -74,6 +83,10 @@ def get_blocked_pipelines(
     """Return the current blocked_pipelines list for `goal_id` (empty if NULL).
 
     Reads only live rows; pending rows are invisible by spec.
+
+    Raises:
+        ValueError: stored JSON is corrupt (schema-level invariant violated;
+            silent-failure red line — never fall back to []).
     """
     row = conn.execute(
         "SELECT blocked_pipelines FROM goals "
@@ -84,11 +97,17 @@ def get_blocked_pipelines(
         return []
     try:
         parsed = json.loads(row[0])
-    except json.JSONDecodeError:
-        # Corrupt JSON — treat as empty so BFS still makes progress.
-        # Caller observability via callers' own logging if needed.
-        return []
-    return parsed if isinstance(parsed, list) else []
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"goals.blocked_pipelines JSON corrupt for goal_id={goal_id}: "
+            f"{exc}; raw={row[0]!r}"
+        ) from exc
+    if not isinstance(parsed, list):
+        raise ValueError(
+            f"goals.blocked_pipelines not a JSON list for goal_id={goal_id}: "
+            f"{type(parsed).__name__}"
+        )
+    return parsed
 
 
 def is_blocked(
@@ -109,9 +128,13 @@ def unblock_pipeline(
 
     Used by `asterism goal unblock` CLI (P3 C26 manual rescue path).
     Returns count of entries removed.
+
+    Atomic per HIGH-1 fix: clear-all uses single UPDATE; specific-kind
+    uses subselect to compute new list inline (no Python read-modify-write
+    round-trip). Both go through `WHERE commit_state='live'`.
     """
-    current = get_blocked_pipelines(conn, goal_id)
     if pipeline_kind is None:
+        current = get_blocked_pipelines(conn, goal_id)
         if not current:
             return 0
         with conn:
@@ -122,13 +145,22 @@ def unblock_pipeline(
             )
         return len(current)
 
-    if pipeline_kind not in current:
-        return 0
-    new_list = [k for k in current if k != pipeline_kind]
+    # Specific kind: SQLite has no list `remove`; we compute the filtered
+    # list inline via json_group_array(json_each.value WHERE value != ?).
     with conn:
-        conn.execute(
-            "UPDATE goals SET blocked_pipelines = ? "
-            "WHERE id = ? AND commit_state = 'live'",
-            (json.dumps(new_list), goal_id),
+        cursor = conn.execute(
+            """UPDATE goals
+               SET blocked_pipelines = (
+                   SELECT COALESCE(json_group_array(value), '[]')
+                   FROM json_each(COALESCE(goals.blocked_pipelines, '[]'))
+                   WHERE value != ?
+               )
+               WHERE id = ? AND commit_state = 'live'
+                 AND EXISTS (
+                     SELECT 1 FROM json_each(
+                         COALESCE(goals.blocked_pipelines, '[]'))
+                     WHERE value = ?)""",
+            (pipeline_kind, goal_id, pipeline_kind),
         )
-    return current.count(pipeline_kind)
+    # rowcount > 0 iff the EXISTS guard fired (kind was present).
+    return 1 if cursor.rowcount > 0 else 0

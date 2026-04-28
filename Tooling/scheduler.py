@@ -382,6 +382,11 @@ class Reactor:
             ).fetchone()
             if row:
                 self._inc_failure_count(str(row[0]), "Builder")
+                # P3 C24 R3 MED-1: phase3 §In line 37 字面「Backward / Builder
+                # 都會觸發 blocked_pipelines」. Builder dead_attempts already
+                # written by Builder._record_dead_attempts; just check threshold.
+                from Tooling.stages.failure_archive import archive_check
+                archive_check(self.conn, int(row[0]), "Builder")
 
     def _mark_strategy_dead(self, strategy_id: int) -> None:
         """Mark strategy dead; shelve parent goal if all strategies are dead."""
@@ -462,10 +467,12 @@ class Reactor:
         """INSERT dead_attempts row for Backward exhausted/unproductive outcome.
 
         Looks up the most recent Backward pipeline for this goal to satisfy
-        the dead_attempts.pipeline_id FK. If no pipeline row found
-        (defensive — Backward.run always inserts one), emit a cascade
-        warning and skip without raising (analogous to
-        _record_accept_reject_dead_attempt).
+        the dead_attempts.pipeline_id FK. R3 fix MED-3: Backward.run is the
+        only producer of Backward pipeline rows; finding none here means an
+        invariant has been violated (orphan cascade or stale ordering).
+        Emit fatal + raise FatalError per scheduler-wide silent-failure
+        discipline (mirrors _mark_strategy_dead pattern, not the lenient
+        cascade-warning pattern of _record_accept_reject_dead_attempt).
         """
         pipeline_row = self.conn.execute(
             "SELECT id FROM pipelines WHERE target_id = ? AND kind = 'Backward' "
@@ -473,15 +480,12 @@ class Reactor:
             (str(goal_id),),
         ).fetchone()
         if pipeline_row is None:
-            self._emit_event(
-                "cascade",
-                {
-                    "goal_id": goal_id,
-                    "rule": "backward_failure_no_pipeline_id",
-                    "outcome": outcome,
-                },
+            msg = (
+                f"backward_failure_no_pipeline_id goal_id={goal_id} "
+                f"outcome={outcome}"
             )
-            return
+            self._emit_fatal(msg)
+            raise FatalError(msg)
         with self.conn:
             self.conn.execute(
                 "INSERT INTO dead_attempts (target_id, target_kind, pipeline_id, "
