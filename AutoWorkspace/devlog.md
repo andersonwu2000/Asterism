@@ -6,7 +6,7 @@
 
 **C44 R3 — fix R2 audit (3 HIGH + 4 MED + 3 LOW; 7 fixable 全修)**
 
-Hash: pending — P6 C44 R3: fix C44 R2 audit findings (3 HIGH + 4 MED).
+Hash: `74884cc` — P6 C44 R3: fix C44 R2 audit findings (3 HIGH + 4 MED).
 
 ### 改動摘要
 
