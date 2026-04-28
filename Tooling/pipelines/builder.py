@@ -63,11 +63,18 @@ def _replace_proof_body(content: str, tactic: str) -> str:
     tactic_llm may contain nested `:=` (e.g. `by exact (let x := 5; x)` or
     `have : Q := q1; ...`); a strict Lean parser or staging template marking
     the proof-body start position is required there.
+
+    Defensive strip: if agent (despite the prompt instruction) returns a tactic
+    starting with `by `, drop it — the framework always prepends `by`. Avoids
+    `:= by by simp ...` parse errors when agent imitates a stale example.
     """
     idx = content.rfind(":=")
     if idx == -1:
         return content
-    return content[:idx] + f":= by {tactic}"
+    cleaned = tactic.lstrip()
+    if cleaned.startswith("by "):
+        cleaned = cleaned[3:].lstrip()
+    return content[:idx] + f":= by {cleaned}"
 
 
 @dataclass
@@ -172,10 +179,14 @@ class Builder:
         assert self.chain is not None
         model_tier = self.resolver.resolve("builder", "tactic_llm")
         prompt = self._build_prompt(goal, dead_attempts, lemmas)
+        # phase2 §In line 16: agent fs view = Problem dir + pipeline staging dir.
+        # Problem dir lets agent read Defs.lean (user-defined defs/imports).
+        problem = goal.get("problem") or ""
+        problem_dir = str(Path(self.config.base_dir) / "Problems" / problem)
         response, outcome = self.chain.run(
             model_tier=model_tier,
             prompt=prompt,
-            scope_dirs=[staging_dir],
+            scope_dirs=[problem_dir, staging_dir],
             session_id=session_id,
             staging_dir=staging_dir,
         )
@@ -223,6 +234,9 @@ class Builder:
     ) -> None:
         now = _now()
         goal_id = goal["id"]
+        # Single TX: sub-Goal + best-effort parent Goal must be atomic — process
+        # crash mid-write would otherwise leave half the cascade record (no
+        # recover_scan path covers dead_attempts since it has no commit_state).
         with self.conn:
             self.conn.execute(
                 "INSERT INTO dead_attempts "
@@ -233,16 +247,14 @@ class Builder:
                     "bad_goal", f"Builder reviewed bad: {reason}", now,
                 ),
             )
-        # Best-effort: find parent goal via strategy_subgoals and record there too
-        parent_row = self.conn.execute(
-            "SELECT s.goal_id FROM strategies s "
-            "JOIN strategy_subgoals ss ON ss.strategy_id = s.id "
-            "WHERE ss.subgoal_id = ?",
-            (goal_id,),
-        ).fetchone()
-        if parent_row is not None:
-            parent_goal_id = parent_row[0]
-            with self.conn:
+            parent_row = self.conn.execute(
+                "SELECT s.goal_id FROM strategies s "
+                "JOIN strategy_subgoals ss ON ss.strategy_id = s.id "
+                "WHERE ss.subgoal_id = ?",
+                (goal_id,),
+            ).fetchone()
+            if parent_row is not None:
+                parent_goal_id = parent_row[0]
                 self.conn.execute(
                     "INSERT INTO dead_attempts "
                     "(target_id, target_kind, pipeline_id, pipeline_kind, "
@@ -266,11 +278,15 @@ class Builder:
         pipeline_id: str,
         staging_dir: Path,
         session_id: str,
-        dead_attempts: list[dict],
         lemmas: list[str],
         source_content: str,
     ) -> BuilderResult:
         for _attempt in range(self.config.max_retries):
+            # Refresh failure_replay each iter so agent sees prior tactic_llm
+            # self_verify failures (written below) — without refresh the prompt
+            # is identical across retries → agent has no signal to course-correct.
+            dead_attempts = self._failure_replay()
+
             elapsed = time.monotonic() - self._start
             if elapsed >= self.config.t_wall:
                 return BuilderResult(outcome="exhausted", timed_out=True)
@@ -279,12 +295,19 @@ class Builder:
                 goal, dead_attempts, lemmas, session_id, str(staging_dir)
             )
             if response is None:
-                # chain exhausted (all providers/retries failed)
+                # chain exhausted (all providers/retries failed) — record so
+                # next Builder run on this strategy sees the agent gave up.
+                self._record_dead_attempts(
+                    [{"tactic": "<chain_exhausted>", "messages": [], "timed_out": False}],
+                    pipeline_id,
+                )
                 return BuilderResult(outcome="exhausted")
 
             parsed = self._parse_tactic_response(response.output)
             if parsed is None:
-                # malformed JSON → retry agent
+                # Malformed JSON → retry agent (no per-iter dead_attempt; the
+                # agent saw a parse-fail signal via no progress; final
+                # `<tactic_llm_max_retries>` row records exhaustion below).
                 continue
 
             if "needs_decomposition" in parsed:
@@ -314,8 +337,27 @@ class Builder:
                 if self._self_verify(staging_lean, per_call_timeout):
                     self._commit_success(strategy, staging_lean)
                     return BuilderResult(outcome="proved", tactic=tactic_code)
-                # self_verify failed → retry from tactic_llm (spec §1 step 5)
 
+                # self_verify failed → record this specific tactic_llm attempt
+                # so next iter's failure_replay shows what the agent already tried.
+                self._record_dead_attempts(
+                    [
+                        {
+                            "tactic": f"tactic_llm: {tactic_code[:80]}",
+                            "messages": [],
+                            "timed_out": False,
+                        }
+                    ],
+                    pipeline_id,
+                )
+                # fall through to retry (spec §1 step 5: [fail → retry from step 4])
+
+        # max_retries exhausted (parse loop or self_verify loop) — single
+        # summary row so next Builder run on this strategy sees the cap was hit.
+        self._record_dead_attempts(
+            [{"tactic": "<tactic_llm_max_retries>", "messages": [], "timed_out": False}],
+            pipeline_id,
+        )
         return BuilderResult(outcome="exhausted")
 
     # ------------------------------------------------------------------
@@ -325,11 +367,16 @@ class Builder:
     def run(self) -> BuilderResult:
         self._start = time.monotonic()
         p_uuid = str(uuid.uuid4())
+        # Generate session_id up-front so `pipelines.session_id` is always
+        # populated (phase2 §引入元件 §DB table line 156, parity with backward.py).
+        # tactic_try-only paths (chain=None) still get a session_id even though
+        # no agent runs — the column is informational, not gating.
+        session_id = str(uuid.uuid4())
 
         strategy = _row_as_dict(self.conn, "strategies", self.strategy_id)
         goal = _row_as_dict(self.conn, "goals", strategy["goal_id"])
 
-        pipeline_id = self._insert_pipeline(p_uuid)
+        pipeline_id = self._insert_pipeline(p_uuid, session_id)
         staging_dir = self._staging_dir(goal, p_uuid)
         staging_dir.mkdir(parents=True, exist_ok=True)
 
@@ -338,7 +385,7 @@ class Builder:
         )
 
         result = self._run_all_stages(
-            strategy, goal, pipeline_id, staging_dir, source_content
+            strategy, goal, pipeline_id, session_id, staging_dir, source_content
         )
 
         self._finish_pipeline(pipeline_id, result.outcome)
@@ -357,6 +404,7 @@ class Builder:
         strategy: dict[str, Any],
         goal: dict[str, Any],
         pipeline_id: str,
+        session_id: str,
         staging_dir: Path,
         source_content: str,
     ) -> BuilderResult:
@@ -416,21 +464,18 @@ class Builder:
         if self.chain is None:
             return BuilderResult(outcome="exhausted")
 
-        # Stage 2: failure_replay (reads dead_attempts including tactic_try just written)
-        dead_attempts = self._failure_replay()
-
-        # Stage 3: find_lemmas (stub)
+        # Stage 3: find_lemmas (stub) — computed once; lemmas is repo-derived,
+        # not run-state-derived, so no per-iter refresh needed.
+        # (Stage 2 failure_replay is computed inside _tactic_llm_loop per iter
+        # so agent sees self_verify failures recorded mid-loop.)
         lemmas = self._find_lemmas(goal)
 
-        # Stages 4+5: tactic_llm + self_verify retry loop
-        session_id = str(uuid.uuid4())
         return self._tactic_llm_loop(
             strategy,
             goal,
             pipeline_id,
             staging_dir,
             session_id,
-            dead_attempts,
             lemmas,
             source_content,
         )
@@ -444,21 +489,26 @@ class Builder:
         g_folder = f"{goal['id']}_{goal['slug']}"
         return base / "Problems" / goal["problem"] / "Goals" / g_folder / "Staging" / p_uuid
 
-    def _insert_pipeline(self, p_uuid: str) -> str:
+    def _insert_pipeline(self, p_uuid: str, session_id: str) -> str:
         with self.conn:
             self.conn.execute(
                 "INSERT INTO pipelines "
-                "(id, kind, runtime, target_id, target_kind, status, started_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(id, kind, runtime, target_id, target_kind, status, "
+                "session_id, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     p_uuid, "Builder", "atomic",
                     str(self.strategy_id), "Strategy",
-                    "running", _now(),
+                    "running", session_id, _now(),
                 ),
             )
         return p_uuid
 
     def _finish_pipeline(self, pipeline_id: str, outcome: str) -> None:
+        # outcome ∈ {proved, exhausted, needs_decomp, bad_goal}.
+        # Only "proved" maps to status=succeeded. needs_decomp / bad_goal are
+        # agent early-exit conclusions (not pipeline failures per se), but at
+        # the pipeline-level they're "failed" — cascade triggers on outcome=
+        # 'proved' alone, so this status is informational for debug/Strategist.
         status = "succeeded" if outcome == "proved" else "failed"
         with self.conn:
             self.conn.execute(

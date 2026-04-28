@@ -978,3 +978,290 @@ class TestSilentFailureGuard:
             "SELECT status FROM strategies WHERE id = ?", (strategy_id,)
         ).fetchone()
         assert row[0] == "proposed"
+
+
+# ---------------------------------------------------------------------------
+# R3 audit fixes
+# ---------------------------------------------------------------------------
+
+
+class TestLeadingByStrip:
+    """Issue #1: agent stale-example `by simp` must not produce `by by simp`."""
+
+    def test_tactic_proof_with_leading_by_handled(self, db, tmp_path):
+        """Agent returning 'by simp' (with leading by) → staging file has
+        single 'by simp' (not double 'by by'). Integrates with self_verify
+        proved path: tactic_try fails → tactic_llm returns leading-by → pass."""
+        strategy_lean = tmp_path / "strat.lean"
+        strategy_lean.write_text(_lean_source(), encoding="utf-8")
+        goal_lean = tmp_path / "goal.lean"
+        goal_lean.write_text("placeholder", encoding="utf-8")
+        _, strategy_id = _make_rows(db, strategy_lean, goal_lean)
+
+        captured_files: list[str] = []
+        call_count = [0]
+
+        def fake_run(lean_file, cwd, timeout=600.0):
+            call_count[0] += 1
+            if call_count[0] <= len(TACTICS):
+                return _exhausted_result()
+            captured_files.append(Path(lean_file).read_text(encoding="utf-8"))
+            return _proved_result()
+
+        chain = _mock_chain(_json_block({"tactic_proof": "by simp [add_zero]"}))
+        with patch("Tooling.pipelines.builder.run_lean", side_effect=fake_run):
+            result = Builder(
+                strategy_id, db,
+                BuilderConfig(base_dir=str(tmp_path)),
+                chain=chain,
+            ).run()
+
+        assert result.outcome == "proved"
+        # Staging must contain ':= by simp [...]' — not ':= by by simp [...]'
+        assert len(captured_files) == 1
+        content = captured_files[0]
+        assert ":= by simp [add_zero]" in content
+        assert "by by" not in content
+
+
+# ---------------------------------------------------------------------------
+# R3 audit #2: tactic_llm failure paths must write dead_attempts
+# ---------------------------------------------------------------------------
+
+
+class TestTacticLlmDeadAttempts:
+    """Issue #2: chain_exhausted / self_verify fail / max_retries must persist
+    a dead_attempts row so cross-run failure_replay sees agent's history."""
+
+    def _setup(self, db, tmp_path, *, slug="add_zero"):
+        strategy_lean = tmp_path / "strat.lean"
+        strategy_lean.write_text(_lean_source(), encoding="utf-8")
+        goal_lean = tmp_path / "goal.lean"
+        goal_lean.write_text("placeholder", encoding="utf-8")
+        return _make_rows(db, strategy_lean, goal_lean, slug=slug)
+
+    def test_chain_exhausted_writes_dead_attempt(self, db, tmp_path):
+        """chain.run returns ('', 'exhausted') → 1 chain_exhausted dead_attempt
+        on top of tactic_try's 5."""
+        _, strategy_id = self._setup(db, tmp_path)
+
+        chain = _mock_chain("", outcome="exhausted")
+        with patch("Tooling.pipelines.builder.run_lean", return_value=_exhausted_result()):
+            Builder(
+                strategy_id, db,
+                BuilderConfig(base_dir=str(tmp_path), max_retries=1),
+                chain=chain,
+            ).run()
+
+        rows = db.execute(
+            "SELECT reason_summary FROM dead_attempts WHERE target_id = ? AND target_kind='Strategy'",
+            (str(strategy_id),),
+        ).fetchall()
+        # 5 from tactic_try + 1 from chain_exhausted
+        assert len(rows) == 6
+        assert any("chain_exhausted" in r[0] for r in rows)
+
+    def test_self_verify_fail_writes_dead_attempts(self, db, tmp_path):
+        """self_verify fails N times → N tactic_llm: dead_attempts (one per
+        attempt) + 1 final tactic_llm_max_retries summary row."""
+        _, strategy_id = self._setup(db, tmp_path)
+
+        def fake_run(lean_file, cwd, timeout=600.0):
+            return _exhausted_result()  # tactic_try AND self_verify always fail
+
+        chain = _mock_chain(_json_block({"tactic_proof": "exact rfl"}))
+        with patch("Tooling.pipelines.builder.run_lean", side_effect=fake_run):
+            result = Builder(
+                strategy_id, db,
+                BuilderConfig(base_dir=str(tmp_path), max_retries=2),
+                chain=chain,
+            ).run()
+
+        assert result.outcome == "exhausted"
+        rows = db.execute(
+            "SELECT reason_summary FROM dead_attempts WHERE target_id = ? AND target_kind='Strategy'",
+            (str(strategy_id),),
+        ).fetchall()
+        reasons = [r[0] for r in rows]
+        # 5 tactic_try + 2 tactic_llm self_verify fails + 1 max_retries summary
+        assert len(rows) == 8
+        # Per-iter rows include the tactic body summary
+        tactic_llm_rows = [r for r in reasons if "tactic_llm:" in r and "exact rfl" in r]
+        assert len(tactic_llm_rows) == 2
+        # Final summary row
+        assert any("tactic_llm_max_retries" in r for r in reasons)
+
+    def test_max_retries_with_parse_fail_writes_summary(self, db, tmp_path):
+        """All retries return malformed JSON → no per-iter rows, but final
+        max_retries summary row written so cross-run sees the cap was hit."""
+        _, strategy_id = self._setup(db, tmp_path)
+
+        chain = _mock_chain("not valid json")
+        with patch("Tooling.pipelines.builder.run_lean", return_value=_exhausted_result()):
+            Builder(
+                strategy_id, db,
+                BuilderConfig(base_dir=str(tmp_path), max_retries=3),
+                chain=chain,
+            ).run()
+
+        rows = db.execute(
+            "SELECT reason_summary FROM dead_attempts WHERE target_id = ? AND target_kind='Strategy'",
+            (str(strategy_id),),
+        ).fetchall()
+        reasons = [r[0] for r in rows]
+        # 5 tactic_try + 1 max_retries summary (no per-iter for parse fails)
+        assert len(rows) == 6
+        assert any("tactic_llm_max_retries" in r for r in reasons)
+
+
+# ---------------------------------------------------------------------------
+# R3 audit #2 (#7 dependent): per-iter failure_replay refresh sees prior run's
+# tactic_llm failures across Builder runs
+# ---------------------------------------------------------------------------
+
+
+class TestFailureReplayCrossRun:
+    """Issue #2 + #7: agent in run-N sees run-(N-1) tactic_llm failures."""
+
+    def test_prior_run_tactic_llm_failures_visible(self, db, tmp_path):
+        """Run 1: tactic_llm self_verify fails → dead_attempts written.
+        Run 2 (k_digest large enough to clear tactic_try recency): failure_replay
+        must surface run 1's tactic_llm fail in prompt."""
+        strategy_lean = tmp_path / "strat.lean"
+        strategy_lean.write_text(_lean_source(), encoding="utf-8")
+        goal_lean = tmp_path / "goal.lean"
+        goal_lean.write_text("placeholder", encoding="utf-8")
+        _, strategy_id = _make_rows(db, strategy_lean, goal_lean)
+
+        # Run 1: agent suggests "exact zero_add" → self_verify fails → recorded
+        run1_chain = _mock_chain(_json_block({"tactic_proof": "exact zero_add"}))
+        with patch("Tooling.pipelines.builder.run_lean", return_value=_exhausted_result()):
+            Builder(
+                strategy_id, db,
+                BuilderConfig(base_dir=str(tmp_path), max_retries=1),
+                chain=run1_chain,
+            ).run()
+
+        # Sanity: run 1 wrote the tactic_llm row to DB
+        rows_after_run1 = db.execute(
+            "SELECT reason_summary FROM dead_attempts WHERE target_id=? AND target_kind='Strategy'",
+            (str(strategy_id),),
+        ).fetchall()
+        assert any("exact zero_add" in r[0] for r in rows_after_run1), \
+            "run 1 must have persisted tactic_llm fail row"
+
+        # Run 2: use k_digest=20 so prior tactic_llm row clears tactic_try newness window
+        run2_prompts: list[str] = []
+        original_build = Builder._build_prompt
+
+        def capturing_build(self_ref, goal, dead_attempts, lemmas):
+            prompt = original_build(self_ref, goal, dead_attempts, lemmas)
+            run2_prompts.append(prompt)
+            return prompt
+
+        run2_chain = _mock_chain("not valid json")  # parse fail → loop runs full max_retries
+        with patch("Tooling.pipelines.builder.run_lean", return_value=_exhausted_result()):
+            with patch.object(Builder, "_build_prompt", capturing_build):
+                Builder(
+                    strategy_id, db,
+                    BuilderConfig(base_dir=str(tmp_path), max_retries=1, k_digest=20),
+                    chain=run2_chain,
+                ).run()
+
+        # Run 2's prompt must include the "exact zero_add" tactic_llm fail from run 1
+        assert len(run2_prompts) >= 1
+        assert any("exact zero_add" in p for p in run2_prompts)
+
+
+# ---------------------------------------------------------------------------
+# R3 audit #3: pipelines.session_id must be written
+# ---------------------------------------------------------------------------
+
+
+class TestPipelineSessionId:
+    """Issue #3: phase2 §引入元件 §DB table line 156 字面要求 + parity with backward.py."""
+
+    def test_pipeline_row_has_session_id_on_proved(self, db, tmp_path):
+        """tactic_try success → pipelines.session_id is non-NULL."""
+        strategy_lean = tmp_path / "strat.lean"
+        strategy_lean.write_text(_lean_source(), encoding="utf-8")
+        goal_lean = tmp_path / "goal.lean"
+        goal_lean.write_text("placeholder", encoding="utf-8")
+        _, strategy_id = _make_rows(db, strategy_lean, goal_lean)
+
+        with patch("Tooling.pipelines.builder.run_lean", return_value=_proved_result()):
+            Builder(strategy_id, db, BuilderConfig(base_dir=str(tmp_path))).run()
+
+        row = db.execute("SELECT session_id FROM pipelines").fetchone()
+        assert row[0] is not None
+        # session_id should be a UUID string
+        assert len(row[0]) >= 32
+
+    def test_pipeline_row_has_session_id_on_chain_run(self, db, tmp_path):
+        """tactic_llm chain run → session_id matches the value passed to chain."""
+        strategy_lean = tmp_path / "strat.lean"
+        strategy_lean.write_text(_lean_source(), encoding="utf-8")
+        goal_lean = tmp_path / "goal.lean"
+        goal_lean.write_text("placeholder", encoding="utf-8")
+        _, strategy_id = _make_rows(db, strategy_lean, goal_lean)
+
+        captured_session_ids: list[str] = []
+        chain = MagicMock()
+
+        def capturing_run(**kwargs):
+            captured_session_ids.append(kwargs["session_id"])
+            return None, "exhausted"
+
+        chain.run.side_effect = capturing_run
+
+        with patch("Tooling.pipelines.builder.run_lean", return_value=_exhausted_result()):
+            Builder(
+                strategy_id, db,
+                BuilderConfig(base_dir=str(tmp_path), max_retries=1),
+                chain=chain,
+            ).run()
+
+        # session_id in pipelines table matches what was passed to chain.run
+        row = db.execute("SELECT session_id FROM pipelines").fetchone()
+        assert row[0] is not None
+        assert len(captured_session_ids) >= 1
+        assert row[0] == captured_session_ids[0]
+
+
+# ---------------------------------------------------------------------------
+# R3 audit #4: scope_dirs includes Problem dir
+# ---------------------------------------------------------------------------
+
+
+class TestScopeDirs:
+    """Issue #4: phase2 §In line 16 字面要求 fs view = Problem dir + staging dir."""
+
+    def test_scope_dirs_includes_problem_dir(self, db, tmp_path):
+        """_run_tactic_llm passes [problem_dir, staging_dir] to chain.run."""
+        strategy_lean = tmp_path / "strat.lean"
+        strategy_lean.write_text(_lean_source(), encoding="utf-8")
+        goal_lean = tmp_path / "goal.lean"
+        goal_lean.write_text("placeholder", encoding="utf-8")
+        _, strategy_id = _make_rows(db, strategy_lean, goal_lean, problem="my_problem")
+
+        captured: list[list[str]] = []
+        chain = MagicMock()
+
+        def capturing_run(**kwargs):
+            captured.append(list(kwargs["scope_dirs"]))
+            return None, "exhausted"
+
+        chain.run.side_effect = capturing_run
+
+        with patch("Tooling.pipelines.builder.run_lean", return_value=_exhausted_result()):
+            Builder(
+                strategy_id, db,
+                BuilderConfig(base_dir=str(tmp_path), max_retries=1),
+                chain=chain,
+            ).run()
+
+        assert len(captured) >= 1
+        scope_dirs = captured[0]
+        # Both Problem dir AND staging dir must appear
+        assert any("my_problem" in d for d in scope_dirs)
+        assert any("Staging" in d for d in scope_dirs)

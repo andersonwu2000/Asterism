@@ -22,7 +22,11 @@ Analyze the goal and choose exactly one of these three responses:
 
 **a) Suggest a tactic proof**: If you believe a tactic expression can close this goal, provide it.
 The tactic will replace the proof body — write only the proof tactic, not the full theorem statement.
-Examples: `exact Nat.add_comm m n`, `by simp [Nat.succ_eq_add_one]`, `omega`, `decide`.
+
+**The framework prepends `by` automatically — DO NOT include a leading `by` in your tactic.**
+If your tactic is a single term-mode expression like `Nat.add_comm m n`, prefix with `exact`.
+
+Examples: `exact Nat.add_comm m n`, `simp [Nat.succ_eq_add_one]`, `omega`, `decide`.
 
 **b) Needs decomposition**: If this goal requires splitting into sub-goals (induction, case analysis,
 auxiliary lemmas) and cannot be closed by a single tactic, indicate this.
