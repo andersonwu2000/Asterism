@@ -449,6 +449,8 @@ class Reactor:
             self._cascade_builder(int(task["target_id"]), result)
         elif kind == "Backward":
             self._cascade_backward(int(task["target_id"]), result)
+        elif kind == "Refuter":
+            self._cascade_refuter(int(task["target_id"]), result)
 
     def _run_step4_trust_set(self, task: dict, result: Any) -> None:
         """Trust set construction is integrated into _cascade_builder. P2 no-op."""
@@ -567,6 +569,60 @@ class Reactor:
                     "VALUES (?, ?, ?, ?)",
                     ("Builder", str(result.strategy_id), 0, _now()),
                 )
+
+    def _cascade_refuter(self, goal_id: int, result: Any) -> None:
+        """Cascade for Refuter pipeline outcome (P4 C30).
+
+        'success': Refuter.commit already inserted ¬G goal + bidirectional
+                    twin_of UPDATE. No direct cascade — structural refill
+                    picks up the new ¬G next cycle, Backward/Builder attack
+                    it; if/when Builder proves ¬G (origin='refuter_negation'),
+                    _cascade_twin_to_refuted fires and flips G.
+        'exhausted': mirror Backward exhausted — record dead_attempts on G
+                    + archive_check to enforce Refuter retry budget
+                    (N=5 default, blocks Refuter on G when threshold hit).
+        """
+        if result.outcome == "success":
+            return
+        # exhausted: write dead_attempts + archive_check
+        self._record_refuter_failure(goal_id, result.outcome)
+        from Tooling.stages.failure_archive import archive_check
+        archive_check(self.conn, goal_id, "Refuter")
+
+    def _record_refuter_failure(self, goal_id: int, outcome: str) -> None:
+        """INSERT dead_attempts row for Refuter exhausted outcome.
+
+        Same shape as _record_backward_failure: lookup most recent Refuter
+        pipeline for FK; missing pipeline → fatal (orphan cascade or stale
+        ordering). Silent-failure red-line discipline.
+        """
+        pipeline_row = self.conn.execute(
+            "SELECT id FROM pipelines WHERE target_id = ? AND kind = 'Refuter' "
+            "ORDER BY started_at DESC LIMIT 1",
+            (str(goal_id),),
+        ).fetchone()
+        if pipeline_row is None:
+            msg = (
+                f"refuter_failure_no_pipeline_id goal_id={goal_id} "
+                f"outcome={outcome}"
+            )
+            self._emit_fatal(msg)
+            raise FatalError(msg)
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO dead_attempts (target_id, target_kind, pipeline_id, "
+                "pipeline_kind, outcome, reason_summary, ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(goal_id),
+                    "Goal",
+                    pipeline_row[0],
+                    "Refuter",
+                    outcome,
+                    f"Refuter outcome={outcome}",
+                    _now(),
+                ),
+            )
 
     def _record_backward_failure(self, goal_id: int, outcome: str) -> None:
         """INSERT dead_attempts row for Backward exhausted/unproductive outcome.
@@ -1026,6 +1082,12 @@ class Reactor:
         changes both local_goals search results (proved Goals are search
         candidates) and dedupe results (proved Goal types now match against
         future candidates). Kill both scopes.
+
+        P4 C30: after the proved UPDATE, run twin cascade — if this goal
+        has twin_of, flip the twin to status='refuted' (architecture.md §6
+        line 330: "Builder/Backward 鏈成功 → Goal status=proved, twin (若有)
+        status=refuted"). Symmetric: works whether the proved goal is a
+        user conjecture (G) or a Refuter-spawned negation (¬G).
         """
         with self.conn:
             self.conn.execute(
@@ -1034,6 +1096,110 @@ class Reactor:
                 (answer_data, trust_set_json, _now(), goal_id),
             )
         invalidate_for_goals_write(self.conn)
+        self._cascade_twin_to_refuted(goal_id, trust_set_json)
+
+    def _cascade_twin_to_refuted(
+        self, proved_goal_id: int, trust_set_json: str | None
+    ) -> None:
+        """If proved goal has twin_of, flip twin to status='refuted'.
+
+        Spec arch.md §6 line 330 字面: "Builder/Backward 鏈成功 → Goal
+        `status='proved'`...; twin（若有）`status='refuted'`、
+        `answer_data={type:'classical', negation_lean_path, negation_goal_id}`、
+        `trust_set` 從 ¬G 繼承".
+
+        P4 C30 simplified scope (Counterexample deferred):
+          - dual-proved invariant: if twin already proved → CASCADE_FAULT
+            simulation (or natural detection) → fatal halt.
+          - silver→gold (Counterexample-source) deferred: if twin already
+            refuted with type='witness', would normally upgrade trust_set
+            to classical lean_axiom. With Counterexample deferred, twin
+            should never be in silver state on entry; treat as idempotent
+            (no-op).
+
+        CASCADE_FAULT=dual_proved env hook (acceptance #9): force the
+        invariant violation path even when twin status differs. Used by
+        tests verifying scheduler halt behavior.
+        """
+        # Look up proved goal's lean_path + twin_of
+        row = self.conn.execute(
+            "SELECT twin_of, lean_path FROM goals WHERE id = ?",
+            (proved_goal_id,),
+        ).fetchone()
+        if row is None:
+            return
+        twin_of, proved_lean_path = row
+        if twin_of is None:
+            return
+
+        twin_row = self.conn.execute(
+            "SELECT id, status, answer_data FROM goals WHERE id = ?",
+            (twin_of,),
+        ).fetchone()
+        if twin_row is None:
+            # Twin pointer dangling — not a healthy DB state but cascade
+            # should not silently proceed; emit cascade event for visibility.
+            self._emit_event(
+                "cascade",
+                {
+                    "goal_id": proved_goal_id,
+                    "twin_of": twin_of,
+                    "rule": "twin_cascade_dangling_pointer",
+                },
+            )
+            return
+        twin_id, twin_status, twin_answer_data = twin_row
+
+        # CASCADE_FAULT=dual_proved: force invariant violation path
+        from Tooling.cascade import check_cascade_fault, CascadeFault
+        try:
+            check_cascade_fault("dual_proved")
+        except CascadeFault as exc:
+            msg = str(exc)
+            self._emit_fatal(msg)
+            raise FatalError(msg) from exc
+
+        if twin_status == "proved":
+            # Real dual-proved invariant violation
+            msg = (
+                f"dual_proved invariant violation: goal {proved_goal_id} "
+                f"proved with twin {twin_id} also proved"
+            )
+            self._emit_fatal(msg)
+            raise FatalError(msg)
+
+        if twin_status == "refuted":
+            # Idempotent: twin already refuted (e.g. cascade replayed).
+            # Counterexample silver→gold path would land here once that
+            # pipeline is undeferred; for C30 this is a no-op.
+            return
+
+        # Flip twin to refuted (classical type, with cross-reference back
+        # to the proved goal's lean_path).
+        refuted_answer_data = json.dumps({
+            "type": "classical",
+            "negation_lean_path": proved_lean_path,
+            "negation_goal_id": proved_goal_id,
+        })
+        try:
+            with self.conn:
+                self.conn.execute(
+                    "UPDATE goals SET status = 'refuted', answer_data = ?, "
+                    "trust_set = ?, status_changed_at = ? WHERE id = ?",
+                    (refuted_answer_data, trust_set_json, _now(), twin_id),
+                )
+            invalidate_for_goals_write(self.conn)
+            self._emit_event(
+                "cascade",
+                {
+                    "goal_id": twin_id,
+                    "rule": "twin_proved→refuted",
+                    "via_proved_goal_id": proved_goal_id,
+                },
+            )
+        except sqlite3.Error as exc:
+            self._emit_fatal(str(exc))
+            raise FatalError(str(exc)) from exc
 
     def _record_accept_reject_dead_attempt(
         self,

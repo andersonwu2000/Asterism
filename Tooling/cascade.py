@@ -1,4 +1,4 @@
-"""Cascade dispatch table (P3 C25 — minimal extraction).
+"""Cascade dispatch table (P3 C25 — minimal extraction; P4 C30 extended).
 
 phase3_cache.md §任務序列 #11: "Cascade dispatch 表重構（Tooling/cascade.py）：
 覆蓋直接 effect; cascade upward 仍走 BFS 偵測機制".
@@ -11,6 +11,24 @@ chain. The full action-execution refactor (handlers as Python functions
 in this module) lands when P4 conjecture / P5 construction add silver →
 gold / twin / refuter actions and the inline if/else would not scale.
 
+P4 C30 extends the table with Refuter outcomes:
+  - (Refuter, success): ¬G goal already inserted by Refuter.commit; cascade
+    is a no-op acknowledgement (BFS picks up the new goal next cycle).
+  - (Refuter, exhausted): record dead_attempts + archive_check (mirrors
+    Backward exhausted handling).
+
+The actual ¬G-proved → twin-G-refuted cascade fires on Builder.proved
+when the proved goal has origin='refuter_negation' + twin_of != NULL —
+that branch lives in scheduler._cascade_twin_to_refuted, dispatched via
+existing (Builder, proved) entry, not via a separate Refuter table key.
+Spec arch.md §6 line 330 字面 'Builder/Backward 鏈成功 → twin (若有)
+status=refuted'.
+
+CASCADE_FAULT env hook (P4 acceptance #9): set to 'dual_proved' to force
+the dual-proved invariant violation path during twin cascade — emits
+fatal + halts. 'unique_violation' / 'fk_invalid' modes reserved (raise
+on any cascade UPDATE) but not yet wired to specific simulation points.
+
 Cascade upward propagation (sub-Goal proved → next cycle structural refill
 → enqueue Builder for parent strategy) is NOT in this table — it is an
 implicit chain handled by `_run_structural_refill` BFS, per phase3 spec
@@ -19,9 +37,11 @@ implicit chain handled by `_run_structural_refill` BFS, per phase3 spec
 Public API:
     DISPATCH_TABLE: dict[(pipeline_kind, outcome), CascadeAction]
     get_action(pipeline_kind, outcome) -> CascadeAction | None
+    check_cascade_fault(mode) -> None  -- raises if CASCADE_FAULT matches
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 
@@ -88,7 +108,48 @@ DISPATCH_TABLE: dict[tuple[str, str], CascadeAction] = {
         side_effects=("record_backward_failure", "archive_check_backward",
                        "archive_ih_trap"),
     ),
+    ("Refuter", "success"): CascadeAction(
+        name="refuter_success",
+        description="¬G already inserted by Refuter.commit; structural "
+                    "refill picks it up next cycle. No direct cascade.",
+        handler="_cascade_refuter",
+        side_effects=("acknowledge_negation_goal",),
+    ),
+    ("Refuter", "exhausted"): CascadeAction(
+        name="refuter_failure",
+        description="INSERT dead_attempts + archive_check on G "
+                    "(Refuter retry budget mirrors Backward).",
+        handler="_cascade_refuter",
+        side_effects=("record_refuter_failure", "archive_check_refuter"),
+    ),
 }
+
+
+# Module-level helper used by scheduler. Defined here so all CASCADE_FAULT
+# semantics live in one file.
+class CascadeFault(Exception):
+    """Raised by check_cascade_fault to simulate cascade SQL / invariant
+    failure paths in tests (acceptance #9 family)."""
+
+
+def check_cascade_fault(mode: str) -> None:
+    """If CASCADE_FAULT env var equals `mode`, raise CascadeFault.
+
+    Modes (P4 acceptance #9):
+      'dual_proved'      — simulate G + ¬G both proved invariant violation
+      'unique_violation' — simulate SQLite UNIQUE constraint failure
+      'fk_invalid'       — simulate FK reference invalid
+
+    Caller catches CascadeFault, emits fatal event + raises FatalError.
+    Modes other than 'dual_proved' are reserved names (no production
+    trigger sites yet); the wiring lands when those specific cascade
+    failure paths get exercised by test cases.
+    """
+    fault = os.environ.get("CASCADE_FAULT")
+    if fault and fault == mode:
+        raise CascadeFault(
+            f"CASCADE_FAULT={mode} simulated invariant violation"
+        )
 
 
 def get_action(
