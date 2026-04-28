@@ -1197,7 +1197,29 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _reconfigure_stdio_utf8() -> None:
+    """Force stdout/stderr to UTF-8 so unicode (∀, ¬, ⊆, etc.) prints
+    cleanly on Windows cp950 / shift_jis / other legacy codepages.
+
+    P6.x patch (Round-1 演習 found): cmd_goal_add printed `∀` and
+    UnicodeEncodeError'd on Windows cp950. Lean specs commonly contain
+    unicode operators; the CLI must not crash on them.
+
+    Best-effort: TextIOBase.reconfigure exists in Python 3.7+ for
+    real streams, may be missing when stdout is redirected to a
+    non-text wrapper (e.g. some test runners). On AttributeError we
+    silently skip — the original codec stays.
+    """
+    import sys as _sys
+    for stream in (_sys.stdout, _sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> None:
+    _reconfigure_stdio_utf8()
     parser = build_parser()
     args = parser.parse_args(argv)
 

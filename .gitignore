@@ -4,3 +4,10 @@ __pycache__/
 
 # pip install -e build artifacts
 *.egg-info/
+
+# Lake build artifacts (long-term runtime env)
+/.lake
+asterism.db
+asterism.db-journal
+asterism.db-wal
+asterism.db-shm
