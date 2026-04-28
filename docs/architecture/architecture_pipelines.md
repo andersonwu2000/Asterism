@@ -1,12 +1,48 @@
 # Pipeline 細節（v3 配對文件）
 
-對應 `architecture_v3.md` §5。本文列五個 pipeline 各自的 stage 序列、outcome、行為規則。共用部分（Runtime 規則、commit 協議、Session 策略）留在 v3 §5。
+對應 `architecture_v3.md` §5。本文列八個 pipeline 各自的 **速查（觸發來源 / Runtime / Pool / 預設 model / cancellation 行為）+ stage 序列 + outcome + 行為規則**。共用部分（Runtime 規則、commit 協議、Session 策略）留在 v3 §5。
+
+**Pipeline 觸發來源全表**（v3 §6 task queue 段）：
+
+| Pipeline | structural refill | Strategist inject | Pool |
+|---|---|---|---|
+| Builder | ✅（leaf Strategy） | ❌ | atomic |
+| Backward | ✅（多數）| ✅（高優先案例） | atomic |
+| Refuter | ✅（kind=conjecture 三線並攻 + silver-stuck stop-gap） | ✅（theorem-kind 唯一通道 / silver 卡升級加碼） | atomic |
+| Counterexample | ✅（kind=conjecture 三線並攻） | ✅（加碼 / theorem-kind sanity check） | atomic |
+| ConstructionSearch | ✅（kind=construction） | ✅（加碼 budget / 換 mutation） | continuous |
+| **Forward** | ❌ | ✅（**唯一來源**） | atomic |
+| **Generalizer** | ❌ | ✅（**唯一來源**） | atomic |
+| Strategist | event count 觸發（K_strategist=P×2）| — | atomic |
+
+**設計原則**：有 structural refill 觸發的 pipeline 派發規則是**結構性的**（leaf Strategy / open Goal / kind dispatch）；只能 Strategist inject 的（Forward / Generalizer / Refuter on theorem-kind）派發**沒明確結構規則**、需 LLM 看 inventory 才該派——避免結構性 BFS 撈所有 proved Goal 都派 Forward 燒 token。
+
+**Cancellation 白名單**（v3 §6 cancellation 表，正向白名單；新加 pipeline 預設不入名單）：
+
+| Verdict 觸發源 | 該 cancel 的 still-running pipeline kinds |
+|---|---|
+| Builder/Backward 鏈 → Goal proved (full classical) | Builder, Backward, Refuter, Counterexample, ConstructionSearch（target=G.id） |
+| Refuter→Builder 鏈 → twin G refuted (full classical) | 同上（target 跨 G.id + ¬G.id 雙 Goal 各殺一次） |
+| Counterexample silver (`type='witness'`) | Builder, Backward, 其他 Counterexample（**Refuter 留**——升級用） |
+| ConstructionSearch silver (`type='construction'`) | Backward, 其他 ConstructionSearch（**Builder 留**——升級用） |
+| Strategy dead 連鎖 | Builder, Backward 對應 Strategy 的 still-running |
+| Goal shelved（Strategist Shelve action）| 同 Goal still-running 全部 pipeline kind |
 
 ---
 
 ## 1. Builder
 
 攻一個葉子 Strategy（無 sub-Goal 的 Strategy）。
+
+**速查**：
+
+| 維度 | 值 |
+|---|---|
+| 觸發來源 | structural refill：BFS 撈到「全 sub-Goal proved 的 Strategy」自動 enqueue |
+| Runtime / Pool | atomic / P（atomic pool） |
+| 預設 model | `agent.model_defaults.builder.tactic_llm: haiku`（低 cost、tactic 試多次） |
+| 被 cancel 時機 | Goal proved (full classical) / Goal refuted (full classical) / Strategy dead；Counterexample silver / ConstructionSearch silver 也會 cancel（後者 silver 對輔助 Goal 的 Builder 例外不 cancel） |
+| 對外 cancel | 無（Builder 自身不主動 cancel 別的 pipeline） |
 
 Stages：
 
@@ -47,6 +83,17 @@ bad_goal        — agent 早退（缺條件 / 看似為假）
 
 拆一個 Goal，產出新 prove-Strategy + sub-Goal。
 
+**速查**：
+
+| 維度 | 值 |
+|---|---|
+| 觸發來源 | structural refill（多數）：BFS 撈到 `status='open'` 的 Goal 自動 enqueue<br>Strategist inject（少數）：高優先案例（如 IH-trap signal 後 Strategist 判該換角度再拆） |
+| Runtime / Pool | atomic / P（atomic pool） |
+| 預設 model | `agent.model_defaults.backward.agent: sonnet`（拆解需語意理解、比 tactic 試貴） |
+| 被 cancel 時機 | Goal proved (full classical) / Goal refuted (full classical) / Strategy dead（同 strategy_id 範圍）；Counterexample silver 也會 cancel |
+| 對外 cancel | 無 |
+| `unproductive` outcome | 寫 dead_attempts；P3 通用 N=5 機制累計後寫 `goals.blocked_pipelines += ['Backward']`；IH-trap special-case 連 ≥ 2 次 unproductive AND `parent_subgoal_max_similarity ≥ 閾值` → 立即寫入（不等 N=5，v3 §7.5） |
+
 Stages：
 
 ```
@@ -86,6 +133,17 @@ unproductive    — agent 早退（判這 Goal 拆不動）
 
 建立 ¬G 為新樹根、與 G 互設 twin_of。¬G 從此是普通 Goal，由 Builder/Backward 攻擊；證了 ¬G 觸發 cascade，G 標 refuted（若 G 已 silver-refuted 則升級為 RefutedClassical）。
 
+**速查**：
+
+| 維度 | 值 |
+|---|---|
+| 觸發來源 | **三條來源**：<br>(1) structural refill（kind=conjecture 三線並攻：Backward + Refuter + Counterexample 同時派）<br>(2) structural refill **silver-stuck stop-gap hard rule**：`status='refuted' AND answer_data.type='witness' AND 無 active Refuter` → 自動 inject 一次（解 Counterexample/Refuter race condition；**永久 mechanism、Strategist disable 時也跑**）<br>(3) Strategist inject：對 theorem-kind Goal 派**只能**走 Strategist（無結構性觸發）；對 conjecture-kind 加碼派額外 Refuter（如「silver 卡升級」signal hard rule 已派但仍卡時）|
+| Runtime / Pool | atomic / P（atomic pool） |
+| 預設 model | 未明定（agent stage 跑 ¬G statement + witness-based template）；建議走 sonnet 級 |
+| 被 cancel 時機 | Goal proved (full classical) / twin G refuted (full classical)；**Counterexample silver 時不被 cancel**（保留升級用） |
+| 對外 cancel | 無（Refuter 證 ¬G 成功的 cancellation 由 cascade 套白名單） |
+| `unproductive` outcome | 寫 dead_attempts；P3 通用 N=5 機制累計 |
+
 Stages：
 
 ```
@@ -120,6 +178,17 @@ exhausted       — retry 用盡（agent 寫不出有效 ¬G statement）
 
 從已證 Goal 推新 Goal 入 Goals/（孤兒，origin=forward）。
 
+**速查**：
+
+| 維度 | 值 |
+|---|---|
+| 觸發來源 | **Strategist inject only**——架構唯二「無 structural refill 自動派」之一（另一是 Generalizer）<br>**理由**：對哪個 proved Goal 該推 corollary 沒明確結構規則；BFS 撈所有 proved 都派 Forward 會炸 token、需 LLM judgment<br>**Contingency hard rule**（spike-026 結果若顯示 LLM 不主動）：proved root 累計 N 次 / idle T 分鐘無 Forward 派出 → reactor 強制 inject 一次（hardcoded、不靠 Strategist）。**P7 default 不開**、視 spike 結果決定 |
+| Runtime / Pool | atomic / P（atomic pool） |
+| 預設 model | 未明定（agent stage 從 seed 提 corollary 候選）；建議走 sonnet 級 |
+| 被 cancel 時機 | 無（Forward 跑時不依附特定 Goal terminal verdict） |
+| 對外 cancel | 無 |
+| `no_novel` outcome | dup → discard、不算失敗、不寫 dead_attempts |
+
 Stages：
 
 ```
@@ -153,6 +222,19 @@ Forward 跟 Generalizer 都產新 Goal 入池，差別：Forward 推**下游 cor
 ## 5. Strategist
 
 Meta-coordinator。週期性看 Graph 全景，決定要派哪些 fuzzy-trigger pipeline（Refuter / Forward / 高優先 Backward）跟 shelve 哪些 Goal。輸出注入 task queue 左端。
+
+**速查**：
+
+| 維度 | 值 |
+|---|---|
+| 觸發來源 | event count 累計：每 `K_strategist` 個 `pipeline_finished` event 達標（預設 P×2，P=4 → K=8）+ cooldown 釋放 → 自動 inject Strategist task<br>multi-Problem 時走嚴格 round-robin（K_strategist global 累計、cooldown 解除後切下個 Problem，cooldown global non-overlapping） |
+| Runtime / Pool | atomic / P（atomic pool）|
+| 預設 model | opus（spike-029 決定值不值；多數 inventory 推理 + decision schema 寫作，需強 reasoning） |
+| 被 cancel 時機 | 無（Strategist 自身跑時不被打斷） |
+| 對外 cancel | 透過 `Shelve` decision 觸發 cascade（Goal shelved → cancel 同 Goal still-running 全部 pipeline，v3 §6 cancellation 表第 6 條） |
+| Cooldown | Strategist 自身跑時不重派；commit 完才釋放 cooldown 旗標 |
+| Inject 上限 | 單次 ≤ `M_strategist=5` 個 task |
+| Decision payload override | `{model?, provider?, budget?, range?, mutation_operators?}`——架構 §8.3 三層 model 解析的最高優先層；對 stuck Goal 加強用 opus、或 ConstructionSearch 加 budget |
 
 Stages：
 
@@ -215,6 +297,18 @@ exhausted       — agent 寫不出有效 schema
 
 目前只支援 atomic 模式（單次跑 budget 內），continuous 模式延後。
 
+**速查**：
+
+| 維度 | 值 |
+|---|---|
+| 觸發來源 | structural refill（kind=conjecture 三線並攻：跟 Backward + Refuter 並排）<br>Strategist inject（加碼：domain 不夠時換更大 range；對 theorem-kind sanity check） |
+| Runtime / Pool | atomic / P（atomic pool）；continuous 模式延後（Pool=continuous 時用 P_continuous） |
+| 預設 model | 未明定（agent stage 寫 decidable predicate + evaluator code）；建議走 sonnet 級 |
+| 被 cancel 時機 | Goal proved (full classical) / Goal refuted (full classical)；Counterexample silver 也會 cancel **其他** Counterexample（同 G） |
+| 對外 cancel | silver verdict 後 cancel G.id 上 Builder / Backward / 其他 Counterexample；**Refuter 留**（保留 silver→gold 升級用） |
+| `unproductive` outcome | **一次就寫** `goals.blocked_pipelines += ['Counterexample']`（跟 P3 通用 N=5 機制獨立——unproductive = agent 判命題不可機械決定，不會因再試而改變） |
+| `evidence_only` outcome | 不算失敗、不寫 blocked、可被 Strategist 加碼派 |
+
 Stages：
 
 ```
@@ -266,6 +360,20 @@ Outcome 分類：前兩屬 success class；後兩屬 failure class。
 對 `kind=construction` Goal 找滿足 spec 的 instance witness。產出 silver verdict（`status='proved'` AND `answer_data.type='construction'`，trust kind=computational）；後續 Builder 證 `∃X, P(X)` 成功時 cascade 自動 silver → gold 升級（見 v3 §6）。
 
 走 continuous task runtime（v3 §5）：長運行（hours-days）、定期 checkpoint、可 pause/resume。
+
+**速查**：
+
+| 維度 | 值 |
+|---|---|
+| 觸發來源 | structural refill（kind=construction：跟 Backward 並排；Builder 不直接派、由 Backward 後續產 Strategy 才走 leaf 規則）<br>Strategist inject（加碼 budget / 換 mutation operator override / score plateau 救援）|
+| Runtime / Pool | **continuous** / P_continuous（background pool，預設 P/4）|
+| 預設 model | `agent.model_defaults.construction_search.generate: haiku`（每代 N 候選、高頻呼叫、低 cost 必要） |
+| Lifecycle | `running / paused / done / killed`（continuous_tasks 表）；可 pause / resume；`T_pause_max=7 days` 自動 killed |
+| Crash recovery | scheduler 啟動掃 `lifecycle_state='running'` task：checkpoint_state 完整 → resume；殘缺（含 checkpoint_state=NULL「首檔 checkpoint 前 crash」case）→ killed + alert，**不 auto-resume from 0**（impl §9.3） |
+| 被 cancel 時機 | Goal proved (full classical) / Goal refuted (full classical)；ConstructionSearch silver 也會 cancel **其他** ConstructionSearch（同 G）|
+| 對外 cancel | silver verdict 後 cancel G.id 上 Backward / 其他 ConstructionSearch；**Builder 留**（保留升級用——輔助 Goal 的對應 Builder） |
+| Cancellation 機制 | SIGTERM + 5s grace → SIGKILL（impl §9.3） |
+| `unproductive` outcome | 寫 dead_attempts；P3 通用 N=5 機制累計 |
 
 Stages：
 
@@ -338,7 +446,18 @@ Outcome 分類：前兩屬 success class；後兩屬 failure class。
 
 讀一個已 proved Goal G，寫候選 generalization G\*——更廣命題使 G 是其特例。G\* 入池走 normal attack（Backward / Builder）；證成功就成 Library 內更廣定理。
 
-由 Strategist inject（無 structural refill 自動觸發，避免對每個 proved Goal 都派）。產出 Goal 的 origin='generalizer'。
+**速查**：
+
+| 維度 | 值 |
+|---|---|
+| 觸發來源 | **Strategist inject only**——架構唯二「無 structural refill 自動派」之一（另一是 Forward）<br>**理由**：對每個 proved Goal 都派 Generalizer 會炸 token；需 LLM 看 inventory 判 Goal 結構是否有 generalize 潛力<br>**Contingency hard rule** 同 Forward：proved root 累計 N 次 / idle T 分鐘無 Generalizer 派出 → reactor 強制 inject（hardcoded、P7 default 不開） |
+| Runtime / Pool | atomic / P（atomic pool） |
+| 預設 model | 未明定（agent stage 寫 G\* statement）；建議走 sonnet 級 |
+| 被 cancel 時機 | 無（Generalizer 跑時不依附特定 Goal terminal verdict） |
+| 對外 cancel | 無 |
+| `no_novel` outcome | dup → discard、不算失敗、不寫 dead_attempts |
+| `unproductive` outcome | **不寫 blocked_pipelines**（跟 Counterexample 不同）：Generalizer 的 unproductive 來自 LLM 主觀判斷「G 不適合 generalize」，不是結構性不可能。保留 Strategist 反覆派彈性（agent 可能後來改變判斷或不同模型有不同看法） |
+| 自動 cascade | **無**——G\* proved 後**不**自動把原 G 標 proved（需 Cluster typed relation 機制，留 P8+） |
 
 Stages：
 
