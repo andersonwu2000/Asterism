@@ -4,6 +4,31 @@
 
 ## Commit：
 
+**C21 R3 — Fix R2 audit (silent-failure regression x1 + doc accuracy)**
+
+Hash: `6b26e74` — P3 C21 R3: fix R2 audit findings.
+
+### 改動摘要
+
+- **HIGH-1 [silent-failure 第 7 cycle regression]**：scheduler.py:572-583 D_max shelve 路徑把 `invalidate_for_goals_write` 包在 `try/except sqlite3.Error: pass` 內 → cache invalidation fail 被 silent swallow → goals UPDATE 已 commit 但 cache stale → 後續 search 給錯結果。R3 hoist invalidate 出 try/except、用 `update_ok` flag 守、UPDATE 成功才 invalidate；invalidate 拋會傳到 caller。+1 propagation test。
+- **HIGH-2 [doc accuracy]**：cache.py docstring 寫「does NOT open its own TX」但實作 `with conn:` 是 TX 邊界。功能正確、僅 doc 反向。重寫 docstring：「invalidate opens its own short TX；caller's UPDATE TX must commit first」。
+- **MED-1 [P6 hint]**：cache.py docstring 加「P6 unblocks schema gap 時、grep `invalidate_for_goals_write(` 找全 4 個 call site」+ finalize() 可 SELECT problem from row 的 hint。
+- **MED-2 [pending vs live rationale]**：docstring 加 "Trigger point — pending vs live" 段、解釋為何 begin() 不 trigger（pending 被 `WHERE commit_state='live'` 過濾、無 cache poison 風險）。
+- **LOW-1 [import cleanup]**：scheduler.py 提升 `from Tooling.subsystems.cache import invalidate_for_goals_write` 到頂部、消除 3 個 inline duplicate。commit.py 保留 inline import（無真 circular dep、但 inline 形式 document 層級方向）+ 改寫 comment 移除錯誤的「circular dep」陳述。
+
+### Hybrid mode 觀察
+
+R1 由 Opus inline 完成、**仍漏 silent-failure pattern**（D_max 路徑 try/except pass 包 invalidate）。**第 7 cycle silent-failure regression**：C11/C12/C13/C15/C17 R1 (Sonnet) + C18/C20 R1 (Opus hybrid) + C21 R1 (Opus hybrid)。R2 Audit (Opus fresh session) 抓到。再次證明 **R2 獨立 review 不可省、即便 hybrid mode 即便 Opus**。
+
+### Caveats
+
+- 全套 467 pass + 3 skipped、0 regression。
+- 仍有 `commit.py finalize()` 內聯 import — 是設計選擇（document 層級方向）、不算錯。
+
+---
+
+
+
 **C20 R3 — Fix R2 audit findings (spec §7.1 NOVEL + cache mode='dedupe')**
 
 Hash: `72258af` — P3 C20 R3: fix R2 audit findings.
