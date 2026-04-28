@@ -17,12 +17,34 @@ Per impl §2.3, any goals INSERT/UPDATE invalidates two cache scopes:
 Library writes (Library/Theorems/proved.lean append, Library/Counterexamples/
 write) are P6 concerns and not handled here.
 
+Trigger point — pending vs live:
+    spec §2.3 says "INSERT/UPDATE goals", but the implementation only fires
+    inside CommitWriter.finalize() (pending → live transition) and at the
+    three scheduler.py direct UPDATE sites that flip live rows. Pending
+    rows are excluded from search/dedupe queries via `WHERE commit_state =
+    'live'` (impl §1 commit protocol) so they cannot poison cache; firing
+    on `begin()` would be wasted work. Aligns with phase3_cache.md:199
+    "CommitWriter `finalize()` 統一鉤子".
+
 Public API:
     invalidate_for_goals_write(conn, problem=None) -> int
         Returns total rows deleted (test verification helper).
-        `problem` is currently unused but kept in the signature so call sites
-        can pass it now and have it become a SQL filter once the schema
-        gap is resolved.
+        `problem` is currently unused but kept in the signature so call
+        sites can pass it now and have it become a SQL filter once the
+        schema gap is resolved.
+
+When P6 unblocks the schema gap and you want problem-scoped filtering,
+grep for `invalidate_for_goals_write(` to find every call site (currently
+4: commit.py finalize() + scheduler.py three inline sites) and route the
+goal's problem name through. CommitWriter.finalize() can read it from the
+goals row directly; scheduler sites have it in scope already.
+
+TX semantics:
+    invalidate_for_goals_write opens its own short TX via `with conn:`. It
+    composes correctly only when the caller's preceding goals UPDATE has
+    already committed — i.e. the caller's `with self.conn:` block has
+    exited. All four current call sites do this: finalize() and the three
+    scheduler sites all exit their UPDATE TX before calling here.
 
 Silent-failure red lines:
     Spec §2.1: "走 mutation invalidation, 不靠 TTL". A failed invalidation

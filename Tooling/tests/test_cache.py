@@ -201,6 +201,29 @@ class TestSchedulerInvalidationHooks:
         assert status == "shelved"
         assert _row_count(db, scope_like="%local_goals%") == 0
 
+    def test_d_max_invalidate_failure_propagates(
+        self, db, tmp_path
+    ) -> None:
+        """C21 R3 HIGH-1: D_max path must NOT silently swallow invalidation
+        failure. Original C21 R1 wrapped invalidate inside `except sqlite3.Error:
+        pass` → goals UPDATE succeeds + cache stays stale + caller sees nothing.
+
+        After R3, the invalidate call is hoisted out of the UPDATE try/except,
+        so a failing invalidate propagates up to the caller (here pytest).
+        """
+        from Tooling.scheduler import Reactor, ReactorConfig
+        _insert_goal(db, slug="g_deep_propagate", depth=12)
+
+        reactor = Reactor(str(tmp_path / "asterism.db"),
+                          ReactorConfig(base_dir=str(tmp_path)))
+        reactor.conn = db
+        with patch(
+            "Tooling.scheduler.invalidate_for_goals_write",
+            side_effect=sqlite3.OperationalError("simulated cache fail"),
+        ):
+            with pytest.raises(sqlite3.OperationalError, match="simulated cache fail"):
+                reactor._run_structural_refill()
+
     def test_all_strategies_dead_shelve_invalidates(self, db, tmp_path) -> None:
         """_cascade Strategy dead → all-dead → shelve goal path."""
         from Tooling.pipelines.builder import BuilderResult

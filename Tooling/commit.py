@@ -260,9 +260,10 @@ class CommitWriter:
         _check_fault("after_step3")
 
         if table == "goals":
-            # Local import: avoid circular dependency at module load time
-            # (cache.py is part of the subsystems package which itself may
-            # import from commit indirectly via tests/fixtures).
+            # Local import keeps commit.py independent of subsystems/ at
+            # module load (no real circular dep — cache.py imports nothing
+            # from commit — but the subsystems layer logically depends on
+            # the commit layer, not the other way around).
             from Tooling.subsystems.cache import invalidate_for_goals_write
             invalidate_for_goals_write(self.conn)
 

@@ -39,6 +39,7 @@ from Tooling.db.connect import connect, init_schema
 from Tooling.meta import MetaError, parse_meta
 from Tooling.pipelines.backward import Backward, BackwardConfig, BackwardResult
 from Tooling.pipelines.builder import Builder, BuilderConfig, BuilderResult
+from Tooling.subsystems.cache import invalidate_for_goals_write
 from Tooling.trust import build_trust_set, check_accept_rule, print_axioms
 
 
@@ -412,7 +413,6 @@ class Reactor:
                 # → kill local_goals + dedupe cache rows. Re-raise on SQL
                 # error per silent-failure red line — this UPDATE block
                 # already raises sqlite3.Error to outer handler.
-                from Tooling.subsystems.cache import invalidate_for_goals_write
                 invalidate_for_goals_write(self.conn)
                 self._emit_event(
                     "cascade",
@@ -569,6 +569,12 @@ class Reactor:
             goal_id_s = str(goal_id)
             # D_max: shelve deep goals instead of decomposing further
             if depth is not None and depth >= self.config.d_max:
+                # Separate the UPDATE from the cache invalidation: the UPDATE
+                # is best-effort here (we may race with another scheduler tick
+                # that already shelved the goal), but the cache invalidation
+                # MUST surface its failures (silent-failure red line —
+                # cache.py docstring: "callers must observe the failure").
+                update_ok = False
                 try:
                     with self.conn:
                         self.conn.execute(
@@ -576,11 +582,11 @@ class Reactor:
                             "status_changed_at = ? WHERE id = ?",
                             (_now(), goal_id),
                         )
-                    # P3 C21 cache invalidation hook (impl §2.3)
-                    from Tooling.subsystems.cache import invalidate_for_goals_write
-                    invalidate_for_goals_write(self.conn)
+                    update_ok = True
                 except sqlite3.Error:
                     pass
+                if update_ok:
+                    invalidate_for_goals_write(self.conn)
                 continue
             # Stop-gap: skip if Backward has failed n_block_after_failures times
             if (
@@ -880,7 +886,6 @@ class Reactor:
                 "trust_set = ?, status_changed_at = ? WHERE id = ?",
                 (answer_data, trust_set_json, _now(), goal_id),
             )
-        from Tooling.subsystems.cache import invalidate_for_goals_write
         invalidate_for_goals_write(self.conn)
 
     def _record_accept_reject_dead_attempt(
