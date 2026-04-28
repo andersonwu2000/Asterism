@@ -1032,6 +1032,11 @@ P5.C36 Multi-provider fallback chain 要求 `[claude, gemini, codex]` 全 stage 
 
 ```
 codex exec [PROMPT]
+-C, --cd <DIR>              Tell the agent to use the specified directory as
+                            its working root (sets workspace cwd explicitly)
+    --add-dir <DIR>         Additional directories that should be writable
+                            alongside the primary workspace (repeatable; same
+                            字面 pattern as claude --add-dir)
 -s, --sandbox <SANDBOX_MODE>
                             read-only         = agent 只讀
                             workspace-write   = agent 可寫 cwd workspace
@@ -1047,24 +1052,26 @@ codex sandbox windows ...   Windows 用 restricted token（platform-specific）
 ```
 -p, --prompt                non-interactive
 --add-dir <path>            additional fs scope（per-dir、多次給）
---permission-mode <mode>    default | acceptEdits | bypassPermissions | plan
-                            acceptEdits = auto-approve edit tools
+--permission-mode <mode>    default | acceptEdits | auto | bypassPermissions
+                            | dontAsk | plan
+                            acceptEdits = auto-approve edit tools (P5 used)
 ```
 
 **三 provider unified scope_dirs 介面 mapping**：
 
 | Asterism `scope_dirs=[<p1>, <p2>, ...]` 介面 | claude | gemini | codex |
 |---|---|---|---|
-| 主 cwd | subprocess `cwd=<p1>` | subprocess `cwd=<p1>` | subprocess `cwd=<p1>` |
-| 額外 fs scope | `--add-dir <p2> --add-dir <p3> ...` | `--include-directories <p2>,<p3>,...` | **無直接等價**——codex sandbox `workspace-write` 只給 cwd write、其他 dir 預設 read-only。需把 staging dir 設為 cwd、其他 path 走 `-c sandbox_workspace_write.writable_roots=...` config |
+| 主 cwd | subprocess `cwd=<p1>` | subprocess `cwd=<p1>` | subprocess `cwd=<p1>` 或 `-C <p1>` 顯式 |
+| 額外 fs scope | `--add-dir <p2> --add-dir <p3> ...` | `--include-directories <p2>,<p3>,...` 或 `--include-directories <p2> --include-directories <p3>` | `--add-dir <p2> --add-dir <p3> ...`（字面對齊 claude pattern）|
 | auto-approve edit on staging | `--permission-mode acceptEdits` | `--approval-mode auto_edit` | `-s workspace-write` 或 `--full-auto` |
-| Block write 外部 | `--add-dir` whitelist 字面已擋 | `--include-directories` whitelist 字面已擋 | sandbox mode 字面已擋（read-only / workspace-write 都不允許 cwd 外寫）|
+| Block write 外部 | `--add-dir` whitelist 字面已擋 | `--include-directories` whitelist 字面已擋 | sandbox mode 字面已擋（read-only / workspace-write 都不允許 cwd + add-dir 外寫）|
 | git status 兜底 | 必需（spike-004 已驗 D:\Asterism CWD 內可能漏寫） | 同左、需驗 | sandbox 比 claude 嚴、但 git status 兜底仍保留 |
 
 **Codex 「workspace-write」mode 細節**：
-- `cwd` = workspace root；agent 只能寫 cwd 樹下
-- 額外 writable dirs 透過 config (`-c sandbox_workspace_write.writable_roots=["D:/path/to/staging"]`) 設定
-- Asterism Provider impl 上對 codex 要 fold scope_dirs[1:] 進 config string
+- `cwd` = workspace root；`-C <DIR>` 可顯式指定（替代 subprocess `cwd=` 參數）
+- **`--add-dir <DIR>` 為直接 CLI flag（C34 R2 audit MED-1 修正）**——repeatable、字面對齊 claude `--add-dir`、為 P5.C36 codex provider 首選 mapping
+- `-c sandbox_workspace_write.writable_roots=[...]` 為 config-based fallback（適合需要 TOML 動態組裝多 dir 的 advanced 場景；當 `--add-dir` flag 數受限時備用）
+- agent 只能寫 cwd + 列入 --add-dir 的 dir 樹下；其他 path 預設 read-only
 
 **自動 accept staging 內 edit 字面對齊**：
 - claude `--permission-mode acceptEdits`：staging 內 edit 直接過、staging 外 edit prompt confirm（agent 通常拒絕）
@@ -1086,12 +1093,15 @@ codex sandbox windows ...   Windows 用 restricted token（platform-specific）
 5. **spike-004 的 git status 兜底邏輯**仍適用 P5——三家 scope-isolation 各自實作，但 framework 不依賴 provider 內部 sandbox、git status diff 是 model-independent 的最後一道防線
 
 **決策 D-19-1**：
-1. **`Provider.invoke` 介面 unify 為 `scope_dirs: list[str]`**——provider impl 各自 map 到對應 CLI flag（claude `--add-dir` 多 flag / gemini `--include-directories` csv / codex cwd + writable_roots config）
-2. **Default scope_dirs = `[staging_dir]`**——staging 為主 cwd；Problems/<p>/ + lake_cwd（如 D:/Hadamard）為次 dir 加進 scope_dirs[1:]
-3. **三 provider auto-approve flag** 各自映射：claude `--permission-mode acceptEdits` / gemini `--approval-mode auto_edit` / codex `--full-auto`（含 workspace-write）。三家 default 都是「edit on staging auto / 外部 reject」
-4. **codex `writable_roots` 額外 dir** 透過 `-c 'sandbox_workspace_write.writable_roots=[...]'` 傳；P5.C36 codex provider impl 該欄位 stringify scope_dirs
+1. **`Provider.invoke` 介面 unify 為 `scope_dirs: list[str]`**——provider impl 各自 map 到對應 CLI flag：
+   - claude: `--add-dir <p>` 多 flag（spike-004 已驗）
+   - gemini: `--include-directories <p1>,<p2>,...`（csv 或 multi-flag 兩形式皆支援）
+   - codex: `--add-dir <p>` 多 flag（**字面對齊 claude pattern**，C34 R2 audit MED-1 修正）
+2. **Default scope_dirs = `[staging_dir]`**——staging 為主 cwd（subprocess `cwd=` 或 codex `-C` 顯式設）；Problems/<p>/ + lake_cwd（如 D:/Hadamard）為次 dir 加進 scope_dirs[1:]
+3. **三 provider auto-approve flag** 各自映射：claude `--permission-mode acceptEdits` / gemini `--approval-mode auto_edit` / codex `--full-auto`（含 workspace-write）。三家 default 都是「edit on staging + add-dir auto / 外部 reject」
+4. **codex `writable_roots` config-based 路徑為 fallback**——P5.C36 codex provider impl **首選** `--add-dir` per-flag pattern（直接、與 claude 對稱、無 TOML escape 負擔）；`-c 'sandbox_workspace_write.writable_roots=[...]'` config-based 路徑留作 multi-dir > N flag 限制 / 動態組裝 場景的 fallback（CLI flag 上限不明、若實作期遇到時補測）
 5. **git status 兜底** 維持 spike-004 設計、不省略——provider sandbox 失效時 fs diff oracle 仍守住
-6. **P5.C36 / P5.C37 真實實作 provider 時補 evil prompt fs-isolation real test**（spike-004 Test B 對 claude 已驗、gemini / codex 補測；屬 implementation-time test、不再寫獨立 spike）
+6. **P5.C36 / P5.C37 真實實作 provider 時補 evil prompt fs-isolation real test**（spike-004 Test B 對 claude 已驗、gemini / codex 補測；屬 implementation-time test、不再寫獨立 spike）。**真打 model evil prompt**（如「edit /etc/passwd」）為 spike-019 補測語意；與 acceptance #14 走 `PROVIDER_MOCK_<NAME>=evil_write` 強制 mock hook 為**互補路徑**——後者驗 retry/fallback chain 機制、前者驗 provider sandbox 真效
 
 ---
 
