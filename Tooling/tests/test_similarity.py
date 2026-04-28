@@ -64,3 +64,16 @@ class TestParentSubgoalMaxSimilarity:
         sub = "∀ n : Nat, P n"
         sim = parent_subgoal_max_similarity(parent, [sub])
         assert sim >= 0.85  # ih_trap_similarity_threshold per spike-008 D-08-1
+
+    def test_empty_parent_with_nonempty_sub_returns_zero(self) -> None:
+        """C23 R3 LOW-2: empty-vs-nonempty edge — must NOT trip the empty-equals-empty
+        return-1 short-circuit. token_jaccard handles this; pin it explicitly."""
+        assert parent_subgoal_max_similarity("", ["a + b"]) == 0.0
+
+    def test_empty_parent_with_empty_sub_returns_one(self) -> None:
+        """C23 R3 LOW-2: empty-vs-empty is 1.0 (token_jaccard convention).
+        Documented edge: caller (Backward._commit) is responsible for
+        substituting `or ""` and filtering empty statements before this hits
+        threshold checks. If a caller refactor drops the `or ""` and lets
+        None reach here, this test surfaces the symptom."""
+        assert parent_subgoal_max_similarity("", [""]) == 1.0

@@ -35,13 +35,15 @@ def tmp_base(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def _dedupe_mock_force_miss(monkeypatch):
-    """C23: dedupe.lean is wired into Backward._dedupe via subprocess. Most
-    test_backward.py tests don't care about dedupe details — force_miss so
-    every candidate counts as novel and tests don't time out on real lake
-    invocation. TestDedupe overrides per-test for dedupe-specific behavior.
+def _stage_mocks(monkeypatch):
+    """C22/C23: Backward.run now invokes real subsystem stages via subprocess
+    (dedupe.lean + search.lean). Most test_backward.py tests don't care about
+    those details and would time out without lake env — force-miss both so
+    every candidate counts as novel and search returns []. Per-test
+    overrides allowed inside the test body via monkeypatch.setenv.
     """
     monkeypatch.setenv("DEDUPE_MOCK", "force_miss")
+    monkeypatch.setenv("SEARCH_MOCK", "force_miss")
 
 
 def _insert_goal(
@@ -227,7 +229,7 @@ class TestDedupe:
         monkeypatch.setenv("DEDUPE_MOCK", "force_miss")
         bw = _make_backward(db, base_dir=tmp_base)
         subgoals = [{"slug": "sub1", "statement": "1 + 1 = 2"}]
-        result = bw._dedupe(subgoals, str(tmp_base))
+        result = bw._dedupe(subgoals, str(tmp_base), {"problem": "test"})
         assert len(result) == 1
         assert result[0]["slug"] == "sub1"
         # statement_hash no longer populated (C23 完全取代)
@@ -240,7 +242,7 @@ class TestDedupe:
         _insert_goal(db, slug="seed_goal")
         bw = _make_backward(db, base_dir=tmp_base)
         subgoals = [{"slug": "sub1", "statement": "1 + 1 = 2"}]
-        result = bw._dedupe(subgoals, str(tmp_base))
+        result = bw._dedupe(subgoals, str(tmp_base), {"problem": "test"})
         assert result == []
 
     def test_intra_proposal_text_dedup(self, db, tmp_base, monkeypatch):
@@ -253,7 +255,7 @@ class TestDedupe:
             {"slug": "sub2", "statement": "1 + 1 = 2"},  # duplicate text
             {"slug": "sub3", "statement": "2 + 2 = 4"},
         ]
-        result = bw._dedupe(subgoals, str(tmp_base))
+        result = bw._dedupe(subgoals, str(tmp_base), {"problem": "test"})
         assert len(result) == 2
         assert {sg["slug"] for sg in result} == {"sub1", "sub3"}
 
@@ -262,9 +264,58 @@ class TestDedupe:
         monkeypatch.setenv("DEDUPE_MOCK", "force_miss")
         bw = _make_backward(db, base_dir=tmp_base)
         result = bw._dedupe(
-            [{"slug": "sub1", "statement": "True"}], str(tmp_base)
+            [{"slug": "sub1", "statement": "True"}], str(tmp_base),
+            {"problem": "test"},
         )
         assert result[0].get("statement_hash") is None or "statement_hash" not in result[0]
+
+    def test_subprocess_runtime_error_propagates(self, db, tmp_base, monkeypatch):
+        """C23 R3 LOW-1: subprocess RuntimeError must propagate to caller
+        (not silently fall through to NOVEL). Pin the wrapper-level invariant
+        so future refactors can't slip silent-failure pattern back in."""
+        monkeypatch.delenv("DEDUPE_MOCK", raising=False)
+        _insert_goal(db, slug="seed")
+        bw = _make_backward(db, base_dir=tmp_base)
+        with patch(
+            "Tooling.pipelines.backward._stage_dedupe",
+            side_effect=RuntimeError("dedupe.lean rc=1, no JSON"),
+        ):
+            with pytest.raises(RuntimeError, match="dedupe.lean rc=1"):
+                bw._dedupe(
+                    [{"slug": "sub1", "statement": "True"}],
+                    str(tmp_base),
+                    {"problem": "test"},
+                )
+
+    def test_entries_scoped_to_parent_problem(self, db, tmp_base, monkeypatch):
+        """C23 R3 MED-2: dedupe entries SELECT must filter by parent's
+        problem so cross-Problem α-equiv goals don't silently drop sub-goals."""
+        from unittest.mock import MagicMock
+        monkeypatch.delenv("DEDUPE_MOCK", raising=False)
+        _insert_goal(db, slug="A_entry", problem="A",
+                     lean_path="Problems/A/A_entry.lean")
+        _insert_goal(db, slug="B_entry", problem="B",
+                     lean_path="Problems/B/B_entry.lean")
+
+        captured: list[list[dict]] = []
+        def fake_dedupe(cand_path, entries, **kwargs):
+            from Tooling.subsystems.dedupe import DedupeResult
+            captured.append(list(entries))
+            return DedupeResult(outcome="novel")
+
+        bw = _make_backward(db, base_dir=tmp_base)
+        with patch("Tooling.pipelines.backward._stage_dedupe",
+                   side_effect=fake_dedupe):
+            bw._dedupe(
+                [{"slug": "sub1", "statement": "True"}],
+                str(tmp_base),
+                {"problem": "A"},
+            )
+        # entries passed to dedupe should only include Problem A's row
+        assert len(captured) == 1
+        slugs_in_paths = [e["lean_path"] for e in captured[0]]
+        assert any("/A/" in p for p in slugs_in_paths)
+        assert not any("/B/" in p for p in slugs_in_paths)
 
 
 # ---------------------------------------------------------------------------

@@ -218,6 +218,7 @@ class Backward:
         self,
         subgoals: list[dict],
         staging_dir: str,
+        goal: dict,
     ) -> list[dict]:
         """Remove subgoals duplicating an existing live Goal or another
         sub-goal in the same proposal.
@@ -227,13 +228,21 @@ class Backward:
         sub-goal is written to a temporary staging .lean file then compared
         against the entries list (live goals in DB) via subprocess.
 
+        Entries are scoped to the parent goal's Problem (spec
+        phase3_cache.md §Demo D1: "dedupe (local)" — local = single-Problem
+        scope). Cross-Problem hits would silently drop sub-goals whose
+        cross-Problem entry can't even be imported into Problem B's lake env.
+
         Returns the unique sub-goals (statement_hash field is no longer
         populated; spec §C23 directs full replacement of statement_hash
         code, leaving the column NULL for new sub-goals).
         """
-        # Build entries list from live goals across the DB (single SELECT).
+        # Build entries list from live goals scoped to parent goal's Problem.
+        problem = goal["problem"]
         entry_rows = self.conn.execute(
-            "SELECT id, lean_path FROM goals WHERE commit_state = 'live'"
+            "SELECT id, lean_path FROM goals "
+            "WHERE commit_state = 'live' AND problem = ?",
+            (problem,),
         ).fetchall()
         entries = [{"id": int(r[0]), "lean_path": str(r[1])} for r in entry_rows]
 
@@ -241,7 +250,11 @@ class Backward:
         unique: list[dict] = []
         for sg in subgoals:
             statement = sg.get("statement", "")
-            # Within-proposal dedup: cheap text-equal check first.
+            # Within-proposal dedup is text-equal only (P2-equivalent
+            # behavior); isDefEq is reserved for the candidate-vs-DB-entry
+            # path below. α-equiv siblings within the same proposal would
+            # slip through but commit's slug_unique constraint catches the
+            # realistic conflict.
             text_key = statement.strip()
             if text_key in seen_hashes:
                 continue
@@ -268,8 +281,18 @@ class Backward:
             if result.outcome == "hit":
                 # Already exists as goal entry_id — skip.
                 continue
-            # outcome == 'novel' (or 'timeout' fallthrough — accept as novel
-            # to keep the agent moving; cache layer surfaces timeouts)
+            if result.outcome == "timeout":
+                # phase3 §風險 line 230 字面允許 NOVEL fallback on timeout;
+                # cache does NOT cache timeout (dedupe.py:287 only caches
+                # hit/novel). Surface to stderr so a stretch of timeouts
+                # is visible during P3 demo D1 — silent fallthrough was
+                # the C13–C22 silent-failure red-line failure mode.
+                import sys
+                print(
+                    f"[backward._dedupe] timeout for sub-goal {slug!r}; "
+                    "treated as novel per spec §風險",
+                    file=sys.stderr,
+                )
             seen_hashes.add(text_key)
             unique.append(sg)
         return unique
@@ -657,7 +680,7 @@ class Backward:
             if not subgoals_raw:
                 return BackwardResult(outcome="unproductive")
 
-            subgoals = self._dedupe(subgoals_raw, staging_dir)
+            subgoals = self._dedupe(subgoals_raw, staging_dir, goal)
             if not subgoals:
                 return BackwardResult(outcome="unproductive")
 
