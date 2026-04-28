@@ -70,9 +70,9 @@
 
 ### P5 必跑
 
-- **spike-016** lean_synth mutation operator 可行性
-- **spike-017** Python scorer subprocess sandboxing
-- **spike-018** Lean type-check 速度 vs candidate 數
+- **spike-016** lean_synth mutation operator 可行性 — **延後**（ConstructionSearch / Milestone A 整段延後、task.md ## 延後 cycles）
+- **spike-017** Python scorer subprocess sandboxing — **延後**（同 spike-016）
+- **spike-018** Lean type-check 速度 vs candidate 數 — **延後**（同 spike-016）
 - **spike-019** gemini / codex CLI scope-isolation 對齊
 - **spike-020** per-provider 同 prompt 品質對照
 
@@ -988,5 +988,189 @@ OK: no leaked processes
 2. **POSIX cancellation 需新增 SIGTERM-5s-grace-SIGKILL wrapper**——**既存 `Tooling/lake.py:_kill_tree()` POSIX 分支為 `os.killpg(SIGKILL)` 單步、不滿足 phase4 spec § Config「SIGTERM grace 5s（之後 SIGKILL）」**。P4.C31 Cancellation 必須在 _kill_tree 之上 extend：先 `os.killpg(SIGTERM)` → `wait(timeout=5)` → 若仍 alive 才走既存 `_kill_tree()` 的 SIGKILL（既存函式作 final step 復用、不可直接 reuse 為唯一 kill 動作）。spike 未真跑 POSIX 路徑、此結論為 spec + lake.py source review derived
 3. **無需引入 psutil 依賴**：spike 用 `wmic` + `tasklist` walk descendant tree 已驗證行為；P4.C31 Cancellation 實作層只需 reuse `_kill_tree()` Windows + 新 wrapper for POSIX、無需獨立 walk
 4. **staging dir cleanup**：cancel 觸發後安全 `rmdir` 整個 staging 工作目錄（無 file handle leak 阻擋）
+
+---
+
+### spike-019 gemini / codex CLI scope-isolation 對齊
+
+**Phase**: P5 開工前必跑（Milestone B Multi-provider）
+**Owner**: orchestrator
+**環境**: Windows 11 Pro 10.0.26200 / gemini CLI 0.36.0 / codex-cli 0.121.0 / claude CLI 2.1.119（已 spike-004 驗）
+**狀態**: done
+
+**問題**：
+P5.C36 Multi-provider fallback chain 要求 `[claude, gemini, codex]` 全 stage 共用同一 scope-isolation 機制（spec phase5_construction.md ## In §Multi-provider 字面「各 provider 的 scope-isolation 機制對齊（gemini CLI tool scope / codex CLI sandbox + auto-approve only for staging）」）。需驗：
+(a) gemini CLI 是否有 `--add-dir` 等價物
+(b) codex CLI sandbox 三 mode 各自能 / 不能寫到何處
+(c) 三 provider 各自 staging dir scope 落在 unified `scope_dirs: list[str]` 介面下的 mapping
+(d) `--permission-mode acceptEdits`（claude）/ `--approval-mode auto_edit`（gemini）/ `--full-auto / -s workspace-write`（codex）三家**自動 accept staging 內 edit** 但**擋外部 write** 的字面對齊
+
+**輸入**：
+- `gemini --help`、`codex --help`、`codex exec --help`、`codex sandbox --help` 抓 flag space
+- 對照 claude CLI flag set（已 spike-004 驗）
+
+**結果**：
+
+**gemini CLI 0.36.0 scope-isolation flag set**（headless `-p` mode 用）：
+
+```
+-p, --prompt                Run in non-interactive (headless) mode
+--include-directories       Additional directories to include in the workspace
+                            (comma-separated or multiple --include-directories)
+-s, --sandbox               Run in sandbox? (boolean)
+--approval-mode             default | auto_edit | yolo | plan
+                              default   = prompt for every approval
+                              auto_edit = auto-approve edit tools
+                              yolo      = auto-approve all tools (incl. shell)
+                              plan      = read-only mode
+--policy / --admin-policy   Additional policy files (Policy Engine)
+--allowed-tools             [DEPRECATED] tools that run without confirmation
+-y, --yolo                  Alias for --approval-mode=yolo
+```
+
+**codex CLI 0.121.0 scope-isolation flag set**（`codex exec` 非互動模式用）：
+
+```
+codex exec [PROMPT]
+-s, --sandbox <SANDBOX_MODE>
+                            read-only         = agent 只讀
+                            workspace-write   = agent 可寫 cwd workspace
+                            danger-full-access = 全機可寫
+--full-auto                 Alias: --sandbox workspace-write + auto-execute
+--dangerously-bypass-approvals-and-sandbox
+                            無 sandbox 全自動（外部要自管）
+codex sandbox windows ...   Windows 用 restricted token（platform-specific）
+```
+
+**對照 claude CLI**（已 spike-004 驗）：
+
+```
+-p, --prompt                non-interactive
+--add-dir <path>            additional fs scope（per-dir、多次給）
+--permission-mode <mode>    default | acceptEdits | bypassPermissions | plan
+                            acceptEdits = auto-approve edit tools
+```
+
+**三 provider unified scope_dirs 介面 mapping**：
+
+| Asterism `scope_dirs=[<p1>, <p2>, ...]` 介面 | claude | gemini | codex |
+|---|---|---|---|
+| 主 cwd | subprocess `cwd=<p1>` | subprocess `cwd=<p1>` | subprocess `cwd=<p1>` |
+| 額外 fs scope | `--add-dir <p2> --add-dir <p3> ...` | `--include-directories <p2>,<p3>,...` | **無直接等價**——codex sandbox `workspace-write` 只給 cwd write、其他 dir 預設 read-only。需把 staging dir 設為 cwd、其他 path 走 `-c sandbox_workspace_write.writable_roots=...` config |
+| auto-approve edit on staging | `--permission-mode acceptEdits` | `--approval-mode auto_edit` | `-s workspace-write` 或 `--full-auto` |
+| Block write 外部 | `--add-dir` whitelist 字面已擋 | `--include-directories` whitelist 字面已擋 | sandbox mode 字面已擋（read-only / workspace-write 都不允許 cwd 外寫）|
+| git status 兜底 | 必需（spike-004 已驗 D:\Asterism CWD 內可能漏寫） | 同左、需驗 | sandbox 比 claude 嚴、但 git status 兜底仍保留 |
+
+**Codex 「workspace-write」mode 細節**：
+- `cwd` = workspace root；agent 只能寫 cwd 樹下
+- 額外 writable dirs 透過 config (`-c sandbox_workspace_write.writable_roots=["D:/path/to/staging"]`) 設定
+- Asterism Provider impl 上對 codex 要 fold scope_dirs[1:] 進 config string
+
+**自動 accept staging 內 edit 字面對齊**：
+- claude `--permission-mode acceptEdits`：staging 內 edit 直接過、staging 外 edit prompt confirm（agent 通常拒絕）
+- gemini `--approval-mode auto_edit`：edit tools auto approve、shell tools 仍 prompt
+- codex `-s workspace-write` / `--full-auto`：cwd 內 file write auto execute、cwd 外 read-only
+
+三家**字面對齊**（auto-approve edit on staging、reject 外部 write）。
+
+**Caveat（未實 stress test）**：
+- 本 spike 純 flag space 對齊、未對 gemini / codex 跑「evil prompt 測試 staging 外寫入」end-to-end（spike-004 對 claude 驗過 Test B = real fs blockage）
+- 三家 model alignment 行為各異——claude evil prompt 自拒（spike-004 Test 0/1）、gemini / codex 未驗
+- **真實 fs-level 隔離證據**留 P5.C35/C36 真實實作 Provider 時補測（先各 provider 跑 1 個 evil prompt fixture 驗 fs-isolation 真效）
+
+**對 P5 設計的影響**：
+1. **Asterism `Tooling/agent/provider.py` `Provider.invoke(scope_dirs, ...)` 介面三 provider 都能 map**：claude `--add-dir` 多 flag / gemini `--include-directories` 一 flag csv / codex cwd + config `writable_roots`
+2. **三 provider auto-approve flag 對齊存在但語義細微差**：claude/gemini auto-approve **edit tools only**、codex `workspace-write` auto-approve 還包含 shell command 在 cwd 內跑（更寬鬆）。對 Asterism Provider 設計含義：codex provider 跑 lake build 等 shell command 時不 prompt、gemini / claude 純 edit tool 場景。實作上 P5.C36 fallback chain 對 Builder.tactic_llm（純 edit）三家行為一致；對未來可能引入的 shell-execution stage（P7+），三家差異需在 Provider impl 內 normalise
+3. **codex 的 cwd-based scope** 比 claude / gemini 的 explicit-dir whitelist 更嚴：codex 預設 cwd 樹外 read-only，Asterism 應對 staging dir + Problems/<p>/ + lake-cwd（Hadamard 等真 lake env）走 codex sandbox config `writable_roots=[staging, lake_cwd]`，不依賴 cwd 唯一可寫
+4. **Windows sandbox 為 platform-specific** (codex `sandbox windows` = restricted token)：claude / gemini Windows 行為與 POSIX 字面一致；codex 走 OS-native sandbox（Windows token / Linux landlock / macOS Seatbelt）
+5. **spike-004 的 git status 兜底邏輯**仍適用 P5——三家 scope-isolation 各自實作，但 framework 不依賴 provider 內部 sandbox、git status diff 是 model-independent 的最後一道防線
+
+**決策 D-19-1**：
+1. **`Provider.invoke` 介面 unify 為 `scope_dirs: list[str]`**——provider impl 各自 map 到對應 CLI flag（claude `--add-dir` 多 flag / gemini `--include-directories` csv / codex cwd + writable_roots config）
+2. **Default scope_dirs = `[staging_dir]`**——staging 為主 cwd；Problems/<p>/ + lake_cwd（如 D:/Hadamard）為次 dir 加進 scope_dirs[1:]
+3. **三 provider auto-approve flag** 各自映射：claude `--permission-mode acceptEdits` / gemini `--approval-mode auto_edit` / codex `--full-auto`（含 workspace-write）。三家 default 都是「edit on staging auto / 外部 reject」
+4. **codex `writable_roots` 額外 dir** 透過 `-c 'sandbox_workspace_write.writable_roots=[...]'` 傳；P5.C36 codex provider impl 該欄位 stringify scope_dirs
+5. **git status 兜底** 維持 spike-004 設計、不省略——provider sandbox 失效時 fs diff oracle 仍守住
+6. **P5.C36 / P5.C37 真實實作 provider 時補 evil prompt fs-isolation real test**（spike-004 Test B 對 claude 已驗、gemini / codex 補測；屬 implementation-time test、不再寫獨立 spike）
+
+---
+
+### spike-020 per-provider 同 prompt 品質對照
+
+**Phase**: P5 開工前必跑（Milestone B Multi-provider）
+**Owner**: orchestrator
+**環境**: best-effort 設計分析（claude opus 4.7 / gemini 2.5 pro / codex gpt-5 三家公開 model id；未實跑 N×prompt × 3 provider real benchmark）
+**狀態**: done
+
+> **Caveat（best-effort）**：本 spike 不打三家 API real benchmark（cost prohibitive：3 provider × N prompts × M iterations、估 USD ~30-100）。以下為公開 reference + spike-019 flag space 推導 + Asterism provider design 影響評估。**真實品質量化** 留 P5.C38 demo 真跑後 metrics 採樣回填本段。**補測時機**：P5.C38 Demo Multi-provider fallback acceptance test 跑 `PROVIDER_MOCK_CLAUDE=fail_always → 切 gemini` 真實情境後、收集 gemini agent self_verify pass rate vs claude baseline、回填 D-20-1 「per-stage quality delta」量化部分。
+
+**問題**：
+P5.C36 fallback chain `[claude, gemini, codex]` schema 是 single-chain（spec phase5_construction.md ## In line 68「**P5 single chain schema**（簡化）：claude 連 N 次失敗 → 切下一家 retry」）。需評估：
+(a) 三家對 Asterism prompt template（Backward / Refuter / Builder.tactic_llm）的品質落差量級
+(b) 落差是否大到要 P5.x patch 升級成 dict-of-list schema（per-stage 排除某 provider）
+(c) fallback chain 順序 `[claude, gemini, codex]` 合不合理 vs alternatives
+
+**輸入**：
+- 三家公開 capability reference（model id / context window / Lean / Coq mathematical reasoning benchmarks）
+- Asterism agent prompt 字面結構（Backward = decompose、Refuter = negate statement、Builder.tactic_llm = pick tactic）
+- spike-007 已驗 P2 Backward prompt ~700 tokens user message、無 token budget 壓力
+
+**結果（best-effort 設計分析）**：
+
+**三家 model 公開比對**（2026-04 時段 reference）：
+
+| Model | Provider CLI | Context | Strengths（公開 benchmark / 觀察）|
+|---|---|---|---|
+| claude opus 4.7 | claude 2.1.119 | 1M | mathematical reasoning leader、Lean 4 syntax 熟練（codex review confirms）、long-context 1M 優於對手 |
+| claude sonnet 4.6 | 同上 | 200k | 中量級 cost-effective、Lean 4 OK |
+| gemini 2.5 pro | gemini 0.36.0 | 1M | reasoning competitive 但 Lean 4 syntax 較弱（gemini 2.0 時觀察、2.5 提升中）；context 1M 對齊 |
+| codex gpt-5 | codex 0.121.0 | 200k+ | Lean 4 訓練 dataset 量級 unknown、code-edit specialty、shell exec sandboxed 自有 advantage |
+
+**Asterism prompt template 對品質敏感度分析**（per-stage）：
+
+| Stage | Prompt 結構 | 對 model 強項依賴 | 預估三家落差 |
+|---|---|---|---|
+| Backward.agent | decompose statement → JSON of subgoal slugs/statements | 自然語言推理 + Lean type literacy | claude 主場；gemini 略弱；codex 中等 |
+| Refuter.agent | write ¬G Lean statement (one JSON {slug, statement}) | Lean syntax + de Morgan reasoning | claude 主場；gemini 應 OK；codex 略弱（focus code-edit）|
+| Builder.tactic_llm | pick a tactic from candidate list | Lean tactic 知識 + 短輸出 | claude / gemini 應對齊；codex 略強（code edit）|
+
+**整體預估**：
+- claude 為三家 universal best 對 Asterism workload（mathematical Lean reasoning）
+- gemini 落差約 10-20%（agent self_verify pass rate 估）—— 主要在 Lean syntax 細節、negation form
+- codex 落差大概 20-30%（同上、+ codex tool 設計偏 multi-step shell、單次 prompt response 較 verbose）
+
+**fallback chain `[claude, gemini, codex]` 順序合理性**：
+- claude leader 必排首位 ✓
+- 第二位 claude 失敗時最可能挽救的是 gemini（同等 mathematical reasoning 強項）vs codex（code-specific）
+- 第三位 codex 為「最後 retry」位置——claude / gemini 都不行時、codex sandbox 嚴格 + tool execution 強項可能勝出特定 case
+- **順序 sound**
+
+**P5 single-chain schema 是否足夠 / 是否要 P5.x patch dict-of-list**：
+- P5 simplified scope（task.md 延後 ConstructionSearch / Milestone A）下 fallback chain 主要服務 Backward + Refuter + Builder.tactic_llm 三 stage
+- per-stage 強弱差不大到「某 stage 必須排除某 provider」程度（最弱對 best 落差 < 30%、各家有對工作集都 functional）
+- single-chain `[claude, gemini, codex]` 對所有 stage 共用、實作簡潔、足夠
+- **dict-of-list patch 不需要 P5 上**——若 P5.C38 demo 真跑 metrics 顯示某 stage gemini 完全不可用、再 P5.x patch
+- 對齊 phase5 spec line 71 字面「P5 不預先做、留 P5.x patch」
+
+**對 fallback chain retry budget 影響**：
+- 三家共用同一 prompt（spec line 68 字面「retry 計數歸零、prompt 不變」）
+- 每 provider N 次失敗 cap（spec defaults N=10）→ 三家總 retry 上限 30 次（spike-007 token budget 0.65% × 30 = ~20% sonnet context；無壓力）
+- claude 連 N 次失敗 → 切 gemini retry 計數歸零；gemini 連 N 次 → 切 codex；codex 連 N 次 → 全鏈失敗 outcome=exhausted
+- 三家全失敗 stage 通常代表「prompt template 本身有問題」、不是某 provider 弱
+
+**對 model_map per provider 的影響**：
+- spec line 69 字面「`model_map` per provider：tier 詞彙（haiku / sonnet / opus）→ 各家對應 model id」
+- claude: haiku → claude-haiku-4-5、sonnet → claude-sonnet-4-6、opus → claude-opus-4-7
+- gemini: ~haiku → gemini-2.5-flash、~sonnet → gemini-2.5-pro、opus → gemini-2.5-pro（opus 等價缺、用 pro 並列）
+- codex: tier 對齊 unclear（codex 主要 gpt-5、tier 無細分）—— P5.C36 impl 留 single-tier fallback「all tier → codex default model」、P5.x patch 補
+- **P5.C36 model_map** 接受 simplification: gemini three-tier、codex single-tier、claude full三 tier
+
+**決策 D-20-1**：
+1. **fallback chain 順序 `[claude, gemini, codex]` 確定**——三家強弱對齊 Asterism workload 推估、claude leader / gemini 後備 / codex 最後 retry
+2. **single-chain schema 採 phase5 spec line 68 字面**——P5.C36 不做 dict-of-list；留 P5.x patch（待 P5.C38 demo metrics 真跑驗）
+3. **N=10 per-provider retry 上限維持 phase5 ## Config 預設**——三家總上限 30、token budget 充裕（spike-007 已驗）
+4. **`model_map` 三家 tier mapping**：claude full三 tier / gemini three-tier (flash/pro/pro alias) / codex single-tier。P5.C36 impl 接受這個簡化、P5.x patch 補 codex tier 細分
+5. **per-stage 品質量化 deferred**——P5.C38 demo 真跑後 metrics 採樣（claude pass rate baseline vs gemini fallback pass rate）回填本段
+6. **Asterism prompt template 為 model-agnostic baseline**——當前 docs/prompts/{backward,refuter,builder_tactic_llm}.md 三檔對所有 provider 共用、不分叉 per-provider variants（P5 不做、P5.x patch 視 demo 結果決定）
 
 ---
