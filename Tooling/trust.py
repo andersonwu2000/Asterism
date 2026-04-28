@@ -32,11 +32,21 @@ _BRACKET_RE = re.compile(r'\[([^\]]+)\]')
 # print_axioms
 # ---------------------------------------------------------------------------
 
-def print_axioms(theorem_name: str, cwd: str) -> list[str]:
+def print_axioms(theorem_name: str, cwd: str,
+                 module_path: str | None = None) -> list[str]:
     """Return the axiom names that *theorem_name* depends on.
 
-    Runs ``lake env lean -e '#print axioms <theorem_name>'`` from *cwd*.
-    Raises RuntimeError on subprocess timeout.
+    P6.x patch 6 (Round-2 演習):
+      - When *module_path* is provided (e.g.
+        `Problems.smoke_p6.Goals.«1_reverse_length».reverse_length`), we
+        first run `lake build <module_path>` to ensure the .olean exists,
+        then write a tempfile with `import <module_path>` + `#print
+        axioms <module_path>.<theorem_name>` and run lean on it. This is
+        the path used by the production scheduler hook.
+      - When *module_path* is None (legacy callers / unit tests), fall
+        back to the bare `lean -e '#print axioms <theorem_name>'`
+        invocation, which only works if the theorem is in the current
+        toolchain's prelude or test framework provided PRINT_AXIOMS_MOCK.
 
     Test hook (mutually exclusive — see docs/dev/test_hooks.md):
       PRINT_AXIOMS_MOCK=none        → return [] (trivial / no axioms)
@@ -48,13 +58,69 @@ def print_axioms(theorem_name: str, cwd: str) -> list[str]:
             return []
         return [a.strip() for a in mock.split(",") if a.strip()]
 
+    if module_path is not None:
+        # Build .olean first.
+        try:
+            build = subprocess.run(
+                ["lake", "build", module_path],
+                cwd=cwd, capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"lake build {module_path!r} timed out after {_TIMEOUT}s"
+            )
+        if build.returncode != 0:
+            raise RuntimeError(
+                f"lake build {module_path!r} exit {build.returncode}: "
+                f"stderr={(build.stderr or build.stdout)[:500].strip()!r}"
+            )
+
+        # Tempfile that imports the module and prints axioms of the
+        # fully-qualified theorem name. Note: with the leaf-bypass
+        # `namespace Problems.<p>.Goals.<id_seg>` wrap, the theorem's
+        # fully-qualified name equals module_path itself (file is named
+        # after slug, namespace is the file path minus slug, plus slug
+        # gives back the file path). So no extra `.{theorem_name}`.
+        import tempfile
+        full_name = module_path
+        body = (
+            f"import {module_path}\n"
+            f"#print axioms {full_name}\n"
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".lean", delete=False, encoding="utf-8",
+        ) as f:
+            f.write(body)
+            tmp_path = f.name
+        try:
+            result = subprocess.run(
+                ["lake", "env", "lean", tmp_path],
+                cwd=cwd, capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=_TIMEOUT,
+            )
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"print_axioms({full_name!r}) exit {result.returncode}: "
+                f"stderr={(result.stderr or result.stdout)[:500].strip()!r}"
+            )
+        return _parse_print_axioms_output(result.stdout)
+
+    # Legacy bare-name path (unit tests / mock environments).
     cmd = ["lake", "env", "lean", "-e", f"#print axioms {theorem_name}"]
     try:
         result = subprocess.run(
             cmd,
             cwd=cwd,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=_TIMEOUT,
         )
     except subprocess.TimeoutExpired:

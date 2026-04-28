@@ -266,6 +266,61 @@ def _append_line(path: Path, line: str) -> None:
         f.write(line)
 
 
+def _import_line_for(goal: dict) -> str:
+    """P6.x patch 18: produce the `import Problems.<p>.Goals.<id_seg>.<slug>`
+    line that resolves the source theorem referenced by `_re_export_line`.
+    Mirrors the french-quote rule for numeric-prefix segments."""
+    p = goal["problem"]
+    g_id = goal["id"]
+    slug = goal["slug"]
+    id_segment = f"{g_id}_{slug}"
+    if id_segment[:1].isdigit():
+        id_segment_lean = f"«{id_segment}»"
+    else:
+        id_segment_lean = id_segment
+    return f"import Problems.{p}.Goals.{id_segment_lean}.{slug}\n"
+
+
+def _ensure_import_in_proved(path: Path, import_line: str) -> None:
+    """P6.x patch 18: place `import_line` at the top of `path`.
+
+    Lean 4 requires all imports before any theorem decl. We read the file,
+    split into (imports block, body block) by the first non-import line,
+    insert the new import if absent, write back. Idempotent: the same
+    import line written twice produces only one entry.
+    """
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(import_line, encoding="utf-8")
+        return
+
+    text = path.read_text(encoding="utf-8")
+    # Split: lines starting with "import" stay in header; first non-import
+    # non-blank line begins body.
+    lines = text.splitlines(keepends=True)
+    header: list[str] = []
+    body_start = 0
+    for i, raw in enumerate(lines):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("--"):
+            # blank / comment can sit in header
+            header.append(raw)
+            body_start = i + 1
+            continue
+        if stripped.startswith("import "):
+            header.append(raw)
+            body_start = i + 1
+            continue
+        body_start = i
+        break
+    body = "".join(lines[body_start:])
+
+    if import_line in "".join(header):
+        return  # already present — no-op
+    new_header = "".join(header) + import_line
+    path.write_text(new_header + body, encoding="utf-8")
+
+
 def _truncate_appended_line(path: Path, line: str) -> None:
     """Best-effort revert: read file, drop last line if it equals `line`,
     write back. Caller has already verified `line` was appended in the
@@ -366,11 +421,15 @@ def promote_to_library(
                 # skip the append. Re-runs of Builder against the same
                 # leaf strategy fire promotion repeatedly; without this
                 # check we accumulate duplicate declarations.
-                if pp_path.exists() and line in pp_path.read_text(
-                    encoding="utf-8"
-                ):
-                    pass  # already present — no-op
-                else:
+                # P6.x patch 18: also ensure the source module import is
+                # at the top of proved.lean — otherwise Lean rejects the
+                # re-export with `unknown identifier`.
+                already_present = (
+                    pp_path.exists()
+                    and line in pp_path.read_text(encoding="utf-8")
+                )
+                if not already_present:
+                    _ensure_import_in_proved(pp_path, _import_line_for(goal))
                     _append_line(pp_path, line)
                     written_pp = True
                     result.lines_written.append(

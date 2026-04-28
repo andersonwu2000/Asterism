@@ -1325,8 +1325,22 @@ class Reactor:
         if goal_row is not None:
             problem = goal_row[0]
             thm_name = Path(lean_path).stem
+            # P6.x patch 6: build module_path for print_axioms so it can
+            # `lake build` the .olean and import it before #print axioms.
+            # Module path mirrors filesystem layout with french-quote
+            # wrapping for numeric-prefix segments (spike-024 D-24-1 #6).
+            lean_dir = Path(lean_path).parent
+            id_segment = lean_dir.name  # e.g. "1_reverse_length"
+            if id_segment[:1].isdigit():
+                id_segment_lean = f"«{id_segment}»"
+            else:
+                id_segment_lean = id_segment
+            module_path = (
+                f"Problems.{problem}.Goals.{id_segment_lean}.{thm_name}"
+            )
             try:
-                axioms = print_axioms(thm_name, self.config.base_dir)
+                axioms = print_axioms(thm_name, self.config.base_dir,
+                                      module_path=module_path)
                 trust_entries = build_trust_set(axioms)
                 trust_set_json = json.dumps(trust_entries)
                 # Accept rule: load allowed axioms from META.md

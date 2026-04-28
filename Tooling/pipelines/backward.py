@@ -795,9 +795,22 @@ class Backward:
         # the agent's proof tactic. We rewrite the whole file rather than
         # patching to keep the `import Problems.<p>.Defs` line + the
         # canonical `theorem <slug> :` header.
+        # P6.x patch 18: wrap the theorem in a namespace matching the
+        # module path so the fully-qualified name `Problems.<p>.Goals.<id_seg>.<slug>`
+        # actually resolves after `import` from proved.lean. Without the
+        # namespace, the theorem is bare-named (`reverse_length`) and
+        # the re-export's qualified ref is unknown.
+        id_segment = f"{goal_id}_{goal_slug}"
+        if id_segment[:1].isdigit():
+            id_segment_lean = f"«{id_segment}»"
+        else:
+            id_segment_lean = id_segment
+        ns = f"Problems.{problem}.Goals.{id_segment_lean}"
         proven_content = (
             f"import Problems.{problem}.Defs\n\n"
-            f"theorem {goal_slug} : {statement} := {proof}\n"
+            f"namespace {ns}\n\n"
+            f"theorem {goal_slug} : {statement} := {proof}\n\n"
+            f"end {ns}\n"
         )
         Path(staging_dir).mkdir(parents=True, exist_ok=True)
         leaf_staging = str(

@@ -67,7 +67,15 @@ def _now() -> str:
 
 
 def cmd_init(args: Any, base_dir: Path | None = None) -> None:
-    """Create Problems/<name>/{META.md, Defs.lean, Root.lean}."""
+    """Create Problems/<name>/{META.md, Defs.lean, Root.lean}.
+
+    P6.x patch 4: after writing the files, kick off `lake build
+    Problems.<name>.Defs` so the Defs.olean exists in the Asterism build
+    cache. Subsequent `lake env lean Problems/<name>/Goals/...` invocations
+    can then resolve `import Problems.<name>.Defs` without first running
+    a manual `lake build`. Build failure does not block init (operator
+    can debug Defs.lean and re-run `lake build` manually).
+    """
     base = base_dir or _DEFAULT_BASE
     prob_dir = base / "Problems" / args.problem
     prob_dir.mkdir(parents=True, exist_ok=True)
@@ -90,6 +98,29 @@ def cmd_init(args: Any, base_dir: Path | None = None) -> None:
     print(f"  {meta}")
     print(f"  {defs}")
     print(f"  {root}")
+
+    # P6.x patch 4: build Defs.olean so subsequent `lake env lean`
+    # invocations can resolve `import Problems.<p>.Defs`.
+    import subprocess
+    print(f"  building Problems.{args.problem}.Defs ...")
+    try:
+        result = subprocess.run(
+            ["lake", "build", f"Problems.{args.problem}.Defs"],
+            cwd=str(base), capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=600,
+        )
+        if result.returncode == 0:
+            print(f"  Defs.olean ready (lake build pass)")
+        else:
+            tail = (result.stdout or result.stderr or "").splitlines()[-3:]
+            print(f"  warning: lake build Defs failed (rc={result.returncode}):"
+                  f" {'; '.join(tail)}", file=sys.stderr)
+            print(f"  fix Defs.lean and run `lake build "
+                  f"Problems.{args.problem}.Defs` manually before adding goals",
+                  file=sys.stderr)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        print(f"  warning: could not run lake build: {exc}", file=sys.stderr)
 
 
 # ──────────────────────────────────────────────────────────────
