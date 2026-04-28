@@ -158,9 +158,16 @@ class Provider(abc.ABC):
             # Write a sentinel file outside scope_dirs[0] (the staging dir).
             # The path is the parent dir of staging — guaranteed outside
             # whatever the FallbackChain's validate_scope considers "in scope".
-            # If staging has no parent (extremely defensive), fall back to
-            # writing inside staging — that's still a behaviour change a
-            # caller can detect.
+            #
+            # Root-corner-case caveat (C37 R3 LOW-2): if staging IS the
+            # filesystem root (`Path("/").parent == Path("/")`), the
+            # fallback writes the sentinel inside staging, which means
+            # validate_scope can NOT detect it as a leak. This degenerate
+            # case never occurs under pytest tmp_path / production
+            # Problems/<p>/Goals/<id>_<slug>/Staging/<sess> layout
+            # (staging is always 5+ levels deep), so it's documented but
+            # not raised — operator's responsibility to never use the FS
+            # root as a staging dir.
             if not scope_dirs:
                 raise ProviderError(
                     f"{self.name} PROVIDER_MOCK={mode} requires scope_dirs"

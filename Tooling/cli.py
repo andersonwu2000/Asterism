@@ -569,9 +569,10 @@ def cmd_agent_test(args: Any) -> None:
     provider's stdout to terminal and exits with the provider's returncode.
 
     Uses a fresh tempdir as the staging scope; subprocess cwd = tempdir.
-    Session id is a fresh UUID. PROVIDER_MOCK_<NAME> env hook (added by
-    later C37 step) still applies — operators can dry-run with
-    PROVIDER_MOCK_CLAUDE=fail_always to verify the env hook plumbing.
+    Session id is a fresh UUID. PROVIDER_MOCK_<NAME> env hook applies
+    (handled in Provider._maybe_apply_mock; see docs/dev/test_hooks.md
+    P5 row) — operators can dry-run with PROVIDER_MOCK_CLAUDE=fail_always
+    to verify the env hook plumbing.
     """
     import tempfile
     from Tooling.agent.provider import ProviderError
