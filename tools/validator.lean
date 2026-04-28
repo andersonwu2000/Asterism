@@ -1,124 +1,145 @@
 -- Hypothesis carry validator for Asterism P2 Backward pipeline.
 --
--- Run via Python (Tooling/stages/validator.py):
---   VALIDATOR_PARENT_TYPE="∀ (n m : Nat), ..."
---   VALIDATOR_SUBGOALS='[{"id":"G001","type_str":"∀ (n : Nat), ..."}]'
---   lake env lean /path/to/tools/validator.lean
+-- CLI (impl §4.2):
+--   validator hypothesis_carry --parent <file> --subgoals <file>...
 --
--- Outputs one JSON line to stdout: Array SubgoalResult
--- (JSON has the same format regardless of Lean diagnostic output on the same stream;
---  Python locates the line starting with "[" to parse it.)
+-- Invocation (Python wrapper Tooling/stages/validator.py):
+--   lake env lean --run tools/validator.lean -- hypothesis_carry \
+--       --parent <parent.lean> --subgoals <sub1.lean> <sub2.lean> ...
 --
--- Lean core only — no Mathlib import.  Startup ~2.5 s (spike-005).
--- impl §4.2: hypothesis_carry CLI behaviour.
+-- Output (stdout, single line, JSON):
+--   {"parent_error": null|"<msg>",
+--    "subgoals": [
+--      {"subgoal": "<path>", "missing_binders": ["<n>"...], "error": null|"<msg>"}
+--    ]}
+--
+-- Exit codes:
+--   0 success
+--   1 CLI argument parse error
+--   2 parent file failed to elaborate (subgoals not checked)
+--
+-- Behavior (impl §4.2 / spike-005):
+--   - For each .lean file, run Lean.Elab.runFrontend on its content.
+--   - Locate the first user-declared theorem (env.getModuleIdxFor? = none).
+--   - Walk the theorem's type Expr to collect ∀-binder names — no MetaM,
+--     no ppExpr (audit C11.R2 #6: type strings are dead work for P2/P3).
+--   - Compare parent binder names against subgoal binder names.
+--
+-- Lean core only (no Mathlib import on this file itself; subgoal files'
+-- imports are loaded by runFrontend as needed).
 
 import Lean
-import Lean.Meta
-import Lean.Elab.Command
+import Lean.Elab.Frontend
 
-open Lean Meta Elab Command
+open Lean
 
 -- ================================================================
 -- Output types
 -- ================================================================
 
-structure TypeMismatch where
-  name         : String
-  parent_type  : String
-  subgoal_type : String
-deriving ToJson
-
 structure SubgoalResult where
-  subgoal          : String
-  missing_binders  : Array String
-  type_mismatches  : Array TypeMismatch   -- P3: Meta.isDefEq; P2 always []
+  subgoal         : String
+  missing_binders : Array String
+  error           : Option String := none
+deriving ToJson
+
+structure ValidatorOutput where
+  parent_error : Option String  := none
+  subgoals     : Array SubgoalResult := #[]
 deriving ToJson
 
 -- ================================================================
--- Binder extraction
+-- Binder extraction (pure Expr walk, no MetaM)
 -- ================================================================
 
-/-- Parse *typeStr* as a term, elaborate it, and extract (name, type_string)
-    for every ∀-bound variable via forallTelescope.
-
-    Returns #[] on parse or elab error (caller treats as "no binders"). -/
-def extractBinders (typeStr : String) : CommandElabM (Array (String × String)) := do
-  let env ← getEnv
-  match Parser.runParserCategory env `term typeStr "<validator>" with
-  | .error _ => return #[]
-  | .ok stx  =>
-    liftTermElabM do
-      try
-        let expr ← Term.elabTerm stx none
-        let expr ← instantiateMVars expr
-        forallTelescope expr fun xs _ => do
-          let lctx ← getLCtx
-          let mut result : Array (String × String) := #[]
-          for x in xs do
-            if let some decl := lctx.find? x.fvarId! then
-              let tp ← ppExpr decl.type
-              result := result.push (decl.userName.toString, s!"{tp}")
-          return result
-      catch _ => return #[]
+/-- Collect ∀-binder names by walking the Expr tree. -/
+partial def collectForallBinders : Expr → Array Name
+  | .forallE n _ body _ => #[n] ++ collectForallBinders body
+  | _                   => #[]
 
 -- ================================================================
--- Hypothesis carry check
+-- File elaboration via Lean.Elab.runFrontend
 -- ================================================================
 
-/-- Compare parent binders against sub-goal binders by name.
-    Returns a SubgoalResult with missing_binder names filled in.
-    type_mismatches is always empty in P2 (P3 adds Meta.isDefEq). -/
-def checkCarry
-    (subId         : String)
-    (parentBinders : Array (String × String))
-    (subBinders    : Array (String × String))
-    : SubgoalResult :=
-  let subNames := subBinders.map (·.1)
-  let missing  := parentBinders.filterMap fun (n, _) =>
-    if subNames.contains n then none else some n
-  { subgoal         := subId
-    missing_binders := missing
-    type_mismatches := #[] }
+/-- True iff `name` was declared in the current file (not from imports). -/
+def isUserDecl (env : Environment) (name : Name) : Bool :=
+  env.getModuleIdxFor? name |>.isNone
+
+/-- Find the first user-declared theorem in `env`. -/
+def findUserTheorem (env : Environment) : Option Name :=
+  env.constants.toList.findSome? fun (name, info) =>
+    match info with
+    | .thmInfo _ => if isUserDecl env name then some name else none
+    | _          => none
+
+/-- Elaborate file at `path` and return its theorem's binder names.
+    Errors propagate as `Except String`. -/
+def fileBinders (path : String) : IO (Except String (Array Name)) := do
+  try
+    let content ← IO.FS.readFile path
+    let (env, ok) ← Lean.Elab.runFrontend content {} path `_AsterismValidator
+    if !ok then
+      return .error s!"runFrontend reported errors in {path}"
+    match findUserTheorem env with
+    | none => return .error s!"no user theorem found in {path}"
+    | some thmName =>
+      match env.find? thmName with
+      | none    => return .error s!"theorem {thmName} not in env after runFrontend"
+      | some ci => return .ok (collectForallBinders ci.type)
+  catch e =>
+    return .error s!"IO error on {path}: {e.toString}"
 
 -- ================================================================
--- JSON parsing helpers
+-- CLI argument parsing
 -- ================================================================
 
-/-- Parse VALIDATOR_SUBGOALS JSON: Array of {id, type_str} objects. -/
-def parseSubgoals (s : String) : Array (String × String) :=
-  match Json.parse s with
-  | .error _  => #[]
-  | .ok j =>
-    match j.getArr? with
-    | .error _   => #[]
-    | .ok arr    =>
-      arr.filterMap fun item =>
-        let id  := (item.getObjVal? "id").toOption.bind       (·.getStr?.toOption)
-        let typ := (item.getObjVal? "type_str").toOption.bind (·.getStr?.toOption)
-        match id, typ with
-        | some i, some t => some (i, t)
-        | _,      _      => none
+structure Args where
+  parent   : String
+  subgoals : Array String
+
+/-- Parse args:  hypothesis_carry --parent <file> --subgoals <file>... -/
+def parseArgs : List String → Option Args
+  | "hypothesis_carry" :: rest => parseRest rest none #[]
+  | _                          => none
+where
+  parseRest : List String → Option String → Array String → Option Args
+    | [],                              some p, sgs => some { parent := p, subgoals := sgs }
+    | [],                              none,   _   => none
+    | "--parent"   :: p :: rest, _,     sgs        => parseRest rest (some p) sgs
+    | "--subgoals" :: rest,      some p, sgs       =>
+        some { parent := p, subgoals := sgs ++ rest.toArray }
+    | "--subgoals" :: _,         none,   _         => none
+    | _ :: rest,                 parent, sgs       => parseRest rest parent sgs
 
 -- ================================================================
--- Entry-point command
+-- Main
 -- ================================================================
 
-/-- Main command: reads env vars, runs checks, prints JSON to stdout. -/
-syntax "#run_validator" : command
-
-elab_rules : command | `(#run_validator) => do
-  let parentType  := (← liftIO (IO.getEnv "VALIDATOR_PARENT_TYPE")).getD  ""
-  let subgoalsStr := (← liftIO (IO.getEnv "VALIDATOR_SUBGOALS")).getD     "[]"
-
-  let subgoals    := parseSubgoals subgoalsStr
-  let parentBnds  ← extractBinders parentType
-
-  let mut results : Array SubgoalResult := #[]
-  for (subId, subTypeStr) in subgoals do
-    let subBnds ← extractBinders subTypeStr
-    results := results.push (checkCarry subId parentBnds subBnds)
-
-  -- Output JSON; Python finds the line starting with "[".
-  liftIO (IO.println (toString (toJson results)))
-
-#run_validator
+def main (raw : List String) : IO UInt32 := do
+  match parseArgs raw with
+  | none =>
+      IO.eprintln
+        "usage: validator hypothesis_carry --parent <file> --subgoals <file>..."
+      pure 1
+  | some args =>
+      let parentRes ← fileBinders args.parent
+      match parentRes with
+      | .error err =>
+          let out : ValidatorOutput := { parent_error := some err }
+          IO.println (toString (toJson out))
+          pure 2
+      | .ok parentBnds =>
+          let mut results : Array SubgoalResult := #[]
+          for sub in args.subgoals do
+            let r ← fileBinders sub
+            match r with
+            | .error err =>
+                results := results.push
+                  { subgoal := sub, missing_binders := #[], error := some err }
+            | .ok subBnds =>
+                let missing := parentBnds.filter (fun n => !subBnds.contains n)
+                results := results.push
+                  { subgoal := sub, missing_binders := missing.map (·.toString) }
+          let out : ValidatorOutput := { subgoals := results }
+          IO.println (toString (toJson out))
+          pure 0

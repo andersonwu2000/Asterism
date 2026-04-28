@@ -2,8 +2,14 @@
 
 Three checks in order:
   1. max_subgoals  — proposed sub-Goal count <= MAX_SUBGOALS (config)
-  2. slug_unique   — no proposed slug already in goals table (SQL UNIQUE)
-  3. hyp_carry     — each sub-Goal carries all parent binders (via tools/validator.lean)
+  2. slug_unique   — no proposed slug already in goals table
+                      (runtime SELECT; schema_v1 has no (problem, slug) UNIQUE
+                       constraint and P2 cannot extend schema)
+  3. hyp_carry     — each sub-Goal carries all parent ∀-binders
+                     (delegated to tools/validator.lean via subprocess;
+                      Lean.Meta side does the actual binder extraction —
+                      regex-parsing Lean source is forbidden by
+                      architecture.md §7.4 / impl §4.1)
 
 Public API:
   validate(conn, problem, parent_lean_path, subgoals, lake_cwd) -> list[ValidatorError]
@@ -14,8 +20,6 @@ impl §4.2 / phase2_decomposition.md §Scope In Validator.
 from __future__ import annotations
 
 import json
-import os
-import re
 import sqlite3
 import subprocess
 from dataclasses import dataclass
@@ -35,89 +39,6 @@ _VALIDATOR_LEAN = Path(__file__).parents[2] / "tools" / "validator.lean"
 class ValidatorError:
     check: str   # 'max_subgoals' | 'slug_unique' | 'hyp_carry'
     detail: str
-
-
-# ---------------------------------------------------------------------------
-# Type string extraction from .lean files
-# ---------------------------------------------------------------------------
-
-def _find_at_depth0(s: str, target: str, *, skip_assign: bool = True) -> int:
-    """Return index of first *target* char in *s* at brace/paren depth 0.
-
-    If *skip_assign* is True, a ':' immediately followed by '=' is skipped
-    (so ':=' is not treated as a type separator).
-    """
-    depth = 0
-    i = 0
-    while i < len(s):
-        c = s[i]
-        if c in "([{":
-            depth += 1
-        elif c in ")]}":
-            depth -= 1
-        elif depth == 0 and c == target:
-            if skip_assign and target == ":" and i + 1 < len(s) and s[i + 1] == "=":
-                i += 1  # skip ':='
-            else:
-                return i
-        i += 1
-    return -1
-
-
-def extract_theorem_type(lean_content: str) -> str:
-    """Extract the full ∀-type string from a theorem declaration in *lean_content*.
-
-    For ``theorem foo (a : A) (b : B) : Q := ...``
-      → ``∀ (a : A) (b : B), Q``
-
-    For ``theorem foo : ∀ (a : A), Q := ...``
-      → ``∀ (a : A), Q``
-
-    Raises ValueError if no theorem declaration is found.
-    """
-    # Strip line comments so embedded '--' doesn't confuse parsing.
-    lines = [re.sub(r"--.*", "", ln) for ln in lean_content.splitlines()]
-    flat = " ".join(lines)
-
-    # Find 'theorem <name>'
-    m = re.search(r"\btheorem\s+\w[\w']*", flat)
-    if m is None:
-        raise ValueError("No 'theorem' declaration found in lean content")
-
-    rest = flat[m.end():].lstrip()
-
-    # Clip at ':=' position (depth-0)
-    assign_pos = _find_at_depth0(rest, ":", skip_assign=False)
-    # We want ':=' specifically
-    def _find_define(s: str) -> int:
-        depth = 0
-        i = 0
-        while i < len(s) - 1:
-            c = s[i]
-            if c in "([{":
-                depth += 1
-            elif c in ")]}":
-                depth -= 1
-            elif depth == 0 and c == ":" and s[i + 1] == "=":
-                return i
-            i += 1
-        return -1
-
-    define_pos = _find_define(rest)
-    sig = rest[:define_pos].strip() if define_pos != -1 else rest.strip()
-
-    # Find the ':' separating explicit params from return type (depth-0, not ':=')
-    colon_pos = _find_at_depth0(sig, ":", skip_assign=True)
-
-    if colon_pos == -1:
-        return sig.strip()
-
-    params   = sig[:colon_pos].strip()
-    ret_type = sig[colon_pos + 1:].strip()
-
-    if params:
-        return f"∀ {params}, {ret_type}"
-    return ret_type
 
 
 # ---------------------------------------------------------------------------
@@ -160,54 +81,49 @@ def check_slug_unique(
 
 
 # ---------------------------------------------------------------------------
-# Check 3: hypothesis carry (via tools/validator.lean)
+# Check 3: hypothesis carry (delegated to tools/validator.lean)
 # ---------------------------------------------------------------------------
 
-def _parse_lean_output(stdout: str) -> list[dict]:
-    """Find the JSON array line in validator.lean stdout output."""
+def _parse_validator_json(stdout: str) -> dict | None:
+    """Locate and parse validator.lean's JSON object output.
+
+    Returns None if no parseable `{...}` line is found in *stdout*.
+    """
     for line in stdout.splitlines():
         line = line.strip()
-        if line.startswith("["):
+        if line.startswith("{"):
             try:
                 return json.loads(line)
             except json.JSONDecodeError:
                 continue
-    return []
+    return None
 
 
 def check_hyp_carry(
     parent_lean_path: str,
     subgoals: list[dict[str, Any]],
     lake_cwd: str,
-    timeout: float = 30.0,
+    timeout: float = 60.0,
 ) -> list[ValidatorError]:
-    """Run tools/validator.lean to check hypothesis carry.
+    """Invoke tools/validator.lean and translate its JSON into ValidatorErrors.
 
-    Each entry in *subgoals* must have keys: 'id', 'lean_path'.
-    *lake_cwd* is the directory with a lake environment (e.g. D:/Hadamard).
+    Each *subgoals* entry must have keys: 'id', 'lean_path'.
+    *lake_cwd* must be a directory with a usable lake environment
+    (e.g. D:/Hadamard for the Mathlib-backed cache).
     """
-    # Extract type strings
-    parent_type = extract_theorem_type(
-        Path(parent_lean_path).read_text(encoding="utf-8")
-    )
-    subgoals_input = []
-    for sg in subgoals:
-        type_str = extract_theorem_type(
-            Path(sg["lean_path"]).read_text(encoding="utf-8")
-        )
-        subgoals_input.append({"id": sg["id"], "type_str": type_str})
-
-    env = {
-        **os.environ,
-        "VALIDATOR_PARENT_TYPE": parent_type,
-        "VALIDATOR_SUBGOALS": json.dumps(subgoals_input, ensure_ascii=False),
-    }
+    cmd = [
+        "lake", "env", "lean",
+        "--run", str(_VALIDATOR_LEAN),
+        "--",
+        "hypothesis_carry",
+        "--parent", str(parent_lean_path),
+        "--subgoals", *[str(sg["lean_path"]) for sg in subgoals],
+    ]
 
     try:
         result = subprocess.run(
-            ["lake", "env", "lean", str(_VALIDATOR_LEAN)],
+            cmd,
             cwd=lake_cwd,
-            env=env,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -215,31 +131,55 @@ def check_hyp_carry(
     except subprocess.TimeoutExpired:
         return [ValidatorError(check="hyp_carry", detail="validator.lean timed out")]
 
-    lean_results = _parse_lean_output(result.stdout)
+    parsed = _parse_validator_json(result.stdout)
+
+    # No JSON line found anywhere — opaque failure (audit C11.R2 #4).
+    if parsed is None:
+        return [ValidatorError(
+            check="hyp_carry",
+            detail=(
+                f"validator.lean produced no JSON output "
+                f"(rc={result.returncode}); "
+                f"stderr={result.stderr.strip()[:300]!r}"
+            ),
+        )]
+
+    # Parent failed to elaborate — JSON is well-formed but flags it.
+    if parsed.get("parent_error"):
+        return [ValidatorError(
+            check="hyp_carry",
+            detail=f"parent elab failed: {parsed['parent_error']}",
+        )]
+
+    # Non-zero exit without parent_error: argv / runtime issue.
+    if result.returncode != 0:
+        return [ValidatorError(
+            check="hyp_carry",
+            detail=(
+                f"validator.lean exited rc={result.returncode}; "
+                f"stderr={result.stderr.strip()[:300]!r}"
+            ),
+        )]
+
+    # Translate per-subgoal results back to caller-supplied IDs.
+    path_to_id = {str(sg["lean_path"]): sg["id"] for sg in subgoals}
 
     errors: list[ValidatorError] = []
-    for item in lean_results:
+    for item in parsed.get("subgoals", []):
+        path = item.get("subgoal", "")
+        sg_id = path_to_id.get(path, path)
+        if item.get("error"):
+            errors.append(ValidatorError(
+                check="hyp_carry",
+                detail=f"sub-Goal '{sg_id}' elab failed: {item['error']}",
+            ))
+            continue
         missing = item.get("missing_binders", [])
         if missing:
-            errors.append(
-                ValidatorError(
-                    check="hyp_carry",
-                    detail=(
-                        f"sub-Goal '{item['subgoal']}' missing binders: {missing}"
-                    ),
-                )
-            )
-        for mm in item.get("type_mismatches", []):
-            errors.append(
-                ValidatorError(
-                    check="hyp_carry",
-                    detail=(
-                        f"sub-Goal '{item['subgoal']}' binder '{mm['name']}' "
-                        f"type mismatch: parent={mm['parent_type']!r} "
-                        f"subgoal={mm['subgoal_type']!r}"
-                    ),
-                )
-            )
+            errors.append(ValidatorError(
+                check="hyp_carry",
+                detail=f"sub-Goal '{sg_id}' missing binders: {missing}",
+            ))
     return errors
 
 
@@ -257,20 +197,18 @@ def validate(
     """Run all validator checks.  Returns a (possibly empty) list of errors.
 
     *subgoals* is a list of dicts with keys: 'id', 'slug', 'lean_path'.
-    Checks are run in order; max_subgoals is a hard gate (stops on fail).
+    Order is cheap-to-expensive; max_subgoals is a hard gate.
     """
-    errors: list[ValidatorError] = []
-
     err = check_max_subgoals(subgoals)
     if err:
         return [err]  # hard stop
+
+    errors: list[ValidatorError] = []
 
     err = check_slug_unique(conn, problem, subgoals)
     if err:
         errors.append(err)
 
-    errors.extend(
-        check_hyp_carry(parent_lean_path, subgoals, lake_cwd)
-    )
+    errors.extend(check_hyp_carry(parent_lean_path, subgoals, lake_cwd))
 
     return errors
