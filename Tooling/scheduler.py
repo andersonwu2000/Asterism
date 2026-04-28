@@ -47,22 +47,33 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _restore_goal_template(
-    goal_lean_path: Path,
-    problem: str,
-    slug: str,
-    statement: str,
-) -> None:
-    """P6.x patch 21: rewrite the goal .lean back to its `:= by sorry`
-    template so a forbidden-lemma rejection rolls back the leaf-bypass
-    overwrite. Next Backward attempt then has a clean canvas.
+def _extract_proof_body(strategy_text: str, slug: str) -> str | None:
+    """P6.x patch 23: extract the proof body from a strategy file's
+    `theorem <slug> : <type> := <body>` declaration.
+
+    Returns the substring from after the `:=` (with surrounding
+    whitespace stripped) up to (but not including) the closing
+    `end <namespace>` line. Returns None when the marker isn't found
+    (caller treats as a finalize-failure and leaves the goal file
+    untouched).
     """
-    goal_lean_path.parent.mkdir(parents=True, exist_ok=True)
-    template = (
-        f"import Problems.{problem}.Defs\n\n"
-        f"theorem {slug} : {statement} := by sorry\n"
+    import re as _re
+    # Find the `theorem <slug>` line; allow any whitespace before `:`.
+    m = _re.search(
+        r"theorem\s+" + _re.escape(slug) + r"\s+:[^\n]*?:=",
+        strategy_text,
+        _re.DOTALL,
     )
-    goal_lean_path.write_text(template, encoding="utf-8")
+    if not m:
+        return None
+    body_start = m.end()
+    # Find the closing `end <ns>` line; if absent, take to end of file.
+    end_m = _re.search(r"\nend\s+\S", strategy_text[body_start:])
+    if end_m:
+        body = strategy_text[body_start:body_start + end_m.start()]
+    else:
+        body = strategy_text[body_start:]
+    return body.strip()
 
 
 class FatalError(Exception):
@@ -1488,6 +1499,27 @@ class Reactor:
                     "UPDATE strategies SET status = 'succeeded' WHERE id = ?",
                     (strategy_id,),
                 )
+            # P6.x patch 23: now that all checks (Builder + trust_set +
+            # accept_rule + forbidden_lemmas) have passed, commit the
+            # strategy file's proven content to the canonical goal file.
+            # The goal file becomes either `:= by sorry` (unproved) or a
+            # complete proof (proved) — no mid-state, no race.
+            try:
+                self._finalize_goal_file_from_strategy(goal_id, strategy_id)
+            except Exception as exc:  # noqa: BLE001
+                # Finalize is best-effort — the proof artifact still
+                # exists in the strategy file; emit a cascade event so
+                # operators can manually copy it over if the automated
+                # commit failed (eg disk full, race with another tick).
+                self._emit_event(
+                    "cascade",
+                    {
+                        "rule": "goal_file_finalize_failed",
+                        "goal_id": goal_id,
+                        "strategy_id": strategy_id,
+                        "error": str(exc),
+                    },
+                )
             self._update_goal_proved(goal_id, answer_data, trust_set_json)
             self._emit_event(
                 "cascade",
@@ -1500,6 +1532,109 @@ class Reactor:
         except sqlite3.Error as exc:
             self._emit_fatal(str(exc))
             raise FatalError(str(exc)) from exc
+
+    def _finalize_goal_file_from_strategy(
+        self,
+        goal_id: int,
+        strategy_id: int,
+    ) -> None:
+        """P6.x patch 23: write the strategy file's proven content to
+        the canonical goal file, then delete the strategy file.
+
+        The strategy file declares `theorem <slug>` under the namespace
+        `Problems.<p>.Goals.<id_seg>._strategy_<pid>`. The goal file
+        lives at `Problems/<p>/Goals/<id_seg>/<slug>.lean` with the
+        canonical namespace `Problems.<p>.Goals.<id_seg>` (or no
+        namespace, depending on convention). We extract the proof body
+        from the strategy file and substitute it into the goal-file
+        template — same `import Problems.<p>.Defs` line + the canonical
+        `theorem <slug> : <type> := <proof_body>` declaration.
+        """
+        goal_row = self.conn.execute(
+            "SELECT problem, slug, lean_path, question FROM goals "
+            "WHERE id = ?",
+            (goal_id,),
+        ).fetchone()
+        if goal_row is None:
+            return
+        problem, slug, goal_lean_path, question = goal_row
+        strat_row = self.conn.execute(
+            "SELECT lean_path FROM strategies WHERE id = ?",
+            (strategy_id,),
+        ).fetchone()
+        if strat_row is None:
+            return
+        strategy_lean_path = strat_row[0]
+
+        strat_full = Path(self.config.base_dir) / strategy_lean_path
+        goal_full = Path(self.config.base_dir) / goal_lean_path
+        if not strat_full.exists():
+            return
+
+        # Extract the proof body from the strategy file. The strategy
+        # file shape is:
+        #   import Problems.<p>.Defs
+        #   namespace <strategy_ns>
+        #   theorem <slug> : <type> := <proof_body>
+        #   end <strategy_ns>
+        # We pull <proof_body> by finding the `theorem <slug> ... :=`
+        # marker and taking everything up to the `end <strategy_ns>` line.
+        text = strat_full.read_text(encoding="utf-8")
+        proof_body = _extract_proof_body(text, slug)
+        if proof_body is None:
+            raise RuntimeError(
+                f"could not extract proof body from {strategy_lean_path}"
+            )
+        # Build canonical goal file content. The goal-file namespace is
+        # `Problems.<p>.Goals.<id_seg>` (without the strategy segment)
+        # so proved.lean's re-export `Problems.<p>.Goals.<id_seg>.<slug>`
+        # resolves once the goal module is imported.
+        from pathlib import Path as _P
+        id_segment = _P(goal_lean_path).parent.name
+        if id_segment[:1].isdigit():
+            id_segment_lean = f"«{id_segment}»"
+        else:
+            id_segment_lean = id_segment
+        canonical_ns = f"Problems.{problem}.Goals.{id_segment_lean}"
+        canonical_content = (
+            f"import Problems.{problem}.Defs\n\n"
+            f"namespace {canonical_ns}\n\n"
+            f"theorem {slug} : {question} := {proof_body}\n\n"
+            f"end {canonical_ns}\n"
+        )
+
+        # Atomic write: write to a temp sibling, fsync, rename onto goal
+        # file. On Windows POSIX rename semantics differ but for our
+        # single-Reactor + atomic-pool model, the worst case is one
+        # in-flight reader (e.g. proved.lean lake-build) races with the
+        # rename; lake's read of an old olean is fine because the new
+        # goal file content will produce a refreshed olean on the next
+        # `lake build`.
+        tmp_path = goal_full.with_suffix(".lean.tmp")
+        tmp_path.write_text(canonical_content, encoding="utf-8")
+        import os as _os
+        try:
+            _os.replace(str(tmp_path), str(goal_full))
+        except OSError:
+            # Fallback to non-atomic on platforms where replace fails.
+            goal_full.write_text(canonical_content, encoding="utf-8")
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        # Delete the strategy file — it has served its staging purpose.
+        try:
+            strat_full.unlink(missing_ok=True)
+        except OSError:
+            pass
+        # Update strategies.lean_path to point at the goal file so
+        # promote_to_library and downstream queries find the canonical
+        # location.
+        with self.conn:
+            self.conn.execute(
+                "UPDATE strategies SET lean_path = ? WHERE id = ?",
+                (str(goal_lean_path), strategy_id),
+            )
 
     def _update_goal_proved(
         self,

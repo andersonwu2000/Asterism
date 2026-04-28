@@ -156,13 +156,17 @@ def _strategy_module_path(strategy_lean_path: str | Path) -> tuple[str, str]:
 def _re_export_line(goal: dict) -> str:
     """Format the re-export line per spike-024 D-24-1.
 
-    Schema: `theorem <problem>.<slug> : <type> := <source>`
-    where source = the strategy module's qualified theorem name.
+    Schema: `theorem <problem>.<slug> : <type> := <source>`.
+    Source = fully-qualified theorem name. Two cases:
 
-    P6.x patch 22: source comes from the succeeded strategy's file path
-    (not the goal file). Goal file stays `:= by sorry` until promotion;
-    the canonical proven artifact lives in the strategy file under a
-    strategy-specific namespace.
+    - Goal file (post-patch-23 finalize, `<slug>.lean`): namespace inside
+      file is `Problems.<p>.Goals.<id_seg>`, theorem name is `<slug>`,
+      fully qualified = `Problems.<p>.Goals.<id_seg>.<slug>` (which
+      equals the module path; the file is named after the slug).
+    - Strategy file (pre-finalize / non-leaf path,
+      `_strategy_<pid>.lean`): namespace inside file is the strategy
+      module path, theorem `<slug>` lives under that namespace, fully
+      qualified = `<module_path>.<slug>`.
     """
     p = goal["problem"]
     slug = goal["slug"]
@@ -170,10 +174,13 @@ def _re_export_line(goal: dict) -> str:
     strategy_path = goal.get("_strategy_lean_path")
     if strategy_path:
         module_path, _ = _strategy_module_path(strategy_path)
-        # The strategy file declares `theorem <slug>` under
-        # namespace == module_path, so theorem fully-qualified name
-        # equals `<module_path>.<slug>`.
-        source = f"{module_path}.{slug}"
+        # Detect: if the file basename equals `<slug>.lean`, it's the
+        # goal file — fully qualified theorem == module_path. Otherwise
+        # it's a strategy file — fully qualified == module_path.<slug>.
+        if Path(strategy_path).stem == slug:
+            source = module_path
+        else:
+            source = f"{module_path}.{slug}"
     else:
         # Legacy path (pre-patch-22) — shouldn't happen post-22 but
         # preserved for unit tests that hand-construct goal dicts.

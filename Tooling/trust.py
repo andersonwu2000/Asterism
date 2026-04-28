@@ -59,32 +59,16 @@ def print_axioms(theorem_name: str, cwd: str,
         return [a.strip() for a in mock.split(",") if a.strip()]
 
     if module_path is not None:
-        # Build .olean first.
-        try:
-            build = subprocess.run(
-                ["lake", "build", module_path],
-                cwd=cwd, capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-                timeout=_TIMEOUT,
-            )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(
-                f"lake build {module_path!r} timed out after {_TIMEOUT}s"
-            )
-        if build.returncode != 0:
-            raise RuntimeError(
-                f"lake build {module_path!r} exit {build.returncode}: "
-                f"stderr={(build.stderr or build.stdout)[:500].strip()!r}"
-            )
-
-        # Tempfile that imports the module and prints axioms of the
-        # fully-qualified theorem name. Note: with the leaf-bypass
-        # `namespace Problems.<p>.Goals.<id_seg>` wrap, the theorem's
-        # fully-qualified name equals module_path itself (file is named
-        # after slug, namespace is the file path minus slug, plus slug
-        # gives back the file path). So no extra `.{theorem_name}`.
+        # P6.x patch 23 fix: skip pre-`lake build <module>`. lake build
+        # pulls in the whole `Problems.<p>.Goals.<id_seg>.*` glob, which
+        # fails when ANY sibling strategy file (a dead variant left
+        # over from a rejected attempt) has elab errors. `lake env lean
+        # <tempfile>` lazily compiles only the needed import chain.
+        # Strategy file (patch 22) declares `theorem <slug>` under
+        # namespace == module_path (file path), so theorem fully-
+        # qualified name = module_path + "." + theorem_name (= slug).
         import tempfile
-        full_name = module_path
+        full_name = f"{module_path}.{theorem_name}"
         body = (
             f"import {module_path}\n"
             f"#print axioms {full_name}\n"
