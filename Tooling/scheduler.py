@@ -976,25 +976,6 @@ class Reactor:
     # Cancellation
     # ------------------------------------------------------------------
 
-    def _cancel_running_for_goal(self, goal_id: str) -> None:
-        """Signal running pipelines for goal_id to stop.
-
-        P2 spec deliberately accepts no-op for thread-pool runtime: threads
-        cannot be SIGTERM'd from outside, and step1_stale_filter is also a
-        P3 hook. The audit-recognized trade-off (R2 finding F):
-          - In-flight Backward / Builder against an already-proved Goal will
-            run to completion and may commit orphan sub-goals / strategies.
-          - BFS structural refill on the next tick MAY then dispatch Builder
-            against those orphans (also wasteful, but functionally harmless:
-            their sub-goals' parent Goal is already proved, so the cascade
-            will re-prove a duplicate trust_set into the same goals row).
-          - P3 step1_stale_filter takes over: it will gate
-            _handle_pipeline_finished by re-reading goal.status before cascade
-            so stale results are dropped pre-DB-write.
-          - P4 subprocess-based runtime can SIGTERM real OS processes here.
-        """
-        return  # P3: step1_stale_filter; P4: subprocess SIGTERM
-
     # ------------------------------------------------------------------
     # Queue (P1 compat)
     # ------------------------------------------------------------------
@@ -1316,28 +1297,29 @@ class Reactor:
                     "via_proved_goal_id": proved_goal_id,
                 },
             )
+            # P4 C31: trigger cond 2 'twin_refuted' verdict cancellation.
+            # Cancels Builder/Backward/Refuter/Counterexample/ConstructionSearch
+            # on either G or ¬G (architecture.md §6 cancellation table; spec
+            # L430 「同上」 = same kind set as cond 1). Inside this try/except
+            # for fatal-event symmetry with _mark_strategy_dead cond 4 trigger
+            # (C31 R2 LOW-4): if cancel_for_verdict raises, _emit_fatal still
+            # writes the events table before FatalError propagates.
+            from Tooling.cancellation import (
+                CancellationVerdict,
+                cancel_for_verdict,
+            )
+            cancel_for_verdict(
+                self.conn,
+                CancellationVerdict(
+                    kind="twin_refuted",
+                    goal_id=twin_id,
+                    twin_id=proved_goal_id,
+                ),
+                emit_event=self._emit_event,
+            )
         except sqlite3.Error as exc:
             self._emit_fatal(str(exc))
             raise FatalError(str(exc)) from exc
-
-        # P4 C31: trigger cond 2 'twin_refuted' verdict cancellation.
-        # Cancels any pipeline kind on either G or ¬G (architecture.md §6
-        # cancellation table). Selection emits a cascade event for audit;
-        # actual thread SIGTERM remains no-op for thread-pool runtime per
-        # cancellation.py module docstring.
-        from Tooling.cancellation import (
-            CancellationVerdict,
-            cancel_for_verdict,
-        )
-        cancel_for_verdict(
-            self.conn,
-            CancellationVerdict(
-                kind="twin_refuted",
-                goal_id=twin_id,
-                twin_id=proved_goal_id,
-            ),
-            emit_event=self._emit_event,
-        )
 
     def _record_accept_reject_dead_attempt(
         self,
