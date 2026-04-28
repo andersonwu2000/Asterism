@@ -14,11 +14,16 @@ Differences from claude provider:
     --approval-mode auto_edit.
   - Session tracking: gemini does NOT support specifying a fresh session
     id via flag (only -r/--resume <existing-id|latest|index>). The
-    session_id parameter is stored in AgentResponse.extra for callers to
-    track across the gemini auto-generated id. gc_session is a no-op for
-    P5 C35 — gemini stores sessions under platform-specific dirs and the
-    framework cleanup discipline is provider-specific; will revisit at
-    P5.C36 if gemini sessions accumulate during demo runs.
+    session_id parameter is echoed back on `AgentResponse.session_id`
+    (top-level field, identical to ClaudeProvider) so callers see the
+    framework session id in audit logs even though the gemini CLI auto-
+    generates its own internal id. `AgentResponse.extra` carries the
+    resolved `model_id` and a redacted `argv` for diagnostics, but does
+    NOT carry session_id — that lives at the top level by design.
+    gc_session is a no-op for P5 C35 — gemini stores sessions under
+    platform-specific dirs and the framework cleanup discipline is
+    provider-specific; will revisit at P5.C38 demo if gemini sessions
+    accumulate during fallback runs.
 
 Subprocess invocation pattern:
   gemini -p "$PROMPT" \
