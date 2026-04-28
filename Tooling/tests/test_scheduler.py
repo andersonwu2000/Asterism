@@ -1900,6 +1900,43 @@ class TestSchedulerLiveness:
         assert reactor._scheduler_id is None
         reactor._heartbeat()  # should not raise
 
+    def test_heartbeat_sql_error_writes_fatal_event_no_raise(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """C40 R3 LOW-1 / HIGH-2: _heartbeat SQL UPDATE fail writes a
+        fatal event row to events table via _emit_fatal but does NOT
+        raise and does NOT enqueue ('fatal', ...) which would shut down
+        the daemon. Daemon retries on next tick."""
+        reactor = _make_reactor(db, tmp_path)
+        reactor._register_scheduler()
+        # Replace conn with one that raises on UPDATE but lets
+        # _emit_fatal's INSERT INTO events succeed.
+        real_conn = reactor.conn
+
+        class _FailUpdateConn:
+            def execute(self, sql, *args, **kwargs):
+                if sql.startswith("UPDATE schedulers"):
+                    raise sqlite3.Error("simulated UPDATE fail")
+                return real_conn.execute(sql, *args, **kwargs)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        reactor.conn = _FailUpdateConn()
+        # Should not raise
+        reactor._heartbeat()
+        # _event_queue stays empty (no fatal enqueue)
+        assert reactor._event_queue.empty()
+        # events table got a fatal row via _emit_fatal
+        events = real_conn.execute(
+            "SELECT kind, payload FROM events WHERE kind = 'fatal'"
+        ).fetchall()
+        assert len(events) >= 1
+        assert any("_heartbeat update fail" in p for _, p in events)
+
     def test_liveness_query_sql_error_emits_fatal(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:

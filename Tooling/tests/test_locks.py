@@ -52,8 +52,20 @@ class TestLibraryLockBasic:
     def test_invalid_mode_raises(self, db_path):
         conn = connect(db_path)
         try:
-            with pytest.raises(ValueError, match="DEFERRED.*IMMEDIATE.*EXCLUSIVE"):
+            with pytest.raises(ValueError, match="IMMEDIATE or EXCLUSIVE"):
                 with library_lock(conn, mode="bogus"):
+                    pass
+        finally:
+            conn.close()
+
+    def test_deferred_rejected(self, db_path):
+        """C40 R3 MED-2: DEFERRED isn't an "advisory" mode — second
+        BEGIN DEFERRED doesn't block until first write. Library write
+        path needs immediate-lock semantics, so DEFERRED is rejected."""
+        conn = connect(db_path)
+        try:
+            with pytest.raises(ValueError, match="spike-022 D-22-1"):
+                with library_lock(conn, mode="DEFERRED"):
                     pass
         finally:
             conn.close()

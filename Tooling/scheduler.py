@@ -328,9 +328,12 @@ class Reactor:
 
         Daemon loop calls this on each structural-refill tick so other
         instances see the row as live. Best-effort: a write failure
-        emits fatal but does not raise — the daemon continues running
-        on the assumption the row will eventually update on a later
-        tick (avoids a transient SQLite contention killing the daemon).
+        writes a fatal event row to the events table via _emit_fatal
+        but does NOT raise and does NOT enqueue ('fatal', ...) — the
+        daemon continues running and retries UPDATE on the next tick.
+        Avoids transient SQLite contention killing the daemon while
+        preserving an audit-trail row that ops monitoring can pick up.
+        (C40 R3 HIGH-2 fix: docstring + emit path now match.)
         """
         if self._scheduler_id is None:
             return
@@ -341,9 +344,10 @@ class Reactor:
                     (_now(), self._scheduler_id),
                 )
         except sqlite3.Error as exc:
-            self._event_queue.put(
-                ("control_signal", f"_heartbeat update fail: {exc}")
-            )
+            # Diagnostic-only: write to events table for ops visibility,
+            # don't enqueue ('fatal', ...) which would shut down the
+            # daemon on the next dispatch tick.
+            self._emit_fatal(f"_heartbeat update fail: {exc}")
 
     def _unregister_scheduler(self) -> None:
         """Remove scheduler row on clean daemon exit."""

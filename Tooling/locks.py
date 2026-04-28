@@ -37,11 +37,16 @@ def library_lock(
 ) -> Iterator[None]:
     """Acquire a SQLite advisory lock for the Library write path.
 
-    `mode` is the SQLite transaction mode ('DEFERRED' / 'IMMEDIATE'
-    / 'EXCLUSIVE'). Default IMMEDIATE — a reserved-write lock that
-    blocks other writers but allows readers; sufficient for Library
-    promotion (concurrent reactor instances are the only collision
-    case in P6).
+    `mode` is the SQLite transaction mode — restricted to IMMEDIATE
+    or EXCLUSIVE per spike-022 D-22-1 condition 1 (which only listed
+    those two). Default IMMEDIATE — a reserved-write lock that blocks
+    other writers but allows readers; sufficient for Library promotion
+    (concurrent reactor instances are the only collision case in P6).
+
+    DEFERRED is intentionally NOT supported (C40 R3 MED-2 fix):
+    BEGIN DEFERRED does not acquire a write lock until the first
+    write statement, so a second connection's BEGIN DEFERRED would
+    not block — wrong semantics for an "advisory lock".
 
     On context exit:
       - normal exit  → COMMIT
@@ -51,10 +56,10 @@ def library_lock(
     second connection tries to acquire while this is held; caller
     typically retries with backoff.
     """
-    if mode not in ("DEFERRED", "IMMEDIATE", "EXCLUSIVE"):
+    if mode not in ("IMMEDIATE", "EXCLUSIVE"):
         raise ValueError(
-            f"library_lock mode must be DEFERRED|IMMEDIATE|EXCLUSIVE, "
-            f"got {mode!r}"
+            f"library_lock mode must be IMMEDIATE or EXCLUSIVE "
+            f"(per spike-022 D-22-1); got {mode!r}"
         )
     conn.execute(f"BEGIN {mode}")
     try:
