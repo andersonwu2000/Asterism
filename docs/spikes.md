@@ -1323,7 +1323,7 @@ P6 Multi-Problem 啟用後、Problem B 透過 `import Problems.A.Proved` 取用 
 - impl §3.1 「Library/Theorems/proved.lean: theorem <problem>.<slug> := <fully-qualified-source-name>」字面格式
 - impl §3.1 「per-Problem `Problems/<n>/proved.lean` re-export 該 Problem 內所有 origin 的 status='proved' Goal」
 - lake build dep graph resolve 機制（lake / Lake.lean 內建）
-- spec line 96-100 Demo bash: `import Problems.A.Proved`（Problem B 的 Defs.lean 內）
+- spec line 107 Demo bash 字面 `--imports "Problems.list_lemmas.Proved"`（具體 problem name list_lemmas、非抽象 A/B）
 
 **結果（best-effort 設計分析）**：
 
@@ -1395,6 +1395,7 @@ impl §3.1 spec 字面 + Demo bash line 93 字面範例：`list_lemmas.append_ni
 
 **字面長度估**：
 - `<source>` 長度 ≈ `Problems.<problem>.Goals.<id>_<slug>.<slug>` ≈ 40-80 chars per entry
+- **Numeric-prefix caveat（C39 R3 MED-1）**：Asterism Goal directory `<id>_<slug>`（`cli.py:103/179` 字面）在 `<id>` 為純數字時、module path segment `42_add_comm_induction` 違反 Lean 4 identifier 字面規則（必 letter / `_` 開頭、不可數字開頭）。lake build 預期會 parse fail。P6.C41 實作時需走替代方案：(a) directory rename convention（如 `g<id>_<slug>` letter-開頭）+ schema migration 或 (b) goal `.lean` 內 explicit `namespace <problem_slug>` wrapper，以 user-controlled 名稱繞開 path-derived namespace。具體選項 P6.C41 真跑 lake build verify 後 backfill 決定
 - `Library/Theorems/proved.lean` 每行：`theorem <problem>.<slug> := <40-80-char source>` ≈ ~80-120 chars total
 - 5 entries 總 file size ~600 bytes、無壓力
 
@@ -1432,5 +1433,6 @@ impl §3.1 spec 字面 + Demo bash line 93 字面範例：`list_lemmas.append_ni
 3. **library_index `(layer='Theorems', name='<problem>.<slug>')` composite PK**——天然解 cross-Problem 同 slug name
 4. **first-write-wins + warning event 對 same-Problem 重命名場景**——P6.x 補、不阻 P6 demo
 5. **真實 lake build accept dotted alias 行為**——P6.C41 真實 promotion 跑通時 backfill；若 Lean 4 syntax 不支援 dotted theorem alias inline、退而採 explicit namespace block format（impl 自動偵測 + fallback）
+6. **Numeric-prefix module segment failure mode（C39 R3 MED-1）**：跟 #5 獨立的失敗模式——goal directory `<id>_<slug>` 數字開頭違反 Lean identifier 規則、即便 dotted alias inline OK 也會在 source path 本身撞 parse fail。P6.C41 第一條 promotion lake build verify 必踩、需提前選方案：(a) directory rename `g<id>_<slug>` + schema migration / (b) goal `.lean` 內 explicit `namespace` wrapper 規避 path-derived namespace。**Backfill 時機**：P6.C41 真跑 lake build 觸此 case 時實測 + 回填本段
 
 ---
