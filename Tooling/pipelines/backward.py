@@ -36,6 +36,9 @@ import sqlite3
 
 from Tooling.commit import CommitWriter
 from Tooling.lake import run_lean
+from Tooling.stages.failure_replay import failure_replay as _stage_failure_replay
+from Tooling.stages.find_lemmas import find_lemmas as _stage_find_lemmas
+from Tooling.stages.find_subgoals import find_subgoals as _stage_find_subgoals
 from Tooling.stages.validator import validate
 from Tooling.agent.provider import AgentResponse, FallbackChain, ModelResolver
 
@@ -84,25 +87,43 @@ class Backward:
         self.resolver = resolver or ModelResolver()
 
     # ------------------------------------------------------------------
-    # Stage: failure_replay (P2 stub — returns empty)
+    # Stage: failure_replay (P3 C22 — delegates to Tooling.stages module)
     # ------------------------------------------------------------------
 
-    def failure_replay(self, pipeline_id: str) -> list[dict]:
-        return []
+    def failure_replay(self, goal_id: int) -> list[dict]:
+        """Read up to K_digest most recent dead_attempts for the goal.
+
+        Backward operates at Goal target_kind (Builder uses Strategy).
+        K_digest defaults to 5 per phase3 §Config; pass goal_id directly
+        instead of pipeline_id (P2 stub took pipeline_id and returned [];
+        C22 makes this Goal-scoped to feed prior decomposition failures
+        back into the agent prompt).
+        """
+        return _stage_failure_replay(self.conn, goal_id, "Goal")
 
     # ------------------------------------------------------------------
-    # Stage: find_lemmas (P2 stub — returns empty)
+    # Stage: find_lemmas (P3 C22 — delegates to Tooling.stages module)
     # ------------------------------------------------------------------
 
     def find_lemmas(self, goal: dict) -> list[str]:
-        return []
+        """Return candidate lemma names from mathlib + library scopes.
+
+        P3 search.lean stubs return [] for both scopes; results list will
+        populate when P5/P6 wire real declaration walkers. Returns string
+        names for Backward agent prompt compatibility (the stage module
+        returns dicts; we project the 'name' field here).
+        """
+        results = _stage_find_lemmas(self.conn, goal,
+                                     lake_cwd=self.config.lake_cwd)
+        return [r.get("name", "") for r in results if r.get("name")]
 
     # ------------------------------------------------------------------
-    # Stage: find_subgoals (P2 stub — returns empty)
+    # Stage: find_subgoals (P3 C22 — delegates to Tooling.stages module)
     # ------------------------------------------------------------------
 
     def find_subgoals(self, goal: dict) -> list[dict]:
-        return []
+        """Return existing local Goals reusable as sub-goals (current Problem)."""
+        return _stage_find_subgoals(self.conn, goal)
 
     # ------------------------------------------------------------------
     # Stage: agent
@@ -499,7 +520,7 @@ class Backward:
 
         self._insert_pipeline(pipeline_id, goal_id, session_id)
 
-        dead_attempts = self.failure_replay(pipeline_id)
+        dead_attempts = self.failure_replay(goal_id)
         self.find_lemmas(goal)
         self.find_subgoals(goal)
 

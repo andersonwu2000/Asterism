@@ -127,14 +127,18 @@ class Builder:
     # ------------------------------------------------------------------
 
     def _failure_replay(self) -> list[dict]:
-        """Read up to K_digest most recent dead_attempts for this strategy."""
-        rows = self.conn.execute(
-            "SELECT reason_summary, outcome, ts FROM dead_attempts "
-            "WHERE target_id = ? AND target_kind = 'Strategy' "
-            "ORDER BY ts DESC LIMIT ?",
-            (str(self.strategy_id), self.config.k_digest),
-        ).fetchall()
-        return [{"reason": r[0], "outcome": r[1], "ts": r[2]} for r in rows]
+        """Read up to K_digest most recent dead_attempts for this strategy.
+
+        Delegates to Tooling.stages.failure_replay (P3 C22 unified module).
+        Strategy-scoped (vs Backward.failure_replay which is Goal-scoped).
+        """
+        from Tooling.stages.failure_replay import failure_replay
+        return failure_replay(
+            self.conn,
+            self.strategy_id,
+            "Strategy",
+            k_digest=self.config.k_digest,
+        )
 
     # ------------------------------------------------------------------
     # Stage: find_lemmas (stub — P3 search subsystem)

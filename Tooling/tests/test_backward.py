@@ -93,16 +93,24 @@ def _simple_proposal(parent_slug: str = "G_root", n: int = 2) -> dict:
 # Stub stages
 # ---------------------------------------------------------------------------
 
-class TestStubStages:
-    def test_failure_replay_returns_empty(self, db, tmp_base):
-        bw = _make_backward(db, base_dir=tmp_base)
-        assert bw.failure_replay("pipeline-1") == []
+class TestStageDelegation:
+    """C22 wired three Backward stages to Tooling.stages modules.
 
-    def test_find_lemmas_returns_empty(self, db, tmp_base):
+    Empty-database / empty-search baselines:
+      - failure_replay: no dead_attempts rows → []
+      - find_lemmas:    SEARCH_MOCK=force_miss → []
+      - find_subgoals:  no live goals match query → []
+    """
+    def test_failure_replay_no_dead_attempts(self, db, tmp_base):
+        bw = _make_backward(db, base_dir=tmp_base)
+        assert bw.failure_replay(goal_id=1) == []
+
+    def test_find_lemmas_with_search_mock(self, db, tmp_base, monkeypatch):
+        monkeypatch.setenv("SEARCH_MOCK", "force_miss")
         bw = _make_backward(db, base_dir=tmp_base)
         assert bw.find_lemmas({"problem": "test", "slug": "g"}) == []
 
-    def test_find_subgoals_returns_empty(self, db, tmp_base):
+    def test_find_subgoals_empty_goals_table(self, db, tmp_base):
         bw = _make_backward(db, base_dir=tmp_base)
         assert bw.find_subgoals({"problem": "test", "slug": "g"}) == []
 
