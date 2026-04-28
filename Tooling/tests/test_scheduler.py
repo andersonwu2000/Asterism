@@ -1812,3 +1812,103 @@ class TestSchedulerRegistration:
         kind, msg = reactor._event_queue.get_nowait()
         assert kind == "fatal"
         assert "_unregister_scheduler" in msg
+
+
+class TestSchedulerLiveness:
+    """P6 C40: pre-INSERT liveness check rejects dual instances."""
+
+    def test_first_register_succeeds(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Empty schedulers table → register succeeds."""
+        reactor = _make_reactor(db, tmp_path)
+        reactor._register_scheduler()
+        rows = db.execute("SELECT count(*) FROM schedulers").fetchone()
+        assert rows[0] == 1
+        assert reactor._scheduler_id is not None
+
+    def test_second_register_with_live_row_raises(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Pre-existing row with last_heartbeat within TTL → FatalError."""
+        from datetime import datetime, timezone
+        recent = datetime.now(timezone.utc).isoformat()
+        with db:
+            db.execute(
+                "INSERT INTO schedulers (host, pid, started_at, last_heartbeat) "
+                "VALUES (?, ?, ?, ?)",
+                ("other_host", 12345, recent, recent),
+            )
+        reactor = _make_reactor(db, tmp_path)
+        with pytest.raises(FatalError, match="scheduler already running"):
+            reactor._register_scheduler()
+        # Fatal event emitted
+        kind, msg = reactor._event_queue.get_nowait()
+        assert kind == "fatal"
+        assert "scheduler already running" in msg
+        assert "force-clear" in msg
+
+    def test_register_ignores_stale_row(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Pre-existing row with last_heartbeat older than TTL → register
+        succeeds. Stale row is NOT auto-deleted (operator runs
+        `asterism scheduler force-clear`)."""
+        from datetime import datetime, timedelta, timezone
+        stale = (
+            datetime.now(timezone.utc) - timedelta(seconds=300)
+        ).isoformat()
+        with db:
+            db.execute(
+                "INSERT INTO schedulers (host, pid, started_at, last_heartbeat) "
+                "VALUES (?, ?, ?, ?)",
+                ("dead_host", 999, stale, stale),
+            )
+        reactor = _make_reactor(db, tmp_path)
+        reactor._register_scheduler()
+        # Two rows now: stale (preserved) + new (live)
+        rows = db.execute("SELECT count(*) FROM schedulers").fetchone()
+        assert rows[0] == 2
+
+    def test_heartbeat_updates_last_heartbeat(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """_heartbeat() updates last_heartbeat for the registered row."""
+        reactor = _make_reactor(db, tmp_path)
+        reactor._register_scheduler()
+        original_hb = db.execute(
+            "SELECT last_heartbeat FROM schedulers WHERE id = ?",
+            (reactor._scheduler_id,),
+        ).fetchone()[0]
+        # Sleep enough that ISO timestamps differ; reactor uses
+        # datetime.now() with microsecond precision so even ~1ms suffices
+        import time
+        time.sleep(0.01)
+        reactor._heartbeat()
+        new_hb = db.execute(
+            "SELECT last_heartbeat FROM schedulers WHERE id = ?",
+            (reactor._scheduler_id,),
+        ).fetchone()[0]
+        assert new_hb > original_hb
+
+    def test_heartbeat_no_op_when_not_registered(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """If _scheduler_id is None (e.g. heartbeat called before
+        register), _heartbeat is a no-op — no exception."""
+        reactor = _make_reactor(db, tmp_path)
+        assert reactor._scheduler_id is None
+        reactor._heartbeat()  # should not raise
+
+    def test_liveness_query_sql_error_emits_fatal(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """SELECT live schedulers fail → fatal emitted + FatalError."""
+        reactor = _make_reactor(db, tmp_path)
+        reactor.conn = MagicMock()
+        reactor.conn.execute.side_effect = sqlite3.Error("simulated SELECT fail")
+        with pytest.raises(FatalError):
+            reactor._register_scheduler()
+        kind, msg = reactor._event_queue.get_nowait()
+        assert kind == "fatal"
+        assert "_register_scheduler" in msg

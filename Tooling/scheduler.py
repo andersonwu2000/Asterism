@@ -30,7 +30,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -155,6 +155,9 @@ class Reactor:
                     now = time.monotonic()
                     if now - last_tick >= self.config.tick_interval:
                         last_tick = now
+                        # P6 C40: heartbeat alongside structural refill
+                        # so other instances see this scheduler as live.
+                        self._heartbeat()
                         self._run_structural_refill()
                         self._try_spawn_from_queue()
                     continue
@@ -254,12 +257,58 @@ class Reactor:
         self._shutdown_flag = True
 
     # ------------------------------------------------------------------
-    # Scheduler liveness (minimal: register/unregister on daemon start/stop)
+    # Scheduler liveness — register/heartbeat/unregister
+    # P6 C40: pre-INSERT live check rejects dual instances per spec
+    # phase6_library.md ## In line 65 「scheduler 啟動時對每個 Problem
+    # 解析 META.md...」 + impl §6 schedulers liveness 字面.
     # ------------------------------------------------------------------
 
+    HEARTBEAT_TTL_SEC: int = 60  # rows older than this are considered stale
+
     def _register_scheduler(self) -> None:
-        """Insert a row into schedulers table; track id for cleanup."""
+        """Reject if a live scheduler row exists; otherwise INSERT.
+
+        P6 C40: a live scheduler row is one whose last_heartbeat is
+        within HEARTBEAT_TTL_SEC of now (default 60s — matches the
+        daemon's structural-refill tick + 2× cushion). If found, raise
+        FatalError so the second instance fails to start (visible to
+        the operator + scheduler row preserved as evidence).
+
+        Stale rows (last_heartbeat older than TTL) are NOT auto-deleted
+        here — operators run `asterism scheduler force-clear` (P6.C44)
+        to clean them. Auto-delete on startup would mask crashes where
+        a scheduler exited without _unregister_scheduler running.
+        """
         now = _now()
+        # Cutoff = now - TTL; ISO timestamps sort lexicographically.
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=self.HEARTBEAT_TTL_SEC)
+        ).isoformat()
+        try:
+            live = self.conn.execute(
+                "SELECT id, host, pid, started_at, last_heartbeat "
+                "FROM schedulers WHERE last_heartbeat > ?",
+                (cutoff,),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            self._event_queue.put(
+                ("fatal", f"_register_scheduler liveness query fail: {exc}")
+            )
+            raise FatalError(f"_register_scheduler fail: {exc}") from exc
+
+        if live:
+            details = ", ".join(
+                f"id={r[0]} host={r[1]} pid={r[2]} last_heartbeat={r[4]}"
+                for r in live
+            )
+            msg = (
+                f"scheduler already running ({len(live)} live row(s)): "
+                f"{details}. Run `asterism scheduler force-clear` to "
+                f"reset stale rows manually."
+            )
+            self._event_queue.put(("fatal", msg))
+            raise FatalError(msg)
+
         try:
             with self.conn:
                 cursor = self.conn.execute(
@@ -273,6 +322,28 @@ class Reactor:
                 ("fatal", f"_register_scheduler INSERT fail: {exc}")
             )
             raise FatalError(f"_register_scheduler fail: {exc}") from exc
+
+    def _heartbeat(self) -> None:
+        """Update last_heartbeat for this scheduler row.
+
+        Daemon loop calls this on each structural-refill tick so other
+        instances see the row as live. Best-effort: a write failure
+        emits fatal but does not raise — the daemon continues running
+        on the assumption the row will eventually update on a later
+        tick (avoids a transient SQLite contention killing the daemon).
+        """
+        if self._scheduler_id is None:
+            return
+        try:
+            with self.conn:
+                self.conn.execute(
+                    "UPDATE schedulers SET last_heartbeat = ? WHERE id = ?",
+                    (_now(), self._scheduler_id),
+                )
+        except sqlite3.Error as exc:
+            self._event_queue.put(
+                ("control_signal", f"_heartbeat update fail: {exc}")
+            )
 
     def _unregister_scheduler(self) -> None:
         """Remove scheduler row on clean daemon exit."""
