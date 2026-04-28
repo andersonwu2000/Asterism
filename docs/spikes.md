@@ -574,9 +574,9 @@ P3 blocked_pipelines IH-trap special-case 需對每個新 sub-Goal 算 `parent_s
 
 **跑法**：
 Fixture `Tooling/tests/fixtures/spikes/spike008_similarity.py`：
-- 合成 12 個 case（6 IH-trap / 5 非 IH-trap / 1 boundary）
-  - IH-trap cases：`P.erase x`、`l.tail`、`n-1`、`t.left`、`S \ {a}` 五種結構縮小 + boundary-2 單 quantifier drop
-  - 非 IH-trap cases：commutativity（+ vs *）、induction base case（nil）、list nil vs cons、不同 predicate 同 binder、無關 helper lemma；boundary-1 alpha-rename only
+- 合成 12 個 case（6 positive：5 IH-trap + boundary-2；6 negative：5 非 IH + boundary-1）
+  - IH-trap cases (positive)：`P.erase x`、`l.tail`、`n-1`、`t.left`、`S \ {a}` 五種結構縮小；boundary-2 單 quantifier drop（亦判 TRAP）
+  - 非 IH-trap cases (negative)：commutativity（+ vs *）、induction base case（nil）、list nil vs cons、不同 predicate 同 binder、無關 helper lemma；boundary-1 alpha-rename only（判 ok 不 TRAP）
 - 在 threshold=0.85 計 TP/FP/TN/FN；另掃 0.60–0.95 threshold sweep
 - AST diff：純設計分析，不實作
 
@@ -647,7 +647,7 @@ AST diff 設計分析（conceptual，未實作）：
 **環境**: 無 lake env（CI 無 Mathlib）；best-effort：Mathlib4 source 閱讀 + spike-001/003 timing 外推
 **狀態**: done
 
-> **Caveat（best-effort）**：本 spike 無法在 D:/Hadamard 真環境實測 isDefEq wall-clock。以下 timing 估算來自 spike-001 warm-cache 數據（`lake env lean` 啟動 ~2s）+ Mathlib4 issue/PR 中有記錄的 elaboration 時間 + 理論分析。**需 D:/Hadamard 真環境補量化 data**。
+> **Caveat（best-effort）**：本 spike 無法在 D:/Hadamard 真環境實測 isDefEq wall-clock。以下 timing 估算來自 spike-001 warm-cache 數據（`lake env lean` 啟動 ~2s）+ Mathlib4 issue/PR 中有記錄的 elaboration 時間 + 理論分析。**需 D:/Hadamard 真環境補量化 data**。**補測時機**：P3 demo cycle (C27) 跑 D2（IH-trap 提前抓到）時順帶量 isDefEq wall-clock，回填 D-09-1 caveat 段。
 
 **問題**：
 P3 dedupe.lean（impl §7.1）用 `Lean.Meta.isDefEq` 做 strict mode α-equiv 比對。需估算：
@@ -665,7 +665,7 @@ P3 dedupe.lean（impl §7.1）用 `Lean.Meta.isDefEq` 做 strict mode α-equiv �
 
 **isDefEq cost 估算**：
 - `Lean.Meta.isDefEq` 本身（in-process，忽略 subprocess overhead）：簡單 forall/term 比對 <0.1ms；帶 Mathlib typeclass 實例推導時最壞情況可到數秒（unification depth ∝ term complexity）
-- Mathlib4 已知 timing：`#check @Fin.val_last` elaboration ~5ms；跨 module isDefEq 估 ~10-50ms per pair（文獻參考：[Lean4 Issue #2441](https://github.com/leanprover/lean4/issues/) 記錄 `isDefEq` retry storm 在 complex type ~500ms–2s）
+- Mathlib4 已知 timing：`#check @Fin.val_last` elaboration ~5ms；跨 module isDefEq 估 ~10-50ms per pair（**caveat**：`isDefEq` retry storm 在 complex type 可達 ~500ms–2s 為 Lean4 社群常見 issue 反饋的 worst case 數量級；本 spike 未驗具體 issue 編號，C20 dedupe.lean 實作後若觀測到 retry storm 應補真實 reference）
 - subprocess overhead（每次 `lake env lean tools/dedupe.lean`）：warm cache ~2s（spike-001 無 Mathlib import base）；加 `import Mathlib` 則 ~22s warm（spike-001 Part 2）。**Dedupe.lean 無需 import Mathlib**（只需 `import Lean`，類似 validator.lean）→ per-subprocess-call overhead ~2s
 
 **100 lemma dedupe wall-clock projection**（subprocess mode，一 candidate 對 100 entries）：
@@ -712,7 +712,7 @@ theorem _check : <candidate> ↔ <entry> := by simp; try decide; try norm_num; r
 **環境**: 無 P2 real run logs（CI 全 mock、無真實 LLM 呼叫）；best-effort：讀 Backward.py query pattern 估算
 **狀態**: done
 
-> **Caveat（best-effort）**：本 spike 無實際 Backward/Builder 跑出的 log。以下 cache hit rate 估算基於 `Tooling/pipelines/backward.py` query pattern 分析 + sub-goal hash 重複機率理論分析。**需 P2 real run logs 補 quantitative data**。
+> **Caveat（best-effort）**：本 spike 無實際 Backward/Builder 跑出的 log。以下 cache hit rate 估算基於 `Tooling/pipelines/backward.py` query pattern 分析 + sub-goal hash 重複機率理論分析。**需 P2 real run logs 補 quantitative data**。**補測時機**：P3 demo cycle (C27) 跑 D1（dedupe 共享 sub-Goal）時順帶量 search_cache hit rate，回填 D-10-1 caveat 段。
 
 **問題**：
 P3 search_cache 對 `find_lemmas` / `find_subgoals` / `find_pattern` / `find_mathlib` 四個 stage 都有 cache。TTL per scope（mathlib=3600s / library=3600s / local_goals=300s / inventory=30s）是否合理？cache 值不值（hit rate 足夠高嗎）？決定 cache TTL 設定 + cache size budget。
@@ -828,7 +828,7 @@ C  app-lock, no-filter (Python rw + Lock)                    0   0.000  PASS
       COALESCE(blocked_pipelines, '[]'), '$[#]', ?
   )
   WHERE id = ? AND commit_state = 'live'
-    AND NOT json_type(blocked_pipelines, '$[0]') IS NULL  -- 可選去重 guard
+  -- 去重 guard 見下條（json_each EXISTS）
   ```
 - **不加 application-level lock**：SQLite WAL + single-statement atomicity 足夠；P3 無需
 - 去重 guard（避免 `['Backward','Backward']`）：在 SQL WHERE 加 `AND NOT EXISTS (SELECT 1 FROM json_each(COALESCE(blocked_pipelines,'[]')) WHERE value=?)` 或在 Python 端讀後 check（可接受，因 idempotent block 無害）
