@@ -255,8 +255,11 @@ class Reactor:
                     (socket.gethostname(), os.getpid(), now, now),
                 )
                 self._scheduler_id = cursor.lastrowid
-        except sqlite3.Error:
-            pass  # non-fatal: liveness check degrades gracefully
+        except sqlite3.Error as exc:
+            self._event_queue.put(
+                ("fatal", f"_register_scheduler INSERT fail: {exc}")
+            )
+            raise FatalError(f"_register_scheduler fail: {exc}") from exc
 
     def _unregister_scheduler(self) -> None:
         """Remove scheduler row on clean daemon exit."""
@@ -267,8 +270,10 @@ class Reactor:
                 self.conn.execute(
                     "DELETE FROM schedulers WHERE id = ?", (self._scheduler_id,)
                 )
-        except Exception:
-            pass
+        except sqlite3.Error as exc:
+            self._event_queue.put(
+                ("fatal", f"_unregister_scheduler DELETE fail: {exc}")
+            )
 
     # ------------------------------------------------------------------
     # DB control signal poll (IPC: asterism stop → daemon)
@@ -287,7 +292,10 @@ class Reactor:
                 "WHERE kind = 'control_signal' AND id > ? ORDER BY id ASC",
                 (self._last_seen_ctrl_id,),
             ).fetchall()
-        except sqlite3.Error:
+        except sqlite3.Error as exc:
+            self._event_queue.put(
+                ("fatal", f"control_signal poll SQL fail: {exc}")
+            )
             return
         for row_id, payload_json in rows:
             self._last_seen_ctrl_id = row_id

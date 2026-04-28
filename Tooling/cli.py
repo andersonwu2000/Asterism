@@ -423,6 +423,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_run = sub.add_parser("run", help="run Reactor in daemon mode (default) or --once")
     p_run.add_argument("--once", action="store_true", default=False,
                        help="[P1 legacy] drain queue then exit (default: daemon mode)")
+    p_run.add_argument("--daemon", action="store_true", default=False,
+                       help="[P1 legacy alias; daemon is default since P2] no-op for forward-compat")
 
     # ── stop ──────────────────────────────────────────────────
     p_stop = sub.add_parser("stop", help="send control signal to running daemon")

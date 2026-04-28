@@ -567,6 +567,14 @@ class TestParser:
         assert args.command == "run"
         assert args.once is False
 
+    def test_run_daemon_flag_still_parses(self):
+        """C17 R3 HIGH-1: --daemon kept as P1 forward-compat alias (no-op)."""
+        parser = build_parser()
+        args = parser.parse_args(["run", "--daemon"])
+        assert args.command == "run"
+        assert args.daemon is True
+        assert args.once is False
+
     def test_stop_default_parses(self):
         parser = build_parser()
         args = parser.parse_args(["stop"])

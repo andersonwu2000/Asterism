@@ -1398,3 +1398,115 @@ class TestHookPlaceholders:
         task = {"kind": "Builder", "target_id": "1"}
         reactor._run_step5_strategist_trigger(task, BuilderResult(outcome="proved"))
         assert db.execute("SELECT count(*) FROM events").fetchone()[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# 19. C17 R3 — IPC poll + scheduler register/unregister fail-shut
+# ---------------------------------------------------------------------------
+
+
+class TestDbControlSignalPoll:
+    """C17 R3 MED-2: IPC path tests for asterism stop → daemon."""
+
+    def test_poll_picks_up_cli_control_signal(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """events row {action,source=cli} → _event_queue gets ('control_signal', action)."""
+        reactor = _make_reactor(db, tmp_path)
+        reactor._last_seen_ctrl_id = 0
+        with db:
+            db.execute(
+                "INSERT INTO events (kind, payload, ts) VALUES (?, ?, ?)",
+                ("control_signal",
+                 json.dumps({"action": "shutdown", "source": "cli"}),
+                 "2026-01-01T00:00:00+00:00"),
+            )
+        reactor._poll_db_control_signals()
+        assert reactor._event_queue.get_nowait() == ("control_signal", "shutdown")
+
+    def test_poll_filters_non_cli_source(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """events row without source='cli' → not forwarded (avoids feedback loop)."""
+        reactor = _make_reactor(db, tmp_path)
+        reactor._last_seen_ctrl_id = 0
+        with db:
+            db.execute(
+                "INSERT INTO events (kind, payload, ts) VALUES (?, ?, ?)",
+                ("control_signal",
+                 json.dumps({"action": "shutdown", "source": "internal"}),
+                 "2026-01-01T00:00:00+00:00"),
+            )
+        reactor._poll_db_control_signals()
+        assert reactor._event_queue.empty()
+
+    def test_poll_skips_pre_startup_events(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """events row with id <= _last_seen_ctrl_id → skipped (don't process old signals)."""
+        with db:
+            db.execute(
+                "INSERT INTO events (kind, payload, ts) VALUES (?, ?, ?)",
+                ("control_signal",
+                 json.dumps({"action": "shutdown", "source": "cli"}),
+                 "2026-01-01T00:00:00+00:00"),
+            )
+            old_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        reactor = _make_reactor(db, tmp_path)
+        reactor._last_seen_ctrl_id = old_id  # snapshot at startup excludes this row
+        reactor._poll_db_control_signals()
+        assert reactor._event_queue.empty()
+
+    def test_poll_sql_error_emits_fatal(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """C17 R3 HIGH-2: sqlite3.Error during poll → ('fatal', ...) emitted, not silent.
+
+        Without this, asterism stop signals can be silently dropped — user sees
+        no feedback that daemon failed to receive.
+        """
+        reactor = _make_reactor(db, tmp_path)
+        reactor._last_seen_ctrl_id = 0
+        reactor.conn = MagicMock()
+        reactor.conn.execute.side_effect = sqlite3.Error("simulated DB fail")
+        reactor._poll_db_control_signals()
+        kind, msg = reactor._event_queue.get_nowait()
+        assert kind == "fatal"
+        assert "control_signal poll" in msg
+
+
+class TestSchedulerRegistration:
+    """C17 R3 HIGH-3 + MED-1: register/unregister must not silent-swallow."""
+
+    def test_register_sql_error_emits_fatal_and_raises(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """C17 R3 HIGH-3: INSERT into schedulers fail → fatal + FatalError raised.
+
+        Silent-swallow would let daemon run as zombie that asterism stop can't reach.
+        """
+        reactor = _make_reactor(db, tmp_path)
+        reactor.conn = MagicMock()
+        reactor.conn.__enter__ = MagicMock(return_value=reactor.conn)
+        reactor.conn.__exit__ = MagicMock(return_value=False)
+        reactor.conn.execute.side_effect = sqlite3.Error("simulated INSERT fail")
+        with pytest.raises(FatalError):
+            reactor._register_scheduler()
+        kind, msg = reactor._event_queue.get_nowait()
+        assert kind == "fatal"
+        assert "_register_scheduler" in msg
+
+    def test_unregister_sql_error_emits_fatal(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """C17 R3 MED-1: DELETE fail → fatal emitted (best-effort, no raise on shutdown)."""
+        reactor = _make_reactor(db, tmp_path)
+        reactor._scheduler_id = 999  # pretend registered
+        reactor.conn = MagicMock()
+        reactor.conn.__enter__ = MagicMock(return_value=reactor.conn)
+        reactor.conn.__exit__ = MagicMock(return_value=False)
+        reactor.conn.execute.side_effect = sqlite3.Error("simulated DELETE fail")
+        reactor._unregister_scheduler()
+        kind, msg = reactor._event_queue.get_nowait()
+        assert kind == "fatal"
+        assert "_unregister_scheduler" in msg
