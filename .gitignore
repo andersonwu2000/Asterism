@@ -11,3 +11,16 @@ asterism.db
 asterism.db-journal
 asterism.db-wal
 asterism.db-shm
+
+# Per-Problem runtime state (Problems are demo / smoke / acceptance
+# artifacts; commit specific Problems intentionally if needed)
+/Problems/
+/Library/
+
+# Orchestrator session state (audit_*.md are per-cycle audit reports;
+# log/ is dispatcher event archive; task.md is in-flight cycle plan)
+/AutoWorkspace/audit*.md
+/AutoWorkspace/audit*.output
+/AutoWorkspace/log/
+/AutoWorkspace/task.md
+/AutoWorkspace/backward_prompt.txt
