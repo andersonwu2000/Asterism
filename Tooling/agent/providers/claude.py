@@ -111,7 +111,7 @@ class ClaudeProvider(Provider):
                 stdin=subprocess.DEVNULL,   # avoid "no stdin data" warning
                 cwd=effective_cwd,
                 timeout=self.invoke_timeout,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
             )
         except subprocess.TimeoutExpired as exc:
             # subprocess.run() already killed the child; just surface the error.
@@ -182,6 +182,8 @@ class ClaudeProvider(Provider):
                 ["git", "status", "--porcelain"],
                 capture_output=True,
                 text=True,
+
+                encoding="utf-8", errors="replace",
                 cwd=self.repo_root,
                 timeout=_GIT_TIMEOUT,
             )

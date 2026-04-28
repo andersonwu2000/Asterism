@@ -186,6 +186,8 @@ def _run_lean_search(
             cwd=str(lake_cwd),
             capture_output=True,
             text=True,
+
+            encoding="utf-8", errors="replace",
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
