@@ -169,6 +169,27 @@ class TestGoalShowBlocked:
         out = capsys.readouterr().out
         assert "blocked:" not in out
 
+    def test_blocked_malformed_json_loud(self, db_path, capsys):
+        """C32 R3 MED-1 + LOW-3: malformed blocked_pipelines JSON must
+        produce a loud stderr surface + sys.exit(1) — not a silent skip.
+        Pins the silent-failure red-line invariant established by
+        C29 R3 (_extract_witness_block) extended to CLI display path."""
+        gid = _seed_goal(db_path, slug="g_corrupt")
+        conn = connect(db_path)
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE goals SET blocked_pipelines=? WHERE id=?",
+                    ("{not valid", gid),
+                )
+        finally:
+            conn.close()
+        with pytest.raises(SystemExit):
+            cmd_goal_show(_args(goal_id=str(gid)), db_path=db_path)
+        err = capsys.readouterr().err
+        assert "blocked_pipelines" in err
+        assert "malformed JSON" in err
+
 
 # ---------------------------------------------------------------------------
 # goal add --kind conjecture

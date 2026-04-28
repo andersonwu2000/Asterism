@@ -523,10 +523,22 @@ def cmd_goal_show(
                 print(f"  twin_of:   G{twin_of} ({t_slug}) "
                       f"[kind={t_kind} status={t_status}]")
         if blocked_pipelines:
+            # Loud surface on malformed JSON (silent-failure red line per
+            # C29 R3 "same-module exception surface consistency" invariant —
+            # answer_data.parse above also raises on malformed; blocked_
+            # pipelines must match). DB schema invariant (architecture.md
+            # L647): goals.blocked_pipelines is list-of-strings JSON; a
+            # parse error implies schema violation that operators should
+            # see, not a hidden empty.
             try:
                 bp_list = json.loads(blocked_pipelines)
-            except json.JSONDecodeError:
-                bp_list = None
+            except json.JSONDecodeError as exc:
+                print(
+                    f"error: goal {g_id} blocked_pipelines column "
+                    f"malformed JSON: {exc}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             if bp_list:
                 print(f"  blocked:   {', '.join(bp_list)}")
 
