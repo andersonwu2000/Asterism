@@ -321,11 +321,12 @@ class TestSchedulerBFSFilter:
 
 
 class TestSchedulerCascadeBackwardHook:
-    def test_exhausted_records_dead_attempt_and_inc_count(self, db, tmp_path):
+    def test_exhausted_records_dead_attempt(self, db, tmp_path):
+        """C25: cascade writes dead_attempts on non-success (in-memory
+        _failure_count removed; persistent block is the canonical signal)."""
         from Tooling.pipelines.backward import BackwardResult
         from Tooling.scheduler import Reactor, ReactorConfig
         gid = _insert_goal(db, slug="cascade_g")
-        # Pre-insert a Backward pipeline row so the FK is satisfied.
         _insert_pipeline(db, pid="pipe-bw", kind="Backward",
                           target_id=str(gid))
 
@@ -340,8 +341,6 @@ class TestSchedulerCascadeBackwardHook:
         ).fetchall()
         assert len(rows) == 1
         assert rows[0][0] == "exhausted"
-        # In-memory count also incremented
-        assert reactor._get_failure_count(str(gid), "Backward") == 1
 
     def test_5th_exhausted_blocks_via_failure_archive(self, db, tmp_path):
         from Tooling.pipelines.backward import BackwardResult

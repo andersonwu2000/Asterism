@@ -337,10 +337,11 @@ class TestBackwardDispatch:
 
         MockBackward.return_value.run.assert_called_once_with(99)
 
-    def test_backward_exhausted_increments_failure_count(
+    def test_backward_exhausted_records_dead_attempt(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
-        """Backward exhausted in _dispatch → failure_count incremented."""
+        """C25: Backward exhausted in _dispatch → dead_attempts row written
+        (was: _inc_failure_count on the removed in-memory dict)."""
         reactor = _make_reactor(db, tmp_path)
         _insert_pipeline_row(db, pid="pipe-77", target_id="77")
         task = {"id": 1, "kind": "Backward", "target_id": "77", "payload": None}
@@ -350,7 +351,12 @@ class TestBackwardDispatch:
             MockBackward.return_value.run.return_value = BackwardResult(outcome="exhausted")
             reactor._dispatch(task)
 
-        assert reactor._get_failure_count("77", "Backward") == 1
+        rows = db.execute(
+            "SELECT outcome FROM dead_attempts WHERE target_id = '77' "
+            "AND pipeline_kind = 'Backward'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == "exhausted"
 
 
 # ---------------------------------------------------------------------------
@@ -854,45 +860,46 @@ class TestFailureCountStopGap:
     def test_bfs_skips_backward_after_n_failures(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
-        """After N_block_after_failures Backward failures, BFS skips the goal."""
+        """C25: BFS skips goals whose persistent blocked_pipelines contains 'Backward'."""
+        from Tooling.subsystems.blocked_pipelines import block_pipeline
         goal_id = _insert_open_goal(db, tmp_path, slug="blocked")
         reactor = _make_reactor(db, tmp_path)
-        for _ in range(reactor.config.n_block_after_failures):
-            reactor._inc_failure_count(str(goal_id), "Backward")
+        block_pipeline(db, goal_id, "Backward")
 
         reactor._bfs_enqueue_backward()
 
         assert db.execute("SELECT count(*) FROM queue").fetchone()[0] == 0
 
-    def test_bfs_skips_builder_after_n_failures(
+    def test_bfs_skips_builder_after_persistent_block(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
-        """After N_block_after_failures Builder failures on goal, BFS skips strategies."""
+        """C25: BFS skips strategies whose parent goal has 'Builder' in blocked_pipelines."""
+        from Tooling.subsystems.blocked_pipelines import block_pipeline
         goal_id = _insert_open_goal(db, tmp_path, slug="bcap_g")
         _insert_strategy(db, tmp_path, goal_id, slug="bcap_s")
         reactor = _make_reactor(db, tmp_path)
-        for _ in range(reactor.config.n_block_after_failures):
-            reactor._inc_failure_count(str(goal_id), "Builder")
+        block_pipeline(db, goal_id, "Builder")
 
         reactor._bfs_enqueue_builder()
 
         assert db.execute("SELECT count(*) FROM queue").fetchone()[0] == 0
 
-    def test_failure_count_resets_on_new_instance(
+    def test_block_persists_across_reactor_instances(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
-        """In-memory failure count is not persisted; new Reactor starts from 0."""
+        """C25: persistent block survives scheduler restart (key advantage
+        over the removed in-memory _failure_count)."""
+        from Tooling.subsystems.blocked_pipelines import block_pipeline
         goal_id = _insert_open_goal(db, tmp_path, slug="reset_g")
         r1 = _make_reactor(db, tmp_path)
-        for _ in range(r1.config.n_block_after_failures):
-            r1._inc_failure_count(str(goal_id), "Backward")
+        block_pipeline(db, goal_id, "Backward")
         r1._bfs_enqueue_backward()
         assert db.execute("SELECT count(*) FROM queue").fetchone()[0] == 0
 
-        # New reactor: failure_count starts empty → goal is enqueued again
+        # New reactor: block remains because it's in the DB
         r2 = _make_reactor(db, tmp_path)
         r2._bfs_enqueue_backward()
-        assert db.execute("SELECT count(*) FROM queue").fetchone()[0] == 1
+        assert db.execute("SELECT count(*) FROM queue").fetchone()[0] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -980,21 +987,24 @@ class TestCascadeV2:
         ).fetchone()[0]
         assert status == "open"
 
-    def test_cascade_backward_increments_failure_on_exhausted(
+    def test_cascade_backward_records_dead_attempt_on_exhausted(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
-        """Backward exhausted/unproductive → failure_count incremented; success → no change."""
+        """C25: cascade writes dead_attempts on non-success outcomes (was:
+        _inc_failure_count on removed in-memory dict). success → no row."""
         reactor = _make_reactor(db, tmp_path)
         # C24 R3 MED-3: cascade now requires Backward pipeline row for FK.
         _insert_pipeline_row(db, pid="pipe-42", target_id="42")
         reactor._cascade_backward(42, BackwardResult(outcome="exhausted"))
-        assert reactor._get_failure_count("42", "Backward") == 1
-
         reactor._cascade_backward(42, BackwardResult(outcome="unproductive"))
-        assert reactor._get_failure_count("42", "Backward") == 2
-
         reactor._cascade_backward(42, BackwardResult(outcome="success"))
-        assert reactor._get_failure_count("42", "Backward") == 2  # success: no change
+
+        rows = db.execute(
+            "SELECT outcome FROM dead_attempts WHERE target_id = '42' "
+            "AND pipeline_kind = 'Backward' ORDER BY id"
+        ).fetchall()
+        assert [r[0] for r in rows] == ["exhausted", "unproductive"]
+        # success outcome does NOT write dead_attempts
 
 
 # ---------------------------------------------------------------------------
@@ -1407,14 +1417,22 @@ class TestBFSCommitStateFilter:
 
 
 class TestHookPlaceholders:
-    def test_step1_stale_filter_is_noop(
+    def test_step1_stale_filter_emits_event_for_orphan_target(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
-        """_run_step1_stale_filter does nothing; no exception raised."""
+        """C25: _run_step1_stale_filter detects strategy_id with no live row
+        and emits a cascade event with rule='stale_filter'. Reserved hook
+        for P4 cascade cancellation handling.
+        """
+        import json as _json
         reactor = _make_reactor(db, tmp_path)
-        task = {"kind": "Builder", "target_id": "1"}
+        task = {"kind": "Builder", "target_id": "9999"}  # no strategy 9999
         reactor._run_step1_stale_filter(task, BuilderResult(outcome="exhausted"))
-        assert db.execute("SELECT count(*) FROM events").fetchone()[0] == 0
+        rows = db.execute(
+            "SELECT payload FROM events WHERE kind = 'cascade'"
+        ).fetchall()
+        rules = [_json.loads(r[0]).get("rule") for r in rows]
+        assert "stale_filter" in rules
 
     def test_step5_strategist_trigger_is_noop(
         self, db: sqlite3.Connection, tmp_path: Path

@@ -633,10 +633,16 @@ class TestAC10ModelResolutionTwoLayer:
 
 class TestAC11RetryStopGap:
     """#11: After N_block_after_failures=5 Backward exhausted attempts on the
-    same Goal, structural refill skips that (Goal, Backward) tuple. Scheduler
-    restart resets the in-memory counter."""
+    same Goal, structural refill skips that (Goal, Backward) tuple.
+
+    P3 C25 update: in-memory _failure_count was removed; the canonical block
+    source is now persistent goals.blocked_pipelines (C24). The acceptance
+    behavior is the same — 5 failures → BFS skips — but the persistence
+    semantics flipped (now survives restart instead of resetting).
+    """
 
     def test_after_5_failures_bfs_skips_goal(self, tmp_path: Path) -> None:
+        from Tooling.subsystems.blocked_pipelines import block_pipeline
         _, conn = _make_db(tmp_path)
         goal_id = _insert_goal(conn, slug="g11", status="open", depth=0)
 
@@ -644,18 +650,19 @@ class TestAC11RetryStopGap:
                           ReactorConfig(base_dir=str(tmp_path)))
         reactor.conn = conn
 
-        # Simulate 5 prior Backward exhaustions on this goal
-        for _ in range(5):
-            reactor._inc_failure_count(str(goal_id), "Backward")
+        # P3 C25: persistent block via goals.blocked_pipelines (was 5x
+        # _inc_failure_count on the removed in-memory dict).
+        block_pipeline(conn, goal_id, "Backward")
 
         reactor._run_structural_refill()
 
         kinds = [r[0] for r in conn.execute(
             "SELECT kind FROM queue WHERE target_id=?", (str(goal_id),)
         ).fetchall()]
-        assert "Backward" not in kinds, f"should skip after 5 fails: {kinds}"
+        assert "Backward" not in kinds, f"should skip after block: {kinds}"
 
-    def test_4_failures_does_not_skip(self, tmp_path: Path) -> None:
+    def test_unblocked_goal_still_enqueued(self, tmp_path: Path) -> None:
+        """P3 C25: dual to test_after_5_failures — unblocked goal still gets enqueued."""
         _, conn = _make_db(tmp_path)
         goal_id = _insert_goal(conn, slug="g11b", status="open", depth=0)
 
@@ -663,30 +670,36 @@ class TestAC11RetryStopGap:
                           ReactorConfig(base_dir=str(tmp_path)))
         reactor.conn = conn
 
-        for _ in range(4):
-            reactor._inc_failure_count(str(goal_id), "Backward")
-
+        # No block applied
         reactor._run_structural_refill()
 
         kinds = [r[0] for r in conn.execute(
             "SELECT kind FROM queue WHERE target_id=?", (str(goal_id),)
         ).fetchall()]
-        assert "Backward" in kinds, f"4 fails should NOT skip: {kinds}"
+        assert "Backward" in kinds, f"unblocked should enqueue: {kinds}"
 
-    def test_fresh_reactor_resets_counter(self, tmp_path: Path) -> None:
-        """Restart resets in-memory counter (P3 will persist via blocked_pipelines)."""
+    def test_block_persists_across_reactor_instances(self, tmp_path: Path) -> None:
+        """P3 C25: persistent block survives scheduler restart. This is the
+        semantics flip from P2 (in-memory reset on restart) → C24 persistent
+        DB-backed block."""
+        from Tooling.subsystems.blocked_pipelines import block_pipeline
         _, conn = _make_db(tmp_path)
         goal_id = _insert_goal(conn, slug="g11c", status="open", depth=0)
 
-        # First reactor: 5 failures
         r1 = Reactor(str(tmp_path / "asterism.db"),
                      ReactorConfig(base_dir=str(tmp_path)))
         r1.conn = conn
-        for _ in range(5):
-            r1._inc_failure_count(str(goal_id), "Backward")
+        block_pipeline(conn, goal_id, "Backward")
 
-        # Fresh reactor instance: counter empty
+        # Fresh reactor: block persists in DB
         r2 = Reactor(str(tmp_path / "asterism.db"),
                      ReactorConfig(base_dir=str(tmp_path)))
         r2.conn = conn
-        assert r2._get_failure_count(str(goal_id), "Backward") == 0
+        from Tooling.subsystems.blocked_pipelines import is_blocked
+        assert is_blocked(conn, goal_id, "Backward") is True
+        # BFS in r2 still skips the blocked goal
+        r2._run_structural_refill()
+        kinds = [row[0] for row in conn.execute(
+            "SELECT kind FROM queue WHERE target_id=?", (str(goal_id),)
+        ).fetchall()]
+        assert "Backward" not in kinds

@@ -74,7 +74,10 @@ class Reactor:
         # pipeline_id → (target_id, kind); target_id as string
         self._running: dict[str, tuple[str, str]] = {}
         # (goal_or_strategy_id_str, pipeline_kind) → failure_count; in-memory stop-gap
-        self._failure_count: dict[tuple[str, str], int] = {}
+        # P2 in-memory retry cap removed in C25; persistent
+        # goals.blocked_pipelines (C24) is the canonical block source.
+        # `_failure_count` dict + _inc_failure_count + _get_failure_count
+        # all deleted; BFS filters on blocked_pipelines via is_blocked().
         self._paused: bool = False
         self._shutdown_flag: bool = False
         self._scheduler_id: int | None = None
@@ -322,8 +325,49 @@ class Reactor:
     # ------------------------------------------------------------------
 
     def _run_step1_stale_filter(self, task: dict, result: Any) -> None:
-        """P3: filter stale pipeline results before cascade. P2 no-op."""
-        pass  # P3 接手
+        """P3 C25: liveness check — filter results from stale pipeline rows.
+
+        A pipeline row is "stale" when its target row has commit_state !=
+        'live' (e.g. recovered after a CommitFault left the row pending) or
+        when the target row no longer exists at all. Such results should not
+        propagate into cascade — they would mark a deleted strategy
+        succeeded or write dead_attempts against an orphan goal.
+
+        Currently raises ValueError on detection (caller in _dispatch_event
+        does not yet branch on this — reserved hook). For P3 the filter is
+        defensive only; production silent_filter integration lands in P4
+        when cancellation cascades produce more stale-pipeline corner cases.
+        """
+        target_kind = task.get("kind")
+        target_id = task.get("target_id")
+        if target_kind == "Backward":
+            row = self.conn.execute(
+                "SELECT commit_state FROM goals WHERE id = ?",
+                (int(target_id),),
+            ).fetchone()
+            if row is None or row[0] != "live":
+                self._emit_event(
+                    "cascade",
+                    {
+                        "rule": "stale_filter",
+                        "task": task,
+                        "reason": "goal_not_live_or_missing",
+                    },
+                )
+        elif target_kind == "Builder":
+            row = self.conn.execute(
+                "SELECT commit_state FROM strategies WHERE id = ?",
+                (int(target_id),),
+            ).fetchone()
+            if row is None or row[0] != "live":
+                self._emit_event(
+                    "cascade",
+                    {
+                        "rule": "stale_filter",
+                        "task": task,
+                        "reason": "strategy_not_live_or_missing",
+                    },
+                )
 
     def _run_step2_cancellation(self, task: dict, result: Any) -> None:
         """Cancel same-Goal running pipelines when Builder proves the goal."""
@@ -381,10 +425,12 @@ class Reactor:
                 "SELECT goal_id FROM strategies WHERE id = ?", (strategy_id,)
             ).fetchone()
             if row:
-                self._inc_failure_count(str(row[0]), "Builder")
-                # P3 C24 R3 MED-1: phase3 §In line 37 字面「Backward / Builder
-                # 都會觸發 blocked_pipelines」. Builder dead_attempts already
-                # written by Builder._record_dead_attempts; just check threshold.
+                # P3 C24 R3 MED-1 + C25: phase3 §In line 37 字面「Backward /
+                # Builder 都會觸發 blocked_pipelines」. Builder dead_attempts
+                # already written by Builder._record_dead_attempts; just
+                # check threshold. In-memory _inc_failure_count call removed
+                # in C25 — persistent blocked_pipelines is the only canonical
+                # block source now.
                 from Tooling.stages.failure_archive import archive_check
                 archive_check(self.conn, int(row[0]), "Builder")
 
@@ -443,9 +489,9 @@ class Reactor:
                                        and IH-trap special-case).
         """
         if result.outcome != "success":
-            self._inc_failure_count(str(goal_id), "Backward")
+            # P3 C25: in-memory _inc_failure_count call removed; persistent
+            # goals.blocked_pipelines (C24) is the only canonical block source.
             self._record_backward_failure(goal_id, result.outcome)
-            # P3 C24: persistent blocked_pipelines via failure_archive.
             from Tooling.stages.failure_archive import (
                 archive_check,
                 archive_ih_trap,
@@ -643,17 +689,8 @@ class Reactor:
                 if update_ok:
                     invalidate_for_goals_write(self.conn)
                 continue
-            # Stop-gap: skip if Backward has failed n_block_after_failures times
-            # (in-memory; P3 C25 will remove this in favor of persistent
-            # goals.blocked_pipelines).
-            if (
-                self._get_failure_count(goal_id_s, "Backward")
-                >= self.config.n_block_after_failures
-            ):
-                continue
-            # P3 C24: persistent blocked_pipelines filter (impl §6.X /
-            # phase3_cache.md §In). Survives scheduler restart unlike
-            # in-memory _failure_count.
+            # P3 C24+C25: persistent blocked_pipelines is the canonical
+            # filter (in-memory _failure_count removed in C25).
             from Tooling.subsystems.blocked_pipelines import is_blocked
             if is_blocked(self.conn, int(goal_id), "Backward"):
                 continue
@@ -674,13 +711,8 @@ class Reactor:
         ).fetchall()
         for strategy_id, goal_id in rows:
             strategy_id_s = str(strategy_id)
-            # Stop-gap keyed on goal_id (per spec: dict[(goal_id, pipeline_kind)])
-            if (
-                self._get_failure_count(str(goal_id), "Builder")
-                >= self.config.n_block_after_failures
-            ):
-                continue
-            # P3 C24: persistent blocked_pipelines filter for Builder too.
+            # P3 C24+C25: persistent blocked_pipelines filter (in-memory
+            # _failure_count removed in C25).
             from Tooling.subsystems.blocked_pipelines import is_blocked
             if is_blocked(self.conn, int(goal_id), "Builder"):
                 continue
@@ -725,12 +757,9 @@ class Reactor:
     # Stop-gap failure count (in-memory; P3 持久化接手)
     # ------------------------------------------------------------------
 
-    def _get_failure_count(self, key_id: str, kind: str) -> int:
-        return self._failure_count.get((key_id, kind), 0)
-
-    def _inc_failure_count(self, key_id: str, kind: str) -> None:
-        key = (key_id, kind)
-        self._failure_count[key] = self._failure_count.get(key, 0) + 1
+    # _get_failure_count / _inc_failure_count removed in C25
+    # (P3 §任務序列 #10 字面 「移除 P2 in-memory retry cap」).
+    # Persistent goals.blocked_pipelines (C24) is the canonical replacement.
 
     # ------------------------------------------------------------------
     # Cancellation
