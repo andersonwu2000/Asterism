@@ -873,7 +873,7 @@ P4 Refuter pipeline 在 G.evidence 含 witness（Counterexample silver verdict �
 **Coverage 評估**：
 - ✅ 直接適用 short template：shape 1, 2, 4, 5, 9, 10 = **6/10 (60%)**——皆為 universal-quantifier-with-counterexample 形態（Refuter 主場景，Counterexample 也以此為主）
 - ❌ Template 不適用：shape 3, 6, 7, 8 = **4/10 (40%)**——這些 shape Refuter 必走 generic ¬G classical 路徑，不能套 witness template
-- 上述比例**不適用於 Counterexample silver verdict 寫的 witness**——因為 Counterexample evolution 只對 `∀x.P(x)` 形態的 conjecture 找得到 witness（其他 shape 在 Counterexample agent 階段就會以 unproductive 標記）。換言之、**evidence 真有 witness 的 conjecture，shape 必為 1/2/4/5/9/10 之一，short template 適用率 100%**。Catalog 中 shape 3/6/7/8 走的是 evidence 無 witness 的 generic 路徑
+- 上述比例**不適用於 Counterexample silver verdict 寫的 witness**——若 Counterexample evolution 行為符合 design 預期（只對 ∀x.P(x) 形態的 conjecture emit witness、其他 shape 在 Counterexample agent 階段以 unproductive 標記），則 evidence 真有 witness 的 conjecture shape 必落在 short template 適用區間（1/2/4/5/9/10）；Catalog 中 shape 3/6/7/8 走的是 evidence 無 witness 的 generic 路徑。**注意**：上述「適用率 100%」為循環推論（依賴 Counterexample agent 行為與 Refuter prompt + Lean elaborator well-typed 兩個未實 sample 的前提）、待 Counterexample 上線、N≥10 真實樣本回填驗
 
 **對 Refuter prompt design 的影響**：
 1. **Refuter prompt v1 採 dual-mode**：(a) `evidence.counterexample_witness` 存在 → short template；(b) 無 witness → generic ¬G classical 路徑
@@ -882,6 +882,9 @@ P4 Refuter pipeline 在 G.evidence 含 witness（Counterexample silver verdict �
 4. **Fallback path 必要**：4/10 shape 不適用 template。Counterexample 上線後，這些 shape 仍會走 evolution 但找不到 witness（unproductive） → Refuter 走 generic 路徑、blocked_pipelines 機制接 N=5 retry budget
 
 **Robust 度評估（heuristic、未實測）**：
+
+> **警示**：以下比例皆為 catalog 推論、無真實 Refuter agent 樣本支撐。**不應作為下游 cycle 的 budget 計算 / acceptance criteria 硬數值依據**——P4.C29 Refuter pipeline + P4.C33 Demo 真實 N>0 跑出來再 backfill 此處（同 spike-009/010 best-effort caveat 處理模式）。
+
 - shape 1/9 short template 預估 self_verify pass rate **80-90%**（最簡 anonymous constructor + numeric tactic）
 - shape 2/4 短 template 預估 **70-80%**（多元 anonymous constructor + 多步 tactic）
 - shape 5/10 預估 **60-70%**（嵌套 + 領域 tactic 依賴）
@@ -966,22 +969,24 @@ OK: no leaked processes
 
 **Lean elaboration 階段未捕到（兩 run 中 lean.exe count 始終=4=baseline）**：
 - lake env lean 在 0.6s / 3s window 內仍在 lake startup phase（resolving manifest / loading shared lib），尚未 fork lean.exe child
-- 較長 wait 才能 reproduce「kill 中段 lean elaboration」場景；但此 spike 結論不變——已驗 process tree kill 對 lake 全層級的覆蓋（包括 transient 子程序）
+- 較長 wait 才能 reproduce「kill 中段 lean elaboration」場景；但此 spike 結論不變——已驗 process tree kill 對 lake 全層級的覆蓋（包括 transient 子程序）。**Caveat（inference vs direct evidence）**：D-14-1 #1「Windows _kill_tree sufficient」結論基於「taskkill /T 用 ParentProcessId chain、與 process 內部狀態無關」的 OS-level inference + run 2 已 demonstrate 3 層深樹清理；evidence 比 wording suggest 弱、需端對端 cancellation test 補實
+- **補測時機**：P4.C31 Cancellation 真實實作後、跑端對端 test 用 `import Mathlib` 含重 transitive import 的 .lean 觸發 lean.exe child（>30s elaboration window）、於 mid-elaboration 下 cancel、驗 `children_after=[]` + 全層級 process tree 清理；可同時驗 POSIX 路徑（spike-014 純 Windows）
 
 **對 P4 cancellation design 的影響**：
 1. **`taskkill /F /T /PID` 對 lake subprocess 是充分的清理機制**：3 層深樹（parent → child → grandchild）內全部清乾淨；transient 子程序（mid-run 出現但 kill 時可能已退）也不漏
 2. **Tooling/lake.py:_kill_tree() 既存實作正確**：Windows path 直接走 `taskkill /F /T /PID`、跟 spike harness 一致；P4 cancellation 直接 reuse 此函式即可、無需擴展 fallback
-3. **無需 SIGKILL grace 機制**：phase4_conjecture.md ## Config 表「cancellation SIGTERM grace 5s（之後 SIGKILL）」是 POSIX 邏輯，Windows 上 `taskkill /F` 已是 immediate force-terminate（等同 SIGKILL），不存在「先 SIGTERM 等 5s 再 SIGKILL」的階梯。**對齊修正**：P4.C31 Cancellation 實作時 Windows 路徑直接 `taskkill /F /T`、POSIX 路徑保留 grace ladder（既存 _kill_tree 行為）
+3. **Windows path 既存 `_kill_tree` 對齊 spec、POSIX path 既存 `_kill_tree` 不對齊 spec**：phase4_conjecture.md ## Config 表「cancellation SIGTERM grace 5s（之後 SIGKILL）」是 POSIX 邏輯——Windows 上 `taskkill /F` 已是 immediate force-terminate（等同 SIGKILL）、不存在「先 SIGTERM 等 5s 再 SIGKILL」的階梯、既存 _kill_tree Windows path 對齊 spec ✓；**但 POSIX path 既存 `Tooling/lake.py:38-44` 為 `os.killpg(SIGKILL)` 單步、無 SIGTERM grace 階段、不滿足 phase4 spec § Config 「SIGTERM 5s grace」要求**。P4.C31 Cancellation 實作時 POSIX 路徑必須 extend 加 SIGTERM-wait-SIGKILL wrapper（既存 _kill_tree 可作為最終 SIGKILL step 復用、不可直接 reuse）
 4. **無 file handle leak**：test .lean unlink 成功、無 lock 殘留；P4 staging dir cleanup（cancel 後 remove staging）安全
 5. **kill 響應時間 < 0.21s**：P4 cancellation 白名單條 1-4 觸發後 kill 動作 < 0.5s 完成（含 wait + settle）；scheduler step3 cascade 接 cancellation 不會 stall
 
 **對 spec 的影響**：
-- `pipelines.md` § cancellation 的「SIGTERM 5s grace 後 SIGKILL」適用 POSIX；Windows 用 `taskkill /F` 一步到位的設計差異需在 phase4 doc 或 implementation 註記（不算 spec 變更、是 platform-specific 補充）
+- `pipelines.md` § cancellation 的「SIGTERM 5s grace 後 SIGKILL」適用 POSIX；Windows 用 `taskkill /F` 一步到位、設計差異需在 phase4 doc 或 implementation 註記（不算 spec 變更、是 platform-specific 補充）
+- **POSIX 路徑既存 `_kill_tree` 不滿足 phase4 spec § Config grace 要求**——非 spec 漂移（spec 字面是對的）、是 P1 lake.py 實作未 cover P4 才啟用的 grace ladder；P4.C31 Cancellation 必須 extend，不算 phase doc 修改
 
 **決策 D-14-1**：
-1. **Windows cancellation 採 `taskkill /F /T /PID` 一步**——既存 `Tooling/lake.py:_kill_tree()` 行為 sufficient；P4.C31 Cancellation 實作時 reuse 此函式、不需 extend
-2. **POSIX cancellation 保留 SIGTERM 5s grace + SIGKILL 階梯**（既存 _kill_tree 實作；spike 未真跑 POSIX 路徑、信賴 architecture spec + lake.py 既有測試）
-3. **無需引入 psutil 依賴**：spike 用 `wmic` + `tasklist` walk descendant tree 已驗證行為；P4.C31 Cancellation 實作層只需 reuse `_kill_tree()`、無需獨立 walk
+1. **Windows cancellation 採 `taskkill /F /T /PID` 一步**——既存 `Tooling/lake.py:_kill_tree()` Windows 分支 sufficient；P4.C31 Cancellation 實作時 reuse 此函式即可、不需 extend
+2. **POSIX cancellation 需新增 SIGTERM-5s-grace-SIGKILL wrapper**——**既存 `Tooling/lake.py:_kill_tree()` POSIX 分支為 `os.killpg(SIGKILL)` 單步、不滿足 phase4 spec § Config「SIGTERM grace 5s（之後 SIGKILL）」**。P4.C31 Cancellation 必須在 _kill_tree 之上 extend：先 `os.killpg(SIGTERM)` → `wait(timeout=5)` → 若仍 alive 才走既存 `_kill_tree()` 的 SIGKILL（既存函式作 final step 復用、不可直接 reuse 為唯一 kill 動作）。spike 未真跑 POSIX 路徑、此結論為 spec + lake.py source review derived
+3. **無需引入 psutil 依賴**：spike 用 `wmic` + `tasklist` walk descendant tree 已驗證行為；P4.C31 Cancellation 實作層只需 reuse `_kill_tree()` Windows + 新 wrapper for POSIX、無需獨立 walk
 4. **staging dir cleanup**：cancel 觸發後安全 `rmdir` 整個 staging 工作目錄（無 file handle leak 阻擋）
 
 ---

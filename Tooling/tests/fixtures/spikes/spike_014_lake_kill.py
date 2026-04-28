@@ -150,7 +150,7 @@ def main() -> int:
             try:
                 test_lean.unlink()
             except OSError:
-                pass
+                pass  # step 6 already reported leak; this is best-effort cleanup
 
 
 if __name__ == "__main__":
