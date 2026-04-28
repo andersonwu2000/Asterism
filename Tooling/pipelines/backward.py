@@ -22,7 +22,6 @@ Public API:
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -40,6 +39,8 @@ from Tooling.stages.failure_replay import failure_replay as _stage_failure_repla
 from Tooling.stages.find_lemmas import find_lemmas as _stage_find_lemmas
 from Tooling.stages.find_subgoals import find_subgoals as _stage_find_subgoals
 from Tooling.stages.validator import validate
+from Tooling.subsystems.dedupe import dedupe as _stage_dedupe
+from Tooling.subsystems.similarity import parent_subgoal_max_similarity
 from Tooling.agent.provider import AgentResponse, FallbackChain, ModelResolver
 
 
@@ -210,29 +211,67 @@ class Backward:
         return obj
 
     # ------------------------------------------------------------------
-    # Stage: dedupe (local) — statement_hash SHA256
+    # Stage: dedupe (local) — dedupe.lean via Tooling.subsystems.dedupe
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _normalize_hash(statement: str) -> str:
-        normalized = re.sub(r'\s+', ' ', statement.strip())
-        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    def _dedupe(
+        self,
+        subgoals: list[dict],
+        staging_dir: str,
+    ) -> list[dict]:
+        """Remove subgoals duplicating an existing live Goal or another
+        sub-goal in the same proposal.
 
-    def _dedupe(self, subgoals: list[dict]) -> list[dict]:
-        """Remove subgoals duplicating either an existing goal (DB lookup) or
-        a previously-seen sub-goal in the same proposal."""
+        P3 C23 fully replaces the P2 statement_hash short-circuit with
+        dedupe.lean (Lean.Meta.isDefEq strict mode). Each candidate
+        sub-goal is written to a temporary staging .lean file then compared
+        against the entries list (live goals in DB) via subprocess.
+
+        Returns the unique sub-goals (statement_hash field is no longer
+        populated; spec §C23 directs full replacement of statement_hash
+        code, leaving the column NULL for new sub-goals).
+        """
+        # Build entries list from live goals across the DB (single SELECT).
+        entry_rows = self.conn.execute(
+            "SELECT id, lean_path FROM goals WHERE commit_state = 'live'"
+        ).fetchall()
+        entries = [{"id": int(r[0]), "lean_path": str(r[1])} for r in entry_rows]
+
         seen_hashes: set[str] = set()
         unique: list[dict] = []
         for sg in subgoals:
-            h = self._normalize_hash(sg.get("statement", ""))
-            if h in seen_hashes:
+            statement = sg.get("statement", "")
+            # Within-proposal dedup: cheap text-equal check first.
+            text_key = statement.strip()
+            if text_key in seen_hashes:
                 continue
-            row = self.conn.execute(
-                "SELECT id FROM goals WHERE statement_hash = ?", (h,)
-            ).fetchone()
-            if row is None:
-                seen_hashes.add(h)
-                unique.append({**sg, "statement_hash": h})
+
+            # Build a temporary candidate file for dedupe.lean.
+            slug = sg.get("slug", f"sg_{len(unique)}")
+            cand_path = Path(staging_dir) / f"_dedupe_cand_{slug}.lean"
+            cand_path.parent.mkdir(parents=True, exist_ok=True)
+            cand_path.write_text(
+                f"theorem _candidate : {statement} := sorry\n",
+                encoding="utf-8",
+            )
+
+            try:
+                result = _stage_dedupe(
+                    cand_path,
+                    entries,
+                    conn=self.conn,
+                    mode="strict",
+                )
+            finally:
+                cand_path.unlink(missing_ok=True)
+
+            if result.outcome == "hit":
+                # Already exists as goal entry_id — skip.
+                continue
+            # outcome == 'novel' (or 'timeout' fallthrough — accept as novel
+            # to keep the agent moving; cache layer surfaces timeouts)
+            seen_hashes.add(text_key)
+            unique.append(sg)
         return unique
 
     # ------------------------------------------------------------------
@@ -374,6 +413,13 @@ class Backward:
             encoding="utf-8",
         )
 
+        # P3 C23 IH-trap signal: token Jaccard between parent statement and
+        # each sub-goal statement; max → strategies.parent_subgoal_max_similarity.
+        # P7 Strategist consumes this; P3 only stores it.
+        parent_statement = goal.get("question") or ""
+        sg_statements = [sg.get("statement", "") for sg in subgoals]
+        ih_sim = parent_subgoal_max_similarity(parent_statement, sg_statements)
+
         # Step 1: begin_batch — INSERT strategy + all subgoal goals (main ops)
         # + INSERT strategy_subgoals junction rows (junction_ops_factory)
         # ALL atomic in one TX.
@@ -386,10 +432,14 @@ class Backward:
                     "lean_path": strategy_lean_path,
                     "status": "proposed",
                     "created_by": pipeline_id,
+                    "parent_subgoal_max_similarity": ih_sim,
                 },
             }
         ]
         for sg in subgoals:
+            # P3 C23 完全取代 P2 statement_hash code; column left NULL for
+            # backward-origin sub-goals. dedupe.lean isDefEq is the new
+            # uniqueness contract (impl §7.1).
             ops.append({
                 "table": "goals",
                 "op": "insert",
@@ -397,7 +447,6 @@ class Backward:
                     "problem": problem,
                     "slug": sg["slug"],
                     "lean_path": sg["lean_path"],
-                    "statement_hash": sg["statement_hash"],
                     "origin": "backward",
                     "kind": "theorem",
                     "status": "open",
@@ -608,7 +657,7 @@ class Backward:
             if not subgoals_raw:
                 return BackwardResult(outcome="unproductive")
 
-            subgoals = self._dedupe(subgoals_raw)
+            subgoals = self._dedupe(subgoals_raw, staging_dir)
             if not subgoals:
                 return BackwardResult(outcome="unproductive")
 

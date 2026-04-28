@@ -34,6 +34,16 @@ def tmp_base(tmp_path):
     return str(tmp_path)
 
 
+@pytest.fixture(autouse=True)
+def _dedupe_mock_force_miss(monkeypatch):
+    """C23: dedupe.lean is wired into Backward._dedupe via subprocess. Most
+    test_backward.py tests don't care about dedupe details — force_miss so
+    every candidate counts as novel and tests don't time out on real lake
+    invocation. TestDedupe overrides per-test for dedupe-specific behavior.
+    """
+    monkeypatch.setenv("DEDUPE_MOCK", "force_miss")
+
+
 def _insert_goal(
     conn,
     problem: str = "test",
@@ -200,85 +210,61 @@ class TestParseProposal:
 # Normalize hash / dedupe
 # ---------------------------------------------------------------------------
 
-class TestNormalizeHash:
-    def test_whitespace_collapsed(self):
-        h1 = Backward._normalize_hash("∀  n  :  ℕ,  n + 0 = n")
-        h2 = Backward._normalize_hash("∀ n : ℕ, n + 0 = n")
-        assert h1 == h2
-
-    def test_leading_trailing_stripped(self):
-        h1 = Backward._normalize_hash("  True  ")
-        h2 = Backward._normalize_hash("True")
-        assert h1 == h2
-
-    def test_different_statements_differ(self):
-        assert Backward._normalize_hash("True") != Backward._normalize_hash("False")
+# C23 removed Backward._normalize_hash (P2 statement_hash 完全取代 by dedupe.lean).
+# Equivalent isDefEq behavior is tested in test_dedupe.py + test_backward.py::TestDedupe.
 
 
 class TestDedupe:
-    def test_new_statement_passes(self, db, tmp_base):
+    """C23: dedupe.lean (Lean.Meta.isDefEq) replaces P2 statement_hash.
+
+    Subprocess is mocked via DEDUPE_MOCK env hook (force_hit / force_miss);
+    these tests assert the wrapper behavior in Backward._dedupe — within-
+    proposal text-equal short-circuit, subprocess call count, slug
+    preservation. Real isDefEq behavior is tested in test_dedupe.py.
+    """
+
+    def test_force_miss_keeps_all_unique(self, db, tmp_base, monkeypatch):
+        monkeypatch.setenv("DEDUPE_MOCK", "force_miss")
         bw = _make_backward(db, base_dir=tmp_base)
         subgoals = [{"slug": "sub1", "statement": "1 + 1 = 2"}]
-        result = bw._dedupe(subgoals)
+        result = bw._dedupe(subgoals, str(tmp_base))
         assert len(result) == 1
-        assert "statement_hash" in result[0]
+        assert result[0]["slug"] == "sub1"
+        # statement_hash no longer populated (C23 完全取代)
+        assert "statement_hash" not in result[0] or result[0].get("statement_hash") is None
 
-    def test_existing_hash_filtered(self, db, tmp_base):
-        statement = "∀ n : ℕ, n + 0 = n"
-        h = Backward._normalize_hash(statement)
-        with db:
-            db.execute(
-                "INSERT INTO goals "
-                "(problem, slug, lean_path, statement_hash, origin, kind, status, "
-                "commit_state, created_at, updated_at) "
-                "VALUES ('test', 'existing', 'Problems/test/existing.lean', ?, "
-                "'root', 'theorem', 'open', 'live', datetime('now'), datetime('now'))",
-                (h,),
-            )
+    def test_force_hit_filters_all(self, db, tmp_base, monkeypatch):
+        """When dedupe.lean reports hit for every candidate, all are filtered."""
+        monkeypatch.setenv("DEDUPE_MOCK", "force_hit")
+        # force_hit needs entries non-empty; insert a placeholder live goal.
+        _insert_goal(db, slug="seed_goal")
         bw = _make_backward(db, base_dir=tmp_base)
-        result = bw._dedupe([{"slug": "sub1", "statement": statement}])
+        subgoals = [{"slug": "sub1", "statement": "1 + 1 = 2"}]
+        result = bw._dedupe(subgoals, str(tmp_base))
         assert result == []
 
-    def test_hash_stored_in_result(self, db, tmp_base):
-        bw = _make_backward(db, base_dir=tmp_base)
-        subgoals = [{"slug": "s1", "statement": "True"}]
-        result = bw._dedupe(subgoals)
-        expected_hash = Backward._normalize_hash("True")
-        assert result[0]["statement_hash"] == expected_hash
-
-    def test_partial_dedupe(self, db, tmp_base):
-        existing_stmt = "∀ n : ℕ, n = n"
-        h = Backward._normalize_hash(existing_stmt)
-        with db:
-            db.execute(
-                "INSERT INTO goals "
-                "(problem, slug, lean_path, statement_hash, origin, kind, status, "
-                "commit_state, created_at, updated_at) "
-                "VALUES ('test', 'dup', 'Problems/test/dup.lean', ?, "
-                "'root', 'theorem', 'open', 'live', datetime('now'), datetime('now'))",
-                (h,),
-            )
-        bw = _make_backward(db, base_dir=tmp_base)
-        subgoals = [
-            {"slug": "sub1", "statement": existing_stmt},
-            {"slug": "sub2", "statement": "True"},
-        ]
-        result = bw._dedupe(subgoals)
-        assert len(result) == 1
-        assert result[0]["slug"] == "sub2"
-
-    def test_intra_proposal_dedupe(self, db, tmp_base):
-        """Two sub-goals in the same proposal sharing a statement should
-        collapse to one — agent occasionally proposes redundant sub-goals."""
+    def test_intra_proposal_text_dedup(self, db, tmp_base, monkeypatch):
+        """Same-text sub-goals in one proposal collapse before subprocess
+        is even called (within-proposal cheap text-equal check)."""
+        monkeypatch.setenv("DEDUPE_MOCK", "force_miss")
         bw = _make_backward(db, base_dir=tmp_base)
         subgoals = [
             {"slug": "sub1", "statement": "1 + 1 = 2"},
-            {"slug": "sub2", "statement": "1 + 1 = 2"},  # duplicate stmt
+            {"slug": "sub2", "statement": "1 + 1 = 2"},  # duplicate text
             {"slug": "sub3", "statement": "2 + 2 = 4"},
         ]
-        result = bw._dedupe(subgoals)
+        result = bw._dedupe(subgoals, str(tmp_base))
         assert len(result) == 2
         assert {sg["slug"] for sg in result} == {"sub1", "sub3"}
+
+    def test_no_statement_hash_in_output(self, db, tmp_base, monkeypatch):
+        """C23 spec: 完全取代 P2 statement_hash code — column NULL for new sub-goals."""
+        monkeypatch.setenv("DEDUPE_MOCK", "force_miss")
+        bw = _make_backward(db, base_dir=tmp_base)
+        result = bw._dedupe(
+            [{"slug": "sub1", "statement": "True"}], str(tmp_base)
+        )
+        assert result[0].get("statement_hash") is None or "statement_hash" not in result[0]
 
 
 # ---------------------------------------------------------------------------
@@ -303,22 +289,16 @@ class TestAgentStage:
         result = bw.run(goal_id)
         assert result.outcome == "unproductive"
 
-    def test_unproductive_all_dupes(self, db, tmp_base):
-        stmt = "True"
-        h = Backward._normalize_hash(stmt)
-        with db:
-            db.execute(
-                "INSERT INTO goals "
-                "(problem, slug, lean_path, statement_hash, origin, kind, status, "
-                "commit_state, created_at, updated_at) "
-                "VALUES ('test', 'dup', 'Problems/test/dup.lean', ?, "
-                "'root', 'theorem', 'open', 'live', datetime('now'), datetime('now'))",
-                (h,),
-            )
+    def test_unproductive_all_dupes(self, db, tmp_base, monkeypatch):
+        """C23: when dedupe.lean reports every sub-goal is a hit (duplicate),
+        Backward returns unproductive."""
+        monkeypatch.setenv("DEDUPE_MOCK", "force_hit")
+        # force_hit needs entries non-empty
+        _insert_goal(db, slug="seed_for_dedupe")
         chain = MagicMock(spec=FallbackChain)
         proposal = {
             "combinator": "And",
-            "subgoals": [{"slug": "sub1", "statement": stmt}],
+            "subgoals": [{"slug": "sub1", "statement": "True"}],
             "leaf_claims": [],
         }
         chain.run.return_value = (_make_response(proposal), "success")
