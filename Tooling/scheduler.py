@@ -22,6 +22,7 @@ import json
 import os
 import queue
 import signal
+import socket
 import sqlite3
 import sys
 import threading
@@ -75,6 +76,8 @@ class Reactor:
         self._failure_count: dict[tuple[str, str], int] = {}
         self._paused: bool = False
         self._shutdown_flag: bool = False
+        self._scheduler_id: int | None = None
+        self._last_seen_ctrl_id: int = 0
 
     # ------------------------------------------------------------------
     # Startup
@@ -111,8 +114,20 @@ class Reactor:
     # ------------------------------------------------------------------
 
     def run_daemon(self) -> None:
-        """Daemon loop: block on _event_queue; 30s tick → structural refill."""
+        """Daemon loop: block on _event_queue; 30s tick → structural refill.
+
+        Control signal IPC: asterism stop inserts a control_signal event with
+        source='cli' into the DB. _poll_db_control_signals() reads it every
+        ~2s and enqueues to _event_queue so _handle_control_signal responds
+        within the 5s shutdown window (impl §6.5).
+        """
         self.startup()
+        self._register_scheduler()
+        # Snapshot current max control_signal id so we ignore pre-existing rows.
+        row = self.conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM events WHERE kind = 'control_signal'"
+        ).fetchone()
+        self._last_seen_ctrl_id = row[0]
         self._pool = ThreadPoolExecutor(max_workers=self.config.pool_size)
         self._run_structural_refill()
         self._try_spawn_from_queue()
@@ -120,18 +135,23 @@ class Reactor:
         try:
             while not self._shutdown_flag:
                 elapsed = time.monotonic() - last_tick
-                wait = max(0.1, self.config.tick_interval - elapsed)
+                # Cap wait at 2s so DB control_signal polling is timely (≤5s response).
+                wait = max(0.1, min(self.config.tick_interval - elapsed, 2.0))
                 try:
                     event = self._event_queue.get(timeout=wait)
                 except queue.Empty:
-                    last_tick = time.monotonic()
-                    self._run_structural_refill()
-                    self._try_spawn_from_queue()
+                    self._poll_db_control_signals()
+                    now = time.monotonic()
+                    if now - last_tick >= self.config.tick_interval:
+                        last_tick = now
+                        self._run_structural_refill()
+                        self._try_spawn_from_queue()
                     continue
                 self._dispatch_event(event)
                 if not self._shutdown_flag:
                     self._try_spawn_from_queue()
         finally:
+            self._unregister_scheduler()
             if self._pool is not None:
                 self._pool.shutdown(wait=False)
 
@@ -219,6 +239,67 @@ class Reactor:
         """Fatal event: emit to DB and halt reactor."""
         self._emit_fatal(error)
         self._shutdown_flag = True
+
+    # ------------------------------------------------------------------
+    # Scheduler liveness (minimal: register/unregister on daemon start/stop)
+    # ------------------------------------------------------------------
+
+    def _register_scheduler(self) -> None:
+        """Insert a row into schedulers table; track id for cleanup."""
+        now = _now()
+        try:
+            with self.conn:
+                cursor = self.conn.execute(
+                    "INSERT INTO schedulers (host, pid, started_at, last_heartbeat) "
+                    "VALUES (?, ?, ?, ?)",
+                    (socket.gethostname(), os.getpid(), now, now),
+                )
+                self._scheduler_id = cursor.lastrowid
+        except sqlite3.Error:
+            pass  # non-fatal: liveness check degrades gracefully
+
+    def _unregister_scheduler(self) -> None:
+        """Remove scheduler row on clean daemon exit."""
+        if self._scheduler_id is None:
+            return
+        try:
+            with self.conn:
+                self.conn.execute(
+                    "DELETE FROM schedulers WHERE id = ?", (self._scheduler_id,)
+                )
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # DB control signal poll (IPC: asterism stop → daemon)
+    # ------------------------------------------------------------------
+
+    def _poll_db_control_signals(self) -> None:
+        """Read control_signal events inserted by CLI (source='cli') since last poll.
+
+        Filters on source='cli' to skip internal diagnostic events emitted by
+        _handle_control_signal, which would otherwise create a feedback loop.
+        Only actions in (pause, resume, shutdown) are forwarded to _event_queue.
+        """
+        try:
+            rows = self.conn.execute(
+                "SELECT id, payload FROM events "
+                "WHERE kind = 'control_signal' AND id > ? ORDER BY id ASC",
+                (self._last_seen_ctrl_id,),
+            ).fetchall()
+        except sqlite3.Error:
+            return
+        for row_id, payload_json in rows:
+            self._last_seen_ctrl_id = row_id
+            try:
+                payload = json.loads(payload_json) if payload_json else {}
+            except json.JSONDecodeError:
+                continue
+            if payload.get("source") != "cli":
+                continue
+            action = payload.get("action", "")
+            if action in ("pause", "resume", "shutdown"):
+                self._event_queue.put(("control_signal", action))
 
     # ------------------------------------------------------------------
     # 6-step cycle steps (P2)

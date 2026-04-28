@@ -193,15 +193,70 @@ def cmd_run(
     db_path: Path | None = None,
     base_dir: Path | None = None,
 ) -> None:
-    """Start Reactor: recover_scan → queue drain → exit.
+    """Start Reactor in daemon mode (default) or single-shot (--once).
 
-    --once and --daemon are P1-equivalent (both exit after queue empties).
-    P2+ will implement true daemon blocking on event_bus for --daemon.
+    Default (no flag): run_daemon() — blocks on event_queue, 30s structural
+    refill tick, responds to control_signal from `asterism stop`.
+    --once: P1 legacy single-shot drain-queue-then-exit.
     """
     db = db_path or _DEFAULT_DB
     base = str(base_dir or _DEFAULT_BASE)
     cfg = ReactorConfig(base_dir=base)
-    Reactor(db, cfg).run()
+    reactor = Reactor(db, cfg)
+    if getattr(args, "once", False):
+        reactor.run()
+    else:
+        reactor.run_daemon()
+
+
+# ──────────────────────────────────────────────────────────────
+# stop
+# ──────────────────────────────────────────────────────────────
+
+
+def cmd_stop(
+    args: Any,
+    db_path: Path | None = None,
+) -> None:
+    """Send a control signal to a running daemon via the DB events table.
+
+    IPC mechanism: INSERT events row with kind='control_signal' and
+    payload={'action': <action>, 'source': 'cli'}. The daemon's
+    _poll_db_control_signals() picks it up within ~2s and enqueues to
+    _event_queue so _handle_control_signal responds within the 5s window.
+
+    If no scheduler row exists in the schedulers table, the daemon is
+    not running — print a notice and exit 0 without inserting anything.
+    """
+    db = db_path or _DEFAULT_DB
+    conn = connect(db)
+    try:
+        init_schema(conn)
+        count = conn.execute("SELECT COUNT(*) FROM schedulers").fetchone()[0]
+        if count == 0:
+            print("no scheduler running")
+            return
+
+        action = "shutdown"
+        if getattr(args, "all", False):
+            action = "shutdown"
+        elif getattr(args, "signal", None):
+            action = args.signal
+
+        payload = json.dumps({"action": action, "source": "cli"})
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT INTO events (kind, payload, ts) VALUES (?, ?, ?)",
+                    ("control_signal", payload, _now()),
+                )
+        except Exception as exc:
+            print(f"error: failed to send control signal: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"sent {action} signal to scheduler")
+    finally:
+        conn.close()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -365,12 +420,21 @@ def build_parser() -> argparse.ArgumentParser:
                         help="integer ID or G_N format")
 
     # ── run ───────────────────────────────────────────────────
-    p_run = sub.add_parser("run", help="run the Reactor (drain queue then exit)")
-    mode = p_run.add_mutually_exclusive_group()
-    mode.add_argument("--once", action="store_true", default=False,
-                      help="[P1 default] drain queue then exit")
-    mode.add_argument("--daemon", action="store_true", default=False,
-                      help="[P2+ only; P1 behavior identical to --once]")
+    p_run = sub.add_parser("run", help="run Reactor in daemon mode (default) or --once")
+    p_run.add_argument("--once", action="store_true", default=False,
+                       help="[P1 legacy] drain queue then exit (default: daemon mode)")
+
+    # ── stop ──────────────────────────────────────────────────
+    p_stop = sub.add_parser("stop", help="send control signal to running daemon")
+    p_stop.add_argument(
+        "--signal", metavar="ACTION", default="shutdown",
+        choices=["pause", "resume", "shutdown"],
+        help="control signal to send: pause | resume | shutdown (default: shutdown)",
+    )
+    p_stop.add_argument(
+        "--all", action="store_true", default=False,
+        help="stop all schedulers (equivalent to --signal shutdown)",
+    )
 
     # ── db ────────────────────────────────────────────────────
     p_db = sub.add_parser("db", help="database utilities")
@@ -393,6 +457,8 @@ def main(argv: list[str] | None = None) -> None:
             cmd_goal_show(args)
     elif args.command == "run":
         cmd_run(args)
+    elif args.command == "stop":
+        cmd_stop(args)
     elif args.command == "db":
         if args.db_command == "recover":
             cmd_db_recover(args)

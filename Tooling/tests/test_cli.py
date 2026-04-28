@@ -23,6 +23,7 @@ from Tooling.cli import (
     cmd_goal_show,
     cmd_init,
     cmd_run,
+    cmd_stop,
 )
 from Tooling.db.connect import connect, init_schema
 
@@ -259,9 +260,9 @@ class TestGoalAdd:
 
 
 class TestRun:
-    def test_calls_reactor_run(self, tmp_path):
+    def test_once_calls_reactor_run(self, tmp_path):
         db_path = _db(tmp_path)
-        args = _args(once=True, daemon=False)
+        args = _args(once=True)
         with patch("Tooling.cli.Reactor") as MockReactor:
             instance = MockReactor.return_value
             # Reactor.run() triggers sys.exit(0) on empty queue; mock to avoid that.
@@ -271,17 +272,130 @@ class TestRun:
         assert exc.value.code == 0
         instance.run.assert_called_once()
 
-    def test_reactor_receives_config(self, tmp_path):
+    def test_default_calls_run_daemon(self, tmp_path):
+        """No --once flag → daemon mode (run_daemon)."""
         db_path = _db(tmp_path)
-        args = _args(once=False, daemon=True)
+        args = _args(once=False)
         with patch("Tooling.cli.Reactor") as MockReactor:
             instance = MockReactor.return_value
-            instance.run.side_effect = SystemExit(0)
+            instance.run_daemon.side_effect = SystemExit(0)
+            with pytest.raises(SystemExit) as exc:
+                cmd_run(args, db_path=db_path, base_dir=tmp_path)
+        assert exc.value.code == 0
+        instance.run_daemon.assert_called_once()
+
+    def test_reactor_receives_db_path(self, tmp_path):
+        db_path = _db(tmp_path)
+        args = _args(once=False)
+        with patch("Tooling.cli.Reactor") as MockReactor:
+            instance = MockReactor.return_value
+            instance.run_daemon.side_effect = SystemExit(0)
             with pytest.raises(SystemExit):
                 cmd_run(args, db_path=db_path, base_dir=tmp_path)
-        # Reactor should have been instantiated with db_path and a ReactorConfig.
+        # Reactor should have been instantiated with db_path as first positional arg.
         call_args = MockReactor.call_args
-        assert call_args[0][0] == db_path  # first positional arg is db_path
+        assert call_args[0][0] == db_path
+
+
+# ──────────────────────────────────────────────────────────────
+# stop
+# ──────────────────────────────────────────────────────────────
+
+
+class TestStop:
+    def _insert_scheduler(self, conn):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "INSERT INTO schedulers (host, pid, started_at, last_heartbeat) "
+            "VALUES (?, ?, ?, ?)",
+            ("testhost", 12345, now, now),
+        )
+        conn.commit()
+
+    def test_no_scheduler_prints_message_no_event(self, tmp_path, capsys):
+        """No scheduler row → print notice, no event inserted, exit 0."""
+        db_path = _db(tmp_path)
+        cmd_stop(_args(signal="shutdown", all=False), db_path=db_path)
+        out = capsys.readouterr().out
+        assert "no scheduler running" in out
+        conn = connect(db_path)
+        count = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE kind='control_signal'"
+        ).fetchone()[0]
+        conn.close()
+        assert count == 0
+
+    def test_with_scheduler_inserts_shutdown_event(self, tmp_path, capsys):
+        """Scheduler row present → inserts control_signal event with action=shutdown."""
+        db_path = _db(tmp_path)
+        conn = connect(db_path)
+        self._insert_scheduler(conn)
+        conn.close()
+
+        cmd_stop(_args(signal="shutdown", all=False), db_path=db_path)
+        out = capsys.readouterr().out
+        assert "shutdown" in out
+
+        conn = connect(db_path)
+        row = conn.execute(
+            "SELECT payload FROM events WHERE kind='control_signal'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        payload = json.loads(row[0])
+        assert payload["action"] == "shutdown"
+        assert payload["source"] == "cli"
+
+    def test_stop_signal_pause(self, tmp_path, capsys):
+        """--signal pause inserts pause action."""
+        db_path = _db(tmp_path)
+        conn = connect(db_path)
+        self._insert_scheduler(conn)
+        conn.close()
+
+        cmd_stop(_args(signal="pause", all=False), db_path=db_path)
+
+        conn = connect(db_path)
+        row = conn.execute(
+            "SELECT payload FROM events WHERE kind='control_signal'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert json.loads(row[0])["action"] == "pause"
+
+    def test_stop_signal_resume(self, tmp_path, capsys):
+        """--signal resume inserts resume action."""
+        db_path = _db(tmp_path)
+        conn = connect(db_path)
+        self._insert_scheduler(conn)
+        conn.close()
+
+        cmd_stop(_args(signal="resume", all=False), db_path=db_path)
+
+        conn = connect(db_path)
+        row = conn.execute(
+            "SELECT payload FROM events WHERE kind='control_signal'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert json.loads(row[0])["action"] == "resume"
+
+    def test_stop_all_sends_shutdown(self, tmp_path, capsys):
+        """--all flag sends shutdown regardless of --signal."""
+        db_path = _db(tmp_path)
+        conn = connect(db_path)
+        self._insert_scheduler(conn)
+        conn.close()
+
+        cmd_stop(_args(signal="pause", all=True), db_path=db_path)
+
+        conn = connect(db_path)
+        row = conn.execute(
+            "SELECT payload FROM events WHERE kind='control_signal'"
+        ).fetchone()
+        conn.close()
+        assert json.loads(row[0])["action"] == "shutdown"
 
 
 # ──────────────────────────────────────────────────────────────
@@ -445,12 +559,30 @@ class TestParser:
         args = parser.parse_args(["run", "--once"])
         assert args.command == "run"
         assert args.once is True
-        assert args.daemon is False
 
-    def test_run_daemon_parses(self):
+    def test_run_default_no_once_flag(self):
+        """Default 'run' (no flags) = daemon mode: once=False."""
         parser = build_parser()
-        args = parser.parse_args(["run", "--daemon"])
-        assert args.daemon is True
+        args = parser.parse_args(["run"])
+        assert args.command == "run"
+        assert args.once is False
+
+    def test_stop_default_parses(self):
+        parser = build_parser()
+        args = parser.parse_args(["stop"])
+        assert args.command == "stop"
+        assert args.signal == "shutdown"
+        assert args.all is False
+
+    def test_stop_signal_pause_parses(self):
+        parser = build_parser()
+        args = parser.parse_args(["stop", "--signal", "pause"])
+        assert args.signal == "pause"
+
+    def test_stop_all_parses(self):
+        parser = build_parser()
+        args = parser.parse_args(["stop", "--all"])
+        assert args.all is True
 
     def test_db_recover_parses(self):
         parser = build_parser()
