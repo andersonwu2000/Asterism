@@ -356,6 +356,53 @@ class TestPromoteToLibrary:
         rules = [p.get("rule") for _, p in captured]
         assert "library_promotion_reverted" in rules
 
+    def test_library_promotion_invalidates_library_cache(self, db, tmp_path):
+        """C43 R1: Library write triggers cache invalidation per impl
+        §2.3 字面."""
+        # Pre-seed search_cache with a library scope row
+        with db:
+            db.execute(
+                "INSERT INTO search_cache (query_hash, scope, mode, "
+                "results, expires_at) "
+                "VALUES ('q_lib', 'mathlib_library', 'find_lemmas', "
+                "'[]', '2099-01-01')"
+            )
+            db.execute(
+                "INSERT INTO search_cache (query_hash, scope, mode, "
+                "results, expires_at) "
+                "VALUES ('q_local', 'local_goals', 'find_subgoals', "
+                "'[]', '2099-01-01')"
+            )
+        gid = _seed_proved_root(db, slug="cache_inv_thm")
+        meta = tmp_path / "Problems" / "test_problem" / "META.md"
+        meta.parent.mkdir(parents=True)
+        meta.write_text(
+            "---\n"
+            "problem_name: test_problem\n"
+            "axioms:\n  - propext\n  - Quot.sound\n"
+            "---\n",
+            encoding="utf-8",
+        )
+        import os
+        cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            promote_to_library(db, gid, tmp_path)
+        finally:
+            os.chdir(cwd)
+        # library scope row deleted by invalidate_for_library_write
+        rows = db.execute(
+            "SELECT query_hash FROM search_cache "
+            "WHERE scope LIKE '%library%'"
+        ).fetchall()
+        assert rows == []
+        # local_goals scope row untouched (different invalidation hook)
+        rows = db.execute(
+            "SELECT query_hash FROM search_cache "
+            "WHERE scope = 'local_goals'"
+        ).fetchall()
+        assert len(rows) == 1
+
     def test_library_index_first_write_wins(self, db, tmp_path):
         """If library_index already has (Theorems, <name>), don't
         overwrite — emit a cascade event for visibility."""

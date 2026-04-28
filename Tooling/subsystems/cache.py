@@ -87,3 +87,30 @@ def invalidate_for_goals_write(
         )
         dedupe_deleted = cur.rowcount
     return local_goals_deleted + dedupe_deleted
+
+
+def invalidate_for_library_write(conn: sqlite3.Connection) -> int:
+    """Delete cache rows triggered by a Library write (P6 C43).
+
+    Spec impl §2.3 字面: "Library/Theorems/proved.lean append 或
+    Library/Counterexamples / Constructions 寫入 → DELETE search_cache
+    WHERE scope LIKE '%library%'". The P3 cache infrastructure
+    (search_cache + scope-keyed invalidation) was already in place
+    when P4/P5 wrote silver-verdict json artifacts; P6 wires the
+    Library promotion path to call this so the library scope is
+    actually flushed when entries change.
+
+    Args:
+      conn: live sqlite3 connection.
+
+    Returns:
+      Rows deleted under the library scope.
+
+    Raises:
+      sqlite3.Error: caller must observe.
+    """
+    with conn:
+        cur = conn.execute(
+            "DELETE FROM search_cache WHERE scope LIKE '%library%'"
+        )
+        return cur.rowcount

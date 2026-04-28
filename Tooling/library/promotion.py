@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from Tooling.locks import library_lock
+from Tooling.subsystems.cache import invalidate_for_library_write
 
 
 # Origins the per-Problem proved.lean re-exports.
@@ -350,6 +351,28 @@ def promote_to_library(
     result.per_problem_appended = written_pp
     result.library_theorems_appended = written_lt
     result.library_index_inserted = inserted_index
+
+    # P6 C43: cache invalidation for library scope (impl §2.3 字面
+    # "Library/Theorems/proved.lean append... → DELETE search_cache
+    # WHERE scope LIKE '%library%'"). Triggered after at least one
+    # library file changed; per-Problem proved.lean changes also flush
+    # because future search_cache rows might key on per-Problem scope.
+    if written_pp or written_lt:
+        try:
+            invalidate_for_library_write(conn)
+        except Exception as exc:  # noqa: BLE001
+            # Caller (scheduler hook) wraps promote_to_library in
+            # try/except already; surface via emit_event for audit
+            # trail but don't break the promotion result.
+            if emit_event is not None:
+                emit_event(
+                    "cascade",
+                    {
+                        "rule": "library_cache_invalidate_failed",
+                        "goal_id": goal_id,
+                        "error": str(exc),
+                    },
+                )
 
     # lake build verify (default: trivially OK for unit tests).
     verifier = lake_verify or (lambda _path: True)
