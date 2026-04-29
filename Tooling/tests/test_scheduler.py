@@ -841,6 +841,60 @@ class TestStructuralRefill:
         assert row is not None
         assert row[1] == str(strat_id)
 
+    def test_cascade_builder_mirrors_strategy_failure_to_goal(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """P7 演習 fix: Builder failures must surface as Goal-scoped
+        dead_attempts so Backward.failure_replay sees them.
+
+        Builder._record_dead_attempts writes target_kind='Strategy'.
+        Backward.failure_replay queries target_kind='Goal'. Without the
+        cascade mirror, retry Backward never learns what Builder tried +
+        why it failed → tends to repeat the flawed approach.
+        """
+        from Tooling.pipelines.builder import BuilderResult
+
+        goal_id = _insert_open_goal(db, tmp_path, slug="mirror_g")
+        strat_id = _insert_strategy(db, tmp_path, goal_id, slug="mirror_s")
+        # Insert prior Strategy-scoped Builder dead_attempts (what Builder
+        # itself wrote during its run).
+        db.execute(
+            "INSERT INTO pipelines "
+            "(id, kind, runtime, target_id, target_kind, status, outcome, "
+            "started_at, finished_at) VALUES "
+            "('pipe-mirror-1', 'Builder', 'atomic', ?, 'Strategy', 'failed', "
+            "'exhausted', '2026-04-29T05:00:00+00:00', "
+            "'2026-04-29T05:01:00+00:00')",
+            (str(strat_id),),
+        )
+        db.execute(
+            "INSERT INTO dead_attempts "
+            "(target_id, target_kind, pipeline_id, pipeline_kind, "
+            " outcome, reason_summary, ts) "
+            "VALUES (?, 'Strategy', 'pipe-mirror-1', 'Builder', "
+            " 'exhausted', 'tactic <inline-proof>: Tactic.unsolvedGoals', "
+            " '2026-04-29T05:01:00+00:00')",
+            (str(strat_id),),
+        )
+        db.commit()
+
+        reactor = _make_reactor(db, tmp_path)
+        reactor._cascade_builder(strat_id, BuilderResult(outcome="exhausted"))
+
+        # Verify a NEW Goal-scoped dead_attempt now exists.
+        rows = db.execute(
+            "SELECT pipeline_kind, outcome, reason_summary FROM dead_attempts "
+            "WHERE target_id = ? AND target_kind = 'Goal'",
+            (str(goal_id),),
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == "Builder"
+        assert rows[0][1] == "exhausted"
+        # Reason summary must mention both the strategy id (so Backward can
+        # locate the offending attempt) and the underlying error kind.
+        assert f"strategy {strat_id}" in rows[0][2]
+        assert "unsolvedGoals" in rows[0][2]
+
     def test_bfs_skips_builder_after_one_attempt_already_ran(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:

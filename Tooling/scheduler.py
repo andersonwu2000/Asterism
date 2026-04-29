@@ -761,6 +761,15 @@ class Reactor:
         if result.outcome == "proved":
             self._cascade(strategy_id, result, strict_trust_set=True)
         else:
+            # P7 演習 fix: Builder.failure summary as Goal-scoped dead_attempt.
+            # Builder._record_dead_attempts writes target_kind='Strategy', but
+            # Backward.failure_replay only reads target_kind='Goal'. Without
+            # this bridge, the next Backward retry on the goal has zero
+            # feedback about what Builder tried + why it failed, so the LLM
+            # tends to repeat the same flawed approach. Mirror Strategy →
+            # Goal so Backward sees prior Builder failures and can choose a
+            # different proof path.
+            self._mirror_builder_failure_to_goal(strategy_id, result)
             # non-proved: mark strategy dead, maybe shelve goal
             self._mark_strategy_dead(strategy_id)
             row = self.conn.execute(
@@ -775,6 +784,64 @@ class Reactor:
                 # block source now.
                 from Tooling.stages.failure_archive import archive_check
                 archive_check(self.conn, int(row[0]), "Builder")
+
+    def _mirror_builder_failure_to_goal(
+        self, strategy_id: int, result: BuilderResult
+    ) -> None:
+        """Write a Goal-scoped dead_attempt summarising the Builder failure.
+
+        Source rows are target_kind='Strategy' (written by Builder) — invisible
+        to Backward.failure_replay. We aggregate the most recent Strategy-
+        scoped Builder failures for this strategy + read the strategy's
+        lean_path so the next Backward can see "your prior attempt tried X
+        and got Y, choose a different approach".
+
+        Best-effort: missing pipeline FK or schema drift falls through to
+        a reason-only entry (the goal still gets feedback even if details
+        are sparse). Silent-failure red line: SQL errors propagate.
+        """
+        row = self.conn.execute(
+            "SELECT goal_id, lean_path FROM strategies WHERE id = ?",
+            (strategy_id,),
+        ).fetchone()
+        if row is None:
+            return
+        goal_id, strategy_lean_path = row
+        # Pull recent Strategy-scoped Builder dead_attempts for context.
+        prior_reasons = self.conn.execute(
+            "SELECT reason_summary FROM dead_attempts "
+            "WHERE target_id = ? AND target_kind = 'Strategy' "
+            "  AND pipeline_kind = 'Builder' "
+            "ORDER BY id DESC LIMIT 3",
+            (str(strategy_id),),
+        ).fetchall()
+        reasons_str = "; ".join(r[0] for r in prior_reasons) if prior_reasons else \
+            f"Builder outcome={result.outcome}"
+        strategy_basename = (
+            Path(strategy_lean_path).name if strategy_lean_path else "<unknown>"
+        )
+        summary = (
+            f"prior strategy {strategy_id} ({strategy_basename}) Builder "
+            f"{result.outcome}: {reasons_str}"
+        )
+        # Pipeline FK: most recent Builder pipeline on this strategy.
+        pipe_row = self.conn.execute(
+            "SELECT id FROM pipelines WHERE kind = 'Builder' AND target_id = ? "
+            "ORDER BY started_at DESC LIMIT 1",
+            (str(strategy_id),),
+        ).fetchone()
+        if pipe_row is None:
+            return  # No pipeline row to satisfy FK; skip silently.
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO dead_attempts (target_id, target_kind, "
+                "pipeline_id, pipeline_kind, outcome, reason_summary, ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(goal_id), "Goal", pipe_row[0], "Builder",
+                    result.outcome, summary, _now(),
+                ),
+            )
 
     def _mark_strategy_dead(self, strategy_id: int) -> None:
         """Mark strategy dead; shelve parent goal if all strategies are dead.
