@@ -130,10 +130,59 @@ class Reactor:
     # ------------------------------------------------------------------
 
     def startup(self) -> None:
-        """Connect DB, apply schema (idempotent), run recover_scan."""
+        """Connect DB, apply schema (idempotent), run recover_scan + sweep
+        zombie pipelines.
+
+        P7 演習 fix: a prior daemon that crashed / was killed leaves
+        `pipelines.status='running'` rows in DB with no live worker
+        thread. Startup must mark these failed so `_is_already_dispatched`
+        doesn't treat them as in-flight (which would block legitimate
+        BFS enqueue forever — observed during compactness 演習: goal 13
+        had a zombie Backward from prior daemon kill, new daemon never
+        re-attacked the goal because BFS thought a Backward was running).
+
+        Singleton-scheduler discipline (P6 liveness check) ensures we
+        won't sweep another live scheduler's pipelines.
+        """
         self.conn = connect(self.db_path)
         init_schema(self.conn)
         CommitWriter(self.conn).recover_scan()
+        self._sweep_zombie_pipelines()
+
+    def _sweep_zombie_pipelines(self) -> None:
+        """Mark any status='running' pipelines as failed/cancelled.
+
+        Counts the affected rows + emits an observability event so an
+        operator can see how many zombies were swept. Best-effort:
+        single SQL UPDATE; we propagate sqlite errors so silent-failure
+        red line is preserved.
+        """
+        cur = self.conn.execute(
+            "SELECT COUNT(*) FROM pipelines WHERE status = 'running'"
+        )
+        count = cur.fetchone()[0]
+        if count == 0:
+            return
+        with self.conn:
+            self.conn.execute(
+                "UPDATE pipelines SET status = 'failed', "
+                "outcome = 'cancelled', finished_at = ? "
+                "WHERE status = 'running'",
+                (_now(),),
+            )
+        # Emit a cascade event so the sweep is visible in audits.
+        # _emit_event uses self.conn — already valid here.
+        try:
+            self._emit_event(
+                "cascade",
+                {
+                    "rule": "zombie_pipelines_swept",
+                    "count": count,
+                    "reason": "startup_recovery",
+                },
+            )
+        except sqlite3.Error:
+            pass
 
     # ------------------------------------------------------------------
     # P1 entry point (backward compat)

@@ -994,6 +994,66 @@ class TestStructuralRefill:
         rule = _json.loads(events[0])["rule"]
         assert rule == "dup_dispatch_dropped"
 
+    def test_startup_sweeps_zombie_pipelines(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """P7 演習 fix: prior daemon crash leaves pipelines.status='running'
+        with no live worker thread. Without sweeping, the new daemon's
+        `_is_already_dispatched` DB-side check treats them as in-flight,
+        permanently blocking BFS from re-attacking the goal."""
+        # Pre-seed 2 zombie running pipelines + 1 live finished one.
+        for pid, kind, target_id, status, finished in [
+            ("zombie-1", "Backward", "1", "running", None),
+            ("zombie-2", "Builder", "2", "running", None),
+            ("alive-1", "Backward", "3", "succeeded",
+             "2026-04-29T05:01:00+00:00"),
+        ]:
+            db.execute(
+                "INSERT INTO pipelines "
+                "(id, kind, runtime, target_id, target_kind, status, "
+                "started_at, finished_at) VALUES "
+                "(?, ?, 'atomic', ?, 'Goal', ?, ?, ?)",
+                (pid, kind, target_id, status,
+                 "2026-04-29T05:00:00+00:00", finished),
+            )
+        db.commit()
+
+        # Build a Reactor with conn injected — bypass real startup
+        # (which would re-init DB) but invoke the sweep directly.
+        reactor = Reactor(
+            str(tmp_path / "test.db"),
+            ReactorConfig(base_dir=str(tmp_path)),
+        )
+        reactor.conn = db
+        reactor._sweep_zombie_pipelines()
+
+        # All running rows now failed/cancelled.
+        running_after = db.execute(
+            "SELECT COUNT(*) FROM pipelines WHERE status = 'running'"
+        ).fetchone()[0]
+        assert running_after == 0
+        # The originally-finished pipeline untouched.
+        alive = db.execute(
+            "SELECT status, outcome FROM pipelines WHERE id = 'alive-1'"
+        ).fetchone()
+        assert alive == ("succeeded", None)
+        # Zombies marked cancelled.
+        zombies = db.execute(
+            "SELECT id, status, outcome FROM pipelines "
+            "WHERE id IN ('zombie-1', 'zombie-2') ORDER BY id"
+        ).fetchall()
+        assert all(s == "failed" and o == "cancelled"
+                   for (_, s, o) in zombies)
+        # Diagnostic event emitted with count.
+        events = db.execute(
+            "SELECT payload FROM events WHERE kind = 'cascade' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        import json as _json
+        ev = _json.loads(events[0])
+        assert ev["rule"] == "zombie_pipelines_swept"
+        assert ev["count"] == 2
+
     def test_is_already_dispatched_checks_db_running(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
