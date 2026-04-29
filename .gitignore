@@ -17,10 +17,6 @@ asterism.db-shm
 /Problems/
 /Library/
 
-# Orchestrator session state (audit_*.md are per-cycle audit reports;
-# log/ is dispatcher event archive; task.md is in-flight cycle plan)
-/AutoWorkspace/audit*.md
-/AutoWorkspace/audit*.output
-/AutoWorkspace/log/
-/AutoWorkspace/task.md
-/AutoWorkspace/backward_prompt.txt
+# Orchestrator AutoWorkspace / AutoDev removed — operational scratch +
+# multi-agent framework definitions no longer needed (project past P7
+# implementation phase; future audits can spawn ad-hoc).
