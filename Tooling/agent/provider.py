@@ -317,14 +317,13 @@ class FallbackChain:
         """
         for provider_idx, provider in enumerate(self.providers):
             for attempt in range(self.n_retry):
-                # Fresh sub-session per claude CLI call; suffix encodes
-                # which provider/attempt for forensic log readability.
-                # Truncate base UUID to keep total length reasonable.
-                base = session_id[:8] if len(session_id) >= 8 else session_id
-                invoke_session_id = (
-                    f"{base}-{provider.name}-{provider_idx}-{attempt}-"
-                    f"{uuid.uuid4().hex[:8]}"
-                )
+                # Fresh sub-session per claude CLI call. Must be a plain
+                # UUID — claude CLI rejects custom formats with
+                # "Invalid session ID. Must be a valid UUID". Forensic
+                # correlation back to pipeline session_id done via
+                # scheduler events / pipelines.session_id (caller's
+                # responsibility).
+                invoke_session_id = str(uuid.uuid4())
                 try:
                     response = provider.invoke(
                         model_tier, prompt, scope_dirs, invoke_session_id,
