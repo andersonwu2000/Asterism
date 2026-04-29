@@ -547,6 +547,46 @@ class TestSelfVerifyRetry:
         assert result.outcome == "exhausted"
         assert chain.run.call_count == 2
 
+    def test_leaf_commit_does_not_enqueue_builder(self, db, tmp_path):
+        """P7 演習 fix: scheduler._cascade_backward already enqueues Builder
+        for leaf-strategy success. Backward._commit_leaf must NOT also
+        enqueue, otherwise two queue rows fire and two Builder threads run
+        on the same staging file simultaneously (BFS retry-ceiling guard
+        is too late — both spawns happen before any pipeline row exists).
+        """
+        chain = MagicMock(spec=FallbackChain)
+        leaf_proposal = {
+            "combinator": "Leaf",
+            "proof": "by trivial",
+            "subgoals": [],
+            "leaf_claims": [],
+        }
+        chain.run.return_value = (_make_response(leaf_proposal), "success")
+
+        problems_dir = tmp_path / "Problems" / "test"
+        problems_dir.mkdir(parents=True)
+        lean_file = problems_dir / "G_root.lean"
+        lean_file.write_text("theorem G_root : True := by sorry\n")
+
+        goal_id = _insert_goal(db, lean_path=str(lean_file))
+        config = BackwardConfig(
+            base_dir=str(tmp_path), lake_cwd=str(tmp_path), max_retries=3,
+        )
+        bw = Backward(db, chain, config)
+        result = bw.run(goal_id)
+
+        assert result.outcome == "success"
+        assert result.subgoal_ids == []
+        # No Builder queue row should have been written by Backward —
+        # cascade is responsible for that step.
+        rows = db.execute(
+            "SELECT count(*) FROM queue WHERE kind='Builder'"
+        ).fetchone()
+        assert rows[0] == 0, (
+            "Backward._commit_leaf must not enqueue Builder; "
+            "scheduler._cascade_backward is the canonical source."
+        )
+
     @patch("Tooling.pipelines.backward.validate", return_value=[])
     @patch("Tooling.pipelines.backward.run_lean")
     def test_hassorry_only_passes(self, mock_lake, mock_validate, db, tmp_path):

@@ -931,13 +931,16 @@ class Backward:
         writer.stage_file(leaf_staging, strategy_lean_path)
         writer.finalize("strategies", strategy_id, {})
 
-        # Enqueue Builder for the strategy.
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO queue (kind, target_id, priority, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                ("Builder", str(strategy_id), 0, _now()),
-            )
+        # P7 演習 fix: do NOT enqueue Builder here. The scheduler's
+        # _cascade_backward (success branch) already enqueues a Builder
+        # task for leaf strategies (no sub-goals), reachable from both
+        # daemon and --once paths. Inline-enqueueing here in addition
+        # produces TWO queue rows for the same strategy, both of which
+        # spawn before the BFS retry-ceiling guard sees any pipeline
+        # row → two Builder threads run on the same staging file
+        # simultaneously and one always wins the cascade race. Dropping
+        # this duplicate makes leaf success path clean: Backward writes
+        # strategy + commits, returns success; cascade decides spawn.
 
         return strategy_id
 

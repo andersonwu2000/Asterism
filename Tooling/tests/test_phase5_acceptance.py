@@ -294,7 +294,12 @@ class TestAC14ProviderScopeIsolation:
         # Sentinel file is the persistent evidence of the violation.
         evil_files = list(tmp_path.glob("EVIL_*"))
         assert len(evil_files) >= 1
-        assert "EVIL_claude_session1" in evil_files[0].name
+        # The session_id baked into the EVIL filename is the chain's
+        # per-invoke UUID (P7 演習 fix: FallbackChain mints fresh UUIDs
+        # per provider.invoke call, so claude CLI doesn't reject reused
+        # IDs). It will NOT match the caller's "session1234" base —
+        # just assert the provider-name prefix.
+        assert evil_files[0].name.startswith("EVIL_claude_")
 
     def test_evil_write_each_provider_independent(self, tmp_path, monkeypatch):
         """Each provider's evil_write writes a distinct sentinel file.
