@@ -6,21 +6,21 @@ Read `Context.md` in your sandbox for the goal statement, Manifest hints, FORBID
 
 ## What to write
 
-Three kinds of files in your sandbox:
+Three kinds of files in your sandbox. **Read `Context.md`'s `## Naming convention` section first** — it gives you the exact `s<id>_` prefix to use in every slug and theorem name.
 
 1. `PROPOSAL.md` — a markdown narrative explaining your decomposition strategy: which sub-goals you propose, why they together imply the parent, and proof sketches for each sub-goal (which Mathlib lemmas you expect to use).
-2. `patch_<goal_slug>.lean` — the parent goal's lean file rewritten to combine the sub-goals. Body uses `have h_i : <sub_i_type> := <slug_i> args` calls + a final tactic that closes the parent. Imports must include `import Problems.<problem>.proofs.L_<slug_i>` for each sub-goal.
-3. `new_<sub_slug>.lean` × N — one file per sub-goal, each with a placeholder `theorem <slug> : <type> := by sorry`.
+2. `patch_<parent_slug>.lean` — the combined patch for the parent goal. Imports `import Problems.<problem>.proofs.L_<sub_slug>` for each sub-goal. Declares a single theorem named per Context.md's naming convention (NOT just `<parent_slug>`; the prefixed name to avoid collision with the parent's Root.lean), in `namespace Problems.<problem>`. Body uses `have h_i : <sub_i_type> := <slug_i> args` calls + a final tactic that discharges the parent's statement.
+3. `new_<sub_slug>.lean` × N — one file per sub-goal. The slug must be the prefixed form per Context.md; theorem name = slug; namespace = `Problems.<problem>`; body = `:= by sorry`.
 
 ## Rules
 
 - 2-8 sub-goals. One is not a decomposition; more than 8 is rarely tractable.
 - Each sub-goal must be **strictly simpler** than the parent (more concrete, fewer assumptions, narrower scope) — re-stating the parent in different notation does not count.
 - All universal binders (∀) and hypotheses from the parent statement must appear in each sub-goal (hypothesis carry-over).
-- Each sub-goal slug must be unique within the problem; format `<parent_slug>_sub_<N>`.
+- Slug + theorem naming MUST match Context.md's naming convention exactly. The integrator validates and rejects non-conforming output.
 - **Do NOT use any name in FORBIDDEN_LEMMAS** — not in patch, not in sub-goal docstrings, nowhere. The integrator catches these patterns.
-- The combination tactic in `patch_<goal_slug>.lean` must elaborate against the sub-goal placeholders (which start as `:= by sorry`). Lake will compile patch + sub-goals together; if the combination doesn't type-check the whole proposal is rejected.
+- Lake will compile each sub-goal file + the patch file independently; all must elaborate. The patch builds against sub-goal placeholders (`:= by sorry`); after sub-goals are individually proved, Verify re-runs lake build on the patch.
 
 ## Output
 
-`PROPOSAL.md` + `patch_<goal_slug>.lean` + N × `new_<sub_slug>.lean`. Nothing else.
+`PROPOSAL.md` + `patch_<parent_slug>.lean` + N × `new_<sub_slug>.lean`. Nothing else.

@@ -44,14 +44,23 @@ CREATE TABLE IF NOT EXISTS goals (
     UNIQUE(problem, slug)
 );
 
+-- strategies.lean_path = parent goal's lean_path (the eventual write
+--   target when this strategy wins Verify). NOT UNIQUE: multiple
+--   strategies for the same goal share the same target.
+-- strategies.scratch_path = this strategy's standalone patch lean module
+--   (Problems/<p>/proofs/_strategy_s<sid>.lean). UNIQUE per strategy.
+-- 'superseded' = another strategy for the same goal won Verify; this
+--   one's work is moot and its sub-goals can be filtered out.
 CREATE TABLE IF NOT EXISTS strategies (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    goal_id     INTEGER NOT NULL REFERENCES goals(id),
-    lean_path   TEXT    NOT NULL UNIQUE,
-    status      TEXT    NOT NULL CHECK(status IN ('proposed','succeeded','dead')),
-    proposal_md TEXT    NOT NULL DEFAULT '',
-    created_by  TEXT    NOT NULL,
-    created_at  TEXT NOT NULL
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    goal_id      INTEGER NOT NULL REFERENCES goals(id),
+    lean_path    TEXT    NOT NULL,
+    scratch_path TEXT    NOT NULL DEFAULT '',
+    status       TEXT    NOT NULL
+                     CHECK(status IN ('proposed','succeeded','dead','superseded')),
+    proposal_md  TEXT    NOT NULL DEFAULT '',
+    created_by   TEXT    NOT NULL,
+    created_at   TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS strategy_subgoals (
@@ -171,8 +180,23 @@ def increment_goal_attempts(conn: sqlite3.Connection, goal_id: int) -> int:
 
 
 def open_goals(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Open goals eligible for dispatch.
+
+    Filters out orphans: a backward-origin sub-goal whose every parent
+    strategy is no longer 'proposed' (i.e. the strategy died or was
+    superseded by a sibling's win) is not dispatched. Root goals are
+    always eligible.
+    """
     return list(conn.execute(
-        "SELECT * FROM goals WHERE status = 'open' ORDER BY id"
+        "SELECT g.* FROM goals g "
+        "WHERE g.status = 'open' "
+        "  AND (g.origin = 'root' "
+        "       OR EXISTS ("
+        "         SELECT 1 FROM strategy_subgoals ss "
+        "         JOIN strategies s ON s.id = ss.strategy_id "
+        "         WHERE ss.subgoal_id = g.id AND s.status = 'proposed'"
+        "       )) "
+        "ORDER BY g.id"
     ))
 
 
@@ -192,14 +216,44 @@ def root_proved(conn: sqlite3.Connection, problem: str | None = None) -> bool:
 
 def insert_strategy(conn: sqlite3.Connection, *, goal_id: int,
                     lean_path: str, created_by: str,
-                    proposal_md: str = "") -> int:
+                    proposal_md: str = "", scratch_path: str = "") -> int:
+    """Insert a new strategy. `lean_path` is the parent goal's target;
+    `scratch_path` is this strategy's standalone patch module path.
+    `scratch_path` may be left empty here and UPDATE'd via
+    `update_strategy_scratch_path` once the sid is known and paths
+    derived from it have been computed."""
     cur = conn.execute(
-        "INSERT INTO strategies (goal_id, lean_path, status, proposal_md,"
-        " created_by, created_at) VALUES (?, ?, 'proposed', ?, ?, ?)",
-        (goal_id, lean_path, proposal_md, created_by, now()),
+        "INSERT INTO strategies (goal_id, lean_path, scratch_path, status,"
+        " proposal_md, created_by, created_at)"
+        " VALUES (?, ?, ?, 'proposed', ?, ?, ?)",
+        (goal_id, lean_path, scratch_path, proposal_md, created_by, now()),
     )
     conn.commit()
     return int(cur.lastrowid)
+
+
+def update_strategy_scratch_path(conn: sqlite3.Connection, strategy_id: int,
+                                 scratch_path: str) -> None:
+    conn.execute(
+        "UPDATE strategies SET scratch_path = ? WHERE id = ?",
+        (scratch_path, strategy_id),
+    )
+    conn.commit()
+
+
+def mark_other_strategies_superseded(conn: sqlite3.Connection, *,
+                                     goal_id: int, winner_id: int) -> int:
+    """When one strategy wins Verify, mark all other live strategies of
+    the same goal as 'superseded'. Returns the number of strategies
+    affected. In-flight workers on those strategies' sub-goals will
+    cascade as no-op once goal is proved."""
+    cur = conn.execute(
+        "UPDATE strategies SET status = 'superseded'"
+        " WHERE goal_id = ? AND id != ? AND status = 'proposed'",
+        (goal_id, winner_id),
+    )
+    conn.commit()
+    return int(cur.rowcount)
 
 
 def link_subgoal(conn: sqlite3.Connection, *, strategy_id: int,
@@ -267,6 +321,16 @@ def is_in_queue(conn: sqlite3.Connection, *, target_id: str,
         (target_id, kind),
     ).fetchone()
     return row is not None
+
+
+def queue_count(conn: sqlite3.Connection, *, target_id: str, kind: str) -> int:
+    """Count queue entries matching (target_id, kind). Used by OR-parallel
+    dispatch to enforce per-goal Backward fanout."""
+    row = conn.execute(
+        "SELECT count(*) AS n FROM queue WHERE target_id = ? AND kind = ?",
+        (target_id, kind),
+    ).fetchone()
+    return int(row["n"])
 
 
 # ---------------------------------------------------------------------

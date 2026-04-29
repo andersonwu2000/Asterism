@@ -15,6 +15,7 @@ from . import agent, db, manifest, pipeline
 
 SHELVE_THRESHOLD = 7
 TICK_TIMEOUT = 30  # seconds
+OR_FANOUT_DEFAULT = 3  # max concurrent Backwards per open goal (env override)
 
 
 def next_worker_kind(goal: sqlite3.Row) -> str:
@@ -39,7 +40,28 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
       Builder  → Goal   (fresh sorry-stub closure)
       Backward → Goal   (decompose into sub-goals)
       Verify   → Strategy (re-run lake build after sub-goals proved)
+
+    No-op entry: if the target's underlying goal is already proved or
+    its strategy is already 'superseded', skip the transition. This
+    catches loser strategies / orphan sub-goals whose workers finish
+    after a sibling has won (OR parallelism).
     """
+    if target_kind == "Strategy":
+        row = conn.execute(
+            "SELECT s.status, g.status AS goal_status FROM strategies s"
+            " JOIN goals g ON g.id = s.goal_id WHERE s.id = ?",
+            (int(target_id),),
+        ).fetchone()
+        if row and (row["status"] == "superseded"
+                    or row["goal_status"] == "proved"):
+            return
+    elif target_kind == "Goal":
+        row = conn.execute(
+            "SELECT status FROM goals WHERE id = ?", (int(target_id),),
+        ).fetchone()
+        if row and row["status"] == "proved":
+            return
+
     if kind == "Builder":
         if outcome == "proved":
             db.update_goal_status(conn, int(target_id), "proved")
@@ -70,6 +92,12 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             db.update_strategy_status(conn, int(target_id), "succeeded")
             if goal_id is not None:
                 db.update_goal_status(conn, goal_id, "proved")
+                # OR parallelism: sibling strategies of this goal lose;
+                # mark them superseded so their orphan sub-goals stop
+                # being dispatched (open_goals filter).
+                db.mark_other_strategies_superseded(
+                    conn, goal_id=goal_id, winner_id=int(target_id),
+                )
             return
         # exhausted / failed
         db.update_strategy_status(conn, int(target_id), "dead")
@@ -96,27 +124,34 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
 # ---------------------------------------------------------------------
 
 def bfs_refill(conn: sqlite3.Connection,
-               running: set[tuple[str, str]]) -> None:
+               running: set[tuple[str, str]],
+               *, or_fanout: int = OR_FANOUT_DEFAULT) -> None:
     """Enqueue dispatchable tasks. `running` is the in-memory live set
     (target_id, kind) of pipelines currently executing in this daemon.
     Stale state from prior daemon runs lives nowhere (pipelines table only
-    holds finished rows; daemon crash leaves clean slate)."""
-    def already(tid: str, kind: str) -> bool:
-        return ((tid, kind) in running
-                or db.is_in_queue(conn, target_id=tid, kind=kind))
+    holds finished rows; daemon crash leaves clean slate).
 
-    # Strategies with all sub-goals proved → enqueue Verify
+    OR parallelism: per (goal, Backward) pair we allow up to `or_fanout`
+    concurrent attempts (running + queued). Builder/Verify keep cap=1.
+    """
+    def in_flight(tid: str, kind: str) -> int:
+        running_n = sum(1 for (t, k) in running if t == tid and k == kind)
+        return running_n + db.queue_count(conn, target_id=tid, kind=kind)
+
+    # Strategies with all sub-goals proved → enqueue Verify (cap 1)
     for s in db.strategies_ready_for_verify(conn):
         sid = str(s["id"])
-        if not already(sid, "Verify"):
+        if in_flight(sid, "Verify") == 0:
             db.enqueue(conn, kind="Verify", target_id=sid, priority=10)
 
-    # Open goals → enqueue worker_kind
+    # Open goals → fill up to per-kind cap
     for g in db.open_goals(conn):
         gid = str(g["id"])
         kind = next_worker_kind(g)
-        if not already(gid, kind):
-            priority = 5 if kind == "Builder" else 2
+        cap = or_fanout if kind == "Backward" else 1
+        slots = cap - in_flight(gid, kind)
+        priority = 5 if kind == "Builder" else 2
+        for _ in range(max(0, slots)):
             db.enqueue(conn, kind=kind, target_id=gid, priority=priority)
 
 
@@ -219,6 +254,8 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
 def run(workspace: Path, *, once: bool = False) -> int:
     pool_size = int(os.environ.get("ASTERISM_POOL", "4"))
     budget_sec = int(os.environ.get("ASTERISM_BUDGET_SEC", "1800"))
+    or_fanout = int(os.environ.get("ASTERISM_OR_FANOUT",
+                                   str(OR_FANOUT_DEFAULT)))
     pool = ThreadPoolExecutor(max_workers=pool_size)
     futures: dict[Future, tuple[str, str, str, str]] = {}
     # In-memory live set of (target_id, kind) currently executing in this daemon.
@@ -256,7 +293,7 @@ def run(workspace: Path, *, once: bool = False) -> int:
             return 0
 
         # Refill queue (uses in-memory `running` for dedup)
-        bfs_refill(conn, running)
+        bfs_refill(conn, running, or_fanout=or_fanout)
 
         # Spawn from queue while pool has slots
         while len(futures) < pool_size:

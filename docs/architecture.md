@@ -105,14 +105,22 @@ CREATE TABLE goals (
     UNIQUE(problem, slug)
 );
 
+-- lean_path: the parent goal's lean_path (write target on Verify win).
+--   NOT UNIQUE — multiple strategies for the same goal share the target.
+-- scratch_path: this strategy's standalone patch module (Problems/<p>/
+--   proofs/_strategy_s<sid>.lean). UNIQUE per strategy.
+-- 'superseded': another strategy of this goal won Verify; this one's
+--   work is moot. orphan-filter in bfs_refill skips its sub-goals.
 CREATE TABLE strategies (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    goal_id     INTEGER NOT NULL REFERENCES goals(id),
-    lean_path   TEXT    NOT NULL UNIQUE,
-    status      TEXT    NOT NULL CHECK(status IN ('proposed','succeeded','dead')),
-    proposal_md TEXT    NOT NULL DEFAULT '',  -- Backward's PROPOSAL.md verbatim
-    created_by  TEXT    NOT NULL REFERENCES pipelines(id),
-    created_at  TEXT NOT NULL
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    goal_id      INTEGER NOT NULL REFERENCES goals(id),
+    lean_path    TEXT    NOT NULL,
+    scratch_path TEXT    NOT NULL DEFAULT '',
+    status       TEXT    NOT NULL
+                     CHECK(status IN ('proposed','succeeded','dead','superseded')),
+    proposal_md  TEXT    NOT NULL DEFAULT '',  -- Backward's PROPOSAL.md verbatim
+    created_by   TEXT    NOT NULL REFERENCES pipelines(id),
+    created_at   TEXT NOT NULL
 );
 
 CREATE TABLE strategy_subgoals (

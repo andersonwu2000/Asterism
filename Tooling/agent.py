@@ -54,8 +54,16 @@ def _attempts_dir(workspace: Path, pipeline_id: str) -> Path:
 
 
 def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
-                    mfst: manifest.Manifest, attempts_dir: Path) -> Path:
-    """Write Context.md into attempts_dir. Pulls from DB + Manifest."""
+                    mfst: manifest.Manifest, attempts_dir: Path,
+                    strategy_id: int | None = None) -> Path:
+    """Write Context.md into attempts_dir. Pulls from DB + Manifest.
+
+    `strategy_id`: when set (Backward worker), write a 'Naming convention'
+    section instructing the agent to prefix all slugs with `s<sid>_`.
+    Required for OR-parallel correctness — multiple Backwards on the same
+    parent goal must produce non-colliding sub-goal slugs and theorem
+    names.
+    """
     parts: list[str] = []
 
     parts.append(f"# Context for goal {goal['slug']}")
@@ -63,6 +71,30 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     parts.append("## Goal statement")
     parts.append(goal["statement"])
     parts.append("")
+
+    if strategy_id is not None:
+        sid_token = f"s{strategy_id}"
+        parent = goal["slug"]
+        parts.append("## Naming convention (REQUIRED)")
+        parts.append(
+            f"This Backward attempt has been allocated strategy id "
+            f"`{sid_token}`. Multiple strategies may race for this goal in "
+            f"parallel; collision-free naming is mandatory."
+        )
+        parts.append("")
+        parts.append(f"- Sub-goal slugs: `{sid_token}_{parent}_sub_1`, "
+                     f"`{sid_token}_{parent}_sub_2`, ... — always start "
+                     f"with `{sid_token}_`.")
+        parts.append(f"- Sub-goal filenames: `new_{sid_token}_{parent}_sub_<N>.lean`.")
+        parts.append(f"- Sub-goal theorem name = sub-goal slug.")
+        parts.append(f"- Patch filename: `patch_{parent}.lean` (parent slug, "
+                     f"no `{sid_token}` prefix).")
+        parts.append(f"- Patch theorem name: `{sid_token}_{parent}` (NOT "
+                     f"`{parent}` — that name belongs to the parent's "
+                     f"Root.lean and would collide).")
+        parts.append(f"- Patch imports: `import Problems.<problem>.proofs."
+                     f"L_{sid_token}_{parent}_sub_<N>` for each sub-goal.")
+        parts.append("")
 
     if goal["origin"] == "backward":
         # Look up the parent goal + the strategy that produced this sub-goal
