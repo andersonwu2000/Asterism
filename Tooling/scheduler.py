@@ -682,6 +682,12 @@ class Reactor:
             self._cascade_backward(int(task["target_id"]), result)
         elif kind == "Refuter":
             self._cascade_refuter(int(task["target_id"]), result)
+        elif kind == "Forward":
+            self._cascade_forward(int(task["target_id"]), result)
+        elif kind == "Generalizer":
+            self._cascade_generalizer(int(task["target_id"]), result)
+        # Strategist / Counterexample / ConstructionSearch: cascade handler
+        # exists in DISPATCH_TABLE as no-op acknowledgement; nothing to do.
 
     def _run_step4_trust_set(self, task: dict, result: Any) -> None:
         """Trust set construction is integrated into _cascade_builder. P2 no-op."""
@@ -937,6 +943,89 @@ class Reactor:
                 ),
             )
 
+    def _cascade_forward(self, seed_goal_id: int, result: Any) -> None:
+        """Cascade for Forward pipeline (P7 R3 round 2 fix audit2 NEW-MED-A).
+
+        Forward outcomes: success / no_novel / exhausted.
+          - success: Forward.commit already INSERT'd new orphan goals
+            (origin='forward'); BFS picks them up next cycle. No cascade.
+          - no_novel: dedupe wiped all candidates; nothing to write.
+          - exhausted: agent gave up; record a dead_attempt so
+            Forward.failure_replay can surface this seed's history on the
+            next call (mirrors Backward / Refuter exhausted handling).
+        """
+        if result is None or result.outcome in {"success", "no_novel"}:
+            return
+        # exhausted (or any other failure-shaped outcome)
+        self._record_pipeline_failure(
+            seed_goal_id, "Forward", "forward", result.outcome,
+            f"Forward outcome={result.outcome}",
+        )
+
+    def _cascade_generalizer(self, source_goal_id: int, result: Any) -> None:
+        """Cascade for Generalizer pipeline (P7 R3 round 2 fix audit2 NEW-MED-A).
+
+        Generalizer outcomes: success / no_novel / unproductive / exhausted.
+          - success: G* inserted as new tree root; BFS picks it up.
+          - no_novel: G* matched an existing entry.
+          - unproductive: agent self-claim G already maximal — spec §8 says
+            do NOT write blocked_pipelines. We DO write a dead_attempt so
+            failure_replay sees the rejection (without it Generalizer keeps
+            re-proposing the same pattern).
+          - exhausted: self_verify retry exhausted.
+        """
+        if result is None or result.outcome in {"success", "no_novel"}:
+            return
+        # unproductive / exhausted both record dead_attempt; do NOT touch
+        # goals.blocked_pipelines (spec §8 explicit).
+        self._record_pipeline_failure(
+            source_goal_id, "Generalizer", "Goal", result.outcome,
+            f"Generalizer outcome={result.outcome}",
+        )
+
+    def _record_pipeline_failure(
+        self,
+        goal_id: int,
+        pipeline_kind: str,
+        target_kind: str,
+        outcome: str,
+        reason: str,
+    ) -> None:
+        """Generic dead_attempts writer for Forward / Generalizer.
+
+        Mirrors _record_backward_failure / _record_refuter_failure: looks up
+        the most recent matching pipeline row to satisfy the FK; missing
+        pipeline → fatal (orphan cascade or stale ordering, the same
+        silent-failure discipline as the older recorders).
+        """
+        pipeline_row = self.conn.execute(
+            "SELECT id FROM pipelines WHERE target_id = ? AND kind = ? "
+            "ORDER BY started_at DESC LIMIT 1",
+            (str(goal_id), pipeline_kind),
+        ).fetchone()
+        if pipeline_row is None:
+            msg = (
+                f"{pipeline_kind.lower()}_failure_no_pipeline_id "
+                f"goal_id={goal_id} outcome={outcome}"
+            )
+            self._emit_fatal(msg)
+            raise FatalError(msg)
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO dead_attempts (target_id, target_kind, "
+                "pipeline_id, pipeline_kind, outcome, reason_summary, ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(goal_id),
+                    target_kind,
+                    pipeline_row[0],
+                    pipeline_kind,
+                    outcome,
+                    reason,
+                    _now(),
+                ),
+            )
+
     def _record_backward_failure(self, goal_id: int, outcome: str) -> None:
         """INSERT dead_attempts row for Backward exhausted/unproductive outcome.
 
@@ -1046,18 +1135,23 @@ class Reactor:
                 self._event_queue.put(("pipeline_finished", task, result))
 
     def _execute_task_with_conn(self, task: dict, conn: Any) -> Any:
-        """Run Builder or Backward pipeline with provided connection.
+        """Run a pipeline with the provided connection.
 
-        R3 fix (audit_c52_c53_c54_c55.md HIGH-4): if `task['payload']` carries
-        a `model` override (Strategist demux propagated it from a decision),
-        we build a ModelResolver with that tier set on the pipeline's agent
-        stage so the override is actually consumed downstream. Previously
-        the payload was extracted into the task dict but never read.
+        R3 fix (audit_c52_c53_c54_c55.md HIGH-4 + audit2 NEW-HIGH-A):
+          - HIGH-4: extract task['payload'] and build a ModelResolver with
+            any `model` override (Strategist propagates this via demux);
+          - NEW-HIGH-A: dispatch ALL atomic-pool kinds the framework can
+            enqueue. Strategist demux can inject Forward / Generalizer /
+            Refuter / Counterexample / ConstructionSearch (currently
+            deferred); BFS enqueues Refuter for conjecture goals. Without
+            these branches, the first such task spawns into FatalError and
+            halts the daemon.
         """
         from Tooling.agent.provider import ModelResolver
         kind = task["kind"]
         payload = self._decode_payload(task)
         resolver = self._resolver_with_overrides(kind, payload)
+        self._warn_dropped_payload_keys(kind, payload)
 
         if kind == "Builder":
             strategy_id = int(task["target_id"])
@@ -1067,7 +1161,7 @@ class Reactor:
                 base_dir=self.config.base_dir,
             )
             # Builder doesn't yet accept a resolver in its constructor;
-            # leave the override path here as future-compat.
+            # tracked in deferred catalog (Builder.resolver wiring).
             return Builder(strategy_id, conn, cfg).run()
         elif kind == "Backward":
             goal_id = int(task["target_id"])
@@ -1078,6 +1172,63 @@ class Reactor:
             )
             chain = self._make_fallback_chain()
             return Backward(conn, chain, cfg, resolver=resolver).run(goal_id)
+        elif kind == "Refuter":
+            from Tooling.pipelines.refuter import Refuter, RefuterConfig
+            goal_id = int(task["target_id"])
+            cfg = RefuterConfig(
+                base_dir=self.config.base_dir,
+                lake_cwd=self.config.base_dir,
+                lean_timeout=self.config.lake_timeout,
+            )
+            chain = self._make_fallback_chain()
+            return Refuter(conn, chain, cfg, resolver=resolver).run(goal_id)
+        elif kind == "Forward":
+            from Tooling.pipelines.forward import Forward, ForwardConfig
+            seed_goal_id = int(task["target_id"])
+            cfg = ForwardConfig(
+                base_dir=self.config.base_dir,
+                lake_cwd=self.config.base_dir,
+                lean_timeout=self.config.lake_timeout,
+            )
+            chain = self._make_fallback_chain()
+            return Forward(conn, chain, cfg, resolver=resolver).run(seed_goal_id)
+        elif kind == "Generalizer":
+            from Tooling.pipelines.generalizer import (
+                Generalizer, GeneralizerConfig,
+            )
+            source_goal_id = int(task["target_id"])
+            cfg = GeneralizerConfig(
+                base_dir=self.config.base_dir,
+                lake_cwd=self.config.base_dir,
+                lean_timeout=self.config.lake_timeout,
+            )
+            chain = self._make_fallback_chain()
+            return Generalizer(
+                conn, chain, cfg, resolver=resolver,
+            ).run(source_goal_id)
+        elif kind in {"Counterexample", "ConstructionSearch"}:
+            # Deferred per task.md ## 延後 cycles. Demux can still write the
+            # queue row (it's a legal Strategist decision); we record an
+            # observable diagnostic and return None so the cascade dispatch
+            # treats it as no-op rather than fatal-halting the scheduler.
+            self._emit_event(
+                "cascade",
+                {"rule": "pipeline_kind_deferred",
+                 "kind": kind,
+                 "target_id": task.get("target_id")},
+            )
+            return None
+        elif kind == "Strategist":
+            from Tooling.pipelines.strategist import (
+                Strategist, StrategistConfig,
+            )
+            target = task["target_id"]
+            problem = (target.split(":", 1)[1]
+                       if isinstance(target, str) and target.startswith("_problem:")
+                       else str(target))
+            chain = self._make_fallback_chain()
+            cfg = StrategistConfig(base_dir=self.config.base_dir)
+            return Strategist(conn, chain, cfg, resolver=resolver).run(problem)
         else:
             raise FatalError(f"Unsupported task kind in thread: {kind!r}")
 
@@ -1106,6 +1257,32 @@ class Reactor:
         if isinstance(model, str) and model:
             meta_models[f"{kind.lower()}.agent"] = model
         return ModelResolver(meta_models=meta_models or None)
+
+    def _warn_dropped_payload_keys(self, kind: str, payload: dict) -> None:
+        """R3 round 2 fix (audit2_c49_c50_c51.md M_R2-2): demux carries
+        budget / provider / range / mutation_operators in queue.payload but
+        the spawn path here only honors `model`. Emit a diagnostic event so
+        silently-dropped overrides leave a trail (rather than disappearing
+        into the void as silent feature drop).
+        """
+        if not payload:
+            return
+        unconsumed = {
+            k: v for k, v in payload.items()
+            if k in {"provider", "budget", "range", "mutation_operators"}
+        }
+        if not unconsumed:
+            return
+        try:
+            self._emit_event(
+                "cascade",
+                {"rule": "payload_override_unconsumed",
+                 "kind": kind,
+                 "dropped_keys": sorted(unconsumed.keys())},
+            )
+        except Exception:
+            # Observability best-effort; never block spawn on event-write failure.
+            pass
 
     def _make_fallback_chain(self) -> Any:
         """Create the default multi-provider FallbackChain.
@@ -1375,13 +1552,13 @@ class Reactor:
     # ------------------------------------------------------------------
 
     def _dispatch(self, task: dict[str, Any]) -> None:
-        """Synchronous dispatch used by P1 _run_loop. P2 adds Backward kind.
+        """Synchronous dispatch used by P1 _run_loop and `--once` mode.
 
-        Builder branch keeps P1 cascade-only behavior (no _mark_strategy_dead
-        on exhausted) to preserve `--once` semantics required by Phase 1
-        acceptance tests (TestAC7SorryDetection: exhausted Strategy leaves
-        Goal open). Daemon mode uses _cascade_builder which marks strategy
-        dead — that asymmetry is intentional and noted in audit R2 finding H.
+        R3 round 2 fix (audit2_c52_c53_c54_c55.md NEW-HIGH-A): mirror the
+        async _execute_task_with_conn dispatch so Strategist-injected and
+        BFS-injected non-Builder/Backward kinds don't fatal-halt --once.
+        Cascade for these kinds is best-effort (Forward/Generalizer have
+        no scheduler cascade today; their commit happens inside .run).
         """
         kind = task["kind"]
         if kind == "Builder":
@@ -1404,6 +1581,13 @@ class Reactor:
                 self.conn, self._make_fallback_chain(), back_cfg
             ).run(goal_id)
             self._cascade_backward(goal_id, result)
+        elif kind in {"Refuter", "Forward", "Generalizer", "Strategist",
+                      "Counterexample", "ConstructionSearch"}:
+            # Reuse the async path's full dispatch table (with the same
+            # payload + resolver wiring). Cascade for these kinds is
+            # currently no-op (BFS picks up new orphan goals; Strategist
+            # commit lands inside its own .run via demux).
+            self._execute_task_with_conn(task, self.conn)
         else:
             msg = f"Unsupported task kind: {kind!r}"
             self._emit_fatal(msg)

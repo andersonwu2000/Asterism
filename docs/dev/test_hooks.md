@@ -36,6 +36,7 @@
 | P7 | `GENERALIZER_FORCE` | `exhausted` / `no_novel` / `unproductive` | Generalizer.run() 強制 outcome；同上 |
 | P7 | `STRATEGIST_DISABLED` | `1` | scheduler step 5 trigger 整段跳過、不 enqueue Strategist 任務；給 D-baseline 對照 demo + 演習選擇性關 Strategist 用 |
 | P7 | `K_STRATEGIST` | int (預設 8) | 覆寫 round_robin K 閾值；給 acceptance test 用較小 K 加速 |
+| P7 | `STRATEGIST_STALE_SEC` | int (預設 4h) | 覆寫 is_strategist_running 認定 stale 的 cutoff；給 acceptance test 模擬 stale running row 不需等真實 4h |
 | P7 | `ASTERISM_NOW` | ISO8601 timestamp | 強制 `cancel_running_for_goal` 寫入指定 finished_at 而非 wall-clock now；給 demux Shelve cancel test 確定性比對用 |
 
 ## P7 fixture CLI（不是 env hook）

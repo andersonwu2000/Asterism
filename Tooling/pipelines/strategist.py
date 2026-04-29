@@ -306,11 +306,7 @@ class Strategist:
             return StrategistResult(outcome="exhausted")
         if force == "empty":
             decisions_id, demux = self._commit(problem, [])
-            try:
-                from Tooling.strategist.round_robin import consume
-                consume(self.conn, problem)
-            except Exception:
-                pass
+            self._consume_safely(problem)
             return StrategistResult(
                 outcome="success",
                 decisions_id=decisions_id,
@@ -354,23 +350,48 @@ class Strategist:
         decisions = parsed.get("decisions", [])
         decisions_id, demux = self._commit(problem, decisions)
         self._finish_pipeline(pipeline_id, "success")
-        # R3 fix (audit_c49_c50_c51.md spec MISS): C51 round_robin.consume
-        # was a primitive with no caller. Without it, the K accumulator never
-        # resets and select_next keeps returning the SAME problem each time
-        # — phase7_smarts.md ## Strategist 行為 #10 'strict A→B→C→A' fails.
-        # Wire here at the success commit boundary (architecture_pipelines.md
-        # §5: 'commit 完才釋放 cooldown 並切下個 Problem').
-        try:
-            from Tooling.strategist.round_robin import consume
-            consume(self.conn, problem)
-        except Exception:
-            # Best-effort. Failure to consume just means the next select_next
-            # may keep choosing this Problem; not catastrophic, surfaceable
-            # via select_next behavior.
-            pass
+        self._consume_safely(problem)
         return StrategistResult(
             outcome="success",
             decisions_id=decisions_id,
             raw_decisions=decisions,
             demux=demux,
         )
+
+    def _consume_safely(self, problem: str) -> None:
+        """Run round_robin.consume(problem) and emit an event on failure.
+
+        R3 round 2 fix (audit2_c49_c50_c51.md H_R2-1 + H_R2-3): formerly
+        each caller wrapped consume() in `except Exception: pass` — a
+        silent-failure red-line violation (round-robin failures would
+        invisibly stick the framework on one Problem). Plus duplicate code
+        across the force=empty and main success paths. Centralise here.
+
+        The architecture compliance for round-robin (phase7_smarts.md #10
+        strict A→B→C→A rotation) depends on consume() succeeding. If it
+        raises (DB BUSY/LOCKED, schema drift, conn closed), we emit an
+        observable cascade event so an operator sees that round-robin is
+        broken — instead of the framework silently re-selecting the same
+        Problem next cycle.
+        """
+        from Tooling.strategist.round_robin import consume
+        try:
+            consume(self.conn, problem)
+        except Exception as exc:
+            try:
+                with self.conn:
+                    self.conn.execute(
+                        "INSERT INTO events (kind, payload, ts) VALUES (?, ?, ?)",
+                        ("cascade",
+                         json.dumps({
+                             "rule": "strategist_consume_failed",
+                             "problem": problem,
+                             "error": str(exc),
+                         }),
+                         _now()),
+                    )
+            except sqlite3.Error:
+                # Even event-write failed — reraise the original so the
+                # caller (Strategist.run) sees the failure rather than
+                # double-silent.
+                raise exc

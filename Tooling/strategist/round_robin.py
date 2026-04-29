@@ -79,23 +79,62 @@ def _write_state(conn: sqlite3.Connection, key: str, value: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-_STRATEGIST_STALE_SEC = 600  # 10 min — process death threshold
+_DEFAULT_STRATEGIST_STALE_SEC = 4 * 60 * 60  # 4h
+# A real Strategist running on opus with M_strategist=5 decisions can take
+# 30+ min for the agent stage alone; the original 600s cutoff would mark it
+# stale mid-run and break single-instance cooldown.
+
+
+def _stale_sec() -> int:
+    """Stale cutoff for strategist running rows.
+
+    R3 round 2 fix (audit2_c49_c50_c51.md M_R2-1): the original 600s const
+    was too short for opus latency. Now 4h default with env override:
+        STRATEGIST_STALE_SEC=<int>   override stale threshold (seconds)
+    """
+    import os
+    raw = os.environ.get("STRATEGIST_STALE_SEC")
+    if raw:
+        try:
+            v = int(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return _DEFAULT_STRATEGIST_STALE_SEC
+
+
+def _now_iso(now: datetime | None = None) -> str:
+    """Wall-clock now with ASTERISM_NOW override (test_hooks.md).
+
+    R3 round 2 fix (audit2_c49_c50_c51.md M_R2-4): is_strategist_running was
+    using datetime.now() directly, which ignored the ASTERISM_NOW env hook
+    other parts of the framework honor. Now goes through _now_iso() so
+    deterministic tests can pin time across the stale-running boundary.
+    """
+    if now is not None:
+        return now.isoformat()
+    import os
+    raw = os.environ.get("ASTERISM_NOW")
+    if raw:
+        return raw
+    return datetime.now(timezone.utc).isoformat()
 
 
 def is_strategist_running(conn: sqlite3.Connection) -> bool:
     """Cooldown predicate: any RECENT in-flight Strategist pipeline row?
 
-    R3 fix (audit_c49_c50_c51.md M3): formerly counted ANY status='running'
-    Strategist row, which left the cooldown stuck forever after a crash
-    (OOM / Ctrl-C between _insert_pipeline and _finish_pipeline). Now any
-    'running' row whose started_at is older than _STRATEGIST_STALE_SEC is
-    treated as stale and ignored — the next select_next can hand out a new
-    Strategist task and the stale row eventually gets cleaned up by a real
-    recovery sweep (db.recover) or just sits as observable leak.
+    R3 fix (audit_c49_c50_c51.md M3 + audit2 M_R2-1 / M_R2-4): formerly
+    counted ANY status='running' Strategist row, which left the cooldown
+    stuck forever after a crash. Now uses an env-tunable stale threshold
+    (default 4h) and honors ASTERISM_NOW for deterministic tests.
     """
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(seconds=_STRATEGIST_STALE_SEC)
-    ).isoformat()
+    now_str = _now_iso()
+    try:
+        now_dt = datetime.fromisoformat(now_str)
+    except ValueError:
+        now_dt = datetime.now(timezone.utc)
+    cutoff = (now_dt - timedelta(seconds=_stale_sec())).isoformat()
     row = conn.execute(
         "SELECT COUNT(*) FROM pipelines "
         "WHERE kind = 'Strategist' AND status = 'running' "

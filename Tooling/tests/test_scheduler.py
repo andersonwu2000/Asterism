@@ -302,9 +302,14 @@ class TestDispatch:
     def test_dispatch_unknown_kind_raises_fatal(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
-        """Unknown kind: FatalError raised AND fatal event emitted (R2 #3)."""
+        """Unknown kind: FatalError raised AND fatal event emitted (R2 #3).
+
+        Note (R3 round 2 audit2 NEW-HIGH-A fix): Refuter / Forward /
+        Generalizer / Strategist are now supported in _dispatch. Use a
+        truly bogus kind to exercise the FatalError path.
+        """
         reactor = _make_reactor(db, tmp_path)
-        task = {"id": 1, "kind": "Refuter", "target_id": "1", "payload": None}
+        task = {"id": 1, "kind": "Bogus", "target_id": "1", "payload": None}
         with pytest.raises(FatalError):
             reactor._dispatch(task)
 
@@ -313,7 +318,7 @@ class TestDispatch:
         ).fetchone()
         assert event is not None
         payload = json.loads(event[1])
-        assert "Refuter" in payload["error"]
+        assert "Bogus" in payload["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -1341,7 +1346,9 @@ class TestThreadFatalRouting:
         db_path = tmp_path / "test.db"
         reactor = Reactor(str(db_path), ReactorConfig(base_dir=str(tmp_path)))
         reactor.startup()
-        task = {"id": 1, "kind": "Refuter", "target_id": "1", "payload": None}
+        # Use a truly bogus kind — Refuter / Forward / Generalizer are now
+        # supported in _execute_task_with_conn (R3 round 2 audit2 NEW-HIGH-A).
+        task = {"id": 1, "kind": "Bogus", "target_id": "1", "payload": None}
         pid = "test-pid-1"
         reactor._running[pid] = (task["target_id"], task["kind"])
 
@@ -1354,7 +1361,7 @@ class TestThreadFatalRouting:
 
         fatal_events = [e for e in events if e[0] == "fatal"]
         assert len(fatal_events) >= 1
-        assert "Refuter" in fatal_events[0][1]
+        assert "Bogus" in fatal_events[0][1]
         # FatalError path: pipeline_finished must NOT be emitted
         assert not any(e[0] == "pipeline_finished" for e in events)
 
@@ -1692,14 +1699,86 @@ class TestHookPlaceholders:
         ).fetchone()[0]
         assert count == 0
 
-    def test_step5_strategist_trigger_is_noop(
+    def test_step5_strategist_trigger_does_nothing_without_problems(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
-        """_run_step5_strategist_trigger does nothing; no exception raised."""
+        """Step 5 trigger is no-op when no live Goal exists in any Problem
+        (active_problems=[]). C54 R1 + R3 round 2 wiring."""
         reactor = _make_reactor(db, tmp_path)
         task = {"kind": "Builder", "target_id": "1"}
         reactor._run_step5_strategist_trigger(task, BuilderResult(outcome="proved"))
-        assert db.execute("SELECT count(*) FROM events").fetchone()[0] == 0
+        # No queue row, no events.
+        assert db.execute("SELECT count(*) FROM queue").fetchone()[0] == 0
+
+    def test_step5_strategist_trigger_disabled_env(
+        self, db: sqlite3.Connection, tmp_path: Path, monkeypatch
+    ) -> None:
+        """STRATEGIST_DISABLED=1 short-circuits the trigger even when a
+        Strategist task would otherwise be enqueued (R3 round 2 audit2 MED-2)."""
+        monkeypatch.setenv("STRATEGIST_DISABLED", "1")
+        # Insert a live Goal so active_problems is non-empty.
+        db.execute(
+            "INSERT INTO goals "
+            "(problem, slug, lean_path, origin, kind, status, commit_state, "
+            "created_at, updated_at) VALUES "
+            "('p', 'g_root', 'p/g.lean', 'root', 'theorem', 'open', 'live', "
+            "?, ?)",
+            ("2026-04-29T00:00:00+00:00", "2026-04-29T00:00:00+00:00"),
+        )
+        db.commit()
+        reactor = _make_reactor(db, tmp_path)
+        reactor._run_step5_strategist_trigger(
+            {"kind": "Builder", "target_id": "1"}, BuilderResult(outcome="proved")
+        )
+        # Disabled → no Strategist enqueued.
+        assert db.execute(
+            "SELECT count(*) FROM queue WHERE kind='Strategist'"
+        ).fetchone()[0] == 0
+
+    def test_step5_strategist_trigger_enqueues_after_K_finishes(
+        self, db: sqlite3.Connection, tmp_path: Path, monkeypatch
+    ) -> None:
+        """R3 round 2 audit2 MED-2: when K_strategist non-Strategist pipelines
+        have finished, step 5 enqueues exactly one Strategist task with
+        priority=100 + target_id='_problem:<name>'.
+        """
+        monkeypatch.setenv("K_STRATEGIST", "2")  # tiny K for fast test
+        # Insert live Goal under problem 'p'.
+        db.execute(
+            "INSERT INTO goals "
+            "(problem, slug, lean_path, origin, kind, status, commit_state, "
+            "created_at, updated_at) VALUES "
+            "('p', 'g_root', 'p/g.lean', 'root', 'theorem', 'open', 'live', "
+            "?, ?)",
+            ("2026-04-29T00:00:00+00:00", "2026-04-29T00:00:00+00:00"),
+        )
+        # Insert 2 finished non-Strategist pipelines (>= K_STRATEGIST=2).
+        for i, ts in enumerate(
+            ["2026-04-29T01:00:00+00:00", "2026-04-29T01:01:00+00:00"]
+        ):
+            db.execute(
+                "INSERT INTO pipelines "
+                "(id, kind, runtime, target_id, target_kind, status, "
+                "started_at, finished_at) VALUES "
+                "(?, 'Backward', 'atomic', '1', 'Goal', 'succeeded', ?, ?)",
+                (f"pipe-pre-{i}", ts, ts),
+            )
+        db.commit()
+
+        reactor = _make_reactor(db, tmp_path)
+        reactor._run_step5_strategist_trigger(
+            {"kind": "Builder", "target_id": "1"}, BuilderResult(outcome="proved")
+        )
+
+        rows = db.execute(
+            "SELECT kind, target_id, priority FROM queue "
+            "WHERE kind = 'Strategist'"
+        ).fetchall()
+        assert len(rows) == 1
+        kind, target_id, priority = rows[0]
+        assert kind == "Strategist"
+        assert target_id == "_problem:p"
+        assert priority == 100
 
 
 # ---------------------------------------------------------------------------

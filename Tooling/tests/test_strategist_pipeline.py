@@ -224,6 +224,32 @@ class TestRunLoop:
         q = db.execute("SELECT kind, target_id FROM queue").fetchall()
         assert q == [("Backward", str(gid))]
 
+    def test_consume_failure_emits_event_not_silent(self, db, tmp_base):
+        """R3 round 2 regression (audit2_c49_c50_c51.md H_R2-1): the previous
+        round-1 fix wrapped consume() in `except Exception: pass`, hiding
+        DB failures that break round-robin. _consume_safely now emits a
+        cascade event on failure so the silent failure red line is held."""
+        gid = _insert_goal(db, problem="p", slug="g_root")
+        chain = _make_chain([_wrap_decisions(
+            [{"kind": "Backward", "target": gid, "reason": "x"}]
+        )])
+        s = _make_strategist(db, chain, tmp_base)
+
+        from unittest.mock import patch as _patch
+        with _patch(
+            "Tooling.strategist.round_robin.consume",
+            side_effect=RuntimeError("simulated DB failure"),
+        ):
+            r = s.run("p")
+
+        # Strategist itself still succeeds; the failure surfaces as an event.
+        assert r.outcome == "success"
+        events = db.execute(
+            "SELECT payload FROM events WHERE kind = 'cascade'"
+        ).fetchall()
+        rules = [json.loads(p[0]).get("rule") for p in events if p[0]]
+        assert "strategist_consume_failed" in rules
+
     def test_consume_called_after_success(self, db, tmp_base):
         """R3 regression (audit_c49_c50_c51.md spec MISS): Strategist.run()
         must call round_robin.consume() at the success boundary, otherwise
