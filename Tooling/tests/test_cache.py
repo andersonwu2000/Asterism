@@ -245,8 +245,11 @@ class TestSchedulerInvalidationHooks:
         reactor = Reactor(str(tmp_path / "asterism.db"),
                           ReactorConfig(base_dir=str(tmp_path)))
         reactor.conn = db
-        # Builder exhausted → strategy marked dead → all-dead → goal shelved
-        # (the shelve UPDATE is what triggers cache invalidation)
+        # Builder exhausted → strategy marked dead → all-dead AND Backward
+        # blocked → goal shelved (triggers cache invalidation).
+        # P7 演習 fix #11: pre-block Backward so the deferred-shelve fires.
+        from Tooling.subsystems.blocked_pipelines import block_pipeline
+        block_pipeline(db, gid, "Backward")
         reactor._cascade_builder(sid, BuilderResult(outcome="exhausted"))
 
         status = db.execute(

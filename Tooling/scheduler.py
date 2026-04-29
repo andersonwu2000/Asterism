@@ -112,6 +112,12 @@ class Reactor:
         self._lock = threading.Lock()
         # pipeline_id → (target_id, kind); target_id as string
         self._running: dict[str, tuple[str, str]] = {}
+        # P7 演習 fix: parallel sidecar dict tracking task.payload per
+        # in-flight pipeline so BFS Backward per-mode dispatch
+        # (Path A free vs Path B force_decompose) can detect already-
+        # running force_decompose Backward without changing the
+        # _running tuple shape.
+        self._running_payloads: dict[str, dict] = {}
         # P2 in-memory retry cap (was self._failure_count dict) removed in
         # C25; persistent goals.blocked_pipelines (C24) is the canonical
         # block source.
@@ -870,6 +876,50 @@ class Reactor:
                 # block source now.
                 from Tooling.stages.failure_archive import archive_check
                 archive_check(self.conn, int(row[0]), "Builder")
+                # P7 演習 fix #11: also block BACKWARD after enough strategy
+                # deaths. Without this, fix #11 (defer shelve) leaves goals
+                # open forever in pathological cases where Backward keeps
+                # producing dead strategies. The goal-level retry budget
+                # is the count of dead strategies on the goal — once it
+                # crosses threshold, Backward is blocked for this goal,
+                # _mark_strategy_dead's deferred shelve fires, and the
+                # cascade chain converges.
+                self._maybe_block_backward_at_dead_strategy_threshold(
+                    int(row[0])
+                )
+
+    def _maybe_block_backward_at_dead_strategy_threshold(
+        self, goal_id: int, threshold: int = 5,
+    ) -> None:
+        """Block Backward when goal has reached the dead-strategy threshold.
+
+        This is the goal-level retry budget. Each strategy = one Backward
+        production. After N dead strategies, Backward stops trying.
+        Combined with deferred shelve in _mark_strategy_dead, the goal
+        then naturally enters terminal shelved state on the next cascade.
+        """
+        from Tooling.subsystems.blocked_pipelines import (
+            is_blocked, block_pipeline,
+        )
+        if is_blocked(self.conn, goal_id, "Backward"):
+            return
+        dead_count = self.conn.execute(
+            "SELECT COUNT(*) FROM strategies "
+            "WHERE goal_id = ? AND status = 'dead' "
+            "  AND commit_state = 'live'",
+            (goal_id,),
+        ).fetchone()[0]
+        if dead_count >= threshold:
+            block_pipeline(self.conn, goal_id, "Backward")
+            self._emit_event(
+                "cascade",
+                {
+                    "rule": "backward_blocked_dead_strategy_threshold",
+                    "goal_id": goal_id,
+                    "dead_strategies": dead_count,
+                    "threshold": threshold,
+                },
+            )
 
     def _mirror_builder_failure_to_goal(
         self, strategy_id: int, result: BuilderResult
@@ -1006,7 +1056,19 @@ class Reactor:
                 "WHERE goal_id = ? AND status != 'dead'",
                 (goal_id,),
             ).fetchone()[0]
-            if non_dead == 0:
+            # P7 演習 fix #11: defer shelve until Backward truly blocked.
+            # The legacy "all strategies dead → shelve immediately" rule
+            # made the goal-level retry budget effectively zero — a single
+            # Builder rejection of the first strategy shelved the goal,
+            # giving Backward zero chance to learn from dead_attempts and
+            # try a different proof path. Now shelve only when both:
+            #   (a) all strategies are dead (no proposed/succeeded in flight)
+            #   (b) Backward is blocked_pipelines for this goal
+            # Condition (b) becomes true once enough dead strategies have
+            # accumulated (cascade_builder writes the block at threshold).
+            from Tooling.subsystems.blocked_pipelines import is_blocked
+            backward_blocked = is_blocked(self.conn, goal_id, "Backward")
+            if non_dead == 0 and backward_blocked:
                 with self.conn:
                     self.conn.execute(
                         "UPDATE goals SET status = 'shelved', "
@@ -1269,7 +1331,17 @@ class Reactor:
         """
         target_id = str(task.get("target_id", ""))
         kind = str(task.get("kind", ""))
-        if self._is_already_dispatched(target_id, kind):
+        # P7 演習 fix: per-mode dedup. Backward task with force_decompose
+        # payload is a different "mode" from a free Backward — should
+        # not collide with each other. Other kinds use mode='default'
+        # (single mode, behaves like the original check).
+        payload = self._decode_payload(task)
+        if kind == "Backward":
+            mode = ("force_decompose"
+                    if payload.get("force_decompose") else "free")
+        else:
+            mode = "default"
+        if self._is_already_dispatched(target_id, kind, mode=mode):
             self._emit_event(
                 "cascade",
                 {
@@ -1282,6 +1354,7 @@ class Reactor:
         pipeline_id = str(uuid.uuid4())
         with self._lock:
             self._running[pipeline_id] = (task["target_id"], task["kind"])
+            self._running_payloads[pipeline_id] = payload
         self._pool.submit(self._run_pipeline_thread, pipeline_id, task)
 
     def _run_pipeline_thread(self, pipeline_id: str, task: dict) -> None:
@@ -1326,6 +1399,7 @@ class Reactor:
                 pass
             with self._lock:
                 self._running.pop(pipeline_id, None)
+                self._running_payloads.pop(pipeline_id, None)
             if result is not None:
                 self._event_queue.put(("pipeline_finished", task, result))
 
@@ -1366,7 +1440,13 @@ class Reactor:
                 lean_timeout=self.config.lake_timeout,
             )
             chain = self._make_fallback_chain()
-            return Backward(conn, chain, cfg, resolver=resolver).run(goal_id)
+            # P7 演習 fix #11: pass through force_decompose payload so
+            # the Backward run produces a Path B strategy without
+            # globally toggling goal.evidence.decompose_required.
+            force_decompose = bool(payload.get("force_decompose"))
+            return Backward(
+                conn, chain, cfg, resolver=resolver,
+            ).run(goal_id, force_decompose=force_decompose)
         elif kind == "Refuter":
             from Tooling.pipelines.refuter import Refuter, RefuterConfig
             goal_id = int(task["target_id"])
@@ -1619,30 +1699,97 @@ class Reactor:
             from Tooling.subsystems.blocked_pipelines import is_blocked
             if is_blocked(self.conn, int(goal_id), "Backward"):
                 continue
-            # Avoid duplicate dispatch
-            if self._is_already_dispatched(goal_id_s, "Backward"):
-                continue
-            # P7 演習 fix: Backward retry pile-up race. After Backward
-            # succeeds and writes a 'proposed' (or 'succeeded')
-            # strategy, the goal still reads `status='open'` until
-            # cascade either marks the strategy dead (and shelves the
-            # goal if all strategies dead) or all sub-goals prove
-            # (cascading the strategy succeeded → goal proved). In
-            # that gap (BFS tick fires every 30s, cascade can lag a
-            # few seconds), BFS would re-enqueue another Backward on
-            # the same goal — which then writes a competing strategy.
-            # Skip if there is any non-dead strategy already on this
-            # goal: Builder is about to verify, no point in proposing
-            # an alternative until Builder either proves or fails.
-            non_dead = self.conn.execute(
-                "SELECT COUNT(*) FROM strategies "
-                "WHERE goal_id = ? AND commit_state = 'live' "
-                "  AND status != 'dead'",
+            # P7 演習 fix #11 + parallel Path A/B design: per-mode BFS.
+            # Strategies have an implicit mode by structure:
+            #   Path A leaf  = no entries in strategy_subgoals (LLM proof
+            #                  in `proof` field, Builder verifies as-is).
+            #   Path B decomp = ≥1 entries in strategy_subgoals.
+            # We allow up to ONE in-flight Backward of each mode per goal,
+            # giving the LLM space to refine Path A via dead_attempts
+            # feedback while the framework auto-spawns a Path B forced
+            # attempt once Path A has tried twice without success.
+            self._counts_query = self.conn.execute(
+                """
+                SELECT
+                  SUM(CASE WHEN status != 'dead' AND has_subgoals = 0 THEN 1 ELSE 0 END) AS path_a_live,
+                  SUM(CASE WHEN status = 'dead'  AND has_subgoals = 0 THEN 1 ELSE 0 END) AS path_a_dead,
+                  SUM(CASE WHEN status != 'dead' AND has_subgoals = 1 THEN 1 ELSE 0 END) AS path_b_live
+                FROM (
+                  SELECT s.id AS sid, s.status AS status,
+                         CASE WHEN EXISTS (SELECT 1 FROM strategy_subgoals
+                                           WHERE strategy_id = s.id)
+                              THEN 1 ELSE 0 END AS has_subgoals
+                  FROM strategies s
+                  WHERE s.goal_id = ? AND s.commit_state = 'live'
+                )
+                """,
                 (int(goal_id),),
             ).fetchone()
-            if non_dead and non_dead[0] > 0:
-                continue
-            self._enqueue_task("Backward", goal_id_s, priority=0)
+            path_a_live = self._counts_query[0] or 0
+            path_a_dead = self._counts_query[1] or 0
+            path_b_live = self._counts_query[2] or 0
+
+            # Path A free Backward: enqueue when no Path A strategy in
+            # flight + no free Backward already running/queued.
+            if path_a_live == 0 \
+                    and not self._has_backward_mode_in_flight(goal_id_s, "free"):
+                self._enqueue_task("Backward", goal_id_s, priority=0)
+
+            # Path B forced Backward: trigger condition is "2+ dead Path
+            # A strategies AND no live Path B strategy". Spawn at most
+            # one force_decompose attempt at a time per goal.
+            if (path_a_dead >= 2 and path_b_live == 0
+                    and not self._has_backward_mode_in_flight(
+                        goal_id_s, "force_decompose")):
+                payload_json = json.dumps({"force_decompose": True})
+                with self.conn:
+                    self.conn.execute(
+                        "INSERT INTO queue (kind, target_id, priority, "
+                        "payload, created_at) VALUES "
+                        "(?, ?, ?, ?, ?)",
+                        ("Backward", goal_id_s, 5, payload_json, _now()),
+                    )
+
+    def _has_backward_mode_in_flight(
+        self, goal_id_s: str, mode: str,
+    ) -> bool:
+        """Check if a Backward in `mode` is queued or running for the goal.
+
+        mode='free' = task.payload null OR no force_decompose key.
+        mode='force_decompose' = task.payload contains "force_decompose": true.
+
+        Queue rows are scanned via payload string match; running pipeline
+        payloads are tracked via self._running_payloads (parallel dict
+        to self._running, populated at _submit_task).
+        """
+        # Queue side
+        rows = self.conn.execute(
+            "SELECT payload FROM queue WHERE kind = 'Backward' "
+            "  AND target_id = ?",
+            (goal_id_s,),
+        ).fetchall()
+        for (payload,) in rows:
+            payload_has_force = (
+                payload and "force_decompose" in payload
+                and "true" in payload.lower()
+            )
+            if mode == "force_decompose" and payload_has_force:
+                return True
+            if mode == "free" and not payload_has_force:
+                return True
+        # Running pipeline side: cross-reference _running with
+        # _running_payloads.
+        with self._lock:
+            for pid, entry in self._running.items():
+                if len(entry) >= 2 and entry[0] == goal_id_s \
+                        and entry[1] == "Backward":
+                    p = self._running_payloads.get(pid, {})
+                    is_force = bool(p.get("force_decompose"))
+                    if mode == "force_decompose" and is_force:
+                        return True
+                    if mode == "free" and not is_force:
+                        return True
+        return False
 
     def _bfs_enqueue_refuter_for_conjecture(self) -> None:
         """Enqueue Refuter for open conjecture Goals (P4 C31, three-line attack).
@@ -1735,34 +1882,84 @@ class Reactor:
                 # Cascade upward: all sub-goals proved — enqueue Builder
                 self._enqueue_task("Builder", strategy_id_s, priority=10)
 
-    def _is_already_dispatched(self, target_id: str, kind: str) -> bool:
-        """True if a pipeline for this (target_id, kind) is running or queued.
+    def _is_already_dispatched(
+        self, target_id: str, kind: str, mode: str = "default",
+    ) -> bool:
+        """True if a pipeline for this (target_id, kind, mode) is running or
+        queued.
 
         P7 演習 fix: also check DB for in-flight pipeline. Race window
         exists between the worker thread popping `_running` and the main
         loop processing pipeline_finished + cascade UPDATE'ing
-        pipelines.status. During that gap the in-memory `_running` is
-        empty, but the DB still shows status='running'. Without this
-        DB check, BFS and Strategist demux can both schedule duplicate
-        work for the same (target, kind) — daemon then spawns two
-        threads that race on the same artifacts.
+        pipelines.status.
+
+        P7 演習 fix #11: `mode` differentiates Backward dispatch by
+        payload — 'free' (no force_decompose) vs 'force_decompose'
+        (parallel Path B forced trigger). For non-Backward kinds the
+        caller passes mode='default' (single bucket).
         """
         with self._lock:
-            for tid, k in self._running.values():
-                if tid == target_id and k == kind:
+            for pid, entry in self._running.items():
+                if len(entry) < 2:
+                    continue
+                tid, k = entry[0], entry[1]
+                if tid != target_id or k != kind:
+                    continue
+                if mode == "default":
                     return True
-        row = self.conn.execute(
-            "SELECT id FROM queue WHERE target_id = ? AND kind = ?",
+                payload = self._running_payloads.get(pid, {})
+                running_mode = (
+                    "force_decompose"
+                    if payload.get("force_decompose") else "free"
+                )
+                if running_mode == mode:
+                    return True
+        # Queue side
+        rows = self.conn.execute(
+            "SELECT payload FROM queue WHERE target_id = ? AND kind = ?",
             (target_id, kind),
-        ).fetchone()
-        if row is not None:
-            return True
-        row = self.conn.execute(
+        ).fetchall()
+        for (payload,) in rows:
+            if mode == "default":
+                return True
+            payload_has_force = bool(
+                payload and "force_decompose" in payload
+                and "true" in payload.lower()
+            )
+            queue_mode = "force_decompose" if payload_has_force else "free"
+            if queue_mode == mode:
+                return True
+        # DB pipelines.status='running' (cascade-pending window or
+        # zombie from prior daemon).
+        if mode == "default":
+            # Single-mode kinds: any running row blocks.
+            row = self.conn.execute(
+                "SELECT id FROM pipelines WHERE target_id = ? AND kind = ? "
+                "  AND status = 'running'",
+                (target_id, kind),
+            ).fetchone()
+            return row is not None
+        # Mode-aware kinds (Backward): a DB running row WITHOUT a
+        # corresponding _running_payloads entry is a zombie/orphan we
+        # can't classify — block conservatively. A DB row WITH known
+        # _running_payloads we can compare modes against.
+        rows = self.conn.execute(
             "SELECT id FROM pipelines WHERE target_id = ? AND kind = ? "
             "  AND status = 'running'",
             (target_id, kind),
-        ).fetchone()
-        return row is not None
+        ).fetchall()
+        with self._lock:
+            for (pid,) in rows:
+                if pid not in self._running_payloads:
+                    return True  # zombie / unknown — be safe
+                payload = self._running_payloads.get(pid, {})
+                running_mode = (
+                    "force_decompose"
+                    if payload.get("force_decompose") else "free"
+                )
+                if running_mode == mode:
+                    return True
+        return False
 
     def _enqueue_task(self, kind: str, target_id: str, priority: int = 0) -> None:
         """Insert a task into the DB queue table."""

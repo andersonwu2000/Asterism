@@ -101,6 +101,11 @@ class Backward:
         self.chain = chain
         self.config = config
         self.resolver = resolver or ModelResolver()
+        # P7 演習 fix #11: per-run flag set by run(force_decompose=...)
+        # so the prompt + parser treat this attempt as Path B forced
+        # without writing to goal.evidence in DB (which would also force
+        # parallel free-mode Backwards into Path B mode).
+        self._force_decompose: bool = False
 
     # ------------------------------------------------------------------
     # Stage: failure_replay (P3 C22 — delegates to Tooling.stages module)
@@ -183,12 +188,14 @@ class Backward:
             .replace("{{DEAD_ATTEMPTS}}", dead_str)
             .replace("{{CANDIDATE_LEMMAS}}", cand_str)
         )
-        # P6.x patch 24: per-Goal `decompose_required` framework hard
-        # limit (stored in goals.evidence JSON). When set, prepend a
-        # directive so the agent ONLY produces Path B (decomposition);
-        # _parse_proposal rejects `combinator: "Leaf"` further down so
-        # the constraint is doubly enforced.
-        if _is_decompose_required(goal):
+        # P6.x patch 24 + P7 演習 fix #11: per-Goal `decompose_required`
+        # framework hard limit (stored in goals.evidence JSON) OR the
+        # per-run `_force_decompose` flag set by run(force_decompose=).
+        # The latter lets the framework spawn ONE Path B Backward
+        # alongside ongoing Path A free Backwards without globally
+        # forcing every Backward into Path B. _parse_proposal rejects
+        # `combinator: "Leaf"` for the same conditions.
+        if _is_decompose_required(goal) or self._force_decompose:
             prompt = (
                 "## FRAMEWORK CONSTRAINT (hard, non-negotiable)\n\n"
                 "This Goal is marked `decompose_required: true`. You MUST"
@@ -251,9 +258,12 @@ class Backward:
             return None
         # P6.x patch 3: Leaf path requires `proof` field, no subgoals.
         if obj.get("combinator") == "Leaf":
-            # P6.x patch 24: framework hard limit — reject Leaf when
-            # the Goal has `decompose_required: true` in evidence.
+            # P6.x patch 24 + P7 演習 fix #11: framework hard limit —
+            # reject Leaf when the Goal has `decompose_required: true`
+            # in evidence OR this run was kicked off with force_decompose.
             if goal is not None and _is_decompose_required(goal):
+                return None
+            if self._force_decompose:
                 return None
             proof = obj.get("proof")
             if not isinstance(proof, str) or not proof.strip():
@@ -622,8 +632,17 @@ class Backward:
     # Main orchestration
     # ------------------------------------------------------------------
 
-    def run(self, goal_id: int) -> BackwardResult:
+    def run(
+        self, goal_id: int, *, force_decompose: bool = False,
+    ) -> BackwardResult:
         """Run the full Backward stage sequence for the given goal.
+
+        P7 演習 fix #11: `force_decompose=True` (set by scheduler when
+        task.payload contains `force_decompose=true`) puts THIS run into
+        Path B mode without touching goal.evidence in DB — so a parallel
+        free-mode Backward on the same goal can still pursue Path A.
+        Parser-level Leaf rejection is enforced by combining this flag
+        with `_is_decompose_required(goal)` in `_parse_proposal`.
 
         Test hooks (mutually exclusive — see docs/dev/test_hooks.md):
           BACKWARD_MOCK=success_leaf   → bypass agent, write a trivial leaf
@@ -643,6 +662,7 @@ class Backward:
         avoids C18/P3 collision (P3 plans BACKWARD_FORCE for failure-path
         coverage tests).
         """
+        self._force_decompose = bool(force_decompose)
         mock = os.environ.get("BACKWARD_MOCK")
         if mock == "success_leaf":
             return self._mock_success_leaf(goal_id)

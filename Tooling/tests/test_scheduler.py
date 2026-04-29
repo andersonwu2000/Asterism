@@ -1025,7 +1025,16 @@ class TestStructuralRefill:
         ).fetchone()[0]
         assert status == "dead"
 
-        # Goal G: now also shelved (all strategies dead = strategy S only).
+        # P7 演習 fix #11: goal stays 'open' (not shelved) until Backward
+        # is blocked_pipelines for the goal. Cascade no longer shelves
+        # immediately on all-strategies-dead — it gives Backward retry
+        # the chance to produce more strategies. Use block_pipeline
+        # explicitly to drive the goal to shelved here.
+        from Tooling.subsystems.blocked_pipelines import block_pipeline
+        block_pipeline(db, goal_id, "Backward")
+        # Re-run propagation; _mark_strategy_dead's shelve check now sees
+        # all-dead AND blocked → shelves.
+        reactor._mark_strategy_dead(strat_id)
         g_status = db.execute(
             "SELECT status FROM goals WHERE id = ?", (goal_id,),
         ).fetchone()[0]
@@ -1409,12 +1418,22 @@ class TestCascadeV2:
     def test_all_strategies_dead_shelves_goal(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
-        """When all strategies are dead, goal.status → shelved + cascade event."""
+        """When all strategies are dead AND Backward is blocked, goal →
+        shelved + cascade event.
+
+        P7 演習 fix #11: shelve only when Backward truly blocked
+        (i.e. retry budget exhausted). Without the block, goal stays
+        open to allow Backward to write more strategies.
+        """
         strategy_lean = tmp_path / "strat.lean"
         strategy_lean.write_text("placeholder", "utf-8")
         goal_lean = tmp_path / "goal.lean"
         goal_lean.write_text("placeholder", "utf-8")
         goal_id, strategy_id = _make_rows(db, strategy_lean, goal_lean)
+
+        # Pre-block Backward so the deferred-shelve condition fires.
+        from Tooling.subsystems.blocked_pipelines import block_pipeline
+        block_pipeline(db, goal_id, "Backward")
 
         _make_reactor(db, tmp_path)._mark_strategy_dead(strategy_id)
 
