@@ -34,17 +34,21 @@
 
 ## Step
 
-**P7 R1 推進至 C55-minimal (commit `0f66d7d`)；R2 audit batch 進行中（3 個 parallel Auditor）。**
+**P7 推進完成 + 3 輪 R2/R3 review cycle + 3 演習 (wilson / compactness / SG)、framework 全 PASS。**
+最新 commit: `139f1c6` (R3 round 3 minimal).
+report.md 內最終彙整 + 給 user 的 5 條決策點。
 
-⚠️ 本 session 從 compact 後接手期間 R1 連推 8 batch 但**全部跳過 R2 audit**——違反 framework hybrid mode discipline（auditor.md / checklist.md 明定 R2 永遠 spawn 獨立 Opus）。User 點出後立即 spawn 3 個 parallel Auditor 補回，等所有 audit_*.md 寫完後再 R3 fix。
+R2/R3 對應:
+- audit_*.md ← R2 round 1 (3 batch);  R3 round 1 → `2a30363`
+- audit2_*.md ← R2 round 2 (3 batch); R3 round 2 → `88ebbc3` (NEW-HIGH-A 演習 blocker)
+- audit3_*.md ← R2 round 3 (3 batch); R3 round 3 → `139f1c6` (minimal)
 
-R2 audit batch 對應：
-- audit_patch28_29.md ← `0b2f3c5` + `45964af`
-- audit_c49_c50_c51.md ← `c842297` + `9de1f89` + `09e7ea1`
-- audit_c52_c53_c54_c55.md ← `1ff2a46` + `57d99eb` + `0f66d7d`
+3 個演習結果（`Problems/{wilson,compactness,sylvester_gallai}` 下都有 staged Goal + sub-goals）:
+- wilson: framework PASS, LLM 90% (omega 收尾 unsolvedGoals)
+- compactness: framework PASS, Lindenbaum-style decomposition (3 sub-goals depth=1)
+- SG: framework PASS, Kelly minimiser-style decomposition (3 sub-goals depth=1)
 
-預先發現的 finding（待 Auditor 確認）：
-- Generalizer.failure_replay SQL `target_kind='forward'`（應為 'generalizer'；docstring vs code 不符；schema CHECK 也不允許 'generalizer' 值——spec 與 schema 雙重 gap）
+CI: 905 → 1014 pass / 35 skip / 1 xfail / 0 regression.
 
 ---
 

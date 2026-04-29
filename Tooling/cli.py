@@ -326,6 +326,17 @@ def cmd_run(
     base = str(base_dir or _DEFAULT_BASE)
     bypass = getattr(args, "bypass_startup_check", False)
     cfg = ReactorConfig(base_dir=base, bypass_startup_check=bypass)
+    # 演習 hook: ASTERISM_POOL_SIZE env overrides the default pool_size=4
+    # (user note "演習 P 可開到 12~15"; token-cheap, time-expensive).
+    import os as _os
+    pool_env = _os.environ.get("ASTERISM_POOL_SIZE")
+    if pool_env:
+        try:
+            v = int(pool_env)
+            if v > 0:
+                cfg.pool_size = v
+        except ValueError:
+            pass
     reactor = Reactor(db, cfg)
     if getattr(args, "once", False):
         reactor.run()
