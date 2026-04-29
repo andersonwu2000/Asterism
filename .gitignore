@@ -1,0 +1,20 @@
+# Lean / Lake
+.lake/
+build/
+
+# Asterism runtime
+.attempts/
+asterism.db
+asterism.db-journal
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
