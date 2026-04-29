@@ -204,6 +204,10 @@ FRAMEWORK_MODEL_DEFAULTS: dict[str, str] = {
     # (heavy inventory reasoning + decision schema authoring; spike-029 will
     # decide whether to keep this default).
     "strategist.agent": "opus",
+    # P7 C52/C53: Forward / Generalizer agents per architecture_pipelines.md
+    # §4/§8 (statement authoring; sonnet per spec recommendation).
+    "forward.agent": "sonnet",
+    "generalizer.agent": "sonnet",
 }
 
 
