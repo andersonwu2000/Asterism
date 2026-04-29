@@ -895,6 +895,58 @@ class TestStructuralRefill:
         assert f"strategy {strat_id}" in rows[0][2]
         assert "unsolvedGoals" in rows[0][2]
 
+    def test_bfs_skips_backward_when_proposed_strategy_exists(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """P7 演習 fix: Backward retry pile-up race.
+
+        Goal stays 'open' between Backward.commit_leaf (writes 'proposed'
+        strategy) and cascade running (which marks goal proved/shelved
+        based on Builder outcome). In that 30s gap, BFS would re-enqueue
+        another Backward on the same goal, ending up with a second
+        strategy competing with the first. Builder is in flight; no point
+        in proposing a different proof until cascade resolves the first
+        attempt.
+
+        Skip Backward if the goal has any 'proposed' or 'succeeded'
+        strategy (i.e. anything not 'dead'). Cascade eventually marks
+        them dead → next BFS tick proceeds.
+        """
+        goal_id = _insert_open_goal(db, tmp_path, slug="proposed_g")
+        # Insert a 'proposed' strategy (not dead) — Builder hasn't run yet.
+        _insert_strategy(db, tmp_path, goal_id, slug="prop_strat",
+                         status="proposed")
+
+        reactor = _make_reactor(db, tmp_path)
+        reactor._bfs_enqueue_backward()
+
+        rows = db.execute(
+            "SELECT count(*) FROM queue WHERE kind='Backward' AND target_id=?",
+            (str(goal_id),),
+        ).fetchone()
+        assert rows[0] == 0, (
+            "BFS must skip Backward enqueue when goal has a non-dead "
+            "strategy in flight; otherwise duplicate strategies pile up "
+            "in the cascade-lag gap."
+        )
+
+    def test_bfs_enqueues_backward_when_only_dead_strategies(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Counterpart to the above: when all existing strategies on a
+        goal are 'dead', Backward IS allowed to retry with feedback.
+        """
+        goal_id = _insert_open_goal(db, tmp_path, slug="retry_g")
+        _insert_strategy(db, tmp_path, goal_id, slug="dead_strat",
+                         status="dead")
+        reactor = _make_reactor(db, tmp_path)
+        reactor._bfs_enqueue_backward()
+        rows = db.execute(
+            "SELECT count(*) FROM queue WHERE kind='Backward' AND target_id=?",
+            (str(goal_id),),
+        ).fetchone()
+        assert rows[0] == 1
+
     def test_bfs_skips_builder_after_one_attempt_already_ran(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:

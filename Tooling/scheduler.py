@@ -1480,6 +1480,26 @@ class Reactor:
             # Avoid duplicate dispatch
             if self._is_already_dispatched(goal_id_s, "Backward"):
                 continue
+            # P7 演習 fix: Backward retry pile-up race. After Backward
+            # succeeds and writes a 'proposed' (or 'succeeded')
+            # strategy, the goal still reads `status='open'` until
+            # cascade either marks the strategy dead (and shelves the
+            # goal if all strategies dead) or all sub-goals prove
+            # (cascading the strategy succeeded → goal proved). In
+            # that gap (BFS tick fires every 30s, cascade can lag a
+            # few seconds), BFS would re-enqueue another Backward on
+            # the same goal — which then writes a competing strategy.
+            # Skip if there is any non-dead strategy already on this
+            # goal: Builder is about to verify, no point in proposing
+            # an alternative until Builder either proves or fails.
+            non_dead = self.conn.execute(
+                "SELECT COUNT(*) FROM strategies "
+                "WHERE goal_id = ? AND commit_state = 'live' "
+                "  AND status != 'dead'",
+                (int(goal_id),),
+            ).fetchone()
+            if non_dead and non_dead[0] > 0:
+                continue
             self._enqueue_task("Backward", goal_id_s, priority=0)
 
     def _bfs_enqueue_refuter_for_conjecture(self) -> None:
