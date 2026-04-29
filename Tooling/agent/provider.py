@@ -200,6 +200,10 @@ FRAMEWORK_MODEL_DEFAULTS: dict[str, str] = {
     "builder.tactic_llm": "haiku",
     "backward.agent": "sonnet",
     "refuter.agent": "sonnet",
+    # P7 C50: Strategist defaults to opus per architecture_pipelines.md §5
+    # (heavy inventory reasoning + decision schema authoring; spike-029 will
+    # decide whether to keep this default).
+    "strategist.agent": "opus",
 }
 
 
