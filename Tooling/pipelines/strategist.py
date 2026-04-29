@@ -235,9 +235,25 @@ class Strategist:
         problem: str,
         decisions: list[dict],
     ) -> tuple[int, DemuxResult]:
-        """Two transactions: INSERT strategist_decisions row, then run
-        demux (which has its own TX). Decisions row records what the agent
-        proposed; demux records what actually landed."""
+        """Run demux first, then INSERT strategist_decisions row (R3 fix
+        audit_c49_c50_c51.md HIGH-1: was previously two TXs with the row
+        committed before demux, leaving an orphan row whenever demux's
+        per-decision UPDATE/INSERT raised; failure_replay would later see
+        a logged decision with no downstream pipeline outcome and
+        misinterpret it as 'still running').
+
+        New ordering: demux always runs (it never raises — failed decisions
+        land in `rejected`). Then we INSERT the decisions row in a separate
+        single-statement TX. Worst case is the row INSERT fails after demux
+        side-effects landed; that means failure_replay misses one history
+        entry — strictly less harmful than orphan row + bogus reflection.
+        """
+        demux = apply_decisions(
+            self.conn,
+            problem=problem,
+            decisions=decisions,
+            allowed_providers=self.config.allowed_providers,
+        )
         with self.conn:
             cur = self.conn.execute(
                 "INSERT INTO strategist_decisions (decisions, ts) "
@@ -245,12 +261,6 @@ class Strategist:
                 (json.dumps(decisions), _now()),
             )
             decisions_id = cur.lastrowid
-        demux = apply_decisions(
-            self.conn,
-            problem=problem,
-            decisions=decisions,
-            allowed_providers=self.config.allowed_providers,
-        )
         return decisions_id, demux
 
     # ------------------------------------------------------------------
@@ -296,6 +306,11 @@ class Strategist:
             return StrategistResult(outcome="exhausted")
         if force == "empty":
             decisions_id, demux = self._commit(problem, [])
+            try:
+                from Tooling.strategist.round_robin import consume
+                consume(self.conn, problem)
+            except Exception:
+                pass
             return StrategistResult(
                 outcome="success",
                 decisions_id=decisions_id,
@@ -339,6 +354,20 @@ class Strategist:
         decisions = parsed.get("decisions", [])
         decisions_id, demux = self._commit(problem, decisions)
         self._finish_pipeline(pipeline_id, "success")
+        # R3 fix (audit_c49_c50_c51.md spec MISS): C51 round_robin.consume
+        # was a primitive with no caller. Without it, the K accumulator never
+        # resets and select_next keeps returning the SAME problem each time
+        # — phase7_smarts.md ## Strategist 行為 #10 'strict A→B→C→A' fails.
+        # Wire here at the success commit boundary (architecture_pipelines.md
+        # §5: 'commit 完才釋放 cooldown 並切下個 Problem').
+        try:
+            from Tooling.strategist.round_robin import consume
+            consume(self.conn, problem)
+        except Exception:
+            # Best-effort. Failure to consume just means the next select_next
+            # may keep choosing this Problem; not catastrophic, surfaceable
+            # via select_next behavior.
+            pass
         return StrategistResult(
             outcome="success",
             decisions_id=decisions_id,

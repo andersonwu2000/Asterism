@@ -8,7 +8,13 @@ mark the original G proved (architecture_pipelines.md §8: needs Cluster
 typed relation, deferred to P8+).
 
 Stages (architecture_pipelines.md §8):
-  1. failure_replay  — read dead_attempts (target_kind='generalizer').
+  1. failure_replay  — read dead_attempts (target_kind='Goal',
+                       pipeline_kind='Generalizer'; spec line 493 says
+                       `target_kind=generalizer` but the schema CHECK
+                       constraint only enumerates {Goal, Strategy, forward},
+                       so we map the spec name to the closest legal enum
+                       value with the pipeline_kind acting as the
+                       discriminator).
   2. agent           — read G statement + write candidate G* statement;
                        agent may early-exit `outcome: 'unproductive'`
                        claiming G is already maximally general.
@@ -85,9 +91,15 @@ class Generalizer:
     # ------------------------------------------------------------------
 
     def failure_replay(self, source_goal_id: int) -> list[dict]:
+        # R3 fix (audit_c52_c53_c54_c55.md HIGH-1): was previously locked to
+        # target_kind='forward' (copy-paste from Forward) which made this
+        # query unconditionally return [] — the dead_attempts CHECK constraint
+        # only allows {Goal, Strategy, forward}, so Generalizer rows live as
+        # target_kind='Goal' (Generalizer operates on a Goal, not on a
+        # Forward-style orphan). Pair with pipeline_kind filter for selectivity.
         rows = self.conn.execute(
             "SELECT id, reason_summary, ts FROM dead_attempts "
-            "WHERE target_kind = 'forward' "
+            "WHERE target_kind = 'Goal' "
             "  AND target_id = ? "
             "  AND pipeline_kind = 'Generalizer' "
             "ORDER BY id DESC LIMIT 5",
@@ -212,13 +224,21 @@ class Generalizer:
 
     def _commit(self, candidate: dict, problem: str) -> int:
         writer = CommitWriter(self.conn)
+        # R3 fix (audit HIGH-2 batch3 spirit): goals.lean_path UNIQUE; even
+        # single-candidate case can collide if Generalizer is invoked twice on
+        # the same Problem/slug. Use UUID-qualified placeholder.
+        slug = candidate["slug"]
+        placeholder = (
+            f"Problems/{problem}/Goals/_pending_gen_{uuid.uuid4().hex[:8]}_"
+            f"{slug}/{slug}.lean"
+        )
         op = {
             "table": "goals",
             "op": "insert",
             "data": {
                 "problem": problem,
-                "slug": candidate["slug"],
-                "lean_path": "",
+                "slug": slug,
+                "lean_path": placeholder,
                 "origin": "generalizer",
                 "kind": "theorem",
                 "status": "open",

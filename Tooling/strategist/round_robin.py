@@ -35,6 +35,7 @@ status='running' (single-instance enforcement at the runtime level).
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 
@@ -78,11 +79,28 @@ def _write_state(conn: sqlite3.Connection, key: str, value: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+_STRATEGIST_STALE_SEC = 600  # 10 min — process death threshold
+
+
 def is_strategist_running(conn: sqlite3.Connection) -> bool:
-    """Cooldown predicate: any in-flight Strategist pipeline row?"""
+    """Cooldown predicate: any RECENT in-flight Strategist pipeline row?
+
+    R3 fix (audit_c49_c50_c51.md M3): formerly counted ANY status='running'
+    Strategist row, which left the cooldown stuck forever after a crash
+    (OOM / Ctrl-C between _insert_pipeline and _finish_pipeline). Now any
+    'running' row whose started_at is older than _STRATEGIST_STALE_SEC is
+    treated as stale and ignored — the next select_next can hand out a new
+    Strategist task and the stale row eventually gets cleaned up by a real
+    recovery sweep (db.recover) or just sits as observable leak.
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(seconds=_STRATEGIST_STALE_SEC)
+    ).isoformat()
     row = conn.execute(
         "SELECT COUNT(*) FROM pipelines "
-        "WHERE kind = 'Strategist' AND status = 'running'"
+        "WHERE kind = 'Strategist' AND status = 'running' "
+        "  AND started_at >= ?",
+        (cutoff,),
     ).fetchone()
     return bool(row[0])
 

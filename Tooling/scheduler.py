@@ -1046,8 +1046,19 @@ class Reactor:
                 self._event_queue.put(("pipeline_finished", task, result))
 
     def _execute_task_with_conn(self, task: dict, conn: Any) -> Any:
-        """Run Builder or Backward pipeline with provided connection."""
+        """Run Builder or Backward pipeline with provided connection.
+
+        R3 fix (audit_c52_c53_c54_c55.md HIGH-4): if `task['payload']` carries
+        a `model` override (Strategist demux propagated it from a decision),
+        we build a ModelResolver with that tier set on the pipeline's agent
+        stage so the override is actually consumed downstream. Previously
+        the payload was extracted into the task dict but never read.
+        """
+        from Tooling.agent.provider import ModelResolver
         kind = task["kind"]
+        payload = self._decode_payload(task)
+        resolver = self._resolver_with_overrides(kind, payload)
+
         if kind == "Builder":
             strategy_id = int(task["target_id"])
             cfg = BuilderConfig(
@@ -1055,6 +1066,8 @@ class Reactor:
                 lake_timeout=self.config.lake_timeout,
                 base_dir=self.config.base_dir,
             )
+            # Builder doesn't yet accept a resolver in its constructor;
+            # leave the override path here as future-compat.
             return Builder(strategy_id, conn, cfg).run()
         elif kind == "Backward":
             goal_id = int(task["target_id"])
@@ -1064,9 +1077,35 @@ class Reactor:
                 lean_timeout=self.config.lake_timeout,
             )
             chain = self._make_fallback_chain()
-            return Backward(conn, chain, cfg).run(goal_id)
+            return Backward(conn, chain, cfg, resolver=resolver).run(goal_id)
         else:
             raise FatalError(f"Unsupported task kind in thread: {kind!r}")
+
+    @staticmethod
+    def _decode_payload(task: dict) -> dict:
+        """Parse queue.payload JSON column (or None) into a dict."""
+        raw = task.get("payload")
+        if not raw:
+            return {}
+        try:
+            v = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return v if isinstance(v, dict) else {}
+
+    @staticmethod
+    def _resolver_with_overrides(kind: str, payload: dict):
+        """Build a ModelResolver honoring payload['model'] override.
+
+        The Strategist sets `model='opus'` etc. per decision. The override
+        applies to the agent stage of the spawned pipeline.
+        """
+        from Tooling.agent.provider import ModelResolver
+        meta_models: dict[str, str] = {}
+        model = payload.get("model")
+        if isinstance(model, str) and model:
+            meta_models[f"{kind.lower()}.agent"] = model
+        return ModelResolver(meta_models=meta_models or None)
 
     def _make_fallback_chain(self) -> Any:
         """Create the default multi-provider FallbackChain.

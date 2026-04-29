@@ -226,6 +226,35 @@ class TestRunLoop:
         assert r.outcome == "no_novel"
         assert r.new_goal_ids == []
 
+    @patch("Tooling.pipelines.forward.run_lean")
+    def test_commit_two_candidates_no_unique_violation(
+        self, mock_lake, db, tmp_base
+    ):
+        """R3 regression (audit_c52_c53_c54_c55.md HIGH-2): batch insert of
+        2+ candidates used to write lean_path="" twice → UNIQUE constraint
+        crash. Verify the UUID-qualified placeholder fix avoids it."""
+        mock_lake.return_value = LakeResult(
+            outcome="proved",
+            messages=[{"kind": "hasSorry", "data": "uses sorry"}],
+        )
+        seed = _insert_goal(db, slug="g_seed", question="True")
+        chain = _make_chain([_wrap_candidates([
+            {"slug": "g_seed_c1", "statement": "True", "reason": "..."},
+            {"slug": "g_seed_c2", "statement": "True", "reason": "..."},
+            {"slug": "g_seed_c3", "statement": "True", "reason": "..."},
+        ])])
+        f = _make_forward(db, chain, tmp_base)
+        r = f.run(seed_goal_id=seed)
+        assert r.outcome == "success"
+        assert len(r.new_goal_ids) == 3
+        # Each new goal should have a unique canonical lean_path.
+        paths = db.execute(
+            "SELECT lean_path FROM goals WHERE id IN (?, ?, ?)",
+            tuple(r.new_goal_ids),
+        ).fetchall()
+        path_set = {p[0] for p in paths}
+        assert len(path_set) == 3, f"lean_path collision: {path_set}"
+
     def test_no_response_then_max_retries_exhausted(self, db, tmp_base):
         seed = _insert_goal(db, slug="g_seed", question="True")
         chain = _make_chain([])  # always None

@@ -33,7 +33,22 @@
 - 整個 Asterism repo 是 fresh repo（C1 前無 commit）—— framework + spec 該獨立 commit、不混進 phase commit
 
 ## Step
-**P6 ✅ done + P6.x patch series 27 patches + P7 C48 R1 done** (latest `eba7389`).
+
+**P7 R1 推進至 C55-minimal (commit `0f66d7d`)；R2 audit batch 進行中（3 個 parallel Auditor）。**
+
+⚠️ 本 session 從 compact 後接手期間 R1 連推 8 batch 但**全部跳過 R2 audit**——違反 framework hybrid mode discipline（auditor.md / checklist.md 明定 R2 永遠 spawn 獨立 Opus）。User 點出後立即 spawn 3 個 parallel Auditor 補回，等所有 audit_*.md 寫完後再 R3 fix。
+
+R2 audit batch 對應：
+- audit_patch28_29.md ← `0b2f3c5` + `45964af`
+- audit_c49_c50_c51.md ← `c842297` + `9de1f89` + `09e7ea1`
+- audit_c52_c53_c54_c55.md ← `1ff2a46` + `57d99eb` + `0f66d7d`
+
+預先發現的 finding（待 Auditor 確認）：
+- Generalizer.failure_replay SQL `target_kind='forward'`（應為 'generalizer'；docstring vs code 不符；schema CHECK 也不允許 'generalizer' 值——spec 與 schema 雙重 gap）
+
+---
+
+**P6 ✅ done + P6.x patch series 27 patches + P7 C48 R1 done** (legacy commit `eba7389`).
 
 **Post-compact 醒來 priority 列表**（user 說「逐步解決問題並推進 P7」）：
 

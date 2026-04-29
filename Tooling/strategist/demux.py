@@ -84,16 +84,23 @@ def _load_goal(conn: sqlite3.Connection, goal_id: int) -> dict | None:
     }
 
 
-def _decode_blocked(raw: str | None) -> list[str]:
+def _decode_blocked(raw: str | None) -> tuple[list[str], str | None]:
+    """Returns (blocked_list, error_msg).
+
+    R3 fix (audit_c49_c50_c51.md M4): formerly silent — returned `[]` on
+    JSON corruption which BYPASSED blocked_pipelines filtering. Now returns
+    an error so the caller can reject the decision rather than silently
+    inject a pipeline that should have been blocked.
+    """
     if not raw:
-        return []
+        return [], None
     try:
         v = json.loads(raw)
-    except json.JSONDecodeError:
-        return []
+    except json.JSONDecodeError as exc:
+        return [], f"blocked_pipelines JSON corrupt: {exc}"
     if not isinstance(v, list):
-        return []
-    return [str(x) for x in v]
+        return [], f"blocked_pipelines not a list: {type(v).__name__}"
+    return [str(x) for x in v], None
 
 
 def _build_payload(decision: dict[str, Any]) -> dict[str, Any]:
@@ -127,93 +134,121 @@ def apply_decisions(
     *,
     allowed_providers: list[str] | None = None,
 ) -> DemuxResult:
-    """Apply Strategist decisions, atomically writing queue inserts and
-    Goal status updates inside a single transaction.
+    """Apply Strategist decisions to queue + goals.
 
-    Decisions failing validation are recorded under `rejected` rather than
-    raising — Strategist commit step expects partial success (some
-    decisions ride, others are skipped with a logged reason).
+    R3 fix (audit_c49_c50_c51.md HIGH-2): each decision now runs in its OWN
+    `with conn:` transaction. The previous single-TX design meant a single
+    INSERT failure (BUSY/LOCKED, FK, schema drift) would silently rollback
+    the entire batch while DemuxResult.enqueued / shelved still reported
+    them as landed — silent partial commit.
+
+    Validation order (R3 audit_c49_c50_c51.md HIGH-3): shape → exists →
+    same-Problem → commit_state. cross-Problem check moves BEFORE
+    commit_state because a pending Goal in the wrong Problem should report
+    "wrong Problem" (the agent's actionable bug) rather than "pending"
+    (an internal state the agent has no view into).
+
+    Decisions failing validation OR raising during INSERT/UPDATE are
+    recorded under `rejected` rather than propagating exceptions.
     """
     result = DemuxResult()
     now = _now()
 
-    with conn:
-        for dec in decisions:
-            shape_err = _validate_decision_shape(dec)
-            if shape_err:
-                result.rejected.append({"decision": dec, "reason": shape_err})
-                continue
+    for dec in decisions:
+        shape_err = _validate_decision_shape(dec)
+        if shape_err:
+            result.rejected.append({"decision": dec, "reason": shape_err})
+            continue
 
-            kind = dec["kind"]
-            target = dec["target"]
-            goal = _load_goal(conn, target)
-            if goal is None:
-                result.rejected.append({
-                    "decision": dec,
-                    "reason": f"Goal id {target} not found",
-                })
-                continue
-            if goal["commit_state"] != "live":
-                result.rejected.append({
-                    "decision": dec,
-                    "reason": f"Goal id {target} commit_state != live",
-                })
-                continue
-            if goal["problem"] != problem:
-                result.rejected.append({
-                    "decision": dec,
-                    "reason": (f"Goal id {target} is in problem "
-                               f"{goal['problem']!r}, not {problem!r}"),
-                })
-                continue
+        kind = dec["kind"]
+        target = dec["target"]
+        goal = _load_goal(conn, target)
+        if goal is None:
+            result.rejected.append({
+                "decision": dec,
+                "reason": f"Goal id {target} not found",
+            })
+            continue
+        # R3 HIGH-3: check Problem match BEFORE commit_state so error
+        # message points to the agent's real mistake.
+        if goal["problem"] != problem:
+            result.rejected.append({
+                "decision": dec,
+                "reason": (f"Goal id {target} is in problem "
+                           f"{goal['problem']!r}, not {problem!r}"),
+            })
+            continue
+        if goal["commit_state"] != "live":
+            result.rejected.append({
+                "decision": dec,
+                "reason": f"Goal id {target} commit_state != live",
+            })
+            continue
 
-            # Shelve: UPDATE goal + cancel still-running pipelines on it
-            # (architecture v3 §6 cancellation row 6).
-            if kind == _SHELVE_KIND:
-                conn.execute(
-                    "UPDATE goals SET status = 'shelved', "
-                    "status_changed_at = ?, updated_at = ? "
-                    "WHERE id = ?",
-                    (now, now, target),
-                )
+        # Shelve: UPDATE goal + cancel still-running pipelines.
+        if kind == _SHELVE_KIND:
+            try:
+                with conn:
+                    conn.execute(
+                        "UPDATE goals SET status = 'shelved', "
+                        "status_changed_at = ?, updated_at = ? "
+                        "WHERE id = ?",
+                        (now, now, target),
+                    )
+                    from Tooling.cascade import cancel_running_for_goal
+                    cancel_running_for_goal(conn, target)
                 result.shelved.append(target)
-                # Cancel cascade — separate atomic txn within the same `with`.
-                from Tooling.cascade import cancel_running_for_goal
-                cancel_running_for_goal(conn, target)
-                continue
-
-            # Inject path: blocked_pipelines filter.
-            blocked = _decode_blocked(goal["blocked_pipelines"])
-            if kind in blocked:
+            except sqlite3.Error as exc:
                 result.rejected.append({
                     "decision": dec,
-                    "reason": (f"pipeline kind {kind!r} is in "
-                               f"blocked_pipelines for Goal {target}"),
+                    "reason": f"Shelve UPDATE failed: {exc}",
+                })
+            continue
+
+        # Inject path: blocked_pipelines filter (R3 M4: surface JSON corruption
+        # as a per-decision rejection rather than silently bypassing the filter).
+        blocked, blocked_err = _decode_blocked(goal["blocked_pipelines"])
+        if blocked_err:
+            result.rejected.append({
+                "decision": dec,
+                "reason": blocked_err,
+            })
+            continue
+        if kind in blocked:
+            result.rejected.append({
+                "decision": dec,
+                "reason": (f"pipeline kind {kind!r} is in "
+                           f"blocked_pipelines for Goal {target}"),
+            })
+            continue
+
+        payload = _build_payload(dec)
+        if "provider" in payload and allowed_providers is not None:
+            if payload["provider"] not in allowed_providers:
+                result.rejected.append({
+                    "decision": dec,
+                    "reason": (f"provider {payload['provider']!r} not in "
+                               f"allowed list {allowed_providers!r}"),
                 })
                 continue
 
-            # Provider override gate (decisions may set provider, but it
-            # must be in the caller-supplied allowed_providers list).
-            payload = _build_payload(dec)
-            if "provider" in payload and allowed_providers is not None:
-                if payload["provider"] not in allowed_providers:
-                    result.rejected.append({
-                        "decision": dec,
-                        "reason": (f"provider {payload['provider']!r} not in "
-                                   f"allowed list {allowed_providers!r}"),
-                    })
-                    continue
-
-            payload_json = json.dumps(payload) if payload else None
-            conn.execute(
-                "INSERT INTO queue (kind, target_id, priority, payload, "
-                "created_at) VALUES (?, ?, ?, ?, ?)",
-                (kind, str(target), _INJECT_PRIORITY, payload_json, now),
-            )
+        payload_json = json.dumps(payload) if payload else None
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT INTO queue (kind, target_id, priority, payload, "
+                    "created_at) VALUES (?, ?, ?, ?, ?)",
+                    (kind, str(target), _INJECT_PRIORITY, payload_json, now),
+                )
             result.enqueued.append({
                 "kind": kind,
                 "target_id": target,
                 "payload": payload,
+            })
+        except sqlite3.Error as exc:
+            result.rejected.append({
+                "decision": dec,
+                "reason": f"queue INSERT failed: {exc}",
             })
 
     return result

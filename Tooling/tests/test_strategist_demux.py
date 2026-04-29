@@ -202,6 +202,25 @@ class TestRejection:
         assert result.enqueued == []
         assert "commit_state" in result.rejected[0]["reason"]
 
+    def test_blocked_pipelines_corrupt_json_rejects_decision(self, db):
+        """R3 regression (audit_c49_c50_c51.md M4): _decode_blocked used to
+        silently return [] on JSON parse failure → blocked_pipelines filter
+        bypassed → silent failure red line. Now the decision is rejected
+        with a corruption-tagged reason."""
+        gid = _insert_goal(db, problem="p", slug="g")
+        # Manually corrupt blocked_pipelines column.
+        db.execute(
+            "UPDATE goals SET blocked_pipelines = ? WHERE id = ?",
+            ("{not json", gid),
+        )
+        db.commit()
+        result = apply_decisions(
+            db, "p", [{"kind": "Backward", "target": gid, "reason": "..."}],
+        )
+        assert result.enqueued == []
+        assert len(result.rejected) == 1
+        assert "JSON corrupt" in result.rejected[0]["reason"]
+
     def test_blocked_pipeline_rejected(self, db):
         gid = _insert_goal(
             db, problem="p", slug="g",

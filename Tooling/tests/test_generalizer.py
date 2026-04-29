@@ -207,3 +207,59 @@ class TestRunLoop:
         chain = _make_chain([])
         g = _make_gen(db, chain, tmp_base)
         assert g.run(source_goal_id=seed).outcome == "exhausted"
+
+
+# ---------------------------------------------------------------------------
+# failure_replay regression test (R3 fix audit_c52_c53_c54_c55.md HIGH-1)
+# ---------------------------------------------------------------------------
+
+
+class TestFailureReplay:
+    """R3 regression: failure_replay used to query target_kind='forward' (a
+    copy-paste from forward.py). It's now target_kind='Goal' + pipeline_kind
+    discriminator so reflection actually surfaces past Generalizer attempts.
+    """
+
+    def _seed_dead_attempt(
+        self, conn, *, target_id: int, pipeline_kind: str = "Generalizer",
+        target_kind: str = "Goal",
+    ) -> None:
+        # Need a pipeline row first (FK).
+        conn.execute(
+            "INSERT INTO pipelines "
+            "(id, kind, runtime, target_id, target_kind, status, started_at) "
+            "VALUES (?, ?, 'atomic', ?, 'Goal', 'failed', ?)",
+            (f"pipe-test-{target_id}-{pipeline_kind}", pipeline_kind,
+             str(target_id), _NOW.isoformat()),
+        )
+        conn.execute(
+            "INSERT INTO dead_attempts "
+            "(target_id, target_kind, pipeline_id, pipeline_kind, "
+            " outcome, reason_summary, ts) "
+            "VALUES (?, ?, ?, ?, 'exhausted', ?, ?)",
+            (str(target_id), target_kind,
+             f"pipe-test-{target_id}-{pipeline_kind}",
+             pipeline_kind, "g already maximal", _NOW.isoformat()),
+        )
+        conn.commit()
+
+    def test_finds_generalizer_dead_attempts(self, db, tmp_base):
+        seed = _insert_goal(db, slug="g_seed", question="True")
+        self._seed_dead_attempt(db, target_id=seed)
+        g = _make_gen(db, MagicMock(spec=FallbackChain), tmp_base)
+        replay = g.failure_replay(source_goal_id=seed)
+        assert len(replay) == 1
+        assert "g already maximal" in replay[0]["reason_summary"]
+
+    def test_filters_out_other_pipeline_kinds(self, db, tmp_base):
+        seed = _insert_goal(db, slug="g_seed", question="True")
+        # Forward dead_attempt on the same Goal — should NOT appear.
+        self._seed_dead_attempt(
+            db, target_id=seed, pipeline_kind="Forward",
+            target_kind="forward",
+        )
+        # Generalizer dead_attempt — SHOULD appear.
+        self._seed_dead_attempt(db, target_id=seed)
+        g = _make_gen(db, MagicMock(spec=FallbackChain), tmp_base)
+        replay = g.failure_replay(source_goal_id=seed)
+        assert len(replay) == 1  # only Generalizer one

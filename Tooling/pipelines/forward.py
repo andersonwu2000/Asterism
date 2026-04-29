@@ -118,15 +118,37 @@ class Forward:
 
     def find_mathlib(self, seed: dict) -> list[dict]:
         # Best-effort; not failure-coupled.
+        # R3 fix (audit HIGH-3): seed dict keys come from goals row schema
+        # (`question`), not the agent-facing key `statement`. Old code
+        # passed "" as query so Mathlib search was always empty.
+        # R3 fix (audit MED-1 batch3): silent except violated red line; emit
+        # an events row so the failure is observable instead of swallowed.
+        query = seed.get("question") or ""
         try:
             r = search(
-                seed.get("statement", ""),
+                query,
                 scope="mathlib", kind="find_mathlib",
                 conn=self.conn, lake_cwd=self.config.lake_cwd,
             )
             return r.results
-        except RuntimeError:
+        except RuntimeError as exc:
+            self._emit_diagnostic("find_mathlib_failed", str(exc))
             return []
+
+    def _emit_diagnostic(self, rule: str, detail: str) -> None:
+        """Best-effort observability hook (mirrors Backward._emit_stage_fail)."""
+        try:
+            with self.conn:
+                self.conn.execute(
+                    "INSERT INTO events (kind, payload, ts) VALUES "
+                    "(?, ?, ?)",
+                    ("cascade",
+                     json.dumps({"rule": rule, "stage": "forward",
+                                 "detail": detail}),
+                     _now()),
+                )
+        except sqlite3.Error:
+            pass
 
     # ------------------------------------------------------------------
     # Stage 4: agent
@@ -272,14 +294,23 @@ class Forward:
     ) -> list[int]:
         writer = CommitWriter(self.conn)
         ops: list[dict[str, Any]] = []
+        # R3 fix (audit HIGH-2): goals.lean_path is NOT NULL UNIQUE; an empty
+        # placeholder string conflicts on the second candidate. Use a UUID-
+        # qualified placeholder per row (same pattern as cli.py:cmd_goal_add)
+        # so begin_batch can INSERT N rows atomically; finalize() rewrites
+        # to the canonical id-keyed path.
         for c in candidates:
+            placeholder = (
+                f"Problems/{problem}/Goals/_pending_{pipeline_id}_"
+                f"{c['slug']}/{c['slug']}.lean"
+            )
             ops.append({
                 "table": "goals",
                 "op": "insert",
                 "data": {
                     "problem": problem,
                     "slug": c["slug"],
-                    "lean_path": "",  # set after we know the goal_id
+                    "lean_path": placeholder,
                     "origin": "forward",
                     "kind": "theorem",
                     "status": "open",
@@ -288,8 +319,6 @@ class Forward:
                 },
             })
         ids = writer.begin_batch(ops) if ops else []
-        # finalize each goal: move staging file to canonical path keyed
-        # on goal_id and set commit_state='live'.
         for goal_id, c in zip(ids, candidates):
             slug = c["slug"]
             canonical_rel = f"Problems/{problem}/Goals/{goal_id}_{slug}/{slug}.lean"

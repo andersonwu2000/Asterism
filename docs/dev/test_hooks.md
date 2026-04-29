@@ -31,6 +31,12 @@
 | P5 | `PROVIDER_MOCK_<NAME>` | `fail_after_<N>` / `fail_always` / `evil_write` | Provider 強制失敗 / scope-isolation 違規。**multi-env 風格、避免 colon+comma quote 問題**——例：`PROVIDER_MOCK_CLAUDE=fail_after_3 PROVIDER_MOCK_GEMINI=evil_write asterism run`；name ∈ {CLAUDE, GEMINI, CODEX} |
 | P6 | `LIBRARY_BUILD_FAULT` | `1` / `0` | 強制 lake build Library 回 fail（給 promotion revert acceptance 用） |
 | P6 | `--bypass-startup-check`（CLI flag、非 env hook）| flag | scheduler 啟動跳過 CLI 早期 single-instance 攔截、讓進到 liveness check 階段；liveness check 仍正常擋。給 acceptance #10 驗 liveness check 真有效 |
+| P7 | `STRATEGIST_FORCE` | `exhausted` / `empty` | Strategist.run() 強制走特定 outcome、不呼叫 agent；給 demux/round_robin acceptance 用 |
+| P7 | `FORWARD_FORCE` | `exhausted` / `no_novel` | Forward.run() 強制 outcome（未走 self_verify / dedupe）；給 cascade integration test 用 |
+| P7 | `GENERALIZER_FORCE` | `exhausted` / `no_novel` / `unproductive` | Generalizer.run() 強制 outcome；同上 |
+| P7 | `STRATEGIST_DISABLED` | `1` | scheduler step 5 trigger 整段跳過、不 enqueue Strategist 任務；給 D-baseline 對照 demo + 演習選擇性關 Strategist 用 |
+| P7 | `K_STRATEGIST` | int (預設 8) | 覆寫 round_robin K 閾值；給 acceptance test 用較小 K 加速 |
+| P7 | `ASTERISM_NOW` | ISO8601 timestamp | 強制 `cancel_running_for_goal` 寫入指定 finished_at 而非 wall-clock now；給 demux Shelve cancel test 確定性比對用 |
 
 ## P7 fixture CLI（不是 env hook）
 

@@ -224,6 +224,43 @@ class TestRunLoop:
         q = db.execute("SELECT kind, target_id FROM queue").fetchall()
         assert q == [("Backward", str(gid))]
 
+    def test_consume_called_after_success(self, db, tmp_base):
+        """R3 regression (audit_c49_c50_c51.md spec MISS): Strategist.run()
+        must call round_robin.consume() at the success boundary, otherwise
+        the K accumulator never resets and select_next keeps returning the
+        same Problem on every cycle.
+        """
+        from Tooling.strategist.round_robin import (
+            _ensure_state_table, _read_state,
+        )
+        # Pre-seed pipeline rows so the round_robin marker has something to
+        # advance to.
+        for i in range(3):
+            db.execute(
+                "INSERT INTO pipelines "
+                "(id, kind, runtime, target_id, target_kind, status, "
+                "started_at, finished_at) VALUES "
+                "(?, 'Backward', 'atomic', '1', 'Goal', 'succeeded', ?, ?)",
+                (f"pipe-pre-{i}", f"2026-04-29T11:00:0{i}+00:00",
+                 f"2026-04-29T11:00:0{i}+00:00"),
+            )
+        db.commit()
+
+        gid = _insert_goal(db, problem="p", slug="g_root")
+        chain = _make_chain([_wrap_decisions(
+            [{"kind": "Backward", "target": gid, "reason": "x"}]
+        )])
+        s = _make_strategist(db, chain, tmp_base)
+        r = s.run("p")
+        assert r.outcome == "success"
+
+        _ensure_state_table(db)
+        # consume() should have been called → last_problem='p' written.
+        assert _read_state(db, "last_problem") == "p"
+        # And finished_count_at marker advanced to a non-empty value.
+        marker = _read_state(db, "finished_count_at")
+        assert marker  # non-empty
+
 
 # ---------------------------------------------------------------------------
 # Pipeline lifecycle
