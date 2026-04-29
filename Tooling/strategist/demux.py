@@ -167,7 +167,8 @@ def apply_decisions(
                 })
                 continue
 
-            # Shelve: UPDATE only; no queue, no payload validation.
+            # Shelve: UPDATE goal + cancel still-running pipelines on it
+            # (architecture v3 §6 cancellation row 6).
             if kind == _SHELVE_KIND:
                 conn.execute(
                     "UPDATE goals SET status = 'shelved', "
@@ -176,6 +177,9 @@ def apply_decisions(
                     (now, now, target),
                 )
                 result.shelved.append(target)
+                # Cancel cascade — separate atomic txn within the same `with`.
+                from Tooling.cascade import cancel_running_for_goal
+                cancel_running_for_goal(conn, target)
                 continue
 
             # Inject path: blocked_pipelines filter.

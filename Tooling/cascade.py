@@ -122,7 +122,96 @@ DISPATCH_TABLE: dict[tuple[str, str], CascadeAction] = {
         handler="_cascade_refuter",
         side_effects=("record_refuter_failure", "archive_check_refuter"),
     ),
+    # ── P7 entries (C52-C54) ──────────────────────────────────────
+    # Forward / Generalizer produce orphan Goals; structural refill BFS
+    # picks them up the next cycle. No direct cascade.
+    ("Forward", "success"): CascadeAction(
+        name="forward_success",
+        description="Forward.commit inserted new orphan Goals; BFS handles refill.",
+        handler="",
+        side_effects=("acknowledge_forward_goals",),
+    ),
+    ("Forward", "no_novel"): CascadeAction(
+        name="forward_no_novel",
+        description="All candidates were dups; nothing to do.",
+        handler="",
+    ),
+    ("Forward", "exhausted"): CascadeAction(
+        name="forward_failure",
+        description="No useful corollaries; record dead_attempt for future inspection.",
+        handler="",
+        side_effects=("record_forward_failure",),
+    ),
+    ("Generalizer", "success"): CascadeAction(
+        name="generalizer_success",
+        description="G* inserted as new tree root; BFS picks it up.",
+        handler="",
+        side_effects=("acknowledge_generalizer_goal",),
+    ),
+    ("Generalizer", "no_novel"): CascadeAction(
+        name="generalizer_no_novel",
+        description="G* matched an existing entry; nothing to do.",
+        handler="",
+    ),
+    ("Generalizer", "unproductive"): CascadeAction(
+        name="generalizer_unproductive",
+        description="Agent self-reports G already maximal; do NOT block_pipelines.",
+        handler="",
+    ),
+    ("Generalizer", "exhausted"): CascadeAction(
+        name="generalizer_failure",
+        description="self_verify retry exhausted; record dead_attempt.",
+        handler="",
+        side_effects=("record_generalizer_failure",),
+    ),
+    # Strategist itself: success commits decisions; demux already ran.
+    # Cascade is a no-op acknowledgement (the work landed inside the run).
+    ("Strategist", "success"): CascadeAction(
+        name="strategist_success",
+        description="Strategist commit + demux already landed; nothing further.",
+        handler="",
+    ),
+    ("Strategist", "exhausted"): CascadeAction(
+        name="strategist_failure",
+        description="Strategist agent failed to produce valid JSON.",
+        handler="",
+    ),
 }
+
+
+# ---------------------------------------------------------------------------
+# Shelve cancel helper (P7 C54)
+# ---------------------------------------------------------------------------
+
+
+def cancel_running_for_goal(conn, goal_id: int) -> int:
+    """Mark all in-flight pipelines and queued tasks for `goal_id` as cancelled.
+
+    Used by Strategist demux when a Goal is shelved (architecture v3 §6
+    cancellation row 6). Returns the number of pipelines + queue rows
+    affected. Pipelines status='running' move to 'failed' with
+    outcome='cancelled'; queue entries for the Goal are deleted.
+    """
+    now = os.environ.get("ASTERISM_NOW") or _now_iso()
+    with conn:
+        cur = conn.execute(
+            "UPDATE pipelines SET status = 'failed', outcome = 'cancelled', "
+            "finished_at = ? "
+            "WHERE target_id = ? AND status = 'running'",
+            (now, str(goal_id)),
+        )
+        cancelled = cur.rowcount or 0
+        cur = conn.execute(
+            "DELETE FROM queue WHERE target_id = ?",
+            (str(goal_id),),
+        )
+        cancelled += cur.rowcount or 0
+    return cancelled
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
 
 
 # Module-level helper used by scheduler. Defined here so all CASCADE_FAULT

@@ -688,8 +688,52 @@ class Reactor:
         pass
 
     def _run_step5_strategist_trigger(self, task: dict, result: Any) -> None:
-        """P7: Strategist trigger. P2 no-op."""
-        pass  # P7 接手
+        """P7 C54: enqueue a Strategist task when round_robin says so.
+
+        Called after every pipeline_finished event (step 3 cascade has
+        already run). Behavior is gated by:
+          - K_strategist accumulator: round_robin counts non-Strategist
+            finished pipelines since the last consume().
+          - Cooldown: existing running Strategist row blocks selection.
+          - strategist.enabled config: when explicitly false, skipped.
+
+        On success enqueues one Strategist task (priority=high, target_id
+        is "_problem:<name>" sentinel matching pipelines.target_id shape
+        used by Strategist itself).
+        """
+        if os.environ.get("STRATEGIST_DISABLED") == "1":
+            return
+        try:
+            from Tooling.strategist.round_robin import select_next, consume
+        except ImportError:
+            return  # P7 module not yet available — defensive
+
+        problems = self._list_active_problems()
+        if not problems:
+            return
+        # K_strategist default = P×2 = 8 (per phase7_smarts.md).
+        k = int(os.environ.get("K_STRATEGIST", "8"))
+        problem = select_next(self.conn, problems, K=k)
+        if problem is None:
+            return
+        # Enqueue. Mark consumed so we don't re-trigger on the next event
+        # before this Strategist actually runs.
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO queue (kind, target_id, priority, created_at) "
+                "VALUES ('Strategist', ?, 100, ?)",
+                (f"_problem:{problem}", _now()),
+            )
+        consume(self.conn, problem)
+
+    def _list_active_problems(self) -> list[str]:
+        """Distinct Problem names that have at least one live Goal."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT problem FROM goals "
+            "WHERE commit_state = 'live' "
+            "ORDER BY problem ASC"
+        ).fetchall()
+        return [r[0] for r in rows if r[0]]
 
     def _run_step6_spawn(self) -> None:
         """Structural refill + spawn from queue."""

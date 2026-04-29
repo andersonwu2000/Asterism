@@ -83,6 +83,16 @@ class TestDispatchTable:
             # P4 C30:
             ("Refuter", "success"),
             ("Refuter", "exhausted"),
+            # P7 C52-C54:
+            ("Forward", "success"),
+            ("Forward", "no_novel"),
+            ("Forward", "exhausted"),
+            ("Generalizer", "success"),
+            ("Generalizer", "no_novel"),
+            ("Generalizer", "unproductive"),
+            ("Generalizer", "exhausted"),
+            ("Strategist", "success"),
+            ("Strategist", "exhausted"),
         }
         assert set(DISPATCH_TABLE.keys()) == expected_keys
 

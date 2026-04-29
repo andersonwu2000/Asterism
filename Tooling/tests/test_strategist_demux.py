@@ -144,6 +144,34 @@ class TestShelve:
         rows = db.execute("SELECT COUNT(*) FROM queue").fetchone()
         assert rows[0] == 0
 
+    def test_shelve_cancels_running_pipelines(self, db):
+        gid = _insert_goal(db, problem="p", slug="g")
+        # Pre-seed a running Backward + a queued Builder for this Goal.
+        db.execute(
+            "INSERT INTO pipelines "
+            "(id, kind, runtime, target_id, target_kind, status, "
+            "started_at) VALUES "
+            "('pipe-1', 'Backward', 'atomic', ?, 'Goal', 'running', ?)",
+            (str(gid), "2026-04-29T12:00:00+00:00"),
+        )
+        db.execute(
+            "INSERT INTO queue (kind, target_id, priority, created_at) "
+            "VALUES ('Builder', ?, 0, ?)",
+            (str(gid), "2026-04-29T12:00:00+00:00"),
+        )
+        db.commit()
+        apply_decisions(
+            db, "p", [{"kind": "Shelve", "target": gid, "reason": "..."}],
+        )
+        pipe = db.execute(
+            "SELECT status, outcome FROM pipelines WHERE id = 'pipe-1'"
+        ).fetchone()
+        assert pipe == ("failed", "cancelled")
+        q_count = db.execute(
+            "SELECT COUNT(*) FROM queue WHERE target_id = ?", (str(gid),),
+        ).fetchone()
+        assert q_count[0] == 0
+
 
 # ---------------------------------------------------------------------------
 # Filter / reject paths
