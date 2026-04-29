@@ -6,6 +6,8 @@ build/
 .attempts/
 asterism.db
 asterism.db-journal
+asterism.db-shm
+asterism.db-wal
 
 # Python
 __pycache__/

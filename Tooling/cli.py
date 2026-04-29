@@ -29,8 +29,12 @@ def cmd_init(args: argparse.Namespace) -> int:
     proofs_dir.mkdir(parents=True, exist_ok=True)
     root_lean = pdir / "Root.lean"
     if not root_lean.exists():
+        defs_import = (
+            f"import Problems.{problem}.Defs\n"
+            if (pdir / "Defs.lean").exists() else ""
+        )
         root_lean.write_text(
-            f"import Mathlib\n\n"
+            f"import Mathlib\n{defs_import}\n"
             f"namespace Problems.{problem}\n\n"
             f"theorem main : {mfst.statement} := by sorry\n\n"
             f"end Problems.{problem}\n",

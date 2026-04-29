@@ -283,3 +283,49 @@ def test_bfs_refill_builder_capped_at_one(conn: sqlite3.Connection) -> None:
     gid = _seed_goal(conn, difficulty=2)  # difficulty<4, attempts=0 → Builder
     bfs_refill(conn, running=set(), or_fanout=5)
     assert db.queue_count(conn, target_id=str(gid), kind="Builder") == 1
+
+
+def test_strategies_ready_for_verify_excludes_proved_goal(
+    conn: sqlite3.Connection,
+) -> None:
+    """W6 fix: a strategy whose own goal is already proved (by sibling
+    OR strategy) must NOT be returned as ready, even if its sub-goals
+    are all proved. Prevents the Verify-thrashing loop seen in
+    compactness smoke."""
+    gid = _seed_goal(conn)
+    sid = db.insert_strategy(conn, goal_id=gid,
+                             lean_path="Problems/p/Root.lean",
+                             created_by="pid")
+    # Add a proved sub-goal so the EXISTS clause is satisfied.
+    sub_gid = db.insert_goal(
+        conn, problem="p", slug="proved_sub",
+        lean_path="Problems/p/proofs/L_proved_sub.lean",
+        statement="T", origin="backward", difficulty=1, depth=1,
+    )
+    db.update_goal_status(conn, sub_gid, "proved")
+    db.link_subgoal(conn, strategy_id=sid, subgoal_id=sub_gid, position=0)
+
+    # While goal is open: ready
+    assert any(s["id"] == sid for s in db.strategies_ready_for_verify(conn))
+
+    # Once goal is proved (by sibling): NOT ready
+    db.update_goal_status(conn, gid, "proved")
+    assert not any(s["id"] == sid for s in db.strategies_ready_for_verify(conn))
+
+
+def test_cascade_finalizes_superseded_when_goal_already_proved(
+    conn: sqlite3.Connection,
+) -> None:
+    """W6 fix: cascade no-op entry should ALSO transition a still-'proposed'
+    strategy to 'superseded' when its goal is already proved. Without
+    this, the strategy stays 'proposed' and bfs_refill thrashes."""
+    gid = _seed_goal(conn)
+    db.update_goal_status(conn, gid, "proved")
+    sid = db.insert_strategy(conn, goal_id=gid,
+                             lean_path="Problems/p/Root.lean",
+                             created_by="pid")
+    cascade_one(conn, pipeline_id="late", kind="Verify",
+                target_id=str(sid), target_kind="Strategy", outcome="failed")
+    s = conn.execute("SELECT status FROM strategies WHERE id = ?",
+                     (sid,)).fetchone()
+    assert s["status"] == "superseded"

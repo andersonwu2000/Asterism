@@ -52,9 +52,16 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             " JOIN goals g ON g.id = s.goal_id WHERE s.id = ?",
             (int(target_id),),
         ).fetchone()
-        if row and (row["status"] == "superseded"
-                    or row["goal_status"] == "proved"):
-            return
+        if row:
+            if row["status"] == "superseded":
+                return
+            if row["goal_status"] == "proved":
+                # Sibling won the OR race; finalize this strategy as
+                # superseded so bfs_refill stops considering it ready.
+                if row["status"] == "proposed":
+                    db.update_strategy_status(conn, int(target_id),
+                                              "superseded")
+                return
     elif target_kind == "Goal":
         row = conn.execute(
             "SELECT status FROM goals WHERE id = ?", (int(target_id),),
@@ -124,18 +131,19 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
 # ---------------------------------------------------------------------
 
 def bfs_refill(conn: sqlite3.Connection,
-               running: set[tuple[str, str]],
+               running: set[tuple[str, str, str]],
                *, or_fanout: int = OR_FANOUT_DEFAULT) -> None:
     """Enqueue dispatchable tasks. `running` is the in-memory live set
-    (target_id, kind) of pipelines currently executing in this daemon.
-    Stale state from prior daemon runs lives nowhere (pipelines table only
-    holds finished rows; daemon crash leaves clean slate).
+    (target_id, kind, pipeline_id) of pipelines currently executing in
+    this daemon — pipeline_id makes each entry unique under OR parallelism
+    (multiple Backwards on the same goal). Daemon crash → set vanishes;
+    pipelines table only holds finished rows so restart is clean.
 
     OR parallelism: per (goal, Backward) pair we allow up to `or_fanout`
     concurrent attempts (running + queued). Builder/Verify keep cap=1.
     """
     def in_flight(tid: str, kind: str) -> int:
-        running_n = sum(1 for (t, k) in running if t == tid and k == kind)
+        running_n = sum(1 for (t, k, _) in running if t == tid and k == kind)
         return running_n + db.queue_count(conn, target_id=tid, kind=kind)
 
     # Strategies with all sub-goals proved → enqueue Verify (cap 1)
@@ -228,8 +236,10 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
                 started_at=started_at,
             )
 
-            # Capture artifacts from .attempts/<pid>/ before WorkArea rmtree
-            if r.failure_reason:
+            # Capture artifacts from .attempts/<pid>/ before WorkArea rmtree.
+            # 'superseded' isn't a real failure (just OR race noise), don't
+            # pollute dead_attempts with it.
+            if r.failure_reason and r.failure_reason != "superseded":
                 artifacts = pipeline._collect_artifacts(attempts_dir)
                 tk = target_kind
                 tid = goal_id if tk == "Goal" else int(target_id)
@@ -258,10 +268,11 @@ def run(workspace: Path, *, once: bool = False) -> int:
                                    str(OR_FANOUT_DEFAULT)))
     pool = ThreadPoolExecutor(max_workers=pool_size)
     futures: dict[Future, tuple[str, str, str, str]] = {}
-    # In-memory live set of (target_id, kind) currently executing in this daemon.
-    # Daemon crash → set vanishes → next start sees clean slate (no zombie sweep
-    # needed; pipelines table only holds finished rows).
-    running: set[tuple[str, str]] = set()
+    # In-memory live set of (target_id, kind, pipeline_id) currently executing
+    # in this daemon. Including pipeline_id keeps multiple Backwards on the
+    # same goal as distinct entries (OR parallelism). Daemon crash → set
+    # vanishes → restart sees clean slate.
+    running: set[tuple[str, str, str]] = set()
 
     conn = db.connect()
     manifests: dict[str, manifest.Manifest] = {}
@@ -278,7 +289,8 @@ def run(workspace: Path, *, once: bool = False) -> int:
             done, _ = wait(list(futures), timeout=0, return_when=FIRST_COMPLETED)
             for fut in done:
                 meta = futures.pop(fut)
-                running.discard((meta[2], meta[1]))  # (target_id, kind)
+                # meta = (pipeline_id, kind, target_id, target_kind)
+                running.discard((meta[2], meta[1], meta[0]))
                 try:
                     pid, kind, tid, tk, outcome = fut.result()
                     cascade_one(conn, pipeline_id=pid, kind=kind,
@@ -295,7 +307,10 @@ def run(workspace: Path, *, once: bool = False) -> int:
         # Refill queue (uses in-memory `running` for dedup)
         bfs_refill(conn, running, or_fanout=or_fanout)
 
-        # Spawn from queue while pool has slots
+        # Spawn from queue while pool has slots. No (target_id, kind)
+        # dedup here — bfs_refill is cap-aware (running + queue) and
+        # OR-parallel Backwards intentionally allow multiple in flight
+        # per goal.
         while len(futures) < pool_size:
             row = db.pop_queue(conn)
             if row is None:
@@ -303,10 +318,8 @@ def run(workspace: Path, *, once: bool = False) -> int:
             target_id = str(row["target_id"])
             kind = str(row["kind"])
             target_kind = "Strategy" if kind == "Verify" else "Goal"
-            if (target_id, kind) in running:
-                continue
             pipeline_id = agent.new_pipeline_id()
-            running.add((target_id, kind))
+            running.add((target_id, kind, pipeline_id))
             fut = pool.submit(_run_pipeline, workspace, manifests,
                               kind, target_id, target_kind, pipeline_id)
             futures[fut] = (pipeline_id, kind, target_id, target_kind)

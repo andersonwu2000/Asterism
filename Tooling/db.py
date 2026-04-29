@@ -276,14 +276,21 @@ def update_strategy_status(conn: sqlite3.Connection, strategy_id: int,
 
 
 def strategies_ready_for_verify(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Strategies whose all sub-goals are proved (ready for Verify worker)."""
+    """Strategies whose all sub-goals are proved AND whose own parent goal
+    is still alive (not already proved by a sibling strategy). The
+    parent-alive check prevents Verify thrashing when an OR sibling has
+    already won the goal — without it bfs_refill keeps re-enqueueing
+    the doomed Verify forever.
+    """
     return list(conn.execute(
         "SELECT s.* FROM strategies s "
+        "JOIN goals g ON g.id = s.goal_id "
         "WHERE s.status = 'proposed' "
+        "  AND g.status != 'proved' "
         "  AND NOT EXISTS ("
         "    SELECT 1 FROM strategy_subgoals ss"
-        "    JOIN goals g ON g.id = ss.subgoal_id"
-        "    WHERE ss.strategy_id = s.id AND g.status != 'proved'"
+        "    JOIN goals sg ON sg.id = ss.subgoal_id"
+        "    WHERE ss.strategy_id = s.id AND sg.status != 'proved'"
         "  )"
         "  AND EXISTS ("
         "    SELECT 1 FROM strategy_subgoals ss WHERE ss.strategy_id = s.id"
