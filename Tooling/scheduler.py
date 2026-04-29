@@ -1409,6 +1409,29 @@ class Reactor:
 
         R3 fix MED-2: filter commit_state='live' so mid-commit strategies are
         not picked up before stage_file completes.
+
+        P7演習 fix (BFS Builder retry pile-up race): strategies are
+        single-shot from the BFS perspective. A given strategy's lean file is
+        deterministic — if its first Builder verifies, cascade marks the
+        strategy 'succeeded' and the goal proved; if it fails, cascade marks
+        it 'dead' and Backward must write a NEW strategy to retry with
+        different content. There is no scenario where re-running Builder on
+        the SAME strategy can change the outcome (lake build is deterministic).
+
+        Cascade runs asynchronously in the main loop AFTER the Builder thread
+        pops `_running` and emits `pipeline_finished`. Until cascade runs,
+        the strategy still reads as 'proposed', and BFS tick (30s) can fire
+        in that gap. Without this guard, BFS re-enqueues Builder on the
+        already-tried strategy, and the strategy ends up with 4-13 wasted
+        Builder runs (each with its own staging dir + lake build) before
+        cascade catches up.
+
+        Guard: skip if there's been ANY Builder pipeline for this strategy
+        (running OR finished). This is logically equivalent to "Builder runs
+        at most once per strategy" — the correct invariant. Cascade-lag
+        race becomes a non-issue because the second BFS tick simply sees
+        attempts > 0 and waits, regardless of whether cascade has marked
+        the strategy dead yet.
         """
         rows = self.conn.execute(
             "SELECT s.id, s.goal_id FROM strategies s "
@@ -1422,6 +1445,15 @@ class Reactor:
             if is_blocked(self.conn, int(goal_id), "Builder"):
                 continue
             if self._is_already_dispatched(strategy_id_s, "Builder"):
+                continue
+            # P7演習 fix: at most one Builder per strategy ever (see method
+            # docstring for rationale). Cascade catches up; BFS waits.
+            attempt_row = self.conn.execute(
+                "SELECT COUNT(*) FROM pipelines "
+                "WHERE kind = 'Builder' AND target_id = ?",
+                (strategy_id_s,),
+            ).fetchone()
+            if attempt_row and attempt_row[0] >= 1:
                 continue
             # Check sub-goal status
             subgoal_rows = self.conn.execute(

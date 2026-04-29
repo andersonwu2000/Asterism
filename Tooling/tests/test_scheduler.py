@@ -841,6 +841,47 @@ class TestStructuralRefill:
         assert row is not None
         assert row[1] == str(strat_id)
 
+    def test_bfs_skips_builder_after_one_attempt_already_ran(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """P7演習 fix: BFS Builder retry pile-up race.
+
+        After ONE Builder pipeline has run on a strategy (regardless of
+        outcome), BFS must NOT enqueue another Builder for that strategy.
+        Even if the strategy's status is still 'proposed' (cascade hasn't
+        marked it dead yet), the second BFS tick sees one finished Builder
+        attempt and skips. This is the logic-level fix for the race where
+        BFS ticks (30s) faster than cascade can mark a strategy dead.
+        """
+        goal_id = _insert_open_goal(db, tmp_path, slug="rerun_g")
+        strat_id = _insert_strategy(db, tmp_path, goal_id, slug="rerun_s")
+        # Insert a finished Builder pipeline for this strategy
+        # (simulating the just-finished, cascade-pending state).
+        db.execute(
+            "INSERT INTO pipelines "
+            "(id, kind, runtime, target_id, target_kind, status, outcome, "
+            "started_at, finished_at) VALUES "
+            "(?, 'Builder', 'atomic', ?, 'Strategy', 'failed', 'exhausted', "
+            "?, ?)",
+            ("pipe-prior-builder", str(strat_id),
+             "2026-04-29T05:00:00+00:00", "2026-04-29T05:01:00+00:00"),
+        )
+        db.commit()
+
+        reactor = _make_reactor(db, tmp_path)
+        reactor._bfs_enqueue_builder()
+
+        # No new Builder queued.
+        rows = db.execute(
+            "SELECT count(*) FROM queue WHERE kind='Builder' AND target_id=?",
+            (str(strat_id),),
+        ).fetchone()
+        assert rows[0] == 0, (
+            "BFS must skip Builder enqueue when a prior Builder pipeline "
+            "exists; this prevents the cascade-lag race that piles up "
+            "redundant Builder runs on the same strategy."
+        )
+
     def test_bfs_no_dup_when_already_queued(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
