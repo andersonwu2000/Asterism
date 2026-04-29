@@ -8,6 +8,9 @@ asterism.db
 asterism.db-journal
 asterism.db-shm
 asterism.db-wal
+*.lean.backup
+*.lean.tmp
+*.lean.verify_backup
 
 # Python
 __pycache__/
