@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,6 +23,7 @@ from Tooling.stages.validator import (
     MAX_SUBGOALS,
     ValidatorError,
     check_hyp_carry,
+    check_hyp_carry_batch,
     check_max_subgoals,
     check_slug_unique,
     validate,
@@ -261,6 +263,130 @@ class TestHypCarry:
         assert len(errs) == 1
         assert errs[0].check == "hyp_carry"
         assert "timed out" in errs[0].detail
+
+
+# ---------------------------------------------------------------------------
+# check_hyp_carry_batch — P6.x patch 29
+# ---------------------------------------------------------------------------
+
+# Batch JSON output is per-slug (not per-path), so the canonical fixtures
+# look slightly different.
+
+BATCH_PASS_JSON = json.dumps({
+    "parent_error": None,
+    "subgoals": [
+        {"subgoal": "sg_a", "missing_binders": [], "error": None},
+    ],
+})
+
+BATCH_MISSING_BINDER_JSON = json.dumps({
+    "parent_error": None,
+    "subgoals": [
+        {"subgoal": "sg_a", "missing_binders": ["h"], "error": None},
+    ],
+})
+
+BATCH_PARENT_ERR_JSON = json.dumps({
+    "parent_error": "runFrontend reported errors elaborating synthesized batch source",
+    "subgoals": [],
+})
+
+
+class TestHypCarryBatch:
+    def _call(self, *, stdout: str = "", stderr: str = "", returncode: int = 0,
+              n_subgoals: int = 1) -> list[ValidatorError]:
+        sgs = [
+            {"id": f"G{i+1:03d}", "slug": f"sg_{chr(ord('a') + i)}",
+             "statement": f"True -- sub {i}"}
+            for i in range(n_subgoals)
+        ]
+        with patch(
+            "Tooling.stages.validator.subprocess.run",
+            return_value=_mock_run(stdout, stderr, returncode),
+        ):
+            return check_hyp_carry_batch(
+                problem="ex",
+                parent_slug="root",
+                parent_statement="True",
+                subgoals=sgs,
+                lake_cwd="/tmp/lake",
+            )
+
+    def test_pass_returns_no_errors(self):
+        assert self._call(stdout=BATCH_PASS_JSON, returncode=0) == []
+
+    def test_missing_binder_attributed_to_caller_id(self):
+        errs = self._call(stdout=BATCH_MISSING_BINDER_JSON, returncode=0)
+        assert len(errs) == 1
+        assert errs[0].check == "hyp_carry"
+        assert "G001" in errs[0].detail  # mapped from slug 'sg_a'
+        assert "h" in errs[0].detail
+
+    def test_parent_error_short_circuits(self):
+        errs = self._call(stdout=BATCH_PARENT_ERR_JSON, returncode=2)
+        assert len(errs) == 1
+        assert errs[0].check == "hyp_carry"
+        assert "batch elab failed" in errs[0].detail
+
+    def test_no_json_output(self):
+        errs = self._call(stdout="lake noise but no JSON\n",
+                          stderr="usage error", returncode=1)
+        assert len(errs) == 1
+        assert "no JSON output" in errs[0].detail
+
+    def test_timeout(self):
+        sgs = [{"id": "G001", "slug": "sg_a", "statement": "True"}]
+        with patch(
+            "Tooling.stages.validator.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="lake", timeout=600),
+        ):
+            errs = check_hyp_carry_batch(
+                problem="ex",
+                parent_slug="root",
+                parent_statement="True",
+                subgoals=sgs,
+                lake_cwd="/tmp/lake",
+            )
+        assert len(errs) == 1
+        assert "timed out" in errs[0].detail
+
+
+class TestHypCarryBatchInvocation:
+    """Verify the JSON payload + argv shape sent to validator.lean."""
+
+    def test_argv_uses_batch_subcommand(self):
+        sgs = [{"id": "G001", "slug": "sg_a", "statement": "True"}]
+        captured: dict = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            # Read the JSON file that wrapper just wrote so we can assert
+            # its contents before it gets unlinked in the finally block.
+            json_path = cmd[cmd.index("--json") + 1]
+            captured["payload"] = json.loads(Path(json_path).read_text("utf-8"))
+            captured["cwd"] = kwargs.get("cwd")
+            return _mock_run(BATCH_PASS_JSON, returncode=0)
+
+        with patch("Tooling.stages.validator.subprocess.run",
+                   side_effect=fake_run):
+            check_hyp_carry_batch(
+                problem="ex",
+                parent_slug="root",
+                parent_statement="True",
+                subgoals=sgs,
+                lake_cwd="/tmp/lake",
+            )
+
+        cmd = captured["cmd"]
+        assert cmd[:3] == ["lake", "env", "lean"]
+        assert "--run" in cmd
+        assert "hypothesis_carry_batch" in cmd
+        assert "--json" in cmd
+        payload = captured["payload"]
+        assert payload["problem"] == "ex"
+        assert payload["parent"] == {"slug": "root", "statement": "True"}
+        assert payload["subgoals"] == [{"slug": "sg_a", "statement": "True"}]
+        assert captured["cwd"] == "/tmp/lake"
 
 
 # ---------------------------------------------------------------------------

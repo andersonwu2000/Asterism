@@ -408,11 +408,14 @@ class Backward:
         # Pre-commit phase: sub-goals have no DB id yet; use slug as identifier.
         # validator.check_hyp_carry uses it only as a dict key + error-message
         # interpolation, which accepts strings.
+        # P6.x patch 29: pass `statement` so validate() takes the batch hyp_carry
+        # path (one runFrontend amortizing Mathlib load instead of N+1 cold loads).
         validator_sgs = [
             {
                 "id": sg["slug"],
                 "slug": sg["slug"],
                 "lean_path": sg["staging_path"],
+                "statement": sg.get("statement", ""),
             }
             for sg in subgoals
         ]
@@ -422,6 +425,8 @@ class Backward:
             parent_lean_path=goal["lean_path"],
             subgoals=validator_sgs,
             lake_cwd=self.config.lake_cwd,
+            parent_slug=goal["slug"],
+            parent_statement=goal.get("question") or "",
         )
 
     # ------------------------------------------------------------------
