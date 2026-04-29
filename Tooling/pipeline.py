@@ -93,15 +93,27 @@ def _grep_forbidden(text: str, forbidden: list[str]) -> str | None:
     return None
 
 
+_SORRY_STUB_RE = re.compile(r":=[ \t]*by[ \t]+sorry[ \t]*$", re.MULTILINE)
+
+
+def _is_sorry_stub(content: str) -> bool:
+    """True iff the file's proof body is a fresh `:= by sorry` placeholder.
+
+    Phase 1 tactic_try rewrites the proof body via textual substitution and
+    is only safe on this canonical form. After Backward replaces the body
+    with a structured `have ... ; final_tac` patch, this returns False and
+    Phase 1 must skip.
+    """
+    return _SORRY_STUB_RE.search(content) is not None
+
+
 def _replace_proof_body(content: str, tactic: str) -> str:
-    """Replace everything after the last ':=' with `:= by <tactic>`."""
-    idx = content.rfind(":=")
-    if idx == -1:
-        return content
+    """Replace `:= by sorry` with `:= by <tactic>`. Caller must check
+    `_is_sorry_stub` first; behavior on non-stub input is undefined."""
     cleaned = tactic.lstrip()
     if cleaned.startswith("by "):
         cleaned = cleaned[3:].lstrip()
-    return content[:idx] + f":= by {cleaned}"
+    return _SORRY_STUB_RE.sub(f":= by {cleaned}", content, count=1)
 
 
 # ---------------------------------------------------------------------
@@ -125,8 +137,10 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
 
     attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
 
-    # Phase 1: tactic_try (in-place backup-restore)
-    if goal["attempts"] == 0:
+    # Phase 1: tactic_try — only on fresh `:= by sorry` stubs.
+    # Skips structured patches (post-Backward) and re-attempt scenarios
+    # to avoid clobbering existing proof structure.
+    if goal["attempts"] == 0 and _is_sorry_stub(source):
         backup_text = source
         for tac in TACTIC_TRY_LIST:
             new_text = _replace_proof_body(source, tac)
@@ -349,10 +363,62 @@ def _slug_from_filename(name: str) -> str:
     return base.removeprefix("new_") if base.startswith("new_") else base
 
 
-_THM_RE = re.compile(r"theorem\s+\S+\s*:\s*(.+?)\s*:=", re.DOTALL)
+_THM_HEAD_RE = re.compile(r"\btheorem\s+\S+")
+
+
+def _extract_statement(text: str) -> str:
+    """Extract the type expression of the first `theorem` declaration.
+
+    Handles explicit args `(x : T)`, implicit args `{α : Type*}`,
+    instance args `[Inhabited α]`, and arbitrary depth of paren/brace/bracket
+    nesting in the type itself. Returns the substring between the theorem's
+    top-level `:` and the top-level `:=`.
+    """
+    m = _THM_HEAD_RE.search(text)
+    if not m:
+        return ""
+    pos = m.end()
+    n = len(text)
+
+    # Skip leading arg blocks: ( ... ), { ... }, [ ... ]
+    while pos < n:
+        while pos < n and text[pos].isspace():
+            pos += 1
+        if pos >= n:
+            return ""
+        ch = text[pos]
+        if ch in "({[":
+            close = {"(": ")", "{": "}", "[": "]"}[ch]
+            depth = 1
+            pos += 1
+            while pos < n and depth > 0:
+                if text[pos] == ch:
+                    depth += 1
+                elif text[pos] == close:
+                    depth -= 1
+                pos += 1
+            continue
+        if ch == ":":
+            pos += 1
+            break
+        return ""
+
+    # Capture type until top-level `:=`
+    start = pos
+    dp = db_ = dk = 0
+    while pos < n - 1:
+        c = text[pos]
+        if c == "(": dp += 1
+        elif c == ")": dp -= 1
+        elif c == "{": db_ += 1
+        elif c == "}": db_ -= 1
+        elif c == "[": dk += 1
+        elif c == "]": dk -= 1
+        elif c == ":" and text[pos + 1] == "=" and dp == 0 and db_ == 0 and dk == 0:
+            return text[start:pos].strip()
+        pos += 1
+    return ""
 
 
 def _extract_statement_from_lean(path: Path) -> str:
-    text = path.read_text(encoding="utf-8")
-    m = _THM_RE.search(text)
-    return m.group(1).strip() if m else ""
+    return _extract_statement(path.read_text(encoding="utf-8"))

@@ -18,6 +18,35 @@ from . import db, manifest
 WORKER_TIMEOUT_SEC = 600  # 10 min, see architecture.md §13
 
 
+class WorkArea:
+    """Ephemeral working area for one pipeline run.
+
+    Holds two paths under `.attempts/`:
+      * `attempts` = `.attempts/<pid>/`         agent sandbox, Context.md, outputs
+      * `backup`   = `.attempts/_backup_<pid>/` Backward's pre-write proofs/ snapshot
+
+    Both are unconditionally rmtree'd on `__exit__` (best-effort). A worker
+    that needs to consume `backup` (e.g. Backward restoring on lake fail)
+    must `shutil.move` it before the context exits — `__exit__` only cleans
+    whatever is still on disk.
+    """
+    def __init__(self, workspace: Path, pipeline_id: str):
+        self.workspace = workspace
+        self.pipeline_id = pipeline_id
+        self.attempts = workspace / ".attempts" / pipeline_id
+        self.backup = workspace / ".attempts" / f"_backup_{pipeline_id}"
+
+    def __enter__(self) -> "WorkArea":
+        self.attempts.mkdir(parents=True, exist_ok=True)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        for p in (self.attempts, self.backup):
+            if p.exists():
+                shutil.rmtree(p, ignore_errors=True)
+        return False
+
+
 def _attempts_dir(workspace: Path, pipeline_id: str) -> Path:
     d = workspace / ".attempts" / pipeline_id
     d.mkdir(parents=True, exist_ok=True)

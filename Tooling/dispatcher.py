@@ -5,7 +5,6 @@ See architecture.md §7-§8.
 from __future__ import annotations
 
 import os
-import shutil
 import sqlite3
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, FIRST_COMPLETED, wait
@@ -120,92 +119,85 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
     """Run one pipeline in worker thread. Returns (pipeline_id, kind, target_id,
     target_kind, outcome).
 
-    Side effects (long-term cleanup design):
-      - On finish: INSERT one finished pipeline row (no 'running' state in DB)
+    Side effects:
+      - INSERT one finished pipeline row (succeeded/failed)
       - On failure: INSERT dead_attempt row with full artifacts JSON
-      - Always: rmtree the .attempts/<pid>/ sandbox after capturing artifacts
+      - Always rmtree .attempts/<pid>/ + .attempts/_backup_<pid>/ via WorkArea
 
     NB: opens its own DB conn (sqlite3 thread safety)."""
     import json as _json
     conn = db.connect()
     started_at = db.now()
-    attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
     try:
-        # Resolve which goal this task ultimately concerns (for problem lookup
-        # and dead_attempts attribution). Verify targets a Strategy whose
-        # parent goal supplies the problem name.
-        if target_kind == "Strategy":
-            row = conn.execute(
-                "SELECT goal_id FROM strategies WHERE id = ?",
-                (int(target_id),),
-            ).fetchone()
-            goal_id = int(row["goal_id"]) if row else 0
-        else:
-            goal_id = int(target_id)
+        with agent.WorkArea(workspace, pipeline_id) as wa:
+            attempts_dir = wa.attempts
 
-        goal = db.get_goal(conn, goal_id)
-        if goal is None:
+            # Resolve which goal this task concerns. Verify targets a
+            # Strategy whose parent goal supplies the problem name.
+            if target_kind == "Strategy":
+                row = conn.execute(
+                    "SELECT goal_id FROM strategies WHERE id = ?",
+                    (int(target_id),),
+                ).fetchone()
+                goal_id = int(row["goal_id"]) if row else 0
+            else:
+                goal_id = int(target_id)
+
+            goal = db.get_goal(conn, goal_id)
+            if goal is None:
+                db.record_pipeline(
+                    conn, pipeline_id=pipeline_id, kind=task_kind,
+                    target_id=target_id, target_kind=target_kind,
+                    status="failed", outcome="failed",
+                    started_at=started_at,
+                )
+                return (pipeline_id, task_kind, target_id, target_kind, "failed")
+
+            mfst = manifests[goal["problem"]]
+
+            if task_kind == "Verify":
+                r = pipeline.run_verify(
+                    conn, strategy_id=int(target_id), workspace=workspace,
+                    mfst=mfst, pipeline_id=pipeline_id,
+                )
+            elif task_kind == "Builder":
+                r = pipeline.run_builder(
+                    conn, goal_id=goal_id, workspace=workspace,
+                    mfst=mfst, pipeline_id=pipeline_id,
+                )
+            elif task_kind == "Backward":
+                r = pipeline.run_backward(
+                    conn, goal_id=goal_id, workspace=workspace,
+                    mfst=mfst, pipeline_id=pipeline_id,
+                )
+            else:
+                r = pipeline.PipelineResult(outcome="failed",
+                                            failure_reason="unknown_kind")
+
+            status = "succeeded" if r.outcome in ("proved", "success") else "failed"
             db.record_pipeline(
                 conn, pipeline_id=pipeline_id, kind=task_kind,
                 target_id=target_id, target_kind=target_kind,
-                status="failed", outcome="failed",
+                status=status, outcome=r.outcome,
                 started_at=started_at,
             )
-            return (pipeline_id, task_kind, target_id, target_kind, "failed")
 
-        mfst = manifests[goal["problem"]]
+            # Capture artifacts from .attempts/<pid>/ before WorkArea rmtree
+            if r.failure_reason:
+                artifacts = pipeline._collect_artifacts(attempts_dir)
+                tk = target_kind
+                tid = goal_id if tk == "Goal" else int(target_id)
+                db.record_dead_attempt(
+                    conn, target_id=tid, target_kind=tk,
+                    pipeline_id=pipeline_id,
+                    failure_reason=r.failure_reason,
+                    failure_detail=r.failure_detail,
+                    proposal_md=r.proposal_md,
+                    artifacts=_json.dumps(artifacts) if artifacts else "",
+                )
 
-        if task_kind == "Verify":
-            r = pipeline.run_verify(
-                conn, strategy_id=int(target_id), workspace=workspace,
-                mfst=mfst, pipeline_id=pipeline_id,
-            )
-        elif task_kind == "Builder":
-            r = pipeline.run_builder(
-                conn, goal_id=goal_id, workspace=workspace,
-                mfst=mfst, pipeline_id=pipeline_id,
-            )
-        elif task_kind == "Backward":
-            r = pipeline.run_backward(
-                conn, goal_id=goal_id, workspace=workspace,
-                mfst=mfst, pipeline_id=pipeline_id,
-            )
-        else:
-            r = pipeline.PipelineResult(outcome="failed",
-                                        failure_reason="unknown_kind")
-
-        # INSERT finished pipeline row (success or failure — uniform path).
-        status = "succeeded" if r.outcome in ("proved", "success") else "failed"
-        db.record_pipeline(
-            conn, pipeline_id=pipeline_id, kind=task_kind,
-            target_id=target_id, target_kind=target_kind,
-            status=status, outcome=r.outcome,
-            started_at=started_at,
-        )
-
-        # On failure: capture full artifacts from .attempts/<pid>/ before rmtree
-        if r.failure_reason:
-            artifacts = pipeline._collect_artifacts(attempts_dir)
-            tk = target_kind
-            tid = goal_id if tk == "Goal" else int(target_id)
-            db.record_dead_attempt(
-                conn, target_id=tid, target_kind=tk,
-                pipeline_id=pipeline_id,
-                failure_reason=r.failure_reason,
-                failure_detail=r.failure_detail,
-                proposal_md=r.proposal_md,
-                artifacts=_json.dumps(artifacts) if artifacts else "",
-            )
-
-        return (pipeline_id, task_kind, target_id, target_kind, r.outcome)
+            return (pipeline_id, task_kind, target_id, target_kind, r.outcome)
     finally:
-        # Unconditional rmtree: .attempts/<pid>/ is pure ephemeral working dir;
-        # all forensic data (PROPOSAL.md, patches) is in dead_attempts.artifacts.
-        try:
-            if attempts_dir.exists():
-                shutil.rmtree(attempts_dir)
-        except OSError:
-            pass
         conn.close()
 
 
@@ -215,6 +207,7 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
 
 def run(workspace: Path, *, once: bool = False) -> int:
     pool_size = int(os.environ.get("ASTERISM_POOL", "4"))
+    budget_sec = int(os.environ.get("ASTERISM_BUDGET_SEC", "1800"))
     pool = ThreadPoolExecutor(max_workers=pool_size)
     futures: dict[Future, tuple[str, str, str, str]] = {}
     # In-memory live set of (target_id, kind) currently executing in this daemon.
@@ -284,8 +277,9 @@ def run(workspace: Path, *, once: bool = False) -> int:
         else:
             time.sleep(min(TICK_TIMEOUT, 5))
 
-        if time.time() - start_time > 30 * 60:
-            print("[dispatcher] 30 min budget exceeded; stopping")
+        if time.time() - start_time > budget_sec:
+            print(f"[dispatcher] {budget_sec}s budget exceeded; stopping",
+                  flush=True)
             pool.shutdown(wait=False, cancel_futures=True)
             return 1
 

@@ -457,6 +457,7 @@ asterism run [--once]
 - **Tooling/ 重寫**：不借 Hadamard。Asterism Tooling/ 從零寫純 Python、要比 Hadamard 簡單 + 好。否則直接改 Hadamard 即可、不需 Asterism。
 - **Shelve 判斷**：cascade rule 內、不在 `next_worker_kind`（見 §8）
 - **Pool size**：預設 4、`ASTERISM_POOL=N` env 可覆蓋
+- **Daemon budget**：預設 1800s（30 min）、`ASTERISM_BUDGET_SEC=N` env 可覆蓋。超過自動 shutdown（cancel_futures）。
 - **`proofs/` 結構**：flat（≤30 個 L 檔；多了再分子 dir）
 - **Worker 單次 timeout**：10 min（compactness 級才會超、那是 Backward 拆解的 signal）
 
