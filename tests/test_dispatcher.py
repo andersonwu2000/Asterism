@@ -129,3 +129,34 @@ def test_cascade_verify_failed_marks_strategy_dead(
     g = db.get_goal(conn, gid)
     assert s["status"] == "dead"
     assert g["attempts"] == 1
+
+
+def test_cascade_verify_failed_reopens_attempting_goal(
+    conn: sqlite3.Connection,
+) -> None:
+    """After last live strategy dies, goal must return to 'open' so a fresh
+    Backward can be dispatched. Otherwise goal is stuck 'attempting'."""
+    gid = _seed_goal(conn)
+    db.update_goal_status(conn, gid, "attempting")
+    sid = _seed_strategy(conn, gid)
+    cascade_one(conn, pipeline_id="pid", kind="Verify",
+                target_id=str(sid), target_kind="Strategy", outcome="failed")
+    g = db.get_goal(conn, gid)
+    assert g["status"] == "open"
+
+
+def test_cascade_verify_failed_keeps_attempting_when_other_strategies_live(
+    conn: sqlite3.Connection,
+) -> None:
+    gid = _seed_goal(conn)
+    db.update_goal_status(conn, gid, "attempting")
+    sid1 = _seed_strategy(conn, gid)
+    # Second strategy with different lean_path (UNIQUE constraint)
+    sid2 = db.insert_strategy(
+        conn, goal_id=gid, lean_path="Problems/p/Root_alt.lean",
+        created_by="pid",
+    )
+    cascade_one(conn, pipeline_id="pid", kind="Verify",
+                target_id=str(sid1), target_kind="Strategy", outcome="failed")
+    g = db.get_goal(conn, gid)
+    assert g["status"] == "attempting"  # sid2 still live

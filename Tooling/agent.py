@@ -130,6 +130,39 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
                 parts.append("```")
             parts.append("")
 
+    # Strategies of THIS goal that died at Verify (combined patch failed
+    # lake build). The Backward that produced them stored its PROPOSAL.md
+    # in strategies.proposal_md; surface that so the agent can avoid the
+    # same combination pattern.
+    strat_deads = conn.execute(
+        "SELECT da.failure_reason, da.failure_detail, da.pipeline_id,"
+        "       s.proposal_md AS strategy_proposal "
+        "FROM dead_attempts da "
+        "JOIN strategies s ON s.id = da.target_id "
+        "WHERE da.target_kind = 'Strategy' AND s.goal_id = ? "
+        "ORDER BY da.id DESC LIMIT 5",
+        (goal["id"],),
+    ).fetchall()
+    if strat_deads:
+        parts.append("## Past decompositions that failed Verify")
+        parts.append("Earlier Backward attempts decomposed this goal but the "
+                     "combination patch did not elaborate against the "
+                     "sub-goal proofs. Avoid the same shape.")
+        parts.append("")
+        for i, d in enumerate(strat_deads, 1):
+            parts.append(f"### Strategy {i} (pid {d['pipeline_id'][:12]}): "
+                         f"{d['failure_reason']}")
+            if d["failure_detail"]:
+                parts.append("```")
+                parts.append(d["failure_detail"][:1000])
+                parts.append("```")
+            if d["strategy_proposal"]:
+                parts.append("Decomposition (from strategies.proposal_md):")
+                parts.append("```")
+                parts.append(d["strategy_proposal"][:2000])
+                parts.append("```")
+            parts.append("")
+
     out = attempts_dir / "Context.md"
     out.write_text("\n".join(parts), encoding="utf-8")
     return out

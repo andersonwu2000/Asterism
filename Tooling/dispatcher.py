@@ -77,6 +77,17 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             n = db.increment_goal_attempts(conn, goal_id)
             if n >= SHELVE_THRESHOLD:
                 db.update_goal_status(conn, goal_id, "shelved")
+                return
+            # Re-open the goal if no live strategy remains, so bfs_refill
+            # can dispatch a new Backward attempt. Without this the goal
+            # is stuck in 'attempting' forever after the last verify fails.
+            has_live = conn.execute(
+                "SELECT 1 FROM strategies WHERE goal_id = ?"
+                " AND status = 'proposed' LIMIT 1",
+                (goal_id,),
+            ).fetchone()
+            if has_live is None:
+                db.update_goal_status(conn, goal_id, "open")
         return
 
 
