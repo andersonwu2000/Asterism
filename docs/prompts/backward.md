@@ -12,6 +12,16 @@ Your task is to either decompose a formal Lean 4 goal into simpler sub-goals OR 
 
 {{DEAD_ATTEMPTS}}
 
+## Available Proved Sibling Theorems
+
+The following theorems have already been proved within this Problem and are available for direct citation. To cite one in Path A, use `exact Problems.{{GOAL_PROBLEM}}.<slug>` (or the appropriate `import` plus name); the statement type is shown so you can match the goal shape.
+
+```json
+{{CANDIDATE_LEMMAS}}
+```
+
+If a sibling already proves your goal (or implies it via a one-line tactic), prefer Path A `exact` over decomposition.
+
 ## Instructions
 
 Choose ONE of two response paths:

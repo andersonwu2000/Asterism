@@ -1,4 +1,4 @@
-"""find_lemmas stage (P3 C22).
+"""find_lemmas stage (P3 C22; P6.x patch 28 library wire).
 
 Wraps Tooling.subsystems.search to look up candidate lemmas in mathlib +
 library scopes. Used by Backward agent prompt and Builder tactic_llm prompt
@@ -7,15 +7,17 @@ to surface relevant existing lemmas.
 Public API:
     find_lemmas(conn, goal, lake_cwd=None) -> list[dict]
 
-Returns up to ~20 candidate lemmas; each entry follows search.lean output
-shape: {"name": str, "type": str, "score": float}. Empty list when search
-returns nothing (P3: search.lean stubs return [] for both scopes; real
-implementation deferred to P5/P6 per phase3 doc Subsystem caveat).
+Returns candidate lemmas; each entry follows search shape:
+{"name": str, "type": str, "score": float}.
+
+  - mathlib scope: still stub ([]); full Mathlib walker deferred.
+  - library scope: P6.x patch 28 returns sibling proved goals from the
+    same Problem (DB-backed). problem_scope is taken from goal['problem'].
 
 The query is derived from the goal's slug + statement (`question` column
-when set). For P3 demo simplicity a single concatenated query string is
-used; richer query construction (e.g. type-pattern extraction) lands when
-the search subsystem itself is upgraded.
+when set). Library scope ignores the query (returns all proved siblings)
+since the agent benefits from full visibility; richer ranking lands when
+the count grows past prompt budget.
 """
 from __future__ import annotations
 
@@ -45,13 +47,13 @@ def find_lemmas(
 
     results: list[dict] = []
     # Mathlib scope first (broader corpus); then library (Problem-local
-    # promoted lemmas). Both are stubs in P3 returning empty; the merge
-    # logic is here so P5/P6 can drop in real results without re-wiring
-    # the Backward / Builder call sites.
+    # proved siblings). mathlib still stub returning []; library is now
+    # DB-backed (P6.x patch 28).
     mathlib = search(query, scope="mathlib", kind="find_lemmas",
                      conn=conn, lake_cwd=lake_cwd)
     library = search(query, scope="library", kind="find_lemmas",
-                     conn=conn, lake_cwd=lake_cwd)
+                     conn=conn, lake_cwd=lake_cwd,
+                     problem_scope=str(goal.get("problem") or ""))
     results.extend(mathlib.results)
     results.extend(library.results)
     return results

@@ -128,6 +128,75 @@ class TestStageDelegation:
 
 
 # ---------------------------------------------------------------------------
+# Prompt building (P6.x patch 28: CANDIDATE_LEMMAS wire)
+# ---------------------------------------------------------------------------
+
+class TestBuildPromptCandidateLemmas:
+    """Verify {{CANDIDATE_LEMMAS}} placeholder receives find_lemmas output.
+
+    The substitution must:
+      - render an empty list as `[]` when no candidates are passed,
+      - render each candidate as {"name": ..., "type": ...},
+      - drop entries with empty names,
+      - leave the rest of the prompt template untouched.
+    """
+
+    def test_empty_candidates_renders_empty_list(self, db, tmp_base):
+        bw = _make_backward(db, base_dir=tmp_base)
+        goal = {"problem": "p", "slug": "g", "question": "True"}
+        prompt = bw._build_prompt(goal, dead_attempts=[], candidate_lemmas=None)
+        assert "{{CANDIDATE_LEMMAS}}" not in prompt
+        assert "## Available Proved Sibling Theorems" in prompt
+        # The JSON block right after the section header should be `[]`.
+        m = re.search(
+            r"## Available Proved Sibling Theorems[\s\S]*?```json\s*([\s\S]*?)```",
+            prompt,
+        )
+        assert m is not None
+        assert json.loads(m.group(1).strip()) == []
+
+    def test_candidates_serialized_with_name_and_type(self, db, tmp_base):
+        bw = _make_backward(db, base_dir=tmp_base)
+        goal = {"problem": "p", "slug": "g", "question": "True"}
+        candidates = [
+            {"name": "lemma_a", "type": "∀ n : ℕ, 0 + n = n", "score": 1.0},
+            {"name": "lemma_b", "type": "True"},
+        ]
+        prompt = bw._build_prompt(
+            goal, dead_attempts=[], candidate_lemmas=candidates
+        )
+        m = re.search(
+            r"## Available Proved Sibling Theorems[\s\S]*?```json\s*([\s\S]*?)```",
+            prompt,
+        )
+        assert m is not None
+        rendered = json.loads(m.group(1).strip())
+        assert rendered == [
+            {"name": "lemma_a", "type": "∀ n : ℕ, 0 + n = n"},
+            {"name": "lemma_b", "type": "True"},
+        ]
+
+    def test_drops_entries_with_empty_name(self, db, tmp_base):
+        bw = _make_backward(db, base_dir=tmp_base)
+        goal = {"problem": "p", "slug": "g", "question": "True"}
+        candidates = [
+            {"name": "", "type": "junk"},
+            {"type": "no_name_field"},
+            {"name": "keep_me", "type": "T"},
+        ]
+        prompt = bw._build_prompt(
+            goal, dead_attempts=[], candidate_lemmas=candidates
+        )
+        m = re.search(
+            r"## Available Proved Sibling Theorems[\s\S]*?```json\s*([\s\S]*?)```",
+            prompt,
+        )
+        assert m is not None
+        rendered = json.loads(m.group(1).strip())
+        assert rendered == [{"name": "keep_me", "type": "T"}]
+
+
+# ---------------------------------------------------------------------------
 # Parse PROPOSAL
 # ---------------------------------------------------------------------------
 

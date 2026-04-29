@@ -121,24 +121,19 @@ class Backward:
     # Stage: find_lemmas (P3 C22 — delegates to Tooling.stages module)
     # ------------------------------------------------------------------
 
-    def find_lemmas(self, goal: dict) -> list[str]:
-        """Return candidate lemma names from mathlib + library scopes.
+    def find_lemmas(self, goal: dict) -> list[dict]:
+        """Return candidate lemmas from mathlib + library scopes.
 
-        **P3 status**: stub-only. search.lean returns [] for both scopes
-        (full Mathlib walker deferred to P5; Library scope deferred to P6).
-        The return shape (list[str]) is reserved for prompt wiring — the
-        Backward agent prompt template (docs/prompts/backward.md) does NOT
-        currently include a `{{CANDIDATE_LEMMAS}}` placeholder; that wire
-        lands when search.lean produces real results in P5/P6 and
-        `_build_prompt` gains the corresponding parameter.
+        P6.x patch 28: library scope is now DB-backed (returns proved
+        siblings in the same Problem); mathlib remains stub-empty.
 
-        Returns the projection to list[str] of names so the upcoming
-        prompt-wiring change is a 1-line addition rather than re-shaping
-        the stage's return type later.
+        Each entry: {"name": slug, "type": question, "score": float}.
+        The full dict (not just names) is forwarded to `_build_prompt`
+        so the agent sees the proven sibling's statement type and can
+        cite it via Lean import.
         """
-        results = _stage_find_lemmas(self.conn, goal,
-                                     lake_cwd=self.config.lake_cwd)
-        return [r.get("name", "") for r in results if r.get("name")]
+        return _stage_find_lemmas(self.conn, goal,
+                                  lake_cwd=self.config.lake_cwd)
 
     # ------------------------------------------------------------------
     # Stage: find_subgoals (P3 C22 — delegates to Tooling.stages module)
@@ -156,15 +151,37 @@ class Backward:
         prompt_path = Path(__file__).parents[2] / "docs" / "prompts" / "backward.md"
         return prompt_path.read_text(encoding="utf-8")
 
-    def _build_prompt(self, goal: dict, dead_attempts: list[dict]) -> str:
+    def _build_prompt(
+        self,
+        goal: dict,
+        dead_attempts: list[dict],
+        candidate_lemmas: list[dict] | None = None,
+    ) -> str:
         template = self._load_prompt_template()
         dead_str = json.dumps(dead_attempts, indent=2) if dead_attempts else "[]"
+        # P6.x patch 28: wire find_lemmas results into the prompt under
+        # `{{CANDIDATE_LEMMAS}}`. Library scope is DB-backed and surfaces
+        # proved siblings in the same Problem; the agent can `exact
+        # Problems.<p>.<slug>` them in Path A.
+        if candidate_lemmas:
+            cand_str = json.dumps(
+                [
+                    {"name": c.get("name", ""),
+                     "type": c.get("type", "")}
+                    for c in candidate_lemmas
+                    if c.get("name")
+                ],
+                indent=2,
+            )
+        else:
+            cand_str = "[]"
         prompt = (
             template
             .replace("{{GOAL_PROBLEM}}", goal.get("problem") or "")
             .replace("{{GOAL_SLUG}}", goal.get("slug") or "")
             .replace("{{GOAL_STATEMENT}}", goal.get("question") or "")
             .replace("{{DEAD_ATTEMPTS}}", dead_str)
+            .replace("{{CANDIDATE_LEMMAS}}", cand_str)
         )
         # P6.x patch 24: per-Goal `decompose_required` framework hard
         # limit (stored in goals.evidence JSON). When set, prepend a
@@ -190,9 +207,10 @@ class Backward:
         dead_attempts: list[dict],
         session_id: str,
         staging_dir: str,
+        candidate_lemmas: list[dict] | None = None,
     ) -> AgentResponse | None:
         model_tier = self.resolver.resolve("backward", "agent")
-        prompt = self._build_prompt(goal, dead_attempts)
+        prompt = self._build_prompt(goal, dead_attempts, candidate_lemmas)
         response, outcome = self.chain.run(
             model_tier=model_tier,
             prompt=prompt,
@@ -663,10 +681,13 @@ class Backward:
         self._insert_pipeline(pipeline_id, goal_id, session_id)
 
         dead_attempts = self.failure_replay(goal_id)
-        self.find_lemmas(goal)
+        candidate_lemmas = self.find_lemmas(goal)
         self.find_subgoals(goal)
 
-        result = self._run_loop(goal, pipeline_id, session_id, staging_dir, dead_attempts)
+        result = self._run_loop(
+            goal, pipeline_id, session_id, staging_dir,
+            dead_attempts, candidate_lemmas,
+        )
         self._finish_pipeline(pipeline_id, result.outcome)
         return result
 
@@ -724,6 +745,7 @@ class Backward:
         session_id: str,
         staging_dir: str,
         dead_attempts: list[dict],
+        candidate_lemmas: list[dict] | None = None,
     ) -> BackwardResult:
         # P6.x patch 10: per-stage observability. Every retry exit path emits
         # a 'cascade' event so operators can see why Backward exhausted (was
@@ -740,7 +762,7 @@ class Backward:
             # remains the original for cross-retry traceability.
             retry_session_id = str(uuid.uuid4()) if _attempt > 0 else session_id
             response = self._run_agent(goal, dead_attempts, retry_session_id,
-                                       staging_dir)
+                                       staging_dir, candidate_lemmas)
             if response is None:
                 self._emit_stage_fail(goal, pipeline_id, _attempt,
                                       "agent_no_response")

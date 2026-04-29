@@ -1,10 +1,12 @@
-"""Search subsystem (P3 C20).
+"""Search subsystem (P3 C20; P6.x patch 28 library DB).
 
 Three scopes:
   - mathlib: subprocess to tools/search.lean (C20 stub returns []; full
              impl deferred per phase3_cache.md §Subsystem caveat).
-  - library: subprocess to tools/search.lean (C20 stub returns []; P6
-             populates Library/Theorems/proved.lean).
+  - library: SQL query on `goals` table for status='proved' rows in the
+             same Problem (P6.x patch 28; replaces former search.lean stub
+             that returned []). Each result is {"name": slug, "type":
+             question, "score": 1.0}. Returns [] when problem_scope="".
   - local_goals: direct SQL on `goals` table (no Lean subprocess).
 
 Public API:
@@ -208,6 +210,39 @@ def _run_lean_search(
 
 
 # ---------------------------------------------------------------------------
+# library scope (direct SQL — P6.x patch 28)
+# ---------------------------------------------------------------------------
+
+
+def _search_library(
+    conn: sqlite3.Connection, problem_scope: str
+) -> list[dict]:
+    """Return proved sibling goals in the same Problem.
+
+    `problem_scope` is the Problem name (goal['problem']). Empty string
+    short-circuits to [] — cross-Problem library search is not supported
+    here (Library/<p>/proved.lean is the cross-Problem promotion artifact;
+    Backward agents only see siblings).
+
+    `query` is intentionally ignored — Backward's Path B prompt benefits
+    from seeing ALL proved siblings, not just slug-substring matches.
+    Filtering down to 'relevant' siblings is the agent's job.
+    """
+    if not problem_scope:
+        return []
+    rows = conn.execute(
+        "SELECT slug, question FROM goals "
+        "WHERE problem = ? AND status = 'proved' AND commit_state = 'live' "
+        "ORDER BY id ASC",
+        (problem_scope,),
+    ).fetchall()
+    return [
+        {"name": r[0], "type": r[1] or "", "score": 1.0}
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
 # local_goals scope (direct SQL)
 # ---------------------------------------------------------------------------
 
@@ -311,6 +346,12 @@ def search(
         if conn is None:
             raise ValueError("local_goals scope requires conn")
         results = _search_local_goals(conn, query)
+    elif scope == "library":
+        # P6.x patch 28: library scope queries DB for proved siblings
+        # in the same Problem instead of invoking the search.lean stub.
+        if conn is None:
+            raise ValueError("library scope requires conn")
+        results = _search_library(conn, problem_scope)
     else:
         if lake_cwd is None:
             lake_cwd = Path.cwd()

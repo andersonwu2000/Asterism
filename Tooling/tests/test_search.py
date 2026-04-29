@@ -166,16 +166,53 @@ class TestMathlibScope:
 
 
 class TestLibraryScope:
-    def test_p3_stub_returns_empty(self, tmp_path) -> None:
-        """search.lean library scope is C20 stub returning []."""
-        fake = MagicMock()
-        fake.returncode = 0
-        fake.stdout = json.dumps({"results": []})
-        fake.stderr = ""
-        with patch("Tooling.subsystems.search.subprocess.run", return_value=fake):
-            r = search("q", scope="library", kind="find_lemmas",
-                       lake_cwd=tmp_path)
+    """P6.x patch 28: library scope is DB-backed (proved siblings)."""
+
+    def test_requires_conn(self) -> None:
+        with pytest.raises(ValueError, match="library scope requires conn"):
+            search("q", scope="library", kind="find_lemmas")
+
+    def test_empty_problem_scope_returns_empty(self, db) -> None:
+        _insert_goal(db, slug="add_zero", lean_path="path/g1.lean",
+                     status="proved")
+        r = search("q", scope="library", kind="find_lemmas",
+                   conn=db, problem_scope="")
         assert r.results == []
+
+    def test_returns_proved_siblings(self, db) -> None:
+        # All inserted under problem='ex' by _insert_goal helper.
+        _insert_goal(db, slug="open_g", lean_path="path/o.lean",
+                     status="open")
+        _insert_goal(db, slug="proved_g", lean_path="path/p.lean",
+                     status="proved")
+        # Patch in 'question' so we can verify it surfaces as 'type'.
+        db.execute("UPDATE goals SET question = ? WHERE slug = ?",
+                   ("∀ n : ℕ, 0 + n = n", "proved_g"))
+        db.commit()
+        r = search("ignored", scope="library", kind="find_lemmas",
+                   conn=db, problem_scope="ex")
+        names = [row["name"] for row in r.results]
+        assert names == ["proved_g"]
+        assert r.results[0]["type"] == "∀ n : ℕ, 0 + n = n"
+
+    def test_skips_pending_commit_state(self, db) -> None:
+        _insert_goal(db, slug="proved_pending", lean_path="path/p.lean",
+                     status="proved", commit_state="pending")
+        _insert_goal(db, slug="proved_live", lean_path="path/l.lean",
+                     status="proved", commit_state="live")
+        r = search("q", scope="library", kind="find_lemmas",
+                   conn=db, problem_scope="ex")
+        slugs = [row["name"] for row in r.results]
+        assert "proved_pending" not in slugs
+        assert "proved_live" in slugs
+
+    def test_no_subprocess_invoked(self, db) -> None:
+        with patch(
+            "Tooling.subsystems.search.subprocess.run"
+        ) as mock_run:
+            search("q", scope="library", kind="find_lemmas",
+                   conn=db, problem_scope="ex")
+        assert mock_run.call_count == 0
 
 
 # ---------------------------------------------------------------------------
