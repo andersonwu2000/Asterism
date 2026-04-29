@@ -182,20 +182,27 @@ def increment_goal_attempts(conn: sqlite3.Connection, goal_id: int) -> int:
 def open_goals(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Open goals eligible for dispatch.
 
-    Filters out orphans: a backward-origin sub-goal whose every parent
-    strategy is no longer 'proposed' (i.e. the strategy died or was
-    superseded by a sibling's win) is not dispatched. Root goals are
-    always eligible.
+    Walks the strategy DAG from each root: a goal is 'reachable' iff
+    every strategy on some ancestor chain back to a root is alive
+    ('proposed' or 'succeeded'). Open goals not reachable this way are
+    orphaned by an upstream supersede / dead and must NOT be dispatched.
+
+    The recursive CTE handles arbitrary depth — fixing the prior bug
+    where a depth-2 sub-goal of a 'proposed' strategy was kept alive
+    even when that strategy's own goal was orphaned upstream.
     """
     return list(conn.execute(
+        "WITH RECURSIVE alive(id) AS ("
+        "    SELECT id FROM goals WHERE origin = 'root'"
+        "    UNION"
+        "    SELECT g.id FROM goals g"
+        "    JOIN strategy_subgoals ss ON ss.subgoal_id = g.id"
+        "    JOIN strategies s ON s.id = ss.strategy_id"
+        "    JOIN alive a ON a.id = s.goal_id"
+        "    WHERE s.status IN ('proposed','succeeded')"
+        ") "
         "SELECT g.* FROM goals g "
-        "WHERE g.status = 'open' "
-        "  AND (g.origin = 'root' "
-        "       OR EXISTS ("
-        "         SELECT 1 FROM strategy_subgoals ss "
-        "         JOIN strategies s ON s.id = ss.strategy_id "
-        "         WHERE ss.subgoal_id = g.id AND s.status = 'proposed'"
-        "       )) "
+        "WHERE g.status = 'open' AND g.id IN alive "
         "ORDER BY g.id"
     ))
 

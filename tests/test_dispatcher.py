@@ -259,6 +259,116 @@ def test_open_goals_filters_orphan_subgoals(conn: sqlite3.Connection) -> None:
     assert parent_gid in ids  # root unaffected
 
 
+def test_recover_at_startup_clears_queue(conn: sqlite3.Connection) -> None:
+    from Tooling.dispatcher import _recover_at_startup
+    db.enqueue(conn, kind="Backward", target_id="42")
+    db.enqueue(conn, kind="Verify", target_id="9")
+    _recover_at_startup(conn)
+    assert db.queue_count(conn, target_id="42", kind="Backward") == 0
+    assert db.queue_count(conn, target_id="9", kind="Verify") == 0
+
+
+def test_recover_at_startup_kills_half_baked_strategies(
+    conn: sqlite3.Connection,
+) -> None:
+    """A 'proposed' strategy with empty scratch_path is from a Backward
+    that crashed mid-flight (INSERT done, file/UPDATE not). Recovery must
+    mark it 'dead' so subsequent Verify dispatch ignores it."""
+    from Tooling.dispatcher import _recover_at_startup
+    gid = _seed_goal(conn)
+    half_baked = db.insert_strategy(conn, goal_id=gid,
+                                     lean_path="Problems/p/Root.lean",
+                                     created_by="pid-crash",
+                                     scratch_path="")
+    healthy = db.insert_strategy(conn, goal_id=gid,
+                                  lean_path="Problems/p/Root.lean",
+                                  created_by="pid-ok",
+                                  scratch_path="Problems/p/proofs/_strategy_s2.lean")
+    _recover_at_startup(conn)
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (half_baked,),
+    ).fetchone()["status"] == "dead"
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (healthy,),
+    ).fetchone()["status"] == "proposed"
+
+
+def test_recover_at_startup_reopens_stuck_attempting_goals(
+    conn: sqlite3.Connection,
+) -> None:
+    """Goal in 'attempting' with no surviving 'proposed' strategy is stuck
+    — bfs_refill won't dispatch it. Recovery must reset to 'open'.
+    Goals with at least one 'proposed' strategy are left alone."""
+    from Tooling.dispatcher import _recover_at_startup
+    # Stuck root: 'attempting' with only a 'dead' strategy
+    stuck = _seed_goal(conn)
+    db.update_goal_status(conn, stuck, "attempting")
+    dead_strat = db.insert_strategy(conn, goal_id=stuck,
+                                     lean_path="Problems/p/Root.lean",
+                                     created_by="pid-old")
+    db.update_strategy_status(conn, dead_strat, "dead")
+
+    # Alive root: 'attempting' with a still-'proposed' strategy
+    alive = db.insert_goal(
+        conn, problem="p", slug="alive_main",
+        lean_path="Problems/p/Alive.lean", statement="T",
+        origin="root", difficulty=4,
+    )
+    db.update_goal_status(conn, alive, "attempting")
+    db.insert_strategy(conn, goal_id=alive,
+                       lean_path="Problems/p/Alive.lean",
+                       created_by="pid-live",
+                       scratch_path="Problems/p/proofs/_strategy_alive.lean")
+
+    _recover_at_startup(conn)
+
+    assert db.get_goal(conn, stuck)["status"] == "open"
+    assert db.get_goal(conn, alive)["status"] == "attempting"
+
+
+def test_open_goals_recursive_orphan_filter(conn: sqlite3.Connection) -> None:
+    """E8 fix: orphan filter must walk the full ancestor chain. A depth-2
+    sub-goal whose immediate parent strategy is 'proposed' but whose
+    grandparent strategy is 'superseded' must still be filtered out.
+
+    Bug scenario from cantor smoke restart against compactness leftover:
+    s4 (root strategy, OR loser) was 'superseded'; goal 41 (s4's sub-goal)
+    was 'open' and properly orphan-filtered; but goal 41's own strategy
+    s11 was still 'proposed', so goal 51 (s11's sub-sub-goal) was
+    incorrectly considered eligible and dispatched."""
+    root = _seed_goal(conn)
+    # Root has a 'superseded' strategy (e.g. OR loser)
+    s_root = db.insert_strategy(conn, goal_id=root,
+                                 lean_path="Problems/p/Root.lean",
+                                 created_by="pid-root")
+    db.update_strategy_status(conn, s_root, "superseded")
+
+    sub = db.insert_goal(
+        conn, problem="p", slug="depth1_orphan",
+        lean_path="Problems/p/proofs/L_depth1_orphan.lean",
+        statement="T", origin="backward", difficulty=3, depth=1,
+    )
+    db.link_subgoal(conn, strategy_id=s_root, subgoal_id=sub, position=0)
+
+    # Depth-2: sub's strategy is still 'proposed' (just hadn't been
+    # cleaned up in the cascade). Without recursive filter, the
+    # sub-sub-goal looks eligible.
+    s_sub = db.insert_strategy(conn, goal_id=sub,
+                                lean_path=f"Problems/p/proofs/L_depth1_orphan.lean",
+                                created_by="pid-sub")
+    sub_sub = db.insert_goal(
+        conn, problem="p", slug="depth2_orphan",
+        lean_path="Problems/p/proofs/L_depth2_orphan.lean",
+        statement="T", origin="backward", difficulty=2, depth=2,
+    )
+    db.link_subgoal(conn, strategy_id=s_sub, subgoal_id=sub_sub, position=0)
+
+    ids = [g["id"] for g in db.open_goals(conn)]
+    assert sub not in ids        # immediate orphan, prior fix
+    assert sub_sub not in ids    # recursive orphan, E8 fix
+    assert root in ids           # root always eligible
+
+
 def test_queue_count_helper(conn: sqlite3.Connection) -> None:
     db.enqueue(conn, kind="Backward", target_id="42")
     db.enqueue(conn, kind="Backward", target_id="42")

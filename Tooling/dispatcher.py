@@ -18,6 +18,53 @@ TICK_TIMEOUT = 30  # seconds
 OR_FANOUT_DEFAULT = 3  # max concurrent Backwards per open goal (env override)
 
 
+# ---------------------------------------------------------------------
+# Startup recovery
+# ---------------------------------------------------------------------
+
+def _recover_at_startup(conn: sqlite3.Connection) -> None:
+    """Sweep transient state left by a crashed prior daemon.
+
+    Three classes of stale state, each restored to a consistent baseline:
+
+      1. queue rows         — live dispatch state, never persists across
+                              daemon lifetimes; clear unconditionally.
+      2. half-baked strategies — INSERTed by run_backward then crashed
+                              before UPDATE scratch_path; status stayed
+                              'proposed' with empty path. Mark 'dead'.
+      3. stuck-attempting goals — Backward succeeded last run, but no
+                              'proposed' strategy survives now (all dead/
+                              superseded). Reset to 'open' so bfs_refill
+                              can dispatch a fresh Backward.
+
+    Orphan lean files in proofs/ are NOT touched here — they're handled
+    by the post-success reconcile + prune path.
+    """
+    queue_cleared = conn.execute("DELETE FROM queue").rowcount
+
+    strategies_killed = conn.execute(
+        "UPDATE strategies SET status = 'dead'"
+        " WHERE status = 'proposed' AND scratch_path = ''"
+    ).rowcount
+
+    goals_reopened = conn.execute(
+        "UPDATE goals SET status = 'open', updated_at = ?"
+        " WHERE status = 'attempting'"
+        "   AND NOT EXISTS ("
+        "     SELECT 1 FROM strategies"
+        "     WHERE goal_id = goals.id AND status = 'proposed'"
+        "   )",
+        (db.now(),),
+    ).rowcount
+
+    conn.commit()
+
+    if queue_cleared or strategies_killed or goals_reopened:
+        print(f"[dispatcher] recovery: cleared {queue_cleared} queue rows, "
+              f"killed {strategies_killed} half-baked strategies, "
+              f"reopened {goals_reopened} stuck goals", flush=True)
+
+
 def next_worker_kind(goal: sqlite3.Row) -> str:
     """Pure: input goal row → 'Builder' or 'Backward'."""
     if int(goal["difficulty"]) >= 4:
@@ -278,6 +325,8 @@ def run(workspace: Path, *, once: bool = False) -> int:
     manifests: dict[str, manifest.Manifest] = {}
     for row in conn.execute("SELECT name, manifest_path FROM problems"):
         manifests[row["name"]] = manifest.parse(workspace / row["manifest_path"])
+
+    _recover_at_startup(conn)
 
     print(f"[dispatcher] start, pool={pool_size}, problems={list(manifests)}",
           flush=True)
