@@ -10,7 +10,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor, FIRST_COMPLETED, wait
 from pathlib import Path
 
-from . import agent, db, manifest, pipeline
+from . import agent, db, manifest, pipeline, prune
 
 
 SHELVE_THRESHOLD = 7
@@ -301,6 +301,18 @@ def run(workspace: Path, *, once: bool = False) -> int:
 
         if db.root_proved(conn):
             print("[dispatcher] all roots proved", flush=True)
+            for problem_name in manifests:
+                # Reconcile first (fix any FILE/DB drift from OR races),
+                # THEN prune (delete orphans, now safe to remove).
+                repaired = prune.reconcile_proved_goals(
+                    conn, workspace, problem_name)
+                if repaired:
+                    print(f"[reconcile] {problem_name}: repaired "
+                          f"{len(repaired)} drifted files", flush=True)
+                removed = prune.prune_problem(conn, workspace, problem_name)
+                if removed:
+                    print(f"[prune] {problem_name}: removed {len(removed)} "
+                          f"orphan files", flush=True)
             pool.shutdown(wait=False, cancel_futures=True)
             return 0
 
