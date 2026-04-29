@@ -2,7 +2,7 @@
 
 寫於 2026-04-30。前次設計診斷見 `D:/Hadamard/docs/asterism_postmortem.md` 與 `asterism_factor_analysis.md`，前次完整 v3 架構（一次設計 8 pipeline kind）存於 `D:/Hadamard/docs/asterism_archive/`。
 
-本檔反映 commit `b69a4ba` 後的實作現況。Milestone 1 已通過（wilson + compactness 兩題 from-scratch proved）；核心架構穩定、後續按 §13 排序加 feature。
+本檔反映 commit `39df821` 後的實作現況。三題 from-scratch proved（wilson / compactness / cantor）；核心架構穩定 + Deduper 上線、後續按 §13 排序加 feature。
 
 ---
 
@@ -10,13 +10,15 @@
 
 | 項目 | 狀態 |
 |------|------|
-| Wilson (Freek 100 #51) | proved end-to-end、commit 6b0cf3b、~15 min |
-| Compactness (propositional, custom Defs) | proved end-to-end、commit 46c8941、~60 min、~2.5x faster than Hadamard 2.5h |
+| Wilson (Freek 100 #51) | proved、commit 6b0cf3b、~15 min |
+| Compactness (propositional, custom Defs) | proved、commit 46c8941、~60 min、~2.5x faster than Hadamard 2.5h |
+| Cantor (Freek 100 #63 reformulated) | proved、commit 6bd6c15、~5 min、單 Builder one-shot、axioms = `[]` |
 | Pipeline kinds | Builder + Backward + **Verify**（3 種、每 kind 有固定 target_kind） |
 | OR parallelism | 開、`ASTERISM_OR_FANOUT=3` 預設 |
-| Unit tests | 53 passing |
-| Tooling LOC | ~1490 lines Python |
-| Axioms whitelist | `[propext, Classical.choice, Quot.sound]`（兩題均通過） |
+| Deduper | 開（whitespace-norm 字串等價、§9.5）、無 schema 改動 |
+| Unit tests | 79 passing |
+| Tooling LOC | ~1700 lines Python |
+| Axioms whitelist | `[propext, Classical.choice, Quot.sound]`（題級、cantor 為 `[]`） |
 
 ---
 
@@ -492,6 +494,80 @@ ORDER BY g.id
 - 收益：抗 Context 累積病態、抗 timeout、整體 wall-clock 加速（compactness 約 2.5x）
 - 成本：Token 多 N 倍（每 OR Backward 都呼叫 LLM）；落敗 strategies 留 orphan files；DAG 在深層題目展開為原 fanout × OR_FANOUT
 
+### 9.5 Deduper
+
+**動機**：OR fanout 下、N 條 strategies 各自跑 LLM、產出的 sub-goals 經常 overlap（同 statement 不同 slug 包裝）。沒 dedupe 時、3 條 OR strategies 各證一次同樣的 lemma、token 浪費。
+
+**設計核心**：alias-based 共享、零 schema 改動。
+
+`Tooling/dedupe.py`：
+
+```python
+_normalize_statement(s)            # whitespace 折疊
+_statements_equivalent(a, b)       # 單一 swap point（未來換 α-rename / Lean defeq）
+find_canonical(conn, problem,
+               statement) -> id | None
+build_alias_content(...)
+```
+
+**Canonical 選擇規則**（deterministic）：
+1. `status='proved'` 優先（alias 直通真實 proof）
+2. reachable open/attempting（lineage 上每個 strategy 都 'proposed'/'succeeded'，由 recursive CTE `WITH RECURSIVE alive` 計算）
+3. earliest id tie-break
+
+**跳過**：`status` IN `('superseded','dead','shelved')` 或 lineage 含 dead 鏈（會留 stale alias）。
+
+**整合進 `run_backward`**（forbidden grep 之後、檔案放置之前）：
+
+```python
+canonical_for: list[int | None] = [
+    dedupe.find_canonical(conn, problem, _extract_statement(src))
+    for slug, src in sub_meta
+]
+
+# 檔案放置：
+for ..., canonical_id in zip(...):
+    if canonical_id:
+        canonical = db.get_goal(conn, canonical_id)
+        dest.write_text(dedupe.build_alias_content(...))   # alias .lean
+    else:
+        shutil.copy2(src, dest)                            # 原生 sub-goal
+
+# DB INSERT：dedupe-hits 不 insert 新 goal、直接 link_subgoal 到 canonical
+```
+
+**Alias 檔內容**：
+
+```lean
+import Mathlib
+import Problems.<p>.Defs                      -- 若 Defs 存在
+import Problems.<p>.proofs.L_<canonical_slug>
+
+namespace Problems.<p>
+theorem <new_slug> : <statement> := <canonical_slug>
+end Problems.<p>
+```
+
+Lake-build 對 canonical 任何狀態都 OK（sorry stub 也 type-check）；canonical 真 proved 時 alias transitively 繼承 proof。
+
+**用 `strategy_subgoals` 多對多支援共享**：dedupe-hit 時、新 strategy 的 `strategy_subgoals` 直接 link 到 canonical 的 goal_id；DAG 變 graph、不破壞既有 invariants（cascade no-op、orphan filter、reconcile、prune 全不受影響）。
+
+**Fail-open**：dedupe 內部錯（statement 解析失敗等）→ `find_canonical` 回 None、Backward 走 non-dedupe 路徑、永不阻斷主流程。
+
+**目前比對方法限制**：whitespace-only 命中率約 30-50%（catches identical agent output）。漏：α-renamed binders、reordered hypotheses、`Nat.add` vs `+` defeq。升級為 α-rename 或 Lean defeq 只需動 `_statements_equivalent`、不動 call site。
+
+**對比 v3 archive 設計**（簡化幅度）：
+
+| 項目 | v3 archive | v2.5 |
+|------|-----------|------|
+| 比對引擎 | Lean exec `tools/dedupe.lean`（subprocess + isDefEq + iff_lite） | 純 Python whitespace-norm |
+| 配套 | `search_cache` 表 + mutation invalidation + 30s timeout | 0 |
+| 模式 | strict + iff_lite | 1（pluggable） |
+| 命中後動作 | mark dup + cache | alias .lean + link 到 canonical |
+| LOC | ~300 估計 | ~70 + 25 整合 |
+
+簡化由來：Asterism v2 的 AND/OR graph schema 把「兩 strategies 共用同一 sub-goal」變 schema-native（`strategy_subgoals` 多對多）、不需要 v3 那套 cache + invalidation 基礎建設。
+
 ---
 
 ## 10. CLI
@@ -544,7 +620,7 @@ status / stop 命令暫不寫，直接 sqlite 查 / Ctrl-C 終止。
 
 ## 12. 已驗證的 long-term cleanup design
 
-每條都在 wilson + compactness smoke 跑過、行為符合預期：
+每條都在 wilson + compactness + cantor smoke 跑過、行為符合預期：
 
 1. **finished-only pipelines table**：daemon 死 → 重啟見乾淨表面、不需要 zombie sweep（W1）
 2. **ephemeral `.attempts/<pid>/`**：pipeline 結束 unconditional rmtree、藉 `WorkArea` context manager（W2）
@@ -554,6 +630,10 @@ status / stop 命令暫不寫，直接 sqlite 查 / Ctrl-C 終止。
 6. **W4 stuck-attempting 修正**：goal 在 Verify 失敗 + 無剩餘 strategy 時自動回 'open'
 7. **W4 cross-strategy dead_attempts**：goal 的下次 Backward 看得到上次 strategy 的 Verify 失敗（cross-pipeline learning）
 8. **W6 thrashing fix**：`strategies_ready_for_verify` 過濾 proved-goal、cascade 入口轉 superseded、`superseded` 不寫 dead_attempt 噪音
+9. **W7 recursive orphan filter**：`open_goals` 用 recursive CTE 走完整 ancestor 鏈、catch depth-2+ orphan
+10. **W8 startup recovery sweep**：daemon 啟動時清 queue + 殺 half-baked strategies + 重開 stuck-attempting goals、與 success-exit 的 reconcile+prune 對稱（startup self-healing + exit self-healing）
+11. **E1-E7 reconcile + prune**：成功退出時自動 reconcile（修 OR Verify race 的 file/DB drift）+ prune（GC OR 落敗檔）；CLI fallback 給 partial state
+12. **Deduper alias 共享**：OR 並行下 sub-goal overlap 透過 `strategy_subgoals` 多對多 + alias .lean 檔零 schema 共享（§9.5）
 
 ---
 
@@ -561,21 +641,21 @@ status / stop 命令暫不寫，直接 sqlite 查 / Ctrl-C 終止。
 
 | # | 項目 | 動機 / 觸發條件 |
 |---|------|----------------|
-| 1 | **`asterism prune`** | OR 後 proofs/ 檔暴增（compactness 98 個檔、winner chain 占 1/4）；GC 落敗 strategies 的 lean files |
-| 2 | **Web dashboard / UI** | DAG 視覺化、dead_attempts artifacts 點擊展開；compactness 級多層深 + OR fanout 已超 CLI 可讀 |
-| 3 | **第三題 smoke**（如 sylvester_gallai / cantor） | 驗證跨 problem parallelism + 對更多題型穩定性 |
-| 4 | **多 problem 平行**（同一 daemon 多 problem） | 視 Library 跨題效益決定 |
-| 5 | **Forward + Deduper** | 從 proved Node 推 lemma，跨 strategy 共用 sub-goal、減少 OR 浪費 |
+| 1 | **Web dashboard / UI** | DAG 視覺化、dead_attempts artifacts 點擊展開；compactness 級多層深 + OR fanout 已超 CLI 可讀 |
+| 2 | **Dedupe predicate 升級**（α-rename 或 Lean defeq） | 量到 whitespace-norm 命中率 < 30% 時觸發；單 swap point 換 `_statements_equivalent` |
+| 3 | **第四題 smoke**（如 sylvester_gallai） | 驗證對更深 / 不同題型穩定性 |
+| 4 | **多 problem 並行**（同一 daemon 多 problem） | 視 Library 跨題效益決定 |
+| 5 | **Forward** | 從 proved Node 推 lemma；可與 Deduper 整合（找已存在的等價公式） |
 | 6 | **Promotion Judge** | shelved goal 重審、自動跑 |
 | 7 | **Strategist** | cross-pipeline meta-decision、用 DB 累積訊號 |
 | 8 | **answer_data typed verdict** | conjecture / construction kind 啟用時必須 |
 | 9 | **Refuter / conjecture kind** | 等 answer_data 落地 |
 | 10 | **commit_state 兩段式** | OR_FANOUT 升到 ≥ 8 + 多 problem 並發時才有意義 |
 | 11 | **Construction kind + ConstructionSearch** | continuous task framework |
-| 12 | **Library 跨 problem promotion** | 等 Forward + 多題場景 |
+| 12 | **Library 跨 problem promotion** | 等 Forward + 多題場景；Deduper 加 cross-problem scope |
 | 13 | **events 表 + audit log** | 當前 dead_attempts.artifacts + print 夠、Strategist 啟用時可能升級 |
 
-每條都需要先有兩題 smoke pass 為基準。**沒過不加新東西**。
+每條都需要先有 smoke pass 為基準。**沒過不加新東西**。
 
 ---
 
@@ -608,7 +688,11 @@ status / stop 命令暫不寫，直接 sqlite 查 / Ctrl-C 終止。
 | OR fanout | 預設 3、`ASTERISM_OR_FANOUT=N` env 覆蓋；Builder/Verify cap=1 不變 |
 | Daemon budget | 預設 1800s、`ASTERISM_BUDGET_SEC=N` env 覆蓋 |
 | Worker 單次 timeout | 10 min hardcoded（compactness 級才會超、那是 Backward 拆解的 signal） |
-| `proofs/` 結構 | flat（含 winner chain + OR orphan files；`asterism prune` 後續） |
+| `proofs/` 結構 | flat（success exit 自動 reconcile + prune 留 winner chain；CLI fallback 給 partial state） |
 | Sub-goal 命名 | agent 端負責（Context.md 注入 sid_token、agent 寫 `s<sid>_` 前綴）；不做框架 post-substitute |
 | cli init 自動 import | 若 `Problems/<p>/Defs.lean` 存在、自動加進 Root.lean（W6） |
 | 'superseded' dead_attempt | 跳過寫入（OR race noise、不是 learnable failure） |
+| Dedupe predicate | 起步 whitespace-norm；`_statements_equivalent` 是單一 swap point、未來升 α-rename / Lean defeq |
+| Dedupe canonical 優先序 | `proved` > reachable open/attempting；orphan/superseded/shelved 跳過；earliest id tie-break |
+| Dedupe schema | 0 改動；用 `strategy_subgoals` 多對多 + alias `.lean` 共享、不加 `equiv_to` 欄 |
+| Dedupe scope | 同 problem 內；cross-problem 等 Library 階段 |
