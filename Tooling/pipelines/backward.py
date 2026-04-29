@@ -44,22 +44,13 @@ from Tooling.subsystems.similarity import parent_subgoal_max_similarity
 from Tooling.agent.provider import AgentResponse, FallbackChain, ModelResolver
 
 
-_VALID_COMBINATORS: frozenset[str] = frozenset({"And", "Or", "Exists", "Leaf"})
-
-
-def _is_decompose_required(goal: dict) -> bool:
-    """P6.x patch 24: read per-Goal `decompose_required` flag from
-    goals.evidence JSON. When True, Backward MUST produce Path B —
-    Leaf proposals are rejected by the parser as if malformed.
-    """
-    ev_raw = goal.get("evidence")
-    if not ev_raw:
-        return False
-    try:
-        ev = json.loads(ev_raw) if isinstance(ev_raw, str) else ev_raw
-    except json.JSONDecodeError:
-        return False
-    return bool(ev.get("decompose_required", False)) if isinstance(ev, dict) else False
+_VALID_COMBINATORS: frozenset[str] = frozenset({"And", "Or", "Exists"})
+# P7 演習 fix: Backward is decomposition-only. The 1-shot direct-proof
+# attempt (formerly Path A / "Leaf" combinator) is now its own pipeline
+# (Solver). Backward.run produces only And/Or/Exists strategies with
+# non-empty sub-goals. The framework dictates "try Solver first; if
+# Solver-built strategy fails Builder, fall back to Backward" via BFS
+# structural refill rules — LLM no longer chooses path mode.
 
 
 def _now() -> str:
@@ -101,11 +92,12 @@ class Backward:
         self.chain = chain
         self.config = config
         self.resolver = resolver or ModelResolver()
-        # P7 演習 fix #11: per-run flag set by run(force_decompose=...)
-        # so the prompt + parser treat this attempt as Path B forced
-        # without writing to goal.evidence in DB (which would also force
-        # parallel free-mode Backwards into Path B mode).
-        self._force_decompose: bool = False
+        # P7 演習 refactor (路線 1): Backward is decomposition-only;
+        # _force_decompose flag retained as a no-op alias for backwards
+        # compat (no callers rely on it now that Backward never produces
+        # Leaf), but kept in case future Strategist payload override
+        # passes it through. Future cleanup: drop entirely.
+        self._force_decompose: bool = True
 
     # ------------------------------------------------------------------
     # Stage: failure_replay (P3 C22 — delegates to Tooling.stages module)
@@ -188,24 +180,21 @@ class Backward:
             .replace("{{DEAD_ATTEMPTS}}", dead_str)
             .replace("{{CANDIDATE_LEMMAS}}", cand_str)
         )
-        # P6.x patch 24 + P7 演習 fix #11: per-Goal `decompose_required`
-        # framework hard limit (stored in goals.evidence JSON) OR the
-        # per-run `_force_decompose` flag set by run(force_decompose=).
-        # The latter lets the framework spawn ONE Path B Backward
-        # alongside ongoing Path A free Backwards without globally
-        # forcing every Backward into Path B. _parse_proposal rejects
-        # `combinator: "Leaf"` for the same conditions.
-        if _is_decompose_required(goal) or self._force_decompose:
-            prompt = (
-                "## FRAMEWORK CONSTRAINT (hard, non-negotiable)\n\n"
-                "This Goal is marked `decompose_required: true`. You MUST"
-                " produce a Path B decomposition (combinator And / Or /"
-                " Exists with non-empty `subgoals`). Path A (Leaf) is"
-                " REJECTED by the framework parser regardless of what"
-                " you propose. Even if you believe Mathlib has a one-"
-                "shot proof, do NOT use Leaf — propose 2-8 sub-goals.\n\n"
-                + prompt
-            )
+        # P7 演習 refactor (路線 1): Backward is decomposition-only.
+        # Always prepend the framework constraint so the prompt template
+        # can keep historical Path A wording without confusing the LLM.
+        prompt = (
+            "## FRAMEWORK CONSTRAINT (hard, non-negotiable)\n\n"
+            "This Backward run produces a DECOMPOSITION only (combinator"
+            " And / Or / Exists with non-empty `subgoals`). Direct 1-shot"
+            " proofs (`Leaf`) are handled by a separate `Solver` pipeline"
+            " and have already been tried before this Backward fires —"
+            " they did not work. Your job is to propose 2-8 sub-goals"
+            " that each prove a strictly simpler statement than the"
+            " parent goal. The framework parser rejects any `Leaf`"
+            " combinator regardless of how easy you think the proof is.\n\n"
+            + prompt
+        )
         return prompt
 
     def _run_agent(
@@ -255,20 +244,11 @@ class Backward:
         if not isinstance(obj, dict):
             return None
         if obj.get("combinator") not in _VALID_COMBINATORS:
+            # P7 演習 refactor (路線 1): Backward decompose-only —
+            # 'Leaf' is no longer a valid combinator here. Any Leaf
+            # proposal is rejected by parser; LLM is informed via
+            # the framework-constraint preamble in _build_prompt.
             return None
-        # P6.x patch 3: Leaf path requires `proof` field, no subgoals.
-        if obj.get("combinator") == "Leaf":
-            # P6.x patch 24 + P7 演習 fix #11: framework hard limit —
-            # reject Leaf when the Goal has `decompose_required: true`
-            # in evidence OR this run was kicked off with force_decompose.
-            if goal is not None and _is_decompose_required(goal):
-                return None
-            if self._force_decompose:
-                return None
-            proof = obj.get("proof")
-            if not isinstance(proof, str) or not proof.strip():
-                return None
-            return obj
         subgoals = obj.get("subgoals")
         if not isinstance(subgoals, list):
             return None
@@ -801,20 +781,9 @@ class Backward:
                                               if response.output else ""))
                 continue
 
-            # P6.x patch 3: Leaf path — agent claims goal is directly
-            # provable by a single tactic block. Skip decomposition,
-            # write a leaf strategy, commit with empty subgoals so BFS
-            # treats it as ready for Builder verification.
-            if proposal.get("combinator") == "Leaf":
-                strategy_id = self._commit_leaf(
-                    goal, proposal["proof"], pipeline_id, staging_dir,
-                )
-                return BackwardResult(
-                    outcome="success",
-                    strategy_id=strategy_id,
-                    subgoal_ids=[],
-                )
-
+            # P7 演習 refactor (路線 1): no Leaf branch here —
+            # _parse_proposal rejects 'Leaf' combinator outright. Backward
+            # always proceeds to decomposition logic.
             subgoals_raw = proposal.get("subgoals", [])
             if not subgoals_raw:
                 self._emit_stage_fail(goal, pipeline_id, _attempt,

@@ -115,9 +115,25 @@ class TestAC1ThreeLineDispatch:
     def test_bfs_enqueues_backward_and_refuter(self, db, tmp_path) -> None:
         """In-process variant of AC #1: BFS structural refill on a
         conjecture goal enqueues both Backward and Refuter; Counterexample
-        deferred per task.md ## 延後 cycles."""
+        deferred per task.md ## 延後 cycles.
+
+        P7 演習 refactor: Backward fallback gate requires a finished
+        Solver attempt — pre-seed one so this AC test still validates
+        the Backward+Refuter dispatch behavior.
+        """
         from Tooling.scheduler import Reactor, ReactorConfig
         gid = _insert_goal(db, slug="conj_dispatch", kind="conjecture")
+        # Seed finished Solver to open Backward gate.
+        db.execute(
+            "INSERT INTO pipelines "
+            "(id, kind, runtime, target_id, target_kind, status, outcome, "
+            "started_at, finished_at) VALUES "
+            "(?, 'Solver', 'atomic', ?, 'Goal', 'failed', 'exhausted', "
+            "'2026-04-29T00:00:00+00:00', '2026-04-29T00:00:01+00:00')",
+            (f"seeded-solver-{gid}", str(gid)),
+        )
+        db.commit()
+
         cfg = ReactorConfig(base_dir=str(tmp_path), pool_size=1)
         reactor = Reactor(str(tmp_path / "test.db"), cfg)
         reactor.conn = db

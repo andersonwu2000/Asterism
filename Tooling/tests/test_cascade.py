@@ -93,6 +93,9 @@ class TestDispatchTable:
             ("Generalizer", "exhausted"),
             ("Strategist", "success"),
             ("Strategist", "exhausted"),
+            # P7 演習 refactor (路線 1):
+            ("Solver", "success"),
+            ("Solver", "exhausted"),
         }
         assert set(DISPATCH_TABLE.keys()) == expected_keys
 

@@ -187,6 +187,29 @@ def _link_subgoal(
         )
 
 
+def _seed_finished_solver(
+    conn: sqlite3.Connection, goal_id: int, outcome: str = "exhausted",
+) -> None:
+    """P7 演習 refactor (路線 1): Backward BFS gate requires a finished
+    Solver attempt on the goal. Tests that exercise _bfs_enqueue_backward
+    directly seed this; daemon path runs Solver naturally.
+    """
+    with conn:
+        conn.execute(
+            "INSERT INTO pipelines "
+            "(id, kind, runtime, target_id, target_kind, status, outcome, "
+            "started_at, finished_at) VALUES "
+            "(?, 'Solver', 'atomic', ?, 'Goal', 'failed', ?, ?, ?)",
+            (
+                f"seeded-solver-{goal_id}-{outcome}",
+                str(goal_id),
+                outcome,
+                "2026-04-29T00:00:00+00:00",
+                "2026-04-29T00:00:01+00:00",
+            ),
+        )
+
+
 def _insert_pipeline_row(
     conn: sqlite3.Connection,
     *,
@@ -783,8 +806,13 @@ class TestStructuralRefill:
     def test_bfs_enqueues_backward_for_open_goal(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
-        """Open theorem goal → Backward enqueued in queue table."""
+        """Open theorem goal → Backward enqueued in queue table.
+
+        P7 演習 refactor (路線 1): Solver-first gate requires a finished
+        Solver attempt before Backward fires. Seed one.
+        """
         goal_id = _insert_open_goal(db, tmp_path, slug="thm1")
+        _seed_finished_solver(db, goal_id)
         reactor = _make_reactor(db, tmp_path)
         reactor._bfs_enqueue_backward()
 
@@ -1199,8 +1227,10 @@ class TestStructuralRefill:
     ) -> None:
         """Counterpart to the above: when all existing strategies on a
         goal are 'dead', Backward IS allowed to retry with feedback.
+        P7 演習 refactor: also needs Solver seed.
         """
         goal_id = _insert_open_goal(db, tmp_path, slug="retry_g")
+        _seed_finished_solver(db, goal_id)
         _insert_strategy(db, tmp_path, goal_id, slug="dead_strat",
                          status="dead")
         reactor = _make_reactor(db, tmp_path)
@@ -1257,6 +1287,7 @@ class TestStructuralRefill:
     ) -> None:
         """BFS does not double-enqueue a goal already in the queue."""
         goal_id = _insert_open_goal(db, tmp_path, slug="dup_g")
+        _seed_finished_solver(db, goal_id)
         reactor = _make_reactor(db, tmp_path)
         reactor._bfs_enqueue_backward()  # first pass
         reactor._bfs_enqueue_backward()  # second pass — must not add again
@@ -1271,9 +1302,11 @@ class TestStructuralRefill:
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
         """P4 C31: kind='conjecture' goals also get Backward enqueued
-        (was theorem-only in P3)."""
+        (was theorem-only in P3). P7 演習 refactor: also needs Solver
+        seed (Solver-first gate applies to conjectures too)."""
         goal_id = _insert_open_goal(
             db, tmp_path, slug="conj1", kind="conjecture")
+        _seed_finished_solver(db, goal_id)
         reactor = _make_reactor(db, tmp_path)
         reactor._bfs_enqueue_backward()
         row = db.execute(

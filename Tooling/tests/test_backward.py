@@ -547,12 +547,12 @@ class TestSelfVerifyRetry:
         assert result.outcome == "exhausted"
         assert chain.run.call_count == 2
 
-    def test_leaf_commit_does_not_enqueue_builder(self, db, tmp_path):
-        """P7 演習 fix: scheduler._cascade_backward already enqueues Builder
-        for leaf-strategy success. Backward._commit_leaf must NOT also
-        enqueue, otherwise two queue rows fire and two Builder threads run
-        on the same staging file simultaneously (BFS retry-ceiling guard
-        is too late — both spawns happen before any pipeline row exists).
+    def test_leaf_combinator_rejected_by_parser(self, db, tmp_path):
+        """P7 演習 refactor (路線 1): Backward is decomposition-only.
+        'Leaf' combinator is no longer accepted. Any proposal with
+        combinator='Leaf' is rejected at parse time → Backward retries;
+        all retries fail → outcome='exhausted'. (Leaf-style direct
+        proof is now Solver pipeline territory.)
         """
         chain = MagicMock(spec=FallbackChain)
         leaf_proposal = {
@@ -575,17 +575,11 @@ class TestSelfVerifyRetry:
         bw = Backward(db, chain, config)
         result = bw.run(goal_id)
 
-        assert result.outcome == "success"
-        assert result.subgoal_ids == []
-        # No Builder queue row should have been written by Backward —
-        # cascade is responsible for that step.
-        rows = db.execute(
-            "SELECT count(*) FROM queue WHERE kind='Builder'"
-        ).fetchone()
-        assert rows[0] == 0, (
-            "Backward._commit_leaf must not enqueue Builder; "
-            "scheduler._cascade_backward is the canonical source."
-        )
+        # Parser rejected all 3 Leaf proposals → Backward exhausts.
+        assert result.outcome == "exhausted"
+        # No strategy committed.
+        rows = db.execute("SELECT count(*) FROM strategies").fetchone()
+        assert rows[0] == 0
 
     @patch("Tooling.pipelines.backward.validate", return_value=[])
     @patch("Tooling.pipelines.backward.run_lean")

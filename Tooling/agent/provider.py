@@ -209,6 +209,10 @@ FRAMEWORK_MODEL_DEFAULTS: dict[str, str] = {
     # §4/§8 (statement authoring; sonnet per spec recommendation).
     "forward.agent": "sonnet",
     "generalizer.agent": "sonnet",
+    # P7 演習 refactor (路線 1): Solver = 1-shot direct proof attempt.
+    # sonnet is sufficient for short proofs; opus is reserved for cases
+    # where Strategist payload override boosts a stuck goal.
+    "solver.agent": "sonnet",
 }
 
 

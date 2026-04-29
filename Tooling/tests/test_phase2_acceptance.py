@@ -538,11 +538,13 @@ class TestAC8DMaxBound:
         ).fetchone()[0]
         assert deep_status == "shelved", f"depth=12 should be shelved, got {deep_status}"
 
-        # shallow_id → Backward enqueued
+        # shallow_id → Solver enqueued (P7 演習 refactor 路線 1: Solver
+        # is the first-attempt pipeline; Backward fallback fires only
+        # after Solver finishes and fails).
         kinds = [r[0] for r in conn.execute(
             "SELECT kind FROM queue WHERE target_id=?", (str(shallow_id),)
         ).fetchall()]
-        assert "Backward" in kinds, f"shallow should be enqueued: {kinds}"
+        assert "Solver" in kinds, f"shallow should be enqueued: {kinds}"
 
         # No Backward enqueued for deep
         deep_kinds = [r[0] for r in conn.execute(
@@ -662,7 +664,10 @@ class TestAC11RetryStopGap:
         assert "Backward" not in kinds, f"should skip after block: {kinds}"
 
     def test_unblocked_goal_still_enqueued(self, tmp_path: Path) -> None:
-        """P3 C25: dual to test_after_5_failures — unblocked goal still gets enqueued."""
+        """P3 C25: dual to test_after_5_failures — unblocked goal still gets
+        enqueued. P7 演習 refactor: with Solver-first gate the FIRST
+        attack on a fresh open goal is Solver, not Backward.
+        """
         _, conn = _make_db(tmp_path)
         goal_id = _insert_goal(conn, slug="g11b", status="open", depth=0)
 
@@ -676,7 +681,7 @@ class TestAC11RetryStopGap:
         kinds = [r[0] for r in conn.execute(
             "SELECT kind FROM queue WHERE target_id=?", (str(goal_id),)
         ).fetchall()]
-        assert "Backward" in kinds, f"unblocked should enqueue: {kinds}"
+        assert "Solver" in kinds, f"unblocked should enqueue: {kinds}"
 
     def test_block_persists_across_reactor_instances(self, tmp_path: Path) -> None:
         """P3 C25: persistent block survives scheduler restart. This is the

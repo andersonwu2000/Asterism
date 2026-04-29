@@ -168,8 +168,13 @@ class TestManualGates:
 
 class TestMultiProblemBFS:
     def test_bfs_enqueues_backward_for_each_problem(self, db_path, tmp_path):
-        """A single Reactor structural-refill tick enqueues Backward for
-        open Goals from multiple Problems."""
+        """A single Reactor structural-refill tick enqueues attack
+        pipelines for open Goals from multiple Problems.
+
+        P7 演習 refactor: first attack is Solver, not Backward. AC's
+        meaningful invariant is "BFS visits each Problem"; the kind is
+        secondary. Assert Solver attack is queued for both Problems.
+        """
         conn = connect(db_path)
         try:
             g_a = _seed_open_goal(conn, "alpha", "g1")
@@ -187,10 +192,11 @@ class TestMultiProblemBFS:
             ).fetchall()
         finally:
             conn.close()
-        # Expect Backward for both goals, one row each
-        backwards = [t for k, t in queue if k == "Backward"]
-        assert str(g_a) in backwards
-        assert str(g_b) in backwards
+        # Expect Solver for both goals, one row each (Backward only fires
+        # after Solver finishes — see _bfs_enqueue_solver / _bfs_enqueue_backward).
+        solvers = [t for k, t in queue if k == "Solver"]
+        assert str(g_a) in solvers
+        assert str(g_b) in solvers
 
 
 # ─────────────────────────────────────────────────────────────

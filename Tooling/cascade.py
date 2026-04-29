@@ -169,6 +169,25 @@ DISPATCH_TABLE: dict[tuple[str, str], CascadeAction] = {
         handler="_cascade_generalizer",
         side_effects=("record_generalizer_failure",),
     ),
+    # P7 演習 refactor (路線 1): Solver = 1-shot direct proof attempt
+    # spun out of Backward's old Path A. success enqueues Builder for the
+    # committed leaf strategy; exhausted records a Goal-scoped dead_attempt
+    # so subsequent BFS opens the Backward fallback gate.
+    ("Solver", "success"): CascadeAction(
+        name="solver_success",
+        description="Solver committed a leaf strategy; "
+                    "_cascade_solver enqueues Builder to verify.",
+        handler="_cascade_solver",
+        side_effects=("enqueue_builder",),
+    ),
+    ("Solver", "exhausted"): CascadeAction(
+        name="solver_failure",
+        description="Solver agent couldn't produce a verifiable 1-shot "
+                    "proof; record dead_attempt so Backward fallback "
+                    "gate opens on next BFS tick.",
+        handler="_cascade_solver",
+        side_effects=("record_solver_failure",),
+    ),
     # Strategist itself: success commits decisions; demux already ran inside
     # Strategist.run. Cascade is an explicit no-op acknowledgement.
     ("Strategist", "success"): CascadeAction(

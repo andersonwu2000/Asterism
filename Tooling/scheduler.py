@@ -771,6 +771,8 @@ class Reactor:
             self._cascade_forward(int(task["target_id"]), result)
         elif kind == "Generalizer":
             self._cascade_generalizer(int(task["target_id"]), result)
+        elif kind == "Solver":
+            self._cascade_solver(int(task["target_id"]), result)
         # Strategist / Counterexample / ConstructionSearch: cascade handler
         # exists in DISPATCH_TABLE as no-op acknowledgement; nothing to do.
 
@@ -1197,6 +1199,36 @@ class Reactor:
             f"Forward outcome={result.outcome}",
         )
 
+    def _cascade_solver(self, goal_id: int, result: Any) -> None:
+        """Cascade for Solver pipeline (P7 演習 refactor 路線 1).
+
+        Solver outcomes: success | exhausted.
+          - success: a leaf strategy was committed; enqueue Builder so it
+            can verify the proof body. (Mirrors the Backward-leaf branch
+            from before the refactor; that branch is now dead because
+            Backward never produces leaves.)
+          - exhausted: agent couldn't produce a verifiable proof; record
+            a Goal-scoped dead_attempt so the next BFS tick can see it
+            and gate-open Backward (which only fires after a Solver
+            attempt has finished).
+        """
+        if result is None:
+            return
+        if result.outcome == "success":
+            if getattr(result, "strategy_id", None) is not None:
+                with self.conn:
+                    self.conn.execute(
+                        "INSERT INTO queue (kind, target_id, priority, "
+                        "created_at) VALUES (?, ?, ?, ?)",
+                        ("Builder", str(result.strategy_id), 0, _now()),
+                    )
+            return
+        # exhausted (or any non-success outcome)
+        self._record_pipeline_failure(
+            goal_id, "Solver", "Goal", result.outcome,
+            f"Solver outcome={result.outcome}",
+        )
+
     def _cascade_generalizer(self, source_goal_id: int, result: Any) -> None:
         """Cascade for Generalizer pipeline (P7 R3 round 2 fix audit2 NEW-MED-A).
 
@@ -1440,13 +1472,25 @@ class Reactor:
                 lean_timeout=self.config.lake_timeout,
             )
             chain = self._make_fallback_chain()
-            # P7 演習 fix #11: pass through force_decompose payload so
-            # the Backward run produces a Path B strategy without
-            # globally toggling goal.evidence.decompose_required.
+            # P7 演習 refactor (路線 1): Backward is decomposition-only.
+            # force_decompose payload is now redundant (Backward never
+            # produces Leaf) but kept as a no-op for backwards compat.
             force_decompose = bool(payload.get("force_decompose"))
             return Backward(
                 conn, chain, cfg, resolver=resolver,
             ).run(goal_id, force_decompose=force_decompose)
+        elif kind == "Solver":
+            from Tooling.pipelines.solver import Solver, SolverConfig
+            goal_id = int(task["target_id"])
+            cfg = SolverConfig(
+                base_dir=self.config.base_dir,
+                lake_cwd=self.config.base_dir,
+                lean_timeout=self.config.lake_timeout,
+            )
+            chain = self._make_fallback_chain()
+            return Solver(
+                conn, chain, cfg, resolver=resolver,
+            ).run(goal_id)
         elif kind == "Refuter":
             from Tooling.pipelines.refuter import Refuter, RefuterConfig
             goal_id = int(task["target_id"])
@@ -1588,26 +1632,59 @@ class Reactor:
     # ------------------------------------------------------------------
 
     def _run_structural_refill(self) -> None:
-        """BFS goals: enqueue Backward for open goals; Builder for all-proved strategies.
+        """BFS goals: Solver first → Backward (decompose) on Solver fail →
+        Builder when all sub-goals proved.
+
+        P7 演習 refactor (路線 1): the framework dictates "try direct
+        proof (Solver) before structural decomposition (Backward)".
+        Solver fires on every open goal that has not yet been attempted;
+        Backward fires only after at least one Solver attempt has died.
 
         P4 C31: open `kind=conjecture` goals also get Refuter dispatched
-        in addition to Backward (three-line attack per architecture.md
-        §6 task queue, structural refill rules). Counterexample line is
-        deferred (task.md ## 延後 cycles); only Backward + Refuter fire
-        on conjecture goals in the current cycle.
+        (three-line attack per architecture.md §6).
 
-        P7 演習 fix: also propagate sub-goal terminal states upward.
-        A 'proposed' strategy whose sub-goals contain any shelved or
-        refuted entry can never succeed (Builder needs ALL sub-goals
-        proved). Without this propagation, such strategies stay
-        'proposed' forever, blocking BFS Backward retry on the parent
-        goal (the Backward retry guard skips when non-dead strategy
-        exists).
+        P7 演習 fix #9: propagate sub-goal terminal states upward —
+        'proposed' strategies whose sub-goals are all shelved/refuted
+        get marked dead so the cascade-up + parent shelve chain runs.
         """
         self._propagate_subgoal_shelve_to_strategy()
+        self._bfs_enqueue_solver()
         self._bfs_enqueue_backward()
         self._bfs_enqueue_refuter_for_conjecture()
         self._bfs_enqueue_builder()
+
+    def _bfs_enqueue_solver(self) -> None:
+        """Enqueue Solver for open goals that haven't yet been Solver-tried.
+
+        At most one Solver attempt per goal (logical equivalent of the
+        Builder one-shot rule from earlier演習 fixes — Solver writes a
+        deterministic strategy, retrying same Solver wouldn't change
+        outcome). LLM is given retries internally via Solver.run's
+        max_retries; once the pipeline exits, no more Solver fires.
+        """
+        rows = self.conn.execute(
+            "SELECT id, depth FROM goals "
+            "WHERE status = 'open' AND kind IN ('theorem', 'conjecture') "
+            "  AND commit_state = 'live'"
+        ).fetchall()
+        for goal_id, depth in rows:
+            goal_id_s = str(goal_id)
+            if depth is not None and depth >= self.config.d_max:
+                continue
+            from Tooling.subsystems.blocked_pipelines import is_blocked
+            if is_blocked(self.conn, int(goal_id), "Solver"):
+                continue
+            if self._is_already_dispatched(goal_id_s, "Solver"):
+                continue
+            # One Solver attempt per goal ever. Detect via pipelines table.
+            attempt_count = self.conn.execute(
+                "SELECT COUNT(*) FROM pipelines "
+                "WHERE kind = 'Solver' AND target_id = ?",
+                (goal_id_s,),
+            ).fetchone()
+            if attempt_count and attempt_count[0] >= 1:
+                continue
+            self._enqueue_task("Solver", goal_id_s, priority=1)
 
     def _propagate_subgoal_shelve_to_strategy(self) -> None:
         """Mark 'proposed' strategies dead when any sub-goal is shelved/refuted.
@@ -1699,6 +1776,26 @@ class Reactor:
             from Tooling.subsystems.blocked_pipelines import is_blocked
             if is_blocked(self.conn, int(goal_id), "Backward"):
                 continue
+            # P7 演習 refactor (路線 1): Solver-first gating. Backward
+            # is decomposition-only; the framework tries 1-shot Solver
+            # FIRST, falls back to Backward only after a Solver attempt
+            # has actually run + failed (or self-rejected as too hard).
+            # Without this gate, Backward and Solver would race on
+            # every open goal; Backward decomposition is more expensive
+            # so the gate amortizes cost.
+            solver_attempts = self.conn.execute(
+                "SELECT COUNT(*) FROM pipelines "
+                "WHERE kind = 'Solver' AND target_id = ? "
+                "  AND status != 'running'",
+                (goal_id_s,),
+            ).fetchone()
+            if not solver_attempts or solver_attempts[0] == 0:
+                # No finished Solver attempt yet — wait for Solver to
+                # report before considering Backward.
+                continue
+            # If any Solver attempt SUCCEEDED, the resulting strategy is
+            # in flight; Backward retry should be gated by the same
+            # per-mode rule below (no live Path A strategy yet).
             # P7 演習 fix #11 + parallel Path A/B design: per-mode BFS.
             # Strategies have an implicit mode by structure:
             #   Path A leaf  = no entries in strategy_subgoals (LLM proof
@@ -2094,7 +2191,7 @@ class Reactor:
             ).run(goal_id)
             self._cascade_backward(goal_id, result)
         elif kind in {"Refuter", "Forward", "Generalizer", "Strategist",
-                      "Counterexample", "ConstructionSearch"}:
+                      "Counterexample", "ConstructionSearch", "Solver"}:
             # Reuse the async path's full dispatch table (with the same
             # payload + resolver wiring). Cascade for these kinds is
             # currently no-op (BFS picks up new orphan goals; Strategist

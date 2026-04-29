@@ -82,7 +82,8 @@ CREATE TABLE IF NOT EXISTS pipelines (
     kind         TEXT NOT NULL
                      CHECK(kind IN (
                          'Builder','Backward','Refuter','Forward',
-                         'Generalizer','Counterexample','ConstructionSearch','Strategist'
+                         'Generalizer','Counterexample','ConstructionSearch','Strategist',
+                         'Solver'
                      )),
     runtime      TEXT NOT NULL
                      CHECK(runtime IN ('atomic','continuous')),
@@ -109,7 +110,8 @@ CREATE TABLE IF NOT EXISTS dead_attempts (
     pipeline_kind  TEXT    NOT NULL
                        CHECK(pipeline_kind IN (
                            'Builder','Backward','Refuter','Forward',
-                           'Generalizer','Counterexample','ConstructionSearch','Strategist'
+                           'Generalizer','Counterexample','ConstructionSearch','Strategist',
+                           'Solver'
                        )),
     outcome        TEXT    NOT NULL,
     reason_summary TEXT    NOT NULL,
@@ -124,7 +126,8 @@ CREATE TABLE IF NOT EXISTS queue (
     kind        TEXT    NOT NULL
                     CHECK(kind IN (
                         'Builder','Backward','Refuter','Forward',
-                        'Generalizer','Counterexample','ConstructionSearch','Strategist'
+                        'Generalizer','Counterexample','ConstructionSearch','Strategist',
+                        'Solver'
                     )),
     target_id   TEXT    NOT NULL,
     priority    INTEGER NOT NULL DEFAULT 0,
