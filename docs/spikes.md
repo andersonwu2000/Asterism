@@ -1435,4 +1435,201 @@ impl §3.1 spec 字面 + Demo bash line 93 字面範例：`list_lemmas.append_ni
 5. **真實 lake build accept dotted alias 行為**——P6.C41 真實 promotion 跑通時 backfill；若 Lean 4 syntax 不支援 dotted theorem alias inline、退而採 explicit namespace block format（impl 自動偵測 + fallback）
 6. **Numeric-prefix module segment failure mode（C39 R3 MED-1）**：跟 #5 獨立的失敗模式——goal directory `<id>_<slug>` 數字開頭違反 Lean identifier 規則、即便 dotted alias inline OK 也會在 source path 本身撞 parse fail。P6.C41 第一條 promotion lake build verify 必踩、需提前選方案：(a) directory rename `g<id>_<slug>` + schema migration / (b) goal `.lean` 內 explicit `namespace` wrapper 規避 path-derived namespace。**Backfill 時機**：P6.C41 真跑 lake build 觸此 case 時實測 + 回填本段
 
+**P6.x 演習 backfill (Round 2)**：
+- D-24-1 #1 確認字面對齊：strategy file `Problems/<p>/Goals/<id_seg>/_strategy_<pid>.lean` 內 `namespace Problems.<p>.Goals.«<id_seg>»._strategy_<pid>` + `theorem <slug>` 真實 lake build pass、跨 import resolve OK
+- D-24-1 #5 確認：dotted theorem `theorem <p>.<slug> : <type> := <source>` 加 explicit `: <type>` 簽名後 lake build accept；單純 `theorem foo := <body>`（Lean 4 omit type）對 `theorem` keyword 不允許、需 `def` 或加 type
+- D-24-1 #6 確認 + 修法：`«1_main»` french-quote wrapping 在 import 路徑跟 namespace 路徑 both work、不需 directory rename。Asterism 現用此方案（patch 5 + 18 + 22）
+
+---
+
+### spike-025 P7 baseline 量測
+
+**Phase**: P7 開工前必跑
+**Owner**: orchestrator
+**環境**: Asterism v4.30.0-rc2 + Mathlib + claude-sonnet-4-6 + 26-patch P6.x series
+**狀態**: design only — empirical deferred to P7.x patch (validator perf rework)
+
+> **Caveat**：spike-025 真實量測要 Path B 拆分鏈端到端 work、目前卡在 validator perf（Mathlib elab × N subgoals 超 600s）。實 baseline 數值待 P6.x patch 28+（validator 單 Lean session 批量驗 / 或 timeout 改 soft warning）解掉、補做 5 conjecture demo。
+
+**問題**：
+為 P7 Strategist 上線前後 efficiency 對照建 baseline。要量「P6 結束（無 Strategist）跑 5 conjecture demo」的 wall-clock / token usage / 終態分布、之後 acceptance #16 才有 pin 數值可對。
+
+**輸入**（5 conjecture mix）：
+1. **真命題易證**：`reverse_length` 級別、claude Path A `by simp` 級
+2. **真命題需拆**：`add_assoc` 級別、有效 induction Path B
+3. **真命題需 lemma**：non_denumerable 主敘述、需 Cardinal 鏈
+4. **假命題（refute via witness）**：`∀ n, n + 1 < n` 級、Counterexample 找 n=0
+5. **假命題（refute via classical）**：`∀ n, n^2 < n` 級、需歸納反證
+
+每 case 跑 30 min budget、daemon mode、收 `pipelines.{started_at, finished_at}` + `events` token 記錄（若 provider 回 token usage metadata）+ `goals.status` 終態。
+
+**預期觀察**：
+- case 1: < 5 min wall, 1-2 claude call, status=proved
+- case 2: 10-20 min wall, 5-10 claude call, status=proved (需 Path B 通)
+- case 3: 20-30 min wall, status 可能 shelved（Mathlib 秒殺 lemma forbidden 後 claude 找不出 Path B）
+- case 4: 5-15 min wall, status=refuted with witness
+- case 5: 15-30 min wall, status=refuted classical
+
+**對 P7 設計的影響**（pre-empirical 設計推論）：
+- baseline wall-clock 預期 1-2 hr 整 batch、acceptance #16「Strategist enable 後縮 X% wall / Y% token」需 Strategist 真實能 cut 拼 retry / 找對 path
+- token cost：5 case × 平均 5 claude call × ~10k token/call ≈ 250k token baseline
+- **acceptance #16 數值 pin 到「Strategist enable 應省 ≥ 30% wall + ≥ 20% token vs baseline」**（保守目標、demo 用、實測再調）
+
+**對 P7 設計的影響**（empirical 補後 backfill）：
+- 5 case 真實終態分布、Strategist 能改善哪幾 case
+- Refuter / Counterexample / Forward / Generalizer 觸發比例
+- bottleneck stage（agent / validator / Builder）
+
+**決策 D-25-1**（pre-empirical placeholder）：
+1. acceptance #16 数值 pin `wall_reduction >= 30%, token_reduction >= 20%`（real measurement 補後可修）
+2. baseline run 在 P6.x validator perf 修完後跑、不在 spike-025 design 階段強做
+3. 5 case 配比：2 真易、1 真難、1 假 witness、1 假 classical（為 P7 demo 拍照用、不全 cover 真實題庫）
+
+---
+
+### spike-026 Strategist agent prompt 可行性
+
+**Phase**: P7 開工前必跑
+**Owner**: orchestrator
+**環境**: claude-sonnet-4-6 single-shot
+**狀態**: design (empirical 1-shot pending)
+
+**問題**：
+P7 Strategist agent 餵 inventory metrics + decisions enum + signal hints 給 LLM、看：
+- decisions JSON schema 是否被 LLM 穩定輸出（不 hallucinate decision kind）
+- 對「該派 Refuter？該 Shelve？」的判斷是否合理（不 spam 派 pipeline）
+- prompt 模板複雜度上限（多少 inventory row 餵進 prompt、claude 還能聚焦）
+
+**輸入**（fixture inventory snapshot）：
+```yaml
+problem: demo_p7
+goals:
+  - {id: 1, slug: main, kind: conjecture, status: open, attempts: 0}
+  - {id: 2, slug: lemma_a, kind: theorem, status: proved, axioms: [propext]}
+  - {id: 3, slug: lemma_b, kind: theorem, status: open, attempts: 5, blocked: [Backward]}
+  - {id: 4, slug: ih_trap, kind: theorem, status: open,
+     attempts: 3, similarity_max: 0.95}
+signals:
+  - {kind: ih_trap_detected, target_id: 4}
+  - {kind: blocked_pipelines, target_id: 3, blocked: [Backward]}
+budgets: {K_strategist: 8, M_strategist: 5, decisions_lookback: 10}
+prior_decisions: []  # first run
+```
+
+**預期觀察**：
+- LLM 寫 ≤ M=5 decisions、JSON valid
+- 對 ih_trap goal 4 派 Strategist-flavored Backward retry（換 model / 範圍 hint）or Shelve
+- 對 blocked goal 3 不派 Backward (避重)、派 Forward / Refuter
+- 不對 status=proved goal 派任何 pipeline
+
+**對設計的影響**：
+- LLM hallucinate decision kind → enum 用枚舉式 prompt 約束（"choose ONLY from: dispatch, shelve, set_budget, override_model"）
+- prompt token 大小估：inventory 4 row + signal 2 + budgets ≈ 1-2k token、安全
+- decisions_lookback 10 條歷史 outcome 也餵進 prompt（patch C49 反思段）→ 約再加 1-2k
+
+**決策 D-26-1**（pre-empirical placeholder）：
+1. Strategist prompt 模板採 enum-style decision kind list（不 free-form）
+2. inventory snapshot 限 ≤ 30 goal row（per-Problem）+ 過去 10 decisions outcome；超過先 truncate
+3. JSON schema validation 在 demux 入口做、invalid decision 寫 dead_attempts (target=Strategist) 並 retry
+4. **empirical 1-shot 待 spike-026.x 補**：餵上面 fixture 給 claude / 看 output、若 schema valid + 判斷合理 → confirm；若 hallucinate → prompt + schema 加嚴
+
+---
+
+### spike-027 Generalizer agent 寫 G\* 成功率
+
+**Phase**: P7 開工前必跑
+**Owner**: orchestrator
+**狀態**: design only — empirical deferred to P7.C53
+
+**問題**：
+Generalizer agent 給 proved Goal G、寫候選 generalization G\*（更廣命題、G 是其 instance）。看：
+- G\* statement 是否 lean 4 elaborable
+- G\* 是否真比 G 廣（不退化）
+- self_verify pass 比例（claude 寫的 G\* 證明 lake elab 過率）
+
+**輸入**（5 fixture proved Goal）：
+1. `add_zero (n : Nat) : n + 0 = n` → 預期 G\* `(α : Type) [Zero α] (a : α) : a + 0 = a` (Monoid 級廣化)
+2. `reverse_length (l : List Nat) : l.reverse.length = l.length` → 預期 G\* polymorphic `(l : List α)`
+3. `nat_add_comm (a b : Nat) : a + b = b + a` → G\* `[CommMonoid α]` 級
+4. `list_append_assoc` → polymorphic
+5. `Cantor 主敘述` → 預期 fail（已是最廣形式、無自然 G\*）
+
+**預期觀察**：
+- 5 case 中 3-4 case G\* 寫得出、self_verify 1-2 個 pass（Mathlib 既有同名 instance 引用 ok）
+- 失敗 case 多在 G\* 證明 elab fail、需 Generalizer agent 升級 prompt + Builder 接
+
+**對 P7 設計的影響**：
+- self_verify pass 率 < 30% → Generalizer demo 期待 manage（demo 失敗多）、acceptance criteria 寫「Generalizer 提案 N 個、proof 至少 1 個 pass」
+- prompt 加「generalize-along-typeclass」hint
+- empirical 等 P7.C53 Generalizer pipeline 上線後 backfill
+
+**決策 D-27-1**（pre-empirical placeholder）：
+1. Generalizer agent prompt 強調 typeclass 廣化（Monoid / CommMonoid / Type Polymorphism）
+2. self_verify fail 不 alert、寫 dead_attempts + 等下次嘗試
+3. acceptance #11 為「至少 1 個 G\* proof pass」（low bar）
+
+---
+
+### spike-028 Forward 從 negation seed 推
+
+**Phase**: P7 開工前必跑
+**Owner**: orchestrator
+**狀態**: design only — empirical deferred to P7.C52
+
+**問題**：
+給 proved ¬G、Forward agent 推有意義的 corollary。看：
+- 從 ¬G 真能寫 corollary statement 還是 claude 假裝有
+- corollary 自身可 prove 比例（self_verify）
+
+**輸入**（3 fixture proved ¬G）：
+1. `¬ ∀ n : Nat, n^2 = n` (witness n=2) → 預期 corollary `∃ n, n^2 ≠ n`
+2. `¬ ∀ l : List Nat, l.length = 0` → 預期 `∃ l, l ≠ []`
+3. `¬ ∃ f : ℕ → ℝ, surjective` → 預期 corollary `Cardinal.mk ℝ > Cardinal.mk ℕ`（已知）
+
+**預期觀察**：
+- 2/3 case Forward 能寫合理 corollary、self_verify 1/3 過
+- case 3 Forward 多半 produce 已存在的 Mathlib 定理（因 forbidden 概念上能擋）
+
+**對 P7 設計的影響**：
+- Forward 主價值是「從 P3 demo D2（IH-trap）的 ¬G refute 推 forward direction」、不是 ¬G 本身的 corollary
+- prompt 強調「look for adjacent provable claims、不 generalize 自身」
+- empirical 等 P7.C52 Forward pipeline 上線後 backfill
+
+**決策 D-28-1**（pre-empirical placeholder）：
+1. Forward 從 ¬G 推 corollary 限「∃ witness 改寫」+「contrapositive」+「specialization」三類
+2. acceptance criteria 為「至少 1 個 Forward corollary pass」（low bar）
+
+---
+
+### spike-029 Strategist model override 反饋值
+
+**Phase**: P7 開工前必跑
+**Owner**: orchestrator
+**狀態**: design only — empirical defers to Strategist runtime online (P7.C50+)
+
+**問題**：
+Strategist 對某 Goal 派 Backward 時、payload override `model=sonnet` vs default `opus`、實測 downstream Backward 品質差距。決定 framework 預設 Strategist=opus 是否值得 token。
+
+**輸入**：
+- IH-trap Goal（P3 demo D2）— Backward 連 2 attempt unproductive、similarity 0.95
+- 兩組對照：
+  - A: Strategist 用 default opus、payload `{model: opus}`
+  - B: Strategist 強制 sonnet、payload `{model: sonnet}`
+- 跑 N=3 次取平均 outcome
+
+**預期觀察**：
+- opus 寫的 decisions 預期更會挑「換 angle / 換 mutation」高層策略
+- sonnet 預期傾向「retry + 換 lemma」短期策略
+- 實測 downstream Backward outcome 是否差超過 token cost 比
+
+**對 P7 設計的影響**：
+- 若 opus advantage < 20%、framework default Strategist=sonnet（省 token）
+- 若 opus advantage > 50%、保留 opus default
+- 中間值（20-50%）→ user 決定 default、CLI 提供 override
+
+**決策 D-29-1**（pre-empirical placeholder）：
+1. 預設 Strategist=opus、CLI `--strategist-model sonnet` 可覆寫
+2. 對小 demo problem (≤ 10 goal)、`framework default sonnet`（省 token）
+3. empirical 等 Strategist runtime 上線、IH-trap fixture 真跑後 backfill 調 default
+
 ---
