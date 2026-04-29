@@ -1515,10 +1515,61 @@ class Reactor:
         §6 task queue, structural refill rules). Counterexample line is
         deferred (task.md ## 延後 cycles); only Backward + Refuter fire
         on conjecture goals in the current cycle.
+
+        P7 演習 fix: also propagate sub-goal terminal states upward.
+        A 'proposed' strategy whose sub-goals contain any shelved or
+        refuted entry can never succeed (Builder needs ALL sub-goals
+        proved). Without this propagation, such strategies stay
+        'proposed' forever, blocking BFS Backward retry on the parent
+        goal (the Backward retry guard skips when non-dead strategy
+        exists).
         """
+        self._propagate_subgoal_shelve_to_strategy()
         self._bfs_enqueue_backward()
         self._bfs_enqueue_refuter_for_conjecture()
         self._bfs_enqueue_builder()
+
+    def _propagate_subgoal_shelve_to_strategy(self) -> None:
+        """Mark 'proposed' strategies dead when any sub-goal is shelved/refuted.
+
+        Builder needs ALL sub-goals proved to succeed. A single
+        sub-goal in shelved/refuted terminal state means the strategy
+        cannot proceed. _mark_strategy_dead handles the rest of the
+        cascade (cancel matching pipelines + shelve parent goal when
+        all strategies dead).
+        """
+        rows = self.conn.execute(
+            "SELECT DISTINCT s.id "
+            "FROM strategies s "
+            "JOIN strategy_subgoals ss ON ss.strategy_id = s.id "
+            "JOIN goals g ON g.id = ss.subgoal_id "
+            "WHERE s.status = 'proposed' AND s.commit_state = 'live' "
+            "  AND g.status IN ('shelved', 'refuted')"
+        ).fetchall()
+        for (strategy_id,) in rows:
+            try:
+                self._mark_strategy_dead(int(strategy_id))
+                self._emit_event(
+                    "cascade",
+                    {
+                        "rule": "strategy_dead_subgoal_terminal",
+                        "strategy_id": strategy_id,
+                    },
+                )
+            except FatalError:
+                # _mark_strategy_dead already emitted fatal event;
+                # let caller's outer loop decide whether to halt.
+                raise
+            except sqlite3.Error:
+                # Best-effort: surface diagnostic but don't halt the
+                # whole BFS pass on a single strategy's UPDATE failure.
+                self._emit_event(
+                    "cascade",
+                    {
+                        "rule": "subgoal_shelve_propagation_failed",
+                        "strategy_id": strategy_id,
+                    },
+                )
 
     def _bfs_enqueue_backward(self) -> None:
         """Enqueue Backward for open theorem + conjecture Goals (P4 C31),

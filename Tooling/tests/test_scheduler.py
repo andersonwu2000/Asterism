@@ -994,6 +994,81 @@ class TestStructuralRefill:
         rule = _json.loads(events[0])["rule"]
         assert rule == "dup_dispatch_dropped"
 
+    def test_subgoal_shelve_propagates_to_proposed_strategy(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """P7 演習 fix: when ANY sub-goal of a 'proposed' strategy is
+        shelved/refuted, the strategy can never succeed (Builder needs
+        ALL sub-goals proved). _run_structural_refill must mark such
+        strategies dead so the cascade-up + parent-goal-shelve chain
+        can run; otherwise zombie 'proposed' strategies block BFS
+        Backward retry on the parent goal forever.
+        """
+        # Goal G with strategy S; S has sub-goals A (open) + B (shelved).
+        goal_id = _insert_open_goal(db, tmp_path, slug="G")
+        strat_id = _insert_strategy(db, tmp_path, goal_id, slug="S",
+                                     status="proposed")
+        sg_a = _insert_open_goal(db, tmp_path, slug="A_open")
+        sg_b = _insert_open_goal(db, tmp_path, slug="B_shelved")
+        # Mark B shelved.
+        db.execute("UPDATE goals SET status='shelved' WHERE id=?", (sg_b,))
+        _link_subgoal(db, strat_id, sg_a, position=0)
+        _link_subgoal(db, strat_id, sg_b, position=1)
+        db.commit()
+
+        reactor = _make_reactor(db, tmp_path)
+        reactor._propagate_subgoal_shelve_to_strategy()
+
+        # Strategy S now dead.
+        status = db.execute(
+            "SELECT status FROM strategies WHERE id = ?", (strat_id,),
+        ).fetchone()[0]
+        assert status == "dead"
+
+        # Goal G: now also shelved (all strategies dead = strategy S only).
+        g_status = db.execute(
+            "SELECT status FROM goals WHERE id = ?", (goal_id,),
+        ).fetchone()[0]
+        assert g_status == "shelved"
+
+        # Diagnostic event for the propagation.
+        events = db.execute(
+            "SELECT payload FROM events WHERE kind = 'cascade' "
+            "ORDER BY id DESC"
+        ).fetchall()
+        rules = []
+        import json as _json
+        for (p,) in events:
+            try:
+                rules.append(_json.loads(p).get("rule"))
+            except Exception:
+                pass
+        assert "strategy_dead_subgoal_terminal" in rules
+
+    def test_propagation_skips_strategy_with_all_open_subgoals(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Counterpart: when sub-goals are all open (or proved), strategy
+        stays 'proposed' — the propagation only fires on terminal-not-
+        proved sub-goals.
+        """
+        goal_id = _insert_open_goal(db, tmp_path, slug="G_ok")
+        strat_id = _insert_strategy(db, tmp_path, goal_id, slug="S_ok",
+                                     status="proposed")
+        sg_a = _insert_open_goal(db, tmp_path, slug="A_ok")
+        sg_b = _insert_open_goal(db, tmp_path, slug="B_ok")
+        _link_subgoal(db, strat_id, sg_a, position=0)
+        _link_subgoal(db, strat_id, sg_b, position=1)
+        db.commit()
+
+        reactor = _make_reactor(db, tmp_path)
+        reactor._propagate_subgoal_shelve_to_strategy()
+
+        status = db.execute(
+            "SELECT status FROM strategies WHERE id = ?", (strat_id,),
+        ).fetchone()[0]
+        assert status == "proposed"
+
     def test_startup_sweeps_zombie_pipelines(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
