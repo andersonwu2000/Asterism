@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import abc
 import os
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -298,18 +299,42 @@ class FallbackChain:
         Returns (response, outcome) where outcome is:
           'success'   – valid response obtained
           'exhausted' – all providers / retries failed
+
+        P7 演習 fix (FallbackChain session_id collision): claude CLI
+        rejects --session-id values that have ever been used. The original
+        loop reused the caller-supplied `session_id` across every
+        provider × n_retry call, so the second invoke inside the chain
+        always failed with "Session ID ... is already in use" regardless
+        of why the first attempt failed (ProviderError, scope-fail, etc.).
+        Patch 11 fixed retries at the Backward._run_loop layer (outer
+        max_retries) but not inside the chain.
+
+        Mint a fresh per-invoke session_id derived from the pipeline
+        session_id. The base session_id is still echoed back via
+        AgentResponse.session_id (provider's responsibility) so pipeline-
+        level tracing is preserved; per-invoke IDs are only used to keep
+        the claude CLI happy.
         """
-        for provider in self.providers:
+        for provider_idx, provider in enumerate(self.providers):
             for attempt in range(self.n_retry):
+                # Fresh sub-session per claude CLI call; suffix encodes
+                # which provider/attempt for forensic log readability.
+                # Truncate base UUID to keep total length reasonable.
+                base = session_id[:8] if len(session_id) >= 8 else session_id
+                invoke_session_id = (
+                    f"{base}-{provider.name}-{provider_idx}-{attempt}-"
+                    f"{uuid.uuid4().hex[:8]}"
+                )
                 try:
                     response = provider.invoke(
-                        model_tier, prompt, scope_dirs, session_id, cwd=cwd
+                        model_tier, prompt, scope_dirs, invoke_session_id,
+                        cwd=cwd,
                     )
                 except ProviderError:
                     continue
 
                 if self._validate_scope is not None and staging_dir is not None:
-                    if not self._validate_scope(staging_dir, session_id):
+                    if not self._validate_scope(staging_dir, invoke_session_id):
                         continue
 
                 return response, "success"

@@ -182,6 +182,81 @@ class TestFallbackChain:
         assert outcome == "exhausted"
         assert provider._call_count == 3
 
+    def test_session_id_unique_per_invoke(self):
+        """P7演習 fix: chain.run must mint a fresh session_id per inner
+        provider.invoke call, otherwise claude CLI rejects the second call
+        with 'Session ID ... is already in use' on every retry path
+        (ProviderError, scope-fail). Patch 11 (Backward._run_loop) only
+        addressed the OUTER max_retries, not the inner chain retries.
+
+        Verify by spying on session_id values across n_retry invocations
+        with a provider that always raises (so we hit the retry branch).
+        """
+        captured_session_ids = []
+
+        class CapturingProvider(Provider):
+            name = "capture"
+            model_map = {"sonnet": "x"}
+
+            def invoke(self, model_tier, prompt, scope_dirs, session_id,
+                       *, cwd=None):
+                captured_session_ids.append(session_id)
+                raise ProviderError("force retry")
+
+            def gc_session(self, session_id):
+                pass
+
+        chain = FallbackChain(providers=[CapturingProvider()], n_retry=4)
+        resp, outcome = chain.run(
+            "sonnet", "prompt", ["/staging"], "pipeline-base-sess"
+        )
+        assert outcome == "exhausted"
+        assert len(captured_session_ids) == 4
+        # All four IDs must be distinct (no claude CLI collision).
+        assert len(set(captured_session_ids)) == 4
+        # And none should equal the caller-supplied base session_id —
+        # base is reserved for pipeline-level tracing, not provider calls.
+        assert "pipeline-base-sess" not in captured_session_ids
+
+    def test_session_id_unique_across_providers(self):
+        """Same invariant must hold across providers in the chain — mixing
+        claude → gemini → codex with reused session_id would also fail
+        for any provider that enforces session uniqueness.
+        """
+        captured = []
+
+        class P1(Provider):
+            name = "p1"
+            model_map = {"sonnet": "x"}
+
+            def invoke(self, model_tier, prompt, scope_dirs, session_id,
+                       *, cwd=None):
+                captured.append(("p1", session_id))
+                raise ProviderError("p1 fail")
+
+            def gc_session(self, session_id):
+                pass
+
+        class P2(Provider):
+            name = "p2"
+            model_map = {"sonnet": "x"}
+
+            def invoke(self, model_tier, prompt, scope_dirs, session_id,
+                       *, cwd=None):
+                captured.append(("p2", session_id))
+                raise ProviderError("p2 fail")
+
+            def gc_session(self, session_id):
+                pass
+
+        chain = FallbackChain(providers=[P1(), P2()], n_retry=2)
+        chain.run("sonnet", "prompt", ["/staging"], "base-sess")
+
+        # 2 providers × 2 retries = 4 calls, all with distinct session_ids.
+        assert len(captured) == 4
+        ids = [sid for (_, sid) in captured]
+        assert len(set(ids)) == 4
+
 
 # ---------------------------------------------------------------------------
 # 5. ClaudeProvider._build_cmd
