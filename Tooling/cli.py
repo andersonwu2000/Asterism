@@ -1209,6 +1209,34 @@ def build_parser() -> argparse.ArgumentParser:
         "audit", help="[stub → C45] lake-driven library audit (Lean exe binding)",
     )
 
+    # ── strategist + inventory (P7 C55) ───────────────────────
+    p_strategist = sub.add_parser(
+        "strategist",
+        help="[P7 C55] manually trigger / inspect Strategist runs",
+    )
+    strategist_sub = p_strategist.add_subparsers(
+        dest="strategist_command", required=True,
+    )
+    p_strat_run = strategist_sub.add_parser(
+        "run-once",
+        help="run one Strategist cycle on the named Problem (debug)",
+    )
+    p_strat_run.add_argument("--problem", required=True, metavar="NAME")
+
+    p_strat_dec = strategist_sub.add_parser(
+        "decisions",
+        help="show last N strategist_decisions rows",
+    )
+    p_strat_dec.add_argument(
+        "--limit", type=int, default=10, metavar="N",
+    )
+
+    p_inventory = sub.add_parser(
+        "inventory",
+        help="[P7 C55] print Strategist inventory metrics for one Problem",
+    )
+    p_inventory.add_argument("problem", metavar="PROBLEM_NAME")
+
     # ── scheduler (P6 C44) ────────────────────────────────────
     p_scheduler = sub.add_parser(
         "scheduler", help="[P6 C44] scheduler liveness controls",
@@ -1226,6 +1254,90 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+def cmd_strategist_run_once(
+    args: Any,
+    db_path: Path | None = None,
+    base_dir: Path | None = None,
+) -> None:
+    """Run one Strategist cycle on the named Problem and print the result.
+
+    Used for演習 + manual debugging of Strategist behavior. Real production
+    triggering is handled by scheduler step 5 (round_robin selector).
+    """
+    from Tooling.agent.provider import FallbackChain, ModelResolver
+    from Tooling.agent.providers.claude import ClaudeProvider
+    from Tooling.pipelines.strategist import Strategist, StrategistConfig
+
+    db = db_path or _DEFAULT_DB
+    base = base_dir or _DEFAULT_BASE
+    conn = connect(db)
+    try:
+        init_schema(conn)
+        # Single-provider chain (claude). Multi-provider configured via
+        # asterism agent test --provider X for now.
+        chain = FallbackChain([ClaudeProvider()])
+        config = StrategistConfig(base_dir=str(base))
+        s = Strategist(conn, chain, config, ModelResolver())
+        result = s.run(args.problem)
+    finally:
+        conn.close()
+    print(f"strategist run-once: outcome={result.outcome}")
+    print(f"  decisions_id={result.decisions_id}")
+    print(f"  decisions:    {json.dumps(result.raw_decisions, indent=2)}")
+    if result.demux is not None:
+        print(f"  enqueued:     {len(result.demux.enqueued)}")
+        print(f"  shelved:      {len(result.demux.shelved)}")
+        print(f"  rejected:     {len(result.demux.rejected)}")
+        for r in result.demux.rejected:
+            print(f"    - {r['reason']}")
+
+
+def cmd_strategist_decisions(
+    args: Any,
+    db_path: Path | None = None,
+) -> None:
+    """Show the last N strategist_decisions rows."""
+    db = db_path or _DEFAULT_DB
+    conn = connect(db)
+    try:
+        init_schema(conn)
+        rows = conn.execute(
+            "SELECT id, decisions, ts FROM strategist_decisions "
+            "ORDER BY id DESC LIMIT ?",
+            (args.limit,),
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        print("(no strategist_decisions rows)")
+        return
+    for sd_id, decisions, ts in rows:
+        print(f"#{sd_id}  ts={ts}")
+        try:
+            parsed = json.loads(decisions)
+            print(json.dumps(parsed, indent=2))
+        except json.JSONDecodeError:
+            print(f"  (raw): {decisions}")
+        print("---")
+
+
+def cmd_inventory(
+    args: Any,
+    db_path: Path | None = None,
+) -> None:
+    """Print Strategist inventory metrics for one Problem (no agent call)."""
+    from Tooling.strategist.inventory import collect
+
+    db = db_path or _DEFAULT_DB
+    conn = connect(db)
+    try:
+        init_schema(conn)
+        out = collect(conn, args.problem)
+    finally:
+        conn.close()
+    print(json.dumps(out, indent=2))
 
 
 def _reconfigure_stdio_utf8() -> None:
@@ -1292,6 +1404,13 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "scheduler":
         if args.scheduler_command == "force-clear":
             cmd_scheduler_force_clear(args)
+    elif args.command == "strategist":
+        if args.strategist_command == "run-once":
+            cmd_strategist_run_once(args)
+        elif args.strategist_command == "decisions":
+            cmd_strategist_decisions(args)
+    elif args.command == "inventory":
+        cmd_inventory(args)
 
 
 if __name__ == "__main__":
