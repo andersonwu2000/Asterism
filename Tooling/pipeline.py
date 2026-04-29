@@ -13,7 +13,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import agent, db, manifest
+from . import agent, db, dedupe, manifest
 
 
 PROMPT_DIR = Path(__file__).parent / "prompts"
@@ -379,6 +379,20 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
             )
         sub_meta.append((slug, ns))
 
+    # Dedupe scan: for each candidate sub-goal, check whether an
+    # equivalent goal already exists in this problem. Hits → write an
+    # alias lean file pointing to the canonical theorem; link the
+    # strategy to canonical instead of inserting a new goal.
+    canonical_for: list[int | None] = []
+    for slug, src in sub_meta:
+        try:
+            stmt = _extract_statement(src.read_text(encoding="utf-8"))
+        except OSError:
+            stmt = ""
+        canonical_for.append(
+            dedupe.find_canonical(conn, goal["problem"], stmt) if stmt else None
+        )
+
     # Compute permanent paths under proofs/. No collision possible
     # because every path includes sid_token.
     proofs_dir = workspace / "Problems" / goal["problem"] / "proofs"
@@ -386,12 +400,34 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
     scratch_filename = f"_strategy_{sid_token}.lean"
     scratch_dest = proofs_dir / scratch_filename
     sub_dests = [(slug, proofs_dir / f"L_{slug}.lean") for slug, _ in sub_meta]
+    defs_exists = (workspace / "Problems" / goal["problem"] / "Defs.lean").exists()
 
     placed: list[Path] = []
     try:
-        # Place sub-goal placeholders + scratch.
-        for (slug, src), (_, dest) in zip(sub_meta, sub_dests):
-            shutil.copy2(src, dest)
+        # Place sub-goal files: alias content for dedupe-hits, original
+        # content for novel sub-goals.
+        for (slug, src), (_, dest), canonical_id in zip(
+            sub_meta, sub_dests, canonical_for,
+        ):
+            if canonical_id is not None:
+                canonical = db.get_goal(conn, canonical_id)
+                canonical_module = _lean_path_to_module(
+                    workspace, workspace / canonical["lean_path"])
+                stmt = _extract_statement_from_lean(src)
+                dest.write_text(
+                    dedupe.build_alias_content(
+                        problem=goal["problem"], new_slug=slug,
+                        statement=stmt,
+                        canonical_slug=canonical["slug"],
+                        canonical_module=canonical_module,
+                        defs_imported=defs_exists,
+                    ),
+                    encoding="utf-8",
+                )
+                print(f"[dedupe] {slug} → goal {canonical_id} "
+                      f"({canonical['slug']})", flush=True)
+            else:
+                shutil.copy2(src, dest)
             placed.append(dest)
         shutil.copy2(patches[0], scratch_dest)
         placed.append(scratch_dest)
@@ -402,20 +438,24 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
             if not ok:
                 raise RuntimeError(f"lake build {t.name} failed: {err[:500]}")
 
-        # All passed — INSERT sub-goals + link + finalize strategy.
-        new_goal_ids: list[int] = []
-        for slug, dest in sub_dests:
-            stmt = _extract_statement_from_lean(dest)
-            rel = dest.relative_to(workspace).as_posix()
-            new_goal_ids.append(db.insert_goal(
-                conn, problem=goal["problem"], slug=slug,
-                lean_path=rel, statement=stmt, origin="backward",
-                difficulty=max(1, goal["difficulty"] - 1),
-                depth=goal["depth"] + 1,
-            ))
-        for pos, sgid in enumerate(new_goal_ids):
+        # All passed — INSERT new sub-goals (skip dedupe-hits) + link
+        # all (new + canonical) via strategy_subgoals.
+        linked_ids: list[int] = []
+        for (slug, dest), canonical_id in zip(sub_dests, canonical_for):
+            if canonical_id is not None:
+                linked_ids.append(canonical_id)
+            else:
+                stmt = _extract_statement_from_lean(dest)
+                rel = dest.relative_to(workspace).as_posix()
+                linked_ids.append(db.insert_goal(
+                    conn, problem=goal["problem"], slug=slug,
+                    lean_path=rel, statement=stmt, origin="backward",
+                    difficulty=max(1, goal["difficulty"] - 1),
+                    depth=goal["depth"] + 1,
+                ))
+        for pos, gid in enumerate(linked_ids):
             db.link_subgoal(conn, strategy_id=strategy_id,
-                            subgoal_id=sgid, position=pos)
+                            subgoal_id=gid, position=pos)
 
         scratch_rel = scratch_dest.relative_to(workspace).as_posix()
         db.update_strategy_scratch_path(conn, strategy_id, scratch_rel)
