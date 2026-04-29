@@ -29,11 +29,12 @@ CREATE TABLE IF NOT EXISTS goals (
     lean_path   TEXT    NOT NULL UNIQUE,
     statement   TEXT    NOT NULL,
     difficulty  INTEGER NOT NULL DEFAULT 4,
+    -- kind / origin enums kept minimal; extend when implementing
+    -- forward / generalizer / refuter / construction (architecture.md §12).
     kind        TEXT    NOT NULL DEFAULT 'theorem'
-                    CHECK(kind IN ('theorem','conjecture','construction')),
+                    CHECK(kind IN ('theorem')),
     origin      TEXT    NOT NULL
-                    CHECK(origin IN ('root','backward','forward','generalizer',
-                                     'refuter_negation','construction_witness')),
+                    CHECK(origin IN ('root','backward')),
     status      TEXT    NOT NULL
                     CHECK(status IN ('open','attempting','proved','shelved')),
     depth       INTEGER NOT NULL DEFAULT 0,
@@ -48,6 +49,7 @@ CREATE TABLE IF NOT EXISTS strategies (
     goal_id     INTEGER NOT NULL REFERENCES goals(id),
     lean_path   TEXT    NOT NULL UNIQUE,
     status      TEXT    NOT NULL CHECK(status IN ('proposed','succeeded','dead')),
+    proposal_md TEXT    NOT NULL DEFAULT '',
     created_by  TEXT    NOT NULL,
     created_at  TEXT NOT NULL
 );
@@ -64,7 +66,7 @@ CREATE TABLE IF NOT EXISTS strategy_subgoals (
 -- → daemon crash leaves no zombie rows; restart sees clean DB.
 CREATE TABLE IF NOT EXISTS pipelines (
     id          TEXT PRIMARY KEY,
-    kind        TEXT NOT NULL CHECK(kind IN ('Builder','Backward')),
+    kind        TEXT NOT NULL CHECK(kind IN ('Builder','Backward','Verify')),
     target_id   TEXT NOT NULL,
     target_kind TEXT NOT NULL CHECK(target_kind IN ('Goal','Strategy')),
     status      TEXT NOT NULL CHECK(status IN ('succeeded','failed')),
@@ -90,7 +92,7 @@ CREATE TABLE IF NOT EXISTS dead_attempts (
 
 CREATE TABLE IF NOT EXISTS queue (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind        TEXT NOT NULL CHECK(kind IN ('Builder','Backward')),
+    kind        TEXT NOT NULL CHECK(kind IN ('Builder','Backward','Verify')),
     target_id   TEXT NOT NULL,
     priority    INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL
@@ -186,11 +188,12 @@ def root_proved(conn: sqlite3.Connection, problem: str | None = None) -> bool:
 # ---------------------------------------------------------------------
 
 def insert_strategy(conn: sqlite3.Connection, *, goal_id: int,
-                    lean_path: str, created_by: str) -> int:
+                    lean_path: str, created_by: str,
+                    proposal_md: str = "") -> int:
     cur = conn.execute(
-        "INSERT INTO strategies (goal_id, lean_path, status, created_by, created_at)"
-        " VALUES (?, ?, 'proposed', ?, ?)",
-        (goal_id, lean_path, created_by, now()),
+        "INSERT INTO strategies (goal_id, lean_path, status, proposal_md,"
+        " created_by, created_at) VALUES (?, ?, 'proposed', ?, ?, ?)",
+        (goal_id, lean_path, proposal_md, created_by, now()),
     )
     conn.commit()
     return int(cur.lastrowid)
@@ -215,8 +218,8 @@ def update_strategy_status(conn: sqlite3.Connection, strategy_id: int,
     conn.commit()
 
 
-def strategies_ready_for_builder(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Strategies whose all sub-goals are proved (ready for Builder verify)."""
+def strategies_ready_for_verify(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Strategies whose all sub-goals are proved (ready for Verify worker)."""
     return list(conn.execute(
         "SELECT s.* FROM strategies s "
         "WHERE s.status = 'proposed' "

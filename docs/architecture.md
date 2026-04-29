@@ -89,13 +89,13 @@ CREATE TABLE goals (
     lean_path   TEXT    NOT NULL UNIQUE,
     statement   TEXT    NOT NULL,
     difficulty  INTEGER NOT NULL DEFAULT 4,
-    -- v3 留洞：初期只用 'theorem'。conjecture / construction 留欄、不分支
+    -- kind / origin enums kept minimal; extend in a migration when
+    -- forward / generalizer / refuter / conjecture / construction are
+    -- actually implemented (§12).
     kind        TEXT    NOT NULL DEFAULT 'theorem'
-                    CHECK(kind IN ('theorem','conjecture','construction')),
-    -- v3 留洞：初期只用 'root' + 'backward'
+                    CHECK(kind IN ('theorem')),
     origin      TEXT    NOT NULL
-                    CHECK(origin IN ('root','backward','forward','generalizer',
-                                     'refuter_negation','construction_witness')),
+                    CHECK(origin IN ('root','backward')),
     status      TEXT    NOT NULL
                     CHECK(status IN ('open','attempting','proved','shelved')),
     depth       INTEGER NOT NULL DEFAULT 0,
@@ -110,6 +110,7 @@ CREATE TABLE strategies (
     goal_id     INTEGER NOT NULL REFERENCES goals(id),
     lean_path   TEXT    NOT NULL UNIQUE,
     status      TEXT    NOT NULL CHECK(status IN ('proposed','succeeded','dead')),
+    proposal_md TEXT    NOT NULL DEFAULT '',  -- Backward's PROPOSAL.md verbatim
     created_by  TEXT    NOT NULL REFERENCES pipelines(id),
     created_at  TEXT NOT NULL
 );
@@ -123,13 +124,14 @@ CREATE TABLE strategy_subgoals (
 
 CREATE TABLE pipelines (
     id          TEXT PRIMARY KEY,                 -- UUID
-    kind        TEXT NOT NULL CHECK(kind IN ('Builder','Backward')),
+    kind        TEXT NOT NULL CHECK(kind IN ('Builder','Backward','Verify')),
     target_id   TEXT NOT NULL,
     target_kind TEXT NOT NULL CHECK(target_kind IN ('Goal','Strategy')),
-    status      TEXT NOT NULL CHECK(status IN ('running','succeeded','failed')),
-    outcome     TEXT,
+    -- only finished rows stored; no 'running' state in DB
+    status      TEXT NOT NULL CHECK(status IN ('succeeded','failed')),
+    outcome     TEXT NOT NULL,
     started_at  TEXT NOT NULL,
-    finished_at TEXT
+    finished_at TEXT NOT NULL
 );
 
 CREATE TABLE dead_attempts (
@@ -145,7 +147,9 @@ CREATE TABLE dead_attempts (
 
 CREATE TABLE queue (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind        TEXT NOT NULL CHECK(kind IN ('Builder','Backward')),
+    -- worker_kind determines target_kind: Builder/Backward target Goal,
+    -- Verify targets Strategy. No separate target_kind column needed.
+    kind        TEXT NOT NULL CHECK(kind IN ('Builder','Backward','Verify')),
     target_id   TEXT NOT NULL,
     priority    INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL
@@ -154,7 +158,7 @@ CREATE TABLE queue (
 
 **對 v3 schema 砍掉**：`commit_state`（用 backup-restore）、`answer_data` JSON（只看 status 夠）、`evidence` / `twin_of` / `trust_set`（conjecture/refuter/library 用、deferred）、`continuous_tasks` / `events` / `search_cache` / `forward_targets` / `strategist_decisions` 表（全 deferred）。
 
-**留 schema 洞但 dispatcher 不分支**的：`goals.kind`、`goals.origin`、status 含 `refuted` 但目前不會出現。將來加 conjecture/refuter 不需 migration。
+**Schema 留洞策略**：`goals.kind`/`origin` 只接受目前實作中的值；新增 origin（forward / generalizer / refuter）時做 migration 加 enum、不預先放未檢驗的字串。
 
 **Atomicity 改用 Hadamard backup-restore**：integrator 跑完 lake build 前先 `cp -r proofs/ /tmp/backup/`，build fail 或 forbidden_lemma 命中就 mv backup 回 proofs/。沒 commit_state 兩段式。
 

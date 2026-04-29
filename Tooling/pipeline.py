@@ -191,6 +191,44 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
 
 
 # ---------------------------------------------------------------------
+# Verify (Strategy)
+# ---------------------------------------------------------------------
+
+def run_verify(conn: sqlite3.Connection, *, strategy_id: int,
+               workspace: Path, mfst: manifest.Manifest,
+               pipeline_id: str) -> PipelineResult:
+    """Verify a Strategy by re-building its parent goal lean file.
+
+    All sub-goals of the strategy are already proved (this is enforced by
+    `strategies_ready_for_builder` in dispatcher). The parent lean file
+    holds the patch that combines them. We just re-run lake build to
+    confirm it elaborates against the now-real sub-goal proofs.
+
+    No agent spawn, no Phase 1 tactic_try, no proof body rewrite.
+    """
+    s = conn.execute(
+        "SELECT * FROM strategies WHERE id = ?", (strategy_id,)
+    ).fetchone()
+    if s is None:
+        return PipelineResult(outcome="failed", failure_reason="strategy_not_found")
+
+    goal_lean = workspace / s["lean_path"]
+    if not goal_lean.exists():
+        return PipelineResult(
+            outcome="failed", failure_reason="lean_file_missing",
+            failure_detail=str(goal_lean),
+        )
+
+    ok, err = _lake_build(workspace, goal_lean)
+    if ok:
+        return PipelineResult(outcome="proved")
+    return PipelineResult(
+        outcome="failed", failure_reason="lake_build_error",
+        failure_detail=err[:2000],
+    )
+
+
+# ---------------------------------------------------------------------
 # Backward
 # ---------------------------------------------------------------------
 
@@ -284,6 +322,7 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
             conn, goal_id=goal_id,
             lean_path=goal["lean_path"],
             created_by=pipeline_id,
+            proposal_md=proposal_text,
         )
         for pos, sgid in enumerate(new_goal_ids):
             db.link_subgoal(conn, strategy_id=strategy_id,

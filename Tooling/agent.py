@@ -36,14 +36,32 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     parts.append("")
 
     if goal["origin"] == "backward":
-        parent = conn.execute(
-            "SELECT g.* FROM goals g JOIN strategy_subgoals ss ON ss.subgoal_id = g.id "
-            "WHERE 0=1"  # we don't track parent_id directly; placeholder for future
+        # Look up the parent goal + the strategy that produced this sub-goal
+        # via strategy_subgoals → strategies → goals.
+        row = conn.execute(
+            "SELECT g.slug AS parent_slug, g.statement AS parent_statement,"
+            "       s.proposal_md AS proposal_md "
+            "FROM strategy_subgoals ss "
+            "JOIN strategies s ON s.id = ss.strategy_id "
+            "JOIN goals g ON g.id = s.goal_id "
+            "WHERE ss.subgoal_id = ? "
+            "ORDER BY ss.strategy_id ASC LIMIT 1",
+            (goal["id"],),
         ).fetchone()
-        if parent:
-            parts.append("## Parent goal")
-            parts.append(f"{parent['slug']}: {parent['statement']}")
+        if row:
+            parts.append("## Parent goal & strategy")
+            parts.append(f"This goal `{goal['slug']}` is a sub-goal of "
+                         f"`{row['parent_slug']}`:")
             parts.append("")
+            parts.append(f"> {row['parent_statement']}")
+            parts.append("")
+            if row["proposal_md"]:
+                parts.append("Strategy that produced this sub-goal "
+                             "(parent's PROPOSAL.md excerpt):")
+                parts.append("```")
+                parts.append(row["proposal_md"][:2000])
+                parts.append("```")
+                parts.append("")
 
     if mfst.mathlib_hints:
         parts.append("## Mathlib hints (from Manifest.md)")

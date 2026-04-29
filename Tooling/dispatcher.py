@@ -34,35 +34,21 @@ def next_worker_kind(goal: sqlite3.Row) -> str:
 def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 kind: str, target_id: str, target_kind: str,
                 outcome: str) -> None:
-    """Apply state transitions for one finished pipeline."""
+    """Apply state transitions for one finished pipeline.
+
+    Each worker_kind has a fixed target_kind:
+      Builder  → Goal   (fresh sorry-stub closure)
+      Backward → Goal   (decompose into sub-goals)
+      Verify   → Strategy (re-run lake build after sub-goals proved)
+    """
     if kind == "Builder":
         if outcome == "proved":
-            if target_kind == "Strategy":
-                db.update_strategy_status(conn, int(target_id), "succeeded")
-                row = conn.execute(
-                    "SELECT goal_id FROM strategies WHERE id = ?",
-                    (int(target_id),),
-                ).fetchone()
-                if row:
-                    db.update_goal_status(conn, int(row["goal_id"]), "proved")
-            else:
-                db.update_goal_status(conn, int(target_id), "proved")
+            db.update_goal_status(conn, int(target_id), "proved")
             return
         if outcome in ("exhausted", "failed"):
-            if target_kind == "Strategy":
-                db.update_strategy_status(conn, int(target_id), "dead")
-                row = conn.execute(
-                    "SELECT goal_id FROM strategies WHERE id = ?",
-                    (int(target_id),),
-                ).fetchone()
-                if row:
-                    n = db.increment_goal_attempts(conn, int(row["goal_id"]))
-                    if n >= SHELVE_THRESHOLD:
-                        db.update_goal_status(conn, int(row["goal_id"]), "shelved")
-            else:
-                n = db.increment_goal_attempts(conn, int(target_id))
-                if n >= SHELVE_THRESHOLD:
-                    db.update_goal_status(conn, int(target_id), "shelved")
+            n = db.increment_goal_attempts(conn, int(target_id))
+            if n >= SHELVE_THRESHOLD:
+                db.update_goal_status(conn, int(target_id), "shelved")
             return
 
     if kind == "Backward":
@@ -73,6 +59,25 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
         n = db.increment_goal_attempts(conn, int(target_id))
         if n >= SHELVE_THRESHOLD:
             db.update_goal_status(conn, int(target_id), "shelved")
+        return
+
+    if kind == "Verify":
+        row = conn.execute(
+            "SELECT goal_id FROM strategies WHERE id = ?",
+            (int(target_id),),
+        ).fetchone()
+        goal_id = int(row["goal_id"]) if row else None
+        if outcome == "proved":
+            db.update_strategy_status(conn, int(target_id), "succeeded")
+            if goal_id is not None:
+                db.update_goal_status(conn, goal_id, "proved")
+            return
+        # exhausted / failed
+        db.update_strategy_status(conn, int(target_id), "dead")
+        if goal_id is not None:
+            n = db.increment_goal_attempts(conn, goal_id)
+            if n >= SHELVE_THRESHOLD:
+                db.update_goal_status(conn, goal_id, "shelved")
         return
 
 
@@ -90,11 +95,11 @@ def bfs_refill(conn: sqlite3.Connection,
         return ((tid, kind) in running
                 or db.is_in_queue(conn, target_id=tid, kind=kind))
 
-    # Strategies with all sub-goals proved → enqueue Builder
-    for s in db.strategies_ready_for_builder(conn):
+    # Strategies with all sub-goals proved → enqueue Verify
+    for s in db.strategies_ready_for_verify(conn):
         sid = str(s["id"])
-        if not already(sid, "Builder"):
-            db.enqueue(conn, kind="Builder", target_id=sid, priority=10)
+        if not already(sid, "Verify"):
+            db.enqueue(conn, kind="Verify", target_id=sid, priority=10)
 
     # Open goals → enqueue worker_kind
     for g in db.open_goals(conn):
@@ -126,7 +131,9 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
     started_at = db.now()
     attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
     try:
-        # Resolve goal_id (Builder may target Strategy → look up its goal_id)
+        # Resolve which goal this task ultimately concerns (for problem lookup
+        # and dead_attempts attribution). Verify targets a Strategy whose
+        # parent goal supplies the problem name.
         if target_kind == "Strategy":
             row = conn.execute(
                 "SELECT goal_id FROM strategies WHERE id = ?",
@@ -148,7 +155,12 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
 
         mfst = manifests[goal["problem"]]
 
-        if task_kind == "Builder":
+        if task_kind == "Verify":
+            r = pipeline.run_verify(
+                conn, strategy_id=int(target_id), workspace=workspace,
+                mfst=mfst, pipeline_id=pipeline_id,
+            )
+        elif task_kind == "Builder":
             r = pipeline.run_builder(
                 conn, goal_id=goal_id, workspace=workspace,
                 mfst=mfst, pipeline_id=pipeline_id,
@@ -249,8 +261,7 @@ def run(workspace: Path, *, once: bool = False) -> int:
                 break
             target_id = str(row["target_id"])
             kind = str(row["kind"])
-            target_kind = "Strategy" if kind == "Builder" and \
-                _looks_like_strategy_id(conn, target_id) else "Goal"
+            target_kind = "Strategy" if kind == "Verify" else "Goal"
             if (target_id, kind) in running:
                 continue
             pipeline_id = agent.new_pipeline_id()
@@ -279,12 +290,3 @@ def run(workspace: Path, *, once: bool = False) -> int:
             return 1
 
 
-def _looks_like_strategy_id(conn: sqlite3.Connection, tid: str) -> bool:
-    try:
-        i = int(tid)
-    except ValueError:
-        return False
-    row = conn.execute(
-        "SELECT 1 FROM strategies WHERE id = ? LIMIT 1", (i,)
-    ).fetchone()
-    return row is not None
