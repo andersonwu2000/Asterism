@@ -895,6 +895,126 @@ class TestStructuralRefill:
         assert f"strategy {strat_id}" in rows[0][2]
         assert "unsolvedGoals" in rows[0][2]
 
+    def test_mark_strategy_dead_renames_file_keeps_forensic(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """P7 演習 fix: dead strategy file is renamed to .lean.attempted
+        rather than deleted. The proof body that was tried + rejected by
+        Builder remains on disk for human inspection — without this
+        change, every dead-strategy attempt leaves no forensic record
+        once cascade fires.
+        """
+        goal_id = _insert_open_goal(db, tmp_path, slug="forensic_g",
+                                     problem="forensic_p")
+        # Insert a strategy with a real on-disk file containing a fake proof.
+        strat_dir = tmp_path / "Problems" / "forensic_p" / "Goals" / f"{goal_id}_forensic_g"
+        strat_dir.mkdir(parents=True)
+        strategy_lean_rel = (
+            f"Problems/forensic_p/Goals/{goal_id}_forensic_g/_strategy_xyz.lean"
+        )
+        strategy_full = tmp_path / strategy_lean_rel
+        strategy_full.write_text(
+            "theorem forensic_g : True := by trivial\n",
+            encoding="utf-8",
+        )
+        # Distinct goal lean_path so _mark_strategy_dead doesn't think
+        # they are the same file (rename guard).
+        goal_lean_rel = f"Problems/forensic_p/Goals/{goal_id}_forensic_g/forensic_g.lean"
+        (tmp_path / goal_lean_rel).write_text(
+            "theorem forensic_g : True := by sorry\n", encoding="utf-8",
+        )
+        db.execute(
+            "UPDATE goals SET lean_path = ? WHERE id = ?",
+            (goal_lean_rel, goal_id),
+        )
+        with db:
+            db.execute(
+                "INSERT INTO strategies "
+                "(goal_id, lean_path, status, commit_state, created_at) "
+                "VALUES (?, ?, 'proposed', 'live', ?)",
+                (goal_id, strategy_lean_rel, "2026-01-01T00:00:00+00:00"),
+            )
+        strat_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        reactor = _make_reactor(db, tmp_path)
+        reactor._mark_strategy_dead(strat_id)
+
+        # Original file is gone (renamed away).
+        assert not strategy_full.exists()
+        # Renamed sibling preserves the proof body for forensic inspection.
+        attempted = strategy_full.with_suffix(strategy_full.suffix + ".attempted")
+        assert attempted.exists()
+        body = attempted.read_text("utf-8")
+        assert "by trivial" in body, (
+            "renamed dead strategy must still contain the original proof body"
+        )
+        # Strategy row is now dead.
+        status = db.execute(
+            "SELECT status FROM strategies WHERE id = ?", (strat_id,),
+        ).fetchone()[0]
+        assert status == "dead"
+
+    def test_dup_dispatch_dropped_at_submit_time(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """P7 演習 fix: duplicate (target_id, kind) tasks may end up in
+        queue from multiple sources (BFS, Strategist demux, --once).
+        _submit_task must drop a task whose sibling pipeline is already
+        running, otherwise daemon spawns two threads racing on the same
+        artifacts.
+        """
+        # Pre-seed a 'running' Backward pipeline on goal 42.
+        db.execute(
+            "INSERT INTO pipelines "
+            "(id, kind, runtime, target_id, target_kind, status, started_at) "
+            "VALUES ('pipe-running-bw', 'Backward', 'atomic', '42', 'Goal', "
+            "'running', ?)",
+            ("2026-04-29T05:00:00+00:00",),
+        )
+        db.commit()
+
+        reactor = _make_reactor(db, tmp_path)
+        # Claim that the running pipeline is also tracked in _running so
+        # _submit_task's first check (in-memory) catches it. We test the
+        # DB-side check too below.
+        # Simulate a queue task aimed at goal 42.
+        task = {"id": 999, "kind": "Backward", "target_id": "42",
+                "payload": None}
+        reactor._pool = MagicMock()
+        reactor._submit_task(task)
+
+        # Pool should NOT have been asked to submit anything.
+        assert reactor._pool.submit.call_count == 0
+        # Diagnostic event recorded.
+        events = db.execute(
+            "SELECT payload FROM events WHERE kind = 'cascade' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        import json as _json
+        rule = _json.loads(events[0])["rule"]
+        assert rule == "dup_dispatch_dropped"
+
+    def test_is_already_dispatched_checks_db_running(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """The DB-side branch of _is_already_dispatched: even when both
+        in-memory _running and queue are empty, a DB pipeline with
+        status='running' for this (target, kind) means work is in flight."""
+        db.execute(
+            "INSERT INTO pipelines "
+            "(id, kind, runtime, target_id, target_kind, status, started_at) "
+            "VALUES ('pipe-bw-99', 'Backward', 'atomic', '99', 'Goal', "
+            "'running', ?)",
+            ("2026-04-29T05:00:00+00:00",),
+        )
+        db.commit()
+        reactor = _make_reactor(db, tmp_path)
+        assert reactor._is_already_dispatched("99", "Backward") is True
+        # Different target_id → not dispatched.
+        assert reactor._is_already_dispatched("100", "Backward") is False
+        # Different kind on same target → not dispatched.
+        assert reactor._is_already_dispatched("99", "Builder") is False
+
     def test_bfs_skips_backward_when_proposed_strategy_exists(
         self, db: sqlite3.Connection, tmp_path: Path
     ) -> None:

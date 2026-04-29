@@ -913,13 +913,15 @@ class Reactor:
                 ),
                 emit_event=self._emit_event,
             )
-            # P6.x patch 22-fix-2: delete the strategy .lean file when the
-            # strategy goes dead. Leftover broken strategy files in the
-            # goal directory cause subsequent `lake build` calls (e.g.
-            # print_axioms's pre-step) to fail when the lib glob picks
-            # them up. Skip when strategy.lean_path == goal.lean_path
-            # (post-finalize state from patch 23: deleting the goal file
-            # would lose the canonical proven artifact).
+            # P7 演習 fix: rename (not delete) the dead strategy file so
+            # forensic lookup of "what was tried" survives. Lake's glob
+            # only picks up `*.lean` files, so renaming to `*.lean.attempted`
+            # both (a) keeps the broken proof out of the lib build (was
+            # P6.x patch 22-fix-2's reason for deleting in the first place)
+            # and (b) leaves the proof body on disk for human inspection.
+            # Skip when strategy.lean_path == goal.lean_path (post-finalize
+            # state from patch 23: renaming the goal file would lose the
+            # canonical proven artifact).
             try:
                 goal_path = self.conn.execute(
                     "SELECT lean_path FROM goals WHERE id = ?", (goal_id,),
@@ -928,7 +930,25 @@ class Reactor:
                         and goal_path
                         and strategy_lean_path != goal_path[0]):
                     full = Path(self.config.base_dir) / strategy_lean_path
-                    full.unlink(missing_ok=True)
+                    if full.exists():
+                        attempted = full.with_suffix(full.suffix + ".attempted")
+                        # If a prior .attempted with same name exists (rare —
+                        # only if scheduler restart re-cycles uuid), remove
+                        # it before rename so os.replace doesn't fail on
+                        # platforms that disallow overwrite.
+                        try:
+                            attempted.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        try:
+                            full.rename(attempted)
+                        except OSError:
+                            # Rename may fail across filesystems on some
+                            # platforms; fall back to delete (P6.x patch
+                            # 22-fix-2 behavior) so lake glob still stays
+                            # clean — losing forensic record is less bad
+                            # than a broken lib build.
+                            full.unlink(missing_ok=True)
             except (OSError, sqlite3.Error):
                 pass  # Best-effort; surfaced via cascade events on
                        # subsequent print_axioms / promote failures.
@@ -1187,7 +1207,29 @@ class Reactor:
             self._submit_task(task)
 
     def _submit_task(self, task: dict) -> None:
-        """Register task in _running and submit to thread pool."""
+        """Register task in _running and submit to thread pool.
+
+        P7 演習 fix: re-check `_is_already_dispatched` AFTER the pop +
+        BEFORE submitting. A queue can hold duplicate (target_id, kind)
+        rows when multiple sources (BFS structural refill, Strategist
+        demux, --once dispatch) write independently. Each source has
+        its own gating logic but they don't coordinate; only this
+        chokepoint sees the full picture. If a sibling pipeline is
+        already running (in-memory `_running` or DB `pipelines.status
+        ='running'`), drop this dup and emit a diagnostic.
+        """
+        target_id = str(task.get("target_id", ""))
+        kind = str(task.get("kind", ""))
+        if self._is_already_dispatched(target_id, kind):
+            self._emit_event(
+                "cascade",
+                {
+                    "rule": "dup_dispatch_dropped",
+                    "task": task,
+                    "reason": "sibling_already_running_or_queued",
+                },
+            )
+            return
         pipeline_id = str(uuid.uuid4())
         with self._lock:
             self._running[pipeline_id] = (task["target_id"], task["kind"])
@@ -1594,13 +1636,30 @@ class Reactor:
                 self._enqueue_task("Builder", strategy_id_s, priority=10)
 
     def _is_already_dispatched(self, target_id: str, kind: str) -> bool:
-        """True if a pipeline for this (target_id, kind) is running or queued."""
+        """True if a pipeline for this (target_id, kind) is running or queued.
+
+        P7 演習 fix: also check DB for in-flight pipeline. Race window
+        exists between the worker thread popping `_running` and the main
+        loop processing pipeline_finished + cascade UPDATE'ing
+        pipelines.status. During that gap the in-memory `_running` is
+        empty, but the DB still shows status='running'. Without this
+        DB check, BFS and Strategist demux can both schedule duplicate
+        work for the same (target, kind) — daemon then spawns two
+        threads that race on the same artifacts.
+        """
         with self._lock:
             for tid, k in self._running.values():
                 if tid == target_id and k == kind:
                     return True
         row = self.conn.execute(
             "SELECT id FROM queue WHERE target_id = ? AND kind = ?",
+            (target_id, kind),
+        ).fetchone()
+        if row is not None:
+            return True
+        row = self.conn.execute(
+            "SELECT id FROM pipelines WHERE target_id = ? AND kind = ? "
+            "  AND status = 'running'",
             (target_id, kind),
         ).fetchone()
         return row is not None
