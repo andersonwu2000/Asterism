@@ -539,6 +539,36 @@ class Reactor:
         """
         target_kind = task.get("kind")
         target_id_raw = task.get("target_id")
+
+        # P7 演習 fix: Strategist target_id is a string `_problem:<name>`,
+        # not an int. Handle it before the generic int-cast branch.
+        if target_kind == "Strategist":
+            if not isinstance(target_id_raw, str) \
+                    or not target_id_raw.startswith("_problem:"):
+                self._emit_event(
+                    "cascade",
+                    {"rule": "stale_filter", "task": task,
+                     "reason": "strategist_malformed_target_id"},
+                )
+                return True
+            problem = target_id_raw.split(":", 1)[1]
+            row = self.conn.execute(
+                "SELECT COUNT(*) FROM goals "
+                "WHERE problem = ? AND status = 'open' "
+                "  AND commit_state = 'live'",
+                (problem,),
+            ).fetchone()
+            if row is None or row[0] == 0:
+                # No open goals in the problem — Strategist would have
+                # nothing actionable. Drop as stale.
+                self._emit_event(
+                    "cascade",
+                    {"rule": "stale_filter", "task": task,
+                     "reason": "strategist_no_open_goals"},
+                )
+                return True
+            return False
+
         try:
             target_id = int(target_id_raw)
         except (TypeError, ValueError):
@@ -733,10 +763,17 @@ class Reactor:
         consume(self.conn, problem)
 
     def _list_active_problems(self) -> list[str]:
-        """Distinct Problem names that have at least one live Goal."""
+        """Distinct Problem names with at least one OPEN live Goal.
+
+        P7 演習 fix: previous version returned any Problem with `commit_state
+        = 'live'` regardless of status, so a Problem whose goals were all
+        shelved/proved/refuted still got Strategist tasks enqueued — they
+        immediately got stale-filtered with no actionable work. Restrict to
+        Problems that actually have something for Strategist to coordinate.
+        """
         rows = self.conn.execute(
             "SELECT DISTINCT problem FROM goals "
-            "WHERE commit_state = 'live' "
+            "WHERE commit_state = 'live' AND status = 'open' "
             "ORDER BY problem ASC"
         ).fetchall()
         return [r[0] for r in rows if r[0]]

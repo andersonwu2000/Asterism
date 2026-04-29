@@ -1805,6 +1805,91 @@ class TestHookPlaceholders:
         # No queue row, no events.
         assert db.execute("SELECT count(*) FROM queue").fetchone()[0] == 0
 
+    def test_active_problems_excludes_no_open_goals(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """P7 演習 fix: a Problem whose goals are all shelved/proved/refuted
+        must NOT appear in _list_active_problems — Strategist would have
+        nothing to coordinate, and the resulting queued task hits stale
+        filter on every spawn cycle."""
+        # 'wilson_x' has only shelved goals; 'wilson_y' has 1 open goal.
+        for slug, status in [("g_shelved_a", "shelved"), ("g_shelved_b", "shelved")]:
+            db.execute(
+                "INSERT INTO goals "
+                "(problem, slug, lean_path, origin, kind, status, commit_state, "
+                "created_at, updated_at) VALUES "
+                "('wilson_x', ?, ?, 'root', 'theorem', ?, 'live', ?, ?)",
+                (slug, f"x/{slug}.lean", status,
+                 "2026-04-29T00:00:00+00:00", "2026-04-29T00:00:00+00:00"),
+            )
+        db.execute(
+            "INSERT INTO goals "
+            "(problem, slug, lean_path, origin, kind, status, commit_state, "
+            "created_at, updated_at) VALUES "
+            "('wilson_y', 'g_open', 'y/g.lean', 'root', 'theorem', 'open', "
+            "'live', ?, ?)",
+            ("2026-04-29T00:00:00+00:00", "2026-04-29T00:00:00+00:00"),
+        )
+        db.commit()
+
+        reactor = _make_reactor(db, tmp_path)
+        active = reactor._list_active_problems()
+        assert active == ["wilson_y"]
+        assert "wilson_x" not in active
+
+    def test_stale_filter_strategist_target_id_format(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """P7 演習 fix: Strategist target_id is `_problem:<name>` string,
+        not int. step1 stale filter must NOT report it as
+        malformed_target_id; instead it should validate the prefix and
+        check whether the Problem has any open goals.
+        """
+        # Problem with one open goal — Strategist task should NOT be stale.
+        db.execute(
+            "INSERT INTO goals "
+            "(problem, slug, lean_path, origin, kind, status, commit_state, "
+            "created_at, updated_at) VALUES "
+            "('p_active', 'g1', 'p/g1.lean', 'root', 'theorem', 'open', "
+            "'live', ?, ?)",
+            ("2026-04-29T00:00:00+00:00", "2026-04-29T00:00:00+00:00"),
+        )
+        # Problem with no open goals — Strategist task SHOULD be stale.
+        db.execute(
+            "INSERT INTO goals "
+            "(problem, slug, lean_path, origin, kind, status, commit_state, "
+            "created_at, updated_at) VALUES "
+            "('p_dormant', 'g2', 'p/g2.lean', 'root', 'theorem', 'shelved', "
+            "'live', ?, ?)",
+            ("2026-04-29T00:00:00+00:00", "2026-04-29T00:00:00+00:00"),
+        )
+        db.commit()
+
+        reactor = _make_reactor(db, tmp_path)
+
+        # Active Problem → not stale.
+        active_task = {"id": 1, "kind": "Strategist",
+                       "target_id": "_problem:p_active", "payload": None}
+        assert reactor._run_step1_stale_filter(active_task, None) is False
+
+        # Dormant Problem → stale with strategist_no_open_goals reason.
+        dormant_task = {"id": 2, "kind": "Strategist",
+                        "target_id": "_problem:p_dormant", "payload": None}
+        assert reactor._run_step1_stale_filter(dormant_task, None) is True
+
+        # Malformed target_id (no _problem: prefix) → stale with
+        # strategist_malformed_target_id reason (different from the generic
+        # int-cast malformed_target_id).
+        bad_task = {"id": 3, "kind": "Strategist",
+                    "target_id": "999", "payload": None}
+        assert reactor._run_step1_stale_filter(bad_task, None) is True
+        events = db.execute(
+            "SELECT payload FROM events WHERE kind = 'cascade' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        import json as _json
+        assert _json.loads(events[0])["reason"] == "strategist_malformed_target_id"
+
     def test_step5_strategist_trigger_disabled_env(
         self, db: sqlite3.Connection, tmp_path: Path, monkeypatch
     ) -> None:
