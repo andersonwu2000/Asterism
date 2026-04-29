@@ -33,7 +33,38 @@
 - 整個 Asterism repo 是 fresh repo（C1 前無 commit）—— framework + spec 該獨立 commit、不混進 phase commit
 
 ## Step
-**P6 ✅ done + P6.x patch series 24 patches** (latest `459525a`). Real runtime演習 round 1 (reverse_length) + round 2 (non_denumerable) drove patches 1-23 + 22-fix.
+**P6 ✅ done + P6.x patch series 27 patches + P7 C48 R1 done** (latest `eba7389`).
+
+**Post-compact 醒來 priority 列表**（user 說「逐步解決問題並推進 P7」）：
+
+1. **patch 28: wire find_lemmas 跨 goal proved sibling** (30 min)
+   - `Tooling/subsystems/search.py`: scope='library' 改 query DB 抓同 Problem 內 status='proved' goals + 回 (slug, question)
+   - `Tooling/pipelines/backward.py:_build_prompt`: 把 find_lemmas 結果序列化進 `{{CANDIDATE_LEMMAS}}` 字串
+   - `docs/prompts/backward.md`: 加 `## Available Proved Sibling Theorems\n{{CANDIDATE_LEMMAS}}` section
+   - 跑 2-goal 演習驗 (3) 真 wire 通
+
+2. **patch 29: validator perf**（要解 Path B chain 完整）
+   - 選項 A: validator.lean 改一次 load Mathlib 後批量驗 N subgoals（單 Lean session）
+   - 選項 B: validator timeout 改 soft warning（逾時 commit anyway、subgoal 後續自然驗失敗會 mark dead）
+   - 選項 C: validator.lean 內加 `--no-mathlib-elab` 模式只 walk binders、不 elaborate full body
+   - 跑 round 10 with non_denumerable + decompose_required 驗 Path B 全鏈端到端 → goal=proved 才算 verified
+
+3. **C49 Inventory SQL + Strategist prompt v1**（C48 spike-026 D-26-1 設計已 ready）
+   - `Tooling/strategist/inventory.py` per impl §6.4
+   - `docs/prompts/strategist.md` 含 inventory + signals + decisions schema + decisions_lookback 反思段
+
+4. **C50 Strategist pipeline runtime + demux**
+
+5. **C51-C57** 按 task.md ## Cycle plan §P7 推進
+
+**P7 推完之後 user 要求**：
+- 用 SG（Sylvester-Gallai、D:/Hadamard/Practice/sylvester_gallai 既有完整證明）做高強度演習
+- 用 compactness 之類更難 case 持續驗證 + 修
+- user 不過多監控、orchestrator 自主推進
+
+---
+
+**P6.x patch series 27 patches** (real runtime演習 round 1-9 driven、bug-first 修復、所有 patches inline orchestrator)：
 
 **P6.x patch series**（演習-driven、bug-first 修復、所有 patches inline orchestrator）：
 
