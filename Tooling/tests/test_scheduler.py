@@ -1735,6 +1735,47 @@ class TestHookPlaceholders:
             "SELECT count(*) FROM queue WHERE kind='Strategist'"
         ).fetchone()[0] == 0
 
+    def test_warn_dropped_payload_keys_emits_event(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """R3 round 3 regression (audit3 batch 2 M_R2-2 followup): when a
+        Strategist demux propagates payload keys (provider/budget/range/
+        mutation_operators) that the spawn path doesn't yet honor,
+        _warn_dropped_payload_keys must emit a 'payload_override_unconsumed'
+        cascade event so the silent feature drop leaves a trail.
+        """
+        reactor = _make_reactor(db, tmp_path)
+        # Direct method call — model key is consumed (no event), the others
+        # are dropped (event expected).
+        reactor._warn_dropped_payload_keys("Backward", {
+            "model": "opus",       # consumed
+            "provider": "gemini",  # dropped
+            "budget": {"wall_clock_sec": 28800},  # dropped
+        })
+
+        events = db.execute(
+            "SELECT payload FROM events WHERE kind = 'cascade'"
+        ).fetchall()
+        rules = [json.loads(p[0]) for p in events if p[0]]
+        unconsumed = [r for r in rules
+                      if r.get("rule") == "payload_override_unconsumed"]
+        assert len(unconsumed) == 1
+        assert unconsumed[0]["kind"] == "Backward"
+        assert sorted(unconsumed[0]["dropped_keys"]) == ["budget", "provider"]
+        # 'model' is consumed → must NOT appear in dropped_keys.
+        assert "model" not in unconsumed[0]["dropped_keys"]
+
+    def test_warn_dropped_payload_keys_silent_for_only_consumed(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """When payload contains only `model`, no event should be emitted."""
+        reactor = _make_reactor(db, tmp_path)
+        reactor._warn_dropped_payload_keys("Backward", {"model": "opus"})
+        rows = db.execute(
+            "SELECT COUNT(*) FROM events WHERE kind = 'cascade'"
+        ).fetchone()
+        assert rows[0] == 0
+
     def test_step5_strategist_trigger_enqueues_after_K_finishes(
         self, db: sqlite3.Connection, tmp_path: Path, monkeypatch
     ) -> None:

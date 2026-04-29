@@ -127,53 +127,60 @@ DISPATCH_TABLE: dict[tuple[str, str], CascadeAction] = {
     # picks them up the next cycle. No direct cascade.
     ("Forward", "success"): CascadeAction(
         name="forward_success",
-        description="Forward.commit inserted new orphan Goals; BFS handles refill.",
-        handler="",
-        side_effects=("acknowledge_forward_goals",),
+        description="Forward.commit inserted new orphan Goals; "
+                    "BFS handles refill (cascade is explicit no-op).",
+        handler="_cascade_forward",
     ),
     ("Forward", "no_novel"): CascadeAction(
         name="forward_no_novel",
-        description="All candidates were dups; nothing to do.",
-        handler="",
+        description="All candidates were dups; explicit no-op.",
+        handler="_cascade_forward",
     ),
     ("Forward", "exhausted"): CascadeAction(
         name="forward_failure",
-        description="No useful corollaries; record dead_attempt for future inspection.",
-        handler="",
+        description="Agent gave up; _cascade_forward records dead_attempt "
+                    "(target_kind='forward').",
+        handler="_cascade_forward",
         side_effects=("record_forward_failure",),
     ),
     ("Generalizer", "success"): CascadeAction(
         name="generalizer_success",
-        description="G* inserted as new tree root; BFS picks it up.",
-        handler="",
-        side_effects=("acknowledge_generalizer_goal",),
+        description="G* inserted as new tree root; "
+                    "BFS picks it up (cascade is explicit no-op).",
+        handler="_cascade_generalizer",
     ),
     ("Generalizer", "no_novel"): CascadeAction(
         name="generalizer_no_novel",
-        description="G* matched an existing entry; nothing to do.",
-        handler="",
+        description="G* matched an existing entry; explicit no-op.",
+        handler="_cascade_generalizer",
     ),
     ("Generalizer", "unproductive"): CascadeAction(
         name="generalizer_unproductive",
-        description="Agent self-reports G already maximal; do NOT block_pipelines.",
-        handler="",
+        description="Agent self-reports G already maximal; "
+                    "_cascade_generalizer records dead_attempt (target_kind='Goal'). "
+                    "Spec §8: do NOT update goals.blocked_pipelines.",
+        handler="_cascade_generalizer",
+        side_effects=("record_generalizer_failure",),
     ),
     ("Generalizer", "exhausted"): CascadeAction(
         name="generalizer_failure",
-        description="self_verify retry exhausted; record dead_attempt.",
-        handler="",
+        description="self_verify retry exhausted; "
+                    "_cascade_generalizer records dead_attempt (target_kind='Goal').",
+        handler="_cascade_generalizer",
         side_effects=("record_generalizer_failure",),
     ),
-    # Strategist itself: success commits decisions; demux already ran.
-    # Cascade is a no-op acknowledgement (the work landed inside the run).
+    # Strategist itself: success commits decisions; demux already ran inside
+    # Strategist.run. Cascade is an explicit no-op acknowledgement.
     ("Strategist", "success"): CascadeAction(
         name="strategist_success",
-        description="Strategist commit + demux already landed; nothing further.",
+        description="Strategist commit + demux already landed inside .run; "
+                    "explicit no-op acknowledgement.",
         handler="",
     ),
     ("Strategist", "exhausted"): CascadeAction(
         name="strategist_failure",
-        description="Strategist agent failed to produce valid JSON.",
+        description="Strategist agent failed to produce valid JSON within "
+                    "max_retries; explicit no-op (no dead_attempts written).",
         handler="",
     ),
 }
