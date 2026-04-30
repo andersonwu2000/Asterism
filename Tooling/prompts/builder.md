@@ -22,4 +22,4 @@ If both pass, the patch becomes the proved goal file.
 
 ## Output
 
-Write `patch.lean` and `PROPOSAL.md` (a short narrative of your strategy + which Mathlib lemmas you used). Nothing else.
+Write `patch.lean` and `PROPOSAL.md`. PROPOSAL.md: 1-2 sentences naming the key Mathlib lemma family + why it closes the goal. No restating the goal.

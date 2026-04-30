@@ -18,7 +18,7 @@ Do not include any other text outside these blocks. Do not wrap blocks in markdo
 
 Required files:
 
-1. `==== FILE: PROPOSAL.md ====` — short narrative: strategy + which Mathlib lemmas you used.
+1. `==== FILE: PROPOSAL.md ====` — 1-2 sentences naming the key Mathlib lemma family + why it closes the goal. No restating the goal.
 
 2. `==== FILE: patch.lean ====` — entire goal lean file with the proof body filled in. Imports, namespace, and `theorem` line stay the same; only the body after `:=` changes.
 
