@@ -19,27 +19,82 @@ adding a new pattern is one regex, not a per-model prompt addendum.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from typing import Callable
+
+
+_NAME_IDENTITY: Callable[[str], str] = lambda s: s
+_NAME_NORMALIZE_PATH: Callable[[str], str] = lambda s: s.replace("\\", "/")
+
+
+@dataclass(frozen=True)
+class _HintPattern:
+    """One stderr pattern + its hint template.
+
+    `regex` is matched against the stderr; group(1) is the captured
+    name / path. `transform` post-processes the captured group (default
+    identity); `template` is a `.format(name=...)` string. Adding a new
+    error pattern is one entry in `_HINT_PATTERNS` below — no new
+    if-block in `parse_lake_stderr`.
+    """
+    regex: re.Pattern[str]
+    template: str
+    transform: Callable[[str], str] = _NAME_IDENTITY
 
 
 # Lean's casing is inconsistent: `unknown identifier 'foo'` (lowercase)
-# vs `Unknown constant ` foo`` (capital U). re.IGNORECASE handles both.
-_BAD_IMPORT_RE = re.compile(
-    r"bad import ['`]([^'`\s]+)['`]", re.IGNORECASE)
-_UNKNOWN_IDENT_RE = re.compile(
-    r"unknown identifier ['`]([^'`]+)['`]", re.IGNORECASE)
-_UNKNOWN_CONSTANT_RE = re.compile(
-    r"unknown constant ['`]([^'`]+)['`]", re.IGNORECASE)
-_UNKNOWN_TACTIC_RE = re.compile(
-    r"unknown tactic ['`]([^'`]+)['`]", re.IGNORECASE)
-# Lean's autoImplicit hint phrasing: "Hint: The identifier `X` is unknown,
-# and Lean's `autoImplicit` option ..." — same root cause as a plain
-# unknown identifier (missing import / typo).
-_AUTOIMPLICIT_HINT_RE = re.compile(
-    r"the identifier ['`]([^'`]+)['`] is unknown", re.IGNORECASE)
-_NO_FILE_RE = re.compile(
-    r"no such file or directory.*?Mathlib[/\\]([A-Za-z0-9/\\.]+\.lean)",
-    re.DOTALL,
-)
+# vs `Unknown constant ` foo`` (capital U). IGNORECASE handles both.
+# Order matters for first-seen de-dup (rare collisions): bad-import and
+# no-file fire first since they're the most actionable; unknown-name
+# variants follow; unknown-tactic last.
+_HINT_PATTERNS: list[_HintPattern] = [
+    _HintPattern(
+        re.compile(r"bad import ['`]([^'`\s]+)['`]", re.IGNORECASE),
+        "Bad import path `{name}` — this module does not exist. "
+        "Mathlib has been reorganized; the safest fix is to use "
+        "`import Mathlib` (umbrella) instead of a specific path. "
+        "If you need a smaller import, check "
+        "`.lake/packages/mathlib/Mathlib/` for the renamed module.",
+    ),
+    _HintPattern(
+        re.compile(
+            r"no such file or directory.*?Mathlib[/\\]([A-Za-z0-9/\\.]+\.lean)",
+            re.DOTALL,
+        ),
+        "Mathlib file not found: `Mathlib/{name}`. The file was "
+        "likely renamed or split. Use `import Mathlib` (umbrella) "
+        "or search the current Mathlib for the new location.",
+        transform=_NAME_NORMALIZE_PATH,
+    ),
+    _HintPattern(
+        re.compile(r"unknown identifier ['`]([^'`]+)['`]", re.IGNORECASE),
+        "Unknown identifier `{name}` — the lemma/definition may "
+        "have been renamed in current Mathlib, or its module is "
+        "not imported. Try grep'ing `.lake/packages/mathlib/Mathlib/` "
+        "for similar names.",
+    ),
+    _HintPattern(
+        re.compile(r"unknown constant ['`]([^'`]+)['`]", re.IGNORECASE),
+        "Unknown constant `{name}` — the lemma/definition may "
+        "have been renamed or removed. Search current Mathlib for "
+        "a renamed version, or use a broader import.",
+    ),
+    # autoImplicit hint surfaces the same missing-import pathology as
+    # `unknown identifier`, just phrased as a help message.
+    _HintPattern(
+        re.compile(r"the identifier ['`]([^'`]+)['`] is unknown",
+                   re.IGNORECASE),
+        "Identifier `{name}` is unknown (autoImplicit hint) — most "
+        "likely a missing `import Mathlib` at the top of the file. "
+        "Add the umbrella import or check the specific module path.",
+    ),
+    _HintPattern(
+        re.compile(r"unknown tactic ['`]([^'`]+)['`]", re.IGNORECASE),
+        "Unknown tactic `{name}` — the tactic may have been renamed "
+        "or moved to a different module. Try `import Mathlib` "
+        "(umbrella) to ensure all tactics are in scope.",
+    ),
+]
 
 
 def parse_lake_stderr(stderr: str) -> list[str]:
@@ -48,78 +103,15 @@ def parse_lake_stderr(stderr: str) -> list[str]:
     De-duplicated; preserves first-seen order."""
     if not stderr:
         return []
-
     hints: list[str] = []
     seen: set[str] = set()
-
-    def add(hint: str) -> None:
-        if hint not in seen:
-            seen.add(hint)
-            hints.append(hint)
-
-    # Bad import path. Mathlib has reorganized many files into
-    # subdirectories (e.g. Data.Nat.Prime → Data.Nat.Prime.Basic).
-    # Safest fix: import the umbrella.
-    for m in _BAD_IMPORT_RE.finditer(stderr):
-        path = m.group(1)
-        add(
-            f"Bad import path `{path}` — this module does not exist. "
-            f"Mathlib has been reorganized; the safest fix is to use "
-            f"`import Mathlib` (umbrella) instead of a specific path. "
-            f"If you need a smaller import, check "
-            f"`.lake/packages/mathlib/Mathlib/` for the renamed module."
-        )
-
-    # `no such file` from lake build trace, which often co-occurs with
-    # the above but also fires for files outside `bad import`.
-    for m in _NO_FILE_RE.finditer(stderr):
-        path = m.group(1).replace("\\", "/")
-        add(
-            f"Mathlib file not found: `Mathlib/{path}`. The file was "
-            f"likely renamed or split. Use `import Mathlib` (umbrella) "
-            f"or search the current Mathlib for the new location."
-        )
-
-    # Unknown identifier / constant. Could be a renamed lemma, a
-    # missing import, or a typo. We don't try to guess the new name —
-    # just point the agent at where to look.
-    for m in _UNKNOWN_IDENT_RE.finditer(stderr):
-        name = m.group(1)
-        add(
-            f"Unknown identifier `{name}` — the lemma/definition may "
-            f"have been renamed in current Mathlib, or its module is "
-            f"not imported. Try grep'ing `.lake/packages/mathlib/Mathlib/` "
-            f"for similar names."
-        )
-    for m in _UNKNOWN_CONSTANT_RE.finditer(stderr):
-        name = m.group(1)
-        add(
-            f"Unknown constant `{name}` — the lemma/definition may "
-            f"have been renamed or removed. Search current Mathlib for "
-            f"a renamed version, or use a broader import."
-        )
-
-    # autoImplicit hint surfaces the same missing-import pathology as
-    # `unknown identifier`, just phrased as a help message. Treat it as
-    # an unknown identifier for hint-building purposes.
-    for m in _AUTOIMPLICIT_HINT_RE.finditer(stderr):
-        name = m.group(1)
-        add(
-            f"Identifier `{name}` is unknown (autoImplicit hint) — most "
-            f"likely a missing `import Mathlib` at the top of the file. "
-            f"Add the umbrella import or check the specific module path."
-        )
-
-    # Unknown tactic. Mathlib's tactic library evolves; some tactics
-    # are renamed or moved.
-    for m in _UNKNOWN_TACTIC_RE.finditer(stderr):
-        name = m.group(1)
-        add(
-            f"Unknown tactic `{name}` — the tactic may have been renamed "
-            f"or moved to a different module. Try `import Mathlib` "
-            f"(umbrella) to ensure all tactics are in scope."
-        )
-
+    for hp in _HINT_PATTERNS:
+        for m in hp.regex.finditer(stderr):
+            name = hp.transform(m.group(1))
+            hint = hp.template.format(name=name)
+            if hint not in seen:
+                seen.add(hint)
+                hints.append(hint)
     return hints
 
 
