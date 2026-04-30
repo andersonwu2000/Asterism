@@ -8,9 +8,15 @@ asterism.db
 asterism.db-journal
 asterism.db-shm
 asterism.db-wal
+asterism.db.*
 *.lean.backup
 *.lean.tmp
 *.lean.verify_backup
+# F20 lemma signature cache (toolchain-keyed; rebuilt on demand)
+Tooling/.lemma_cache.json
+# Daemon logs from manual runs
+wilson_haiku*.log
+*_haiku*.log
 
 # Python
 __pycache__/
