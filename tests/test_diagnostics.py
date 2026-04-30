@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import pytest
 
-from Tooling.diagnostics import annotate_failure_detail, parse_lake_stderr
+from Tooling.diagnostics import (
+    annotate_failure_detail,
+    parse_lake_stderr,
+    strip_lake_noise,
+)
 
 
 # ---------------------------------------------------------------------
@@ -222,3 +226,139 @@ def test_annotate_surfaces_capital_u_unknown_constant() -> None:
     out = annotate_failure_detail(stderr)
     assert "framework hints" in out
     assert "Nat.factorial" in out
+
+
+# ---------------------------------------------------------------------
+# F32 — strip_lake_noise
+# ---------------------------------------------------------------------
+
+def test_strip_removes_lean_path_trace_line() -> None:
+    """The `trace: .> LEAN_PATH=...lean.exe ...args... --json` single
+    line is always pure noise."""
+    stderr = (
+        "✖ [10/10] Building x (3s)\n"
+        "trace: .> LEAN_PATH=D:\\.lake\\packages\\Cli;...lean.exe ... --json\n"
+        "error: file.lean:7: Type mismatch\n"
+    )
+    out = strip_lake_noise(stderr)
+    assert "LEAN_PATH=" not in out
+    assert "lean.exe" not in out
+    assert "Type mismatch" in out
+    assert "Building x" in out  # progress marker preserved
+
+
+def test_strip_removes_redundant_exit_summary() -> None:
+    """Lake emits `error: Lean exited with code N` + `Some required
+    targets ...` + `error: build failed` after the actual error.
+    All three are summary noise."""
+    stderr = (
+        "error: real failure here\n"
+        "error: Lean exited with code 1\n"
+        "Some required targets logged failures:\n"
+        "- Problems.wilson.proofs.L_xxx\n"
+        "error: build failed\n"
+    )
+    out = strip_lake_noise(stderr)
+    assert "real failure here" in out
+    assert "Lean exited with code" not in out
+    assert "Some required targets" not in out
+    assert "build failed" not in out
+    assert "- Problems.wilson" not in out
+
+
+def test_strip_preserves_error_warning_note_hint() -> None:
+    """Actionable lines must survive verbatim."""
+    stderr = (
+        "error: Type mismatch on `Foo.bar`\n"
+        "warning: unused variable `x`\n"
+        "Note: This linter can be disabled with ...\n"
+        "Hint: Use the `+revert` option to ...\n"
+    )
+    out = strip_lake_noise(stderr)
+    assert "Type mismatch on `Foo.bar`" in out
+    assert "warning: unused variable `x`" in out
+    assert "Note: This linter" in out
+    assert "Hint: Use the `+revert`" in out
+
+
+def test_strip_preserves_multiline_type_mismatch_block() -> None:
+    """`Type mismatch` reports include 3-5 lines of expected/actual
+    type info — those lines don't match noise patterns and must
+    survive."""
+    stderr = (
+        "error: file.lean:7:2: Type mismatch\n"
+        "  ZMod.val_neg_one (p - 1)\n"
+        "has type\n"
+        "  (-(1 : ZMod (p - 1).succ)).val = p - 1\n"
+        "but is expected to have type\n"
+        "  (-(1 : ZMod p)).val = p - 1\n"
+    )
+    out = strip_lake_noise(stderr)
+    assert "ZMod.val_neg_one" in out
+    assert "has type" in out
+    assert "but is expected to have type" in out
+
+
+def test_strip_preserves_omega_counterexample_block() -> None:
+    """`omega` failures emit a multi-line counterexample. Each line
+    is non-noise and must survive."""
+    stderr = (
+        "error: file.lean:6:2: omega could not prove the goal:\n"
+        "a possible counterexample may satisfy the constraints\n"
+        "  a ≥ 2\n"
+        "where\n"
+        " a := ↑p\n"
+    )
+    out = strip_lake_noise(stderr)
+    assert "omega could not prove" in out
+    assert "counterexample" in out
+    assert "a ≥ 2" in out
+    assert "a := ↑p" in out
+
+
+def test_strip_realistic_sample_drops_majority(
+) -> None:
+    """End-to-end size check on a realistic single-error stderr.
+    Pre-F32: ~1400 chars, mostly LEAN_PATH dump. Post-F32: just the
+    actionable lines, ≤300 chars."""
+    stderr = (
+        "✖ [8368/8368] Building Problems.wilson.proofs.L_s126_sub_1 (22s)\n"
+        "trace: .> LEAN_PATH=D:\\Asterism\\.lake\\packages\\Cli\\.lake\\build\\lib\\lean;"
+        + ";".join("D:/lake/p" + str(i) for i in range(50))
+        + " c:\\elan\\toolchains\\lean.exe D:\\file.lean -o ... -i ... -c ... --json\n"
+        "error: Problems/wilson/proofs/L_s126_sub_1.lean:7:2: No applicable extensionality theorem found for type\n"
+        "  ZMod p\n"
+        "Note: Extensionality theorems can be registered by marking them with the `[ext]` attribute\n"
+        "error: Lean exited with code 1\n"
+        "Some required targets logged failures:\n"
+        "- Problems.wilson.proofs.L_s126_sub_1\n"
+        "error: build failed\n"
+    )
+    out = strip_lake_noise(stderr)
+    # All meaningful content preserved
+    assert "Building Problems.wilson" in out
+    assert "No applicable extensionality" in out
+    assert "ZMod p" in out
+    assert "Note: Extensionality theorems" in out
+    # Significant size reduction
+    assert len(out) < len(stderr) // 3
+
+
+def test_strip_handles_empty() -> None:
+    assert strip_lake_noise("") == ""
+    assert strip_lake_noise(None) is None  # type: ignore[arg-type]
+
+
+def test_strip_collapses_blank_runs() -> None:
+    """Removing noise lines leaves blank lines; strip should collapse
+    multiple consecutive blanks to at most one."""
+    stderr = (
+        "error: real\n"
+        "trace: .> LEAN_PATH=foo\n"
+        "trace: .> LEAN_PATH=bar\n"
+        "trace: .> LEAN_PATH=baz\n"
+        "Note: hi\n"
+    )
+    out = strip_lake_noise(stderr)
+    # No 3+ blank-line runs
+    assert "\n\n\n" not in out

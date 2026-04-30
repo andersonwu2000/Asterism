@@ -176,9 +176,9 @@ def test_write_past_verifies_empty_returns_none(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------
 
 def test_past_attempts_strips_lean_path_dump(tmp_path: Path) -> None:
-    """A failure_detail starting with a multi-KB LEAN_PATH dump must
-    have its actual `error:` line surfaced first when written to
-    PAST_ATTEMPTS.md."""
+    """F30 + F32: PAST_ATTEMPTS.md must surface the actual error
+    line, and after F32 the LEAN_PATH dump is removed entirely (not
+    just reordered)."""
     big_lean_path = "trace: .> LEAN_PATH=" + ";".join(
         f"D:/lake/packages/p{i}/lib/lean" for i in range(120))
     detail = (
@@ -195,12 +195,9 @@ def test_past_attempts_strips_lean_path_dump(tmp_path: Path) -> None:
     # The actual error line is preserved
     assert "Type mismatch" in text
     assert "ZMod.val_natCast" in text
-    # The full LEAN_PATH dump must NOT appear before the error in the
-    # rendered file (smart_truncate reorders error lines to front).
-    error_idx = text.find("Type mismatch")
-    lean_path_idx = text.find("LEAN_PATH=")
-    assert error_idx < lean_path_idx or lean_path_idx == -1, (
-        "error line must appear before LEAN_PATH dump")
+    # F32: LEAN_PATH dump fully gone, plus the redundant exit-code line
+    assert "LEAN_PATH=" not in text
+    assert "Lean exited with code" not in text
 
 
 def test_past_attempts_preserves_proposal_md(tmp_path: Path) -> None:
@@ -236,7 +233,7 @@ def test_past_attempts_short_failure_detail_unchanged(tmp_path: Path) -> None:
 
 
 def test_past_verifies_strips_lean_path_dump(tmp_path: Path) -> None:
-    """Same F30 treatment for PAST_VERIFIES.md."""
+    """Same F30+F32 treatment for PAST_VERIFIES.md."""
     big_lean_path = "trace: .> LEAN_PATH=" + "x" * 3000
     detail = (
         big_lean_path + "\n"
@@ -250,9 +247,7 @@ def test_past_verifies_strips_lean_path_dump(tmp_path: Path) -> None:
     text = out.read_text(encoding="utf-8")
     assert "combine patch failed elaboration" in text
     assert "3 sub-goals" in text  # proposal preserved
-    error_idx = text.find("combine patch failed")
-    lean_path_idx = text.find("LEAN_PATH=")
-    assert error_idx < lean_path_idx or lean_path_idx == -1
+    assert "LEAN_PATH=" not in text
 
 
 # ---------------------------------------------------------------------
@@ -285,7 +280,11 @@ def test_compile_context_writes_companion_past_attempts(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
     """End-to-end: dead_attempts → Context.md gets summary, full
-    content goes to PAST_ATTEMPTS.md."""
+    actionable content goes to PAST_ATTEMPTS.md.
+
+    F32: even the companion file no longer carries the LEAN_PATH
+    dump — strip_lake_noise unconditionally drops infra lines
+    (signal-free regardless of where they're rendered)."""
     gid = _seed_goal(conn)
     _record_pipeline(conn, "pid-q1")
     db.record_dead_attempt(
@@ -308,13 +307,14 @@ def test_compile_context_writes_companion_past_attempts(
     assert "Previous attempts on THIS goal" in text
     assert "Type mismatch on `Foo.bar`" in text  # digest extracted
     assert "PAST_ATTEMPTS.md" in text  # pointer present
-    # Context.md must NOT contain the LEAN_PATH dump anymore
     assert "LEAN_PATH=" not in text
 
-    # Companion file has the full content
+    # Companion file has the actionable error preserved (verbatim)
     past = (attempts_dir / "PAST_ATTEMPTS.md").read_text(encoding="utf-8")
-    assert "LEAN_PATH=" in past  # full stderr preserved here
     assert "Foo.bar" in past
+    assert "Type mismatch" in past
+    # F32: companion file is also strip_lake_noise'd — no infra dump
+    assert "LEAN_PATH=" not in past
 
 
 def test_compile_context_size_drop_with_many_attempts(

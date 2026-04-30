@@ -121,6 +121,47 @@ _IMPORTANT_LINE_RE = re.compile(
     re.MULTILINE,
 )
 
+# F32 — pure-noise lines lake emits in every build-error stderr. These
+# carry no signal beyond what the actual `error:` line already conveys,
+# but historically dominated failure_detail by 70-80% of bytes. We
+# delete them outright before any reorder / truncate logic.
+_NOISE_LINE_PATTERNS = [
+    # `trace: .> LEAN_PATH=...lean.exe ...args... --json` single line.
+    # Anchor on the LEAN_PATH= sigil; the rest of the line is the
+    # full lean.exe invocation we don't need.
+    r"^trace: \.> LEAN_PATH=.*$",
+    # Redundant exit-code summary; the prior `error:` already explained
+    # the failure. Matches "error: Lean exited with code 1" / "...code 2"
+    # / `build failed` / lake's task-failure rollup.
+    r"^error: Lean exited with code \d+\s*$",
+    r"^error: build failed\s*$",
+    r"^Some required targets logged failures:\s*$",
+    # The list of failed module paths under "Some required targets".
+    # In single-target builds this duplicates the ✖ Building header.
+    r"^- Problems\..*$",
+]
+_NOISE_LINE_RE = re.compile("|".join(f"(?:{p})" for p in _NOISE_LINE_PATTERNS),
+                            re.MULTILINE)
+
+
+def strip_lake_noise(stderr: str) -> str:
+    """Remove lake/lean infrastructure noise from stderr while keeping
+    every actionable line (error / warning / Note / Hint / ✖ progress
+    markers / multi-line context blocks like Type mismatch's expected
+    vs actual) verbatim.
+
+    Cuts typical lake_build_error failure_detail from ~1.4 KB down to
+    ~250 B — the rest was LEAN_PATH dump + redundant exit-summary
+    boilerplate carrying no information beyond the actual error line.
+    """
+    if not stderr:
+        return stderr
+    out = _NOISE_LINE_RE.sub("", stderr)
+    # The substitutions leave blank lines where noise used to be.
+    # Collapse runs of blank lines to at most one.
+    out = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", out)
+    return out.strip()
+
 
 def smart_truncate_stderr(stderr: str, *, budget: int = 2000,
                           force_reorder: bool = False) -> str:
@@ -144,6 +185,13 @@ def smart_truncate_stderr(stderr: str, *, budget: int = 2000,
     """
     if not stderr:
         return stderr
+
+    # F32 — drop lake noise lines (LEAN_PATH dump, redundant exit
+    # summaries) unconditionally. Every consumer of smart_truncate
+    # benefits; force_reorder remains useful for ordering whatever
+    # actionable content survives.
+    stderr = strip_lake_noise(stderr)
+
     if not force_reorder and len(stderr) <= budget:
         return stderr
 
