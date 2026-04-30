@@ -26,11 +26,11 @@ Required files:
 
 ## Rules
 
-- 2-8 sub-goals. One is not a decomposition; >8 is rarely tractable.
-- Each sub-goal must be **strictly simpler** than the parent.
+- 2-8 sub-goals. One is not a decomposition; more than 8 is rarely tractable.
+- Each sub-goal must be **strictly simpler** than the parent (more concrete, fewer assumptions, narrower scope) — re-stating the parent in different notation does not count.
 - All universal binders (∀) and hypotheses from the parent statement must appear in each sub-goal (hypothesis carry-over).
-- Naming MUST match Context's convention exactly. The integrator validates and rejects non-conforming output.
-- Do NOT use any name in FORBIDDEN_LEMMAS — anywhere, including comments.
-- Each sub-goal file + the patch file must each compile under `lake build` independently. The patch builds against sub-goals' `:= by sorry` placeholders.
+- Slug + theorem naming MUST match Context's naming convention exactly. The integrator validates and rejects non-conforming output.
+- **Do NOT use any name in FORBIDDEN_LEMMAS** — not in patch, not in sub-goal docstrings, nowhere. The integrator catches these patterns.
+- Lake will compile each sub-goal file + the patch file independently; all must elaborate. The patch builds against sub-goal placeholders (`:= by sorry`); after sub-goals are individually proved, Verify re-runs lake build on the patch.
 
 Emit only the fenced blocks. Nothing else.
