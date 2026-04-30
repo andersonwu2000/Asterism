@@ -323,6 +323,96 @@ def test_recover_at_startup_skips_filesystem_when_workspace_none(
     # No assertion needed; reaching here means no exception.
 
 
+def test_recover_at_startup_restores_backup_when_goal_not_proved(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """F3: a `.lean.backup` left by a killed Builder/Verify means the
+    pipeline didn't commit success. Goal is still open in DB. The
+    current .lean may hold a half-applied patch; restore the backup."""
+    from Tooling.dispatcher import _recover_at_startup
+    _seed_problem_with_root(conn)  # creates goal at Problems/p/Root.lean
+
+    proofs = tmp_path / "Problems" / "p"
+    proofs.mkdir(parents=True)
+    (proofs / "Root.lean").write_text("PATCH-IN-PROGRESS")
+    (proofs / "Root.lean.backup").write_text("ORIGINAL-SORRY")
+
+    _recover_at_startup(conn, tmp_path)
+
+    assert (proofs / "Root.lean").read_text() == "ORIGINAL-SORRY"
+    assert not (proofs / "Root.lean.backup").exists()
+
+
+def test_recover_at_startup_discards_backup_when_goal_proved(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """F3: if the goal is 'proved' in DB, the pipeline DID commit success
+    — the daemon died in the race window between lake-build success and
+    backup.unlink. Current .lean is the validated proof; restoring the
+    backup would destroy it. Just discard the backup."""
+    from Tooling.dispatcher import _recover_at_startup
+    gid = _seed_problem_with_root(conn)
+    db.update_goal_status(conn, gid, "proved")
+
+    proofs = tmp_path / "Problems" / "p"
+    proofs.mkdir(parents=True)
+    (proofs / "Root.lean").write_text("VALIDATED-PROOF")
+    (proofs / "Root.lean.backup").write_text("ORIGINAL-SORRY")
+
+    _recover_at_startup(conn, tmp_path)
+
+    assert (proofs / "Root.lean").read_text() == "VALIDATED-PROOF"
+    assert not (proofs / "Root.lean.backup").exists()
+
+
+def test_recover_at_startup_handles_verify_backup(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """F3: same logic for `.lean.verify_backup` from killed Verify."""
+    from Tooling.dispatcher import _recover_at_startup
+    _seed_problem_with_root(conn)
+
+    proofs = tmp_path / "Problems" / "p"
+    proofs.mkdir(parents=True)
+    (proofs / "Root.lean").write_text("ALIAS-IN-PROGRESS")
+    (proofs / "Root.lean.verify_backup").write_text("ORIGINAL")
+
+    _recover_at_startup(conn, tmp_path)
+
+    assert (proofs / "Root.lean").read_text() == "ORIGINAL"
+    assert not (proofs / "Root.lean.verify_backup").exists()
+
+
+def test_recover_at_startup_removes_tmp_files(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """F3: .lean.tmp from killed Verify (between write and os.replace)
+    holds partial content. Never safe to use; always unlink."""
+    from Tooling.dispatcher import _recover_at_startup
+    proofs = tmp_path / "Problems" / "p"
+    proofs.mkdir(parents=True)
+    (proofs / "Root.lean").write_text("OK")
+    (proofs / "Root.lean.tmp").write_text("PARTIAL-WRITE")
+
+    _recover_at_startup(conn, tmp_path)
+
+    assert (proofs / "Root.lean").read_text() == "OK"
+    assert not (proofs / "Root.lean.tmp").exists()
+
+
+def _seed_problem_with_root(conn: sqlite3.Connection) -> int:
+    """Helper: insert a problem + open root goal at Problems/p/Root.lean."""
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at) VALUES (?, ?, ?)",
+        ("p", "Problems/p/Manifest.md", db.now()),
+    )
+    return db.insert_goal(
+        conn, problem="p", slug="main",
+        lean_path="Problems/p/Root.lean",
+        statement="T", origin="root", difficulty=4,
+    )
+
+
 def test_recover_at_startup_reopens_stuck_attempting_goals(
     conn: sqlite3.Connection,
 ) -> None:

@@ -27,7 +27,7 @@ def _recover_at_startup(conn: sqlite3.Connection,
                         workspace: Path | None = None) -> None:
     """Sweep transient state left by a crashed prior daemon.
 
-    Four classes of stale state, each restored to a consistent baseline:
+    Five classes of stale state, each restored to a consistent baseline:
 
       1. queue rows         — live dispatch state, never persists across
                               daemon lifetimes; clear unconditionally.
@@ -41,13 +41,19 @@ def _recover_at_startup(conn: sqlite3.Connection,
       4. orphan .attempts/<pid>/ dirs — daemon SIGKILL bypasses
                               WorkArea.__exit__, and child claude
                               subprocesses can keep writing to a dead
-                              parent's sandbox. Daemon startup means a
-                              fresh lifecycle; any pre-existing dir is
-                              by definition stale. Skip if workspace is
-                              None (test fixtures call DB-only).
+                              parent's sandbox.
+      5. orphan .lean.{backup,verify_backup,tmp} files — Builder/Verify
+                              died mid-write, leaving the original next
+                              to a half-applied patch (or vice versa).
+                              Restore from backup unless DB shows the
+                              corresponding goal already proved (race
+                              window between lake-build success and
+                              backup.unlink); then just delete.
 
-    Orphan lean files in proofs/ are NOT touched here — they're handled
-    by the post-success reconcile + prune path.
+    Skip filesystem sweeps if workspace is None (test fixtures call
+    DB-only). Orphan lean files placed by killed Backward in proofs/
+    are NOT touched here — they're handled by the post-success
+    reconcile + prune path.
     """
     queue_cleared = conn.execute("DELETE FROM queue").rowcount
 
@@ -69,6 +75,8 @@ def _recover_at_startup(conn: sqlite3.Connection,
     conn.commit()
 
     attempts_cleared = 0
+    backups_handled = 0
+    tmps_removed = 0
     if workspace is not None:
         attempts_root = workspace / ".attempts"
         if attempts_root.exists():
@@ -80,12 +88,77 @@ def _recover_at_startup(conn: sqlite3.Connection,
                     except OSError:
                         pass  # claude subprocess may still hold a handle
 
-    if queue_cleared or strategies_killed or goals_reopened or attempts_cleared:
+        backups_handled, tmps_removed = _sweep_lean_backups(conn, workspace)
+
+    if (queue_cleared or strategies_killed or goals_reopened
+            or attempts_cleared or backups_handled or tmps_removed):
         print(f"[dispatcher] recovery: cleared {queue_cleared} queue rows, "
               f"killed {strategies_killed} half-baked strategies, "
               f"reopened {goals_reopened} stuck goals, "
-              f"removed {attempts_cleared} orphan attempts dirs",
+              f"removed {attempts_cleared} orphan attempts dirs, "
+              f"handled {backups_handled} lean backups, "
+              f"removed {tmps_removed} stale .tmp files",
               flush=True)
+
+
+def _sweep_lean_backups(conn: sqlite3.Connection,
+                        workspace: Path) -> tuple[int, int]:
+    """Restore or discard `*.lean.{backup,verify_backup}` and remove
+    `*.lean.tmp` files left by killed Builder/Verify pipelines.
+
+    Decision per backup file:
+      - If the corresponding goal in DB is already 'proved', the daemon
+        died in the microsecond window between lake-build success and
+        backup.unlink. The current .lean is the validated proof; just
+        unlink the backup (do NOT restore — would discard the proof).
+      - Otherwise (goal still 'open' / 'attempting' / 'shelved'), the
+        pipeline did not commit success. Restore .lean from backup,
+        then unlink the backup.
+
+    .tmp files (Verify's atomic-write candidate) are always removed
+    unread — partial content, never safe to use.
+    """
+    backups_handled = 0
+    tmps_removed = 0
+    problems_root = workspace / "Problems"
+    if not problems_root.exists():
+        return 0, 0
+
+    # Build (lean_path → goal status) map for quick lookup
+    goal_status = {
+        r["lean_path"]: r["status"]
+        for r in conn.execute("SELECT lean_path, status FROM goals")
+    }
+
+    for ext in (".backup", ".verify_backup"):
+        for backup in problems_root.glob(f"**/*.lean{ext}"):
+            original = backup.with_suffix("")  # strips just last suffix
+            try:
+                rel = original.relative_to(workspace).as_posix()
+            except ValueError:
+                rel = ""
+            status = goal_status.get(rel)
+            try:
+                if status == "proved":
+                    # Lake-build success was committed; backup is leftover
+                    # from the race window. Just discard.
+                    backup.unlink()
+                else:
+                    # Pipeline didn't commit success; restore safe state.
+                    shutil.copy2(backup, original)
+                    backup.unlink()
+                backups_handled += 1
+            except OSError:
+                pass
+
+    for tmp in problems_root.glob("**/*.lean.tmp"):
+        try:
+            tmp.unlink()
+            tmps_removed += 1
+        except OSError:
+            pass
+
+    return backups_handled, tmps_removed
 
 
 def next_worker_kind(goal: sqlite3.Row) -> str:
