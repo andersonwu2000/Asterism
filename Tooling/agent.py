@@ -57,6 +57,254 @@ def _attempts_dir(workspace: Path, pipeline_id: str) -> Path:
     return d
 
 
+# ---------------------------------------------------------------------
+# Context.md sections — each pure: `(...) -> list[str]` of lines (with
+# trailing empty string for blank-line separator). Empty list means
+# "section absent". `compile_context` orchestrates ordering + writes.
+#
+# Adding a new section is appending a function to the list in
+# compile_context, no edits to the imperative blob.
+# ---------------------------------------------------------------------
+
+
+def _section_header(goal: sqlite3.Row) -> list[str]:
+    return [
+        f"# Context for goal {goal['slug']}",
+        "",
+        "## Goal statement",
+        goal["statement"],
+        "",
+    ]
+
+
+def _section_naming_convention(strategy_id: int | None,
+                               goal: sqlite3.Row) -> list[str]:
+    if strategy_id is None:
+        return []
+    sid_token = f"s{strategy_id}"
+    parent = goal["slug"]
+    return [
+        "## Naming convention (REQUIRED)",
+        f"This Backward attempt has been allocated strategy id "
+        f"`{sid_token}`. Multiple strategies may race for this goal in "
+        f"parallel; collision-free naming is mandatory.",
+        "",
+        f"- Sub-goal slugs: `{sid_token}_sub_1`, "
+        f"`{sid_token}_sub_2`, ... — exactly `{sid_token}_sub_<N>`.",
+        f"- Sub-goal filenames: `new_{sid_token}_sub_<N>.lean`.",
+        f"- Sub-goal theorem name = sub-goal slug.",
+        f"- Patch filename: `patch_{parent}.lean` (parent slug, "
+        f"no `{sid_token}` prefix).",
+        f"- Patch theorem name: `{sid_token}` (NOT `{parent}` — "
+        f"that name belongs to the parent's lean file and "
+        f"would collide).",
+        f"- Patch imports: `import Problems.<problem>.proofs."
+        f"L_{sid_token}_sub_<N>` for each sub-goal.",
+        "",
+    ]
+
+
+def _section_parent_strategy(conn: sqlite3.Connection,
+                             goal: sqlite3.Row) -> list[str]:
+    if goal["origin"] != "backward":
+        return []
+    # Look up the parent goal + the strategy that produced this sub-goal
+    # via strategy_subgoals → strategies → goals.
+    row = conn.execute(
+        "SELECT g.slug AS parent_slug, g.statement AS parent_statement,"
+        "       s.proposal_md AS proposal_md "
+        "FROM strategy_subgoals ss "
+        "JOIN strategies s ON s.id = ss.strategy_id "
+        "JOIN goals g ON g.id = s.goal_id "
+        "WHERE ss.subgoal_id = ? "
+        "ORDER BY ss.strategy_id ASC LIMIT 1",
+        (goal["id"],),
+    ).fetchone()
+    if not row:
+        return []
+    out = [
+        "## Parent goal & strategy",
+        f"This goal `{goal['slug']}` is a sub-goal of "
+        f"`{row['parent_slug']}`:",
+        "",
+        f"> {row['parent_statement']}",
+        "",
+    ]
+    if row["proposal_md"]:
+        out.extend([
+            "Strategy that produced this sub-goal "
+            "(parent's PROPOSAL.md excerpt):",
+            "```",
+            row["proposal_md"][:2000],
+            "```",
+            "",
+        ])
+    return out
+
+
+def _section_manifest_hints(mfst: manifest.Manifest) -> list[str]:
+    if not mfst.mathlib_hints:
+        return []
+    return [
+        "## Mathlib hints (from Manifest.md)",
+        *(f"- {h}" for h in mfst.mathlib_hints),
+        "",
+    ]
+
+
+def _section_manifest_forbidden(mfst: manifest.Manifest) -> list[str]:
+    if not mfst.forbidden_lemmas:
+        return []
+    return [
+        "## FORBIDDEN_LEMMAS (from Manifest.md)",
+        "**Do NOT use any of the following in your proof or in any "
+        "sub-goal docstring; the integrator will reject the proposal.**",
+        *(f"- {f}" for f in mfst.forbidden_lemmas),
+        "",
+    ]
+
+
+def _section_manifest_notes(mfst: manifest.Manifest) -> list[str]:
+    if not mfst.strategic_notes:
+        return []
+    return [
+        "## Strategic notes (from Manifest.md)",
+        mfst.strategic_notes,
+        "",
+    ]
+
+
+def _section_playbook(goal: sqlite3.Row, workspace: Path) -> list[str]:
+    """F22 — agent-curated success idioms accumulated across prior
+    strategies on this problem. Author intent (mathlib_hints /
+    strategic_notes) above represent design; this section is what the
+    framework has empirically learned works."""
+    pb_text = playbook.read_playbook(goal["problem"], workspace)
+    if not pb_text.strip():
+        return []
+    return [
+        "## Past wins on this problem (playbook)",
+        "Idioms that proved earlier strategies on this same problem. "
+        "When the current goal matches a pattern below, prefer the "
+        "noted idiom over re-deriving from scratch.",
+        "",
+        pb_text.rstrip(),
+        "",
+    ]
+
+
+def _section_past_attempts(deads: list[sqlite3.Row]) -> list[str]:
+    if not deads:
+        return []
+    out = ["## Previous attempts on THIS goal"]
+    for i, d in enumerate(deads, 1):
+        out.append(
+            f"### Attempt {i} ({d['pipeline_id'][:12]}): {d['failure_reason']}")
+        if d["failure_detail"]:
+            out.extend(["```", d["failure_detail"][:1000], "```"])
+        if d["proposal_md"]:
+            out.extend([
+                "Strategy summary (from PROPOSAL.md):",
+                "```",
+                d["proposal_md"][:2000],
+                "```",
+            ])
+        out.append("")
+    return out
+
+
+def _collect_lemma_names(deads: list[sqlite3.Row],
+                        mfst: manifest.Manifest) -> list[str]:
+    """Names visible to the agent: those Lean errored on (highest
+    signal) plus those the Manifest curated. De-duped, first-seen order."""
+    names: list[str] = []
+    seen: set[str] = set()
+    for d in deads:
+        for nm in lemma_lookup.extract_lemma_names(d["failure_detail"] or ""):
+            if nm not in seen:
+                seen.add(nm)
+                names.append(nm)
+    # Manifest hints come as `Module.name` or `Module.name (Path:line)` —
+    # the leading dotted token is the name we want.
+    for hint in mfst.mathlib_hints:
+        m = re.match(r"\s*([A-Z][\w']*(?:\.[\w']+)+)", hint)
+        if m and m.group(1) not in seen:
+            seen.add(m.group(1))
+            names.append(m.group(1))
+    return names
+
+
+def _section_lemma_references(deads: list[sqlite3.Row],
+                              mfst: manifest.Manifest,
+                              workspace: Path) -> list[str]:
+    """F20 — `lake env lean #check` resolves real Mathlib signatures for
+    names the agent has been confused about. Inject so weaker models
+    don't have to guess arg order / instance shape from training memory."""
+    names = _collect_lemma_names(deads, mfst)
+    if not names:
+        return []
+    try:
+        infos = lemma_lookup.lookup_batch(names, workspace)
+    except Exception as exc:  # never block context generation
+        print(f"[lemma_lookup] failed, skipping: {exc}", flush=True)
+        return []
+    bullets = [
+        f"- **{info.name}** : `{info.signature}`"
+        for info in infos.values() if info.found
+    ]
+    if not bullets:
+        return []
+    return [
+        "## Lemma references (resolved from Mathlib)",
+        "Ground-truth signatures for the lemmas Lean mentioned "
+        "in past errors and the names the Manifest flagged. Use "
+        "these to fix arg order / instance shape — do **not** "
+        "improvise from memory when the signature is here.",
+        "",
+        *bullets,
+        "",
+    ]
+
+
+def _section_past_verify_failures(conn: sqlite3.Connection,
+                                  goal: sqlite3.Row) -> list[str]:
+    """Strategies whose Verify failed because the combination patch
+    didn't elaborate against the sub-goal proofs. Surface the
+    decomposition so the next Backward avoids the same shape."""
+    rows = conn.execute(
+        "SELECT da.failure_reason, da.failure_detail, da.pipeline_id,"
+        "       s.proposal_md AS strategy_proposal "
+        "FROM dead_attempts da "
+        "JOIN strategies s ON s.id = da.target_id "
+        "WHERE da.target_kind = 'Strategy' AND s.goal_id = ? "
+        "ORDER BY da.id DESC LIMIT 5",
+        (goal["id"],),
+    ).fetchall()
+    if not rows:
+        return []
+    out = [
+        "## Past decompositions that failed Verify",
+        "Earlier Backward attempts decomposed this goal but the "
+        "combination patch did not elaborate against the "
+        "sub-goal proofs. Avoid the same shape.",
+        "",
+    ]
+    for i, d in enumerate(rows, 1):
+        out.append(f"### Strategy {i} (pid {d['pipeline_id'][:12]}): "
+                   f"{d['failure_reason']}")
+        if d["failure_detail"]:
+            out.extend(["```", d["failure_detail"][:1000], "```"])
+        if d["strategy_proposal"]:
+            out.extend([
+                "Decomposition (from strategies.proposal_md):",
+                "```",
+                d["strategy_proposal"][:2000],
+                "```",
+            ])
+        out.append("")
+    return out
+
+
 def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
                     mfst: manifest.Manifest, attempts_dir: Path,
                     strategy_id: int | None = None) -> Path:
@@ -67,194 +315,31 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     Required for OR-parallel correctness — multiple Backwards on the same
     parent goal must produce non-colliding sub-goal slugs and theorem
     names.
+
+    Section ordering — keep stable; agents may have learned to scan
+    top-down. Each section function returns `[]` when not applicable
+    so the resulting Context.md only contains sections with content.
     """
-    parts: list[str] = []
-
-    parts.append(f"# Context for goal {goal['slug']}")
-    parts.append("")
-    parts.append("## Goal statement")
-    parts.append(goal["statement"])
-    parts.append("")
-
-    if strategy_id is not None:
-        sid_token = f"s{strategy_id}"
-        parent = goal["slug"]
-        parts.append("## Naming convention (REQUIRED)")
-        parts.append(
-            f"This Backward attempt has been allocated strategy id "
-            f"`{sid_token}`. Multiple strategies may race for this goal in "
-            f"parallel; collision-free naming is mandatory."
-        )
-        parts.append("")
-        parts.append(f"- Sub-goal slugs: `{sid_token}_sub_1`, "
-                     f"`{sid_token}_sub_2`, ... — exactly `{sid_token}_sub_<N>`.")
-        parts.append(f"- Sub-goal filenames: `new_{sid_token}_sub_<N>.lean`.")
-        parts.append(f"- Sub-goal theorem name = sub-goal slug.")
-        parts.append(f"- Patch filename: `patch_{parent}.lean` (parent slug, "
-                     f"no `{sid_token}` prefix).")
-        parts.append(f"- Patch theorem name: `{sid_token}` (NOT `{parent}` — "
-                     f"that name belongs to the parent's lean file and "
-                     f"would collide).")
-        parts.append(f"- Patch imports: `import Problems.<problem>.proofs."
-                     f"L_{sid_token}_sub_<N>` for each sub-goal.")
-        parts.append("")
-
-    if goal["origin"] == "backward":
-        # Look up the parent goal + the strategy that produced this sub-goal
-        # via strategy_subgoals → strategies → goals.
-        row = conn.execute(
-            "SELECT g.slug AS parent_slug, g.statement AS parent_statement,"
-            "       s.proposal_md AS proposal_md "
-            "FROM strategy_subgoals ss "
-            "JOIN strategies s ON s.id = ss.strategy_id "
-            "JOIN goals g ON g.id = s.goal_id "
-            "WHERE ss.subgoal_id = ? "
-            "ORDER BY ss.strategy_id ASC LIMIT 1",
-            (goal["id"],),
-        ).fetchone()
-        if row:
-            parts.append("## Parent goal & strategy")
-            parts.append(f"This goal `{goal['slug']}` is a sub-goal of "
-                         f"`{row['parent_slug']}`:")
-            parts.append("")
-            parts.append(f"> {row['parent_statement']}")
-            parts.append("")
-            if row["proposal_md"]:
-                parts.append("Strategy that produced this sub-goal "
-                             "(parent's PROPOSAL.md excerpt):")
-                parts.append("```")
-                parts.append(row["proposal_md"][:2000])
-                parts.append("```")
-                parts.append("")
-
-    if mfst.mathlib_hints:
-        parts.append("## Mathlib hints (from Manifest.md)")
-        for h in mfst.mathlib_hints:
-            parts.append(f"- {h}")
-        parts.append("")
-
-    if mfst.forbidden_lemmas:
-        parts.append("## FORBIDDEN_LEMMAS (from Manifest.md)")
-        parts.append("**Do NOT use any of the following in your proof or in any "
-                     "sub-goal docstring; the integrator will reject the proposal.**")
-        for f in mfst.forbidden_lemmas:
-            parts.append(f"- {f}")
-        parts.append("")
-
-    if mfst.strategic_notes:
-        parts.append("## Strategic notes (from Manifest.md)")
-        parts.append(mfst.strategic_notes)
-        parts.append("")
-
-    # F22 — playbook: agent-curated success idioms accumulated across
-    # prior strategies on this problem. Static `mathlib_hints` /
-    # `strategic_notes` above represent author intent; this section is
-    # what the framework has empirically learned works.
-    workspace_for_pb = attempts_dir.parent.parent  # .attempts/<pid> → workspace
-    pb_text = playbook.read_playbook(goal["problem"], workspace_for_pb)
-    if pb_text.strip():
-        parts.append("## Past wins on this problem (playbook)")
-        parts.append(
-            "Idioms that proved earlier strategies on this same problem. "
-            "When the current goal matches a pattern below, prefer the "
-            "noted idiom over re-deriving from scratch.")
-        parts.append("")
-        parts.append(pb_text.rstrip())
-        parts.append("")
-
-    deads = db.recent_dead_attempts(
-        conn, target_id=goal["id"], target_kind="Goal", k=5
-    )
-    if deads:
-        parts.append("## Previous attempts on THIS goal")
-        for i, d in enumerate(deads, 1):
-            parts.append(f"### Attempt {i} ({d['pipeline_id'][:12]}): {d['failure_reason']}")
-            if d["failure_detail"]:
-                detail = d["failure_detail"][:1000]
-                parts.append("```")
-                parts.append(detail)
-                parts.append("```")
-            if d["proposal_md"]:
-                parts.append("Strategy summary (from PROPOSAL.md):")
-                parts.append("```")
-                parts.append(d["proposal_md"][:2000])
-                parts.append("```")
-            parts.append("")
-
-    # F20 — fetch Mathlib signatures for lemma names visible to the
-    # agent: those Lean rejected in past attempts (highest signal) plus
-    # any names the Manifest curated as relevant. A real `lake env lean`
-    # session resolves each `#check @<name>` and we inject ground-truth
-    # signatures so weaker models don't have to guess arg order or
-    # instance shape from stale memory.
     workspace = attempts_dir.parent.parent  # .attempts/<pid> → workspace
-    lemma_names: list[str] = []
-    seen_names: set[str] = set()
-    for d in deads:
-        for nm in lemma_lookup.extract_lemma_names(d["failure_detail"] or ""):
-            if nm not in seen_names:
-                seen_names.add(nm)
-                lemma_names.append(nm)
-    # Manifest hints come as `Module.name` or `Module.name (Path:line)` —
-    # the leading dotted token is the name we want.
-    for hint in mfst.mathlib_hints:
-        m = re.match(r"\s*([A-Z][\w']*(?:\.[\w']+)+)", hint)
-        if m and m.group(1) not in seen_names:
-            seen_names.add(m.group(1))
-            lemma_names.append(m.group(1))
-    if lemma_names:
-        try:
-            infos = lemma_lookup.lookup_batch(lemma_names, workspace)
-        except Exception as exc:  # never block context generation
-            print(f"[lemma_lookup] failed, skipping: {exc}", flush=True)
-            infos = {}
-        bullets = [
-            f"- **{info.name}** : `{info.signature}`"
-            for info in infos.values() if info.found
-        ]
-        if bullets:
-            parts.append("## Lemma references (resolved from Mathlib)")
-            parts.append(
-                "Ground-truth signatures for the lemmas Lean mentioned "
-                "in past errors and the names the Manifest flagged. Use "
-                "these to fix arg order / instance shape — do **not** "
-                "improvise from memory when the signature is here.")
-            parts.append("")
-            parts.extend(bullets)
-            parts.append("")
+    deads = db.recent_dead_attempts(
+        conn, target_id=goal["id"], target_kind="Goal", k=5)
 
-    # Strategies of THIS goal that died at Verify (combined patch failed
-    # lake build). The Backward that produced them stored its PROPOSAL.md
-    # in strategies.proposal_md; surface that so the agent can avoid the
-    # same combination pattern.
-    strat_deads = conn.execute(
-        "SELECT da.failure_reason, da.failure_detail, da.pipeline_id,"
-        "       s.proposal_md AS strategy_proposal "
-        "FROM dead_attempts da "
-        "JOIN strategies s ON s.id = da.target_id "
-        "WHERE da.target_kind = 'Strategy' AND s.goal_id = ? "
-        "ORDER BY da.id DESC LIMIT 5",
-        (goal["id"],),
-    ).fetchall()
-    if strat_deads:
-        parts.append("## Past decompositions that failed Verify")
-        parts.append("Earlier Backward attempts decomposed this goal but the "
-                     "combination patch did not elaborate against the "
-                     "sub-goal proofs. Avoid the same shape.")
-        parts.append("")
-        for i, d in enumerate(strat_deads, 1):
-            parts.append(f"### Strategy {i} (pid {d['pipeline_id'][:12]}): "
-                         f"{d['failure_reason']}")
-            if d["failure_detail"]:
-                parts.append("```")
-                parts.append(d["failure_detail"][:1000])
-                parts.append("```")
-            if d["strategy_proposal"]:
-                parts.append("Decomposition (from strategies.proposal_md):")
-                parts.append("```")
-                parts.append(d["strategy_proposal"][:2000])
-                parts.append("```")
-            parts.append("")
+    sections: list[list[str]] = [
+        _section_header(goal),
+        _section_naming_convention(strategy_id, goal),
+        _section_parent_strategy(conn, goal),
+        _section_manifest_hints(mfst),
+        _section_manifest_forbidden(mfst),
+        _section_manifest_notes(mfst),
+        _section_playbook(goal, workspace),
+        _section_past_attempts(deads),
+        _section_lemma_references(deads, mfst, workspace),
+        _section_past_verify_failures(conn, goal),
+    ]
+
+    parts: list[str] = []
+    for section in sections:
+        parts.extend(section)
 
     out = attempts_dir / "Context.md"
     out.write_text("\n".join(parts), encoding="utf-8")
