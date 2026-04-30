@@ -117,3 +117,53 @@ def test_lean_path_to_module_nested(tmp_path: Path) -> None:
 def test_slug_from_filename() -> None:
     assert _slug_from_filename("new_main_sub_1.lean") == "main_sub_1"
     assert _slug_from_filename("foo.lean") == "foo"
+
+
+# ---------------------------------------------------------------------
+# F17 — auto-inject `import Mathlib` when lemma file lacks any import
+# ---------------------------------------------------------------------
+
+def test_ensure_import_mathlib_prepends_when_no_imports() -> None:
+    """Haiku-style output: no import line at all. Must be patched."""
+    from Tooling.pipeline import _ensure_import_mathlib
+    src = (
+        "namespace Problems.x\n\n"
+        "theorem foo : Nat.factorial 1 % 2 = 1 := by sorry\n\n"
+        "end Problems.x\n"
+    )
+    out = _ensure_import_mathlib(src)
+    assert out.startswith("import Mathlib\n")
+    assert "namespace Problems.x" in out
+
+
+def test_ensure_import_mathlib_passthrough_when_specific_import() -> None:
+    """Model intentionally chose a specific import — leave it alone."""
+    from Tooling.pipeline import _ensure_import_mathlib
+    src = (
+        "import Mathlib.Data.Nat.Factorial.Basic\n\n"
+        "namespace Problems.x\n"
+        "theorem foo : True := trivial\n"
+        "end Problems.x\n"
+    )
+    assert _ensure_import_mathlib(src) == src
+
+
+def test_ensure_import_mathlib_passthrough_when_umbrella_already() -> None:
+    """Already has `import Mathlib`: don't double-inject."""
+    from Tooling.pipeline import _ensure_import_mathlib
+    src = "import Mathlib\n\nnamespace X\nend X\n"
+    assert _ensure_import_mathlib(src) == src
+
+
+def test_ensure_import_mathlib_anchored_to_line_start() -> None:
+    """`import` appearing inside a comment is not a real import — the
+    regex anchors `^import\\s` to start-of-line via re.MULTILINE."""
+    from Tooling.pipeline import _ensure_import_mathlib
+    src = (
+        "-- this comment mentions import Mathlib but isn't a directive\n"
+        "namespace X\n"
+        "theorem t : True := trivial\n"
+        "end X\n"
+    )
+    out = _ensure_import_mathlib(src)
+    assert out.startswith("import Mathlib\n")

@@ -171,3 +171,54 @@ def test_smart_truncate_preserves_lean_unknown_identifier() -> None:
     stderr = long_trace + "\nerror: unknown identifier 'foo'\n"
     out = smart_truncate_stderr(stderr, budget=500)
     assert "unknown identifier 'foo'" in out
+
+
+# ---------------------------------------------------------------------
+# F17 — case-insensitive matching + autoImplicit hint variant
+# ---------------------------------------------------------------------
+
+def test_unknown_constant_capital_u_matched() -> None:
+    """Lean emits `Unknown constant` (capital U) in some contexts.
+    Pre-F17 the lowercase-only regex missed this entirely, so Haiku
+    failures with `Unknown constant ` Nat.factorial`` got no umbrella-
+    import hint and looped to shelve."""
+    stderr = "error: Unknown constant `Nat.factorial`"
+    hints = parse_lake_stderr(stderr)
+    assert len(hints) == 1
+    assert "Nat.factorial" in hints[0]
+
+
+def test_bad_import_capital_b_matched() -> None:
+    """Defensive: Lean's casing is inconsistent across versions / paths.
+    `Bad import` should also work."""
+    stderr = "error: Bad import 'Mathlib.X'"
+    hints = parse_lake_stderr(stderr)
+    assert len(hints) == 1
+    assert "Mathlib.X" in hints[0]
+
+
+def test_autoimplicit_hint_recognized() -> None:
+    """Lean's autoImplicit elaboration hint:
+       `Hint: The identifier ` ZMod` is unknown, and Lean's autoImplicit ...`
+    Same root cause as a missing import — F17 surfaces an umbrella-import
+    suggestion for this phrasing too."""
+    stderr = (
+        "error: ...\n"
+        "Hint: The identifier `ZMod` is unknown, and Lean's `autoImplicit` "
+        "option causes an unknown identifier to be treated as ..."
+    )
+    hints = parse_lake_stderr(stderr)
+    assert any("ZMod" in h and "import Mathlib" in h for h in hints)
+
+
+def test_annotate_surfaces_capital_u_unknown_constant() -> None:
+    """End-to-end: a real Haiku-style failure (`Unknown constant
+    ` Nat.factorial``) reaches `annotate_failure_detail` and now yields
+    a hint section (pre-F17 it did not)."""
+    stderr = (
+        "error: Problems/x/L.lean:3:20: Unknown constant `Nat.factorial`\n"
+        "error: Lean exited with code 1"
+    )
+    out = annotate_failure_detail(stderr)
+    assert "framework hints" in out
+    assert "Nat.factorial" in out

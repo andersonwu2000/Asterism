@@ -24,6 +24,24 @@ TACTIC_TRY_LIST = [
 ]
 
 
+_IMPORT_LINE_RE = re.compile(r"(?m)^import\s")
+
+
+def _ensure_import_mathlib(content: str) -> str:
+    """Prepend `import Mathlib` if the file has no `import` line at all.
+
+    Weaker LLMs (e.g. Haiku) sometimes write a lemma file with no
+    imports and reference Mathlib types like `ZMod` or `Nat.factorial`,
+    causing every reference to fail as `Unknown constant ...`. Files
+    that already declare any specific import are left untouched —
+    duplicate umbrella import is harmless in Lean 4 but we don't want
+    to second-guess intentional minimal imports.
+    """
+    if _IMPORT_LINE_RE.search(content):
+        return content
+    return "import Mathlib\n\n" + content
+
+
 @dataclass
 class PipelineResult:
     outcome: str  # 'proved' | 'success' | 'exhausted' | 'failed'
@@ -437,7 +455,9 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
                 print(f"[dedupe] {slug} → goal {canonical_id} "
                       f"({canonical['slug']})", flush=True)
             else:
-                shutil.copy2(src, dest)
+                content = _ensure_import_mathlib(
+                    src.read_text(encoding="utf-8"))
+                dest.write_text(content, encoding="utf-8")
             placed.append(dest)
         shutil.copy2(patches[0], scratch_dest)
         placed.append(scratch_dest)

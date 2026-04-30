@@ -21,10 +21,21 @@ from __future__ import annotations
 import re
 
 
-_BAD_IMPORT_RE = re.compile(r"bad import ['`]([^'`\s]+)['`]")
-_UNKNOWN_IDENT_RE = re.compile(r"unknown identifier ['`]([^'`]+)['`]")
-_UNKNOWN_CONSTANT_RE = re.compile(r"unknown constant ['`]([^'`]+)['`]")
-_UNKNOWN_TACTIC_RE = re.compile(r"unknown tactic ['`]([^'`]+)['`]")
+# Lean's casing is inconsistent: `unknown identifier 'foo'` (lowercase)
+# vs `Unknown constant ` foo`` (capital U). re.IGNORECASE handles both.
+_BAD_IMPORT_RE = re.compile(
+    r"bad import ['`]([^'`\s]+)['`]", re.IGNORECASE)
+_UNKNOWN_IDENT_RE = re.compile(
+    r"unknown identifier ['`]([^'`]+)['`]", re.IGNORECASE)
+_UNKNOWN_CONSTANT_RE = re.compile(
+    r"unknown constant ['`]([^'`]+)['`]", re.IGNORECASE)
+_UNKNOWN_TACTIC_RE = re.compile(
+    r"unknown tactic ['`]([^'`]+)['`]", re.IGNORECASE)
+# Lean's autoImplicit hint phrasing: "Hint: The identifier `X` is unknown,
+# and Lean's `autoImplicit` option ..." — same root cause as a plain
+# unknown identifier (missing import / typo).
+_AUTOIMPLICIT_HINT_RE = re.compile(
+    r"the identifier ['`]([^'`]+)['`] is unknown", re.IGNORECASE)
 _NO_FILE_RE = re.compile(
     r"no such file or directory.*?Mathlib[/\\]([A-Za-z0-9/\\.]+\.lean)",
     re.DOTALL,
@@ -86,6 +97,17 @@ def parse_lake_stderr(stderr: str) -> list[str]:
             f"Unknown constant `{name}` — the lemma/definition may "
             f"have been renamed or removed. Search current Mathlib for "
             f"a renamed version, or use a broader import."
+        )
+
+    # autoImplicit hint surfaces the same missing-import pathology as
+    # `unknown identifier`, just phrased as a help message. Treat it as
+    # an unknown identifier for hint-building purposes.
+    for m in _AUTOIMPLICIT_HINT_RE.finditer(stderr):
+        name = m.group(1)
+        add(
+            f"Identifier `{name}` is unknown (autoImplicit hint) — most "
+            f"likely a missing `import Mathlib` at the top of the file. "
+            f"Add the umbrella import or check the specific module path."
         )
 
     # Unknown tactic. Mathlib's tactic library evolves; some tactics
