@@ -19,23 +19,37 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable
 
+from . import diagnostics
+
 
 PAST_ATTEMPTS_FILENAME = "PAST_ATTEMPTS.md"
 PAST_VERIFIES_FILENAME = "PAST_VERIFIES.md"
 
+# F30 — companion files are the lazy-load deeper-look reference, but
+# raw lake stderr still carries 1.5+ KB LEAN_PATH dump per attempt.
+# When the agent does pull these files, every byte matters. Reuse
+# diagnostics.smart_truncate_stderr to surface error/warning lines
+# first; budget is wider than Context.md's inline cap (2000) since
+# this is by-design the deeper reference file.
+_COMPANION_STDERR_BUDGET = 4000
+
 
 def _render_attempt_block(idx: int, dead: sqlite3.Row) -> str:
-    """Per-attempt section: failure_reason header + raw failure_detail
-    + (optional) raw proposal_md. Same content density as pre-F26
-    Context.md — just relocated here."""
+    """Per-attempt section: failure_reason header + smart-truncated
+    failure_detail + (optional) raw proposal_md."""
     lines: list[str] = []
     lines.append(
         f"### Attempt {idx} ({dead['pipeline_id'][:12]}): "
         f"{dead['failure_reason']}"
     )
     if dead["failure_detail"]:
-        lines.extend(["", "```", dead["failure_detail"], "```"])
+        truncated = diagnostics.smart_truncate_stderr(
+            dead["failure_detail"], budget=_COMPANION_STDERR_BUDGET,
+            force_reorder=True)
+        lines.extend(["", "```", truncated, "```"])
     if dead["proposal_md"]:
+        # proposal_md is the agent's own prose (PROPOSAL.md) — no
+        # lake noise to strip. Include verbatim.
         lines.extend(["", "Strategy summary (from PROPOSAL.md):",
                       "```", dead["proposal_md"], "```"])
     lines.append("")
@@ -66,14 +80,18 @@ def write_past_attempts(deads: Iterable[sqlite3.Row],
 
 
 def _render_strategy_block(idx: int, row: sqlite3.Row) -> str:
-    """Per-Verify-failure section."""
+    """Per-Verify-failure section. Same smart-truncate treatment as
+    _render_attempt_block (F30)."""
     lines: list[str] = []
     lines.append(
         f"### Strategy {idx} (pid {row['pipeline_id'][:12]}): "
         f"{row['failure_reason']}"
     )
     if row["failure_detail"]:
-        lines.extend(["", "```", row["failure_detail"], "```"])
+        truncated = diagnostics.smart_truncate_stderr(
+            row["failure_detail"], budget=_COMPANION_STDERR_BUDGET,
+            force_reorder=True)
+        lines.extend(["", "```", truncated, "```"])
     if row["strategy_proposal"]:
         lines.extend(["", "Decomposition (from strategies.proposal_md):",
                       "```", row["strategy_proposal"], "```"])

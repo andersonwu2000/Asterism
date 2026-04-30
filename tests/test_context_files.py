@@ -169,6 +169,93 @@ def test_write_past_verifies_empty_returns_none(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------
+# F30 — companion files run failure_detail through smart_truncate_stderr
+# (the same pre-F26 noise — LEAN_PATH dumps, lake build trace — was
+# bloating PAST_ATTEMPTS.md, paid only when the agent actually reads it
+# but still wasted bytes when it does)
+# ---------------------------------------------------------------------
+
+def test_past_attempts_strips_lean_path_dump(tmp_path: Path) -> None:
+    """A failure_detail starting with a multi-KB LEAN_PATH dump must
+    have its actual `error:` line surfaced first when written to
+    PAST_ATTEMPTS.md."""
+    big_lean_path = "trace: .> LEAN_PATH=" + ";".join(
+        f"D:/lake/packages/p{i}/lib/lean" for i in range(120))
+    detail = (
+        big_lean_path + "\n"
+        + "/x.lean:7:2: error: Type mismatch on `ZMod.val_natCast`\n"
+        + "error: Lean exited with code 1\n"
+    )
+    deads = [_row(pipeline_id="pid-aaaaaaaaaaaa",
+                  failure_reason="lake_build_error",
+                  failure_detail=detail, proposal_md="")]
+    out = context_files.write_past_attempts(deads, tmp_path)
+    text = out.read_text(encoding="utf-8")
+
+    # The actual error line is preserved
+    assert "Type mismatch" in text
+    assert "ZMod.val_natCast" in text
+    # The full LEAN_PATH dump must NOT appear before the error in the
+    # rendered file (smart_truncate reorders error lines to front).
+    error_idx = text.find("Type mismatch")
+    lean_path_idx = text.find("LEAN_PATH=")
+    assert error_idx < lean_path_idx or lean_path_idx == -1, (
+        "error line must appear before LEAN_PATH dump")
+
+
+def test_past_attempts_preserves_proposal_md(tmp_path: Path) -> None:
+    """proposal_md is the agent's own prose — must NOT be truncated by
+    smart_truncate (which is for lake stderr noise)."""
+    long_proposal = (
+        "# My strategy\n\n"
+        + "This is a substantial decomposition rationale. " * 50
+        + "\nKey insight: use the Lindenbaum lemma."
+    )
+    deads = [_row(pipeline_id="pid-bbbbbbbbbbbb",
+                  failure_reason="lake_build_error",
+                  failure_detail="error: trivial",
+                  proposal_md=long_proposal)]
+    out = context_files.write_past_attempts(deads, tmp_path)
+    text = out.read_text(encoding="utf-8")
+    # Full proposal_md is preserved verbatim
+    assert "# My strategy" in text
+    assert "Lindenbaum lemma" in text
+    assert long_proposal in text
+
+
+def test_past_attempts_short_failure_detail_unchanged(tmp_path: Path) -> None:
+    """Below the smart_truncate budget threshold, failure_detail is
+    passed through unchanged."""
+    detail = "error: agent rc=124"
+    deads = [_row(pipeline_id="pid-cccccccccccc",
+                  failure_reason="agent_no_response",
+                  failure_detail=detail, proposal_md="")]
+    out = context_files.write_past_attempts(deads, tmp_path)
+    text = out.read_text(encoding="utf-8")
+    assert "agent rc=124" in text
+
+
+def test_past_verifies_strips_lean_path_dump(tmp_path: Path) -> None:
+    """Same F30 treatment for PAST_VERIFIES.md."""
+    big_lean_path = "trace: .> LEAN_PATH=" + "x" * 3000
+    detail = (
+        big_lean_path + "\n"
+        + "error: combine patch failed elaboration\n"
+    )
+    rows = [_row(pipeline_id="pid-vvvvvvvvvvvv",
+                 failure_reason="lake_build_error",
+                 failure_detail=detail,
+                 strategy_proposal="### Decomp\n3 sub-goals")]
+    out = context_files.write_past_verifies(rows, tmp_path)
+    text = out.read_text(encoding="utf-8")
+    assert "combine patch failed elaboration" in text
+    assert "3 sub-goals" in text  # proposal preserved
+    error_idx = text.find("combine patch failed")
+    lean_path_idx = text.find("LEAN_PATH=")
+    assert error_idx < lean_path_idx or lean_path_idx == -1
+
+
+# ---------------------------------------------------------------------
 # Integration: compile_context produces summary-form Context.md AND
 # companion files, and Context.md stays small even with many attempts
 # ---------------------------------------------------------------------

@@ -122,7 +122,8 @@ _IMPORTANT_LINE_RE = re.compile(
 )
 
 
-def smart_truncate_stderr(stderr: str, *, budget: int = 2000) -> str:
+def smart_truncate_stderr(stderr: str, *, budget: int = 2000,
+                          force_reorder: bool = False) -> str:
     """Truncate stderr while preserving the lines diagnostics actually
     care about: errors, warnings, the lake `✖` task marker, and the
     Lean-side `unknown ...` / `bad import` / `object file ...` strings.
@@ -135,10 +136,15 @@ def smart_truncate_stderr(stderr: str, *, budget: int = 2000) -> str:
     Strategy: extract important lines first (preserve order), then
     fill the remaining budget with the head of the original stderr
     for context.
+
+    `force_reorder=True` skips the under-budget fast path so the
+    LEAN_PATH dump is pushed past the error line even when the whole
+    stderr fits in budget. Used by F30 companion-file writers where
+    the lazy-load file's reader still benefits from error-first order.
     """
     if not stderr:
         return stderr
-    if len(stderr) <= budget:
+    if not force_reorder and len(stderr) <= budget:
         return stderr
 
     important = _IMPORTANT_LINE_RE.findall(stderr)
