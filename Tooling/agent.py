@@ -10,12 +10,13 @@ into agent's sandbox.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import sqlite3
 import uuid
 from pathlib import Path
 
-from . import db, llm, manifest
+from . import db, lemma_lookup, llm, manifest
 
 
 WORKER_TIMEOUT_SEC = 600  # 10 min, see architecture.md §13
@@ -162,6 +163,48 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
                 parts.append("```")
                 parts.append(d["proposal_md"][:2000])
                 parts.append("```")
+            parts.append("")
+
+    # F20 — fetch Mathlib signatures for lemma names visible to the
+    # agent: those Lean rejected in past attempts (highest signal) plus
+    # any names the Manifest curated as relevant. A real `lake env lean`
+    # session resolves each `#check @<name>` and we inject ground-truth
+    # signatures so weaker models don't have to guess arg order or
+    # instance shape from stale memory.
+    workspace = attempts_dir.parent.parent  # .attempts/<pid> → workspace
+    lemma_names: list[str] = []
+    seen_names: set[str] = set()
+    for d in deads:
+        for nm in lemma_lookup.extract_lemma_names(d["failure_detail"] or ""):
+            if nm not in seen_names:
+                seen_names.add(nm)
+                lemma_names.append(nm)
+    # Manifest hints come as `Module.name` or `Module.name (Path:line)` —
+    # the leading dotted token is the name we want.
+    for hint in mfst.mathlib_hints:
+        m = re.match(r"\s*([A-Z][\w']*(?:\.[\w']+)+)", hint)
+        if m and m.group(1) not in seen_names:
+            seen_names.add(m.group(1))
+            lemma_names.append(m.group(1))
+    if lemma_names:
+        try:
+            infos = lemma_lookup.lookup_batch(lemma_names, workspace)
+        except Exception as exc:  # never block context generation
+            print(f"[lemma_lookup] failed, skipping: {exc}", flush=True)
+            infos = {}
+        bullets = [
+            f"- **{info.name}** : `{info.signature}`"
+            for info in infos.values() if info.found
+        ]
+        if bullets:
+            parts.append("## Lemma references (resolved from Mathlib)")
+            parts.append(
+                "Ground-truth signatures for the lemmas Lean mentioned "
+                "in past errors and the names the Manifest flagged. Use "
+                "these to fix arg order / instance shape — do **not** "
+                "improvise from memory when the signature is here.")
+            parts.append("")
+            parts.extend(bullets)
             parts.append("")
 
     # Strategies of THIS goal that died at Verify (combined patch failed
