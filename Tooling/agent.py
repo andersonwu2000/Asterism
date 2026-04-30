@@ -6,6 +6,7 @@ from prior dead_attempts injected into agent's sandbox.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sqlite3
@@ -16,6 +17,7 @@ from . import db, manifest
 
 
 WORKER_TIMEOUT_SEC = 600  # 10 min, see architecture.md §13
+DEFAULT_AGENT_MODEL = "claude-sonnet-4-6"
 
 
 class WorkArea:
@@ -201,8 +203,13 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
 
 
 def spawn_claude(*, kind: str, prompt_path: Path, problem_dir: Path,
-                 attempts_dir: Path, model: str = "claude-sonnet-4-6") -> int:
-    """Run claude --agent <kind> with proper scope. Returns rc."""
+                 attempts_dir: Path, model: str | None = None) -> int:
+    """Run claude --agent <kind> with proper scope. Returns rc.
+
+    `model` defaults to `ASTERISM_AGENT_MODEL` env var if set, else
+    `DEFAULT_AGENT_MODEL` (Sonnet)."""
+    if model is None:
+        model = os.environ.get("ASTERISM_AGENT_MODEL", DEFAULT_AGENT_MODEL)
     if not shutil.which("claude"):
         print("[agent] claude CLI not found; skipping spawn")
         return 127

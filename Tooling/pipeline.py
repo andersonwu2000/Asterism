@@ -380,17 +380,26 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
         sub_meta.append((slug, ns))
 
     # Dedupe scan: for each candidate sub-goal, check whether an
-    # equivalent goal already exists in this problem. Hits → write an
-    # alias lean file pointing to the canonical theorem; link the
-    # strategy to canonical instead of inserting a new goal.
+    # ancestor goal in this problem has a matching conclusion (and
+    # equal-or-fewer binders). Hits → write an alias lean file that
+    # delegates to canonical via `apply <;> assumption`; insert the
+    # alias goal as 'proved' (its proof IS the alias body).
     canonical_for: list[int | None] = []
     for slug, src in sub_meta:
         try:
-            stmt = _extract_statement(src.read_text(encoding="utf-8"))
+            full_text = src.read_text(encoding="utf-8")
+            concl = _extract_statement(full_text)
         except OSError:
-            stmt = ""
+            full_text = ""
+            concl = ""
         canonical_for.append(
-            dedupe.find_canonical(conn, goal["problem"], stmt) if stmt else None
+            dedupe.find_canonical(
+                conn, workspace,
+                problem=goal["problem"],
+                parent_goal_id=goal_id,
+                candidate_full_text=full_text,
+                candidate_conclusion=concl,
+            ) if concl else None
         )
 
     # Compute permanent paths under proofs/. No collision possible
@@ -400,11 +409,10 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
     scratch_filename = f"_strategy_{sid_token}.lean"
     scratch_dest = proofs_dir / scratch_filename
     sub_dests = [(slug, proofs_dir / f"L_{slug}.lean") for slug, _ in sub_meta]
-    defs_exists = (workspace / "Problems" / goal["problem"] / "Defs.lean").exists()
 
     placed: list[Path] = []
     try:
-        # Place sub-goal files: alias content for dedupe-hits, original
+        # Place sub-goal files: alias body for dedupe-hits, original
         # content for novel sub-goals.
         for (slug, src), (_, dest), canonical_id in zip(
             sub_meta, sub_dests, canonical_for,
@@ -413,14 +421,12 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
                 canonical = db.get_goal(conn, canonical_id)
                 canonical_module = _lean_path_to_module(
                     workspace, workspace / canonical["lean_path"])
-                stmt = _extract_statement_from_lean(src)
+                original_content = src.read_text(encoding="utf-8")
                 dest.write_text(
                     dedupe.build_alias_content(
-                        problem=goal["problem"], new_slug=slug,
-                        statement=stmt,
-                        canonical_slug=canonical["slug"],
+                        original_content=original_content,
                         canonical_module=canonical_module,
-                        defs_imported=defs_exists,
+                        canonical_slug=canonical["slug"],
                     ),
                     encoding="utf-8",
                 )
@@ -438,21 +444,22 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
             if not ok:
                 raise RuntimeError(f"lake build {t.name} failed: {err[:500]}")
 
-        # All passed — INSERT new sub-goals (skip dedupe-hits) + link
-        # all (new + canonical) via strategy_subgoals.
+        # All passed — INSERT goals + link via strategy_subgoals.
+        # Dedupe-hits are inserted as already-'proved' (alias body is
+        # the proof); novel sub-goals start 'open'.
         linked_ids: list[int] = []
         for (slug, dest), canonical_id in zip(sub_dests, canonical_for):
+            stmt = _extract_statement_from_lean(dest)
+            rel = dest.relative_to(workspace).as_posix()
+            new_gid = db.insert_goal(
+                conn, problem=goal["problem"], slug=slug,
+                lean_path=rel, statement=stmt, origin="backward",
+                difficulty=max(1, goal["difficulty"] - 1),
+                depth=goal["depth"] + 1,
+            )
             if canonical_id is not None:
-                linked_ids.append(canonical_id)
-            else:
-                stmt = _extract_statement_from_lean(dest)
-                rel = dest.relative_to(workspace).as_posix()
-                linked_ids.append(db.insert_goal(
-                    conn, problem=goal["problem"], slug=slug,
-                    lean_path=rel, statement=stmt, origin="backward",
-                    difficulty=max(1, goal["difficulty"] - 1),
-                    depth=goal["depth"] + 1,
-                ))
+                db.update_goal_status(conn, new_gid, "proved")
+            linked_ids.append(new_gid)
         for pos, gid in enumerate(linked_ids):
             db.link_subgoal(conn, strategy_id=strategy_id,
                             subgoal_id=gid, position=pos)
