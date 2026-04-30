@@ -14,7 +14,24 @@ from pathlib import Path
 from . import agent, db, manifest, pipeline, prune
 
 
-SHELVE_THRESHOLD = 7
+# Defaults are tuned for weaker models (e.g. Haiku) which iterate
+# productively across attempts but need more rounds than Sonnet to
+# converge. Both are env-overridable so a Sonnet run can tighten them
+# back (e.g. ASTERISM_BUILDER_THRESHOLD=3 ASTERISM_SHELVE_THRESHOLD=7).
+#
+# Semantics:
+#   BUILDER_THRESHOLD = N → first N attempts (0..N-1) dispatch Builder,
+#                          attempts >= N dispatch Backward.
+#   SHELVE_THRESHOLD = M  → goal shelves once attempts hits M.
+# Default 5/8: 5 Builder tries then up to 3 Backward tries before shelve.
+BUILDER_THRESHOLD_DEFAULT = 5
+SHELVE_THRESHOLD_DEFAULT = 8
+
+# Module-level mutable knobs — read at use sites so env override
+# (set in `run`) takes effect.
+BUILDER_THRESHOLD = BUILDER_THRESHOLD_DEFAULT
+SHELVE_THRESHOLD = SHELVE_THRESHOLD_DEFAULT
+
 TICK_TIMEOUT = 30  # seconds
 OR_FANOUT_DEFAULT = 2  # max concurrent Backwards per open goal (env override)
 
@@ -214,10 +231,14 @@ def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
 
 
 def next_worker_kind(goal: sqlite3.Row) -> str:
-    """Pure: input goal row → 'Builder' or 'Backward'."""
+    """Pure-ish: input goal row → 'Builder' or 'Backward'.
+
+    `BUILDER_THRESHOLD` is module-level so test/env overrides are
+    visible without re-importing.
+    """
     if int(goal["difficulty"]) >= 4:
         return "Backward"
-    if int(goal["attempts"]) <= 2:
+    if int(goal["attempts"]) < BUILDER_THRESHOLD:
         return "Builder"
     return "Backward"
 
@@ -460,10 +481,22 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
 # ---------------------------------------------------------------------
 
 def run(workspace: Path, *, once: bool = False) -> int:
+    global BUILDER_THRESHOLD, SHELVE_THRESHOLD
     pool_size = int(os.environ.get("ASTERISM_POOL", "4"))
     budget_sec = int(os.environ.get("ASTERISM_BUDGET_SEC", "1800"))
     or_fanout = int(os.environ.get("ASTERISM_OR_FANOUT",
                                    str(OR_FANOUT_DEFAULT)))
+    BUILDER_THRESHOLD = int(os.environ.get(
+        "ASTERISM_BUILDER_THRESHOLD", str(BUILDER_THRESHOLD_DEFAULT)))
+    SHELVE_THRESHOLD = int(os.environ.get(
+        "ASTERISM_SHELVE_THRESHOLD", str(SHELVE_THRESHOLD_DEFAULT)))
+    if SHELVE_THRESHOLD <= BUILDER_THRESHOLD:
+        # An invalid combo would mean Backward never gets a chance —
+        # fail loudly rather than silently degrade behavior.
+        raise ValueError(
+            f"ASTERISM_SHELVE_THRESHOLD ({SHELVE_THRESHOLD}) must exceed "
+            f"ASTERISM_BUILDER_THRESHOLD ({BUILDER_THRESHOLD}); otherwise "
+            f"the goal shelves before any Backward attempt fires.")
     pool = ThreadPoolExecutor(max_workers=pool_size)
     futures: dict[Future, tuple[str, str, str, str]] = {}
     # In-memory live set of (target_id, kind, pipeline_id) currently executing

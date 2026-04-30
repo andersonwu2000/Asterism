@@ -6,6 +6,7 @@ import sqlite3
 import pytest
 
 from Tooling import db
+from Tooling import dispatcher as _dispatcher
 from Tooling.dispatcher import next_worker_kind, cascade_one, SHELVE_THRESHOLD
 
 
@@ -27,8 +28,26 @@ def test_next_worker_kind_easy_first_attempts() -> None:
     assert next_worker_kind(_fake_goal(difficulty=1, attempts=2)) == "Builder"
 
 
-def test_next_worker_kind_easy_after_two_attempts() -> None:
-    assert next_worker_kind(_fake_goal(difficulty=2, attempts=3)) == "Backward"
+def test_next_worker_kind_boundary_at_builder_threshold() -> None:
+    """attempts < BUILDER_THRESHOLD → Builder, attempts >= → Backward."""
+    bt = _dispatcher.BUILDER_THRESHOLD
+    assert next_worker_kind(
+        _fake_goal(difficulty=2, attempts=bt - 1)) == "Builder"
+    assert next_worker_kind(
+        _fake_goal(difficulty=2, attempts=bt)) == "Backward"
+
+
+def test_next_worker_kind_respects_runtime_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F18: BUILDER_THRESHOLD is module-level mutable so env override
+    in `run` takes effect without re-import. Direct assignment is the
+    same channel."""
+    monkeypatch.setattr(_dispatcher, "BUILDER_THRESHOLD", 3)
+    assert next_worker_kind(
+        _fake_goal(difficulty=2, attempts=2)) == "Builder"
+    assert next_worker_kind(
+        _fake_goal(difficulty=2, attempts=3)) == "Backward"
 
 
 # ---------------------------------------------------------------------
