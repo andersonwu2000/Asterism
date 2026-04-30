@@ -34,11 +34,14 @@ class PipelineResult:
 
 
 def _collect_artifacts(attempts_dir: Path) -> dict[str, str]:
-    """Snapshot all .md / .lean files in attempts_dir for forensic preservation
-    in dead_attempts.artifacts JSON column."""
+    """Snapshot all .md / .lean / .txt files in attempts_dir for forensic
+    preservation in dead_attempts.artifacts JSON column. .txt covers
+    `_raw_response.txt` written by the OpenAI provider (raw model output
+    before fence parsing) — needed when fence-parse failures point
+    blame at the model's output schema."""
     out: dict[str, str] = {}
     for f in attempts_dir.glob("*"):
-        if f.is_file() and f.suffix in {".md", ".lean"}:
+        if f.is_file() and f.suffix in {".md", ".lean", ".txt"}:
             try:
                 out[f.name] = f.read_text(encoding="utf-8")
             except OSError:

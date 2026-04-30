@@ -68,6 +68,48 @@ def test_parse_fence_handles_blank_body() -> None:
     assert out == {"empty.txt": ""}
 
 
+def test_parse_fence_strips_surrounding_markdown_fence() -> None:
+    """Observed Qwen3 output: each FILE block wrapped in ``` markdown
+    fence. Trailing ``` ends up in body and breaks Lean compilation.
+    Provider strips them before writing."""
+    text = (
+        "==== FILE: patch.lean ====\n"
+        "```lean\n"
+        "theorem foo : True := trivial\n"
+        "```\n"
+        "==== END ====\n"
+    )
+    out = openai_api._parse_fenced_output(text)
+    assert out == {"patch.lean": "theorem foo : True := trivial"}
+
+
+def test_parse_fence_strip_no_fence_passes_through() -> None:
+    """A body without surrounding markdown fence is not modified."""
+    text = (
+        "==== FILE: patch.lean ====\n"
+        "theorem foo : True := trivial\n"
+        "==== END ====\n"
+    )
+    out = openai_api._parse_fenced_output(text)
+    assert out == {"patch.lean": "theorem foo : True := trivial"}
+
+
+def test_strip_markdown_fence_only_outer_layer() -> None:
+    """Internal ``` (e.g. inside docstrings) must not be stripped — only
+    the outermost lines if they are the language-tagged fence."""
+    body = (
+        "```python\n"
+        "def f():\n"
+        "    \"\"\"docstring with ``` inside.\"\"\"\n"
+        "    return 1\n"
+        "```"
+    )
+    out = openai_api._strip_markdown_fence(body)
+    assert "docstring with ```" in out
+    assert not out.startswith("```")
+    assert not out.rstrip().endswith("```")
+
+
 # ---------------------------------------------------------------------
 # _select_prompt_template
 # ---------------------------------------------------------------------

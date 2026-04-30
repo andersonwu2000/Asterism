@@ -71,20 +71,42 @@ def _build_messages(*, prompt_template: str, context_text: str) -> list[dict]:
     ]
 
 
+def _strip_markdown_fence(body: str) -> str:
+    """Strip surrounding ``` markdown fences from a body block.
+
+    Some models (observed: Qwen3-Instruct) habitually wrap each
+    `==== FILE ====` block in a markdown ``` ... ``` fence. The
+    closing ``` ends up captured as a trailing token of the body
+    (Lean rejects it as syntax error). Strip them before writing.
+
+    Conservative: only removes a leading ``` (with optional language
+    tag) on its own line, and a trailing ``` on its own line.
+    """
+    lines = body.split("\n")
+    if lines and lines[0].lstrip().startswith("```"):
+        lines = lines[1:]
+    while lines and lines[-1].strip() == "":
+        lines.pop()
+    if lines and lines[-1].strip() == "```":
+        lines.pop()
+    return "\n".join(lines)
+
+
 def _parse_fenced_output(text: str) -> dict[str, str]:
     """Extract `{filename: content}` from `==== FILE: x ==== ... ==== END ====`
     blocks. Returns empty dict if no blocks found.
 
     Allows arbitrary text before/between/after blocks (models often
     chat). Filenames are taken verbatim — caller is responsible for
-    sandboxing (writing only into a known dir).
+    sandboxing (writing only into a known dir). Surrounding markdown
+    ``` fences are stripped from each body before writing.
     """
     out: dict[str, str] = {}
     for m in _FENCE_RE.finditer(text):
         name = m.group("name").strip()
         if not name or "/" in name or "\\" in name or name.startswith(".."):
             continue  # reject path-traversal attempts silently
-        out[name] = m.group("body")
+        out[name] = _strip_markdown_fence(m.group("body"))
     return out
 
 
