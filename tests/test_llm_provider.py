@@ -30,16 +30,6 @@ def test_get_provider_unknown_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         llm.get_provider()
 
 
-def test_get_provider_openai_placeholder_raises_not_implemented(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Step-2 placeholder: selecting 'openai' must signal not-yet-done
-    rather than silently using the wrong provider."""
-    monkeypatch.setenv("ASTERISM_LLM_PROVIDER", "openai")
-    with pytest.raises(NotImplementedError):
-        llm.get_provider()
-
-
 def test_llm_request_dataclass_fields() -> None:
     """Smoke test: LLMRequest accepts expected kwargs."""
     from pathlib import Path
