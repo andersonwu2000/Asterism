@@ -161,26 +161,29 @@ def _sweep_lean_backups(conn: sqlite3.Connection,
     return backups_handled, tmps_removed
 
 
-def _propagate_shelve(conn: sqlite3.Connection, sub_goal_id: int) -> None:
-    """When a sub-goal shelves, every parent strategy that still depends
-    on it can never become ready_for_verify (which requires all
-    sub-goals 'proved'). Such strategies sit in 'proposed' forever as
-    zombies, blocking their own parent goal from being re-dispatched
-    (W4 reopen only fires when no 'proposed' strategy remains).
+def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
+    """Cascade a goal-shelve event in two directions:
 
-    Cascade the shelve upward: kill any 'proposed' parent strategy of
-    this sub-goal; for each strategy's parent goal, if it's 'attempting'
-    with no surviving live strategy, reopen it (same logic as W4).
+    Upward (F12): every parent strategy that still depends on this goal
+    as a sub-goal can never become ready_for_verify (requires all
+    sub-goals 'proved'). Kill those proposed strategies; for each
+    affected parent goal, if no live strategy survives, reopen it
+    (mirrors W4 reopen rule).
+
+    Inward (F16): strategies for proving the just-shelved goal are now
+    moot. Kill them as well. Their sub-goals become orphans — `open_goals`
+    walks the alive-strategy DAG and excludes them from dispatch, so no
+    further cleanup is required.
 
     Iterative — a re-opened parent goal may shelve later via its own
     increment_goal_attempts path; we don't recurse here.
     """
-    # Parent strategies of this sub-goal that are still proposed
+    # F12 — kill strategies USING this goal as a sub-goal
     parent_strategies = conn.execute(
         "SELECT s.id, s.goal_id FROM strategies s "
         "JOIN strategy_subgoals ss ON ss.strategy_id = s.id "
         "WHERE ss.subgoal_id = ? AND s.status = 'proposed'",
-        (sub_goal_id,),
+        (goal_id,),
     ).fetchall()
 
     for s in parent_strategies:
@@ -201,6 +204,13 @@ def _propagate_shelve(conn: sqlite3.Connection, sub_goal_id: int) -> None:
             ).fetchone()
             if row and row["status"] == "attempting":
                 db.update_goal_status(conn, gid, "open")
+
+    # F16 — kill strategies whose parent goal IS this shelved goal
+    conn.execute(
+        "UPDATE strategies SET status='dead' "
+        "WHERE goal_id = ? AND status='proposed'",
+        (goal_id,),
+    )
 
 
 def next_worker_kind(goal: sqlite3.Row) -> str:

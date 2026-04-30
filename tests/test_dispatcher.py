@@ -221,6 +221,94 @@ def test_strategies_ready_for_verify_excludes_shelved_goal(
 
 
 # ---------------------------------------------------------------------
+# F16 — goal-shelve symmetric cascade: kill its own strategies
+# ---------------------------------------------------------------------
+
+def test_goal_shelve_kills_own_strategies(
+    conn: sqlite3.Connection,
+) -> None:
+    """F16: when goal X shelves, strategies for proving X are moot.
+    They must transition 'proposed' → 'dead' so DB invariant holds:
+    strategy.status='proposed' implies parent goal alive."""
+    gid = _seed_goal(conn)
+
+    # Two proposed strategies on this goal
+    s1 = db.insert_strategy(conn, goal_id=gid,
+                            lean_path="Problems/p/Root.lean",
+                            scratch_path="Problems/p/proofs/_strategy_a.lean",
+                            created_by="pid1")
+    s2 = db.insert_strategy(conn, goal_id=gid,
+                            lean_path="Problems/p/Root.lean",
+                            scratch_path="Problems/p/proofs/_strategy_b.lean",
+                            created_by="pid2")
+
+    # Push goal itself to SHELVE_THRESHOLD via Backward failures
+    for _ in range(SHELVE_THRESHOLD):
+        cascade_one(conn, pipeline_id="pid", kind="Backward",
+                    target_id=str(gid), target_kind="Goal",
+                    outcome="failed")
+
+    assert db.get_goal(conn, gid)["status"] == "shelved"
+    # Both strategies on the shelved goal should now be dead
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (s1,),
+    ).fetchone()["status"] == "dead"
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (s2,),
+    ).fetchone()["status"] == "dead"
+
+
+def test_goal_shelve_combined_upward_and_inward_cascade(
+    conn: sqlite3.Connection,
+) -> None:
+    """F12 + F16 together: a goal that is both (a) sub-goal of a parent
+    strategy and (b) has its own strategies must propagate in both
+    directions when it shelves."""
+    grand = _seed_goal(conn, problem="p", difficulty=4)
+    db.update_goal_status(conn, grand, "attempting")
+
+    middle = db.insert_goal(
+        conn, problem="p", slug="middle",
+        lean_path="Problems/p/proofs/L_middle.lean",
+        statement="T", origin="backward", difficulty=4, depth=1,
+    )
+
+    # parent strategy of grand uses middle as sub-goal
+    parent_strat = db.insert_strategy(
+        conn, goal_id=grand,
+        lean_path="Problems/p/Root.lean",
+        scratch_path="Problems/p/proofs/_strategy_p.lean",
+        created_by="pid_p",
+    )
+    db.link_subgoal(conn, strategy_id=parent_strat,
+                    subgoal_id=middle, position=0)
+
+    # middle has its own strategy too
+    own_strat = db.insert_strategy(
+        conn, goal_id=middle,
+        lean_path="Problems/p/proofs/L_middle.lean",
+        scratch_path="Problems/p/proofs/_strategy_m.lean",
+        created_by="pid_m",
+    )
+
+    for _ in range(SHELVE_THRESHOLD):
+        cascade_one(conn, pipeline_id="pid", kind="Backward",
+                    target_id=str(middle), target_kind="Goal",
+                    outcome="failed")
+
+    # F12 — parent strategy killed (used middle as sub)
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (parent_strat,),
+    ).fetchone()["status"] == "dead"
+    # F16 — middle's own strategy killed (middle is shelved)
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (own_strat,),
+    ).fetchone()["status"] == "dead"
+    # grand reopened (no live strategy)
+    assert db.get_goal(conn, grand)["status"] == "open"
+
+
+# ---------------------------------------------------------------------
 # cascade_one — Verify
 # ---------------------------------------------------------------------
 
