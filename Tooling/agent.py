@@ -16,7 +16,9 @@ import sqlite3
 import uuid
 from pathlib import Path
 
-from . import db, lemma_lookup, llm, manifest, playbook
+from datetime import datetime, timezone
+
+from . import context_files, db, lemma_lookup, llm, manifest, playbook
 
 
 WORKER_TIMEOUT_SEC = 600  # 10 min, see architecture.md §13
@@ -193,23 +195,88 @@ def _section_playbook(goal: sqlite3.Row, workspace: Path) -> list[str]:
     ]
 
 
+_LEAN_PATH_DUMP_RE = re.compile(r"LEAN_PATH=|lake/packages/|lake/build/")
+_FIRST_ERROR_RE = re.compile(
+    r"^.*?\berror\b\s*:?\s*(.*)$", re.IGNORECASE)
+
+
+def _digest_failure(failure_reason: str, failure_detail: str) -> str:
+    """One-line digest of a failed pipeline for the Context.md summary.
+
+    The full content is written to PAST_ATTEMPTS.md by context_files —
+    here we extract only what the agent needs at-a-glance: which class
+    of failure + the actual error message (skipping LEAN_PATH dumps
+    and other lake-trace noise that 76% of pre-F26 dead_attempts
+    caught Sonnet looking at)."""
+    if not failure_detail:
+        return ""
+
+    # agent_no_response, forbidden_lemma, parse_proposal_fail,
+    # naming_violation, goal_no_longer_open are all already short.
+    if failure_reason != "lake_build_error":
+        return failure_detail.strip().splitlines()[0][:160]
+
+    # lake_build_error: walk lines to find the first real `error:` —
+    # skipping the lake task-progress line (✖ [N/N] Building ...) and
+    # any line that's clearly LEAN_PATH / lake-internal tracing.
+    for line in failure_detail.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if _LEAN_PATH_DUMP_RE.search(s):
+            continue
+        if s.startswith("✖ ") or s.startswith("error: build failed"):
+            continue
+        m = _FIRST_ERROR_RE.match(s)
+        if m and m.group(1).strip():
+            return m.group(1).strip()[:200]
+    # Fallback: first non-trace line, capped
+    for line in failure_detail.splitlines():
+        s = line.strip()
+        if s and not _LEAN_PATH_DUMP_RE.search(s):
+            return s[:160]
+    return ""
+
+
+def _ago(ts_iso: str | None) -> str:
+    """Render dead_attempt.ts as `Nmin ago` / `Nh ago`."""
+    if not ts_iso:
+        return ""
+    try:
+        t = datetime.fromisoformat(ts_iso)
+    except (TypeError, ValueError):
+        return ""
+    now = datetime.now(timezone.utc)
+    delta = (now - t).total_seconds()
+    if delta < 0:
+        return "just now"
+    if delta < 60:
+        return f"{int(delta)}s ago"
+    if delta < 3600:
+        return f"{int(delta // 60)}min ago"
+    return f"{int(delta // 3600)}h ago"
+
+
 def _section_past_attempts(deads: list[sqlite3.Row]) -> list[str]:
+    """F26 — Context.md gets a 1-line digest per attempt; full per-
+    attempt content lives in PAST_ATTEMPTS.md (written separately by
+    context_files.write_past_attempts)."""
     if not deads:
         return []
     out = ["## Previous attempts on THIS goal"]
     for i, d in enumerate(deads, 1):
-        out.append(
-            f"### Attempt {i} ({d['pipeline_id'][:12]}): {d['failure_reason']}")
-        if d["failure_detail"]:
-            out.extend(["```", d["failure_detail"][:1000], "```"])
-        if d["proposal_md"]:
-            out.extend([
-                "Strategy summary (from PROPOSAL.md):",
-                "```",
-                d["proposal_md"][:2000],
-                "```",
-            ])
-        out.append("")
+        ago = _ago(d["ts"] if "ts" in d.keys() else None)
+        digest = _digest_failure(d["failure_reason"],
+                                 d["failure_detail"] or "")
+        line = f"{i}. ({ago}) {d['failure_reason']}"
+        if digest:
+            line += f" — {digest}"
+        out.append(line)
+    out.append("")
+    out.append(
+        f"→ Full failure_detail + PROPOSAL.md per attempt: read "
+        f"`{context_files.PAST_ATTEMPTS_FILENAME}` in this directory.")
+    out.append("")
     return out
 
 
@@ -266,42 +333,45 @@ def _section_lemma_references(deads: list[sqlite3.Row],
     ]
 
 
-def _section_past_verify_failures(conn: sqlite3.Connection,
-                                  goal: sqlite3.Row) -> list[str]:
-    """Strategies whose Verify failed because the combination patch
-    didn't elaborate against the sub-goal proofs. Surface the
-    decomposition so the next Backward avoids the same shape."""
-    rows = conn.execute(
+def _fetch_strategy_dead_attempts(
+    conn: sqlite3.Connection, goal_id: int,
+) -> list[sqlite3.Row]:
+    return conn.execute(
         "SELECT da.failure_reason, da.failure_detail, da.pipeline_id,"
         "       s.proposal_md AS strategy_proposal "
         "FROM dead_attempts da "
         "JOIN strategies s ON s.id = da.target_id "
         "WHERE da.target_kind = 'Strategy' AND s.goal_id = ? "
         "ORDER BY da.id DESC LIMIT 5",
-        (goal["id"],),
+        (goal_id,),
     ).fetchall()
+
+
+def _section_past_verify_failures(rows: list[sqlite3.Row]) -> list[str]:
+    """F26 — 1-line digest per past Verify failure; full content in
+    PAST_VERIFIES.md (written separately by context_files.write_past_verifies)."""
     if not rows:
         return []
     out = [
         "## Past decompositions that failed Verify",
         "Earlier Backward attempts decomposed this goal but the "
-        "combination patch did not elaborate against the "
-        "sub-goal proofs. Avoid the same shape.",
+        "combination patch did not elaborate against the sub-goal "
+        "proofs. Avoid the same shape.",
         "",
     ]
     for i, d in enumerate(rows, 1):
-        out.append(f"### Strategy {i} (pid {d['pipeline_id'][:12]}): "
-                   f"{d['failure_reason']}")
-        if d["failure_detail"]:
-            out.extend(["```", d["failure_detail"][:1000], "```"])
-        if d["strategy_proposal"]:
-            out.extend([
-                "Decomposition (from strategies.proposal_md):",
-                "```",
-                d["strategy_proposal"][:2000],
-                "```",
-            ])
-        out.append("")
+        digest = _digest_failure(d["failure_reason"],
+                                 d["failure_detail"] or "")
+        line = (f"{i}. (pid {d['pipeline_id'][:12]}) "
+                f"{d['failure_reason']}")
+        if digest:
+            line += f" — {digest}"
+        out.append(line)
+    out.append("")
+    out.append(
+        f"→ Full stderr + decomposition PROPOSAL.md per Verify failure: "
+        f"read `{context_files.PAST_VERIFIES_FILENAME}` in this directory.")
+    out.append("")
     return out
 
 
@@ -323,6 +393,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     workspace = attempts_dir.parent.parent  # .attempts/<pid> → workspace
     deads = db.recent_dead_attempts(
         conn, target_id=goal["id"], target_kind="Goal", k=5)
+    strat_deads = _fetch_strategy_dead_attempts(conn, int(goal["id"]))
 
     sections: list[list[str]] = [
         _section_header(goal),
@@ -334,7 +405,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_playbook(goal, workspace),
         _section_past_attempts(deads),
         _section_lemma_references(deads, mfst, workspace),
-        _section_past_verify_failures(conn, goal),
+        _section_past_verify_failures(strat_deads),
     ]
 
     parts: list[str] = []
@@ -343,6 +414,12 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
 
     out = attempts_dir / "Context.md"
     out.write_text("\n".join(parts), encoding="utf-8")
+
+    # F26 — write companion reference files for the bulky / lazy-load
+    # content (Context.md only carries digests + pointers).
+    context_files.write_past_attempts(deads, attempts_dir)
+    context_files.write_past_verifies(strat_deads, attempts_dir)
+
     return out
 
 

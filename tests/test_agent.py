@@ -40,8 +40,12 @@ def _record_pipeline(conn: sqlite3.Connection, pid: str, kind: str,
 def test_context_includes_strategy_dead_attempts(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """Verify failures should surface in the parent goal's Context so a
-    fresh Backward agent doesn't repeat the broken combination pattern."""
+    """Verify failures must surface in the parent goal's Context so a
+    fresh Backward agent doesn't repeat the broken combination pattern.
+
+    F26 split: Context.md gets the 1-line digest + pointer; the full
+    failure_detail + proposal_md goes into PAST_VERIFIES.md alongside.
+    """
     gid = _seed_problem_and_goal(conn)
     sid = db.insert_strategy(
         conn, goal_id=gid, lean_path="Problems/p/Root.lean",
@@ -60,10 +64,16 @@ def test_context_includes_strategy_dead_attempts(
                           attempts_dir=tmp_path)
     text = out.read_text(encoding="utf-8")
 
+    # Context.md: section header + digest + pointer
     assert "Past decompositions that failed Verify" in text
     assert "lake_build_error" in text
     assert "type mismatch" in text
-    assert "My decomposition" in text
+    assert "PAST_VERIFIES.md" in text
+
+    # Full proposal_md externalized
+    past_verifies = (tmp_path / "PAST_VERIFIES.md").read_text(encoding="utf-8")
+    assert "My decomposition" in past_verifies
+    assert "type mismatch in have h_1" in past_verifies
 
 
 def test_context_no_strategy_section_when_clean(

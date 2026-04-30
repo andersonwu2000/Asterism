@@ -14,9 +14,12 @@ asterism.db.*
 *.lean.verify_backup
 # F20 lemma signature cache (toolchain-keyed; rebuilt on demand)
 Tooling/.lemma_cache.json
+# F20 transient query file (created + unlinked per goal lookup)
+.lemma_lookup_query.lean
 # Daemon logs from manual runs
 wilson_haiku*.log
 *_haiku*.log
+*_sonnet*.log
 
 # Python
 __pycache__/
