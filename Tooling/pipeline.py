@@ -80,16 +80,21 @@ def _lean_path_to_module(workspace: Path, lean_path: Path) -> str:
     return ".".join(rel.parts)
 
 
-def _lake_build(workspace: Path, target_lean: Path) -> tuple[bool, str]:
-    """Run `lake build <module>` (resolves dependencies). Returns (pass, output).
+def _lake_build_modules(workspace: Path,
+                        modules: list[str]) -> tuple[bool, str]:
+    """Run `lake build <m1> <m2> ...` for one or many module names.
 
-    Single-file `lake env lean` doesn't pull dependencies; if patch imports
-    sub-goal modules they need to be built first. lake build does that.
+    Lake's internal scheduler resolves the dependency DAG and builds
+    independent modules in parallel. Passing N modules in a single
+    call is therefore much faster than N sequential single-target
+    invocations whenever any of those modules can run in parallel
+    (e.g. Backward writes 4 sibling sub-goal files plus 1 strategy
+    file that imports them all — sub-goals build concurrently, then
+    the strategy serially).
     """
-    module = _lean_path_to_module(workspace, target_lean)
     try:
         r = subprocess.run(
-            ["lake", "build", module],
+            ["lake", "build", *modules],
             cwd=str(workspace),
             capture_output=True, text=True,
             encoding="utf-8", errors="replace",
@@ -99,7 +104,25 @@ def _lake_build(workspace: Path, target_lean: Path) -> tuple[bool, str]:
         ok = r.returncode == 0 and "error:" not in out.lower()
         return ok, out
     except subprocess.TimeoutExpired:
-        return False, f"lake build {module} timed out (600s)"
+        return False, f"lake build {' '.join(modules)} timed out (600s)"
+
+
+def _lake_build(workspace: Path, target_lean: Path) -> tuple[bool, str]:
+    """Build a single .lean file's module (resolves deps).
+
+    Thin wrapper around `_lake_build_modules` — kept for Builder / Verify
+    call sites that only ever build one target at a time.
+    """
+    module = _lean_path_to_module(workspace, target_lean)
+    return _lake_build_modules(workspace, [module])
+
+
+def _lake_build_batch(workspace: Path,
+                      targets: list[Path]) -> tuple[bool, str]:
+    """Build multiple .lean files in one lake invocation. Lake
+    parallelizes independent targets internally."""
+    modules = [_lean_path_to_module(workspace, t) for t in targets]
+    return _lake_build_modules(workspace, modules)
 
 
 def _grep_forbidden(text: str, forbidden: list[str]) -> str | None:
@@ -462,13 +485,16 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
         shutil.copy2(patches[0], scratch_dest)
         placed.append(scratch_dest)
 
-        # Build sub-goals first, then scratch (which imports them).
-        for t in placed:
-            ok, err = _lake_build(workspace, t)
-            if not ok:
-                # Pass full stderr; caller (annotate_failure_detail)
-                # smart-truncates to keep error/warning lines.
-                raise RuntimeError(f"lake build {t.name} failed: {err}")
+        # F23 — single multi-target lake invocation. Lake's internal
+        # scheduler builds independent sub-goal files in parallel and
+        # serializes the strategy assembly (which imports the subs)
+        # after, replacing the prior serial per-file loop. On a 4-sub
+        # strategy the wall-clock dropped from ~5×80s to ~max(80s)+80s.
+        # Caller (annotate_failure_detail) smart-truncates stderr to
+        # surface error / warning lines.
+        ok, err = _lake_build_batch(workspace, placed)
+        if not ok:
+            raise RuntimeError(f"lake build failed: {err}")
 
         # F24-A — race guard: between this Backward's dispatch and now
         # (which is up to several minutes due to claude CLI + lake build),

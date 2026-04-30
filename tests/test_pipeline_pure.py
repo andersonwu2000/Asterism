@@ -167,3 +167,131 @@ def test_ensure_import_mathlib_anchored_to_line_start() -> None:
     )
     out = _ensure_import_mathlib(src)
     assert out.startswith("import Mathlib\n")
+
+
+# ---------------------------------------------------------------------
+# F23 — _lake_build_batch / _lake_build_modules: single subprocess for
+# multiple targets so lake's internal scheduler can parallelize. Mocks
+# subprocess; real-lake exercise is the existing _lake_build coverage.
+# ---------------------------------------------------------------------
+
+def test_lake_build_modules_passes_all_targets_in_one_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Single `lake build m1 m2 m3` invocation — not three separate."""
+    import subprocess
+    from unittest.mock import MagicMock
+    from Tooling import pipeline
+    fake_run = MagicMock(return_value=subprocess.CompletedProcess(
+        args=[], returncode=0, stdout="ok", stderr=""))
+    monkeypatch.setattr(pipeline.subprocess, "run", fake_run)
+
+    ok, _ = pipeline._lake_build_modules(tmp_path, ["m1", "m2", "m3"])
+    assert ok is True
+    fake_run.assert_called_once()
+    cmd = fake_run.call_args[0][0]
+    assert cmd[:2] == ["lake", "build"]
+    assert cmd[2:] == ["m1", "m2", "m3"]
+
+
+def test_lake_build_modules_returns_failure_on_nonzero_rc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+    from unittest.mock import MagicMock
+    from Tooling import pipeline
+    fake_run = MagicMock(return_value=subprocess.CompletedProcess(
+        args=[], returncode=1,
+        stdout="", stderr="error: build failed"))
+    monkeypatch.setattr(pipeline.subprocess, "run", fake_run)
+
+    ok, err = pipeline._lake_build_modules(tmp_path, ["m1", "m2"])
+    assert ok is False
+    assert "error" in err.lower()
+
+
+def test_lake_build_modules_treats_error_in_output_as_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lake sometimes returns rc=0 but emits `error:` in stderr (e.g.
+    incremental rebuild that hit a Lean elaboration error). Treat it
+    as failure to match _lake_build's existing semantics."""
+    import subprocess
+    from unittest.mock import MagicMock
+    from Tooling import pipeline
+    fake_run = MagicMock(return_value=subprocess.CompletedProcess(
+        args=[], returncode=0,
+        stdout="", stderr="error: Type mismatch ..."))
+    monkeypatch.setattr(pipeline.subprocess, "run", fake_run)
+
+    ok, _ = pipeline._lake_build_modules(tmp_path, ["m1"])
+    assert ok is False
+
+
+def test_lake_build_modules_returns_timeout_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+    from Tooling import pipeline
+
+    def _timeout(*a, **kw):
+        raise subprocess.TimeoutExpired(cmd=a[0], timeout=600)
+    monkeypatch.setattr(pipeline.subprocess, "run", _timeout)
+
+    ok, err = pipeline._lake_build_modules(tmp_path, ["m1", "m2"])
+    assert ok is False
+    assert "timed out" in err
+    assert "m1 m2" in err
+
+
+def test_lake_build_batch_resolves_paths_to_modules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_lake_build_batch(paths)` should derive module names from
+    each .lean path and invoke lake once."""
+    import subprocess
+    from unittest.mock import MagicMock
+    from Tooling import pipeline
+
+    # Set up a workspace layout so _lean_path_to_module resolves
+    (tmp_path / "Problems" / "p" / "proofs").mkdir(parents=True)
+    p1 = tmp_path / "Problems" / "p" / "proofs" / "L_sub_1.lean"
+    p2 = tmp_path / "Problems" / "p" / "proofs" / "L_sub_2.lean"
+    p1.write_text("", encoding="utf-8")
+    p2.write_text("", encoding="utf-8")
+
+    fake_run = MagicMock(return_value=subprocess.CompletedProcess(
+        args=[], returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(pipeline.subprocess, "run", fake_run)
+
+    ok, _ = pipeline._lake_build_batch(tmp_path, [p1, p2])
+    assert ok is True
+    fake_run.assert_called_once()
+    cmd = fake_run.call_args[0][0]
+    assert cmd[:2] == ["lake", "build"]
+    assert cmd[2] == "Problems.p.proofs.L_sub_1"
+    assert cmd[3] == "Problems.p.proofs.L_sub_2"
+
+
+def test_lake_build_single_target_uses_modules_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_lake_build` (single) should still work; behaviorally
+    equivalent to `_lake_build_modules(workspace, [module])`."""
+    import subprocess
+    from unittest.mock import MagicMock
+    from Tooling import pipeline
+
+    (tmp_path / "Problems" / "p").mkdir(parents=True)
+    p = tmp_path / "Problems" / "p" / "Root.lean"
+    p.write_text("", encoding="utf-8")
+
+    fake_run = MagicMock(return_value=subprocess.CompletedProcess(
+        args=[], returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(pipeline.subprocess, "run", fake_run)
+
+    ok, _ = pipeline._lake_build(tmp_path, p)
+    assert ok is True
+    fake_run.assert_called_once()
+    cmd = fake_run.call_args[0][0]
+    assert cmd == ["lake", "build", "Problems.p.Root"]
