@@ -219,3 +219,43 @@ class OpenAIProvider:
                 # be enough for pipeline to glob.
 
         return 0
+
+    def complete_text(
+        self, *, prompt: str, timeout_sec: int = 60,
+    ) -> str | None:
+        """One-shot completion against the configured OpenAI-compatible
+        endpoint. Returns response text or None on any failure (no
+        model env, HTTP error, malformed response). Used by F22."""
+        model = os.environ.get("ASTERISM_LLM_MODEL")
+        if not model:
+            return None
+        base_url = os.environ.get(
+            "ASTERISM_LLM_BASE_URL", "http://localhost:8000/v1"
+        ).rstrip("/")
+        api_key = os.environ.get("ASTERISM_LLM_API_KEY", "")
+        try:
+            temperature = float(
+                os.environ.get("ASTERISM_LLM_TEMPERATURE", "0.3"))
+        except ValueError:
+            temperature = 0.3
+
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 400,
+            "temperature": temperature,
+            "stream": False,
+        }
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        try:
+            data = _http_post_json(
+                f"{base_url}/chat/completions", payload,
+                headers=headers, timeout_sec=timeout_sec,
+            )
+            return data["choices"][0]["message"]["content"].strip()
+        except (urllib.error.URLError, socket.timeout,
+                RuntimeError, ValueError, json.JSONDecodeError,
+                KeyError, IndexError, TypeError):
+            return None

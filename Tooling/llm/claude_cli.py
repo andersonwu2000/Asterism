@@ -55,3 +55,31 @@ class ClaudeCliProvider:
             print(f"[llm:claude] timed out after {req.timeout_sec}s",
                   flush=True)
             return 124
+
+    def complete_text(
+        self, *, prompt: str, timeout_sec: int = 60,
+    ) -> str | None:
+        """One-shot completion via `claude -p <prompt>`. Captures
+        stdout text rather than producing files. Used by F22 short
+        auxiliary calls (idiom extract / curate)."""
+        if not shutil.which("claude"):
+            return None
+        model = os.environ.get("ASTERISM_AGENT_MODEL", DEFAULT_MODEL)
+        cmd = [
+            "claude",
+            "--model", model,
+            "-p", prompt,
+            "--no-session-persistence",
+            "--output-format", "text",
+        ]
+        try:
+            r = subprocess.run(
+                cmd, timeout=timeout_sec,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+            )
+            if r.returncode != 0:
+                return None
+            return r.stdout.strip()
+        except subprocess.TimeoutExpired:
+            return None

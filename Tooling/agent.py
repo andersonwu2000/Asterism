@@ -16,7 +16,7 @@ import sqlite3
 import uuid
 from pathlib import Path
 
-from . import db, lemma_lookup, llm, manifest
+from . import db, lemma_lookup, llm, manifest, playbook
 
 
 WORKER_TIMEOUT_SEC = 600  # 10 min, see architecture.md §13
@@ -144,6 +144,22 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     if mfst.strategic_notes:
         parts.append("## Strategic notes (from Manifest.md)")
         parts.append(mfst.strategic_notes)
+        parts.append("")
+
+    # F22 — playbook: agent-curated success idioms accumulated across
+    # prior strategies on this problem. Static `mathlib_hints` /
+    # `strategic_notes` above represent author intent; this section is
+    # what the framework has empirically learned works.
+    workspace_for_pb = attempts_dir.parent.parent  # .attempts/<pid> → workspace
+    pb_text = playbook.read_playbook(goal["problem"], workspace_for_pb)
+    if pb_text.strip():
+        parts.append("## Past wins on this problem (playbook)")
+        parts.append(
+            "Idioms that proved earlier strategies on this same problem. "
+            "When the current goal matches a pattern below, prefer the "
+            "noted idiom over re-deriving from scratch.")
+        parts.append("")
+        parts.append(pb_text.rstrip())
         parts.append("")
 
     deads = db.recent_dead_attempts(

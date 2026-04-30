@@ -40,5 +40,16 @@ class LLMRequest:
 
 
 class Provider(Protocol):
-    """All LLM backends implement this single method."""
+    """All LLM backends implement these two methods.
+
+    `spawn` runs a full agent invocation that writes outputs to disk
+    (Backward / Builder / Verify). `complete_text` is a one-shot
+    text-in/text-out call used by short auxiliary tasks (F22 playbook
+    idiom extraction + curation) where file IO would be overkill.
+    """
     def spawn(self, req: LLMRequest) -> int: ...
+
+    def complete_text(self, *, prompt: str, timeout_sec: int = 60) -> str | None:
+        """One-shot completion. Returns response text or None on
+        failure (provider unavailable, timeout, parse error)."""
+        ...

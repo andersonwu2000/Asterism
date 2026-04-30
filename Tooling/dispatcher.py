@@ -11,7 +11,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor, FIRST_COMPLETED, wait
 from pathlib import Path
 
-from . import agent, db, manifest, pipeline, prune
+from . import agent, db, manifest, pipeline, playbook, prune
 
 
 # Defaults are tuned for weaker models (e.g. Haiku) which iterate
@@ -249,7 +249,8 @@ def next_worker_kind(goal: sqlite3.Row) -> str:
 
 def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 kind: str, target_id: str, target_kind: str,
-                outcome: str) -> None:
+                outcome: str,
+                workspace: Path | None = None) -> None:
     """Apply state transitions for one finished pipeline.
 
     Each worker_kind has a fixed target_kind:
@@ -261,6 +262,9 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
     its strategy is already 'superseded', skip the transition. This
     catches loser strategies / orphan sub-goals whose workers finish
     after a sibling has won (OR parallelism).
+
+    `workspace` enables the F22 playbook hook on Verify=proved. Tests
+    that don't care about file-side effects pass None.
     """
     if target_kind == "Strategy":
         row = conn.execute(
@@ -323,6 +327,13 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 db.mark_other_strategies_superseded(
                     conn, goal_id=goal_id, winner_id=int(target_id),
                 )
+            # F22 — capture the just-proven idiom into the per-problem
+            # playbook. Synchronous (~30-60s LLM call) but only fires
+            # on Verify=proved, which is rare. Failures are logged and
+            # never propagate.
+            if workspace is not None:
+                playbook.maybe_record_idiom(
+                    int(target_id), conn, workspace)
             return
         # exhausted / failed
         db.update_strategy_status(conn, int(target_id), "dead")
@@ -527,7 +538,8 @@ def run(workspace: Path, *, once: bool = False) -> int:
                 try:
                     pid, kind, tid, tk, outcome = fut.result()
                     cascade_one(conn, pipeline_id=pid, kind=kind,
-                                target_id=tid, target_kind=tk, outcome=outcome)
+                                target_id=tid, target_kind=tk,
+                                outcome=outcome, workspace=workspace)
                     print(f"[cascade] {kind} {tk}={tid} → {outcome}", flush=True)
                 except Exception as exc:
                     print(f"[cascade] worker exception: {exc}", flush=True)

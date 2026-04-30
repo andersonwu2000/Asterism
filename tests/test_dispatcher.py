@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -237,6 +239,65 @@ def test_strategies_ready_for_verify_excludes_shelved_goal(
     db.update_goal_status(conn, gid, "shelved")
     assert not any(s["id"] == sid
                    for s in db.strategies_ready_for_verify(conn))
+
+
+# ---------------------------------------------------------------------
+# F22 — playbook hook fires on Verify=proved when workspace given
+# ---------------------------------------------------------------------
+
+def test_cascade_verify_proved_invokes_playbook_when_workspace(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify=proved + workspace passed → playbook.maybe_record_idiom
+    is called with the strategy id. Tests without workspace skip the
+    hook (legacy behavior)."""
+    from Tooling import playbook as _playbook
+
+    gid = _seed_goal(conn)
+    sid = db.insert_strategy(conn, goal_id=gid,
+                             lean_path="Problems/p/Root.lean",
+                             scratch_path="Problems/p/proofs/_strategy_s.lean",
+                             created_by="pid")
+
+    captured: dict[str, object] = {}
+
+    def _spy(strategy_id, conn_arg, workspace_arg):
+        captured["sid"] = strategy_id
+        captured["ws"] = workspace_arg
+        return None
+    monkeypatch.setattr(_playbook, "maybe_record_idiom", _spy)
+
+    cascade_one(conn, pipeline_id="pid", kind="Verify",
+                target_id=str(sid), target_kind="Strategy",
+                outcome="proved", workspace=tmp_path)
+
+    assert captured["sid"] == sid
+    assert captured["ws"] == tmp_path
+
+
+def test_cascade_verify_proved_skips_playbook_without_workspace(
+    conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test fixtures that don't pass workspace must not trigger the
+    playbook hook — keeps existing tests fast and deterministic."""
+    from Tooling import playbook as _playbook
+
+    gid = _seed_goal(conn)
+    sid = db.insert_strategy(conn, goal_id=gid,
+                             lean_path="Problems/p/Root.lean",
+                             scratch_path="Problems/p/proofs/_strategy_s.lean",
+                             created_by="pid")
+
+    called = MagicMock()
+    monkeypatch.setattr(_playbook, "maybe_record_idiom", called)
+
+    cascade_one(conn, pipeline_id="pid", kind="Verify",
+                target_id=str(sid), target_kind="Strategy",
+                outcome="proved")
+
+    called.assert_not_called()
 
 
 # ---------------------------------------------------------------------
