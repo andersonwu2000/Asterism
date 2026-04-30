@@ -5,14 +5,23 @@ ancestor goal of the same problem. Writes an alias lean file that
 delegates the proof to the canonical theorem via Lean tactics, so the
 candidate inherits canonical's eventual proof for free.
 
-**Safety rule (ancestor-only)**
+**Safety rule (strict ancestor)**
 
-Only canonicals that are ancestors of the candidate's parent goal are
-considered. Justification: a goal is alive iff every strategy on its
-chain back to a root is alive. An ancestor's chain is a prefix of the
-candidate's chain, so ancestor alive ⇔ candidate alive. Aliasing within
-an ancestor never breaks at prune time. Cross-strategy / OR-sibling
-canonicals are excluded because they can die independently.
+Only canonicals that are STRICT ancestors of the candidate's parent
+goal are considered (i.e., parent_goal_id itself is excluded). Two
+justifications:
+
+  1. Lifetime: ancestor's chain is a prefix of candidate's chain, so
+     ancestor alive ⇔ candidate alive. Aliasing across OR siblings or
+     unrelated branches can break at prune time.
+
+  2. Anti-cycle: aliasing to parent_goal_id is logically circular —
+     the candidate is supposed to help prove parent_goal_id, so it
+     can't itself be aliased to parent_goal_id's eventual proof. At
+     the lake-build level this manifests as an import cycle when
+     parent's Verify rewrites parent.lean_path to import the strategy
+     scratch which transitively imports the alias which imports
+     parent.lean_path.
 
 **Binder count rule (specialization-direction)**
 
@@ -114,11 +123,17 @@ def find_canonical(conn: sqlite3.Connection, workspace: Path, *,
         "  JOIN alive a ON a.id = s.goal_id"
         "  WHERE s.status IN ('proposed','succeeded')"
         "), ancestors(id) AS ("
-        "  SELECT ?"
+        # Base: STRICT ancestors of parent_goal_id (its containing
+        # strategies' parent goals). parent_goal_id itself is excluded
+        # — aliasing to one's own immediate parent creates a logical
+        # circularity (proof of X uses X) and a Lake import cycle.
+        "  SELECT s.goal_id FROM strategies s"
+        "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        "    WHERE ss.subgoal_id = ?"
         "  UNION"
         "  SELECT s.goal_id FROM strategies s"
-        "  JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
-        "  JOIN ancestors a ON a.id = ss.subgoal_id"
+        "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        "    JOIN ancestors a ON a.id = ss.subgoal_id"
         ") "
         "SELECT g.id, g.statement, g.lean_path, g.status FROM goals g "
         "WHERE g.id IN alive AND g.id IN ancestors "
