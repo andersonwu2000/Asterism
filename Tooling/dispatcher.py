@@ -16,7 +16,7 @@ from . import agent, db, manifest, pipeline, prune
 
 SHELVE_THRESHOLD = 7
 TICK_TIMEOUT = 30  # seconds
-OR_FANOUT_DEFAULT = 3  # max concurrent Backwards per open goal (env override)
+OR_FANOUT_DEFAULT = 2  # max concurrent Backwards per open goal (env override)
 
 
 # ---------------------------------------------------------------------
