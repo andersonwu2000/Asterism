@@ -5,6 +5,7 @@ See architecture.md §7-§8.
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, FIRST_COMPLETED, wait
@@ -22,10 +23,11 @@ OR_FANOUT_DEFAULT = 3  # max concurrent Backwards per open goal (env override)
 # Startup recovery
 # ---------------------------------------------------------------------
 
-def _recover_at_startup(conn: sqlite3.Connection) -> None:
+def _recover_at_startup(conn: sqlite3.Connection,
+                        workspace: Path | None = None) -> None:
     """Sweep transient state left by a crashed prior daemon.
 
-    Three classes of stale state, each restored to a consistent baseline:
+    Four classes of stale state, each restored to a consistent baseline:
 
       1. queue rows         — live dispatch state, never persists across
                               daemon lifetimes; clear unconditionally.
@@ -36,6 +38,13 @@ def _recover_at_startup(conn: sqlite3.Connection) -> None:
                               'proposed' strategy survives now (all dead/
                               superseded). Reset to 'open' so bfs_refill
                               can dispatch a fresh Backward.
+      4. orphan .attempts/<pid>/ dirs — daemon SIGKILL bypasses
+                              WorkArea.__exit__, and child claude
+                              subprocesses can keep writing to a dead
+                              parent's sandbox. Daemon startup means a
+                              fresh lifecycle; any pre-existing dir is
+                              by definition stale. Skip if workspace is
+                              None (test fixtures call DB-only).
 
     Orphan lean files in proofs/ are NOT touched here — they're handled
     by the post-success reconcile + prune path.
@@ -59,10 +68,24 @@ def _recover_at_startup(conn: sqlite3.Connection) -> None:
 
     conn.commit()
 
-    if queue_cleared or strategies_killed or goals_reopened:
+    attempts_cleared = 0
+    if workspace is not None:
+        attempts_root = workspace / ".attempts"
+        if attempts_root.exists():
+            for d in attempts_root.iterdir():
+                if d.is_dir():
+                    try:
+                        shutil.rmtree(d)
+                        attempts_cleared += 1
+                    except OSError:
+                        pass  # claude subprocess may still hold a handle
+
+    if queue_cleared or strategies_killed or goals_reopened or attempts_cleared:
         print(f"[dispatcher] recovery: cleared {queue_cleared} queue rows, "
               f"killed {strategies_killed} half-baked strategies, "
-              f"reopened {goals_reopened} stuck goals", flush=True)
+              f"reopened {goals_reopened} stuck goals, "
+              f"removed {attempts_cleared} orphan attempts dirs",
+              flush=True)
 
 
 def next_worker_kind(goal: sqlite3.Row) -> str:
@@ -326,7 +349,7 @@ def run(workspace: Path, *, once: bool = False) -> int:
     for row in conn.execute("SELECT name, manifest_path FROM problems"):
         manifests[row["name"]] = manifest.parse(workspace / row["manifest_path"])
 
-    _recover_at_startup(conn)
+    _recover_at_startup(conn, workspace)
 
     print(f"[dispatcher] start, pool={pool_size}, problems={list(manifests)}",
           flush=True)

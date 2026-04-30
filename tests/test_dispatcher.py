@@ -293,6 +293,36 @@ def test_recover_at_startup_kills_half_baked_strategies(
     ).fetchone()["status"] == "proposed"
 
 
+def test_recover_at_startup_clears_orphan_attempts_dirs(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """F2: daemon kill bypasses WorkArea cleanup; child claude subprocesses
+    can keep writing to dead parent's dir. Startup must rmtree everything
+    in .attempts/ (it's pure transient state; any pre-existing dir is
+    stale by definition)."""
+    from Tooling.dispatcher import _recover_at_startup
+    attempts = tmp_path / ".attempts"
+    (attempts / "stale-pid-aaa").mkdir(parents=True)
+    (attempts / "stale-pid-aaa" / "PROPOSAL.md").write_text("zombie")
+    (attempts / "stale-pid-bbb").mkdir(parents=True)
+    (attempts / "stale-pid-bbb" / "Context.md").write_text("zombie")
+
+    _recover_at_startup(conn, tmp_path)
+
+    # All orphan dirs cleared; .attempts/ itself may still exist (empty)
+    assert not (attempts / "stale-pid-aaa").exists()
+    assert not (attempts / "stale-pid-bbb").exists()
+
+
+def test_recover_at_startup_skips_filesystem_when_workspace_none(
+    conn: sqlite3.Connection,
+) -> None:
+    """DB-only call (test fixtures, etc.) must not crash."""
+    from Tooling.dispatcher import _recover_at_startup
+    _recover_at_startup(conn)  # workspace=None default
+    # No assertion needed; reaching here means no exception.
+
+
 def test_recover_at_startup_reopens_stuck_attempting_goals(
     conn: sqlite3.Connection,
 ) -> None:
