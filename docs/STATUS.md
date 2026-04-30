@@ -1,17 +1,18 @@
 # Asterism v2 — Current Status
 
-Updated 2026-05-01. Compaction-safe handoff note.
+Updated 2026-05-01 (post-Haiku-wilson). Compaction-safe handoff note.
 
-## Proved problems (4)
+## Proved problems (4 + 1 weak-model variant)
 
-| Problem | Commit | Wall-clock | Axioms |
-|---------|--------|-----------|--------|
-| wilson | 6b0cf3b | ~15 min | propext, Classical.choice, Quot.sound |
-| compactness | 46c8941 | ~60 min | propext, Classical.choice, Quot.sound |
-| cantor | 6bd6c15 | ~5 min | [] (constructive) |
-| gen_generates | 4c6f423 | ~30 min | propext, Quot.sound |
+| Problem | Commit | Prover | Wall-clock | Axioms |
+|---------|--------|--------|-----------|--------|
+| wilson | 9c2c2a0 | **Haiku** | 39.5 min | propext, Classical.choice, Quot.sound |
+| wilson (Sonnet, replaced) | 6b0cf3b | Sonnet | ~15 min | propext, Classical.choice, Quot.sound |
+| compactness | 46c8941 | Sonnet | ~60 min | propext, Classical.choice, Quot.sound |
+| cantor | 6bd6c15 | Sonnet | ~5 min | [] (constructive) |
+| gen_generates | 4c6f423 | Sonnet | ~30 min | propext, Quot.sound |
 
-All on Sonnet via Claude CLI provider. SoT for design: `docs/architecture.md` v2.5 (lagging 11+ commits — separate update task pending).
+**Headline**: 9c2c2a0 is Asterism's first end-to-end proof by a weak model (claude-haiku-4-5). 5x more pipelines + 2.6x more wall-clock than Sonnet, but identical axioms — framework-side intelligence (F16-F24) compensates for model API gaps.
 
 ## Provider stack (commit ca6aec9, F22-extended)
 
@@ -22,100 +23,102 @@ All on Sonnet via Claude CLI provider. SoT for design: `docs/architecture.md` v2
 - Single-shot has companion prompt files `prompts/*_singleshot.md`
 - **F22 added `Provider.complete_text(prompt, timeout_sec) → str | None`** for short auxiliary calls (idiom extract / playbook curate). Both providers implement; failures return None.
 
-## Architectural delta since 2026-04-30 (F16 → F22 + refactors)
+## Architectural delta since 2026-04-30 (F16 → F24 + refactors)
 
-Six framework changes plus two consolidation passes. All in main.
+Eight framework changes plus two consolidation passes. All in main.
 
 ### Cascade rules — symmetric goal-shelve handling (F12 + F16)
-`_propagate_shelve(conn, goal_id)` in dispatcher.py now cascades a shelve event in BOTH directions:
+`_propagate_shelve(conn, goal_id)` in dispatcher.py cascades a shelve event in BOTH directions:
 - **Upward (F12)**: kill 'proposed' strategies that depend on the shelved goal as a sub-goal; reopen their parent goals if no live strategy remains.
 - **Inward (F16)**: kill 'proposed' strategies whose `goal_id` IS the shelved goal (own strategies — they're now moot).
 
-DB invariant restored: `strategy.status='proposed'` implies parent goal alive.
+### Cascade race fix (F24)
+`cascade_one` no-op guards extended to `'shelved'` for Goal target_kind (matching the existing `'proved'` guard). For Strategy target_kind: parent goal shelved → mark strategy dead. Plus pipeline.run_backward re-checks goal status before linking sub-goals; aborts cleanly with `failure_reason='goal_no_longer_open'` if shelved/proved during the in-flight pipeline. Defense-in-depth: pipeline-side prevents orphan creation, cascade-side handles late races.
 
 ### Diagnostic hints (F9 + F13 + F17 → consolidated table)
-`Tooling/diagnostics.py` `_HINT_PATTERNS: list[_HintPattern]` table replaces six per-pattern if-blocks. Patterns: bad import, no-such-file (Mathlib path with `\\→/` transform), unknown identifier, unknown constant, autoImplicit hint, unknown tactic. All `re.IGNORECASE` after F17 — Lean's casing varies (`unknown identifier` lowercase vs `Unknown constant` capital). Adding a new pattern is one entry.
+`Tooling/diagnostics.py` `_HINT_PATTERNS: list[_HintPattern]` table replaces six per-pattern if-blocks. All `re.IGNORECASE` after F17. Adding a new pattern is one entry.
 
 ### Lemma signature lookup (F20)
-`Tooling/lemma_lookup.py` runs `lake env lean` against `import Mathlib` + `#check @<name>` queries to fetch real signatures. Persistent JSON cache `.lemma_cache.json` keyed on `(toolchain_version_hash, lemma_name)`; `lake update` invalidates implicitly. Mathlib loading dominates (~20s cold), so all of one goal's names go in one subprocess. agent.py's compile_context emits a `## Lemma references (resolved from Mathlib)` section with `name : signature` bullets. Names not found produce no bullet.
+`Tooling/lemma_lookup.py` runs `lake env lean` against `import Mathlib` + `#check @<name>` queries to fetch real signatures. Persistent JSON cache `.lemma_cache.json` keyed on toolchain hash. compile_context emits `## Lemma references (resolved from Mathlib)` section. Names not found produce no bullet (no fabricated info).
 
 ### Per-problem playbook (F22)
 `Tooling/playbook.py`. After each Verify=proved, dispatcher fires `maybe_record_idiom`:
-1. Short LLM call extracts a `- **<pattern>**: <idiom>` bullet (or `SKIP` for trivial proofs).
-2. If `Problems/<p>/playbook.md` < CAP=10 entries → append.
-3. If at CAP → second LLM call asks `REPLACE n` or `KEEP`. Self-curation: candidate must beat an incumbent or get discarded.
+1. Short LLM call extracts a `- **<pattern>**: <idiom>` bullet.
+2. Append if under CAP=10; else second LLM call decides REPLACE n / KEEP. Self-curation.
+3. compile_context injects playbook between strategic_notes and past failures.
 
-compile_context injects playbook between strategic_notes and past failures. Boundary: Manifest = author intent (static); playbook = agent experience (dynamic). Both inject; non-overlapping roles.
+Boundary: Manifest = author intent; playbook = agent experience. Non-overlapping roles.
 
 ### Configurable thresholds (F18)
-- `BUILDER_THRESHOLD_DEFAULT = 5` (was hardcoded `2` = 3 Builder tries; now 5 tries before Backward fallback)
-- `SHELVE_THRESHOLD_DEFAULT = 8` (was 7; now 5 Builder + up to 3 Backward before shelve)
-- Env: `ASTERISM_BUILDER_THRESHOLD`, `ASTERISM_SHELVE_THRESHOLD`. Validator: SHELVE > BUILDER required.
-- Tuned for weaker models (Haiku-class) which iterate productively but need more rounds. Sonnet runs can tighten back via env.
-- `OR_FANOUT_DEFAULT = 2` (was 3) — less wasteful per goal.
+- `BUILDER_THRESHOLD_DEFAULT = 5` (was hardcoded `2` = 3 Builder tries)
+- `SHELVE_THRESHOLD_DEFAULT = 8` (was 7)
+- `OR_FANOUT_DEFAULT = 2` (was 3)
+- All env-overridable via `ASTERISM_*`.
 
 ### Pipeline auto-inject (F17 layer C)
-`pipeline._ensure_import_mathlib`: when a Backward worker writes a sub-goal lemma file with no `^import\s` line at all (Haiku occasionally does this), framework prepends `import Mathlib`. Idempotent in Lean 4. Catches "Unknown constant Nat.factorial" failures before they happen.
+`pipeline._ensure_import_mathlib`: prepends `import Mathlib` when a Backward-generated lemma file has no `^import\s` line.
+
+### Batch lake build (F23)
+`pipeline.run_backward`'s sequential `for t in placed: _lake_build(...)` loop replaced with single `_lake_build_batch(workspace, placed)` invocation. Lake parallelizes independent sub-goal builds, serializes the strategy assembly. **Effect**: Backward succeeded avg dropped from ~517s → ~151s (-71%) across the Haiku wilson run.
 
 ### Refactors (no behavior change)
 | Commit | Change |
 |---|---|
-| 4d8caba | `compile_context` → section-list pattern (10 pure section funcs, main fn just iterates) |
+| 4d8caba | `compile_context` → section-list pattern |
 | ad33753 | `parse_lake_stderr` → `_HintPattern` table |
 
-## Wilson Haiku probes summary
+## Wilson Haiku probe series
 
-Three rounds during this iteration cycle, all stopped before convergence (intentional — goal was framework BUG-hunting, not proving).
+| Round | Setup | Outcome | Lessons |
+|---|---|---|---|
+| Probe 1 | pre-F12 | Stuck attempts=4 (zombie strategies) | F12 + F13 + F14 |
+| Probe 2 | post-F12, OR=2 | 19/42 proved, depth 4 | F16 + F17 + F18 |
+| Probe 3 | post-F18 | 17 goals, depth 4 narrower | F20 + F22 designed |
+| Probe 4 | post-F22 | Race bug surfaced (goal stuck attempts=8/attempting) | F23 + F24 |
+| **Probe 5** | post-F24 | **PROVED, 39 pipelines, 39.5 min** | playbook entries captured |
 
-| Round | When | Setup | Outcome | Lessons |
-|---|---|---|---|---|
-| Probe 1 | pre-F12 | Haiku, default thresholds | Root stuck attempting=4 (zombie strategies) | F12 + F13 + F14 |
-| Probe 2 | post-F12, pre-F16 | Haiku, OR_FANOUT=2 | 19/42 proved, depth 4, F12 cascade live-validated | F16 + F17 + F18 |
-| Probe 3 | post-F18 | Haiku, BUILDER=5/SHELVE=8 | 17/?? proved, depth 4 still, tree narrower (-75%) | F19/F20 designed, F18 effect partially confirmed |
+Failure-mode evolution: probes 1-3 dominated by zombie strategies + tree blow-up; probe 4 surfaced OR-race; probe 5's only remaining stuck point (goal 101 = `(-1 : ZMod p).val = p - 1` variant) recovered via Backward recursion. Stack contributions all necessary, none alone sufficient.
 
-Failure mode classified across all probes: Haiku knows lemma families but writes wrong arg order / hallucinated names / missing `Fact`/`NeZero` instances. Direction is right, API specifics are wrong → motivates F20 (lemma signature lookup) + F22 (playbook for cross-strategy idiom transfer).
-
-## Recent commits (since previous STATUS at 6390221)
+## Recent commits (since previous STATUS at 8905d84)
 
 | Commit | Topic |
 |---|---|
-| ad33753 | Consolidate hint regexes into _HintPattern table |
-| 4d8caba | Refactor compile_context into section-list pattern |
-| f766707 | F22 — per-problem playbook |
-| 1011f1f | F20 — lemma signature lookup |
-| 8881383 | F18 — configurable BUILDER/SHELVE thresholds |
-| f1fbbf0 | OR_FANOUT_DEFAULT 3 → 2 |
-| 6dfd7ce | F17 — hint regex case-insensitive + auto-inject Mathlib |
-| b6c3896 | F16 — symmetric cascade |
+| 9c2c2a0 | **Wilson proved by Haiku — first weak-model end-to-end** |
+| 34644c0 | F23 — batch lake build |
+| efd0236 | F24 — cascade race fix |
+| 8905d84 | (this STATUS's predecessor — F16-F22 architectural delta) |
 
 ## Next pending
 
-- **#227 F10**: Sonnet + maxfinsat_complete to live-validate Dedupe v4 true positives. Cost: Sonnet tokens. Order: do AFTER F15 (so Root.lean state is clean) or directly if user prioritizes.
-- **#232 F15**: Root.lean lifecycle hardening — init guard for non-sorry Root + auto promote-to-wrap on root_proved + README §Root.lean lifecycle. Architecture-level cleanup.
+- **#227 F10**: Sonnet + maxfinsat_complete to live-validate Dedupe v4 true positives. Independent of F15.
+- **#232 F15** (re-scoped): promote-to-Root proven to already work (existing `prune.reconcile_proved_goals` rewrites Root.lean to wrap form on root_proved, observed in Haiku run). F15 narrows to: init-side guard for non-sorry Root.lean + README §Root.lean lifecycle. Implementation lighter than originally scoped.
 
-Future deferred (mentioned during F22 design, not on task list):
-- Playbook seed command (one-shot extract idioms from already-proved problems via single LLM call).
-- F21 — TACTIC_TRY_LIST expansion (`field_simp`, `push_cast`, `decide`); only useful if probe data shows Builder fast-path failures.
-- F19 — richer Context.md prior-attempts summary; deferred after F22 probe data review.
-- docs/architecture.md v2.6 — SoT lagging 11+ commits; separate doc maintenance pass.
+Future deferred:
+- Playbook seed command (one-shot extract idioms from already-proved problems).
+- F21 — TACTIC_TRY_LIST expansion; reconsider after more probe data.
+- F19 — richer Context.md prior-attempts summary; F20+F22 may have already addressed the gap.
+- docs/architecture.md v2.6 — SoT now ~13 commits behind; separate doc pass.
+- Cross-problem playbook validation: run Haiku on cantor / compactness with their playbook seeded from the Sonnet proofs.
 
 ## Test count
 
-222 unit tests + 2 lake-integration tests (skipped if lake missing). All green at HEAD.
+231 unit tests + 2 lake-integration tests (skipped if lake missing). All green at HEAD.
 
 ## Tooling LOC
 
-~3900 lines Python (was 2300 pre-F16). Growth: F20 (`lemma_lookup.py` 200), F22 (`playbook.py` 250 + 2 prompt files 70), `complete_text` provider extension, F18 thresholds + tests, agent.py refactor reorganized but didn't shrink.
+~3900 lines Python (mostly steady since 2026-04-30 mid; F23/F24 added ~50 lines net).
 
 ## Things to verify post-compact
 
-1. `git log --oneline -12` to confirm history (top should be ad33753 if no further work)
-2. Working tree clean (`Problems/maxfinsat_complete/` untracked is fine; `wilson_haiku2.log` / `wilson_haiku3.log` / `asterism.db.preprobe` fine to ignore or delete)
-3. `python -m pytest tests/ -q --deselect tests/test_dedupe.py::test_batch_isdefeq_real_lake --deselect tests/test_lemma_lookup.py::test_lookup_batch_real_lake` should show **222 passed**
+1. `git log --oneline -10` — top should be 9c2c2a0 (Haiku wilson proof) or further work.
+2. Working tree clean. `Problems/maxfinsat_complete/` is intentionally untracked. `wilson_haiku*.log` + `Tooling/.lemma_cache.json` + `asterism.db.*` are now gitignored.
+3. `python -m pytest tests/ -q --deselect tests/test_dedupe.py::test_batch_isdefeq_real_lake --deselect tests/test_lemma_lookup.py::test_lookup_batch_real_lake` should show **231 passed**.
+4. `Problems/wilson/playbook.md` should contain 2 entries (the two Haiku idioms).
 
 ## User preferences (memory pinned)
 
 - Long-term clean over short-term patch
 - "建議?" / "看一下" = consult signal, propose first, wait for "ok" / "動手"
 - Don't fix prompts when frameworks could fix the root cause; if prompt is right tool, scope to specific model
-- After several additive commits, periodically pause for consolidation pass (this STATUS update + 4d8caba + ad33753 are exactly that)
+- After several additive commits, periodically pause for consolidation pass
+- Per-problem experience belongs in plain-text Markdown next to the problem, not in DB (F22 playbook design)
