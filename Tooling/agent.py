@@ -1,23 +1,24 @@
-"""claude CLI spawn + Context.md compilation.
+"""WorkArea + Context.md compilation + LLM dispatch.
 
-Context.md is the unique Asterism-over-Hadamard improvement (A7 from
-Hadamard's deferred.md): structured failure_reason + full proposal_md
-from prior dead_attempts injected into agent's sandbox.
+LLM provider selection lives in `Tooling.llm` (see `llm/base.py`).
+This module orchestrates: sandbox dir, Context.md generation from DB,
+and forwarding to the configured provider.
+
+Context.md is Asterism's A7 improvement over Hadamard: structured
+failure_reason + full proposal_md from prior dead_attempts injected
+into agent's sandbox.
 """
 from __future__ import annotations
 
-import os
 import shutil
-import subprocess
 import sqlite3
 import uuid
 from pathlib import Path
 
-from . import db, manifest
+from . import db, llm, manifest
 
 
 WORKER_TIMEOUT_SEC = 600  # 10 min, see architecture.md §13
-DEFAULT_AGENT_MODEL = "claude-sonnet-4-6"
 
 
 class WorkArea:
@@ -201,44 +202,27 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     return out
 
 
-def spawn_claude(*, kind: str, prompt_path: Path, problem_dir: Path,
-                 attempts_dir: Path, model: str | None = None) -> int:
-    """Run claude --agent <kind> with proper scope. Returns rc.
+def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
+              attempts_dir: Path) -> int:
+    """Dispatch to the configured LLM provider for one agent invocation.
 
-    `model` defaults to `ASTERISM_AGENT_MODEL` env var if set, else
-    `DEFAULT_AGENT_MODEL` (Sonnet)."""
-    if model is None:
-        model = os.environ.get("ASTERISM_AGENT_MODEL", DEFAULT_AGENT_MODEL)
-    if not shutil.which("claude"):
-        print("[agent] claude CLI not found; skipping spawn")
-        return 127
+    Provider is resolved from `ASTERISM_LLM_PROVIDER` env (default:
+    `claude`). Returns the provider's rc (0 success, 124 timeout,
+    127 missing dep, other = error).
+    """
+    return llm.get_provider().spawn(llm.LLMRequest(
+        kind=kind,
+        prompt_path=prompt_path,
+        problem_dir=problem_dir,
+        attempts_dir=attempts_dir,
+        timeout_sec=WORKER_TIMEOUT_SEC,
+    ))
 
-    prompt = (
-        f"{kind} task. Read agent prompt at {prompt_path} and follow it exactly.\n"
-        f"Read context at {attempts_dir}/Context.md.\n"
-        f"Write output to {attempts_dir}/."
-    )
 
-    cmd = [
-        "claude",
-        "--model", model,
-        "-p", prompt,
-        "--permission-mode", "acceptEdits",
-        "--add-dir", str(problem_dir),
-        "--add-dir", str(attempts_dir),
-        "--no-session-persistence",
-        "--output-format", "text",
-    ]
-    try:
-        r = subprocess.run(
-            cmd, timeout=WORKER_TIMEOUT_SEC,
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-        )
-        return r.returncode
-    except subprocess.TimeoutExpired:
-        print(f"[agent] claude timed out after {WORKER_TIMEOUT_SEC}s")
-        return 124
+# Back-compat alias: existing code (and any external callers) referencing
+# `agent.spawn_claude` still work. Will be removed in a future cleanup
+# once all in-tree call sites are migrated.
+spawn_claude = spawn_llm
 
 
 def new_pipeline_id() -> str:

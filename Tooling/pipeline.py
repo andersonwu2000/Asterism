@@ -162,7 +162,7 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
 
     # Phase 2: tactic_llm
     agent.compile_context(conn, goal=goal, mfst=mfst, attempts_dir=attempts_dir)
-    rc = agent.spawn_claude(
+    rc = agent.spawn_llm(
         kind="builder",
         prompt_path=PROMPT_DIR / "builder.md",
         problem_dir=workspace / "Problems" / goal["problem"],
@@ -336,7 +336,7 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
                           attempts_dir=attempts_dir,
                           strategy_id=strategy_id)
 
-    rc = agent.spawn_claude(
+    rc = agent.spawn_llm(
         kind="backward",
         prompt_path=PROMPT_DIR / "backward.md",
         problem_dir=workspace / "Problems" / goal["problem"],
