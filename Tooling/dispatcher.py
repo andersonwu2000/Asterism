@@ -14,23 +14,39 @@ from pathlib import Path
 from . import agent, db, manifest, pipeline, playbook, prune
 
 
-# Defaults are tuned for weaker models (e.g. Haiku) which iterate
-# productively across attempts but need more rounds than Sonnet to
-# converge. Both are env-overridable so a Sonnet run can tighten them
-# back (e.g. ASTERISM_BUILDER_THRESHOLD=3 ASTERISM_SHELVE_THRESHOLD=7).
+# Per-model defaults (F31). Empirically:
+#   Sonnet/Opus rarely succeed at attempts ≥3 — 97% of proves happen
+#                in ≤3 Builder fails. Tighten to 3/7 to skip the
+#                wasted attempts 4-5 (each costs claude thinking +
+#                potentially a 600s CLI timeout).
+#   Haiku       iterates productively across more attempts (its
+#                training memory of Mathlib API specifics is thinner;
+#                F20 + F22 + retries lets it converge given enough
+#                budget). Keep 5/8.
 #
 # Semantics:
 #   BUILDER_THRESHOLD = N → first N attempts (0..N-1) dispatch Builder,
 #                          attempts >= N dispatch Backward.
 #   SHELVE_THRESHOLD = M  → goal shelves once attempts hits M.
-# Default 5/8: 5 Builder tries then up to 3 Backward tries before shelve.
-BUILDER_THRESHOLD_DEFAULT = 5
-SHELVE_THRESHOLD_DEFAULT = 8
+# Both env-overridable: ASTERISM_BUILDER_THRESHOLD / ASTERISM_SHELVE_THRESHOLD.
+_STRONG_DEFAULTS = (3, 7)
+_WEAK_DEFAULTS = (5, 8)
+
+
+def _model_aware_thresholds() -> tuple[int, int]:
+    """Pick (BUILDER, SHELVE) defaults based on ASTERISM_AGENT_MODEL.
+    Substring 'haiku' (case-insensitive) selects weak-tier defaults;
+    everything else (sonnet, opus, future strong models, unset) gets
+    strong-tier."""
+    model = os.environ.get("ASTERISM_AGENT_MODEL", "").lower()
+    if "haiku" in model:
+        return _WEAK_DEFAULTS
+    return _STRONG_DEFAULTS
+
 
 # Module-level mutable knobs — read at use sites so env override
 # (set in `run`) takes effect.
-BUILDER_THRESHOLD = BUILDER_THRESHOLD_DEFAULT
-SHELVE_THRESHOLD = SHELVE_THRESHOLD_DEFAULT
+BUILDER_THRESHOLD, SHELVE_THRESHOLD = _model_aware_thresholds()
 
 TICK_TIMEOUT = 30  # seconds
 OR_FANOUT_DEFAULT = 2  # max concurrent Backwards per open goal (env override)
@@ -511,10 +527,11 @@ def run(workspace: Path, *, once: bool = False) -> int:
     budget_sec = int(os.environ.get("ASTERISM_BUDGET_SEC", "1800"))
     or_fanout = int(os.environ.get("ASTERISM_OR_FANOUT",
                                    str(OR_FANOUT_DEFAULT)))
+    b_default, s_default = _model_aware_thresholds()
     BUILDER_THRESHOLD = int(os.environ.get(
-        "ASTERISM_BUILDER_THRESHOLD", str(BUILDER_THRESHOLD_DEFAULT)))
+        "ASTERISM_BUILDER_THRESHOLD", str(b_default)))
     SHELVE_THRESHOLD = int(os.environ.get(
-        "ASTERISM_SHELVE_THRESHOLD", str(SHELVE_THRESHOLD_DEFAULT)))
+        "ASTERISM_SHELVE_THRESHOLD", str(s_default)))
     if SHELVE_THRESHOLD <= BUILDER_THRESHOLD:
         # An invalid combo would mean Backward never gets a chance —
         # fail loudly rather than silently degrade behavior.

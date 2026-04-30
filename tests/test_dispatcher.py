@@ -53,6 +53,53 @@ def test_next_worker_kind_respects_runtime_threshold(
 
 
 # ---------------------------------------------------------------------
+# F31 — model-aware default thresholds
+# ---------------------------------------------------------------------
+
+def test_model_aware_thresholds_haiku(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Haiku gets weak-tier defaults (5/8) — extra Builder attempts
+    have proven productive for it."""
+    monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-haiku-4-5")
+    assert _dispatcher._model_aware_thresholds() == (5, 8)
+
+
+def test_model_aware_thresholds_sonnet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sonnet gets strong-tier defaults (3/7) — empirical: 0% of
+    Sonnet's proves happen at 4+ Builder fails."""
+    monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-sonnet-4-6")
+    assert _dispatcher._model_aware_thresholds() == (3, 7)
+
+
+def test_model_aware_thresholds_opus_strong(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Opus / non-Haiku models default to strong tier (claude_cli's
+    DEFAULT_MODEL is Sonnet, so unset env also falls here)."""
+    monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-opus-4-7")
+    assert _dispatcher._model_aware_thresholds() == (3, 7)
+
+
+def test_model_aware_thresholds_unset_env_strong(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ASTERISM_AGENT_MODEL", raising=False)
+    assert _dispatcher._model_aware_thresholds() == (3, 7)
+
+
+def test_model_aware_thresholds_haiku_case_insensitive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Substring match must be case-insensitive — vendor naming
+    drift shouldn't silently flip a real Haiku run to strong-tier."""
+    monkeypatch.setenv("ASTERISM_AGENT_MODEL", "Claude-HAIKU-Pro")
+    assert _dispatcher._model_aware_thresholds() == (5, 8)
+
+
+# ---------------------------------------------------------------------
 # cascade_one — Builder
 # ---------------------------------------------------------------------
 
