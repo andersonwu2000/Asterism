@@ -16,7 +16,11 @@ asterism.db.*
 Tooling/.lemma_cache.json
 # F20 transient query file (created + unlinked per goal lookup)
 .lemma_lookup_query.lean
-# Daemon logs from manual runs
+# F28 — Asterism runtime state (logs, future scratch). Whole hidden
+# directory tree.
+.asterism/
+# Legacy daemon log paths (pre-F28). Kept gitignored for back-compat
+# with old workspaces; new runs auto-write under .asterism/logs/.
 wilson_haiku*.log
 *_haiku*.log
 *_sonnet*.log

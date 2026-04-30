@@ -5,11 +5,91 @@ See architecture.md §9.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import db, dispatcher, manifest, prune
+
+
+# F28 — daemon log lifecycle.
+LOG_DIR = Path(".asterism") / "logs"
+LOG_RETENTION_KEEP = 20  # most-recent N logs kept; older deleted on startup
+
+
+class _Tee:
+    """Write to multiple text streams. Used so the daemon's stdout
+    appears on the operator's terminal AND in the per-run log file."""
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, s):
+        for st in self._streams:
+            st.write(s)
+            st.flush()
+        return len(s)
+
+    def flush(self):
+        for st in self._streams:
+            st.flush()
+
+    def isatty(self):
+        # Some downstream tools query isatty; report based on the
+        # primary (terminal) stream.
+        return getattr(self._streams[0], "isatty", lambda: False)()
+
+
+def _log_filename(workspace: Path) -> str:
+    """`<problem>_<model>_<UTC ts>.log` — `<problem>` falls back to
+    `daemon` when the DB has no problems yet (e.g. first run before
+    init), or `multi` when more than one problem is registered."""
+    problem = "daemon"
+    try:
+        conn = db.connect()
+        names = [r[0] for r in conn.execute(
+            "SELECT name FROM problems ORDER BY name").fetchall()]
+        conn.close()
+        if len(names) == 1:
+            problem = names[0]
+        elif len(names) > 1:
+            problem = "multi"
+    except Exception:
+        # DB missing / unreadable: keep 'daemon' default
+        pass
+    model = os.environ.get("ASTERISM_AGENT_MODEL", "claude-sonnet-4-6")
+    # Strip path-unsafe chars from model (just in case env carries them)
+    model = re.sub(r"[^\w.-]", "_", model)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return f"{problem}_{model}_{ts}.log"
+
+
+def _open_run_log(workspace: Path) -> Path:
+    """Ensure `.asterism/logs/` exists, prune oldest beyond retention,
+    and return the new log file's path. Caller is responsible for
+    actually opening + redirecting."""
+    log_dir = workspace / LOG_DIR
+    log_dir.mkdir(parents=True, exist_ok=True)
+    _retain_recent_logs(log_dir, keep=LOG_RETENTION_KEEP)
+    return log_dir / _log_filename(workspace)
+
+
+def _retain_recent_logs(log_dir: Path, *, keep: int) -> list[Path]:
+    """Delete .log files beyond the most-recent `keep` count
+    (sorted by mtime). Returns the deleted paths for tests."""
+    if not log_dir.exists():
+        return []
+    logs = sorted(log_dir.glob("*.log"),
+                  key=lambda p: p.stat().st_mtime, reverse=True)
+    deleted: list[Path] = []
+    for old in logs[keep:]:
+        try:
+            old.unlink()
+            deleted.append(old)
+        except OSError:
+            pass
+    return deleted
 
 
 # Root.lean lifecycle (F15):
@@ -128,8 +208,27 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     workspace = Path.cwd()
-    rc = dispatcher.run(workspace, once=getattr(args, "once", False))
-    return rc
+    # F28 — auto-tee daemon stdout/stderr into .asterism/logs/<...>.log
+    # so post-run forensics + post-compact handoffs always have a
+    # canonical artifact, while the operator still sees real-time
+    # output on the terminal.
+    log_path = _open_run_log(workspace)
+    log_file = log_path.open("w", encoding="utf-8")
+    print(f"[cli] log → {log_path.relative_to(workspace).as_posix()}",
+          flush=True)
+    orig_stdout, orig_stderr = sys.stdout, sys.stderr
+    sys.stdout = _Tee(orig_stdout, log_file)
+    sys.stderr = _Tee(orig_stderr, log_file)
+    try:
+        rc = dispatcher.run(workspace, once=getattr(args, "once", False))
+        return rc
+    finally:
+        sys.stdout = orig_stdout
+        sys.stderr = orig_stderr
+        try:
+            log_file.close()
+        except OSError:
+            pass
 
 
 def cmd_prune(args: argparse.Namespace) -> int:
