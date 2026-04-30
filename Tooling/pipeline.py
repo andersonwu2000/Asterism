@@ -13,7 +13,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import agent, db, dedupe, manifest
+from . import agent, db, dedupe, diagnostics, manifest
 
 
 PROMPT_DIR = Path(__file__).parent / "prompts"
@@ -204,7 +204,8 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
     backup.unlink()
     return PipelineResult(
         outcome="failed", failure_reason="lake_build_error",
-        failure_detail=err[:2000], proposal_md=proposal_text,
+        failure_detail=diagnostics.annotate_failure_detail(err[:2000]),
+        proposal_md=proposal_text,
     )
 
 
@@ -255,9 +256,11 @@ def run_verify(conn: sqlite3.Connection, *, strategy_id: int,
     # Step 1: re-build scratch against now-real sub-goal proofs.
     ok, err = _lake_build(workspace, scratch_abs)
     if not ok:
-        return PipelineResult(outcome="failed",
-                              failure_reason="lake_build_error",
-                              failure_detail=f"scratch: {err[:1900]}")
+        return PipelineResult(
+            outcome="failed", failure_reason="lake_build_error",
+            failure_detail=diagnostics.annotate_failure_detail(
+                f"scratch: {err[:1900]}"),
+        )
 
     # Step 2: rewrite parent's lean_path to alias from scratch.
     parent_abs = workspace / s["lean_path"]
@@ -289,9 +292,11 @@ def run_verify(conn: sqlite3.Connection, *, strategy_id: int,
         if backup.exists():
             shutil.copy2(backup, parent_abs)
             backup.unlink()
-        return PipelineResult(outcome="failed",
-                              failure_reason="lake_build_error",
-                              failure_detail=f"parent: {err[:1900]}")
+        return PipelineResult(
+            outcome="failed", failure_reason="lake_build_error",
+            failure_detail=diagnostics.annotate_failure_detail(
+                f"parent: {err[:1900]}"),
+        )
 
     if backup.exists():
         backup.unlink()
@@ -480,7 +485,11 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
                     p.unlink()
             except OSError:
                 pass
-        return _abort("lake_build_error", str(exc)[:2000], proposal_text)
+        return _abort(
+            "lake_build_error",
+            diagnostics.annotate_failure_detail(str(exc)[:2000]),
+            proposal_text,
+        )
 
 
 def _slug_from_filename(name: str) -> str:

@@ -347,6 +347,12 @@ def queue_count(conn: sqlite3.Connection, *, target_id: str, kind: str) -> int:
     return int(row["n"])
 
 
+def queue_size(conn: sqlite3.Connection) -> int:
+    """Total queue rows. Non-destructive (unlike pop_queue)."""
+    row = conn.execute("SELECT count(*) AS n FROM queue").fetchone()
+    return int(row["n"])
+
+
 # ---------------------------------------------------------------------
 # Queue helpers
 # ---------------------------------------------------------------------

@@ -293,6 +293,41 @@ def test_recover_at_startup_kills_half_baked_strategies(
     ).fetchone()["status"] == "proposed"
 
 
+def test_queue_size_helper(conn: sqlite3.Connection) -> None:
+    assert db.queue_size(conn) == 0
+    db.enqueue(conn, kind="Backward", target_id="1")
+    db.enqueue(conn, kind="Builder", target_id="2")
+    assert db.queue_size(conn) == 2
+
+
+def test_run_idle_exits_when_only_shelved_goals(
+    conn: sqlite3.Connection,
+) -> None:
+    """F11: when daemon has no dispatchable work (all goals shelved or
+    proved + nothing in flight + queue empty), it exits instead of
+    spinning until budget timeout."""
+    # We don't run the full dispatcher loop (too heavy); we replicate
+    # the idle-exit condition check to confirm the predicate logic.
+    _seed_problem_with_root(conn)
+    # Goal status='open' initially → not idle
+    assert len(db.open_goals(conn)) > 0
+
+    # Shelf the only goal → no dispatchable work
+    gid = conn.execute("SELECT id FROM goals WHERE slug='main'").fetchone()["id"]
+    db.update_goal_status(conn, gid, "shelved")
+
+    assert len(db.open_goals(conn)) == 0
+    assert len(db.strategies_ready_for_verify(conn)) == 0
+    assert db.queue_size(conn) == 0
+    # Predicate that dispatcher.run() uses to decide idle-exit
+    is_idle = (
+        len(db.open_goals(conn)) == 0
+        and len(db.strategies_ready_for_verify(conn)) == 0
+        and db.queue_size(conn) == 0
+    )
+    assert is_idle
+
+
 def test_recover_at_startup_clears_orphan_attempts_dirs(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:

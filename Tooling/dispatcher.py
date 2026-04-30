@@ -488,6 +488,20 @@ def run(workspace: Path, *, once: bool = False) -> int:
             pool.shutdown(wait=True)
             return 0
 
+        # Idle exit: nothing in flight, queue empty, and bfs_refill found
+        # nothing to dispatch (open_goals filter excludes shelved/orphan).
+        # Means we'd just spin until budget — exit instead. Distinct from
+        # root_proved exit above: this fires when goals have shelved or
+        # all reachable goals are dead.
+        if (not futures
+                and db.queue_size(conn) == 0
+                and len(db.open_goals(conn)) == 0
+                and len(db.strategies_ready_for_verify(conn)) == 0):
+            print(f"[dispatcher] no dispatchable work, exiting "
+                  f"(roots_proved={db.root_proved(conn)})", flush=True)
+            pool.shutdown(wait=True)
+            return 0 if db.root_proved(conn) else 1
+
         # Wait for any completion or tick
         if futures:
             wait(list(futures), timeout=TICK_TIMEOUT,
