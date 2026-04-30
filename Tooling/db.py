@@ -293,7 +293,7 @@ def strategies_ready_for_verify(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         "SELECT s.* FROM strategies s "
         "JOIN goals g ON g.id = s.goal_id "
         "WHERE s.status = 'proposed' "
-        "  AND g.status != 'proved' "
+        "  AND g.status NOT IN ('proved','shelved') "
         "  AND NOT EXISTS ("
         "    SELECT 1 FROM strategy_subgoals ss"
         "    JOIN goals sg ON sg.id = ss.subgoal_id"

@@ -161,6 +161,48 @@ def _sweep_lean_backups(conn: sqlite3.Connection,
     return backups_handled, tmps_removed
 
 
+def _propagate_shelve(conn: sqlite3.Connection, sub_goal_id: int) -> None:
+    """When a sub-goal shelves, every parent strategy that still depends
+    on it can never become ready_for_verify (which requires all
+    sub-goals 'proved'). Such strategies sit in 'proposed' forever as
+    zombies, blocking their own parent goal from being re-dispatched
+    (W4 reopen only fires when no 'proposed' strategy remains).
+
+    Cascade the shelve upward: kill any 'proposed' parent strategy of
+    this sub-goal; for each strategy's parent goal, if it's 'attempting'
+    with no surviving live strategy, reopen it (same logic as W4).
+
+    Iterative — a re-opened parent goal may shelve later via its own
+    increment_goal_attempts path; we don't recurse here.
+    """
+    # Parent strategies of this sub-goal that are still proposed
+    parent_strategies = conn.execute(
+        "SELECT s.id, s.goal_id FROM strategies s "
+        "JOIN strategy_subgoals ss ON ss.strategy_id = s.id "
+        "WHERE ss.subgoal_id = ? AND s.status = 'proposed'",
+        (sub_goal_id,),
+    ).fetchall()
+
+    for s in parent_strategies:
+        db.update_strategy_status(conn, int(s["id"]), "dead")
+
+    # For each affected parent goal, mirror the W4 reopen rule: if no
+    # 'proposed' strategy survives, transition 'attempting' → 'open'.
+    affected_parent_goals = {int(s["goal_id"]) for s in parent_strategies}
+    for gid in affected_parent_goals:
+        has_live = conn.execute(
+            "SELECT 1 FROM strategies WHERE goal_id = ?"
+            " AND status = 'proposed' LIMIT 1",
+            (gid,),
+        ).fetchone()
+        if has_live is None:
+            row = conn.execute(
+                "SELECT status FROM goals WHERE id = ?", (gid,),
+            ).fetchone()
+            if row and row["status"] == "attempting":
+                db.update_goal_status(conn, gid, "open")
+
+
 def next_worker_kind(goal: sqlite3.Row) -> str:
     """Pure: input goal row → 'Builder' or 'Backward'."""
     if int(goal["difficulty"]) >= 4:
@@ -220,6 +262,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             n = db.increment_goal_attempts(conn, int(target_id))
             if n >= SHELVE_THRESHOLD:
                 db.update_goal_status(conn, int(target_id), "shelved")
+                _propagate_shelve(conn, int(target_id))
             return
 
     if kind == "Backward":
@@ -230,6 +273,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
         n = db.increment_goal_attempts(conn, int(target_id))
         if n >= SHELVE_THRESHOLD:
             db.update_goal_status(conn, int(target_id), "shelved")
+            _propagate_shelve(conn, int(target_id))
         return
 
     if kind == "Verify":
@@ -255,6 +299,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             n = db.increment_goal_attempts(conn, goal_id)
             if n >= SHELVE_THRESHOLD:
                 db.update_goal_status(conn, goal_id, "shelved")
+                _propagate_shelve(conn, goal_id)
                 return
             # Re-open the goal if no live strategy remains, so bfs_refill
             # can dispatch a new Backward attempt. Without this the goal

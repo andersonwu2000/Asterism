@@ -204,7 +204,7 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
     backup.unlink()
     return PipelineResult(
         outcome="failed", failure_reason="lake_build_error",
-        failure_detail=diagnostics.annotate_failure_detail(err[:2000]),
+        failure_detail=diagnostics.annotate_failure_detail(err),
         proposal_md=proposal_text,
     )
 
@@ -259,7 +259,7 @@ def run_verify(conn: sqlite3.Connection, *, strategy_id: int,
         return PipelineResult(
             outcome="failed", failure_reason="lake_build_error",
             failure_detail=diagnostics.annotate_failure_detail(
-                f"scratch: {err[:1900]}"),
+                f"scratch: {err}"),
         )
 
     # Step 2: rewrite parent's lean_path to alias from scratch.
@@ -295,7 +295,7 @@ def run_verify(conn: sqlite3.Connection, *, strategy_id: int,
         return PipelineResult(
             outcome="failed", failure_reason="lake_build_error",
             failure_detail=diagnostics.annotate_failure_detail(
-                f"parent: {err[:1900]}"),
+                f"parent: {err}"),
         )
 
     if backup.exists():
@@ -446,7 +446,9 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
         for t in placed:
             ok, err = _lake_build(workspace, t)
             if not ok:
-                raise RuntimeError(f"lake build {t.name} failed: {err[:500]}")
+                # Pass full stderr; caller (annotate_failure_detail)
+                # smart-truncates to keep error/warning lines.
+                raise RuntimeError(f"lake build {t.name} failed: {err}")
 
         # All passed — INSERT goals + link via strategy_subgoals.
         # Dedupe-hits are inserted as already-'proved' (alias body is
@@ -487,7 +489,7 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
                 pass
         return _abort(
             "lake_build_error",
-            diagnostics.annotate_failure_detail(str(exc)[:2000]),
+            diagnostics.annotate_failure_detail(str(exc)),
             proposal_text,
         )
 

@@ -95,6 +95,132 @@ def test_cascade_backward_failed_increments(conn: sqlite3.Connection) -> None:
 
 
 # ---------------------------------------------------------------------
+# F12 — sub-goal shelve propagates to parent strategies
+# ---------------------------------------------------------------------
+
+def test_subgoal_shelve_kills_parent_strategy_and_reopens_goal(
+    conn: sqlite3.Connection,
+) -> None:
+    """F12: when a sub-goal hits SHELVE_THRESHOLD, parent strategies
+    that depend on it can never become ready_for_verify (require all
+    sub-goals 'proved'). Cascade should kill them so the grandparent
+    goal is no longer blocked by zombies.
+
+    Grandparent → strategy → {proved-sub, doomed-sub}.
+    Doomed sub-goal accumulates failures and shelves at attempts=7.
+    Strategy should die; grandparent should reopen if it has no other
+    live strategy."""
+    grand = _seed_goal(conn, problem="p", difficulty=4)
+    db.update_goal_status(conn, grand, "attempting")
+
+    proved_sub = db.insert_goal(
+        conn, problem="p", slug="proved_sub",
+        lean_path="Problems/p/proofs/L_proved_sub.lean",
+        statement="T", origin="backward", difficulty=2, depth=1,
+    )
+    db.update_goal_status(conn, proved_sub, "proved")
+
+    doomed_sub = db.insert_goal(
+        conn, problem="p", slug="doomed_sub",
+        lean_path="Problems/p/proofs/L_doomed_sub.lean",
+        statement="T", origin="backward", difficulty=2, depth=1,
+    )
+
+    sid = db.insert_strategy(
+        conn, goal_id=grand,
+        lean_path="Problems/p/Root.lean",
+        scratch_path="Problems/p/proofs/_strategy_s.lean",
+        created_by="pid",
+    )
+    db.link_subgoal(conn, strategy_id=sid, subgoal_id=proved_sub, position=0)
+    db.link_subgoal(conn, strategy_id=sid, subgoal_id=doomed_sub, position=1)
+
+    # Push doomed_sub to SHELVE_THRESHOLD via Builder failures.
+    for _ in range(SHELVE_THRESHOLD):
+        cascade_one(conn, pipeline_id="pid", kind="Builder",
+                    target_id=str(doomed_sub), target_kind="Goal",
+                    outcome="failed")
+
+    # Doomed sub-goal shelved
+    assert db.get_goal(conn, doomed_sub)["status"] == "shelved"
+    # Parent strategy died (no longer 'proposed')
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (sid,),
+    ).fetchone()["status"] == "dead"
+    # Grandparent reopened (no live strategy left)
+    assert db.get_goal(conn, grand)["status"] == "open"
+
+
+def test_subgoal_shelve_keeps_goal_attempting_when_other_strategy_alive(
+    conn: sqlite3.Connection,
+) -> None:
+    """F12: if grandparent has another live strategy after one dies,
+    don't reopen — the alive strategy may still verify."""
+    grand = _seed_goal(conn, problem="p", difficulty=4)
+    db.update_goal_status(conn, grand, "attempting")
+
+    doomed_sub = db.insert_goal(
+        conn, problem="p", slug="doomed_sub2",
+        lean_path="Problems/p/proofs/L_doomed_sub2.lean",
+        statement="T", origin="backward", difficulty=2, depth=1,
+    )
+
+    # Two strategies on grand; only s1 includes doomed_sub
+    s1 = db.insert_strategy(conn, goal_id=grand,
+                            lean_path="Problems/p/Root.lean",
+                            scratch_path="Problems/p/proofs/_strategy_s1.lean",
+                            created_by="pid1")
+    db.link_subgoal(conn, strategy_id=s1, subgoal_id=doomed_sub, position=0)
+
+    s2 = db.insert_strategy(conn, goal_id=grand,
+                            lean_path="Problems/p/Root.lean",
+                            scratch_path="Problems/p/proofs/_strategy_s2.lean",
+                            created_by="pid2")
+    # s2's sub-goals not touched
+
+    for _ in range(SHELVE_THRESHOLD):
+        cascade_one(conn, pipeline_id="pid", kind="Builder",
+                    target_id=str(doomed_sub), target_kind="Goal",
+                    outcome="failed")
+
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (s1,),
+    ).fetchone()["status"] == "dead"
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (s2,),
+    ).fetchone()["status"] == "proposed"
+    # Grandparent stays attempting (s2 still alive)
+    assert db.get_goal(conn, grand)["status"] == "attempting"
+
+
+def test_strategies_ready_for_verify_excludes_shelved_goal(
+    conn: sqlite3.Connection,
+) -> None:
+    """F12 secondary fix: defensive — strategies on shelved goals must
+    not be returned as ready_for_verify (their parent is dead)."""
+    gid = _seed_goal(conn)
+    sub = db.insert_goal(
+        conn, problem="p", slug="proved_sub_x",
+        lean_path="Problems/p/proofs/L_proved_sub_x.lean",
+        statement="T", origin="backward", difficulty=2, depth=1,
+    )
+    db.update_goal_status(conn, sub, "proved")
+    sid = db.insert_strategy(conn, goal_id=gid,
+                             lean_path="Problems/p/Root.lean",
+                             scratch_path="Problems/p/proofs/_strategy_x.lean",
+                             created_by="pid")
+    db.link_subgoal(conn, strategy_id=sid, subgoal_id=sub, position=0)
+
+    # Initially: ready
+    assert any(s["id"] == sid for s in db.strategies_ready_for_verify(conn))
+
+    # Shelve the goal
+    db.update_goal_status(conn, gid, "shelved")
+    assert not any(s["id"] == sid
+                   for s in db.strategies_ready_for_verify(conn))
+
+
+# ---------------------------------------------------------------------
 # cascade_one — Verify
 # ---------------------------------------------------------------------
 

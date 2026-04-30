@@ -107,3 +107,67 @@ def test_annotate_passthrough_when_no_pattern() -> None:
 def test_annotate_handles_none() -> None:
     """Defensive: annotate_failure_detail must not crash on None."""
     assert annotate_failure_detail("") == ""
+
+
+# ---------------------------------------------------------------------
+# F13 — smart_truncate_stderr preserves error/warning lines over LEAN_PATH
+# ---------------------------------------------------------------------
+
+def test_smart_truncate_short_stderr_passthrough() -> None:
+    """If stderr is already under budget, return verbatim."""
+    from Tooling.diagnostics import smart_truncate_stderr
+    text = "error: foo\nwarning: bar"
+    assert smart_truncate_stderr(text, budget=2000) == text
+
+
+def test_smart_truncate_keeps_error_when_lean_path_dominates() -> None:
+    """F13 root cause: Windows lake build emits LEAN_PATH=...;...;... as
+    a giant first chunk. Naive truncation cuts the actual error. Smart
+    truncate must surface error lines first."""
+    from Tooling.diagnostics import smart_truncate_stderr
+    lean_path = "trace: .> LEAN_PATH=" + ";".join(
+        f"D:/lake/packages/p{i}/lib/lean" for i in range(120)
+    )  # ~3000+ chars
+    error_line = "/file.lean:5:10: error: bad import 'Mathlib.Foo'"
+    stderr = lean_path + "\n" + error_line + "\nmore trace"
+    out = smart_truncate_stderr(stderr, budget=500)
+    assert error_line in out
+    assert len(out) <= 500
+
+
+def test_smart_truncate_dedupes_repeated_error_lines() -> None:
+    """Same error line repeated in trace + stderr should appear once
+    in the surfaced section (the head-trace fill might re-include it
+    verbatim, so we only check the count after dedupe — that the
+    extracted block has it once)."""
+    from Tooling.diagnostics import smart_truncate_stderr
+    error = "error: bad import 'X'"
+    # Force truncation by exceeding budget
+    long_filler = "z" * 3000
+    stderr = f"{error}\n{long_filler}\n{error}\nmore"
+    out = smart_truncate_stderr(stderr, budget=500)
+    head_marker = "--- trace head ---"
+    extracted = out.split(head_marker)[0] if head_marker in out else out
+    assert extracted.count(error) == 1
+
+
+def test_annotate_uses_smart_truncate_then_finds_hint() -> None:
+    """Integration: a long stderr with error line buried mid-text should
+    yield a hint after smart-truncation surfaces the error."""
+    lean_path = "trace: .> LEAN_PATH=" + ";".join(
+        f"path{i}" for i in range(100)
+    )
+    stderr = lean_path + "\n/x.lean:1:0: error: bad import 'Mathlib.Old.Path'"
+    out = annotate_failure_detail(stderr)
+    assert "framework hints" in out
+    assert "Mathlib.Old.Path" in out
+
+
+def test_smart_truncate_preserves_lean_unknown_identifier() -> None:
+    """Lean errors like `unknown identifier 'foo'` (without file:line:col
+    prefix) must also be preserved."""
+    from Tooling.diagnostics import smart_truncate_stderr
+    long_trace = "x" * 3000
+    stderr = long_trace + "\nerror: unknown identifier 'foo'\n"
+    out = smart_truncate_stderr(stderr, budget=500)
+    assert "unknown identifier 'foo'" in out

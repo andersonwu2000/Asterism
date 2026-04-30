@@ -212,6 +212,7 @@ def _batch_isdefeq(workspace: Path, problem: str,
             timeout=_BATCH_TIMEOUT_SEC,
         )
         output = r.stdout + r.stderr
+        rc = r.returncode
     except subprocess.TimeoutExpired:
         return [False] * len(pairs)
     except OSError:
@@ -222,10 +223,43 @@ def _batch_isdefeq(workspace: Path, problem: str,
         except OSError:
             pass
 
+    # Fast path: if Lean is happy with the entire file, every pair passed.
+    if rc == 0:
+        return [True] * len(pairs)
+
+    # rc != 0 means at least one error. Walk error lines and partition
+    # them by which pair's range they fall into. Errors outside any
+    # pair range are GLOBAL (e.g. import not found, namespace mis-parse,
+    # earlier example bailing the elaborator). A global error invalidates
+    # the run — Lean may have stopped before reaching later pairs, so
+    # absence-of-error in their line range does NOT mean isDefEq passed.
+    # Conservative: treat all pairs as False on global error.
     error_lines: set[int] = set()
     for m in _LAKE_ERR_RE.finditer(output):
         error_lines.add(int(m.group(1)))
 
+    in_any_pair = set()
+    for el in error_lines:
+        for i, start in enumerate(pair_start_lines):
+            end = (pair_start_lines[i + 1] - 1
+                   if i + 1 < len(pair_start_lines) else len(lines))
+            if start <= el <= end:
+                in_any_pair.add(el)
+                break
+
+    if error_lines - in_any_pair:
+        # Global error present: rc said failure but the failure is not
+        # attributable to a single pair. Refuse all.
+        return [False] * len(pairs)
+
+    if not error_lines:
+        # rc != 0 but regex matched no line-prefixed errors. Conservative:
+        # the failure pattern is unfamiliar; refuse all rather than
+        # silently accept.
+        return [False] * len(pairs)
+
+    # Per-pair attribution: pair fails iff at least one error line falls
+    # in its range.
     results: list[bool] = []
     for i, start in enumerate(pair_start_lines):
         end = (pair_start_lines[i + 1] - 1

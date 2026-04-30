@@ -101,15 +101,64 @@ def parse_lake_stderr(stderr: str) -> list[str]:
     return hints
 
 
+_IMPORTANT_LINE_RE = re.compile(
+    r"^.*?(?:error[:\s]|warning[:\s]|✖|unknown identifier|unknown constant"
+    r"|unknown tactic|bad import|object file).*$",
+    re.MULTILINE,
+)
+
+
+def smart_truncate_stderr(stderr: str, *, budget: int = 2000) -> str:
+    """Truncate stderr while preserving the lines diagnostics actually
+    care about: errors, warnings, the lake `✖` task marker, and the
+    Lean-side `unknown ...` / `bad import` / `object file ...` strings.
+
+    Lake `lake build <module>` stderr on Windows often dumps a
+    multi-kilobyte LEAN_PATH string before reaching the actual Lean
+    error. A naive `stderr[:budget]` cuts off the error and
+    parse_lake_stderr sees nothing to act on.
+
+    Strategy: extract important lines first (preserve order), then
+    fill the remaining budget with the head of the original stderr
+    for context.
+    """
+    if not stderr:
+        return stderr
+    if len(stderr) <= budget:
+        return stderr
+
+    important = _IMPORTANT_LINE_RE.findall(stderr)
+    # Dedupe consecutive identical lines while preserving order
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for ln in important:
+        if ln not in seen:
+            seen.add(ln)
+            deduped.append(ln)
+
+    important_text = "\n".join(deduped)
+    if len(important_text) >= budget:
+        return important_text[:budget]
+
+    sep = "\n--- trace head ---\n"
+    head_budget = budget - len(important_text) - len(sep)
+    if head_budget <= 0:
+        return important_text
+    return important_text + sep + stderr[:head_budget]
+
+
 def annotate_failure_detail(failure_detail: str) -> str:
-    """Append structured hint section to `failure_detail` if any pattern
-    matched. Original stderr preserved verbatim above the hint block."""
-    hints = parse_lake_stderr(failure_detail or "")
-    if not hints:
+    """Smart-truncate stderr (preserves error lines), then append parsed
+    hints if any patterns matched."""
+    if not failure_detail:
         return failure_detail
+    truncated = smart_truncate_stderr(failure_detail)
+    hints = parse_lake_stderr(truncated)
+    if not hints:
+        return truncated
     bullet = "\n".join(f"- {h}" for h in hints)
     return (
-        f"{failure_detail}\n\n"
+        f"{truncated}\n\n"
         f"--- framework hints (parsed from stderr) ---\n"
         f"{bullet}"
     )

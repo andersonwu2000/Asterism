@@ -407,6 +407,88 @@ def test_build_alias_handles_no_imports() -> None:
 # _batch_isdefeq integration (skipped when lake unavailable)
 # ---------------------------------------------------------------------
 
+# ---------------------------------------------------------------------
+# _batch_isdefeq global-error handling (F14)
+# ---------------------------------------------------------------------
+
+def _patch_subprocess(monkeypatch: pytest.MonkeyPatch, *,
+                      stdout: str, stderr: str, rc: int) -> None:
+    """Stub subprocess.run inside dedupe with a fixed result."""
+    class FakeResult:
+        def __init__(self) -> None:
+            self.stdout = stdout
+            self.stderr = stderr
+            self.returncode = rc
+
+    def fake_run(*args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        return FakeResult()
+
+    monkeypatch.setattr(openai_api_dedupe := __import__(
+        "Tooling.dedupe", fromlist=["subprocess"]).subprocess,
+                        "run", fake_run)
+
+
+def test_batch_isdefeq_rc0_means_all_pairs_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F14: rc==0 from Lean is the canonical 'no errors anywhere' signal.
+    Skip line-error parsing entirely in the happy path."""
+    _patch_subprocess(monkeypatch, stdout="", stderr="", rc=0)
+    pairs = [(": Nat", ": Nat"), (": Bool", ": Bool")]
+    result = dedupe._batch_isdefeq(tmp_path, "p", pairs)
+    assert result == [True, True]
+
+
+def test_batch_isdefeq_global_error_outside_pair_range_rejects_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F14 root cause: when an error fires before the first pair (e.g.
+    bad import on file line 1), Lean stops elaborating and the pair
+    lines never produce errors. Old code defaulted to all-True.
+    New code: rc != 0 + error outside any pair → all False."""
+    # Pair lines start around 5; error at line 1 is global.
+    stdout = "/tmp/x.lean:1:0: error: object file does not exist"
+    _patch_subprocess(monkeypatch, stdout=stdout, stderr="", rc=1)
+    pairs = [(": A", ": B"), (": C", ": D")]
+    result = dedupe._batch_isdefeq(tmp_path, "p", pairs)
+    assert result == [False, False]
+
+
+def test_batch_isdefeq_per_pair_attribution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When all errors are inside pair ranges, attribute per-pair.
+    Pair 0 occupies lines around 6, pair 1 around 8 (after import line +
+    namespace + blank). Error at the second pair's line range only."""
+    # Need to inspect the actual file structure built by _batch_isdefeq.
+    # Lines 1: import Mathlib
+    #       2: (blank)
+    #       3: namespace dedupe_check
+    #       4: (blank)
+    #       5: -- pair 0
+    #       6: example : (...)= (...) := rfl
+    #       7: (blank)
+    #       8: -- pair 1
+    #       9: example : (...)= (...) := rfl
+    # Error at line 9 → pair 1 fails, pair 0 passes.
+    stdout = "/tmp/x.lean:9:10: error: type mismatch"
+    _patch_subprocess(monkeypatch, stdout=stdout, stderr="", rc=1)
+    pairs = [(": A", ": A"), (": B", ": C")]
+    result = dedupe._batch_isdefeq(tmp_path, "p", pairs)
+    assert result == [True, False]
+
+
+def test_batch_isdefeq_unknown_failure_pattern_rejects_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rc != 0 but no line-prefixed errors matched. Could be a parser
+    panic / Lean crash. Conservative: reject all pairs."""
+    _patch_subprocess(monkeypatch, stdout="", stderr="lean: panic", rc=1)
+    pairs = [(": A", ": B")]
+    result = dedupe._batch_isdefeq(tmp_path, "p", pairs)
+    assert result == [False]
+
+
 @pytest.mark.skipif(shutil.which("lake") is None,
                     reason="requires lake CLI on PATH")
 def test_batch_isdefeq_real_lake(tmp_path: Path) -> None:
