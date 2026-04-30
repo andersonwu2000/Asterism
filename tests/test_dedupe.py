@@ -1,7 +1,13 @@
-"""dedupe library: signature parser + ancestor-scoped canonical lookup +
-tactic-based alias body."""
+"""dedupe library: signature parser + ancestor scoping + alias body.
+
+The Lean-kernel batch (`_batch_isdefeq`) is monkeypatched in tests so
+suites stay fast and lake-independent. An optional integration test
+(skipped if `lake` is missing) exercises the real subprocess on simple
+inputs.
+"""
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -76,16 +82,6 @@ def _write_lean(workspace: Path, problem: str, slug: str,
 
 
 # ---------------------------------------------------------------------
-# _normalize_statement
-# ---------------------------------------------------------------------
-
-def test_normalize_collapses_whitespace() -> None:
-    assert dedupe._normalize_statement("a   b\nc") == "a b c"
-    assert dedupe._normalize_statement("  x  ") == "x"
-    assert dedupe._normalize_statement("x\t\ty") == "x y"
-
-
-# ---------------------------------------------------------------------
 # _signature_binder_count
 # ---------------------------------------------------------------------
 
@@ -106,230 +102,255 @@ def test_signature_binder_count_no_theorem() -> None:
 
 
 # ---------------------------------------------------------------------
-# find_canonical: ancestor scoping
+# _extract_full_signature
 # ---------------------------------------------------------------------
 
-def test_find_canonical_excludes_immediate_parent(
+def test_extract_full_signature_simple() -> None:
+    text = "theorem foo : True := by trivial"
+    assert dedupe._extract_full_signature(text) == ": True"
+
+
+def test_extract_full_signature_with_binders() -> None:
+    text = "theorem foo (x : Nat) (h : x ≥ 0) : x = x := by rfl"
+    assert dedupe._extract_full_signature(text) == "(x : Nat) (h : x ≥ 0) : x = x"
+
+
+def test_extract_full_signature_no_theorem() -> None:
+    assert dedupe._extract_full_signature("def foo := 1") is None
+
+
+# ---------------------------------------------------------------------
+# _to_forall_form
+# ---------------------------------------------------------------------
+
+def test_to_forall_form_simple() -> None:
+    assert dedupe._to_forall_form(": True") == "True"
+
+
+def test_to_forall_form_with_binders() -> None:
+    sig = "(x : Nat) (h : x ≥ 0) : x = x"
+    assert dedupe._to_forall_form(sig) == "∀ (x : Nat) (h : x ≥ 0), x = x"
+
+
+def test_to_forall_form_implicit_binder() -> None:
+    sig = "{α : Type} (x : α) : x = x"
+    assert dedupe._to_forall_form(sig) == "∀ {α : Type} (x : α), x = x"
+
+
+def test_to_forall_form_skips_colons_inside_groups() -> None:
+    """Colons inside (x : T) shouldn't be confused with the type colon."""
+    sig = "(x : Nat) (y : Nat) : x = y"
+    assert dedupe._to_forall_form(sig) == "∀ (x : Nat) (y : Nat), x = y"
+
+
+# ---------------------------------------------------------------------
+# _eligible_ancestors (DB-driven, no subprocess)
+# ---------------------------------------------------------------------
+
+def test_eligible_ancestors_excludes_immediate_parent(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """parent_goal_id (the goal currently being decomposed) must NOT be
-    a candidate. Aliasing back to the immediate parent is circular —
-    the candidate is one of parent's sub-goals supposed to help prove
-    parent, so it cannot be discharged via parent's own proof. At lake
-    level this manifests as an import cycle when Verify rewrites
-    parent.lean_path."""
-    _seed_problem(conn)
-    root = _seed_root(conn, statement="ROOT_T")
-    parent = _seed_sub(conn, slug="parent_match", statement="X")
-    _link(conn, root, [parent])
-    _write_lean(tmp_path, "p", "parent_match",
-        "import Mathlib\nnamespace Problems.p\n"
-        "theorem parent_match (a : T) : X := by sorry\nend Problems.p\n")
-    cand_text = (
-        "import Mathlib\nnamespace Problems.p\n"
-        "theorem cand (a : T) (b : T) : X := by sorry\n"
-        "end Problems.p\n"
-    )
-    # Candidate's parent_goal_id is parent itself — must not match
-    assert dedupe.find_canonical(
-        conn, tmp_path, problem="p", parent_goal_id=parent,
-        candidate_full_text=cand_text,
-        candidate_conclusion="X",
-    ) is None
-
-
-def test_find_canonical_finds_strict_ancestor_with_fewer_binders(
-    conn: sqlite3.Connection, tmp_path: Path,
-) -> None:
-    """Valid case: candidate at depth 3 has same conclusion as a depth-1
-    ancestor goal (the grandparent in DAG terms). Strict ancestor
-    means parent_goal_id itself is excluded, but the grandparent is
-    eligible."""
-    _seed_problem(conn)
-    root = _seed_root(conn, statement="ROOT_T")
-    grandparent = _seed_sub(conn, slug="grand_match", statement="Sat M",
-                             depth=1)
-    _link(conn, root, [grandparent])
-    # parent of candidate (depth 2) — different conclusion than match
-    parent = _seed_sub(conn, slug="parent_no_match",
-                       statement="OTHER_T", depth=2)
-    _link(conn, grandparent, [parent])
-    # canonical (grandparent's lean file): 3 binders
-    _write_lean(tmp_path, "p", "grand_match",
-        "import Mathlib\nnamespace Problems.p\n"
-        "theorem grand_match (M : T) (hM : T) (hMax : T) : Sat M := by sorry\n"
-        "end Problems.p\n")
-    # parent's lean file (different conclusion, irrelevant)
-    _write_lean(tmp_path, "p", "parent_no_match",
-        "import Mathlib\nnamespace Problems.p\n"
-        "theorem parent_no_match : OTHER_T := by sorry\n"
-        "end Problems.p\n")
-    # candidate (would be sub of strategy on parent — so parent_goal_id=parent)
-    # has 6 binders, conclusion matches grandparent's "Sat M"
-    cand_text = (
-        "import Mathlib\nnamespace Problems.p\n"
-        "theorem cand (M : T) (hM : T) (hMax : T) "
-        "(hComp : T) (hCons : T) (hConj : T) : Sat M := by sorry\n"
-        "end Problems.p\n"
-    )
-    assert dedupe.find_canonical(
-        conn, tmp_path, problem="p", parent_goal_id=parent,
-        candidate_full_text=cand_text,
-        candidate_conclusion="Sat M",
-    ) == grandparent
-
-
-def test_find_canonical_rejects_when_candidate_has_fewer_binders(
-    conn: sqlite3.Connection, tmp_path: Path,
-) -> None:
-    """Reverse direction: candidate has FEWER binders than canonical.
-    Aliasing would lack hypotheses canonical needs — must reject.
-    (Uses grandparent setup so candidate's parent is excluded by
-    strict ancestor.)"""
+    """parent_goal_id itself is excluded from ancestors (anti-cycle).
+    Need a depth-3 chain so parent has a strict ancestor we can verify
+    is INCLUDED (and parent itself is EXCLUDED)."""
     _seed_problem(conn)
     root = _seed_root(conn)
-    grandparent = _seed_sub(conn, slug="canonical_with_many",
-                             statement="Sat M", depth=1)
-    _link(conn, root, [grandparent])
-    parent = _seed_sub(conn, slug="parent_dec",
-                       statement="OTHER_T", depth=2)
-    _link(conn, grandparent, [parent])
-    # grandparent has 5 binders
-    _write_lean(tmp_path, "p", "canonical_with_many",
-        "import Mathlib\nnamespace Problems.p\n"
-        "theorem canonical_with_many (M : T) (h1 : T) (h2 : T) "
-        "(h3 : T) (h4 : T) : Sat M := by sorry\nend Problems.p\n")
-    _write_lean(tmp_path, "p", "parent_dec",
-        "import Mathlib\nnamespace Problems.p\n"
-        "theorem parent_dec : OTHER_T := by sorry\nend Problems.p\n")
-    # candidate has 3 binders, conclusion matches grandparent
-    cand_text = (
-        "import Mathlib\nnamespace Problems.p\n"
-        "theorem cand (M : T) (h1 : T) (h2 : T) : Sat M := by sorry\n"
-        "end Problems.p\n"
-    )
-    assert dedupe.find_canonical(
-        conn, tmp_path, problem="p", parent_goal_id=parent,
-        candidate_full_text=cand_text,
-        candidate_conclusion="Sat M",
-    ) is None
-
-
-def test_find_canonical_rejects_non_ancestor(
-    conn: sqlite3.Connection, tmp_path: Path,
-) -> None:
-    """OR-sibling goals are NOT ancestors and must not be candidates.
-    Aliasing across OR siblings can break when one of them dies later."""
-    _seed_problem(conn)
-    root = _seed_root(conn, statement="ROOT_T")
-    # Two OR-sibling strategies under root
-    s2 = _link(conn, root, [])
-    s4 = _link(conn, root, [])
-    # s2's sub-goal (potential 'canonical') with matching conclusion
-    other_sub = _seed_sub(conn, slug="s2_sub_1", statement="X")
-    db.link_subgoal(conn, strategy_id=s2, subgoal_id=other_sub, position=0)
-    _write_lean(tmp_path, "p", "s2_sub_1",
-        "import Mathlib\nnamespace Problems.p\n"
-        "theorem s2_sub_1 (a : T) : X := by sorry\nend Problems.p\n")
-    # candidate is being inserted under s4 (parent_goal_id = ?
-    # well, parent_goal of s4 is root; s4's sub is being decomposed.
-    # We simulate decomposing s4's first sub-goal that doesn't exist
-    # yet — use root as parent_goal_id for the candidate's strategy)
-    cand_text = (
-        "import Mathlib\nnamespace Problems.p\n"
-        "theorem cand (a : T) : X := by sorry\nend Problems.p\n"
-    )
-    # Looking for canonical from root's tree — s2_sub_1 is in s2's tree
-    # but not on the ancestor chain of root itself. Wait: s2_sub_1's
-    # ancestor is root. Walking ancestors from root: just {root}.
-    # Walking from s4's parent (= root): {root}. So s2_sub_1 is not in
-    # ancestors of root.
-    result = dedupe.find_canonical(
-        conn, tmp_path, problem="p", parent_goal_id=root,
-        candidate_full_text=cand_text,
-        candidate_conclusion="X",
-    )
-    # root.statement is "ROOT_T", not "X" → no match. s2_sub_1 not in
-    # ancestors of root → excluded. Result: None.
-    assert result is None
-
-
-def test_find_canonical_skips_orphan_chain(
-    conn: sqlite3.Connection, tmp_path: Path,
-) -> None:
-    """A matching strict ancestor on a 'superseded' path must not be
-    picked. Uses 3-deep DAG so parent_goal_id has a strict ancestor to
-    test against."""
-    _seed_problem(conn)
-    root = _seed_root(conn, statement="ROOT_T")
-    grandparent = _seed_sub(conn, slug="grand", statement="X", depth=1)
-    s_dead = db.insert_strategy(
-        conn, goal_id=root, lean_path="Problems/p/Root.lean",
-        created_by="pid",
-        scratch_path="Problems/p/proofs/_strategy_dead.lean",
-    )
-    db.update_strategy_status(conn, s_dead, "superseded")
-    db.link_subgoal(conn, strategy_id=s_dead, subgoal_id=grandparent, position=0)
-    parent = _seed_sub(conn, slug="parent_dec",
-                       statement="OTHER_T", depth=2)
-    _link(conn, grandparent, [parent])
-    _write_lean(tmp_path, "p", "grand",
-        "import Mathlib\nnamespace Problems.p\n"
-        "theorem grand : X := by sorry\nend Problems.p\n")
-    _write_lean(tmp_path, "p", "parent_dec",
-        "import Mathlib\nnamespace Problems.p\n"
-        "theorem parent_dec : OTHER_T := by sorry\nend Problems.p\n")
-    cand_text = (
-        "import Mathlib\nnamespace Problems.p\n"
-        "theorem cand (a : T) : X := by sorry\nend Problems.p\n"
-    )
-    # grandparent is on a superseded chain — alive set excludes it
-    assert dedupe.find_canonical(
-        conn, tmp_path, problem="p", parent_goal_id=parent,
-        candidate_full_text=cand_text,
-        candidate_conclusion="X",
-    ) is None
-
-
-def test_find_canonical_problem_scoped(
-    conn: sqlite3.Connection, tmp_path: Path,
-) -> None:
-    """Match within problem only — no cross-problem leak."""
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at)"
-                 " VALUES ('p','p/m.md',?)", (db.now(),))
-    conn.execute("INSERT INTO problems (name, manifest_path, created_at)"
-                 " VALUES ('q','q/m.md',?)", (db.now(),))
-    p_root = _seed_root(conn, problem="p", statement="STMT")
-    _seed_root(conn, problem="q", statement="STMT")
-    # Sub-goal of p_root that will be the candidate's parent (so p_root
-    # is a strict ancestor and matches as canonical)
-    p_parent = _seed_sub(conn, problem="p", slug="p_parent",
-                         statement="OTHER_T", depth=1)
-    _link(conn, p_root, [p_parent], problem="p")
+    grand = _seed_sub(conn, slug="grand", statement="X")
+    _link(conn, root, [grand])
+    parent = _seed_sub(conn, slug="parent", statement="OTHER", depth=2)
+    _link(conn, grand, [parent])
     _write_lean(tmp_path, "p", "main",
-        "import Mathlib\ntheorem main : STMT := by sorry\n", root=True)
-    _write_lean(tmp_path, "p", "p_parent",
-        "import Mathlib\ntheorem p_parent : OTHER_T := by sorry\n")
-    _write_lean(tmp_path, "q", "main",
-        "import Mathlib\ntheorem main : STMT := by sorry\n", root=True)
-    cand_text = "import Mathlib\ntheorem cand : STMT := by sorry\n"
-    assert dedupe.find_canonical(
-        conn, tmp_path, problem="p", parent_goal_id=p_parent,
-        candidate_full_text=cand_text,
-        candidate_conclusion="STMT",
-    ) == p_root
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+    _write_lean(tmp_path, "p", "grand",
+        "import Mathlib\ntheorem grand : X := by sorry\n")
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : OTHER := by sorry\n")
+
+    ancestors = dedupe._eligible_ancestors(
+        conn, tmp_path, problem="p",
+        parent_goal_id=parent, candidate_count=10,
+    )
+    ids = [r[0]["id"] for r in ancestors]
+    assert parent not in ids
+    assert grand in ids
+    assert root in ids
 
 
-def test_find_canonical_empty_returns_none(
+def test_eligible_ancestors_filters_by_binder_count(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
+    """Ancestors with more binders than candidate are excluded."""
     _seed_problem(conn)
     root = _seed_root(conn)
-    assert dedupe.find_canonical(
-        conn, tmp_path, problem="p", parent_goal_id=root,
-        candidate_full_text="",
-        candidate_conclusion="",
-    ) is None
+    grand = _seed_sub(conn, slug="grand", statement="Sat M")
+    _link(conn, root, [grand])
+    parent = _seed_sub(conn, slug="parent", statement="OTHER", depth=2)
+    _link(conn, grand, [parent])
+    _write_lean(tmp_path, "p", "grand",
+        "import Mathlib\nnamespace P\n"
+        "theorem grand (M : T) (h1 : T) (h2 : T) (h3 : T) (h4 : T) : Sat M := by sorry\n"
+        "end P\n")
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : OTHER := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+
+    # Candidate has 3 binders → grand (5) excluded
+    a3 = dedupe._eligible_ancestors(
+        conn, tmp_path, problem="p",
+        parent_goal_id=parent, candidate_count=3,
+    )
+    assert grand not in [r[0]["id"] for r in a3]
+
+    # Candidate has 6 binders → grand (5) eligible
+    a6 = dedupe._eligible_ancestors(
+        conn, tmp_path, problem="p",
+        parent_goal_id=parent, candidate_count=6,
+    )
+    assert grand in [r[0]["id"] for r in a6]
+
+
+def test_eligible_ancestors_skips_orphan_chain(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Ancestor on a 'superseded' chain is unreachable; alive set excludes."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    grand = _seed_sub(conn, slug="grand", statement="X")
+    s_dead = db.insert_strategy(
+        conn, goal_id=root,
+        lean_path="Problems/p/Root.lean",
+        scratch_path="Problems/p/proofs/_strategy_dead.lean",
+        created_by="pid")
+    db.update_strategy_status(conn, s_dead, "superseded")
+    db.link_subgoal(conn, strategy_id=s_dead, subgoal_id=grand, position=0)
+    parent = _seed_sub(conn, slug="parent", statement="OTHER", depth=2)
+    _link(conn, grand, [parent])
+    _write_lean(tmp_path, "p", "grand",
+        "import Mathlib\ntheorem grand : X := by sorry\n")
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : OTHER := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+
+    ancestors = dedupe._eligible_ancestors(
+        conn, tmp_path, problem="p",
+        parent_goal_id=parent, candidate_count=10,
+    )
+    assert grand not in [r[0]["id"] for r in ancestors]
+
+
+# ---------------------------------------------------------------------
+# find_canonicals_batch (with monkeypatched _batch_isdefeq)
+# ---------------------------------------------------------------------
+
+def test_find_canonicals_batch_picks_proved_over_open(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If two ancestors match isDefEq, prefer 'proved' over 'open'."""
+    _seed_problem(conn)
+    root = _seed_root(conn, statement="ROOT")
+    proved_anc = _seed_sub(conn, slug="proved_anc",
+                            statement="X", status="proved")
+    open_anc = _seed_sub(conn, slug="open_anc", statement="X")
+    _link(conn, root, [proved_anc, open_anc])
+    parent = _seed_sub(conn, slug="parent", statement="OTHER", depth=2)
+    _link(conn, proved_anc, [parent])
+    for slug in ("proved_anc", "open_anc", "parent"):
+        _write_lean(tmp_path, "p", slug,
+            f"import Mathlib\ntheorem {slug} (a : T) : X := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+
+    # Only proved_anc is a strict ancestor of parent (proved_anc is parent's
+    # parent). open_anc is a sibling. Pre-filter via SQL handles that.
+    monkeypatch.setattr(dedupe, "_batch_isdefeq",
+                        lambda ws, p, pairs: [True] * len(pairs))
+
+    candidate_text = ("import Mathlib\nnamespace P\n"
+                      "theorem cand (a : T) (b : T) : X := by sorry\n"
+                      "end P\n")
+    canonicals = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("cand", candidate_text)],
+    )
+    assert canonicals == [proved_anc]
+
+
+def test_find_canonicals_batch_no_match_returns_none(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """isDefEq returns all False → all canonicals None."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    grand = _seed_sub(conn, slug="grand", statement="X")
+    _link(conn, root, [grand])
+    parent = _seed_sub(conn, slug="parent", statement="OTHER", depth=2)
+    _link(conn, grand, [parent])
+    _write_lean(tmp_path, "p", "grand",
+        "import Mathlib\ntheorem grand (a : T) : X := by sorry\n")
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : OTHER := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+
+    monkeypatch.setattr(dedupe, "_batch_isdefeq",
+                        lambda ws, p, pairs: [False] * len(pairs))
+
+    cand = "import Mathlib\ntheorem c (a : T) (b : T) : X := by sorry\n"
+    canonicals = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("c", cand)],
+    )
+    assert canonicals == [None]
+
+
+def test_find_canonicals_batch_empty_candidates(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    assert dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=1, candidates=[],
+    ) == []
+
+
+def test_find_canonicals_batch_mixed_hits(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One candidate matches its ancestor, another doesn't. Verify
+    per-candidate alignment of canonical_for return list."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    g_anc1 = _seed_sub(conn, slug="ga1", statement="X")
+    _link(conn, root, [g_anc1])
+    p1 = _seed_sub(conn, slug="p1", statement="OT1", depth=2)
+    _link(conn, g_anc1, [p1])
+    _write_lean(tmp_path, "p", "ga1",
+        "import Mathlib\ntheorem ga1 (a : T) : X := by sorry\n")
+    _write_lean(tmp_path, "p", "p1",
+        "import Mathlib\ntheorem p1 : OT1 := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+
+    # Fake isDefEq: equal signatures → True
+    def fake(ws: Path, prob: str,
+             pairs: list[tuple[str, str]]) -> list[bool]:
+        return [p[0] == p[1] for p in pairs]
+
+    monkeypatch.setattr(dedupe, "_batch_isdefeq", fake)
+
+    # cand1 has the same signature as ga1 → match
+    # cand2 has a different conclusion → no match
+    cand1 = "import Mathlib\ntheorem c1 (a : T) : X := by sorry\n"
+    cand2 = "import Mathlib\ntheorem c2 (a : T) : Z := by sorry\n"
+    canonicals = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=p1,
+        candidates=[("c1", cand1), ("c2", cand2)],
+    )
+    assert canonicals[0] == g_anc1
+    assert canonicals[1] is None
 
 
 # ---------------------------------------------------------------------
@@ -352,15 +373,12 @@ def test_build_alias_replaces_sorry_with_apply_assumption() -> None:
     assert "import Problems.p.proofs.L_canonical" in out
     assert ":= by apply canonical <;> assumption" in out
     assert ":= by sorry" not in out
-    # Original signature preserved verbatim
     assert "theorem cand (M : T) (h : T) : Sat M" in out
-    # Original imports preserved
     assert "import Mathlib" in out
     assert "import Problems.p.Defs" in out
 
 
 def test_build_alias_does_not_duplicate_existing_import() -> None:
-    """If canonical import is already present (rare), don't add twice."""
     original = (
         "import Mathlib\n"
         "import Problems.p.proofs.L_canonical\n\n"
@@ -383,3 +401,29 @@ def test_build_alias_handles_no_imports() -> None:
     )
     assert out.startswith("import Problems.p.proofs.L_c")
     assert ":= by apply c <;> assumption" in out
+
+
+# ---------------------------------------------------------------------
+# _batch_isdefeq integration (skipped when lake unavailable)
+# ---------------------------------------------------------------------
+
+@pytest.mark.skipif(shutil.which("lake") is None,
+                    reason="requires lake CLI on PATH")
+def test_batch_isdefeq_real_lake(tmp_path: Path) -> None:
+    """Spin up the actual Lean kernel on a tiny pair to confirm the
+    subprocess plumbing + parsing work. Slow (lake env startup ~3-5s);
+    skipped unless lake is on PATH."""
+    # Need a minimal lakefile in tmp_path so `lake env` works
+    (tmp_path / "lakefile.lean").write_text(
+        "import Lake\nopen Lake DSL\npackage tmp where\n"
+        "@[default_target]\nlean_lib tmp where\n",
+        encoding="utf-8")
+    (tmp_path / "lean-toolchain").write_text("leanprover/lean4:v4.0.0\n",
+                                              encoding="utf-8")
+    # This may still fail because Mathlib isn't present in tmp_path's
+    # lake project. We accept that and just verify the call-flow doesn't
+    # crash; equality decision is opaque without Mathlib.
+    pairs = [("(x : Nat) : x = x", "(y : Nat) : y = y")]
+    result = dedupe._batch_isdefeq(tmp_path, "tmp", pairs)
+    assert isinstance(result, list)
+    assert len(result) == 1

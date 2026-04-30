@@ -379,28 +379,24 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
             )
         sub_meta.append((slug, ns))
 
-    # Dedupe scan: for each candidate sub-goal, check whether an
-    # ancestor goal in this problem has a matching conclusion (and
-    # equal-or-fewer binders). Hits → write an alias lean file that
-    # delegates to canonical via `apply <;> assumption`; insert the
-    # alias goal as 'proved' (its proof IS the alias body).
-    canonical_for: list[int | None] = []
+    # Dedupe scan: batch-call Lean kernel isDefEq for all candidate
+    # sub-goals × eligible ancestors in one subprocess. Hits → write an
+    # alias lean file that delegates to canonical via `apply <;>
+    # assumption`; insert the alias goal as 'proved' (its proof IS the
+    # alias body).
+    candidates_for_dedupe: list[tuple[str, str]] = []
     for slug, src in sub_meta:
         try:
-            full_text = src.read_text(encoding="utf-8")
-            concl = _extract_statement(full_text)
+            candidates_for_dedupe.append(
+                (slug, src.read_text(encoding="utf-8")))
         except OSError:
-            full_text = ""
-            concl = ""
-        canonical_for.append(
-            dedupe.find_canonical(
-                conn, workspace,
-                problem=goal["problem"],
-                parent_goal_id=goal_id,
-                candidate_full_text=full_text,
-                candidate_conclusion=concl,
-            ) if concl else None
-        )
+            candidates_for_dedupe.append((slug, ""))
+    canonical_for = dedupe.find_canonicals_batch(
+        conn, workspace,
+        problem=goal["problem"],
+        parent_goal_id=goal_id,
+        candidates=candidates_for_dedupe,
+    )
 
     # Compute permanent paths under proofs/. No collision possible
     # because every path includes sid_token.
