@@ -5,10 +5,45 @@ See architecture.md §9.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
 from . import db, dispatcher, manifest, prune
+
+
+# Root.lean lifecycle (F15):
+#  initial state — auto-written by `init`: `theorem main : <stmt> := by sorry`
+#  during run    — framework writes proofs/_strategy_sNN.lean files;
+#                  Root.lean unchanged.
+#  on root proved — `prune.reconcile_proved_goals` rewrites Root.lean to
+#                   wrap form: `import Problems.X.proofs._strategy_sNN`
+#                   then `theorem main : <stmt> := sNN`.
+#  Manual editing of Root.lean is not expected. The init guard below
+#  rejects anything that doesn't match these two shapes (sorry stub or
+#  wrap form) unless `--force` is given.
+
+# Lazy match between `theorem main` and the first `:=` so statements
+# containing colons (`∀ p : ℕ, ...`) don't break the regex.
+_SORRY_BODY_RE = re.compile(
+    r"theorem\s+main\b.*?:=\s*by\s+sorry\b", re.DOTALL)
+# Wrap form: bound to a strategy term `s\d+`. The promote-to-Root step
+# always uses this exact shape.
+_WRAP_BODY_RE = re.compile(
+    r"theorem\s+main\b.*?:=\s*s\d+\b", re.DOTALL)
+
+
+def _classify_root_body(text: str) -> str:
+    """Classify Root.lean's `theorem main` body as one of:
+    - 'sorry' : `:= by sorry`  (initial state, auto-created)
+    - 'wrap'  : `:= s<N>`      (post-prove wrap form)
+    - 'unknown': anything else (user-written sketch or in-progress)
+    """
+    if _SORRY_BODY_RE.search(text):
+        return "sorry"
+    if _WRAP_BODY_RE.search(text):
+        return "wrap"
+    return "unknown"
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -40,6 +75,26 @@ def cmd_init(args: argparse.Namespace) -> int:
             f"end Problems.{problem}\n",
             encoding="utf-8",
         )
+    else:
+        # F15 — guard: reject manually-written or in-progress Root.lean
+        # so a fresh init never silently wraps non-canonical state.
+        # 'sorry' (auto-shape) and 'wrap' (post-prove) are both fine;
+        # anything else is operator confusion until --force overrides.
+        body_kind = _classify_root_body(
+            root_lean.read_text(encoding="utf-8"))
+        if body_kind == "unknown" and not args.force:
+            print(
+                f"FAIL: {root_lean} has a non-sorry, non-wrap proof body.\n"
+                f"  Asterism manages Root.lean's lifecycle: it should be\n"
+                f"  `:= by sorry` initially, and gets rewritten to the\n"
+                f"  wrap form `:= sNN` automatically when root_proved.\n"
+                f"  If you wrote a hand sketch intentionally, re-run\n"
+                f"  with `--force` to bypass this check; otherwise reset\n"
+                f"  Root.lean to `:= by sorry` (or delete it and let\n"
+                f"  init recreate it).",
+                file=sys.stderr,
+            )
+            return 1
 
     conn = db.connect()
     db.init_schema(conn)
@@ -115,6 +170,10 @@ def main(argv: list[str] | None = None) -> int:
 
     p_init = sub.add_parser("init", help="initialize a Problem")
     p_init.add_argument("problem", help="problem name (Problems/<problem>/)")
+    p_init.add_argument(
+        "--force", action="store_true",
+        help="bypass the Root.lean-shape guard (allows hand-written sketches)",
+    )
     p_init.set_defaults(func=cmd_init)
 
     p_run = sub.add_parser("run", help="run dispatcher")

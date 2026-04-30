@@ -95,6 +95,57 @@ YAML frontmatter 是結構化必填；body 自由 markdown，由 `init` 解析 s
 
 ---
 
+## 3.5 Root.lean lifecycle (F15)
+
+`Root.lean` 是框架管理的檔，**不是** user-written sketch。三個生命週期狀態：
+
+**狀態 A — 初始（`asterism init <p>` 寫入）**
+```lean
+import Mathlib
+import Problems.<p>.Defs
+
+namespace Problems.<p>
+
+theorem main : <stmt> := by sorry
+
+end Problems.<p>
+```
+
+`init` 在 Root.lean 不存在時自動寫入這個 sorry-stub 形態。`<stmt>` 取自 Manifest.md 的 `## Statement`。
+
+**狀態 B — 過程（Asterism 執行中）**
+框架在 `proofs/` 下產生 `_strategy_s<NN>.lean`（每個 Backward 候選 strategy 一份）跟 `L_<slug>.lean`（每個 sub-goal 一份），**Root.lean 本身不動**。
+
+**狀態 C — 證完（`prune.reconcile_proved_goals` 自動寫回）**
+當 `dispatcher.run` 偵測 root proved，cleanup 階段把 Root.lean 改寫成 wrap form：
+```lean
+import Mathlib
+import Problems.<p>.Defs
+import Problems.<p>.proofs._strategy_s<NN>
+
+namespace Problems.<p>
+
+theorem main : <stmt> := s<NN>
+
+end Problems.<p>
+```
+其中 `s<NN>` 是 Verify 通過的 winning strategy。完整證明 body 留在 `_strategy_s<NN>.lean`，Root.lean 是薄 indirection 層。
+
+**Init guard（F15）**
+為防止操作者誤改 Root.lean 後重 init 造成靜默 wrap，`init` 偵測現有 Root.lean 的 `theorem main := <body>` 形態：
+- `:= by sorry` → 狀態 A，OK
+- `:= s<digits>` → 狀態 C，視為已證（noop）
+- 其他 → reject，要求 `--force` 才能繼續
+
+`--force` 適用於使用者**故意**手寫 sketch 給 Backward 起手提示的情況（不常見）。
+
+**這個生命週期意味著**：
+- 永遠不要手動編 Root.lean — 從 `:= by sorry` 開始，讓框架接管
+- `_strategy_s<NN>.lean` 才是「真實證明所在」；Root.lean 只是 entry point
+- 多個 strategy 並存於 `proofs/` 是正常的；root_proved 後 `prune` 會清掉 loser orphans
+
+---
+
 ## 4. DB Schema
 
 ```sql
