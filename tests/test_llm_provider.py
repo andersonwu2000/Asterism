@@ -113,3 +113,92 @@ def test_openai_complete_text_returns_none_without_model_env(
     monkeypatch.delenv("ASTERISM_LLM_MODEL", raising=False)
     p = openai_api.OpenAIProvider()
     assert p.complete_text(prompt="hello") is None
+
+
+# ---------------------------------------------------------------------
+# F27 — system-prompt trim flags must accompany every claude invocation
+# ---------------------------------------------------------------------
+
+def _capture_cmd(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Patch claude_cli.subprocess.run to capture the cmd argv and
+    return success without executing."""
+    import subprocess as _sub
+    from Tooling.llm import claude_cli
+    captured: list = []
+
+    def _fake_run(cmd, *a, **kw):
+        captured.append(cmd)
+        return _sub.CompletedProcess(args=cmd, returncode=0,
+                                     stdout="ok", stderr="")
+    monkeypatch.setattr(claude_cli.shutil, "which", lambda _: "/fake/claude")
+    monkeypatch.setattr(claude_cli.subprocess, "run", _fake_run)
+    return captured
+
+
+def test_claude_spawn_includes_trim_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """spawn() should pass the 4 trim flags so the system prompt
+    excludes Bash/Glob/etc. tool descriptions and skips CLAUDE.md
+    auto-discovery."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="backward",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+    ))
+    assert captured, "subprocess.run should be invoked"
+    cmd = captured[0]
+    assert "--tools" in cmd
+    assert cmd[cmd.index("--tools") + 1] == "Read Write Edit"
+    assert "--setting-sources" in cmd
+    assert cmd[cmd.index("--setting-sources") + 1] == ""
+    assert "--disable-slash-commands" in cmd
+    assert "--exclude-dynamic-system-prompt-sections" in cmd
+
+
+def test_claude_complete_text_includes_trim_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """complete_text() (F22 playbook calls) carries the same trim."""
+    from Tooling.llm import claude_cli
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.complete_text(prompt="hi")
+    assert captured
+    cmd = captured[0]
+    assert "--tools" in cmd
+    assert "--disable-slash-commands" in cmd
+    assert "--exclude-dynamic-system-prompt-sections" in cmd
+    assert "--setting-sources" in cmd
+
+
+def test_claude_tools_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ASTERISM_CLAUDE_TOOLS env replaces the default tool list — for
+    rare flows that legitimately need extra surface."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    monkeypatch.setenv("ASTERISM_CLAUDE_TOOLS", "Read Bash")
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="backward",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+    ))
+    cmd = captured[0]
+    assert cmd[cmd.index("--tools") + 1] == "Read Bash"

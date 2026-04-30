@@ -16,8 +16,7 @@ If both pass, the patch becomes the proved goal file.
 
 ## Strategy hints
 
-- The Manifest's `## Mathlib hints` section lists candidate Mathlib lemmas with file:line references when known. Verify the API name exists before using it (use Bash + grep on `.lake/packages/mathlib4/Mathlib/` if your scope allows).
-- WebFetch `https://leanprover-community.github.io/mathlib4_docs/` if you need to confirm a signature.
+- The Manifest's `## Mathlib hints` section lists candidate Mathlib lemmas with file:line references. The framework also pre-resolves these and any lemma names mentioned in past errors via `lake env lean` and injects exact signatures into Context.md's `## Lemma references` section — use those directly. Don't try to grep mathlib yourself; you don't have shell access.
 - Don't paraphrase a forbidden lemma — the integrator catches the pattern.
 - Keep the tactic block small (1-10 lines). If the goal genuinely needs multi-step decomposition, return early without a viable patch and the framework will dispatch Backward instead.
 
