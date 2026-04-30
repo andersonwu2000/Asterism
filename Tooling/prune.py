@@ -30,7 +30,11 @@ def _lean_path_to_module(workspace: Path, lean_path: Path) -> str:
 def _canonical_parent_content(*, problem: str, goal_slug: str,
                               goal_statement: str, sid: int,
                               defs_exists: bool, scratch_module: str) -> str:
-    """Build the deterministic content for a proved goal's lean_path."""
+    """Build the deterministic content for a proved goal's lean_path.
+
+    The patch theorem in the strategy scratch is named just `s<sid>`
+    (no parent slug), so the alias body is bare `s<sid>`.
+    """
     imports = ["import Mathlib"]
     if defs_exists:
         imports.append(f"import Problems.{problem}.Defs")
@@ -39,7 +43,7 @@ def _canonical_parent_content(*, problem: str, goal_slug: str,
         "\n".join(imports) + "\n\n"
         f"namespace Problems.{problem}\n\n"
         f"theorem {goal_slug} : {goal_statement} := "
-        f"s{sid}_{goal_slug}\n\n"
+        f"s{sid}\n\n"
         f"end Problems.{problem}\n"
     )
 

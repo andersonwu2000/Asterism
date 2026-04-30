@@ -84,18 +84,17 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
             f"parallel; collision-free naming is mandatory."
         )
         parts.append("")
-        parts.append(f"- Sub-goal slugs: `{sid_token}_{parent}_sub_1`, "
-                     f"`{sid_token}_{parent}_sub_2`, ... — always start "
-                     f"with `{sid_token}_`.")
-        parts.append(f"- Sub-goal filenames: `new_{sid_token}_{parent}_sub_<N>.lean`.")
+        parts.append(f"- Sub-goal slugs: `{sid_token}_sub_1`, "
+                     f"`{sid_token}_sub_2`, ... — exactly `{sid_token}_sub_<N>`.")
+        parts.append(f"- Sub-goal filenames: `new_{sid_token}_sub_<N>.lean`.")
         parts.append(f"- Sub-goal theorem name = sub-goal slug.")
         parts.append(f"- Patch filename: `patch_{parent}.lean` (parent slug, "
                      f"no `{sid_token}` prefix).")
-        parts.append(f"- Patch theorem name: `{sid_token}_{parent}` (NOT "
-                     f"`{parent}` — that name belongs to the parent's "
-                     f"Root.lean and would collide).")
+        parts.append(f"- Patch theorem name: `{sid_token}` (NOT `{parent}` — "
+                     f"that name belongs to the parent's lean file and "
+                     f"would collide).")
         parts.append(f"- Patch imports: `import Problems.<problem>.proofs."
-                     f"L_{sid_token}_{parent}_sub_<N>` for each sub-goal.")
+                     f"L_{sid_token}_sub_<N>` for each sub-goal.")
         parts.append("")
 
     if goal["origin"] == "backward":

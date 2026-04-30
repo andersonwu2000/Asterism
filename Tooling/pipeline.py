@@ -270,7 +270,7 @@ def run_verify(conn: sqlite3.Connection, *, strategy_id: int,
         "\n".join(orig_imports) + "\n\n"
         f"namespace Problems.{s['goal_problem']}\n\n"
         f"theorem {s['goal_slug']} : {s['goal_statement']} := "
-        f"{sid_token}_{s['goal_slug']}\n\n"
+        f"{sid_token}\n\n"
         f"end Problems.{s['goal_problem']}\n"
     )
 
@@ -366,8 +366,8 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
         return _abort("forbidden_lemma", forbidden, proposal_text)
 
     # Validate slug naming convention: every sub-goal filename must be
-    # `new_<sid_token>_<parent_slug>_sub_<N>.lean`.
-    expected_prefix = f"{sid_token}_{goal['slug']}_"
+    # `new_<sid_token>_sub_<N>.lean`.
+    expected_prefix = f"{sid_token}_sub_"
     sub_meta: list[tuple[str, Path]] = []  # (slug, source_in_attempts)
     for ns in new_subs:
         slug = _slug_from_filename(ns.name)

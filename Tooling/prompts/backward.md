@@ -9,8 +9,8 @@ Read `Context.md` in your sandbox for the goal statement, Manifest hints, FORBID
 Three kinds of files in your sandbox. **Read `Context.md`'s `## Naming convention` section first** — it gives you the exact `s<id>_` prefix to use in every slug and theorem name.
 
 1. `PROPOSAL.md` — a markdown narrative explaining your decomposition strategy: which sub-goals you propose, why they together imply the parent, and proof sketches for each sub-goal (which Mathlib lemmas you expect to use).
-2. `patch_<parent_slug>.lean` — the combined patch for the parent goal. Imports `import Problems.<problem>.proofs.L_<sub_slug>` for each sub-goal. Declares a single theorem named per Context.md's naming convention (NOT just `<parent_slug>`; the prefixed name to avoid collision with the parent's Root.lean), in `namespace Problems.<problem>`. Body uses `have h_i : <sub_i_type> := <slug_i> args` calls + a final tactic that discharges the parent's statement.
-3. `new_<sub_slug>.lean` × N — one file per sub-goal. The slug must be the prefixed form per Context.md; theorem name = slug; namespace = `Problems.<problem>`; body = `:= by sorry`.
+2. `patch_<parent_slug>.lean` — the combined patch. Imports `import Problems.<problem>.proofs.L_<sub_slug>` for each sub-goal. Declares one theorem in `namespace Problems.<problem>`, named exactly per Context.md's naming convention (NOT the parent slug — that would collide). Body uses `have h_i : <sub_i_type> := <slug_i> args` plus a final tactic that closes the parent statement.
+3. `new_<sub_slug>.lean` × N — one file per sub-goal. Slug + theorem name follow Context.md exactly. `namespace Problems.<problem>`, body `:= by sorry`.
 
 ## Rules
 

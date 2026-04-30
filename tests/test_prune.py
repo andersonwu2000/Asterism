@@ -281,7 +281,7 @@ def test_reconcile_repairs_drifted_parent_lean_path(
     new_content = parent.read_text(encoding="utf-8")
     assert f"import Problems.p.proofs._strategy_s{sid7}" in new_content
     assert f"import Problems.p.proofs._strategy_s{sid14}" not in new_content
-    assert f"theorem main : T := s{sid7}_main" in new_content
+    assert f"theorem main : T := s{sid7}" in new_content
 
 
 def test_reconcile_idempotent(
