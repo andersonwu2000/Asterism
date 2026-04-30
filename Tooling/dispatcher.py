@@ -282,11 +282,25 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                     db.update_strategy_status(conn, int(target_id),
                                               "superseded")
                 return
+            if row["goal_status"] == "shelved":
+                # F24 — parent goal was shelved while this strategy's
+                # pipeline was in flight. Strategy is moot; mark dead so
+                # invariant `proposed → parent alive` holds.
+                if row["status"] == "proposed":
+                    db.update_strategy_status(conn, int(target_id),
+                                              "dead")
+                return
     elif target_kind == "Goal":
         row = conn.execute(
             "SELECT status FROM goals WHERE id = ?", (int(target_id),),
         ).fetchone()
-        if row and row["status"] == "proved":
+        # F24 — once a goal reaches a terminal state (proved/shelved),
+        # late cascades from in-flight pipelines must not mutate it.
+        # Without the 'shelved' guard, a Backward 'success' that races
+        # past the shelve transition would unconditionally flip status
+        # back to 'attempting' (observed: goal stuck at attempts=N with
+        # status='attempting' instead of 'shelved').
+        if row and row["status"] in ("proved", "shelved"):
             return
 
     if kind == "Builder":

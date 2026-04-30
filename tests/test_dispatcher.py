@@ -242,6 +242,78 @@ def test_strategies_ready_for_verify_excludes_shelved_goal(
 
 
 # ---------------------------------------------------------------------
+# F24 — cascade no-op guards on shelved goal (defense vs OR-race)
+# ---------------------------------------------------------------------
+
+def test_cascade_builder_failed_on_shelved_goal_is_noop(
+    conn: sqlite3.Connection,
+) -> None:
+    """Late Builder pipeline finishes after the goal already shelved.
+    Cascade must not bump attempts further or mutate status."""
+    gid = _seed_goal(conn)
+    db.update_goal_status(conn, gid, "shelved")
+    # Push attempts to a known value to prove no further increment
+    conn.execute("UPDATE goals SET attempts = 8 WHERE id = ?", (gid,))
+    conn.commit()
+
+    cascade_one(conn, pipeline_id="late", kind="Builder",
+                target_id=str(gid), target_kind="Goal", outcome="failed")
+
+    row = conn.execute(
+        "SELECT status, attempts FROM goals WHERE id = ?", (gid,),
+    ).fetchone()
+    assert row["status"] == "shelved"
+    assert row["attempts"] == 8
+
+
+def test_cascade_backward_succeeded_on_shelved_goal_does_not_unshelve(
+    conn: sqlite3.Connection,
+) -> None:
+    """Reverse-test of the observed race: a Backward 'success' that
+    arrives after the goal was shelved must NOT flip status back to
+    'attempting'. The strategy that Backward already wrote becomes a
+    DB-side concern (handled by run_backward's own race guard)."""
+    gid = _seed_goal(conn)
+    db.update_goal_status(conn, gid, "shelved")
+    conn.execute("UPDATE goals SET attempts = 8 WHERE id = ?", (gid,))
+    conn.commit()
+
+    cascade_one(conn, pipeline_id="late_backward", kind="Backward",
+                target_id=str(gid), target_kind="Goal", outcome="success")
+
+    row = conn.execute(
+        "SELECT status, attempts FROM goals WHERE id = ?", (gid,),
+    ).fetchone()
+    assert row["status"] == "shelved"
+    assert row["attempts"] == 8
+
+
+def test_cascade_strategy_on_shelved_parent_marks_dead(
+    conn: sqlite3.Connection,
+) -> None:
+    """Strategy whose parent goal got shelved while this strategy's
+    Verify was in flight: cascade must mark strategy dead so the
+    `proposed → parent alive` invariant holds."""
+    gid = _seed_goal(conn)
+    sid = db.insert_strategy(conn, goal_id=gid,
+                             lean_path="Problems/p/Root.lean",
+                             scratch_path="Problems/p/proofs/_strategy_x.lean",
+                             created_by="pid")
+    db.update_goal_status(conn, gid, "shelved")
+
+    cascade_one(conn, pipeline_id="pid", kind="Verify",
+                target_id=str(sid), target_kind="Strategy",
+                outcome="failed")
+
+    row = conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (sid,),
+    ).fetchone()
+    assert row["status"] == "dead"
+    # Goal still shelved
+    assert db.get_goal(conn, gid)["status"] == "shelved"
+
+
+# ---------------------------------------------------------------------
 # F22 — playbook hook fires on Verify=proved when workspace given
 # ---------------------------------------------------------------------
 

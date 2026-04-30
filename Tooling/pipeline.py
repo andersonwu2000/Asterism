@@ -470,6 +470,30 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
                 # smart-truncates to keep error/warning lines.
                 raise RuntimeError(f"lake build {t.name} failed: {err}")
 
+        # F24-A — race guard: between this Backward's dispatch and now
+        # (which is up to several minutes due to claude CLI + lake build),
+        # an OR-parallel sibling may have shelved or proved this goal.
+        # Either way our new strategy is moot. Abort cleanly so cascade
+        # has nothing to mutate; clean up sub-goal files we placed.
+        # cascade_one's no-op guard handles the same race on its side
+        # (defense in depth) — this layer prevents the orphan strategy +
+        # sub-goal rows from ever reaching the DB.
+        fresh = db.get_goal(conn, goal_id)
+        if fresh is None or fresh["status"] not in ("open", "attempting"):
+            for p in placed:
+                try:
+                    if p.exists():
+                        p.unlink()
+                except OSError:
+                    pass
+            current = fresh["status"] if fresh else "missing"
+            return _abort(
+                "goal_no_longer_open",
+                f"goal {goal_id} transitioned to {current!r} during this "
+                f"Backward's run; aborting to avoid orphan strategy.",
+                proposal_text,
+            )
+
         # All passed — INSERT goals + link via strategy_subgoals.
         # Dedupe-hits are inserted as already-'proved' (alias body is
         # the proof); novel sub-goals start 'open'.
