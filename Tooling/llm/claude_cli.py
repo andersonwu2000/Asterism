@@ -77,18 +77,22 @@ class ClaudeCliProvider:
 
         model = os.environ.get("ASTERISM_AGENT_MODEL", DEFAULT_MODEL)
 
-        # F33 — retry path uses `--resume`, a short prompt template,
-        # and skips the file-based prompt fetch (the prior turn's
-        # context lives in claude's session memory).
+        # F33 — retry path uses `--resume`, a short inline prompt with
+        # the lake error embedded directly (no separate RETRY_NOTE.md
+        # file → agent doesn't need a Read tool round-trip), and skips
+        # the file-based prompt fetch (prior turn's context lives in
+        # claude's session memory).
         if req.is_retry and req.session_id:
             session_flags = ["--resume", req.session_id]
             session_lifetime_flag: list[str] = []  # session persists
+            err = (req.retry_context or "(lake error not captured)").strip()
             prompt = (
-                f"Previous attempt failed lake build. Read updated "
-                f"failure_detail at {req.attempts_dir}/RETRY_NOTE.md "
-                f"and produce a fresh patch.lean (same scope) that "
-                f"addresses the error. Reuse PROPOSAL.md from the "
-                f"prior turn unless the strategy needs to change."
+                f"Previous attempt failed lake build with:\n\n"
+                f"```\n{err}\n```\n\n"
+                f"Produce a fresh patch.lean (same scope) addressing "
+                f"this error. Reuse the prior PROPOSAL.md unless the "
+                f"strategy needs to change. Write outputs into "
+                f"{req.attempts_dir}/."
             )
         elif req.session_id:
             # Cold path with a caller-pinned session id (so a future

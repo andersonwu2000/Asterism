@@ -238,12 +238,13 @@ def test_claude_spawn_cold_with_session_id_uses_session_id_flag(
     assert "--no-session-persistence" not in cmd
 
 
-def test_claude_spawn_retry_uses_resume_and_short_prompt(
+def test_claude_spawn_retry_inlines_error_into_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Retry path: --resume <uuid> + a prompt that points the agent
-    at RETRY_NOTE.md (the prior turn's reasoning lives in the session
-    memory; we only inject the new lake error)."""
+    """Retry path: --resume <uuid> + the lake error inlined directly
+    in the -p prompt (no separate RETRY_NOTE.md file → agent sees
+    the error immediately, no Read tool round-trip). Prior turn's
+    reasoning lives in the session memory."""
     from pathlib import Path
     from Tooling import llm
     from Tooling.llm import claude_cli
@@ -258,14 +259,42 @@ def test_claude_spawn_retry_uses_resume_and_short_prompt(
         timeout_sec=60,
         session_id="abc123",
         is_retry=True,
+        retry_context="error: Type mismatch on `ZMod.val_natCast`",
     ))
     cmd = captured[0]
     assert "--resume" in cmd
     assert cmd[cmd.index("--resume") + 1] == "abc123"
     assert "--session-id" not in cmd
-    # Prompt should reference RETRY_NOTE.md, not Context.md
+    # Lake error embedded in -p prompt; no RETRY_NOTE.md reference
     prompt_idx = cmd.index("-p") + 1
-    assert "RETRY_NOTE.md" in cmd[prompt_idx]
+    assert "Type mismatch on `ZMod.val_natCast`" in cmd[prompt_idx]
+    assert "RETRY_NOTE" not in cmd[prompt_idx]
+
+
+def test_claude_spawn_retry_handles_missing_retry_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If retry_context is None (e.g. the prior dead_attempt had an
+    empty failure_detail), the prompt still emits a fallback marker
+    so the agent isn't shown an empty code block."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+        session_id="abc123",
+        is_retry=True,
+        retry_context=None,
+    ))
+    prompt_idx = captured[0].index("-p") + 1
+    assert "lake error not captured" in captured[0][prompt_idx]
 
 
 def test_claude_spawn_no_session_id_keeps_legacy_ephemeral(

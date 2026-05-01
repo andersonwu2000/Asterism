@@ -40,6 +40,12 @@ class LLMRequest:
                     a prior attempt. Provider may switch to a shorter
                     prompt (assumes prior turn's context lives in the
                     session memory).
+      retry_context: F33 — short text (typically the smart-truncated
+                    lake error from the prior attempt) that the
+                    provider inlines into the retry prompt. Replaces
+                    a separate RETRY_NOTE.md file: the agent sees the
+                    error immediately without needing a Read tool
+                    round-trip. Ignored when is_retry=False.
     """
     kind: str
     prompt_path: Path
@@ -48,6 +54,7 @@ class LLMRequest:
     timeout_sec: int
     session_id: str | None = None
     is_retry: bool = False
+    retry_context: str | None = None
 
 
 class Provider(Protocol):
