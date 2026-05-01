@@ -2,6 +2,10 @@
 
 Updated 2026-05-01 (post-F37 OR-passive). Compaction-safe handoff note.
 
+> **Operator workflow** — see `docs/OPERATOR.md` for CLI subcommands,
+> Asterism.yaml schema, recurring traps. Kept under `docs/` so solver
+> agents (claude / gemini subprocesses) don't auto-load it.
+
 ## Proved problems (4 + 1 weak-model variant)
 
 | Problem | Commit | Prover | Wall-clock | Axioms |

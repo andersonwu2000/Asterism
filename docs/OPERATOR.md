@@ -1,8 +1,5 @@
 # Asterism — Claude operator notes
 
-Claude is the primary CLI operator here; the human user rarely runs
-commands directly.
-
 ## Read first
 
 1. `docs/STATUS.md` — canonical handoff (proved problems, recent commits,
@@ -43,8 +40,6 @@ Sonnet/Opus. Weak-tier (Haiku / Flash / mini): write `(5, 10)` in
 
 - `claude --session-id` requires dashed UUID — use `str(uuid.uuid4())`,
   not `.hex`.
-- Gemini free-tier quota exhausts as rc=0 + empty output;
-  `gemini_cli.py` already detects this.
 - `.attempts/<pid>/` is per-pipeline ephemeral. `rm -rf .attempts/`
   after killing daemon when zombies pile up; `doctor` warns at > 5.
 
@@ -59,14 +54,13 @@ python -m pytest tests/ -q --deselect \
 The two deselected need real `lake` cache; skip in normal regression.
 Full suite < 5 s, must be 100 % green before any commit.
 
-## Don't
-
-- Push without explicit user instruction.
-- Reintroduce model-name substring tier — write to `Asterism.yaml`.
-- Add `run:` section to Manifest.md — Manifest is data only.
-- Add `README.md` / quickstart unless asked.
-
 ## Updating
 
 Record substantial changes in `docs/STATUS.md`. Update this file when
 operator workflow changes (new subcommand, retired knob, new convention).
+
+---
+
+This file lives under `docs/` (not at repo root as `CLAUDE.md`) so the
+solver agents spawned by `Tooling/cli.py run` don't auto-load it into
+their system prompt. STATUS.md links here for the next operator session.
