@@ -804,22 +804,7 @@ def test_complete_text_uses_builder_kind_for_resolution(
     assert cmd[cmd.index("--model") + 1] == "claude-haiku-4-5"
 
 
-def test_dispatcher_threshold_reads_builder_model_first(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """F39 — threshold gates Builder iteration count, so it must
-    detect 'haiku' from the Builder-specific override even when
-    ASTERISM_AGENT_MODEL is sonnet."""
-    from Tooling import dispatcher as _d
-    monkeypatch.setenv("ASTERISM_BUILDER_MODEL", "claude-haiku-4-5")
-    monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-sonnet-4-6")
-    assert _d._model_aware_thresholds() == _d._WEAK_DEFAULTS
-
-
-def test_dispatcher_threshold_falls_back_to_agent_model(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from Tooling import dispatcher as _d
-    monkeypatch.delenv("ASTERISM_BUILDER_MODEL", raising=False)
-    monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-haiku-4-5")
-    assert _d._model_aware_thresholds() == _d._WEAK_DEFAULTS
+# Note: F31's substring-based threshold tier was retired together with
+# the Asterism.yaml introduction. The threshold resolution chain is
+# tested via tests/test_config.py + tests/test_dispatcher.py; weak-tier
+# users now set `dispatch.builder_threshold: 5` explicitly.

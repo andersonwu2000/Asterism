@@ -643,27 +643,44 @@ asterism init <problem>
   └─ idempotent：再次 init 同 problem 不覆蓋
 
 asterism run [--once]
-  └─ 啟動 dispatcher。env 可控：
-       ASTERISM_POOL              worker pool size (default 4)
-       ASTERISM_BUILDER_THRESHOLD Builder→Backward 切換閾值 (default 3 / haiku 5)
-       ASTERISM_SHELVE_THRESHOLD  goal shelve 閾值 (default 8 / haiku 10)
-       ASTERISM_BUDGET_SEC        daemon wall-clock budget (default 1800)
-       ASTERISM_AGENT_MODEL       legacy provider-wide model fallback;
-                                  also feeds threshold tier detection
-                                  (含 'haiku' 走弱模型 tier)
-       ASTERISM_LLM_PROVIDER      'claude' (default) / 'openai' / 'gemini' (F38)
-       ASTERISM_GEMINI_MODEL      Gemini 模型 (default gemini-2.5-flash;
-                                  pro 在 free tier 幾乎無額度、不建議)
+  └─ 啟動 dispatcher。設定一律走 Tooling/config.get 的 4 步解析鏈：
+       1. env var (一次性 override / CI)
+       2. Asterism.yaml at workspace root (per-project default)
+       3. legacy env var (向後相容、舊 setup 不需要改)
+       4. built-in default
 
-     F39 — per-pipeline overrides (optional, fall back to provider-wide
-     vars above):
-       ASTERISM_BUILDER_PROVIDER    e.g. 'gemini'
-       ASTERISM_BUILDER_MODEL       e.g. 'gemini-2.5-flash'
-       ASTERISM_BACKWARD_PROVIDER   e.g. 'claude'
-       ASTERISM_BACKWARD_MODEL      e.g. 'claude-opus-4-7'
-     Threshold tier (haiku weak / sonnet strong) reads BUILDER_MODEL
-     first, falling back to AGENT_MODEL. F22 complete_text auxiliary
-     calls inherit the Builder tier (cheap-LLM role).
+     Asterism.yaml schema (所有欄位 optional)：
+       dispatch:
+         pool:               4       (env: ASTERISM_POOL)
+         budget_sec:         1800    (env: ASTERISM_BUDGET_SEC)
+         builder_threshold:  3       (env: ASTERISM_BUILDER_THRESHOLD)
+         shelve_threshold:   8       (env: ASTERISM_SHELVE_THRESHOLD)
+       builder:
+         provider:  claude   (env: ASTERISM_BUILDER_PROVIDER →
+                                   ASTERISM_LLM_PROVIDER)
+         model:     <provider-default>
+                    (env: ASTERISM_BUILDER_MODEL →
+                          provider-specific legacy:
+                            claude  → ASTERISM_AGENT_MODEL
+                            gemini  → ASTERISM_GEMINI_MODEL
+                            openai  → ASTERISM_LLM_MODEL)
+       backward:
+         provider:  claude   (same chain as builder.provider)
+         model:     <provider-default>
+                    (same chain as builder.model)
+
+     Built-in defaults assume Sonnet/Opus tier. Weak-tier models
+     (haiku / flash / mini) want roughly (5, 10) for the threshold
+     pair — set explicitly in Asterism.yaml; the framework no longer
+     auto-detects from model-name substrings (was retired with this
+     consolidation: substring matching couldn't survive vendor naming
+     drift, see "Recent commits" in STATUS.md).
+
+     Provider-specific knobs not in Asterism.yaml (env-only):
+       ASTERISM_CLAUDE_TOOLS    claude --tools value (rare override)
+       ASTERISM_GEMINI_MODEL    gemini provider-wide model fallback
+       ASTERISM_LLM_MODEL       openai provider-wide model fallback
+       ASTERISM_LLM_BASE_URL    openai HTTP base URL
 ```
 
 status / stop 命令暫不寫，直接 sqlite 查 / Ctrl-C 終止。

@@ -53,51 +53,16 @@ def test_next_worker_kind_respects_runtime_threshold(
 
 
 # ---------------------------------------------------------------------
-# F31 — model-aware default thresholds
+# Threshold defaults — single (3, 8) baseline.
+# F31's haiku-substring tier was retired alongside the Asterism.yaml
+# config introduction: weak-tier users now write `dispatch.builder_threshold:
+# 5` + `dispatch.shelve_threshold: 10` explicitly. Tested via test_config.
 # ---------------------------------------------------------------------
 
-def test_model_aware_thresholds_haiku(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Haiku gets weak-tier defaults (5/10 post-F37) — extra Builder
-    attempts and extra strategy-retry budget have proven productive."""
-    monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-haiku-4-5")
-    assert _dispatcher._model_aware_thresholds() == (5, 10)
-
-
-def test_model_aware_thresholds_sonnet(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Sonnet gets strong-tier defaults (3/8 post-F37). 0% of Sonnet's
-    proves happen at 4+ Builder fails; F37 raised SHELVE 7→8 to give
-    passive Backward retries one extra round."""
-    monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-sonnet-4-6")
-    assert _dispatcher._model_aware_thresholds() == (3, 8)
-
-
-def test_model_aware_thresholds_opus_strong(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Opus / non-Haiku models default to strong tier (claude_cli's
-    DEFAULT_MODEL is Sonnet, so unset env also falls here)."""
-    monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-opus-4-7")
-    assert _dispatcher._model_aware_thresholds() == (3, 8)
-
-
-def test_model_aware_thresholds_unset_env_strong(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("ASTERISM_AGENT_MODEL", raising=False)
-    assert _dispatcher._model_aware_thresholds() == (3, 8)
-
-
-def test_model_aware_thresholds_haiku_case_insensitive(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Substring match must be case-insensitive — vendor naming
-    drift shouldn't silently flip a real Haiku run to strong-tier."""
-    monkeypatch.setenv("ASTERISM_AGENT_MODEL", "Claude-HAIKU-Pro")
-    assert _dispatcher._model_aware_thresholds() == (5, 10)
+def test_threshold_defaults_are_strong_tier() -> None:
+    """Module-level constants reflect the post-substring-removal default."""
+    assert _dispatcher.BUILDER_THRESHOLD == 3
+    assert _dispatcher.SHELVE_THRESHOLD == 8
 
 
 # ---------------------------------------------------------------------

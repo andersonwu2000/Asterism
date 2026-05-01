@@ -43,17 +43,23 @@ RC_QUOTA_EXHAUSTED = 126
 
 
 def _resolve_model(kind: str | None) -> str:
-    """F39 — model resolution chain for the gemini provider.
+    """Model resolution chain for the gemini provider (per
+    Tooling/config.get):
 
-    1. `ASTERISM_<KIND>_MODEL` (kind from LLMRequest; complete_text
-       uses 'builder')
-    2. `ASTERISM_GEMINI_MODEL` (legacy provider-wide override)
-    3. `DEFAULT_MODEL` (gemini-2.5-flash)
+    1. `ASTERISM_<KIND>_MODEL` env  (kind in {'builder','backward'})
+    2. Asterism.yaml `<kind>.model`
+    3. `ASTERISM_GEMINI_MODEL` env  (legacy gemini-wide)
+    4. `DEFAULT_MODEL` (gemini-2.5-flash)
     """
+    from .. import config
     if kind:
-        v = os.environ.get(f"ASTERISM_{kind.upper()}_MODEL")
-        if v:
-            return v
+        v = config.get(
+            f"{kind}.model",
+            env_var=f"ASTERISM_{kind.upper()}_MODEL",
+            legacy_env=("ASTERISM_GEMINI_MODEL",),
+            default=DEFAULT_MODEL,
+        )
+        return str(v)
     return os.environ.get("ASTERISM_GEMINI_MODEL", DEFAULT_MODEL)
 
 

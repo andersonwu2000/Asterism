@@ -11,7 +11,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor, FIRST_COMPLETED, wait
 from pathlib import Path
 
-from . import agent, db, manifest, pipeline, playbook, prune
+from . import agent, config, db, manifest, pipeline, playbook, prune
 
 
 # Per-model defaults (F31 + F37). Empirically:
@@ -31,32 +31,14 @@ from . import agent, db, manifest, pipeline, playbook, prune
 #   BUILDER_THRESHOLD = N → first N attempts (0..N-1) dispatch Builder,
 #                          attempts >= N dispatch Backward.
 #   SHELVE_THRESHOLD = M  → goal shelves once attempts hits M.
-# Both env-overridable: ASTERISM_BUILDER_THRESHOLD / ASTERISM_SHELVE_THRESHOLD.
-_STRONG_DEFAULTS = (3, 8)
-_WEAK_DEFAULTS = (5, 10)
-
-
-def _model_aware_thresholds() -> tuple[int, int]:
-    """Pick (BUILDER, SHELVE) defaults based on the Builder model.
-    Substring 'haiku' (case-insensitive) selects weak-tier defaults;
-    everything else (sonnet, opus, future strong models, unset) gets
-    strong-tier.
-
-    F39 — threshold gates Builder iteration count, so we read the
-    Builder-specific override first and fall back to the legacy
-    provider-wide `ASTERISM_AGENT_MODEL`."""
-    model = (
-        os.environ.get("ASTERISM_BUILDER_MODEL")
-        or os.environ.get("ASTERISM_AGENT_MODEL", "")
-    ).lower()
-    if "haiku" in model:
-        return _WEAK_DEFAULTS
-    return _STRONG_DEFAULTS
-
-
-# Module-level mutable knobs — read at use sites so env override
-# (set in `run`) takes effect.
-BUILDER_THRESHOLD, SHELVE_THRESHOLD = _model_aware_thresholds()
+#
+# Resolution chain (see Tooling/config.py): env override
+# (ASTERISM_{BUILDER,SHELVE}_THRESHOLD) → Asterism.yaml `dispatch.*`
+# → built-in (3, 8) tuned for Sonnet/Opus baseline. Weak-tier models
+# (haiku/flash) want roughly (5, 10) — set explicitly in Asterism.yaml.
+# Real values resolved in `run()` below per-process.
+BUILDER_THRESHOLD = 3
+SHELVE_THRESHOLD = 8
 
 TICK_TIMEOUT = 30  # seconds
 
@@ -550,19 +532,24 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
 
 def run(workspace: Path, *, once: bool = False) -> int:
     global BUILDER_THRESHOLD, SHELVE_THRESHOLD
-    pool_size = int(os.environ.get("ASTERISM_POOL", "4"))
-    budget_sec = int(os.environ.get("ASTERISM_BUDGET_SEC", "1800"))
-    b_default, s_default = _model_aware_thresholds()
-    BUILDER_THRESHOLD = int(os.environ.get(
-        "ASTERISM_BUILDER_THRESHOLD", str(b_default)))
-    SHELVE_THRESHOLD = int(os.environ.get(
-        "ASTERISM_SHELVE_THRESHOLD", str(s_default)))
+    pool_size = config.get(
+        "dispatch.pool", default=4,
+        env_var="ASTERISM_POOL", cast=int, workspace=workspace)
+    budget_sec = config.get(
+        "dispatch.budget_sec", default=1800,
+        env_var="ASTERISM_BUDGET_SEC", cast=int, workspace=workspace)
+    BUILDER_THRESHOLD = config.get(
+        "dispatch.builder_threshold", default=3,
+        env_var="ASTERISM_BUILDER_THRESHOLD", cast=int, workspace=workspace)
+    SHELVE_THRESHOLD = config.get(
+        "dispatch.shelve_threshold", default=8,
+        env_var="ASTERISM_SHELVE_THRESHOLD", cast=int, workspace=workspace)
     if SHELVE_THRESHOLD <= BUILDER_THRESHOLD:
         # An invalid combo would mean Backward never gets a chance —
         # fail loudly rather than silently degrade behavior.
         raise ValueError(
-            f"ASTERISM_SHELVE_THRESHOLD ({SHELVE_THRESHOLD}) must exceed "
-            f"ASTERISM_BUILDER_THRESHOLD ({BUILDER_THRESHOLD}); otherwise "
+            f"shelve_threshold ({SHELVE_THRESHOLD}) must exceed "
+            f"builder_threshold ({BUILDER_THRESHOLD}); otherwise "
             f"the goal shelves before any Backward attempt fires.")
     pool = ThreadPoolExecutor(max_workers=pool_size)
     futures: dict[Future, tuple[str, str, str, str]] = {}

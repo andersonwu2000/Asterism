@@ -56,17 +56,23 @@ DEFAULT_TOOLS = "Read Write Edit"
 
 
 def _resolve_model(kind: str | None) -> str:
-    """F39 — model resolution chain for the claude provider.
+    """Model resolution chain for the claude provider (per
+    Tooling/config.get):
 
-    1. `ASTERISM_<KIND>_MODEL` (kind in {'builder','backward'} from
-       LLMRequest.kind; complete_text uses 'builder')
-    2. `ASTERISM_AGENT_MODEL` (legacy provider-wide override)
-    3. `DEFAULT_MODEL`
+    1. `ASTERISM_<KIND>_MODEL` env  (kind in {'builder','backward'})
+    2. Asterism.yaml `<kind>.model`
+    3. `ASTERISM_AGENT_MODEL` env  (legacy provider-wide)
+    4. `DEFAULT_MODEL`
     """
+    from .. import config
     if kind:
-        v = os.environ.get(f"ASTERISM_{kind.upper()}_MODEL")
-        if v:
-            return v
+        v = config.get(
+            f"{kind}.model",
+            env_var=f"ASTERISM_{kind.upper()}_MODEL",
+            legacy_env=("ASTERISM_AGENT_MODEL",),
+            default=DEFAULT_MODEL,
+        )
+        return str(v)
     return os.environ.get("ASTERISM_AGENT_MODEL", DEFAULT_MODEL)
 
 

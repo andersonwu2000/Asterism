@@ -20,23 +20,30 @@ from __future__ import annotations
 
 import os
 
+from .. import config
 from .base import LLMRequest, Provider
 
 
 def get_provider(kind: str | None = None) -> Provider:
     """Return the provider for one agent invocation.
 
-    Resolution order (F39):
-      1. `ASTERISM_<KIND>_PROVIDER` (kind in {'builder','backward'})
-      2. `ASTERISM_LLM_PROVIDER`
-      3. 'claude' (default)
+    Resolution order (per Tooling/config.get):
+      1. `ASTERISM_<KIND>_PROVIDER` env (kind in {'builder','backward'})
+      2. Asterism.yaml `<kind>.provider`
+      3. `ASTERISM_LLM_PROVIDER` env (legacy)
+      4. 'claude' (default)
     """
-    name = None
     if kind:
-        name = os.environ.get(f"ASTERISM_{kind.upper()}_PROVIDER")
-    if not name:
+        name = config.get(
+            f"{kind}.provider",
+            env_var=f"ASTERISM_{kind.upper()}_PROVIDER",
+            legacy_env=("ASTERISM_LLM_PROVIDER",),
+            default="claude",
+        )
+    else:
+        # No kind context (legacy path) — only env+default chain.
         name = os.environ.get("ASTERISM_LLM_PROVIDER", "claude")
-    name = name.lower()
+    name = str(name).lower()
     if name == "claude":
         from .claude_cli import ClaudeCliProvider
         return ClaudeCliProvider()

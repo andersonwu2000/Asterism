@@ -46,17 +46,25 @@ _FENCE_RE = re.compile(
 
 
 def _resolve_model(kind: str | None) -> str | None:
-    """F39 — model resolution chain for the openai provider.
+    """Model resolution chain for the openai provider (per
+    Tooling/config.get):
 
-    1. `ASTERISM_<KIND>_MODEL` (kind from LLMRequest; complete_text
-       uses 'builder')
-    2. `ASTERISM_LLM_MODEL` (legacy provider-wide override)
-    3. None — caller surfaces rc=127 / returns None
+    1. `ASTERISM_<KIND>_MODEL` env  (kind in {'builder','backward'})
+    2. Asterism.yaml `<kind>.model`
+    3. `ASTERISM_LLM_MODEL` env  (legacy openai-wide)
+    4. None — caller surfaces rc=127 / returns None
     """
+    from .. import config
     if kind:
-        v = os.environ.get(f"ASTERISM_{kind.upper()}_MODEL")
-        if v:
-            return v
+        v = config.get(
+            f"{kind}.model",
+            env_var=f"ASTERISM_{kind.upper()}_MODEL",
+            legacy_env=("ASTERISM_LLM_MODEL",),
+            default=None,
+        )
+        if v is not None:
+            return str(v)
+        return None
     return os.environ.get("ASTERISM_LLM_MODEL")
 
 
