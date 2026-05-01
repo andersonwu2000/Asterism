@@ -18,7 +18,7 @@ Do not include any other text outside these blocks. Do not wrap blocks in markdo
 
 Required files:
 
-1. `==== FILE: PROPOSAL.md ====` — high-level strategy, why each sub-goal is simpler, how they combine. No restating the goal, no sub-goal statement code blocks, no detailed proof sketches.
+1. `==== FILE: PROPOSAL.md ====` — high-level strategy, why each sub-goal is simpler, how they combine. No restating the goal, no sub-goal statement code blocks.
 
 2. `==== FILE: patch_<parent_slug>.lean ====` — combined patch for the parent goal. Replace `<parent_slug>` with the value from Context. Imports include `import Problems.<problem>.proofs.L_<sub_slug>` for each sub-goal. Declares one theorem in `namespace Problems.<problem>`, named per Context's `## Naming convention` section (NOT the parent slug — that would collide). Body uses `have h_i : <sub_i_type> := <slug_i> args` calls + a final tactic that closes the parent statement.
 

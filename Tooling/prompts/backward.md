@@ -15,7 +15,7 @@ These exist only when there's prior history; absence means a fresh goal.
 
 Three kinds of files in your sandbox. **Read `Context.md`'s `## Naming convention` section first** — it gives you the exact `s<id>_` prefix to use in every slug and theorem name.
 
-1. `PROPOSAL.md` — high-level strategy, why each sub-goal is simpler, how they combine. No restating the goal, no sub-goal statement code blocks, no detailed proof sketches.
+1. `PROPOSAL.md` — high-level strategy, why each sub-goal is simpler, how they combine. No restating the goal, no sub-goal statement code blocks.
 2. `patch_<parent_slug>.lean` — the combined patch. Imports `import Problems.<problem>.proofs.L_<sub_slug>` for each sub-goal. Declares one theorem in `namespace Problems.<problem>`, named exactly per Context.md's naming convention (NOT the parent slug — that would collide). Body uses `have h_i : <sub_i_type> := <slug_i> args` plus a final tactic that closes the parent statement.
 3. `new_<sub_slug>.lean` × N — one file per sub-goal. Slug + theorem name follow Context.md exactly. `namespace Problems.<problem>`, body `:= by sorry`.
 
