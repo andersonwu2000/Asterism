@@ -202,3 +202,159 @@ def test_claude_tools_env_override(
     ))
     cmd = captured[0]
     assert cmd[cmd.index("--tools") + 1] == "Read Bash"
+
+
+# ---------------------------------------------------------------------
+# F33 — same-session Builder retry: --session-id (cold) / --resume
+# (retry) / stale-session sentinel rc=125
+# ---------------------------------------------------------------------
+
+def test_claude_spawn_cold_with_session_id_uses_session_id_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """First Builder attempt: caller mints a uuid, passes session_id
+    + is_retry=False. spawn must use --session-id <uuid> (not --resume)
+    and persist the session to disk (no --no-session-persistence)."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+        session_id="abc123",
+        is_retry=False,
+    ))
+    cmd = captured[0]
+    assert "--session-id" in cmd
+    assert cmd[cmd.index("--session-id") + 1] == "abc123"
+    assert "--resume" not in cmd
+    # Session must persist for the future retry to find it
+    assert "--no-session-persistence" not in cmd
+
+
+def test_claude_spawn_retry_uses_resume_and_short_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retry path: --resume <uuid> + a prompt that points the agent
+    at RETRY_NOTE.md (the prior turn's reasoning lives in the session
+    memory; we only inject the new lake error)."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+        session_id="abc123",
+        is_retry=True,
+    ))
+    cmd = captured[0]
+    assert "--resume" in cmd
+    assert cmd[cmd.index("--resume") + 1] == "abc123"
+    assert "--session-id" not in cmd
+    # Prompt should reference RETRY_NOTE.md, not Context.md
+    prompt_idx = cmd.index("-p") + 1
+    assert "RETRY_NOTE.md" in cmd[prompt_idx]
+
+
+def test_claude_spawn_no_session_id_keeps_legacy_ephemeral(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backward / Verify and OpenAI fallback don't pass session_id;
+    behavior must stay unchanged (--no-session-persistence retained)."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="backward",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+    ))
+    cmd = captured[0]
+    assert "--session-id" not in cmd
+    assert "--resume" not in cmd
+    assert "--no-session-persistence" in cmd
+
+
+def test_claude_spawn_stale_session_returns_rc_125(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When `--resume <uuid>` finds no on-disk session, claude prints
+    'No conversation found with session ID: ...' to stderr and returns
+    rc=1. spawn must surface this as RC_STALE_SESSION (=125) so the
+    caller (pipeline.run_builder) can clear the DB id and retry cold."""
+    import subprocess as _sub
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    monkeypatch.setattr(claude_cli.shutil, "which",
+                        lambda _: "/fake/claude")
+    monkeypatch.setattr(
+        claude_cli.subprocess, "run",
+        lambda *a, **kw: _sub.CompletedProcess(
+            args=a[0], returncode=1, stdout="",
+            stderr="No conversation found with session ID: abc123",
+        ))
+    p = claude_cli.ClaudeCliProvider()
+    rc = p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+        session_id="abc123",
+        is_retry=True,
+    ))
+    assert rc == claude_cli.RC_STALE_SESSION
+    assert claude_cli.RC_STALE_SESSION == 125
+
+
+def test_claude_spawn_stale_marker_only_on_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stale-session sentinel is meaningful only on --resume.
+    A --session-id call that fails for any reason should pass through
+    its real rc — we don't want to misclassify an unrelated rc=1
+    as 'stale session'."""
+    import subprocess as _sub
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    monkeypatch.setattr(claude_cli.shutil, "which",
+                        lambda _: "/fake/claude")
+    monkeypatch.setattr(
+        claude_cli.subprocess, "run",
+        lambda *a, **kw: _sub.CompletedProcess(
+            args=a[0], returncode=1, stdout="",
+            stderr="No conversation found with session ID: abc123",
+        ))
+    p = claude_cli.ClaudeCliProvider()
+    rc = p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+        session_id="abc123",
+        is_retry=False,  # cold path
+    ))
+    # Cold path can't be a stale session — pass through real rc
+    assert rc == 1

@@ -1,9 +1,9 @@
 """Claude CLI provider — subprocess to `claude` executable.
 
 Inherits the existing claude CLI workflow: `--add-dir` for sandboxing,
-`--no-session-persistence`, `acceptEdits` permission, text output.
-The agent reads `Context.md` and the prompt template from disk and
-writes outputs back to `attempts_dir/`.
+`acceptEdits` permission, text output. The agent reads `Context.md`
+and the prompt template from disk and writes outputs back to
+`attempts_dir/`.
 
 Model selection: `ASTERISM_AGENT_MODEL` env (default: Sonnet).
 
@@ -15,6 +15,21 @@ NotebookEdit, mcp__*), skip CLAUDE.md / auto-memory / settings load,
 and stabilize per-machine sections so prompt caching reuses across
 calls. Override the tool list via `ASTERISM_CLAUDE_TOOLS` if a future
 flow needs a different surface.
+
+Same-session retry (F33): when LLMRequest.session_id is provided,
+the cold path uses `--session-id <uuid>` to pin the session id; a
+retry (is_retry=True) uses `--resume <uuid>` and a short prompt
+(builder_retry.md) that relies on the session memory carrying the
+prior turn's reasoning. `--no-session-persistence` is dropped on
+those calls — sessions persist to disk so Asterism can resume them.
+Sessions without session_id (e.g. Backward) keep the old
+`--no-session-persistence` behavior.
+
+Stale session sentinel (F33): `claude --resume <uuid>` against a
+session id whose on-disk file is gone (GC'd / never existed) returns
+rc=1 with stderr `"No conversation found with session ID"`. spawn
+maps that to rc=125 so the caller (pipeline) knows to clear the
+DB session_id and retry with a fresh uuid (cold path).
 """
 from __future__ import annotations
 
@@ -26,6 +41,12 @@ from .base import LLMRequest
 
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
+
+# F33 — sentinel rc returned when claude reports "No conversation
+# found with session ID: ...". Caller's contract: on rc=125, clear
+# the goal's builder_session_id and retry once with a fresh uuid.
+RC_STALE_SESSION = 125
+_STALE_SESSION_MARKER = "no conversation found with session id"
 
 # Asterism's pipelines only ever need Read / Write / Edit. Backward,
 # Builder, Verify each manipulate sandbox files; lemma signatures and
@@ -55,12 +76,41 @@ class ClaudeCliProvider:
             return 127
 
         model = os.environ.get("ASTERISM_AGENT_MODEL", DEFAULT_MODEL)
-        prompt = (
-            f"{req.kind} task. Read agent prompt at {req.prompt_path} "
-            f"and follow it exactly.\n"
-            f"Read context at {req.attempts_dir}/Context.md.\n"
-            f"Write output to {req.attempts_dir}/."
-        )
+
+        # F33 — retry path uses `--resume`, a short prompt template,
+        # and skips the file-based prompt fetch (the prior turn's
+        # context lives in claude's session memory).
+        if req.is_retry and req.session_id:
+            session_flags = ["--resume", req.session_id]
+            session_lifetime_flag: list[str] = []  # session persists
+            prompt = (
+                f"Previous attempt failed lake build. Read updated "
+                f"failure_detail at {req.attempts_dir}/RETRY_NOTE.md "
+                f"and produce a fresh patch.lean (same scope) that "
+                f"addresses the error. Reuse PROPOSAL.md from the "
+                f"prior turn unless the strategy needs to change."
+            )
+        elif req.session_id:
+            # Cold path with a caller-pinned session id (so a future
+            # retry can resume).
+            session_flags = ["--session-id", req.session_id]
+            session_lifetime_flag = []  # persist
+            prompt = (
+                f"{req.kind} task. Read agent prompt at "
+                f"{req.prompt_path} and follow it exactly.\n"
+                f"Read context at {req.attempts_dir}/Context.md.\n"
+                f"Write output to {req.attempts_dir}/."
+            )
+        else:
+            # Legacy non-session path: ephemeral session, original prompt.
+            session_flags = []
+            session_lifetime_flag = ["--no-session-persistence"]
+            prompt = (
+                f"{req.kind} task. Read agent prompt at "
+                f"{req.prompt_path} and follow it exactly.\n"
+                f"Read context at {req.attempts_dir}/Context.md.\n"
+                f"Write output to {req.attempts_dir}/."
+            )
 
         cmd = [
             "claude",
@@ -69,8 +119,9 @@ class ClaudeCliProvider:
             "--permission-mode", "acceptEdits",
             "--add-dir", str(req.problem_dir),
             "--add-dir", str(req.attempts_dir),
-            "--no-session-persistence",
             "--output-format", "text",
+            *session_flags,
+            *session_lifetime_flag,
             *_trim_flags(),
         ]
         try:
@@ -79,6 +130,16 @@ class ClaudeCliProvider:
                 capture_output=True, text=True,
                 encoding="utf-8", errors="replace",
             )
+            # F33 — detect stale session: claude returns rc=1 with
+            # "No conversation found with session ID: ..." in stderr.
+            # Surface as RC_STALE_SESSION so pipeline can clear the
+            # DB session_id and retry with a fresh one.
+            if (r.returncode != 0 and req.is_retry
+                    and _STALE_SESSION_MARKER in (r.stderr or "").lower()):
+                print(f"[llm:claude] stale session "
+                      f"{req.session_id[:8] if req.session_id else '?'}",
+                      flush=True)
+                return RC_STALE_SESSION
             return r.returncode
         except subprocess.TimeoutExpired:
             print(f"[llm:claude] timed out after {req.timeout_sec}s",

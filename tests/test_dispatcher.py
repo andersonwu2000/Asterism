@@ -143,6 +143,108 @@ def test_cascade_builder_shelves_at_threshold(conn: sqlite3.Connection) -> None:
 
 
 # ---------------------------------------------------------------------
+# F33 — cascade clears builder_session_id at right moments
+# ---------------------------------------------------------------------
+
+def test_cascade_builder_proved_clears_session_id(
+    conn: sqlite3.Connection,
+) -> None:
+    """Goal proved → session_id cleared (purpose served)."""
+    gid = _seed_goal(conn)
+    db.set_builder_session_id(conn, gid, "abc-uuid")
+    cascade_one(conn, pipeline_id="pid", kind="Builder",
+                target_id=str(gid), target_kind="Goal", outcome="proved")
+    assert db.get_builder_session_id(conn, gid) is None
+
+
+def test_cascade_builder_failed_keeps_session_id_below_threshold(
+    conn: sqlite3.Connection,
+) -> None:
+    """Single Builder failure → session_id preserved (next attempt
+    will resume to leverage prior turn's reasoning)."""
+    gid = _seed_goal(conn)
+    db.set_builder_session_id(conn, gid, "abc-uuid")
+    cascade_one(conn, pipeline_id="pid", kind="Builder",
+                target_id=str(gid), target_kind="Goal", outcome="failed")
+    assert db.get_builder_session_id(conn, gid) == "abc-uuid"
+
+
+def test_cascade_builder_failed_clears_session_id_at_builder_threshold(
+    conn: sqlite3.Connection,
+) -> None:
+    """Once attempts hit BUILDER_THRESHOLD, next dispatch is Backward
+    (no LLM session). Lingering session_id is cleared."""
+    from Tooling import dispatcher as _d
+    gid = _seed_goal(conn)
+    db.set_builder_session_id(conn, gid, "abc-uuid")
+    for _ in range(_d.BUILDER_THRESHOLD):
+        cascade_one(conn, pipeline_id="pid", kind="Builder",
+                    target_id=str(gid), target_kind="Goal",
+                    outcome="failed")
+    assert db.get_builder_session_id(conn, gid) is None
+
+
+def test_cascade_builder_shelved_clears_session_id(
+    conn: sqlite3.Connection,
+) -> None:
+    """Goal shelved → session_id also cleared as part of cleanup."""
+    gid = _seed_goal(conn)
+    db.set_builder_session_id(conn, gid, "abc-uuid")
+    for _ in range(SHELVE_THRESHOLD):
+        cascade_one(conn, pipeline_id="pid", kind="Builder",
+                    target_id=str(gid), target_kind="Goal",
+                    outcome="failed")
+    assert db.get_goal(conn, gid)["status"] == "shelved"
+    assert db.get_builder_session_id(conn, gid) is None
+
+
+def test_db_migration_adds_builder_session_id_column(
+    tmp_path: Path,
+) -> None:
+    """Older DBs created without the F33 column must be migrated by
+    init_schema's idempotent ALTER TABLE."""
+    import sqlite3 as _sq
+    db_path = tmp_path / "old.db"
+    # Create the old goals table shape (no builder_session_id)
+    legacy = _sq.connect(str(db_path))
+    legacy.executescript("""
+        CREATE TABLE problems (
+            name TEXT PRIMARY KEY,
+            manifest_path TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE goals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            problem TEXT NOT NULL REFERENCES problems(name),
+            slug TEXT NOT NULL,
+            lean_path TEXT NOT NULL UNIQUE,
+            statement TEXT NOT NULL,
+            difficulty INTEGER NOT NULL DEFAULT 4,
+            kind TEXT NOT NULL DEFAULT 'theorem' CHECK(kind IN ('theorem')),
+            origin TEXT NOT NULL CHECK(origin IN ('root','backward')),
+            status TEXT NOT NULL CHECK(status IN ('open','attempting','proved','shelved')),
+            depth INTEGER NOT NULL DEFAULT 0,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(problem, slug)
+        );
+    """)
+    legacy.commit()
+    legacy.close()
+
+    # Re-open via db.connect + init_schema; column should appear
+    fresh = _sq.connect(str(db_path))
+    fresh.row_factory = _sq.Row
+    db.init_schema(fresh)
+    cols = [r[1] for r in fresh.execute("PRAGMA table_info(goals)").fetchall()]
+    assert "builder_session_id" in cols
+    # Idempotent: a second init_schema doesn't error
+    db.init_schema(fresh)
+    fresh.close()
+
+
+# ---------------------------------------------------------------------
 # cascade_one — Backward
 # ---------------------------------------------------------------------
 

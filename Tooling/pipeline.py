@@ -188,9 +188,46 @@ def _replace_proof_body(content: str, tactic: str) -> str:
 # Builder
 # ---------------------------------------------------------------------
 
+def _write_retry_note(attempts_dir: Path,
+                      conn: sqlite3.Connection, goal_id: int) -> None:
+    """F33 — write `RETRY_NOTE.md` summarizing the most recent
+    Builder failure for this goal. The retry agent reads this in lieu
+    of re-loading the whole Context.md (its prior turn lives in the
+    claude session memory). Call only on retry path."""
+    from . import diagnostics
+    row = conn.execute(
+        "SELECT da.failure_detail FROM dead_attempts da"
+        " JOIN pipelines p ON p.id = da.pipeline_id"
+        " WHERE da.target_id = ? AND da.target_kind = 'Goal'"
+        "   AND p.kind = 'Builder'"
+        " ORDER BY da.id DESC LIMIT 1",
+        (goal_id,),
+    ).fetchone()
+    if row is None:
+        msg = "(no prior Builder failure recorded)"
+    else:
+        detail = row["failure_detail"] or "(empty)"
+        msg = diagnostics.strip_lake_noise(detail)
+    text = (
+        "# Retry note for this goal\n\n"
+        "Your previous attempt's lake build failed with:\n\n"
+        "```\n"
+        f"{msg}\n"
+        "```\n\n"
+        "Continue from your prior turn. Your previous PROPOSAL.md "
+        "and patch.lean are in your session memory. Adjust patch.lean "
+        "to fix this error; reuse the strategy unless it's clearly "
+        "wrong-direction. Output a fresh patch.lean and a brief "
+        "PROPOSAL.md (1-2 sentences) noting what changed.\n"
+    )
+    (attempts_dir / "RETRY_NOTE.md").write_text(text, encoding="utf-8")
+
+
 def run_builder(conn: sqlite3.Connection, *, goal_id: int,
                 workspace: Path, mfst: manifest.Manifest,
                 pipeline_id: str) -> PipelineResult:
+    import uuid
+
     goal = db.get_goal(conn, goal_id)
     if goal is None:
         return PipelineResult(outcome="failed", failure_reason="goal_not_found")
@@ -227,16 +264,59 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
         return PipelineResult(outcome="exhausted",
                               failure_reason="tactic_try_exhausted")
 
-    # Phase 2: tactic_llm
-    agent.compile_context(conn, goal=goal, mfst=mfst, attempts_dir=attempts_dir)
+    # Phase 2: tactic_llm with F33 same-session retry.
+    # First attempt mints a session id and pins it via --session-id;
+    # subsequent attempts reuse via --resume + a short RETRY_NOTE.md
+    # that relies on the prior turn living in claude's session memory.
+    sid = db.get_builder_session_id(conn, goal_id)
+    is_retry = sid is not None
+    if not is_retry:
+        sid = uuid.uuid4().hex
+        db.set_builder_session_id(conn, goal_id, sid)
+        agent.compile_context(conn, goal=goal, mfst=mfst,
+                              attempts_dir=attempts_dir)
+    else:
+        _write_retry_note(attempts_dir, conn, goal_id)
+
     rc = agent.spawn_llm(
         kind="builder",
         prompt_path=PROMPT_DIR / "builder.md",
         problem_dir=workspace / "Problems" / goal["problem"],
         attempts_dir=attempts_dir,
+        session_id=sid,
+        is_retry=is_retry,
     )
+
+    # F33 — fallback for stale session (claude's on-disk session was
+    # GC'd or the daemon's DB id outlived the file). One-time retry
+    # with a fresh uuid down the cold path.
+    if rc == 125:
+        db.set_builder_session_id(conn, goal_id, None)
+        sid = uuid.uuid4().hex
+        db.set_builder_session_id(conn, goal_id, sid)
+        agent.compile_context(conn, goal=goal, mfst=mfst,
+                              attempts_dir=attempts_dir)
+        rc = agent.spawn_llm(
+            kind="builder",
+            prompt_path=PROMPT_DIR / "builder.md",
+            problem_dir=workspace / "Problems" / goal["problem"],
+            attempts_dir=attempts_dir,
+            session_id=sid,
+            is_retry=False,
+        )
+
+    if rc == 124:
+        # Timeout: claude's session may have been killed mid-write.
+        # Conservative: clear session_id so next attempt cold-starts.
+        db.set_builder_session_id(conn, goal_id, None)
+        return PipelineResult(outcome="failed",
+                              failure_reason="agent_no_response",
+                              failure_detail=f"claude rc={rc}")
     if rc != 0:
-        return PipelineResult(outcome="failed", failure_reason="agent_no_response",
+        # Ordinary failure: keep session_id so next attempt's --resume
+        # has the prior failed-turn context to learn from.
+        return PipelineResult(outcome="failed",
+                              failure_reason="agent_no_response",
                               failure_detail=f"claude rc={rc}")
 
     proposal = (attempts_dir / "PROPOSAL.md")

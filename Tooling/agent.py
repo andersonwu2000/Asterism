@@ -428,12 +428,18 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
 
 
 def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
-              attempts_dir: Path) -> int:
+              attempts_dir: Path,
+              session_id: str | None = None,
+              is_retry: bool = False) -> int:
     """Dispatch to the configured LLM provider for one agent invocation.
 
     Provider is resolved from `ASTERISM_LLM_PROVIDER` env (default:
     `claude`). Returns the provider's rc (0 success, 124 timeout,
-    127 missing dep, other = error).
+    125 stale session (F33), 127 missing dep, other = error).
+
+    `session_id` / `is_retry`: F33 same-session Builder retry. Pass
+    a UUID + is_retry=False on first attempt; same UUID + is_retry=True
+    on subsequent attempts to reuse claude's session memory.
     """
     return llm.get_provider().spawn(llm.LLMRequest(
         kind=kind,
@@ -441,6 +447,8 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
         problem_dir=problem_dir,
         attempts_dir=attempts_dir,
         timeout_sec=WORKER_TIMEOUT_SEC,
+        session_id=session_id,
+        is_retry=is_retry,
     ))
 
 

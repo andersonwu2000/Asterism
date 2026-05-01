@@ -31,12 +31,23 @@ class LLMRequest:
       attempts_dir: .attempts/<pid>/ — sandbox; agent writes outputs here.
                     Must already contain Context.md.
       timeout_sec:  hard wall-clock cap. Provider must enforce.
+      session_id:   F33 — claude CLI session UUID. Caller-controlled.
+                    First attempt uses --session-id <id> to pin the
+                    session id; retry attempts use --resume <id>.
+                    Providers without session support (OpenAI HTTP)
+                    ignore this field.
+      is_retry:     F33 — True when caller is reusing session_id from
+                    a prior attempt. Provider may switch to a shorter
+                    prompt (assumes prior turn's context lives in the
+                    session memory).
     """
     kind: str
     prompt_path: Path
     problem_dir: Path
     attempts_dir: Path
     timeout_sec: int
+    session_id: str | None = None
+    is_retry: bool = False
 
 
 class Provider(Protocol):

@@ -322,12 +322,20 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
     if kind == "Builder":
         if outcome == "proved":
             db.update_goal_status(conn, int(target_id), "proved")
+            # F33 — goal proved; the Builder session served its purpose.
+            # Clearing keeps DB tidy; on-disk session file is harmless.
+            db.set_builder_session_id(conn, int(target_id), None)
             return
         if outcome in ("exhausted", "failed"):
             n = db.increment_goal_attempts(conn, int(target_id))
             if n >= SHELVE_THRESHOLD:
                 db.update_goal_status(conn, int(target_id), "shelved")
+                db.set_builder_session_id(conn, int(target_id), None)
                 _propagate_shelve(conn, int(target_id))
+            elif n >= BUILDER_THRESHOLD:
+                # F33 — next dispatch is Backward (no LLM session);
+                # the lingering Builder session won't be reused.
+                db.set_builder_session_id(conn, int(target_id), None)
             return
 
     if kind == "Backward":

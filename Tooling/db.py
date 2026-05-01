@@ -39,6 +39,11 @@ CREATE TABLE IF NOT EXISTS goals (
                     CHECK(status IN ('open','attempting','proved','shelved')),
     depth       INTEGER NOT NULL DEFAULT 0,
     attempts    INTEGER NOT NULL DEFAULT 0,
+    -- F33 — claude CLI session UUID for same-session Builder retry.
+    -- Set on first Builder dispatch; reused on retry via `claude --resume`;
+    -- cleared on timeout (rc=124), stale-session fallback (rc=125), or
+    -- when Builder threshold reached (next dispatch is Backward).
+    builder_session_id TEXT NULL DEFAULT NULL,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     UNIQUE(problem, slug)
@@ -129,6 +134,19 @@ def connect(path: Path = DB_PATH) -> sqlite3.Connection:
 
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    # F33 — additive migration for older DBs created before
+    # builder_session_id existed in the goals table. CREATE TABLE IF
+    # NOT EXISTS is a no-op when the table is already present, so a
+    # blind ALTER TABLE is needed to backfill the column. Idempotent
+    # via "duplicate column name" detection.
+    try:
+        conn.execute(
+            "ALTER TABLE goals ADD COLUMN builder_session_id TEXT NULL"
+            " DEFAULT NULL"
+        )
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e).lower():
+            raise
     conn.commit()
 
 
@@ -165,6 +183,30 @@ def update_goal_status(conn: sqlite3.Connection, goal_id: int,
         (status, now(), goal_id),
     )
     conn.commit()
+
+
+def set_builder_session_id(conn: sqlite3.Connection, goal_id: int,
+                           session_id: str | None) -> None:
+    """F33 — record (or clear with None) the claude CLI session UUID
+    for same-session Builder retry."""
+    conn.execute(
+        "UPDATE goals SET builder_session_id = ?, updated_at = ?"
+        " WHERE id = ?",
+        (session_id, now(), goal_id),
+    )
+    conn.commit()
+
+
+def get_builder_session_id(conn: sqlite3.Connection,
+                           goal_id: int) -> str | None:
+    row = conn.execute(
+        "SELECT builder_session_id FROM goals WHERE id = ?",
+        (goal_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    val = row["builder_session_id"]
+    return str(val) if val else None
 
 
 def increment_goal_attempts(conn: sqlite3.Connection, goal_id: int) -> int:
