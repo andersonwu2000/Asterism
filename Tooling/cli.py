@@ -13,7 +13,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import db, dispatcher, manifest, prune
+from . import db, dispatcher, manifest, prune, tree
 
 
 # F28 — daemon log lifecycle.
@@ -205,6 +205,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     else:
         print(f"OK: {problem} already initialized (goal id={existing_goal['id']})")
     conn.commit()
+    # Initial TREE.md so readers see structure right after init.
+    tree.write(conn, workspace, problem)
     return 0
 
 
@@ -305,6 +307,15 @@ def cmd_reset(args: argparse.Namespace) -> int:
                     deleted_files.append(f.name)
                 except OSError:
                     pass
+
+    # Drop the live TREE.md if present — Problem rows are gone, so the
+    # tree would render as "no root goal" anyway. Cleaner to remove.
+    tree_path = pdir / "TREE.md"
+    if tree_path.exists():
+        try:
+            tree_path.unlink()
+        except OSError:
+            pass
 
     # Restore Root.lean to sorry stub (same template as cmd_init).
     mfst = manifest.parse(mfst_path)

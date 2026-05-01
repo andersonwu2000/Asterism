@@ -11,7 +11,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor, FIRST_COMPLETED, wait
 from pathlib import Path
 
-from . import agent, config, db, manifest, pipeline, playbook, prune
+from . import agent, config, db, manifest, pipeline, playbook, prune, tree
 
 
 # Per-model defaults (F31 + F37). Empirically:
@@ -584,6 +584,7 @@ def run(workspace: Path, *, once: bool = False) -> int:
                                 target_id=tid, target_kind=tk,
                                 outcome=outcome, workspace=workspace)
                     print(f"[cascade] {kind} {tk}={tid} → {outcome}", flush=True)
+                    tree.write_for_target(conn, workspace, tid, tk)
                 except Exception as exc:
                     # Worker thread raised an unhandled exception (e.g.
                     # subprocess launch errno-2, OSError on temp dir, an
@@ -601,6 +602,7 @@ def run(workspace: Path, *, once: bool = False) -> int:
                         cascade_one(conn, pipeline_id=pid, kind=kind,
                                     target_id=tid, target_kind=tk,
                                     outcome="failed", workspace=workspace)
+                        tree.write_for_target(conn, workspace, tid, tk)
                     except Exception as exc2:
                         # Cascade itself bombing is a deeper bug; log
                         # but don't crash the daemon (other work may
