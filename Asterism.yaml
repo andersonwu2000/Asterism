@@ -6,8 +6,8 @@
 # any entry to override. Leaving the file as-is is identical to deleting
 # it; the framework only reads what's set.
 
-# dispatch:
-#   pool: 4               # ThreadPoolExecutor workers
+dispatch:
+  pool: 8               # ThreadPoolExecutor workers
 #   budget_sec: 1800      # daemon wall-clock cutoff (30 min)
 #   builder_threshold: 3  # attempts per goal before switching to Backward
 #   shelve_threshold: 8   # attempts per goal before shelving
@@ -20,17 +20,3 @@
 # backward:
 #   provider: claude
 #   model: claude-sonnet-4-6
-
-# Examples ------------------------------------------------------------
-#
-# Cheap Builder + strong Backward (mix providers in one daemon run):
-#   builder:  { provider: claude, model: claude-haiku-4-5 }
-#   backward: { provider: claude, model: claude-opus-4-7  }
-#   dispatch: { builder_threshold: 5, shelve_threshold: 10 }
-#
-# Pure Gemini run (free-tier flash):
-#   builder:  { provider: gemini, model: gemini-2.5-flash }
-#   backward: { provider: gemini, model: gemini-2.5-flash }
-#
-# env always wins for one-off override:
-#   ASTERISM_BUILDER_MODEL=claude-opus-4-7 python -m Tooling.cli run
