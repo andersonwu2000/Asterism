@@ -669,3 +669,157 @@ def test_gemini_spawn_returns_127_on_filenotfounderror(
         problem_dir=tmp_path, attempts_dir=tmp_path, timeout_sec=60,
     ))
     assert rc == 127
+
+
+# ---------------------------------------------------------------------
+# F39 — per-pipeline provider/model selection (kind-aware resolution)
+# ---------------------------------------------------------------------
+
+def test_get_provider_kind_specific_overrides_global(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ASTERISM_BUILDER_PROVIDER takes precedence over LLM_PROVIDER
+    when caller passes kind='builder'."""
+    monkeypatch.setenv("ASTERISM_LLM_PROVIDER", "claude")
+    monkeypatch.setenv("ASTERISM_BUILDER_PROVIDER", "gemini")
+    p = llm.get_provider(kind="builder")
+    assert p.__class__.__name__ == "GeminiCliProvider"
+
+
+def test_get_provider_kind_specific_unset_falls_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If ASTERISM_BUILDER_PROVIDER not set, kind='builder' falls back
+    to ASTERISM_LLM_PROVIDER (then 'claude' default)."""
+    monkeypatch.delenv("ASTERISM_BUILDER_PROVIDER", raising=False)
+    monkeypatch.setenv("ASTERISM_LLM_PROVIDER", "openai")
+    p = llm.get_provider(kind="builder")
+    assert p.__class__.__name__ == "OpenAIProvider"
+
+
+def test_get_provider_kind_specific_with_no_global(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ASTERISM_BUILDER_PROVIDER", raising=False)
+    monkeypatch.delenv("ASTERISM_LLM_PROVIDER", raising=False)
+    p = llm.get_provider(kind="builder")
+    assert p.__class__.__name__ == "ClaudeCliProvider"
+
+
+def test_get_provider_builder_and_backward_can_differ(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hallmark F39 use case — Builder uses cheap LLM, Backward uses
+    strong LLM, in the same daemon run."""
+    monkeypatch.setenv("ASTERISM_BUILDER_PROVIDER", "gemini")
+    monkeypatch.setenv("ASTERISM_BACKWARD_PROVIDER", "claude")
+    pb = llm.get_provider(kind="builder")
+    pk = llm.get_provider(kind="backward")
+    assert pb.__class__.__name__ == "GeminiCliProvider"
+    assert pk.__class__.__name__ == "ClaudeCliProvider"
+
+
+def test_claude_resolve_model_kind_specific_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from Tooling.llm import claude_cli
+    monkeypatch.setenv("ASTERISM_BUILDER_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-sonnet-4-6")
+    assert claude_cli._resolve_model("builder") == "claude-haiku-4-5"
+    # Different kind falls through to legacy AGENT_MODEL
+    assert claude_cli._resolve_model("backward") == "claude-sonnet-4-6"
+
+
+def test_claude_resolve_model_legacy_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from Tooling.llm import claude_cli
+    monkeypatch.delenv("ASTERISM_BUILDER_MODEL", raising=False)
+    monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-opus-4-7")
+    assert claude_cli._resolve_model("builder") == "claude-opus-4-7"
+
+
+def test_claude_resolve_model_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from Tooling.llm import claude_cli
+    monkeypatch.delenv("ASTERISM_BUILDER_MODEL", raising=False)
+    monkeypatch.delenv("ASTERISM_AGENT_MODEL", raising=False)
+    assert claude_cli._resolve_model("builder") == claude_cli.DEFAULT_MODEL
+
+
+def test_gemini_resolve_model_kind_specific_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from Tooling.llm import gemini_cli
+    monkeypatch.setenv("ASTERISM_BUILDER_MODEL", "gemini-2.5-flash")
+    monkeypatch.setenv("ASTERISM_GEMINI_MODEL", "gemini-2.5-pro")
+    assert gemini_cli._resolve_model("builder") == "gemini-2.5-flash"
+    assert gemini_cli._resolve_model("backward") == "gemini-2.5-pro"
+
+
+def test_openai_resolve_model_kind_specific_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from Tooling.llm import openai_api
+    monkeypatch.setenv("ASTERISM_BUILDER_MODEL", "qwen3-coder-30b")
+    monkeypatch.setenv("ASTERISM_LLM_MODEL", "qwen3-instruct-7b")
+    assert openai_api._resolve_model("builder") == "qwen3-coder-30b"
+    assert openai_api._resolve_model("backward") == "qwen3-instruct-7b"
+
+
+def test_openai_resolve_model_returns_none_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from Tooling.llm import openai_api
+    monkeypatch.delenv("ASTERISM_BUILDER_MODEL", raising=False)
+    monkeypatch.delenv("ASTERISM_LLM_MODEL", raising=False)
+    assert openai_api._resolve_model("builder") is None
+
+
+def test_complete_text_uses_builder_kind_for_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F22 auxiliary calls (idiom extract / curate) inherit the
+    Builder tier — explicit kind='builder' inside complete_text so a
+    user who set ASTERISM_BUILDER_MODEL=cheap-llm gets that, not the
+    Backward / agent default."""
+    import subprocess as _sub
+    from Tooling.llm import claude_cli
+    monkeypatch.setenv("ASTERISM_BUILDER_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-sonnet-4-6")
+    captured: list = []
+
+    def _fake_run(cmd, *a, **kw):
+        captured.append(cmd)
+        return _sub.CompletedProcess(args=cmd, returncode=0,
+                                     stdout="ok", stderr="")
+    monkeypatch.setattr(claude_cli.shutil, "which", lambda _: "/fake/claude")
+    monkeypatch.setattr(claude_cli.subprocess, "run", _fake_run)
+    p = claude_cli.ClaudeCliProvider()
+    p.complete_text(prompt="x")
+    cmd = captured[0]
+    # complete_text must have used the Builder model (haiku), not the
+    # Sonnet legacy default.
+    assert cmd[cmd.index("--model") + 1] == "claude-haiku-4-5"
+
+
+def test_dispatcher_threshold_reads_builder_model_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F39 — threshold gates Builder iteration count, so it must
+    detect 'haiku' from the Builder-specific override even when
+    ASTERISM_AGENT_MODEL is sonnet."""
+    from Tooling import dispatcher as _d
+    monkeypatch.setenv("ASTERISM_BUILDER_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-sonnet-4-6")
+    assert _d._model_aware_thresholds() == _d._WEAK_DEFAULTS
+
+
+def test_dispatcher_threshold_falls_back_to_agent_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from Tooling import dispatcher as _d
+    monkeypatch.delenv("ASTERISM_BUILDER_MODEL", raising=False)
+    monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-haiku-4-5")
+    assert _d._model_aware_thresholds() == _d._WEAK_DEFAULTS

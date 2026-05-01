@@ -42,6 +42,21 @@ DEFAULT_MODEL = "gemini-2.5-flash"
 RC_QUOTA_EXHAUSTED = 126
 
 
+def _resolve_model(kind: str | None) -> str:
+    """F39 — model resolution chain for the gemini provider.
+
+    1. `ASTERISM_<KIND>_MODEL` (kind from LLMRequest; complete_text
+       uses 'builder')
+    2. `ASTERISM_GEMINI_MODEL` (legacy provider-wide override)
+    3. `DEFAULT_MODEL` (gemini-2.5-flash)
+    """
+    if kind:
+        v = os.environ.get(f"ASTERISM_{kind.upper()}_MODEL")
+        if v:
+            return v
+    return os.environ.get("ASTERISM_GEMINI_MODEL", DEFAULT_MODEL)
+
+
 def _resolve_gemini_executable() -> str | None:
     """Return a launchable path for `gemini`, or None if not installed.
 
@@ -115,7 +130,7 @@ class GeminiCliProvider:
                   flush=True)
             return 127
 
-        model = os.environ.get("ASTERISM_GEMINI_MODEL", DEFAULT_MODEL)
+        model = _resolve_model(req.kind)
 
         prompt = (
             f"{req.kind} task. Read agent prompt at "
@@ -179,7 +194,8 @@ class GeminiCliProvider:
         gemini_exe = _resolve_gemini_executable()
         if not gemini_exe:
             return None
-        model = os.environ.get("ASTERISM_GEMINI_MODEL", DEFAULT_MODEL)
+        # F22 auxiliary calls inherit the 'builder' tier.
+        model = _resolve_model("builder")
         cmd = [
             gemini_exe,
             "-m", model,

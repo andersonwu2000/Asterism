@@ -37,11 +37,18 @@ _WEAK_DEFAULTS = (5, 10)
 
 
 def _model_aware_thresholds() -> tuple[int, int]:
-    """Pick (BUILDER, SHELVE) defaults based on ASTERISM_AGENT_MODEL.
+    """Pick (BUILDER, SHELVE) defaults based on the Builder model.
     Substring 'haiku' (case-insensitive) selects weak-tier defaults;
     everything else (sonnet, opus, future strong models, unset) gets
-    strong-tier."""
-    model = os.environ.get("ASTERISM_AGENT_MODEL", "").lower()
+    strong-tier.
+
+    F39 — threshold gates Builder iteration count, so we read the
+    Builder-specific override first and fall back to the legacy
+    provider-wide `ASTERISM_AGENT_MODEL`."""
+    model = (
+        os.environ.get("ASTERISM_BUILDER_MODEL")
+        or os.environ.get("ASTERISM_AGENT_MODEL", "")
+    ).lower()
     if "haiku" in model:
         return _WEAK_DEFAULTS
     return _STRONG_DEFAULTS

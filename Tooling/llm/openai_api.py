@@ -45,6 +45,21 @@ _FENCE_RE = re.compile(
 )
 
 
+def _resolve_model(kind: str | None) -> str | None:
+    """F39 — model resolution chain for the openai provider.
+
+    1. `ASTERISM_<KIND>_MODEL` (kind from LLMRequest; complete_text
+       uses 'builder')
+    2. `ASTERISM_LLM_MODEL` (legacy provider-wide override)
+    3. None — caller surfaces rc=127 / returns None
+    """
+    if kind:
+        v = os.environ.get(f"ASTERISM_{kind.upper()}_MODEL")
+        if v:
+            return v
+    return os.environ.get("ASTERISM_LLM_MODEL")
+
+
 def _select_prompt_template(prompt_path: Path) -> Path:
     """If the caller passed `prompts/backward.md`, prefer the
     `backward_singleshot.md` variant when present. Falls back to the
@@ -124,9 +139,11 @@ def _http_post_json(url: str, payload: dict, *, headers: dict,
 
 class OpenAIProvider:
     def spawn(self, req: LLMRequest) -> int:
-        model = os.environ.get("ASTERISM_LLM_MODEL")
+        model = _resolve_model(req.kind)
         if not model:
-            print("[llm:openai] ASTERISM_LLM_MODEL not set", flush=True)
+            print("[llm:openai] no model env set "
+                  "(ASTERISM_<KIND>_MODEL or ASTERISM_LLM_MODEL)",
+                  flush=True)
             return 127
 
         base_url = os.environ.get(
@@ -225,8 +242,9 @@ class OpenAIProvider:
     ) -> str | None:
         """One-shot completion against the configured OpenAI-compatible
         endpoint. Returns response text or None on any failure (no
-        model env, HTTP error, malformed response). Used by F22."""
-        model = os.environ.get("ASTERISM_LLM_MODEL")
+        model env, HTTP error, malformed response). Used by F22 — the
+        auxiliary call inherits the 'builder' tier (cheap-LLM role)."""
+        model = _resolve_model("builder")
         if not model:
             return None
         base_url = os.environ.get(

@@ -648,10 +648,22 @@ asterism run [--once]
        ASTERISM_BUILDER_THRESHOLD Builder→Backward 切換閾值 (default 3 / haiku 5)
        ASTERISM_SHELVE_THRESHOLD  goal shelve 閾值 (default 8 / haiku 10)
        ASTERISM_BUDGET_SEC        daemon wall-clock budget (default 1800)
-       ASTERISM_AGENT_MODEL       影響 BUILDER/SHELVE 預設（含 'haiku' 走弱模型 tier）
+       ASTERISM_AGENT_MODEL       legacy provider-wide model fallback;
+                                  also feeds threshold tier detection
+                                  (含 'haiku' 走弱模型 tier)
        ASTERISM_LLM_PROVIDER      'claude' (default) / 'openai' / 'gemini' (F38)
        ASTERISM_GEMINI_MODEL      Gemini 模型 (default gemini-2.5-flash;
                                   pro 在 free tier 幾乎無額度、不建議)
+
+     F39 — per-pipeline overrides (optional, fall back to provider-wide
+     vars above):
+       ASTERISM_BUILDER_PROVIDER    e.g. 'gemini'
+       ASTERISM_BUILDER_MODEL       e.g. 'gemini-2.5-flash'
+       ASTERISM_BACKWARD_PROVIDER   e.g. 'claude'
+       ASTERISM_BACKWARD_MODEL      e.g. 'claude-opus-4-7'
+     Threshold tier (haiku weak / sonnet strong) reads BUILDER_MODEL
+     first, falling back to AGENT_MODEL. F22 complete_text auxiliary
+     calls inherit the Builder tier (cheap-LLM role).
 ```
 
 status / stop 命令暫不寫，直接 sqlite 查 / Ctrl-C 終止。

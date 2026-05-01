@@ -55,6 +55,21 @@ _STALE_SESSION_MARKER = "no conversation found with session id"
 DEFAULT_TOOLS = "Read Write Edit"
 
 
+def _resolve_model(kind: str | None) -> str:
+    """F39 — model resolution chain for the claude provider.
+
+    1. `ASTERISM_<KIND>_MODEL` (kind in {'builder','backward'} from
+       LLMRequest.kind; complete_text uses 'builder')
+    2. `ASTERISM_AGENT_MODEL` (legacy provider-wide override)
+    3. `DEFAULT_MODEL`
+    """
+    if kind:
+        v = os.environ.get(f"ASTERISM_{kind.upper()}_MODEL")
+        if v:
+            return v
+    return os.environ.get("ASTERISM_AGENT_MODEL", DEFAULT_MODEL)
+
+
 def _trim_flags() -> list[str]:
     """The four CLI flags that strip system-prompt overhead Asterism
     doesn't benefit from. Centralized so spawn() and complete_text()
@@ -75,7 +90,7 @@ class ClaudeCliProvider:
                   flush=True)
             return 127
 
-        model = os.environ.get("ASTERISM_AGENT_MODEL", DEFAULT_MODEL)
+        model = _resolve_model(req.kind)
 
         # F33 — retry path uses `--resume`, a short inline prompt with
         # the lake error embedded directly (no separate RETRY_NOTE.md
@@ -156,10 +171,11 @@ class ClaudeCliProvider:
         """One-shot completion via `claude -p <prompt>`. Captures
         stdout text rather than producing files. Used by F22 short
         auxiliary calls (idiom extract / curate). complete_text never
-        invokes tools, but the same trim applies to the system prompt."""
+        invokes tools, but the same trim applies to the system prompt.
+        F22 auxiliary calls inherit the 'builder' tier (cheap-LLM role)."""
         if not shutil.which("claude"):
             return None
-        model = os.environ.get("ASTERISM_AGENT_MODEL", DEFAULT_MODEL)
+        model = _resolve_model("builder")
         cmd = [
             "claude",
             "--model", model,
