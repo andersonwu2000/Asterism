@@ -4,6 +4,8 @@
   'claude' (default) — claude CLI subprocess
   'openai'           — OpenAI-compatible HTTP API (vLLM / Ollama / LM
                        Studio / Anthropic-via-proxy / etc.)
+  'gemini'           — Google Gemini CLI subprocess (Code Assist
+                       free-tier auth; flash model practical, F38)
 
 Each provider is a separate module so its dependencies and quirks
 don't leak. Adding a new backend = adding one file + one branch here.
@@ -23,6 +25,9 @@ def get_provider() -> Provider:
     if name == "openai":
         from .openai_api import OpenAIProvider
         return OpenAIProvider()
+    if name == "gemini":
+        from .gemini_cli import GeminiCliProvider
+        return GeminiCliProvider()
     raise ValueError(f"unknown ASTERISM_LLM_PROVIDER={name!r}")
 
 

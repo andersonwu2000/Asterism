@@ -387,3 +387,285 @@ def test_claude_spawn_stale_marker_only_on_retry(
     ))
     # Cold path can't be a stale session — pass through real rc
     assert rc == 1
+
+
+# ---------------------------------------------------------------------
+# F38 — Gemini CLI provider (registry + quota-exhausted detection)
+# ---------------------------------------------------------------------
+
+def test_get_provider_gemini(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASTERISM_LLM_PROVIDER", "gemini")
+    p = llm.get_provider()
+    assert p.__class__.__name__ == "GeminiCliProvider"
+
+
+def _capture_gemini_cmd(monkeypatch: pytest.MonkeyPatch,
+                        *, returncode: int = 0,
+                        stdout: str = "", stderr: str = "") -> list:
+    """Patch gemini_cli.subprocess.run to record argv and return a
+    canned CompletedProcess. Pretends gemini is on PATH."""
+    import subprocess as _sub
+    from Tooling.llm import gemini_cli
+    captured: list = []
+
+    def _fake_run(cmd, *a, **kw):
+        captured.append(cmd)
+        return _sub.CompletedProcess(args=cmd, returncode=returncode,
+                                     stdout=stdout, stderr=stderr)
+    monkeypatch.setattr(gemini_cli.shutil, "which",
+                        lambda _: "/fake/gemini")
+    monkeypatch.setattr(gemini_cli.subprocess, "run", _fake_run)
+    return captured
+
+
+def test_gemini_spawn_returns_127_when_cli_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pathlib import Path
+    from Tooling.llm import gemini_cli
+    monkeypatch.setattr(gemini_cli.shutil, "which", lambda _: None)
+    p = gemini_cli.GeminiCliProvider()
+    rc = p.spawn(llm.LLMRequest(
+        kind="backward",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+    ))
+    assert rc == 127
+
+
+def test_gemini_spawn_uses_default_model_and_shared_flags(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    """Default model is gemini-2.5-flash; shared flags --yolo /
+    --skip-trust / --output-format text are always present."""
+    from Tooling.llm import gemini_cli
+    monkeypatch.delenv("ASTERISM_GEMINI_MODEL", raising=False)
+    captured = _capture_gemini_cmd(monkeypatch, returncode=0,
+                                   stdout="ok")
+    # Pre-create an artifact so spawn doesn't tag it as quota-exhausted
+    (tmp_path / "PROPOSAL.md").write_text("done", encoding="utf-8")
+    p = gemini_cli.GeminiCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="backward",
+        prompt_path=tmp_path / "p.md",
+        problem_dir=tmp_path,
+        attempts_dir=tmp_path,
+        timeout_sec=60,
+    ))
+    cmd = captured[0]
+    # cmd[0] is the resolved executable path (handles npm bash-shim vs
+    # .cmd disambiguation on Windows). Just check it ends with `gemini`
+    # so the assertion is platform-insensitive.
+    assert cmd[0].endswith("gemini") or cmd[0].endswith("gemini.cmd")
+    assert "-m" in cmd
+    assert cmd[cmd.index("-m") + 1] == "gemini-2.5-flash"
+    assert "--yolo" in cmd
+    assert "--skip-trust" in cmd
+    assert "--output-format" in cmd
+    assert cmd[cmd.index("--output-format") + 1] == "text"
+
+
+def test_gemini_spawn_model_env_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    from Tooling.llm import gemini_cli
+    monkeypatch.setenv("ASTERISM_GEMINI_MODEL", "gemini-2.5-pro")
+    captured = _capture_gemini_cmd(monkeypatch, returncode=0)
+    (tmp_path / "PROPOSAL.md").write_text("x", encoding="utf-8")
+    p = gemini_cli.GeminiCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="backward",
+        prompt_path=tmp_path / "p.md",
+        problem_dir=tmp_path, attempts_dir=tmp_path,
+        timeout_sec=60,
+    ))
+    cmd = captured[0]
+    assert cmd[cmd.index("-m") + 1] == "gemini-2.5-pro"
+
+
+def test_gemini_spawn_rc0_with_output_passes_through(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    """rc=0 + agent wrote a .lean file → real success; pass through."""
+    from Tooling.llm import gemini_cli
+    _capture_gemini_cmd(monkeypatch, returncode=0, stdout="done")
+    (tmp_path / "patch.lean").write_text("ok", encoding="utf-8")
+    p = gemini_cli.GeminiCliProvider()
+    rc = p.spawn(llm.LLMRequest(
+        kind="builder", prompt_path=tmp_path / "p.md",
+        problem_dir=tmp_path, attempts_dir=tmp_path, timeout_sec=60,
+    ))
+    assert rc == 0
+
+
+def test_gemini_spawn_rc0_no_output_with_quota_marker_returns_126(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    """rc=0 + nothing written + quota phrase in captured output →
+    surface as RC_QUOTA_EXHAUSTED so caller can back off."""
+    from Tooling.llm import gemini_cli
+    _capture_gemini_cmd(
+        monkeypatch, returncode=0, stdout="",
+        stderr="Attempt 5 failed: You have exhausted your capacity",
+    )
+    p = gemini_cli.GeminiCliProvider()
+    rc = p.spawn(llm.LLMRequest(
+        kind="builder", prompt_path=tmp_path / "p.md",
+        problem_dir=tmp_path, attempts_dir=tmp_path, timeout_sec=60,
+    ))
+    assert rc == gemini_cli.RC_QUOTA_EXHAUSTED == 126
+
+
+def test_gemini_spawn_rc0_no_output_no_marker_returns_generic_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    """rc=0 + nothing written + no quota phrase → still a failure
+    (agent ran but produced nothing) but not classified as quota."""
+    from Tooling.llm import gemini_cli
+    _capture_gemini_cmd(monkeypatch, returncode=0, stdout="ok",
+                        stderr="")
+    p = gemini_cli.GeminiCliProvider()
+    rc = p.spawn(llm.LLMRequest(
+        kind="builder", prompt_path=tmp_path / "p.md",
+        problem_dir=tmp_path, attempts_dir=tmp_path, timeout_sec=60,
+    ))
+    assert rc == 1
+
+
+def test_gemini_spawn_excludes_pre_existing_context_md(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    """Context.md is framework-written before spawn — its presence
+    must NOT count as agent output. Otherwise quota detection would
+    misfire as success on every quota-exhausted call."""
+    from Tooling.llm import gemini_cli
+    _capture_gemini_cmd(monkeypatch, returncode=0, stdout="",
+                        stderr="status: 429")
+    (tmp_path / "Context.md").write_text("ctx", encoding="utf-8")
+    p = gemini_cli.GeminiCliProvider()
+    rc = p.spawn(llm.LLMRequest(
+        kind="builder", prompt_path=tmp_path / "p.md",
+        problem_dir=tmp_path, attempts_dir=tmp_path, timeout_sec=60,
+    ))
+    assert rc == gemini_cli.RC_QUOTA_EXHAUSTED
+
+
+def test_gemini_spawn_timeout_returns_124(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    import subprocess as _sub
+    from Tooling.llm import gemini_cli
+    monkeypatch.setattr(gemini_cli.shutil, "which",
+                        lambda _: "/fake/gemini")
+
+    def _timeout(*a, **kw):
+        raise _sub.TimeoutExpired(cmd=a[0], timeout=1)
+    monkeypatch.setattr(gemini_cli.subprocess, "run", _timeout)
+    p = gemini_cli.GeminiCliProvider()
+    rc = p.spawn(llm.LLMRequest(
+        kind="builder", prompt_path=tmp_path / "p.md",
+        problem_dir=tmp_path, attempts_dir=tmp_path, timeout_sec=1,
+    ))
+    assert rc == 124
+
+
+def test_gemini_complete_text_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from Tooling.llm import gemini_cli
+    _capture_gemini_cmd(monkeypatch, returncode=0,
+                        stdout="  hi\n  ", stderr="")
+    p = gemini_cli.GeminiCliProvider()
+    assert p.complete_text(prompt="x") == "hi"
+
+
+def test_gemini_complete_text_returns_none_on_quota(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty stdout + quota phrase → None (caller treats as
+    'unavailable, skip')."""
+    from Tooling.llm import gemini_cli
+    _capture_gemini_cmd(
+        monkeypatch, returncode=0, stdout="",
+        stderr="Attempt 3 failed: Too Many Requests",
+    )
+    p = gemini_cli.GeminiCliProvider()
+    assert p.complete_text(prompt="x") is None
+
+
+def test_gemini_complete_text_returns_none_on_nonzero_rc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from Tooling.llm import gemini_cli
+    _capture_gemini_cmd(monkeypatch, returncode=2, stdout="oops")
+    p = gemini_cli.GeminiCliProvider()
+    assert p.complete_text(prompt="x") is None
+
+
+def test_gemini_complete_text_returns_none_when_cli_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from Tooling.llm import gemini_cli
+    monkeypatch.setattr(gemini_cli.shutil, "which", lambda _: None)
+    p = gemini_cli.GeminiCliProvider()
+    assert p.complete_text(prompt="x") is None
+
+
+def test_gemini_resolve_prefers_cmd_extension_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """npm installs `gemini` (no-extension bash shim) and `gemini.cmd`
+    side-by-side on Windows. shutil.which without extension may return
+    the shim, which CreateProcess (subprocess.run) cannot launch
+    (WinError 2). Resolver must probe `.cmd` first on win32."""
+    from Tooling.llm import gemini_cli
+    monkeypatch.setattr(gemini_cli.sys, "platform", "win32")
+    seen: list = []
+
+    def fake_which(name):
+        seen.append(name)
+        if name == "gemini.cmd":
+            return r"C:\npm\gemini.cmd"
+        if name == "gemini":
+            return r"C:\npm\gemini"
+        return None
+
+    monkeypatch.setattr(gemini_cli.shutil, "which", fake_which)
+    assert gemini_cli._resolve_gemini_executable() == r"C:\npm\gemini.cmd"
+    # Resolver must have probed gemini.cmd BEFORE the no-extension shim
+    assert seen[0] == "gemini.cmd"
+
+
+def test_gemini_resolve_uses_plain_name_on_posix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from Tooling.llm import gemini_cli
+    monkeypatch.setattr(gemini_cli.sys, "platform", "linux")
+    monkeypatch.setattr(gemini_cli.shutil, "which",
+                        lambda n: "/usr/bin/gemini" if n == "gemini" else None)
+    assert gemini_cli._resolve_gemini_executable() == "/usr/bin/gemini"
+
+
+def test_gemini_spawn_returns_127_on_filenotfounderror(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    """If subprocess.run raises FileNotFoundError (e.g. resolved path
+    was deleted between resolve and spawn), provider must return 127
+    instead of letting the exception escape — otherwise the dispatcher
+    catches it as a generic worker exception and re-dispatches in a
+    loop without incrementing goal attempts."""
+    import subprocess as _sub
+    from Tooling.llm import gemini_cli
+    monkeypatch.setattr(gemini_cli.shutil, "which", lambda _: "/fake/gemini")
+
+    def _raise_fnf(*a, **kw):
+        raise FileNotFoundError(2, "stale path")
+    monkeypatch.setattr(gemini_cli.subprocess, "run", _raise_fnf)
+    p = gemini_cli.GeminiCliProvider()
+    rc = p.spawn(llm.LLMRequest(
+        kind="builder", prompt_path=tmp_path / "p.md",
+        problem_dir=tmp_path, attempts_dir=tmp_path, timeout_sec=60,
+    ))
+    assert rc == 127
