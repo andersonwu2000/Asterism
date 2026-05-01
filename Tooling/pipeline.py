@@ -252,15 +252,6 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
     # First attempt mints a session id and pins it via --session-id;
     # subsequent attempts reuse via --resume + a short RETRY_NOTE.md
     # that relies on the prior turn living in claude's session memory.
-    #
-    # F40 (opt-in) splits Phase 2 into Phase A (PROPOSAL.md only) and
-    # Phase B (patch.lean only, cold ephemeral call). Phase A inherits
-    # the F33 same-session machinery; Phase B always cold so gemini /
-    # claude paths agree (PROPOSAL.md sits on disk, Phase B reads it).
-    two_phase = os.environ.get("ASTERISM_BUILDER_TWO_PHASE", "0") == "1"
-    phase_a_prompt = ("builder_phase_a_proposal.md" if two_phase
-                      else "builder.md")
-
     sid = db.get_builder_session_id(conn, goal_id)
     is_retry = sid is not None
     retry_context: str | None = None
@@ -274,7 +265,7 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
 
     rc = agent.spawn_llm(
         kind="builder",
-        prompt_path=PROMPT_DIR / phase_a_prompt,
+        prompt_path=PROMPT_DIR / "builder.md",
         problem_dir=workspace / "Problems" / goal["problem"],
         attempts_dir=attempts_dir,
         session_id=sid,
@@ -293,7 +284,7 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
                               attempts_dir=attempts_dir)
         rc = agent.spawn_llm(
             kind="builder",
-            prompt_path=PROMPT_DIR / phase_a_prompt,
+            prompt_path=PROMPT_DIR / "builder.md",
             problem_dir=workspace / "Problems" / goal["problem"],
             attempts_dir=attempts_dir,
             session_id=sid,
@@ -315,32 +306,6 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
         return PipelineResult(outcome="failed",
                               failure_reason="agent_no_response",
                               failure_detail=f"agent rc={rc}")
-
-    # F40 Phase B — validate PROPOSAL then dispatch a cold call for patch.
-    if two_phase:
-        proposal_path = attempts_dir / "PROPOSAL.md"
-        proposal_text_a = (proposal_path.read_text(encoding="utf-8").strip()
-                           if proposal_path.exists() else "")
-        if not proposal_text_a:
-            return PipelineResult(
-                outcome="failed", failure_reason="phase_a_no_proposal",
-                failure_detail="phase A produced no PROPOSAL.md",
-            )
-        rc = agent.spawn_llm(
-            kind="builder",
-            prompt_path=PROMPT_DIR / "builder_phase_b_patch.md",
-            problem_dir=workspace / "Problems" / goal["problem"],
-            attempts_dir=attempts_dir,
-            session_id=None,
-            is_retry=False,
-            retry_context=None,
-        )
-        if rc != 0:
-            return PipelineResult(
-                outcome="failed", failure_reason="agent_no_response",
-                failure_detail=f"phase_b agent rc={rc}",
-                proposal_md=proposal_text_a,
-            )
 
     proposal = (attempts_dir / "PROPOSAL.md")
     proposal_text = proposal.read_text(encoding="utf-8") if proposal.exists() else ""

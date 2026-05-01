@@ -664,20 +664,6 @@ asterism run [--once]
      Threshold tier (haiku weak / sonnet strong) reads BUILDER_MODEL
      first, falling back to AGENT_MODEL. F22 complete_text auxiliary
      calls inherit the Builder tier (cheap-LLM role).
-
-     F40 — two-phase Builder delivery (opt-in):
-       ASTERISM_BUILDER_TWO_PHASE   '1' to enable
-     Off (default): one Builder spawn writes both PROPOSAL.md + patch.lean
-     via prompts/builder.md.
-     On: two spawns per attempt — Phase A (prompts/builder_phase_a_proposal.md)
-     writes PROPOSAL.md only, framework validates non-empty; Phase B
-     (prompts/builder_phase_b_patch.md) is a cold call (session_id=None,
-     same for claude / gemini) writing patch.lean only, agent reads
-     PROPOSAL.md from attempts_dir. F33 same-session retry stays on
-     Phase A across attempts; Phase B is always cold so a single Phase A
-     failure (e.g. no PROPOSAL.md) skips Phase B and saves the call.
-     Token cost: ~1.5x per attempt; only worth it for weak models where
-     single-call attempt-2 retry would be ~2x.
 ```
 
 status / stop 命令暫不寫，直接 sqlite 查 / Ctrl-C 終止。

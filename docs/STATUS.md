@@ -83,14 +83,9 @@ This batch closed 15 task IDs + two refactor commits. Group by goal:
 
 ## Next pending
 
-- **#252 F40 (in progress)**: Two-phase Builder delivery. Spec settled 2026-05-01 22:27 +0800 then session ended without persisting:
-  - **Token cost rule**: strong models (Sonnet/Opus) two-phase = pure loss (1.5x; single-call retry only ~1.1x); weak models (Haiku/flash) two-phase = net win (1.5x vs 2x retry). Therefore F40 must be **opt-in** (`ASTERISM_BUILDER_TWO_PHASE=1`), never hardcoded.
-  - **Audit of per-model special handling** found exactly **1 violation**: `dispatcher.py:52` `if "haiku" in model: return _WEAK_DEFAULTS`. User decision: **defer** the substring fix until F40 measured — `(BUILDER=5, SHELVE=10)` for Haiku came from real measurements, not a guess. F40 evaluation will tell us whether weak models can be dropped from the framework's concern (F40 closes the gap → tier substring becomes obsolete; F40 fails → keep `(5,10)` as is).
-  - **F40 spec**: Phase A writes only `PROPOSAL.md` (prompt = `builder_phase_a_proposal.md`), framework validates non-empty; Phase B writes only `patch.lean` (prompt = `builder_phase_b_patch.md`, cold call, agent reads `PROPOSAL.md` from attempts_dir). F33 same-session retry stays on Phase A across attempts; Phase B is always cold (so gemini path = claude path).
-  - **Live test**: Gemini Builder + Sonnet/Opus Backward on **wilson**. Hypothesis: gemini-2.5-flash alone can't write patches reliably, but with Phase A focusing it on strategy and Phase B focusing it on exactly one file, success rate climbs enough to make wilson finish. Fall back if not.
-- **#227 F10**: Sonnet + Dedupe v4 live-validation. Current data shows v4 doesn't fire on either wilson or compactness (max depth 2-3, no ancestor-back reuse pattern). v4 verified safe after F14. Either retire as "validated safe" or wait for a deeper-recursion problem.
-- **F37 follow-up regression** (post-commit): wilson Sonnet + Haiku must still prove. Sonnet baseline 15.7 min; Haiku baseline 39.5 min.
-- **#250 F38**: Gemini CLI provider — code complete (`Tooling/llm/gemini_cli.py`, 13 unit tests). Live smoke pending — folded into F40 wilson test above.
+- **#227 F10**: Sonnet + Dedupe v4 live-validation. **Current data shows v4 doesn't fire on either wilson or compactness** (max depth 2-3, no ancestor-back reuse pattern). v4 is verified safe (no false positives after F14) but real-yield blocked by tree shape. Either retire as "validated safe" or wait for a deeper-recursion problem.
+- **F37 follow-up regression** (post-commit): wilson Sonnet + Haiku must still prove. Sonnet baseline 15.7 min; Haiku baseline 39.5 min. SHELVE 8/10 should give passive Backward enough room.
+- **#250 F38**: Gemini CLI provider — code complete (`Tooling/llm/gemini_cli.py`, 13 unit tests). Pivoted from HTTP API to CLI subprocess after smoke tests showed Code Assist CLI tier (60 RPM / 1000 RPD) is the only practical free quota; public Gemini API free tier (2 RPM / 50 RPD on pro) is unusable. Live smoke pending: cantor (~5 min, smallest problem) once user's pro quota resets and flash quota is fresh. Caveats: gemini CLI rc=0 lies on quota exhaustion (provider compensates by checking attempts_dir output presence + quota-marker phrases). No F33 same-session retry support (gemini --resume uses session index, not UUID — semantically incompatible).
 
 ## Test count
 
