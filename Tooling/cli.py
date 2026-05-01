@@ -456,6 +456,159 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Pre-flight diagnostic. Checks the toolchain (claude / gemini /
+    lake), the Asterism.yaml config, every initialized Problem's
+    Manifest, and on-disk state (`.attempts/` zombies + log retention).
+    Output is icon-prefixed lines (`OK / FAIL / WARN`) the operator —
+    or a future Claude session — can scan top to bottom.
+
+    Exits 0 if every check is OK or WARN; 1 if any FAIL fired."""
+    import shutil
+    import subprocess
+
+    workspace = Path.cwd()
+    fails = 0
+
+    def line(status: str, msg: str) -> None:
+        nonlocal fails
+        if status == "FAIL":
+            fails += 1
+        print(f"  [{status:>4}] {msg}")
+
+    print("\n=== External tools ===")
+    # Claude CLI
+    if shutil.which("claude"):
+        try:
+            r = subprocess.run(
+                ["claude", "--version"],
+                capture_output=True, text=True, timeout=10,
+                encoding="utf-8", errors="replace",
+            )
+            v = (r.stdout or "").strip().splitlines()[0] if r.stdout else "?"
+            line("OK", f"claude  {v}")
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            line("FAIL", f"claude --version timed out or errored: {exc}")
+    else:
+        line("WARN", "claude CLI not on PATH (Claude provider unavailable)")
+
+    # Gemini CLI — use the same Windows-aware resolver the provider does
+    # (npm ships gemini as a bash shim + gemini.cmd; subprocess.run on
+    # Windows can only launch the .cmd).
+    from .llm.gemini_cli import _resolve_gemini_executable
+    gemini_exe = _resolve_gemini_executable()
+    if gemini_exe:
+        try:
+            r = subprocess.run(
+                [gemini_exe, "--version"],
+                capture_output=True, text=True, timeout=10,
+                encoding="utf-8", errors="replace",
+            )
+            v = (r.stdout or "").strip().splitlines()[0] if r.stdout else "?"
+            line("OK", f"gemini  {v}")
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            line("FAIL", f"gemini --version timed out or errored: {exc}")
+    else:
+        line("WARN", "gemini CLI not on PATH (Gemini provider unavailable)")
+
+    # Lake (Lean build tool)
+    if shutil.which("lake"):
+        try:
+            r = subprocess.run(
+                ["lake", "env", "lean", "--version"],
+                capture_output=True, text=True, timeout=30,
+                encoding="utf-8", errors="replace",
+            )
+            v = (r.stdout or "").strip().splitlines()[0] if r.stdout else "?"
+            line("OK", f"lake env lean  {v}")
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            line("FAIL", f"lake env lean errored: {exc}")
+    else:
+        line("FAIL", "lake not on PATH — cannot build Lean (mandatory)")
+
+    # Asterism.yaml
+    print("\n=== Asterism.yaml ===")
+    cfg_path = workspace / "Asterism.yaml"
+    if not cfg_path.exists():
+        line("WARN", f"{cfg_path.name} absent — using built-in defaults "
+                     f"(see docs/architecture.md §10 for schema)")
+    else:
+        try:
+            from . import config as _config
+            _config._reset_cache()
+            data = _config.load(workspace)
+            keys = []
+            for top in ("dispatch", "builder", "backward"):
+                if top in data and isinstance(data[top], dict):
+                    keys.append(f"{top}({len(data[top])})")
+            line("OK", f"{cfg_path.name}: " + ", ".join(keys)
+                       if keys else f"{cfg_path.name}: empty / no known sections")
+        except Exception as exc:
+            line("FAIL", f"{cfg_path.name} parse error: {exc}")
+
+    # Problems
+    print("\n=== Problems ===")
+    conn = db.connect()
+    db.init_schema(conn)
+    rows = conn.execute(
+        "SELECT name, manifest_path FROM problems ORDER BY name"
+    ).fetchall()
+    if not rows:
+        line("WARN", "no problems initialized — run `asterism init <p>`")
+    for r in rows:
+        name = r["name"]
+        mfst_path = workspace / r["manifest_path"]
+        if not mfst_path.exists():
+            line("FAIL", f"{name}: Manifest.md missing at {r['manifest_path']}")
+            continue
+        try:
+            mfst = manifest.parse(mfst_path)
+            if not mfst.statement:
+                line("FAIL", f"{name}: Manifest.md has no `## Statement` section")
+                continue
+        except Exception as exc:
+            line("FAIL", f"{name}: Manifest parse error: {exc}")
+            continue
+        # Root goal status
+        root = conn.execute(
+            "SELECT id, status, attempts FROM goals "
+            "WHERE problem = ? AND slug = 'main'", (name,)
+        ).fetchone()
+        if root:
+            line("OK", f"{name}: root goal id={root['id']} "
+                       f"status={root['status']} attempts={root['attempts']}")
+        else:
+            line("WARN", f"{name}: registered but no root goal "
+                         f"(re-run `asterism init {name}`)")
+
+    # Filesystem state
+    print("\n=== Filesystem state ===")
+    attempts_dir = workspace / ".attempts"
+    if attempts_dir.exists():
+        n = sum(1 for _ in attempts_dir.iterdir())
+        if n > 5:
+            line("WARN", f".attempts/ has {n} dirs — likely zombies, "
+                         f"`rm -rf .attempts/` after killing daemon")
+        elif n:
+            line("OK", f".attempts/ has {n} dir(s) — possibly live or recent")
+        else:
+            line("OK", ".attempts/ empty")
+    else:
+        line("OK", ".attempts/ does not exist (clean state)")
+
+    log_dir = workspace / LOG_DIR
+    if log_dir.exists():
+        logs = list(log_dir.glob("*.log"))
+        total = sum(p.stat().st_size for p in logs) if logs else 0
+        line("OK", f".asterism/logs/  {len(logs)} file(s), "
+                   f"{total // 1024} KB")
+
+    print()
+    print(f"=== Summary: {fails} FAIL ===" if fails else
+          "=== Summary: all checks passed (some WARN OK) ===")
+    return 0 if fails == 0 else 1
+
+
 def cmd_prune(args: argparse.Namespace) -> int:
     """Manual fallback: GC orphan lean files in proofs/. Auto-invoked by
     `run` on success; this CLI exists for partial state (user killed
@@ -522,6 +675,12 @@ def main(argv: list[str] | None = None) -> int:
         help="emit JSON instead of human-readable text",
     )
     p_status.set_defaults(func=cmd_status)
+
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="pre-flight: tools / Asterism.yaml / Manifests / .attempts state",
+    )
+    p_doctor.set_defaults(func=cmd_doctor)
 
     p_prune = sub.add_parser(
         "prune",
