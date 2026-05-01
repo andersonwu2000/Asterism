@@ -93,5 +93,5 @@ axioms identical to baseline.
 
 ## Test count
 
-374 unit tests + 2 lake-integration tests (skipped if `lake` missing).
+392 unit tests + 2 lake-integration tests (skipped if `lake` missing).
 All green at HEAD.
