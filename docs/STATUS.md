@@ -1,6 +1,6 @@
 # Asterism v2 — Current Status
 
-Updated 2026-05-01 (post-F33 stack). Compaction-safe handoff note.
+Updated 2026-05-01 (post-F37 OR-passive). Compaction-safe handoff note.
 
 ## Proved problems (4 + 1 weak-model variant)
 
@@ -14,9 +14,9 @@ Updated 2026-05-01 (post-F33 stack). Compaction-safe handoff note.
 
 **Latest regression check** (post-F35/F36 fixes): wilson re-proved by Sonnet in **15.7 min**, axioms identical to baseline. Sub_1 used the same `Nat.prime_iff_fac_equiv_neg_one` shortcut the original baseline relied on.
 
-## Architectural delta since 2026-04-30 (F23 → F36)
+## Architectural delta since 2026-04-30 (F23 → F37)
 
-This batch closed 14 task IDs + two refactor commits. Group by goal:
+This batch closed 15 task IDs + two refactor commits. Group by goal:
 
 ### Cascade & dispatch hardening
 - **F23** (34644c0) — `_lake_build_batch`: one `lake build m1 m2 m3 ...` instead of N sequential single-target calls. Backward succeeded avg dropped 517s → 151s (-71%) on Haiku wilson.
@@ -39,11 +39,19 @@ This batch closed 14 task IDs + two refactor commits. Group by goal:
 - Other failures keep session_id (next attempt sees prior failed turn — useful self-correction context).
 - BUILDER threshold reached / proved / shelved → cascade clears session_id.
 
+### OR sequencing → passive (F37, major architectural shift)
+- **F37** — `OR_FANOUT` removed entirely (constant + `ASTERISM_OR_FANOUT` env var + `or_fanout` parameter all gone). Each open Goal now has at most one in-flight Builder OR Backward; sequential strategy retry replaces eager fanout.
+  - `bfs_refill` cap=1 universally; `running` set simplified `(tid, kind, pid)` → `(tid, kind)`.
+  - Added missing `increment_goal_attempts` in `_propagate_shelve` reopen branch — without this, dead-by-cascade strategies wouldn't advance the goal toward SHELVE_THRESHOLD and Backward would loop forever. Also handles cascade-shelve recursion when the increment itself crosses threshold.
+  - Defaults raised: SHELVE 7→8 (Sonnet), 8→10 (Haiku) so passive Backward gets ~5 strategy attempts before goal shelves.
+  - `agent.py` new `_section_dead_strategies` — each Backward retry sees prior dead strategies' sub-goal slugs + statuses (anti-repetition prompt hint, replaces F25 sibling alias which no longer applies).
+- **F25** (Sibling sub-goal dedupe) — RETIRED. Was for OR-parallel waste; passive trigger eliminates parallel siblings entirely. Anti-repetition handled by `_section_dead_strategies` instead.
+
 ### Other
 - **F28** (531dedd) — Daemon log auto-path `.asterism/logs/<problem>_<model>_<ts>.log` + tee + retention (keep 20 newest).
 - **F34** (7db1603) — `TACTIC_TRY_LIST` adds `norm_cast`, `push_cast`, `ring`, `ring_nf`, `field_simp`, `positivity`, `grind`. Each fast-path hit saves an entire Builder pipeline.
 - **F15** (a7caf1a) — Root.lean lifecycle init guard. Reject non-sorry, non-wrap Root.lean unless `--force`. Architecture §3.5 documents three-state lifecycle.
-- **OR_FANOUT_DEFAULT** 3 → 2 (f1fbbf0) — less wasteful per-goal default.
+- **OR_FANOUT_DEFAULT** 3 → 2 (f1fbbf0) — less wasteful per-goal default. Now superseded by F37 (whole knob removed).
 
 ## Ablations / dead ends (don't re-investigate)
 
@@ -55,6 +63,9 @@ This batch closed 14 task IDs + two refactor commits. Group by goal:
 
 | Commit | Topic |
 |---|---|
+| (uncommitted) | Follow-ups — `pipeline.py` provider-agnostic `agent rc=` failure_detail (was hardcoded `claude rc=`); dispatcher worker-exception recovery (synthesize `outcome='failed'` cascade so unhandled exceptions advance goal attempts instead of looping forever) |
+| (uncommitted) | F38 — Gemini CLI provider (subprocess; quota-exhausted detection via output absence; Windows `gemini.cmd` resolver fix for npm bash-shim disambiguation) |
+| (uncommitted) | F37 — OR fanout removed; passive sequential strategy retry; SHELVE 8/10; dead-strategies prompt hint |
 | 945c8d4 | F33 follow-up: inline retry error in prompt (drop RETRY_NOTE.md) |
 | 46c73c9 | F33 — same-session Builder retry |
 | 2c541aa | Reorder Context.md sections |
@@ -73,13 +84,12 @@ This batch closed 14 task IDs + two refactor commits. Group by goal:
 ## Next pending
 
 - **#227 F10**: Sonnet + Dedupe v4 live-validation. **Current data shows v4 doesn't fire on either wilson or compactness** (max depth 2-3, no ancestor-back reuse pattern). v4 is verified safe (no false positives after F14) but real-yield blocked by tree shape. Either retire as "validated safe" or wait for a deeper-recursion problem.
-- **#238 F25**: Sibling sub-goal dedupe. Compactness OR-parallel run showed s148/s150/etc producing byte-identical sub-goals across siblings — F25 would alias them. Empirical lever vs F33 / F36 lever is smaller; design noted but not implemented.
-- **F37** (placeholder): OR-parallel → passive trigger. User-proposed pivot from eager OR_FANOUT to lazy expansion. Spec to be detailed post-compact.
-- **F38** (placeholder): Gemini provider via free-tier API. New `Tooling/llm/gemini_api.py`. Spec to be detailed post-compact.
+- **F37 follow-up regression** (post-commit): wilson Sonnet + Haiku must still prove. Sonnet baseline 15.7 min; Haiku baseline 39.5 min. SHELVE 8/10 should give passive Backward enough room.
+- **#250 F38**: Gemini CLI provider — code complete (`Tooling/llm/gemini_cli.py`, 13 unit tests). Pivoted from HTTP API to CLI subprocess after smoke tests showed Code Assist CLI tier (60 RPM / 1000 RPD) is the only practical free quota; public Gemini API free tier (2 RPM / 50 RPD on pro) is unusable. Live smoke pending: cantor (~5 min, smallest problem) once user's pro quota resets and flash quota is fresh. Caveats: gemini CLI rc=0 lies on quota exhaustion (provider compensates by checking attempts_dir output presence + quota-marker phrases). No F33 same-session retry support (gemini --resume uses session index, not UUID — semantically incompatible).
 
 ## Test count
 
-309 unit tests + 2 lake-integration tests (skipped if lake missing). All green at HEAD.
+327 unit tests + 2 lake-integration tests (skipped if lake missing). All green at HEAD + uncommitted F37/F38 patches. F37 added 5 tests (passive cap=1 + attempts-increment + dead-strategies section); F38 added 13 (Gemini provider registry + quota-detection + complete_text).
 
 ## Tooling LOC
 
@@ -87,10 +97,11 @@ This batch closed 14 task IDs + two refactor commits. Group by goal:
 
 ## Things to verify post-compact
 
-1. `git log --oneline -16` — top should be 945c8d4 (F33 inline follow-up).
-2. Working tree: `Problems/wilson/` should reflect the regression-test re-proof (Root.lean wrap form `:= s249`); maxfinsat_complete is fully removed; `.asterism/logs/`, `.asterism/`, `Tooling/.lemma_cache.json`, `*.log` all gitignored.
-3. `python -m pytest tests/ -q --deselect tests/test_dedupe.py::test_batch_isdefeq_real_lake --deselect tests/test_lemma_lookup.py::test_lookup_batch_real_lake` should show **309 passed**.
-4. `Problems/wilson/playbook.md` non-empty (1 idiom from regression run).
+1. `git log --oneline -16` — top should be 945c8d4 (F33 inline follow-up); F37 is uncommitted in working tree.
+2. `git diff --stat` should show changes in: `Tooling/dispatcher.py`, `Tooling/agent.py`, `tests/test_dispatcher.py`, `tests/test_agent.py`, `docs/architecture.md`, `docs/STATUS.md`.
+3. Working tree: `Problems/wilson/` Haiku milestone (commit 9c2c2a0) preserved; `.asterism/logs/`, `.asterism/`, `Tooling/.lemma_cache.json`, `*.log` all gitignored.
+4. `python -m pytest tests/ -q --deselect tests/test_dedupe.py::test_batch_isdefeq_real_lake --deselect tests/test_lemma_lookup.py::test_lookup_batch_real_lake` should show **314 passed**.
+5. `Problems/wilson/playbook.md` non-empty (1 idiom from regression run).
 
 ## User preferences (memory pinned)
 
@@ -100,3 +111,4 @@ This batch closed 14 task IDs + two refactor commits. Group by goal:
 - After several additive commits, pause for consolidation pass (this STATUS update + section-list refactor + diagnostics table are exactly that)
 - Per-problem experience belongs in plain-text Markdown next to the problem, not in DB (F22 playbook design)
 - Prompt cuts have second-order reasoning-quality cost — F29 → F36 lesson: don't only weigh tokens
+- 砍掉一個可調節旋鈕（OR_FANOUT env / param / constant）整體簡化收益大於彈性損失（F37 hardcode=1 路線）

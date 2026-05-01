@@ -591,7 +591,28 @@ def run(workspace: Path, *, once: bool = False) -> int:
                                 outcome=outcome, workspace=workspace)
                     print(f"[cascade] {kind} {tk}={tid} → {outcome}", flush=True)
                 except Exception as exc:
-                    print(f"[cascade] worker exception: {exc}", flush=True)
+                    # Worker thread raised an unhandled exception (e.g.
+                    # subprocess launch errno-2, OSError on temp dir, an
+                    # internal pipeline bug). Without explicit recovery
+                    # the goal stays open, attempts unchanged, and
+                    # bfs_refill re-dispatches in an infinite loop.
+                    # Synthesize a cascade with outcome='failed' so the
+                    # goal advances toward SHELVE_THRESHOLD and forensic
+                    # state at least mentions the exception.
+                    pid, kind, tid, tk = meta
+                    print(f"[cascade] worker exception on {kind} "
+                          f"{tk}={tid}: {exc}; treating as failed",
+                          flush=True)
+                    try:
+                        cascade_one(conn, pipeline_id=pid, kind=kind,
+                                    target_id=tid, target_kind=tk,
+                                    outcome="failed", workspace=workspace)
+                    except Exception as exc2:
+                        # Cascade itself bombing is a deeper bug; log
+                        # but don't crash the daemon (other work may
+                        # still progress).
+                        print(f"[cascade] secondary exception during "
+                              f"recovery: {exc2}", flush=True)
 
         if db.root_proved(conn):
             print("[dispatcher] all roots proved", flush=True)

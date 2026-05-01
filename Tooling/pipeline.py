@@ -292,18 +292,20 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
         )
 
     if rc == 124:
-        # Timeout: claude's session may have been killed mid-write.
+        # Timeout: the agent's session may have been killed mid-write
+        # (claude's session file, gemini's in-flight API call, etc).
         # Conservative: clear session_id so next attempt cold-starts.
         db.set_builder_session_id(conn, goal_id, None)
         return PipelineResult(outcome="failed",
                               failure_reason="agent_no_response",
-                              failure_detail=f"claude rc={rc}")
+                              failure_detail=f"agent rc={rc}")
     if rc != 0:
         # Ordinary failure: keep session_id so next attempt's --resume
-        # has the prior failed-turn context to learn from.
+        # has the prior failed-turn context to learn from. (Gemini /
+        # OpenAI providers ignore session_id — clearing on rc=124 only.)
         return PipelineResult(outcome="failed",
                               failure_reason="agent_no_response",
-                              failure_detail=f"claude rc={rc}")
+                              failure_detail=f"agent rc={rc}")
 
     proposal = (attempts_dir / "PROPOSAL.md")
     proposal_text = proposal.read_text(encoding="utf-8") if proposal.exists() else ""
@@ -481,7 +483,7 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
         attempts_dir=attempts_dir,
     )
     if rc != 0:
-        return _abort("agent_no_response", f"claude rc={rc}")
+        return _abort("agent_no_response", f"agent rc={rc}")
 
     proposal = attempts_dir / "PROPOSAL.md"
     if not proposal.exists():
