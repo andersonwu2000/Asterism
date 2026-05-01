@@ -265,7 +265,7 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
     is_retry = sid is not None
     retry_context: str | None = None
     if not is_retry:
-        sid = uuid.uuid4().hex
+        sid = str(uuid.uuid4())
         db.set_builder_session_id(conn, goal_id, sid)
         agent.compile_context(conn, goal=goal, mfst=mfst,
                               attempts_dir=attempts_dir)
@@ -287,7 +287,7 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
     # with a fresh uuid down the cold path.
     if rc == 125:
         db.set_builder_session_id(conn, goal_id, None)
-        sid = uuid.uuid4().hex
+        sid = str(uuid.uuid4())
         db.set_builder_session_id(conn, goal_id, sid)
         agent.compile_context(conn, goal=goal, mfst=mfst,
                               attempts_dir=attempts_dir)
