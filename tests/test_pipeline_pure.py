@@ -295,3 +295,35 @@ def test_lake_build_single_target_uses_modules_helper(
     fake_run.assert_called_once()
     cmd = fake_run.call_args[0][0]
     assert cmd == ["lake", "build", "Problems.p.Root"]
+
+
+# ---------------------------------------------------------------------
+# F34 — TACTIC_TRY_LIST contains the expected fast-path closers
+# ---------------------------------------------------------------------
+
+def test_tactic_try_list_contains_existing_closers() -> None:
+    """Original 10 tactics still present (regression guard)."""
+    from Tooling.pipeline import TACTIC_TRY_LIST
+    for t in ["rfl", "simp", "decide", "trivial", "omega",
+              "linarith", "nlinarith", "norm_num", "simp_all", "aesop"]:
+        assert t in TACTIC_TRY_LIST, f"missing {t!r}"
+
+
+def test_tactic_try_list_contains_new_domain_closers() -> None:
+    """F34 additions for cast / algebraic / positivity / decision."""
+    from Tooling.pipeline import TACTIC_TRY_LIST
+    for t in ["norm_cast", "push_cast", "ring", "ring_nf",
+              "field_simp", "positivity", "grind"]:
+        assert t in TACTIC_TRY_LIST, f"missing {t!r}"
+
+
+def test_tactic_try_list_orders_cheap_before_heavy() -> None:
+    """Cheap tactics (rfl, decide) must precede heavy search (aesop,
+    grind) so the fast-path bails on the first hit before paying
+    the search-tactic startup."""
+    from Tooling.pipeline import TACTIC_TRY_LIST
+    rfl_idx = TACTIC_TRY_LIST.index("rfl")
+    aesop_idx = TACTIC_TRY_LIST.index("aesop")
+    grind_idx = TACTIC_TRY_LIST.index("grind")
+    assert rfl_idx < aesop_idx
+    assert rfl_idx < grind_idx

@@ -18,9 +18,32 @@ from . import agent, db, dedupe, diagnostics, manifest
 
 PROMPT_DIR = Path(__file__).parent / "prompts"
 
+# Fast-path tactic closers tried (each via single `lake env lean`)
+# before any LLM call. Order: cheapest first, most general last. Each
+# hit saves an entire Builder pipeline (~$0.05 face-value + ~270s
+# wall + thinking budget); cumulative ~30s lake-env startup overhead
+# when all fail is more than offset by any single hit. Confirmed
+# real Lean 4 / Mathlib names (no `polyrith` — needs SAGE binary).
 TACTIC_TRY_LIST = [
-    "rfl", "simp", "decide", "trivial", "omega",
-    "linarith", "nlinarith", "norm_num", "simp_all", "aesop",
+    # Trivial / instant
+    "rfl", "decide", "trivial",
+    # Numeric / linear
+    "norm_num", "omega",
+    # Cast normalization
+    "norm_cast", "push_cast",
+    # General simp
+    "simp",
+    # Algebraic identities
+    "ring", "ring_nf", "field_simp",
+    # Arithmetic search
+    "linarith", "nlinarith",
+    # Positivity
+    "positivity",
+    # Heavier simp
+    "simp_all",
+    # Decision procedures
+    "grind",   # Lean 4.30+ general decision procedure
+    "aesop",   # general proof search
 ]
 
 
