@@ -61,13 +61,62 @@ This batch closed 15 task IDs + two refactor commits. Group by goal:
 - **F40 (Two-phase Builder delivery, opt-in `ASTERISM_BUILDER_TWO_PHASE=1`)** — implemented at commit `2b6ff1a`, reverted at `232a3e0`. Hypothesis: weak models (gemini-flash / haiku) miss the patch.lean deliverable when asked to write PROPOSAL.md + patch.lean in the same call, so split into Phase A (PROPOSAL) and Phase B (cold patch). Live test on wilson with Haiku Builder + Sonnet Backward: 18 Builder pipelines / 30 min, 3 succeeded, 15 failed → 11 `lake_build_error` (Phase B wrote a patch but Lean rejected it: hallucinated lemma names, wrong tactics, syntax errors), only 4 `phase_a_no_proposal`. PROPOSAL content was reasonable; patch quality was the bottleneck. F40 doesn't address Lean reasoning quality, so it neither speeds up Haiku nor reaches root proof faster than the 39.5 min single-phase baseline. Gemini path unverified (quota exhausted on first dispatch). Don't reintroduce without a concrete model whose dominant fail mode is documented as deliverable miss (not Lean type error). Prompt files `builder_phase_{a,b}_*.md` and 6 unit tests deleted along with the revert.
 - Critical sub-fix kept (commit `a4bbeb5`, NOT reverted): `uuid.uuid4().hex` (32-char no-dash) is rejected by current claude CLI's `--session-id` validator (wants dashed 8-4-4-4-12). Replaced with `str(uuid.uuid4())`. F33 cold-spawn was actually broken in current claude CLI without this fix; only surfaced because F40 testing happened to exercise the cold path on a fresh DB.
 
+## Usability consolidation (2026-05-02)
+
+After F40 ablation the framework had ~10 env vars scattered across 5 files
+and ad-hoc operator workflows (manual `rm -rf .attempts/`, hand-written
+sqlite one-liners) that re-occurred every session. This batch consolidates:
+
+- **`asterism reset <p>`** (commit `44385dd`) — wipe one Problem's DB
+  rows + `proofs/{L_*,_strategy_*}.lean` + Root.lean back to sorry stub.
+  Other Problems untouched. `.attempts/` left alone (per-pipeline ephemeral).
+- **`asterism status <p> [--json]`** (commit `44385dd`) — goals table,
+  live strategies, queue depth, dead_attempts grouped by failure_reason,
+  recent pipelines filtered to this problem. JSON output for piping.
+- **`Asterism.yaml`** at repo root + `Tooling/config.py` (commit `d7af009`) —
+  4-step resolution chain `env > Asterism.yaml > legacy env > built-in`.
+  Schema covers `dispatch.{pool,budget_sec,builder_threshold,shelve_threshold}`
+  + `{builder,backward}.{provider,model}`. Optional file; legacy env vars
+  (`ASTERISM_AGENT_MODEL`, `ASTERISM_GEMINI_MODEL`, `ASTERISM_LLM_MODEL`)
+  remain in the chain so existing setups don't need to change. See
+  architecture.md §10 for the full schema.
+- **F31 substring tier retired** (same commit `d7af009`) — `_model_aware_thresholds`,
+  `_WEAK_DEFAULTS`, `_STRONG_DEFAULTS`, and 7 tests gone. Built-in `(3, 8)` for
+  Sonnet/Opus baseline. Weak-tier projects now write `dispatch.builder_threshold: 5`
+  + `dispatch.shelve_threshold: 10` in `Asterism.yaml` explicitly. Substring matching
+  was brittle (vendor naming drift, future model classes silent-mismatch — proven
+  brittle 2026-05-02 by today's UUID hex fix exposing analogous fragility).
+- **`asterism doctor`** (commit `b64f58f`) — pre-flight: claude/gemini/lake
+  on PATH + version banner, `Asterism.yaml` parse + section count, every
+  initialized Problem's Manifest validity, `.attempts/` zombie warning,
+  `.asterism/logs/` size. Uses the same Windows-aware gemini resolver
+  the provider does so the npm bash-shim path doesn't false-FAIL.
+- **`Asterism/CLAUDE.md`** (commit `655d907`) — operator notes for next
+  session: read STATUS.md first, use the new CLI subcommands, recurring
+  traps (UUID dashed, gemini quota silent, .attempts/ ephemeral),
+  testing recipe, do/don't list. Replaces the implicit knowledge that
+  was only in compaction summaries.
+
+Deferred per user instruction: `docs/MODEL_TIERS.md` (per-model
+recommended threshold table). User wants to discuss this later;
+no auto-detection in code, just a doc reference when ready.
+
 ## Recent commits (since previous STATUS at 8905d84)
 
 | Commit | Topic |
 |---|---|
-| (uncommitted) | Follow-ups — `pipeline.py` provider-agnostic `agent rc=` failure_detail (was hardcoded `claude rc=`); dispatcher worker-exception recovery (synthesize `outcome='failed'` cascade so unhandled exceptions advance goal attempts instead of looping forever) |
-| (uncommitted) | F38 — Gemini CLI provider (subprocess; quota-exhausted detection via output absence; Windows `gemini.cmd` resolver fix for npm bash-shim disambiguation) |
-| (uncommitted) | F37 — OR fanout removed; passive sequential strategy retry; SHELVE 8/10; dead-strategies prompt hint |
+| 655d907 | Asterism/CLAUDE.md — operator notes for future sessions |
+| b64f58f | asterism doctor — pre-flight diagnostic |
+| d7af009 | Asterism.yaml + 4-step resolution chain; retire haiku-substring tier |
+| 44385dd | asterism reset / status — replace ad-hoc per-Problem ops |
+| e63932c | STATUS: record F40 ablation conclusion + uuid sub-fix |
+| 232a3e0 | Revert "[F40] Two-phase Builder delivery (opt-in)" |
+| a4bbeb5 | Fix F33 cold-spawn rc=1: --session-id requires dashed UUID |
+| 2b6ff1a | [F40] Two-phase Builder delivery (opt-in) — reverted |
+| 4710987 | F39 — per-pipeline provider/model selection |
+| 382e23c | Provider-neutral failure_detail + dispatcher worker-exception recovery |
+| 5a0ed10 | F38 — Gemini CLI provider via Code Assist free tier |
+| 49a848a | F37 — OR-parallel → passive sequential strategy retry |
 | 945c8d4 | F33 follow-up: inline retry error in prompt (drop RETRY_NOTE.md) |
 | 46c73c9 | F33 — same-session Builder retry |
 | 2c541aa | Reorder Context.md sections |
@@ -91,7 +140,7 @@ This batch closed 15 task IDs + two refactor commits. Group by goal:
 
 ## Test count
 
-327 unit tests + 2 lake-integration tests (skipped if lake missing). All green at HEAD + uncommitted F37/F38 patches. F37 added 5 tests (passive cap=1 + attempts-increment + dead-strategies section); F38 added 13 (Gemini provider registry + quota-detection + complete_text).
+374 unit tests + 2 lake-integration tests (skipped if lake missing). All green at HEAD. Recent additions: 10 reset/status, 20 Asterism.yaml + resolution chain, 8 doctor; 7 retired (haiku substring tier).
 
 ## Tooling LOC
 
