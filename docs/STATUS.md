@@ -90,8 +90,26 @@ axioms identical to baseline.
   pending Gemini quota reset.
 - **MODEL_TIERS doc** (deferred per user) — per-model recommended
   thresholds as a doc table, not a runtime lookup.
+- **Verify-failed-with-all-subs-proved** (observed 2026-05-02 on
+  compactness, multiple strategies — s19 / s24 / s26 / s28 / s30 all
+  died this way). Sub-goals individually `proved` (lake build OK in
+  isolation), but `_strategy_sNN.lean` patch fails its Verify lake
+  build with errors like `typeclass instance problem is stuck
+  Membership (PropForm α) ?m.2`. Cause: LLM-written lemma signatures
+  in sub-goals are alpha-equivalent but not implicit/typeclass-
+  identical to what the parent strategy's combining tactics expected;
+  Lean elaborator's stricter unification at composition time rejects
+  them. F12 cascade currently retries via `goal.attempts++ → re-Backward
+  decompose`, which is correct but expensive (re-prove all sub-goals).
+  Cheaper directions to evaluate: (a) Verify-time patch retry — feed
+  proved sub-goal signatures back to LLM to rewrite ONLY the strategy
+  patch without redoing sub-goals; (b) Backward signature lock —
+  pin sub-goal type signature explicitly so Builder can't drift;
+  (c) Don't try to fix — gather more samples and confirm prevalence
+  before designing. Track failure_reason='lake_build_error' rows on
+  Strategy targets across runs to estimate cost.
 
 ## Test count
 
-374 unit tests + 2 lake-integration tests (skipped if `lake` missing).
+392 unit tests + 2 lake-integration tests (skipped if `lake` missing).
 All green at HEAD.
