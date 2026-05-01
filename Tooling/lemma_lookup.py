@@ -78,11 +78,12 @@ def _save_cache(toolchain_hash: str, entries: dict[str, LemmaInfo]) -> None:
     )
 
 
-# A `#check @<name>` block opens with the bare name at column 0 followed
-# by ` : `. Continuation lines for long signatures are indented or wrap
-# without a `<name> : ` marker.
+# A `#check @<name>` block opens at column 0 with `<name>` (or `@<name>`
+# when the lemma has implicit args — Lean prefixes `@` to the
+# explicit-form printout in that case) followed by ` : `. Continuation
+# lines for long signatures are indented or wrap without a name marker.
 _CHECK_BLOCK_RE = re.compile(
-    r"^(?P<name>[\w.']+)\s*:\s*(?P<sig>.*?)(?=^[\w.']+\s*:|\Z)",
+    r"^@?(?P<name>[\w.']+)\s*:\s*(?P<sig>.*?)(?=^@?[\w.']+\s*:|\Z)",
     re.MULTILINE | re.DOTALL,
 )
 

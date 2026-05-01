@@ -78,6 +78,27 @@ def test_parse_check_output_ignores_unrelated_names() -> None:
     assert got == {"Nat.factorial": "ℕ → ℕ"}
 
 
+def test_parse_check_output_at_prefix_when_implicit_args() -> None:
+    """Lean 4 prefixes `@` to `#check @foo` output when the lemma has
+    implicit args. Real failure observed: with @-prefixed names, the
+    block boundary regex would treat `@Nat.foo : ...` as continuation
+    of the previous lemma's signature, mashing 3 lemmas into one
+    bullet. Parser must accept optional leading `@`."""
+    output = (
+        "ZMod.val_neg_one : ∀ (n : ℕ), (-1).val = n\n"
+        "@Nat.mod_eq_of_lt : ∀ {a b : ℕ}, a < b → a % b = a\n"
+        "@Nat.Prime.two_le : ∀ {p : ℕ}, Nat.Prime p → 2 ≤ p\n"
+    )
+    got = _parse_check_output(output,
+                              ["ZMod.val_neg_one",
+                               "Nat.mod_eq_of_lt",
+                               "Nat.Prime.two_le"])
+    # Each lemma resolves to its own clean signature, no concatenation
+    assert got["ZMod.val_neg_one"] == "∀ (n : ℕ), (-1).val = n"
+    assert got["Nat.mod_eq_of_lt"] == "∀ {a b : ℕ}, a < b → a % b = a"
+    assert got["Nat.Prime.two_le"] == "∀ {p : ℕ}, Nat.Prime p → 2 ≤ p"
+
+
 # ---------------------------------------------------------------------
 # extract_lemma_names — pull dotted names from stderr
 # ---------------------------------------------------------------------
