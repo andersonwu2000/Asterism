@@ -400,11 +400,15 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_naming_convention(strategy_id, goal),
         _section_parent_strategy(conn, goal),
         _section_manifest_hints(mfst),
+        # Lemma references is a precise expansion of mathlib_hints
+        # (signatures resolved via lake env lean) — keep it adjacent
+        # so the agent reads name + signature together rather than
+        # scrolling past `## Strategic notes` to find the signatures.
+        _section_lemma_references(deads, mfst, workspace),
         _section_manifest_forbidden(mfst),
         _section_manifest_notes(mfst),
         _section_playbook(goal, workspace),
         _section_past_attempts(deads),
-        _section_lemma_references(deads, mfst, workspace),
         _section_past_verify_failures(strat_deads),
     ]
 
