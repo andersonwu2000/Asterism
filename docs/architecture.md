@@ -14,7 +14,7 @@
 | Compactness (propositional, custom Defs) | proved、commit 46c8941、~60 min、~2.5x faster than Hadamard 2.5h |
 | Cantor (Freek 100 #63 reformulated) | proved、commit 6bd6c15、~5 min、單 Builder one-shot、axioms = `[]` |
 | Pipeline kinds | Builder + Backward + **Verify**（3 種、每 kind 有固定 target_kind） |
-| OR parallelism | 開、`ASTERISM_OR_FANOUT=3` 預設 |
+| OR parallelism | F37 起 passive (cap=1)；同 goal 多策略走序列觸發、不再並行 fanout |
 | Deduper | 開（whitespace-norm 字串等價、§9.5）、無 schema 改動 |
 | Unit tests | 79 passing |
 | Tooling LOC | ~1700 lines Python |
@@ -35,7 +35,7 @@ Strategy  = AND   : 所有 sub-Goal 成功 → Strategy 成功
 
 葉子 Goal 不靠 Strategy 證明、靠 Builder 直接 closure（tactic_try → tactic_llm）。Strategy 必有 ≥ 1 個 sub-goal、否則無法被 `strategies_ready_for_verify` 撈到。
 
-OR 並行（§9）：同 Goal 可同時掛 N 條 Strategy；首個通過 Verify 的勝出、其餘標 `superseded`。
+OR 順序展開（§9）：同 Goal 至多一條 active Strategy；當前 strategy 死亡（sub-goal cascade-shelve / Verify 失敗）後才觸發新一輪 Backward 產 next strategy。F37 之前為 eager OR fanout、現為 passive trigger。
 
 ---
 
@@ -398,23 +398,23 @@ def run(workspace, *, once=False) -> int:
     or_fanout  = int(os.environ.get('ASTERISM_OR_FANOUT', '3'))
     pool = ThreadPoolExecutor(max_workers=pool_size)
     futures: dict[Future, tuple[str, str, str, str]] = {}
-    running: set[tuple[str, str, str]] = set()  # (target_id, kind, pipeline_id)
+    running: set[tuple[str, str]] = set()  # (target_id, kind)  F37
 
     while True:
         # Cascade 永遠主 loop sequential、不在 worker thread
         for fut in done(futures):
             cascade_one(...)
-            running.discard((target_id, kind, pipeline_id))
+            running.discard((target_id, kind))
 
         if root_proved(): return 0
 
-        bfs_refill(running, or_fanout=or_fanout)
+        bfs_refill(running)
 
         while len(futures) < pool_size:
             row = pop_queue()
             if row is None: break
-            # 不再做 (target_id, kind) dedup — bfs_refill 已 cap-aware
-            running.add((target_id, kind, pipeline_id))
+            if (target_id, kind) in running: continue   # defensive
+            running.add((target_id, kind))
             futures[pool.submit(_run_pipeline, ...)] = ...
 
         wait_one_or_timeout(futures, TICK_TIMEOUT=30)
@@ -426,8 +426,8 @@ def run(workspace, *, once=False) -> int:
 **設計紀律**：
 - Cascade 永遠主 loop sequential（避免 v1 race 災難）
 - worker thread 只做：跑 pipeline、寫 staging、INSERT pipeline finished row
-- `running` 含 pipeline_id 作為 key 第三元素 → 多個 Backward 同 (target_id, kind) 不互相覆蓋
-- BFS dedup 改成 cap-aware count：`in_flight = len(running matches) + queue_count`、`slot = cap - in_flight`、enqueue 數 = max(0, slot)
+- F37 起 `running` 是 `(target_id, kind)` 二元組（passive cap=1、無需 pipeline_id 區分）
+- BFS cap-aware：`in_flight(tid, kind) = ((tid,kind) in running) + queue_count`、cap=1 一律
 - Daemon 死 → in-memory 全消失、pipelines 表只 finished、重啟見乾淨表面
 
 ---
@@ -485,9 +485,9 @@ def cascade_one(*, kind, target_id, target_kind, outcome):
 ```
 
 ```python
-def bfs_refill(running, *, or_fanout):
+def bfs_refill(running):
     def in_flight(tid, kind):
-        return sum(1 for (t,k,_) in running if t==tid and k==kind) + queue_count(tid, kind)
+        return (1 if (tid,kind) in running else 0) + queue_count(tid, kind)
 
     # Verify 派遣（cap=1 per strategy）
     for s in strategies_ready_for_verify():       # filters g.status != 'proved' (W6)
@@ -495,14 +495,16 @@ def bfs_refill(running, *, or_fanout):
             enqueue('Verify', s.id, priority=10)
 
     # 對 open goals: orphan filter 跳過 dead/superseded ancestor
+    # F37 — Builder 與 Backward 都 cap=1，一條 strategy 死掉才會經 cascade
+    # 重新 reopen goal 進到下一輪 enqueue。
     for g in open_goals():                        # joins strategy_subgoals + strategies
         kind = next_worker_kind(g)                # difficulty>=4 → Backward;
-                                                  # else attempts<=2 → Builder; else Backward
-        cap = or_fanout if kind == 'Backward' else 1
-        slots = cap - in_flight(g.id, kind)
-        for _ in range(max(0, slots)):
+                                                  # else attempts<BUILDER_THRESHOLD → Builder; else Backward
+        if in_flight(g.id, kind) == 0:
             enqueue(kind, g.id, priority=5 if kind=='Builder' else 2)
 ```
+
+**F37 — `_propagate_shelve` reopen 分支補增 attempts 計數**：sub-goal cascade-shelve 殺掉父 strategy 後，若父 goal 無 live strategy、attempts++ 並依 SHELVE_THRESHOLD 決定 'open'（再生新 strategy）或 'shelved'（自己也死掉、繼續上拋）。沒有這條 increment、passive 下父 goal 永不 shelve、Backward 會無限 retry。
 
 `open_goals()` 的 orphan filter SQL（避免 supersede 後 dispatch 到 dead branch sub-goals）：
 
@@ -519,11 +521,24 @@ ORDER BY g.id
 
 ---
 
-## 9. OR parallelism
+## 9. OR sequencing (F37 passive trigger)
 
-**動機**：wilson smoke 第 2 輪實證 Context.md 注入 prior_failures 在重試上有過深 reasoning 病態（agent 越來越遠離 simple solution、最後 timeout）。OR 下、N 條 Strategy 用 spawn 時 snapshot 的 Context、不會遞迴病態化、且能 hedge 風險。
+**歷史**：v2.5 起初為 eager OR fanout（每 goal 同時派 N 條 Strategy 並行 race），動機是抗 Context 累積病態 + hedge 風險 + wall-clock 加速。F37 改成 passive：**每 goal 同一時間至多一條 active Strategy**；它死掉後才生下一條。
 
-**核心設計**：每條 Strategy 有獨立的「scratch lean module + namespaced sub-goals」、parent 的 lean_path 直到 Verify 勝出才被改。
+**動機**：eager 在強模型（Sonnet/Opus）下 token 浪費顯著（單一最快策略事後幾乎可預測唯一）、深層 fanout × depth 也加重多餘工作。passive 下總工 token 大致 = 真正成功的策略 + 失敗 retry 各一份、無並行多餘。
+
+**改變的內容**：
+- `OR_FANOUT_DEFAULT` 常數 + `ASTERISM_OR_FANOUT` env var 全砍
+- `bfs_refill` 對 Builder/Backward 一律 cap=1
+- `running` set 從 `(tid, kind, pid)` 簡化為 `(tid, kind)`
+- `_propagate_shelve` reopen 分支補 `increment_goal_attempts`（防無限 retry）
+- SHELVE_THRESHOLD 預設 7→8 (Sonnet) / 8→10 (Haiku)、給 passive 多探索預算
+- agent.py 新增 `_section_dead_strategies`：Backward 重觸發時看見過往 dead strategies 的 sub-goal 列表、避免重提同樣分解
+
+**保留的內容**（仍適用 passive）：
+- 每條 Strategy 有獨立的「scratch lean module + namespaced sub-goals」、parent 的 lean_path 直到 Verify 勝出才被改
+- sub-goal slug `s<sid>_` 前綴防 sequential strategies 之間檔案命名碰撞
+- cascade 入口 no-op、`mark_other_strategies_superseded` 等防禦在 cascade timing race 下仍可能觸發
 
 | 隔離維度 | 實作 |
 |---------|------|
@@ -532,22 +547,13 @@ ORDER BY g.id
 | DB slug | sub-goal slug 含 `s<sid>_` 前綴、滿足 `goals.UNIQUE(problem, slug)` |
 | 父 lean_path | Backward **不寫**、只在 Verify 勝出時 alias-import scratch |
 
-**勝出與清理**：
-- Verify outcome='proved' → strategy='succeeded'、goal='proved'、`mark_other_strategies_superseded` 把同 goal 其他 'proposed' 全標 'superseded'
-- 落敗 strategies 的 sub-goals 變 orphan、`open_goals` SQL filter 自動排除
-- 落敗 strategies 的檔不主動清（forensics 用、`asterism prune` deferred）
-
-**Race window 與防禦**：
-- 多個 Verify 同時改 parent.lean_path → 用 `os.replace` 原子 rename、last-write-wins、cascade 入口 no-op 接住第二波
-- `strategies_ready_for_verify` 加 `g.status != 'proved'` 過濾、防 W6 無窮 verify-thrashing 迴圈
-
 **Trade-off**：
-- 收益：抗 Context 累積病態、抗 timeout、整體 wall-clock 加速（compactness 約 2.5x）
-- 成本：Token 多 N 倍（每 OR Backward 都呼叫 LLM）；落敗 strategies 留 orphan files；DAG 在深層題目展開為原 fanout × OR_FANOUT
+- 收益：token 浪費下降（強模型最有感）、tree shape 簡化、log 易讀
+- 成本：first strategy 走錯方向時、wall-clock 比 eager 慢（要等全棵子樹 cascade-shelve 才轉向）；靠 SHELVE_THRESHOLD 拉高 + dead-strategies prompt hint 緩解
 
 ### 9.5 Deduper
 
-**動機**：OR fanout 下、N 條 strategies 各自跑 LLM、產出的 sub-goals 經常 overlap（同 statement 不同 slug 包裝）。沒 dedupe 時、3 條 OR strategies 各證一次同樣的 lemma、token 浪費。
+**動機**：眼下主要場景是 ancestor / 跨深度的 sub-goal 重複（同 problem 內多條 strategy 的某層 sub-goal 與更上面的 ancestor 在 statement 上 def-equiv）。F37 passive 下、parallel sibling 重複已不存在；剩下的價值是跨 ancestor。
 
 **設計核心**：alias-based 共享、零 schema 改動。
 
@@ -638,9 +644,14 @@ asterism init <problem>
 
 asterism run [--once]
   └─ 啟動 dispatcher。env 可控：
-       ASTERISM_POOL          worker pool size (default 4)
-       ASTERISM_OR_FANOUT     per-goal Backward concurrency (default 3)
-       ASTERISM_BUDGET_SEC    daemon wall-clock budget (default 1800)
+       ASTERISM_POOL              worker pool size (default 4)
+       ASTERISM_BUILDER_THRESHOLD Builder→Backward 切換閾值 (default 3 / haiku 5)
+       ASTERISM_SHELVE_THRESHOLD  goal shelve 閾值 (default 8 / haiku 10)
+       ASTERISM_BUDGET_SEC        daemon wall-clock budget (default 1800)
+       ASTERISM_AGENT_MODEL       影響 BUILDER/SHELVE 預設（含 'haiku' 走弱模型 tier）
+       ASTERISM_LLM_PROVIDER      'claude' (default) / 'openai' / 'gemini' (F38)
+       ASTERISM_GEMINI_MODEL      Gemini 模型 (default gemini-2.5-flash;
+                                  pro 在 free tier 幾乎無額度、不建議)
 ```
 
 status / stop 命令暫不寫，直接 sqlite 查 / Ctrl-C 終止。
@@ -692,7 +703,7 @@ status / stop 命令暫不寫，直接 sqlite 查 / Ctrl-C 終止。
 
 | # | 項目 | 動機 / 觸發條件 |
 |---|------|----------------|
-| 1 | **Web dashboard / UI** | DAG 視覺化、dead_attempts artifacts 點擊展開；compactness 級多層深 + OR fanout 已超 CLI 可讀 |
+| 1 | **Web dashboard / UI** | DAG 視覺化、dead_attempts artifacts 點擊展開；compactness 級多層深 已超 CLI 可讀 |
 | 2 | **Dedupe predicate 升級**（α-rename 或 Lean defeq） | 量到 whitespace-norm 命中率 < 30% 時觸發；單 swap point 換 `_statements_equivalent` |
 | 3 | **第四題 smoke**（如 sylvester_gallai） | 驗證對更深 / 不同題型穩定性 |
 | 4 | **多 problem 並行**（同一 daemon 多 problem） | 視 Library 跨題效益決定 |
@@ -736,7 +747,7 @@ status / stop 命令暫不寫，直接 sqlite 查 / Ctrl-C 終止。
 | Tooling/ 重寫 | 不借 Hadamard 代碼；純 Python、模組界線清楚 |
 | Shelve 判斷 | cascade rule 內、不在 `next_worker_kind`（純函數） |
 | Pool size | 預設 4、`ASTERISM_POOL=N` env 覆蓋 |
-| OR fanout | 預設 3、`ASTERISM_OR_FANOUT=N` env 覆蓋；Builder/Verify cap=1 不變 |
+| OR sequencing | F37 起 passive (cap=1)；env var 已移除；同 goal 多策略走序列觸發 |
 | Daemon budget | 預設 1800s、`ASTERISM_BUDGET_SEC=N` env 覆蓋 |
 | Worker 單次 timeout | 10 min hardcoded（compactness 級才會超、那是 Backward 拆解的 signal） |
 | `proofs/` 結構 | flat（success exit 自動 reconcile + prune 留 winner chain；CLI fallback 給 partial state） |

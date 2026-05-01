@@ -88,6 +88,83 @@ def test_context_no_strategy_section_when_clean(
 
 
 # ---------------------------------------------------------------------
+# F37 — dead-strategies anti-repetition hint for sequential Backward retry
+# ---------------------------------------------------------------------
+
+def test_context_includes_dead_strategies_with_subgoal_decomposition(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """F37 — when a strategy has died (e.g. a sub-goal cascade-shelved
+    it), the next Backward attempt must see its decomposition + sub-goal
+    statuses so it doesn't re-propose the same shape."""
+    gid = _seed_problem_and_goal(conn)
+    sid = db.insert_strategy(
+        conn, goal_id=gid, lean_path="Problems/p/Root.lean",
+        scratch_path="Problems/p/proofs/_strategy_s.lean",
+        created_by="pid-x",
+        proposal_md="### Decomp via foo + bar\n2 sub-goals.",
+    )
+    sub1 = db.insert_goal(
+        conn, problem="p", slug="s1_sub_1",
+        lean_path="Problems/p/proofs/L_s1_sub_1.lean",
+        statement="∀ n, foo n = bar n",
+        origin="backward", difficulty=2, depth=1,
+    )
+    sub2 = db.insert_goal(
+        conn, problem="p", slug="s1_sub_2",
+        lean_path="Problems/p/proofs/L_s1_sub_2.lean",
+        statement="∀ n, baz n",
+        origin="backward", difficulty=2, depth=1,
+    )
+    db.link_subgoal(conn, strategy_id=sid, subgoal_id=sub1, position=0)
+    db.link_subgoal(conn, strategy_id=sid, subgoal_id=sub2, position=1)
+    db.update_goal_status(conn, sub1, "shelved")  # the one that killed s
+    db.update_strategy_status(conn, sid, "dead")
+
+    goal = db.get_goal(conn, gid)
+    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+                          attempts_dir=tmp_path)
+    text = out.read_text(encoding="utf-8")
+    assert "Prior strategies that died" in text
+    assert "s1_sub_1" in text
+    assert "(shelved)" in text
+    assert "foo n = bar n" in text
+    assert "s1_sub_2" in text
+
+
+def test_context_omits_dead_strategies_when_none(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """F37 — clean state: no dead strategies → section is absent."""
+    gid = _seed_problem_and_goal(conn)
+    goal = db.get_goal(conn, gid)
+    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+                          attempts_dir=tmp_path)
+    text = out.read_text(encoding="utf-8")
+    assert "Prior strategies that died" not in text
+
+
+def test_context_skips_half_baked_dead_strategies(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """F37 — recovery cleanup marks half-baked strategies dead with
+    empty proposal_md and no sub-goals. Don't surface those as 'prior
+    decompositions' — they carry no signal."""
+    gid = _seed_problem_and_goal(conn)
+    sid = db.insert_strategy(
+        conn, goal_id=gid, lean_path="Problems/p/Root.lean",
+        created_by="pid-x", proposal_md="",  # half-baked
+    )
+    db.update_strategy_status(conn, sid, "dead")
+
+    goal = db.get_goal(conn, gid)
+    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+                          attempts_dir=tmp_path)
+    text = out.read_text(encoding="utf-8")
+    assert "Prior strategies that died" not in text
+
+
+# ---------------------------------------------------------------------
 # F22 — Context.md surfaces playbook entries
 # ---------------------------------------------------------------------
 

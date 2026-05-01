@@ -59,19 +59,20 @@ def test_next_worker_kind_respects_runtime_threshold(
 def test_model_aware_thresholds_haiku(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Haiku gets weak-tier defaults (5/8) — extra Builder attempts
-    have proven productive for it."""
+    """Haiku gets weak-tier defaults (5/10 post-F37) — extra Builder
+    attempts and extra strategy-retry budget have proven productive."""
     monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-haiku-4-5")
-    assert _dispatcher._model_aware_thresholds() == (5, 8)
+    assert _dispatcher._model_aware_thresholds() == (5, 10)
 
 
 def test_model_aware_thresholds_sonnet(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Sonnet gets strong-tier defaults (3/7) — empirical: 0% of
-    Sonnet's proves happen at 4+ Builder fails."""
+    """Sonnet gets strong-tier defaults (3/8 post-F37). 0% of Sonnet's
+    proves happen at 4+ Builder fails; F37 raised SHELVE 7→8 to give
+    passive Backward retries one extra round."""
     monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-sonnet-4-6")
-    assert _dispatcher._model_aware_thresholds() == (3, 7)
+    assert _dispatcher._model_aware_thresholds() == (3, 8)
 
 
 def test_model_aware_thresholds_opus_strong(
@@ -80,14 +81,14 @@ def test_model_aware_thresholds_opus_strong(
     """Opus / non-Haiku models default to strong tier (claude_cli's
     DEFAULT_MODEL is Sonnet, so unset env also falls here)."""
     monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-opus-4-7")
-    assert _dispatcher._model_aware_thresholds() == (3, 7)
+    assert _dispatcher._model_aware_thresholds() == (3, 8)
 
 
 def test_model_aware_thresholds_unset_env_strong(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("ASTERISM_AGENT_MODEL", raising=False)
-    assert _dispatcher._model_aware_thresholds() == (3, 7)
+    assert _dispatcher._model_aware_thresholds() == (3, 8)
 
 
 def test_model_aware_thresholds_haiku_case_insensitive(
@@ -96,7 +97,7 @@ def test_model_aware_thresholds_haiku_case_insensitive(
     """Substring match must be case-insensitive — vendor naming
     drift shouldn't silently flip a real Haiku run to strong-tier."""
     monkeypatch.setenv("ASTERISM_AGENT_MODEL", "Claude-HAIKU-Pro")
-    assert _dispatcher._model_aware_thresholds() == (5, 8)
+    assert _dispatcher._model_aware_thresholds() == (5, 10)
 
 
 # ---------------------------------------------------------------------
@@ -319,6 +320,46 @@ def test_subgoal_shelve_kills_parent_strategy_and_reopens_goal(
     ).fetchone()["status"] == "dead"
     # Grandparent reopened (no live strategy left)
     assert db.get_goal(conn, grand)["status"] == "open"
+    # F37 — grandparent attempts incremented by 1, so passive Backward
+    # retries can't loop forever
+    assert db.get_goal(conn, grand)["attempts"] == 1
+
+
+def test_subgoal_shelve_cascades_grand_when_at_threshold(
+    conn: sqlite3.Connection,
+) -> None:
+    """F37 — when sub-goal shelve triggers parent strategy death AND the
+    grandparent's incremented attempts reach SHELVE_THRESHOLD, the
+    grandparent itself shelves and propagates further up."""
+    grand = _seed_goal(conn, problem="p", difficulty=4)
+    db.update_goal_status(conn, grand, "attempting")
+    # Pre-load grand attempts to one short of SHELVE_THRESHOLD so the
+    # increment from the cascade pushes it over.
+    conn.execute("UPDATE goals SET attempts = ? WHERE id = ?",
+                 (SHELVE_THRESHOLD - 1, grand))
+    conn.commit()
+
+    doomed_sub = db.insert_goal(
+        conn, problem="p", slug="doomed_for_grand_cascade",
+        lean_path="Problems/p/proofs/L_doomed_grand.lean",
+        statement="T", origin="backward", difficulty=2, depth=1,
+    )
+    sid = db.insert_strategy(
+        conn, goal_id=grand,
+        lean_path="Problems/p/Root.lean",
+        scratch_path="Problems/p/proofs/_strategy_grand.lean",
+        created_by="pid",
+    )
+    db.link_subgoal(conn, strategy_id=sid, subgoal_id=doomed_sub, position=0)
+
+    for _ in range(SHELVE_THRESHOLD):
+        cascade_one(conn, pipeline_id="pid", kind="Builder",
+                    target_id=str(doomed_sub), target_kind="Goal",
+                    outcome="failed")
+
+    assert db.get_goal(conn, doomed_sub)["status"] == "shelved"
+    assert db.get_goal(conn, grand)["status"] == "shelved"
+    assert db.get_goal(conn, grand)["attempts"] == SHELVE_THRESHOLD
 
 
 def test_subgoal_shelve_keeps_goal_attempting_when_other_strategy_alive(
@@ -1048,21 +1089,32 @@ def test_queue_count_helper(conn: sqlite3.Connection) -> None:
     assert db.queue_count(conn, target_id="99", kind="Backward") == 0
 
 
-def test_bfs_refill_or_fanout_for_backward(conn: sqlite3.Connection) -> None:
-    """For an open goal whose next worker is Backward, bfs_refill must
-    enqueue up to or_fanout entries (running set empty here)."""
+def test_bfs_refill_backward_capped_at_one(conn: sqlite3.Connection) -> None:
+    """F37 — for an open goal whose next worker is Backward, bfs_refill
+    enqueues exactly one entry (passive trigger; sequential expansion)."""
     from Tooling.dispatcher import bfs_refill
     gid = _seed_goal(conn, difficulty=4)  # difficulty>=4 → Backward
-    bfs_refill(conn, running=set(), or_fanout=3)
-    assert db.queue_count(conn, target_id=str(gid), kind="Backward") == 3
+    bfs_refill(conn, running=set())
+    assert db.queue_count(conn, target_id=str(gid), kind="Backward") == 1
 
 
 def test_bfs_refill_builder_capped_at_one(conn: sqlite3.Connection) -> None:
-    """Builder is single-attempt-per-goal even with high fanout."""
+    """F37 — Builder is also single-attempt-per-goal."""
     from Tooling.dispatcher import bfs_refill
     gid = _seed_goal(conn, difficulty=2)  # difficulty<4, attempts=0 → Builder
-    bfs_refill(conn, running=set(), or_fanout=5)
+    bfs_refill(conn, running=set())
     assert db.queue_count(conn, target_id=str(gid), kind="Builder") == 1
+
+
+def test_bfs_refill_no_duplicate_when_already_running(
+    conn: sqlite3.Connection,
+) -> None:
+    """F37 — bfs_refill must not enqueue if a pipeline of the same
+    (target_id, kind) is already in flight (in `running` set)."""
+    from Tooling.dispatcher import bfs_refill
+    gid = _seed_goal(conn, difficulty=4)
+    bfs_refill(conn, running={(str(gid), "Backward")})
+    assert db.queue_count(conn, target_id=str(gid), kind="Backward") == 0
 
 
 def test_strategies_ready_for_verify_excludes_proved_goal(

@@ -88,8 +88,8 @@ def _section_naming_convention(strategy_id: int | None,
     return [
         "## Naming convention (REQUIRED)",
         f"This Backward attempt has been allocated strategy id "
-        f"`{sid_token}`. Multiple strategies may race for this goal in "
-        f"parallel; collision-free naming is mandatory.",
+        f"`{sid_token}`. Earlier strategies for this goal may have left "
+        f"files on disk; collision-free naming is mandatory.",
         "",
         f"- Sub-goal slugs: `{sid_token}_sub_1`, "
         f"`{sid_token}_sub_2`, ... — exactly `{sid_token}_sub_<N>`.",
@@ -347,6 +347,71 @@ def _fetch_strategy_dead_attempts(
     ).fetchall()
 
 
+def _fetch_dead_strategies(
+    conn: sqlite3.Connection, goal_id: int, *, k: int = 5,
+) -> list[dict]:
+    """F37 — strategies that were proposed for this goal but later died
+    (sub-goal cascade-shelve, F16 inward kill, etc). Each result includes
+    the strategy's proposal_md plus the slug+statement of every sub-goal
+    it spawned, so the next Backward can be told 'these decompositions
+    were tried and failed — pick a different angle.'
+
+    Filtered to strategies with a non-empty proposal_md AND at least one
+    linked sub-goal — drops half-baked recovery cleanups (status='dead'
+    + empty proposal) which carry no signal."""
+    rows = conn.execute(
+        "SELECT s.id, s.proposal_md FROM strategies s "
+        "WHERE s.goal_id = ? AND s.status = 'dead' "
+        "  AND s.proposal_md != '' "
+        "  AND EXISTS (SELECT 1 FROM strategy_subgoals ss "
+        "              WHERE ss.strategy_id = s.id) "
+        "ORDER BY s.id DESC LIMIT ?",
+        (goal_id, k),
+    ).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        subs = conn.execute(
+            "SELECT g.slug, g.statement, g.status FROM strategy_subgoals ss "
+            "JOIN goals g ON g.id = ss.subgoal_id "
+            "WHERE ss.strategy_id = ? ORDER BY ss.position ASC",
+            (int(r["id"]),),
+        ).fetchall()
+        out.append({
+            "id": int(r["id"]),
+            "proposal_md": r["proposal_md"],
+            "subs": [(s["slug"], s["statement"], s["status"]) for s in subs],
+        })
+    return out
+
+
+def _section_dead_strategies(rows: list[dict]) -> list[str]:
+    """F37 — anti-repetition hint for sequential Backward retry. Lists
+    sub-goal decompositions from prior strategies on this goal that were
+    cascade-killed (e.g. by a sub-goal hitting SHELVE_THRESHOLD). Helps
+    the next Backward avoid re-proposing the same shape that already
+    proved unreachable."""
+    if not rows:
+        return []
+    out = [
+        "## Prior strategies that died (avoid re-proposing the same shape)",
+        "Earlier Backward attempts for this same goal produced the "
+        "decompositions below. Each one was killed because at least one "
+        "of its sub-goals could not be proved (cascade-shelve). Do NOT "
+        "re-propose a decomposition that hinges on the same dead "
+        "sub-goal — pick a structurally different angle.",
+        "",
+    ]
+    for i, s in enumerate(rows, 1):
+        out.append(f"### Dead strategy s{s['id']}")
+        out.append("Sub-goals it produced:")
+        for slug, statement, status in s["subs"]:
+            mark = "(shelved)" if status == "shelved" else f"({status})"
+            stmt = statement.strip().splitlines()[0][:200]
+            out.append(f"- `{slug}` {mark} — {stmt}")
+        out.append("")
+    return out
+
+
 def _section_past_verify_failures(rows: list[sqlite3.Row]) -> list[str]:
     """F26 — 1-line digest per past Verify failure; full content in
     PAST_VERIFIES.md (written separately by context_files.write_past_verifies)."""
@@ -382,9 +447,9 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
 
     `strategy_id`: when set (Backward worker), write a 'Naming convention'
     section instructing the agent to prefix all slugs with `s<sid>_`.
-    Required for OR-parallel correctness — multiple Backwards on the same
-    parent goal must produce non-colliding sub-goal slugs and theorem
-    names.
+    Required because earlier strategies for the same goal may have left
+    files on disk (cleanup is deferred to prune); each strategy must
+    produce non-colliding sub-goal slugs and theorem names.
 
     Section ordering — keep stable; agents may have learned to scan
     top-down. Each section function returns `[]` when not applicable
@@ -394,6 +459,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     deads = db.recent_dead_attempts(
         conn, target_id=goal["id"], target_kind="Goal", k=5)
     strat_deads = _fetch_strategy_dead_attempts(conn, int(goal["id"]))
+    dead_strats = _fetch_dead_strategies(conn, int(goal["id"]))
 
     sections: list[list[str]] = [
         _section_header(goal),
@@ -410,6 +476,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_playbook(goal, workspace),
         _section_past_attempts(deads),
         _section_past_verify_failures(strat_deads),
+        _section_dead_strategies(dead_strats),
     ]
 
     parts: list[str] = []

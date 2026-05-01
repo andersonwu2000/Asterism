@@ -14,23 +14,26 @@ from pathlib import Path
 from . import agent, db, manifest, pipeline, playbook, prune
 
 
-# Per-model defaults (F31). Empirically:
+# Per-model defaults (F31 + F37). Empirically:
 #   Sonnet/Opus rarely succeed at attempts ≥3 — 97% of proves happen
-#                in ≤3 Builder fails. Tighten to 3/7 to skip the
-#                wasted attempts 4-5 (each costs claude thinking +
-#                potentially a 600s CLI timeout).
-#   Haiku       iterates productively across more attempts (its
-#                training memory of Mathlib API specifics is thinner;
-#                F20 + F22 + retries lets it converge given enough
-#                budget). Keep 5/8.
+#                in ≤3 Builder fails. Use 3/8 — first 3 attempts go to
+#                Builder, then Backward retries until attempts hit 8.
+#   Haiku       iterates productively across more attempts (its training
+#                memory of Mathlib API specifics is thinner; F20 + F22 +
+#                retries lets it converge given enough budget). Use 5/10.
+#
+# F37 raised the SHELVE half (7→8 / 8→10) because passive OR=1 means
+# every dead strategy now consumes one goal-attempt (added in
+# _propagate_shelve). Without the bump the goal would shelve before
+# Backward gets enough chances to explore alternative strategies.
 #
 # Semantics:
 #   BUILDER_THRESHOLD = N → first N attempts (0..N-1) dispatch Builder,
 #                          attempts >= N dispatch Backward.
 #   SHELVE_THRESHOLD = M  → goal shelves once attempts hits M.
 # Both env-overridable: ASTERISM_BUILDER_THRESHOLD / ASTERISM_SHELVE_THRESHOLD.
-_STRONG_DEFAULTS = (3, 7)
-_WEAK_DEFAULTS = (5, 8)
+_STRONG_DEFAULTS = (3, 8)
+_WEAK_DEFAULTS = (5, 10)
 
 
 def _model_aware_thresholds() -> tuple[int, int]:
@@ -49,7 +52,6 @@ def _model_aware_thresholds() -> tuple[int, int]:
 BUILDER_THRESHOLD, SHELVE_THRESHOLD = _model_aware_thresholds()
 
 TICK_TIMEOUT = 30  # seconds
-OR_FANOUT_DEFAULT = 2  # max concurrent Backwards per open goal (env override)
 
 
 # ---------------------------------------------------------------------
@@ -223,7 +225,12 @@ def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
         db.update_strategy_status(conn, int(s["id"]), "dead")
 
     # For each affected parent goal, mirror the W4 reopen rule: if no
-    # 'proposed' strategy survives, transition 'attempting' → 'open'.
+    # 'proposed' strategy survives, transition 'attempting' → 'open'
+    # AND increment the goal's attempts counter. The increment (F37)
+    # ensures every dead strategy advances toward SHELVE_THRESHOLD;
+    # without it, passive OR=1 would spin Backward indefinitely
+    # producing strategies that all die to deeper sub-goal shelves
+    # without ever exhausting the goal's attempt budget.
     affected_parent_goals = {int(s["goal_id"]) for s in parent_strategies}
     for gid in affected_parent_goals:
         has_live = conn.execute(
@@ -236,7 +243,15 @@ def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
                 "SELECT status FROM goals WHERE id = ?", (gid,),
             ).fetchone()
             if row and row["status"] == "attempting":
-                db.update_goal_status(conn, gid, "open")
+                n = db.increment_goal_attempts(conn, gid)
+                if n >= SHELVE_THRESHOLD:
+                    # Cascading shelve: this parent has now run out of
+                    # attempts as a result of the sub-goal's death.
+                    # Recurse so its own parents propagate too.
+                    db.update_goal_status(conn, gid, "shelved")
+                    _propagate_shelve(conn, gid)
+                else:
+                    db.update_goal_status(conn, gid, "open")
 
     # F16 — kill strategies whose parent goal IS this shelved goal
     conn.execute(
@@ -277,7 +292,8 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
     No-op entry: if the target's underlying goal is already proved or
     its strategy is already 'superseded', skip the transition. This
     catches loser strategies / orphan sub-goals whose workers finish
-    after a sibling has won (OR parallelism).
+    after the goal has been won by a (possibly sequential) sibling
+    strategy or after the goal cascade-shelved.
 
     `workspace` enables the F22 playbook hook on Verify=proved. Tests
     that don't care about file-side effects pass None.
@@ -359,9 +375,10 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             db.update_strategy_status(conn, int(target_id), "succeeded")
             if goal_id is not None:
                 db.update_goal_status(conn, goal_id, "proved")
-                # OR parallelism: sibling strategies of this goal lose;
-                # mark them superseded so their orphan sub-goals stop
-                # being dispatched (open_goals filter).
+                # Defensive: mark any other live strategies on this goal
+                # 'superseded'. Under F37 OR=1 this is rare (typically only
+                # the winner is alive), but cascade timing can briefly
+                # leave a stale 'proposed' sibling.
                 db.mark_other_strategies_superseded(
                     conn, goal_id=goal_id, winner_id=int(target_id),
                 )
@@ -399,35 +416,30 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
 # ---------------------------------------------------------------------
 
 def bfs_refill(conn: sqlite3.Connection,
-               running: set[tuple[str, str, str]],
-               *, or_fanout: int = OR_FANOUT_DEFAULT) -> None:
+               running: set[tuple[str, str]]) -> None:
     """Enqueue dispatchable tasks. `running` is the in-memory live set
-    (target_id, kind, pipeline_id) of pipelines currently executing in
-    this daemon — pipeline_id makes each entry unique under OR parallelism
-    (multiple Backwards on the same goal). Daemon crash → set vanishes;
-    pipelines table only holds finished rows so restart is clean.
-
-    OR parallelism: per (goal, Backward) pair we allow up to `or_fanout`
-    concurrent attempts (running + queued). Builder/Verify keep cap=1.
+    of (target_id, kind) pairs currently executing in this daemon. F37
+    passive trigger: cap = 1 per (target_id, kind) — a goal has at most
+    one Builder OR one Backward in flight at a time, and a strategy at
+    most one Verify. Daemon crash → set vanishes; pipelines table only
+    holds finished rows so restart is clean.
     """
     def in_flight(tid: str, kind: str) -> int:
-        running_n = sum(1 for (t, k, _) in running if t == tid and k == kind)
+        running_n = 1 if (tid, kind) in running else 0
         return running_n + db.queue_count(conn, target_id=tid, kind=kind)
 
-    # Strategies with all sub-goals proved → enqueue Verify (cap 1)
+    # Strategies with all sub-goals proved → enqueue Verify
     for s in db.strategies_ready_for_verify(conn):
         sid = str(s["id"])
         if in_flight(sid, "Verify") == 0:
             db.enqueue(conn, kind="Verify", target_id=sid, priority=10)
 
-    # Open goals → fill up to per-kind cap
+    # Open goals → enqueue if no in-flight or queued attempt exists
     for g in db.open_goals(conn):
         gid = str(g["id"])
         kind = next_worker_kind(g)
-        cap = or_fanout if kind == "Backward" else 1
-        slots = cap - in_flight(gid, kind)
-        priority = 5 if kind == "Builder" else 2
-        for _ in range(max(0, slots)):
+        if in_flight(gid, kind) == 0:
+            priority = 5 if kind == "Builder" else 2
             db.enqueue(conn, kind=kind, target_id=gid, priority=priority)
 
 
@@ -533,8 +545,6 @@ def run(workspace: Path, *, once: bool = False) -> int:
     global BUILDER_THRESHOLD, SHELVE_THRESHOLD
     pool_size = int(os.environ.get("ASTERISM_POOL", "4"))
     budget_sec = int(os.environ.get("ASTERISM_BUDGET_SEC", "1800"))
-    or_fanout = int(os.environ.get("ASTERISM_OR_FANOUT",
-                                   str(OR_FANOUT_DEFAULT)))
     b_default, s_default = _model_aware_thresholds()
     BUILDER_THRESHOLD = int(os.environ.get(
         "ASTERISM_BUILDER_THRESHOLD", str(b_default)))
@@ -549,11 +559,11 @@ def run(workspace: Path, *, once: bool = False) -> int:
             f"the goal shelves before any Backward attempt fires.")
     pool = ThreadPoolExecutor(max_workers=pool_size)
     futures: dict[Future, tuple[str, str, str, str]] = {}
-    # In-memory live set of (target_id, kind, pipeline_id) currently executing
-    # in this daemon. Including pipeline_id keeps multiple Backwards on the
-    # same goal as distinct entries (OR parallelism). Daemon crash → set
-    # vanishes → restart sees clean slate.
-    running: set[tuple[str, str, str]] = set()
+    # In-memory live set of (target_id, kind) pairs currently executing in
+    # this daemon. F37 passive trigger means at most one of each kind per
+    # target, so the pair is a unique key. Daemon crash → set vanishes →
+    # restart sees clean slate.
+    running: set[tuple[str, str]] = set()
 
     conn = db.connect()
     manifests: dict[str, manifest.Manifest] = {}
@@ -573,7 +583,7 @@ def run(workspace: Path, *, once: bool = False) -> int:
             for fut in done:
                 meta = futures.pop(fut)
                 # meta = (pipeline_id, kind, target_id, target_kind)
-                running.discard((meta[2], meta[1], meta[0]))
+                running.discard((meta[2], meta[1]))
                 try:
                     pid, kind, tid, tk, outcome = fut.result()
                     cascade_one(conn, pipeline_id=pid, kind=kind,
@@ -601,21 +611,23 @@ def run(workspace: Path, *, once: bool = False) -> int:
             return 0
 
         # Refill queue (uses in-memory `running` for dedup)
-        bfs_refill(conn, running, or_fanout=or_fanout)
+        bfs_refill(conn, running)
 
-        # Spawn from queue while pool has slots. No (target_id, kind)
-        # dedup here — bfs_refill is cap-aware (running + queue) and
-        # OR-parallel Backwards intentionally allow multiple in flight
-        # per goal.
+        # Spawn from queue while pool has slots. F37: skip if a pipeline
+        # of the same (target_id, kind) is already in flight in this
+        # daemon — bfs_refill caps at 1 but daemon recovery + race
+        # corners mean defense-in-depth here is cheap.
         while len(futures) < pool_size:
             row = db.pop_queue(conn)
             if row is None:
                 break
             target_id = str(row["target_id"])
             kind = str(row["kind"])
+            if (target_id, kind) in running:
+                continue
             target_kind = "Strategy" if kind == "Verify" else "Goal"
             pipeline_id = agent.new_pipeline_id()
-            running.add((target_id, kind, pipeline_id))
+            running.add((target_id, kind))
             fut = pool.submit(_run_pipeline, workspace, manifests,
                               kind, target_id, target_kind, pipeline_id)
             futures[fut] = (pipeline_id, kind, target_id, target_kind)
