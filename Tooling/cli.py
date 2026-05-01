@@ -1,10 +1,12 @@
-"""CLI: asterism init <p> | asterism run [--once].
+"""CLI: asterism init <p> | asterism run [--once] | asterism reset <p>
+       | asterism status <p> [--json] | asterism prune [<p>] [--dry-run].
 
 See architecture.md §9.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -231,6 +233,229 @@ def cmd_run(args: argparse.Namespace) -> int:
             pass
 
 
+def cmd_reset(args: argparse.Namespace) -> int:
+    """Wipe one Problem's DB rows + on-disk proof files + Root.lean back
+    to sorry-stub form. Manifest.md / Defs.lean / lean files outside
+    `Problems/<p>/proofs/` untouched. Idempotent — running on a clean
+    Problem yields the same `OK` output without errors.
+
+    Does NOT touch `.attempts/` (per-pipeline ephemeral state, possibly
+    in-flight when other Problems are running). If the problem's daemon
+    is dead, the operator can `rm -rf .attempts/` separately.
+
+    Refuses to reset if no Manifest.md exists (signals user typo).
+    """
+    workspace = Path.cwd()
+    problem = args.problem
+    pdir = workspace / "Problems" / problem
+    if not pdir.exists():
+        print(f"FAIL: Problems/{problem}/ not found", file=sys.stderr)
+        return 1
+    mfst_path = pdir / "Manifest.md"
+    if not mfst_path.exists():
+        print(f"FAIL: {mfst_path} not found", file=sys.stderr)
+        return 1
+
+    conn = db.connect()
+    db.init_schema(conn)
+    conn.execute("PRAGMA foreign_keys = ON")
+
+    gids = [r[0] for r in conn.execute(
+        "SELECT id FROM goals WHERE problem = ?", (problem,)).fetchall()]
+    sids: list[int] = []
+    if gids:
+        ph = ",".join("?" * len(gids))
+        sids = [r[0] for r in conn.execute(
+            f"SELECT id FROM strategies WHERE goal_id IN ({ph})",
+            gids).fetchall()]
+
+    # Delete in FK-safe order: leaf tables first.
+    if sids:
+        ph = ",".join("?" * len(sids))
+        conn.execute(
+            f"DELETE FROM strategy_subgoals WHERE strategy_id IN ({ph})",
+            sids)
+        conn.execute(
+            f"DELETE FROM dead_attempts WHERE target_kind='Strategy' "
+            f"AND target_id IN ({ph})", sids)
+        conn.execute(
+            f"DELETE FROM queue WHERE kind='Verify' AND target_id IN ({ph})",
+            [str(s) for s in sids])
+        conn.execute(f"DELETE FROM strategies WHERE id IN ({ph})", sids)
+    if gids:
+        ph = ",".join("?" * len(gids))
+        conn.execute(
+            f"DELETE FROM dead_attempts WHERE target_kind='Goal' "
+            f"AND target_id IN ({ph})", gids)
+        conn.execute(
+            f"DELETE FROM queue WHERE kind!='Verify' AND target_id IN ({ph})",
+            [str(g) for g in gids])
+        conn.execute(f"DELETE FROM goals WHERE id IN ({ph})", gids)
+    conn.execute("DELETE FROM problems WHERE name = ?", (problem,))
+    conn.commit()
+
+    # Filesystem cleanup. Only inside Problems/<p>/proofs/, never higher.
+    proofs_dir = pdir / "proofs"
+    deleted_files: list[str] = []
+    if proofs_dir.exists():
+        for pattern in ("L_*.lean", "_strategy_*.lean"):
+            for f in proofs_dir.glob(pattern):
+                try:
+                    f.unlink()
+                    deleted_files.append(f.name)
+                except OSError:
+                    pass
+
+    # Restore Root.lean to sorry stub (same template as cmd_init).
+    mfst = manifest.parse(mfst_path)
+    root_lean = pdir / "Root.lean"
+    if mfst.statement:
+        defs_import = (
+            f"import Problems.{problem}.Defs\n"
+            if (pdir / "Defs.lean").exists() else ""
+        )
+        root_lean.write_text(
+            f"import Mathlib\n{defs_import}\n"
+            f"namespace Problems.{problem}\n\n"
+            f"theorem main : {mfst.statement} := by sorry\n\n"
+            f"end Problems.{problem}\n",
+            encoding="utf-8",
+        )
+
+    print(f"OK: reset {problem}")
+    print(f"  DB rows: {len(gids)} goals, {len(sids)} strategies cleared")
+    print(f"  Files: {len(deleted_files)} proof file(s) removed; Root.lean reset")
+    attempts_dir = workspace / ".attempts"
+    if attempts_dir.exists():
+        att_n = sum(1 for _ in attempts_dir.iterdir())
+        if att_n:
+            print(f"  Note: .attempts/ has {att_n} dir(s) — untouched. "
+                  f"Kill any running daemon then `rm -rf .attempts/` for "
+                  f"full cleanup.")
+    return 0
+
+
+def _status_payload(conn, problem: str) -> dict:
+    """Pure data: collect status info for one problem. Shared between
+    text and --json output paths so both see the same shape."""
+    goals = [dict(r) for r in conn.execute(
+        "SELECT id, slug, status, attempts, depth FROM goals "
+        "WHERE problem = ? ORDER BY id", (problem,)).fetchall()]
+    if not goals:
+        return {"problem": problem, "exists": False}
+
+    gids = [g["id"] for g in goals]
+    ph_g = ",".join("?" * len(gids))
+    strategies = [dict(r) for r in conn.execute(
+        f"SELECT id, goal_id, status FROM strategies "
+        f"WHERE goal_id IN ({ph_g}) ORDER BY id", gids).fetchall()]
+    sids = [s["id"] for s in strategies]
+
+    # Recent dead_attempts targeting this problem's goals or strategies.
+    deads = []
+    if gids and sids:
+        ph_s = ",".join("?" * len(sids))
+        deads = [dict(r) for r in conn.execute(
+            f"SELECT id, target_kind, target_id, failure_reason, ts "
+            f"FROM dead_attempts "
+            f"WHERE (target_kind='Goal' AND target_id IN ({ph_g})) "
+            f"   OR (target_kind='Strategy' AND target_id IN ({ph_s})) "
+            f"ORDER BY id DESC LIMIT 50",
+            list(gids) + list(sids)).fetchall()]
+    elif gids:
+        deads = [dict(r) for r in conn.execute(
+            f"SELECT id, target_kind, target_id, failure_reason, ts "
+            f"FROM dead_attempts "
+            f"WHERE target_kind='Goal' AND target_id IN ({ph_g}) "
+            f"ORDER BY id DESC LIMIT 50", gids).fetchall()]
+
+    fr_counts: dict[str, int] = {}
+    for d in deads:
+        fr_counts[d["failure_reason"]] = fr_counts.get(
+            d["failure_reason"], 0) + 1
+
+    # Recent pipelines (filtered to this problem). pipelines.target_id is TEXT,
+    # so compare against str() of our int ids.
+    gid_strs = {str(g) for g in gids}
+    sid_strs = {str(s) for s in sids}
+    pipes_recent = [dict(r) for r in conn.execute(
+        "SELECT id, kind, target_id, target_kind, status, outcome, "
+        "started_at, finished_at FROM pipelines "
+        "ORDER BY finished_at DESC LIMIT 50").fetchall()]
+    pipes_recent = [
+        p for p in pipes_recent
+        if (p["target_kind"] == "Goal" and p["target_id"] in gid_strs)
+        or (p["target_kind"] == "Strategy" and p["target_id"] in sid_strs)
+    ][:10]
+
+    queue_count = conn.execute(
+        f"SELECT count(*) FROM queue "
+        f"WHERE (kind!='Verify' AND target_id IN ({ph_g}))"
+        + (f" OR (kind='Verify' AND target_id IN ({','.join('?'*len(sids))}))"
+           if sids else ""),
+        list(map(str, gids)) + list(map(str, sids)),
+    ).fetchone()[0] if gids else 0
+
+    return {
+        "problem": problem,
+        "exists": True,
+        "goals": goals,
+        "strategies": strategies,
+        "live_strategies_count": sum(
+            1 for s in strategies if s["status"] == "proposed"),
+        "queue_count": queue_count,
+        "recent_failure_reasons": fr_counts,
+        "recent_pipelines": pipes_recent,
+        "dead_attempts_window": len(deads),
+    }
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    """Show one Problem's current state: goal table, live strategies,
+    queue depth, recent dead_attempts grouped by failure_reason, recent
+    pipelines. Replaces the ad-hoc `python -c 'import sqlite3; ...'`
+    one-liners. `--json` emits the same data structure for piping."""
+    conn = db.connect()
+    db.init_schema(conn)
+    payload = _status_payload(conn, args.problem)
+
+    if args.json:
+        print(json.dumps(payload, indent=2, default=str))
+        return 0 if payload.get("exists") else 1
+
+    if not payload.get("exists"):
+        print(f"problem '{args.problem}' not initialized "
+              f"(run `asterism init {args.problem}`)")
+        return 1
+
+    print(f"=== {payload['problem']} ===")
+    print(f"\nGoals ({len(payload['goals'])}):")
+    for g in payload["goals"]:
+        print(f"  [{g['id']:>3}] depth={g['depth']} {g['status']:<11}"
+              f" attempts={g['attempts']} {g['slug']}")
+    print(f"\nLive strategies: {payload['live_strategies_count']} "
+          f"of {len(payload['strategies'])} total")
+    for s in payload["strategies"]:
+        if s["status"] == "proposed":
+            print(f"  [{s['id']:>3}] goal={s['goal_id']} {s['status']}")
+    print(f"\nQueue depth: {payload['queue_count']}")
+
+    fr = payload["recent_failure_reasons"]
+    if fr:
+        print(f"\nFailure reasons (last {payload['dead_attempts_window']} "
+              f"dead_attempts):")
+        for reason, count in sorted(fr.items(), key=lambda x: -x[1]):
+            print(f"  {count:>3}  {reason}")
+
+    pipes = payload["recent_pipelines"]
+    if pipes:
+        print(f"\nRecent pipelines (last {len(pipes)}):")
+        for p in pipes:
+            print(f"  {p['kind']:<8} {p['target_kind']}={p['target_id']:<3}"
+                  f" {p['status']:<10} {p['outcome']}")
+    return 0
+
+
 def cmd_prune(args: argparse.Namespace) -> int:
     """Manual fallback: GC orphan lean files in proofs/. Auto-invoked by
     `run` on success; this CLI exists for partial state (user killed
@@ -279,6 +504,24 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--once", action="store_true",
                        help="exit when queue empties")
     p_run.set_defaults(func=cmd_run)
+
+    p_reset = sub.add_parser(
+        "reset",
+        help="wipe a Problem's DB rows + proof files + Root.lean stub",
+    )
+    p_reset.add_argument("problem", help="problem name")
+    p_reset.set_defaults(func=cmd_reset)
+
+    p_status = sub.add_parser(
+        "status",
+        help="show goals / strategies / dead_attempts / pipelines for a Problem",
+    )
+    p_status.add_argument("problem", help="problem name")
+    p_status.add_argument(
+        "--json", action="store_true",
+        help="emit JSON instead of human-readable text",
+    )
+    p_status.set_defaults(func=cmd_status)
 
     p_prune = sub.add_parser(
         "prune",
