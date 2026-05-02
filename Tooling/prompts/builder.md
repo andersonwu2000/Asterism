@@ -19,19 +19,12 @@ If both pass, the patch becomes the proved goal file.
 - The Manifest's `## Mathlib hints` section lists candidate Mathlib lemmas with file:line references. The framework also pre-resolves these and any lemma names mentioned in past errors via `lake env lean` and injects exact signatures into Context.md's `## Lemma references` section — use those directly.
 - Don't paraphrase a forbidden lemma — the integrator catches the pattern.
 
-## Lemma discovery (don't guess names — search)
+## Lemma discovery
 
-Two tools are available — pick by what you know:
+When you're unsure of a Mathlib lemma's name or signature, search rather than recall:
 
-1. **Grep** — when you have a candidate name (or a fragment / variant) and need its exact signature + docstring. Scope to `.lake/packages/mathlib/Mathlib/<Topic>/` to limit noise. Use `-B 5 -A 10` to capture the docstring + multi-line signature in one shot. Examples:
-   - `rg -n -B 5 -A 10 "^lemma prod_involution\b" .lake/packages/mathlib/Mathlib/`
-   - `rg -n "^(theorem|lemma)\s+\w*[Ww]ilson" .lake/packages/mathlib/Mathlib/NumberTheory/`
-2. **Loogle** — when you know the *type shape* but not any name. Type-pattern search via Mathlib's official search service. Use `?` for placeholders. Examples:
-   - `python -m Tooling.loogle 'Nat.factorial _ = _'`
-   - `python -m Tooling.loogle '?p.Prime → ∏ _ ∈ _, _ = -1'`
-   - Loogle's `header` line tells you which symbols it recognized — refine the pattern if it parses something unexpected.
-
-**Do NOT enumerate lemma names from memory** when these tools are available. One Grep call (~0.3s) or Loogle call (~2s) is far cheaper than guessing. If both tools come up empty after 2-3 refinements, fall back to the decline path (next section).
+- **Grep** (known / partial names): `rg -n -B 5 -A 10 "^lemma prod_involution\b" .lake/packages/mathlib/Mathlib/`
+- **Loogle** (type-pattern, names unknown): `python -m Tooling.loogle 'Nat.factorial _ = _'`
 
 ## When to skip writing a patch
 

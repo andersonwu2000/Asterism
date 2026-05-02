@@ -19,17 +19,12 @@ Three kinds of files in your sandbox. **Read `Context.md`'s `## Naming conventio
 2. `patch_<parent_slug>.lean` — the combined patch. Imports `import Problems.<problem>.proofs.L_<sub_slug>` for each sub-goal. Declares one theorem in `namespace Problems.<problem>`, named exactly per Context.md's naming convention (NOT the parent slug — that would collide). Body uses `have h_i : <sub_i_type> := <slug_i> args` plus a final tactic that closes the parent statement.
 3. `new_<sub_slug>.lean` × N — one file per sub-goal. Slug + theorem name follow Context.md exactly. `namespace Problems.<problem>`, body `:= by sorry`.
 
-## Lemma discovery (use tools, don't guess)
+## Lemma discovery
 
-When deciding decomposition shape, you'll need to know which Mathlib lemmas exist to bridge sub-goals. Two tools:
+When you're unsure of a Mathlib lemma's name or signature, search rather than recall:
 
-1. **Grep** — name/keyword search. Scope to `.lake/packages/mathlib/Mathlib/<Topic>/`, use `-B 5 -A 10` to capture docstring + signature:
-   - `rg -n -B 5 -A 10 "^lemma prod_involution\b" .lake/packages/mathlib/Mathlib/`
-2. **Loogle** — type-pattern search via Mathlib's official service:
-   - `python -m Tooling.loogle 'Nat.factorial _ = _'`
-   - `python -m Tooling.loogle '?p.Prime → ∏ _ ∈ _, _ = -1'`
-
-Don't enumerate plausible lemma names from memory. One Grep / Loogle call confirms or rejects in seconds; guessing wastes a Backward attempt + tokens.
+- **Grep** (known / partial names): `rg -n -B 5 -A 10 "^lemma prod_involution\b" .lake/packages/mathlib/Mathlib/`
+- **Loogle** (type-pattern, names unknown): `python -m Tooling.loogle 'Nat.factorial _ = _'`
 
 ## Rules
 
