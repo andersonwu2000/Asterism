@@ -345,6 +345,122 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
 # Verify (Strategy)
 # ---------------------------------------------------------------------
 
+def _verify_patch_retry(
+    conn: sqlite3.Connection, *,
+    workspace: Path, pipeline_id: str,
+    strategy: sqlite3.Row,
+    scratch_abs: Path,
+    lake_err: str,
+) -> tuple[bool, str | None]:
+    """F41 — one-shot LLM repair when scratch lake_build failed.
+
+    Common Verify failure pattern: every sub-goal proves individually
+    (lake build OK in isolation), but the strategy combination patch
+    fails to elaborate due to implicit-arg / typeclass drift between
+    what the patch expected and what the sub-goals actually expose.
+    Default cascade response is to mark strategy dead, increment the
+    parent goal's attempts, and let Backward re-decompose — re-proving
+    every sub-goal from scratch. Expensive.
+
+    This helper intercepts: snapshot the original patch, ask the LLM
+    once to rewrite ONLY the strategy's tactic block (sub-goals stay
+    untouched), re-build. On success we return (True, None) and the
+    caller proceeds to Step 2 (parent rewrite). On failure (rc!=0,
+    no patch.lean, or lake still rejects) we restore the original
+    patch and return (False, new_err) so the caller can drop into
+    the standard failure path with no behavior change.
+
+    Off via `ASTERISM_VERIFY_RETRY=0`. Default on.
+    """
+    if os.environ.get("ASTERISM_VERIFY_RETRY", "1") == "0":
+        return False, None
+
+    backup = scratch_abs.with_suffix(scratch_abs.suffix + ".verify_retry_backup")
+    shutil.copy2(scratch_abs, backup)
+
+    # Reuse the existing pipeline's attempts dir (created by WorkArea
+    # in dispatcher) — the original Verify pipeline doesn't write
+    # anything into it, so it's empty and safe to populate.
+    attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
+
+    # Pull each sub-goal's lean file content so the LLM sees the
+    # actual proved signatures + bodies. Order by strategy_subgoals
+    # position to match how the patch references them.
+    sub_rows = conn.execute(
+        "SELECT g.lean_path, g.slug FROM strategy_subgoals ss "
+        "JOIN goals g ON g.id = ss.subgoal_id "
+        "WHERE ss.strategy_id = ? ORDER BY ss.position",
+        (int(strategy["id"]),),
+    ).fetchall()
+
+    parts: list[str] = [
+        f"# Verify retry — strategy s{strategy['id']}",
+        "",
+        "The strategy patch failed to elaborate against the now-real "
+        "sub-goal proofs. Rewrite the strategy patch so the elaboration "
+        "goes through. Do NOT modify the sub-goal proofs.",
+        "",
+        "## Original strategy patch (failed Verify)",
+        "",
+        "```lean",
+        scratch_abs.read_text(encoding="utf-8"),
+        "```",
+        "",
+        "## Sub-goal proofs (correct, signatures fixed)",
+        "",
+    ]
+    for r in sub_rows:
+        path = workspace / r["lean_path"]
+        if not path.exists():
+            continue
+        parts.append(f"### `{path.name}` (slug `{r['slug']}`)")
+        parts.append("")
+        parts.append("```lean")
+        parts.append(path.read_text(encoding="utf-8"))
+        parts.append("```")
+        parts.append("")
+    parts.append("## Verify lake stderr (the failure to fix)")
+    parts.append("")
+    parts.append("```")
+    parts.append(diagnostics.smart_truncate_stderr(lake_err))
+    parts.append("```")
+    parts.append("")
+    (attempts_dir / "Context.md").write_text(
+        "\n".join(parts), encoding="utf-8")
+
+    # Spawn LLM. Use kind='builder' so it picks up the Builder model
+    # tier (cheap-LLM is fine for a tactic-block rewrite). Cold spawn
+    # — no F33 session, no retry context.
+    rc = agent.spawn_llm(
+        kind="builder",
+        prompt_path=PROMPT_DIR / "verify_retry.md",
+        problem_dir=workspace / "Problems" / strategy["goal_problem"],
+        attempts_dir=attempts_dir,
+        session_id=None,
+        is_retry=False,
+        retry_context=None,
+    )
+    if rc != 0:
+        shutil.copy2(backup, scratch_abs)
+        backup.unlink()
+        return False, None
+
+    new_patch = attempts_dir / "patch.lean"
+    if not new_patch.exists():
+        shutil.copy2(backup, scratch_abs)
+        backup.unlink()
+        return False, None
+
+    shutil.copy2(new_patch, scratch_abs)
+    ok, new_err = _lake_build(workspace, scratch_abs)
+    if ok:
+        backup.unlink()
+        return True, None
+    shutil.copy2(backup, scratch_abs)
+    backup.unlink()
+    return False, new_err
+
+
 def run_verify(conn: sqlite3.Connection, *, strategy_id: int,
                workspace: Path, mfst: manifest.Manifest,
                pipeline_id: str) -> PipelineResult:
@@ -388,11 +504,27 @@ def run_verify(conn: sqlite3.Connection, *, strategy_id: int,
     # Step 1: re-build scratch against now-real sub-goal proofs.
     ok, err = _lake_build(workspace, scratch_abs)
     if not ok:
-        return PipelineResult(
-            outcome="failed", failure_reason="lake_build_error",
-            failure_detail=diagnostics.annotate_failure_detail(
-                f"scratch: {err}"),
+        # F41 — try one LLM-driven repair before giving up. Common
+        # failure mode is type-drift (sub-goals individually OK but
+        # combined patch elaboration fails); cheap retry can fix
+        # without losing the sub-goal proofs.
+        retry_ok, retry_err = _verify_patch_retry(
+            conn, workspace=workspace, pipeline_id=pipeline_id,
+            strategy=s, scratch_abs=scratch_abs, lake_err=err,
         )
+        if retry_ok:
+            print(f"[verify_retry] strategy=s{strategy_id} succeeded",
+                  flush=True)
+            ok, err = True, ""  # fall through to Step 2
+        else:
+            if retry_err is not None:
+                print(f"[verify_retry] strategy=s{strategy_id} attempted "
+                      f"but lake still rejects", flush=True)
+            return PipelineResult(
+                outcome="failed", failure_reason="lake_build_error",
+                failure_detail=diagnostics.annotate_failure_detail(
+                    f"scratch: {err}"),
+            )
 
     # Step 2: rewrite parent's lean_path to alias from scratch.
     parent_abs = workspace / s["lean_path"]
