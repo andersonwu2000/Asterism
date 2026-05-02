@@ -109,11 +109,21 @@ def winning_chain(conn: sqlite3.Connection, problem: str) -> set[str]:
             return
         visited.add(goal_id)
         goal = conn.execute(
-            "SELECT lean_path FROM goals WHERE id = ?", (goal_id,),
+            "SELECT lean_path, alias_target_id FROM goals WHERE id = ?",
+            (goal_id,),
         ).fetchone()
         if goal is None:
             return
         keep.add(goal["lean_path"])
+
+        # F42 — alias goals' lean files import their canonical's file.
+        # Walk into the canonical so its lean_path stays in `keep` even
+        # when the canonical is an orphan from a dead/superseded
+        # strategy. Visited-set prevents loops; chain stays flat in
+        # practice (insertion never aliases to an alias — see dedupe
+        # _eligible_orphan_subgoals filter).
+        if goal["alias_target_id"] is not None:
+            walk(int(goal["alias_target_id"]))
 
         # A proved goal is closed either by Builder (no succeeded strategy)
         # or by a single 'succeeded' Strategy. Recurse only into the latter.

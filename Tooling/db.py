@@ -44,6 +44,14 @@ CREATE TABLE IF NOT EXISTS goals (
     -- cleared on timeout (rc=124), stale-session fallback (rc=125), or
     -- when Builder threshold reached (next dispatch is Backward).
     builder_session_id TEXT NULL DEFAULT NULL,
+    -- F42 — when this goal is an alias (its lean file's proof body
+    -- delegates to another goal via `apply <canonical_slug> <;>
+    -- assumption`), `alias_target_id` points at that canonical goal.
+    -- prune.is_retained treats a goal as retained if any alive goal
+    -- aliases to it, so an orphan (status='proved' under a dead/
+    -- superseded strategy) survives long enough for the eventual root
+    -- lake build to find its file. NULL for non-alias goals.
+    alias_target_id INTEGER NULL DEFAULT NULL REFERENCES goals(id),
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     UNIQUE(problem, slug)
@@ -139,14 +147,19 @@ def init_schema(conn: sqlite3.Connection) -> None:
     # NOT EXISTS is a no-op when the table is already present, so a
     # blind ALTER TABLE is needed to backfill the column. Idempotent
     # via "duplicate column name" detection.
-    try:
-        conn.execute(
-            "ALTER TABLE goals ADD COLUMN builder_session_id TEXT NULL"
-            " DEFAULT NULL"
-        )
-    except sqlite3.OperationalError as e:
-        if "duplicate column name" not in str(e).lower():
-            raise
+    for col, ddl in (
+        ("builder_session_id",  # F33
+         "ALTER TABLE goals ADD COLUMN builder_session_id TEXT NULL"
+         " DEFAULT NULL"),
+        ("alias_target_id",     # F42
+         "ALTER TABLE goals ADD COLUMN alias_target_id INTEGER NULL"
+         " DEFAULT NULL REFERENCES goals(id)"),
+    ):
+        try:
+            conn.execute(ddl)
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
     conn.commit()
 
 
@@ -174,6 +187,30 @@ def get_goal(conn: sqlite3.Connection, goal_id: int) -> sqlite3.Row | None:
     return conn.execute(
         "SELECT * FROM goals WHERE id = ?", (goal_id,)
     ).fetchone()
+
+
+def set_alias_target(conn: sqlite3.Connection, goal_id: int,
+                     target_id: int) -> None:
+    """F42 — record that `goal_id` is an alias whose proof delegates
+    to `target_id`'s file. The alias chain stays flat: if `target_id`
+    is itself an alias, its own alias_target_id is followed transparently
+    by the caller before passing in (see _resolve_alias_root in dedupe)."""
+    conn.execute(
+        "UPDATE goals SET alias_target_id = ?, updated_at = ?"
+        " WHERE id = ?",
+        (target_id, now(), goal_id),
+    )
+    conn.commit()
+
+
+def aliases_pointing_at(conn: sqlite3.Connection,
+                        target_id: int) -> list[int]:
+    """F42 — return ids of every goal whose alias_target_id == target_id.
+    Used by prune.is_retained to keep an orphan canonical alive while
+    any live goal aliases to it."""
+    return [int(r["id"]) for r in conn.execute(
+        "SELECT id FROM goals WHERE alias_target_id = ?", (target_id,)
+    ).fetchall()]
 
 
 def update_goal_status(conn: sqlite3.Connection, goal_id: int,

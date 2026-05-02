@@ -489,6 +489,143 @@ def test_batch_isdefeq_unknown_failure_pattern_rejects_all(
     assert result == [False]
 
 
+# ---------------------------------------------------------------------
+# F42 — cross-strategy orphan reuse
+# ---------------------------------------------------------------------
+
+def test_orphan_pool_includes_proved_subs_of_dead_strategies(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """A proved sub-goal whose owning strategy has died is still
+    considered as a canonical for new candidates on the same parent.
+    Pre-F42 this orphan was invisible (alive walk excluded it)."""
+    _seed_problem(conn)
+    root = _seed_root(conn, statement="ROOT")
+    parent = _seed_sub(conn, slug="parent", statement="PARENT")
+    _link(conn, root, [parent])
+    # First strategy on `parent` produced 2 sub-goals; one proved, then
+    # the strategy died (e.g. another sub shelved → cascade).
+    orphan_proved = _seed_sub(
+        conn, slug="orph_a", statement="X", depth=2, status="proved")
+    orphan_other = _seed_sub(
+        conn, slug="orph_b", statement="Y", depth=2)
+    s_dead = _link(conn, parent, [orphan_proved, orphan_other],
+                   status="dead")
+    _write_lean(tmp_path, "p", "orph_a",
+        "import Mathlib\ntheorem orph_a : X := by trivial\n")
+    _write_lean(tmp_path, "p", "orph_b",
+        "import Mathlib\ntheorem orph_b : Y := by sorry\n")
+
+    pool = dedupe._eligible_orphan_subgoals(
+        conn, tmp_path, problem="p",
+        parent_goal_id=parent, candidate_count=10,
+    )
+    ids = [r[0]["id"] for r in pool]
+    assert orphan_proved in ids
+    # Orphan sub that was never proved isn't a useful canonical
+    assert orphan_other not in ids
+
+
+def test_orphan_pool_excludes_already_alias_goals(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """An orphan that's itself an alias (alias_target_id IS NOT NULL)
+    is excluded — we don't want to chain alias→alias→concrete (lifetime
+    reasoning gets murky and the file already imports the real
+    canonical, so adding another hop wastes a build edge)."""
+    _seed_problem(conn)
+    root = _seed_root(conn, statement="ROOT")
+    parent = _seed_sub(conn, slug="parent", statement="PARENT")
+    _link(conn, root, [parent])
+    real = _seed_sub(conn, slug="real", statement="X", depth=2,
+                     status="proved")
+    alias = _seed_sub(conn, slug="alias_g", statement="X", depth=2,
+                      status="proved")
+    db.set_alias_target(conn, alias, real)
+    _link(conn, parent, [real, alias], status="dead")
+    _write_lean(tmp_path, "p", "real",
+        "import Mathlib\ntheorem real : X := by trivial\n")
+    _write_lean(tmp_path, "p", "alias_g",
+        "import Mathlib\ntheorem alias_g : X := by apply real\n")
+
+    ids = [r[0]["id"] for r in dedupe._eligible_orphan_subgoals(
+        conn, tmp_path, problem="p",
+        parent_goal_id=parent, candidate_count=10,
+    )]
+    assert real in ids
+    assert alias not in ids
+
+
+def test_orphan_pool_filters_by_binder_count(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Same binder rule applies to orphans as to ancestors."""
+    _seed_problem(conn)
+    root = _seed_root(conn, statement="ROOT")
+    parent = _seed_sub(conn, slug="parent", statement="PARENT")
+    _link(conn, root, [parent])
+    o = _seed_sub(conn, slug="orph", statement="X", depth=2,
+                  status="proved")
+    _link(conn, parent, [o], status="dead")
+    _write_lean(tmp_path, "p", "orph",
+        "import Mathlib\nnamespace P\n"
+        "theorem orph (a : T) (b : T) (c : T) (d : T) (e : T) : X := by sorry\n"
+        "end P\n")
+    # Candidate has 3 binders → orphan (5) excluded
+    p3 = dedupe._eligible_orphan_subgoals(
+        conn, tmp_path, problem="p",
+        parent_goal_id=parent, candidate_count=3,
+    )
+    assert o not in [r[0]["id"] for r in p3]
+    # Candidate has 6 binders → orphan eligible
+    p6 = dedupe._eligible_orphan_subgoals(
+        conn, tmp_path, problem="p",
+        parent_goal_id=parent, candidate_count=6,
+    )
+    assert o in [r[0]["id"] for r in p6]
+
+
+def test_orphan_pool_excludes_unrelated_parents(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Only orphans whose owning strategy targeted THIS parent are in
+    the pool. Don't pull in proved goals from unrelated branches."""
+    _seed_problem(conn)
+    root = _seed_root(conn, statement="ROOT")
+    parent_a = _seed_sub(conn, slug="parent_a", statement="A")
+    parent_b = _seed_sub(conn, slug="parent_b", statement="B")
+    _link(conn, root, [parent_a, parent_b])
+    # Orphan from parent_b's dead strategy
+    orphan_b = _seed_sub(conn, slug="orph_b", statement="X", depth=2,
+                         status="proved")
+    _link(conn, parent_b, [orphan_b], status="dead")
+    _write_lean(tmp_path, "p", "orph_b",
+        "import Mathlib\ntheorem orph_b : X := by trivial\n")
+
+    pool = dedupe._eligible_orphan_subgoals(
+        conn, tmp_path, problem="p",
+        parent_goal_id=parent_a, candidate_count=10,
+    )
+    assert orphan_b not in [r[0]["id"] for r in pool]
+
+
+def test_db_set_alias_target_and_lookup(conn: sqlite3.Connection) -> None:
+    """Round-trip on the new column + the helper that prune uses."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    canon = _seed_sub(conn, slug="canon", statement="X", status="proved")
+    alias = _seed_sub(conn, slug="alias_g", statement="X", status="proved")
+    db.set_alias_target(conn, alias, canon)
+    g = db.get_goal(conn, alias)
+    assert g["alias_target_id"] == canon
+    assert db.aliases_pointing_at(conn, canon) == [alias]
+    assert db.aliases_pointing_at(conn, root) == []
+
+
+# ---------------------------------------------------------------------
+# Original real-lake integration test
+# ---------------------------------------------------------------------
+
 @pytest.mark.skipif(shutil.which("lake") is None,
                     reason="requires lake CLI on PATH")
 def test_batch_isdefeq_real_lake(tmp_path: Path) -> None:

@@ -326,3 +326,72 @@ def test_reconcile_skips_goals_proved_by_builder(
     _seed_root(conn)  # root proved, but no strategy
     repaired = prune.reconcile_proved_goals(conn, tmp_path, "p")
     assert repaired == []
+
+
+# ---------------------------------------------------------------------
+# F42 — winning_chain follows alias_target_id so orphan canonicals stay
+# ---------------------------------------------------------------------
+
+def test_winning_chain_keeps_alias_canonical(
+    conn: sqlite3.Connection,
+) -> None:
+    """An alive alias's lean file imports its canonical's lean file.
+    winning_chain must include the canonical so prune doesn't delete
+    its file (the alias's lake build would then break)."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    win = _seed_strategy(conn, goal_id=root, sid_label="s1")
+    # The winner's sub is itself an alias to an orphan canonical
+    alias = _seed_subgoal(conn, problem="p", slug="s1_sub_alias")
+    db.link_subgoal(conn, strategy_id=win, subgoal_id=alias, position=0)
+
+    # Orphan canonical from a prior dead strategy on a different parent
+    other_parent = db.insert_goal(
+        conn, problem="p", slug="other_parent",
+        lean_path="Problems/p/proofs/L_other_parent.lean",
+        statement="P", origin="backward", difficulty=3, depth=1,
+    )
+    s_dead = db.insert_strategy(
+        conn, goal_id=other_parent,
+        lean_path="Problems/p/proofs/L_other_parent.lean",
+        scratch_path="Problems/p/proofs/_strategy_dead.lean",
+        created_by="pid-dead",
+    )
+    db.update_strategy_status(conn, s_dead, "dead")
+    canonical = db.insert_goal(
+        conn, problem="p", slug="canonical",
+        lean_path="Problems/p/proofs/L_canonical.lean",
+        statement="X", origin="backward", difficulty=3, depth=2,
+    )
+    db.update_goal_status(conn, canonical, "proved")
+    db.link_subgoal(conn, strategy_id=s_dead, subgoal_id=canonical,
+                    position=0)
+    # Winner's alias points at the orphan canonical
+    db.set_alias_target(conn, alias, canonical)
+
+    keep = prune.winning_chain(conn, "p")
+    # Without F42 the canonical's file would be missing → alias broken.
+    assert "Problems/p/proofs/L_canonical.lean" in keep
+    assert "Problems/p/proofs/L_s1_sub_alias.lean" in keep
+
+
+def test_winning_chain_handles_alias_chain_without_loop(
+    conn: sqlite3.Connection,
+) -> None:
+    """alias→alias→concrete shouldn't happen in production (orphan
+    pool excludes already-alias goals), but if it did, walk's visited-
+    set must prevent infinite recursion."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    win = _seed_strategy(conn, goal_id=root, sid_label="s1")
+    a = _seed_subgoal(conn, problem="p", slug="alias_a")
+    b = _seed_subgoal(conn, problem="p", slug="alias_b")
+    c = _seed_subgoal(conn, problem="p", slug="concrete")
+    db.link_subgoal(conn, strategy_id=win, subgoal_id=a, position=0)
+    db.set_alias_target(conn, a, b)
+    db.set_alias_target(conn, b, c)
+
+    keep = prune.winning_chain(conn, "p")
+    # All three files retained; no infinite loop
+    for slug in ("alias_a", "alias_b", "concrete"):
+        assert f"Problems/p/proofs/L_{slug}.lean" in keep

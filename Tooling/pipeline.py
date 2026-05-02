@@ -819,6 +819,10 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
             )
             if canonical_id is not None:
                 db.update_goal_status(conn, new_gid, "proved")
+                # F42 — record alias relationship so prune retains the
+                # canonical (in case it's an orphan from a dead strategy)
+                # for as long as this alias is alive.
+                db.set_alias_target(conn, new_gid, canonical_id)
             linked_ids.append(new_gid)
         for pos, gid in enumerate(linked_ids):
             db.link_subgoal(conn, strategy_id=strategy_id,

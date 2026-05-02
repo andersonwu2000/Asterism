@@ -17,22 +17,37 @@ Cost: ~3-5s lake-env startup + per-pair elaboration; one batch call
 per `find_canonicals_batch`. For Asterism scale (~30 Backwards per
 problem × 1 batch each) this is bounded few-minutes overhead.
 
-**Safety rule (strict ancestor)**
+**Safety rules**
 
-Only canonicals that are STRICT ancestors of the candidate's parent
-goal are considered (parent_goal_id itself excluded). Justifications:
+Two canonical sources, both with their own justification:
 
-  1. Lifetime: ancestor's chain is a prefix of candidate's chain, so
-     ancestor alive ⇔ candidate alive. Aliasing across OR siblings or
-     unrelated branches can break at prune time.
+(1) STRICT ANCESTORS of candidate's parent goal. Excludes
+    parent_goal_id itself:
 
-  2. Anti-cycle: aliasing to parent_goal_id is logically circular —
-     the candidate is supposed to help prove parent_goal_id, so it
-     can't itself be aliased to parent_goal_id's eventual proof. At
-     the lake-build level this manifests as an import cycle when
-     parent's Verify rewrites parent.lean_path to import the strategy
-     scratch which transitively imports the alias which imports
-     parent.lean_path.
+    a. Lifetime: ancestor's chain is a prefix of candidate's chain,
+       so ancestor alive ⇔ candidate alive.
+    b. Anti-cycle: aliasing to parent_goal_id is logically circular —
+       the candidate is supposed to help prove parent_goal_id, so it
+       can't itself be aliased to parent_goal_id's eventual proof. At
+       the lake-build level this manifests as an import cycle when
+       parent's Verify rewrites parent.lean_path to import the strategy
+       scratch which transitively imports the alias which imports
+       parent.lean_path.
+
+(2) **F42** — ORPHAN PROVED SUB-GOALS of dead/superseded strategies on
+    the same parent goal (cross-strategy reuse). Justifications:
+
+    a. Lifetime: orphan's lean file already exists on disk (it was
+       proved before its strategy died). prune retains it as long as
+       any live goal aliases to it (see goals.alias_target_id +
+       prune.is_retained).
+    b. Anti-cycle: orphan was a sub-goal of a sibling strategy on the
+       same parent, not on candidate's chain — no import loop.
+
+    Without this rule, a parent that loses one sub-goal to shelve
+    re-Backwards from scratch and re-proves all the salvageable
+    siblings — observed waste on compactness 2026-05-02 was ~20
+    sub-goals.
 
 **Binder count rule (specialization-direction)**
 
@@ -314,6 +329,49 @@ def _eligible_ancestors(conn: sqlite3.Connection, workspace: Path, *,
     return eligible
 
 
+def _eligible_orphan_subgoals(conn: sqlite3.Connection, workspace: Path, *,
+                              problem: str, parent_goal_id: int,
+                              candidate_count: int,
+                              ) -> list[tuple[sqlite3.Row, str]]:
+    """F42 — proved sub-goals from dead/superseded strategies on the
+    same parent goal. They're orphaned by the alive-chain walk, but
+    their lean files still hold valid proofs we can alias against.
+    Filters by binder count (same as ancestors) and by file readability.
+
+    Excludes goals already inserted as aliases (alias_target_id IS NOT
+    NULL) — chasing alias chains complicates lifetime reasoning. The
+    pool is "real proofs only".
+    """
+    rows = conn.execute(
+        "SELECT g.id, g.statement, g.lean_path, g.status FROM goals g "
+        "JOIN strategy_subgoals ss ON ss.subgoal_id = g.id "
+        "JOIN strategies s ON s.id = ss.strategy_id "
+        "WHERE s.goal_id = ? "
+        "  AND s.status IN ('dead', 'superseded') "
+        "  AND g.problem = ? "
+        "  AND g.status = 'proved' "
+        "  AND g.alias_target_id IS NULL "
+        "ORDER BY g.id ASC",
+        (parent_goal_id, problem),
+    ).fetchall()
+
+    eligible: list[tuple[sqlite3.Row, str]] = []
+    seen: set[int] = set()
+    for r in rows:
+        if r["id"] in seen:
+            continue  # a goal can be linked from multiple dead strategies
+        seen.add(int(r["id"]))
+        try:
+            canon_text = (workspace / r["lean_path"]).read_text(
+                encoding="utf-8")
+        except OSError:
+            continue
+        if _signature_binder_count(canon_text) > candidate_count:
+            continue
+        eligible.append((r, canon_text))
+    return eligible
+
+
 def find_canonicals_batch(
     conn: sqlite3.Connection, workspace: Path, *,
     problem: str, parent_goal_id: int,
@@ -334,7 +392,8 @@ def find_canonicals_batch(
     if n == 0:
         return []
 
-    # Per-candidate eligible-ancestor list (already binder-count filtered)
+    # Per-candidate eligible canonicals: ancestors first (priority), then
+    # F42 orphan siblings. Both pre-filtered by binder count.
     cand_ancestors: list[list[tuple[sqlite3.Row, str]]] = []
     for slug, full_text in candidates:
         sig = _extract_full_signature(full_text)
@@ -342,10 +401,15 @@ def find_canonicals_batch(
             cand_ancestors.append([])
             continue
         cand_count = _signature_binder_count(full_text)
-        cand_ancestors.append(_eligible_ancestors(
+        anc = _eligible_ancestors(
             conn, workspace, problem=problem,
             parent_goal_id=parent_goal_id, candidate_count=cand_count,
-        ))
+        )
+        orph = _eligible_orphan_subgoals(
+            conn, workspace, problem=problem,
+            parent_goal_id=parent_goal_id, candidate_count=cand_count,
+        )
+        cand_ancestors.append(anc + orph)
 
     # Build flat list of pairs to check; track origin (cand_idx, anc_row)
     pairs: list[tuple[str, str]] = []
