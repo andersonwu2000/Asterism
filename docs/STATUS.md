@@ -63,29 +63,18 @@ or a daemon flag, but a one-off was sufficient here.
 
 | Problem | Commit | Prover | Wall-clock | Axioms |
 |---------|--------|--------|-----------|--------|
-| wilson | 9c2c2a0 | Haiku | 39.5 min | propext, Classical.choice, Quot.sound |
-| wilson (Sonnet) | 6b0cf3b | Sonnet | ~15 min | propext, Classical.choice, Quot.sound |
 | compactness | 46c8941 | Sonnet | ~60 min | propext, Classical.choice, Quot.sound |
 | compactness (Opus) | (HEAD) | Opus  | ~25 min tail | propext, Classical.choice, Quot.sound |
-| cantor | 6bd6c15 | Sonnet | ~5 min | [] (constructive) |
 | gen_generates | 4c6f423 | Sonnet | ~30 min | propext, Quot.sound |
 
-Latest regression check (post-F35/F36): wilson re-proved by Sonnet in 15.7 min,
-axioms identical to baseline.
+(wilson + cantor problems removed 2026-05-03 — operator has external
+solutions cache, no longer needs them in-tree as testbeds.)
 
 ## Ablations / dead ends (don't re-investigate)
 
-- Wilson core `(↑(p-1)! : ZMod p) = -1` is single-step — Sonnet only closes
-  via `Nat.prime_iff_fac_equiv_neg_one` (Mathlib helper, not in
-  Manifest's forbidden_lemmas). When Sonnet recalls the name, wilson
-  finishes in ~15 min; otherwise no decomposition helps because the
-  sub-goal IS the parent's hardest step. baseline `6b0cf3b`'s "fast"
-  wilson WAS this shortcut.
-- F27 `--tools` trim is NOT the cause of the wilson Sonnet regression
-  (verified by `ASTERISM_CLAUDE_TOOLS=default` ablation).
 - **F40** Two-phase Builder delivery (`ASTERISM_BUILDER_TWO_PHASE=1`,
   commit `2b6ff1a` reverted at `232a3e0`). Hypothesis: weak models miss
-  the patch.lean deliverable. Empirics on wilson + Haiku Builder + Sonnet
+  the patch.lean deliverable. Empirics on Haiku Builder + Sonnet
   Backward: 18 Builder pipelines / 30 min, 3 succeeded, 15 failed, of
   which **11 lake_build_error** (Phase B wrote a patch but Lean rejected
   it — hallucinated lemmas, wrong tactics, syntax errors) vs only **4
@@ -95,8 +84,8 @@ axioms identical to baseline.
   Gemini path unverified (quota exhausted on first dispatch).
 - **F31 substring tier** (`if "haiku" in model: ...`) retired together
   with the `Asterism.yaml` introduction. Brittle by design (vendor
-  naming drift). Weak-tier projects now write `dispatch.builder_threshold:
-  5` + `shelve_threshold: 10` in `Asterism.yaml` explicitly.
+  naming drift). Weak-tier projects now write `builder.threshold: 5`
+  + `dispatch.shelve_threshold: 10` in `Asterism.yaml` explicitly.
 
 ## Operator notes from compactness Opus run
 
