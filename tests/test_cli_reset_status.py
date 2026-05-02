@@ -113,6 +113,54 @@ def test_reset_clears_db_rows_for_problem(
     assert conn.execute(
         "SELECT count(*) FROM problems WHERE name='wilson'"
     ).fetchone()[0] == 0
+    # The pipelines belonging to this problem must also be cleared —
+    # otherwise post-reset queries (forensics / `status`) join against
+    # ghost target_ids that no longer resolve to a goal/strategy.
+    assert conn.execute(
+        "SELECT count(*) FROM pipelines"
+    ).fetchone()[0] == 0
+
+
+def test_reset_clears_pipelines_for_problem_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resetting wilson must wipe wilson's pipelines but preserve cantor's."""
+    _setup_problem(tmp_path, "wilson")
+    _setup_problem(tmp_path, "cantor",
+                   manifest_body="# cantor\n\n## Statement\n\nTrue\n")
+    monkeypatch.chdir(tmp_path)
+    cmd_init(argparse.Namespace(problem="wilson", force=False))
+    cmd_init(argparse.Namespace(problem="cantor", force=False))
+    conn = db.connect()
+    wilson_gid = int(conn.execute(
+        "SELECT id FROM goals WHERE problem='wilson'").fetchone()["id"])
+    cantor_gid = int(conn.execute(
+        "SELECT id FROM goals WHERE problem='cantor'").fetchone()["id"])
+    # Seed pipelines on both problems' goals
+    for label, gid in (("w", wilson_gid), ("c", cantor_gid)):
+        conn.execute(
+            "INSERT INTO pipelines "
+            "(id, kind, target_id, target_kind, status, outcome, "
+            " started_at, finished_at) "
+            "VALUES (?, 'Builder', ?, 'Goal', 'failed', 'failed', ?, ?)",
+            (f"pid-{label}", str(gid), db.now(), db.now()))
+    # Also seed a Verify pipeline targeting a wilson strategy
+    wilson_sid = _seed_strategy(conn, wilson_gid)
+    conn.execute(
+        "INSERT INTO pipelines "
+        "(id, kind, target_id, target_kind, status, outcome, "
+        " started_at, finished_at) "
+        "VALUES ('pid-w-verify', 'Verify', ?, 'Strategy', 'failed', 'failed', ?, ?)",
+        (str(wilson_sid), db.now(), db.now()))
+    conn.commit()
+
+    cmd_reset(argparse.Namespace(problem="wilson"))
+
+    conn = db.connect()
+    remaining = {r[0] for r in conn.execute("SELECT id FROM pipelines").fetchall()}
+    assert "pid-w" not in remaining
+    assert "pid-w-verify" not in remaining  # Strategy-targeting pipeline also cleared
+    assert "pid-c" in remaining  # cantor's pipeline preserved
 
 
 def test_reset_isolates_other_problems(

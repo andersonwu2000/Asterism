@@ -272,6 +272,8 @@ def cmd_reset(args: argparse.Namespace) -> int:
             gids).fetchall()]
 
     # Delete in FK-safe order: leaf tables first.
+    # dead_attempts.pipeline_id has an FK to pipelines, so dead_attempts
+    # must be wiped before the matching pipelines rows.
     if sids:
         ph = ",".join("?" * len(sids))
         conn.execute(
@@ -293,6 +295,20 @@ def cmd_reset(args: argparse.Namespace) -> int:
             f"DELETE FROM queue WHERE kind!='Verify' AND target_id IN ({ph})",
             [str(g) for g in gids])
         conn.execute(f"DELETE FROM goals WHERE id IN ({ph})", gids)
+    # Clean pipelines targeting this problem's now-deleted goals /
+    # strategies. Without this, pipelines accumulates orphan rows
+    # whose target_id no longer resolves — confuses forensics queries
+    # and any future pipeline → strategy / goal joins.
+    if gids:
+        ph = ",".join("?" * len(gids))
+        conn.execute(
+            f"DELETE FROM pipelines WHERE target_kind='Goal' "
+            f"AND target_id IN ({ph})", [str(g) for g in gids])
+    if sids:
+        ph = ",".join("?" * len(sids))
+        conn.execute(
+            f"DELETE FROM pipelines WHERE target_kind='Strategy' "
+            f"AND target_id IN ({ph})", [str(s) for s in sids])
     conn.execute("DELETE FROM problems WHERE name = ?", (problem,))
     conn.commit()
 
