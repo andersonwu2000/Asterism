@@ -135,6 +135,28 @@ def _capture_cmd(monkeypatch: pytest.MonkeyPatch) -> list:
     return captured
 
 
+def _capture_call(monkeypatch: pytest.MonkeyPatch, *,
+                  module_name: str = "claude_cli") -> list:
+    """Capture both cmd argv AND kwargs from subprocess.run patches.
+    Lets tests assert on cwd, timeout, etc. — anything not in cmd."""
+    import subprocess as _sub
+    if module_name == "claude_cli":
+        from Tooling.llm import claude_cli as mod
+    elif module_name == "gemini_cli":
+        from Tooling.llm import gemini_cli as mod
+    else:
+        raise ValueError(module_name)
+    calls: list = []
+
+    def _fake_run(cmd, *a, **kw):
+        calls.append({"cmd": cmd, "kwargs": kw})
+        return _sub.CompletedProcess(args=cmd, returncode=0,
+                                     stdout="ok", stderr="")
+    monkeypatch.setattr(mod.shutil, "which", lambda _: "/fake/exe")
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+    return calls
+
+
 def test_claude_spawn_includes_trim_flags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -808,3 +830,75 @@ def test_complete_text_uses_builder_kind_for_resolution(
 # the Asterism.yaml introduction. The threshold resolution chain is
 # tested via tests/test_config.py + tests/test_dispatcher.py; weak-tier
 # users now set `dispatch.builder_threshold: 5` explicitly.
+
+
+# ---------------------------------------------------------------------
+# F44 — agent cwd anchored at problem_dir (soft sandbox)
+# ---------------------------------------------------------------------
+
+def test_claude_spawn_cwd_is_problem_dir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F44 — claude subprocess runs with cwd=problem_dir, so relative
+    paths the agent reads/writes resolve inside the Problem instead
+    of at workspace root. Soft sandbox: doesn't block absolute-path
+    Read on workspace files (claude CLI doesn't enforce that), but
+    shifts the cognitive 'I am here' frame toward the Problem."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    calls = _capture_call(monkeypatch, module_name="claude_cli")
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/Problems/myproblem"),
+        attempts_dir=Path("/x/.attempts/abc"),
+        timeout_sec=60,
+    ))
+    assert calls, "subprocess.run should be invoked"
+    assert calls[0]["kwargs"].get("cwd") == str(Path("/x/Problems/myproblem"))
+
+
+def test_gemini_spawn_cwd_is_problem_dir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F44 — same cwd anchoring for the gemini provider; both code
+    paths must agree so a daemon mixing providers gets uniform
+    behavior."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import gemini_cli
+
+    calls = _capture_call(monkeypatch, module_name="gemini_cli")
+    # Gemini also needs the Windows .cmd resolver patched so it
+    # doesn't return None.
+    monkeypatch.setattr(
+        gemini_cli, "_resolve_gemini_executable", lambda: "/fake/gemini.cmd")
+    p = gemini_cli.GeminiCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="backward",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/Problems/myproblem"),
+        attempts_dir=Path("/x/.attempts/abc"),
+        timeout_sec=60,
+    ))
+    assert calls, "subprocess.run should be invoked"
+    assert calls[0]["kwargs"].get("cwd") == str(Path("/x/Problems/myproblem"))
+
+
+def test_claude_complete_text_has_no_cwd_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F44 only sandboxes the file-IO `spawn` path. complete_text
+    (F22 playbook idiom calls) is text-in / text-out — no tool use,
+    no working dir relevance — so cwd stays unset (inherits
+    daemon's cwd, which is fine)."""
+    from Tooling.llm import claude_cli
+
+    calls = _capture_call(monkeypatch, module_name="claude_cli")
+    p = claude_cli.ClaudeCliProvider()
+    p.complete_text(prompt="hi")
+    assert calls
+    assert "cwd" not in calls[0]["kwargs"]

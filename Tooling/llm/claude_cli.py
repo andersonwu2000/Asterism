@@ -154,6 +154,13 @@ class ClaudeCliProvider:
                 cmd, timeout=req.timeout_sec,
                 capture_output=True, text=True,
                 encoding="utf-8", errors="replace",
+                # F44 — anchor agent cwd at problem_dir, not workspace.
+                # Soft-sandbox: relative paths the agent writes resolve
+                # under the Problem; reduces wandering reads to other
+                # Problems / workspace-root files. attempts_dir is still
+                # passed as absolute path in the prompt above so reads
+                # there continue to work regardless of cwd.
+                cwd=str(req.problem_dir),
             )
             # F33 — detect stale session: claude returns rc=1 with
             # "No conversation found with session ID: ..." in stderr.

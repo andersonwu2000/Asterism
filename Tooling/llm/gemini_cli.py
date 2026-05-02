@@ -159,6 +159,10 @@ class GeminiCliProvider:
                 cmd, timeout=req.timeout_sec,
                 capture_output=True, text=True,
                 encoding="utf-8", errors="replace",
+                # F44 — anchor agent cwd at problem_dir (matches
+                # claude_cli; soft-sandbox so relative reads/writes
+                # land inside the Problem instead of at workspace).
+                cwd=str(req.problem_dir),
             )
         except subprocess.TimeoutExpired:
             print(f"[llm:gemini] timed out after {req.timeout_sec}s",
