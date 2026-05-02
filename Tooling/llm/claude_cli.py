@@ -35,10 +35,65 @@ DB session_id and retry with a fresh uuid (cold path).
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 
 from .base import LLMRequest
+
+
+# F51 — extract names from "Unknown constant `X.Y.Z`" / "unknown identifier
+# `X.Y.Z`" lake errors so the retry prompt can point the agent at Loogle/
+# Grep before it guesses again. Cap to keep prompt size bounded.
+_UNKNOWN_CONSTANT_RE = re.compile(
+    r"[Uu]nknown\s+(?:constant|identifier)\s+`([^`]+)`"
+)
+_MAX_HINTED_UNKNOWNS = 3
+
+
+def _extract_unknown_constants(stderr: str) -> list[str]:
+    """Return up to MAX deduped unknown-constant names parsed from
+    `stderr` (typically lake build output). Order is first-seen so the
+    agent's attention lands on the earliest failures."""
+    seen: list[str] = []
+    for m in _UNKNOWN_CONSTANT_RE.finditer(stderr or ""):
+        name = m.group(1).strip()
+        if name and name not in seen:
+            seen.append(name)
+            if len(seen) >= _MAX_HINTED_UNKNOWNS:
+                break
+    return seen
+
+
+def _retry_hint_for_unknowns(names: list[str]) -> str:
+    """Compact verification hint for unknown-constant errors. Empty
+    when no unknowns. Per-name overhead is one Loogle command line —
+    so even hitting the cap (3) adds < 400 chars to the prompt."""
+    if not names:
+        return ""
+    lines = [
+        "",
+        "Lake reports unknown constant(s) — verify the name in Mathlib "
+        "BEFORE rewriting (the same guess will fail the same way):",
+    ]
+    for n in names:
+        # Build Loogle query by keeping the namespace path + the
+        # underscore-prefix of the leaf identifier. e.g.
+        # `Multiplicative.toAdd_zpow` → query `Multiplicative.toAdd _`
+        # (most lemmas about a function `toAdd` start `toAdd_*`, so
+        # this catches the family). For a bare name with no dot, just
+        # use the leaf prefix as-is.
+        parts = n.split(".")
+        leaf_prefix = parts[-1].split("_", 1)[0]
+        if len(parts) >= 2:
+            loogle_q = ".".join(parts[:-1] + [leaf_prefix])
+        else:
+            loogle_q = parts[0]  # bare identifier — query whole name
+        lines.append(
+            f"- `{n}` not found. Try: `python -m Tooling.loogle "
+            f"'{loogle_q} _'`"
+        )
+    return "\n".join(lines)
 
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -180,9 +235,14 @@ class ClaudeCliProvider:
             session_flags = ["--resume", req.session_id]
             session_lifetime_flag: list[str] = []  # session persists
             err = (req.retry_context or "(lake error not captured)").strip()
+            # F51 — when the prior failure cites unknown constants,
+            # nudge the agent to verify names via Loogle/Grep instead
+            # of repeating the same guess. Empty hint when no match.
+            unknown_hint = _retry_hint_for_unknowns(
+                _extract_unknown_constants(err))
             prompt = (
                 f"Previous attempt failed lake build with:\n\n"
-                f"```\n{err}\n```\n\n"
+                f"```\n{err}\n```{unknown_hint}\n\n"
                 f"Produce a fresh patch.lean (same scope) addressing "
                 f"this error. Reuse the prior PROPOSAL.md unless the "
                 f"strategy needs to change. Write outputs into "

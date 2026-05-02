@@ -322,6 +322,149 @@ def test_claude_spawn_retry_handles_missing_retry_context(
     assert "lake error not captured" in captured[0][prompt_idx]
 
 
+# ---------------------------------------------------------------------
+# F51 — retry prompt enrichment when stderr contains "Unknown constant"
+# ---------------------------------------------------------------------
+
+def test_extract_unknown_constants_basic() -> None:
+    """Parse names from a representative lake error line."""
+    from Tooling.llm import claude_cli
+    stderr = (
+        "✖ [8369/8369] Building Problems.foo.proofs.L_x (17s)\n"
+        "error: Problems/foo/proofs/L_x.lean:9:18: "
+        "Unknown constant `Multiplicative.toAdd_zpow`"
+    )
+    assert claude_cli._extract_unknown_constants(stderr) == [
+        "Multiplicative.toAdd_zpow"]
+
+
+def test_extract_unknown_constants_handles_lowercase_and_identifier() -> None:
+    """Both 'Unknown constant' and 'unknown identifier' phrasings match."""
+    from Tooling.llm import claude_cli
+    stderr = (
+        "error: ... unknown identifier `Foo.bar`\n"
+        "error: ... Unknown constant `Baz.qux`\n"
+    )
+    assert claude_cli._extract_unknown_constants(stderr) == [
+        "Foo.bar", "Baz.qux"]
+
+
+def test_extract_unknown_constants_dedup_and_cap() -> None:
+    """Duplicates collapse; total capped at MAX_HINTED_UNKNOWNS so the
+    retry prompt size stays bounded even when many distinct names fail."""
+    from Tooling.llm import claude_cli
+    stderr = "\n".join(
+        f"error: Unknown constant `Foo.bar_{i}`" for i in range(10)
+    ) + "\nerror: Unknown constant `Foo.bar_0`"  # duplicate
+    out = claude_cli._extract_unknown_constants(stderr)
+    assert len(out) == claude_cli._MAX_HINTED_UNKNOWNS
+    assert out == ["Foo.bar_0", "Foo.bar_1", "Foo.bar_2"]
+
+
+def test_extract_unknown_constants_no_match() -> None:
+    """Errors that aren't unknown-constant (timeout, type mismatch, ...)
+    yield empty list — no hint should be appended for those."""
+    from Tooling.llm import claude_cli
+    stderr = (
+        "error: type mismatch\n"
+        "error: typeclass instance problem is stuck\n"
+    )
+    assert claude_cli._extract_unknown_constants(stderr) == []
+    assert claude_cli._extract_unknown_constants("") == []
+
+
+def test_retry_hint_empty_when_no_names() -> None:
+    """No unknown constants → empty string. Caller concatenates this
+    into the prompt; an empty hint must not add a trailing blank line."""
+    from Tooling.llm import claude_cli
+    assert claude_cli._retry_hint_for_unknowns([]) == ""
+
+
+def test_retry_hint_uses_parent_path_for_loogle_query() -> None:
+    """For dotted names the Loogle query strips the last segment so
+    the agent searches for related lemmas in the parent namespace
+    (e.g. `Multiplicative.toAdd_zpow` → query `Multiplicative.toAdd _`)."""
+    from Tooling.llm import claude_cli
+    hint = claude_cli._retry_hint_for_unknowns(["Multiplicative.toAdd_zpow"])
+    assert "`Multiplicative.toAdd_zpow` not found" in hint
+    assert "python -m Tooling.loogle 'Multiplicative.toAdd _'" in hint
+
+
+def test_retry_hint_handles_single_segment_name() -> None:
+    """A bare identifier (no dot) Loogles itself rather than empty."""
+    from Tooling.llm import claude_cli
+    hint = claude_cli._retry_hint_for_unknowns(["wilson_lemma"])
+    assert "python -m Tooling.loogle 'wilson_lemma _'" in hint
+
+
+def test_retry_hint_size_bounded(
+) -> None:
+    """Even with the cap of names hit, the hint stays small (< 600
+    chars) — that's the whole point of capping at MAX_HINTED_UNKNOWNS.
+    Guards against future regressions that bloat per-name overhead."""
+    from Tooling.llm import claude_cli
+    names = [f"Foo.bar_long_name_{i}" for i in range(claude_cli._MAX_HINTED_UNKNOWNS)]
+    hint = claude_cli._retry_hint_for_unknowns(names)
+    assert len(hint) < 600
+
+
+def test_spawn_retry_appends_unknown_constant_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: when retry_context contains 'Unknown constant `X`',
+    the spawned -p prompt includes the F51 verification hint inline."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+        session_id="abc123",
+        is_retry=True,
+        retry_context=(
+            "error: Problems/foo.lean:9:18: Unknown constant "
+            "`Multiplicative.toAdd_zpow`"
+        ),
+    ))
+    prompt = captured[0][captured[0].index("-p") + 1]
+    assert "Multiplicative.toAdd_zpow" in prompt  # error preserved
+    assert "verify the name in Mathlib" in prompt  # F51 hint preamble
+    assert "python -m Tooling.loogle" in prompt    # actionable command
+
+
+def test_spawn_retry_no_hint_for_other_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """type mismatch / typeclass stuck etc. shouldn't trigger the
+    F51 hint — different diagnosis path. Retry prompt stays as before."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+        session_id="abc123",
+        is_retry=True,
+        retry_context="error: typeclass instance problem is stuck",
+    ))
+    prompt = captured[0][captured[0].index("-p") + 1]
+    assert "typeclass instance problem is stuck" in prompt
+    assert "verify the name in Mathlib" not in prompt
+    assert "python -m Tooling.loogle" not in prompt
+
+
 def test_claude_spawn_no_session_id_keeps_legacy_ephemeral(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
