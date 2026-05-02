@@ -138,11 +138,19 @@ class GeminiCliProvider:
 
         model = _resolve_model(req.kind)
 
+        # F45 — inline prompt body so the agent doesn't need read access
+        # to the workspace `Tooling/prompts/` dir (outside --include-
+        # directories after F44 narrowed cwd to problem_dir).
+        try:
+            body = req.prompt_path.read_text(encoding="utf-8")
+        except OSError as e:
+            body = f"(prompt file unavailable: {e})"
         prompt = (
-            f"{req.kind} task. Read agent prompt at "
-            f"{req.prompt_path} and follow it exactly.\n"
-            f"Read context at {req.attempts_dir}/Context.md.\n"
-            f"Write output to {req.attempts_dir}/."
+            f"You are running a {req.kind} task. Follow the instructions "
+            f"below exactly.\n\nAfter reading them, read context at "
+            f"{req.attempts_dir}/Context.md and write outputs into "
+            f"{req.attempts_dir}/.\n\n"
+            f"=== INSTRUCTIONS ===\n{body}\n=== END INSTRUCTIONS ==="
         )
 
         cmd = [

@@ -888,6 +888,88 @@ def test_gemini_spawn_cwd_is_problem_dir(
     assert calls[0]["kwargs"].get("cwd") == str(Path("/x/Problems/myproblem"))
 
 
+# ---------------------------------------------------------------------
+# F45 — inline prompt body into -p (no Read-tool round-trip / no
+# workspace prompts/ access requirement after F44 narrowed cwd)
+# ---------------------------------------------------------------------
+
+def test_claude_spawn_inlines_prompt_body_into_p(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    """F45 — the prompt template content must be inlined into the -p
+    flag so the agent doesn't need read access to the workspace
+    Tooling/prompts/ directory (which is outside --add-dir after F44)."""
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    prompt_file = tmp_path / "backward.md"
+    prompt_file.write_text("INLINED PROMPT BODY MARKER", encoding="utf-8")
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="backward",
+        prompt_path=prompt_file,
+        problem_dir=tmp_path,
+        attempts_dir=tmp_path,
+        timeout_sec=60,
+    ))
+    cmd = captured[0]
+    p_idx = cmd.index("-p") + 1
+    # Prompt body must be present verbatim in -p
+    assert "INLINED PROMPT BODY MARKER" in cmd[p_idx]
+    # And must NOT instruct agent to Read the prompt path (the previous
+    # broken pattern that depended on workspace access)
+    assert "Read agent prompt at" not in cmd[p_idx]
+
+
+def test_claude_spawn_missing_prompt_still_runs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    """If the prompt file is unreadable (deleted, permission, etc.),
+    spawn must still call subprocess and surface a marker — never crash
+    or leave the daemon stuck. The agent will fail downstream with a
+    normal failure_reason."""
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="backward",
+        prompt_path=tmp_path / "nonexistent.md",
+        problem_dir=tmp_path,
+        attempts_dir=tmp_path,
+        timeout_sec=60,
+    ))
+    assert captured, "subprocess.run must still be invoked"
+    p_idx = captured[0].index("-p") + 1
+    assert "prompt file unavailable" in captured[0][p_idx]
+
+
+def test_gemini_spawn_inlines_prompt_body_into_p(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    """F45 — same inlining for the gemini provider."""
+    from Tooling.llm import gemini_cli
+
+    prompt_file = tmp_path / "backward.md"
+    prompt_file.write_text("GEMINI PROMPT MARKER", encoding="utf-8")
+    (tmp_path / "patch.lean").write_text("ok", encoding="utf-8")
+    captured = _capture_gemini_cmd(monkeypatch, returncode=0)
+    p = gemini_cli.GeminiCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="backward",
+        prompt_path=prompt_file,
+        problem_dir=tmp_path,
+        attempts_dir=tmp_path,
+        timeout_sec=60,
+    ))
+    cmd = captured[0]
+    p_idx = cmd.index("-p") + 1
+    assert "GEMINI PROMPT MARKER" in cmd[p_idx]
+    assert "Read agent prompt at" not in cmd[p_idx]
+
+
 def test_claude_complete_text_has_no_cwd_pin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

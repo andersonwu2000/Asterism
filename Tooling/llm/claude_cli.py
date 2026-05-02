@@ -2,8 +2,9 @@
 
 Inherits the existing claude CLI workflow: `--add-dir` for sandboxing,
 `acceptEdits` permission, text output. The agent reads `Context.md`
-and the prompt template from disk and writes outputs back to
-`attempts_dir/`.
+from `attempts_dir/` and writes outputs back there. The prompt
+template content is inlined into `-p` (F45) so the agent doesn't
+need read access to the workspace `Tooling/prompts/` directory.
 
 Model selection: `ASTERISM_AGENT_MODEL` env (default: Sonnet).
 
@@ -76,6 +77,33 @@ def _resolve_model(kind: str | None) -> str:
     return os.environ.get("ASTERISM_AGENT_MODEL", DEFAULT_MODEL)
 
 
+def _load_prompt(req: LLMRequest) -> str:
+    """Read the prompt template file. F45: inlined into `-p` instead
+    of pointed-to so the agent never needs read access to the workspace
+    `Tooling/prompts/` directory (which lives outside `--add-dir` after
+    F44 narrowed cwd to problem_dir). On read error, return a marker
+    string so the spawn still proceeds and the failure surfaces as a
+    normal agent error rather than a silent crash."""
+    try:
+        return req.prompt_path.read_text(encoding="utf-8")
+    except OSError as e:
+        return f"(prompt file unavailable: {e})"
+
+
+def _build_cold_prompt(req: LLMRequest) -> str:
+    """Compose the `-p` payload for a cold (non-retry) spawn: the full
+    prompt template content, followed by short framework instructions
+    pointing at Context.md and the output directory."""
+    body = _load_prompt(req)
+    return (
+        f"You are running a {req.kind} task. Follow the instructions "
+        f"below exactly.\n\nAfter reading them, read context at "
+        f"{req.attempts_dir}/Context.md and write outputs into "
+        f"{req.attempts_dir}/.\n\n"
+        f"=== INSTRUCTIONS ===\n{body}\n=== END INSTRUCTIONS ==="
+    )
+
+
 def _trim_flags() -> list[str]:
     """The four CLI flags that strip system-prompt overhead Asterism
     doesn't benefit from. Centralized so spawn() and complete_text()
@@ -120,22 +148,12 @@ class ClaudeCliProvider:
             # retry can resume).
             session_flags = ["--session-id", req.session_id]
             session_lifetime_flag = []  # persist
-            prompt = (
-                f"{req.kind} task. Read agent prompt at "
-                f"{req.prompt_path} and follow it exactly.\n"
-                f"Read context at {req.attempts_dir}/Context.md.\n"
-                f"Write output to {req.attempts_dir}/."
-            )
+            prompt = _build_cold_prompt(req)
         else:
             # Legacy non-session path: ephemeral session, original prompt.
             session_flags = []
             session_lifetime_flag = ["--no-session-persistence"]
-            prompt = (
-                f"{req.kind} task. Read agent prompt at "
-                f"{req.prompt_path} and follow it exactly.\n"
-                f"Read context at {req.attempts_dir}/Context.md.\n"
-                f"Write output to {req.attempts_dir}/."
-            )
+            prompt = _build_cold_prompt(req)
 
         cmd = [
             "claude",
