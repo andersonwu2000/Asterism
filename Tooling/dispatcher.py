@@ -11,7 +11,9 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor, FIRST_COMPLETED, wait
 from pathlib import Path
 
-from . import agent, config, db, manifest, pipeline, playbook, prune, tree
+from . import (
+    agent, config, db, library, manifest, pipeline, playbook, prune, tree,
+)
 
 
 # Per-model defaults (F31 + F37). Empirically:
@@ -745,6 +747,12 @@ def run(workspace: Path, *, once: bool = False) -> int:
                 if removed:
                     print(f"[prune] {problem_name}: removed {len(removed)} "
                           f"orphan files", flush=True)
+                # F49 — promote proved root to Library/<Topic>/. Runs
+                # AFTER reconcile + prune so the file set is canonical
+                # before re-export. Idempotent + axiom-gated; safe to
+                # call on every daemon exit.
+                library.maybe_promote(
+                    conn, workspace, problem_name, manifests[problem_name])
             pool.shutdown(wait=False, cancel_futures=True)
             return 0
 

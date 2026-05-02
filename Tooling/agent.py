@@ -422,6 +422,52 @@ def _section_builder_declines(rows: list[sqlite3.Row]) -> list[str]:
     return out
 
 
+def _section_library_available(mfst, workspace) -> list[str]:
+    """F49 — list Library/<Topic>/INDEX.md entries for the topics
+    inferred from `mfst.lemma_hints` (any `Library.<Topic>.*` entries).
+    Empty topic set → empty section (the agent isn't shown an unrelated
+    Library tour).
+
+    Each line is one previously-proved theorem from another Problem
+    that the agent can now `import Library.<Topic>.<problem>` and use."""
+    from . import library  # local import to avoid cycle at module load
+    topics = library.topics_from_hints(mfst.all_hints)
+    if not topics:
+        return []
+    lib_root = workspace / "Library"
+    chunks: list[str] = []
+    for topic in topics:
+        idx_file = lib_root / topic / "INDEX.md"
+        if not idx_file.exists():
+            continue
+        try:
+            body = idx_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        # Drop the `# Library/<Topic> — INDEX` heading; keep just the
+        # bullet entries so the section reads cleanly inline.
+        entries = [
+            ln for ln in body.splitlines()
+            if ln.strip().startswith("- `")
+        ]
+        if entries:
+            chunks.append(f"### {topic}")
+            chunks.extend(entries)
+            chunks.append("")
+    if not chunks:
+        return []
+    return [
+        "## Library available (filtered by lemma_hints topics)",
+        "",
+        "Theorems already proved by Asterism in prior Problems. Import "
+        "via `import Library.<Topic>.<problem>` and use the theorem "
+        "name `<problem>`. Signatures resolve through the same lemma "
+        "lookup as Mathlib hints.",
+        "",
+        *chunks,
+    ]
+
+
 def _section_dead_strategies(rows: list[dict]) -> list[str]:
     """F37 — anti-repetition hint for sequential Backward retry. Lists
     sub-goal decompositions from prior strategies on this goal that were
@@ -529,6 +575,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_lemma_references(deads, mfst, workspace),
         _section_manifest_forbidden(mfst),
         _section_manifest_notes(mfst),
+        _section_library_available(mfst, workspace),
         _section_playbook(goal, workspace),
         _section_builder_declines(builder_declines),
         _section_past_attempts(deads) if show_attempts else [],

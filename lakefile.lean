@@ -15,3 +15,10 @@ require mathlib from git
 lean_lib «Problems» where
   srcDir := "."
   globs := #[Glob.submodules `Problems]
+
+-- F49 — Library/<Topic>/*.lean re-exports proved roots from
+-- Problems/, organized by Mathlib-style topic. Each file imports a
+-- Problems.<problem>.Root. Empty Library/ glob is harmless.
+lean_lib «Library» where
+  srcDir := "."
+  globs := #[Glob.submodules `Library]
