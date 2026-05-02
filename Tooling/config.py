@@ -16,8 +16,11 @@ Field map (Asterism.yaml → env var fallback → built-in default):
 
     dispatch.pool                  ASTERISM_POOL                4
     dispatch.budget_sec            ASTERISM_BUDGET_SEC          1800
-    dispatch.builder_threshold     ASTERISM_BUILDER_THRESHOLD   3
     dispatch.shelve_threshold      ASTERISM_SHELVE_THRESHOLD    8
+    builder.threshold              ASTERISM_BUILDER_THRESHOLD   3
+                                                                (legacy yaml
+                                                                key:
+                                                                dispatch.builder_threshold)
     builder.provider               ASTERISM_BUILDER_PROVIDER →
                                    ASTERISM_LLM_PROVIDER        'claude'
     builder.model                  ASTERISM_BUILDER_MODEL →

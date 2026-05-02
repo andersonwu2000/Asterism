@@ -55,8 +55,10 @@ def test_next_worker_kind_respects_runtime_threshold(
 # ---------------------------------------------------------------------
 # Threshold defaults — single (3, 8) baseline.
 # F31's haiku-substring tier was retired alongside the Asterism.yaml
-# config introduction: weak-tier users now write `dispatch.builder_threshold:
-# 5` + `dispatch.shelve_threshold: 10` explicitly. Tested via test_config.
+# config introduction: weak-tier users now write `builder.threshold:
+# 5` + `dispatch.shelve_threshold: 10` explicitly. F47 moved
+# builder_threshold from dispatch.* to builder.* (kind-local); the
+# legacy yaml key stays honored as a fallback. Tested via test_config.
 # ---------------------------------------------------------------------
 
 def test_threshold_defaults_are_strong_tier() -> None:

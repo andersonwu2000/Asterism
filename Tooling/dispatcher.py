@@ -580,9 +580,18 @@ def run(workspace: Path, *, once: bool = False) -> int:
     budget_sec = config.get(
         "dispatch.budget_sec", default=1800,
         env_var="ASTERISM_BUDGET_SEC", cast=int, workspace=workspace)
+    # F47 — BUILDER_THRESHOLD semantically belongs to the Builder kind
+    # (controls Builder→Backward transition based on Builder model
+    # strength). New canonical key: `builder.threshold`. Old
+    # `dispatch.builder_threshold` is honored as a back-compat fallback
+    # so existing Asterism.yaml files keep working unchanged.
     BUILDER_THRESHOLD = config.get(
-        "dispatch.builder_threshold", default=3,
+        "builder.threshold", default=None,
         env_var="ASTERISM_BUILDER_THRESHOLD", cast=int, workspace=workspace)
+    if BUILDER_THRESHOLD is None:
+        BUILDER_THRESHOLD = config.get(
+            "dispatch.builder_threshold", default=3,
+            cast=int, workspace=workspace)
     SHELVE_THRESHOLD = config.get(
         "dispatch.shelve_threshold", default=8,
         env_var="ASTERISM_SHELVE_THRESHOLD", cast=int, workspace=workspace)

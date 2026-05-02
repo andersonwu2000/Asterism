@@ -653,9 +653,15 @@ asterism run [--once]
        dispatch:
          pool:               4       (env: ASTERISM_POOL)
          budget_sec:         1800    (env: ASTERISM_BUDGET_SEC)
-         builder_threshold:  3       (env: ASTERISM_BUILDER_THRESHOLD)
          shelve_threshold:   8       (env: ASTERISM_SHELVE_THRESHOLD)
        builder:
+         threshold: 3        (env: ASTERISM_BUILDER_THRESHOLD)
+                             # F47: Builder attempts per goal before
+                             # switching to Backward. Lives under
+                             # `builder` because it sizes to the
+                             # Builder model's strength. Legacy yaml
+                             # key `dispatch.builder_threshold` is
+                             # still honored as a fallback.
          provider:  claude   (env: ASTERISM_BUILDER_PROVIDER →
                                    ASTERISM_LLM_PROVIDER)
          model:     <provider-default>
@@ -670,11 +676,12 @@ asterism run [--once]
                     (same chain as builder.model)
 
      Built-in defaults assume Sonnet/Opus tier. Weak-tier models
-     (haiku / flash / mini) want roughly (5, 10) for the threshold
-     pair — set explicitly in Asterism.yaml; the framework no longer
-     auto-detects from model-name substrings (was retired with this
-     consolidation: substring matching couldn't survive vendor naming
-     drift, see "Recent commits" in STATUS.md).
+     (haiku / flash / mini) want roughly (5, 10) for the
+     (builder.threshold, dispatch.shelve_threshold) pair — set
+     explicitly in Asterism.yaml; the framework no longer auto-detects
+     from model-name substrings (was retired with this consolidation:
+     substring matching couldn't survive vendor naming drift, see
+     "Recent commits" in STATUS.md).
 
      Provider-specific knobs not in Asterism.yaml (env-only):
        ASTERISM_CLAUDE_TOOLS    claude --tools value (rare override)
