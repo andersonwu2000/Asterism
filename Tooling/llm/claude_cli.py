@@ -64,10 +64,12 @@ _STALE_SESSION_MARKER = "no conversation found with session id"
 # Override via env if a future use case needs different surface.
 DEFAULT_TOOLS = "Read Write Edit Grep Bash"
 
-# F50 — restrict Bash to the Loogle invocation only. Without this the
-# agent could execute arbitrary shell. The pattern matches `python -m
-# Tooling.loogle` plus any arguments the agent supplies.
-DEFAULT_ALLOWED_TOOLS = "Bash(python -m Tooling.loogle:*)"
+# F50 — restrict Bash to the Loogle invocation only. Pattern uses
+# claude CLI's space-star wildcard `Bash(prefix *)` to allow any args
+# after the prefix. NB: `--permission-mode acceptEdits` in
+# non-interactive `-p` mode may auto-approve unrelated Bash anyway,
+# but the explicit allowlist is the right defensive baseline.
+DEFAULT_ALLOWED_TOOLS = "Bash(python -m Tooling.loogle *)"
 
 
 def _resolve_model(kind: str | None) -> str:

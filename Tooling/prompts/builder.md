@@ -21,7 +21,7 @@ If both pass, the patch becomes the proved goal file.
 
 ## Lemma discovery
 
-When you're unsure of a Mathlib lemma's name or signature, search rather than recall:
+Mathlib source lives at `.lake/packages/mathlib/Mathlib/` (relative to the workspace root). When you're unsure of a lemma's name or signature, search rather than recall:
 
 - **Grep** (known / partial names): `rg -n -B 5 -A 10 "^lemma prod_involution\b" .lake/packages/mathlib/Mathlib/`
 - **Loogle** (type-pattern, names unknown): `python -m Tooling.loogle 'Nat.factorial _ = _'`
