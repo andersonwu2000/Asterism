@@ -3,6 +3,7 @@ import Problems.gen_generates.Defs
 
 namespace Problems.gen_generates
 
-theorem main : ∀ (n : ℕ) [Fact (2 ≤ n)] (x : G n), x ∈ Subgroup.zpowers (gen n) := by sorry
+theorem s127_sub_2 : ∀ (n : ℕ) [Fact (2 ≤ n)] (a : ZMod n),
+    (a.val : ZMod n) = a := by sorry
 
 end Problems.gen_generates
