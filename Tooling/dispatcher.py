@@ -267,6 +267,22 @@ def next_worker_kind(goal: sqlite3.Row) -> str:
 # Cascade
 # ---------------------------------------------------------------------
 
+def _is_spawn_fast_fail(conn: sqlite3.Connection, pipeline_id: str) -> bool:
+    """F46 — was this pipeline's failure a spawn-side fast fail (rc≠0
+    in <10s, almost certainly an infra problem and not an agent error)?
+    The pipeline writes a dead_attempt row with `failure_reason =
+    'spawn_fast_fail'` in this case. Check that row to decide whether
+    the cascade should skip incrementing the goal's attempts counter.
+    Returns False if no dead_attempt was recorded (e.g. success cases
+    or worker-exception cascades synthesized from outside)."""
+    row = conn.execute(
+        "SELECT failure_reason FROM dead_attempts "
+        "WHERE pipeline_id = ? ORDER BY id DESC LIMIT 1",
+        (pipeline_id,),
+    ).fetchone()
+    return bool(row and row["failure_reason"] == "spawn_fast_fail")
+
+
 def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 kind: str, target_id: str, target_kind: str,
                 outcome: str,
@@ -324,6 +340,13 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
         if row and row["status"] in ("proved", "shelved"):
             return
 
+    # F46 — spawn fast-fail (rc≠0 in <10s) is almost always an infra
+    # fault (claude.exe crash on launch, cwd issue, transient OS hiccup),
+    # not an agent error. Don't burn the goal's attempts cap for it.
+    # Dispatcher main loop separately back-offs via cooldown dict.
+    is_fast_fail = (outcome in ("exhausted", "failed")
+                    and _is_spawn_fast_fail(conn, pipeline_id))
+
     if kind == "Builder":
         if outcome == "proved":
             db.update_goal_status(conn, int(target_id), "proved")
@@ -332,6 +355,10 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             db.set_builder_session_id(conn, int(target_id), None)
             return
         if outcome in ("exhausted", "failed"):
+            if is_fast_fail:
+                # F46 — leave attempts unchanged; dispatcher will cool
+                # this (target,kind) for ~30s before the next dispatch.
+                return
             n = db.increment_goal_attempts(conn, int(target_id))
             if n >= SHELVE_THRESHOLD:
                 db.update_goal_status(conn, int(target_id), "shelved")
@@ -348,6 +375,8 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             db.update_goal_status(conn, int(target_id), "attempting")
             return
         # exhausted / failed
+        if is_fast_fail:
+            return  # F46 — same skip-increment as Builder above
         n = db.increment_goal_attempts(conn, int(target_id))
         if n >= SHELVE_THRESHOLD:
             db.update_goal_status(conn, int(target_id), "shelved")
@@ -405,29 +434,42 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
 # ---------------------------------------------------------------------
 
 def bfs_refill(conn: sqlite3.Connection,
-               running: set[tuple[str, str]]) -> None:
+               running: set[tuple[str, str]],
+               cooldown_until: dict[tuple[str, str], float] | None = None,
+               ) -> None:
     """Enqueue dispatchable tasks. `running` is the in-memory live set
     of (target_id, kind) pairs currently executing in this daemon. F37
     passive trigger: cap = 1 per (target_id, kind) — a goal has at most
     one Builder OR one Backward in flight at a time, and a strategy at
     most one Verify. Daemon crash → set vanishes; pipelines table only
     holds finished rows so restart is clean.
+
+    F46 — `cooldown_until` carries (target_id, kind) → epoch seconds
+    until which dispatch is suppressed. Pairs whose cooldown is in the
+    future are skipped this tick. Set after a spawn_fast_fail cascade
+    so transient claude / network failures don't burst-retry at 2s/call.
     """
+    now = time.time()
+    cd = cooldown_until or {}
+
     def in_flight(tid: str, kind: str) -> int:
         running_n = 1 if (tid, kind) in running else 0
         return running_n + db.queue_count(conn, target_id=tid, kind=kind)
 
+    def cooled(tid: str, kind: str) -> bool:
+        return cd.get((tid, kind), 0.0) > now
+
     # Strategies with all sub-goals proved → enqueue Verify
     for s in db.strategies_ready_for_verify(conn):
         sid = str(s["id"])
-        if in_flight(sid, "Verify") == 0:
+        if in_flight(sid, "Verify") == 0 and not cooled(sid, "Verify"):
             db.enqueue(conn, kind="Verify", target_id=sid, priority=10)
 
     # Open goals → enqueue if no in-flight or queued attempt exists
     for g in db.open_goals(conn):
         gid = str(g["id"])
         kind = next_worker_kind(g)
-        if in_flight(gid, kind) == 0:
+        if in_flight(gid, kind) == 0 and not cooled(gid, kind):
             priority = 5 if kind == "Builder" else 2
             db.enqueue(conn, kind=kind, target_id=gid, priority=priority)
 
@@ -558,6 +600,18 @@ def run(workspace: Path, *, once: bool = False) -> int:
     # target, so the pair is a unique key. Daemon crash → set vanishes →
     # restart sees clean slate.
     running: set[tuple[str, str]] = set()
+    # F46 — per-(target_id, kind) cooldown until epoch seconds. Set after
+    # a spawn_fast_fail cascade; bfs_refill skips cooled pairs so the
+    # daemon doesn't burst-retry a broken claude.exe at 2s/call.
+    cooldown_until: dict[tuple[str, str], float] = {}
+    # F46 — global counter of consecutive spawn_fast_fail outcomes
+    # (across all targets). Reset by any non-fast-fail cascade. If it
+    # crosses CONSEC_SPAWN_FAIL_LIMIT the daemon exits with a clear
+    # message — claude.exe is persistently broken and human attention
+    # is required.
+    consec_fast_fails = 0
+    SPAWN_COOLDOWN_SEC = 30.0
+    CONSEC_SPAWN_FAIL_LIMIT = 10
 
     conn = db.connect()
     manifests: dict[str, manifest.Manifest] = {}
@@ -583,6 +637,25 @@ def run(workspace: Path, *, once: bool = False) -> int:
                     cascade_one(conn, pipeline_id=pid, kind=kind,
                                 target_id=tid, target_kind=tk,
                                 outcome=outcome, workspace=workspace)
+                    # F46 — back-off + global counter for spawn fast-fails
+                    if outcome in ("exhausted", "failed") \
+                            and _is_spawn_fast_fail(conn, pid):
+                        cooldown_until[(tid, kind)] = (
+                            time.time() + SPAWN_COOLDOWN_SEC)
+                        consec_fast_fails += 1
+                        print(f"[cooldown] {kind} {tk}={tid} cooled "
+                              f"{SPAWN_COOLDOWN_SEC:.0f}s after spawn_fast_fail "
+                              f"(consec={consec_fast_fails})", flush=True)
+                        if consec_fast_fails >= CONSEC_SPAWN_FAIL_LIMIT:
+                            print(f"[dispatcher] {consec_fast_fails} "
+                                  f"consecutive spawn_fast_fails — claude.exe "
+                                  f"or provider appears broken; exiting. "
+                                  f"Inspect .attempts/<pid>/_spawn.stderr "
+                                  f"for the underlying error.", flush=True)
+                            pool.shutdown(wait=False, cancel_futures=True)
+                            return 2
+                    else:
+                        consec_fast_fails = 0
                     print(f"[cascade] {kind} {tk}={tid} → {outcome}", flush=True)
                     tree.write_for_target(conn, workspace, tid, tk)
                 except Exception as exc:
@@ -627,8 +700,9 @@ def run(workspace: Path, *, once: bool = False) -> int:
             pool.shutdown(wait=False, cancel_futures=True)
             return 0
 
-        # Refill queue (uses in-memory `running` for dedup)
-        bfs_refill(conn, running)
+        # Refill queue (uses in-memory `running` for dedup; cooldown_until
+        # holds spawn_fast_fail back-offs from F46).
+        bfs_refill(conn, running, cooldown_until)
 
         # Spawn from queue while pool has slots. F37: skip if a pipeline
         # of the same (target_id, kind) is already in flight in this

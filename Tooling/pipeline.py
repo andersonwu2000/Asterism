@@ -10,6 +10,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,6 +18,44 @@ from . import agent, db, dedupe, diagnostics, manifest
 
 
 PROMPT_DIR = Path(__file__).parent / "prompts"
+
+# F46 — wall-clock threshold under which a non-zero spawn is reclassified
+# as `spawn_fast_fail`. Real claude.exe launches take ~3-5s and the
+# fastest legitimate failure (e.g. compilation rejection of malformed
+# patch) needs at least one model turn, so 10s is a conservative bound.
+# Below this floor, the rc≠0 is almost certainly an infra fault (cwd /
+# permission / network / claude.exe crash) rather than agent error.
+SPAWN_FAST_FAIL_SEC = 10.0
+
+
+def _spawn_failure(rc: int, attempts_dir: Path,
+                   spawn_dur: float) -> tuple[str, str]:
+    """F46 — classify a non-zero `agent.spawn_llm` rc into
+    (failure_reason, failure_detail). When wall-clock < 10s the agent
+    almost certainly never ran (claude.exe crashed at startup, prompt
+    parser rejected, cwd unreachable, ...) so the call is reclassified
+    as `spawn_fast_fail`. Pipeline cascade treats this differently:
+    no goal-attempt increment, dispatcher sets a per-target cooldown.
+
+    Reads `attempts_dir/_spawn.stderr` (written by the provider on
+    rc≠0) and folds the first ~600 chars into failure_detail so
+    forensic visibility doesn't depend on grovelling through orphan
+    sandbox dirs."""
+    stderr_tail = ""
+    sf = attempts_dir / "_spawn.stderr"
+    if sf.exists():
+        try:
+            stderr_tail = sf.read_text(encoding="utf-8")[:600].strip()
+        except OSError:
+            stderr_tail = ""
+    base = f"agent rc={rc}"
+    if spawn_dur < SPAWN_FAST_FAIL_SEC:
+        base = f"agent rc={rc} (fast-fail in {spawn_dur:.1f}s)"
+        reason = "spawn_fast_fail"
+    else:
+        reason = "agent_no_response"
+    detail = base if not stderr_tail else f"{base}\n{stderr_tail}"
+    return reason, detail
 
 # Fast-path tactic closers tried (each via single `lake env lean`)
 # before any LLM call. Order: cheapest first, most general last. Each
@@ -263,6 +302,7 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
     else:
         retry_context = _fetch_last_builder_error(conn, goal_id)
 
+    spawn_t0 = time.monotonic()
     rc = agent.spawn_llm(
         kind="builder",
         prompt_path=PROMPT_DIR / "builder.md",
@@ -272,6 +312,7 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
         is_retry=is_retry,
         retry_context=retry_context,
     )
+    spawn_dur = time.monotonic() - spawn_t0
 
     # F33 — fallback for stale session (claude's on-disk session was
     # GC'd or the daemon's DB id outlived the file). One-time retry
@@ -282,6 +323,7 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
         db.set_builder_session_id(conn, goal_id, sid)
         agent.compile_context(conn, goal=goal, mfst=mfst,
                               attempts_dir=attempts_dir, kind="builder")
+        spawn_t0 = time.monotonic()
         rc = agent.spawn_llm(
             kind="builder",
             prompt_path=PROMPT_DIR / "builder.md",
@@ -290,22 +332,25 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
             session_id=sid,
             is_retry=False,
         )
+        spawn_dur = time.monotonic() - spawn_t0
 
     if rc == 124:
         # Timeout: the agent's session may have been killed mid-write
         # (claude's session file, gemini's in-flight API call, etc).
         # Conservative: clear session_id so next attempt cold-starts.
         db.set_builder_session_id(conn, goal_id, None)
+        reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
         return PipelineResult(outcome="failed",
-                              failure_reason="agent_no_response",
-                              failure_detail=f"agent rc={rc}")
+                              failure_reason=reason,
+                              failure_detail=detail)
     if rc != 0:
         # Ordinary failure: keep session_id so next attempt's --resume
         # has the prior failed-turn context to learn from. (Gemini /
         # OpenAI providers ignore session_id — clearing on rc=124 only.)
+        reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
         return PipelineResult(outcome="failed",
-                              failure_reason="agent_no_response",
-                              failure_detail=f"agent rc={rc}")
+                              failure_reason=reason,
+                              failure_detail=detail)
 
     proposal = (attempts_dir / "PROPOSAL.md")
     proposal_text = proposal.read_text(encoding="utf-8") if proposal.exists() else ""
@@ -608,6 +653,7 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
                           attempts_dir=attempts_dir,
                           strategy_id=strategy_id, kind="backward")
 
+    spawn_t0 = time.monotonic()
     rc = agent.spawn_llm(
         kind="backward",
         prompt_path=PROMPT_DIR / "backward.md",
@@ -615,7 +661,9 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
         attempts_dir=attempts_dir,
     )
     if rc != 0:
-        return _abort("agent_no_response", f"agent rc={rc}")
+        spawn_dur = time.monotonic() - spawn_t0
+        reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
+        return _abort(reason, detail)
 
     proposal = attempts_dir / "PROPOSAL.md"
     if not proposal.exists():

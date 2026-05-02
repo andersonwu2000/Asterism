@@ -108,6 +108,21 @@ def _shared_flags() -> list[str]:
     ]
 
 
+def _write_spawn_stderr(attempts_dir: Path, stderr: str,
+                        stdout: str, rc: int) -> None:
+    """F46 — mirror of claude_cli helper. Writes captured stderr to
+    `attempts_dir/_spawn.stderr` for pipeline forensics. Best-effort:
+    silent on IO errors so a sandbox-write failure doesn't mask the
+    underlying spawn failure."""
+    try:
+        body = (stderr + ("\n--- stdout ---\n" + stdout if stdout else ""))
+        body = body[:10240]
+        (attempts_dir / "_spawn.stderr").write_text(
+            f"rc={rc}\n{body}", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _output_present(attempts_dir: Path) -> bool:
     """Did the agent write any expected artifact? Backward emits
     `new_*.lean` + `PROPOSAL.md` + `patch_*.lean`; Builder emits
@@ -175,6 +190,9 @@ class GeminiCliProvider:
         except subprocess.TimeoutExpired:
             print(f"[llm:gemini] timed out after {req.timeout_sec}s",
                   flush=True)
+            _write_spawn_stderr(req.attempts_dir,
+                                f"(subprocess.TimeoutExpired after "
+                                f"{req.timeout_sec}s)", "", 124)
             return 124
         except FileNotFoundError as e:
             # Defensive: _resolve_gemini_executable returned a path
@@ -182,7 +200,14 @@ class GeminiCliProvider:
             # produced a stale hit. Surface as missing-CLI rather
             # than letting subprocess raise.
             print(f"[llm:gemini] launch failed ({e})", flush=True)
+            _write_spawn_stderr(req.attempts_dir, str(e), "", 127)
             return 127
+
+        # F46 — capture stderr to attempts_dir on failure so the
+        # pipeline can surface it in dead_attempts.failure_detail.
+        if r.returncode != 0:
+            _write_spawn_stderr(req.attempts_dir, r.stderr or "",
+                                r.stdout or "", r.returncode)
 
         # rc=0 from gemini does NOT prove the model produced anything —
         # the CLI swallows quota exhaustion (after its own retries) and

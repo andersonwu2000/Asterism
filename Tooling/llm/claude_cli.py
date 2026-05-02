@@ -104,6 +104,25 @@ def _build_cold_prompt(req: LLMRequest) -> str:
     )
 
 
+def _write_spawn_stderr(attempts_dir, stderr: str, stdout: str,
+                        rc: int) -> None:
+    """F46 — write captured stderr to `attempts_dir/_spawn.stderr`
+    so pipeline forensics can include it in dead_attempts.failure_detail.
+    Best-effort: silent on IO errors (the spawn already failed; making
+    forensics fatal would mask the real diagnosis).
+
+    Combines stderr + stdout because some claude / gemini errors land
+    on stdout (rare). Caps the saved file at ~10KB to bound disk usage
+    on pathological loops."""
+    try:
+        body = (stderr + ("\n--- stdout ---\n" + stdout if stdout else ""))
+        body = body[:10240]
+        (attempts_dir / "_spawn.stderr").write_text(
+            f"rc={rc}\n{body}", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _trim_flags() -> list[str]:
     """The four CLI flags that strip system-prompt overhead Asterism
     doesn't benefit from. Centralized so spawn() and complete_text()
@@ -180,6 +199,12 @@ class ClaudeCliProvider:
                 # there continue to work regardless of cwd.
                 cwd=str(req.problem_dir),
             )
+            # F46 — capture stderr to attempts_dir on failure so the
+            # pipeline can surface it in dead_attempts.failure_detail.
+            # Skipping on rc=0 keeps the sandbox tidy.
+            if r.returncode != 0:
+                _write_spawn_stderr(req.attempts_dir, r.stderr or "",
+                                    r.stdout or "", r.returncode)
             # F33 — detect stale session: claude returns rc=1 with
             # "No conversation found with session ID: ..." in stderr.
             # Surface as RC_STALE_SESSION so pipeline can clear the
@@ -194,6 +219,9 @@ class ClaudeCliProvider:
         except subprocess.TimeoutExpired:
             print(f"[llm:claude] timed out after {req.timeout_sec}s",
                   flush=True)
+            _write_spawn_stderr(req.attempts_dir,
+                                f"(subprocess.TimeoutExpired after "
+                                f"{req.timeout_sec}s)", "", 124)
             return 124
 
     def complete_text(
