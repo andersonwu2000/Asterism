@@ -258,25 +258,21 @@ def _ago(ts_iso: str | None) -> str:
 
 
 def _section_past_attempts(deads: list[sqlite3.Row]) -> list[str]:
-    """F26 — Context.md gets a 1-line digest per attempt; full per-
-    attempt content lives in PAST_ATTEMPTS.md (written separately by
-    context_files.write_past_attempts)."""
+    """F43 — full inline rendering of PAST_ATTEMPTS history into
+    Context.md. Sonnet was previously trusted to Read PAST_ATTEMPTS.md
+    on demand (compactness 2026-05-02 telemetry: ~58/59 sessions did,
+    so the lazy mechanism worked here — but kept in Context for
+    symmetry with PAST_VERIFIES, which Sonnet ignored 0/N times).
+
+    Companion file is still written by `context_files.write_past_attempts`
+    for forensics + future re-reading; this section duplicates its
+    content so the agent can't miss it."""
     if not deads:
         return []
-    out = ["## Previous attempts on THIS goal"]
+    out = ["## Previous attempts on THIS goal", ""]
     for i, d in enumerate(deads, 1):
-        ago = _ago(d["ts"] if "ts" in d.keys() else None)
-        digest = _digest_failure(d["failure_reason"],
-                                 d["failure_detail"] or "")
-        line = f"{i}. ({ago}) {d['failure_reason']}"
-        if digest:
-            line += f" — {digest}"
-        out.append(line)
-    out.append("")
-    out.append(
-        f"→ Full failure_detail + PROPOSAL.md per attempt: read "
-        f"`{context_files.PAST_ATTEMPTS_FILENAME}` in this directory.")
-    out.append("")
+        out.append(context_files._render_attempt_block(i, d).rstrip())
+        out.append("")
     return out
 
 
@@ -413,36 +409,36 @@ def _section_dead_strategies(rows: list[dict]) -> list[str]:
 
 
 def _section_past_verify_failures(rows: list[sqlite3.Row]) -> list[str]:
-    """F26 — 1-line digest per past Verify failure; full content in
-    PAST_VERIFIES.md (written separately by context_files.write_past_verifies)."""
+    """F43 — full inline rendering of PAST_VERIFIES history into
+    Context.md. Compactness telemetry on 2026-05-02 showed Sonnet
+    Read PAST_VERIFIES.md zero times across 59 sessions despite the
+    prompt pointer; the resulting type-drift in re-Backward
+    decompositions was the run's dominant time sink. Inline the full
+    content so it lands in Sonnet's attention regardless.
+
+    Companion file is still written for forensics."""
     if not rows:
         return []
     out = [
         "## Past decompositions that failed Verify",
+        "",
         "Earlier Backward attempts decomposed this goal but the "
         "combination patch did not elaborate against the sub-goal "
-        "proofs. Avoid the same shape.",
+        "proofs. Each block below is the lake stderr + the "
+        "strategy's PROPOSAL.md. Avoid re-proposing a decomposition "
+        "with the same typing shape.",
         "",
     ]
-    for i, d in enumerate(rows, 1):
-        digest = _digest_failure(d["failure_reason"],
-                                 d["failure_detail"] or "")
-        line = (f"{i}. (pid {d['pipeline_id'][:12]}) "
-                f"{d['failure_reason']}")
-        if digest:
-            line += f" — {digest}"
-        out.append(line)
-    out.append("")
-    out.append(
-        f"→ Full stderr + decomposition PROPOSAL.md per Verify failure: "
-        f"read `{context_files.PAST_VERIFIES_FILENAME}` in this directory.")
-    out.append("")
+    for i, r in enumerate(rows, 1):
+        out.append(context_files._render_strategy_block(i, r).rstrip())
+        out.append("")
     return out
 
 
 def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
                     mfst: manifest.Manifest, attempts_dir: Path,
-                    strategy_id: int | None = None) -> Path:
+                    strategy_id: int | None = None,
+                    kind: str | None = None) -> Path:
     """Write Context.md into attempts_dir. Pulls from DB + Manifest.
 
     `strategy_id`: when set (Backward worker), write a 'Naming convention'
@@ -450,6 +446,15 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     Required because earlier strategies for the same goal may have left
     files on disk (cleanup is deferred to prune); each strategy must
     produce non-colliding sub-goal slugs and theorem names.
+
+    `kind` (F43): 'builder' | 'backward' | None.
+      - 'builder'  → render PAST_ATTEMPTS section, skip PAST_VERIFIES
+      - 'backward' → render PAST_VERIFIES section, skip PAST_ATTEMPTS
+      - None       → render both (back-compat for tests that don't
+                     supply a kind; production callers always do)
+    Each kind only sees the failure history it can actually act on:
+    Builder fixes leaf-level patches, Backward fixes decomposition
+    shape; cross-feeding adds noise without signal.
 
     Section ordering — keep stable; agents may have learned to scan
     top-down. Each section function returns `[]` when not applicable
@@ -460,6 +465,9 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         conn, target_id=goal["id"], target_kind="Goal", k=5)
     strat_deads = _fetch_strategy_dead_attempts(conn, int(goal["id"]))
     dead_strats = _fetch_dead_strategies(conn, int(goal["id"]))
+
+    show_attempts = kind in (None, "builder")
+    show_verifies = kind in (None, "backward")
 
     sections: list[list[str]] = [
         _section_header(goal),
@@ -474,8 +482,8 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_manifest_forbidden(mfst),
         _section_manifest_notes(mfst),
         _section_playbook(goal, workspace),
-        _section_past_attempts(deads),
-        _section_past_verify_failures(strat_deads),
+        _section_past_attempts(deads) if show_attempts else [],
+        _section_past_verify_failures(strat_deads) if show_verifies else [],
         _section_dead_strategies(dead_strats),
     ]
 

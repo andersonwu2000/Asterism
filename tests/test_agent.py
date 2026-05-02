@@ -43,9 +43,9 @@ def test_context_includes_strategy_dead_attempts(
     """Verify failures must surface in the parent goal's Context so a
     fresh Backward agent doesn't repeat the broken combination pattern.
 
-    F26 split: Context.md gets the 1-line digest + pointer; the full
-    failure_detail + proposal_md goes into PAST_VERIFIES.md alongside.
-    """
+    F43: full inline rendering — Context.md carries the actual stderr
+    + proposal_md, not a digest+pointer. Companion PAST_VERIFIES.md is
+    still written for forensics."""
     gid = _seed_problem_and_goal(conn)
     sid = db.insert_strategy(
         conn, goal_id=gid, lean_path="Problems/p/Root.lean",
@@ -64,13 +64,13 @@ def test_context_includes_strategy_dead_attempts(
                           attempts_dir=tmp_path)
     text = out.read_text(encoding="utf-8")
 
-    # Context.md: section header + digest + pointer
+    # Context.md (F43): full inline content, not a digest pointer
     assert "Past decompositions that failed Verify" in text
     assert "lake_build_error" in text
-    assert "type mismatch" in text
-    assert "PAST_VERIFIES.md" in text
+    assert "type mismatch in have h_1" in text
+    assert "My decomposition" in text  # proposal_md inline
 
-    # Full proposal_md externalized
+    # Companion file still written (forensics)
     past_verifies = (tmp_path / "PAST_VERIFIES.md").read_text(encoding="utf-8")
     assert "My decomposition" in past_verifies
     assert "type mismatch in have h_1" in past_verifies

@@ -259,7 +259,7 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
         sid = str(uuid.uuid4())
         db.set_builder_session_id(conn, goal_id, sid)
         agent.compile_context(conn, goal=goal, mfst=mfst,
-                              attempts_dir=attempts_dir)
+                              attempts_dir=attempts_dir, kind="builder")
     else:
         retry_context = _fetch_last_builder_error(conn, goal_id)
 
@@ -281,7 +281,7 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
         sid = str(uuid.uuid4())
         db.set_builder_session_id(conn, goal_id, sid)
         agent.compile_context(conn, goal=goal, mfst=mfst,
-                              attempts_dir=attempts_dir)
+                              attempts_dir=attempts_dir, kind="builder")
         rc = agent.spawn_llm(
             kind="builder",
             prompt_path=PROMPT_DIR / "builder.md",
@@ -474,7 +474,7 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
 
     agent.compile_context(conn, goal=goal, mfst=mfst,
                           attempts_dir=attempts_dir,
-                          strategy_id=strategy_id)
+                          strategy_id=strategy_id, kind="backward")
 
     rc = agent.spawn_llm(
         kind="backward",

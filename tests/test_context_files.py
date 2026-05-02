@@ -279,8 +279,8 @@ def _record_pipeline(conn, pid):
 def test_compile_context_writes_companion_past_attempts(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """End-to-end: dead_attempts → Context.md gets summary, full
-    actionable content goes to PAST_ATTEMPTS.md.
+    """End-to-end: dead_attempts → Context.md inlines the full content
+    (F43). Companion PAST_ATTEMPTS.md still written for forensics.
 
     F32: even the companion file no longer carries the LEAN_PATH
     dump — strip_lake_noise unconditionally drops infra lines
@@ -303,13 +303,12 @@ def test_compile_context_writes_companion_past_attempts(
                           attempts_dir=attempts_dir)
     text = out.read_text(encoding="utf-8")
 
-    # Context.md: summary line with digest + pointer
+    # F43: full content inlined into Context.md
     assert "Previous attempts on THIS goal" in text
-    assert "Type mismatch on `Foo.bar`" in text  # digest extracted
-    assert "PAST_ATTEMPTS.md" in text  # pointer present
-    assert "LEAN_PATH=" not in text
+    assert "Type mismatch on `Foo.bar`" in text
+    assert "LEAN_PATH=" not in text  # F32 noise stripped here too
 
-    # Companion file has the actionable error preserved (verbatim)
+    # Companion file still written (forensics) — verbatim error preserved
     past = (attempts_dir / "PAST_ATTEMPTS.md").read_text(encoding="utf-8")
     assert "Foo.bar" in past
     assert "Type mismatch" in past
@@ -317,12 +316,15 @@ def test_compile_context_writes_companion_past_attempts(
     assert "LEAN_PATH=" not in past
 
 
-def test_compile_context_size_drop_with_many_attempts(
+def test_compile_context_size_with_many_attempts_under_smart_truncate(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """Quantitative goal: even 5 attempts each carrying ~2KB of
-    failure_detail must not blow up Context.md. F26's design budget
-    is ~5x reduction vs the pre-F26 raw-blob approach."""
+    """F43 inlines the smart-truncated PAST_ATTEMPTS content into
+    Context.md. Verify two things:
+      (a) Smart-truncate (F30 + F32) caps each attempt block — even
+          with 5 attempts each carrying multi-KB of LEAN_PATH garbage,
+          Context.md stays well below the pre-F26 raw blob (~15KB).
+      (b) The companion file still mirrors the same content."""
     gid = _seed_goal(conn)
     big_stderr_template = (
         "✖ [N/N] Building x\n"
@@ -348,11 +350,12 @@ def test_compile_context_size_drop_with_many_attempts(
     ctx_size = out.stat().st_size
     past_size = (attempts_dir / "PAST_ATTEMPTS.md").stat().st_size
 
-    # Pre-F26 with 5 attempts × (1000 char detail + 2000 char proposal)
-    # ≈ 15 KB inline. F26 budget: Context.md should be well under 3 KB.
-    assert ctx_size < 3000, f"Context.md too big: {ctx_size}B"
-    # Full content lives in companion file (which is allowed to be big)
-    assert past_size > 5000
+    # F43: Context.md grew to fit the inlined content — but smart_truncate
+    # (4KB per block) keeps it bounded well under the pre-F26 ~15KB raw blob.
+    assert ctx_size < 30000, f"Context.md too big: {ctx_size}B"
+    assert ctx_size > 3000, f"Context.md too small — likely missing content: {ctx_size}B"
+    # Companion file still written for forensics
+    assert past_size > 3000
 
 
 def test_compile_context_no_companion_when_no_history(
@@ -368,3 +371,117 @@ def test_compile_context_no_companion_when_no_history(
                     attempts_dir=attempts_dir)
     assert not (attempts_dir / "PAST_ATTEMPTS.md").exists()
     assert not (attempts_dir / "PAST_VERIFIES.md").exists()
+
+
+# ---------------------------------------------------------------------
+# F43 — kind-aware section selection in compile_context
+# ---------------------------------------------------------------------
+
+def _seed_goal_with_history(conn: sqlite3.Connection,
+                            tmp_path: Path) -> tuple[int, Path]:
+    """Seed: 1 dead_attempt on the goal + 1 dead strategy with a
+    Verify failure on it. Returns (goal_id, attempts_dir)."""
+    gid = _seed_goal(conn)
+    # Goal-level dead attempt (Builder-class history)
+    _record_pipeline(conn, "pid-builder-fail")
+    db.record_dead_attempt(
+        conn, target_id=gid, target_kind="Goal",
+        pipeline_id="pid-builder-fail",
+        failure_reason="lake_build_error",
+        failure_detail="error: BUILDER-LEVEL Lean error here",
+        proposal_md="builder PROPOSAL contents",
+    )
+    # Strategy + Verify-level dead attempt (Backward-class history)
+    sid = db.insert_strategy(
+        conn, goal_id=gid, lean_path="Problems/p/Root.lean",
+        created_by="pid-strat",
+        proposal_md="strategy decomposition prose",
+    )
+    conn.execute(
+        "UPDATE strategies SET status='dead' WHERE id=?", (sid,))
+    conn.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("pid-verify-fail", "Verify", str(sid), "Strategy",
+         "failed", "failed", db.now(), db.now()))
+    db.record_dead_attempt(
+        conn, target_id=sid, target_kind="Strategy",
+        pipeline_id="pid-verify-fail",
+        failure_reason="lake_build_error",
+        failure_detail="error: VERIFY-LEVEL combine elaboration failed",
+    )
+    conn.commit()
+    attempts_dir = tmp_path / ".attempts" / "pid-current"
+    attempts_dir.mkdir(parents=True)
+    return gid, attempts_dir
+
+
+def test_compile_context_builder_kind_includes_attempts_excludes_verifies(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """F43 — Builder gets PAST_ATTEMPTS section only. PAST_VERIFIES is
+    irrelevant to Builder (different layer of failure) and would be
+    pure attention noise."""
+    gid, attempts_dir = _seed_goal_with_history(conn, tmp_path)
+    goal = db.get_goal(conn, gid)
+    out = compile_context(conn, goal=goal,
+                          mfst=Manifest(problem="p", statement="T"),
+                          attempts_dir=attempts_dir, kind="builder")
+    text = out.read_text(encoding="utf-8")
+    assert "Previous attempts on THIS goal" in text
+    assert "BUILDER-LEVEL Lean error" in text
+    assert "Past decompositions that failed Verify" not in text
+    assert "VERIFY-LEVEL" not in text
+
+
+def test_compile_context_backward_kind_includes_verifies_excludes_attempts(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """F43 — Backward gets PAST_VERIFIES section only. PAST_ATTEMPTS
+    (Builder's leaf-level failures) doesn't help Backward pick a
+    decomposition shape."""
+    gid, attempts_dir = _seed_goal_with_history(conn, tmp_path)
+    goal = db.get_goal(conn, gid)
+    out = compile_context(conn, goal=goal,
+                          mfst=Manifest(problem="p", statement="T"),
+                          attempts_dir=attempts_dir, kind="backward")
+    text = out.read_text(encoding="utf-8")
+    assert "Past decompositions that failed Verify" in text
+    assert "VERIFY-LEVEL" in text
+    assert "Previous attempts on THIS goal" not in text
+    assert "BUILDER-LEVEL" not in text
+
+
+def test_compile_context_no_kind_renders_both_sections(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Back-compat: callers (typically tests) that don't pass `kind`
+    get both sections — preserves the pre-F43 behavior so existing
+    test fixtures keep working unchanged."""
+    gid, attempts_dir = _seed_goal_with_history(conn, tmp_path)
+    goal = db.get_goal(conn, gid)
+    out = compile_context(conn, goal=goal,
+                          mfst=Manifest(problem="p", statement="T"),
+                          attempts_dir=attempts_dir)
+    text = out.read_text(encoding="utf-8")
+    assert "BUILDER-LEVEL" in text
+    assert "VERIFY-LEVEL" in text
+
+
+def test_compile_context_companion_files_always_written(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """F43: companion files are forensics + future-proof storage; they
+    must keep being written regardless of which inline section the
+    current pipeline kind is rendering. A Backward with PAST_ATTEMPTS
+    history off the inline path still has PAST_ATTEMPTS.md on disk."""
+    gid, attempts_dir = _seed_goal_with_history(conn, tmp_path)
+    goal = db.get_goal(conn, gid)
+    compile_context(conn, goal=goal,
+                    mfst=Manifest(problem="p", statement="T"),
+                    attempts_dir=attempts_dir, kind="backward")
+    # Backward inline path skipped PAST_ATTEMPTS section in Context.md,
+    # but the companion file must still exist (forensics + agent can
+    # still Read on demand if it ever wants to).
+    assert (attempts_dir / "PAST_ATTEMPTS.md").exists()
+    assert (attempts_dir / "PAST_VERIFIES.md").exists()
