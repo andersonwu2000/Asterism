@@ -49,11 +49,25 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 RC_STALE_SESSION = 125
 _STALE_SESSION_MARKER = "no conversation found with session id"
 
-# Asterism's pipelines only ever need Read / Write / Edit. Backward,
-# Builder, Verify each manipulate sandbox files; lemma signatures and
-# stderr hints come pre-resolved by the framework (F9, F20). Override
-# via env if a future use case needs more (e.g. Bash for ad-hoc shell).
-DEFAULT_TOOLS = "Read Write Edit"
+# Asterism's pipelines need Read / Write / Edit for sandbox file
+# manipulation, plus F50 search tools:
+#   - `Grep`: keyword/name search over Mathlib source (e.g. find
+#     `Finset.prod_involution`'s exact signature in <0.5s)
+#   - `Bash`: scoped via `--allowed-tools` (see _spawn_allowed_tools
+#     below) so the agent can ONLY invoke `python -m Tooling.loogle`
+#     for type-pattern search via Loogle's HTTPS API. Other Bash
+#     commands stay blocked. Adds ~3K tokens of system-prompt
+#     overhead vs F27's strict trim, justified by removing the agent's
+#     "guess Mathlib lemma names without ground truth" failure mode
+#     (wilson 2026-05-02 evidence: 6.7-min thinking on a single goal
+#     was ~30% lemma-name enumeration).
+# Override via env if a future use case needs different surface.
+DEFAULT_TOOLS = "Read Write Edit Grep Bash"
+
+# F50 — restrict Bash to the Loogle invocation only. Without this the
+# agent could execute arbitrary shell. The pattern matches `python -m
+# Tooling.loogle` plus any arguments the agent supplies.
+DEFAULT_ALLOWED_TOOLS = "Bash(python -m Tooling.loogle:*)"
 
 
 def _resolve_model(kind: str | None) -> str:
@@ -124,16 +138,26 @@ def _write_spawn_stderr(attempts_dir, stderr: str, stdout: str,
 
 
 def _trim_flags() -> list[str]:
-    """The four CLI flags that strip system-prompt overhead Asterism
-    doesn't benefit from. Centralized so spawn() and complete_text()
-    use the same trim consistently."""
+    """CLI flags that strip system-prompt overhead Asterism doesn't
+    benefit from + tool surface configuration.
+
+    F50 adds `--allowed-tools` to whitelist the Loogle Bash invocation
+    while keeping other Bash commands gated. complete_text() (no file
+    IO, no agent tool use) drops `--allowed-tools` since it never runs
+    Bash anyway.
+    """
     tools = os.environ.get("ASTERISM_CLAUDE_TOOLS", DEFAULT_TOOLS)
-    return [
+    allowed = os.environ.get(
+        "ASTERISM_CLAUDE_ALLOWED_TOOLS", DEFAULT_ALLOWED_TOOLS)
+    flags = [
         "--tools", tools,
         "--setting-sources", "",
         "--disable-slash-commands",
         "--exclude-dynamic-system-prompt-sections",
     ]
+    if allowed:
+        flags += ["--allowed-tools", allowed]
+    return flags
 
 
 class ClaudeCliProvider:

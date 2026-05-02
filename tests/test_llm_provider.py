@@ -179,7 +179,10 @@ def test_claude_spawn_includes_trim_flags(
     assert captured, "subprocess.run should be invoked"
     cmd = captured[0]
     assert "--tools" in cmd
-    assert cmd[cmd.index("--tools") + 1] == "Read Write Edit"
+    # F50 — Grep + Bash were added; existing Read/Write/Edit kept
+    tools_val = cmd[cmd.index("--tools") + 1]
+    for t in ("Read", "Write", "Edit", "Grep", "Bash"):
+        assert t in tools_val.split(), f"missing tool {t} in {tools_val!r}"
     assert "--setting-sources" in cmd
     assert cmd[cmd.index("--setting-sources") + 1] == ""
     assert "--disable-slash-commands" in cmd
@@ -886,6 +889,97 @@ def test_gemini_spawn_cwd_is_problem_dir(
     ))
     assert calls, "subprocess.run should be invoked"
     assert calls[0]["kwargs"].get("cwd") == str(Path("/x/Problems/myproblem"))
+
+
+# ---------------------------------------------------------------------
+# F50 — Grep + Bash(Loogle) added to default tool surface
+# ---------------------------------------------------------------------
+
+def test_default_tools_include_grep_and_bash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F50 — agents need Grep for keyword search and Bash for the
+    Loogle invocation. Both must be in DEFAULT_TOOLS so the system
+    prompt advertises them."""
+    from Tooling.llm import claude_cli
+    assert "Grep" in claude_cli.DEFAULT_TOOLS
+    assert "Bash" in claude_cli.DEFAULT_TOOLS
+
+
+def test_spawn_passes_allowed_tools_for_loogle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F50 — Bash is gated via --allowed-tools so the agent can ONLY
+    invoke `python -m Tooling.loogle`. Other Bash commands (rm, curl,
+    git, ...) stay blocked by the permission system."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+    ))
+    cmd = captured[0]
+    assert "--allowed-tools" in cmd
+    val = cmd[cmd.index("--allowed-tools") + 1]
+    # Must scope to loogle invocation; arbitrary Bash blocked
+    assert "Tooling.loogle" in val
+    assert val.startswith("Bash(")
+
+
+def test_allowed_tools_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ASTERISM_CLAUDE_ALLOWED_TOOLS env replaces the default whitelist
+    — for rare flows that legitimately need extra Bash commands."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    monkeypatch.setenv("ASTERISM_CLAUDE_ALLOWED_TOOLS",
+                       "Bash(echo *) Bash(ls *)")
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+    ))
+    cmd = captured[0]
+    val = cmd[cmd.index("--allowed-tools") + 1]
+    assert val == "Bash(echo *) Bash(ls *)"
+
+
+def test_allowed_tools_empty_env_omits_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setting ASTERISM_CLAUDE_ALLOWED_TOOLS='' (explicit empty)
+    drops the flag entirely — useful for debugging or when the
+    operator wants Bash fully blocked."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    monkeypatch.setenv("ASTERISM_CLAUDE_ALLOWED_TOOLS", "")
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+    ))
+    cmd = captured[0]
+    assert "--allowed-tools" not in cmd
 
 
 # ---------------------------------------------------------------------
