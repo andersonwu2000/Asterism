@@ -380,6 +380,48 @@ def _fetch_dead_strategies(
     return out
 
 
+def _fetch_builder_declines(
+    conn: sqlite3.Connection, goal_id: int, *, k: int = 3,
+) -> list[sqlite3.Row]:
+    """F48 — Builder decline events on this goal. Each row's
+    proposal_md carries the agent's reasoning for why direct proof
+    isn't viable; Backward's Context.md surfaces this so the
+    decomposition addresses the flagged hard parts instead of
+    re-discovering them."""
+    return conn.execute(
+        "SELECT proposal_md, ts FROM dead_attempts "
+        "WHERE target_id = ? AND target_kind = 'Goal' "
+        "  AND failure_reason = 'agent_declined' "
+        "  AND COALESCE(proposal_md, '') != '' "
+        "ORDER BY id DESC LIMIT ?",
+        (goal_id, k),
+    ).fetchall()
+
+
+def _section_builder_declines(rows: list[sqlite3.Row]) -> list[str]:
+    """F48 — render Builder decline reasons inline so Backward sees
+    *what specifically* the Builder agent flagged as hard. Each entry
+    is the prior PROPOSAL.md verbatim (already short — agent decline
+    PROPOSALs are typically 3-10 lines)."""
+    if not rows:
+        return []
+    out = [
+        "## Why Builder declined this goal",
+        "",
+        "Earlier Builder attempts on this goal followed the decline "
+        "hatch (wrote PROPOSAL.md, no patch.lean) instead of producing "
+        "a guess. Their reasoning is below — design the decomposition "
+        "to address the specific hard parts they identified.",
+        "",
+    ]
+    for i, r in enumerate(rows, 1):
+        body = (r["proposal_md"] or "").strip()
+        out.append(f"### Decline {i}")
+        out.append(body)
+        out.append("")
+    return out
+
+
 def _section_dead_strategies(rows: list[dict]) -> list[str]:
     """F37 — anti-repetition hint for sequential Backward retry. Lists
     sub-goal decompositions from prior strategies on this goal that were
@@ -465,6 +507,12 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         conn, target_id=goal["id"], target_kind="Goal", k=5)
     strat_deads = _fetch_strategy_dead_attempts(conn, int(goal["id"]))
     dead_strats = _fetch_dead_strategies(conn, int(goal["id"]))
+    # F48 — Builder declines feed Backward only. Builder seeing its own
+    # prior declines would tempt it to decline again without retrying.
+    builder_declines = (
+        _fetch_builder_declines(conn, int(goal["id"]))
+        if kind == "backward" else []
+    )
 
     show_attempts = kind in (None, "builder")
     show_verifies = kind in (None, "backward")
@@ -482,6 +530,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_manifest_forbidden(mfst),
         _section_manifest_notes(mfst),
         _section_playbook(goal, workspace),
+        _section_builder_declines(builder_declines),
         _section_past_attempts(deads) if show_attempts else [],
         _section_past_verify_failures(strat_deads) if show_verifies else [],
         _section_dead_strategies(dead_strats),

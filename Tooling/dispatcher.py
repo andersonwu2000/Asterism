@@ -267,6 +267,19 @@ def next_worker_kind(goal: sqlite3.Row) -> str:
 # Cascade
 # ---------------------------------------------------------------------
 
+def _latest_failure_reason(conn: sqlite3.Connection,
+                           pipeline_id: str) -> str | None:
+    """Look up the failure_reason of the latest dead_attempt for this
+    pipeline, or None when no row exists (worker-exception cascades
+    synthesized from outside don't write dead_attempts)."""
+    row = conn.execute(
+        "SELECT failure_reason FROM dead_attempts "
+        "WHERE pipeline_id = ? ORDER BY id DESC LIMIT 1",
+        (pipeline_id,),
+    ).fetchone()
+    return row["failure_reason"] if row else None
+
+
 def _is_spawn_fast_fail(conn: sqlite3.Connection, pipeline_id: str) -> bool:
     """F46 — was this pipeline's failure a spawn-side fast fail (rc≠0
     in <10s, almost certainly an infra problem and not an agent error)?
@@ -275,12 +288,15 @@ def _is_spawn_fast_fail(conn: sqlite3.Connection, pipeline_id: str) -> bool:
     the cascade should skip incrementing the goal's attempts counter.
     Returns False if no dead_attempt was recorded (e.g. success cases
     or worker-exception cascades synthesized from outside)."""
-    row = conn.execute(
-        "SELECT failure_reason FROM dead_attempts "
-        "WHERE pipeline_id = ? ORDER BY id DESC LIMIT 1",
-        (pipeline_id,),
-    ).fetchone()
-    return bool(row and row["failure_reason"] == "spawn_fast_fail")
+    return _latest_failure_reason(conn, pipeline_id) == "spawn_fast_fail"
+
+
+def _is_agent_declined(conn: sqlite3.Connection, pipeline_id: str) -> bool:
+    """F48 — did the Builder agent invoke the decline hatch (write
+    PROPOSAL.md but no patch.lean)? When True, cascade fast-tracks the
+    goal to Backward rather than burning the rest of BUILDER_THRESHOLD
+    on attempts the agent already declared unwinnable."""
+    return _latest_failure_reason(conn, pipeline_id) == "agent_declined"
 
 
 def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
@@ -358,6 +374,29 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             if is_fast_fail:
                 # F46 — leave attempts unchanged; dispatcher will cool
                 # this (target,kind) for ~30s before the next dispatch.
+                return
+            # F48 — Builder explicitly declined (wrote PROPOSAL.md
+            # but no patch.lean per builder.md's STOP block). Honor
+            # the agent: jump attempts to BUILDER_THRESHOLD so the
+            # next dispatch is Backward rather than another Builder
+            # the agent already said it can't handle. SHELVE_THRESHOLD
+            # progress still advances by the same +1 the increment
+            # would have produced — declines are not free, just
+            # routed differently.
+            if _is_agent_declined(conn, pipeline_id):
+                cur = db.get_goal(conn, int(target_id))
+                cur_n = int(cur["attempts"]) if cur else 0
+                target_n = max(cur_n + 1, BUILDER_THRESHOLD)
+                # Bring attempts up to the Backward boundary in one step.
+                for _ in range(target_n - cur_n):
+                    n = db.increment_goal_attempts(conn, int(target_id))
+                if n >= SHELVE_THRESHOLD:
+                    db.update_goal_status(conn, int(target_id), "shelved")
+                    db.set_builder_session_id(conn, int(target_id), None)
+                    _propagate_shelve(conn, int(target_id))
+                else:
+                    # Builder session is moot now; next dispatch is Backward.
+                    db.set_builder_session_id(conn, int(target_id), None)
                 return
             n = db.increment_goal_attempts(conn, int(target_id))
             if n >= SHELVE_THRESHOLD:

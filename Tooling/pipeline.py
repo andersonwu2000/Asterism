@@ -357,6 +357,19 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
 
     patches = list(attempts_dir.glob("patch*.lean"))
     if not patches:
+        # F48 — Builder decline channel. The agent followed builder.md's
+        # "When to skip writing a patch" hatch: it produced a non-empty
+        # PROPOSAL.md explaining why the goal is too hard / needs
+        # decomposition, but did not write patch.lean. Cascade treats
+        # this distinctly from agent_no_response: it jumps the goal to
+        # Backward immediately rather than letting BUILDER_THRESHOLD
+        # run out on attempts the agent already said are unwinnable.
+        if proposal_text.strip():
+            return PipelineResult(
+                outcome="failed", failure_reason="agent_declined",
+                failure_detail="builder declined; PROPOSAL.md explains why",
+                proposal_md=proposal_text,
+            )
         return PipelineResult(outcome="failed", failure_reason="agent_no_response",
                               failure_detail="no patch*.lean", proposal_md=proposal_text)
     patch = patches[0]

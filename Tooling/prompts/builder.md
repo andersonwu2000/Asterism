@@ -18,8 +18,21 @@ If both pass, the patch becomes the proved goal file.
 
 - The Manifest's `## Mathlib hints` section lists candidate Mathlib lemmas with file:line references. The framework also pre-resolves these and any lemma names mentioned in past errors via `lake env lean` and injects exact signatures into Context.md's `## Lemma references` section — use those directly. Don't try to grep mathlib yourself; you don't have shell access.
 - Don't paraphrase a forbidden lemma — the integrator catches the pattern.
-- Keep the tactic block small (1-10 lines). If the goal genuinely needs multi-step decomposition, return early without a viable patch and the framework will dispatch Backward instead.
+
+## When to skip writing a patch
+
+Write only `PROPOSAL.md` (no `patch.lean`) if:
+1. No concrete proof direction.
+2. Can't bound retries needed to converge.
+3. Needs further analysis before tactics.
+4. Sub-lemma decomposition is more efficient than direct proof.
+
+In PROPOSAL.md note which condition fired and what makes the goal hard
+(a typeclass that won't unify, missing Mathlib lemma, etc.). The
+framework jumps the goal to Backward and forwards your reasoning.
 
 ## Output
 
-Write `patch.lean` and `PROPOSAL.md`. PROPOSAL.md: 1-2 sentences naming the key Mathlib lemma family + why it closes the goal. No restating the goal.
+Either:
+- **Patch path**: write `patch.lean` + `PROPOSAL.md` (1-2 sentences naming the key Mathlib lemma family + why it closes the goal; no restating the goal). Or:
+- **Decline path**: write only `PROPOSAL.md` per the section above.
