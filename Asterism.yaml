@@ -7,7 +7,7 @@
 # it; the framework only reads what's set.
 
 dispatch:
-  pool: 8               # ThreadPoolExecutor workers
+  pool: 12               # ThreadPoolExecutor workers
 #   budget_sec: 1800      # daemon wall-clock cutoff (30 min)
 #   builder_threshold: 3  # attempts per goal before switching to Backward
 #   shelve_threshold: 8   # attempts per goal before shelving

@@ -1,31 +1,57 @@
 # Asterism v2 — Current Status
 
-Updated 2026-05-02 (post-F41/F43/F44 batch). Compaction-safe handoff note.
+Updated 2026-05-02 (post-F45/F46 batch + compactness Opus baseline).
 
-## Live test queued (post-compact action item)
+## What just happened (today's session)
 
-**Re-run compactness with Sonnet, 2hr+ budget, to quantify combined
-F41/F43/F44 effect.**
+Compactness rerun on Sonnet exposed two cascading framework gaps and
+finished proved on Opus:
 
-Setup already in place:
-- `Problems/compactness/Manifest.md` carries verified-easy 4-sub root
-  decomposition hint (commit `ed877a3`). Sonnet's first Backward
-  followed it verbatim in the prior run.
-- `Asterism.yaml` has `dispatch.pool: 12` set.
-- Daemon currently NOT running. Compactness DB state from prior run
-  is stale-leftover; reset before launching:
-  `python -m Tooling.cli reset compactness && python -m Tooling.cli init compactness`.
-- Launch: `ASTERISM_BUDGET_SEC=7200 python -m Tooling.cli run`.
+1. **F45** (commit `77156f8`) — F44's cwd narrowing left
+   `Tooling/prompts/*.md` unreachable to claude (outside `--add-dir`),
+   so Backward's first 7.5min just generated the title `"Unable to
+   access file system"` with no PROPOSAL.md. Fix: inline the prompt
+   body into `-p` so the agent never needs cross-boundary file reads.
+2. **F46** (commit `5941c56`) — Sonnet's compactness rerun then hit
+   account quota mid-cascade. claude.exe started returning rc=1 in
+   ~2s with stdout `"You've hit your limit"`. The dispatcher had no
+   defense: 25+ instant failures within 30s burned every reachable
+   goal's attempts cap and shelved root via cascade. Fix is three-layer:
+   - Provider writes captured stderr to `attempts_dir/_spawn.stderr`
+     on rc≠0 → real diagnosis instead of "agent rc=1".
+   - Pipeline times the spawn; rc≠0 in <10s → failure_reason
+     `spawn_fast_fail`. cascade_one looks that up via DB and skips
+     `increment_goal_attempts`. Goal cap untouched by infra blips.
+   - Dispatcher cooldown_until dict + global counter: per-(target,
+     kind) 30s back-off after fast-fail, daemon exits cleanly after
+     10 consecutive fast-fails (any target).
 
-What to measure (compare to last run @ commit `f98c473`):
-- Total wall-clock to root proved (last run hit 95min budget without
-  proving root)
-- Verify failure count vs Verify-retry success count
-  (`SELECT failure_reason, count(*) FROM dead_attempts WHERE target_kind='Strategy'`
-  + grep daemon log for `[verify_retry] strategy=...`)
-- Wandering Read counts (parse session jsonls for absolute-path Reads
-  pointing outside the active Problem)
-- Total cascade count (proxy for re-Backward thrash)
+After F46, **Opus closed compactness in 25.2 min** (post-restore — see
+"Compactness 2026-05-02 timeline" below). Wilson Sonnet baseline
+unaffected. 431 unit tests green.
+
+## Compactness 2026-05-02 timeline (representative case)
+
+| Phase | Wall-clock | Outcome |
+|---|---|---|
+| Sonnet round 1 | 83 min | shelved (account quota exhaust → cascade) |
+| F45 + F46 dev | ~30 min | tests green, commits pushed |
+| Sonnet round 2 | <1 min | F46 caught quota in 10 spawn_fast_fails, exited rc=2 |
+| Manual restore | seconds | 4 goals + 3 strategies revived, 20 spurious dead_attempts pruned |
+| Opus rerun | 25.2 min | **proved**; axioms `[propext, Classical.choice, Quot.sound]` |
+
+The restore script rule of thumb (only needed if a daemon shelved
+goals from infra rather than agent failure):
+
+```python
+# 1. fast_fail_pids = pipelines whose duration < 10s on the affected goals
+# 2. DELETE FROM dead_attempts + DELETE FROM pipelines for those pids
+# 3. UPDATE goals SET attempts = (real attempts), status = (open/attempting)
+# 4. UPDATE strategies SET status='proposed' for ones cascade-killed by the fake-shelve
+```
+
+A future enhancement could fold this into `asterism reset --soft <problem>`
+or a daemon flag, but a one-off was sufficient here.
 
 > **Operator workflow** — see `docs/OPERATOR.md` for CLI subcommands,
 > `Asterism.yaml` schema, recurring traps. Kept under `docs/` so solver
@@ -40,6 +66,7 @@ What to measure (compare to last run @ commit `f98c473`):
 | wilson | 9c2c2a0 | Haiku | 39.5 min | propext, Classical.choice, Quot.sound |
 | wilson (Sonnet) | 6b0cf3b | Sonnet | ~15 min | propext, Classical.choice, Quot.sound |
 | compactness | 46c8941 | Sonnet | ~60 min | propext, Classical.choice, Quot.sound |
+| compactness (Opus) | (HEAD) | Opus  | ~25 min tail | propext, Classical.choice, Quot.sound |
 | cantor | 6bd6c15 | Sonnet | ~5 min | [] (constructive) |
 | gen_generates | 4c6f423 | Sonnet | ~30 min | propext, Quot.sound |
 
@@ -70,6 +97,25 @@ axioms identical to baseline.
   with the `Asterism.yaml` introduction. Brittle by design (vendor
   naming drift). Weak-tier projects now write `dispatch.builder_threshold:
   5` + `shelve_threshold: 10` in `Asterism.yaml` explicitly.
+
+## Operator notes from compactness Opus run
+
+- **Opus respects builder.md's "return early" hatch** — line 21 of the
+  Builder prompt says "if the goal genuinely needs multi-step
+  decomposition, return early without a viable patch." Opus follows
+  this literally: writes nothing for genuinely-hard sub-goals, framework
+  escalates to Backward after `BUILDER_THRESHOLD` no-op attempts.
+  Sonnet ignores the hatch and writes a (frequently broken) patch
+  anyway. Net effect on opus: the 3 no-op attempts before Backward
+  cost ~30-90s wall-clock per goal, but the eventual Backward
+  decomposition is good. Don't tighten BUILDER_THRESHOLD for Opus to
+  "skip" the no-ops — those reads might correctly find a 1-step proof
+  on easier siblings.
+- **Quota exhaust is silent at the CLI layer** — claude.exe returns
+  rc=1 with the quota message on **stdout** (not stderr). F46
+  combines both into `_spawn.stderr` so this remains visible. If a
+  future provider hides the quota message differently, look for
+  *consistent* fast-fail across all targets (vs sporadic) as the tell.
 
 ## Architectural delta this session (2026-05-02 batch)
 
@@ -111,6 +157,9 @@ Driven by compactness telemetry on the prior run + a Manifest-hint experiment:
 
 | Commit | Topic |
 |---|---|
+| 5941c56 | F46 — defense against claude.exe instant-fail loop |
+| 77156f8 | F45 — inline prompt body into -p (fix F44 regression) |
+| a0fc91f | STATUS: F41/F43/F44 batch + post-compact action item |
 | 7f7f293 | F41 — Verify-time patch retry (one-shot LLM repair) |
 | 141a5e2 | Fix asterism reset leaking stale pipelines table rows |
 | d4f9321 | F44 — anchor agent cwd at problem_dir (soft sandbox) |
@@ -165,5 +214,5 @@ Driven by compactness telemetry on the prior run + a Manifest-hint experiment:
 
 ## Test count
 
-409 unit tests + 2 lake-integration tests (skipped if `lake` missing).
+431 unit tests + 2 lake-integration tests (skipped if `lake` missing).
 All green at HEAD.
