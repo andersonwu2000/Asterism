@@ -14,8 +14,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import agent, db, dedupe, diagnostics, manifest
-from .llm.base import SpawnRC
+from .. import agent, db, dedupe, diagnostics, manifest
+from ..llm.base import SpawnRC
 
 
 PROMPT_DIR = Path(__file__).parent / "prompts"
@@ -141,58 +141,15 @@ _collect_artifacts = collect_artifacts
 # Helpers
 # ---------------------------------------------------------------------
 
-def _lean_path_to_module(workspace: Path, lean_path: Path) -> str:
-    """Convert workspace-relative .lean path to lean module name.
-    Problems/wilson/Root.lean → Problems.wilson.Root
-    Problems/wilson/proofs/L_x.lean → Problems.wilson.proofs.L_x
-    """
-    rel = lean_path.relative_to(workspace).with_suffix("")
-    return ".".join(rel.parts)
-
-
-def _lake_build_modules(workspace: Path,
-                        modules: list[str]) -> tuple[bool, str]:
-    """Run `lake build <m1> <m2> ...` for one or many module names.
-
-    Lake's internal scheduler resolves the dependency DAG and builds
-    independent modules in parallel. Passing N modules in a single
-    call is therefore much faster than N sequential single-target
-    invocations whenever any of those modules can run in parallel
-    (e.g. Backward writes 4 sibling sub-goal files plus 1 strategy
-    file that imports them all — sub-goals build concurrently, then
-    the strategy serially).
-    """
-    try:
-        r = subprocess.run(
-            ["lake", "build", *modules],
-            cwd=str(workspace),
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-            timeout=600,
-        )
-        out = (r.stdout + r.stderr).strip()
-        ok = r.returncode == 0 and "error:" not in out.lower()
-        return ok, out
-    except subprocess.TimeoutExpired:
-        return False, f"lake build {' '.join(modules)} timed out (600s)"
-
-
-def _lake_build(workspace: Path, target_lean: Path) -> tuple[bool, str]:
-    """Build a single .lean file's module (resolves deps).
-
-    Thin wrapper around `_lake_build_modules` — kept for Builder / Verify
-    call sites that only ever build one target at a time.
-    """
-    module = _lean_path_to_module(workspace, target_lean)
-    return _lake_build_modules(workspace, [module])
-
-
-def _lake_build_batch(workspace: Path,
-                      targets: list[Path]) -> tuple[bool, str]:
-    """Build multiple .lean files in one lake invocation. Lake
-    parallelizes independent targets internally."""
-    modules = [_lean_path_to_module(workspace, t) for t in targets]
-    return _lake_build_modules(workspace, modules)
+# P2-#1: lake helpers extracted to _lake.py. Underscore aliases for
+# back-compat with existing test + dispatcher imports
+# (`pipeline._lake_build`, `pipeline._lean_path_to_module`).
+from ._lake import (  # noqa: E402
+    lean_path_to_module as _lean_path_to_module,
+    lake_build_modules as _lake_build_modules,
+    lake_build as _lake_build,
+    lake_build_batch as _lake_build_batch,
+)
 
 
 def _grep_forbidden(text: str, forbidden: list[str]) -> str | None:
@@ -211,174 +168,17 @@ def _grep_forbidden(text: str, forbidden: list[str]) -> str | None:
 _SORRY_STUB_RE = re.compile(r":=[ \t]*by[ \t]+sorry[ \t]*$", re.MULTILINE)
 
 
-# ---------------------------------------------------------------------
-# F52 — skeleton-driven strategy patches + def-alias promotion
-# ---------------------------------------------------------------------
-
-def _signature_prefix(text: str, name: str) -> str:
-    """Return the substring `theorem <name> <binders> : <type>` (up to but
-    not including `:=`). Returns "" if `theorem <name>` not found.
-
-    Walks balanced paren/brace/bracket depth so a top-level `:=` is
-    distinguished from `:=` inside a binder default value or anonymous
-    constructor literal.
-    """
-    m = re.search(rf"\btheorem\s+{re.escape(name)}\b", text)
-    if not m:
-        return ""
-    pos = m.end()
-    n = len(text)
-    depth = 0
-    while pos < n - 1:
-        ch = text[pos]
-        if ch in "({[":
-            depth += 1
-        elif ch in ")}]":
-            depth = max(0, depth - 1)
-        elif depth == 0 and ch == ":" and text[pos + 1] == "=":
-            return text[m.start():pos]
-        pos += 1
-    return text[m.start():]
-
-
-def _normalize_signature(s: str) -> str:
-    """Collapse all whitespace runs to single spaces. Lets agents reformat
-    indentation freely without tripping the diff check; only meaningful
-    edits (binder names, types, theorem name) remain detectable."""
-    return re.sub(r"\s+", " ", s).strip()
-
-
-def _build_strategy_skeleton(
-    parent_text: str, *, parent_slug: str, sid_token: str,
-    namespace: str,
-) -> str | None:
-    """Construct a strategy patch skeleton by copying the parent stub's
-    `theorem <parent_slug> ...` declaration verbatim, then renaming the
-    theorem to `<sid_token>` and stubbing the body as `by sorry`.
-
-    Returns None if `theorem <parent_slug>` is not found (e.g. parent
-    was already promoted by a sibling and now contains `def ... := @...`
-    instead — race-safe handling: caller aborts cleanly).
-    """
-    sig = _signature_prefix(parent_text, parent_slug)
-    if not sig:
-        return None
-    # Rename `theorem <parent_slug>` → `theorem <sid_token>` (only
-    # the first match within sig, which is the head we anchored).
-    new_sig = re.sub(
-        rf"\btheorem\s+{re.escape(parent_slug)}\b",
-        f"theorem {sid_token}", sig, count=1,
-    )
-    imports = [ln for ln in parent_text.splitlines()
-               if ln.strip().startswith("import")]
-    if not imports:
-        imports = ["import Mathlib"]
-    return (
-        "\n".join(imports) + "\n\n"
-        f"namespace {namespace}\n\n"
-        f"{new_sig} := by sorry\n\n"
-        f"end {namespace}\n"
-    )
-
-
-def _inject_imports_for_subs(
-    workspace: Path, patch_path: Path,
-    sub_dest_paths: list[Path],
-) -> None:
-    """Splice `import <module>` lines into `patch_path` for every
-    sub-goal file the agent placed. Idempotent: pre-existing imports
-    are not duplicated. Inserted just before the first non-import line
-    so namespace decl + theorem stay below the import block."""
-    if not patch_path.exists() or not sub_dest_paths:
-        return
-    text = patch_path.read_text(encoding="utf-8")
-    existing = {ln.strip() for ln in text.splitlines()
-                if ln.strip().startswith("import")}
-    needed = []
-    for sub in sub_dest_paths:
-        mod = _lean_path_to_module(workspace, sub)
-        line = f"import {mod}"
-        if line not in existing:
-            needed.append(line)
-    if not needed:
-        return
-    lines = text.splitlines()
-    # Find insert point: after last existing import, else at top.
-    insert_at = 0
-    for idx, ln in enumerate(lines):
-        if ln.strip().startswith("import"):
-            insert_at = idx + 1
-    new_lines = lines[:insert_at] + needed + lines[insert_at:]
-    patch_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-
-
-def _verify_backup_path(parent_abs: Path, sid_token: str) -> Path:
-    """Backup filename keyed by sid_token so concurrent Verifies on
-    sibling strategies of the same parent goal can't clobber each
-    other's backup. Was previously a fixed `.verify_backup` shared
-    by every Verify on the parent — race-prone (P0-#1)."""
-    return parent_abs.with_suffix(
-        parent_abs.suffix + f".verify_backup_{sid_token}")
-
-
-def _promote_to_alias(
-    parent_abs: Path, *,
-    namespace: str, slug: str, sid_token: str,
-    scratch_module: str,
-) -> Path | None:
-    """F52 — rewrite parent stub as a re-export alias of the strategy.
-
-    Replaces the entire file contents with::
-
-        <orig imports + scratch_module>
-
-        namespace <namespace>
-
-        def <slug> := @<namespace>.<sid_token>
-
-        end <namespace>
-
-    `def` (not `theorem`) is required because Lean 4 syntax demands an
-    explicit `: <type>` after a theorem name, and we deliberately want
-    Lean to copy the type from the strategy theorem's signature at
-    elaboration. This sidesteps the older bug where serializing
-    `goal.statement` (just the conclusion — binders stripped during
-    extraction) into a fresh `theorem ... : <stmt> := s_id` left
-    identifiers like `P` unbound, triggering `Function expected ...`
-    at lake build.
-
-    Returns the backup path the caller should keep until the post-
-    promote lake build succeeds (delete on success, restore on fail
-    via `_rollback_promote`). Returns None if no original file existed.
-    """
-    original = parent_abs.read_text(encoding="utf-8") if parent_abs.exists() else ""
-    orig_imports = [ln for ln in original.splitlines()
-                    if ln.strip().startswith("import")]
-    if f"import {scratch_module}" not in orig_imports:
-        orig_imports.append(f"import {scratch_module}")
-    new_content = (
-        "\n".join(orig_imports) + "\n\n"
-        f"namespace {namespace}\n\n"
-        f"def {slug} := @{namespace}.{sid_token}\n\n"
-        f"end {namespace}\n"
-    )
-    backup: Path | None = None
-    if parent_abs.exists():
-        backup = _verify_backup_path(parent_abs, sid_token)
-        shutil.copy2(parent_abs, backup)
-    # tmp filename is also sid-keyed so concurrent writes on the same
-    # parent_abs don't race on the rename source.
-    tmp = parent_abs.with_suffix(parent_abs.suffix + f".tmp_{sid_token}")
-    tmp.write_text(new_content, encoding="utf-8")
-    os.replace(tmp, parent_abs)
-    return backup
-
-
-def _rollback_promote(parent_abs: Path, backup: Path | None) -> None:
-    """Restore parent_abs from backup; delete backup. No-op if backup is None."""
-    if backup is not None and backup.exists():
-        shutil.copy2(backup, parent_abs)
-        backup.unlink()
+# P2-#1: F52 skeleton + alias helpers extracted to _skeleton.py.
+# Underscore aliases for back-compat with existing tests.
+from ._skeleton import (  # noqa: E402
+    signature_prefix as _signature_prefix,
+    normalize_signature as _normalize_signature,
+    build_strategy_skeleton as _build_strategy_skeleton,
+    inject_imports_for_subs as _inject_imports_for_subs,
+    verify_backup_path as _verify_backup_path,
+    promote_to_alias as _promote_to_alias,
+    rollback_promote as _rollback_promote,
+)
 
 
 def _is_sorry_stub(content: str) -> bool:
