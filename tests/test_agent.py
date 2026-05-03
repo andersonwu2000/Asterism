@@ -206,6 +206,99 @@ def test_context_omits_playbook_when_missing(
 # Manifest as relevant)
 # ---------------------------------------------------------------------
 
+def test_context_sandbox_section_always_rendered_for_builder(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """P0-#4: Builder dispatch never passes strategy_id, but the
+    universal Sandbox section (read-allowlist + framework file
+    contracts) must still appear so Builder agents know which paths
+    are allowed without permission prompts."""
+    gid = _seed_problem_and_goal(conn)
+    attempts_dir = tmp_path / ".attempts" / "pid-bld"
+    attempts_dir.mkdir(parents=True)
+    goal = db.get_goal(conn, gid)
+    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+                          attempts_dir=attempts_dir, kind="builder")
+    text = out.read_text(encoding="utf-8")
+    assert "## Sandbox" in text
+    assert "Reads allowed" in text
+    assert ".lake/packages/mathlib/Mathlib" in text
+    # Strategy-naming section must NOT appear for Builder (no sub-goals)
+    assert "## Strategy naming" not in text
+
+
+def test_context_strategy_naming_only_for_backward_with_sid(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """The Backward-specific naming section appears only when a
+    strategy_id is supplied (Backward dispatch path). Builder kind
+    has no sub-goals so this section stays absent."""
+    gid = _seed_problem_and_goal(conn)
+    attempts_dir = tmp_path / ".attempts" / "pid-bw"
+    attempts_dir.mkdir(parents=True)
+    goal = db.get_goal(conn, gid)
+    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+                          attempts_dir=attempts_dir,
+                          strategy_id=42, kind="backward")
+    text = out.read_text(encoding="utf-8")
+    assert "## Strategy naming" in text
+    assert "`s42`" in text
+    assert "new_s42_sub_<N>.lean" in text
+    # Sandbox is universal — also present
+    assert "## Sandbox" in text
+
+
+def test_context_dead_strategies_visible_to_builder(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """P0-#4: Builder kind has show_verifies=False (no
+    `## Past decompositions that failed Verify` section), so the
+    dedupe filter that strips strategies-shown-in-verify-failures
+    from `dead_strats` must NOT run for Builder — otherwise Builder
+    silently loses the dead-strategy signal entirely."""
+    gid = _seed_problem_and_goal(conn)
+    # Seed a dead strategy on this goal with a committed sub
+    sid = db.insert_strategy(
+        conn, goal_id=gid, lean_path="Problems/p/Root.lean",
+        created_by="pid-prior",
+        proposal_md="dead strategy: split into A and B")
+    db.update_strategy_status(conn, sid, "dead")
+    sub = db.insert_goal(
+        conn, problem="p", slug="ds_sub_1",
+        lean_path="Problems/p/proofs/L_ds_sub_1.lean",
+        statement="T", origin="backward", difficulty=1, depth=1,
+    )
+    db.link_subgoal(conn, strategy_id=sid, subgoal_id=sub, position=0)
+    # And record a Verify dead_attempt so the dedupe set includes this sid
+    _record_pipeline(conn, "pid-verify", "Verify", str(sid), "Strategy")
+    db.record_dead_attempt(
+        conn, target_id=sid, target_kind="Strategy",
+        pipeline_id="pid-verify",
+        failure_reason="lake_build_error",
+        failure_detail="error: typeclass instance problem")
+    # For Backward kind: dedupe should hide the dead strategy (verify
+    # failures section already covers it).
+    attempts_bw = tmp_path / ".attempts" / "pid-bw"
+    attempts_bw.mkdir(parents=True)
+    out_bw = compile_context(
+        conn, goal=db.get_goal(conn, gid), mfst=_empty_manifest(),
+        attempts_dir=attempts_bw, strategy_id=99, kind="backward")
+    text_bw = out_bw.read_text(encoding="utf-8")
+    assert "Past decompositions that failed Verify" in text_bw
+    assert "Prior strategies that died" not in text_bw  # deduped
+
+    # For Builder kind: no verify-failures section, so dead strategy
+    # MUST still be visible (regression: P0-#4 dedupe was unconditional).
+    attempts_bld = tmp_path / ".attempts" / "pid-bld"
+    attempts_bld.mkdir(parents=True)
+    out_bld = compile_context(
+        conn, goal=db.get_goal(conn, gid), mfst=_empty_manifest(),
+        attempts_dir=attempts_bld, kind="builder")
+    text_bld = out_bld.read_text(encoding="utf-8")
+    assert "Past decompositions that failed Verify" not in text_bld
+    assert "Prior strategies that died" in text_bld
+
+
 def test_context_emits_lemma_references_when_lookup_finds(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

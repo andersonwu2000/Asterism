@@ -81,34 +81,50 @@ def _section_header(goal: sqlite3.Row) -> list[str]:
 
 def _section_sandbox(strategy_id: int | None,
                      goal: sqlite3.Row) -> list[str]:
-    """Single source of truth for: working directory, what files the
-    framework wrote vs what the agent writes, allowed read paths, and
-    the slug-naming convention pinned to this strategy id. Replaces
-    the earlier `## Naming convention` paragraph (which still said
-    `patch_<parent>.lean` post-F52, and warned about collisions that
-    F53/A's stable sid_token has eliminated)."""
-    if strategy_id is None:
-        return []
-    sid_token = f"s{strategy_id}"
+    """Universal sandbox info — read-allowlist boundaries + framework
+    file conventions. Always rendered (Builder + Backward both need
+    to know which paths are accessible). Strategy-specific naming is
+    in `_section_strategy_naming` below; that one is Backward-only
+    because Builder doesn't fan out into sub-goals.
+
+    P0-#4: prior version returned [] when strategy_id is None,
+    silently denying Builder kind the read-scope hints — Builder then
+    burned turns hitting permission prompts the new F54 allowlist
+    introduced.
+    """
     return [
         "## Sandbox",
-        f"- Strategy id: `{sid_token}` (stable across same-session retries).",
-        "- Files framework wrote (read & edit, do NOT rename):",
-        "  - `patch.lean` — strategy skeleton; signature is locked, "
-        "edit only the proof body after `:=`.",
-        "  - `Context.md`, `PAST_ATTEMPTS.md`, `PAST_VERIFIES.md` "
-        "(when present) — read-only reference.",
-        "- Files you write:",
-        "  - `PROPOSAL.md` — strategy explanation.",
-        f"  - `new_{sid_token}_sub_<N>.lean` × N (one per sub-goal). "
-        f"Theorem name in each file = `{sid_token}_sub_<N>` "
-        f"(matches filename minus `new_` and `.lean`).",
         "- Reads allowed without permission prompts:",
         "  - This goal's problem dir (your cwd).",
         "  - `.lake/packages/mathlib/Mathlib/` for `rg`/`Read` on "
         "Mathlib source.",
         "- Reads NOT allowed: other `Problems/<...>/` dirs — they're "
         "irrelevant to this goal. Use Loogle / Grep on Mathlib instead.",
+        "- Files framework wrote (read & edit, do NOT rename):",
+        "  - `patch.lean` — proof patch (Builder writes body; Backward "
+        "edits the locked-signature skeleton, body only).",
+        "  - `Context.md`, `PAST_ATTEMPTS.md`, `PAST_VERIFIES.md` "
+        "(when present) — read-only reference.",
+        "- Files you write:",
+        "  - `PROPOSAL.md` — strategy / approach explanation.",
+        "",
+    ]
+
+
+def _section_strategy_naming(strategy_id: int | None,
+                             goal: sqlite3.Row) -> list[str]:
+    """Backward-only: slug naming pinned to this strategy id. Builder
+    doesn't fan out into sub-goals so this section is empty for it."""
+    if strategy_id is None:
+        return []
+    sid_token = f"s{strategy_id}"
+    return [
+        "## Strategy naming",
+        f"- This Backward attempt is strategy `{sid_token}` (stable "
+        "across same-session retries).",
+        f"- Sub-goal files you write: `new_{sid_token}_sub_<N>.lean` × N. "
+        f"Theorem name in each file = `{sid_token}_sub_<N>` (filename "
+        f"minus `new_` and `.lean`).",
         "",
     ]
 
@@ -589,21 +605,27 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     # `strat_deads` (with lake stderr + proposal) and `dead_strats`
     # (with proposal + sub-goals). Drop the strat-side entries from
     # `dead_strats` so the agent doesn't see the same proposal twice.
-    verify_failed_strategy_ids: set[int] = set()
-    for r in strat_deads:
-        # _fetch_strategy_dead_attempts joins via target_id (strategy id)
-        try:
-            verify_failed_strategy_ids.add(int(r["target_id"]))
-        except (KeyError, IndexError, TypeError):
-            pass
-    dead_strats_filtered = [
-        s for s in dead_strats
-        if s["id"] not in verify_failed_strategy_ids
-    ]
+    # P0-#4: gate on `show_verifies`. For Builder kind we suppress
+    # the verify-failures section, so applying the dedupe would silently
+    # strip dead-strategy signal too.
+    if show_verifies:
+        verify_failed_strategy_ids: set[int] = set()
+        for r in strat_deads:
+            try:
+                verify_failed_strategy_ids.add(int(r["target_id"]))
+            except (KeyError, IndexError, TypeError):
+                pass
+        dead_strats_filtered = [
+            s for s in dead_strats
+            if s["id"] not in verify_failed_strategy_ids
+        ]
+    else:
+        dead_strats_filtered = dead_strats
 
     sections: list[list[str]] = [
         _section_header(goal),
         _section_sandbox(strategy_id, goal),
+        _section_strategy_naming(strategy_id, goal),
         _section_parent_strategy(conn, goal),
         _section_mathlib_lemmas(mfst, deads, workspace),
         _section_manifest_forbidden(mfst),
