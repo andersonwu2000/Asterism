@@ -6,17 +6,34 @@ inference, and writing outputs (PROPOSAL.md, patch.lean, new_*.lean)
 into `attempts_dir`. The pipeline checks the directory contents
 afterwards — providers don't return anything but the rc.
 
-Return code convention (mirrors claude CLI):
+Return code convention (mirrors claude CLI; see SpawnRC enum below
+for typed names — providers may return either int or SpawnRC since
+SpawnRC is an IntEnum):
   0   success (output files in attempts_dir; pipeline parses them)
   124 timeout
+  125 stale session (claude --resume on a GC'd session UUID, F33)
+  126 quota exhausted (gemini free-tier limit, F38)
   127 dependency missing (CLI not on PATH / SDK not installed)
   other non-zero  agent error / API failure
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import IntEnum
 from pathlib import Path
 from typing import Protocol
+
+
+class SpawnRC(IntEnum):
+    """Typed names for the rc convention. P2-#3 — pipeline branches
+    on `rc == SpawnRC.TIMEOUT` etc. instead of magic numbers, while
+    providers can still return raw int (IntEnum compares equal to
+    its underlying int)."""
+    OK = 0
+    TIMEOUT = 124
+    STALE_SESSION = 125
+    QUOTA_EXHAUSTED = 126
+    MISSING_DEP = 127
 
 
 @dataclass
