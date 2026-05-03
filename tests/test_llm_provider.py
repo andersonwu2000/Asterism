@@ -963,7 +963,7 @@ def test_gemini_resolve_prefers_cmd_extension_on_windows(
         return None
 
     monkeypatch.setattr(gemini_cli.shutil, "which", fake_which)
-    assert gemini_cli._resolve_gemini_executable() == r"C:\npm\gemini.cmd"
+    assert gemini_cli.resolve_gemini_executable() == r"C:\npm\gemini.cmd"
     # Resolver must have probed gemini.cmd BEFORE the no-extension shim
     assert seen[0] == "gemini.cmd"
 
@@ -975,7 +975,7 @@ def test_gemini_resolve_uses_plain_name_on_posix(
     monkeypatch.setattr(gemini_cli.sys, "platform", "linux")
     monkeypatch.setattr(gemini_cli.shutil, "which",
                         lambda n: "/usr/bin/gemini" if n == "gemini" else None)
-    assert gemini_cli._resolve_gemini_executable() == "/usr/bin/gemini"
+    assert gemini_cli.resolve_gemini_executable() == "/usr/bin/gemini"
 
 
 def test_gemini_spawn_returns_127_on_filenotfounderror(
@@ -1183,7 +1183,7 @@ def test_gemini_spawn_cwd_is_problem_dir(
     # Gemini also needs the Windows .cmd resolver patched so it
     # doesn't return None.
     monkeypatch.setattr(
-        gemini_cli, "_resolve_gemini_executable", lambda: "/fake/gemini.cmd")
+        gemini_cli, "resolve_gemini_executable", lambda: "/fake/gemini.cmd")
     p = gemini_cli.GeminiCliProvider()
     p.spawn(llm.LLMRequest(
         kind="backward",

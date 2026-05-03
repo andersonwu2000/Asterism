@@ -63,7 +63,7 @@ def _resolve_model(kind: str | None) -> str:
     return os.environ.get("ASTERISM_GEMINI_MODEL", DEFAULT_MODEL)
 
 
-def _resolve_gemini_executable() -> str | None:
+def resolve_gemini_executable() -> str | None:
     """Return a launchable path for `gemini`, or None if not installed.
 
     npm installs gemini side-by-side as `gemini` (a no-extension bash
@@ -145,7 +145,7 @@ def _quota_message_in(text: str) -> bool:
 
 class GeminiCliProvider:
     def spawn(self, req: LLMRequest) -> int:
-        gemini_exe = _resolve_gemini_executable()
+        gemini_exe = resolve_gemini_executable()
         if not gemini_exe:
             print("[llm:gemini] gemini CLI not found; skipping spawn",
                   flush=True)
@@ -195,7 +195,7 @@ class GeminiCliProvider:
                                 f"{req.timeout_sec}s)", "", 124)
             return 124
         except FileNotFoundError as e:
-            # Defensive: _resolve_gemini_executable returned a path
+            # Defensive: resolve_gemini_executable returned a path
             # whose target was deleted between checks, or PATHEXT
             # produced a stale hit. Surface as missing-CLI rather
             # than letting subprocess raise.
@@ -234,7 +234,7 @@ class GeminiCliProvider:
         """One-shot completion via `gemini -p`. Returns stdout text or
         None on quota exhaustion / timeout / failure. Used by F22 short
         auxiliary calls (idiom extract / curate)."""
-        gemini_exe = _resolve_gemini_executable()
+        gemini_exe = resolve_gemini_executable()
         if not gemini_exe:
             return None
         # F22 auxiliary calls inherit the 'builder' tier.

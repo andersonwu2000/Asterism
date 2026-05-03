@@ -515,7 +515,7 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
             # 'superseded' isn't a real failure (just OR race noise), don't
             # pollute dead_attempts with it.
             if r.failure_reason and r.failure_reason != "superseded":
-                artifacts = pipeline._collect_artifacts(attempts_dir)
+                artifacts = pipeline.collect_artifacts(attempts_dir)
                 tk = target_kind
                 tid = goal_id if tk == "Goal" else int(target_id)
                 db.record_dead_attempt(

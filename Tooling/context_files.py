@@ -34,7 +34,7 @@ PAST_VERIFIES_FILENAME = "PAST_VERIFIES.md"
 _COMPANION_STDERR_BUDGET = 4000
 
 
-def _render_attempt_block(idx: int, dead: sqlite3.Row) -> str:
+def render_attempt_block(idx: int, dead: sqlite3.Row) -> str:
     """Per-attempt section: failure_reason header + smart-truncated
     failure_detail + (optional) raw proposal_md."""
     lines: list[str] = []
@@ -73,15 +73,15 @@ def write_past_attempts(deads: Iterable[sqlite3.Row],
         "",
     ]
     for i, d in enumerate(rows, 1):
-        parts.append(_render_attempt_block(i, d))
+        parts.append(render_attempt_block(i, d))
     out = attempts_dir / PAST_ATTEMPTS_FILENAME
     out.write_text("\n".join(parts), encoding="utf-8")
     return out
 
 
-def _render_strategy_block(idx: int, row: sqlite3.Row) -> str:
+def render_strategy_block(idx: int, row: sqlite3.Row) -> str:
     """Per-Verify-failure section. Same smart-truncate treatment as
-    _render_attempt_block (F30)."""
+    render_attempt_block (F30)."""
     lines: list[str] = []
     lines.append(
         f"### Strategy {idx} (pid {row['pipeline_id'][:12]}): "
@@ -116,7 +116,7 @@ def write_past_verifies(strat_deads: Iterable[sqlite3.Row],
         "",
     ]
     for i, r in enumerate(rows, 1):
-        parts.append(_render_strategy_block(i, r))
+        parts.append(render_strategy_block(i, r))
     out = attempts_dir / PAST_VERIFIES_FILENAME
     out.write_text("\n".join(parts), encoding="utf-8")
     return out

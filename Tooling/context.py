@@ -289,7 +289,7 @@ def _section_past_attempts(deads: list[sqlite3.Row]) -> list[str]:
         return []
     out = ["## Previous attempts on THIS goal", ""]
     for i, d in enumerate(deads, 1):
-        out.append(context_files._render_attempt_block(i, d).rstrip())
+        out.append(context_files.render_attempt_block(i, d).rstrip())
         out.append("")
     return out
 
@@ -478,7 +478,7 @@ def _section_past_verify_failures(rows: list[sqlite3.Row]) -> list[str]:
         "",
     ]
     for i, r in enumerate(rows, 1):
-        out.append(context_files._render_strategy_block(i, r).rstrip())
+        out.append(context_files.render_strategy_block(i, r).rstrip())
         out.append("")
     return out
 

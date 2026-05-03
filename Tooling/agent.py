@@ -113,11 +113,6 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     ))
 
 
-# Back-compat alias: existing code (and any external callers) referencing
-# `agent.spawn_claude` still work.
-spawn_claude = spawn_llm
-
-
 def new_pipeline_id() -> str:
     return str(uuid.uuid4())
 

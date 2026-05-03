@@ -113,12 +113,15 @@ class PipelineResult:
     artifacts: dict[str, str] = field(default_factory=dict)
 
 
-def _collect_artifacts(attempts_dir: Path) -> dict[str, str]:
+def collect_artifacts(attempts_dir: Path) -> dict[str, str]:
     """Snapshot all .md / .lean / .txt files in attempts_dir for forensic
     preservation in dead_attempts.artifacts JSON column. .txt covers
     `_raw_response.txt` written by the OpenAI provider (raw model output
     before fence parsing) — needed when fence-parse failures point
-    blame at the model's output schema."""
+    blame at the model's output schema.
+
+    P2-#5: promoted from `_collect_artifacts` (used cross-module by
+    dispatcher.py)."""
     out: dict[str, str] = {}
     for f in attempts_dir.glob("*"):
         if f.is_file() and f.suffix in {".md", ".lean", ".txt"}:
@@ -127,6 +130,10 @@ def _collect_artifacts(attempts_dir: Path) -> dict[str, str]:
             except OSError:
                 pass
     return out
+
+
+# Back-compat alias for any external callers still using the underscore form.
+_collect_artifacts = collect_artifacts
 
 
 # ---------------------------------------------------------------------

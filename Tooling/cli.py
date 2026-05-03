@@ -623,8 +623,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     # Gemini CLI — use the same Windows-aware resolver the provider does
     # (npm ships gemini as a bash shim + gemini.cmd; subprocess.run on
     # Windows can only launch the .cmd).
-    from .llm.gemini_cli import _resolve_gemini_executable
-    gemini_exe = _resolve_gemini_executable()
+    from .llm.gemini_cli import resolve_gemini_executable
+    gemini_exe = resolve_gemini_executable()
     if gemini_exe:
         try:
             r = subprocess.run(
