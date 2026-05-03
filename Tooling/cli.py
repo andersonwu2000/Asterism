@@ -249,6 +249,86 @@ def cmd_run(args: argparse.Namespace) -> int:
             pass
 
 
+def _soft_reset(problem: str) -> int:
+    """P2-#6: undo the cascade caused by spawn_fast_fail bursts (F46
+    detected provider-quota exhaustion as <10s rc=1 spam). The hard
+    reset wipes everything; soft reset is surgical:
+
+      1. Find dead_attempts on this problem with failure_reason in
+         the spurious-failure set ('spawn_fast_fail').
+      2. Delete those rows + matching pipelines rows.
+      3. Recompute goals.attempts from surviving dead_attempts.
+      4. Revive goals shelved purely from the cascade (no real
+         Backward / Builder failure left).
+
+    Doesn't touch proof files / Root.lean / Manifest. Operator runs
+    after fixing the underlying provider issue (e.g. switching model
+    after quota exhaust) to recover state without re-doing real work.
+    """
+    workspace = Path.cwd()
+    pdir = workspace / "Problems" / problem
+    if not pdir.exists():
+        print(f"FAIL: Problems/{problem}/ not found", file=sys.stderr)
+        return 1
+    conn = db.connect()
+    db.init_schema(conn)
+    SPURIOUS = ("spawn_fast_fail",)
+
+    # Goals belonging to this problem
+    gids = [r[0] for r in conn.execute(
+        "SELECT id FROM goals WHERE problem = ?", (problem,)).fetchall()]
+    if not gids:
+        print(f"OK: soft-reset {problem} (no goals to clean)")
+        return 0
+    ph = ",".join("?" * len(gids))
+    sph = ",".join("?" * len(SPURIOUS))
+    spurious_pids = [r[0] for r in conn.execute(
+        f"SELECT pipeline_id FROM dead_attempts "
+        f"WHERE failure_reason IN ({sph}) "
+        f"  AND ((target_kind='Goal' AND target_id IN ({ph})) "
+        f"   OR  (target_kind='Strategy' AND target_id IN ("
+        f"        SELECT id FROM strategies WHERE goal_id IN ({ph}))))",
+        (*SPURIOUS, *gids, *gids)).fetchall()]
+    if not spurious_pids:
+        print(f"OK: soft-reset {problem} (no spurious dead_attempts found)")
+        return 0
+    pidph = ",".join("?" * len(spurious_pids))
+    n_da = conn.execute(
+        f"DELETE FROM dead_attempts WHERE pipeline_id IN ({pidph})",
+        spurious_pids).rowcount
+    n_pl = conn.execute(
+        f"DELETE FROM pipelines WHERE id IN ({pidph})",
+        spurious_pids).rowcount
+    # Recompute goals.attempts = number of remaining (real) Goal-kind
+    # dead_attempts on each goal in this problem.
+    n_recomp = 0
+    for gid in gids:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM dead_attempts WHERE target_kind='Goal' "
+            "AND target_id = ?", (gid,)).fetchone()[0]
+        cur = conn.execute(
+            "SELECT attempts, status FROM goals WHERE id = ?",
+            (gid,)).fetchone()
+        if cur is None:
+            continue
+        if cur["attempts"] != n:
+            new_status = cur["status"]
+            # If we're freeing a shelve cascaded from spurious failures,
+            # revive the goal so the next dispatch can resume.
+            from .dispatcher import SHELVE_THRESHOLD as _ST
+            if cur["status"] == "shelved" and n < _ST:
+                new_status = "open"
+            conn.execute(
+                "UPDATE goals SET attempts = ?, status = ?, updated_at = ?"
+                " WHERE id = ?", (n, new_status, db.now(), gid))
+            n_recomp += 1
+    conn.commit()
+    print(f"OK: soft-reset {problem}")
+    print(f"  deleted {n_da} spurious dead_attempts + {n_pl} pipelines")
+    print(f"  recomputed attempts on {n_recomp} goal(s)")
+    return 0
+
+
 def cmd_reset(args: argparse.Namespace) -> int:
     """Wipe one Problem's DB rows + on-disk proof files + Root.lean back
     to sorry-stub form. Manifest.md / Defs.lean / lean files outside
@@ -259,8 +339,15 @@ def cmd_reset(args: argparse.Namespace) -> int:
     in-flight when other Problems are running). If the problem's daemon
     is dead, the operator can `rm -rf .attempts/` separately.
 
+    `--soft`: skip the file/DB wipe; just clear spurious dead_attempts
+    (spawn_fast_fail bursts) + revive cascade victims. Use after an
+    F46 quota-exhaust incident.
+
     Refuses to reset if no Manifest.md exists (signals user typo).
     """
+    if getattr(args, "soft", False):
+        return _soft_reset(args.problem)
+
     workspace = Path.cwd()
     problem = args.problem
     pdir = workspace / "Problems" / problem
@@ -650,6 +737,67 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if fails == 0 else 1
 
 
+def cmd_logs(args: argparse.Namespace) -> int:
+    """P2-#5: list / tail framework run logs from `.asterism/logs/`.
+    Default: list with sizes, mtime, sorted newest first.
+    `--tail N`: print the last N lines of the most recent log.
+    """
+    workspace = Path.cwd()
+    log_dir = workspace / LOG_DIR
+    if not log_dir.exists():
+        print(f"no log dir at {log_dir}")
+        return 0
+    logs = sorted(log_dir.glob("*.log"),
+                  key=lambda p: p.stat().st_mtime, reverse=True)
+    if not logs:
+        print(f"no logs in {log_dir}")
+        return 0
+    if args.tail:
+        latest = logs[0]
+        print(f"# {latest.name}  ({latest.stat().st_size:,} bytes)")
+        with latest.open("r", encoding="utf-8", errors="replace") as f:
+            tail_lines = f.readlines()[-args.tail:]
+        sys.stdout.writelines(tail_lines)
+        return 0
+    print(f"# {log_dir} ({len(logs)} logs)")
+    for p in logs:
+        st = p.stat()
+        ts = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
+        print(f"  {st.st_size:>8,} B  {ts}  {p.name}")
+    return 0
+
+
+def cmd_config(args: argparse.Namespace) -> int:
+    """P2-#5: print the resolved Asterism config — what `dispatch.*`,
+    `builder.*`, `backward.*` actually evaluate to right now (env >
+    Asterism.yaml > legacy env > built-in default). Eliminates
+    "what's actually active?" confusion when env vars + yaml + defaults
+    interact.
+    """
+    from . import config as _cfg
+    from .llm import claude_cli as _cc
+    rows = [
+        ("dispatch.pool",
+         _cfg.get("dispatch.pool", env_var="ASTERISM_POOL", default=12, cast=int)),
+        ("dispatch.budget_sec",
+         _cfg.get("dispatch.budget_sec", env_var="ASTERISM_BUDGET_SEC",
+                  default=1800, cast=int)),
+        ("dispatch.shelve_threshold",
+         _cfg.get("dispatch.shelve_threshold",
+                  env_var="ASTERISM_SHELVE_THRESHOLD", default=8, cast=int)),
+        ("builder.threshold",
+         _cfg.get("builder.threshold",
+                  legacy_env=("ASTERISM_BUILDER_THRESHOLD",),
+                  default=_cfg.get("dispatch.builder_threshold", default=3, cast=int),
+                  cast=int)),
+        ("builder.model", _cc._resolve_model("builder")),
+        ("backward.model", _cc._resolve_model("backward")),
+    ]
+    for k, v in rows:
+        print(f"  {k:<30} = {v}")
+    return 0
+
+
 def cmd_prune(args: argparse.Namespace) -> int:
     """Manual fallback: GC orphan lean files in proofs/. Auto-invoked by
     `run` on success; this CLI exists for partial state (user killed
@@ -704,6 +852,11 @@ def main(argv: list[str] | None = None) -> int:
         help="wipe a Problem's DB rows + proof files + Root.lean stub",
     )
     p_reset.add_argument("problem", help="problem name")
+    p_reset.add_argument(
+        "--soft", action="store_true",
+        help="surgical: only clear spurious dead_attempts + revive "
+             "cascade victims (use after F46 quota-exhaust incident)",
+    )
     p_reset.set_defaults(func=cmd_reset)
 
     p_status = sub.add_parser(
@@ -732,6 +885,21 @@ def main(argv: list[str] | None = None) -> int:
     p_prune.add_argument("--dry-run", action="store_true",
                          help="list files without deleting")
     p_prune.set_defaults(func=cmd_prune)
+
+    p_logs = sub.add_parser(
+        "logs",
+        help="list / tail framework run logs (.asterism/logs/)",
+    )
+    p_logs.add_argument("--tail", type=int, metavar="N",
+                        help="print last N lines of the most recent log "
+                             "instead of listing")
+    p_logs.set_defaults(func=cmd_logs)
+
+    p_config = sub.add_parser(
+        "config",
+        help="print resolved Asterism config (env > yaml > legacy > default)",
+    )
+    p_config.set_defaults(func=cmd_config)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

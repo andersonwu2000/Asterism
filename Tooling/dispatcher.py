@@ -156,8 +156,16 @@ def _sweep_lean_backups(conn: sqlite3.Connection,
         for r in conn.execute("SELECT lean_path, status FROM goals")
     }
 
-    for ext in (".backup", ".verify_backup"):
-        for backup in problems_root.glob(f"**/*.lean{ext}"):
+    # P0-#1 added sid-keyed backups (`.lean.verify_backup_s<id>`) so
+    # concurrent Verifies on sibling strategies don't clobber each
+    # other. Glob both the legacy plain suffix and the sid-suffixed
+    # variant. Missing this would let sid-keyed orphans accumulate
+    # forever after a daemon crash mid-Verify.
+    backup_globs = ["**/*.lean.backup",
+                    "**/*.lean.verify_backup",
+                    "**/*.lean.verify_backup_s*"]
+    for pattern in backup_globs:
+        for backup in problems_root.glob(pattern):
             original = backup.with_suffix("")  # strips just last suffix
             try:
                 rel = original.relative_to(workspace).as_posix()
