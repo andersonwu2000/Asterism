@@ -1,8 +1,8 @@
 # Asterism — 架構文件 v2.5
 
-寫於 2026-04-30。前次設計診斷見 `D:/Hadamard/docs/asterism_postmortem.md` 與 `asterism_factor_analysis.md`，前次完整 v3 架構（一次設計 8 pipeline kind）存於 `D:/Hadamard/docs/asterism_archive/`。
+寫於 2026-04-30，重大更新 2026-05-04（F47-F54 + P0/P1/M batch）。前次設計診斷見 `D:/Hadamard/docs/asterism_postmortem.md` 與 `asterism_factor_analysis.md`，前次完整 v3 架構（一次設計 8 pipeline kind）存於 `D:/Hadamard/docs/asterism_archive/`。
 
-本檔反映 commit `39df821` 後的實作現況。三題 from-scratch proved（wilson / compactness / cantor）；核心架構穩定 + Deduper 上線、後續按 §13 排序加 feature。
+本檔反映 commit `1014d91` 後的實作現況。Wilson + cantor 已從 in-tree testbeds 移除（external solutions cache）；compactness + gen_generates + inner_zero_iff_smul + proj_nonexpansive 等 4 題 from-scratch proved。
 
 ---
 
@@ -10,15 +10,21 @@
 
 | 項目 | 狀態 |
 |------|------|
-| Wilson (Freek 100 #51) | proved、commit 6b0cf3b、~15 min |
-| Compactness (propositional, custom Defs) | proved、commit 46c8941、~60 min、~2.5x faster than Hadamard 2.5h |
-| Cantor (Freek 100 #63 reformulated) | proved、commit 6bd6c15、~5 min、單 Builder one-shot、axioms = `[]` |
+| compactness (propositional, custom Defs) | proved、commit 46c8941 (Sonnet) / Opus rerun ~25 min |
+| gen_generates (HW 代數) | proved、commit 4c6f423 (Sonnet) ~30 min |
+| inner_zero_iff_smul (HW 實變) | proved、Sonnet ~18 min |
+| proj_nonexpansive (HW 實變) | proved、Opus ~33 min / Sonnet (post P0/P1/M) ~58 min |
 | Pipeline kinds | Builder + Backward + **Verify**（3 種、每 kind 有固定 target_kind） |
 | OR parallelism | F37 起 passive (cap=1)；同 goal 多策略走序列觸發、不再並行 fanout |
-| Deduper | 開（whitespace-norm 字串等價、§9.5）、無 schema 改動 |
-| Unit tests | 79 passing |
-| Tooling LOC | ~1700 lines Python |
-| Axioms whitelist | `[propext, Classical.choice, Quot.sound]`（題級、cantor 為 `[]`） |
+| Verify per-goal serialization | P0-#1：同 parent 的 sibling Verify 一次只夠跑一個（避免 `_promote_to_alias` race） |
+| Same-session retry | F33 (Builder) + F53 (Backward, sid pinned per F53/A across warm retries) |
+| Strategy patch skeleton | F52：framework 預寫 `patch.lean`（locked signature），agent 只填 body |
+| Library promotion | F49：root proved 後自動 promote 進 `Library/<Topic>/` |
+| Provider | claude (default) / gemini / openai；F39 per-pipeline-kind selection |
+| Read allowlist | F54 + M1：`Read/Grep` scoped to problem dir + `.lake/packages/**` |
+| Unit tests | 544 passing + 24 lake-integration |
+| Tooling LOC | ~3000 lines Python |
+| Axioms whitelist | `[propext, Classical.choice, Quot.sound]`（題級、可 per-Manifest 限縮） |
 
 ---
 
@@ -66,30 +72,33 @@ Asterism/
 
 ```markdown
 ---
-problem: wilson
+problem: proj_nonexpansive
 axioms_whitelist: [propext, Quot.sound, Classical.choice]
-forbidden_lemmas:
-  - ZMod.wilsons_lemma
-  - Nat.Prime.wilsons_lemma
+forbidden_lemmas: []
 ---
 
-# wilson — Freek 100 #51 reformulated on Nat
+# proj_nonexpansive — metric projection is non-expansive
 
 ## Statement
-∀ p : ℕ, p.Prime → Nat.factorial (p - 1) % p = p - 1
+∀ ..., IsMetricProjector K P → ∀ x y, ‖P x - P y‖ ≤ ‖x - y‖
 
 ## Difficulty
-4
+5
 
-## Mathlib hints
-- ZMod.val_natCast (Data/ZMod/Basic.lean:89)
-- Nat.Prime.two_le
+## Lemma hints                     ← F49 canonical key (legacy: "Mathlib hints")
+- inner_sub_left
+- norm_sub_sq_real
+- Library.InnerProductSpace.real_inner_le_norm
 
 ## Strategic notes
-此題 reformulated 過、ZMod 形式直接用會被擋；要走 Mathlib bridge。
+Apply variational inequality at (x, P y) and (y, P x); add inequalities; ...
 ```
 
 YAML frontmatter 是結構化必填；body 自由 markdown，由 `init` 解析 statement + difficulty 進 DB、hints + notes 在 worker spawn 時注入 Context.md。
+
+**`Defs.lean` 自動鉤入（F15）**：`Problems/<p>/Defs.lean` 若存在，框架在 `init` 時自動 import 進 `Root.lean`。在這裡放 problem-specific definitions（如 `IsMetricProjector`），避免 Manifest 用 in-statement 寫一大坨。
+
+**Lemma hints 兩個欄位** (F49)：`lemma_hints` 是 canonical key，可帶 `Library.<Topic>.<problem>` 條目從 framework 自身的 Library 抽提。`mathlib_hints` 為 legacy alias，仍接受但建議新題寫 `lemma_hints`。
 
 `manifest.parse` 寬解：缺欄位給 default + warning，不 crash。
 

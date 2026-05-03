@@ -36,6 +36,23 @@ Built-in `(builder_threshold, shelve_threshold) = (3, 8)` for
 Sonnet/Opus. Weak-tier (Haiku / Flash / mini): write `(5, 10)` in
 `Asterism.yaml` explicitly. No runtime model-name auto-detection.
 
+### Environment variables
+
+The chain above covers `dispatch.*`, `builder.*`, `backward.*`. These
+extra env vars are env-only (no Asterism.yaml binding):
+
+| Var | Effect | Default |
+|---|---|---|
+| `ASTERISM_VERIFY_RETRY` | F41: when Verify Step-1 lake build fails, ask LLM ONCE to rewrite the strategy patch (sub-goals untouched). Set `0` to disable. | `1` (on) |
+| `ASTERISM_BUDGET_SEC` | Daemon wall-clock cutoff. | `1800` (30 min) |
+| `ASTERISM_LLM_API_KEY` | OpenAI provider auth. Required when `ASTERISM_LLM_PROVIDER=openai`. | unset |
+| `ASTERISM_LLM_BASE_URL` | OpenAI-compatible endpoint (LiteLLM proxy etc). | OpenAI default |
+| `ASTERISM_LLM_MAX_TOKENS` | OpenAI provider per-call cap. | `8000` |
+| `ASTERISM_LLM_TEMPERATURE` | OpenAI provider sampling temp. | `0` |
+| `ASTERISM_CLAUDE_TOOLS` | Override `--tools` list passed to claude CLI. | `Read Write Edit Grep Bash` |
+| `ASTERISM_CLAUDE_ALLOWED_TOOLS` | Replace the per-spawn computed allowlist (see F54/M1). Empty string (`""`) drops the flag. | derived from `req.problem_dir` |
+| `ASTERISM_CLAUDE_ALLOWED_BASH` | Override only the Bash subset of the allowlist. | `Bash(python -m Tooling.loogle *)` |
+
 ## Recurring traps
 
 - `claude --session-id` requires dashed UUID — use `str(uuid.uuid4())`,
