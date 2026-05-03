@@ -244,12 +244,18 @@ def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
                 else:
                     db.update_goal_status(conn, gid, "open")
 
-    # F16 — kill strategies whose parent goal IS this shelved goal
+    # F16 — kill strategies whose parent goal IS this shelved goal.
+    # P1-#5: explicit commit. Previously the trailing UPDATE relied
+    # on a downstream `db.update_*` helper to flush. Most cascades
+    # do trigger one before the worker conn closes, but if the loop
+    # exits cleanly (budget exhausted, idle-exit) right after this
+    # function returns, the F16 row updates never reach disk.
     conn.execute(
         "UPDATE strategies SET status='dead' "
         "WHERE goal_id = ? AND status='proposed'",
         (goal_id,),
     )
+    conn.commit()
 
 
 def next_worker_kind(goal: sqlite3.Row) -> str:

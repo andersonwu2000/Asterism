@@ -484,8 +484,11 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
     is_retry = sid is not None
     retry_context: str | None = None
     if not is_retry:
+        # P1-#7: mint UUID locally; persist AFTER spawn returns so a
+        # process kill mid-spawn leaves DB session_id NULL instead of
+        # pointing at a session claude never minted (which would cost
+        # one wasted --resume / rc=125 cycle on the next dispatch).
         sid = str(uuid.uuid4())
-        db.set_builder_session_id(conn, goal_id, sid)
         agent.compile_context(conn, goal=goal, mfst=mfst,
                               attempts_dir=attempts_dir, kind="builder")
     else:
@@ -503,13 +506,19 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
     )
     spawn_dur = time.monotonic() - spawn_t0
 
+    # P1-#7: persist session_id only after we know spawn completed
+    # past the kill window. rc 124/125 paths below clear/replace
+    # explicitly; for any other return code claude minted the
+    # session and a future retry's --resume can leverage it.
+    if not is_retry and rc not in (124, 125):
+        db.set_builder_session_id(conn, goal_id, sid)
+
     # F33 — fallback for stale session (claude's on-disk session was
     # GC'd or the daemon's DB id outlived the file). One-time retry
     # with a fresh uuid down the cold path.
     if rc == 125:
         db.set_builder_session_id(conn, goal_id, None)
         sid = str(uuid.uuid4())
-        db.set_builder_session_id(conn, goal_id, sid)
         agent.compile_context(conn, goal=goal, mfst=mfst,
                               attempts_dir=attempts_dir, kind="builder")
         spawn_t0 = time.monotonic()
@@ -522,6 +531,8 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
             is_retry=False,
         )
         spawn_dur = time.monotonic() - spawn_t0
+        if rc not in (124, 125):
+            db.set_builder_session_id(conn, goal_id, sid)
 
     if rc == 124:
         # Timeout: the agent's session may have been killed mid-write
@@ -892,8 +903,9 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
 
     retry_context: str | None = None
     if not is_retry:
+        # P1-#7: mint UUID locally; persist AFTER spawn (mirror
+        # builder block above).
         sid = str(uuid.uuid4())
-        db.set_backward_session_id(conn, goal_id, sid)
         agent.compile_context(conn, goal=goal, mfst=mfst,
                               attempts_dir=attempts_dir,
                               strategy_id=strategy_id, kind="backward")
@@ -942,12 +954,15 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
     )
     spawn_dur = time.monotonic() - spawn_t0
 
+    # P1-#7: persist after spawn proves session exists.
+    if not is_retry and rc not in (124, 125):
+        db.set_backward_session_id(conn, goal_id, sid)
+
     # F53 — claude session may have been GC'd between dispatches
     # (rc=125). Mint a fresh UUID, recompile context, cold-spawn once.
     if rc == 125:
         db.set_backward_session_id(conn, goal_id, None)
         sid = str(uuid.uuid4())
-        db.set_backward_session_id(conn, goal_id, sid)
         agent.compile_context(conn, goal=goal, mfst=mfst,
                               attempts_dir=attempts_dir,
                               strategy_id=strategy_id, kind="backward")
@@ -961,6 +976,8 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
             is_retry=False,
         )
         spawn_dur = time.monotonic() - spawn_t0
+        if rc not in (124, 125):
+            db.set_backward_session_id(conn, goal_id, sid)
 
     if rc == 124:
         # Timeout: agent's session may have been killed mid-write.

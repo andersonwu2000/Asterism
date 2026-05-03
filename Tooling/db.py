@@ -137,11 +137,17 @@ def now() -> str:
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(path))
+    # P1-#6: lift busy-timeout from sqlite3's 5s default to 30s.
+    # With pool=12 workers each holding their own conn and issuing
+    # short bursts of UPDATEs / INSERTs through cascade_one, the 5s
+    # ceiling is uncomfortably close to real bursts; 30s absorbs
+    # transient WAL writer contention without ever surfacing as
+    # OperationalError to callers (who don't retry).
+    conn = sqlite3.connect(str(path), timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    # WAL: readers don't block writers; reduces contention with 4 workers
-    # concurrently INSERTing into pipelines + dead_attempts.
+    # WAL: readers don't block writers; reduces contention with 12
+    # workers concurrently INSERTing into pipelines + dead_attempts.
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
