@@ -284,8 +284,15 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
     # round-trip through subprocess argv as strings, so we normalize.
     problem = req.problem_dir.as_posix()
     attempts = req.attempts_dir.as_posix()
-    mathlib = (workspace / ".lake" / "packages" / "mathlib" /
-               "Mathlib").as_posix()
+    # M1: cover the whole `.lake/packages/` tree, not just
+    # `mathlib/Mathlib/`. Sonnet's natural `rg` query is rooted at
+    # `.lake/packages/mathlib/` (the package root, not the Mathlib
+    # source subdir), which the narrow prefix rejected — observed
+    # 18 denied Grep ops in a single proj_nonexpansive run, each
+    # wasting one agent turn. Allowing the whole packages tree also
+    # covers batteries / proofwidgets / aesop / Qq when an agent
+    # legitimately needs to look at them.
+    packages = (workspace / ".lake" / "packages").as_posix()
     # NB: claude CLI's `--allowed-tools` parser is paren-aware (the
     # pre-existing `Bash(python -m Tooling.loogle *)` pattern carries
     # internal spaces unquoted), so a `Read(C:/My Project/...)` glob
@@ -295,13 +302,14 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
     patterns = [
         # Bash (Loogle, plus operator override)
         os.environ.get("ASTERISM_CLAUDE_ALLOWED_BASH", DEFAULT_BASH_ALLOWED),
-        # Read scope: this problem's dir, the agent's sandbox, Mathlib
+        # Read scope: this problem's dir, the agent's sandbox, the
+        # entire Lake-packages tree (Mathlib + transitive deps).
         f"Read({problem}/**)",
         f"Read({attempts}/**)",
-        f"Read({mathlib}/**)",
-        # Grep needs explicit path patterns too
+        f"Read({packages}/**)",
+        # Grep mirrors Read for the lemma-discovery use case
         f"Grep({problem}/**)",
-        f"Grep({mathlib}/**)",
+        f"Grep({packages}/**)",
     ]
     return " ".join(p for p in patterns if p)
 

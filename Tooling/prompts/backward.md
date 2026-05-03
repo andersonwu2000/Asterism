@@ -21,7 +21,7 @@ Three kinds of files in your sandbox. **Read `Context.md`'s `## Sandbox` and `##
 
 ## Lemma discovery
 
-Mathlib source lives at `.lake/packages/mathlib/Mathlib/` (relative to the workspace root). When you're unsure of a lemma's name or signature, search rather than recall:
+**引用 mathlib 定理之前，使用 Grep 或 Loogle 確定定理名稱。** Mathlib has been reorganized across versions (e.g. `pow_le_pow_left` → `pow_le_pow_left₀`); a name from your training memory may no longer exist or carry a different signature. Mathlib source lives at `.lake/packages/mathlib/Mathlib/` (relative to the workspace root).
 
 - **Grep** (known / partial names): `rg -n -B 5 -A 10 "^lemma prod_involution\b" .lake/packages/mathlib/Mathlib/`
 - **Loogle** (type-pattern, names unknown): `python -m Tooling.loogle 'Nat.factorial _ = _'`

@@ -1306,13 +1306,16 @@ def test_allowed_tools_scopes_read_to_problem_and_mathlib(
     ))
     cmd = captured[0]
     val = cmd[cmd.index("--allowed-tools") + 1]
-    # Active problem + sandbox + Mathlib all in the Read scope
+    # Active problem + sandbox + entire Lake-packages tree in Read scope.
+    # M1: scope is `.lake/packages/**` (not just `mathlib/Mathlib/**`)
+    # so Sonnet's natural `rg .lake/packages/mathlib/...` queries hit
+    # the allowlist instead of being denied (observed 18×/run).
     assert "Read(/ws/Problems/active_problem/**)" in val
     assert "Read(/ws/.attempts/pid-x/**)" in val
-    assert "Read(/ws/.lake/packages/mathlib/Mathlib/**)" in val
-    # Grep allowlist mirrors Read for the Mathlib search use case
+    assert "Read(/ws/.lake/packages/**)" in val
+    # Grep allowlist mirrors Read for the lemma-discovery use case
     assert "Grep(/ws/Problems/active_problem/**)" in val
-    assert "Grep(/ws/.lake/packages/mathlib/Mathlib/**)" in val
+    assert "Grep(/ws/.lake/packages/**)" in val
     # Other Problems must NOT be in scope — the F44 sandbox boundary
     # is what F53 rerun showed Sonnet wandering across.
     assert "Read(/ws/Problems/other" not in val
