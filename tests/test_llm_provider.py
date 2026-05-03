@@ -1,6 +1,8 @@
 """LLM provider registry: dispatch by env, error on unknown, default Claude."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from Tooling import llm
@@ -510,6 +512,70 @@ def test_pattern_hints_empty_for_unknown_stderr() -> None:
     out = claude_cli._retry_hint_for_patterns(
         "error: stack overflow during elaboration")
     assert out == ""
+
+
+def test_sorry_hint_scoped_to_patch_not_substubs() -> None:
+    """P1-#9 (c): the leftover-sorry hint must NOT fire on standalone
+    `new_<sub>.lean` warnings (those legitimately carry `:= by sorry`
+    until the sub-goal is proved). Only fires when the warning's path
+    points at `_strategy_s<id>.lean` or `patch.lean`.
+    """
+    from Tooling.llm import claude_cli
+    sub_warning = (
+        "warning: Problems/p/proofs/L_s5_sub_2.lean:6:8: "
+        "declaration uses `sorry`"
+    )
+    assert claude_cli._retry_hint_for_patterns(sub_warning) == ""
+    patch_warning = (
+        "warning: Problems/p/proofs/_strategy_s5.lean:6:8: "
+        "declaration uses `sorry`"
+    )
+    assert "still has `:= by sorry`" in claude_cli._retry_hint_for_patterns(
+        patch_warning)
+
+
+def test_manifest_hint_placeholder_not_appended_when_empty() -> None:
+    """P1-#9 (d): when a Manifest hint is just `Foo.bar` with no
+    commentary, the rendered Mathlib-lemmas bullet must NOT carry a
+    spurious `(manifest hint)` placeholder — was previously a fallback
+    string, now silently omitted."""
+    from Tooling import agent as ag
+    from Tooling.manifest import Manifest
+    # Stub lemma_lookup to "find" the name with a fake signature
+    from unittest.mock import patch as _patch
+    mfst = Manifest(problem="p", statement="T",
+                    mathlib_hints=["Nat.factorial"])
+    fake_info = type("LI", (), {
+        "name": "Nat.factorial", "signature": "ℕ → ℕ", "found": True,
+    })()
+    with _patch.object(ag.lemma_lookup, "lookup_batch",
+                       return_value={"Nat.factorial": fake_info}):
+        section = ag._section_mathlib_lemmas(mfst, deads=[],
+                                             workspace=Path("/tmp"))
+    body = "\n".join(section)
+    assert "Nat.factorial" in body
+    assert "ℕ → ℕ" in body
+    assert "(manifest hint)" not in body  # no placeholder
+
+
+def test_manifest_hint_keeps_real_commentary() -> None:
+    """When a Manifest hint DOES carry author commentary
+    (e.g. `Foo.bar — explanation`), preserve it next to the resolved
+    signature."""
+    from Tooling import agent as ag
+    from Tooling.manifest import Manifest
+    from unittest.mock import patch as _patch
+    mfst = Manifest(problem="p", statement="T",
+                    mathlib_hints=["Nat.factorial — n! is positive"])
+    fake_info = type("LI", (), {
+        "name": "Nat.factorial", "signature": "ℕ → ℕ", "found": True,
+    })()
+    with _patch.object(ag.lemma_lookup, "lookup_batch",
+                       return_value={"Nat.factorial": fake_info}):
+        section = ag._section_mathlib_lemmas(mfst, deads=[],
+                                             workspace=Path("/tmp"))
+    body = "\n".join(section)
+    assert "n! is positive" in body
 
 
 def test_pattern_hints_capped_at_two() -> None:

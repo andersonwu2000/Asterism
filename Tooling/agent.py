@@ -207,7 +207,11 @@ def _section_mathlib_lemmas(mfst: manifest.Manifest,
         m = re.match(r"\s*([A-Z][\w']*(?:\.[\w']+)+)", hint)
         if m and m.group(1) in resolved:
             nm = m.group(1)
-            out.append(f"- **{nm}** : `{resolved[nm]}`  ({hint[m.end():].strip().lstrip('-—').strip() or 'manifest hint'})")
+            commentary = hint[m.end():].strip().lstrip("-—").strip()
+            if commentary:
+                out.append(f"- **{nm}** : `{resolved[nm]}`  ({commentary})")
+            else:
+                out.append(f"- **{nm}** : `{resolved[nm]}`")
             rendered.add(nm)
         else:
             out.append(f"- {hint}")

@@ -132,29 +132,33 @@ _RETRY_PATTERN_HINTS: list[tuple[re.Pattern[str], str]] = [
      "The chosen tactic didn't progress on the current goal — pick a "
      "different family (e.g. for inner-product symmetry use "
      "`inner_sub_left`/`inner_neg_right`, not `ring_nf`)."),
-    # Sorry warning surfacing as fail — usually upstream of build_error
-    (re.compile(r"declaration uses\s+`sorry`", re.IGNORECASE),
-     "A sub-goal still has `:= by sorry` — that's only legal in "
-     "`new_*.lean` stubs, NOT in patch.lean. Replace the patch.lean "
-     "body with real tactics."),
+    # Sorry warning specifically attributed to a patch file — sub-stub
+    # warnings for `new_*.lean` are legitimate (those carry intentional
+    # `:= by sorry`) and emit the same lake warning text. Scope the
+    # match to filenames the framework would *not* expect to contain
+    # sorry: the strategy patch (`_strategy_s<id>.lean`) and the
+    # Builder leaf (`<problem-root>.lean` resolves to the agent's
+    # `patch.lean` via copy). P1-#9.
+    (re.compile(
+        r"(?:_strategy_s\d+|patch)\.lean[^\n]*declaration uses\s+`sorry`",
+        re.IGNORECASE),
+     "Your patch.lean still has `:= by sorry` — that's only legal in "
+     "`new_*.lean` sub-goal stubs, NOT in the strategy patch / Builder "
+     "patch. Replace the body with real tactics."),
 ]
 
 
 def _retry_hint_for_patterns(stderr: str) -> str:
     """Apply _RETRY_PATTERN_HINTS to `stderr`, return a short joined
-    hint string (or '' if no matches). Cap to first 2 distinct hits to
-    bound prompt growth — multiple matching errors usually share one
-    root cause."""
+    hint string (or '' if no matches). Cap to first 2 hits to bound
+    prompt growth — multiple matching errors usually share one root
+    cause."""
     if not stderr:
         return ""
     out: list[str] = []
-    seen: set[int] = set()
-    for idx, (pat, hint) in enumerate(_RETRY_PATTERN_HINTS):
-        if idx in seen:
-            continue
+    for pat, hint in _RETRY_PATTERN_HINTS:
         if pat.search(stderr):
             out.append(f"- {hint}")
-            seen.add(idx)
             if len(out) >= 2:
                 break
     if not out:
@@ -282,6 +286,12 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
     attempts = req.attempts_dir.as_posix()
     mathlib = (workspace / ".lake" / "packages" / "mathlib" /
                "Mathlib").as_posix()
+    # NB: claude CLI's `--allowed-tools` parser is paren-aware (the
+    # pre-existing `Bash(python -m Tooling.loogle *)` pattern carries
+    # internal spaces unquoted), so a `Read(C:/My Project/...)` glob
+    # does NOT need quoting either — pattern boundaries are pulled by
+    # balanced parens, not whitespace. P1-#9 verified this empirically;
+    # the pre-quoting attempt broke the Bash pattern's existing test.
     patterns = [
         # Bash (Loogle, plus operator override)
         os.environ.get("ASTERISM_CLAUDE_ALLOWED_BASH", DEFAULT_BASH_ALLOWED),
