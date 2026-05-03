@@ -1,46 +1,98 @@
 # Asterism v2 — Current Status
 
-Updated 2026-05-03 (post-F47..F51 batch + 4 new HW testbeds).
+Updated 2026-05-04 (post P0/P1/M/P2 + critical regression caught).
+HEAD = `be940d5`, 550 unit tests + 24 lake-integration green.
 
 ## Live test queued (post-compact action item)
 
-Operator's account quota recovered. Six testbeds available, daemon
-not running. Suggested rollout order:
+Daemon stopped. Operator about to /compact and run **Sonnet** on
+the next testbed. P0/P1/M validated last run (proj_nonexpansive
+Sonnet ~58 min, 0 dead, 0 naming_violation). Suggested order:
 
-1. **inner_zero_iff_smul** (difficulty 4, ~15-20 min) — short F50
-   smoke test on a clean problem. Mathlib doesn't have the universal-α
-   iff version of Pythagorean, so Loogle/Grep usage is testable.
-2. **proj_nonexpansive** (difficulty 5, ~30-45 min) — medium. Mathlib's
-   `orthogonalProjection` is for closed subspaces only; the closed-
-   convex generalisation is genuine 3-step inner-product work.
-3. **gen_generates** — restart fresh. Has stale partial DB state (Goal
-   155 attempting, sub-goals scattered). Reset before launch:
-   `python -m Tooling.cli reset gen_generates && python -m Tooling.cli init gen_generates`.
-4. **localization_euclidean** / **cantor_xi_measure** (both difficulty 6) —
-   stress tests. Reserve for after the 3 above prove out, since each
-   may need 60+ min.
+1. **inner_zero_iff_smul** (difficulty 4, ~15-20 min) — short
+   smoke test for the post-batch state.
+2. **proj_nonexpansive** (difficulty 5, ~58 min Sonnet baseline)
+   — already proved this run, useful as regression baseline if
+   thinking-length / Builder-retry numbers drift.
+3. **gen_generates** — restart fresh:
+   `python -m Tooling.cli reset gen_generates && python -m Tooling.cli init gen_generates`
+4. **localization_euclidean** / **cantor_xi_measure** — stress
+   tests (60+ min each).
 
-Launch one at a time, single problem per daemon to keep telemetry clean:
+Launch:
 ```
+python -m Tooling.cli reset <problem>
 python -m Tooling.cli init <problem>
-ASTERISM_BUDGET_SEC=3600 python -m Tooling.cli run > <problem>_run.log 2>&1
+ASTERISM_BUDGET_SEC=3600 python -m Tooling.cli run
 ```
+(daemon log auto-tees to `.asterism/logs/<problem>_<model>_<ts>.log`;
+no `>` redirect needed.)
 
-Active dispatchable goals across all problems will all be serviced
-in parallel (pool=12), so multiple `init` calls before `run` would
-mix problems — prefer single-problem runs for measurement.
+New CLI affordances this batch:
+- `python -m Tooling.cli logs [--tail N]` — list / tail framework logs
+- `python -m Tooling.cli config` — print resolved config (pool / thresholds / models)
+- `python -m Tooling.cli reset <p> --soft` — surgical recovery from
+  spawn_fast_fail cascades (provider quota exhaust)
 
-What to compare across runs (F50 + F51 should show):
-- Builder hit-rate (target ≥ 90%; baselines were 75%)
-- Max thinking length per session (was 25-35K pre-F50, target < 15K)
-- `_spawn.stderr` empty (no infra failures cascading)
-- Bash tool usage patterns (Loogle invocations on retry vs first attempt)
-- `[verify_retry]` strategy hits in daemon log
+What to watch for (P0/P1/M signals):
+- 0 `naming_violation` in cascade log (P0-#3 / F53/A)
+- 0 `patch_signature_mismatch` (F52)
+- 0 cross-problem reads in claude session jsonls (F54+M1)
+- 0 Mathlib Grep denied (M1 widened to `.lake/packages/**/*.lean`)
+- F33/F53 `--resume` warm spawns active (look for `--resume` in claude.exe argv)
 
-> **Daemon state**: stopped (claude PIDs killed at session end). DB
-> has compactness=proved + gen_generates partial. No live processes.
+> **Daemon state**: stopped, no live PIDs. DB carries proj_nonexpansive
+> = proved. Other problems' state unchanged from pre-run.
 
-## What just happened (today's session)
+## 2026-05-04 batch (today)
+
+Audit-driven cleanup, 25+ commits in one day. Headline:
+
+**Bugs fixed (P0/P1)**:
+- P0-#1 `_promote_to_alias` race + per-goal Verify serialization
+- P0-#2 `reconcile_proved_goals` no longer undoes F52 (was rewriting parents back to binder-stripping form every prune)
+- P0-#3 F53/A reuse path clears stale `strategy_subgoals`
+- P0-#4 F54 Builder regressions (sandbox empty + over-pruned dedupe)
+- P1-#5/#6/#7 `_propagate_shelve` commit + sqlite timeout=30 + post-spawn session_id
+- P1-#8/#9 cli log mixed-model + F54 nits
+
+**Prompt/agent (M)**: M1 widened `.lake/packages/**` allowlist
+(Sonnet rerun showed 18 denied Grep ops/run); M2 added "verify
+lemma names via Loogle/Grep" directive.
+
+**Architecture (P2)**: pipeline.py → `pipeline/` package with
+`_lake.py` + `_skeleton.py`; `Tooling/context.py` extracted from
+agent.py (575 LOC out of 700); `Tooling/recovery.py` extracted
+from dispatcher.py; `SpawnRC` IntEnum replaces magic numbers;
+private cross-module symbols promoted (`_collect_artifacts` →
+`collect_artifacts`, `_render_*` → `render_*`,
+`_resolve_gemini_executable` / `_resolve_model` likewise).
+
+**Tests (P2)**: first true e2e test (`test_e2e_dispatcher.py`)
++ direct `run_builder` entry-point tests + `lemma_lookup`
+CACHE_FILE isolated per-test. 529 → 550.
+
+**Docs (P2)**: `docs/architecture.md` §0/§3 refreshed;
+`docs/OPERATOR.md` env-var table now lists 17 vars (was 0).
+
+**Critical regression caught by review (commit `be940d5`)**:
+P2-#1's pipeline-package conversion broke `PROMPT_DIR` —
+`Path(__file__).parent / "prompts"` resolved to the now-non-existent
+`Tooling/pipeline/prompts/`. Live runs would silently spawn with
+`(prompt file unavailable)`. All 549 unit tests miss this because
+they monkeypatch `agent.spawn_llm`. Fixed + e2e test now asserts
+`prompt_path.exists()` inside its fake_spawn so the next analogous
+regression fails immediately.
+
+Deferred follow-ups (low ROI, not blocking):
+- `cmd_logs --tail` could use deque instead of `readlines()[-N:]`
+- `cmd_config` could annotate value source (env / yaml / default)
+- `_soft_reset` revives F12-cascaded shelves; self-stabilizes after
+  one bounce but noisy
+- F33/F53 retry boilerplate (~120 LOC dup between Builder+Backward)
+  could move to a `_spawn.py` helper
+
+## Earlier sessions
 
 Compactness rerun on Sonnet exposed two cascading framework gaps and
 finished proved on Opus:
