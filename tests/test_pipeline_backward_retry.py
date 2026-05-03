@@ -206,6 +206,49 @@ def test_warm_retry_reuses_dead_strategy_id(
     assert f"theorem s{prior_sid}" in seen_skeletons[0]
 
 
+def test_warm_retry_clears_stale_strategy_subgoals(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P0-#3: when warm-retry resurrects a dead strategy that had
+    committed sub-goal links in the prior cycle, those rows must be
+    cleared so `strategies_ready_for_verify` doesn't falsely flag
+    the resurrected strategy on stale subs."""
+    gid = _seed_root_goal(tmp_path, conn)
+    rel = db.get_goal(conn, gid)["lean_path"]
+    prior_sid = db.insert_strategy(
+        conn, goal_id=gid, lean_path=rel,
+        created_by="pid-prior", proposal_md="prior", scratch_path="",
+    )
+    db.update_strategy_status(conn, prior_sid, "dead")
+    # Simulate the prior dead cycle having committed a subgoal link
+    sub_gid = db.insert_goal(
+        conn, problem="p", slug="ghost_sub",
+        lean_path="Problems/p/proofs/L_ghost_sub.lean",
+        statement="T", origin="backward", difficulty=1, depth=1,
+    )
+    db.update_goal_status(conn, sub_gid, "proved")
+    db.link_subgoal(conn, strategy_id=prior_sid, subgoal_id=sub_gid, position=0)
+    db.set_backward_session_id(conn, gid, "warm-uuid")
+
+    monkeypatch.setattr(agent, "spawn_llm", lambda **kw: 1)  # ordinary fail
+
+    pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=manifest.Manifest(problem="p", statement="True"),
+        pipeline_id="pid-warm",
+    )
+
+    # After reuse: stale link gone. Without the DELETE, this row
+    # would survive the resurrect → ghost sub kept marking the
+    # strategy verify-eligible whenever it was 'proposed'.
+    links = conn.execute(
+        "SELECT COUNT(*) AS n FROM strategy_subgoals WHERE strategy_id=?",
+        (prior_sid,),
+    ).fetchone()
+    assert links["n"] == 0
+
+
 def test_cold_dispatch_mints_fresh_strategy_id(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

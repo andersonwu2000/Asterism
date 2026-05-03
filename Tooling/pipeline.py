@@ -853,6 +853,21 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
         ).fetchone()
         if row is not None:
             strategy_id = int(row["id"])
+            # P0-#3: clear any stale `strategy_subgoals` links from
+            # the prior dead cycle. If the previous Backward had
+            # committed sub-goals (currently only reachable on full
+            # success, which clears session_id and prevents this
+            # branch — but defensive against future code paths), the
+            # resurrected strategy would otherwise carry ghost links
+            # whose subgoal goal-rows are stale. Concretely
+            # `strategies_ready_for_verify` checks every linked sub;
+            # ghost-but-proved subs would falsely mark the strategy
+            # ready for Verify before this Backward had even written
+            # the new ones.
+            conn.execute(
+                "DELETE FROM strategy_subgoals WHERE strategy_id = ?",
+                (strategy_id,),
+            )
             conn.execute(
                 "UPDATE strategies "
                 "SET status='proposed', created_by=?, scratch_path='', "
