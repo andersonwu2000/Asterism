@@ -547,3 +547,54 @@ def test_rollback_promote_restores_original(tmp_path: Path) -> None:
     _rollback_promote(parent, backup)
     assert parent.read_text(encoding="utf-8") == original
     assert backup is not None and not backup.exists()
+
+
+def test_verify_backup_path_keyed_by_strategy_id(tmp_path: Path) -> None:
+    """P0-#1: backup filename includes sid_token so concurrent
+    Verifies on sibling strategies of the same parent goal don't
+    clobber each other's backup."""
+    from Tooling.pipeline import _verify_backup_path
+    parent = tmp_path / "L_g.lean"
+    parent.write_text("orig", encoding="utf-8")
+    b10 = _verify_backup_path(parent, "s10")
+    b11 = _verify_backup_path(parent, "s11")
+    assert b10 != b11
+    assert "s10" in b10.name
+    assert "s11" in b11.name
+
+
+def test_concurrent_promote_two_siblings_keeps_both_backups(
+    tmp_path: Path,
+) -> None:
+    """Regression for the original race: two sibling strategies
+    promoting the same parent_abs in sequence (or interleaved)
+    must each keep their own backup so each can roll back to the
+    PREVIOUS state — not to whatever the other sibling wrote.
+    """
+    from Tooling.pipeline import _promote_to_alias, _rollback_promote
+    parent = tmp_path / "L_g.lean"
+    original = (
+        "import Mathlib\nnamespace Problems.p\n"
+        "theorem g : True := by sorry\nend Problems.p\n"
+    )
+    parent.write_text(original, encoding="utf-8")
+    # W1 promotes for s10
+    b10 = _promote_to_alias(
+        parent, namespace="Problems.p", slug="g", sid_token="s10",
+        scratch_module="Problems.p.proofs._strategy_s10")
+    after_w1 = parent.read_text(encoding="utf-8")
+    assert b10 is not None and b10.exists()
+    assert b10.read_text(encoding="utf-8") == original  # s10's backup IS orig
+    # W2 promotes for s11 against the parent_abs W1 just rewrote
+    b11 = _promote_to_alias(
+        parent, namespace="Problems.p", slug="g", sid_token="s11",
+        scratch_module="Problems.p.proofs._strategy_s11")
+    assert b11 is not None and b11.exists()
+    assert b11 != b10  # distinct files
+    assert b11.read_text(encoding="utf-8") == after_w1  # not orig
+    # Now simulate W2 fail → rollback. After rollback, parent_abs
+    # should be W1's content (not lost). W1's own backup still
+    # holds orig so W1 could still rollback if it later failed.
+    _rollback_promote(parent, b11)
+    assert parent.read_text(encoding="utf-8") == after_w1
+    assert b10.exists() and b10.read_text(encoding="utf-8") == original

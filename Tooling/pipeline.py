@@ -304,6 +304,15 @@ def _inject_imports_for_subs(
     patch_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
+def _verify_backup_path(parent_abs: Path, sid_token: str) -> Path:
+    """Backup filename keyed by sid_token so concurrent Verifies on
+    sibling strategies of the same parent goal can't clobber each
+    other's backup. Was previously a fixed `.verify_backup` shared
+    by every Verify on the parent — race-prone (P0-#1)."""
+    return parent_abs.with_suffix(
+        parent_abs.suffix + f".verify_backup_{sid_token}")
+
+
 def _promote_to_alias(
     parent_abs: Path, *,
     namespace: str, slug: str, sid_token: str,
@@ -347,9 +356,11 @@ def _promote_to_alias(
     )
     backup: Path | None = None
     if parent_abs.exists():
-        backup = parent_abs.with_suffix(parent_abs.suffix + ".verify_backup")
+        backup = _verify_backup_path(parent_abs, sid_token)
         shutil.copy2(parent_abs, backup)
-    tmp = parent_abs.with_suffix(parent_abs.suffix + ".tmp")
+    # tmp filename is also sid-keyed so concurrent writes on the same
+    # parent_abs don't race on the rename source.
+    tmp = parent_abs.with_suffix(parent_abs.suffix + f".tmp_{sid_token}")
     tmp.write_text(new_content, encoding="utf-8")
     os.replace(tmp, parent_abs)
     return backup

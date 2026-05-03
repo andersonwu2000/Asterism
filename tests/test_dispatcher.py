@@ -1166,6 +1166,86 @@ def test_bfs_refill_no_duplicate_when_already_running(
     assert db.queue_count(conn, target_id=str(gid), kind="Backward") == 0
 
 
+def _seed_ready_strategy(conn: sqlite3.Connection, *, goal_id: int,
+                         slug: str = "s_x", lean_path: str | None = None) -> int:
+    """Insert a strategy on `goal_id` with one already-proved sub-goal,
+    so it appears in `strategies_ready_for_verify`."""
+    sid = db.insert_strategy(
+        conn, goal_id=goal_id,
+        lean_path=lean_path or "Problems/p/Root.lean",
+        created_by=f"pid-{slug}",
+    )
+    sub_gid = db.insert_goal(
+        conn, problem="p", slug=f"{slug}_sub",
+        lean_path=f"Problems/p/proofs/L_{slug}_sub.lean",
+        statement="T", origin="backward", difficulty=1, depth=1,
+    )
+    db.update_goal_status(conn, sub_gid, "proved")
+    db.link_subgoal(conn, strategy_id=sid, subgoal_id=sub_gid, position=0)
+    return sid
+
+
+def test_bfs_refill_serializes_verify_per_parent_goal(
+    conn: sqlite3.Connection,
+) -> None:
+    """P0-#1: two sibling strategies on the same parent goal both
+    have all sub-goals proved (both in strategies_ready_for_verify),
+    but bfs_refill must enqueue exactly ONE Verify — concurrent
+    Verifies on the same parent_abs would race in _promote_to_alias."""
+    from Tooling.dispatcher import bfs_refill
+    gid = _seed_goal(conn)
+    s_a = _seed_ready_strategy(conn, goal_id=gid, slug="sA")
+    s_b = _seed_ready_strategy(conn, goal_id=gid, slug="sB")
+
+    bfs_refill(conn, running=set())
+
+    enqueued = sum(
+        db.queue_count(conn, target_id=str(s), kind="Verify")
+        for s in (s_a, s_b)
+    )
+    assert enqueued == 1
+
+
+def test_bfs_refill_blocks_verify_when_sibling_already_running(
+    conn: sqlite3.Connection,
+) -> None:
+    """P0-#1: if one strategy's Verify is already in `running`, the
+    sibling on the same parent goal is held back — even though its
+    own (sid, 'Verify') is not in running."""
+    from Tooling.dispatcher import bfs_refill
+    gid = _seed_goal(conn)
+    s_running = _seed_ready_strategy(conn, goal_id=gid, slug="sR")
+    s_waiting = _seed_ready_strategy(conn, goal_id=gid, slug="sW")
+
+    bfs_refill(conn, running={(str(s_running), "Verify")})
+
+    assert db.queue_count(conn, target_id=str(s_waiting), kind="Verify") == 0
+
+
+def test_bfs_refill_verify_unrelated_parents_independent(
+    conn: sqlite3.Connection,
+) -> None:
+    """Per-goal Verify serialization must not bleed across parents.
+    Two ready strategies on DIFFERENT parent goals both get Verify."""
+    from Tooling.dispatcher import bfs_refill
+    g1 = _seed_goal(conn)
+    g2_slug = "main2"
+    # Add a second root goal manually (a different parent)
+    g2 = db.insert_goal(
+        conn, problem="p", slug=g2_slug,
+        lean_path="Problems/p/Root2.lean",
+        statement="T2", origin="root", difficulty=2, depth=0,
+    )
+    s1 = _seed_ready_strategy(conn, goal_id=g1, slug="s1")
+    s2 = _seed_ready_strategy(conn, goal_id=g2, slug="s2",
+                              lean_path="Problems/p/Root2.lean")
+
+    bfs_refill(conn, running=set())
+
+    assert db.queue_count(conn, target_id=str(s1), kind="Verify") == 1
+    assert db.queue_count(conn, target_id=str(s2), kind="Verify") == 1
+
+
 def test_strategies_ready_for_verify_excludes_proved_goal(
     conn: sqlite3.Connection,
 ) -> None:

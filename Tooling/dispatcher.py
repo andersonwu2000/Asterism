@@ -507,11 +507,52 @@ def bfs_refill(conn: sqlite3.Connection,
     def cooled(tid: str, kind: str) -> bool:
         return cd.get((tid, kind), 0.0) > now
 
-    # Strategies with all sub-goals proved → enqueue Verify
+    # Strategies with all sub-goals proved → enqueue Verify.
+    # Per-goal serialization (P0-#1): at most one Verify per parent
+    # goal at a time. Sibling strategies (OR-parallel) on the same
+    # goal still both reach `strategies_ready_for_verify`, but only
+    # the first gets dispatched; the second waits its turn after
+    # cascade marks the first 'succeeded'/'dead'. Without this, two
+    # concurrent Verifies on the same parent_abs would race on
+    # `os.replace` (last-writer-wins on the parent stub) and a
+    # losing strategy's lake_build would run against the winner's
+    # content (false success or wrong rollback).
+    busy_parents: set[int] = set()
+    # Already-running Verifies block their parent from re-dispatch.
+    for run_sid, run_kind in running:
+        if run_kind != "Verify":
+            continue
+        try:
+            row = conn.execute(
+                "SELECT goal_id FROM strategies WHERE id = ?",
+                (int(run_sid),),
+            ).fetchone()
+            if row is not None:
+                busy_parents.add(int(row["goal_id"]))
+        except (ValueError, sqlite3.Error):
+            continue
+    # Already-queued Verifies (in DB queue table) likewise block.
+    queued = conn.execute(
+        "SELECT q.target_id FROM queue q WHERE q.kind = 'Verify'"
+    ).fetchall()
+    for q in queued:
+        try:
+            row = conn.execute(
+                "SELECT goal_id FROM strategies WHERE id = ?",
+                (int(q["target_id"]),),
+            ).fetchone()
+            if row is not None:
+                busy_parents.add(int(row["goal_id"]))
+        except (ValueError, sqlite3.Error):
+            continue
     for s in db.strategies_ready_for_verify(conn):
         sid = str(s["id"])
+        parent_gid = int(s["goal_id"])
+        if parent_gid in busy_parents:
+            continue
         if in_flight(sid, "Verify") == 0 and not cooled(sid, "Verify"):
             db.enqueue(conn, kind="Verify", target_id=sid, priority=10)
+            busy_parents.add(parent_gid)
 
     # Open goals → enqueue if no in-flight or queued attempt exists
     for g in db.open_goals(conn):
