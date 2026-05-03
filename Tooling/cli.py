@@ -60,9 +60,23 @@ def _log_filename(workspace: Path) -> str:
     except Exception:
         # DB missing / unreadable: keep 'daemon' default
         pass
-    model = os.environ.get("ASTERISM_AGENT_MODEL", "claude-sonnet-4-6")
+    # P1-#8: resolve via the same chain as the actual workers (F39
+    # per-pipeline provider/model), not the legacy ASTERISM_AGENT_MODEL
+    # env which lies when builder/backward use different models. Use
+    # the builder's resolved model as the canonical label; combine
+    # with backward's model when they differ so a mixed-model run is
+    # visible from the filename.
+    try:
+        from .llm import claude_cli as _cc
+        b_model = _cc._resolve_model("builder")
+        w_model = _cc._resolve_model("backward")
+        model = b_model if b_model == w_model else f"{b_model}+{w_model}"
+    except Exception:
+        # Provider import failed (very early init / corrupt config):
+        # fall back to legacy env so log filename always succeeds.
+        model = os.environ.get("ASTERISM_AGENT_MODEL", "claude-sonnet-4-6")
     # Strip path-unsafe chars from model (just in case env carries them)
-    model = re.sub(r"[^\w.-]", "_", model)
+    model = re.sub(r"[^\w.+-]", "_", model)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     return f"{problem}_{model}_{ts}.log"
 

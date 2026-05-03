@@ -40,6 +40,36 @@ def test_log_filename_format(
     assert ts[:8].isdigit() and ts[9:].isdigit()
 
 
+def test_log_filename_reflects_mixed_models(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-#8: when builder and backward use different models (F39 per-
+    pipeline selection), filename combines them with `+` so the
+    operator can tell at a glance — instead of always reporting the
+    legacy ASTERISM_AGENT_MODEL value (which lied for mixed runs)."""
+    monkeypatch.chdir(tmp_path)
+    # Clear legacy fallback
+    monkeypatch.delenv("ASTERISM_AGENT_MODEL", raising=False)
+    monkeypatch.setenv("ASTERISM_BUILDER_MODEL", "claude-sonnet-4-6")
+    monkeypatch.setenv("ASTERISM_BACKWARD_MODEL", "claude-opus-4-7")
+    name = _log_filename(tmp_path)
+    assert "claude-sonnet-4-6+claude-opus-4-7" in name
+
+
+def test_log_filename_collapses_when_models_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-#8: when both kinds resolve to the same model, no `+`
+    appears — keeps the common case clean."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ASTERISM_AGENT_MODEL", raising=False)
+    monkeypatch.setenv("ASTERISM_BUILDER_MODEL", "claude-opus-4-7")
+    monkeypatch.setenv("ASTERISM_BACKWARD_MODEL", "claude-opus-4-7")
+    name = _log_filename(tmp_path)
+    assert "claude-opus-4-7_" in name
+    assert "+" not in name
+
+
 def test_log_filename_uses_single_problem(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
