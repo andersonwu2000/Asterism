@@ -813,22 +813,6 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
 
     attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
 
-    # Reserve a strategy id up front so the agent can use it in slug names.
-    # If we fail anywhere below we mark this row 'dead' (no orphan files).
-    strategy_id = db.insert_strategy(
-        conn, goal_id=goal_id, lean_path=goal["lean_path"],
-        created_by=pipeline_id, proposal_md="", scratch_path="",
-    )
-    sid_token = f"s{strategy_id}"
-
-    def _abort(reason: str, detail: str = "",
-               proposal_md: str = "") -> PipelineResult:
-        db.update_strategy_status(conn, strategy_id, "dead")
-        return PipelineResult(
-            outcome="failed", failure_reason=reason,
-            failure_detail=detail, proposal_md=proposal_md,
-        )
-
     # F53 — same-session Backward retry (mirror of F33 for Builder).
     # First dispatch on a goal mints a session UUID and pins it via
     # --session-id; subsequent dispatches `claude --resume` so the
@@ -839,6 +823,47 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
     import uuid
     sid = db.get_backward_session_id(conn, goal_id)
     is_retry = sid is not None
+
+    # F53/A — reuse the prior dead strategy's id across warm retries.
+    # Agent's session memory anchors on the slug it wrote last turn
+    # (`L_s152_sub_*`). If this dispatch mints a fresh strategy_id
+    # (s153, s154, ...), the resumed agent keeps writing the stale
+    # `s152_sub_*` slugs and trips `naming_violation` every time.
+    # Pinning sid_token to the prior strategy keeps Context.md, the
+    # F52 skeleton, and the agent's session-memory all using the
+    # same slug.
+    strategy_id: int | None = None
+    if is_retry:
+        row = conn.execute(
+            "SELECT id FROM strategies "
+            "WHERE goal_id = ? AND status = 'dead' "
+            "ORDER BY id DESC LIMIT 1",
+            (goal_id,),
+        ).fetchone()
+        if row is not None:
+            strategy_id = int(row["id"])
+            conn.execute(
+                "UPDATE strategies "
+                "SET status='proposed', created_by=?, scratch_path='', "
+                "    proposal_md='' WHERE id=?",
+                (pipeline_id, strategy_id),
+            )
+            conn.commit()
+    if strategy_id is None:
+        strategy_id = db.insert_strategy(
+            conn, goal_id=goal_id, lean_path=goal["lean_path"],
+            created_by=pipeline_id, proposal_md="", scratch_path="",
+        )
+    sid_token = f"s{strategy_id}"
+
+    def _abort(reason: str, detail: str = "",
+               proposal_md: str = "") -> PipelineResult:
+        db.update_strategy_status(conn, strategy_id, "dead")
+        return PipelineResult(
+            outcome="failed", failure_reason=reason,
+            failure_detail=detail, proposal_md=proposal_md,
+        )
+
     retry_context: str | None = None
     if not is_retry:
         sid = str(uuid.uuid4())
@@ -853,10 +878,9 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
     # `theorem <slug> <binders> : <type>` declaration verbatim, rename
     # to `theorem sX`, body = `by sorry`. Agent edits ONLY the body;
     # framework rejects any signature edit via `_signature_prefix` diff.
-    # Skeleton is rewritten on every dispatch (new sid_token each time
-    # since strategy_id is fresh per dispatch); the resumed agent uses
-    # the latest skeleton's theorem name, not a stale one from session
-    # memory.
+    # Under F53/A the strategy_id is stable across warm retries, so
+    # the skeleton's `theorem sX` head matches both the prior turn's
+    # session memory and the current Context.md naming convention.
     parent_abs_for_skeleton = workspace / goal["lean_path"]
     try:
         parent_text = parent_abs_for_skeleton.read_text(encoding="utf-8")

@@ -157,3 +157,84 @@ def test_non_zero_non_timeout_keeps_session_id(
         pipeline_id="pid-bw-fail",
     )
     assert db.get_backward_session_id(conn, gid) == "warm-uuid"
+
+
+def test_warm_retry_reuses_dead_strategy_id(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F53/A — warm retry must REUSE the prior dead strategy's id so
+    the agent's session memory of `L_s<X>_sub_*` slugs stays valid.
+    Minting a fresh sX here is what produced the naming_violation
+    cascade observed in proj_nonexpansive (s152→s153→s154 all dying
+    with `does not start with 's<new>_sub_'`).
+    """
+    gid = _seed_root_goal(tmp_path, conn)
+    # Seed a prior dead strategy on this goal (the failed s<N>)
+    rel = db.get_goal(conn, gid)["lean_path"]
+    prior_sid = db.insert_strategy(
+        conn, goal_id=gid, lean_path=rel,
+        created_by="pid-prior", proposal_md="prior", scratch_path="",
+    )
+    db.update_strategy_status(conn, prior_sid, "dead")
+    db.set_backward_session_id(conn, gid, "warm-uuid")
+
+    seen_skeletons = []
+
+    def fake_spawn(**kw):
+        # Capture the sid_token the framework wrote into patch.lean
+        patch = (kw["attempts_dir"] / "patch.lean").read_text(encoding="utf-8")
+        seen_skeletons.append(patch)
+        return 1  # ordinary failure — keeps session for next retry
+
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=manifest.Manifest(problem="p", statement="True"),
+        pipeline_id="pid-bw-retry",
+    )
+
+    # Strategy id must be the prior dead one, not a fresh insert.
+    rows = conn.execute(
+        "SELECT id, status FROM strategies WHERE goal_id=? ORDER BY id",
+        (gid,),
+    ).fetchall()
+    assert len(rows) == 1, f"expected reuse, got rows={list(rows)}"
+    assert rows[0]["id"] == prior_sid
+    # And the skeleton's theorem name uses the SAME sid token.
+    assert f"theorem s{prior_sid}" in seen_skeletons[0]
+
+
+def test_cold_dispatch_mints_fresh_strategy_id(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F53/A — when there's no active session (cold path), strategy_id
+    is freshly minted as before. Reuse path is gated on is_retry."""
+    gid = _seed_root_goal(tmp_path, conn)
+    # Even if a stale dead strategy exists, no session means cold
+    rel = db.get_goal(conn, gid)["lean_path"]
+    stale_sid = db.insert_strategy(
+        conn, goal_id=gid, lean_path=rel,
+        created_by="pid-old", proposal_md="", scratch_path="",
+    )
+    db.update_strategy_status(conn, stale_sid, "dead")
+    # No backward_session_id → cold path
+    assert db.get_backward_session_id(conn, gid) is None
+
+    monkeypatch.setattr(agent, "spawn_llm", lambda **kw: 124)
+
+    pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=manifest.Manifest(problem="p", statement="True"),
+        pipeline_id="pid-bw-cold",
+    )
+    rows = conn.execute(
+        "SELECT id FROM strategies WHERE goal_id=? ORDER BY id",
+        (gid,),
+    ).fetchall()
+    # Expect: stale + freshly-minted (different ids)
+    assert len(rows) == 2
+    assert rows[0]["id"] == stale_sid
+    assert rows[1]["id"] != stale_sid
