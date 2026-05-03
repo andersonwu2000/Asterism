@@ -548,7 +548,8 @@ def test_manifest_hint_placeholder_not_appended_when_empty() -> None:
     fake_info = type("LI", (), {
         "name": "Nat.factorial", "signature": "ℕ → ℕ", "found": True,
     })()
-    with _patch.object(ag.lemma_lookup, "lookup_batch",
+    from Tooling import context as _ctx
+    with _patch.object(_ctx.lemma_lookup, "lookup_batch",
                        return_value={"Nat.factorial": fake_info}):
         section = ag._section_mathlib_lemmas(mfst, deads=[],
                                              workspace=Path("/tmp"))
@@ -570,7 +571,8 @@ def test_manifest_hint_keeps_real_commentary() -> None:
     fake_info = type("LI", (), {
         "name": "Nat.factorial", "signature": "ℕ → ℕ", "found": True,
     })()
-    with _patch.object(ag.lemma_lookup, "lookup_batch",
+    from Tooling import context as _ctx
+    with _patch.object(_ctx.lemma_lookup, "lookup_batch",
                        return_value={"Nat.factorial": fake_info}):
         section = ag._section_mathlib_lemmas(mfst, deads=[],
                                              workspace=Path("/tmp"))
