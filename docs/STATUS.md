@@ -1,6 +1,44 @@
 # Asterism v2 — Current Status
 
-Updated 2026-05-02 (post-F45/F46 batch + compactness Opus baseline).
+Updated 2026-05-03 (post-F47..F51 batch + 4 new HW testbeds).
+
+## Live test queued (post-compact action item)
+
+Operator's account quota recovered. Six testbeds available, daemon
+not running. Suggested rollout order:
+
+1. **inner_zero_iff_smul** (difficulty 4, ~15-20 min) — short F50
+   smoke test on a clean problem. Mathlib doesn't have the universal-α
+   iff version of Pythagorean, so Loogle/Grep usage is testable.
+2. **proj_nonexpansive** (difficulty 5, ~30-45 min) — medium. Mathlib's
+   `orthogonalProjection` is for closed subspaces only; the closed-
+   convex generalisation is genuine 3-step inner-product work.
+3. **gen_generates** — restart fresh. Has stale partial DB state (Goal
+   155 attempting, sub-goals scattered). Reset before launch:
+   `python -m Tooling.cli reset gen_generates && python -m Tooling.cli init gen_generates`.
+4. **localization_euclidean** / **cantor_xi_measure** (both difficulty 6) —
+   stress tests. Reserve for after the 3 above prove out, since each
+   may need 60+ min.
+
+Launch one at a time, single problem per daemon to keep telemetry clean:
+```
+python -m Tooling.cli init <problem>
+ASTERISM_BUDGET_SEC=3600 python -m Tooling.cli run > <problem>_run.log 2>&1
+```
+
+Active dispatchable goals across all problems will all be serviced
+in parallel (pool=12), so multiple `init` calls before `run` would
+mix problems — prefer single-problem runs for measurement.
+
+What to compare across runs (F50 + F51 should show):
+- Builder hit-rate (target ≥ 90%; baselines were 75%)
+- Max thinking length per session (was 25-35K pre-F50, target < 15K)
+- `_spawn.stderr` empty (no infra failures cascading)
+- Bash tool usage patterns (Loogle invocations on retry vs first attempt)
+- `[verify_retry]` strategy hits in daemon log
+
+> **Daemon state**: stopped (claude PIDs killed at session end). DB
+> has compactness=proved + gen_generates partial. No live processes.
 
 ## What just happened (today's session)
 
@@ -146,6 +184,17 @@ Driven by compactness telemetry on the prior run + a Manifest-hint experiment:
 
 | Commit | Topic |
 |---|---|
+| f211823 | Add localization_euclidean + cantor_xi_measure stress testbeds |
+| ffe5637 | Add proj_nonexpansive + inner_zero_iff_smul HW testbeds |
+| c8b7d87 | STATUS trim — wilson + cantor problem entries removed |
+| 93bcba5 | Remove wilson + cantor problems (operator has external cache) |
+| 1214fa7 | F51 — retry prompt enrichment for unknown-constant lake errors |
+| 1289cff | F50 follow-up: hint Mathlib path + fix allowed-tools wildcard |
+| 5c07254 | F50 follow-up: trim lemma discovery prompt verbosity |
+| 9901b04 | F50 — Lemma discovery tools: Grep + Loogle for agents |
+| 2cc86bf | F48 — Builder decline channel |
+| 248837b | F47 — move builder_threshold to builder.* in Asterism.yaml |
+| 1d234ae | compactness proved by Opus + STATUS update |
 | 5941c56 | F46 — defense against claude.exe instant-fail loop |
 | 77156f8 | F45 — inline prompt body into -p (fix F44 regression) |
 | a0fc91f | STATUS: F41/F43/F44 batch + post-compact action item |
@@ -191,17 +240,12 @@ Driven by compactness telemetry on the prior run + a Manifest-hint experiment:
 - **#227 F10**: Sonnet + Dedupe v4 live-validation. v4 is verified safe
   after F14 but doesn't fire on wilson / compactness (max depth 2-3, no
   ancestor reuse). Either retire as "validated safe" or wait for a
-  deeper-recursion problem.
-- **#254 F42**: Cross-strategy sub-goal reuse — broaden dedupe beyond
-  strict ancestors. dead strategy's proved sub-goals currently invisible
-  to new strategies on the same parent. Compactness prior run lost
-  ~20 proved sub-goals to orphans when strategy 15 cascade-died.
-- **#250 F38 live smoke**: Gemini provider live test on cantor (~5 min)
-  pending Gemini quota reset.
-- **MODEL_TIERS doc** (deferred per user) — per-model recommended
-  thresholds as a doc table, not a runtime lookup.
+  deeper-recursion problem. (F42 since done — this may now redirect to
+  testing on the new deeper testbeds.)
+- **#250 F38 live smoke**: Gemini provider live test pending Gemini
+  quota reset. Lower priority since claude path is well-exercised.
 
 ## Test count
 
-431 unit tests + 2 lake-integration tests (skipped if `lake` missing).
-All green at HEAD.
+472 unit tests + 24 lake-integration tests (lemma_lookup; skipped if
+`lake` missing). All green at HEAD f211823.
