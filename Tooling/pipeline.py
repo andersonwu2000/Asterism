@@ -203,6 +203,165 @@ def _grep_forbidden(text: str, forbidden: list[str]) -> str | None:
 _SORRY_STUB_RE = re.compile(r":=[ \t]*by[ \t]+sorry[ \t]*$", re.MULTILINE)
 
 
+# ---------------------------------------------------------------------
+# F52 — skeleton-driven strategy patches + def-alias promotion
+# ---------------------------------------------------------------------
+
+def _signature_prefix(text: str, name: str) -> str:
+    """Return the substring `theorem <name> <binders> : <type>` (up to but
+    not including `:=`). Returns "" if `theorem <name>` not found.
+
+    Walks balanced paren/brace/bracket depth so a top-level `:=` is
+    distinguished from `:=` inside a binder default value or anonymous
+    constructor literal.
+    """
+    m = re.search(rf"\btheorem\s+{re.escape(name)}\b", text)
+    if not m:
+        return ""
+    pos = m.end()
+    n = len(text)
+    depth = 0
+    while pos < n - 1:
+        ch = text[pos]
+        if ch in "({[":
+            depth += 1
+        elif ch in ")}]":
+            depth = max(0, depth - 1)
+        elif depth == 0 and ch == ":" and text[pos + 1] == "=":
+            return text[m.start():pos]
+        pos += 1
+    return text[m.start():]
+
+
+def _normalize_signature(s: str) -> str:
+    """Collapse all whitespace runs to single spaces. Lets agents reformat
+    indentation freely without tripping the diff check; only meaningful
+    edits (binder names, types, theorem name) remain detectable."""
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _build_strategy_skeleton(
+    parent_text: str, *, parent_slug: str, sid_token: str,
+    namespace: str,
+) -> str | None:
+    """Construct a strategy patch skeleton by copying the parent stub's
+    `theorem <parent_slug> ...` declaration verbatim, then renaming the
+    theorem to `<sid_token>` and stubbing the body as `by sorry`.
+
+    Returns None if `theorem <parent_slug>` is not found (e.g. parent
+    was already promoted by a sibling and now contains `def ... := @...`
+    instead — race-safe handling: caller aborts cleanly).
+    """
+    sig = _signature_prefix(parent_text, parent_slug)
+    if not sig:
+        return None
+    # Rename `theorem <parent_slug>` → `theorem <sid_token>` (only
+    # the first match within sig, which is the head we anchored).
+    new_sig = re.sub(
+        rf"\btheorem\s+{re.escape(parent_slug)}\b",
+        f"theorem {sid_token}", sig, count=1,
+    )
+    imports = [ln for ln in parent_text.splitlines()
+               if ln.strip().startswith("import")]
+    if not imports:
+        imports = ["import Mathlib"]
+    return (
+        "\n".join(imports) + "\n\n"
+        f"namespace {namespace}\n\n"
+        f"{new_sig} := by sorry\n\n"
+        f"end {namespace}\n"
+    )
+
+
+def _inject_imports_for_subs(
+    workspace: Path, patch_path: Path,
+    sub_dest_paths: list[Path],
+) -> None:
+    """Splice `import <module>` lines into `patch_path` for every
+    sub-goal file the agent placed. Idempotent: pre-existing imports
+    are not duplicated. Inserted just before the first non-import line
+    so namespace decl + theorem stay below the import block."""
+    if not patch_path.exists() or not sub_dest_paths:
+        return
+    text = patch_path.read_text(encoding="utf-8")
+    existing = {ln.strip() for ln in text.splitlines()
+                if ln.strip().startswith("import")}
+    needed = []
+    for sub in sub_dest_paths:
+        mod = _lean_path_to_module(workspace, sub)
+        line = f"import {mod}"
+        if line not in existing:
+            needed.append(line)
+    if not needed:
+        return
+    lines = text.splitlines()
+    # Find insert point: after last existing import, else at top.
+    insert_at = 0
+    for idx, ln in enumerate(lines):
+        if ln.strip().startswith("import"):
+            insert_at = idx + 1
+    new_lines = lines[:insert_at] + needed + lines[insert_at:]
+    patch_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
+def _promote_to_alias(
+    parent_abs: Path, *,
+    namespace: str, slug: str, sid_token: str,
+    scratch_module: str,
+) -> Path | None:
+    """F52 — rewrite parent stub as a re-export alias of the strategy.
+
+    Replaces the entire file contents with::
+
+        <orig imports + scratch_module>
+
+        namespace <namespace>
+
+        def <slug> := @<namespace>.<sid_token>
+
+        end <namespace>
+
+    `def` (not `theorem`) is required because Lean 4 syntax demands an
+    explicit `: <type>` after a theorem name, and we deliberately want
+    Lean to copy the type from the strategy theorem's signature at
+    elaboration. This sidesteps the older bug where serializing
+    `goal.statement` (just the conclusion — binders stripped during
+    extraction) into a fresh `theorem ... : <stmt> := s_id` left
+    identifiers like `P` unbound, triggering `Function expected ...`
+    at lake build.
+
+    Returns the backup path the caller should keep until the post-
+    promote lake build succeeds (delete on success, restore on fail
+    via `_rollback_promote`). Returns None if no original file existed.
+    """
+    original = parent_abs.read_text(encoding="utf-8") if parent_abs.exists() else ""
+    orig_imports = [ln for ln in original.splitlines()
+                    if ln.strip().startswith("import")]
+    if f"import {scratch_module}" not in orig_imports:
+        orig_imports.append(f"import {scratch_module}")
+    new_content = (
+        "\n".join(orig_imports) + "\n\n"
+        f"namespace {namespace}\n\n"
+        f"def {slug} := @{namespace}.{sid_token}\n\n"
+        f"end {namespace}\n"
+    )
+    backup: Path | None = None
+    if parent_abs.exists():
+        backup = parent_abs.with_suffix(parent_abs.suffix + ".verify_backup")
+        shutil.copy2(parent_abs, backup)
+    tmp = parent_abs.with_suffix(parent_abs.suffix + ".tmp")
+    tmp.write_text(new_content, encoding="utf-8")
+    os.replace(tmp, parent_abs)
+    return backup
+
+
+def _rollback_promote(parent_abs: Path, backup: Path | None) -> None:
+    """Restore parent_abs from backup; delete backup. No-op if backup is None."""
+    if backup is not None and backup.exists():
+        shutil.copy2(backup, parent_abs)
+        backup.unlink()
+
+
 def _is_sorry_stub(content: str) -> bool:
     """True iff the file's proof body is a fresh `:= by sorry` placeholder.
 
@@ -584,44 +743,33 @@ def run_verify(conn: sqlite3.Connection, *, strategy_id: int,
                     f"scratch: {err}"),
             )
 
-    # Step 2: rewrite parent's lean_path to alias from scratch.
+    # Step 2: promote parent stub to a `def <slug> := @<ns>.s<id>`
+    # re-export of the strategy. Lean copies the type from the
+    # strategy theorem at elaboration, so binders and conclusion
+    # transfer exactly — no chance of binder-stripping bugs (which
+    # broke s142 in the proj_nonexpansive run; see F52 notes).
     parent_abs = workspace / s["lean_path"]
     sid_token = f"s{strategy_id}"
     scratch_module = _lean_path_to_module(workspace, scratch_abs)
-
-    original = parent_abs.read_text(encoding="utf-8") if parent_abs.exists() else ""
-    orig_imports = [ln for ln in original.splitlines()
-                    if ln.strip().startswith("import")]
-    if f"import {scratch_module}" not in orig_imports:
-        orig_imports.append(f"import {scratch_module}")
-    new_content = (
-        "\n".join(orig_imports) + "\n\n"
-        f"namespace Problems.{s['goal_problem']}\n\n"
-        f"theorem {s['goal_slug']} : {s['goal_statement']} := "
-        f"{sid_token}\n\n"
-        f"end Problems.{s['goal_problem']}\n"
+    parent_backup = _promote_to_alias(
+        parent_abs,
+        namespace=f"Problems.{s['goal_problem']}",
+        slug=s["goal_slug"],
+        sid_token=sid_token,
+        scratch_module=scratch_module,
     )
-
-    backup = parent_abs.with_suffix(parent_abs.suffix + ".verify_backup")
-    if parent_abs.exists():
-        shutil.copy2(parent_abs, backup)
-    tmp = parent_abs.with_suffix(parent_abs.suffix + ".tmp")
-    tmp.write_text(new_content, encoding="utf-8")
-    os.replace(tmp, parent_abs)
 
     ok, err = _lake_build(workspace, parent_abs)
     if not ok:
-        if backup.exists():
-            shutil.copy2(backup, parent_abs)
-            backup.unlink()
+        _rollback_promote(parent_abs, parent_backup)
         return PipelineResult(
             outcome="failed", failure_reason="lake_build_error",
             failure_detail=diagnostics.annotate_failure_detail(
                 f"parent: {err}"),
         )
 
-    if backup.exists():
-        backup.unlink()
+    if parent_backup is not None and parent_backup.exists():
+        parent_backup.unlink()
     return PipelineResult(outcome="proved")
 
 
@@ -666,6 +814,33 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
                           attempts_dir=attempts_dir,
                           strategy_id=strategy_id, kind="backward")
 
+    # F52 — pre-write strategy patch skeleton: copy parent stub's
+    # `theorem <slug> <binders> : <type>` declaration verbatim, rename
+    # to `theorem sX`, body = `by sorry`. Agent edits ONLY the body;
+    # framework rejects any signature edit via `_signature_prefix` diff.
+    parent_abs_for_skeleton = workspace / goal["lean_path"]
+    try:
+        parent_text = parent_abs_for_skeleton.read_text(encoding="utf-8")
+    except OSError as exc:
+        return _abort("missing_parent_stub", str(exc))
+    namespace = f"Problems.{goal['problem']}"
+    skeleton = _build_strategy_skeleton(
+        parent_text,
+        parent_slug=goal["slug"],
+        sid_token=sid_token,
+        namespace=namespace,
+    )
+    if skeleton is None:
+        return _abort(
+            "parent_stub_not_decomposable",
+            f"theorem {goal['slug']} not found in {goal['lean_path']} "
+            f"(may have been promoted by a sibling already)",
+        )
+    skeleton_path = attempts_dir / "patch.lean"
+    skeleton_path.write_text(skeleton, encoding="utf-8")
+    skeleton_signature = _normalize_signature(
+        _signature_prefix(skeleton, sid_token))
+
     spawn_t0 = time.monotonic()
     rc = agent.spawn_llm(
         kind="backward",
@@ -697,6 +872,21 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
     forbidden = _grep_forbidden(all_text, mfst.forbidden_lemmas)
     if forbidden:
         return _abort("forbidden_lemma", forbidden, proposal_text)
+
+    # F52 — diff check: agent must preserve the framework-locked
+    # signature `theorem sX <binders> : <type>`. Whitespace normalized
+    # so re-indentation is OK; binder/type changes are not.
+    main_patch_text = patches[0].read_text(encoding="utf-8")
+    agent_signature = _normalize_signature(
+        _signature_prefix(main_patch_text, sid_token))
+    if agent_signature != skeleton_signature:
+        return _abort(
+            "patch_signature_mismatch",
+            f"agent edited the locked signature\n"
+            f"expected: {skeleton_signature[:300]}\n"
+            f"got:      {agent_signature[:300]}",
+            proposal_text,
+        )
 
     # Validate slug naming convention: every sub-goal filename must be
     # `new_<sid_token>_sub_<N>.lean`.
@@ -768,6 +958,13 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
             placed.append(dest)
         shutil.copy2(patches[0], scratch_dest)
         placed.append(scratch_dest)
+
+        # F52 — auto-inject `import` lines for sub-goal modules into
+        # the strategy patch. Agents reliably forget at least one;
+        # framework-managed imports avoid an entire class of
+        # `unknown identifier` errors at lake build.
+        sub_dest_paths = [dest for _, dest in sub_dests]
+        _inject_imports_for_subs(workspace, scratch_dest, sub_dest_paths)
 
         # F23 — single multi-target lake invocation. Lake's internal
         # scheduler builds independent sub-goal files in parallel and
