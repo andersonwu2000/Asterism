@@ -44,6 +44,12 @@ CREATE TABLE IF NOT EXISTS goals (
     -- cleared on timeout (rc=124), stale-session fallback (rc=125), or
     -- when Builder threshold reached (next dispatch is Backward).
     builder_session_id TEXT NULL DEFAULT NULL,
+    -- F53 — same idea as builder_session_id but for Backward retries.
+    -- A Backward dispatch that fails lake_build_error preserves the
+    -- session so the next Backward dispatch on the same goal can
+    -- `--resume` with the lake stderr inlined and edit one file
+    -- instead of cold-restarting from Context.md.
+    backward_session_id TEXT NULL DEFAULT NULL,
     -- F42 — when this goal is an alias (its lean file's proof body
     -- delegates to another goal via `apply <canonical_slug> <;>
     -- assumption`), `alias_target_id` points at that canonical goal.
@@ -154,6 +160,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
         ("alias_target_id",     # F42
          "ALTER TABLE goals ADD COLUMN alias_target_id INTEGER NULL"
          " DEFAULT NULL REFERENCES goals(id)"),
+        ("backward_session_id", # F53
+         "ALTER TABLE goals ADD COLUMN backward_session_id TEXT NULL"
+         " DEFAULT NULL"),
     ):
         try:
             conn.execute(ddl)
@@ -243,6 +252,30 @@ def get_builder_session_id(conn: sqlite3.Connection,
     if row is None:
         return None
     val = row["builder_session_id"]
+    return str(val) if val else None
+
+
+def set_backward_session_id(conn: sqlite3.Connection, goal_id: int,
+                            session_id: str | None) -> None:
+    """F53 — record (or clear with None) the claude CLI session UUID
+    for same-session Backward retry."""
+    conn.execute(
+        "UPDATE goals SET backward_session_id = ?, updated_at = ?"
+        " WHERE id = ?",
+        (session_id, now(), goal_id),
+    )
+    conn.commit()
+
+
+def get_backward_session_id(conn: sqlite3.Connection,
+                            goal_id: int) -> str | None:
+    row = conn.execute(
+        "SELECT backward_session_id FROM goals WHERE id = ?",
+        (goal_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    val = row["backward_session_id"]
     return str(val) if val else None
 
 

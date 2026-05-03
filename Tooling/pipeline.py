@@ -405,6 +405,25 @@ def _fetch_last_builder_error(conn: sqlite3.Connection,
     return diagnostics.strip_lake_noise(row["failure_detail"])
 
 
+def _fetch_last_backward_error(conn: sqlite3.Connection,
+                               goal_id: int) -> str:
+    """F53 — most recent Backward lake error on this goal. Inlined as
+    retry_context so the same-session resume agent sees what its prior
+    turn produced + how lake rejected it, without re-reading any
+    companion file."""
+    row = conn.execute(
+        "SELECT da.failure_detail FROM dead_attempts da"
+        " JOIN pipelines p ON p.id = da.pipeline_id"
+        " WHERE da.target_id = ? AND da.target_kind = 'Goal'"
+        "   AND p.kind = 'Backward'"
+        " ORDER BY da.id DESC LIMIT 1",
+        (goal_id,),
+    ).fetchone()
+    if row is None or not row["failure_detail"]:
+        return ""
+    return diagnostics.strip_lake_noise(row["failure_detail"])
+
+
 def run_builder(conn: sqlite3.Connection, *, goal_id: int,
                 workspace: Path, mfst: manifest.Manifest,
                 pipeline_id: str) -> PipelineResult:
@@ -810,14 +829,34 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
             failure_detail=detail, proposal_md=proposal_md,
         )
 
-    agent.compile_context(conn, goal=goal, mfst=mfst,
-                          attempts_dir=attempts_dir,
-                          strategy_id=strategy_id, kind="backward")
+    # F53 — same-session Backward retry (mirror of F33 for Builder).
+    # First dispatch on a goal mints a session UUID and pins it via
+    # --session-id; subsequent dispatches `claude --resume` so the
+    # agent's prior thinking + tool reads + lake-error perception
+    # carry over. retry_context inlines the latest lake stderr so the
+    # resumed agent sees what its prior turn produced and how lake
+    # rejected it.
+    import uuid
+    sid = db.get_backward_session_id(conn, goal_id)
+    is_retry = sid is not None
+    retry_context: str | None = None
+    if not is_retry:
+        sid = str(uuid.uuid4())
+        db.set_backward_session_id(conn, goal_id, sid)
+        agent.compile_context(conn, goal=goal, mfst=mfst,
+                              attempts_dir=attempts_dir,
+                              strategy_id=strategy_id, kind="backward")
+    else:
+        retry_context = _fetch_last_backward_error(conn, goal_id)
 
     # F52 — pre-write strategy patch skeleton: copy parent stub's
     # `theorem <slug> <binders> : <type>` declaration verbatim, rename
     # to `theorem sX`, body = `by sorry`. Agent edits ONLY the body;
     # framework rejects any signature edit via `_signature_prefix` diff.
+    # Skeleton is rewritten on every dispatch (new sid_token each time
+    # since strategy_id is fresh per dispatch); the resumed agent uses
+    # the latest skeleton's theorem name, not a stale one from session
+    # memory.
     parent_abs_for_skeleton = workspace / goal["lean_path"]
     try:
         parent_text = parent_abs_for_skeleton.read_text(encoding="utf-8")
@@ -847,9 +886,41 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
         prompt_path=PROMPT_DIR / "backward.md",
         problem_dir=workspace / "Problems" / goal["problem"],
         attempts_dir=attempts_dir,
+        session_id=sid,
+        is_retry=is_retry,
+        retry_context=retry_context,
     )
-    if rc != 0:
+    spawn_dur = time.monotonic() - spawn_t0
+
+    # F53 — claude session may have been GC'd between dispatches
+    # (rc=125). Mint a fresh UUID, recompile context, cold-spawn once.
+    if rc == 125:
+        db.set_backward_session_id(conn, goal_id, None)
+        sid = str(uuid.uuid4())
+        db.set_backward_session_id(conn, goal_id, sid)
+        agent.compile_context(conn, goal=goal, mfst=mfst,
+                              attempts_dir=attempts_dir,
+                              strategy_id=strategy_id, kind="backward")
+        spawn_t0 = time.monotonic()
+        rc = agent.spawn_llm(
+            kind="backward",
+            prompt_path=PROMPT_DIR / "backward.md",
+            problem_dir=workspace / "Problems" / goal["problem"],
+            attempts_dir=attempts_dir,
+            session_id=sid,
+            is_retry=False,
+        )
         spawn_dur = time.monotonic() - spawn_t0
+
+    if rc == 124:
+        # Timeout: agent's session may have been killed mid-write.
+        # Conservative — clear so the next dispatch cold-starts.
+        db.set_backward_session_id(conn, goal_id, None)
+        reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
+        return _abort(reason, detail)
+    if rc != 0:
+        # Ordinary failure — keep session_id so the next dispatch's
+        # --resume has the prior failed-turn context to learn from.
         reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
         return _abort(reason, detail)
 
@@ -1029,6 +1100,11 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
         db.update_strategy_scratch_path(conn, strategy_id, scratch_rel)
         conn.execute("UPDATE strategies SET proposal_md = ? WHERE id = ?",
                      (proposal_text, strategy_id))
+        # F53 — strategy committed; clear backward_session_id so any
+        # future Backward on this same goal (e.g. cascade-reopen after
+        # a sub-goal shelves) starts from a fresh session rather than
+        # resuming a now-stale one talking about a superseded strategy.
+        db.set_backward_session_id(conn, goal_id, None)
         conn.commit()
 
         return PipelineResult(outcome="success", proposal_md=proposal_text)

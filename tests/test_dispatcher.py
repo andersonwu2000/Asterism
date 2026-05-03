@@ -166,6 +166,88 @@ def test_cascade_builder_shelved_clears_session_id(
     assert db.get_builder_session_id(conn, gid) is None
 
 
+# ---------------------------------------------------------------------
+# F53 — cascade clears backward_session_id at right moments
+# ---------------------------------------------------------------------
+
+def test_cascade_backward_success_clears_session_id(
+    conn: sqlite3.Connection,
+) -> None:
+    """Backward strategy committed → next dispatch (if cascade-reopens)
+    cold-spawns a fresh session rather than resuming a now-stale one."""
+    gid = _seed_goal(conn)
+    db.set_backward_session_id(conn, gid, "abc-uuid")
+    cascade_one(conn, pipeline_id="pid", kind="Backward",
+                target_id=str(gid), target_kind="Goal", outcome="success")
+    assert db.get_backward_session_id(conn, gid) is None
+
+
+def test_cascade_backward_failed_keeps_session_id_below_threshold(
+    conn: sqlite3.Connection,
+) -> None:
+    """Backward failure → session_id preserved so the next dispatch
+    `--resume`s with prior turn's lake-error context."""
+    gid = _seed_goal(conn)
+    db.set_backward_session_id(conn, gid, "abc-uuid")
+    cascade_one(conn, pipeline_id="pid", kind="Backward",
+                target_id=str(gid), target_kind="Goal", outcome="failed")
+    assert db.get_backward_session_id(conn, gid) == "abc-uuid"
+
+
+def test_cascade_backward_shelved_clears_session_id(
+    conn: sqlite3.Connection,
+) -> None:
+    """Goal shelved → backward_session_id cleared as part of cleanup."""
+    gid = _seed_goal(conn)
+    db.set_backward_session_id(conn, gid, "abc-uuid")
+    for _ in range(SHELVE_THRESHOLD):
+        cascade_one(conn, pipeline_id="pid", kind="Backward",
+                    target_id=str(gid), target_kind="Goal",
+                    outcome="failed")
+    assert db.get_goal(conn, gid)["status"] == "shelved"
+    assert db.get_backward_session_id(conn, gid) is None
+
+
+def test_db_migration_adds_backward_session_id_column(
+    tmp_path: Path,
+) -> None:
+    """Older DBs created without the F53 column must also pick up the
+    additive migration."""
+    import sqlite3 as _sq
+    db_path = tmp_path / "old.db"
+    legacy = _sq.connect(str(db_path))
+    legacy.executescript("""
+        CREATE TABLE problems (
+            name TEXT PRIMARY KEY,
+            manifest_path TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE goals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            problem TEXT NOT NULL REFERENCES problems(name),
+            slug TEXT NOT NULL,
+            lean_path TEXT NOT NULL UNIQUE,
+            statement TEXT NOT NULL,
+            difficulty INTEGER NOT NULL DEFAULT 4,
+            kind TEXT NOT NULL DEFAULT 'theorem' CHECK(kind IN ('theorem')),
+            origin TEXT NOT NULL CHECK(origin IN ('root','backward')),
+            status TEXT NOT NULL CHECK(status IN ('open','attempting','proved','shelved')),
+            depth INTEGER NOT NULL DEFAULT 0,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(problem, slug)
+        );
+    """)
+    legacy.commit()
+    legacy.close()
+    fresh = _sq.connect(str(db_path))
+    fresh.row_factory = _sq.Row
+    db.init_schema(fresh)
+    cols = [r[1] for r in fresh.execute("PRAGMA table_info(goals)").fetchall()]
+    assert "backward_session_id" in cols
+
+
 def test_db_migration_adds_builder_session_id_column(
     tmp_path: Path,
 ) -> None:

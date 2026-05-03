@@ -414,6 +414,11 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
     if kind == "Backward":
         if outcome == "success":
             db.update_goal_status(conn, int(target_id), "attempting")
+            # F53 — strategy committed; clear backward session so the
+            # next Backward on this goal (cascade-reopen path) starts
+            # fresh rather than resuming a session about a strategy
+            # that's already taken on the goal.
+            db.set_backward_session_id(conn, int(target_id), None)
             return
         # exhausted / failed
         if is_fast_fail:
@@ -421,6 +426,8 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
         n = db.increment_goal_attempts(conn, int(target_id))
         if n >= SHELVE_THRESHOLD:
             db.update_goal_status(conn, int(target_id), "shelved")
+            # F53 — shelved; same cleanup as Builder.
+            db.set_backward_session_id(conn, int(target_id), None)
             _propagate_shelve(conn, int(target_id))
         return
 
