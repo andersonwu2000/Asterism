@@ -491,7 +491,7 @@ def test_spawn_retry_no_unknown_constant_hint_for_other_errors(
     # leftover sorry in patch
     ("warning: Problems/p/proofs/_strategy_s5.lean:6:8: "
      "declaration uses `sorry`",
-     "still has `:= by sorry`"),
+     "strategy patch (`_strategy_s<id>.lean`) still has"),
 ])
 def test_pattern_hints_emit_for_known_stderr(
     stderr: str, must_appear: str,
@@ -530,8 +530,8 @@ def test_sorry_hint_scoped_to_patch_not_substubs() -> None:
         "warning: Problems/p/proofs/_strategy_s5.lean:6:8: "
         "declaration uses `sorry`"
     )
-    assert "still has `:= by sorry`" in claude_cli._retry_hint_for_patterns(
-        patch_warning)
+    assert "strategy patch (`_strategy_s<id>.lean`) still has" in (
+        claude_cli._retry_hint_for_patterns(patch_warning))
 
 
 def test_manifest_hint_placeholder_not_appended_when_empty() -> None:
@@ -1055,9 +1055,9 @@ def test_claude_resolve_model_kind_specific_first(
     from Tooling.llm import claude_cli
     monkeypatch.setenv("ASTERISM_BUILDER_MODEL", "claude-haiku-4-5")
     monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-sonnet-4-6")
-    assert claude_cli._resolve_model("builder") == "claude-haiku-4-5"
+    assert claude_cli.resolve_model("builder") == "claude-haiku-4-5"
     # Different kind falls through to legacy AGENT_MODEL
-    assert claude_cli._resolve_model("backward") == "claude-sonnet-4-6"
+    assert claude_cli.resolve_model("backward") == "claude-sonnet-4-6"
 
 
 def test_claude_resolve_model_legacy_fallback(
@@ -1066,7 +1066,7 @@ def test_claude_resolve_model_legacy_fallback(
     from Tooling.llm import claude_cli
     monkeypatch.delenv("ASTERISM_BUILDER_MODEL", raising=False)
     monkeypatch.setenv("ASTERISM_AGENT_MODEL", "claude-opus-4-7")
-    assert claude_cli._resolve_model("builder") == "claude-opus-4-7"
+    assert claude_cli.resolve_model("builder") == "claude-opus-4-7"
 
 
 def test_claude_resolve_model_default(
@@ -1075,7 +1075,7 @@ def test_claude_resolve_model_default(
     from Tooling.llm import claude_cli
     monkeypatch.delenv("ASTERISM_BUILDER_MODEL", raising=False)
     monkeypatch.delenv("ASTERISM_AGENT_MODEL", raising=False)
-    assert claude_cli._resolve_model("builder") == claude_cli.DEFAULT_MODEL
+    assert claude_cli.resolve_model("builder") == claude_cli.DEFAULT_MODEL
 
 
 def test_gemini_resolve_model_kind_specific_first(
@@ -1314,7 +1314,7 @@ def test_allowed_tools_scopes_read_to_problem_and_mathlib(
     # the allowlist instead of being denied (observed 18×/run).
     assert "Read(/ws/Problems/active_problem/**)" in val
     assert "Read(/ws/.attempts/pid-x/**)" in val
-    assert "Read(/ws/.lake/packages/**)" in val
+    assert "Read(/ws/.lake/packages/**/*.lean)" in val
     # Grep allowlist mirrors Read for the lemma-discovery use case
     assert "Grep(/ws/Problems/active_problem/**)" in val
     assert "Grep(/ws/.lake/packages/**)" in val

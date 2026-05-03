@@ -18,7 +18,14 @@ from .. import agent, db, dedupe, diagnostics, manifest
 from ..llm.base import SpawnRC
 
 
-PROMPT_DIR = Path(__file__).parent / "prompts"
+# P2-#1 regression fix: pipeline.py was converted to pipeline/ package,
+# bumping `__file__` one directory deeper. The prompts/ dir lives at
+# Tooling/prompts/ — go up one level to reach it. Without this, the
+# claude provider silently spawns with an "(prompt file unavailable)"
+# stub on every Builder/Backward dispatch (caught by review of
+# c398ded — none of the existing tests hit this path because they
+# monkeypatch `agent.spawn_llm`).
+PROMPT_DIR = Path(__file__).parent.parent / "prompts"
 
 # F46 — wall-clock threshold under which a non-zero spawn is reclassified
 # as `spawn_fast_fail`. Real claude.exe launches take ~3-5s and the

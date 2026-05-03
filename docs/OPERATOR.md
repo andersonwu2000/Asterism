@@ -52,6 +52,14 @@ extra env vars are env-only (no Asterism.yaml binding):
 | `ASTERISM_CLAUDE_TOOLS` | Override `--tools` list passed to claude CLI. | `Read Write Edit Grep Bash` |
 | `ASTERISM_CLAUDE_ALLOWED_TOOLS` | Replace the per-spawn computed allowlist (see F54/M1). Empty string (`""`) drops the flag. | derived from `req.problem_dir` |
 | `ASTERISM_CLAUDE_ALLOWED_BASH` | Override only the Bash subset of the allowlist. | `Bash(python -m Tooling.loogle *)` |
+| `ASTERISM_POOL` | Worker pool size (mirrors `dispatch.pool`). | `12` (from yaml default) |
+| `ASTERISM_BUILDER_THRESHOLD` | Mirrors `builder.threshold`. | `3` |
+| `ASTERISM_SHELVE_THRESHOLD` | Goal attempts cap before shelve. | `8` |
+| `ASTERISM_LLM_PROVIDER` | Default provider for both kinds (claude/gemini/openai). | `claude` |
+| `ASTERISM_BUILDER_PROVIDER` / `ASTERISM_BACKWARD_PROVIDER` | Per-kind provider override (F39). | follows `ASTERISM_LLM_PROVIDER` |
+| `ASTERISM_BUILDER_MODEL` / `ASTERISM_BACKWARD_MODEL` | Per-kind model override (mirrors `builder.model` / `backward.model`). | follows yaml then `ASTERISM_AGENT_MODEL` |
+| `ASTERISM_AGENT_MODEL` | Legacy provider-wide model fallback. | `claude-sonnet-4-6` |
+| `ASTERISM_GEMINI_MODEL` | Gemini provider model. | gemini default |
 
 ## Recurring traps
 

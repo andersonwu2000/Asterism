@@ -68,8 +68,8 @@ def _log_filename(workspace: Path) -> str:
     # visible from the filename.
     try:
         from .llm import claude_cli as _cc
-        b_model = _cc._resolve_model("builder")
-        w_model = _cc._resolve_model("backward")
+        b_model = _cc.resolve_model("builder")
+        w_model = _cc.resolve_model("backward")
         model = b_model if b_model == w_model else f"{b_model}+{w_model}"
     except Exception:
         # Provider import failed (very early init / corrupt config):
@@ -790,8 +790,8 @@ def cmd_config(args: argparse.Namespace) -> int:
                   legacy_env=("ASTERISM_BUILDER_THRESHOLD",),
                   default=_cfg.get("dispatch.builder_threshold", default=3, cast=int),
                   cast=int)),
-        ("builder.model", _cc._resolve_model("builder")),
-        ("backward.model", _cc._resolve_model("backward")),
+        ("builder.model", _cc.resolve_model("builder")),
+        ("backward.model", _cc.resolve_model("backward")),
     ]
     for k, v in rows:
         print(f"  {k:<30} = {v}")

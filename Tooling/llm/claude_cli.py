@@ -132,19 +132,21 @@ _RETRY_PATTERN_HINTS: list[tuple[re.Pattern[str], str]] = [
      "The chosen tactic didn't progress on the current goal — pick a "
      "different family (e.g. for inner-product symmetry use "
      "`inner_sub_left`/`inner_neg_right`, not `ring_nf`)."),
-    # Sorry warning specifically attributed to a patch file — sub-stub
-    # warnings for `new_*.lean` are legitimate (those carry intentional
-    # `:= by sorry`) and emit the same lake warning text. Scope the
-    # match to filenames the framework would *not* expect to contain
-    # sorry: the strategy patch (`_strategy_s<id>.lean`) and the
-    # Builder leaf (`<problem-root>.lean` resolves to the agent's
-    # `patch.lean` via copy). P1-#9.
+    # Sorry warning attributed to a strategy patch. Sub-stub warnings
+    # for `new_*.lean` and goal stubs `L_*.lean` are legitimate
+    # (intentional `:= by sorry` placeholders) and are NOT flagged.
+    # Builder patches: lake reports the warning under the goal's
+    # lean_path (Builder copies patch onto goal_lean before building),
+    # so we don't have a reliable filename signature for them — Builder
+    # rarely emits `sorry` in practice; the strategy-patch case is what
+    # matters. P1-#9 / review follow-up.
     (re.compile(
-        r"(?:_strategy_s\d+|patch)\.lean[^\n]*declaration uses\s+`sorry`",
+        r"_strategy_s\d+\.lean[^\n]*declaration uses\s+`sorry`",
         re.IGNORECASE),
-     "Your patch.lean still has `:= by sorry` — that's only legal in "
-     "`new_*.lean` sub-goal stubs, NOT in the strategy patch / Builder "
-     "patch. Replace the body with real tactics."),
+     "Your strategy patch (`_strategy_s<id>.lean`) still has "
+     "`:= by sorry`. Sub-goal stubs (`new_*.lean` / `L_*.lean`) carry "
+     "intentional sorry placeholders, but the strategy patch must "
+     "compose them via real tactics."),
 ]
 
 
@@ -198,7 +200,7 @@ DEFAULT_TOOLS = "Read Write Edit Grep Bash"
 DEFAULT_BASH_ALLOWED = "Bash(python -m Tooling.loogle *)"
 
 
-def _resolve_model(kind: str | None) -> str:
+def resolve_model(kind: str | None) -> str:
     """Model resolution chain for the claude provider (per
     Tooling/config.get):
 
@@ -302,12 +304,16 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
     patterns = [
         # Bash (Loogle, plus operator override)
         os.environ.get("ASTERISM_CLAUDE_ALLOWED_BASH", DEFAULT_BASH_ALLOWED),
-        # Read scope: this problem's dir, the agent's sandbox, the
-        # entire Lake-packages tree (Mathlib + transitive deps).
+        # Read scope: this problem's dir, the agent's sandbox, and
+        # only `*.lean` under Lake-packages — keeps `.olean` binary
+        # blobs out of agent context (an accidental Read on one
+        # would dump megabytes of garbage). Mathlib + transitive
+        # deps' source files remain fully accessible.
         f"Read({problem}/**)",
         f"Read({attempts}/**)",
-        f"Read({packages}/**)",
-        # Grep mirrors Read for the lemma-discovery use case
+        f"Read({packages}/**/*.lean)",
+        # Grep mirrors Read; rg skips binaries by default but the
+        # narrowed pattern keeps the allowlist self-consistent.
         f"Grep({problem}/**)",
         f"Grep({packages}/**)",
     ]
@@ -355,7 +361,7 @@ class ClaudeCliProvider:
                   flush=True)
             return 127
 
-        model = _resolve_model(req.kind)
+        model = resolve_model(req.kind)
 
         # F33 — retry path uses `--resume`, a short inline prompt with
         # the lake error embedded directly (no separate RETRY_NOTE.md
@@ -455,7 +461,7 @@ class ClaudeCliProvider:
         F22 auxiliary calls inherit the 'builder' tier (cheap-LLM role)."""
         if not shutil.which("claude"):
             return None
-        model = _resolve_model("builder")
+        model = resolve_model("builder")
         cmd = [
             "claude",
             "--model", model,

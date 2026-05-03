@@ -143,11 +143,17 @@ def sweep_lean_backups(conn: sqlite3.Connection,
             except OSError:
                 pass
 
-    for tmp in problems_root.glob("**/*.lean.tmp"):
-        try:
-            tmp.unlink()
-            tmps_removed += 1
-        except OSError:
-            pass
+    # P0-#1 also sid-keys the .tmp staging file (see _skeleton.py:
+    # `tmp = parent_abs.with_suffix(parent_abs.suffix + f".tmp_{sid_token}")`)
+    # so daemon-crash mid-Verify can leak `.lean.tmp_s<id>` files. Glob
+    # both the legacy plain suffix and the sid-suffixed variant —
+    # missing the latter would let sid-keyed orphans accumulate forever.
+    for pattern in ("**/*.lean.tmp", "**/*.lean.tmp_s*"):
+        for tmp in problems_root.glob(pattern):
+            try:
+                tmp.unlink()
+                tmps_removed += 1
+            except OSError:
+                pass
 
     return backups_handled, tmps_removed

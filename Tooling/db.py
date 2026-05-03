@@ -420,6 +420,11 @@ def strategies_ready_for_verify(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         "  AND EXISTS ("
         "    SELECT 1 FROM strategy_subgoals ss WHERE ss.strategy_id = s.id"
         "  )"
+        # Deterministic order so per-goal Verify serialization
+        # (P0-#1 in bfs_refill) picks the same sibling on each tick
+        # — without this, sqlite's natural rowid order is nominal
+        # but documented-as-undefined.
+        " ORDER BY s.id"
     ))
 
 

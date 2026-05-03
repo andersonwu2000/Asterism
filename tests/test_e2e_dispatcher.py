@@ -81,6 +81,15 @@ def test_e2e_root_proved_through_dispatcher(
     # forbidden-lemma scan + delivers a body. The framework's
     # _is_sorry_stub guard accepts any non-sorry patch.
     def fake_spawn(**kw):
+        # Regression guard: P2-#1 (commit c398ded) initially broke
+        # PROMPT_DIR resolution by relativizing to the new pipeline/
+        # package dir; the actual prompts live one level up at
+        # Tooling/prompts/. None of the unit tests hit the file system
+        # path because they all monkeypatch spawn_llm — so the e2e
+        # test asserts the prompt_path the framework computed is real.
+        assert kw["prompt_path"].exists(), (
+            f"framework passed a non-existent prompt path: "
+            f"{kw['prompt_path']}")
         attempts = kw["attempts_dir"]
         kind = kw.get("kind", "builder")
         if kind == "builder":

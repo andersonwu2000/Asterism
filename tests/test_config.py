@@ -289,11 +289,11 @@ def test_claude_model_resolution_via_yaml(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """builder.model in yaml selects Haiku even with no env vars set."""
-    from Tooling.llm.claude_cli import _resolve_model
+    from Tooling.llm.claude_cli import resolve_model
     for v in ("ASTERISM_BUILDER_MODEL", "ASTERISM_AGENT_MODEL"):
         monkeypatch.delenv(v, raising=False)
     (tmp_path / "Asterism.yaml").write_text(
         "builder:\n  model: claude-haiku-4-5\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     config._reset_cache()
-    assert _resolve_model("builder") == "claude-haiku-4-5"
+    assert resolve_model("builder") == "claude-haiku-4-5"

@@ -22,7 +22,7 @@
 | Library promotion | F49：root proved 後自動 promote 進 `Library/<Topic>/` |
 | Provider | claude (default) / gemini / openai；F39 per-pipeline-kind selection |
 | Read allowlist | F54 + M1：`Read/Grep` scoped to problem dir + `.lake/packages/**` |
-| Unit tests | 544 passing + 24 lake-integration |
+| Unit tests | 550+ passing + 24 lake-integration |
 | Tooling LOC | ~3000 lines Python |
 | Axioms whitelist | `[propext, Classical.choice, Quot.sound]`（題級、可 per-Manifest 限縮） |
 

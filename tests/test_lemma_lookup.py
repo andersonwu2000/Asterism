@@ -24,15 +24,11 @@ from Tooling.lemma_lookup import (
 )
 
 
-# P2-#3: redirect the on-disk cache to a per-test tmp dir for the
-# entire module. Eliminates the cross-test / pytest-xdist pollution
-# of `lemma_lookup.CACHE_FILE` (a module-level Path constant) that
-# made `test_lookup_batch_real_lake` flaky and prevented parallel
-# test runs.
-@pytest.fixture(autouse=True)
-def _isolate_lemma_cache(tmp_path, monkeypatch):
-    monkeypatch.setattr(lemma_lookup, "CACHE_FILE",
-                        tmp_path / ".lemma_cache.json")
+# P2-#3: an autouse `_isolate_cache` fixture below (line ~206) already
+# redirects `lemma_lookup.CACHE_FILE` to tmp_path for every test in
+# this file. The earlier P2-#3 commit added a duplicate at module
+# top — removed during review (redundant; the second invocation of
+# autouse on the same name silently overrode the first anyway).
 
 
 # ---------------------------------------------------------------------
