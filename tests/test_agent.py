@@ -212,7 +212,9 @@ def test_context_emits_lemma_references_when_lookup_finds(
 ) -> None:
     """Past dead_attempt mentions `ZMod.val_natCast` in stderr →
     extract_lemma_names picks it → lookup_batch returns a found
-    LemmaInfo → Context.md gets a `## Lemma references` bullet."""
+    LemmaInfo → Context.md's `## Mathlib lemmas` section (the merged
+    successor of the F20 `## Lemma references` block) lists it with
+    its resolved signature."""
     from Tooling import lemma_lookup
 
     gid = _seed_problem_and_goal(conn)
@@ -241,7 +243,7 @@ def test_context_emits_lemma_references_when_lookup_finds(
                           attempts_dir=attempts_dir)
     text = out.read_text(encoding="utf-8")
 
-    assert "## Lemma references" in text
+    assert "## Mathlib lemmas" in text
     assert "ZMod.val_natCast" in text
     assert "(↑a).val = a % n" in text
 
@@ -275,7 +277,8 @@ def test_context_skips_lemma_references_when_lookup_finds_nothing(
     out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
                           attempts_dir=attempts_dir)
     text = out.read_text(encoding="utf-8")
-    assert "## Lemma references" not in text
+    # No manifest hints + no resolved names → merged section absent.
+    assert "## Mathlib lemmas" not in text
 
 
 def test_context_lemma_lookup_failure_is_swallowed(

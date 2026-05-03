@@ -96,6 +96,72 @@ def _retry_hint_for_unknowns(names: list[str]) -> str:
     return "\n".join(lines)
 
 
+# F53/3b — generic stderr-pattern → diagnostic-hint table. Each entry
+# is (regex on stderr, short hint string). Hints are appended to the
+# retry prompt so the resumed agent gets a pointed clue instead of
+# spending several minutes inferring the failure class. Patterns use
+# re.IGNORECASE; first match wins per family. Order matters — more
+# specific patterns first.
+_RETRY_PATTERN_HINTS: list[tuple[re.Pattern[str], str]] = [
+    # Unicode / notation parser issues: `expected token` at a column
+    # often means a notation symbol's scope isn't open or a hidden
+    # character snuck in via copy-paste. Always-on grep tip.
+    (re.compile(r"error:.*expected token", re.IGNORECASE),
+     "`expected token` is usually a notation/scope problem. If the "
+     "line uses ⟪⟫, ⟨⟩, ‖, etc, either `open scoped <Namespace>` or "
+     "use the function form (e.g. `inner ℝ x y` instead of `⟪x, y⟫_ℝ`). "
+     "Also check for stray zero-width chars from copy-paste."),
+    # Typeclass metavariable — implicit/explicit binder shape mismatch.
+    (re.compile(r"typeclass\s+instance\s+problem\s+is\s+stuck",
+                re.IGNORECASE),
+     "`typeclass instance problem is stuck` means Lean can't figure "
+     "out a type argument. Add an explicit type annotation "
+     "(e.g. `(x : ℝ)`) or pass the carrier explicitly via `@` form."),
+    # `Function expected at, identifier ?m unknown` — autoImplicit
+    # bound an undeclared identifier.
+    (re.compile(r"Function expected at.*identifier.*unknown",
+                re.IGNORECASE | re.DOTALL),
+     "`Function expected at … identifier unknown` usually means a "
+     "binder name (e.g. `P`) isn't declared in the theorem's signature. "
+     "Make sure every variable in the conclusion appears as a binder."),
+    # Tactic made no progress — use a different tactic family.
+    # Lake quotes the tactic with either single quotes or backticks
+    # (`ring_nf` made no progress / `tactic 'simp' made no progress`).
+    (re.compile(r"(?:tactic\s+['`][^'`]+['`]|`[^`]+`)\s+made no progress",
+                re.IGNORECASE),
+     "The chosen tactic didn't progress on the current goal — pick a "
+     "different family (e.g. for inner-product symmetry use "
+     "`inner_sub_left`/`inner_neg_right`, not `ring_nf`)."),
+    # Sorry warning surfacing as fail — usually upstream of build_error
+    (re.compile(r"declaration uses\s+`sorry`", re.IGNORECASE),
+     "A sub-goal still has `:= by sorry` — that's only legal in "
+     "`new_*.lean` stubs, NOT in patch.lean. Replace the patch.lean "
+     "body with real tactics."),
+]
+
+
+def _retry_hint_for_patterns(stderr: str) -> str:
+    """Apply _RETRY_PATTERN_HINTS to `stderr`, return a short joined
+    hint string (or '' if no matches). Cap to first 2 distinct hits to
+    bound prompt growth — multiple matching errors usually share one
+    root cause."""
+    if not stderr:
+        return ""
+    out: list[str] = []
+    seen: set[int] = set()
+    for idx, (pat, hint) in enumerate(_RETRY_PATTERN_HINTS):
+        if idx in seen:
+            continue
+        if pat.search(stderr):
+            out.append(f"- {hint}")
+            seen.add(idx)
+            if len(out) >= 2:
+                break
+    if not out:
+        return ""
+    return "\n\nRetry hints based on the lake error above:\n" + "\n".join(out)
+
+
 DEFAULT_MODEL = "claude-sonnet-4-6"
 
 # F33 — sentinel rc returned when claude reports "No conversation
@@ -119,12 +185,13 @@ _STALE_SESSION_MARKER = "no conversation found with session id"
 # Override via env if a future use case needs different surface.
 DEFAULT_TOOLS = "Read Write Edit Grep Bash"
 
-# F50 — restrict Bash to the Loogle invocation only. Pattern uses
-# claude CLI's space-star wildcard `Bash(prefix *)` to allow any args
-# after the prefix. NB: `--permission-mode acceptEdits` in
-# non-interactive `-p` mode may auto-approve unrelated Bash anyway,
-# but the explicit allowlist is the right defensive baseline.
-DEFAULT_ALLOWED_TOOLS = "Bash(python -m Tooling.loogle *)"
+# Bash invocations the agent is allowed (whitespace-separated patterns
+# joined into a single --allowed-tools argument). Path-scoped Read /
+# Grep patterns are appended per-spawn from problem_dir + Mathlib by
+# `_compose_allowed_tools` below.
+#
+# F50: Loogle (Mathlib type-pattern search via HTTPS).
+DEFAULT_BASH_ALLOWED = "Bash(python -m Tooling.loogle *)"
 
 
 def _resolve_model(kind: str | None) -> str:
@@ -194,26 +261,72 @@ def _write_spawn_stderr(attempts_dir, stderr: str, stdout: str,
         pass
 
 
-def _trim_flags() -> list[str]:
-    """CLI flags that strip system-prompt overhead Asterism doesn't
-    benefit from + tool surface configuration.
+def _compose_allowed_tools(req: LLMRequest) -> str:
+    """Build the `--allowed-tools` argument: Bash patterns joined with
+    Read/Grep path-scoped patterns derived from problem_dir + the
+    workspace's Mathlib package. Claude CLI matches glob-like patterns
+    in the form `Read(<path>)` / `Grep(<path>)`.
 
-    F50 adds `--allowed-tools` to whitelist the Loogle Bash invocation
-    while keeping other Bash commands gated. complete_text() (no file
-    IO, no agent tool use) drops `--allowed-tools` since it never runs
-    Bash anyway.
+    Deliberately NOT in the allowlist: other `Problems/<...>/` dirs
+    under the same workspace. The Sonnet rerun of proj_nonexpansive
+    showed agents wandering into `inner_zero_iff_smul/proofs/` and
+    `gen_generates/proofs/` for unrelated examples; those reads tripped
+    permission prompts but cost a turn each. Restricting Read to the
+    active problem's dir + Mathlib makes the boundary explicit.
+    """
+    workspace = _workspace_from_problem_dir(req.problem_dir)
+    # Forward-slash form for the patterns; claude CLI matches glob-style
+    # and Windows users naturally write backslashes, but the patterns
+    # round-trip through subprocess argv as strings, so we normalize.
+    problem = req.problem_dir.as_posix()
+    attempts = req.attempts_dir.as_posix()
+    mathlib = (workspace / ".lake" / "packages" / "mathlib" /
+               "Mathlib").as_posix()
+    patterns = [
+        # Bash (Loogle, plus operator override)
+        os.environ.get("ASTERISM_CLAUDE_ALLOWED_BASH", DEFAULT_BASH_ALLOWED),
+        # Read scope: this problem's dir, the agent's sandbox, Mathlib
+        f"Read({problem}/**)",
+        f"Read({attempts}/**)",
+        f"Read({mathlib}/**)",
+        # Grep needs explicit path patterns too
+        f"Grep({problem}/**)",
+        f"Grep({mathlib}/**)",
+    ]
+    return " ".join(p for p in patterns if p)
+
+
+def _workspace_from_problem_dir(problem_dir: Path) -> Path:
+    """problem_dir = <workspace>/Problems/<name>; walk up two."""
+    return problem_dir.parent.parent
+
+
+def _trim_flags(req: LLMRequest | None = None) -> list[str]:
+    """CLI flags that strip system-prompt overhead Asterism doesn't
+    benefit from + per-spawn allowlist for Read/Grep/Bash.
+
+    `req=None` is for callers that don't run agent tools (e.g.
+    complete_text). The path-scoped allowlist is dropped in that case;
+    Bash allowlist still emitted for back-compat with tests.
     """
     tools = os.environ.get("ASTERISM_CLAUDE_TOOLS", DEFAULT_TOOLS)
-    allowed = os.environ.get(
-        "ASTERISM_CLAUDE_ALLOWED_TOOLS", DEFAULT_ALLOWED_TOOLS)
     flags = [
         "--tools", tools,
         "--setting-sources", "",
         "--disable-slash-commands",
         "--exclude-dynamic-system-prompt-sections",
     ]
-    if allowed:
-        flags += ["--allowed-tools", allowed]
+    if req is not None:
+        allowed = os.environ.get(
+            "ASTERISM_CLAUDE_ALLOWED_TOOLS",
+            _compose_allowed_tools(req))
+        if allowed:
+            flags += ["--allowed-tools", allowed]
+    else:
+        bash_only = os.environ.get(
+            "ASTERISM_CLAUDE_ALLOWED_BASH", DEFAULT_BASH_ALLOWED)
+        if bash_only:
+            flags += ["--allowed-tools", bash_only]
     return flags
 
 
@@ -240,9 +353,13 @@ class ClaudeCliProvider:
             # of repeating the same guess. Empty hint when no match.
             unknown_hint = _retry_hint_for_unknowns(
                 _extract_unknown_constants(err))
+            # F53/3b — generic stderr → diagnostic hint table.
+            # Catches expected-token / typeclass-stuck / tactic-no-
+            # progress patterns the unknown-constant matcher misses.
+            pattern_hint = _retry_hint_for_patterns(err)
             prompt = (
                 f"Previous attempt failed lake build with:\n\n"
-                f"```\n{err}\n```{unknown_hint}\n\n"
+                f"```\n{err}\n```{unknown_hint}{pattern_hint}\n\n"
                 f"Produce a fresh patch.lean (same scope) addressing "
                 f"this error. Reuse the prior PROPOSAL.md unless the "
                 f"strategy needs to change. Write outputs into "
@@ -270,7 +387,7 @@ class ClaudeCliProvider:
             "--output-format", "text",
             *session_flags,
             *session_lifetime_flag,
-            *_trim_flags(),
+            *_trim_flags(req),
         ]
         try:
             r = subprocess.run(

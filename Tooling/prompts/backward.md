@@ -13,7 +13,7 @@ These exist only when there's prior history; absence means a fresh goal.
 
 ## What to write
 
-Three kinds of files in your sandbox. **Read `Context.md`'s `## Naming convention` section first** — it gives you the exact `s<id>_` prefix to use in every slug and theorem name.
+Three kinds of files in your sandbox. **Read `Context.md`'s `## Sandbox` section first** — it pins your strategy id, naming convention, and which paths are allowed for `Read`/`Grep`.
 
 1. `PROPOSAL.md` — high-level strategy, why each sub-goal is simpler, how they combine. No restating the goal, no sub-goal statement code blocks.
 2. `patch.lean` — **pre-written by the framework** with the strategy's locked signature `theorem s<id> <binders> : <type> := by sorry`. Replace ONLY the proof body (everything after `:=`). Do NOT change the theorem name, binders, or conclusion type — the framework does a string-diff against the locked signature and rejects any edit (`patch_signature_mismatch`). Sub-goal `import` lines are auto-injected by the framework after you write — don't add them yourself. Body typically uses `have h_i : <sub_i_type> := <slug_i> args` plus a final tactic that closes the parent statement.

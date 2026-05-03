@@ -79,29 +79,36 @@ def _section_header(goal: sqlite3.Row) -> list[str]:
     ]
 
 
-def _section_naming_convention(strategy_id: int | None,
-                               goal: sqlite3.Row) -> list[str]:
+def _section_sandbox(strategy_id: int | None,
+                     goal: sqlite3.Row) -> list[str]:
+    """Single source of truth for: working directory, what files the
+    framework wrote vs what the agent writes, allowed read paths, and
+    the slug-naming convention pinned to this strategy id. Replaces
+    the earlier `## Naming convention` paragraph (which still said
+    `patch_<parent>.lean` post-F52, and warned about collisions that
+    F53/A's stable sid_token has eliminated)."""
     if strategy_id is None:
         return []
     sid_token = f"s{strategy_id}"
-    parent = goal["slug"]
     return [
-        "## Naming convention (REQUIRED)",
-        f"This Backward attempt has been allocated strategy id "
-        f"`{sid_token}`. Earlier strategies for this goal may have left "
-        f"files on disk; collision-free naming is mandatory.",
-        "",
-        f"- Sub-goal slugs: `{sid_token}_sub_1`, "
-        f"`{sid_token}_sub_2`, ... — exactly `{sid_token}_sub_<N>`.",
-        f"- Sub-goal filenames: `new_{sid_token}_sub_<N>.lean`.",
-        f"- Sub-goal theorem name = sub-goal slug.",
-        f"- Patch filename: `patch_{parent}.lean` (parent slug, "
-        f"no `{sid_token}` prefix).",
-        f"- Patch theorem name: `{sid_token}` (NOT `{parent}` — "
-        f"that name belongs to the parent's lean file and "
-        f"would collide).",
-        f"- Patch imports: `import Problems.<problem>.proofs."
-        f"L_{sid_token}_sub_<N>` for each sub-goal.",
+        "## Sandbox",
+        f"- Strategy id: `{sid_token}` (stable across same-session retries).",
+        "- Files framework wrote (read & edit, do NOT rename):",
+        "  - `patch.lean` — strategy skeleton; signature is locked, "
+        "edit only the proof body after `:=`.",
+        "  - `Context.md`, `PAST_ATTEMPTS.md`, `PAST_VERIFIES.md` "
+        "(when present) — read-only reference.",
+        "- Files you write:",
+        "  - `PROPOSAL.md` — strategy explanation.",
+        f"  - `new_{sid_token}_sub_<N>.lean` × N (one per sub-goal). "
+        f"Theorem name in each file = `{sid_token}_sub_<N>` "
+        f"(matches filename minus `new_` and `.lean`).",
+        "- Reads allowed without permission prompts:",
+        "  - This goal's problem dir (your cwd).",
+        "  - `.lake/packages/mathlib/Mathlib/` for `rg`/`Read` on "
+        "Mathlib source.",
+        "- Reads NOT allowed: other `Problems/<...>/` dirs — they're "
+        "irrelevant to this goal. Use Loogle / Grep on Mathlib instead.",
         "",
     ]
 
@@ -144,14 +151,58 @@ def _section_parent_strategy(conn: sqlite3.Connection,
     return out
 
 
-def _section_manifest_hints(mfst: manifest.Manifest) -> list[str]:
-    if not mfst.mathlib_hints:
+def _section_mathlib_lemmas(mfst: manifest.Manifest,
+                             deads: list[sqlite3.Row],
+                             workspace: Path) -> list[str]:
+    """Merged successor of the previous separate `## Mathlib hints`
+    + `## Lemma references`. Manifest hints often point at a name; the
+    lookup pass resolves the same name to a real `lake env lean #check`
+    signature. Showing them as one block (signature when resolved, raw
+    hint text otherwise) saves a heading + a prose preamble and lets
+    the agent read each lemma's name + signature in one place."""
+    names = _collect_lemma_names(deads, mfst)
+    resolved: dict[str, str] = {}
+    if names:
+        try:
+            infos = lemma_lookup.lookup_batch(names, workspace)
+            resolved = {
+                info.name: info.signature
+                for info in infos.values() if info.found
+            }
+        except Exception as exc:  # never block context generation
+            print(f"[lemma_lookup] failed, skipping: {exc}", flush=True)
+
+    if not mfst.mathlib_hints and not resolved:
         return []
-    return [
-        "## Mathlib hints (from Manifest.md)",
-        *(f"- {h}" for h in mfst.mathlib_hints),
+
+    out = [
+        "## Mathlib lemmas",
+        "Names from Manifest plus those Lean errored on in past "
+        "attempts. Where a signature is shown, that's the ground "
+        "truth from `lake env lean #check` — use it for arg order / "
+        "instance shape. For raw-text entries, the hint is the "
+        "Manifest author's own note.",
         "",
     ]
+    rendered: set[str] = set()
+    # First emit raw manifest hints (preserving author phrasing),
+    # but rewriting the lemma-name prefix when we have a signature.
+    for hint in mfst.mathlib_hints:
+        m = re.match(r"\s*([A-Z][\w']*(?:\.[\w']+)+)", hint)
+        if m and m.group(1) in resolved:
+            nm = m.group(1)
+            out.append(f"- **{nm}** : `{resolved[nm]}`  ({hint[m.end():].strip().lstrip('-—').strip() or 'manifest hint'})")
+            rendered.add(nm)
+        else:
+            out.append(f"- {hint}")
+    # Then emit lookup-resolved names not already covered by a manifest hint
+    # (these come from past lake errors — high-signal).
+    for name, sig in resolved.items():
+        if name in rendered:
+            continue
+        out.append(f"- **{name}** : `{sig}`")
+    out.append("")
+    return out
 
 
 def _section_manifest_forbidden(mfst: manifest.Manifest) -> list[str]:
@@ -297,44 +348,15 @@ def _collect_lemma_names(deads: list[sqlite3.Row],
     return names
 
 
-def _section_lemma_references(deads: list[sqlite3.Row],
-                              mfst: manifest.Manifest,
-                              workspace: Path) -> list[str]:
-    """F20 — `lake env lean #check` resolves real Mathlib signatures for
-    names the agent has been confused about. Inject so weaker models
-    don't have to guess arg order / instance shape from training memory."""
-    names = _collect_lemma_names(deads, mfst)
-    if not names:
-        return []
-    try:
-        infos = lemma_lookup.lookup_batch(names, workspace)
-    except Exception as exc:  # never block context generation
-        print(f"[lemma_lookup] failed, skipping: {exc}", flush=True)
-        return []
-    bullets = [
-        f"- **{info.name}** : `{info.signature}`"
-        for info in infos.values() if info.found
-    ]
-    if not bullets:
-        return []
-    return [
-        "## Lemma references (resolved from Mathlib)",
-        "Ground-truth signatures for the lemmas Lean mentioned "
-        "in past errors and the names the Manifest flagged. Use "
-        "these to fix arg order / instance shape — do **not** "
-        "improvise from memory when the signature is here.",
-        "",
-        *bullets,
-        "",
-    ]
+# `_section_lemma_references` was merged into `_section_mathlib_lemmas`.
 
 
 def _fetch_strategy_dead_attempts(
     conn: sqlite3.Connection, goal_id: int,
 ) -> list[sqlite3.Row]:
     return conn.execute(
-        "SELECT da.failure_reason, da.failure_detail, da.pipeline_id,"
-        "       s.proposal_md AS strategy_proposal "
+        "SELECT da.target_id, da.failure_reason, da.failure_detail,"
+        "       da.pipeline_id, s.proposal_md AS strategy_proposal "
         "FROM dead_attempts da "
         "JOIN strategies s ON s.id = da.target_id "
         "WHERE da.target_kind = 'Strategy' AND s.goal_id = ? "
@@ -563,16 +585,27 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     show_attempts = kind in (None, "builder")
     show_verifies = kind in (None, "backward")
 
+    # Dedupe: a strategy that died at Verify shows up in BOTH
+    # `strat_deads` (with lake stderr + proposal) and `dead_strats`
+    # (with proposal + sub-goals). Drop the strat-side entries from
+    # `dead_strats` so the agent doesn't see the same proposal twice.
+    verify_failed_strategy_ids: set[int] = set()
+    for r in strat_deads:
+        # _fetch_strategy_dead_attempts joins via target_id (strategy id)
+        try:
+            verify_failed_strategy_ids.add(int(r["target_id"]))
+        except (KeyError, IndexError, TypeError):
+            pass
+    dead_strats_filtered = [
+        s for s in dead_strats
+        if s["id"] not in verify_failed_strategy_ids
+    ]
+
     sections: list[list[str]] = [
         _section_header(goal),
-        _section_naming_convention(strategy_id, goal),
+        _section_sandbox(strategy_id, goal),
         _section_parent_strategy(conn, goal),
-        _section_manifest_hints(mfst),
-        # Lemma references is a precise expansion of mathlib_hints
-        # (signatures resolved via lake env lean) — keep it adjacent
-        # so the agent reads name + signature together rather than
-        # scrolling past `## Strategic notes` to find the signatures.
-        _section_lemma_references(deads, mfst, workspace),
+        _section_mathlib_lemmas(mfst, deads, workspace),
         _section_manifest_forbidden(mfst),
         _section_manifest_notes(mfst),
         _section_library_available(mfst, workspace),
@@ -580,7 +613,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_builder_declines(builder_declines),
         _section_past_attempts(deads) if show_attempts else [],
         _section_past_verify_failures(strat_deads) if show_verifies else [],
-        _section_dead_strategies(dead_strats),
+        _section_dead_strategies(dead_strats_filtered),
     ]
 
     parts: list[str] = []

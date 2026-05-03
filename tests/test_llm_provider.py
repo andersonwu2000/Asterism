@@ -438,11 +438,12 @@ def test_spawn_retry_appends_unknown_constant_hint(
     assert "python -m Tooling.loogle" in prompt    # actionable command
 
 
-def test_spawn_retry_no_hint_for_other_errors(
+def test_spawn_retry_no_unknown_constant_hint_for_other_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """type mismatch / typeclass stuck etc. shouldn't trigger the
-    F51 hint — different diagnosis path. Retry prompt stays as before."""
+    """Stderr without `Unknown constant` shouldn't trigger the F51
+    Loogle-name verification hint. The generic F53/3b pattern table
+    may still fire — that's a separate diagnosis covered below."""
     from pathlib import Path
     from Tooling import llm
     from Tooling.llm import claude_cli
@@ -461,8 +462,101 @@ def test_spawn_retry_no_hint_for_other_errors(
     ))
     prompt = captured[0][captured[0].index("-p") + 1]
     assert "typeclass instance problem is stuck" in prompt
+    # F51-specific (unknown-constant) hint absent
     assert "verify the name in Mathlib" not in prompt
     assert "python -m Tooling.loogle" not in prompt
+
+
+# ---------------------------------------------------------------------
+# F53/3b — generic stderr → diagnostic-hint table for the retry prompt
+# ---------------------------------------------------------------------
+
+@pytest.mark.parametrize("stderr,must_appear", [
+    # expected token (notation/scope/unicode) — Sonnet's recurring
+    # pain point on inner-product / norm goals.
+    ("error: L_x.lean:8:48: expected token",
+     "expected token"),
+    # typeclass stuck — F41-class type-drift symptom
+    ("error: typeclass instance problem is stuck\n  Norm ?m.1",
+     "typeclass instance problem is stuck"),
+    # autoImplicit unknown identifier
+    ("error: L_x.lean:7:22: Function expected at\n"
+     "Hint: The identifier `P` is unknown",
+     "Function expected at … identifier unknown"),
+    # tactic made no progress
+    ("error: L_x.lean:24:42: `ring_nf` made no progress on the goal",
+     "didn't progress on the current goal"),
+    # leftover sorry in patch
+    ("warning: Problems/p/proofs/_strategy_s5.lean:6:8: "
+     "declaration uses `sorry`",
+     "still has `:= by sorry`"),
+])
+def test_pattern_hints_emit_for_known_stderr(
+    stderr: str, must_appear: str,
+) -> None:
+    """Each known stderr family yields a non-empty, distinct hint
+    so the resumed agent has a pointed clue instead of guessing."""
+    from Tooling.llm import claude_cli
+    out = claude_cli._retry_hint_for_patterns(stderr)
+    assert "Retry hints based on the lake error above" in out
+    assert must_appear in out
+
+
+def test_pattern_hints_empty_for_unknown_stderr() -> None:
+    """An error message that doesn't match any known family yields
+    no hint (empty string), so the retry prompt isn't padded with
+    irrelevant noise."""
+    from Tooling.llm import claude_cli
+    out = claude_cli._retry_hint_for_patterns(
+        "error: stack overflow during elaboration")
+    assert out == ""
+
+
+def test_pattern_hints_capped_at_two() -> None:
+    """Even when stderr matches 3+ patterns, only the first two are
+    emitted to keep prompt growth bounded — matching errors usually
+    share a root cause."""
+    from Tooling.llm import claude_cli
+    stderr = (
+        "error: expected token\n"
+        "error: typeclass instance problem is stuck\n"
+        "error: `simp` made no progress on the goal\n"
+        "warning: declaration uses `sorry`\n"
+    )
+    out = claude_cli._retry_hint_for_patterns(stderr)
+    # Two `- ` bullet lines max
+    assert out.count("\n- ") == 2
+
+
+def test_spawn_retry_appends_pattern_hint_for_typeclass_stuck(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: typeclass-stuck stderr → 3b hint inlined into -p
+    prompt, no F51 Loogle hint (no unknown-constant cited)."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+        session_id="abc123",
+        is_retry=True,
+        retry_context=(
+            "error: L_s139_sub_3.lean:7:21: typeclass instance "
+            "problem is stuck\n  Norm ?m.1"
+        ),
+    ))
+    prompt = captured[0][captured[0].index("-p") + 1]
+    assert "Retry hints based on the lake error above" in prompt
+    assert "Lean can't figure out a type argument" in prompt
+    # F51 unknown-constant hint absent because no `Unknown constant ...`
+    assert "verify the name in Mathlib" not in prompt
 
 
 def test_claude_spawn_no_session_id_keeps_legacy_ephemeral(
@@ -1123,6 +1217,41 @@ def test_allowed_tools_empty_env_omits_flag(
     ))
     cmd = captured[0]
     assert "--allowed-tools" not in cmd
+
+
+def test_allowed_tools_scopes_read_to_problem_and_mathlib(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Path-scoped allowlist: Read/Grep on the active problem dir +
+    workspace-Mathlib only. Other Problems/<...>/ deliberately absent
+    so the agent can't burn turns probing unrelated problems."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/ws/p.md"),
+        problem_dir=Path("/ws/Problems/active_problem"),
+        attempts_dir=Path("/ws/.attempts/pid-x"),
+        timeout_sec=60,
+    ))
+    cmd = captured[0]
+    val = cmd[cmd.index("--allowed-tools") + 1]
+    # Active problem + sandbox + Mathlib all in the Read scope
+    assert "Read(/ws/Problems/active_problem/**)" in val
+    assert "Read(/ws/.attempts/pid-x/**)" in val
+    assert "Read(/ws/.lake/packages/mathlib/Mathlib/**)" in val
+    # Grep allowlist mirrors Read for the Mathlib search use case
+    assert "Grep(/ws/Problems/active_problem/**)" in val
+    assert "Grep(/ws/.lake/packages/mathlib/Mathlib/**)" in val
+    # Other Problems must NOT be in scope — the F44 sandbox boundary
+    # is what F53 rerun showed Sonnet wandering across.
+    assert "Read(/ws/Problems/other" not in val
+    # Bash allowlist (Loogle) preserved
+    assert "Bash(python -m Tooling.loogle *)" in val
 
 
 # ---------------------------------------------------------------------
