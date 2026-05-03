@@ -27,23 +27,40 @@ def _lean_path_to_module(workspace: Path, lean_path: Path) -> str:
     return ".".join(rel.parts)
 
 
-def _canonical_parent_content(*, problem: str, goal_slug: str,
-                              goal_statement: str, sid: int,
-                              defs_exists: bool, scratch_module: str) -> str:
-    """Build the deterministic content for a proved goal's lean_path.
+_STRATEGY_IMPORT_PATTERN = "proofs._strategy_s"
 
-    The patch theorem in the strategy scratch is named just `s<sid>`
-    (no parent slug), so the alias body is bare `s<sid>`.
+
+def _canonical_alias_content(*, problem: str, goal_slug: str,
+                             sid_token: str, scratch_module: str,
+                             current: str) -> str:
+    """Canonical end-of-run content for a proved goal's lean_path.
+
+    Same shape Verify Step 2's `_promote_to_alias` writes (def-alias
+    so Lean copies type from the strategy theorem; pre-F52 used
+    `theorem <slug> : <statement> := s<sid>` which lost binders).
+    Difference from Verify-time promotion: reconcile DROPS any
+    `_strategy_s*` imports other than the winning strategy's, so
+    drift from sibling Verify races is repaired exclusively.
     """
-    imports = ["import Mathlib"]
-    if defs_exists:
-        imports.append(f"import Problems.{problem}.Defs")
-    imports.append(f"import {scratch_module}")
+    keep_imports: list[str] = []
+    seen: set[str] = set()
+    for ln in current.splitlines():
+        s = ln.strip()
+        if not s.startswith("import"):
+            continue
+        if _STRATEGY_IMPORT_PATTERN in s:
+            continue  # drop ALL prior strategy imports (winner re-added below)
+        if s in seen:
+            continue
+        seen.add(s)
+        keep_imports.append(ln)
+    winner = f"import {scratch_module}"
+    if winner not in seen:
+        keep_imports.append(winner)
     return (
-        "\n".join(imports) + "\n\n"
+        "\n".join(keep_imports) + "\n\n"
         f"namespace Problems.{problem}\n\n"
-        f"theorem {goal_slug} : {goal_statement} := "
-        f"s{sid}\n\n"
+        f"def {goal_slug} := @Problems.{problem}.{sid_token}\n\n"
         f"end Problems.{problem}\n"
     )
 
@@ -56,10 +73,16 @@ def reconcile_proved_goals(conn: sqlite3.Connection, workspace: Path,
     lean_path to alias EXCLUSIVELY from that strategy's scratch — no
     stale imports from sibling strategies that finished concurrently.
 
-    Idempotent: a file already matching the canonical form is left alone.
+    Form matches Verify Step 2's `_promote_to_alias` (P0-#2: prior
+    version emitted `theorem <slug> : <statement> := s<sid>`, which
+    serializes only the goal's conclusion — binders from the original
+    stub were stripped, breaking elaboration on any non-trivially-
+    bound goal; this regenerated form would silently undo F52's fix
+    every end-of-run reconcile). Idempotent — already-canonical
+    files are left alone.
+
     Returns the list of repaired paths.
     """
-    defs_exists = (workspace / "Problems" / problem / "Defs.lean").exists()
     repaired: list[Path] = []
 
     rows = conn.execute(
@@ -78,17 +101,18 @@ def reconcile_proved_goals(conn: sqlite3.Connection, workspace: Path,
         scratch_abs = workspace / r["scratch_path"]
         if not scratch_abs.exists():
             continue
-        scratch_module = _lean_path_to_module(workspace, scratch_abs)
-        expected = _canonical_parent_content(
-            problem=problem, goal_slug=r["slug"],
-            goal_statement=r["statement"], sid=int(r["sid"]),
-            defs_exists=defs_exists, scratch_module=scratch_module,
-        )
         parent_abs = workspace / r["lean_path"]
+        scratch_module = _lean_path_to_module(workspace, scratch_abs)
+        sid_token = f"s{int(r['sid'])}"
         try:
-            current = parent_abs.read_text(encoding="utf-8")
+            current = parent_abs.read_text(encoding="utf-8") if parent_abs.exists() else ""
         except OSError:
             continue
+        expected = _canonical_alias_content(
+            problem=problem, goal_slug=r["slug"],
+            sid_token=sid_token, scratch_module=scratch_module,
+            current=current,
+        )
         if current == expected:
             continue
         parent_abs.write_text(expected, encoding="utf-8")

@@ -281,7 +281,12 @@ def test_reconcile_repairs_drifted_parent_lean_path(
     new_content = parent.read_text(encoding="utf-8")
     assert f"import Problems.p.proofs._strategy_s{sid7}" in new_content
     assert f"import Problems.p.proofs._strategy_s{sid14}" not in new_content
-    assert f"theorem main : T := s{sid7}" in new_content
+    # P0-#2: canonical form is a `def` re-export so Lean copies the
+    # type from the strategy theorem (preserving binders). The pre-
+    # P0-#2 form `theorem main : T := s7` stripped binders and broke
+    # any non-trivially-bound goal at lake build.
+    assert f"def main := @Problems.p.s{sid7}" in new_content
+    assert "theorem main :" not in new_content
 
 
 def test_reconcile_idempotent(
@@ -326,6 +331,40 @@ def test_reconcile_skips_goals_proved_by_builder(
     _seed_root(conn)  # root proved, but no strategy
     repaired = prune.reconcile_proved_goals(conn, tmp_path, "p")
     assert repaired == []
+
+
+def test_reconcile_idempotent_on_f52_def_alias_form(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """P0-#2 regression: Verify Step 2 writes parent in def-alias
+    form (`def slug := @ns.sX`) per F52. The end-of-run reconcile
+    must NOT keep flipping that file back to a different shape every
+    pass — that would silently undo the binder-preservation fix.
+    """
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    sid = _seed_strategy(conn, goal_id=root, sid_label="s1",
+                         status="succeeded")
+    db.update_strategy_scratch_path(
+        conn, sid, f"Problems/p/proofs/_strategy_s{sid}.lean")
+    proofs = tmp_path / "Problems" / "p" / "proofs"
+    proofs.mkdir(parents=True)
+    (proofs / f"_strategy_s{sid}.lean").write_text("-- ok\n")
+    parent = tmp_path / "Problems/p/Root.lean"
+    parent.parent.mkdir(parents=True, exist_ok=True)
+    # Pre-seed the parent already in F52 def-alias form (i.e. exactly
+    # what _promote_to_alias would write).
+    parent.write_text(
+        f"import Mathlib\nimport Problems.p.proofs._strategy_s{sid}\n\n"
+        f"namespace Problems.p\n\n"
+        f"def main := @Problems.p.s{sid}\n\n"
+        f"end Problems.p\n",
+        encoding="utf-8",
+    )
+    before = parent.read_text(encoding="utf-8")
+    repaired = prune.reconcile_proved_goals(conn, tmp_path, "p")
+    assert repaired == []  # already canonical → no rewrite
+    assert parent.read_text(encoding="utf-8") == before
 
 
 # ---------------------------------------------------------------------
