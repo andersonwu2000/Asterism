@@ -37,7 +37,7 @@ def _seed_workspace(tmp_path: Path) -> Path:
     pdir.mkdir(parents=True)
     (pdir / "Manifest.md").write_text(
         "---\nproblem: p\n---\n\n"
-        "# p\n\n## Statement\nTrue\n\n## Difficulty\n2\n",
+        "# p\n\n## Statement\nTrue\n\n## Entry kind\nBuilder\n",
         encoding="utf-8")
     (pdir / "Defs.lean").write_text("import Mathlib\n", encoding="utf-8")
     # Asterism.yaml: pool=1 to keep the test deterministic; budget high.

@@ -47,7 +47,7 @@ def _seed_goal(conn: sqlite3.Connection, *, slug: str = "main",
     return db.insert_goal(
         conn, problem=problem, slug=slug,
         lean_path=lean_path or f"Problems/{problem}/proofs/L_{slug}.lean",
-        statement="True", origin="root", difficulty=2, depth=0,
+        statement="True", origin="root", depth=0,
     )
 
 
@@ -64,7 +64,7 @@ def _seed_strategy_with_proved_subs(
         sub = db.insert_goal(
             conn, problem="p", slug=f"sub_{sid}_{i}",
             lean_path=f"Problems/p/proofs/L_sub_{sid}_{i}.lean",
-            statement="T", origin="backward", difficulty=1, depth=1,
+            statement="T", origin="backward", depth=1,
         )
         db.update_goal_status(conn, sub, "proved")
         db.link_subgoal(conn, strategy_id=sid, subgoal_id=sub, position=i)
@@ -312,7 +312,7 @@ def test_housekeeping_chain_promotes_through_layers(
     parent_gid = db.insert_goal(
         conn, problem="p", slug="parent",
         lean_path="Problems/p/proofs/L_parent.lean",
-        statement="T", origin="backward", difficulty=2, depth=1,
+        statement="T", origin="backward", depth=1,
     )
     db.link_subgoal(
         conn, strategy_id=grand_sid, subgoal_id=parent_gid, position=0)
@@ -360,7 +360,7 @@ def test_housekeeping_caps_iterations(
     parent_gid = db.insert_goal(
         conn, problem="p", slug="parent",
         lean_path="Problems/p/proofs/L_parent.lean",
-        statement="T", origin="backward", difficulty=2, depth=1,
+        statement="T", origin="backward", depth=1,
     )
     db.link_subgoal(
         conn, strategy_id=grand_sid, subgoal_id=parent_gid, position=0)

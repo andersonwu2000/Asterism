@@ -13,9 +13,8 @@ forbidden_lemmas: []
 ∀ (ξ : ℝ), 0 < ξ → ξ < 1 →
   MeasureTheory.volume (cantorSet ξ) = 0
 
-## Difficulty
-6
-
+## Entry kind
+Backward
 ## Lemma hints
 - `MeasureTheory.volume` — Lebesgue measure on `ℝ` (`MeasureSpace.volume`)
 - `MeasureTheory.measure_iInter_le` / `MeasureTheory.measure_le_of_subset` — bound a set's measure by any superset

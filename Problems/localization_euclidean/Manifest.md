@@ -13,9 +13,8 @@ forbidden_lemmas: []
 ∀ {D : Type*} [EuclideanDomain D] (S : Submonoid D),
   0 ∉ S → Nonempty (EuclideanDomain (Localization S))
 
-## Difficulty
-6
-
+## Entry kind
+Backward
 ## Lemma hints
 - `EuclideanDomain` — Mathlib structure with fields `r`, `quotient`, `remainder`, `quotient_mul_add_remainder_eq`, `r_wellFounded`, `remainder_lt`
 - `Localization`, `Localization.mk`, `Localization.r` — the equivalence on `D × S` plus quotient construction

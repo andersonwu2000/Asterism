@@ -7,8 +7,8 @@ the directive while attempts < BUILDER_THRESHOLD; once attempts reach
 the threshold, escalation to Backward is forced regardless (safety net
 for an entry_kind=Builder directive that turns out wrong).
 
-Root goal's entry_kind comes from cli init: `Backward` when the
-human-authored Manifest difficulty >=4, else `Builder`.
+Root goal's entry_kind comes directly from `Manifest.entry_kind`
+(`## Entry kind` section, parsed at cli init time).
 """
 from __future__ import annotations
 

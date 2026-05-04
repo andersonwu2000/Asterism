@@ -85,8 +85,8 @@ forbidden_lemmas: []
 ## Statement
 ∀ ..., IsMetricProjector K P → ∀ x y, ‖P x - P y‖ ≤ ‖x - y‖
 
-## Difficulty
-5
+## Entry kind                      ← Builder | Backward; sets `goals.entry_kind` for the root
+Backward
 
 ## Lemma hints                     ← F49 canonical key (legacy: "Mathlib hints")
 - inner_sub_left
@@ -97,7 +97,7 @@ forbidden_lemmas: []
 Apply variational inequality at (x, P y) and (y, P x); add inequalities; ...
 ```
 
-YAML frontmatter 是結構化必填；body 自由 markdown，由 `init` 解析 statement + difficulty 進 DB、hints + notes 在 worker spawn 時注入 Context.md。
+YAML frontmatter 是結構化必填；body 自由 markdown，由 `init` 解析 statement + entry_kind 進 DB、hints + notes 在 worker spawn 時注入 Context.md。
 
 **`Defs.lean` 自動鉤入（F15）**：`Problems/<p>/Defs.lean` 若存在，框架在 `init` 時自動 import 進 `Root.lean`。在這裡放 problem-specific definitions（如 `IsMetricProjector`），避免 Manifest 用 in-statement 寫一大坨。
 
@@ -173,7 +173,6 @@ CREATE TABLE goals (
     slug        TEXT    NOT NULL,
     lean_path   TEXT    NOT NULL UNIQUE,
     statement   TEXT    NOT NULL,
-    difficulty  INTEGER NOT NULL DEFAULT 4,
     -- kind / origin enums kept minimal; extend in a migration when
     -- forward / generalizer / refuter / conjecture / construction land.
     kind        TEXT    NOT NULL DEFAULT 'theorem'
@@ -184,6 +183,12 @@ CREATE TABLE goals (
                     CHECK(status IN ('open','attempting','proved','shelved')),
     depth       INTEGER NOT NULL DEFAULT 0,
     attempts    INTEGER NOT NULL DEFAULT 0,
+    -- Routing directive (Builder | Backward) — root reads from
+    -- Manifest's `## Entry kind`; sub-goals from Backward agent's
+    -- `-- entry_kind:` annotation. Dispatcher honors while attempts <
+    -- BUILDER_THRESHOLD; threshold force-escalates to Backward.
+    entry_kind  TEXT    NOT NULL DEFAULT 'Builder'
+                    CHECK(entry_kind IN ('Builder','Backward')),
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     UNIQUE(problem, slug)
@@ -526,8 +531,8 @@ def bfs_refill(running):
     # F37 — Builder 與 Backward 都 cap=1，一條 strategy 死掉才會經 cascade
     # 重新 reopen goal 進到下一輪 enqueue。
     for g in open_goals():                        # joins strategy_subgoals + strategies
-        kind = next_worker_kind(g)                # difficulty>=4 → Backward;
-                                                  # else attempts<BUILDER_THRESHOLD → Builder; else Backward
+        kind = next_worker_kind(g)                # attempts>=BUILDER_THRESHOLD → Backward (safety net);
+                                                  # else honor goal.entry_kind (set by Manifest or Backward agent)
         if in_flight(g.id, kind) == 0:
             enqueue(kind, g.id, priority=5 if kind=='Builder' else 2)
 ```
@@ -661,7 +666,7 @@ Lake-build 對 canonical 任何狀態都 OK（sorry stub 也 type-check）；can
 asterism init <problem>
   ├─ 讀 Problems/<p>/Manifest.md frontmatter + sections
   ├─ INSERT problems row
-  ├─ INSERT goals row (origin='root', status='open', depth=0, difficulty=mfst.difficulty)
+  ├─ INSERT goals row (origin='root', status='open', depth=0, entry_kind=mfst.entry_kind)
   ├─ 寫 Problems/<p>/Root.lean stub:
   │   import Mathlib
   │   import Problems.<p>.Defs        ← 自動加（若 Defs.lean 存在、W6）

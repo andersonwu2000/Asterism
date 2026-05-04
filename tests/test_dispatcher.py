@@ -16,38 +16,31 @@ from Tooling.dispatcher import next_worker_kind, cascade_one, SHELVE_THRESHOLD
 # next_worker_kind
 # ---------------------------------------------------------------------
 
-def _fake_goal(*, difficulty: int, attempts: int,
-               entry_kind: str = "Builder") -> dict:
-    return {"difficulty": difficulty, "attempts": attempts,
-            "entry_kind": entry_kind}
+def _fake_goal(*, attempts: int, entry_kind: str = "Builder") -> dict:
+    return {"attempts": attempts, "entry_kind": entry_kind}
 
 
-def test_next_worker_kind_ignores_difficulty() -> None:
-    """The difficulty hard-gate (legacy `>=4 → Backward`) was removed
-    after SG g380. Routing is now `entry_kind`-driven; difficulty does
-    NOT affect dispatch (only the human-authored Manifest.difficulty
-    feeds entry_kind at root init time, which then sits in the goal
-    row as a stable directive)."""
+def test_next_worker_kind_honors_entry_kind_builder() -> None:
+    """entry_kind='Builder' on a fresh goal routes to Builder regardless
+    of any other signal — there's no longer a numeric `difficulty` gate
+    that would override the directive."""
     assert next_worker_kind(
-        _fake_goal(difficulty=8, attempts=0, entry_kind="Builder")
-    ) == "Builder"
-    assert next_worker_kind(
-        _fake_goal(difficulty=10, attempts=0, entry_kind="Builder")
+        _fake_goal(attempts=0, entry_kind="Builder")
     ) == "Builder"
 
 
 def test_next_worker_kind_honors_entry_kind_backward() -> None:
     """entry_kind='Backward' on a fresh goal skips Builder entirely."""
     assert next_worker_kind(
-        _fake_goal(difficulty=2, attempts=0, entry_kind="Backward")
+        _fake_goal(attempts=0, entry_kind="Backward")
     ) == "Backward"
 
 
 def test_next_worker_kind_easy_first_attempts() -> None:
     assert next_worker_kind(
-        _fake_goal(difficulty=2, attempts=0)) == "Builder"
+        _fake_goal(attempts=0)) == "Builder"
     assert next_worker_kind(
-        _fake_goal(difficulty=1, attempts=2)) == "Builder"
+        _fake_goal(attempts=2)) == "Builder"
 
 
 def test_next_worker_kind_boundary_at_builder_threshold() -> None:
@@ -56,12 +49,12 @@ def test_next_worker_kind_boundary_at_builder_threshold() -> None:
     after N consecutive Builder failures we escalate regardless."""
     bt = _dispatcher.BUILDER_THRESHOLD
     assert next_worker_kind(
-        _fake_goal(difficulty=2, attempts=bt - 1)) == "Builder"
+        _fake_goal(attempts=bt - 1)) == "Builder"
     assert next_worker_kind(
-        _fake_goal(difficulty=2, attempts=bt)) == "Backward"
+        _fake_goal(attempts=bt)) == "Backward"
     # Even with entry_kind=Builder, attempts threshold wins
     assert next_worker_kind(
-        _fake_goal(difficulty=2, attempts=bt, entry_kind="Builder")
+        _fake_goal(attempts=bt, entry_kind="Builder")
     ) == "Backward"
 
 
@@ -73,9 +66,9 @@ def test_next_worker_kind_respects_runtime_threshold(
     same channel."""
     monkeypatch.setattr(_dispatcher, "BUILDER_THRESHOLD", 3)
     assert next_worker_kind(
-        _fake_goal(difficulty=2, attempts=2)) == "Builder"
+        _fake_goal(attempts=2)) == "Builder"
     assert next_worker_kind(
-        _fake_goal(difficulty=2, attempts=3)) == "Backward"
+        _fake_goal(attempts=3)) == "Backward"
 
 
 # ---------------------------------------------------------------------
@@ -97,15 +90,14 @@ def test_threshold_defaults_are_strong_tier() -> None:
 # cascade_one — Builder
 # ---------------------------------------------------------------------
 
-def _seed_goal(conn: sqlite3.Connection, *, problem: str = "p",
-               difficulty: int = 2) -> int:
+def _seed_goal(conn: sqlite3.Connection, *, problem: str = "p") -> int:
     conn.execute(
         "INSERT INTO problems (name, manifest_path, created_at) VALUES (?, ?, ?)",
         (problem, "Problems/p/Manifest.md", db.now()),
     )
     return db.insert_goal(
         conn, problem=problem, slug="main", lean_path="Problems/p/Root.lean",
-        statement="T", origin="root", difficulty=difficulty,
+        statement="T", origin="root",
     )
 
 
@@ -254,7 +246,6 @@ def test_db_migration_adds_backward_session_id_column(
             slug TEXT NOT NULL,
             lean_path TEXT NOT NULL UNIQUE,
             statement TEXT NOT NULL,
-            difficulty INTEGER NOT NULL DEFAULT 4,
             kind TEXT NOT NULL DEFAULT 'theorem' CHECK(kind IN ('theorem')),
             origin TEXT NOT NULL CHECK(origin IN ('root','backward')),
             status TEXT NOT NULL CHECK(status IN ('open','attempting','proved','shelved')),
@@ -295,7 +286,6 @@ def test_db_migration_adds_builder_session_id_column(
             slug TEXT NOT NULL,
             lean_path TEXT NOT NULL UNIQUE,
             statement TEXT NOT NULL,
-            difficulty INTEGER NOT NULL DEFAULT 4,
             kind TEXT NOT NULL DEFAULT 'theorem' CHECK(kind IN ('theorem')),
             origin TEXT NOT NULL CHECK(origin IN ('root','backward')),
             status TEXT NOT NULL CHECK(status IN ('open','attempting','proved','shelved')),
@@ -356,20 +346,20 @@ def test_subgoal_shelve_kills_parent_strategy_and_reopens_goal(
     Doomed sub-goal accumulates failures and shelves at attempts=7.
     Strategy should die; grandparent should reopen if it has no other
     live strategy."""
-    grand = _seed_goal(conn, problem="p", difficulty=4)
+    grand = _seed_goal(conn, problem="p")
     db.update_goal_status(conn, grand, "attempting")
 
     proved_sub = db.insert_goal(
         conn, problem="p", slug="proved_sub",
         lean_path="Problems/p/proofs/L_proved_sub.lean",
-        statement="T", origin="backward", difficulty=2, depth=1,
+        statement="T", origin="backward", depth=1,
     )
     db.update_goal_status(conn, proved_sub, "proved")
 
     doomed_sub = db.insert_goal(
         conn, problem="p", slug="doomed_sub",
         lean_path="Problems/p/proofs/L_doomed_sub.lean",
-        statement="T", origin="backward", difficulty=2, depth=1,
+        statement="T", origin="backward", depth=1,
     )
 
     sid = db.insert_strategy(
@@ -406,7 +396,7 @@ def test_subgoal_shelve_cascades_grand_when_at_threshold(
     """F37 — when sub-goal shelve triggers parent strategy death AND the
     grandparent's incremented attempts reach SHELVE_THRESHOLD, the
     grandparent itself shelves and propagates further up."""
-    grand = _seed_goal(conn, problem="p", difficulty=4)
+    grand = _seed_goal(conn, problem="p")
     db.update_goal_status(conn, grand, "attempting")
     # Pre-load grand attempts to one short of SHELVE_THRESHOLD so the
     # increment from the cascade pushes it over.
@@ -417,7 +407,7 @@ def test_subgoal_shelve_cascades_grand_when_at_threshold(
     doomed_sub = db.insert_goal(
         conn, problem="p", slug="doomed_for_grand_cascade",
         lean_path="Problems/p/proofs/L_doomed_grand.lean",
-        statement="T", origin="backward", difficulty=2, depth=1,
+        statement="T", origin="backward", depth=1,
     )
     sid = db.insert_strategy(
         conn, goal_id=grand,
@@ -442,13 +432,13 @@ def test_subgoal_shelve_keeps_goal_attempting_when_other_strategy_alive(
 ) -> None:
     """F12: if grandparent has another live strategy after one dies,
     don't reopen — the alive strategy may still verify."""
-    grand = _seed_goal(conn, problem="p", difficulty=4)
+    grand = _seed_goal(conn, problem="p")
     db.update_goal_status(conn, grand, "attempting")
 
     doomed_sub = db.insert_goal(
         conn, problem="p", slug="doomed_sub2",
         lean_path="Problems/p/proofs/L_doomed_sub2.lean",
-        statement="T", origin="backward", difficulty=2, depth=1,
+        statement="T", origin="backward", depth=1,
     )
 
     # Two strategies on grand; only s1 includes doomed_sub
@@ -488,7 +478,7 @@ def test_strategies_ready_for_verify_excludes_shelved_goal(
     sub = db.insert_goal(
         conn, problem="p", slug="proved_sub_x",
         lean_path="Problems/p/proofs/L_proved_sub_x.lean",
-        statement="T", origin="backward", difficulty=2, depth=1,
+        statement="T", origin="backward", depth=1,
     )
     db.update_goal_status(conn, sub, "proved")
     sid = db.insert_strategy(conn, goal_id=gid,
@@ -631,13 +621,13 @@ def test_goal_shelve_combined_upward_and_inward_cascade(
     """F12 + F16 together: a goal that is both (a) sub-goal of a parent
     strategy and (b) has its own strategies must propagate in both
     directions when it shelves."""
-    grand = _seed_goal(conn, problem="p", difficulty=4)
+    grand = _seed_goal(conn, problem="p")
     db.update_goal_status(conn, grand, "attempting")
 
     middle = db.insert_goal(
         conn, problem="p", slug="middle",
         lean_path="Problems/p/proofs/L_middle.lean",
-        statement="T", origin="backward", difficulty=4, depth=1,
+        statement="T", origin="backward", depth=1,
     )
 
     # parent strategy of grand uses middle as sub-goal
@@ -735,7 +725,7 @@ def test_open_goals_filters_orphan_subgoals(conn: sqlite3.Connection) -> None:
     sub_gid = db.insert_goal(
         conn, problem="p", slug="orphan_sub",
         lean_path="Problems/p/proofs/L_orphan_sub.lean",
-        statement="T", origin="backward", difficulty=3, depth=1,
+        statement="T", origin="backward", depth=1,
     )
     db.link_subgoal(conn, strategy_id=sid, subgoal_id=sub_gid, position=0)
 
@@ -935,7 +925,7 @@ def _seed_problem_with_root(conn: sqlite3.Connection) -> int:
     return db.insert_goal(
         conn, problem="p", slug="main",
         lean_path="Problems/p/Root.lean",
-        statement="T", origin="root", difficulty=4,
+        statement="T", origin="root",
     )
 
 
@@ -958,7 +948,7 @@ def test_recover_at_startup_reopens_stuck_attempting_goals(
     alive = db.insert_goal(
         conn, problem="p", slug="alive_main",
         lean_path="Problems/p/Alive.lean", statement="T",
-        origin="root", difficulty=4,
+        origin="root",
     )
     db.update_goal_status(conn, alive, "attempting")
     db.insert_strategy(conn, goal_id=alive,
@@ -992,7 +982,7 @@ def test_open_goals_recursive_orphan_filter(conn: sqlite3.Connection) -> None:
     sub = db.insert_goal(
         conn, problem="p", slug="depth1_orphan",
         lean_path="Problems/p/proofs/L_depth1_orphan.lean",
-        statement="T", origin="backward", difficulty=3, depth=1,
+        statement="T", origin="backward", depth=1,
     )
     db.link_subgoal(conn, strategy_id=s_root, subgoal_id=sub, position=0)
 
@@ -1005,7 +995,7 @@ def test_open_goals_recursive_orphan_filter(conn: sqlite3.Connection) -> None:
     sub_sub = db.insert_goal(
         conn, problem="p", slug="depth2_orphan",
         lean_path="Problems/p/proofs/L_depth2_orphan.lean",
-        statement="T", origin="backward", difficulty=2, depth=2,
+        statement="T", origin="backward", depth=2,
     )
     db.link_subgoal(conn, strategy_id=s_sub, subgoal_id=sub_sub, position=0)
 
@@ -1029,8 +1019,9 @@ def test_bfs_refill_backward_capped_at_one(conn: sqlite3.Connection) -> None:
     enqueues exactly one entry (passive trigger; sequential expansion)."""
     from Tooling.dispatcher import bfs_refill, BUILDER_THRESHOLD
     gid = _seed_goal(conn)
-    # Bump attempts past BUILDER_THRESHOLD so next worker is Backward
-    # (the difficulty hard-gate was removed; routing is by attempts only).
+    # Bump attempts past BUILDER_THRESHOLD so next_worker_kind escalates
+    # to Backward (the entry_kind=Builder default would otherwise route
+    # to Builder; threshold is the safety-net escalation).
     for _ in range(BUILDER_THRESHOLD):
         db.increment_goal_attempts(conn, gid)
     bfs_refill(conn, running=set())
@@ -1040,7 +1031,7 @@ def test_bfs_refill_backward_capped_at_one(conn: sqlite3.Connection) -> None:
 def test_bfs_refill_builder_capped_at_one(conn: sqlite3.Connection) -> None:
     """F37 — Builder is also single-attempt-per-goal."""
     from Tooling.dispatcher import bfs_refill
-    gid = _seed_goal(conn, difficulty=2)  # difficulty<4, attempts=0 → Builder
+    gid = _seed_goal(conn)  # default entry_kind=Builder, attempts=0 → Builder
     bfs_refill(conn, running=set())
     assert db.queue_count(conn, target_id=str(gid), kind="Builder") == 1
 
@@ -1051,7 +1042,7 @@ def test_bfs_refill_no_duplicate_when_already_running(
     """F37 — bfs_refill must not enqueue if a pipeline of the same
     (target_id, kind) is already in flight (in `running` set)."""
     from Tooling.dispatcher import bfs_refill
-    gid = _seed_goal(conn, difficulty=4)
+    gid = _seed_goal(conn)
     bfs_refill(conn, running={(str(gid), "Backward")})
     assert db.queue_count(conn, target_id=str(gid), kind="Backward") == 0
 
@@ -1068,7 +1059,7 @@ def _seed_ready_strategy(conn: sqlite3.Connection, *, goal_id: int,
     sub_gid = db.insert_goal(
         conn, problem="p", slug=f"{slug}_sub",
         lean_path=f"Problems/p/proofs/L_{slug}_sub.lean",
-        statement="T", origin="backward", difficulty=1, depth=1,
+        statement="T", origin="backward", depth=1,
     )
     db.update_goal_status(conn, sub_gid, "proved")
     db.link_subgoal(conn, strategy_id=sid, subgoal_id=sub_gid, position=0)
@@ -1097,7 +1088,7 @@ def test_strategies_ready_for_verify_excludes_proved_goal(
     sub_gid = db.insert_goal(
         conn, problem="p", slug="proved_sub",
         lean_path="Problems/p/proofs/L_proved_sub.lean",
-        statement="T", origin="backward", difficulty=1, depth=1,
+        statement="T", origin="backward", depth=1,
     )
     db.update_goal_status(conn, sub_gid, "proved")
     db.link_subgoal(conn, strategy_id=sid, subgoal_id=sub_gid, position=0)

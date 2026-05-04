@@ -243,7 +243,7 @@ def _seed_strategy(conn: sqlite3.Connection, *, problem: str = "p",
         conn, problem=problem, slug="main",
         lean_path="Problems/p/Root.lean",
         statement="∀ p : ℕ, p.Prime → True",
-        origin="root", difficulty=4,
+        origin="root",
     )
     return db.insert_strategy(
         conn, goal_id=gid, lean_path="Problems/p/Root.lean",

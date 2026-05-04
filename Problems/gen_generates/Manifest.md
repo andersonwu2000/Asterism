@@ -12,9 +12,8 @@ forbidden_lemmas: []
 ## Statement
 ∀ (n : ℕ) [Fact (2 ≤ n)] (x : G n), x ∈ Subgroup.zpowers (gen n)
 
-## Difficulty
-5
-
+## Entry kind
+Backward
 ## Mathlib hints
 - `Subgroup.mem_zpowers_iff` — `x ∈ Subgroup.zpowers g ↔ ∃ k : ℤ, g^k = x`
 - `Multiplicative.ofAdd`, `Multiplicative.toAdd`, `Multiplicative.toAdd_zpow`

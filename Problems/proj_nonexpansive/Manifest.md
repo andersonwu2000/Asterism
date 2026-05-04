@@ -15,9 +15,8 @@ forbidden_lemmas: []
   ∀ {P : X → X}, IsMetricProjector K P →
   ∀ x y, ‖P x - P y‖ ≤ ‖x - y‖
 
-## Difficulty
-5
-
+## Entry kind
+Backward
 ## Lemma hints
 - `Mathlib.Analysis.InnerProductSpace.Basic` — inner product API (`inner`, `inner_sub_left`, `inner_sub_right`, `real_inner_self_eq_norm_sq`)
 - `inner_le_nnorm_mul_nnorm` / `abs_inner_le_norm` — Cauchy-Schwarz for real inner product

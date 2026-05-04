@@ -132,26 +132,23 @@ def next_worker_kind(goal: sqlite3.Row) -> str:
     """Pure-ish: input goal row → 'Builder' or 'Backward'.
 
     Routing is `entry_kind`-driven with an attempts-threshold safety net.
-    On the first attempts < `BUILDER_THRESHOLD` dispatches we honor the
-    `entry_kind` directive (`'Builder'` | `'Backward'`); once attempts
-    reach `BUILDER_THRESHOLD`, escalation to Backward is forced (safety
-    net for an entry_kind=Builder directive that turns out wrong).
+    While attempts < `BUILDER_THRESHOLD` we honor the `entry_kind`
+    directive (`'Builder'` | `'Backward'`); once attempts reach the
+    threshold, escalation to Backward is forced (safety net for an
+    entry_kind=Builder directive that turns out wrong).
 
     `entry_kind` is set by:
-      - cli init for the root goal, from `Manifest.difficulty` (≥4 →
-        `'Backward'`, else `'Builder'`).
+      - cli init for the root goal, from `Manifest.entry_kind`
+        (`Builder` | `Backward`, human-authored in `## Entry kind`).
       - Backward agent for each sub-goal it generates, via the
-        `entry_kind:` directive in `new_<slug>.lean`'s docstring;
+        `-- entry_kind: ...` directive in `new_<slug>.lean`'s docstring;
         framework parses + persists at sub-goal insertion time.
 
-    Why not just `difficulty >= 4` like before? The Backward agent's
-    1-10 estimate on its own sub-goals tracks conceptual complexity,
-    not Builder-tractability — SG g380 (a `ring`-tractable identity
-    tagged difficulty=4 by the agent) burned 5×12-min Backward timeouts
-    before manual override. `entry_kind` is a Builder-vs-Backward routing
-    decision the agent makes deliberately, separate from the difficulty
-    estimate, which makes it more honest signal. Manifest difficulty for
-    the root remains trusted because it's human-authored.
+    Earlier iterations gated on a numeric `difficulty` (1-10): a hard
+    `>=4 → Backward` rule was unreliable because the agent's estimate
+    tracked conceptual complexity, not Builder-tractability. The boolean
+    directive is now the only routing signal — `difficulty` was removed
+    from both Manifest and the goals table.
 
     `BUILDER_THRESHOLD` is module-level so test/env overrides are visible
     without re-importing.

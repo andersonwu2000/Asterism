@@ -210,18 +210,13 @@ def cmd_init(args: argparse.Namespace) -> int:
     ).fetchone()
     if existing_goal is None:
         rel_root = (pdir / "Root.lean").relative_to(workspace).as_posix()
-        # Root entry_kind: trust Manifest.difficulty (human-authored).
-        # >=4 → Backward (skip the doomed first Builder attempt on a
-        # statement that's far too structural for tactic_try / one-shot
-        # patch); otherwise default to Builder.
-        root_entry = "Backward" if mfst.difficulty >= 4 else "Builder"
         gid = db.insert_goal(
             conn, problem=problem, slug="main",
             lean_path=rel_root, statement=mfst.statement,
-            difficulty=mfst.difficulty, origin="root", depth=0,
-            entry_kind=root_entry,
+            origin="root", depth=0, entry_kind=mfst.entry_kind,
         )
-        print(f"OK: init {problem}, root goal id={gid} entry_kind={root_entry}")
+        print(f"OK: init {problem}, root goal id={gid} "
+              f"entry_kind={mfst.entry_kind}")
     else:
         print(f"OK: {problem} already initialized (goal id={existing_goal['id']})")
     conn.commit()

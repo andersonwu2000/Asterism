@@ -172,15 +172,14 @@ def test_spawn_failure_handles_missing_stderr_file(tmp_path: Path) -> None:
 # 3. cascade_one skips increment for spawn_fast_fail
 # ---------------------------------------------------------------------
 
-def _seed_goal(conn: sqlite3.Connection, *, problem: str = "p",
-               difficulty: int = 2) -> int:
+def _seed_goal(conn: sqlite3.Connection, *, problem: str = "p") -> int:
     conn.execute(
         "INSERT INTO problems (name, manifest_path, created_at) VALUES (?, ?, ?)",
         (problem, "Problems/p/Manifest.md", db.now()),
     )
     return db.insert_goal(
         conn, problem=problem, slug="main", lean_path="Problems/p/Root.lean",
-        statement="T", origin="root", difficulty=difficulty,
+        statement="T", origin="root",
     )
 
 

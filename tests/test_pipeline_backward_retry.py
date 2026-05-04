@@ -225,7 +225,7 @@ def test_warm_retry_clears_stale_strategy_subgoals(
     sub_gid = db.insert_goal(
         conn, problem="p", slug="ghost_sub",
         lean_path="Problems/p/proofs/L_ghost_sub.lean",
-        statement="T", origin="backward", difficulty=1, depth=1,
+        statement="T", origin="backward", depth=1,
     )
     db.update_goal_status(conn, sub_gid, "proved")
     db.link_subgoal(conn, strategy_id=prior_sid, subgoal_id=sub_gid, position=0)

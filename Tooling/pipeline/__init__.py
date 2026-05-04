@@ -978,7 +978,6 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             new_gid = db.insert_goal(
                 conn, problem=goal["problem"], slug=slug,
                 lean_path=rel, statement=stmt, origin="backward",
-                difficulty=max(1, goal["difficulty"] - 1),
                 depth=goal["depth"] + 1,
                 entry_kind=entry_kind,
             )

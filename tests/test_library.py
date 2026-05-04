@@ -262,7 +262,7 @@ def test_maybe_promote_noops_when_root_not_proved(
     _seed_problem(conn, "p")
     db.insert_goal(conn, problem="p", slug="main",
                    lean_path="Problems/p/Root.lean",
-                   statement="T", origin="root", difficulty=4)
+                   statement="T", origin="root")
     mfst = manifest.Manifest(problem="p", statement="T",
                              lemma_hints=["Library.Algebra.p"])
     library.maybe_promote(conn, tmp_path, "p", mfst)
@@ -278,7 +278,7 @@ def test_maybe_promote_runs_when_root_proved(
     _seed_problem(conn, "p")
     gid = db.insert_goal(conn, problem="p", slug="main",
                          lean_path="Problems/p/Root.lean",
-                         statement="T", origin="root", difficulty=4)
+                         statement="T", origin="root")
     db.update_goal_status(conn, gid, "proved")
     mfst = manifest.Manifest(problem="p", statement="T",
                              lemma_hints=["Library.NumberTheory.p"])
@@ -296,7 +296,7 @@ def test_maybe_promote_swallows_exceptions(
     _seed_problem(conn, "p")
     gid = db.insert_goal(conn, problem="p", slug="main",
                          lean_path="Problems/p/Root.lean",
-                         statement="T", origin="root", difficulty=4)
+                         statement="T", origin="root")
     db.update_goal_status(conn, gid, "proved")
 
     def _boom(*a, **kw):

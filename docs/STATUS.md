@@ -65,10 +65,11 @@ cantor 是當前最大 sample（50 goals、depth 4、18 verify）。F55+F56 改�
 
 ## 待辦（按優先序）
 
-1. **(已做) 難度系統 binary 化 — entry_kind 直接 directive** — Backward 在每個 `new_<slug>.lean` 標 `-- entry_kind: Builder | Backward`；framework parse 進 `goals.entry_kind`；`next_worker_kind` 第一次 honor directive，attempts ≥ BUILDER_THRESHOLD 強制升 Backward 兜底。Root entry_kind 由 cli init 從 Manifest difficulty 決定（≥4 → Backward）。Manifest difficulty 是人類寫的可信，agent 自估的 sub-goal difficulty 不可信但 entry_kind 是兩件事（前者主觀粗估、後者是路由決策），分開處理。
+1. **(已做) entry_kind 直接 directive，刪掉 difficulty** — Backward 在每個 `new_<slug>.lean` 標 `-- entry_kind: Builder | Backward`；framework parse 進 `goals.entry_kind`；`next_worker_kind` 第一次 honor directive，attempts ≥ BUILDER_THRESHOLD 強制升 Backward 兜底。Root entry_kind 由 cli init 直接從 Manifest `## Entry kind` 段讀取。Manifest 改為直接寫 binary directive，數字 `## Difficulty` 整個從 schema / 程式 / 測試 / 文件移除（87 個 reference 全清）。
 
-2. **TACTIC_TRY_LIST 補 `assumption` / `tauto` / `exact?`** — SG 剩餘 hot goals 中有一批 `A → B → A`-shaped 廢題型，Phase 1 tactic_try 全部沒命中（list 缺 `assumption`），落到 Phase 2 LLM 寫 patch、又因為猜錯 hypothesis 名 timeout。加進 list 後這類題目都該 Phase 1 收工。成本低、覆蓋面寬。`linear_combination`（需係數）/ `polyrith`（需 Sage）暫不做。
-3. **SG with F55**（已跑、進行中）— postmortem 機制驗證有效（s215→s235 alternative-direction 收斂）；但 g380 暴露難度估錯結構性問題，見 (1)。
+2. **(已做) TACTIC_TRY_LIST 補 `assumption` / `tauto` / `exact?`** — `A → B → A`-shaped 廢題型 Phase 1 直接收工。`linear_combination`（需係數）/ `polyrith`（需 Sage）暫不做。
+3. **(已做) Infeasibility escape channel** — `decline_reason: parent_type_infeasible` PROPOSAL.md frontmatter；Builder + Backward 都可 escape；cascade 直接 shelve goal + propagate 上層重拆，不燒 attempts。SG 實證 g363 一次 spawn 內構造反例 + escape 成功。
+4. **SG with new framework**（已跑驗證部分機制）— F55 postmortem alternative-direction 確認有效；entry_kind 修補後 root 直接 Backward；尚未跑出完整 root proved。
 4. **F38 Gemini live smoke** — quota 恢復後跑
 5. **第三方 deep problem** — cantor 是當前最深，再要更深場景才知道 dedupe / cascade 邊界
 6. **Strategist** — 拆 Backward 為 Plan + Decompose；只有 SG 在 entry_kind directive 後仍卡住才真的需要

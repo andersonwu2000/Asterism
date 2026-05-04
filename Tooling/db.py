@@ -28,7 +28,6 @@ CREATE TABLE IF NOT EXISTS goals (
     slug        TEXT    NOT NULL,
     lean_path   TEXT    NOT NULL UNIQUE,
     statement   TEXT    NOT NULL,
-    difficulty  INTEGER NOT NULL DEFAULT 4,
     -- kind / origin enums kept minimal; extend when implementing
     -- forward / generalizer / refuter / construction (architecture.md §12).
     kind        TEXT    NOT NULL DEFAULT 'theorem'
@@ -39,6 +38,18 @@ CREATE TABLE IF NOT EXISTS goals (
                     CHECK(status IN ('open','attempting','proved','shelved')),
     depth       INTEGER NOT NULL DEFAULT 0,
     attempts    INTEGER NOT NULL DEFAULT 0,
+    -- Routing directive: which worker dispatches on the first attempt.
+    -- 'Builder' = tactic_try + one-shot LLM patch; 'Backward' = skip
+    -- Builder, decompose immediately. Set at goal creation:
+    --   - cli init: from Manifest's `## Entry kind` section.
+    --   - Backward agent: per sub-goal, via `-- entry_kind:` annotation
+    --     in `new_<slug>.lean`.
+    -- next_worker_kind honors this while attempts < BUILDER_THRESHOLD;
+    -- once the threshold is reached escalation to Backward is forced
+    -- regardless (safety net for an entry_kind=Builder directive that
+    -- turns out wrong).
+    entry_kind  TEXT    NOT NULL DEFAULT 'Builder'
+                    CHECK(entry_kind IN ('Builder','Backward')),
     -- F33 — claude CLI session UUID for same-session Builder retry.
     -- Set on first Builder dispatch; reused on retry via `claude --resume`;
     -- cleared on timeout (rc=124), stale-session fallback (rc=125), or
@@ -169,15 +180,13 @@ def init_schema(conn: sqlite3.Connection) -> None:
         ("backward_session_id", # F53
          "ALTER TABLE goals ADD COLUMN backward_session_id TEXT NULL"
          " DEFAULT NULL"),
-        # entry_kind directive: which worker is dispatched on the goal's
-        # first attempt. 'Builder' = framework's tactic_try + (on miss) a
-        # one-shot LLM patch; 'Backward' = skip Builder entirely, decompose
-        # immediately. Set by:
-        #   - cli init: from Manifest's `## Difficulty` (>= 4 → Backward)
-        #   - Backward agent: per sub-goal it generates, via the
-        #     `entry_kind:` directive in `new_<slug>.lean`'s docstring.
-        # On `attempts >= BUILDER_THRESHOLD` the dispatcher escalates to
-        # Backward regardless of entry_kind (safety net for misjudgement).
+        # Migration entry for older DBs created before entry_kind landed.
+        # The CREATE TABLE above already declares this column with a
+        # CHECK constraint; this ALTER picks up disk DBs created prior
+        # and adds the column with the same NOT NULL default. SQLite
+        # ALTER TABLE can't add CHECK after the fact; the CHECK is only
+        # enforced for new DBs, but `insert_goal` is the only writer of
+        # this column and it always passes a validated value.
         ("entry_kind",
          "ALTER TABLE goals ADD COLUMN entry_kind TEXT NOT NULL"
          " DEFAULT 'Builder'"),
@@ -196,16 +205,16 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
 def insert_goal(conn: sqlite3.Connection, *, problem: str, slug: str,
                 lean_path: str, statement: str, origin: str,
-                difficulty: int = 4, depth: int = 0,
+                depth: int = 0,
                 kind: str = 'theorem',
                 entry_kind: str = 'Builder') -> int:
     ts = now()
     cur = conn.execute(
-        "INSERT INTO goals (problem, slug, lean_path, statement, difficulty,"
+        "INSERT INTO goals (problem, slug, lean_path, statement,"
         " kind, origin, status, depth, attempts, entry_kind,"
         " created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, 0, ?, ?, ?)",
-        (problem, slug, lean_path, statement, difficulty,
+        " VALUES (?, ?, ?, ?, ?, ?, 'open', ?, 0, ?, ?, ?)",
+        (problem, slug, lean_path, statement,
          kind, origin, depth, entry_kind, ts, ts),
     )
     conn.commit()

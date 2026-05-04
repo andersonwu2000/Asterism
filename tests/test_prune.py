@@ -21,7 +21,7 @@ def _seed_root(conn: sqlite3.Connection, name: str = "p",
     gid = db.insert_goal(
         conn, problem=name, slug="main",
         lean_path=f"Problems/{name}/Root.lean",
-        statement="T", origin="root", difficulty=4,
+        statement="T", origin="root",
     )
     db.update_goal_status(conn, gid, status)
     return gid
@@ -45,7 +45,7 @@ def _seed_subgoal(conn: sqlite3.Connection, *, problem: str, slug: str,
     sub = db.insert_goal(
         conn, problem=problem, slug=slug,
         lean_path=f"Problems/{problem}/proofs/L_{slug}.lean",
-        statement="T", origin="backward", difficulty=3, depth=1,
+        statement="T", origin="backward", depth=1,
     )
     if status != "open":
         db.update_goal_status(conn, sub, status)
@@ -388,7 +388,7 @@ def test_winning_chain_keeps_alias_canonical(
     other_parent = db.insert_goal(
         conn, problem="p", slug="other_parent",
         lean_path="Problems/p/proofs/L_other_parent.lean",
-        statement="P", origin="backward", difficulty=3, depth=1,
+        statement="P", origin="backward", depth=1,
     )
     s_dead = db.insert_strategy(
         conn, goal_id=other_parent,
@@ -400,7 +400,7 @@ def test_winning_chain_keeps_alias_canonical(
     canonical = db.insert_goal(
         conn, problem="p", slug="canonical",
         lean_path="Problems/p/proofs/L_canonical.lean",
-        statement="X", origin="backward", difficulty=3, depth=2,
+        statement="X", origin="backward", depth=2,
     )
     db.update_goal_status(conn, canonical, "proved")
     db.link_subgoal(conn, strategy_id=s_dead, subgoal_id=canonical,

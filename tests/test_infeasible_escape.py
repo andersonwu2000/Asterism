@@ -88,7 +88,7 @@ def _seed_goal(conn: sqlite3.Connection, *, problem: str = "p") -> int:
     return db.insert_goal(
         conn, problem=problem, slug="main",
         lean_path="Problems/p/Root.lean",
-        statement="T", origin="root", difficulty=2,
+        statement="T", origin="root",
     )
 
 
@@ -185,7 +185,7 @@ def test_cascade_infeasible_propagates_to_parent_strategy(
     sub_gid = db.insert_goal(
         conn, problem="p", slug="s1_sub_1",
         lean_path="Problems/p/proofs/L_s1_sub_1.lean",
-        statement="T", origin="backward", difficulty=2,
+        statement="T", origin="backward",
     )
     conn.execute(
         "INSERT INTO strategy_subgoals (strategy_id, subgoal_id, position) "

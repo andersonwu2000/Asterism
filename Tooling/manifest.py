@@ -9,12 +9,18 @@ Format (see docs/architecture.md §3):
   # <name> — <description>
   ## Statement
   <Lean 4 type expression>
-  ## Difficulty
-  <int>
+  ## Entry kind
+  Builder | Backward
   ## Mathlib hints
   - <hint>
   ## Strategic notes
   <free-form>
+
+`## Entry kind` controls the dispatcher's first worker for the root goal:
+`Builder` for leaf-shaped statements (rare; tactic_try + one-shot patch
+might close the whole problem), `Backward` for everything that needs
+decomposition. Replaces the legacy `## Difficulty 1-10` field; the
+boolean directive is the only signal `cli init` actually consumed.
 """
 from __future__ import annotations
 
@@ -28,7 +34,7 @@ from pathlib import Path
 class Manifest:
     problem: str
     statement: str
-    difficulty: int = 4
+    entry_kind: str = "Backward"
     axioms_whitelist: list[str] = field(default_factory=list)
     forbidden_lemmas: list[str] = field(default_factory=list)
     # F49 — `lemma_hints` unifies Mathlib + Library hint paths. Entries
@@ -144,12 +150,15 @@ def parse(path: Path) -> Manifest:
     if not statement:
         _warn(f"{path} missing ## Statement section")
 
-    difficulty_str = sections.get('Difficulty', '4').strip()
-    try:
-        difficulty = int(difficulty_str.split()[0])
-    except (ValueError, IndexError):
-        _warn(f"{path} ## Difficulty unparseable {difficulty_str!r}; using 4")
-        difficulty = 4
+    entry_kind_str = sections.get('Entry kind', 'Backward').strip()
+    if entry_kind_str in ('Builder', 'Backward'):
+        entry_kind = entry_kind_str
+    else:
+        _warn(
+            f"{path} ## Entry kind unrecognized {entry_kind_str!r}; "
+            f"using 'Backward' (Builder|Backward expected)"
+        )
+        entry_kind = "Backward"
 
     # F49 — read both `## Lemma hints` (canonical) and `## Mathlib hints`
     # (legacy alias). Either may be present; if both, lemma_hints wins
@@ -170,7 +179,7 @@ def parse(path: Path) -> Manifest:
     return Manifest(
         problem=problem,
         statement=statement,
-        difficulty=difficulty,
+        entry_kind=entry_kind,
         axioms_whitelist=list(axioms),
         forbidden_lemmas=list(forbidden),
         lemma_hints=lemma_hints,

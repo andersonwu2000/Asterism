@@ -41,7 +41,7 @@ def _seed_problem(conn: sqlite3.Connection, tmp_path: Path) -> int:
     rel = root.relative_to(tmp_path).as_posix()
     return db.insert_goal(
         conn, problem=problem, slug="main", lean_path=rel,
-        statement="True", origin="root", difficulty=2, depth=0,
+        statement="True", origin="root", depth=0,
     )
 
 

@@ -90,8 +90,7 @@ def test_whitespace_proposal_is_not_decline(tmp_path: Path) -> None:
 # 2. cascade_one fast-tracks declined goal to Backward
 # ---------------------------------------------------------------------
 
-def _seed_goal(conn: sqlite3.Connection, *, problem: str = "p",
-               difficulty: int = 2) -> int:
+def _seed_goal(conn: sqlite3.Connection, *, problem: str = "p") -> int:
     conn.execute(
         "INSERT INTO problems (name, manifest_path, created_at) "
         "VALUES (?, ?, ?)",
@@ -100,7 +99,7 @@ def _seed_goal(conn: sqlite3.Connection, *, problem: str = "p",
     return db.insert_goal(
         conn, problem=problem, slug="main",
         lean_path="Problems/p/Root.lean",
-        statement="T", origin="root", difficulty=difficulty,
+        statement="T", origin="root",
     )
 
 

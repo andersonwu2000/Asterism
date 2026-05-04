@@ -29,8 +29,8 @@ forbidden_lemmas: [ZMod.wilsons_lemma]
 ## Statement
 ∀ p : ℕ, p.Prime → True
 
-## Difficulty
-4
+## Entry kind
+Backward
 
 ## Mathlib hints
 - ZMod.val_natCast
@@ -42,14 +42,17 @@ free-form text
     m = manifest.parse(p)
     assert m.problem == "wilson"
     assert m.statement == "∀ p : ℕ, p.Prime → True"
-    assert m.difficulty == 4
+    assert m.entry_kind == "Backward"
     assert m.axioms_whitelist == ["propext", "Quot.sound"]
     assert m.forbidden_lemmas == ["ZMod.wilsons_lemma"]
     assert m.mathlib_hints == ["ZMod.val_natCast", "ZMod.val_neg_one"]
     assert "free-form" in m.strategic_notes
 
 
-def test_missing_difficulty_defaults(tmp_path: Path) -> None:
+def test_missing_entry_kind_defaults_to_backward(tmp_path: Path) -> None:
+    """A Manifest without `## Entry kind` falls back to 'Backward'.
+    Bias toward decomposition is safer than wasting a Builder spawn on
+    an un-annotated root statement."""
     p = write(tmp_path / "p", "Manifest.md", """---
 problem: p
 ---
@@ -58,7 +61,43 @@ problem: p
 T
 """)
     m = manifest.parse(p)
-    assert m.difficulty == 4
+    assert m.entry_kind == "Backward"
+
+
+def test_unrecognized_entry_kind_falls_back_to_backward(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    p = write(tmp_path / "p", "Manifest.md", """---
+problem: p
+---
+
+## Statement
+T
+
+## Entry kind
+Strategist
+""")
+    m = manifest.parse(p)
+    assert m.entry_kind == "Backward"
+    err = capsys.readouterr().err
+    assert "Entry kind unrecognized" in err
+
+
+def test_entry_kind_builder(tmp_path: Path) -> None:
+    """Explicit 'Builder' is honored — for tiny leaf-shaped problems
+    where tactic_try might close the whole thing in one shot."""
+    p = write(tmp_path / "p", "Manifest.md", """---
+problem: p
+---
+
+## Statement
+True
+
+## Entry kind
+Builder
+""")
+    m = manifest.parse(p)
+    assert m.entry_kind == "Builder"
 
 
 def test_missing_statement_warn(tmp_path: Path, capsys) -> None:

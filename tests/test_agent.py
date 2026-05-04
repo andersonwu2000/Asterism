@@ -22,7 +22,7 @@ def _seed_problem_and_goal(conn: sqlite3.Connection, **goal_kw: object) -> int:
     )
     return db.insert_goal(
         conn, problem="p", slug="main", lean_path="Problems/p/Root.lean",
-        statement="T", origin="root", difficulty=4, **goal_kw,
+        statement="T", origin="root", **goal_kw,
     )
 
 
@@ -108,13 +108,13 @@ def test_context_includes_dead_strategies_with_subgoal_decomposition(
         conn, problem="p", slug="s1_sub_1",
         lean_path="Problems/p/proofs/L_s1_sub_1.lean",
         statement="∀ n, foo n = bar n",
-        origin="backward", difficulty=2, depth=1,
+        origin="backward", depth=1,
     )
     sub2 = db.insert_goal(
         conn, problem="p", slug="s1_sub_2",
         lean_path="Problems/p/proofs/L_s1_sub_2.lean",
         statement="∀ n, baz n",
-        origin="backward", difficulty=2, depth=1,
+        origin="backward", depth=1,
     )
     db.link_subgoal(conn, strategy_id=sid, subgoal_id=sub1, position=0)
     db.link_subgoal(conn, strategy_id=sid, subgoal_id=sub2, position=1)
@@ -266,7 +266,7 @@ def test_context_dead_strategies_visible_to_builder(
     sub = db.insert_goal(
         conn, problem="p", slug="ds_sub_1",
         lean_path="Problems/p/proofs/L_ds_sub_1.lean",
-        statement="T", origin="backward", difficulty=1, depth=1,
+        statement="T", origin="backward", depth=1,
     )
     db.link_subgoal(conn, strategy_id=sid, subgoal_id=sub, position=0)
     # And record a Verify dead_attempt so the dedupe set includes this sid
@@ -449,7 +449,7 @@ def test_context_subgoal_includes_parent_strategy(
     sub_gid = db.insert_goal(
         conn, problem="p", slug="main_sub_1",
         lean_path="Problems/p/proofs/L_main_sub_1.lean",
-        statement="A", origin="backward", difficulty=3, depth=1,
+        statement="A", origin="backward", depth=1,
     )
     db.link_subgoal(conn, strategy_id=sid, subgoal_id=sub_gid, position=0)
 

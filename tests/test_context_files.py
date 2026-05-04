@@ -362,7 +362,7 @@ def _seed_goal(conn: sqlite3.Connection) -> int:
     )
     return db.insert_goal(
         conn, problem="p", slug="main", lean_path="Problems/p/Root.lean",
-        statement="T", origin="root", difficulty=4,
+        statement="T", origin="root",
     )
 
 

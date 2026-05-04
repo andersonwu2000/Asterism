@@ -34,7 +34,7 @@ def _seed_root(conn: sqlite3.Connection, *, problem: str = "p",
     gid = db.insert_goal(
         conn, problem=problem, slug=slug,
         lean_path=lean_path or f"Problems/{problem}/Root.lean",
-        statement=statement, origin="root", difficulty=4,
+        statement=statement, origin="root",
     )
     if status != "open":
         db.update_goal_status(conn, gid, status)
@@ -47,7 +47,7 @@ def _seed_sub(conn: sqlite3.Connection, *, problem: str = "p",
     gid = db.insert_goal(
         conn, problem=problem, slug=slug,
         lean_path=f"Problems/{problem}/proofs/L_{slug}.lean",
-        statement=statement, origin="backward", difficulty=2, depth=depth,
+        statement=statement, origin="backward", depth=depth,
     )
     if status != "open":
         db.update_goal_status(conn, gid, status)
