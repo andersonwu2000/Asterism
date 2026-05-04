@@ -97,19 +97,31 @@ TACTIC_TRY_LIST = [
 _IMPORT_LINE_RE = re.compile(r"(?m)^import\s")
 
 
-def _ensure_import_mathlib(content: str) -> str:
-    """Prepend `import Mathlib` if the file has no `import` line at all.
+def _ensure_imports_subgoal(
+    content: str, *, problem: str, workspace: Path,
+) -> str:
+    """Prepend `import Mathlib` and `import Problems.<problem>.Defs`
+    (when the problem ships a `Defs.lean`) if missing. Idempotent —
+    skips any line already present.
 
-    Weaker LLMs (e.g. Haiku) sometimes write a lemma file with no
-    imports and reference Mathlib types like `ZMod` or `Nat.factorial`,
-    causing every reference to fail as `Unknown constant ...`. Files
-    that already declare any specific import are left untouched —
-    duplicate umbrella import is harmless in Lean 4 but we don't want
-    to second-guess intentional minimal imports.
+    Without `Defs`, problem-level custom symbols (e.g. SG's `Collinear`)
+    are unresolved; a strict agent following the prompt's "framework
+    auto-injects imports" instruction writes none, and Lean falls back
+    to whatever `import Mathlib` exposes (e.g. Mathlib's universe-poly
+    `Collinear (k : Type*) ...`), breaking elaboration.
     """
-    if _IMPORT_LINE_RE.search(content):
+    needed: list[str] = []
+    if not re.search(r"(?m)^import\s+Mathlib\b", content):
+        needed.append("import Mathlib")
+    defs_path = workspace / "Problems" / problem / "Defs.lean"
+    if defs_path.exists():
+        defs_module = f"Problems.{problem}.Defs"
+        if not re.search(rf"(?m)^import\s+{re.escape(defs_module)}\b",
+                         content):
+            needed.append(f"import {defs_module}")
+    if not needed:
         return content
-    return "import Mathlib\n\n" + content
+    return "\n".join(needed) + "\n\n" + content
 
 
 @dataclass
@@ -823,8 +835,10 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                 print(f"[dedupe] {slug} → goal {canonical_id} "
                       f"({canonical['slug']})", flush=True)
             else:
-                content = _ensure_import_mathlib(
-                    src.read_text(encoding="utf-8"))
+                content = _ensure_imports_subgoal(
+                    src.read_text(encoding="utf-8"),
+                    problem=goal["problem"], workspace=workspace,
+                )
                 dest.write_text(content, encoding="utf-8")
             placed.append(dest)
         shutil.copy2(patches[0], scratch_dest)

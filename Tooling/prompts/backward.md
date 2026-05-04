@@ -18,8 +18,8 @@ If your prior attempt timed out, Context.md's `## Your previous progress note` s
 Three kinds of files in your sandbox. **Read `Context.md`'s `## Sandbox` and `## Strategy naming` sections first** — Sandbox pins read-allowlist boundaries; Strategy naming pins your strategy id (`s<N>`) and the `s<N>_sub_<M>` slug convention.
 
 1. `PROPOSAL.md` — high-level strategy, why each sub-goal is simpler, how they combine. No restating the goal, no sub-goal statement code blocks.
-2. `patch.lean` — **pre-written by the framework** with the strategy's locked signature `theorem s<id> <binders> : <type> := by sorry`. Replace ONLY the proof body (everything after `:=`). Do NOT change the theorem name, binders, or conclusion type — the framework does a string-diff against the locked signature and rejects any edit (`patch_signature_mismatch`). Sub-goal `import` lines are auto-injected by the framework after you write — don't add them yourself. Body typically uses `have h_i : <sub_i_type> := <slug_i> args` plus a final tactic that closes the parent statement.
-3. `new_<sub_slug>.lean` × N — one file per sub-goal. Slug + theorem name follow Context.md exactly. `namespace Problems.<problem>`, body `:= by sorry`.
+2. `patch.lean` — **pre-written by the framework** with the strategy's locked signature `theorem s<id> <binders> : <type> := by sorry`. Replace ONLY the proof body (everything after `:=`). Do NOT change the theorem name, binders, or conclusion type — the framework does a string-diff against the locked signature and rejects any edit (`patch_signature_mismatch`). The framework also auto-appends `import` lines for each sub-goal module — don't add those yourself. Body typically uses `have h_i : <sub_i_type> := <slug_i> args` plus a final tactic that closes the parent statement.
+3. `new_<sub_slug>.lean` × N — one file per sub-goal. Slug + theorem name follow Context.md exactly. `namespace Problems.<problem>`, body `:= by sorry`. Do NOT write `import` lines — the framework prepends `import Mathlib` and `import Problems.<problem>.Defs` for you (Defs exposes the problem's custom symbols, e.g. SG's `Collinear`).
 
 ## Lemma discovery
 

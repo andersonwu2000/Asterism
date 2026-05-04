@@ -120,52 +120,92 @@ def test_slug_from_filename() -> None:
 
 
 # ---------------------------------------------------------------------
-# F17 — auto-inject `import Mathlib` when lemma file lacks any import
+# F17 + Defs auto-inject — sub-goal files get `import Mathlib` and
+# `import Problems.<problem>.Defs` (when present) prepended if missing.
 # ---------------------------------------------------------------------
 
-def test_ensure_import_mathlib_prepends_when_no_imports() -> None:
-    """Haiku-style output: no import line at all. Must be patched."""
-    from Tooling.pipeline import _ensure_import_mathlib
+def _make_workspace(tmp_path: Path, problem: str,
+                    *, with_defs: bool) -> Path:
+    p = tmp_path / "Problems" / problem
+    p.mkdir(parents=True)
+    if with_defs:
+        (p / "Defs.lean").write_text("-- defs\n", encoding="utf-8")
+    return tmp_path
+
+
+def test_ensure_imports_subgoal_prepends_when_no_imports(
+    tmp_path: Path,
+) -> None:
+    """Strict-prompt output: no imports at all. Must be patched with
+    Mathlib + Defs (when Defs ships)."""
+    from Tooling.pipeline import _ensure_imports_subgoal
+    ws = _make_workspace(tmp_path, "x", with_defs=True)
     src = (
         "namespace Problems.x\n\n"
         "theorem foo : Nat.factorial 1 % 2 = 1 := by sorry\n\n"
         "end Problems.x\n"
     )
-    out = _ensure_import_mathlib(src)
-    assert out.startswith("import Mathlib\n")
+    out = _ensure_imports_subgoal(src, problem="x", workspace=ws)
+    assert out.startswith("import Mathlib\nimport Problems.x.Defs\n")
     assert "namespace Problems.x" in out
 
 
-def test_ensure_import_mathlib_passthrough_when_specific_import() -> None:
-    """Model intentionally chose a specific import — leave it alone."""
-    from Tooling.pipeline import _ensure_import_mathlib
+def test_ensure_imports_subgoal_no_defs_when_problem_lacks_defs(
+    tmp_path: Path,
+) -> None:
+    """Problem ships no Defs.lean: only Mathlib gets prepended."""
+    from Tooling.pipeline import _ensure_imports_subgoal
+    ws = _make_workspace(tmp_path, "x", with_defs=False)
+    src = "namespace Problems.x\nend Problems.x\n"
+    out = _ensure_imports_subgoal(src, problem="x", workspace=ws)
+    assert out.startswith("import Mathlib\n")
+    assert "import Problems.x.Defs" not in out
+
+
+def test_ensure_imports_subgoal_adds_defs_when_only_mathlib(
+    tmp_path: Path,
+) -> None:
+    """Agent wrote `import Mathlib` but forgot Defs — fill in Defs."""
+    from Tooling.pipeline import _ensure_imports_subgoal
+    ws = _make_workspace(tmp_path, "x", with_defs=True)
+    src = "import Mathlib\n\nnamespace Problems.x\nend Problems.x\n"
+    out = _ensure_imports_subgoal(src, problem="x", workspace=ws)
+    assert "import Mathlib" in out
+    assert "import Problems.x.Defs" in out
+
+
+def test_ensure_imports_subgoal_idempotent_when_both_present(
+    tmp_path: Path,
+) -> None:
+    """Both imports already present — passthrough, no double-injection."""
+    from Tooling.pipeline import _ensure_imports_subgoal
+    ws = _make_workspace(tmp_path, "x", with_defs=True)
     src = (
-        "import Mathlib.Data.Nat.Factorial.Basic\n\n"
+        "import Mathlib\n"
+        "import Problems.x.Defs\n\n"
         "namespace Problems.x\n"
         "theorem foo : True := trivial\n"
         "end Problems.x\n"
     )
-    assert _ensure_import_mathlib(src) == src
+    assert _ensure_imports_subgoal(
+        src, problem="x", workspace=ws,
+    ) == src
 
 
-def test_ensure_import_mathlib_passthrough_when_umbrella_already() -> None:
-    """Already has `import Mathlib`: don't double-inject."""
-    from Tooling.pipeline import _ensure_import_mathlib
-    src = "import Mathlib\n\nnamespace X\nend X\n"
-    assert _ensure_import_mathlib(src) == src
-
-
-def test_ensure_import_mathlib_anchored_to_line_start() -> None:
-    """`import` appearing inside a comment is not a real import — the
-    regex anchors `^import\\s` to start-of-line via re.MULTILINE."""
-    from Tooling.pipeline import _ensure_import_mathlib
+def test_ensure_imports_subgoal_anchored_to_line_start(
+    tmp_path: Path,
+) -> None:
+    """`import` inside a comment is not a real import — re.MULTILINE
+    anchors detection to start-of-line."""
+    from Tooling.pipeline import _ensure_imports_subgoal
+    ws = _make_workspace(tmp_path, "x", with_defs=False)
     src = (
         "-- this comment mentions import Mathlib but isn't a directive\n"
         "namespace X\n"
         "theorem t : True := trivial\n"
         "end X\n"
     )
-    out = _ensure_import_mathlib(src)
+    out = _ensure_imports_subgoal(src, problem="x", workspace=ws)
     assert out.startswith("import Mathlib\n")
 
 
