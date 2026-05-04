@@ -169,6 +169,18 @@ def init_schema(conn: sqlite3.Connection) -> None:
         ("backward_session_id", # F53
          "ALTER TABLE goals ADD COLUMN backward_session_id TEXT NULL"
          " DEFAULT NULL"),
+        # entry_kind directive: which worker is dispatched on the goal's
+        # first attempt. 'Builder' = framework's tactic_try + (on miss) a
+        # one-shot LLM patch; 'Backward' = skip Builder entirely, decompose
+        # immediately. Set by:
+        #   - cli init: from Manifest's `## Difficulty` (>= 4 → Backward)
+        #   - Backward agent: per sub-goal it generates, via the
+        #     `entry_kind:` directive in `new_<slug>.lean`'s docstring.
+        # On `attempts >= BUILDER_THRESHOLD` the dispatcher escalates to
+        # Backward regardless of entry_kind (safety net for misjudgement).
+        ("entry_kind",
+         "ALTER TABLE goals ADD COLUMN entry_kind TEXT NOT NULL"
+         " DEFAULT 'Builder'"),
     ):
         try:
             conn.execute(ddl)
@@ -185,14 +197,16 @@ def init_schema(conn: sqlite3.Connection) -> None:
 def insert_goal(conn: sqlite3.Connection, *, problem: str, slug: str,
                 lean_path: str, statement: str, origin: str,
                 difficulty: int = 4, depth: int = 0,
-                kind: str = 'theorem') -> int:
+                kind: str = 'theorem',
+                entry_kind: str = 'Builder') -> int:
     ts = now()
     cur = conn.execute(
         "INSERT INTO goals (problem, slug, lean_path, statement, difficulty,"
-        " kind, origin, status, depth, attempts, created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, 0, ?, ?)",
+        " kind, origin, status, depth, attempts, entry_kind,"
+        " created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, 0, ?, ?, ?)",
         (problem, slug, lean_path, statement, difficulty,
-         kind, origin, depth, ts, ts),
+         kind, origin, depth, entry_kind, ts, ts),
     )
     conn.commit()
     return int(cur.lastrowid)

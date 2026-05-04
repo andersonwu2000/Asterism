@@ -157,6 +157,27 @@ def _parse_decline_reason(proposal_text: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
+# `entry_kind: Builder` or `entry_kind: Backward` directive — the
+# Backward agent annotates each `new_<slug>.lean` with this comment so
+# the framework knows whether to dispatch this sub-goal to Builder
+# (one-shot tactic + LLM patch) or skip straight to Backward
+# decomposition. Comment-form (not YAML frontmatter) so it sits next to
+# the theorem definition the agent is reasoning about.
+_ENTRY_KIND_RE = re.compile(
+    r"(?m)^\s*--\s*entry_kind\s*:\s*(Builder|Backward)\b"
+)
+
+
+def _parse_entry_kind(lean_text: str) -> str:
+    """Extract the `-- entry_kind: ...` directive from a sub-goal lean
+    file. Returns 'Builder' or 'Backward' (capitalized as in the DB
+    enum); defaults to 'Builder' if the directive is absent or
+    unrecognized. The default mirrors the legacy attempts-only routing
+    so a missing directive doesn't change behavior."""
+    m = _ENTRY_KIND_RE.search(lean_text)
+    return m.group(1) if m else "Builder"
+
+
 @dataclass
 class PipelineResult:
     outcome: str  # 'proved' | 'success' | 'exhausted' | 'failed'
@@ -952,11 +973,14 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         for (slug, dest), canonical_id in zip(sub_dests, canonical_for):
             stmt = _extract_statement_from_lean(dest)
             rel = dest.relative_to(workspace).as_posix()
+            entry_kind = _parse_entry_kind(
+                dest.read_text(encoding="utf-8"))
             new_gid = db.insert_goal(
                 conn, problem=goal["problem"], slug=slug,
                 lean_path=rel, statement=stmt, origin="backward",
                 difficulty=max(1, goal["difficulty"] - 1),
                 depth=goal["depth"] + 1,
+                entry_kind=entry_kind,
             )
             if canonical_id is not None:
                 db.update_goal_status(conn, new_gid, "proved")

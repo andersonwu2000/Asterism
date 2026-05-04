@@ -16,32 +16,53 @@ from Tooling.dispatcher import next_worker_kind, cascade_one, SHELVE_THRESHOLD
 # next_worker_kind
 # ---------------------------------------------------------------------
 
-def _fake_goal(*, difficulty: int, attempts: int) -> dict:
-    return {"difficulty": difficulty, "attempts": attempts}
+def _fake_goal(*, difficulty: int, attempts: int,
+               entry_kind: str = "Builder") -> dict:
+    return {"difficulty": difficulty, "attempts": attempts,
+            "entry_kind": entry_kind}
 
 
 def test_next_worker_kind_ignores_difficulty() -> None:
     """The difficulty hard-gate (legacy `>=4 → Backward`) was removed
-    after SG g380 evidence: agent-estimated difficulty correlates with
-    conceptual complexity, not Builder-tractability. Routing now uses
-    only the attempts threshold; high-difficulty goals burn a few cheap
-    Builder spawns before escalating to Backward, which is acceptable."""
-    assert next_worker_kind(_fake_goal(difficulty=8, attempts=0)) == "Builder"
-    assert next_worker_kind(_fake_goal(difficulty=10, attempts=0)) == "Builder"
+    after SG g380. Routing is now `entry_kind`-driven; difficulty does
+    NOT affect dispatch (only the human-authored Manifest.difficulty
+    feeds entry_kind at root init time, which then sits in the goal
+    row as a stable directive)."""
+    assert next_worker_kind(
+        _fake_goal(difficulty=8, attempts=0, entry_kind="Builder")
+    ) == "Builder"
+    assert next_worker_kind(
+        _fake_goal(difficulty=10, attempts=0, entry_kind="Builder")
+    ) == "Builder"
+
+
+def test_next_worker_kind_honors_entry_kind_backward() -> None:
+    """entry_kind='Backward' on a fresh goal skips Builder entirely."""
+    assert next_worker_kind(
+        _fake_goal(difficulty=2, attempts=0, entry_kind="Backward")
+    ) == "Backward"
 
 
 def test_next_worker_kind_easy_first_attempts() -> None:
-    assert next_worker_kind(_fake_goal(difficulty=2, attempts=0)) == "Builder"
-    assert next_worker_kind(_fake_goal(difficulty=1, attempts=2)) == "Builder"
+    assert next_worker_kind(
+        _fake_goal(difficulty=2, attempts=0)) == "Builder"
+    assert next_worker_kind(
+        _fake_goal(difficulty=1, attempts=2)) == "Builder"
 
 
 def test_next_worker_kind_boundary_at_builder_threshold() -> None:
-    """attempts < BUILDER_THRESHOLD → Builder, attempts >= → Backward."""
+    """attempts >= BUILDER_THRESHOLD overrides entry_kind=Builder
+    (safety net): the Backward agent's directive can be wrong, but
+    after N consecutive Builder failures we escalate regardless."""
     bt = _dispatcher.BUILDER_THRESHOLD
     assert next_worker_kind(
         _fake_goal(difficulty=2, attempts=bt - 1)) == "Builder"
     assert next_worker_kind(
         _fake_goal(difficulty=2, attempts=bt)) == "Backward"
+    # Even with entry_kind=Builder, attempts threshold wins
+    assert next_worker_kind(
+        _fake_goal(difficulty=2, attempts=bt, entry_kind="Builder")
+    ) == "Backward"
 
 
 def test_next_worker_kind_respects_runtime_threshold(

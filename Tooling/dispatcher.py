@@ -131,23 +131,36 @@ def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
 def next_worker_kind(goal: sqlite3.Row) -> str:
     """Pure-ish: input goal row → 'Builder' or 'Backward'.
 
-    `BUILDER_THRESHOLD` is module-level so test/env overrides are
-    visible without re-importing.
+    Routing is `entry_kind`-driven with an attempts-threshold safety net.
+    On the first attempts < `BUILDER_THRESHOLD` dispatches we honor the
+    `entry_kind` directive (`'Builder'` | `'Backward'`); once attempts
+    reach `BUILDER_THRESHOLD`, escalation to Backward is forced (safety
+    net for an entry_kind=Builder directive that turns out wrong).
 
-    No longer gates on `difficulty`. The Backward agent's 1-10 estimate
-    tracks conceptual complexity, not Builder-tractability — SG g380 was
-    a polynomial identity (`ring`/`linear_combination`-tractable) tagged
-    difficulty=4 by the agent and routed past Builder into 5 successive
-    12-min Backward timeouts. The attempts-threshold escalation already
-    auto-promotes Builder→Backward after `BUILDER_THRESHOLD` fails, which
-    is the only signal that actually correlates with Builder failure.
-    Cost of dropping the gate: root-level goals (typically Manifest-
-    estimated 7-8) burn `BUILDER_THRESHOLD` cheap Builder spawns before
-    Backward kicks in — acceptable in practice.
+    `entry_kind` is set by:
+      - cli init for the root goal, from `Manifest.difficulty` (≥4 →
+        `'Backward'`, else `'Builder'`).
+      - Backward agent for each sub-goal it generates, via the
+        `entry_kind:` directive in `new_<slug>.lean`'s docstring;
+        framework parses + persists at sub-goal insertion time.
+
+    Why not just `difficulty >= 4` like before? The Backward agent's
+    1-10 estimate on its own sub-goals tracks conceptual complexity,
+    not Builder-tractability — SG g380 (a `ring`-tractable identity
+    tagged difficulty=4 by the agent) burned 5×12-min Backward timeouts
+    before manual override. `entry_kind` is a Builder-vs-Backward routing
+    decision the agent makes deliberately, separate from the difficulty
+    estimate, which makes it more honest signal. Manifest difficulty for
+    the root remains trusted because it's human-authored.
+
+    `BUILDER_THRESHOLD` is module-level so test/env overrides are visible
+    without re-importing.
     """
-    if int(goal["attempts"]) < BUILDER_THRESHOLD:
-        return "Builder"
-    return "Backward"
+    if int(goal["attempts"]) >= BUILDER_THRESHOLD:
+        return "Backward"
+    if str(goal["entry_kind"]) == "Backward":
+        return "Backward"
+    return "Builder"
 
 
 # ---------------------------------------------------------------------

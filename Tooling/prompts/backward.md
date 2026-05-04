@@ -21,6 +21,29 @@ Three kinds of files in your sandbox. **Read `Context.md`'s `## Sandbox` and `##
 2. `patch.lean` — **pre-written by the framework** with the strategy's locked signature `theorem s<id> <binders> : <type> := by sorry`. Replace ONLY the proof body (everything after `:=`). Do NOT change the theorem name, binders, or conclusion type — the framework does a string-diff against the locked signature and rejects any edit (`patch_signature_mismatch`). The framework also auto-appends `import` lines for each sub-goal module — don't add those yourself. Body typically uses `have h_i : <sub_i_type> := <slug_i> args` plus a final tactic that closes the parent statement.
 3. `new_<sub_slug>.lean` × N — one file per sub-goal. Slug + theorem name follow Context.md exactly. `namespace Problems.<problem>`, body `:= by sorry`. Do NOT write `import` lines — the framework prepends `import Mathlib` and `import Problems.<problem>.Defs` for you (Defs exposes the problem's custom symbols, e.g. SG's `Collinear`).
 
+   **Required**: include a directive comment line on the line above the theorem:
+
+   ```lean
+   -- entry_kind: Builder
+   theorem s<id>_sub_N : ... := by sorry
+   ```
+
+   Pick `Builder` or `Backward` per sub-goal:
+   - **`Builder`**: a leaf-level statement with a clear tactic path —
+     pure ring identity, hypothesis matches conclusion (`assumption`),
+     `linarith`/`nlinarith` on visible inequalities, `exact?`-findable
+     Mathlib lemma, simple unfolding. Framework runs `tactic_try` first
+     (cheap), then a one-shot LLM patch.
+   - **`Backward`**: structurally bigger — quantifier over `Finset`,
+     ∃-witness construction, induction over an inductive type, multi-
+     step argument. Skip Builder, decompose immediately. Saves
+     `BUILDER_THRESHOLD` doomed Builder spawns per such sub-goal.
+
+   The framework also auto-promotes Builder→Backward after
+   `BUILDER_THRESHOLD` failed Builder attempts, so `Builder` is the safer
+   default if you're unsure — but a wrong `Builder` directive on a
+   structural sub-goal still costs a few wasted spawns. Be deliberate.
+
 ## Lemma discovery
 
 **引用 mathlib 定理之前，使用 Grep 或 Loogle 確定定理名稱。** Mathlib has been reorganized across versions (e.g. `pow_le_pow_left` → `pow_le_pow_left₀`); a name from your training memory may no longer exist or carry a different signature. Mathlib source lives at `.lake/packages/mathlib/Mathlib/` (relative to the workspace root).
