@@ -818,7 +818,7 @@ status / stop 命令暫不寫，直接 sqlite 查 / Ctrl-C 終止。
 | Pool size | 預設 4、`ASTERISM_POOL=N` env 覆蓋 |
 | OR sequencing | F37 起 passive (cap=1)；env var 已移除；同 goal 多策略走序列觸發 |
 | Daemon budget | 預設 1800s、`ASTERISM_BUDGET_SEC=N` env 覆蓋 |
-| Worker 單次 timeout | 720s（12 min）；postmortem spawn 額外 120s（F55） |
+| Worker 單次 timeout | 600s（10 min）；postmortem spawn 額外 180s（F55） |
 | Timeout 後資料保留 | F55 postmortem-spawn 寫 `_progress.md`；不採「邊寫邊存」（污染主任務） |
 | Verify 是不是 worker_kind | F56 改為 dispatcher housekeeping；無 LLM 不該佔 worker slot |
 | F41 LLM 修復 strategy patch | 取消（26 次實證 0 觸發）；未來實證有需要再回頭加 |

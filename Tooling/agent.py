@@ -46,13 +46,16 @@ from .context import (  # noqa: F401  (re-export)
 )
 
 
-WORKER_TIMEOUT_SEC = 720  # 12 min, see architecture.md §13
+WORKER_TIMEOUT_SEC = 600  # 10 min, see architecture.md §13
 
 # F55 — postmortem spawn after a main-spawn timeout. Uses --resume so
 # session memory is intact; agent writes a short state + blocker note
-# (`_progress.md`) and exits. Tight cap so a hung postmortem doesn't
-# stack on top of the main timeout.
-POSTMORTEM_TIMEOUT_SEC = 120
+# (`_progress.md`) and exits. Cap so a hung postmortem doesn't stack
+# on top of the main timeout — but 120s was empirically too tight for
+# Sonnet to write a usable note on dense root-level state (SG g4
+# postmortem timed out twice running, leaving no draft for the next
+# spawn). 180s gives ~50% more breathing room for the same pattern.
+POSTMORTEM_TIMEOUT_SEC = 180
 
 
 class WorkArea:
@@ -114,8 +117,8 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     timeout. Provider uses `--resume <session_id>`, loads `prompt_path`
     verbatim (a short instruction asking the agent to dump state +
     blockers into `_progress.md`). `timeout_sec` defaults to
-    `POSTMORTEM_TIMEOUT_SEC` (120s) for postmortem calls and
-    `WORKER_TIMEOUT_SEC` (720s) otherwise.
+    `POSTMORTEM_TIMEOUT_SEC` (180s) for postmortem calls and
+    `WORKER_TIMEOUT_SEC` (600s) otherwise.
     """
     if timeout_sec is None:
         timeout_sec = (POSTMORTEM_TIMEOUT_SEC if is_postmortem
