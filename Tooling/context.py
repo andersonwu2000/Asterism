@@ -58,7 +58,7 @@ def _section_sandbox(strategy_id: int | None,
         "- Files framework wrote (read & edit, do NOT rename):",
         "  - `patch.lean` — proof patch (Builder writes body; Backward "
         "edits the locked-signature skeleton, body only).",
-        "  - `Context.md`, `PAST_ATTEMPTS.md`, `PAST_VERIFIES.md` "
+        "  - `Context.md`, `PAST_ATTEMPTS.md`, `PAST_BACKWARD.md` "
         "(when present) — read-only reference.",
         "- Files you write:",
         "  - `PROPOSAL.md` — strategy / approach explanation.",
@@ -462,9 +462,15 @@ def _section_dead_strategies(rows: list[dict]) -> list[str]:
     return out
 
 
-def _section_past_verify_failures(rows: list[sqlite3.Row]) -> list[str]:
-    """F43 — full inline rendering of PAST_VERIFIES history into
-    Context.md."""
+def _section_past_backward(rows: list[sqlite3.Row]) -> list[str]:
+    """F43 + F55 — full inline rendering of past-Backward history.
+
+    Renders sibling strategies' Verify failures so the agent avoids
+    re-proposing a decomposition with the same typing shape. The
+    companion file `PAST_BACKWARD.md` (formerly PAST_VERIFIES.md)
+    carries the same content + an additional partial-PROPOSAL section
+    when applicable; this inline copy keeps the must-see signal in
+    front of the agent without forcing a Read tool round-trip."""
     if not rows:
         return []
     out = [
@@ -483,6 +489,38 @@ def _section_past_verify_failures(rows: list[sqlite3.Row]) -> list[str]:
     return out
 
 
+def _section_prior_partial(kind: str | None, problem_dir: Path,
+                           goal_id: int) -> list[str]:
+    """F55 — surface the persisted partial output (if any) from a prior
+    failed / timed-out spawn on THIS (goal, kind) pair. The agent reads
+    this and continues from a sketch instead of starting fresh.
+
+    Stays concise: header + 1-line warning + fenced content (already
+    truncated to PARTIAL_BUDGET in `_drafts.persist_partials`)."""
+    if kind not in ("backward", "builder"):
+        return []
+    try:
+        from .pipeline import _drafts
+    except ImportError:
+        return []
+    body = _drafts.read_partial(problem_dir=problem_dir, kind=kind,
+                                goal_id=goal_id)
+    if not body:
+        return []
+    label = "PROPOSAL.md" if kind == "backward" else "patch.lean"
+    return [
+        f"## Your previous incomplete {label} (timed out / failed mid-write)",
+        "",
+        f"This is what your prior attempt wrote before exit. It may be "
+        f"**incomplete or syntactically invalid** — treat as a draft to "
+        f"continue / refine, not a finished file. Replace fully if the "
+        f"approach was wrong.",
+        "",
+        body.rstrip(),
+        "",
+    ]
+
+
 # ---------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------
@@ -497,18 +535,24 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     naming' section pinning sub-goal slug prefixes to `s<sid>_`.
 
     `kind` (F43): 'builder' | 'backward' | None.
-      - 'builder'  → render PAST_ATTEMPTS section, skip PAST_VERIFIES
-      - 'backward' → render PAST_VERIFIES section, skip PAST_ATTEMPTS
+      - 'builder'  → render PAST_ATTEMPTS section, skip PAST_BACKWARD
+      - 'backward' → render PAST_BACKWARD section, skip PAST_ATTEMPTS
       - None       → render both (back-compat for tests)
     Each kind only sees the failure history it can actually act on:
     Builder fixes leaf-level patches, Backward fixes decomposition
     shape; cross-feeding adds noise without signal.
+
+    F55 — also surfaces the persisted partial output (PROPOSAL.md for
+    backward, patch.lean for builder) from a prior failed/timed-out
+    spawn, so the agent picks up where it left off instead of starting
+    fresh.
 
     Section ordering — keep stable; agents may have learned to scan
     top-down. Each section function returns `[]` when not applicable
     so the resulting Context.md only contains sections with content.
     """
     workspace = attempts_dir.parent.parent  # .attempts/<pid> → workspace
+    problem_dir = workspace / "Problems" / goal["problem"]
     deads = db.recent_dead_attempts(
         conn, target_id=goal["id"], target_kind="Goal", k=5)
     strat_deads = _fetch_strategy_dead_attempts(conn, int(goal["id"]))
@@ -549,8 +593,9 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_library_available(mfst, workspace),
         _section_playbook(goal, workspace),
         _section_builder_declines(builder_declines),
+        _section_prior_partial(kind, problem_dir, int(goal["id"])),
         _section_past_attempts(deads) if show_attempts else [],
-        _section_past_verify_failures(strat_deads) if show_verifies else [],
+        _section_past_backward(strat_deads) if show_verifies else [],
         _section_dead_strategies(dead_strats_filtered),
     ]
 
@@ -562,8 +607,29 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     out.write_text("\n".join(parts), encoding="utf-8")
 
     # F26 — write companion reference files for the bulky / lazy-load
-    # content (Context.md only carries digests + pointers).
+    # content (Context.md only carries digests + pointers). F55 — for
+    # backward, fold any persisted partial PROPOSAL into PAST_BACKWARD.md
+    # so the deeper-look reference covers it too.
     context_files.write_past_attempts(deads, attempts_dir)
-    context_files.write_past_verifies(strat_deads, attempts_dir)
+    partial_for_backward = (
+        _read_partial_for_kind("backward", problem_dir, int(goal["id"]))
+        if show_verifies else None
+    )
+    context_files.write_past_backward(
+        strat_deads, attempts_dir, partial_proposal=partial_for_backward,
+    )
 
     return out
+
+
+def _read_partial_for_kind(kind: str, problem_dir: Path,
+                           goal_id: int) -> str | None:
+    """Helper for `compile_context` — keeps the local import out of the
+    orchestration body. Returns the persisted partial draft text or
+    None when no draft exists."""
+    try:
+        from .pipeline import _drafts
+    except ImportError:
+        return None
+    return _drafts.read_partial(problem_dir=problem_dir, kind=kind,
+                                goal_id=goal_id)

@@ -1,4 +1,4 @@
-"""F26 — companion reference files (PAST_ATTEMPTS.md / PAST_VERIFIES.md)
+"""F26 — companion reference files (PAST_ATTEMPTS.md / PAST_BACKWARD.md)
 + agent._digest_failure helper. Tests cover digest extraction across
 all failure_reason kinds and the lazy-load size discipline."""
 from __future__ import annotations
@@ -150,22 +150,59 @@ def test_write_past_attempts_empty_returns_none(tmp_path: Path) -> None:
     assert not (tmp_path / "PAST_ATTEMPTS.md").exists()
 
 
-def test_write_past_verifies_creates_file(tmp_path: Path) -> None:
+def test_write_past_backward_creates_file(tmp_path: Path) -> None:
     rows = [
         _row(pipeline_id="pid-aaaaaaaaaaaa",
              failure_reason="lake_build_error",
              failure_detail="error: combine patch failed elaboration",
              strategy_proposal="### Decomposition\n4 sub-goals"),
     ]
-    out = context_files.write_past_verifies(rows, tmp_path)
+    out = context_files.write_past_backward(rows, tmp_path)
     assert out is not None
+    assert out.name == "PAST_BACKWARD.md"
     text = out.read_text(encoding="utf-8")
     assert "combine patch failed elaboration" in text
     assert "Decomposition" in text
 
 
-def test_write_past_verifies_empty_returns_none(tmp_path: Path) -> None:
-    assert context_files.write_past_verifies([], tmp_path) is None
+def test_write_past_backward_empty_returns_none(tmp_path: Path) -> None:
+    """No rows AND no partial PROPOSAL → no file."""
+    assert context_files.write_past_backward([], tmp_path) is None
+    assert context_files.write_past_backward(
+        [], tmp_path, partial_proposal="") is None
+    assert context_files.write_past_backward(
+        [], tmp_path, partial_proposal="   \n") is None
+
+
+def test_write_past_backward_includes_partial_proposal(tmp_path: Path) -> None:
+    """F55 — when a persisted partial PROPOSAL is supplied, it appears
+    in the companion file under its own clearly-labeled section."""
+    out = context_files.write_past_backward(
+        [], tmp_path,
+        partial_proposal="### Partial draft\nKelly minimiser route, 3 subs",
+    )
+    assert out is not None
+    text = out.read_text(encoding="utf-8")
+    assert "Your previous incomplete PROPOSAL" in text
+    assert "Kelly minimiser route" in text
+
+
+def test_write_past_backward_partial_with_verify_failures(
+    tmp_path: Path,
+) -> None:
+    """Both sources present → both sections rendered, in order."""
+    rows = [
+        _row(pipeline_id="pid-vvvvvvvvvvvv",
+             failure_reason="lake_build_error",
+             failure_detail="error: combine patch failed elaboration",
+             strategy_proposal="### Sibling decomp"),
+    ]
+    out = context_files.write_past_backward(
+        rows, tmp_path, partial_proposal="### My partial draft\n...")
+    text = out.read_text(encoding="utf-8")
+    sib_pos = text.index("Sibling")
+    partial_pos = text.index("incomplete PROPOSAL")
+    assert sib_pos < partial_pos  # sibling section first, partial after
 
 
 # ---------------------------------------------------------------------
@@ -232,8 +269,8 @@ def test_past_attempts_short_failure_detail_unchanged(tmp_path: Path) -> None:
     assert "agent rc=124" in text
 
 
-def test_past_verifies_strips_lean_path_dump(tmp_path: Path) -> None:
-    """Same F30+F32 treatment for PAST_VERIFIES.md."""
+def test_past_backward_strips_lean_path_dump(tmp_path: Path) -> None:
+    """Same F30+F32 treatment for PAST_BACKWARD.md."""
     big_lean_path = "trace: .> LEAN_PATH=" + "x" * 3000
     detail = (
         big_lean_path + "\n"
@@ -243,11 +280,98 @@ def test_past_verifies_strips_lean_path_dump(tmp_path: Path) -> None:
                  failure_reason="lake_build_error",
                  failure_detail=detail,
                  strategy_proposal="### Decomp\n3 sub-goals")]
-    out = context_files.write_past_verifies(rows, tmp_path)
+    out = context_files.write_past_backward(rows, tmp_path)
     text = out.read_text(encoding="utf-8")
     assert "combine patch failed elaboration" in text
     assert "3 sub-goals" in text  # proposal preserved
     assert "LEAN_PATH=" not in text
+
+
+# ---------------------------------------------------------------------
+# F55 — partial-PROPOSAL injection through compile_context
+# ---------------------------------------------------------------------
+
+def test_compile_context_inlines_prior_partial_for_backward(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """When `.drafts/backward_g<gid>.md` exists, Backward Context.md
+    surfaces it inline so the agent picks up where the prior timed-out
+    spawn left off."""
+    from Tooling.pipeline import _drafts
+    gid = _seed_goal(conn)
+    workspace = tmp_path
+    attempts_dir = workspace / ".attempts" / "pid-current"
+    attempts_dir.mkdir(parents=True)
+    problem_dir = workspace / "Problems" / "p"
+    problem_dir.mkdir(parents=True)
+    # Simulate a prior timed-out spawn having persisted a partial PROPOSAL
+    prior_attempts = workspace / ".attempts" / "pid-prior"
+    prior_attempts.mkdir(parents=True)
+    (prior_attempts / "PROPOSAL.md").write_text(
+        "## Kelly minimiser route\nSub-goal 1: cross is positive\n...",
+        encoding="utf-8",
+    )
+    _drafts.persist_partials(
+        attempts_dir=prior_attempts, problem_dir=problem_dir,
+        kind="backward", goal_id=gid,
+    )
+    goal = db.get_goal(conn, gid)
+    out = compile_context(conn, goal=goal,
+                          mfst=Manifest(problem="p", statement="T"),
+                          attempts_dir=attempts_dir, kind="backward")
+    text = out.read_text(encoding="utf-8")
+    assert "Your previous incomplete PROPOSAL.md" in text
+    assert "Kelly minimiser route" in text
+    # Companion file also includes it (under its own section)
+    companion = (attempts_dir / "PAST_BACKWARD.md").read_text(encoding="utf-8")
+    assert "Kelly minimiser route" in companion
+
+
+def test_compile_context_inlines_prior_partial_for_builder(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Same treatment for Builder, except the partial is patch.lean."""
+    from Tooling.pipeline import _drafts
+    gid = _seed_goal(conn)
+    workspace = tmp_path
+    attempts_dir = workspace / ".attempts" / "pid-current"
+    attempts_dir.mkdir(parents=True)
+    problem_dir = workspace / "Problems" / "p"
+    problem_dir.mkdir(parents=True)
+    prior_attempts = workspace / ".attempts" / "pid-prior"
+    prior_attempts.mkdir(parents=True)
+    (prior_attempts / "patch.lean").write_text(
+        "theorem g : T := by\n  have h := fooBar\n  -- TODO finish",
+        encoding="utf-8",
+    )
+    _drafts.persist_partials(
+        attempts_dir=prior_attempts, problem_dir=problem_dir,
+        kind="builder", goal_id=gid,
+    )
+    goal = db.get_goal(conn, gid)
+    out = compile_context(conn, goal=goal,
+                          mfst=Manifest(problem="p", statement="T"),
+                          attempts_dir=attempts_dir, kind="builder")
+    text = out.read_text(encoding="utf-8")
+    assert "Your previous incomplete patch.lean" in text
+    assert "have h := fooBar" in text
+
+
+def test_compile_context_no_partial_section_when_no_draft(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """No `.drafts/<kind>_g<gid>.md` → no inline partial section
+    (most spawns succeed first try)."""
+    gid = _seed_goal(conn)
+    workspace = tmp_path
+    attempts_dir = workspace / ".attempts" / "pid-current"
+    attempts_dir.mkdir(parents=True)
+    goal = db.get_goal(conn, gid)
+    out = compile_context(conn, goal=goal,
+                          mfst=Manifest(problem="p", statement="T"),
+                          attempts_dir=attempts_dir, kind="backward")
+    text = out.read_text(encoding="utf-8")
+    assert "Your previous incomplete" not in text
 
 
 # ---------------------------------------------------------------------
@@ -370,7 +494,7 @@ def test_compile_context_no_companion_when_no_history(
                     mfst=Manifest(problem="p", statement="T"),
                     attempts_dir=attempts_dir)
     assert not (attempts_dir / "PAST_ATTEMPTS.md").exists()
-    assert not (attempts_dir / "PAST_VERIFIES.md").exists()
+    assert not (attempts_dir / "PAST_BACKWARD.md").exists()
 
 
 # ---------------------------------------------------------------------
@@ -419,7 +543,7 @@ def _seed_goal_with_history(conn: sqlite3.Connection,
 def test_compile_context_builder_kind_includes_attempts_excludes_verifies(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """F43 — Builder gets PAST_ATTEMPTS section only. PAST_VERIFIES is
+    """F43 — Builder gets PAST_ATTEMPTS section only. PAST_BACKWARD is
     irrelevant to Builder (different layer of failure) and would be
     pure attention noise."""
     gid, attempts_dir = _seed_goal_with_history(conn, tmp_path)
@@ -437,7 +561,7 @@ def test_compile_context_builder_kind_includes_attempts_excludes_verifies(
 def test_compile_context_backward_kind_includes_verifies_excludes_attempts(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """F43 — Backward gets PAST_VERIFIES section only. PAST_ATTEMPTS
+    """F43 — Backward gets PAST_BACKWARD section only. PAST_ATTEMPTS
     (Builder's leaf-level failures) doesn't help Backward pick a
     decomposition shape."""
     gid, attempts_dir = _seed_goal_with_history(conn, tmp_path)
@@ -484,4 +608,4 @@ def test_compile_context_companion_files_always_written(
     # but the companion file must still exist (forensics + agent can
     # still Read on demand if it ever wants to).
     assert (attempts_dir / "PAST_ATTEMPTS.md").exists()
-    assert (attempts_dir / "PAST_VERIFIES.md").exists()
+    assert (attempts_dir / "PAST_BACKWARD.md").exists()

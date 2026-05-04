@@ -187,6 +187,10 @@ from ._skeleton import (  # noqa: E402
     rollback_promote as _rollback_promote,
 )
 
+# F55 — partial-output persistence so a timed-out / failed spawn's
+# in-flight work survives into the next attempt's Context.md.
+from . import _drafts  # noqa: E402
+
 
 def _is_sorry_stub(content: str) -> bool:
     """True iff the file's proof body is a fresh `:= by sorry` placeholder.
@@ -253,6 +257,40 @@ def _fetch_last_backward_error(conn: sqlite3.Connection,
 def run_builder(conn: sqlite3.Connection, *, goal_id: int,
                 workspace: Path, mfst: manifest.Manifest,
                 pipeline_id: str) -> PipelineResult:
+    """Outer dispatch — runs the inner pipeline then persists or clears
+    the partial-output draft (F55) so a future spawn on this same goal
+    sees the in-flight patch from the prior failed attempt instead of
+    starting from scratch.
+
+    Outcomes:
+      - `proved` / `exhausted`: deterministic completion. `exhausted`
+        is Phase-1 tactic_try giving up cleanly with no LLM partial to
+        preserve; `proved` is the success case. Both clear any prior
+        draft (no carry-over wanted).
+      - anything else (rc!=0 from spawn, lake_build_error, ...):
+        persist whatever the spawn wrote so the next dispatch picks
+        up from a sketch.
+    """
+    goal_row = db.get_goal(conn, goal_id)
+    if goal_row is None:
+        return PipelineResult(outcome="failed", failure_reason="goal_not_found")
+    problem_dir = workspace / "Problems" / goal_row["problem"]
+    result = _run_builder_inner(conn, goal_id=goal_id, workspace=workspace,
+                                mfst=mfst, pipeline_id=pipeline_id)
+    if result.outcome in ("proved", "exhausted"):
+        _drafts.clear_partial(problem_dir=problem_dir, kind="builder",
+                              goal_id=goal_id)
+    else:
+        attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
+        _drafts.persist_partials(attempts_dir=attempts_dir,
+                                 problem_dir=problem_dir,
+                                 kind="builder", goal_id=goal_id)
+    return result
+
+
+def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
+                       workspace: Path, mfst: manifest.Manifest,
+                       pipeline_id: str) -> PipelineResult:
     import uuid
 
     goal = db.get_goal(conn, goal_id)
@@ -636,6 +674,42 @@ def run_verify(conn: sqlite3.Connection, *, strategy_id: int,
 def run_backward(conn: sqlite3.Connection, *, goal_id: int,
                  workspace: Path, mfst: manifest.Manifest,
                  pipeline_id: str) -> PipelineResult:
+    """Outer dispatch — runs the inner Backward then persists or clears
+    the partial-output draft (F55) so a future spawn on this same goal
+    sees the in-flight PROPOSAL.md from the prior failed/timed-out
+    attempt instead of starting from scratch.
+
+    Outcomes:
+      - `success`: strategy committed → clear any prior draft.
+      - `failed` with `failure_reason == "goal_no_longer_open"`: the
+        race-guard fired because a sibling (re)decomposed or shelved
+        this goal mid-spawn. The persisted PROPOSAL.md is moot for any
+        future Backward — clear instead of persisting a stale draft
+        that would mislead a re-decomposition if the goal later reopens.
+      - anything else (rc!=0, parse_proposal_fail, signature mismatch,
+        ...): persist what the spawn wrote.
+    """
+    goal_row = db.get_goal(conn, goal_id)
+    if goal_row is None:
+        return PipelineResult(outcome="failed", failure_reason="goal_not_found")
+    problem_dir = workspace / "Problems" / goal_row["problem"]
+    result = _run_backward_inner(conn, goal_id=goal_id, workspace=workspace,
+                                 mfst=mfst, pipeline_id=pipeline_id)
+    if (result.outcome == "success"
+            or result.failure_reason == "goal_no_longer_open"):
+        _drafts.clear_partial(problem_dir=problem_dir, kind="backward",
+                              goal_id=goal_id)
+    else:
+        attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
+        _drafts.persist_partials(attempts_dir=attempts_dir,
+                                 problem_dir=problem_dir,
+                                 kind="backward", goal_id=goal_id)
+    return result
+
+
+def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
+                        workspace: Path, mfst: manifest.Manifest,
+                        pipeline_id: str) -> PipelineResult:
     """OR-parallel-safe Backward.
 
     Each invocation reserves a fresh strategy id and writes its scratch +

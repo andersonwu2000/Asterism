@@ -281,3 +281,114 @@ def test_cold_dispatch_mints_fresh_strategy_id(
     assert len(rows) == 2
     assert rows[0]["id"] == stale_sid
     assert rows[1]["id"] != stale_sid
+
+
+# ---------------------------------------------------------------------
+# F55 — wrapper persists/clears partial PROPOSAL.md per outcome
+# ---------------------------------------------------------------------
+
+def _bw_drafts_path(tmp_path: Path, gid: int) -> Path:
+    return tmp_path / "Problems" / "p" / ".drafts" / f"backward_g{gid}.md"
+
+
+def test_backward_wrapper_persists_draft_on_timeout(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F55 — Backward writes PROPOSAL.md, then spawn times out (rc=124)
+    → wrapper persists what's on disk so the next attempt's Context.md
+    surfaces it as a starting sketch."""
+    gid = _seed_root_goal(tmp_path, conn)
+
+    def fake_spawn(**kw):
+        (kw["attempts_dir"] / "PROPOSAL.md").write_text(
+            "## Kelly minimiser route\nSub-goal sketch...",
+            encoding="utf-8")
+        return 124  # timeout
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=manifest.Manifest(problem="p", statement="True"),
+        pipeline_id="pid-bw-timeout")
+    draft = _bw_drafts_path(tmp_path, gid)
+    assert draft.exists()
+    body = draft.read_text(encoding="utf-8")
+    assert "Kelly minimiser route" in body
+
+
+def test_backward_wrapper_clears_draft_on_goal_no_longer_open(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F55 review fix #2 — race-guard `goal_no_longer_open` means a
+    sibling cascade already settled this goal; the in-flight PROPOSAL
+    is moot. Clear the draft so a future re-decomposition (if the goal
+    later reopens) doesn't get misled by stale carry-over."""
+    gid = _seed_root_goal(tmp_path, conn)
+    # Pre-seed a stale draft as if from a prior attempt
+    draft = _bw_drafts_path(tmp_path, gid)
+    draft.parent.mkdir(parents=True)
+    draft.write_text("stale prior draft", encoding="utf-8")
+
+    def fake_spawn(**kw):
+        (kw["attempts_dir"] / "PROPOSAL.md").write_text(
+            "this attempt's draft", encoding="utf-8")
+        # write valid skeleton-shaped patch + sub-goal so the inner
+        # gets past parse + signature check and into the race-guard
+        sid_token = "s1"
+        # Match the strategy id the inner mints; the test reads it back
+        # below to determine the sid_token, but for simplicity we let
+        # the inner reach lake_build then race-fail. Easier path: have
+        # the spawn write only the PROPOSAL and let the inner abort
+        # with parse_proposal_fail. That doesn't exercise the race
+        # guard branch though — so instead we manipulate the goal
+        # status mid-spawn so the inner trips the `fresh.status not
+        # in (open, attempting)` guard at line ~942.
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    # Simulate a sibling having shelved the goal between dispatch and
+    # post-spawn. We force this by mutating goal status before the
+    # spawn returns — easier: monkeypatch the spawn itself to do it.
+    def fake_spawn_with_race(**kw):
+        # Write the agent outputs first (so persist_partials would
+        # capture them if the wrapper went down the persist branch)
+        attempts = kw["attempts_dir"]
+        (attempts / "PROPOSAL.md").write_text("sibling-raced draft",
+                                              encoding="utf-8")
+        # Forge minimal skeleton-shaped patch + sub stub: copy patch.lean
+        # the framework pre-wrote, then add a single sub-goal new_*.lean
+        patch_text = (attempts / "patch.lean").read_text(encoding="utf-8")
+        (attempts / "patch.lean").write_text(
+            patch_text.replace(":= by sorry", ":= by trivial"),
+            encoding="utf-8")
+        # Match the sid_token the inner used. The skeleton's signature
+        # has `theorem s<id>` — we just need ANY new_*.lean.
+        # Inspect skeleton to extract sid_token:
+        import re
+        m = re.search(r"theorem (s\d+)", patch_text)
+        sid_token = m.group(1) if m else "s1"
+        (attempts / f"new_{sid_token}_sub_1.lean").write_text(
+            "import Mathlib\nnamespace Problems.p\n"
+            f"theorem {sid_token}_sub_1 : True := by sorry\n"
+            "end Problems.p\n",
+            encoding="utf-8")
+        # Race: between spawn return and the inner's status re-check
+        # at the race guard, sibling shelved.
+        db.update_goal_status(conn, gid, "shelved")
+        conn.commit()
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn_with_race)
+    monkeypatch.setattr(pipeline, "_lake_build_batch",
+                        lambda ws, ts: (True, ""))
+
+    r = pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=manifest.Manifest(problem="p", statement="True"),
+        pipeline_id="pid-bw-race")
+    assert r.outcome == "failed"
+    assert r.failure_reason == "goal_no_longer_open"
+    # Wrapper should have CLEARED the stale draft, not overwritten it
+    # with the moot in-flight PROPOSAL.
+    assert not draft.exists()

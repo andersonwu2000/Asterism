@@ -184,3 +184,97 @@ def test_run_builder_forbidden_lemma_blocked(
     assert r.failure_reason == "forbidden_lemma"
     assert "Cheat.theorem" in (r.failure_detail or "")
     assert not lake_calls  # rejected before lake
+
+
+# ---------------------------------------------------------------------
+# F55 — wrapper persists/clears partial-output draft per outcome
+# ---------------------------------------------------------------------
+
+def _drafts_path_for(tmp_path: Path, gid: int) -> Path:
+    return tmp_path / "Problems" / "p" / ".drafts" / f"builder_g{gid}.md"
+
+
+def test_run_builder_wrapper_persists_draft_on_lake_fail(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F55 — Builder writes patch.lean, lake rejects → wrapper persists
+    the (broken) patch into .drafts/ so the next spawn sees a starting
+    sketch instead of a blank slate."""
+    gid = _seed_problem(conn, tmp_path)
+    db.increment_goal_attempts(conn, gid)
+
+    def fake_spawn(**kw):
+        (kw["attempts_dir"] / "patch.lean").write_text(
+            "theorem main : True := bogus_tactic", encoding="utf-8")
+        (kw["attempts_dir"] / "PROPOSAL.md").write_text(
+            "tried bogus_tactic", encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    monkeypatch.setattr(pipeline, "_lake_build",
+                        lambda ws, t: (False, "error"))
+
+    pipeline.run_builder(
+        conn, goal_id=gid, workspace=tmp_path, mfst=_mfst(),
+        pipeline_id="pid-fail-1")
+    draft = _drafts_path_for(tmp_path, gid)
+    assert draft.exists()
+    assert "bogus_tactic" in draft.read_text(encoding="utf-8")
+
+
+def test_run_builder_wrapper_clears_draft_on_proved(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F55 — successful build clears any prior draft so a future
+    Builder dispatch on this same goal (rare; cascade re-open) starts
+    clean."""
+    gid = _seed_problem(conn, tmp_path)
+    db.increment_goal_attempts(conn, gid)
+    # Pre-seed a stale draft from an earlier failed attempt
+    draft = _drafts_path_for(tmp_path, gid)
+    draft.parent.mkdir(parents=True)
+    draft.write_text("stale prior content", encoding="utf-8")
+
+    def fake_spawn(**kw):
+        (kw["attempts_dir"] / "patch.lean").write_text(
+            "import Mathlib\ntheorem main : True := trivial", encoding="utf-8")
+        (kw["attempts_dir"] / "PROPOSAL.md").write_text("ok", encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    monkeypatch.setattr(pipeline, "_lake_build", lambda ws, t: (True, ""))
+
+    r = pipeline.run_builder(
+        conn, goal_id=gid, workspace=tmp_path, mfst=_mfst(),
+        pipeline_id="pid-ok")
+    assert r.outcome == "proved"
+    assert not draft.exists()
+
+
+def test_run_builder_wrapper_clears_draft_on_tactic_try_exhausted(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F55 nit-fix — Phase-1 tactic_try exhausted is deterministic
+    completion (no LLM partial to preserve). Wrapper must clear, not
+    persist (otherwise a stale draft from a prior failed Phase-2 spawn
+    would carry forward across an unrelated tactic_try cycle)."""
+    gid = _seed_problem(conn, tmp_path)
+    # Pre-seed a stale draft as if from a prior LLM failure
+    draft = _drafts_path_for(tmp_path, gid)
+    draft.parent.mkdir(parents=True)
+    draft.write_text("stale content from prior failed LLM spawn",
+                     encoding="utf-8")
+    # Force every tactic_try candidate to fail
+    monkeypatch.setattr(pipeline, "_lake_build", lambda ws, t: (False, ""))
+    spawn_calls = []
+    monkeypatch.setattr(agent, "spawn_llm",
+                        lambda **kw: spawn_calls.append(1) or 0)
+
+    r = pipeline.run_builder(
+        conn, goal_id=gid, workspace=tmp_path, mfst=_mfst(),
+        pipeline_id="pid-exh")
+    assert r.outcome == "exhausted"
+    assert r.failure_reason == "tactic_try_exhausted"
+    assert not spawn_calls  # never reached Phase 2
+    assert not draft.exists()

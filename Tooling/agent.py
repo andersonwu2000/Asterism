@@ -37,7 +37,8 @@ from .context import (  # noqa: F401  (re-export)
     _section_mathlib_lemmas,
     _section_parent_strategy,
     _section_past_attempts,
-    _section_past_verify_failures,
+    _section_past_backward,
+    _section_prior_partial,
     _section_playbook,
     _section_sandbox,
     _section_strategy_naming,
@@ -45,7 +46,7 @@ from .context import (  # noqa: F401  (re-export)
 )
 
 
-WORKER_TIMEOUT_SEC = 600  # 10 min, see architecture.md §13
+WORKER_TIMEOUT_SEC = 720  # 12 min, see architecture.md §13
 
 
 class WorkArea:

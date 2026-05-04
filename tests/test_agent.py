@@ -44,8 +44,8 @@ def test_context_includes_strategy_dead_attempts(
     fresh Backward agent doesn't repeat the broken combination pattern.
 
     F43: full inline rendering — Context.md carries the actual stderr
-    + proposal_md, not a digest+pointer. Companion PAST_VERIFIES.md is
-    still written for forensics."""
+    + proposal_md, not a digest+pointer. Companion PAST_BACKWARD.md is
+    still written for forensics (F55 rename of PAST_VERIFIES.md)."""
     gid = _seed_problem_and_goal(conn)
     sid = db.insert_strategy(
         conn, goal_id=gid, lean_path="Problems/p/Root.lean",
@@ -70,10 +70,10 @@ def test_context_includes_strategy_dead_attempts(
     assert "type mismatch in have h_1" in text
     assert "My decomposition" in text  # proposal_md inline
 
-    # Companion file still written (forensics)
-    past_verifies = (tmp_path / "PAST_VERIFIES.md").read_text(encoding="utf-8")
-    assert "My decomposition" in past_verifies
-    assert "type mismatch in have h_1" in past_verifies
+    # Companion file still written (forensics; F55 renamed)
+    past_backward = (tmp_path / "PAST_BACKWARD.md").read_text(encoding="utf-8")
+    assert "My decomposition" in past_backward
+    assert "type mismatch in have h_1" in past_backward
 
 
 def test_context_no_strategy_section_when_clean(

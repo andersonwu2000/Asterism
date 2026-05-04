@@ -23,7 +23,10 @@ from . import diagnostics
 
 
 PAST_ATTEMPTS_FILENAME = "PAST_ATTEMPTS.md"
-PAST_VERIFIES_FILENAME = "PAST_VERIFIES.md"
+# F55 — formerly PAST_VERIFIES.md; renamed to cover the broader "past
+# Backward work" semantics, which now also includes the prior partial
+# PROPOSAL.md draft from a failed / timed-out attempt.
+PAST_BACKWARD_FILENAME = "PAST_BACKWARD.md"
 
 # F30 — companion files are the lazy-load deeper-look reference, but
 # raw lake stderr still carries 1.5+ KB LEAN_PATH dump per attempt.
@@ -99,24 +102,51 @@ def render_strategy_block(idx: int, row: sqlite3.Row) -> str:
     return "\n".join(lines)
 
 
-def write_past_verifies(strat_deads: Iterable[sqlite3.Row],
-                        attempts_dir: Path) -> Path | None:
-    """Write `PAST_VERIFIES.md` with full Verify-failure history for
-    strategies on THIS goal. No-op when `strat_deads` is empty."""
+def write_past_backward(strat_deads: Iterable[sqlite3.Row],
+                        attempts_dir: Path,
+                        partial_proposal: str | None = None) -> Path | None:
+    """Write `PAST_BACKWARD.md` (F55 rename of PAST_VERIFIES.md) covering:
+
+    - **Verify failures for sibling strategies**: prior Backward decomps
+      whose combination patch didn't elaborate. Each block carries the
+      raw lake stderr + the strategy's PROPOSAL.md.
+    - **Prior partial PROPOSAL.md** (when `partial_proposal` is non-None):
+      the in-flight PROPOSAL written by your last attempt before it
+      timed out / was killed. May be incomplete; review carefully.
+
+    No-op (returns None) when both sources are empty.
+    """
     rows = list(strat_deads)
-    if not rows:
+    has_partial = bool(partial_proposal and partial_proposal.strip())
+    if not rows and not has_partial:
         return None
     parts: list[str] = [
-        "# Past decomposition Verify failures for this goal",
-        "",
-        "Earlier Backward attempts decomposed this goal but the "
-        "combination patch did not elaborate against the sub-goal "
-        "proofs. Each block is the raw lake stderr + the strategy's "
-        "PROPOSAL.md.",
+        "# Past Backward work on this goal",
         "",
     ]
-    for i, r in enumerate(rows, 1):
-        parts.append(render_strategy_block(i, r))
-    out = attempts_dir / PAST_VERIFIES_FILENAME
+    if rows:
+        parts.extend([
+            "## Sibling strategies' Verify failures",
+            "",
+            "Earlier Backward attempts decomposed this goal but the "
+            "combination patch did not elaborate against the sub-goal "
+            "proofs. Each block is the raw lake stderr + the strategy's "
+            "PROPOSAL.md.",
+            "",
+        ])
+        for i, r in enumerate(rows, 1):
+            parts.append(render_strategy_block(i, r))
+    if has_partial:
+        parts.extend([
+            "## Your previous incomplete PROPOSAL (timed out / killed mid-write)",
+            "",
+            "This is what your prior attempt wrote before being killed. "
+            "It may be **incomplete**; treat as a draft to refine, not "
+            "a finished spec.",
+            "",
+            partial_proposal.rstrip(),
+            "",
+        ])
+    out = attempts_dir / PAST_BACKWARD_FILENAME
     out.write_text("\n".join(parts), encoding="utf-8")
     return out
