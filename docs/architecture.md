@@ -1,8 +1,10 @@
-# Asterism — 架構文件 v2.5
+# Asterism — 架構文件 v2.6
 
-寫於 2026-04-30，重大更新 2026-05-04（F47-F54 + P0/P1/M batch）。前次設計診斷見 `D:/Hadamard/docs/asterism_postmortem.md` 與 `asterism_factor_analysis.md`，前次完整 v3 架構（一次設計 8 pipeline kind）存於 `D:/Hadamard/docs/asterism_archive/`。
+寫於 2026-04-30，重大更新 2026-05-04（F55 + F56：postmortem-spawn 取代邊寫邊存、Verify 從 worker 改為 housekeeping）。前次設計診斷見 `D:/Hadamard/docs/asterism_postmortem.md` 與 `asterism_factor_analysis.md`，前次完整 v3 架構（一次設計 8 pipeline kind）存於 `D:/Hadamard/docs/asterism_archive/`。
 
-本檔反映 commit `1014d91` 後的實作現況。Wilson + cantor 已從 in-tree testbeds 移除（external solutions cache）；compactness + gen_generates + inner_zero_iff_smul + proj_nonexpansive 等 4 題 from-scratch proved。
+本檔反映 F56 之後的實作現況。資料在 agent 與框架之間怎麼流見 `docs/data-flow.md`，那是這份架構文件的概念入口。
+
+compactness + gen_generates + inner_zero_iff_smul + proj_nonexpansive + cantor_xi_measure 等 5 題 from-scratch proved。
 
 ---
 
@@ -14,16 +16,17 @@
 | gen_generates (HW 代數) | proved、commit 4c6f423 (Sonnet) ~30 min |
 | inner_zero_iff_smul (HW 實變) | proved、Sonnet ~18 min |
 | proj_nonexpansive (HW 實變) | proved、Opus ~33 min / Sonnet (post P0/P1/M) ~58 min |
-| Pipeline kinds | Builder + Backward + **Verify**（3 種、每 kind 有固定 target_kind） |
+| Pipeline kinds | **Builder + Backward**（2 種；F56 之後 Verify 不再是 worker_kind） |
+| Strategy verification | F56：dispatcher tick 末端的 housekeeping 步驟，無 LLM、不佔 worker slot |
 | OR parallelism | F37 起 passive (cap=1)；同 goal 多策略走序列觸發、不再並行 fanout |
-| Verify per-goal serialization | P0-#1：同 parent 的 sibling Verify 一次只夠跑一個（避免 `_promote_to_alias` race） |
 | Same-session retry | F33 (Builder) + F53 (Backward, sid pinned per F53/A across warm retries) |
+| Timeout 後資料保留 | F55：postmortem spawn 寫 `_progress.md` 進 `.drafts/`、下次 spawn 內聯顯示 |
 | Strategy patch skeleton | F52：framework 預寫 `patch.lean`（locked signature），agent 只填 body |
 | Library promotion | F49：root proved 後自動 promote 進 `Library/<Topic>/` |
 | Provider | claude (default) / gemini / openai；F39 per-pipeline-kind selection |
-| Read allowlist | F54 + M1：`Read/Grep` scoped to problem dir + `.lake/packages/**` |
-| Unit tests | 550+ passing + 24 lake-integration |
-| Tooling LOC | ~3000 lines Python |
+| Read allowlist | F54 + M1 + M3：`Read/Grep` scoped to problem dir + `.lake/packages/**` + `--add-dir packages` |
+| Unit tests | 569 passing + 24 lake-integration |
+| Tooling LOC | ~3100 lines Python |
 | Axioms whitelist | `[propext, Classical.choice, Quot.sound]`（題級、可 per-Manifest 限縮） |
 
 ---
@@ -214,6 +217,7 @@ CREATE TABLE strategy_subgoals (
 -- 只存 finished rows、無 'running' state；daemon 死掉重啟見乾淨表面。
 CREATE TABLE pipelines (
     id          TEXT PRIMARY KEY,                 -- UUID
+    -- 'Verify' 仍出現在 pre-F56 DB 的歷史 row；新 row 只 Builder/Backward。
     kind        TEXT NOT NULL CHECK(kind IN ('Builder','Backward','Verify')),
     target_id   TEXT NOT NULL,
     target_kind TEXT NOT NULL CHECK(target_kind IN ('Goal','Strategy')),
@@ -239,8 +243,8 @@ CREATE TABLE dead_attempts (
 
 CREATE TABLE queue (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    -- worker_kind 決定 target_kind: Builder/Backward → Goal、Verify → Strategy。
-    -- 不需要單獨 target_kind 欄位。
+    -- F56 後新 row 只 Builder/Backward，target_kind 永遠是 Goal。
+    -- CHECK 內留 'Verify' 是為了相容 pre-F56 DB（pop_queue / 清理用）。
     kind        TEXT NOT NULL CHECK(kind IN ('Builder','Backward','Verify')),
     target_id   TEXT NOT NULL,
     priority    INTEGER NOT NULL DEFAULT 0,
@@ -254,13 +258,17 @@ CREATE TABLE queue (
 
 **Schema 留洞策略**：CHECK 只接受目前實作中的值；新增 origin（forward / generalizer / refuter）時做 migration 加 enum、不預先放 unreachable 字串。
 
-**Atomicity 改用 Hadamard backup-restore**：integrator 跑完 lake build 前先備份、build fail 還原。run_verify 改用 `os.replace` 原子 rename + backup 檔。沒 commit_state 兩段式。
+**Atomicity 改用 Hadamard backup-restore**：integrator 跑完 lake build 前先備份、build fail 還原。`verify_strategy` 改用 `os.replace` 原子 rename + backup 檔。沒 commit_state 兩段式。
 
 ---
 
-## 5. Pipeline kinds（3 種）
+## 5. Pipeline kinds（2 種）+ Verify housekeeping
 
-每 kind 有固定 target_kind、不需要 dispatcher 推斷。
+每 worker_kind 有固定 target_kind=Goal。Strategy verify 在 F56 之後從 worker_kind 改成 dispatcher 末端的 housekeeping 步驟（§5.3）。
+
+兩個原則：
+- **Worker = LLM 介入點**。Builder / Backward 都會 spawn agent。
+- **純框架操作不佔 worker slot**。Verify 全是 lake build + 改檔，沒 LLM，所以不該掛在 worker pool。
 
 ### 5.1 Builder（target_kind='Goal'）
 
@@ -314,26 +322,43 @@ parent 的 lean_path **不被 Backward 改動**（保持 sorry）、由 Verify �
 
 **Outcome**：`success` / `exhausted`（agent 不回 valid output）/ `failed`（forbidden / lake_build / naming_violation / agent_no_response）。
 
-### 5.3 Verify（target_kind='Strategy'、無 agent、純 script）
+### 5.3 Verify housekeeping（F56；非 worker_kind）
 
-觸發條件：strategy 的全部 sub-goals 都 proved AND 自己 status='proposed' AND 自己 goal_id 對應的 goal 未被 sibling 證掉。
+每輪 dispatcher tick 在 cascade 之後呼叫 `verify.verify_housekeeping(conn, workspace)`。
 
 ```
-1. 早期退出: 若 strategy='superseded' 或 goal='proved' → outcome='failed' reason='superseded'
-2. lake build scratch_path（重編譯、確認 patch 對 now-real sub-goal proofs 仍 elaborate）
-3. backup parent.lean_path → 寫 alias 到 parent.lean_path（atomic os.replace）
-   alias 內容:
-       <orig imports>
+loop（最多 max_iters=8 圈）:
+  ready = strategies_ready_for_verify(DB)
+        — 過濾 g.status != 'proved'（W6）+ 自己 'proposed' + 所有 sub_goal 'proved'
+  若 ready 為空 → break
+  對每條 strategy s:
+    outcome = verify_strategy(s)
+    若 'proved': 套狀態變化（s='succeeded', g='proved', siblings='superseded',
+                F22 playbook hook）→ 下一圈會撈到上層 strategy
+    若 'dead':   套 cascade（s='dead', g.attempts++, 達 SHELVE 則 shelved）
+    若 'superseded': 略過（OR race noise）
+```
+
+`verify_strategy` 是純框架操作：
+
+```
+1. 早期退出：strategy='superseded' / goal='proved' / scratch 不存在 → 'superseded' 或 'dead'
+2. lake build _strategy_s<sid>.lean（對 now-real sub-goal proofs）
+3. backup parent.lean_path → 寫 alias 進 parent.lean_path（atomic os.replace）
+   alias 內容（F52 簽名鎖死保證型態完全相符）：
        import Problems.<p>.proofs._strategy_s<sid>
        namespace Problems.<p>
-       theorem <parent_slug> : <statement> := s<sid>_<parent_slug>
-       end Problems.<p>
+       def <parent_slug> := @Problems.<p>.s<sid>
 4. lake build parent.lean_path
-5. pass: outcome='proved'、刪 backup
-   fail: 還原 parent.lean_path、record dead_attempt(reason='lake_build_error')
+5. 全過 → 'proved'；任一步壞 → rollback parent + 'dead'
 ```
 
-**Outcome**：`proved` / `failed`。
+設計重點：
+- **單執行緒**：housekeeping 在 dispatcher 主迴圈跑，序列處理，自然解掉 OR-race（過去 P0-#1 的 `busy_parents` 已不需要）
+- **遞迴 max_iters=8**：深度 4 的題目可能一輪 sweep 連帶 4 層 strategy 全 promote；上限避免病態鏈式 monopolize tick
+- **無 F41 LLM 修復**：26 次實證 0 觸發；Step 1 失敗就讓 strategy='dead' 走 cascade 重 Backward；未來實證再開始失敗才回頭加 retry
+
+詳細資料流見 `docs/data-flow.md` §「Verify 收尾」。
 
 ---
 
@@ -370,6 +395,11 @@ Strategy that produced this sub-goal (parent's PROPOSAL.md excerpt):
 ## Strategic notes (from Manifest.md)
 <text>
 
+## Your previous progress note              ← F55；上次 timeout 的 postmortem 寫的 _progress.md
+This note is the agent's own state + blocker dump from the last spawn that was killed.
+Inlined verbatim（≤ 2000 chars）。
+Source: Problems/<p>/.drafts/<kind>_g<gid>.md
+
 ## Previous attempts on THIS goal           ← K=5 most recent dead_attempts where target=goal
 ### Attempt N (<pid prefix>): <failure_reason>
 ```<failure_detail>```
@@ -392,7 +422,7 @@ Decomposition (from strategies.proposal_md):
 | `naming_violation` | Backward sub-goal slug 不符 `s<sid>_<parent>_` 格式（W5/C） |
 | `agent_no_response` | claude CLI rc != 0 |
 | `tactic_try_exhausted` | Phase 1 全 deterministic tactic 失敗 |
-| `superseded` | run_verify 早期退出（goal 已 proved 或 strategy superseded）；**不寫 dead_attempt**（W6 noise filter） |
+| `superseded` | `verify_strategy` 早期退出（goal 已 proved 或 strategy superseded）；F56 後 housekeeping 不寫 dead_attempt（純內部 race noise） |
 
 **Hadamard 對照**：`Dead/` 只 rename 檔、無 reason metadata、agent 看不出失敗原因。Asterism 結構化 reason + 完整 narrative 注入下次 worker，是 Asterism 唯一真實增量。
 
@@ -414,6 +444,9 @@ def run(workspace, *, once=False) -> int:
         for fut in done(futures):
             cascade_one(...)
             running.discard((target_id, kind))
+
+        # F56 — strategy verify housekeeping（cascade 後、root_proved 前）
+        verify.verify_housekeeping(conn, workspace=workspace)
 
         if root_proved(): return 0
 
@@ -476,21 +509,9 @@ def cascade_one(*, kind, target_id, target_kind, outcome):
             if n >= SHELVE_THRESHOLD: update_goal_status(target_id, 'shelved')
         return
 
-    # === Verify ===
-    if kind == 'Verify':
-        goal_id = SELECT goal_id FROM strategies WHERE id = target_id
-        if outcome == 'proved':
-            update_strategy_status(target_id, 'succeeded')
-            update_goal_status(goal_id, 'proved')
-            mark_other_strategies_superseded(goal_id, winner_id=target_id)  # OR
-            return
-        # failed
-        update_strategy_status(target_id, 'dead')
-        n = increment_goal_attempts(goal_id)
-        if n >= SHELVE_THRESHOLD: update_goal_status(goal_id, 'shelved'); return
-        # W4 #199: 若無 live strategy 剩、goal 回 'open' 才能再被 dispatch
-        if not exists_proposed_strategy(goal_id):
-            update_goal_status(goal_id, 'open')
+    # F56 — Verify 已不是 worker_kind；strategy 的 succeeded/dead 狀態
+    # 變化在 verify.verify_housekeeping 內套（§5.3）。cascade_one 只
+    # 處理 Builder + Backward。
 ```
 
 ```python
@@ -498,10 +519,8 @@ def bfs_refill(running):
     def in_flight(tid, kind):
         return (1 if (tid,kind) in running else 0) + queue_count(tid, kind)
 
-    # Verify 派遣（cap=1 per strategy）
-    for s in strategies_ready_for_verify():       # filters g.status != 'proved' (W6)
-        if in_flight(s.id, 'Verify') == 0:
-            enqueue('Verify', s.id, priority=10)
+    # F56 — strategies_ready_for_verify 不在這裡派遣，由 dispatcher
+    # 主迴圈末端的 verify_housekeeping 直接 inline 處理。
 
     # 對 open goals: orphan filter 跳過 dead/superseded ancestor
     # F37 — Builder 與 Backward 都 cap=1，一條 strategy 死掉才會經 cascade
@@ -750,7 +769,7 @@ status / stop 命令暫不寫，直接 sqlite 查 / Ctrl-C 終止。
 |---|------|----------------|
 | 1 | **Web dashboard / UI** | DAG 視覺化、dead_attempts artifacts 點擊展開；compactness 級多層深 已超 CLI 可讀 |
 | 2 | **Dedupe predicate 升級**（α-rename 或 Lean defeq） | 量到 whitespace-norm 命中率 < 30% 時觸發；單 swap point 換 `_statements_equivalent` |
-| 3 | **第四題 smoke**（如 sylvester_gallai） | 驗證對更深 / 不同題型穩定性 |
+| 3 | **sylvester_gallai 收尾** | F55 postmortem 機制是否能讓 root 拆解收斂（先前 720s timeout 沒寫成 PROPOSAL；postmortem 之後重試結果待驗）|
 | 4 | **多 problem 並行**（同一 daemon 多 problem） | 視 Library 跨題效益決定 |
 | 5 | **Forward** | 從 proved Node 推 lemma；可與 Deduper 整合（找已存在的等價公式） |
 | 6 | **Promotion Judge** | shelved goal 重審、自動跑 |
@@ -772,7 +791,7 @@ status / stop 命令暫不寫，直接 sqlite 查 / Ctrl-C 終止。
 - worker thread 只 INSERT finished pipeline row、不更新 goal/strategy 狀態
 - pipelines 表只存 finished rows（無 'running' state）
 - `.attempts/<pid>/` + `.attempts/_backup_<pid>/` 透過 `WorkArea` 統一管理、`__exit__` unconditional rmtree
-- worker_kind 與 target_kind 一一對應：Builder/Backward → Goal、Verify → Strategy
+- worker_kind 與 target_kind 一一對應：Builder/Backward → Goal（F56 後 Verify 不是 worker_kind）
 - Strategy 的 `scratch_path` 一旦 UPDATE 後 immutable
 - `goals.lean_path` UNIQUE、`strategies.lean_path` 不 UNIQUE（多 strategies 共享 parent target）
 - Strategy 的 sub-goal slug **必須**含 `s<sid>_` 前綴（W5/C 命名約定）
@@ -794,7 +813,10 @@ status / stop 命令暫不寫，直接 sqlite 查 / Ctrl-C 終止。
 | Pool size | 預設 4、`ASTERISM_POOL=N` env 覆蓋 |
 | OR sequencing | F37 起 passive (cap=1)；env var 已移除；同 goal 多策略走序列觸發 |
 | Daemon budget | 預設 1800s、`ASTERISM_BUDGET_SEC=N` env 覆蓋 |
-| Worker 單次 timeout | 10 min hardcoded（compactness 級才會超、那是 Backward 拆解的 signal） |
+| Worker 單次 timeout | 720s（12 min）；postmortem spawn 額外 120s（F55） |
+| Timeout 後資料保留 | F55 postmortem-spawn 寫 `_progress.md`；不採「邊寫邊存」（污染主任務） |
+| Verify 是不是 worker_kind | F56 改為 dispatcher housekeeping；無 LLM 不該佔 worker slot |
+| F41 LLM 修復 strategy patch | 取消（26 次實證 0 觸發）；未來實證有需要再回頭加 |
 | `proofs/` 結構 | flat（success exit 自動 reconcile + prune 留 winner chain；CLI fallback 給 partial state） |
 | Sub-goal 命名 | agent 端負責（Context.md 注入 sid_token、agent 寫 `s<sid>_` 前綴）；不做框架 post-substitute |
 | cli init 自動 import | 若 `Problems/<p>/Defs.lean` 存在、自動加進 Root.lean（W6） |
