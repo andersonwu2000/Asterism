@@ -1169,6 +1169,69 @@ def test_claude_spawn_cwd_is_problem_dir(
     assert calls[0]["kwargs"].get("cwd") == str(Path("/x/Problems/myproblem"))
 
 
+def test_claude_spawn_adds_packages_dir_when_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """M3 — F44 narrows cwd to problem_dir; claude CLI then treats
+    `cwd subtree ∪ --add-dir` as the implicit trust boundary, denying
+    absolute-path Read/Grep on Mathlib even when `--allowed-tools` lists
+    it. Spawn must add `.lake/packages` as a third --add-dir so the
+    allowlist's path patterns actually take effect.
+
+    Conditional: only adds when the dir physically exists, since claude
+    CLI errors on missing --add-dir paths (fresh checkout pre-`lake build`)."""
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    workspace = tmp_path
+    (workspace / ".lake" / "packages").mkdir(parents=True)
+    problem_dir = workspace / "Problems" / "myproblem"
+    problem_dir.mkdir(parents=True)
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=workspace / "p.md",
+        problem_dir=problem_dir,
+        attempts_dir=workspace / ".attempts" / "abc",
+        timeout_sec=60,
+    ))
+    cmd = captured[0]
+    expected = str(workspace / ".lake" / "packages")
+    add_dir_values = [cmd[i + 1] for i, v in enumerate(cmd) if v == "--add-dir"]
+    assert expected in add_dir_values, (
+        f"--add-dir for {expected} missing from {add_dir_values}")
+
+
+def test_claude_spawn_skips_packages_dir_when_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """When `.lake/packages` doesn't exist (fresh checkout, before
+    `lake build`), spawn must NOT pass --add-dir for it — claude CLI
+    errors on missing --add-dir paths and would block the spawn."""
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    problem_dir = tmp_path / "Problems" / "myproblem"
+    problem_dir.mkdir(parents=True)
+    # NOTE: no `.lake/packages` created
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=tmp_path / "p.md",
+        problem_dir=problem_dir,
+        attempts_dir=tmp_path / ".attempts" / "abc",
+        timeout_sec=60,
+    ))
+    cmd = captured[0]
+    add_dir_values = [cmd[i + 1] for i, v in enumerate(cmd) if v == "--add-dir"]
+    missing = str(tmp_path / ".lake" / "packages")
+    assert missing not in add_dir_values
+
+
 def test_gemini_spawn_cwd_is_problem_dir(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

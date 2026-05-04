@@ -401,6 +401,21 @@ class ClaudeCliProvider:
             session_lifetime_flag = ["--no-session-persistence"]
             prompt = _build_cold_prompt(req)
 
+        # M3 — F44 narrows cwd to problem_dir, after which claude CLI's
+        # permission system treats `cwd subtree ∪ --add-dir paths` as the
+        # implicit trust boundary; absolute paths outside that boundary
+        # are denied even when listed in --allowed-tools. Mathlib lives
+        # outside problem_dir, so M1's `Read(.lake/packages/**/*.lean)`
+        # allowlist alone wasn't enough — proj_nonexpansive 2026-05-03
+        # rerun saw 75 mathlib Grep denials per run despite M1. Adding
+        # `.lake/packages` as a third --add-dir grants the explicit trust
+        # so the allowlist's path patterns actually take effect.
+        # Conditional: skip when the dir doesn't exist (fresh checkout
+        # before `lake build`) — claude CLI errors on missing --add-dir.
+        packages_dir = (_workspace_from_problem_dir(req.problem_dir)
+                        / ".lake" / "packages")
+        add_dir_packages: list[str] = (
+            ["--add-dir", str(packages_dir)] if packages_dir.is_dir() else [])
         cmd = [
             "claude",
             "--model", model,
@@ -408,6 +423,7 @@ class ClaudeCliProvider:
             "--permission-mode", "acceptEdits",
             "--add-dir", str(req.problem_dir),
             "--add-dir", str(req.attempts_dir),
+            *add_dir_packages,
             "--output-format", "text",
             *session_flags,
             *session_lifetime_flag,
