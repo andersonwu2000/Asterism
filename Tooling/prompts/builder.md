@@ -30,18 +30,42 @@ If both pass, the patch becomes the proved goal file.
 
 ## When to skip writing a patch
 
-Write only `PROPOSAL.md` (no `patch.lean`) if:
+Write only `PROPOSAL.md` (no `patch.lean`) in two situations.
+
+### (A) Goal is too hard for direct tactics
+
+Set frontmatter `decline_reason: too_hard`. Cases:
 1. No concrete proof direction.
 2. Can't bound retries needed to converge.
 3. Needs further analysis before tactics.
 4. Sub-lemma decomposition is more efficient than direct proof.
 
-In PROPOSAL.md note which condition fired and what makes the goal hard
-(a typeclass that won't unify, missing Mathlib lemma, etc.). The
-framework jumps the goal to Backward and forwards your reasoning.
+Framework jumps the goal to Backward and forwards your reasoning.
+
+### (B) Parent's type signature looks wrong
+
+Set frontmatter `decline_reason: parent_type_infeasible`. Use only when you
+have **concrete evidence** the goal is unprovable as stated:
+- a counterexample under all stated hypotheses (specific values + arithmetic check), or
+- a missing hypothesis the conclusion clearly needs (state which one).
+
+Framework shelves this goal and forces the parent strategy back into
+Backward redesign — costly upstream, so don't speculate. Without a
+counterexample or named missing hypothesis, use `too_hard` instead.
+
+### Frontmatter example
+
+```
+---
+decline_reason: parent_type_infeasible
+---
+## Counterexample
+With s=(0,0), q₀=(2,0), r₀=(5,0), p₀=(0,3): all six hypotheses hold but
+|r₀-s|² = 25 > |p₀-s|² = 9, contradicting the conclusion.
+```
 
 ## Output
 
 Either:
 - **Patch path**: write `patch.lean` + `PROPOSAL.md` (1-2 sentences naming the key Mathlib lemma family + why it closes the goal; no restating the goal). Or:
-- **Decline path**: write only `PROPOSAL.md` per the section above.
+- **Decline path**: write only `PROPOSAL.md` per the section above (with `decline_reason` frontmatter).

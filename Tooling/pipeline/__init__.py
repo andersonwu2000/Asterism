@@ -74,6 +74,11 @@ def _spawn_failure(rc: int, attempts_dir: Path,
 TACTIC_TRY_LIST = [
     # Trivial / instant
     "rfl", "decide", "trivial",
+    # Hypothesis-direct (handles `A → B → A`-shaped sub-goals where
+    # one hypothesis already matches the conclusion verbatim)
+    "assumption",
+    # Propositional logic
+    "tauto",
     # Numeric / linear
     "norm_num", "omega",
     # Cast normalization
@@ -91,6 +96,9 @@ TACTIC_TRY_LIST = [
     # Decision procedures
     "grind",   # Lean 4.30+ general decision procedure
     "aesop",   # general proof search
+    # Mathlib library search — last because it's the most expensive
+    # (queries the discrimination tree across all of Mathlib)
+    "exact?",
 ]
 
 
@@ -122,6 +130,31 @@ def _ensure_imports_subgoal(
     if not needed:
         return content
     return "\n".join(needed) + "\n\n" + content
+
+
+# Recognized values for PROPOSAL.md's `decline_reason` frontmatter field.
+# `too_hard` keeps the legacy F48 channel (jump to Backward on same goal);
+# `parent_type_infeasible` shelves this goal and cascades up to force the
+# parent strategy back into Backward redesign — used when the agent can
+# construct a counterexample to the goal under all stated hypotheses, or
+# the hypothesis set is missing something the conclusion clearly needs.
+DECLINE_TOO_HARD = "too_hard"
+DECLINE_PARENT_TYPE_INFEASIBLE = "parent_type_infeasible"
+_DECLINE_RE = re.compile(
+    r"(?m)^---\s*$.*?^decline_reason\s*:\s*([\w_]+).*?^---\s*$",
+    re.DOTALL,
+)
+
+
+def _parse_decline_reason(proposal_text: str) -> str | None:
+    """Extract `decline_reason` from PROPOSAL.md YAML frontmatter, if any.
+
+    Returns the raw value (e.g. `'too_hard'` or `'parent_type_infeasible'`),
+    or None if the file lacks frontmatter or the field. Unrecognized values
+    are returned as-is — caller decides how to dispatch.
+    """
+    m = _DECLINE_RE.search(proposal_text)
+    return m.group(1).strip() if m else None
 
 
 @dataclass
@@ -466,10 +499,23 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # "When to skip writing a patch" hatch: it produced a non-empty
         # PROPOSAL.md explaining why the goal is too hard / needs
         # decomposition, but did not write patch.lean. Cascade treats
-        # this distinctly from agent_no_response: it jumps the goal to
-        # Backward immediately rather than letting BUILDER_THRESHOLD
-        # run out on attempts the agent already said are unwinnable.
+        # this distinctly from agent_no_response.
+        #
+        # `decline_reason` frontmatter sub-routes:
+        #   - `parent_type_infeasible` → agent_infeasible (cascade-up:
+        #     parent strategy dies, parent goal re-decomposes)
+        #   - `too_hard` / missing      → agent_declined  (jump this
+        #     goal to Backward via F48 path)
         if proposal_text.strip():
+            reason = _parse_decline_reason(proposal_text)
+            if reason == DECLINE_PARENT_TYPE_INFEASIBLE:
+                return PipelineResult(
+                    outcome="failed",
+                    failure_reason="agent_infeasible",
+                    failure_detail=("builder reports parent type infeasible; "
+                                    "PROPOSAL.md must include counterexample"),
+                    proposal_md=proposal_text,
+                )
             return PipelineResult(
                 outcome="failed", failure_reason="agent_declined",
                 failure_detail="builder declined; PROPOSAL.md explains why",
@@ -744,6 +790,19 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     patches = list(attempts_dir.glob("patch*.lean"))
     new_subs = list(attempts_dir.glob("new_*.lean"))
     if not patches or not new_subs:
+        # Backward decline channel. Mirrors Builder's F48 hatch: an agent
+        # that finds the goal infeasible (counterexample available, or
+        # it sees no honest decomposition) writes only PROPOSAL.md with
+        # `decline_reason: parent_type_infeasible` — framework cascades
+        # up rather than charging another wasted attempt.
+        reason = _parse_decline_reason(proposal_text)
+        if reason == DECLINE_PARENT_TYPE_INFEASIBLE:
+            return _abort(
+                "agent_infeasible",
+                ("backward reports parent type infeasible; "
+                 "PROPOSAL.md must include counterexample"),
+                proposal_text,
+            )
         return _abort(
             "parse_proposal_fail",
             f"patch={len(patches)} new={len(new_subs)}",

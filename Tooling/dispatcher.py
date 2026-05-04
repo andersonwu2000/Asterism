@@ -133,9 +133,18 @@ def next_worker_kind(goal: sqlite3.Row) -> str:
 
     `BUILDER_THRESHOLD` is module-level so test/env overrides are
     visible without re-importing.
+
+    No longer gates on `difficulty`. The Backward agent's 1-10 estimate
+    tracks conceptual complexity, not Builder-tractability — SG g380 was
+    a polynomial identity (`ring`/`linear_combination`-tractable) tagged
+    difficulty=4 by the agent and routed past Builder into 5 successive
+    12-min Backward timeouts. The attempts-threshold escalation already
+    auto-promotes Builder→Backward after `BUILDER_THRESHOLD` fails, which
+    is the only signal that actually correlates with Builder failure.
+    Cost of dropping the gate: root-level goals (typically Manifest-
+    estimated 7-8) burn `BUILDER_THRESHOLD` cheap Builder spawns before
+    Backward kicks in — acceptable in practice.
     """
-    if int(goal["difficulty"]) >= 4:
-        return "Backward"
     if int(goal["attempts"]) < BUILDER_THRESHOLD:
         return "Builder"
     return "Backward"
@@ -167,6 +176,15 @@ def _is_spawn_fast_fail(conn: sqlite3.Connection, pipeline_id: str) -> bool:
     Returns False if no dead_attempt was recorded (e.g. success cases
     or worker-exception cascades synthesized from outside)."""
     return _latest_failure_reason(conn, pipeline_id) == "spawn_fast_fail"
+
+
+def _is_agent_infeasible(conn: sqlite3.Connection, pipeline_id: str) -> bool:
+    """True if the latest dead_attempt for `pipeline_id` came back with
+    `agent_infeasible` — the agent constructed a counterexample showing
+    the parent's sub-goal type is unprovable. Builder/Backward both write
+    this when they trip the `decline_reason: parent_type_infeasible` hatch.
+    """
+    return _latest_failure_reason(conn, pipeline_id) == "agent_infeasible"
 
 
 def _is_agent_declined(conn: sqlite3.Connection, pipeline_id: str) -> bool:
@@ -256,6 +274,18 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 # F46 — leave attempts unchanged; dispatcher will cool
                 # this (target,kind) for ~30s before the next dispatch.
                 return
+            # Infeasibility escape: agent reported `parent_type_infeasible`
+            # in PROPOSAL.md frontmatter (counterexample required). Skip
+            # attempts++; shelve this goal directly so `_propagate_shelve`
+            # kills the parent strategy and re-opens the parent goal for
+            # a redesigned Backward decomposition. Without this, the wrong-
+            # type sub-goal would burn SHELVE_THRESHOLD attempts before
+            # cascading up — typically several hours of LLM time.
+            if _is_agent_infeasible(conn, pipeline_id):
+                db.update_goal_status(conn, int(target_id), "shelved")
+                db.set_builder_session_id(conn, int(target_id), None)
+                _propagate_shelve(conn, int(target_id))
+                return
             # F48 — Builder explicitly declined (wrote PROPOSAL.md
             # but no patch.lean per builder.md's STOP block). Honor
             # the agent: jump attempts to BUILDER_THRESHOLD so the
@@ -302,6 +332,14 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
         # exhausted / failed
         if is_fast_fail:
             return  # F46 — same skip-increment as Builder above
+        # Infeasibility escape (mirrors Builder branch above): Backward
+        # agent declined with `parent_type_infeasible`, skip attempts++,
+        # propagate shelve so the parent strategy re-decomposes.
+        if _is_agent_infeasible(conn, pipeline_id):
+            db.update_goal_status(conn, int(target_id), "shelved")
+            db.set_backward_session_id(conn, int(target_id), None)
+            _propagate_shelve(conn, int(target_id))
+            return
         n = db.increment_goal_attempts(conn, int(target_id))
         if n >= SHELVE_THRESHOLD:
             db.update_goal_status(conn, int(target_id), "shelved")

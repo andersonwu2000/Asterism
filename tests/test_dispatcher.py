@@ -20,9 +20,14 @@ def _fake_goal(*, difficulty: int, attempts: int) -> dict:
     return {"difficulty": difficulty, "attempts": attempts}
 
 
-def test_next_worker_kind_high_difficulty() -> None:
-    assert next_worker_kind(_fake_goal(difficulty=5, attempts=0)) == "Backward"
-    assert next_worker_kind(_fake_goal(difficulty=4, attempts=0)) == "Backward"
+def test_next_worker_kind_ignores_difficulty() -> None:
+    """The difficulty hard-gate (legacy `>=4 → Backward`) was removed
+    after SG g380 evidence: agent-estimated difficulty correlates with
+    conceptual complexity, not Builder-tractability. Routing now uses
+    only the attempts threshold; high-difficulty goals burn a few cheap
+    Builder spawns before escalating to Backward, which is acceptable."""
+    assert next_worker_kind(_fake_goal(difficulty=8, attempts=0)) == "Builder"
+    assert next_worker_kind(_fake_goal(difficulty=10, attempts=0)) == "Builder"
 
 
 def test_next_worker_kind_easy_first_attempts() -> None:
@@ -1001,8 +1006,12 @@ def test_queue_count_helper(conn: sqlite3.Connection) -> None:
 def test_bfs_refill_backward_capped_at_one(conn: sqlite3.Connection) -> None:
     """F37 — for an open goal whose next worker is Backward, bfs_refill
     enqueues exactly one entry (passive trigger; sequential expansion)."""
-    from Tooling.dispatcher import bfs_refill
-    gid = _seed_goal(conn, difficulty=4)  # difficulty>=4 → Backward
+    from Tooling.dispatcher import bfs_refill, BUILDER_THRESHOLD
+    gid = _seed_goal(conn)
+    # Bump attempts past BUILDER_THRESHOLD so next worker is Backward
+    # (the difficulty hard-gate was removed; routing is by attempts only).
+    for _ in range(BUILDER_THRESHOLD):
+        db.increment_goal_attempts(conn, gid)
     bfs_refill(conn, running=set())
     assert db.queue_count(conn, target_id=str(gid), kind="Backward") == 1
 
