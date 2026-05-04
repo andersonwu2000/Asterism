@@ -491,12 +491,15 @@ def _section_past_backward(rows: list[sqlite3.Row]) -> list[str]:
 
 def _section_prior_partial(kind: str | None, problem_dir: Path,
                            goal_id: int) -> list[str]:
-    """F55 — surface the persisted partial output (if any) from a prior
-    failed / timed-out spawn on THIS (goal, kind) pair. The agent reads
-    this and continues from a sketch instead of starting fresh.
+    """F55 — surface the postmortem progress note (if any) from a
+    prior timed-out spawn on THIS (goal, kind) pair. The note is the
+    short state + blocker dump the framework collected via a
+    `--resume`-based postmortem call right after the main spawn was
+    SIGKILL'd; it's a starting sketch, not a partial deliverable.
 
-    Stays concise: header + 1-line warning + fenced content (already
-    truncated to PARTIAL_BUDGET in `_drafts.persist_partials`)."""
+    Stays concise: header + 1-line orientation + the note (already
+    bounded by the postmortem prompt's ~150-word target plus a hard
+    PARTIAL_BUDGETS cap)."""
     if kind not in ("backward", "builder"):
         return []
     try:
@@ -507,14 +510,12 @@ def _section_prior_partial(kind: str | None, problem_dir: Path,
                                 goal_id=goal_id)
     if not body:
         return []
-    label = "PROPOSAL.md" if kind == "backward" else "patch.lean"
     return [
-        f"## Your previous incomplete {label} (timed out / failed mid-write)",
+        "## Your previous progress note",
         "",
-        f"This is what your prior attempt wrote before exit. It may be "
-        f"**incomplete or syntactically invalid** — treat as a draft to "
-        f"continue / refine, not a finished file. Replace fully if the "
-        f"approach was wrong.",
+        "Your previous spawn on this goal timed out. The framework "
+        "ran a short postmortem to capture where you got and what "
+        "blocked you. Pick up from this sketch.",
         "",
         body.rstrip(),
         "",
@@ -607,29 +608,12 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     out.write_text("\n".join(parts), encoding="utf-8")
 
     # F26 — write companion reference files for the bulky / lazy-load
-    # content (Context.md only carries digests + pointers). F55 — for
-    # backward, fold any persisted partial PROPOSAL into PAST_BACKWARD.md
-    # so the deeper-look reference covers it too.
+    # content (Context.md only carries digests + pointers). F55 — the
+    # progress note from a prior timed-out spawn is rendered ONLY in
+    # Context.md (must-see channel), not duplicated into the companion
+    # — agents miss companion files (F43) so the inline section is the
+    # canonical surface.
     context_files.write_past_attempts(deads, attempts_dir)
-    partial_for_backward = (
-        _read_partial_for_kind("backward", problem_dir, int(goal["id"]))
-        if show_verifies else None
-    )
-    context_files.write_past_backward(
-        strat_deads, attempts_dir, partial_proposal=partial_for_backward,
-    )
+    context_files.write_past_backward(strat_deads, attempts_dir)
 
     return out
-
-
-def _read_partial_for_kind(kind: str, problem_dir: Path,
-                           goal_id: int) -> str | None:
-    """Helper for `compile_context` — keeps the local import out of the
-    orchestration body. Returns the persisted partial draft text or
-    None when no draft exists."""
-    try:
-        from .pipeline import _drafts
-    except ImportError:
-        return None
-    return _drafts.read_partial(problem_dir=problem_dir, kind=kind,
-                                goal_id=goal_id)

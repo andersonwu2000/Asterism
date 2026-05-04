@@ -166,43 +166,10 @@ def test_write_past_backward_creates_file(tmp_path: Path) -> None:
 
 
 def test_write_past_backward_empty_returns_none(tmp_path: Path) -> None:
-    """No rows AND no partial PROPOSAL → no file."""
+    """No verify-failure rows → no companion file. F55 progress notes
+    do NOT contribute to this file (they live only in Context.md inline
+    per F43-style 'must-see channel' lesson)."""
     assert context_files.write_past_backward([], tmp_path) is None
-    assert context_files.write_past_backward(
-        [], tmp_path, partial_proposal="") is None
-    assert context_files.write_past_backward(
-        [], tmp_path, partial_proposal="   \n") is None
-
-
-def test_write_past_backward_includes_partial_proposal(tmp_path: Path) -> None:
-    """F55 — when a persisted partial PROPOSAL is supplied, it appears
-    in the companion file under its own clearly-labeled section."""
-    out = context_files.write_past_backward(
-        [], tmp_path,
-        partial_proposal="### Partial draft\nKelly minimiser route, 3 subs",
-    )
-    assert out is not None
-    text = out.read_text(encoding="utf-8")
-    assert "Your previous incomplete PROPOSAL" in text
-    assert "Kelly minimiser route" in text
-
-
-def test_write_past_backward_partial_with_verify_failures(
-    tmp_path: Path,
-) -> None:
-    """Both sources present → both sections rendered, in order."""
-    rows = [
-        _row(pipeline_id="pid-vvvvvvvvvvvv",
-             failure_reason="lake_build_error",
-             failure_detail="error: combine patch failed elaboration",
-             strategy_proposal="### Sibling decomp"),
-    ]
-    out = context_files.write_past_backward(
-        rows, tmp_path, partial_proposal="### My partial draft\n...")
-    text = out.read_text(encoding="utf-8")
-    sib_pos = text.index("Sibling")
-    partial_pos = text.index("incomplete PROPOSAL")
-    assert sib_pos < partial_pos  # sibling section first, partial after
 
 
 # ---------------------------------------------------------------------
@@ -291,12 +258,17 @@ def test_past_backward_strips_lean_path_dump(tmp_path: Path) -> None:
 # F55 — partial-PROPOSAL injection through compile_context
 # ---------------------------------------------------------------------
 
-def test_compile_context_inlines_prior_partial_for_backward(
+def test_compile_context_inlines_prior_progress_note_for_backward(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """When `.drafts/backward_g<gid>.md` exists, Backward Context.md
-    surfaces it inline so the agent picks up where the prior timed-out
-    spawn left off."""
+    """When `.drafts/backward_g<gid>.md` exists (postmortem note from
+    a prior timed-out spawn), Backward Context.md surfaces it inline
+    as 'Your previous progress note' so the agent picks up from the
+    captured state + blocker sketch instead of starting fresh.
+
+    The companion file `PAST_BACKWARD.md` is intentionally NOT
+    augmented with the note — F43 lesson says agents miss companion
+    files, so the inline section is the canonical surface."""
     from Tooling.pipeline import _drafts
     gid = _seed_goal(conn)
     workspace = tmp_path
@@ -304,11 +276,12 @@ def test_compile_context_inlines_prior_partial_for_backward(
     attempts_dir.mkdir(parents=True)
     problem_dir = workspace / "Problems" / "p"
     problem_dir.mkdir(parents=True)
-    # Simulate a prior timed-out spawn having persisted a partial PROPOSAL
+    # Simulate a prior timed-out spawn whose postmortem wrote _progress.md
     prior_attempts = workspace / ".attempts" / "pid-prior"
     prior_attempts.mkdir(parents=True)
-    (prior_attempts / "PROPOSAL.md").write_text(
-        "## Kelly minimiser route\nSub-goal 1: cross is positive\n...",
+    (prior_attempts / "_progress.md").write_text(
+        "Kelly minimiser route, 4 sub-goals; blocked on naming the "
+        "perpendicular-distance lemma.",
         encoding="utf-8",
     )
     _drafts.persist_partials(
@@ -320,17 +293,20 @@ def test_compile_context_inlines_prior_partial_for_backward(
                           mfst=Manifest(problem="p", statement="T"),
                           attempts_dir=attempts_dir, kind="backward")
     text = out.read_text(encoding="utf-8")
-    assert "Your previous incomplete PROPOSAL.md" in text
-    assert "Kelly minimiser route" in text
-    # Companion file also includes it (under its own section)
-    companion = (attempts_dir / "PAST_BACKWARD.md").read_text(encoding="utf-8")
-    assert "Kelly minimiser route" in companion
+    assert "Your previous progress note" in text
+    assert "Kelly minimiser" in text
+    # Companion file does NOT carry the progress note (F55 design choice)
+    if (attempts_dir / "PAST_BACKWARD.md").exists():
+        companion = (attempts_dir / "PAST_BACKWARD.md").read_text(
+            encoding="utf-8")
+        assert "Kelly minimiser" not in companion
 
 
-def test_compile_context_inlines_prior_partial_for_builder(
+def test_compile_context_inlines_prior_progress_note_for_builder(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """Same treatment for Builder, except the partial is patch.lean."""
+    """Same surface for Builder. The note is the postmortem dump after
+    a Builder-spawn timeout."""
     from Tooling.pipeline import _drafts
     gid = _seed_goal(conn)
     workspace = tmp_path
@@ -340,8 +316,8 @@ def test_compile_context_inlines_prior_partial_for_builder(
     problem_dir.mkdir(parents=True)
     prior_attempts = workspace / ".attempts" / "pid-prior"
     prior_attempts.mkdir(parents=True)
-    (prior_attempts / "patch.lean").write_text(
-        "theorem g : T := by\n  have h := fooBar\n  -- TODO finish",
+    (prior_attempts / "_progress.md").write_text(
+        "Tried `omega` then `polyrith`; need a divisibility lemma I can't name.",
         encoding="utf-8",
     )
     _drafts.persist_partials(
@@ -353,15 +329,15 @@ def test_compile_context_inlines_prior_partial_for_builder(
                           mfst=Manifest(problem="p", statement="T"),
                           attempts_dir=attempts_dir, kind="builder")
     text = out.read_text(encoding="utf-8")
-    assert "Your previous incomplete patch.lean" in text
-    assert "have h := fooBar" in text
+    assert "Your previous progress note" in text
+    assert "polyrith" in text
 
 
 def test_compile_context_no_partial_section_when_no_draft(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """No `.drafts/<kind>_g<gid>.md` → no inline partial section
-    (most spawns succeed first try)."""
+    """No `.drafts/<kind>_g<gid>.md` → no inline progress-note section
+    (most spawns succeed first try; postmortem only fires on timeout)."""
     gid = _seed_goal(conn)
     workspace = tmp_path
     attempts_dir = workspace / ".attempts" / "pid-current"
@@ -371,7 +347,7 @@ def test_compile_context_no_partial_section_when_no_draft(
                           mfst=Manifest(problem="p", statement="T"),
                           attempts_dir=attempts_dir, kind="backward")
     text = out.read_text(encoding="utf-8")
-    assert "Your previous incomplete" not in text
+    assert "Your previous progress note" not in text
 
 
 # ---------------------------------------------------------------------

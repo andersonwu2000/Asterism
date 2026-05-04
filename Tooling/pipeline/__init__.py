@@ -235,6 +235,36 @@ def _fetch_last_builder_error(conn: sqlite3.Connection,
     return diagnostics.strip_lake_noise(row["failure_detail"])
 
 
+def _attempt_postmortem(*, kind: str, prompt_path: Path,
+                        problem_dir: Path, attempts_dir: Path,
+                        session_id: str) -> None:
+    """F55 — short follow-up spawn after a main-spawn timeout.
+
+    Resumes `session_id` so the killed agent's session memory is
+    intact; the postmortem prompt asks the agent to write a brief
+    state + blocker note into `attempts_dir/_progress.md`. The wrapper
+    around `run_builder` / `run_backward` then captures that file as
+    the partial draft for the next dispatch.
+
+    Best-effort: any failure (postmortem also times out, session GC'd,
+    provider unavailable) is silently absorbed — the next dispatch
+    just cold-starts as it would have without F55. We log the rc to
+    the daemon log via the provider's own `[llm:claude] timed out
+    after Ns` line; no extra exception path needed.
+    """
+    try:
+        agent.spawn_llm(
+            kind=kind,
+            prompt_path=prompt_path,
+            problem_dir=problem_dir,
+            attempts_dir=attempts_dir,
+            session_id=session_id,
+            is_postmortem=True,
+        )
+    except Exception:  # noqa: BLE001 — postmortem must not block timeout flow
+        pass
+
+
 def _fetch_last_backward_error(conn: sqlite3.Connection,
                                goal_id: int) -> str:
     """F53 — most recent Backward lake error on this goal. Inlined as
@@ -388,9 +418,19 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             db.set_builder_session_id(conn, goal_id, sid)
 
     if rc == SpawnRC.TIMEOUT:
-        # Timeout: the agent's session may have been killed mid-write
-        # (claude's session file, gemini's in-flight API call, etc).
-        # Conservative: clear session_id so next attempt cold-starts.
+        # Timeout: agent SIGKILL'd mid-write. F55 — before clearing the
+        # session id, do a short postmortem spawn that resumes the same
+        # session and asks the agent to dump state + blockers into
+        # `_progress.md`. The wrapper then captures _progress.md as
+        # the partial draft for the next dispatch.
+        if sid is not None:
+            _attempt_postmortem(
+                kind="builder",
+                prompt_path=PROMPT_DIR / "builder_postmortem.md",
+                problem_dir=workspace / "Problems" / goal["problem"],
+                attempts_dir=attempts_dir,
+                session_id=sid,
+            )
         db.set_builder_session_id(conn, goal_id, None)
         reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
         return PipelineResult(outcome="failed",
@@ -452,219 +492,13 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     )
 
 
-# ---------------------------------------------------------------------
-# Verify (Strategy)
-# ---------------------------------------------------------------------
-
-def _verify_patch_retry(
-    conn: sqlite3.Connection, *,
-    workspace: Path, pipeline_id: str,
-    strategy: sqlite3.Row,
-    scratch_abs: Path,
-    lake_err: str,
-) -> tuple[bool, str | None]:
-    """F41 — one-shot LLM repair when scratch lake_build failed.
-
-    Common Verify failure pattern: every sub-goal proves individually
-    (lake build OK in isolation), but the strategy combination patch
-    fails to elaborate due to implicit-arg / typeclass drift between
-    what the patch expected and what the sub-goals actually expose.
-    Default cascade response is to mark strategy dead, increment the
-    parent goal's attempts, and let Backward re-decompose — re-proving
-    every sub-goal from scratch. Expensive.
-
-    This helper intercepts: snapshot the original patch, ask the LLM
-    once to rewrite ONLY the strategy's tactic block (sub-goals stay
-    untouched), re-build. On success we return (True, None) and the
-    caller proceeds to Step 2 (parent rewrite). On failure (rc!=0,
-    no patch.lean, or lake still rejects) we restore the original
-    patch and return (False, new_err) so the caller can drop into
-    the standard failure path with no behavior change.
-
-    Off via `ASTERISM_VERIFY_RETRY=0`. Default on.
-    """
-    if os.environ.get("ASTERISM_VERIFY_RETRY", "1") == "0":
-        return False, None
-
-    backup = scratch_abs.with_suffix(scratch_abs.suffix + ".verify_retry_backup")
-    shutil.copy2(scratch_abs, backup)
-
-    # Reuse the existing pipeline's attempts dir (created by WorkArea
-    # in dispatcher) — the original Verify pipeline doesn't write
-    # anything into it, so it's empty and safe to populate.
-    attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
-
-    # Pull each sub-goal's lean file content so the LLM sees the
-    # actual proved signatures + bodies. Order by strategy_subgoals
-    # position to match how the patch references them.
-    sub_rows = conn.execute(
-        "SELECT g.lean_path, g.slug FROM strategy_subgoals ss "
-        "JOIN goals g ON g.id = ss.subgoal_id "
-        "WHERE ss.strategy_id = ? ORDER BY ss.position",
-        (int(strategy["id"]),),
-    ).fetchall()
-
-    parts: list[str] = [
-        f"# Verify retry — strategy s{strategy['id']}",
-        "",
-        "The strategy patch failed to elaborate against the now-real "
-        "sub-goal proofs. Rewrite the strategy patch so the elaboration "
-        "goes through. Do NOT modify the sub-goal proofs.",
-        "",
-        "## Original strategy patch (failed Verify)",
-        "",
-        "```lean",
-        scratch_abs.read_text(encoding="utf-8"),
-        "```",
-        "",
-        "## Sub-goal proofs (correct, signatures fixed)",
-        "",
-    ]
-    for r in sub_rows:
-        path = workspace / r["lean_path"]
-        if not path.exists():
-            continue
-        parts.append(f"### `{path.name}` (slug `{r['slug']}`)")
-        parts.append("")
-        parts.append("```lean")
-        parts.append(path.read_text(encoding="utf-8"))
-        parts.append("```")
-        parts.append("")
-    parts.append("## Verify lake stderr (the failure to fix)")
-    parts.append("")
-    parts.append("```")
-    parts.append(diagnostics.smart_truncate_stderr(lake_err))
-    parts.append("```")
-    parts.append("")
-    (attempts_dir / "Context.md").write_text(
-        "\n".join(parts), encoding="utf-8")
-
-    # Spawn LLM. Use kind='builder' so it picks up the Builder model
-    # tier (cheap-LLM is fine for a tactic-block rewrite). Cold spawn
-    # — no F33 session, no retry context.
-    rc = agent.spawn_llm(
-        kind="builder",
-        prompt_path=PROMPT_DIR / "verify_retry.md",
-        problem_dir=workspace / "Problems" / strategy["goal_problem"],
-        attempts_dir=attempts_dir,
-        session_id=None,
-        is_retry=False,
-        retry_context=None,
-    )
-    if rc != 0:
-        shutil.copy2(backup, scratch_abs)
-        backup.unlink()
-        return False, None
-
-    new_patch = attempts_dir / "patch.lean"
-    if not new_patch.exists():
-        shutil.copy2(backup, scratch_abs)
-        backup.unlink()
-        return False, None
-
-    shutil.copy2(new_patch, scratch_abs)
-    ok, new_err = _lake_build(workspace, scratch_abs)
-    if ok:
-        backup.unlink()
-        return True, None
-    shutil.copy2(backup, scratch_abs)
-    backup.unlink()
-    return False, new_err
-
-
-def run_verify(conn: sqlite3.Connection, *, strategy_id: int,
-               workspace: Path, mfst: manifest.Manifest,
-               pipeline_id: str) -> PipelineResult:
-    """Verify a Strategy:
-      1. lake build the strategy's scratch (re-elaborate against now-real
-         sub-goal proofs);
-      2. atomically rewrite the parent goal's lean_path to import the
-         scratch and alias the proved theorem;
-      3. lake build the parent. On any failure, restore the parent's
-         pre-verify content.
-
-    Returns outcome='proved' on full success, 'failed' otherwise. If the
-    strategy has been superseded or the parent goal already proved, the
-    pipeline returns outcome='failed' with reason='superseded' (cascade
-    treats this as a no-op).
-    """
-    s = conn.execute(
-        "SELECT s.*, g.status AS goal_status, g.slug AS goal_slug,"
-        "       g.statement AS goal_statement, g.problem AS goal_problem"
-        " FROM strategies s JOIN goals g ON g.id = s.goal_id"
-        " WHERE s.id = ?",
-        (strategy_id,),
-    ).fetchone()
-    if s is None:
-        return PipelineResult(outcome="failed",
-                              failure_reason="strategy_not_found")
-
-    if s["status"] == "superseded" or s["goal_status"] == "proved":
-        return PipelineResult(outcome="failed", failure_reason="superseded")
-
-    if not s["scratch_path"]:
-        return PipelineResult(outcome="failed",
-                              failure_reason="scratch_path_missing")
-
-    scratch_abs = workspace / s["scratch_path"]
-    if not scratch_abs.exists():
-        return PipelineResult(outcome="failed",
-                              failure_reason="scratch_file_missing",
-                              failure_detail=str(scratch_abs))
-
-    # Step 1: re-build scratch against now-real sub-goal proofs.
-    ok, err = _lake_build(workspace, scratch_abs)
-    if not ok:
-        # F41 — try one LLM-driven repair before giving up. Common
-        # failure mode is type-drift (sub-goals individually OK but
-        # combined patch elaboration fails); cheap retry can fix
-        # without losing the sub-goal proofs.
-        retry_ok, retry_err = _verify_patch_retry(
-            conn, workspace=workspace, pipeline_id=pipeline_id,
-            strategy=s, scratch_abs=scratch_abs, lake_err=err,
-        )
-        if retry_ok:
-            print(f"[verify_retry] strategy=s{strategy_id} succeeded",
-                  flush=True)
-            ok, err = True, ""  # fall through to Step 2
-        else:
-            if retry_err is not None:
-                print(f"[verify_retry] strategy=s{strategy_id} attempted "
-                      f"but lake still rejects", flush=True)
-            return PipelineResult(
-                outcome="failed", failure_reason="lake_build_error",
-                failure_detail=diagnostics.annotate_failure_detail(
-                    f"scratch: {err}"),
-            )
-
-    # Step 2: promote parent stub to a `def <slug> := @<ns>.s<id>`
-    # re-export of the strategy. Lean copies the type from the
-    # strategy theorem at elaboration, so binders and conclusion
-    # transfer exactly — no chance of binder-stripping bugs (which
-    # broke s142 in the proj_nonexpansive run; see F52 notes).
-    parent_abs = workspace / s["lean_path"]
-    sid_token = f"s{strategy_id}"
-    scratch_module = _lean_path_to_module(workspace, scratch_abs)
-    parent_backup = _promote_to_alias(
-        parent_abs,
-        namespace=f"Problems.{s['goal_problem']}",
-        slug=s["goal_slug"],
-        sid_token=sid_token,
-        scratch_module=scratch_module,
-    )
-
-    ok, err = _lake_build(workspace, parent_abs)
-    if not ok:
-        _rollback_promote(parent_abs, parent_backup)
-        return PipelineResult(
-            outcome="failed", failure_reason="lake_build_error",
-            failure_detail=diagnostics.annotate_failure_detail(
-                f"parent: {err}"),
-        )
-
-    if parent_backup is not None and parent_backup.exists():
-        parent_backup.unlink()
-    return PipelineResult(outcome="proved")
+# F56 — `run_verify` and `_verify_patch_retry` (F41) removed; strategy
+# verification is now `Tooling/verify.verify_strategy` (pure framework,
+# no LLM) called by `verify.verify_housekeeping` from the dispatcher
+# main loop. The legacy LLM-repair path is retired (26 verifies across
+# cantor + proj_nonexpansive runs showed 0 Step-1 failures); a future
+# regression where lake build at Verify time becomes unreliable can
+# re-add it as a separate housekeeping recovery step.
 
 
 # ---------------------------------------------------------------------
@@ -869,8 +703,18 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             db.set_backward_session_id(conn, goal_id, sid)
 
     if rc == SpawnRC.TIMEOUT:
-        # Timeout: agent's session may have been killed mid-write.
-        # Conservative — clear so the next dispatch cold-starts.
+        # Timeout: agent SIGKILL'd mid-write. F55 — postmortem spawn
+        # resumes the killed session for a short state-dump into
+        # `_progress.md` before we clear the session id (the wrapper
+        # then persists _progress.md as the partial draft).
+        if sid is not None:
+            _attempt_postmortem(
+                kind="backward",
+                prompt_path=PROMPT_DIR / "backward_postmortem.md",
+                problem_dir=workspace / "Problems" / goal["problem"],
+                attempts_dir=attempts_dir,
+                session_id=sid,
+            )
         db.set_backward_session_id(conn, goal_id, None)
         reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
         return _abort(reason, detail)

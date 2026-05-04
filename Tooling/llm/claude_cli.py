@@ -363,14 +363,26 @@ class ClaudeCliProvider:
 
         model = resolve_model(req.kind)
 
+        # F55 postmortem — main spawn timed out, agent's session memory
+        # is intact on disk. Resume the session with a short prompt
+        # asking for a state + blocker note (`_progress.md`) into the
+        # SAME attempts_dir. The wrapper then captures _progress.md as
+        # the partial draft for the next dispatch. Loaded prompt body
+        # is short and self-contained — no _build_cold_prompt wrapping
+        # (Context.md from the killed turn is already in session memory;
+        # re-injecting it would distract the postmortem agent).
+        if req.is_postmortem and req.session_id:
+            session_flags = ["--resume", req.session_id]
+            session_lifetime_flag: list[str] = []
+            prompt = _load_prompt(req)
         # F33 — retry path uses `--resume`, a short inline prompt with
         # the lake error embedded directly (no separate RETRY_NOTE.md
         # file → agent doesn't need a Read tool round-trip), and skips
         # the file-based prompt fetch (prior turn's context lives in
         # claude's session memory).
-        if req.is_retry and req.session_id:
+        elif req.is_retry and req.session_id:
             session_flags = ["--resume", req.session_id]
-            session_lifetime_flag: list[str] = []  # session persists
+            session_lifetime_flag = []  # session persists
             err = (req.retry_context or "(lake error not captured)").strip()
             # F51 — when the prior failure cites unknown constants,
             # nudge the agent to verify names via Loogle/Grep instead

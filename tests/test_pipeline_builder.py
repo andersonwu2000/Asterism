@@ -194,32 +194,64 @@ def _drafts_path_for(tmp_path: Path, gid: int) -> Path:
     return tmp_path / "Problems" / "p" / ".drafts" / f"builder_g{gid}.md"
 
 
-def test_run_builder_wrapper_persists_draft_on_lake_fail(
+def test_run_builder_wrapper_persists_progress_note_after_timeout(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F55 — Builder writes patch.lean, lake rejects → wrapper persists
-    the (broken) patch into .drafts/ so the next spawn sees a starting
-    sketch instead of a blank slate."""
+    """F55 — Builder times out (rc=124). Framework triggers postmortem
+    spawn that writes _progress.md. Wrapper then persists _progress.md
+    into .drafts/ so the next spawn sees the captured state + blocker."""
+    gid = _seed_problem(conn, tmp_path)
+    db.increment_goal_attempts(conn, gid)
+
+    def fake_spawn(**kw):
+        # Main spawn times out. Postmortem spawn (is_postmortem=True)
+        # writes the note and exits 0.
+        if kw.get("is_postmortem"):
+            (kw["attempts_dir"] / "_progress.md").write_text(
+                "tried bogus_tactic; need a divisibility lemma I can't name",
+                encoding="utf-8")
+            return 0
+        return 124  # main timeout
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    pipeline.run_builder(
+        conn, goal_id=gid, workspace=tmp_path, mfst=_mfst(),
+        pipeline_id="pid-timeout-1")
+    draft = _drafts_path_for(tmp_path, gid)
+    assert draft.exists()
+    body = draft.read_text(encoding="utf-8")
+    assert "_progress.md" in body
+    assert "divisibility lemma" in body
+
+
+def test_run_builder_wrapper_no_persist_when_postmortem_skipped(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-timeout failure (lake_build_error) → no postmortem fires →
+    no _progress.md → no draft persisted. F33 warm-resume covers this
+    failure mode separately; F55 is timeout-specific."""
     gid = _seed_problem(conn, tmp_path)
     db.increment_goal_attempts(conn, gid)
 
     def fake_spawn(**kw):
         (kw["attempts_dir"] / "patch.lean").write_text(
-            "theorem main : True := bogus_tactic", encoding="utf-8")
+            "garbage", encoding="utf-8")
         (kw["attempts_dir"] / "PROPOSAL.md").write_text(
-            "tried bogus_tactic", encoding="utf-8")
+            "tried", encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     monkeypatch.setattr(pipeline, "_lake_build",
-                        lambda ws, t: (False, "error"))
+                        lambda ws, t: (False, "error: garbage"))
 
-    pipeline.run_builder(
+    r = pipeline.run_builder(
         conn, goal_id=gid, workspace=tmp_path, mfst=_mfst(),
-        pipeline_id="pid-fail-1")
+        pipeline_id="pid-lake-fail")
+    assert r.outcome == "failed"
+    assert r.failure_reason == "lake_build_error"
     draft = _drafts_path_for(tmp_path, gid)
-    assert draft.exists()
-    assert "bogus_tactic" in draft.read_text(encoding="utf-8")
+    assert not draft.exists()
 
 
 def test_run_builder_wrapper_clears_draft_on_proved(

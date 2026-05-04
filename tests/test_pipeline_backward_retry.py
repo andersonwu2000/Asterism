@@ -291,20 +291,24 @@ def _bw_drafts_path(tmp_path: Path, gid: int) -> Path:
     return tmp_path / "Problems" / "p" / ".drafts" / f"backward_g{gid}.md"
 
 
-def test_backward_wrapper_persists_draft_on_timeout(
+def test_backward_wrapper_persists_progress_note_after_timeout(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F55 — Backward writes PROPOSAL.md, then spawn times out (rc=124)
-    → wrapper persists what's on disk so the next attempt's Context.md
-    surfaces it as a starting sketch."""
+    """F55 — main Backward spawn times out (rc=124). Framework runs a
+    postmortem spawn that resumes the killed session and writes
+    _progress.md with state + blockers. Wrapper persists _progress.md
+    into .drafts/ so the next dispatch's Context.md surfaces it."""
     gid = _seed_root_goal(tmp_path, conn)
 
     def fake_spawn(**kw):
-        (kw["attempts_dir"] / "PROPOSAL.md").write_text(
-            "## Kelly minimiser route\nSub-goal sketch...",
-            encoding="utf-8")
-        return 124  # timeout
+        if kw.get("is_postmortem"):
+            (kw["attempts_dir"] / "_progress.md").write_text(
+                "Kelly minimiser route, 4 sub-goals; blocked on the "
+                "perpendicular-distance lemma name.",
+                encoding="utf-8")
+            return 0
+        return 124  # main timeout
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     pipeline.run_backward(
@@ -314,7 +318,62 @@ def test_backward_wrapper_persists_draft_on_timeout(
     draft = _bw_drafts_path(tmp_path, gid)
     assert draft.exists()
     body = draft.read_text(encoding="utf-8")
-    assert "Kelly minimiser route" in body
+    assert "Kelly minimiser" in body
+    assert "perpendicular-distance" in body
+
+
+def test_backward_timeout_dispatches_postmortem_with_correct_args(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F55 — on main-spawn timeout, framework calls spawn_llm a second
+    time with is_postmortem=True, prompt_path pointing at
+    backward_postmortem.md, and the same session_id as the killed
+    main spawn (so --resume can revive its memory)."""
+    gid = _seed_root_goal(tmp_path, conn)
+    calls = []
+
+    def fake_spawn(**kw):
+        calls.append(kw)
+        if kw.get("is_postmortem"):
+            return 124  # don't bother writing — just inspect args
+        return 124  # main timeout
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=manifest.Manifest(problem="p", statement="True"),
+        pipeline_id="pid-bw-pm-args")
+    assert len(calls) == 2  # main + postmortem
+    main_call, pm_call = calls
+    assert pm_call["is_postmortem"] is True
+    assert pm_call["session_id"] == main_call["session_id"]
+    assert pm_call["prompt_path"].name == "backward_postmortem.md"
+    assert pm_call["kind"] == "backward"
+
+
+def test_backward_wrapper_no_persist_when_no_postmortem_note(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the postmortem itself also times out (or returns no
+    _progress.md), no draft is persisted — next dispatch cold-starts
+    as it would have without F55. Best-effort design: no exception
+    blocks the timeout flow."""
+    gid = _seed_root_goal(tmp_path, conn)
+
+    def fake_spawn(**kw):
+        if kw.get("is_postmortem"):
+            return 124  # postmortem also times out — no _progress.md
+        return 124  # main timeout
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=manifest.Manifest(problem="p", statement="True"),
+        pipeline_id="pid-bw-nodump")
+    draft = _bw_drafts_path(tmp_path, gid)
+    assert not draft.exists()
 
 
 def test_backward_wrapper_clears_draft_on_goal_no_longer_open(

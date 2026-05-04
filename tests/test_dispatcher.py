@@ -556,59 +556,9 @@ def test_cascade_strategy_on_shelved_parent_marks_dead(
 # F22 — playbook hook fires on Verify=proved when workspace given
 # ---------------------------------------------------------------------
 
-def test_cascade_verify_proved_invokes_playbook_when_workspace(
-    conn: sqlite3.Connection, tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Verify=proved + workspace passed → playbook.maybe_record_idiom
-    is called with the strategy id. Tests without workspace skip the
-    hook (legacy behavior)."""
-    from Tooling import playbook as _playbook
-
-    gid = _seed_goal(conn)
-    sid = db.insert_strategy(conn, goal_id=gid,
-                             lean_path="Problems/p/Root.lean",
-                             scratch_path="Problems/p/proofs/_strategy_s.lean",
-                             created_by="pid")
-
-    captured: dict[str, object] = {}
-
-    def _spy(strategy_id, conn_arg, workspace_arg):
-        captured["sid"] = strategy_id
-        captured["ws"] = workspace_arg
-        return None
-    monkeypatch.setattr(_playbook, "maybe_record_idiom", _spy)
-
-    cascade_one(conn, pipeline_id="pid", kind="Verify",
-                target_id=str(sid), target_kind="Strategy",
-                outcome="proved", workspace=tmp_path)
-
-    assert captured["sid"] == sid
-    assert captured["ws"] == tmp_path
-
-
-def test_cascade_verify_proved_skips_playbook_without_workspace(
-    conn: sqlite3.Connection,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Test fixtures that don't pass workspace must not trigger the
-    playbook hook — keeps existing tests fast and deterministic."""
-    from Tooling import playbook as _playbook
-
-    gid = _seed_goal(conn)
-    sid = db.insert_strategy(conn, goal_id=gid,
-                             lean_path="Problems/p/Root.lean",
-                             scratch_path="Problems/p/proofs/_strategy_s.lean",
-                             created_by="pid")
-
-    called = MagicMock()
-    monkeypatch.setattr(_playbook, "maybe_record_idiom", called)
-
-    cascade_one(conn, pipeline_id="pid", kind="Verify",
-                target_id=str(sid), target_kind="Strategy",
-                outcome="proved")
-
-    called.assert_not_called()
+# F56 — playbook hook is part of `verify.verify_housekeeping`, no
+# longer dispatched via cascade. See `tests/test_verify.py` for
+# coverage.
 
 
 # ---------------------------------------------------------------------
@@ -699,71 +649,9 @@ def test_goal_shelve_combined_upward_and_inward_cascade(
     assert db.get_goal(conn, grand)["status"] == "open"
 
 
-# ---------------------------------------------------------------------
-# cascade_one — Verify
-# ---------------------------------------------------------------------
-
-def _seed_strategy(conn: sqlite3.Connection, goal_id: int) -> int:
-    return db.insert_strategy(
-        conn, goal_id=goal_id, lean_path=f"Problems/p/Root_{goal_id}.lean",
-        created_by="pid",
-    )
-
-
-def test_cascade_verify_proved_succeeds_strategy_and_goal(
-    conn: sqlite3.Connection,
-) -> None:
-    gid = _seed_goal(conn)
-    sid = _seed_strategy(conn, gid)
-    cascade_one(conn, pipeline_id="pid", kind="Verify",
-                target_id=str(sid), target_kind="Strategy", outcome="proved")
-    s = conn.execute("SELECT status FROM strategies WHERE id = ?", (sid,)).fetchone()
-    g = db.get_goal(conn, gid)
-    assert s["status"] == "succeeded"
-    assert g["status"] == "proved"
-
-
-def test_cascade_verify_failed_marks_strategy_dead(
-    conn: sqlite3.Connection,
-) -> None:
-    gid = _seed_goal(conn)
-    sid = _seed_strategy(conn, gid)
-    cascade_one(conn, pipeline_id="pid", kind="Verify",
-                target_id=str(sid), target_kind="Strategy", outcome="failed")
-    s = conn.execute("SELECT status FROM strategies WHERE id = ?", (sid,)).fetchone()
-    g = db.get_goal(conn, gid)
-    assert s["status"] == "dead"
-    assert g["attempts"] == 1
-
-
-def test_cascade_verify_failed_reopens_attempting_goal(
-    conn: sqlite3.Connection,
-) -> None:
-    """After last live strategy dies, goal must return to 'open' so a fresh
-    Backward can be dispatched. Otherwise goal is stuck 'attempting'."""
-    gid = _seed_goal(conn)
-    db.update_goal_status(conn, gid, "attempting")
-    sid = _seed_strategy(conn, gid)
-    cascade_one(conn, pipeline_id="pid", kind="Verify",
-                target_id=str(sid), target_kind="Strategy", outcome="failed")
-    g = db.get_goal(conn, gid)
-    assert g["status"] == "open"
-
-
-def test_cascade_verify_failed_keeps_attempting_when_other_strategies_live(
-    conn: sqlite3.Connection,
-) -> None:
-    gid = _seed_goal(conn)
-    db.update_goal_status(conn, gid, "attempting")
-    sid1 = _seed_strategy(conn, gid)
-    sid2 = db.insert_strategy(
-        conn, goal_id=gid, lean_path=f"Problems/p/Root_{gid}.lean",
-        created_by="pid",
-    )
-    cascade_one(conn, pipeline_id="pid", kind="Verify",
-                target_id=str(sid1), target_kind="Strategy", outcome="failed")
-    g = db.get_goal(conn, gid)
-    assert g["status"] == "attempting"  # sid2 still live
+# F56 — cascade_one no longer handles kind="Verify"; strategy state
+# transitions are owned by `verify.verify_housekeeping`. See
+# `tests/test_verify.py` for the equivalent coverage.
 
 
 # ---------------------------------------------------------------------
@@ -781,34 +669,6 @@ def test_two_strategies_share_parent_lean_path(conn: sqlite3.Connection) -> None
                               lean_path="Problems/p/Root.lean",
                               created_by="pid-2")
     assert sid1 != sid2
-
-
-def test_cascade_verify_proved_supersedes_siblings(
-    conn: sqlite3.Connection,
-) -> None:
-    gid = _seed_goal(conn)
-    sid_winner = db.insert_strategy(conn, goal_id=gid,
-                                    lean_path="Problems/p/Root.lean",
-                                    created_by="pid-w",
-                                    scratch_path="proofs/_strategy_s1.lean")
-    sid_loser1 = db.insert_strategy(conn, goal_id=gid,
-                                    lean_path="Problems/p/Root.lean",
-                                    created_by="pid-l1")
-    sid_loser2 = db.insert_strategy(conn, goal_id=gid,
-                                    lean_path="Problems/p/Root.lean",
-                                    created_by="pid-l2")
-    cascade_one(conn, pipeline_id="pid-w", kind="Verify",
-                target_id=str(sid_winner), target_kind="Strategy",
-                outcome="proved")
-    statuses = {
-        sid: conn.execute("SELECT status FROM strategies WHERE id = ?",
-                          (sid,)).fetchone()["status"]
-        for sid in (sid_winner, sid_loser1, sid_loser2)
-    }
-    assert statuses[sid_winner] == "succeeded"
-    assert statuses[sid_loser1] == "superseded"
-    assert statuses[sid_loser2] == "superseded"
-    assert db.get_goal(conn, gid)["status"] == "proved"
 
 
 def test_cascade_no_op_when_goal_already_proved(
@@ -1185,65 +1045,11 @@ def _seed_ready_strategy(conn: sqlite3.Connection, *, goal_id: int,
     return sid
 
 
-def test_bfs_refill_serializes_verify_per_parent_goal(
-    conn: sqlite3.Connection,
-) -> None:
-    """P0-#1: two sibling strategies on the same parent goal both
-    have all sub-goals proved (both in strategies_ready_for_verify),
-    but bfs_refill must enqueue exactly ONE Verify — concurrent
-    Verifies on the same parent_abs would race in _promote_to_alias."""
-    from Tooling.dispatcher import bfs_refill
-    gid = _seed_goal(conn)
-    s_a = _seed_ready_strategy(conn, goal_id=gid, slug="sA")
-    s_b = _seed_ready_strategy(conn, goal_id=gid, slug="sB")
-
-    bfs_refill(conn, running=set())
-
-    enqueued = sum(
-        db.queue_count(conn, target_id=str(s), kind="Verify")
-        for s in (s_a, s_b)
-    )
-    assert enqueued == 1
-
-
-def test_bfs_refill_blocks_verify_when_sibling_already_running(
-    conn: sqlite3.Connection,
-) -> None:
-    """P0-#1: if one strategy's Verify is already in `running`, the
-    sibling on the same parent goal is held back — even though its
-    own (sid, 'Verify') is not in running."""
-    from Tooling.dispatcher import bfs_refill
-    gid = _seed_goal(conn)
-    s_running = _seed_ready_strategy(conn, goal_id=gid, slug="sR")
-    s_waiting = _seed_ready_strategy(conn, goal_id=gid, slug="sW")
-
-    bfs_refill(conn, running={(str(s_running), "Verify")})
-
-    assert db.queue_count(conn, target_id=str(s_waiting), kind="Verify") == 0
-
-
-def test_bfs_refill_verify_unrelated_parents_independent(
-    conn: sqlite3.Connection,
-) -> None:
-    """Per-goal Verify serialization must not bleed across parents.
-    Two ready strategies on DIFFERENT parent goals both get Verify."""
-    from Tooling.dispatcher import bfs_refill
-    g1 = _seed_goal(conn)
-    g2_slug = "main2"
-    # Add a second root goal manually (a different parent)
-    g2 = db.insert_goal(
-        conn, problem="p", slug=g2_slug,
-        lean_path="Problems/p/Root2.lean",
-        statement="T2", origin="root", difficulty=2, depth=0,
-    )
-    s1 = _seed_ready_strategy(conn, goal_id=g1, slug="s1")
-    s2 = _seed_ready_strategy(conn, goal_id=g2, slug="s2",
-                              lean_path="Problems/p/Root2.lean")
-
-    bfs_refill(conn, running=set())
-
-    assert db.queue_count(conn, target_id=str(s1), kind="Verify") == 1
-    assert db.queue_count(conn, target_id=str(s2), kind="Verify") == 1
+# F56 — bfs_refill no longer enqueues Verify pipelines (verify is
+# inline housekeeping). Per-goal serialization is no longer needed
+# either: housekeeping runs serially within the dispatcher tick, so
+# two sibling strategies on the same parent are handled one at a
+# time naturally.
 
 
 def test_strategies_ready_for_verify_excludes_proved_goal(
@@ -1274,19 +1080,7 @@ def test_strategies_ready_for_verify_excludes_proved_goal(
     assert not any(s["id"] == sid for s in db.strategies_ready_for_verify(conn))
 
 
-def test_cascade_finalizes_superseded_when_goal_already_proved(
-    conn: sqlite3.Connection,
-) -> None:
-    """W6 fix: cascade no-op entry should ALSO transition a still-'proposed'
-    strategy to 'superseded' when its goal is already proved. Without
-    this, the strategy stays 'proposed' and bfs_refill thrashes."""
-    gid = _seed_goal(conn)
-    db.update_goal_status(conn, gid, "proved")
-    sid = db.insert_strategy(conn, goal_id=gid,
-                             lean_path="Problems/p/Root.lean",
-                             created_by="pid")
-    cascade_one(conn, pipeline_id="late", kind="Verify",
-                target_id=str(sid), target_kind="Strategy", outcome="failed")
-    s = conn.execute("SELECT status FROM strategies WHERE id = ?",
-                     (sid,)).fetchone()
-    assert s["status"] == "superseded"
+# F56 — `cascade_one(kind="Verify")` no longer exists. The W6
+# "stale proposed strategy on a proved goal" finalization is handled
+# by `verify.verify_strategy` returning "superseded"; see
+# `tests/test_verify.py`.

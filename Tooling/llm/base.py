@@ -63,6 +63,12 @@ class LLMRequest:
                     a separate RETRY_NOTE.md file: the agent sees the
                     error immediately without needing a Read tool
                     round-trip. Ignored when is_retry=False.
+      is_postmortem: F55 — postmortem call after a main-spawn timeout.
+                    Uses --resume so the prior turn's session memory is
+                    intact, loads `prompt_path` verbatim (a short prompt
+                    asking the agent to summarize state + blockers into
+                    `_progress.md` and exit). Mutually exclusive with
+                    is_retry. Providers without session support skip.
     """
     kind: str
     prompt_path: Path
@@ -72,6 +78,7 @@ class LLMRequest:
     session_id: str | None = None
     is_retry: bool = False
     retry_context: str | None = None
+    is_postmortem: bool = False
 
 
 class Provider(Protocol):

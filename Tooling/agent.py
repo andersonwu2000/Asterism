@@ -48,6 +48,12 @@ from .context import (  # noqa: F401  (re-export)
 
 WORKER_TIMEOUT_SEC = 720  # 12 min, see architecture.md §13
 
+# F55 — postmortem spawn after a main-spawn timeout. Uses --resume so
+# session memory is intact; agent writes a short state + blocker note
+# (`_progress.md`) and exits. Tight cap so a hung postmortem doesn't
+# stack on top of the main timeout.
+POSTMORTEM_TIMEOUT_SEC = 120
+
 
 class WorkArea:
     """Ephemeral working area for one pipeline run.
@@ -88,7 +94,9 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
               attempts_dir: Path,
               session_id: str | None = None,
               is_retry: bool = False,
-              retry_context: str | None = None) -> int:
+              retry_context: str | None = None,
+              is_postmortem: bool = False,
+              timeout_sec: int | None = None) -> int:
     """Dispatch to the configured LLM provider for one agent invocation.
 
     Provider is resolved per-kind (F39): `ASTERISM_<KIND>_PROVIDER` →
@@ -101,16 +109,27 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     Builder retry. Pass a UUID + is_retry=False on first attempt;
     same UUID + is_retry=True + the prior lake error string in
     `retry_context` on subsequent attempts.
+
+    `is_postmortem`: F55 — set on the postmortem spawn after a main
+    timeout. Provider uses `--resume <session_id>`, loads `prompt_path`
+    verbatim (a short instruction asking the agent to dump state +
+    blockers into `_progress.md`). `timeout_sec` defaults to
+    `POSTMORTEM_TIMEOUT_SEC` (120s) for postmortem calls and
+    `WORKER_TIMEOUT_SEC` (720s) otherwise.
     """
+    if timeout_sec is None:
+        timeout_sec = (POSTMORTEM_TIMEOUT_SEC if is_postmortem
+                       else WORKER_TIMEOUT_SEC)
     return llm.get_provider(kind=kind).spawn(llm.LLMRequest(
         kind=kind,
         prompt_path=prompt_path,
         problem_dir=problem_dir,
         attempts_dir=attempts_dir,
-        timeout_sec=WORKER_TIMEOUT_SEC,
+        timeout_sec=timeout_sec,
         session_id=session_id,
         is_retry=is_retry,
         retry_context=retry_context,
+        is_postmortem=is_postmortem,
     ))
 
 

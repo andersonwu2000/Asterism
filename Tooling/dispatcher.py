@@ -13,6 +13,7 @@ from pathlib import Path
 
 from . import (
     agent, config, db, library, manifest, pipeline, playbook, prune, tree,
+    verify,
 )
 
 
@@ -185,7 +186,10 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
     Each worker_kind has a fixed target_kind:
       Builder  → Goal   (fresh sorry-stub closure)
       Backward → Goal   (decompose into sub-goals)
-      Verify   → Strategy (re-run lake build after sub-goals proved)
+
+    F56 — strategy verification is no longer a worker_kind. The
+    framework-side verify happens inline in the dispatcher tick via
+    `verify.verify_housekeeping`, not here.
 
     No-op entry: if the target's underlying goal is already proved or
     its strategy is already 'superseded', skip the transition. This
@@ -193,8 +197,8 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
     after the goal has been won by a (possibly sequential) sibling
     strategy or after the goal cascade-shelved.
 
-    `workspace` enables the F22 playbook hook on Verify=proved. Tests
-    that don't care about file-side effects pass None.
+    `workspace` is retained on the signature for back-compat (legacy
+    callers passed it for Verify's playbook hook); now unused.
     """
     if target_kind == "Strategy":
         row = conn.execute(
@@ -306,50 +310,9 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             _propagate_shelve(conn, int(target_id))
         return
 
-    if kind == "Verify":
-        row = conn.execute(
-            "SELECT goal_id FROM strategies WHERE id = ?",
-            (int(target_id),),
-        ).fetchone()
-        goal_id = int(row["goal_id"]) if row else None
-        if outcome == "proved":
-            db.update_strategy_status(conn, int(target_id), "succeeded")
-            if goal_id is not None:
-                db.update_goal_status(conn, goal_id, "proved")
-                # Defensive: mark any other live strategies on this goal
-                # 'superseded'. Under F37 OR=1 this is rare (typically only
-                # the winner is alive), but cascade timing can briefly
-                # leave a stale 'proposed' sibling.
-                db.mark_other_strategies_superseded(
-                    conn, goal_id=goal_id, winner_id=int(target_id),
-                )
-            # F22 — capture the just-proven idiom into the per-problem
-            # playbook. Synchronous (~30-60s LLM call) but only fires
-            # on Verify=proved, which is rare. Failures are logged and
-            # never propagate.
-            if workspace is not None:
-                playbook.maybe_record_idiom(
-                    int(target_id), conn, workspace)
-            return
-        # exhausted / failed
-        db.update_strategy_status(conn, int(target_id), "dead")
-        if goal_id is not None:
-            n = db.increment_goal_attempts(conn, goal_id)
-            if n >= SHELVE_THRESHOLD:
-                db.update_goal_status(conn, goal_id, "shelved")
-                _propagate_shelve(conn, goal_id)
-                return
-            # Re-open the goal if no live strategy remains, so bfs_refill
-            # can dispatch a new Backward attempt. Without this the goal
-            # is stuck in 'attempting' forever after the last verify fails.
-            has_live = conn.execute(
-                "SELECT 1 FROM strategies WHERE goal_id = ?"
-                " AND status = 'proposed' LIMIT 1",
-                (goal_id,),
-            ).fetchone()
-            if has_live is None:
-                db.update_goal_status(conn, goal_id, "open")
-        return
+    # F56 — Verify removed as a worker_kind. Strategy verification +
+    # parent promotion happens in `verify.verify_housekeeping`, called
+    # at the end of each dispatcher tick (see `run` below).
 
 
 # ---------------------------------------------------------------------
@@ -382,52 +345,9 @@ def bfs_refill(conn: sqlite3.Connection,
     def cooled(tid: str, kind: str) -> bool:
         return cd.get((tid, kind), 0.0) > now
 
-    # Strategies with all sub-goals proved → enqueue Verify.
-    # Per-goal serialization (P0-#1): at most one Verify per parent
-    # goal at a time. Sibling strategies (OR-parallel) on the same
-    # goal still both reach `strategies_ready_for_verify`, but only
-    # the first gets dispatched; the second waits its turn after
-    # cascade marks the first 'succeeded'/'dead'. Without this, two
-    # concurrent Verifies on the same parent_abs would race on
-    # `os.replace` (last-writer-wins on the parent stub) and a
-    # losing strategy's lake_build would run against the winner's
-    # content (false success or wrong rollback).
-    busy_parents: set[int] = set()
-    # Already-running Verifies block their parent from re-dispatch.
-    for run_sid, run_kind in running:
-        if run_kind != "Verify":
-            continue
-        try:
-            row = conn.execute(
-                "SELECT goal_id FROM strategies WHERE id = ?",
-                (int(run_sid),),
-            ).fetchone()
-            if row is not None:
-                busy_parents.add(int(row["goal_id"]))
-        except (ValueError, sqlite3.Error):
-            continue
-    # Already-queued Verifies (in DB queue table) likewise block.
-    queued = conn.execute(
-        "SELECT q.target_id FROM queue q WHERE q.kind = 'Verify'"
-    ).fetchall()
-    for q in queued:
-        try:
-            row = conn.execute(
-                "SELECT goal_id FROM strategies WHERE id = ?",
-                (int(q["target_id"]),),
-            ).fetchone()
-            if row is not None:
-                busy_parents.add(int(row["goal_id"]))
-        except (ValueError, sqlite3.Error):
-            continue
-    for s in db.strategies_ready_for_verify(conn):
-        sid = str(s["id"])
-        parent_gid = int(s["goal_id"])
-        if parent_gid in busy_parents:
-            continue
-        if in_flight(sid, "Verify") == 0 and not cooled(sid, "Verify"):
-            db.enqueue(conn, kind="Verify", target_id=sid, priority=10)
-            busy_parents.add(parent_gid)
+    # F56 — strategies ready for verify are no longer enqueued as
+    # Verify pipelines. They're processed inline in `verify_housekeeping`
+    # at the end of each tick.
 
     # Open goals → enqueue if no in-flight or queued attempt exists
     for g in db.open_goals(conn):
@@ -461,17 +381,9 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
         with agent.WorkArea(workspace, pipeline_id) as wa:
             attempts_dir = wa.attempts
 
-            # Resolve which goal this task concerns. Verify targets a
-            # Strategy whose parent goal supplies the problem name.
-            if target_kind == "Strategy":
-                row = conn.execute(
-                    "SELECT goal_id FROM strategies WHERE id = ?",
-                    (int(target_id),),
-                ).fetchone()
-                goal_id = int(row["goal_id"]) if row else 0
-            else:
-                goal_id = int(target_id)
-
+            # F56 — only Goal-targeting kinds remain (Builder /
+            # Backward). Strategy verify is housekeeping, not a worker.
+            goal_id = int(target_id)
             goal = db.get_goal(conn, goal_id)
             if goal is None:
                 db.record_pipeline(
@@ -484,12 +396,7 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
 
             mfst = manifests[goal["problem"]]
 
-            if task_kind == "Verify":
-                r = pipeline.run_verify(
-                    conn, strategy_id=int(target_id), workspace=workspace,
-                    mfst=mfst, pipeline_id=pipeline_id,
-                )
-            elif task_kind == "Builder":
+            if task_kind == "Builder":
                 r = pipeline.run_builder(
                     conn, goal_id=goal_id, workspace=workspace,
                     mfst=mfst, pipeline_id=pipeline_id,
@@ -656,6 +563,12 @@ def run(workspace: Path, *, once: bool = False) -> int:
                         print(f"[cascade] secondary exception during "
                               f"recovery: {exc2}", flush=True)
 
+        # F56 — strategy verify housekeeping. Runs after cascade so any
+        # newly-proved sub-goals from this tick contribute to the
+        # `ready_for_verify` poll. Inline + recursive (chain follow-up
+        # for multi-layer strategies in one tick).
+        verify.verify_housekeeping(conn, workspace=workspace)
+
         if db.root_proved(conn):
             print("[dispatcher] all roots proved", flush=True)
             for problem_name in manifests:
@@ -695,7 +608,7 @@ def run(workspace: Path, *, once: bool = False) -> int:
             kind = str(row["kind"])
             if (target_id, kind) in running:
                 continue
-            target_kind = "Strategy" if kind == "Verify" else "Goal"
+            target_kind = "Goal"  # F56 — Verify removed; only Goal kinds left
             pipeline_id = agent.new_pipeline_id()
             running.add((target_id, kind))
             fut = pool.submit(_run_pipeline, workspace, manifests,

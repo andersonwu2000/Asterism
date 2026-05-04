@@ -265,6 +265,79 @@ def test_claude_spawn_cold_with_session_id_uses_session_id_flag(
     assert "--no-session-persistence" not in cmd
 
 
+def test_claude_spawn_postmortem_uses_resume_with_loaded_prompt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """F55 — postmortem call: --resume <uuid> + the prompt body loaded
+    verbatim from prompt_path (NOT the cold-path framework wrapper).
+    Used after a main-spawn timeout to extract a state + blocker note
+    via the killed agent's still-intact session memory."""
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    prompt_file = tmp_path / "backward_postmortem.md"
+    prompt_file.write_text(
+        "Write _progress.md with state + blocker. Exit.",
+        encoding="utf-8")
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="backward",
+        prompt_path=prompt_file,
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=120,
+        session_id="killed-session-uuid",
+        is_postmortem=True,
+    ))
+    cmd = captured[0]
+    # Resume the killed session, NOT a fresh one
+    assert "--resume" in cmd
+    assert cmd[cmd.index("--resume") + 1] == "killed-session-uuid"
+    assert "--session-id" not in cmd
+    # Prompt body is the postmortem template verbatim, no cold-path
+    # framework wrapper ("You are running a {kind} task...")
+    p_idx = cmd.index("-p")
+    prompt_payload = cmd[p_idx + 1]
+    assert "Write _progress.md" in prompt_payload
+    assert "INSTRUCTIONS" not in prompt_payload  # no cold wrapper
+    assert "Read context at" not in prompt_payload  # no cold wrapper
+
+
+def test_claude_spawn_postmortem_takes_priority_over_retry_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """If both is_postmortem and is_retry are set, postmortem wins —
+    the inline lake-error retry prompt is NOT constructed; the
+    postmortem template is loaded verbatim. (The pipeline never
+    actually sets both, but defense-in-depth.)"""
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    prompt_file = tmp_path / "p.md"
+    prompt_file.write_text("postmortem-only template", encoding="utf-8")
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="backward",
+        prompt_path=prompt_file,
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=120,
+        session_id="sid-1",
+        is_retry=True,
+        retry_context="error: lake failed",
+        is_postmortem=True,
+    ))
+    cmd = captured[0]
+    p_idx = cmd.index("-p")
+    prompt_payload = cmd[p_idx + 1]
+    assert "postmortem-only template" in prompt_payload
+    assert "Previous attempt failed lake build" not in prompt_payload
+
+
 def test_claude_spawn_retry_inlines_error_into_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

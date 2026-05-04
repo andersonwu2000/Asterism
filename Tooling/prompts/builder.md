@@ -4,7 +4,7 @@ The framework's cheap deterministic tactics (rfl, simp, decide, omega, ...) have
 
 If Context.md's per-attempt digest doesn't surface the error you need to diagnose, the framework also writes a `PAST_ATTEMPTS.md` companion file with the full failure_detail (lake stderr) + originating PROPOSAL.md per past dead_attempt — read it on demand. Absence means no prior history.
 
-**Save outputs incrementally** — write `patch.lean` as soon as you have a draft proof body, even if you intend to refine it. If your spawn gets killed (timeout / quota), the framework persists what's on disk and surfaces it in your next attempt's Context.md as "Your previous incomplete patch.lean". Even a half-finished file gives the next attempt a starting point — a blank file does not.
+If your prior attempt timed out, Context.md's `## Your previous progress note` section carries a short summary of where you got and what blocked you (the framework runs a brief postmortem call after a kill to extract this). Treat it as your starting sketch.
 
 ## What to write
 
