@@ -13,6 +13,7 @@ from Tooling.pipeline import (
     _lean_path_to_module,
     _slug_from_filename,
     _safe_glob,
+    _SORRY_RE,
 )
 
 
@@ -118,6 +119,37 @@ def test_lean_path_to_module_nested(tmp_path: Path) -> None:
 def test_slug_from_filename() -> None:
     assert _slug_from_filename("new_main_sub_1.lean") == "main_sub_1"
     assert _slug_from_filename("foo.lean") == "foo"
+
+
+# ---------------------------------------------------------------------
+# _SORRY_RE — sorry-detection used by _try_promote_sorry_free
+# ---------------------------------------------------------------------
+
+def test_sorry_re_detects_canonical_stub() -> None:
+    assert _SORRY_RE.search("theorem foo : Nat := by sorry")
+    assert _SORRY_RE.search("theorem foo : Nat := by\n  sorry\n")
+
+
+def test_sorry_re_detects_sorryAx_token() -> None:
+    # `sorry` is a substring of `sorryAx` and we want both flagged.
+    assert _SORRY_RE.search("def foo := @sorryAx _")
+
+
+def test_sorry_re_misses_words_containing_sorry_substring() -> None:
+    # Word-boundary anchored: hypothetical identifier with `sorry`
+    # baked in as a substring (e.g. `sorrying`, `sorryless`) should
+    # not flag. Realistic Lean code rarely names anything this way,
+    # but the regex protects us if it ever does.
+    assert _SORRY_RE.search("foo := sorrying") is None
+    assert _SORRY_RE.search("foo := nosorry") is None
+
+
+def test_sorry_re_clean_proof() -> None:
+    src = (
+        "theorem foo (n : ℕ) : n + 0 = n := by\n"
+        "  rfl\n"
+    )
+    assert _SORRY_RE.search(src) is None
 
 
 # ---------------------------------------------------------------------

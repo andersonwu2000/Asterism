@@ -637,6 +637,10 @@ def run(workspace: Path, *, once: bool = False) -> int:
                 # call on every daemon exit.
                 library.maybe_promote(
                     conn, workspace, problem_name, manifests[problem_name])
+                # Final TREE.md refresh — the per-cascade write_for_target
+                # ran before the verify_housekeeping that cascade-proved
+                # the root, leaving TREE.md frozen at root=attempting.
+                tree.write(conn, workspace, problem_name)
             pool.shutdown(wait=False, cancel_futures=True)
             return 0
 

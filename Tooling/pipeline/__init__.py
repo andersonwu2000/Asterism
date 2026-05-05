@@ -170,6 +170,71 @@ def _ensure_imports_subgoal(
 # the hypothesis set is missing something the conclusion clearly needs.
 DECLINE_TOO_HARD = "too_hard"
 DECLINE_PARENT_TYPE_INFEASIBLE = "parent_type_infeasible"
+
+# Backward-placement convention: each `new_<sub_slug>.lean` should land
+# with body `:= by sorry`. Agents occasionally inline a full proof
+# instead (observed on SG s75_sub_4 — agent collapsed the sub-goal with
+# `by_contra + ring + nlinarith`). When that happens AND axioms are in
+# whitelist, we skip the now-redundant Backward dispatch and mark the
+# sub-goal proved upfront. The check is fast: `\bsorry\b` substring
+# match first (microseconds; 99% of placements have sorry); only the
+# rare sorry-free case pays the axiom-probe cost.
+_SORRY_RE = re.compile(r"\b(?:sorry|sorryAx)\b")
+
+
+def _try_promote_sorry_free(
+    *, dest: Path, problem: str, slug: str, workspace: Path,
+    axioms_whitelist: list[str],
+) -> tuple[bool, str]:
+    """If `dest` is sorry-free AND its `#print axioms` set is a subset
+    of `axioms_whitelist`, return (True, msg). Otherwise (False, reason).
+
+    The strategy's batch lake build at the caller's site already
+    confirmed the file compiles, so we skip a redundant compile here
+    and only run `#print axioms` on the candidate identifier.
+
+    Empty whitelist → reject (the project clearly didn't authorize
+    bypassing the axiom gate; conservative path is to dispatch).
+    """
+    try:
+        content = dest.read_text(encoding="utf-8")
+    except OSError as exc:
+        return False, f"read failed: {exc}"
+    if _SORRY_RE.search(content):
+        return False, "body contains sorry"
+    if not axioms_whitelist:
+        return False, "no axioms_whitelist"
+    fq_name = f"Problems.{problem}.{slug}"
+    module = _lean_path_to_module(workspace, dest)
+    probe = workspace / f"_axiom_probe_{slug}.lean"
+    probe.write_text(
+        f"import {module}\n#print axioms {fq_name}\n",
+        encoding="utf-8",
+    )
+    try:
+        r = subprocess.run(
+            ["lake", "env", "lean", str(probe)],
+            cwd=str(workspace), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=180,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return False, f"axiom probe failed: {exc}"
+    finally:
+        probe.unlink(missing_ok=True)
+    if r.returncode != 0:
+        return False, f"axiom probe rc={r.returncode}"
+    used: set[str] = set()
+    m = re.search(r"depends on axioms?\s*:\s*\[(.*?)\]",
+                  r.stdout, re.DOTALL)
+    if m:
+        for a in m.group(1).split(","):
+            a = a.strip()
+            if a:
+                used.add(a)
+    rogue = used - set(axioms_whitelist)
+    if rogue:
+        return False, f"rogue axioms: {sorted(rogue)}"
+    return True, f"axioms ok: {sorted(used) or '[]'}"
 _DECLINE_RE = re.compile(
     r"(?m)^---\s*$.*?^decline_reason\s*:\s*([\w_]+).*?^---\s*$",
     re.DOTALL,
@@ -999,7 +1064,10 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
 
         # All passed — INSERT goals + link via strategy_subgoals.
         # Dedupe-hits are inserted as already-'proved' (alias body is
-        # the proof); novel sub-goals start 'open'.
+        # the proof); novel sub-goals start 'open'. Sorry-free
+        # placements with whitelisted axioms also start 'proved' —
+        # spares a redundant Backward/Builder spawn that would just
+        # `promote_to_alias` over the same content.
         linked_ids: list[int] = []
         for (slug, dest), canonical_id in zip(sub_dests, canonical_for):
             stmt = _extract_statement_from_lean(dest)
@@ -1018,6 +1086,16 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                 # canonical (in case it's an orphan from a dead strategy)
                 # for as long as this alias is alive.
                 db.set_alias_target(conn, new_gid, canonical_id)
+            else:
+                ok, msg = _try_promote_sorry_free(
+                    dest=dest, problem=goal["problem"], slug=slug,
+                    workspace=workspace,
+                    axioms_whitelist=mfst.axioms_whitelist,
+                )
+                if ok:
+                    db.update_goal_status(conn, new_gid, "proved")
+                    print(f"[skip-dispatch] {slug} → proved ({msg})",
+                          flush=True)
             linked_ids.append(new_gid)
         for pos, gid in enumerate(linked_ids):
             db.link_subgoal(conn, strategy_id=strategy_id,
