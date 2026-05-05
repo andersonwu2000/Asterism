@@ -1,9 +1,9 @@
 import Mathlib
 import Problems.sylvester_gallai.Defs
-import Problems.sylvester_gallai.proofs._strategy_s44
 
 namespace Problems.sylvester_gallai
 
-def main := @Problems.sylvester_gallai.s44
+-- entry_kind: Builder
+theorem s65_sub_5 : ∀ (A B L : ℝ), 0 < L → A * L < B * L → A < B := by simp_all
 
 end Problems.sylvester_gallai

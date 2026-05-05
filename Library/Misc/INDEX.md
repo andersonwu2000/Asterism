@@ -9,3 +9,5 @@
 - `inner_zero_iff_smul` — ∀ {X : Type*} [NormedAddCommGroup X] [InnerProductSpace ℝ X] (x y : X), inner ℝ x y = 0 ↔ ∀ α : ℝ, ‖x + α • y‖ = ‖x - α • y‖
 
 - `cantor_xi_measure` — ∀ (ξ : ℝ), 0 < ξ → ξ < 1 → MeasureTheory.volume (cantorSet ξ) = 0
+
+- `sylvester_gallai` — ∀ (P : Finset (ℝ × ℝ)), (∃ a ∈ P, ∃ b ∈ P, ∃ c ∈ P, ¬ Collinear a b c) → ∃ p ∈ P, ∃ q ∈ P, p ≠ q ∧ ∀ r ∈ P, Collinear p q r → r = p ∨ r = q

@@ -108,6 +108,9 @@ cantor 是當前最大 sample（50 goals、depth 4、18 verify）。F55+F56 改�
 3b. **(已做) `_safe_glob` 防 Windows reserved-char 檔名** — agent 偶爾寫 `won_exact?.lean`（把 Lean tactic `exact?` 當識別字），Windows path API 對 `?` `<>:"|*` 拋 OSError，使 `Path.glob` 整個 dir 掃描失敗。helper 改用 `os.scandir` + `fnmatch`，跳過 path resolve 階段；單一 fix 涵蓋所有 reserved chars。
 4. **SG with new framework**（已跑驗證部分機制）— F55 postmortem alternative-direction 確認有效；entry_kind 修補後 root 直接 Backward；尚未跑出完整 root proved。
 4. **F38 Gemini live smoke** — quota 恢復後跑
+5. **Backward placement 沒驗證 sub-goal body** — `backward.md` 約定 `new_<sub_slug>.lean` 為 `:= by sorry`，但 agent 偶爾 inline 整段 valid proof（SG s75_sub_4 實例：agent 用 `by_contra + ring + nlinarith` 多行收掉），framework 直接吞下、placement 為 `L_<slug>.lean`。**漏洞 (a)**：placement 階段 lint 缺。
+6. **Dispatcher 不檢查 file 是否已 sorry-free 就 dispatch** — 承上，即使 `L_<slug>.lean` 已是 valid proof，只要 `entry_kind: Backward` 仍 spawn Backward worker 重證一次，最終 `promote_to_alias` 把 working proof 蓋掉。**漏洞 (b)**：dispatch 前應 quick lake build placeholder file，sorry-free + axioms 在白名單就直接 mark proved 跳過。SG s75_sub_4 → s76 case 實證 redundant work（重花 ~5 min spawn 一個等價 strategy）。
+7. **TREE.md 在 root proved 後不更新** — `dispatcher.py:620` 的 "all roots proved" exit 分支只跑 reconcile/prune/library_promote 就 return 0，**沒呼叫 `tree.write_for_target`**。最後 `verify_housekeeping` 把 root cascade-proved 的那輪不觸發 per-cascade tree write，TREE.md 凍結在 root=attempting 的前一刻；prune 又砍 orphan 檔，TREE 內的死分支引用全失效。SG run 2026-05-05 21:10:00 root proved 後實證。**漏洞**：exit 分支應在 reconcile 後重 render 一次 TREE.md。
 5. **第三方 deep problem** — cantor 是當前最深，再要更深場景才知道 dedupe / cascade 邊界
 6. **Strategist** — 拆 Backward 為 Plan + Decompose；只有 SG 在 entry_kind directive 後仍卡住才真的需要
 
