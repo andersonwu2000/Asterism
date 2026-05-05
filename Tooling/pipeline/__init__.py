@@ -105,6 +105,36 @@ TACTIC_TRY_LIST = [
 _IMPORT_LINE_RE = re.compile(r"(?m)^import\s")
 
 
+def _safe_glob(directory: Path, pattern: str) -> list[Path]:
+    """Drop-in replacement for `directory.glob(pattern)` that survives
+    Windows-reserved characters in sibling filenames.
+
+    `pathlib.Path.glob()` traverses the directory by stat'ing each
+    entry; on Windows, `<>:"|?*` in any filename make those stats raise
+    `OSError [Errno 22]`, propagating up and killing the entire glob
+    even when the bad-named file doesn't match the pattern. Agents
+    occasionally write files like `won_exact?.lean` (mistakenly using
+    Lean tactic names like `exact?` as identifiers in slugs), and
+    `attempts_dir.glob("patch*.lean")` then crashes the whole spawn's
+    validation.
+
+    `os.scandir` enumerates raw NTFS entries without per-entry stat;
+    `fnmatch.fnmatch` is pure string matching. Together we get the
+    pattern semantics without ever resolving the bad-named path.
+    """
+    import os
+    import fnmatch
+    out: list[Path] = []
+    try:
+        with os.scandir(directory) as it:
+            for entry in it:
+                if fnmatch.fnmatch(entry.name, pattern):
+                    out.append(Path(entry.path))
+    except OSError:
+        pass
+    return out
+
+
 def _ensure_imports_subgoal(
     content: str, *, problem: str, workspace: Path,
 ) -> str:
@@ -197,12 +227,13 @@ def collect_artifacts(attempts_dir: Path) -> dict[str, str]:
     P2-#5: promoted from `_collect_artifacts` (used cross-module by
     dispatcher.py)."""
     out: dict[str, str] = {}
-    for f in attempts_dir.glob("*"):
-        if f.is_file() and f.suffix in {".md", ".lean", ".txt"}:
-            try:
-                out[f.name] = f.read_text(encoding="utf-8")
-            except OSError:
-                pass
+    for f in _safe_glob(attempts_dir, "*"):
+        if f.suffix not in {".md", ".lean", ".txt"}:
+            continue
+        try:
+            out[f.name] = f.read_text(encoding="utf-8")
+        except OSError:
+            pass
     return out
 
 
@@ -299,31 +330,6 @@ def _fetch_last_builder_error(conn: sqlite3.Connection,
     if row is None or not row["failure_detail"]:
         return ""
     return diagnostics.strip_lake_noise(row["failure_detail"])
-
-
-def _attempt_commit_phase(*, kind: str, prompt_path: Path,
-                          problem_dir: Path, attempts_dir: Path,
-                          session_id: str) -> None:
-    """Two-phase spawn helper. After body timeout, resume the same
-    session with a 1-line "You have N minutes left" prompt and a 2-min
-    cap. The bet: an explicit interrupt + minimal time-pressure nudge
-    breaks the agent out of internal reasoning into write mode (Backward
-    Sonnet's failure mode is 30K-character thinking blocks with zero
-    Write tool calls — empirically observed across SG g4/g8/g10).
-    Best-effort: any failure is silently absorbed; downstream file
-    validation (or postmortem) handles the case where commit also dove.
-    """
-    try:
-        agent.spawn_llm(
-            kind=kind,
-            prompt_path=prompt_path,
-            problem_dir=problem_dir,
-            attempts_dir=attempts_dir,
-            session_id=session_id,
-            is_commit_phase=True,
-        )
-    except Exception:  # noqa: BLE001
-        pass
 
 
 def _attempt_postmortem(*, kind: str, prompt_path: Path,
@@ -509,42 +515,24 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             db.set_builder_session_id(conn, goal_id, sid)
 
     if rc == SpawnRC.TIMEOUT:
-        # Two-phase spawn: body timed out. Try a 2-min commit-phase
-        # resume first — gives the agent one chance to break out of
-        # thinking-dive and write deliverables. If commit yields a
-        # patch.lean, fall through to normal validation; otherwise
-        # F55 postmortem + return failed.
-        commit_wrote = False
+        # Timeout: agent SIGKILL'd mid-write. F55 — before clearing the
+        # session id, do a short postmortem spawn that resumes the same
+        # session and asks the agent to dump state + blockers into
+        # `_progress.md`. The wrapper then captures _progress.md as
+        # the partial draft for the next dispatch.
         if sid is not None:
-            _attempt_commit_phase(
+            _attempt_postmortem(
                 kind="builder",
-                prompt_path=PROMPT_DIR / "builder_commit.md",
+                prompt_path=PROMPT_DIR / "builder_postmortem.md",
                 problem_dir=workspace / "Problems" / goal["problem"],
                 attempts_dir=attempts_dir,
                 session_id=sid,
             )
-            commit_wrote = bool(list(attempts_dir.glob("patch*.lean")))
-        if commit_wrote:
-            # Treat as ordinary spawn success; the file-validation
-            # path below will run normally (forbidden-lemma grep,
-            # signature check, lake build).
-            rc = SpawnRC.OK
-            db.set_builder_session_id(conn, goal_id, sid)
-        else:
-            if sid is not None:
-                _attempt_postmortem(
-                    kind="builder",
-                    prompt_path=PROMPT_DIR / "builder_postmortem.md",
-                    problem_dir=workspace / "Problems" / goal["problem"],
-                    attempts_dir=attempts_dir,
-                    session_id=sid,
-                )
-            db.set_builder_session_id(conn, goal_id, None)
-            reason, detail = _spawn_failure(
-                SpawnRC.TIMEOUT, attempts_dir, spawn_dur)
-            return PipelineResult(outcome="failed",
-                                  failure_reason=reason,
-                                  failure_detail=detail)
+        db.set_builder_session_id(conn, goal_id, None)
+        reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
+        return PipelineResult(outcome="failed",
+                              failure_reason=reason,
+                              failure_detail=detail)
     if rc != 0:
         # Ordinary failure: keep session_id so next attempt's --resume
         # has the prior failed-turn context to learn from. (Gemini /
@@ -557,7 +545,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     proposal = (attempts_dir / "PROPOSAL.md")
     proposal_text = proposal.read_text(encoding="utf-8") if proposal.exists() else ""
 
-    patches = list(attempts_dir.glob("patch*.lean"))
+    patches = _safe_glob(attempts_dir, "patch*.lean")
     if not patches:
         # F48 — Builder decline channel. The agent followed builder.md's
         # "When to skip writing a patch" hatch: it produced a non-empty
@@ -825,40 +813,21 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             db.set_backward_session_id(conn, goal_id, sid)
 
     if rc == SpawnRC.TIMEOUT:
-        # Two-phase: try commit phase first to break the agent out of
-        # thinking-dive (Backward's typical failure mode is 30K+ char
-        # thinking blocks with zero Write tool calls). Fall through to
-        # validation if commit produced both a patch and at least one
-        # sub-goal stub; otherwise F55 postmortem + return.
-        commit_wrote = False
+        # Timeout: agent SIGKILL'd mid-write. F55 — postmortem spawn
+        # resumes the killed session for a short state-dump into
+        # `_progress.md` before we clear the session id (the wrapper
+        # then persists _progress.md as the partial draft).
         if sid is not None:
-            _attempt_commit_phase(
+            _attempt_postmortem(
                 kind="backward",
-                prompt_path=PROMPT_DIR / "backward_commit.md",
+                prompt_path=PROMPT_DIR / "backward_postmortem.md",
                 problem_dir=workspace / "Problems" / goal["problem"],
                 attempts_dir=attempts_dir,
                 session_id=sid,
             )
-            commit_wrote = (
-                bool(list(attempts_dir.glob("patch*.lean")))
-                and bool(list(attempts_dir.glob("new_*.lean")))
-            )
-        if commit_wrote:
-            rc = SpawnRC.OK
-            db.set_backward_session_id(conn, goal_id, sid)
-        else:
-            if sid is not None:
-                _attempt_postmortem(
-                    kind="backward",
-                    prompt_path=PROMPT_DIR / "backward_postmortem.md",
-                    problem_dir=workspace / "Problems" / goal["problem"],
-                    attempts_dir=attempts_dir,
-                    session_id=sid,
-                )
-            db.set_backward_session_id(conn, goal_id, None)
-            reason, detail = _spawn_failure(
-                SpawnRC.TIMEOUT, attempts_dir, spawn_dur)
-            return _abort(reason, detail)
+        db.set_backward_session_id(conn, goal_id, None)
+        reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
+        return _abort(reason, detail)
     if rc != 0:
         # Ordinary failure — keep session_id so the next dispatch's
         # --resume has the prior failed-turn context to learn from.
@@ -870,8 +839,8 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         return _abort("parse_proposal_fail", "no PROPOSAL.md")
     proposal_text = proposal.read_text(encoding="utf-8")
 
-    patches = list(attempts_dir.glob("patch*.lean"))
-    new_subs = list(attempts_dir.glob("new_*.lean"))
+    patches = _safe_glob(attempts_dir, "patch*.lean")
+    new_subs = _safe_glob(attempts_dir, "new_*.lean")
     if not patches or not new_subs:
         # Backward decline channel. Mirrors Builder's F48 hatch: an agent
         # that finds the goal infeasible (counterexample available, or

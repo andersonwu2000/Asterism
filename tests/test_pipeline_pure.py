@@ -12,6 +12,7 @@ from Tooling.pipeline import (
     _extract_statement,
     _lean_path_to_module,
     _slug_from_filename,
+    _safe_glob,
 )
 
 
@@ -638,3 +639,45 @@ def test_concurrent_promote_two_siblings_keeps_both_backups(
     _rollback_promote(parent, b11)
     assert parent.read_text(encoding="utf-8") == after_w1
     assert b10.exists() and b10.read_text(encoding="utf-8") == original
+
+
+# ---------------------------------------------------------------------
+# _safe_glob — survives Windows-reserved chars in sibling filenames
+# ---------------------------------------------------------------------
+
+def test_safe_glob_returns_pattern_matches(tmp_path: Path) -> None:
+    """Plain happy path: behaves like Path.glob for ordinary names."""
+    (tmp_path / "patch.lean").write_text("x", encoding="utf-8")
+    (tmp_path / "new_s1_sub_1.lean").write_text("x", encoding="utf-8")
+    (tmp_path / "PROPOSAL.md").write_text("x", encoding="utf-8")
+    patches = _safe_glob(tmp_path, "patch*.lean")
+    assert {p.name for p in patches} == {"patch.lean"}
+    subs = _safe_glob(tmp_path, "new_*.lean")
+    assert {p.name for p in subs} == {"new_s1_sub_1.lean"}
+
+
+def test_safe_glob_skips_invalid_filename_siblings(tmp_path: Path) -> None:
+    """The whole point: a sibling file with a Windows-reserved char in
+    its name (e.g. `?` from an agent confusing `exact?` for an
+    identifier) must not crash the glob. We can't reliably *create*
+    such a file on Windows from Python, but we can simulate it: the
+    glob must remain robust if `os.scandir` returns a name that
+    `Path.is_file()` would crash on. Use a name with a `?` if the
+    filesystem accepts; otherwise skip — the safety logic itself is
+    independently exercised by the happy-path test above."""
+    (tmp_path / "patch.lean").write_text("x", encoding="utf-8")
+    bad = tmp_path / "won_exact?.lean"
+    try:
+        bad.write_text("x", encoding="utf-8")
+    except OSError:
+        pytest.skip("filesystem rejects '?' in filename; cannot reproduce")
+    # If creation succeeded, the glob must still find patch.lean and
+    # not raise on the bad sibling.
+    patches = _safe_glob(tmp_path, "patch*.lean")
+    assert {p.name for p in patches} == {"patch.lean"}
+
+
+def test_safe_glob_returns_empty_on_missing_directory(tmp_path: Path) -> None:
+    """Defensive — never raise, just return empty if the directory is
+    gone (e.g. attempts_dir cleaned up between spawn and validation)."""
+    assert _safe_glob(tmp_path / "does-not-exist", "*") == []

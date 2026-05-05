@@ -231,18 +231,14 @@ def _load_prompt(req: LLMRequest) -> str:
 
     Substitutes `{timeout_min}` with the live spawn timeout (in
     minutes) so the prompt's wall-clock hint stays in sync with
-    `WORKER_TIMEOUT_SEC` / `COMMIT_PHASE_SEC` / `POSTMORTEM_TIMEOUT_SEC`.
+    `WORKER_TIMEOUT_SEC` / `POSTMORTEM_TIMEOUT_SEC`.
     """
     from Tooling.agent import render_prompt_template
     try:
         text = req.prompt_path.read_text(encoding="utf-8")
     except OSError as e:
         return f"(prompt file unavailable: {e})"
-    return render_prompt_template(
-        text,
-        is_postmortem=req.is_postmortem,
-        is_commit_phase=req.is_commit_phase,
-    )
+    return render_prompt_template(text, is_postmortem=req.is_postmortem)
 
 
 def _build_cold_prompt(req: LLMRequest) -> str:
@@ -385,14 +381,6 @@ class ClaudeCliProvider:
         if req.is_postmortem and req.session_id:
             session_flags = ["--resume", req.session_id]
             session_lifetime_flag: list[str] = []
-            prompt = _load_prompt(req)
-        # Commit phase — body spawn timed out, framework gives the agent
-        # one more minimal nudge ("You have N min left") via --resume to
-        # break it out of thinking-dive into write mode. Same mechanics
-        # as postmortem: short verbatim prompt, no Context.md re-inject.
-        elif req.is_commit_phase and req.session_id:
-            session_flags = ["--resume", req.session_id]
-            session_lifetime_flag = []
             prompt = _load_prompt(req)
         # F33 — retry path uses `--resume`, a short inline prompt with
         # the lake error embedded directly (no separate RETRY_NOTE.md
