@@ -1,22 +1,53 @@
 # Asterism v2 — Current Status
 
-更新於 2026-05-04（F55 + F56 收尾後）。HEAD `919b1a8`，**569 unit tests + 24 lake-integration green**。
+更新於 2026-05-05（thinking-budget cap 後）。HEAD `8f0d2b3`，**596 unit tests + 1 skipped green**。
 
 ## 下個 session 接手要做的事
 
-Daemon 已停。Operator 即將 /compact 後跑 **sylvester_gallai (Sonnet)** 驗證 F55 postmortem-spawn 機制。SG root id=292 已 reset + init。
+Daemon 已停。下一步：**重跑 SG 驗證 thinking budget cap 效果**（commit `8f0d2b3`）。當前 SG DB 是上一輪的中斷狀態（root attempting, 7 sub-goals proved, g5 卡 Kelly contradiction）。建議**完全 reset**從零跑乾淨 baseline。
 
+```bash
+cd D:/Asterism
+rm -f asterism.db
+rm -rf .attempts/* Problems/sylvester_gallai/.drafts/*.md
+python -m Tooling.cli init sylvester_gallai
+ASTERISM_BUDGET_SEC=21600 python -m Tooling.cli run  # 6hr (跟 GitHub baseline 對齊)
 ```
-ASTERISM_BUDGET_SEC=5400 python -m Tooling.cli run
-```
-（cwd `D:/Asterism`；daemon log 自動 tee 到 `.asterism/logs/`）
 
-**SG 是 F55 的關鍵測試點**：先前 720s timeout 也撐不住、root 未產 PROPOSAL.md。F55 預期讓每次 timeout 留下 `Problems/sylvester_gallai/.drafts/backward_g292.md`（postmortem 寫的進度筆記），下次 spawn 從 sketch 開始而非 0。
+**核心測試點：thinking cap 是否解 dive 問題**。對比舊資料：
+- **舊（high adaptive thinking）**：74% Backward spawn dive（30-40K char thinking, 0 writes），SG g4/g8/g10 都死循環
+- **新（10K token cap @ 1K/min）**：理論上 dive 觸頂被截斷、agent 強制進寫作模式
 
-健康訊號（要看的）：
-- 第 1 次 timeout 後 `.drafts/backward_g292.md` 出現
-- 第 2 次 spawn 的 Context.md 內聯「Your previous progress note」段
-- 0 spawn_fast_fail / 0 naming_violation / 0 mathlib Grep denied
+健康訊號：
+- Backward spawn 的 thinking 不再超過 10K tokens（看 `~/.claude/projects/D--Asterism-Problems-sylvester-gallai/<sid>.jsonl` 的 thinking event size）
+- dive(0 writes) ratio 從 74% 降到顯著低
+- root proved 達成（這次未達；歷史只有 cantor ~4hr 達成過）
+
+如果 thinking cap 仍解不了：
+- 先看 jsonl thinking 是否真的 capped 在 10K（驗證 env 注入有效）
+- 如果 cap 生效但 agent 寫不出檔，考慮再降到 5K-7K
+- 如果 cap 沒生效（thinking 仍 > 10K），表示 `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` 沒被尊重，需 web research / 看 claude CLI 版本
+
+## 本 session（2026-05-04 ~ 05-05）改動鏈
+
+按 commit 順序：
+
+1. `c6a2117` — **Backward prompt 5 個 skeleton**（exists+property / adapter+main / case dispatch / linear pipeline / induction+step）+ postmortem 加 alternative direction
+2. `75f9deb` — **Sub-goal Defs auto-import** — `_ensure_imports_subgoal` 自動加 `import Problems/<p>/Defs`
+3. `e9cbdd7` — **Infeasibility escape channel** + TACTIC_TRY 補 `assumption/tauto/exact?` + 刪 `difficulty>=4` hard gate
+4. `c63e149` — **entry_kind directive** — Backward 為每個 sub-goal 標 Builder/Backward
+5. `234de10` — **刪數字 difficulty** — Manifest `## Entry kind: Builder|Backward`，schema drop 欄位
+6. `30392d2` — Backward prompt Rules 合併 stay-abstract directive
+7. `9c7fc68` then `b117620` — **two-phase commit-phase 加了又回退**（實證 0% 救活，Sonnet thinking 一旦開始無法中斷）
+8. `b117620` — `_safe_glob` 防 Windows reserved-char filename（agent 寫 `won_exact?.lean` 案例）
+9. `ab03522` — Manifest `## Tactical` / `## Mathlib hints` → 統一 `## Lemma hints`
+10. `8f0d2b3` — **thinking budget cap 1K tokens/min**（核心修復！env `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1` + `MAX_THINKING_TOKENS`）
+
+關鍵實證：
+- thinking dive 統計（148 個 spawn）：dive median 9K tokens, successful median 3.7K — 10K cap 是邊界
+- two-phase commit-phase 失敗：session jsonl 顯示 commit prompt 後 agent 完全沒回應 → Sonnet thinking block 是 atomic
+- entry_kind directive：之前 g422/g423 被無條件先 Builder 浪費，新機制讓 Backward 預判跳過 Builder
+- infeasibility escape：g363 實證一次 spawn 內構造反例 + escape，省 SHELVE_THRESHOLD-1 次 timeout
 
 ## 最近批次（2026-05-04）
 
