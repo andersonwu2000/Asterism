@@ -502,22 +502,28 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     # Phase 1: tactic_try — only on fresh `:= by sorry` stubs.
     # Skips structured patches (post-Backward) and re-attempt scenarios
     # to avoid clobbering existing proof structure.
+    #
+    # Single `by first | t1 | t2 | …` block instead of N separate lake
+    # builds. Lake's startup cost (~5-15s) is paid once; Lean's
+    # elaborator handles the short-circuit so cheap tactics still try
+    # first. Failure path: 1 build instead of len(TACTIC_TRY_LIST).
+    # Forensic loss: we don't know which arm closed the goal — if that
+    # ever matters, layer in `Mathlib.Tactic.Hint` + `Says` (Try this:
+    # mechanism captures the winner). See STATUS.md item 9.
     if goal["attempts"] == 0 and _is_sorry_stub(source):
         backup_text = source
-        for tac in TACTIC_TRY_LIST:
-            new_text = _replace_proof_body(source, tac)
-            goal_lean.write_text(new_text, encoding="utf-8")
-            ok, _ = _lake_build(workspace, goal_lean)
-            if ok:
-                forbidden = _grep_forbidden(new_text, mfst.forbidden_lemmas)
-                if not forbidden:
-                    # Snapshot of the working tactic for forensics
-                    (attempts_dir / f"won_{tac}.lean").write_text(
-                        new_text, encoding="utf-8"
-                    )
-                    return PipelineResult(outcome="proved")
-            # Restore for next try
-            goal_lean.write_text(backup_text, encoding="utf-8")
+        first_block = "first\n  | " + "\n  | ".join(TACTIC_TRY_LIST)
+        new_text = _replace_proof_body(source, first_block)
+        goal_lean.write_text(new_text, encoding="utf-8")
+        ok, _ = _lake_build(workspace, goal_lean)
+        if ok:
+            forbidden = _grep_forbidden(new_text, mfst.forbidden_lemmas)
+            if not forbidden:
+                (attempts_dir / "won_first_block.lean").write_text(
+                    new_text, encoding="utf-8"
+                )
+                return PipelineResult(outcome="proved")
+        goal_lean.write_text(backup_text, encoding="utf-8")
         return PipelineResult(outcome="exhausted",
                               failure_reason="tactic_try_exhausted")
 

@@ -241,6 +241,107 @@ def test_eligible_ancestors_skips_orphan_chain(
 
 
 # ---------------------------------------------------------------------
+# _eligible_problem_proved (cross-branch dedup pool, item 11)
+# ---------------------------------------------------------------------
+
+def test_eligible_problem_proved_finds_cross_branch_proved(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """A proved goal on a sibling sub-tree (not in candidate's strict
+    ancestor chain, not an orphan-sibling) should appear in the
+    cross-branch pool."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    branch_a = _seed_sub(conn, slug="branch_a", statement="A")
+    branch_b = _seed_sub(conn, slug="branch_b", statement="B")
+    _link(conn, root, [branch_a, branch_b])
+    cousin_proved = _seed_sub(conn, slug="cousin", statement="X",
+                              depth=2, status="proved")
+    _link(conn, branch_a, [cousin_proved])
+    parent = _seed_sub(conn, slug="parent", statement="OTHER", depth=2)
+    _link(conn, branch_b, [parent])
+    _write_lean(tmp_path, "p", "cousin",
+        "import Mathlib\ntheorem cousin : X := by trivial\n")
+    _write_lean(tmp_path, "p", "branch_a",
+        "import Mathlib\ntheorem branch_a : A := by sorry\n")
+    _write_lean(tmp_path, "p", "branch_b",
+        "import Mathlib\ntheorem branch_b : B := by sorry\n")
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : OTHER := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+
+    pool = dedupe._eligible_problem_proved(
+        conn, tmp_path, problem="p",
+        parent_goal_id=parent, candidate_count=10,
+        exclude_ids=set(),
+    )
+    ids = [r[0]["id"] for r in pool]
+    assert cousin_proved in ids, (
+        "cross-branch proved cousin should be in pool when exclude_ids is empty "
+        "(B1 regression: NOT IN (NULL) silently filtered everything)"
+    )
+
+
+def test_eligible_problem_proved_excludes_parent_and_aliases(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Parent itself (anti-cycle) and existing aliases are excluded."""
+    _seed_problem(conn)
+    root = _seed_root(conn, status="proved")
+    parent = _seed_sub(conn, slug="parent", statement="P",
+                       depth=1, status="proved")
+    _link(conn, root, [parent])
+    aliased = _seed_sub(conn, slug="aliased", statement="A",
+                        depth=1, status="proved")
+    db.set_alias_target(conn, aliased, root)
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by trivial\n", root=True)
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : P := by trivial\n")
+    _write_lean(tmp_path, "p", "aliased",
+        "import Mathlib\ntheorem aliased : A := by trivial\n")
+
+    pool = dedupe._eligible_problem_proved(
+        conn, tmp_path, problem="p",
+        parent_goal_id=parent, candidate_count=10,
+        exclude_ids=set(),
+    )
+    ids = [r[0]["id"] for r in pool]
+    assert parent not in ids
+    assert aliased not in ids
+    assert root in ids
+
+
+def test_eligible_problem_proved_skips_excluded_ids(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Caller passes exclude_ids to dedup with ancestor / orphan pools."""
+    _seed_problem(conn)
+    root = _seed_root(conn, status="proved")
+    parent = _seed_sub(conn, slug="parent", statement="P", depth=1)
+    _link(conn, root, [parent])
+    other = _seed_sub(conn, slug="other", statement="O",
+                      depth=1, status="proved")
+    _link(conn, root, [other])
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by trivial\n", root=True)
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : P := by sorry\n")
+    _write_lean(tmp_path, "p", "other",
+        "import Mathlib\ntheorem other : O := by trivial\n")
+
+    pool = dedupe._eligible_problem_proved(
+        conn, tmp_path, problem="p",
+        parent_goal_id=parent, candidate_count=10,
+        exclude_ids={root},
+    )
+    ids = [r[0]["id"] for r in pool]
+    assert root not in ids  # excluded by caller
+    assert other in ids
+
+
+# ---------------------------------------------------------------------
 # find_canonicals_batch (with monkeypatched _batch_isdefeq)
 # ---------------------------------------------------------------------
 

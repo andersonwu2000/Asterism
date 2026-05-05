@@ -372,6 +372,64 @@ def _eligible_orphan_subgoals(conn: sqlite3.Connection, workspace: Path, *,
     return eligible
 
 
+def _eligible_problem_proved(conn: sqlite3.Connection, workspace: Path, *,
+                             problem: str, parent_goal_id: int,
+                             candidate_count: int,
+                             exclude_ids: set[int],
+                             ) -> list[tuple[sqlite3.Row, str]]:
+    """Proved goals anywhere in the same Problem (cross-branch). Catches
+    the case where two independent decomposition branches landed on
+    type-equivalent sub-goals — the strict-ancestor / orphan-sibling
+    pools don't see this.
+
+    Excludes:
+    - `parent_goal_id` (aliasing to your own parent is a logical cycle).
+    - `alias_target_id IS NOT NULL` (no alias chains; pool stays "real
+      proofs only", same rule as `_eligible_orphan_subgoals`).
+    - `exclude_ids` (caller passes ancestors + orphans already counted
+      so we don't double-emit pairs into the batch).
+
+    Anti-cycle: a proved goal G's `lean_path` is concrete on disk —
+    elaborated against its own already-proved sub-tree, with no
+    placeholder slots. Importing G from candidate's alias file is
+    therefore non-recursive at lake-build time. (Contrast the ancestor
+    case where parent is transitively waiting for candidate's proof,
+    so aliasing candidate to parent would loop.)
+    """
+    # Guard against `NOT IN ()` / `NOT IN (NULL)` — both filter all rows
+    # out in SQLite. When `exclude_ids` is empty (root-adjacent Backward
+    # with no ancestors yet — exactly when cross-branch dedup is most
+    # useful), drop the clause entirely.
+    if exclude_ids:
+        placeholders = ",".join("?" for _ in exclude_ids)
+        exclude_clause = f" AND g.id NOT IN ({placeholders})"
+        params = (problem, parent_goal_id, *exclude_ids)
+    else:
+        exclude_clause = ""
+        params = (problem, parent_goal_id)
+    rows = conn.execute(
+        f"SELECT g.id, g.statement, g.lean_path, g.status FROM goals g "
+        f"WHERE g.problem = ? AND g.status = 'proved' "
+        f"  AND g.alias_target_id IS NULL "
+        f"  AND g.id != ?"
+        f"{exclude_clause} "
+        f"ORDER BY g.id ASC",
+        params,
+    ).fetchall()
+
+    eligible: list[tuple[sqlite3.Row, str]] = []
+    for r in rows:
+        try:
+            canon_text = (workspace / r["lean_path"]).read_text(
+                encoding="utf-8")
+        except OSError:
+            continue
+        if _signature_binder_count(canon_text) > candidate_count:
+            continue
+        eligible.append((r, canon_text))
+    return eligible
+
+
 def find_canonicals_batch(
     conn: sqlite3.Connection, workspace: Path, *,
     problem: str, parent_goal_id: int,
@@ -392,8 +450,9 @@ def find_canonicals_batch(
     if n == 0:
         return []
 
-    # Per-candidate eligible canonicals: ancestors first (priority), then
-    # F42 orphan siblings. Both pre-filtered by binder count.
+    # Per-candidate eligible canonicals: ancestors first (priority),
+    # then F42 orphan siblings, then cross-branch proved goals in the
+    # same Problem. All three pre-filtered by binder count.
     cand_ancestors: list[list[tuple[sqlite3.Row, str]]] = []
     for slug, full_text in candidates:
         sig = _extract_full_signature(full_text)
@@ -409,7 +468,13 @@ def find_canonicals_batch(
             conn, workspace, problem=problem,
             parent_goal_id=parent_goal_id, candidate_count=cand_count,
         )
-        cand_ancestors.append(anc + orph)
+        seen_ids = {int(r["id"]) for r, _ in anc} | {int(r["id"]) for r, _ in orph}
+        cross = _eligible_problem_proved(
+            conn, workspace, problem=problem,
+            parent_goal_id=parent_goal_id, candidate_count=cand_count,
+            exclude_ids=seen_ids,
+        )
+        cand_ancestors.append(anc + orph + cross)
 
     # Build flat list of pairs to check; track origin (cand_idx, anc_row)
     pairs: list[tuple[str, str]] = []
