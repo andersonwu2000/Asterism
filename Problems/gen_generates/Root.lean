@@ -1,8 +1,9 @@
 import Mathlib
 import Problems.gen_generates.Defs
+import Problems.gen_generates.proofs._strategy_s126
 
 namespace Problems.gen_generates
 
-theorem main : ∀ (n : ℕ) [Fact (2 ≤ n)] (x : G n), x ∈ Subgroup.zpowers (gen n) := by sorry
+def main := @Problems.gen_generates.s126
 
 end Problems.gen_generates

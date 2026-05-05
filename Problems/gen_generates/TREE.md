@@ -3,13 +3,18 @@
 _Auto-updated by dispatcher on every cascade._
 
 ```
-main  (attempting, attempts=1)
+main  (proved, attempts=1)
 ├── via s124  (dead)
-└── via s126  (proposed)
-    ├── s126_sub_1  (attempting)
-    │   └── via s127  (proposed)
+└── via s126  (succeeded)
+    ├── s126_sub_1  (proved)
+    │   └── via s127  (succeeded)
     │       ├── s127_sub_1  (proved)
-    │       └── s127_sub_2  (open, attempts=3)
+    │       └── s127_sub_2  (proved, attempts=3)
+    │           ├── via s132  (dead)
+    │           ├── via s133  (dead)
+    │           └── via s135  (succeeded)
+    │               ├── s135_sub_1  (proved, attempts=2)
+    │               └── s135_sub_2  (proved, attempts=1)
     ├── s126_sub_2  (proved)
     │   └── via s130  (succeeded)
     │       ├── s130_sub_1  (proved, attempts=2)
@@ -24,4 +29,4 @@ main  (attempting, attempts=1)
             └── s129_sub_2  (proved)
 ```
 
-**Counters:** 10 proved / 2 attempting / 1 open
+**Counters:** 15 proved

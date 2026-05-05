@@ -1,9 +1,9 @@
 import Mathlib
 import Problems.gen_generates.Defs
+import Problems.gen_generates.proofs._strategy_s135
 
 namespace Problems.gen_generates
 
-theorem s127_sub_2 : ∀ (n : ℕ) [Fact (2 ≤ n)] (a : ZMod n),
-    (a.val : ZMod n) = a := by sorry
+def s127_sub_2 := @Problems.gen_generates.s135
 
 end Problems.gen_generates
