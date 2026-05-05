@@ -1,9 +1,9 @@
 import Mathlib
 import Problems.sylvester_gallai.Defs
-import Problems.sylvester_gallai.proofs._strategy_s77
+import Problems.sylvester_gallai.proofs._strategy_s87
 
 namespace Problems.sylvester_gallai
 
-def main := @Problems.sylvester_gallai.s77
+def s83_sub_3 := @Problems.sylvester_gallai.s87
 
 end Problems.sylvester_gallai

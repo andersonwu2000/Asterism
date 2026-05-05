@@ -12,18 +12,10 @@ dispatch:
 #   shelve_threshold: 8   # total attempts per goal before shelving
 #                         # (goal-level cap; spans Builder + Backward)
 
-# builder:
-#   provider: claude      # claude | gemini | openai
-#   model: claude-sonnet-4-6
-#   threshold: 3          # Builder attempts per goal before escalating
-#                         # to Backward. Lives next to the Builder model
-#                         # because it should be sized to that model:
-#                         #   Sonnet/Opus:        3        ← default
-#                         #   Haiku/Flash/mini:   5        (weaker; needs more shots)
-#                         #   Local/quantized:    8
+builder:
+  provider: claude
+  model: claude-opus-4-7
 
-# backward:
-#   provider: claude
-#   model: claude-sonnet-4-6
-#                         # backward has no `threshold` — it's the
-#                         # destination kind once Builder gives up.
+backward:
+  provider: claude
+  model: claude-opus-4-7

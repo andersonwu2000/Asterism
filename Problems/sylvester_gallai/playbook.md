@@ -1,19 +1,19 @@
-- **Existential reformulation by direct witness reuse**: Unpack the triple, set `p := a, x := b, y := c`; derive `b ≠ c` from `¬ Collinear a b b` reducing to `0 = 0` via `simp [Collinear]` or `intro rfl`.
+- **Argmin over filtered triple-product Finset**: Use `Finset.exists_min_image` on `(P×ˢP×ˢP).filter pred` with `open Classical`; delegate pack/unpack of `mem_filter`/`mem_product` to Builder sub-lemmas.
 
-- **Nonempty filter via explicit witness triple**: Unpack existentials, then `exact ⟨(p, a, b), membership_lemma ...⟩`; membership closed by `simp [Finset.mem_filter, Finset.mem_product]` + hypotheses. Needs `open Classical` for `Collinear` decidability.
+- **Sylvester–Gallai existence goal**: `by_contra` + Skolemise the negated `∃ p q, p≠q ∧ ∀ r, …` via a pure-logic sub-lemma, then feed the universal witness into a Kelly-style geometric refutation sub-lemma.
 
-- **Finset minimum of scaled perpendicular distance**: Filter `P ×ˢ (P ×ˢ P)` by non-collinearity, apply `Finset.exists_min_image` on the real-division objective, then cross-multiply with `s31_sub_3` using positivity of squared distances from `s31_sub_2`.
+- **Existence of perpendicular-distance² minimiser over point triples**: Split into Builder witness (`p,q,r` from non-collinear triple, `p≠q` via `Collinear`'s `mul_comm` symmetry) + Backward `Finset.exists_min_image` on filtered `P ×ˢ P ×ˢ P`, then unpack.
 
-- **Sylvester–Gallai via Kelly min-distance**: Use `Finset.exists_min_image` to get a minimiser triple, then derive contradiction from a third collinear point via cross-product arithmetic; assemble with `s44_sub_1/2/3`.
+- **Kelly polynomial closer (μ-substituted)**: Backward-split into `D² > 0` (unfold `Collinear` determinant + `ring`), `2μA ≤ 0` (sign case-split on H1/H2), then `nlinarith` closes via identity `RHS−LHS = D²·(|q−r|² − 2μA)`.
 
-- **Finset filter Nonempty via explicit witness**: `open Classical` at namespace level (not tactic-level) for `DecidablePred` on filter type; unpack existentials, derive `b ≠ c` from non-collinearity sub-lemma, close with `refine ⟨(a,b,c), ?_⟩` + `simp [mem_filter, mem_product]`.
+- **|s-p|² < |r-p|² via Lagrange + strict Cauchy–Schwarz**: Combine four sub-lemmas (|u|²>0, Lagrange equality on s, sign-bound (s-p)·u, strict CS at r) then `nlinarith` to cancel the positive |u|² factor.
 
-- **Minimum cross-multiplied perpendicular distance exists**: Build a filtered product Finset of non-collinear triples, apply `Finset.exists_min_image` on the squared-distance ratio, then use `div_le_div_iff₀` to cross-multiply into the product inequality.
+- **Cross-square inequality with collinearity-induced identity rewrite**: Split `A²·D < C²·E` as identity `A²·D = C²·F` (`s100_sub_1`) plus `F < E` (`sub_2`) and `C² > 0` (`sub_3`); finish with `rw [h1]; exact mul_lt_mul_of_pos_left h2 h3`.
 
-- **Parametric point closer to foot than off-line point**: Witness `(c, a)`; chain `d(c,a)²·L = t²L²  <  dot²+D²  = d(p,a)²·L` via Lagrange identity + `nlinarith`, then divide by `L > 0`.
+- **Strict ratio inequality `X²/D1 < Y²/D2`**: Prove both denominators positive, then `rw [div_lt_div_iff₀ hD2 hD1]` to reduce to the cross-multiplied polynomial inequality.
 
-- **Collinearity contradiction via line uniqueness**: Case-split `x ≠ z` into coordinate differences; transfer collinearity with `nlinarith` witnesses; then use permutation symmetry (`simp [Collinear]; ring`) to close against the negated hypothesis.
+- **Kelly geometric step (smaller perp-distance triple)**: Pigeonhole `{p,q,s}` along line `pq` via signed scalar projections to a same-side pair, then dispatch each of the 3 cases to a sub-lemma with `rcases … | … | …`.
 
-- **Closest point among collinear triple to off-line point**: Split on `t ≤ 1/2` vs `t > 1/2` via `le_or_gt`; in each branch use `(c,b)` or `(c,a)` as witness and close with `nlinarith` using squared cross-product and parametric distance identities.
+- **Minimiser of perp-distance² ⇒ False**: Split off the Kelly construction as a Backward sub-lemma producing a strictly-smaller witness, then close with `absurd (h_min …) (not_le.mpr h_lt)`.
 
-- **Closest-endpoint distance on parametric segment**: `by_contra`+`not_or`; express `d(c,a)²` and `d(c,b)²` via `ring`, lift bounds with `mul_le_mul_of_nonneg_right`, apply Lagrange identity via `ring`, then close with `nlinarith`/`sq_pos_of_ne_zero` sub-lemma.
+- **Kelly cross-multiplied distance bound (Case B)**: Introduce A,B,D,E,α,β; combine ring identities `A·D = B·(β−α)` and `α²+B² = D·E` with `D>0`, `B≠0` and feed to nlinarith.
