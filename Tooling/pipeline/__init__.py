@@ -301,6 +301,31 @@ def _fetch_last_builder_error(conn: sqlite3.Connection,
     return diagnostics.strip_lake_noise(row["failure_detail"])
 
 
+def _attempt_commit_phase(*, kind: str, prompt_path: Path,
+                          problem_dir: Path, attempts_dir: Path,
+                          session_id: str) -> None:
+    """Two-phase spawn helper. After body timeout, resume the same
+    session with a 1-line "You have N minutes left" prompt and a 2-min
+    cap. The bet: an explicit interrupt + minimal time-pressure nudge
+    breaks the agent out of internal reasoning into write mode (Backward
+    Sonnet's failure mode is 30K-character thinking blocks with zero
+    Write tool calls — empirically observed across SG g4/g8/g10).
+    Best-effort: any failure is silently absorbed; downstream file
+    validation (or postmortem) handles the case where commit also dove.
+    """
+    try:
+        agent.spawn_llm(
+            kind=kind,
+            prompt_path=prompt_path,
+            problem_dir=problem_dir,
+            attempts_dir=attempts_dir,
+            session_id=session_id,
+            is_commit_phase=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _attempt_postmortem(*, kind: str, prompt_path: Path,
                         problem_dir: Path, attempts_dir: Path,
                         session_id: str) -> None:
@@ -484,24 +509,42 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             db.set_builder_session_id(conn, goal_id, sid)
 
     if rc == SpawnRC.TIMEOUT:
-        # Timeout: agent SIGKILL'd mid-write. F55 — before clearing the
-        # session id, do a short postmortem spawn that resumes the same
-        # session and asks the agent to dump state + blockers into
-        # `_progress.md`. The wrapper then captures _progress.md as
-        # the partial draft for the next dispatch.
+        # Two-phase spawn: body timed out. Try a 2-min commit-phase
+        # resume first — gives the agent one chance to break out of
+        # thinking-dive and write deliverables. If commit yields a
+        # patch.lean, fall through to normal validation; otherwise
+        # F55 postmortem + return failed.
+        commit_wrote = False
         if sid is not None:
-            _attempt_postmortem(
+            _attempt_commit_phase(
                 kind="builder",
-                prompt_path=PROMPT_DIR / "builder_postmortem.md",
+                prompt_path=PROMPT_DIR / "builder_commit.md",
                 problem_dir=workspace / "Problems" / goal["problem"],
                 attempts_dir=attempts_dir,
                 session_id=sid,
             )
-        db.set_builder_session_id(conn, goal_id, None)
-        reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
-        return PipelineResult(outcome="failed",
-                              failure_reason=reason,
-                              failure_detail=detail)
+            commit_wrote = bool(list(attempts_dir.glob("patch*.lean")))
+        if commit_wrote:
+            # Treat as ordinary spawn success; the file-validation
+            # path below will run normally (forbidden-lemma grep,
+            # signature check, lake build).
+            rc = SpawnRC.OK
+            db.set_builder_session_id(conn, goal_id, sid)
+        else:
+            if sid is not None:
+                _attempt_postmortem(
+                    kind="builder",
+                    prompt_path=PROMPT_DIR / "builder_postmortem.md",
+                    problem_dir=workspace / "Problems" / goal["problem"],
+                    attempts_dir=attempts_dir,
+                    session_id=sid,
+                )
+            db.set_builder_session_id(conn, goal_id, None)
+            reason, detail = _spawn_failure(
+                SpawnRC.TIMEOUT, attempts_dir, spawn_dur)
+            return PipelineResult(outcome="failed",
+                                  failure_reason=reason,
+                                  failure_detail=detail)
     if rc != 0:
         # Ordinary failure: keep session_id so next attempt's --resume
         # has the prior failed-turn context to learn from. (Gemini /
@@ -782,21 +825,40 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             db.set_backward_session_id(conn, goal_id, sid)
 
     if rc == SpawnRC.TIMEOUT:
-        # Timeout: agent SIGKILL'd mid-write. F55 — postmortem spawn
-        # resumes the killed session for a short state-dump into
-        # `_progress.md` before we clear the session id (the wrapper
-        # then persists _progress.md as the partial draft).
+        # Two-phase: try commit phase first to break the agent out of
+        # thinking-dive (Backward's typical failure mode is 30K+ char
+        # thinking blocks with zero Write tool calls). Fall through to
+        # validation if commit produced both a patch and at least one
+        # sub-goal stub; otherwise F55 postmortem + return.
+        commit_wrote = False
         if sid is not None:
-            _attempt_postmortem(
+            _attempt_commit_phase(
                 kind="backward",
-                prompt_path=PROMPT_DIR / "backward_postmortem.md",
+                prompt_path=PROMPT_DIR / "backward_commit.md",
                 problem_dir=workspace / "Problems" / goal["problem"],
                 attempts_dir=attempts_dir,
                 session_id=sid,
             )
-        db.set_backward_session_id(conn, goal_id, None)
-        reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
-        return _abort(reason, detail)
+            commit_wrote = (
+                bool(list(attempts_dir.glob("patch*.lean")))
+                and bool(list(attempts_dir.glob("new_*.lean")))
+            )
+        if commit_wrote:
+            rc = SpawnRC.OK
+            db.set_backward_session_id(conn, goal_id, sid)
+        else:
+            if sid is not None:
+                _attempt_postmortem(
+                    kind="backward",
+                    prompt_path=PROMPT_DIR / "backward_postmortem.md",
+                    problem_dir=workspace / "Problems" / goal["problem"],
+                    attempts_dir=attempts_dir,
+                    session_id=sid,
+                )
+            db.set_backward_session_id(conn, goal_id, None)
+            reason, detail = _spawn_failure(
+                SpawnRC.TIMEOUT, attempts_dir, spawn_dur)
+            return _abort(reason, detail)
     if rc != 0:
         # Ordinary failure — keep session_id so the next dispatch's
         # --resume has the prior failed-turn context to learn from.

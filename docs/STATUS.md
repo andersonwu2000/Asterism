@@ -69,6 +69,8 @@ cantor 是當前最大 sample（50 goals、depth 4、18 verify）。F55+F56 改�
 
 2. **(已做) TACTIC_TRY_LIST 補 `assumption` / `tauto` / `exact?`** — `A → B → A`-shaped 廢題型 Phase 1 直接收工。`linear_combination`（需係數）/ `polyrith`（需 Sage）暫不做。
 3. **(已做) Infeasibility escape channel** — `decline_reason: parent_type_infeasible` PROPOSAL.md frontmatter；Builder + Backward 都可 escape；cascade 直接 shelve goal + propagate 上層重拆，不燒 attempts。SG 實證 g363 一次 spawn 內構造反例 + escape 成功。
+
+3a. **(已做) Two-phase spawn** — body 480s timeout 後框架 `--resume` 同 session 加 1 行 prompt `You have {timeout_min} minutes left.` 跑 commit-phase 120s。打斷 thinking-dive，逼 agent 切寫作模式。若 commit 寫出 deliverables（Backward: patch+new_*；Builder: patch）→ fall through 正常 validation；否則 F55 postmortem。Total worst-case wall clock 不變（480+120+180=780s vs 舊 600+180=780s）。源於 SG 分析：74% Backward spawn 燒 36-40K thinking 0 writes，內部 reasoning loop 無視 deadline。
 4. **SG with new framework**（已跑驗證部分機制）— F55 postmortem alternative-direction 確認有效；entry_kind 修補後 root 直接 Backward；尚未跑出完整 root proved。
 4. **F38 Gemini live smoke** — quota 恢復後跑
 5. **第三方 deep problem** — cantor 是當前最深，再要更深場景才知道 dedupe / cascade 邊界

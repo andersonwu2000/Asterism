@@ -326,26 +326,30 @@ def test_backward_timeout_dispatches_postmortem_with_correct_args(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F55 — on main-spawn timeout, framework calls spawn_llm a second
-    time with is_postmortem=True, prompt_path pointing at
-    backward_postmortem.md, and the same session_id as the killed
-    main spawn (so --resume can revive its memory)."""
+    """Two-phase timeout flow: main spawn timeout → commit-phase spawn
+    (1-line "you have N min left", --resume) → if commit also writes
+    nothing → F55 postmortem (--resume, asks for `_progress.md`).
+    All three calls share the same session_id."""
     gid = _seed_root_goal(tmp_path, conn)
     calls = []
 
     def fake_spawn(**kw):
         calls.append(kw)
-        if kw.get("is_postmortem"):
-            return 124  # don't bother writing — just inspect args
-        return 124  # main timeout
+        return 124  # all phases time out — never writes deliverables
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
         mfst=manifest.Manifest(problem="p", statement="True"),
         pipeline_id="pid-bw-pm-args")
-    assert len(calls) == 2  # main + postmortem
-    main_call, pm_call = calls
+    assert len(calls) == 3  # main + commit + postmortem
+    main_call, commit_call, pm_call = calls
+    # Commit phase
+    assert commit_call.get("is_commit_phase") is True
+    assert commit_call["session_id"] == main_call["session_id"]
+    assert commit_call["prompt_path"].name == "backward_commit.md"
+    assert commit_call["kind"] == "backward"
+    # Postmortem
     assert pm_call["is_postmortem"] is True
     assert pm_call["session_id"] == main_call["session_id"]
     assert pm_call["prompt_path"].name == "backward_postmortem.md"
@@ -365,7 +369,7 @@ def test_backward_wrapper_no_persist_when_no_postmortem_note(
     def fake_spawn(**kw):
         if kw.get("is_postmortem"):
             return 124  # postmortem also times out — no _progress.md
-        return 124  # main timeout
+        return 124  # main + commit phase both time out
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     pipeline.run_backward(
@@ -374,6 +378,49 @@ def test_backward_wrapper_no_persist_when_no_postmortem_note(
         pipeline_id="pid-bw-nodump")
     draft = _bw_drafts_path(tmp_path, gid)
     assert not draft.exists()
+
+
+def test_backward_commit_phase_skipped_when_writes_appear(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If body times out but commit-phase produces both a patch and a
+    sub-goal stub, the framework falls through to file validation
+    instead of running postmortem. Exercises the two-phase happy path:
+    postmortem only fires when commit also yields nothing."""
+    gid = _seed_root_goal(tmp_path, conn)
+    calls = []
+
+    def fake_spawn(**kw):
+        calls.append(kw)
+        if kw.get("is_commit_phase"):
+            # Simulate the commit-phase spawn breaking out and writing
+            # a (deliberately malformed) patch + sub-goal — file
+            # validation will reject downstream, but the postmortem
+            # branch must NOT run.
+            ad = kw["attempts_dir"]
+            (ad / "patch.lean").write_text("malformed", encoding="utf-8")
+            (ad / "new_s1_sub_1.lean").write_text(
+                "namespace x\nend x\n", encoding="utf-8")
+            (ad / "PROPOSAL.md").write_text("draft", encoding="utf-8")
+            return 124  # commit also reports timeout, but files exist
+        if kw.get("is_postmortem"):
+            return 0
+        return 124  # body timeout
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=manifest.Manifest(problem="p", statement="True"),
+        pipeline_id="pid-bw-commit-ok")
+    kinds = [c.get("is_commit_phase", False) or c.get("is_postmortem", False)
+             for c in calls]
+    # main + commit; no postmortem because files appeared
+    assert len(calls) == 2
+    assert calls[0].get("is_postmortem", False) is False
+    assert calls[0].get("is_commit_phase", False) is False
+    assert calls[1].get("is_commit_phase") is True
+    assert all(not c.get("is_postmortem") for c in calls)
 
 
 def test_backward_wrapper_clears_draft_on_goal_no_longer_open(

@@ -46,7 +46,16 @@ from .context import (  # noqa: F401  (re-export)
 )
 
 
-WORKER_TIMEOUT_SEC = 600  # 10 min, see architecture.md §13
+WORKER_TIMEOUT_SEC = 480  # body phase: 8 min, see architecture.md §13
+
+# Two-phase spawn: after `WORKER_TIMEOUT_SEC` body, if no deliverables
+# were written (Backward thinking-dive failure mode), the framework
+# fires a `--resume` commit-phase spawn with a 1-line prompt telling
+# the agent how much time remains — bet is the interrupt + minimal
+# nudge breaks the agent out of internal reasoning into write mode.
+# Total worst-case wall clock unchanged (480 + 120 + 180 = 780s,
+# matches old 600 + 180 = 780s).
+COMMIT_PHASE_SEC = 120
 
 # F55 — postmortem spawn after a main-spawn timeout. Uses --resume so
 # session memory is intact; agent writes a short state + blocker note
@@ -56,6 +65,23 @@ WORKER_TIMEOUT_SEC = 600  # 10 min, see architecture.md §13
 # postmortem timed out twice running, leaving no draft for the next
 # spawn). 180s gives ~50% more breathing room for the same pattern.
 POSTMORTEM_TIMEOUT_SEC = 180
+
+
+def render_prompt_template(text: str, *, is_postmortem: bool = False,
+                           is_commit_phase: bool = False) -> str:
+    """Substitute `{timeout_min}` in a prompt template with the live
+    timeout (in minutes). Body phase reports the *combined* budget
+    body + commit (= the agent's effective working window across the
+    main spawn and the post-timeout resume), not just the body cap —
+    otherwise the agent under-counts and might cut off thinking too
+    early. Commit and postmortem phases each report their own cap."""
+    if is_commit_phase:
+        timeout_sec = COMMIT_PHASE_SEC
+    elif is_postmortem:
+        timeout_sec = POSTMORTEM_TIMEOUT_SEC
+    else:
+        timeout_sec = WORKER_TIMEOUT_SEC + COMMIT_PHASE_SEC
+    return text.replace("{timeout_min}", str(timeout_sec // 60))
 
 
 class WorkArea:
@@ -99,6 +125,7 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
               is_retry: bool = False,
               retry_context: str | None = None,
               is_postmortem: bool = False,
+              is_commit_phase: bool = False,
               timeout_sec: int | None = None) -> int:
     """Dispatch to the configured LLM provider for one agent invocation.
 
@@ -121,8 +148,12 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     `WORKER_TIMEOUT_SEC` (600s) otherwise.
     """
     if timeout_sec is None:
-        timeout_sec = (POSTMORTEM_TIMEOUT_SEC if is_postmortem
-                       else WORKER_TIMEOUT_SEC)
+        if is_commit_phase:
+            timeout_sec = COMMIT_PHASE_SEC
+        elif is_postmortem:
+            timeout_sec = POSTMORTEM_TIMEOUT_SEC
+        else:
+            timeout_sec = WORKER_TIMEOUT_SEC
     return llm.get_provider(kind=kind).spawn(llm.LLMRequest(
         kind=kind,
         prompt_path=prompt_path,
@@ -133,6 +164,7 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
         is_retry=is_retry,
         retry_context=retry_context,
         is_postmortem=is_postmortem,
+        is_commit_phase=is_commit_phase,
     ))
 
 

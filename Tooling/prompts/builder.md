@@ -6,6 +6,8 @@ If Context.md's per-attempt digest doesn't surface the error you need to diagnos
 
 If your prior attempt timed out, Context.md's `## Your previous progress note` section carries a short summary of where you got and what blocked you (the framework runs a brief postmortem call after a kill to extract this). Treat it as your starting sketch.
 
+**You have {timeout_min} minutes total.**
+
 ## What to write
 
 Output exactly one file in your sandbox: `patch.lean`. It must be the entire goal lean file with the proof body filled in. Imports, namespace, and `theorem` line stay the same; only the body after `:=` changes.

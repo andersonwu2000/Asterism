@@ -69,6 +69,12 @@ class LLMRequest:
                     asking the agent to summarize state + blockers into
                     `_progress.md` and exit). Mutually exclusive with
                     is_retry. Providers without session support skip.
+      is_commit_phase: Two-phase Backward/Builder spawn. After body
+                    timeout fires, framework re-enters with --resume +
+                    a 1-line "you have N min left" prompt to break the
+                    agent out of internal reasoning into write mode.
+                    Mutually exclusive with is_postmortem and is_retry.
+                    Providers without session support skip.
     """
     kind: str
     prompt_path: Path
@@ -79,6 +85,7 @@ class LLMRequest:
     is_retry: bool = False
     retry_context: str | None = None
     is_postmortem: bool = False
+    is_commit_phase: bool = False
 
 
 class Provider(Protocol):

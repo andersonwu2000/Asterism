@@ -156,10 +156,17 @@ class GeminiCliProvider:
         # F45 — inline prompt body so the agent doesn't need read access
         # to the workspace `Tooling/prompts/` dir (outside --include-
         # directories after F44 narrowed cwd to problem_dir).
+        from Tooling.agent import render_prompt_template
         try:
             body = req.prompt_path.read_text(encoding="utf-8")
         except OSError as e:
             body = f"(prompt file unavailable: {e})"
+        else:
+            body = render_prompt_template(
+                body,
+                is_postmortem=req.is_postmortem,
+                is_commit_phase=req.is_commit_phase,
+            )
         prompt = (
             f"You are running a {req.kind} task. Follow the instructions "
             f"below exactly.\n\nAfter reading them, read context at "
