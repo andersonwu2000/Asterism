@@ -20,7 +20,7 @@ If both pass, the patch becomes the proved goal file.
 
 ## Strategy hints
 
-- The Manifest's `## Mathlib hints` section lists candidate Mathlib lemmas with file:line references. The framework also pre-resolves these and any lemma names mentioned in past errors via `lake env lean` and injects exact signatures into Context.md's `## Lemma references` section — use those directly.
+- The Manifest's `## Lemma hints` section lists candidate Mathlib lemmas with file:line references. The framework also pre-resolves these and any lemma names mentioned in past errors via `lake env lean` and injects exact signatures into Context.md's `## Lemma references` section — use those directly.
 - Don't paraphrase a forbidden lemma — the integrator catches the pattern.
 
 ## Lemma discovery

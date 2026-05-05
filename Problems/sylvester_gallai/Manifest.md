@@ -32,9 +32,8 @@ Kelly's proof (1948):
   p* defines a line strictly closer to the third. Contradiction.
 - Hence ℓ* has exactly 2 points of P.
 
-## Tactical
+## Lemma hints
 - `Collinear p q r` ≝ `(p.1 - r.1)*(q.2 - r.2) = (p.2 - r.2)*(q.1 - r.1)`
-- Key Mathlib primitives:
-  - `Finset.min'_image` / `Finset.exists_min_image` — minimiser existence
-  - Real distance / arithmetic inequalities
-  - Classical `by_contra` + finite induction over `P.card`
+- `Finset.min'_image` / `Finset.exists_min_image` — minimiser existence
+- Real distance / arithmetic inequalities
+- Classical `by_contra` + finite induction over `P.card`

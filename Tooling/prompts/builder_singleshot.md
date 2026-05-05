@@ -27,7 +27,7 @@ Required files:
 - The framework checks: (a) no name from FORBIDDEN_LEMMAS appears anywhere; (b) `lake env lean patch.lean` passes with no errors.
 - Don't paraphrase a forbidden lemma — the integrator catches the pattern.
 - Keep the tactic block small (1-10 lines).
-- The Manifest's Mathlib hints in Context list candidate lemmas with file:line. Use those directly; the framework cannot give you a Bash shell to grep mathlib4 yourself.
+- The Manifest's Lemma hints in Context list candidate lemmas with file:line. Use those directly; the framework cannot give you a Bash shell to grep mathlib4 yourself.
 - If the goal genuinely needs multi-step decomposition, return PROPOSAL.md only (skip patch.lean) and the framework will fall back to Backward.
 
 Emit only the fenced blocks. Nothing else.

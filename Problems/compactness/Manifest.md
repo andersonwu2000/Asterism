@@ -17,7 +17,7 @@ forbidden_lemmas:
 
 ## Entry kind
 Backward
-## Mathlib hints
+## Lemma hints
 - `Set.Finite`, `Set.Finite.toFinset`, `Set.subset_biUnion`
 - `Classical.choice`, `Classical.byCases`
 - `Mathlib.Order.Zorn` — `zorn_subset_nonempty` / `zorn_subset` for chain-bound argument

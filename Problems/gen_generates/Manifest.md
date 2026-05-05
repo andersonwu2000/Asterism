@@ -14,7 +14,7 @@ forbidden_lemmas: []
 
 ## Entry kind
 Backward
-## Mathlib hints
+## Lemma hints
 - `Subgroup.mem_zpowers_iff` — `x ∈ Subgroup.zpowers g ↔ ∃ k : ℤ, g^k = x`
 - `Multiplicative.ofAdd`, `Multiplicative.toAdd`, `Multiplicative.toAdd_zpow`
 - `AddSubgroup.mem_zmultiples_iff` — additive analogue
