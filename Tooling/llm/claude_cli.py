@@ -448,11 +448,26 @@ class ClaudeCliProvider:
             *session_lifetime_flag,
             *_trim_flags(req),
         ]
+        # Per-spawn thinking-token cap, scaled with the wall-clock
+        # budget at ~1K tokens/minute (e.g. 600s body → 10000, 180s
+        # postmortem → 3000). Prevents Sonnet 4.6 from burning the
+        # entire window on a 30-90K-character thinking block while
+        # producing zero Write tool calls — empirically observed on
+        # 74% of SG Backward spawns. `MAX_THINKING_TOKENS` only takes
+        # effect in legacy (non-adaptive) mode, so we also disable
+        # adaptive routing. Cap is per-turn: agent can resume thinking
+        # in the next turn (after a tool result) so multi-step tasks
+        # still get cumulative reasoning, just no single block dive.
+        env = dict(os.environ)
+        env["CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING"] = "1"
+        env["MAX_THINKING_TOKENS"] = str(
+            max(1000, (req.timeout_sec // 60) * 1000))
         try:
             r = subprocess.run(
                 cmd, timeout=req.timeout_sec,
                 capture_output=True, text=True,
                 encoding="utf-8", errors="replace",
+                env=env,
                 # F44 — anchor agent cwd at problem_dir, not workspace.
                 # Soft-sandbox: relative paths the agent writes resolve
                 # under the Problem; reduces wandering reads to other

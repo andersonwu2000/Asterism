@@ -70,7 +70,9 @@ cantor 是當前最大 sample（50 goals、depth 4、18 verify）。F55+F56 改�
 2. **(已做) TACTIC_TRY_LIST 補 `assumption` / `tauto` / `exact?`** — `A → B → A`-shaped 廢題型 Phase 1 直接收工。`linear_combination`（需係數）/ `polyrith`（需 Sage）暫不做。
 3. **(已做) Infeasibility escape channel** — `decline_reason: parent_type_infeasible` PROPOSAL.md frontmatter；Builder + Backward 都可 escape；cascade 直接 shelve goal + propagate 上層重拆，不燒 attempts。SG 實證 g363 一次 spawn 內構造反例 + escape 成功。
 
-3a. **(已做後回退) Two-phase commit-phase** — body 8min + commit 2min 嘗試打斷 thinking-dive。實證 0% 救活：Sonnet thinking block 一旦開始無法中斷，commit phase 收到 `--resume` 後再次進 thinking、120s 內 thinking 都沒生成完就被砍。session jsonl 顯示 commit prompt 後 agent 完全沒回應。回退到 body 10min + F55 postmortem 3min 單路徑，body prompt 留 1 行 `**You have 10 minutes total.**` 自願性提醒（無強制效果但成本零）。長期解需要降 thinking budget 或換非 thinking model。
+3a. **(已做後回退) Two-phase commit-phase** — body 8min + commit 2min 嘗試打斷 thinking-dive。實證 0% 救活：Sonnet thinking block 一旦開始無法中斷，commit phase 收到 `--resume` 後再次進 thinking、120s 內 thinking 都沒生成完就被砍。session jsonl 顯示 commit prompt 後 agent 完全沒回應。回退到 body 10min + F55 postmortem 3min 單路徑。
+
+3c. **(已做) Thinking budget cap** — env `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1` + `MAX_THINKING_TOKENS=(timeout_sec//60)*1000` 注入每次 claude spawn。1K tokens/min 對應 wall-clock 預算（body 600s→10K, postmortem 180s→3K）。Per-turn cap，agent 觸頂後強制進 output 模式但 partial thinking 保留在 session memory，下個 tool round-trip 又能 think。對症 SG 數據：dive median 9K tokens、successful median 3.7K，10K cap 切掉大半 dive、successful 損失 < 25%。在 claude_cli.py spawn 設 env、不影響其他 provider。
 
 3b. **(已做) `_safe_glob` 防 Windows reserved-char 檔名** — agent 偶爾寫 `won_exact?.lean`（把 Lean tactic `exact?` 當識別字），Windows path API 對 `?` `<>:"|*` 拋 OSError，使 `Path.glob` 整個 dir 掃描失敗。helper 改用 `os.scandir` + `fnmatch`，跳過 path resolve 階段；單一 fix 涵蓋所有 reserved chars。
 4. **SG with new framework**（已跑驗證部分機制）— F55 postmortem alternative-direction 確認有效；entry_kind 修補後 root 直接 Backward；尚未跑出完整 root proved。

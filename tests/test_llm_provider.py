@@ -1557,3 +1557,59 @@ def test_claude_complete_text_has_no_cwd_pin(
     p.complete_text(prompt="hi")
     assert calls
     assert "cwd" not in calls[0]["kwargs"]
+
+
+def test_claude_spawn_sets_thinking_budget_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The framework caps Sonnet 4.6's thinking budget per spawn at
+    ~1K tokens / minute of wall-clock allowance. Without this cap,
+    74% of Backward spawns burn the full body window on a 30-90K
+    character thinking block with zero Write tool calls. The mechanism
+    requires both env vars: `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1`
+    to switch off Sonnet's adaptive routing (which ignores the cap),
+    and `MAX_THINKING_TOKENS=N` to set the legacy fixed budget."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    calls = _capture_call(monkeypatch, module_name="claude_cli")
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/Problems/myproblem"),
+        attempts_dir=Path("/x/.attempts/abc"),
+        timeout_sec=600,  # body 10 min
+    ))
+    env = calls[0]["kwargs"]["env"]
+    assert env["CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING"] == "1"
+    assert env["MAX_THINKING_TOKENS"] == "10000"  # 600 // 60 * 1000
+
+
+def test_claude_spawn_thinking_budget_scales_with_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """1K tokens / minute scaling: postmortem (180s) gets a 3K cap,
+    body (600s) gets 10K, hypothetical short retries get a 1K floor
+    so a < 60s spawn doesn't end up with budget 0."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    p = claude_cli.ClaudeCliProvider()
+
+    for timeout, expected in [(180, "3000"), (600, "10000"),
+                              (60, "1000"), (30, "1000")]:
+        calls = _capture_call(monkeypatch, module_name="claude_cli")
+        p.spawn(llm.LLMRequest(
+            kind="builder",
+            prompt_path=Path("/x/p.md"),
+            problem_dir=Path("/x/Problems/myproblem"),
+            attempts_dir=Path("/x/.attempts/abc"),
+            timeout_sec=timeout,
+        ))
+        env = calls[0]["kwargs"]["env"]
+        assert env["MAX_THINKING_TOKENS"] == expected, (
+            f"timeout={timeout}s → expected {expected}, got "
+            f"{env['MAX_THINKING_TOKENS']}")
