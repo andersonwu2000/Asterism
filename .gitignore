@@ -24,6 +24,9 @@ Tooling/.lemma_cache.json
 wilson_haiku*.log
 *_haiku*.log
 *_sonnet*.log
+# Session-local nohup launcher logs from `python -m Tooling.cli run`
+.run.log
+*_run.log
 
 # Python
 __pycache__/
