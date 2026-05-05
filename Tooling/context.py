@@ -327,6 +327,37 @@ def _fetch_strategy_dead_attempts(
     ).fetchall()
 
 
+def _extract_root_cause(proposal_md: str, *, max_chars: int = 400) -> str:
+    """Pull the agent-written root-cause one-paragraph excerpt out of an
+    `agent_infeasible` decline's PROPOSAL.md. Prefers a `## Root cause`
+    section; falls back to the first non-empty paragraph after frontmatter."""
+    if not proposal_md:
+        return ""
+    text = proposal_md
+    if text.startswith("---"):
+        end = text.find("---", 3)
+        if end > 0:
+            text = text[end + 3:].lstrip()
+    import re as _re
+    m = _re.search(r"^##\s*Root cause\s*$", text,
+                   _re.MULTILINE | _re.IGNORECASE)
+    if m:
+        rest = text[m.end():]
+        nxt = _re.search(r"^##\s", rest, _re.MULTILINE)
+        excerpt = (rest[:nxt.start()] if nxt else rest).strip()
+    else:
+        # No `## Root cause` section — agents often put the conclusion
+        # at the END of `## Counterexample`. Take the last non-heading
+        # paragraph (skip raw headings and frontmatter remnants).
+        paras = [p.strip() for p in text.split("\n\n") if p.strip()]
+        paras = [p for p in paras if not p.lstrip().startswith("#")]
+        excerpt = paras[-1] if paras else ""
+    excerpt = " ".join(excerpt.split())  # collapse whitespace/newlines
+    if len(excerpt) > max_chars:
+        excerpt = excerpt[:max_chars].rsplit(" ", 1)[0] + " ..."
+    return excerpt
+
+
 def _fetch_dead_strategies(
     conn: sqlite3.Connection, goal_id: int, *, k: int = 5,
 ) -> list[dict]:
@@ -337,7 +368,12 @@ def _fetch_dead_strategies(
     decompositions were tried and failed — pick a different angle.'
     Filtered to strategies with non-empty proposal_md AND ≥ 1 linked
     sub-goal — drops half-baked recovery cleanups (status='dead' +
-    empty proposal) which carry no signal."""
+    empty proposal) which carry no signal.
+
+    For each shelved sub-goal, also pulls the latest `agent_infeasible`
+    dead_attempt's PROPOSAL.md so the next Backward sees a one-line
+    root-cause excerpt inline (full counterexample is mirrored into
+    `PAST_DEAD_STRATEGIES.md` companion)."""
     rows = conn.execute(
         "SELECT s.id, s.proposal_md FROM strategies s "
         "WHERE s.goal_id = ? AND s.status = 'dead' "
@@ -350,15 +386,38 @@ def _fetch_dead_strategies(
     out: list[dict] = []
     for r in rows:
         subs = conn.execute(
-            "SELECT g.slug, g.statement, g.status FROM strategy_subgoals ss "
+            "SELECT g.id, g.slug, g.statement, g.status FROM strategy_subgoals ss "
             "JOIN goals g ON g.id = ss.subgoal_id "
             "WHERE ss.strategy_id = ? ORDER BY ss.position ASC",
             (int(r["id"]),),
         ).fetchall()
+        sub_list: list[dict] = []
+        for s in subs:
+            root_cause = ""
+            counterexample_full = ""
+            if s["status"] == "shelved":
+                d = conn.execute(
+                    "SELECT proposal_md FROM dead_attempts "
+                    "WHERE target_id = ? AND target_kind = 'Goal' "
+                    "  AND failure_reason = 'agent_infeasible' "
+                    "  AND COALESCE(proposal_md, '') != '' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (int(s["id"]),),
+                ).fetchone()
+                if d and d["proposal_md"]:
+                    counterexample_full = d["proposal_md"]
+                    root_cause = _extract_root_cause(d["proposal_md"])
+            sub_list.append({
+                "slug": s["slug"],
+                "statement": s["statement"],
+                "status": s["status"],
+                "root_cause": root_cause,
+                "counterexample_full": counterexample_full,
+            })
         out.append({
             "id": int(r["id"]),
             "proposal_md": r["proposal_md"],
-            "subs": [(s["slug"], s["statement"], s["status"]) for s in subs],
+            "subs": sub_list,
         })
     return out
 
@@ -439,7 +498,10 @@ def _section_library_available(mfst, workspace) -> list[str]:
 
 
 def _section_dead_strategies(rows: list[dict]) -> list[str]:
-    """F37 — anti-repetition hint for sequential Backward retry."""
+    """F37 — anti-repetition hint for sequential Backward retry. For
+    shelved sub-goals also surfaces the agent-written root-cause excerpt
+    so the next Backward sees what trap the prior shape fell into; full
+    counterexample text lives in `PAST_DEAD_STRATEGIES.md`."""
     if not rows:
         return []
     out = [
@@ -448,16 +510,23 @@ def _section_dead_strategies(rows: list[dict]) -> list[str]:
         "decompositions below. Each one was killed because at least one "
         "of its sub-goals could not be proved (cascade-shelve). Do NOT "
         "re-propose a decomposition that hinges on the same dead "
-        "sub-goal — pick a structurally different angle.",
+        "sub-goal — pick a structurally different angle. Full "
+        "counterexamples are in `PAST_DEAD_STRATEGIES.md`.",
         "",
     ]
-    for i, s in enumerate(rows, 1):
+    for s in rows:
         out.append(f"### Dead strategy s{s['id']}")
         out.append("Sub-goals it produced:")
-        for slug, statement, status in s["subs"]:
-            mark = "(shelved)" if status == "shelved" else f"({status})"
-            stmt = statement.strip().splitlines()[0][:200]
-            out.append(f"- `{slug}` {mark} — {stmt}")
+        for sub in s["subs"]:
+            mark = (f"({sub['status']})"
+                    if sub["status"] != "shelved" else "(shelved)")
+            stmt = sub["statement"].strip()
+            if len(stmt) > 300:
+                stmt = stmt[:300].rstrip() + " …"
+            stmt_oneline = " ".join(stmt.split())
+            out.append(f"- `{sub['slug']}` {mark} — {stmt_oneline}")
+            if sub.get("root_cause"):
+                out.append(f"  **Root cause**: {sub['root_cause']}")
         out.append("")
     return out
 
@@ -615,5 +684,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     # canonical surface.
     context_files.write_past_attempts(deads, attempts_dir)
     context_files.write_past_backward(strat_deads, attempts_dir)
+    context_files.write_past_dead_strategies(dead_strats_filtered,
+                                             attempts_dir)
 
     return out

@@ -27,6 +27,11 @@ PAST_ATTEMPTS_FILENAME = "PAST_ATTEMPTS.md"
 # Backward work" semantics, which now also includes the prior partial
 # PROPOSAL.md draft from a failed / timed-out attempt.
 PAST_BACKWARD_FILENAME = "PAST_BACKWARD.md"
+# Cascade-shelve forensics: full strategy proposals + sub-goal
+# counterexamples for prior dead strategies on this goal. Context.md's
+# inline section carries one-line root-cause excerpts; this file is the
+# read-on-demand depth view.
+PAST_DEAD_STRATEGIES_FILENAME = "PAST_DEAD_STRATEGIES.md"
 
 # F30 — companion files are the lazy-load deeper-look reference, but
 # raw lake stderr still carries 1.5+ KB LEAN_PATH dump per attempt.
@@ -100,6 +105,59 @@ def render_strategy_block(idx: int, row: sqlite3.Row) -> str:
                       "```", row["strategy_proposal"], "```"])
     lines.append("")
     return "\n".join(lines)
+
+
+def write_past_dead_strategies(dead_strats: list[dict],
+                               attempts_dir: Path) -> Path | None:
+    """Write `PAST_DEAD_STRATEGIES.md` with each prior dead strategy's
+    full PROPOSAL.md plus, for each shelved sub-goal, the verbatim
+    counterexample text from the agent_infeasible decline. No-op when
+    no input rows or when none carry a strategy proposal or
+    counterexample (companion stays absent rather than empty)."""
+    if not dead_strats:
+        return None
+    has_payload = any(
+        s.get("proposal_md") or
+        any(sub.get("counterexample_full") for sub in s.get("subs", []))
+        for s in dead_strats
+    )
+    if not has_payload:
+        return None
+    parts: list[str] = [
+        "# Full content for prior dead strategies on this goal",
+        "",
+        "Context.md's `## Prior strategies that died` section shows a "
+        "one-line root-cause excerpt per shelved sub-goal. This file "
+        "carries the strategy's own PROPOSAL.md and the verbatim "
+        "counterexample text from each shelved sub-goal's "
+        "`agent_infeasible` decline — read it when the inline excerpt "
+        "is not enough to spot which assumption was missing.",
+        "",
+    ]
+    for s in dead_strats:
+        parts.append(f"## Dead strategy s{s['id']}")
+        parts.append("")
+        if s.get("proposal_md"):
+            parts.append("### Strategy PROPOSAL.md")
+            parts.append("")
+            parts.append("```")
+            parts.append(s["proposal_md"].rstrip())
+            parts.append("```")
+            parts.append("")
+        for sub in s.get("subs", []):
+            cx = sub.get("counterexample_full", "")
+            if not cx:
+                continue
+            parts.append(
+                f"### Shelved sub-goal `{sub['slug']}` — counterexample")
+            parts.append("")
+            parts.append("```")
+            parts.append(cx.rstrip())
+            parts.append("```")
+            parts.append("")
+    out = attempts_dir / PAST_DEAD_STRATEGIES_FILENAME
+    out.write_text("\n".join(parts), encoding="utf-8")
+    return out
 
 
 def write_past_backward(strat_deads: Iterable[sqlite3.Row],
