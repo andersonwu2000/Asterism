@@ -2,13 +2,12 @@
 postmortem, and the .drafts/ persist/clear policy.
 
 Phase 7 retired the cross-pipeline session_id mechanism (former F53 /
-F53A) that previous versions of this file exercised: the agent session
-now lives entirely within one pipeline, sid is a local var in the
-retry helper, and `goals.backward_session_id` is a vestigial column
-slated for removal. Tests for cross-pipeline session reuse + dead-
-strategy resurrection were deleted with that change; the in-pipeline
-retry helper itself is exercised by Phase 7-A's contract via
-test_pipeline_builder.py and (future) test_pipeline_retry_helper.py.
+F53A) and Phase 7-D dropped the `goals.backward_session_id` column
+entirely: the agent session now lives within one pipeline call, sid
+is a local var in the retry helper. The helper's behavior is
+exercised directly by `test_pipeline_retry_helper.py`; this file
+covers the Backward-specific outer wrapper (skeleton write, leaf-
+bypass, .drafts/ policy, postmortem dispatch).
 """
 from __future__ import annotations
 
@@ -49,8 +48,7 @@ def test_first_dispatch_mints_session_id_and_passes_to_spawn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """First retry-loop iteration is cold: helper mints a fresh sid
-    and passes it with is_retry=False / retry_context=None. The
-    vestigial backward_session_id column is never written (Phase 7)."""
+    and passes it with is_retry=False / retry_context=None."""
     gid = _seed_root_goal(tmp_path, conn)
     captured = {}
 
@@ -68,26 +66,25 @@ def test_first_dispatch_mints_session_id_and_passes_to_spawn(
     assert captured["session_id"] is not None
     assert captured["is_retry"] is False
     assert captured["retry_context"] is None
-    # backward_session_id column is vestigial in Phase 7-C — never written.
-    assert db.get_backward_session_id(conn, gid) is None
 
 
-def test_cold_dispatch_mints_fresh_strategy_id(
+def test_each_dispatch_mints_fresh_strategy_id(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F53/A — when there's no active session (cold path), strategy_id
-    is freshly minted as before. Reuse path is gated on is_retry."""
+    """Phase 7 — every Backward dispatch reserves a fresh strategy_id
+    (no cross-pipeline reuse of dead strategies). The retired F53/A
+    reuse logic was a workaround for cross-pipeline session memory
+    anchoring on a stale theorem name; in-pipeline retry shares one
+    sid + one strategy_id within a single pipeline call, so cross-
+    pipeline always gets fresh ids."""
     gid = _seed_root_goal(tmp_path, conn)
-    # Even if a stale dead strategy exists, no session means cold
     rel = db.get_goal(conn, gid)["lean_path"]
     stale_sid = db.insert_strategy(
         conn, goal_id=gid, lean_path=rel,
         created_by="pid-old", proposal_md="", scratch_path="",
     )
     db.update_strategy_status(conn, stale_sid, "dead")
-    # No backward_session_id → cold path
-    assert db.get_backward_session_id(conn, gid) is None
 
     monkeypatch.setattr(agent, "spawn_llm", lambda **kw: 124)
 

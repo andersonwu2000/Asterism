@@ -253,9 +253,6 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
     if kind == "Builder":
         if outcome == "proved":
             db.update_goal_status(conn, int(target_id), "proved")
-            # F33 — goal proved; the Builder session served its purpose.
-            # Clearing keeps DB tidy; on-disk session file is harmless.
-            db.set_builder_session_id(conn, int(target_id), None)
             return
         # Phase 7 — `exhausted` outcome: in-pipeline retry helper
         # consumed its budget without a terminal outcome. Helper has
@@ -267,10 +264,11 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             n = int(cur["attempts"]) if cur else 0
             if n >= SHELVE_THRESHOLD:
                 db.update_goal_status(conn, int(target_id), "shelved")
-                db.set_builder_session_id(conn, int(target_id), None)
                 _propagate_shelve(conn, int(target_id))
-            elif n >= BUILDER_THRESHOLD:
-                db.set_builder_session_id(conn, int(target_id), None)
+            # If n is at/over BUILDER_THRESHOLD but under SHELVE, the
+            # next bfs_refill picks Backward via next_worker_kind
+            # — no extra cascade work needed (no session_id column to
+            # clear post Phase 7-D).
             return
         if outcome == "failed":
             if is_infra:
@@ -289,7 +287,6 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             if failure_reason == "agent_infeasible":
                 db.increment_goal_attempts(conn, int(target_id))
                 db.update_goal_status(conn, int(target_id), "shelved")
-                db.set_builder_session_id(conn, int(target_id), None)
                 _propagate_shelve(conn, int(target_id))
                 return
             # F48 — Builder explicitly declined (wrote `-- decline:
@@ -302,7 +299,6 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             # forcing the next dispatch to Backward.
             if failure_reason == "agent_declined":
                 n = db.increment_goal_attempts(conn, int(target_id))
-                db.set_builder_session_id(conn, int(target_id), None)
                 if n >= SHELVE_THRESHOLD:
                     db.update_goal_status(conn, int(target_id), "shelved")
                     _propagate_shelve(conn, int(target_id))
@@ -313,22 +309,12 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             n = db.increment_goal_attempts(conn, int(target_id))
             if n >= SHELVE_THRESHOLD:
                 db.update_goal_status(conn, int(target_id), "shelved")
-                db.set_builder_session_id(conn, int(target_id), None)
                 _propagate_shelve(conn, int(target_id))
-            elif n >= BUILDER_THRESHOLD:
-                # F33 — next dispatch is Backward (no LLM session);
-                # the lingering Builder session won't be reused.
-                db.set_builder_session_id(conn, int(target_id), None)
             return
 
     if kind == "Backward":
         if outcome == "success":
             db.update_goal_status(conn, int(target_id), "attempting")
-            # F53 — strategy committed; clear backward session so the
-            # next Backward on this goal (cascade-reopen path) starts
-            # fresh rather than resuming a session about a strategy
-            # that's already taken on the goal.
-            db.set_backward_session_id(conn, int(target_id), None)
             return
         # Phase 7 — `exhausted` outcome: mirrors Builder branch above.
         # Helper buffered N dead_attempts + N attempts++ for the N
@@ -338,7 +324,6 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             n = int(cur["attempts"]) if cur else 0
             if n >= SHELVE_THRESHOLD:
                 db.update_goal_status(conn, int(target_id), "shelved")
-                db.set_backward_session_id(conn, int(target_id), None)
                 _propagate_shelve(conn, int(target_id))
             return
         # failed
@@ -351,14 +336,11 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
         if failure_reason == "agent_infeasible":
             db.increment_goal_attempts(conn, int(target_id))
             db.update_goal_status(conn, int(target_id), "shelved")
-            db.set_backward_session_id(conn, int(target_id), None)
             _propagate_shelve(conn, int(target_id))
             return
         n = db.increment_goal_attempts(conn, int(target_id))
         if n >= SHELVE_THRESHOLD:
             db.update_goal_status(conn, int(target_id), "shelved")
-            # F53 — shelved; same cleanup as Builder.
-            db.set_backward_session_id(conn, int(target_id), None)
             _propagate_shelve(conn, int(target_id))
         return
 

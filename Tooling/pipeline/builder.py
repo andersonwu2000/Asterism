@@ -7,9 +7,9 @@ annotation block (no separate PROPOSAL.md); declines via
 
 Phase 7 in-pipeline retry: Phase 2 delegates to
 `run_with_session_retries` which owns budget computation, sid lifecycle,
-per-spawn forensic + attempts++. The former cross-pipeline session
-passing (`builder_session_id` column, F33) is unused — the column
-remains as an orphan field until 7-D drops it.
+per-spawn forensic + attempts++. claude session memory is shared
+across in-pipeline retry iterations via `claude --resume <sid>`; sid
+is a local var in the helper, not persisted to DB.
 
 Public entry point: `run_builder`.
 """

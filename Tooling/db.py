@@ -50,17 +50,11 @@ CREATE TABLE IF NOT EXISTS goals (
     -- turns out wrong).
     entry_kind  TEXT    NOT NULL DEFAULT 'Builder'
                     CHECK(entry_kind IN ('Builder','Backward')),
-    -- F33 — claude CLI session UUID for same-session Builder retry.
-    -- Set on first Builder dispatch; reused on retry via `claude --resume`;
-    -- cleared on timeout (rc=124), stale-session fallback (rc=125), or
-    -- when Builder threshold reached (next dispatch is Backward).
-    builder_session_id TEXT NULL DEFAULT NULL,
-    -- F53 — same idea as builder_session_id but for Backward retries.
-    -- A Backward dispatch that fails lake_build_error preserves the
-    -- session so the next Backward dispatch on the same goal can
-    -- `--resume` with the lake stderr inlined and edit one file
-    -- instead of cold-restarting from Context.md.
-    backward_session_id TEXT NULL DEFAULT NULL,
+    -- (Phase 7-D removed `builder_session_id` and `backward_session_id`
+    -- columns. The cross-pipeline session passing they served is now
+    -- handled by `Tooling/pipeline/_retry.py` with sid as a local
+    -- pipeline-scope var. The migration in init_schema below drops
+    -- these columns from older DBs.)
     -- F42 — when this goal is an alias (its lean file's proof body
     -- delegates to another goal via `apply <canonical_slug> <;>
     -- assumption`), `alias_target_id` points at that canonical goal.
@@ -165,21 +159,14 @@ def connect(path: Path = DB_PATH) -> sqlite3.Connection:
 
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
-    # F33 — additive migration for older DBs created before
-    # builder_session_id existed in the goals table. CREATE TABLE IF
-    # NOT EXISTS is a no-op when the table is already present, so a
-    # blind ALTER TABLE is needed to backfill the column. Idempotent
+    # Additive migrations for older DBs (CREATE TABLE IF NOT EXISTS is
+    # a no-op when the table already exists, so blind ALTER TABLE is
+    # needed to backfill columns added in later versions). Idempotent
     # via "duplicate column name" detection.
     for col, ddl in (
-        ("builder_session_id",  # F33
-         "ALTER TABLE goals ADD COLUMN builder_session_id TEXT NULL"
-         " DEFAULT NULL"),
         ("alias_target_id",     # F42
          "ALTER TABLE goals ADD COLUMN alias_target_id INTEGER NULL"
          " DEFAULT NULL REFERENCES goals(id)"),
-        ("backward_session_id", # F53
-         "ALTER TABLE goals ADD COLUMN backward_session_id TEXT NULL"
-         " DEFAULT NULL"),
         # Migration entry for older DBs created before entry_kind landed.
         # The CREATE TABLE above already declares this column with a
         # CHECK constraint; this ALTER picks up disk DBs created prior
@@ -195,6 +182,18 @@ def init_schema(conn: sqlite3.Connection) -> None:
             conn.execute(ddl)
         except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e).lower():
+                raise
+    # Phase 7-D — drop the former cross-pipeline session_id columns.
+    # The in-pipeline retry helper (Tooling/pipeline/_retry.py) keeps
+    # sid as a local var for the pipeline's lifetime; the columns are
+    # vestigial. Idempotent: a fresh DB built from the current SCHEMA
+    # never had them, so DROP COLUMN raises "no such column" and we
+    # swallow. Requires SQLite >= 3.35.0 (Python 3.12 ships ≥ 3.40).
+    for col in ("builder_session_id", "backward_session_id"):
+        try:
+            conn.execute(f"ALTER TABLE goals DROP COLUMN {col}")
+        except sqlite3.OperationalError as e:
+            if "no such column" not in str(e).lower():
                 raise
     conn.commit()
 
@@ -271,54 +270,6 @@ def update_goal_entry_kind(conn: sqlite3.Connection, goal_id: int,
         (entry_kind, now(), goal_id),
     )
     conn.commit()
-
-
-def set_builder_session_id(conn: sqlite3.Connection, goal_id: int,
-                           session_id: str | None) -> None:
-    """F33 — record (or clear with None) the claude CLI session UUID
-    for same-session Builder retry."""
-    conn.execute(
-        "UPDATE goals SET builder_session_id = ?, updated_at = ?"
-        " WHERE id = ?",
-        (session_id, now(), goal_id),
-    )
-    conn.commit()
-
-
-def get_builder_session_id(conn: sqlite3.Connection,
-                           goal_id: int) -> str | None:
-    row = conn.execute(
-        "SELECT builder_session_id FROM goals WHERE id = ?",
-        (goal_id,),
-    ).fetchone()
-    if row is None:
-        return None
-    val = row["builder_session_id"]
-    return str(val) if val else None
-
-
-def set_backward_session_id(conn: sqlite3.Connection, goal_id: int,
-                            session_id: str | None) -> None:
-    """F53 — record (or clear with None) the claude CLI session UUID
-    for same-session Backward retry."""
-    conn.execute(
-        "UPDATE goals SET backward_session_id = ?, updated_at = ?"
-        " WHERE id = ?",
-        (session_id, now(), goal_id),
-    )
-    conn.commit()
-
-
-def get_backward_session_id(conn: sqlite3.Connection,
-                            goal_id: int) -> str | None:
-    row = conn.execute(
-        "SELECT backward_session_id FROM goals WHERE id = ?",
-        (goal_id,),
-    ).fetchone()
-    if row is None:
-        return None
-    val = row["backward_session_id"]
-    return str(val) if val else None
 
 
 def increment_goal_attempts(conn: sqlite3.Connection, goal_id: int) -> int:

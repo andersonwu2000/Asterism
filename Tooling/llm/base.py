@@ -11,7 +11,7 @@ for typed names — providers may return either int or SpawnRC since
 SpawnRC is an IntEnum):
   0   success (output files in attempts_dir; pipeline parses them)
   124 timeout
-  125 stale session (claude --resume on a GC'd session UUID, F33)
+  125 stale session (claude --resume on a GC'd session UUID)
   126 quota exhausted (gemini free-tier limit, F38)
   127 dependency missing (CLI not on PATH / SDK not installed)
   other non-zero  agent error / API failure
@@ -48,21 +48,20 @@ class LLMRequest:
       attempts_dir: .attempts/<pid>/ — sandbox; agent writes outputs here.
                     Must already contain Context.md.
       timeout_sec:  hard wall-clock cap. Provider must enforce.
-      session_id:   F33 — claude CLI session UUID. Caller-controlled.
-                    First attempt uses --session-id <id> to pin the
-                    session id; retry attempts use --resume <id>.
-                    Providers without session support (OpenAI HTTP)
-                    ignore this field.
-      is_retry:     F33 — True when caller is reusing session_id from
-                    a prior attempt. Provider may switch to a shorter
-                    prompt (assumes prior turn's context lives in the
-                    session memory).
-      retry_context: F33 — short text (typically the smart-truncated
-                    lake error from the prior attempt) that the
-                    provider inlines into the retry prompt. Replaces
-                    a separate RETRY_NOTE.md file: the agent sees the
-                    error immediately without needing a Read tool
-                    round-trip. Ignored when is_retry=False.
+      session_id:   claude CLI session UUID. Caller-controlled. First
+                    attempt uses --session-id <id> to pin the session
+                    id; subsequent in-pipeline retries use --resume
+                    <id> on the same UUID. Providers without session
+                    support (OpenAI HTTP) ignore this field.
+      is_retry:     True when caller is reusing session_id from the
+                    prior in-pipeline attempt. Provider may switch to
+                    a shorter prompt (assumes prior turn's context
+                    lives in session memory).
+      retry_context: short text (typically the smart-truncated lake
+                    error from the prior in-pipeline attempt) that
+                    the provider inlines into the retry prompt. Lets
+                    the agent see the error immediately without a
+                    Read tool round-trip. Ignored when is_retry=False.
       is_postmortem: F55 — postmortem call after a main-spawn timeout.
                     Uses --resume so the prior turn's session memory is
                     intact, loads `prompt_path` verbatim (a short prompt

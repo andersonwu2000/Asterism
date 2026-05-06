@@ -17,20 +17,22 @@ and stabilize per-machine sections so prompt caching reuses across
 calls. Override the tool list via `ASTERISM_CLAUDE_TOOLS` if a future
 flow needs a different surface.
 
-Same-session retry (F33): when LLMRequest.session_id is provided,
-the cold path uses `--session-id <uuid>` to pin the session id; a
-retry (is_retry=True) uses `--resume <uuid>` and a short prompt
-(builder_retry.md) that relies on the session memory carrying the
-prior turn's reasoning. `--no-session-persistence` is dropped on
-those calls — sessions persist to disk so Asterism can resume them.
-Sessions without session_id (e.g. Backward) keep the old
-`--no-session-persistence` behavior.
+In-pipeline same-session retry: when LLMRequest.session_id is
+provided, the cold path uses `--session-id <uuid>` to pin the session
+id; warm retries (is_retry=True) within the same pipeline use
+`--resume <uuid>` and a short prompt (builder_retry.md) that relies
+on the session memory carrying the prior turn's reasoning.
+`--no-session-persistence` is dropped on those calls — sessions
+persist to disk so the in-pipeline retry helper can resume them.
+Sessions without session_id keep the `--no-session-persistence`
+behavior.
 
-Stale session sentinel (F33): `claude --resume <uuid>` against a
-session id whose on-disk file is gone (GC'd / never existed) returns
-rc=1 with stderr `"No conversation found with session ID"`. spawn
-maps that to rc=125 so the caller (pipeline) knows to clear the
-DB session_id and retry with a fresh uuid (cold path).
+Stale session sentinel: `claude --resume <uuid>` against a session
+id whose on-disk file is gone (GC'd / never existed) returns rc=1
+with stderr `"No conversation found with session ID"`. spawn maps
+that to rc=125; the in-pipeline retry helper detects the warm-spawn
+stale on the next iteration and re-mints sid + falls back to a cold
+spawn within the same iteration (no budget consumed).
 """
 from __future__ import annotations
 
@@ -170,9 +172,11 @@ def _retry_hint_for_patterns(stderr: str) -> str:
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 
-# F33 — sentinel rc returned when claude reports "No conversation
-# found with session ID: ...". Caller's contract: on rc=125, clear
-# the goal's builder_session_id and retry once with a fresh uuid.
+# Sentinel rc returned when claude reports "No conversation found
+# with session ID: ...". The in-pipeline retry helper
+# (`Tooling/pipeline/_retry.py`) detects rc=125 on a warm spawn and
+# re-mints sid + falls back to a cold spawn within the same iteration
+# without consuming retry budget.
 RC_STALE_SESSION = 125
 _STALE_SESSION_MARKER = "no conversation found with session id"
 
@@ -382,11 +386,11 @@ class ClaudeCliProvider:
             session_flags = ["--resume", req.session_id]
             session_lifetime_flag: list[str] = []
             prompt = _load_prompt(req)
-        # F33 — retry path uses `--resume`, a short inline prompt with
-        # the lake error embedded directly (no separate RETRY_NOTE.md
-        # file → agent doesn't need a Read tool round-trip), and skips
-        # the file-based prompt fetch (prior turn's context lives in
-        # claude's session memory).
+        # In-pipeline retry path uses `--resume`, a short inline prompt
+        # with the lake error embedded directly (no separate
+        # RETRY_NOTE.md file → agent doesn't need a Read tool round-
+        # trip), and skips the file-based prompt fetch (prior turn's
+        # context lives in claude's session memory).
         elif req.is_retry and req.session_id:
             session_flags = ["--resume", req.session_id]
             session_lifetime_flag = []  # session persists
@@ -482,10 +486,11 @@ class ClaudeCliProvider:
             if r.returncode != 0:
                 _write_spawn_stderr(req.attempts_dir, r.stderr or "",
                                     r.stdout or "", r.returncode)
-            # F33 — detect stale session: claude returns rc=1 with
-            # "No conversation found with session ID: ..." in stderr.
-            # Surface as RC_STALE_SESSION so pipeline can clear the
-            # DB session_id and retry with a fresh one.
+            # Detect stale session: claude returns rc=1 with "No
+            # conversation found with session ID: ..." in stderr.
+            # Surface as RC_STALE_SESSION so the in-pipeline retry
+            # helper falls back to a cold spawn with a fresh sid
+            # without consuming retry budget.
             if (r.returncode != 0 and req.is_retry
                     and _STALE_SESSION_MARKER in (r.stderr or "").lower()):
                 print(f"[llm:claude] stale session "

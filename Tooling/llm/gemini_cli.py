@@ -10,9 +10,9 @@ gemini-2.5-pro has nearly-zero free-tier quota in practice — flash is
 the sole practical target unless the user has paid access.
 
 No session / retry support: `gemini --resume` uses session index
-(integer / "latest"), not UUID, so F33 same-session retry doesn't map
-cleanly. `LLMRequest.session_id` / `is_retry` / `retry_context` are
-ignored. Each invocation is a fresh session.
+(integer / "latest"), not UUID, so claude's --session-id / --resume
+contract doesn't map cleanly. `LLMRequest.session_id` / `is_retry` /
+`retry_context` are ignored; each invocation is a fresh session.
 
 Quota-exhausted sentinel: gemini CLI returns rc=0 even when ALL
 internal retries fail (observed: pro model exhausted, 5 attempts each
@@ -36,8 +36,8 @@ from .base import LLMRequest
 
 DEFAULT_MODEL = "gemini-2.5-flash"
 
-# Quota-exhausted sentinel rc — distinct from 124 (timeout), 125 (stale
-# claude session, F33), 127 (CLI missing). Caller may surface as a
+# Quota-exhausted sentinel rc — distinct from 124 (timeout), 125
+# (stale claude session), 127 (CLI missing). Caller may surface as a
 # distinct dead_attempt failure_reason or trigger a wait-and-retry.
 RC_QUOTA_EXHAUSTED = 126
 

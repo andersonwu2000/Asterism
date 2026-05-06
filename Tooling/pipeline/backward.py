@@ -508,8 +508,6 @@ def _backward_parse_and_commit(
         db.update_strategy_scratch_path(conn, strategy_id, scratch_rel)
         conn.execute("UPDATE strategies SET proposal_md = ? WHERE id = ?",
                      (leading, strategy_id))
-        # F53 — clear backward_session_id symmetric to the decomp path.
-        db.set_backward_session_id(conn, goal_id, None)
         conn.commit()
         print(f"[backward leaf-bypass] strategy={sid_token} → ready_for_verify",
               flush=True)
@@ -745,11 +743,6 @@ def _backward_parse_and_commit(
         db.update_strategy_scratch_path(conn, strategy_id, scratch_rel)
         conn.execute("UPDATE strategies SET proposal_md = ? WHERE id = ?",
                      (leading, strategy_id))
-        # F53 — strategy committed; clear backward_session_id so any
-        # future Backward on this same goal (e.g. cascade-reopen after
-        # a sub-goal shelves) starts from a fresh session rather than
-        # resuming a now-stale one talking about a superseded strategy.
-        db.set_backward_session_id(conn, goal_id, None)
         conn.commit()
 
         return PipelineResult(outcome="success", proposal_md=leading)

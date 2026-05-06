@@ -105,13 +105,15 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     Provider is resolved per-kind (F39): `ASTERISM_<KIND>_PROVIDER` →
     `ASTERISM_LLM_PROVIDER` → 'claude'. Likewise the model string is
     looked up per-kind inside each provider. Returns the provider's
-    rc (0 success, 124 timeout, 125 stale session (F33), 126 quota
-    exhausted (F38 gemini), 127 missing dep, other = error).
+    rc (0 success, 124 timeout, 125 stale session, 126 quota
+    exhausted, 127 missing dep, other = error).
 
-    `session_id` / `is_retry` / `retry_context`: F33 same-session
-    Builder retry. Pass a UUID + is_retry=False on first attempt;
+    `session_id` / `is_retry` / `retry_context`: in-pipeline same-
+    session retry. Pass a UUID + is_retry=False on first attempt;
     same UUID + is_retry=True + the prior lake error string in
-    `retry_context` on subsequent attempts.
+    `retry_context` on subsequent attempts within the same pipeline
+    (Phase 7 — sid is a local var owned by the retry helper, not
+    persisted across pipeline calls).
 
     `is_postmortem`: F55 — set on the postmortem spawn after a main
     timeout. Provider uses `--resume <session_id>`, loads `prompt_path`
