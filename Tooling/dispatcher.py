@@ -269,7 +269,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
     # fault (claude.exe crash on launch, cwd issue, transient OS hiccup),
     # not an agent error. Don't burn the goal's attempts cap for it.
     # Dispatcher main loop separately back-offs via cooldown dict.
-    is_fast_fail = (outcome in ("exhausted", "failed")
+    is_fast_fail = (outcome == "failed"
                     and _is_spawn_fast_fail(conn, pipeline_id))
 
     if kind == "Builder":
@@ -279,7 +279,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             # Clearing keeps DB tidy; on-disk session file is harmless.
             db.set_builder_session_id(conn, int(target_id), None)
             return
-        if outcome in ("exhausted", "failed"):
+        if outcome == "failed":
             if is_fast_fail:
                 # F46 — leave attempts unchanged; dispatcher will cool
                 # this (target,kind) for ~30s before the next dispatch.
@@ -339,7 +339,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             # that's already taken on the goal.
             db.set_backward_session_id(conn, int(target_id), None)
             return
-        # exhausted / failed
+        # failed
         if is_fast_fail:
             return  # F46 — same skip-increment as Builder above
         # Infeasibility escape (mirrors Builder branch above): Backward
@@ -566,7 +566,7 @@ def run(workspace: Path, *, once: bool = False) -> int:
                                 target_id=tid, target_kind=tk,
                                 outcome=outcome, workspace=workspace)
                     # F46 — back-off + global counter for spawn fast-fails
-                    if outcome in ("exhausted", "failed") \
+                    if outcome == "failed" \
                             and _is_spawn_fast_fail(conn, pid):
                         cooldown_until[(tid, kind)] = (
                             time.time() + SPAWN_COOLDOWN_SEC)

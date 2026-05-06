@@ -11,7 +11,7 @@ Split layout (planned by docs/dev/goal_history_unified.md):
 Public API surfaced from this module (preserves pre-split callers):
   - run_builder, run_backward                        — dispatch entry points
   - PipelineResult, collect_artifacts                — DTO + forensics
-  - TACTIC_TRY_LIST                                  — Phase 1 list
+  - _parse_hint_winner                               — Phase 1 hint output parser
   - DECLINE_TOO_HARD, DECLINE_PARENT_TYPE_INFEASIBLE — frontmatter values
   - _drafts                                          — partial-output module
 
@@ -53,7 +53,7 @@ SPAWN_FAST_FAIL_SEC = 10.0
 
 @dataclass
 class PipelineResult:
-    outcome: str  # 'proved' | 'success' | 'exhausted' | 'failed'
+    outcome: str  # 'proved' | 'success' | 'failed'
     failure_reason: str = ""
     failure_detail: str = ""
     proposal_md: str = ""
@@ -155,41 +155,53 @@ def _safe_glob(directory: Path, pattern: str) -> list[Path]:
 
 
 # ---------------------------------------------------------------------
-# Phase 1 tactic list + sorry-stub helpers
+# Phase 1 — Mathlib `hint` invocation + output parsing
 # ---------------------------------------------------------------------
 
-# Phase 1 deterministic tactic try-list. Cheap-first ordering;
-# `first | t1 | t2 | …` short-circuits in this order, so move expensive
-# tactics last. `polyrith` excluded (Mathlib stub since SAGE shutdown).
-TACTIC_TRY_LIST = [
-    # Trivial / instant
-    "rfl", "decide", "trivial",
-    # Hypothesis-direct (handles `A → B → A`-shaped sub-goals where
-    # one hypothesis already matches the conclusion verbatim)
-    "assumption",
-    # Propositional logic
-    "tauto",
-    # Numeric / linear
-    "norm_num", "omega",
-    # Cast normalization
-    "norm_cast", "push_cast",
-    # General simp
-    "simp",
-    # Algebraic identities
-    "ring", "ring_nf", "field_simp",
-    # Arithmetic search
-    "linarith", "nlinarith",
-    # Positivity
-    "positivity",
-    # Heavier simp
-    "simp_all",
-    # Decision procedures
-    "grind",   # Lean 4.30+ general decision procedure
-    "aesop",   # general proof search
-    # Mathlib library search — last because it's the most expensive
-    # (queries the discrimination tree across all of Mathlib)
-    "exact?",
-]
+# Phase 1 uses Mathlib's `Mathlib.Tactic.Hint` (`by hint`) instead of a
+# framework-maintained tactic list. `hint` runs every tactic registered
+# via `register_hint <prio> tac` in priority order, emits a `Try these:`
+# info message listing all that succeeded, and uses the first goal-
+# closing one as the proof. We parse the info message to recover the
+# precise winning tactic and rewrite the patch as `:= by <winner>` for
+# a forensically clear final artifact.
+#
+# Trade-off vs the previous `by first | t1 | t2 | …` design:
+#   + Forensic: artifact records the exact winning tactic, not an
+#     opaque `first` block.
+#   + Coverage: tracks Mathlib's curated hint set automatically (24+
+#     tactics; see `register_hint` call sites under
+#     `.lake/packages/mathlib/Mathlib/`).
+#   + No framework-side list to maintain.
+#   - Cost: 2 lake builds on success (probe + confirm) instead of 1.
+#     In practice the second build hits warm cache for almost everything
+#     except the swapped tactic body.
+#   - Coverage gap: a few legacy TACTIC_TRY_LIST entries (rfl,
+#     assumption, norm_cast, ring_nf, simp, nlinarith) are not
+#     register_hint'd in Mathlib's defaults; goals that only those
+#     close fall through to Phase 2.
+
+# Output format (from Mathlib/Tactic/Hint.lean + lake build observation):
+#     info: <file>:<line>:<col>: Try these:
+#       [apply] 🎉️ <tactic that closed the goal>      ← winner
+#       [apply] <tactic that left subgoals>           ← non-winner, skip
+# Failure: rc != 0 + "error: No suggestions available".
+_HINT_WINNER_RE = re.compile(
+    r"^\s*\[apply\]\s*🎉️\s*(.+?)\s*$", re.MULTILINE
+)
+
+
+def _parse_hint_winner(output: str) -> str | None:
+    """First 🎉️-marked tactic from `hint`'s `Try these:` block, or None.
+
+    The 🎉️ marker is added by `Mathlib.Tactic.Hint.suggestion` only
+    when the candidate tactic closed all goals. `hint` orders by
+    `register_hint` priority desc, so the first 🎉️ entry is the
+    highest-priority successful close — the same tactic `hint` itself
+    used to seal the proof.
+    """
+    m = _HINT_WINNER_RE.search(output)
+    return m.group(1).strip() if m else None
 
 
 _SORRY_STUB_RE = re.compile(r":=[ \t]*by[ \t]+sorry[ \t]*$", re.MULTILINE)

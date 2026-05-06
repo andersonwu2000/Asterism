@@ -68,14 +68,18 @@ def test_e2e_root_proved_through_dispatcher(
         "SELECT id, status FROM goals WHERE problem='p'").fetchone()
     assert root is not None and root["status"] == "open"
 
-    # Stub _lake_build* to always succeed. With this in place the
-    # in-Builder tactic_try Phase 1 will accept the first tactic
-    # (`rfl`) as proving the goal — short-circuiting before spawn_llm.
-    # Good: still exercises run_builder → cascade → root proved.
+    # Stub _lake_build* to always succeed AND return a Mathlib `hint`
+    # `Try these:` block so Phase 1's two-build flow extracts a winner
+    # and short-circuits before spawn_llm. Good: still exercises
+    # run_builder → cascade → root proved.
+    fake_hint_out = (
+        "info: x.lean:1:1: Try these:\n"
+        "  [apply] 🎉️ trivial\n"
+    )
     monkeypatch.setattr(pipeline, "_lake_build_modules",
-                        lambda ws, mods: (True, ""))
+                        lambda ws, mods: (True, fake_hint_out))
     monkeypatch.setattr(pipeline, "_lake_build",
-                        lambda ws, target: (True, ""))
+                        lambda ws, target: (True, fake_hint_out))
 
     # Mock spawn_llm: write a patch.lean that satisfies Builder's
     # forbidden-lemma scan + delivers a body. The framework's

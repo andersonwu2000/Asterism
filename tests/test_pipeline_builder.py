@@ -5,7 +5,7 @@ _lake_build_modules, _promote_to_alias, ...) but 0 direct
 `run_builder` tests. The four happy / unhappy paths are covered here:
 
   - tactic_try Phase 1 closes the goal (e.g. `rfl` on a fresh stub).
-  - tactic_try exhausted → falls into LLM Phase 2.
+  - tactic_try Phase 1 fails → falls through to Phase 2 LLM in same dispatch.
   - LLM patch builds → 'proved' + backup cleaned.
   - LLM declines (PROPOSAL.md without patch.lean) → F48 'agent_declined'.
   - LLM patch fails lake → 'lake_build_error', goal_lean restored from backup.
@@ -49,16 +49,23 @@ def _mfst() -> manifest.Manifest:
     return manifest.Manifest(problem="p", statement="True")
 
 
+_FAKE_HINT_OUT = (
+    "info: x.lean:1:1: Try these:\n"
+    "  [apply] 🎉️ trivial\n"
+)
+
+
 def test_run_builder_phase1_tactic_try_closes_fresh_stub(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A fresh `:= by sorry` goal gets `rfl`-tier tactics tried first.
-    With _lake_build stubbed True, the FIRST tactic in the list wins
-    and run_builder returns 'proved' without ever spawning the LLM."""
+    """A fresh `:= by sorry` goal goes through Mathlib `hint`. With
+    _lake_build stubbed to return a Try-these block whose first marker
+    is `🎉️ trivial`, Phase 1 captures that as the winner and
+    run_builder returns 'proved' without ever spawning the LLM."""
     gid = _seed_problem(conn, tmp_path)
     monkeypatch.setattr(pipeline, "_lake_build",
-                        lambda ws, t: (True, ""))
+                        lambda ws, t: (True, _FAKE_HINT_OUT))
     spawn_calls = []
     monkeypatch.setattr(agent, "spawn_llm",
                         lambda **kw: spawn_calls.append(1) or 0)
@@ -283,30 +290,41 @@ def test_run_builder_wrapper_clears_draft_on_proved(
     assert not draft.exists()
 
 
-def test_run_builder_wrapper_clears_draft_on_tactic_try_exhausted(
+def test_run_builder_phase1_fail_falls_through_to_llm(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F55 nit-fix — Phase-1 tactic_try exhausted is deterministic
-    completion (no LLM partial to preserve). Wrapper must clear, not
-    persist (otherwise a stale draft from a prior failed Phase-2 spawn
-    would carry forward across an unrelated tactic_try cycle)."""
+    """When Phase 1 `hint` returns no winner, Builder must NOT terminate
+    early — it falls through to Phase 2 LLM in the SAME dispatch.
+
+    Two `_lake_build` invocations to model: Phase 1 probe build and
+    Phase 2 patch build. Phase 1 fails, Phase 2 succeeds. Asserts
+    spawn_llm got called and the final outcome is `proved`.
+    """
     gid = _seed_problem(conn, tmp_path)
-    # Pre-seed a stale draft as if from a prior LLM failure
-    draft = _drafts_path_for(tmp_path, gid)
-    draft.parent.mkdir(parents=True)
-    draft.write_text("stale content from prior failed LLM spawn",
-                     encoding="utf-8")
-    # Force every tactic_try candidate to fail
-    monkeypatch.setattr(pipeline, "_lake_build", lambda ws, t: (False, ""))
+
+    # _lake_build sequence: Phase 1 probe fail → Phase 2 patch ok.
+    # Returns (ok, output) per call.
+    build_calls = iter([
+        (False, "error: No suggestions available"),  # Phase 1 probe
+        (True, ""),                                   # Phase 2 lake_build
+    ])
+    monkeypatch.setattr(pipeline, "_lake_build",
+                        lambda ws, t: next(build_calls))
+
     spawn_calls = []
-    monkeypatch.setattr(agent, "spawn_llm",
-                        lambda **kw: spawn_calls.append(1) or 0)
+    def fake_spawn(**kw):
+        spawn_calls.append(1)
+        (kw["attempts_dir"] / "patch.lean").write_text(
+            "import Mathlib\ntheorem main : True := trivial\n",
+            encoding="utf-8")
+        (kw["attempts_dir"] / "PROPOSAL.md").write_text(
+            "fall-through proof", encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     r = pipeline.run_builder(
         conn, goal_id=gid, workspace=tmp_path, mfst=_mfst(),
-        pipeline_id="pid-exh")
-    assert r.outcome == "exhausted"
-    assert r.failure_reason == "tactic_try_exhausted"
-    assert not spawn_calls  # never reached Phase 2
-    assert not draft.exists()
+        pipeline_id="pid-ft")
+    assert r.outcome == "proved"
+    assert spawn_calls == [1]  # Phase 2 LLM was reached

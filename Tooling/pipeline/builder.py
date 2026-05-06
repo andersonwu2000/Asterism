@@ -1,11 +1,11 @@
-"""Builder pipeline. Phase 1 deterministic tactic_try, Phase 2 LLM patch
-with F33 same-session retry, F46 spawn-fast-fail handling, F48 decline
-channel, F55 partial-output persistence.
+"""Builder pipeline. Phase 1 deterministic tactic_try via Mathlib `hint`,
+Phase 2 LLM patch with F33 same-session retry, F46 spawn-fast-fail
+handling, F48 decline channel, F55 partial-output persistence.
 
 Public entry point: `run_builder`. Shared helpers (`_grep_forbidden`,
 `_is_sorry_stub`, `_replace_proof_body`, `_attempt_postmortem`,
 `_spawn_failure`, `_safe_glob`, `PipelineResult`, `PROMPT_DIR`,
-`TACTIC_TRY_LIST`, `_lake_build`, `DECLINE_*`, `_parse_decline_reason`,
+`_parse_hint_winner`, `_lake_build`, `DECLINE_*`, `_parse_decline_reason`,
 `_drafts`) are imported from the package root.
 """
 from __future__ import annotations
@@ -48,10 +48,7 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
     starting from scratch.
 
     Outcomes:
-      - `proved` / `exhausted`: deterministic completion. `exhausted`
-        is Phase-1 tactic_try giving up cleanly with no LLM partial to
-        preserve; `proved` is the success case. Both clear any prior
-        draft (no carry-over wanted).
+      - `proved`: success — clear any draft (no carry-over wanted).
       - anything else (rc!=0 from spawn, lake_build_error, ...):
         persist whatever the spawn wrote so the next dispatch picks
         up from a sketch.
@@ -65,7 +62,7 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
     problem_dir = workspace / "Problems" / goal_row["problem"]
     result = _run_builder_inner(conn, goal_id=goal_id, workspace=workspace,
                                 mfst=mfst, pipeline_id=pipeline_id)
-    if result.outcome in ("proved", "exhausted"):
+    if result.outcome == "proved":
         _drafts.clear_partial(problem_dir=problem_dir, kind="builder",
                               goal_id=goal_id)
     else:
@@ -80,10 +77,10 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                        workspace: Path, mfst: manifest.Manifest,
                        pipeline_id: str) -> "PipelineResult":  # noqa: F821
     from . import (
-        PipelineResult, PROMPT_DIR, TACTIC_TRY_LIST,
+        PipelineResult, PROMPT_DIR,
         _attempt_postmortem, _grep_forbidden, _is_sorry_stub,
-        _lake_build, _parse_decline_reason, _replace_proof_body,
-        _safe_glob, _spawn_failure,
+        _lake_build, _parse_decline_reason, _parse_hint_winner,
+        _replace_proof_body, _safe_glob, _spawn_failure,
         DECLINE_PARENT_TYPE_INFEASIBLE,
     )
 
@@ -101,33 +98,60 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
 
     attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
 
-    # Phase 1: tactic_try — only on fresh `:= by sorry` stubs.
-    # Skips structured patches (post-Backward) and re-attempt scenarios
-    # to avoid clobbering existing proof structure.
+    # Phase 1: tactic_try via Mathlib `hint` — only on fresh `:= by sorry`
+    # stubs (skips post-Backward structured patches), and only on the
+    # first dispatch (attempts == 0) since `hint`'s register_hint set is
+    # deterministic — re-running on later dispatches wastes a lake build.
     #
-    # Single `by first | t1 | t2 | …` block instead of N separate lake
-    # builds. Lake's startup cost (~5-15s) is paid once; Lean's
-    # elaborator handles the short-circuit so cheap tactics still try
-    # first. Failure path: 1 build instead of len(TACTIC_TRY_LIST).
-    # Forensic loss: we don't know which arm closed the goal — if that
-    # ever matters, layer in `Mathlib.Tactic.Hint` + `Says` (Try this:
-    # mechanism captures the winner). See STATUS.md item 9.
+    # Two-build flow:
+    #   (1) probe: `:= by hint` — Lean elaborates all `register_hint`
+    #       tactics; emits `info: ... Try these: [apply] 🎉️ <tac>`
+    #       lines for each that closed the goal. Failure → "error: No
+    #       suggestions available" (rc != 0).
+    #   (2) confirm: rewrite as `:= by <winner>` and rebuild. The
+    #       artifact ends up with the precise tactic, not `hint`
+    #       (forensic clarity + avoids silent `admitGoal` fall-through
+    #       if the registered set changes). Cheap — second build hits
+    #       warm cache.
+    #
+    # Any failure in this block (probe build, no winner, confirm rebuild)
+    # restores the backup and falls through to Phase 2 in the SAME
+    # dispatch — Phase 1 doesn't terminate the pipeline early.
+    # See pipeline/__init__.py `_HINT_WINNER_RE` for the parser.
     if goal["attempts"] == 0 and _is_sorry_stub(source):
         backup_text = source
-        first_block = "first\n  | " + "\n  | ".join(TACTIC_TRY_LIST)
-        new_text = _replace_proof_body(source, first_block)
-        goal_lean.write_text(new_text, encoding="utf-8")
-        ok, _ = _lake_build(workspace, goal_lean)
-        if ok:
-            forbidden = _grep_forbidden(new_text, mfst.forbidden_lemmas)
-            if not forbidden:
-                (attempts_dir / "won_first_block.lean").write_text(
-                    new_text, encoding="utf-8"
+
+        probe_text = _replace_proof_body(source, "hint")
+        goal_lean.write_text(probe_text, encoding="utf-8")
+        ok, probe_out = _lake_build(workspace, goal_lean)
+        winner = _parse_hint_winner(probe_out) if ok else None
+
+        if winner is not None:
+            # Confirm — rewrite with the precise winning tactic and rebuild.
+            # `hint` runs in a shared mctx; isolated re-elaboration of
+            # just the winner can theoretically diverge (rare).
+            final_text = _replace_proof_body(source, winner)
+            goal_lean.write_text(final_text, encoding="utf-8")
+            ok, _ = _lake_build(workspace, goal_lean)
+            if ok:
+                forbidden = _grep_forbidden(final_text, mfst.forbidden_lemmas)
+                if forbidden:
+                    goal_lean.write_text(backup_text, encoding="utf-8")
+                    return PipelineResult(outcome="failed",
+                                          failure_reason="forbidden_lemma",
+                                          failure_detail=forbidden)
+                # Forensic snapshot. Filename is fixed (`won_hint.lean`)
+                # since the winning tactic may contain spaces / quotes /
+                # unicode unfit for filenames; the file body has the
+                # exact tactic in `:= by <winner>`.
+                (attempts_dir / "won_hint.lean").write_text(
+                    final_text, encoding="utf-8"
                 )
                 return PipelineResult(outcome="proved")
+
+        # Phase 1 didn't close the goal — restore the original sorry-stub
+        # and fall through to Phase 2 LLM.
         goal_lean.write_text(backup_text, encoding="utf-8")
-        return PipelineResult(outcome="exhausted",
-                              failure_reason="tactic_try_exhausted")
 
     # Phase 2: tactic_llm with F33 same-session retry.
     # First attempt mints a session id and pins it via --session-id;

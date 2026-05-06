@@ -371,35 +371,42 @@ def test_lake_build_single_target_uses_modules_helper(
 
 
 # ---------------------------------------------------------------------
-# F34 — TACTIC_TRY_LIST contains the expected fast-path closers
+# Phase 1 hint-output parser
 # ---------------------------------------------------------------------
 
-def test_tactic_try_list_contains_existing_closers() -> None:
-    """Original 10 tactics still present (regression guard)."""
-    from Tooling.pipeline import TACTIC_TRY_LIST
-    for t in ["rfl", "simp", "decide", "trivial", "omega",
-              "linarith", "nlinarith", "norm_num", "simp_all", "aesop"]:
-        assert t in TACTIC_TRY_LIST, f"missing {t!r}"
+def test_parse_hint_winner_picks_first_close_marker() -> None:
+    """`hint` marks goal-closing tactics with 🎉️; non-closers (only
+    leave subgoals) lack the marker. Parser takes the first 🎉️ entry."""
+    from Tooling.pipeline import _parse_hint_winner
+    sample = (
+        "info: Foo.lean:3:26: Try these:\n"
+        "  [apply] 🎉️ trivial\n"
+        "  [apply] norm_num\n"
+        "  Remaining subgoals:\n"
+        "  ⊢ False\n"
+    )
+    assert _parse_hint_winner(sample) == "trivial"
 
 
-def test_tactic_try_list_contains_new_domain_closers() -> None:
-    """F34 additions for cast / algebraic / positivity / decision."""
-    from Tooling.pipeline import TACTIC_TRY_LIST
-    for t in ["norm_cast", "push_cast", "ring", "ring_nf",
-              "field_simp", "positivity", "grind"]:
-        assert t in TACTIC_TRY_LIST, f"missing {t!r}"
+def test_parse_hint_winner_handles_complex_tactic() -> None:
+    """Winning tactic may carry arguments / spaces."""
+    from Tooling.pipeline import _parse_hint_winner
+    sample = (
+        "info: Foo.lean:3:60: Try these:\n"
+        "  [apply] 🎉️ exact Std.lt_trans h1 h2\n"
+    )
+    assert _parse_hint_winner(sample) == "exact Std.lt_trans h1 h2"
 
 
-def test_tactic_try_list_orders_cheap_before_heavy() -> None:
-    """Cheap tactics (rfl, decide) must precede heavy search (aesop,
-    grind) so the fast-path bails on the first hit before paying
-    the search-tactic startup."""
-    from Tooling.pipeline import TACTIC_TRY_LIST
-    rfl_idx = TACTIC_TRY_LIST.index("rfl")
-    aesop_idx = TACTIC_TRY_LIST.index("aesop")
-    grind_idx = TACTIC_TRY_LIST.index("grind")
-    assert rfl_idx < aesop_idx
-    assert rfl_idx < grind_idx
+def test_parse_hint_winner_returns_none_on_no_close() -> None:
+    """No 🎉️-marked entry → None (caller falls through to Phase 2)."""
+    from Tooling.pipeline import _parse_hint_winner
+    # Output where every candidate left subgoals — pathological but
+    # possible if hint passed but no full close.
+    assert _parse_hint_winner("info: foo: Try these:\n  [apply] norm_num\n") is None
+    # Empty / unrelated output.
+    assert _parse_hint_winner("") is None
+    assert _parse_hint_winner("error: No suggestions available") is None
 
 
 # ---------------------------------------------------------------------
