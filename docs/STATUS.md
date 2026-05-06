@@ -1,28 +1,46 @@
 # Asterism v2 — Current Status
 
-更新於 2026-05-06（goal_history v1 完成 + PN Sonnet smoke validated）。HEAD `6783e05`，**596+ unit tests green**。
+更新於 2026-05-06（goal_naming + annotation Phase 1-4 完成、PN root proved e2e
+驗證 + 進行 single-output 整合 phase）。HEAD `dee781c+`、**496 unit tests green**。
 
 ## 下個 session 接手要做的事
 
-開始 **item 12 — Bridge lemma layer 架構設計**（新一輪、`docs/dev/bridge_lemma_layer.md` 是起點）。
+**Single-output 整合（in-progress）**：把 PROPOSAL.md 整個砍掉、agent 一個檔
+`patch.lean` 輸出（檔頂 `--` 註解 + theorem 主體）。Decline path 用
+`-- decline: <reason>` directive 表態、`:= by sorry` 留著。Builder / Backward
+parse 都改成讀檔頂 directive 分流。同時順便把所有 prompt 重寫精簡（user 要求、
+避免廢話）。設計細節見 `docs/dev/goal_naming_annotation.md`。
 
-簡述：對齊 `parcadei/sylvester-gallai-lean4` 1000 LOC 實作的核心差距 — Asterism SG / cantor 級題目每個 sub-goal 各自重展開 cross-product polynomial、parcadei 集中在 12 個 bridge lemma 寫一次。**問題本質是 abstraction（把代數工作集中在 bridge layer），不是 generalization 或 Mathlib API**。
+完成這個之後才能回到上層設計：
 
-進入時讀：
-1. `docs/dev/bridge_lemma_layer.md` 開放決策點清單（6 個問題）
-2. STATUS item 12（current 1-paragraph summary）
-3. `git log --oneline -10`（最近落地什麼）
-4. CLAUDE.md（紀律、先讀現有代碼再改）
-
-第一步行動：對 `bridge_lemma_layer.md` 的 6 個開放決策點逐一給 user 推薦選擇 + trade-off、user 拍板後動 code。
+**item 12 — Bridge lemma layer 架構設計**（`docs/dev/bridge_lemma_layer.md` 是起點）。
+substrate（命名 + 註解）已備、Strategist / Forward / Generalize 等上層 pipeline
+可以開始討論。bridge_lemma_layer.md 6 個開放決策點仍待 user 拍板。
 
 ## 近期落地（給 next session 的 context）
 
-`27f0f7c..6783e05`：
+`205bd4a..43c3a30`（goal_naming + annotation Phase 1-4，2026-05-06）：
+- **Phase 1**（`cab25cc` + `948f557`）：Backward sub-goal slug 從 `s<sid>_sub_<N>`
+  改成 LLM 自選 descriptive name (`cross_sq_add_inner_sq` 等)、charset/length lint、
+  collision framework auto-suffix（`_resolve_slug_collisions` helper）
+- **Phase 2**（`cc934ff`）：Builder + Verify 強制 annotation。每個 proved goal 的
+  `.lean` 檔頂帶 `-- <slug>: <summary>` line-comment block。空 PROPOSAL.md
+  → `agent_no_annotation` failure。`promote_to_alias` 加 annotation kwarg。
+- **Phase 3**（`5be9a33`）：F22 playbook 機制完全砍（-790 LOC、刪 `Tooling/playbook.py` +
+  兩個 prompt + cli reset 清理 + Context.md section + verify hook）。
+  `43c3a30` 順便清掉 6 個 problem 殘留的 stale `playbook.md` 檔。
+- **Phase 4**（`dee781c`）：Context.md 新增 `## Proved goals on this problem (grep
+  entrypoint)` section、count + path 入口指針、不 push candidate list、agent 用
+  grep + Read 自食其力（同 mathlib pattern）。
+- **PN root proved e2e**：Sonnet、~48 min 總 wall-clock（30 min budget hit + resume 15 min）、
+  depth 8、21 goals。對照 pre-Phase-1-4 同模型 ~30 min depth 2 — annotation 強制
+  讓 agent 拆解更深、wall-clock 上升、但機制全 work（無 `agent_no_annotation` 觸發、
+  Verify propagate 8 strategies 鏈式 root-proved）。
+
+`27f0f7c..6783e05`（前一輪、goal_history_unified v1）：
 - **goal_history_unified v1 完成**（7 commits、見 item 8 詳述）
 - **PN Sonnet e2e smoke 通過**：g142-class 修復實證、umbrella render 確認
 - **Asterism.yaml default 切 Sonnet**（builder + backward 都 claude-sonnet-4-6）
-- **cli reset 加清 playbook + .drafts**（baseline run 的紀律）
 
 ## 本 session（2026-05-04 ~ 05-05）改動鏈
 

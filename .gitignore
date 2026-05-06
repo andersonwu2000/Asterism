@@ -39,3 +39,6 @@ __pycache__/
 .idea/
 *.swp
 .DS_Store
+
+# Claude Code agent-side state (per-cwd transient)
+.claude/
