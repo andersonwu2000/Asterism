@@ -121,14 +121,11 @@ def direct_attempts(conn: sqlite3.Connection,
     act on (excludes infra noise, framework errors, and cross-goal
     `agent_infeasible` projections — see `_NON_AGENT_REASONS`).
 
-    Step 3 transitional: also excludes `agent_declined` because those
-    rows render in the standalone `## Why Builder declined this goal`
-    section. C3 (step 4) merges declines into direct_attempts via a
-    subtype prefix and removes this extra filter.
+    Includes `agent_declined` rows from C3 onward — declines are a
+    direct attempt with their own subtype, no longer rendered in a
+    separate `## Why Builder declined` section.
     """
-    extra_excludes = ("agent_declined",)
-    excludes = (*_NON_AGENT_REASONS, *extra_excludes)
-    placeholders = ",".join(["?"] * len(excludes))
+    placeholders = ",".join(["?"] * len(_NON_AGENT_REASONS))
     rows = conn.execute(
         f"SELECT id, target_id, target_kind, pipeline_id, failure_reason, "
         f"       failure_detail, proposal_md, ts "
@@ -136,7 +133,7 @@ def direct_attempts(conn: sqlite3.Connection,
         f"WHERE target_kind = 'Goal' AND target_id = ? "
         f"  AND failure_reason NOT IN ({placeholders}) "
         f"ORDER BY id DESC LIMIT ?",
-        (goal_id, *excludes, k),
+        (goal_id, *_NON_AGENT_REASONS, k),
     ).fetchall()
     return [
         Event(type="direct_attempt",
@@ -255,32 +252,6 @@ def dead_strategies(conn: sqlite3.Connection,
                      "subs": sub_list},
         ))
     return out
-
-
-def builder_declines(conn: sqlite3.Connection,
-                     goal_id: int, *, k: int = 3) -> list[Event]:
-    """F48 — direct_attempts subset where the Builder agent invoked the
-    decline hatch (`failure_reason='agent_declined'`, PROPOSAL.md text
-    explaining what's hard). Surfaced as its own section in the current
-    Context.md layout (`## Why Builder declined this goal`); step 4
-    of the goal_history refactor merges this back into
-    `direct_attempts` with a subtype prefix."""
-    rows = conn.execute(
-        "SELECT id, pipeline_id, proposal_md, ts "
-        "FROM dead_attempts "
-        "WHERE target_id = ? AND target_kind = 'Goal' "
-        "  AND failure_reason = 'agent_declined' "
-        "  AND COALESCE(proposal_md, '') != '' "
-        "ORDER BY id DESC LIMIT ?",
-        (goal_id, k),
-    ).fetchall()
-    return [
-        Event(type="direct_attempt",  # subtype carries the decline distinction
-              target_goal_id=goal_id,
-              payload=_row_to_dict(r),
-              ts=r["ts"] or "")
-        for r in rows
-    ]
 
 
 def infeasible_subs(conn: sqlite3.Connection,

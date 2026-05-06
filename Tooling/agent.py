@@ -25,7 +25,6 @@ from .context import (  # noqa: F401  (re-export)
     _ago,
     _collect_lemma_names,
     _digest_failure,
-    _section_builder_declines,
     _section_goal_history,
     _section_header,
     _section_library_available,

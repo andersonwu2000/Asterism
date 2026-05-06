@@ -300,28 +300,6 @@ def _collect_lemma_names(deads: list,
     return names
 
 
-def _section_builder_declines(rows: list) -> list[str]:
-    """F48 — render Builder decline reasons inline so Backward sees
-    *what specifically* the Builder agent flagged as hard."""
-    if not rows:
-        return []
-    out = [
-        "## Why Builder declined this goal",
-        "",
-        "Earlier Builder attempts on this goal followed the decline "
-        "hatch (wrote PROPOSAL.md, no patch.lean) instead of producing "
-        "a guess. Their reasoning is below — design the decomposition "
-        "to address the specific hard parts they identified.",
-        "",
-    ]
-    for i, r in enumerate(rows, 1):
-        body = (r["proposal_md"] or "").strip()
-        out.append(f"### Decline {i}")
-        out.append(body)
-        out.append("")
-    return out
-
-
 def _section_library_available(mfst, workspace) -> list[str]:
     """F49 — list Library/<Topic>/INDEX.md entries for the topics
     inferred from `mfst.lemma_hints` (any `Library.<Topic>.*` entries)."""
@@ -366,7 +344,6 @@ def _section_goal_history(*,
                           verify_events: list,
                           dead_strat_events: list,
                           infeasible_sub_events: list,
-                          show_attempts: bool,
                           show_verifies: bool) -> list[str]:
     """`## Goal history` umbrella — past failures on this goal in one
     place, partitioned by event_type into sub-sections. Replaces the
@@ -393,8 +370,27 @@ def _section_goal_history(*,
     """
     parts: list[list[str]] = []
 
-    if show_attempts and direct_events:
+    # Direct attempts: no kind-gate (was `show_attempts` only) — the
+    # goal's failure history is a property of the goal, not of the
+    # pipeline kind. Backward retry needs this to see SG-g142-class
+    # cases (its own prior `lake_build_error` rows) and the hand-off
+    # signal from Builder declines that previously lived in a separate
+    # `## Why Builder declined this goal` section.
+    if direct_events:
         sub = ["### Direct attempts on this goal", ""]
+        # If any attempt is `agent_declined`, surface it up front so the
+        # next dispatch (typically Backward, since declined jumps attempts
+        # to BUILDER_THRESHOLD) sees decomposition reasoning early. The
+        # individual block still renders the full PROPOSAL.md text.
+        if any(e.get("failure_reason") == "agent_declined"
+               for e in direct_events):
+            sub.append(
+                "Note: blocks with `agent_declined` are Builder declining "
+                "this goal as decomposition-needed (PROPOSAL.md carries "
+                "the specific hard parts identified). Design the "
+                "decomposition to address them."
+            )
+            sub.append("")
         for i, d in enumerate(direct_events, 1):
             sub.append(context_files.render_attempt_block(i, d).rstrip())
             sub.append("")
@@ -529,14 +525,17 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     naming' section pinning sub-goal slug prefixes to `s<sid>_`.
 
     `kind` (F43): 'builder' | 'backward' | None — gates which Goal
-    history sub-sections render:
-      - 'builder'  → `### Direct attempts on this goal` only
-      - 'backward' → `### Sibling decompositions that failed Verify`
-                     + `### Sub-goals reported infeasible` only
-      - None       → all sub-sections (back-compat for tests)
-    `### Strategies whose decomposition died` is rendered for both
-    kinds. C3 will collapse the kind-asymmetric gates further
-    (step 4 of goal_history_unified.md).
+    history sub-sections render. C3 (step 4) collapsed most of the
+    kind-asymmetric gating; current state:
+      - `### Direct attempts on this goal` — kind-agnostic, always
+        rendered (was builder-only; SG g142 needed it for Backward).
+        Builder declines now appear here as `agent_declined` rows
+        (was a separate `## Why Builder declined` section).
+      - `### Strategies whose decomposition died` — kind-agnostic.
+      - `### Sibling decompositions that failed Verify` — kind ∈
+        {backward, None}; Builder retry has no actionable read.
+      - `### Sub-goals reported infeasible` — kind ∈ {backward, None};
+        same reasoning.
 
     F55 — also surfaces the persisted partial output (PROPOSAL.md for
     backward, patch.lean for builder) from a prior failed/timed-out
@@ -559,12 +558,12 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     verify_events = events.verify_failures(conn, int(goal["id"]), k=5)
     infeasible_sub_events = events.infeasible_subs(
         conn, int(goal["id"]), k=5)
-    decline_events = (
-        events.builder_declines(conn, int(goal["id"]))
-        if kind == "backward" else []
-    )
 
-    show_attempts = kind in (None, "builder")
+    # `show_attempts` retired: `### Direct attempts on this goal` is
+    # now kind-agnostic (a goal's failure history is its own property).
+    # `show_verifies` still gates the verify_failure / infeasible_sub
+    # sub-sections — those are decomposition-shape signals that have
+    # no actionable read for Builder.
     show_verifies = kind in (None, "backward")
 
     # Dedupe dead_strategy against verify_failure only when both render
@@ -588,14 +587,12 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_manifest_notes(mfst),
         _section_library_available(mfst, workspace),
         _section_playbook(goal, workspace),
-        _section_builder_declines(decline_events),
         _section_prior_partial(kind, problem_dir, int(goal["id"])),
         _section_goal_history(
             direct_events=direct_events,
             verify_events=verify_events,
             dead_strat_events=dead_strat_events,
             infeasible_sub_events=infeasible_sub_events,
-            show_attempts=show_attempts,
             show_verifies=show_verifies,
         ),
     ]

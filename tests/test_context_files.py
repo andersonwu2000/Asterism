@@ -535,13 +535,15 @@ def test_compile_context_builder_kind_includes_attempts_excludes_verifies(
     assert "VERIFY-LEVEL" not in text
 
 
-def test_compile_context_backward_kind_includes_verifies_excludes_attempts(
+def test_compile_context_backward_kind_sees_both_attempts_and_verifies(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """F43 — Backward gets the verify_failures sub-section only. The
-    direct_attempts sub-section is
-    (Builder's leaf-level failures) doesn't help Backward pick a
-    decomposition shape."""
+    """C3 — `### Direct attempts on this goal` is now kind-agnostic
+    (a goal's failure history is its own property, not the pipeline's).
+    Backward retry needs this to see SG-g142-class cases (its own
+    prior `lake_build_error` rows) AND inherited Builder declines.
+    `### Sibling decompositions that failed Verify` stays Backward-
+    gated (no actionable read for Builder)."""
     gid, attempts_dir = _seed_goal_with_history(conn, tmp_path)
     goal = db.get_goal(conn, gid)
     out = compile_context(conn, goal=goal,
@@ -550,8 +552,9 @@ def test_compile_context_backward_kind_includes_verifies_excludes_attempts(
     text = out.read_text(encoding="utf-8")
     assert "Sibling decompositions that failed Verify" in text
     assert "VERIFY-LEVEL" in text
-    assert "Direct attempts on this goal" not in text
-    assert "BUILDER-LEVEL" not in text
+    # C3: Backward also sees direct_attempts (was the F43 gate)
+    assert "Direct attempts on this goal" in text
+    assert "BUILDER-LEVEL" in text
 
 
 def test_compile_context_no_kind_renders_both_sections(

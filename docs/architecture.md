@@ -210,16 +210,15 @@ FORBIDDEN_LEMMAS
 Strategic notes
 Library available
 Playbook
-Builder declines                  ← 只給 Backward 看（step 4 將合進 Goal history）
 Your previous progress note       ← F55 timeout 後留下的進度筆記
-Goal history (umbrella)           ← v1 已落地（C1 + C2、commit 3ef9c55 onward）：
-  ### Direct attempts on this goal           (kind=Builder/None gate)
+Goal history (umbrella)           ← v1 完成（C1 + C2 + C3、commit 8712ce5 onward）：
+  ### Direct attempts on this goal           (kind-agnostic、C3 砍 gate；含 agent_declined 子類)
   ### Sibling decompositions that failed Verify (kind=Backward/None gate)
-  ### Strategies whose decomposition died     (兩 kind 都看)
-  ### Sub-goals reported infeasible           (cross-goal、kind=Backward/None)
+  ### Strategies whose decomposition died     (kind-agnostic)
+  ### Sub-goals reported infeasible           (cross-goal、kind=Backward/None gate)
 ```
 
-舊版三個獨立 `##` section（`Past attempts on this goal` / `Past decompositions that failed Verify` / `Prior strategies that died`）合併成 `## Goal history` umbrella、event 投影邏輯抽到 `Tooling/pipeline/events.py` 的 `direct_attempts` / `verify_failures` / `dead_strategies` / `infeasible_subs`。`infeasible_sub` 是新增的 cross-goal 投影：sub-goal 的 `agent_infeasible` 反向投到 parent goal 的 next Backward。完整設計見 `docs/dev/goal_history_unified.md`、reason→event 對照見 `docs/failure_modes.md` §3。`Builder declines` 暫時保留獨立 section、step 4 合進 Goal history。
+舊版四個獨立 `##` section（`Past attempts on this goal` / `Past decompositions that failed Verify` / `Prior strategies that died` / `Why Builder declined this goal`）合併成 `## Goal history` umbrella、event 投影邏輯抽到 `Tooling/pipeline/events.py` 的 4 個函數（`direct_attempts` 含 agent_declined / `verify_failures` / `dead_strategies` / `infeasible_subs`）。`infeasible_sub` 是新增的 cross-goal 投影：sub-goal 的 `agent_infeasible` 反向投到 parent goal 的 next Backward。`### Direct attempts on this goal` 砍 kind-gate（C3）— SG g142 case 修復：Backward retry 看到自己的 prior `lake_build_error` / Builder 接手前的 declined。完整設計見 `docs/dev/goal_history_unified.md`、reason→event 對照見 `docs/failure_modes.md` §3。
 
 ---
 

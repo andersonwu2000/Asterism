@@ -109,14 +109,13 @@ def test_direct_attempts_excludes_agent_infeasible(
     assert events.direct_attempts(conn, gid) == []
 
 
-def test_direct_attempts_excludes_agent_declined(
+def test_direct_attempts_includes_agent_declined(
     conn: sqlite3.Connection,
 ) -> None:
-    """Step 3 transitional: agent_declined rows live in their own
-    `## Why Builder declined this goal` section. They must NOT also
-    surface in direct_attempts (would render the same row twice in
-    Backward kind's Context.md). Step 4 (C3) merges the two and
-    removes this filter."""
+    """C3 — declines no longer have a separate section; agent_declined
+    rows now surface inside `direct_attempts` (renderer can flag them
+    via the failure_reason field). The standalone
+    `## Why Builder declined this goal` section is retired."""
     _seed_problem(conn)
     gid = _seed_goal(conn)
     _record_dead_attempt(conn, target_id=gid, reason="agent_declined",
@@ -125,10 +124,8 @@ def test_direct_attempts_excludes_agent_declined(
     _record_dead_attempt(conn, target_id=gid, reason="lake_build_error",
                          pipeline_id="pid-lake")
     out = events.direct_attempts(conn, gid)
-    assert len(out) == 1
-    assert out[0]["failure_reason"] == "lake_build_error"
-    # builder_declines must still surface the agent_declined row
-    assert len(events.builder_declines(conn, gid)) == 1
+    reasons = {e["failure_reason"] for e in out}
+    assert reasons == {"agent_declined", "lake_build_error"}
 
 
 def test_direct_attempts_excludes_framework_reasons(

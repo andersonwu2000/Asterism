@@ -198,16 +198,17 @@ PAST_*.md 各自服務不同 event 類型，內容性質差很大（lake stderr 
 
 ## 實作順序
 
-1. **Pipeline 分檔**：`pipeline/__init__.py` 拆 `builder.py` + `backward.py`，共用 helpers 留原檔。所有測試通過。Commit。
-2. **Event interface 雛形**：`pipeline/events.py` 定義 event 投影函數（DB row → event object），`compile_context` 改用此介面。section 名稱先維持原樣。
-3. **Renderer 重組**：合併 4 個 section 為 `## Goal history` umbrella。companion file 重命名。測試 fixtures 連動更新。
-4. **Decline records 整合**：取消獨立 `## Builder declines` section，內容歸入 `### Direct attempts on this goal`。
-5. **跑 SG 驗證**：對照 `sg-opus-proved-2026-05-06` baseline 看 wall-clock + g142-class case 是否真避開重複錯誤路線。
+1. **Pipeline 分檔** ✓ pre-existing。
+2. **Event interface 雛形** ✓ commit `3ef9c55` (C1)：`pipeline/events.py` 5 個投影函數 + `Event` dataclass + `_NON_AGENT_REASONS`。compile_context 改用 events.\*；agent 看到的 Context.md 外貌 0 變化。
+3. **Renderer 重組** ✓ commit `16fd369` (C2)：4 個獨立 `##` section 合 `## Goal history` umbrella + 4 個 `### sub-section`（含新 `### Sub-goals reported infeasible`、wire infeasible_subs cross-goal projection）；companion file rename；empty bucket 整段省略。
+4. **Audit fixes** ✓ commit `8712ce5`：4 個 bug fix（agent_declined 兩 section 重複 / infeasible_subs JOIN 多 parent dup / dead_strategies LIMIT-then-exclude starve / rename comment direction）+ regression test。
+5. **Decline records 整合** ✓ commit (next)：砍 `## Why Builder declined this goal` 獨立 section、`agent_declined` 進 `### Direct attempts on this goal`（subtype 由 `failure_reason` 欄位攜帶、renderer 對 declined row 加一段 lead-in note）。順手砍 `### Direct attempts on this goal` 的 `show_attempts` kind-gate — SG g142 case 修復（Backward retry 看到自己 prior `lake_build_error`）。
+6. **跑 SG 驗證**（TODO）：對照 `sg-opus-proved-2026-05-06` baseline 看 wall-clock + g142-class case 是否真避開重複錯誤路線。
 
-每步獨立可 commit。風險最大是步驟 3（測試假設大量 section 命名），需先盤點 grep `_section_*` + fixtures。
+每步獨立可 commit、風險最大是步驟 3（測試假設大量 section 命名）。
 
-## 開放決策點
+## 開放決策點（已解決）
 
-- Section 命名：`## Goal history` vs `## Past events on this goal` vs 其他
-- companion file 是否真改名（純 cosmetic、可不動）
-- 步驟 4 的 decline records 整合是否同 commit / 拆 commit
+- Section 命名：採用 `## Goal history` (C2)
+- companion file rename：採用（C2）— `PAST_ATTEMPTS.md` → `PAST_DIRECT_ATTEMPTS.md` / `PAST_BACKWARD.md` → `PAST_VERIFY_FAILURES.md`
+- decline records 整合：拆獨立 commit（C3、C2 之後）

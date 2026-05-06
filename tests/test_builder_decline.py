@@ -205,12 +205,14 @@ def test_cascade_normal_failure_unchanged_by_f48(
 # 3. Backward Context.md surfaces decline reasoning
 # ---------------------------------------------------------------------
 
-def test_backward_context_includes_decline_section(
+def test_backward_context_surfaces_decline_in_direct_attempts(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """Backward dispatch on a goal with prior agent_declined attempts
-    must inline the decline PROPOSAL.md(s) so decomposition addresses
-    the flagged hard parts."""
+    """C3 — Builder declines no longer have their own
+    `## Why Builder declined this goal` section; they appear inline
+    in the umbrella's `### Direct attempts on this goal` sub-section
+    as `agent_declined` rows. Backward dispatch must still see the
+    decline PROPOSAL.md content (the decomposition signal)."""
     gid = _seed_goal(conn)
     decline_text = (
         "Decline: condition 3 (needs analysis before tactics).\n"
@@ -221,7 +223,6 @@ def test_backward_context_includes_decline_section(
                          reason="agent_declined",
                          proposal=decline_text)
 
-    # Build a minimal manifest + sandbox
     mfst = manifest.Manifest(problem="p", statement="T")
     attempts_dir = tmp_path / ".attempts" / "pid"
     attempts_dir.mkdir(parents=True)
@@ -231,15 +232,25 @@ def test_backward_context_includes_decline_section(
                           attempts_dir=attempts_dir,
                           strategy_id=None, kind="backward")
     body = (attempts_dir / "Context.md").read_text(encoding="utf-8")
-    assert "## Why Builder declined this goal" in body
+    # Old top-level section gone
+    assert "## Why Builder declined this goal" not in body
+    # New: inline in the goal-history umbrella's direct_attempts sub
+    assert "### Direct attempts on this goal" in body
+    assert "agent_declined" in body
     assert "PropForm.implies" in body  # excerpt of decline reasoning
+    # Lead-in note flagging the declined row to Backward
+    assert "decomposition-needed" in body
 
 
-def test_builder_context_excludes_decline_section(
+def test_builder_context_also_sees_decline_history(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """Builder seeing its OWN prior decline would tempt it to decline
-    again without trying. Decline section is Backward-only."""
+    """C3 — `### Direct attempts on this goal` is now kind-agnostic
+    (was Builder-only; the goal's failure history is its own
+    property, not the pipeline's). In practice Builder rarely
+    re-dispatches on a declined goal (cascade jumps attempts to
+    BUILDER_THRESHOLD), so this test just verifies the rendering
+    contract — declined rows surface for Builder kind too."""
     gid = _seed_goal(conn)
     _record_dead_attempt(conn, pipeline_id="p-decl", target_id=gid,
                          reason="agent_declined",
@@ -254,7 +265,12 @@ def test_builder_context_excludes_decline_section(
                           attempts_dir=attempts_dir,
                           strategy_id=None, kind="builder")
     body = (attempts_dir / "Context.md").read_text(encoding="utf-8")
+    # Old top-level section retired
     assert "## Why Builder declined this goal" not in body
+    # New: declined row surfaces inside the goal-history umbrella for
+    # Builder kind too (kind-gate retired in C3)
+    assert "### Direct attempts on this goal" in body
+    assert "agent_declined" in body
 
 
 def test_decline_section_absent_when_no_declines(
