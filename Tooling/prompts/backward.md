@@ -31,12 +31,11 @@ Body shape varies — `obtain` for ∃-witnesses, `rcases` for case dispatch, `i
 
 Pick `<slug>` per sub-goal as a short descriptive identifier (e.g. `cross_sq_add_inner_sq`, `triangle_inequality_metric`). Charset `[a-z][a-z0-9_]*`, length ≤ 60. Framework auto-suffixes on collision — don't worry about uniqueness.
 
-Annotation immediately above the theorem (Mathlib doc-style):
+Stub only — `:= by sorry` plus an `entry_kind` directive. The sub-goal's annotation gets written when whoever closes it proves it (Builder writes its proof sketch / a deeper Backward propagates its strategy rationale via Verify); don't pre-fill it.
 
 ```lean
 namespace Problems.<problem>
 
--- <slug>: <one-line statement of what this sub-goal proves>
 -- entry_kind: Builder
 theorem <slug> : ... := by sorry
 
