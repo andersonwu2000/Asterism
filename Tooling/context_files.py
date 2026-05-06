@@ -24,8 +24,8 @@ from . import diagnostics
 
 # C2 (goal_history v1) — companion files renamed to align with the
 # event_type they cover (PAST_<EVENT_TYPE>.md). Old names retired:
-#   PAST_DIRECT_ATTEMPTS.md → PAST_DIRECT_ATTEMPTS.md
-#   PAST_VERIFY_FAILURES.md → PAST_VERIFY_FAILURES.md
+#   PAST_ATTEMPTS.md → PAST_DIRECT_ATTEMPTS.md
+#   PAST_BACKWARD.md → PAST_VERIFY_FAILURES.md
 #   (PAST_DEAD_STRATEGIES.md kept — already aligned)
 PAST_DIRECT_ATTEMPTS_FILENAME = "PAST_DIRECT_ATTEMPTS.md"
 PAST_VERIFY_FAILURES_FILENAME = "PAST_VERIFY_FAILURES.md"
@@ -165,7 +165,7 @@ def write_past_dead_strategies(dead_strats: list[dict],
 
 def write_past_backward(strat_deads: Iterable[sqlite3.Row],
                         attempts_dir: Path) -> Path | None:
-    """Write `PAST_VERIFY_FAILURES.md` (F55 rename of PAST_VERIFIES.md) with
+    """Write `PAST_VERIFY_FAILURES.md` with
     the full Verify-failure history for sibling strategies on THIS
     goal. No-op when `strat_deads` is empty.
 

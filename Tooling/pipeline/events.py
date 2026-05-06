@@ -119,8 +119,16 @@ def direct_attempts(conn: sqlite3.Connection,
                     goal_id: int, *, k: int = 5) -> list[Event]:
     """Latest k dead_attempts targeted at this goal that the agent can
     act on (excludes infra noise, framework errors, and cross-goal
-    `agent_infeasible` projections — see `_NON_AGENT_REASONS`)."""
-    placeholders = ",".join(["?"] * len(_NON_AGENT_REASONS))
+    `agent_infeasible` projections — see `_NON_AGENT_REASONS`).
+
+    Step 3 transitional: also excludes `agent_declined` because those
+    rows render in the standalone `## Why Builder declined this goal`
+    section. C3 (step 4) merges declines into direct_attempts via a
+    subtype prefix and removes this extra filter.
+    """
+    extra_excludes = ("agent_declined",)
+    excludes = (*_NON_AGENT_REASONS, *extra_excludes)
+    placeholders = ",".join(["?"] * len(excludes))
     rows = conn.execute(
         f"SELECT id, target_id, target_kind, pipeline_id, failure_reason, "
         f"       failure_detail, proposal_md, ts "
@@ -128,7 +136,7 @@ def direct_attempts(conn: sqlite3.Connection,
         f"WHERE target_kind = 'Goal' AND target_id = ? "
         f"  AND failure_reason NOT IN ({placeholders}) "
         f"ORDER BY id DESC LIMIT ?",
-        (goal_id, *_NON_AGENT_REASONS, k),
+        (goal_id, *excludes, k),
     ).fetchall()
     return [
         Event(type="direct_attempt",
@@ -185,21 +193,31 @@ def dead_strategies(conn: sqlite3.Connection,
     counterexample text from the latest `agent_infeasible` decline."""
     exclude = set(exclude_strategy_ids) if exclude_strategy_ids else set()
 
+    # Embed exclude into SQL (not post-filter in Python): if SQL
+    # `LIMIT k` ran before the exclude filter, k=5 with 3 of the top 5
+    # excluded would leave us with 2 rows — older non-excluded rows
+    # silently dropped. Inline NOT IN keeps the LIMIT honest.
+    exclude_clause = ""
+    exclude_params: tuple = ()
+    if exclude:
+        ph = ",".join(["?"] * len(exclude))
+        exclude_clause = f"  AND s.id NOT IN ({ph}) "
+        exclude_params = tuple(exclude)
+
     rows = conn.execute(
-        "SELECT s.id, s.proposal_md FROM strategies s "
-        "WHERE s.goal_id = ? AND s.status = 'dead' "
-        "  AND s.proposal_md != '' "
-        "  AND EXISTS (SELECT 1 FROM strategy_subgoals ss "
-        "              WHERE ss.strategy_id = s.id) "
-        "ORDER BY s.id DESC LIMIT ?",
-        (goal_id, k),
+        f"SELECT s.id, s.proposal_md FROM strategies s "
+        f"WHERE s.goal_id = ? AND s.status = 'dead' "
+        f"  AND s.proposal_md != '' "
+        f"{exclude_clause}"
+        f"  AND EXISTS (SELECT 1 FROM strategy_subgoals ss "
+        f"              WHERE ss.strategy_id = s.id) "
+        f"ORDER BY s.id DESC LIMIT ?",
+        (goal_id, *exclude_params, k),
     ).fetchall()
 
     out: list[Event] = []
     for r in rows:
         sid = int(r["id"])
-        if sid in exclude:
-            continue
         subs = conn.execute(
             "SELECT g.id, g.slug, g.statement, g.status "
             "FROM strategy_subgoals ss "
@@ -286,17 +304,24 @@ def infeasible_subs(conn: sqlite3.Connection,
     umbrella section in step 3 of the refactor introduces a new
     sub-section to render these. Until then, declared but unused.
     """
+    # `EXISTS` subquery instead of JOIN — a sub may link to MULTIPLE
+    # of parent's strategies (dedupe alias / multiple decompositions
+    # sharing canonical sub), and JOIN would emit one row per
+    # (sub, parent_strategy) pair, duplicating the same dead_attempt.
+    # EXISTS collapses to one row per distinct (da, sub).
     rows = conn.execute(
         "SELECT da.id, da.target_id AS sub_goal_id, da.pipeline_id, "
         "       da.failure_reason, da.failure_detail, da.proposal_md, "
         "       da.ts, sub.slug AS sub_slug, sub.statement AS sub_statement "
         "FROM dead_attempts da "
         "JOIN goals sub ON sub.id = da.target_id "
-        "JOIN strategy_subgoals ss ON ss.subgoal_id = sub.id "
-        "JOIN strategies s ON s.id = ss.strategy_id "
         "WHERE da.failure_reason = 'agent_infeasible' "
         "  AND da.target_kind = 'Goal' "
-        "  AND s.goal_id = ? "
+        "  AND EXISTS ("
+        "    SELECT 1 FROM strategy_subgoals ss "
+        "    JOIN strategies s ON s.id = ss.strategy_id "
+        "    WHERE ss.subgoal_id = sub.id AND s.goal_id = ?"
+        "  ) "
         "ORDER BY da.id DESC LIMIT ?",
         (parent_goal_id, k),
     ).fetchall()

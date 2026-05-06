@@ -109,6 +109,28 @@ def test_direct_attempts_excludes_agent_infeasible(
     assert events.direct_attempts(conn, gid) == []
 
 
+def test_direct_attempts_excludes_agent_declined(
+    conn: sqlite3.Connection,
+) -> None:
+    """Step 3 transitional: agent_declined rows live in their own
+    `## Why Builder declined this goal` section. They must NOT also
+    surface in direct_attempts (would render the same row twice in
+    Backward kind's Context.md). Step 4 (C3) merges the two and
+    removes this filter."""
+    _seed_problem(conn)
+    gid = _seed_goal(conn)
+    _record_dead_attempt(conn, target_id=gid, reason="agent_declined",
+                         pipeline_id="pid-decl",
+                         proposal_md="declined: too_hard")
+    _record_dead_attempt(conn, target_id=gid, reason="lake_build_error",
+                         pipeline_id="pid-lake")
+    out = events.direct_attempts(conn, gid)
+    assert len(out) == 1
+    assert out[0]["failure_reason"] == "lake_build_error"
+    # builder_declines must still surface the agent_declined row
+    assert len(events.builder_declines(conn, gid)) == 1
+
+
 def test_direct_attempts_excludes_framework_reasons(
     conn: sqlite3.Connection,
 ) -> None:
@@ -161,6 +183,30 @@ def test_infeasible_subs_finds_subs_under_parent_strategies(
     assert "empty set has no element" in e["root_cause"]
 
 
+def test_infeasible_subs_dedupes_across_multiple_parent_strategies(
+    conn: sqlite3.Connection,
+) -> None:
+    """If a sub-goal links to multiple of parent's strategies (dedupe
+    alias / re-decomposition), the JOIN-form would emit one row per
+    (sub, parent_strategy) pair, duplicating the same dead_attempt.
+    EXISTS-form collapses to one row per dead_attempt."""
+    _seed_problem(conn)
+    parent = _seed_goal(conn, slug="parent")
+    sid_a = _seed_strategy(conn, parent, status="dead",
+                           proposal_md="strategy A")
+    sid_b = _seed_strategy(conn, parent, status="dead",
+                           proposal_md="strategy B")
+    sub = _seed_goal(conn, slug="shared_sub", origin="backward")
+    # Same sub linked to BOTH parent strategies (dedupe alias scenario)
+    db.link_subgoal(conn, strategy_id=sid_a, subgoal_id=sub, position=0)
+    db.link_subgoal(conn, strategy_id=sid_b, subgoal_id=sub, position=0)
+    _record_dead_attempt(conn, target_id=sub, reason="agent_infeasible",
+                         pipeline_id="pid-shared",
+                         proposal_md="counterexample")
+    out = events.infeasible_subs(conn, parent)
+    assert len(out) == 1, f"expected 1 row, got {len(out)} (JOIN-style multi-row dup)"
+
+
 def test_infeasible_subs_skips_unrelated_goal(
     conn: sqlite3.Connection,
 ) -> None:
@@ -210,6 +256,33 @@ def test_dead_strategies_excludes_listed_ids(
                                  exclude_strategy_ids={sid_dead_a})
     assert len(out) == 1
     assert out[0]["id"] == sid_dead_b
+
+
+def test_dead_strategies_exclude_does_not_starve_limit(
+    conn: sqlite3.Connection,
+) -> None:
+    """When `exclude_strategy_ids` rules out the most recent strategies,
+    the SQL must still return up to `k` non-excluded older ones.
+    Naive Python post-filter (LIMIT k → exclude → < k rows) silently
+    drops older non-excluded rows; embedded NOT IN keeps LIMIT honest."""
+    _seed_problem(conn)
+    gid = _seed_goal(conn)
+    sids: list[int] = []
+    for i in range(7):
+        sid = _seed_strategy(conn, gid, status="dead",
+                             proposal_md=f"strat {i}")
+        sub = _seed_goal(conn, slug=f"sub_{i}", origin="backward")
+        db.link_subgoal(conn, strategy_id=sid, subgoal_id=sub, position=0)
+        sids.append(sid)
+    # Exclude top 3 (most recent ids: sids[-3:]); ask k=5
+    exclude = set(sids[-3:])
+    out = events.dead_strategies(conn, gid, k=5,
+                                 exclude_strategy_ids=exclude)
+    assert len(out) == 4, (
+        f"expected 4 (= 7 total - 3 excluded), got {len(out)}"
+    )
+    returned_ids = {o["id"] for o in out}
+    assert exclude.isdisjoint(returned_ids)
 
 
 def test_dead_strategies_skips_empty_proposal_or_no_subs(

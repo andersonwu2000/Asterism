@@ -45,7 +45,7 @@ def test_context_includes_strategy_dead_attempts(
 
     F43: full inline rendering — Context.md carries the actual stderr
     + proposal_md, not a digest+pointer. Companion PAST_VERIFY_FAILURES.md is
-    still written for forensics (F55 rename of PAST_VERIFIES.md)."""
+    still written for forensics."""
     gid = _seed_problem_and_goal(conn)
     sid = db.insert_strategy(
         conn, goal_id=gid, lean_path="Problems/p/Root.lean",

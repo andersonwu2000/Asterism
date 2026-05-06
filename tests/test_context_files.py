@@ -419,7 +419,7 @@ def test_compile_context_writes_companion_past_attempts(
 def test_compile_context_size_with_many_attempts_under_smart_truncate(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """F43 inlines the smart-truncated PAST_ATTEMPTS content into
+    """F43 inlines the smart-truncated PAST_DIRECT_ATTEMPTS content into
     Context.md. Verify two things:
       (a) Smart-truncate (F30 + F32) caps each attempt block — even
           with 5 attempts each carrying multi-KB of LEAN_PATH garbage,
@@ -519,7 +519,8 @@ def _seed_goal_with_history(conn: sqlite3.Connection,
 def test_compile_context_builder_kind_includes_attempts_excludes_verifies(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """F43 — Builder gets PAST_ATTEMPTS section only. PAST_BACKWARD is
+    """F43 — Builder gets the direct_attempts sub-section only.
+    Sibling-decompositions sub-section is
     irrelevant to Builder (different layer of failure) and would be
     pure attention noise."""
     gid, attempts_dir = _seed_goal_with_history(conn, tmp_path)
@@ -537,7 +538,8 @@ def test_compile_context_builder_kind_includes_attempts_excludes_verifies(
 def test_compile_context_backward_kind_includes_verifies_excludes_attempts(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """F43 — Backward gets PAST_BACKWARD section only. PAST_ATTEMPTS
+    """F43 — Backward gets the verify_failures sub-section only. The
+    direct_attempts sub-section is
     (Builder's leaf-level failures) doesn't help Backward pick a
     decomposition shape."""
     gid, attempts_dir = _seed_goal_with_history(conn, tmp_path)
@@ -573,14 +575,14 @@ def test_compile_context_companion_files_always_written(
 ) -> None:
     """F43: companion files are forensics + future-proof storage; they
     must keep being written regardless of which inline section the
-    current pipeline kind is rendering. A Backward with PAST_ATTEMPTS
+    current pipeline kind is rendering. A Backward with direct-attempts
     history off the inline path still has PAST_DIRECT_ATTEMPTS.md on disk."""
     gid, attempts_dir = _seed_goal_with_history(conn, tmp_path)
     goal = db.get_goal(conn, gid)
     compile_context(conn, goal=goal,
                     mfst=Manifest(problem="p", statement="T"),
                     attempts_dir=attempts_dir, kind="backward")
-    # Backward inline path skipped PAST_ATTEMPTS section in Context.md,
+    # Backward inline path skipped the direct_attempts sub-section in Context.md,
     # but the companion file must still exist (forensics + agent can
     # still Read on demand if it ever wants to).
     assert (attempts_dir / "PAST_DIRECT_ATTEMPTS.md").exists()
