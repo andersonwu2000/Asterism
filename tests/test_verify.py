@@ -92,7 +92,7 @@ def test_verify_strategy_proved_when_lake_builds(
     scratch_abs.parent.mkdir(parents=True)
     scratch_abs.write_text("-- stub", encoding="utf-8")
 
-    monkeypatch.setattr(verify, "lake_build", lambda *a, **kw: (True, ""))
+    monkeypatch.setattr(verify, "lake_build_batch", lambda *a, **kw: (True, ""))
     monkeypatch.setattr(verify, "lean_path_to_module",
                         lambda *a, **kw: "Problems.p.proofs._strategy_s")
     monkeypatch.setattr(verify, "promote_to_alias",
@@ -128,7 +128,7 @@ def test_verify_strategy_propagates_proposal_md_as_annotation(
     def fake_promote(*a, **kw):
         captured["annotation"] = kw.get("annotation", "")
         return None
-    monkeypatch.setattr(verify, "lake_build", lambda *a, **kw: (True, ""))
+    monkeypatch.setattr(verify, "lake_build_batch", lambda *a, **kw: (True, ""))
     monkeypatch.setattr(verify, "lean_path_to_module",
                         lambda *a, **kw: "Problems.p.proofs._strategy_s")
     monkeypatch.setattr(verify, "promote_to_alias", fake_promote)
@@ -164,7 +164,7 @@ def test_verify_strategy_empty_proposal_yields_empty_annotation(
     def fake_promote(*a, **kw):
         captured["annotation"] = kw.get("annotation", "")
         return None
-    monkeypatch.setattr(verify, "lake_build", lambda *a, **kw: (True, ""))
+    monkeypatch.setattr(verify, "lake_build_batch", lambda *a, **kw: (True, ""))
     monkeypatch.setattr(verify, "lean_path_to_module",
                         lambda *a, **kw: "Problems.p.proofs._strategy_s")
     monkeypatch.setattr(verify, "promote_to_alias", fake_promote)
@@ -176,40 +176,47 @@ def test_verify_strategy_empty_proposal_yields_empty_annotation(
     assert captured["annotation"] == ""
 
 
-def test_verify_strategy_dead_when_step1_fails(
+def test_verify_strategy_dead_when_lake_batch_fails(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Step 1 lake_build fail → 'dead' (no F41 retry; F56 retired it)."""
+    """Batched lake build fails (strategy assembly broke OR alias parent
+    didn't compile after rewrite) → 'dead'. F41 LLM repair was retired
+    alongside Verify-as-pipeline; cascade re-opens the goal for a
+    fresh Backward instead."""
     gid = _seed_goal(conn)
     sid = _seed_strategy_with_proved_subs(conn, goal_id=gid)
     scratch_abs = tmp_path / "Problems/p/proofs/_strategy_s.lean"
     scratch_abs.parent.mkdir(parents=True)
     scratch_abs.write_text("-- stub", encoding="utf-8")
-    monkeypatch.setattr(verify, "lake_build",
+    monkeypatch.setattr(verify, "lake_build_batch",
                         lambda *a, **kw: (False, "elaboration drift"))
+    monkeypatch.setattr(verify, "lean_path_to_module",
+                        lambda *a, **kw: "Problems.p.proofs._strategy_s")
+    monkeypatch.setattr(verify, "promote_to_alias",
+                        lambda *a, **kw: None)
+    monkeypatch.setattr(verify, "rollback_promote",
+                        lambda *a, **kw: None)
     out = verify.verify_strategy(conn, workspace=tmp_path, strategy_id=sid)
     assert out == "dead"
 
 
-def test_verify_strategy_dead_when_step3_fails(
+def test_verify_strategy_rolls_back_parent_on_batch_fail(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Step 3 (alias-form parent build) fails → 'dead', and rollback
-    is invoked to restore the parent stub."""
+    """When the batched lake build fails after promote_to_alias has
+    rewritten the parent file, rollback_promote restores the parent
+    stub from its backup."""
     gid = _seed_goal(conn)
     sid = _seed_strategy_with_proved_subs(conn, goal_id=gid)
     scratch_abs = tmp_path / "Problems/p/proofs/_strategy_s.lean"
     scratch_abs.parent.mkdir(parents=True)
     scratch_abs.write_text("-- stub", encoding="utf-8")
-    calls = {"lake": 0, "rollback": 0}
+    calls = {"rollback": 0}
 
-    def fake_lake(*a, **kw):
-        calls["lake"] += 1
-        # First call (Step 1) passes; second (Step 3) fails
-        return (True, "") if calls["lake"] == 1 else (False, "parent fail")
-    monkeypatch.setattr(verify, "lake_build", fake_lake)
+    monkeypatch.setattr(verify, "lake_build_batch",
+                        lambda *a, **kw: (False, "alias build failed"))
     monkeypatch.setattr(verify, "lean_path_to_module",
                         lambda *a, **kw: "Problems.p.proofs._strategy_s")
     monkeypatch.setattr(verify, "promote_to_alias",

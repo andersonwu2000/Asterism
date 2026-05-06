@@ -26,17 +26,25 @@ from pathlib import Path
 from typing import Literal
 
 from . import db
-from .pipeline._lake import lake_build, lean_path_to_module
+from .pipeline._lake import lake_build_batch, lean_path_to_module
 from .pipeline._skeleton import promote_to_alias, rollback_promote
 
 
 def verify_strategy(
     conn: sqlite3.Connection, *, workspace: Path, strategy_id: int,
 ) -> Literal["proved", "dead", "superseded"]:
-    """Pure framework verify: lake build strategy, write alias to
-    parent, lake build parent. Returns the terminal outcome only —
-    state transitions (mark goal proved / mark strategy succeeded /
-    cascade-shelve etc) are the caller's job (see `verify_housekeeping`).
+    """Pure framework verify: rewrite parent as alias, then build the
+    strategy patch + alias parent in one batched lake invocation.
+    Returns the terminal outcome only — state transitions (mark goal
+    proved / mark strategy succeeded / cascade-shelve etc) are the
+    caller's job (see `verify_housekeeping`).
+
+    The promote-then-batch ordering replaces the prior 2-invocation
+    approach (build strategy → rewrite alias → build parent). lake's
+    internal scheduler resolves the parent-imports-strategy dependency
+    and builds in order within one process, halving the lake-startup
+    overhead per verify level. Rollback semantics unchanged: any build
+    failure restores the parent file from backup and returns 'dead'.
     """
     s = conn.execute(
         "SELECT s.*, g.status AS goal_status, g.slug AS goal_slug,"
@@ -55,18 +63,13 @@ def verify_strategy(
     if not scratch_abs.exists():
         return "dead"
 
-    # Step 1: build the strategy patch against now-real sub-goal proofs.
-    ok, _err = lake_build(workspace, scratch_abs)
-    if not ok:
-        return "dead"
-
-    # Step 2: rewrite parent stub as a `def <slug> := @<ns>.s<id>`
-    # alias. Lean copies the type from the strategy theorem at
-    # elaboration, so binders + conclusion transfer exactly (F52).
-    # The winning strategy's `proposal_md` is the raw `--` comment
-    # block the Backward agent wrote at the top of patch.lean; we
-    # prepend it verbatim above the alias for grep + readability.
-    # Lean-inert, so the alias build is unaffected.
+    # Promote parent stub to `def <slug> := @<ns>.s<id>` alias. Lean
+    # copies the type from the strategy theorem at elaboration, so
+    # binders + conclusion transfer exactly (F52). The winning
+    # strategy's `proposal_md` is the raw `--` comment block the
+    # Backward agent wrote at the top of patch.lean; we prepend it
+    # verbatim above the alias for grep + readability. Lean-inert, so
+    # the alias build is unaffected.
     parent_abs = workspace / s["lean_path"]
     sid_token = f"s{strategy_id}"
     scratch_module = lean_path_to_module(workspace, scratch_abs)
@@ -82,8 +85,10 @@ def verify_strategy(
         annotation=annotation,
     )
 
-    # Step 3: build the alias-form parent.
-    ok, _err = lake_build(workspace, parent_abs)
+    # Single batched build: lake schedules the parent-imports-strategy
+    # dependency internally. Failure is shared (either file's compile
+    # error fails the whole batch).
+    ok, _err = lake_build_batch(workspace, [scratch_abs, parent_abs])
     if not ok:
         rollback_promote(parent_abs, parent_backup)
         return "dead"
