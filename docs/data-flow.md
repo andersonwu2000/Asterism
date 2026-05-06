@@ -134,7 +134,9 @@ cascade 對 Builder 的狀態轉移：proved → goal proved；failed → attemp
      decline_reason=parent_type_infeasible → agent_infeasible）
    - forbidden_lemmas grep 全文件
    - patch.lean 簽名沒被改（normalize whitespace 後比對 skeleton）
-   - 每個 sub-goal 檔名 = `new_s<sid>_sub_<N>.lean`（不符 → naming_violation）
+   - 每個 sub-goal 檔名 = `new_<slug>.lean`、agent 自選 descriptive slug（charset
+     `[a-z][a-z0-9_]*`、length ≤ 60；不符 → naming_violation；命名衝突 framework
+     auto-suffix `_2` `_3`、agent 不檢查唯一性）
 
 6. dedupe：
    對每個 candidate sub-goal、batch 呼叫 Lean kernel isDefEq 比對候選池：

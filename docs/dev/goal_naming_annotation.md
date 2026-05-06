@@ -1,8 +1,9 @@
 # Goal naming + annotation
 
-Status: planned (2026-05-06). Bridge lemma layer (`bridge_lemma_layer.md`) 的前置：
-Strategist / Forward / Generalize 等更上層 pipeline 都仰賴 goal 有語意的命名 +
-可被 grep 找到的描述。本 doc 定形這個 substrate。
+Status: Phase 1-4 shipped (commits cab25cc / 948f557 / cc934ff / 5be9a33 / dee781c,
+2026-05-06). Phase 5 (PN/cantor/SG e2e 驗證) 待跑。Bridge lemma layer
+(`bridge_lemma_layer.md`) 的前置 substrate — Strategist / Forward / Generalize
+等更上層 pipeline 都仰賴 goal 有語意的命名 + 可被 grep 找到的描述。
 
 ## 動機
 
@@ -39,7 +40,7 @@ value。命名 + 註解是把這條落實到 Asterism。
 
 `naming_violation` 從 `s\d+_sub_\d+` 格式 regex 改成：
 - 非空、長度 ≤ 60
-- 只允許 `[a-zA-Z0-9_]`
+- 只允許 `[a-z][a-z0-9_]*`（lowercase 起頭、後接 lowercase / 數字 / 底線）
 - 不撞既有 DB row（衝突由 framework auto-suffix、不視為 violation）
 
 ### 註解
@@ -78,9 +79,12 @@ Builder 證完沒寫 annotation → 視同失敗、走 retry。Backward 沒寫 s
 
 ### Schema
 
-- `goals.slug`：CHECK 從 `s\d+_sub_\d+` 隱含格式改為 length / 字元 lint
-- `strategies.proposal_md`：從 unused → Verify 勝出時 propagate 進 parent .lean
-- 新 helper：`apply_goal_annotation(goal_id, text)` 寫進對應 .lean 檔頂
+- `goals.slug`：DB CHECK 不變、應用層 lint 從 `s<sid>_sub_<N>` 前綴規則改為
+  charset (`[a-z][a-z0-9_]*`) / length (≤ 60) 兩檢、collision 由 framework
+  auto-suffix（`Tooling/pipeline/backward.py:_resolve_slug_collisions`）
+- `strategies.proposal_md`：既有 column、Verify 勝出時 propagate 進 parent .lean
+- 新 shared helper：`Tooling.pipeline._format_annotation_comment(slug, body)` →
+  `-- <slug>: <summary>\n-- <line2>\n...` 字串、空 body 回 ""
 
 ### 代碼
 
@@ -138,5 +142,11 @@ Builder 證完沒寫 annotation → 視同失敗、走 retry。Backward 沒寫 s
 - Bridge lemma 設計：`bridge_lemma_layer.md`
 - Hadamard postmortem 教訓：`D:\Hadamard\docs\asterism_postmortem.md`
   （workspace hydration vs dehydration）
-- 當前 slug 機制：`Tooling/db.py:25-75`、`Tooling/pipeline/backward.py:450-462`
-- playbook 機制：`Tooling/playbook.py`、`Tooling/context.py:_section_playbook`
+- Slug 機制：`Tooling/db.py:25-75`（schema）、`Tooling/pipeline/backward.py`
+  charset 檢 + `_resolve_slug_collisions` helper
+- Annotation helper：`Tooling/pipeline/__init__.py:_format_annotation_comment`
+- Builder annotation：`Tooling/pipeline/builder.py` Phase 1 / Phase 2 success path
+- Verify propagate：`Tooling/verify.py` + `Tooling/pipeline/_skeleton.py:promote_to_alias`
+  的 `annotation` kwarg
+- Proved-goals grep entrypoint section：`Tooling/context.py:_section_proved_goals`
+- Playbook（已退役）：commit 5be9a33 砍掉 `Tooling/playbook.py` + 兩個 prompt
