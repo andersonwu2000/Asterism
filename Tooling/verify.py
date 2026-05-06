@@ -111,9 +111,9 @@ def verify_housekeeping(
     fenced via `busy_parents`. Each strategy's full transition commits
     before the next is processed.
     """
-    # Local imports break the dispatcher → verify cycle (dispatcher
+    # Local import breaks the dispatcher → verify cycle (dispatcher
     # imports verify; we need a couple of dispatcher-side helpers).
-    from . import dispatcher, playbook
+    from . import dispatcher
     counts = {"proved": 0, "dead": 0, "superseded": 0}
     for _ in range(max_iters):
         ready = db.strategies_ready_for_verify(conn)
@@ -134,12 +134,11 @@ def verify_housekeeping(
                 db.mark_other_strategies_superseded(
                     conn, goal_id=goal_id, winner_id=sid,
                 )
-                # F22 playbook idiom capture. Best-effort; LLM call
-                # failures must not abort housekeeping.
-                try:
-                    playbook.maybe_record_idiom(sid, conn, workspace)
-                except Exception:  # noqa: BLE001
-                    pass
+                # The proved goal's source is annotated with the
+                # winning strategy's `proposal_md` (Backward agent's
+                # rationale) by `verify_strategy` → `promote_to_alias`.
+                # Future agents read it via grep, replacing the prior
+                # F22 playbook extract+curate flow.
                 conn.commit()
                 counts["proved"] += 1
                 print(f"[verify] Strategy={sid} → proved", flush=True)

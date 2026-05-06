@@ -568,14 +568,6 @@ def test_cascade_strategy_on_shelved_parent_marks_dead(
     assert db.get_goal(conn, gid)["status"] == "shelved"
 
 
-# ---------------------------------------------------------------------
-# F22 — playbook hook fires on Verify=proved when workspace given
-# ---------------------------------------------------------------------
-
-# F56 — playbook hook is part of `verify.verify_housekeeping`, no
-# longer dispatched via cascade. See `tests/test_verify.py` for
-# coverage.
-
 
 # ---------------------------------------------------------------------
 # F16 — goal-shelve symmetric cascade: kill its own strategies

@@ -190,7 +190,8 @@ loop（最多 max_iters=8 圈）:
     Step 3: lake build alias-form parent
     
     全過 → strategy='succeeded'、parent goal='proved'
-            sibling strategies 標 'superseded'、F22 playbook hook
+            sibling strategies 標 'superseded'、strategy.proposal_md 寫進
+            parent .lean 檔頂作 annotation（替代已退役的 F22 playbook 流程）
             鏈式：parent goal 可能是更上層 strategy 的 sub-goal、下一圈會撈到
     任一壞 → backup 還原 parent、strategy='dead'
             cascade 處理（attempts++、SHELVE 處理、_propagate_shelve 上拋）

@@ -12,7 +12,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, FIRST_COMPLETED, wait
 from pathlib import Path
 
 from . import (
-    agent, config, db, library, manifest, pipeline, playbook, prune, tree,
+    agent, config, db, library, manifest, pipeline, prune, tree,
     verify,
 )
 
@@ -194,7 +194,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
     strategy or after the goal cascade-shelved.
 
     `workspace` is retained on the signature for back-compat (legacy
-    callers passed it for Verify's playbook hook); now unused.
+    callers passed it for the retired F22 playbook hook); now unused.
     """
     if target_kind == "Strategy":
         row = conn.execute(

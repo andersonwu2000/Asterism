@@ -86,8 +86,10 @@ class Provider(Protocol):
 
     `spawn` runs a full agent invocation that writes outputs to disk
     (Backward / Builder / Verify). `complete_text` is a one-shot
-    text-in/text-out call used by short auxiliary tasks (F22 playbook
-    idiom extraction + curation) where file IO would be overkill.
+    text-in/text-out call retained for short auxiliary tasks where
+    file IO would be overkill (no current call sites since the F22
+    playbook flow was retired in favor of inline goal annotations,
+    but the surface stays in place for future use).
     """
     def spawn(self, req: LLMRequest) -> int: ...
 

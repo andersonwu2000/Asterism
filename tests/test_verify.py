@@ -269,10 +269,6 @@ def test_housekeeping_proved_marks_strategy_and_goal(
     sid = _seed_strategy_with_proved_subs(conn, goal_id=gid)
     monkeypatch.setattr(verify, "verify_strategy",
                         lambda *a, **kw: "proved")
-    # Block the F22 playbook hook (LLM call) — irrelevant to this test
-    from Tooling import playbook
-    monkeypatch.setattr(playbook, "maybe_record_idiom",
-                        lambda *a, **kw: None)
 
     counts = verify.verify_housekeeping(conn, workspace=tmp_path)
     assert counts["proved"] == 1
@@ -296,9 +292,6 @@ def test_housekeeping_proved_supersedes_siblings(
         created_by="pid_l")
     monkeypatch.setattr(verify, "verify_strategy",
                         lambda *a, **kw: "proved")
-    from Tooling import playbook
-    monkeypatch.setattr(playbook, "maybe_record_idiom",
-                        lambda *a, **kw: None)
 
     verify.verify_housekeeping(conn, workspace=tmp_path)
     assert conn.execute(
@@ -397,9 +390,6 @@ def test_housekeeping_chain_promotes_through_layers(
     # Stub verify_strategy to always return "proved"
     monkeypatch.setattr(verify, "verify_strategy",
                         lambda *a, **kw: "proved")
-    from Tooling import playbook
-    monkeypatch.setattr(playbook, "maybe_record_idiom",
-                        lambda *a, **kw: None)
 
     counts = verify.verify_housekeeping(conn, workspace=tmp_path)
     assert counts["proved"] == 2  # parent_sid + grand_sid in one call
@@ -444,9 +434,6 @@ def test_housekeeping_caps_iterations(
 
     monkeypatch.setattr(verify, "verify_strategy",
                         lambda *a, **kw: "proved")
-    from Tooling import playbook
-    monkeypatch.setattr(playbook, "maybe_record_idiom",
-                        lambda *a, **kw: None)
 
     counts = verify.verify_housekeeping(
         conn, workspace=tmp_path, max_iters=1)
@@ -456,31 +443,3 @@ def test_housekeeping_caps_iterations(
     assert db.get_goal(conn, grand_gid)["status"] != "proved"
 
 
-def test_housekeeping_playbook_failure_does_not_abort(
-    conn: sqlite3.Connection, tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """playbook.maybe_record_idiom is best-effort — its exception must
-    not prevent housekeeping from continuing through subsequent ready
-    strategies."""
-    gid_a = _seed_goal(conn, slug="a")
-    sid_a = _seed_strategy_with_proved_subs(
-        conn, goal_id=gid_a,
-        lean_path="Problems/p/proofs/L_a.lean",
-        scratch_path="Problems/p/proofs/_strategy_a.lean")
-    gid_b = _seed_goal(conn, slug="b")
-    sid_b = _seed_strategy_with_proved_subs(
-        conn, goal_id=gid_b,
-        lean_path="Problems/p/proofs/L_b.lean",
-        scratch_path="Problems/p/proofs/_strategy_b.lean")
-
-    monkeypatch.setattr(verify, "verify_strategy",
-                        lambda *a, **kw: "proved")
-    from Tooling import playbook
-
-    def boom(*a, **kw):
-        raise RuntimeError("LLM unavailable")
-    monkeypatch.setattr(playbook, "maybe_record_idiom", boom)
-
-    counts = verify.verify_housekeeping(conn, workspace=tmp_path)
-    assert counts["proved"] == 2  # both processed despite playbook errors

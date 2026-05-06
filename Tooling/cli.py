@@ -435,19 +435,10 @@ def cmd_reset(args: argparse.Namespace) -> int:
         except OSError:
             pass
 
-    # Drop playbook.md (F22 — per-problem agent-curated idioms). Reset
-    # is meant to wipe state for a clean baseline run; carrying over
-    # idioms from a prior run pre-biases the new run's Context.md.
-    playbook_path = pdir / "playbook.md"
-    if playbook_path.exists():
-        try:
-            playbook_path.unlink()
-        except OSError:
-            pass
-
     # Drop .drafts/ (F55 — postmortem progress notes from prior
-    # timed-out spawns). Same reasoning as playbook: stale carry-over
-    # would pre-bias a clean reset.
+    # timed-out spawns). Reset is meant to wipe state for a clean
+    # baseline run; carrying over partial sketches would pre-bias a
+    # clean reset.
     drafts_dir = pdir / ".drafts"
     if drafts_dir.exists():
         import shutil

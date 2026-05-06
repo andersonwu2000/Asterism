@@ -165,42 +165,6 @@ def test_context_skips_half_baked_dead_strategies(
 
 
 # ---------------------------------------------------------------------
-# F22 — Context.md surfaces playbook entries
-# ---------------------------------------------------------------------
-
-def test_context_includes_playbook_when_present(
-    conn: sqlite3.Connection, tmp_path: Path,
-) -> None:
-    gid = _seed_problem_and_goal(conn)
-    pdir = tmp_path / "Problems" / "p"
-    pdir.mkdir(parents=True)
-    (pdir / "playbook.md").write_text(
-        "- **goal foo**: use trick X\n", encoding="utf-8")
-
-    attempts_dir = tmp_path / ".attempts" / "pid-q"
-    attempts_dir.mkdir(parents=True)
-    goal = db.get_goal(conn, gid)
-    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
-                          attempts_dir=attempts_dir)
-    text = out.read_text(encoding="utf-8")
-    assert "## Past wins on this problem (playbook)" in text
-    assert "use trick X" in text
-
-
-def test_context_omits_playbook_when_missing(
-    conn: sqlite3.Connection, tmp_path: Path,
-) -> None:
-    gid = _seed_problem_and_goal(conn)
-    attempts_dir = tmp_path / ".attempts" / "pid-q"
-    attempts_dir.mkdir(parents=True)
-    goal = db.get_goal(conn, gid)
-    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
-                          attempts_dir=attempts_dir)
-    text = out.read_text(encoding="utf-8")
-    assert "Past wins on this problem" not in text
-
-
-# ---------------------------------------------------------------------
 # F20 — Context.md surfaces resolved Mathlib signatures for names the
 # agent has been confused about (errored on before, or were curated by
 # Manifest as relevant)

@@ -17,7 +17,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import context_files, db, lemma_lookup, manifest, playbook
+from . import context_files, db, lemma_lookup, manifest
 from .pipeline import events
 
 
@@ -208,25 +208,6 @@ def _section_manifest_notes(mfst: manifest.Manifest) -> list[str]:
     return [
         "## Strategic notes (from Manifest.md)",
         mfst.strategic_notes,
-        "",
-    ]
-
-
-def _section_playbook(goal: sqlite3.Row, workspace: Path) -> list[str]:
-    """F22 — agent-curated success idioms accumulated across prior
-    strategies on this problem. Author intent (mathlib_hints /
-    strategic_notes) above represent design; this section is what the
-    framework has empirically learned works."""
-    pb_text = playbook.read_playbook(goal["problem"], workspace)
-    if not pb_text.strip():
-        return []
-    return [
-        "## Past wins on this problem (playbook)",
-        "Idioms that proved earlier strategies on this same problem. "
-        "When the current goal matches a pattern below, prefer the "
-        "noted idiom over re-deriving from scratch.",
-        "",
-        pb_text.rstrip(),
         "",
     ]
 
@@ -600,7 +581,6 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_manifest_forbidden(mfst),
         _section_manifest_notes(mfst),
         _section_library_available(mfst, workspace),
-        _section_playbook(goal, workspace),
         _section_prior_partial(kind, problem_dir, int(goal["id"])),
         _section_goal_history(
             direct_events=direct_events,

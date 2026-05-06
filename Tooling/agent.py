@@ -33,7 +33,6 @@ from .context import (  # noqa: F401  (re-export)
     _section_mathlib_lemmas,
     _section_parent_strategy,
     _section_prior_partial,
-    _section_playbook,
     _section_sandbox,
     _section_strategy_naming,
     compile_context,
