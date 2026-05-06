@@ -295,6 +295,51 @@ def _collect_lemma_names(deads: list,
     return names
 
 
+def _section_proved_goals(conn: sqlite3.Connection,
+                          goal: sqlite3.Row) -> list[str]:
+    """Grep entrypoint for proved goals in this problem.
+
+    Per the goal_naming_annotation design, proved-goal sources are
+    annotated with a `-- <slug>: <summary>` line-comment block (Builder
+    writes its PROPOSAL.md, Verify propagates the winning strategy's
+    `proposal_md`). Agents grep `Problems/<p>/proofs/` to find prior
+    work — same surface as Mathlib (grep `.lake/packages/mathlib/`)
+    and Library (grep `Library/<Topic>/` + INDEX.md).
+
+    Framework only surfaces a count + grep target here; it does not
+    push a pre-filtered candidate list. Agent picks what to grep based
+    on the current goal's content and reads relevant entries on demand.
+
+    Empty (no proved goals yet) → section omitted entirely so a fresh
+    problem's Context.md isn't cluttered.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM goals "
+        "WHERE problem = ? AND status = 'proved' "
+        "  AND id != ? AND alias_target_id IS NULL",
+        (goal["problem"], goal["id"]),
+    ).fetchone()
+    if row is None or int(row["n"]) == 0:
+        return []
+    n = int(row["n"])
+    return [
+        "## Proved goals on this problem (grep entrypoint)",
+        f"- {n} proved goal{'s' if n != 1 else ''} in this problem so "
+        f"far. Sources live at `Problems/{goal['problem']}/proofs/L_<slug>.lean`.",
+        "- Each proved file starts with a `-- <slug>: <summary>` "
+        "comment block (and possibly a multi-line description). Grep "
+        "the path for slugs / summary text relevant to the current "
+        "goal — e.g. `rg -l 'cross.*inner' Problems/<p>/proofs/` then "
+        "Read the hits.",
+        "- Use this when decomposing (avoid re-deriving an existing "
+        "sub-goal) or when writing a leaf proof (prior bridge lemmas "
+        "may close it via `apply <slug>`). The framework's dedupe "
+        "step also auto-aliases statement-equivalent sub-goals, but "
+        "your judgment on naming + signature reuse is upstream of that.",
+        "",
+    ]
+
+
 def _section_library_available(mfst, workspace) -> list[str]:
     """F49 — list Library/<Topic>/INDEX.md entries for the topics
     inferred from `mfst.lemma_hints` (any `Library.<Topic>.*` entries)."""
@@ -581,6 +626,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_manifest_forbidden(mfst),
         _section_manifest_notes(mfst),
         _section_library_available(mfst, workspace),
+        _section_proved_goals(conn, goal),
         _section_prior_partial(kind, problem_dir, int(goal["id"])),
         _section_goal_history(
             direct_events=direct_events,

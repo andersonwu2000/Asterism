@@ -110,7 +110,7 @@ Builder 證完沒寫 annotation → 視同失敗、走 retry。Backward 沒寫 s
 | 1 | Schema lint 改 + Backward prompt + parse 改（含 strategy 描述 + sub-goal 命名） | 1 |
 | 2 | Builder annotation 強制 + Verify propagate | 1 |
 | 3 | playbook 機制砍、F22 兩個 prompt 一起刪 | 1 |
-| 4 | Context.md candidate list 改成 grep 入口指針 | 1 |
+| 4 | Context.md 加 `## Proved goals on this problem (grep entrypoint)` section（count + path、不 push candidate list） | 1 |
 | 5 | PN / cantor / SG 重跑驗證 | (no commit) |
 
 每階段獨立 commit、可獨立 revert。

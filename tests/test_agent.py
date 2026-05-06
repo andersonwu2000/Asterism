@@ -165,6 +165,71 @@ def test_context_skips_half_baked_dead_strategies(
 
 
 # ---------------------------------------------------------------------
+# Phase 4 — proved-goals grep entrypoint section
+# ---------------------------------------------------------------------
+
+def test_context_omits_proved_goals_section_when_none_proved(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Fresh problem (only the current root goal exists, none proved
+    yet) → section omitted entirely so Context.md isn't cluttered."""
+    gid = _seed_problem_and_goal(conn)
+    attempts_dir = tmp_path / ".attempts" / "pid-q"
+    attempts_dir.mkdir(parents=True)
+    goal = db.get_goal(conn, gid)
+    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+                          attempts_dir=attempts_dir)
+    text = out.read_text(encoding="utf-8")
+    assert "Proved goals on this problem" not in text
+
+
+def test_context_includes_proved_goals_grep_pointer_when_some_proved(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """When ≥ 1 non-alias proved goal exists for the same problem
+    (excluding the current goal itself), Context.md surfaces a count
+    + grep target pointer — no inline candidate list, agent does its
+    own grep / Read."""
+    gid = _seed_problem_and_goal(conn)
+    # Seed two proved sibling goals, one alias one canonical, plus one
+    # open goal (none of which should be counted as the current one).
+    canon = db.insert_goal(
+        conn, problem="p", slug="cross_sq_add_inner_sq",
+        lean_path="Problems/p/proofs/L_cross_sq_add_inner_sq.lean",
+        statement="T", origin="backward",
+    )
+    db.update_goal_status(conn, canon, "proved")
+    other_proved = db.insert_goal(
+        conn, problem="p", slug="metric_triangle",
+        lean_path="Problems/p/proofs/L_metric_triangle.lean",
+        statement="T", origin="backward",
+    )
+    db.update_goal_status(conn, other_proved, "proved")
+    alias = db.insert_goal(
+        conn, problem="p", slug="cross_sq_alias",
+        lean_path="Problems/p/proofs/L_cross_sq_alias.lean",
+        statement="T", origin="backward",
+    )
+    db.update_goal_status(conn, alias, "proved")
+    db.set_alias_target(conn, alias, canon)
+
+    attempts_dir = tmp_path / ".attempts" / "pid-q"
+    attempts_dir.mkdir(parents=True)
+    goal = db.get_goal(conn, gid)
+    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+                          attempts_dir=attempts_dir)
+    text = out.read_text(encoding="utf-8")
+    assert "## Proved goals on this problem (grep entrypoint)" in text
+    # Two non-alias proved goals counted (alias excluded)
+    assert "2 proved goals" in text
+    # Path target surfaces the per-problem proofs/ dir
+    assert "Problems/p/proofs/L_<slug>.lean" in text
+    # No inline list of candidates — agent runs its own grep
+    assert "cross_sq_add_inner_sq" not in text
+    assert "metric_triangle" not in text
+
+
+# ---------------------------------------------------------------------
 # F20 — Context.md surfaces resolved Mathlib signatures for names the
 # agent has been confused about (errored on before, or were curated by
 # Manifest as relevant)
