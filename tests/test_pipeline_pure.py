@@ -12,7 +12,6 @@ from Tooling.pipeline import (
     _extract_statement,
     _extract_decline_reason,
     _extract_leading_comments,
-    _format_annotation_comment,
     _lean_path_to_module,
     _slug_from_filename,
     _safe_glob,
@@ -871,51 +870,6 @@ def test_resolve_collisions_partial_collision_only_renames_overlap(
         [("taken", p1), ("free", p2)], existing_slugs={"taken"})
     assert resolved == [("taken", "taken_2", p1), ("free", "free", p2)]
     assert rename_map == {"taken": "taken_2"}
-
-
-# ---------------------------------------------------------------------
-# Annotation comment formatting (`_format_annotation_comment`)
-# ---------------------------------------------------------------------
-
-def test_annotation_empty_body_returns_empty() -> None:
-    assert _format_annotation_comment("foo", "") == ""
-    assert _format_annotation_comment("foo", "   ") == ""
-    assert _format_annotation_comment("foo", "\n\n\n") == ""
-
-
-def test_annotation_single_line_body() -> None:
-    out = _format_annotation_comment("cross_id", "uses ring + Mathlib.cross_smul")
-    assert out == "-- cross_id: uses ring + Mathlib.cross_smul\n"
-
-
-def test_annotation_multi_line_preserves_paragraphs() -> None:
-    body = (
-        "split into A + B via combinator\n"
-        "\n"
-        "A is the algebraic identity, B is the metric bound."
-    )
-    out = _format_annotation_comment("strat_main", body)
-    assert out == (
-        "-- strat_main: split into A + B via combinator\n"
-        "--\n"
-        "-- A is the algebraic identity, B is the metric bound.\n"
-    )
-
-
-def test_annotation_strips_leading_blank_lines_in_summary() -> None:
-    """Agent might emit `\\n\\n## Strategy\\n...` — first non-blank
-    line wins as the summary."""
-    body = "\n\n## Strategy\nWe split into..."
-    out = _format_annotation_comment("foo", body)
-    # Summary is `## Strategy`; rest is `We split into...`
-    assert out.startswith("-- foo: ## Strategy\n")
-    assert "-- We split into..." in out
-
-
-def test_annotation_strips_trailing_whitespace_per_line() -> None:
-    body = "first line   \nsecond line\t\n"
-    out = _format_annotation_comment("x", body)
-    assert out == "-- x: first line\n-- second line\n"
 
 
 # ---------------------------------------------------------------------

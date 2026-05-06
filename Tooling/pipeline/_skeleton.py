@@ -137,11 +137,11 @@ def promote_to_alias(
     identifiers like `P` unbound, triggering `Function expected ...`
     at lake build.
 
-    `annotation` (already-formatted Lean line-comment block, e.g. the
-    output of `_format_annotation_comment`) is prepended verbatim if
-    non-empty. Comments are Lean-inert, so this does not affect alias
+    `annotation` (a `--` line-comment block extracted from the winning
+    strategy patch by `_extract_leading_comments`) is prepended verbatim
+    if non-empty. Comments are Lean-inert, so this does not affect alias
     elaboration; it just hydrates the proved goal's source with the
-    winning strategy's `proposal_md` for human readers + agent grep.
+    winning strategy's rationale for human readers + agent grep.
 
     Returns the backup path the caller should keep until the post-
     promote lake build succeeds (delete on success, restore on fail

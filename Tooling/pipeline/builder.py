@@ -82,10 +82,9 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     from . import (
         PipelineResult, PROMPT_DIR,
         _attempt_postmortem, _extract_decline_reason,
-        _extract_leading_comments, _format_annotation_comment,
-        _grep_forbidden, _is_sorry_stub, _lake_build,
-        _parse_hint_winner, _replace_proof_body, _safe_glob,
-        _spawn_failure,
+        _extract_leading_comments, _grep_forbidden, _is_sorry_stub,
+        _lake_build, _parse_hint_winner, _replace_proof_body,
+        _safe_glob, _spawn_failure,
         DECLINE_PARENT_TYPE_INFEASIBLE,
     )
 
@@ -148,18 +147,13 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                 # Forensic snapshot. Filename is fixed (`won_hint.lean`)
                 # since the winning tactic may contain spaces / quotes /
                 # unicode unfit for filenames; the file body has the
-                # exact tactic in `:= by <winner>`.
+                # exact tactic in `:= by <winner>`. No annotation written —
+                # `by <winner>` (linarith / decide / simp ...) is short
+                # enough to self-document; a synthetic comment would be
+                # mechanical noise.
                 (attempts_dir / "won_hint.lean").write_text(
                     final_text, encoding="utf-8"
                 )
-                # Phase 1 has no agent / PROPOSAL.md, so synthesize a
-                # short annotation from the deterministic outcome.
-                annotation = _format_annotation_comment(
-                    goal["slug"], f"proved by hint: {winner}",
-                )
-                if annotation:
-                    annotated = annotation + final_text
-                    goal_lean.write_text(annotated, encoding="utf-8")
                 return PipelineResult(outcome="proved")
 
         # Phase 1 didn't close the goal — restore the original sorry-stub

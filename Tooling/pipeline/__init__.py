@@ -12,10 +12,10 @@ Public API surfaced from this module (preserves pre-split callers):
   - run_builder, run_backward                        — dispatch entry points
   - PipelineResult, collect_artifacts                — DTO + forensics
   - _parse_hint_winner                               — Phase 1 hint output parser
-  - DECLINE_TOO_HARD, DECLINE_PARENT_TYPE_INFEASIBLE — directive values for
-                                                       the `-- decline: <reason>`
-                                                       directive at top of patch.lean
-  - _extract_leading_comments, _extract_decline_reason — Phase 6 directive parsing
+  - DECLINE_TOO_HARD, DECLINE_PARENT_TYPE_INFEASIBLE — values for the
+                                                       `-- decline: <reason>`
+                                                       directive in patch.lean
+  - _extract_leading_comments, _extract_decline_reason — Phase 6 parsing
   - _drafts                                          — partial-output module
 
 Test-only / dispatcher imports also keep working through underscore
@@ -306,40 +306,6 @@ def _slug_from_filename(name: str) -> str:
     """`new_<slug>.lean` → `<slug>` (Backward sub-goal placement)."""
     base = name.removesuffix(".lean")
     return base.removeprefix("new_") if base.startswith("new_") else base
-
-
-def _format_annotation_comment(slug: str, body: str) -> str:
-    """Synthesize a Lean line-comment annotation block from plain text.
-
-    Used by Phase 1 (hint) where the framework picks the winning tactic
-    and there's no agent text to extract — we manufacture `-- <slug>:
-    proved by hint: <tactic>` instead. Phase 2 LLM and Verify now
-    consume agent-written `--` blocks directly via `_extract_leading_
-    comments`, so this helper's caller surface has narrowed to Phase 1.
-
-    The first non-empty line of `body` becomes the summary line, the
-    rest follow as `-- <line>` (bare `--` for blanks). Empty body → "".
-    Returned text includes a trailing newline.
-    """
-    body = body.strip()
-    if not body:
-        return ""
-    lines = body.splitlines()
-    # First non-blank line is the summary
-    summary = ""
-    rest_start = 0
-    for idx, ln in enumerate(lines):
-        if ln.strip():
-            summary = ln.strip()
-            rest_start = idx + 1
-            break
-    if not summary:
-        return ""
-    out = [f"-- {slug}: {summary}"]
-    for ln in lines[rest_start:]:
-        s = ln.rstrip()
-        out.append(f"-- {s}" if s else "--")
-    return "\n".join(out) + "\n"
 
 
 _THEOREM_DECL_RE = re.compile(r"^\s*theorem\s+\S+", re.MULTILINE)
