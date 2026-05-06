@@ -20,12 +20,9 @@ import re
 import shutil
 import sqlite3
 import subprocess
-import time
-import uuid
 from pathlib import Path
 
 from .. import agent, db, dedupe, diagnostics, manifest
-from ..llm.base import SpawnRC
 
 
 # Sub-goal slug pattern: lowercase letter start, then lowercase letters,
@@ -187,25 +184,6 @@ def _parse_entry_kind(lean_text: str) -> str:
     return m.group(1) if m else "Builder"
 
 
-def _fetch_last_backward_error(conn: sqlite3.Connection,
-                               goal_id: int) -> str:
-    """F53 — most recent Backward lake error on this goal. Inlined as
-    retry_context so the same-session resume agent sees what its prior
-    turn produced + how lake rejected it, without re-reading any
-    companion file."""
-    row = conn.execute(
-        "SELECT da.failure_detail FROM dead_attempts da"
-        " JOIN pipelines p ON p.id = da.pipeline_id"
-        " WHERE da.target_id = ? AND da.target_kind = 'Goal'"
-        "   AND p.kind = 'Backward'"
-        " ORDER BY da.id DESC LIMIT 1",
-        (goal_id,),
-    ).fetchone()
-    if row is None or not row["failure_detail"]:
-        return ""
-    return diagnostics.strip_lake_noise(row["failure_detail"])
-
-
 # ---------------------------------------------------------------------
 # Pipeline entry
 # ---------------------------------------------------------------------
@@ -220,13 +198,14 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
 
     Outcomes:
       - `success`: strategy committed → clear any prior draft.
+      - `moot`: goal terminated by parallel cascade → no useful draft.
       - `failed` with `failure_reason == "goal_no_longer_open"`: the
         race-guard fired because a sibling (re)decomposed or shelved
         this goal mid-spawn. The persisted PROPOSAL.md is moot for any
         future Backward — clear instead of persisting a stale draft
         that would mislead a re-decomposition if the goal later reopens.
-      - anything else (rc!=0, parse_proposal_fail, signature mismatch,
-        ...): persist what the spawn wrote.
+      - anything else (failed / exhausted with retryable reasons):
+        persist what the spawn wrote.
     """
     from . import PipelineResult, _drafts
     goal_row = db.get_goal(conn, goal_id)
@@ -235,7 +214,7 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
     problem_dir = workspace / "Problems" / goal_row["problem"]
     result = _run_backward_inner(conn, goal_id=goal_id, workspace=workspace,
                                  mfst=mfst, pipeline_id=pipeline_id)
-    if (result.outcome == "success"
+    if (result.outcome in ("success", "moot")
             or result.failure_reason == "goal_no_longer_open"):
         _drafts.clear_partial(problem_dir=problem_dir, kind="backward",
                               goal_id=goal_id)
@@ -250,13 +229,20 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
 def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                         workspace: Path, mfst: manifest.Manifest,
                         pipeline_id: str) -> "PipelineResult":  # noqa: F821
-    """OR-parallel-safe Backward.
+    """OR-parallel-safe Backward — Phase 7 in-pipeline retry.
 
     Each invocation reserves a fresh strategy id and writes its scratch +
     namespaced sub-goal files at strategy-isolated paths. Multiple
     concurrent Backwards on the same parent therefore never collide on
     the filesystem, the goals table (slug uniqueness), or the parent's
     own lean_path (which is left untouched until Verify wins).
+
+    Phase 7 — strategy_id is reserved once before the retry helper loop
+    and stays stable across all in-pipeline retries (so the agent's
+    session memory anchored on `theorem s<sid_token>` remains valid
+    after `--resume`). The former F53/A cross-pipeline strategy reuse
+    is retired because each pipeline now mints fresh sid + strategy_id
+    (no cross-pipeline session continuity to misalign).
     """
     from . import (
         PipelineResult, PROMPT_DIR,
@@ -266,107 +252,38 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         _inject_imports_for_subs, _is_sorry_stub, _lake_build_batch,
         _lean_path_to_module, _normalize_signature,
         _safe_glob, _signature_prefix, _slug_from_filename,
-        _spawn_failure,
         DECLINE_PARENT_TYPE_INFEASIBLE,
     )
+    from ._retry import SpawnCtx, run_with_session_retries
+    from .. import dispatcher  # late: SHELVE_THRESHOLD live value
 
     goal = db.get_goal(conn, goal_id)
     if goal is None:
         return PipelineResult(outcome="failed", failure_reason="goal_not_found")
 
     attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
+    problem_dir = workspace / "Problems" / goal["problem"]
+    namespace = f"Problems.{goal['problem']}"
 
-    # F53 — same-session Backward retry (mirror of F33 for Builder).
-    # First dispatch on a goal mints a session UUID and pins it via
-    # --session-id; subsequent dispatches `claude --resume` so the
-    # agent's prior thinking + tool reads + lake-error perception
-    # carry over. retry_context inlines the latest lake stderr so the
-    # resumed agent sees what its prior turn produced and how lake
-    # rejected it.
-    sid = db.get_backward_session_id(conn, goal_id)
-    is_retry = sid is not None
-
-    # F53/A — reuse the prior dead strategy's id across warm retries.
-    # Agent's session memory anchors on the strategy patch's locked
-    # name (`theorem s152` + file `_strategy_s152.lean`); if this
-    # dispatch mints a fresh strategy_id (s153, s154, ...), the resumed
-    # agent keeps emitting code against the stale `s152` and trips the
-    # F52 signature check every time. Pinning sid_token to the prior
-    # strategy keeps Context.md, the F52 skeleton, and the agent's
-    # session-memory all anchored on the same patch name.
-    # (Sub-goal slugs are agent-picked descriptive identifiers and
-    # carry no sid_token — they're independent of this reuse logic.)
-    strategy_id: int | None = None
-    if is_retry:
-        row = conn.execute(
-            "SELECT id FROM strategies "
-            "WHERE goal_id = ? AND status = 'dead' "
-            "ORDER BY id DESC LIMIT 1",
-            (goal_id,),
-        ).fetchone()
-        if row is not None:
-            strategy_id = int(row["id"])
-            # P0-#3: clear any stale `strategy_subgoals` links from
-            # the prior dead cycle. If the previous Backward had
-            # committed sub-goals (currently only reachable on full
-            # success, which clears session_id and prevents this
-            # branch — but defensive against future code paths), the
-            # resurrected strategy would otherwise carry ghost links
-            # whose subgoal goal-rows are stale. Concretely
-            # `strategies_ready_for_verify` checks every linked sub;
-            # ghost-but-proved subs would falsely mark the strategy
-            # ready for Verify before this Backward had even written
-            # the new ones.
-            conn.execute(
-                "DELETE FROM strategy_subgoals WHERE strategy_id = ?",
-                (strategy_id,),
-            )
-            conn.execute(
-                "UPDATE strategies "
-                "SET status='proposed', created_by=?, scratch_path='', "
-                "    proposal_md='' WHERE id=?",
-                (pipeline_id, strategy_id),
-            )
-            conn.commit()
-    if strategy_id is None:
-        strategy_id = db.insert_strategy(
-            conn, goal_id=goal_id, lean_path=goal["lean_path"],
-            created_by=pipeline_id, proposal_md="", scratch_path="",
-        )
-    sid_token = f"s{strategy_id}"
-
-    def _abort(reason: str, detail: str = "",
-               proposal_md: str = "") -> "PipelineResult":
-        db.update_strategy_status(conn, strategy_id, "dead")
-        return PipelineResult(
-            outcome="failed", failure_reason=reason,
-            failure_detail=detail, proposal_md=proposal_md,
-        )
-
-    retry_context: str | None = None
-    if not is_retry:
-        # P1-#7: mint UUID locally; persist AFTER spawn (mirror
-        # builder block above).
-        sid = str(uuid.uuid4())
-        agent.compile_context(conn, goal=goal, mfst=mfst,
-                              attempts_dir=attempts_dir,
-                              strategy_id=strategy_id, kind="backward")
-    else:
-        retry_context = _fetch_last_backward_error(conn, goal_id)
-
-    # F52 — pre-write strategy patch skeleton: copy parent stub's
-    # `theorem <slug> <binders> : <type>` declaration verbatim, rename
-    # to `theorem sX`, body = `by sorry`. Agent edits ONLY the body;
-    # framework rejects any signature edit via `_signature_prefix` diff.
-    # Under F53/A the strategy_id is stable across warm retries, so
-    # the skeleton's `theorem sX` head matches both the prior turn's
-    # session memory and the current Context.md naming convention.
+    # Build the F52 skeleton text once. Used by spawn_fn (cold) to
+    # pre-populate attempts_dir/patch.lean and by parse_fn for the
+    # signature lock check.
     parent_abs_for_skeleton = workspace / goal["lean_path"]
     try:
         parent_text = parent_abs_for_skeleton.read_text(encoding="utf-8")
     except OSError as exc:
-        return _abort("missing_parent_stub", str(exc))
-    namespace = f"Problems.{goal['problem']}"
+        return PipelineResult(outcome="failed",
+                              failure_reason="missing_parent_stub",
+                              failure_detail=str(exc))
+
+    # Reserve strategy_id once for the entire pipeline. Cleaned up on
+    # any non-success outcome at the bottom of this function.
+    strategy_id = db.insert_strategy(
+        conn, goal_id=goal_id, lean_path=goal["lean_path"],
+        created_by=pipeline_id, proposal_md="", scratch_path="",
+    )
+    sid_token = f"s{strategy_id}"
+
     skeleton = _build_strategy_skeleton(
         parent_text,
         parent_slug=goal["slug"],
@@ -374,75 +291,126 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         namespace=namespace,
     )
     if skeleton is None:
-        return _abort(
-            "parent_stub_not_decomposable",
-            f"theorem {goal['slug']} not found in {goal['lean_path']} "
-            f"(may have been promoted by a sibling already)",
+        db.update_strategy_status(conn, strategy_id, "dead")
+        return PipelineResult(
+            outcome="failed",
+            failure_reason="parent_stub_not_decomposable",
+            failure_detail=(
+                f"theorem {goal['slug']} not found in {goal['lean_path']} "
+                f"(may have been promoted by a sibling already)"
+            ),
         )
-    skeleton_path = attempts_dir / "patch.lean"
-    skeleton_path.write_text(skeleton, encoding="utf-8")
     skeleton_signature = _normalize_signature(
         _signature_prefix(skeleton, sid_token))
 
-    spawn_t0 = time.monotonic()
-    rc = agent.spawn_llm(
-        kind="backward",
-        prompt_path=PROMPT_DIR / "backward.md",
-        problem_dir=workspace / "Problems" / goal["problem"],
-        attempts_dir=attempts_dir,
-        session_id=sid,
-        is_retry=is_retry,
-        retry_context=retry_context,
-    )
-    spawn_dur = time.monotonic() - spawn_t0
+    # In-loop _abort: returns failure WITHOUT marking strategy dead.
+    # The outer cleanup at the bottom of this function marks it dead
+    # if the helper's final outcome isn't 'success'.
+    def _abort(reason: str, detail: str = "",
+               proposal_md: str = "") -> "PipelineResult":  # noqa: F821
+        return PipelineResult(
+            outcome="failed", failure_reason=reason,
+            failure_detail=detail, proposal_md=proposal_md,
+        )
 
-    # P1-#7: persist after spawn proves session exists.
-    if not is_retry and rc not in (SpawnRC.TIMEOUT, SpawnRC.STALE_SESSION):
-        db.set_backward_session_id(conn, goal_id, sid)
-
-    # F53 — claude session may have been GC'd between dispatches
-    # (rc=125). Mint a fresh UUID, recompile context, cold-spawn once.
-    if rc == SpawnRC.STALE_SESSION:
-        db.set_backward_session_id(conn, goal_id, None)
-        sid = str(uuid.uuid4())
-        agent.compile_context(conn, goal=goal, mfst=mfst,
-                              attempts_dir=attempts_dir,
-                              strategy_id=strategy_id, kind="backward")
-        spawn_t0 = time.monotonic()
-        rc = agent.spawn_llm(
+    def backward_spawn(ctx: SpawnCtx) -> int:
+        # Cold start: agent has no session memory to resume. Compile
+        # Context.md fresh and write the F52 skeleton so the agent's
+        # first Read of patch.lean shows a clean `theorem s<sid_token>
+        # ... := by sorry` template.
+        # Warm: skip both — agent's --resume picks up Context from
+        # prior turn, and patch.lean keeps whatever the agent wrote
+        # last iteration so retry_context-driven fixes can be
+        # incremental.
+        if ctx.cold:
+            agent.compile_context(conn, goal=goal, mfst=mfst,
+                                  attempts_dir=ctx.attempts_dir,
+                                  strategy_id=strategy_id,
+                                  kind="backward")
+            (ctx.attempts_dir / "patch.lean").write_text(
+                skeleton, encoding="utf-8")
+        return agent.spawn_llm(
             kind="backward",
             prompt_path=PROMPT_DIR / "backward.md",
-            problem_dir=workspace / "Problems" / goal["problem"],
+            problem_dir=problem_dir,
+            attempts_dir=ctx.attempts_dir,
+            session_id=ctx.sid,
+            is_retry=not ctx.cold,
+            retry_context=ctx.retry_context,
+        )
+
+    def backward_parse() -> "PipelineResult":  # noqa: F821
+        return _backward_parse_and_commit(
+            conn=conn, goal=goal, goal_id=goal_id, mfst=mfst,
+            workspace=workspace, attempts_dir=attempts_dir,
+            strategy_id=strategy_id, sid_token=sid_token,
+            skeleton_signature=skeleton_signature,
+            _abort=_abort,
+            _safe_glob=_safe_glob,
+            _extract_leading_comments=_extract_leading_comments,
+            _extract_decline_reason=_extract_decline_reason,
+            DECLINE_PARENT_TYPE_INFEASIBLE=DECLINE_PARENT_TYPE_INFEASIBLE,
+            _normalize_signature=_normalize_signature,
+            _signature_prefix=_signature_prefix,
+            _is_sorry_stub=_is_sorry_stub,
+            _grep_forbidden=_grep_forbidden,
+            _slug_from_filename=_slug_from_filename,
+            _lake_build_batch=_lake_build_batch,
+            _inject_imports_for_subs=_inject_imports_for_subs,
+            _lean_path_to_module=_lean_path_to_module,
+            _extract_statement_from_lean=_extract_statement_from_lean,
+        )
+
+    def backward_postmortem(sid: str) -> None:
+        _attempt_postmortem(
+            kind="backward",
+            prompt_path=PROMPT_DIR / "backward_postmortem.md",
+            problem_dir=problem_dir,
             attempts_dir=attempts_dir,
             session_id=sid,
-            is_retry=False,
         )
-        spawn_dur = time.monotonic() - spawn_t0
-        if rc not in (SpawnRC.TIMEOUT, SpawnRC.STALE_SESSION):
-            db.set_backward_session_id(conn, goal_id, sid)
 
-    if rc == SpawnRC.TIMEOUT:
-        # Timeout: agent SIGKILL'd mid-write. F55 — postmortem spawn
-        # resumes the killed session for a short state-dump into
-        # `_progress.md` before we clear the session id (the wrapper
-        # then persists _progress.md as the partial draft).
-        if sid is not None:
-            _attempt_postmortem(
-                kind="backward",
-                prompt_path=PROMPT_DIR / "backward_postmortem.md",
-                problem_dir=workspace / "Problems" / goal["problem"],
-                attempts_dir=attempts_dir,
-                session_id=sid,
-            )
-        db.set_backward_session_id(conn, goal_id, None)
-        reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
-        return _abort(reason, detail)
-    if rc != 0:
-        # Ordinary failure — keep session_id so the next dispatch's
-        # --resume has the prior failed-turn context to learn from.
-        reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
-        return _abort(reason, detail)
+    result = run_with_session_retries(
+        conn=conn,
+        goal_id=goal_id,
+        pipeline_id=pipeline_id,
+        threshold=dispatcher.SHELVE_THRESHOLD,
+        attempts_dir=attempts_dir,
+        spawn_fn=backward_spawn,
+        parse_fn=backward_parse,
+        postmortem_fn=backward_postmortem,
+    )
 
+    # Cleanup: any non-success outcome leaves the strategy at 'proposed'
+    # with no scratch_path / no sub-goal links. Mark it dead so
+    # `strategies_ready_for_verify` doesn't hang on it.
+    if result.outcome != "success":
+        db.update_strategy_status(conn, strategy_id, "dead")
+
+    return result
+
+
+def _backward_parse_and_commit(
+    *, conn, goal, goal_id, mfst, workspace, attempts_dir,
+    strategy_id, sid_token, skeleton_signature, _abort,
+    _safe_glob, _extract_leading_comments, _extract_decline_reason,
+    DECLINE_PARENT_TYPE_INFEASIBLE,
+    _normalize_signature, _signature_prefix, _is_sorry_stub,
+    _grep_forbidden, _slug_from_filename, _lake_build_batch,
+    _inject_imports_for_subs, _lean_path_to_module,
+    _extract_statement_from_lean,
+) -> "PipelineResult":  # noqa: F821
+    """Parse + dedupe + place + build + commit pass for one Backward
+    spawn. Called by the in-pipeline retry helper after a successful
+    spawn (rc=0). Returns 'success' on commit, 'failed' on any
+    structural / build problem; the caller decides whether to retry
+    (helper) or escalate (cascade).
+
+    Strategy mark-dead cleanup is the OUTER caller's responsibility —
+    this function leaves the strategy at 'proposed' even on failure
+    so warm retries can run against the same row.
+    """
+    from . import PipelineResult
     patches = _safe_glob(attempts_dir, "patch*.lean")
     if not patches:
         return _abort("parse_proposal_fail", "no patch.lean")

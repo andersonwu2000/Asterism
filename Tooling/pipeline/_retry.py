@@ -43,12 +43,18 @@ from . import PipelineResult, _spawn_failure, collect_artifacts
 # `proved` (Builder success), `success` (Backward strategy commit).
 _TERMINAL_SUCCESS_OUTCOMES = frozenset({"proved", "success"})
 
-# Failure reasons that the agent *intentionally* signaled and that the
-# retry loop must not paper over with another spawn. `agent_declined`
-# burns Builder budget through cascade routing; `agent_infeasible`
-# escapes the goal upward via _propagate_shelve. Either way the loop
-# stops here and returns to dispatcher cascade.
-_TERMINAL_DECLINE_REASONS = frozenset({"agent_declined", "agent_infeasible"})
+# Failure reasons that must NOT be retried inside the loop:
+#   * `agent_declined` (Builder) — agent intentionally declined; cascade
+#     routes to Backward.
+#   * `agent_infeasible` (Builder/Backward) — agent supplied a counter-
+#     example; cascade shelves the goal and propagates upward.
+#   * `goal_no_longer_open` (Backward) — race-detected mid-parse moot
+#     (sibling proved or shelve propagated while this pipeline was
+#     building). Retrying the same session against a terminated goal
+#     accomplishes nothing.
+_TERMINAL_DECLINE_REASONS = frozenset({
+    "agent_declined", "agent_infeasible", "goal_no_longer_open",
+})
 
 
 def goal_still_active(conn: sqlite3.Connection, goal_id: int,

@@ -329,6 +329,17 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             # that's already taken on the goal.
             db.set_backward_session_id(conn, int(target_id), None)
             return
+        # Phase 7 — `exhausted` outcome: mirrors Builder branch above.
+        # Helper buffered N dead_attempts + N attempts++ for the N
+        # failed retries; cascade does status transition only.
+        if outcome == "exhausted":
+            cur = db.get_goal(conn, int(target_id))
+            n = int(cur["attempts"]) if cur else 0
+            if n >= SHELVE_THRESHOLD:
+                db.update_goal_status(conn, int(target_id), "shelved")
+                db.set_backward_session_id(conn, int(target_id), None)
+                _propagate_shelve(conn, int(target_id))
+            return
         # failed
         if is_fast_fail:
             return  # F46 — same skip-increment as Builder above
