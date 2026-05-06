@@ -91,10 +91,12 @@ Spawn agent：
 ```
 1. 編 Context.md（kind='builder'）
 2. spawn claude（cwd=Problems/<p>/、--session-id <uuid>）
-3. agent 寫 PROPOSAL.md + patch.lean（body 改寫 sorry）
-4. forbidden_lemmas grep
-5. backup parent.lean → 套 patch → lake build
-6. 過：留 patch、outcome 'proved'
+3. agent 寫 patch.lean：檔頂 `-- <slug>: <summary>` annotation block + body 改寫 sorry
+   （Phase 6 single-output、無獨立 PROPOSAL.md；decline 用 `-- decline: <reason>` directive）
+4. extract leading comments + decline directive 分流（decline → agent_declined / agent_infeasible）
+5. forbidden_lemmas grep
+6. backup parent.lean → 套 patch → lake build
+7. 過 + 檔頂 annotation 非空 → 留 patch（含 annotation）、outcome 'proved'
    不過：還原 backup、record dead_attempt(reason='lake_build_error')、outcome 'failed'
 ```
 
@@ -128,10 +130,12 @@ cascade 對 Builder 的狀態轉移：proved → goal proved；failed → attemp
 
 4. spawn claude（cwd=Problems/<p>/、第一次 --session-id、重試 --resume）
 
-5. 驗 agent 輸出：
-   - PROPOSAL.md 必存在
-   - patch_*.lean + new_*.lean 必存在（缺則 parse_proposal_fail；若 PROPOSAL 標
-     decline_reason=parent_type_infeasible → agent_infeasible）
+5. 驗 agent 輸出（Phase 6 single-output、無獨立 PROPOSAL.md）：
+   - patch.lean 必存在（缺則 parse_proposal_fail）
+   - extract patch.lean 檔頂 `--` leading comments 進 `strategies.proposal_md`
+   - 檔頂若帶 `-- decline: parent_type_infeasible` → agent_infeasible（不需 sub-goals）
+   - 否則 new_*.lean 必存在（缺則 parse_proposal_fail）
+   - leading comments 非空（空則 agent_no_annotation、未來 Verify propagate 會無內容）
    - forbidden_lemmas grep 全文件
    - patch.lean 簽名沒被改（normalize whitespace 後比對 skeleton）
    - 每個 sub-goal 檔名 = `new_<slug>.lean`、agent 自選 descriptive slug（charset
@@ -297,7 +301,7 @@ inline 成「## Your previous progress note」section
 agent 看到自己的回顧筆記、繼續做（fresh session）
 ```
 
-**為什麼不直接讓 agent 邊想邊存 PROPOSAL.md**（早期 F55 設計）：agent 同時思考又要維護 deliverable、注意力分裂、容易過早承諾分解方向。改成事後 postmortem 把 deliverable 跟思考紀錄解耦。
+**為什麼不直接讓 agent 邊想邊存 deliverable**（早期 F55 設計）：agent 同時思考又要維護 deliverable、注意力分裂、容易過早承諾分解方向。改成事後 postmortem 把 deliverable 跟思考紀錄解耦。
 
 **postmortem 自己也死怎麼辦**：180s cap + 任何 rc≠0 都當 best-effort 失敗（next spawn 直接 cold start、不比沒 F55 差）。
 

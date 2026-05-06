@@ -1,17 +1,20 @@
-"""F48 — Builder decline channel.
+"""F48 — Builder decline channel (cascade behavior).
 
-When Builder writes only PROPOSAL.md (no patch.lean), the agent has
-followed builder.md's "When to skip writing a patch" hatch. Three
-contracts must hold:
+When Builder produces a `-- decline: too_hard` directive in
+patch.lean's leading comment block (Phase 6 single-output design),
+the pipeline classifies the run as `failure_reason='agent_declined'`.
+This file covers the cascade reaction to such a classification:
 
-1. Pipeline classifies this as failure_reason='agent_declined'
-   (distinct from agent_no_output, which means agent died / didn't
-   produce any output).
-2. cascade_one promotes the goal to BUILDER_THRESHOLD attempts in
+1. cascade_one promotes the goal to BUILDER_THRESHOLD attempts in
    one step so the next dispatch is Backward, not yet-another Builder.
-3. Backward's Context.md surfaces the decline reasoning as
-   `## Why Builder declined` so decomposition addresses what the
-   Builder agent flagged.
+2. Backward's Context.md surfaces the decline reasoning inline in
+   the `### Direct attempts on this goal` umbrella sub-section so
+   the next decomposition addresses what Builder flagged.
+
+The directive-parsing classification itself is tested in
+`tests/test_pipeline_pure.py` (`_extract_decline_reason`) and the
+full pipeline branch in `tests/test_pipeline_builder.py`
+(`test_run_builder_decline_returns_agent_declined`).
 """
 from __future__ import annotations
 
@@ -28,65 +31,7 @@ from Tooling.dispatcher import (
 
 
 # ---------------------------------------------------------------------
-# 1. Pipeline classifies decline distinctly from no-response
-# ---------------------------------------------------------------------
-
-def test_no_patch_no_proposal_is_agent_no_output(tmp_path: Path) -> None:
-    """Sanity baseline: empty attempts_dir → agent died / produced
-    nothing. Stays as legacy `agent_no_output`."""
-    # Nothing written to tmp_path
-    patches = list(tmp_path.glob("patch*.lean"))
-    proposal = tmp_path / "PROPOSAL.md"
-    assert not patches
-    assert not proposal.exists()
-    # The classification logic mirrors pipeline.run_builder line ~358-373.
-    proposal_text = ""
-    if not patches:
-        if proposal_text.strip():
-            reason = "agent_declined"
-        else:
-            reason = "agent_no_output"
-    assert reason == "agent_no_output"
-
-
-def test_no_patch_with_proposal_is_agent_declined(tmp_path: Path) -> None:
-    """Decline path: agent wrote a non-empty PROPOSAL.md but no
-    patch.lean. The PROPOSAL.md text becomes the decline reasoning."""
-    proposal_text = (
-        "Decline: condition 4 (sub-lemma decomposition more efficient).\n"
-        "The goal needs an induction over PropForm whose eliminator "
-        "isn't auto-derivable from the available hypotheses."
-    )
-    proposal = tmp_path / "PROPOSAL.md"
-    proposal.write_text(proposal_text, encoding="utf-8")
-    patches = list(tmp_path.glob("patch*.lean"))
-    assert not patches
-    assert proposal.read_text(encoding="utf-8").strip()
-
-    # Same classification logic
-    if not patches:
-        if proposal.read_text(encoding="utf-8").strip():
-            reason = "agent_declined"
-        else:
-            reason = "agent_no_output"
-    assert reason == "agent_declined"
-
-
-def test_whitespace_proposal_is_not_decline(tmp_path: Path) -> None:
-    """A PROPOSAL.md containing only whitespace doesn't carry signal —
-    classify as agent_no_output, not as a fake decline."""
-    (tmp_path / "PROPOSAL.md").write_text("   \n\n  \n", encoding="utf-8")
-    patches = list(tmp_path.glob("patch*.lean"))
-    if not patches:
-        if (tmp_path / "PROPOSAL.md").read_text(encoding="utf-8").strip():
-            reason = "agent_declined"
-        else:
-            reason = "agent_no_output"
-    assert reason == "agent_no_output"
-
-
-# ---------------------------------------------------------------------
-# 2. cascade_one fast-tracks declined goal to Backward
+# cascade_one fast-tracks declined goal to Backward
 # ---------------------------------------------------------------------
 
 def _seed_goal(conn: sqlite3.Connection, *, problem: str = "p") -> int:

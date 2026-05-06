@@ -54,16 +54,13 @@ def _section_sandbox(strategy_id: int | None,
         "  - This goal's problem dir (your cwd).",
         "  - `.lake/packages/mathlib/Mathlib/` for `rg`/`Read` on "
         "Mathlib source.",
-        "- Reads NOT allowed: other `Problems/<...>/` dirs — they're "
-        "irrelevant to this goal. Use Loogle / Grep on Mathlib instead.",
-        "- Files framework wrote (read & edit, do NOT rename):",
-        "  - `patch.lean` — proof patch (Builder writes body; Backward "
-        "edits the locked-signature skeleton, body only).",
-        "  - `Context.md`, `PAST_DIRECT_ATTEMPTS.md`, "
-        "`PAST_VERIFY_FAILURES.md`, `PAST_DEAD_STRATEGIES.md` "
-        "(when present) — read-only reference.",
-        "- Files you write:",
-        "  - `PROPOSAL.md` — strategy / approach explanation.",
+        "- Reads NOT allowed: other `Problems/<...>/` dirs — irrelevant "
+        "to this goal. Use Loogle / Grep on Mathlib instead.",
+        "- `Context.md` + `PAST_*.md` companion files: read-only.",
+        "- `patch.lean` is your single output. Lead with `--` annotation "
+        "comments, then edit the body (Builder fills in the proof; "
+        "Backward edits the F52 skeleton's body — signature locked). "
+        "See the kind-specific prompt for layout.",
         "",
     ]
 
