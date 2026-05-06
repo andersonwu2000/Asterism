@@ -4,6 +4,13 @@ Status: planned (2026-05-06). 從 Phase 6.5 PN dry-run 觀察到 Context.md 跨
 spawn 重複大量 stable 內容、加上「agent 在某個 goal 上學到的東西無法 carry 到
 其他 spawn」的機制空缺、整理出兩個檔案的設計。
 
+**前置依賴**：本 doc 假設 retry model 已從 cross-pipeline 改為 in-pipeline-
+bounded（見 `pipeline_session_unification.md` Phase 7）。在 Model B 下「pipeline
+terminal = session terminal」是 by-definition、reflection 觸發點直接落在 pipeline
+結束時、不需要區分「success pipeline」vs「failure pipeline」的半補丁措辭。
+若 Phase 7 未先落地、本 doc 的 reflection 觸發描述須改用「success pipeline
+terminal」措辭、設計不變但解釋負擔較重。
+
 ## 動機
 
 兩個獨立但相關的問題：
