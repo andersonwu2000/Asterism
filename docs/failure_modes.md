@@ -37,8 +37,8 @@
 | `patch_signature_mismatch` | Backward (F52) | agent 改了鎖死的 `theorem sX <binders> : <type>` 簽名 | 保留 | attempts++ | `direct_attempt` |
 | `naming_violation` | Backward | sub-goal slug 違反 charset / length lint（後 Phase 1 重命名：lowercase `[a-z][a-z0-9_]*`、≤ 60 chars；衝突 framework auto-suffix、不算 violation） | 保留 | attempts++ | `direct_attempt` |
 | `agent_no_annotation` | Builder + Backward (Phase 2) | rc=0、`patch.lean` build 過、但 PROPOSAL.md 空白（whitespace only）。Backward 同 reason 用於 strategy 描述空白 | 保留 | attempts++ | `direct_attempt` |
-| `agent_declined` | Builder (F48) | agent 寫 PROPOSAL 但無 patch + frontmatter `decline_reason: too_hard` | 清（next dispatch 是 Backward） | attempts 跳到 BUILDER_THRESHOLD（一次燒掉 Builder 預算） | `direct_attempt`（subtype） |
-| `agent_infeasible` | Builder + Backward (F48) | agent 在 PROPOSAL 標 `decline_reason: parent_type_infeasible`（含反例） | 清 | goal 直接 `shelved` + `_propagate_shelve`（**不增 attempts**、cascade 上拋讓父 strategy 重拆） | `infeasible_sub`（投到 parent goal、不到自己） |
+| `agent_declined` | Builder (F48) | agent 在 patch.lean 檔頂寫 `-- decline: too_hard`（Phase 6） | 清（next dispatch 是 Backward） | attempts 跳到 BUILDER_THRESHOLD（一次燒掉 Builder 預算） | `direct_attempt`（subtype） |
+| `agent_infeasible` | Builder + Backward (F48) | agent 在 patch.lean 檔頂寫 `-- decline: parent_type_infeasible`（含反例、Phase 6） | 清 | goal 直接 `shelved` + `_propagate_shelve`（**不增 attempts**、cascade 上拋讓父 strategy 重拆） | `infeasible_sub`（投到 parent goal、不到自己） |
 | `agent_timeout` | Builder + Backward | claude rc=124（SIGKILL at WORKER_TIMEOUT_SEC、預設 600s） | 清（postmortem 跑完 + 寫 `.drafts/`、F55） | attempts++ | `direct_attempt` |
 | `agent_rc_nonzero` | Builder + Backward | rc≠0、rc≠124、wall-clock ≥ 10s（一般 hard fail：crash / parser error / etc.） | 保留（warm retry 帶 stderr） | attempts++ | `direct_attempt` |
 | `agent_no_output` | Builder Phase 2 | rc=0 但 agent 沒寫 `patch*.lean` 也沒 PROPOSAL.md（agent 不 follow 格式） | 保留 | attempts++ | `direct_attempt` |

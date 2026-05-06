@@ -5,13 +5,14 @@ sub-goals to alias bodies, places everything atomically.
 
 Public entry point: `run_backward`. Backward-specific helpers
 (`_ensure_imports_subgoal`, `_try_promote_sorry_free`,
-`_parse_entry_kind`) live here. Shared helpers (`_grep_forbidden`,
-`_attempt_postmortem`, `_spawn_failure`, `_safe_glob`,
-`_signature_prefix`, `_normalize_signature`, `_build_strategy_skeleton`,
-`_inject_imports_for_subs`, `_lean_path_to_module`, `_lake_build_batch`,
-`PipelineResult`, `PROMPT_DIR`, `DECLINE_*`, `_parse_decline_reason`,
-`_drafts`, `_extract_statement_from_lean`, `_slug_from_filename`) are
-imported from the package root.
+`_parse_entry_kind`, `_resolve_slug_collisions`) live here. Shared
+helpers (`_grep_forbidden`, `_attempt_postmortem`, `_spawn_failure`,
+`_safe_glob`, `_signature_prefix`, `_normalize_signature`,
+`_build_strategy_skeleton`, `_inject_imports_for_subs`,
+`_lean_path_to_module`, `_lake_build_batch`, `PipelineResult`,
+`PROMPT_DIR`, `DECLINE_*`, `_extract_decline_reason`,
+`_extract_leading_comments`, `_drafts`, `_extract_statement_from_lean`,
+`_slug_from_filename`) are imported from the package root.
 """
 from __future__ import annotations
 
@@ -260,11 +261,12 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     from . import (
         PipelineResult, PROMPT_DIR,
         _attempt_postmortem, _build_strategy_skeleton,
+        _extract_decline_reason, _extract_leading_comments,
         _extract_statement_from_lean, _grep_forbidden,
         _inject_imports_for_subs, _lake_build_batch,
         _lean_path_to_module, _normalize_signature,
-        _parse_decline_reason, _safe_glob,
-        _signature_prefix, _slug_from_filename, _spawn_failure,
+        _safe_glob, _signature_prefix, _slug_from_filename,
+        _spawn_failure,
         DECLINE_PARENT_TYPE_INFEASIBLE,
     )
 
@@ -441,54 +443,51 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
         return _abort(reason, detail)
 
-    proposal = attempts_dir / "PROPOSAL.md"
-    if not proposal.exists():
-        return _abort("parse_proposal_fail", "no PROPOSAL.md")
-    proposal_text = proposal.read_text(encoding="utf-8")
-    # Strategy description is the source of the parent goal's
-    # annotation when this strategy wins Verify. Empty PROPOSAL.md
-    # would propagate as an empty annotation — symmetric to Builder's
-    # `agent_no_annotation` check.
-    if not proposal_text.strip():
+    patches = _safe_glob(attempts_dir, "patch*.lean")
+    if not patches:
+        return _abort("parse_proposal_fail", "no patch.lean")
+    main_patch_text = patches[0].read_text(encoding="utf-8")
+
+    # Phase 6 single-output: leading comment block on patch.lean is the
+    # strategy's annotation source (later propagates to the parent goal
+    # when this strategy wins Verify). `-- decline: <reason>` on the
+    # leading block routes through the decline channel.
+    leading = _extract_leading_comments(main_patch_text)
+    decline = _extract_decline_reason(leading)
+    if decline == DECLINE_PARENT_TYPE_INFEASIBLE:
         return _abort(
-            "agent_no_annotation",
-            "PROPOSAL.md present but whitespace-only; strategy "
-            "description is required for goal annotation propagation.",
-            proposal_text,
+            "agent_infeasible",
+            ("backward reports parent type infeasible; "
+             "leading comments must include counterexample"),
+            leading,
         )
 
-    patches = _safe_glob(attempts_dir, "patch*.lean")
     new_subs = _safe_glob(attempts_dir, "new_*.lean")
-    if not patches or not new_subs:
-        # Backward decline channel. Mirrors Builder's F48 hatch: an agent
-        # that finds the goal infeasible (counterexample available, or
-        # it sees no honest decomposition) writes only PROPOSAL.md with
-        # `decline_reason: parent_type_infeasible` — framework cascades
-        # up rather than charging another wasted attempt.
-        reason = _parse_decline_reason(proposal_text)
-        if reason == DECLINE_PARENT_TYPE_INFEASIBLE:
-            return _abort(
-                "agent_infeasible",
-                ("backward reports parent type infeasible; "
-                 "PROPOSAL.md must include counterexample"),
-                proposal_text,
-            )
+    if not new_subs:
         return _abort(
             "parse_proposal_fail",
-            f"patch={len(patches)} new={len(new_subs)}",
-            proposal_text,
+            f"patch=1 new={len(new_subs)}",
+            leading,
         )
 
-    all_text = "\n".join(p.read_text(encoding="utf-8")
-                         for p in patches + new_subs)
+    if not leading.strip():
+        return _abort(
+            "agent_no_annotation",
+            "patch.lean present but had no leading comment block; "
+            "strategy rationale is required for goal annotation propagation.",
+            leading,
+        )
+
+    # Forbidden-lemma grep covers patch + every sub-goal stub.
+    all_text = "\n".join([main_patch_text] +
+                          [p.read_text(encoding="utf-8") for p in new_subs])
     forbidden = _grep_forbidden(all_text, mfst.forbidden_lemmas)
     if forbidden:
-        return _abort("forbidden_lemma", forbidden, proposal_text)
+        return _abort("forbidden_lemma", forbidden, leading)
 
     # F52 — diff check: agent must preserve the framework-locked
     # signature `theorem sX <binders> : <type>`. Whitespace normalized
     # so re-indentation is OK; binder/type changes are not.
-    main_patch_text = patches[0].read_text(encoding="utf-8")
     agent_signature = _normalize_signature(
         _signature_prefix(main_patch_text, sid_token))
     if agent_signature != skeleton_signature:
@@ -497,7 +496,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             f"agent edited the locked signature\n"
             f"expected: {skeleton_signature[:300]}\n"
             f"got:      {agent_signature[:300]}",
-            proposal_text,
+            leading,
         )
 
     # Validate slug naming: agent-picked descriptive identifier.
@@ -516,20 +515,20 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             return _abort(
                 "naming_violation",
                 f"sub-goal filename {ns.name!r} yields empty slug",
-                proposal_text,
+                leading,
             )
         if len(slug) > 60:
             return _abort(
                 "naming_violation",
                 f"sub-goal slug {slug!r} exceeds max length 60",
-                proposal_text,
+                leading,
             )
         if not _SLUG_RE.match(slug):
             return _abort(
                 "naming_violation",
                 f"sub-goal slug {slug!r} must match [a-z][a-z0-9_]* "
                 f"(lowercase ascii start, then ascii/digits/underscore)",
-                proposal_text,
+                leading,
             )
         sub_meta.append((slug, ns))
 
@@ -677,7 +676,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                 "goal_no_longer_open",
                 f"goal {goal_id} transitioned to {current!r} during this "
                 f"Backward's run; aborting to avoid orphan strategy.",
-                proposal_text,
+                leading,
             )
 
         # All passed — INSERT goals + link via strategy_subgoals.
@@ -722,7 +721,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         scratch_rel = scratch_dest.relative_to(workspace).as_posix()
         db.update_strategy_scratch_path(conn, strategy_id, scratch_rel)
         conn.execute("UPDATE strategies SET proposal_md = ? WHERE id = ?",
-                     (proposal_text, strategy_id))
+                     (leading, strategy_id))
         # F53 — strategy committed; clear backward_session_id so any
         # future Backward on this same goal (e.g. cascade-reopen after
         # a sub-goal shelves) starts from a fresh session rather than
@@ -730,7 +729,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         db.set_backward_session_id(conn, goal_id, None)
         conn.commit()
 
-        return PipelineResult(outcome="success", proposal_md=proposal_text)
+        return PipelineResult(outcome="success", proposal_md=leading)
 
     except Exception as exc:
         # Cleanup: remove only this strategy's files (other strategies
@@ -744,5 +743,5 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         return _abort(
             "lake_build_error",
             diagnostics.annotate_failure_detail(str(exc)),
-            proposal_text,
+            leading,
         )

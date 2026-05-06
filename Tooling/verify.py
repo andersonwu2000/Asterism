@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import Literal
 
 from . import db
-from .pipeline import _format_annotation_comment
 from .pipeline._lake import lake_build, lean_path_to_module
 from .pipeline._skeleton import promote_to_alias, rollback_promote
 
@@ -64,15 +63,16 @@ def verify_strategy(
     # Step 2: rewrite parent stub as a `def <slug> := @<ns>.s<id>`
     # alias. Lean copies the type from the strategy theorem at
     # elaboration, so binders + conclusion transfer exactly (F52).
-    # The winning strategy's `proposal_md` (Backward agent's high-level
-    # decomposition rationale) hydrates as a comment block above the
-    # alias for grep + readability — Lean-inert, so build is unaffected.
+    # The winning strategy's `proposal_md` is the raw `--` comment
+    # block the Backward agent wrote at the top of patch.lean; we
+    # prepend it verbatim above the alias for grep + readability.
+    # Lean-inert, so the alias build is unaffected.
     parent_abs = workspace / s["lean_path"]
     sid_token = f"s{strategy_id}"
     scratch_module = lean_path_to_module(workspace, scratch_abs)
-    annotation = _format_annotation_comment(
-        s["goal_slug"], s["proposal_md"] or "",
-    )
+    annotation = (s["proposal_md"] or "")
+    if annotation and not annotation.endswith("\n"):
+        annotation += "\n"
     parent_backup = promote_to_alias(
         parent_abs,
         namespace=f"Problems.{s['goal_problem']}",

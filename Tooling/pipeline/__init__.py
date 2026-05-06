@@ -12,7 +12,10 @@ Public API surfaced from this module (preserves pre-split callers):
   - run_builder, run_backward                        — dispatch entry points
   - PipelineResult, collect_artifacts                — DTO + forensics
   - _parse_hint_winner                               — Phase 1 hint output parser
-  - DECLINE_TOO_HARD, DECLINE_PARENT_TYPE_INFEASIBLE — frontmatter values
+  - DECLINE_TOO_HARD, DECLINE_PARENT_TYPE_INFEASIBLE — directive values for
+                                                       the `-- decline: <reason>`
+                                                       directive at top of patch.lean
+  - _extract_leading_comments, _extract_decline_reason — Phase 6 directive parsing
   - _drafts                                          — partial-output module
 
 Test-only / dispatcher imports also keep working through underscore
@@ -250,33 +253,19 @@ def _grep_forbidden(text: str, forbidden: list[str]) -> str | None:
 
 
 # ---------------------------------------------------------------------
-# Decline frontmatter
+# Decline reasons (Phase 6 directive values)
 # ---------------------------------------------------------------------
 
-# Recognized values for PROPOSAL.md's `decline_reason` frontmatter field.
-# `too_hard` keeps the legacy F48 channel (jump to Backward on same goal);
-# `parent_type_infeasible` shelves this goal and cascades up to force the
-# parent strategy back into Backward redesign — used when the agent can
-# construct a counterexample to the goal under all stated hypotheses, or
-# the hypothesis set is missing something the conclusion clearly needs.
+# Recognized values for the `-- decline: <reason>` directive an agent
+# writes at the top of patch.lean to opt out of the success path.
+# `too_hard` is the canonical value; the framework jumps Builder kind
+# to Backward on the same goal (legacy F48 channel). `parent_type_
+# infeasible` shelves this goal and cascades up to force the parent
+# strategy back into Backward redesign — used when the agent can
+# construct a counterexample to the goal under all stated hypotheses,
+# or the hypothesis set is missing something the conclusion needs.
 DECLINE_TOO_HARD = "too_hard"
 DECLINE_PARENT_TYPE_INFEASIBLE = "parent_type_infeasible"
-
-_DECLINE_RE = re.compile(
-    r"(?m)^---\s*$.*?^decline_reason\s*:\s*([\w_]+).*?^---\s*$",
-    re.DOTALL,
-)
-
-
-def _parse_decline_reason(proposal_text: str) -> str | None:
-    """Extract `decline_reason` from PROPOSAL.md YAML frontmatter, if any.
-
-    Returns the raw value (e.g. `'too_hard'` or `'parent_type_infeasible'`),
-    or None if the file lacks frontmatter or the field. Unrecognized values
-    are returned as-is — caller decides how to dispatch.
-    """
-    m = _DECLINE_RE.search(proposal_text)
-    return m.group(1).strip() if m else None
 
 
 # ---------------------------------------------------------------------
@@ -320,24 +309,17 @@ def _slug_from_filename(name: str) -> str:
 
 
 def _format_annotation_comment(slug: str, body: str) -> str:
-    """Format a goal-annotation block as Lean line comments.
+    """Synthesize a Lean line-comment annotation block from plain text.
 
-    The first non-empty line of `body` becomes the annotation summary,
-    rendered as `-- <slug>: <summary>` (one-line, grep-friendly). Each
-    subsequent line follows as `-- <line>` (or bare `--` for blank
-    lines) so paragraph structure carries over. Returns empty string
-    when `body` is empty / whitespace only.
+    Used by Phase 1 (hint) where the framework picks the winning tactic
+    and there's no agent text to extract — we manufacture `-- <slug>:
+    proved by hint: <tactic>` instead. Phase 2 LLM and Verify now
+    consume agent-written `--` blocks directly via `_extract_leading_
+    comments`, so this helper's caller surface has narrowed to Phase 1.
 
-    The returned text includes a trailing newline so it can be
-    `<annotation> + <existing source>` prepended verbatim.
-
-    Used by:
-      * Builder success paths — annotation comes from agent's
-        PROPOSAL.md (Phase 2 LLM patch) or a synthesized "proved by
-        hint: <tactic>" line (Phase 1).
-      * Verify (`promote_to_alias`) — annotation comes from the
-        winning strategy's `proposal_md` (Backward agent's high-level
-        decomposition rationale).
+    The first non-empty line of `body` becomes the summary line, the
+    rest follow as `-- <line>` (bare `--` for blanks). Empty body → "".
+    Returned text includes a trailing newline.
     """
     body = body.strip()
     if not body:
@@ -358,6 +340,51 @@ def _format_annotation_comment(slug: str, body: str) -> str:
         s = ln.rstrip()
         out.append(f"-- {s}" if s else "--")
     return "\n".join(out) + "\n"
+
+
+def _extract_leading_comments(text: str) -> str:
+    """Return the contiguous leading `--` comment block of a Lean source,
+    including its trailing newline. Stops at the first non-comment,
+    non-blank line. Blank lines that appear *between* comment lines are
+    preserved (paragraph breaks survive); trailing blanks are trimmed.
+    Empty string if `text` doesn't open with comments.
+
+    The captured block is the agent-written annotation source under
+    Phase 6 single-output design (Builder success / Backward strategy
+    rationale / decline directive).
+    """
+    out: list[str] = []
+    buffered_blanks: list[str] = []
+    for ln in text.splitlines(keepends=True):
+        stripped = ln.strip()
+        if stripped.startswith("--"):
+            if buffered_blanks:
+                out.extend(buffered_blanks)
+                buffered_blanks = []
+            out.append(ln)
+        elif stripped == "":
+            if out:
+                buffered_blanks.append(ln)
+            # else: leading blank before any comment → ignore
+        else:
+            break
+    return "".join(out)
+
+
+_DECLINE_DIRECTIVE_RE = re.compile(r"^\s*--\s*decline\s*:\s*(\S+)",
+                                   re.MULTILINE)
+
+
+def _extract_decline_reason(comment_block: str) -> str | None:
+    """If the leading comment block opens with a `-- decline: <reason>`
+    directive, return the reason. Otherwise None. The directive must
+    appear in the leading-comment region (caller already extracted via
+    `_extract_leading_comments`); placing it deeper in the file is
+    ignored on purpose so an agent describing prior declines in a
+    paragraph can't accidentally trigger the path.
+    """
+    m = _DECLINE_DIRECTIVE_RE.search(comment_block)
+    return m.group(1) if m else None
 
 
 _THM_HEAD_RE = re.compile(r"\btheorem\s+\S+")

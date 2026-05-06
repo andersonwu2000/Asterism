@@ -1,12 +1,15 @@
 """Builder pipeline. Phase 1 deterministic tactic_try via Mathlib `hint`,
-Phase 2 LLM patch with F33 same-session retry, F46 spawn-fast-fail
-handling, F48 decline channel, F55 partial-output persistence.
+Phase 2 LLM patch (Phase 6 single-output: agent emits patch.lean with
+leading `--` annotation block) + F33 same-session retry + F46 spawn-
+fast-fail handling + F48 decline channel + F55 partial-output
+persistence.
 
 Public entry point: `run_builder`. Shared helpers (`_grep_forbidden`,
 `_is_sorry_stub`, `_replace_proof_body`, `_attempt_postmortem`,
 `_spawn_failure`, `_safe_glob`, `PipelineResult`, `PROMPT_DIR`,
-`_parse_hint_winner`, `_lake_build`, `DECLINE_*`, `_parse_decline_reason`,
-`_drafts`) are imported from the package root.
+`_parse_hint_winner`, `_lake_build`, `_extract_leading_comments`,
+`_extract_decline_reason`, `DECLINE_*`, `_drafts`) are imported from
+the package root.
 """
 from __future__ import annotations
 
@@ -78,8 +81,9 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                        pipeline_id: str) -> "PipelineResult":  # noqa: F821
     from . import (
         PipelineResult, PROMPT_DIR,
-        _attempt_postmortem, _format_annotation_comment, _grep_forbidden,
-        _is_sorry_stub, _lake_build, _parse_decline_reason,
+        _attempt_postmortem, _extract_decline_reason,
+        _extract_leading_comments, _format_annotation_comment,
+        _grep_forbidden, _is_sorry_stub, _lake_build,
         _parse_hint_winner, _replace_proof_body, _safe_glob,
         _spawn_failure,
         DECLINE_PARENT_TYPE_INFEASIBLE,
@@ -248,47 +252,43 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                               failure_reason=reason,
                               failure_detail=detail)
 
-    proposal = (attempts_dir / "PROPOSAL.md")
-    proposal_text = proposal.read_text(encoding="utf-8") if proposal.exists() else ""
-
     patches = _safe_glob(attempts_dir, "patch*.lean")
     if not patches:
-        # F48 — Builder decline channel. The agent followed builder.md's
-        # "When to skip writing a patch" hatch: it produced a non-empty
-        # PROPOSAL.md explaining why the goal is too hard / needs
-        # decomposition, but did not write patch.lean. Cascade treats
-        # this distinctly from agent_no_output (no PROPOSAL either).
-        #
-        # `decline_reason` frontmatter sub-routes:
-        #   - `parent_type_infeasible` → agent_infeasible (cascade-up:
-        #     parent strategy dies, parent goal re-decomposes)
-        #   - `too_hard` / missing      → agent_declined  (jump this
-        #     goal to Backward via F48 path)
-        if proposal_text.strip():
-            reason = _parse_decline_reason(proposal_text)
-            if reason == DECLINE_PARENT_TYPE_INFEASIBLE:
-                return PipelineResult(
-                    outcome="failed",
-                    failure_reason="agent_infeasible",
-                    failure_detail=("builder reports parent type infeasible; "
-                                    "PROPOSAL.md must include counterexample"),
-                    proposal_md=proposal_text,
-                )
-            return PipelineResult(
-                outcome="failed", failure_reason="agent_declined",
-                failure_detail="builder declined; PROPOSAL.md explains why",
-                proposal_md=proposal_text,
-            )
-        return PipelineResult(outcome="failed", failure_reason="agent_no_output",
-                              failure_detail="no patch*.lean", proposal_md=proposal_text)
+        return PipelineResult(
+            outcome="failed", failure_reason="agent_no_output",
+            failure_detail="no patch*.lean",
+        )
     patch = patches[0]
     patch_text = patch.read_text(encoding="utf-8")
+
+    # Phase 6 single-output: agent's metadata lives in patch.lean's
+    # leading comment block. `-- decline: <reason>` directive routes
+    # to F48; otherwise the block is the goal's annotation source.
+    leading = _extract_leading_comments(patch_text)
+    decline = _extract_decline_reason(leading)
+    if decline == DECLINE_PARENT_TYPE_INFEASIBLE:
+        return PipelineResult(
+            outcome="failed",
+            failure_reason="agent_infeasible",
+            failure_detail=("builder reports parent type infeasible; "
+                            "leading comments must include counterexample"),
+            proposal_md=leading,
+        )
+    if decline is not None:
+        # Any other declared decline reason maps to the agent_declined
+        # branch (jump to Backward). `too_hard` is the canonical value;
+        # unknown sub-reasons stay routed here defensively.
+        return PipelineResult(
+            outcome="failed", failure_reason="agent_declined",
+            failure_detail=f"builder declined: {decline}",
+            proposal_md=leading,
+        )
 
     forbidden = _grep_forbidden(patch_text, mfst.forbidden_lemmas)
     if forbidden:
         return PipelineResult(
             outcome="failed", failure_reason="forbidden_lemma",
-            failure_detail=forbidden, proposal_md=proposal_text,
+            failure_detail=forbidden, proposal_md=leading,
         )
 
     # Stage: copy patch over goal lean (backup first)
@@ -297,32 +297,25 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     shutil.copy2(patch, goal_lean)
     ok, err = _lake_build(workspace, goal_lean)
     if ok:
-        # Annotation is a hard success condition: an empty / whitespace-
-        # only PROPOSAL.md means the agent skipped the documentation step
-        # entirely. Roll back to the sorry-stub backup and treat as
-        # failure so the next dispatch retries with the same prompt.
-        # Comments are Lean-inert, so prepending the annotation after a
-        # successful build does not affect the already-elaborated proof.
-        annotation = _format_annotation_comment(
-            goal["slug"], proposal_text,
-        )
-        if not annotation:
+        # Annotation is a hard success condition: an empty leading-
+        # comment block means the agent skipped documentation. Roll
+        # back to the sorry-stub backup and retry. The agent's patch
+        # already contains the annotation in place, so on success we
+        # just keep the file as the proved goal source verbatim.
+        if not leading.strip():
             shutil.copy2(backup, goal_lean)
             backup.unlink()
             return PipelineResult(
                 outcome="failed",
                 failure_reason="agent_no_annotation",
-                failure_detail="patch built but PROPOSAL.md was empty",
-                proposal_md=proposal_text,
+                failure_detail="patch built but had no leading comment block",
             )
-        annotated = annotation + goal_lean.read_text(encoding="utf-8")
-        goal_lean.write_text(annotated, encoding="utf-8")
         backup.unlink()
-        return PipelineResult(outcome="proved")
+        return PipelineResult(outcome="proved", proposal_md=leading)
     shutil.copy2(backup, goal_lean)
     backup.unlink()
     return PipelineResult(
         outcome="failed", failure_reason="lake_build_error",
         failure_detail=diagnostics.annotate_failure_detail(err),
-        proposal_md=proposal_text,
+        proposal_md=leading,
     )

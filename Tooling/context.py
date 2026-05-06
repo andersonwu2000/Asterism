@@ -70,32 +70,21 @@ def _section_sandbox(strategy_id: int | None,
 
 def _section_strategy_naming(strategy_id: int | None,
                              goal: sqlite3.Row) -> list[str]:
-    """Backward-only: strategy id token + sub-goal slug rules. Builder
-    doesn't fan out into sub-goals so this section is empty for it.
-
-    Slug rules: sub-goals are named by the agent with a short descriptive
-    identifier reflecting what each one proves (e.g. `cross_sq_add_inner_sq`
-    rather than `s17_sub_3`). Charset and length are agent-enforced;
-    cross-batch collisions are auto-suffixed by the framework — agent
-    doesn't perform a uniqueness check."""
+    """Backward-only: strategy id token + sub-goal slug rules. Empty
+    for Builder (no fan-out into sub-goals)."""
     if strategy_id is None:
         return []
     sid_token = f"s{strategy_id}"
     return [
         "## Strategy naming",
-        f"- This Backward attempt is strategy `{sid_token}` (stable "
-        "across same-session retries). The framework owns the strategy "
-        f"patch file `_strategy_{sid_token}.lean` and its top-level "
-        f"theorem name `{sid_token}` — do not change either.",
-        "- Sub-goal files: `new_<slug>.lean` × N. You pick `<slug>` per "
-        "sub-goal as a short descriptive identifier reflecting what it "
-        "proves (e.g. `cross_sq_add_inner_sq`, `triangle_inequality_metric`).",
-        "- Slug rules: `[a-z][a-z0-9_]*`, length ≤ 60. Pick a name that "
-        "fits the sub-goal's content — the framework auto-suffixes "
-        "(`_2`, `_3`, ...) if your name collides with an existing slug "
-        "in this problem, so don't worry about uniqueness yourself.",
-        "- Theorem name in each sub-goal file = `<slug>` (filename minus "
-        "`new_` and `.lean`).",
+        f"- Strategy id `{sid_token}` (stable across same-session retries). "
+        f"Framework owns `_strategy_{sid_token}.lean` and theorem name "
+        f"`{sid_token}` — do not change.",
+        "- Sub-goal files: `new_<slug>.lean` × N. Pick descriptive "
+        "`<slug>` per sub-goal (e.g. `cross_sq_add_inner_sq`). Charset "
+        "`[a-z][a-z0-9_]*`, length ≤ 60. Framework auto-suffixes on "
+        "collision — uniqueness is not your concern.",
+        "- Theorem name inside each sub-goal file MUST equal the slug.",
         "",
     ]
 
@@ -297,21 +286,13 @@ def _collect_lemma_names(deads: list,
 
 def _section_proved_goals(conn: sqlite3.Connection,
                           goal: sqlite3.Row) -> list[str]:
-    """Grep entrypoint for proved goals in this problem.
+    """Grep entrypoint for proved goals in this problem. Section omitted
+    when the count is zero (fresh problem).
 
-    Per the goal_naming_annotation design, proved-goal sources are
-    annotated with a `-- <slug>: <summary>` line-comment block (Builder
-    writes its PROPOSAL.md, Verify propagates the winning strategy's
-    `proposal_md`). Agents grep `Problems/<p>/proofs/` to find prior
-    work — same surface as Mathlib (grep `.lake/packages/mathlib/`)
-    and Library (grep `Library/<Topic>/` + INDEX.md).
-
-    Framework only surfaces a count + grep target here; it does not
-    push a pre-filtered candidate list. Agent picks what to grep based
-    on the current goal's content and reads relevant entries on demand.
-
-    Empty (no proved goals yet) → section omitted entirely so a fresh
-    problem's Context.md isn't cluttered.
+    Each proved goal source carries a `-- <slug>: <summary>` leading
+    comment block (Builder Phase 6 / Verify propagate). Framework only
+    points the agent at the directory; it doesn't push a candidate list.
+    Same pattern as Mathlib (grep `.lake/packages/mathlib/`) and Library.
     """
     row = conn.execute(
         "SELECT COUNT(*) AS n FROM goals "
@@ -324,18 +305,14 @@ def _section_proved_goals(conn: sqlite3.Connection,
     n = int(row["n"])
     return [
         "## Proved goals on this problem (grep entrypoint)",
-        f"- {n} proved goal{'s' if n != 1 else ''} in this problem so "
-        f"far. Sources live at `Problems/{goal['problem']}/proofs/L_<slug>.lean`.",
-        "- Each proved file starts with a `-- <slug>: <summary>` "
-        "comment block (and possibly a multi-line description). Grep "
-        "the path for slugs / summary text relevant to the current "
-        "goal — e.g. `rg -l 'cross.*inner' Problems/<p>/proofs/` then "
-        "Read the hits.",
-        "- Use this when decomposing (avoid re-deriving an existing "
-        "sub-goal) or when writing a leaf proof (prior bridge lemmas "
-        "may close it via `apply <slug>`). The framework's dedupe "
-        "step also auto-aliases statement-equivalent sub-goals, but "
-        "your judgment on naming + signature reuse is upstream of that.",
+        f"- {n} proved goal{'s' if n != 1 else ''} so far. Sources at "
+        f"`Problems/{goal['problem']}/proofs/L_<slug>.lean`, each opening "
+        "with a `-- <slug>: <summary>` comment block.",
+        "- Grep the directory for slugs / summary text matching the "
+        "current goal — e.g. `rg -l 'cross.*inner' Problems/"
+        f"{goal['problem']}/proofs/` then Read the hits. Useful for "
+        "spotting an already-proved sub-goal to alias against, or a "
+        "prior bridge lemma to apply.",
         "",
     ]
 

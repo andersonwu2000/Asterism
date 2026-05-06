@@ -1,12 +1,12 @@
-Your previous turn was killed by a wall-clock timeout before you could finalize PROPOSAL.md. Your session memory still holds everything you read, considered, and were about to write.
+Your prior turn was killed by wall-clock timeout before you finalized output. Your session memory still holds what you read, considered, were about to write.
 
-Quickly write a short note (~200 words) into `_progress.md` in your sandbox capturing **only**:
+Write a short note (~200 words) into `_progress.md` in your sandbox. The framework inlines it into the next attempt's Context.md so the next spawn picks up from your sketch.
 
-1. The decomposition shape you were converging on (one sentence — what split into how many sub-pieces, the structural idea).
-2. Any sub-piece you already had a clear formulation for (slug-style names + 1-line statement each, no proofs).
-3. The specific point you were stuck on or about to spend a long time on (which Mathlib lemma you couldn't name, which case analysis was unclear, etc).
-4. **Alternative direction (≤ 60 words)**: if the stuck point looks avoidable by a different decomposition shape, sketch the alternative (e.g. "split 2-way into existence + ordinary, push the algebraic detail one layer down"). If the direction was correct and you only got stuck on a tactic detail, write "none — direction sound".
+Capture only:
 
-This note will be inlined into your next attempt's Context.md so the next spawn picks up from your sketch instead of starting fresh. Skip recap of the goal statement (Context.md will already have it).
+1. The decomposition shape you were converging on (one sentence — what splits into how many pieces, the structural idea).
+2. Any sub-piece with a clear formulation (slug-style name + 1-line statement, no proofs).
+3. The specific blocker (which Mathlib lemma you couldn't name, which case analysis was unclear, ...).
+4. **Alternative direction (≤ 60 words)**: if the blocker looks avoidable by a different decomposition shape, sketch it. Otherwise write "none — direction sound".
 
-Write `_progress.md` and exit. Do NOT attempt to finalize PROPOSAL.md, patch.lean, or sub-goal stubs in this turn — the next spawn does that with your note as the starting point.
+Skip recapping the goal — Context.md already has it. Write `_progress.md` and exit. Do NOT finalize patch.lean / sub-goal stubs in this turn.

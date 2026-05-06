@@ -1,11 +1,11 @@
-Your previous turn was killed by a wall-clock timeout before you could finalize patch.lean. Your session memory still holds everything you read, tried, and were about to do.
+Your prior turn was killed by wall-clock timeout before you finalized patch.lean. Your session memory still holds what you read, tried, were about to do.
 
-Quickly write a short note (~150 words) into `_progress.md` in your sandbox capturing **only**:
+Write a short note (~150 words) into `_progress.md` in your sandbox. The framework inlines it into the next attempt's Context.md so the next spawn picks up from your sketch.
 
-1. The proof approach you were pursuing (one sentence — main lemma family + how you intended to assemble the goal).
-2. Any tactic block you already had a clear shape for (a few lines of Lean is fine).
-3. The specific point you were stuck on or about to spend a long time on (an unknown Mathlib lemma name, a typeclass instance you couldn't synthesize, a case the tactic chain wouldn't close).
+Capture only:
 
-This note will be inlined into your next attempt's Context.md so the next spawn picks up from your sketch instead of starting fresh. Skip recap of the goal statement (Context.md will already have it).
+1. The proof approach (one sentence — main lemma family + how you'd assemble the goal).
+2. Any tactic block with a clear shape (a few lines of Lean is fine).
+3. The specific blocker (unknown Mathlib lemma name, typeclass instance you couldn't synthesize, a case the tactic chain wouldn't close).
 
-Write `_progress.md` and exit. Do NOT attempt to finalize patch.lean in this turn — the next spawn does that with your note as the starting point.
+Skip recapping the goal — Context.md already has it. Write `_progress.md` and exit. Do NOT finalize patch.lean in this turn.

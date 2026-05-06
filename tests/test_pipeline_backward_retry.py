@@ -393,47 +393,25 @@ def test_backward_wrapper_clears_draft_on_goal_no_longer_open(
     draft.parent.mkdir(parents=True)
     draft.write_text("stale prior draft", encoding="utf-8")
 
-    def fake_spawn(**kw):
-        (kw["attempts_dir"] / "PROPOSAL.md").write_text(
-            "this attempt's draft", encoding="utf-8")
-        # write valid skeleton-shaped patch + sub-goal so the inner
-        # gets past parse + signature check and into the race-guard
-        sid_token = "s1"
-        # Match the strategy id the inner mints; the test reads it back
-        # below to determine the sid_token, but for simplicity we let
-        # the inner reach lake_build then race-fail. Easier path: have
-        # the spawn write only the PROPOSAL and let the inner abort
-        # with parse_proposal_fail. That doesn't exercise the race
-        # guard branch though — so instead we manipulate the goal
-        # status mid-spawn so the inner trips the `fresh.status not
-        # in (open, attempting)` guard at line ~942.
-        return 0
-    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
-
     # Simulate a sibling having shelved the goal between dispatch and
     # post-spawn. We force this by mutating goal status before the
-    # spawn returns — easier: monkeypatch the spawn itself to do it.
+    # spawn returns.
     def fake_spawn_with_race(**kw):
-        # Write the agent outputs first (so persist_partials would
-        # capture them if the wrapper went down the persist branch)
         attempts = kw["attempts_dir"]
-        (attempts / "PROPOSAL.md").write_text("sibling-raced draft",
-                                              encoding="utf-8")
-        # Forge minimal skeleton-shaped patch + sub stub: copy patch.lean
-        # the framework pre-wrote, then add a single sub-goal new_*.lean
+        # Phase 6 single-output: agent writes patch.lean with leading
+        # comments + edits the F52 skeleton body. Add a sub-goal stub.
         patch_text = (attempts / "patch.lean").read_text(encoding="utf-8")
         (attempts / "patch.lean").write_text(
-            patch_text.replace(":= by sorry", ":= by trivial"),
+            "-- s1: race test\n"
+            + patch_text.replace(":= by sorry", ":= by trivial"),
             encoding="utf-8")
-        # Match the sid_token the inner used. The skeleton's signature
-        # has `theorem s<id>` — we just need ANY new_*.lean.
-        # Inspect skeleton to extract sid_token:
         import re
         m = re.search(r"theorem (s\d+)", patch_text)
         sid_token = m.group(1) if m else "s1"
-        (attempts / f"new_{sid_token}_sub_1.lean").write_text(
+        (attempts / f"new_sub_one.lean").write_text(
+            "-- sub_one: race-test sub\n"
             "import Mathlib\nnamespace Problems.p\n"
-            f"theorem {sid_token}_sub_1 : True := by sorry\n"
+            "theorem sub_one : True := by sorry\n"
             "end Problems.p\n",
             encoding="utf-8")
         # Race: between spawn return and the inner's status re-check

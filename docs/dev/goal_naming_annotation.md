@@ -1,9 +1,11 @@
 # Goal naming + annotation
 
-Status: Phase 1-4 shipped (commits cab25cc / 948f557 / cc934ff / 5be9a33 / dee781c,
-2026-05-06). Phase 5 (PN/cantor/SG e2e 驗證) 待跑。Bridge lemma layer
-(`bridge_lemma_layer.md`) 的前置 substrate — Strategist / Forward / Generalize
-等更上層 pipeline 都仰賴 goal 有語意的命名 + 可被 grep 找到的描述。
+Status: Phase 1-4 shipped + PN root proved e2e (commits cab25cc / 948f557 /
+cc934ff / 5be9a33 / dee781c / 400d7a7、2026-05-06). Phase 6 single-output
+整合 in progress：PROPOSAL.md 退役、agent 在 patch.lean 檔頂寫 `-- ` annotation
+block、decline 改用 `-- decline: <reason>` directive（success/decline 同一個檔
+出口）。Phase 5（cantor/SG e2e）跟上層設計（Strategist / Forward / Generalize、
+見 `bridge_lemma_layer.md`）等 Phase 6 收完再續。
 
 ## 動機
 
@@ -62,18 +64,30 @@ theorem cross_sq_add_inner_sq ... := by ...
 
 時間軸：
 
-1. Backward 拆 G → 寫 strategy s100 + 描述進 `proposal_md` + 命名 sub-goal A/B/C
+1. Backward 拆 G → 寫 strategy s100、檔頂帶 `-- ...` annotation 進 patch.lean、
+   命名 sub-goal A/B/C。framework parse 時抽 leading comments 進 `strategies.proposal_md`
 2. A/B/C 各自被證掉、各自的 .lean 檔頂被 Builder（或下一層 Backward）寫上自己的
-   annotation
-3. s100 的 Verify 勝出 → framework 把 `s100.proposal_md` 寫進 G 的 .lean 檔頂作 annotation
+   annotation（直接寫進 patch.lean 檔頂、framework 不再 prepend）
+3. s100 的 Verify 勝出 → framework 把 `s100.proposal_md` 寫進 G 的 .lean 檔頂
 4. s100 若死、s120 上場、走同樣流程、annotation 永遠跟著勝出的那條
 
 → 每個 goal 最終 annotation 跟證它的路徑同步、不會 stale。
 
+### 單一檔 + decline directive（Phase 6）
+
+PROPOSAL.md 整個退役。所有 metadata 走 patch.lean 檔頂的 `--` 註解：
+
+- success：`-- <slug>: <summary>` + body（agent 已寫對位置、framework 直接 mv）
+- decline：`-- decline: too_hard | parent_type_infeasible` + 詳述、`:= by sorry` 留著
+
+Framework parse `_extract_leading_comments` + `_extract_decline_reason` 分流。
+單一 artifact、agent 心智模型統一（"a goal file is what I edit"）、framework 少一層
+prepend 邏輯、forensic 走 dead_attempts.artifacts JSON 統一。
+
 ### 註解是 success 硬條件
 
-Builder 證完沒寫 annotation → 視同失敗、走 retry。Backward 沒寫 strategy 描述同理。
-理由：不強制就會漏、漏就退化回沒命名的狀態。
+Builder 證完沒寫 leading comment block → 視同失敗、`agent_no_annotation`、retry。
+Backward 沒寫 strategy 描述同理。不強制就會漏。
 
 ## 改動清單
 
@@ -111,11 +125,12 @@ Builder 證完沒寫 annotation → 視同失敗、走 retry。Backward 沒寫 s
 
 | 階段 | 內容 | Commit |
 |---|---|---|
-| 1 | Schema lint 改 + Backward prompt + parse 改（含 strategy 描述 + sub-goal 命名） | 1 |
-| 2 | Builder annotation 強制 + Verify propagate | 1 |
-| 3 | playbook 機制砍、F22 兩個 prompt 一起刪 | 1 |
-| 4 | Context.md 加 `## Proved goals on this problem (grep entrypoint)` section（count + path、不 push candidate list） | 1 |
-| 5 | PN / cantor / SG 重跑驗證 | (no commit) |
+| 1 | Schema lint 改 + Backward prompt + parse 改（含 strategy 描述 + sub-goal 命名） | cab25cc + 948f557 |
+| 2 | Builder annotation 強制 + Verify propagate | cc934ff |
+| 3 | playbook 機制砍、F22 兩個 prompt 一起刪 | 5be9a33 + 43c3a30 |
+| 4 | Context.md 加 `## Proved goals on this problem (grep entrypoint)` section | dee781c |
+| 5 | PN root proved e2e validation（depth 8、21 goals） | 400d7a7 |
+| 6 | single-output 整合：PROPOSAL.md 退役、agent 在 patch.lean 檔頂寫 annotation；decline 改用 `-- decline: <reason>` directive；prompt 全面精簡 | (in-progress) |
 
 每階段獨立 commit、可獨立 revert。
 

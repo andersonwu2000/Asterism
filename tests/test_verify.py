@@ -108,14 +108,16 @@ def test_verify_strategy_propagates_proposal_md_as_annotation(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When a strategy wins Verify, its `proposal_md` (the Backward
-    agent's high-level decomposition rationale) propagates into the
-    parent goal's `.lean` source as a `-- <slug>: ...` line-comment
-    block via `promote_to_alias`'s `annotation` keyword."""
+    """When a strategy wins Verify, its `proposal_md` (already a raw
+    Lean line-comment block — Backward parse extracted the leading
+    comments from patch.lean directly under Phase 6) propagates into
+    the parent goal's `.lean` source verbatim via promote_to_alias's
+    `annotation` keyword."""
     gid = _seed_goal(conn, slug="parent_main")
     sid = _seed_strategy_with_proved_subs(
         conn, goal_id=gid,
-        proposal_md="split into A + B via cross-product Lagrange",
+        proposal_md="-- parent_main: split into A + B via "
+                     "cross-product Lagrange\n",
     )
     scratch_abs = tmp_path / "Problems/p/proofs/_strategy_s.lean"
     scratch_abs.parent.mkdir(parents=True)

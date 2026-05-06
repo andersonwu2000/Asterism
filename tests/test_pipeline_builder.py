@@ -82,18 +82,18 @@ def test_run_builder_phase2_llm_patch_builds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When attempts > 0 (forces past Phase 1), Builder spawns the LLM,
-    grabs patch.lean, lake-builds against it, returns 'proved'. The
-    proved goal file is hydrated with a `-- <slug>: <summary>` annotation
-    block prepended above the patch body."""
+    grabs patch.lean (Phase 6: single output, leading comment block +
+    body), lake-builds, returns 'proved'. The proved goal file IS the
+    patch.lean verbatim — agent already wrote the annotation in place."""
     gid = _seed_problem(conn, tmp_path)
     db.increment_goal_attempts(conn, gid)  # bypass tactic_try
 
     def fake_spawn(**kw):
         (kw["attempts_dir"] / "patch.lean").write_text(
+            "-- main: trivial direct proof\n"
+            "-- closes via `trivial`\n"
             "import Mathlib\ntheorem main : True := trivial\n",
             encoding="utf-8")
-        (kw["attempts_dir"] / "PROPOSAL.md").write_text(
-            "trivial direct proof", encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     monkeypatch.setattr(pipeline, "_lake_build",
@@ -105,28 +105,28 @@ def test_run_builder_phase2_llm_patch_builds(
     assert r.outcome == "proved"
     goal = db.get_goal(conn, gid)
     proved_text = (tmp_path / goal["lean_path"]).read_text(encoding="utf-8")
-    assert proved_text.startswith(f"-- {goal['slug']}: trivial direct proof")
+    assert proved_text.startswith("-- main: trivial direct proof")
+    assert "-- closes via `trivial`" in proved_text
 
 
-def test_run_builder_phase2_empty_proposal_fails_no_annotation(
+def test_run_builder_phase2_empty_leading_comments_fails_no_annotation(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Phase 2 requires a non-empty PROPOSAL.md as the source of the
-    proved goal's annotation. Empty PROPOSAL.md → outcome='failed' with
-    failure_reason='agent_no_annotation'; the goal file is rolled back
-    to the sorry stub so retry can proceed cleanly."""
+    """Phase 6 requires patch.lean to open with a leading `--` comment
+    block (the goal's annotation source). A patch lacking it → outcome
+    'failed' with reason 'agent_no_annotation'; goal_lean rolls back to
+    its sorry stub so retry can proceed cleanly."""
     gid = _seed_problem(conn, tmp_path)
     db.increment_goal_attempts(conn, gid)  # bypass tactic_try
     goal = db.get_goal(conn, gid)
     original_text = (tmp_path / goal["lean_path"]).read_text(encoding="utf-8")
 
     def fake_spawn(**kw):
+        # No leading comment block — agent forgot the annotation.
         (kw["attempts_dir"] / "patch.lean").write_text(
             "import Mathlib\ntheorem main : True := trivial\n",
             encoding="utf-8")
-        (kw["attempts_dir"] / "PROPOSAL.md").write_text(
-            "   \n\n\t\n", encoding="utf-8")  # whitespace-only
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     monkeypatch.setattr(pipeline, "_lake_build",
@@ -145,16 +145,19 @@ def test_run_builder_decline_returns_agent_declined(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F48: LLM writes PROPOSAL.md but no patch.lean → outcome='failed'
-    with reason='agent_declined' so cascade can fast-track to Backward."""
+    """Phase 6 decline channel: agent writes patch.lean with a leading
+    `-- decline: too_hard` directive and `:= by sorry` body kept. Maps
+    to outcome='failed' / reason='agent_declined' so cascade fast-tracks
+    to Backward."""
     gid = _seed_problem(conn, tmp_path)
     db.increment_goal_attempts(conn, gid)
 
     def fake_spawn(**kw):
-        (kw["attempts_dir"] / "PROPOSAL.md").write_text(
-            "this needs decomposition; no direct tactic suffices",
+        (kw["attempts_dir"] / "patch.lean").write_text(
+            "-- decline: too_hard\n"
+            "-- this needs decomposition; no direct tactic suffices\n"
+            "import Mathlib\ntheorem main : True := by sorry\n",
             encoding="utf-8")
-        # NO patch.lean
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
@@ -315,8 +318,9 @@ def test_run_builder_wrapper_clears_draft_on_proved(
 
     def fake_spawn(**kw):
         (kw["attempts_dir"] / "patch.lean").write_text(
-            "import Mathlib\ntheorem main : True := trivial", encoding="utf-8")
-        (kw["attempts_dir"] / "PROPOSAL.md").write_text("ok", encoding="utf-8")
+            "-- main: ok\n"
+            "import Mathlib\ntheorem main : True := trivial",
+            encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     monkeypatch.setattr(pipeline, "_lake_build", lambda ws, t: (True, ""))
@@ -354,10 +358,9 @@ def test_run_builder_phase1_fail_falls_through_to_llm(
     def fake_spawn(**kw):
         spawn_calls.append(1)
         (kw["attempts_dir"] / "patch.lean").write_text(
+            "-- main: fall-through proof\n"
             "import Mathlib\ntheorem main : True := trivial\n",
             encoding="utf-8")
-        (kw["attempts_dir"] / "PROPOSAL.md").write_text(
-            "fall-through proof", encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 

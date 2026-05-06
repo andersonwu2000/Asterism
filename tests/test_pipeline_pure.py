@@ -10,6 +10,8 @@ from Tooling.pipeline import (
     _replace_proof_body,
     _grep_forbidden,
     _extract_statement,
+    _extract_decline_reason,
+    _extract_leading_comments,
     _format_annotation_comment,
     _lean_path_to_module,
     _slug_from_filename,
@@ -914,3 +916,91 @@ def test_annotation_strips_trailing_whitespace_per_line() -> None:
     body = "first line   \nsecond line\t\n"
     out = _format_annotation_comment("x", body)
     assert out == "-- x: first line\n-- second line\n"
+
+
+# ---------------------------------------------------------------------
+# Leading comment extraction (`_extract_leading_comments`) — Phase 6
+# ---------------------------------------------------------------------
+
+def test_extract_leading_comments_basic() -> None:
+    src = (
+        "-- foo: summary\n"
+        "-- detail line\n"
+        "import Mathlib\n"
+        "theorem foo : True := trivial\n"
+    )
+    assert _extract_leading_comments(src) == (
+        "-- foo: summary\n-- detail line\n"
+    )
+
+
+def test_extract_leading_comments_preserves_internal_blanks() -> None:
+    src = (
+        "-- foo: summary\n"
+        "--\n"
+        "-- ## Strategy\n"
+        "-- We split into ...\n"
+        "import Mathlib\n"
+    )
+    out = _extract_leading_comments(src)
+    assert "-- ## Strategy" in out
+    assert out.count("--\n") >= 1  # the bare `--` separator survives
+
+
+def test_extract_leading_comments_stops_at_first_code() -> None:
+    """A non-comment, non-blank line ends the block — comments deeper
+    in the file (e.g. inline tactic explanations) are not captured."""
+    src = (
+        "-- top: summary\n"
+        "import Mathlib\n"
+        "-- inline comment past the import — NOT part of leading block\n"
+        "theorem foo : True := trivial\n"
+    )
+    out = _extract_leading_comments(src)
+    assert out == "-- top: summary\n"
+    assert "inline" not in out
+
+
+def test_extract_leading_comments_empty_when_no_leading_comment() -> None:
+    src = "import Mathlib\n-- mid comment\ntheorem foo : True := trivial\n"
+    assert _extract_leading_comments(src) == ""
+
+
+def test_extract_leading_comments_skips_leading_blank_lines() -> None:
+    src = "\n\n-- foo: summary\nimport Mathlib\n"
+    assert _extract_leading_comments(src) == "-- foo: summary\n"
+
+
+# ---------------------------------------------------------------------
+# Decline directive parsing (`_extract_decline_reason`) — Phase 6
+# ---------------------------------------------------------------------
+
+def test_extract_decline_too_hard() -> None:
+    block = (
+        "-- decline: too_hard\n"
+        "-- Direct tactics don't converge; needs Backward.\n"
+    )
+    assert _extract_decline_reason(block) == "too_hard"
+
+
+def test_extract_decline_parent_type_infeasible() -> None:
+    block = (
+        "-- decline: parent_type_infeasible\n"
+        "-- ## Counterexample\n"
+        "-- With s=(0,0) ...\n"
+    )
+    assert _extract_decline_reason(block) == "parent_type_infeasible"
+
+
+def test_extract_decline_returns_none_for_non_decline() -> None:
+    block = "-- foo: summary line\n-- detail\n"
+    assert _extract_decline_reason(block) is None
+
+
+def test_extract_decline_returns_none_for_empty() -> None:
+    assert _extract_decline_reason("") is None
+
+
+def test_extract_decline_tolerates_whitespace_around_directive() -> None:
+    block = "--   decline:  too_hard  \n"
+    assert _extract_decline_reason(block) == "too_hard"
