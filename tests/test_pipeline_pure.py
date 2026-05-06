@@ -947,22 +947,62 @@ def test_extract_leading_comments_preserves_internal_blanks() -> None:
     assert out.count("--\n") >= 1  # the bare `--` separator survives
 
 
-def test_extract_leading_comments_stops_at_first_code() -> None:
-    """A non-comment, non-blank line ends the block — comments deeper
-    in the file (e.g. inline tactic explanations) are not captured."""
+def test_extract_leading_comments_captures_mathlib_doc_placement() -> None:
+    """Agents commonly write the doc comment immediately above the
+    theorem (after `namespace ...`), Mathlib-style — not at file top.
+    The parser must catch both placements."""
     src = (
-        "-- top: summary\n"
         "import Mathlib\n"
-        "-- inline comment past the import — NOT part of leading block\n"
+        "import Problems.p.Defs\n"
+        "\n"
+        "namespace Problems.p\n"
+        "\n"
+        "-- foo: summary\n"
+        "-- detail line\n"
+        "theorem foo : True := trivial\n"
+        "\n"
+        "end Problems.p\n"
+    )
+    out = _extract_leading_comments(src)
+    assert out == "-- foo: summary\n-- detail line\n"
+
+
+def test_extract_leading_comments_combines_top_and_doc_placements() -> None:
+    """If an agent writes comments in BOTH positions (file top + just
+    above the theorem), parser captures all of them in source order.
+    Boilerplate (imports, namespace) and pure blanks in between are
+    skipped silently."""
+    src = (
+        "-- file-top context note\n"
+        "import Mathlib\n"
+        "\n"
+        "namespace Problems.p\n"
+        "\n"
+        "-- foo: summary right above the theorem\n"
         "theorem foo : True := trivial\n"
     )
     out = _extract_leading_comments(src)
-    assert out == "-- top: summary\n"
-    assert "inline" not in out
+    assert "-- file-top context note" in out
+    assert "-- foo: summary right above the theorem" in out
 
 
-def test_extract_leading_comments_empty_when_no_leading_comment() -> None:
-    src = "import Mathlib\n-- mid comment\ntheorem foo : True := trivial\n"
+def test_extract_leading_comments_ignores_inline_comments_inside_proof() -> None:
+    """Comments INSIDE the proof body (after the `theorem` keyword) are
+    not part of the annotation — the parser stops at the theorem."""
+    src = (
+        "-- legit annotation\n"
+        "theorem foo : True := by\n"
+        "  -- step 1: trivial closes it\n"
+        "  trivial\n"
+    )
+    out = _extract_leading_comments(src)
+    assert "-- legit annotation\n" in out
+    assert "step 1" not in out
+
+
+def test_extract_leading_comments_empty_when_no_comment_before_theorem() -> None:
+    """No `--` lines anywhere before the first theorem → empty result."""
+    src = "import Mathlib\nnamespace Problems.p\ntheorem foo : True := trivial\n"
     assert _extract_leading_comments(src) == ""
 
 

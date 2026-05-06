@@ -342,20 +342,36 @@ def _format_annotation_comment(slug: str, body: str) -> str:
     return "\n".join(out) + "\n"
 
 
-def _extract_leading_comments(text: str) -> str:
-    """Return the contiguous leading `--` comment block of a Lean source,
-    including its trailing newline. Stops at the first non-comment,
-    non-blank line. Blank lines that appear *between* comment lines are
-    preserved (paragraph breaks survive); trailing blanks are trimmed.
-    Empty string if `text` doesn't open with comments.
+_THEOREM_DECL_RE = re.compile(r"^\s*theorem\s+\S+", re.MULTILINE)
 
-    The captured block is the agent-written annotation source under
-    Phase 6 single-output design (Builder success / Backward strategy
-    rationale / decline directive).
+
+def _extract_leading_comments(text: str) -> str:
+    """Return all `--` comment lines that appear before the first
+    `theorem` declaration in a Lean source, in source order. Imports,
+    namespace lines, blank lines, and other non-`--` lines that
+    intersperse with comments are skipped — they're framework /
+    boilerplate, not the agent's annotation.
+
+    Captures both placements agents naturally use:
+      * file-top docstring (above imports), and
+      * Mathlib-style doc-comment immediately preceding the theorem
+        (after `namespace ...` etc).
+
+    Blank lines that fall *between* two captured comment lines are
+    preserved as bare `--` paragraph separators; pure-blank lines from
+    the boilerplate region are dropped. Empty result if the file has
+    no comments before the theorem (or no theorem at all).
+
+    Phase 6 single-output design: this block is the agent's annotation
+    source (Builder success summary / Backward strategy rationale /
+    `-- decline: <reason>` directive).
     """
+    m = _THEOREM_DECL_RE.search(text)
+    upper_bound = m.start() if m else len(text)
+    region = text[:upper_bound]
     out: list[str] = []
     buffered_blanks: list[str] = []
-    for ln in text.splitlines(keepends=True):
+    for ln in region.splitlines(keepends=True):
         stripped = ln.strip()
         if stripped.startswith("--"):
             if buffered_blanks:
@@ -365,9 +381,8 @@ def _extract_leading_comments(text: str) -> str:
         elif stripped == "":
             if out:
                 buffered_blanks.append(ln)
-            # else: leading blank before any comment → ignore
-        else:
-            break
+            # else: blank in the boilerplate region before any comment → drop
+        # else: import / namespace / open / etc — skip without breaking
     return "".join(out)
 
 

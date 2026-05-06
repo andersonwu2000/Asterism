@@ -16,22 +16,24 @@ No text outside the block. No markdown ` ``` ` wrapping. Framework parses fences
 
 ## patch.lean
 
-Lead with annotation comments — first non-blank line is the one-line summary (key lemma + why it closes the goal). Then imports, namespace, and the theorem with body filled in.
+Add annotation comments immediately above the theorem (Mathlib doc-style) — first non-blank line is the one-line summary (key lemma + why it closes the goal).
 
 ```lean
--- <slug>: <one-line summary>
--- <optional further detail>
 import Mathlib
 namespace Problems.<problem>
+
+-- <slug>: <one-line summary>
+-- <optional further detail>
 theorem <slug> : ... := by <tactic block>
+
 end Problems.<problem>
 ```
 
-Framework checks: forbidden-lemma grep + lake build clean + leading comment block present.
+Framework checks: forbidden-lemma grep + lake build clean + non-empty `--` annotation present anywhere before the theorem.
 
 ## Decline
 
-Keep `:= by sorry` and lead with a directive instead.
+Keep `:= by sorry`, place the directive in the same slot as the success annotation.
 
 `too_hard` — escalates to Backward:
 

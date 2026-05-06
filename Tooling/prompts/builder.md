@@ -8,29 +8,38 @@ Time budget: {timeout_min} minutes.
 
 ## Output: patch.lean
 
-Replace `:= by sorry` with a tactic block. Lead with annotation comments — first non-blank line is the one-line summary (key lemma family + why it closes the goal).
+Replace `:= by sorry` with a tactic block. Add an annotation comment block immediately above the theorem (Mathlib doc-style) — first non-blank line is the one-line summary (key lemma family + why it closes the goal).
 
 ```lean
--- <slug>: <one-line summary>
--- <optional further detail>
 import Mathlib
 namespace Problems.<problem>
+
+-- <slug>: <one-line summary>
+-- <optional further detail>
 theorem <slug> : ... := by <tactic block>
+
 end Problems.<problem>
 ```
 
-Framework checks: forbidden-lemma grep + `lake env lean patch.lean` clean + non-empty leading comment block. All three pass → proved.
+Framework checks: forbidden-lemma grep + `lake env lean patch.lean` clean + non-empty `--` annotation present anywhere before the theorem. All three pass → proved.
 
 ## Decline
 
 Keep `:= by sorry` and lead with a directive instead of a summary.
 
-`too_hard` — framework escalates to Backward:
+Place the directive immediately above the theorem (same slot as the success annotation):
 
 ```lean
+namespace Problems.<problem>
+
 -- decline: too_hard
 -- <why direct tactics won't converge / which decomposition you'd want>
+theorem <slug> : ... := by sorry
+
+end Problems.<problem>
 ```
+
+`too_hard` — framework escalates to Backward.
 
 `parent_type_infeasible` — framework shelves goal + forces parent strategy redesign. Use only with a concrete counterexample under all stated hypotheses, or a named missing hypothesis the conclusion needs. No speculation.
 

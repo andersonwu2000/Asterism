@@ -18,16 +18,18 @@ No text outside the blocks. No markdown ` ``` ` wrapping.
 
 Framework pre-wrote this with the strategy's locked signature (`theorem s<id> ... := by sorry`). Emit your version with **only the body** changed; signature edits are rejected. Imports auto-injected — write none.
 
-Lead with annotation comments — first non-blank line is the one-line decomposition summary.
+Add annotation comments immediately above the theorem (Mathlib doc-style) — first non-blank line is the one-line decomposition summary.
 
 ```lean
+namespace ...
+
 -- <one-line decomposition summary>
 -- <how the sub-goals combine; why each is simpler>
-namespace ...
 theorem s<id> ... := by
   have h1 : <sub_1_type> := <slug_1> args
   have h2 : <sub_2_type> := <slug_2> args
   exact <combinator> h1 h2
+
 end ...
 ```
 
@@ -36,10 +38,12 @@ end ...
 One per sub-goal. Pick `<slug>` as a short descriptive identifier (e.g. `cross_sq_add_inner_sq`). Charset `[a-z][a-z0-9_]*`, length ≤ 60. Framework auto-suffixes on collision.
 
 ```lean
+namespace Problems.<problem>
+
 -- <slug>: <one-line statement of what this sub-goal proves>
 -- entry_kind: Builder
-namespace Problems.<problem>
 theorem <slug> : ... := by sorry
+
 end Problems.<problem>
 ```
 
@@ -51,14 +55,16 @@ Theorem name MUST equal the filename slug.
 
 ## Decline
 
-Edit `patch.lean` only, lead with directive, keep `:= by sorry`. No sub-goal files. Use only with concrete counterexample or named missing hypothesis.
+Edit `patch.lean` only, place directive immediately above the theorem (same slot as success annotation), keep `:= by sorry`. No sub-goal files. Use only with concrete counterexample or named missing hypothesis.
 
 ```lean
+namespace ...
+
 -- decline: parent_type_infeasible
 -- ## Counterexample
 -- <values + arithmetic check>
-namespace ...
 theorem s<id> ... := by sorry
+
 end ...
 ```
 

@@ -10,16 +10,18 @@ Edit `patch.lean` (the strategy patch — pre-written skeleton with locked signa
 
 ### patch.lean
 
-Skeleton has `theorem s<id> ... := by sorry`. Edit only the body; signature changes are rejected as `patch_signature_mismatch`. Lead with annotation:
+Skeleton has `theorem s<id> ... := by sorry`. Edit only the body; signature changes are rejected as `patch_signature_mismatch`. Add annotation comments immediately above the theorem (Mathlib doc-style):
 
 ```lean
+namespace ...
+
 -- <one-line decomposition summary>
 -- <how the sub-goals combine; why each is simpler>
-namespace ...
 theorem s<id> ... := by
   have h1 : <sub_1_type> := <slug_1> args
   have h2 : <sub_2_type> := <slug_2> args
   exact <combinator> h1 h2
+
 end ...
 ```
 
@@ -29,11 +31,15 @@ Body shape varies — `obtain` for ∃-witnesses, `rcases` for case dispatch, `i
 
 Pick `<slug>` per sub-goal as a short descriptive identifier (e.g. `cross_sq_add_inner_sq`, `triangle_inequality_metric`). Charset `[a-z][a-z0-9_]*`, length ≤ 60. Framework auto-suffixes on collision — don't worry about uniqueness.
 
+Annotation immediately above the theorem (Mathlib doc-style):
+
 ```lean
+namespace Problems.<problem>
+
 -- <slug>: <one-line statement of what this sub-goal proves>
 -- entry_kind: Builder
-namespace Problems.<problem>
 theorem <slug> : ... := by sorry
+
 end Problems.<problem>
 ```
 
@@ -45,14 +51,16 @@ Theorem name MUST equal the slug encoded in the filename.
 
 ## Decline
 
-Use only with concrete evidence the goal is unprovable as stated. Lead `patch.lean` with the directive, keep `:= by sorry`, write no sub-goal files. Framework shelves goal + forces parent strategy redesign — costly upstream.
+Use only with concrete evidence the goal is unprovable as stated. Place the directive immediately above the theorem in `patch.lean` (same slot as the success annotation), keep `:= by sorry`, write no sub-goal files. Framework shelves goal + forces parent strategy redesign — costly upstream.
 
 ```lean
+namespace ...
+
 -- decline: parent_type_infeasible
 -- ## Counterexample
 -- <specific values + arithmetic check, or named missing hypothesis>
-namespace ...
 theorem s<id> ... := by sorry
+
 end ...
 ```
 
