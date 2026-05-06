@@ -32,7 +32,8 @@ value。命名 + 註解是把這條落實到 Asterism。
 
 - Backward 拆 G 時、一輪 LLM output 同時給：strategy 描述 + 每個 sub-goal 名字
 - 名字必須 problem-local unique（DB `UNIQUE(problem, slug)` 維持）
-- 衝突由 framework 自動加後綴 `_2` `_3`、agent 不需自檢
+- 衝突由 framework 回 `naming_violation`、agent 重派時改名（Phase 1）；
+  若實證衝突率高、升級為 framework 自動加後綴（避免一輪 LLM call）
 - 不 lint 名字品質（爛名字是 agent 不懂該 goal 的訊號、後續 shelve 機制處理）
 - 第一版不解 cross-problem 命名漂移、留到 Library 階段
 
@@ -84,7 +85,8 @@ Builder 證完沒寫 annotation → 視同失敗、走 retry。Backward 沒寫 s
 ### 代碼
 
 - Backward prompt：output schema 加 `name` + strategy 描述
-- Backward parse：唯一性衝突自動加後綴、不再 reject；`expected_prefix` 檢查砍掉
+- Backward parse：`expected_prefix` 檢查砍掉、改 charset / length / uniqueness 三檢；
+  衝突回 `naming_violation`、agent 重派時改名（Phase 1 不做 auto-suffix；衝突率高再升級）
 - Builder：Phase 2 的 LLM patch output schema 加 annotation 段、success 條件加
   「annotation present」
 - Verify：勝出時觸發 propagate `proposal_md` → goal .lean
