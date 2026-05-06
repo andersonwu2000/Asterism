@@ -233,12 +233,15 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
         if row and row["status"] in ("proved", "shelved"):
             return
 
-    # F46 — spawn fast-fail (rc≠0 in <10s) is almost always an infra
-    # fault (claude.exe crash on launch, cwd issue, transient OS hiccup),
-    # not an agent error. Don't burn the goal's attempts cap for it.
-    # Dispatcher main loop separately back-offs via cooldown dict.
-    is_fast_fail = (outcome == "failed"
-                    and failure_reason == "spawn_fast_fail")
+    # F46 + Phase 7 — provider-level infra failures don't burn the
+    # goal's attempts cap. Dispatcher main loop applies a per-target
+    # cooldown for all three; only spawn_fast_fail contributes to
+    # the CONSEC daemon-exit counter.
+    #   * spawn_fast_fail   — rc≠0 with wall<10s (claude.exe crash etc.)
+    #   * quota_exhausted   — rc=126 (provider rate limit / quota cap)
+    #   * missing_dep       — rc=127 (CLI binary missing)
+    _INFRA_REASONS = ("spawn_fast_fail", "quota_exhausted", "missing_dep")
+    is_infra = (outcome == "failed" and failure_reason in _INFRA_REASONS)
 
     # Phase 7 — `moot` outcome: pipeline detected the goal already
     # terminated (sibling proved / shelved / propagated shelve) before
@@ -270,44 +273,42 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 db.set_builder_session_id(conn, int(target_id), None)
             return
         if outcome == "failed":
-            if is_fast_fail:
+            if is_infra:
                 # F46 — leave attempts unchanged; dispatcher will cool
                 # this (target,kind) for ~30s before the next dispatch.
                 return
             # Infeasibility escape: agent reported `parent_type_infeasible`
-            # in PROPOSAL.md frontmatter (counterexample required). Skip
-            # attempts++; shelve this goal directly so `_propagate_shelve`
-            # kills the parent strategy and re-opens the parent goal for
-            # a redesigned Backward decomposition. Without this, the wrong-
-            # type sub-goal would burn SHELVE_THRESHOLD attempts before
-            # cascading up — typically several hours of LLM time.
+            # with a counterexample. Phase 7 — increment attempts once
+            # (the LLM call DID happen) to preserve the 1:1 attempts ↔
+            # dead_attempts invariant (decision 5/6); cascade still
+            # shelves directly + propagates so the wrong-type sub-goal
+            # doesn't burn the rest of SHELVE_THRESHOLD before cascading
+            # up. Net difference vs pre-Phase-7: shelved goal ends with
+            # attempts=N+1 instead of attempts=N (cosmetic only —
+            # already-terminal goals don't reuse attempts).
             if failure_reason == "agent_infeasible":
+                db.increment_goal_attempts(conn, int(target_id))
                 db.update_goal_status(conn, int(target_id), "shelved")
                 db.set_builder_session_id(conn, int(target_id), None)
                 _propagate_shelve(conn, int(target_id))
                 return
-            # F48 — Builder explicitly declined (wrote PROPOSAL.md
-            # but no patch.lean per builder.md's STOP block). Honor
-            # the agent: jump attempts to BUILDER_THRESHOLD so the
-            # next dispatch is Backward rather than another Builder
-            # the agent already said it can't handle. SHELVE_THRESHOLD
-            # progress still advances by the same +1 the increment
-            # would have produced — declines are not free, just
-            # routed differently.
+            # F48 — Builder explicitly declined (wrote `-- decline:
+            # too_hard` in patch.lean's leading block). Honor the
+            # agent: route the next dispatch to Backward via the
+            # `entry_kind` directive instead of inflating attempts to
+            # BUILDER_THRESHOLD. Phase 7 — decision 5: attempts is
+            # LLM-call failure count, not a routing knob; using
+            # entry_kind preserves the 1:1 invariant while still
+            # forcing the next dispatch to Backward.
             if failure_reason == "agent_declined":
-                cur = db.get_goal(conn, int(target_id))
-                cur_n = int(cur["attempts"]) if cur else 0
-                target_n = max(cur_n + 1, BUILDER_THRESHOLD)
-                # Bring attempts up to the Backward boundary in one step.
-                for _ in range(target_n - cur_n):
-                    n = db.increment_goal_attempts(conn, int(target_id))
+                n = db.increment_goal_attempts(conn, int(target_id))
+                db.set_builder_session_id(conn, int(target_id), None)
                 if n >= SHELVE_THRESHOLD:
                     db.update_goal_status(conn, int(target_id), "shelved")
-                    db.set_builder_session_id(conn, int(target_id), None)
                     _propagate_shelve(conn, int(target_id))
                 else:
-                    # Builder session is moot now; next dispatch is Backward.
-                    db.set_builder_session_id(conn, int(target_id), None)
+                    db.update_goal_entry_kind(conn, int(target_id),
+                                              "Backward")
                 return
             n = db.increment_goal_attempts(conn, int(target_id))
             if n >= SHELVE_THRESHOLD:
@@ -341,12 +342,14 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 _propagate_shelve(conn, int(target_id))
             return
         # failed
-        if is_fast_fail:
+        if is_infra:
             return  # F46 — same skip-increment as Builder above
         # Infeasibility escape (mirrors Builder branch above): Backward
-        # agent declined with `parent_type_infeasible`, skip attempts++,
-        # propagate shelve so the parent strategy re-decomposes.
+        # agent declined with `parent_type_infeasible`. Phase 7 —
+        # attempts++ once (one LLM call happened) before shelve, to
+        # preserve 1:1 with the final dead_attempts row.
         if failure_reason == "agent_infeasible":
+            db.increment_goal_attempts(conn, int(target_id))
             db.update_goal_status(conn, int(target_id), "shelved")
             db.set_backward_session_id(conn, int(target_id), None)
             _propagate_shelve(conn, int(target_id))
@@ -476,17 +479,26 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
             # here gives all-or-nothing crash semantics (a daemon kill
             # mid-pipeline leaves goals.attempts unchanged and no
             # orphan dead_attempts rows).
-            for pf in r.pending_failures:
-                db.record_dead_attempt(
-                    conn, target_id=goal_id, target_kind="Goal",
-                    pipeline_id=pipeline_id,
-                    failure_reason=pf["reason"],
-                    failure_detail=pf["detail"],
-                    proposal_md=pf.get("proposal_md", ""),
-                    artifacts=(_json.dumps(pf["artifacts"])
-                               if pf.get("artifacts") else ""),
-                )
-                db.increment_goal_attempts(conn, goal_id)
+            #
+            # Skip flush on outcome='moot': decision 2 mandates moot is
+            # uniform no-op (no attempts++, no dead_attempts). Mid-loop
+            # moot detection drops any prior-iteration buffered
+            # failures — those were real LLM calls but on a goal that's
+            # since gone terminal, so their forensic value is curiosity-
+            # only. Strict alignment with decision 2 trumps preserving
+            # buried-iteration forensic.
+            if r.outcome != "moot":
+                for pf in r.pending_failures:
+                    db.record_dead_attempt(
+                        conn, target_id=goal_id, target_kind="Goal",
+                        pipeline_id=pipeline_id,
+                        failure_reason=pf["reason"],
+                        failure_detail=pf["detail"],
+                        proposal_md=pf.get("proposal_md", ""),
+                        artifacts=(_json.dumps(pf["artifacts"])
+                                   if pf.get("artifacts") else ""),
+                    )
+                    db.increment_goal_attempts(conn, goal_id)
 
             # Capture artifacts from .attempts/<pid>/ before WorkArea rmtree.
             # Skip the pipeline-final dead_attempts INSERT for:
@@ -494,15 +506,18 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
             #     last retry's failure into pending_failures (flushed
             #     above); duplicating here would violate the 1:1
             #     attempts ↔ dead_attempts invariant.
-            #   - 'superseded' (OR race noise, not a real failure)
-            #   - 'spawn_fast_fail' (infra fault, not agent action; reason
-            #     is carried back through the future tuple for cooldown,
-            #     dead_attempts row would only be filtered out by events
-            #     anyway — F46/audit problem 4)
+            #   - 'superseded' (OR race noise, not a real failure).
+            #   - infra reasons (spawn_fast_fail / quota_exhausted /
+            #     missing_dep): not agent actions; reason carried back
+            #     via the future tuple for cooldown, events.py filters
+            #     them anyway (F46/audit problem 4).
             if (r.outcome != "exhausted"
                     and r.failure_reason
                     and r.failure_reason not in (
-                        "superseded", "spawn_fast_fail",
+                        "superseded",
+                        "spawn_fast_fail",
+                        "quota_exhausted",
+                        "missing_dep",
                     )):
                 artifacts = pipeline.collect_artifacts(attempts_dir)
                 tk = target_kind
@@ -601,22 +616,34 @@ def run(workspace: Path, *, once: bool = False) -> int:
                                 target_id=tid, target_kind=tk,
                                 outcome=outcome, failure_reason=reason,
                                 workspace=workspace)
-                    # F46 — back-off + global counter for spawn fast-fails
-                    if outcome == "failed" and reason == "spawn_fast_fail":
+                    # F46 — back-off + global counter for spawn fast-fails.
+                    # Phase 7 — quota_exhausted (rc=126) / missing_dep (rc=127)
+                    # also cooldown but do NOT contribute to CONSEC tracking
+                    # (quota recovers on its own; missing_dep is operator-fix).
+                    if outcome == "failed" and reason in (
+                        "spawn_fast_fail", "quota_exhausted", "missing_dep",
+                    ):
                         cooldown_until[(tid, kind)] = (
                             time.time() + SPAWN_COOLDOWN_SEC)
-                        consec_fast_fails += 1
-                        print(f"[cooldown] {kind} {tk}={tid} cooled "
-                              f"{SPAWN_COOLDOWN_SEC:.0f}s after spawn_fast_fail "
-                              f"(consec={consec_fast_fails})", flush=True)
-                        if consec_fast_fails >= CONSEC_SPAWN_FAIL_LIMIT:
-                            print(f"[dispatcher] {consec_fast_fails} "
-                                  f"consecutive spawn_fast_fails — claude.exe "
-                                  f"or provider appears broken; exiting. "
-                                  f"Inspect .attempts/<pid>/_spawn.stderr "
-                                  f"for the underlying error.", flush=True)
-                            pool.shutdown(wait=False, cancel_futures=True)
-                            return 2
+                        if reason == "spawn_fast_fail":
+                            consec_fast_fails += 1
+                            print(f"[cooldown] {kind} {tk}={tid} cooled "
+                                  f"{SPAWN_COOLDOWN_SEC:.0f}s after "
+                                  f"spawn_fast_fail "
+                                  f"(consec={consec_fast_fails})", flush=True)
+                            if consec_fast_fails >= CONSEC_SPAWN_FAIL_LIMIT:
+                                print(f"[dispatcher] {consec_fast_fails} "
+                                      f"consecutive spawn_fast_fails — "
+                                      f"claude.exe or provider appears broken; "
+                                      f"exiting. Inspect "
+                                      f".attempts/<pid>/_spawn.stderr "
+                                      f"for the underlying error.", flush=True)
+                                pool.shutdown(wait=False, cancel_futures=True)
+                                return 2
+                        else:
+                            print(f"[cooldown] {kind} {tk}={tid} cooled "
+                                  f"{SPAWN_COOLDOWN_SEC:.0f}s after {reason}",
+                                  flush=True)
                     else:
                         consec_fast_fails = 0
                     print(f"[cascade] {kind} {tk}={tid} → {outcome}", flush=True)

@@ -32,8 +32,9 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
 
     Outcomes:
       - `proved`: success — clear any draft (no carry-over wanted).
-      - anything else (failed / exhausted / moot): persist whatever
-        the spawn wrote so the next dispatch picks up from a sketch.
+      - `moot`: goal terminated by parallel cascade → no useful draft.
+      - anything else (failed / exhausted): persist whatever the spawn
+        wrote so the next dispatch picks up from a sketch.
     """
     from . import (  # late import to avoid circular package init
         PipelineResult, _drafts,
@@ -44,7 +45,7 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
     problem_dir = workspace / "Problems" / goal_row["problem"]
     result = _run_builder_inner(conn, goal_id=goal_id, workspace=workspace,
                                 mfst=mfst, pipeline_id=pipeline_id)
-    if result.outcome == "proved":
+    if result.outcome in ("proved", "moot"):
         _drafts.clear_partial(problem_dir=problem_dir, kind="builder",
                               goal_id=goal_id)
     else:
@@ -246,7 +247,8 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         conn=conn,
         goal_id=goal_id,
         pipeline_id=pipeline_id,
-        threshold=dispatcher.BUILDER_THRESHOLD,
+        budget_threshold=dispatcher.BUILDER_THRESHOLD,
+        shelve_threshold=dispatcher.SHELVE_THRESHOLD,
         attempts_dir=attempts_dir,
         spawn_fn=builder_spawn,
         parse_fn=builder_parse,

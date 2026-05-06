@@ -127,11 +127,15 @@ def _spawn_failure(rc: int, attempts_dir: Path,
         except OSError:
             stderr_tail = ""
     base = f"agent rc={rc}"
-    if spawn_dur < SPAWN_FAST_FAIL_SEC:
+    if rc == SpawnRC.TIMEOUT:
+        # rc=124 is unambiguous: SIGKILL at WORKER_TIMEOUT_SEC. The
+        # wall-clock check below cannot apply (timeout is several
+        # minutes); this ordering also defends against artificial
+        # spawn_dur values in unit tests.
+        reason = "agent_timeout"
+    elif spawn_dur < SPAWN_FAST_FAIL_SEC:
         base = f"agent rc={rc} (fast-fail in {spawn_dur:.1f}s)"
         reason = "spawn_fast_fail"
-    elif rc == SpawnRC.TIMEOUT:
-        reason = "agent_timeout"
     else:
         reason = "agent_rc_nonzero"
     detail = base if not stderr_tail else f"{base}\n{stderr_tail}"

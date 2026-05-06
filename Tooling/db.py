@@ -260,6 +260,19 @@ def update_goal_status(conn: sqlite3.Connection, goal_id: int,
     conn.commit()
 
 
+def update_goal_entry_kind(conn: sqlite3.Connection, goal_id: int,
+                           entry_kind: str) -> None:
+    """Persist the dispatch-routing directive on a goal. Used by
+    cascade for agent_declined (Builder) to flip routing to Backward
+    without inflating attempts (Phase 7 — decision 5: attempts is
+    LLM-call failure count, not a routing inflation knob)."""
+    conn.execute(
+        "UPDATE goals SET entry_kind = ?, updated_at = ? WHERE id = ?",
+        (entry_kind, now(), goal_id),
+    )
+    conn.commit()
+
+
 def set_builder_session_id(conn: sqlite3.Connection, goal_id: int,
                            session_id: str | None) -> None:
     """F33 — record (or clear with None) the claude CLI session UUID

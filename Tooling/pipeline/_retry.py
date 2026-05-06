@@ -64,7 +64,13 @@ def goal_still_active(conn: sqlite3.Connection, goal_id: int,
       * goal row missing (race / DB drift)
       * status no longer 'open' / 'attempting' (sibling proved /
         explicit shelve / propagated shelve)
-      * attempts already at threshold (next cascade tick will shelve)
+      * attempts already at SHELVE_THRESHOLD (a parallel
+        `_propagate_shelve` may have bumped past it).
+
+    `shelve_threshold` must be the goals-level shelve cap (typically
+    `dispatcher.SHELVE_THRESHOLD`), NOT the per-kind budget threshold;
+    those two coincide for Backward but differ for Builder, so the
+    helper takes them as separate parameters.
 
     The loop returns `outcome="moot"` on False — no state mutation,
     no attempts++, no dead_attempt write.
@@ -104,7 +110,8 @@ def run_with_session_retries(
     conn: sqlite3.Connection,
     goal_id: int,
     pipeline_id: str,
-    threshold: int,
+    budget_threshold: int,
+    shelve_threshold: int,
     attempts_dir: Path,
     spawn_fn: SpawnFn,
     parse_fn: ParseFn,
@@ -113,7 +120,8 @@ def run_with_session_retries(
     """Run a kind-agnostic in-pipeline retry loop.
 
     Flow per iteration:
-      1. cascade re-check; bail with outcome='moot' if goal terminated.
+      1. cascade re-check (against `shelve_threshold`); bail with
+         outcome='moot' if goal terminated.
       2. spawn (cold on first iteration, warm on subsequent).
       3. classify rc:
          * STALE_SESSION on warm → in-place cold re-mint, retry once
@@ -121,15 +129,23 @@ def run_with_session_retries(
            attempts++).
          * TIMEOUT → run postmortem, write dead_attempt, attempts++,
            return outcome='exhausted'.
-         * spawn_fast_fail → return outcome='failed' immediately (infra
-           noise; dispatcher's CONSEC tracking + cooldown handle it).
+         * spawn_fast_fail / quota_exhausted / missing_dep → return
+           outcome='failed' immediately with the matching reason
+           (infra noise; dispatcher applies cooldown). Prior-iteration
+           pending_failures still flush; this iteration's failure is
+           NOT recorded against the goal's budget.
          * other rc!=0 → write dead_attempt, attempts++, fall through
            to next iteration with the failure detail as retry_context.
       4. rc==0 → invoke `parse_fn`. Terminal outcomes (proved /
-         success / agent_declined / agent_infeasible) return verbatim.
-         Other failures (lake_build_error, forbidden_lemma,
-         agent_no_annotation, ...) write dead_attempt, attempts++,
-         continue.
+         success / agent_declined / agent_infeasible /
+         goal_no_longer_open) return verbatim. Other failures
+         (lake_build_error, forbidden_lemma, agent_no_annotation,
+         ...) write dead_attempt, attempts++, continue.
+
+    `budget_threshold` is the per-kind retry cap
+    (`BUILDER_THRESHOLD` for Builder, `SHELVE_THRESHOLD` for Backward).
+    `shelve_threshold` is always the goals-level shelve cap; used in
+    `goal_still_active` to detect external `_propagate_shelve` increments.
 
     On budget exhaustion without a terminal outcome, returns
     outcome='exhausted' carrying the most recent failure reason/detail
@@ -140,7 +156,7 @@ def run_with_session_retries(
         return PipelineResult(outcome="failed",
                               failure_reason="goal_not_found")
 
-    budget = threshold - int(goal["attempts"])
+    budget = budget_threshold - int(goal["attempts"])
     if budget <= 0:
         # Defensive — bfs_refill should already filter goals at/over
         # threshold. Reach here only on dispatch races.
@@ -170,7 +186,7 @@ def run_with_session_retries(
         return result
 
     for attempt in range(budget):
-        if not goal_still_active(conn, goal_id, threshold):
+        if not goal_still_active(conn, goal_id, shelve_threshold):
             return attach(PipelineResult(outcome="moot"))
 
         cold = (attempt == 0)
@@ -193,6 +209,23 @@ def run_with_session_retries(
                                    attempts_dir=attempts_dir))
             spawn_dur = time.monotonic() - spawn_t0
 
+        # Provider-level infrastructure failures: bail without
+        # consuming budget. Dispatcher applies cooldown (and, for
+        # spawn_fast_fail only, CONSEC tracking).
+        #   * 126 / QUOTA_EXHAUSTED — provider rate limit / quota cap.
+        #   * 127 / MISSING_DEP    — CLI binary missing / not installed.
+        # Treated symmetrically to spawn_fast_fail (wall<10s + rc!=0)
+        # but classified by rc rather than wall time so a long quota
+        # check still routes here.
+        if rc == SpawnRC.QUOTA_EXHAUSTED:
+            return attach(PipelineResult(
+                outcome="failed", failure_reason="quota_exhausted",
+                failure_detail=f"agent rc={rc} (quota / rate limit)"))
+        if rc == SpawnRC.MISSING_DEP:
+            return attach(PipelineResult(
+                outcome="failed", failure_reason="missing_dep",
+                failure_detail=f"agent rc={rc} (CLI missing / not installed)"))
+
         if rc == SpawnRC.TIMEOUT:
             # Decision 3: timeout → postmortem on the killed session,
             # then forced exhaust. Postmortem writes _progress.md
@@ -208,12 +241,11 @@ def run_with_session_retries(
         if rc != SpawnRC.OK:
             reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
             if reason == "spawn_fast_fail":
-                # Infra noise (claude.exe crash / cwd / quota). No
-                # dead_attempt write, no attempts++ — dispatcher's
-                # cascade_one applies the 30s per-target cooldown and
-                # CONSEC tracking instead. Prior-iteration buffered
-                # failures still flush; this iteration's fast-fail
-                # itself is dropped.
+                # Infra noise (claude.exe crash / cwd). No dead_attempt
+                # write, no attempts++ — dispatcher's cascade_one
+                # applies cooldown + CONSEC tracking. Prior-iteration
+                # buffered failures still flush; this iteration's
+                # fast-fail itself is dropped.
                 return attach(PipelineResult(outcome="failed",
                                              failure_reason=reason,
                                              failure_detail=detail))

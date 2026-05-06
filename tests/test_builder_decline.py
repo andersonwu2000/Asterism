@@ -68,12 +68,15 @@ def _record_dead_attempt(conn: sqlite3.Connection, *, pipeline_id: str,
     conn.commit()
 
 
-def test_cascade_decline_jumps_to_builder_threshold(
+def test_cascade_decline_routes_to_backward_via_entry_kind(
     conn: sqlite3.Connection,
 ) -> None:
-    """First Builder attempt declines on a fresh goal → attempts goes
-    from 0 directly to BUILDER_THRESHOLD so the next dispatch is
-    Backward. Saves BUILDER_THRESHOLD-1 doomed Builder attempts."""
+    """Phase 7 — Builder decline increments attempts by exactly 1 (the
+    declining LLM call) and flips `entry_kind` to 'Backward' so the next
+    dispatch routes to Backward. Pre-Phase-7 inflated attempts to
+    BUILDER_THRESHOLD as a routing hack; that violated the 1:1 attempts
+    ↔ dead_attempts invariant (decision 5/6) by counting attempts that
+    never corresponded to LLM calls."""
     gid = _seed_goal(conn)
     pid = "decline-1"
     _record_dead_attempt(conn, pipeline_id=pid, target_id=gid,
@@ -83,8 +86,9 @@ def test_cascade_decline_jumps_to_builder_threshold(
                 target_id=str(gid), target_kind="Goal", outcome="failed",
                 failure_reason="agent_declined")
     row = db.get_goal(conn, gid)
-    assert row["attempts"] == BUILDER_THRESHOLD
-    # Goal still open (not shelved — BUILDER_THRESHOLD < SHELVE_THRESHOLD)
+    assert row["attempts"] == 1
+    assert row["entry_kind"] == "Backward"
+    # Goal still open (1 < SHELVE_THRESHOLD)
     assert row["status"] == "open"
 
 
