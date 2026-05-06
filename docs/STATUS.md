@@ -1,32 +1,28 @@
 # Asterism v2 — Current Status
 
-更新於 2026-05-05（thinking-budget cap 後）。HEAD `8f0d2b3`，**596 unit tests + 1 skipped green**。
+更新於 2026-05-06（goal_history v1 完成 + PN Sonnet smoke validated）。HEAD `6783e05`，**596+ unit tests green**。
 
 ## 下個 session 接手要做的事
 
-Daemon 已停。下一步：**重跑 SG 驗證 thinking budget cap 效果**（commit `8f0d2b3`）。當前 SG DB 是上一輪的中斷狀態（root attempting, 7 sub-goals proved, g5 卡 Kelly contradiction）。建議**完全 reset**從零跑乾淨 baseline。
+開始 **item 12 — Bridge lemma layer 架構設計**（新一輪、`docs/dev/bridge_lemma_layer.md` 是起點）。
 
-```bash
-cd D:/Asterism
-rm -f asterism.db
-rm -rf .attempts/* Problems/sylvester_gallai/.drafts/*.md
-python -m Tooling.cli init sylvester_gallai
-ASTERISM_BUDGET_SEC=21600 python -m Tooling.cli run  # 6hr (跟 GitHub baseline 對齊)
-```
+簡述：對齊 `parcadei/sylvester-gallai-lean4` 1000 LOC 實作的核心差距 — Asterism SG / cantor 級題目每個 sub-goal 各自重展開 cross-product polynomial、parcadei 集中在 12 個 bridge lemma 寫一次。**問題本質是 abstraction（把代數工作集中在 bridge layer），不是 generalization 或 Mathlib API**。
 
-**核心測試點：thinking cap 是否解 dive 問題**。對比舊資料：
-- **舊（high adaptive thinking）**：74% Backward spawn dive（30-40K char thinking, 0 writes），SG g4/g8/g10 都死循環
-- **新（10K token cap @ 1K/min）**：理論上 dive 觸頂被截斷、agent 強制進寫作模式
+進入時讀：
+1. `docs/dev/bridge_lemma_layer.md` 開放決策點清單（6 個問題）
+2. STATUS item 12（current 1-paragraph summary）
+3. `git log --oneline -10`（最近落地什麼）
+4. CLAUDE.md（紀律、先讀現有代碼再改）
 
-健康訊號：
-- Backward spawn 的 thinking 不再超過 10K tokens（看 `~/.claude/projects/D--Asterism-Problems-sylvester-gallai/<sid>.jsonl` 的 thinking event size）
-- dive(0 writes) ratio 從 74% 降到顯著低
-- root proved 達成（這次未達；歷史只有 cantor ~4hr 達成過）
+第一步行動：對 `bridge_lemma_layer.md` 的 6 個開放決策點逐一給 user 推薦選擇 + trade-off、user 拍板後動 code。
 
-如果 thinking cap 仍解不了：
-- 先看 jsonl thinking 是否真的 capped 在 10K（驗證 env 注入有效）
-- 如果 cap 生效但 agent 寫不出檔，考慮再降到 5K-7K
-- 如果 cap 沒生效（thinking 仍 > 10K），表示 `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` 沒被尊重，需 web research / 看 claude CLI 版本
+## 近期落地（給 next session 的 context）
+
+`27f0f7c..6783e05`：
+- **goal_history_unified v1 完成**（7 commits、見 item 8 詳述）
+- **PN Sonnet e2e smoke 通過**：g142-class 修復實證、umbrella render 確認
+- **Asterism.yaml default 切 Sonnet**（builder + backward 都 claude-sonnet-4-6）
+- **cli reset 加清 playbook + .drafts**（baseline run 的紀律）
 
 ## 本 session（2026-05-04 ~ 05-05）改動鏈
 
@@ -125,9 +121,7 @@ cantor 是當前最大 sample（50 goals、depth 4、18 verify）。F55+F56 改�
 
 11. **(已做) Dedupe `_eligible_ancestors` 過嚴，漏抓 cross-branch 等價 sub-goal** — `dedupe.py:295` 的 candidate 候選池只含 (a) candidate parent_goal_id 的**嚴格祖先鏈**上的 goals + (b) F42 同 parent 的 orphan proved sub。實證：Opus SG run 跑到 75 個 goal 時掃 statement 字串，**有 2 對 cross-branch type-identical 重複 case**：g166 (s95_sub_1, proved at depth 8) ↔ g187 (s106_sub_1, open at depth 10, 37min 後出現)；g172 (s102_sub_1, proved at depth 8) ↔ g200 (s113_sub_3, open at depth 9, 27min 後)。兩對都共一個祖先（g156 / g159）但不在彼此祖先鏈上，所以 ancestor 過濾跳過，dedup 漏。**改進**：candidate 池放寬到「同 problem 內任何 status='proved' 的 goal」（不限祖先鏈、不限同 parent）。安全性：proved goal 已是 leaf proof 沒下游依賴，alias-to-proved 永遠不形成 import cycle；只有 alias-to-open/attempting 才需 anti-cycle 檢查（沿用現行設計）。效能：candidates pool 從 ~10 升到 ~50-100，但 `_batch_isdefeq` 早就是 batched 模式，cost 線性。SG run 預估省 5-15min（每對 dedup hit 省 1-2 個 spawn × Opus 2-5min/spawn）。**不要做**：把 candidate 池無上限放寬到「any goal regardless of status」— 會引入 cycle risk，且 attempting 的 type 可能尚未穩定。
 
-12. **Manifest 沒鼓勵預先建立 bridge lemma → 代數重複度高** — 對照 `parcadei/sylvester-gallai-lean4` 同題目實作（Mathlib `Collinear ℝ` + `Wbtw` + `Metric.infDist` 主邏輯，~1000 LOC，~30 lemma），他把所有 cross-product polynomial 工作集中在 `AreaProof.lean` ~12 個 bridge lemma（`cross2D_sq_add_inner_sq` Lagrange、`infDist_eq_cross_div_dist`、各種 cross-product 恆等式）— 寫一次、上層證明全程在 affine/metric 抽象 API 走，**重複度極低**。Asterism SG 同題目跑出 100+ sub-goal、3× LOC，主因不是 framework 性能而是**每個 sub-goal 各自重展開 cross-product**。**問題本質**：Asterism `Manifest.md` 的 `## Lemma hints` 只列 Mathlib primitives（`Finset.exists_min_image` 等），沒鼓勵 agent 在拆解早期就**預先建立 problem-specific bridge lemma 庫**。Backward worker 拆解時是 type-by-type 即興、彼此獨立，沒有「先建工具、再用工具」的階段感。**這不是 generalization 問題（推廣到更廣定理）也不是 Mathlib API 問題（換 `Collinear` 定義）**，而是 abstraction 問題：把代數工作集中在一個 bridge layer，上層邏輯不再重複 polynomial expansion。**待設計**：解法等之後再討論。可能方向：(a) Manifest 新增 `## Bridge lemmas` section、cli init 自動 placement → 自動成為 sub-goal pool 的 dedup canonical； (b) 強化 Backward prompt，引導早期 spawn 寫 type-only `Lemmas.lean`；(c) 接 item 11 dedup 擴大讓 bridge lemma 自動跨 strategy 重用。
-
-**註記**：v3 archive (`D:\Hadamard\docs\asterism_archive\architecture_pipelines.md` §8) 的 **Generalizer pipeline** 在概念上就是 bridge lemma 的對應物 — 「讀 proved Goal G，寫候選 G\*（更廣命題使 G 是特例）」 — Lagrange identity 等 bridge 確實是 G\*。Strategist 看到「多個 sibling Goal 結構相似」就 inject Generalizer 是天然 fit。短期手動方案 (a)/(c) 可先做，長期目標是把 v3 Generalizer + Strategist coordinator 補回。Forward (corollary) 跟此問題不直接相關（先前誤判為部分解）。
+12. **(設計中) Bridge lemma layer — 對齊 parcadei SG 1000 LOC 實作的 root cause** — Asterism SG / cantor 級題目重複展開 cross-product polynomial 是主因（vs parcadei 集中在 12 個 bridge lemma）。問題不是 generalization 也不是 Mathlib API、是 **abstraction**（把代數工作集中在 bridge layer、上層邏輯不再重複展開）。三個方向 (a) Manifest 新增 `## Bridge lemmas` section / (b) 強化 Backward prompt 引導早期寫 `Lemmas.lean` / (c) 接 item 11 dedup 擴大讓 bridge 自動跨 strategy 重用。長期 hook 是 v3 archive 的 Generalizer pipeline。完整設計、開放決策點、不要做清單見 `docs/dev/bridge_lemma_layer.md`。
 5. **第三方 deep problem** — cantor 是當前最深，再要更深場景才知道 dedupe / cascade 邊界
 6. **Strategist** — 拆 Backward 為 Plan + Decompose；只有 SG 在 entry_kind directive 後仍卡住才真的需要
 
