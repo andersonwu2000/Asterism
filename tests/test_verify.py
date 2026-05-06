@@ -55,10 +55,12 @@ def _seed_strategy_with_proved_subs(
     conn: sqlite3.Connection, *, goal_id: int, sub_count: int = 1,
     scratch_path: str | None = None,
     lean_path: str = "Problems/p/proofs/L_main.lean",
+    proposal_md: str = "",
 ) -> int:
     sid = db.insert_strategy(
         conn, goal_id=goal_id, lean_path=lean_path, created_by="pid",
         scratch_path=scratch_path or f"Problems/p/proofs/_strategy_s.lean",
+        proposal_md=proposal_md,
     )
     for i in range(sub_count):
         sub = db.insert_goal(
@@ -100,6 +102,76 @@ def test_verify_strategy_proved_when_lake_builds(
 
     out = verify.verify_strategy(conn, workspace=tmp_path, strategy_id=sid)
     assert out == "proved"
+
+
+def test_verify_strategy_propagates_proposal_md_as_annotation(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a strategy wins Verify, its `proposal_md` (the Backward
+    agent's high-level decomposition rationale) propagates into the
+    parent goal's `.lean` source as a `-- <slug>: ...` line-comment
+    block via `promote_to_alias`'s `annotation` keyword."""
+    gid = _seed_goal(conn, slug="parent_main")
+    sid = _seed_strategy_with_proved_subs(
+        conn, goal_id=gid,
+        proposal_md="split into A + B via cross-product Lagrange",
+    )
+    scratch_abs = tmp_path / "Problems/p/proofs/_strategy_s.lean"
+    scratch_abs.parent.mkdir(parents=True)
+    scratch_abs.write_text("-- stub", encoding="utf-8")
+
+    captured: dict[str, str] = {}
+
+    def fake_promote(*a, **kw):
+        captured["annotation"] = kw.get("annotation", "")
+        return None
+    monkeypatch.setattr(verify, "lake_build", lambda *a, **kw: (True, ""))
+    monkeypatch.setattr(verify, "lean_path_to_module",
+                        lambda *a, **kw: "Problems.p.proofs._strategy_s")
+    monkeypatch.setattr(verify, "promote_to_alias", fake_promote)
+    monkeypatch.setattr(verify, "rollback_promote",
+                        lambda *a, **kw: None)
+
+    out = verify.verify_strategy(conn, workspace=tmp_path, strategy_id=sid)
+    assert out == "proved"
+    assert captured["annotation"].startswith(
+        "-- parent_main: split into A + B via cross-product Lagrange"
+    )
+
+
+def test_verify_strategy_empty_proposal_yields_empty_annotation(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A strategy with empty `proposal_md` propagates an empty
+    annotation — `promote_to_alias` writes the alias without any
+    comment block. (Backward emits `agent_no_annotation` upstream so
+    this case is rare in practice, but the verify path stays defensive
+    against legacy / pre-Phase-2 strategies.)"""
+    gid = _seed_goal(conn, slug="parent_main")
+    sid = _seed_strategy_with_proved_subs(
+        conn, goal_id=gid, proposal_md="",
+    )
+    scratch_abs = tmp_path / "Problems/p/proofs/_strategy_s.lean"
+    scratch_abs.parent.mkdir(parents=True)
+    scratch_abs.write_text("-- stub", encoding="utf-8")
+
+    captured: dict[str, str] = {}
+
+    def fake_promote(*a, **kw):
+        captured["annotation"] = kw.get("annotation", "")
+        return None
+    monkeypatch.setattr(verify, "lake_build", lambda *a, **kw: (True, ""))
+    monkeypatch.setattr(verify, "lean_path_to_module",
+                        lambda *a, **kw: "Problems.p.proofs._strategy_s")
+    monkeypatch.setattr(verify, "promote_to_alias", fake_promote)
+    monkeypatch.setattr(verify, "rollback_promote",
+                        lambda *a, **kw: None)
+
+    out = verify.verify_strategy(conn, workspace=tmp_path, strategy_id=sid)
+    assert out == "proved"
+    assert captured["annotation"] == ""
 
 
 def test_verify_strategy_dead_when_step1_fails(

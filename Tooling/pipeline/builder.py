@@ -78,9 +78,10 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                        pipeline_id: str) -> "PipelineResult":  # noqa: F821
     from . import (
         PipelineResult, PROMPT_DIR,
-        _attempt_postmortem, _grep_forbidden, _is_sorry_stub,
-        _lake_build, _parse_decline_reason, _parse_hint_winner,
-        _replace_proof_body, _safe_glob, _spawn_failure,
+        _attempt_postmortem, _format_annotation_comment, _grep_forbidden,
+        _is_sorry_stub, _lake_build, _parse_decline_reason,
+        _parse_hint_winner, _replace_proof_body, _safe_glob,
+        _spawn_failure,
         DECLINE_PARENT_TYPE_INFEASIBLE,
     )
 
@@ -147,6 +148,14 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                 (attempts_dir / "won_hint.lean").write_text(
                     final_text, encoding="utf-8"
                 )
+                # Phase 1 has no agent / PROPOSAL.md, so synthesize a
+                # short annotation from the deterministic outcome.
+                annotation = _format_annotation_comment(
+                    goal["slug"], f"proved by hint: {winner}",
+                )
+                if annotation:
+                    annotated = annotation + final_text
+                    goal_lean.write_text(annotated, encoding="utf-8")
                 return PipelineResult(outcome="proved")
 
         # Phase 1 didn't close the goal — restore the original sorry-stub
@@ -288,6 +297,26 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     shutil.copy2(patch, goal_lean)
     ok, err = _lake_build(workspace, goal_lean)
     if ok:
+        # Annotation is a hard success condition: an empty / whitespace-
+        # only PROPOSAL.md means the agent skipped the documentation step
+        # entirely. Roll back to the sorry-stub backup and treat as
+        # failure so the next dispatch retries with the same prompt.
+        # Comments are Lean-inert, so prepending the annotation after a
+        # successful build does not affect the already-elaborated proof.
+        annotation = _format_annotation_comment(
+            goal["slug"], proposal_text,
+        )
+        if not annotation:
+            shutil.copy2(backup, goal_lean)
+            backup.unlink()
+            return PipelineResult(
+                outcome="failed",
+                failure_reason="agent_no_annotation",
+                failure_detail="patch built but PROPOSAL.md was empty",
+                proposal_md=proposal_text,
+            )
+        annotated = annotation + goal_lean.read_text(encoding="utf-8")
+        goal_lean.write_text(annotated, encoding="utf-8")
         backup.unlink()
         return PipelineResult(outcome="proved")
     shutil.copy2(backup, goal_lean)

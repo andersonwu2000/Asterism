@@ -82,7 +82,9 @@ def test_run_builder_phase2_llm_patch_builds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When attempts > 0 (forces past Phase 1), Builder spawns the LLM,
-    grabs patch.lean, lake-builds against it, returns 'proved'."""
+    grabs patch.lean, lake-builds against it, returns 'proved'. The
+    proved goal file is hydrated with a `-- <slug>: <summary>` annotation
+    block prepended above the patch body."""
     gid = _seed_problem(conn, tmp_path)
     db.increment_goal_attempts(conn, gid)  # bypass tactic_try
 
@@ -101,6 +103,42 @@ def test_run_builder_phase2_llm_patch_builds(
         conn, goal_id=gid, workspace=tmp_path, mfst=_mfst(),
         pipeline_id="pid-llm-ok")
     assert r.outcome == "proved"
+    goal = db.get_goal(conn, gid)
+    proved_text = (tmp_path / goal["lean_path"]).read_text(encoding="utf-8")
+    assert proved_text.startswith(f"-- {goal['slug']}: trivial direct proof")
+
+
+def test_run_builder_phase2_empty_proposal_fails_no_annotation(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phase 2 requires a non-empty PROPOSAL.md as the source of the
+    proved goal's annotation. Empty PROPOSAL.md → outcome='failed' with
+    failure_reason='agent_no_annotation'; the goal file is rolled back
+    to the sorry stub so retry can proceed cleanly."""
+    gid = _seed_problem(conn, tmp_path)
+    db.increment_goal_attempts(conn, gid)  # bypass tactic_try
+    goal = db.get_goal(conn, gid)
+    original_text = (tmp_path / goal["lean_path"]).read_text(encoding="utf-8")
+
+    def fake_spawn(**kw):
+        (kw["attempts_dir"] / "patch.lean").write_text(
+            "import Mathlib\ntheorem main : True := trivial\n",
+            encoding="utf-8")
+        (kw["attempts_dir"] / "PROPOSAL.md").write_text(
+            "   \n\n\t\n", encoding="utf-8")  # whitespace-only
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    monkeypatch.setattr(pipeline, "_lake_build",
+                        lambda ws, t: (True, ""))
+
+    r = pipeline.run_builder(
+        conn, goal_id=gid, workspace=tmp_path, mfst=_mfst(),
+        pipeline_id="pid-llm-no-annot")
+    assert r.outcome == "failed"
+    assert r.failure_reason == "agent_no_annotation"
+    # Rolled back to original sorry stub
+    assert (tmp_path / goal["lean_path"]).read_text(encoding="utf-8") == original_text
 
 
 def test_run_builder_decline_returns_agent_declined(

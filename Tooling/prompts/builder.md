@@ -69,5 +69,5 @@ With s=(0,0), q₀=(2,0), r₀=(5,0), p₀=(0,3): all six hypotheses hold but
 ## Output
 
 Either:
-- **Patch path**: write `patch.lean` + `PROPOSAL.md` (1-2 sentences naming the key Mathlib lemma family + why it closes the goal; no restating the goal). Or:
+- **Patch path**: write `patch.lean` + `PROPOSAL.md`. PROPOSAL.md is **required** — the framework prepends it as a Lean line-comment block to the proved goal file (annotation hydrates the proved source for grep + future agents). Aim for 1-2 sentences naming the key Mathlib lemma family + why it closes the goal; no restating the goal. The first non-blank line becomes the one-line summary. Or:
 - **Decline path**: write only `PROPOSAL.md` per the section above (with `decline_reason` frontmatter).

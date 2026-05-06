@@ -119,8 +119,10 @@ def promote_to_alias(
     parent_abs: Path, *,
     namespace: str, slug: str, sid_token: str,
     scratch_module: str,
+    annotation: str = "",
 ) -> Path | None:
     """F52 — rewrite parent stub as a re-export alias of the strategy:
+        <annotation comment lines, if any>
         <orig imports + scratch_module>
         namespace <namespace>
         def <slug> := @<namespace>.<sid_token>
@@ -135,6 +137,12 @@ def promote_to_alias(
     identifiers like `P` unbound, triggering `Function expected ...`
     at lake build.
 
+    `annotation` (already-formatted Lean line-comment block, e.g. the
+    output of `_format_annotation_comment`) is prepended verbatim if
+    non-empty. Comments are Lean-inert, so this does not affect alias
+    elaboration; it just hydrates the proved goal's source with the
+    winning strategy's `proposal_md` for human readers + agent grep.
+
     Returns the backup path the caller should keep until the post-
     promote lake build succeeds (delete on success, restore on fail
     via `rollback_promote`). Returns None if no original file existed.
@@ -145,10 +153,11 @@ def promote_to_alias(
     if f"import {scratch_module}" not in orig_imports:
         orig_imports.append(f"import {scratch_module}")
     new_content = (
-        "\n".join(orig_imports) + "\n\n"
-        f"namespace {namespace}\n\n"
-        f"def {slug} := @{namespace}.{sid_token}\n\n"
-        f"end {namespace}\n"
+        annotation
+        + "\n".join(orig_imports) + "\n\n"
+        + f"namespace {namespace}\n\n"
+        + f"def {slug} := @{namespace}.{sid_token}\n\n"
+        + f"end {namespace}\n"
     )
     backup: Path | None = None
     if parent_abs.exists():

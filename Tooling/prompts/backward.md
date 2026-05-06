@@ -12,7 +12,7 @@ Break it apart so the parts can be tackled independently.
 
 Read Context.md's `## Sandbox` (allowlist) and `## Strategy naming` (strategy id `s<N>` is locked; sub-goal slugs are descriptive identifiers you pick) first. The framework auto-prepends `import Mathlib` + `import Problems.<problem>.Defs` on each sub-goal file and auto-appends sub-goal imports onto the patch — don't write any `import` lines yourself.
 
-1. `PROPOSAL.md` — high-level strategy, why each sub-goal is simpler, how they combine. No restating the goal, no sub-goal statement code blocks.
+1. `PROPOSAL.md` — high-level strategy, why each sub-goal is simpler, how they combine. **Required** and must be non-empty: the framework prepends it as a Lean line-comment block to the parent goal's source when this strategy wins Verify. No restating the goal, no sub-goal statement code blocks. The first non-blank line becomes the one-line summary.
 
 2. `patch.lean` — pre-written with the locked signature `theorem s<id> <binders> : <type> := by sorry`. Replace ONLY the body — changes to the theorem name, binders, or conclusion type are rejected (`patch_signature_mismatch`).
 

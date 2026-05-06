@@ -10,6 +10,7 @@ from Tooling.pipeline import (
     _replace_proof_body,
     _grep_forbidden,
     _extract_statement,
+    _format_annotation_comment,
     _lean_path_to_module,
     _slug_from_filename,
     _safe_glob,
@@ -590,6 +591,54 @@ def test_promote_to_alias_no_backup_when_parent_absent(tmp_path: Path) -> None:
     assert parent.exists()
 
 
+def test_promote_to_alias_prepends_annotation_block(tmp_path: Path) -> None:
+    """An `annotation` kwarg (already-formatted Lean line-comment block)
+    is prepended verbatim before the imports. Comments are Lean-inert
+    so this affects only what humans/agents see, not elaboration."""
+    from Tooling.pipeline import _promote_to_alias
+    parent = tmp_path / "L_g.lean"
+    parent.write_text(
+        "import Mathlib\nnamespace Problems.p\n\n"
+        "theorem g : True := by sorry\n\nend Problems.p\n",
+        encoding="utf-8")
+    annotation = (
+        "-- g: split via combinator on subgoal pair\n"
+        "-- A is identity, B is metric bound\n"
+    )
+    _promote_to_alias(
+        parent,
+        namespace="Problems.p", slug="g", sid_token="s42",
+        scratch_module="Problems.p.proofs._strategy_s42",
+        annotation=annotation,
+    )
+    new = parent.read_text(encoding="utf-8")
+    assert new.startswith(
+        "-- g: split via combinator on subgoal pair\n"
+        "-- A is identity, B is metric bound\n"
+        "import Mathlib"
+    )
+    # Alias body still present after the annotation
+    assert "def g := @Problems.p.s42" in new
+
+
+def test_promote_to_alias_empty_annotation_is_noop(tmp_path: Path) -> None:
+    """Default `annotation=""` matches the pre-Phase-2 behavior — no
+    comment lines added, alias starts with imports."""
+    from Tooling.pipeline import _promote_to_alias
+    parent = tmp_path / "L_g.lean"
+    parent.write_text(
+        "import Mathlib\nnamespace Problems.p\n\n"
+        "theorem g : True := by sorry\n\nend Problems.p\n",
+        encoding="utf-8")
+    _promote_to_alias(
+        parent,
+        namespace="Problems.p", slug="g", sid_token="s7",
+        scratch_module="Problems.p.proofs._strategy_s7",
+    )
+    new = parent.read_text(encoding="utf-8")
+    assert new.startswith("import Mathlib")
+
+
 def test_promote_to_alias_idempotent(tmp_path: Path) -> None:
     """Re-promote of an already-aliased file produces same content with
     no doubled imports or doubled defs."""
@@ -820,3 +869,48 @@ def test_resolve_collisions_partial_collision_only_renames_overlap(
         [("taken", p1), ("free", p2)], existing_slugs={"taken"})
     assert resolved == [("taken", "taken_2", p1), ("free", "free", p2)]
     assert rename_map == {"taken": "taken_2"}
+
+
+# ---------------------------------------------------------------------
+# Annotation comment formatting (`_format_annotation_comment`)
+# ---------------------------------------------------------------------
+
+def test_annotation_empty_body_returns_empty() -> None:
+    assert _format_annotation_comment("foo", "") == ""
+    assert _format_annotation_comment("foo", "   ") == ""
+    assert _format_annotation_comment("foo", "\n\n\n") == ""
+
+
+def test_annotation_single_line_body() -> None:
+    out = _format_annotation_comment("cross_id", "uses ring + Mathlib.cross_smul")
+    assert out == "-- cross_id: uses ring + Mathlib.cross_smul\n"
+
+
+def test_annotation_multi_line_preserves_paragraphs() -> None:
+    body = (
+        "split into A + B via combinator\n"
+        "\n"
+        "A is the algebraic identity, B is the metric bound."
+    )
+    out = _format_annotation_comment("strat_main", body)
+    assert out == (
+        "-- strat_main: split into A + B via combinator\n"
+        "--\n"
+        "-- A is the algebraic identity, B is the metric bound.\n"
+    )
+
+
+def test_annotation_strips_leading_blank_lines_in_summary() -> None:
+    """Agent might emit `\\n\\n## Strategy\\n...` — first non-blank
+    line wins as the summary."""
+    body = "\n\n## Strategy\nWe split into..."
+    out = _format_annotation_comment("foo", body)
+    # Summary is `## Strategy`; rest is `We split into...`
+    assert out.startswith("-- foo: ## Strategy\n")
+    assert "-- We split into..." in out
+
+
+def test_annotation_strips_trailing_whitespace_per_line() -> None:
+    body = "first line   \nsecond line\t\n"
+    out = _format_annotation_comment("x", body)
+    assert out == "-- x: first line\n-- second line\n"

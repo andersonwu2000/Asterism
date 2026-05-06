@@ -319,6 +319,47 @@ def _slug_from_filename(name: str) -> str:
     return base.removeprefix("new_") if base.startswith("new_") else base
 
 
+def _format_annotation_comment(slug: str, body: str) -> str:
+    """Format a goal-annotation block as Lean line comments.
+
+    The first non-empty line of `body` becomes the annotation summary,
+    rendered as `-- <slug>: <summary>` (one-line, grep-friendly). Each
+    subsequent line follows as `-- <line>` (or bare `--` for blank
+    lines) so paragraph structure carries over. Returns empty string
+    when `body` is empty / whitespace only.
+
+    The returned text includes a trailing newline so it can be
+    `<annotation> + <existing source>` prepended verbatim.
+
+    Used by:
+      * Builder success paths — annotation comes from agent's
+        PROPOSAL.md (Phase 2 LLM patch) or a synthesized "proved by
+        hint: <tactic>" line (Phase 1).
+      * Verify (`promote_to_alias`) — annotation comes from the
+        winning strategy's `proposal_md` (Backward agent's high-level
+        decomposition rationale).
+    """
+    body = body.strip()
+    if not body:
+        return ""
+    lines = body.splitlines()
+    # First non-blank line is the summary
+    summary = ""
+    rest_start = 0
+    for idx, ln in enumerate(lines):
+        if ln.strip():
+            summary = ln.strip()
+            rest_start = idx + 1
+            break
+    if not summary:
+        return ""
+    out = [f"-- {slug}: {summary}"]
+    for ln in lines[rest_start:]:
+        s = ln.rstrip()
+        out.append(f"-- {s}" if s else "--")
+    return "\n".join(out) + "\n"
+
+
 _THM_HEAD_RE = re.compile(r"\btheorem\s+\S+")
 
 

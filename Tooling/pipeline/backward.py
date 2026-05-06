@@ -445,6 +445,17 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     if not proposal.exists():
         return _abort("parse_proposal_fail", "no PROPOSAL.md")
     proposal_text = proposal.read_text(encoding="utf-8")
+    # Strategy description is the source of the parent goal's
+    # annotation when this strategy wins Verify. Empty PROPOSAL.md
+    # would propagate as an empty annotation — symmetric to Builder's
+    # `agent_no_annotation` check.
+    if not proposal_text.strip():
+        return _abort(
+            "agent_no_annotation",
+            "PROPOSAL.md present but whitespace-only; strategy "
+            "description is required for goal annotation propagation.",
+            proposal_text,
+        )
 
     patches = _safe_glob(attempts_dir, "patch*.lean")
     new_subs = _safe_glob(attempts_dir, "new_*.lean")

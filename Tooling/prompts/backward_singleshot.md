@@ -18,7 +18,7 @@ Do not include any other text outside these blocks. Do not wrap blocks in markdo
 
 Required files:
 
-1. `==== FILE: PROPOSAL.md ====` — high-level strategy, why each sub-goal is simpler, how they combine. No restating the goal, no sub-goal statement code blocks.
+1. `==== FILE: PROPOSAL.md ====` — high-level strategy, why each sub-goal is simpler, how they combine. **Required** and must be non-empty: framework prepends it as a Lean line-comment block to the parent goal's source when this strategy wins Verify. No restating the goal, no sub-goal statement code blocks. First non-blank line becomes the one-line summary.
 
 2. `==== FILE: patch.lean ====` — the framework pre-wrote this file with the strategy's locked signature (`theorem s<id> ... := by sorry`). Emit your version with **only the proof body** changed (everything after `:=`). The framework rejects any signature edit (`patch_signature_mismatch`). Imports for sub-goals are auto-injected — do NOT add them. Body uses `have h_i : <sub_i_type> := <slug_i> args` calls + a final tactic that closes the parent statement.
 
