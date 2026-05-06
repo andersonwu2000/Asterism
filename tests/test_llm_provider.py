@@ -5,7 +5,23 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import llm
+from Tooling import config, llm
+
+
+@pytest.fixture(autouse=True)
+def _isolate_workspace_config(tmp_path: Path,
+                               monkeypatch: pytest.MonkeyPatch):
+    """Tests in this module exercise provider / model resolution. The
+    real workspace's Asterism.yaml hard-codes claude-sonnet-4-6 for
+    builder + backward, which would dominate the env-only tier the
+    tests intend to verify. chdir into a clean tmp dir + reset the
+    config cache so `config.load()` finds no yaml and the resolution
+    chain falls through to env / legacy / default as the test
+    expects."""
+    monkeypatch.chdir(tmp_path)
+    config._reset_cache()
+    yield
+    config._reset_cache()
 
 
 def test_get_provider_default_is_claude_cli(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -9,8 +9,21 @@ from unittest import mock
 
 import pytest
 
-from Tooling import llm
+from Tooling import config, llm
 from Tooling.llm import openai_api
+
+
+@pytest.fixture(autouse=True)
+def _isolate_workspace_config(tmp_path: Path,
+                               monkeypatch: pytest.MonkeyPatch):
+    """Provider/model resolution tests rely on env-only or "no model
+    set" scenarios; the workspace's Asterism.yaml hard-codes a claude
+    model that would otherwise win the resolution. chdir clean +
+    reset config cache so each test starts with no yaml in scope."""
+    monkeypatch.chdir(tmp_path)
+    config._reset_cache()
+    yield
+    config._reset_cache()
 
 
 # ---------------------------------------------------------------------
