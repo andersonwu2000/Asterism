@@ -373,6 +373,9 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     def backward_reflection(sid: str, result) -> None:
         from ._reflection import attempt_reflection
         from .. import config
+        from ._reflection import _reflection_enabled
+        if not _reflection_enabled(workspace):
+            return
         cap = config.get(
             "lessons.cap", default=10, cast=int, workspace=workspace,
         )

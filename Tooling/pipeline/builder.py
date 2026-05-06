@@ -244,8 +244,10 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         )
 
     def builder_reflection(sid: str, result) -> None:
-        from ._reflection import attempt_reflection
+        from ._reflection import attempt_reflection, _reflection_enabled
         from .. import config
+        if not _reflection_enabled(workspace):
+            return
         cap = config.get(
             "lessons.cap", default=10, cast=int, workspace=workspace,
         )

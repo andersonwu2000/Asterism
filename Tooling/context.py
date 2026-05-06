@@ -678,12 +678,19 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         conn, int(goal["id"]), k=5, exclude_strategy_ids=exclude_ids,
     )
 
+    # Section ordering — cross-spawn-stable content (BRIEF + LESSONS)
+    # leads so prompt-cache prefix-matching gets maximal hit:
+    # within one Manifest version + LESSONS state, the entire
+    # `BRIEF.md` + `LESSONS.md` block is byte-identical across all
+    # spawns of this problem. Putting them first means cache-able
+    # prefix length is the BRIEF + LESSONS size (~2-10 KB) rather
+    # than zero. Per-goal / per-spawn surfaces follow.
     sections: list[list[str]] = [
+        _section_brief_inline(problem_dir),
+        _section_lessons_inline(problem_dir),
         _section_header(goal),
         _section_strategy_naming(strategy_id, goal),
         _section_parent_strategy(conn, goal),
-        _section_brief_inline(problem_dir),
-        _section_lessons_inline(problem_dir),
         _section_mathlib_lemmas_from_deads(direct_events, workspace),
         _section_proved_goals(conn, goal),
         _section_prior_partial(kind, problem_dir, int(goal["id"])),

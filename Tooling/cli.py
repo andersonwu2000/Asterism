@@ -226,11 +226,23 @@ def cmd_init(args: argparse.Namespace) -> int:
     # (sandbox / forbidden lemmas / mathlib hints / library / strategic
     # notes). Refreshed at daemon startup if Manifest changes.
     brief.write(workspace, mfst)
-    # Empty LESSONS.md — agent-curated cross-spawn experience surface,
+    # Seed LESSONS.md — agent-curated cross-spawn experience surface,
     # populated by reflection spawns at successful pipeline terminals.
+    # The seed line ensures the Edit tool has an anchor: appending to a
+    # 0-byte file via Edit fails (no `old_string` match). Reflection
+    # prompt instructs the agent to insert new lessons after the seed
+    # divider line.
     lessons_path = pdir / "LESSONS.md"
     if not lessons_path.exists():
-        lessons_path.write_text("", encoding="utf-8")
+        lessons_path.write_text(
+            "<!-- Lessons learned across spawns on this problem.\n"
+            "     One sentence per `- ` bullet. Reflection spawn appends\n"
+            "     below this header; the divider line below is the\n"
+            "     anchor Edit tool relies on. -->\n"
+            "\n"
+            "<!-- LESSONS_BEGIN -->\n",
+            encoding="utf-8",
+        )
     return 0
 
 

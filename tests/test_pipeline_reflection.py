@@ -79,3 +79,117 @@ def test_classify_delta_unexpected_when_shrank() -> None:
     after = "- a\n"
     delta = _classify_delta(before, after)
     assert "unexpected" in delta
+
+
+# ---------------------------------------------------------------------
+# Trigger gate (T2 — exercises `_retry._maybe_reflect`)
+# ---------------------------------------------------------------------
+
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from Tooling import db
+from Tooling.pipeline import PipelineResult
+from Tooling.pipeline._retry import (
+    SpawnCtx, run_with_session_retries,
+)
+
+
+def _seed_min_goal(conn: sqlite3.Connection) -> int:
+    """Minimal problem + goal so run_with_session_retries can read DB."""
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at) "
+        "VALUES (?, ?, ?)",
+        ("p", "Problems/p/Manifest.md", db.now()),
+    )
+    conn.commit()
+    return db.insert_goal(
+        conn, problem="p", slug="g", lean_path="Problems/p/Root.lean",
+        statement="True", origin="root",
+    )
+
+
+def _make_run(*, parse_outcome: PipelineResult | None = None,
+              spawn_rc: int = 0,
+              extra_iters: int = 0):
+    """Helper: build spawn_fn / parse_fn / postmortem_fn closures that
+    return controlled outcomes."""
+    spawn_calls: list[SpawnCtx] = []
+    parse_calls: list[int] = []
+    pm_calls: list[str] = []
+
+    def spawn_fn(ctx: SpawnCtx) -> int:
+        spawn_calls.append(ctx)
+        return spawn_rc
+
+    def parse_fn() -> PipelineResult:
+        parse_calls.append(1)
+        if parse_outcome is None:
+            # Force a non-terminal failure so loop continues
+            return PipelineResult(
+                outcome="failed", failure_reason="lake_build_error",
+                failure_detail="(stub)",
+            )
+        return parse_outcome
+
+    def postmortem_fn(sid: str) -> None:
+        pm_calls.append(sid)
+
+    return spawn_fn, parse_fn, postmortem_fn, spawn_calls, parse_calls, pm_calls
+
+
+@pytest.mark.parametrize("outcome,reason,should_fire", [
+    ("proved",     "",                       True),
+    ("success",    "",                       True),
+    ("exhausted",  "lake_build_error",       True),
+    ("failed",     "agent_declined",         True),
+    ("failed",     "agent_infeasible",       True),
+    ("failed",     "goal_no_longer_open",    False),
+    ("failed",     "spawn_fast_fail",        False),
+    ("failed",     "quota_exhausted",        False),
+    ("failed",     "missing_dep",            False),
+    ("moot",       "",                       False),
+])
+def test_reflection_trigger_gate(
+    conn: sqlite3.Connection, tmp_path: Path,
+    outcome: str, reason: str, should_fire: bool,
+) -> None:
+    """`_maybe_reflect` filters by outcome + failure_reason. The user-
+    locked decision (5) is: trigger on proved / success / exhausted /
+    agent_declined / agent_infeasible; skip moot, race-detected
+    `goal_no_longer_open`, and infra rcs (spawn_fast_fail /
+    quota_exhausted / missing_dep)."""
+    gid = _seed_min_goal(conn)
+    fired: list[tuple[str, PipelineResult]] = []
+
+    def reflect(sid: str, result: PipelineResult) -> None:
+        fired.append((sid, result))
+
+    # parse_fn returns the parametrized terminal directly so the loop
+    # exits on the first iteration via attach().
+    spawn_fn, parse_fn, pm_fn, *_ = _make_run(
+        parse_outcome=PipelineResult(outcome=outcome,
+                                     failure_reason=reason),
+    )
+
+    # `attach` filters via `_maybe_reflect`. For `moot`, we need a
+    # different path: budget=0 entry returns moot before any spawn.
+    # We construct that case by setting goal.attempts to threshold.
+    if outcome == "moot":
+        for _ in range(3):
+            db.increment_goal_attempts(conn, gid)
+
+    run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-gate",
+        budget_threshold=3, shelve_threshold=8,
+        attempts_dir=tmp_path,
+        spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
+        reflection_fn=reflect,
+    )
+
+    assert bool(fired) == should_fire, (
+        f"outcome={outcome} reason={reason} expected fire={should_fire}, "
+        f"got {len(fired)} call(s)"
+    )

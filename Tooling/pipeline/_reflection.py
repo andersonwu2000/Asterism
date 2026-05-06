@@ -20,6 +20,7 @@ for the design rationale.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 from .. import agent
@@ -28,6 +29,47 @@ from .. import agent
 _REFLECTION_PROMPT_FILENAME = "_reflection_prompt.md"
 _LESSONS_FILENAME = "LESSONS.md"
 _REFLECTION_TIMEOUT_SEC = 120
+
+# Per-problem mutex on LESSONS.md edits. Multiple workers can reach
+# their pipeline terminals concurrently (different goals, same problem)
+# and each fires its own claude reflection spawn that Edit's the same
+# file — Edit is read-modify-write, not atomic, so concurrent Edits
+# can lose updates or corrupt the file. Serialize per-problem so at
+# most one reflection writes LESSONS.md for a given problem at a time.
+# In-process lock is sufficient because the dispatcher is single-
+# process; multi-process deployments would need an OS-level file lock.
+_LESSONS_LOCKS: dict[str, threading.Lock] = {}
+_LESSONS_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for_problem(problem: str) -> threading.Lock:
+    with _LESSONS_LOCKS_GUARD:
+        lock = _LESSONS_LOCKS.get(problem)
+        if lock is None:
+            lock = threading.Lock()
+            _LESSONS_LOCKS[problem] = lock
+        return lock
+
+
+def _reflection_enabled(workspace: Path | None) -> bool:
+    """Read `lessons.reflection_enabled` from Asterism.yaml / env.
+    Defaults to True. Accepts truthy values "true" / "1" / "yes" /
+    "on" (case-insensitive). Anything else, including "false" / "0" /
+    "no" / "off" / empty, disables reflection.
+
+    Operator emergency switch: set `lessons.reflection_enabled: false`
+    in Asterism.yaml (or `ASTERISM_LESSONS_REFLECTION_ENABLED=false` env)
+    to disable reflection without redeploying."""
+    from .. import config
+    raw = config.get(
+        "lessons.reflection_enabled",
+        default=True,
+        env_var="ASTERISM_LESSONS_REFLECTION_ENABLED",
+        workspace=workspace,
+    )
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in ("true", "1", "yes", "on")
 
 
 def attempt_reflection(*,
@@ -46,46 +88,53 @@ def attempt_reflection(*,
     pipeline outcome is already committed; failed reflection costs at
     most one un-saved lesson, never blocks the dispatcher.
     """
-    try:
-        lessons_path = problem_dir / _LESSONS_FILENAME
-        lessons_before = _read_lessons(lessons_path)
-        used = _count_lesson_lines(lessons_before)
+    # Acquire per-problem lock around the entire spawn + diff window.
+    # The lock holds for the LLM call duration (~30-90s). Multiple
+    # workers reflecting on the same problem serialize here; that's a
+    # known cost (the alternative is concurrent Edit which corrupts).
+    # Mutually-different problems do not contend.
+    lock = _lock_for_problem(problem_dir.name)
+    with lock:
+        try:
+            lessons_path = problem_dir / _LESSONS_FILENAME
+            lessons_before = _read_lessons(lessons_path)
+            used = _count_lesson_lines(lessons_before)
 
-        template_path = prompt_dir / "reflection.md"
-        if not template_path.exists():
-            print(f"[reflection] template missing at {template_path}; "
-                  f"skipping", flush=True)
-            return
-        rendered = _render_prompt(
-            template_path.read_text(encoding="utf-8"),
-            kind=kind, slug=slug, outcome=outcome,
-            problem=problem_dir.name,
-            cap=lessons_cap, used=used,
-            lessons_content=lessons_before or "(empty)",
-            timeout_min=str(max(1, _REFLECTION_TIMEOUT_SEC // 60)),
-        )
-        rendered_path = attempts_dir / _REFLECTION_PROMPT_FILENAME
-        rendered_path.write_text(rendered, encoding="utf-8")
+            template_path = prompt_dir / "reflection.md"
+            if not template_path.exists():
+                print(f"[reflection] template missing at {template_path}; "
+                      f"skipping", flush=True)
+                return
+            rendered = _render_prompt(
+                template_path.read_text(encoding="utf-8"),
+                kind=kind, slug=slug, outcome=outcome,
+                problem=problem_dir.name,
+                cap=str(lessons_cap), used=str(used),
+                lessons_content=lessons_before or "(empty)",
+                timeout_min=str(max(1, _REFLECTION_TIMEOUT_SEC // 60)),
+            )
+            rendered_path = attempts_dir / _REFLECTION_PROMPT_FILENAME
+            rendered_path.write_text(rendered, encoding="utf-8")
 
-        agent.spawn_llm(
-            kind=kind,
-            prompt_path=rendered_path,
-            problem_dir=problem_dir,
-            attempts_dir=attempts_dir,
-            session_id=sid,
-            # is_postmortem=True borrows the existing "resume + use
-            # prompt_path verbatim, no companion file load" path.
-            # claude provider handles --resume <sid> already.
-            is_postmortem=True,
-            timeout_sec=_REFLECTION_TIMEOUT_SEC,
-        )
+            agent.spawn_llm(
+                kind=kind,
+                prompt_path=rendered_path,
+                problem_dir=problem_dir,
+                attempts_dir=attempts_dir,
+                session_id=sid,
+                # is_postmortem=True borrows the existing "resume + use
+                # prompt_path verbatim, no companion file load" path.
+                # claude provider handles --resume <sid> already.
+                is_postmortem=True,
+                timeout_sec=_REFLECTION_TIMEOUT_SEC,
+            )
 
-        lessons_after = _read_lessons(lessons_path)
-        delta = _classify_delta(lessons_before, lessons_after)
-        print(f"[reflection] {kind} {slug}: {delta}", flush=True)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[reflection] {kind} {slug}: error swallowed — {exc}",
-              flush=True)
+            lessons_after = _read_lessons(lessons_path)
+            delta = _classify_delta(lessons_before, lessons_after)
+            print(f"[reflection] {kind} {slug}: {delta}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[reflection] {kind} {slug}: error swallowed — {exc}",
+                  flush=True)
 
 
 def _read_lessons(path: Path) -> str:
