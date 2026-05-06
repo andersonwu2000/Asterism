@@ -35,19 +35,19 @@ def _section_header(goal: sqlite3.Row) -> list[str]:
     ]
 
 
-def _section_sandbox(strategy_id: int | None,
-                     goal: sqlite3.Row) -> list[str]:
+def _section_sandbox(strategy_id: int | None = None,
+                     goal: sqlite3.Row | None = None) -> list[str]:
     """Universal sandbox info — read-allowlist boundaries + framework
     file conventions. Always rendered (Builder + Backward both need
     to know which paths are accessible). Strategy-specific naming is
     in `_section_strategy_naming` below; that one is Backward-only
     because Builder doesn't fan out into sub-goals.
 
-    P0-#4: prior version returned [] when strategy_id is None,
-    silently denying Builder kind the read-scope hints — Builder then
-    burned turns hitting permission prompts the new F54 allowlist
-    introduced.
+    Parameters are kept for legacy compatibility but unused — the
+    section content is purely static. `brief.py` calls this with
+    no args to assemble the cross-spawn BRIEF.md.
     """
+    del strategy_id, goal  # static section, params retained for API stability
     return [
         "## Sandbox",
         "- Reads allowed without permission prompts:",
@@ -122,16 +122,17 @@ def _section_parent_strategy(conn: sqlite3.Connection,
     return out
 
 
-def _section_mathlib_lemmas(mfst: manifest.Manifest,
-                             deads: list[sqlite3.Row],
-                             workspace: Path) -> list[str]:
-    """Merged successor of the previous separate `## Mathlib hints`
-    + `## Lemma references`. Manifest hints often point at a name; the
-    lookup pass resolves the same name to a real `lake env lean #check`
-    signature. Showing them as one block (signature when resolved, raw
-    hint text otherwise) saves a heading + a prose preamble and lets
-    the agent read each lemma's name + signature in one place."""
-    names = _collect_lemma_names(deads, mfst)
+def _section_mathlib_hints_stable(mfst: manifest.Manifest,
+                                   workspace: Path) -> list[str]:
+    """Cross-spawn-stable Mathlib lemma surface for BRIEF.md.
+
+    Renders Manifest `mathlib_hints` with their `lake env lean #check`
+    resolved signatures. Stable across spawns: only re-rendered when
+    BRIEF re-renders (cli init / daemon startup). Per-spawn lemma
+    names extracted from this goal's lake errors live in
+    `_section_mathlib_lemmas_from_deads` instead.
+    """
+    names = _hint_names(mfst)
     resolved: dict[str, str] = {}
     if names:
         try:
@@ -140,19 +141,18 @@ def _section_mathlib_lemmas(mfst: manifest.Manifest,
                 info.name: info.signature
                 for info in infos.values() if info.found
             }
-        except Exception as exc:  # never block context generation
+        except Exception as exc:  # never block render
             print(f"[lemma_lookup] failed, skipping: {exc}", flush=True)
 
-    if not mfst.mathlib_hints and not resolved:
+    if not mfst.mathlib_hints:
         return []
 
     out = [
         "## Mathlib lemmas",
-        "Names from Manifest plus those Lean errored on in past "
-        "attempts. Where a signature is shown, that's the ground "
-        "truth from `lake env lean #check` — use it for arg order / "
-        "instance shape. For raw-text entries, the hint is the "
-        "Manifest author's own note.",
+        "Manifest-curated lemma references. Where a signature is "
+        "shown, that's the ground truth from `lake env lean #check` — "
+        "use it for arg order / instance shape. For raw-text entries, "
+        "the hint is the Manifest author's own note.",
         "",
     ]
     rendered: set[str] = set()
@@ -168,11 +168,72 @@ def _section_mathlib_lemmas(mfst: manifest.Manifest,
             rendered.add(nm)
         else:
             out.append(f"- {hint}")
+    out.append("")
+    return out
+
+
+def _section_mathlib_lemmas_from_deads(deads: list,
+                                       workspace: Path) -> list[str]:
+    """Per-spawn surface: lemma names Lean errored on in this goal's
+    past failed attempts, resolved to current Mathlib signatures.
+
+    Distinct from the BRIEF half: those names depend on this goal's
+    failure history and must be re-resolved per spawn. Not rendered
+    when there are no error-derived names (typical first-attempt
+    case)."""
+    names = _names_from_deads(deads)
+    if not names:
+        return []
+    try:
+        infos = lemma_lookup.lookup_batch(names, workspace)
+        resolved = {
+            info.name: info.signature
+            for info in infos.values() if info.found
+        }
+    except Exception as exc:  # never block context generation
+        print(f"[lemma_lookup] failed, skipping: {exc}", flush=True)
+        resolved = {}
+
+    if not resolved:
+        return []
+    out = [
+        "## Mathlib lemmas (from past lake errors on this goal)",
+        "Names Lean reported in prior failures here, resolved to "
+        "their current `lake env lean #check` signature. Use these to "
+        "fix arg-order / instance-shape mistakes without another "
+        "Loogle round-trip.",
+        "",
+    ]
     for name, sig in resolved.items():
-        if name in rendered:
-            continue
         out.append(f"- **{name}** : `{sig}`")
     out.append("")
+    return out
+
+
+def _hint_names(mfst: manifest.Manifest) -> list[str]:
+    """Resolvable names extracted from `mfst.mathlib_hints` (in order,
+    de-duped). Hints that don't open with a Lean qualified name are
+    rendered as raw text and skipped here."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for hint in mfst.mathlib_hints:
+        m = re.match(r"\s*([A-Z][\w']*(?:\.[\w']+)+)", hint)
+        if m and m.group(1) not in seen:
+            seen.add(m.group(1))
+            out.append(m.group(1))
+    return out
+
+
+def _names_from_deads(deads: list) -> list[str]:
+    """Names extracted from `dead_attempts.failure_detail` lake-error
+    output. De-duped, first-seen order."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for d in deads:
+        for nm in lemma_lookup.extract_lemma_names(d["failure_detail"] or ""):
+            if nm not in seen:
+                seen.add(nm)
+                out.append(nm)
     return out
 
 
@@ -262,23 +323,49 @@ def _ago(ts_iso: str | None) -> str:
 # History sections (past attempts / verify failures / dead strategies)
 # ---------------------------------------------------------------------
 
-def _collect_lemma_names(deads: list,
-                        mfst: manifest.Manifest) -> list[str]:
-    """Names visible to the agent: those Lean errored on (highest
-    signal) plus those the Manifest curated. De-duped, first-seen order."""
-    names: list[str] = []
-    seen: set[str] = set()
-    for d in deads:
-        for nm in lemma_lookup.extract_lemma_names(d["failure_detail"] or ""):
-            if nm not in seen:
-                seen.add(nm)
-                names.append(nm)
-    for hint in mfst.mathlib_hints:
-        m = re.match(r"\s*([A-Z][\w']*(?:\.[\w']+)+)", hint)
-        if m and m.group(1) not in seen:
-            seen.add(m.group(1))
-            names.append(m.group(1))
-    return names
+def _section_brief_inline(problem_dir: Path) -> list[str]:
+    """Inline `Problems/<p>/BRIEF.md` content into Context.md so the
+    agent's read surface stays single-file (BRIEF is framework-rendered
+    cross-spawn stable context — sandbox / forbidden / mathlib hints /
+    library / strategic notes; see `Tooling/brief.py`). Returns [] when
+    BRIEF.md is missing (legacy init, mid-reset race) — Context.md
+    proceeds without it; safer than crashing dispatch on a missing
+    optional file."""
+    p = problem_dir / "BRIEF.md"
+    if not p.exists():
+        return []
+    try:
+        content = p.read_text(encoding="utf-8").strip()
+    except OSError:
+        return []
+    if not content:
+        return []
+    return [content, ""]
+
+
+def _section_lessons_inline(problem_dir: Path) -> list[str]:
+    """Inline `Problems/<p>/LESSONS.md` content. LESSONS is the agent-
+    curated cross-spawn experience surface (Edit'd by the reflection
+    spawn after successful pipelines); the file may be empty (initial
+    state) or missing (legacy)."""
+    p = problem_dir / "LESSONS.md"
+    if not p.exists():
+        return []
+    try:
+        content = p.read_text(encoding="utf-8").strip()
+    except OSError:
+        return []
+    if not content:
+        return []
+    return [
+        "## Lessons learned on this problem",
+        "_Cross-spawn observations recorded by past agents on this_",
+        "_problem. Sentence-per-line. Edit only via the reflection_",
+        "_spawn invoked at successful pipeline terminals._",
+        "",
+        content,
+        "",
+    ]
 
 
 def _section_proved_goals(conn: sqlite3.Connection,
@@ -593,13 +680,11 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
 
     sections: list[list[str]] = [
         _section_header(goal),
-        _section_sandbox(strategy_id, goal),
         _section_strategy_naming(strategy_id, goal),
         _section_parent_strategy(conn, goal),
-        _section_mathlib_lemmas(mfst, direct_events, workspace),
-        _section_manifest_forbidden(mfst),
-        _section_manifest_notes(mfst),
-        _section_library_available(mfst, workspace),
+        _section_brief_inline(problem_dir),
+        _section_lessons_inline(problem_dir),
+        _section_mathlib_lemmas_from_deads(direct_events, workspace),
         _section_proved_goals(conn, goal),
         _section_prior_partial(kind, problem_dir, int(goal["id"])),
         _section_goal_history(

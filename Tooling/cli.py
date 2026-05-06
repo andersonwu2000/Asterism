@@ -13,7 +13,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import db, dispatcher, manifest, prune, tree
+from . import brief, db, dispatcher, manifest, prune, tree
 
 
 # F28 — daemon log lifecycle.
@@ -222,6 +222,15 @@ def cmd_init(args: argparse.Namespace) -> int:
     conn.commit()
     # Initial TREE.md so readers see structure right after init.
     tree.write(conn, workspace, problem)
+    # Initial BRIEF.md — framework-rendered cross-spawn stable context
+    # (sandbox / forbidden lemmas / mathlib hints / library / strategic
+    # notes). Refreshed at daemon startup if Manifest changes.
+    brief.write(workspace, mfst)
+    # Empty LESSONS.md — agent-curated cross-spawn experience surface,
+    # populated by reflection spawns at successful pipeline terminals.
+    lessons_path = pdir / "LESSONS.md"
+    if not lessons_path.exists():
+        lessons_path.write_text("", encoding="utf-8")
     return 0
 
 

@@ -579,6 +579,14 @@ def run(workspace: Path, *, once: bool = False) -> int:
 
     _recover_at_startup(conn, workspace)
 
+    # Refresh BRIEF.md for every registered problem at startup. Covers
+    # Manifest edits + Library promotes since the last daemon run
+    # (daemon has no hot-reload; startup is the canonical refresh point).
+    # Lemma resolution can take ~30s when Manifest hints are dense; only
+    # paid once per startup, off the dispatch path.
+    from . import brief
+    brief.write_for_all_problems(conn, workspace, manifests)
+
     print(f"[dispatcher] start, pool={pool_size}, problems={list(manifests)}",
           flush=True)
     start_time = time.time()

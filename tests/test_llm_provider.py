@@ -640,7 +640,7 @@ def test_manifest_hint_placeholder_not_appended_when_empty() -> None:
     from Tooling import context as _ctx
     with _patch.object(_ctx.lemma_lookup, "lookup_batch",
                        return_value={"Nat.factorial": fake_info}):
-        section = ag._section_mathlib_lemmas(mfst, deads=[],
+        section = ag._section_mathlib_hints_stable(mfst,
                                              workspace=Path("/tmp"))
     body = "\n".join(section)
     assert "Nat.factorial" in body
@@ -663,7 +663,7 @@ def test_manifest_hint_keeps_real_commentary() -> None:
     from Tooling import context as _ctx
     with _patch.object(_ctx.lemma_lookup, "lookup_batch",
                        return_value={"Nat.factorial": fake_info}):
-        section = ag._section_mathlib_lemmas(mfst, deads=[],
+        section = ag._section_mathlib_hints_stable(mfst,
                                              workspace=Path("/tmp"))
     body = "\n".join(section)
     assert "n! is positive" in body

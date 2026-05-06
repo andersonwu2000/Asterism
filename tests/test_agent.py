@@ -238,11 +238,15 @@ def test_context_includes_proved_goals_grep_pointer_when_some_proved(
 def test_context_sandbox_section_always_rendered_for_builder(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """P0-#4: Builder dispatch never passes strategy_id, but the
-    universal Sandbox section (read-allowlist + framework file
-    contracts) must still appear so Builder agents know which paths
-    are allowed without permission prompts."""
+    """The universal Sandbox section (read-allowlist + framework file
+    contracts) must appear so Builder agents know which paths are
+    allowed without permission prompts. Lives in BRIEF.md (cross-spawn
+    stable); compile_context inlines it into Context.md."""
+    from Tooling import brief
     gid = _seed_problem_and_goal(conn)
+    pdir = tmp_path / "Problems" / "p"
+    pdir.mkdir(parents=True, exist_ok=True)
+    brief.write(tmp_path, _empty_manifest())
     attempts_dir = tmp_path / ".attempts" / "pid-bld"
     attempts_dir.mkdir(parents=True)
     goal = db.get_goal(conn, gid)
@@ -262,7 +266,11 @@ def test_context_strategy_naming_only_for_backward_with_sid(
     """The Backward-specific naming section appears only when a
     strategy_id is supplied (Backward dispatch path). Builder kind
     has no sub-goals so this section stays absent."""
+    from Tooling import brief
     gid = _seed_problem_and_goal(conn)
+    pdir = tmp_path / "Problems" / "p"
+    pdir.mkdir(parents=True, exist_ok=True)
+    brief.write(tmp_path, _empty_manifest())
     attempts_dir = tmp_path / ".attempts" / "pid-bw"
     attempts_dir.mkdir(parents=True)
     goal = db.get_goal(conn, gid)
@@ -281,7 +289,7 @@ def test_context_strategy_naming_only_for_backward_with_sid(
     # Auto-suffix on collision is documented so agent doesn't try to
     # be clever about uniqueness.
     assert "auto-suffix" in text
-    # Sandbox is universal — also present
+    # Sandbox is universal — also present (inlined from BRIEF.md)
     assert "## Sandbox" in text
 
 
@@ -441,15 +449,16 @@ def test_context_lemma_lookup_failure_is_swallowed(
     assert "Goal statement" in text
 
 
-def test_context_includes_manifest_hint_names(
-    conn: sqlite3.Connection, tmp_path: Path,
+def test_brief_includes_manifest_hint_names(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Manifest.mathlib_hints feed the lookup batch even when no past
-    error mentions them — the curated list is itself a query target."""
-    from Tooling import lemma_lookup
-
-    gid = _seed_problem_and_goal(conn)
+    """Manifest.mathlib_hints feed the lookup batch when BRIEF.md is
+    rendered — the curated list is itself a query target. Lemma
+    resolution moved out of compile_context (per-spawn) into brief
+    render (cross-spawn cache, paid once at cli init / daemon
+    startup) as part of the BRIEF.md split."""
+    from Tooling import brief, lemma_lookup
     captured: list[list[str]] = []
 
     def _spy(names, ws):
@@ -457,15 +466,14 @@ def test_context_includes_manifest_hint_names(
         return {}
     monkeypatch.setattr(lemma_lookup, "lookup_batch", _spy)
 
+    pdir = tmp_path / "Problems" / "p"
+    pdir.mkdir(parents=True, exist_ok=True)
     mfst = Manifest(
         problem="p", statement="T",
         mathlib_hints=["Nat.factorial (Data/Nat/Factorial/Basic.lean:50)",
                        "ZMod.val_natCast"],
     )
-    attempts_dir = tmp_path / ".attempts" / "pid-q"
-    attempts_dir.mkdir(parents=True)
-    goal = db.get_goal(conn, gid)
-    compile_context(conn, goal=goal, mfst=mfst, attempts_dir=attempts_dir)
+    brief.write(tmp_path, mfst)
 
     assert captured, "lookup_batch should be invoked when hints are present"
     assert "Nat.factorial" in captured[0]
