@@ -26,16 +26,18 @@ event_contribution(must_see, optional)
 
 ## v1 scope
 
-只覆蓋當前 Context.md 的 [C] 失敗歷史群組 + decline records：
+只覆蓋當前 Context.md 的 [C] 失敗歷史群組 + decline records + 新增的 cross-goal 投影：
 
-| 既有 section | 對應的 event type |
+| 既有 section / 新增來源 | 對應的 event type |
 |---|---|
 | `## Past attempts on this goal` | `direct_attempt` (dead_attempts row, target_kind='Goal') |
 | `## Builder declines` | `direct_attempt` 內 `failure_reason='agent_declined'` 子類 |
 | `## Past decompositions that failed Verify` | `verify_failure` (strategy lake build 不過) |
 | `## Prior strategies that died` | `dead_strategy` (cascade-shelve / F16 inward kill) |
+| **新增**：當前未注入 | `infeasible_sub` (sub-goal 的 `agent_infeasible` 反向投到 parent 的下次 Backward) |
 
 decline records 不獨立成 event type — 是 `direct_attempt` 的 `failure_reason` 區分。
+`infeasible_sub` 是現存 `dead_attempts` row 的 cross-goal 投影、不寫新 row。詳見 §「Audience 規則」的 Edge cases。
 
 不覆蓋（v1 不動）：
 - Goal context 群（statement / sandbox / strategy naming / parent goal）
@@ -71,27 +73,73 @@ decline records 不獨立成 event type — 是 `direct_attempt` 的 `failure_re
 （empty 子 section 整段省略）
 ```
 
-<!-- 待重審 -->
-<!-- ## Audience 矩陣
+## Audience 規則：event-as-audience-declarer
 
-依事件性質而非 pipeline kind：
+舊版「Audience 矩陣」是 `(event × pipeline_kind)` 兩欄表格、跟「event 自己宣告 audience」的設計核心矛盾（標題說依事件、欄位仍是 kind）。重新設計為 event 兩個自身屬性決定可見性、不再 kind-gate。
 
-| Event 類型 | Builder must-see | Backward must-see |
-|---|---|---|
-| `tactic_try_exhausted` (direct) | ✓ | ✓ |
-| `lake_build_error` (direct) | ✓ | ✓ |
-| `agent_no_response` (direct) | ✓ | ✓ |
-| `parse_proposal_fail` (direct) | ✓ | ✓ |
-| `forbidden_lemma` (direct) | ✓ | ✓ |
-| `naming_violation` (direct) | ✓ | ✓ |
-| `patch_signature_mismatch` (direct) | ✓ | ✓ |
-| `agent_declined` (direct, subtype) | — | ✓（接手 trigger） |
-| `agent_infeasible` (direct, subtype) | ✓ | ✓ |
-| `spawn_fast_fail` (direct) | — | —（framework signal，無 actionable）|
-| `dead_strategy`（cascade-shelve）| ✓ | ✓ |
-| `verify_failure`（sibling strategy verify 不過）| —（Builder 不拆解）| ✓ |
+### 兩個 axis
 
-**axis 從「kind-based」改成「directness-based」**：直接於這個 goal 的事件都 must-see；跨 strategy 的看 audience。 -->
+**(1) Target locality** — event 跟當下 dispatch goal 的關係：
+
+| event_type | event 本體位置 |
+|---|---|
+| `direct_attempt` | target 就是這個 goal（`dead_attempts.target_kind='Goal'`） |
+| `verify_failure` | target 是這個 goal 的某條 strategy、組裝 patch 不過（`target_kind='Strategy'`） |
+| `dead_strategy` | target 是這個 goal 的某條 strategy（cascade-shelve / F16 inward kill；strategy `status='dead'`） |
+| `infeasible_sub` | target 是 *parent goal 的某個 sub-goal*（**cross-goal**：`agent_infeasible` 當前在 sub-goal 的 dead_attempts、actionable signal 在 parent 的下次 Backward） |
+
+**(2) Actionability** — 對下次 spawn 的 signal 強度：
+
+- **must-see** — inline 進 Context.md `## Goal history` umbrella
+- **on-demand** — companion file（`PAST_*.md`）給 deep-dive、agent 主動 Read
+- **不投影** — 純 framework noise、event 層直接 drop（不寫進任何 Context.md section）
+
+### Event 投影對照
+
+完整對照表（event_type × DB 來源 × digest × audience × actionability、以及 edge cases）→ `docs/failure_modes.md` §3。
+
+renderer 邏輯簡化為：
+
+```
+events_for(goal_id) → list[Event]    # 投影層、四種 event_type 各自的 SQL + filter
+render_goal_history(events) → str    # 按 type bucket 排序、digest inline
+```
+
+不再有 `show_attempts = kind in (None, "builder")` 之類的 kind gate。
+
+### kind-gating 為何能消失（為什麼 Builder / Backward 看同一份是安全的）
+
+當前 `_section_past_attempts` 只 Builder、`_section_past_backward` 只 Backward — 主張是「Builder 不拆解、verify_failure 對它無 actionable signal」。實際分析：
+
+- **direct_attempt**：goal 的失敗歷史是 *goal 的特性*、不是 *pipeline 的特性*。Builder retry 看到上次 Backward 的 lake error 也能 inform（不重提相同 patch shape）；Backward retry 看到上次 Builder 為何拒了能 inform 接手方向。SG g142 案例就是 Backward 重試時 inline 看不到自己上次 3 次 `lake_build_error` + `parse_proposal_fail`。
+- **verify_failure / dead_strategy**：理論上 Builder retry 看到「這 goal 連拆都拆不下來」也是 signal。但 Builder retry 只在 `attempts < BUILDER_THRESHOLD` 跑、那時通常還沒 strategy 嘗試、這兩個 set 為空；不 gate 也不會多注入垃圾。
+- **infeasible_sub**：parent 的下次 Backward 必須看（避免重提 type-infeasible 分解）。對失敗的 sub-goal 自己沒意義 — 但 sub 已被 cascade-shelve、不會再被 dispatch、討論不適用。
+
+結論：所有 actionable event 對下次 spawn 一律 must-see、Builder 跟 Backward 的 must-see set 完全相同。
+
+### 設計選擇紀錄（implementation hints）
+
+- **spawn_fast_fail 在投影層 filter、不在寫入端動** — `dead_attempts` 仍 INSERT（保留 forensic + cascade 端 `_is_spawn_fast_fail` 仍可讀）、events.py 跳過。寫入端動會 break F46 cooldown 的 detection 路徑。
+- **agent_declined 不獨立成 event_type** — 是 `direct_attempt` 的 failure_reason 之一。subtype 突顯由 renderer 處理（例 `[declined: too_hard]` 前綴）、audience 規則同其他 direct_attempt。
+- **agent_infeasible → infeasible_sub 的反向投影** — DB row 形態跟一般 direct_attempt 一樣，但 actionable signal 在 parent；投影層判斷 reason 改投 + 用 `strategy_subgoals` JOIN 找 parent_goal_id。
+- **dead_strategy ↔ verify_failure dedupe** — 沿用既有 context.py:642-651 的 filter 規則（dead_strategy 集合先扣掉 verify_failure 涵蓋的 strategy id）。
+- **Empty event_type bucket** — sub-section header / companion 檔都省略、不寫空檔污染 sandbox。
+
+事實層（哪個 reason 對到哪個 event_type）→ `docs/failure_modes.md` §3 Edge cases。
+
+### 與既有實作的 mapping（給實作步驟參考）
+
+實作步驟 2「Event interface 雛形」：
+
+| 既有 helper | 新 events.py 函數 |
+|---|---|
+| `db.recent_dead_attempts(target_id, target_kind='Goal', k=5)` | `events.direct_attempts(goal_id)`（filter spawn_fast_fail 跟 agent_infeasible） |
+| `_fetch_strategy_dead_attempts` (context.py:316) | `events.verify_failures(goal_id)` |
+| `_fetch_dead_strategies` (context.py:361) + 既有 verify-id dedupe | `events.dead_strategies(goal_id)`（內建 dedupe） |
+| `_fetch_builder_declines` | (取消、合進 `direct_attempts`) |
+| 新增 | `events.infeasible_subs(parent_goal_id)`（agent_infeasible 反向投到 parent） |
+
+每個函數回 `list[Event]`、Event 是 dataclass：`(type, subtype, digest, full_payload, ts)`。renderer 做 `[events.X(...) for X in (...)]` flatten + `## Goal history` umbrella render。
 
 ## 實作前置：pipeline 分檔
 
