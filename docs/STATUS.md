@@ -1,27 +1,71 @@
 # Asterism v2 — Current Status
 
-更新於 2026-05-06（Phase 7 pipeline/session unification 完成）、HEAD `<post-7-E>`、
-**602 unit tests green**（8 pre-existing llm_provider 失敗與 Phase 7 無關）。
+更新於 2026-05-07（BRIEF/LESSONS feature 完整 ABC 落地 + PN e2e 驗證通過）、
+HEAD `01626b2`（push 上 origin/main）、**634 unit tests green**（1 deselected
+flaky lake-real test、1 pre-existing skip；8 個 llm_provider/openai 已修）。
 
 ## 下個 session 接手要做的事
 
-Phase 7 全套已落地、retry 模型整理完畢。下一個架構設計 phase 候選：
-
-**BRIEF.md + LESSONS.md（`docs/dev/agent_brief_lessons.md`）**：
-Phase 7 的 reflection trigger 點（pipeline terminal = session terminal）已 by-
-definition 對齊。可以開始實作 BRIEF.md（framework auto-render stable invariants）+
-LESSONS.md（agent self-managed cross-spawn experience via Edit tool at successful
-pipeline terminal）。
+BRIEF/LESSONS feature 完整 ABC 已落地、PN e2e 驗證通過。下一個候選工作：
 
 **item 12 — Bridge lemma layer**（`docs/dev/bridge_lemma_layer.md` 是起點）。
-substrate（命名 + 註解 + retry 模型）已備、Strategist / Forward / Generalize 等
-上層 pipeline 可以開始討論。doc 6 個開放決策點仍待 user 拍板。
+substrate（命名 + 註解 + retry 模型 + cross-spawn experience）已備、Strategist /
+Forward / Generalize 等上層 pipeline 可以開始討論。doc 6 個開放決策點仍待 user
+拍板。**最自然 next step：跟 user 走 Phase 7 模式（一一敲定決策）**。
 
-兩個 phase 都不是嚴格 blocker；user 可選任一切入。
+**深題 e2e（cantor / SG）對 BRIEF/LESSONS 驗證**：PN 級驗過、深題還沒。可能
+踩到 BRIEF lemma_lookup 多 hint 時 startup 慢、或 reflection lock contention
+（pool=12 多 worker 同 problem）等已知 review L4-L7 issue。
+
+## 已知未處理 review items（PN 跑得動沒撞、深題可能撞）
+
+從 BRIEF/LESSONS agent review（commit `01626b2` 修了 6 個 critical/likely、剩這些）：
+- **L1** `_render_prompt` 順序敏感雙重替換（lessons_content 含 `{timeout_min}` 字面會被覆蓋）
+- **L2** `_classify_delta` 並發寫下不可靠（雖有 lock、跨檔讀仍可能 race）
+- **L4** `_count_lesson_lines` sub-bullet 計入 cap（與「single sentence」意圖不符）
+- **L5** `manifest.parse` 無 try/except、單 problem Manifest 損壞會 crash daemon（pre-existing、不是 BRIEF 引入）
+- **L6** lemma_lookup 沒 cache、daemon startup 全 problem 重 resolve（多 problem 部署 startup 慢、N×M×~5s）
+- **L7** Windows AV 鎖 race（`brief.write` 罕見 PermissionError、無 retry）
 
 ## 近期落地（給 next session 的 context）
 
-**Phase 7 — Pipeline/Session unification**（`4b0d193..<7-E>`，2026-05-06）：
+**BRIEF/LESSONS feature**（`dd1c408..01626b2`，2026-05-07）：
+agent context 跨 spawn 重複的 stable 內容（sandbox/forbidden/mathlib hints/library/
+strategic notes）抽到 `Problems/<p>/BRIEF.md`、framework auto-render；agent 跨
+spawn 累積經驗到 `Problems/<p>/LESSONS.md`、agent 在「反射 spawn」用 Edit tool
+自管。
+- **A+B**（`dd1c408`）：新建 `Tooling/brief.py` (render + write)、`cli init` /
+  daemon startup 觸發 BRIEF re-render；`compile_context` 把 stable sections 抽
+  走、改 inline BRIEF + LESSONS；`_section_mathlib_lemmas` 拆 stable（BRIEF）
+  + from_deads（Context.md per-spawn）
+- **C**（`ca8363d`）：reflection prompt + `_reflection.py` helper + `_retry.py`
+  reflection_fn callback；trigger gate 過濾 moot/infra rcs/race-detected
+- **review fixes**（`01626b2`）：C1 LESSONS.md per-problem `threading.Lock` 序列化
+  寫入；C2 prompt 限制 agent 只能寫 LESSONS.md；L3 cli init seed `<!-- LESSONS_BEGIN -->`
+  anchor 給 Edit tool；D1 重排 Context.md section ordering 把 BRIEF/LESSONS 前置
+  恢復 prompt cache 效益；D3 `lessons.reflection_enabled` toggle（默認 ON、env
+  override `ASTERISM_LESSONS_REFLECTION_ENABLED=false` 緊急關）；T1+T2 加
+  `tests/test_brief.py` + 10 trigger gate tests
+- **conftest autouse fixture**：tests 默認停 reflection、避免擾動既有 spawn count assert
+
+**PN e2e 驗證**（2026-05-07、~28 min vs baseline ~24 min、+17% wall-clock）：
+- 6 goals 全 proved（vs baseline 11 goals depth 5）— **goal tree 從 depth 5 縮到 depth 2**
+- 6 reflections 全寫入 LESSONS、quality 不錯（API drift / syntax 約束 / typeclass binder / scope）
+- 1:1 invariant 守住（6=6）
+- 沒撞 LESSONS race / corruption（lock 序列化生效）
+
+**Phase 7 + 後續優化**（`cf68854..8afffed`、本 session 早段）：
+- `cf68854` Archive completed design docs（goal_naming / goal_history /
+  pipeline_session 移進 `docs/archive/`、stale claims 修正、cross-refs 對齊）
+- `77499b0` Phase 7 eager `goals.attempts++`（recover pre-Phase-7 的 TREE.md
+  retry-進度可見性、付出 daemon-mid-pipeline-kill 時 attempts 與 dead_attempts
+  的 cosmetic drift 代價）
+- `8afffed` `verify_strategy` batch lake build（一次 lake 啟動 build strategy +
+  alias parent、PN 5-level chain 省 ~30 秒；下限驗到 lake startup ~6s）
+
+---
+
+**Phase 7 — Pipeline/Session unification**（`4b0d193..aafaf6e`，2026-05-06）：
 retry 邏輯從 cross-pipeline scheduler-driven 改成 in-pipeline-bounded helper-driven。
 心智模型對齊「pipeline 呼叫 = 一個 claude session 把該 goal 處理完」。
 - **7-A**（`ad42ea3`）：新建 `Tooling/pipeline/_retry.py`、`run_with_session_retries` helper（dynamic budget、cold/warm sid lifecycle、stale_session in-place re-mint、timeout 強制 exhaust + postmortem）
