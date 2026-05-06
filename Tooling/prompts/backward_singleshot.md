@@ -22,7 +22,7 @@ Required files:
 
 2. `==== FILE: patch.lean ====` — the framework pre-wrote this file with the strategy's locked signature (`theorem s<id> ... := by sorry`). Emit your version with **only the proof body** changed (everything after `:=`). The framework rejects any signature edit (`patch_signature_mismatch`). Imports for sub-goals are auto-injected — do NOT add them. Body uses `have h_i : <sub_i_type> := <slug_i> args` calls + a final tactic that closes the parent statement.
 
-3. `==== FILE: new_<slug>.lean ====` × N — one per sub-goal. Pick `<slug>` per sub-goal as a short descriptive identifier reflecting what the sub-goal proves (e.g. `cross_sq_add_inner_sq`, `triangle_inequality_metric`). Charset `[a-z][a-z0-9_]*`, length ≤ 60, unique within this problem (framework rejects collisions). Theorem name inside MUST equal the slug. `namespace Problems.<problem>`, body `:= by sorry`. Required directive line above the theorem: `-- entry_kind: Builder` (or `Backward`).
+3. `==== FILE: new_<slug>.lean ====` × N — one per sub-goal. Pick `<slug>` per sub-goal as a short descriptive identifier reflecting what the sub-goal proves (e.g. `cross_sq_add_inner_sq`, `triangle_inequality_metric`). Charset `[a-z][a-z0-9_]*`, length ≤ 60 (framework auto-suffixes on collision; uniqueness is not your concern). Theorem name inside MUST equal the slug you encoded in the filename. `namespace Problems.<problem>`, body `:= by sorry`. Required directive line above the theorem: `-- entry_kind: Builder` (or `Backward`).
 
 ## Rules
 

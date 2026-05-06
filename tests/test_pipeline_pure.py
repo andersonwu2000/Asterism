@@ -752,3 +752,71 @@ def test_slug_re_rejects_empty_or_punctuation() -> None:
     assert not _SLUG_RE.match("")
     assert not _SLUG_RE.match("foo.bar")
     assert not _SLUG_RE.match("foo/bar")
+
+
+# ---------------------------------------------------------------------
+# Slug-collision auto-suffix (`_resolve_slug_collisions`)
+# ---------------------------------------------------------------------
+
+def test_resolve_collisions_no_overlap_passes_through(tmp_path: Path) -> None:
+    """No collision → resolved list mirrors input, rename_map empty."""
+    from Tooling.pipeline.backward import _resolve_slug_collisions
+    p1 = tmp_path / "new_alpha.lean"
+    p2 = tmp_path / "new_beta.lean"
+    sub_meta = [("alpha", p1), ("beta", p2)]
+    resolved, rename_map = _resolve_slug_collisions(
+        sub_meta, existing_slugs=set())
+    assert resolved == [("alpha", "alpha", p1), ("beta", "beta", p2)]
+    assert rename_map == {}
+
+
+def test_resolve_collisions_appends_suffix_for_db_hit(
+    tmp_path: Path,
+) -> None:
+    """Existing slug `foo` in DB → agent's `foo` becomes `foo_2`."""
+    from Tooling.pipeline.backward import _resolve_slug_collisions
+    p = tmp_path / "new_foo.lean"
+    resolved, rename_map = _resolve_slug_collisions(
+        [("foo", p)], existing_slugs={"foo"})
+    assert resolved == [("foo", "foo_2", p)]
+    assert rename_map == {"foo": "foo_2"}
+
+
+def test_resolve_collisions_skips_taken_suffixes(tmp_path: Path) -> None:
+    """`foo` and `foo_2` both taken → next free is `foo_3`."""
+    from Tooling.pipeline.backward import _resolve_slug_collisions
+    p = tmp_path / "new_foo.lean"
+    resolved, rename_map = _resolve_slug_collisions(
+        [("foo", p)], existing_slugs={"foo", "foo_2", "foo_3"})
+    assert resolved == [("foo", "foo_4", p)]
+    assert rename_map == {"foo": "foo_4"}
+
+
+def test_resolve_collisions_within_batch_two_sub_goals(
+    tmp_path: Path,
+) -> None:
+    """Two sub-goals in one batch both pick `foo` (filesystem-wise can't
+    happen since two `new_foo.lean` writes overwrite, but the helper is
+    defensive and handles it). Existing DB has `foo` already → first
+    becomes `foo_2`, second becomes `foo_3`."""
+    from Tooling.pipeline.backward import _resolve_slug_collisions
+    p1 = tmp_path / "new_foo_a.lean"
+    p2 = tmp_path / "new_foo_b.lean"
+    resolved, rename_map = _resolve_slug_collisions(
+        [("foo", p1), ("foo", p2)], existing_slugs={"foo"})
+    assert resolved == [("foo", "foo_2", p1), ("foo", "foo_3", p2)]
+    assert rename_map == {"foo": "foo_3"}  # last wins; both renames
+
+
+def test_resolve_collisions_partial_collision_only_renames_overlap(
+    tmp_path: Path,
+) -> None:
+    """One slug collides, the other doesn't — only the overlapping one
+    gets a suffix. The non-colliding slug stays untouched."""
+    from Tooling.pipeline.backward import _resolve_slug_collisions
+    p1 = tmp_path / "new_taken.lean"
+    p2 = tmp_path / "new_free.lean"
+    resolved, rename_map = _resolve_slug_collisions(
+        [("taken", p1), ("free", p2)], existing_slugs={"taken"})
+    assert resolved == [("taken", "taken_2", p1), ("free", "free", p2)]
+    assert rename_map == {"taken": "taken_2"}

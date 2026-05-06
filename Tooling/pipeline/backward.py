@@ -33,6 +33,40 @@ from ..llm.base import SpawnRC
 _SLUG_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
+def _resolve_slug_collisions(
+    sub_meta: list[tuple[str, Path]],
+    existing_slugs: set[str],
+) -> tuple[list[tuple[str, str, Path]], dict[str, str]]:
+    """Pure helper: assign a final slug for each agent-picked (orig_slug,
+    src_path), suffixing `_<n>` (n ≥ 2) when the original collides with
+    `existing_slugs` or with another sub-goal already resolved in this
+    batch.
+
+    Returns `(resolved, rename_map)` where:
+      * `resolved` is `[(orig_slug, final_slug, path), ...]` in input
+        order. `final_slug == orig_slug` for non-colliding entries.
+      * `rename_map: {orig_slug: final_slug}` only contains entries that
+        were renamed; empty if the agent's choices were already unique.
+
+    No filesystem side effects — the caller does file rename + content
+    rewrite based on `rename_map`.
+    """
+    used = set(existing_slugs)
+    resolved: list[tuple[str, str, Path]] = []
+    rename_map: dict[str, str] = {}
+    for orig, path in sub_meta:
+        final = orig
+        if final in used:
+            n = 2
+            while f"{orig}_{n}" in used:
+                n += 1
+            final = f"{orig}_{n}"
+            rename_map[orig] = final
+        used.add(final)
+        resolved.append((orig, final, path))
+    return resolved, rename_map
+
+
 # ---------------------------------------------------------------------
 # Backward-specific helpers (no shared callers as of writing)
 # ---------------------------------------------------------------------
@@ -456,12 +490,15 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         )
 
     # Validate slug naming: agent-picked descriptive identifier.
-    # Charset `[a-z][a-z0-9_]*`, length 1..60, unique within problem.
-    # The strategy's own theorem (`s<sid>`) and patch file (`_strategy_
-    # s<sid>.lean`) are framework-locked and not subject to this check;
-    # only sub-goal filenames `new_<slug>.lean` carry agent-picked slugs.
+    # Charset `[a-z][a-z0-9_]*`, length ≤ 60. Cross-problem collision is
+    # auto-suffixed (`_2`, `_3`, ...) by the framework — agent doesn't
+    # do its own uniqueness check. The strategy's own theorem (`s<sid>`)
+    # and patch file (`_strategy_s<sid>.lean`) are framework-locked.
+    # Only sub-goal filenames `new_<slug>.lean` carry agent-picked slugs.
+    # Same-slug-twice within a batch is impossible at filesystem level
+    # (second write of the same `new_<slug>.lean` overwrites the first
+    # in attempts_dir, so only one file reaches the parse stage).
     sub_meta: list[tuple[str, Path]] = []  # (slug, source_in_attempts)
-    seen_in_batch: set[str] = set()
     for ns in new_subs:
         slug = _slug_from_filename(ns.name)
         if not slug:
@@ -483,34 +520,51 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                 f"(lowercase ascii start, then ascii/digits/underscore)",
                 proposal_text,
             )
-        if slug in seen_in_batch:
-            return _abort(
-                "naming_violation",
-                f"sub-goal slug {slug!r} duplicated within this batch; "
-                f"each sub-goal needs a unique descriptive name",
-                proposal_text,
-            )
-        seen_in_batch.add(slug)
         sub_meta.append((slug, ns))
 
-    # Cross-batch uniqueness: collide with any existing goal in this
-    # problem (proved or otherwise). Dedupe-by-statement happens later;
-    # a slug collision with a different statement is a true name conflict
-    # and the agent must retry with a different name.
+    # Auto-suffix cross-batch collisions. Helper is pure; we apply the
+    # filesystem side effects here based on the returned rename_map.
     existing_slugs = {
         row["slug"] for row in conn.execute(
             "SELECT slug FROM goals WHERE problem = ?",
             (goal["problem"],),
         ).fetchall()
     }
-    for slug, _ in sub_meta:
-        if slug in existing_slugs:
-            return _abort(
-                "naming_violation",
-                f"sub-goal slug {slug!r} already exists in problem "
-                f"{goal['problem']!r}; pick a different descriptive name",
-                proposal_text,
+    resolved, rename_map = _resolve_slug_collisions(
+        sub_meta, existing_slugs)
+    if rename_map:
+        # Rewrite theorem-declaration name + rename file in attempts_dir
+        # for each renamed sub-goal. `count=1` + `\btheorem\s+SLUG\b`
+        # only touches the declaration; comments / other identifiers
+        # that happen to share substrings stay intact.
+        for orig, final, path in resolved:
+            if orig == final:
+                continue
+            new_path = path.parent / f"new_{final}.lean"
+            content = path.read_text(encoding="utf-8")
+            content = re.sub(
+                rf"\btheorem\s+{re.escape(orig)}\b",
+                f"theorem {final}",
+                content,
+                count=1,
             )
+            new_path.write_text(content, encoding="utf-8")
+            path.unlink()
+        # Update patch.lean to point at the renamed sub-goals. Word-
+        # boundary regex prevents corrupting unrelated identifiers that
+        # share a substring prefix. main_patch_text (the in-memory copy
+        # used for the signature check above) is not used after this
+        # point, so leaving it stale is fine; the on-disk file is what
+        # mv'es to scratch_dest later.
+        patch_text = patches[0].read_text(encoding="utf-8")
+        for orig, new in rename_map.items():
+            patch_text = re.sub(
+                rf"\b{re.escape(orig)}\b", new, patch_text)
+        patches[0].write_text(patch_text, encoding="utf-8")
+    sub_meta = [
+        (final, (path.parent / f"new_{final}.lean") if orig != final else path)
+        for orig, final, path in resolved
+    ]
 
     # Dedupe scan: batch-call Lean kernel isDefEq for all candidate
     # sub-goals × eligible ancestors in one subprocess. Hits → write an

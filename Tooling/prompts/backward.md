@@ -16,7 +16,7 @@ Read Context.md's `## Sandbox` (allowlist) and `## Strategy naming` (strategy id
 
 2. `patch.lean` — pre-written with the locked signature `theorem s<id> <binders> : <type> := by sorry`. Replace ONLY the body — changes to the theorem name, binders, or conclusion type are rejected (`patch_signature_mismatch`).
 
-3. `new_<slug>.lean` × N — one per sub-goal. Pick `<slug>` per sub-goal as a short descriptive identifier reflecting what it proves (e.g. `cross_sq_add_inner_sq`, `triangle_inequality_metric`). Charset `[a-z][a-z0-9_]*`, length ≤ 60, unique within this problem (framework rejects collisions; you retry with a different name).
+3. `new_<slug>.lean` × N — one per sub-goal. Pick `<slug>` per sub-goal as a short descriptive identifier reflecting what it proves (e.g. `cross_sq_add_inner_sq`, `triangle_inequality_metric`). Charset `[a-z][a-z0-9_]*`, length ≤ 60. Don't worry about uniqueness — the framework auto-suffixes (`_2`, `_3`, ...) on collision.
 
    `namespace Problems.<problem>`, body `:= by sorry`. **Required** directive line above the theorem:
 

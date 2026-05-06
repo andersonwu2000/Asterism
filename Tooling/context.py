@@ -75,8 +75,9 @@ def _section_strategy_naming(strategy_id: int | None,
 
     Slug rules: sub-goals are named by the agent with a short descriptive
     identifier reflecting what each one proves (e.g. `cross_sq_add_inner_sq`
-    rather than `s17_sub_3`). The framework charset-checks and rejects on
-    collision; the agent retries with a different name on rejection."""
+    rather than `s17_sub_3`). Charset and length are agent-enforced;
+    cross-batch collisions are auto-suffixed by the framework — agent
+    doesn't perform a uniqueness check."""
     if strategy_id is None:
         return []
     sid_token = f"s{strategy_id}"
@@ -89,9 +90,10 @@ def _section_strategy_naming(strategy_id: int | None,
         "- Sub-goal files: `new_<slug>.lean` × N. You pick `<slug>` per "
         "sub-goal as a short descriptive identifier reflecting what it "
         "proves (e.g. `cross_sq_add_inner_sq`, `triangle_inequality_metric`).",
-        "- Slug rules: `[a-z][a-z0-9_]*`, length ≤ 60. Unique within this "
-        "problem; the framework rejects collisions (`naming_violation`) "
-        "and you retry with a different name.",
+        "- Slug rules: `[a-z][a-z0-9_]*`, length ≤ 60. Pick a name that "
+        "fits the sub-goal's content — the framework auto-suffixes "
+        "(`_2`, `_3`, ...) if your name collides with an existing slug "
+        "in this problem, so don't worry about uniqueness yourself.",
         "- Theorem name in each sub-goal file = `<slug>` (filename minus "
         "`new_` and `.lean`).",
         "",

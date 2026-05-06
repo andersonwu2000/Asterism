@@ -249,6 +249,9 @@ def test_context_strategy_naming_only_for_backward_with_sid(
     # section explains the rule rather than a fixed format.
     assert "new_<slug>.lean" in text
     assert "[a-z][a-z0-9_]*" in text
+    # Auto-suffix on collision is documented so agent doesn't try to
+    # be clever about uniqueness.
+    assert "auto-suffix" in text
     # Sandbox is universal — also present
     assert "## Sandbox" in text
 
