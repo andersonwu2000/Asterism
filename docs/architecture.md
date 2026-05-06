@@ -50,7 +50,7 @@ Verify 早期是第三種 worker_kind；後來砍成 dispatcher 主迴圈末端�
 DB schema 見 `Tooling/db.py`（程式碼即文件）；7 張表的意義：
 
 - `problems` — 註冊表
-- `goals` — graph 的 OR 節點，含 `entry_kind`（Builder/Backward 第一手怎麼派）、`status`（open/attempting/proved/shelved）、`builder_session_id` / `backward_session_id`（warm retry 用）、`alias_target_id`（dedupe）
+- `goals` — graph 的 OR 節點，含 `entry_kind`（Builder/Backward 第一手怎麼派、可被 cascade `agent_declined` 改寫成 `Backward`）、`status`（open/attempting/proved/shelved）、`alias_target_id`（dedupe）。Phase 7 後 retry 在 pipeline 內共用同一 claude session、不再用 DB column 跨 pipeline 攜帶 sid
 - `strategies` — graph 的 AND 節點，含 `lean_path`（parent 的目標檔，**Verify 勝出才會被改**）、`scratch_path`（這條 Strategy 獨佔的組裝檔）
 - `strategy_subgoals` — 多對多，dedupe 把重複 sub-Goal 收成同一個 row
 - `pipelines` — 只放 finished rows，沒有 'running' 狀態（daemon 死了重啟見乾淨表面）

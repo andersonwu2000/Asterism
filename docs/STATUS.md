@@ -1,23 +1,51 @@
 # Asterism v2 — Current Status
 
-更新於 2026-05-06（goal_naming + annotation Phase 1-4 完成、PN root proved e2e
-驗證 + 進行 single-output 整合 phase）。HEAD `dee781c+`、**496 unit tests green**。
+更新於 2026-05-06（Phase 7 pipeline/session unification 完成）、HEAD `<post-7-E>`、
+**602 unit tests green**（8 pre-existing llm_provider 失敗與 Phase 7 無關）。
 
 ## 下個 session 接手要做的事
 
-**Single-output 整合（in-progress）**：把 PROPOSAL.md 整個砍掉、agent 一個檔
-`patch.lean` 輸出（檔頂 `--` 註解 + theorem 主體）。Decline path 用
-`-- decline: <reason>` directive 表態、`:= by sorry` 留著。Builder / Backward
-parse 都改成讀檔頂 directive 分流。同時順便把所有 prompt 重寫精簡（user 要求、
-避免廢話）。設計細節見 `docs/dev/goal_naming_annotation.md`。
+Phase 7 全套已落地、retry 模型整理完畢。下一個架構設計 phase 候選：
 
-完成這個之後才能回到上層設計：
+**BRIEF.md + LESSONS.md（`docs/dev/agent_brief_lessons.md`）**：
+Phase 7 的 reflection trigger 點（pipeline terminal = session terminal）已 by-
+definition 對齊。可以開始實作 BRIEF.md（framework auto-render stable invariants）+
+LESSONS.md（agent self-managed cross-spawn experience via Edit tool at successful
+pipeline terminal）。
 
-**item 12 — Bridge lemma layer 架構設計**（`docs/dev/bridge_lemma_layer.md` 是起點）。
-substrate（命名 + 註解）已備、Strategist / Forward / Generalize 等上層 pipeline
-可以開始討論。bridge_lemma_layer.md 6 個開放決策點仍待 user 拍板。
+**item 12 — Bridge lemma layer**（`docs/dev/bridge_lemma_layer.md` 是起點）。
+substrate（命名 + 註解 + retry 模型）已備、Strategist / Forward / Generalize 等
+上層 pipeline 可以開始討論。doc 6 個開放決策點仍待 user 拍板。
+
+兩個 phase 都不是嚴格 blocker；user 可選任一切入。
 
 ## 近期落地（給 next session 的 context）
+
+**Phase 7 — Pipeline/Session unification**（`4b0d193..<7-E>`，2026-05-06）：
+retry 邏輯從 cross-pipeline scheduler-driven 改成 in-pipeline-bounded helper-driven。
+心智模型對齊「pipeline 呼叫 = 一個 claude session 把該 goal 處理完」。
+- **7-A**（`ad42ea3`）：新建 `Tooling/pipeline/_retry.py`、`run_with_session_retries` helper（dynamic budget、cold/warm sid lifecycle、stale_session in-place re-mint、timeout 強制 exhaust + postmortem）
+- **7-B**（`3e9e46b`）：builder.py 接 helper、發現並修 FK ordering bug（helper buffer pending_failures、dispatcher flush 在 pipelines INSERT 之後）、cascade 加 'moot' / 'exhausted' branches
+- **7-C**（`61ed022`）：backward.py 對稱接 helper、F53/A retry-reuse 退役（每 pipeline fresh strategy_id）、parse_and_commit 抽出
+- **7-C.1**（`4d765ea`）：review fixes — C1 builder wrapper moot 漏處理 / C2 helper threshold 拆 budget+shelve / C3 rc=126/127 早返不耗 budget / L1 dispatcher flush 跳過 moot / L2 agent_declined 改用 entry_kind 路由 / L3 agent_infeasible attempts++ 一次保 1:1。新增 `tests/test_pipeline_retry_helper.py` 20 個 unit test
+- **7-D**（`a236fb3`）：drop `goals.builder_session_id` / `backward_session_id` columns（idempotent ALTER TABLE DROP COLUMN migration）+ 移除 4 個 db helper + 清 10 處 vestigial cascade calls + F33/F53 註解全清
+- **7-E**：docs sync（本次）
+
+**1:1 invariant**：attempts ↔ dead_attempts 嚴格一致；helper buffer-then-flush 給
+all-or-nothing crash 語意（daemon kill 中段、attempts 不動、無孤兒 dead_attempts）。
+
+**新 outcome**：`exhausted`（budget 用盡）/ `moot`（goal 已終態）；五種 outcome
+（含 proved/success/failed）涵蓋所有 pipeline 終態。
+
+**新 failure_reason**：`quota_exhausted` (rc=126) / `missing_dep` (rc=127) — 兩者
+跟 spawn_fast_fail 一樣不耗 budget、設 cooldown、不寫 dead_attempt；只 spawn_fast_fail
+進 CONSEC daemon-exit 計數。
+
+**setting 不變**：BUILDER_THRESHOLD=3 / SHELVE_THRESHOLD=8、總 LLM call 上限不變。
+
+完整設計：`docs/dev/pipeline_session_unification.md`（已標 complete）。
+
+---
 
 `205bd4a..43c3a30`（goal_naming + annotation Phase 1-4，2026-05-06）：
 - **Phase 1**（`cab25cc` + `948f557`）：Backward sub-goal slug 從 `s<sid>_sub_<N>`
@@ -93,11 +121,13 @@ cantor 是當前最大 sample（50 goals、depth 4、18 verify）。F55+F56 改�
 
 | 信號 | 期望 | 觸發來源 |
 |---|---|---|
-| `naming_violation` | 0 | F52 + F53/A |
+| `naming_violation` | 0 | F52 + Phase 1 sub-goal naming |
 | `patch_signature_mismatch` | 0 | F52 |
 | Mathlib Grep denied | 0 | M1 + M3 |
 | Cross-Problem read | 0 | F44 sandbox |
 | `spawn_fast_fail` | 0（除非 quota）| F46 |
+| `quota_exhausted` / `missing_dep` | 0（provider quota / CLI 故障才觸發） | Phase 7-C.1 |
+| `pending_failures` flush 數 == `attempts` 增量 | 1:1 不漂移 | Phase 7 helper |
 | 新訊號：postmortem `_progress.md` 寫入 | timeout 時寫一次、success 時清掉 | F55 |
 | 新訊號：verify housekeeping promote | 每 strategy 一次、可鏈式 | F56 |
 

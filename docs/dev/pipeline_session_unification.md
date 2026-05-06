@@ -1,7 +1,8 @@
 # Pipeline / Session 統一 — retry model 從 cross-pipeline 改 in-pipeline-bounded
 
-Status: planned (2026-05-06). 架構整頓 phase、要在 BRIEF.md / LESSONS.md
-落地前完成、避免後續 phase 再 stacking 在錯誤心智模型上。
+Status: **completed 2026-05-06**（commits `ad42ea3..a236fb3` + 7-E docs sync）。
+本 doc 保留作為 Phase 7 設計史紀錄；當前運行 model 反映在 `architecture.md`、
+`data-flow.md`、`failure_modes.md`、`Tooling/pipeline/_retry.py` 文檔註解。
 
 ## 動機
 

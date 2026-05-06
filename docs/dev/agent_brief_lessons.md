@@ -4,12 +4,10 @@ Status: planned (2026-05-06). 從 Phase 6.5 PN dry-run 觀察到 Context.md 跨
 spawn 重複大量 stable 內容、加上「agent 在某個 goal 上學到的東西無法 carry 到
 其他 spawn」的機制空缺、整理出兩個檔案的設計。
 
-**前置依賴**：本 doc 假設 retry model 已從 cross-pipeline 改為 in-pipeline-
-bounded（見 `pipeline_session_unification.md` Phase 7）。在 Model B 下「pipeline
-terminal = session terminal」是 by-definition、reflection 觸發點直接落在 pipeline
-結束時、不需要區分「success pipeline」vs「failure pipeline」的半補丁措辭。
-若 Phase 7 未先落地、本 doc 的 reflection 觸發描述須改用「success pipeline
-terminal」措辭、設計不變但解釋負擔較重。
+**前置依賴**：Phase 7 pipeline/session unification 已落地（2026-05-06、commits
+`ad42ea3..a236fb3`）。「pipeline terminal = session terminal」是 by-definition、
+reflection 觸發點直接落在 pipeline 結束時、不需要區分「success pipeline」vs
+「failure pipeline」的半補丁措辭。
 
 ## 動機
 
@@ -84,21 +82,22 @@ stable、暫定留 Context.md、實作時可調）。
 
 ## Reflection 觸發機制
 
-### 觸發點：每個 successful pipeline 終端
+### 觸發點：每個 successful pipeline 終端（= session terminal）
 
-對應該 kind 的 session terminal（success 清 session_id）：
+Phase 7 後 sid 是 helper 的 local var、pipeline 結束 = session 結束、reflection
+spawn 在 sid 還活著的時候對同個 session resume 起。
 
-- Builder Phase 2 lake build pass → reflect
+- Builder Phase 2 lake build pass（outcome='proved'）→ reflect
 - Builder Phase 1 hint pass → 跳過（無 agent、無 session）
 - Backward 策略 commit success（含 Phase 6.5 leaf-bypass）→ reflect
-- 失敗 pipeline → 不觸發（agent 沒成功 lesson 可萃）
+- 失敗 pipeline（'failed' / 'exhausted' / 'moot'）→ 不觸發（agent 沒成功 lesson 可萃）
 
 PN 級題目估算：~30 reflection call（21 goal × ~1.5 successful pipeline）。
 
 ### Spawn 機制
 
-framework 在 successful pipeline 結束後、`--resume <session_id>` 同 session
-起 brief reflection spawn：
+framework 在 successful pipeline 結束後（pipeline 函數內、return 之前、sid 還
+在 local scope）、`claude --resume <sid>` 同 session 起 brief reflection spawn：
 
 ```
 prompt 大致：

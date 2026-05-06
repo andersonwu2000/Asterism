@@ -15,36 +15,57 @@
 
 | outcome | 適用 | 意義 | cascade 大原則 |
 |---|---|---|---|
-| `proved` | Builder | 證明完成（Phase 1 hint 或 Phase 2 patch 過） | goal `proved`、清 session |
-| `success` | Backward | strategy 提交（patch + sub-goals 落定 + lake build 過） | goal `attempting`、清 session |
-| `failed` | Builder + Backward | 帶 `failure_reason`、見 §2 | 依 reason 變、預設 attempts++ |
+| `proved` | Builder | 證明完成（Phase 1 hint 或 Phase 2 patch 過） | goal `proved` |
+| `success` | Backward | strategy 提交（patch + sub-goals 落定 + lake build 過） | goal `attempting` |
+| `failed` | Builder + Backward | 帶 `failure_reason`、見 §2（terminal decline / infra rc / Phase 1 直接返回 / goal_not_found） | 依 reason 變 |
+| `exhausted` | Builder + Backward (Phase 7) | helper budget 用盡、最後 retry 的 reason 反映在 `failure_reason` | (helper 已 ++ attempts)；過 SHELVE 才 shelve；否則 status 不動讓下次 dispatch 重派 |
+| `moot` | Builder + Backward (Phase 7) | helper 入場 / mid-loop cascade re-check 發現 goal 已終態 | uniform no-op（不動 state、不寫 dead_attempts、不 ++ attempts） |
 
 **cascade 共通規則**（以下表格欄省略相同部分、只列 reason 特異處）：
-- 預設：`attempts++`、達 SHELVE_THRESHOLD（預設 8）→ goal `shelved` + `_propagate_shelve` 上拋
-- 過 BUILDER_THRESHOLD（預設 3）→ 清 builder_session（下次 dispatch 變 Backward）
-- spawn_fast_fail → 不增 attempts、設 30s cooldown、CONSEC=10 觸發 daemon 退出
-- agent_infeasible → 不增 attempts、goal 直接 `shelved` + `_propagate_shelve`
+- 預設：失敗 spawn 由 helper buffer 一筆 dead_attempt + attempts++（dispatcher 在 pipelines INSERT 後 flush）；達 SHELVE_THRESHOLD（預設 8）→ goal `shelved` + `_propagate_shelve` 上拋
+- 過 BUILDER_THRESHOLD（預設 3）→ 下次 dispatch 自動由 `next_worker_kind` 改派 Backward
+- spawn_fast_fail / quota_exhausted / missing_dep → 不增 attempts、不寫 dead_attempt、設 30s cooldown（CONSEC daemon-exit 只對 spawn_fast_fail 觸發）
+- agent_declined → cascade attempts++ 一次 + `entry_kind='Backward'`（路由不再用 attempts 灌到 BUILDER_THRESHOLD 的 hack）
+- agent_infeasible → cascade attempts++ 一次 + goal 直接 `shelved` + `_propagate_shelve`
 
 ---
 
-## 2. Failure reasons（cross-pipeline master table）
+## 2. Failure reasons（master table）
 
-| failure_reason | 出處 | 觸發條件 | session 處理 | cascade 處理 | event_type 投影 |
+Phase 7 後 retry 邏輯下沉到 in-pipeline retry helper（`Tooling/pipeline/_retry.py`）。
+attempts ↔ dead_attempts 的 1:1 invariant：每個失敗 spawn 都 buffer 一筆 dead_attempt
+記錄、由 dispatcher 在 pipelines INSERT 後 flush（buffer-then-flush 給 all-or-nothing
+crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbidden_lemma 等）
+只做 status transition、不再做 attempts++（已由 helper buffer 內計數）。
+
+| failure_reason | 出處 | 觸發條件 | helper 處理 | cascade 處理 | event_type 投影 |
 |---|---|---|---|---|---|
-| `lake_build_error` | Builder + Backward | Phase 2 patch / Backward strategy 組裝 build 失敗 | 保留（warm retry 帶 stderr 進 retry_context） | attempts++ | `direct_attempt` |
-| `forbidden_lemma` | Builder + Backward | patch 文本命中 Manifest `forbidden_lemmas` | 保留 | attempts++ | `direct_attempt` |
-| `parse_proposal_fail` | Backward | PROPOSAL.md / patch_*.lean / new_*.lean 缺一 | 保留 | attempts++ | `direct_attempt` |
-| `patch_signature_mismatch` | Backward (F52) | agent 改了鎖死的 `theorem sX <binders> : <type>` 簽名 | 保留 | attempts++ | `direct_attempt` |
-| `naming_violation` | Backward | sub-goal slug 違反 charset / length lint（後 Phase 1 重命名：lowercase `[a-z][a-z0-9_]*`、≤ 60 chars；衝突 framework auto-suffix、不算 violation） | 保留 | attempts++ | `direct_attempt` |
-| `parse_proposal_fail` | Backward | patch.lean 不存在；或 patch=1 new=0 但 patch body 是 `:= by sorry` 且無 decline directive（Phase 6.5 後：若 patch body 非 sorry 即視為 leaf-bypass 0-subgoal strategy、不算失敗） | 保留 | attempts++ | `direct_attempt` |
-| `agent_no_annotation` | Builder + Backward (Phase 2) | rc=0、`patch.lean` build 過、但 PROPOSAL.md 空白（whitespace only）。Backward 同 reason 用於 strategy 描述空白 | 保留 | attempts++ | `direct_attempt` |
-| `agent_declined` | Builder (F48) | agent 在 patch.lean 檔頂寫 `-- decline: too_hard`（Phase 6） | 清（next dispatch 是 Backward） | attempts 跳到 BUILDER_THRESHOLD（一次燒掉 Builder 預算） | `direct_attempt`（subtype） |
-| `agent_infeasible` | Builder + Backward (F48) | agent 在 patch.lean 檔頂寫 `-- decline: parent_type_infeasible`（含反例、Phase 6） | 清 | goal 直接 `shelved` + `_propagate_shelve`（**不增 attempts**、cascade 上拋讓父 strategy 重拆） | `infeasible_sub`（投到 parent goal、不到自己） |
-| `agent_timeout` | Builder + Backward | claude rc=124（SIGKILL at WORKER_TIMEOUT_SEC、預設 600s） | 清（postmortem 跑完 + 寫 `.drafts/`、F55） | attempts++ | `direct_attempt` |
-| `agent_rc_nonzero` | Builder + Backward | rc≠0、rc≠124、wall-clock ≥ 10s（一般 hard fail：crash / parser error / etc.） | 保留（warm retry 帶 stderr） | attempts++ | `direct_attempt` |
-| `agent_no_output` | Builder Phase 2 | rc=0 但 agent 沒寫 `patch*.lean` 也沒 PROPOSAL.md（agent 不 follow 格式） | 保留 | attempts++ | `direct_attempt` |
-| `spawn_fast_fail` | Builder + Backward (F46) | rc≠0 且 wall-clock < 10s（infra 故障：claude.exe crash / cwd / quota） | 不變 | **不增 attempts**、設 30s cooldown、CONSEC=10 觸發 daemon 退出 rc=2 | 不投影（純 framework noise） |
+| `lake_build_error` | Builder + Backward | Phase 2 patch / Backward strategy 組裝 build 失敗 | buffer + 同 session 下一輪 retry（retry_context 帶 stderr） | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
+| `forbidden_lemma` | Builder + Backward | patch 文本命中 Manifest `forbidden_lemmas` | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
+| `parse_proposal_fail` | Backward | patch.lean 缺；或 patch=1 new=0 + sorry body + 無 decline directive（Phase 6.5 後 patch body 非 sorry 視為 leaf-bypass、不算失敗）| buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
+| `patch_signature_mismatch` | Backward (F52) | agent 改了鎖死的 `theorem sX <binders> : <type>` 簽名 | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
+| `naming_violation` | Backward | sub-goal slug 違反 charset / length lint（lowercase `[a-z][a-z0-9_]*`、≤ 60 chars；衝突 framework auto-suffix、不算 violation） | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
+| `agent_no_annotation` | Builder + Backward (Phase 2) | rc=0、build 過但 patch.lean leading comment 空白 | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
+| `agent_no_output` | Builder Phase 2 | rc=0 但 agent 沒寫 `patch*.lean` | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
+| `agent_rc_nonzero` | Builder + Backward | rc≠0、rc≠124/125/126/127、wall-clock ≥ 10s（一般 hard fail）| buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
+| `agent_timeout` | Builder + Backward | claude rc=124（SIGKILL at WORKER_TIMEOUT_SEC、預設 600s） | postmortem（寫 `.drafts/`、F55）+ buffer + 強制 exhaust（不再續 retry） | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
+| `agent_declined` | Builder | agent 在 patch.lean 檔頂寫 `-- decline: too_hard`（Phase 6） | terminal exit（不 buffer 自身）| **attempts++** + `entry_kind='Backward'`（Phase 7：路由用 entry_kind、不再灌 attempts 到 BUILDER_THRESHOLD） | `direct_attempt` |
+| `agent_infeasible` | Builder + Backward | agent 寫 `-- decline: parent_type_infeasible`（含反例、Phase 6） | terminal exit（不 buffer 自身）| **attempts++** + goal `shelved` + `_propagate_shelve`（cascade 上拋讓父 strategy 重拆） | `infeasible_sub`（投到 parent goal、不到自己） |
+| `goal_no_longer_open` | Backward (F24-A) | parse 階段 race 偵測：lake build 完但 goal 已 proved/shelved | terminal exit（不 buffer 自身）| 走 generic `failed`/attempts++（dispatcher 寫 final dead_attempt） | `direct_attempt` |
+| `quota_exhausted` | Builder + Backward | rc=126（gemini quota 耗盡）| 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、不進 CONSEC | 不投影（infra） |
+| `missing_dep` | Builder + Backward | rc=127（CLI 缺）| 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、不進 CONSEC | 不投影（infra） |
+| `spawn_fast_fail` | Builder + Backward (F46) | rc≠0 且 wall-clock < 10s（claude.exe crash / cwd） | 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、CONSEC=10 觸發 daemon 退出 rc=2 | 不投影（infra） |
 | `superseded` (legacy) | pre-F56 Verify worker | F56 後不再產生新 row、僅歷史 db 有 | n/a | n/a | 不投影 |
+
+**outcome 分類**（Phase 7 新增 / 變更）：
+
+| outcome | 語意 |
+|---|---|
+| `proved` | Builder 成功 |
+| `success` | Backward strategy commit 成功 |
+| `failed` | helper 早返：terminal-decline reasons / infra rcs / goal_not_found |
+| `exhausted` | helper budget 用盡、最後 retry 的 reason 是 helper buffered 的最末筆 |
+| `moot` | helper 入場或 mid-loop cascade re-check 偵測 goal 已終態（sibling proved / shelved）；no-op、不寫 dead_attempts、不 attempts++ |
 
 **Framework-level reasons（罕見、framework / DB / FS race 觸發）**：
 
