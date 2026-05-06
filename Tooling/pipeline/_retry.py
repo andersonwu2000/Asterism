@@ -111,6 +111,7 @@ class SpawnCtx:
 SpawnFn = Callable[[SpawnCtx], int]
 ParseFn = Callable[[], PipelineResult]
 PostmortemFn = Callable[[str], None]
+ReflectionFn = Callable[[str, "PipelineResult"], None]
 
 
 def run_with_session_retries(
@@ -125,6 +126,7 @@ def run_with_session_retries(
     parse_fn: ParseFn,
     postmortem_fn: PostmortemFn,
     workspace: Path | None = None,
+    reflection_fn: ReflectionFn | None = None,
 ) -> PipelineResult:
     """Run a kind-agnostic in-pipeline retry loop.
 
@@ -202,7 +204,36 @@ def run_with_session_retries(
         # Caller (`dispatcher._run_pipeline`) flushes them after the
         # pipelines row INSERT.
         result.pending_failures = pending_failures
+        _maybe_reflect(result)
         return result
+
+    def _maybe_reflect(result: PipelineResult) -> None:
+        # Reflection trigger gate (decision 5 from agent_brief_lessons
+        # design): proved / success / exhausted / agent_declined /
+        # agent_infeasible. Skip moot (no agent ran), goal_no_longer_open
+        # (race-detected, no agent learning), and infra rcs
+        # (spawn_fast_fail / quota_exhausted / missing_dep).
+        if reflection_fn is None:
+            return
+        if result.outcome == "moot":
+            return
+        if result.failure_reason in (
+            "spawn_fast_fail", "quota_exhausted", "missing_dep",
+            "goal_no_longer_open",
+        ):
+            return
+        triggered = (
+            result.outcome in ("proved", "success", "exhausted")
+            or result.failure_reason in ("agent_declined",
+                                         "agent_infeasible")
+        )
+        if not triggered:
+            return
+        try:
+            reflection_fn(sid, result)
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            print(f"[reflection] callback raised, swallowed: {exc}",
+                  flush=True)
 
     for attempt in range(budget):
         if not goal_still_active(conn, goal_id, shelve_threshold):

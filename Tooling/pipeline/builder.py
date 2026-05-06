@@ -243,6 +243,25 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             session_id=sid,
         )
 
+    def builder_reflection(sid: str, result) -> None:
+        from ._reflection import attempt_reflection
+        from .. import config
+        cap = config.get(
+            "lessons.cap", default=10, cast=int, workspace=workspace,
+        )
+        attempt_reflection(
+            kind="builder",
+            sid=sid,
+            slug=goal["slug"],
+            outcome=(result.failure_reason
+                     if result.failure_reason
+                     else result.outcome),
+            problem_dir=problem_dir,
+            attempts_dir=attempts_dir,
+            lessons_cap=int(cap),
+            prompt_dir=PROMPT_DIR,
+        )
+
     return run_with_session_retries(
         conn=conn,
         goal_id=goal_id,
@@ -254,4 +273,5 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         parse_fn=builder_parse,
         postmortem_fn=builder_postmortem,
         workspace=workspace,
+        reflection_fn=builder_reflection,
     )

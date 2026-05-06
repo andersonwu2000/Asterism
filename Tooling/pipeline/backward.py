@@ -370,6 +370,25 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             session_id=sid,
         )
 
+    def backward_reflection(sid: str, result) -> None:
+        from ._reflection import attempt_reflection
+        from .. import config
+        cap = config.get(
+            "lessons.cap", default=10, cast=int, workspace=workspace,
+        )
+        attempt_reflection(
+            kind="backward",
+            sid=sid,
+            slug=goal["slug"],
+            outcome=(result.failure_reason
+                     if result.failure_reason
+                     else result.outcome),
+            problem_dir=problem_dir,
+            attempts_dir=attempts_dir,
+            lessons_cap=int(cap),
+            prompt_dir=PROMPT_DIR,
+        )
+
     result = run_with_session_retries(
         conn=conn,
         goal_id=goal_id,
@@ -381,6 +400,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         parse_fn=backward_parse,
         postmortem_fn=backward_postmortem,
         workspace=workspace,
+        reflection_fn=backward_reflection,
     )
 
     # Cleanup: any non-success outcome leaves the strategy at 'proposed'
