@@ -203,5 +203,5 @@ A + B 可一起做（pure 架構調整、無 reflection），C 是新 feature �
 - 退役的 F22 playbook：Phase 3 commit `5be9a33`（`Tooling/playbook.py` 已刪）
 - Context.md 當前 sections：`Tooling/context.py:compile_context` + `architecture.md` §12
 - F55 postmortem 機制（reflection spawn 範本）：`Tooling/pipeline/__init__.py:_attempt_postmortem`
-- Phase 6 single-output 設計（agent-write 機制範本）：`docs/dev/goal_naming_annotation.md`
+- Phase 6 single-output 設計（agent-write 機制範本）：`docs/archive/goal_naming_annotation.md`
 - Phase 4 grep entrypoint 精神（agent 自食其力）：`Tooling/context.py:_section_proved_goals`

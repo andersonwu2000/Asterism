@@ -1,11 +1,10 @@
 # Goal naming + annotation
 
-Status: Phase 1-4 shipped + PN root proved e2e (commits cab25cc / 948f557 /
-cc934ff / 5be9a33 / dee781c / 400d7a7、2026-05-06). Phase 6 single-output
-整合 in progress：PROPOSAL.md 退役、agent 在 patch.lean 檔頂寫 `-- ` annotation
-block、decline 改用 `-- decline: <reason>` directive（success/decline 同一個檔
-出口）。Phase 5（cantor/SG e2e）跟上層設計（Strategist / Forward / Generalize、
-見 `bridge_lemma_layer.md`）等 Phase 6 收完再續。
+Status: **completed 2026-05-06**（Phase 1-6.5 shipped + PN root proved e2e）。
+本 doc 保留作為設計史紀錄；當前運行行為反映在 `Tooling/pipeline/builder.py`、
+`backward.py`、`_skeleton.py:promote_to_alias`、`context.py:_section_proved_goals`
++ Manifest schema。後續 Phase 5b（cantor / SG e2e validation）與上層設計
+（Strategist / Forward / Generalize、見 `bridge_lemma_layer.md`）獨立規劃。
 
 ## 動機
 
@@ -97,8 +96,11 @@ Backward 沒寫 strategy 描述同理。不強制就會漏。
   charset (`[a-z][a-z0-9_]*`) / length (≤ 60) 兩檢、collision 由 framework
   auto-suffix（`Tooling/pipeline/backward.py:_resolve_slug_collisions`）
 - `strategies.proposal_md`：既有 column、Verify 勝出時 propagate 進 parent .lean
-- 新 shared helper：`Tooling.pipeline._format_annotation_comment(slug, body)` →
-  `-- <slug>: <summary>\n-- <line2>\n...` 字串、空 body 回 ""
+- 早期版本曾規劃 shared helper `_format_annotation_comment` 由 framework 拼出
+  `-- <slug>: ...` block；Phase 6 single-output 改成 agent 直接在 patch.lean 檔頂
+  自寫整段、framework 只 `_extract_leading_comments` 抽出 + 透過
+  `promote_to_alias(annotation=...)` 原樣前置到 alias 檔。helper 在 commit
+  `84c1e06` 砍掉、不再存在
 
 ### 代碼
 
@@ -131,7 +133,7 @@ Backward 沒寫 strategy 描述同理。不強制就會漏。
 | 4 | Context.md 加 `## Proved goals on this problem (grep entrypoint)` section | dee781c |
 | 5 | PN root proved e2e validation（depth 8、21 goals） | 400d7a7 |
 | 6 | single-output 整合：PROPOSAL.md 退役、agent 在 patch.lean 檔頂寫 annotation；decline 改用 `-- decline: <reason>` directive；prompt 全面精簡 | a41e9fe + dcff123 + 586102b + 2b63edf + 84c1e06 |
-| 6.5 | Backward leaf-bypass salvage：agent 寫 patch.lean + 完整 proof body + 0 sub-goals 時、framework 接住為 0-subgoal strategy 走 Verify chain（對稱於既有 sub-goal 層 `_try_promote_sorry_free`、解 tgt=34-class agent 想 leaf 但被框架硬塞 Backward 拆解的死循環） | (in-progress) |
+| 6.5 | Backward leaf-bypass salvage：agent 寫 patch.lean + 完整 proof body + 0 sub-goals 時、framework 接住為 0-subgoal strategy 走 Verify chain（對稱於既有 sub-goal 層 `_try_promote_sorry_free`、解 tgt=34-class agent 想 leaf 但被框架硬塞 Backward 拆解的死循環） | cb7f40b |
 
 每階段獨立 commit、可獨立 revert。
 
@@ -160,7 +162,9 @@ Backward 沒寫 strategy 描述同理。不強制就會漏。
   （workspace hydration vs dehydration）
 - Slug 機制：`Tooling/db.py:25-75`（schema）、`Tooling/pipeline/backward.py`
   charset 檢 + `_resolve_slug_collisions` helper
-- Annotation helper：`Tooling/pipeline/__init__.py:_format_annotation_comment`
+- Annotation extract / decline parse：`Tooling/pipeline/__init__.py`
+  `_extract_leading_comments` + `_extract_decline_reason`（取代了早期規劃的
+  `_format_annotation_comment` framework-side helper、改成 agent 自寫 + framework 抽出）
 - Builder annotation：`Tooling/pipeline/builder.py` Phase 1 / Phase 2 success path
 - Verify propagate：`Tooling/verify.py` + `Tooling/pipeline/_skeleton.py:promote_to_alias`
   的 `annotation` kwarg

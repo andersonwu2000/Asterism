@@ -267,7 +267,7 @@ Goal history (umbrella)         ← v1 完成（C1+C2+C3）、4 sub-section：
   ### Sub-goals reported infeasible        (cross-goal、Backward/None gate)
 ```
 
-`Goal history` umbrella 的 event 投影邏輯在 `Tooling/pipeline/events.py`（4 個函數 + `_NON_AGENT_REASONS` filter）。Empty bucket 整段省略；空 umbrella 連 `## Goal history` header 都不寫。完整設計與 audience 規則見 `docs/dev/goal_history_unified.md`。
+`Goal history` umbrella 的 event 投影邏輯在 `Tooling/pipeline/events.py`（4 個函數 + `_NON_AGENT_REASONS` filter）。Empty bucket 整段省略；空 umbrella 連 `## Goal history` header 都不寫。完整設計與 audience 規則見 `docs/archive/goal_history_unified.md`。
 
 **Sandbox**（F44 + M1 + M3）：
 - cwd = `Problems/<p>/`
@@ -378,4 +378,4 @@ cooldown 期內 `bfs_refill` 跳過該 (target, kind)、queue 不會 burst-retry
 - 系統靜態形狀（角色、不變量、DB schema、cascade 規則完整版）：`docs/architecture.md`
 - 操作員 CLI / 環境變數：`docs/OPERATOR.md`
 - 當前狀態 / 待辦：`docs/STATUS.md`
-- Context.md 失敗 section 即將重構：`docs/dev/goal_history_unified.md`
+- Context.md `## Goal history` umbrella 設計史：`docs/archive/goal_history_unified.md`

@@ -110,7 +110,7 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 1. **Target locality** — event 的 target 跟當下 dispatch goal 的關係（自己 / 自己的 strategy / parent 的 sub）
 2. **Actionability** — must-see / on-demand / 不投影
 
-詳細 axis 設計、kind-gating 為何能消失、實作 mapping → `docs/dev/goal_history_unified.md` §「Audience 規則」。
+詳細 axis 設計、kind-gating 為何能消失、實作 mapping → `docs/archive/goal_history_unified.md` §「Audience 規則」。
 
 **Edge cases**：
 
@@ -123,7 +123,7 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 ## 4. 跨參考
 
 - 動態 flow（pipeline 完整流程含失敗）：`docs/data-flow.md`
-- 在飛設計（goal_history v1 audience 規則 / 實作步驟）：`docs/dev/goal_history_unified.md`
+- goal_history v1 audience 規則 / 實作步驟設計史：`docs/archive/goal_history_unified.md`
 - DB schema CHECK 與 column 定義：`Tooling/db.py`
 - cascade 完整邏輯：`Tooling/dispatcher.py` `cascade_one`
 - session / postmortem 機制：`Tooling/pipeline/builder.py` rc 處理、`pipeline/_drafts.py`

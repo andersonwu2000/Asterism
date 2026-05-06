@@ -218,7 +218,7 @@ Goal history (umbrella):
   ### Sub-goals reported infeasible           (cross-goal、kind=Backward/None gate)
 ```
 
-`Goal history` umbrella 來自 v1（C1 + C2 + C3、commit 8712ce5 onward）— 舊版四個獨立 `##` section 合併、event 投影邏輯抽到 `Tooling/pipeline/events.py` 的 4 個函數。`infeasible_sub` 是 cross-goal 投影：sub-goal 的 `agent_infeasible` 反向投到 parent goal 的 next Backward。完整設計見 `docs/dev/goal_history_unified.md`、reason→event 對照見 `docs/failure_modes.md` §3。
+`Goal history` umbrella 來自 v1（C1 + C2 + C3、commit 8712ce5 onward）— 舊版四個獨立 `##` section 合併、event 投影邏輯抽到 `Tooling/pipeline/events.py` 的 4 個函數。`infeasible_sub` 是 cross-goal 投影：sub-goal 的 `agent_infeasible` 反向投到 parent goal 的 next Backward。完整設計見 `docs/archive/goal_history_unified.md`、reason→event 對照見 `docs/failure_modes.md` §3。
 
 `Proved goals on this problem` 是 Phase 4 加的入口指針 — 只給 count + path，不 push candidate list。agent 用 grep + Read 自食其力（同 mathlib 的 grep + loogle 模式）。每個 proved goal 的 `.lean` 檔頂被 Builder / Verify 寫上 `-- <slug>: <summary>` annotation block（goal_naming_annotation Phase 2，cc934ff），grep 時這就是索引。playbook 機制 + `## Past wins on this problem (playbook)` section 在 Phase 3 退役（5be9a33）— 被這條取代。
 

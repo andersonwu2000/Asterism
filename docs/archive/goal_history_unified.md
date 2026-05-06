@@ -1,6 +1,9 @@
 # Goal history: unified event-as-audience-declarer interface
 
-Status: planned (2026-05-06). Replaces STATUS.md item 8 once implemented.
+Status: **completed 2026-05-06**（C1-C3 + audit fixes shipped、commits
+`3ef9c55` / `16fd369` / `8712ce5` / `403141a`）。本 doc 保留作為設計史紀錄；
+當前運行行為反映在 `Tooling/pipeline/events.py` + `Tooling/context.py:_section_goal_history`
++ `docs/failure_modes.md` §3。SG e2e 對照 baseline 是後續實證、不是設計題。
 
 ## 動機
 
@@ -202,8 +205,8 @@ PAST_*.md 各自服務不同 event 類型，內容性質差很大（lake stderr 
 2. **Event interface 雛形** ✓ commit `3ef9c55` (C1)：`pipeline/events.py` 5 個投影函數 + `Event` dataclass + `_NON_AGENT_REASONS`。compile_context 改用 events.\*；agent 看到的 Context.md 外貌 0 變化。
 3. **Renderer 重組** ✓ commit `16fd369` (C2)：4 個獨立 `##` section 合 `## Goal history` umbrella + 4 個 `### sub-section`（含新 `### Sub-goals reported infeasible`、wire infeasible_subs cross-goal projection）；companion file rename；empty bucket 整段省略。
 4. **Audit fixes** ✓ commit `8712ce5`：4 個 bug fix（agent_declined 兩 section 重複 / infeasible_subs JOIN 多 parent dup / dead_strategies LIMIT-then-exclude starve / rename comment direction）+ regression test。
-5. **Decline records 整合** ✓ commit (next)：砍 `## Why Builder declined this goal` 獨立 section、`agent_declined` 進 `### Direct attempts on this goal`（subtype 由 `failure_reason` 欄位攜帶、renderer 對 declined row 加一段 lead-in note）。順手砍 `### Direct attempts on this goal` 的 `show_attempts` kind-gate — SG g142 case 修復（Backward retry 看到自己 prior `lake_build_error`）。
-6. **跑 SG 驗證**（TODO）：對照 `sg-opus-proved-2026-05-06` baseline 看 wall-clock + g142-class case 是否真避開重複錯誤路線。
+5. **Decline records 整合** ✓ commit `403141a`：砍 `## Why Builder declined this goal` 獨立 section、`agent_declined` 進 `### Direct attempts on this goal`（subtype 由 `failure_reason` 欄位攜帶、renderer 對 declined row 加一段 lead-in note）。順手砍 `### Direct attempts on this goal` 的 `show_attempts` kind-gate — SG g142 case 修復（Backward retry 看到自己 prior `lake_build_error`）。
+6. **跑 SG 驗證**：對照 `sg-opus-proved-2026-05-06` baseline 看 wall-clock + g142-class case 是否真避開重複錯誤路線。後續實證、非設計題；本 doc 不再追蹤。
 
 每步獨立可 commit、風險最大是步驟 3（測試假設大量 section 命名）。
 

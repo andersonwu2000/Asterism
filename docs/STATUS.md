@@ -43,7 +43,7 @@ all-or-nothing crash 語意（daemon kill 中段、attempts 不動、無孤兒 d
 
 **setting 不變**：BUILDER_THRESHOLD=3 / SHELVE_THRESHOLD=8、總 LLM call 上限不變。
 
-完整設計：`docs/dev/pipeline_session_unification.md`（已標 complete）。
+完整設計：`docs/archive/pipeline_session_unification.md`。
 
 ---
 
