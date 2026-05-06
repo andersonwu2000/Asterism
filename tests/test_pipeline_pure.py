@@ -720,3 +720,35 @@ def test_safe_glob_returns_empty_on_missing_directory(tmp_path: Path) -> None:
     """Defensive — never raise, just return empty if the directory is
     gone (e.g. attempts_dir cleaned up between spawn and validation)."""
     assert _safe_glob(tmp_path / "does-not-exist", "*") == []
+
+
+# ---------------------------------------------------------------------
+# Sub-goal slug pattern (`_SLUG_RE`) — agent-picked descriptive ids
+# ---------------------------------------------------------------------
+
+def test_slug_re_accepts_descriptive_lowercase() -> None:
+    from Tooling.pipeline.backward import _SLUG_RE
+    assert _SLUG_RE.match("cross_sq_add_inner_sq")
+    assert _SLUG_RE.match("a")
+    assert _SLUG_RE.match("foo_2")
+    assert _SLUG_RE.match("step1")
+
+
+def test_slug_re_rejects_leading_digit_or_underscore() -> None:
+    from Tooling.pipeline.backward import _SLUG_RE
+    assert not _SLUG_RE.match("1bad")
+    assert not _SLUG_RE.match("_leading_underscore")
+
+
+def test_slug_re_rejects_uppercase_or_hyphen() -> None:
+    from Tooling.pipeline.backward import _SLUG_RE
+    assert not _SLUG_RE.match("CamelCase")
+    assert not _SLUG_RE.match("kebab-case")
+    assert not _SLUG_RE.match("foo bar")  # space
+
+
+def test_slug_re_rejects_empty_or_punctuation() -> None:
+    from Tooling.pipeline.backward import _SLUG_RE
+    assert not _SLUG_RE.match("")
+    assert not _SLUG_RE.match("foo.bar")
+    assert not _SLUG_RE.match("foo/bar")

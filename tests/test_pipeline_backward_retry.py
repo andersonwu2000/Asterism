@@ -164,10 +164,11 @@ def test_warm_retry_reuses_dead_strategy_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """F53/A — warm retry must REUSE the prior dead strategy's id so
-    the agent's session memory of `L_s<X>_sub_*` slugs stays valid.
-    Minting a fresh sX here is what produced the naming_violation
-    cascade observed in proj_nonexpansive (s152→s153→s154 all dying
-    with `does not start with 's<new>_sub_'`).
+    the agent's session memory of the strategy patch's locked theorem
+    name (`theorem s<X>` + `_strategy_s<X>.lean`) stays valid. Minting
+    a fresh sX here would force the resumed agent's session-memory
+    references to `s<X>` against a freshly minted s<Y> patch, breaking
+    the F52 signature check.
     """
     gid = _seed_root_goal(tmp_path, conn)
     # Seed a prior dead strategy on this goal (the failed s<N>)

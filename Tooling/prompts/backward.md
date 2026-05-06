@@ -10,17 +10,19 @@ Break it apart so the parts can be tackled independently.
 
 ## Write
 
-Read Context.md's `## Sandbox` (allowlist) and `## Strategy naming` (slug convention `s<N>` / `s<N>_sub_<M>`) first. The framework auto-prepends `import Mathlib` + `import Problems.<problem>.Defs` on each sub-goal file and auto-appends sub-goal imports onto the patch — don't write any `import` lines yourself.
+Read Context.md's `## Sandbox` (allowlist) and `## Strategy naming` (strategy id `s<N>` is locked; sub-goal slugs are descriptive identifiers you pick) first. The framework auto-prepends `import Mathlib` + `import Problems.<problem>.Defs` on each sub-goal file and auto-appends sub-goal imports onto the patch — don't write any `import` lines yourself.
 
 1. `PROPOSAL.md` — high-level strategy, why each sub-goal is simpler, how they combine. No restating the goal, no sub-goal statement code blocks.
 
 2. `patch.lean` — pre-written with the locked signature `theorem s<id> <binders> : <type> := by sorry`. Replace ONLY the body — changes to the theorem name, binders, or conclusion type are rejected (`patch_signature_mismatch`).
 
-3. `new_<sub_slug>.lean` × N — one per sub-goal. `namespace Problems.<problem>`, body `:= by sorry`. **Required** directive line above the theorem:
+3. `new_<slug>.lean` × N — one per sub-goal. Pick `<slug>` per sub-goal as a short descriptive identifier reflecting what it proves (e.g. `cross_sq_add_inner_sq`, `triangle_inequality_metric`). Charset `[a-z][a-z0-9_]*`, length ≤ 60, unique within this problem (framework rejects collisions; you retry with a different name).
+
+   `namespace Problems.<problem>`, body `:= by sorry`. **Required** directive line above the theorem:
 
    ```lean
    -- entry_kind: Builder
-   theorem s<id>_sub_N : ... := by sorry
+   theorem <slug> : ... := by sorry
    ```
 
    - **Builder** for leaf-level: pure ring identity, hypothesis matches conclusion, `linarith`/`nlinarith` on visible inequalities, `exact?`-findable Mathlib lemma, simple unfolding.
@@ -30,11 +32,11 @@ Read Context.md's `## Sandbox` (allowlist) and `## Strategy naming` (slug conven
 
 ## Canonical body
 
-`patch.lean`'s body is a have-chain plus a closer:
+`patch.lean`'s body is a have-chain plus a closer (replace `<slug_k>` with the descriptive slugs you picked for each sub-goal in step 3):
 
 ```lean
-have h1 : <sub_1_type> := s<id>_sub_1 args
-have h2 : <sub_2_type> := s<id>_sub_2 args
+have h1 : <sub_1_type> := <slug_1> args
+have h2 : <sub_2_type> := <slug_2> args
 exact <combinator> h1 h2
 ```
 
@@ -56,7 +58,7 @@ Ship as `:= by sorry` with `entry_kind: Builder`. Wrong types compile-fail in se
 
 - Each sub-goal must be **strictly simpler** and as abstract as possible — re-stating the parent in different notation does not count.
 - All universal binders (∀) and hypotheses from the parent must appear in each sub-goal.
-- Slug + theorem naming MUST match Context.md exactly. The integrator validates and rejects non-conforming output.
+- Inside each sub-goal file, the theorem name MUST equal the slug you encoded in the filename (`new_<slug>.lean` → `theorem <slug>`). The integrator validates and rejects mismatches as `naming_violation`.
 - **Do NOT use any name in FORBIDDEN_LEMMAS** — not in patch, not in sub-goal docstrings, nowhere.
 - If your closer cites a Mathlib lemma by name, verify it via Grep / Loogle first — Mathlib renames are common.
 

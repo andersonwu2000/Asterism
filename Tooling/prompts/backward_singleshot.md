@@ -22,14 +22,14 @@ Required files:
 
 2. `==== FILE: patch.lean ====` — the framework pre-wrote this file with the strategy's locked signature (`theorem s<id> ... := by sorry`). Emit your version with **only the proof body** changed (everything after `:=`). The framework rejects any signature edit (`patch_signature_mismatch`). Imports for sub-goals are auto-injected — do NOT add them. Body uses `have h_i : <sub_i_type> := <slug_i> args` calls + a final tactic that closes the parent statement.
 
-3. `==== FILE: new_<sub_slug>.lean ====` × N — one per sub-goal. Slug + theorem name follow Context's `## Strategy naming` exactly. `namespace Problems.<problem>`, body `:= by sorry`.
+3. `==== FILE: new_<slug>.lean ====` × N — one per sub-goal. Pick `<slug>` per sub-goal as a short descriptive identifier reflecting what the sub-goal proves (e.g. `cross_sq_add_inner_sq`, `triangle_inequality_metric`). Charset `[a-z][a-z0-9_]*`, length ≤ 60, unique within this problem (framework rejects collisions). Theorem name inside MUST equal the slug. `namespace Problems.<problem>`, body `:= by sorry`. Required directive line above the theorem: `-- entry_kind: Builder` (or `Backward`).
 
 ## Rules
 
 - 2-8 sub-goals. One is not a decomposition; more than 8 is rarely tractable.
 - Each sub-goal must be **strictly simpler** than the parent (more concrete, fewer assumptions, narrower scope) — re-stating the parent in different notation does not count.
 - All universal binders (∀) and hypotheses from the parent statement must appear in each sub-goal (hypothesis carry-over).
-- Slug + theorem naming MUST match Context's `## Strategy naming` section exactly. The integrator validates and rejects non-conforming output.
+- Inside each sub-goal file, the theorem name MUST equal the slug encoded in the filename (`new_<slug>.lean` → `theorem <slug>`). The integrator validates and rejects mismatches as `naming_violation`.
 - **Do NOT use any name in FORBIDDEN_LEMMAS** — not in patch, not in sub-goal docstrings, nowhere. The integrator catches these patterns.
 - Lake will compile each sub-goal file + the patch file independently; all must elaborate. The patch builds against sub-goal placeholders (`:= by sorry`); after sub-goals are individually proved, Verify re-runs lake build on the patch.
 

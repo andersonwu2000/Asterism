@@ -66,10 +66,11 @@ def test_digest_forbidden_lemma_short_circuits() -> None:
 def test_digest_naming_violation_short_circuits() -> None:
     out = _digest_failure(
         "naming_violation",
-        "sub-goal slug 'foo' does not start with 'sNN_sub_'",
+        "sub-goal slug '1bad' must match [a-z][a-z0-9_]* "
+        "(lowercase ascii start, then ascii/digits/underscore)",
     )
     assert "naming_violation" not in out  # we only return the detail
-    assert "does not start with" in out
+    assert "must match" in out
 
 
 def test_digest_empty_returns_empty() -> None:

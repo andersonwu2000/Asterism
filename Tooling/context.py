@@ -70,18 +70,30 @@ def _section_sandbox(strategy_id: int | None,
 
 def _section_strategy_naming(strategy_id: int | None,
                              goal: sqlite3.Row) -> list[str]:
-    """Backward-only: slug naming pinned to this strategy id. Builder
-    doesn't fan out into sub-goals so this section is empty for it."""
+    """Backward-only: strategy id token + sub-goal slug rules. Builder
+    doesn't fan out into sub-goals so this section is empty for it.
+
+    Slug rules: sub-goals are named by the agent with a short descriptive
+    identifier reflecting what each one proves (e.g. `cross_sq_add_inner_sq`
+    rather than `s17_sub_3`). The framework charset-checks and rejects on
+    collision; the agent retries with a different name on rejection."""
     if strategy_id is None:
         return []
     sid_token = f"s{strategy_id}"
     return [
         "## Strategy naming",
         f"- This Backward attempt is strategy `{sid_token}` (stable "
-        "across same-session retries).",
-        f"- Sub-goal files you write: `new_{sid_token}_sub_<N>.lean` × N. "
-        f"Theorem name in each file = `{sid_token}_sub_<N>` (filename "
-        f"minus `new_` and `.lean`).",
+        "across same-session retries). The framework owns the strategy "
+        f"patch file `_strategy_{sid_token}.lean` and its top-level "
+        f"theorem name `{sid_token}` — do not change either.",
+        "- Sub-goal files: `new_<slug>.lean` × N. You pick `<slug>` per "
+        "sub-goal as a short descriptive identifier reflecting what it "
+        "proves (e.g. `cross_sq_add_inner_sq`, `triangle_inequality_metric`).",
+        "- Slug rules: `[a-z][a-z0-9_]*`, length ≤ 60. Unique within this "
+        "problem; the framework rejects collisions (`naming_violation`) "
+        "and you retry with a different name.",
+        "- Theorem name in each sub-goal file = `<slug>` (filename minus "
+        "`new_` and `.lean`).",
         "",
     ]
 

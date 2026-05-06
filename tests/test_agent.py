@@ -243,7 +243,12 @@ def test_context_strategy_naming_only_for_backward_with_sid(
     text = out.read_text(encoding="utf-8")
     assert "## Strategy naming" in text
     assert "`s42`" in text
-    assert "new_s42_sub_<N>.lean" in text
+    # Strategy patch file + locked theorem name use sid_token.
+    assert "_strategy_s42.lean" in text
+    # Sub-goal slugs are agent-picked descriptive identifiers; the
+    # section explains the rule rather than a fixed format.
+    assert "new_<slug>.lean" in text
+    assert "[a-z][a-z0-9_]*" in text
     # Sandbox is universal — also present
     assert "## Sandbox" in text
 

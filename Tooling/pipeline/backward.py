@@ -27,6 +27,12 @@ from .. import agent, db, dedupe, diagnostics, manifest
 from ..llm.base import SpawnRC
 
 
+# Sub-goal slug pattern: lowercase letter start, then lowercase letters,
+# digits, underscore. Length is bounded separately (≤ 60) so the regex
+# stays simple. Picked at agent time per `prompts/backward.md` "Write".
+_SLUG_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
 # ---------------------------------------------------------------------
 # Backward-specific helpers (no shared callers as of writing)
 # ---------------------------------------------------------------------
@@ -245,13 +251,15 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     is_retry = sid is not None
 
     # F53/A — reuse the prior dead strategy's id across warm retries.
-    # Agent's session memory anchors on the slug it wrote last turn
-    # (`L_s152_sub_*`). If this dispatch mints a fresh strategy_id
-    # (s153, s154, ...), the resumed agent keeps writing the stale
-    # `s152_sub_*` slugs and trips `naming_violation` every time.
-    # Pinning sid_token to the prior strategy keeps Context.md, the
-    # F52 skeleton, and the agent's session-memory all using the
-    # same slug.
+    # Agent's session memory anchors on the strategy patch's locked
+    # name (`theorem s152` + file `_strategy_s152.lean`); if this
+    # dispatch mints a fresh strategy_id (s153, s154, ...), the resumed
+    # agent keeps emitting code against the stale `s152` and trips the
+    # F52 signature check every time. Pinning sid_token to the prior
+    # strategy keeps Context.md, the F52 skeleton, and the agent's
+    # session-memory all anchored on the same patch name.
+    # (Sub-goal slugs are agent-picked descriptive identifiers and
+    # carry no sid_token — they're independent of this reuse logic.)
     strategy_id: int | None = None
     if is_retry:
         row = conn.execute(
@@ -447,19 +455,62 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             proposal_text,
         )
 
-    # Validate slug naming convention: every sub-goal filename must be
-    # `new_<sid_token>_sub_<N>.lean`.
-    expected_prefix = f"{sid_token}_sub_"
+    # Validate slug naming: agent-picked descriptive identifier.
+    # Charset `[a-z][a-z0-9_]*`, length 1..60, unique within problem.
+    # The strategy's own theorem (`s<sid>`) and patch file (`_strategy_
+    # s<sid>.lean`) are framework-locked and not subject to this check;
+    # only sub-goal filenames `new_<slug>.lean` carry agent-picked slugs.
     sub_meta: list[tuple[str, Path]] = []  # (slug, source_in_attempts)
+    seen_in_batch: set[str] = set()
     for ns in new_subs:
         slug = _slug_from_filename(ns.name)
-        if not slug.startswith(expected_prefix):
+        if not slug:
             return _abort(
                 "naming_violation",
-                f"sub-goal slug {slug!r} does not start with {expected_prefix!r}",
+                f"sub-goal filename {ns.name!r} yields empty slug",
                 proposal_text,
             )
+        if len(slug) > 60:
+            return _abort(
+                "naming_violation",
+                f"sub-goal slug {slug!r} exceeds max length 60",
+                proposal_text,
+            )
+        if not _SLUG_RE.match(slug):
+            return _abort(
+                "naming_violation",
+                f"sub-goal slug {slug!r} must match [a-z][a-z0-9_]* "
+                f"(lowercase ascii start, then ascii/digits/underscore)",
+                proposal_text,
+            )
+        if slug in seen_in_batch:
+            return _abort(
+                "naming_violation",
+                f"sub-goal slug {slug!r} duplicated within this batch; "
+                f"each sub-goal needs a unique descriptive name",
+                proposal_text,
+            )
+        seen_in_batch.add(slug)
         sub_meta.append((slug, ns))
+
+    # Cross-batch uniqueness: collide with any existing goal in this
+    # problem (proved or otherwise). Dedupe-by-statement happens later;
+    # a slug collision with a different statement is a true name conflict
+    # and the agent must retry with a different name.
+    existing_slugs = {
+        row["slug"] for row in conn.execute(
+            "SELECT slug FROM goals WHERE problem = ?",
+            (goal["problem"],),
+        ).fetchall()
+    }
+    for slug, _ in sub_meta:
+        if slug in existing_slugs:
+            return _abort(
+                "naming_violation",
+                f"sub-goal slug {slug!r} already exists in problem "
+                f"{goal['problem']!r}; pick a different descriptive name",
+                proposal_text,
+            )
 
     # Dedupe scan: batch-call Lean kernel isDefEq for all candidate
     # sub-goals × eligible ancestors in one subprocess. Hits → write an
@@ -480,8 +531,10 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         candidates=candidates_for_dedupe,
     )
 
-    # Compute permanent paths under proofs/. No collision possible
-    # because every path includes sid_token.
+    # Compute permanent paths under proofs/. Strategy patch path includes
+    # sid_token (framework-locked, collision-free). Sub-goal `L_<slug>.lean`
+    # paths use the agent-picked slug, whose problem-local uniqueness was
+    # verified above; if the slug check passed, the path cannot collide.
     proofs_dir = workspace / "Problems" / goal["problem"] / "proofs"
     proofs_dir.mkdir(parents=True, exist_ok=True)
     scratch_filename = f"_strategy_{sid_token}.lean"
