@@ -454,21 +454,21 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
             )
 
             # Phase 7 — flush per-retry buffered failures from the
-            # in-pipeline retry helper. Each entry produces one
-            # dead_attempts row + one goals.attempts++ (decision 5/6:
-            # 1:1). Helper buffered them in memory because dead_attempts
-            # is FK to pipelines.id which we just INSERTed; flushing
-            # here gives all-or-nothing crash semantics (a daemon kill
-            # mid-pipeline leaves goals.attempts unchanged and no
-            # orphan dead_attempts rows).
+            # in-pipeline retry helper. The helper writes one
+            # `goals.attempts++` eagerly (for live TREE.md visibility)
+            # but buffers the paired dead_attempts row here because
+            # dead_attempts.pipeline_id FKs the pipelines row we just
+            # INSERTed. Flush only writes the dead_attempts rows; the
+            # increment already happened in-helper.
             #
             # Skip flush on outcome='moot': decision 2 mandates moot is
-            # uniform no-op (no attempts++, no dead_attempts). Mid-loop
-            # moot detection drops any prior-iteration buffered
-            # failures — those were real LLM calls but on a goal that's
-            # since gone terminal, so their forensic value is curiosity-
-            # only. Strict alignment with decision 2 trumps preserving
-            # buried-iteration forensic.
+            # uniform no-op (no dead_attempts written). Mid-loop moot
+            # detection drops any prior-iteration buffered failures —
+            # those were real LLM calls but on a goal that's since gone
+            # terminal, so their forensic value is curiosity-only. Note
+            # the eager attempts++ from those iterations remains in DB
+            # (helper already wrote them); strict decision-2 alignment
+            # is at the dead_attempts surface, not the attempts column.
             if r.outcome != "moot":
                 for pf in r.pending_failures:
                     db.record_dead_attempt(
@@ -480,7 +480,6 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
                         artifacts=(_json.dumps(pf["artifacts"])
                                    if pf.get("artifacts") else ""),
                     )
-                    db.increment_goal_attempts(conn, goal_id)
 
             # Capture artifacts from .attempts/<pid>/ before WorkArea rmtree.
             # Skip the pipeline-final dead_attempts INSERT for:

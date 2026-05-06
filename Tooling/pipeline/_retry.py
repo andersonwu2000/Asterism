@@ -20,10 +20,18 @@ the pipelines row is INSERTed by `dispatcher._run_pipeline` AFTER this
 helper returns. The helper therefore CANNOT write dead_attempts inline
 (FK violation). Per-retry records are buffered into
 `PipelineResult.pending_failures`; `_run_pipeline` flushes them after
-the pipelines INSERT (one dead_attempts row + one
-`goals.attempts++` per entry). This also gives all-or-nothing crash
-semantics: a daemon kill mid-pipeline leaves goals.attempts unchanged
-and no orphan dead_attempts rows.
+the pipelines INSERT.
+
+`goals.attempts` is incremented EAGERLY (per retry, in-helper) for
+live operator visibility — `TREE.md` + `asterism status` show retry
+progress mid-pipeline rather than waiting for cascade. The paired
+dead_attempts row is still buffered for FK reasons. Crash semantics:
+daemon kill mid-pipeline leaves attempts inflated by N relative to
+dead_attempts (no rows for the in-flight pipeline); this drift is
+cosmetic — `bfs_refill` and threshold checks treat attempts as
+authoritative either way, and on the next dispatch the goal simply
+appears to have N more failures than dead_attempts records (operator-
+visible drift, no functional bug).
 """
 from __future__ import annotations
 
@@ -34,7 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .. import db
+from .. import db, tree
 from ..llm.base import SpawnRC
 from . import PipelineResult, _spawn_failure, collect_artifacts
 
@@ -116,6 +124,7 @@ def run_with_session_retries(
     spawn_fn: SpawnFn,
     parse_fn: ParseFn,
     postmortem_fn: PostmortemFn,
+    workspace: Path | None = None,
 ) -> PipelineResult:
     """Run a kind-agnostic in-pipeline retry loop.
 
@@ -177,6 +186,16 @@ def run_with_session_retries(
             "proposal_md": proposal_md,
             "artifacts": collect_artifacts(attempts_dir),
         })
+        # Eager attempts++ for live operator visibility (TREE.md +
+        # `asterism status` show retry progress mid-pipeline). The
+        # paired dead_attempts row is still buffered for FK ordering
+        # (pipelines.id FK target written by dispatcher post-return);
+        # crash mid-pipeline leaves attempts inflated by N relative to
+        # dead_attempts, but the drift is cosmetic — bfs_refill /
+        # threshold checks treat attempts as authoritative either way.
+        db.increment_goal_attempts(conn, goal_id)
+        if workspace is not None:
+            tree.write_for_target(conn, workspace, str(goal_id), "Goal")
 
     def attach(result: PipelineResult) -> PipelineResult:
         # Always thread the buffered failures through the return value.

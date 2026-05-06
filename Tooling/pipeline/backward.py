@@ -380,6 +380,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         spawn_fn=backward_spawn,
         parse_fn=backward_parse,
         postmortem_fn=backward_postmortem,
+        workspace=workspace,
     )
 
     # Cleanup: any non-success outcome leaves the strategy at 'proposed'

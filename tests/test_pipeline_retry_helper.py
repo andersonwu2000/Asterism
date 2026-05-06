@@ -441,17 +441,20 @@ def test_goal_not_found_returns_failed(conn: sqlite3.Connection,
 
 def test_dispatcher_flush_preserves_1to1_invariant(conn: sqlite3.Connection,
                                                     tmp_path: Path) -> None:
-    """Mimic dispatcher's flush of pending_failures: insert pipelines
-    row, then for each pending failure insert a dead_attempt + ++
-    attempts. Verify final goal.attempts equals dead_attempts row
-    count for this goal — decision 5/6's 1:1 invariant.
+    """Helper now increments attempts EAGERLY for live operator
+    visibility (TREE.md mid-pipeline refresh). Dispatcher's flush only
+    INSERTs the buffered dead_attempts rows; it does NOT re-increment.
+    Verify final goal.attempts equals dead_attempts row count — the
+    1:1 invariant holds in the non-crash path (decision 5/6, with
+    eager attempts++ landing in-helper instead of at flush time).
     """
     import json as _json
     gid = _seed_goal(conn, attempts=0)
     pid = "pid-1to1"
     _seed_pipeline_row(conn, pid, gid)
 
-    # Helper run produces 3 buffered failures.
+    # Helper run produces 3 buffered failures (and eagerly increments
+    # goal.attempts to 3 inside the loop).
     seen, spawn_fn = _spawn_returning([0, 0, 0])
     fail = lambda d: PipelineResult(outcome="failed",
                                     failure_reason="lake_build_error",
@@ -466,8 +469,10 @@ def test_dispatcher_flush_preserves_1to1_invariant(conn: sqlite3.Connection,
         spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
     )
     assert r.outcome == "exhausted"
+    assert db.get_goal(conn, gid)["attempts"] == 3  # eager from helper
 
-    # Dispatcher flush emulation
+    # Dispatcher flush emulation: only INSERT dead_attempts rows; do
+    # NOT re-increment (helper already did).
     for pf in r.pending_failures:
         db.record_dead_attempt(
             conn, target_id=gid, target_kind="Goal",
@@ -475,9 +480,8 @@ def test_dispatcher_flush_preserves_1to1_invariant(conn: sqlite3.Connection,
             failure_detail=pf["detail"],
             artifacts=_json.dumps(pf["artifacts"]) if pf["artifacts"] else "",
         )
-        db.increment_goal_attempts(conn, gid)
 
-    # 1:1 invariant
+    # 1:1 invariant in non-crash path
     final_attempts = db.get_goal(conn, gid)["attempts"]
     da_count = conn.execute(
         "SELECT COUNT(*) AS n FROM dead_attempts WHERE target_id=?",

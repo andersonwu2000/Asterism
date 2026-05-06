@@ -253,4 +253,5 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         spawn_fn=builder_spawn,
         parse_fn=builder_parse,
         postmortem_fn=builder_postmortem,
+        workspace=workspace,
     )
