@@ -429,19 +429,22 @@ def strategies_ready_for_verify(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     parent-alive check prevents Verify thrashing when an OR sibling has
     already won the goal — without it bfs_refill keeps re-enqueueing
     the doomed Verify forever.
+
+    A 0-subgoal strategy (Phase 6.5 Backward leaf-bypass — agent wrote a
+    complete proof in patch.lean with no decomposition) is also ready:
+    the NOT EXISTS clause is vacuously true when no strategy_subgoals
+    rows exist for that strategy.
     """
     return list(conn.execute(
         "SELECT s.* FROM strategies s "
         "JOIN goals g ON g.id = s.goal_id "
         "WHERE s.status = 'proposed' "
         "  AND g.status NOT IN ('proved','shelved') "
+        "  AND s.scratch_path != '' "
         "  AND NOT EXISTS ("
         "    SELECT 1 FROM strategy_subgoals ss"
         "    JOIN goals sg ON sg.id = ss.subgoal_id"
         "    WHERE ss.strategy_id = s.id AND sg.status != 'proved'"
-        "  )"
-        "  AND EXISTS ("
-        "    SELECT 1 FROM strategy_subgoals ss WHERE ss.strategy_id = s.id"
         "  )"
         # Deterministic order so per-goal Verify serialization
         # (P0-#1 in bfs_refill) picks the same sibling on each tick

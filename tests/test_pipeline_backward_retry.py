@@ -432,3 +432,86 @@ def test_backward_wrapper_clears_draft_on_goal_no_longer_open(
     # Wrapper should have CLEARED the stale draft, not overwritten it
     # with the moot in-flight PROPOSAL.
     assert not draft.exists()
+
+
+# ---------------------------------------------------------------------
+# Phase 6.5 — Backward leaf-bypass salvage
+# ---------------------------------------------------------------------
+
+def test_backward_leaf_bypass_promotes_zero_subgoal_strategy(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When Backward agent writes patch.lean with a complete proof body
+    and no `new_*.lean` sub-goal stubs, framework registers a 0-subgoal
+    strategy (mirroring `_try_promote_sorry_free` at the strategy level).
+    Verify housekeeping picks it up next tick. Symmetric escape to
+    Builder's `decline: too_hard` — agent saying 'this is leaf-able,
+    not decompose-able' through behavior rather than directive."""
+    gid = _seed_root_goal(tmp_path, conn)
+
+    def fake_spawn(**kw):
+        attempts = kw["attempts_dir"]
+        # Edit F52 skeleton's body but emit no new_*.lean sub-goals.
+        patch_text = (attempts / "patch.lean").read_text(encoding="utf-8")
+        patch_text = "-- main: trivial leaf proof\n" + patch_text.replace(
+            ":= by sorry", ":= by trivial")
+        (attempts / "patch.lean").write_text(patch_text, encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    monkeypatch.setattr(pipeline, "_lake_build_batch",
+                        lambda ws, ts: (True, ""))
+
+    r = pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=manifest.Manifest(problem="p", statement="True"),
+        pipeline_id="pid-leaf-bypass")
+    assert r.outcome == "success"
+    assert r.proposal_md.startswith("-- main: trivial leaf proof")
+
+    # Strategy committed with scratch_path set, 0 strategy_subgoals rows.
+    rows = conn.execute(
+        "SELECT id, status, scratch_path, proposal_md FROM strategies "
+        "WHERE goal_id = ?", (gid,)
+    ).fetchall()
+    assert len(rows) == 1
+    s = rows[0]
+    assert s["status"] == "proposed"
+    assert s["scratch_path"].endswith(".lean")
+    assert "trivial leaf proof" in s["proposal_md"]
+    sub_count = conn.execute(
+        "SELECT COUNT(*) FROM strategy_subgoals WHERE strategy_id = ?",
+        (s["id"],),
+    ).fetchone()[0]
+    assert sub_count == 0
+    # Ready for Verify: vacuously satisfies the no-unproved-subs gate.
+    assert any(s2["id"] == s["id"]
+               for s2 in db.strategies_ready_for_verify(conn))
+
+
+def test_backward_no_subs_with_sorry_body_still_parse_proposal_fail(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Leaf-bypass requires a non-sorry body. Patch with `:= by sorry`
+    and 0 sub-goals AND no decline directive is genuinely empty output —
+    framework still rejects as parse_proposal_fail (the salvage triggers
+    only when the agent over-delivered, not when they under-delivered)."""
+    gid = _seed_root_goal(tmp_path, conn)
+
+    def fake_spawn(**kw):
+        attempts = kw["attempts_dir"]
+        patch_text = (attempts / "patch.lean").read_text(encoding="utf-8")
+        # Add leading comment but leave body as sorry, no new_*.lean files.
+        patch_text = "-- main: ...\n" + patch_text
+        (attempts / "patch.lean").write_text(patch_text, encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    r = pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=manifest.Manifest(problem="p", statement="True"),
+        pipeline_id="pid-empty")
+    assert r.outcome == "failed"
+    assert r.failure_reason == "parse_proposal_fail"
+    assert "sorry body" in (r.failure_detail or "")

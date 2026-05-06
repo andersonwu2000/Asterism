@@ -134,10 +134,13 @@ cascade 對 Builder 的狀態轉移：proved → goal proved；failed → attemp
    - patch.lean 必存在（缺則 parse_proposal_fail）
    - extract patch.lean 檔頂 `--` leading comments 進 `strategies.proposal_md`
    - 檔頂若帶 `-- decline: parent_type_infeasible` → agent_infeasible（不需 sub-goals）
-   - 否則 new_*.lean 必存在（缺則 parse_proposal_fail）
    - leading comments 非空（空則 agent_no_annotation、未來 Verify propagate 會無內容）
+   - patch.lean 簽名沒被改（normalize whitespace 後比對 F52 skeleton）
+   - **Phase 6.5 leaf-bypass**：new_*.lean 為 0 個但 patch.lean body 非 sorry →
+     視為 0-subgoal strategy、跑 lake build patch 單檔、commit 為 strategy（無
+     strategy_subgoals row）、下個 dispatcher tick Verify housekeeping 接走完成
+     parent goal proved；否則 0 個 sub-goal + sorry body → parse_proposal_fail
    - forbidden_lemmas grep 全文件
-   - patch.lean 簽名沒被改（normalize whitespace 後比對 skeleton）
    - 每個 sub-goal 檔名 = `new_<slug>.lean`、agent 自選 descriptive slug（charset
      `[a-z][a-z0-9_]*`、length ≤ 60；不符 → naming_violation；命名衝突 framework
      auto-suffix `_2` `_3`、agent 不檢查唯一性）

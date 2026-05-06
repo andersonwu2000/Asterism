@@ -263,7 +263,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         _attempt_postmortem, _build_strategy_skeleton,
         _extract_decline_reason, _extract_leading_comments,
         _extract_statement_from_lean, _grep_forbidden,
-        _inject_imports_for_subs, _lake_build_batch,
+        _inject_imports_for_subs, _is_sorry_stub, _lake_build_batch,
         _lean_path_to_module, _normalize_signature,
         _safe_glob, _signature_prefix, _slug_from_filename,
         _spawn_failure,
@@ -462,14 +462,6 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             leading,
         )
 
-    new_subs = _safe_glob(attempts_dir, "new_*.lean")
-    if not new_subs:
-        return _abort(
-            "parse_proposal_fail",
-            f"patch=1 new={len(new_subs)}",
-            leading,
-        )
-
     if not leading.strip():
         return _abort(
             "agent_no_annotation",
@@ -478,16 +470,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             leading,
         )
 
-    # Forbidden-lemma grep covers patch + every sub-goal stub.
-    all_text = "\n".join([main_patch_text] +
-                          [p.read_text(encoding="utf-8") for p in new_subs])
-    forbidden = _grep_forbidden(all_text, mfst.forbidden_lemmas)
-    if forbidden:
-        return _abort("forbidden_lemma", forbidden, leading)
-
-    # F52 — diff check: agent must preserve the framework-locked
-    # signature `theorem sX <binders> : <type>`. Whitespace normalized
-    # so re-indentation is OK; binder/type changes are not.
+    # F52 signature check applies to both decomp + leaf-bypass paths.
     agent_signature = _normalize_signature(
         _signature_prefix(main_patch_text, sid_token))
     if agent_signature != skeleton_signature:
@@ -498,6 +481,77 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             f"got:      {agent_signature[:300]}",
             leading,
         )
+
+    new_subs = _safe_glob(attempts_dir, "new_*.lean")
+    if not new_subs:
+        # Phase 6.5 — Backward leaf-bypass salvage. Mirrors
+        # `_try_promote_sorry_free` at the sub-goal level: when the
+        # agent over-delivers (writes patch.lean with a complete proof
+        # body and no decomposition), the framework registers a
+        # 0-subgoal strategy rather than thrashing with parse_proposal_
+        # fail. Verify housekeeping picks it up next tick (lake build
+        # the patch + promote_to_alias parent → goal proved). If patch
+        # body is `:= by sorry` and there are no subs and no decline
+        # directive, it's truly empty output → real parse_proposal_fail.
+        if _is_sorry_stub(main_patch_text):
+            return _abort(
+                "parse_proposal_fail",
+                "patch=1 new=0 with sorry body and no decline directive; "
+                "need decomposition (new_*.lean), a leaf-style proof, or "
+                "a `-- decline:` directive.",
+                leading,
+            )
+        forbidden = _grep_forbidden(main_patch_text, mfst.forbidden_lemmas)
+        if forbidden:
+            return _abort("forbidden_lemma", forbidden, leading)
+        proofs_dir = workspace / "Problems" / goal["problem"] / "proofs"
+        proofs_dir.mkdir(parents=True, exist_ok=True)
+        scratch_dest = proofs_dir / f"_strategy_{sid_token}.lean"
+        shutil.copy2(patches[0], scratch_dest)
+        try:
+            ok, err = _lake_build_batch(workspace, [scratch_dest])
+        except Exception as exc:  # noqa: BLE001
+            scratch_dest.unlink(missing_ok=True)
+            return _abort(
+                "lake_build_error",
+                diagnostics.annotate_failure_detail(str(exc)),
+                leading,
+            )
+        if not ok:
+            scratch_dest.unlink(missing_ok=True)
+            return _abort(
+                "lake_build_error",
+                diagnostics.annotate_failure_detail(err),
+                leading,
+            )
+        # Race guard mirrors the decomp path's check at line ~666.
+        fresh = db.get_goal(conn, goal_id)
+        if fresh is None or fresh["status"] not in ("open", "attempting"):
+            scratch_dest.unlink(missing_ok=True)
+            current = fresh["status"] if fresh else "missing"
+            return _abort(
+                "goal_no_longer_open",
+                f"goal {goal_id} transitioned to {current!r} during this "
+                f"Backward's leaf-bypass run; aborting to avoid orphan strategy.",
+                leading,
+            )
+        scratch_rel = scratch_dest.relative_to(workspace).as_posix()
+        db.update_strategy_scratch_path(conn, strategy_id, scratch_rel)
+        conn.execute("UPDATE strategies SET proposal_md = ? WHERE id = ?",
+                     (leading, strategy_id))
+        # F53 — clear backward_session_id symmetric to the decomp path.
+        db.set_backward_session_id(conn, goal_id, None)
+        conn.commit()
+        print(f"[backward leaf-bypass] strategy={sid_token} → ready_for_verify",
+              flush=True)
+        return PipelineResult(outcome="success", proposal_md=leading)
+
+    # Forbidden-lemma grep covers patch + every sub-goal stub.
+    all_text = "\n".join([main_patch_text] +
+                          [p.read_text(encoding="utf-8") for p in new_subs])
+    forbidden = _grep_forbidden(all_text, mfst.forbidden_lemmas)
+    if forbidden:
+        return _abort("forbidden_lemma", forbidden, leading)
 
     # Validate slug naming: agent-picked descriptive identifier.
     # Charset `[a-z][a-z0-9_]*`, length ≤ 60. Cross-problem collision is

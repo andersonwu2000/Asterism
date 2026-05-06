@@ -130,7 +130,8 @@ Backward 沒寫 strategy 描述同理。不強制就會漏。
 | 3 | playbook 機制砍、F22 兩個 prompt 一起刪 | 5be9a33 + 43c3a30 |
 | 4 | Context.md 加 `## Proved goals on this problem (grep entrypoint)` section | dee781c |
 | 5 | PN root proved e2e validation（depth 8、21 goals） | 400d7a7 |
-| 6 | single-output 整合：PROPOSAL.md 退役、agent 在 patch.lean 檔頂寫 annotation；decline 改用 `-- decline: <reason>` directive；prompt 全面精簡 | (in-progress) |
+| 6 | single-output 整合：PROPOSAL.md 退役、agent 在 patch.lean 檔頂寫 annotation；decline 改用 `-- decline: <reason>` directive；prompt 全面精簡 | a41e9fe + dcff123 + 586102b + 2b63edf + 84c1e06 |
+| 6.5 | Backward leaf-bypass salvage：agent 寫 patch.lean + 完整 proof body + 0 sub-goals 時、framework 接住為 0-subgoal strategy 走 Verify chain（對稱於既有 sub-goal 層 `_try_promote_sorry_free`、解 tgt=34-class agent 想 leaf 但被框架硬塞 Backward 拆解的死循環） | (in-progress) |
 
 每階段獨立 commit、可獨立 revert。
 

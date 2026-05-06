@@ -1073,10 +1073,11 @@ def test_strategies_ready_for_verify_excludes_proved_goal(
     are all proved. Prevents the Verify-thrashing loop seen in
     compactness smoke."""
     gid = _seed_goal(conn)
-    sid = db.insert_strategy(conn, goal_id=gid,
-                             lean_path="Problems/p/Root.lean",
-                             created_by="pid")
-    # Add a proved sub-goal so the EXISTS clause is satisfied.
+    sid = db.insert_strategy(
+        conn, goal_id=gid, lean_path="Problems/p/Root.lean",
+        created_by="pid",
+        scratch_path="Problems/p/proofs/_strategy_s1.lean",
+    )
     sub_gid = db.insert_goal(
         conn, problem="p", slug="proved_sub",
         lean_path="Problems/p/proofs/L_proved_sub.lean",
@@ -1091,6 +1092,33 @@ def test_strategies_ready_for_verify_excludes_proved_goal(
     # Once goal is proved (by sibling): NOT ready
     db.update_goal_status(conn, gid, "proved")
     assert not any(s["id"] == sid for s in db.strategies_ready_for_verify(conn))
+
+
+def test_strategies_ready_for_verify_includes_zero_subgoal_leaf_bypass(
+    conn: sqlite3.Connection,
+) -> None:
+    """Phase 6.5 — a Backward leaf-bypass strategy commits with 0 sub-goals
+    (agent wrote a complete proof in patch.lean, no decomposition). Such
+    a strategy must qualify for Verify on the next housekeeping tick:
+    the NOT EXISTS-unproved-subs clause is vacuously true with 0 rows.
+    `scratch_path != ''` gates pre-commit / dead strategies out so an
+    abandoned-mid-flight row doesn't accidentally qualify."""
+    gid = _seed_goal(conn)
+    # Leaf-bypass: strategy committed with scratch_path set, 0 sub-goals.
+    sid = db.insert_strategy(
+        conn, goal_id=gid, lean_path="Problems/p/Root.lean",
+        created_by="pid-leaf",
+        scratch_path="Problems/p/proofs/_strategy_s1.lean",
+    )
+    assert any(s["id"] == sid for s in db.strategies_ready_for_verify(conn))
+
+    # Pre-commit (scratch_path empty) state must NOT qualify, otherwise
+    # mid-flight strategies would race ahead of their own commit.
+    sid2 = db.insert_strategy(
+        conn, goal_id=gid, lean_path="Problems/p/Root.lean",
+        created_by="pid-incomplete",
+    )
+    assert not any(s["id"] == sid2 for s in db.strategies_ready_for_verify(conn))
 
 
 # F56 — `cascade_one(kind="Verify")` no longer exists. The W6
