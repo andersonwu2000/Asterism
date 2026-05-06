@@ -52,9 +52,9 @@ def test_digest_lake_build_error_strips_file_line_prefix() -> None:
     assert "Type mismatch" in out
 
 
-def test_digest_agent_no_response_short_circuits() -> None:
+def test_digest_agent_timeout_short_circuits() -> None:
     """Already short — no extraction needed, just truncate to cap."""
-    out = _digest_failure("agent_no_response", "claude rc=124")
+    out = _digest_failure("agent_timeout", "claude rc=124")
     assert "claude rc=124" in out
 
 
@@ -74,7 +74,7 @@ def test_digest_naming_violation_short_circuits() -> None:
 
 def test_digest_empty_returns_empty() -> None:
     assert _digest_failure("lake_build_error", "") == ""
-    assert _digest_failure("agent_no_response", "") == ""
+    assert _digest_failure("agent_rc_nonzero", "") == ""
 
 
 def test_digest_lake_build_error_caps_length() -> None:
@@ -130,7 +130,7 @@ def test_write_past_attempts_creates_file_with_full_content(
         _row(pipeline_id="pid-1234567890ab", failure_reason="lake_build_error",
              failure_detail="error: Type mismatch on X",
              proposal_md="## My strategy\nUse foo"),
-        _row(pipeline_id="pid-2345678901bc", failure_reason="agent_no_response",
+        _row(pipeline_id="pid-2345678901bc", failure_reason="agent_timeout",
              failure_detail="claude rc=124", proposal_md=""),
     ]
     out = context_files.write_past_attempts(deads, tmp_path)
@@ -141,7 +141,7 @@ def test_write_past_attempts_creates_file_with_full_content(
     assert "My strategy" in text
     assert "claude rc=124" in text
     assert "lake_build_error" in text
-    assert "agent_no_response" in text
+    assert "agent_timeout" in text
 
 
 def test_write_past_attempts_empty_returns_none(tmp_path: Path) -> None:
@@ -229,7 +229,7 @@ def test_past_attempts_short_failure_detail_unchanged(tmp_path: Path) -> None:
     passed through unchanged."""
     detail = "error: agent rc=124"
     deads = [_row(pipeline_id="pid-cccccccccccc",
-                  failure_reason="agent_no_response",
+                  failure_reason="agent_timeout",
                   failure_detail=detail, proposal_md="")]
     out = context_files.write_past_attempts(deads, tmp_path)
     text = out.read_text(encoding="utf-8")

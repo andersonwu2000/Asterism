@@ -88,18 +88,25 @@ _collect_artifacts = collect_artifacts
 
 def _spawn_failure(rc: int, attempts_dir: Path,
                    spawn_dur: float) -> tuple[str, str]:
-    """F46 — classify a non-zero `agent.spawn_llm` rc into
-    (failure_reason, failure_detail). When wall-clock < 10s the agent
-    almost certainly never ran (claude.exe crashed at startup, prompt
-    parser rejected, cwd unreachable, ...) so the call is reclassified
-    as `spawn_fast_fail`. Pipeline cascade treats this differently:
-    no goal-attempt increment, dispatcher sets a per-target cooldown.
+    """Classify a non-zero `agent.spawn_llm` rc into
+    (failure_reason, failure_detail). Three classes:
+
+      - `spawn_fast_fail` (F46) — wall-clock < 10s; agent almost
+        certainly never ran (claude.exe crashed at startup, prompt
+        parser rejected, cwd unreachable, ...). Cascade: no
+        goal-attempt increment, dispatcher sets per-target cooldown.
+      - `agent_timeout` — rc=124, SIGKILL'd at WORKER_TIMEOUT_SEC.
+        Pipeline runs F55 postmortem on this same session before
+        returning so next dispatch sees a `.drafts/` progress note.
+      - `agent_rc_nonzero` — anything else (rc≠0, wall ≥ 10s,
+        rc≠124). Generic agent / spawn error.
 
     Reads `attempts_dir/_spawn.stderr` (written by the provider on
     rc≠0) and folds the first ~600 chars into failure_detail so
     forensic visibility doesn't depend on grovelling through orphan
     sandbox dirs.
     """
+    from ..llm.base import SpawnRC
     stderr_tail = ""
     sf = attempts_dir / "_spawn.stderr"
     if sf.exists():
@@ -111,8 +118,10 @@ def _spawn_failure(rc: int, attempts_dir: Path,
     if spawn_dur < SPAWN_FAST_FAIL_SEC:
         base = f"agent rc={rc} (fast-fail in {spawn_dur:.1f}s)"
         reason = "spawn_fast_fail"
+    elif rc == SpawnRC.TIMEOUT:
+        reason = "agent_timeout"
     else:
-        reason = "agent_no_response"
+        reason = "agent_rc_nonzero"
     detail = base if not stderr_tail else f"{base}\n{stderr_tail}"
     return reason, detail
 

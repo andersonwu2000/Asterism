@@ -19,10 +19,7 @@ import sqlite3
 from pathlib import Path
 
 from Tooling import db
-from Tooling.dispatcher import (
-    _is_agent_infeasible,
-    cascade_one,
-)
+from Tooling.dispatcher import cascade_one
 from Tooling.pipeline import (
     DECLINE_PARENT_TYPE_INFEASIBLE,
     DECLINE_TOO_HARD,
@@ -111,23 +108,8 @@ def _record_dead_attempt(conn: sqlite3.Connection, *, pipeline_id: str,
     conn.commit()
 
 
-def test_is_agent_infeasible_helper(conn: sqlite3.Connection) -> None:
-    gid = _seed_goal(conn)
-    _record_dead_attempt(conn, pipeline_id="p1", target_id=gid,
-                         reason="agent_infeasible")
-    assert _is_agent_infeasible(conn, "p1") is True
-    # Other reasons are not infeasibilities
-    _record_dead_attempt(conn, pipeline_id="p2", target_id=gid,
-                         reason="agent_declined")
-    assert _is_agent_infeasible(conn, "p2") is False
-    _record_dead_attempt(conn, pipeline_id="p3", target_id=gid,
-                         reason="lake_build_error")
-    assert _is_agent_infeasible(conn, "p3") is False
-    assert _is_agent_infeasible(conn, "ghost") is False
-
-
 # ---------------------------------------------------------------------
-# 3. cascade_one shelves the goal + skips attempts++ on infeasible
+# 2. cascade_one shelves the goal + skips attempts++ on infeasible
 # ---------------------------------------------------------------------
 
 def test_cascade_infeasible_builder_shelves_goal_immediately(
@@ -144,7 +126,8 @@ def test_cascade_infeasible_builder_shelves_goal_immediately(
     pre = db.get_goal(conn, gid)
     assert pre["attempts"] == 0
     cascade_one(conn, pipeline_id=pid, kind="Builder",
-                target_id=str(gid), target_kind="Goal", outcome="failed")
+                target_id=str(gid), target_kind="Goal", outcome="failed",
+                failure_reason="agent_infeasible")
     row = db.get_goal(conn, gid)
     assert row["status"] == "shelved"
     assert row["attempts"] == 0  # no increment
@@ -160,7 +143,8 @@ def test_cascade_infeasible_backward_shelves_goal_immediately(
     _record_dead_attempt(conn, pipeline_id=pid, target_id=gid,
                          reason="agent_infeasible", kind="Backward")
     cascade_one(conn, pipeline_id=pid, kind="Backward",
-                target_id=str(gid), target_kind="Goal", outcome="failed")
+                target_id=str(gid), target_kind="Goal", outcome="failed",
+                failure_reason="agent_infeasible")
     row = db.get_goal(conn, gid)
     assert row["status"] == "shelved"
     assert row["attempts"] == 0
@@ -202,7 +186,7 @@ def test_cascade_infeasible_propagates_to_parent_strategy(
                          reason="agent_infeasible")
     cascade_one(conn, pipeline_id=pid, kind="Builder",
                 target_id=str(sub_gid), target_kind="Goal",
-                outcome="failed")
+                outcome="failed", failure_reason="agent_infeasible")
 
     # Sub-goal shelved
     assert db.get_goal(conn, sub_gid)["status"] == "shelved"
@@ -229,7 +213,8 @@ def test_cascade_decline_path_unaffected(conn: sqlite3.Connection) -> None:
     _record_dead_attempt(conn, pipeline_id=pid, target_id=gid,
                          reason="agent_declined")
     cascade_one(conn, pipeline_id=pid, kind="Builder",
-                target_id=str(gid), target_kind="Goal", outcome="failed")
+                target_id=str(gid), target_kind="Goal", outcome="failed",
+                failure_reason="agent_declined")
     row = db.get_goal(conn, gid)
     assert row["status"] == "open"  # NOT shelved
     assert row["attempts"] == BUILDER_THRESHOLD

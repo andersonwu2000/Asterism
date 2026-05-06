@@ -164,50 +164,18 @@ def next_worker_kind(goal: sqlite3.Row) -> str:
 # Cascade
 # ---------------------------------------------------------------------
 
-def _latest_failure_reason(conn: sqlite3.Connection,
-                           pipeline_id: str) -> str | None:
-    """Look up the failure_reason of the latest dead_attempt for this
-    pipeline, or None when no row exists (worker-exception cascades
-    synthesized from outside don't write dead_attempts)."""
-    row = conn.execute(
-        "SELECT failure_reason FROM dead_attempts "
-        "WHERE pipeline_id = ? ORDER BY id DESC LIMIT 1",
-        (pipeline_id,),
-    ).fetchone()
-    return row["failure_reason"] if row else None
-
-
-def _is_spawn_fast_fail(conn: sqlite3.Connection, pipeline_id: str) -> bool:
-    """F46 — was this pipeline's failure a spawn-side fast fail (rc≠0
-    in <10s, almost certainly an infra problem and not an agent error)?
-    The pipeline writes a dead_attempt row with `failure_reason =
-    'spawn_fast_fail'` in this case. Check that row to decide whether
-    the cascade should skip incrementing the goal's attempts counter.
-    Returns False if no dead_attempt was recorded (e.g. success cases
-    or worker-exception cascades synthesized from outside)."""
-    return _latest_failure_reason(conn, pipeline_id) == "spawn_fast_fail"
-
-
-def _is_agent_infeasible(conn: sqlite3.Connection, pipeline_id: str) -> bool:
-    """True if the latest dead_attempt for `pipeline_id` came back with
-    `agent_infeasible` — the agent constructed a counterexample showing
-    the parent's sub-goal type is unprovable. Builder/Backward both write
-    this when they trip the `decline_reason: parent_type_infeasible` hatch.
-    """
-    return _latest_failure_reason(conn, pipeline_id) == "agent_infeasible"
-
-
-def _is_agent_declined(conn: sqlite3.Connection, pipeline_id: str) -> bool:
-    """F48 — did the Builder agent invoke the decline hatch (write
-    PROPOSAL.md but no patch.lean)? When True, cascade fast-tracks the
-    goal to Backward rather than burning the rest of BUILDER_THRESHOLD
-    on attempts the agent already declared unwinnable."""
-    return _latest_failure_reason(conn, pipeline_id) == "agent_declined"
+# Cascade reads `failure_reason` directly from PipelineResult passed in;
+# helpers that round-tripped through dead_attempts (`_latest_failure_reason`
+# / `_is_*`) were removed — the reason is already in scope, no DB query
+# needed. spawn_fast_fail rows are no longer written to dead_attempts at
+# all (they were noise: never projected as event, only read by these
+# helpers); the reason is a transient signal carried through the future
+# result tuple.
 
 
 def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 kind: str, target_id: str, target_kind: str,
-                outcome: str,
+                outcome: str, failure_reason: str = "",
                 workspace: Path | None = None) -> None:
     """Apply state transitions for one finished pipeline.
 
@@ -270,7 +238,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
     # not an agent error. Don't burn the goal's attempts cap for it.
     # Dispatcher main loop separately back-offs via cooldown dict.
     is_fast_fail = (outcome == "failed"
-                    and _is_spawn_fast_fail(conn, pipeline_id))
+                    and failure_reason == "spawn_fast_fail")
 
     if kind == "Builder":
         if outcome == "proved":
@@ -291,7 +259,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             # a redesigned Backward decomposition. Without this, the wrong-
             # type sub-goal would burn SHELVE_THRESHOLD attempts before
             # cascading up — typically several hours of LLM time.
-            if _is_agent_infeasible(conn, pipeline_id):
+            if failure_reason == "agent_infeasible":
                 db.update_goal_status(conn, int(target_id), "shelved")
                 db.set_builder_session_id(conn, int(target_id), None)
                 _propagate_shelve(conn, int(target_id))
@@ -304,7 +272,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             # progress still advances by the same +1 the increment
             # would have produced — declines are not free, just
             # routed differently.
-            if _is_agent_declined(conn, pipeline_id):
+            if failure_reason == "agent_declined":
                 cur = db.get_goal(conn, int(target_id))
                 cur_n = int(cur["attempts"]) if cur else 0
                 target_n = max(cur_n + 1, BUILDER_THRESHOLD)
@@ -345,7 +313,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
         # Infeasibility escape (mirrors Builder branch above): Backward
         # agent declined with `parent_type_infeasible`, skip attempts++,
         # propagate shelve so the parent strategy re-decomposes.
-        if _is_agent_infeasible(conn, pipeline_id):
+        if failure_reason == "agent_infeasible":
             db.update_goal_status(conn, int(target_id), "shelved")
             db.set_backward_session_id(conn, int(target_id), None)
             _propagate_shelve(conn, int(target_id))
@@ -440,7 +408,8 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
                     status="failed", outcome="failed",
                     started_at=started_at,
                 )
-                return (pipeline_id, task_kind, target_id, target_kind, "failed")
+                return (pipeline_id, task_kind, target_id, target_kind,
+                        "failed", "goal_not_found")
 
             mfst = manifests[goal["problem"]]
 
@@ -467,9 +436,15 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
             )
 
             # Capture artifacts from .attempts/<pid>/ before WorkArea rmtree.
-            # 'superseded' isn't a real failure (just OR race noise), don't
-            # pollute dead_attempts with it.
-            if r.failure_reason and r.failure_reason != "superseded":
+            # Skip dead_attempts INSERT for:
+            #   - 'superseded' (OR race noise, not a real failure)
+            #   - 'spawn_fast_fail' (infra fault, not agent action; reason
+            #     is carried back through the future tuple for cooldown,
+            #     dead_attempts row would only be filtered out by events
+            #     anyway — F46/audit problem 4)
+            if r.failure_reason and r.failure_reason not in (
+                "superseded", "spawn_fast_fail",
+            ):
                 artifacts = pipeline.collect_artifacts(attempts_dir)
                 tk = target_kind
                 tid = goal_id if tk == "Goal" else int(target_id)
@@ -482,7 +457,8 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
                     artifacts=_json.dumps(artifacts) if artifacts else "",
                 )
 
-            return (pipeline_id, task_kind, target_id, target_kind, r.outcome)
+            return (pipeline_id, task_kind, target_id, target_kind,
+                    r.outcome, r.failure_reason)
     finally:
         conn.close()
 
@@ -561,13 +537,13 @@ def run(workspace: Path, *, once: bool = False) -> int:
                 # meta = (pipeline_id, kind, target_id, target_kind)
                 running.discard((meta[2], meta[1]))
                 try:
-                    pid, kind, tid, tk, outcome = fut.result()
+                    pid, kind, tid, tk, outcome, reason = fut.result()
                     cascade_one(conn, pipeline_id=pid, kind=kind,
                                 target_id=tid, target_kind=tk,
-                                outcome=outcome, workspace=workspace)
+                                outcome=outcome, failure_reason=reason,
+                                workspace=workspace)
                     # F46 — back-off + global counter for spawn fast-fails
-                    if outcome == "failed" \
-                            and _is_spawn_fast_fail(conn, pid):
+                    if outcome == "failed" and reason == "spawn_fast_fail":
                         cooldown_until[(tid, kind)] = (
                             time.time() + SPAWN_COOLDOWN_SEC)
                         consec_fast_fails += 1

@@ -38,7 +38,9 @@
 | `naming_violation` | Backward | sub-goal slug 不含 `s<sid>_` 前綴 | 保留 | attempts++ | `direct_attempt` |
 | `agent_declined` | Builder (F48) | agent 寫 PROPOSAL 但無 patch + frontmatter `decline_reason: too_hard` | 清（next dispatch 是 Backward） | attempts 跳到 BUILDER_THRESHOLD（一次燒掉 Builder 預算） | `direct_attempt`（subtype） |
 | `agent_infeasible` | Builder + Backward (F48) | agent 在 PROPOSAL 標 `decline_reason: parent_type_infeasible`（含反例） | 清 | goal 直接 `shelved` + `_propagate_shelve`（**不增 attempts**、cascade 上拋讓父 strategy 重拆） | `infeasible_sub`（投到 parent goal、不到自己） |
-| `agent_no_response` | Builder + Backward | (a) claude rc≠0 且 wall-clock ≥ 10s（含 timeout rc=124）；(b) Builder Phase 2 rc=0 但 agent 沒寫 `patch*.lean` 也沒 PROPOSAL.md | (a) 一般：保留<br>(a) timeout (rc=124)：清（postmortem 跑完 + 寫 `.drafts/`，F55）<br>(b)：保留 | attempts++ | `direct_attempt` |
+| `agent_timeout` | Builder + Backward | claude rc=124（SIGKILL at WORKER_TIMEOUT_SEC、預設 600s） | 清（postmortem 跑完 + 寫 `.drafts/`、F55） | attempts++ | `direct_attempt` |
+| `agent_rc_nonzero` | Builder + Backward | rc≠0、rc≠124、wall-clock ≥ 10s（一般 hard fail：crash / parser error / etc.） | 保留（warm retry 帶 stderr） | attempts++ | `direct_attempt` |
+| `agent_no_output` | Builder Phase 2 | rc=0 但 agent 沒寫 `patch*.lean` 也沒 PROPOSAL.md（agent 不 follow 格式） | 保留 | attempts++ | `direct_attempt` |
 | `spawn_fast_fail` | Builder + Backward (F46) | rc≠0 且 wall-clock < 10s（infra 故障：claude.exe crash / cwd / quota） | 不變 | **不增 attempts**、設 30s cooldown、CONSEC=10 觸發 daemon 退出 rc=2 | 不投影（純 framework noise） |
 | `superseded` (legacy) | pre-F56 Verify worker | F56 後不再產生新 row、僅歷史 db 有 | n/a | n/a | 不投影 |
 
@@ -51,11 +53,12 @@
 | `missing_parent_stub` | Backward | 讀 parent lean 失敗（OSError） |
 | `parent_stub_not_decomposable` | Backward | F52 skeleton 從 parent stub 抽不出簽名 |
 | `goal_no_longer_open` | Backward | 跑到中途 goal status 已非 `'open'`（race protection、_abort 前回滾寫入的檔） |
+| `unknown_kind` | dispatcher | `_run_pipeline` 收到非 Builder/Backward 的 task_kind（unreachable in current code、enum 完整性保留） |
 
-這些都走 generic cascade（attempts++、過 SHELVE 就 shelved）；event 投影為 `direct_attempt`。觸發頻率極低、未來可考慮獨立 cooldown / retry 策略。
+這些都走 generic cascade（attempts++、過 SHELVE 就 shelved）；**event 不投影**（agent 看不到也不能改、跟 `spawn_fast_fail` 同類處理 — `dead_attempts` 仍 INSERT 給 operator forensic、events.py 投影層 filter out）。觸發頻率極低、未來可考慮獨立 cooldown / retry 策略。
 
 **Notes**：
-- `timeout` **不是** failure_reason 字串。rc=124 在 `_spawn_failure` 內歸 `agent_no_response`（wall-clock ≥ 10s 條件已滿足）；timeout 的特殊處理（F55 postmortem + 清 session）在 pipeline 端基於 rc 判斷、不靠 reason 字串。要在 dead_attempts 區分 timeout vs 一般 agent_no_response，看 `failure_detail`（含 `agent rc=124`）。
+- spawn 失敗的三條 reason（`agent_timeout` / `agent_rc_nonzero` / `agent_no_output`）按 rc + agent 行為精確分類，retry agent / event renderer 可依 reason 直接 dispatch、不需要 parse `failure_detail`。
 - `agent_declined` **只在 Builder**。Backward 沒 declined channel；Backward agent 想退出走 `agent_infeasible`（必須含反例）。
 - `lake_build_error` 在 Builder 來自 patch 套上去 build 失敗；在 Backward 來自 strategy 組裝（sub-goal sorry stubs + scratch 一起 build batch）失敗。
 
@@ -68,11 +71,16 @@
 
 | event_type | DB 來源 | digest 結構 | 注入到誰的 Context.md | actionability |
 |---|---|---|---|---|
-| `direct_attempt` | `dead_attempts` where `target_kind='Goal'` AND `failure_reason NOT IN ('spawn_fast_fail', 'agent_infeasible')` | `failure_reason` + 截斷 `failure_detail` + 簡短 PROPOSAL excerpt | `dead_attempts.target_id`（自己這個 goal） | must-see |
+| `direct_attempt` | `dead_attempts` where `target_kind='Goal'` AND `failure_reason NOT IN _NON_AGENT_REASONS` | `failure_reason` + 截斷 `failure_detail` + 簡短 PROPOSAL excerpt | `dead_attempts.target_id`（自己這個 goal） | must-see |
 | `verify_failure` | `dead_attempts` where `target_kind='Strategy'`（pre-F56 row、F56 後不再產生） | strategy 的 `proposal_md` 截斷 + lake stderr 摘要 | `strategies.goal_id` | must-see |
 | `dead_strategy` | `strategies` where `status='dead'` AND `proposal_md != ''` AND ≥1 linked sub-goal | `proposal_md` 截斷 + 該 strategy 拆出的 sub-goal slug 列表 | `strategies.goal_id` | must-see |
 | `infeasible_sub` | `dead_attempts` where `failure_reason='agent_infeasible'` JOIN `strategy_subgoals` 找 parent | sub-goal slug + counterexample 摘要（從 PROPOSAL.md `## Root cause` / `## Counterexample` 抽，沿用 `_extract_root_cause`） | **parent goal id**（不是失敗的 sub 自己） | must-see |
-| (filtered out) | `dead_attempts` where `failure_reason='spawn_fast_fail'` | — | — | 不投影 |
+| (filtered out) | `dead_attempts` where `failure_reason IN _NON_AGENT_REASONS` | — | — | 不投影 |
+
+**`_NON_AGENT_REASONS`** — events.py 統一定義的不投影 reason set、SQL `NOT IN` 引用：
+- `spawn_fast_fail` — infra 故障（claude.exe crash / cwd / quota）
+- `agent_infeasible` — 改投成 `infeasible_sub`、不在自己 goal 出現
+- `goal_not_found`, `lean_file_missing`, `missing_parent_stub`, `parent_stub_not_decomposable`, `goal_no_longer_open`, `unknown_kind` — framework / DB / FS race、agent 看不到也不能改
 
 **audience 規則的兩個 axis**（不再 kind-gate Builder/Backward）：
 

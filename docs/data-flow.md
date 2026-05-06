@@ -98,7 +98,7 @@ Spawn agent：
    不過：還原 backup、record dead_attempt(reason='lake_build_error')、outcome 'failed'
 ```
 
-**Builder 失敗模式**：Phase 1 hint 失敗（全 register_hint 沒 winner / winner confirm rebuild 不過）**fall-through Phase 2 LLM 同次 dispatch 跑完**、不獨立成 outcome。Phase 2 視 rc / agent 行為走 `lake_build_error` / `forbidden_lemma` / `agent_no_response` / `agent_declined` (F48) / `agent_infeasible` / `spawn_fast_fail`。timeout (rc=124) 在 `_spawn_failure` 內歸到 `agent_no_response` reason、但 pipeline 端額外跑 F55 postmortem 寫 `.drafts/`（§6）。
+**Builder 失敗模式**：Phase 1 hint 失敗（全 register_hint 沒 winner / winner confirm rebuild 不過）**fall-through Phase 2 LLM 同次 dispatch 跑完**、不獨立成 outcome。Phase 2 視 rc / agent 行為走 `lake_build_error` / `forbidden_lemma` / `agent_declined` (F48) / `agent_infeasible` / `agent_no_output` (rc=0 但無 patch) / `agent_rc_nonzero` / `agent_timeout` (rc=124、額外跑 F55 postmortem) / `spawn_fast_fail` (rc≠0 wall<10s)。
 
 cascade 對 Builder 的狀態轉移：proved → goal proved；failed → attempts++、過 SHELVE_THRESHOLD 就 shelved 並 `_propagate_shelve` 上拋（除 `agent_infeasible` 直接 shelved 不增 attempts、`spawn_fast_fail` 也不增）。
 
@@ -159,7 +159,7 @@ cascade 對 Builder 的狀態轉移：proved → goal proved；failed → attemp
 
 **特殊 placement (item 7 SG 教訓)**：agent 偶爾把整段 valid proof 寫進 `new_*.lean` 而不是留 sorry stub。framework 偵測到 sorry-free + axioms 在白名單就直接把該 sub-goal mark proved、跳過後續 Backward dispatch（`_try_promote_sorry_free`）。
 
-**Backward 失敗模式**：步驟 5 結構驗證走 `parse_proposal_fail` / `forbidden_lemma` / `patch_signature_mismatch` (F52) / `naming_violation`；步驟 8 走 `lake_build_error`；spawn 層走 `agent_no_response` / `agent_infeasible` / `spawn_fast_fail`。timeout (rc=124) 同 Builder 歸到 `agent_no_response` reason、額外跑 postmortem。Backward **沒有 declined channel**（agent 想退出走 `agent_infeasible` 含反例）。
+**Backward 失敗模式**：步驟 5 結構驗證走 `parse_proposal_fail` / `forbidden_lemma` / `patch_signature_mismatch` (F52) / `naming_violation`；步驟 8 走 `lake_build_error`；spawn 層走 `agent_rc_nonzero` / `agent_timeout` (額外 postmortem) / `agent_infeasible` / `spawn_fast_fail`。Backward **沒有 declined channel**（agent 想退出走 `agent_infeasible` 含反例）、也**沒有 `agent_no_output`**（agent rc=0 但少檔走 `parse_proposal_fail`）。
 
 cascade 對 Backward 的狀態轉移：success → goal `attempting`（**還沒 proved**、等 Verify）；其他 → attempts++、過 SHELVE_THRESHOLD 就 shelved + `_propagate_shelve` 上拋（同樣的 `agent_infeasible` / `spawn_fast_fail` 例外）。
 

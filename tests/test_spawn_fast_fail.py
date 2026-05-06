@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from Tooling import db, pipeline as _pipeline
-from Tooling.dispatcher import cascade_one, _is_spawn_fast_fail
+from Tooling.dispatcher import cascade_one
 
 
 # ---------------------------------------------------------------------
@@ -130,7 +130,7 @@ def test_spawn_failure_classifies_fast_as_spawn_fast_fail(
     tmp_path: Path,
 ) -> None:
     """Spawn duration < SPAWN_FAST_FAIL_SEC (10s) and rc≠0 → reason
-    is `spawn_fast_fail`, not `agent_no_response`."""
+    is `spawn_fast_fail`, not `agent_rc_nonzero`."""
     reason, detail = _pipeline._spawn_failure(
         rc=1, attempts_dir=tmp_path, spawn_dur=2.3)
     assert reason == "spawn_fast_fail"
@@ -138,15 +138,22 @@ def test_spawn_failure_classifies_fast_as_spawn_fast_fail(
     assert "2.3s" in detail
 
 
-def test_spawn_failure_classifies_slow_as_agent_no_response(
+def test_spawn_failure_classifies_timeout_as_agent_timeout(
     tmp_path: Path,
 ) -> None:
-    """Spawn duration >= SPAWN_FAST_FAIL_SEC and rc≠0 → keep the
-    legacy `agent_no_response` reason. Legitimate timeouts (rc=124
-    after 600s) belong here."""
+    """rc=124 (SIGKILL after WORKER_TIMEOUT_SEC) → `agent_timeout`."""
     reason, _ = _pipeline._spawn_failure(
         rc=124, attempts_dir=tmp_path, spawn_dur=600.0)
-    assert reason == "agent_no_response"
+    assert reason == "agent_timeout"
+
+
+def test_spawn_failure_classifies_slow_nontimeout_as_rc_nonzero(
+    tmp_path: Path,
+) -> None:
+    """rc≠0 and rc≠124, wall ≥ 10s → generic `agent_rc_nonzero`."""
+    reason, _ = _pipeline._spawn_failure(
+        rc=1, attempts_dir=tmp_path, spawn_dur=15.0)
+    assert reason == "agent_rc_nonzero"
 
 
 def test_spawn_failure_includes_stderr_tail(tmp_path: Path) -> None:
@@ -205,32 +212,6 @@ def _record_dead_attempt(conn: sqlite3.Connection, *, pipeline_id: str,
     conn.commit()
 
 
-def test_is_spawn_fast_fail_true_for_matching_pipeline(
-    conn: sqlite3.Connection,
-) -> None:
-    gid = _seed_goal(conn)
-    _record_dead_attempt(conn, pipeline_id="pid-A", target_id=gid,
-                         reason="spawn_fast_fail")
-    assert _is_spawn_fast_fail(conn, "pid-A") is True
-
-
-def test_is_spawn_fast_fail_false_for_other_reasons(
-    conn: sqlite3.Connection,
-) -> None:
-    gid = _seed_goal(conn)
-    _record_dead_attempt(conn, pipeline_id="pid-B", target_id=gid,
-                         reason="lake_build_error")
-    assert _is_spawn_fast_fail(conn, "pid-B") is False
-
-
-def test_is_spawn_fast_fail_false_when_no_dead_attempt(
-    conn: sqlite3.Connection,
-) -> None:
-    """Worker exception path synthesizes a cascade without writing a
-    dead_attempt row. Must report False so the standard increment runs."""
-    assert _is_spawn_fast_fail(conn, "ghost-pipeline") is False
-
-
 def test_cascade_builder_spawn_fast_fail_skips_increment(
     conn: sqlite3.Connection,
 ) -> None:
@@ -239,10 +220,9 @@ def test_cascade_builder_spawn_fast_fail_skips_increment(
     rc=1 bursts torch the cap and shelve a salvageable goal."""
     gid = _seed_goal(conn)
     pid = "fast-fail-pid"
-    _record_dead_attempt(conn, pipeline_id=pid, target_id=gid,
-                         reason="spawn_fast_fail")
     cascade_one(conn, pipeline_id=pid, kind="Builder",
-                target_id=str(gid), target_kind="Goal", outcome="failed")
+                target_id=str(gid), target_kind="Goal", outcome="failed",
+                failure_reason="spawn_fast_fail")
     row = db.get_goal(conn, gid)
     assert row["attempts"] == 0
     assert row["status"] == "open"
@@ -256,10 +236,9 @@ def test_cascade_backward_spawn_fast_fail_skips_increment(
     bursts before the Backward branch was even taken seriously."""
     gid = _seed_goal(conn)
     pid = "fast-fail-bwd"
-    _record_dead_attempt(conn, pipeline_id=pid, target_id=gid,
-                         reason="spawn_fast_fail", kind="Backward")
     cascade_one(conn, pipeline_id=pid, kind="Backward",
-                target_id=str(gid), target_kind="Goal", outcome="failed")
+                target_id=str(gid), target_kind="Goal", outcome="failed",
+                failure_reason="spawn_fast_fail")
     row = db.get_goal(conn, gid)
     assert row["attempts"] == 0
 
@@ -272,10 +251,9 @@ def test_cascade_normal_failure_still_increments(
     the spawn_fast_fail path."""
     gid = _seed_goal(conn)
     pid = "real-fail"
-    _record_dead_attempt(conn, pipeline_id=pid, target_id=gid,
-                         reason="lake_build_error")
     cascade_one(conn, pipeline_id=pid, kind="Builder",
-                target_id=str(gid), target_kind="Goal", outcome="failed")
+                target_id=str(gid), target_kind="Goal", outcome="failed",
+                failure_reason="lake_build_error")
     assert db.get_goal(conn, gid)["attempts"] == 1
 
 

@@ -59,7 +59,7 @@ decline records 不獨立成 event type — 是 `direct_attempt` 的 `failure_re
 ## Goal history
 
 ### Direct attempts on this goal
-（per-row digest，混含 lake_build_error / parse_fail / agent_no_response /
+（per-row digest，混含 lake_build_error / parse_proposal_fail / agent_rc_nonzero / agent_timeout /
   forbidden_lemma / naming_violation / patch_signature_mismatch /
   agent_declined / agent_infeasible / spawn_fast_fail）
 

@@ -5,7 +5,7 @@ followed builder.md's "When to skip writing a patch" hatch. Three
 contracts must hold:
 
 1. Pipeline classifies this as failure_reason='agent_declined'
-   (distinct from agent_no_response, which means agent died / didn't
+   (distinct from agent_no_output, which means agent died / didn't
    produce any output).
 2. cascade_one promotes the goal to BUILDER_THRESHOLD attempts in
    one step so the next dispatch is Backward, not yet-another Builder.
@@ -21,7 +21,6 @@ import pytest
 
 from Tooling import agent, db, manifest, pipeline as _pipeline
 from Tooling.dispatcher import (
-    _is_agent_declined,
     cascade_one,
     BUILDER_THRESHOLD,
     SHELVE_THRESHOLD,
@@ -32,9 +31,9 @@ from Tooling.dispatcher import (
 # 1. Pipeline classifies decline distinctly from no-response
 # ---------------------------------------------------------------------
 
-def test_no_patch_no_proposal_is_agent_no_response(tmp_path: Path) -> None:
+def test_no_patch_no_proposal_is_agent_no_output(tmp_path: Path) -> None:
     """Sanity baseline: empty attempts_dir → agent died / produced
-    nothing. Stays as legacy `agent_no_response`."""
+    nothing. Stays as legacy `agent_no_output`."""
     # Nothing written to tmp_path
     patches = list(tmp_path.glob("patch*.lean"))
     proposal = tmp_path / "PROPOSAL.md"
@@ -46,8 +45,8 @@ def test_no_patch_no_proposal_is_agent_no_response(tmp_path: Path) -> None:
         if proposal_text.strip():
             reason = "agent_declined"
         else:
-            reason = "agent_no_response"
-    assert reason == "agent_no_response"
+            reason = "agent_no_output"
+    assert reason == "agent_no_output"
 
 
 def test_no_patch_with_proposal_is_agent_declined(tmp_path: Path) -> None:
@@ -69,21 +68,21 @@ def test_no_patch_with_proposal_is_agent_declined(tmp_path: Path) -> None:
         if proposal.read_text(encoding="utf-8").strip():
             reason = "agent_declined"
         else:
-            reason = "agent_no_response"
+            reason = "agent_no_output"
     assert reason == "agent_declined"
 
 
 def test_whitespace_proposal_is_not_decline(tmp_path: Path) -> None:
     """A PROPOSAL.md containing only whitespace doesn't carry signal —
-    classify as agent_no_response, not as a fake decline."""
+    classify as agent_no_output, not as a fake decline."""
     (tmp_path / "PROPOSAL.md").write_text("   \n\n  \n", encoding="utf-8")
     patches = list(tmp_path.glob("patch*.lean"))
     if not patches:
         if (tmp_path / "PROPOSAL.md").read_text(encoding="utf-8").strip():
             reason = "agent_declined"
         else:
-            reason = "agent_no_response"
-    assert reason == "agent_no_response"
+            reason = "agent_no_output"
+    assert reason == "agent_no_output"
 
 
 # ---------------------------------------------------------------------
@@ -124,20 +123,6 @@ def _record_dead_attempt(conn: sqlite3.Connection, *, pipeline_id: str,
     conn.commit()
 
 
-def test_is_agent_declined_helper(conn: sqlite3.Connection) -> None:
-    gid = _seed_goal(conn)
-    _record_dead_attempt(conn, pipeline_id="p1", target_id=gid,
-                         reason="agent_declined",
-                         proposal="condition 1: no proof direction")
-    assert _is_agent_declined(conn, "p1") is True
-    # Other reasons aren't declines
-    _record_dead_attempt(conn, pipeline_id="p2", target_id=gid,
-                         reason="lake_build_error")
-    assert _is_agent_declined(conn, "p2") is False
-    # Missing pipeline id (worker exception path) → False, not crash
-    assert _is_agent_declined(conn, "ghost") is False
-
-
 def test_cascade_decline_jumps_to_builder_threshold(
     conn: sqlite3.Connection,
 ) -> None:
@@ -150,7 +135,8 @@ def test_cascade_decline_jumps_to_builder_threshold(
                          reason="agent_declined",
                          proposal="condition 4: needs sub-lemma decomp")
     cascade_one(conn, pipeline_id=pid, kind="Builder",
-                target_id=str(gid), target_kind="Goal", outcome="failed")
+                target_id=str(gid), target_kind="Goal", outcome="failed",
+                failure_reason="agent_declined")
     row = db.get_goal(conn, gid)
     assert row["attempts"] == BUILDER_THRESHOLD
     # Goal still open (not shelved — BUILDER_THRESHOLD < SHELVE_THRESHOLD)
@@ -174,7 +160,8 @@ def test_cascade_decline_at_high_attempts_still_increments_one(
                          reason="agent_declined",
                          proposal="still hard")
     cascade_one(conn, pipeline_id=pid, kind="Builder",
-                target_id=str(gid), target_kind="Goal", outcome="failed")
+                target_id=str(gid), target_kind="Goal", outcome="failed",
+                failure_reason="agent_declined")
     assert db.get_goal(conn, gid)["attempts"] == starting + 1
 
 
@@ -192,7 +179,8 @@ def test_cascade_decline_can_trigger_shelve_at_threshold(
     _record_dead_attempt(conn, pipeline_id=pid, target_id=gid,
                          reason="agent_declined", proposal="hopeless")
     cascade_one(conn, pipeline_id=pid, kind="Builder",
-                target_id=str(gid), target_kind="Goal", outcome="failed")
+                target_id=str(gid), target_kind="Goal", outcome="failed",
+                failure_reason="agent_declined")
     row = db.get_goal(conn, gid)
     assert row["attempts"] >= SHELVE_THRESHOLD
     assert row["status"] == "shelved"
@@ -208,7 +196,8 @@ def test_cascade_normal_failure_unchanged_by_f48(
     _record_dead_attempt(conn, pipeline_id=pid, target_id=gid,
                          reason="lake_build_error")
     cascade_one(conn, pipeline_id=pid, kind="Builder",
-                target_id=str(gid), target_kind="Goal", outcome="failed")
+                target_id=str(gid), target_kind="Goal", outcome="failed",
+                failure_reason="lake_build_error")
     assert db.get_goal(conn, gid)["attempts"] == 1
 
 

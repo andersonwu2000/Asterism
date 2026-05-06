@@ -268,7 +268,7 @@ def test_status_payload_shape_for_initialized_problem(
     _seed_strategy(conn, gid, status="dead")
     _seed_dead_attempt(conn, gid, "Goal", reason="lake_build_error")
     _seed_dead_attempt(conn, gid, "Goal", reason="lake_build_error")
-    _seed_dead_attempt(conn, sid, "Strategy", reason="agent_no_response")
+    _seed_dead_attempt(conn, sid, "Strategy", reason="agent_rc_nonzero")
 
     payload = _status_payload(conn, "wilson")
     assert payload["exists"] is True
@@ -279,7 +279,7 @@ def test_status_payload_shape_for_initialized_problem(
     # Failure-reason aggregation
     assert payload["recent_failure_reasons"] == {
         "lake_build_error": 2,
-        "agent_no_response": 1,
+        "agent_rc_nonzero": 1,
     }
     assert payload["dead_attempts_window"] == 3
 

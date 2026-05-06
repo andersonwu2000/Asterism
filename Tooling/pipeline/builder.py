@@ -248,7 +248,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # "When to skip writing a patch" hatch: it produced a non-empty
         # PROPOSAL.md explaining why the goal is too hard / needs
         # decomposition, but did not write patch.lean. Cascade treats
-        # this distinctly from agent_no_response.
+        # this distinctly from agent_no_output (no PROPOSAL either).
         #
         # `decline_reason` frontmatter sub-routes:
         #   - `parent_type_infeasible` → agent_infeasible (cascade-up:
@@ -270,7 +270,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                 failure_detail="builder declined; PROPOSAL.md explains why",
                 proposal_md=proposal_text,
             )
-        return PipelineResult(outcome="failed", failure_reason="agent_no_response",
+        return PipelineResult(outcome="failed", failure_reason="agent_no_output",
                               failure_detail="no patch*.lean", proposal_md=proposal_text)
     patch = patches[0]
     patch_text = patch.read_text(encoding="utf-8")
