@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import context_files, db, lemma_lookup, manifest, playbook
+from .pipeline import events
 
 
 # ---------------------------------------------------------------------
@@ -313,130 +314,7 @@ def _collect_lemma_names(deads: list[sqlite3.Row],
     return names
 
 
-def _fetch_strategy_dead_attempts(
-    conn: sqlite3.Connection, goal_id: int,
-) -> list[sqlite3.Row]:
-    return conn.execute(
-        "SELECT da.target_id, da.failure_reason, da.failure_detail,"
-        "       da.pipeline_id, s.proposal_md AS strategy_proposal "
-        "FROM dead_attempts da "
-        "JOIN strategies s ON s.id = da.target_id "
-        "WHERE da.target_kind = 'Strategy' AND s.goal_id = ? "
-        "ORDER BY da.id DESC LIMIT 5",
-        (goal_id,),
-    ).fetchall()
-
-
-def _extract_root_cause(proposal_md: str, *, max_chars: int = 400) -> str:
-    """Pull the agent-written root-cause one-paragraph excerpt out of an
-    `agent_infeasible` decline's PROPOSAL.md. Prefers a `## Root cause`
-    section; falls back to the first non-empty paragraph after frontmatter."""
-    if not proposal_md:
-        return ""
-    text = proposal_md
-    if text.startswith("---"):
-        end = text.find("---", 3)
-        if end > 0:
-            text = text[end + 3:].lstrip()
-    import re as _re
-    m = _re.search(r"^##\s*Root cause\s*$", text,
-                   _re.MULTILINE | _re.IGNORECASE)
-    if m:
-        rest = text[m.end():]
-        nxt = _re.search(r"^##\s", rest, _re.MULTILINE)
-        excerpt = (rest[:nxt.start()] if nxt else rest).strip()
-    else:
-        # No `## Root cause` section — agents often put the conclusion
-        # at the END of `## Counterexample`. Take the last non-heading
-        # paragraph (skip raw headings and frontmatter remnants).
-        paras = [p.strip() for p in text.split("\n\n") if p.strip()]
-        paras = [p for p in paras if not p.lstrip().startswith("#")]
-        excerpt = paras[-1] if paras else ""
-    excerpt = " ".join(excerpt.split())  # collapse whitespace/newlines
-    if len(excerpt) > max_chars:
-        excerpt = excerpt[:max_chars].rsplit(" ", 1)[0] + " ..."
-    return excerpt
-
-
-def _fetch_dead_strategies(
-    conn: sqlite3.Connection, goal_id: int, *, k: int = 5,
-) -> list[dict]:
-    """F37 — strategies that were proposed for this goal but later died
-    (sub-goal cascade-shelve, F16 inward kill, etc). Each result
-    includes the strategy's proposal_md plus the slug+statement of
-    every sub-goal it spawned, so the next Backward can be told 'these
-    decompositions were tried and failed — pick a different angle.'
-    Filtered to strategies with non-empty proposal_md AND ≥ 1 linked
-    sub-goal — drops half-baked recovery cleanups (status='dead' +
-    empty proposal) which carry no signal.
-
-    For each shelved sub-goal, also pulls the latest `agent_infeasible`
-    dead_attempt's PROPOSAL.md so the next Backward sees a one-line
-    root-cause excerpt inline (full counterexample is mirrored into
-    `PAST_DEAD_STRATEGIES.md` companion)."""
-    rows = conn.execute(
-        "SELECT s.id, s.proposal_md FROM strategies s "
-        "WHERE s.goal_id = ? AND s.status = 'dead' "
-        "  AND s.proposal_md != '' "
-        "  AND EXISTS (SELECT 1 FROM strategy_subgoals ss "
-        "              WHERE ss.strategy_id = s.id) "
-        "ORDER BY s.id DESC LIMIT ?",
-        (goal_id, k),
-    ).fetchall()
-    out: list[dict] = []
-    for r in rows:
-        subs = conn.execute(
-            "SELECT g.id, g.slug, g.statement, g.status FROM strategy_subgoals ss "
-            "JOIN goals g ON g.id = ss.subgoal_id "
-            "WHERE ss.strategy_id = ? ORDER BY ss.position ASC",
-            (int(r["id"]),),
-        ).fetchall()
-        sub_list: list[dict] = []
-        for s in subs:
-            root_cause = ""
-            counterexample_full = ""
-            if s["status"] == "shelved":
-                d = conn.execute(
-                    "SELECT proposal_md FROM dead_attempts "
-                    "WHERE target_id = ? AND target_kind = 'Goal' "
-                    "  AND failure_reason = 'agent_infeasible' "
-                    "  AND COALESCE(proposal_md, '') != '' "
-                    "ORDER BY id DESC LIMIT 1",
-                    (int(s["id"]),),
-                ).fetchone()
-                if d and d["proposal_md"]:
-                    counterexample_full = d["proposal_md"]
-                    root_cause = _extract_root_cause(d["proposal_md"])
-            sub_list.append({
-                "slug": s["slug"],
-                "statement": s["statement"],
-                "status": s["status"],
-                "root_cause": root_cause,
-                "counterexample_full": counterexample_full,
-            })
-        out.append({
-            "id": int(r["id"]),
-            "proposal_md": r["proposal_md"],
-            "subs": sub_list,
-        })
-    return out
-
-
-def _fetch_builder_declines(
-    conn: sqlite3.Connection, goal_id: int, *, k: int = 3,
-) -> list[sqlite3.Row]:
-    """F48 — Builder decline events on this goal."""
-    return conn.execute(
-        "SELECT proposal_md, ts FROM dead_attempts "
-        "WHERE target_id = ? AND target_kind = 'Goal' "
-        "  AND failure_reason = 'agent_declined' "
-        "  AND COALESCE(proposal_md, '') != '' "
-        "ORDER BY id DESC LIMIT ?",
-        (goal_id, k),
-    ).fetchall()
-
-
-def _section_builder_declines(rows: list[sqlite3.Row]) -> list[str]:
+def _section_builder_declines(rows: list) -> list[str]:
     """F48 — render Builder decline reasons inline so Backward sees
     *what specifically* the Builder agent flagged as hard."""
     if not rows:
@@ -623,50 +501,48 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     """
     workspace = attempts_dir.parent.parent  # .attempts/<pid> → workspace
     problem_dir = workspace / "Problems" / goal["problem"]
-    deads = db.recent_dead_attempts(
-        conn, target_id=goal["id"], target_kind="Goal", k=5)
-    strat_deads = _fetch_strategy_dead_attempts(conn, int(goal["id"]))
-    dead_strats = _fetch_dead_strategies(conn, int(goal["id"]))
-    builder_declines = (
-        _fetch_builder_declines(conn, int(goal["id"]))
+
+    # Project DB rows into Event objects via events.py.
+    # `_NON_AGENT_REASONS` filter lives in events.py; dedupe between
+    # verify_failure and dead_strategy is here because P0-#4 requires
+    # Builder kind to skip verify_failure but still see dead_strategy
+    # intact — events.py can't know whether verify_failure is rendered.
+    direct_events = events.direct_attempts(conn, int(goal["id"]), k=5)
+    verify_events = events.verify_failures(conn, int(goal["id"]), k=5)
+    decline_events = (
+        events.builder_declines(conn, int(goal["id"]))
         if kind == "backward" else []
     )
 
     show_attempts = kind in (None, "builder")
     show_verifies = kind in (None, "backward")
 
-    # P0-#4: gate the dedupe on `show_verifies`. Builder kind suppresses
-    # the verify-failures section; applying the dedupe there would
-    # silently strip dead-strategy signal too.
-    if show_verifies:
-        verify_failed_strategy_ids: set[int] = set()
-        for r in strat_deads:
-            try:
-                verify_failed_strategy_ids.add(int(r["target_id"]))
-            except (KeyError, IndexError, TypeError):
-                pass
-        dead_strats_filtered = [
-            s for s in dead_strats
-            if s["id"] not in verify_failed_strategy_ids
-        ]
-    else:
-        dead_strats_filtered = dead_strats
+    # Dedupe dead_strategy against verify_failure only when both render
+    # for this audience. Builder kind suppresses verify_failure → no
+    # exclude set → all dead strategies surface.
+    exclude_ids = (
+        {int(e["target_id"]) for e in verify_events}
+        if show_verifies else set()
+    )
+    dead_strat_events = events.dead_strategies(
+        conn, int(goal["id"]), k=5, exclude_strategy_ids=exclude_ids,
+    )
 
     sections: list[list[str]] = [
         _section_header(goal),
         _section_sandbox(strategy_id, goal),
         _section_strategy_naming(strategy_id, goal),
         _section_parent_strategy(conn, goal),
-        _section_mathlib_lemmas(mfst, deads, workspace),
+        _section_mathlib_lemmas(mfst, direct_events, workspace),
         _section_manifest_forbidden(mfst),
         _section_manifest_notes(mfst),
         _section_library_available(mfst, workspace),
         _section_playbook(goal, workspace),
-        _section_builder_declines(builder_declines),
+        _section_builder_declines(decline_events),
         _section_prior_partial(kind, problem_dir, int(goal["id"])),
-        _section_past_attempts(deads) if show_attempts else [],
-        _section_past_backward(strat_deads) if show_verifies else [],
-        _section_dead_strategies(dead_strats_filtered),
+        _section_past_attempts(direct_events) if show_attempts else [],
+        _section_past_backward(verify_events) if show_verifies else [],
+        _section_dead_strategies(dead_strat_events),
     ]
 
     parts: list[str] = []
@@ -682,9 +558,9 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     # Context.md (must-see channel), not duplicated into the companion
     # — agents miss companion files (F43) so the inline section is the
     # canonical surface.
-    context_files.write_past_attempts(deads, attempts_dir)
-    context_files.write_past_backward(strat_deads, attempts_dir)
-    context_files.write_past_dead_strategies(dead_strats_filtered,
+    context_files.write_past_attempts(direct_events, attempts_dir)
+    context_files.write_past_backward(verify_events, attempts_dir)
+    context_files.write_past_dead_strategies(dead_strat_events,
                                              attempts_dir)
 
     return out
