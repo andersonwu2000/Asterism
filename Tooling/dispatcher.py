@@ -240,12 +240,34 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
     is_fast_fail = (outcome == "failed"
                     and failure_reason == "spawn_fast_fail")
 
+    # Phase 7 — `moot` outcome: pipeline detected the goal already
+    # terminated (sibling proved / shelved / propagated shelve) before
+    # spawning. No state mutation, no attempts++, no dead_attempt write
+    # (decision 2). bfs_refill won't re-queue a terminal goal anyway.
+    if outcome == "moot":
+        return
+
     if kind == "Builder":
         if outcome == "proved":
             db.update_goal_status(conn, int(target_id), "proved")
             # F33 — goal proved; the Builder session served its purpose.
             # Clearing keeps DB tidy; on-disk session file is harmless.
             db.set_builder_session_id(conn, int(target_id), None)
+            return
+        # Phase 7 — `exhausted` outcome: in-pipeline retry helper
+        # consumed its budget without a terminal outcome. Helper has
+        # already written N dead_attempts + N attempts++ for the N
+        # failed retries (decision 5/6). Cascade does status transition
+        # only — no further increment, no dead_attempt write.
+        if outcome == "exhausted":
+            cur = db.get_goal(conn, int(target_id))
+            n = int(cur["attempts"]) if cur else 0
+            if n >= SHELVE_THRESHOLD:
+                db.update_goal_status(conn, int(target_id), "shelved")
+                db.set_builder_session_id(conn, int(target_id), None)
+                _propagate_shelve(conn, int(target_id))
+            elif n >= BUILDER_THRESHOLD:
+                db.set_builder_session_id(conn, int(target_id), None)
             return
         if outcome == "failed":
             if is_fast_fail:
@@ -435,16 +457,42 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
                 started_at=started_at,
             )
 
+            # Phase 7 — flush per-retry buffered failures from the
+            # in-pipeline retry helper. Each entry produces one
+            # dead_attempts row + one goals.attempts++ (decision 5/6:
+            # 1:1). Helper buffered them in memory because dead_attempts
+            # is FK to pipelines.id which we just INSERTed; flushing
+            # here gives all-or-nothing crash semantics (a daemon kill
+            # mid-pipeline leaves goals.attempts unchanged and no
+            # orphan dead_attempts rows).
+            for pf in r.pending_failures:
+                db.record_dead_attempt(
+                    conn, target_id=goal_id, target_kind="Goal",
+                    pipeline_id=pipeline_id,
+                    failure_reason=pf["reason"],
+                    failure_detail=pf["detail"],
+                    proposal_md=pf.get("proposal_md", ""),
+                    artifacts=(_json.dumps(pf["artifacts"])
+                               if pf.get("artifacts") else ""),
+                )
+                db.increment_goal_attempts(conn, goal_id)
+
             # Capture artifacts from .attempts/<pid>/ before WorkArea rmtree.
-            # Skip dead_attempts INSERT for:
+            # Skip the pipeline-final dead_attempts INSERT for:
+            #   - 'exhausted' outcome: helper already buffered the
+            #     last retry's failure into pending_failures (flushed
+            #     above); duplicating here would violate the 1:1
+            #     attempts ↔ dead_attempts invariant.
             #   - 'superseded' (OR race noise, not a real failure)
             #   - 'spawn_fast_fail' (infra fault, not agent action; reason
             #     is carried back through the future tuple for cooldown,
             #     dead_attempts row would only be filtered out by events
             #     anyway — F46/audit problem 4)
-            if r.failure_reason and r.failure_reason not in (
-                "superseded", "spawn_fast_fail",
-            ):
+            if (r.outcome != "exhausted"
+                    and r.failure_reason
+                    and r.failure_reason not in (
+                        "superseded", "spawn_fast_fail",
+                    )):
                 artifacts = pipeline.collect_artifacts(attempts_dir)
                 tk = target_kind
                 tid = goal_id if tk == "Goal" else int(target_id)

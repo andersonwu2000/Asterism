@@ -15,13 +15,18 @@ Design decisions resolved 2026-05-06 — see
   5. goals.attempts increments per failed spawn (1:1 with dead_attempts).
   6. dead_attempts row per failed retry, artifacts JSON snapshot per row.
 
-Phase 7-A scaffolding only — no caller wired yet. Phase 7-B/7-C wires
-this into builder.py / backward.py and removes cascade_one's redundant
-attempts++ / record_dead_attempt for Builder/Backward failures.
+Forensic write protocol: dead_attempts.pipeline_id is FK to pipelines.id;
+the pipelines row is INSERTed by `dispatcher._run_pipeline` AFTER this
+helper returns. The helper therefore CANNOT write dead_attempts inline
+(FK violation). Per-retry records are buffered into
+`PipelineResult.pending_failures`; `_run_pipeline` flushes them after
+the pipelines INSERT (one dead_attempts row + one
+`goals.attempts++` per entry). This also gives all-or-nothing crash
+semantics: a daemon kill mid-pipeline leaves goals.attempts unchanged
+and no orphan dead_attempts rows.
 """
 from __future__ import annotations
 
-import json
 import sqlite3
 import time
 import uuid
@@ -138,10 +143,29 @@ def run_with_session_retries(
     sid = str(uuid.uuid4())
     last_reason: str = ""
     last_detail: str = ""
+    pending_failures: list[dict] = []
+
+    def buffer_failure(reason: str, detail: str, proposal_md: str = "") -> None:
+        # Snapshot agent output BEFORE next iteration's framework-side
+        # mutations (Builder backup restore / Backward proofs unlink)
+        # so each record captures the agent state at failure time.
+        pending_failures.append({
+            "reason": reason,
+            "detail": detail,
+            "proposal_md": proposal_md,
+            "artifacts": collect_artifacts(attempts_dir),
+        })
+
+    def attach(result: PipelineResult) -> PipelineResult:
+        # Always thread the buffered failures through the return value.
+        # Caller (`dispatcher._run_pipeline`) flushes them after the
+        # pipelines row INSERT.
+        result.pending_failures = pending_failures
+        return result
 
     for attempt in range(budget):
         if not goal_still_active(conn, goal_id, threshold):
-            return PipelineResult(outcome="moot")
+            return attach(PipelineResult(outcome="moot"))
 
         cold = (attempt == 0)
         spawn_t0 = time.monotonic()
@@ -170,14 +194,10 @@ def run_with_session_retries(
             # next cold pipeline to read.
             postmortem_fn(sid)
             reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
-            _record_failure(conn, goal_id=goal_id,
-                            pipeline_id=pipeline_id,
-                            attempts_dir=attempts_dir,
-                            reason=reason, detail=detail,
-                            proposal_md="")
-            return PipelineResult(outcome="exhausted",
-                                  failure_reason=reason,
-                                  failure_detail=detail)
+            buffer_failure(reason, detail)
+            return attach(PipelineResult(outcome="exhausted",
+                                         failure_reason=reason,
+                                         failure_detail=detail))
 
         if rc != SpawnRC.OK:
             reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
@@ -185,15 +205,13 @@ def run_with_session_retries(
                 # Infra noise (claude.exe crash / cwd / quota). No
                 # dead_attempt write, no attempts++ — dispatcher's
                 # cascade_one applies the 30s per-target cooldown and
-                # CONSEC tracking instead.
-                return PipelineResult(outcome="failed",
-                                      failure_reason=reason,
-                                      failure_detail=detail)
-            _record_failure(conn, goal_id=goal_id,
-                            pipeline_id=pipeline_id,
-                            attempts_dir=attempts_dir,
-                            reason=reason, detail=detail,
-                            proposal_md="")
+                # CONSEC tracking instead. Prior-iteration buffered
+                # failures still flush; this iteration's fast-fail
+                # itself is dropped.
+                return attach(PipelineResult(outcome="failed",
+                                             failure_reason=reason,
+                                             failure_detail=detail))
+            buffer_failure(reason, detail)
             last_reason, last_detail = reason, detail
             continue
 
@@ -201,39 +219,13 @@ def run_with_session_retries(
         result = parse_fn()
         if (result.outcome in _TERMINAL_SUCCESS_OUTCOMES
                 or result.failure_reason in _TERMINAL_DECLINE_REASONS):
-            return result
+            return attach(result)
 
-        # Non-terminal parse failure — record + retry
-        _record_failure(conn, goal_id=goal_id,
-                        pipeline_id=pipeline_id,
-                        attempts_dir=attempts_dir,
-                        reason=result.failure_reason,
-                        detail=result.failure_detail,
-                        proposal_md=result.proposal_md)
+        # Non-terminal parse failure — buffer + retry
+        buffer_failure(result.failure_reason, result.failure_detail,
+                       result.proposal_md)
         last_reason, last_detail = result.failure_reason, result.failure_detail
 
-    return PipelineResult(outcome="exhausted",
-                          failure_reason=last_reason,
-                          failure_detail=last_detail)
-
-
-def _record_failure(conn: sqlite3.Connection, *,
-                    goal_id: int, pipeline_id: str,
-                    attempts_dir: Path,
-                    reason: str, detail: str,
-                    proposal_md: str) -> None:
-    """Per-retry forensic + attempts counter. attempts ↔ dead_attempts
-    1:1 (decision 6) so events.py projection sees every retry.
-    artifacts JSON snapshots `.attempts/<pid>/` at this exact moment;
-    next iteration's framework-side mutations (Builder backup restore,
-    Backward proofs/ unlink) happen *after* this snapshot, so each row
-    captures the agent state at failure time."""
-    artifacts_json = json.dumps(collect_artifacts(attempts_dir))
-    db.record_dead_attempt(
-        conn,
-        target_id=goal_id, target_kind="Goal",
-        pipeline_id=pipeline_id,
-        failure_reason=reason, failure_detail=detail,
-        proposal_md=proposal_md, artifacts=artifacts_json,
-    )
-    db.increment_goal_attempts(conn, goal_id)
+    return attach(PipelineResult(outcome="exhausted",
+                                 failure_reason=last_reason,
+                                 failure_detail=last_detail))

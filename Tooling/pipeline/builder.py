@@ -1,45 +1,25 @@
 """Builder pipeline. Phase 1 deterministic tactic_try via Mathlib `hint`,
-Phase 2 LLM patch (Phase 6 single-output: agent emits patch.lean with
-leading `--` annotation block) + F33 same-session retry + F46 spawn-
-fast-fail handling + F48 decline channel + F55 partial-output
-persistence.
+Phase 2 LLM patch via in-pipeline retry helper (Phase 7).
 
-Public entry point: `run_builder`. Shared helpers (`_grep_forbidden`,
-`_is_sorry_stub`, `_replace_proof_body`, `_attempt_postmortem`,
-`_spawn_failure`, `_safe_glob`, `PipelineResult`, `PROMPT_DIR`,
-`_parse_hint_winner`, `_lake_build`, `_extract_leading_comments`,
-`_extract_decline_reason`, `DECLINE_*`, `_drafts`) are imported from
-the package root.
+Phase 6 single-output: agent emits patch.lean with leading `--`
+annotation block (no separate PROPOSAL.md); declines via
+`-- decline: <reason>` directive at the file head.
+
+Phase 7 in-pipeline retry: Phase 2 delegates to
+`run_with_session_retries` which owns budget computation, sid lifecycle,
+per-spawn forensic + attempts++. The former cross-pipeline session
+passing (`builder_session_id` column, F33) is unused — the column
+remains as an orphan field until 7-D drops it.
+
+Public entry point: `run_builder`.
 """
 from __future__ import annotations
 
 import shutil
 import sqlite3
-import time
-import uuid
 from pathlib import Path
 
 from .. import agent, db, diagnostics, manifest
-from ..llm.base import SpawnRC
-
-
-def _fetch_last_builder_error(conn: sqlite3.Connection,
-                              goal_id: int) -> str:
-    """F33 — return the smart-truncated lake error from this goal's
-    most recent Builder dead_attempt. Used as `retry_context` inlined
-    into the retry prompt (no separate file needed — agent sees the
-    error immediately, no Read tool round-trip)."""
-    row = conn.execute(
-        "SELECT da.failure_detail FROM dead_attempts da"
-        " JOIN pipelines p ON p.id = da.pipeline_id"
-        " WHERE da.target_id = ? AND da.target_kind = 'Goal'"
-        "   AND p.kind = 'Builder'"
-        " ORDER BY da.id DESC LIMIT 1",
-        (goal_id,),
-    ).fetchone()
-    if row is None or not row["failure_detail"]:
-        return ""
-    return diagnostics.strip_lake_noise(row["failure_detail"])
 
 
 def run_builder(conn: sqlite3.Connection, *, goal_id: int,
@@ -52,9 +32,8 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
 
     Outcomes:
       - `proved`: success — clear any draft (no carry-over wanted).
-      - anything else (rc!=0 from spawn, lake_build_error, ...):
-        persist whatever the spawn wrote so the next dispatch picks
-        up from a sketch.
+      - anything else (failed / exhausted / moot): persist whatever
+        the spawn wrote so the next dispatch picks up from a sketch.
     """
     from . import (  # late import to avoid circular package init
         PipelineResult, _drafts,
@@ -84,9 +63,11 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         _attempt_postmortem, _extract_decline_reason,
         _extract_leading_comments, _grep_forbidden, _is_sorry_stub,
         _lake_build, _parse_hint_winner, _replace_proof_body,
-        _safe_glob, _spawn_failure,
+        _safe_glob,
         DECLINE_PARENT_TYPE_INFEASIBLE,
     )
+    from ._retry import SpawnCtx, run_with_session_retries
+    from .. import dispatcher  # late: BUILDER_THRESHOLD live value
 
     goal = db.get_goal(conn, goal_id)
     if goal is None:
@@ -101,6 +82,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     source = goal_lean.read_text(encoding="utf-8")
 
     attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
+    problem_dir = workspace / "Problems" / goal["problem"]
 
     # Phase 1: tactic_try via Mathlib `hint` — only on fresh `:= by sorry`
     # stubs (skips post-Backward structured patches), and only on the
@@ -121,7 +103,6 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     # Any failure in this block (probe build, no winner, confirm rebuild)
     # restores the backup and falls through to Phase 2 in the SAME
     # dispatch — Phase 1 doesn't terminate the pipeline early.
-    # See pipeline/__init__.py `_HINT_WINNER_RE` for the parser.
     if goal["attempts"] == 0 and _is_sorry_stub(source):
         backup_text = source
 
@@ -131,9 +112,6 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         winner = _parse_hint_winner(probe_out) if ok else None
 
         if winner is not None:
-            # Confirm — rewrite with the precise winning tactic and rebuild.
-            # `hint` runs in a shared mctx; isolated re-elaboration of
-            # just the winner can theoretically diverge (rare).
             final_text = _replace_proof_body(source, winner)
             goal_lean.write_text(final_text, encoding="utf-8")
             ok, _ = _lake_build(workspace, goal_lean)
@@ -160,156 +138,117 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # and fall through to Phase 2 LLM.
         goal_lean.write_text(backup_text, encoding="utf-8")
 
-    # Phase 2: tactic_llm with F33 same-session retry.
-    # First attempt mints a session id and pins it via --session-id;
-    # subsequent attempts reuse via --resume + a short RETRY_NOTE.md
-    # that relies on the prior turn living in claude's session memory.
-    sid = db.get_builder_session_id(conn, goal_id)
-    is_retry = sid is not None
-    retry_context: str | None = None
-    if not is_retry:
-        # P1-#7: mint UUID locally; persist AFTER spawn returns so a
-        # process kill mid-spawn leaves DB session_id NULL instead of
-        # pointing at a session claude never minted (which would cost
-        # one wasted --resume / rc=125 cycle on the next dispatch).
-        sid = str(uuid.uuid4())
-        agent.compile_context(conn, goal=goal, mfst=mfst,
-                              attempts_dir=attempts_dir, kind="builder")
-    else:
-        retry_context = _fetch_last_builder_error(conn, goal_id)
+    # Phase 2: tactic_llm via in-pipeline retry helper.
+    # Helper owns budget = BUILDER_THRESHOLD - goal.attempts (decision 1),
+    # sid lifecycle (cold first, --resume thereafter), per-retry
+    # forensic. Builder-specific spawn / parse / postmortem are closures
+    # over the pipeline scope below.
 
-    spawn_t0 = time.monotonic()
-    rc = agent.spawn_llm(
-        kind="builder",
-        prompt_path=PROMPT_DIR / "builder.md",
-        problem_dir=workspace / "Problems" / goal["problem"],
-        attempts_dir=attempts_dir,
-        session_id=sid,
-        is_retry=is_retry,
-        retry_context=retry_context,
-    )
-    spawn_dur = time.monotonic() - spawn_t0
-
-    # P1-#7: persist session_id only after we know spawn completed
-    # past the kill window. rc 124/125 paths below clear/replace
-    # explicitly; for any other return code claude minted the
-    # session and a future retry's --resume can leverage it.
-    if not is_retry and rc not in (SpawnRC.TIMEOUT, SpawnRC.STALE_SESSION):
-        db.set_builder_session_id(conn, goal_id, sid)
-
-    # F33 — fallback for stale session (claude's on-disk session was
-    # GC'd or the daemon's DB id outlived the file). One-time retry
-    # with a fresh uuid down the cold path.
-    if rc == SpawnRC.STALE_SESSION:
-        db.set_builder_session_id(conn, goal_id, None)
-        sid = str(uuid.uuid4())
-        agent.compile_context(conn, goal=goal, mfst=mfst,
-                              attempts_dir=attempts_dir, kind="builder")
-        spawn_t0 = time.monotonic()
-        rc = agent.spawn_llm(
+    def builder_spawn(ctx: SpawnCtx) -> int:
+        # Cold start: fresh Context.md compile (snapshot Manifest +
+        # goal history at this exact attempt). Warm: skip — agent's
+        # session memory carries the Context from the prior call;
+        # retry_context inlines the prior lake error.
+        if ctx.cold:
+            agent.compile_context(conn, goal=goal, mfst=mfst,
+                                  attempts_dir=ctx.attempts_dir,
+                                  kind="builder")
+        return agent.spawn_llm(
             kind="builder",
             prompt_path=PROMPT_DIR / "builder.md",
-            problem_dir=workspace / "Problems" / goal["problem"],
-            attempts_dir=attempts_dir,
-            session_id=sid,
-            is_retry=False,
+            problem_dir=problem_dir,
+            attempts_dir=ctx.attempts_dir,
+            session_id=ctx.sid,
+            is_retry=not ctx.cold,
+            retry_context=ctx.retry_context,
         )
-        spawn_dur = time.monotonic() - spawn_t0
-        if rc not in (SpawnRC.TIMEOUT, SpawnRC.STALE_SESSION):
-            db.set_builder_session_id(conn, goal_id, sid)
 
-    if rc == SpawnRC.TIMEOUT:
-        # Timeout: agent SIGKILL'd mid-write. F55 — before clearing the
-        # session id, do a short postmortem spawn that resumes the same
-        # session and asks the agent to dump state + blockers into
-        # `_progress.md`. The wrapper then captures _progress.md as
-        # the partial draft for the next dispatch.
-        if sid is not None:
-            _attempt_postmortem(
-                kind="builder",
-                prompt_path=PROMPT_DIR / "builder_postmortem.md",
-                problem_dir=workspace / "Problems" / goal["problem"],
-                attempts_dir=attempts_dir,
-                session_id=sid,
+    def builder_parse() -> "PipelineResult":  # noqa: F821
+        patches = _safe_glob(attempts_dir, "patch*.lean")
+        if not patches:
+            return PipelineResult(
+                outcome="failed", failure_reason="agent_no_output",
+                failure_detail="no patch*.lean",
             )
-        db.set_builder_session_id(conn, goal_id, None)
-        reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
-        return PipelineResult(outcome="failed",
-                              failure_reason=reason,
-                              failure_detail=detail)
-    if rc != 0:
-        # Ordinary failure: keep session_id so next attempt's --resume
-        # has the prior failed-turn context to learn from. (Gemini /
-        # OpenAI providers ignore session_id — clearing on rc=124 only.)
-        reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
-        return PipelineResult(outcome="failed",
-                              failure_reason=reason,
-                              failure_detail=detail)
+        patch = patches[0]
+        patch_text = patch.read_text(encoding="utf-8")
 
-    patches = _safe_glob(attempts_dir, "patch*.lean")
-    if not patches:
-        return PipelineResult(
-            outcome="failed", failure_reason="agent_no_output",
-            failure_detail="no patch*.lean",
-        )
-    patch = patches[0]
-    patch_text = patch.read_text(encoding="utf-8")
-
-    # Phase 6 single-output: agent's metadata lives in patch.lean's
-    # leading comment block. `-- decline: <reason>` directive routes
-    # to F48; otherwise the block is the goal's annotation source.
-    leading = _extract_leading_comments(patch_text)
-    decline = _extract_decline_reason(leading)
-    if decline == DECLINE_PARENT_TYPE_INFEASIBLE:
-        return PipelineResult(
-            outcome="failed",
-            failure_reason="agent_infeasible",
-            failure_detail=("builder reports parent type infeasible; "
-                            "leading comments must include counterexample"),
-            proposal_md=leading,
-        )
-    if decline is not None:
-        # Any other declared decline reason maps to the agent_declined
-        # branch (jump to Backward). `too_hard` is the canonical value;
-        # unknown sub-reasons stay routed here defensively.
-        return PipelineResult(
-            outcome="failed", failure_reason="agent_declined",
-            failure_detail=f"builder declined: {decline}",
-            proposal_md=leading,
-        )
-
-    forbidden = _grep_forbidden(patch_text, mfst.forbidden_lemmas)
-    if forbidden:
-        return PipelineResult(
-            outcome="failed", failure_reason="forbidden_lemma",
-            failure_detail=forbidden, proposal_md=leading,
-        )
-
-    # Stage: copy patch over goal lean (backup first)
-    backup = goal_lean.with_suffix(goal_lean.suffix + ".backup")
-    shutil.copy2(goal_lean, backup)
-    shutil.copy2(patch, goal_lean)
-    ok, err = _lake_build(workspace, goal_lean)
-    if ok:
-        # Annotation is a hard success condition: an empty leading-
-        # comment block means the agent skipped documentation. Roll
-        # back to the sorry-stub backup and retry. The agent's patch
-        # already contains the annotation in place, so on success we
-        # just keep the file as the proved goal source verbatim.
-        if not leading.strip():
-            shutil.copy2(backup, goal_lean)
-            backup.unlink()
+        # Phase 6 single-output: agent's metadata lives in patch.lean's
+        # leading comment block. `-- decline: <reason>` directive routes
+        # to the agent_declined / agent_infeasible terminal branches;
+        # otherwise the block is the goal's annotation source.
+        leading = _extract_leading_comments(patch_text)
+        decline = _extract_decline_reason(leading)
+        if decline == DECLINE_PARENT_TYPE_INFEASIBLE:
             return PipelineResult(
                 outcome="failed",
-                failure_reason="agent_no_annotation",
-                failure_detail="patch built but had no leading comment block",
+                failure_reason="agent_infeasible",
+                failure_detail=("builder reports parent type infeasible; "
+                                "leading comments must include counterexample"),
+                proposal_md=leading,
             )
+        if decline is not None:
+            # Any other declared decline reason maps to agent_declined
+            # (jump to Backward). `too_hard` is the canonical value;
+            # unknown sub-reasons stay routed here defensively.
+            return PipelineResult(
+                outcome="failed", failure_reason="agent_declined",
+                failure_detail=f"builder declined: {decline}",
+                proposal_md=leading,
+            )
+
+        forbidden = _grep_forbidden(patch_text, mfst.forbidden_lemmas)
+        if forbidden:
+            return PipelineResult(
+                outcome="failed", failure_reason="forbidden_lemma",
+                failure_detail=forbidden, proposal_md=leading,
+            )
+
+        # Stage: copy patch over goal lean (backup first)
+        backup = goal_lean.with_suffix(goal_lean.suffix + ".backup")
+        shutil.copy2(goal_lean, backup)
+        shutil.copy2(patch, goal_lean)
+        ok, err = _lake_build(workspace, goal_lean)
+        if ok:
+            # Annotation is a hard success condition: an empty leading-
+            # comment block means the agent skipped documentation. Roll
+            # back to the sorry-stub backup and retry. The agent's patch
+            # already contains the annotation in place, so on success we
+            # just keep the file as the proved goal source verbatim.
+            if not leading.strip():
+                shutil.copy2(backup, goal_lean)
+                backup.unlink()
+                return PipelineResult(
+                    outcome="failed",
+                    failure_reason="agent_no_annotation",
+                    failure_detail="patch built but had no leading comment block",
+                )
+            backup.unlink()
+            return PipelineResult(outcome="proved", proposal_md=leading)
+        shutil.copy2(backup, goal_lean)
         backup.unlink()
-        return PipelineResult(outcome="proved", proposal_md=leading)
-    shutil.copy2(backup, goal_lean)
-    backup.unlink()
-    return PipelineResult(
-        outcome="failed", failure_reason="lake_build_error",
-        failure_detail=diagnostics.annotate_failure_detail(err),
-        proposal_md=leading,
+        return PipelineResult(
+            outcome="failed", failure_reason="lake_build_error",
+            failure_detail=diagnostics.annotate_failure_detail(err),
+            proposal_md=leading,
+        )
+
+    def builder_postmortem(sid: str) -> None:
+        _attempt_postmortem(
+            kind="builder",
+            prompt_path=PROMPT_DIR / "builder_postmortem.md",
+            problem_dir=problem_dir,
+            attempts_dir=attempts_dir,
+            session_id=sid,
+        )
+
+    return run_with_session_retries(
+        conn=conn,
+        goal_id=goal_id,
+        pipeline_id=pipeline_id,
+        threshold=dispatcher.BUILDER_THRESHOLD,
+        attempts_dir=attempts_dir,
+        spawn_fn=builder_spawn,
+        parse_fn=builder_parse,
+        postmortem_fn=builder_postmortem,
     )

@@ -135,9 +135,13 @@ def test_run_builder_phase2_empty_leading_comments_fails_no_annotation(
     r = pipeline.run_builder(
         conn, goal_id=gid, workspace=tmp_path, mfst=_mfst(),
         pipeline_id="pid-llm-no-annot")
-    assert r.outcome == "failed"
+    # Phase 7 — agent_no_annotation is retryable (agent might add the
+    # annotation on warm retry). Helper consumes the remaining budget;
+    # final outcome is 'exhausted' carrying the last retry's reason.
+    assert r.outcome == "exhausted"
     assert r.failure_reason == "agent_no_annotation"
-    # Rolled back to original sorry stub
+    assert len(r.pending_failures) >= 1
+    # Rolled back to original sorry stub on every failed retry
     assert (tmp_path / goal["lean_path"]).read_text(encoding="utf-8") == original_text
 
 
@@ -192,10 +196,13 @@ def test_run_builder_lake_fail_restores_backup(
     r = pipeline.run_builder(
         conn, goal_id=gid, workspace=tmp_path, mfst=_mfst(),
         pipeline_id="pid-bad")
-    assert r.outcome == "failed"
+    # Phase 7 — lake_build_error is retryable; helper exhausts budget
+    # and returns 'exhausted' with the last retry's reason/detail.
+    assert r.outcome == "exhausted"
     assert r.failure_reason == "lake_build_error"
     assert "garbage" in (r.failure_detail or "")
-    # Goal lean unchanged + no .backup leftover
+    assert len(r.pending_failures) >= 1
+    # Goal lean unchanged + no .backup leftover (each retry rolled back)
     assert goal_lean.read_text(encoding="utf-8") == original
     assert not goal_lean.with_suffix(goal_lean.suffix + ".backup").exists()
 
@@ -228,10 +235,12 @@ def test_run_builder_forbidden_lemma_blocked(
     r = pipeline.run_builder(
         conn, goal_id=gid, workspace=tmp_path, mfst=mfst,
         pipeline_id="pid-forbid")
-    assert r.outcome == "failed"
+    # Phase 7 — forbidden_lemma is retryable; helper exhausts budget.
+    assert r.outcome == "exhausted"
     assert r.failure_reason == "forbidden_lemma"
     assert "Cheat.theorem" in (r.failure_detail or "")
-    assert not lake_calls  # rejected before lake
+    assert len(r.pending_failures) >= 1
+    assert not lake_calls  # rejected before lake on every retry
 
 
 # ---------------------------------------------------------------------
@@ -296,7 +305,8 @@ def test_run_builder_wrapper_no_persist_when_postmortem_skipped(
     r = pipeline.run_builder(
         conn, goal_id=gid, workspace=tmp_path, mfst=_mfst(),
         pipeline_id="pid-lake-fail")
-    assert r.outcome == "failed"
+    # Phase 7 — exhausted (retryable lake failure)
+    assert r.outcome == "exhausted"
     assert r.failure_reason == "lake_build_error"
     draft = _drafts_path_for(tmp_path, gid)
     assert not draft.exists()

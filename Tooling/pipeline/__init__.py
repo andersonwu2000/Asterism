@@ -56,11 +56,20 @@ SPAWN_FAST_FAIL_SEC = 10.0
 
 @dataclass
 class PipelineResult:
-    outcome: str  # 'proved' | 'success' | 'failed'
+    outcome: str  # 'proved' | 'success' | 'failed' | 'exhausted' | 'moot'
     failure_reason: str = ""
     failure_detail: str = ""
     proposal_md: str = ""
     artifacts: dict[str, str] = field(default_factory=dict)
+    # Phase 7 — per-retry failure records buffered by the in-pipeline
+    # retry helper. The helper cannot INSERT dead_attempts during the
+    # loop because the pipelines row (FK target) is written by
+    # `_run_pipeline` only after this PipelineResult returns. Caller
+    # (`dispatcher._run_pipeline`) flushes these after the pipelines
+    # INSERT: one `dead_attempts` row + one `goals.attempts++` per
+    # entry, preserving the 1:1 invariant (decision 5/6).
+    # Each entry has keys: reason, detail, proposal_md, artifacts.
+    pending_failures: list[dict] = field(default_factory=list)
 
 
 def collect_artifacts(attempts_dir: Path) -> dict[str, str]:
