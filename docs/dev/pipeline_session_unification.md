@@ -35,22 +35,50 @@ pipeline」**用 session_id column 硬接起來**、F33/F53 等命名本身就�
 
 ```
 pipeline 入口（run_builder / run_backward）
-  sid = mint_session()      # local var、不存 DB
-  for attempt in range(IN_PIPELINE_BUDGET):  # e.g. 3
-      if cascade_changed_status(goal_id):   # sibling proved / shelved / etc
+  goal = db.get_goal(goal_id)
+  threshold = BUILDER_THRESHOLD if kind == 'Builder' else SHELVE_THRESHOLD
+  budget = threshold - goal.attempts          # 動態 budget（決策 1）
+  if budget <= 0:
+      return PipelineResult(outcome="moot")   # 防呆、bfs_refill 應已過濾
+
+  sid = mint_session()                        # local var、pipeline 級、不入 DB
+  last_err = None
+
+  for attempt in range(budget):
+      if not goal_still_active(goal_id):      # cascade re-check
           return PipelineResult(outcome="moot")
-      spawn agent (sid, is_retry=(attempt > 0), retry_context=last_err)
-      result = parse + lake_build + commit
-      if result.proved or result.terminal:
-          return result
-      attempts_in_db += 1
-      record dead_attempt（含本次 retry context、forensic 粒度同現在）
-  return PipelineResult(outcome="exhausted")  # in-pipeline budget 到、未終態
+
+      cold = (attempt == 0)
+      # cold:  claude --session-id <sid>      # 第 1 次新 session
+      # warm:  claude --resume <sid>          # 後續同 session、agent 記憶連續
+      result = spawn_agent(sid, cold=cold, retry_context=last_err)
+
+      if result.rc == 125 and not cold:       # stale_session: in-place cold mint（決策 4）
+          sid = mint_session()
+          result = spawn_agent(sid, cold=True, retry_context=last_err)
+
+      if result.rc == 124:                    # timeout: postmortem + 強制 exhaust（決策 3）
+          run_postmortem(sid)                 # 寫 .drafts/<kind>_g<gid>.md
+          db.attempts++
+          db.record_dead_attempt(reason='agent_timeout', artifacts=snapshot('.attempts/'))
+          return PipelineResult(outcome="exhausted")
+
+      outcome = parse_and_commit(result)
+      if outcome.terminal:                    # proved / agent_declined / agent_infeasible
+          return outcome
+
+      db.attempts++                           # 決策 5：per-spawn ++
+      db.record_dead_attempt(reason=outcome.reason,
+                             artifacts=snapshot('.attempts/'))  # 決策 6：per-retry snapshot
+      last_err = outcome.detail
+
+  return PipelineResult(outcome="exhausted")  # budget 用盡、未終態
 
 dispatcher 看到 outcome:
-  proved / shelved / decline / infeasible: 標記 goal、cascade
-  exhausted: re-queue 為下個 pipeline（fresh session、新 sid）
-  goal.attempts >= SHELVE_THRESHOLD: shelve 整 goal
+  proved / success / agent_declined / agent_infeasible: cascade（attempts 已 ++）
+  exhausted: re-queue 下個 pipeline（fresh session）；attempts hit threshold 時
+             bfs_refill 升 kind 或 cascade shelve
+  moot: no-op（不動 state；goal 已終態、bfs_refill 自然不撈）
 ```
 
 核心對應：
@@ -99,14 +127,19 @@ session 攜帶、邏輯複製。
 
 ## Pool slot trade-off（明確認知）
 
-Model B-soft 的 pipeline 持有 pool slot 的時間 = `IN_PIPELINE_BUDGET ×
-avg_spawn_time` ≈ 3 × 6 min = ~18 min。當前 cross-pipeline 平均 ~6-10 min。
+Model B-soft 的 pipeline 持有 pool slot 時間 = `budget × avg_spawn_time`、
+budget 是該 kind 的剩餘 threshold（決策 1、dynamic、非固定）：
 
-對 PN 級（pool=12、active goals ~15-20）：oversubscription 程度增加 ~2-3x、
-但仍不到 pool starvation 等級。**緩解 knob = `IN_PIPELINE_BUDGET`、可 tune**。
+- Builder：上限 3 次 retry × ~6 min = ~18 min（attempts=0 第一次 dispatch）
+- Backward：上限 8 次 retry × ~6 min = ~48 min（attempts=0；實務罕見、多數
+  backward 1-2 次就 success / decline / infeasible 提早返回釋放 slot）
 
-對深題（cantor / SG、active goals 30+）：可能需要降 budget（e.g. 2）或加大
-pool。本階段先設 budget=3、PN 驗證、深題實測再 tune。
+實務 avg 遠低於上限（多數 spawn 跑完就 terminal）。
+
+對 PN 級（pool=12、active goals ~15-20）：oversubscription 比當前 cross-
+pipeline 增加 ~2-3x、但仍不到 pool starvation。對深題（cantor / SG、active
+goals 30+）若 throughput 退化、可調 BUILDER_THRESHOLD / SHELVE_THRESHOLD
+（不引入獨立 budget knob）。本階段按現有 (3, 8) 執行、PN 驗證、深題實測再 tune。
 
 ## 移除 / 改名 list
 
@@ -126,11 +159,12 @@ pool。本階段先設 budget=3、PN 驗證、深題實測再 tune。
 ### 新增 / 改寫的代碼
 
 - `Tooling/pipeline/_retry.py`（新模組）：`run_with_session_retries(...)`
-  helper、含 cascade re-check、retry budget、session resumption
+  helper、含 cascade re-check、dynamic budget 計算、session resumption、
+  stale_session in-place fallback
 - `Tooling/pipeline/builder.py:run_builder` 改用 helper、retry loop 內部化
 - `Tooling/pipeline/backward.py:run_backward` 同
-- `IN_PIPELINE_BUDGET` config（dispatch.in_pipeline_budget、預設 3、env
-  override `ASTERISM_IN_PIPELINE_BUDGET`）
+- 不引入獨立 budget config（決策 1：budget = 該 kind 剩餘 threshold、
+  跟既有 BUILDER_THRESHOLD / SHELVE_THRESHOLD 對齊）
 
 ### 名稱退役
 
@@ -164,22 +198,29 @@ retry loop 每次 spawn 前 call 一次。這個 helper 是新 pipeline kind 都
 當前每個 pipeline 結束（success or fail）寫一筆 `pipelines` row + 失敗時
 一筆 `dead_attempts` row。
 
-Model B 下：
-- pipelines row 仍是 1 row per pipeline（內部 retry 不算獨立 pipeline）
-- dead_attempts 仍是 1 row per failed retry attempt（**保留粒度、不退步**）
-  → 在 retry loop 內部 commit 每次 dead_attempt
-- pipelines.outcome 反映最終 outcome（proved / failed / exhausted / moot）
-
-代價：retry loop 內部要做 db.record_dead_attempt 不是只在 pipeline 結束
-做。一兩行的事、不複雜。
+Model B 下（決策 6）：
+- `pipelines` row 仍 1 row per pipeline（內部 retry 不算獨立 pipeline）；
+  `outcome` 反映最終結果（`proved` / `success` / `failed` / `exhausted` /
+  `moot`）
+- `dead_attempts` 1 row per failed retry attempt（保留粒度、attempts ↔
+  dead_attempts 1:1、events.py 投影才能看到完整 retry 軌跡）；retry loop
+  body 內 commit
+- `dead_attempts.artifacts` JSON 每 retry snapshot（每次失敗前把當下
+  `.attempts/<pid>/` 內容打包；retry 之間 `.attempts/` 累積、builder 失敗
+  會 restore parent.lean backup、backward 失敗會 unlink 寫進的 proofs/）
+- `moot` outcome **不寫** `dead_attempts`（決策 2：沒 LLM call、不算失敗）
+- `spawn_fast_fail` (rc≠0 wall<10s) 行為不變（infra 噪訊）、不寫
+  `dead_attempts`、不消耗 budget
 
 ## attempts counter 行為
 
 當前：cascade_one 每次 pipeline failure 把 `goals.attempts++`。
 
-Model B 下：retry loop 內部每次失敗 attempt 都要 `goals.attempts++`、
-保持 SHELVE_THRESHOLD 邏輯不變。Pipeline 級的 attempts 累計變成「budget 用
-盡 = goals.attempts += BUDGET 次」。
+Model B 下（決策 5）：retry loop body 內每次失敗 spawn 把 `goals.attempts++`、
+跟 `dead_attempts` 1:1。cascade_one 不再做 attempts++（只做 status transition：
+shelve / 升 kind）。BUILDER_THRESHOLD=3 / SHELVE_THRESHOLD=8 數值不動、
+語意不變（LLM call 失敗總次數）、只是觸發點下沉到 retry loop body。
+一個 goal 從 attempts=0 到 shelve 的 LLM call 總成本不變。
 
 ## 實作順序（建議）
 
@@ -248,35 +289,65 @@ phase 拆分：
 - `dev/goal_history_unified.md` 若有引用 F33/F53 處更新
 - `dev/goal_naming_annotation.md` 若有引用更新
 
-## 開放決策點（next session 起手回答）
+## 決策已敲定（2026-05-06）
 
-1. **`IN_PIPELINE_BUDGET` 預設值**：3 / 5 / 7 哪個？衡量 session 連貫性 vs
-   pool fairness。傾向 3（保守起步、PN 驗證後再 tune）。
-2. **「moot」outcome 的處理**：Pipeline 因 cascade bail（goal 已 shelved /
-   proved by sibling）回 outcome="moot"。dispatcher 接到 moot 後是 cascade
-   no-op 還是清 attempts？傾向 no-op、attempts 不增（goal 已終態、不該再
-   懲罰）。
-3. **timeout (rc=124) 的處理**：當前 timeout → F55 postmortem → 該 pipeline
-   結束 → 下次 dispatch fresh session。Model B 下 timeout 該不該佔 retry
-   budget 的一格、還是視同 session 必須結束（pipeline return exhausted、
-   讓 dispatcher fresh session）？傾向後者（timeout 表示 agent 卡死、繼續同
-   session 沒意義）。
-4. **stale_session (rc=125) 的處理**：當前 in-pipeline mint 新 sid 重試
-   一次。Model B 下自然行為（retry loop 下一輪 mint 新 sid）、不需特例邏
-   輯。退役當前 fallback 程式碼。
-5. **`goals.attempts` 的語意**：當前 = pipeline 失敗次數 = 跟 SHELVE_THRESHOLD
-   比。Model B 下 = retry attempt 失敗次數（含 in-pipeline retry）。語意
-   一致、但比較尺度從「pipeline 數」變成「LLM call 數」、SHELVE_THRESHOLD
-   數值要重新考慮。傾向保留當前數字、實證調整。
-6. **forensic per-retry 還是 per-pipeline**：當前 dead_attempts 一條 per
-   pipeline failure。Model B 下保留同粒度（per failed retry）、要在 retry
-   loop 內部 commit 多筆。確認這沒違反任何 invariant（spot-check
-   `events.py` 投影邏輯）。
-7. **session_id column drop 時機**：PHASE 7-D 才動 schema、還是 7-B 就動？
-   傾向 7-D（避免 builder/backward 半轉狀態下 column 既存又無用）。
-8. **`F33` / `F53` 命名退役如何記錄**：commit message 標明退役、docs 全清
-   引用、保留 commit history 即可。不需 deprecation period（內部代碼、非
-   公共 API）。
+8 個原開放決策點落定如下：
+
+1. **`IN_PIPELINE_BUDGET` → 動態**：budget = 該 kind 的剩餘 threshold
+   （Builder = `BUILDER_THRESHOLD - attempts`、Backward = `SHELVE_THRESHOLD
+   - attempts`）。不引入獨立 config knob、不 hard-code 固定數字。
+   理由：避免 budget 跟 cascade threshold 雙重邏輯；既有 threshold 仍是
+   cascade 層 SoT、in-pipeline 只是「剩多少給我用」。
+
+2. **`moot` outcome → uniform no-op**：dispatcher 收到 moot 不動 attempts、
+   不 re-queue（goal 已終態、bfs_refill 自然不撈）；`pipelines` row 仍寫
+   （outcome=`moot`、forensic 留證）；`dead_attempts` 不寫（沒 LLM 成本）。
+   不主動 shelve case 2 orphan（避免破壞 F42 cross-strategy reuse）；orphan
+   清理留給 prune 階段、不混進 cascade。
+
+3. **timeout (rc=124) → 強制 exhaust pipeline**：F55 postmortem 仍跑
+   （寫 `.drafts/<kind>_g<gid>.md`）；postmortem 完成後 retry loop 不繼續、
+   pipeline return outcome=`exhausted`、dispatcher 重派 fresh session
+   （讀 `.drafts` 接續）。仍 attempts++（timeout 是有 LLM 成本的失敗）。
+   理由：timeout 表 agent 思考路徑卡死、同 session resume 會撞同卡點；
+   `.drafts` 持久化的整個目的就是給 cold restart 用。
+
+4. **stale_session (rc=125) → 不算 budget、就地 cold mint**：retry loop 內
+   偵測 rc=125 且非首次 spawn → 重 mint sid + 改 cold spawn 補一次、
+   不消耗 budget、不 attempts++。補的那次也失敗則按 normal failure 處理。
+   理由：stale_session 是 infra 噪訊、不該扣 agent budget。
+
+5. **`goals.attempts` 語意 → LLM call 失敗總次數**：per-spawn ++、跟
+   `dead_attempts` 1:1。BUILDER_THRESHOLD=3 / SHELVE_THRESHOLD=8 數值不動、
+   語意不變、觸發點從 cascade_one 下沉到 retry loop body。
+   一個 goal 從 attempts=0 到 shelve 的 LLM call 總成本不變。
+
+6. **forensic 粒度 → per-retry**：retry loop 內每次失敗 1 row dead_attempts；
+   attempts ↔ dead_attempts 1:1（events.py 投影才能看到完整 retry 軌跡）；
+   `dead_attempts.artifacts` JSON 每 retry snapshot（`.attempts/<pid>/` 內容）；
+   `pipelines` 仍 1 row per pipeline、outcome 反映最終結果。
+
+7. **column drop 時機 → 7-D 一次性**：7-B / 7-C 期間 `builder_session_id` /
+   `backward_session_id` column 保留為孤兒（無人讀寫但合法 NULL）；7-D 一次
+   drop 雙 column + 清所有 reference + tests assert。
+   理由：每階段獨立可 revert（7-B revert 時 column 還在、行為回退無礙）；
+   schema migration 集中在 stable phase；test 同步成本集中。
+
+8. **F33 / F53 命名退役 → commit 標明 + docs/code 全清**：7-D commit message
+   寫「F33 / F53 retired」+ 退役理由；docs/code 中所有 `F33` / `F53` 引用
+   改寫為 in-pipeline retry 對應描述；不留 `(deprecated)` 標記（噪訊）。
+   commit history 是天然 reasoning 保存點、`git log -S F33` 永遠搜得到。
+
+### 核心 invariant（決策過程中額外鎖定）
+
+- **in-pipeline retry 共用 same session**：`sid` 是 pipeline 函數的 local
+  var、attempt 0 cold spawn `claude --session-id <sid>`、後續 warm spawn
+  `claude --resume <sid>`、agent 記憶連續。這是把當前
+  `goals.builder_session_id` column 在乾的 hack「session 跨 pipeline 接續」、
+  變成 in-pipeline 的自然結果。
+- **F55 postmortem 機制保留**：`.drafts/` 是 timeout/exhausted 後 cold
+  restart 的接續媒介。
+- **`pipelines` table 仍 1 row per pipeline**（不變）、不細分到 retry 級。
 
 ## 不做（當前階段）
 
