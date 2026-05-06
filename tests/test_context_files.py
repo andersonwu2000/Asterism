@@ -1,4 +1,4 @@
-"""F26 — companion reference files (PAST_ATTEMPTS.md / PAST_BACKWARD.md)
+"""F26 — companion reference files (PAST_DIRECT_ATTEMPTS.md / PAST_VERIFY_FAILURES.md)
 + agent._digest_failure helper. Tests cover digest extraction across
 all failure_reason kinds and the lazy-load size discipline."""
 from __future__ import annotations
@@ -147,7 +147,7 @@ def test_write_past_attempts_creates_file_with_full_content(
 def test_write_past_attempts_empty_returns_none(tmp_path: Path) -> None:
     """No deads → no file written, no clutter."""
     assert context_files.write_past_attempts([], tmp_path) is None
-    assert not (tmp_path / "PAST_ATTEMPTS.md").exists()
+    assert not (tmp_path / "PAST_DIRECT_ATTEMPTS.md").exists()
 
 
 def test_write_past_backward_creates_file(tmp_path: Path) -> None:
@@ -159,7 +159,7 @@ def test_write_past_backward_creates_file(tmp_path: Path) -> None:
     ]
     out = context_files.write_past_backward(rows, tmp_path)
     assert out is not None
-    assert out.name == "PAST_BACKWARD.md"
+    assert out.name == "PAST_VERIFY_FAILURES.md"
     text = out.read_text(encoding="utf-8")
     assert "combine patch failed elaboration" in text
     assert "Decomposition" in text
@@ -175,12 +175,12 @@ def test_write_past_backward_empty_returns_none(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------
 # F30 — companion files run failure_detail through smart_truncate_stderr
 # (the same pre-F26 noise — LEAN_PATH dumps, lake build trace — was
-# bloating PAST_ATTEMPTS.md, paid only when the agent actually reads it
+# bloating PAST_DIRECT_ATTEMPTS.md, paid only when the agent actually reads it
 # but still wasted bytes when it does)
 # ---------------------------------------------------------------------
 
 def test_past_attempts_strips_lean_path_dump(tmp_path: Path) -> None:
-    """F30 + F32: PAST_ATTEMPTS.md must surface the actual error
+    """F30 + F32: PAST_DIRECT_ATTEMPTS.md must surface the actual error
     line, and after F32 the LEAN_PATH dump is removed entirely (not
     just reordered)."""
     big_lean_path = "trace: .> LEAN_PATH=" + ";".join(
@@ -237,7 +237,7 @@ def test_past_attempts_short_failure_detail_unchanged(tmp_path: Path) -> None:
 
 
 def test_past_backward_strips_lean_path_dump(tmp_path: Path) -> None:
-    """Same F30+F32 treatment for PAST_BACKWARD.md."""
+    """Same F30+F32 treatment for PAST_VERIFY_FAILURES.md."""
     big_lean_path = "trace: .> LEAN_PATH=" + "x" * 3000
     detail = (
         big_lean_path + "\n"
@@ -266,7 +266,7 @@ def test_compile_context_inlines_prior_progress_note_for_backward(
     as 'Your previous progress note' so the agent picks up from the
     captured state + blocker sketch instead of starting fresh.
 
-    The companion file `PAST_BACKWARD.md` is intentionally NOT
+    The companion file `PAST_VERIFY_FAILURES.md` is intentionally NOT
     augmented with the note — F43 lesson says agents miss companion
     files, so the inline section is the canonical surface."""
     from Tooling.pipeline import _drafts
@@ -296,8 +296,8 @@ def test_compile_context_inlines_prior_progress_note_for_backward(
     assert "Your previous progress note" in text
     assert "Kelly minimiser" in text
     # Companion file does NOT carry the progress note (F55 design choice)
-    if (attempts_dir / "PAST_BACKWARD.md").exists():
-        companion = (attempts_dir / "PAST_BACKWARD.md").read_text(
+    if (attempts_dir / "PAST_VERIFY_FAILURES.md").exists():
+        companion = (attempts_dir / "PAST_VERIFY_FAILURES.md").read_text(
             encoding="utf-8")
         assert "Kelly minimiser" not in companion
 
@@ -380,7 +380,7 @@ def test_compile_context_writes_companion_past_attempts(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
     """End-to-end: dead_attempts → Context.md inlines the full content
-    (F43). Companion PAST_ATTEMPTS.md still written for forensics.
+    (F43). Companion PAST_DIRECT_ATTEMPTS.md still written for forensics.
 
     F32: even the companion file no longer carries the LEAN_PATH
     dump — strip_lake_noise unconditionally drops infra lines
@@ -404,12 +404,12 @@ def test_compile_context_writes_companion_past_attempts(
     text = out.read_text(encoding="utf-8")
 
     # F43: full content inlined into Context.md
-    assert "Previous attempts on THIS goal" in text
+    assert "Direct attempts on this goal" in text
     assert "Type mismatch on `Foo.bar`" in text
     assert "LEAN_PATH=" not in text  # F32 noise stripped here too
 
     # Companion file still written (forensics) — verbatim error preserved
-    past = (attempts_dir / "PAST_ATTEMPTS.md").read_text(encoding="utf-8")
+    past = (attempts_dir / "PAST_DIRECT_ATTEMPTS.md").read_text(encoding="utf-8")
     assert "Foo.bar" in past
     assert "Type mismatch" in past
     # F32: companion file is also strip_lake_noise'd — no infra dump
@@ -448,7 +448,7 @@ def test_compile_context_size_with_many_attempts_under_smart_truncate(
                           mfst=Manifest(problem="p", statement="T"),
                           attempts_dir=attempts_dir)
     ctx_size = out.stat().st_size
-    past_size = (attempts_dir / "PAST_ATTEMPTS.md").stat().st_size
+    past_size = (attempts_dir / "PAST_DIRECT_ATTEMPTS.md").stat().st_size
 
     # F43: Context.md grew to fit the inlined content — but smart_truncate
     # (4KB per block) keeps it bounded well under the pre-F26 ~15KB raw blob.
@@ -461,7 +461,7 @@ def test_compile_context_size_with_many_attempts_under_smart_truncate(
 def test_compile_context_no_companion_when_no_history(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """Fresh goal, no dead_attempts → no PAST_ATTEMPTS.md emitted."""
+    """Fresh goal, no dead_attempts → no PAST_DIRECT_ATTEMPTS.md emitted."""
     gid = _seed_goal(conn)
     attempts_dir = tmp_path / ".attempts" / "pid-fresh"
     attempts_dir.mkdir(parents=True)
@@ -469,8 +469,8 @@ def test_compile_context_no_companion_when_no_history(
     compile_context(conn, goal=goal,
                     mfst=Manifest(problem="p", statement="T"),
                     attempts_dir=attempts_dir)
-    assert not (attempts_dir / "PAST_ATTEMPTS.md").exists()
-    assert not (attempts_dir / "PAST_BACKWARD.md").exists()
+    assert not (attempts_dir / "PAST_DIRECT_ATTEMPTS.md").exists()
+    assert not (attempts_dir / "PAST_VERIFY_FAILURES.md").exists()
 
 
 # ---------------------------------------------------------------------
@@ -528,9 +528,9 @@ def test_compile_context_builder_kind_includes_attempts_excludes_verifies(
                           mfst=Manifest(problem="p", statement="T"),
                           attempts_dir=attempts_dir, kind="builder")
     text = out.read_text(encoding="utf-8")
-    assert "Previous attempts on THIS goal" in text
+    assert "Direct attempts on this goal" in text
     assert "BUILDER-LEVEL Lean error" in text
-    assert "Past decompositions that failed Verify" not in text
+    assert "Sibling decompositions that failed Verify" not in text
     assert "VERIFY-LEVEL" not in text
 
 
@@ -546,9 +546,9 @@ def test_compile_context_backward_kind_includes_verifies_excludes_attempts(
                           mfst=Manifest(problem="p", statement="T"),
                           attempts_dir=attempts_dir, kind="backward")
     text = out.read_text(encoding="utf-8")
-    assert "Past decompositions that failed Verify" in text
+    assert "Sibling decompositions that failed Verify" in text
     assert "VERIFY-LEVEL" in text
-    assert "Previous attempts on THIS goal" not in text
+    assert "Direct attempts on this goal" not in text
     assert "BUILDER-LEVEL" not in text
 
 
@@ -574,7 +574,7 @@ def test_compile_context_companion_files_always_written(
     """F43: companion files are forensics + future-proof storage; they
     must keep being written regardless of which inline section the
     current pipeline kind is rendering. A Backward with PAST_ATTEMPTS
-    history off the inline path still has PAST_ATTEMPTS.md on disk."""
+    history off the inline path still has PAST_DIRECT_ATTEMPTS.md on disk."""
     gid, attempts_dir = _seed_goal_with_history(conn, tmp_path)
     goal = db.get_goal(conn, gid)
     compile_context(conn, goal=goal,
@@ -583,5 +583,5 @@ def test_compile_context_companion_files_always_written(
     # Backward inline path skipped PAST_ATTEMPTS section in Context.md,
     # but the companion file must still exist (forensics + agent can
     # still Read on demand if it ever wants to).
-    assert (attempts_dir / "PAST_ATTEMPTS.md").exists()
-    assert (attempts_dir / "PAST_BACKWARD.md").exists()
+    assert (attempts_dir / "PAST_DIRECT_ATTEMPTS.md").exists()
+    assert (attempts_dir / "PAST_VERIFY_FAILURES.md").exists()

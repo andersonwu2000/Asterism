@@ -44,7 +44,7 @@ def test_context_includes_strategy_dead_attempts(
     fresh Backward agent doesn't repeat the broken combination pattern.
 
     F43: full inline rendering — Context.md carries the actual stderr
-    + proposal_md, not a digest+pointer. Companion PAST_BACKWARD.md is
+    + proposal_md, not a digest+pointer. Companion PAST_VERIFY_FAILURES.md is
     still written for forensics (F55 rename of PAST_VERIFIES.md)."""
     gid = _seed_problem_and_goal(conn)
     sid = db.insert_strategy(
@@ -65,13 +65,13 @@ def test_context_includes_strategy_dead_attempts(
     text = out.read_text(encoding="utf-8")
 
     # Context.md (F43): full inline content, not a digest pointer
-    assert "Past decompositions that failed Verify" in text
+    assert "Sibling decompositions that failed Verify" in text
     assert "lake_build_error" in text
     assert "type mismatch in have h_1" in text
     assert "My decomposition" in text  # proposal_md inline
 
     # Companion file still written (forensics; F55 renamed)
-    past_backward = (tmp_path / "PAST_BACKWARD.md").read_text(encoding="utf-8")
+    past_backward = (tmp_path / "PAST_VERIFY_FAILURES.md").read_text(encoding="utf-8")
     assert "My decomposition" in past_backward
     assert "type mismatch in have h_1" in past_backward
 
@@ -84,7 +84,7 @@ def test_context_no_strategy_section_when_clean(
     out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
                           attempts_dir=tmp_path)
     text = out.read_text(encoding="utf-8")
-    assert "Past decompositions that failed Verify" not in text
+    assert "Sibling decompositions that failed Verify" not in text
 
 
 # ---------------------------------------------------------------------
@@ -125,7 +125,7 @@ def test_context_includes_dead_strategies_with_subgoal_decomposition(
     out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
                           attempts_dir=tmp_path)
     text = out.read_text(encoding="utf-8")
-    assert "Prior strategies that died" in text
+    assert "Strategies whose decomposition died" in text
     assert "s1_sub_1" in text
     assert "(shelved)" in text
     assert "foo n = bar n" in text
@@ -141,7 +141,7 @@ def test_context_omits_dead_strategies_when_none(
     out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
                           attempts_dir=tmp_path)
     text = out.read_text(encoding="utf-8")
-    assert "Prior strategies that died" not in text
+    assert "Strategies whose decomposition died" not in text
 
 
 def test_context_skips_half_baked_dead_strategies(
@@ -161,7 +161,7 @@ def test_context_skips_half_baked_dead_strategies(
     out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
                           attempts_dir=tmp_path)
     text = out.read_text(encoding="utf-8")
-    assert "Prior strategies that died" not in text
+    assert "Strategies whose decomposition died" not in text
 
 
 # ---------------------------------------------------------------------
@@ -252,7 +252,7 @@ def test_context_dead_strategies_visible_to_builder(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
     """P0-#4: Builder kind has show_verifies=False (no
-    `## Past decompositions that failed Verify` section), so the
+    `## Sibling decompositions that failed Verify` section), so the
     dedupe filter that strips strategies-shown-in-verify-failures
     from `dead_strats` must NOT run for Builder — otherwise Builder
     silently loses the dead-strategy signal entirely."""
@@ -284,8 +284,8 @@ def test_context_dead_strategies_visible_to_builder(
         conn, goal=db.get_goal(conn, gid), mfst=_empty_manifest(),
         attempts_dir=attempts_bw, strategy_id=99, kind="backward")
     text_bw = out_bw.read_text(encoding="utf-8")
-    assert "Past decompositions that failed Verify" in text_bw
-    assert "Prior strategies that died" not in text_bw  # deduped
+    assert "Sibling decompositions that failed Verify" in text_bw
+    assert "Strategies whose decomposition died" not in text_bw  # deduped
 
     # For Builder kind: no verify-failures section, so dead strategy
     # MUST still be visible (regression: P0-#4 dedupe was unconditional).
@@ -295,8 +295,8 @@ def test_context_dead_strategies_visible_to_builder(
         conn, goal=db.get_goal(conn, gid), mfst=_empty_manifest(),
         attempts_dir=attempts_bld, kind="builder")
     text_bld = out_bld.read_text(encoding="utf-8")
-    assert "Past decompositions that failed Verify" not in text_bld
-    assert "Prior strategies that died" in text_bld
+    assert "Sibling decompositions that failed Verify" not in text_bld
+    assert "Strategies whose decomposition died" in text_bld
 
 
 def test_context_emits_lemma_references_when_lookup_finds(

@@ -210,14 +210,16 @@ FORBIDDEN_LEMMAS
 Strategic notes
 Library available
 Playbook
-Builder declines                  ← 只給 Backward 看
+Builder declines                  ← 只給 Backward 看（step 4 將合進 Goal history）
 Your previous progress note       ← F55 timeout 後留下的進度筆記
-Past attempts on this goal        ← 4 個失敗紀錄 section…
-Past decompositions that failed Verify
-Prior strategies that died
+Goal history (umbrella)           ← v1 已落地（C1 + C2、commit 3ef9c55 onward）：
+  ### Direct attempts on this goal           (kind=Builder/None gate)
+  ### Sibling decompositions that failed Verify (kind=Backward/None gate)
+  ### Strategies whose decomposition died     (兩 kind 都看)
+  ### Sub-goals reported infeasible           (cross-goal、kind=Backward/None)
 ```
 
-其中四個失敗紀錄 section（`Builder declines` + `Past attempts on this goal` + `Past decompositions that failed Verify` + `Prior strategies that died`）是 `## Goal history` 重構的對象（見 `docs/dev/goal_history_unified.md`）— 它們散落在 4 個 header、kind-asymmetric gating（Builder vs Backward 看到不同子集）、event 邏輯 hard-code 在 renderer。`Your previous progress note` 夾在中間但**不在合併範圍**：性質是 future hint 而非 past failure。
+舊版三個獨立 `##` section（`Past attempts on this goal` / `Past decompositions that failed Verify` / `Prior strategies that died`）合併成 `## Goal history` umbrella、event 投影邏輯抽到 `Tooling/pipeline/events.py` 的 `direct_attempts` / `verify_failures` / `dead_strategies` / `infeasible_subs`。`infeasible_sub` 是新增的 cross-goal 投影：sub-goal 的 `agent_infeasible` 反向投到 parent goal 的 next Backward。完整設計見 `docs/dev/goal_history_unified.md`、reason→event 對照見 `docs/failure_modes.md` §3。`Builder declines` 暫時保留獨立 section、step 4 合進 Goal history。
 
 ---
 

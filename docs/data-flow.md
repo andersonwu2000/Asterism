@@ -220,14 +220,16 @@ FORBIDDEN_LEMMAS
 Strategic notes
 Library available
 Playbook
-Builder declines                ← Backward only：上次 Builder agent_declined 的 PROPOSAL 摘要
+Builder declines                ← Backward only：上次 Builder agent_declined 的 PROPOSAL 摘要（step 4 將合進 Goal history）
 Your previous progress note     ← F55 timeout 留下的進度筆記（§6）
-Past attempts on this goal      ┐
-Past decompositions failed Verify│ 4 個失敗紀錄 section、即將被 Goal history 統一重構
-Prior strategies that died      ┘
+Goal history (umbrella)         ← v1 已落地、4 sub-section：
+  ### Direct attempts on this goal
+  ### Sibling decompositions that failed Verify
+  ### Strategies whose decomposition died
+  ### Sub-goals reported infeasible
 ```
 
-四個失敗 section 是 `docs/dev/goal_history_unified.md` 的合併目標、`Your previous progress note` 夾中間但不在合併範圍（性質是 future hint 不是 past failure）。
+`Goal history` umbrella 的 event 投影邏輯在 `Tooling/pipeline/events.py`（5 個函數 + `_NON_AGENT_REASONS` filter）。Empty bucket 整段省略；空 umbrella 連 `## Goal history` header 都不寫。完整設計與 audience 規則見 `docs/dev/goal_history_unified.md`。
 
 **Sandbox**（F44 + M1 + M3）：
 - cwd = `Problems/<p>/`

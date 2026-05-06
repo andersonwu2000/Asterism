@@ -59,7 +59,8 @@ def _section_sandbox(strategy_id: int | None,
         "- Files framework wrote (read & edit, do NOT rename):",
         "  - `patch.lean` — proof patch (Builder writes body; Backward "
         "edits the locked-signature skeleton, body only).",
-        "  - `Context.md`, `PAST_ATTEMPTS.md`, `PAST_BACKWARD.md` "
+        "  - `Context.md`, `PAST_DIRECT_ATTEMPTS.md`, "
+        "`PAST_VERIFY_FAILURES.md`, `PAST_DEAD_STRATEGIES.md` "
         "(when present) — read-only reference.",
         "- Files you write:",
         "  - `PROPOSAL.md` — strategy / approach explanation.",
@@ -228,7 +229,7 @@ _FIRST_ERROR_RE = re.compile(
 def _digest_failure(failure_reason: str, failure_detail: str) -> str:
     """One-line digest of a failed pipeline for the Context.md summary.
 
-    The full content is written to PAST_ATTEMPTS.md by context_files —
+    The full content is written to PAST_DIRECT_ATTEMPTS.md by context_files —
     here we extract only what the agent needs at-a-glance: which class
     of failure + the actual error message (skipping LEAN_PATH dumps
     and other lake-trace noise that 76% of pre-F26 dead_attempts
@@ -280,22 +281,7 @@ def _ago(ts_iso: str | None) -> str:
 # History sections (past attempts / verify failures / dead strategies)
 # ---------------------------------------------------------------------
 
-def _section_past_attempts(deads: list[sqlite3.Row]) -> list[str]:
-    """F43 — full inline rendering of PAST_ATTEMPTS history into
-    Context.md. Companion file is still written by
-    `context_files.write_past_attempts` for forensics + future
-    re-reading; this section duplicates its content so the agent
-    can't miss it."""
-    if not deads:
-        return []
-    out = ["## Previous attempts on THIS goal", ""]
-    for i, d in enumerate(deads, 1):
-        out.append(context_files.render_attempt_block(i, d).rstrip())
-        out.append("")
-    return out
-
-
-def _collect_lemma_names(deads: list[sqlite3.Row],
+def _collect_lemma_names(deads: list,
                         mfst: manifest.Manifest) -> list[str]:
     """Names visible to the agent: those Lean errored on (highest
     signal) plus those the Manifest curated. De-duped, first-seen order."""
@@ -375,64 +361,124 @@ def _section_library_available(mfst, workspace) -> list[str]:
     ]
 
 
-def _section_dead_strategies(rows: list[dict]) -> list[str]:
-    """F37 — anti-repetition hint for sequential Backward retry. For
-    shelved sub-goals also surfaces the agent-written root-cause excerpt
-    so the next Backward sees what trap the prior shape fell into; full
-    counterexample text lives in `PAST_DEAD_STRATEGIES.md`."""
-    if not rows:
-        return []
-    out = [
-        "## Prior strategies that died (avoid re-proposing the same shape)",
-        "Earlier Backward attempts for this same goal produced the "
-        "decompositions below. Each one was killed because at least one "
-        "of its sub-goals could not be proved (cascade-shelve). Do NOT "
-        "re-propose a decomposition that hinges on the same dead "
-        "sub-goal — pick a structurally different angle. Full "
-        "counterexamples are in `PAST_DEAD_STRATEGIES.md`.",
-        "",
-    ]
-    for s in rows:
-        out.append(f"### Dead strategy s{s['id']}")
-        out.append("Sub-goals it produced:")
-        for sub in s["subs"]:
-            mark = (f"({sub['status']})"
-                    if sub["status"] != "shelved" else "(shelved)")
-            stmt = sub["statement"].strip()
+def _section_goal_history(*,
+                          direct_events: list,
+                          verify_events: list,
+                          dead_strat_events: list,
+                          infeasible_sub_events: list,
+                          show_attempts: bool,
+                          show_verifies: bool) -> list[str]:
+    """`## Goal history` umbrella — past failures on this goal in one
+    place, partitioned by event_type into sub-sections. Replaces the
+    previous separate `## Previous attempts on THIS goal` /
+    `## Past decompositions that failed Verify` /
+    `## Prior strategies that died` sections.
+
+    Sub-sections render only when their bucket is non-empty AND their
+    kind-gate allows. Umbrella header itself is suppressed when every
+    sub-section is empty (no header for an empty body).
+
+    Sub-sections (in order):
+      ### Direct attempts on this goal              — direct_attempt events
+      ### Sibling decompositions that failed Verify — verify_failure (legacy F56)
+      ### Strategies whose decomposition died        — dead_strategy events
+      ### Sub-goals reported infeasible              — infeasible_sub events (NEW)
+
+    Reasons NOT included here (and won't ever be — they're filtered
+    out at the `events.py` projection layer): `spawn_fast_fail`
+    (infra noise), `agent_infeasible` directly on this goal (the
+    sub is shelved; cross-goal projected to parent's infeasible_sub
+    above), and the framework / DB / FS race reasons. See
+    `docs/failure_modes.md` §3.
+    """
+    parts: list[list[str]] = []
+
+    if show_attempts and direct_events:
+        sub = ["### Direct attempts on this goal", ""]
+        for i, d in enumerate(direct_events, 1):
+            sub.append(context_files.render_attempt_block(i, d).rstrip())
+            sub.append("")
+        parts.append(sub)
+
+    if show_verifies and verify_events:
+        sub = [
+            "### Sibling decompositions that failed Verify",
+            "",
+            "Earlier Backward attempts decomposed this goal but the "
+            "combination patch did not elaborate against the sub-goal "
+            "proofs. Avoid re-proposing a decomposition with the same "
+            "typing shape.",
+            "",
+        ]
+        for i, r in enumerate(verify_events, 1):
+            sub.append(context_files.render_strategy_block(i, r).rstrip())
+            sub.append("")
+        parts.append(sub)
+
+    if dead_strat_events:
+        sub = [
+            "### Strategies whose decomposition died",
+            "",
+            "Earlier Backward attempts produced the decompositions below "
+            "— each killed because at least one of its sub-goals could "
+            "not be proved (cascade-shelve). Do NOT re-propose a "
+            "decomposition that hinges on the same dead sub-goal — pick "
+            "a structurally different angle.",
+            "",
+        ]
+        for s in dead_strat_events:
+            sub.append(f"#### Dead strategy s{s['id']}")
+            sub.append("Sub-goals it produced:")
+            for sub_g in s["subs"]:
+                mark = (f"({sub_g['status']})"
+                        if sub_g["status"] != "shelved" else "(shelved)")
+                stmt = sub_g["statement"].strip()
+                if len(stmt) > 300:
+                    stmt = stmt[:300].rstrip() + " …"
+                stmt_oneline = " ".join(stmt.split())
+                sub.append(f"- `{sub_g['slug']}` {mark} — {stmt_oneline}")
+                if sub_g.get("root_cause"):
+                    sub.append(f"  **Root cause**: {sub_g['root_cause']}")
+            sub.append("")
+        parts.append(sub)
+
+    if show_verifies and infeasible_sub_events:
+        sub = [
+            "### Sub-goals reported infeasible",
+            "",
+            "Sub-goals from earlier decompositions of THIS goal that the "
+            "prover reported as type-infeasible (with counterexample). "
+            "Do NOT re-propose a decomposition built around the same "
+            "sub-goal type — the underlying type is unprovable.",
+            "",
+        ]
+        for e in infeasible_sub_events:
+            stmt = (e.get("sub_statement") or "").strip()
             if len(stmt) > 300:
                 stmt = stmt[:300].rstrip() + " …"
             stmt_oneline = " ".join(stmt.split())
-            out.append(f"- `{sub['slug']}` {mark} — {stmt_oneline}")
-            if sub.get("root_cause"):
-                out.append(f"  **Root cause**: {sub['root_cause']}")
-        out.append("")
-    return out
+            sub.append(f"- `{e['sub_slug']}` — {stmt_oneline}")
+            if e.get("root_cause"):
+                sub.append(f"  **Root cause**: {e['root_cause']}")
+        sub.append("")
+        parts.append(sub)
 
-
-def _section_past_backward(rows: list[sqlite3.Row]) -> list[str]:
-    """F43 + F55 — full inline rendering of past-Backward history.
-
-    Renders sibling strategies' Verify failures so the agent avoids
-    re-proposing a decomposition with the same typing shape. The
-    companion file `PAST_BACKWARD.md` (formerly PAST_VERIFIES.md)
-    carries the same content + an additional partial-PROPOSAL section
-    when applicable; this inline copy keeps the must-see signal in
-    front of the agent without forcing a Read tool round-trip."""
-    if not rows:
+    if not parts:
         return []
+
+    # Umbrella header + companion-file pointer.
     out = [
-        "## Past decompositions that failed Verify",
+        "## Goal history",
         "",
-        "Earlier Backward attempts decomposed this goal but the "
-        "combination patch did not elaborate against the sub-goal "
-        "proofs. Each block below is the lake stderr + the "
-        "strategy's PROPOSAL.md. Avoid re-proposing a decomposition "
-        "with the same typing shape.",
+        "Past failures on this goal — use to avoid re-proposing "
+        "approaches that already failed. Full content (deeper context, "
+        "raw lake stderr, full PROPOSAL.md / counterexample texts) "
+        "in `PAST_DIRECT_ATTEMPTS.md`, `PAST_VERIFY_FAILURES.md`, "
+        "`PAST_DEAD_STRATEGIES.md` when present.",
         "",
     ]
-    for i, r in enumerate(rows, 1):
-        out.append(context_files.render_strategy_block(i, r).rstrip())
-        out.append("")
+    for sub in parts:
+        out.extend(sub)
     return out
 
 
@@ -482,13 +528,15 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     `strategy_id`: when set (Backward worker), write a 'Strategy
     naming' section pinning sub-goal slug prefixes to `s<sid>_`.
 
-    `kind` (F43): 'builder' | 'backward' | None.
-      - 'builder'  → render PAST_ATTEMPTS section, skip PAST_BACKWARD
-      - 'backward' → render PAST_BACKWARD section, skip PAST_ATTEMPTS
-      - None       → render both (back-compat for tests)
-    Each kind only sees the failure history it can actually act on:
-    Builder fixes leaf-level patches, Backward fixes decomposition
-    shape; cross-feeding adds noise without signal.
+    `kind` (F43): 'builder' | 'backward' | None — gates which Goal
+    history sub-sections render:
+      - 'builder'  → `### Direct attempts on this goal` only
+      - 'backward' → `### Sibling decompositions that failed Verify`
+                     + `### Sub-goals reported infeasible` only
+      - None       → all sub-sections (back-compat for tests)
+    `### Strategies whose decomposition died` is rendered for both
+    kinds. C3 will collapse the kind-asymmetric gates further
+    (step 4 of goal_history_unified.md).
 
     F55 — also surfaces the persisted partial output (PROPOSAL.md for
     backward, patch.lean for builder) from a prior failed/timed-out
@@ -509,6 +557,8 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     # intact — events.py can't know whether verify_failure is rendered.
     direct_events = events.direct_attempts(conn, int(goal["id"]), k=5)
     verify_events = events.verify_failures(conn, int(goal["id"]), k=5)
+    infeasible_sub_events = events.infeasible_subs(
+        conn, int(goal["id"]), k=5)
     decline_events = (
         events.builder_declines(conn, int(goal["id"]))
         if kind == "backward" else []
@@ -540,9 +590,14 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_playbook(goal, workspace),
         _section_builder_declines(decline_events),
         _section_prior_partial(kind, problem_dir, int(goal["id"])),
-        _section_past_attempts(direct_events) if show_attempts else [],
-        _section_past_backward(verify_events) if show_verifies else [],
-        _section_dead_strategies(dead_strat_events),
+        _section_goal_history(
+            direct_events=direct_events,
+            verify_events=verify_events,
+            dead_strat_events=dead_strat_events,
+            infeasible_sub_events=infeasible_sub_events,
+            show_attempts=show_attempts,
+            show_verifies=show_verifies,
+        ),
     ]
 
     parts: list[str] = []

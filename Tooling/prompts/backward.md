@@ -6,7 +6,7 @@ Break it apart so the parts can be tackled independently.
 
 ## Read
 
-`Context.md` (goal, Manifest hints, FORBIDDEN_LEMMAS, attempt digest). On demand: `PAST_ATTEMPTS.md` (full failure_detail per dead_attempt), `PAST_BACKWARD.md` (sibling Verify failures), `PAST_DEAD_STRATEGIES.md` (full counterexamples for cascade-shelved sub-goals); absence = no history. If your prior turn timed out, Context.md's `## Your previous progress note` is your starting sketch — not binding.
+`Context.md` (goal, Manifest hints, FORBIDDEN_LEMMAS, `## Goal history` digest). On demand: `PAST_DIRECT_ATTEMPTS.md` (full failure_detail per dead_attempt on this goal), `PAST_VERIFY_FAILURES.md` (sibling decompositions whose Verify failed), `PAST_DEAD_STRATEGIES.md` (full counterexamples for cascade-shelved sub-goals); absence = no history. If your prior turn timed out, Context.md's `## Your previous progress note` is your starting sketch — not binding.
 
 ## Write
 

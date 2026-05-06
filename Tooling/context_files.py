@@ -9,7 +9,7 @@ isn't enough.
 
 Read pattern:
 - Agent always reads Context.md (mandatory primary briefing)
-- Agent reads `PAST_ATTEMPTS.md` etc. only when the summary's digest
+- Agent reads `PAST_DIRECT_ATTEMPTS.md` etc. only when the summary's digest
   doesn't suffice (e.g. recurring same-shape error needs raw stderr
   to spot the exact type-mismatch detail).
 """
@@ -22,11 +22,13 @@ from typing import Iterable
 from . import diagnostics
 
 
-PAST_ATTEMPTS_FILENAME = "PAST_ATTEMPTS.md"
-# F55 — formerly PAST_VERIFIES.md; renamed to cover the broader "past
-# Backward work" semantics, which now also includes the prior partial
-# PROPOSAL.md draft from a failed / timed-out attempt.
-PAST_BACKWARD_FILENAME = "PAST_BACKWARD.md"
+# C2 (goal_history v1) — companion files renamed to align with the
+# event_type they cover (PAST_<EVENT_TYPE>.md). Old names retired:
+#   PAST_DIRECT_ATTEMPTS.md → PAST_DIRECT_ATTEMPTS.md
+#   PAST_VERIFY_FAILURES.md → PAST_VERIFY_FAILURES.md
+#   (PAST_DEAD_STRATEGIES.md kept — already aligned)
+PAST_DIRECT_ATTEMPTS_FILENAME = "PAST_DIRECT_ATTEMPTS.md"
+PAST_VERIFY_FAILURES_FILENAME = "PAST_VERIFY_FAILURES.md"
 # Cascade-shelve forensics: full strategy proposals + sub-goal
 # counterexamples for prior dead strategies on this goal. Context.md's
 # inline section carries one-line root-cause excerpts; this file is the
@@ -66,7 +68,7 @@ def render_attempt_block(idx: int, dead: sqlite3.Row) -> str:
 
 def write_past_attempts(deads: Iterable[sqlite3.Row],
                         attempts_dir: Path) -> Path | None:
-    """Write `PAST_ATTEMPTS.md` with the full per-dead-attempt history
+    """Write `PAST_DIRECT_ATTEMPTS.md` with the full per-dead-attempt history
     for THIS goal. No-op (returns None) when `deads` is empty."""
     rows = list(deads)
     if not rows:
@@ -82,7 +84,7 @@ def write_past_attempts(deads: Iterable[sqlite3.Row],
     ]
     for i, d in enumerate(rows, 1):
         parts.append(render_attempt_block(i, d))
-    out = attempts_dir / PAST_ATTEMPTS_FILENAME
+    out = attempts_dir / PAST_DIRECT_ATTEMPTS_FILENAME
     out.write_text("\n".join(parts), encoding="utf-8")
     return out
 
@@ -126,7 +128,8 @@ def write_past_dead_strategies(dead_strats: list[dict],
     parts: list[str] = [
         "# Full content for prior dead strategies on this goal",
         "",
-        "Context.md's `## Prior strategies that died` section shows a "
+        "Context.md's `### Strategies whose decomposition died` "
+        "sub-section (under `## Goal history`) shows a "
         "one-line root-cause excerpt per shelved sub-goal. This file "
         "carries the strategy's own PROPOSAL.md and the verbatim "
         "counterexample text from each shelved sub-goal's "
@@ -162,7 +165,7 @@ def write_past_dead_strategies(dead_strats: list[dict],
 
 def write_past_backward(strat_deads: Iterable[sqlite3.Row],
                         attempts_dir: Path) -> Path | None:
-    """Write `PAST_BACKWARD.md` (F55 rename of PAST_VERIFIES.md) with
+    """Write `PAST_VERIFY_FAILURES.md` (F55 rename of PAST_VERIFIES.md) with
     the full Verify-failure history for sibling strategies on THIS
     goal. No-op when `strat_deads` is empty.
 
@@ -186,6 +189,6 @@ def write_past_backward(strat_deads: Iterable[sqlite3.Row],
     ]
     for i, r in enumerate(rows, 1):
         parts.append(render_strategy_block(i, r))
-    out = attempts_dir / PAST_BACKWARD_FILENAME
+    out = attempts_dir / PAST_VERIFY_FAILURES_FILENAME
     out.write_text("\n".join(parts), encoding="utf-8")
     return out
