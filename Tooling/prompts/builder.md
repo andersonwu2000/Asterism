@@ -68,7 +68,8 @@ end Problems.<problem>
 
 ## Lemma discovery
 
-Verify Mathlib lemma names before citing — names drift between versions (e.g. `pow_le_pow_left` → `pow_le_pow_left₀`). Mathlib lives at `.lake/packages/mathlib/Mathlib/`.
+Mathlib at `.lake/packages/mathlib/Mathlib/`. Pick by what you have — names drift across versions (`pow_le_pow_left` → `pow_le_pow_left₀`), so verify before citing:
 
-- `rg -n "^lemma <name>\b" .lake/packages/mathlib/Mathlib/`
-- `python -m Tooling.loogle '<type pattern>'`
+- name: `rg -n "(theorem|lemma) <name>\b" .lake/packages/mathlib/Mathlib/`
+- type pattern: `python -m Tooling.loogle '<pattern>'` (e.g. `'_ ^ _ = ENNReal.ofReal _'`)
+- notation / symbol: `rg -n "<symbol>" .lake/packages/mathlib/Mathlib/`

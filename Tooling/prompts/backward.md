@@ -101,4 +101,4 @@ Ship as `:= by sorry` with `entry_kind: Builder`. Wrong types compile-fail in se
 - Each sub-goal must be **strictly simpler** and as abstract as possible — re-stating the parent in different notation does not count.
 - All universal binders (∀) and hypotheses from the parent must appear in each sub-goal.
 - Do NOT use any name in FORBIDDEN_LEMMAS — anywhere.
-- Verify Mathlib lemma names with Grep / Loogle before citing — names drift.
+- Verify lemma references before citing (names drift): Grep by name/symbol, Loogle by type pattern.
