@@ -301,16 +301,27 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             prompt_dir=PROMPT_DIR,
         )
 
-    return run_with_session_retries(
-        conn=conn,
-        goal_id=goal_id,
-        pipeline_id=pipeline_id,
-        budget_threshold=dispatcher.BUILDER_THRESHOLD,
-        shelve_threshold=dispatcher.SHELVE_THRESHOLD,
-        attempts_dir=attempts_dir,
-        spawn_fn=builder_spawn,
-        parse_fn=builder_parse,
-        postmortem_fn=builder_postmortem,
-        workspace=workspace,
-        reflection_fn=builder_reflection,
-    )
+    try:
+        return run_with_session_retries(
+            conn=conn,
+            goal_id=goal_id,
+            pipeline_id=pipeline_id,
+            budget_threshold=dispatcher.BUILDER_THRESHOLD,
+            shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+            attempts_dir=attempts_dir,
+            spawn_fn=builder_spawn,
+            parse_fn=builder_parse,
+            postmortem_fn=builder_postmortem,
+            workspace=workspace,
+            reflection_fn=builder_reflection,
+        )
+    finally:
+        # LSP swap final guard: spawn rc != 0 paths (timeout / quota /
+        # agent crash) skip parse_fn entirely, so the parse-side
+        # `_restore_backup` doesn't fire. Without this, a timed-out
+        # first attempt leaves goal_lean in agent's mid-session
+        # apply_edit state, which the next retry inherits as a broken
+        # baseline (observed cantor_xi g94: second attempt's
+        # initial_diagnostic_count=4 from first attempt's leftover).
+        # Mirrors backward.py's outer try/finally pattern.
+        _restore_backup()

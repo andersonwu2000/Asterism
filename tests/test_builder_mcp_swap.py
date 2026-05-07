@@ -130,3 +130,39 @@ def test_restores_goal_lean_when_lake_build_fails(
     assert restored == original, (
         "goal_lean must restore to pre-spawn state on lake fail"
     )
+
+
+def test_restores_goal_lean_after_spawn_timeout(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spawn rc != 0 paths skip parse_fn, so the parse-side
+    `_restore_backup` doesn't fire. The outer try/finally around
+    `run_with_session_retries` must catch this and restore goal_lean.
+    Otherwise the agent's mid-session apply_edit state leaks into the
+    next retry as a broken baseline (observed cantor_xi g94)."""
+    gid = _seed_problem(conn, tmp_path, initial_body="  sorry")
+    goal_row = db.get_goal(conn, gid)
+    goal_lean = tmp_path / goal_row["lean_path"]
+    original = goal_lean.read_text(encoding="utf-8")
+
+    def fake_spawn(**kw):
+        # Simulate agent's LSP edit polluting goal_lean...
+        if not kw.get("is_postmortem"):
+            goal_lean.write_text(
+                "-- agent's mid-session LSP edit (incomplete)\n"
+                "broken garbage\n",
+                encoding="utf-8")
+        # ...then spawn times out (rc=124). Parse never runs.
+        return 124
+
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    pipeline.run_builder(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=_mfst(), pipeline_id="pid-builder-timeout-restore")
+
+    restored = goal_lean.read_text(encoding="utf-8")
+    assert restored == original, (
+        "Builder must restore goal_lean even when spawn rc != 0 "
+        "and parse_fn never runs"
+    )
