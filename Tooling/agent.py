@@ -39,7 +39,13 @@ from .context import (  # noqa: F401  (re-export)
 )
 
 
-WORKER_TIMEOUT_SEC = 600  # 10 min, see architecture.md §13
+WORKER_TIMEOUT_SEC = 900  # 15 min. Phase 2 LSP cantor_xi had 6
+                          # spawns hit the prior 600s wall while making
+                          # real progress (esp. measure-theory leaves
+                          # like cantorxi_next_*_vol). 900s gives Sonnet
+                          # room to finish; fewer-but-longer spawns
+                          # paired with shelve_threshold=4 keeps total
+                          # cost on stuck goals bounded.
 
 # F55 — postmortem spawn after a main-spawn timeout. Uses --resume so
 # session memory is intact; agent writes a short state + blocker note
