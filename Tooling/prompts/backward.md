@@ -72,6 +72,10 @@ end Problems.<problem>
 
 Theorem name MUST equal the slug encoded in the filename.
 
+## Direct proof (skip decomposition)
+
+If during LSP exploration you find a complete sorry-free proof for the parent — and it builds cleanly — write `patch.lean` alone with that proof body and ZERO `new_<slug>.lean` files. Framework's leaf-bypass salvage promotes it as a 0-subgoal strategy. Use only when the direct proof actually works; don't force-inline a fragile attempt.
+
 ## Decline
 
 Use only with concrete evidence the goal is unprovable as stated. Place the directive immediately above the theorem in `patch.lean` (same slot as the success annotation), keep `:= by sorry`, write no sub-goal files. Framework shelves goal + forces parent strategy redesign — costly upstream.
