@@ -4,6 +4,29 @@ Read `Context.md` for the goal, Manifest hints, FORBIDDEN_LEMMAS, prior failures
 
 Time budget: {timeout_min} minutes.
 
+## Validating decomposition via LSP (recommended)
+
+You have three MCP tools backed by a live Lean server holding the parent goal's source file (`goal_lean`, the `.lean` file referenced in Context.md):
+
+- `mcp__lsp__apply_edit(start_line, end_line, new_text)` — replace a 1-indexed inclusive line range. Returns the post-edit goal at line=start_line and full-file diagnostics.
+- `mcp__lsp__goal_at(line, col)` — read the proof goal at any position.
+- `mcp__lsp__errors_at(line=None)` — list diagnostics (optional line filter).
+
+Use them to prototype the decomposition skeleton **inside goal_lean** before committing to `new_*.lean` + `patch.lean`. Workflow:
+
+1. apply_edit goal_lean's body to insert your candidate skeleton:
+   ```
+     intro ...
+     have h_<slug_1> : <stmt_1> := by sorry
+     have h_<slug_2> : <stmt_2> := by sorry
+     exact <combinator> h_<slug_1> h_<slug_2>
+   ```
+2. errors_at to check: only sorry warnings, no real errors → each sub-claim's statement type-checks AND the combinator closes the parent goal.
+3. If errors: revise statement / combinator and apply_edit again.
+4. Once clean, write the final outputs: each `have` becomes a `new_<slug>.lean` stub (statement only); the body of `patch.lean` is the validated skeleton, with `have h_<slug> := <slug>` referring to the now-extracted theorem.
+
+The framework restores `goal_lean` to its pre-spawn state on exit, so your exploratory edits don't leak into the codebase. Outputs in attempts_dir are what gets committed.
+
 ## Output
 
 Edit `patch.lean` (the strategy patch — pre-written skeleton with locked signature) and add `new_<slug>.lean` × N (one per sub-goal). Framework auto-prepends `import Mathlib` + `Defs` and auto-appends sub-goal imports — write no imports yourself.

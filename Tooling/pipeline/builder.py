@@ -22,44 +22,11 @@ Public entry point: `run_builder`.
 """
 from __future__ import annotations
 
-import json
 import shutil
 import sqlite3
-import sys
 from pathlib import Path
 
 from .. import agent, db, diagnostics, manifest
-
-
-def _write_mcp_config(attempts_dir: Path, workspace: Path,
-                      target: Path) -> Path:
-    """Generate the MCP config JSON claude CLI uses to spawn our LSP
-    server as a stdio child. Lifecycle naturally tracks claude's
-    process — the server dies with claude, no separate cleanup needed.
-
-    The MCP server reads its config (workspace, target file, optional
-    log path) via env vars set here; claude propagates them when it
-    spawns the subprocess.
-    """
-    config_path = attempts_dir / "_mcp_config.json"
-    log_path = attempts_dir / "_mcp.jsonl"
-    config = {
-        "mcpServers": {
-            "lsp": {
-                "command": sys.executable,
-                "args": ["-m", "Tooling.lsp_mcp_server"],
-                "env": {
-                    "ASTERISM_WORKSPACE": str(workspace),
-                    "ASTERISM_TARGET": str(target),
-                    "ASTERISM_MCP_LOG": str(log_path),
-                    "PYTHONIOENCODING": "utf-8",
-                },
-            },
-        },
-    }
-    config_path.write_text(json.dumps(config, indent=2),
-                           encoding="utf-8")
-    return config_path
 
 
 def run_builder(conn: sqlite3.Connection, *, goal_id: int,
@@ -104,7 +71,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         _attempt_postmortem, _extract_decline_reason,
         _extract_leading_comments, _grep_forbidden, _is_sorry_stub,
         _lake_build, _parse_hint_winner, _replace_proof_body,
-        _safe_glob,
+        _safe_glob, _write_mcp_config,
         DECLINE_PARENT_TYPE_INFEASIBLE,
     )
     from ._retry import SpawnCtx, run_with_session_retries

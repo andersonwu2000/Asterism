@@ -25,13 +25,50 @@ Integrator atomicity = Hadamard backup-restore (no commit_state).
 """
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import subprocess  # noqa: F401 — surface for `pipeline.subprocess` monkeypatch in tests
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .. import agent, diagnostics
+
+
+def _write_mcp_config(attempts_dir: Path, workspace: Path,
+                      target: Path) -> Path:
+    """Generate the MCP config JSON claude CLI uses to spawn our LSP
+    server as a stdio child. Lifecycle naturally tracks claude's
+    process — the server dies with claude, no separate cleanup needed.
+
+    The MCP server reads its config (workspace, target file, optional
+    log path) via env vars set here; claude propagates them when it
+    spawns the subprocess.
+
+    Used by both Builder and Backward LSP swaps. The two pipelines
+    pass different `target` files (their respective `goal_lean`); the
+    rest is identical.
+    """
+    config_path = attempts_dir / "_mcp_config.json"
+    log_path = attempts_dir / "_mcp.jsonl"
+    config = {
+        "mcpServers": {
+            "lsp": {
+                "command": sys.executable,
+                "args": ["-m", "Tooling.lsp_mcp_server"],
+                "env": {
+                    "ASTERISM_WORKSPACE": str(workspace),
+                    "ASTERISM_TARGET": str(target),
+                    "ASTERISM_MCP_LOG": str(log_path),
+                    "PYTHONIOENCODING": "utf-8",
+                },
+            },
+        },
+    }
+    config_path.write_text(json.dumps(config, indent=2),
+                           encoding="utf-8")
+    return config_path
 
 
 # P2-#1 regression fix: pipeline.py was converted to pipeline/ package,

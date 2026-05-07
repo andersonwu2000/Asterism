@@ -3,14 +3,27 @@ strategy id, writes scratch + namespaced sub-goal files at strategy-
 isolated paths, runs Lean kernel isDefEq dedupe to collapse equivalent
 sub-goals to alias bodies, places everything atomically.
 
+Phase 2 LSP swap: Backward spawns claude with an LSP MCP server
+(`Tooling.lsp_mcp_server`) attached, target = `goal_lean`. The agent
+uses `apply_edit` / `goal_at` / `errors_at` to validate that each
+proposed sub-claim's statement type-checks before writing the final
+`new_*.lean` + `patch.lean` outputs to attempts_dir. Backward's
+output protocol is unchanged (multi-file `new_<slug>.lean` +
+`patch.lean`); LSP is just an in-session validation sandbox.
+
+Because the agent may apply_edit `goal_lean` during exploration,
+each spawn snapshots `goal_lean` to a `.backup` file before the
+spawn and restores it on every exit path — Backward's contract is
+"goal_lean unchanged; outputs are in attempts_dir + proofs/".
+
 Public entry point: `run_backward`. Backward-specific helpers
 (`_ensure_imports_subgoal`, `_try_promote_sorry_free`,
 `_parse_entry_kind`, `_resolve_slug_collisions`) live here. Shared
 helpers (`_grep_forbidden`, `_attempt_postmortem`, `_spawn_failure`,
 `_safe_glob`, `_signature_prefix`, `_normalize_signature`,
 `_build_strategy_skeleton`, `_inject_imports_for_subs`,
-`_lean_path_to_module`, `_lake_build_batch`, `PipelineResult`,
-`PROMPT_DIR`, `DECLINE_*`, `_extract_decline_reason`,
+`_lean_path_to_module`, `_lake_build_batch`, `_write_mcp_config`,
+`PipelineResult`, `PROMPT_DIR`, `DECLINE_*`, `_extract_decline_reason`,
 `_extract_leading_comments`, `_drafts`, `_extract_statement_from_lean`,
 `_slug_from_filename`) are imported from the package root.
 """
@@ -252,6 +265,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         _inject_imports_for_subs, _is_sorry_stub, _lake_build_batch,
         _lean_path_to_module, _normalize_signature,
         _safe_glob, _signature_prefix, _slug_from_filename,
+        _write_mcp_config,
         DECLINE_PARENT_TYPE_INFEASIBLE,
     )
     from ._retry import SpawnCtx, run_with_session_retries
@@ -313,6 +327,19 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             failure_detail=detail, proposal_md=proposal_md,
         )
 
+    # LSP swap (Phase 2): agent edits goal_lean in-session via
+    # apply_edit to validate sub-claim statements. Backward's contract
+    # is "goal_lean unchanged on exit" (decomposition outputs go to
+    # attempts_dir → proofs/, NOT to goal_lean), so we snapshot before
+    # each spawn and restore on every parse exit path.
+    goal_lean = parent_abs_for_skeleton
+    backup_path = goal_lean.with_suffix(goal_lean.suffix + ".backup")
+
+    def _restore_backup() -> None:
+        if backup_path.exists():
+            shutil.copy2(backup_path, goal_lean)
+            backup_path.unlink()
+
     def backward_spawn(ctx: SpawnCtx) -> int:
         # Cold start: agent has no session memory to resume. Compile
         # Context.md fresh and write the F52 skeleton so the agent's
@@ -329,6 +356,18 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                                   kind="backward")
             (ctx.attempts_dir / "patch.lean").write_text(
                 skeleton, encoding="utf-8")
+
+        # Snapshot goal_lean (the parent theorem's source file) and
+        # write the MCP config so claude spawns lsp_mcp_server as a
+        # stdio child. Agent uses LSP for in-session validation, but
+        # goal_lean is restored to this snapshot on parse exit.
+        shutil.copy2(goal_lean, backup_path)
+        mcp_config_path = _write_mcp_config(
+            attempts_dir=ctx.attempts_dir,
+            workspace=workspace,
+            target=goal_lean,
+        )
+
         return agent.spawn_llm(
             kind="backward",
             prompt_path=PROMPT_DIR / "backward.md",
@@ -337,29 +376,38 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             session_id=ctx.sid,
             is_retry=not ctx.cold,
             retry_context=ctx.retry_context,
+            mcp_config_path=mcp_config_path,
         )
 
     def backward_parse() -> "PipelineResult":  # noqa: F821
-        return _backward_parse_and_commit(
-            conn=conn, goal=goal, goal_id=goal_id, mfst=mfst,
-            workspace=workspace, attempts_dir=attempts_dir,
-            strategy_id=strategy_id, sid_token=sid_token,
-            skeleton_signature=skeleton_signature,
-            _abort=_abort,
-            _safe_glob=_safe_glob,
-            _extract_leading_comments=_extract_leading_comments,
-            _extract_decline_reason=_extract_decline_reason,
-            DECLINE_PARENT_TYPE_INFEASIBLE=DECLINE_PARENT_TYPE_INFEASIBLE,
-            _normalize_signature=_normalize_signature,
-            _signature_prefix=_signature_prefix,
-            _is_sorry_stub=_is_sorry_stub,
-            _grep_forbidden=_grep_forbidden,
-            _slug_from_filename=_slug_from_filename,
-            _lake_build_batch=_lake_build_batch,
-            _inject_imports_for_subs=_inject_imports_for_subs,
-            _lean_path_to_module=_lean_path_to_module,
-            _extract_statement_from_lean=_extract_statement_from_lean,
-        )
+        # LSP swap: restore goal_lean from the pre-spawn backup on
+        # every exit path. Backward's contract is "goal_lean
+        # unchanged"; the agent may have used apply_edit to test the
+        # decomposition, but the actual outputs (new_*.lean +
+        # patch.lean → proofs/_strategy_*.lean) live elsewhere.
+        try:
+            return _backward_parse_and_commit(
+                conn=conn, goal=goal, goal_id=goal_id, mfst=mfst,
+                workspace=workspace, attempts_dir=attempts_dir,
+                strategy_id=strategy_id, sid_token=sid_token,
+                skeleton_signature=skeleton_signature,
+                _abort=_abort,
+                _safe_glob=_safe_glob,
+                _extract_leading_comments=_extract_leading_comments,
+                _extract_decline_reason=_extract_decline_reason,
+                DECLINE_PARENT_TYPE_INFEASIBLE=DECLINE_PARENT_TYPE_INFEASIBLE,
+                _normalize_signature=_normalize_signature,
+                _signature_prefix=_signature_prefix,
+                _is_sorry_stub=_is_sorry_stub,
+                _grep_forbidden=_grep_forbidden,
+                _slug_from_filename=_slug_from_filename,
+                _lake_build_batch=_lake_build_batch,
+                _inject_imports_for_subs=_inject_imports_for_subs,
+                _lean_path_to_module=_lean_path_to_module,
+                _extract_statement_from_lean=_extract_statement_from_lean,
+            )
+        finally:
+            _restore_backup()
 
     def backward_postmortem(sid: str) -> None:
         _attempt_postmortem(
@@ -392,19 +440,27 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             prompt_dir=PROMPT_DIR,
         )
 
-    result = run_with_session_retries(
-        conn=conn,
-        goal_id=goal_id,
-        pipeline_id=pipeline_id,
-        budget_threshold=dispatcher.SHELVE_THRESHOLD,
-        shelve_threshold=dispatcher.SHELVE_THRESHOLD,
-        attempts_dir=attempts_dir,
-        spawn_fn=backward_spawn,
-        parse_fn=backward_parse,
-        postmortem_fn=backward_postmortem,
-        workspace=workspace,
-        reflection_fn=backward_reflection,
-    )
+    try:
+        result = run_with_session_retries(
+            conn=conn,
+            goal_id=goal_id,
+            pipeline_id=pipeline_id,
+            budget_threshold=dispatcher.SHELVE_THRESHOLD,
+            shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+            attempts_dir=attempts_dir,
+            spawn_fn=backward_spawn,
+            parse_fn=backward_parse,
+            postmortem_fn=backward_postmortem,
+            workspace=workspace,
+            reflection_fn=backward_reflection,
+        )
+    finally:
+        # LSP swap final guard: spawn rc != 0 paths (timeout, quota,
+        # agent crash) skip parse_fn entirely, so the parse-side
+        # `_restore_backup` doesn't fire. Belt-and-suspenders here:
+        # whatever the helper's exit, ensure goal_lean is back to its
+        # pre-spawn state. Idempotent — `.backup` may already be gone.
+        _restore_backup()
 
     # Cleanup: any non-success outcome leaves the strategy at 'proposed'
     # with no scratch_path / no sub-goal links. Mark it dead so
