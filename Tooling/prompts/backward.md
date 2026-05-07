@@ -21,9 +21,9 @@ Use them to prototype the decomposition skeleton **inside goal_lean** before com
      have h_<slug_2> : <stmt_2> := by sorry
      exact <combinator> h_<slug_1> h_<slug_2>
    ```
-2. errors_at to check: only sorry warnings, no real errors → each sub-claim's statement type-checks AND the combinator closes the parent goal.
+2. errors_at to check: only sorry warnings, no errors → each sub-claim's statement type-checks AND the combinator closes the parent goal.
 3. If errors: revise statement / combinator and apply_edit again.
-4. Once clean, write the final outputs: each `have` becomes a `new_<slug>.lean` stub (statement only); the body of `patch.lean` is the validated skeleton, with `have h_<slug> := <slug>` referring to the now-extracted theorem.
+4. Once 0 errors (warnings tolerated), write outputs: each `have` becomes a `new_<slug>.lean` stub (statement only); `patch.lean` body is the validated skeleton with `have h_<slug> := <slug>` referring to the extracted theorem.
 
 The framework restores `goal_lean` to its pre-spawn state on exit, so your exploratory edits don't leak into the codebase. Outputs in attempts_dir are what gets committed.
 

@@ -18,13 +18,13 @@ Workflow recommendation:
 1. `mcp__lsp__goal_at` near the `sorry` to see what you're proving.
 2. `mcp__lsp__apply_edit` to write a tactic. Read the returned goal — did it shrink? Are there errors?
 3. Iterate: when stuck, query goal again before guessing another tactic.
-4. When 0 errors and 0 sorry, write the final state into `patch.lean` (your output contract — see below).
+4. When 0 errors and 0 sorry, you are done. Write to `patch.lean` and exit. Warnings don't block — handle at annotation step.
 
 You may also use Read/Write/Edit/Grep/Bash as before — they're not blocked. But LSP gives the proof feedback that a `lake build` cycle would, in <1s instead of multiple seconds and within the same session.
 
 ## Output: patch.lean
 
-Replace `:= by sorry` with a tactic block. Add an annotation comment block immediately above the theorem (Mathlib doc-style) — first non-blank line is the one-line summary (key lemma family + why it closes the goal).
+Replace `:= by sorry` with a tactic block. Add an annotation comment block immediately above the theorem (Mathlib doc-style) — first non-blank line is the one-line summary (key lemma family + why it closes the goal). While writing the annotation, fix any remaining warnings (e.g. lines >100 chars).
 
 ```lean
 import Mathlib
