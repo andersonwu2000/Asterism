@@ -32,10 +32,10 @@ from __future__ import annotations
 import re
 import shutil
 import sqlite3
-import subprocess
 from pathlib import Path
 
 from .. import agent, db, dedupe, diagnostics, manifest
+from . import _axiom
 
 
 # Sub-goal slug pattern: lowercase letter start, then lowercase letters,
@@ -124,56 +124,23 @@ def _try_promote_sorry_free(
     *, dest: Path, problem: str, slug: str, workspace: Path,
     axioms_whitelist: list[str],
 ) -> tuple[bool, str]:
-    """If `dest` is sorry-free AND its `#print axioms` set is a subset
-    of `axioms_whitelist`, return (True, msg). Otherwise (False, reason).
+    """If `dest` is sorry-free AND its `#print axioms` set ⊆ whitelist,
+    return (True, msg). Otherwise (False, reason).
 
     The strategy's batch lake build at the caller's site already
-    confirmed the file compiles, so we skip a redundant compile here
-    and only run `#print axioms` on the candidate identifier.
-
-    Empty whitelist → reject (the project clearly didn't authorize
-    bypassing the axiom gate; conservative path is to dispatch).
+    confirmed the file compiles, so the literal `\\bsorry\\b` substring
+    check is the cheap pre-filter; the real authority is `axiom_probe`.
     """
-    from . import _lean_path_to_module  # late-import via package root
     try:
         content = dest.read_text(encoding="utf-8")
     except OSError as exc:
         return False, f"read failed: {exc}"
     if _SORRY_RE.search(content):
         return False, "body contains sorry"
-    if not axioms_whitelist:
-        return False, "no axioms_whitelist"
-    fq_name = f"Problems.{problem}.{slug}"
-    module = _lean_path_to_module(workspace, dest)
-    probe = workspace / f"_axiom_probe_{slug}.lean"
-    probe.write_text(
-        f"import {module}\n#print axioms {fq_name}\n",
-        encoding="utf-8",
+    return _axiom.axiom_probe_file(
+        workspace, dest, problem=problem, slug=slug,
+        whitelist=axioms_whitelist,
     )
-    try:
-        r = subprocess.run(
-            ["lake", "env", "lean", str(probe)],
-            cwd=str(workspace), capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=180,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        return False, f"axiom probe failed: {exc}"
-    finally:
-        probe.unlink(missing_ok=True)
-    if r.returncode != 0:
-        return False, f"axiom probe rc={r.returncode}"
-    used: set[str] = set()
-    m = re.search(r"depends on axioms?\s*:\s*\[(.*?)\]",
-                  r.stdout, re.DOTALL)
-    if m:
-        for a in m.group(1).split(","):
-            a = a.strip()
-            if a:
-                used.add(a)
-    rogue = used - set(axioms_whitelist)
-    if rogue:
-        return False, f"rogue axioms: {sorted(rogue)}"
-    return True, f"axioms ok: {sorted(used) or '[]'}"
 
 
 # `entry_kind: Builder` or `entry_kind: Backward` directive — the

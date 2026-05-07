@@ -27,6 +27,7 @@ import sqlite3
 from pathlib import Path
 
 from .. import agent, db, diagnostics, manifest
+from . import _axiom
 
 
 def run_builder(conn: sqlite3.Connection, *, goal_id: int,
@@ -130,6 +131,16 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                     return PipelineResult(outcome="failed",
                                           failure_reason="forbidden_lemma",
                                           failure_detail=forbidden)
+                ok_ax, msg = _axiom.axiom_probe_file(
+                    workspace, goal_lean,
+                    problem=goal["problem"], slug=goal["slug"],
+                    whitelist=mfst.axioms_whitelist,
+                )
+                if not ok_ax:
+                    goal_lean.write_text(backup_text, encoding="utf-8")
+                    return PipelineResult(outcome="failed",
+                                          failure_reason="axiom_violation",
+                                          failure_detail=msg)
                 # Forensic snapshot. Filename is fixed (`won_hint.lean`)
                 # since the winning tactic may contain spaces / quotes /
                 # unicode unfit for filenames; the file body has the
@@ -260,6 +271,19 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                     outcome="failed",
                     failure_reason="agent_no_annotation",
                     failure_detail="patch built but had no leading comment block",
+                )
+            ok_ax, msg = _axiom.axiom_probe_file(
+                workspace, goal_lean,
+                problem=goal["problem"], slug=goal["slug"],
+                whitelist=mfst.axioms_whitelist,
+            )
+            if not ok_ax:
+                _restore_backup()
+                return PipelineResult(
+                    outcome="failed",
+                    failure_reason="axiom_violation",
+                    failure_detail=msg,
+                    proposal_md=leading,
                 )
             if backup_path.exists():
                 backup_path.unlink()

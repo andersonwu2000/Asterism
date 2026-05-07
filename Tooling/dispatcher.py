@@ -666,7 +666,8 @@ def run(workspace: Path, *, once: bool = False) -> int:
         # newly-proved sub-goals from this tick contribute to the
         # `ready_for_verify` poll. Inline + recursive (chain follow-up
         # for multi-layer strategies in one tick).
-        verify.verify_housekeeping(conn, workspace=workspace)
+        verify.verify_housekeeping(conn, workspace=workspace,
+                                   manifests=manifests)
 
         if db.root_proved(conn):
             print("[dispatcher] all roots proved", flush=True)

@@ -25,13 +25,15 @@ import sqlite3
 from pathlib import Path
 from typing import Literal
 
-from . import db
+from . import db, manifest
+from .pipeline._axiom import axiom_probe_file
 from .pipeline._lake import lake_build_batch, lean_path_to_module
 from .pipeline._skeleton import promote_to_alias, rollback_promote
 
 
 def verify_strategy(
     conn: sqlite3.Connection, *, workspace: Path, strategy_id: int,
+    manifests: dict[str, manifest.Manifest] | None = None,
 ) -> Literal["proved", "dead", "superseded"]:
     """Pure framework verify: rewrite parent as alias, then build the
     strategy patch + alias parent in one batched lake invocation.
@@ -93,6 +95,32 @@ def verify_strategy(
         rollback_promote(parent_abs, parent_backup)
         return "dead"
 
+    # Axiom probe — sole defense against transitive sorryAx slipping
+    # into the chain (lake build accepts files whose imports contain
+    # sorry; only `#print axioms` walks the kernel dependency graph).
+    # Catches both 0-subgoal leaf-bypass (Phase 6.5) and the rare case
+    # where a regular decomposition strategy imports a sibling whose
+    # promotion was wrong. Without this probe, `goals.status='proved'`
+    # is asserted from lake-build success alone, which is false.
+    #
+    # `manifests=None` skips the probe — used by tests that don't ship
+    # a Manifest.md fixture. Production callers (verify_housekeeping)
+    # always pass the dispatcher's manifests dict.
+    if manifests is not None:
+        mfst = manifests.get(s["goal_problem"]) or manifest.parse(
+            workspace / "Problems" / s["goal_problem"] / "Manifest.md"
+        )
+        ok_ax, msg = axiom_probe_file(
+            workspace, parent_abs,
+            problem=s["goal_problem"], slug=s["goal_slug"],
+            whitelist=mfst.axioms_whitelist,
+        )
+        if not ok_ax:
+            rollback_promote(parent_abs, parent_backup)
+            print(f"[verify] axiom_violation strategy={strategy_id}: {msg}",
+                  flush=True)
+            return "dead"
+
     if parent_backup is not None and parent_backup.exists():
         parent_backup.unlink()
     return "proved"
@@ -100,6 +128,7 @@ def verify_strategy(
 
 def verify_housekeeping(
     conn: sqlite3.Connection, *, workspace: Path, max_iters: int = 8,
+    manifests: dict[str, manifest.Manifest] | None = None,
 ) -> dict[str, int]:
     """Run inline at the end of each dispatcher tick. Polls strategies
     in `ready_for_verify` state, runs `verify_strategy` on each, and
@@ -129,6 +158,7 @@ def verify_housekeeping(
             goal_id = int(s["goal_id"])
             outcome = verify_strategy(
                 conn, workspace=workspace, strategy_id=sid,
+                manifests=manifests,
             )
             if outcome == "proved":
                 db.update_strategy_status(conn, sid, "succeeded")
