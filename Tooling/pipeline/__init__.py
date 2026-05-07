@@ -46,6 +46,14 @@ def _write_mcp_config(attempts_dir: Path, workspace: Path,
     log path) via env vars set here; claude propagates them when it
     spawns the subprocess.
 
+    PYTHONPATH is critical: claude CLI sets `cwd = problem_dir` (F44),
+    so `python -m Tooling.lsp_mcp_server` from that cwd would fail
+    with `ModuleNotFoundError: No module named 'Tooling'`. Setting
+    PYTHONPATH = workspace makes the Tooling package resolvable
+    regardless of subprocess cwd. (Discovered after the first
+    cantor_xi run: agents had been silently running without the MCP
+    server attached for two whole pipeline cuts.)
+
     Used by both Builder and Backward LSP swaps. The two pipelines
     pass different `target` files (their respective `goal_lean`); the
     rest is identical.
@@ -61,6 +69,7 @@ def _write_mcp_config(attempts_dir: Path, workspace: Path,
                     "ASTERISM_WORKSPACE": str(workspace),
                     "ASTERISM_TARGET": str(target),
                     "ASTERISM_MCP_LOG": str(log_path),
+                    "PYTHONPATH": str(workspace),
                     "PYTHONIOENCODING": "utf-8",
                 },
             },
