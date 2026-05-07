@@ -7,7 +7,9 @@
 # it; the framework only reads what's set.
 
 dispatch:
-  pool: 12               # ThreadPoolExecutor workers
+  pool: 4                # ThreadPoolExecutor workers
+                         # (LSP swap: each spawn may start an LSP MCP
+                         # server ~5 GB; pool=4 caps RAM peak ~20 GB)
 #   budget_sec: 1800      # daemon wall-clock cutoff (30 min)
 #   shelve_threshold: 8   # total attempts per goal before shelving
 #                         # (goal-level cap; spans Builder + Backward)

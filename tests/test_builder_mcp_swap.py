@@ -1,13 +1,11 @@
 """Phase 1 LSP swap — Builder pipeline integration tests.
 
 Verifies that:
-  - With ASTERISM_BUILDER_LSP unset / "1", `agent.spawn_llm` receives
-    a `mcp_config_path` kwarg, and the config file written there is
-    valid JSON pointing at `Tooling.lsp_mcp_server` with the right env.
-  - With `ASTERISM_BUILDER_LSP=0`, the kwarg is None (legacy flow).
-  - When LSP is on, builder backs up `goal_lean` BEFORE the agent
-    runs (since the agent now edits goal_lean in-session via LSP),
-    and restores it on a lake-build failure.
+  - `agent.spawn_llm` receives a `mcp_config_path` kwarg pointing at
+    a freshly-written JSON config that boots `Tooling.lsp_mcp_server`.
+  - Builder backs up `goal_lean` BEFORE the agent runs (since the
+    agent now edits goal_lean in-session via LSP) and restores it on
+    a lake-build failure.
 """
 from __future__ import annotations
 
@@ -53,14 +51,13 @@ def _mfst() -> manifest.Manifest:
     return manifest.Manifest(problem="p", statement="True")
 
 
-def test_lsp_enabled_passes_mcp_config_path(
+def test_spawn_passes_mcp_config_path(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Default (LSP on): spawn_llm gets a mcp_config_path pointing at
-    a freshly-written JSON config. The config references our MCP server
-    module and carries ASTERISM_WORKSPACE / ASTERISM_TARGET envs."""
-    monkeypatch.delenv("ASTERISM_BUILDER_LSP", raising=False)
+    """spawn_llm gets a mcp_config_path pointing at a freshly-written
+    JSON config. The config references our MCP server module and
+    carries ASTERISM_WORKSPACE / ASTERISM_TARGET envs."""
     gid = _seed_problem(conn, tmp_path)
     captured: dict = {}
 
@@ -94,38 +91,7 @@ def test_lsp_enabled_passes_mcp_config_path(
     assert env["ASTERISM_TARGET"].endswith("Root.lean")
 
 
-def test_lsp_disabled_via_env_yields_no_mcp_config(
-    conn: sqlite3.Connection, tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Setting ASTERISM_BUILDER_LSP=0 reverts to legacy spawn-and-read
-    flow: spawn_llm sees mcp_config_path=None and no MCP config file
-    appears under attempts_dir."""
-    monkeypatch.setenv("ASTERISM_BUILDER_LSP", "0")
-    gid = _seed_problem(conn, tmp_path)
-    captured: dict = {}
-
-    def fake_spawn(**kw):
-        captured.update(kw)
-        (kw["attempts_dir"] / "patch.lean").write_text(
-            "-- main: ok\nimport Mathlib\ntheorem main : True := trivial\n",
-            encoding="utf-8")
-        return 0
-
-    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
-    monkeypatch.setattr(pipeline, "_lake_build",
-                        lambda ws, t: (True, ""))
-
-    r = pipeline.run_builder(conn, goal_id=gid, workspace=tmp_path,
-                              mfst=_mfst(), pipeline_id="pid-lsp-off")
-    assert r.outcome == "proved"
-    assert captured.get("mcp_config_path") is None
-    # And no _mcp_config.json should have been written.
-    attempts_dir = captured["attempts_dir"]
-    assert not (attempts_dir / "_mcp_config.json").exists()
-
-
-def test_lsp_on_restores_goal_lean_when_lake_build_fails(
+def test_restores_goal_lean_when_lake_build_fails(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -133,7 +99,6 @@ def test_lsp_on_restores_goal_lean_when_lake_build_fails(
     bad patch.lean, the lake-build failure must restore the original
     sorry-stub from the pre-spawn backup. Otherwise the next retry
     iteration would see the agent's broken intermediate state."""
-    monkeypatch.delenv("ASTERISM_BUILDER_LSP", raising=False)
     gid = _seed_problem(conn, tmp_path, initial_body="  sorry")
     goal_row = db.get_goal(conn, gid)
     goal_lean = tmp_path / goal_row["lean_path"]

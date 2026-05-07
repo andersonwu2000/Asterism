@@ -11,32 +11,24 @@ per-spawn forensic + attempts++. claude session memory is shared
 across in-pipeline retry iterations via `claude --resume <sid>`; sid
 is a local var in the helper, not persisted to DB.
 
-Phase 1-LSP swap: when `ASTERISM_BUILDER_LSP` is "1" (default),
-Builder spawns claude with an MCP server (`Tooling.lsp_mcp_server`)
-attached via `--mcp-config`. The agent gets LSP-backed
-apply_edit / goal_at / errors_at tools that operate on `goal_lean`
-directly. Final patch.lean output protocol unchanged. Set
-`ASTERISM_BUILDER_LSP=0` to fall back to the legacy spawn-and-read
-flow.
+Phase 1-LSP swap: Builder spawns claude with an MCP server
+(`Tooling.lsp_mcp_server`) attached via `--mcp-config`. The agent
+gets LSP-backed apply_edit / goal_at / errors_at tools that operate
+on `goal_lean` directly. Final patch.lean output protocol unchanged.
+Rollback is git-based (`git revert <commit>`); there is no runtime
+fallback to legacy.
 
 Public entry point: `run_builder`.
 """
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import sqlite3
 import sys
 from pathlib import Path
 
 from .. import agent, db, diagnostics, manifest
-
-
-def _lsp_enabled() -> bool:
-    """Phase 1 LSP swap. Default on; set ASTERISM_BUILDER_LSP=0 to
-    revert to legacy spawn-and-read flow without redeploying."""
-    return os.environ.get("ASTERISM_BUILDER_LSP", "1") != "0"
 
 
 def _write_mcp_config(attempts_dir: Path, workspace: Path,
@@ -193,19 +185,16 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     # forensic. Builder-specific spawn / parse / postmortem are closures
     # over the pipeline scope below.
 
-    # Backup path (LSP swap: agent edits goal_lean in-session via
-    # apply_edit, so backup must be taken BEFORE spawn — not after
-    # parse like the legacy flow). builder_spawn writes it,
-    # builder_parse reads / cleans up. Tracked via shared closure
-    # variable so spawn / parse stay simple closures.
+    # Backup path: agent edits goal_lean in-session via apply_edit, so
+    # we snapshot the pre-spawn (sorry-stub) state before each spawn.
+    # builder_spawn writes it, builder_parse reads / cleans up.
     backup_path = goal_lean.with_suffix(goal_lean.suffix + ".backup")
-    use_lsp = _lsp_enabled()
 
     def _restore_backup() -> None:
-        """Restore goal_lean from the pre-spawn backup. Always called
-        on builder_parse fail paths under the LSP-on flow (where the
-        agent may have mutated goal_lean via apply_edit). Under the
-        legacy flow this is a no-op since goal_lean wasn't touched."""
+        """Restore goal_lean from the pre-spawn backup. Called on every
+        builder_parse fail path — the agent may have mutated goal_lean
+        via apply_edit, and the original sorry-stub must be restored
+        before the next retry iteration sees it."""
         if backup_path.exists():
             shutil.copy2(backup_path, goal_lean)
             backup_path.unlink()
@@ -220,18 +209,16 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                                   attempts_dir=ctx.attempts_dir,
                                   kind="builder")
 
-        # LSP swap setup: snapshot the pre-spawn goal_lean (always the
-        # sorry-stub at this point, since prior iterations either
-        # restored it or this is the first iteration), and write the
-        # MCP config so claude spawns lsp_mcp_server as a stdio child.
-        mcp_config_path: Path | None = None
-        if use_lsp:
-            shutil.copy2(goal_lean, backup_path)
-            mcp_config_path = _write_mcp_config(
-                attempts_dir=ctx.attempts_dir,
-                workspace=workspace,
-                target=goal_lean,
-            )
+        # Snapshot goal_lean (always sorry-stub at this point: prior
+        # iterations either restored it or this is the first iter),
+        # and write the MCP config so claude spawns lsp_mcp_server as
+        # a stdio child.
+        shutil.copy2(goal_lean, backup_path)
+        mcp_config_path = _write_mcp_config(
+            attempts_dir=ctx.attempts_dir,
+            workspace=workspace,
+            target=goal_lean,
+        )
 
         return agent.spawn_llm(
             kind="builder",
@@ -289,13 +276,9 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                 failure_detail=forbidden, proposal_md=leading,
             )
 
-        # Stage: copy patch over goal lean. Under LSP-on flow, backup
-        # was already taken at spawn entry — just overwrite goal_lean
-        # with the agent's final patch.lean (the contract). Under
-        # legacy flow, take a fresh backup here since goal_lean wasn't
-        # touched during the spawn.
-        if not use_lsp:
-            shutil.copy2(goal_lean, backup_path)
+        # Stage: copy patch over goal lean. Backup was already taken at
+        # spawn entry — overwrite goal_lean with the agent's final
+        # patch.lean (the output contract).
         shutil.copy2(patch, goal_lean)
         ok, err = _lake_build(workspace, goal_lean)
         if ok:
