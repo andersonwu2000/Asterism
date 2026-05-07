@@ -68,6 +68,14 @@ class LLMRequest:
                     asking the agent to summarize state + blockers into
                     `_progress.md` and exit). Mutually exclusive with
                     is_retry. Providers without session support skip.
+      mcp_config_path: Optional path to an MCP config JSON file. When
+                    set and the provider supports it (claude CLI),
+                    the spawn includes `--mcp-config <path>` so the
+                    agent gets MCP-backed tools (e.g. LSP-driven
+                    apply_edit / goal_at / errors_at via
+                    `Tooling.lsp_mcp_server`). Builder pipeline sets
+                    this; other kinds (Backward / Reflection) leave
+                    it None.
     """
     kind: str
     prompt_path: Path
@@ -78,6 +86,7 @@ class LLMRequest:
     is_retry: bool = False
     retry_context: str | None = None
     is_postmortem: bool = False
+    mcp_config_path: Path | None = None
 
 
 class Provider(Protocol):

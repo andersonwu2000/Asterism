@@ -328,6 +328,16 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
         f"Grep({problem}/**)",
         f"Grep({packages}/**)",
     ]
+    # When the request carries an MCP config (Builder pipeline +
+    # Phase 1 LSP swap), allow the LSP-backed MCP tools without
+    # per-call permission prompts. claude CLI exposes MCP tools as
+    # `mcp__<server-name>__<tool>`; our server name is `lsp`.
+    if req.mcp_config_path is not None:
+        patterns.extend([
+            "mcp__lsp__apply_edit",
+            "mcp__lsp__goal_at",
+            "mcp__lsp__errors_at",
+        ])
     return " ".join(p for p in patterns if p)
 
 
@@ -439,6 +449,20 @@ class ClaudeCliProvider:
                         / ".lake" / "packages")
         add_dir_packages: list[str] = (
             ["--add-dir", str(packages_dir)] if packages_dir.is_dir() else [])
+        # MCP config — Builder pipeline (Phase 1 LSP swap) sets
+        # mcp_config_path to a JSON file describing the LSP MCP
+        # server. claude spawns the server itself as a child process
+        # over stdio, so the server's lifecycle naturally tracks
+        # claude's lifetime (which == this pipeline spawn).
+        # `--strict-mcp-config` keeps any user-level globally
+        # configured MCPs out of the agent's surface.
+        mcp_flags: list[str] = []
+        if req.mcp_config_path is not None:
+            mcp_flags = [
+                "--mcp-config", str(req.mcp_config_path),
+                "--strict-mcp-config",
+            ]
+
         cmd = [
             "claude",
             "--model", model,
@@ -447,6 +471,7 @@ class ClaudeCliProvider:
             "--add-dir", str(req.problem_dir),
             "--add-dir", str(req.attempts_dir),
             *add_dir_packages,
+            *mcp_flags,
             "--output-format", "text",
             *session_flags,
             *session_lifetime_flag,

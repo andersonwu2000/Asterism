@@ -11,15 +11,63 @@ per-spawn forensic + attempts++. claude session memory is shared
 across in-pipeline retry iterations via `claude --resume <sid>`; sid
 is a local var in the helper, not persisted to DB.
 
+Phase 1-LSP swap: when `ASTERISM_BUILDER_LSP` is "1" (default),
+Builder spawns claude with an MCP server (`Tooling.lsp_mcp_server`)
+attached via `--mcp-config`. The agent gets LSP-backed
+apply_edit / goal_at / errors_at tools that operate on `goal_lean`
+directly. Final patch.lean output protocol unchanged. Set
+`ASTERISM_BUILDER_LSP=0` to fall back to the legacy spawn-and-read
+flow.
+
 Public entry point: `run_builder`.
 """
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import sqlite3
+import sys
 from pathlib import Path
 
 from .. import agent, db, diagnostics, manifest
+
+
+def _lsp_enabled() -> bool:
+    """Phase 1 LSP swap. Default on; set ASTERISM_BUILDER_LSP=0 to
+    revert to legacy spawn-and-read flow without redeploying."""
+    return os.environ.get("ASTERISM_BUILDER_LSP", "1") != "0"
+
+
+def _write_mcp_config(attempts_dir: Path, workspace: Path,
+                      target: Path) -> Path:
+    """Generate the MCP config JSON claude CLI uses to spawn our LSP
+    server as a stdio child. Lifecycle naturally tracks claude's
+    process — the server dies with claude, no separate cleanup needed.
+
+    The MCP server reads its config (workspace, target file, optional
+    log path) via env vars set here; claude propagates them when it
+    spawns the subprocess.
+    """
+    config_path = attempts_dir / "_mcp_config.json"
+    log_path = attempts_dir / "_mcp.jsonl"
+    config = {
+        "mcpServers": {
+            "lsp": {
+                "command": sys.executable,
+                "args": ["-m", "Tooling.lsp_mcp_server"],
+                "env": {
+                    "ASTERISM_WORKSPACE": str(workspace),
+                    "ASTERISM_TARGET": str(target),
+                    "ASTERISM_MCP_LOG": str(log_path),
+                    "PYTHONIOENCODING": "utf-8",
+                },
+            },
+        },
+    }
+    config_path.write_text(json.dumps(config, indent=2),
+                           encoding="utf-8")
+    return config_path
 
 
 def run_builder(conn: sqlite3.Connection, *, goal_id: int,
@@ -145,6 +193,23 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     # forensic. Builder-specific spawn / parse / postmortem are closures
     # over the pipeline scope below.
 
+    # Backup path (LSP swap: agent edits goal_lean in-session via
+    # apply_edit, so backup must be taken BEFORE spawn — not after
+    # parse like the legacy flow). builder_spawn writes it,
+    # builder_parse reads / cleans up. Tracked via shared closure
+    # variable so spawn / parse stay simple closures.
+    backup_path = goal_lean.with_suffix(goal_lean.suffix + ".backup")
+    use_lsp = _lsp_enabled()
+
+    def _restore_backup() -> None:
+        """Restore goal_lean from the pre-spawn backup. Always called
+        on builder_parse fail paths under the LSP-on flow (where the
+        agent may have mutated goal_lean via apply_edit). Under the
+        legacy flow this is a no-op since goal_lean wasn't touched."""
+        if backup_path.exists():
+            shutil.copy2(backup_path, goal_lean)
+            backup_path.unlink()
+
     def builder_spawn(ctx: SpawnCtx) -> int:
         # Cold start: fresh Context.md compile (snapshot Manifest +
         # goal history at this exact attempt). Warm: skip — agent's
@@ -154,6 +219,20 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             agent.compile_context(conn, goal=goal, mfst=mfst,
                                   attempts_dir=ctx.attempts_dir,
                                   kind="builder")
+
+        # LSP swap setup: snapshot the pre-spawn goal_lean (always the
+        # sorry-stub at this point, since prior iterations either
+        # restored it or this is the first iteration), and write the
+        # MCP config so claude spawns lsp_mcp_server as a stdio child.
+        mcp_config_path: Path | None = None
+        if use_lsp:
+            shutil.copy2(goal_lean, backup_path)
+            mcp_config_path = _write_mcp_config(
+                attempts_dir=ctx.attempts_dir,
+                workspace=workspace,
+                target=goal_lean,
+            )
+
         return agent.spawn_llm(
             kind="builder",
             prompt_path=PROMPT_DIR / "builder.md",
@@ -162,11 +241,13 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             session_id=ctx.sid,
             is_retry=not ctx.cold,
             retry_context=ctx.retry_context,
+            mcp_config_path=mcp_config_path,
         )
 
     def builder_parse() -> "PipelineResult":  # noqa: F821
         patches = _safe_glob(attempts_dir, "patch*.lean")
         if not patches:
+            _restore_backup()
             return PipelineResult(
                 outcome="failed", failure_reason="agent_no_output",
                 failure_detail="no patch*.lean",
@@ -181,6 +262,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         leading = _extract_leading_comments(patch_text)
         decline = _extract_decline_reason(leading)
         if decline == DECLINE_PARENT_TYPE_INFEASIBLE:
+            _restore_backup()
             return PipelineResult(
                 outcome="failed",
                 failure_reason="agent_infeasible",
@@ -192,6 +274,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             # Any other declared decline reason maps to agent_declined
             # (jump to Backward). `too_hard` is the canonical value;
             # unknown sub-reasons stay routed here defensively.
+            _restore_backup()
             return PipelineResult(
                 outcome="failed", failure_reason="agent_declined",
                 failure_detail=f"builder declined: {decline}",
@@ -200,14 +283,19 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
 
         forbidden = _grep_forbidden(patch_text, mfst.forbidden_lemmas)
         if forbidden:
+            _restore_backup()
             return PipelineResult(
                 outcome="failed", failure_reason="forbidden_lemma",
                 failure_detail=forbidden, proposal_md=leading,
             )
 
-        # Stage: copy patch over goal lean (backup first)
-        backup = goal_lean.with_suffix(goal_lean.suffix + ".backup")
-        shutil.copy2(goal_lean, backup)
+        # Stage: copy patch over goal lean. Under LSP-on flow, backup
+        # was already taken at spawn entry — just overwrite goal_lean
+        # with the agent's final patch.lean (the contract). Under
+        # legacy flow, take a fresh backup here since goal_lean wasn't
+        # touched during the spawn.
+        if not use_lsp:
+            shutil.copy2(goal_lean, backup_path)
         shutil.copy2(patch, goal_lean)
         ok, err = _lake_build(workspace, goal_lean)
         if ok:
@@ -217,17 +305,16 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             # already contains the annotation in place, so on success we
             # just keep the file as the proved goal source verbatim.
             if not leading.strip():
-                shutil.copy2(backup, goal_lean)
-                backup.unlink()
+                _restore_backup()
                 return PipelineResult(
                     outcome="failed",
                     failure_reason="agent_no_annotation",
                     failure_detail="patch built but had no leading comment block",
                 )
-            backup.unlink()
+            if backup_path.exists():
+                backup_path.unlink()
             return PipelineResult(outcome="proved", proposal_md=leading)
-        shutil.copy2(backup, goal_lean)
-        backup.unlink()
+        _restore_backup()
         return PipelineResult(
             outcome="failed", failure_reason="lake_build_error",
             failure_detail=diagnostics.annotate_failure_detail(err),

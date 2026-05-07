@@ -99,7 +99,8 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
               is_retry: bool = False,
               retry_context: str | None = None,
               is_postmortem: bool = False,
-              timeout_sec: int | None = None) -> int:
+              timeout_sec: int | None = None,
+              mcp_config_path: Path | None = None) -> int:
     """Dispatch to the configured LLM provider for one agent invocation.
 
     Provider is resolved per-kind (F39): `ASTERISM_<KIND>_PROVIDER` →
@@ -135,6 +136,7 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
         is_retry=is_retry,
         retry_context=retry_context,
         is_postmortem=is_postmortem,
+        mcp_config_path=mcp_config_path,
     ))
 
 
