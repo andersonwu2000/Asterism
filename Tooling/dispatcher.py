@@ -746,6 +746,18 @@ def run(workspace: Path, *, once: bool = False) -> int:
         else:
             time.sleep(min(TICK_TIMEOUT, 5))
 
+        # Periodic TREE.md refresh — cascade-only writes leave the tree
+        # frozen during long Builder/Backward spawns (5-15min under LSP).
+        # Cheap render + atomic replace; failures are swallowed inside
+        # tree.write_for_target's caller pattern but tree.write itself
+        # raises, so guard here.
+        for problem_name in manifests:
+            try:
+                tree.write(conn, workspace, problem_name)
+            except Exception as exc:
+                print(f"[tree] periodic write skipped for "
+                      f"{problem_name}: {exc}", flush=True)
+
         if time.time() - start_time > budget_sec:
             print(f"[dispatcher] {budget_sec}s budget exceeded; stopping",
                   flush=True)

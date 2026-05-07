@@ -1,21 +1,80 @@
 # Asterism v2 — Current Status
 
-更新於 2026-05-07（BRIEF/LESSONS feature 完整 ABC 落地 + PN e2e 驗證通過）、
-HEAD `01626b2`（push 上 origin/main）、**634 unit tests green**（1 deselected
-flaky lake-real test、1 pre-existing skip；8 個 llm_provider/openai 已修）。
+更新於 2026-05-08（**LSP swap Phases 1-3 落地**、cantor_xi 單跑 87.1 min、
+PN solo 24.4 min（落在 pre-LSP 15-30 min 區間）、**TREE.md periodic refresh 已上**）、
+HEAD `f738873`+、tag `pre-lsp-cutover` @ `3fc9422`、**649 unit tests green**。
 
 ## 下個 session 接手要做的事
 
-BRIEF/LESSONS feature 完整 ABC 已落地、PN e2e 驗證通過。下一個候選工作：
+近一輪改動全收完。PN clean run 走完了 leaf-bypass（s57 zero-subgoal 直接證掉、
+verify cascade 收 s55/56/57）。TREE.md 改成 dispatcher tick wait 後 per-problem
+寫一次（`Tooling/dispatcher.py:749-759`）、cascade write 仍保留作即時觸發。
 
-**item 12 — Bridge lemma layer**（`docs/dev/bridge_lemma_layer.md` 是起點）。
-substrate（命名 + 註解 + retry 模型 + cross-spawn experience）已備、Strategist /
-Forward / Generalize 等上層 pipeline 可以開始討論。doc 6 個開放決策點仍待 user
-拍板。**最自然 next step：跟 user 走 Phase 7 模式（一一敲定決策）**。
+候選工作（依優先序）：
 
-**深題 e2e（cantor / SG）對 BRIEF/LESSONS 驗證**：PN 級驗過、深題還沒。可能
-踩到 BRIEF lemma_lookup 多 hint 時 startup 慢、或 reflection lock contention
-（pool=12 多 worker 同 problem）等已知 review L4-L7 issue。
+1. **同題重跑收 baseline**：cantor_xi 已驗 ~3× 加速、PN 還沒公平比較
+   （上輪 LESSONS 沒清）。其他題（compactness / gen_generates / sylvester_gallai）
+   未跑 LSP。
+2. **item 12 — Bridge lemma layer**（`docs/dev/bridge_lemma_layer.md`）。LSP
+   swap 沒動 substrate、6 個 open decision 仍待拍板。
+
+## LSP swap（Phase 1-3、commits `82772af..f738873`）
+
+Builder + Backward 都 spawn claude with MCP server attached
+(`Tooling/lsp_mcp_server.py`)。Agent 拿到 4 個 LSP-backed tools：`apply_edit`、
+`goal_at`、`errors_at`、`validate_file`。Output protocol（`patch.lean` +
+`new_*.lean`）不變、lake build 仍是 ground-truth verifier。
+
+Rollback model：`git revert <hash>`、無 runtime fallback flag。tag
+`pre-lsp-cutover` 是最後一個 pre-LSP commit（`3fc9422`）。
+
+關鍵不變式（動 Builder / Backward 時必守）：
+- MCP env 必含 `PYTHONPATH=workspace`（claude CLI cwd=problem_dir、否則
+  `python -m Tooling.lsp_mcp_server` import fail、agent 改走 legacy tools 還
+  跑成功、但表面數據假）
+- `goal_lean` 必在每個 spawn 退出時 restore（parse-path + outer try/finally
+  並存、覆蓋 rc=0 跟 rc≠0）
+- `wait_for_diagnostics_settled`（3s stable poll）取代 `fileProgress empty` ──
+  後者對 ≥100 LOC 的 proof 不是 elaborate-done 信號（Lean LSP 在 empty 後仍
+  emit publishDiagnostics 多次、最長 25-30s）
+- prompt 退出條件「0 errors」不是「0 diagnostics」（warnings 由 lake build 容忍、
+  agent 卡 warning 會撞 wall）
+
+Phase 3 配套調整：`WORKER_TIMEOUT_SEC=900`、`builder.threshold=2`、
+`dispatch.shelve_threshold=4`、`pool=4`（RAM cap ~20GB）。
+
+**Wall-clock 計算注意**：log filename 用 UTC（`cli.py:80`）、`os.stat().st_mtime`
+fromtimestamp 預設 local。混算會多 8 hr 偏差（UTC+8 的話）。比 wall 一律先轉同
+時區、或從 log 內容拉 timestamp。
+
+cantor_xi 數據（commit `f738873` 前後跑）：87.1 min wall、15 spawns、leaf-bypass
+未觸發。STATUS.md 舊 baseline `~4 hr (含 30min budget hit + 重啟)` 不是乾淨單跑、
+不能直接 ~3× 比，但同 problem 比較單跑 wall **87 min vs ~240 min reference** 仍
+顯著加速、warrant 進一步乾淨重跑。
+
+PN 歷史 vs 今天（pre-LSP solo runs vs LSP today）：
+
+| Date (UTC) | Wall | Spawns | Framework |
+|---|---|---|---|
+| 2026-05-06 03:30 | 25.2 min | 11 | pipeline split `9638eed` |
+| 2026-05-06 07:37 | 15.2 min | 6 | 同上 |
+| 2026-05-06 13:45 | 28.4 min | 11 | Bridge lemma stub `205bd4a` |
+| 2026-05-06 16:44 | 29.5 min | 6 | Phase 6 fix `586102b` |
+| **2026-05-07 20:57** | **24.4 min** | **6** | **LSP swap + leaf-bypass `3fc9422`** |
+
+今天 PN run 24.4 min、6 spawns ── 落在歷史 6-spawn 區間（15-30 min）中段、LSP
+overhead 沒拖慢。leaf-bypass 在 s57 觸發（zero-subgoal 直接證掉、Builder 不用回
+強拆）。
+
+## 已知未處理 review items（PN 跑得動沒撞、深題可能撞）
+
+從 BRIEF/LESSONS agent review（commit `01626b2` 修了 6 個 critical/likely、剩這些）：
+- **L1** `_render_prompt` 順序敏感雙重替換（lessons_content 含 `{timeout_min}` 字面會被覆蓋）
+- **L2** `_classify_delta` 並發寫下不可靠（雖有 lock、跨檔讀仍可能 race）
+- **L4** `_count_lesson_lines` sub-bullet 計入 cap（與「single sentence」意圖不符）
+- **L5** `manifest.parse` 無 try/except、單 problem Manifest 損壞會 crash daemon（pre-existing、不是 BRIEF 引入）
+- **L6** lemma_lookup 沒 cache、daemon startup 全 problem 重 resolve（多 problem 部署 startup 慢、N×M×~5s）
+- **L7** Windows AV 鎖 race（`brief.write` 罕見 PermissionError、無 retry）
 
 ## 已知未處理 review items（PN 跑得動沒撞、深題可能撞）
 
