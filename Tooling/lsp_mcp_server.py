@@ -38,11 +38,13 @@ import atexit
 import json
 import os
 import queue
+import re
 import struct
 import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -340,6 +342,23 @@ class LspClient:
 WORKSPACE = Path(os.environ["ASTERISM_WORKSPACE"]).resolve()
 TARGET_PATH = Path(os.environ["ASTERISM_TARGET"]).resolve()
 
+
+def _derive_problem_name(workspace: Path, target: Path) -> str:
+    """Walk up from `target` until we find a directory whose parent
+    equals `workspace / "Problems"`. That directory's name is the
+    problem (e.g. `cantor_xi_measure`). Used by `validate_file` to
+    auto-prepend `import Problems.<problem>.Defs`."""
+    p = target.resolve()
+    problems_root = (workspace / "Problems").resolve()
+    while p != p.parent:
+        if p.parent == problems_root:
+            return p.name
+        p = p.parent
+    return ""
+
+
+PROBLEM_NAME = _derive_problem_name(WORKSPACE, TARGET_PATH)
+
 # Optional: log file for tool-call forensic. Set by builder.py to
 # .attempts/<pid>/_mcp.jsonl. Best-effort; silent if missing or
 # unwritable.
@@ -448,6 +467,28 @@ def _format_diag(d: dict) -> dict:
         "severity": sev_map.get(d.get("severity", 0), str(d.get("severity"))),
         "message": d.get("message", ""),
     }
+
+
+def _ensure_imports(content: str, problem: str, workspace: Path) -> str:
+    """Mirror of `Tooling.pipeline.backward._ensure_imports_subgoal`.
+    Prepends `import Mathlib` and (if the problem ships a Defs.lean)
+    `import Problems.<problem>.Defs` when missing. Idempotent.
+
+    Inlined here rather than imported so the MCP server stays
+    self-contained (no circular dep on the pipeline package, which
+    pulls in the dispatcher / DB layer)."""
+    needed: list[str] = []
+    if not re.search(r"(?m)^import\s+Mathlib\b", content):
+        needed.append("import Mathlib")
+    defs_path = workspace / "Problems" / problem / "Defs.lean"
+    if defs_path.exists():
+        defs_module = f"Problems.{problem}.Defs"
+        if not re.search(rf"(?m)^import\s+{re.escape(defs_module)}\b",
+                         content):
+            needed.append(f"import {defs_module}")
+    if not needed:
+        return content
+    return "\n".join(needed) + "\n\n" + content
 
 
 def _summarize_goal(result) -> str:
@@ -602,6 +643,96 @@ def errors_at(line: int | None = None) -> str:
     return json.dumps({"diagnostics": formatted,
                        "count": len(formatted)},
                       ensure_ascii=False)
+
+
+@mcp.tool()
+def validate_file(content: str) -> str:
+    """Validate a candidate Lean file (typically a `new_<slug>.lean`
+    sub-goal stub before Backward commits it) against the live LSP.
+    Auto-prepends required imports (Mathlib + the problem's Defs if
+    any), didOpens at a temp path, waits for diagnostics, then
+    closes + deletes.
+
+    Use after writing each `new_<slug>.lean` to catch parse / type
+    errors. The in-file `have h_<slug> := by sorry` skeleton check
+    on the parent file does NOT cover the standalone-file case
+    (separate import context, fresh parser state); a sub-goal stub
+    that elaborates inside the parent's body can still fail to
+    compile as its own file.
+
+    Args:
+      content: Full contents of the candidate file (theorem
+               declaration, body = `:= by sorry`). No need to
+               include `import Mathlib` etc — the framework adds
+               them as it does for committed sub-goal stubs.
+
+    Returns: { ok, diagnostics, diagnostic_count }. `ok` is true iff
+    no error-severity diagnostics (sorry warnings tolerated).
+    """
+    err = _ensure_lsp_ready()
+    if err:
+        return json.dumps({"error": err})
+    if not PROBLEM_NAME:
+        return json.dumps({
+            "error": "could not derive problem name from target",
+        })
+
+    # Place under attempts_dir if known, else workspace root. Lake
+    # serve resolves `import Mathlib` / `import Problems.<p>.Defs`
+    # via olean lookup, so the file's directory doesn't affect
+    # elaboration. Avoids polluting Problems/ with temp files that
+    # could be globbed by an out-of-band lake build.
+    base_dir = LOG_PATH.parent if LOG_PATH else WORKSPACE
+    tmp_path = base_dir / f"_validate_{uuid.uuid4().hex[:8]}.lean"
+    full_content = _ensure_imports(content, PROBLEM_NAME, WORKSPACE)
+
+    t0 = time.perf_counter()
+    diags: list = []
+    elaborate_failed = False
+    try:
+        tmp_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path.write_text(full_content, encoding="utf-8")
+        uri = tmp_path.as_uri()
+        _lsp_client.clear_diagnostics(uri)
+        _lsp_client.did_open(tmp_path, full_content)
+        try:
+            _lsp_client.wait_for_file_done(uri, timeout=15)
+        except TimeoutError:
+            pass
+        diags = _lsp_client.wait_for_diagnostics_settled(
+            uri, stable_for=3.0, max_wait=60.0)
+        try:
+            _lsp_client.notify("textDocument/didClose", {
+                "textDocument": {"uri": uri},
+            })
+        except Exception:
+            pass
+    except Exception as e:
+        elaborate_failed = True
+        diags = []
+    finally:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+
+    formatted = [_format_diag(d) for d in diags]
+    has_error = any(f.get("severity") == "error" for f in formatted)
+    if elaborate_failed:
+        has_error = True
+    dur = time.perf_counter() - t0
+
+    response = {
+        "ok": not has_error,
+        "diagnostic_count": len(formatted),
+        "diagnostics": formatted,
+    }
+    _log({"event": "tool_call", "name": "validate_file",
+          "args": {"content_lines": full_content.count("\n") + 1},
+          "duration_s": dur,
+          "diagnostic_count": len(formatted),
+          "has_error": has_error})
+    return json.dumps(response, ensure_ascii=False)
 
 
 # ─── Entrypoint ────────────────────────────────────────────────────

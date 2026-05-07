@@ -6,11 +6,12 @@ Time budget: {timeout_min} minutes.
 
 ## Validating decomposition via LSP (recommended)
 
-You have three MCP tools backed by a live Lean server holding the parent goal's source file (`goal_lean`, the `.lean` file referenced in Context.md):
+You have four MCP tools backed by a live Lean server holding the parent goal's source file (`goal_lean`, the `.lean` file referenced in Context.md):
 
 - `mcp__lsp__apply_edit(start_line, end_line, new_text)` — replace a 1-indexed inclusive line range. Returns the post-edit goal at line=start_line and full-file diagnostics.
 - `mcp__lsp__goal_at(line, col)` — read the proof goal at any position.
 - `mcp__lsp__errors_at(line=None)` — list diagnostics (optional line filter).
+- `mcp__lsp__validate_file(content)` — elaborate a candidate file standalone (auto-prepends Mathlib + Defs imports). Returns `{ok, diagnostics}`. Use after writing each `new_<slug>.lean` to catch syntax/type errors that the in-file `have` check missed.
 
 Use them to prototype the decomposition skeleton **inside goal_lean** before committing to `new_*.lean` + `patch.lean`. Workflow:
 
@@ -23,7 +24,7 @@ Use them to prototype the decomposition skeleton **inside goal_lean** before com
    ```
 2. errors_at to check: only sorry warnings, no errors → each sub-claim's statement type-checks AND the combinator closes the parent goal.
 3. If errors: revise statement / combinator and apply_edit again.
-4. Once 0 errors (warnings tolerated), write outputs: each `have` becomes a `new_<slug>.lean` stub (statement only); `patch.lean` body is the validated skeleton with `have h_<slug> := <slug>` referring to the extracted theorem.
+4. Once 0 errors (warnings tolerated), write outputs: each `have` becomes a `new_<slug>.lean` stub (statement only); after writing each, call `validate_file` with its content to confirm it elaborates standalone (catches stub-only failures the in-file check can't see). `patch.lean` body is the validated skeleton with `have h_<slug> := <slug>` referring to the extracted theorem.
 
 The framework restores `goal_lean` to its pre-spawn state on exit, so your exploratory edits don't leak into the codebase. Outputs in attempts_dir are what gets committed.
 

@@ -50,14 +50,59 @@ def test_module_loads_with_required_env(
     assert mod.LOG_PATH is None  # ASTERISM_MCP_LOG was cleared
 
 
-def test_three_tools_registered(
+def test_four_tools_registered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "Main.lean"
     target.write_text("import Mathlib\n", encoding="utf-8")
     mod = _import_server(monkeypatch, workspace=tmp_path, target=target)
     tool_names = {t.name for t in mod.mcp._tool_manager.list_tools()}
-    assert tool_names == {"apply_edit", "goal_at", "errors_at"}
+    assert tool_names == {"apply_edit", "goal_at", "errors_at",
+                          "validate_file"}
+
+
+def test_derive_problem_name_from_subgoal_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sub-goal target is at Problems/<p>/proofs/L_*.lean.
+    PROBLEM_NAME should resolve to <p>."""
+    target = tmp_path / "Problems" / "myprob" / "proofs" / "L_x.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text("import Mathlib\n", encoding="utf-8")
+    mod = _import_server(monkeypatch, workspace=tmp_path, target=target)
+    assert mod.PROBLEM_NAME == "myprob"
+
+
+def test_derive_problem_name_from_root_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Root target is at Problems/<p>/Root.lean (one level up from
+    sub-goals). Same resolution result."""
+    target = tmp_path / "Problems" / "myprob" / "Root.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text("import Mathlib\n", encoding="utf-8")
+    mod = _import_server(monkeypatch, workspace=tmp_path, target=target)
+    assert mod.PROBLEM_NAME == "myprob"
+
+
+def test_ensure_imports_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_ensure_imports prepends Mathlib + Defs (if Defs.lean exists);
+    repeat calls don't double-add."""
+    target = tmp_path / "Problems" / "myprob" / "proofs" / "L_x.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text("import Mathlib\n", encoding="utf-8")
+    defs = tmp_path / "Problems" / "myprob" / "Defs.lean"
+    defs.write_text("namespace Foo\nend Foo\n", encoding="utf-8")
+    mod = _import_server(monkeypatch, workspace=tmp_path, target=target)
+
+    bare = "theorem t : True := by sorry"
+    once = mod._ensure_imports(bare, "myprob", tmp_path)
+    twice = mod._ensure_imports(once, "myprob", tmp_path)
+    assert "import Mathlib" in once
+    assert "import Problems.myprob.Defs" in once
+    assert once == twice  # idempotent
 
 
 def test_log_path_picked_up_from_env(

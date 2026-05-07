@@ -337,6 +337,7 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
             "mcp__lsp__apply_edit",
             "mcp__lsp__goal_at",
             "mcp__lsp__errors_at",
+            "mcp__lsp__validate_file",
         ])
     return " ".join(p for p in patterns if p)
 
