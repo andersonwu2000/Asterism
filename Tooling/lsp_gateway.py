@@ -106,6 +106,16 @@ class GatewayState:
     sessions_lock: threading.Lock = field(default_factory=threading.Lock)
     ready_event: threading.Event = field(default_factory=threading.Event)
     init_error: str | None = None
+    # Hot/cold path counters for slot acquire (visible via /health).
+    # The cost asymmetry — hot ~0.2s vs cold-swap ~5-30s for complex
+    # content — is the dominant framework overhead at pool > W. These
+    # let operators measure churn rate directly.
+    counters_lock: threading.Lock = field(default_factory=threading.Lock)
+    n_hot: int = 0           # slot already loaded with this pipeline's content
+    n_cold_warmup: int = 0   # slot had warmup (`import Mathlib\n`) only
+    n_cold_evicted: int = 0  # slot held another pipeline's content (real churn)
+    n_cold_noswap: int = 0   # swap_in=False (apply_edit / validate_file)
+    n_busy_polls: int = 0    # times we slept 0.1s waiting for any free slot
 
 
 _state = GatewayState()
@@ -246,7 +256,9 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True):
                 # snatching the slot for a different pipeline).
                 if slot.loaded_pipeline_id == meta.pipeline_id:
                     try:
-                        yield slot
+                        with _state.counters_lock:
+                            _state.n_hot += 1
+                        yield (slot, "hot")
                         slot.last_used_ts = time.time()
                         return
                     finally:
@@ -263,6 +275,18 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True):
             if slot.lock.acquire(blocking=False):
                 try:
                     if swap_in and slot.loaded_pipeline_id != meta.pipeline_id:
+                        # Distinguish "first time slot used for any
+                        # pipeline" vs "evicting another pipeline's
+                        # content". The latter is the real churn cost
+                        # of pool > W.
+                        if slot.loaded_pipeline_id is None:
+                            kind = "cold_warmup"
+                            with _state.counters_lock:
+                                _state.n_cold_warmup += 1
+                        else:
+                            kind = "cold_evicted"
+                            with _state.counters_lock:
+                                _state.n_cold_evicted += 1
                         slot.file_version += 1
                         backend.clear_diagnostics(slot.slot_uri)
                         backend.did_change_full(
@@ -277,12 +301,21 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True):
                         except (TimeoutError, RuntimeError):
                             pass
                         slot.loaded_pipeline_id = meta.pipeline_id
-                    yield slot
+                    else:
+                        # swap_in=False (apply_edit / validate_file
+                        # will overwrite content themselves) — caller
+                        # got a slot but no swap-in elaborate happened.
+                        kind = "cold_noswap"
+                        with _state.counters_lock:
+                            _state.n_cold_noswap += 1
+                    yield (slot, kind)
                     slot.last_used_ts = time.time()
                     return
                 finally:
                     slot.lock.release()
         # All slots busy. Wait briefly + retry.
+        with _state.counters_lock:
+            _state.n_busy_polls += 1
         time.sleep(0.1)
     raise RuntimeError("no slot available within 120s")
 
@@ -452,7 +485,7 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
 
     backend = _state.backend
     # apply_edit overwrites slot content anyway → skip swap-in.
-    with _acquire_slot(meta, swap_in=False) as slot:
+    with _acquire_slot(meta, swap_in=False) as (slot, _slot_kind):
         slot.file_version += 1
         backend.clear_diagnostics(slot.slot_uri)
         backend.did_change_full(slot.slot_path, new_content,
@@ -498,6 +531,7 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
                              "end_line": end_line,
                              "new_text_lines": new_text.count("\n") + 1},
                     "duration_s": dur,
+                    "slot_kind": _slot_kind,
                     "diagnostic_count": len(diags)})
     return json.dumps(response, ensure_ascii=False)
 
@@ -521,7 +555,7 @@ def goal_at(line: int, col: int) -> str:
             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     t0 = time.perf_counter()
     backend = _state.backend
-    with _acquire_slot(meta, swap_in=True) as slot:
+    with _acquire_slot(meta, swap_in=True) as (slot, _slot_kind):
         try:
             result = backend.plain_goal(
                 slot.slot_path, line=line - 1, character=col, timeout=15
@@ -532,7 +566,8 @@ def goal_at(line: int, col: int) -> str:
     dur = time.perf_counter() - t0
     _log_for(meta, {"event": "tool_call", "name": "goal_at",
                     "args": {"line": line, "col": col},
-                    "duration_s": dur})
+                    "duration_s": dur,
+                    "slot_kind": _slot_kind})
     return json.dumps({"line": line, "col": col, "goal": goal_text,
                        "_server_recv_ts": _recv_ts,
                        "_server_send_ts": _ts_now()},
@@ -558,7 +593,7 @@ def errors_at(line: int | None = None) -> str:
             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     t0 = time.perf_counter()
     backend = _state.backend
-    with _acquire_slot(meta, swap_in=True) as slot:
+    with _acquire_slot(meta, swap_in=True) as (slot, _slot_kind):
         diags = backend.diagnostics_for(slot.slot_uri)
         formatted = [_format_diag(d) for d in diags]
     if line is not None:
@@ -566,6 +601,7 @@ def errors_at(line: int | None = None) -> str:
     dur = time.perf_counter() - t0
     _log_for(meta, {"event": "tool_call", "name": "errors_at",
                     "args": {"line": line}, "duration_s": dur,
+                    "slot_kind": _slot_kind,
                     "returned_count": len(formatted)})
     return json.dumps({"diagnostics": formatted, "count": len(formatted),
                        "_server_recv_ts": _recv_ts,
@@ -602,13 +638,14 @@ def validate_file(content: str) -> str:
     t0 = time.perf_counter()
     diags: list = []
     elaborate_failed = False
+    _slot_kind: str = "unknown"
     backend = _state.backend
     # validate_file uses a slot like apply_edit — swap_in=False (we'll
     # overwrite). After the call we mark slot as orphan (None) so the
     # next caller doesn't think this candidate content "belongs" to
     # anyone.
     try:
-        with _acquire_slot(meta, swap_in=False) as slot:
+        with _acquire_slot(meta, swap_in=False) as (slot, _slot_kind):
             slot.file_version += 1
             backend.clear_diagnostics(slot.slot_uri)
             backend.did_change_full(slot.slot_path, full_content,
@@ -643,6 +680,7 @@ def validate_file(content: str) -> str:
     _log_for(meta, {"event": "tool_call", "name": "validate_file",
                     "args": {"content_lines": full_content.count("\n") + 1},
                     "duration_s": dur,
+                    "slot_kind": _slot_kind,
                     "diagnostic_count": len(formatted),
                     "has_error": has_error})
     return json.dumps(response, ensure_ascii=False)
@@ -772,7 +810,7 @@ async def verify(request: Request):
     diags: list = []
 
     try:
-        with _acquire_slot(meta, swap_in=True) as slot:
+        with _acquire_slot(meta, swap_in=True) as (slot, _slot_kind):
             diags = backend.diagnostics_for(slot.slot_uri)
             formatted = [_format_diag(d) for d in diags]
             has_error = any(f.get("severity") == "error" for f in formatted)
@@ -847,18 +885,35 @@ async def verify(request: Request):
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request):
-    """Liveness check. Reports worker pool status + active sessions."""
+    """Liveness check. Reports worker pool status + active sessions
+    + slot acquire counters (so operator can compute hot/cold ratio
+    over the run, especially relevant at pool > W where churn
+    dominates framework overhead)."""
     backend_ok = _state.backend is not None and bool(_state.workers)
     with _state.sessions_lock:
         n_sessions = len(_state.sessions)
     n_workers = len(_state.workers)
     n_busy = sum(1 for s in _state.workers if s.lock.locked())
+    with _state.counters_lock:
+        counters = {
+            "n_hot": _state.n_hot,
+            "n_cold_warmup": _state.n_cold_warmup,
+            "n_cold_evicted": _state.n_cold_evicted,
+            "n_cold_noswap": _state.n_cold_noswap,
+            "n_busy_polls": _state.n_busy_polls,
+        }
+    total_acq = (counters["n_hot"] + counters["n_cold_warmup"]
+                 + counters["n_cold_evicted"] + counters["n_cold_noswap"])
+    counters["hot_rate"] = (
+        counters["n_hot"] / total_acq if total_acq else None
+    )
     return JSONResponse({
         "backend_ready": backend_ok,
         "workers_total": n_workers,
         "workers_busy": n_busy,
         "sessions_active": n_sessions,
         "init_error": _state.init_error,
+        "acquires": counters,
     })
 
 
