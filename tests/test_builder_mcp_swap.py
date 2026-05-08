@@ -118,6 +118,10 @@ def test_restores_goal_lean_when_lake_build_fails(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     monkeypatch.setattr(pipeline, "_lake_build",
                         lambda ws, t: (False, "error: nonsense_tactic"))
+    # Phase 2.5 — Builder verifies via gateway.check_build now.
+    from Tooling import gateway_lifecycle
+    monkeypatch.setattr(gateway_lifecycle, "check_build",
+                        lambda path, **kw: (False, "error: nonsense_tactic"))
 
     r = pipeline.run_builder(conn, goal_id=gid, workspace=tmp_path,
                               mfst=_mfst(), pipeline_id="pid-restore")

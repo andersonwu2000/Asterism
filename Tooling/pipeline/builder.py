@@ -291,7 +291,15 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # spawn entry — overwrite goal_lean with the agent's final
         # patch.lean (the output contract).
         shutil.copy2(patch, goal_lean)
-        ok, err = _lake_build(workspace, goal_lean)
+        # Phase 2.5 — verify via gateway worker pool instead of cold
+        # `lake build` (saves ~10-30s per spawn). Same source-of-truth
+        # (lean kernel + mathlib); axiom probe still runs separately
+        # below to catch transitive sorryAx, library promote at
+        # root_proved time still does a final lake build.
+        from .. import gateway_lifecycle
+        ok, err = gateway_lifecycle.check_build(
+            goal_lean, workspace=workspace
+        )
         if ok:
             # Annotation is a hard success condition: an empty leading-
             # comment block means the agent skipped documentation. Roll

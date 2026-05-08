@@ -50,12 +50,19 @@ def _stub_gateway_calls_by_default(monkeypatch: pytest.MonkeyPatch):
         def read(self): return self._body
 
     def _fake_urlopen(req, timeout=None):
-        # Fake responses for the endpoints _write_mcp_config hits.
+        # Fake responses for the endpoints framework code hits.
         url = getattr(req, "full_url", str(req))
         if url.endswith("/register"):
             return _FakeResp(b'{"session_token": "test-stub-token"}')
         if "/release/" in url:
             return _FakeResp(b'{"ok": true}')
+        if url.endswith("/check_build"):
+            # Phase 2.5: framework calls /check_build instead of
+            # `lake build`. Default stub passes — tests that exercise
+            # the failure path must override this fixture locally.
+            return _FakeResp(
+                b'{"ok": true, "diagnostic_count": 0, "diagnostics": []}'
+            )
         # Anything else (e.g. /health from gateway_lifecycle.start_gateway)
         # — raise URLError so tests don't accidentally see a "fake healthy"
         # gateway. End-to-end tests that need start_gateway to work must

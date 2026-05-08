@@ -186,12 +186,18 @@ def test_run_builder_lake_fail_restores_backup(
 
     def fake_spawn(**kw):
         (kw["attempts_dir"] / "patch.lean").write_text(
-            "garbage that won't build", encoding="utf-8")
+            "-- annotation\ngarbage that won't build", encoding="utf-8")
         (kw["attempts_dir"] / "PROPOSAL.md").write_text("guess", encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     monkeypatch.setattr(pipeline, "_lake_build",
                         lambda ws, t: (False, "error: garbage"))
+    # Phase 2.5 — Builder verifies via gateway.check_build instead of
+    # cold lake_build. Stub it to fail with the same shape so the
+    # retry-helper still sees a non-terminal lake_build_error.
+    from Tooling import gateway_lifecycle
+    monkeypatch.setattr(gateway_lifecycle, "check_build",
+                        lambda path, **kw: (False, "error: garbage"))
 
     r = pipeline.run_builder(
         conn, goal_id=gid, workspace=tmp_path, mfst=_mfst(),
@@ -294,13 +300,16 @@ def test_run_builder_wrapper_no_persist_when_postmortem_skipped(
 
     def fake_spawn(**kw):
         (kw["attempts_dir"] / "patch.lean").write_text(
-            "garbage", encoding="utf-8")
+            "-- annotation\ngarbage", encoding="utf-8")
         (kw["attempts_dir"] / "PROPOSAL.md").write_text(
             "tried", encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     monkeypatch.setattr(pipeline, "_lake_build",
                         lambda ws, t: (False, "error: garbage"))
+    from Tooling import gateway_lifecycle
+    monkeypatch.setattr(gateway_lifecycle, "check_build",
+                        lambda path, **kw: (False, "error: garbage"))
 
     r = pipeline.run_builder(
         conn, goal_id=gid, workspace=tmp_path, mfst=_mfst(),
