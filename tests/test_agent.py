@@ -506,3 +506,44 @@ def test_context_subgoal_includes_parent_strategy(
     assert "main_sub_1" in text
     assert "main" in text  # parent slug
     assert "parent decomposes into A, B, C" in text
+
+
+def test_workarea_exit_releases_gateway_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WorkArea.__exit__ must POST /release on the gateway session token
+    persisted at `attempts/_gateway_session.token`. Without this hook,
+    the LAST token of every pipeline (and the only token of one-shot
+    pipelines) leaks — gateway accumulates SessionMetadata
+    indefinitely (observed at /health: sessions_active=12 with
+    workers_busy=0 after a run with 5-6 spawn fails on quota)."""
+    from Tooling import agent, gateway_lifecycle
+
+    pid = "test-pid-release"
+    captured: list[str] = []
+    monkeypatch.setattr(gateway_lifecycle, "release_session",
+                        lambda tok: captured.append(tok))
+
+    with agent.WorkArea(tmp_path, pid) as wa:
+        (wa.attempts / "_gateway_session.token").write_text(
+            "deadbeef-token", encoding="utf-8")
+
+    assert captured == ["deadbeef-token"]
+
+
+def test_workarea_exit_no_release_when_no_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the pipeline never wrote a token (e.g. spawn-side
+    _write_mcp_config crashed before /register completed), __exit__ must
+    not call release."""
+    from Tooling import agent, gateway_lifecycle
+
+    captured: list[str] = []
+    monkeypatch.setattr(gateway_lifecycle, "release_session",
+                        lambda tok: captured.append(tok))
+
+    with agent.WorkArea(tmp_path, "pid-no-token"):
+        pass
+
+    assert captured == []

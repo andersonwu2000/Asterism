@@ -825,6 +825,41 @@ def test_claude_spawn_stale_session_returns_rc_125(
     assert claude_cli.RC_STALE_SESSION == 125
 
 
+def test_claude_spawn_quota_exhausted_returns_rc_126(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When Anthropic quota is exhausted, claude.exe returns rc=1 with
+    'You've hit your limit · resets …' on STDOUT (not stderr). spawn
+    must reclassify this as SpawnRC.QUOTA_EXHAUSTED (=126) so the
+    dispatcher's infra-reason cooldown path applies; otherwise budget
+    is consumed retrying a deterministically-failing spawn until
+    CONSEC_SPAWN_FAIL_LIMIT bails the daemon."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+    from Tooling.llm.base import SpawnRC
+
+    monkeypatch.setattr(claude_cli.shutil, "which",
+                        lambda _: "/fake/claude")
+    monkeypatch.setattr(
+        claude_cli.subprocess, "Popen",
+        lambda *a, **kw: _FakePopen(
+            rc=1,
+            stdout="You've hit your limit · resets May 11, 8am (Asia/Taipei)",
+            stderr="",
+        ))
+    p = claude_cli.ClaudeCliProvider()
+    rc = p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+    ))
+    assert rc == SpawnRC.QUOTA_EXHAUSTED
+    assert int(SpawnRC.QUOTA_EXHAUSTED) == 126
+
+
 def test_claude_spawn_stale_marker_only_on_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

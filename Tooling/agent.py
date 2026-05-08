@@ -87,6 +87,23 @@ class WorkArea:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        # Release the gateway session before tearing down attempts/.
+        # `_write_mcp_config` only releases the PREVIOUS retry's token
+        # (when overwriting on a fresh retry), so the LAST token of
+        # each pipeline (and the only token of single-shot pipelines)
+        # would otherwise leak — gateway accumulates SessionMetadata
+        # entries indefinitely. Best-effort: release_session swallows
+        # urlopen errors, so a dead gateway / network blip won't block
+        # the rmtree.
+        token_file = self.attempts / "_gateway_session.token"
+        if token_file.exists():
+            try:
+                token = token_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                token = ""
+            if token:
+                from . import gateway_lifecycle
+                gateway_lifecycle.release_session(token)
         for p in (self.attempts, self.backup):
             if p.exists():
                 shutil.rmtree(p, ignore_errors=True)

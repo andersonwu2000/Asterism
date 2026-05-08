@@ -184,6 +184,24 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 RC_STALE_SESSION = 125
 _STALE_SESSION_MARKER = "no conversation found with session id"
 
+# Anthropic API quota / usage-limit sentinels. claude.exe surfaces
+# these as a normal rc=1 with the limit message printed to stdout
+# (NOT stderr), so the dispatcher's generic agent_rc_nonzero path
+# would otherwise consume retry budget on a deterministically-failing
+# spawn. Reclassify to RC_QUOTA_EXHAUSTED (= base.SpawnRC.QUOTA_EXHAUSTED
+# = 126) so the retry helper short-circuits and the dispatcher applies
+# cooldown via the standard infra-reason path.
+# Markers chosen from observed claude.exe output ("You've hit your
+# limit · resets … 8am") plus standard Anthropic API error phrasings.
+# Lowercased before matching.
+_QUOTA_MARKERS = (
+    "you've hit your limit",
+    "you have hit your limit",
+    "usage limit reached",
+    "rate limit",
+    "rate_limit_exceeded",
+)
+
 # Sentinel rc returned when the watchdog kills a spawn for emitting
 # zero `tool_use` events for too long (Sonnet's runaway thinking trap:
 # 30-90K-character thinking blocks producing no actionable output).
@@ -631,6 +649,20 @@ class ClaudeCliProvider:
                   f"{req.session_id[:8] if req.session_id else '?'}",
                   flush=True)
             return RC_STALE_SESSION
+        # Detect quota / usage-limit refusals. claude.exe writes the
+        # limit message to stdout AND returns rc=1, indistinguishable
+        # at the rc level from a real model error. Without this check,
+        # the dispatcher consumes retry budget retrying a
+        # deterministically-failing spawn until CONSEC_SPAWN_FAIL_LIMIT
+        # bails the daemon. Reclassify to QUOTA_EXHAUSTED so the
+        # standard infra-reason cooldown path applies.
+        if rc != 0:
+            from .base import SpawnRC
+            combined = ((stdout or "") + "\n" + (stderr or "")).lower()
+            if any(m in combined for m in _QUOTA_MARKERS):
+                print(f"[llm:claude] quota exhausted (rc={rc} → "
+                      f"{SpawnRC.QUOTA_EXHAUSTED})", flush=True)
+                return SpawnRC.QUOTA_EXHAUSTED
         return rc
 
     def complete_text(
