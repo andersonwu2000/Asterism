@@ -265,6 +265,7 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True):
                     if swap_in and slot.loaded_pipeline_id != meta.pipeline_id:
                         slot.file_version += 1
                         backend.clear_diagnostics(slot.slot_uri)
+                        backend.clear_file_progress(slot.slot_uri)
                         backend.did_change_full(
                             slot.slot_path, meta.file_content,
                             slot.file_version
@@ -446,6 +447,7 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
     with _acquire_slot(meta, swap_in=False) as slot:
         slot.file_version += 1
         backend.clear_diagnostics(slot.slot_uri)
+        backend.clear_file_progress(slot.slot_uri)
         backend.did_change_full(slot.slot_path, new_content,
                                 slot.file_version)
         try:
@@ -582,6 +584,7 @@ def validate_file(content: str) -> str:
         with _acquire_slot(meta, swap_in=False) as slot:
             slot.file_version += 1
             backend.clear_diagnostics(slot.slot_uri)
+            backend.clear_file_progress(slot.slot_uri)
             backend.did_change_full(slot.slot_path, full_content,
                                     slot.file_version)
             try:

@@ -40,6 +40,22 @@ class LspClient:
         self._stderr_buf: list[bytes] = []
         self._latest_diagnostics: dict[str, list] = {}
         self._diag_lock = threading.Lock()
+        # Per-URI fileProgress state. Reader thread updates on every
+        # `$/lean/fileProgress` message; pollers in `wait_for_file_done`
+        # read without consuming. This avoids the queue-drain race that
+        # occurs at multi-slot warmup, where slot N's wait pulled and
+        # discarded slot M's fileProgress=[] message, leaving slot M's
+        # later wait blocking until timeout.
+        # `_file_progress[uri]` = most recent `processing` list (None
+        # if Lean has never reported on this URI).
+        # `_file_progress_seen_nonempty` = URIs for which Lean emitted
+        # at least one processing=[…non-empty…] event. We require this
+        # before treating processing=[] as "done", because Lean briefly
+        # reports processing=[] right after didOpen before elaborate
+        # actually starts.
+        self._file_progress: dict[str, list] = {}
+        self._file_progress_seen_nonempty: set[str] = set()
+        self._file_progress_lock = threading.Lock()
         # Send-side mutex. Lake serve's stdin is a single byte stream;
         # without this lock concurrent threads (the gateway dispatches
         # MCP tool calls in an executor → multiple sessions hit one
@@ -164,6 +180,16 @@ class LspClient:
                                 self._latest_diagnostics[uri] = (
                                     params.get("diagnostics", []) or []
                                 )
+                    elif method == "$/lean/fileProgress":
+                        params = msg.get("params") or {}
+                        doc = params.get("textDocument", {}) or {}
+                        uri = doc.get("uri", "")
+                        processing = params.get("processing", []) or []
+                        if uri:
+                            with self._file_progress_lock:
+                                self._file_progress[uri] = processing
+                                if processing:
+                                    self._file_progress_seen_nonempty.add(uri)
                     self._notifications.put(msg)
         except Exception:
             pass  # reader exits on shutdown / pipe close
@@ -250,30 +276,42 @@ class LspClient:
         with self._diag_lock:
             self._latest_diagnostics.pop(uri, None)
 
+    def clear_file_progress(self, uri: str) -> None:
+        """Reset per-URI fileProgress state so a subsequent
+        `wait_for_file_done` only matches a NEW elaborate cycle.
+        Call before `did_change_full` if the caller intends to wait
+        for the new cycle to finish (otherwise stale "done" state
+        from the previous elaborate would short-circuit the wait)."""
+        with self._file_progress_lock:
+            self._file_progress.pop(uri, None)
+            self._file_progress_seen_nonempty.discard(uri)
+
     def wait_for_file_done(self, file_uri: str,
-                           timeout: float = 180.0) -> str:
+                           timeout: float = 180.0,
+                           poll_interval: float = 0.05) -> str:
         """Block until $/lean/fileProgress reports `processing=[]` for
         `file_uri`. NOT a sufficient signal for "elaborate done" by
-        itself — see wait_for_diagnostics_settled."""
+        itself — see wait_for_diagnostics_settled.
+
+        Polls reader-thread-maintained per-URI state instead of draining
+        `_notifications` queue. This is essential when multiple URIs are
+        elaborating in parallel (e.g. gateway warmup of W slots): a
+        queue-draining wait would consume sibling URIs' messages and
+        leave their later waits blocking forever."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            remaining = deadline - time.monotonic()
-            try:
-                msg = self._notifications.get(timeout=remaining)
-            except queue.Empty:
-                break
-            method = msg.get("method", "")
-            params = msg.get("params") or {}
-            if method == "$/lean/fileProgress":
-                doc = params.get("textDocument", {}) or {}
-                processing = params.get("processing", [])
-                if doc.get("uri") == file_uri and not processing:
-                    return "file_progress_empty"
-            elif method == "textDocument/publishDiagnostics":
-                if params.get("uri") == file_uri:
-                    diags = params.get("diagnostics", [])
-                    if diags:
-                        return "diagnostics_with_content"
+            with self._file_progress_lock:
+                seen = file_uri in self._file_progress_seen_nonempty
+                cur = self._file_progress.get(file_uri)
+            if seen and cur is not None and not cur:
+                return "file_progress_empty"
+            # Fast-fail if a publishDiagnostics with content already
+            # arrived — Lean sometimes signals diagnostics before
+            # fileProgress=[] (originally observed for tactic-level
+            # errors that shortcut the elaborator).
+            if self.diagnostics_for(file_uri):
+                return "diagnostics_with_content"
+            time.sleep(poll_interval)
         raise TimeoutError(f"file done signal not received within {timeout}s")
 
     def wait_for_diagnostics_settled(self, uri: str,
