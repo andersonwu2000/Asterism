@@ -85,12 +85,24 @@ def start_gateway(workspace: Path,
     env["ASTERISM_GATEWAY_PORT"] = str(_gateway_port())
     env["PYTHONIOENCODING"] = "utf-8"
 
-    print(f"[gateway] launching subprocess (port {_gateway_port()}) ...",
-          flush=True)
+    # Capture gateway subprocess output to a dedicated log file so
+    # we get the traceback if it crashes mid-run. Without this, the
+    # subprocess inherits parent's stdout/stderr — fine while
+    # everything works, but a hard crash + the log being also where
+    # the dispatcher writes makes correlation hard. Dedicated log
+    # also survives parent's stdout being captured/buffered.
+    log_dir = workspace / ".asterism" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    gateway_log = log_dir / "gateway.log"
+    gateway_log_fp = open(gateway_log, "ab", buffering=0)
+    print(f"[gateway] launching subprocess (port {_gateway_port()}); "
+          f"log={gateway_log}", flush=True)
     proc = subprocess.Popen(
         [sys.executable, "-m", "Tooling.lsp_gateway"],
         env=env,
         cwd=str(workspace),
+        stdout=gateway_log_fp,
+        stderr=subprocess.STDOUT,
     )
 
     def _shutdown():
