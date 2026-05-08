@@ -191,87 +191,36 @@ _STALE_SESSION_MARKER = "no conversation found with session id"
 # spawn (--resume of the same session, force-ship prompt, 180s cap)
 # instead of a regular full-budget retry.
 RC_STUCK_THINKING = 128
-# Watchdog has two kill conditions (whichever fires first):
-#   1. Wall-clock cap: req.timeout_sec - RESCUE_BUDGET_SEC. Always
-#      leaves a guaranteed window for the rescue spawn before the
-#      subprocess timeout would fire. Without this, an agent making
-#      slow-but-steady tool_use through ~14min on a 15min spawn hits
-#      subprocess timeout → postmortem path (no rescue).
-#   2. Stuck-by-silence: `_STUCK_THRESHOLD_SEC` of no tool_use event
-#      in the session jsonl. Empirically, healthy SG/Backward spawns
-#      emit a tool_use every 30-90s; >5min silence is the unambiguous
-#      trap signal, 10min gives generous buffer for legit deep thinking.
-#      Capped at the wall-clock cap so it never fires later than (1).
-_STUCK_THRESHOLD_SEC = 600
+# Watchdog wall-clock cap: kill spawn at `req.timeout_sec -
+# RESCUE_BUDGET_SEC` regardless of agent activity. This guarantees the
+# retry helper has a 3-min window for the rescue spawn before subprocess
+# timeout fires. Without this, an agent making slow-but-steady tool_use
+# through ~14min on a 15min spawn hits subprocess timeout → postmortem
+# path (no rescue).
+#
+# A previous design also had a "stuck-by-silence" trigger (kill if no
+# tool_use for ≥10min) intended to detect Sonnet's runaway-thinking trap
+# earlier than wall_cap. Empirical PN runs showed it never beat wall_cap
+# under default 15min timeout (silence has to start within minute 0-2 to
+# fire before wall_cap; agents typically work productively for several
+# minutes first). Removed for simplicity. If users tune timeout_sec to
+# very large values (e.g. 60min for Opus exploring deep problems), the
+# argument for re-adding stuck detection becomes stronger — wall_cap at
+# 57min would let a stuck agent waste ~50min before kill. Re-introduce
+# only when that scenario is real.
 _WATCHDOG_POLL_SEC = 30
-
-
-def _find_session_jsonl(sid: str) -> Path | None:
-    """Locate the per-session jsonl claude CLI maintains under
-    `~/.claude/projects/<encoded_cwd>/<sid>.jsonl`. Returns None if
-    not yet created (cold start race) or if the .claude tree is
-    missing entirely. Watchdog handles None by waiting another tick."""
-    base = Path.home() / ".claude" / "projects"
-    if not base.exists():
-        return None
-    target = f"{sid}.jsonl"
-    try:
-        for project_dir in base.iterdir():
-            cand = project_dir / target
-            if cand.exists():
-                return cand
-    except OSError:
-        pass
-    return None
-
-
-def _count_tool_use_events(log_path: Path) -> int:
-    """Count tool_use content blocks in a session jsonl. Tolerates
-    the trailing line being mid-write (claude appends as model streams)
-    via per-line try/except — partial JSON is silently skipped."""
-    count = 0
-    try:
-        text = log_path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return count
-    for line in text.splitlines():
-        if not line:
-            continue
-        try:
-            d = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        msg = d.get("message", {}) or {}
-        content = msg.get("content", [])
-        if isinstance(content, list):
-            for c in content:
-                if isinstance(c, dict) and c.get("type") == "tool_use":
-                    count += 1
-    return count
 
 
 def _watchdog(proc: subprocess.Popen, sid: str, *,
               stuck_flag: list, timeout_sec: int,
-              stuck_threshold_sec: int = _STUCK_THRESHOLD_SEC,
               poll_interval: float = _WATCHDOG_POLL_SEC) -> None:
-    """Monitor `proc` for two kill conditions; sets `stuck_flag[0]`
-    when either fires:
-
-      (1) wall-clock cap = `timeout_sec - RESCUE_BUDGET_SEC`. Fires
-          regardless of agent activity so the retry helper always has
-          a guaranteed rescue window before subprocess timeout.
-      (2) stuck-by-silence = `stuck_threshold_sec` of no tool_use
-          event in the session jsonl. Capped at the wall-clock cap
-          so it never fires later than (1).
-
-    Both conditions terminate `proc`. Runs in a daemon thread; exits
-    when `proc` finishes naturally."""
+    """Monitor `proc` and kill at the wall-clock cap
+    (= `timeout_sec - RESCUE_BUDGET_SEC`). Sets `stuck_flag[0] = True`
+    on kill so the caller can route the spawn to the rescue path
+    instead of subprocess-timeout postmortem. Runs in a daemon thread;
+    exits when `proc` finishes naturally."""
     spawn_start = time.monotonic()
     wall_cap_sec = max(60, timeout_sec - RESCUE_BUDGET_SEC)
-    effective_stuck_sec = min(stuck_threshold_sec, wall_cap_sec)
-    log_path: Path | None = None
-    last_count = 0
-    last_progress = spawn_start
 
     def _kill(reason: str) -> None:
         stuck_flag[0] = True
@@ -285,23 +234,8 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
 
     while proc.poll() is None:
         time.sleep(poll_interval)
-        now = time.monotonic()
-        wall_elapsed = now - spawn_start
-        if wall_elapsed > wall_cap_sec:
+        if time.monotonic() - spawn_start > wall_cap_sec:
             _kill(f"wall cap {int(wall_cap_sec)}s reached")
-            return
-        if log_path is None:
-            log_path = _find_session_jsonl(sid)
-            if log_path is None:
-                continue
-        new_count = _count_tool_use_events(log_path)
-        if new_count > last_count:
-            last_count = new_count
-            last_progress = now
-            continue
-        silence = now - last_progress
-        if silence > effective_stuck_sec:
-            _kill(f"no tool_use for {int(silence)}s")
             return
 
 # Asterism's pipelines need Read / Write / Edit for sandbox file
