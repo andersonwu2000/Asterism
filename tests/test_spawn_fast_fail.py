@@ -30,19 +30,54 @@ from Tooling.dispatcher import cascade_one
 # 1. Provider stderr capture
 # ---------------------------------------------------------------------
 
+class _FakePopen:
+    """Stand-in for subprocess.Popen — supports communicate(timeout=...)
+    and poll() that the watchdog inspects. Constructed via factory
+    closures in tests so the mock returns the desired (rc, stdout,
+    stderr) triple or raises TimeoutExpired."""
+    def __init__(self, *, rc: int = 0, stdout: str = "",
+                 stderr: str = "", raise_timeout: bool = False) -> None:
+        self._rc = rc
+        self._stdout = stdout
+        self._stderr = stderr
+        self._raise_timeout = raise_timeout
+        self.returncode: int | None = None
+
+    def communicate(self, input=None, timeout: float | None = None):
+        import subprocess
+        if self._raise_timeout:
+            # Mirror subprocess.run's TimeoutExpired path: caller (claude
+            # CLI provider) calls proc.kill() then communicate() again
+            # to drain — that second call returns the captured streams.
+            self._raise_timeout = False
+            raise subprocess.TimeoutExpired(cmd=["fake"], timeout=timeout)
+        self.returncode = self._rc
+        return self._stdout, self._stderr
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
+
+    def terminate(self):
+        self.returncode = -15
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
 def test_claude_spawn_writes_stderr_on_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """rc≠0 → write `attempts_dir/_spawn.stderr` with the captured
     stderr. Skip on rc=0 to keep the sandbox tidy."""
-    import subprocess as _sub
     from Tooling.llm import claude_cli, base
     monkeypatch.setattr(claude_cli.shutil, "which", lambda _: "/fake/claude")
     monkeypatch.setattr(
-        claude_cli.subprocess, "run",
-        lambda *a, **kw: _sub.CompletedProcess(
-            args=a[0], returncode=1, stdout="",
-            stderr="claude: prompt parse error at line 3"))
+        claude_cli.subprocess, "Popen",
+        lambda *a, **kw: _FakePopen(
+            rc=1, stderr="claude: prompt parse error at line 3"))
     (tmp_path / "p.md").write_text("body", encoding="utf-8")
     p = claude_cli.ClaudeCliProvider()
     p.spawn(base.LLMRequest(
@@ -60,13 +95,11 @@ def test_claude_spawn_skips_stderr_file_on_success(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """rc=0 → don't write _spawn.stderr (avoid clutter)."""
-    import subprocess as _sub
     from Tooling.llm import claude_cli, base
     monkeypatch.setattr(claude_cli.shutil, "which", lambda _: "/fake/claude")
     monkeypatch.setattr(
-        claude_cli.subprocess, "run",
-        lambda *a, **kw: _sub.CompletedProcess(
-            args=a[0], returncode=0, stdout="ok", stderr=""))
+        claude_cli.subprocess, "Popen",
+        lambda *a, **kw: _FakePopen(rc=0, stdout="ok"))
     (tmp_path / "p.md").write_text("body", encoding="utf-8")
     p = claude_cli.ClaudeCliProvider()
     p.spawn(base.LLMRequest(
@@ -79,15 +112,14 @@ def test_claude_spawn_skips_stderr_file_on_success(
 def test_claude_spawn_writes_timeout_stderr(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """Timeout (rc=124) gets a synthetic _spawn.stderr noting the
-    timeout. Without this the rc=124 case left no forensic trail."""
-    import subprocess as _sub
+    """Subprocess timeout (full wall hit) → rc=124, synthetic
+    _spawn.stderr. Watchdog stuck-kill returns rc=128 instead and is
+    covered by test_claude_spawn_stuck_thinking."""
     from Tooling.llm import claude_cli, base
     monkeypatch.setattr(claude_cli.shutil, "which", lambda _: "/fake/claude")
-
-    def _timeout(*a, **kw):
-        raise _sub.TimeoutExpired(cmd=a[0], timeout=1)
-    monkeypatch.setattr(claude_cli.subprocess, "run", _timeout)
+    monkeypatch.setattr(
+        claude_cli.subprocess, "Popen",
+        lambda *a, **kw: _FakePopen(raise_timeout=True))
     (tmp_path / "p.md").write_text("body", encoding="utf-8")
     p = claude_cli.ClaudeCliProvider()
     rc = p.spawn(base.LLMRequest(

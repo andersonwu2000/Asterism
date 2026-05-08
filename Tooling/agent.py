@@ -106,14 +106,17 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
               retry_context: str | None = None,
               is_postmortem: bool = False,
               timeout_sec: int | None = None,
-              mcp_config_path: Path | None = None) -> int:
+              mcp_config_path: Path | None = None,
+              is_rescue: bool = False,
+              rescue_prompt: str | None = None,
+              timeout_sec_override: int | None = None) -> int:
     """Dispatch to the configured LLM provider for one agent invocation.
 
     Provider is resolved per-kind (F39): `ASTERISM_<KIND>_PROVIDER` →
     `ASTERISM_LLM_PROVIDER` → 'claude'. Likewise the model string is
     looked up per-kind inside each provider. Returns the provider's
     rc (0 success, 124 timeout, 125 stale session, 126 quota
-    exhausted, 127 missing dep, other = error).
+    exhausted, 127 missing dep, 128 stuck thinking, other = error).
 
     `session_id` / `is_retry` / `retry_context`: in-pipeline same-
     session retry. Pass a UUID + is_retry=False on first attempt;
@@ -128,10 +131,19 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     blockers into `_progress.md`). `timeout_sec` defaults to
     `POSTMORTEM_TIMEOUT_SEC` (180s) for postmortem calls and
     `WORKER_TIMEOUT_SEC` (600s) otherwise.
+
+    `is_rescue` / `rescue_prompt` / `timeout_sec_override`: stuck-
+    thinking rescue spawn. Triggered by the retry helper after the
+    watchdog killed a prior spawn for emitting no tool_use for too
+    long. Provider --resumes the same session, sends `rescue_prompt`
+    inline (no prompt_path template), uses `timeout_sec_override`
+    (typically 180s). Skips the watchdog (rescue is already short).
     """
     if timeout_sec is None:
         timeout_sec = (POSTMORTEM_TIMEOUT_SEC if is_postmortem
                        else WORKER_TIMEOUT_SEC)
+    if timeout_sec_override is not None:
+        timeout_sec = timeout_sec_override
     return llm.get_provider(kind=kind).spawn(llm.LLMRequest(
         kind=kind,
         prompt_path=prompt_path,
@@ -143,6 +155,8 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
         retry_context=retry_context,
         is_postmortem=is_postmortem,
         mcp_config_path=mcp_config_path,
+        is_rescue=is_rescue,
+        rescue_prompt=rescue_prompt,
     ))
 
 

@@ -137,42 +137,93 @@ def test_openai_complete_text_returns_none_without_model_env(
 # F27 — system-prompt trim flags must accompany every claude invocation
 # ---------------------------------------------------------------------
 
+class _FakePopen:
+    """Stand-in for subprocess.Popen in claude_cli tests. Supports
+    claude_cli's spawn-loop surface (communicate / poll / kill /
+    terminate / wait) AND the context-manager protocol that the stdlib
+    `subprocess.run` enters internally (`with Popen(...) as proc:`).
+    Tests that monkeypatch `subprocess.Popen` globally need both."""
+    def __init__(self, *, rc: int = 0, stdout: str = "ok",
+                 stderr: str = "") -> None:
+        self._rc = rc
+        self._stdout = stdout
+        self._stderr = stderr
+        self.returncode: int | None = None
+        # subprocess.run reads .args off the Popen instance to attach
+        # to CompletedProcess; without it, complete_text path crashes.
+        self.args: list = []
+
+    def communicate(self, input=None, timeout=None):
+        # `input` only relevant for subprocess.run pipeline (via
+        # `with Popen(...) as p: p.communicate(input, timeout=...)`).
+        # Ignored for spawn path which calls communicate(timeout=...).
+        self.returncode = self._rc
+        return self._stdout, self._stderr
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
+
+    def terminate(self):
+        self.returncode = -15
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 def _capture_cmd(monkeypatch: pytest.MonkeyPatch) -> list:
-    """Patch claude_cli.subprocess.run to capture the cmd argv and
-    return success without executing."""
-    import subprocess as _sub
+    """Patch claude_cli.subprocess.Popen to capture the cmd argv and
+    return a successful fake Popen instance. claude_cli's spawn was
+    refactored to Popen + communicate(timeout=...) for the watchdog;
+    callers that mocked subprocess.run won't trigger anymore."""
     from Tooling.llm import claude_cli
     captured: list = []
 
-    def _fake_run(cmd, *a, **kw):
+    def _fake_popen(cmd, *a, **kw):
         captured.append(cmd)
-        return _sub.CompletedProcess(args=cmd, returncode=0,
-                                     stdout="ok", stderr="")
+        return _FakePopen(rc=0, stdout="ok")
     monkeypatch.setattr(claude_cli.shutil, "which", lambda _: "/fake/claude")
-    monkeypatch.setattr(claude_cli.subprocess, "run", _fake_run)
+    monkeypatch.setattr(claude_cli.subprocess, "Popen", _fake_popen)
     return captured
 
 
 def _capture_call(monkeypatch: pytest.MonkeyPatch, *,
                   module_name: str = "claude_cli") -> list:
-    """Capture both cmd argv AND kwargs from subprocess.run patches.
-    Lets tests assert on cwd, timeout, etc. — anything not in cmd."""
+    """Capture both cmd argv AND kwargs from subprocess patches.
+    claude_cli uses Popen now (for watchdog support); gemini_cli still
+    uses subprocess.run, so the helper branches by module."""
     import subprocess as _sub
     if module_name == "claude_cli":
         from Tooling.llm import claude_cli as mod
+        calls: list = []
+
+        def _fake_popen(cmd, *a, **kw):
+            calls.append({"cmd": cmd, "kwargs": kw})
+            return _FakePopen(rc=0, stdout="ok")
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "/fake/exe")
+        monkeypatch.setattr(mod.subprocess, "Popen", _fake_popen)
+        return calls
     elif module_name == "gemini_cli":
         from Tooling.llm import gemini_cli as mod
+        calls: list = []
+
+        def _fake_run(cmd, *a, **kw):
+            calls.append({"cmd": cmd, "kwargs": kw})
+            return _sub.CompletedProcess(args=cmd, returncode=0,
+                                         stdout="ok", stderr="")
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "/fake/exe")
+        monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+        return calls
     else:
         raise ValueError(module_name)
-    calls: list = []
-
-    def _fake_run(cmd, *a, **kw):
-        calls.append({"cmd": cmd, "kwargs": kw})
-        return _sub.CompletedProcess(args=cmd, returncode=0,
-                                     stdout="ok", stderr="")
-    monkeypatch.setattr(mod.shutil, "which", lambda _: "/fake/exe")
-    monkeypatch.setattr(mod.subprocess, "run", _fake_run)
-    return calls
 
 
 def test_claude_spawn_includes_trim_flags(
@@ -755,9 +806,9 @@ def test_claude_spawn_stale_session_returns_rc_125(
     monkeypatch.setattr(claude_cli.shutil, "which",
                         lambda _: "/fake/claude")
     monkeypatch.setattr(
-        claude_cli.subprocess, "run",
-        lambda *a, **kw: _sub.CompletedProcess(
-            args=a[0], returncode=1, stdout="",
+        claude_cli.subprocess, "Popen",
+        lambda *a, **kw: _FakePopen(
+            rc=1, stdout="",
             stderr="No conversation found with session ID: abc123",
         ))
     p = claude_cli.ClaudeCliProvider()
@@ -781,7 +832,6 @@ def test_claude_spawn_stale_marker_only_on_retry(
     A --session-id call that fails for any reason should pass through
     its real rc — we don't want to misclassify an unrelated rc=1
     as 'stale session'."""
-    import subprocess as _sub
     from pathlib import Path
     from Tooling import llm
     from Tooling.llm import claude_cli
@@ -789,9 +839,9 @@ def test_claude_spawn_stale_marker_only_on_retry(
     monkeypatch.setattr(claude_cli.shutil, "which",
                         lambda _: "/fake/claude")
     monkeypatch.setattr(
-        claude_cli.subprocess, "run",
-        lambda *a, **kw: _sub.CompletedProcess(
-            args=a[0], returncode=1, stdout="",
+        claude_cli.subprocess, "Popen",
+        lambda *a, **kw: _FakePopen(
+            rc=1, stdout="",
             stderr="No conversation found with session ID: abc123",
         ))
     p = claude_cli.ClaudeCliProvider()
@@ -1575,16 +1625,18 @@ def test_claude_complete_text_has_no_cwd_pin(
     assert "cwd" not in calls[0]["kwargs"]
 
 
-def test_claude_spawn_sets_thinking_budget_env(
+def test_claude_spawn_does_not_set_thinking_budget_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The framework caps Sonnet 4.6's thinking budget per spawn at
-    ~1K tokens / minute of wall-clock allowance. Without this cap,
-    74% of Backward spawns burn the full body window on a 30-90K
-    character thinking block with zero Write tool calls. The mechanism
-    requires both env vars: `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1`
-    to switch off Sonnet's adaptive routing (which ignores the cap),
-    and `MAX_THINKING_TOKENS=N` to set the legacy fixed budget."""
+    """MAX_THINKING_TOKENS / CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING were
+    retired in favor of the tool_use-rate watchdog (`_watchdog` in
+    claude_cli) + per-pipeline rescue spawn. The cap was a blunt fix:
+    it stopped a single thinking block from filling 30K-90K chars but
+    couldn't stop the agent from re-entering deep thinking on the next
+    turn after a tool call. Watchdog catches the actual anti-pattern
+    (>10min between tool_use events) and routes to a rescue spawn with
+    a tight force-ship prompt — the framework prefers SIGKILL over
+    capping the model's reasoning depth."""
     from pathlib import Path
     from Tooling import llm
     from Tooling.llm import claude_cli
@@ -1596,36 +1648,8 @@ def test_claude_spawn_sets_thinking_budget_env(
         prompt_path=Path("/x/p.md"),
         problem_dir=Path("/x/Problems/myproblem"),
         attempts_dir=Path("/x/.attempts/abc"),
-        timeout_sec=600,  # body 10 min
+        timeout_sec=600,
     ))
     env = calls[0]["kwargs"]["env"]
-    assert env["CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING"] == "1"
-    assert env["MAX_THINKING_TOKENS"] == "10000"  # 600 // 60 * 1000
-
-
-def test_claude_spawn_thinking_budget_scales_with_timeout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """1K tokens / minute scaling: postmortem (180s) gets a 3K cap,
-    body (600s) gets 10K, hypothetical short retries get a 1K floor
-    so a < 60s spawn doesn't end up with budget 0."""
-    from pathlib import Path
-    from Tooling import llm
-    from Tooling.llm import claude_cli
-
-    p = claude_cli.ClaudeCliProvider()
-
-    for timeout, expected in [(180, "3000"), (600, "10000"),
-                              (60, "1000"), (30, "1000")]:
-        calls = _capture_call(monkeypatch, module_name="claude_cli")
-        p.spawn(llm.LLMRequest(
-            kind="builder",
-            prompt_path=Path("/x/p.md"),
-            problem_dir=Path("/x/Problems/myproblem"),
-            attempts_dir=Path("/x/.attempts/abc"),
-            timeout_sec=timeout,
-        ))
-        env = calls[0]["kwargs"]["env"]
-        assert env["MAX_THINKING_TOKENS"] == expected, (
-            f"timeout={timeout}s → expected {expected}, got "
-            f"{env['MAX_THINKING_TOKENS']}")
+    assert "MAX_THINKING_TOKENS" not in env
+    assert "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING" not in env

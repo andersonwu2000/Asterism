@@ -178,6 +178,30 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             backup_path.unlink()
 
     def builder_spawn(ctx: SpawnCtx) -> int:
+        # Rescue path — prior spawn was watchdog-killed mid-thinking.
+        # Resume the same session, send the inline force-ship prompt,
+        # tight 180s timeout, no Context.md re-injection (session
+        # memory holds the original Context). Skip backup snapshot —
+        # the prior killed spawn already restored on its way out, OR
+        # the rescue's own apply_edit work needs goal_lean as-is.
+        if ctx.rescue_prompt:
+            from ..llm.base import RESCUE_BUDGET_SEC
+            shutil.copy2(goal_lean, backup_path)
+            mcp_config_path = _write_mcp_config(
+                attempts_dir=ctx.attempts_dir,
+                workspace=workspace, target=goal_lean,
+            )
+            return agent.spawn_llm(
+                kind="builder", prompt_path=PROMPT_DIR / "builder.md",
+                problem_dir=problem_dir,
+                attempts_dir=ctx.attempts_dir,
+                session_id=ctx.sid, is_retry=True,
+                retry_context=None,
+                mcp_config_path=mcp_config_path,
+                is_rescue=True, rescue_prompt=ctx.rescue_prompt,
+                timeout_sec_override=RESCUE_BUDGET_SEC,
+            )
+
         # Cold start: fresh Context.md compile (snapshot Manifest +
         # goal history at this exact attempt). Warm: skip — agent's
         # session memory carries the Context from the prior call;
@@ -336,6 +360,10 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             spawn_fn=builder_spawn,
             parse_fn=builder_parse,
             postmortem_fn=builder_postmortem,
+            rescue_prompt=(
+                "Killed mid-think. Ship now: patch.lean with current proof "
+                "(`:= by sorry` ok). No analysis."
+            ),
             workspace=workspace,
             reflection_fn=builder_reflection,
         )

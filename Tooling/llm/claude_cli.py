@@ -36,12 +36,16 @@ spawn within the same iteration (no budget consumed).
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
+import threading
+import time
+from pathlib import Path
 
-from .base import LLMRequest
+from .base import LLMRequest, RESCUE_BUDGET_SEC
 
 
 # F51 — extract names from "Unknown constant `X.Y.Z`" / "unknown identifier
@@ -179,6 +183,126 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 # without consuming retry budget.
 RC_STALE_SESSION = 125
 _STALE_SESSION_MARKER = "no conversation found with session id"
+
+# Sentinel rc returned when the watchdog kills a spawn for emitting
+# zero `tool_use` events for too long (Sonnet's runaway thinking trap:
+# 30-90K-character thinking blocks producing no actionable output).
+# The retry helper translates rc=128 into one tight-budget rescue
+# spawn (--resume of the same session, force-ship prompt, 180s cap)
+# instead of a regular full-budget retry.
+RC_STUCK_THINKING = 128
+# Watchdog has two kill conditions (whichever fires first):
+#   1. Wall-clock cap: req.timeout_sec - RESCUE_BUDGET_SEC. Always
+#      leaves a guaranteed window for the rescue spawn before the
+#      subprocess timeout would fire. Without this, an agent making
+#      slow-but-steady tool_use through ~14min on a 15min spawn hits
+#      subprocess timeout → postmortem path (no rescue).
+#   2. Stuck-by-silence: `_STUCK_THRESHOLD_SEC` of no tool_use event
+#      in the session jsonl. Empirically, healthy SG/Backward spawns
+#      emit a tool_use every 30-90s; >5min silence is the unambiguous
+#      trap signal, 10min gives generous buffer for legit deep thinking.
+#      Capped at the wall-clock cap so it never fires later than (1).
+_STUCK_THRESHOLD_SEC = 600
+_WATCHDOG_POLL_SEC = 30
+
+
+def _find_session_jsonl(sid: str) -> Path | None:
+    """Locate the per-session jsonl claude CLI maintains under
+    `~/.claude/projects/<encoded_cwd>/<sid>.jsonl`. Returns None if
+    not yet created (cold start race) or if the .claude tree is
+    missing entirely. Watchdog handles None by waiting another tick."""
+    base = Path.home() / ".claude" / "projects"
+    if not base.exists():
+        return None
+    target = f"{sid}.jsonl"
+    try:
+        for project_dir in base.iterdir():
+            cand = project_dir / target
+            if cand.exists():
+                return cand
+    except OSError:
+        pass
+    return None
+
+
+def _count_tool_use_events(log_path: Path) -> int:
+    """Count tool_use content blocks in a session jsonl. Tolerates
+    the trailing line being mid-write (claude appends as model streams)
+    via per-line try/except — partial JSON is silently skipped."""
+    count = 0
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return count
+    for line in text.splitlines():
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        msg = d.get("message", {}) or {}
+        content = msg.get("content", [])
+        if isinstance(content, list):
+            for c in content:
+                if isinstance(c, dict) and c.get("type") == "tool_use":
+                    count += 1
+    return count
+
+
+def _watchdog(proc: subprocess.Popen, sid: str, *,
+              stuck_flag: list, timeout_sec: int,
+              stuck_threshold_sec: int = _STUCK_THRESHOLD_SEC,
+              poll_interval: float = _WATCHDOG_POLL_SEC) -> None:
+    """Monitor `proc` for two kill conditions; sets `stuck_flag[0]`
+    when either fires:
+
+      (1) wall-clock cap = `timeout_sec - RESCUE_BUDGET_SEC`. Fires
+          regardless of agent activity so the retry helper always has
+          a guaranteed rescue window before subprocess timeout.
+      (2) stuck-by-silence = `stuck_threshold_sec` of no tool_use
+          event in the session jsonl. Capped at the wall-clock cap
+          so it never fires later than (1).
+
+    Both conditions terminate `proc`. Runs in a daemon thread; exits
+    when `proc` finishes naturally."""
+    spawn_start = time.monotonic()
+    wall_cap_sec = max(60, timeout_sec - RESCUE_BUDGET_SEC)
+    effective_stuck_sec = min(stuck_threshold_sec, wall_cap_sec)
+    log_path: Path | None = None
+    last_count = 0
+    last_progress = spawn_start
+
+    def _kill(reason: str) -> None:
+        stuck_flag[0] = True
+        print(f"[watchdog] sid={sid[:8]} {reason} — killing for rescue",
+              flush=True)
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    while proc.poll() is None:
+        time.sleep(poll_interval)
+        now = time.monotonic()
+        wall_elapsed = now - spawn_start
+        if wall_elapsed > wall_cap_sec:
+            _kill(f"wall cap {int(wall_cap_sec)}s reached")
+            return
+        if log_path is None:
+            log_path = _find_session_jsonl(sid)
+            if log_path is None:
+                continue
+        new_count = _count_tool_use_events(log_path)
+        if new_count > last_count:
+            last_count = new_count
+            last_progress = now
+            continue
+        silence = now - last_progress
+        if silence > effective_stuck_sec:
+            _kill(f"no tool_use for {int(silence)}s")
+            return
 
 # Asterism's pipelines need Read / Write / Edit for sandbox file
 # manipulation, plus F50 search tools:
@@ -385,6 +509,16 @@ class ClaudeCliProvider:
 
         model = resolve_model(req.kind)
 
+        # Rescue spawn — prior spawn was watchdog-killed for stuck
+        # thinking. Resume the session, send the inline force-ship
+        # prompt (rescue_prompt) verbatim — no template loading, no
+        # Context.md re-injection. The agent has session memory of the
+        # killed turn (its prior tool_use trace + thinking) and is
+        # asked to ship whatever decomposition it had in mind.
+        if req.is_rescue and req.session_id and req.rescue_prompt:
+            session_flags = ["--resume", req.session_id]
+            session_lifetime_flag: list[str] = []
+            prompt = req.rescue_prompt
         # F55 postmortem — main spawn timed out, agent's session memory
         # is intact on disk. Resume the session with a short prompt
         # asking for a state + blocker note (`_progress.md`) into the
@@ -393,9 +527,9 @@ class ClaudeCliProvider:
         # is short and self-contained — no _build_cold_prompt wrapping
         # (Context.md from the killed turn is already in session memory;
         # re-injecting it would distract the postmortem agent).
-        if req.is_postmortem and req.session_id:
+        elif req.is_postmortem and req.session_id:
             session_flags = ["--resume", req.session_id]
-            session_lifetime_flag: list[str] = []
+            session_lifetime_flag = []
             prompt = _load_prompt(req)
         # In-pipeline retry path uses `--resume`, a short inline prompt
         # with the lake error embedded directly (no separate
@@ -478,59 +612,86 @@ class ClaudeCliProvider:
             *session_lifetime_flag,
             *_trim_flags(req),
         ]
-        # Per-spawn thinking-token cap, scaled with the wall-clock
-        # budget at ~1K tokens/minute (e.g. 600s body → 10000, 180s
-        # postmortem → 3000). Prevents Sonnet 4.6 from burning the
-        # entire window on a 30-90K-character thinking block while
-        # producing zero Write tool calls — empirically observed on
-        # 74% of SG Backward spawns. `MAX_THINKING_TOKENS` only takes
-        # effect in legacy (non-adaptive) mode, so we also disable
-        # adaptive routing. Cap is per-turn: agent can resume thinking
-        # in the next turn (after a tool result) so multi-step tasks
-        # still get cumulative reasoning, just no single block dive.
         env = dict(os.environ)
-        env["CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING"] = "1"
-        env["MAX_THINKING_TOKENS"] = str(
-            max(1000, (req.timeout_sec // 60) * 1000))
-        try:
-            r = subprocess.run(
-                cmd, timeout=req.timeout_sec,
-                capture_output=True, text=True,
-                encoding="utf-8", errors="replace",
-                env=env,
-                # F44 — anchor agent cwd at problem_dir, not workspace.
-                # Soft-sandbox: relative paths the agent writes resolve
-                # under the Problem; reduces wandering reads to other
-                # Problems / workspace-root files. attempts_dir is still
-                # passed as absolute path in the prompt above so reads
-                # there continue to work regardless of cwd.
-                cwd=str(req.problem_dir),
+        # Watchdog policy: monitor the session jsonl for tool_use
+        # events on normal spawns. Postmortem (180s) + rescue (180s)
+        # are already short and skip the watchdog — for those the
+        # subprocess timeout is the only kill mechanism. Cold spawns
+        # without session_id can't be monitored (no jsonl path), so
+        # they also skip; in practice every Asterism dispatch sets
+        # session_id, so this branch is just defensive.
+        watchdog_eligible = (
+            not req.is_postmortem
+            and not req.is_rescue
+            and req.session_id is not None
+        )
+        proc = subprocess.Popen(
+            cmd, env=env, cwd=str(req.problem_dir),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        stuck_flag: list[bool] = [False]
+        wd_thread: threading.Thread | None = None
+        if watchdog_eligible:
+            wd_thread = threading.Thread(
+                target=_watchdog,
+                args=(proc, req.session_id),
+                kwargs={
+                    "stuck_flag": stuck_flag,
+                    "timeout_sec": req.timeout_sec,
+                },
+                daemon=True,
             )
-            # F46 — capture stderr to attempts_dir on failure so the
-            # pipeline can surface it in dead_attempts.failure_detail.
-            # Skipping on rc=0 keeps the sandbox tidy.
-            if r.returncode != 0:
-                _write_spawn_stderr(req.attempts_dir, r.stderr or "",
-                                    r.stdout or "", r.returncode)
-            # Detect stale session: claude returns rc=1 with "No
-            # conversation found with session ID: ..." in stderr.
-            # Surface as RC_STALE_SESSION so the in-pipeline retry
-            # helper falls back to a cold spawn with a fresh sid
-            # without consuming retry budget.
-            if (r.returncode != 0 and req.is_retry
-                    and _STALE_SESSION_MARKER in (r.stderr or "").lower()):
-                print(f"[llm:claude] stale session "
-                      f"{req.session_id[:8] if req.session_id else '?'}",
-                      flush=True)
-                return RC_STALE_SESSION
-            return r.returncode
+            wd_thread.start()
+        try:
+            stdout, stderr = proc.communicate(timeout=req.timeout_sec)
+            rc = proc.returncode
         except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            rc = 124
+        if wd_thread is not None:
+            wd_thread.join(timeout=2)
+        # Watchdog stuck-kill takes precedence over the OS-level rc
+        # (TerminateProcess returns a platform-dependent code that
+        # collides with our normal failure semantics). Reclassify so
+        # the retry helper can route to a rescue spawn.
+        if stuck_flag[0]:
+            _write_spawn_stderr(req.attempts_dir,
+                                "(watchdog stuck-kill: wall cap or "
+                                "tool_use silence — see [watchdog] log "
+                                "line above)", stdout or "",
+                                RC_STUCK_THINKING)
+            return RC_STUCK_THINKING
+        # Subprocess timeout (full wall budget hit without watchdog
+        # firing — i.e., agent kept emitting tool_use but couldn't
+        # converge). Distinct from stuck-thinking; falls through to
+        # the existing TIMEOUT path in the retry helper.
+        if rc == 124:
             print(f"[llm:claude] timed out after {req.timeout_sec}s",
                   flush=True)
             _write_spawn_stderr(req.attempts_dir,
                                 f"(subprocess.TimeoutExpired after "
                                 f"{req.timeout_sec}s)", "", 124)
             return 124
+        # F46 — capture stderr to attempts_dir on failure so the
+        # pipeline can surface it in dead_attempts.failure_detail.
+        # Skipping on rc=0 keeps the sandbox tidy.
+        if rc != 0:
+            _write_spawn_stderr(req.attempts_dir, stderr or "",
+                                stdout or "", rc)
+        # Detect stale session: claude returns rc=1 with "No
+        # conversation found with session ID: ..." in stderr.
+        # Surface as RC_STALE_SESSION so the in-pipeline retry
+        # helper falls back to a cold spawn with a fresh sid
+        # without consuming retry budget.
+        if (rc != 0 and req.is_retry
+                and _STALE_SESSION_MARKER in (stderr or "").lower()):
+            print(f"[llm:claude] stale session "
+                  f"{req.session_id[:8] if req.session_id else '?'}",
+                  flush=True)
+            return RC_STALE_SESSION
+        return rc
 
     def complete_text(
         self, *, prompt: str, timeout_sec: int = 60,

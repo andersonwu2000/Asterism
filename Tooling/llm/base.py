@@ -14,6 +14,10 @@ SpawnRC is an IntEnum):
   125 stale session (claude --resume on a GC'd session UUID)
   126 quota exhausted (gemini free-tier limit, F38)
   127 dependency missing (CLI not on PATH / SDK not installed)
+  128 stuck thinking — watchdog killed spawn after >N min without any
+      tool_use event in the session jsonl. Distinct from 124 (full
+      wall hit) so the retry helper can route to a tight-budget
+      rescue spawn rather than a regular retry.
   other non-zero  agent error / API failure
 """
 from __future__ import annotations
@@ -34,6 +38,17 @@ class SpawnRC(IntEnum):
     STALE_SESSION = 125
     QUOTA_EXHAUSTED = 126
     MISSING_DEP = 127
+    STUCK_THINKING = 128
+
+
+# Rescue spawn budget (seconds). Cross-referenced by:
+#   - claude_cli._watchdog: wall-clock kill threshold = req.timeout_sec
+#     minus this, so the helper has a guaranteed window for rescue.
+#   - agent.spawn_llm / pipeline callers: timeout_sec_override on the
+#     rescue spawn itself. Keeping both sides on one constant prevents
+#     the wall_cap and rescue timeout from drifting apart.
+# Tunable by editing here only — every consumer reads this name.
+RESCUE_BUDGET_SEC = 180
 
 
 @dataclass
@@ -76,6 +91,17 @@ class LLMRequest:
                     `Tooling.lsp_mcp_server`). Builder pipeline sets
                     this; other kinds (Backward / Reflection) leave
                     it None.
+      is_rescue:    True when this is a stuck-thinking rescue spawn —
+                    triggered after the watchdog kills a prior spawn
+                    that produced no tool_use for too long. The
+                    provider should: (1) skip its watchdog (rescue is
+                    already short), (2) use the rescue prompt
+                    inline (no prompt_path template), (3) honour the
+                    tight timeout passed in `timeout_sec`. Mutually
+                    exclusive with is_postmortem.
+      rescue_prompt: When `is_rescue=True`, the inline force-ship
+                    prompt to send to the resumed session (no template
+                    rendering). Ignored when is_rescue=False.
     """
     kind: str
     prompt_path: Path
@@ -87,6 +113,8 @@ class LLMRequest:
     retry_context: str | None = None
     is_postmortem: bool = False
     mcp_config_path: Path | None = None
+    is_rescue: bool = False
+    rescue_prompt: str | None = None
 
 
 class Provider(Protocol):

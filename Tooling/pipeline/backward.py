@@ -308,6 +308,32 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             backup_path.unlink()
 
     def backward_spawn(ctx: SpawnCtx) -> int:
+        # Rescue path — prior spawn watchdog-killed mid-thinking.
+        # Resume the same session, send inline force-ship prompt
+        # (180s cap). patch.lean still has whatever skeleton/edits
+        # the killed turn produced (or the original cold-start
+        # skeleton if it never wrote); the rescue agent has session
+        # memory of its prior thinking and is asked to ship the
+        # decomposition as-is.
+        if ctx.rescue_prompt:
+            from ..llm.base import RESCUE_BUDGET_SEC
+            shutil.copy2(goal_lean, backup_path)
+            mcp_config_path = _write_mcp_config(
+                attempts_dir=ctx.attempts_dir,
+                workspace=workspace, target=goal_lean,
+            )
+            return agent.spawn_llm(
+                kind="backward",
+                prompt_path=PROMPT_DIR / "backward.md",
+                problem_dir=problem_dir,
+                attempts_dir=ctx.attempts_dir,
+                session_id=ctx.sid, is_retry=True,
+                retry_context=None,
+                mcp_config_path=mcp_config_path,
+                is_rescue=True, rescue_prompt=ctx.rescue_prompt,
+                timeout_sec_override=RESCUE_BUDGET_SEC,
+            )
+
         # Cold start: agent has no session memory to resume. Compile
         # Context.md fresh and write the F52 skeleton so the agent's
         # first Read of patch.lean shows a clean `theorem s<sid_token>
@@ -418,6 +444,10 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             spawn_fn=backward_spawn,
             parse_fn=backward_parse,
             postmortem_fn=backward_postmortem,
+            rescue_prompt=(
+                "Killed mid-think. Ship now: patch.lean + new_<slug>.lean "
+                "stubs (`:= by sorry` ok). No analysis."
+            ),
             workspace=workspace,
             reflection_fn=backward_reflection,
         )

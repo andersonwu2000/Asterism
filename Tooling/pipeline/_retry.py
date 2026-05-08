@@ -101,11 +101,18 @@ class SpawnCtx:
     attempt 0 of a fresh pipeline, or a stale_session in-place re-mint.
     Callers that need to write framework-side scratch (Builder
     compile_context, Backward F52 skeleton) gate that work on `cold`.
+
+    `rescue_prompt` is set by the helper after a stuck-thinking kill:
+    the spawn function should --resume the same sid with this prompt
+    inline (no Context.md re-injection, no template loading) and a
+    tight 180s timeout. Bypasses the watchdog (rescue is already
+    short). When None, normal cold/warm flow applies.
     """
     sid: str
     cold: bool
     retry_context: str | None
     attempts_dir: Path
+    rescue_prompt: str | None = None
 
 
 SpawnFn = Callable[[SpawnCtx], int]
@@ -125,6 +132,9 @@ def run_with_session_retries(
     spawn_fn: SpawnFn,
     parse_fn: ParseFn,
     postmortem_fn: PostmortemFn,
+    rescue_prompt: str = (
+        "Killed mid-think. Ship now: whatever output you have. No analysis."
+    ),
     workspace: Path | None = None,
     reflection_fn: ReflectionFn | None = None,
 ) -> PipelineResult:
@@ -287,6 +297,51 @@ def run_with_session_retries(
             return attach(PipelineResult(outcome="exhausted",
                                          failure_reason=reason,
                                          failure_detail=detail))
+
+        if rc == SpawnRC.STUCK_THINKING:
+            # Watchdog killed the spawn for >10min without any tool_use
+            # event in the session jsonl — Sonnet's runaway-thinking
+            # trap. One tight-budget rescue spawn: --resume the same
+            # session, force-ship prompt, 180s cap. The rescue agent
+            # has session memory of the killed turn (its tool history)
+            # and is asked to ship whatever decomposition it had in
+            # mind, no further analysis.
+            #
+            # Rescue success → attach result, exit pipeline. Rescue
+            # failure (parse fail / timeout / etc.) → record as a
+            # buffered failure with reason='agent_stuck_thinking' and
+            # continue the normal retry loop. The watchdog kill itself
+            # consumes one budget slot (mirrors any other rc!=0).
+            rescue_t0 = time.monotonic()
+            rescue_rc = spawn_fn(SpawnCtx(
+                sid=sid, cold=False, retry_context=None,
+                attempts_dir=attempts_dir,
+                rescue_prompt=rescue_prompt,
+            ))
+            rescue_dur = time.monotonic() - rescue_t0
+            print(f"[rescue] sid={sid[:8]} rc={rescue_rc} "
+                  f"dur={rescue_dur:.0f}s", flush=True)
+            if rescue_rc == SpawnRC.OK:
+                rescue_result = parse_fn()
+                if (rescue_result.outcome in _TERMINAL_SUCCESS_OUTCOMES
+                        or rescue_result.failure_reason
+                        in _TERMINAL_DECLINE_REASONS):
+                    return attach(rescue_result)
+                # Rescue ran but parse didn't reach terminal — fall
+                # through and let the next iteration retry normally.
+                buffer_failure(rescue_result.failure_reason,
+                               rescue_result.failure_detail,
+                               rescue_result.proposal_md)
+                last_reason = rescue_result.failure_reason
+                last_detail = rescue_result.failure_detail
+                continue
+            # Rescue itself failed — record stuck-thinking and continue.
+            buffer_failure("agent_stuck_thinking",
+                           f"watchdog killed prior spawn; rescue rc="
+                           f"{rescue_rc}, dur={rescue_dur:.0f}s")
+            last_reason = "agent_stuck_thinking"
+            last_detail = f"rescue rc={rescue_rc}"
+            continue
 
         if rc != SpawnRC.OK:
             reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
