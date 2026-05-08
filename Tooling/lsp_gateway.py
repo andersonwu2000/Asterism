@@ -265,20 +265,17 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True):
                     if swap_in and slot.loaded_pipeline_id != meta.pipeline_id:
                         slot.file_version += 1
                         backend.clear_diagnostics(slot.slot_uri)
-                        backend.clear_file_progress(slot.slot_uri)
                         backend.did_change_full(
                             slot.slot_path, meta.file_content,
                             slot.file_version
                         )
                         try:
-                            backend.wait_for_file_done(
-                                slot.slot_uri, timeout=10
+                            backend.wait_for_diagnostics(
+                                slot.slot_uri, slot.file_version,
+                                timeout=120
                             )
-                        except TimeoutError:
+                        except (TimeoutError, RuntimeError):
                             pass
-                        backend.wait_for_diagnostics_settled(
-                            slot.slot_uri, stable_for=3.0, max_wait=90.0
-                        )
                         slot.loaded_pipeline_id = meta.pipeline_id
                     yield slot
                     slot.last_used_ts = time.time()
@@ -447,16 +444,19 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
     with _acquire_slot(meta, swap_in=False) as slot:
         slot.file_version += 1
         backend.clear_diagnostics(slot.slot_uri)
-        backend.clear_file_progress(slot.slot_uri)
         backend.did_change_full(slot.slot_path, new_content,
                                 slot.file_version)
+        # `textDocument/waitForDiagnostics` blocks server-side until
+        # the doc reaches our version, the reporter has flushed all
+        # publishDiagnostics for it, and all command snapshots have
+        # elaborated. Replaces the prior fileProgress + 3s-settle
+        # polling, which over-waited by ~3s on every tool call.
         try:
-            backend.wait_for_file_done(slot.slot_uri, timeout=10)
-        except TimeoutError:
+            backend.wait_for_diagnostics(slot.slot_uri, slot.file_version,
+                                          timeout=120)
+        except (TimeoutError, RuntimeError):
             pass
-        diags = backend.wait_for_diagnostics_settled(
-            slot.slot_uri, stable_for=3.0, max_wait=90.0
-        )
+        diags = backend.diagnostics_for(slot.slot_uri)
         try:
             result = backend.plain_goal(slot.slot_path,
                                          line=start_line - 1, character=2,
@@ -584,16 +584,15 @@ def validate_file(content: str) -> str:
         with _acquire_slot(meta, swap_in=False) as slot:
             slot.file_version += 1
             backend.clear_diagnostics(slot.slot_uri)
-            backend.clear_file_progress(slot.slot_uri)
             backend.did_change_full(slot.slot_path, full_content,
                                     slot.file_version)
             try:
-                backend.wait_for_file_done(slot.slot_uri, timeout=15)
-            except TimeoutError:
+                backend.wait_for_diagnostics(slot.slot_uri,
+                                              slot.file_version,
+                                              timeout=120)
+            except (TimeoutError, RuntimeError):
                 pass
-            diags = backend.wait_for_diagnostics_settled(
-                slot.slot_uri, stable_for=3.0, max_wait=60.0
-            )
+            diags = backend.diagnostics_for(slot.slot_uri)
             # Mark slot as orphan: validate_file's content isn't the
             # session's "real" mirror, just a probe; future tool calls
             # from this session will didChange back to file_content.

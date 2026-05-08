@@ -347,6 +347,32 @@ class LspClient:
             self._file_progress.pop(uri, None)
             self._file_progress_seen_nonempty.discard(uri)
 
+    def wait_for_diagnostics(self, file_uri: str, version: int,
+                              timeout: float = 180.0) -> None:
+        """Block until Lean has finished elaborating `file_uri` at the
+        given version AND has flushed all `publishDiagnostics`
+        notifications for that version.
+
+        Uses Lean's built-in `textDocument/waitForDiagnostics` request
+        (see `Lean/Server/FileWorker/RequestHandling.lean` line 466
+        and `ProtocolOverview.lean` line 407 — "Emitted in interactive
+        tests to wait for all diagnostics up to a given point.").
+
+        Server-side returns after:
+          1. `doc.meta.version >= version` — our didChange is applied
+          2. reporter task done — every publishDiagnostics for this
+             version has been emitted
+          3. `cmdSnaps.waitAll` — every command's elaborate finished
+
+        This is the canonical "all done" signal. Replaces the older
+        `wait_for_file_done` + `wait_for_diagnostics_settled` pair —
+        no polling, no arbitrary settle window. After this returns,
+        `diagnostics_for(uri)` reflects the full final set."""
+        self.request("textDocument/waitForDiagnostics", {
+            "uri": file_uri,
+            "version": version,
+        }, timeout=timeout)
+
     def wait_for_file_done(self, file_uri: str,
                            timeout: float = 180.0,
                            poll_interval: float = 0.05) -> str:
