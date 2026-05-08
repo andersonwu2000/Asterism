@@ -179,7 +179,16 @@ def verify_file(target_path: Path,
 def release_session(token: str) -> None:
     """POST /release/{token}. Idempotent. Best-effort — failure is
     logged but not raised (the daemon teardown path uses this and
-    should never crash on a missed release)."""
+    should never crash on a missed release).
+
+    Timeout is generous (30s) because the gateway shares its uvicorn
+    event loop between `/release` and `/mcp` traffic; under high
+    concurrent MCP load (multiple agents firing apply_edit etc.)
+    `/release` can queue behind in-flight tool calls. The handler
+    itself is microsecond-scale (one dict pop + a non-blocking lock
+    sweep), so a long timeout costs nothing in the typical case but
+    avoids spurious warnings + leaked sessions when cascade events
+    coincide with peak MCP traffic."""
     if not token:
         return
     try:
@@ -187,6 +196,6 @@ def release_session(token: str) -> None:
             f"http://127.0.0.1:{_gateway_port()}/release/{token}",
             method="POST",
         )
-        urllib.request.urlopen(req, timeout=5.0).read()
+        urllib.request.urlopen(req, timeout=30.0).read()
     except (urllib.error.URLError, OSError) as exc:
         print(f"[gateway] release {token[:8]} failed: {exc}", flush=True)
