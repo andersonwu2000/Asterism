@@ -494,7 +494,12 @@ def cmd_reset(args: argparse.Namespace) -> int:
     deleted_files: list[str] = []
     failed_files: list[str] = []
     if proofs_dir.exists():
-        for pattern in ("L_*.lean", "_strategy_*.lean"):
+        # `*.backup` covers `L_<slug>.lean.backup` left behind by
+        # Backward / Builder spawn-retry path (`shutil.copy2(goal_lean,
+        # backup_path)`) when the pipeline got watchdog-killed before
+        # `_restore_backup`. Without sweeping these, next reset+init
+        # leaves stale backup files that confuse future runs.
+        for pattern in ("L_*.lean", "_strategy_*.lean", "*.backup"):
             for f in proofs_dir.glob(pattern):
                 if _robust_unlink(f):
                     deleted_files.append(f.name)
@@ -577,7 +582,7 @@ def cmd_reset(args: argparse.Namespace) -> int:
     # we forgot to sweep.
     leftovers: list[str] = []
     if proofs_dir.exists():
-        for pattern in ("L_*.lean", "_strategy_*.lean"):
+        for pattern in ("L_*.lean", "_strategy_*.lean", "*.backup"):
             for f in proofs_dir.glob(pattern):
                 leftovers.append(f"proofs/{f.name}")
     for name in ("LESSONS.md", "Root.lean.backup", "TREE.md"):

@@ -1,27 +1,81 @@
 # Asterism v2 — Current Status
 
-更新於 2026-05-08（**LSP swap + axiom probe + watchdog/rescue 三套修補 e2e 驗過**、
-**PN v4 47.3 min 真實 lake-pass**、Gateway HTTP MCP spike 通過）、
-HEAD `bdbe7a7`+、tag `pre-lsp-cutover` @ `3fc9422`、**659 unit tests green**。
+更新於 **2026-05-09**（**Gateway Phase 2 + verify-unification + opus 整合 e2e 驗過**、
+**PN 在 opus 30 分鐘 depth=3 完整 proved**、SG 即將開跑）、HEAD `9c7cefc`+、
+**669 unit tests green、1 skipped**。
 
 ## 下個 session 接手要做的事
 
-**主攻：Gateway 架構**（pool=4 → pool=8+ unlock）。現況每個 spawn 各起一份 lake
-serve、4 並行 ~12-20 GB RAM、想拉並行度直接撞 RAM 牆。spike 已驗 claude CLI 接
-HTTP MCP transport 工作正常（pid 51848 跨 3 並發 client 正確、無 race）。剩
-Phase 1-4 工程實作（~4 天、~1900 LOC）：
-1. Gateway 原型（K=1 backend、HTTP transport、4 個 LSP tool 移過去）
-2. Backend pool（K>1、sticky routing per pipeline_id）
-3. Lifecycle（supervisor、restart、graceful shutdown、health check）
-4. 整合（替換 `_write_mcp_config`、移除 per-spawn server）
+**SG run 監看中**（pool=15、W=3、sonnet、budget 4hr30min）。歷史 baseline：
+sonnet 4h16min、opus 2h48min；新架構 pool=15 預期 1.5-3 hr wall。已起的話
+監看點：
+- `curl /health.acquires.hot_rate` 應 > 50%；< 30% 持續 = churn 嚴重、cut
+- `[watchdog] sid=... wall cap` 是設計內、看 `[rescue] sid=... rc=0` 是否救活
+- `[gateway] release ... failed: timed out` 過去是常態、改 30s 後罕見
+- gateway crash 看 `.asterism/logs/gateway.log` 有無 traceback
+- 突發 `agent_rc_nonzero` 連續 = Anthropic API 故障 / 配額用盡
 
-完成後 RAM 由 K 決定、並行由 N 決定，N=8/16 不再爆。
+跑完後待做：
+1. **記錄 SG run baseline 進 commit message**（pool=15 sonnet wall vs 歷史 4hr）
+2. **比較 churn rate vs PN**（PN cold_evicted = 4.1%、SG pool=15 W=3 = 5x oversub、預期 5-15%）
+3. **若 hot_rate 低**：考慮 W=4 加 1 個 worker（+3GB RAM、剩 buffer 仍夠）
 
-候選工作（gateway 之後）：
-- **同題重跑收 baseline**：cantor_xi、SG、其他題在新框架（含 axiom probe 修補）下
-  公平比較。
-- **item 12 — Bridge lemma layer**（`docs/dev/bridge_lemma_layer.md`）：substrate
-  沒動、6 個 open decision 仍待拍板。
+## 2026-05-09 最新落地
+
+### Verify unification（commits `7f7e443..9188f9c`）
+
+framework runtime 對 `lake build` 的依賴從 verify path 完全拔掉。Lean 4 自定 RPC
+`Asterism.writeOlean` + `Asterism.printAxioms` 在 worker 內跑、`/verify` HTTP
+endpoint 統一所有 verify 路徑。
+
+**架構**：
+- `Asterism/GatewayRpc.lean` + `lean-asterism-server` binary（custom worker for `lake serve`）
+- `LEAN_WORKER_PATH` 指向 binary、所有 worker 載入 `builtin_initialize` RPC handlers
+- `gateway.verify_file(target_path, write_olean=, axioms_for=)` 單次 round trip：elaborate + 寫 .olean + 跑 `#print axioms`
+- 所有 callsite 統一（Builder Phase 1+2、Backward leaf+placed、verify_strategy、library promote）
+
+**速度**：cascade level 從 ~25-50s（cold lake build batch）→ ~3-5s（warm worker）。
+PN 整顆 proved 30 分鐘（vs 歷史 sonnet 4-5 倍速）。
+
+### waitForDiagnostics fix（commit `40ad9cb`）
+
+替掉 wait_for_diagnostics_settled 的 3s 硬下限。Lean 內建 `textDocument/waitForDiagnostics`
+回傳就是真正 elaborate done。apply_edit 從 3.26s → 0.22s（**~15× 加速**）、validate_file 同樣受惠。
+
+**已驗證**：trivial 5 連 apply_edit 全 0.22s。複雜內容仍受 Lean elaborate 真實時間限制
+（20-30s 是合理上限）。
+
+### Opus 模型支援
+
+Asterism.yaml `builder.model` / `backward.model` 接 `claude-opus-4-7`。Opus thinking-gap
+avg 11.76s（sonnet 25s）、約 2× 快。PN run 用 opus 完整 proved。但 SG 用 sonnet
+是因為跑時間長（4hr）、token cost 5×、quota 風險。
+
+### 新加工程設施
+
+- **`/health.acquires`**: hot/cold/busy_polls 計數、`hot_rate` 計算（commit `3fa53d0`）
+- **Singleton daemon lock**: `.asterism/daemon.pid` 防雙 dispatcher 同 DB 撞（commit `e9d3bbd`）
+- **Gateway 專屬 log**: `.asterism/logs/gateway.log`、crash 留 traceback（commit `f6d838f`）
+- **`release_session` timeout 5s → 30s**: 高並發時 /release 跟 /mcp event loop 爭、避免 spurious 警告（commit `1765311`）
+- **Quota detection**: claude.exe rc=1 + "You've hit your limit" → reclassify SpawnRC.QUOTA_EXHAUSTED（commit `f13e67d`）
+- **WorkArea session release**: `__exit__` 自動 POST /release、避免 session leak（commit `f13e67d`）
+- **Reset cleanup `*.backup`**: Backward retry 留下的 `L_<slug>.lean.backup` 加入 reset sweep pattern（這個 session）
+
+### 關鍵 invariant 補充
+
+- **每 cascade level 第一個 tool call 是 cold_warmup**: 是設計內、~20-30s elaborate complex
+  content。不是 framework bug
+- **W < pool 是設計內**：LRU + content stickiness 自然處理、PN W=2 pool=4 cold_evicted/total = 4.1%
+- **Watchdog wall_cap = spawn_timeout - rescue_timeout**: 預設 720s = 900-180、sonnet 在 SG
+  曾撞、值得觀察是否需要更長
+
+### 現有未解 / 觀察中
+
+- **opus 23s outliers in single agent**: 同 agent 連 8 個 tool call 中 2 個 23s（c8ed1de0
+  PN run）。實證是 Lean elaborate substantial content 真實成本、非 framework
+- **gateway 偶發 silent exit**: 02:47 crash 過一次無 traceback、後續未復現、可能是 Windows
+  AV / OOM。`.asterism/logs/gateway.log` 已加保險、下次有可看 traceback
+- **Reset 的 .backup 漏網**: 這 session 已修、commit 在路上
 
 ## 今日修補 e2e 驗證（2026-05-08）
 
