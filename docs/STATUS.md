@@ -1,22 +1,88 @@
 # Asterism v2 — Current Status
 
-更新於 2026-05-08（**LSP swap Phases 1-3 落地**、cantor_xi 單跑 87.1 min、
-PN solo 24.4 min（落在 pre-LSP 15-30 min 區間）、**TREE.md periodic refresh 已上**）、
-HEAD `f738873`+、tag `pre-lsp-cutover` @ `3fc9422`、**649 unit tests green**。
+更新於 2026-05-08（**LSP swap + axiom probe + watchdog/rescue 三套修補 e2e 驗過**、
+**PN v4 47.3 min 真實 lake-pass**、Gateway HTTP MCP spike 通過）、
+HEAD `bdbe7a7`+、tag `pre-lsp-cutover` @ `3fc9422`、**659 unit tests green**。
 
 ## 下個 session 接手要做的事
 
-近一輪改動全收完。PN clean run 走完了 leaf-bypass（s57 zero-subgoal 直接證掉、
-verify cascade 收 s55/56/57）。TREE.md 改成 dispatcher tick wait 後 per-problem
-寫一次（`Tooling/dispatcher.py:749-759`）、cascade write 仍保留作即時觸發。
+**主攻：Gateway 架構**（pool=4 → pool=8+ unlock）。現況每個 spawn 各起一份 lake
+serve、4 並行 ~12-20 GB RAM、想拉並行度直接撞 RAM 牆。spike 已驗 claude CLI 接
+HTTP MCP transport 工作正常（pid 51848 跨 3 並發 client 正確、無 race）。剩
+Phase 1-4 工程實作（~4 天、~1900 LOC）：
+1. Gateway 原型（K=1 backend、HTTP transport、4 個 LSP tool 移過去）
+2. Backend pool（K>1、sticky routing per pipeline_id）
+3. Lifecycle（supervisor、restart、graceful shutdown、health check）
+4. 整合（替換 `_write_mcp_config`、移除 per-spawn server）
 
-候選工作（依優先序）：
+完成後 RAM 由 K 決定、並行由 N 決定，N=8/16 不再爆。
 
-1. **同題重跑收 baseline**：cantor_xi 已驗 ~3× 加速、PN 還沒公平比較
-   （上輪 LESSONS 沒清）。其他題（compactness / gen_generates / sylvester_gallai）
-   未跑 LSP。
-2. **item 12 — Bridge lemma layer**（`docs/dev/bridge_lemma_layer.md`）。LSP
-   swap 沒動 substrate、6 個 open decision 仍待拍板。
+候選工作（gateway 之後）：
+- **同題重跑收 baseline**：cantor_xi、SG、其他題在新框架（含 axiom probe 修補）下
+  公平比較。
+- **item 12 — Bridge lemma layer**（`docs/dev/bridge_lemma_layer.md`）：substrate
+  沒動、6 個 open decision 仍待拍板。
+
+## 今日修補 e2e 驗證（2026-05-08）
+
+PN v4 run（47.3 min、commit `bdbe7a7`）：
+- 5 spawns / 4 cascades / 4 verifies / 0 axiom_violation / 2 leaf-bypass
+- **Watchdog 2 次準時 fire**（720s wall cap → kill）
+- **Rescue 2 次**：1 次 180s timeout（fall-through 正常 retry）+ 1 次 74s 救活
+  寫了 leaf-bypass `s91`、verify pass、cascade 收尾
+- **Lake build 真實 pass**（不像上次 SG「all roots proved 但 lake build broken」）
+
+歷次 PN wall：
+
+| Date | Wall | Notes |
+|---|---|---|
+| 2026-05-06 (pre-LSP) | 15-30 min | 6-11 spawns、無 watchdog |
+| 2026-05-07 (LSP swap) | 24.4 min | 6 spawns、leaf-bypass 漏 axiom probe |
+| **2026-05-08 (今日 v4)** | **47.3 min** | **5 spawns + 2 watchdog kill + 1 rescue 救活、真實 lake-pass** |
+
+慢了主因是 watchdog kill 各吃 12 min wall + 180s rescue。換來真實 lake-pass +
+axiom-clean、trade-off 合理。
+
+## 三套修補
+
+1. **Axiom probe 單一閘門**（commit `57556be`）：`pipeline/_axiom.py:axiom_probe`、
+   接 `verify_strategy` + Builder Phase 1/2、refactor `_try_promote_sorry_free`。
+   每個 `goals.status='proved'` 對應的 `#print axioms` 一定 ⊆ whitelist。修補了
+   leaf-bypass 路徑漏掉 axiom probe 的漏洞（SG s64 假 proved 案例）。
+2. **Watchdog + rescue**（commit `bdbe7a7`）：取代 `MAX_THINKING_TOKENS`。Watchdog
+   tail session jsonl 抓 tool_use 速率、`req.timeout_sec - RESCUE_BUDGET_SEC`（i.e.
+   12 min for 15 min spawn）強制 wall cap、stuck 時 SIGKILL。rescue spawn 用 --resume
+   + 簡短 force-ship prompt + 3 min budget、rescue 失敗 fall-through normal retry。
+3. **LSP swap**（commits `82772af..f738873`）：Builder + Backward 寫證明時跟在背景
+   常駐的 Lean server 即時對話、4 個 MCP tool（`apply_edit` / `goal_at` / `errors_at`
+   / `validate_file`）。
+
+## Gateway 架構決定（2026-05-08 spike 完）
+
+**動機**：每 spawn 各起 lake serve、Mathlib 在 process 裡 elaborated 一份、4
+並行 ~12-20 GB、想 pool=8+ 撞 RAM 牆。
+
+**架構**：
+- `Tooling/lsp_gateway.py`（待寫）：long-living asyncio HTTP server、daemon
+  startup 起 1-2 個 lake serve backend、所有 spawn 經由 HTTP MCP 連同一個
+- claude `--mcp-config` 改寫 URL `{"type":"http","url":"..."}` 而非 stdio command
+- backend 選擇：sticky per `pipeline_id`（首次 tool call 綁定、後續同 backend）
+- spawn 結束時 gateway 釋放 backend file handles
+- 不同 problem / file 共用同 backend（LSP 多檔本來支援）；同檔被 file-lock 擋
+
+**Spike 結果**（2026-05-08）：
+- FastMCP `streamable-http` transport 起在 port 8000、`/mcp` endpoint
+- claude CLI 接 URL config 工作（`--transport http <url>`）
+- 3 並發 client 命中同一 pid、call counter 累加 2→4 正確、無 race
+- MCP session ID 由 protocol 自管
+
+**RAM 估算**：
+- N=4 / K=4（現在）：12-20 GB
+- N=8 / K=2：6-10 GB（並行 ×2、RAM 對折）
+- N=16 / K=4：12-20 GB（並行 ×4、RAM 不變）
+
+**工程量**：~1900 LOC、~4 天分階段（Gateway 原型 → backend pool → lifecycle →
+整合）。技術 unknown 全消、剩純工程。
 
 ## LSP swap（Phase 1-3、commits `82772af..f738873`）
 
