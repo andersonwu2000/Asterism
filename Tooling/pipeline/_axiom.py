@@ -47,6 +47,9 @@ def axiom_probe(
       - (False, reason) otherwise. Reasons:
         * "no axioms_whitelist": Manifest didn't authorize bypass
         * "axiom probe failed: <exc>": probe couldn't run (timeout etc.)
+        * "axiom probe rebuild rc=N": `lake build <module>` failed —
+          source has compile error (rare: gateway.check_build said ok
+          but lake disagreed; flag for investigation)
         * "axiom probe rc=N": lean rc != 0 (parse / import / kernel)
         * "rogue axioms: [<sorted>]": axioms used not in whitelist —
           almost always sorryAx, indicating transitive sorry import.
@@ -56,6 +59,35 @@ def axiom_probe(
     """
     if not whitelist:
         return False, "no axioms_whitelist"
+
+    # Rebuild olean from current source BEFORE probing. `lake env lean`
+    # alone does NOT trigger rebuild — it uses whatever olean is on
+    # disk, decided by mtime. Phase 2.5's `gateway.check_build` verify
+    # path doesn't update olean (worker memory only), so a stale olean
+    # from an earlier compilation (e.g. Phase 1 hint probe with `:= by
+    # hint`, or from a prior PN run) can be served. Combined with
+    # `shutil.copy2(patch, goal_lean)` preserving patch.lean's mtime,
+    # `source.mtime < olean.mtime` is reachable → lake env lean reads
+    # the stale olean → spurious sorryAx report.
+    # `lake build` uses content hash, so it correctly rebuilds when
+    # source has changed regardless of mtime ordering. If hash already
+    # matches, this is a near-instant no-op.
+    # See task #71 (cs_cancel false-positive on 2026-05-08).
+    try:
+        rb = subprocess.run(
+            ["lake", "build", module],
+            cwd=str(workspace), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return False, f"axiom probe failed: {exc}"
+    if rb.returncode != 0:
+        # If gateway.check_build said ok but lake build now fails, the
+        # worker's elaborated state diverged from disk — likely a race
+        # or worker bug. Surface stderr to aid diagnosis.
+        tail = (rb.stderr or rb.stdout or "")[-400:].strip()
+        return False, f"axiom probe rebuild rc={rb.returncode}: {tail}"
+
     probe = workspace / f"_axiom_probe_{uuid.uuid4().hex[:8]}.lean"
     probe.write_text(
         f"import {module}\n#print axioms {fq_name}\n",
