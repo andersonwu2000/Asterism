@@ -124,50 +124,6 @@ def start_gateway(workspace: Path,
         f"gateway not ready within {ready_timeout}s; last_status={last_status}")
 
 
-def check_build(target_path: Path,
-                timeout: float = 90.0,
-                workspace: Path | None = None,
-                ) -> tuple[bool, str]:
-    """POST /check_build to verify a Lean file via the gateway worker
-    pool. Replaces a cold `lake build` shell-out (~10-30s) with a slot
-    acquire + didChange (~3-4s on miss, ~ms on hot).
-
-    Returns (ok, error_text). On success, error_text is empty. On
-    failure, error_text holds a multi-line dump of error-severity
-    diagnostics suitable for surfacing through the existing
-    failure_reason='lake_build_error' path."""
-    import json
-    if not target_path.exists():
-        return False, f"target file not found: {target_path}"
-    body = json.dumps({"target_path": str(target_path)}).encode("utf-8")
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{_gateway_port(workspace)}/check_build",
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        try:
-            err_body = exc.read().decode("utf-8", errors="replace")
-        except Exception:
-            err_body = str(exc)
-        return False, f"gateway HTTP {exc.code}: {err_body}"
-    except (urllib.error.URLError, OSError) as exc:
-        return False, f"gateway unreachable: {exc}"
-    if data.get("ok"):
-        return True, ""
-    diags = data.get("diagnostics") or []
-    err_lines = [
-        f"line {d.get('line', '?')}:{d.get('col', '?')}  "
-        f"{d.get('severity', '?')}: {d.get('message', '')}"
-        for d in diags if d.get("severity") == "error"
-    ]
-    return False, "\n".join(err_lines) or "no error-severity diagnostics returned"
-
-
 def verify_file(target_path: Path,
                 *,
                 write_olean: bool = True,

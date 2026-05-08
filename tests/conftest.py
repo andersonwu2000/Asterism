@@ -56,12 +56,17 @@ def _stub_gateway_calls_by_default(monkeypatch: pytest.MonkeyPatch):
             return _FakeResp(b'{"session_token": "test-stub-token"}')
         if "/release/" in url:
             return _FakeResp(b'{"ok": true}')
-        if url.endswith("/check_build"):
-            # Phase 2.5: framework calls /check_build instead of
-            # `lake build`. Default stub passes — tests that exercise
-            # the failure path must override this fixture locally.
+        if url.endswith("/verify"):
+            # Verify-unification: framework's gateway-side verify
+            # entry point. Default stub passes — tests that exercise
+            # the failure path must override the higher-level
+            # `gateway_lifecycle.verify_file` directly. (HTTP-level
+            # stub is kept as belt-and-braces in case a test forgets
+            # to patch the function-level call.)
             return _FakeResp(
-                b'{"ok": true, "diagnostic_count": 0, "diagnostics": []}'
+                b'{"ok": true, "diagnostic_count": 0, "diagnostics": [],'
+                b' "olean_written": true, "olean_path": null,'
+                b' "axioms": null, "axiom_error": null}'
             )
         # Anything else (e.g. /health from gateway_lifecycle.start_gateway)
         # — raise URLError so tests don't accidentally see a "fake healthy"

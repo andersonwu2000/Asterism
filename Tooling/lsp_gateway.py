@@ -174,7 +174,7 @@ def _start_workers(workspace: Path, w_count: int) -> None:
         # multi-worker machines (CPU contention) can trickle for many
         # minutes and never reach 3s-stable. fileProgress is the
         # canonical "elaborate done" signal at this layer; per-tool
-        # operations (apply_edit / validate_file / check_build) still
+        # operations (apply_edit / validate_file / verify) still
         # use wait_for_diagnostics_settled for their POST-edit reads
         # because at that point the file is small and diagnostics
         # converge fast.
@@ -655,78 +655,6 @@ async def release(request: Request):
     token = request.path_params["token"]
     _release_session_internal(token)
     return JSONResponse({"ok": True}, status_code=200)
-
-
-@mcp.custom_route("/check_build", methods=["POST"])
-async def check_build(request: Request):
-    """Verify a Lean file builds via worker pool. Replaces the framework's
-    cold `lake build` for post-spawn / post-promote verification — instead
-    of paying a fresh lake invocation (~10-30s), borrow a worker slot,
-    didChange to the file's current on-disk content, read diagnostics.
-
-    Body: {"target_path": "/abs/path/file.lean"}
-    Returns: {"ok": bool, "diagnostics": [...], "diagnostic_count": int}.
-
-    `ok` is true iff no error-severity diagnostics. Sorry warnings AND
-    info messages tolerated; the framework's `_axiom.axiom_probe_file`
-    runs separately to catch transitive sorryAx via `#print axioms`.
-
-    Slot ownership: marks loaded_pipeline_id=None after the check so the
-    next caller doesn't think this content "belongs" to anyone."""
-    try:
-        data = await request.json()
-    except Exception as e:
-        return JSONResponse({"error": f"invalid JSON: {e}"},
-                            status_code=400)
-    target_path = data.get("target_path")
-    if not target_path:
-        return JSONResponse({"error": "missing target_path"},
-                            status_code=400)
-    target = Path(target_path).resolve()
-    if not target.exists():
-        return JSONResponse({"error": f"file not found: {target}"},
-                            status_code=404)
-    err = _ensure_backend_ready()
-    if err:
-        return JSONResponse({"error": err}, status_code=503)
-    try:
-        content = target.read_text(encoding="utf-8")
-    except OSError as e:
-        return JSONResponse({"error": f"read failed: {e}"},
-                            status_code=500)
-
-    backend = _state.backend
-    # Synthesise a one-shot "session" scaffolding for _acquire_slot —
-    # it expects SessionMetadata, but for /check_build we don't have a
-    # real pipeline_id. Use a unique sentinel so the slot's
-    # loaded_pipeline_id never accidentally matches another session.
-    probe_id = f"build_check:{uuid.uuid4().hex[:8]}"
-    meta = SessionMetadata(
-        pipeline_id=probe_id,
-        target_path=target,
-        problem="",  # not used by acquire path
-        workspace=_state.workspace or target.parent,
-        log_path=None,
-        file_content=content,
-    )
-    diags: list = []
-    try:
-        with _acquire_slot(meta, swap_in=True) as slot:
-            diags = backend.diagnostics_for(slot.slot_uri)
-            # Mark orphan — caller doesn't own this slot's content.
-            slot.loaded_pipeline_id = None
-    except Exception as e:
-        return JSONResponse(
-            {"error": f"slot acquire failed: {type(e).__name__}: {e}"},
-            status_code=500,
-        )
-    formatted = [_format_diag(d) for d in diags]
-    has_error = any(f.get("severity") == "error" for f in formatted)
-    return JSONResponse({
-        "ok": not has_error,
-        "diagnostic_count": len(formatted),
-        "diagnostics": formatted,
-    })
 
 
 def _olean_dest_for(workspace: Path, target_path: Path) -> Path | None:
