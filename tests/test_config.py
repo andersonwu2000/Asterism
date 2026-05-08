@@ -297,3 +297,81 @@ def test_claude_model_resolution_via_yaml(
     monkeypatch.chdir(tmp_path)
     config._reset_cache()
     assert resolve_model("builder") == "claude-haiku-4-5"
+
+
+# ---------------------------------------------------------------------
+# Phase 2 — new keys surfaced in Asterism.yaml (Task #69 batch)
+# ---------------------------------------------------------------------
+
+def test_yaml_overrides_spawn_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`dispatch.spawn_timeout_sec` resolves through the standard
+    chain. Pre-Phase-2 this was a hardcoded `WORKER_TIMEOUT_SEC=900`
+    constant in agent.py; surfacing makes spawn timeout tunable
+    per-project without touching code."""
+    monkeypatch.delenv("ASTERISM_SPAWN_TIMEOUT_SEC", raising=False)
+    (tmp_path / "Asterism.yaml").write_text(
+        "dispatch:\n  spawn_timeout_sec: 1200\n",
+        encoding="utf-8",
+    )
+    assert config.get(
+        "dispatch.spawn_timeout_sec", default=900,
+        env_var="ASTERISM_SPAWN_TIMEOUT_SEC", cast=int,
+        workspace=tmp_path,
+    ) == 1200
+
+
+def test_yaml_overrides_rescue_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`dispatch.rescue_timeout_sec` controls both the rescue spawn's
+    own budget and the watchdog wall_cap (= spawn - rescue). User
+    setting it via yaml must propagate to both consumers without
+    code edits."""
+    monkeypatch.delenv("ASTERISM_RESCUE_TIMEOUT_SEC", raising=False)
+    (tmp_path / "Asterism.yaml").write_text(
+        "dispatch:\n  rescue_timeout_sec: 240\n",
+        encoding="utf-8",
+    )
+    assert config.get(
+        "dispatch.rescue_timeout_sec", default=180,
+        env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
+        workspace=tmp_path,
+    ) == 240
+
+
+def test_yaml_overrides_gateway_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`gateway.workers` is the primary RAM knob in Phase 2 (each
+    worker holds ~3 GB of Mathlib elaborated state). Must be settable
+    in the project's Asterism.yaml so the operator can tune to their
+    machine's RAM budget."""
+    monkeypatch.delenv("ASTERISM_GATEWAY_WORKERS", raising=False)
+    (tmp_path / "Asterism.yaml").write_text(
+        "gateway:\n  workers: 8\n",
+        encoding="utf-8",
+    )
+    assert config.get(
+        "gateway.workers", default=4,
+        env_var="ASTERISM_GATEWAY_WORKERS", cast=int,
+        workspace=tmp_path,
+    ) == 8
+
+
+def test_yaml_overrides_gateway_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`gateway.port` lets ops avoid port conflicts without setting
+    env on every shell."""
+    monkeypatch.delenv("ASTERISM_GATEWAY_PORT", raising=False)
+    (tmp_path / "Asterism.yaml").write_text(
+        "gateway:\n  port: 9090\n",
+        encoding="utf-8",
+    )
+    assert config.get(
+        "gateway.port", default=8765,
+        env_var="ASTERISM_GATEWAY_PORT", cast=int,
+        workspace=tmp_path,
+    ) == 9090

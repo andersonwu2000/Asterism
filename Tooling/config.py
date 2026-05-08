@@ -17,6 +17,11 @@ Field map (Asterism.yaml → env var fallback → built-in default):
     dispatch.pool                  ASTERISM_POOL                4
     dispatch.budget_sec            ASTERISM_BUDGET_SEC          1800
     dispatch.shelve_threshold      ASTERISM_SHELVE_THRESHOLD    8
+    dispatch.spawn_timeout_sec     ASTERISM_SPAWN_TIMEOUT_SEC   900
+    dispatch.postmortem_timeout_sec  ASTERISM_POSTMORTEM_TIMEOUT_SEC  180
+    dispatch.rescue_timeout_sec    ASTERISM_RESCUE_TIMEOUT_SEC  180
+    gateway.workers                ASTERISM_GATEWAY_WORKERS     4
+    gateway.port                   ASTERISM_GATEWAY_PORT        8765
     builder.threshold              ASTERISM_BUILDER_THRESHOLD   3
                                                                 (legacy yaml
                                                                 key:

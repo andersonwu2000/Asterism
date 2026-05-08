@@ -694,8 +694,17 @@ def main() -> None:
               file=sys.stderr, flush=True)
         sys.exit(2)
     workspace = Path(workspace_env).resolve()
-    port = int(os.environ.get("ASTERISM_GATEWAY_PORT", "8765"))
-    w_count = int(os.environ.get("ASTERISM_GATEWAY_WORKERS", "4"))
+    from . import config as _cfg
+    port = _cfg.get(
+        "gateway.port", default=8765,
+        env_var="ASTERISM_GATEWAY_PORT", cast=int,
+        workspace=workspace,
+    )
+    w_count = _cfg.get(
+        "gateway.workers", default=4,
+        env_var="ASTERISM_GATEWAY_WORKERS", cast=int,
+        workspace=workspace,
+    )
 
     print(f"[gateway] starting; workspace={workspace} port={port} "
           f"workers={w_count}",

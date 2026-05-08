@@ -316,7 +316,13 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         # memory of its prior thinking and is asked to ship the
         # decomposition as-is.
         if ctx.rescue_prompt:
+            from .. import config as _cfg
             from ..llm.base import RESCUE_BUDGET_SEC
+            rescue_budget = _cfg.get(
+                "dispatch.rescue_timeout_sec",
+                default=RESCUE_BUDGET_SEC,
+                env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
+            )
             shutil.copy2(goal_lean, backup_path)
             mcp_config_path = _write_mcp_config(
                 attempts_dir=ctx.attempts_dir,
@@ -332,7 +338,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                 retry_context=None,
                 mcp_config_path=mcp_config_path,
                 is_rescue=True, rescue_prompt=ctx.rescue_prompt,
-                timeout_sec_override=RESCUE_BUDGET_SEC,
+                timeout_sec_override=rescue_budget,
             )
 
         # Cold start: agent has no session memory to resume. Compile

@@ -29,8 +29,16 @@ import urllib.request
 from pathlib import Path
 
 
-def _gateway_port() -> int:
-    return int(os.environ.get("ASTERISM_GATEWAY_PORT", "8765"))
+def _gateway_port(workspace: Path | None = None) -> int:
+    """Resolve gateway HTTP port via env / yaml / default chain. Both
+    daemon-side (this module) and gateway-side (lsp_gateway.main) read
+    the same config so they always agree."""
+    from . import config as _cfg
+    return _cfg.get(
+        "gateway.port", default=8765,
+        env_var="ASTERISM_GATEWAY_PORT", cast=int,
+        workspace=workspace,
+    )
 
 
 def _health_url() -> str:

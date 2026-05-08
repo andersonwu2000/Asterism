@@ -219,8 +219,14 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
     on kill so the caller can route the spawn to the rescue path
     instead of subprocess-timeout postmortem. Runs in a daemon thread;
     exits when `proc` finishes naturally."""
+    from .. import config as _cfg
+    rescue_budget = _cfg.get(
+        "dispatch.rescue_timeout_sec",
+        default=RESCUE_BUDGET_SEC,
+        env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
+    )
     spawn_start = time.monotonic()
-    wall_cap_sec = max(60, timeout_sec - RESCUE_BUDGET_SEC)
+    wall_cap_sec = max(60, timeout_sec - rescue_budget)
 
     def _kill(reason: str) -> None:
         stuck_flag[0] = True

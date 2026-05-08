@@ -57,7 +57,12 @@ def _write_mcp_config(attempts_dir: Path, workspace: Path,
     config_path = attempts_dir / "_mcp_config.json"
     log_path = attempts_dir / "_mcp.jsonl"
     token_file = attempts_dir / "_gateway_session.token"
-    gateway_port = int(os.environ.get("ASTERISM_GATEWAY_PORT", "8765"))
+    from .. import config as _cfg
+    gateway_port = _cfg.get(
+        "gateway.port", default=8765,
+        env_var="ASTERISM_GATEWAY_PORT", cast=int,
+        workspace=workspace,
+    )
     base = f"http://127.0.0.1:{gateway_port}"
 
     # Release any leftover session from a prior retry on this pipeline.

@@ -7,20 +7,40 @@
 # it; the framework only reads what's set.
 
 dispatch:
-  pool: 4                # ThreadPoolExecutor workers
-                         # (LSP swap: each spawn may start an LSP MCP
-                         # server ~5 GB; pool=4 caps RAM peak ~20 GB)
-#   budget_sec: 1800      # daemon wall-clock cutoff (30 min)
-  shelve_threshold: 4    # total attempts per goal before shelving
-                         # (cantor_xi run had 6 timeouts; reduced from
-                         # 8 to fail-fast on stuck goals at 4 retries)
+  pool: 4                     # ThreadPoolExecutor workers (= max in-flight
+                              # pipelines). With Phase 2 LSP gateway, RAM
+                              # cost per spawn is just claude.exe (~330 MB);
+                              # worker pool RAM is bounded by gateway.workers
+                              # below, so pool can scale higher than
+                              # gateway.workers.
+#  budget_sec: 1800           # daemon wall-clock cutoff (default 30 min)
+  shelve_threshold: 4         # total attempts per goal before shelving
+                              # (cantor_xi run had 6 timeouts; reduced from
+                              # 8 to fail-fast on stuck goals at 4 retries)
+#  spawn_timeout_sec: 900     # per-claude-spawn wall budget (default 15 min).
+                              # Watchdog kills at (this - rescue_timeout_sec)
+                              # so rescue path always has a window.
+#  postmortem_timeout_sec: 180  # F55 postmortem spawn budget (writes
+                              # _progress.md after a main timeout).
+#  rescue_timeout_sec: 180    # stuck-thinking rescue spawn budget. Also
+                              # determines watchdog wall-cap = spawn -
+                              # rescue. Lowering tightens both ends.
+
+gateway:                       # Phase 2 LSP gateway (Tooling/lsp_gateway.py)
+  workers: 4                  # Persistent lean workers in the pool. Each is
+                              # ~3 GB Mathlib elaborated state. RAM ≈ 1.6 +
+                              # 3.0×workers + 0.33×pool. Tune to RAM budget;
+                              # tool-call queue depth grows when pool>>workers
+                              # (each cache miss ~3-4s, see
+                              # docs/dev/lsp_gateway.md §6).
+#  port: 8765                  # HTTP MCP endpoint. Change only on conflict.
 
 builder:
   provider: claude
   model: claude-sonnet-4-6
-  threshold: 2           # builder→backward escalation at 2 attempts
-                         # (was 3; tighter with the 900s spawn timeout
-                         # below)
+  threshold: 2                # builder→backward escalation at 2 attempts
+                              # (was 3; tighter with the 900s spawn timeout
+                              # below)
 
 backward:
   provider: claude

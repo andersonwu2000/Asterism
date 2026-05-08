@@ -13,7 +13,7 @@ import shutil
 import uuid
 from pathlib import Path
 
-from . import llm
+from . import config, llm
 
 # Re-export everything Context-related so legacy callers
 # (`agent.compile_context`, `agent._section_X`, `agent._digest_failure`)
@@ -140,8 +140,18 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     (typically 180s). Skips the watchdog (rescue is already short).
     """
     if timeout_sec is None:
-        timeout_sec = (POSTMORTEM_TIMEOUT_SEC if is_postmortem
-                       else WORKER_TIMEOUT_SEC)
+        if is_postmortem:
+            timeout_sec = config.get(
+                "dispatch.postmortem_timeout_sec",
+                default=POSTMORTEM_TIMEOUT_SEC,
+                env_var="ASTERISM_POSTMORTEM_TIMEOUT_SEC", cast=int,
+            )
+        else:
+            timeout_sec = config.get(
+                "dispatch.spawn_timeout_sec",
+                default=WORKER_TIMEOUT_SEC,
+                env_var="ASTERISM_SPAWN_TIMEOUT_SEC", cast=int,
+            )
     if timeout_sec_override is not None:
         timeout_sec = timeout_sec_override
     return llm.get_provider(kind=kind).spawn(llm.LLMRequest(
