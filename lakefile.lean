@@ -22,3 +22,14 @@ lean_lib «Problems» where
 lean_lib «Library» where
   srcDir := "."
   globs := #[Glob.submodules `Library]
+
+-- Verify-unification (see `docs/dev/verify_unification.md`):
+-- custom RPC handlers on the LSP worker so the gateway can write
+-- `.olean` and run `#print axioms` in-process instead of paying a
+-- fresh `lake build` / `lake env lean` per call.
+lean_lib «Asterism» where
+  srcDir := "."
+  globs := #[Glob.submodules `Asterism]
+
+lean_exe «lean-asterism-server» where
+  root := `Asterism.GatewayRpc
