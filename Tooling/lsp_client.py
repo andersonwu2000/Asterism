@@ -265,6 +265,38 @@ class LspClient:
         except Exception:
             pass
 
+    # ---- custom RPC (Asterism builtin procedures) -----------------
+
+    def rpc_call(self, slot_uri: str, method: str, params: dict,
+                 timeout: float = 30.0) -> dict:
+        """Invoke a custom Lean RPC method registered via
+        `registerBuiltinRpcProcedure` in our `lean-asterism-server`
+        binary. Two-step: connect to get a session id, then call.
+
+        `slot_uri` must be a URI of an open document — the RPC
+        handler runs in that document's worker context, with access
+        to its elaborated `Environment`. Caller must have called
+        `did_open` (and ideally waited for elaborate to finish) on
+        `slot_uri` before this.
+
+        Per-call connect is intentional: RPC sessions expire after
+        30s (`RpcSession.keepAliveTimeMs`), and our usage (~one call
+        per slot per verify) doesn't justify cache machinery.
+        """
+        connect = self.request("$/lean/rpc/connect",
+                               {"uri": slot_uri}, timeout=timeout)
+        session_id = connect.get("sessionId")
+        if session_id is None:
+            raise RuntimeError(f"$/lean/rpc/connect returned no sessionId: "
+                               f"{connect}")
+        return self.request("$/lean/rpc/call", {
+            "sessionId": session_id,
+            "method": method,
+            "textDocument": {"uri": slot_uri},
+            "position": {"line": 0, "character": 0},
+            "params": params,
+        }, timeout=timeout)
+
     # ---- file ops -------------------------------------------------
 
     def did_open(self, file_path: Path, content: str,

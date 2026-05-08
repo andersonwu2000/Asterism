@@ -168,6 +168,58 @@ def check_build(target_path: Path,
     return False, "\n".join(err_lines) or "no error-severity diagnostics returned"
 
 
+def verify_file(target_path: Path,
+                *,
+                write_olean: bool = True,
+                axioms_for: str | None = None,
+                timeout: float = 120.0,
+                workspace: Path | None = None,
+                ) -> dict:
+    """POST /verify. Single round trip: elaborate `target_path` in a
+    gateway worker slot, optionally write the `.olean`, optionally
+    run `#print axioms` on a fully-qualified name.
+
+    Returns the gateway's response dict directly:
+      {
+        ok, diagnostics, diagnostic_count,
+        olean_written, olean_path,
+        axioms, axiom_error,
+        # OR on infrastructure failure:
+        error: str
+      }
+
+    Replaces the older `check_build` + downstream `lake build` +
+    `lake env lean #print axioms` chain. ~3-5s on a warm worker
+    (Mathlib loaded), vs ~25-50s for the cold-lake path.
+    """
+    import json
+    if not target_path.exists():
+        return {"error": f"target file not found: {target_path}"}
+    body: dict = {
+        "target_path": str(target_path),
+        "write_olean": write_olean,
+    }
+    if axioms_for:
+        body["axioms_for"] = axioms_for
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{_gateway_port(workspace)}/verify",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            return {"error": f"gateway HTTP {exc.code}: "
+                             f"{exc.read().decode('utf-8', errors='replace')}"}
+        except Exception:
+            return {"error": f"gateway HTTP {exc.code}"}
+    except (urllib.error.URLError, OSError) as exc:
+        return {"error": f"gateway unreachable: {exc}"}
+
+
 def release_session(token: str) -> None:
     """POST /release/{token}. Idempotent. Best-effort — failure is
     logged but not raised (the daemon teardown path uses this and

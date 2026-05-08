@@ -729,6 +729,166 @@ async def check_build(request: Request):
     })
 
 
+def _olean_dest_for(workspace: Path, target_path: Path) -> Path | None:
+    """Derive `.lake/build/lib/lean/<module path>.olean` for a Lean
+    source under `workspace`. Returns None if the path isn't under
+    workspace or doesn't end in `.lean`."""
+    try:
+        rel = target_path.resolve().relative_to(workspace.resolve())
+    except ValueError:
+        return None
+    if rel.suffix != ".lean":
+        return None
+    return (workspace / ".lake" / "build" / "lib" / "lean"
+            / rel.with_suffix(".olean"))
+
+
+@mcp.custom_route("/verify", methods=["POST"])
+async def verify(request: Request):
+    """Unified verify endpoint: didChange the file's content into a
+    worker slot, optionally write the resulting `.olean` to disk,
+    optionally run `Asterism.printAxioms` on a constant in it.
+
+    Body: {
+      "target_path":  "/abs/path.lean",        # required
+      "write_olean":  true,                    # default: true
+      "axioms_for":   "Problems.foo.main",     # optional fq name
+    }
+    Returns: {
+      "ok":               bool,
+      "diagnostics":      [{line,col,severity,message}, ...],
+      "diagnostic_count": int,
+      "olean_written":    bool,
+      "olean_path":       str | null,
+      "axioms":           [str, ...] | null,
+      "axiom_error":      str | null,
+    }
+
+    Replaces the prior `lake build` + `lake env lean #print axioms`
+    pair: the verify, the olean publish, and the axiom probe all run
+    in the same worker process against the same just-elaborated
+    environment.
+
+    Slot ownership: marks loaded_pipeline_id=None after the call so
+    the next caller doesn't think this content "belongs" to anyone.
+    """
+    try:
+        data = await request.json()
+    except Exception as e:
+        return JSONResponse({"error": f"invalid JSON: {e}"},
+                            status_code=400)
+    target_path = data.get("target_path")
+    if not target_path:
+        return JSONResponse({"error": "missing target_path"},
+                            status_code=400)
+    target = Path(target_path).resolve()
+    if not target.exists():
+        return JSONResponse({"error": f"file not found: {target}"},
+                            status_code=404)
+    write_olean: bool = bool(data.get("write_olean", True))
+    axioms_for: str | None = data.get("axioms_for")
+
+    err = _ensure_backend_ready()
+    if err:
+        return JSONResponse({"error": err}, status_code=503)
+    try:
+        content = target.read_text(encoding="utf-8")
+    except OSError as e:
+        return JSONResponse({"error": f"read failed: {e}"},
+                            status_code=500)
+
+    backend = _state.backend
+    workspace = _state.workspace or target.parent
+    probe_id = f"verify:{uuid.uuid4().hex[:8]}"
+    meta = SessionMetadata(
+        pipeline_id=probe_id,
+        target_path=target,
+        problem="",
+        workspace=workspace,
+        log_path=None,
+        file_content=content,
+    )
+
+    olean_path: Path | None = None
+    olean_written = False
+    axioms: list[str] | None = None
+    axiom_error: str | None = None
+    diags: list = []
+
+    try:
+        with _acquire_slot(meta, swap_in=True) as slot:
+            diags = backend.diagnostics_for(slot.slot_uri)
+            formatted = [_format_diag(d) for d in diags]
+            has_error = any(f.get("severity") == "error" for f in formatted)
+
+            # Optional RPC calls — only on successful elaborate, since
+            # writeOlean / collectAxioms need a final cmd state. The
+            # custom RPCs run inside the slot worker via lake serve's
+            # `$/lean/rpc/call` dispatch.
+            if not has_error:
+                if write_olean:
+                    olean_path = _olean_dest_for(workspace, target)
+                    if olean_path is not None:
+                        olean_path.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            r = backend.rpc_call(
+                                slot.slot_uri,
+                                "Asterism.writeOlean",
+                                {"destPath": str(olean_path)},
+                                timeout=30,
+                            )
+                            olean_written = bool(r.get("ok"))
+                            if not olean_written:
+                                axiom_error = (
+                                    f"writeOlean error: {r.get('error')}"
+                                )
+                        except Exception as e:
+                            olean_written = False
+                            axiom_error = (
+                                f"writeOlean RPC failed: "
+                                f"{type(e).__name__}: {e}"
+                            )
+
+                if axioms_for:
+                    try:
+                        r = backend.rpc_call(
+                            slot.slot_uri,
+                            "Asterism.printAxioms",
+                            {"fqName": axioms_for},
+                            timeout=30,
+                        )
+                        if r.get("found"):
+                            axioms = list(r.get("axioms") or [])
+                        else:
+                            axiom_error = (
+                                f"printAxioms: {r.get('error') or 'not found'}"
+                            )
+                    except Exception as e:
+                        axiom_error = (
+                            f"printAxioms RPC failed: "
+                            f"{type(e).__name__}: {e}"
+                        )
+
+            slot.loaded_pipeline_id = None
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"slot acquire failed: {type(e).__name__}: {e}"},
+            status_code=500,
+        )
+
+    formatted = [_format_diag(d) for d in diags]
+    has_error = any(f.get("severity") == "error" for f in formatted)
+    return JSONResponse({
+        "ok": not has_error,
+        "diagnostic_count": len(formatted),
+        "diagnostics": formatted,
+        "olean_written": olean_written,
+        "olean_path": str(olean_path) if olean_path else None,
+        "axioms": axioms,
+        "axiom_error": axiom_error,
+    })
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request):
     """Liveness check. Reports worker pool status + active sessions."""
