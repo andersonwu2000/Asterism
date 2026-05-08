@@ -591,6 +591,16 @@ def run(workspace: Path, *, once: bool = False) -> int:
           flush=True)
     start_time = time.time()
 
+    # Phase 1 gateway: launch long-living LSP HTTP MCP server, wait
+    # until backend pre-warm completes (mathlib loaded). Per-spawn MCP
+    # config will point at this gateway via HTTP; spawns no longer
+    # fork their own lake serve. Cold start ~30-145s amortized once
+    # per daemon startup. start_gateway registers an atexit handler so
+    # the subprocess dies with the daemon — we don't need to track the
+    # Popen ourselves here.
+    from . import gateway_lifecycle
+    gateway_lifecycle.start_gateway(workspace)
+
     while True:
         # Cascade for any completed pipelines
         if futures:

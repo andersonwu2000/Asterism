@@ -30,6 +30,42 @@ def _disable_reflection_by_default(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def _stub_gateway_calls_by_default(monkeypatch: pytest.MonkeyPatch):
+    """`pipeline._write_mcp_config` POSTs to the long-living gateway
+    (`Tooling/lsp_gateway.py`) at /register to obtain a session token,
+    and POSTs /release on retry overwrite. Unit tests don't run a real
+    gateway, so we stub urllib.request.urlopen to return a fake
+    session token + 200 OK release. Production callers (dispatcher
+    starts the gateway via gateway_lifecycle.start_gateway) hit the
+    real HTTP endpoint."""
+    import io
+    import urllib.request
+
+    class _FakeResp:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return self._body
+
+    def _fake_urlopen(req, timeout=None):
+        # Fake responses for the endpoints _write_mcp_config hits.
+        url = getattr(req, "full_url", str(req))
+        if url.endswith("/register"):
+            return _FakeResp(b'{"session_token": "test-stub-token"}')
+        if "/release/" in url:
+            return _FakeResp(b'{"ok": true}')
+        # Anything else (e.g. /health from gateway_lifecycle.start_gateway)
+        # — raise URLError so tests don't accidentally see a "fake healthy"
+        # gateway. End-to-end tests that need start_gateway to work must
+        # stub it directly.
+        raise urllib.error.URLError("(test) no real gateway running")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+
+
+@pytest.fixture(autouse=True)
 def _stub_axiom_probe_by_default(monkeypatch: pytest.MonkeyPatch):
     """Builder / verify_strategy / `_try_promote_sorry_free` run a real
     `lake env lean … #print axioms <name>` probe at promote time. That

@@ -107,6 +107,19 @@ def test_e2e_root_proved_through_dispatcher(
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
+    # Phase 1 gateway: dispatcher.run launches the long-living gateway
+    # subprocess at startup (mathlib pre-warm). For e2e test purposes
+    # we stub start_gateway to a no-op — the conftest urlopen stub
+    # handles per-spawn /register + /release.
+    from Tooling import gateway_lifecycle
+
+    class _NoopGw:
+        def poll(self): return None
+        def terminate(self): pass
+        def wait(self, timeout=None): return 0
+    monkeypatch.setattr(gateway_lifecycle, "start_gateway",
+                        lambda workspace, **kw: _NoopGw())
+
     # Run dispatcher; once=True exits when the queue empties.
     dispatcher.run(tmp_path, once=True)
 

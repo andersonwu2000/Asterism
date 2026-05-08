@@ -75,11 +75,10 @@ def test_spawn_passes_mcp_config_path(
     assert Path(cfg).exists()
     data = json.loads(Path(cfg).read_text(encoding="utf-8"))
     server = data["mcpServers"]["lsp"]
-    assert server["command"] == sys.executable
-    assert server["args"] == ["-m", "Tooling.lsp_mcp_server"]
-    env = server["env"]
-    assert env["ASTERISM_WORKSPACE"] == str(tmp_path)
-    assert env["ASTERISM_TARGET"].endswith("Root.lean")
+    # Phase 1 gateway: HTTP MCP config (was stdio command in pre-Phase-1).
+    assert server["type"] == "http"
+    assert server["url"].endswith("/mcp")
+    assert server["headers"]["X-Asterism-Session"] == "test-stub-token"
 
 
 def test_restores_goal_lean_after_spawn_timeout(

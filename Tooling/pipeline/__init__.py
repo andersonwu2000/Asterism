@@ -26,6 +26,7 @@ Integrator atomicity = Hadamard backup-restore (no commit_state).
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import subprocess  # noqa: F401 — surface for `pipeline.subprocess` monkeypatch in tests
@@ -37,46 +38,74 @@ from .. import agent, diagnostics
 
 
 def _write_mcp_config(attempts_dir: Path, workspace: Path,
-                      target: Path) -> Path:
-    """Generate the MCP config JSON claude CLI uses to spawn our LSP
-    server as a stdio child. Lifecycle naturally tracks claude's
-    process — the server dies with claude, no separate cleanup needed.
+                      target: Path, *,
+                      pipeline_id: str, problem: str) -> Path:
+    """Generate the MCP config JSON claude CLI uses to connect to the
+    long-living gateway. Phase 1 (gateway model): one HTTP MCP server
+    per daemon; spawns connect over HTTP with a session token in the
+    `X-Asterism-Session` header. The token is obtained by POST to
+    `/register` immediately before writing this file; the gateway
+    associates the token with `target` so tool calls operate on the
+    right file.
 
-    The MCP server reads its config (workspace, target file, optional
-    log path) via env vars set here; claude propagates them when it
-    spawns the subprocess.
-
-    PYTHONPATH is critical: claude CLI sets `cwd = problem_dir` (F44),
-    so `python -m Tooling.lsp_mcp_server` from that cwd would fail
-    with `ModuleNotFoundError: No module named 'Tooling'`. Setting
-    PYTHONPATH = workspace makes the Tooling package resolvable
-    regardless of subprocess cwd. (Discovered after the first
-    cantor_xi run: agents had been silently running without the MCP
-    server attached for two whole pipeline cuts.)
-
-    Used by both Builder and Backward LSP swaps. The two pipelines
-    pass different `target` files (their respective `goal_lean`); the
-    rest is identical.
+    The legacy stdio model (each spawn forks its own
+    `Tooling.lsp_mcp_server`) is preserved for fallback in
+    `lsp_mcp_server.py` but not used here; remove in Phase 4.
     """
+    import urllib.request as _u
+    import urllib.error as _ue
     config_path = attempts_dir / "_mcp_config.json"
     log_path = attempts_dir / "_mcp.jsonl"
+    token_file = attempts_dir / "_gateway_session.token"
+    gateway_port = int(os.environ.get("ASTERISM_GATEWAY_PORT", "8765"))
+    base = f"http://127.0.0.1:{gateway_port}"
+
+    # Release any leftover session from a prior retry on this pipeline.
+    # Each warm retry calls back into here; without release the gateway
+    # accumulates open files on the shared backend (gradual mem leak).
+    if token_file.exists():
+        old_token = token_file.read_text(encoding="utf-8").strip()
+        if old_token:
+            try:
+                rel = _u.Request(f"{base}/release/{old_token}",
+                                 method="POST")
+                _u.urlopen(rel, timeout=5.0).read()
+            except (_ue.URLError, OSError):
+                pass
+
+    register_body = json.dumps({
+        "pipeline_id": pipeline_id,
+        "target_path": str(target),
+        "problem": problem,
+        "workspace": str(workspace),
+        "log_path": str(log_path),
+    }).encode("utf-8")
+    req = _u.Request(base + "/register", data=register_body,
+                     headers={"Content-Type": "application/json"},
+                     method="POST")
+    with _u.urlopen(req, timeout=120) as resp:
+        body = resp.read().decode("utf-8")
+    payload = json.loads(body)
+    token = payload.get("session_token")
+    if not token:
+        raise RuntimeError(
+            f"gateway /register returned no session_token: {body}")
+
     config = {
         "mcpServers": {
             "lsp": {
-                "command": sys.executable,
-                "args": ["-m", "Tooling.lsp_mcp_server"],
-                "env": {
-                    "ASTERISM_WORKSPACE": str(workspace),
-                    "ASTERISM_TARGET": str(target),
-                    "ASTERISM_MCP_LOG": str(log_path),
-                    "PYTHONPATH": str(workspace),
-                    "PYTHONIOENCODING": "utf-8",
-                },
+                "type": "http",
+                "url": f"{base}/mcp",
+                "headers": {"X-Asterism-Session": token},
             },
         },
     }
     config_path.write_text(json.dumps(config, indent=2),
                            encoding="utf-8")
+    # Also store the token in attempts_dir so the framework can
+    # POST /release/{token} when the spawn completes (cleanup hook).
+    (attempts_dir / "_gateway_session.token").write_text(
+        token, encoding="utf-8")
     return config_path
 
 

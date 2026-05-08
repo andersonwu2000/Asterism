@@ -83,12 +83,11 @@ def test_spawn_passes_mcp_config_path(
     data = json.loads(Path(cfg).read_text(encoding="utf-8"))
     assert "lsp" in data["mcpServers"]
     server = data["mcpServers"]["lsp"]
-    assert server["command"] == sys.executable
-    assert server["args"] == ["-m", "Tooling.lsp_mcp_server"]
-    env = server["env"]
-    assert env["ASTERISM_WORKSPACE"] == str(tmp_path)
-    # ASTERISM_TARGET should point at the goal_lean (Root.lean here).
-    assert env["ASTERISM_TARGET"].endswith("Root.lean")
+    # Phase 1 gateway: HTTP MCP config. Token comes from the conftest
+    # urlopen stub (test-stub-token).
+    assert server["type"] == "http"
+    assert server["url"].endswith("/mcp")
+    assert server["headers"]["X-Asterism-Session"] == "test-stub-token"
 
 
 def test_restores_goal_lean_when_lake_build_fails(

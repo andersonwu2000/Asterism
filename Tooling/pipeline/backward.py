@@ -321,6 +321,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             mcp_config_path = _write_mcp_config(
                 attempts_dir=ctx.attempts_dir,
                 workspace=workspace, target=goal_lean,
+                pipeline_id=pipeline_id, problem=goal["problem"],
             )
             return agent.spawn_llm(
                 kind="backward",
@@ -359,6 +360,8 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             attempts_dir=ctx.attempts_dir,
             workspace=workspace,
             target=goal_lean,
+            pipeline_id=pipeline_id,
+            problem=goal["problem"],
         )
 
         return agent.spawn_llm(
