@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shutil
 import subprocess
 import threading
 import time
@@ -71,12 +72,41 @@ class LspClient:
 
     def start(self) -> None:
         # `lake serve` reads lakefile.lean for toolchain + LEAN_PATH,
-        # then spawns `lean --server`. cwd must be the workspace root.
+        # then spawns `lean --server` (which spawns child workers via
+        # `lean --worker`). The watchdog locates the worker binary via
+        # env `LEAN_WORKER_PATH` (falling back to its own argv[0] —
+        # i.e. stock `lean.exe`). See `Lean/Server/Watchdog.lean :: findWorkerPath`.
+        #
+        # If our custom `lean-asterism-server` binary is built, point
+        # the watchdog at it instead. Workers then load
+        # `Asterism.GatewayRpc`'s `builtin_initialize` and surface the
+        # custom RPCs (`$/lean/rpc/call` with method `Asterism.writeOlean`
+        # / `Asterism.printAxioms`). If the binary isn't built, fall
+        # back silently to stock workers — verify_unification features
+        # are then unavailable but the rest of the gateway still works.
+        # cwd must be the workspace root regardless.
+        env = dict(os.environ)
+        suffix = ".exe" if os.name == "nt" else ""
+        custom = self.workspace / ".lake" / "build" / "bin" / f"lean-asterism-server{suffix}"
+        if custom.exists():
+            env["LEAN_WORKER_PATH"] = str(custom)
+            # `Lean.determineLakePath` (used by `setupFile` to spawn
+            # `lake setup-file` for module setup) falls back to
+            # `IO.appDir / "lake"` if neither LAKE nor LEAN_SYSROOT is
+            # set. For our custom binary, IO.appDir is `.lake/build/bin/`
+            # which doesn't contain `lake` → setup fails → header
+            # processing reports `result?=none`. Set LAKE explicitly to
+            # the toolchain's lake binary so setup-file works.
+            if "LAKE" not in env:
+                lake_path = shutil.which("lake")
+                if lake_path:
+                    env["LAKE"] = lake_path
         self.proc = subprocess.Popen(
             ["lake", "serve"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=str(self.workspace),
+            env=env,
             bufsize=0,
         )
         self._reader_thread = threading.Thread(

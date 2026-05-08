@@ -34,6 +34,55 @@ open Lean Server
 
 namespace Asterism
 
+/-! ## Snapshot tree walker
+
+`doc.cmdSnaps` is the "old representation for backward compatibility"
+and is built via a `private_decl%` default field initializer that
+captures `initSnap` at construction time — when the parser hasn't
+yet completed, `mkCmdSnaps` returns `.nil` and locks that in. We
+therefore can't rely on `cmdSnaps.waitAll` to give us a populated
+list. Instead, traverse `doc.initSnap` directly:
+
+  initSnap (HeaderParsedSnapshot)
+    .result? → headerParsed
+      .processedSnap → HeaderProcessedSnapshot
+        .result? → headerSuccess
+          .firstCmdSnap → CommandParsedSnapshot (chained via `nextCmdSnap?`)
+            .elabSnap.resultSnap → CommandResultSnapshot
+              .cmdState.env  ← this is what we want, post all elab.
+-/
+
+/-- Result of the snapshot tree walk. `env` is `some` only when the
+walker reached a terminal command's elaboration result. `trace` is
+a short diagnostic string for the failure case. -/
+structure WalkResult where
+  env : Option Environment := none
+  trace : String
+
+instance : Inhabited WalkResult := ⟨{ trace := "" }⟩
+
+open Language.Lean in
+/-- Walk to the LAST command's elaboration result and return its
+post-elaborate environment + a trace string indicating where the
+walk terminated. -/
+partial def lastCmdEnv (doc : Server.FileWorker.EditableDocument) :
+    ServerTask WalkResult := Id.run do
+  let some headerParsed := doc.initSnap.result?
+    | .pure { trace := "initSnap.result? is none (header parse failed)" }
+  headerParsed.processedSnap.task.asServerTask.bindCheap fun headerProcessed =>
+    Id.run do
+      let some headerSuccess := headerProcessed.result?
+        | .pure { trace := "headerProcessed.result? is none (import failed)" }
+      headerSuccess.firstCmdSnap.task.asServerTask.bindCheap (walk 0)
+where
+  walk (depth : Nat) (cmd : CommandParsedSnapshot) : ServerTask WalkResult := Id.run do
+    match cmd.nextCmdSnap? with
+    | none =>
+        cmd.elabSnap.resultSnap.task.asServerTask.bindCheap fun result =>
+          .pure { env := some result.cmdState.env, trace := s!"ok (cmd depth {depth})" }
+    | some next =>
+        next.task.asServerTask.bindCheap (walk (depth + 1))
+
 /-! ## writeOlean -/
 
 structure WriteOleanParams where
@@ -49,17 +98,17 @@ structure WriteOleanResp where
 
 instance : RpcEncodable WriteOleanResp := inferInstance
 
-/-- Wait for the worker's snapshot stream to terminate (whole file
-elaborated), then call `Lean.writeModule` on the resulting env.
-IO errors are captured into `error` rather than surfaced as RPC
-failures so the client gets a structured response. -/
+/-- Wait for the file's terminal snapshot (whole file elaborated),
+then call `Lean.writeModule` on the resulting env. IO errors are
+captured into `error` rather than surfaced as RPC failures so the
+client gets a structured response. -/
 def writeOleanImpl (p : WriteOleanParams) : RequestM (RequestTask WriteOleanResp) := do
   let doc ← RequestM.readDoc
-  RequestM.mapTaskCostly doc.cmdSnaps.waitAll fun (snaps, _) => do
-    match snaps.getLast? with
-    | none => return { ok := false, error := some "no snapshots produced" }
-    | some snap =>
-        let r ← (Lean.writeModule snap.env
+  RequestM.mapTaskCostly (lastCmdEnv doc) fun walkResult => do
+    match walkResult.env with
+    | none => return { ok := false, error := some s!"no terminal snapshot: {walkResult.trace}" }
+    | some env =>
+        let r ← (Lean.writeModule env
                   (System.FilePath.mk p.destPath) (writeIR := false)).toBaseIO
         match r with
         | .ok _ => return { ok := true }
@@ -94,13 +143,13 @@ context so we can call from a server-RPC context (no Lean elab
 state available). -/
 def printAxiomsImpl (p : PrintAxiomsParams) : RequestM (RequestTask PrintAxiomsResp) := do
   let doc ← RequestM.readDoc
-  RequestM.mapTaskCostly doc.cmdSnaps.waitAll fun (snaps, _) => do
-    match snaps.getLast? with
+  RequestM.mapTaskCostly (lastCmdEnv doc) fun walkResult => do
+    match walkResult.env with
     | none =>
-        return { found := false, axioms := #[], error := some "no snapshots produced" }
-    | some snap =>
+        return { found := false, axioms := #[],
+                 error := some s!"no terminal snapshot: {walkResult.trace}" }
+    | some env =>
         let n := parseQualifiedName p.fqName
-        let env := snap.env
         if env.find? n |>.isNone then
           return {
             found := false, axioms := #[],
@@ -144,7 +193,15 @@ The watchdog locates the worker binary via env
 env var to our binary path in the gateway's `lake serve` startup.
 That way: stock `lake serve` watchdog spawns our binary as workers,
 which then load this module's `builtin_initialize`. -/
-def main (args : List String) : IO UInt32 := do
+unsafe def main (args : List String) : IO UInt32 := do
+  -- Stock `lean.exe`'s C++ entry calls runtime init + search-path init
+  -- + `enableInitializerExecution` before handing off to `lean_main`.
+  -- Lake's `lean_exe` wrapper calls runtime init but NOT the rest, so
+  -- our binary boots with an empty search path and `loadExts := true`
+  -- import paths fail. Mirror what lean.exe does. The init APIs are
+  -- `unsafe` (they mutate global state), hence the `unsafe def`.
+  Lean.initSearchPath (← Lean.findSysroot)
+  Lean.enableInitializersExecution
   match args with
   | "--worker" :: _ =>
       Lean.Server.FileWorker.workerMain {}

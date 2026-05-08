@@ -33,3 +33,8 @@ lean_lib «Asterism» where
 
 lean_exe «lean-asterism-server» where
   root := `Asterism.GatewayRpc
+  -- Required for the LSP server to be able to load `Init`/`Std`/`Lean`
+  -- modules via interpreter-driven imports (see Lean's `IO.getRandomBytes`
+  -- and similar `extern` declarations). Without this the worker's
+  -- header processing fails with "Could not find native implementation".
+  supportInterpreter := true
