@@ -76,7 +76,26 @@ Manifest.md frontmatter parser、Context.md section ordering。post-mortem 結�
 - 宣稱 X 導致 Y → 要能操縱 X 看 Y 變才算測過。
 - 沒辦法測的（Lean 內核行為、claude CLI 內部）直接說「沒辦法從這側測」、不要編。
 
-### 8. 解 root cause，不 patch around symptom
+### 8. 殺 orphan process 不能用名稱 + 時間 broad filter
+
+清 orphan claude / lean / lake 時、絕不寫成
+`Get-Process -Name claude,... | Where StartTime < Xmin`：你自己的 claude.exe
+runtime 是同名的長 process、必落入 filter → **broad-kill 會殺到自己對話的
+parent**。
+
+實證：本 session 多次因為這條 anti-pattern 被殺、harness 自動 restart 後 prior
+response context 丟失、agent 對 "Continue from where you left off" 系統訊號
+回空（「自殺」表象）。
+
+→ orphan 清理一律先抓**特定 PID list**：daemon 的 `.attempts/<pid>/`、daemon
+log 裡的 spawn pid、`lsof` / process tree walk 從已知 daemon parent 往下找。
+殺前 echo PID 自查。
+
+實作層面更好的修法：daemon 用 Windows Job Object / Linux process group、
+parent 死 children 自動回收、根本不用手動清。當前 Asterism 的 `subprocess.Popen`
+沒套這層、Phase 3 supervisor 應補上。
+
+### 9. 解 root cause，不 patch around symptom
 
 設計新功能、修 bug、選依賴、決定資料流都適用。第一直覺常是「加 if 擋症狀」「補 fallback
 包起來」「cache 繞過」「先用簡單版頂住」「先這樣再說」— 那是 patch、不是 fix。症狀暫時
