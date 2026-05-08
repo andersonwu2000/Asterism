@@ -111,8 +111,10 @@ def test_topics_from_hints_dedups_and_preserves_order() -> None:
 
 def _bypass_axiom_check(monkeypatch: pytest.MonkeyPatch) -> None:
     """Real axiom check requires a working lake build; tests mock it
-    out unless we want to exercise the gate explicitly."""
-    monkeypatch.setattr(library, "_check_axioms",
+    out unless we want to exercise the gate explicitly. library now
+    delegates to the shared `_axiom.axiom_probe`; patch the symbol
+    library imported at module load."""
+    monkeypatch.setattr(library, "axiom_probe",
                         lambda *a, **kw: (True, "(test bypass)"))
 
 
@@ -210,10 +212,10 @@ def test_promote_replaces_index_entry_on_statement_change(
 def test_promote_rejects_axioms_outside_whitelist(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When _check_axioms reports a rogue axiom, promote() returns
+    """When axiom_probe reports a rogue axiom, promote() returns
     (False, msg) and writes nothing."""
-    monkeypatch.setattr(library, "_check_axioms",
-        lambda *a, **kw: (False, "axioms not in whitelist: ['rogue.X']"))
+    monkeypatch.setattr(library, "axiom_probe",
+        lambda *a, **kw: (False, "rogue axioms: ['rogue.X']"))
     mfst = manifest.Manifest(
         problem="bad", statement="T",
         axioms_whitelist=["propext"],

@@ -796,12 +796,13 @@ def test_claude_spawn_stale_session_returns_rc_125(
 ) -> None:
     """When `--resume <uuid>` finds no on-disk session, claude prints
     'No conversation found with session ID: ...' to stderr and returns
-    rc=1. spawn must surface this as RC_STALE_SESSION (=125) so the
-    caller (pipeline.run_builder) can clear the DB id and retry cold."""
-    import subprocess as _sub
+    rc=1. spawn must surface this as SpawnRC.STALE_SESSION (=125) so
+    the caller (pipeline.run_builder) can clear the DB id and retry
+    cold."""
     from pathlib import Path
     from Tooling import llm
     from Tooling.llm import claude_cli
+    from Tooling.llm.base import SpawnRC
 
     monkeypatch.setattr(claude_cli.shutil, "which",
                         lambda _: "/fake/claude")
@@ -821,8 +822,8 @@ def test_claude_spawn_stale_session_returns_rc_125(
         session_id="abc123",
         is_retry=True,
     ))
-    assert rc == claude_cli.RC_STALE_SESSION
-    assert claude_cli.RC_STALE_SESSION == 125
+    assert rc == SpawnRC.STALE_SESSION
+    assert int(SpawnRC.STALE_SESSION) == 125
 
 
 def test_claude_spawn_quota_exhausted_returns_rc_126(

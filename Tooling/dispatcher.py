@@ -175,8 +175,7 @@ def next_worker_kind(goal: sqlite3.Row) -> str:
 
 def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 kind: str, target_id: str, target_kind: str,
-                outcome: str, failure_reason: str = "",
-                workspace: Path | None = None) -> None:
+                outcome: str, failure_reason: str = "") -> None:
     """Apply state transitions for one finished pipeline.
 
     Each worker_kind has a fixed target_kind:
@@ -192,9 +191,6 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
     catches loser strategies / orphan sub-goals whose workers finish
     after the goal has been won by a (possibly sequential) sibling
     strategy or after the goal cascade-shelved.
-
-    `workspace` is retained on the signature for back-compat (legacy
-    callers passed it for the retired F22 playbook hook); now unused.
     """
     if target_kind == "Strategy":
         row = conn.execute(
@@ -613,8 +609,7 @@ def run(workspace: Path, *, once: bool = False) -> int:
                     pid, kind, tid, tk, outcome, reason = fut.result()
                     cascade_one(conn, pipeline_id=pid, kind=kind,
                                 target_id=tid, target_kind=tk,
-                                outcome=outcome, failure_reason=reason,
-                                workspace=workspace)
+                                outcome=outcome, failure_reason=reason)
                     # F46 — back-off + global counter for spawn fast-fails.
                     # Phase 7 — quota_exhausted (rc=126) / missing_dep (rc=127)
                     # also cooldown but do NOT contribute to CONSEC tracking
@@ -663,7 +658,7 @@ def run(workspace: Path, *, once: bool = False) -> int:
                     try:
                         cascade_one(conn, pipeline_id=pid, kind=kind,
                                     target_id=tid, target_kind=tk,
-                                    outcome="failed", workspace=workspace)
+                                    outcome="failed")
                         tree.write_for_target(conn, workspace, tid, tk)
                     except Exception as exc2:
                         # Cascade itself bombing is a deeper bug; log

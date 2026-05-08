@@ -45,7 +45,7 @@ import threading
 import time
 from pathlib import Path
 
-from .base import LLMRequest, RESCUE_BUDGET_SEC
+from .base import LLMRequest, RESCUE_BUDGET_SEC, SpawnRC
 
 
 # F51 — extract names from "Unknown constant `X.Y.Z`" / "unknown identifier
@@ -176,24 +176,23 @@ def _retry_hint_for_patterns(stderr: str) -> str:
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 
-# Sentinel rc returned when claude reports "No conversation found
-# with session ID: ...". The in-pipeline retry helper
-# (`Tooling/pipeline/_retry.py`) detects rc=125 on a warm spawn and
-# re-mints sid + falls back to a cold spawn within the same iteration
-# without consuming retry budget.
-RC_STALE_SESSION = 125
+# Marker substring of claude's "No conversation found with session
+# ID: ..." stderr output, lowercased. spawn returns
+# SpawnRC.STALE_SESSION (= 125) when a warm spawn (`--resume`) hits
+# this so the in-pipeline retry helper (`Tooling/pipeline/_retry.py`)
+# can re-mint sid + fall back to a cold spawn within the same
+# iteration without consuming retry budget.
 _STALE_SESSION_MARKER = "no conversation found with session id"
 
 # Anthropic API quota / usage-limit sentinels. claude.exe surfaces
 # these as a normal rc=1 with the limit message printed to stdout
 # (NOT stderr), so the dispatcher's generic agent_rc_nonzero path
 # would otherwise consume retry budget on a deterministically-failing
-# spawn. Reclassify to RC_QUOTA_EXHAUSTED (= base.SpawnRC.QUOTA_EXHAUSTED
-# = 126) so the retry helper short-circuits and the dispatcher applies
-# cooldown via the standard infra-reason path.
-# Markers chosen from observed claude.exe output ("You've hit your
-# limit · resets … 8am") plus standard Anthropic API error phrasings.
-# Lowercased before matching.
+# spawn. Reclassify to SpawnRC.QUOTA_EXHAUSTED (= 126) so the retry
+# helper short-circuits and the dispatcher applies cooldown via the
+# standard infra-reason path. Markers chosen from observed claude.exe
+# output ("You've hit your limit · resets … 8am") plus standard
+# Anthropic API error phrasings. Lowercased before matching.
 _QUOTA_MARKERS = (
     "you've hit your limit",
     "you have hit your limit",
@@ -201,14 +200,6 @@ _QUOTA_MARKERS = (
     "rate limit",
     "rate_limit_exceeded",
 )
-
-# Sentinel rc returned when the watchdog kills a spawn for emitting
-# zero `tool_use` events for too long (Sonnet's runaway thinking trap:
-# 30-90K-character thinking blocks producing no actionable output).
-# The retry helper translates rc=128 into one tight-budget rescue
-# spawn (--resume of the same session, force-ship prompt, 180s cap)
-# instead of a regular full-budget retry.
-RC_STUCK_THINKING = 128
 # Watchdog wall-clock cap: kill spawn at `req.timeout_sec -
 # RESCUE_BUDGET_SEC` regardless of agent activity. This guarantees the
 # retry helper has a 3-min window for the rescue spawn before subprocess
@@ -619,8 +610,8 @@ class ClaudeCliProvider:
                                 "(watchdog stuck-kill: wall cap or "
                                 "tool_use silence — see [watchdog] log "
                                 "line above)", stdout or "",
-                                RC_STUCK_THINKING)
-            return RC_STUCK_THINKING
+                                SpawnRC.STUCK_THINKING)
+            return SpawnRC.STUCK_THINKING
         # Subprocess timeout (full wall budget hit without watchdog
         # firing — i.e., agent kept emitting tool_use but couldn't
         # converge). Distinct from stuck-thinking; falls through to
@@ -640,7 +631,7 @@ class ClaudeCliProvider:
                                 stdout or "", rc)
         # Detect stale session: claude returns rc=1 with "No
         # conversation found with session ID: ..." in stderr.
-        # Surface as RC_STALE_SESSION so the in-pipeline retry
+        # Surface as SpawnRC.STALE_SESSION so the in-pipeline retry
         # helper falls back to a cold spawn with a fresh sid
         # without consuming retry budget.
         if (rc != 0 and req.is_retry
@@ -648,7 +639,7 @@ class ClaudeCliProvider:
             print(f"[llm:claude] stale session "
                   f"{req.session_id[:8] if req.session_id else '?'}",
                   flush=True)
-            return RC_STALE_SESSION
+            return SpawnRC.STALE_SESSION
         # Detect quota / usage-limit refusals. claude.exe writes the
         # limit message to stdout AND returns rc=1, indistinguishable
         # at the rc level from a real model error. Without this check,
@@ -657,7 +648,6 @@ class ClaudeCliProvider:
         # bails the daemon. Reclassify to QUOTA_EXHAUSTED so the
         # standard infra-reason cooldown path applies.
         if rc != 0:
-            from .base import SpawnRC
             combined = ((stdout or "") + "\n" + (stderr or "")).lower()
             if any(m in combined for m in _QUOTA_MARKERS):
                 print(f"[llm:claude] quota exhausted (rc={rc} → "

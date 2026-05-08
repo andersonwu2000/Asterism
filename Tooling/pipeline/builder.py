@@ -11,12 +11,10 @@ per-spawn forensic + attempts++. claude session memory is shared
 across in-pipeline retry iterations via `claude --resume <sid>`; sid
 is a local var in the helper, not persisted to DB.
 
-Phase 1-LSP swap: Builder spawns claude with an MCP server
-(`Tooling.lsp_mcp_server`) attached via `--mcp-config`. The agent
-gets LSP-backed apply_edit / goal_at / errors_at tools that operate
-on `goal_lean` directly. Final patch.lean output protocol unchanged.
-Rollback is git-based (`git revert <commit>`); there is no runtime
-fallback to legacy.
+LSP-backed agent: Builder spawns claude with an `--mcp-config`
+pointing at the long-living `Tooling.lsp_gateway` HTTP server. The
+agent gets apply_edit / goal_at / errors_at tools that operate on
+`goal_lean` directly. Final patch.lean output protocol unchanged.
 
 Public entry point: `run_builder`.
 """
@@ -220,8 +218,8 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
 
         # Snapshot goal_lean (always sorry-stub at this point: prior
         # iterations either restored it or this is the first iter),
-        # and write the MCP config so claude spawns lsp_mcp_server as
-        # a stdio child.
+        # and register a gateway session so claude's MCP tools operate
+        # on goal_lean's content via the shared worker pool.
         shutil.copy2(goal_lean, backup_path)
         mcp_config_path = _write_mcp_config(
             attempts_dir=ctx.attempts_dir,

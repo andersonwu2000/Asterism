@@ -1,8 +1,9 @@
-"""Phase 1 LSP swap — Builder pipeline integration tests.
+"""LSP MCP wiring — Builder pipeline integration tests.
 
 Verifies that:
   - `agent.spawn_llm` receives a `mcp_config_path` kwarg pointing at
-    a freshly-written JSON config that boots `Tooling.lsp_mcp_server`.
+    a freshly-written JSON config that connects to the long-living
+    `Tooling.lsp_gateway` HTTP server.
   - Builder backs up `goal_lean` BEFORE the agent runs (since the
     agent now edits goal_lean in-session via LSP) and restores it on
     a lake-build failure.

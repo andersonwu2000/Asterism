@@ -41,16 +41,12 @@ def _write_mcp_config(attempts_dir: Path, workspace: Path,
                       target: Path, *,
                       pipeline_id: str, problem: str) -> Path:
     """Generate the MCP config JSON claude CLI uses to connect to the
-    long-living gateway. Phase 1 (gateway model): one HTTP MCP server
-    per daemon; spawns connect over HTTP with a session token in the
+    long-living gateway. One HTTP MCP server per daemon; spawns
+    connect over HTTP with a session token in the
     `X-Asterism-Session` header. The token is obtained by POST to
     `/register` immediately before writing this file; the gateway
     associates the token with `target` so tool calls operate on the
     right file.
-
-    The legacy stdio model (each spawn forks its own
-    `Tooling.lsp_mcp_server`) is preserved for fallback in
-    `lsp_mcp_server.py` but not used here; remove in Phase 4.
     """
     import urllib.request as _u
     import urllib.error as _ue
@@ -170,10 +166,6 @@ def collect_artifacts(attempts_dir: Path) -> dict[str, str]:
     return out
 
 
-# Back-compat alias for any external callers still using the underscore form.
-_collect_artifacts = collect_artifacts
-
-
 # ---------------------------------------------------------------------
 # Spawn classification
 # ---------------------------------------------------------------------
@@ -281,10 +273,9 @@ def _safe_glob(directory: Path, pattern: str) -> list[Path]:
 #   - Cost: 2 lake builds on success (probe + confirm) instead of 1.
 #     In practice the second build hits warm cache for almost everything
 #     except the swapped tactic body.
-#   - Coverage gap: a few legacy TACTIC_TRY_LIST entries (rfl,
-#     assumption, norm_cast, ring_nf, simp, nlinarith) are not
-#     register_hint'd in Mathlib's defaults; goals that only those
-#     close fall through to Phase 2.
+#   - Coverage gap: a few common tactics (rfl, assumption, norm_cast,
+#     ring_nf, simp, nlinarith) are not in Mathlib's `register_hint`
+#     defaults; goals that only those close fall through to Phase 2.
 
 # Output format (from Mathlib/Tactic/Hint.lean + lake build observation):
 #     info: <file>:<line>:<col>: Try these:

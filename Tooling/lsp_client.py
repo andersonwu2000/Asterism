@@ -1,10 +1,9 @@
 """Stdio JSON-RPC client for `lake serve` (the Lean LSP wrapper).
 
-Extracted from `lsp_mcp_server.py` (2026-05-08) so both the per-spawn
-stdio server (`lsp_mcp_server.py`) and the long-living shared gateway
-(`lsp_gateway.py`) can reuse the same client without import-order
-hazards. The class is fully self-contained — no module-level config,
-no globals.
+Used by the long-living shared gateway (`lsp_gateway.py`) to drive a
+single `lake serve` instance whose worker pool is shared across all
+in-flight pipelines. The class is fully self-contained — no
+module-level config, no globals.
 
 Two threads run alongside the main thread once `start()` is called:
   * reader: pulls Content-Length-framed messages off lake serve's

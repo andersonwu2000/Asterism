@@ -22,11 +22,11 @@ the topic set without code changes.
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 from pathlib import Path
 
 from . import db, manifest
+from .pipeline._axiom import axiom_probe
 
 
 # Topic recognized by the framework; informational only (we don't
@@ -64,56 +64,6 @@ def topics_from_hints(hints: list[str]) -> list[str]:
     return out
 
 
-def _check_axioms(workspace: Path, problem: str,
-                  whitelist: list[str]) -> tuple[bool, str]:
-    """Run `#print axioms Problems.<problem>.main` and verify the
-    reported set is a subset of `whitelist`. Returns (ok, message).
-
-    Whitelist empty → accept any (legacy behavior; warn caller via
-    message). Lake unavailable / non-zero exit → return (False, reason).
-    """
-    if not whitelist:
-        return True, "(no whitelist; accepting any axioms)"
-
-    probe = workspace / "_axiom_probe.lean"
-    probe.write_text(
-        f"import Problems.{problem}.Root\n"
-        f"#print axioms Problems.{problem}.main\n",
-        encoding="utf-8",
-    )
-    try:
-        r = subprocess.run(
-            ["lake", "env", "lean", str(probe)],
-            cwd=str(workspace), capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=180,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        probe.unlink(missing_ok=True)
-        return False, f"axiom check failed: {e}"
-    finally:
-        probe.unlink(missing_ok=True)
-
-    if r.returncode != 0:
-        return False, f"axiom probe rc={r.returncode}: {(r.stderr or '')[:300]}"
-
-    # Output looks like:
-    #   'Problems.foo.main' depends on axioms: [propext, Classical.choice]
-    # or "no axioms" / "depends on axioms: []".
-    out = r.stdout
-    used: set[str] = set()
-    m = re.search(r"depends on axioms?\s*:\s*\[(.*?)\]", out, re.DOTALL)
-    if m:
-        for a in m.group(1).split(","):
-            a = a.strip()
-            if a:
-                used.add(a)
-
-    rogue = used - set(whitelist)
-    if rogue:
-        return False, f"axioms not in whitelist: {sorted(rogue)}"
-    return True, f"axioms ok: {sorted(used) or '[]'}"
-
-
 def _re_export_content(problem: str) -> str:
     """Lean source for `Library/<Topic>/<problem>.lean`. Re-exports
     `Problems.<problem>.main` so callers can `import Library.<Topic>.
@@ -142,10 +92,26 @@ def promote(workspace: Path, problem: str,
     """Run a single promotion attempt. Returns (promoted, message).
     `promoted=False` covers idempotent skip and axiom-gate reject;
     callers log message either way."""
-    ok, axiom_msg = _check_axioms(workspace, problem,
-                                   mfst.axioms_whitelist)
-    if not ok:
-        return False, f"[library] {problem}: skip — {axiom_msg}"
+    # Empty whitelist = accept (legacy behavior, matches manifests
+    # without an `axioms_whitelist:` field). Skip the probe entirely
+    # in that case so we don't pay lake build time.
+    if not mfst.axioms_whitelist:
+        axiom_msg = "(no whitelist; accepting any axioms)"
+    else:
+        # Use the shared axiom_probe — it does `lake build <module>`
+        # first to defeat the stale-olean cache, which the prior
+        # local impl missed. Library promotion is the last gate
+        # before a proved root is re-exported into the shared
+        # Library/, so a false-positive accept here would publish a
+        # sorry-tainted theorem network-wide.
+        ok, axiom_msg = axiom_probe(
+            workspace,
+            fq_name=f"Problems.{problem}.main",
+            module=f"Problems.{problem}.Root",
+            whitelist=mfst.axioms_whitelist,
+        )
+        if not ok:
+            return False, f"[library] {problem}: skip — {axiom_msg}"
 
     topic = topic_from_hints(mfst.all_hints)
     topic_dir = workspace / "Library" / topic

@@ -87,9 +87,9 @@ class LLMRequest:
                     set and the provider supports it (claude CLI),
                     the spawn includes `--mcp-config <path>` so the
                     agent gets MCP-backed tools (e.g. LSP-driven
-                    apply_edit / goal_at / errors_at via
-                    `Tooling.lsp_mcp_server`). Builder pipeline sets
-                    this; other kinds (Backward / Reflection) leave
+                    apply_edit / goal_at / errors_at via the long-
+                    living `Tooling.lsp_gateway` HTTP server). Builder
+                    + Backward pipelines set this; Reflection leaves
                     it None.
       is_rescue:    True when this is a stuck-thinking rescue spawn —
                     triggered after the watchdog kills a prior spawn

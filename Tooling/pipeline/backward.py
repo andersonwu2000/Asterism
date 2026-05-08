@@ -3,13 +3,14 @@ strategy id, writes scratch + namespaced sub-goal files at strategy-
 isolated paths, runs Lean kernel isDefEq dedupe to collapse equivalent
 sub-goals to alias bodies, places everything atomically.
 
-Phase 2 LSP swap: Backward spawns claude with an LSP MCP server
-(`Tooling.lsp_mcp_server`) attached, target = `goal_lean`. The agent
-uses `apply_edit` / `goal_at` / `errors_at` to validate that each
-proposed sub-claim's statement type-checks before writing the final
-`new_*.lean` + `patch.lean` outputs to attempts_dir. Backward's
-output protocol is unchanged (multi-file `new_<slug>.lean` +
-`patch.lean`); LSP is just an in-session validation sandbox.
+LSP-backed agent: Backward spawns claude with an `--mcp-config`
+pointing at the long-living `Tooling.lsp_gateway` HTTP server,
+target = `goal_lean`. The agent uses `apply_edit` / `goal_at` /
+`errors_at` to validate that each proposed sub-claim's statement
+type-checks before writing the final `new_*.lean` + `patch.lean`
+outputs to attempts_dir. Backward's output protocol is unchanged
+(multi-file `new_<slug>.lean` + `patch.lean`); LSP is just an
+in-session validation sandbox.
 
 Because the agent may apply_edit `goal_lean` during exploration,
 each spawn snapshots `goal_lean` to a `.backup` file before the
@@ -358,9 +359,10 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                 skeleton, encoding="utf-8")
 
         # Snapshot goal_lean (the parent theorem's source file) and
-        # write the MCP config so claude spawns lsp_mcp_server as a
-        # stdio child. Agent uses LSP for in-session validation, but
-        # goal_lean is restored to this snapshot on parse exit.
+        # register a gateway session so claude's MCP tools operate on
+        # goal_lean's content via the shared worker pool. Agent uses
+        # LSP for in-session validation, but goal_lean is restored to
+        # this snapshot on parse exit.
         shutil.copy2(goal_lean, backup_path)
         mcp_config_path = _write_mcp_config(
             attempts_dir=ctx.attempts_dir,

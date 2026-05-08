@@ -1,9 +1,9 @@
-"""Phase 2 LSP swap — Backward pipeline integration tests.
+"""LSP MCP wiring — Backward pipeline integration tests.
 
 Verifies that:
   - `agent.spawn_llm` receives a `mcp_config_path` kwarg pointing at
-    a freshly-written JSON config that boots `Tooling.lsp_mcp_server`
-    with target=goal_lean.
+    a freshly-written JSON config that connects to the long-living
+    `Tooling.lsp_gateway` HTTP server with target=goal_lean.
   - Backward backs up goal_lean BEFORE the agent runs, restores it on
     parse failure (e.g. malformed output → no lake build).
   - The OUTER try/finally guard restores goal_lean even when the
@@ -56,8 +56,8 @@ def test_spawn_passes_mcp_config_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """spawn_llm gets a mcp_config_path pointing at a freshly-written
-    JSON config for Tooling.lsp_mcp_server. The config carries
-    ASTERISM_WORKSPACE / ASTERISM_TARGET (target = goal_lean)."""
+    JSON config that addresses the long-living Tooling.lsp_gateway
+    via HTTP, with the session token in X-Asterism-Session."""
     gid = _seed_root_goal(tmp_path, conn)
     captured: dict = {}
 

@@ -110,12 +110,6 @@ class WorkArea:
         return False
 
 
-def _attempts_dir(workspace: Path, pipeline_id: str) -> Path:
-    d = workspace / ".attempts" / pipeline_id
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
 def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
               attempts_dir: Path,
               session_id: str | None = None,
@@ -192,4 +186,6 @@ def new_pipeline_id() -> str:
 
 
 def attempts_dir_for(workspace: Path, pipeline_id: str) -> Path:
-    return _attempts_dir(workspace, pipeline_id)
+    d = workspace / ".attempts" / pipeline_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
