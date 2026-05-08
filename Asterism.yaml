@@ -27,7 +27,7 @@ dispatch:
                               # rescue. Lowering tightens both ends.
 
 gateway:                       # Phase 2 LSP gateway (Tooling/lsp_gateway.py)
-  workers: 4                  # Persistent lean workers in the pool. Each is
+  workers: 2                  # Persistent lean workers in the pool. Each is
                               # ~3 GB Mathlib elaborated state. RAM ≈ 1.6 +
                               # 3.0×workers + 0.33×pool. Tune to RAM budget;
                               # tool-call queue depth grows when pool>>workers
@@ -37,11 +37,11 @@ gateway:                       # Phase 2 LSP gateway (Tooling/lsp_gateway.py)
 
 builder:
   provider: claude
-  model: claude-sonnet-4-6
+  model: claude-opus-4-7
   threshold: 2                # builder→backward escalation at 2 attempts
                               # (was 3; tighter with the 900s spawn timeout
                               # below)
 
 backward:
   provider: claude
-  model: claude-sonnet-4-6
+  model: claude-opus-4-7

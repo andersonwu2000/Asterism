@@ -1,9 +1,9 @@
 import Mathlib
 import Problems.proj_nonexpansive.Defs
-import Problems.proj_nonexpansive.proofs._strategy_s142
+import Problems.proj_nonexpansive.proofs._strategy_s143
 
 namespace Problems.proj_nonexpansive
 
-def main := @Problems.proj_nonexpansive.s142
+def variational_ineq := @Problems.proj_nonexpansive.s143
 
 end Problems.proj_nonexpansive
