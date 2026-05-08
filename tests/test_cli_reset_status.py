@@ -232,6 +232,69 @@ def test_reset_idempotent_on_clean_problem(
     assert rc1 == 0 and rc2 == 0
 
 
+def test_reset_sweeps_workspace_gateway_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """reset cleans workspace-root LSP gateway leftovers
+    (`_gateway_slot_<i>.lean`, `_gateway_smoke_*.lean`,
+    `_axiom_probe_*.lean`). Without this, a hard-killed daemon's
+    artifacts pile up across runs and the next gateway startup
+    collides with stale slot files."""
+    _setup_problem(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    cmd_init(argparse.Namespace(problem="wilson", force=False))
+    # Drop fake gateway leftovers in the workspace root.
+    for name in ("_gateway_slot_0.lean", "_gateway_slot_1.lean",
+                 "_gateway_smoke_abc12345.lean",
+                 "_axiom_probe_def67890.lean"):
+        (tmp_path / name).write_text("import Mathlib\n",
+                                      encoding="utf-8")
+    # An unrelated workspace file MUST survive.
+    (tmp_path / "lakefile.lean").write_text("--keep me",
+                                              encoding="utf-8")
+
+    rc = cmd_reset(argparse.Namespace(problem="wilson"))
+    assert rc == 0
+    # All gateway artifacts gone.
+    for name in ("_gateway_slot_0.lean", "_gateway_slot_1.lean",
+                 "_gateway_smoke_abc12345.lean",
+                 "_axiom_probe_def67890.lean"):
+        assert not (tmp_path / name).exists(), (
+            f"{name} should have been swept by reset")
+    # Unrelated file untouched.
+    assert (tmp_path / "lakefile.lean").exists()
+
+
+def test_reset_raises_on_persistent_unlink_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When _robust_unlink can't remove a file even after retries (e.g.
+    Windows file lock from a stuck process), reset must FAIL LOUDLY
+    with rc != 0 and report which files were stuck — never silently
+    swallow OSError. Without this guard, stale stale L_*.lean from
+    a prior run silently inherit into the next dispatch and corrupt
+    state."""
+    pdir = _setup_problem(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    cmd_init(argparse.Namespace(problem="wilson", force=False))
+    proofs = pdir / "proofs"
+    (proofs / "L_stuck.lean").write_text("foo", encoding="utf-8")
+
+    # Simulate persistent file lock: monkeypatch _robust_unlink to
+    # always return False on this specific file.
+    from Tooling import cli as cli_mod
+    real_unlink = cli_mod._robust_unlink
+
+    def fake_unlink(path, **kw):
+        if path.name == "L_stuck.lean":
+            return False
+        return real_unlink(path, **kw)
+    monkeypatch.setattr(cli_mod, "_robust_unlink", fake_unlink)
+
+    rc = cmd_reset(argparse.Namespace(problem="wilson"))
+    assert rc == 2, f"expected fail rc=2 on stuck unlink, got {rc}"
+
+
 # ---------------------------------------------------------------------
 # cmd_status
 # ---------------------------------------------------------------------

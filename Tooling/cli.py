@@ -351,6 +351,49 @@ def _soft_reset(problem: str) -> int:
     return 0
 
 
+def _robust_unlink(path: Path, retries: int = 5,
+                   backoff_s: float = 0.5) -> bool:
+    """Unlink with retry-on-OSError. Windows file locks (orphan
+    lean/lake/claude holding handles after a kill) usually clear
+    within 1-2s; we retry up to ~5×0.5s = 2.5s before giving up.
+    Returns True on success, False on persistent failure."""
+    import time
+    for attempt in range(retries):
+        try:
+            path.unlink(missing_ok=True)
+            return True
+        except OSError:
+            if attempt + 1 < retries:
+                time.sleep(backoff_s)
+    # Final attempt — let the exception escape so caller sees it
+    try:
+        path.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def _robust_rmtree(path: Path, retries: int = 5,
+                   backoff_s: float = 0.5) -> bool:
+    """Like _robust_unlink but for directories. shutil.rmtree on
+    Windows can hit transient locks too (especially if files inside
+    are still being written by a dying process)."""
+    import shutil
+    import time
+    for attempt in range(retries):
+        try:
+            shutil.rmtree(path, ignore_errors=False)
+            return True
+        except OSError:
+            if attempt + 1 < retries:
+                time.sleep(backoff_s)
+    try:
+        shutil.rmtree(path, ignore_errors=False)
+        return True
+    except OSError:
+        return False
+
+
 def cmd_reset(args: argparse.Namespace) -> int:
     """Wipe one Problem's DB rows + on-disk proof files + Root.lean back
     to sorry-stub form. Manifest.md / Defs.lean / lean files outside
@@ -435,26 +478,48 @@ def cmd_reset(args: argparse.Namespace) -> int:
     conn.execute("DELETE FROM problems WHERE name = ?", (problem,))
     conn.commit()
 
-    # Filesystem cleanup. Only inside Problems/<p>/proofs/, never higher.
+    # Filesystem cleanup. Robust against Windows file locks (orphan
+    # claude/lean process tree from a previously-killed daemon may
+    # still hold handles for a few seconds). Two failure modes from the
+    # original try/except OSError: pass:
+    #   1. silent: user sees "0 proof file(s) removed" but stale L_*.lean
+    #      / _strategy_*.lean stay → next dispatch sees inconsistent state
+    #   2. ambiguous: same message regardless of whether deletion really
+    #      happened or was blocked
+    # Fix: retry with backoff (file locks usually clear in 1-2s after
+    # holder dies), then RAISE on persistent failure so the operator
+    # knows to kill the holder rather than silently inheriting stale
+    # state. See docs/CLAUDE.md rule 9 (root-cause vs patch-around).
     proofs_dir = pdir / "proofs"
     deleted_files: list[str] = []
+    failed_files: list[str] = []
     if proofs_dir.exists():
         for pattern in ("L_*.lean", "_strategy_*.lean"):
             for f in proofs_dir.glob(pattern):
-                try:
-                    f.unlink()
+                if _robust_unlink(f):
                     deleted_files.append(f.name)
-                except OSError:
-                    pass
+                else:
+                    failed_files.append(f.name)
+
+    # Sweep workspace-root gateway artifacts (Phase 1+ gateway leaves
+    # `_gateway_slot_<i>.lean` per worker, `_gateway_smoke_*.lean` from
+    # cold start, `_axiom_probe_*.lean` from in-flight axiom checks).
+    # When the daemon dies hard these stay; reset is the canonical
+    # cleanup point.
+    for pattern in ("_gateway_slot_*.lean", "_gateway_smoke_*.lean",
+                     "_axiom_probe_*.lean"):
+        for f in workspace.glob(pattern):
+            if _robust_unlink(f):
+                deleted_files.append(f.name)
+            else:
+                failed_files.append(f.name)
 
     # Drop the live TREE.md if present — Problem rows are gone, so the
     # tree would render as "no root goal" anyway. Cleaner to remove.
     tree_path = pdir / "TREE.md"
     if tree_path.exists():
-        try:
-            tree_path.unlink()
-        except OSError:
-            pass
+        if not _robust_unlink(tree_path):
+            failed_files.append(tree_path.name)
 
     # Drop .drafts/ (F55 — postmortem progress notes from prior
     # timed-out spawns). Reset is meant to wipe state for a clean
@@ -462,11 +527,20 @@ def cmd_reset(args: argparse.Namespace) -> int:
     # clean reset.
     drafts_dir = pdir / ".drafts"
     if drafts_dir.exists():
-        import shutil
-        try:
-            shutil.rmtree(drafts_dir)
-        except OSError:
-            pass
+        if not _robust_rmtree(drafts_dir):
+            failed_files.append(".drafts/")
+
+    if failed_files:
+        print(f"FAIL: reset {problem}: could not remove "
+              f"{len(failed_files)} file(s) after retries:",
+              file=sys.stderr)
+        for name in failed_files:
+            print(f"  - {name}", file=sys.stderr)
+        print("Cause is usually a stale claude/lean/lake process "
+              "holding the file. Kill any running daemon and orphan "
+              "lake/lean process tree, then retry.",
+              file=sys.stderr)
+        return 2
 
     # Restore Root.lean to sorry stub (same template as cmd_init).
     mfst = manifest.parse(mfst_path)
@@ -484,9 +558,31 @@ def cmd_reset(args: argparse.Namespace) -> int:
             encoding="utf-8",
         )
 
+    # Post-reset verification: scan the directories we cleaned and
+    # raise loudly if anything we expected gone is still there. This
+    # catches both "_robust_unlink reported success but file came
+    # back" (race against a process still spawning) and any pattern
+    # we forgot to sweep.
+    leftovers: list[str] = []
+    if proofs_dir.exists():
+        for pattern in ("L_*.lean", "_strategy_*.lean"):
+            for f in proofs_dir.glob(pattern):
+                leftovers.append(f"proofs/{f.name}")
+    for pattern in ("_gateway_slot_*.lean", "_gateway_smoke_*.lean",
+                     "_axiom_probe_*.lean"):
+        for f in workspace.glob(pattern):
+            leftovers.append(f.name)
+    if leftovers:
+        print(f"FAIL: reset {problem}: cleanup verified, but these "
+              f"files reappeared / weren't matched:",
+              file=sys.stderr)
+        for name in leftovers:
+            print(f"  - {name}", file=sys.stderr)
+        return 2
+
     print(f"OK: reset {problem}")
     print(f"  DB rows: {len(gids)} goals, {len(sids)} strategies cleared")
-    print(f"  Files: {len(deleted_files)} proof file(s) removed; Root.lean reset")
+    print(f"  Files: {len(deleted_files)} file(s) removed; Root.lean reset")
     attempts_dir = workspace / ".attempts"
     if attempts_dir.exists():
         att_n = sum(1 for _ in attempts_dir.iterdir())
