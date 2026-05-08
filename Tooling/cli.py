@@ -514,12 +514,24 @@ def cmd_reset(args: argparse.Namespace) -> int:
             else:
                 failed_files.append(f.name)
 
-    # Drop the live TREE.md if present — Problem rows are gone, so the
-    # tree would render as "no root goal" anyway. Cleaner to remove.
-    tree_path = pdir / "TREE.md"
-    if tree_path.exists():
-        if not _robust_unlink(tree_path):
-            failed_files.append(tree_path.name)
+    # Drop per-problem artifacts that aren't in proofs/:
+    #   - TREE.md: live tree rendering; goal rows gone → render
+    #     would say "no root goal" anyway
+    #   - LESSONS.md: Phase 7 reflection cache (accumulated
+    #     Builder/Backward postmortems). Reset wipes the goal tree,
+    #     so lessons from a structurally-different prior decomposition
+    #     would pre-bias the next agent's reasoning
+    #   - Root.lean.backup: spawn-side snapshot from in-pipeline retry
+    #     path; only an unclean shutdown leaves it behind
+    # BRIEF.md is intentionally NOT swept — it's auto-regenerated at
+    # daemon startup from Manifest+Library.
+    for name in ("TREE.md", "LESSONS.md", "Root.lean.backup"):
+        p = pdir / name
+        if p.exists():
+            if _robust_unlink(p):
+                deleted_files.append(name)
+            else:
+                failed_files.append(name)
 
     # Drop .drafts/ (F55 — postmortem progress notes from prior
     # timed-out spawns). Reset is meant to wipe state for a clean
@@ -568,6 +580,9 @@ def cmd_reset(args: argparse.Namespace) -> int:
         for pattern in ("L_*.lean", "_strategy_*.lean"):
             for f in proofs_dir.glob(pattern):
                 leftovers.append(f"proofs/{f.name}")
+    for name in ("LESSONS.md", "Root.lean.backup", "TREE.md"):
+        if (pdir / name).exists():
+            leftovers.append(name)
     for pattern in ("_gateway_slot_*.lean", "_gateway_smoke_*.lean",
                      "_axiom_probe_*.lean"):
         for f in workspace.glob(pattern):
