@@ -355,6 +355,14 @@ def _current_session() -> SessionMetadata | None:
 
 # ─── Diag + import helpers ─────────────────────────
 
+def _ts_now() -> str:
+    """High-precision UTC ISO timestamp for server-side stamping into
+    tool responses. Pairs with claude.exe's session jsonl message
+    timestamps to localize MCP transport / claude-internal latency
+    versus actual gateway processing time. Cheap (<1µs)."""
+    return datetime.utcnow().isoformat() + "Z"
+
+
 def _format_diag(d: dict) -> dict:
     rng = d.get("range") or {}
     start = rng.get("start") or {}
@@ -417,13 +425,16 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
       end_line:   1-indexed inclusive end of region to replace.
       new_text:   Replacement text (may be multi-line).
     """
+    _recv_ts = _ts_now()
     meta = _current_session()
     if meta is None:
         return json.dumps({"error":
-            "no session — X-Asterism-Session header missing or unknown"})
+            "no session — X-Asterism-Session header missing or unknown",
+            "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     err = _ensure_backend_ready()
     if err:
-        return json.dumps({"error": err})
+        return json.dumps({"error": err,
+            "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     t0 = time.perf_counter()
 
     lines = meta.file_content.split("\n")
@@ -478,6 +489,8 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
         "goal_at_edit_start": goal_text,
         "diagnostics": [_format_diag(d) for d in diags],
         "diagnostic_count": len(diags),
+        "_server_recv_ts": _recv_ts,
+        "_server_send_ts": _ts_now(),
     }
     dur = time.perf_counter() - t0
     _log_for(meta, {"event": "tool_call", "name": "apply_edit",
@@ -497,12 +510,15 @@ def goal_at(line: int, col: int) -> str:
       line: 1-indexed line number.
       col:  0-indexed character column.
     """
+    _recv_ts = _ts_now()
     meta = _current_session()
     if meta is None:
-        return json.dumps({"error": "no session"})
+        return json.dumps({"error": "no session",
+            "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     err = _ensure_backend_ready()
     if err:
-        return json.dumps({"error": err})
+        return json.dumps({"error": err,
+            "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     t0 = time.perf_counter()
     backend = _state.backend
     with _acquire_slot(meta, swap_in=True) as slot:
@@ -517,7 +533,9 @@ def goal_at(line: int, col: int) -> str:
     _log_for(meta, {"event": "tool_call", "name": "goal_at",
                     "args": {"line": line, "col": col},
                     "duration_s": dur})
-    return json.dumps({"line": line, "col": col, "goal": goal_text},
+    return json.dumps({"line": line, "col": col, "goal": goal_text,
+                       "_server_recv_ts": _recv_ts,
+                       "_server_send_ts": _ts_now()},
                       ensure_ascii=False)
 
 
@@ -529,12 +547,15 @@ def errors_at(line: int | None = None) -> str:
       line: Optional 1-indexed line. If set, return only diagnostics
             on that line. If None, return all.
     """
+    _recv_ts = _ts_now()
     meta = _current_session()
     if meta is None:
-        return json.dumps({"error": "no session"})
+        return json.dumps({"error": "no session",
+            "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     err = _ensure_backend_ready()
     if err:
-        return json.dumps({"error": err})
+        return json.dumps({"error": err,
+            "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     t0 = time.perf_counter()
     backend = _state.backend
     with _acquire_slot(meta, swap_in=True) as slot:
@@ -546,7 +567,9 @@ def errors_at(line: int | None = None) -> str:
     _log_for(meta, {"event": "tool_call", "name": "errors_at",
                     "args": {"line": line}, "duration_s": dur,
                     "returned_count": len(formatted)})
-    return json.dumps({"diagnostics": formatted, "count": len(formatted)},
+    return json.dumps({"diagnostics": formatted, "count": len(formatted),
+                       "_server_recv_ts": _recv_ts,
+                       "_server_send_ts": _ts_now()},
                       ensure_ascii=False)
 
 
@@ -562,14 +585,18 @@ def validate_file(content: str) -> str:
 
     Returns: { ok, diagnostics, diagnostic_count }.
     """
+    _recv_ts = _ts_now()
     meta = _current_session()
     if meta is None:
-        return json.dumps({"error": "no session"})
+        return json.dumps({"error": "no session",
+            "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     err = _ensure_backend_ready()
     if err:
-        return json.dumps({"error": err})
+        return json.dumps({"error": err,
+            "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     if not meta.problem:
-        return json.dumps({"error": "no problem on session metadata"})
+        return json.dumps({"error": "no problem on session metadata",
+            "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     full_content = _ensure_imports(content, meta.problem, meta.workspace)
 
     t0 = time.perf_counter()
@@ -610,6 +637,8 @@ def validate_file(content: str) -> str:
         "ok": not has_error,
         "diagnostic_count": len(formatted),
         "diagnostics": formatted,
+        "_server_recv_ts": _recv_ts,
+        "_server_send_ts": _ts_now(),
     }
     _log_for(meta, {"event": "tool_call", "name": "validate_file",
                     "args": {"content_lines": full_content.count("\n") + 1},
