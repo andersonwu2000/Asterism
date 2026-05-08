@@ -45,14 +45,39 @@ from Tooling.pipeline import _axiom
 
 @pytest.fixture
 def _reject_probe(monkeypatch: pytest.MonkeyPatch):
-    """Replace `axiom_probe_file` everywhere it's bound with a stub
-    returning (False, "rogue axioms: ['sorryAx']"). Mirrors the SG
-    s64 case where leaf-bypass sat on a shelved sibling's sorry stub."""
+    """Replace the axiom-probing surface everywhere with a False-
+    returning stub mirroring the SG s64 case (leaf-bypass sat on a
+    shelved sibling's sorry stub).
+
+    After verify-unification, axiom probing goes through TWO paths:
+      1. `_axiom.axiom_probe(_file)` — direct callers (Builder
+         Phase 1 hint, library.promote, etc.).
+      2. `gateway_lifecycle.verify_file(..., axioms_for=...)` —
+         verify_strategy / Builder Phase 2 verify use this. Reject
+         via the `axioms` field returning a sorryAx; the rogue
+         check happens client-side.
+    """
     def _stub_reject(*args, **kwargs):
         return False, "rogue axioms: ['sorryAx']"
     monkeypatch.setattr(_axiom, "axiom_probe_file", _stub_reject)
     monkeypatch.setattr(_axiom, "axiom_probe", _stub_reject)
-    monkeypatch.setattr(verify, "axiom_probe_file", _stub_reject)
+
+    from Tooling import gateway_lifecycle as _gl
+    def _stub_verify_with_rogue(target_path, *, write_olean=True,
+                                  axioms_for=None, timeout=120.0,
+                                  workspace=None):
+        return {
+            "ok": True,
+            "diagnostic_count": 0,
+            "diagnostics": [],
+            "olean_written": write_olean,
+            "olean_path": str(target_path),
+            # Always include sorryAx so the client-side whitelist
+            # check rejects regardless of which whitelist tests pass.
+            "axioms": ["sorryAx"] if axioms_for else None,
+            "axiom_error": None,
+        }
+    monkeypatch.setattr(_gl, "verify_file", _stub_verify_with_rogue)
     return _stub_reject
 
 
@@ -101,8 +126,7 @@ def test_verify_strategy_dead_on_axiom_violation(
     the parent goal cascaded up to root_proved. With the probe, the
     strategy is killed at verify time → 'dead'."""
     _, sid = _seed_goal_with_strategy(conn, tmp_path)
-    monkeypatch.setattr(verify, "lake_build_batch",
-                        lambda *a, **kw: (True, ""))
+    # `_reject_probe` already stubbed `verify_file` to return ok+sorryAx.
     monkeypatch.setattr(verify, "lean_path_to_module",
                         lambda *a, **kw: "Problems.p.proofs._strategy_s")
     monkeypatch.setattr(verify, "promote_to_alias",
@@ -129,8 +153,7 @@ def test_verify_strategy_rolls_back_parent_on_axiom_violation(
     the parent doesn't stay aliased to a tainted strategy."""
     _, sid = _seed_goal_with_strategy(conn, tmp_path)
     calls = {"rollback": 0}
-    monkeypatch.setattr(verify, "lake_build_batch",
-                        lambda *a, **kw: (True, ""))
+    # `_reject_probe` already stubbed `verify_file` to return ok+sorryAx.
     monkeypatch.setattr(verify, "lean_path_to_module",
                         lambda *a, **kw: "Problems.p.proofs._strategy_s")
     monkeypatch.setattr(verify, "promote_to_alias",
@@ -212,10 +235,34 @@ def test_builder_phase1_axiom_violation_returns_failed(
     NOT mark proved — outcome='failed' with reason='axiom_violation'.
     goal_lean is restored to the original sorry stub."""
     gid = _seed_builder_problem(conn, tmp_path)
-    monkeypatch.setattr(
-        pipeline, "_lake_build",
-        lambda ws, t: (True, "info: x.lean:1:1: Try these:\n"
-                              "  [apply] 🎉️ trivial\n"))
+    # The `_reject_probe` fixture has already replaced verify_file
+    # with one that returns axioms = ['sorryAx'] when axioms_for is
+    # given. We additionally need the Phase 1 hint probe path to
+    # surface a Try-these info diagnostic so a winner is parsed.
+    from Tooling import gateway_lifecycle
+    def stub(target_path, *, write_olean=True, axioms_for=None, **kw):
+        if not write_olean:
+            return {
+                "ok": True,
+                "diagnostics": [{
+                    "line": 1, "col": 0, "severity": "info",
+                    "message": "Try these:\n  [apply] 🎉️ trivial\n",
+                }],
+                "diagnostic_count": 1,
+                "olean_written": False, "olean_path": None,
+                "axioms": None, "axiom_error": None,
+            }
+        return {
+            "ok": True,
+            "diagnostics": [],
+            "diagnostic_count": 0,
+            "olean_written": True,
+            "olean_path": str(target_path),
+            # Trigger the rogue-axiom rejection on the confirm call.
+            "axioms": ["sorryAx"] if axioms_for else None,
+            "axiom_error": None,
+        }
+    monkeypatch.setattr(gateway_lifecycle, "verify_file", stub)
     monkeypatch.setattr(agent, "spawn_llm",
                         lambda **kw: pytest.fail("LLM spawn unexpected"))
 

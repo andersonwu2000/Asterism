@@ -26,8 +26,7 @@ from pathlib import Path
 from typing import Literal
 
 from . import db, manifest
-from .pipeline._axiom import axiom_probe_file
-from .pipeline._lake import lake_build_batch, lean_path_to_module
+from .pipeline._lake import lean_path_to_module
 from .pipeline._skeleton import promote_to_alias, rollback_promote
 
 
@@ -87,38 +86,68 @@ def verify_strategy(
         annotation=annotation,
     )
 
-    # Single batched build: lake schedules the parent-imports-strategy
-    # dependency internally. Failure is shared (either file's compile
-    # error fails the whole batch).
-    ok, _err = lake_build_batch(workspace, [scratch_abs, parent_abs])
-    if not ok:
+    # Verify-unification: sequential per-file verify through the
+    # gateway worker pool. We can't concat (parent imports the strategy
+    # module by name; that needs an olean on disk), so we rely on the
+    # write_olean side-effect: verify the strategy first → its olean
+    # lands at .lake/build/lib/lean/<scratch-module>.olean → parent's
+    # `import <scratch-module>` resolves on the next verify_file call.
+    # See docs/dev/verify_unification.md §3.
+    from . import gateway_lifecycle
+    v_strategy = gateway_lifecycle.verify_file(
+        scratch_abs, write_olean=True, workspace=workspace,
+    )
+    if "error" in v_strategy:
+        rollback_promote(parent_abs, parent_backup)
+        print(f"[verify] strategy={strategy_id} infra error: "
+              f"{v_strategy['error']}", flush=True)
+        return "dead"
+    if not v_strategy.get("ok"):
         rollback_promote(parent_abs, parent_backup)
         return "dead"
 
-    # Axiom probe — sole defense against transitive sorryAx slipping
-    # into the chain (lake build accepts files whose imports contain
-    # sorry; only `#print axioms` walks the kernel dependency graph).
-    # Catches both 0-subgoal leaf-bypass (Phase 6.5) and the rare case
-    # where a regular decomposition strategy imports a sibling whose
-    # promotion was wrong. Without this probe, `goals.status='proved'`
-    # is asserted from lake-build success alone, which is false.
-    #
-    # `manifests=None` skips the probe — used by tests that don't ship
-    # a Manifest.md fixture. Production callers (verify_housekeeping)
-    # always pass the dispatcher's manifests dict.
+    # Now verify the parent file (alias). Its `import <scratch-module>`
+    # resolves through the olean we just wrote. Also probes axioms in
+    # the same call. `manifests=None` skips the axiom check — used by
+    # tests that don't ship a Manifest.md fixture; production callers
+    # (verify_housekeeping) always pass the dispatcher's manifests
+    # dict.
+    fq_name = f"Problems.{s['goal_problem']}.{s['goal_slug']}"
+    axioms_for: str | None = None
+    whitelist: list[str] = []
     if manifests is not None:
         mfst = manifests.get(s["goal_problem"]) or manifest.parse(
             workspace / "Problems" / s["goal_problem"] / "Manifest.md"
         )
-        ok_ax, msg = axiom_probe_file(
-            workspace, parent_abs,
-            problem=s["goal_problem"], slug=s["goal_slug"],
-            whitelist=mfst.axioms_whitelist,
-        )
-        if not ok_ax:
+        whitelist = list(mfst.axioms_whitelist)
+        if whitelist:
+            axioms_for = fq_name
+
+    v_parent = gateway_lifecycle.verify_file(
+        parent_abs, write_olean=True, axioms_for=axioms_for,
+        workspace=workspace,
+    )
+    if "error" in v_parent:
+        rollback_promote(parent_abs, parent_backup)
+        print(f"[verify] strategy={strategy_id} parent infra error: "
+              f"{v_parent['error']}", flush=True)
+        return "dead"
+    if not v_parent.get("ok"):
+        rollback_promote(parent_abs, parent_backup)
+        return "dead"
+
+    if axioms_for and whitelist:
+        if v_parent.get("axiom_error"):
             rollback_promote(parent_abs, parent_backup)
-            print(f"[verify] axiom_violation strategy={strategy_id}: {msg}",
-                  flush=True)
+            print(f"[verify] axiom_violation strategy={strategy_id}: "
+                  f"{v_parent['axiom_error']}", flush=True)
+            return "dead"
+        used = set(v_parent.get("axioms") or [])
+        rogue = used - set(whitelist)
+        if rogue:
+            rollback_promote(parent_abs, parent_backup)
+            print(f"[verify] axiom_violation strategy={strategy_id}: "
+                  f"rogue axioms: {sorted(rogue)}", flush=True)
             return "dead"
 
     if parent_backup is not None and parent_backup.exists():

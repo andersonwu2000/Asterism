@@ -25,7 +25,6 @@ import sqlite3
 from pathlib import Path
 
 from .. import agent, db, diagnostics, manifest
-from . import _axiom
 
 
 def run_builder(conn: sqlite3.Connection, *, goal_id: int,
@@ -69,7 +68,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         PipelineResult, PROMPT_DIR,
         _attempt_postmortem, _extract_decline_reason,
         _extract_leading_comments, _grep_forbidden, _is_sorry_stub,
-        _lake_build, _parse_hint_winner, _replace_proof_body,
+        _parse_hint_winner, _replace_proof_body,
         _safe_glob, _write_mcp_config,
         DECLINE_PARENT_TYPE_INFEASIBLE,
     )
@@ -112,33 +111,57 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     # dispatch — Phase 1 doesn't terminate the pipeline early.
     if goal["attempts"] == 0 and _is_sorry_stub(source):
         backup_text = source
+        from .. import gateway_lifecycle
 
+        # Probe: `:= by hint` elaborates all `register_hint` tactics;
+        # the `hint` tactic emits info diagnostics with a "Try these:
+        # [apply] 🎉️ <tac>" block when it found a closer. We scan all
+        # info diagnostics' message text for the marker. write_olean
+        # is skipped (probe is throwaway).
         probe_text = _replace_proof_body(source, "hint")
         goal_lean.write_text(probe_text, encoding="utf-8")
-        ok, probe_out = _lake_build(workspace, goal_lean)
-        winner = _parse_hint_winner(probe_out) if ok else None
+        v_probe = gateway_lifecycle.verify_file(
+            goal_lean, write_olean=False, workspace=workspace,
+        )
+        winner: str | None = None
+        if "error" not in v_probe and v_probe.get("ok"):
+            for d in v_probe.get("diagnostics") or []:
+                if d.get("severity") == "info":
+                    w = _parse_hint_winner(d.get("message", ""))
+                    if w:
+                        winner = w
+                        break
 
         if winner is not None:
             final_text = _replace_proof_body(source, winner)
             goal_lean.write_text(final_text, encoding="utf-8")
-            ok, _ = _lake_build(workspace, goal_lean)
-            if ok:
+            fq_name = f"Problems.{goal['problem']}.{goal['slug']}"
+            v_confirm = gateway_lifecycle.verify_file(
+                goal_lean, write_olean=True,
+                axioms_for=fq_name if mfst.axioms_whitelist else None,
+                workspace=workspace,
+            )
+            ok_confirm = "error" not in v_confirm and v_confirm.get("ok")
+            if ok_confirm:
                 forbidden = _grep_forbidden(final_text, mfst.forbidden_lemmas)
                 if forbidden:
                     goal_lean.write_text(backup_text, encoding="utf-8")
                     return PipelineResult(outcome="failed",
                                           failure_reason="forbidden_lemma",
                                           failure_detail=forbidden)
-                ok_ax, msg = _axiom.axiom_probe_file(
-                    workspace, goal_lean,
-                    problem=goal["problem"], slug=goal["slug"],
-                    whitelist=mfst.axioms_whitelist,
-                )
-                if not ok_ax:
-                    goal_lean.write_text(backup_text, encoding="utf-8")
-                    return PipelineResult(outcome="failed",
-                                          failure_reason="axiom_violation",
-                                          failure_detail=msg)
+                if mfst.axioms_whitelist:
+                    if v_confirm.get("axiom_error"):
+                        goal_lean.write_text(backup_text, encoding="utf-8")
+                        return PipelineResult(outcome="failed",
+                                              failure_reason="axiom_violation",
+                                              failure_detail=v_confirm["axiom_error"])
+                    used = set(v_confirm.get("axioms") or [])
+                    rogue = used - set(mfst.axioms_whitelist)
+                    if rogue:
+                        goal_lean.write_text(backup_text, encoding="utf-8")
+                        return PipelineResult(outcome="failed",
+                                              failure_reason="axiom_violation",
+                                              failure_detail=f"rogue axioms: {sorted(rogue)}")
                 # Forensic snapshot. Filename is fixed (`won_hint.lean`)
                 # since the winning tactic may contain spaces / quotes /
                 # unicode unfit for filenames; the file body has the
@@ -289,50 +312,70 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # spawn entry — overwrite goal_lean with the agent's final
         # patch.lean (the output contract).
         shutil.copy2(patch, goal_lean)
-        # Phase 2.5 — verify via gateway worker pool instead of cold
-        # `lake build` (saves ~10-30s per spawn). Same source-of-truth
-        # (lean kernel + mathlib); axiom probe still runs separately
-        # below to catch transitive sorryAx, library promote at
-        # root_proved time still does a final lake build.
+        # Verify-unification (see docs/dev/verify_unification.md):
+        # one /verify round trip elaborates the patch in a warm worker,
+        # writes the .olean for downstream cascade consumers, and runs
+        # `#print axioms` against the resulting environment. Replaces
+        # the prior check_build + lake build + lake env lean chain.
         from .. import gateway_lifecycle
-        ok, err = gateway_lifecycle.check_build(
-            goal_lean, workspace=workspace
+        fq_name = f"Problems.{goal['problem']}.{goal['slug']}"
+        v = gateway_lifecycle.verify_file(
+            goal_lean, write_olean=True,
+            axioms_for=fq_name if mfst.axioms_whitelist else None,
+            workspace=workspace,
         )
-        if ok:
-            # Annotation is a hard success condition: an empty leading-
-            # comment block means the agent skipped documentation. Roll
-            # back to the sorry-stub backup and retry. The agent's patch
-            # already contains the annotation in place, so on success we
-            # just keep the file as the proved goal source verbatim.
-            if not leading.strip():
-                _restore_backup()
-                return PipelineResult(
-                    outcome="failed",
-                    failure_reason="agent_no_annotation",
-                    failure_detail="patch built but had no leading comment block",
-                )
-            ok_ax, msg = _axiom.axiom_probe_file(
-                workspace, goal_lean,
-                problem=goal["problem"], slug=goal["slug"],
-                whitelist=mfst.axioms_whitelist,
+        if "error" in v:
+            _restore_backup()
+            return PipelineResult(
+                outcome="failed", failure_reason="lake_build_error",
+                failure_detail=f"verify infra error: {v['error']}",
+                proposal_md=leading,
             )
-            if not ok_ax:
+        if not v.get("ok"):
+            err_lines = "\n".join(
+                f"line {d.get('line','?')}:{d.get('col','?')}  "
+                f"{d.get('severity','?')}: {d.get('message','')}"
+                for d in (v.get("diagnostics") or [])
+                if d.get("severity") == "error"
+            )
+            _restore_backup()
+            return PipelineResult(
+                outcome="failed", failure_reason="lake_build_error",
+                failure_detail=diagnostics.annotate_failure_detail(
+                    err_lines or "(no error diagnostics returned)"),
+                proposal_md=leading,
+            )
+        # Annotation is a hard success condition: an empty leading-
+        # comment block means the agent skipped documentation. Roll
+        # back to the sorry-stub backup and retry.
+        if not leading.strip():
+            _restore_backup()
+            return PipelineResult(
+                outcome="failed",
+                failure_reason="agent_no_annotation",
+                failure_detail="patch built but had no leading comment block",
+            )
+        # Axiom whitelist check on the just-collected axiom set.
+        if mfst.axioms_whitelist:
+            if v.get("axiom_error"):
                 _restore_backup()
                 return PipelineResult(
-                    outcome="failed",
-                    failure_reason="axiom_violation",
-                    failure_detail=msg,
+                    outcome="failed", failure_reason="axiom_violation",
+                    failure_detail=f"axiom probe failed: {v['axiom_error']}",
                     proposal_md=leading,
                 )
-            if backup_path.exists():
-                backup_path.unlink()
-            return PipelineResult(outcome="proved", proposal_md=leading)
-        _restore_backup()
-        return PipelineResult(
-            outcome="failed", failure_reason="lake_build_error",
-            failure_detail=diagnostics.annotate_failure_detail(err),
-            proposal_md=leading,
-        )
+            used = set(v.get("axioms") or [])
+            rogue = used - set(mfst.axioms_whitelist)
+            if rogue:
+                _restore_backup()
+                return PipelineResult(
+                    outcome="failed", failure_reason="axiom_violation",
+                    failure_detail=f"rogue axioms: {sorted(rogue)}",
+                    proposal_md=leading,
+                )
+        if backup_path.exists():
+            backup_path.unlink()
+        return PipelineResult(outcome="proved", proposal_md=leading)
 
     def builder_postmortem(sid: str) -> None:
         _attempt_postmortem(

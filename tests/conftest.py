@@ -75,28 +75,36 @@ def _stub_gateway_calls_by_default(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture(autouse=True)
 def _stub_axiom_probe_by_default(monkeypatch: pytest.MonkeyPatch):
     """Builder / verify_strategy / `_try_promote_sorry_free` run a real
-    `lake env lean … #print axioms <name>` probe at promote time. That
-    needs a real Lean toolchain + a buildable workspace, which unit
-    tests don't provide. Stub at the patched call sites so unit tests
-    exercise mark-proved logic without paying the probe overhead.
+    `#print axioms <name>` probe at promote time. After the verify-
+    unification migration this goes through `gateway_lifecycle.verify_file`,
+    which needs the gateway running + a real Lean toolchain. Unit tests
+    don't provide that, so stub two layers:
 
-    Tests that specifically exercise axiom-violation rejection
-    (`tests/test_axiom_invariant.py`) override this fixture by
-    monkeypatching to a False-returning stub locally."""
+      1. `_axiom.axiom_probe(_file)` — direct callers (Builder Phase 1
+         hint, library.promote, etc.) bypass the gateway entirely.
+      2. `gateway_lifecycle.verify_file` — verify_strategy / Builder
+         Phase 2 verify go through this directly. Stub returns the
+         shape `verify_file` produces on a clean elaborate.
+
+    Tests exercising axiom-violation rejection
+    (`tests/test_axiom_invariant.py`) override locally."""
     def _stub_ok(*args, **kwargs):
         return True, "axioms ok: [] (test stub)"
     from Tooling.pipeline import _axiom
-    from Tooling import verify as _verify_mod
-    from Tooling.pipeline import builder as _builder_mod
-    from Tooling.pipeline import backward as _backward_mod
+    from Tooling import gateway_lifecycle as _gl
     monkeypatch.setattr(_axiom, "axiom_probe_file", _stub_ok)
     monkeypatch.setattr(_axiom, "axiom_probe", _stub_ok)
-    # The call sites import via `_axiom.axiom_probe_file`; patching the
-    # module-level attribute above suffices for those. `verify.py` uses
-    # the symbol via a module-level `from ._axiom import …` so that
-    # binding is captured at import — patch it on the verify module too.
-    monkeypatch.setattr(_verify_mod, "axiom_probe_file", _stub_ok)
-    # Builder + Backward use `_axiom.axiom_probe_file` (via module attr),
-    # so the _axiom monkeypatch is enough; explicit re-patches kept off
-    # the fast path.
-    _ = (_builder_mod, _backward_mod)  # silence unused-import lint
+
+    def _stub_verify_file(target_path, *, write_olean=True,
+                          axioms_for=None, timeout=120.0,
+                          workspace=None):
+        return {
+            "ok": True,
+            "diagnostic_count": 0,
+            "diagnostics": [],
+            "olean_written": write_olean,
+            "olean_path": str(target_path),
+            "axioms": [] if axioms_for else None,
+            "axiom_error": None,
+        }
+    monkeypatch.setattr(_gl, "verify_file", _stub_verify_file)

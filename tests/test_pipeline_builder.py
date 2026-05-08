@@ -55,6 +55,45 @@ _FAKE_HINT_OUT = (
 )
 
 
+def _stub_verify_file_with_hint(monkeypatch, hint_message: str = _FAKE_HINT_OUT):
+    """Stub `gateway_lifecycle.verify_file` so that:
+      - the probe call (write_olean=False) returns ok + an info
+        diagnostic carrying the hint message (winner gets parsed)
+      - the confirm call (write_olean=True) returns ok + empty axioms
+
+    Tests can choose which call's parameters to peek by inspecting
+    the arguments via a list of captured kwargs (returned)."""
+    from Tooling import gateway_lifecycle
+    captured: list[dict] = []
+
+    def stub(target_path, *, write_olean=True, axioms_for=None, **kw):
+        captured.append({"target_path": target_path,
+                         "write_olean": write_olean,
+                         "axioms_for": axioms_for})
+        if not write_olean:
+            return {
+                "ok": True,
+                "diagnostics": [{
+                    "line": 1, "col": 0, "severity": "info",
+                    "message": hint_message,
+                }],
+                "diagnostic_count": 1,
+                "olean_written": False, "olean_path": None,
+                "axioms": None, "axiom_error": None,
+            }
+        return {
+            "ok": True,
+            "diagnostics": [],
+            "diagnostic_count": 0,
+            "olean_written": True,
+            "olean_path": str(target_path),
+            "axioms": [] if axioms_for else None,
+            "axiom_error": None,
+        }
+    monkeypatch.setattr(gateway_lifecycle, "verify_file", stub)
+    return captured
+
+
 def test_run_builder_phase1_tactic_try_closes_fresh_stub(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -64,8 +103,7 @@ def test_run_builder_phase1_tactic_try_closes_fresh_stub(
     is `🎉️ trivial`, Phase 1 captures that as the winner and
     run_builder returns 'proved' without ever spawning the LLM."""
     gid = _seed_problem(conn, tmp_path)
-    monkeypatch.setattr(pipeline, "_lake_build",
-                        lambda ws, t: (True, _FAKE_HINT_OUT))
+    _stub_verify_file_with_hint(monkeypatch)
     spawn_calls = []
     monkeypatch.setattr(agent, "spawn_llm",
                         lambda **kw: spawn_calls.append(1) or 0)
@@ -190,14 +228,18 @@ def test_run_builder_lake_fail_restores_backup(
         (kw["attempts_dir"] / "PROPOSAL.md").write_text("guess", encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
-    monkeypatch.setattr(pipeline, "_lake_build",
-                        lambda ws, t: (False, "error: garbage"))
-    # Phase 2.5 — Builder verifies via gateway.check_build instead of
-    # cold lake_build. Stub it to fail with the same shape so the
-    # retry-helper still sees a non-terminal lake_build_error.
+    # Verify-unification: Builder Phase 2 verify goes through
+    # gateway_lifecycle.verify_file. Stub a failing elaborate.
     from Tooling import gateway_lifecycle
-    monkeypatch.setattr(gateway_lifecycle, "check_build",
-                        lambda path, **kw: (False, "error: garbage"))
+    monkeypatch.setattr(gateway_lifecycle, "verify_file",
+        lambda path, **kw: {
+            "ok": False,
+            "diagnostics": [{"line": 1, "col": 0, "severity": "error",
+                              "message": "error: garbage"}],
+            "diagnostic_count": 1,
+            "olean_written": False, "olean_path": None,
+            "axioms": None, "axiom_error": None,
+        })
 
     r = pipeline.run_builder(
         conn, goal_id=gid, workspace=tmp_path, mfst=_mfst(),
@@ -305,11 +347,16 @@ def test_run_builder_wrapper_no_persist_when_postmortem_skipped(
             "tried", encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
-    monkeypatch.setattr(pipeline, "_lake_build",
-                        lambda ws, t: (False, "error: garbage"))
     from Tooling import gateway_lifecycle
-    monkeypatch.setattr(gateway_lifecycle, "check_build",
-                        lambda path, **kw: (False, "error: garbage"))
+    monkeypatch.setattr(gateway_lifecycle, "verify_file",
+        lambda path, **kw: {
+            "ok": False,
+            "diagnostics": [{"line": 1, "col": 0, "severity": "error",
+                              "message": "error: garbage"}],
+            "diagnostic_count": 1,
+            "olean_written": False, "olean_path": None,
+            "axioms": None, "axiom_error": None,
+        })
 
     r = pipeline.run_builder(
         conn, goal_id=gid, workspace=tmp_path, mfst=_mfst(),

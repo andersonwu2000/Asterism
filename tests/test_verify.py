@@ -92,7 +92,10 @@ def test_verify_strategy_proved_when_lake_builds(
     scratch_abs.parent.mkdir(parents=True)
     scratch_abs.write_text("-- stub", encoding="utf-8")
 
-    monkeypatch.setattr(verify, "lake_build_batch", lambda *a, **kw: (True, ""))
+    # conftest's autouse stub already returns ok for verify_file;
+    # this is a no-op override, but kept explicit so the test reads
+    # as "this path expects the gateway to say ok".
+    pass  # verify_file stubbed via conftest._stub_axiom_probe_by_default
     monkeypatch.setattr(verify, "lean_path_to_module",
                         lambda *a, **kw: "Problems.p.proofs._strategy_s")
     monkeypatch.setattr(verify, "promote_to_alias",
@@ -128,7 +131,10 @@ def test_verify_strategy_propagates_proposal_md_as_annotation(
     def fake_promote(*a, **kw):
         captured["annotation"] = kw.get("annotation", "")
         return None
-    monkeypatch.setattr(verify, "lake_build_batch", lambda *a, **kw: (True, ""))
+    # conftest's autouse stub already returns ok for verify_file;
+    # this is a no-op override, but kept explicit so the test reads
+    # as "this path expects the gateway to say ok".
+    pass  # verify_file stubbed via conftest._stub_axiom_probe_by_default
     monkeypatch.setattr(verify, "lean_path_to_module",
                         lambda *a, **kw: "Problems.p.proofs._strategy_s")
     monkeypatch.setattr(verify, "promote_to_alias", fake_promote)
@@ -164,7 +170,10 @@ def test_verify_strategy_empty_proposal_yields_empty_annotation(
     def fake_promote(*a, **kw):
         captured["annotation"] = kw.get("annotation", "")
         return None
-    monkeypatch.setattr(verify, "lake_build_batch", lambda *a, **kw: (True, ""))
+    # conftest's autouse stub already returns ok for verify_file;
+    # this is a no-op override, but kept explicit so the test reads
+    # as "this path expects the gateway to say ok".
+    pass  # verify_file stubbed via conftest._stub_axiom_probe_by_default
     monkeypatch.setattr(verify, "lean_path_to_module",
                         lambda *a, **kw: "Problems.p.proofs._strategy_s")
     monkeypatch.setattr(verify, "promote_to_alias", fake_promote)
@@ -189,8 +198,17 @@ def test_verify_strategy_dead_when_lake_batch_fails(
     scratch_abs = tmp_path / "Problems/p/proofs/_strategy_s.lean"
     scratch_abs.parent.mkdir(parents=True)
     scratch_abs.write_text("-- stub", encoding="utf-8")
-    monkeypatch.setattr(verify, "lake_build_batch",
-                        lambda *a, **kw: (False, "elaboration drift"))
+    from Tooling import gateway_lifecycle
+    monkeypatch.setattr(
+        gateway_lifecycle, "verify_file",
+        lambda *a, **kw: {
+            "ok": False,
+            "diagnostics": [{"line": 1, "col": 0, "severity": "error",
+                              "message": "elaboration drift"}],
+            "diagnostic_count": 1,
+            "olean_written": False, "olean_path": None,
+            "axioms": None, "axiom_error": None,
+        })
     monkeypatch.setattr(verify, "lean_path_to_module",
                         lambda *a, **kw: "Problems.p.proofs._strategy_s")
     monkeypatch.setattr(verify, "promote_to_alias",
@@ -215,8 +233,17 @@ def test_verify_strategy_rolls_back_parent_on_batch_fail(
     scratch_abs.write_text("-- stub", encoding="utf-8")
     calls = {"rollback": 0}
 
-    monkeypatch.setattr(verify, "lake_build_batch",
-                        lambda *a, **kw: (False, "alias build failed"))
+    from Tooling import gateway_lifecycle
+    monkeypatch.setattr(
+        gateway_lifecycle, "verify_file",
+        lambda *a, **kw: {
+            "ok": False,
+            "diagnostics": [{"line": 1, "col": 0, "severity": "error",
+                              "message": "alias build failed"}],
+            "diagnostic_count": 1,
+            "olean_written": False, "olean_path": None,
+            "axioms": None, "axiom_error": None,
+        })
     monkeypatch.setattr(verify, "lean_path_to_module",
                         lambda *a, **kw: "Problems.p.proofs._strategy_s")
     monkeypatch.setattr(verify, "promote_to_alias",

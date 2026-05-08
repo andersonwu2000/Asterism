@@ -68,18 +68,36 @@ def test_e2e_root_proved_through_dispatcher(
         "SELECT id, status FROM goals WHERE problem='p'").fetchone()
     assert root is not None and root["status"] == "open"
 
-    # Stub _lake_build* to always succeed AND return a Mathlib `hint`
-    # `Try these:` block so Phase 1's two-build flow extracts a winner
-    # and short-circuits before spawn_llm. Good: still exercises
-    # run_builder → cascade → root proved.
-    fake_hint_out = (
-        "info: x.lean:1:1: Try these:\n"
-        "  [apply] 🎉️ trivial\n"
-    )
-    monkeypatch.setattr(pipeline, "_lake_build_modules",
-                        lambda ws, mods: (True, fake_hint_out))
-    monkeypatch.setattr(pipeline, "_lake_build",
-                        lambda ws, target: (True, fake_hint_out))
+    # Stub gateway_lifecycle.verify_file so:
+    #   - Phase 1 hint probe (write_olean=False) returns ok + a
+    #     Try-these info diagnostic → winner parsed
+    #   - Phase 1 confirm + Phase 2 verify (write_olean=True) return
+    #     ok + empty axioms → proved
+    # This short-circuits Phase 1 and exercises the cascade →
+    # root_proved path without spawning an LLM.
+    from Tooling import gateway_lifecycle
+    def fake_verify(target_path, *, write_olean=True, axioms_for=None, **kw):
+        if not write_olean:
+            return {
+                "ok": True,
+                "diagnostics": [{
+                    "line": 1, "col": 0, "severity": "info",
+                    "message": "Try these:\n  [apply] 🎉️ trivial\n",
+                }],
+                "diagnostic_count": 1,
+                "olean_written": False, "olean_path": None,
+                "axioms": None, "axiom_error": None,
+            }
+        return {
+            "ok": True,
+            "diagnostics": [],
+            "diagnostic_count": 0,
+            "olean_written": True,
+            "olean_path": str(target_path),
+            "axioms": [] if axioms_for else None,
+            "axiom_error": None,
+        }
+    monkeypatch.setattr(gateway_lifecycle, "verify_file", fake_verify)
 
     # Mock spawn_llm: write a patch.lean that satisfies Builder's
     # forbidden-lemma scan + delivers a body. The framework's

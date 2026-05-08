@@ -23,7 +23,7 @@ Public entry point: `run_backward`. Backward-specific helpers
 helpers (`_grep_forbidden`, `_attempt_postmortem`, `_spawn_failure`,
 `_safe_glob`, `_signature_prefix`, `_normalize_signature`,
 `_build_strategy_skeleton`, `_inject_imports_for_subs`,
-`_lean_path_to_module`, `_lake_build_batch`, `_write_mcp_config`,
+`_lean_path_to_module`, `_write_mcp_config`,
 `PipelineResult`, `PROMPT_DIR`, `DECLINE_*`, `_extract_decline_reason`,
 `_extract_leading_comments`, `_drafts`, `_extract_statement_from_lean`,
 `_slug_from_filename`) are imported from the package root.
@@ -230,7 +230,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         _attempt_postmortem, _build_strategy_skeleton,
         _extract_decline_reason, _extract_leading_comments,
         _extract_statement_from_lean, _grep_forbidden,
-        _inject_imports_for_subs, _is_sorry_stub, _lake_build_batch,
+        _inject_imports_for_subs, _is_sorry_stub,
         _lean_path_to_module, _normalize_signature,
         _safe_glob, _signature_prefix, _slug_from_filename,
         _write_mcp_config,
@@ -405,7 +405,6 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                 _is_sorry_stub=_is_sorry_stub,
                 _grep_forbidden=_grep_forbidden,
                 _slug_from_filename=_slug_from_filename,
-                _lake_build_batch=_lake_build_batch,
                 _inject_imports_for_subs=_inject_imports_for_subs,
                 _lean_path_to_module=_lean_path_to_module,
                 _extract_statement_from_lean=_extract_statement_from_lean,
@@ -485,7 +484,7 @@ def _backward_parse_and_commit(
     _safe_glob, _extract_leading_comments, _extract_decline_reason,
     DECLINE_PARENT_TYPE_INFEASIBLE,
     _normalize_signature, _signature_prefix, _is_sorry_stub,
-    _grep_forbidden, _slug_from_filename, _lake_build_batch,
+    _grep_forbidden, _slug_from_filename,
     _inject_imports_for_subs, _lean_path_to_module,
     _extract_statement_from_lean,
 ) -> "PipelineResult":  # noqa: F821
@@ -565,29 +564,37 @@ def _backward_parse_and_commit(
         proofs_dir.mkdir(parents=True, exist_ok=True)
         scratch_dest = proofs_dir / f"_strategy_{sid_token}.lean"
         shutil.copy2(patches[0], scratch_dest)
-        # Phase 2.5 — verify the leaf-bypass strategy file via the
-        # gateway worker pool instead of cold `lake build`. Single-
-        # file build with no cross-module deps inside this strategy
-        # (the proof imports Mathlib + Defs, both already-warm in
-        # every gateway slot). axiom_probe in verify_strategy further
-        # downstream still drives `lake build` — keeps olean fresh.
+        # Verify-unification: gateway worker pool elaborates the
+        # strategy file AND writes its olean to disk in one round trip.
+        # The olean is needed downstream by `verify_strategy`, which
+        # later builds the parent alias against this strategy module.
+        # Single-file verify (no cross-module deps within the strategy
+        # itself; it imports Mathlib + Defs, both already warm in every
+        # slot).
         from .. import gateway_lifecycle
-        try:
-            ok, err = gateway_lifecycle.check_build(
-                scratch_dest, workspace=workspace
-            )
-        except Exception as exc:  # noqa: BLE001
+        v = gateway_lifecycle.verify_file(
+            scratch_dest, write_olean=True, workspace=workspace,
+        )
+        if "error" in v:
             scratch_dest.unlink(missing_ok=True)
             return _abort(
                 "lake_build_error",
-                diagnostics.annotate_failure_detail(str(exc)),
+                diagnostics.annotate_failure_detail(
+                    f"verify infra error: {v['error']}"),
                 leading,
             )
-        if not ok:
+        if not v.get("ok"):
+            err_lines = "\n".join(
+                f"line {d.get('line','?')}:{d.get('col','?')}  "
+                f"{d.get('severity','?')}: {d.get('message','')}"
+                for d in (v.get("diagnostics") or [])
+                if d.get("severity") == "error"
+            )
             scratch_dest.unlink(missing_ok=True)
             return _abort(
                 "lake_build_error",
-                diagnostics.annotate_failure_detail(err),
+                diagnostics.annotate_failure_detail(
+                    err_lines or "(no error diagnostics returned)"),
                 leading,
             )
         # Race guard mirrors the decomp path's check at line ~666.
@@ -762,16 +769,32 @@ def _backward_parse_and_commit(
         sub_dest_paths = [dest for _, dest in sub_dests]
         _inject_imports_for_subs(workspace, scratch_dest, sub_dest_paths)
 
-        # F23 — single multi-target lake invocation. Lake's internal
-        # scheduler builds independent sub-goal files in parallel and
-        # serializes the strategy assembly (which imports the subs)
-        # after, replacing the prior serial per-file loop. On a 4-sub
-        # strategy the wall-clock dropped from ~5×80s to ~max(80s)+80s.
-        # Caller (annotate_failure_detail) smart-truncates stderr to
-        # surface error / warning lines.
-        ok, err = _lake_build_batch(workspace, placed)
-        if not ok:
-            raise RuntimeError(f"lake build failed: {err}")
+        # Verify-unification: sequential per-file verify through the
+        # gateway worker pool (see docs/dev/verify_unification.md §3).
+        # `placed` is in dependency order — sub-goal stubs first (each
+        # independent, importing only Mathlib + Defs), strategy file
+        # last (imports the sub-goal modules by name, resolves through
+        # the .olean files we wrote in earlier iterations).
+        from .. import gateway_lifecycle
+        for path in placed:
+            v = gateway_lifecycle.verify_file(
+                path, write_olean=True, workspace=workspace,
+            )
+            if "error" in v:
+                raise RuntimeError(
+                    f"verify infra error on {path.name}: {v['error']}"
+                )
+            if not v.get("ok"):
+                err_lines = "\n".join(
+                    f"{path.name}:{d.get('line','?')}:{d.get('col','?')}  "
+                    f"{d.get('severity','?')}: {d.get('message','')}"
+                    for d in (v.get("diagnostics") or [])
+                    if d.get("severity") == "error"
+                )
+                raise RuntimeError(
+                    f"lake build failed: "
+                    f"{err_lines or 'no error diagnostics'}"
+                )
 
         # F24-A — race guard: between this Backward's dispatch and now
         # (which is up to several minutes due to claude CLI + lake build),
