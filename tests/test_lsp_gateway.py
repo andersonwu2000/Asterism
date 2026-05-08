@@ -176,6 +176,7 @@ def test_acquire_slot_hot_path_no_swap(
         def __init__(self): self.calls = []
         def did_change_full(self, *a, **kw): self.calls.append("didChange")
         def clear_diagnostics(self, *a): self.calls.append("clear")
+        def clear_file_progress(self, *a): self.calls.append("clear_fp")
         def wait_for_file_done(self, *a, **kw): self.calls.append("wait_done")
         def wait_for_diagnostics_settled(self, *a, **kw):
             self.calls.append("wait_settled"); return []
@@ -207,6 +208,7 @@ def test_acquire_slot_cold_path_picks_lru(
         def __init__(self): self.calls = []
         def did_change_full(self, p, c, v): self.calls.append(("didChange", v))
         def clear_diagnostics(self, *a): self.calls.append("clear")
+        def clear_file_progress(self, *a): self.calls.append("clear_fp")
         def wait_for_file_done(self, *a, **kw): pass
         def wait_for_diagnostics_settled(self, *a, **kw): return []
     fake = _FakeBackend()
@@ -236,6 +238,7 @@ def test_acquire_slot_skip_swap_in_for_apply_edit(
         def __init__(self): self.calls = []
         def did_change_full(self, *a, **kw): self.calls.append("didChange")
         def clear_diagnostics(self, *a): self.calls.append("clear")
+        def clear_file_progress(self, *a): self.calls.append("clear_fp")
         def wait_for_file_done(self, *a, **kw): pass
         def wait_for_diagnostics_settled(self, *a, **kw): return []
     fake = _FakeBackend()
@@ -265,6 +268,7 @@ def test_acquire_slot_lock_excludes_concurrent_acquire(
     class _FakeBackend:
         def did_change_full(self, *a, **kw): pass
         def clear_diagnostics(self, *a): pass
+        def clear_file_progress(self, *a): pass
         def wait_for_file_done(self, *a, **kw): pass
         def wait_for_diagnostics_settled(self, *a, **kw): return []
     monkeypatch.setattr(lsp_gateway._state, "backend", _FakeBackend())
