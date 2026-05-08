@@ -166,16 +166,27 @@ def _start_workers(workspace: Path, w_count: int) -> None:
 
         # Lean processes didOpens in parallel across worker processes
         # (one per slot); we serial-wait each one's elaborate done.
-        # Total wall ≈ max(per-slot elaborate) since they run in parallel
-        # internally, bounded by serial wait granularity.
+        # The fileProgress=[] signal means "this file's elaborate
+        # finished" — sufficient for "the worker is warm". We do NOT
+        # also wait_for_diagnostics_settled here because for plain
+        # `import Mathlib` Lean keeps emitting incremental info
+        # publishDiagnostics as transitive modules load, which on
+        # multi-worker machines (CPU contention) can trickle for many
+        # minutes and never reach 3s-stable. fileProgress is the
+        # canonical "elaborate done" signal at this layer; per-tool
+        # operations (apply_edit / validate_file / check_build) still
+        # use wait_for_diagnostics_settled for their POST-edit reads
+        # because at that point the file is small and diagnostics
+        # converge fast.
         for slot in slots:
+            t_slot = time.perf_counter()
             try:
                 client.wait_for_file_done(slot.slot_uri, timeout=300)
             except TimeoutError:
                 pass
-            client.wait_for_diagnostics_settled(
-                slot.slot_uri, stable_for=3.0, max_wait=300.0
-            )
+            print(f"[gateway] slot {slot.slot_id} warmed in "
+                  f"{time.perf_counter() - t_slot:.1f}s",
+                  file=sys.stderr, flush=True)
 
         _state.workers = slots
         elapsed = time.perf_counter() - t0
