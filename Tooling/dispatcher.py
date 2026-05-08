@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import shutil
 import sqlite3
+import sys
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, FIRST_COMPLETED, wait
 from pathlib import Path
@@ -518,7 +519,72 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
 # Main loop
 # ---------------------------------------------------------------------
 
+def _pid_alive(pid: int) -> bool:
+    """Cross-platform liveness check. POSIX: os.kill(pid, 0); Windows:
+    OpenProcess with PROCESS_QUERY_LIMITED_INFORMATION.
+
+    Note: On Windows, os.kill(pid, 0) raises SystemError because sig
+    0 isn't a real Windows signal — Python's os.kill on Windows only
+    handles termination signals via TerminateProcess."""
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        kernel32 = ctypes.windll.kernel32
+        h = kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not h:
+            return False
+        kernel32.CloseHandle(h)
+        return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+
+
+def _acquire_singleton_lock(workspace: Path) -> Path | None:
+    """Refuse to start if another daemon is already running on this
+    workspace. Two daemons sharing one DB silently dispatch the same
+    goal twice, write conflicting strategy rows, and clobber each
+    other's verify_strategy state. Caught in the wild when a stray
+    `&` background invocation overlapped with a fresh `run`.
+
+    Mechanism: PID file at `.asterism/daemon.pid`. On startup:
+      - if file missing → create, return path
+      - if file exists + holds a live PID → return None (caller exits)
+      - if file exists + holds a dead PID → stale, overwrite
+
+    Returned path should be `.unlink(missing_ok=True)` at shutdown.
+    """
+    asterism_dir = workspace / ".asterism"
+    asterism_dir.mkdir(parents=True, exist_ok=True)
+    pid_file = asterism_dir / "daemon.pid"
+    my_pid = os.getpid()
+
+    if pid_file.exists():
+        try:
+            existing = int(pid_file.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            existing = -1
+        if existing > 0 and existing != my_pid and _pid_alive(existing):
+            print(f"[dispatcher] another daemon (pid={existing}) is "
+                  f"already running on this workspace. Kill it or wait "
+                  f"for it to exit, then retry. (lock: {pid_file})",
+                  file=sys.stderr, flush=True)
+            return None
+
+    pid_file.write_text(str(my_pid), encoding="utf-8")
+    return pid_file
+
+
 def run(workspace: Path, *, once: bool = False) -> int:
+    pid_lock = _acquire_singleton_lock(workspace)
+    if pid_lock is None:
+        return 1
+    import atexit
+    atexit.register(lambda: pid_lock.unlink(missing_ok=True))
+
     global BUILDER_THRESHOLD, SHELVE_THRESHOLD
     pool_size = config.get(
         "dispatch.pool", default=4,
