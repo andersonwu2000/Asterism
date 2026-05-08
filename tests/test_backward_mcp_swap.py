@@ -116,6 +116,69 @@ def test_restores_goal_lean_after_spawn_timeout(
     )
 
 
+def test_no_contamination_across_retries(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: each backward_spawn must restore goal_lean from a
+    PRISTINE snapshot taken once before the retry loop. The earlier
+    impl re-snapshotted at the top of every spawn — so iter N's
+    snapshot captured iter N-1's apply_edit contamination, and outer
+    finally's restore brought goal_lean back to a contaminated baseline
+    instead of the pre-pipeline original. Symptom (SG g217): each
+    retry's agent saw the prior retry's broken partial proof and built
+    on it, deepening the contamination per iter (e.g. accumulated
+    `intro p q r` lines).
+
+    Test simulates: agent writes a unique line per attempt + returns
+    rc=128 (STUCK_THINKING), helper rescues with rc=124 (TIMEOUT),
+    which buffers a stuck-thinking failure and continues to next iter.
+    After the budget exhausts, goal_lean must equal original — not
+    accumulate iteration tags."""
+    from Tooling.llm.base import SpawnRC
+    gid = _seed_root_goal(tmp_path, conn)
+    goal_row = db.get_goal(conn, gid)
+    goal_lean = tmp_path / goal_row["lean_path"]
+    original = goal_lean.read_text(encoding="utf-8")
+
+    call_counter = {"n": 0}
+
+    def fake_spawn(**kw):
+        if kw.get("is_postmortem"):
+            return 0
+        call_counter["n"] += 1
+        # Each spawn appends a unique iteration tag, mimicking the
+        # agent's apply_edit accretion across retries. With the bug,
+        # outer finally's restore would leave ALL these tags in place.
+        prior = goal_lean.read_text(encoding="utf-8")
+        goal_lean.write_text(
+            prior + f"-- iter {call_counter['n']} contamination\n",
+            encoding="utf-8")
+        # Rescue path (is_rescue=True) — return TIMEOUT to fall through
+        # to next iter. Main path — return STUCK_THINKING to enter the
+        # rescue branch.
+        if kw.get("is_rescue"):
+            return int(SpawnRC.TIMEOUT)
+        return int(SpawnRC.STUCK_THINKING)
+
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=_mfst(), pipeline_id="pid-bw-no-contam")
+
+    restored = goal_lean.read_text(encoding="utf-8")
+    assert restored == original, (
+        f"goal_lean accumulated contamination across {call_counter['n']} "
+        f"spawn calls — expected pristine, got:\n{restored}"
+    )
+    # Sanity: ensure the helper actually retried more than once (else
+    # the test passes trivially).
+    assert call_counter["n"] >= 2, (
+        f"helper only called spawn {call_counter['n']} time(s); test "
+        f"needs >=2 iters to exercise the contamination path"
+    )
+
+
 def test_restores_goal_lean_when_parse_fails(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

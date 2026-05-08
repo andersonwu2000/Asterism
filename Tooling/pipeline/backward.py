@@ -296,19 +296,34 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         )
 
     # LSP swap (Phase 2): agent edits goal_lean in-session via
-    # apply_edit to validate sub-claim statements. Backward's contract
-    # is "goal_lean unchanged on exit" (decomposition outputs go to
-    # attempts_dir → proofs/, NOT to goal_lean), so we snapshot before
-    # each spawn and restore on every parse exit path.
+    # apply_edit (which writes to disk, see lsp_gateway.py:517).
+    # Backward's contract is "goal_lean unchanged on exit"
+    # (decomposition outputs go to attempts_dir → proofs/, NOT to
+    # goal_lean), so we snapshot ONCE before the retry loop and
+    # restore from that pristine snapshot before every spawn + on
+    # every parse exit. Re-snapshotting inside the loop would capture
+    # the prior attempt's apply_edit contamination, leaking it into
+    # the next attempt's view of the file (observed SG g217: each
+    # retry started from previous retry's broken partial proof, so
+    # the agent saw double `intro` lines and built on the bad state).
     goal_lean = parent_abs_for_skeleton
     backup_path = goal_lean.with_suffix(goal_lean.suffix + ".backup")
+    shutil.copy2(goal_lean, backup_path)
 
     def _restore_backup() -> None:
+        """Restore goal_lean to the pre-pipeline snapshot. Backup is
+        NOT unlinked here — every spawn / parse exit reads from the
+        same pristine snapshot. Outer finally unlinks at pipeline end."""
         if backup_path.exists():
             shutil.copy2(backup_path, goal_lean)
-            backup_path.unlink()
 
     def backward_spawn(ctx: SpawnCtx) -> int:
+        # Always start from the pristine snapshot. Agent's --resume
+        # session memory carries warm context; LSP slot state is in
+        # the gateway worker. On-disk goal_lean is reset each entry
+        # so prior-spawn apply_edits never leak into the next view.
+        _restore_backup()
+
         # Rescue path — prior spawn watchdog-killed mid-thinking.
         # Resume the same session, send inline force-ship prompt
         # (180s cap). patch.lean still has whatever skeleton/edits
@@ -324,7 +339,6 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                 default=RESCUE_BUDGET_SEC,
                 env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
             )
-            shutil.copy2(goal_lean, backup_path)
             mcp_config_path = _write_mcp_config(
                 attempts_dir=ctx.attempts_dir,
                 workspace=workspace, target=goal_lean,
@@ -358,12 +372,10 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             (ctx.attempts_dir / "patch.lean").write_text(
                 skeleton, encoding="utf-8")
 
-        # Snapshot goal_lean (the parent theorem's source file) and
-        # register a gateway session so claude's MCP tools operate on
-        # goal_lean's content via the shared worker pool. Agent uses
-        # LSP for in-session validation, but goal_lean is restored to
-        # this snapshot on parse exit.
-        shutil.copy2(goal_lean, backup_path)
+        # Register a gateway session so claude's MCP tools operate on
+        # goal_lean's content via the shared worker pool. Snapshot
+        # already taken once before the retry loop; pristine restore
+        # happened at the top of this function.
         mcp_config_path = _write_mcp_config(
             attempts_dir=ctx.attempts_dir,
             workspace=workspace,
@@ -466,8 +478,10 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         # agent crash) skip parse_fn entirely, so the parse-side
         # `_restore_backup` doesn't fire. Belt-and-suspenders here:
         # whatever the helper's exit, ensure goal_lean is back to its
-        # pre-spawn state. Idempotent — `.backup` may already be gone.
+        # pre-spawn state, then unlink the snapshot.
         _restore_backup()
+        if backup_path.exists():
+            backup_path.unlink()
 
     # Cleanup: any non-success outcome leaves the strategy at 'proposed'
     # with no scratch_path / no sub-goal links. Mark it dead so

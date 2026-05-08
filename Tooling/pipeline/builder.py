@@ -184,27 +184,33 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     # forensic. Builder-specific spawn / parse / postmortem are closures
     # over the pipeline scope below.
 
-    # Backup path: agent edits goal_lean in-session via apply_edit, so
-    # we snapshot the pre-spawn (sorry-stub) state before each spawn.
-    # builder_spawn writes it, builder_parse reads / cleans up.
+    # Backup path: agent edits goal_lean in-session via apply_edit
+    # (writes to disk, see lsp_gateway.py:517). Snapshot the pristine
+    # sorry-stub ONCE before the retry loop; every spawn entry +
+    # parse-fail path restores from this same snapshot. Re-snapshotting
+    # inside the loop captures the prior attempt's contamination, which
+    # then leaks into the next attempt's view of the file.
     backup_path = goal_lean.with_suffix(goal_lean.suffix + ".backup")
+    shutil.copy2(goal_lean, backup_path)
 
     def _restore_backup() -> None:
-        """Restore goal_lean from the pre-spawn backup. Called on every
-        builder_parse fail path — the agent may have mutated goal_lean
-        via apply_edit, and the original sorry-stub must be restored
-        before the next retry iteration sees it."""
+        """Restore goal_lean from the pristine pre-pipeline snapshot.
+        Backup is NOT unlinked — every spawn / parse-fail path reads
+        from the same snapshot. Success path + outer finally unlink."""
         if backup_path.exists():
             shutil.copy2(backup_path, goal_lean)
-            backup_path.unlink()
 
     def builder_spawn(ctx: SpawnCtx) -> int:
+        # Always start from the pristine snapshot. Agent's --resume
+        # session memory carries warm context; LSP slot state is in
+        # the gateway worker. On-disk goal_lean is reset each entry
+        # so prior-spawn apply_edits never leak into the next view.
+        _restore_backup()
+
         # Rescue path — prior spawn was watchdog-killed mid-thinking.
         # Resume the same session, send the inline force-ship prompt,
         # tight 180s timeout, no Context.md re-injection (session
-        # memory holds the original Context). Skip backup snapshot —
-        # the prior killed spawn already restored on its way out, OR
-        # the rescue's own apply_edit work needs goal_lean as-is.
+        # memory holds the original Context).
         if ctx.rescue_prompt:
             from .. import config as _cfg
             from ..llm.base import RESCUE_BUDGET_SEC
@@ -213,7 +219,6 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                 default=RESCUE_BUDGET_SEC,
                 env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
             )
-            shutil.copy2(goal_lean, backup_path)
             mcp_config_path = _write_mcp_config(
                 attempts_dir=ctx.attempts_dir,
                 workspace=workspace, target=goal_lean,
@@ -239,11 +244,10 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                                   attempts_dir=ctx.attempts_dir,
                                   kind="builder")
 
-        # Snapshot goal_lean (always sorry-stub at this point: prior
-        # iterations either restored it or this is the first iter),
-        # and register a gateway session so claude's MCP tools operate
-        # on goal_lean's content via the shared worker pool.
-        shutil.copy2(goal_lean, backup_path)
+        # Register a gateway session so claude's MCP tools operate on
+        # goal_lean's content via the shared worker pool. Snapshot was
+        # taken once before the retry loop; pristine restore happened
+        # at the top of this function.
         mcp_config_path = _write_mcp_config(
             attempts_dir=ctx.attempts_dir,
             workspace=workspace,
@@ -428,10 +432,10 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     finally:
         # LSP swap final guard: spawn rc != 0 paths (timeout / quota /
         # agent crash) skip parse_fn entirely, so the parse-side
-        # `_restore_backup` doesn't fire. Without this, a timed-out
-        # first attempt leaves goal_lean in agent's mid-session
-        # apply_edit state, which the next retry inherits as a broken
-        # baseline (observed cantor_xi g94: second attempt's
-        # initial_diagnostic_count=4 from first attempt's leftover).
-        # Mirrors backward.py's outer try/finally pattern.
+        # `_restore_backup` doesn't fire. Belt-and-suspenders here:
+        # restore goal_lean to the pristine snapshot, then unlink the
+        # snapshot. On success path the snapshot was already unlinked
+        # inline (line ~376) so this restore no-ops.
         _restore_backup()
+        if backup_path.exists():
+            backup_path.unlink()
