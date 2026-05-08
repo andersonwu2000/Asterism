@@ -565,8 +565,17 @@ def _backward_parse_and_commit(
         proofs_dir.mkdir(parents=True, exist_ok=True)
         scratch_dest = proofs_dir / f"_strategy_{sid_token}.lean"
         shutil.copy2(patches[0], scratch_dest)
+        # Phase 2.5 — verify the leaf-bypass strategy file via the
+        # gateway worker pool instead of cold `lake build`. Single-
+        # file build with no cross-module deps inside this strategy
+        # (the proof imports Mathlib + Defs, both already-warm in
+        # every gateway slot). axiom_probe in verify_strategy further
+        # downstream still drives `lake build` — keeps olean fresh.
+        from .. import gateway_lifecycle
         try:
-            ok, err = _lake_build_batch(workspace, [scratch_dest])
+            ok, err = gateway_lifecycle.check_build(
+                scratch_dest, workspace=workspace
+            )
         except Exception as exc:  # noqa: BLE001
             scratch_dest.unlink(missing_ok=True)
             return _abort(
