@@ -287,7 +287,6 @@ def test_backward_leaf_bypass_promotes_zero_subgoal_strategy(
         pipeline_id="pid-leaf-bypass")
     assert r.outcome == "success"
     assert r.proposal_md.startswith("-- main: trivial leaf proof")
-
     # Strategy committed with scratch_path set, 0 strategy_subgoals rows.
     rows = conn.execute(
         "SELECT id, status, scratch_path, proposal_md FROM strategies "
@@ -306,6 +305,77 @@ def test_backward_leaf_bypass_promotes_zero_subgoal_strategy(
     # Ready for Verify: vacuously satisfies the no-unproved-subs gate.
     assert any(s2["id"] == s["id"]
                for s2 in db.strategies_ready_for_verify(conn))
+
+
+def test_backward_leaf_bypass_axiom_violation_rejects_at_acceptance(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Acceptance-gate axiom probe (option (a)): when Backward agent
+    ships a leaf-bypass patch whose elaborate succeeds (LSP reports
+    0 errors) but whose `#print axioms` exposes sorryAx, framework
+    rejects at the acceptance gate — strategy is NEVER promoted to
+    ready_for_verify, scratch file is unlinked, helper buffers
+    axiom_violation as a retryable failure (analogous to
+    lake_build_error)."""
+    gid = _seed_root_goal(tmp_path, conn)
+    from Tooling import gateway_lifecycle as _gl
+    def _stub_verify_with_sorry_ax(target_path, *, write_olean=True,
+                                    axioms_for=None, timeout=120.0,
+                                    workspace=None):
+        return {
+            "ok": True, "diagnostic_count": 0, "diagnostics": [],
+            "olean_written": write_olean, "olean_path": str(target_path),
+            "axioms": ["sorryAx"] if axioms_for else None,
+            "axiom_error": None,
+        }
+    monkeypatch.setattr(_gl, "verify_file", _stub_verify_with_sorry_ax)
+
+    def fake_spawn(**kw):
+        attempts = kw["attempts_dir"]
+        patch_text = (attempts / "patch.lean").read_text(encoding="utf-8")
+        (attempts / "patch.lean").write_text(
+            "-- main: leaf-bypass shipping a sorry-tainted body\n"
+            + patch_text.replace(":= by sorry", ":= by trivial"),
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    mfst = manifest.Manifest(problem="p", statement="True",
+                              axioms_whitelist=["propext"])
+    r = pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=mfst, pipeline_id="pid-leaf-bypass-axiom-violation")
+
+    # axiom_violation is RETRYABLE (unlike agent_infeasible / agent_
+    # declined which are terminal): helper buffers + retries; with
+    # fake_spawn always shipping the same sorry-tainted patch, the
+    # helper exhausts budget. Last buffered failure is axiom_violation.
+    assert r.outcome == "exhausted"
+    assert r.failure_reason == "axiom_violation"
+    assert "sorryAx" in r.failure_detail
+    assert len(r.pending_failures) >= 2, (
+        f"expected helper to retry on axiom_violation; got "
+        f"{len(r.pending_failures)} buffered failure(s)"
+    )
+    assert all(pf["reason"] == "axiom_violation"
+                for pf in r.pending_failures)
+    # Strategy never promoted (scratch_path stays empty).
+    rows = conn.execute(
+        "SELECT scratch_path FROM strategies WHERE goal_id=?",
+        (gid,)).fetchall()
+    assert all(r_["scratch_path"] == "" for r_ in rows), (
+        "leaf-bypass scratch_path must stay empty when axiom probe "
+        "rejects at acceptance gate (no promote_to_alias attempted)"
+    )
+    # All scratch files unlinked
+    proofs_dir = tmp_path / "Problems" / "p" / "proofs"
+    if proofs_dir.exists():
+        leftover = list(proofs_dir.glob("_strategy_*.lean"))
+        assert not leftover, (
+            f"leaf-bypass scratch files must be unlinked on axiom "
+            f"rejection; found {leftover}"
+        )
 
 
 def test_backward_no_subs_with_sorry_body_still_parse_proposal_fail(

@@ -618,8 +618,26 @@ def _backward_parse_and_commit(
         # itself; it imports Mathlib + Defs, both already warm in every
         # slot).
         from .. import gateway_lifecycle
+        # Run axiom probe at acceptance gate (single round trip — gateway
+        # already computes axiom info during elaboration; passing
+        # axioms_for just asks for it back). Catches the common Sonnet
+        # leaf-bypass failure mode where the agent ships a patch whose
+        # body looks complete + LSP reports "0 errors / no goals" but
+        # Lean's elaborator silently filled in `sorryAx` synthetic
+        # placeholders for unification failures it treated as warnings.
+        # Pre-(a): such a patch passed acceptance, entered ready_for_
+        # verify, then verify_strategy detected sorryAx + killed the
+        # strategy + reopened the goal — wasting one promote_to_alias +
+        # parent build (~5-10s) and triggering the cascade-vs-verify
+        # race window. Post-(a): caught here with no scratch promotion,
+        # no race surface.
+        fq_name = (
+            f"Problems.{goal['problem']}.{sid_token}"
+            if mfst.axioms_whitelist else None
+        )
         v = gateway_lifecycle.verify_file(
-            scratch_dest, write_olean=True, workspace=workspace,
+            scratch_dest, write_olean=True,
+            axioms_for=fq_name, workspace=workspace,
         )
         if "error" in v:
             scratch_dest.unlink(missing_ok=True)
@@ -643,6 +661,23 @@ def _backward_parse_and_commit(
                     err_lines or "(no error diagnostics returned)"),
                 leading,
             )
+        if mfst.axioms_whitelist:
+            if v.get("axiom_error"):
+                scratch_dest.unlink(missing_ok=True)
+                return _abort(
+                    "axiom_violation",
+                    f"leaf-bypass axiom probe error: {v['axiom_error']}",
+                    leading,
+                )
+            used = set(v.get("axioms") or [])
+            rogue = used - set(mfst.axioms_whitelist)
+            if rogue:
+                scratch_dest.unlink(missing_ok=True)
+                return _abort(
+                    "axiom_violation",
+                    f"leaf-bypass rogue axioms: {sorted(rogue)}",
+                    leading,
+                )
         # Race guard mirrors the decomp path's check at line ~666.
         fresh = db.get_goal(conn, goal_id)
         if fresh is None or fresh["status"] not in ("open", "attempting"):
