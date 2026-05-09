@@ -188,10 +188,52 @@ def test_db_migration_drops_legacy_session_id_columns(
 
 def test_cascade_backward_success_marks_attempting(conn: sqlite3.Connection) -> None:
     gid = _seed_goal(conn)
+    # Seed a live strategy so the success cascade has something to
+    # attribute the 'attempting' transition to. Without it, the
+    # has_live race guard would (correctly) skip the transition; that
+    # path is exercised by the no-live-strategy regression test below.
+    db.insert_strategy(
+        conn, goal_id=gid, lean_path="Problems/p/Root.lean",
+        created_by="pid", proposal_md="", scratch_path="",
+    )
     cascade_one(conn, pipeline_id="pid", kind="Backward",
                 target_id=str(gid), target_kind="Goal", outcome="success")
     row = db.get_goal(conn, gid)
     assert row["status"] == "attempting"
+
+
+def test_cascade_backward_success_no_live_strategy_preserves_status(
+    conn: sqlite3.Connection,
+) -> None:
+    """Race guard regression: when verify_housekeeping fires before a
+    Backward 'success' cascade and kills the just-committed strategy
+    (e.g. leaf-bypass with sorry-stub body → axiom_violation → strategy
+    dead → goal reopened to 'open'), the late-arriving cascade must NOT
+    overwrite the verify-set status with 'attempting'. Pre-fix
+    behavior: cascade unconditionally set 'attempting', leaving the goal
+    in a self-inconsistent state (no live strategy yet status=
+    'attempting'); bfs_refill's open-only filter then excluded it and
+    the dispatcher idle-exited even though attempts budget remained.
+    Observed SG run #3 root goal 232 — exit at attempts=2 with
+    shelve_threshold=5, 3 retries left unused."""
+    gid = _seed_goal(conn)
+    # Seed a strategy that mirrors the post-verify state: dead, no
+    # other live strategy on this goal. verify would have already
+    # transitioned the goal back to 'open' by this point.
+    sid = db.insert_strategy(
+        conn, goal_id=gid, lean_path="Problems/p/Root.lean",
+        created_by="pid", proposal_md="", scratch_path="",
+    )
+    db.update_strategy_status(conn, sid, "dead")
+    db.update_goal_status(conn, gid, "open")
+    # Late cascade arrives.
+    cascade_one(conn, pipeline_id="pid", kind="Backward",
+                target_id=str(gid), target_kind="Goal", outcome="success")
+    row = db.get_goal(conn, gid)
+    assert row["status"] == "open", (
+        f"Backward 'success' cascade with no live strategy must not "
+        f"clobber verify-set status; got {row['status']!r}"
+    )
 
 
 def test_cascade_backward_failed_increments(conn: sqlite3.Connection) -> None:

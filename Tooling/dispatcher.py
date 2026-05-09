@@ -311,7 +311,29 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
 
     if kind == "Backward":
         if outcome == "success":
-            db.update_goal_status(conn, int(target_id), "attempting")
+            # Race guard: when a Backward leaf-bypass commits a strategy
+            # that fails axiom probe (e.g. sorry-stub body), verify
+            # housekeeping can fire BEFORE this cascade — verify marks
+            # the strategy dead and reopens the goal to 'open'. The
+            # delay comes from the worker's WorkArea.__exit__ release_
+            # session HTTP call (up to 30s under gateway load); during
+            # that window the main thread's tick boundary lets verify
+            # see the just-committed ready_for_verify strategy and
+            # process it before the worker's future is observed done.
+            # Without this guard, the late cascade overwrites the
+            # verify-reopened 'open' with 'attempting', leaving the
+            # goal in a self-inconsistent state (no live strategy yet
+            # status='attempting'); bfs_refill's open-only filter then
+            # excludes it and the dispatcher idle-exits with budget
+            # still available. Mirrors verify.py:218-224's has_live
+            # check.
+            has_live = conn.execute(
+                "SELECT 1 FROM strategies WHERE goal_id = ?"
+                " AND status IN ('proposed','succeeded') LIMIT 1",
+                (int(target_id),),
+            ).fetchone()
+            if has_live is not None:
+                db.update_goal_status(conn, int(target_id), "attempting")
             return
         # Phase 7 — `exhausted` outcome: mirrors Builder branch above.
         # Helper buffered N dead_attempts + N attempts++ for the N
