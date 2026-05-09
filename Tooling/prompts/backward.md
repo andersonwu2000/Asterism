@@ -74,17 +74,35 @@ Theorem name MUST equal the slug encoded in the filename.
 
 ## Decline
 
-Use only with concrete evidence the goal is unprovable as stated. Place the directive immediately above the theorem in `patch.lean` (same slot as the success annotation), keep `:= by sorry`, write no sub-goal files. Framework shelves goal + forces parent strategy redesign — costly upstream.
+Place the directive immediately above the theorem in `patch.lean`, keep `:= by sorry`, write no sub-goal files. Pick one:
+
+- `unprovable` — false in this hypothesis scope. Description must give a counterexample (specific values + arithmetic check).
+- `return_to_parent` — provable after parent strategy is fixed. Description must name the fix concretely (missing hypothesis, wrong substructure).
+- `shelve` — stuck without counterexample. Description briefly explains the block.
 
 ```lean
 namespace ...
 
--- decline: parent_type_infeasible
--- ## Counterexample
--- <specific values + arithmetic check, or named missing hypothesis>
+-- decline: <directive>
+-- ## ...description...
 theorem s<id> ... := by sorry
 
 end ...
+```
+
+Examples:
+
+```lean
+-- decline: unprovable
+-- ## Counterexample
+-- p=(0,0), q=(1,0), r=(2,0), s=(2,1/2): all hypotheses hold but the conclusion fails.
+```
+
+```lean
+-- decline: return_to_parent
+-- ## Fix hint
+-- Parent passes hmin (b,pt,r) and hmin (a,pt,r); needs hmin (r,a,pt) — without it
+-- h1+h2 are simultaneously satisfiable.
 ```
 
 ## Stop signals

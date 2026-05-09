@@ -41,29 +41,36 @@ Framework checks: forbidden-lemma grep + `lake env lean patch.lean` clean + non-
 
 ## Decline
 
-Keep `:= by sorry` and lead with a directive instead of a summary.
+Place the directive immediately above the theorem, keep `:= by sorry`. Pick one:
 
-Place the directive immediately above the theorem (same slot as the success annotation):
+- `unprovable` — false in this hypothesis scope. Description must give a counterexample (specific values + arithmetic check).
+- `return_to_parent` — provable after parent strategy is fixed. Description must name the fix concretely (missing hypothesis, wrong substructure).
+- `shelve` — stuck without counterexample. Description briefly explains the block.
+- `needs_decomposition` — too coarse for one Builder pass. Description hints at decomposition shape if you have one.
 
 ```lean
-namespace Problems.<problem>
+namespace ...
 
--- decline: too_hard
--- <why direct tactics won't converge / which decomposition you'd want>
-theorem <slug> : ... := by sorry
+-- decline: <directive>
+-- ## ...description...
+theorem ... := by sorry
 
-end Problems.<problem>
+end ...
 ```
 
-`too_hard` — framework escalates to Backward.
-
-`parent_type_infeasible` — framework shelves goal + forces parent strategy redesign. Use only with a concrete counterexample under all stated hypotheses, or a named missing hypothesis the conclusion needs. No speculation.
+Examples:
 
 ```lean
--- decline: parent_type_infeasible
+-- decline: unprovable
 -- ## Counterexample
--- With s=(0,0), q₀=(2,0), r₀=(5,0), p₀=(0,3): all hypotheses hold but
--- |r₀-s|² = 25 > |p₀-s|² = 9, contradicting the conclusion.
+-- p=(0,0), q=(1,0), r=(2,0), s=(2,1/2): all hypotheses hold but the conclusion fails.
+```
+
+```lean
+-- decline: return_to_parent
+-- ## Fix hint
+-- Parent passes hmin (b,pt,r) and hmin (a,pt,r); needs hmin (r,a,pt) — without it
+-- h1+h2 are simultaneously satisfiable.
 ```
 
 ## Lemma discovery

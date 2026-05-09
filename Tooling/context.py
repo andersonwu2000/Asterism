@@ -541,12 +541,22 @@ def _section_goal_history(*,
 
     if show_verifies and infeasible_sub_events:
         sub = [
-            "### Sub-goals reported infeasible",
+            "### Sub-goals declined",
             "",
             "Sub-goals from earlier decompositions of THIS goal that the "
-            "prover reported as type-infeasible (with counterexample). "
-            "Do NOT re-propose a decomposition built around the same "
-            "sub-goal type — the underlying type is unprovable.",
+            "prover declined via a `decline:` directive. Three failure "
+            "reasons surface here:",
+            "",
+            "- `agent_infeasible` (`unprovable` directive) — sub-goal is "
+            "false in scope; do NOT re-propose a decomposition around "
+            "the same type.",
+            "- `parent_needs_fix` (`return_to_parent` directive) — the "
+            "sub-goal can be proved IF this goal's strategy is fixed "
+            "as the **Fix hint** below describes. Prefer keeping the "
+            "prior strategy shape and applying the fix over switching "
+            "to a different decomposition.",
+            "- `agent_shelved` (`shelve` directive) — prover stuck "
+            "without a counterexample; treat as soft information.",
             "",
         ]
         for e in infeasible_sub_events:
@@ -554,9 +564,12 @@ def _section_goal_history(*,
             if len(stmt) > 300:
                 stmt = stmt[:300].rstrip() + " …"
             stmt_oneline = " ".join(stmt.split())
-            sub.append(f"- `{e['sub_slug']}` — {stmt_oneline}")
+            reason = e.get("failure_reason") or "agent_infeasible"
+            sub.append(
+                f"- `{e['sub_slug']}` *(reason: {reason})* — {stmt_oneline}"
+            )
             if e.get("root_cause"):
-                sub.append(f"  **Root cause**: {e['root_cause']}")
+                sub.append(f"  **Root cause / fix hint**: {e['root_cause']}")
         sub.append("")
         parts.append(sub)
 

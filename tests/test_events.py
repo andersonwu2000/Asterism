@@ -180,6 +180,39 @@ def test_infeasible_subs_finds_subs_under_parent_strategies(
     assert "empty set has no element" in e["root_cause"]
 
 
+def test_infeasible_subs_includes_parent_needs_fix_and_agent_shelved(
+    conn: sqlite3.Connection,
+) -> None:
+    """Decline directive system: `return_to_parent` (failure_reason
+    'parent_needs_fix') and `shelve` ('agent_shelved') sub-goal
+    failures also surface here so the parent's next decomposer sees
+    the description (esp. fix hints from return_to_parent)."""
+    _seed_problem(conn)
+    parent = _seed_goal(conn, slug="parent")
+    sid = _seed_strategy(conn, parent)
+    sub_rtp = _seed_goal(conn, slug="sub_rtp", origin="backward")
+    sub_shelve = _seed_goal(conn, slug="sub_shelve", origin="backward")
+    db.link_subgoal(conn, strategy_id=sid, subgoal_id=sub_rtp, position=0)
+    db.link_subgoal(conn, strategy_id=sid, subgoal_id=sub_shelve, position=1)
+    _record_dead_attempt(
+        conn, target_id=sub_rtp, reason="parent_needs_fix",
+        pipeline_id="pid-rtp",
+        proposal_md="## Fix hint\nparent strategy missed hypothesis hmin_r_a.",
+    )
+    _record_dead_attempt(
+        conn, target_id=sub_shelve, reason="agent_shelved",
+        pipeline_id="pid-shelve",
+        proposal_md="ran out of ideas.",
+    )
+    out = events.infeasible_subs(conn, parent)
+    by_slug = {e["sub_slug"]: e for e in out}
+    assert "sub_rtp" in by_slug
+    assert "sub_shelve" in by_slug
+    assert by_slug["sub_rtp"]["failure_reason"] == "parent_needs_fix"
+    assert by_slug["sub_shelve"]["failure_reason"] == "agent_shelved"
+    assert "missed hypothesis" in by_slug["sub_rtp"]["root_cause"]
+
+
 def test_infeasible_subs_dedupes_across_multiple_parent_strategies(
     conn: sqlite3.Connection,
 ) -> None:

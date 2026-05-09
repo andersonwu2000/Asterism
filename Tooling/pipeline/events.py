@@ -286,7 +286,8 @@ def infeasible_subs(conn: sqlite3.Connection,
         "       da.ts, sub.slug AS sub_slug, sub.statement AS sub_statement "
         "FROM dead_attempts da "
         "JOIN goals sub ON sub.id = da.target_id "
-        "WHERE da.failure_reason = 'agent_infeasible' "
+        "WHERE da.failure_reason IN "
+        "        ('agent_infeasible', 'parent_needs_fix', 'agent_shelved') "
         "  AND da.target_kind = 'Goal' "
         "  AND EXISTS ("
         "    SELECT 1 FROM strategy_subgoals ss "
@@ -316,10 +317,14 @@ def infeasible_subs(conn: sqlite3.Connection,
 # ---------------------------------------------------------------------
 
 def _extract_root_cause(proposal_md: str, *, max_chars: int = 400) -> str:
-    """Pull the agent-written root-cause one-paragraph excerpt out of
-    an `agent_infeasible` decline's PROPOSAL.md. Prefers a `## Root cause`
-    section; falls back to the last non-heading paragraph (agents often
-    put the conclusion at the end of `## Counterexample`).
+    """Pull the agent-written root-cause / fix-hint excerpt out of a
+    decline's PROPOSAL.md. Tries in order:
+
+      1. `## Root cause` section (legacy convention)
+      2. `## Fix hint` section (`return_to_parent` directive)
+      3. `## Counterexample` section (`unprovable` directive)
+      4. last non-heading paragraph (catch-all for agents that put
+         the conclusion outside any structured section)
 
     Moved here from `Tooling.context` so events.py is self-contained
     (avoid import cycle: context imports events, events would import
@@ -331,13 +336,19 @@ def _extract_root_cause(proposal_md: str, *, max_chars: int = 400) -> str:
         end = text.find("---", 3)
         if end > 0:
             text = text[end + 3:].lstrip()
-    m = re.search(r"^##\s*Root cause\s*$", text,
-                  re.MULTILINE | re.IGNORECASE)
-    if m:
+
+    def _section_after(header_pat: str) -> str | None:
+        m = re.search(header_pat, text, re.MULTILINE | re.IGNORECASE)
+        if not m:
+            return None
         rest = text[m.end():]
         nxt = re.search(r"^##\s", rest, re.MULTILINE)
-        excerpt = (rest[:nxt.start()] if nxt else rest).strip()
-    else:
+        return (rest[:nxt.start()] if nxt else rest).strip()
+
+    excerpt = (_section_after(r"^##\s*Root cause\s*$")
+               or _section_after(r"^##\s*Fix hint\s*$")
+               or _section_after(r"^##\s*Counterexample\s*$"))
+    if excerpt is None:
         paras = [p.strip() for p in text.split("\n\n") if p.strip()]
         paras = [p for p in paras if not p.lstrip().startswith("#")]
         excerpt = paras[-1] if paras else ""

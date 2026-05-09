@@ -33,21 +33,36 @@ Framework checks: forbidden-lemma grep + lake build clean + non-empty `--` annot
 
 ## Decline
 
-Keep `:= by sorry`, place the directive in the same slot as the success annotation.
+Place the directive immediately above the theorem, keep `:= by sorry`. Pick one:
 
-`too_hard` — escalates to Backward:
+- `unprovable` — false in this hypothesis scope. Description must give a counterexample (specific values + arithmetic check).
+- `return_to_parent` — provable after parent strategy is fixed. Description must name the fix concretely (missing hypothesis, wrong substructure).
+- `shelve` — stuck without counterexample. Description briefly explains the block.
+- `needs_decomposition` — too coarse for one Builder pass. Description hints at decomposition shape if you have one.
 
 ```lean
--- decline: too_hard
--- <why direct tactics won't suffice>
+namespace ...
+
+-- decline: <directive>
+-- ## ...description...
+theorem ... := by sorry
+
+end ...
 ```
 
-`parent_type_infeasible` — shelves goal, forces parent strategy redesign. Use only with a concrete counterexample or named missing hypothesis. No speculation.
+Examples:
 
 ```lean
--- decline: parent_type_infeasible
+-- decline: unprovable
 -- ## Counterexample
--- <values + arithmetic check>
+-- p=(0,0), q=(1,0), r=(2,0), s=(2,1/2): all hypotheses hold but the conclusion fails.
+```
+
+```lean
+-- decline: return_to_parent
+-- ## Fix hint
+-- Parent passes hmin (b,pt,r) and hmin (a,pt,r); needs hmin (r,a,pt) — without it
+-- h1+h2 are simultaneously satisfiable.
 ```
 
 ## Rules

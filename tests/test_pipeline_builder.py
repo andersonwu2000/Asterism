@@ -188,15 +188,15 @@ def test_run_builder_decline_returns_agent_declined(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Phase 6 decline channel: agent writes patch.lean with a leading
-    `-- decline: too_hard` directive and `:= by sorry` body kept. Maps
-    to outcome='failed' / reason='agent_declined' so cascade fast-tracks
-    to Backward."""
+    `-- decline: needs_decomposition` directive and `:= by sorry` body
+    kept. Maps to outcome='failed' / reason='agent_declined' so cascade
+    fast-tracks to Backward."""
     gid = _seed_problem(conn, tmp_path)
     db.increment_goal_attempts(conn, gid)
 
     def fake_spawn(**kw):
         (kw["attempts_dir"] / "patch.lean").write_text(
-            "-- decline: too_hard\n"
+            "-- decline: needs_decomposition\n"
             "-- this needs decomposition; no direct tactic suffices\n"
             "import Mathlib\ntheorem main : True := by sorry\n",
             encoding="utf-8")

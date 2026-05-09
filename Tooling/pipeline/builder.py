@@ -45,8 +45,8 @@ def _build_rescue_prompt_builder(workspace: Path) -> str:
     return (
         "Killed mid-think. Ship now ONE of:\n"
         "(a) patch.lean with current proof (`:= by sorry` ok)\n"
-        "(b) patch.lean with `-- decline: too_hard` (escalate to Backward)\n"
-        "(c) patch.lean with `-- decline: parent_type_infeasible` + "
+        "(b) patch.lean with `-- decline: needs_decomposition` (escalate to Backward)\n"
+        "(c) patch.lean with `-- decline: unprovable` + "
         "concrete counterexample (only if you found one)\n"
         "No analysis.\n"
         f"{rescue_min} minutes left. Act now."
@@ -96,7 +96,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         _extract_leading_comments, _grep_forbidden, _is_sorry_stub,
         _parse_hint_winner, _replace_proof_body,
         _safe_glob, _write_mcp_config,
-        DECLINE_PARENT_TYPE_INFEASIBLE,
+        DECLINE_TO_FAILURE_REASON,
     )
     from ._retry import SpawnCtx, run_with_session_retries
     from .. import dispatcher  # late: BUILDER_THRESHOLD live value
@@ -305,27 +305,22 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         patch_text = patch.read_text(encoding="utf-8")
 
         # Phase 6 single-output: agent's metadata lives in patch.lean's
-        # leading comment block. `-- decline: <reason>` directive routes
-        # to the agent_declined / agent_infeasible terminal branches;
-        # otherwise the block is the goal's annotation source.
+        # leading comment block. The `-- decline: <directive>` directive
+        # (one of DECLINE_DIRECTIVES) maps to a structured failure_reason
+        # via DECLINE_TO_FAILURE_REASON; cascade_one then routes by that
+        # reason. Unknown directive strings (typos / partial migration
+        # / future extensions) fall through to the generic `agent_declined`
+        # branch — same destination as `needs_decomposition`, which is
+        # the safe legacy default. The `## ...description...` block under
+        # the directive is preserved verbatim in proposal_md and projected
+        # to downstream context.md.
         leading = _extract_leading_comments(patch_text)
         decline = _extract_decline_reason(leading)
-        if decline == DECLINE_PARENT_TYPE_INFEASIBLE:
-            _restore_backup()
-            return PipelineResult(
-                outcome="failed",
-                failure_reason="agent_infeasible",
-                failure_detail=("builder reports parent type infeasible; "
-                                "leading comments must include counterexample"),
-                proposal_md=leading,
-            )
         if decline is not None:
-            # Any other declared decline reason maps to agent_declined
-            # (jump to Backward). `too_hard` is the canonical value;
-            # unknown sub-reasons stay routed here defensively.
             _restore_backup()
+            reason = DECLINE_TO_FAILURE_REASON.get(decline, "agent_declined")
             return PipelineResult(
-                outcome="failed", failure_reason="agent_declined",
+                outcome="failed", failure_reason=reason,
                 failure_detail=f"builder declined: {decline}",
                 proposal_md=leading,
             )

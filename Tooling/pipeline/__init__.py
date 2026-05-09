@@ -12,9 +12,9 @@ Public API surfaced from this module (preserves pre-split callers):
   - run_builder, run_backward                        — dispatch entry points
   - PipelineResult, collect_artifacts                — DTO + forensics
   - _parse_hint_winner                               — Phase 1 hint output parser
-  - DECLINE_TOO_HARD, DECLINE_PARENT_TYPE_INFEASIBLE — values for the
-                                                       `-- decline: <reason>`
-                                                       directive in patch.lean
+  - DECLINE_*, DECLINE_DIRECTIVES, DECLINE_TO_FAILURE_REASON — unified
+                                                       decline vocabulary
+                                                       (see docs/dev/decline_directives.md)
   - _extract_leading_comments, _extract_decline_reason — Phase 6 parsing
   - _drafts                                          — partial-output module
 
@@ -337,19 +337,52 @@ def _grep_forbidden(text: str, forbidden: list[str]) -> str | None:
 
 
 # ---------------------------------------------------------------------
-# Decline reasons (Phase 6 directive values)
+# Decline directives (unified vocabulary, see docs/dev/decline_directives.md)
 # ---------------------------------------------------------------------
 
-# Recognized values for the `-- decline: <reason>` directive an agent
-# writes at the top of patch.lean to opt out of the success path.
-# `too_hard` is the canonical value; the framework jumps Builder kind
-# to Backward on the same goal (legacy F48 channel). `parent_type_
-# infeasible` shelves this goal and cascades up to force the parent
-# strategy back into Backward redesign — used when the agent can
-# construct a counterexample to the goal under all stated hypotheses,
-# or the hypothesis set is missing something the conclusion needs.
-DECLINE_TOO_HARD = "too_hard"
-DECLINE_PARENT_TYPE_INFEASIBLE = "parent_type_infeasible"
+# Recognized values for the `-- decline: <directive>` directive an
+# agent writes at the top of patch.lean to opt out of the success
+# path. Routing semantics live in cascade_one; description (the
+# agent's `## ...` block under the directive) is preserved in
+# dead_attempts.proposal_md and projected to downstream context.
+#
+#   unprovable          — false in this hypothesis scope; description
+#                         must give a counterexample.  Persisted as
+#                         failure_reason='agent_infeasible' (legacy).
+#   return_to_parent    — provable after parent strategy is fixed;
+#                         description must name the fix.  Cascades up
+#                         to parent re-decompose with description as
+#                         fix hint.  failure_reason='parent_needs_fix'.
+#   shelve              — stuck without counterexample; framework
+#                         shelves; future Strategist may revisit.
+#                         failure_reason='agent_shelved'.
+#   needs_decomposition — Builder-only; routes to Backward via
+#                         entry_kind switch (legacy too_hard channel).
+#                         failure_reason='agent_declined'.
+DECLINE_UNPROVABLE = "unprovable"
+DECLINE_RETURN_TO_PARENT = "return_to_parent"
+DECLINE_SHELVE = "shelve"
+DECLINE_NEEDS_DECOMPOSITION = "needs_decomposition"
+
+# Set of every recognized directive (parser uses for membership check;
+# unknown directives fall through to the generic `agent_declined`
+# branch downstream).
+DECLINE_DIRECTIVES = frozenset({
+    DECLINE_UNPROVABLE,
+    DECLINE_RETURN_TO_PARENT,
+    DECLINE_SHELVE,
+    DECLINE_NEEDS_DECOMPOSITION,
+})
+
+# Map directive → DB failure_reason. Keeps existing enum values for
+# unprovable / needs_decomposition (no schema migration needed); adds
+# two new values for the new directives.
+DECLINE_TO_FAILURE_REASON = {
+    DECLINE_UNPROVABLE: "agent_infeasible",
+    DECLINE_RETURN_TO_PARENT: "parent_needs_fix",
+    DECLINE_SHELVE: "agent_shelved",
+    DECLINE_NEEDS_DECOMPOSITION: "agent_declined",
+}
 
 
 # ---------------------------------------------------------------------

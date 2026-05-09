@@ -272,28 +272,30 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 # F46 — leave attempts unchanged; dispatcher will cool
                 # this (target,kind) for ~30s before the next dispatch.
                 return
-            # Infeasibility escape: agent reported `parent_type_infeasible`
-            # with a counterexample. Phase 7 — increment attempts once
-            # (the LLM call DID happen) to preserve the 1:1 attempts ↔
-            # dead_attempts invariant (decision 5/6); cascade still
-            # shelves directly + propagates so the wrong-type sub-goal
-            # doesn't burn the rest of SHELVE_THRESHOLD before cascading
-            # up. Net difference vs pre-Phase-7: shelved goal ends with
-            # attempts=N+1 instead of attempts=N (cosmetic only —
-            # already-terminal goals don't reuse attempts).
-            if failure_reason == "agent_infeasible":
+            # Decline directives: agent shipped a structured "this goal
+            # can't progress at this level" signal. Three of the four
+            # directives (unprovable / return_to_parent / shelve) all
+            # cascade up — they differ in DOWNSTREAM CONTEXT projection
+            # (verify.py / context.py read failure_reason to render the
+            # right section in parent's next dispatch), not in cascade
+            # routing. Net effect mirrors the legacy parent_type_
+            # infeasible path: increment attempts once (the LLM call
+            # happened, preserve 1:1 attempts ↔ dead_attempts), shelve
+            # directly, propagate up — don't burn the remaining
+            # SHELVE_THRESHOLD on a goal the agent already diagnosed.
+            if failure_reason in ("agent_infeasible", "parent_needs_fix",
+                                  "agent_shelved"):
                 db.increment_goal_attempts(conn, int(target_id))
                 db.update_goal_status(conn, int(target_id), "shelved")
                 _propagate_shelve(conn, int(target_id))
                 return
-            # F48 — Builder explicitly declined (wrote `-- decline:
-            # too_hard` in patch.lean's leading block). Honor the
-            # agent: route the next dispatch to Backward via the
-            # `entry_kind` directive instead of inflating attempts to
-            # BUILDER_THRESHOLD. Phase 7 — decision 5: attempts is
-            # LLM-call failure count, not a routing knob; using
-            # entry_kind preserves the 1:1 invariant while still
-            # forcing the next dispatch to Backward.
+            # `needs_decomposition` directive (legacy `too_hard`):
+            # Builder says "this goal needs decomposition first". Route
+            # next dispatch to Backward via entry_kind switch instead
+            # of inflating attempts to BUILDER_THRESHOLD. Phase 7
+            # decision 5: attempts is LLM-call failure count, not a
+            # routing knob; entry_kind preserves the 1:1 invariant
+            # while still forcing the next dispatch to Backward.
             if failure_reason == "agent_declined":
                 n = db.increment_goal_attempts(conn, int(target_id))
                 if n >= SHELVE_THRESHOLD:
@@ -348,11 +350,14 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
         # failed
         if is_infra:
             return  # F46 — same skip-increment as Builder above
-        # Infeasibility escape (mirrors Builder branch above): Backward
-        # agent declined with `parent_type_infeasible`. Phase 7 —
-        # attempts++ once (one LLM call happened) before shelve, to
-        # preserve 1:1 with the final dead_attempts row.
-        if failure_reason == "agent_infeasible":
+        # Decline directives mirror the Builder branch above: agent
+        # shipped a structured failure signal — shelve + cascade up
+        # without burning the remaining SHELVE_THRESHOLD. Backward
+        # cannot send `needs_decomposition` (Builder-only); if a typo
+        # / unknown directive lands here it falls through to the
+        # generic attempts++ branch and eventually shelves at threshold.
+        if failure_reason in ("agent_infeasible", "parent_needs_fix",
+                              "agent_shelved"):
             db.increment_goal_attempts(conn, int(target_id))
             db.update_goal_status(conn, int(target_id), "shelved")
             _propagate_shelve(conn, int(target_id))

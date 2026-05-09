@@ -179,3 +179,58 @@ def test_cascade_decline_path_unaffected(conn: sqlite3.Connection) -> None:
     assert row["status"] == "open"  # NOT shelved
     assert row["attempts"] == 1
     assert row["entry_kind"] == "Backward"
+
+
+# ---------------------------------------------------------------------
+# 5. New decline directives (return_to_parent, shelve) — same cascade
+#    semantics as agent_infeasible: shelve immediately + propagate up.
+# ---------------------------------------------------------------------
+
+def test_cascade_parent_needs_fix_shelves_goal(conn: sqlite3.Connection) -> None:
+    """`return_to_parent` directive routes to failure_reason
+    'parent_needs_fix' — semantically distinct from agent_infeasible
+    (provable after parent fix vs unprovable in scope) but cascade
+    behavior identical: shelve + propagate."""
+    gid = _seed_goal(conn)
+    pid = "rtp-1"
+    _record_dead_attempt(conn, pipeline_id=pid, target_id=gid,
+                         reason="parent_needs_fix")
+    cascade_one(conn, pipeline_id=pid, kind="Builder",
+                target_id=str(gid), target_kind="Goal", outcome="failed",
+                failure_reason="parent_needs_fix")
+    row = db.get_goal(conn, gid)
+    assert row["status"] == "shelved"
+    assert row["attempts"] == 1
+
+
+def test_cascade_agent_shelved_shelves_goal(conn: sqlite3.Connection) -> None:
+    """`shelve` directive routes to failure_reason 'agent_shelved' —
+    cascades same as agent_infeasible / parent_needs_fix. Distinction
+    is for downstream review (Strategist may revisit)."""
+    gid = _seed_goal(conn)
+    pid = "shelve-1"
+    _record_dead_attempt(conn, pipeline_id=pid, target_id=gid,
+                         reason="agent_shelved", kind="Backward")
+    cascade_one(conn, pipeline_id=pid, kind="Backward",
+                target_id=str(gid), target_kind="Goal", outcome="failed",
+                failure_reason="agent_shelved")
+    row = db.get_goal(conn, gid)
+    assert row["status"] == "shelved"
+    assert row["attempts"] == 1
+
+
+# ---------------------------------------------------------------------
+# 6. Parser → failure_reason mapping (the four decline directives map
+#    to the four failure_reason values via DECLINE_TO_FAILURE_REASON).
+# ---------------------------------------------------------------------
+
+def test_decline_directive_to_failure_reason_mapping() -> None:
+    from Tooling.pipeline import (
+        DECLINE_TO_FAILURE_REASON, DECLINE_UNPROVABLE,
+        DECLINE_RETURN_TO_PARENT, DECLINE_SHELVE,
+        DECLINE_NEEDS_DECOMPOSITION,
+    )
+    assert DECLINE_TO_FAILURE_REASON[DECLINE_UNPROVABLE] == "agent_infeasible"
+    assert DECLINE_TO_FAILURE_REASON[DECLINE_RETURN_TO_PARENT] == "parent_needs_fix"
+    assert DECLINE_TO_FAILURE_REASON[DECLINE_SHELVE] == "agent_shelved"
+    assert DECLINE_TO_FAILURE_REASON[DECLINE_NEEDS_DECOMPOSITION] == "agent_declined"

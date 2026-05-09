@@ -196,8 +196,8 @@ def _build_rescue_prompt_backward(workspace: Path) -> str:
         "(a) patch.lean + new_<slug>.lean stubs (`:= by sorry` ok)\n"
         "(b) patch.lean alone if a sorry-free direct proof of the parent "
         "compiles (leaf-bypass)\n"
-        "(c) patch.lean with `-- decline: parent_type_infeasible` + "
-        "counterexample / named missing hypothesis (no sub-goals)\n"
+        "(c) patch.lean with `-- decline: unprovable` + "
+        "counterexample (no sub-goals)\n"
         "You write types not proofs — don't grind sub-goal details in "
         "your head. No analysis.\n"
         f"{rescue_min} minutes left. Act now."
@@ -269,7 +269,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         _lean_path_to_module, _normalize_signature,
         _safe_glob, _signature_prefix, _slug_from_filename,
         _write_mcp_config,
-        DECLINE_PARENT_TYPE_INFEASIBLE,
+        DECLINE_TO_FAILURE_REASON,
     )
     from ._retry import SpawnCtx, run_with_session_retries
     from .. import dispatcher  # late: SHELVE_THRESHOLD live value
@@ -446,7 +446,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                 _safe_glob=_safe_glob,
                 _extract_leading_comments=_extract_leading_comments,
                 _extract_decline_reason=_extract_decline_reason,
-                DECLINE_PARENT_TYPE_INFEASIBLE=DECLINE_PARENT_TYPE_INFEASIBLE,
+                DECLINE_TO_FAILURE_REASON=DECLINE_TO_FAILURE_REASON,
                 _normalize_signature=_normalize_signature,
                 _signature_prefix=_signature_prefix,
                 _is_sorry_stub=_is_sorry_stub,
@@ -528,7 +528,7 @@ def _backward_parse_and_commit(
     *, conn, goal, goal_id, mfst, workspace, attempts_dir,
     strategy_id, sid_token, skeleton_signature, _abort,
     _safe_glob, _extract_leading_comments, _extract_decline_reason,
-    DECLINE_PARENT_TYPE_INFEASIBLE,
+    DECLINE_TO_FAILURE_REASON,
     _normalize_signature, _signature_prefix, _is_sorry_stub,
     _grep_forbidden, _slug_from_filename,
     _inject_imports_for_subs, _lean_path_to_module,
@@ -556,11 +556,17 @@ def _backward_parse_and_commit(
     # leading block routes through the decline channel.
     leading = _extract_leading_comments(main_patch_text)
     decline = _extract_decline_reason(leading)
-    if decline == DECLINE_PARENT_TYPE_INFEASIBLE:
+    if decline is not None:
+        # Map directive to DB failure_reason. Unknown directive strings
+        # (typos / partial migration) fall through to agent_declined —
+        # cascade_one's generic-failure branch catches them. Backward
+        # cannot send `needs_decomposition` (Builder-only); if seen here
+        # the prompt failed to constrain the agent — log + treat as
+        # declined.
+        reason = DECLINE_TO_FAILURE_REASON.get(decline, "agent_declined")
         return _abort(
-            "agent_infeasible",
-            ("backward reports parent type infeasible; "
-             "leading comments must include counterexample"),
+            reason,
+            f"backward declined: {decline}",
             leading,
         )
 
