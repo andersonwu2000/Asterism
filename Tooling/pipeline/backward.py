@@ -169,6 +169,41 @@ def _parse_entry_kind(lean_text: str) -> str:
 # Pipeline entry
 # ---------------------------------------------------------------------
 
+def _build_rescue_prompt_backward(workspace: Path) -> str:
+    """Inline force-ship prompt for stuck-thinking rescue. Re-emphasizes
+    the escape hatches the cold-start prompt covers (`prompts/backward.md`
+    `## Decline`, `## Stop signals`, `## Rules` last bullet) because the
+    rescue agent --resume's into a force-ship narrowing its attention to
+    whatever options the inline prompt enumerates. Empirically (SG g224
+    2026-05-09) silent-thinking turns happen when the rescue prompt only
+    lists the success-path options, so agents that have realized the
+    sub-goal is unprovable but haven't found a sorry-stub path don't
+    decline — they just keep thinking until watchdog kills.
+
+    The minutes value tracks `dispatch.rescue_timeout_sec` so prompt
+    text doesn't drift from the actual spawn budget."""
+    from .. import config as _cfg
+    from ..llm.base import RESCUE_BUDGET_SEC
+    rescue_sec = _cfg.get(
+        "dispatch.rescue_timeout_sec",
+        default=RESCUE_BUDGET_SEC,
+        env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
+        workspace=workspace,
+    )
+    rescue_min = max(1, rescue_sec // 60)
+    return (
+        "Killed mid-think. Ship now ONE of:\n"
+        "(a) patch.lean + new_<slug>.lean stubs (`:= by sorry` ok)\n"
+        "(b) patch.lean alone if a sorry-free direct proof of the parent "
+        "compiles (leaf-bypass)\n"
+        "(c) patch.lean with `-- decline: parent_type_infeasible` + "
+        "counterexample / named missing hypothesis (no sub-goals)\n"
+        "You write types not proofs — don't grind sub-goal details in "
+        "your head. No analysis.\n"
+        f"{rescue_min} minutes left. Act now."
+    )
+
+
 def run_backward(conn: sqlite3.Connection, *, goal_id: int,
                  workspace: Path, mfst: manifest.Manifest,
                  pipeline_id: str) -> "PipelineResult":  # noqa: F821
@@ -466,10 +501,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             spawn_fn=backward_spawn,
             parse_fn=backward_parse,
             postmortem_fn=backward_postmortem,
-            rescue_prompt=(
-                "Killed mid-think. Ship now: patch.lean + new_<slug>.lean "
-                "stubs (`:= by sorry` ok). No analysis."
-            ),
+            rescue_prompt=_build_rescue_prompt_backward(workspace),
             workspace=workspace,
             reflection_fn=backward_reflection,
         )

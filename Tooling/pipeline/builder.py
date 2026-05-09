@@ -27,6 +27,32 @@ from pathlib import Path
 from .. import agent, db, diagnostics, manifest
 
 
+def _build_rescue_prompt_builder(workspace: Path) -> str:
+    """Inline force-ship prompt for stuck-thinking rescue. Re-emphasizes
+    the two `## Decline` reasons in `prompts/builder.md` so the rescue
+    agent — which --resume's into force-ship attention narrowing — has
+    a concrete escape if the goal is too hard or unprovable. Minutes
+    track `dispatch.rescue_timeout_sec` to avoid drift."""
+    from .. import config as _cfg
+    from ..llm.base import RESCUE_BUDGET_SEC
+    rescue_sec = _cfg.get(
+        "dispatch.rescue_timeout_sec",
+        default=RESCUE_BUDGET_SEC,
+        env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
+        workspace=workspace,
+    )
+    rescue_min = max(1, rescue_sec // 60)
+    return (
+        "Killed mid-think. Ship now ONE of:\n"
+        "(a) patch.lean with current proof (`:= by sorry` ok)\n"
+        "(b) patch.lean with `-- decline: too_hard` (escalate to Backward)\n"
+        "(c) patch.lean with `-- decline: parent_type_infeasible` + "
+        "concrete counterexample (only if you found one)\n"
+        "No analysis.\n"
+        f"{rescue_min} minutes left. Act now."
+    )
+
+
 def run_builder(conn: sqlite3.Connection, *, goal_id: int,
                 workspace: Path, mfst: manifest.Manifest,
                 pipeline_id: str) -> "PipelineResult":  # noqa: F821
@@ -422,10 +448,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             spawn_fn=builder_spawn,
             parse_fn=builder_parse,
             postmortem_fn=builder_postmortem,
-            rescue_prompt=(
-                "Killed mid-think. Ship now: patch.lean with current proof "
-                "(`:= by sorry` ok). No analysis."
-            ),
+            rescue_prompt=_build_rescue_prompt_builder(workspace),
             workspace=workspace,
             reflection_fn=builder_reflection,
         )
