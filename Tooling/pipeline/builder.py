@@ -240,11 +240,18 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         if ctx.rescue_prompt:
             from .. import config as _cfg
             from ..llm.base import RESCUE_BUDGET_SEC
-            rescue_budget = _cfg.get(
-                "dispatch.rescue_timeout_sec",
-                default=RESCUE_BUDGET_SEC,
-                env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
-            )
+            # Two-phase rescue: helper sets `rescue_budget_override` on
+            # the STOP spawn so it gets ~30s instead of the default
+            # rescue budget. None override → use the standard
+            # dispatch.rescue_timeout_sec for the actual rescue spawn.
+            if ctx.rescue_budget_override is not None:
+                rescue_budget = ctx.rescue_budget_override
+            else:
+                rescue_budget = _cfg.get(
+                    "dispatch.rescue_timeout_sec",
+                    default=RESCUE_BUDGET_SEC,
+                    env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
+                )
             mcp_config_path = _write_mcp_config(
                 attempts_dir=ctx.attempts_dir,
                 workspace=workspace, target=goal_lean,

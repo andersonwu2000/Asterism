@@ -107,6 +107,22 @@ def goal_still_active(conn: sqlite3.Connection, goal_id: int,
     return True
 
 
+# Two-phase rescue (2026-05-10): inject STOP_PROMPT first to clear
+# Sonnet's deep-thinking pattern, then inject the actual rescue prompt
+# with normal budget. Empirical evidence (16176de5 probe): single
+# rescue spawn into a max_tokens-broken session re-deadlocks (~7min
+# silent thinking, no tool_use); STOP injection elicits a tiny
+# end_turn ack in ~3s, after which the rescue prompt produces a
+# structured response (~75s, full Backward decomposition shipped).
+# The STOP phase is cheap (~5s startup + ~3s API) and the recovered
+# rescue success rate makes the overhead trivially worth it.
+STOP_PROMPT = (
+    "STOP THINKING IMMEDIATELY. STOP THINKING IMMEDIATELY. "
+    "STOP THINKING IMMEDIATELY."
+)
+_DEFAULT_STOP_TIMEOUT_SEC = 30
+
+
 @dataclass
 class SpawnCtx:
     """Per-attempt context handed to the kind-specific spawn callback.
@@ -119,14 +135,21 @@ class SpawnCtx:
     `rescue_prompt` is set by the helper after a stuck-thinking kill:
     the spawn function should --resume the same sid with this prompt
     inline (no Context.md re-injection, no template loading) and a
-    tight 180s timeout. Bypasses the watchdog (rescue is already
-    short). When None, normal cold/warm flow applies.
+    tight rescue-budget timeout. Bypasses the watchdog (rescue is
+    already short). When None, normal cold/warm flow applies.
+
+    `rescue_budget_override` lets the helper set a different budget
+    for a specific rescue spawn. Used by the two-phase rescue: STOP
+    spawn gets `dispatch.stop_timeout_sec` (~30s), the actual rescue
+    spawn gets `dispatch.rescue_timeout_sec` (~180s, the default when
+    override is None).
     """
     sid: str
     cold: bool
     retry_context: str | None
     attempts_dir: Path
     rescue_prompt: str | None = None
+    rescue_budget_override: int | None = None
 
 
 SpawnFn = Callable[[SpawnCtx], int]
@@ -378,17 +401,45 @@ def run_with_session_retries(
         if rc == SpawnRC.STUCK_THINKING:
             # Watchdog killed the spawn for >10min without any tool_use
             # event in the session jsonl — Sonnet's runaway-thinking
-            # trap. One tight-budget rescue spawn: --resume the same
-            # session, force-ship prompt, 180s cap. The rescue agent
-            # has session memory of the killed turn (its tool history)
-            # and is asked to ship whatever decomposition it had in
-            # mind, no further analysis.
+            # trap. Two-phase rescue (revised 2026-05-10):
+            #
+            #   Phase 1 — STOP injection (~30s budget): inject
+            #   STOP_PROMPT to clear Sonnet's deep-thinking pattern.
+            #   Empirical evidence (16176de5 probe): a single rescue
+            #   spawn into a max_tokens-broken session re-deadlocks
+            #   (~7min silent thinking, no tool_use); injecting STOP
+            #   first elicits a tiny end_turn ack in ~3s. The session
+            #   then has one cleanly-completed turn after the
+            #   deadlock, breaking the thinking loop. STOP rc is
+            #   informational only — proceed to Phase 2 regardless.
+            #
+            #   Phase 2 — actual rescue (~180s budget): inject the
+            #   kind-specific rescue_prompt. After STOP, this elicits
+            #   a structured response (~75s, full Backward
+            #   decomposition shipped in the probe).
             #
             # Rescue success → attach result, exit pipeline. Rescue
             # failure (parse fail / timeout / etc.) → record as a
             # buffered failure with reason='agent_stuck_thinking' and
             # continue the normal retry loop. The watchdog kill itself
             # consumes one budget slot (mirrors any other rc!=0).
+            from .. import config as _cfg
+            stop_budget = _cfg.get(
+                "dispatch.stop_timeout_sec",
+                default=_DEFAULT_STOP_TIMEOUT_SEC,
+                env_var="ASTERISM_STOP_TIMEOUT_SEC", cast=int,
+                workspace=workspace,
+            )
+            stop_t0 = time.monotonic()
+            stop_rc = spawn_fn(SpawnCtx(
+                sid=sid, cold=False, retry_context=None,
+                attempts_dir=attempts_dir,
+                rescue_prompt=STOP_PROMPT,
+                rescue_budget_override=stop_budget,
+            ))
+            stop_dur = time.monotonic() - stop_t0
+            print(f"[stop] sid={sid[:8]} rc={stop_rc} "
+                  f"dur={stop_dur:.0f}s", flush=True)
             rescue_t0 = time.monotonic()
             rescue_rc = spawn_fn(SpawnCtx(
                 sid=sid, cold=False, retry_context=None,
@@ -414,8 +465,9 @@ def run_with_session_retries(
                 continue
             # Rescue itself failed — record stuck-thinking and continue.
             buffer_failure("agent_stuck_thinking",
-                           f"watchdog killed prior spawn; rescue rc="
-                           f"{rescue_rc}, dur={rescue_dur:.0f}s")
+                           f"watchdog killed prior spawn; stop rc="
+                           f"{stop_rc} dur={stop_dur:.0f}s; rescue rc="
+                           f"{rescue_rc} dur={rescue_dur:.0f}s")
             last_reason = "agent_stuck_thinking"
             last_detail = f"rescue rc={rescue_rc}"
             continue

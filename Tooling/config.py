@@ -20,6 +20,7 @@ Field map (Asterism.yaml → env var fallback → built-in default):
     dispatch.spawn_timeout_sec     ASTERISM_SPAWN_TIMEOUT_SEC   900
     dispatch.postmortem_timeout_sec  ASTERISM_POSTMORTEM_TIMEOUT_SEC  180
     dispatch.rescue_timeout_sec    ASTERISM_RESCUE_TIMEOUT_SEC  180
+    dispatch.stop_timeout_sec      ASTERISM_STOP_TIMEOUT_SEC    30
     dispatch.idle_window_sec       ASTERISM_IDLE_WINDOW_SEC     480
     gateway.workers                ASTERISM_GATEWAY_WORKERS     4
     gateway.port                   ASTERISM_GATEWAY_PORT        8765

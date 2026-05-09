@@ -212,9 +212,14 @@ def test_backward_rescue_bail_via_progress_md_persists_draft(
     gid = _seed_root_goal(tmp_path, conn)
     spawn_calls: list[dict] = []
 
+    from Tooling.pipeline._retry import STOP_PROMPT
+
     def fake_spawn(**kw):
         spawn_calls.append(kw)
-        # Iter 0 main: stuck. Iter 0 rescue: writes _progress.md.
+        # Iter 0 main: stuck. STOP spawn: ack ok. Rescue spawn:
+        # writes _progress.md (bail).
+        if kw.get("rescue_prompt") == STOP_PROMPT:
+            return SpawnRC.OK
         if kw.get("is_rescue"):
             (kw["attempts_dir"] / "_progress.md").write_text(
                 "Tried Kelly minimiser shape with 3 sub-lemmas; could "
@@ -237,10 +242,13 @@ def test_backward_rescue_bail_via_progress_md_persists_draft(
     body = draft.read_text(encoding="utf-8")
     assert "Kelly minimiser" in body
     assert "perpendicular-distance" in body
-    # 2 spawn invocations: main (stuck) + rescue (bail).
-    assert len(spawn_calls) == 2
+    # 3 spawn invocations: main (stuck) + STOP + rescue (bail).
+    assert len(spawn_calls) == 3
     assert spawn_calls[0].get("is_rescue") in (None, False)
     assert spawn_calls[1]["is_rescue"] is True
+    assert spawn_calls[1]["rescue_prompt"] == STOP_PROMPT
+    assert spawn_calls[2]["is_rescue"] is True
+    assert spawn_calls[2]["rescue_prompt"] != STOP_PROMPT
 
 
 def test_backward_progress_md_with_real_split_does_not_trigger_bail(
