@@ -243,6 +243,57 @@ def test_backward_rescue_bail_via_progress_md_persists_draft(
     assert spawn_calls[1]["is_rescue"] is True
 
 
+def test_backward_progress_md_with_real_split_does_not_trigger_bail(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bail discriminator must require an empty patch.lean skeleton
+    (no leading + sorry body) AND no new_*.lean files. SG run #6 g266
+    pattern: cold-spawn agent finished a valid split (real patch.lean
+    leading + new_<slug>.lean stub) AND ALSO wrote _progress.md as a
+    cargo-cult bonus before subprocess timeout. The strict
+    discriminator must NOT route this to agent_bailed — losing valid
+    work to a false-positive bail would be worse than the original
+    discard-on-timeout bug we just fixed."""
+    gid = _seed_root_goal(tmp_path, conn)
+
+    def fake_spawn(**kw):
+        attempts = kw["attempts_dir"]
+        # Replicate the agent's three writes (matches g266 timeline):
+        # patch.lean with leading + body, new_<slug>.lean stub, then
+        # _progress.md as bonus note.
+        patch_text = (attempts / "patch.lean").read_text(encoding="utf-8")
+        # Add leading comment + change body away from sorry stub.
+        (attempts / "patch.lean").write_text(
+            "-- s_one: real Kelly minimiser sketch\n"
+            + patch_text.replace(":= by sorry", ":= by exact sub_one"),
+            encoding="utf-8")
+        (attempts / "new_sub_one.lean").write_text(
+            "-- sub_one: real sub-lemma\n"
+            "import Mathlib\nnamespace Problems.p\n"
+            "theorem sub_one : True := by sorry\n"
+            "end Problems.p\n",
+            encoding="utf-8")
+        (attempts / "_progress.md").write_text(
+            "## Progress note for next spawn\n"
+            "Status: validate_file passed; files written; no blocker.\n",
+            encoding="utf-8")
+        return SpawnRC.OK
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    monkeypatch.setattr(pipeline, "_lake_build_batch",
+                        lambda ws, ts: (True, ""))
+
+    r = pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=manifest.Manifest(problem="p", statement="True"),
+        pipeline_id="pid-bw-no-false-bail")
+    # Discriminator passed — parse continues and treats this as a real
+    # decomposition commit (or whatever downstream parse decides).
+    # Critical: NOT agent_bailed.
+    assert r.failure_reason != "agent_bailed", (
+        f"strict bail discriminator failed: real split + _progress.md "
+        f"was misclassified as bail. outcome={r.outcome}, "
+        f"reason={r.failure_reason}, detail={r.failure_detail}")
 
 
 def test_backward_wrapper_clears_draft_on_goal_no_longer_open(

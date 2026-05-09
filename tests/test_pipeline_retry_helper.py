@@ -276,14 +276,23 @@ def test_terminal_decline_reasons_exit_without_buffering(
 # rc-classified outcomes
 # ---------------------------------------------------------------------
 
-def test_timeout_calls_postmortem_then_returns_exhausted(
+def test_timeout_no_salvage_calls_postmortem_then_returns_exhausted(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """rc=124 on iter 0: postmortem called once with the killed sid,
-    timeout buffered, return outcome='exhausted'."""
+    """rc=124 on iter 0: helper attempts a salvage parse first; when
+    parse returns a non-terminal failure (incomplete output on disk),
+    falls through to postmortem + forced exhaust. This preserves the
+    pre-`b6ece82` behavior for genuinely timed-out spawns with no
+    usable output."""
     gid = _seed_goal(conn, attempts=0)
     seen, spawn_fn = _spawn_returning([SpawnRC.TIMEOUT])
-    _, parse_fn = _parse_returning([])  # never called
+    # Parse returns a non-terminal failure → salvage skipped, postmortem
+    # path engages.
+    _, parse_fn = _parse_returning([
+        PipelineResult(outcome="failed",
+                       failure_reason="parse_proposal_fail",
+                       failure_detail="no usable patch on disk"),
+    ])
     pm_log, pm_fn = _make_postmortem_recorder()
 
     r = run_with_session_retries(
@@ -298,6 +307,120 @@ def test_timeout_calls_postmortem_then_returns_exhausted(
     assert pm_log[0] == seen[0].sid  # postmortem on the killed session
     assert len(r.pending_failures) == 1
     assert r.pending_failures[0]["reason"] == "agent_timeout"
+
+
+def test_timeout_salvages_when_parse_returns_success(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """rc=124 but the agent left valid output on disk before the
+    subprocess was killed (typical Sonnet pattern under the idle-window
+    guard: writes complete by ~+880s, kept doing tool_use, killed at
+    +900s). Helper's salvage parse returns 'proved'/'success'; helper
+    honors it without postmortem + without buffering a timeout failure."""
+    gid = _seed_goal(conn, attempts=0)
+    _, spawn_fn = _spawn_returning([SpawnRC.TIMEOUT])
+    _, parse_fn = _parse_returning([
+        PipelineResult(outcome="proved"),
+    ])
+    pm_log, pm_fn = _make_postmortem_recorder()
+
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-timeout-salvage",
+        budget_threshold=3, shelve_threshold=8,
+        attempts_dir=tmp_path,
+        spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
+    )
+    assert r.outcome == "proved"
+    # Postmortem must NOT run when salvage succeeds.
+    assert pm_log == []
+    # No buffered failure for the timeout itself — salvage replaces it.
+    assert r.pending_failures == []
+
+
+def test_timeout_no_salvage_folds_parse_reason_into_detail(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """When TIMEOUT salvage parse returns a non-terminal failure (e.g.
+    lake_build_error from a partially-written patch), we still fall
+    through to postmortem + forced exhaust with reason=agent_timeout
+    (preserving the operator-level "this was a timeout" signal). But
+    the parse outcome is folded into failure_detail so forensics can
+    distinguish "agent wrote nothing" vs "agent wrote a broken patch"."""
+    gid = _seed_goal(conn, attempts=0)
+    _, spawn_fn = _spawn_returning([SpawnRC.TIMEOUT])
+    _, parse_fn = _parse_returning([
+        PipelineResult(outcome="failed",
+                       failure_reason="lake_build_error",
+                       failure_detail="unknown identifier `foo`"),
+    ])
+    pm_log, pm_fn = _make_postmortem_recorder()
+
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-timeout-fold",
+        budget_threshold=3, shelve_threshold=8,
+        attempts_dir=tmp_path,
+        spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
+    )
+    # Reason stays agent_timeout — TIMEOUT classification preserved.
+    assert r.outcome == "exhausted"
+    assert r.failure_reason == "agent_timeout"
+    # Parse outcome folded into detail for forensic transparency.
+    assert "lake_build_error" in (r.failure_detail or "")
+    assert "unknown identifier" in (r.failure_detail or "")
+    # Postmortem still ran (no salvage success).
+    assert len(pm_log) == 1
+
+
+def test_timeout_no_salvage_records_parse_exception_in_detail(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """When salvage parse itself raises (DB / FS error mid-commit),
+    the exception type+message lands in failure_detail so forensics
+    can see it. Reason stays agent_timeout, postmortem still runs."""
+    gid = _seed_goal(conn, attempts=0)
+    _, spawn_fn = _spawn_returning([SpawnRC.TIMEOUT])
+
+    def raising_parse() -> PipelineResult:
+        raise OSError("disk read failed mid-parse")
+    pm_log, pm_fn = _make_postmortem_recorder()
+
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-timeout-raise",
+        budget_threshold=3, shelve_threshold=8,
+        attempts_dir=tmp_path,
+        spawn_fn=spawn_fn, parse_fn=raising_parse, postmortem_fn=pm_fn,
+    )
+    assert r.outcome == "exhausted"
+    assert r.failure_reason == "agent_timeout"
+    assert "OSError" in (r.failure_detail or "")
+    assert "disk read failed" in (r.failure_detail or "")
+    assert len(pm_log) == 1
+
+
+def test_timeout_salvage_honors_terminal_decline_directive(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """If the agent already shipped a `decline:` directive in patch.lean
+    before subprocess timeout, salvage parse returns the decline reason
+    (in `_TERMINAL_DECLINE_REASONS`); helper exits without postmortem."""
+    gid = _seed_goal(conn, attempts=0)
+    _, spawn_fn = _spawn_returning([SpawnRC.TIMEOUT])
+    _, parse_fn = _parse_returning([
+        PipelineResult(outcome="failed",
+                       failure_reason="agent_infeasible",
+                       failure_detail="counterexample on patch.lean"),
+    ])
+    pm_log, pm_fn = _make_postmortem_recorder()
+
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-timeout-decline",
+        budget_threshold=3, shelve_threshold=8,
+        attempts_dir=tmp_path,
+        spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
+    )
+    assert r.outcome == "failed"
+    assert r.failure_reason == "agent_infeasible"
+    assert pm_log == []
 
 
 def test_stale_session_on_warm_remints_in_place_no_budget_consumed(

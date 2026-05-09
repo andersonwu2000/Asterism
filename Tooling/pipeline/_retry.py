@@ -305,12 +305,66 @@ def run_with_session_retries(
                 failure_detail=f"agent rc={rc} (CLI missing / not installed)"))
 
         if rc == SpawnRC.TIMEOUT:
-            # Decision 3: timeout → postmortem on the killed session,
-            # then forced exhaust. Postmortem writes _progress.md
-            # which the outer wrapper persists into .drafts/ for the
-            # next cold pipeline to read.
+            # Decision 3 (revised 2026-05-10): salvage parse before
+            # postmortem. The watchdog's idle-window guard
+            # (Tooling/llm/claude_cli.py) defers wall_cap kills for
+            # agents that are still emitting tool_use, leaving them
+            # only `rescue_timeout_sec` seconds to wrap up before
+            # subprocess timeout. Sonnet's empirical pattern is to
+            # finish writing patch.lean + new_*.lean and then keep
+            # running tool_use (extra `ls` self-checks, optional
+            # `_progress.md` notes) past the natural exit point —
+            # subprocess.TimeoutExpired fires, rc=124, files are valid
+            # on disk but the old code path discarded them.
+            #
+            # Salvage: try parse_fn(); if it returns a terminal-
+            # success outcome OR a terminal-decline directive (agent
+            # explicitly signaled via patch.lean even mid-think), honor
+            # it. Only fall through to postmortem + forced exhaust when
+            # the on-disk output is genuinely incomplete / malformed.
+            #
+            # Pre-existing risk note: parse_fn can mutate DB / disk
+            # mid-execution and raise without rollback. This risk
+            # exists on the rc=0 path too (every successful spawn
+            # invokes parse_fn the same way); salvage doesn't introduce
+            # new risk, only exposes the same risk to one more rc.
+            # Adding transactional wrapping is a separate refactor.
+            salvage_note = ""
+            timeout_result: PipelineResult | None = None
+            try:
+                timeout_result = parse_fn()
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                salvage_note = (f"salvage parse raised "
+                                f"{type(exc).__name__}: {exc}")
+                print(f"[timeout-salvage] sid={sid[:8]} {salvage_note}; "
+                      f"falling back to postmortem", flush=True)
+            if timeout_result is not None and (
+                timeout_result.outcome in _TERMINAL_SUCCESS_OUTCOMES
+                or timeout_result.failure_reason
+                in _TERMINAL_DECLINE_REASONS
+            ):
+                print(f"[timeout-salvage] sid={sid[:8]} salvaged "
+                      f"outcome={timeout_result.outcome} "
+                      f"reason={timeout_result.failure_reason} despite "
+                      f"subprocess timeout", flush=True)
+                return attach(timeout_result)
+            # No salvage — run postmortem on the killed session, force
+            # exhaust. Fold the parse outcome into failure_detail so
+            # forensics can distinguish "agent wrote nothing usable"
+            # (parse_proposal_fail) from "agent wrote a broken patch"
+            # (lake_build_error / patch_signature_mismatch / ...) from
+            # "salvage parse itself raised". Reason stays `agent_timeout`
+            # so the operator-level "this is a timeout" signal is not
+            # lost — TIMEOUT remains the primary classification.
             postmortem_fn(sid)
             reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
+            if timeout_result is not None:
+                salvage_note = (
+                    f"salvage parse: outcome={timeout_result.outcome} "
+                    f"reason={timeout_result.failure_reason} detail="
+                    f"{(timeout_result.failure_detail or '')[:200]}")
+            if salvage_note:
+                detail = f"{detail}; {salvage_note}"
             buffer_failure(reason, detail)
             return attach(PipelineResult(outcome="exhausted",
                                          failure_reason=reason,

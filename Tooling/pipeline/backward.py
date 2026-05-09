@@ -562,16 +562,25 @@ def _backward_parse_and_commit(
     so warm retries can run against the same row.
     """
     from . import PipelineResult
+    patches = _safe_glob(attempts_dir, "patch*.lean")
+    if not patches:
+        return _abort("parse_proposal_fail", "no patch.lean")
+    main_patch_text = patches[0].read_text(encoding="utf-8")
+
     # Bail-for-postmortem detection (Backward rescue option d): the
     # rescue prompt offers the agent a "write _progress.md and exit"
-    # path when not confident in any split. Detect this before patch.
-    # lean checks below — agent may leave the cold-start skeleton
-    # patch.lean (`:= by sorry` only) which would otherwise route through
-    # parse_proposal_fail or leaf-bypass salvage. _progress.md presence
-    # is the explicit sentinel and takes precedence. Failure_reason
-    # `agent_bailed` is in `_TERMINAL_DECLINE_REASONS`, so the helper
-    # exits the retry loop; the outer `run_backward` wrapper then
-    # persists `_progress.md` to .drafts/ for the next cold dispatch.
+    # path when not confident in any split. Discriminator must be
+    # strict — false-positive bail loses real strategy commits. Bail
+    # only when the agent's *only* meaningful output is _progress.md:
+    # patch.lean is unchanged from the cold-start skeleton (no leading
+    # comment, sorry body) AND no new_<slug>.lean files. Observed in
+    # SG run #6 (g266 sid=d4230668): a productive cold-spawn agent
+    # cargo-culted the postmortem format and wrote _progress.md after
+    # finishing a valid split — without this discriminator, that win
+    # would be discarded as bail. failure_reason `agent_bailed` is in
+    # `_TERMINAL_DECLINE_REASONS`, so the helper exits the retry loop;
+    # the outer `run_backward` wrapper then persists `_progress.md` to
+    # .drafts/ for the next cold dispatch.
     progress = attempts_dir / "_progress.md"
     if progress.exists():
         try:
@@ -579,15 +588,17 @@ def _backward_parse_and_commit(
         except OSError:
             note = ""
         if note:
-            return _abort(
-                "agent_bailed",
-                "agent wrote _progress.md instead of committing a "
-                "split (Backward rescue option d).",
-            )
-    patches = _safe_glob(attempts_dir, "patch*.lean")
-    if not patches:
-        return _abort("parse_proposal_fail", "no patch.lean")
-    main_patch_text = patches[0].read_text(encoding="utf-8")
+            bail_leading = _extract_leading_comments(main_patch_text)
+            bail_new_subs = _safe_glob(attempts_dir, "new_*.lean")
+            if (not bail_leading.strip()
+                    and not bail_new_subs
+                    and _is_sorry_stub(main_patch_text)):
+                return _abort(
+                    "agent_bailed",
+                    "agent wrote _progress.md and left patch.lean as "
+                    "skeleton with no sub-goals (Backward rescue "
+                    "option d).",
+                )
 
     # Phase 6 single-output: leading comment block on patch.lean is the
     # strategy's annotation source (later propagates to the parent goal
