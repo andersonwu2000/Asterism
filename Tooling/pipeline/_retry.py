@@ -61,7 +61,16 @@ _TERMINAL_SUCCESS_OUTCOMES = frozenset({"proved", "success"})
 #     building). Retrying the same session against a terminated goal
 #     accomplishes nothing.
 _TERMINAL_DECLINE_REASONS = frozenset({
-    "agent_declined", "agent_infeasible", "goal_no_longer_open",
+    # Decline directives that the in-pipeline retry helper must NOT
+    # silently retry — the agent has emitted a structured signal that
+    # this goal is done at this level. cascade_one routes each by
+    # failure_reason; helper just stops the loop.
+    "agent_declined",       # needs_decomposition → entry_kind switch to Backward
+    "agent_infeasible",     # unprovable → shelve + cascade up
+    "parent_needs_fix",     # return_to_parent → shelve + cascade up + fix hint
+    "agent_shelved",        # shelve → shelve + cascade up
+    # Race-detected mid-parse: a sibling already terminated this goal.
+    "goal_no_longer_open",
 })
 
 
@@ -219,10 +228,10 @@ def run_with_session_retries(
 
     def _maybe_reflect(result: PipelineResult) -> None:
         # Reflection trigger gate (decision 5 from agent_brief_lessons
-        # design): proved / success / exhausted / agent_declined /
-        # agent_infeasible. Skip moot (no agent ran), goal_no_longer_open
-        # (race-detected, no agent learning), and infra rcs
-        # (spawn_fast_fail / quota_exhausted / missing_dep).
+        # design): proved / success / exhausted plus all decline
+        # directives that signal real agent learning. Skip moot (no
+        # agent ran), goal_no_longer_open (race-detected, no learning),
+        # and infra rcs (spawn_fast_fail / quota_exhausted / missing_dep).
         if reflection_fn is None:
             return
         if result.outcome == "moot":
@@ -234,8 +243,12 @@ def run_with_session_retries(
             return
         triggered = (
             result.outcome in ("proved", "success", "exhausted")
-            or result.failure_reason in ("agent_declined",
-                                         "agent_infeasible")
+            or result.failure_reason in (
+                "agent_declined",       # needs_decomposition directive
+                "agent_infeasible",     # unprovable directive
+                "parent_needs_fix",     # return_to_parent directive
+                "agent_shelved",        # shelve directive
+            )
         )
         if not triggered:
             return

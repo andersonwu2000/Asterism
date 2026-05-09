@@ -62,7 +62,13 @@ from typing import Any
 # Context.md.
 _NON_AGENT_REASONS: frozenset[str] = frozenset({
     "spawn_fast_fail",
+    # All three decline directives that cascade up are cross-projected
+    # via `infeasible_subs` to the parent's context.md. They must NOT
+    # also appear in the goal's own direct_attempts projection (would
+    # be a duplicate signal).
     "agent_infeasible",
+    "parent_needs_fix",
+    "agent_shelved",
     "goal_not_found",
     "lean_file_missing",
     "missing_parent_stub",

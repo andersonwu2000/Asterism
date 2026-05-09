@@ -241,6 +241,7 @@ def test_all_iters_fail_returns_exhausted(conn: sqlite3.Connection,
 
 @pytest.mark.parametrize("reason", [
     "agent_declined", "agent_infeasible", "goal_no_longer_open",
+    "parent_needs_fix", "agent_shelved",
 ])
 def test_terminal_decline_reasons_exit_without_buffering(
     conn: sqlite3.Connection, tmp_path: Path, reason: str,
