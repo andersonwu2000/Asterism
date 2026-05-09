@@ -176,10 +176,8 @@ def test_acquire_slot_hot_path_no_swap(
         def __init__(self): self.calls = []
         def did_change_full(self, *a, **kw): self.calls.append("didChange")
         def clear_diagnostics(self, *a): self.calls.append("clear")
-        def clear_file_progress(self, *a): self.calls.append("clear_fp")
-        def wait_for_file_done(self, *a, **kw): self.calls.append("wait_done")
-        def wait_for_diagnostics_settled(self, *a, **kw):
-            self.calls.append("wait_settled"); return []
+        def wait_for_diagnostics(self, *a, **kw):
+            self.calls.append("wait_diag")
     fake = _FakeBackend()
     monkeypatch.setattr(lsp_gateway._state, "backend", fake)
 
@@ -188,8 +186,9 @@ def test_acquire_slot_hot_path_no_swap(
         problem="p", workspace=tmp_path, log_path=None,
         file_content="content for pipe-A",
     )
-    with lsp_gateway._acquire_slot(meta, swap_in=True) as s:
+    with lsp_gateway._acquire_slot(meta, swap_in=True) as (s, kind):
         assert s.slot_id == 1  # the one loaded with pipe-A
+        assert kind == "hot"
     # No didChange / clear calls — pure hot-path acquire.
     assert fake.calls == []
 
@@ -208,9 +207,7 @@ def test_acquire_slot_cold_path_picks_lru(
         def __init__(self): self.calls = []
         def did_change_full(self, p, c, v): self.calls.append(("didChange", v))
         def clear_diagnostics(self, *a): self.calls.append("clear")
-        def clear_file_progress(self, *a): self.calls.append("clear_fp")
-        def wait_for_file_done(self, *a, **kw): pass
-        def wait_for_diagnostics_settled(self, *a, **kw): return []
+        def wait_for_diagnostics(self, *a, **kw): pass
     fake = _FakeBackend()
     monkeypatch.setattr(lsp_gateway._state, "backend", fake)
 
@@ -219,9 +216,11 @@ def test_acquire_slot_cold_path_picks_lru(
         problem="p", workspace=tmp_path, log_path=None,
         file_content="hello",
     )
-    with lsp_gateway._acquire_slot(meta, swap_in=True) as s:
+    with lsp_gateway._acquire_slot(meta, swap_in=True) as (s, kind):
         assert s.slot_id == 2  # LRU
         assert s.loaded_pipeline_id == "pipe-NEW"  # marked after swap
+        # Slot 2 starts at loaded=None → first-use warmup, not eviction.
+        assert kind == "cold_warmup"
     assert ("didChange", 3) in fake.calls  # version bumped from 2 → 3
 
 
@@ -238,9 +237,7 @@ def test_acquire_slot_skip_swap_in_for_apply_edit(
         def __init__(self): self.calls = []
         def did_change_full(self, *a, **kw): self.calls.append("didChange")
         def clear_diagnostics(self, *a): self.calls.append("clear")
-        def clear_file_progress(self, *a): self.calls.append("clear_fp")
-        def wait_for_file_done(self, *a, **kw): pass
-        def wait_for_diagnostics_settled(self, *a, **kw): return []
+        def wait_for_diagnostics(self, *a, **kw): pass
     fake = _FakeBackend()
     monkeypatch.setattr(lsp_gateway._state, "backend", fake)
 
@@ -249,9 +246,10 @@ def test_acquire_slot_skip_swap_in_for_apply_edit(
         problem="p", workspace=tmp_path, log_path=None,
         file_content="hello",
     )
-    with lsp_gateway._acquire_slot(meta, swap_in=False) as s:
+    with lsp_gateway._acquire_slot(meta, swap_in=False) as (s, kind):
         # Got the slot; no swap-in performed.
         assert s.slot_id == 0
+        assert kind == "cold_noswap"
     assert "didChange" not in fake.calls
     assert "clear" not in fake.calls
 
@@ -268,9 +266,7 @@ def test_acquire_slot_lock_excludes_concurrent_acquire(
     class _FakeBackend:
         def did_change_full(self, *a, **kw): pass
         def clear_diagnostics(self, *a): pass
-        def clear_file_progress(self, *a): pass
-        def wait_for_file_done(self, *a, **kw): pass
-        def wait_for_diagnostics_settled(self, *a, **kw): return []
+        def wait_for_diagnostics(self, *a, **kw): pass
     monkeypatch.setattr(lsp_gateway._state, "backend", _FakeBackend())
 
     meta = lsp_gateway.SessionMetadata(
