@@ -180,6 +180,16 @@ def _build_rescue_prompt_backward(workspace: Path) -> str:
     sub-goal is unprovable but haven't found a sorry-stub path don't
     decline — they just keep thinking until watchdog kills.
 
+    Backward-only option (d): bail — write `_progress.md` and exit. The
+    Backward decomposition's downstream cost is multiplicative (fan-out
+    over N sub-lemmas, each with own retry budget); a low-confidence
+    forced split that turns out wrong cascades parent_needs_fix back up
+    over multiple attempts before recovery. Letting the agent self-route
+    to postmortem when uncertain trades one attempt slot for a
+    structured note that the next cold-spawn picks up from. Inline
+    bail guideline mirrors `prompts/backward_postmortem.md` (the
+    standard post-timeout flow) so both paths produce the same artifact.
+
     The minutes value tracks `dispatch.rescue_timeout_sec` so prompt
     text doesn't drift from the actual spawn budget."""
     from .. import config as _cfg
@@ -192,12 +202,19 @@ def _build_rescue_prompt_backward(workspace: Path) -> str:
     )
     rescue_min = max(1, rescue_sec // 60)
     return (
-        "Killed mid-think. Ship now ONE of:\n"
-        "(a) patch.lean + new_<slug>.lean stubs (`:= by sorry` ok)\n"
-        "(b) patch.lean alone if a sorry-free direct proof of the parent "
-        "compiles (leaf-bypass)\n"
-        "(c) patch.lean with `-- decline: unprovable` + "
+        "Killed mid-think. Choose ONE:\n"
+        "(a) ship patch.lean + new_<slug>.lean stubs (`:= by sorry` ok)\n"
+        "(b) ship patch.lean alone if a sorry-free direct proof of the "
+        "parent compiles (leaf-bypass)\n"
+        "(c) ship patch.lean with `-- decline: unprovable` + "
         "counterexample (no sub-goals)\n"
+        "(d) bail — if you're NOT confident in any split, write "
+        "`_progress.md` and exit. No patch.lean. Capture in ≤200 words:\n"
+        "    • shape you were converging on (1 sentence)\n"
+        "    • any sub-piece with clear name+statement\n"
+        "    • the specific blocker\n"
+        "    • alternative direction (≤60 words) or 'none — direction sound'\n"
+        "    Next attempt picks up from your sketch.\n"
         "You write types not proofs — don't grind sub-goal details in "
         "your head. No analysis.\n"
         f"{rescue_min} minutes left. Act now."
@@ -545,6 +562,28 @@ def _backward_parse_and_commit(
     so warm retries can run against the same row.
     """
     from . import PipelineResult
+    # Bail-for-postmortem detection (Backward rescue option d): the
+    # rescue prompt offers the agent a "write _progress.md and exit"
+    # path when not confident in any split. Detect this before patch.
+    # lean checks below — agent may leave the cold-start skeleton
+    # patch.lean (`:= by sorry` only) which would otherwise route through
+    # parse_proposal_fail or leaf-bypass salvage. _progress.md presence
+    # is the explicit sentinel and takes precedence. Failure_reason
+    # `agent_bailed` is in `_TERMINAL_DECLINE_REASONS`, so the helper
+    # exits the retry loop; the outer `run_backward` wrapper then
+    # persists `_progress.md` to .drafts/ for the next cold dispatch.
+    progress = attempts_dir / "_progress.md"
+    if progress.exists():
+        try:
+            note = progress.read_text(encoding="utf-8").strip()
+        except OSError:
+            note = ""
+        if note:
+            return _abort(
+                "agent_bailed",
+                "agent wrote _progress.md instead of committing a "
+                "split (Backward rescue option d).",
+            )
     patches = _safe_glob(attempts_dir, "patch*.lean")
     if not patches:
         return _abort("parse_proposal_fail", "no patch.lean")

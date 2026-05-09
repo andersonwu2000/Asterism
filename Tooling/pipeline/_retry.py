@@ -69,6 +69,11 @@ _TERMINAL_DECLINE_REASONS = frozenset({
     "agent_infeasible",     # unprovable → shelve + cascade up
     "parent_needs_fix",     # return_to_parent → shelve + cascade up + fix hint
     "agent_shelved",        # shelve → shelve + cascade up
+    # Backward rescue option (d) — agent wrote `_progress.md` instead
+    # of committing a split when not confident. Terminal in this
+    # pipeline so the loop exits and `run_backward` outer wrapper
+    # persists the note into .drafts/ for the next cold dispatch.
+    "agent_bailed",
     # Race-detected mid-parse: a sibling already terminated this goal.
     "goal_no_longer_open",
 })

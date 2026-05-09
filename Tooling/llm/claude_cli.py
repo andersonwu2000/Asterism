@@ -200,42 +200,109 @@ _QUOTA_MARKERS = (
     "rate limit",
     "rate_limit_exceeded",
 )
-# Watchdog wall-clock cap: kill spawn at `req.timeout_sec -
-# RESCUE_BUDGET_SEC` regardless of agent activity. This guarantees the
-# retry helper has a 3-min window for the rescue spawn before subprocess
-# timeout fires. Without this, an agent making slow-but-steady tool_use
-# through ~14min on a 15min spawn hits subprocess timeout → postmortem
-# path (no rescue).
+# Watchdog policy: at the wall-clock cap (= `timeout_sec -
+# RESCUE_BUDGET_SEC`), kill the spawn ONLY if the agent has been idle
+# (no tool_use in the session jsonl) for ≥ `idle_window_sec`. The
+# wall_cap exists to guarantee the retry helper a rescue window before
+# subprocess timeout; the idle-window guard avoids killing agents that
+# are demonstrably making progress and would benefit from running to
+# their full budget + the standard postmortem flow.
 #
-# A previous design also had a "stuck-by-silence" trigger (kill if no
-# tool_use for ≥10min) intended to detect Sonnet's runaway-thinking trap
-# earlier than wall_cap. Empirical PN runs showed it never beat wall_cap
-# under default 15min timeout (silence has to start within minute 0-2 to
-# fire before wall_cap; agents typically work productively for several
-# minutes first). Removed for simplicity. If users tune timeout_sec to
-# very large values (e.g. 60min for Opus exploring deep problems), the
-# argument for re-adding stuck detection becomes stronger — wall_cap at
-# 57min would let a stuck agent waste ~50min before kill. Re-introduce
-# only when that scenario is real.
+# Trade-off vs the older unconditional wall_cap kill: a stuck-thinking
+# agent now wastes its rescue window if it had ANY tool_use within the
+# last `idle_window_sec` before wall_cap. Empirically, runaway thinking
+# is silent (no tool_use) so this is fine. Productive agents that hit
+# wall_cap with recent tool_use no longer get force-shipped via rescue
+# — they run to subprocess timeout and write a postmortem note instead,
+# which is the cheaper outcome for them.
+#
+# Re-introduced after `ff94493` removed it: SG run #5 (2026-05-10)
+# showed concrete cases where Backward agents hit wall_cap mid-active
+# work (kept emitting tool_use up to wall_cap) and got force-shipped
+# into bad splits — the multiplicative downstream cost (parent_needs_fix
+# cascade-up) made the unconditional kill the wrong default for
+# Backward, and the idle-window guard recovers the productive cases.
 _WATCHDOG_POLL_SEC = 30
+_DEFAULT_IDLE_WINDOW_SEC = 480
+# Floor on the wall_cap so misconfigured `timeout_sec < rescue_budget`
+# pairs (or tests that pass tiny timeouts) don't fire the watchdog
+# immediately. 60s is a safe minimum for any real spawn; tests
+# monkeypatch this down for fast watchdog assertions.
+_MIN_WALL_CAP_SEC = 60
+
+
+def _find_session_jsonl(sid: str) -> Path | None:
+    """Locate the per-session jsonl claude CLI maintains under
+    `~/.claude/projects/<encoded_cwd>/<sid>.jsonl`. Returns None if
+    not yet created (cold start race) or if the .claude tree is
+    missing entirely. Watchdog handles None by waiting another tick."""
+    base = Path.home() / ".claude" / "projects"
+    if not base.exists():
+        return None
+    target = f"{sid}.jsonl"
+    try:
+        for project_dir in base.iterdir():
+            cand = project_dir / target
+            if cand.exists():
+                return cand
+    except OSError:
+        pass
+    return None
+
+
+def _count_tool_use_events(log_path: Path) -> int:
+    """Count tool_use content blocks in a session jsonl. Tolerates
+    the trailing line being mid-write (claude appends as model streams)
+    via per-line try/except — partial JSON is silently skipped."""
+    count = 0
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return count
+    for line in text.splitlines():
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        msg = d.get("message", {}) or {}
+        content = msg.get("content", [])
+        if isinstance(content, list):
+            for c in content:
+                if isinstance(c, dict) and c.get("type") == "tool_use":
+                    count += 1
+    return count
 
 
 def _watchdog(proc: subprocess.Popen, sid: str, *,
               stuck_flag: list, timeout_sec: int,
               poll_interval: float = _WATCHDOG_POLL_SEC) -> None:
-    """Monitor `proc` and kill at the wall-clock cap
-    (= `timeout_sec - RESCUE_BUDGET_SEC`). Sets `stuck_flag[0] = True`
-    on kill so the caller can route the spawn to the rescue path
-    instead of subprocess-timeout postmortem. Runs in a daemon thread;
-    exits when `proc` finishes naturally."""
+    """Monitor `proc`; at the wall-clock cap
+    (= `timeout_sec - dispatch.rescue_timeout_sec`), kill only if the
+    agent has been silent for ≥ `dispatch.idle_window_sec`. Sets
+    `stuck_flag[0] = True` on kill so the caller can route the spawn to
+    the rescue path. If wall_cap is reached but the agent is still
+    active (recent tool_use), exit the watchdog quietly — the spawn
+    runs to its full subprocess timeout and the postmortem path takes
+    over. Runs in a daemon thread; exits when `proc` finishes naturally.
+    """
     from .. import config as _cfg
     rescue_budget = _cfg.get(
         "dispatch.rescue_timeout_sec",
         default=RESCUE_BUDGET_SEC,
         env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
     )
+    idle_window_sec = _cfg.get(
+        "dispatch.idle_window_sec",
+        default=_DEFAULT_IDLE_WINDOW_SEC,
+        env_var="ASTERISM_IDLE_WINDOW_SEC", cast=int,
+    )
     spawn_start = time.monotonic()
-    wall_cap_sec = max(60, timeout_sec - rescue_budget)
+    wall_cap_sec = max(_MIN_WALL_CAP_SEC, timeout_sec - rescue_budget)
+    log_path: Path | None = None
+    last_count = 0
+    last_progress = spawn_start
 
     def _kill(reason: str) -> None:
         stuck_flag[0] = True
@@ -249,8 +316,30 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
 
     while proc.poll() is None:
         time.sleep(poll_interval)
-        if time.monotonic() - spawn_start > wall_cap_sec:
-            _kill(f"wall cap {int(wall_cap_sec)}s reached")
+        now = time.monotonic()
+        # Track tool_use progress so the wall_cap check below can
+        # consult silence duration. The jsonl appears asynchronously
+        # after claude opens the session; tolerate None.
+        if log_path is None:
+            log_path = _find_session_jsonl(sid)
+        if log_path is not None:
+            new_count = _count_tool_use_events(log_path)
+            if new_count > last_count:
+                last_count = new_count
+                last_progress = now
+        if now - spawn_start > wall_cap_sec:
+            silence = now - last_progress
+            if silence >= idle_window_sec:
+                _kill(f"wall cap {int(wall_cap_sec)}s + idle "
+                      f"{int(silence)}s reached")
+            else:
+                # Agent still active at wall_cap — yield to subprocess
+                # timeout so the postmortem path (not rescue) handles it.
+                print(f"[watchdog] sid={sid[:8]} wall cap "
+                      f"{int(wall_cap_sec)}s reached but agent active "
+                      f"(silence={int(silence)}s < "
+                      f"{int(idle_window_sec)}s); deferring to "
+                      f"subprocess timeout + postmortem", flush=True)
             return
 
 # Asterism's pipelines need Read / Write / Edit for sandbox file

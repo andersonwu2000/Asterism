@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from Tooling import agent, db, manifest, pipeline
+from Tooling.llm.base import SpawnRC
 
 
 def _seed_root_goal(tmp_path: Path, conn: sqlite3.Connection) -> int:
@@ -194,6 +195,52 @@ def test_backward_wrapper_no_persist_when_no_postmortem_note(
         pipeline_id="pid-bw-nodump")
     draft = _bw_drafts_path(tmp_path, gid)
     assert not draft.exists()
+
+
+def test_backward_rescue_bail_via_progress_md_persists_draft(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backward rescue option (d) — main spawn is watchdog-killed
+    (rc=128 STUCK_THINKING), retry helper sends rescue spawn. Rescue
+    agent self-routes to postmortem: writes `_progress.md` instead of
+    committing a split, returns rc=0. Backward parse detects
+    `_progress.md` priority over patch.lean content and emits
+    failure_reason='agent_bailed' (terminal). Outer wrapper's persist
+    path captures the note into `.drafts/backward_g<id>.md` so the
+    next cold dispatch reads it via Context.md."""
+    gid = _seed_root_goal(tmp_path, conn)
+    spawn_calls: list[dict] = []
+
+    def fake_spawn(**kw):
+        spawn_calls.append(kw)
+        # Iter 0 main: stuck. Iter 0 rescue: writes _progress.md.
+        if kw.get("is_rescue"):
+            (kw["attempts_dir"] / "_progress.md").write_text(
+                "Tried Kelly minimiser shape with 3 sub-lemmas; could "
+                "not name the perpendicular-distance lemma. Direction "
+                "may need switching to a contradiction proof on "
+                "min-distance triple.",
+                encoding="utf-8")
+            return SpawnRC.OK
+        return SpawnRC.STUCK_THINKING
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    r = pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=manifest.Manifest(problem="p", statement="True"),
+        pipeline_id="pid-bw-bail")
+    assert r.failure_reason == "agent_bailed"
+    # Outer wrapper persists _progress.md to .drafts/ (non-success path).
+    draft = _bw_drafts_path(tmp_path, gid)
+    assert draft.exists()
+    body = draft.read_text(encoding="utf-8")
+    assert "Kelly minimiser" in body
+    assert "perpendicular-distance" in body
+    # 2 spawn invocations: main (stuck) + rescue (bail).
+    assert len(spawn_calls) == 2
+    assert spawn_calls[0].get("is_rescue") in (None, False)
+    assert spawn_calls[1]["is_rescue"] is True
 
 
 
