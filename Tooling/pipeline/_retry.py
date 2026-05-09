@@ -348,16 +348,21 @@ def run_with_session_retries(
                       f"reason={timeout_result.failure_reason} despite "
                       f"subprocess timeout", flush=True)
                 return attach(timeout_result)
-            # No salvage — run postmortem on the killed session, force
-            # exhaust. Fold the parse outcome into failure_detail so
+            # No salvage — capture failure detail FROM THE MAIN SPAWN's
+            # _spawn.stderr BEFORE calling postmortem, otherwise the
+            # postmortem spawn's own stderr (e.g. its own timeout
+            # "TimeoutExpired after 180s") overwrites the main's
+            # "TimeoutExpired after 900s" and operators reading
+            # dead_attempts.failure_detail get the wrong wall budget.
+            # Fold the salvage parse outcome into failure_detail so
             # forensics can distinguish "agent wrote nothing usable"
             # (parse_proposal_fail) from "agent wrote a broken patch"
             # (lake_build_error / patch_signature_mismatch / ...) from
             # "salvage parse itself raised". Reason stays `agent_timeout`
             # so the operator-level "this is a timeout" signal is not
             # lost — TIMEOUT remains the primary classification.
-            postmortem_fn(sid)
             reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
+            postmortem_fn(sid)
             if timeout_result is not None:
                 salvage_note = (
                     f"salvage parse: outcome={timeout_result.outcome} "

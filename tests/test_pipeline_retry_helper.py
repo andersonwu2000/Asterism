@@ -371,6 +371,57 @@ def test_timeout_no_salvage_folds_parse_reason_into_detail(
     assert len(pm_log) == 1
 
 
+def test_timeout_detail_is_main_spawn_stderr_not_postmortem(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Regression — `_spawn_failure` must read attempts_dir/_spawn.stderr
+    BEFORE postmortem_fn runs. Otherwise postmortem's own spawn writes
+    its own stderr (e.g. its 180s budget timeout) over the main spawn's
+    900s stderr, and operators reading dead_attempts.failure_detail get
+    the wrong wall budget — looks like "180s" when the main spawn
+    actually ran the full 900s. Observed in SG run #6 g266 retry
+    pipeline 0187e8d1 (dead_attempt 128)."""
+    gid = _seed_goal(conn, attempts=0)
+    _, spawn_fn = _spawn_returning([SpawnRC.TIMEOUT])
+    # Salvage parse returns non-terminal failure → falls through to
+    # postmortem path (the one with the bug).
+    _, parse_fn = _parse_returning([
+        PipelineResult(outcome="failed",
+                       failure_reason="parse_proposal_fail",
+                       failure_detail="no patch on disk"),
+    ])
+    # Pre-seed the _spawn.stderr file as the MAIN spawn would: claude
+    # CLI writes this on rc=124 with the actual req.timeout_sec value.
+    (tmp_path / "_spawn.stderr").write_text(
+        "rc=124\n(subprocess.TimeoutExpired after 900s)",
+        encoding="utf-8")
+
+    # Postmortem callback simulates its own spawn timing out and
+    # OVERWRITING _spawn.stderr (this is what the real provider does).
+    def postmortem_overwrites(sid: str) -> None:
+        (tmp_path / "_spawn.stderr").write_text(
+            "rc=124\n(subprocess.TimeoutExpired after 180s)",
+            encoding="utf-8")
+
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-stderr-overwrite",
+        budget_threshold=3, shelve_threshold=8,
+        attempts_dir=tmp_path,
+        spawn_fn=spawn_fn, parse_fn=parse_fn,
+        postmortem_fn=postmortem_overwrites,
+    )
+    assert r.outcome == "exhausted"
+    assert r.failure_reason == "agent_timeout"
+    # Critical: detail captures the MAIN spawn's 900s, not the
+    # postmortem's 180s.
+    assert "900s" in (r.failure_detail or ""), (
+        f"failure_detail should mention main spawn's 900s timeout; "
+        f"got: {r.failure_detail}")
+    assert "180s" not in (r.failure_detail or ""), (
+        f"failure_detail leaked postmortem's 180s; got: "
+        f"{r.failure_detail}")
+
+
 def test_timeout_no_salvage_records_parse_exception_in_detail(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
