@@ -1,407 +1,122 @@
 # Asterism v2 — Current Status
 
-更新於 **2026-05-09**（**Gateway Phase 2 + verify-unification + opus 整合 e2e 驗過**、
-**PN 在 opus 30 分鐘 depth=3 完整 proved**、SG 即將開跑）、HEAD `9c7cefc`+、
-**669 unit tests green、1 skipped**。
+更新於 **2026-05-10**、HEAD `87370bb`、**642 unit tests green / 1 skipped**。
 
 ## 下個 session 接手要做的事
 
-**SG run 監看中**（pool=15、W=3、sonnet、budget 4hr30min）。歷史 baseline：
-sonnet 4h16min、opus 2h48min；新架構 pool=15 預期 1.5-3 hr wall。已起的話
-監看點：
-- `curl /health.acquires.hot_rate` 應 > 50%；< 30% 持續 = churn 嚴重、cut
-- `[watchdog] sid=... wall cap` 是設計內、看 `[rescue] sid=... rc=0` 是否救活
-- `[gateway] release ... failed: timed out` 過去是常態、改 30s 後罕見
-- gateway crash 看 `.asterism/logs/gateway.log` 有無 traceback
-- 突發 `agent_rc_nonzero` 連續 = Anthropic API 故障 / 配額用盡
+**SG run #5（首次帶完整 decline directives 系統 + 累計修法跑）**：
+- 配置：`pool=15, W=3, sonnet, budget 4hr30min, shelve=5, spawn_timeout=900`
+- 起跑流程：`cli reset sylvester_gallai && rm -rf Problems/sylvester_gallai/.attempts/ && cli init sylvester_gallai && cli run`
+- 監看 cadence：每 20 min 檢查 `/health`、`/health.acquires.hot_rate`、`goals-by-status`、最新 cascade events、`.asterism/logs/gateway.log`
 
-跑完後待做：
-1. **記錄 SG run baseline 進 commit message**（pool=15 sonnet wall vs 歷史 4hr）
-2. **比較 churn rate vs PN**（PN cold_evicted = 4.1%、SG pool=15 W=3 = 5x oversub、預期 5-15%）
-3. **若 hot_rate 低**：考慮 W=4 加 1 個 worker（+3GB RAM、剩 buffer 仍夠）
+**這次 run 主要驗證點**（按重要序）：
 
-## 2026-05-09 最新落地
+1. **decline directive 各條使用情況**：agent 用 `unprovable` / `return_to_parent` / `shelve` / `needs_decomposition` 的分布、特別是 `return_to_parent` 是否觸發 + parent 是否真的「保留 shape 補 hypothesis」
+2. **leaf-bypass axiom probe at acceptance**：commit `968e4e7` 上次 run 沒驗（commit 在 daemon 啟動後）；本次 run 期待 sorryAx 偽證在接受階段就被擋、不再進 verify 階段觸發 race
+3. **race fix 持續穩定**：`5bded83` 的 has_live guard、上 run 觸發 ≥3 次都正確處理
+4. **rescue prompt 三選項繼續工作**：上 run 救援成功率 8/14 = 57%，看本 run 是否再升
 
-### Verify unification（commits `7f7e443..9188f9c`）
+**異常觸發 cut**：gateway crash loop、`hot_rate < 30%` 持續、`agent_rc_nonzero` 連續 burst、`shelved%` > 50%。
 
-framework runtime 對 `lake build` 的依賴從 verify path 完全拔掉。Lean 4 自定 RPC
-`Asterism.writeOlean` + `Asterism.printAxioms` 在 worker 內跑、`/verify` HTTP
-endpoint 統一所有 verify 路徑。
+跑完後待做：commit 中記 baseline（wall / proved / shelved / agent_infeasible 數 / parent_needs_fix 數）；對比 SG run #4（270min wall, 4 proved, 5 shelved, 0 parent_needs_fix）。
 
-**架構**：
-- `Asterism/GatewayRpc.lean` + `lean-asterism-server` binary（custom worker for `lake serve`）
-- `LEAN_WORKER_PATH` 指向 binary、所有 worker 載入 `builtin_initialize` RPC handlers
-- `gateway.verify_file(target_path, write_olean=, axioms_for=)` 單次 round trip：elaborate + 寫 .olean + 跑 `#print axioms`
-- 所有 callsite 統一（Builder Phase 1+2、Backward leaf+placed、verify_strategy、library promote）
+## 2026-05-09 ~ 05-10 session 落地
 
-**速度**：cascade level 從 ~25-50s（cold lake build batch）→ ~3-5s（warm worker）。
-PN 整顆 proved 30 分鐘（vs 歷史 sonnet 4-5 倍速）。
+### Decline directives 統合系統（commits `dd3e905..87370bb`）
 
-### waitForDiagnostics fix（commit `40ad9cb`）
+把分散的 `decline:` directive 收斂成 4-token 詞彙、跨 Builder/Backward 共用。設計細節 `docs/dev/decline_directives.md`、failure_reason mapping `docs/failure_modes.md` §2。
 
-替掉 wait_for_diagnostics_settled 的 3s 硬下限。Lean 內建 `textDocument/waitForDiagnostics`
-回傳就是真正 elaborate done。apply_edit 從 3.26s → 0.22s（**~15× 加速**）、validate_file 同樣受惠。
-
-**已驗證**：trivial 5 連 apply_edit 全 0.22s。複雜內容仍受 Lean elaborate 真實時間限制
-（20-30s 是合理上限）。
-
-### Opus 模型支援
-
-Asterism.yaml `builder.model` / `backward.model` 接 `claude-opus-4-7`。Opus thinking-gap
-avg 11.76s（sonnet 25s）、約 2× 快。PN run 用 opus 完整 proved。但 SG 用 sonnet
-是因為跑時間長（4hr）、token cost 5×、quota 風險。
-
-### 新加工程設施
-
-- **`/health.acquires`**: hot/cold/busy_polls 計數、`hot_rate` 計算（commit `3fa53d0`）
-- **Singleton daemon lock**: `.asterism/daemon.pid` 防雙 dispatcher 同 DB 撞（commit `e9d3bbd`）
-- **Gateway 專屬 log**: `.asterism/logs/gateway.log`、crash 留 traceback（commit `f6d838f`）
-- **`release_session` timeout 5s → 30s**: 高並發時 /release 跟 /mcp event loop 爭、避免 spurious 警告（commit `1765311`）
-- **Quota detection**: claude.exe rc=1 + "You've hit your limit" → reclassify SpawnRC.QUOTA_EXHAUSTED（commit `f13e67d`）
-- **WorkArea session release**: `__exit__` 自動 POST /release、避免 session leak（commit `f13e67d`）
-- **Reset cleanup `*.backup`**: Backward retry 留下的 `L_<slug>.lean.backup` 加入 reset sweep pattern（這個 session）
-
-### 關鍵 invariant 補充
-
-- **每 cascade level 第一個 tool call 是 cold_warmup**: 是設計內、~20-30s elaborate complex
-  content。不是 framework bug
-- **W < pool 是設計內**：LRU + content stickiness 自然處理、PN W=2 pool=4 cold_evicted/total = 4.1%
-- **Watchdog wall_cap = spawn_timeout - rescue_timeout**: 預設 720s = 900-180、sonnet 在 SG
-  曾撞、值得觀察是否需要更長
-
-### 現有未解 / 觀察中
-
-- **opus 23s outliers in single agent**: 同 agent 連 8 個 tool call 中 2 個 23s（c8ed1de0
-  PN run）。實證是 Lean elaborate substantial content 真實成本、非 framework
-- **gateway 偶發 silent exit**: 02:47 crash 過一次無 traceback、後續未復現、可能是 Windows
-  AV / OOM。`.asterism/logs/gateway.log` 已加保險、下次有可看 traceback
-- **Reset 的 .backup 漏網**: 這 session 已修、commit 在路上
-
-## 今日修補 e2e 驗證（2026-05-08）
-
-PN v4 run（47.3 min、commit `bdbe7a7`）：
-- 5 spawns / 4 cascades / 4 verifies / 0 axiom_violation / 2 leaf-bypass
-- **Watchdog 2 次準時 fire**（720s wall cap → kill）
-- **Rescue 2 次**：1 次 180s timeout（fall-through 正常 retry）+ 1 次 74s 救活
-  寫了 leaf-bypass `s91`、verify pass、cascade 收尾
-- **Lake build 真實 pass**（不像上次 SG「all roots proved 但 lake build broken」）
-
-歷次 PN wall：
-
-| Date | Wall | Notes |
+| directive | failure_reason | 路由 |
 |---|---|---|
-| 2026-05-06 (pre-LSP) | 15-30 min | 6-11 spawns、無 watchdog |
-| 2026-05-07 (LSP swap) | 24.4 min | 6 spawns、leaf-bypass 漏 axiom probe |
-| **2026-05-08 (今日 v4)** | **47.3 min** | **5 spawns + 2 watchdog kill + 1 rescue 救活、真實 lake-pass** |
+| `unprovable` | `agent_infeasible` | shelve + cascade up |
+| `return_to_parent` | `parent_needs_fix`（新）| shelve + cascade up + description 投 parent fix hint section |
+| `shelve` | `agent_shelved`（新）| shelve + cascade up |
+| `needs_decomposition` | `agent_declined`（沿用、舊 token `too_hard`）| `entry_kind='Backward'` 切換 |
 
-慢了主因是 watchdog kill 各吃 12 min wall + 180s rescue。換來真實 lake-pass +
-axiom-clean、trade-off 合理。
+實作：`Tooling/pipeline/__init__.py` 新 `DECLINE_*` 常數 + `DECLINE_TO_FAILURE_REASON` map；`builder.py` / `backward.py` parse 改用 map；`dispatcher.py:cascade_one` 對稱處理 Builder + Backward 三條 shelve+propagate 路徑；`pipeline/_retry.py:_TERMINAL_DECLINE_REASONS` 跟 `_maybe_reflect` trigger 補上新 reasons；`pipeline/events.py` `_NON_AGENT_REASONS` + `infeasible_subs` SQL 都擴；`context.py` 渲染加 directive tag + 三類別 preamble；4 個 prompt 檔（builder.md / builder_singleshot.md / backward.md / backward_singleshot.md）`## Decline` 章節統一改寫。
 
-## 三套修補
+### Cascade-vs-verify race fix（commit `5bded83`）
 
-1. **Axiom probe 單一閘門**（commit `57556be`）：`pipeline/_axiom.py:axiom_probe`、
-   接 `verify_strategy` + Builder Phase 1/2、refactor `_try_promote_sorry_free`。
-   每個 `goals.status='proved'` 對應的 `#print axioms` 一定 ⊆ whitelist。修補了
-   leaf-bypass 路徑漏掉 axiom probe 的漏洞（SG s64 假 proved 案例）。
-2. **Watchdog + rescue**（commit `bdbe7a7`）：取代 `MAX_THINKING_TOKENS`。Watchdog
-   tail session jsonl 抓 tool_use 速率、`req.timeout_sec - RESCUE_BUDGET_SEC`（i.e.
-   12 min for 15 min spawn）強制 wall cap、stuck 時 SIGKILL。rescue spawn 用 --resume
-   + 簡短 force-ship prompt + 3 min budget、rescue 失敗 fall-through normal retry。
-3. **LSP swap**（commits `82772af..f738873`）：Builder + Backward 寫證明時跟在背景
-   常駐的 Lean server 即時對話、4 個 MCP tool（`apply_edit` / `goal_at` / `errors_at`
-   / `validate_file`）。
+leaf-bypass 提交 strategy 後 `WorkArea.__exit__` 釋放 gateway session 可能花 30s（高並發 release_session timeout）、worker 還沒回來時 main thread 跑了 verify_housekeeping 殺策略並 reopen goal、worker 終於回來 cascade(success) 又把 status 改 `attempting`。bfs_refill 排除 'attempting'、dispatcher idle exit、root 還有 budget 沒用就停。
 
-## Gateway 架構決定（2026-05-08 spike 完）
+修：`cascade_one` Backward success 加 `has_live` guard、無活策略不轉 'attempting'。Run #4 證觸發 ≥3 次都正確。
 
-**動機**：每 spawn 各起 lake serve、Mathlib 在 process 裡 elaborated 一份、4
-並行 ~12-20 GB、想 pool=8+ 撞 RAM 牆。
+### Leaf-bypass acceptance axiom probe（commit `968e4e7`）
 
-**架構**：
-- `Tooling/lsp_gateway.py`（待寫）：long-living asyncio HTTP server、daemon
-  startup 起 1-2 個 lake serve backend、所有 spawn 經由 HTTP MCP 連同一個
-- claude `--mcp-config` 改寫 URL `{"type":"http","url":"..."}` 而非 stdio command
-- backend 選擇：sticky per `pipeline_id`（首次 tool call 綁定、後續同 backend）
-- spawn 結束時 gateway 釋放 backend file handles
-- 不同 problem / file 共用同 backend（LSP 多檔本來支援）；同檔被 file-lock 擋
+sonnet 偷塞 sorryAx 的 leaf-bypass：patch.lean 字面無 `sorry`、LSP `errors_at` 回 0、`goal_at` 回 "no goals"、agent 信任地 ship；但 Lean elaborator 對某些 unification 失敗塞 synthetic sorry、`#print axioms` 抓得到。原來 verify 階段才抓、走完 promote_to_alias + parent build 約 5-10s。修法：leaf-bypass 接受階段直接帶 `axioms_for=fq_name`、見 sorryAx → `axiom_violation` reject、scratch 清掉、不進 ready_for_verify queue。Run #4 沒驗（commit 在 daemon 啟動後）、Run #5 看效果。
 
-**Spike 結果**（2026-05-08）：
-- FastMCP `streamable-http` transport 起在 port 8000、`/mcp` endpoint
-- claude CLI 接 URL config 工作（`--transport http <url>`）
-- 3 並發 client 命中同一 pid、call counter 累加 2→4 正確、無 race
-- MCP session ID 由 protocol 自管
+### Rescue prompt 三選項 + 動態時限（commit `c24263e`）
 
-**RAM 估算**：
-- N=4 / K=4（現在）：12-20 GB
-- N=8 / K=2：6-10 GB（並行 ×2、RAM 對折）
-- N=16 / K=4：12-20 GB（並行 ×4、RAM 不變）
+rescue spawn 用 `--resume` 進入「force-ship」注意力收窄、若原 rescue prompt 只列「ship patch + sorry stubs」兩條、agent 看不到 `decline:` 出口、silent thinking 等死（SG run #2 g224 4× 全 rc=124）。修：rescue prompt 列 (a) ship stubs (b) leaf-bypass 直推 (c) `decline: unprovable` + counterexample 三條 + `<N> minutes left, act now` 動態時限（從 `dispatch.rescue_timeout_sec` 讀）。
 
-**工程量**：~1900 LOC、~4 天分階段（Gateway 原型 → backend pool → lifecycle →
-整合）。技術 unknown 全消、剩純工程。
+對照 SG run 統計：
 
-## LSP swap（Phase 1-3、commits `82772af..f738873`）
+| Run | rescue 成功率 |
+|---|---|
+| #2（修前）| 0/9 = 0% |
+| #3（snapshot fix） | 2/6 = 33% |
+| #4（race fix 補完）| 8/14 = 57% |
 
-Builder + Backward 都 spawn claude with MCP server attached
-(`Tooling/lsp_mcp_server.py`)。Agent 拿到 4 個 LSP-backed tools：`apply_edit`、
-`goal_at`、`errors_at`、`validate_file`。Output protocol（`patch.lean` +
-`new_*.lean`）不變、lake build 仍是 ground-truth verifier。
+### Snapshot-once goal_lean（commit `15f54b2`）
 
-Rollback model：`git revert <hash>`、無 runtime fallback flag。tag
-`pre-lsp-cutover` 是最後一個 pre-LSP commit（`3fc9422`）。
+`backward.py` / `builder.py` 原本 worker 每次 spawn 都 re-snapshot `goal_lean.backup`、retry 時等於用「上次 contaminated 狀態」當基準、agent 看到上次的爛 partial 繼續加碼。修：snapshot 一次（pipeline 入場）、每次 spawn entry restore 從 pristine、parse exit 再 restore、outer finally 收尾 unlink。Run #4 全程驗 backup 都 pristine。
 
-關鍵不變式（動 Builder / Backward 時必守）：
-- MCP env 必含 `PYTHONPATH=workspace`（claude CLI cwd=problem_dir、否則
-  `python -m Tooling.lsp_mcp_server` import fail、agent 改走 legacy tools 還
-  跑成功、但表面數據假）
-- `goal_lean` 必在每個 spawn 退出時 restore（parse-path + outer try/finally
-  並存、覆蓋 rc=0 跟 rc≠0）
-- `wait_for_diagnostics_settled`（3s stable poll）取代 `fileProgress empty` ──
-  後者對 ≥100 LOC 的 proof 不是 elaborate-done 信號（Lean LSP 在 empty 後仍
-  emit publishDiagnostics 多次、最長 25-30s）
-- prompt 退出條件「0 errors」不是「0 diagnostics」（warnings 由 lake build 容忍、
-  agent 卡 warning 會撞 wall）
+## 累計 framework 機制清單（給下次 session 對齊）
 
-Phase 3 配套調整：`WORKER_TIMEOUT_SEC=900`、`builder.threshold=2`、
-`dispatch.shelve_threshold=4`、`pool=4`（RAM cap ~20GB）。
-
-**Wall-clock 計算注意**：log filename 用 UTC（`cli.py:80`）、`os.stat().st_mtime`
-fromtimestamp 預設 local。混算會多 8 hr 偏差（UTC+8 的話）。比 wall 一律先轉同
-時區、或從 log 內容拉 timestamp。
-
-cantor_xi 數據（commit `f738873` 前後跑）：87.1 min wall、15 spawns、leaf-bypass
-未觸發。STATUS.md 舊 baseline `~4 hr (含 30min budget hit + 重啟)` 不是乾淨單跑、
-不能直接 ~3× 比，但同 problem 比較單跑 wall **87 min vs ~240 min reference** 仍
-顯著加速、warrant 進一步乾淨重跑。
-
-PN 歷史 vs 今天（pre-LSP solo runs vs LSP today）：
-
-| Date (UTC) | Wall | Spawns | Framework |
+| 機制 | commit | 觸發 | 健康 metric |
 |---|---|---|---|
-| 2026-05-06 03:30 | 25.2 min | 11 | pipeline split `9638eed` |
-| 2026-05-06 07:37 | 15.2 min | 6 | 同上 |
-| 2026-05-06 13:45 | 28.4 min | 11 | Bridge lemma stub `205bd4a` |
-| 2026-05-06 16:44 | 29.5 min | 6 | Phase 6 fix `586102b` |
-| **2026-05-07 20:57** | **24.4 min** | **6** | **LSP swap + leaf-bypass `3fc9422`** |
-
-今天 PN run 24.4 min、6 spawns ── 落在歷史 6-spawn 區間（15-30 min）中段、LSP
-overhead 沒拖慢。leaf-bypass 在 s57 觸發（zero-subgoal 直接證掉、Builder 不用回
-強拆）。
-
-## 已知未處理 review items（PN 跑得動沒撞、深題可能撞）
-
-從 BRIEF/LESSONS agent review（commit `01626b2` 修了 6 個 critical/likely、剩這些）：
-- **L1** `_render_prompt` 順序敏感雙重替換（lessons_content 含 `{timeout_min}` 字面會被覆蓋）
-- **L2** `_classify_delta` 並發寫下不可靠（雖有 lock、跨檔讀仍可能 race）
-- **L4** `_count_lesson_lines` sub-bullet 計入 cap（與「single sentence」意圖不符）
-- **L5** `manifest.parse` 無 try/except、單 problem Manifest 損壞會 crash daemon（pre-existing、不是 BRIEF 引入）
-- **L6** lemma_lookup 沒 cache、daemon startup 全 problem 重 resolve（多 problem 部署 startup 慢、N×M×~5s）
-- **L7** Windows AV 鎖 race（`brief.write` 罕見 PermissionError、無 retry）
-
-## 已知未處理 review items（PN 跑得動沒撞、深題可能撞）
-
-從 BRIEF/LESSONS agent review（commit `01626b2` 修了 6 個 critical/likely、剩這些）：
-- **L1** `_render_prompt` 順序敏感雙重替換（lessons_content 含 `{timeout_min}` 字面會被覆蓋）
-- **L2** `_classify_delta` 並發寫下不可靠（雖有 lock、跨檔讀仍可能 race）
-- **L4** `_count_lesson_lines` sub-bullet 計入 cap（與「single sentence」意圖不符）
-- **L5** `manifest.parse` 無 try/except、單 problem Manifest 損壞會 crash daemon（pre-existing、不是 BRIEF 引入）
-- **L6** lemma_lookup 沒 cache、daemon startup 全 problem 重 resolve（多 problem 部署 startup 慢、N×M×~5s）
-- **L7** Windows AV 鎖 race（`brief.write` 罕見 PermissionError、無 retry）
-
-## 近期落地（給 next session 的 context）
-
-**BRIEF/LESSONS feature**（`dd1c408..01626b2`，2026-05-07）：
-agent context 跨 spawn 重複的 stable 內容（sandbox/forbidden/mathlib hints/library/
-strategic notes）抽到 `Problems/<p>/BRIEF.md`、framework auto-render；agent 跨
-spawn 累積經驗到 `Problems/<p>/LESSONS.md`、agent 在「反射 spawn」用 Edit tool
-自管。
-- **A+B**（`dd1c408`）：新建 `Tooling/brief.py` (render + write)、`cli init` /
-  daemon startup 觸發 BRIEF re-render；`compile_context` 把 stable sections 抽
-  走、改 inline BRIEF + LESSONS；`_section_mathlib_lemmas` 拆 stable（BRIEF）
-  + from_deads（Context.md per-spawn）
-- **C**（`ca8363d`）：reflection prompt + `_reflection.py` helper + `_retry.py`
-  reflection_fn callback；trigger gate 過濾 moot/infra rcs/race-detected
-- **review fixes**（`01626b2`）：C1 LESSONS.md per-problem `threading.Lock` 序列化
-  寫入；C2 prompt 限制 agent 只能寫 LESSONS.md；L3 cli init seed `<!-- LESSONS_BEGIN -->`
-  anchor 給 Edit tool；D1 重排 Context.md section ordering 把 BRIEF/LESSONS 前置
-  恢復 prompt cache 效益；D3 `lessons.reflection_enabled` toggle（默認 ON、env
-  override `ASTERISM_LESSONS_REFLECTION_ENABLED=false` 緊急關）；T1+T2 加
-  `tests/test_brief.py` + 10 trigger gate tests
-- **conftest autouse fixture**：tests 默認停 reflection、避免擾動既有 spawn count assert
-
-**PN e2e 驗證**（2026-05-07、~28 min vs baseline ~24 min、+17% wall-clock）：
-- 6 goals 全 proved（vs baseline 11 goals depth 5）— **goal tree 從 depth 5 縮到 depth 2**
-- 6 reflections 全寫入 LESSONS、quality 不錯（API drift / syntax 約束 / typeclass binder / scope）
-- 1:1 invariant 守住（6=6）
-- 沒撞 LESSONS race / corruption（lock 序列化生效）
-
-**Phase 7 + 後續優化**（`cf68854..8afffed`、本 session 早段）：
-- `cf68854` Archive completed design docs（goal_naming / goal_history /
-  pipeline_session 移進 `docs/archive/`、stale claims 修正、cross-refs 對齊）
-- `77499b0` Phase 7 eager `goals.attempts++`（recover pre-Phase-7 的 TREE.md
-  retry-進度可見性、付出 daemon-mid-pipeline-kill 時 attempts 與 dead_attempts
-  的 cosmetic drift 代價）
-- `8afffed` `verify_strategy` batch lake build（一次 lake 啟動 build strategy +
-  alias parent、PN 5-level chain 省 ~30 秒；下限驗到 lake startup ~6s）
-
----
-
-**Phase 7 — Pipeline/Session unification**（`4b0d193..aafaf6e`，2026-05-06）：
-retry 邏輯從 cross-pipeline scheduler-driven 改成 in-pipeline-bounded helper-driven。
-心智模型對齊「pipeline 呼叫 = 一個 claude session 把該 goal 處理完」。
-- **7-A**（`ad42ea3`）：新建 `Tooling/pipeline/_retry.py`、`run_with_session_retries` helper（dynamic budget、cold/warm sid lifecycle、stale_session in-place re-mint、timeout 強制 exhaust + postmortem）
-- **7-B**（`3e9e46b`）：builder.py 接 helper、發現並修 FK ordering bug（helper buffer pending_failures、dispatcher flush 在 pipelines INSERT 之後）、cascade 加 'moot' / 'exhausted' branches
-- **7-C**（`61ed022`）：backward.py 對稱接 helper、F53/A retry-reuse 退役（每 pipeline fresh strategy_id）、parse_and_commit 抽出
-- **7-C.1**（`4d765ea`）：review fixes — C1 builder wrapper moot 漏處理 / C2 helper threshold 拆 budget+shelve / C3 rc=126/127 早返不耗 budget / L1 dispatcher flush 跳過 moot / L2 agent_declined 改用 entry_kind 路由 / L3 agent_infeasible attempts++ 一次保 1:1。新增 `tests/test_pipeline_retry_helper.py` 20 個 unit test
-- **7-D**（`a236fb3`）：drop `goals.builder_session_id` / `backward_session_id` columns（idempotent ALTER TABLE DROP COLUMN migration）+ 移除 4 個 db helper + 清 10 處 vestigial cascade calls + F33/F53 註解全清
-- **7-E**：docs sync（本次）
-
-**1:1 invariant**：attempts ↔ dead_attempts 嚴格一致；helper buffer-then-flush 給
-all-or-nothing crash 語意（daemon kill 中段、attempts 不動、無孤兒 dead_attempts）。
-
-**新 outcome**：`exhausted`（budget 用盡）/ `moot`（goal 已終態）；五種 outcome
-（含 proved/success/failed）涵蓋所有 pipeline 終態。
-
-**新 failure_reason**：`quota_exhausted` (rc=126) / `missing_dep` (rc=127) — 兩者
-跟 spawn_fast_fail 一樣不耗 budget、設 cooldown、不寫 dead_attempt；只 spawn_fast_fail
-進 CONSEC daemon-exit 計數。
-
-**setting 不變**：BUILDER_THRESHOLD=3 / SHELVE_THRESHOLD=8、總 LLM call 上限不變。
-
-完整設計：`docs/archive/pipeline_session_unification.md`。
-
----
-
-`205bd4a..43c3a30`（goal_naming + annotation Phase 1-4，2026-05-06）：
-- **Phase 1**（`cab25cc` + `948f557`）：Backward sub-goal slug 從 `s<sid>_sub_<N>`
-  改成 LLM 自選 descriptive name (`cross_sq_add_inner_sq` 等)、charset/length lint、
-  collision framework auto-suffix（`_resolve_slug_collisions` helper）
-- **Phase 2**（`cc934ff`）：Builder + Verify 強制 annotation。每個 proved goal 的
-  `.lean` 檔頂帶 `-- <slug>: <summary>` line-comment block。空 PROPOSAL.md
-  → `agent_no_annotation` failure。`promote_to_alias` 加 annotation kwarg。
-- **Phase 3**（`5be9a33`）：F22 playbook 機制完全砍（-790 LOC、刪 `Tooling/playbook.py` +
-  兩個 prompt + cli reset 清理 + Context.md section + verify hook）。
-  `43c3a30` 順便清掉 6 個 problem 殘留的 stale `playbook.md` 檔。
-- **Phase 4**（`dee781c`）：Context.md 新增 `## Proved goals on this problem (grep
-  entrypoint)` section、count + path 入口指針、不 push candidate list、agent 用
-  grep + Read 自食其力（同 mathlib pattern）。
-- **PN root proved e2e**：Sonnet、~48 min 總 wall-clock（30 min budget hit + resume 15 min）、
-  depth 8、21 goals。對照 pre-Phase-1-4 同模型 ~30 min depth 2 — annotation 強制
-  讓 agent 拆解更深、wall-clock 上升、但機制全 work（無 `agent_no_annotation` 觸發、
-  Verify propagate 8 strategies 鏈式 root-proved）。
-
-`27f0f7c..6783e05`（前一輪、goal_history_unified v1）：
-- **goal_history_unified v1 完成**（7 commits、見 item 8 詳述）
-- **PN Sonnet e2e smoke 通過**：g142-class 修復實證、umbrella render 確認
-- **Asterism.yaml default 切 Sonnet**（builder + backward 都 claude-sonnet-4-6）
-
-## 本 session（2026-05-04 ~ 05-05）改動鏈
-
-按 commit 順序：
-
-1. `c6a2117` — **Backward prompt 5 個 skeleton**（exists+property / adapter+main / case dispatch / linear pipeline / induction+step）+ postmortem 加 alternative direction
-2. `75f9deb` — **Sub-goal Defs auto-import** — `_ensure_imports_subgoal` 自動加 `import Problems/<p>/Defs`
-3. `e9cbdd7` — **Infeasibility escape channel** + TACTIC_TRY 補 `assumption/tauto/exact?` + 刪 `difficulty>=4` hard gate
-4. `c63e149` — **entry_kind directive** — Backward 為每個 sub-goal 標 Builder/Backward
-5. `234de10` — **刪數字 difficulty** — Manifest `## Entry kind: Builder|Backward`，schema drop 欄位
-6. `30392d2` — Backward prompt Rules 合併 stay-abstract directive
-7. `9c7fc68` then `b117620` — **two-phase commit-phase 加了又回退**（實證 0% 救活，Sonnet thinking 一旦開始無法中斷）
-8. `b117620` — `_safe_glob` 防 Windows reserved-char filename（agent 寫 `won_exact?.lean` 案例）
-9. `ab03522` — Manifest `## Tactical` / `## Mathlib hints` → 統一 `## Lemma hints`
-10. `8f0d2b3` — **thinking budget cap 1K tokens/min**（核心修復！env `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1` + `MAX_THINKING_TOKENS`）
-
-關鍵實證：
-- thinking dive 統計（148 個 spawn）：dive median 9K tokens, successful median 3.7K — 10K cap 是邊界
-- two-phase commit-phase 失敗：session jsonl 顯示 commit prompt 後 agent 完全沒回應 → Sonnet thinking block 是 atomic
-- entry_kind directive：之前 g422/g423 被無條件先 Builder 浪費，新機制讓 Backward 預判跳過 Builder
-- infeasibility escape：g363 實證一次 spawn 內構造反例 + escape，省 SHELVE_THRESHOLD-1 次 timeout
-
-## 最近批次（2026-05-04）
-
-按時間倒序，三批改動：
-
-**F55 redesign + F56**（commit `27d46bb`）— 改框架對失敗 spawn 的處理：
-- F55 棄「邊寫邊存 PROPOSAL.md」改用「timeout 後 postmortem spawn 寫 _progress.md」。主任務不再要 agent 維護 deliverable，partial 從 deliverable 解耦成獨立側通道。
-- F56 砍 worker_kind="Verify"。strategy 驗證改成 dispatcher tick 末端的 housekeeping 步驟（純框架、無 LLM、不佔 worker pool）。F41 LLM 修復同步取消（26 verify 0 觸發）。
-- 兩件事一起做，因為 timeout 處理 + verify 收尾都是「失敗/收尾路徑的清理」性質的工作。
-
-**M3**（commit `d045e15`）— `--add-dir <packages>` 修復 mathlib Grep 被拒問題。M1 加寬 allowlist 但仍有 75 次 Grep 拒絕，根因是 F44 narrowing cwd 後，claude permission 把 cwd subtree ∪ --add-dir 當隱式信任邊界，allowlist 被忽略。加 packages 進 add-dir 修。
-
-**docs**（commit `919b1a8`）— `docs/data-flow.md` 新檔（概念敘事、agent 與框架資料流）；`architecture.md` v2.5 → v2.6 反映 F55+F56。
-
-## Proved problems
-
-| Problem | Prover | Wall-clock | Axioms |
-|---|---|---|---|
-| compactness | Opus | ~25 min | propext, Classical.choice, Quot.sound |
-| compactness | Sonnet | ~60 min | 同上 |
-| gen_generates | Sonnet | ~30 min | propext, Quot.sound |
-| inner_zero_iff_smul | Sonnet | ~21 min | std 3 |
-| proj_nonexpansive | Sonnet | ~58 min | std 3 |
-| **cantor_xi_measure** | Sonnet | **~4 hr**（含 90min budget exit + 重啟）| std 3 |
-
-cantor 是當前最大 sample（50 goals、depth 4、18 verify）。F55+F56 改動後尚未跑過完整題目 — SG 是首次驗證。
+| snapshot-once goal_lean | `15f54b2` | 每次 Backward / Builder pipeline | backup 跨 retry 全 pristine |
+| rescue 3-option prompt | `c24263e` | watchdog wall_cap 720s 後 | rescue rc=0 比率 |
+| cascade-vs-verify race fix | `5bded83` | leaf-bypass + verify 殺策略 + cascade 後到 | 不出現「shelved goal but bfs filter excludes」idle exit |
+| leaf-bypass acceptance axiom probe | `968e4e7` | leaf-bypass 提交時 | `axiom_violation` 在 acceptance 階段抓、不進 verify |
+| Decline directives 4-token | `54ed9fb..87370bb` | agent 寫 `decline: <token>` | `dead_attempts.failure_reason` 分布、`parent_needs_fix` 數 > 0 |
+| Singleton daemon lock | `e9d3bbd` | daemon 啟動 | `.asterism/daemon.pid` 不重複 |
+| Gateway 專屬 log + 30s release timeout | `f6d838f, 1765311` | gateway 跑 | crash 留 traceback、release 不 spurious 警告 |
+| `release_session` 30s | `1765311` | WorkArea exit | 高並發不 timeout |
+| Verify unification + `lean-asterism-server` | `7f7e443..9188f9c` | 所有 verify path | cascade level 3-5s（vs lake build 25-50s）|
+| `waitForDiagnostics` LSP fix | `40ad9cb` | apply_edit / validate_file | 從 3.26s 降到 0.22s |
 
 ## 信號監控（每次 run 後檢查）
 
-| 信號 | 期望 | 觸發來源 |
-|---|---|---|
-| `naming_violation` | 0 | F52 + Phase 1 sub-goal naming |
-| `patch_signature_mismatch` | 0 | F52 |
-| Mathlib Grep denied | 0 | M1 + M3 |
-| Cross-Problem read | 0 | F44 sandbox |
-| `spawn_fast_fail` | 0（除非 quota）| F46 |
-| `quota_exhausted` / `missing_dep` | 0（provider quota / CLI 故障才觸發） | Phase 7-C.1 |
-| `pending_failures` flush 數 == `attempts` 增量 | 1:1 不漂移 | Phase 7 helper |
-| 新訊號：postmortem `_progress.md` 寫入 | timeout 時寫一次、success 時清掉 | F55 |
-| 新訊號：verify housekeeping promote | 每 strategy 一次、可鏈式 | F56 |
+| 信號 | 期望 |
+|---|---|
+| `naming_violation` / `patch_signature_mismatch` | 0 |
+| Mathlib Grep denied / Cross-Problem read | 0 |
+| `spawn_fast_fail` | 0（quota 才會非 0）|
+| `quota_exhausted` / `missing_dep` | 0 |
+| `hot_rate` | > 50%（< 30% 持續 = 該 cut）|
+| `n_cold_evicted` | < 15% of total acquires（pool > W 設計內、PN baseline 4.1%）|
+| dispatcher idle exit | 必伴隨 `roots_proved=True` 或所有 root shelved |
 
-## 砍掉但留參考的舊機制
+## 已知未解 / 觀察中
 
-- **F40** Two-phase Builder（commit `2b6ff1a` revert at `232a3e0`）— Phase A 寫 PROPOSAL、Phase B 寫 patch。Haiku 實證證明瓶頸在 patch 品質不在 deliverable miss。除非新 model 失敗模式換成 deliverable miss，不重做。
-- **F31** `if "haiku" in model:` substring tier — Asterism.yaml 化後退役，weak-tier 改顯式寫 `(builder.threshold, dispatch.shelve_threshold) = (5, 10)`。
-- **F41** Verify-time LLM patch retry — 26 verify 0 觸發，F56 一起取消。實證 Step 1 開始失敗才回頭加。
-- **F55 邊寫邊存版**（commit `cdb03b5`，被 `27d46bb` 取代）— 讓 agent 邊寫 PROPOSAL.md 邊 save。實作出來但用戶指出污染主任務注意力，改成 postmortem spawn 設計。
+- **opus 23s outliers in single agent**: Lean elaborate substantial content 真實成本、非 framework
+- **gateway 偶發 silent exit**: `02:47 crash 一次無 traceback、後續未復現、`gateway.log` 有保險、再現有可看
+- **Backward 是否在收到 fix hint 時 incremental fix**：commit `54ed9fb` 寫進 context.md 提示但 backward.md prompt 沒明文鼓勵；下次 SG run 看 agent 行為再決定 prompt 補一段
+- **Strategist / Forward / Generalizer**：留給 v2、Decline directive 系統先看能 cover 多少場景
 
-## 待辦（按優先序）
+## Proved problems（已驗）
 
-1. **(已做) entry_kind 直接 directive，刪掉 difficulty** — Backward 在每個 `new_<slug>.lean` 標 `-- entry_kind: Builder | Backward`；framework parse 進 `goals.entry_kind`；`next_worker_kind` 第一次 honor directive，attempts ≥ BUILDER_THRESHOLD 強制升 Backward 兜底。Root entry_kind 由 cli init 直接從 Manifest `## Entry kind` 段讀取。Manifest 改為直接寫 binary directive，數字 `## Difficulty` 整個從 schema / 程式 / 測試 / 文件移除（87 個 reference 全清）。
+| Problem | Prover | Wall-clock | Axioms |
+|---|---|---|---|
+| compactness | Opus | ~25 min | std 3 |
+| compactness | Sonnet | ~60 min | std 3 |
+| gen_generates | Sonnet | ~30 min | propext, Quot.sound |
+| inner_zero_iff_smul | Sonnet | ~21 min | std 3 |
+| proj_nonexpansive | Opus 4.7 (1M) | 30 min depth-3 | std 3 |
+| cantor_xi_measure | Sonnet | ~4 hr | std 3 |
 
-2. **(已做) TACTIC_TRY_LIST 補 `assumption` / `tauto` / `exact?`** — `A → B → A`-shaped 廢題型 Phase 1 直接收工。`linear_combination`（需係數）/ `polyrith`（需 Sage）暫不做。
-3. **(已做) Infeasibility escape channel** — `decline_reason: parent_type_infeasible` PROPOSAL.md frontmatter；Builder + Backward 都可 escape；cascade 直接 shelve goal + propagate 上層重拆，不燒 attempts。SG 實證 g363 一次 spawn 內構造反例 + escape 成功。
-
-3a. **(已做後回退) Two-phase commit-phase** — body 8min + commit 2min 嘗試打斷 thinking-dive。實證 0% 救活：Sonnet thinking block 一旦開始無法中斷，commit phase 收到 `--resume` 後再次進 thinking、120s 內 thinking 都沒生成完就被砍。session jsonl 顯示 commit prompt 後 agent 完全沒回應。回退到 body 10min + F55 postmortem 3min 單路徑。
-
-3c. **(已做) Thinking budget cap** — env `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1` + `MAX_THINKING_TOKENS=(timeout_sec//60)*1000` 注入每次 claude spawn。1K tokens/min 對應 wall-clock 預算（body 600s→10K, postmortem 180s→3K）。Per-turn cap，agent 觸頂後強制進 output 模式但 partial thinking 保留在 session memory，下個 tool round-trip 又能 think。對症 SG 數據：dive median 9K tokens、successful median 3.7K，10K cap 切掉大半 dive、successful 損失 < 25%。在 claude_cli.py spawn 設 env、不影響其他 provider。
-
-3b. **(已做) `_safe_glob` 防 Windows reserved-char 檔名** — agent 偶爾寫 `won_exact?.lean`（把 Lean tactic `exact?` 當識別字），Windows path API 對 `?` `<>:"|*` 拋 OSError，使 `Path.glob` 整個 dir 掃描失敗。helper 改用 `os.scandir` + `fnmatch`，跳過 path resolve 階段；單一 fix 涵蓋所有 reserved chars。
-4. **SG with new framework**（已跑驗證部分機制）— F55 postmortem alternative-direction 確認有效；entry_kind 修補後 root 直接 Backward；尚未跑出完整 root proved。
-4. **F38 Gemini live smoke** — quota 恢復後跑
-5. **Backward placement 沒驗證 sub-goal body** — `backward.md` 約定 `new_<sub_slug>.lean` 為 `:= by sorry`，但 agent 偶爾 inline 整段 valid proof（SG s75_sub_4 實例：agent 用 `by_contra + ring + nlinarith` 多行收掉），framework 直接吞下、placement 為 `L_<slug>.lean`。**漏洞 (a)**：placement 階段 lint 缺。
-6. **Dispatcher 不檢查 file 是否已 sorry-free 就 dispatch** — 承上，即使 `L_<slug>.lean` 已是 valid proof，只要 `entry_kind: Backward` 仍 spawn Backward worker 重證一次，最終 `promote_to_alias` 把 working proof 蓋掉。**漏洞 (b)**：dispatch 前應 quick lake build placeholder file，sorry-free + axioms 在白名單就直接 mark proved 跳過。SG s75_sub_4 → s76 case 實證 redundant work（重花 ~5 min spawn 一個等價 strategy）。
-7. **TREE.md 在 root proved 後不更新** — `dispatcher.py:620` 的 "all roots proved" exit 分支只跑 reconcile/prune/library_promote 就 return 0，**沒呼叫 `tree.write_for_target`**。最後 `verify_housekeeping` 把 root cascade-proved 的那輪不觸發 per-cascade tree write，TREE.md 凍結在 root=attempting 的前一刻；prune 又砍 orphan 檔，TREE 內的死分支引用全失效。SG run 2026-05-05 21:10:00 root proved 後實證。**漏洞**：exit 分支應在 reconcile 後重 render 一次 TREE.md。
-
-8. **(v1 完成) Context.md `## Goal history` umbrella + events.py 投影層** — 舊版 4 個失敗 section 散亂 + kind-asymmetric gating + event 邏輯 hard-code 在 renderer。重構：
-   - **C1 (commit 3ef9c55)**：新檔 `Tooling/pipeline/events.py` 提供投影函數 + `Event` dataclass + `_NON_AGENT_REASONS` 統一 filter set。`compile_context` 改用 events.\*；agent 看到的 Context.md 外貌 0 變化、純 internal refactor。
-   - **C2 (commit 16fd369)**：合 3 個獨立 `##` section 成 `## Goal history` umbrella + 4 sub-section（含新 `### Sub-goals reported infeasible`、cross-goal 投影 sub 的 `agent_infeasible` 到 parent）。companion file rename：`PAST_ATTEMPTS.md` → `PAST_DIRECT_ATTEMPTS.md`、`PAST_BACKWARD.md` → `PAST_VERIFY_FAILURES.md`。Empty bucket 整段省略。
-   - **Audit fixes (commit 8712ce5)**：external code review 抓 4 個 bug：(1) agent_declined 兩 section 重複 render (2) infeasible_subs JOIN 多 parent dup row (3) dead_strategies LIMIT-then-exclude 邊界 starve (4) rename comment direction reversed。各修 + 加 regression test。
-   - **C3 (commit 403141a)**：砍 `## Why Builder declined this goal` 獨立 section、`agent_declined` 進 `### Direct attempts on this goal`。順手砍 `### Direct attempts` 的 `show_attempts` kind-gate（**SG g142 case 修復**：Backward retry 看到自己 prior `lake_build_error` 歷史）。
-   - **C4 e2e validation**（PN Sonnet smoke、~30 min wall-clock）：跑 `proj_nonexpansive` 從零開始驗 v1 機制。Tree depth 2、6 leaf goals + 2 strategies、4 個 lake_build_error warm retry 都接續成功。**g142-class 修復實證**：Goal=2 (root) 第一次 Backward 寫 sub-goal 用 `⟪⟫_ℝ` notation 缺 `open scoped` → expected token error；第二次 Backward Context.md 真實看到自己 prior `lake_build_error` row 進 `### Direct attempts on this goal` sub-section、**第二次 PROPOSAL 明確寫「Fix from previous attempt: ... Added that directive」**、agent 看到並修正、success。Audit fix 4 (`spawn_fast_fail` 不寫 dead_attempts) 確認：4 個 dead row 全 lake_build_error、無 infra noise。仍未自然 trigger：cross-goal `infeasible_sub`（PN 無 type-infeasible）、`dead_strategy` 投影（PN 無 cascade-shelve）— 留將來深題自然實證或 fixture-based unit test。
-
-9. **(已做) Phase 1 `tactic_try` 改用 Mathlib `hint` + 寫回精確 winner** — 演進：N 個 tactic 各跑獨立 lake build → `by first | t1 | t2 | …` 單一 build → 現在 `by hint` 兩階段 build。新流程：(1) probe 寫 `:= by hint`、lake build、parse stdout 的 `info: ... Try these: [apply] 🎉️ <tac>`、(2) confirm 把 sorry body 重寫成 `by <winner>` 再 build 一次。代價：成功時付 2 次 build（confirm 走 warm cache、便宜）。收益：搜尋集合接 mathlib `register_hint` curated set（24+ tactic、自動跟 mathlib 同步、framework 不再維護 TACTIC_TRY_LIST）；artifact 留具名 winning tactic（`won_hint.lean` 內 body 是 `:= by <具體 tac>`、不是 opaque `first | ...` 區塊）。Coverage gap：mathlib 預設 register_hint 不含 `rfl` / `assumption` / `norm_cast` / `push_cast` / `simp` / `ring_nf` / `nlinarith`，靠這幾個才能 close 的 goal 會 fall through Phase 2。實作：`Tooling/pipeline/__init__.py:_HINT_WINNER_RE + _parse_hint_winner` + `pipeline/builder.py` Phase 1 兩階段。
-
-10. **Lake build 耗時占比沒儀表** — 目前 dispatcher log 行只記事件名（`[dispatch] ...`、`[cascade] ...`），**沒帶 timestamp**；agent jsonl 只記 agent CLI 在 session 內的時間，框架層的 `_lake_build` / `_lake_build_batch` / verify Step 1+3 都在 agent 退出後 dispatcher Python 進程內呼叫，**完全不在 jsonl**，也沒 stdout 紀錄。導致無法回答「lake build 占 spawn wall-clock 幾%」這種基本性能問題（user 問過、我先前回 50-75% 是目測印象不是測量）。**最小 instrumentation**：(a) `pipeline/_lake.py` 的 3 個 lake invocation function 加 `time.perf_counter()` 包裝，把 elapsed 寫進回傳值或 print 一行 `[lake] <target> Ns` 摘要；(b) dispatcher log lines 加 ISO timestamp prefix（一次性 logger format 改動）。完成後可以做：每 spawn 算 spawn-wall-clock vs agent-jsonl-active vs framework-lake-elapsed 三者比例，量化 (item 9) 的 `first|...` 改進實際省了多少。前置：item 9 也應該等這個 instrumentation 做完 → 可以 before/after 比較（不然只能信估算）。
-
-11. **(已做) Dedupe `_eligible_ancestors` 過嚴，漏抓 cross-branch 等價 sub-goal** — `dedupe.py:295` 的 candidate 候選池只含 (a) candidate parent_goal_id 的**嚴格祖先鏈**上的 goals + (b) F42 同 parent 的 orphan proved sub。實證：Opus SG run 跑到 75 個 goal 時掃 statement 字串，**有 2 對 cross-branch type-identical 重複 case**：g166 (s95_sub_1, proved at depth 8) ↔ g187 (s106_sub_1, open at depth 10, 37min 後出現)；g172 (s102_sub_1, proved at depth 8) ↔ g200 (s113_sub_3, open at depth 9, 27min 後)。兩對都共一個祖先（g156 / g159）但不在彼此祖先鏈上，所以 ancestor 過濾跳過，dedup 漏。**改進**：candidate 池放寬到「同 problem 內任何 status='proved' 的 goal」（不限祖先鏈、不限同 parent）。安全性：proved goal 已是 leaf proof 沒下游依賴，alias-to-proved 永遠不形成 import cycle；只有 alias-to-open/attempting 才需 anti-cycle 檢查（沿用現行設計）。效能：candidates pool 從 ~10 升到 ~50-100，但 `_batch_isdefeq` 早就是 batched 模式，cost 線性。SG run 預估省 5-15min（每對 dedup hit 省 1-2 個 spawn × Opus 2-5min/spawn）。**不要做**：把 candidate 池無上限放寬到「any goal regardless of status」— 會引入 cycle risk，且 attempting 的 type 可能尚未穩定。
-
-12. **(設計中) Bridge lemma layer — 對齊 parcadei SG 1000 LOC 實作的 root cause** — Asterism SG / cantor 級題目重複展開 cross-product polynomial 是主因（vs parcadei 集中在 12 個 bridge lemma）。問題不是 generalization 也不是 Mathlib API、是 **abstraction**（把代數工作集中在 bridge layer、上層邏輯不再重複展開）。三個方向 (a) Manifest 新增 `## Bridge lemmas` section / (b) 強化 Backward prompt 引導早期寫 `Lemmas.lean` / (c) 接 item 11 dedup 擴大讓 bridge 自動跨 strategy 重用。長期 hook 是 v3 archive 的 Generalizer pipeline。完整設計、開放決策點、不要做清單見 `docs/dev/bridge_lemma_layer.md`。
-5. **第三方 deep problem** — cantor 是當前最深，再要更深場景才知道 dedupe / cascade 邊界
-6. **Strategist** — 拆 Backward 為 Plan + Decompose；只有 SG 在 entry_kind directive 後仍卡住才真的需要
+SG / cantor 是當前最大樣本（50+ goals、4hr+ wall、有 Kelly minimizer 類型困難 sub-goal）。SG 在 Asterism 過去有以 sonnet 證過記錄（操作人提供）；本 session 多次 SG run 是 framework stress test、不是「證 SG」目的。
 
 ## 重要參考
 
-- `docs/data-flow.md` — agent 與框架資料流（F55 + F56 概念入口）
+- `docs/dev/decline_directives.md` — 4-token decline directive 系統設計
+- `docs/dev/bridge_lemma_layer.md` — 長期方向：把 cross-product algebra 集中成 bridge lemma
+- `docs/data-flow.md` — agent 與框架資料流
 - `docs/architecture.md` — DB schema、cascade rules、pipeline 細節
+- `docs/failure_modes.md` — failure_reason / event_type single SoT
 - `docs/OPERATOR.md` — CLI subcommands、env vars、recurring traps
 
 ## 用戶 preferences
 
-操作者全域 memory 在 `C:\Users\ander\.claude\projects\D--Hadamard\memory\`，本檔不重複。
+操作者全域 memory 在 `C:\Users\ander\.claude\projects\D--Asterism\memory\`、本檔不重複。

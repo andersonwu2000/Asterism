@@ -49,8 +49,10 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 | `agent_no_output` | Builder Phase 2 | rc=0 但 agent 沒寫 `patch*.lean` | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `agent_rc_nonzero` | Builder + Backward | rc≠0、rc≠124/125/126/127、wall-clock ≥ 10s（一般 hard fail）| buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `agent_timeout` | Builder + Backward | claude rc=124（SIGKILL at WORKER_TIMEOUT_SEC、預設 600s） | postmortem（寫 `.drafts/`、F55）+ buffer + 強制 exhaust（不再續 retry） | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
-| `agent_declined` | Builder | agent 在 patch.lean 檔頂寫 `-- decline: too_hard`（Phase 6） | terminal exit（不 buffer 自身）| **attempts++** + `entry_kind='Backward'`（Phase 7：路由用 entry_kind、不再灌 attempts 到 BUILDER_THRESHOLD） | `direct_attempt` |
-| `agent_infeasible` | Builder + Backward | agent 寫 `-- decline: parent_type_infeasible`（含反例、Phase 6） | terminal exit（不 buffer 自身）| **attempts++** + goal `shelved` + `_propagate_shelve`（cascade 上拋讓父 strategy 重拆） | `infeasible_sub`（投到 parent goal、不到自己） |
+| `agent_declined` | Builder | agent 寫 `-- decline: needs_decomposition`（unified directive system, 2026-05-10；舊名 `too_hard`） | terminal exit（不 buffer 自身）| **attempts++** + `entry_kind='Backward'`（路由用 entry_kind、不再灌 attempts 到 BUILDER_THRESHOLD） | `direct_attempt` |
+| `agent_infeasible` | Builder + Backward | agent 寫 `-- decline: unprovable`（含反例；舊名 `parent_type_infeasible`） | terminal exit（不 buffer 自身）| **attempts++** + goal `shelved` + `_propagate_shelve` | `infeasible_sub`（投到 parent goal、不到自己；filter `_NON_AGENT_REASONS` 排除 self） |
+| `parent_needs_fix` | Builder + Backward | agent 寫 `-- decline: return_to_parent`（含具體 fix hint：缺哪個 hypothesis / 換哪個結構） | terminal exit（不 buffer 自身）| **attempts++** + goal `shelved` + `_propagate_shelve`；description 投到 parent context 的 fix hint section | `infeasible_sub`（同上；renderer 用 `failure_reason` 區分 fix-hint vs counterexample） |
+| `agent_shelved` | Builder + Backward | agent 寫 `-- decline: shelve`（無反例、純 give up） | terminal exit（不 buffer 自身）| **attempts++** + goal `shelved` + `_propagate_shelve` | `infeasible_sub`（同上；soft 訊號、留給 Strategist 將來覆核） |
 | `goal_no_longer_open` | Backward (F24-A) | parse 階段 race 偵測：lake build 完但 goal 已 proved/shelved | terminal exit（不 buffer 自身）| 走 generic `failed`/attempts++（dispatcher 寫 final dead_attempt） | `direct_attempt` |
 | `quota_exhausted` | Builder + Backward | rc=126（gemini quota 耗盡）| 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、不進 CONSEC | 不投影（infra） |
 | `missing_dep` | Builder + Backward | rc=127（CLI 缺）| 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、不進 CONSEC | 不投影（infra） |
@@ -82,7 +84,8 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 
 **Notes**：
 - spawn 失敗的三條 reason（`agent_timeout` / `agent_rc_nonzero` / `agent_no_output`）按 rc + agent 行為精確分類，retry agent / event renderer 可依 reason 直接 dispatch、不需要 parse `failure_detail`。
-- `agent_declined` **只在 Builder**。Backward 沒 declined channel；Backward agent 想退出走 `agent_infeasible`（必須含反例）。
+- `agent_declined`（`needs_decomposition` directive）**只在 Builder**。Backward 是 decomposer 自己、沒有「需要拆解」的 escape；Backward agent 退出用 `unprovable` / `return_to_parent` / `shelve` 三條。
+- 詳細的 directive 詞彙設計（4 個 directive × 2 pipeline、何時用哪條、description 規範）見 `docs/dev/decline_directives.md`。
 - `lake_build_error` 在 Builder 來自 patch 套上去 build 失敗；在 Backward 來自 strategy 組裝（sub-goal sorry stubs + scratch 一起 build batch）失敗。
 
 ---
@@ -97,7 +100,7 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 | `direct_attempt` | `dead_attempts` where `target_kind='Goal'` AND `failure_reason NOT IN _NON_AGENT_REASONS` | `failure_reason` + 截斷 `failure_detail` + 簡短 PROPOSAL excerpt | `dead_attempts.target_id`（自己這個 goal） | must-see |
 | `verify_failure` | `dead_attempts` where `target_kind='Strategy'`（pre-F56 row、F56 後不再產生） | strategy 的 `proposal_md` 截斷 + lake stderr 摘要 | `strategies.goal_id` | must-see |
 | `dead_strategy` | `strategies` where `status='dead'` AND `proposal_md != ''` AND ≥1 linked sub-goal | `proposal_md` 截斷 + 該 strategy 拆出的 sub-goal slug 列表 | `strategies.goal_id` | must-see |
-| `infeasible_sub` | `dead_attempts` where `failure_reason='agent_infeasible'` JOIN `strategy_subgoals` 找 parent | sub-goal slug + counterexample 摘要（從 PROPOSAL.md `## Root cause` / `## Counterexample` 抽，沿用 `_extract_root_cause`） | **parent goal id**（不是失敗的 sub 自己） | must-see |
+| `infeasible_sub` | `dead_attempts` where `failure_reason IN ('agent_infeasible','parent_needs_fix','agent_shelved')` JOIN `strategy_subgoals` 找 parent | sub-goal slug + `failure_reason` tag + 摘要（`_extract_root_cause` 抽 `## Root cause` / `## Fix hint` / `## Counterexample`）| **parent goal id**（不是失敗的 sub 自己） | must-see |
 | (filtered out) | `dead_attempts` where `failure_reason IN _NON_AGENT_REASONS` | — | — | 不投影 |
 
 **`_NON_AGENT_REASONS`** — events.py 統一定義的不投影 reason set、SQL `NOT IN` 引用：
