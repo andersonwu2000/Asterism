@@ -142,12 +142,26 @@ class _FakePopen:
     claude_cli's spawn-loop surface (communicate / poll / kill /
     terminate / wait) AND the context-manager protocol that the stdlib
     `subprocess.run` enters internally (`with Popen(...) as proc:`).
-    Tests that monkeypatch `subprocess.Popen` globally need both."""
+    Tests that monkeypatch `subprocess.Popen` globally need both.
+
+    Watchdog-eligible spawns use the stream-json + reader-thread path
+    (added 2026-05-10): the dispatch loop calls `proc.wait(timeout)`
+    and drains `.stdout` / `.stderr` line-by-line via reader threads.
+    `_FakePopen.stdout` / `.stderr` are StringIO so the reader threads
+    see EOF immediately and exit cleanly (no real stream events for
+    parser; tests don't assert on parser state, just on cmd shape).
+    `wait()` sets returncode so dispatch proceeds with rc."""
     def __init__(self, *, rc: int = 0, stdout: str = "ok",
                  stderr: str = "") -> None:
+        import io
         self._rc = rc
         self._stdout = stdout
         self._stderr = stderr
+        # Pipe-like .stdout / .stderr for the reader-thread path.
+        # Pre-populate with the same text communicate() returns so
+        # both paths see the same content.
+        self.stdout = io.StringIO(stdout)
+        self.stderr = io.StringIO(stderr)
         self.returncode: int | None = None
         # subprocess.run reads .args off the Popen instance to attach
         # to CompletedProcess; without it, complete_text path crashes.
@@ -170,6 +184,11 @@ class _FakePopen:
         self.returncode = -15
 
     def wait(self, timeout=None):
+        # Watchdog-eligible path: dispatch calls wait() instead of
+        # communicate(). Set returncode here so the dispatch loop
+        # sees a successful spawn.
+        if self.returncode is None:
+            self.returncode = self._rc
         return self.returncode
 
     def __enter__(self):

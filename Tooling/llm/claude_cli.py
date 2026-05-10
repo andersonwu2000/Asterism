@@ -46,6 +46,7 @@ import time
 from pathlib import Path
 
 from .base import LLMRequest, RESCUE_BUDGET_SEC, SpawnRC
+from .stream_parser import StreamParser
 
 
 # F51 — extract names from "Unknown constant `X.Y.Z`" / "unknown identifier
@@ -200,42 +201,45 @@ _QUOTA_MARKERS = (
     "rate limit",
     "rate_limit_exceeded",
 )
-# Watchdog policy: at the wall-clock cap (= `timeout_sec -
-# RESCUE_BUDGET_SEC`), kill the spawn ONLY if the agent has been idle
-# (no tool_use in the session jsonl) for ≥ `idle_window_sec`. The
-# wall_cap exists to guarantee the retry helper a rescue window before
-# subprocess timeout; the idle-window guard avoids killing agents that
-# are demonstrably making progress and would benefit from running to
-# their full budget + the standard postmortem flow.
+# Watchdog policy: single point-in-time check at the wall-clock cap
+# (= `timeout_sec - dispatch.rescue_timeout_sec`). At that moment we
+# sample the stream parser's runtime state and kill iff the agent is
+# in a thinking trap (manifestation (a): currently mid-thinking, or
+# (b): finalized + last stop_reason == max_tokens). See
+# Tooling/llm/stream_parser.py for the trap detection rationale.
 #
-# Trade-off vs the older unconditional wall_cap kill: a stuck-thinking
-# agent now wastes its rescue window if it had ANY tool_use within the
-# last `idle_window_sec` before wall_cap. Empirically, runaway thinking
-# is silent (no tool_use) so this is fine. Productive agents that hit
-# wall_cap with recent tool_use no longer get force-shipped via rescue
-# — they run to subprocess timeout and write a postmortem note instead,
-# which is the cheaper outcome for them.
+# Why no continuous polling / silence threshold:
+#   The earlier silence-based idle_window design (replaced 2026-05-10
+#   after SG run #9) couldn't catch the mid-thinking case before the
+#   first tool_use silence accumulated past threshold. Sonnet sessions
+#   that entered a deep-thinking deadlock right after a tool_use
+#   (s219 cb7e1cde: 7 minutes of mid-thinking from 07:24:15 → 07:31:25
+#   max_tokens, silence at subprocess kill = 468s, 12s shy of the
+#   480s threshold) slipped through. The stream parser sees thinking
+#   start in real time, so a single check at wall_cap is sufficient
+#   — productive agents are between turns at wall_cap (state=
+#   IN_MESSAGE / MID_TOOL / FINALIZED + clean stop), trapped agents
+#   are either mid-thinking or finalized + max_tokens.
 #
-# Re-introduced after `ff94493` removed it: SG run #5 (2026-05-10)
-# showed concrete cases where Backward agents hit wall_cap mid-active
-# work (kept emitting tool_use up to wall_cap) and got force-shipped
-# into bad splits — the multiplicative downstream cost (parent_needs_fix
-# cascade-up) made the unconditional kill the wrong default for
-# Backward, and the idle-window guard recovers the productive cases.
-_WATCHDOG_POLL_SEC = 30
-_DEFAULT_IDLE_WINDOW_SEC = 480
-# Floor on the wall_cap so misconfigured `timeout_sec < rescue_budget`
-# pairs (or tests that pass tiny timeouts) don't fire the watchdog
-# immediately. 60s is a safe minimum for any real spawn; tests
-# monkeypatch this down for fast watchdog assertions.
+# False-positive safety net: the fresh-sid stage 2 prompt
+# (`Tooling/pipeline/_retry.py`) tells the agent to Read the broken
+# session's jsonl and decide ship-or-bail. If watchdog kills an active
+# agent that happened to be mid-thinking at exactly wall_cap (low
+# probability for a 660s trigger), the fresh-sid takeover ships the
+# work that was already on disk.
 _MIN_WALL_CAP_SEC = 60
 
 
 def _find_session_jsonl(sid: str) -> Path | None:
     """Locate the per-session jsonl claude CLI maintains under
     `~/.claude/projects/<encoded_cwd>/<sid>.jsonl`. Returns None if
-    not yet created (cold start race) or if the .claude tree is
-    missing entirely. Watchdog handles None by waiting another tick."""
+    not yet created or if the .claude tree is missing.
+
+    Used by the fresh-sid stage 2/3 takeover (`_retry.py`'s
+    `_copy_broken_session_jsonl`) to copy the broken session's
+    history into `attempts_dir/_broken_session.jsonl` so the fresh
+    agent can Read it from inside its sandbox without needing
+    add-dir access to ~/.claude/projects/."""
     base = Path.home() / ".claude" / "projects"
     if not base.exists():
         return None
@@ -250,42 +254,21 @@ def _find_session_jsonl(sid: str) -> Path | None:
     return None
 
 
-def _count_tool_use_events(log_path: Path) -> int:
-    """Count tool_use content blocks in a session jsonl. Tolerates
-    the trailing line being mid-write (claude appends as model streams)
-    via per-line try/except — partial JSON is silently skipped."""
-    count = 0
-    try:
-        text = log_path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return count
-    for line in text.splitlines():
-        if not line:
-            continue
-        try:
-            d = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        msg = d.get("message", {}) or {}
-        content = msg.get("content", [])
-        if isinstance(content, list):
-            for c in content:
-                if isinstance(c, dict) and c.get("type") == "tool_use":
-                    count += 1
-    return count
-
-
 def _watchdog(proc: subprocess.Popen, sid: str, *,
               stuck_flag: list, timeout_sec: int,
-              poll_interval: float = _WATCHDOG_POLL_SEC) -> None:
-    """Monitor `proc`; at the wall-clock cap
-    (= `timeout_sec - dispatch.rescue_timeout_sec`), kill only if the
-    agent has been silent for ≥ `dispatch.idle_window_sec`. Sets
-    `stuck_flag[0] = True` on kill so the caller can route the spawn to
-    the rescue path. If wall_cap is reached but the agent is still
-    active (recent tool_use), exit the watchdog quietly — the spawn
-    runs to its full subprocess timeout and the postmortem path takes
-    over. Runs in a daemon thread; exits when `proc` finishes naturally.
+              parser: StreamParser) -> None:
+    """Sleep until the wall-clock cap (= `timeout_sec -
+    dispatch.rescue_timeout_sec`). At that single trigger point sample
+    `parser.is_thinking_trap()`; if True, kill the proc and set
+    `stuck_flag[0] = True` so the caller routes to STUCK_THINKING →
+    fresh-sid stage 2/3. If False, exit quietly — the spawn runs to
+    its full subprocess timeout and the TIMEOUT path takes over (which
+    re-checks the parser final state symmetrically).
+
+    If `proc` finishes naturally before the wall cap, exit without
+    sampling (no decision to make).
+
+    Runs in a daemon thread; one spawn = one trigger.
     """
     from .. import config as _cfg
     rescue_budget = _cfg.get(
@@ -293,54 +276,61 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
         default=RESCUE_BUDGET_SEC,
         env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
     )
-    idle_window_sec = _cfg.get(
-        "dispatch.idle_window_sec",
-        default=_DEFAULT_IDLE_WINDOW_SEC,
-        env_var="ASTERISM_IDLE_WINDOW_SEC", cast=int,
-    )
     spawn_start = time.monotonic()
     wall_cap_sec = max(_MIN_WALL_CAP_SEC, timeout_sec - rescue_budget)
-    log_path: Path | None = None
-    last_count = 0
-    last_progress = spawn_start
+    trigger_at = spawn_start + wall_cap_sec
 
-    def _kill(reason: str) -> None:
+    # Wait until trigger time, in short slices so a fast-finishing
+    # spawn unblocks the thread promptly. 1s slice keeps the thread
+    # responsive without burning CPU.
+    while proc.poll() is None:
+        now = time.monotonic()
+        remaining = trigger_at - now
+        if remaining <= 0:
+            break
+        time.sleep(min(1.0, remaining))
+
+    if proc.poll() is not None:
+        return  # Proc finished naturally before the wall cap.
+
+    snap = parser.snapshot()
+    verdict_state = snap.state.value
+    verdict_stop = snap.last_stop_reason or "—"
+    if parser.is_thinking_trap():
+        # Re-check proc liveness inside the trap branch: if the proc
+        # finished between the wait-loop exit (line above) and this
+        # sample, sticking a STUCK_THINKING rc on a finished spawn
+        # would route a legitimately-completed agent into the
+        # ~6-minute fresh-sid takeover. The race window is narrow but
+        # real (parser may finalize a max_tokens turn microseconds
+        # before the OS reaps the process). When proc is already
+        # dead, defer to the natural rc path; the TIMEOUT branch's
+        # symmetric trap check will handle it via fresh-sid takeover
+        # IF the rc was 124, or via the standard rc!=0 path
+        # otherwise.
+        if proc.poll() is not None:
+            print(f"[watchdog] sid={sid[:8]} wall cap "
+                  f"{int(wall_cap_sec)}s reached; trap "
+                  f"(state={verdict_state} "
+                  f"last_stop_reason={verdict_stop}) but proc already "
+                  f"finished; deferring to natural rc path",
+                  flush=True)
+            return
         stuck_flag[0] = True
-        print(f"[watchdog] sid={sid[:8]} {reason} — killing for rescue",
+        print(f"[watchdog] sid={sid[:8]} wall cap {int(wall_cap_sec)}s "
+              f"reached; trap (state={verdict_state} "
+              f"last_stop_reason={verdict_stop}); killing for rescue",
               flush=True)
         try:
             proc.terminate()
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
-
-    while proc.poll() is None:
-        time.sleep(poll_interval)
-        now = time.monotonic()
-        # Track tool_use progress so the wall_cap check below can
-        # consult silence duration. The jsonl appears asynchronously
-        # after claude opens the session; tolerate None.
-        if log_path is None:
-            log_path = _find_session_jsonl(sid)
-        if log_path is not None:
-            new_count = _count_tool_use_events(log_path)
-            if new_count > last_count:
-                last_count = new_count
-                last_progress = now
-        if now - spawn_start > wall_cap_sec:
-            silence = now - last_progress
-            if silence >= idle_window_sec:
-                _kill(f"wall cap {int(wall_cap_sec)}s + idle "
-                      f"{int(silence)}s reached")
-            else:
-                # Agent still active at wall_cap — yield to subprocess
-                # timeout so the postmortem path (not rescue) handles it.
-                print(f"[watchdog] sid={sid[:8]} wall cap "
-                      f"{int(wall_cap_sec)}s reached but agent active "
-                      f"(silence={int(silence)}s < "
-                      f"{int(idle_window_sec)}s); deferring to "
-                      f"subprocess timeout + postmortem", flush=True)
-            return
+    else:
+        print(f"[watchdog] sid={sid[:8]} wall cap {int(wall_cap_sec)}s "
+              f"reached; active (state={verdict_state} "
+              f"last_stop_reason={verdict_stop}); deferring to "
+              f"subprocess timeout", flush=True)
 
 # Asterism's pipelines need Read / Write / Edit for sandbox file
 # manipulation, plus F50 search tools:
@@ -420,6 +410,31 @@ def _build_cold_prompt(req: LLMRequest) -> str:
         f"{req.attempts_dir}/.\n\n"
         f"=== INSTRUCTIONS ===\n{body}\n=== END INSTRUCTIONS ==="
     )
+
+
+def _persist_parser_state(attempts_dir: Path,
+                          parser: StreamParser) -> None:
+    """Write the parser's final snapshot to
+    `attempts_dir/_parser_state.json` so the retry helper's TIMEOUT
+    branch can re-check trap symmetrically with the watchdog. The
+    file is also a forensic artifact (operator can inspect last
+    parser state without restarting the daemon).
+
+    Best-effort: silent on IO errors. The retry helper treats a
+    missing file as 'no parser data — assume active' (defaults to the
+    legacy `--resume` postmortem path)."""
+    try:
+        snap = parser.snapshot()
+        body = json.dumps({
+            "state": snap.state.value,
+            "last_stop_reason": snap.last_stop_reason,
+            "messages_seen": snap.messages_seen,
+            "is_thinking_trap": parser.is_thinking_trap(),
+        })
+        (attempts_dir / "_parser_state.json").write_text(
+            body, encoding="utf-8")
+    except (OSError, ValueError):
+        pass
 
 
 def _write_spawn_stderr(attempts_dir, stderr: str, stdout: str,
@@ -641,6 +656,34 @@ class ClaudeCliProvider:
                 "--strict-mcp-config",
             ]
 
+        # Watchdog policy: short rescue / postmortem spawns skip the
+        # watchdog (no rescue window math, subprocess timeout is the
+        # only kill mechanism). Cold spawns without session_id can't
+        # be tracked across retries either — defensive guard, every
+        # real dispatch sets session_id.
+        # Fresh-rescue stages 2/3 (inline_prompt) and F55 postmortem
+        # (is_postmortem) both fall in the no-watchdog bucket.
+        watchdog_eligible = (
+            not req.is_postmortem
+            and req.inline_prompt is None
+            and req.session_id is not None
+        )
+        # Stream-json + partial-messages enables real-time event
+        # parsing: claude CLI emits one JSON line per Anthropic SSE
+        # event (message_start, content_block_start with
+        # type=thinking/tool_use, content_block_delta, message_delta
+        # with stop_reason, message_stop). The parser maintains a
+        # state machine the watchdog samples at wall_cap.
+        # Non-watchdog spawns (postmortem / fresh-rescue) keep text
+        # output — they don't need parser visibility and text mode
+        # avoids the JSON Lines volume / parser overhead.
+        if watchdog_eligible:
+            output_flags = [
+                "--output-format", "stream-json", "--verbose",
+                "--include-partial-messages",
+            ]
+        else:
+            output_flags = ["--output-format", "text"]
         cmd = [
             "claude",
             "--model", model,
@@ -650,29 +693,12 @@ class ClaudeCliProvider:
             "--add-dir", str(req.attempts_dir),
             *add_dir_packages,
             *mcp_flags,
-            "--output-format", "text",
+            *output_flags,
             *session_flags,
             *session_lifetime_flag,
             *_trim_flags(req),
         ]
         env = dict(os.environ)
-        # Watchdog policy: monitor the session jsonl for tool_use
-        # events on normal spawns. Postmortem (180s) + rescue (180s)
-        # are already short and skip the watchdog — for those the
-        # subprocess timeout is the only kill mechanism. Cold spawns
-        # without session_id can't be monitored (no jsonl path), so
-        # they also skip; in practice every Asterism dispatch sets
-        # session_id, so this branch is just defensive.
-        # Fresh-rescue stages 2/3 (inline_prompt) run at tight rescue/
-        # postmortem budgets; watchdog wall_cap math (`timeout_sec -
-        # rescue_budget`) doesn't apply meaningfully there. Skip
-        # watchdog on those — the subprocess timeout is the only kill
-        # mechanism for short rescues.
-        watchdog_eligible = (
-            not req.is_postmortem
-            and req.inline_prompt is None
-            and req.session_id is not None
-        )
         proc = subprocess.Popen(
             cmd, env=env, cwd=str(req.problem_dir),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -680,26 +706,89 @@ class ClaudeCliProvider:
         )
         stuck_flag: list[bool] = [False]
         wd_thread: threading.Thread | None = None
+        reader_thread: threading.Thread | None = None
+        parser: StreamParser | None = None
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+
+        def _drain_stream(pipe, buf: list[str],
+                          parser_ref: StreamParser | None) -> None:
+            """Read `pipe` line by line; append to `buf` and (if
+            parser given) feed each line to the parser. Exits on EOF
+            (proc closes pipe). Tolerant of decode errors via the
+            parent Popen's encoding/errors settings."""
+            try:
+                for line in pipe:
+                    buf.append(line)
+                    if parser_ref is not None:
+                        parser_ref.feed_line(line)
+            except (OSError, ValueError):
+                # Pipe closed mid-read (proc killed) — stop draining.
+                pass
+
         if watchdog_eligible:
+            parser = StreamParser()
+            reader_thread = threading.Thread(
+                target=_drain_stream,
+                args=(proc.stdout, stdout_chunks, parser),
+                daemon=True,
+            )
+            reader_thread.start()
+            # stderr also needs a reader so the OS pipe buffer doesn't
+            # fill and deadlock the proc. Parser only consumes stdout.
+            stderr_thread = threading.Thread(
+                target=_drain_stream,
+                args=(proc.stderr, stderr_chunks, None),
+                daemon=True,
+            )
+            stderr_thread.start()
             wd_thread = threading.Thread(
                 target=_watchdog,
                 args=(proc, req.session_id),
                 kwargs={
                     "stuck_flag": stuck_flag,
                     "timeout_sec": req.timeout_sec,
+                    "parser": parser,
                 },
                 daemon=True,
             )
             wd_thread.start()
         try:
-            stdout, stderr = proc.communicate(timeout=req.timeout_sec)
-            rc = proc.returncode
+            if watchdog_eligible:
+                proc.wait(timeout=req.timeout_sec)
+                rc = proc.returncode
+                # Drain any remaining buffered output (reader threads
+                # exit on EOF after proc closes its pipes).
+                if reader_thread is not None:
+                    reader_thread.join(timeout=2)
+                stderr_thread.join(timeout=2)
+                stdout = "".join(stdout_chunks)
+                stderr = "".join(stderr_chunks)
+            else:
+                stdout, stderr = proc.communicate(
+                    timeout=req.timeout_sec)
+                rc = proc.returncode
         except subprocess.TimeoutExpired:
             proc.kill()
-            stdout, stderr = proc.communicate()
+            if watchdog_eligible:
+                # Reader threads see EOF on the killed pipes and exit.
+                if reader_thread is not None:
+                    reader_thread.join(timeout=2)
+                stderr_thread.join(timeout=2)
+                stdout = "".join(stdout_chunks)
+                stderr = "".join(stderr_chunks)
+            else:
+                stdout, stderr = proc.communicate()
             rc = 124
         if wd_thread is not None:
             wd_thread.join(timeout=2)
+        # Persist parser final state so the retry helper's TIMEOUT
+        # branch (in _retry.py) can re-check trap symmetrically with
+        # the watchdog's at-trigger check, and so dead_attempts
+        # forensic detail can record the verdict. Best-effort — IO
+        # errors don't fail the spawn.
+        if parser is not None:
+            _persist_parser_state(req.attempts_dir, parser)
         # Watchdog stuck-kill takes precedence over the OS-level rc
         # (TerminateProcess returns a platform-dependent code that
         # collides with our normal failure semantics). Reclassify so
