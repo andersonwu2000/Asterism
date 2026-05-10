@@ -725,6 +725,18 @@ def run(workspace: Path, *, once: bool = False) -> int:
 
     _recover_at_startup(conn, workspace)
 
+    # Spawn-sandbox sweep: clean any orphan sandboxes left by SIGKILL'd
+    # spawns from a prior daemon run (per docs/dev/spawn_sandbox.md §3.3).
+    # Runs after _recover_at_startup so DB state is consistent before
+    # filesystem state is reconciled. Sweep skips sandboxes whose owner
+    # daemon is alive (guards against concurrent daemons).
+    from . import spawn_sandbox as _spawn_sandbox
+    _sb_counters = _spawn_sandbox.sweep_orphan_sandboxes(workspace)
+    if any(_sb_counters[k] for k in
+           ("rolled_back", "deleted_committed", "corrupt_manifest",
+            "drift_warnings", "skipped_alive_owner")):
+        print(f"[sandbox-sweep] startup: {_sb_counters}", flush=True)
+
     # Refresh BRIEF.md for every registered problem at startup. Covers
     # Manifest edits + Library promotes since the last daemon run
     # (daemon has no hot-reload; startup is the canonical refresh point).
