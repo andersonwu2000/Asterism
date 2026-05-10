@@ -193,12 +193,10 @@ def _build_fresh_rescue_stage2_prompt(
     """Stage-2 prompt: agent Reads broken jsonl, ships-or-bails."""
     if jsonl_copied:
         log_note = (
-            f"The previous session's full conversation log (including "
-            f"all thinking blocks) is at "
+            f"The previous session's full conversation log is at "
             f"`{attempts_dir}/_broken_session.jsonl`. Read it (use "
-            f"Read with offset/limit if it's large; thinking blocks "
-            f"are inside `assistant` events under content[].thinking) "
-            f"to see what was attempted and where it got stuck."
+            f"offset/limit for large files) to see what was attempted "
+            f"and where it got stuck."
         )
     else:
         log_note = (
@@ -208,8 +206,8 @@ def _build_fresh_rescue_stage2_prompt(
     return (
         f"The previous session was killed mid-think after exceeding the "
         f"wall-clock budget. {log_note}\n\n"
-        f"Then ship ONE of the following — no deep analysis, use what's "
-        f"already in the log:\n"
+        f"Then ship ONE of the following — use what's already in the "
+        f"log:\n"
         f"(a) `patch.lean` + `new_<slug>.lean` stubs (`:= by sorry` ok)\n"
         f"(b) `patch.lean` alone with a sorry-free direct proof "
         f"(leaf-bypass)\n"
@@ -217,7 +215,7 @@ def _build_fresh_rescue_stage2_prompt(
         f"(d) bail — write `_progress.md` only, exit. No `patch.lean`. "
         f"Capture in ≤200 words: shape converging to, sub-pieces with "
         f"clear name+statement, the specific blocker, alternative "
-        f"direction (≤60 words) or 'none — direction sound'.\n\n"
+        f"direction (≤60 words).\n\n"
         f"Act now. {rescue_min} minutes left."
     )
 
@@ -230,8 +228,7 @@ def _build_fresh_rescue_stage3_prompt(
         log_note = (
             f"The previous session's log is at "
             f"`{attempts_dir}/_broken_session.jsonl`. Read it (use "
-            f"Read with offset/limit if it's large) to see what was "
-            f"explored."
+            f"offset/limit for large files) to see what was explored."
         )
     else:
         log_note = (
@@ -246,7 +243,7 @@ def _build_fresh_rescue_stage3_prompt(
         f"2. Any sub-piece with clear formulation (slug + statement).\n"
         f"3. The specific blocker (which Mathlib lemma, which case "
         f"analysis, etc.).\n"
-        f"4. Alternative direction (≤60 words) or 'none — direction sound'.\n\n"
+        f"4. Alternative direction (≤60 words).\n\n"
         f"Skip recapping the goal — Context.md already has it. Write "
         f"`_progress.md` and exit. Do NOT finalize patch.lean. "
         f"{postmortem_min} minutes left."

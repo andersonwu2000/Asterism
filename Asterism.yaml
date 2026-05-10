@@ -27,15 +27,17 @@ dispatch:
                               # (720s = 12min) → rescue path engages sooner.
 #  postmortem_timeout_sec: 180  # F55 postmortem spawn budget (writes
                               # _progress.md after a main timeout).
-#  rescue_timeout_sec: 180    # stuck-thinking rescue spawn budget. Also
-                              # determines watchdog wall-cap = spawn -
-                              # rescue. Lowering tightens both ends.
-                              # Note: as of 2026-05-10, this only gates
-                              # the watchdog wall-cap math (spawn -
-                              # rescue). Stuck-thinking now triggers a
-                              # fresh-rescue (cold spawn into a fresh
-                              # session at full spawn_timeout_sec
-                              # budget), not a tight `--resume` rescue.
+  rescue_timeout_sec: 240     # gates two things:
+                              # (a) watchdog wall-cap math (kill at
+                              #     `spawn_timeout - rescue_timeout`,
+                              #     leaves room for stage 2 + stage 3
+                              #     fresh-rescue spawns within budget).
+                              # (b) fresh-rescue stage 2 budget (the
+                              #     ship-or-bail spawn after stuck-
+                              #     thinking, takes over the original
+                              #     session's rescue stage).
+                              # Stage 3 (postmortem replacement) uses
+                              # `postmortem_timeout_sec` instead.
 #  idle_window_sec: 480       # at wall_cap, kill spawn for rescue ONLY
                               # if the agent has emitted no tool_use for
                               # ≥ this window. Productive agents at
