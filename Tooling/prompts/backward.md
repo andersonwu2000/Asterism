@@ -4,15 +4,29 @@ Read `Context.md` for the goal, Manifest hints, FORBIDDEN_LEMMAS, prior failures
 
 Time budget: {timeout_min} minutes.
 
-## Verification model
+## Validating decomposition via LSP (recommended)
 
-You write outputs (`patch.lean` + `new_<slug>.lean`) and exit. The framework then runs `lake build` to verify your decomposition compiles. On any error you get a fresh retry with the lake error inlined into the next prompt.
+You have four MCP tools backed by a live Lean server holding the parent goal's source file (`goal_lean`, the `.lean` file referenced in Context.md):
 
-You have **NO live Lean server** in this spawn — there is no apply_edit / errors_at / goal_at tool. Verification is deferred. So:
+- `mcp__lsp__apply_edit(start_line, end_line, new_text)` — replace a 1-indexed inclusive line range. Returns the post-edit goal at line=start_line and full-file diagnostics.
+- `mcp__lsp__goal_at(line, col)` — read the proof goal at any position.
+- `mcp__lsp__errors_at(line=None)` — list diagnostics (optional line filter).
+- `mcp__lsp__validate_file(content)` — elaborate a candidate file standalone (auto-prepends Mathlib + Defs imports). Returns `{ok, diagnostics}`. Use after writing each `new_<slug>.lean` to catch syntax/type errors that the in-file `have` check missed.
 
-- **Decomposition shape decisions are cheap to commit** — wrong types compile-fail in seconds at lake; agent's thinking-budget on "is this the right shape" wastes time.
-- **Use Read/Grep on `.lake/packages/mathlib/Mathlib/`** to verify lemma names + signatures BEFORE citing them. Names drift across versions (`pow_le_pow_left` → `pow_le_pow_left₀`). Loogle (`python -m Tooling.loogle '<pattern>'`) for type-pattern search.
-- **Don't simulate Lean elaboration in your head** — pick a plausible decomposition, ship it, let lake tell you if signatures don't compose.
+Use them to prototype the decomposition skeleton **inside goal_lean** before committing to `new_*.lean` + `patch.lean`. Workflow:
+
+1. apply_edit goal_lean's body to insert your candidate skeleton:
+   ```
+     intro ...
+     have h_<slug_1> : <stmt_1> := by sorry
+     have h_<slug_2> : <stmt_2> := by sorry
+     exact <combinator> h_<slug_1> h_<slug_2>
+   ```
+2. errors_at to check: only sorry warnings, no errors → each sub-claim's statement type-checks AND the combinator closes the parent goal.
+3. If errors: revise statement / combinator and apply_edit again.
+4. Once 0 errors (warnings tolerated), write outputs: each `have` becomes a `new_<slug>.lean` stub (statement only); after writing each, call `validate_file` with its content to confirm it elaborates standalone (catches stub-only failures the in-file check can't see). `patch.lean` body is the validated skeleton with `have h_<slug> := <slug>` referring to the extracted theorem.
+
+The framework restores `goal_lean` to its pre-spawn state on exit, so your exploratory edits don't leak into the codebase. Outputs in attempts_dir are what gets committed.
 
 ## Output
 
@@ -84,6 +98,13 @@ Examples:
 -- p=(0,0), q=(1,0), r=(2,0), s=(2,1/2): all hypotheses hold but the conclusion fails.
 ```
 
+```lean
+-- decline: return_to_parent
+-- ## Fix hint
+-- Parent passes hmin (b,pt,r) and hmin (a,pt,r); needs hmin (r,a,pt) — without it
+-- h1+h2 are simultaneously satisfiable.
+```
+
 ## Stop signals
 
 You write **types, not proofs**. Builder fills in proof detail — don't grind on it yourself. Ship the moment you catch yourself:
@@ -91,7 +112,6 @@ You write **types, not proofs**. Builder fills in proof detail — don't grind o
 - Working through a sub-goal's proof in your head
 - Picking specific values, arithmetic, or case orderings
 - Pivoting decomposition shape a 3rd time
-- Mentally simulating Lean elaboration / type-checking — that's lake's job, not yours
 
 Ship as `:= by sorry` with `entry_kind: Builder`. Wrong types compile-fail in seconds — cheaper than your thinking.
 
@@ -100,5 +120,5 @@ Ship as `:= by sorry` with `entry_kind: Builder`. Wrong types compile-fail in se
 - Each sub-goal must be **strictly simpler** and as abstract as possible — re-stating the parent in different notation does not count.
 - All universal binders (∀) and hypotheses from the parent must appear in each sub-goal.
 - Do NOT use any name in FORBIDDEN_LEMMAS — anywhere.
-- Verify lemma references before citing (names drift): Grep by name/symbol on `.lake/packages/mathlib/Mathlib/`, Loogle by type pattern.
+- Verify lemma references before citing (names drift): Grep by name/symbol, Loogle by type pattern.
 - If a sorry-free direct proof builds cleanly, ship `patch.lean` alone (no `new_*.lean`); framework leaf-bypass takes it.

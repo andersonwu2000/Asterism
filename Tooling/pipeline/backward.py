@@ -344,22 +344,18 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             (ctx.attempts_dir / "patch.lean").write_text(
                 skeleton, encoding="utf-8")
 
-        # 2026-05-10 reverted: Backward no longer uses LSP MCP tools.
-        # Pre-LSP architecture (last verified working at 9d05d19, SG
-        # proved by Sonnet in 4h 16min) had Backward write outputs
-        # blindly + framework runs lake build externally + retry's
-        # warm-spawn prompt inlines lake error. The LSP swap (cfc0e2a
-        # 2026-05-08) gave Backward apply_edit/errors_at/goal_at to
-        # prototype the decomposition skeleton inside goal_lean, but
-        # SG run #11 (2026-05-10) showed agents can spend the entire
-        # budget iterating on indentation/syntax through apply_edit
-        # without touching the actual decomposition decision (Goal=288
-        # ba921474: 26 thinking + 42 tool_use cycle). For decomposition
-        # tasks the LSP feedback loop is wrong-grained — the relevant
-        # check is "do my sub-goal types compose to close the parent"
-        # (lake-build verifiable), not "does my body have indentation
-        # bugs" (LSP-iteration trap).
-        # mcp_config_path=None disables --mcp-config flag in the spawn.
+        # Register a gateway session so claude's MCP tools operate on
+        # goal_lean's content via the shared worker pool. Snapshot
+        # already taken once before the retry loop; pristine restore
+        # happened at the top of this function.
+        mcp_config_path = _write_mcp_config(
+            attempts_dir=ctx.attempts_dir,
+            workspace=workspace,
+            target=goal_lean,
+            pipeline_id=pipeline_id,
+            problem=goal["problem"],
+        )
+
         return agent.spawn_llm(
             kind="backward",
             prompt_path=PROMPT_DIR / "backward.md",
@@ -368,7 +364,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             session_id=ctx.sid,
             is_retry=not ctx.cold,
             retry_context=ctx.retry_context,
-            mcp_config_path=None,
+            mcp_config_path=mcp_config_path,
             inline_prompt=ctx.inline_prompt,
             timeout_sec_override=ctx.budget_override,
         )

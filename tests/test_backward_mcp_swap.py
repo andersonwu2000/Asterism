@@ -51,24 +51,13 @@ def _mfst() -> manifest.Manifest:
     return manifest.Manifest(problem="p", statement="True")
 
 
-def test_spawn_skips_mcp_config_path(
+def test_spawn_passes_mcp_config_path(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Backward 2026-05-10 revert: agent no longer uses LSP MCP tools.
-    spawn_llm is called with mcp_config_path=None so the spawned
-    claude process gets no --mcp-config flag and has no apply_edit /
-    errors_at / goal_at / validate_file tools. Verification reverts
-    to the pre-LSP architecture: write outputs, framework runs
-    lake build, retry inlines the lake error.
-
-    Why: SG run #11 (2026-05-10) showed Backward agents spending
-    full spawn budget on apply_edit / errors_at iteration cycles
-    over indentation/syntax (e.g. Goal=288 ba921474: 26 thinking +
-    42 tool_use without converging). For decomposition tasks the
-    LSP feedback loop is wrong-grained — the right check is
-    'do my sub-goal types compose to close the parent', which
-    lake-build verifies, not 'does my body have indentation bugs'."""
+    """spawn_llm gets a mcp_config_path pointing at a freshly-written
+    JSON config that addresses the long-living Tooling.lsp_gateway
+    via HTTP, with the session token in X-Asterism-Session."""
     gid = _seed_root_goal(tmp_path, conn)
     captured: dict = {}
 
@@ -82,9 +71,14 @@ def test_spawn_skips_mcp_config_path(
         mfst=_mfst(), pipeline_id="pid-bw-mcp")
 
     cfg = captured.get("mcp_config_path")
-    assert cfg is None, (
-        f"Backward must NOT pass mcp_config_path "
-        f"(LSP disabled per 2026-05-10 revert), got {cfg!r}")
+    assert cfg is not None, "mcp_config_path should be set"
+    assert Path(cfg).exists()
+    data = json.loads(Path(cfg).read_text(encoding="utf-8"))
+    server = data["mcpServers"]["lsp"]
+    # Phase 1 gateway: HTTP MCP config (was stdio command in pre-Phase-1).
+    assert server["type"] == "http"
+    assert server["url"].endswith("/mcp")
+    assert server["headers"]["X-Asterism-Session"] == "test-stub-token"
 
 
 def test_restores_goal_lean_after_spawn_timeout(
