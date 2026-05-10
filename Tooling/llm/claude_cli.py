@@ -410,13 +410,32 @@ def _load_prompt(req: LLMRequest) -> str:
 def _build_cold_prompt(req: LLMRequest) -> str:
     """Compose the `-p` payload for a cold (non-retry) spawn: the full
     prompt template content, followed by short framework instructions
-    pointing at Context.md and the output directory."""
+    pointing at Context.md and the output directory.
+
+    When `is_fresh_rescue=True`, prepend an imperative instruction
+    requiring the agent to Read `_prior_analysis.md` first — that file
+    holds the prior killed spawn's thinking blocks, dumped by the
+    retry helper. Without this directive the fresh agent often
+    re-derives reasoning from scratch (probe finding 2026-05-10).
+    """
     body = _load_prompt(req)
+    rescue_note = ""
+    if req.is_fresh_rescue:
+        rescue_note = (
+            f"\n\nIMPORTANT: This is a fresh session. The previous spawn "
+            f"on this goal was killed mid-thinking (deadlocked on its own "
+            f"deep reasoning). Its thinking has been preserved at "
+            f"`{req.attempts_dir}/_prior_analysis.md`. You MUST Read that "
+            f"file before any other action — it contains the prior agent's "
+            f"reasoning. Then proceed with the {req.kind} task using that "
+            f"reasoning as your starting point; do not redo analysis from "
+            f"scratch."
+        )
     return (
         f"You are running a {req.kind} task. Follow the instructions "
         f"below exactly.\n\nAfter reading them, read context at "
         f"{req.attempts_dir}/Context.md and write outputs into "
-        f"{req.attempts_dir}/.\n\n"
+        f"{req.attempts_dir}/.{rescue_note}\n\n"
         f"=== INSTRUCTIONS ===\n{body}\n=== END INSTRUCTIONS ==="
     )
 
@@ -547,16 +566,6 @@ class ClaudeCliProvider:
 
         model = resolve_model(req.kind)
 
-        # Rescue spawn — prior spawn was watchdog-killed for stuck
-        # thinking. Resume the session, send the inline force-ship
-        # prompt (rescue_prompt) verbatim — no template loading, no
-        # Context.md re-injection. The agent has session memory of the
-        # killed turn (its prior tool_use trace + thinking) and is
-        # asked to ship whatever decomposition it had in mind.
-        if req.is_rescue and req.session_id and req.rescue_prompt:
-            session_flags = ["--resume", req.session_id]
-            session_lifetime_flag: list[str] = []
-            prompt = req.rescue_prompt
         # F55 postmortem — main spawn timed out, agent's session memory
         # is intact on disk. Resume the session with a short prompt
         # asking for a state + blocker note (`_progress.md`) into the
@@ -565,9 +574,9 @@ class ClaudeCliProvider:
         # is short and self-contained — no _build_cold_prompt wrapping
         # (Context.md from the killed turn is already in session memory;
         # re-injecting it would distract the postmortem agent).
-        elif req.is_postmortem and req.session_id:
+        if req.is_postmortem and req.session_id:
             session_flags = ["--resume", req.session_id]
-            session_lifetime_flag = []
+            session_lifetime_flag: list[str] = []
             prompt = _load_prompt(req)
         # In-pipeline retry path uses `--resume`, a short inline prompt
         # with the lake error embedded directly (no separate
@@ -658,9 +667,11 @@ class ClaudeCliProvider:
         # without session_id can't be monitored (no jsonl path), so
         # they also skip; in practice every Asterism dispatch sets
         # session_id, so this branch is just defensive.
+        # Fresh-rescue is a cold spawn that runs at full timeout (it
+        # IS the rescue, not a tight follow-up); watchdog applies so
+        # the new session can also be killed if it deadlocks.
         watchdog_eligible = (
             not req.is_postmortem
-            and not req.is_rescue
             and req.session_id is not None
         )
         proc = subprocess.Popen(

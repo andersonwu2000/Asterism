@@ -91,17 +91,20 @@ class LLMRequest:
                     living `Tooling.lsp_gateway` HTTP server). Builder
                     + Backward pipelines set this; Reflection leaves
                     it None.
-      is_rescue:    True when this is a stuck-thinking rescue spawn —
-                    triggered after the watchdog kills a prior spawn
-                    that produced no tool_use for too long. The
-                    provider should: (1) skip its watchdog (rescue is
-                    already short), (2) use the rescue prompt
-                    inline (no prompt_path template), (3) honour the
-                    tight timeout passed in `timeout_sec`. Mutually
-                    exclusive with is_postmortem.
-      rescue_prompt: When `is_rescue=True`, the inline force-ship
-                    prompt to send to the resumed session (no template
-                    rendering). Ignored when is_rescue=False.
+      is_fresh_rescue: True when this is a fresh-cold rescue after a
+                    prior in-pipeline spawn was watchdog-killed for
+                    stuck-thinking. The broken session's thinking
+                    blocks have been dumped to
+                    `attempts_dir/_prior_analysis.md`; a fresh
+                    session_id is set on this request. Provider should
+                    treat as a cold-start (--session-id, normal
+                    template loading) but inject a Read directive into
+                    the prompt so the agent consumes
+                    `_prior_analysis.md` before any other action.
+                    Mutually exclusive with is_postmortem / is_retry.
+                    Replaces the prior `is_rescue` (--resume + force-
+                    ship inline prompt) which was empirically broken
+                    on max_tokens-deadlocked sessions.
     """
     kind: str
     prompt_path: Path
@@ -113,8 +116,7 @@ class LLMRequest:
     retry_context: str | None = None
     is_postmortem: bool = False
     mcp_config_path: Path | None = None
-    is_rescue: bool = False
-    rescue_prompt: str | None = None
+    is_fresh_rescue: bool = False
 
 
 class Provider(Protocol):

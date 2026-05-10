@@ -169,58 +169,6 @@ def _parse_entry_kind(lean_text: str) -> str:
 # Pipeline entry
 # ---------------------------------------------------------------------
 
-def _build_rescue_prompt_backward(workspace: Path) -> str:
-    """Inline force-ship prompt for stuck-thinking rescue. Re-emphasizes
-    the escape hatches the cold-start prompt covers (`prompts/backward.md`
-    `## Decline`, `## Stop signals`, `## Rules` last bullet) because the
-    rescue agent --resume's into a force-ship narrowing its attention to
-    whatever options the inline prompt enumerates. Empirically (SG g224
-    2026-05-09) silent-thinking turns happen when the rescue prompt only
-    lists the success-path options, so agents that have realized the
-    sub-goal is unprovable but haven't found a sorry-stub path don't
-    decline — they just keep thinking until watchdog kills.
-
-    Backward-only option (d): bail — write `_progress.md` and exit. The
-    Backward decomposition's downstream cost is multiplicative (fan-out
-    over N sub-lemmas, each with own retry budget); a low-confidence
-    forced split that turns out wrong cascades parent_needs_fix back up
-    over multiple attempts before recovery. Letting the agent self-route
-    to postmortem when uncertain trades one attempt slot for a
-    structured note that the next cold-spawn picks up from. Inline
-    bail guideline mirrors `prompts/backward_postmortem.md` (the
-    standard post-timeout flow) so both paths produce the same artifact.
-
-    The minutes value tracks `dispatch.rescue_timeout_sec` so prompt
-    text doesn't drift from the actual spawn budget."""
-    from .. import config as _cfg
-    from ..llm.base import RESCUE_BUDGET_SEC
-    rescue_sec = _cfg.get(
-        "dispatch.rescue_timeout_sec",
-        default=RESCUE_BUDGET_SEC,
-        env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
-        workspace=workspace,
-    )
-    rescue_min = max(1, rescue_sec // 60)
-    return (
-        "Killed mid-think. Choose ONE:\n"
-        "(a) ship patch.lean + new_<slug>.lean stubs (`:= by sorry` ok)\n"
-        "(b) ship patch.lean alone if a sorry-free direct proof of the "
-        "parent compiles (leaf-bypass)\n"
-        "(c) ship patch.lean with `-- decline: unprovable` + "
-        "counterexample (no sub-goals)\n"
-        "(d) bail — if you're NOT confident in any split, write "
-        "`_progress.md` and exit. No patch.lean. Capture in ≤200 words:\n"
-        "    • shape you were converging on (1 sentence)\n"
-        "    • any sub-piece with clear name+statement\n"
-        "    • the specific blocker\n"
-        "    • alternative direction (≤60 words) or 'none — direction sound'\n"
-        "    Next attempt picks up from your sketch.\n"
-        "You write types not proofs — don't grind sub-goal details in "
-        "your head. No analysis.\n"
-        f"{rescue_min} minutes left. Act now."
-    )
-
-
 def run_backward(conn: sqlite3.Connection, *, goal_id: int,
                  workspace: Path, mfst: manifest.Manifest,
                  pipeline_id: str) -> "PipelineResult":  # noqa: F821
@@ -376,49 +324,14 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         # so prior-spawn apply_edits never leak into the next view.
         _restore_backup()
 
-        # Rescue path — prior spawn watchdog-killed mid-thinking.
-        # Resume the same session, send inline force-ship prompt
-        # (180s cap). patch.lean still has whatever skeleton/edits
-        # the killed turn produced (or the original cold-start
-        # skeleton if it never wrote); the rescue agent has session
-        # memory of its prior thinking and is asked to ship the
-        # decomposition as-is.
-        if ctx.rescue_prompt:
-            from .. import config as _cfg
-            from ..llm.base import RESCUE_BUDGET_SEC
-            # Two-phase rescue: helper sets `rescue_budget_override` on
-            # the STOP spawn so it gets ~30s instead of the default
-            # rescue budget. None override → use the standard
-            # dispatch.rescue_timeout_sec for the actual rescue spawn.
-            if ctx.rescue_budget_override is not None:
-                rescue_budget = ctx.rescue_budget_override
-            else:
-                rescue_budget = _cfg.get(
-                    "dispatch.rescue_timeout_sec",
-                    default=RESCUE_BUDGET_SEC,
-                    env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
-                )
-            mcp_config_path = _write_mcp_config(
-                attempts_dir=ctx.attempts_dir,
-                workspace=workspace, target=goal_lean,
-                pipeline_id=pipeline_id, problem=goal["problem"],
-            )
-            return agent.spawn_llm(
-                kind="backward",
-                prompt_path=PROMPT_DIR / "backward.md",
-                problem_dir=problem_dir,
-                attempts_dir=ctx.attempts_dir,
-                session_id=ctx.sid, is_retry=True,
-                retry_context=None,
-                mcp_config_path=mcp_config_path,
-                is_rescue=True, rescue_prompt=ctx.rescue_prompt,
-                timeout_sec_override=rescue_budget,
-            )
-
-        # Cold start: agent has no session memory to resume. Compile
+        # Cold start (and fresh-rescue, which is also cold-with-fresh-
+        # sid): agent has no session memory to resume. Compile
         # Context.md fresh and write the F52 skeleton so the agent's
         # first Read of patch.lean shows a clean `theorem s<sid_token>
-        # ... := by sorry` template.
+        # ... := by sorry` template. For fresh-rescue, the helper has
+        # already written `_prior_analysis.md` to attempts_dir; the
+        # cold prompt's `is_fresh_rescue` flag injects a Read directive
+        # so the agent consumes it before any other action.
         # Warm: skip both — agent's --resume picks up Context from
         # prior turn, and patch.lean keeps whatever the agent wrote
         # last iteration so retry_context-driven fixes can be
@@ -452,6 +365,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             is_retry=not ctx.cold,
             retry_context=ctx.retry_context,
             mcp_config_path=mcp_config_path,
+            is_fresh_rescue=ctx.is_fresh_rescue,
         )
 
     def backward_parse() -> "PipelineResult":  # noqa: F821
@@ -525,7 +439,6 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             spawn_fn=backward_spawn,
             parse_fn=backward_parse,
             postmortem_fn=backward_postmortem,
-            rescue_prompt=_build_rescue_prompt_backward(workspace),
             workspace=workspace,
             reflection_fn=backward_reflection,
         )

@@ -1,11 +1,15 @@
-"""Watchdog + rescue spawn — replaces MAX_THINKING_TOKENS strategy.
+"""Watchdog + fresh-rescue spawn — replaces MAX_THINKING_TOKENS strategy.
 
-Verifies retry-helper routing of rc=128 (SpawnRC.STUCK_THINKING) to
-a single rescue spawn with the rescue_prompt set on SpawnCtx; rescue
-success ships, rescue failure buffers + continues normal retry.
+Verifies retry-helper routing of rc=128 (SpawnRC.STUCK_THINKING) to a
+fresh-rescue cold spawn: a freshly-minted session id with
+`is_fresh_rescue=True` set on SpawnCtx. The broken session is abandoned
+(its thinking is dumped to attempts_dir/_prior_analysis.md by the
+helper); the fresh spawn cold-starts with a Read directive injecting
+`_prior_analysis.md` into the agent's first action.
 
 The end-to-end behavior (real watchdog thread killing real claude.exe
-on real session jsonl) lives in integration runs, not here.
+on real session jsonl, fresh session reading the dumped analysis) lives
+in integration runs, not here.
 """
 from __future__ import annotations
 
@@ -41,26 +45,23 @@ def _seed_open_goal(conn: sqlite3.Connection, *, attempts: int = 0) -> int:
 
 
 # ---------------------------------------------------------------------
-# retry helper rescue routing
+# retry helper fresh-rescue routing
 # ---------------------------------------------------------------------
 
-def test_stuck_thinking_triggers_two_phase_rescue_then_ships(
+def test_stuck_thinking_triggers_fresh_rescue_then_ships(
     conn: sqlite3.Connection,
 ) -> None:
-    """Two-phase rescue (2026-05-10): rc=128 → STOP spawn (~30s) →
-    actual rescue spawn (~180s). Helper invokes spawn_fn THREE times
-    total: main(stuck), STOP(short-budget), rescue(actual prompt).
-    Verifies STOP_PROMPT is sent first with rescue_budget_override
-    set, then the caller-supplied rescue_prompt with no override
-    (default budget)."""
-    from Tooling.pipeline._retry import STOP_PROMPT
+    """rc=128 → fresh-rescue cold spawn. Helper invokes spawn_fn TWICE
+    total: main (stuck), then fresh-rescue (cold + is_fresh_rescue +
+    fresh sid). Verifies the rescue spawn has a different sid from the
+    main, runs cold (cold=True), and signals is_fresh_rescue=True."""
     gid = _seed_open_goal(conn)
     spawn_calls: list[SpawnCtx] = []
 
     def spawn(ctx: SpawnCtx) -> int:
         spawn_calls.append(ctx)
-        # Iter 0 main: stuck. STOP spawn: ack ok. Rescue spawn: ship.
-        if ctx.rescue_prompt is not None:
+        # Iter 0 main: stuck. Fresh-rescue: ships.
+        if ctx.is_fresh_rescue:
             return SpawnRC.OK
         return SpawnRC.STUCK_THINKING
 
@@ -73,79 +74,36 @@ def test_stuck_thinking_triggers_two_phase_rescue_then_ships(
         attempts_dir=Path("/tmp/x"),
         spawn_fn=spawn, parse_fn=parse,
         postmortem_fn=lambda _sid: None,
-        rescue_prompt="ship now no analysis",
     )
     assert r.outcome == "proved"
-    assert len(spawn_calls) == 3, f"expected 3 spawns, got {len(spawn_calls)}"
-    # Spawn 0: cold main (no rescue prompt)
-    assert spawn_calls[0].rescue_prompt is None
-    # Spawn 1: STOP injection — short budget override, STOP_PROMPT
-    assert spawn_calls[1].rescue_prompt == STOP_PROMPT
-    assert spawn_calls[1].rescue_budget_override is not None
-    assert spawn_calls[1].rescue_budget_override <= 60  # short
-    # Spawn 2: actual rescue — caller's prompt, no budget override
-    assert spawn_calls[2].rescue_prompt == "ship now no analysis"
-    assert spawn_calls[2].rescue_budget_override is None
+    assert len(spawn_calls) == 2, (
+        f"expected 2 spawns (main + fresh-rescue), got {len(spawn_calls)}")
+    # Spawn 0: cold main.
+    assert spawn_calls[0].is_fresh_rescue is False
+    assert spawn_calls[0].cold is True
+    # Spawn 1: fresh-rescue — cold, is_fresh_rescue, FRESH sid.
+    assert spawn_calls[1].is_fresh_rescue is True
+    assert spawn_calls[1].cold is True
+    assert spawn_calls[1].sid != spawn_calls[0].sid, (
+        "fresh-rescue must use a new sid, not reuse the broken one")
 
 
-def test_stop_failure_does_not_block_rescue(
+def test_stuck_thinking_fresh_rescue_failure_falls_through_to_retry(
     conn: sqlite3.Connection,
 ) -> None:
-    """If the STOP spawn itself fails (rc != 0), the helper STILL
-    proceeds to the actual rescue spawn — STOP rc is informational
-    only, the goal is to clear the thinking pattern, not produce
-    useful output. The actual rescue spawn is what matters."""
-    from Tooling.pipeline._retry import STOP_PROMPT
-    gid = _seed_open_goal(conn)
-    spawn_calls: list[SpawnCtx] = []
-
-    def spawn(ctx: SpawnCtx) -> int:
-        spawn_calls.append(ctx)
-        # Iter 0: stuck. STOP: also fails (rc=1). Rescue: ships.
-        if ctx.rescue_prompt == STOP_PROMPT:
-            return 1  # STOP failed
-        if ctx.rescue_prompt is not None:
-            return SpawnRC.OK  # actual rescue ships
-        return SpawnRC.STUCK_THINKING
-
-    def parse() -> PipelineResult:
-        return PipelineResult(outcome="proved")
-
-    r = run_with_session_retries(
-        conn=conn, goal_id=gid, pipeline_id="pid-stop-fail",
-        budget_threshold=3, shelve_threshold=8,
-        attempts_dir=Path("/tmp/x"),
-        spawn_fn=spawn, parse_fn=parse,
-        postmortem_fn=lambda _sid: None,
-        rescue_prompt="ship now no analysis",
-    )
-    assert r.outcome == "proved"
-    # 3 spawns even though STOP failed.
-    assert len(spawn_calls) == 3
-    assert spawn_calls[1].rescue_prompt == STOP_PROMPT
-    assert spawn_calls[2].rescue_prompt == "ship now no analysis"
-
-
-def test_stuck_thinking_rescue_failure_falls_through_to_retry(
-    conn: sqlite3.Connection,
-) -> None:
-    """If the actual rescue spawn fails (rc != 0), helper records
+    """If the fresh-rescue spawn fails (rc != 0), helper records
     `agent_stuck_thinking` as a buffered failure and continues the
-    normal retry loop. STOP-then-rescue counts as two extra spawns;
-    the next iteration is a regular warm retry."""
-    from Tooling.pipeline._retry import STOP_PROMPT
+    normal retry loop. Subsequent warm retries use the FRESH sid (the
+    broken one is abandoned permanently)."""
     gid = _seed_open_goal(conn)
     spawn_calls: list[SpawnCtx] = []
 
     def spawn(ctx: SpawnCtx) -> int:
         spawn_calls.append(ctx)
-        # Iter 0 main: stuck. STOP: ack ok. Rescue: fails.
-        # Iter 1 warm: proved.
-        if ctx.rescue_prompt == STOP_PROMPT:
-            return SpawnRC.OK
-        if ctx.rescue_prompt is not None:
-            return 1  # rescue failure
-        if len([c for c in spawn_calls if c.rescue_prompt is None]) == 1:
+        # Iter 0 main: stuck. Fresh-rescue: fails. Iter 1 warm: proved.
+        if ctx.is_fresh_rescue:
+            return 1  # fresh-rescue failure
+        if len([c for c in spawn_calls if not c.is_fresh_rescue]) == 1:
             return SpawnRC.STUCK_THINKING
         return SpawnRC.OK
 
@@ -160,48 +118,69 @@ def test_stuck_thinking_rescue_failure_falls_through_to_retry(
         postmortem_fn=lambda _sid: None,
     )
     assert r.outcome == "proved"
-    # 4 invocations: stuck main, STOP, rescue (failed), warm retry (proved)
-    assert len(spawn_calls) == 4
-    assert spawn_calls[0].rescue_prompt is None
-    assert spawn_calls[1].rescue_prompt == STOP_PROMPT
-    assert spawn_calls[2].rescue_prompt is not None
-    assert spawn_calls[2].rescue_prompt != STOP_PROMPT
-    assert spawn_calls[3].rescue_prompt is None
+    # 3 invocations: stuck main, fresh-rescue (failed), warm retry (proved).
+    assert len(spawn_calls) == 3
+    assert spawn_calls[0].is_fresh_rescue is False
+    assert spawn_calls[1].is_fresh_rescue is True
+    # Subsequent warm retry uses the FRESH sid, not the original broken one.
+    assert spawn_calls[2].sid == spawn_calls[1].sid
+    assert spawn_calls[2].sid != spawn_calls[0].sid
+    assert spawn_calls[2].is_fresh_rescue is False
     # pending_failures stores dicts (events.py shape); look for the
     # buffered stuck-thinking marker.
     reasons = [f["reason"] for f in r.pending_failures]
     assert "agent_stuck_thinking" in reasons
 
 
-def test_rescue_spawn_uses_caller_supplied_prompt(
-    conn: sqlite3.Connection,
+def test_fresh_rescue_dumps_prior_analysis_when_jsonl_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The kind-specific rescue text (Builder vs Backward) is passed
-    via the helper's `rescue_prompt` parameter and surfaces verbatim
-    on the second rescue-phase SpawnCtx.rescue_prompt (the first is
-    the framework-level STOP_PROMPT)."""
-    from Tooling.pipeline._retry import STOP_PROMPT
-    gid = _seed_open_goal(conn)
-    captured_rescue_prompts: list[str] = []
+    """The helper's `_dump_prior_thinking` extracts thinking blocks
+    from the broken session's jsonl and writes them to
+    attempts_dir/_prior_analysis.md. This unit-tests the dump helper
+    against a synthetic jsonl."""
+    import json
+    from Tooling.pipeline._retry import _dump_prior_thinking
+    from Tooling.llm import claude_cli
+    sid = "abc12345-test-sid"
+    fake_jsonl = tmp_path / f"{sid}.jsonl"
+    events = [
+        {"type": "user", "message": {"content": "task"}},
+        {"type": "assistant", "timestamp": "2026-05-10T00:00:01Z",
+         "message": {"content": [
+             {"type": "thinking", "thinking": "first thought block"},
+             {"type": "tool_use", "name": "Read"},
+         ]}},
+        {"type": "assistant", "timestamp": "2026-05-10T00:01:00Z",
+         "message": {"content": [
+             {"type": "thinking",
+              "thinking": "deep reasoning about Kelly minimiser"},
+         ]}},
+    ]
+    with open(fake_jsonl, "w", encoding="utf-8") as f:
+        for e in events:
+            f.write(json.dumps(e) + "\n")
+    monkeypatch.setattr(claude_cli, "_find_session_jsonl",
+                        lambda s: fake_jsonl if s == sid else None)
+    out = tmp_path / "_prior_analysis.md"
+    ok = _dump_prior_thinking(sid, out)
+    assert ok is True
+    body = out.read_text(encoding="utf-8")
+    assert "first thought block" in body
+    assert "deep reasoning about Kelly minimiser" in body
+    assert "2026-05-10T00:00:01Z" in body
+    assert "2026-05-10T00:01:00Z" in body
 
-    def spawn(ctx: SpawnCtx) -> int:
-        if ctx.rescue_prompt is not None and ctx.rescue_prompt != STOP_PROMPT:
-            captured_rescue_prompts.append(ctx.rescue_prompt)
-            return SpawnRC.OK
-        if ctx.rescue_prompt == STOP_PROMPT:
-            return SpawnRC.OK
-        return SpawnRC.STUCK_THINKING
 
-    def parse() -> PipelineResult:
-        return PipelineResult(outcome="proved")
-
-    custom = "BWRESCUE: ship now + new_<slug>.lean stubs."
-    run_with_session_retries(
-        conn=conn, goal_id=gid, pipeline_id="pid-rescue-prompt",
-        budget_threshold=3, shelve_threshold=8,
-        attempts_dir=Path("/tmp/x"),
-        spawn_fn=spawn, parse_fn=parse,
-        postmortem_fn=lambda _sid: None,
-        rescue_prompt=custom,
-    )
-    assert captured_rescue_prompts == [custom]
+def test_fresh_rescue_dump_returns_false_when_jsonl_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dump helper returns False (graceful) when session jsonl can't
+    be located. Caller's fresh-rescue still proceeds; agent just
+    doesn't see prior analysis."""
+    from Tooling.pipeline._retry import _dump_prior_thinking
+    from Tooling.llm import claude_cli
+    monkeypatch.setattr(claude_cli, "_find_session_jsonl", lambda _: None)
+    ok = _dump_prior_thinking("missing-sid", tmp_path / "_prior_analysis.md")
+    assert ok is False
+    assert not (tmp_path / "_prior_analysis.md").exists()

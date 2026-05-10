@@ -154,10 +154,10 @@ def test_no_contamination_across_retries(
         goal_lean.write_text(
             prior + f"-- iter {call_counter['n']} contamination\n",
             encoding="utf-8")
-        # Rescue path (is_rescue=True) — return TIMEOUT to fall through
-        # to next iter. Main path — return STUCK_THINKING to enter the
-        # rescue branch.
-        if kw.get("is_rescue"):
+        # Fresh-rescue path (is_fresh_rescue=True) — return TIMEOUT to
+        # fall through to next iter. Main path — return STUCK_THINKING
+        # to enter the fresh-rescue branch.
+        if kw.get("is_fresh_rescue"):
             return int(SpawnRC.TIMEOUT)
         return int(SpawnRC.STUCK_THINKING)
 

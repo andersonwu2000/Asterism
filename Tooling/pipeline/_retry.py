@@ -107,20 +107,86 @@ def goal_still_active(conn: sqlite3.Connection, goal_id: int,
     return True
 
 
-# Two-phase rescue (2026-05-10): inject STOP_PROMPT first to clear
-# Sonnet's deep-thinking pattern, then inject the actual rescue prompt
-# with normal budget. Empirical evidence (16176de5 probe): single
-# rescue spawn into a max_tokens-broken session re-deadlocks (~7min
-# silent thinking, no tool_use); STOP injection elicits a tiny
-# end_turn ack in ~3s, after which the rescue prompt produces a
-# structured response (~75s, full Backward decomposition shipped).
-# The STOP phase is cheap (~5s startup + ~3s API) and the recovered
-# rescue success rate makes the overhead trivially worth it.
-STOP_PROMPT = (
-    "STOP THINKING IMMEDIATELY. STOP THINKING IMMEDIATELY. "
-    "STOP THINKING IMMEDIATELY."
-)
-_DEFAULT_STOP_TIMEOUT_SEC = 30
+# Fresh-rescue (2026-05-10, replaces prior STOP-then-rescue 2-phase
+# design): when watchdog kills a spawn for stuck-thinking, abandon the
+# broken session entirely. The session has typically hit
+# `stop_reason=max_tokens` and any subsequent prompt re-enters the same
+# deep-thinking pattern (probe + production evidence: --resume rescue
+# spawns produce 0 events for full budget). Instead:
+#
+#   1. Extract all thinking blocks from the broken session's jsonl
+#      and write them to `attempts_dir/_prior_analysis.md`.
+#   2. Mint a fresh session id, abandoning the broken one.
+#   3. Cold-spawn into the fresh session with a Read directive
+#      requiring `_prior_analysis.md` first; agent picks up reasoning
+#      from prior thinking and ships per the standard Backward task.
+#
+# Probe evidence (16176de5 → fresh sid 236ced1d, 2026-05-10): fresh
+# session shipped patch.lean + sub-lemma stub in ~4 min, directly
+# referencing the prior analysis (Kelly minimiser geometric argument).
+# Compare to --resume rescue: 180s, 0 events. Fresh-rescue cost is
+# higher (cold-start overhead + full spawn budget) but actually
+# produces output, which the resume path didn't.
+def _dump_prior_thinking(sid: str, out_path: Path) -> bool:
+    """Extract all assistant thinking blocks from session `sid`'s jsonl
+    and write them to `out_path`, in chronological order with
+    timestamps. Returns True on success, False if jsonl missing /
+    no thinking blocks. Best-effort — any error returns False so the
+    caller can fall through gracefully."""
+    import json as _json
+    from ..llm.claude_cli import _find_session_jsonl
+    log_path = _find_session_jsonl(sid)
+    if log_path is None:
+        return False
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    blocks: list[tuple[str, str]] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            d = _json.loads(line)
+        except (_json.JSONDecodeError, ValueError):
+            continue
+        if d.get("type") != "assistant":
+            continue
+        ts = d.get("timestamp", "")
+        msg = d.get("message", {}) or {}
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for c in content:
+            if isinstance(c, dict) and c.get("type") == "thinking":
+                t = c.get("thinking", "")
+                if t.strip():
+                    blocks.append((ts, t))
+    if not blocks:
+        return False
+    body = [
+        f"# Prior in-flight analysis from killed session sid={sid[:8]}",
+        "",
+        f"This is the unfinished thinking from the previous spawn that "
+        f"was killed for exceeding the wall-clock budget. The session "
+        f"is abandoned; you are a fresh session resuming the work. "
+        f"Use this to skip re-doing analysis from scratch.",
+        "",
+        f"{len(blocks)} thinking block(s) follow, in chronological order:",
+        "",
+    ]
+    for ts, t in blocks:
+        body.append(f"## Thinking block at {ts} ({len(t)} chars)")
+        body.append("")
+        body.append("```")
+        body.append(t)
+        body.append("```")
+        body.append("")
+    try:
+        out_path.write_text("\n".join(body), encoding="utf-8")
+    except OSError:
+        return False
+    return True
 
 
 @dataclass
@@ -128,28 +194,24 @@ class SpawnCtx:
     """Per-attempt context handed to the kind-specific spawn callback.
 
     `cold=True` means the agent has no prior session to resume — either
-    attempt 0 of a fresh pipeline, or a stale_session in-place re-mint.
-    Callers that need to write framework-side scratch (Builder
-    compile_context, Backward F52 skeleton) gate that work on `cold`.
+    attempt 0 of a fresh pipeline, or a stale_session in-place re-mint,
+    or a fresh-rescue (see `is_fresh_rescue`).
 
-    `rescue_prompt` is set by the helper after a stuck-thinking kill:
-    the spawn function should --resume the same sid with this prompt
-    inline (no Context.md re-injection, no template loading) and a
-    tight rescue-budget timeout. Bypasses the watchdog (rescue is
-    already short). When None, normal cold/warm flow applies.
-
-    `rescue_budget_override` lets the helper set a different budget
-    for a specific rescue spawn. Used by the two-phase rescue: STOP
-    spawn gets `dispatch.stop_timeout_sec` (~30s), the actual rescue
-    spawn gets `dispatch.rescue_timeout_sec` (~180s, the default when
-    override is None).
+    `is_fresh_rescue=True` signals: the prior in-pipeline spawn was
+    watchdog-killed for stuck-thinking; this spawn is a fresh-cold
+    session (sid is freshly minted, broken session abandoned) with a
+    `_prior_analysis.md` already written to attempts_dir. The spawn
+    function should run normal cold-prep (Context.md compile, F52
+    skeleton) AND signal the LLM provider to inject a Read directive
+    requiring the agent to consume `_prior_analysis.md` before any
+    other action. Mutually exclusive with normal cold (`cold=True`,
+    `is_fresh_rescue=False`).
     """
     sid: str
     cold: bool
     retry_context: str | None
     attempts_dir: Path
-    rescue_prompt: str | None = None
-    rescue_budget_override: int | None = None
+    is_fresh_rescue: bool = False
 
 
 SpawnFn = Callable[[SpawnCtx], int]
@@ -169,9 +231,6 @@ def run_with_session_retries(
     spawn_fn: SpawnFn,
     parse_fn: ParseFn,
     postmortem_fn: PostmortemFn,
-    rescue_prompt: str = (
-        "Killed mid-think. Ship now: whatever output you have. No analysis."
-    ),
     workspace: Path | None = None,
     reflection_fn: ReflectionFn | None = None,
 ) -> PipelineResult:
@@ -399,55 +458,54 @@ def run_with_session_retries(
                                          failure_detail=detail))
 
         if rc == SpawnRC.STUCK_THINKING:
-            # Watchdog killed the spawn for >10min without any tool_use
-            # event in the session jsonl — Sonnet's runaway-thinking
-            # trap. Two-phase rescue (revised 2026-05-10):
+            # Watchdog killed the spawn for >idle_window_sec without any
+            # tool_use event in the session jsonl — Sonnet's runaway-
+            # thinking trap. Fresh-rescue (2026-05-10, replaces prior
+            # 2-phase STOP-then-rescue):
             #
-            #   Phase 1 — STOP injection (~30s budget): inject
-            #   STOP_PROMPT to clear Sonnet's deep-thinking pattern.
-            #   Empirical evidence (16176de5 probe): a single rescue
-            #   spawn into a max_tokens-broken session re-deadlocks
-            #   (~7min silent thinking, no tool_use); injecting STOP
-            #   first elicits a tiny end_turn ack in ~3s. The session
-            #   then has one cleanly-completed turn after the
-            #   deadlock, breaking the thinking loop. STOP rc is
-            #   informational only — proceed to Phase 2 regardless.
+            # Probe + production evidence: a session that has hit
+            # `stop_reason=max_tokens` cannot be rescued via --resume —
+            # any subsequent prompt re-enters the deep-thinking pattern
+            # (production: 0 events for full 180s rescue budget). The
+            # session is effectively dead. Trying to interrupt-and-
+            # resume doesn't work; abandon and reuse only the thinking.
             #
-            #   Phase 2 — actual rescue (~180s budget): inject the
-            #   kind-specific rescue_prompt. After STOP, this elicits
-            #   a structured response (~75s, full Backward
-            #   decomposition shipped in the probe).
+            # Steps:
+            #   1. Dump all thinking blocks from the broken session jsonl
+            #      to attempts_dir/_prior_analysis.md. The agent's prior
+            #      reasoning is preserved as a file, not lost with the
+            #      session.
+            #   2. Mint a fresh session id; replace `sid` permanently
+            #      so subsequent warm retries within this pipeline use
+            #      the fresh session, not the broken one.
+            #   3. Cold-spawn into the fresh session with
+            #      `is_fresh_rescue=True`; the spawn function injects
+            #      a Read directive so the agent consumes
+            #      `_prior_analysis.md` before any other action.
             #
-            # Rescue success → attach result, exit pipeline. Rescue
-            # failure (parse fail / timeout / etc.) → record as a
-            # buffered failure with reason='agent_stuck_thinking' and
-            # continue the normal retry loop. The watchdog kill itself
-            # consumes one budget slot (mirrors any other rc!=0).
-            from .. import config as _cfg
-            stop_budget = _cfg.get(
-                "dispatch.stop_timeout_sec",
-                default=_DEFAULT_STOP_TIMEOUT_SEC,
-                env_var="ASTERISM_STOP_TIMEOUT_SEC", cast=int,
-                workspace=workspace,
-            )
-            stop_t0 = time.monotonic()
-            stop_rc = spawn_fn(SpawnCtx(
-                sid=sid, cold=False, retry_context=None,
-                attempts_dir=attempts_dir,
-                rescue_prompt=STOP_PROMPT,
-                rescue_budget_override=stop_budget,
-            ))
-            stop_dur = time.monotonic() - stop_t0
-            print(f"[stop] sid={sid[:8]} rc={stop_rc} "
-                  f"dur={stop_dur:.0f}s", flush=True)
+            # Probe (16176de5 → fresh sid 236ced1d, 2026-05-10): fresh
+            # session shipped patch.lean + sub-lemma stub in ~4 min,
+            # directly referencing the prior reasoning. Compare to
+            # --resume rescue: 180s, 0 events.
+            #
+            # Rescue success → attach. Rescue failure → record as a
+            # buffered `agent_stuck_thinking` and continue the retry
+            # loop (which now uses the fresh sid for any warm retries).
+            broken_sid = sid
+            prior_path = attempts_dir / "_prior_analysis.md"
+            dumped = _dump_prior_thinking(broken_sid, prior_path)
+            sid = str(uuid.uuid4())
+            print(f"[fresh-rescue] broken_sid={broken_sid[:8]} → "
+                  f"fresh_sid={sid[:8]}; prior_analysis_dumped={dumped}",
+                  flush=True)
             rescue_t0 = time.monotonic()
             rescue_rc = spawn_fn(SpawnCtx(
-                sid=sid, cold=False, retry_context=None,
+                sid=sid, cold=True, retry_context=None,
                 attempts_dir=attempts_dir,
-                rescue_prompt=rescue_prompt,
+                is_fresh_rescue=True,
             ))
             rescue_dur = time.monotonic() - rescue_t0
-            print(f"[rescue] sid={sid[:8]} rc={rescue_rc} "
+            print(f"[fresh-rescue] sid={sid[:8]} rc={rescue_rc} "
                   f"dur={rescue_dur:.0f}s", flush=True)
             if rescue_rc == SpawnRC.OK:
                 rescue_result = parse_fn()
@@ -456,7 +514,8 @@ def run_with_session_retries(
                         in _TERMINAL_DECLINE_REASONS):
                     return attach(rescue_result)
                 # Rescue ran but parse didn't reach terminal — fall
-                # through and let the next iteration retry normally.
+                # through and let the next iteration retry normally
+                # (subsequent warm retries use the fresh sid).
                 buffer_failure(rescue_result.failure_reason,
                                rescue_result.failure_detail,
                                rescue_result.proposal_md)
@@ -465,11 +524,11 @@ def run_with_session_retries(
                 continue
             # Rescue itself failed — record stuck-thinking and continue.
             buffer_failure("agent_stuck_thinking",
-                           f"watchdog killed prior spawn; stop rc="
-                           f"{stop_rc} dur={stop_dur:.0f}s; rescue rc="
-                           f"{rescue_rc} dur={rescue_dur:.0f}s")
+                           f"watchdog killed broken_sid={broken_sid[:8]}; "
+                           f"fresh-rescue sid={sid[:8]} rc={rescue_rc} "
+                           f"dur={rescue_dur:.0f}s")
             last_reason = "agent_stuck_thinking"
-            last_detail = f"rescue rc={rescue_rc}"
+            last_detail = f"fresh-rescue rc={rescue_rc}"
             continue
 
         if rc != SpawnRC.OK:

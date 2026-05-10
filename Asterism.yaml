@@ -30,14 +30,12 @@ dispatch:
 #  rescue_timeout_sec: 180    # stuck-thinking rescue spawn budget. Also
                               # determines watchdog wall-cap = spawn -
                               # rescue. Lowering tightens both ends.
-#  stop_timeout_sec: 30       # pre-rescue STOP-injection budget (two-
-                              # phase rescue, 2026-05-10). Sonnet's
-                              # 3x "STOP THINKING" ack is empirically
-                              # ~3s, so 30s leaves ample margin.
-                              # The STOP spawn breaks the deep-thinking
-                              # pattern before the actual rescue spawn,
-                              # which then ships a real decomposition
-                              # in ~75s instead of re-deadlocking.
+                              # Note: as of 2026-05-10, this only gates
+                              # the watchdog wall-cap math (spawn -
+                              # rescue). Stuck-thinking now triggers a
+                              # fresh-rescue (cold spawn into a fresh
+                              # session at full spawn_timeout_sec
+                              # budget), not a tight `--resume` rescue.
 #  idle_window_sec: 480       # at wall_cap, kill spawn for rescue ONLY
                               # if the agent has emitted no tool_use for
                               # ≥ this window. Productive agents at

@@ -27,32 +27,6 @@ from pathlib import Path
 from .. import agent, db, diagnostics, manifest
 
 
-def _build_rescue_prompt_builder(workspace: Path) -> str:
-    """Inline force-ship prompt for stuck-thinking rescue. Re-emphasizes
-    the two `## Decline` reasons in `prompts/builder.md` so the rescue
-    agent — which --resume's into force-ship attention narrowing — has
-    a concrete escape if the goal is too hard or unprovable. Minutes
-    track `dispatch.rescue_timeout_sec` to avoid drift."""
-    from .. import config as _cfg
-    from ..llm.base import RESCUE_BUDGET_SEC
-    rescue_sec = _cfg.get(
-        "dispatch.rescue_timeout_sec",
-        default=RESCUE_BUDGET_SEC,
-        env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
-        workspace=workspace,
-    )
-    rescue_min = max(1, rescue_sec // 60)
-    return (
-        "Killed mid-think. Ship now ONE of:\n"
-        "(a) patch.lean with current proof (`:= by sorry` ok)\n"
-        "(b) patch.lean with `-- decline: needs_decomposition` (escalate to Backward)\n"
-        "(c) patch.lean with `-- decline: unprovable` + "
-        "concrete counterexample (only if you found one)\n"
-        "No analysis.\n"
-        f"{rescue_min} minutes left. Act now."
-    )
-
-
 def run_builder(conn: sqlite3.Connection, *, goal_id: int,
                 workspace: Path, mfst: manifest.Manifest,
                 pipeline_id: str) -> "PipelineResult":  # noqa: F821
@@ -233,45 +207,14 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # so prior-spawn apply_edits never leak into the next view.
         _restore_backup()
 
-        # Rescue path — prior spawn was watchdog-killed mid-thinking.
-        # Resume the same session, send the inline force-ship prompt,
-        # tight 180s timeout, no Context.md re-injection (session
-        # memory holds the original Context).
-        if ctx.rescue_prompt:
-            from .. import config as _cfg
-            from ..llm.base import RESCUE_BUDGET_SEC
-            # Two-phase rescue: helper sets `rescue_budget_override` on
-            # the STOP spawn so it gets ~30s instead of the default
-            # rescue budget. None override → use the standard
-            # dispatch.rescue_timeout_sec for the actual rescue spawn.
-            if ctx.rescue_budget_override is not None:
-                rescue_budget = ctx.rescue_budget_override
-            else:
-                rescue_budget = _cfg.get(
-                    "dispatch.rescue_timeout_sec",
-                    default=RESCUE_BUDGET_SEC,
-                    env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
-                )
-            mcp_config_path = _write_mcp_config(
-                attempts_dir=ctx.attempts_dir,
-                workspace=workspace, target=goal_lean,
-                pipeline_id=pipeline_id, problem=goal["problem"],
-            )
-            return agent.spawn_llm(
-                kind="builder", prompt_path=PROMPT_DIR / "builder.md",
-                problem_dir=problem_dir,
-                attempts_dir=ctx.attempts_dir,
-                session_id=ctx.sid, is_retry=True,
-                retry_context=None,
-                mcp_config_path=mcp_config_path,
-                is_rescue=True, rescue_prompt=ctx.rescue_prompt,
-                timeout_sec_override=rescue_budget,
-            )
-
-        # Cold start: fresh Context.md compile (snapshot Manifest +
-        # goal history at this exact attempt). Warm: skip — agent's
-        # session memory carries the Context from the prior call;
-        # retry_context inlines the prior lake error.
+        # Cold start (and fresh-rescue, which is also cold-with-fresh-
+        # sid): fresh Context.md compile (snapshot Manifest + goal
+        # history at this exact attempt). For fresh-rescue, the helper
+        # has already written `_prior_analysis.md` to attempts_dir;
+        # the cold prompt's `is_fresh_rescue` flag injects a Read
+        # directive so the agent consumes it before any other action.
+        # Warm: skip — agent's session memory carries the Context from
+        # the prior call; retry_context inlines the prior lake error.
         if ctx.cold:
             agent.compile_context(conn, goal=goal, mfst=mfst,
                                   attempts_dir=ctx.attempts_dir,
@@ -298,6 +241,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             is_retry=not ctx.cold,
             retry_context=ctx.retry_context,
             mcp_config_path=mcp_config_path,
+            is_fresh_rescue=ctx.is_fresh_rescue,
         )
 
     def builder_parse() -> "PipelineResult":  # noqa: F821
@@ -450,7 +394,6 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             spawn_fn=builder_spawn,
             parse_fn=builder_parse,
             postmortem_fn=builder_postmortem,
-            rescue_prompt=_build_rescue_prompt_builder(workspace),
             workspace=workspace,
             reflection_fn=builder_reflection,
         )
