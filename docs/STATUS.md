@@ -1,82 +1,85 @@
 # Asterism v2 — Current Status
 
-更新於 **2026-05-10**、HEAD `87370bb`、**642 unit tests green / 1 skipped**。
+更新於 **2026-05-10**、HEAD `b4308ec`、**691 unit tests green / 1 skipped**。
 
 ## 下個 session 接手要做的事
 
-**SG run #5（首次帶完整 decline directives 系統 + 累計修法跑）**：
-- 配置：`pool=15, W=3, sonnet, budget 4hr30min, shelve=5, spawn_timeout=900`
-- 起跑流程：`cli reset sylvester_gallai && rm -rf Problems/sylvester_gallai/.attempts/ && cli init sylvester_gallai && cli run`
-- 監看 cadence：每 20 min 檢查 `/health`、`/health.acquires.hot_rate`、`goals-by-status`、最新 cascade events、`.asterism/logs/gateway.log`
+**SG run #9 結果待驗收**（compact 前剛起跑、daemon pid 5284、background task `bc68paqy7`、cron `f4521c87` 每 :03/:23/:43 自主 cadence、log 寫到 `D:/Asterism/runs/sg_run_9.md`）。Compact 後讀 `runs/sg_run_9.md` 看當前進度 + 任何 cadence 觀察。
 
-**這次 run 主要驗證點**（按重要序）：
+run #9 是 **two-stage fresh-rescue v2** 首次 production 驗證、累計 11+ 個修法。重點看：
+1. **兩段式 fresh-rescue 整體 wall**：< 7 min/event（vs run #8 v1 設計 15-30 min/event）
+2. **stage 2 / stage 3 是否 ship 真 deliverable**：dead_attempts reason 分布、特別看 `agent_bailed`（stage 3 寫 `_progress.md` 後 parse 偵測到應該觸發）
+3. **不再遞迴 fresh-rescue**：同 sid 不會 fresh-rescue 兩次（v1 觀察到 ddf48b3e 同 pipeline 內遞迴 2 次的災難）
+4. **prompt tighten 後 stuck_thinking 數量**：對照 run #8 的 4 stuck_thinking + 7 timeout、看是否減少
 
-1. **decline directive 各條使用情況**：agent 用 `unprovable` / `return_to_parent` / `shelve` / `needs_decomposition` 的分布、特別是 `return_to_parent` 是否觸發 + parent 是否真的「保留 shape 補 hypothesis」
-2. **leaf-bypass axiom probe at acceptance**：commit `968e4e7` 上次 run 沒驗（commit 在 daemon 啟動後）；本次 run 期待 sorryAx 偽證在接受階段就被擋、不再進 verify 階段觸發 race
-3. **race fix 持續穩定**：`5bded83` 的 has_live guard、上 run 觸發 ≥3 次都正確處理
-4. **rescue prompt 三選項繼續工作**：上 run 救援成功率 8/14 = 57%，看本 run 是否再升
+**異常 cut**：gateway crash loop / hot_rate < 30% 持續 / 連續 ≥3 個 stuck_thinking 都 stage 2+3 都不出 deliverable / shelved% > 60%。
 
-**異常觸發 cut**：gateway crash loop、`hot_rate < 30%` 持續、`agent_rc_nonzero` 連續 burst、`shelved%` > 50%。
+跑完後 commit baseline metrics、對比之前 SG runs（見下表）。
 
-跑完後待做：commit 中記 baseline（wall / proved / shelved / agent_infeasible 數 / parent_needs_fix 數）；對比 SG run #4（270min wall, 4 proved, 5 shelved, 0 parent_needs_fix）。
+## 2026-05-10 session 落地（11 commits）
 
-## 2026-05-09 ~ 05-10 session 落地
+### Watchdog idle-window guard + Backward bail option（commit `b6ece82`）
 
-### Decline directives 統合系統（commits `dd3e905..87370bb`）
+**Watchdog idle-window guard**：原 watchdog 在 wall_cap（spawn-rescue=720s）unconditional 殺。改成 wall_cap 那刻檢「過去 8 min 內有 tool_use 嗎」、無→殺（rc=128 STUCK_THINKING）、有→defer（讓 spawn 跑到自然 subprocess timeout、走 TIMEOUT path）。idle_window_sec 進 yaml（預設 480）。
 
-把分散的 `decline:` directive 收斂成 4-token 詞彙、跨 Builder/Backward 共用。設計細節 `docs/dev/decline_directives.md`、failure_reason mapping `docs/failure_modes.md` §2。
+**Backward bail (option d)**：原 rescue prompt 3 選項（ship stubs / leaf-bypass / decline unprovable）加第 4 選項：「沒把握就寫 `_progress.md` exit、無 patch.lean」。Backward parse 偵測 `_progress.md` + skeleton patch + 無 new_*.lean → 新 failure_reason `agent_bailed`、加進 `_TERMINAL_DECLINE_REASONS`。outer wrapper 把 `_progress.md` persist 到 `.drafts/`、下輪 cold dispatch 看到。設計動機：Backward 強硬 ship 爛 split fan-out 比 Builder 爛 leaf 嚴重多（cascade up parent_needs_fix）、給 honest exit。
 
-| directive | failure_reason | 路由 |
+### TIMEOUT salvage + bail discriminator strict（commit `2504650`）
+
+g266 anomaly：agent finished work（patch + sub-lemmas + validate pass）但繼續做 `ls` self-check + 寫 `_progress.md`、**過 900s subprocess timeout 才 exit**。原 TIMEOUT path 走 postmortem + forced exhaust、丟掉所有 disk output。修：rc=124 先 try `parse_fn()`、success/decline 直接 attach；非 terminal fall through 走 postmortem + 把 parse outcome fold 進 detail（forensic 透明）。同時 bail discriminator 加嚴：不能光看 `_progress.md` 存在、要四件齊（progress + 無 leading + 無 new_* + sorry body）才算 bail、避免 cargo-cult 寫 `_progress.md` 的 agent 被誤判 bail。
+
+### Forensic bug fix（commit `55e38f6`）
+
+`_spawn_failure` 讀 `attempts_dir/_spawn.stderr` 拼進 detail。原 TIMEOUT path 先 `postmortem_fn(sid)` 再 `_spawn_failure`、postmortem spawn 自己若 timeout 寫的 stderr 會覆蓋 main 的、operator 看 dead_attempts.failure_detail 看到 "TimeoutExpired after 180s"（postmortem budget）而非 "after 900s"（main budget）。修：swap 順序、`_spawn_failure` 先讀。
+
+### Fresh-rescue v1 → v2（commits `722472d` → `bf44bc5` → `8277c3c`）
+
+**v1（722472d）**：當 watchdog 殺 STUCK_THINKING、抽 broken jsonl 的 thinking blocks 寫 `_prior_analysis.md`、cold spawn fresh sid + cold prompt 含「MUST Read prior_analysis」directive。Probe（16176de5 → 236ced1d）4 min ship 完整 Backward 結構成功。但 v1 用 **full spawn_timeout_sec budget（900s）**、且 fresh-rescue 失敗會在同 pipeline 內遞迴觸發 fresh-rescue。
+
+**v1 + TIMEOUT salvage（bf44bc5）**：fresh-rescue rc=124 也加 salvage parse、跟主 spawn TIMEOUT 對齊。
+
+**SG run #8 暴露 v1 設計問題**：4 個 fresh-rescue 全失敗（rc=128/124）、累計燒 ~50 min wall、0 useful deliverable。Pattern：Sonnet 對 hard sub-lemma（kelly_smaller_triple class）的 deep thinking 是 **goal-content driven**、不是 session-state driven。Probe 成功的 case（kelly_min_ordinary）prior thinking 完整、production hard goals prior thinking 本身就在 deadlock 中。
+
+**v2（8277c3c）**：完全 redesign 為 **two-stage takeover**：
+- **概念**：原 session 廢了、由新 session **接手原 session 該做的事**（rescue + postmortem stages）、保留原 budget 結構、不是「重做整個 task」
+- **Stage 2** (`rescue_timeout_sec` ~180-240s)：fresh sid + 拷 broken jsonl 到 `attempts_dir/_broken_session.jsonl` + ship-or-bail prompt（agent 自己 Read 看）
+- **Stage 3** (`postmortem_timeout_sec` ~180s)：stage 2 fail / parse 非 terminal → fresh sid + postmortem prompt、agent 寫 `_progress.md`
+- **Worst-case cost / stuck event**：~6 min（vs v1 15-30+ min、含遞迴）
+- **不抽 thinking、不寫 `_prior_analysis.md`**：agent 用 Read 工具直接看 jsonl
+- 拿掉 `is_fresh_rescue` 旗標、用 `inline_prompt` + `budget_override` SpawnCtx 欄位代替
+
+**Prompt tightening（b4308ec）**：stage 2/3 prompts 收緊 — 短 Read hint（不全拿掉、jsonl 可達 400KB）、拿掉「no deep analysis」（math 本來需要深思考、矯枉過正）、拿掉「'none — direction sound'」hedge。
+
+## SG runs 對照（this session）
+
+| Run | wall | proved | shelved | 主驗證 | 結論 |
+|---|---|---|---|---|---|
+| #4 | 270min | 4 | 5 | baseline、無新修 | 對照基準 |
+| #5 | 270min（cut）| 3 | - | snapshot+race+axiom+decline | g263 卡 stuck-rescue 4/5 |
+| #6 | 中止 | 0 | - | 加 idle-window+bail | max_tokens deadlock × 多次 |
+| #7 | 中止 | 0 | - | 加 2-phase rescue（已廢）| STOP-then-rescue 在 production fail |
+| #8 | 270min | **1** | 1 | 加 fresh-rescue v1 | v1 0 success rate、~50 min 浪費 |
+| #9 | in-flight | ? | ? | fresh-rescue v2 + tighter prompt | **看 cadence log** |
+
+## 累計 framework 機制清單（v2 後更新）
+
+| 機制 | commit | 觸發 / 健康 metric |
 |---|---|---|
-| `unprovable` | `agent_infeasible` | shelve + cascade up |
-| `return_to_parent` | `parent_needs_fix`（新）| shelve + cascade up + description 投 parent fix hint section |
-| `shelve` | `agent_shelved`（新）| shelve + cascade up |
-| `needs_decomposition` | `agent_declined`（沿用、舊 token `too_hard`）| `entry_kind='Backward'` 切換 |
+| snapshot-once goal_lean | `15f54b2` | backup 跨 retry 全 pristine |
+| cascade-vs-verify race fix | `5bded83` | 不出現「shelved goal but bfs filter excludes」idle exit |
+| leaf-bypass acceptance axiom probe | `968e4e7` | `axiom_violation` 在 acceptance 階段抓、不進 verify |
+| Decline directives 4-token | `54ed9fb..87370bb` | dead_attempts 含 `parent_needs_fix` / `agent_shelved` 行 |
+| **Watchdog idle-window guard** | `b6ece82` | wall_cap 時 `silence ≥ 480s` 才殺、否則 defer |
+| **Backward bail option (d)** | `b6ece82` | `agent_bailed` failure_reason、`_progress.md` 進 .drafts/ |
+| **TIMEOUT salvage** | `2504650` | rc=124 先 parse 救起 success / decline、不直接走 postmortem |
+| **Bail discriminator strict** | `2504650` | progress + skeleton patch + 無 leading + 無 new_* 才算 bail |
+| **Forensic bug fix** | `55e38f6` | dead_attempts.failure_detail 是 main spawn 的 stderr、不被 postmortem 覆寫 |
+| **Fresh-rescue v2 two-stage** | `8277c3c` | STUCK_THINKING → stage 2 fresh ship-or-bail + stage 3 fresh postmortem、各 ~3 min budget |
+| **Fresh-rescue prompts tightened** | `b4308ec` | stage 2/3 prompt 短 Read hint、無「no deep analysis」過度抑制 |
 
-實作：`Tooling/pipeline/__init__.py` 新 `DECLINE_*` 常數 + `DECLINE_TO_FAILURE_REASON` map；`builder.py` / `backward.py` parse 改用 map；`dispatcher.py:cascade_one` 對稱處理 Builder + Backward 三條 shelve+propagate 路徑；`pipeline/_retry.py:_TERMINAL_DECLINE_REASONS` 跟 `_maybe_reflect` trigger 補上新 reasons；`pipeline/events.py` `_NON_AGENT_REASONS` + `infeasible_subs` SQL 都擴；`context.py` 渲染加 directive tag + 三類別 preamble；4 個 prompt 檔（builder.md / builder_singleshot.md / backward.md / backward_singleshot.md）`## Decline` 章節統一改寫。
+（其餘穩定機制如 daemon lock / gateway log / waitForDiagnostics 仍同前、不重列）
 
-### Cascade-vs-verify race fix（commit `5bded83`）
-
-leaf-bypass 提交 strategy 後 `WorkArea.__exit__` 釋放 gateway session 可能花 30s（高並發 release_session timeout）、worker 還沒回來時 main thread 跑了 verify_housekeeping 殺策略並 reopen goal、worker 終於回來 cascade(success) 又把 status 改 `attempting`。bfs_refill 排除 'attempting'、dispatcher idle exit、root 還有 budget 沒用就停。
-
-修：`cascade_one` Backward success 加 `has_live` guard、無活策略不轉 'attempting'。Run #4 證觸發 ≥3 次都正確。
-
-### Leaf-bypass acceptance axiom probe（commit `968e4e7`）
-
-sonnet 偷塞 sorryAx 的 leaf-bypass：patch.lean 字面無 `sorry`、LSP `errors_at` 回 0、`goal_at` 回 "no goals"、agent 信任地 ship；但 Lean elaborator 對某些 unification 失敗塞 synthetic sorry、`#print axioms` 抓得到。原來 verify 階段才抓、走完 promote_to_alias + parent build 約 5-10s。修法：leaf-bypass 接受階段直接帶 `axioms_for=fq_name`、見 sorryAx → `axiom_violation` reject、scratch 清掉、不進 ready_for_verify queue。Run #4 沒驗（commit 在 daemon 啟動後）、Run #5 看效果。
-
-### Rescue prompt 三選項 + 動態時限（commit `c24263e`）
-
-rescue spawn 用 `--resume` 進入「force-ship」注意力收窄、若原 rescue prompt 只列「ship patch + sorry stubs」兩條、agent 看不到 `decline:` 出口、silent thinking 等死（SG run #2 g224 4× 全 rc=124）。修：rescue prompt 列 (a) ship stubs (b) leaf-bypass 直推 (c) `decline: unprovable` + counterexample 三條 + `<N> minutes left, act now` 動態時限（從 `dispatch.rescue_timeout_sec` 讀）。
-
-對照 SG run 統計：
-
-| Run | rescue 成功率 |
-|---|---|
-| #2（修前）| 0/9 = 0% |
-| #3（snapshot fix） | 2/6 = 33% |
-| #4（race fix 補完）| 8/14 = 57% |
-
-### Snapshot-once goal_lean（commit `15f54b2`）
-
-`backward.py` / `builder.py` 原本 worker 每次 spawn 都 re-snapshot `goal_lean.backup`、retry 時等於用「上次 contaminated 狀態」當基準、agent 看到上次的爛 partial 繼續加碼。修：snapshot 一次（pipeline 入場）、每次 spawn entry restore 從 pristine、parse exit 再 restore、outer finally 收尾 unlink。Run #4 全程驗 backup 都 pristine。
-
-## 累計 framework 機制清單（給下次 session 對齊）
-
-| 機制 | commit | 觸發 | 健康 metric |
-|---|---|---|---|
-| snapshot-once goal_lean | `15f54b2` | 每次 Backward / Builder pipeline | backup 跨 retry 全 pristine |
-| rescue 3-option prompt | `c24263e` | watchdog wall_cap 720s 後 | rescue rc=0 比率 |
-| cascade-vs-verify race fix | `5bded83` | leaf-bypass + verify 殺策略 + cascade 後到 | 不出現「shelved goal but bfs filter excludes」idle exit |
-| leaf-bypass acceptance axiom probe | `968e4e7` | leaf-bypass 提交時 | `axiom_violation` 在 acceptance 階段抓、不進 verify |
-| Decline directives 4-token | `54ed9fb..87370bb` | agent 寫 `decline: <token>` | `dead_attempts.failure_reason` 分布、`parent_needs_fix` 數 > 0 |
-| Singleton daemon lock | `e9d3bbd` | daemon 啟動 | `.asterism/daemon.pid` 不重複 |
-| Gateway 專屬 log + 30s release timeout | `f6d838f, 1765311` | gateway 跑 | crash 留 traceback、release 不 spurious 警告 |
-| `release_session` 30s | `1765311` | WorkArea exit | 高並發不 timeout |
-| Verify unification + `lean-asterism-server` | `7f7e443..9188f9c` | 所有 verify path | cascade level 3-5s（vs lake build 25-50s）|
-| `waitForDiagnostics` LSP fix | `40ad9cb` | apply_edit / validate_file | 從 3.26s 降到 0.22s |
-
-## 信號監控（每次 run 後檢查）
+## 信號監控
 
 | 信號 | 期望 |
 |---|---|
@@ -85,28 +88,30 @@ rescue spawn 用 `--resume` 進入「force-ship」注意力收窄、若原 rescu
 | `spawn_fast_fail` | 0（quota 才會非 0）|
 | `quota_exhausted` / `missing_dep` | 0 |
 | `hot_rate` | > 50%（< 30% 持續 = 該 cut）|
-| `n_cold_evicted` | < 15% of total acquires（pool > W 設計內、PN baseline 4.1%）|
+| `n_cold_evicted` | < 15% of total acquires |
 | dispatcher idle exit | 必伴隨 `roots_proved=True` 或所有 root shelved |
+| **`[fresh-rescue stage2]` 出現** | stuck-thinking 觸發、看 dur < 4 min |
+| **`[fresh-rescue stage3]` 出現** | stage 2 沒收口、看 dur < 4 min |
+| **`agent_bailed` dead_attempts 出現** | stage 2 (d) 或 stage 3 寫 `_progress.md` 成功 |
 
 ## 已知未解 / 觀察中
 
-- **opus 23s outliers in single agent**: Lean elaborate substantial content 真實成本、非 framework
-- **gateway 偶發 silent exit**: `02:47 crash 一次無 traceback、後續未復現、`gateway.log` 有保險、再現有可看
-- **Backward 是否在收到 fix hint 時 incremental fix**：commit `54ed9fb` 寫進 context.md 提示但 backward.md prompt 沒明文鼓勵；下次 SG run 看 agent 行為再決定 prompt 補一段
-- **Strategist / Forward / Generalizer**：留給 v2、Decline directive 系統先看能 cover 多少場景
+- **Sonnet 對 hard sub-lemma class 的 deep thinking 不可框架修**：goal_content driven、撞 max_tokens 32K、framework 任何 post-hoc rescue 不解 root cause。Long-term：考慮 (a) Anthropic API thinking budget cap（已 deprecated 但可能仍有用）、(b) `--effort medium`（推 docs 有用、但官方說「不保證」）、(c) Strategist / 換 model
+- **fresh-rescue v2 的 production transferability**：probe 成功 vs run #8 v1 production 全失敗、原因之一是 MCP overhead + concurrent pipelines。v2 的 stage 2/3 budget 縮短後是否仍能 ship、待 run #9 驗
+- **Cut criterion 設計缺陷（cron 端、非框架）**：「same sid ≥3 fresh-rescue fails」設計上不會觸發（每次 fresh-rescue 換新 sid）。下次設 cron 用「across-sid 累計」criterion
+- **opus 23s outliers / gateway 偶發 silent exit**：仍未解、低優先
 
 ## Proved problems（已驗）
 
-| Problem | Prover | Wall-clock | Axioms |
+| Problem | Prover | Wall | Axioms |
 |---|---|---|---|
-| compactness | Opus | ~25 min | std 3 |
-| compactness | Sonnet | ~60 min | std 3 |
+| compactness | Opus / Sonnet | ~25 / ~60 min | std 3 |
 | gen_generates | Sonnet | ~30 min | propext, Quot.sound |
 | inner_zero_iff_smul | Sonnet | ~21 min | std 3 |
 | proj_nonexpansive | Opus 4.7 (1M) | 30 min depth-3 | std 3 |
 | cantor_xi_measure | Sonnet | ~4 hr | std 3 |
 
-SG / cantor 是當前最大樣本（50+ goals、4hr+ wall、有 Kelly minimizer 類型困難 sub-goal）。SG 在 Asterism 過去有以 sonnet 證過記錄（操作人提供）；本 session 多次 SG run 是 framework stress test、不是「證 SG」目的。
+SG 在 Asterism 過去有以 sonnet 證過記錄（操作人提供）；本 session 多次 SG run 是 framework stress test、不是「證 SG」目的。
 
 ## 重要參考
 
@@ -116,6 +121,8 @@ SG / cantor 是當前最大樣本（50+ goals、4hr+ wall、有 Kelly minimizer 
 - `docs/architecture.md` — DB schema、cascade rules、pipeline 細節
 - `docs/failure_modes.md` — failure_reason / event_type single SoT
 - `docs/OPERATOR.md` — CLI subcommands、env vars、recurring traps
+- `runs/sg_run_8.md` — fresh-rescue v1 production failure 完整觀察（13 cadence + final summary）
+- `runs/sg_run_9.md` — fresh-rescue v2 production validation（in-flight）
 
 ## 用戶 preferences
 
