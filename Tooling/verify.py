@@ -33,7 +33,7 @@ from .pipeline._skeleton import promote_to_alias, rollback_promote
 def verify_strategy(
     conn: sqlite3.Connection, *, workspace: Path, strategy_id: int,
     manifests: dict[str, manifest.Manifest] | None = None,
-) -> Literal["proved", "dead", "superseded"]:
+) -> Literal["proved", "dead", "superseded", "retry"]:
     """Pure framework verify: rewrite parent as alias, then build the
     strategy patch + alias parent in one batched lake invocation.
     Returns the terminal outcome only — state transitions (mark goal
@@ -99,9 +99,16 @@ def verify_strategy(
     )
     if "error" in v_strategy:
         rollback_promote(parent_abs, parent_backup)
-        print(f"[verify] strategy={strategy_id} infra error: "
+        # Transient infra failure (gateway timeout / unreachable /
+        # 5xx after retries) → "retry": leave strategy in
+        # ready_for_verify for a later dispatcher tick. Distinguishes
+        # from logical errors (4xx / missing target) which still
+        # mark the strategy dead.
+        transient = bool(v_strategy.get("transient"))
+        kind = "transient infra" if transient else "infra"
+        print(f"[verify] strategy={strategy_id} {kind} error: "
               f"{v_strategy['error']}", flush=True)
-        return "dead"
+        return "retry" if transient else "dead"
     if not v_strategy.get("ok"):
         rollback_promote(parent_abs, parent_backup)
         return "dead"
@@ -129,9 +136,11 @@ def verify_strategy(
     )
     if "error" in v_parent:
         rollback_promote(parent_abs, parent_backup)
-        print(f"[verify] strategy={strategy_id} parent infra error: "
+        transient = bool(v_parent.get("transient"))
+        kind = "transient infra" if transient else "infra"
+        print(f"[verify] strategy={strategy_id} parent {kind} error: "
               f"{v_parent['error']}", flush=True)
-        return "dead"
+        return "retry" if transient else "dead"
     if not v_parent.get("ok"):
         rollback_promote(parent_abs, parent_backup)
         return "dead"
@@ -177,7 +186,7 @@ def verify_housekeeping(
     # Local import breaks the dispatcher → verify cycle (dispatcher
     # imports verify; we need a couple of dispatcher-side helpers).
     from . import dispatcher
-    counts = {"proved": 0, "dead": 0, "superseded": 0}
+    counts = {"proved": 0, "dead": 0, "superseded": 0, "retry": 0}
     for _ in range(max_iters):
         ready = db.strategies_ready_for_verify(conn)
         if not ready:
@@ -189,6 +198,17 @@ def verify_housekeeping(
                 conn, workspace=workspace, strategy_id=sid,
                 manifests=manifests,
             )
+            if outcome == "retry":
+                # Transient gateway failure exhausted in-call retries.
+                # Don't mutate state — strategy stays ready_for_verify,
+                # next dispatcher tick picks it up. Break out of the
+                # housekeeping inner loop so this tick doesn't busy-spin
+                # retrying the same strategy (the LSP gateway is likely
+                # still under the same load that caused the transient).
+                counts["retry"] += 1
+                print(f"[verify] Strategy={sid} → retry (transient infra)",
+                      flush=True)
+                return counts
             if outcome == "proved":
                 db.update_strategy_status(conn, sid, "succeeded")
                 db.update_goal_status(conn, goal_id, "proved")

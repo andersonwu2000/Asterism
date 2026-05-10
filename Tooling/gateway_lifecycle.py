@@ -136,12 +136,16 @@ def start_gateway(workspace: Path,
         f"gateway not ready within {ready_timeout}s; last_status={last_status}")
 
 
+_VERIFY_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)
+
+
 def verify_file(target_path: Path,
                 *,
                 write_olean: bool = True,
                 axioms_for: str | None = None,
                 timeout: float = 120.0,
                 workspace: Path | None = None,
+                _retry_delays: tuple[float, ...] | None = None,
                 ) -> dict:
     """POST /verify. Single round trip: elaborate `target_path` in a
     gateway worker slot, optionally write the `.olean`, optionally
@@ -152,9 +156,23 @@ def verify_file(target_path: Path,
         ok, diagnostics, diagnostic_count,
         olean_written, olean_path,
         axioms, axiom_error,
-        # OR on infrastructure failure:
-        error: str
+        # OR on failure:
+        error: str,
+        transient: bool,   # True iff retry might succeed
+                           # (gateway timeout / unreachable / 5xx);
+                           # False for logical errors (4xx / missing
+                           # target / malformed response)
       }
+
+    Transient infrastructure failures (URLError / OSError /
+    HTTPError 5xx) trigger an in-process retry with exponential
+    backoff (5s, 15s, 30s by default). Total retry budget ~50s.
+    After the final attempt the dict still carries `transient=True`
+    so the caller (see `verify.verify_strategy`) can defer to a
+    later dispatcher tick rather than mark the strategy dead.
+
+    Logical errors (target file missing, HTTPError 4xx) are returned
+    immediately with `transient=False`.
 
     Replaces the older `check_build` + downstream `lake build` +
     `lake env lean #print axioms` chain. ~3-5s on a warm worker
@@ -162,7 +180,8 @@ def verify_file(target_path: Path,
     """
     import json
     if not target_path.exists():
-        return {"error": f"target file not found: {target_path}"}
+        return {"error": f"target file not found: {target_path}",
+                "transient": False}
     body: dict = {
         "target_path": str(target_path),
         "write_olean": write_olean,
@@ -175,17 +194,35 @@ def verify_file(target_path: Path,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
+    delays = _VERIFY_RETRY_DELAYS if _retry_delays is None else _retry_delays
+    last_err: dict | None = None
+    # One initial attempt + len(delays) retries = len(delays)+1 total
+    for attempt in range(len(delays) + 1):
+        if attempt > 0:
+            time.sleep(delays[attempt - 1])
         try:
-            return {"error": f"gateway HTTP {exc.code}: "
-                             f"{exc.read().decode('utf-8', errors='replace')}"}
-        except Exception:
-            return {"error": f"gateway HTTP {exc.code}"}
-    except (urllib.error.URLError, OSError) as exc:
-        return {"error": f"gateway unreachable: {exc}"}
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            try:
+                body_text = exc.read().decode('utf-8', errors='replace')
+            except Exception:
+                body_text = ""
+            msg = (f"gateway HTTP {exc.code}: {body_text}"
+                   if body_text else f"gateway HTTP {exc.code}")
+            # 5xx is server-side transient; retry. 4xx is request
+            # error; don't retry.
+            if 500 <= exc.code < 600:
+                last_err = {"error": msg, "transient": True}
+                continue
+            return {"error": msg, "transient": False}
+        except (urllib.error.URLError, OSError) as exc:
+            last_err = {"error": f"gateway unreachable: {exc}",
+                        "transient": True}
+            continue
+    # Retries exhausted; return the last transient error verbatim.
+    return last_err or {"error": "gateway unreachable (unknown)",
+                        "transient": True}
 
 
 def release_session(token: str) -> None:

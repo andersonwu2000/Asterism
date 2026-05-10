@@ -291,6 +291,64 @@ def test_verify_strategy_dead_when_scratch_file_missing(
     assert out == "dead"
 
 
+def test_verify_strategy_retry_on_transient_gateway_error(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gateway transient failure (timeout / unreachable / 5xx exhausted
+    retries) returns `transient=True` → verify_strategy maps to 'retry',
+    NOT 'dead'. Strategy stays in ready_for_verify for a later tick."""
+    gid = _seed_goal(conn)
+    sid = _seed_strategy_with_proved_subs(conn, goal_id=gid)
+    scratch_abs = tmp_path / "Problems/p/proofs/_strategy_s.lean"
+    scratch_abs.parent.mkdir(parents=True)
+    scratch_abs.write_text("-- stub", encoding="utf-8")
+    from Tooling import gateway_lifecycle
+    monkeypatch.setattr(
+        gateway_lifecycle, "verify_file",
+        lambda *a, **kw: {
+            "error": "gateway unreachable: timed out",
+            "transient": True,
+        })
+    monkeypatch.setattr(verify, "lean_path_to_module",
+                        lambda *a, **kw: "Problems.p.proofs._strategy_s")
+    monkeypatch.setattr(verify, "promote_to_alias",
+                        lambda *a, **kw: None)
+    monkeypatch.setattr(verify, "rollback_promote",
+                        lambda *a, **kw: None)
+    out = verify.verify_strategy(conn, workspace=tmp_path, strategy_id=sid)
+    assert out == "retry"
+
+
+def test_verify_strategy_dead_on_logical_gateway_error(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gateway logical failure (HTTP 4xx / target missing) returns
+    `transient=False` → verify_strategy maps to 'dead' (unchanged
+    behavior for non-transient infra errors)."""
+    gid = _seed_goal(conn)
+    sid = _seed_strategy_with_proved_subs(conn, goal_id=gid)
+    scratch_abs = tmp_path / "Problems/p/proofs/_strategy_s.lean"
+    scratch_abs.parent.mkdir(parents=True)
+    scratch_abs.write_text("-- stub", encoding="utf-8")
+    from Tooling import gateway_lifecycle
+    monkeypatch.setattr(
+        gateway_lifecycle, "verify_file",
+        lambda *a, **kw: {
+            "error": "gateway HTTP 400: malformed request",
+            "transient": False,
+        })
+    monkeypatch.setattr(verify, "lean_path_to_module",
+                        lambda *a, **kw: "Problems.p.proofs._strategy_s")
+    monkeypatch.setattr(verify, "promote_to_alias",
+                        lambda *a, **kw: None)
+    monkeypatch.setattr(verify, "rollback_promote",
+                        lambda *a, **kw: None)
+    out = verify.verify_strategy(conn, workspace=tmp_path, strategy_id=sid)
+    assert out == "dead"
+
+
 # ---------------------------------------------------------------------
 # verify_housekeeping — state transitions
 # ---------------------------------------------------------------------
@@ -374,6 +432,35 @@ def test_housekeeping_dead_keeps_attempting_when_other_strategy_live(
     assert db.get_goal(conn, gid)["status"] == "attempting"
 
 
+def test_housekeeping_retry_leaves_strategy_in_ready_state(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transient infra failure: outcome 'retry' does NOT mutate strategy
+    or goal state — strategy stays ready_for_verify, attempts unchanged,
+    goal status unchanged. Housekeeping breaks out of its inner loop to
+    defer to the next dispatcher tick rather than busy-spin."""
+    gid = _seed_goal(conn)
+    db.update_goal_status(conn, gid, "attempting")
+    sid = _seed_strategy_with_proved_subs(conn, goal_id=gid)
+    starting_attempts = db.get_goal(conn, gid)["attempts"]
+    monkeypatch.setattr(verify, "verify_strategy",
+                        lambda *a, **kw: "retry")
+
+    counts = verify.verify_housekeeping(conn, workspace=tmp_path)
+    assert counts["retry"] == 1
+    assert counts["dead"] == 0
+    assert counts["proved"] == 0
+    # Strategy stays 'proposed' (the on-disk status for "ready_for_verify")
+    s = conn.execute("SELECT status FROM strategies WHERE id = ?",
+                     (sid,)).fetchone()
+    assert s["status"] == "proposed"
+    # Goal unchanged
+    g = db.get_goal(conn, gid)
+    assert g["status"] == "attempting"
+    assert g["attempts"] == starting_attempts
+
+
 def test_housekeeping_dead_shelves_at_threshold(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -438,7 +525,7 @@ def test_housekeeping_no_op_when_nothing_ready(
 ) -> None:
     """No strategies ready → return zero counts, no DB mutations."""
     counts = verify.verify_housekeeping(conn, workspace=tmp_path)
-    assert counts == {"proved": 0, "dead": 0, "superseded": 0}
+    assert counts == {"proved": 0, "dead": 0, "superseded": 0, "retry": 0}
 
 
 def test_housekeeping_caps_iterations(
