@@ -28,6 +28,41 @@ from Tooling.lsp_gateway import (
 )
 
 
+def test_install_windows_event_loop_policy_on_win32(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On Windows, the gateway switches asyncio to Selector policy
+    before starting uvicorn — works around the
+    IocpProactor.accept WinError 64 race observed in SG run #14
+    (2026-05-11) which left the listening socket bound but no longer
+    accepting connections."""
+    import asyncio
+    monkeypatch.setattr(lsp_gateway.sys, "platform", "win32")
+    calls = {"policy": None}
+
+    def fake_set_policy(p):
+        calls["policy"] = p
+
+    monkeypatch.setattr(asyncio, "set_event_loop_policy", fake_set_policy)
+    lsp_gateway._install_windows_event_loop_policy()
+    assert isinstance(calls["policy"], asyncio.WindowsSelectorEventLoopPolicy)
+
+
+def test_install_windows_event_loop_policy_noop_on_non_win32(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On non-Windows platforms the helper is a no-op — Selector vs
+    Proactor is a Windows-only consideration; Linux/macOS already use
+    epoll/kqueue without this issue."""
+    import asyncio
+    monkeypatch.setattr(lsp_gateway.sys, "platform", "linux")
+    calls = {"n": 0}
+    monkeypatch.setattr(asyncio, "set_event_loop_policy",
+                        lambda p: calls.__setitem__("n", calls["n"] + 1))
+    lsp_gateway._install_windows_event_loop_policy()
+    assert calls["n"] == 0
+
+
 def test_four_tools_registered() -> None:
     """The gateway exposes the same 4 tools as the per-spawn server
     (apply_edit / goal_at / errors_at / validate_file) so agents see

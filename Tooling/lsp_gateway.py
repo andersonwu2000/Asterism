@@ -980,8 +980,41 @@ def main() -> None:
     app = mcp.streamable_http_app()
     app = SessionHeaderMiddleware(app)
 
+    _install_windows_event_loop_policy()
+
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+
+
+def _install_windows_event_loop_policy() -> None:
+    """Switch the asyncio event loop policy to Selector on Windows.
+
+    Default Python 3.8+ on Windows is ProactorEventLoop (IOCP-based).
+    Under sustained HTTP load with frequent connection churn we hit
+    `OSError(WinError 64, '指定的網路名稱無法使用 / The specified
+    network name is no longer available')` inside
+    `IocpProactor.accept.accept_coro()` — the accept task raises but
+    asyncio's default handler does NOT re-arm the accept loop, so the
+    listening socket stays bound while no new connections are accepted.
+    The HTTP endpoint becomes "half-working": in-flight worker sessions
+    keep responding, but framework `/verify` POSTs from the daemon get
+    WinError 10061 connection-refused (kernel rejects SYN because
+    nothing's calling AcceptEx anymore).
+
+    SelectorEventLoop on Windows uses select() instead of IOCP and
+    doesn't run into this race. Throughput ceiling is lower (~few
+    hundred concurrent connections) but Asterism gateway concurrency
+    is bounded by `gateway.workers` (default 3) — well within the
+    Selector ceiling.
+
+    Observed in SG run #14 (2026-05-11): gateway crash at +~4h45min
+    of sustained pool=15 / workers=3 load. See
+    `runs/sg_run_14.md` CUT REASON for forensic detail.
+    """
+    if sys.platform != "win32":
+        return
+    import asyncio
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
 if __name__ == "__main__":
