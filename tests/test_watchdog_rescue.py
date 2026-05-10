@@ -184,3 +184,92 @@ def test_fresh_rescue_dump_returns_false_when_jsonl_missing(
     ok = _dump_prior_thinking("missing-sid", tmp_path / "_prior_analysis.md")
     assert ok is False
     assert not (tmp_path / "_prior_analysis.md").exists()
+
+
+def test_fresh_rescue_timeout_salvages_when_parse_returns_success(
+    conn: sqlite3.Connection,
+) -> None:
+    """Fresh-rescue subprocess timeout (rc=124) might leave valid
+    output on disk (g266-class cargo-cult anomaly). The helper must
+    try `parse_fn()` salvage before treating the rc=124 as a
+    stuck-thinking failure — same logic as the main-spawn TIMEOUT
+    salvage. Observed in SG run #8: e7750c8c and 68d9f792 both
+    returned rc=124 from fresh-rescue but the helper had no salvage
+    path at the time, so any disk output was discarded."""
+    gid = _seed_open_goal(conn)
+    spawn_calls: list[SpawnCtx] = []
+
+    def spawn(ctx: SpawnCtx) -> int:
+        spawn_calls.append(ctx)
+        if ctx.is_fresh_rescue:
+            return SpawnRC.TIMEOUT  # rc=124, not OK
+        return SpawnRC.STUCK_THINKING
+
+    def parse() -> PipelineResult:
+        # Salvage parse on the fresh-rescue's attempts_dir returns
+        # 'success' — agent shipped before the timeout.
+        return PipelineResult(outcome="success")
+
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-fresh-salvage",
+        budget_threshold=3, shelve_threshold=8,
+        attempts_dir=Path("/tmp/x"),
+        spawn_fn=spawn, parse_fn=parse,
+        postmortem_fn=lambda _sid: None,
+    )
+    assert r.outcome == "success"
+    # 2 spawns: main (stuck) + fresh-rescue (rc=124).
+    # parse_fn called 1 time on the fresh-rescue salvage path.
+    assert len(spawn_calls) == 2
+    assert spawn_calls[1].is_fresh_rescue is True
+
+
+def test_fresh_rescue_timeout_no_salvage_folds_parse_outcome_into_detail(
+    conn: sqlite3.Connection,
+) -> None:
+    """When fresh-rescue returns rc=124 and salvage parse returns
+    non-terminal failure, helper buffers `agent_stuck_thinking` but
+    folds the salvage outcome into failure_detail for forensic
+    transparency. Mirrors main-spawn TIMEOUT salvage."""
+    gid = _seed_open_goal(conn)
+    spawn_calls: list[SpawnCtx] = []
+    parse_calls = [0]
+
+    def spawn(ctx: SpawnCtx) -> int:
+        spawn_calls.append(ctx)
+        # iter 0: stuck. fresh-rescue: rc=124. iter 1 warm: proved.
+        if ctx.is_fresh_rescue:
+            return SpawnRC.TIMEOUT
+        if len([c for c in spawn_calls if not c.is_fresh_rescue]) == 1:
+            return SpawnRC.STUCK_THINKING
+        return SpawnRC.OK
+
+    def parse() -> PipelineResult:
+        parse_calls[0] += 1
+        # First parse: salvage on fresh-rescue rc=124 → non-terminal.
+        # Second parse: iter 1 warm → proved.
+        if parse_calls[0] == 1:
+            return PipelineResult(outcome="failed",
+                                  failure_reason="parse_proposal_fail",
+                                  failure_detail="no patch on disk")
+        return PipelineResult(outcome="proved")
+
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-fresh-salvage-fold",
+        budget_threshold=5, shelve_threshold=8,
+        attempts_dir=Path("/tmp/x"),
+        spawn_fn=spawn, parse_fn=parse,
+        postmortem_fn=lambda _sid: None,
+    )
+    assert r.outcome == "proved"
+    # Pending failures should include a stuck-thinking entry whose
+    # detail mentions the salvage parse outcome.
+    stuck = [f for f in r.pending_failures
+             if f["reason"] == "agent_stuck_thinking"]
+    assert len(stuck) == 1, (
+        f"expected one buffered agent_stuck_thinking, got: "
+        f"{r.pending_failures}")
+    detail = stuck[0]["detail"]
+    assert "fresh-rescue salvage" in detail
+    assert "parse_proposal_fail" in detail
+    assert "rc=124" in detail

@@ -522,11 +522,50 @@ def run_with_session_retries(
                 last_reason = rescue_result.failure_reason
                 last_detail = rescue_result.failure_detail
                 continue
+            # Salvage on fresh-rescue TIMEOUT (rc=124): mirror the
+            # main-spawn TIMEOUT salvage. The fresh-rescue agent might
+            # have shipped valid output before subprocess.communicate
+            # killed it (g266-class cargo-cult anomaly observed in SG
+            # run #8 fresh-rescues e7750c8c / 68d9f792). Without this,
+            # any valid disk output from a timeout'd fresh-rescue is
+            # discarded — same bug commit 2504650 fixed for main spawn.
+            salvage_note = ""
+            salvage_result: PipelineResult | None = None
+            if rescue_rc == SpawnRC.TIMEOUT:
+                try:
+                    salvage_result = parse_fn()
+                except Exception as exc:  # noqa: BLE001
+                    salvage_note = (f"fresh-rescue salvage parse raised "
+                                    f"{type(exc).__name__}: {exc}")
+                    print(f"[fresh-rescue-salvage] sid={sid[:8]} "
+                          f"{salvage_note}; falling back to "
+                          f"stuck-thinking buffer", flush=True)
+                if salvage_result is not None and (
+                    salvage_result.outcome in _TERMINAL_SUCCESS_OUTCOMES
+                    or salvage_result.failure_reason
+                    in _TERMINAL_DECLINE_REASONS
+                ):
+                    print(f"[fresh-rescue-salvage] sid={sid[:8]} "
+                          f"salvaged outcome={salvage_result.outcome} "
+                          f"reason={salvage_result.failure_reason} "
+                          f"despite subprocess timeout", flush=True)
+                    return attach(salvage_result)
             # Rescue itself failed — record stuck-thinking and continue.
-            buffer_failure("agent_stuck_thinking",
-                           f"watchdog killed broken_sid={broken_sid[:8]}; "
-                           f"fresh-rescue sid={sid[:8]} rc={rescue_rc} "
-                           f"dur={rescue_dur:.0f}s")
+            # Fold salvage parse outcome into detail when applicable
+            # (forensic transparency: distinguish "rescue timed out
+            # with no output" from "rescue timed out with broken
+            # output" from "rescue salvage parse raised").
+            detail = (f"watchdog killed broken_sid={broken_sid[:8]}; "
+                      f"fresh-rescue sid={sid[:8]} rc={rescue_rc} "
+                      f"dur={rescue_dur:.0f}s")
+            if salvage_result is not None:
+                salvage_note = (
+                    f"fresh-rescue salvage: outcome={salvage_result.outcome} "
+                    f"reason={salvage_result.failure_reason} detail="
+                    f"{(salvage_result.failure_detail or '')[:200]}")
+            if salvage_note:
+                detail = f"{detail}; {salvage_note}"
+            buffer_failure("agent_stuck_thinking", detail)
             last_reason = "agent_stuck_thinking"
             last_detail = f"fresh-rescue rc={rescue_rc}"
             continue
