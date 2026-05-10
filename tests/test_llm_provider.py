@@ -1680,18 +1680,21 @@ def test_claude_complete_text_has_no_cwd_pin(
     assert "cwd" not in calls[0]["kwargs"]
 
 
-def test_claude_spawn_does_not_set_thinking_budget_env(
+def test_claude_spawn_sets_thinking_budget_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MAX_THINKING_TOKENS / CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING were
-    retired in favor of the tool_use-rate watchdog (`_watchdog` in
-    claude_cli) + per-pipeline rescue spawn. The cap was a blunt fix:
-    it stopped a single thinking block from filling 30K-90K chars but
-    couldn't stop the agent from re-entering deep thinking on the next
-    turn after a tool call. Watchdog catches the actual anti-pattern
-    (>10min between tool_use events) and routes to a rescue spawn with
-    a tight force-ship prompt — the framework prefers SIGKILL over
-    capping the model's reasoning depth."""
+    """MAX_THINKING_TOKENS + CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING
+    restored 2026-05-10 (originally from 9d05d19). Cap prevents
+    Sonnet 4.6's adaptive thinking from producing 30-90K-char single
+    thinking blocks that hit max_tokens before the agent calls any
+    Write tool. Cap formula: max(1000, timeout_sec // 60 * 1000)
+    tokens per turn. Multi-step thinking still accumulates across
+    turns (each tool result starts a fresh per-turn budget).
+
+    The retired alternative (watchdog + rescue spawn) was post-hoc
+    cleanup: detect trap → SIGKILL → fresh-sid takeover. Cap is
+    preventive: trap doesn't manifest because the API forces a
+    transition when budget is hit."""
     from pathlib import Path
     from Tooling import llm
     from Tooling.llm import claude_cli
@@ -1706,5 +1709,28 @@ def test_claude_spawn_does_not_set_thinking_budget_env(
         timeout_sec=600,
     ))
     env = calls[0]["kwargs"]["env"]
-    assert "MAX_THINKING_TOKENS" not in env
-    assert "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING" not in env
+    assert env.get("CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING") == "1"
+    # 600s spawn → 10000 tokens cap (1000 per minute).
+    assert env.get("MAX_THINKING_TOKENS") == "10000"
+
+
+def test_claude_spawn_thinking_budget_floors_at_1000(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Floor of 1000 tokens for short spawns (e.g. 60s probe / 30s
+    auxiliary). Avoids 0-cap which would block thinking entirely."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    calls = _capture_call(monkeypatch, module_name="claude_cli")
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/Problems/myproblem"),
+        attempts_dir=Path("/x/.attempts/abc"),
+        timeout_sec=30,  # below 60s/min baseline
+    ))
+    env = calls[0]["kwargs"]["env"]
+    assert env.get("MAX_THINKING_TOKENS") == "1000"

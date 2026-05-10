@@ -719,6 +719,23 @@ class ClaudeCliProvider:
             *_trim_flags(req),
         ]
         env = dict(os.environ)
+        # Per-spawn thinking-token cap (restored 2026-05-10 from 9d05d19).
+        # Sonnet 4.6's adaptive thinking can produce 30-90K-character
+        # single thinking blocks that hit Anthropic's max_tokens stop
+        # before the agent calls any Write tool — empirically observed
+        # on 74% of SG Backward spawns at 9d05d19. With the cap,
+        # Sonnet hits the per-turn cap, the API forces a transition,
+        # and the agent commits its current output via tool_use
+        # (write patch.lean / new_*.lean). Multi-step reasoning still
+        # accumulates across turns (after each tool result the next
+        # turn gets a fresh thinking budget).
+        # MAX_THINKING_TOKENS only takes effect in legacy non-adaptive
+        # mode, so we also disable adaptive routing.
+        # Cap formula: 1000 tokens/min of wall-clock budget, with a
+        # 1000-token floor for short rescue/postmortem spawns.
+        env["CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING"] = "1"
+        env["MAX_THINKING_TOKENS"] = str(
+            max(1000, (req.timeout_sec // 60) * 1000))
         proc = subprocess.Popen(
             cmd, env=env, cwd=str(req.problem_dir),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
