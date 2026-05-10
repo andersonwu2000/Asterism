@@ -1,17 +1,26 @@
 """Statement-level dedup for goals proposed by Backward.
 
-Recognizes when a candidate sub-goal's conclusion is definitionally
-equivalent (via Lean kernel `Lean.Meta.isDefEq`) to an ancestor goal's
-conclusion. Writes an alias lean file that delegates the proof to the
-canonical theorem via Lean tactics, so the candidate inherits
+Recognizes when a candidate sub-goal is provable from an existing
+goal (ancestor / orphan sibling / cross-branch proved). Writes an
+alias lean file that delegates the proof to the canonical theorem via
+`apply canonical <;> assumption`, so the candidate inherits
 canonical's eventual proof for free.
 
-**Equivalence engine: Lean kernel via `lake env lean`**
+**Provability engine: Lean kernel via `lake env lean`**
 
-`_batch_isdefeq` generates a temp `.lean` file with one
-`example : (∀ <a>, ...) = (∀ <b>, ...) := rfl` per pair, runs `lake env
-lean`, parses errors back to per-pair pass/fail. Coverage = α + β + η +
-definitional unfolding (whatever Lean kernel decides).
+`_batch_provable_via_apply` generates a temp `.lean` file with one
+`theorem _dc_i <cand binders> : <cand conclusion> := by apply
+@<canonical> <;> assumption` per pair, runs `lake env lean`, parses
+errors back to per-pair pass/fail. The check semantics matches what
+`build_alias_content` actually writes for the alias body, so anything
+the check accepts can be safely aliased.
+
+Note: this replaced an earlier `_batch_isdefeq` rfl-based check
+(2026-05-11). The rfl check rejected hypothesis-extension cases
+(SG run #15: Goals 323 vs 329 were the same conclusion with extra
+redundant hypotheses; rfl said "different types"; alias would have
+worked because `apply <;> assumption` discharges extras). The
+provability check matches alias semantics exactly.
 
 Cost: ~3-5s lake-env startup + per-pair elaboration; one batch call
 per `find_canonicals_batch`. For Asterism scale (~30 Backwards per
@@ -177,17 +186,40 @@ def _to_forall_form(signature: str) -> str:
     return f"∀ {binders}, {conclusion}"
 
 
-def _batch_isdefeq(workspace: Path, problem: str,
-                   pairs: list[tuple[str, str]]) -> list[bool]:
-    """Run Lean kernel isDefEq on each (a_signature, b_signature) pair.
+_THM_NAME_RE = re.compile(r"\btheorem\s+(\S+)")
 
-    `a_signature` and `b_signature` are `<binders> : <conclusion>`
-    strings (output of `_extract_full_signature`). Each pair is checked
-    by elaborating an `example : <∀-form-a> = <∀-form-b> := rfl`. If
-    elaboration succeeds, kernel deemed them def-equivalent.
 
-    Returns a list of bool aligned with `pairs`. On subprocess timeout
-    or any error, returns all False (fail-open: never block run_backward).
+def _extract_theorem_name(text: str) -> str | None:
+    """Extract the theorem name from the first `theorem <name>` in the
+    file. Returns None if no theorem found."""
+    m = _THM_NAME_RE.search(text)
+    return m.group(1) if m else None
+
+
+def _batch_provable_via_apply(
+    workspace: Path,
+    problem: str,
+    pairs: list[tuple[str, str, str]],
+) -> list[bool]:
+    """For each (cand_signature, canonical_module, canonical_thm_name)
+    pair, check if `apply @canonical <;> assumption` proves
+    `<cand_signature>`.
+
+    `cand_signature` is `<binders> : <conclusion>` (output of
+    `_extract_full_signature`).
+    `canonical_module` is the Lean module to import for canonical.
+    `canonical_thm_name` is the theorem name inside that module.
+
+    Replaces the prior `_batch_isdefeq` (2026-05-11). The rfl check
+    rejected hypothesis-extension cases (Goals 323 vs 329 in SG run
+    #15 — same conclusion with extra hypotheses). The provability
+    check via `apply <;> assumption` matches `build_alias_content`'s
+    alias body semantics: anything this accepts can be aliased
+    successfully.
+
+    Returns a list of bool aligned with `pairs`. On subprocess
+    timeout or any error, returns all False (fail-open: never block
+    run_backward).
     """
     if not pairs:
         return []
@@ -196,18 +228,38 @@ def _batch_isdefeq(workspace: Path, problem: str,
     defs_path = workspace / "Problems" / problem / "Defs.lean"
     if defs_path.exists():
         lines.append(f"import Problems.{problem}.Defs")
+
+    seen_modules: set[str] = set()
+    for _, mod, _ in pairs:
+        if mod and mod not in seen_modules:
+            lines.append(f"import {mod}")
+            seen_modules.add(mod)
+
     lines.append("")
-    lines.append(f"namespace dedupe_check")
+    lines.append("namespace dedupe_check")
     lines.append("")
 
     pair_start_lines: list[int] = []
-    for i, (a_sig, b_sig) in enumerate(pairs):
-        a_forall = _to_forall_form(a_sig)
-        b_forall = _to_forall_form(b_sig)
-        # 1-indexed line of the `example` statement we're about to write
+    for i, (cand_sig, canonical_module, canonical_thm) in enumerate(pairs):
+        # canonical_thm should already be the bare theorem name (e.g.
+        # "kelly_min_exists"). The canonical_module's namespace
+        # convention for sub-goals is `Problems.<problem>` (matches
+        # files in Problems/<problem>/proofs/). We invoke via the FQN
+        # to disambiguate when an ancestor and a sibling share a name.
+        if not canonical_thm:
+            # No theorem name extracted — pair is unusable; emit a
+            # syntactically-broken stub so its line attributes the error
+            # to this pair only (not a global error swallowing siblings).
+            pair_start_lines.append(len(lines) + 1)
+            lines.append(f"-- pair {i} (no canonical theorem name)")
+            lines.append(f"theorem _dc_{i} : True := by trivial_unknown_tac_force_fail")
+            lines.append("")
+            continue
+        canonical_fqn = f"Problems.{problem}.{canonical_thm}"
         pair_start_lines.append(len(lines) + 1)
         lines.append(f"-- pair {i}")
-        lines.append(f"example : ({a_forall}) = ({b_forall}) := rfl")
+        lines.append(f"theorem _dc_{i} {cand_sig} := by")
+        lines.append(f"  apply @{canonical_fqn} <;> assumption")
         lines.append("")
 
     lines.append("end dedupe_check")
@@ -477,23 +529,33 @@ def find_canonicals_batch(
         cand_ancestors.append(anc + orph + cross)
 
     # Build flat list of pairs to check; track origin (cand_idx, anc_row)
-    pairs: list[tuple[str, str]] = []
+    # Each pair: (cand_signature, canonical_module, canonical_theorem_name).
+    # Canonical's module is derived from anc_row's lean_path; theorem
+    # name extracted from anc_text directly (DB slug ≠ on-disk theorem
+    # name in some F49-promoted / aliased cases).
+    pairs: list[tuple[str, str, str]] = []
     pair_origin: list[tuple[int, sqlite3.Row]] = []
     for ci, (slug, full_text) in enumerate(candidates):
         cand_sig = _extract_full_signature(full_text)
         if cand_sig is None:
             continue
         for anc_row, anc_text in cand_ancestors[ci]:
-            anc_sig = _extract_full_signature(anc_text)
-            if anc_sig is None:
+            canonical_thm = _extract_theorem_name(anc_text) or ""
+            # DB stores workspace-relative lean_path strings; resolve
+            # to absolute before module conversion.
+            anc_lean_path = workspace / anc_row["lean_path"]
+            from .pipeline._lake import lean_path_to_module
+            try:
+                canonical_module = lean_path_to_module(workspace, anc_lean_path)
+            except (ValueError, OSError):
                 continue
-            pairs.append((cand_sig, anc_sig))
+            pairs.append((cand_sig, canonical_module, canonical_thm))
             pair_origin.append((ci, anc_row))
 
     if not pairs:
         return [None] * n
 
-    flags = _batch_isdefeq(workspace, problem, pairs)
+    flags = _batch_provable_via_apply(workspace, problem, pairs)
 
     # First-hit per candidate (pair_origin is already in DB priority order
     # because cand_ancestors[ci] was sorted by query)

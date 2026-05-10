@@ -1,6 +1,6 @@
 """dedupe library: signature parser + ancestor scoping + alias body.
 
-The Lean-kernel batch (`_batch_isdefeq`) is monkeypatched in tests so
+The Lean-kernel batch (`_batch_provable_via_apply`) is monkeypatched in tests so
 suites stay fast and lake-independent. An optional integration test
 (skipped if `lake` is missing) exercises the real subprocess on simple
 inputs.
@@ -342,7 +342,7 @@ def test_eligible_problem_proved_skips_excluded_ids(
 
 
 # ---------------------------------------------------------------------
-# find_canonicals_batch (with monkeypatched _batch_isdefeq)
+# find_canonicals_batch (with monkeypatched _batch_provable_via_apply)
 # ---------------------------------------------------------------------
 
 def test_find_canonicals_batch_picks_proved_over_open(
@@ -366,7 +366,7 @@ def test_find_canonicals_batch_picks_proved_over_open(
 
     # Only proved_anc is a strict ancestor of parent (proved_anc is parent's
     # parent). open_anc is a sibling. Pre-filter via SQL handles that.
-    monkeypatch.setattr(dedupe, "_batch_isdefeq",
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply",
                         lambda ws, p, pairs: [True] * len(pairs))
 
     candidate_text = ("import Mathlib\nnamespace P\n"
@@ -397,7 +397,7 @@ def test_find_canonicals_batch_no_match_returns_none(
     _write_lean(tmp_path, "p", "main",
         "import Mathlib\ntheorem main : T := by sorry\n", root=True)
 
-    monkeypatch.setattr(dedupe, "_batch_isdefeq",
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply",
                         lambda ws, p, pairs: [False] * len(pairs))
 
     cand = "import Mathlib\ntheorem c (a : T) (b : T) : X := by sorry\n"
@@ -435,12 +435,15 @@ def test_find_canonicals_batch_mixed_hits(
     _write_lean(tmp_path, "p", "main",
         "import Mathlib\ntheorem main : T := by sorry\n", root=True)
 
-    # Fake isDefEq: equal signatures → True
+    # Fake provability check: cand provable from canonical iff
+    # conclusion matches AND canonical thm is the one with that
+    # conclusion (ga1 has conclusion X; main has conclusion T).
     def fake(ws: Path, prob: str,
-             pairs: list[tuple[str, str]]) -> list[bool]:
-        return [p[0] == p[1] for p in pairs]
+             pairs: list[tuple[str, str, str]]) -> list[bool]:
+        return [(": X" in cand_sig and thm == "ga1")
+                for cand_sig, _mod, thm in pairs]
 
-    monkeypatch.setattr(dedupe, "_batch_isdefeq", fake)
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake)
 
     # cand1 has the same signature as ga1 → match
     # cand2 has a different conclusion → no match
@@ -505,11 +508,11 @@ def test_build_alias_handles_no_imports() -> None:
 
 
 # ---------------------------------------------------------------------
-# _batch_isdefeq integration (skipped when lake unavailable)
+# _batch_provable_via_apply integration (skipped when lake unavailable)
 # ---------------------------------------------------------------------
 
 # ---------------------------------------------------------------------
-# _batch_isdefeq global-error handling (F14)
+# _batch_provable_via_apply global-error handling (F14)
 # ---------------------------------------------------------------------
 
 def _patch_subprocess(monkeypatch: pytest.MonkeyPatch, *,
@@ -529,18 +532,20 @@ def _patch_subprocess(monkeypatch: pytest.MonkeyPatch, *,
                         "run", fake_run)
 
 
-def test_batch_isdefeq_rc0_means_all_pairs_pass(
+def test_batch_provable_via_apply_rc0_means_all_pairs_pass(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """F14: rc==0 from Lean is the canonical 'no errors anywhere' signal.
     Skip line-error parsing entirely in the happy path."""
     _patch_subprocess(monkeypatch, stdout="", stderr="", rc=0)
-    pairs = [(": Nat", ": Nat"), (": Bool", ": Bool")]
-    result = dedupe._batch_isdefeq(tmp_path, "p", pairs)
+    # New 3-tuple shape: (cand_signature, canonical_module, canonical_thm).
+    pairs = [(": Nat", "Mod.A", "thm_a"),
+             (": Bool", "Mod.B", "thm_b")]
+    result = dedupe._batch_provable_via_apply(tmp_path, "p", pairs)
     assert result == [True, True]
 
 
-def test_batch_isdefeq_global_error_outside_pair_range_rejects_all(
+def test_batch_provable_via_apply_global_error_outside_pair_range_rejects_all(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """F14 root cause: when an error fires before the first pair (e.g.
@@ -550,43 +555,47 @@ def test_batch_isdefeq_global_error_outside_pair_range_rejects_all(
     # Pair lines start around 5; error at line 1 is global.
     stdout = "/tmp/x.lean:1:0: error: object file does not exist"
     _patch_subprocess(monkeypatch, stdout=stdout, stderr="", rc=1)
-    pairs = [(": A", ": B"), (": C", ": D")]
-    result = dedupe._batch_isdefeq(tmp_path, "p", pairs)
+    pairs = [(": A", "Mod.A", "thm_a"), (": C", "Mod.C", "thm_c")]
+    result = dedupe._batch_provable_via_apply(tmp_path, "p", pairs)
     assert result == [False, False]
 
 
-def test_batch_isdefeq_per_pair_attribution(
+def test_batch_provable_via_apply_per_pair_attribution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When all errors are inside pair ranges, attribute per-pair.
-    Pair 0 occupies lines around 6, pair 1 around 8 (after import line +
-    namespace + blank). Error at the second pair's line range only."""
-    # Need to inspect the actual file structure built by _batch_isdefeq.
-    # Lines 1: import Mathlib
-    #       2: (blank)
-    #       3: namespace dedupe_check
-    #       4: (blank)
-    #       5: -- pair 0
-    #       6: example : (...)= (...) := rfl
-    #       7: (blank)
-    #       8: -- pair 1
-    #       9: example : (...)= (...) := rfl
-    # Error at line 9 → pair 1 fails, pair 0 passes.
-    stdout = "/tmp/x.lean:9:10: error: type mismatch"
+    File layout (with NEW _batch_provable_via_apply template):
+      1: import Mathlib
+      2: import Mod.A
+      3: import Mod.B
+      4: (blank)
+      5: namespace dedupe_check
+      6: (blank)
+      7: -- pair 0
+      8: theorem _dc_0 : A := by
+      9:   apply @Mod.A.thm_a <;> assumption
+     10: (blank)
+     11: -- pair 1
+     12: theorem _dc_1 : B := by
+     13:   apply @Mod.B.thm_b <;> assumption
+    pair_start_lines: [7, 11]. Error at line 12 → falls in pair 1's
+    range (lines 11–end), so pair 1 fails, pair 0 passes.
+    """
+    stdout = "/tmp/x.lean:12:0: error: type mismatch"
     _patch_subprocess(monkeypatch, stdout=stdout, stderr="", rc=1)
-    pairs = [(": A", ": A"), (": B", ": C")]
-    result = dedupe._batch_isdefeq(tmp_path, "p", pairs)
+    pairs = [(": A", "Mod.A", "thm_a"), (": B", "Mod.B", "thm_b")]
+    result = dedupe._batch_provable_via_apply(tmp_path, "p", pairs)
     assert result == [True, False]
 
 
-def test_batch_isdefeq_unknown_failure_pattern_rejects_all(
+def test_batch_provable_via_apply_unknown_failure_pattern_rejects_all(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """rc != 0 but no line-prefixed errors matched. Could be a parser
     panic / Lean crash. Conservative: reject all pairs."""
     _patch_subprocess(monkeypatch, stdout="", stderr="lean: panic", rc=1)
-    pairs = [(": A", ": B")]
-    result = dedupe._batch_isdefeq(tmp_path, "p", pairs)
+    pairs = [(": A", "Mod.A", "thm_a")]
+    result = dedupe._batch_provable_via_apply(tmp_path, "p", pairs)
     assert result == [False]
 
 
@@ -727,9 +736,61 @@ def test_db_set_alias_target_and_lookup(conn: sqlite3.Connection) -> None:
 # Original real-lake integration test
 # ---------------------------------------------------------------------
 
+def test_batch_provable_via_apply_template_handles_hypothesis_extension(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for SG run #15: cand has MORE hypotheses than
+    canonical, same conclusion. The old rfl-based check rejected this
+    (hypothesis-extension types differ); the new provability check
+    accepts because `apply canonical <;> assumption` proves the
+    extras-vacuously case.
+
+    We capture what _batch_provable_via_apply WRITES (the template) so
+    a later refactor can't accidentally regress to a rfl-only check.
+    """
+    captured = {}
+
+    def capture_run(*args, **kwargs):
+        # First positional arg is the cmd list; we want the input file
+        # path (last element) to read what got written.
+        cmd = args[0]
+        lean_file = Path(cmd[-1])
+        captured["content"] = lean_file.read_text(encoding="utf-8")
+
+        class _R:
+            stdout = ""
+            stderr = ""
+            returncode = 0
+        return _R()
+
+    import Tooling.dedupe as _d
+    monkeypatch.setattr(_d.subprocess, "run", capture_run)
+
+    # cand has extra hypothesis (hcard) vs canonical
+    pairs = [
+        ("(Q : Finset Nat) (h : Q.Nonempty) (hcard : 3 ≤ Q.card) : Q.Nonempty",
+         "Problems.p.proofs.L_canon",
+         "canon_thm"),
+    ]
+    dedupe._batch_provable_via_apply(tmp_path, "p", pairs)
+    body = captured["content"]
+    # Template shape: theorem _dc_0 with apply + assumption.
+    # Canonical FQN is `Problems.<problem>.<thm_name>` because the
+    # canonical's lean file declares `namespace Problems.<problem>`,
+    # not nested under proofs. The MODULE path
+    # `Problems.<problem>.proofs.L_<slug>` is for the import.
+    assert "theorem _dc_0" in body
+    assert "apply @Problems.p.canon_thm" in body
+    assert "<;> assumption" in body
+    # Must NOT use rfl (regression guard)
+    assert ":= rfl" not in body
+    # Imports the canonical's module
+    assert "import Problems.p.proofs.L_canon" in body
+
+
 @pytest.mark.skipif(shutil.which("lake") is None,
                     reason="requires lake CLI on PATH")
-def test_batch_isdefeq_real_lake(tmp_path: Path) -> None:
+def test_batch_provable_via_apply_real_lake(tmp_path: Path) -> None:
     """Spin up the actual Lean kernel on a tiny pair to confirm the
     subprocess plumbing + parsing work. Slow (lake env startup ~3-5s);
     skipped unless lake is on PATH."""
@@ -743,7 +804,7 @@ def test_batch_isdefeq_real_lake(tmp_path: Path) -> None:
     # This may still fail because Mathlib isn't present in tmp_path's
     # lake project. We accept that and just verify the call-flow doesn't
     # crash; equality decision is opaque without Mathlib.
-    pairs = [("(x : Nat) : x = x", "(y : Nat) : y = y")]
-    result = dedupe._batch_isdefeq(tmp_path, "tmp", pairs)
+    pairs = [("(x : Nat) : x = x", "Mod.X", "thm_x")]
+    result = dedupe._batch_provable_via_apply(tmp_path, "tmp", pairs)
     assert isinstance(result, list)
     assert len(result) == 1
