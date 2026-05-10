@@ -174,6 +174,57 @@ def next_worker_kind(goal: sqlite3.Row) -> str:
 # result tuple.
 
 
+def _classify_worker_exception(exc: BaseException) -> str:
+    """Map an uncaught worker-thread exception to a framework
+    failure_reason. Returns `"gateway_unreachable"` for transport-level
+    errors (urllib URLError, socket OSError with conn refused / reset /
+    network-name-deleted), `""` otherwise so the default path applies
+    (synthesize generic "failed" outcome → attempts++).
+
+    Background — SG run #14 (2026-05-11) had a gateway IOCP-accept
+    crash mid-run. After the crash, every Backward dispatch raised
+    `urlopen error [WinError 10061]` (connection refused) from the
+    daemon's own HTTP POST to the gateway. The legacy worker-exception
+    branch wrote outcome=failed with no failure_reason → counted as
+    a real attempt against the goal. Five infra refusals later, the
+    root goal shelved at SHELVE_THRESHOLD. This classifier returns the
+    transport reason so cascade_one routes through the existing
+    _INFRA_REASONS short-circuit (no attempts++) AND the dispatcher
+    main loop applies a 30s cooldown before re-dispatching to the
+    same (target, kind) — giving the gateway time to recover (when
+    accompanied by gateway-side fixes like 475c318) or letting the
+    operator notice & restart.
+    """
+    import errno
+    import urllib.error
+
+    if isinstance(exc, urllib.error.URLError):
+        return "gateway_unreachable"
+    if isinstance(exc, OSError):
+        # Cross-platform errno values for transport-level loss
+        conn_errnos = {errno.ECONNREFUSED, errno.ECONNRESET,
+                       errno.ENETUNREACH, errno.EHOSTUNREACH,
+                       errno.ETIMEDOUT}
+        if exc.errno in conn_errnos:
+            return "gateway_unreachable"
+        # Windows wraps these as WinError codes (winerror attr) often
+        # without setting errno. winerror 10061=ECONNREFUSED-equiv,
+        # 10054=ECONNRESET-equiv, 64=NETNAME_DELETED (peer aborted).
+        winerror = getattr(exc, "winerror", None)
+        if winerror in (10061, 10054, 10060, 10065, 64):
+            return "gateway_unreachable"
+    # Fallback string scan for wrapped/chained exceptions whose outer
+    # type didn't match either isinstance branch above.
+    msg = repr(exc)
+    if any(s in msg for s in ("WinError 10061", "WinError 10054",
+                              "WinError 64",
+                              "Connection refused",
+                              "Connection reset",
+                              "gateway unreachable")):
+        return "gateway_unreachable"
+    return ""
+
+
 def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 kind: str, target_id: str, target_kind: str,
                 outcome: str, failure_reason: str = "") -> None:
@@ -230,14 +281,20 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
         if row and row["status"] in ("proved", "shelved"):
             return
 
-    # F46 + Phase 7 — provider-level infra failures don't burn the
+    # F46 + Phase 7 — provider/transport infra failures don't burn the
     # goal's attempts cap. Dispatcher main loop applies a per-target
-    # cooldown for all three; only spawn_fast_fail contributes to
+    # cooldown for all four; only spawn_fast_fail contributes to
     # the CONSEC daemon-exit counter.
-    #   * spawn_fast_fail   — rc≠0 with wall<10s (claude.exe crash etc.)
-    #   * quota_exhausted   — rc=126 (provider rate limit / quota cap)
-    #   * missing_dep       — rc=127 (CLI binary missing)
-    _INFRA_REASONS = ("spawn_fast_fail", "quota_exhausted", "missing_dep")
+    #   * spawn_fast_fail      — rc≠0 with wall<10s (claude.exe crash)
+    #   * quota_exhausted      — rc=126 (provider rate limit / quota)
+    #   * missing_dep          — rc=127 (CLI binary missing)
+    #   * gateway_unreachable  — pipeline raised URLError/OSError
+    #                            (gateway HTTP transport failed: SG run
+    #                            #14 2026-05-11 IOCP accept-loop death
+    #                            shelved root goal by counting infra
+    #                            refusals against attempts)
+    _INFRA_REASONS = ("spawn_fast_fail", "quota_exhausted", "missing_dep",
+                      "gateway_unreachable")
     is_infra = (outcome == "failed" and failure_reason in _INFRA_REASONS)
 
     # Phase 7 — `moot` outcome: pipeline detected the goal already
@@ -709,6 +766,7 @@ def run(workspace: Path, *, once: bool = False) -> int:
                     # (quota recovers on its own; missing_dep is operator-fix).
                     if outcome == "failed" and reason in (
                         "spawn_fast_fail", "quota_exhausted", "missing_dep",
+                        "gateway_unreachable",
                     ):
                         cooldown_until[(tid, kind)] = (
                             time.time() + SPAWN_COOLDOWN_SEC)
@@ -744,15 +802,36 @@ def run(workspace: Path, *, once: bool = False) -> int:
                     # Synthesize a cascade with outcome='failed' so the
                     # goal advances toward SHELVE_THRESHOLD and forensic
                     # state at least mentions the exception.
+                    #
+                    # Classify first: transport-level errors (gateway
+                    # unreachable / conn refused / network reset) are
+                    # infrastructure failures, not the goal's fault.
+                    # Route through the _INFRA_REASONS short-circuit so
+                    # attempts stay unchanged AND the per-target cooldown
+                    # below kicks in.
                     pid, kind, tid, tk = meta
+                    infra_reason = _classify_worker_exception(exc)
+                    label = (f"{infra_reason} (no attempts++)"
+                             if infra_reason else "treating as failed")
                     print(f"[cascade] worker exception on {kind} "
-                          f"{tk}={tid}: {exc}; treating as failed",
+                          f"{tk}={tid}: {exc}; {label}",
                           flush=True)
                     try:
                         cascade_one(conn, pipeline_id=pid, kind=kind,
                                     target_id=tid, target_kind=tk,
-                                    outcome="failed")
+                                    outcome="failed",
+                                    failure_reason=infra_reason)
                         tree.write_for_target(conn, workspace, tid, tk)
+                        # Mirror the normal-result cooldown path so
+                        # gateway-unreachable also yields a 30s back-off
+                        # — without this, the same Backward gets
+                        # re-dispatched on the next tick and re-fails.
+                        if infra_reason == "gateway_unreachable":
+                            cooldown_until[(tid, kind)] = (
+                                time.time() + SPAWN_COOLDOWN_SEC)
+                            print(f"[cooldown] {kind} {tk}={tid} cooled "
+                                  f"{SPAWN_COOLDOWN_SEC:.0f}s after "
+                                  f"gateway_unreachable", flush=True)
                     except Exception as exc2:
                         # Cascade itself bombing is a deeper bug; log
                         # but don't crash the daemon (other work may

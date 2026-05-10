@@ -289,6 +289,104 @@ def test_cascade_normal_failure_still_increments(
     assert db.get_goal(conn, gid)["attempts"] == 1
 
 
+def test_cascade_builder_gateway_unreachable_skips_increment(
+    conn: sqlite3.Connection,
+) -> None:
+    """SG run #14 (2026-05-11): gateway IOCP accept-loop crashed mid-run,
+    every Backward dispatch raised URLError [WinError 10061] from the
+    daemon's own HTTP POST, the legacy worker-exception path counted
+    each as a real attempt, and the root goal shelved at SHELVE_THRESHOLD
+    after 5 infra refusals. `gateway_unreachable` now joins the infra
+    short-circuit set so transport-level transport refusals don't burn
+    the goal's attempts cap."""
+    gid = _seed_goal(conn)
+    pid = "gateway-down"
+    cascade_one(conn, pipeline_id=pid, kind="Builder",
+                target_id=str(gid), target_kind="Goal", outcome="failed",
+                failure_reason="gateway_unreachable")
+    row = db.get_goal(conn, gid)
+    assert row["attempts"] == 0
+    assert row["status"] == "open"
+
+
+def test_cascade_backward_gateway_unreachable_skips_increment(
+    conn: sqlite3.Connection,
+) -> None:
+    """Same skip applies to Backward (the kind that actually triggered
+    the SG run #14 cascade)."""
+    gid = _seed_goal(conn)
+    pid = "gateway-down-bwd"
+    cascade_one(conn, pipeline_id=pid, kind="Backward",
+                target_id=str(gid), target_kind="Goal", outcome="failed",
+                failure_reason="gateway_unreachable")
+    assert db.get_goal(conn, gid)["attempts"] == 0
+
+
+# ---------------------------------------------------------------------
+# _classify_worker_exception — transport-error classifier
+# ---------------------------------------------------------------------
+
+def test_classify_worker_exception_urlerror_is_gateway_unreachable() -> None:
+    """urllib.error.URLError is the most common shape — the daemon's
+    urllib.request.urlopen() raises it for any TCP-layer failure
+    talking to the gateway HTTP endpoint."""
+    import urllib.error
+    from Tooling.dispatcher import _classify_worker_exception
+    exc = urllib.error.URLError("connection refused")
+    assert _classify_worker_exception(exc) == "gateway_unreachable"
+
+
+def test_classify_worker_exception_oserror_econnrefused() -> None:
+    """OSError with ECONNREFUSED errno also maps (cross-platform)."""
+    import errno
+    from Tooling.dispatcher import _classify_worker_exception
+    exc = OSError(errno.ECONNREFUSED, "Connection refused")
+    assert _classify_worker_exception(exc) == "gateway_unreachable"
+
+
+def test_classify_worker_exception_oserror_winerror_10061() -> None:
+    """Windows wraps connection-refused as WinError 10061 — the
+    actual exception observed in SG run #14 was
+    `<urlopen error [WinError 10061] ...>`. Test the winerror attr
+    path directly with OSError carrying winerror=10061."""
+    from Tooling.dispatcher import _classify_worker_exception
+    # OSError on Windows with winerror set (and errno often unset)
+    exc = OSError(0, "actively refused", None, 10061)
+    assert _classify_worker_exception(exc) == "gateway_unreachable"
+
+
+def test_classify_worker_exception_oserror_winerror_64() -> None:
+    """WinError 64 = ERROR_NETNAME_DELETED, the actual asyncio crash
+    cause inside the gateway. Also classify as gateway_unreachable so
+    the daemon side handles it consistently."""
+    from Tooling.dispatcher import _classify_worker_exception
+    exc = OSError(0, "network name no longer available", None, 64)
+    assert _classify_worker_exception(exc) == "gateway_unreachable"
+
+
+def test_classify_worker_exception_message_fallback() -> None:
+    """Fallback for wrapped/chained exceptions whose outer type isn't
+    URLError/OSError but whose message still mentions the WinError
+    code (e.g. RuntimeError wrapping the URLError text)."""
+    from Tooling.dispatcher import _classify_worker_exception
+    exc = RuntimeError("worker bombed: [WinError 10061] refused")
+    assert _classify_worker_exception(exc) == "gateway_unreachable"
+
+
+def test_classify_worker_exception_real_bug_returns_empty() -> None:
+    """Non-transport exceptions (genuine pipeline bug, attribute error,
+    etc.) return empty string so cascade_one falls through to the
+    normal attempts++ path — we still want to advance toward shelve
+    when a real bug breaks repeatedly."""
+    from Tooling.dispatcher import _classify_worker_exception
+    assert _classify_worker_exception(
+        AttributeError("missing field")) == ""
+    assert _classify_worker_exception(
+        KeyError("unknown")) == ""
+    assert _classify_worker_exception(
+        ValueError("bad input")) == ""
+
+
 # ---------------------------------------------------------------------
 # 4. bfs_refill respects cooldown_until
 # ---------------------------------------------------------------------
