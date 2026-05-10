@@ -184,21 +184,21 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     # forensic. Builder-specific spawn / parse / postmortem are closures
     # over the pipeline scope below.
 
-    # Backup path: agent edits goal_lean in-session via apply_edit
-    # (writes to disk, see lsp_gateway.py:517). Snapshot the pristine
-    # sorry-stub ONCE before the retry loop; every spawn entry +
-    # parse-fail path restores from this same snapshot. Re-snapshotting
-    # inside the loop captures the prior attempt's contamination, which
-    # then leaks into the next attempt's view of the file.
-    backup_path = goal_lean.with_suffix(goal_lean.suffix + ".backup")
-    shutil.copy2(goal_lean, backup_path)
+    # Spawn sandbox snapshot. Replaces the prior ad-hoc `.backup`
+    # mechanism: SpawnWorkspace records goal_lean's pre-pipeline bytes
+    # into `.attempts/<pid>/sandbox/`. Rollback (non-commit exit OR
+    # daemon-startup sweep recovery) restores real goal_lean from
+    # that snapshot. `restore_to_snapshot` is called between in-
+    # pipeline retries so each retry sees pristine state.
+    # See docs/dev/spawn_sandbox.md.
+    from .. import spawn_sandbox as _sandbox_mod
+    workspace_ctx = _sandbox_mod.SpawnWorkspace(
+        workspace, pipeline_id, real_paths=[goal_lean])
 
     def _restore_backup() -> None:
-        """Restore goal_lean from the pristine pre-pipeline snapshot.
-        Backup is NOT unlinked — every spawn / parse-fail path reads
-        from the same snapshot. Success path + outer finally unlink."""
-        if backup_path.exists():
-            shutil.copy2(backup_path, goal_lean)
+        """Restore goal_lean from the spawn sandbox snapshot. Called
+        between in-pipeline retries and on parse-fail paths."""
+        workspace_ctx.restore_to_snapshot(goal_lean)
 
     def builder_spawn(ctx: SpawnCtx) -> int:
         # Always start from the pristine snapshot. Agent's --resume
@@ -350,8 +350,9 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                     failure_detail=f"rogue axioms: {sorted(rogue)}",
                     proposal_md=leading,
                 )
-        if backup_path.exists():
-            backup_path.unlink()
+        # Success: nothing to undo on goal_lean — promote_to_alias
+        # via verify housekeeping will handle the alias rewrite
+        # separately. Sandbox commit is marked at pipeline outer.
         return PipelineResult(outcome="proved", proposal_md=leading)
 
     def builder_postmortem(sid: str) -> None:
@@ -384,27 +385,38 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             prompt_dir=PROMPT_DIR,
         )
 
-    try:
-        return run_with_session_retries(
-            conn=conn,
-            goal_id=goal_id,
-            pipeline_id=pipeline_id,
-            budget_threshold=dispatcher.BUILDER_THRESHOLD,
-            shelve_threshold=dispatcher.SHELVE_THRESHOLD,
-            attempts_dir=attempts_dir,
-            spawn_fn=builder_spawn,
-            parse_fn=builder_parse,
-            postmortem_fn=builder_postmortem,
-            workspace=workspace,
-            reflection_fn=builder_reflection,
-        )
-    finally:
-        # LSP swap final guard: spawn rc != 0 paths (timeout / quota /
-        # agent crash) skip parse_fn entirely, so the parse-side
-        # `_restore_backup` doesn't fire. Belt-and-suspenders here:
-        # restore goal_lean to the pristine snapshot, then unlink the
-        # snapshot. On success path the snapshot was already unlinked
-        # inline (line ~376) so this restore no-ops.
-        _restore_backup()
-        if backup_path.exists():
-            backup_path.unlink()
+    # SpawnWorkspace: rolls back goal_lean from sandbox snapshot on
+    # non-commit exit (exception or — recovered via sweep — daemon
+    # crash). On a proved outcome, Builder's parse-success path has
+    # written the agent's proof into goal_lean (this IS the commit);
+    # we mark the sandbox committed so __exit__ skips the snapshot
+    # rollback. Non-success outcomes leave goal_lean drifted; restore
+    # from snapshot before __exit__ so cascade housekeeping sees
+    # pristine state.
+    result = None
+    with workspace_ctx as ws:
+        try:
+            result = run_with_session_retries(
+                conn=conn,
+                goal_id=goal_id,
+                pipeline_id=pipeline_id,
+                budget_threshold=dispatcher.BUILDER_THRESHOLD,
+                shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+                attempts_dir=attempts_dir,
+                spawn_fn=builder_spawn,
+                parse_fn=builder_parse,
+                postmortem_fn=builder_postmortem,
+                workspace=workspace,
+                reflection_fn=builder_reflection,
+            )
+        finally:
+            if result is None or result.outcome != "proved":
+                # Helper crashed or returned non-success; restore
+                # goal_lean to pre-spawn pristine so the next dispatch
+                # / cascade sees the original stub.
+                _restore_backup()
+        if result.outcome == "proved":
+            # Agent's proof is the commit; sandbox marked committed
+            # so __exit__ doesn't roll it back.
+            ws.commit(real_writes=())
+    return result

@@ -295,27 +295,25 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             failure_detail=detail, proposal_md=proposal_md,
         )
 
-    # LSP swap (Phase 2): agent edits goal_lean in-session via
-    # apply_edit (which writes to disk, see lsp_gateway.py:517).
-    # Backward's contract is "goal_lean unchanged on exit"
-    # (decomposition outputs go to attempts_dir → proofs/, NOT to
-    # goal_lean), so we snapshot ONCE before the retry loop and
-    # restore from that pristine snapshot before every spawn + on
-    # every parse exit. Re-snapshotting inside the loop would capture
-    # the prior attempt's apply_edit contamination, leaking it into
-    # the next attempt's view of the file (observed SG g217: each
-    # retry started from previous retry's broken partial proof, so
-    # the agent saw double `intro` lines and built on the bad state).
+    # Spawn sandbox snapshot. SpawnWorkspace records the pre-spawn
+    # bytes of goal_lean (and other framework-managed paths) into
+    # `.attempts/<pid>/sandbox/`. Rollback (`__exit__` without commit,
+    # or daemon-startup sweep recovery) restores real paths from
+    # those snapshot bytes. `restore_to_snapshot` is used between
+    # in-pipeline retries: each retry resets goal_lean to pristine so
+    # the agent doesn't see prior-retry contamination (observed SG
+    # g217 in earlier code: each retry started from previous retry's
+    # broken partial proof, doubled `intro` lines etc.).
+    # See docs/dev/spawn_sandbox.md.
+    from .. import spawn_sandbox as _sandbox_mod
     goal_lean = parent_abs_for_skeleton
-    backup_path = goal_lean.with_suffix(goal_lean.suffix + ".backup")
-    shutil.copy2(goal_lean, backup_path)
+    workspace_ctx = _sandbox_mod.SpawnWorkspace(
+        workspace, pipeline_id, real_paths=[goal_lean])
 
     def _restore_backup() -> None:
-        """Restore goal_lean to the pre-pipeline snapshot. Backup is
-        NOT unlinked here — every spawn / parse exit reads from the
-        same pristine snapshot. Outer finally unlinks at pipeline end."""
-        if backup_path.exists():
-            shutil.copy2(backup_path, goal_lean)
+        """Restore goal_lean from the spawn sandbox snapshot. Called
+        between in-pipeline retries and on every parse exit."""
+        workspace_ctx.restore_to_snapshot(goal_lean)
 
     def backward_spawn(ctx: SpawnCtx) -> int:
         # Always start from the pristine snapshot. Agent's --resume
@@ -429,29 +427,44 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             prompt_dir=PROMPT_DIR,
         )
 
-    try:
-        result = run_with_session_retries(
-            conn=conn,
-            goal_id=goal_id,
-            pipeline_id=pipeline_id,
-            budget_threshold=dispatcher.SHELVE_THRESHOLD,
-            shelve_threshold=dispatcher.SHELVE_THRESHOLD,
-            attempts_dir=attempts_dir,
-            spawn_fn=backward_spawn,
-            parse_fn=backward_parse,
-            postmortem_fn=backward_postmortem,
-            workspace=workspace,
-            reflection_fn=backward_reflection,
-        )
-    finally:
-        # LSP swap final guard: spawn rc != 0 paths (timeout, quota,
-        # agent crash) skip parse_fn entirely, so the parse-side
-        # `_restore_backup` doesn't fire. Belt-and-suspenders here:
-        # whatever the helper's exit, ensure goal_lean is back to its
-        # pre-spawn state, then unlink the snapshot.
-        _restore_backup()
-        if backup_path.exists():
-            backup_path.unlink()
+    # SpawnWorkspace ensures goal_lean is rolled back on any non-
+    # success exit (exception, abort, or — recovered via sweep —
+    # daemon crash mid-spawn). On success, `commit()` marks the
+    # sandbox as completed; `__exit__` then drops the sandbox dir
+    # cleanly. The framework's parse + commit step writes outputs to
+    # real paths (scratch_path + new_*.lean) directly; goal_lean
+    # itself is NOT mutated by the pipeline's success path (verify
+    # housekeeping handles the alias rewrite separately).
+    with workspace_ctx as ws:
+        try:
+            result = run_with_session_retries(
+                conn=conn,
+                goal_id=goal_id,
+                pipeline_id=pipeline_id,
+                budget_threshold=dispatcher.SHELVE_THRESHOLD,
+                shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+                attempts_dir=attempts_dir,
+                spawn_fn=backward_spawn,
+                parse_fn=backward_parse,
+                postmortem_fn=backward_postmortem,
+                workspace=workspace,
+                reflection_fn=backward_reflection,
+            )
+        finally:
+            # Belt-and-suspenders: helper exits (timeout, quota, crash)
+            # that skipped parse_fn never ran the parse-side restore.
+            # Reset goal_lean from snapshot here too. SpawnWorkspace's
+            # rollback path also does this on non-commit __exit__, but
+            # we want the restore visible to any cascade housekeeping
+            # before __exit__ fires.
+            _restore_backup()
+
+        # Mark the sandbox committed on success outcomes so __exit__
+        # cleans the snapshot without rolling back any drift (drift on
+        # goal_lean on a success path shouldn't happen — verify
+        # housekeeping will rewrite via promote_to_alias separately).
+        if result.outcome == "success":
+            ws.commit(real_writes=())
 
     # Cleanup: any non-success outcome leaves the strategy at 'proposed'
     # with no scratch_path / no sub-goal links. Mark it dead so

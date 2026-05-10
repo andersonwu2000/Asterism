@@ -149,19 +149,45 @@ class SpawnWorkspace:
     # ------------------------------------------------------------ paths
 
     def _sandbox_for(self, real: Path) -> Path:
-        """Sandbox copy path for a snapshotted real path. Names are
-        the real path's filename (collisions across paths with the
-        same basename are forbidden — design assumes each real_paths
-        entry has a unique filename, which holds for goal_lean /
-        scratch_path / new_<slug>.lean / etc)."""
+        """Internal: sandbox snapshot path for a snapshotted real
+        path. `sandbox/<filename>` holds the IMMUTABLE pre-spawn
+        snapshot for rollback. Callers do not write here directly —
+        sandbox is read-only snapshot storage, real-path mutations
+        during the spawn happen on real (existing framework code,
+        agent's LSP apply_edit write-through). Rollback restores
+        real from this snapshot on non-commit exit.
+        """
         return self.sandbox_dir / Path(real).name
 
-    def sandbox_path_for(self, real: Path) -> Path:
-        """Public API: caller should write here instead of `real`
-        during the spawn. Returns even if `real` is not in
-        `real_paths` (caller may opt to store agent outputs in
-        sandbox without a real-path snapshot)."""
-        return self._sandbox_for(Path(real))
+    def restore_to_snapshot(self, real_path: Path) -> None:
+        """Restore a single real_path from its sandbox snapshot bytes.
+
+        Used by in-pipeline retry (backward.py / builder.py) to reset
+        between retries so the next attempt sees pristine state. Same
+        semantics as the existing `.backup` file restore those modules
+        do today; this is the unified replacement.
+
+        Idempotent on missing snapshot or missing manifest entry.
+        """
+        real_path = Path(real_path)
+        sandbox = self._sandbox_for(real_path)
+        if sandbox.exists():
+            real_path.parent.mkdir(parents=True, exist_ok=True)
+            real_path.write_bytes(sandbox.read_bytes())
+        else:
+            # No snapshot recorded for this path; check manifest for
+            # existed_before=False case (path didn't exist on enter).
+            if self._manifest_path.exists():
+                try:
+                    manifest = json.loads(
+                        self._manifest_path.read_text(encoding="utf-8"))
+                    for entry in manifest.get("real_paths", []):
+                        if Path(entry["real"]) == real_path:
+                            if not entry.get("existed_before"):
+                                real_path.unlink(missing_ok=True)
+                            return
+                except (OSError, json.JSONDecodeError):
+                    pass
 
     # ------------------------------------------------------------ commit
 
@@ -206,41 +232,58 @@ class SpawnWorkspace:
     # ------------------------------------------------------------ rollback / exit
 
     def rollback(self) -> None:
-        """Discard sandbox dir. Real paths were never written to,
-        so they're already pristine — no need to rewrite from
-        snapshot. Idempotent."""
-        if self.sandbox_dir.exists():
-            shutil.rmtree(self.sandbox_dir, ignore_errors=True)
+        """Restore each real_path from the sandbox snapshot bytes.
+
+        We do not assume the spawn left real paths pristine. Existing
+        framework code (backward.py / builder.py) writes through to
+        real paths during agent LSP `apply_edit`. Sandbox is the
+        snapshot-style safety net: if the pipeline doesn't reach
+        commit (exception, abort, or daemon crash recovery), we
+        rewrite each real path with its pre-spawn bytes from
+        `sandbox/<filename>`.
+
+        Idempotent. Safe to call multiple times.
+        """
+        if not self.sandbox_dir.exists():
+            return
+        manifest_path = self._manifest_path
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(
+                    manifest_path.read_text(encoding="utf-8"))
+                for entry in manifest.get("real_paths", []):
+                    real = Path(entry["real"])
+                    sandbox = Path(entry["sandbox"])
+                    if entry.get("existed_before"):
+                        if sandbox.exists():
+                            real.parent.mkdir(parents=True, exist_ok=True)
+                            real.write_bytes(sandbox.read_bytes())
+                    else:
+                        # Real path didn't exist pre-spawn — if spawn
+                        # created it, delete to restore "didn't exist".
+                        if real.exists():
+                            real.unlink(missing_ok=True)
+            except (OSError, json.JSONDecodeError):
+                pass  # Best-effort; manifest unreadable is forensic loss
+        shutil.rmtree(self.sandbox_dir, ignore_errors=True)
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
-        # Release gateway session before tearing down attempts_dir
-        # (carry over WorkArea behavior; same rationale: gateway
-        # accumulates SessionMetadata otherwise).
-        token_file = self.attempts_dir / "_gateway_session.token"
-        if token_file.exists():
-            try:
-                token = token_file.read_text(encoding="utf-8").strip()
-            except OSError:
-                token = ""
-            if token:
-                try:
-                    from . import gateway_lifecycle
-                    gateway_lifecycle.release_session(token)
-                except Exception:
-                    pass  # best-effort
-        # If not committed, rollback (no-op for real paths; just drops
-        # sandbox dir). Forensic teardown of attempts_dir mirrors
-        # WorkArea: rmtree on success, retain on failure.
+        """SpawnWorkspace owns ONLY the sandbox/ subdir + manifest.
+        attempts_dir lifecycle (mkdir, .drafts persistence, rmtree,
+        gateway session release) stays with the caller's existing
+        WorkArea / agent.py wrappers. Avoids dual-ownership conflicts
+        — SpawnWorkspace is a snapshot guard inside attempts_dir, not
+        a replacement for attempts_dir management.
+
+        Behavior:
+          * not committed → restore real paths from sandbox snapshots
+          * committed     → no rollback needed
+          * always        → drop the sandbox/ subdir
+        """
         if not self._committed:
             self.rollback()
-        # Always rmtree the sandbox/ subdir (committed or rolled back)
-        # so the attempts_dir's terminal state has no sandbox leftovers
-        # for the sweep to consider.
         if self.sandbox_dir.exists():
             shutil.rmtree(self.sandbox_dir, ignore_errors=True)
-        # Same attempts_dir teardown as WorkArea: best-effort rmtree.
-        if self.attempts_dir.exists():
-            shutil.rmtree(self.attempts_dir, ignore_errors=True)
         return False
 
 
@@ -300,28 +343,37 @@ def sweep_orphan_sandboxes(workspace: Path) -> dict[str, int]:
             shutil.rmtree(sandbox_dir, ignore_errors=True)
             counters["deleted_committed"] += 1
             continue
-        # Uncommitted: confirm real paths are still pristine.
+        # Uncommitted: restore real paths from sandbox snapshots.
+        # The orphan daemon was killed mid-spawn (operator taskkill or
+        # crash); its in-process finally didn't run; real paths may be
+        # drifted. We have the snapshot bytes on disk — use them.
         for entry in manifest.get("real_paths", []):
             real = Path(entry["real"])
+            sandbox = Path(entry["sandbox"])
             sha_before = entry.get("sha_before")
             existed_before = entry.get("existed_before", True)
-            if real.exists():
-                actual = _sha256_hex(real.read_bytes())
-                if sha_before and actual != sha_before:
-                    print(
-                        f"[sandbox-sweep] WARNING drift on {real} "
-                        f"(expected {sha_before[:12]}, got {actual[:12]} — "
-                        f"out-of-sandbox writer?)",
-                        flush=True,
-                    )
-                    counters["drift_warnings"] += 1
-            elif existed_before:
+            current_sha = (_sha256_hex(real.read_bytes())
+                           if real.exists() else None)
+            drifted = (
+                (existed_before and current_sha != sha_before)
+                or (not existed_before and real.exists())
+            )
+            if drifted:
                 print(
-                    f"[sandbox-sweep] WARNING real path {real} "
-                    f"deleted while sandbox uncommitted",
+                    f"[sandbox-sweep] restoring {real} from snapshot "
+                    f"(orphan daemon left drift)",
                     flush=True,
                 )
                 counters["drift_warnings"] += 1
+                try:
+                    if existed_before and sandbox.exists():
+                        real.parent.mkdir(parents=True, exist_ok=True)
+                        real.write_bytes(sandbox.read_bytes())
+                    elif not existed_before:
+                        real.unlink(missing_ok=True)
+                except OSError as exc:
+                    print(f"[sandbox-sweep] restore failed for {real}: "
+                          f"{exc}", flush=True)
         shutil.rmtree(sandbox_dir, ignore_errors=True)
         counters["rolled_back"] += 1
     return counters

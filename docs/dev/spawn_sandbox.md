@@ -211,34 +211,23 @@ to per-tick would create churn for no benefit (the only failure mode
 that needs post-startup recovery is SIGKILL of the daemon's worker
 THREAD, which `__exit__` already handles).
 
-### 3.4 LSP buffer hygiene when switching file paths
+### 3.4 LSP gateway integration (simpler than originally thought)
 
-Gateway worker's `did_open(uri)` caches per-URI elaborated state. If a
-worker previously did_opened `Problems/<p>/proofs/L_<slug>.lean`
-(serving a prior spawn) and now needs to serve the same logical goal
-under `.attempts/<pid>/sandbox/goal_lean.lean`, stale buffer state
-risks inconsistency.
+Re-reading `lsp_gateway.py` reveals slot architecture already handles
+this: each slot has a stable `slot_path` (the URI Lean sees) and uses
+`didChange` to swap content. Different pipelines' `target_path`
+values map to the same slot via content swap, not did_open/did_close.
 
-**Rule**: each `apply_edit` / `goal_at` / `errors_at` /
-`validate_file` call that switches to a new URI does:
+**So**: nothing to add in gateway. We just register the gateway
+session with `target_path = sandbox path` instead of real path; the
+slot loads sandbox's content into its `slot_path` buffer; agent's
+`apply_edit` operates on slot buffer; framework writes the modified
+buffer back to sandbox path (not real). All existing gateway code
+works.
 
-```python
-# In Tooling/lsp_gateway.py tool wrappers:
-def _ensure_did_open_for(slot, new_uri: str):
-    if slot.current_uri and slot.current_uri != new_uri:
-        slot.send_did_close(slot.current_uri)
-    if slot.current_uri != new_uri:
-        slot.send_did_open(new_uri, file_content)
-    slot.current_uri = new_uri
-```
-
-Slot tracks `current_uri`. Switching paths always flushes the old
-buffer. Cost: 1 LSP didClose + 1 didOpen per path switch (~5-50ms).
-Negligible for our concurrency.
-
-Already partially implemented for slot swap-in (different concept —
-swap-in changes WHICH file the slot serves; we additionally need
-swap-in to fire didClose+didOpen on the URI switch too).
+Net change in `lsp_gateway.py`: **zero**. The integration is purely
+caller-side (backward.py / builder.py pass sandbox path to
+`SessionMetadata.target_path`).
 
 ### 3.5 Per-pipeline real_paths
 
@@ -259,27 +248,53 @@ one row to this table.
 
 When watchdog kills a Backward / Builder and fresh-rescue stage 2
 launches a NEW claude process with the SAME attempts_dir
-(`--resume <broken_sid>` flow per `_retry.py`), the question is what
-happens to sandbox/.
+(`--resume <broken_sid>` flow per `_retry.py`), the trapped spawn's
+`__exit__` was skipped (SIGKILL).
 
-**Rule**: fresh-rescue stage 2 entry **discards and re-snapshots** the
-sandbox. The broken spawn's rollback has already restored real paths;
-stage 2 takes a fresh snapshot from those (now-pristine) real paths.
+**Rule**: fresh-rescue stage 2 entry calls
+`spawn_sandbox.force_rollback_sandbox(attempts_dir / "sandbox")` to
+drop the orphan sandbox (already implemented in Phase 1). Real paths
+are pristine because all the trapped spawn's mutations went to sandbox
+that we now delete.
+
+Stage 2 is a SHORT spawn (180-240s, no in-pipeline retry, no LSP
+exploration). It writes outputs directly to `attempts_dir/` (patch.lean,
+new_*.lean, _progress.md) — same as the original spawn would on
+success. No new SpawnWorkspace; the existing attempts_dir is reused.
+
+Stage 3 inherits stage 2's working state.
+
+### 3.5.2 In-pipeline retry × sandbox boundary
+
+Backward's `run_with_session_retries` helper (Phase 7) runs N retries
+within ONE pipeline. Each retry needs the **goal_lean back to its
+pre-pipeline state** so the agent doesn't see prior-retry
+contamination. backward.py:300-330 does this today on the real path
+by snapshotting once outside the loop and rewriting the real file
+between retries.
+
+Under sandbox, this becomes a single SpawnWorkspace per pipeline,
+with a `restore_to_snapshot(real_path)` helper that resets the
+sandbox copy from the manifest snapshot:
 
 ```python
-# In Tooling/pipeline/_retry.py fresh-rescue takeover entry:
-def _enter_fresh_rescue_stage2(attempts_dir, real_paths):
-    # Broken spawn's __exit__ should have rolled back already.
-    # Confirm sandbox/ is gone or roll back manually if not.
-    sb_dir = attempts_dir / "sandbox"
-    if sb_dir.exists():
-        _force_rollback_from_manifest(sb_dir)
-        shutil.rmtree(sb_dir)
-    # Now enter fresh SpawnWorkspace as normal.
-    return SpawnWorkspace(attempts_dir, real_paths).__enter__()
+class SpawnWorkspace:
+    def restore_to_snapshot(self, real_path: Path) -> None:
+        """Restore sandbox copy of `real_path` to its pre-spawn
+        content (recorded in the manifest at __enter__). Used by
+        in-pipeline retry to reset between attempts so the next
+        retry sees pristine state, exactly the same semantics as
+        backward.py:300-330 does today on real paths."""
+        ...
 ```
 
-Stage 3 (postmortem) inherits stage 2's sandbox state, same as today.
+backward.py replaces its existing snapshot/restore (300-330) with:
+- pre-loop: `ws = SpawnWorkspace(...).__enter__()`  (snapshot once)
+- pre-retry: `ws.restore_to_snapshot(goal_lean_path)`  (per retry)
+- post-pipeline: `ws.__exit__()`  (rollback or after commit)
+
+Cleaner than today's code: snapshot lifecycle is owned by one class,
+restore is one method call, ad-hoc backup-file paths gone.
 
 ---
 
@@ -460,21 +475,23 @@ behavior change for production; just adds infrastructure + tests).
 
 ## 12 Test impact
 
-736 tests pass today. Estimated fixture churn:
+762 tests pass today (Phase 1 added 26). Estimated fixture churn for
+Phase 2-4:
 
 | Test file | Tests affected | Reason |
 |---|---|---|
-| `test_pipeline_backward_retry.py` | ~12 | Mock file paths now go through sandbox indirection |
-| `test_pipeline_builder.py` | ~8 | Same |
-| `test_verify.py` | ~6 | promote_to_alias mocking via transaction |
-| `test_dispatcher.py` | ~3 | Add startup-sweep invocation expectation |
-| `test_lsp_gateway.py` | ~4 | did_open/did_close URI switch expectation |
-| `test_workarea_lifecycle.py` (if exists) | merge into test_spawn_sandbox.py |  |
-| New: `test_spawn_sandbox.py` | ~25 tests | Invariant + crash-recovery + SHA-drift detection |
-| Total fixture churn | ~35-40 tests | ~1-2 hr extra work |
+| `test_pipeline_backward_retry.py` | ~15 | Mock paths via SpawnWorkspace; in-pipeline retry uses restore_to_snapshot |
+| `test_pipeline_builder.py` | ~10 | Same |
+| `test_verify.py` | ~8 | promote_to_alias inside HousekeepingTransaction |
+| `test_dispatcher.py` | ~2 | startup sweep expectation (Phase 1 already lands clean) |
+| `test_lsp_gateway.py` | 0 | No gateway code change per §3.4 revision |
+| `test_pipeline_reflection.py` | ~4 | LESSONS marker-line append/rollback |
+| Total | ~40 | ~2-3 hr |
 
-**Total estimate including test churn**: Phase 1 + 2 + 3 + 4 + tests
-≈ 10-12 hr work, ~970 LOC net.
+Phase 1 already shipped: 26 new tests + dispatcher sweep integrated,
+0 regression in 736 existing tests. Phase 2-4 estimate revised down
+from 10-12 hr to **~7-9 hr** after dropping the LSP URI-hygiene work
+(§3.4) and consolidating in-pipeline retry into `restore_to_snapshot`.
 
 ---
 

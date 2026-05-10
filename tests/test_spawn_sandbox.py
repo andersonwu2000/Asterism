@@ -57,7 +57,8 @@ def test_enter_creates_attempts_and_sandbox_dirs(tmp_path: Path) -> None:
 def test_enter_snapshots_real_path_into_sandbox(tmp_path: Path) -> None:
     real = _seed(tmp_path / "Problems/p/proofs/L_goal.lean", b"original\n")
     with SpawnWorkspace(tmp_path, "pid-1", real_paths=[real]) as ws:
-        sb_copy = ws.sandbox_path_for(real)
+        # Internal: snapshot copy lives at sandbox/<filename>.
+        sb_copy = ws._sandbox_for(real)
         assert sb_copy.exists()
         assert sb_copy.read_bytes() == b"original\n"
 
@@ -85,7 +86,7 @@ def test_enter_with_nonexistent_real_path_records_existed_before_false(
         entry = manifest["real_paths"][0]
         assert entry["existed_before"] is False
         assert entry["sha_before"] is None
-        assert not ws.sandbox_path_for(not_yet).exists()
+        assert not ws._sandbox_for(not_yet).exists()
 
 
 def test_enter_with_stale_sandbox_drops_and_recreates(tmp_path: Path) -> None:
@@ -152,16 +153,51 @@ def test_commit_is_atomic_per_file(tmp_path: Path) -> None:
 
 # ---------------------------------------------------------------- rollback
 
-def test_exit_without_commit_rolls_back_real_paths_untouched(
+def test_exit_without_commit_leaves_real_path_unchanged(
+    tmp_path: Path,
+) -> None:
+    """Real path untouched during spawn → rollback no-ops, real keeps
+    pristine. Rollback's restore step writes snapshot bytes back, but
+    the bytes match pristine so it's effectively idempotent."""
+    real = _seed(tmp_path / "Problems/p/proofs/L_g.lean", b"pristine\n")
+    sha_before = _sha(real)
+    with SpawnWorkspace(tmp_path, "pid-1", real_paths=[real]):
+        pass
+    assert real.read_bytes() == b"pristine\n"
+    assert _sha(real) == sha_before
+
+
+def test_rollback_restores_real_path_if_caller_drifted_it(
+    tmp_path: Path,
+) -> None:
+    """Pragmatic mode: framework code may write directly to real path
+    during spawn (existing backward.py / builder.py via LSP apply_edit
+    write-through). Rollback restores real path from snapshot bytes."""
+    real = _seed(tmp_path / "Problems/p/proofs/L_g.lean", b"pristine\n")
+    with SpawnWorkspace(tmp_path, "pid-1", real_paths=[real]) as ws:
+        # Simulate LSP apply_edit write-through to real
+        real.write_text("drifted by agent edit\n", encoding="utf-8")
+    # Rollback restored
+    assert real.read_bytes() == b"pristine\n"
+
+
+def test_rollback_restores_real_path_deleted_during_spawn(
     tmp_path: Path,
 ) -> None:
     real = _seed(tmp_path / "Problems/p/proofs/L_g.lean", b"pristine\n")
-    sha_before = _sha(real)
     with SpawnWorkspace(tmp_path, "pid-1", real_paths=[real]) as ws:
-        # Agent writes to sandbox — should NOT reach real
-        ws.sandbox_path_for(real).write_bytes(b"agent edited\n")
+        real.unlink()  # Simulate framework deleting a snapshotted real
     assert real.read_bytes() == b"pristine\n"
-    assert _sha(real) == sha_before
+
+
+def test_rollback_removes_real_path_if_didnt_exist_before(
+    tmp_path: Path,
+) -> None:
+    not_yet = tmp_path / "Problems/p/proofs/L_g.lean"
+    with SpawnWorkspace(tmp_path, "pid-1", real_paths=[not_yet]) as ws:
+        not_yet.parent.mkdir(parents=True, exist_ok=True)
+        not_yet.write_text("created by spawn\n")
+    assert not not_yet.exists()
 
 
 def test_exception_in_with_block_triggers_rollback(tmp_path: Path) -> None:
@@ -172,9 +208,41 @@ def test_exception_in_with_block_triggers_rollback(tmp_path: Path) -> None:
 
     with pytest.raises(_MyError):
         with SpawnWorkspace(tmp_path, "pid-1", real_paths=[real]) as ws:
-            ws.sandbox_path_for(real).write_bytes(b"agent halfway edit\n")
+            real.write_text("halfway edit\n")  # drift real
             raise _MyError("simulated crash")
     assert real.read_bytes() == b"pristine\n"
+
+
+def test_restore_to_snapshot_rewrites_real_from_sandbox(
+    tmp_path: Path,
+) -> None:
+    """In-pipeline retry helper: between retries within one pipeline,
+    reset real path to its pre-pipeline snapshot. Replaces the old
+    `.backup` file mechanism in backward.py / builder.py."""
+    real = _seed(tmp_path / "Problems/p/proofs/L_g.lean", b"pristine\n")
+    with SpawnWorkspace(tmp_path, "pid-1", real_paths=[real]) as ws:
+        # Simulate retry 1: agent writes garbage via LSP
+        real.write_text("retry 1 garbage\n")
+        # Retry helper resets for retry 2
+        ws.restore_to_snapshot(real)
+        assert real.read_bytes() == b"pristine\n"
+        # Retry 2: another write
+        real.write_text("retry 2 garbage\n")
+        ws.restore_to_snapshot(real)
+        assert real.read_bytes() == b"pristine\n"
+
+
+def test_restore_to_snapshot_handles_path_that_didnt_exist_before(
+    tmp_path: Path,
+) -> None:
+    """If real didn't exist on enter and spawn created it, restore
+    means delete (existed_before=False)."""
+    not_yet = tmp_path / "Problems/p/proofs/L_g.lean"
+    with SpawnWorkspace(tmp_path, "pid-1", real_paths=[not_yet]) as ws:
+        not_yet.parent.mkdir(parents=True, exist_ok=True)
+        not_yet.write_text("created by retry\n")
+        ws.restore_to_snapshot(not_yet)
+        assert not not_yet.exists()
 
 
 def test_exit_after_commit_cleans_sandbox_dir(tmp_path: Path) -> None:
@@ -182,9 +250,11 @@ def test_exit_after_commit_cleans_sandbox_dir(tmp_path: Path) -> None:
     with SpawnWorkspace(tmp_path, "pid-1", real_paths=[real]) as ws:
         ws.commit(real_writes=[(real, b"v2\n")])
         sb_dir = ws.sandbox_dir
-    # After __exit__, both sandbox dir AND attempts_dir are cleaned
-    # (consistent with WorkArea success teardown).
+        attempts = ws.attempts_dir
+    # After __exit__, sandbox/ is dropped. attempts_dir itself is
+    # NOT removed — that's WorkArea's responsibility.
     assert not sb_dir.exists()
+    assert attempts.exists()
 
 
 # ---------------------------------------------------------------- sweep
@@ -266,17 +336,32 @@ def test_sweep_handles_missing_manifest(tmp_path: Path) -> None:
     assert counters["corrupt_manifest"] == 1
 
 
-def test_sweep_warns_on_sha_drift(tmp_path: Path, capsys) -> None:
-    """If real path drifted while sandbox was uncommitted, warn —
-    indicates out-of-sandbox writer."""
+def test_sweep_restores_drifted_real_from_snapshot(
+    tmp_path: Path, capsys,
+) -> None:
+    """Uncommitted sandbox + drifted real → sweep restores real from
+    sandbox snapshot bytes. Recovery path for daemon crash mid-spawn."""
     real = _seed(tmp_path / "Problems/p/proofs/L_g.lean", b"original\n")
     sb = _make_stale_sandbox(tmp_path, "pid-drift", real,
                               committed=False, owner_pid=0)
-    # Simulate an out-of-sandbox writer mutating real path
-    real.write_bytes(b"someone else wrote\n")
+    # Simulate orphan-daemon mid-spawn drift on real
+    real.write_bytes(b"agent partial edit\n")
     counters = sweep_orphan_sandboxes(tmp_path)
+    assert real.read_bytes() == b"original\n"  # restored
     captured = capsys.readouterr()
-    assert "WARNING drift" in captured.out
+    assert "restoring" in captured.out
+    assert counters["drift_warnings"] == 1
+
+
+def test_sweep_restores_deleted_real_from_snapshot(
+    tmp_path: Path, capsys,
+) -> None:
+    real = _seed(tmp_path / "Problems/p/proofs/L_g.lean", b"original\n")
+    _make_stale_sandbox(tmp_path, "pid-del", real,
+                        committed=False, owner_pid=0)
+    real.unlink()
+    counters = sweep_orphan_sandboxes(tmp_path)
+    assert real.read_bytes() == b"original\n"
     assert counters["drift_warnings"] == 1
 
 
