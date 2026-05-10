@@ -27,25 +27,28 @@ dispatch:
                               # (720s = 12min) → rescue path engages sooner.
 #  postmortem_timeout_sec: 180  # F55 postmortem spawn budget (writes
                               # _progress.md after a main timeout).
-  rescue_timeout_sec: 240     # gates two things:
-                              # (a) watchdog wall-cap math (kill at
-                              #     `spawn_timeout - rescue_timeout`,
-                              #     leaves room for stage 2 + stage 3
-                              #     fresh-rescue spawns within budget).
-                              # (b) fresh-rescue stage 2 budget (the
-                              #     ship-or-bail spawn after thinking-
-                              #     trap, takes over the original
-                              #     session's rescue stage).
-                              # Stage 3 (postmortem replacement) uses
-                              # `postmortem_timeout_sec` instead.
-                              # Watchdog 2026-05-10 v3 redesign: at
-                              # wall_cap, the watchdog samples the
-                              # stream parser's state (mid-thinking
-                              # OR finalized+max_tokens → trap → kill
-                              # → fresh-sid stage 2/3). No silence
-                              # threshold (the prior idle_window_sec
-                              # mechanism was retired with the
-                              # stream-json switch).
+  trap_check_sec: 660         # Watchdog 2026-05-10 v4: single
+                              # point-in-time check at this many
+                              # seconds into the spawn. At trigger,
+                              # kill iff BOTH conditions hold:
+                              #   (1) parser.is_thinking_trap()
+                              #       (mid-thinking OR finalized +
+                              #        last_stop_reason=max_tokens)
+                              #   (2) silence > silence_threshold_sec
+                              # AND prevents false positives on
+                              # active agents that briefly think.
+                              # On kill → STUCK_THINKING → single
+                              # combined fresh-sid takeover (budget
+                              # = spawn_timeout + postmortem -
+                              # trap_check = 420s default).
+  silence_threshold_sec: 300  # Trap AND-condition silence threshold.
+                              # silence = seconds since agent's last
+                              # tool_use (or spawn start if no tool
+                              # use yet). 300s tolerates s220-class
+                              # active spawns (max gap 126s observed)
+                              # and catches agents that have been
+                              # silent through the entire window
+                              # [trap_check - 300, trap_check].
 
 gateway:                       # Phase 2 LSP gateway (Tooling/lsp_gateway.py)
   workers: 3                  # Persistent lean workers in the pool. Each is

@@ -41,14 +41,13 @@ class SpawnRC(IntEnum):
     STUCK_THINKING = 128
 
 
-# Rescue spawn budget (seconds). Cross-referenced by:
-#   - claude_cli._watchdog: wall-clock kill threshold = req.timeout_sec
-#     minus this, so the helper has a guaranteed window for rescue.
-#   - agent.spawn_llm / pipeline callers: timeout_sec_override on the
-#     rescue spawn itself. Keeping both sides on one constant prevents
-#     the wall_cap and rescue timeout from drifting apart.
-# Tunable by editing here only — every consumer reads this name.
-RESCUE_BUDGET_SEC = 180
+# Watchdog 2026-05-10 v4: trap_check_sec replaces rescue_timeout_sec
+# as the primary watchdog config. Stage budgets are derived:
+#   combined_takeover_budget = spawn_timeout - trap_check + postmortem
+#   timeout_path_stage2_budget = spawn_timeout - trap_check
+# Both consumers compute these directly from `dispatch.trap_check_sec`
+# + `dispatch.spawn_timeout_sec` + `dispatch.postmortem_timeout_sec`,
+# so no separate constant is exported here.
 
 
 @dataclass

@@ -305,3 +305,78 @@ def test_snapshot_is_immutable_namedtuple() -> None:
     import pytest
     with pytest.raises(AttributeError):
         snap.state = ParserState.MID_THINKING  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------
+# Silence tracking — last_tool_use_ts + silence_seconds
+# ---------------------------------------------------------------------
+
+def test_silence_seconds_falls_back_to_spawn_start() -> None:
+    """Cold spawn that hasn't emitted any tool_use yet — silence is
+    measured from parser creation. Watchdog uses this to detect agents
+    stuck in a long thinking-only opening turn."""
+    import time as _time
+    p = StreamParser()
+    snap = p.snapshot()
+    assert snap.last_tool_use_ts is None
+    # Sleep enough that Windows' coarse timer (15ms granularity)
+    # leaves a margin above zero. 50ms requested → at least ~30ms slept.
+    _time.sleep(0.05)
+    silence = p.silence_seconds(_time.monotonic())
+    assert silence > 0.01
+
+
+def test_silence_seconds_resets_on_tool_use_start() -> None:
+    """When agent emits a `content_block_start type=tool_use`, the
+    parser stamps last_tool_use_ts. silence_seconds(now) then returns
+    `now - last_tool_use_ts`, which should be near-zero immediately."""
+    import time as _time
+    p = StreamParser()
+    _time.sleep(0.05)
+    p.feed_line(_message_start())
+    p.feed_line(_content_block_start(0, "tool_use"))
+    silence = p.silence_seconds(_time.monotonic())
+    # Should be near 0, definitely less than the 50ms we slept before.
+    assert silence < 0.04, (
+        f"silence_seconds after tool_use_start should be near 0; "
+        f"got {silence}")
+    snap = p.snapshot()
+    assert snap.last_tool_use_ts is not None
+
+
+def test_silence_seconds_tracks_latest_tool_use() -> None:
+    """After multiple tool_use events, silence_seconds tracks the
+    MOST RECENT one, not the first. This is what the watchdog AND
+    condition needs: 'has the agent done anything tool-related
+    recently?'"""
+    import time as _time
+    p = StreamParser()
+    p.feed_line(_message_start())
+    p.feed_line(_content_block_start(0, "tool_use"))  # tool 1
+    p.feed_line(_content_block_stop(0))
+    _time.sleep(0.05)
+    p.feed_line(_content_block_start(1, "tool_use"))  # tool 2
+    silence = p.silence_seconds(_time.monotonic())
+    # Should be near 0 (resets to tool 2's timestamp), NOT 50ms.
+    assert silence < 0.04
+
+
+def test_silence_seconds_grows_during_thinking() -> None:
+    """After a tool_use, agent enters thinking — silence grows as
+    long as no new tool_use fires. This is the s219 trap pattern:
+    last tool_use at T, then long thinking, silence grows linearly
+    until watchdog samples it."""
+    import time as _time
+    p = StreamParser()
+    p.feed_line(_message_start())
+    p.feed_line(_content_block_start(0, "tool_use"))
+    p.feed_line(_content_block_stop(0))
+    p.feed_line(_message_stop())
+    p.feed_line(_message_start())
+    p.feed_line(_content_block_start(0, "thinking"))
+    # Now in mid-thinking, no tool_use. Silence should grow.
+    s1 = p.silence_seconds(_time.monotonic())
+    _time.sleep(0.05)
+    s2 = p.silence_seconds(_time.monotonic())
+    assert s2 > s1
+    assert s2 - s1 >= 0.04

@@ -19,8 +19,8 @@ Field map (Asterism.yaml → env var fallback → built-in default):
     dispatch.shelve_threshold      ASTERISM_SHELVE_THRESHOLD    8
     dispatch.spawn_timeout_sec     ASTERISM_SPAWN_TIMEOUT_SEC   900
     dispatch.postmortem_timeout_sec  ASTERISM_POSTMORTEM_TIMEOUT_SEC  180
-    dispatch.rescue_timeout_sec    ASTERISM_RESCUE_TIMEOUT_SEC  180
-    dispatch.idle_window_sec       ASTERISM_IDLE_WINDOW_SEC     480
+    dispatch.trap_check_sec        ASTERISM_TRAP_CHECK_SEC      660
+    dispatch.silence_threshold_sec ASTERISM_SILENCE_THRESHOLD_SEC  300
     gateway.workers                ASTERISM_GATEWAY_WORKERS     4
     gateway.port                   ASTERISM_GATEWAY_PORT        8765
     builder.threshold              ASTERISM_BUILDER_THRESHOLD   3

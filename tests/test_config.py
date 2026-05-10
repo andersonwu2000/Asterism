@@ -322,21 +322,37 @@ def test_yaml_overrides_spawn_timeout(
     ) == 1200
 
 
-def test_yaml_overrides_rescue_timeout(
+def test_yaml_overrides_trap_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`dispatch.rescue_timeout_sec` controls both the rescue spawn's
-    own budget and the watchdog wall_cap (= spawn - rescue). User
-    setting it via yaml must propagate to both consumers without
-    code edits."""
-    monkeypatch.delenv("ASTERISM_RESCUE_TIMEOUT_SEC", raising=False)
+    """`dispatch.trap_check_sec` (2026-05-10 v4 watchdog) controls when
+    the watchdog samples parser state for the AND trap condition. yaml
+    override must propagate to the consumer without code edits."""
+    monkeypatch.delenv("ASTERISM_TRAP_CHECK_SEC", raising=False)
     (tmp_path / "Asterism.yaml").write_text(
-        "dispatch:\n  rescue_timeout_sec: 240\n",
+        "dispatch:\n  trap_check_sec: 540\n",
         encoding="utf-8",
     )
     assert config.get(
-        "dispatch.rescue_timeout_sec", default=180,
-        env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
+        "dispatch.trap_check_sec", default=660,
+        env_var="ASTERISM_TRAP_CHECK_SEC", cast=int,
+        workspace=tmp_path,
+    ) == 540
+
+
+def test_yaml_overrides_silence_threshold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`dispatch.silence_threshold_sec` is the AND-condition silence
+    threshold checked at trap_check_sec. yaml override must propagate."""
+    monkeypatch.delenv("ASTERISM_SILENCE_THRESHOLD_SEC", raising=False)
+    (tmp_path / "Asterism.yaml").write_text(
+        "dispatch:\n  silence_threshold_sec: 240\n",
+        encoding="utf-8",
+    )
+    assert config.get(
+        "dispatch.silence_threshold_sec", default=300,
+        env_var="ASTERISM_SILENCE_THRESHOLD_SEC", cast=int,
         workspace=tmp_path,
     ) == 240
 

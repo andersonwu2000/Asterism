@@ -98,7 +98,7 @@ def _run_watchdog(proc, sid: str, parser: StreamParser, *,
                   monkeypatch: pytest.MonkeyPatch) -> list[bool]:
     """Run `_watchdog` in a thread with the wall_cap floor lowered
     so trigger fires fast. Returns the stuck_flag once thread exits."""
-    monkeypatch.setattr(claude_cli, "_MIN_WALL_CAP_SEC", 0)
+    monkeypatch.setattr(claude_cli, "_MIN_TRAP_CHECK_SEC", 0)
     flag: list[bool] = [False]
     th = threading.Thread(
         target=claude_cli._watchdog,
@@ -122,7 +122,8 @@ def test_watchdog_kills_when_mid_thinking_at_trigger(
     """Parser state == MID_THINKING at wall_cap → trap → kill,
     stuck_flag set, proc terminated. Routes to STUCK_THINKING →
     fresh-sid stage 2/3."""
-    monkeypatch.setenv("ASTERISM_RESCUE_TIMEOUT_SEC", "1")
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "1")
+    monkeypatch.setenv("ASTERISM_SILENCE_THRESHOLD_SEC", "0")
     parser = StreamParser()
     _seed_mid_thinking(parser)
     proc = _FakeProc()
@@ -139,7 +140,8 @@ def test_watchdog_kills_when_finalized_max_tokens_at_trigger(
     trap → kill. Mirrors the s219 case 2 evidence: agent finalized a
     thinking-only message at max_tokens, never recovered, would have
     been silently dropped by silence-only detection."""
-    monkeypatch.setenv("ASTERISM_RESCUE_TIMEOUT_SEC", "1")
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "1")
+    monkeypatch.setenv("ASTERISM_SILENCE_THRESHOLD_SEC", "0")
     parser = StreamParser()
     _seed_finalized_max_tokens(parser)
     proc = _FakeProc()
@@ -159,7 +161,8 @@ def test_watchdog_defers_when_mid_tool_at_trigger(
     """Parser state == MID_TOOL at wall_cap → not trap → defer
     quietly. Subprocess timeout + TIMEOUT-path postmortem handle
     eventual deadline."""
-    monkeypatch.setenv("ASTERISM_RESCUE_TIMEOUT_SEC", "1")
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "1")
+    monkeypatch.setenv("ASTERISM_SILENCE_THRESHOLD_SEC", "0")
     parser = StreamParser()
     _seed_active_tool_use(parser)
     proc = _FakeProc()
@@ -176,7 +179,8 @@ def test_watchdog_defers_when_idle_at_trigger(
     """Parser state == IDLE at wall_cap (no message activity yet) →
     not trap. Cold spawn that hasn't started its first message is
     pre-trap, not in-trap."""
-    monkeypatch.setenv("ASTERISM_RESCUE_TIMEOUT_SEC", "1")
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "1")
+    monkeypatch.setenv("ASTERISM_SILENCE_THRESHOLD_SEC", "0")
     parser = StreamParser()  # initial state: IDLE, no events fed
     proc = _FakeProc()
     flag = _run_watchdog(proc, "abc45678", parser, timeout_sec=2,
@@ -191,7 +195,8 @@ def test_watchdog_defers_when_finalized_clean_stop(
     """FINALIZED + last_stop_reason == 'tool_use' / 'end_turn' is a
     clean turn end, NOT a trap. Watchdog must not kill here — agent
     is between turns."""
-    monkeypatch.setenv("ASTERISM_RESCUE_TIMEOUT_SEC", "1")
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "1")
+    monkeypatch.setenv("ASTERISM_SILENCE_THRESHOLD_SEC", "0")
     parser = StreamParser()
     parser.feed_line(_stream_event({"type": "message_start",
                                     "message": {"id": "m"}}))
@@ -226,7 +231,8 @@ def test_watchdog_exits_when_proc_finishes_before_trigger(
     the watchdog's wait loop exits at the first check without
     consulting parser state.
     """
-    monkeypatch.setenv("ASTERISM_RESCUE_TIMEOUT_SEC", "1")
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "1")
+    monkeypatch.setenv("ASTERISM_SILENCE_THRESHOLD_SEC", "0")
     parser = StreamParser()
     _seed_mid_thinking(parser)  # would trigger trap if sampled
     proc = _FakeProc()
@@ -236,6 +242,67 @@ def test_watchdog_exits_when_proc_finishes_before_trigger(
     assert flag[0] is False
     assert proc.term_calls == 0
     assert proc.kill_calls == 0
+
+
+# ---------------------------------------------------------------------
+# AND condition tests — both signals required to kill
+# ---------------------------------------------------------------------
+
+def test_watchdog_defers_when_trap_but_not_silent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Parser is mid-thinking AT trigger but silence is BELOW
+    threshold (agent emitted tool_use recently before slipping into
+    thinking) → AND fails → defer. The TIMEOUT path's parser-only
+    check is the safety net — caught ~5 min later via two-stage
+    takeover."""
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "1")
+    # Threshold high enough that silence (≈ trigger time = 1s) doesn't trip.
+    monkeypatch.setenv("ASTERISM_SILENCE_THRESHOLD_SEC", "60")
+    parser = StreamParser()
+    # Stamp a tool_use FIRST so silence stays low, then go into thinking.
+    parser.feed_line(_stream_event({"type": "message_start",
+                                    "message": {"id": "m"}}))
+    parser.feed_line(_stream_event({
+        "type": "content_block_start", "index": 0,
+        "content_block": {"type": "tool_use", "id": "t",
+                          "name": "Read", "input": {}}}))
+    parser.feed_line(_stream_event({
+        "type": "content_block_stop", "index": 0}))
+    parser.feed_line(_stream_event({
+        "type": "content_block_start", "index": 1,
+        "content_block": {"type": "thinking", "thinking": ""}}))
+    proc = _FakeProc()
+    flag = _run_watchdog(proc, "trapnsil", parser, timeout_sec=2,
+                         monkeypatch=monkeypatch)
+    assert flag[0] is False, (
+        "AND condition: trap state alone (without silence) must NOT "
+        "fire watchdog kill — TIMEOUT path catches this case later")
+    assert proc.term_calls == 0
+
+
+def test_watchdog_defers_when_silent_but_not_trap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Silence > threshold (e.g., agent waiting on a long Bash that
+    hasn't returned) but parser state is mid-tool (active in tool
+    call) → AND fails → defer. Protects long-running tools from
+    false positive."""
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "1")
+    monkeypatch.setenv("ASTERISM_SILENCE_THRESHOLD_SEC", "0")
+    parser = StreamParser()
+    _seed_active_tool_use(parser)  # mid-tool state, low silence
+    # Override silence by wiping last_tool_use_ts so silence_seconds
+    # reads from spawn_start, which by trigger time is > 0.
+    # Actually with threshold=0, silence > 0 trips, but parser state
+    # is MID_TOOL → NOT trap → AND fails.
+    proc = _FakeProc()
+    flag = _run_watchdog(proc, "silnotr", parser, timeout_sec=2,
+                         monkeypatch=monkeypatch)
+    assert flag[0] is False, (
+        "AND condition: silence alone (without trap state) must NOT "
+        "fire watchdog kill — could be a slow Bash / lake build")
+    assert proc.term_calls == 0
 
 
 # ---------------------------------------------------------------------
@@ -283,7 +350,8 @@ def test_watchdog_skips_kill_when_proc_dies_during_sample(
     exit + first trap-branch re-check sees alive at exit), then 0 on
     poll 3 (re-poll inside trap branch sees dead).
     """
-    monkeypatch.setenv("ASTERISM_RESCUE_TIMEOUT_SEC", "1")
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "1")
+    monkeypatch.setenv("ASTERISM_SILENCE_THRESHOLD_SEC", "0")
     parser = StreamParser()
     _seed_mid_thinking(parser)
     # Polls: (1) wait-loop iteration, (2) wait-loop exit re-check

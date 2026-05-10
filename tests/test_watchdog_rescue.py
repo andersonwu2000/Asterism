@@ -1,16 +1,16 @@
-"""Watchdog + two-stage fresh-rescue spawn — replaces MAX_THINKING_TOKENS strategy.
+"""Watchdog + fresh-sid takeover — STUCK_THINKING uses combined
+single-stage takeover (2026-05-10 v4); TIMEOUT-with-trap uses the
+two-stage variant (kept for the case where broken jsonl has more
+salvageable content than a watchdog-killed mid-thinking session).
 
-Verifies retry-helper routing of rc=128 (SpawnRC.STUCK_THINKING) to a
-two-stage takeover: when the original session is unrecoverable, fresh
-sessions take over its remaining workflow stages (rescue + postmortem).
+  * STUCK_THINKING (rc=128 from watchdog AND-condition kill): single
+    fresh-sid spawn with combined budget (stage2 + postmortem) and
+    the ship-or-bail prompt.
+  * TIMEOUT (rc=124) + parser final state == trap: two-stage fresh-
+    sid spawns (ship-or-bail then postmortem-only) — broken jsonl
+    may have completed turns the agent didn't get to ship.
 
-  * Stage 2: fresh sid #2 cold-spawned with stage-2 prompt
-    (`inline_prompt`, ship-or-bail) and rescue_timeout_sec budget.
-  * Stage 3 (if stage 2 doesn't reach terminal): fresh sid #3 cold-
-    spawned with stage-3 prompt (postmortem-style) and
-    postmortem_timeout_sec budget.
-
-Both stages copy the broken session's jsonl to
+Both copy the broken session's jsonl to
 `attempts_dir/_broken_session.jsonl` so the agent can Read it. The
 end-to-end behavior (real watchdog killing real claude.exe) lives in
 integration runs, not here.
@@ -52,19 +52,17 @@ def _seed_open_goal(conn: sqlite3.Connection, *, attempts: int = 0) -> int:
 # retry helper two-stage fresh-rescue
 # ---------------------------------------------------------------------
 
-def test_stuck_thinking_stage2_ships_attaches_immediately(
+def test_stuck_thinking_combined_takeover_ships_attaches(
     conn: sqlite3.Connection,
 ) -> None:
-    """rc=128 → stage 2 fresh-rescue (cold + inline_prompt + 180s
-    budget). If stage 2 ships valid output (parse returns terminal),
-    helper attaches and exits without spawning stage 3. Total spawns:
-    main (stuck) + stage2 = 2."""
+    """rc=128 → single combined fresh-sid takeover (no stage 3).
+    Combined spawn ships terminal → helper attaches. Total spawns:
+    main (stuck) + combined = 2."""
     gid = _seed_open_goal(conn)
     spawn_calls: list[SpawnCtx] = []
 
     def spawn(ctx: SpawnCtx) -> int:
         spawn_calls.append(ctx)
-        # Iter 0 main: stuck. Stage 2: ships.
         if ctx.inline_prompt is not None:
             return SpawnRC.OK
         return SpawnRC.STUCK_THINKING
@@ -81,11 +79,8 @@ def test_stuck_thinking_stage2_ships_attaches_immediately(
     )
     assert r.outcome == "proved"
     assert len(spawn_calls) == 2, (
-        f"expected 2 spawns (main + stage2), got {len(spawn_calls)}")
-    # Spawn 0: main cold, no inline prompt.
-    assert spawn_calls[0].inline_prompt is None
-    assert spawn_calls[0].cold is True
-    # Spawn 1: stage 2 — cold, inline_prompt set, budget_override set.
+        f"expected 2 spawns (main + combined), got {len(spawn_calls)}")
+    # Combined spawn: cold + inline_prompt + budget_override.
     assert spawn_calls[1].cold is True
     assert spawn_calls[1].inline_prompt is not None
     assert "ship ONE of" in spawn_calls[1].inline_prompt
@@ -93,74 +88,21 @@ def test_stuck_thinking_stage2_ships_attaches_immediately(
     assert spawn_calls[1].sid != spawn_calls[0].sid
 
 
-def test_stuck_thinking_stage2_fails_stage3_ships_postmortem(
+def test_stuck_thinking_combined_fails_buffers_and_continues(
     conn: sqlite3.Connection,
 ) -> None:
-    """Stage 2 fails (parse non-terminal), stage 3 fires with
-    postmortem prompt + postmortem_timeout_sec budget. Stage 3 writes
-    `_progress.md` → parse detects bail → terminal → attach. Total
-    spawns: main + stage2 + stage3 = 3."""
-    gid = _seed_open_goal(conn)
-    spawn_calls: list[SpawnCtx] = []
-    parse_calls = [0]
-
-    def spawn(ctx: SpawnCtx) -> int:
-        spawn_calls.append(ctx)
-        # main: stuck. stage2: rc=124 timeout. stage3: rc=0 (writes
-        # _progress.md, simulated by parse returning agent_bailed).
-        if ctx.inline_prompt is None:
-            return SpawnRC.STUCK_THINKING
-        # stage 2 (first inline) → timeout; stage 3 (second) → ok
-        inline_count = sum(1 for c in spawn_calls if c.inline_prompt)
-        if inline_count == 1:
-            return SpawnRC.TIMEOUT
-        return SpawnRC.OK
-
-    def parse() -> PipelineResult:
-        parse_calls[0] += 1
-        # parse called after stage 2 (no salvageable output, non-
-        # terminal failure) and after stage 3 (agent_bailed).
-        if parse_calls[0] == 1:
-            return PipelineResult(outcome="failed",
-                                  failure_reason="parse_proposal_fail",
-                                  failure_detail="no patch on disk")
-        return PipelineResult(outcome="failed",
-                              failure_reason="agent_bailed",
-                              failure_detail="bail via _progress.md")
-
-    r = run_with_session_retries(
-        conn=conn, goal_id=gid, pipeline_id="pid-stage23",
-        budget_threshold=5, shelve_threshold=8,
-        attempts_dir=Path("/tmp/x"),
-        spawn_fn=spawn, parse_fn=parse,
-        postmortem_fn=lambda _sid: None,
-    )
-    assert r.failure_reason == "agent_bailed"
-    assert len(spawn_calls) == 3
-    # Spawn 1: stage 2 — ship-or-bail prompt
-    assert "ship ONE of" in spawn_calls[1].inline_prompt
-    # Spawn 2: stage 3 — postmortem prompt
-    assert "_progress.md" in spawn_calls[2].inline_prompt
-    assert "decomposition shape" in spawn_calls[2].inline_prompt.lower()
-    # Stage 3 sid is fresh (different from stage 2's fresh sid).
-    assert spawn_calls[2].sid != spawn_calls[1].sid
-
-
-def test_stuck_thinking_both_stages_fail_buffers_and_continues(
-    conn: sqlite3.Connection,
-) -> None:
-    """Both fresh-rescue stages fail (no terminal parse outcome).
-    Helper buffers `agent_stuck_thinking` and continues retry loop.
-    Subsequent warm retries use the LAST fresh sid (stage 3)."""
+    """Combined takeover spawn fails to ship terminal. Helper buffers
+    `agent_stuck_thinking` and continues retry loop with the combined
+    fresh sid for the warm retry. NO stage 3 fires (that's the
+    TIMEOUT-trap path's job, not STUCK_THINKING)."""
     gid = _seed_open_goal(conn)
     spawn_calls: list[SpawnCtx] = []
 
     def spawn(ctx: SpawnCtx) -> int:
         spawn_calls.append(ctx)
-        # main: stuck. stage2 + stage3 both rc=124. Iter 1 warm: proved.
+        # main: stuck. combined takeover: rc=124. Iter 1 warm: proved.
         if ctx.inline_prompt is not None:
             return SpawnRC.TIMEOUT
-        # cold or warm main spawns
         non_inline = [c for c in spawn_calls if c.inline_prompt is None]
         if len(non_inline) == 1:
             return SpawnRC.STUCK_THINKING
@@ -170,35 +112,101 @@ def test_stuck_thinking_both_stages_fail_buffers_and_continues(
 
     def parse() -> PipelineResult:
         parse_calls[0] += 1
-        # stage2 + stage3 parses both non-terminal; iter 1 warm: proved.
-        if parse_calls[0] <= 2:
+        # combined parse: non-terminal. iter 1 warm: proved.
+        if parse_calls[0] <= 1:
             return PipelineResult(outcome="failed",
                                   failure_reason="parse_proposal_fail",
                                   failure_detail="no usable output")
         return PipelineResult(outcome="proved")
 
     r = run_with_session_retries(
-        conn=conn, goal_id=gid, pipeline_id="pid-both-fail",
+        conn=conn, goal_id=gid, pipeline_id="pid-combined-fail",
         budget_threshold=5, shelve_threshold=8,
         attempts_dir=Path("/tmp/x"),
         spawn_fn=spawn, parse_fn=parse,
         postmortem_fn=lambda _sid: None,
     )
     assert r.outcome == "proved"
-    # main + stage2 + stage3 + iter1 warm = 4 spawns
-    assert len(spawn_calls) == 4
-    # Iter 1 warm uses the LAST fresh sid (stage 3), not the
-    # original broken main sid.
-    assert spawn_calls[3].sid == spawn_calls[2].sid
-    assert spawn_calls[3].sid != spawn_calls[0].sid
-    assert spawn_calls[3].inline_prompt is None
-    # Buffered failure has agent_stuck_thinking with both stage rcs.
+    # main + combined + iter1 warm = 3 spawns. No stage 3.
+    assert len(spawn_calls) == 3, (
+        f"STUCK_THINKING must NOT spawn stage 3 — expected 3 spawns "
+        f"(main + combined + warm), got {len(spawn_calls)}")
+    # Iter 1 warm uses the combined fresh sid (not the broken main sid).
+    assert spawn_calls[2].sid == spawn_calls[1].sid
+    assert spawn_calls[2].sid != spawn_calls[0].sid
+    assert spawn_calls[2].inline_prompt is None
+    # Buffered failure says combined (not stage2/stage3).
     reasons = [f["reason"] for f in r.pending_failures]
     assert "agent_stuck_thinking" in reasons
     stuck = [f for f in r.pending_failures
              if f["reason"] == "agent_stuck_thinking"][0]
-    assert "stage2" in stuck["detail"]
-    assert "stage3" in stuck["detail"]
+    assert "combined" in stuck["detail"]
+    assert "stage2" not in stuck["detail"]
+    assert "stage3" not in stuck["detail"]
+
+
+def test_timeout_trap_two_stage_takeover(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """rc=124 + salvage parse fail + parser_state.json shows trap →
+    two-stage fresh-sid takeover (stage 2 ship-or-bail, stage 3
+    postmortem-only). Distinct from STUCK_THINKING's combined helper
+    because broken jsonl from a TIMEOUT-trap may have salvageable
+    completed turns the agent didn't get to ship."""
+    import json
+    gid = _seed_open_goal(conn)
+    attempts_dir = tmp_path / ".attempts" / "pid-timeout"
+    attempts_dir.mkdir(parents=True)
+    # Seed parser state file: trap=True simulates the watchdog deferring
+    # (silence < threshold) but parser flagged trap; subprocess timeout
+    # then fires and TIMEOUT path uses parser final state.
+    (attempts_dir / "_parser_state.json").write_text(json.dumps({
+        "state": "mid-thinking",
+        "last_stop_reason": None,
+        "messages_seen": 5,
+        "is_thinking_trap": True,
+    }), encoding="utf-8")
+
+    spawn_calls: list[SpawnCtx] = []
+    parse_calls = [0]
+
+    def spawn(ctx: SpawnCtx) -> int:
+        spawn_calls.append(ctx)
+        if ctx.inline_prompt is None:
+            return SpawnRC.TIMEOUT  # main: subprocess timeout
+        # stage 2 timeout, stage 3 ok
+        inline_count = sum(1 for c in spawn_calls if c.inline_prompt)
+        if inline_count == 1:
+            return SpawnRC.TIMEOUT
+        return SpawnRC.OK
+
+    def parse() -> PipelineResult:
+        parse_calls[0] += 1
+        # parse 1: salvage on main TIMEOUT — non-terminal.
+        # parse 2: stage 2 — non-terminal.
+        # parse 3: stage 3 — terminal agent_bailed.
+        if parse_calls[0] <= 2:
+            return PipelineResult(outcome="failed",
+                                  failure_reason="parse_proposal_fail",
+                                  failure_detail="no usable output")
+        return PipelineResult(outcome="failed",
+                              failure_reason="agent_bailed",
+                              failure_detail="bail via _progress.md")
+
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-timeout",
+        budget_threshold=5, shelve_threshold=8,
+        attempts_dir=attempts_dir,
+        spawn_fn=spawn, parse_fn=parse,
+        postmortem_fn=lambda _sid: None,
+    )
+    assert r.failure_reason == "agent_bailed"
+    # main + stage 2 + stage 3 = 3 spawns
+    assert len(spawn_calls) == 3
+    assert "ship ONE of" in spawn_calls[1].inline_prompt
+    assert "_progress.md" in spawn_calls[2].inline_prompt
+    assert "decomposition shape" in spawn_calls[2].inline_prompt.lower()
+    assert spawn_calls[2].sid != spawn_calls[1].sid
 
 
 # ---------------------------------------------------------------------

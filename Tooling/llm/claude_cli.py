@@ -45,7 +45,7 @@ import threading
 import time
 from pathlib import Path
 
-from .base import LLMRequest, RESCUE_BUDGET_SEC, SpawnRC
+from .base import LLMRequest, SpawnRC
 from .stream_parser import StreamParser
 
 
@@ -201,33 +201,35 @@ _QUOTA_MARKERS = (
     "rate limit",
     "rate_limit_exceeded",
 )
-# Watchdog policy: single point-in-time check at the wall-clock cap
-# (= `timeout_sec - dispatch.rescue_timeout_sec`). At that moment we
-# sample the stream parser's runtime state and kill iff the agent is
-# in a thinking trap (manifestation (a): currently mid-thinking, or
-# (b): finalized + last stop_reason == max_tokens). See
-# Tooling/llm/stream_parser.py for the trap detection rationale.
+# Watchdog policy: single point-in-time check at `trap_check_sec` (the
+# in-spawn wall-clock when the framework decides whether to abandon
+# the broken session for a fresh-sid takeover). At that moment we
+# sample the stream parser and kill iff BOTH conditions hold:
+#   (1) parser.is_thinking_trap() — currently mid-thinking, OR
+#       finalized + last_stop_reason == max_tokens
+#   (2) parser.silence_seconds(now) > silence_threshold_sec —
+#       agent has been silent (no tool_use) for ≥ threshold
 #
-# Why no continuous polling / silence threshold:
-#   The earlier silence-based idle_window design (replaced 2026-05-10
-#   after SG run #9) couldn't catch the mid-thinking case before the
-#   first tool_use silence accumulated past threshold. Sonnet sessions
-#   that entered a deep-thinking deadlock right after a tool_use
-#   (s219 cb7e1cde: 7 minutes of mid-thinking from 07:24:15 → 07:31:25
-#   max_tokens, silence at subprocess kill = 468s, 12s shy of the
-#   480s threshold) slipped through. The stream parser sees thinking
-#   start in real time, so a single check at wall_cap is sufficient
-#   — productive agents are between turns at wall_cap (state=
-#   IN_MESSAGE / MID_TOOL / FINALIZED + clean stop), trapped agents
-#   are either mid-thinking or finalized + max_tokens.
+# Why AND (not OR):
+#   Conservative discrimination — at trap_check_sec, an agent that
+#   recently emitted tool_use (silence < threshold) but happens to be
+#   mid-thinking right now is plausibly between productive turns; we
+#   prefer false negatives at this trigger over false positives,
+#   because the TIMEOUT path (subprocess timeout + parser-final-state
+#   check) catches the trap-only case ~5 min later via two-stage
+#   takeover. AND-at-trap_check trades a few minutes of detection
+#   latency for substantially fewer wasted rescues on borderline
+#   cases.
 #
-# False-positive safety net: the fresh-sid stage 2 prompt
-# (`Tooling/pipeline/_retry.py`) tells the agent to Read the broken
-# session's jsonl and decide ship-or-bail. If watchdog kills an active
-# agent that happened to be mid-thinking at exactly wall_cap (low
-# probability for a 660s trigger), the fresh-sid takeover ships the
-# work that was already on disk.
-_MIN_WALL_CAP_SEC = 60
+# Watchdog kills route to STUCK_THINKING → single-stage combined
+# fresh-sid takeover (no separate stage 3) with budget = spawn_timeout
+# + postmortem_timeout - trap_check_sec.
+#
+# False-positive safety net: the takeover prompt tells the agent to
+# Read the broken session's jsonl and decide ship-or-bail. If
+# watchdog kills an active agent that meets both AND conditions only
+# borderline, the takeover still recovers shipped work from disk.
+_MIN_TRAP_CHECK_SEC = 60
 
 
 def _find_session_jsonl(sid: str) -> Path | None:
@@ -254,31 +256,44 @@ def _find_session_jsonl(sid: str) -> Path | None:
     return None
 
 
+_DEFAULT_TRAP_CHECK_SEC = 660
+_DEFAULT_SILENCE_THRESHOLD_SEC = 300
+
+
 def _watchdog(proc: subprocess.Popen, sid: str, *,
               stuck_flag: list, timeout_sec: int,
               parser: StreamParser) -> None:
-    """Sleep until the wall-clock cap (= `timeout_sec -
-    dispatch.rescue_timeout_sec`). At that single trigger point sample
-    `parser.is_thinking_trap()`; if True, kill the proc and set
-    `stuck_flag[0] = True` so the caller routes to STUCK_THINKING →
-    fresh-sid stage 2/3. If False, exit quietly — the spawn runs to
-    its full subprocess timeout and the TIMEOUT path takes over (which
-    re-checks the parser final state symmetrically).
+    """Sleep until `trap_check_sec`. At that single trigger point
+    sample BOTH parser-trap state AND silence; kill iff both fire.
+    `stuck_flag[0] = True` on kill routes the spawn to STUCK_THINKING
+    → combined fresh-sid takeover (no separate stage 3). When AND
+    fails (one signal but not the other), exit quietly — the spawn
+    runs to its full subprocess timeout and the TIMEOUT path's
+    parser-only trap check picks up the trap-without-silence cases
+    via two-stage takeover.
 
-    If `proc` finishes naturally before the wall cap, exit without
-    sampling (no decision to make).
+    If `proc` finishes naturally before the trap-check moment, exit
+    without sampling (no decision to make).
 
     Runs in a daemon thread; one spawn = one trigger.
     """
     from .. import config as _cfg
-    rescue_budget = _cfg.get(
-        "dispatch.rescue_timeout_sec",
-        default=RESCUE_BUDGET_SEC,
-        env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
+    trap_check_sec = _cfg.get(
+        "dispatch.trap_check_sec",
+        default=_DEFAULT_TRAP_CHECK_SEC,
+        env_var="ASTERISM_TRAP_CHECK_SEC", cast=int,
+    )
+    silence_threshold_sec = _cfg.get(
+        "dispatch.silence_threshold_sec",
+        default=_DEFAULT_SILENCE_THRESHOLD_SEC,
+        env_var="ASTERISM_SILENCE_THRESHOLD_SEC", cast=int,
     )
     spawn_start = time.monotonic()
-    wall_cap_sec = max(_MIN_WALL_CAP_SEC, timeout_sec - rescue_budget)
-    trigger_at = spawn_start + wall_cap_sec
+    # Floor on trap_check_sec so misconfigured tiny timeouts don't
+    # fire the watchdog immediately. 60s is a safe minimum for any
+    # real spawn; tests monkeypatch this down for fast assertions.
+    trap_check_sec = max(_MIN_TRAP_CHECK_SEC, trap_check_sec)
+    trigger_at = spawn_start + trap_check_sec
 
     # Wait until trigger time, in short slices so a fast-finishing
     # spawn unblocks the thread promptly. 1s slice keeps the thread
@@ -291,46 +306,51 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
         time.sleep(min(1.0, remaining))
 
     if proc.poll() is not None:
-        return  # Proc finished naturally before the wall cap.
+        return  # Proc finished naturally before trap_check_sec.
 
     snap = parser.snapshot()
+    silence = parser.silence_seconds(time.monotonic())
     verdict_state = snap.state.value
     verdict_stop = snap.last_stop_reason or "—"
-    if parser.is_thinking_trap():
-        # Re-check proc liveness inside the trap branch: if the proc
-        # finished between the wait-loop exit (line above) and this
-        # sample, sticking a STUCK_THINKING rc on a finished spawn
-        # would route a legitimately-completed agent into the
-        # ~6-minute fresh-sid takeover. The race window is narrow but
-        # real (parser may finalize a max_tokens turn microseconds
-        # before the OS reaps the process). When proc is already
-        # dead, defer to the natural rc path; the TIMEOUT branch's
-        # symmetric trap check will handle it via fresh-sid takeover
-        # IF the rc was 124, or via the standard rc!=0 path
-        # otherwise.
+    is_trap = parser.is_thinking_trap()
+    is_silent = silence > silence_threshold_sec
+    label = (f"state={verdict_state} last_stop_reason={verdict_stop} "
+             f"silence={int(silence)}s")
+    if is_trap and is_silent:
+        # Race re-check: if the proc finished between the wait-loop
+        # exit and this sample, sticking a STUCK_THINKING rc on a
+        # finished spawn would route a legitimately-completed agent
+        # into the ~7-min combined takeover. Window is narrow
+        # (parser may finalize a max_tokens turn microseconds before
+        # OS reaps proc) but real.
         if proc.poll() is not None:
-            print(f"[watchdog] sid={sid[:8]} wall cap "
-                  f"{int(wall_cap_sec)}s reached; trap "
-                  f"(state={verdict_state} "
-                  f"last_stop_reason={verdict_stop}) but proc already "
-                  f"finished; deferring to natural rc path",
-                  flush=True)
+            print(f"[watchdog] sid={sid[:8]} trap_check "
+                  f"{int(trap_check_sec)}s reached; trap+silent "
+                  f"({label}) but proc already finished; deferring "
+                  f"to natural rc path", flush=True)
             return
         stuck_flag[0] = True
-        print(f"[watchdog] sid={sid[:8]} wall cap {int(wall_cap_sec)}s "
-              f"reached; trap (state={verdict_state} "
-              f"last_stop_reason={verdict_stop}); killing for rescue",
-              flush=True)
+        print(f"[watchdog] sid={sid[:8]} trap_check "
+              f"{int(trap_check_sec)}s reached; trap AND silent "
+              f"({label}); killing for rescue", flush=True)
         try:
             proc.terminate()
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
     else:
-        print(f"[watchdog] sid={sid[:8]} wall cap {int(wall_cap_sec)}s "
-              f"reached; active (state={verdict_state} "
-              f"last_stop_reason={verdict_stop}); deferring to "
-              f"subprocess timeout", flush=True)
+        # AND failed: log which signal was missing. The TIMEOUT
+        # path's parser-only check will catch trap-without-silence
+        # cases ~5 min later when subprocess.TimeoutExpired fires.
+        verdict = "active"
+        if is_trap and not is_silent:
+            verdict = "trap-but-not-silent"
+        elif not is_trap and is_silent:
+            verdict = "silent-but-not-trap"
+        print(f"[watchdog] sid={sid[:8]} trap_check "
+              f"{int(trap_check_sec)}s reached; {verdict} "
+              f"({label}); deferring to subprocess timeout",
+              flush=True)
 
 # Asterism's pipelines need Read / Write / Edit for sandbox file
 # manipulation, plus F50 search tools:

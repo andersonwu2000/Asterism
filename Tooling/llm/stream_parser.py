@@ -66,11 +66,20 @@ class StateSnapshot(NamedTuple):
         arrives.
     `messages_seen`: count of `message_stop` events. Used for diagnostic
         / forensic detail; not part of trap-detection itself.
+    `last_tool_use_ts`: monotonic time of the most recent
+        `content_block_start type=tool_use` event, or None if no
+        tool_use has been seen yet. Used by `silence_seconds` to
+        compute how long the agent has been silent.
+    `spawn_start_ts`: parser creation time (≈ spawn start). Used as
+        the fallback baseline for `silence_seconds` when no tool_use
+        has happened yet.
     """
     state: ParserState
     state_since: float
     last_stop_reason: str | None
     messages_seen: int
+    last_tool_use_ts: float | None
+    spawn_start_ts: float
 
 
 class StreamParser:
@@ -82,10 +91,17 @@ class StreamParser:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        now = time.monotonic()
         self._state = ParserState.IDLE
-        self._state_since = time.monotonic()
+        self._state_since = now
         self._last_stop_reason: str | None = None
         self._messages_seen = 0
+        # Silence tracking: watchdog uses these to compute how long
+        # the agent has been silent (no tool_use). silence_seconds()
+        # returns now - last_tool_use_ts, falling back to
+        # now - spawn_start_ts when no tool_use has been seen.
+        self._last_tool_use_ts: float | None = None
+        self._spawn_start_ts = now
 
     def _set_state(self, new_state: ParserState) -> None:
         # Caller already holds _lock.
@@ -126,6 +142,11 @@ class StreamParser:
                     self._set_state(ParserState.MID_THINKING)
                 elif cb_type == "tool_use":
                     self._set_state(ParserState.MID_TOOL)
+                    # Stamp tool_use start time for silence tracking.
+                    # Watchdog asks "how long since last tool_use?"
+                    # — long silence + thinking-trap state is the
+                    # AND condition that triggers fresh-sid takeover.
+                    self._last_tool_use_ts = time.monotonic()
                 elif cb_type == "text":
                     self._set_state(ParserState.MID_TEXT)
                 # Unknown content block types are ignored — no
@@ -162,7 +183,23 @@ class StreamParser:
                 state_since=self._state_since,
                 last_stop_reason=self._last_stop_reason,
                 messages_seen=self._messages_seen,
+                last_tool_use_ts=self._last_tool_use_ts,
+                spawn_start_ts=self._spawn_start_ts,
             )
+
+    def silence_seconds(self, now: float) -> float:
+        """Seconds since the agent last emitted a tool_use_start event.
+        Falls back to seconds since parser creation when no tool_use
+        has been seen yet (cold spawn that never reached tool phase).
+        Used by the watchdog as one half of the AND trap condition —
+        long silence by itself isn't enough (a slow Bash / lake
+        build would trip it), but combined with parser thinking-trap
+        state it is strong evidence of a stuck agent."""
+        with self._lock:
+            baseline = (self._last_tool_use_ts
+                        if self._last_tool_use_ts is not None
+                        else self._spawn_start_ts)
+            return now - baseline
 
     # ---- Trap detection helpers ----
 

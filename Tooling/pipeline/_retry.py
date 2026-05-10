@@ -281,40 +281,61 @@ class _TakeoverOutcome:
     stage3_rc: int | None
 
 
+def _derive_stage2_budget(workspace: Path | None) -> int:
+    """Stage 2 budget = spawn_timeout - trap_check_sec. Replaces the
+    retired `dispatch.rescue_timeout_sec` config (2026-05-10 v4)."""
+    from .. import config as _cfg
+    from ..agent import WORKER_TIMEOUT_SEC
+    spawn_timeout = _cfg.get(
+        "dispatch.spawn_timeout_sec",
+        default=WORKER_TIMEOUT_SEC,
+        env_var="ASTERISM_SPAWN_TIMEOUT_SEC", cast=int,
+        workspace=workspace,
+    )
+    trap_check_sec = _cfg.get(
+        "dispatch.trap_check_sec",
+        default=660,
+        env_var="ASTERISM_TRAP_CHECK_SEC", cast=int,
+        workspace=workspace,
+    )
+    # Mirror watchdog's floor; never let stage 2 go negative.
+    return max(60, spawn_timeout - trap_check_sec)
+
+
+def _derive_postmortem_budget(workspace: Path | None) -> int:
+    from .. import config as _cfg
+    from ..agent import POSTMORTEM_TIMEOUT_SEC
+    return _cfg.get(
+        "dispatch.postmortem_timeout_sec",
+        default=POSTMORTEM_TIMEOUT_SEC,
+        env_var="ASTERISM_POSTMORTEM_TIMEOUT_SEC", cast=int,
+        workspace=workspace,
+    )
+
+
 def _run_fresh_sid_takeover(
     *, broken_sid: str, broken_sid_label: str,
     attempts_dir: Path, workspace: Path | None,
     spawn_fn: SpawnFn, parse_fn: ParseFn,
 ) -> _TakeoverOutcome:
-    """Execute v2 stage 2 (ship-or-bail) + stage 3 (postmortem)
-    fresh-sid takeover. Shared by the watchdog STUCK_THINKING branch
-    and the TIMEOUT-with-thinking-trap branch — both end up here once
-    we've established the agent's session is unrecoverable and only a
-    fresh sid can extract value (see `Tooling/llm/stream_parser.py`'s
-    is_thinking_trap docstring for the axiom).
+    """Execute two-stage (stage 2 ship-or-bail + stage 3 postmortem)
+    fresh-sid takeover. Used by the TIMEOUT-with-thinking-trap branch
+    when subprocess timeout fires and parser final state shows trap.
+    The watchdog STUCK_THINKING branch uses the simpler combined
+    variant (`_run_fresh_sid_combined_takeover`) instead.
 
     `broken_sid_label`: human description of why takeover fired,
         prepended to detail_parts so dead_attempts.failure_detail
-        records the trigger source. Examples:
-          - 'watchdog killed broken_sid=cb7e1cde'
-          - 'subprocess timeout + thinking trap (state=mid-thinking
-             last_stop_reason=max_tokens) broken_sid=cb7e1cde'
+        records the trigger source. Example:
+          'subprocess timeout + thinking trap (state=mid-thinking
+           last_stop_reason=max_tokens) broken_sid=cb7e1cde'
     """
-    from .. import config as _cfg
-    from ..llm.base import RESCUE_BUDGET_SEC
-    from ..agent import POSTMORTEM_TIMEOUT_SEC
-
     broken_jsonl_dest = attempts_dir / "_broken_session.jsonl"
     jsonl_copied = _copy_broken_session_jsonl(
         broken_sid, broken_jsonl_dest)
 
     # ── Stage 2: fresh-rescue ship-or-bail ────────────────────────
-    stage2_budget = _cfg.get(
-        "dispatch.rescue_timeout_sec",
-        default=RESCUE_BUDGET_SEC,
-        env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
-        workspace=workspace,
-    )
+    stage2_budget = _derive_stage2_budget(workspace)
     stage2_min = max(1, stage2_budget // 60)
     stage2_prompt = _build_fresh_rescue_stage2_prompt(
         attempts_dir, jsonl_copied, stage2_min)
@@ -360,12 +381,7 @@ def _run_fresh_sid_takeover(
         )
 
     # ── Stage 3: fresh-rescue postmortem ──────────────────────────
-    stage3_budget = _cfg.get(
-        "dispatch.postmortem_timeout_sec",
-        default=POSTMORTEM_TIMEOUT_SEC,
-        env_var="ASTERISM_POSTMORTEM_TIMEOUT_SEC", cast=int,
-        workspace=workspace,
-    )
+    stage3_budget = _derive_postmortem_budget(workspace)
     stage3_min = max(1, stage3_budget // 60)
     stage3_prompt = _build_fresh_rescue_stage3_prompt(
         attempts_dir, jsonl_copied, stage3_min)
@@ -429,6 +445,99 @@ def _run_fresh_sid_takeover(
         detail_parts=detail_parts,
         stage2_rc=int(stage2_rc),
         stage3_rc=int(stage3_rc),
+    )
+
+
+def _run_fresh_sid_combined_takeover(
+    *, broken_sid: str, broken_sid_label: str,
+    attempts_dir: Path, workspace: Path | None,
+    spawn_fn: SpawnFn, parse_fn: ParseFn,
+) -> _TakeoverOutcome:
+    """Single-stage fresh-sid takeover used by the watchdog
+    STUCK_THINKING branch (2026-05-10 v4). Combined budget =
+    stage2 + stage3 (postmortem); one spawn handles ship-or-bail
+    in a single window.
+
+    Why one stage instead of stage 2 + stage 3:
+      Watchdog kills mid-thinking — by definition the broken jsonl
+      contains thinking text but no concrete decomposition. Stage 3
+      (which asks the agent to extract a `_progress.md` from the
+      jsonl) adds little value over stage 2's option (d) bail in
+      this case. Combining saves one spawn-startup overhead per
+      trap event.
+
+    The TIMEOUT-with-trap path keeps two stages — the broken jsonl
+    there may have completed turns with concrete reasoning the
+    agent didn't get to ship.
+
+    Returns _TakeoverOutcome with `stage3_rc=None` always (no stage 3
+    fired). Forensic detail says `combined sid=... rc=... dur=...`
+    instead of stage2/stage3 split.
+    """
+    broken_jsonl_dest = attempts_dir / "_broken_session.jsonl"
+    jsonl_copied = _copy_broken_session_jsonl(
+        broken_sid, broken_jsonl_dest)
+
+    combined_budget = (_derive_stage2_budget(workspace)
+                       + _derive_postmortem_budget(workspace))
+    combined_min = max(1, combined_budget // 60)
+    # Reuse stage 2 prompt — it already covers ship (a/b/c) AND bail
+    # (option d: write `_progress.md` only). The agent gets ~7 min
+    # to either ship or write progress note.
+    combined_prompt = _build_fresh_rescue_stage2_prompt(
+        attempts_dir, jsonl_copied, combined_min)
+    sid_combined = str(uuid.uuid4())
+    print(f"[fresh-rescue combined] broken_sid={broken_sid[:8]} → "
+          f"fresh_sid={sid_combined[:8]} budget={combined_budget}s "
+          f"jsonl_copied={jsonl_copied}", flush=True)
+    t0 = time.monotonic()
+    rc = spawn_fn(SpawnCtx(
+        sid=sid_combined, cold=True, retry_context=None,
+        attempts_dir=attempts_dir,
+        inline_prompt=combined_prompt,
+        budget_override=combined_budget,
+    ))
+    dur = time.monotonic() - t0
+    print(f"[fresh-rescue combined] sid={sid_combined[:8]} "
+          f"rc={rc} dur={dur:.0f}s", flush=True)
+
+    result: PipelineResult | None = None
+    try:
+        result = parse_fn()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[fresh-rescue combined] sid={sid_combined[:8]} "
+              f"parse raised {type(exc).__name__}: {exc}", flush=True)
+
+    detail_parts = [
+        broken_sid_label,
+        f"combined sid={sid_combined[:8]} rc={rc} dur={dur:.0f}s",
+    ]
+    if result is not None:
+        detail_parts.append(
+            f"combined parse: reason={result.failure_reason} "
+            f"detail={(result.failure_detail or '')[:120]}")
+
+    if result is not None and (
+        result.outcome in _TERMINAL_SUCCESS_OUTCOMES
+        or result.failure_reason in _TERMINAL_DECLINE_REASONS
+    ):
+        print(f"[fresh-rescue combined] sid={sid_combined[:8]} "
+              f"attached outcome={result.outcome} "
+              f"reason={result.failure_reason}", flush=True)
+        return _TakeoverOutcome(
+            terminal_result=result,
+            last_sid=sid_combined,
+            detail_parts=detail_parts,
+            stage2_rc=int(rc),
+            stage3_rc=None,
+        )
+
+    return _TakeoverOutcome(
+        terminal_result=None,
+        last_sid=sid_combined,
+        detail_parts=detail_parts,
+        stage2_rc=int(rc),
+        stage3_rc=None,
     )
 
 
@@ -737,17 +846,15 @@ def run_with_session_retries(
                                          failure_detail=detail))
 
         if rc == SpawnRC.STUCK_THINKING:
-            # Watchdog detected thinking trap at wall_cap (parser state
-            # = mid-thinking, OR finalized + last_stop_reason =
-            # max_tokens). The broken session is unrecoverable; spawn
-            # fresh sessions to take over the remaining workflow
-            # stages (rescue + postmortem). See module-level block
-            # comment above `_copy_broken_session_jsonl` for the
-            # design rationale and `_run_fresh_sid_takeover` for the
-            # shared two-stage implementation (TIMEOUT-with-trap path
-            # uses the same takeover).
+            # Watchdog detected thinking trap at trap_check_sec
+            # (parser is_thinking_trap AND silence > threshold).
+            # Single-stage combined takeover — broken jsonl from a
+            # mid-thinking kill has only thinking text, so stage 3's
+            # extract-_progress.md task adds little value over
+            # stage 2's bail option. TIMEOUT-with-trap path keeps
+            # two-stage takeover via `_run_fresh_sid_takeover`.
             broken_sid = sid
-            outcome = _run_fresh_sid_takeover(
+            outcome = _run_fresh_sid_combined_takeover(
                 broken_sid=broken_sid,
                 broken_sid_label=(
                     f"watchdog killed broken_sid={broken_sid[:8]}"),
@@ -760,8 +867,7 @@ def run_with_session_retries(
             buffer_failure("agent_stuck_thinking",
                            "; ".join(outcome.detail_parts))
             last_reason = "agent_stuck_thinking"
-            last_detail = (f"stage2 rc={outcome.stage2_rc}, "
-                           f"stage3 rc={outcome.stage3_rc}")
+            last_detail = f"combined rc={outcome.stage2_rc}"
             continue
 
         if rc != SpawnRC.OK:
