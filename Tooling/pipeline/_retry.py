@@ -191,7 +191,19 @@ class SpawnCtx:
 def _build_fresh_rescue_stage2_prompt(
     attempts_dir: Path, jsonl_copied: bool, rescue_min: int,
 ) -> str:
-    """Stage-2 prompt: agent Reads broken jsonl, ships-or-bails."""
+    """Stage-2 prompt: agent Reads broken jsonl, ships-or-bails.
+
+    Path discipline (2026-05-10 fix): includes `attempts_dir` as the
+    explicit output location. The `_build_cold_prompt` wrapper
+    (`claude_cli.py`) only fires for `inline_prompt is None` spawns;
+    fresh-sid takeovers use `inline_prompt`, so the wrapper's
+    "write outputs into {attempts_dir}/" hint never applies. Without
+    this explicit path, agent's cwd-relative Write goes to the
+    sandbox root (problem_dir) and the framework's parse_fn (which
+    reads from attempts_dir) sees no files. SG run #10 evidence:
+    fresh-sid stage 2 wrote patch.lean + new_*.lean to
+    Problems/sylvester_gallai/ root instead of attempts_dir, parse
+    silently failed, takeover counted as no-deliverable."""
     if jsonl_copied:
         log_note = (
             f"The previous session's full conversation log is at "
@@ -202,21 +214,26 @@ def _build_fresh_rescue_stage2_prompt(
     else:
         log_note = (
             "The previous session's log was not recoverable. Work "
-            "from `Context.md` alone."
+            f"from `{attempts_dir}/Context.md` alone."
         )
     return (
         f"The previous session was killed mid-think after exceeding the "
         f"wall-clock budget. {log_note}\n\n"
+        f"All output files must be written into `{attempts_dir}/` — "
+        f"use absolute paths in your Write calls. The framework only "
+        f"reads files from there.\n\n"
         f"Then ship ONE of the following — use what's already in the "
         f"log:\n"
-        f"(a) `patch.lean` + `new_<slug>.lean` stubs (`:= by sorry` ok)\n"
-        f"(b) `patch.lean` alone with a sorry-free direct proof "
-        f"(leaf-bypass)\n"
-        f"(c) `patch.lean` with `-- decline: unprovable` + counterexample\n"
-        f"(d) bail — write `_progress.md` only, exit. No `patch.lean`. "
-        f"Capture in ≤200 words: shape converging to, sub-pieces with "
-        f"clear name+statement, the specific blocker, alternative "
-        f"direction (≤60 words).\n\n"
+        f"(a) `{attempts_dir}/patch.lean` + "
+        f"`{attempts_dir}/new_<slug>.lean` stubs (`:= by sorry` ok)\n"
+        f"(b) `{attempts_dir}/patch.lean` alone with a sorry-free "
+        f"direct proof (leaf-bypass)\n"
+        f"(c) `{attempts_dir}/patch.lean` with `-- decline: unprovable` "
+        f"+ counterexample\n"
+        f"(d) bail — write `{attempts_dir}/_progress.md` only, exit. "
+        f"No `patch.lean`. Capture in ≤200 words: shape converging to, "
+        f"sub-pieces with clear name+statement, the specific blocker, "
+        f"alternative direction (≤60 words).\n\n"
         f"Act now. {rescue_min} minutes left."
     )
 
@@ -224,7 +241,10 @@ def _build_fresh_rescue_stage2_prompt(
 def _build_fresh_rescue_stage3_prompt(
     attempts_dir: Path, jsonl_copied: bool, postmortem_min: int,
 ) -> str:
-    """Stage-3 prompt: agent writes _progress.md based on broken jsonl."""
+    """Stage-3 prompt: agent writes _progress.md based on broken jsonl.
+
+    Path discipline: same fix as stage 2 — explicit `attempts_dir/`
+    in every output reference."""
     if jsonl_copied:
         log_note = (
             f"The previous session's log is at "
@@ -234,20 +254,22 @@ def _build_fresh_rescue_stage3_prompt(
     else:
         log_note = (
             "The previous session's log was not recoverable. Work "
-            "from `Context.md` alone."
+            f"from `{attempts_dir}/Context.md` alone."
         )
     return (
         f"The previous session AND the stage-2 rescue both failed to "
         f"ship. {log_note}\n\n"
-        f"Write a `_progress.md` note (≤200 words) capturing:\n"
+        f"Write `{attempts_dir}/_progress.md` (≤200 words) capturing:\n"
         f"1. The decomposition shape converging to (1 sentence).\n"
         f"2. Any sub-piece with clear formulation (slug + statement).\n"
         f"3. The specific blocker (which Mathlib lemma, which case "
         f"analysis, etc.).\n"
         f"4. Alternative direction (≤60 words).\n\n"
-        f"Skip recapping the goal — Context.md already has it. Write "
-        f"`_progress.md` and exit. Do NOT finalize patch.lean. "
-        f"{postmortem_min} minutes left."
+        f"Use the absolute path above — the framework only reads from "
+        f"`{attempts_dir}/`. Skip recapping the goal — "
+        f"`{attempts_dir}/Context.md` already has it. Write the file "
+        f"and exit. Do NOT finalize patch.lean. {postmortem_min} "
+        f"minutes left."
     )
 
 

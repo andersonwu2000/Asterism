@@ -213,6 +213,42 @@ def test_timeout_trap_two_stage_takeover(
 # _copy_broken_session_jsonl helper
 # ---------------------------------------------------------------------
 
+def test_fresh_rescue_prompts_use_explicit_attempts_dir(
+    tmp_path: Path,
+) -> None:
+    """Regression for SG run #10 file-leak BUG: fresh-sid prompts
+    must include `attempts_dir/` explicitly in every output file
+    reference. Without this, agent's cwd-relative Write goes to
+    sandbox root (problem_dir) and framework's parse_fn never sees
+    the files. SG run #10 evidence: stage 2 wrote patch.lean +
+    new_*.lean to Problems/sylvester_gallai/ root; takeover counted
+    as no-deliverable despite agent having shipped valid content."""
+    from Tooling.pipeline._retry import (
+        _build_fresh_rescue_stage2_prompt,
+        _build_fresh_rescue_stage3_prompt,
+    )
+    attempts_dir = tmp_path / ".attempts" / "pid-test"
+    attempts_dir.mkdir(parents=True)
+    expected_prefix = str(attempts_dir)
+
+    s2 = _build_fresh_rescue_stage2_prompt(attempts_dir, True, 4)
+    # Every output file must be qualified with attempts_dir.
+    assert f"{expected_prefix}\\patch.lean" in s2 or \
+           f"{expected_prefix}/patch.lean" in s2, \
+        "stage 2 must qualify patch.lean with attempts_dir path"
+    assert f"{expected_prefix}\\new_<slug>.lean" in s2 or \
+           f"{expected_prefix}/new_<slug>.lean" in s2, \
+        "stage 2 must qualify new_<slug>.lean with attempts_dir path"
+    assert f"{expected_prefix}\\_progress.md" in s2 or \
+           f"{expected_prefix}/_progress.md" in s2, \
+        "stage 2 bail option must qualify _progress.md with attempts_dir path"
+
+    s3 = _build_fresh_rescue_stage3_prompt(attempts_dir, True, 3)
+    assert f"{expected_prefix}\\_progress.md" in s3 or \
+           f"{expected_prefix}/_progress.md" in s3, \
+        "stage 3 must qualify _progress.md with attempts_dir path"
+
+
 def test_copy_broken_session_jsonl_succeeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
