@@ -197,26 +197,26 @@ def test_backward_wrapper_no_persist_when_no_postmortem_note(
     assert not draft.exists()
 
 
-def test_backward_fresh_rescue_bail_via_progress_md_persists_draft(
+def test_backward_fresh_rescue_stage2_bail_via_progress_md_persists_draft(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Backward bail via fresh-rescue (2026-05-10): main spawn is
-    watchdog-killed (rc=128 STUCK_THINKING), retry helper mints a
-    fresh sid and triggers a fresh-cold rescue. The fresh agent reads
-    `_prior_analysis.md`, decides to bail: writes `_progress.md` and
-    leaves patch.lean as the cold-start skeleton. Backward parse's
-    strict bail discriminator (no leading + no new_*.lean + sorry
-    body + _progress.md present) triggers `agent_bailed`. Outer
-    wrapper persists `_progress.md` into `.drafts/backward_g<id>.md`
-    so the next cold dispatch reads it via Context.md."""
+    """Backward bail via two-stage fresh-rescue (2026-05-10): main
+    spawn is watchdog-killed (rc=128 STUCK_THINKING), retry helper
+    runs stage 2 (fresh sid + ship-or-bail prompt). The stage-2
+    agent decides bail: writes `_progress.md` and leaves patch.lean
+    as the cold-start skeleton. Backward parse's strict bail
+    discriminator (no leading + no new_*.lean + sorry body +
+    _progress.md present) triggers `agent_bailed`. Outer wrapper
+    persists `_progress.md` into `.drafts/backward_g<id>.md` so the
+    next cold dispatch reads it via Context.md."""
     gid = _seed_root_goal(tmp_path, conn)
     spawn_calls: list[dict] = []
 
     def fake_spawn(**kw):
         spawn_calls.append(kw)
-        # Iter 0 main: stuck. Fresh-rescue: writes _progress.md (bail).
-        if kw.get("is_fresh_rescue"):
+        # Iter 0 main: stuck. Stage 2: writes _progress.md (bail).
+        if kw.get("inline_prompt"):
             (kw["attempts_dir"] / "_progress.md").write_text(
                 "Tried Kelly minimiser shape with 3 sub-lemmas; could "
                 "not name the perpendicular-distance lemma. Direction "
@@ -238,11 +238,11 @@ def test_backward_fresh_rescue_bail_via_progress_md_persists_draft(
     body = draft.read_text(encoding="utf-8")
     assert "Kelly minimiser" in body
     assert "perpendicular-distance" in body
-    # 2 spawn invocations: main (stuck) + fresh-rescue (bail).
+    # 2 spawn invocations: main (stuck) + stage 2 fresh (bail).
     assert len(spawn_calls) == 2
-    assert spawn_calls[0].get("is_fresh_rescue") in (None, False)
-    assert spawn_calls[1]["is_fresh_rescue"] is True
-    # Fresh-rescue uses a different sid than the broken main.
+    assert spawn_calls[0].get("inline_prompt") in (None,)
+    assert spawn_calls[1]["inline_prompt"] is not None
+    # Stage 2 uses a different sid than the broken main.
     assert spawn_calls[1]["session_id"] != spawn_calls[0]["session_id"]
 
 

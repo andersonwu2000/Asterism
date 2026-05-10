@@ -241,7 +241,8 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             is_retry=not ctx.cold,
             retry_context=ctx.retry_context,
             mcp_config_path=mcp_config_path,
-            is_fresh_rescue=ctx.is_fresh_rescue,
+            inline_prompt=ctx.inline_prompt,
+            timeout_sec_override=ctx.budget_override,
         )
 
     def builder_parse() -> "PipelineResult":  # noqa: F821

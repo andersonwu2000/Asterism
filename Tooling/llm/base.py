@@ -91,20 +91,16 @@ class LLMRequest:
                     living `Tooling.lsp_gateway` HTTP server). Builder
                     + Backward pipelines set this; Reflection leaves
                     it None.
-      is_fresh_rescue: True when this is a fresh-cold rescue after a
-                    prior in-pipeline spawn was watchdog-killed for
-                    stuck-thinking. The broken session's thinking
-                    blocks have been dumped to
-                    `attempts_dir/_prior_analysis.md`; a fresh
-                    session_id is set on this request. Provider should
-                    treat as a cold-start (--session-id, normal
-                    template loading) but inject a Read directive into
-                    the prompt so the agent consumes
-                    `_prior_analysis.md` before any other action.
+      inline_prompt: When set, the provider sends this string verbatim
+                    as the `-p` payload to claude (bypasses the normal
+                    template loading from `prompt_path`). Used for
+                    fresh-rescue stage 2 / stage 3 where the helper
+                    crafts the prompt with the broken session's jsonl
+                    path baked in. The session is cold (`--session-id
+                    <fresh>`), not resumed. Watchdog is skipped for
+                    these spawns (the budget is short — they're
+                    rescue/postmortem replacements, not full attempts).
                     Mutually exclusive with is_postmortem / is_retry.
-                    Replaces the prior `is_rescue` (--resume + force-
-                    ship inline prompt) which was empirically broken
-                    on max_tokens-deadlocked sessions.
     """
     kind: str
     prompt_path: Path
@@ -116,7 +112,7 @@ class LLMRequest:
     retry_context: str | None = None
     is_postmortem: bool = False
     mcp_config_path: Path | None = None
-    is_fresh_rescue: bool = False
+    inline_prompt: str | None = None
 
 
 class Provider(Protocol):

@@ -411,31 +411,13 @@ def _build_cold_prompt(req: LLMRequest) -> str:
     """Compose the `-p` payload for a cold (non-retry) spawn: the full
     prompt template content, followed by short framework instructions
     pointing at Context.md and the output directory.
-
-    When `is_fresh_rescue=True`, prepend an imperative instruction
-    requiring the agent to Read `_prior_analysis.md` first — that file
-    holds the prior killed spawn's thinking blocks, dumped by the
-    retry helper. Without this directive the fresh agent often
-    re-derives reasoning from scratch (probe finding 2026-05-10).
     """
     body = _load_prompt(req)
-    rescue_note = ""
-    if req.is_fresh_rescue:
-        rescue_note = (
-            f"\n\nIMPORTANT: This is a fresh session. The previous spawn "
-            f"on this goal was killed mid-thinking (deadlocked on its own "
-            f"deep reasoning). Its thinking has been preserved at "
-            f"`{req.attempts_dir}/_prior_analysis.md`. You MUST Read that "
-            f"file before any other action — it contains the prior agent's "
-            f"reasoning. Then proceed with the {req.kind} task using that "
-            f"reasoning as your starting point; do not redo analysis from "
-            f"scratch."
-        )
     return (
         f"You are running a {req.kind} task. Follow the instructions "
         f"below exactly.\n\nAfter reading them, read context at "
         f"{req.attempts_dir}/Context.md and write outputs into "
-        f"{req.attempts_dir}/.{rescue_note}\n\n"
+        f"{req.attempts_dir}/.\n\n"
         f"=== INSTRUCTIONS ===\n{body}\n=== END INSTRUCTIONS ==="
     )
 
@@ -566,6 +548,20 @@ class ClaudeCliProvider:
 
         model = resolve_model(req.kind)
 
+        # Fresh-rescue stage 2 / stage 3 (2026-05-10): the broken
+        # session is unrecoverable; this is a fresh-cold session
+        # picking up the original session's stage-2 (rescue) or
+        # stage-3 (postmortem) workflow. session_id is freshly minted
+        # by the helper. inline_prompt is the helper-crafted prompt
+        # (with broken jsonl path baked in). No template loading, no
+        # Context.md reference inside the prompt — Context.md was
+        # already compiled by spawn_fn's cold-prep step and the inline
+        # prompt may reference it indirectly via the broken jsonl
+        # contents. Watchdog skipped (short budget, not a full attempt).
+        if req.inline_prompt is not None and req.session_id:
+            session_flags = ["--session-id", req.session_id]
+            session_lifetime_flag: list[str] = []
+            prompt = req.inline_prompt
         # F55 postmortem — main spawn timed out, agent's session memory
         # is intact on disk. Resume the session with a short prompt
         # asking for a state + blocker note (`_progress.md`) into the
@@ -574,9 +570,9 @@ class ClaudeCliProvider:
         # is short and self-contained — no _build_cold_prompt wrapping
         # (Context.md from the killed turn is already in session memory;
         # re-injecting it would distract the postmortem agent).
-        if req.is_postmortem and req.session_id:
+        elif req.is_postmortem and req.session_id:
             session_flags = ["--resume", req.session_id]
-            session_lifetime_flag: list[str] = []
+            session_lifetime_flag = []
             prompt = _load_prompt(req)
         # In-pipeline retry path uses `--resume`, a short inline prompt
         # with the lake error embedded directly (no separate
@@ -667,11 +663,14 @@ class ClaudeCliProvider:
         # without session_id can't be monitored (no jsonl path), so
         # they also skip; in practice every Asterism dispatch sets
         # session_id, so this branch is just defensive.
-        # Fresh-rescue is a cold spawn that runs at full timeout (it
-        # IS the rescue, not a tight follow-up); watchdog applies so
-        # the new session can also be killed if it deadlocks.
+        # Fresh-rescue stages 2/3 (inline_prompt) run at tight rescue/
+        # postmortem budgets; watchdog wall_cap math (`timeout_sec -
+        # rescue_budget`) doesn't apply meaningfully there. Skip
+        # watchdog on those — the subprocess timeout is the only kill
+        # mechanism for short rescues.
         watchdog_eligible = (
             not req.is_postmortem
+            and req.inline_prompt is None
             and req.session_id is not None
         )
         proc = subprocess.Popen(

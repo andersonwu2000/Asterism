@@ -118,7 +118,7 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
               is_postmortem: bool = False,
               timeout_sec: int | None = None,
               mcp_config_path: Path | None = None,
-              is_fresh_rescue: bool = False,
+              inline_prompt: str | None = None,
               timeout_sec_override: int | None = None) -> int:
     """Dispatch to the configured LLM provider for one agent invocation.
 
@@ -142,15 +142,14 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     `POSTMORTEM_TIMEOUT_SEC` (180s) for postmortem calls and
     `WORKER_TIMEOUT_SEC` (600s) otherwise.
 
-    `is_fresh_rescue`: 2026-05-10 — fresh-cold rescue after the prior
-    in-pipeline spawn was watchdog-killed for stuck-thinking. Caller
-    has minted a fresh `session_id` and dumped the broken session's
-    thinking to `attempts_dir/_prior_analysis.md`. Provider does a
-    cold spawn (--session-id) but injects a Read directive into the
-    cold prompt requiring `_prior_analysis.md` to be consumed first.
-    Replaces the prior `is_rescue=True` (--resume + force-ship inline
-    prompt) which was empirically broken on max_tokens-deadlocked
-    sessions.
+    `inline_prompt`: 2026-05-10 — fresh-rescue stage 2 / stage 3
+    inline prompt. Caller has minted a fresh `session_id` and copied
+    the broken session's jsonl to `attempts_dir/_broken_session.jsonl`
+    so the agent can Read it. Provider sends `inline_prompt` verbatim
+    as `-p` (no template loading), uses `--session-id <session_id>`
+    (cold), skips the watchdog (these are short rescue/postmortem
+    replacements). Pair with `timeout_sec_override` (typically 180s)
+    for tight budgets.
     """
     if timeout_sec is None:
         if is_postmortem:
@@ -178,7 +177,7 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
         retry_context=retry_context,
         is_postmortem=is_postmortem,
         mcp_config_path=mcp_config_path,
-        is_fresh_rescue=is_fresh_rescue,
+        inline_prompt=inline_prompt,
     ))
 
 

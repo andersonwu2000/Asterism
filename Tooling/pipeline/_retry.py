@@ -107,83 +107,50 @@ def goal_still_active(conn: sqlite3.Connection, goal_id: int,
     return True
 
 
-# Fresh-rescue (2026-05-10, replaces prior STOP-then-rescue 2-phase
-# design): when watchdog kills a spawn for stuck-thinking, abandon the
-# broken session entirely. The session has typically hit
-# `stop_reason=max_tokens` and any subsequent prompt re-enters the same
-# deep-thinking pattern (probe + production evidence: --resume rescue
-# spawns produce 0 events for full budget). Instead:
+# Fresh-rescue (revised 2026-05-10, second iteration): when watchdog
+# kills a spawn for stuck-thinking, the broken session is unrecoverable
+# (--resume re-enters the deep-thinking pattern; production observed
+# 0 events for full rescue budget). The original session's stages
+# (rescue at -3min wall_cap, postmortem on subprocess timeout) cannot
+# fire on the broken session. Replacement: spawn fresh sessions to
+# take over those stages, preserving original budget structure.
 #
-#   1. Extract all thinking blocks from the broken session's jsonl
-#      and write them to `attempts_dir/_prior_analysis.md`.
-#   2. Mint a fresh session id, abandoning the broken one.
-#   3. Cold-spawn into the fresh session with a Read directive
-#      requiring `_prior_analysis.md` first; agent picks up reasoning
-#      from prior thinking and ships per the standard Backward task.
+# Workflow per stuck-thinking event:
 #
-# Probe evidence (16176de5 → fresh sid 236ced1d, 2026-05-10): fresh
-# session shipped patch.lean + sub-lemma stub in ~4 min, directly
-# referencing the prior analysis (Kelly minimiser geometric argument).
-# Compare to --resume rescue: 180s, 0 events. Fresh-rescue cost is
-# higher (cold-start overhead + full spawn budget) but actually
-# produces output, which the resume path didn't.
-def _dump_prior_thinking(sid: str, out_path: Path) -> bool:
-    """Extract all assistant thinking blocks from session `sid`'s jsonl
-    and write them to `out_path`, in chronological order with
-    timestamps. Returns True on success, False if jsonl missing /
-    no thinking blocks. Best-effort — any error returns False so the
-    caller can fall through gracefully."""
-    import json as _json
+#   Stage 2 (rescue, ~3min budget = `dispatch.rescue_timeout_sec`):
+#     Mint fresh sid #2, copy broken session's jsonl to
+#     `attempts_dir/_broken_session.jsonl`, spawn cold with a stage-2
+#     prompt that tells the agent to Read the broken jsonl then
+#     ship-or-bail. Replaces the original `--resume + rescue prompt`
+#     stage that the broken session can't run.
+#
+#   Stage 3 (postmortem, ~3min budget = `dispatch.postmortem_timeout_sec`):
+#     If stage 2 fails / parse non-terminal, mint fresh sid #3, spawn
+#     with a stage-3 prompt asking for `_progress.md` based on the
+#     broken jsonl. Replaces the original postmortem stage. The
+#     resulting `_progress.md` is detected by parse's bail discriminator
+#     → `agent_bailed` terminal decline → outer wrapper persists to
+#     `.drafts/` for the next cold dispatch.
+#
+# Subsequent warm retries within the same pipeline use sid #2 / sid #3
+# (the most recent fresh sid), not the abandoned broken sid.
+#
+# Worst-case cost per stuck-thinking event: 2 fresh spawns × ~3min
+# = ~6min wall (vs. the prior design's full spawn budgets per fresh
+# spawn = 15-30+ min, with recursive fresh-rescues observed).
+def _copy_broken_session_jsonl(broken_sid: str, dest: Path) -> bool:
+    """Copy the broken session's jsonl to `dest` so a fresh-rescue
+    agent can Read it from inside the sandbox without needing
+    add-dir access to ~/.claude/projects/. Returns True on success;
+    best-effort, any error returns False (the fresh agent then has
+    no prior context but the spawn still proceeds)."""
+    import shutil as _shutil
     from ..llm.claude_cli import _find_session_jsonl
-    log_path = _find_session_jsonl(sid)
-    if log_path is None:
+    src = _find_session_jsonl(broken_sid)
+    if src is None:
         return False
     try:
-        text = log_path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return False
-    blocks: list[tuple[str, str]] = []
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        try:
-            d = _json.loads(line)
-        except (_json.JSONDecodeError, ValueError):
-            continue
-        if d.get("type") != "assistant":
-            continue
-        ts = d.get("timestamp", "")
-        msg = d.get("message", {}) or {}
-        content = msg.get("content", [])
-        if not isinstance(content, list):
-            continue
-        for c in content:
-            if isinstance(c, dict) and c.get("type") == "thinking":
-                t = c.get("thinking", "")
-                if t.strip():
-                    blocks.append((ts, t))
-    if not blocks:
-        return False
-    body = [
-        f"# Prior in-flight analysis from killed session sid={sid[:8]}",
-        "",
-        f"This is the unfinished thinking from the previous spawn that "
-        f"was killed for exceeding the wall-clock budget. The session "
-        f"is abandoned; you are a fresh session resuming the work. "
-        f"Use this to skip re-doing analysis from scratch.",
-        "",
-        f"{len(blocks)} thinking block(s) follow, in chronological order:",
-        "",
-    ]
-    for ts, t in blocks:
-        body.append(f"## Thinking block at {ts} ({len(t)} chars)")
-        body.append("")
-        body.append("```")
-        body.append(t)
-        body.append("```")
-        body.append("")
-    try:
-        out_path.write_text("\n".join(body), encoding="utf-8")
+        _shutil.copyfile(src, dest)
     except OSError:
         return False
     return True
@@ -194,24 +161,96 @@ class SpawnCtx:
     """Per-attempt context handed to the kind-specific spawn callback.
 
     `cold=True` means the agent has no prior session to resume — either
-    attempt 0 of a fresh pipeline, or a stale_session in-place re-mint,
-    or a fresh-rescue (see `is_fresh_rescue`).
+    attempt 0 of a fresh pipeline, a stale_session in-place re-mint,
+    or a fresh-rescue stage 2 / stage 3 (see `inline_prompt`).
 
-    `is_fresh_rescue=True` signals: the prior in-pipeline spawn was
-    watchdog-killed for stuck-thinking; this spawn is a fresh-cold
-    session (sid is freshly minted, broken session abandoned) with a
-    `_prior_analysis.md` already written to attempts_dir. The spawn
-    function should run normal cold-prep (Context.md compile, F52
-    skeleton) AND signal the LLM provider to inject a Read directive
-    requiring the agent to consume `_prior_analysis.md` before any
-    other action. Mutually exclusive with normal cold (`cold=True`,
-    `is_fresh_rescue=False`).
+    `inline_prompt` (fresh-rescue): when set, the spawn function should
+    skip the normal cold-prompt template loading and pass this string
+    directly as the inline `-p` payload to claude. Used for fresh-
+    rescue stage 2 (ship-or-bail) and stage 3 (postmortem). The
+    framework also pre-writes `attempts_dir/_broken_session.jsonl` so
+    the agent can Read the broken session's history without needing
+    add-dir access to `~/.claude/projects/`. The spawn still does
+    cold-prep (Context.md compile, F52 skeleton) so the standard
+    workspace artifacts exist.
+
+    `budget_override`: per-spawn timeout override (seconds). Set
+    alongside `inline_prompt` so stage 2 / stage 3 each get the tight
+    rescue / postmortem budget instead of the default 900s spawn
+    budget. None means use the kind's default (spawn_timeout_sec).
     """
     sid: str
     cold: bool
     retry_context: str | None
     attempts_dir: Path
-    is_fresh_rescue: bool = False
+    inline_prompt: str | None = None
+    budget_override: int | None = None
+
+
+def _build_fresh_rescue_stage2_prompt(
+    attempts_dir: Path, jsonl_copied: bool, rescue_min: int,
+) -> str:
+    """Stage-2 prompt: agent Reads broken jsonl, ships-or-bails."""
+    if jsonl_copied:
+        log_note = (
+            f"The previous session's full conversation log (including "
+            f"all thinking blocks) is at "
+            f"`{attempts_dir}/_broken_session.jsonl`. Read it (use "
+            f"Read with offset/limit if it's large; thinking blocks "
+            f"are inside `assistant` events under content[].thinking) "
+            f"to see what was attempted and where it got stuck."
+        )
+    else:
+        log_note = (
+            "The previous session's log was not recoverable. Work "
+            "from `Context.md` alone."
+        )
+    return (
+        f"The previous session was killed mid-think after exceeding the "
+        f"wall-clock budget. {log_note}\n\n"
+        f"Then ship ONE of the following — no deep analysis, use what's "
+        f"already in the log:\n"
+        f"(a) `patch.lean` + `new_<slug>.lean` stubs (`:= by sorry` ok)\n"
+        f"(b) `patch.lean` alone with a sorry-free direct proof "
+        f"(leaf-bypass)\n"
+        f"(c) `patch.lean` with `-- decline: unprovable` + counterexample\n"
+        f"(d) bail — write `_progress.md` only, exit. No `patch.lean`. "
+        f"Capture in ≤200 words: shape converging to, sub-pieces with "
+        f"clear name+statement, the specific blocker, alternative "
+        f"direction (≤60 words) or 'none — direction sound'.\n\n"
+        f"Act now. {rescue_min} minutes left."
+    )
+
+
+def _build_fresh_rescue_stage3_prompt(
+    attempts_dir: Path, jsonl_copied: bool, postmortem_min: int,
+) -> str:
+    """Stage-3 prompt: agent writes _progress.md based on broken jsonl."""
+    if jsonl_copied:
+        log_note = (
+            f"The previous session's log is at "
+            f"`{attempts_dir}/_broken_session.jsonl`. Read it (use "
+            f"Read with offset/limit if it's large) to see what was "
+            f"explored."
+        )
+    else:
+        log_note = (
+            "The previous session's log was not recoverable. Work "
+            "from `Context.md` alone."
+        )
+    return (
+        f"The previous session AND the stage-2 rescue both failed to "
+        f"ship. {log_note}\n\n"
+        f"Write a `_progress.md` note (≤200 words) capturing:\n"
+        f"1. The decomposition shape converging to (1 sentence).\n"
+        f"2. Any sub-piece with clear formulation (slug + statement).\n"
+        f"3. The specific blocker (which Mathlib lemma, which case "
+        f"analysis, etc.).\n"
+        f"4. Alternative direction (≤60 words) or 'none — direction sound'.\n\n"
+        f"Skip recapping the goal — Context.md already has it. Write "
+        f"`_progress.md` and exit. Do NOT finalize patch.lean. "
+        f"{postmortem_min} minutes left."
+    )
 
 
 SpawnFn = Callable[[SpawnCtx], int]
@@ -458,116 +497,141 @@ def run_with_session_retries(
                                          failure_detail=detail))
 
         if rc == SpawnRC.STUCK_THINKING:
-            # Watchdog killed the spawn for >idle_window_sec without any
-            # tool_use event in the session jsonl — Sonnet's runaway-
-            # thinking trap. Fresh-rescue (2026-05-10, replaces prior
-            # 2-phase STOP-then-rescue):
-            #
-            # Probe + production evidence: a session that has hit
-            # `stop_reason=max_tokens` cannot be rescued via --resume —
-            # any subsequent prompt re-enters the deep-thinking pattern
-            # (production: 0 events for full 180s rescue budget). The
-            # session is effectively dead. Trying to interrupt-and-
-            # resume doesn't work; abandon and reuse only the thinking.
-            #
-            # Steps:
-            #   1. Dump all thinking blocks from the broken session jsonl
-            #      to attempts_dir/_prior_analysis.md. The agent's prior
-            #      reasoning is preserved as a file, not lost with the
-            #      session.
-            #   2. Mint a fresh session id; replace `sid` permanently
-            #      so subsequent warm retries within this pipeline use
-            #      the fresh session, not the broken one.
-            #   3. Cold-spawn into the fresh session with
-            #      `is_fresh_rescue=True`; the spawn function injects
-            #      a Read directive so the agent consumes
-            #      `_prior_analysis.md` before any other action.
-            #
-            # Probe (16176de5 → fresh sid 236ced1d, 2026-05-10): fresh
-            # session shipped patch.lean + sub-lemma stub in ~4 min,
-            # directly referencing the prior reasoning. Compare to
-            # --resume rescue: 180s, 0 events.
-            #
-            # Rescue success → attach. Rescue failure → record as a
-            # buffered `agent_stuck_thinking` and continue the retry
-            # loop (which now uses the fresh sid for any warm retries).
+            # Two-stage fresh-rescue: original session is unrecoverable,
+            # so spawn fresh sessions to take over its remaining
+            # workflow stages (rescue + postmortem). See module-level
+            # block comment above `_copy_broken_session_jsonl` for the
+            # design rationale.
+            from .. import config as _cfg
+            from ..llm.base import RESCUE_BUDGET_SEC
+            from ..agent import POSTMORTEM_TIMEOUT_SEC
             broken_sid = sid
-            prior_path = attempts_dir / "_prior_analysis.md"
-            dumped = _dump_prior_thinking(broken_sid, prior_path)
-            sid = str(uuid.uuid4())
-            print(f"[fresh-rescue] broken_sid={broken_sid[:8]} → "
-                  f"fresh_sid={sid[:8]}; prior_analysis_dumped={dumped}",
-                  flush=True)
-            rescue_t0 = time.monotonic()
-            rescue_rc = spawn_fn(SpawnCtx(
-                sid=sid, cold=True, retry_context=None,
+            broken_jsonl_dest = attempts_dir / "_broken_session.jsonl"
+            jsonl_copied = _copy_broken_session_jsonl(
+                broken_sid, broken_jsonl_dest)
+
+            # ── Stage 2: fresh-rescue ship-or-bail ────────────────
+            stage2_budget = _cfg.get(
+                "dispatch.rescue_timeout_sec",
+                default=RESCUE_BUDGET_SEC,
+                env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
+                workspace=workspace,
+            )
+            stage2_min = max(1, stage2_budget // 60)
+            stage2_prompt = _build_fresh_rescue_stage2_prompt(
+                attempts_dir, jsonl_copied, stage2_min)
+            sid_stage2 = str(uuid.uuid4())
+            sid = sid_stage2  # subsequent warm retries use this
+            print(f"[fresh-rescue stage2] broken_sid={broken_sid[:8]} → "
+                  f"fresh_sid={sid_stage2[:8]} budget={stage2_budget}s "
+                  f"jsonl_copied={jsonl_copied}", flush=True)
+            stage2_t0 = time.monotonic()
+            stage2_rc = spawn_fn(SpawnCtx(
+                sid=sid_stage2, cold=True, retry_context=None,
                 attempts_dir=attempts_dir,
-                is_fresh_rescue=True,
+                inline_prompt=stage2_prompt,
+                budget_override=stage2_budget,
             ))
-            rescue_dur = time.monotonic() - rescue_t0
-            print(f"[fresh-rescue] sid={sid[:8]} rc={rescue_rc} "
-                  f"dur={rescue_dur:.0f}s", flush=True)
-            if rescue_rc == SpawnRC.OK:
-                rescue_result = parse_fn()
-                if (rescue_result.outcome in _TERMINAL_SUCCESS_OUTCOMES
-                        or rescue_result.failure_reason
-                        in _TERMINAL_DECLINE_REASONS):
-                    return attach(rescue_result)
-                # Rescue ran but parse didn't reach terminal — fall
-                # through and let the next iteration retry normally
-                # (subsequent warm retries use the fresh sid).
-                buffer_failure(rescue_result.failure_reason,
-                               rescue_result.failure_detail,
-                               rescue_result.proposal_md)
-                last_reason = rescue_result.failure_reason
-                last_detail = rescue_result.failure_detail
-                continue
-            # Salvage on fresh-rescue TIMEOUT (rc=124): mirror the
-            # main-spawn TIMEOUT salvage. The fresh-rescue agent might
-            # have shipped valid output before subprocess.communicate
-            # killed it (g266-class cargo-cult anomaly observed in SG
-            # run #8 fresh-rescues e7750c8c / 68d9f792). Without this,
-            # any valid disk output from a timeout'd fresh-rescue is
-            # discarded — same bug commit 2504650 fixed for main spawn.
-            salvage_note = ""
-            salvage_result: PipelineResult | None = None
-            if rescue_rc == SpawnRC.TIMEOUT:
-                try:
-                    salvage_result = parse_fn()
-                except Exception as exc:  # noqa: BLE001
-                    salvage_note = (f"fresh-rescue salvage parse raised "
-                                    f"{type(exc).__name__}: {exc}")
-                    print(f"[fresh-rescue-salvage] sid={sid[:8]} "
-                          f"{salvage_note}; falling back to "
-                          f"stuck-thinking buffer", flush=True)
-                if salvage_result is not None and (
-                    salvage_result.outcome in _TERMINAL_SUCCESS_OUTCOMES
-                    or salvage_result.failure_reason
-                    in _TERMINAL_DECLINE_REASONS
-                ):
-                    print(f"[fresh-rescue-salvage] sid={sid[:8]} "
-                          f"salvaged outcome={salvage_result.outcome} "
-                          f"reason={salvage_result.failure_reason} "
-                          f"despite subprocess timeout", flush=True)
-                    return attach(salvage_result)
-            # Rescue itself failed — record stuck-thinking and continue.
-            # Fold salvage parse outcome into detail when applicable
-            # (forensic transparency: distinguish "rescue timed out
-            # with no output" from "rescue timed out with broken
-            # output" from "rescue salvage parse raised").
-            detail = (f"watchdog killed broken_sid={broken_sid[:8]}; "
-                      f"fresh-rescue sid={sid[:8]} rc={rescue_rc} "
-                      f"dur={rescue_dur:.0f}s")
-            if salvage_result is not None:
-                salvage_note = (
-                    f"fresh-rescue salvage: outcome={salvage_result.outcome} "
-                    f"reason={salvage_result.failure_reason} detail="
-                    f"{(salvage_result.failure_detail or '')[:200]}")
-            if salvage_note:
-                detail = f"{detail}; {salvage_note}"
-            buffer_failure("agent_stuck_thinking", detail)
+            stage2_dur = time.monotonic() - stage2_t0
+            print(f"[fresh-rescue stage2] sid={sid_stage2[:8]} "
+                  f"rc={stage2_rc} dur={stage2_dur:.0f}s", flush=True)
+
+            # Try parse_fn after stage 2 regardless of rc. Salvage
+            # mirrors the main-spawn TIMEOUT salvage: agent might have
+            # shipped (or written `_progress.md` for bail) before being
+            # killed at the budget cap. Bail discriminator in parse
+            # detects `_progress.md` + skeleton patch + no new_*.lean
+            # → agent_bailed (terminal decline).
+            stage2_result: PipelineResult | None = None
+            try:
+                stage2_result = parse_fn()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[fresh-rescue stage2] sid={sid_stage2[:8]} "
+                      f"parse raised {type(exc).__name__}: {exc}",
+                      flush=True)
+            if stage2_result is not None and (
+                stage2_result.outcome in _TERMINAL_SUCCESS_OUTCOMES
+                or stage2_result.failure_reason
+                in _TERMINAL_DECLINE_REASONS
+            ):
+                print(f"[fresh-rescue stage2] sid={sid_stage2[:8]} "
+                      f"attached outcome={stage2_result.outcome} "
+                      f"reason={stage2_result.failure_reason}",
+                      flush=True)
+                return attach(stage2_result)
+
+            # ── Stage 3: fresh-rescue postmortem ──────────────────
+            stage3_budget = _cfg.get(
+                "dispatch.postmortem_timeout_sec",
+                default=POSTMORTEM_TIMEOUT_SEC,
+                env_var="ASTERISM_POSTMORTEM_TIMEOUT_SEC", cast=int,
+                workspace=workspace,
+            )
+            stage3_min = max(1, stage3_budget // 60)
+            stage3_prompt = _build_fresh_rescue_stage3_prompt(
+                attempts_dir, jsonl_copied, stage3_min)
+            sid_stage3 = str(uuid.uuid4())
+            sid = sid_stage3  # subsequent warm retries use this
+            print(f"[fresh-rescue stage3] stage2_sid={sid_stage2[:8]} → "
+                  f"fresh_sid={sid_stage3[:8]} budget={stage3_budget}s",
+                  flush=True)
+            stage3_t0 = time.monotonic()
+            stage3_rc = spawn_fn(SpawnCtx(
+                sid=sid_stage3, cold=True, retry_context=None,
+                attempts_dir=attempts_dir,
+                inline_prompt=stage3_prompt,
+                budget_override=stage3_budget,
+            ))
+            stage3_dur = time.monotonic() - stage3_t0
+            print(f"[fresh-rescue stage3] sid={sid_stage3[:8]} "
+                  f"rc={stage3_rc} dur={stage3_dur:.0f}s", flush=True)
+
+            # Stage 3 is intended to write `_progress.md` and exit.
+            # parse_fn's bail discriminator detects this and returns
+            # agent_bailed (terminal decline). Try parse regardless of
+            # rc — even on stage 3 timeout, `_progress.md` may already
+            # be on disk.
+            stage3_result: PipelineResult | None = None
+            try:
+                stage3_result = parse_fn()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[fresh-rescue stage3] sid={sid_stage3[:8]} "
+                      f"parse raised {type(exc).__name__}: {exc}",
+                      flush=True)
+            if stage3_result is not None and (
+                stage3_result.outcome in _TERMINAL_SUCCESS_OUTCOMES
+                or stage3_result.failure_reason
+                in _TERMINAL_DECLINE_REASONS
+            ):
+                print(f"[fresh-rescue stage3] sid={sid_stage3[:8]} "
+                      f"attached outcome={stage3_result.outcome} "
+                      f"reason={stage3_result.failure_reason}",
+                      flush=True)
+                return attach(stage3_result)
+
+            # Both stages failed to produce a terminal outcome. Buffer
+            # agent_stuck_thinking with full forensic detail and
+            # continue the retry loop (subsequent warm retries use
+            # sid_stage3 — the broken sid is permanently abandoned).
+            detail_parts = [
+                f"watchdog killed broken_sid={broken_sid[:8]}",
+                f"stage2 sid={sid_stage2[:8]} rc={stage2_rc} "
+                f"dur={stage2_dur:.0f}s",
+                f"stage3 sid={sid_stage3[:8]} rc={stage3_rc} "
+                f"dur={stage3_dur:.0f}s",
+            ]
+            if stage2_result is not None:
+                detail_parts.append(
+                    f"stage2 parse: reason={stage2_result.failure_reason} "
+                    f"detail={(stage2_result.failure_detail or '')[:120]}")
+            if stage3_result is not None:
+                detail_parts.append(
+                    f"stage3 parse: reason={stage3_result.failure_reason} "
+                    f"detail={(stage3_result.failure_detail or '')[:120]}")
+            buffer_failure("agent_stuck_thinking", "; ".join(detail_parts))
             last_reason = "agent_stuck_thinking"
-            last_detail = f"fresh-rescue rc={rescue_rc}"
+            last_detail = (f"stage2 rc={stage2_rc}, "
+                           f"stage3 rc={stage3_rc}")
             continue
 
         if rc != SpawnRC.OK:
