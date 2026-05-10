@@ -1,20 +1,28 @@
 # Asterism v2 — Current Status
 
-更新於 **2026-05-10**、HEAD `b4308ec`、**691 unit tests green / 1 skipped**。
+更新於 **2026-05-10**、HEAD `b4308ec` + WIP（stream-json watchdog redesign）、**707 unit tests green / 1 skipped**。
 
 ## 下個 session 接手要做的事
 
-**SG run #9 結果待驗收**（compact 前剛起跑、daemon pid 5284、background task `bc68paqy7`、cron `f4521c87` 每 :03/:23/:43 自主 cadence、log 寫到 `D:/Asterism/runs/sg_run_9.md`）。Compact 後讀 `runs/sg_run_9.md` 看當前進度 + 任何 cadence 觀察。
+**watchdog stream-json redesign 已寫完待 commit + SG run #10 驗收**。本 session 在 SG run #9 觀察到 s219 的 TIMEOUT-path postmortem `--resume` 撞 thinking trap 失敗（agent 180s 內 0 events）→ 觸發兩條 path 對齊 + watchdog 機制重寫。
 
-run #9 是 **two-stage fresh-rescue v2** 首次 production 驗證、累計 11+ 個修法。重點看：
-1. **兩段式 fresh-rescue 整體 wall**：< 7 min/event（vs run #8 v1 設計 15-30 min/event）
-2. **stage 2 / stage 3 是否 ship 真 deliverable**：dead_attempts reason 分布、特別看 `agent_bailed`（stage 3 寫 `_progress.md` 後 parse 偵測到應該觸發）
-3. **不再遞迴 fresh-rescue**：同 sid 不會 fresh-rescue 兩次（v1 觀察到 ddf48b3e 同 pipeline 內遞迴 2 次的災難）
-4. **prompt tighten 後 stuck_thinking 數量**：對照 run #8 的 4 stuck_thinking + 7 timeout、看是否減少
+修復計畫摘要（已實作、未 commit）：
+1. claude CLI 切到 `--output-format stream-json --verbose --include-partial-messages`（只在 watchdog_eligible 時用）
+2. 新 `Tooling/llm/stream_parser.py`：解 stream events、維護 idle/mid-thinking/mid-tool/mid-text/finalized state + last_stop_reason
+3. watchdog 改成 single-trigger at wall_cap、sample `parser.is_thinking_trap()`（state==mid-thinking OR finalized+max_tokens）
+4. TIMEOUT path 加 parser final state 檢查、trap → fresh-sid stage 2/3 takeover（與 STUCK_THINKING path 對齊）
+5. 拿掉 `idle_window_sec` config + watchdog jsonl polling
+6. dead_attempts.failure_detail 加 detector verdict forensic 標記
+7. `_run_fresh_sid_takeover` helper 抽 STUCK_THINKING / TIMEOUT-trap 兩 path 共用
 
-**異常 cut**：gateway crash loop / hot_rate < 30% 持續 / 連續 ≥3 個 stuck_thinking 都 stage 2+3 都不出 deliverable / shelved% > 60%。
+**SG run #10 驗收重點**：
+1. `[watchdog] sid=... wall cap ...; trap (state=... last_stop_reason=...); killing for rescue` log 出現
+2. `[timeout-trap] sid=... parser detected trap...; running fresh-sid takeover` log 出現（s219-class case）
+3. 沒被 watchdog 抓的 active spawn → `--resume` postmortem 寫得出 `_progress.md`、`.drafts/` 有檔
+4. dead_attempts.failure_detail 含 `[detector verdict: ...]`
+5. 整體 thinking trap 處理 wall < 7 min/event
 
-跑完後 commit baseline metrics、對比之前 SG runs（見下表）。
+**異常 cut**：gateway crash loop / hot_rate < 30% 持續 / 連續 ≥3 個 thinking trap 都 stage2+3 都不出 deliverable / shelved% > 60%。
 
 ## 2026-05-10 session 落地（11 commits）
 
@@ -69,13 +77,16 @@ g266 anomaly：agent finished work（patch + sub-lemmas + validate pass）但繼
 | cascade-vs-verify race fix | `5bded83` | 不出現「shelved goal but bfs filter excludes」idle exit |
 | leaf-bypass acceptance axiom probe | `968e4e7` | `axiom_violation` 在 acceptance 階段抓、不進 verify |
 | Decline directives 4-token | `54ed9fb..87370bb` | dead_attempts 含 `parent_needs_fix` / `agent_shelved` 行 |
-| **Watchdog idle-window guard** | `b6ece82` | wall_cap 時 `silence ≥ 480s` 才殺、否則 defer |
+| ~~Watchdog idle-window guard~~ | ~~`b6ece82`~~ | **2026-05-10 retired** — silence-only 抓不到 mid-thinking before silence 累積（s219 case 2 silence 468s 擦邊 480s threshold）。改用 stream-json 即時偵測 |
 | **Backward bail option (d)** | `b6ece82` | `agent_bailed` failure_reason、`_progress.md` 進 .drafts/ |
 | **TIMEOUT salvage** | `2504650` | rc=124 先 parse 救起 success / decline、不直接走 postmortem |
 | **Bail discriminator strict** | `2504650` | progress + skeleton patch + 無 leading + 無 new_* 才算 bail |
 | **Forensic bug fix** | `55e38f6` | dead_attempts.failure_detail 是 main spawn 的 stderr、不被 postmortem 覆寫 |
 | **Fresh-rescue v2 two-stage** | `8277c3c` | STUCK_THINKING → stage 2 fresh ship-or-bail + stage 3 fresh postmortem、各 ~3 min budget |
 | **Fresh-rescue prompts tightened** | `b4308ec` | stage 2/3 prompt 短 Read hint、無「no deep analysis」過度抑制 |
+| **Watchdog stream-json + thinking-trap detector** | _pending commit_ | `--output-format stream-json --include-partial-messages` + StreamParser；watchdog single-trigger at wall_cap → `state == mid-thinking OR last_stop_reason == max_tokens` 即時偵測 |
+| **TIMEOUT path trap branch** | _pending commit_ | rc=124 + salvage fail + parser final state == trap → fresh-sid takeover（同 STUCK_THINKING）；active → 保留 `--resume` postmortem |
+| **Forensic detector verdict** | _pending commit_ | dead_attempts.failure_detail 加 `[detector verdict: ...]` 段、累積數據後 tune threshold |
 
 （其餘穩定機制如 daemon lock / gateway log / waitForDiagnostics 仍同前、不重列）
 

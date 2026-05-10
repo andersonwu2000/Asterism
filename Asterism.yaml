@@ -33,19 +33,19 @@ dispatch:
                               #     leaves room for stage 2 + stage 3
                               #     fresh-rescue spawns within budget).
                               # (b) fresh-rescue stage 2 budget (the
-                              #     ship-or-bail spawn after stuck-
-                              #     thinking, takes over the original
+                              #     ship-or-bail spawn after thinking-
+                              #     trap, takes over the original
                               #     session's rescue stage).
                               # Stage 3 (postmortem replacement) uses
                               # `postmortem_timeout_sec` instead.
-#  idle_window_sec: 480       # at wall_cap, kill spawn for rescue ONLY
-                              # if the agent has emitted no tool_use for
-                              # ≥ this window. Productive agents at
-                              # wall_cap fall through to the standard
-                              # subprocess-timeout + postmortem path
-                              # instead of being force-shipped via
-                              # rescue. Tied to rescue_timeout_sec —
-                              # both gate the wall_cap kill.
+                              # Watchdog 2026-05-10 v3 redesign: at
+                              # wall_cap, the watchdog samples the
+                              # stream parser's state (mid-thinking
+                              # OR finalized+max_tokens → trap → kill
+                              # → fresh-sid stage 2/3). No silence
+                              # threshold (the prior idle_window_sec
+                              # mechanism was retired with the
+                              # stream-json switch).
 
 gateway:                       # Phase 2 LSP gateway (Tooling/lsp_gateway.py)
   workers: 3                  # Persistent lean workers in the pool. Each is
