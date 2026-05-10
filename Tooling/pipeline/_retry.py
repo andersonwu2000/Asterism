@@ -35,6 +35,7 @@ visible drift, no functional bug).
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 import uuid
@@ -256,6 +257,196 @@ PostmortemFn = Callable[[str], None]
 ReflectionFn = Callable[[str, "PipelineResult"], None]
 
 
+@dataclass
+class _TakeoverOutcome:
+    """Result of a v2 stage 2 + stage 3 fresh-sid takeover.
+
+    `terminal_result`: the PipelineResult to attach when stage 2 or
+        stage 3 reached a terminal outcome (success / decline). None
+        when both stages failed to converge — caller buffers
+        `agent_stuck_thinking` and continues the retry loop.
+    `last_sid`: the most recent fresh sid (stage 2 if it terminated,
+        else stage 3). Subsequent warm retries within the same
+        pipeline use this sid; the broken sid is permanently abandoned.
+    `detail_parts`: forensic strings describing trigger, stage rcs,
+        durations, and parse outcomes; the caller joins these into
+        `failure_detail` when buffering `agent_stuck_thinking`.
+    `stage2_rc` / `stage3_rc`: subprocess rcs for each stage. stage3_rc
+        is None when stage 2 reached terminal (stage 3 didn't fire).
+    """
+    terminal_result: PipelineResult | None
+    last_sid: str
+    detail_parts: list
+    stage2_rc: int
+    stage3_rc: int | None
+
+
+def _run_fresh_sid_takeover(
+    *, broken_sid: str, broken_sid_label: str,
+    attempts_dir: Path, workspace: Path | None,
+    spawn_fn: SpawnFn, parse_fn: ParseFn,
+) -> _TakeoverOutcome:
+    """Execute v2 stage 2 (ship-or-bail) + stage 3 (postmortem)
+    fresh-sid takeover. Shared by the watchdog STUCK_THINKING branch
+    and the TIMEOUT-with-thinking-trap branch — both end up here once
+    we've established the agent's session is unrecoverable and only a
+    fresh sid can extract value (see `Tooling/llm/stream_parser.py`'s
+    is_thinking_trap docstring for the axiom).
+
+    `broken_sid_label`: human description of why takeover fired,
+        prepended to detail_parts so dead_attempts.failure_detail
+        records the trigger source. Examples:
+          - 'watchdog killed broken_sid=cb7e1cde'
+          - 'subprocess timeout + thinking trap (state=mid-thinking
+             last_stop_reason=max_tokens) broken_sid=cb7e1cde'
+    """
+    from .. import config as _cfg
+    from ..llm.base import RESCUE_BUDGET_SEC
+    from ..agent import POSTMORTEM_TIMEOUT_SEC
+
+    broken_jsonl_dest = attempts_dir / "_broken_session.jsonl"
+    jsonl_copied = _copy_broken_session_jsonl(
+        broken_sid, broken_jsonl_dest)
+
+    # ── Stage 2: fresh-rescue ship-or-bail ────────────────────────
+    stage2_budget = _cfg.get(
+        "dispatch.rescue_timeout_sec",
+        default=RESCUE_BUDGET_SEC,
+        env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
+        workspace=workspace,
+    )
+    stage2_min = max(1, stage2_budget // 60)
+    stage2_prompt = _build_fresh_rescue_stage2_prompt(
+        attempts_dir, jsonl_copied, stage2_min)
+    sid_stage2 = str(uuid.uuid4())
+    print(f"[fresh-rescue stage2] broken_sid={broken_sid[:8]} → "
+          f"fresh_sid={sid_stage2[:8]} budget={stage2_budget}s "
+          f"jsonl_copied={jsonl_copied}", flush=True)
+    stage2_t0 = time.monotonic()
+    stage2_rc = spawn_fn(SpawnCtx(
+        sid=sid_stage2, cold=True, retry_context=None,
+        attempts_dir=attempts_dir,
+        inline_prompt=stage2_prompt,
+        budget_override=stage2_budget,
+    ))
+    stage2_dur = time.monotonic() - stage2_t0
+    print(f"[fresh-rescue stage2] sid={sid_stage2[:8]} "
+          f"rc={stage2_rc} dur={stage2_dur:.0f}s", flush=True)
+
+    stage2_result: PipelineResult | None = None
+    try:
+        stage2_result = parse_fn()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[fresh-rescue stage2] sid={sid_stage2[:8]} "
+              f"parse raised {type(exc).__name__}: {exc}",
+              flush=True)
+    if stage2_result is not None and (
+        stage2_result.outcome in _TERMINAL_SUCCESS_OUTCOMES
+        or stage2_result.failure_reason in _TERMINAL_DECLINE_REASONS
+    ):
+        print(f"[fresh-rescue stage2] sid={sid_stage2[:8]} "
+              f"attached outcome={stage2_result.outcome} "
+              f"reason={stage2_result.failure_reason}", flush=True)
+        return _TakeoverOutcome(
+            terminal_result=stage2_result,
+            last_sid=sid_stage2,
+            detail_parts=[
+                broken_sid_label,
+                f"stage2 sid={sid_stage2[:8]} rc={stage2_rc} "
+                f"dur={stage2_dur:.0f}s",
+            ],
+            stage2_rc=int(stage2_rc),
+            stage3_rc=None,
+        )
+
+    # ── Stage 3: fresh-rescue postmortem ──────────────────────────
+    stage3_budget = _cfg.get(
+        "dispatch.postmortem_timeout_sec",
+        default=POSTMORTEM_TIMEOUT_SEC,
+        env_var="ASTERISM_POSTMORTEM_TIMEOUT_SEC", cast=int,
+        workspace=workspace,
+    )
+    stage3_min = max(1, stage3_budget // 60)
+    stage3_prompt = _build_fresh_rescue_stage3_prompt(
+        attempts_dir, jsonl_copied, stage3_min)
+    sid_stage3 = str(uuid.uuid4())
+    print(f"[fresh-rescue stage3] stage2_sid={sid_stage2[:8]} → "
+          f"fresh_sid={sid_stage3[:8]} budget={stage3_budget}s",
+          flush=True)
+    stage3_t0 = time.monotonic()
+    stage3_rc = spawn_fn(SpawnCtx(
+        sid=sid_stage3, cold=True, retry_context=None,
+        attempts_dir=attempts_dir,
+        inline_prompt=stage3_prompt,
+        budget_override=stage3_budget,
+    ))
+    stage3_dur = time.monotonic() - stage3_t0
+    print(f"[fresh-rescue stage3] sid={sid_stage3[:8]} "
+          f"rc={stage3_rc} dur={stage3_dur:.0f}s", flush=True)
+
+    stage3_result: PipelineResult | None = None
+    try:
+        stage3_result = parse_fn()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[fresh-rescue stage3] sid={sid_stage3[:8]} "
+              f"parse raised {type(exc).__name__}: {exc}",
+              flush=True)
+
+    detail_parts = [
+        broken_sid_label,
+        f"stage2 sid={sid_stage2[:8]} rc={stage2_rc} "
+        f"dur={stage2_dur:.0f}s",
+        f"stage3 sid={sid_stage3[:8]} rc={stage3_rc} "
+        f"dur={stage3_dur:.0f}s",
+    ]
+    if stage2_result is not None:
+        detail_parts.append(
+            f"stage2 parse: reason={stage2_result.failure_reason} "
+            f"detail={(stage2_result.failure_detail or '')[:120]}")
+    if stage3_result is not None:
+        detail_parts.append(
+            f"stage3 parse: reason={stage3_result.failure_reason} "
+            f"detail={(stage3_result.failure_detail or '')[:120]}")
+
+    if stage3_result is not None and (
+        stage3_result.outcome in _TERMINAL_SUCCESS_OUTCOMES
+        or stage3_result.failure_reason in _TERMINAL_DECLINE_REASONS
+    ):
+        print(f"[fresh-rescue stage3] sid={sid_stage3[:8]} "
+              f"attached outcome={stage3_result.outcome} "
+              f"reason={stage3_result.failure_reason}", flush=True)
+        return _TakeoverOutcome(
+            terminal_result=stage3_result,
+            last_sid=sid_stage3,
+            detail_parts=detail_parts,
+            stage2_rc=int(stage2_rc),
+            stage3_rc=int(stage3_rc),
+        )
+
+    return _TakeoverOutcome(
+        terminal_result=None,
+        last_sid=sid_stage3,
+        detail_parts=detail_parts,
+        stage2_rc=int(stage2_rc),
+        stage3_rc=int(stage3_rc),
+    )
+
+
+def _read_parser_state(attempts_dir: Path) -> dict | None:
+    """Load the stream parser's final snapshot written by
+    `Tooling/llm/claude_cli._persist_parser_state`. Returns None when
+    the file is absent (non-stream-json spawn) or unparseable. Caller
+    treats None as 'no detector data — assume active' (i.e. fall back
+    to the legacy `--resume` postmortem path)."""
+    try:
+        text = (attempts_dir / "_parser_state.json").read_text(
+            encoding="utf-8")
+        data = json.loads(text)
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+
+
 def run_with_session_retries(
     *,
     conn: sqlite3.Connection,
@@ -423,30 +614,33 @@ def run_with_session_retries(
                 failure_detail=f"agent rc={rc} (CLI missing / not installed)"))
 
         if rc == SpawnRC.TIMEOUT:
-            # Decision 3 (revised 2026-05-10): salvage parse before
-            # postmortem. The watchdog's idle-window guard
-            # (Tooling/llm/claude_cli.py) defers wall_cap kills for
-            # agents that are still emitting tool_use, leaving them
-            # only `rescue_timeout_sec` seconds to wrap up before
-            # subprocess timeout. Sonnet's empirical pattern is to
-            # finish writing patch.lean + new_*.lean and then keep
-            # running tool_use (extra `ls` self-checks, optional
-            # `_progress.md` notes) past the natural exit point —
-            # subprocess.TimeoutExpired fires, rc=124, files are valid
-            # on disk but the old code path discarded them.
+            # Decision 3 (revised 2026-05-10 v3): salvage parse first,
+            # then check parser final state. The salvage path captures
+            # active-but-cargo-cult agents (s220-class: patch + subs
+            # already on disk, agent ran extra `ls` past natural exit
+            # → subprocess.TimeoutExpired). Salvage failure means the
+            # on-disk output is genuinely malformed/incomplete, OR the
+            # agent never reached the writing phase because it was
+            # stuck in thinking.
             #
-            # Salvage: try parse_fn(); if it returns a terminal-
-            # success outcome OR a terminal-decline directive (agent
-            # explicitly signaled via patch.lean even mid-think), honor
-            # it. Only fall through to postmortem + forced exhaust when
-            # the on-disk output is genuinely incomplete / malformed.
+            # The parser-state check (added 2026-05-10) discriminates
+            # the salvage-fail population:
+            #   * thinking trap (state=mid-thinking OR finalized +
+            #     stop_reason=max_tokens) → fresh-sid takeover, same
+            #     mechanism as the watchdog STUCK_THINKING branch.
+            #     `--resume` postmortem on a thinking-trapped session
+            #     re-enters the same trap (s219 cb7e1cde evidence:
+            #     180s postmortem produced 0 events).
+            #   * active (anything else) → keep `--resume` postmortem.
+            #     Active agents at subprocess timeout were emitting
+            #     tool_use right up to the kill; --resume picks up
+            #     where they left off and a 180s budget is enough for
+            #     a recap-style _progress.md.
             #
             # Pre-existing risk note: parse_fn can mutate DB / disk
             # mid-execution and raise without rollback. This risk
-            # exists on the rc=0 path too (every successful spawn
-            # invokes parse_fn the same way); salvage doesn't introduce
-            # new risk, only exposes the same risk to one more rc.
-            # Adding transactional wrapping is a separate refactor.
+            # exists on the rc=0 path too; salvage doesn't introduce
+            # new risk, only exposes it to one more rc.
             salvage_note = ""
             timeout_result: PipelineResult | None = None
             try:
@@ -466,19 +660,57 @@ def run_with_session_retries(
                       f"reason={timeout_result.failure_reason} despite "
                       f"subprocess timeout", flush=True)
                 return attach(timeout_result)
-            # No salvage — capture failure detail FROM THE MAIN SPAWN's
-            # _spawn.stderr BEFORE calling postmortem, otherwise the
-            # postmortem spawn's own stderr (e.g. its own timeout
-            # "TimeoutExpired after 180s") overwrites the main's
-            # "TimeoutExpired after 900s" and operators reading
-            # dead_attempts.failure_detail get the wrong wall budget.
-            # Fold the salvage parse outcome into failure_detail so
-            # forensics can distinguish "agent wrote nothing usable"
-            # (parse_proposal_fail) from "agent wrote a broken patch"
-            # (lake_build_error / patch_signature_mismatch / ...) from
-            # "salvage parse itself raised". Reason stays `agent_timeout`
-            # so the operator-level "this is a timeout" signal is not
-            # lost — TIMEOUT remains the primary classification.
+
+            # Salvage failed. Check parser final state for trap.
+            parser_state = _read_parser_state(attempts_dir)
+            state_label = (parser_state.get("state", "—")
+                           if parser_state else "—")
+            stop_label = (parser_state.get("last_stop_reason", "—")
+                          if parser_state else "—")
+            is_trap = (parser_state.get("is_thinking_trap", False)
+                       if parser_state else False)
+
+            if is_trap:
+                broken_sid = sid
+                print(f"[timeout-trap] sid={broken_sid[:8]} parser "
+                      f"detected trap (state={state_label} "
+                      f"last_stop_reason={stop_label}); running "
+                      f"fresh-sid takeover instead of --resume "
+                      f"postmortem", flush=True)
+                outcome = _run_fresh_sid_takeover(
+                    broken_sid=broken_sid,
+                    broken_sid_label=(
+                        f"subprocess timeout + thinking trap "
+                        f"(state={state_label} "
+                        f"last_stop_reason={stop_label}) "
+                        f"broken_sid={broken_sid[:8]}"),
+                    attempts_dir=attempts_dir, workspace=workspace,
+                    spawn_fn=spawn_fn, parse_fn=parse_fn,
+                )
+                sid = outcome.last_sid
+                if outcome.terminal_result is not None:
+                    return attach(outcome.terminal_result)
+                buffer_failure("agent_stuck_thinking",
+                               "; ".join(outcome.detail_parts))
+                last_reason = "agent_stuck_thinking"
+                last_detail = (f"stage2 rc={outcome.stage2_rc}, "
+                               f"stage3 rc={outcome.stage3_rc}")
+                continue
+
+            # Active spawn at subprocess timeout — keep legacy
+            # `--resume` postmortem. Capture failure detail FROM THE
+            # MAIN SPAWN's _spawn.stderr BEFORE calling postmortem,
+            # otherwise the postmortem spawn's own stderr (e.g. its
+            # own 180s timeout) overwrites the main's "after 900s" and
+            # operators reading dead_attempts.failure_detail get the
+            # wrong wall budget. Fold the salvage parse outcome and
+            # detector verdict into failure_detail so forensics can
+            # distinguish: "agent wrote nothing usable"
+            # (parse_proposal_fail) vs "agent wrote a broken patch"
+            # (lake_build_error / patch_signature_mismatch / ...) vs
+            # "salvage parse itself raised". Reason stays
+            # `agent_timeout` so the operator-level "this is a
+            # timeout" signal is not lost.
             reason, detail = _spawn_failure(rc, attempts_dir, spawn_dur)
             postmortem_fn(sid)
             if timeout_result is not None:
@@ -488,147 +720,48 @@ def run_with_session_retries(
                     f"{(timeout_result.failure_detail or '')[:200]}")
             if salvage_note:
                 detail = f"{detail}; {salvage_note}"
+            # Detector verdict: only assert "active" when the parser
+            # state file actually exists. Missing file (non-stream-json
+            # spawn, write IO error, future code path) → record
+            # `unavailable` so operators don't misread "active" as a
+            # detector observation when in reality nothing was sampled.
+            if parser_state is not None:
+                detail = (f"{detail}; [detector verdict: active "
+                          f"state={state_label} "
+                          f"last_stop_reason={stop_label}]")
+            else:
+                detail = f"{detail}; [detector verdict: unavailable]"
             buffer_failure(reason, detail)
             return attach(PipelineResult(outcome="exhausted",
                                          failure_reason=reason,
                                          failure_detail=detail))
 
         if rc == SpawnRC.STUCK_THINKING:
-            # Two-stage fresh-rescue: original session is unrecoverable,
-            # so spawn fresh sessions to take over its remaining
-            # workflow stages (rescue + postmortem). See module-level
-            # block comment above `_copy_broken_session_jsonl` for the
-            # design rationale.
-            from .. import config as _cfg
-            from ..llm.base import RESCUE_BUDGET_SEC
-            from ..agent import POSTMORTEM_TIMEOUT_SEC
+            # Watchdog detected thinking trap at wall_cap (parser state
+            # = mid-thinking, OR finalized + last_stop_reason =
+            # max_tokens). The broken session is unrecoverable; spawn
+            # fresh sessions to take over the remaining workflow
+            # stages (rescue + postmortem). See module-level block
+            # comment above `_copy_broken_session_jsonl` for the
+            # design rationale and `_run_fresh_sid_takeover` for the
+            # shared two-stage implementation (TIMEOUT-with-trap path
+            # uses the same takeover).
             broken_sid = sid
-            broken_jsonl_dest = attempts_dir / "_broken_session.jsonl"
-            jsonl_copied = _copy_broken_session_jsonl(
-                broken_sid, broken_jsonl_dest)
-
-            # ── Stage 2: fresh-rescue ship-or-bail ────────────────
-            stage2_budget = _cfg.get(
-                "dispatch.rescue_timeout_sec",
-                default=RESCUE_BUDGET_SEC,
-                env_var="ASTERISM_RESCUE_TIMEOUT_SEC", cast=int,
-                workspace=workspace,
+            outcome = _run_fresh_sid_takeover(
+                broken_sid=broken_sid,
+                broken_sid_label=(
+                    f"watchdog killed broken_sid={broken_sid[:8]}"),
+                attempts_dir=attempts_dir, workspace=workspace,
+                spawn_fn=spawn_fn, parse_fn=parse_fn,
             )
-            stage2_min = max(1, stage2_budget // 60)
-            stage2_prompt = _build_fresh_rescue_stage2_prompt(
-                attempts_dir, jsonl_copied, stage2_min)
-            sid_stage2 = str(uuid.uuid4())
-            sid = sid_stage2  # subsequent warm retries use this
-            print(f"[fresh-rescue stage2] broken_sid={broken_sid[:8]} → "
-                  f"fresh_sid={sid_stage2[:8]} budget={stage2_budget}s "
-                  f"jsonl_copied={jsonl_copied}", flush=True)
-            stage2_t0 = time.monotonic()
-            stage2_rc = spawn_fn(SpawnCtx(
-                sid=sid_stage2, cold=True, retry_context=None,
-                attempts_dir=attempts_dir,
-                inline_prompt=stage2_prompt,
-                budget_override=stage2_budget,
-            ))
-            stage2_dur = time.monotonic() - stage2_t0
-            print(f"[fresh-rescue stage2] sid={sid_stage2[:8]} "
-                  f"rc={stage2_rc} dur={stage2_dur:.0f}s", flush=True)
-
-            # Try parse_fn after stage 2 regardless of rc. Salvage
-            # mirrors the main-spawn TIMEOUT salvage: agent might have
-            # shipped (or written `_progress.md` for bail) before being
-            # killed at the budget cap. Bail discriminator in parse
-            # detects `_progress.md` + skeleton patch + no new_*.lean
-            # → agent_bailed (terminal decline).
-            stage2_result: PipelineResult | None = None
-            try:
-                stage2_result = parse_fn()
-            except Exception as exc:  # noqa: BLE001
-                print(f"[fresh-rescue stage2] sid={sid_stage2[:8]} "
-                      f"parse raised {type(exc).__name__}: {exc}",
-                      flush=True)
-            if stage2_result is not None and (
-                stage2_result.outcome in _TERMINAL_SUCCESS_OUTCOMES
-                or stage2_result.failure_reason
-                in _TERMINAL_DECLINE_REASONS
-            ):
-                print(f"[fresh-rescue stage2] sid={sid_stage2[:8]} "
-                      f"attached outcome={stage2_result.outcome} "
-                      f"reason={stage2_result.failure_reason}",
-                      flush=True)
-                return attach(stage2_result)
-
-            # ── Stage 3: fresh-rescue postmortem ──────────────────
-            stage3_budget = _cfg.get(
-                "dispatch.postmortem_timeout_sec",
-                default=POSTMORTEM_TIMEOUT_SEC,
-                env_var="ASTERISM_POSTMORTEM_TIMEOUT_SEC", cast=int,
-                workspace=workspace,
-            )
-            stage3_min = max(1, stage3_budget // 60)
-            stage3_prompt = _build_fresh_rescue_stage3_prompt(
-                attempts_dir, jsonl_copied, stage3_min)
-            sid_stage3 = str(uuid.uuid4())
-            sid = sid_stage3  # subsequent warm retries use this
-            print(f"[fresh-rescue stage3] stage2_sid={sid_stage2[:8]} → "
-                  f"fresh_sid={sid_stage3[:8]} budget={stage3_budget}s",
-                  flush=True)
-            stage3_t0 = time.monotonic()
-            stage3_rc = spawn_fn(SpawnCtx(
-                sid=sid_stage3, cold=True, retry_context=None,
-                attempts_dir=attempts_dir,
-                inline_prompt=stage3_prompt,
-                budget_override=stage3_budget,
-            ))
-            stage3_dur = time.monotonic() - stage3_t0
-            print(f"[fresh-rescue stage3] sid={sid_stage3[:8]} "
-                  f"rc={stage3_rc} dur={stage3_dur:.0f}s", flush=True)
-
-            # Stage 3 is intended to write `_progress.md` and exit.
-            # parse_fn's bail discriminator detects this and returns
-            # agent_bailed (terminal decline). Try parse regardless of
-            # rc — even on stage 3 timeout, `_progress.md` may already
-            # be on disk.
-            stage3_result: PipelineResult | None = None
-            try:
-                stage3_result = parse_fn()
-            except Exception as exc:  # noqa: BLE001
-                print(f"[fresh-rescue stage3] sid={sid_stage3[:8]} "
-                      f"parse raised {type(exc).__name__}: {exc}",
-                      flush=True)
-            if stage3_result is not None and (
-                stage3_result.outcome in _TERMINAL_SUCCESS_OUTCOMES
-                or stage3_result.failure_reason
-                in _TERMINAL_DECLINE_REASONS
-            ):
-                print(f"[fresh-rescue stage3] sid={sid_stage3[:8]} "
-                      f"attached outcome={stage3_result.outcome} "
-                      f"reason={stage3_result.failure_reason}",
-                      flush=True)
-                return attach(stage3_result)
-
-            # Both stages failed to produce a terminal outcome. Buffer
-            # agent_stuck_thinking with full forensic detail and
-            # continue the retry loop (subsequent warm retries use
-            # sid_stage3 — the broken sid is permanently abandoned).
-            detail_parts = [
-                f"watchdog killed broken_sid={broken_sid[:8]}",
-                f"stage2 sid={sid_stage2[:8]} rc={stage2_rc} "
-                f"dur={stage2_dur:.0f}s",
-                f"stage3 sid={sid_stage3[:8]} rc={stage3_rc} "
-                f"dur={stage3_dur:.0f}s",
-            ]
-            if stage2_result is not None:
-                detail_parts.append(
-                    f"stage2 parse: reason={stage2_result.failure_reason} "
-                    f"detail={(stage2_result.failure_detail or '')[:120]}")
-            if stage3_result is not None:
-                detail_parts.append(
-                    f"stage3 parse: reason={stage3_result.failure_reason} "
-                    f"detail={(stage3_result.failure_detail or '')[:120]}")
-            buffer_failure("agent_stuck_thinking", "; ".join(detail_parts))
+            sid = outcome.last_sid
+            if outcome.terminal_result is not None:
+                return attach(outcome.terminal_result)
+            buffer_failure("agent_stuck_thinking",
+                           "; ".join(outcome.detail_parts))
             last_reason = "agent_stuck_thinking"
-            last_detail = (f"stage2 rc={stage2_rc}, "
-                           f"stage3 rc={stage3_rc}")
+            last_detail = (f"stage2 rc={outcome.stage2_rc}, "
+                           f"stage3 rc={outcome.stage3_rc}")
             continue
 
         if rc != SpawnRC.OK:
