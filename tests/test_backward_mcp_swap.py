@@ -3,19 +3,18 @@
 Verifies that:
   - `agent.spawn_llm` receives a `mcp_config_path` kwarg pointing at
     a freshly-written JSON config that connects to the long-living
-    `Tooling.lsp_gateway` HTTP server with target=goal_lean.
-  - Backward backs up goal_lean BEFORE the agent runs, restores it on
-    parse failure (e.g. malformed output → no lake build).
-  - The OUTER try/finally guard restores goal_lean even when the
-    agent's spawn fails before parse is reached (spawn timeout, agent
-    crash). Without this, goal_lean would leak the agent's apply_edit
-    state into the next dispatch.
+    `Tooling.lsp_gateway` HTTP server.
+  - The MCP target is `attempts_dir/patch.lean` (sandboxed), NOT
+    `goal_lean`. This is the architectural fix that eliminates the
+    worker/main race where the worker's _restore_backup could stomp
+    on a concurrently-written promote_to_alias alias on goal_lean.
+  - Backward never mutates `goal_lean` (Root.lean) — promote_to_alias
+    in main thread is the single writer of goal_lean.
 """
 from __future__ import annotations
 
 import json
 import sqlite3
-import sys
 from pathlib import Path
 
 import pytest
@@ -81,131 +80,94 @@ def test_spawn_passes_mcp_config_path(
     assert server["headers"]["X-Asterism-Session"] == "test-stub-token"
 
 
-def test_restores_goal_lean_after_spawn_timeout(
+def test_mcp_target_is_patch_lean_not_goal_lean(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Spawn rc != 0 paths skip parse_fn, so the parse-side
-    `_restore_backup` doesn't fire. The outer try/finally in
-    `_run_backward_inner` (after `run_with_session_retries` returns)
-    must catch this and restore goal_lean. Otherwise the agent's
-    apply_edit state leaks across dispatches."""
+    """Architectural invariant: MCP target must be attempts_dir/patch.lean,
+    NOT goal_lean (Root.lean). This is enforced via the /register body
+    sent by `_write_mcp_config`. If apply_edit targeted goal_lean, the
+    agent's edits would race with promote_to_alias (verify housekeeping) —
+    see the v4 pilot bug where 4/8 proved goals ended up with Root.lean
+    reverted to sorry stub because worker's _restore_backup stomped the
+    alias write.
+    """
+    import io
+    import urllib.request
+
     gid = _seed_root_goal(tmp_path, conn)
-    goal_row = db.get_goal(conn, gid)
-    goal_lean = tmp_path / goal_row["lean_path"]
-    original = goal_lean.read_text(encoding="utf-8")
+    captured: dict = {}
+
+    class _FakeResp:
+        def __init__(self, body): self._body = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return self._body
+
+    def _capturing_urlopen(req, timeout=None):
+        url = getattr(req, "full_url", str(req))
+        if url.endswith("/register"):
+            body = json.loads(req.data.decode("utf-8"))
+            captured["target_path"] = Path(body["target_path"])
+            return _FakeResp(b'{"session_token": "test-stub-token"}')
+        if "/release/" in url:
+            return _FakeResp(b'{"ok": true}')
+        raise urllib.error.URLError("(test) unexpected url " + url)
+
+    monkeypatch.setattr(urllib.request, "urlopen", _capturing_urlopen)
 
     def fake_spawn(**kw):
-        # Simulate the agent making an LSP-driven edit to goal_lean...
-        if not kw.get("is_postmortem"):
-            goal_lean.write_text(
-                "-- agent's exploratory LSP edit\nbroken garbage\n",
-                encoding="utf-8")
-        # ...then the spawn times out (rc=124). Parse never runs.
         return 124
 
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=_mfst(), pipeline_id="pid-bw-timeout-restore")
+        mfst=_mfst(), pipeline_id="pid-bw-target-check")
 
-    restored = goal_lean.read_text(encoding="utf-8")
-    assert restored == original, (
-        "goal_lean must restore to pre-spawn state even when spawn "
-        "exits with rc != 0 and parse_fn never runs"
+    target = captured.get("target_path")
+    assert target is not None, "/register should have been called"
+    # Target must be patch.lean in attempts_dir, not Root.lean.
+    assert target.name == "patch.lean", (
+        f"MCP target must be patch.lean (sandbox), got {target.name!r}"
+    )
+    assert ".attempts" in target.parts, (
+        f"MCP target must live under .attempts/, got {target}"
     )
 
 
-def test_no_contamination_across_retries(
+def test_goal_lean_untouched_by_backward(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression: each backward_spawn must restore goal_lean from a
-    PRISTINE snapshot taken once before the retry loop. The earlier
-    impl re-snapshotted at the top of every spawn — so iter N's
-    snapshot captured iter N-1's apply_edit contamination, and outer
-    finally's restore brought goal_lean back to a contaminated baseline
-    instead of the pre-pipeline original. Symptom (SG g217): each
-    retry's agent saw the prior retry's broken partial proof and built
-    on it, deepening the contamination per iter (e.g. accumulated
-    `intro p q r` lines).
+    """Backward pipeline must NEVER write to goal_lean (Root.lean).
+    The agent's apply_edit targets patch.lean (sandboxed); framework
+    code paths (skeleton build, parse, etc.) only READ goal_lean.
+    promote_to_alias in verify housekeeping is the single writer.
 
-    Test simulates: agent writes a unique line per attempt + returns
-    rc=128 (STUCK_THINKING), helper rescues with rc=124 (TIMEOUT),
-    which buffers a stuck-thinking failure and continues to next iter.
-    After the budget exhausts, goal_lean must equal original — not
-    accumulate iteration tags."""
-    from Tooling.llm.base import SpawnRC
-    gid = _seed_root_goal(tmp_path, conn)
-    goal_row = db.get_goal(conn, gid)
-    goal_lean = tmp_path / goal_row["lean_path"]
-    original = goal_lean.read_text(encoding="utf-8")
-
-    call_counter = {"n": 0}
-
-    def fake_spawn(**kw):
-        if kw.get("is_postmortem"):
-            return 0
-        call_counter["n"] += 1
-        # Each spawn appends a unique iteration tag, mimicking the
-        # agent's apply_edit accretion across retries. With the bug,
-        # outer finally's restore would leave ALL these tags in place.
-        prior = goal_lean.read_text(encoding="utf-8")
-        goal_lean.write_text(
-            prior + f"-- iter {call_counter['n']} contamination\n",
-            encoding="utf-8")
-        # Fresh-rescue stage 2/3 path (inline_prompt=set) — return
-        # TIMEOUT to fall through. Main path — return STUCK_THINKING
-        # to enter the two-stage fresh-rescue branch.
-        if kw.get("inline_prompt"):
-            return int(SpawnRC.TIMEOUT)
-        return int(SpawnRC.STUCK_THINKING)
-
-    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
-    pipeline.run_backward(
-        conn, goal_id=gid, workspace=tmp_path,
-        mfst=_mfst(), pipeline_id="pid-bw-no-contam")
-
-    restored = goal_lean.read_text(encoding="utf-8")
-    assert restored == original, (
-        f"goal_lean accumulated contamination across {call_counter['n']} "
-        f"spawn calls — expected pristine, got:\n{restored}"
-    )
-    # Sanity: ensure the helper actually retried more than once (else
-    # the test passes trivially).
-    assert call_counter["n"] >= 2, (
-        f"helper only called spawn {call_counter['n']} time(s); test "
-        f"needs >=2 iters to exercise the contamination path"
-    )
-
-
-def test_restores_goal_lean_when_parse_fails(
-    conn: sqlite3.Connection, tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Spawn returns rc=0 (agent claims success) but writes neither
-    patch.lean nor new_*.lean — parse_fn fails with parse_proposal_fail.
-    goal_lean must still be restored from backup."""
+    Tests: even on failure paths (spawn timeout, parse fail), goal_lean's
+    pre-spawn bytes are preserved without any restore mechanism.
+    """
     gid = _seed_root_goal(tmp_path, conn)
     goal_row = db.get_goal(conn, gid)
     goal_lean = tmp_path / goal_row["lean_path"]
     original = goal_lean.read_text(encoding="utf-8")
 
     def fake_spawn(**kw):
-        # Agent edits goal_lean but produces no patch / new_*.lean
-        # (simulates agent confusion or output-protocol violation).
-        goal_lean.write_text(
-            "-- agent's stray LSP edit, no real outputs\n"
-            "import Mathlib\n",
+        # Well-behaved agent: writes ONLY to attempts_dir/patch.lean
+        # (would happen via apply_edit; here simulated as direct write).
+        attempts_dir = Path(kw["attempts_dir"])
+        (attempts_dir / "patch.lean").write_text(
+            "-- exploratory edit, no commit\n",
             encoding="utf-8")
-        return 0  # rc 0 → parse runs
+        return 124  # timeout; parse never runs
 
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     pipeline.run_backward(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=_mfst(), pipeline_id="pid-bw-parse-restore")
+        mfst=_mfst(), pipeline_id="pid-bw-untouched")
 
-    restored = goal_lean.read_text(encoding="utf-8")
-    assert restored == original, (
-        "goal_lean must restore on parse failure path too"
+    after = goal_lean.read_text(encoding="utf-8")
+    assert after == original, (
+        "goal_lean (Root.lean) must be byte-identical to pre-spawn state — "
+        "Backward pipeline writes only to attempts_dir."
     )

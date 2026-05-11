@@ -6,27 +6,28 @@ Time budget: {timeout_min} minutes.
 
 ## Validating decomposition via LSP (recommended)
 
-You have four MCP tools backed by a live Lean server holding the parent goal's source file (`goal_lean`, the `.lean` file referenced in Context.md):
+You have four MCP tools backed by a live Lean server holding **your `patch.lean`** (pre-seeded with the F52 skeleton: imports + `theorem s<id> ... := by sorry` matching the parent's signature):
 
-- `mcp__lsp__apply_edit(start_line, end_line, new_text)` — replace a 1-indexed inclusive line range. Returns the post-edit goal at line=start_line and full-file diagnostics.
-- `mcp__lsp__goal_at(line, col)` — read the proof goal at any position.
+- `mcp__lsp__apply_edit(start_line, end_line, new_text)` — replace a 1-indexed inclusive line range of `patch.lean`. Returns the post-edit goal at line=start_line and full-file diagnostics.
+- `mcp__lsp__goal_at(line, col)` — read the proof goal at any position in `patch.lean`.
 - `mcp__lsp__errors_at(line=None)` — list diagnostics (optional line filter).
-- `mcp__lsp__validate_file(content)` — elaborate a candidate file standalone (auto-prepends Mathlib + Defs imports). Returns `{ok, diagnostics}`. Use after writing each `new_<slug>.lean` to catch syntax/type errors that the in-file `have` check missed.
+- `mcp__lsp__validate_file(content)` — elaborate a *different* candidate file standalone (auto-prepends Mathlib + Defs imports). Returns `{ok, diagnostics}`. Use after writing each `new_<slug>.lean` stub to catch syntax/type errors that the in-`patch` `have` check missed.
 
-Use them to prototype the decomposition skeleton **inside goal_lean** before committing to `new_*.lean` + `patch.lean`. Workflow:
+Workflow:
 
-1. apply_edit goal_lean's body to insert your candidate skeleton:
+1. `Read patch.lean` to see the skeleton (imports + `theorem s<id> ... := by sorry`) and its line numbers.
+2. apply_edit `patch.lean`'s body (after `:= by`) to insert your candidate skeleton:
    ```
      intro ...
      have h_<slug_1> : <stmt_1> := by sorry
      have h_<slug_2> : <stmt_2> := by sorry
      exact <combinator> h_<slug_1> h_<slug_2>
    ```
-2. errors_at to check: only sorry warnings, no errors → each sub-claim's statement type-checks AND the combinator closes the parent goal.
-3. If errors: revise statement / combinator and apply_edit again.
-4. Once 0 errors (warnings tolerated), write outputs: each `have` becomes a `new_<slug>.lean` stub (statement only); after writing each, call `validate_file` with its content to confirm it elaborates standalone (catches stub-only failures the in-file check can't see). `patch.lean` body is the validated skeleton with `have h_<slug> := <slug>` referring to the extracted theorem.
+3. errors_at to check: only sorry warnings, no errors → each sub-claim's statement type-checks AND the combinator closes the parent goal.
+4. If errors: revise statement / combinator and apply_edit again.
+5. Once 0 errors (warnings tolerated), write each sub-goal stub as `new_<slug>.lean` in attempts_dir and call `validate_file` on each (catches stub-only failures the in-`patch` check can't see). `patch.lean` is already in its final form — your last apply_edit is what gets committed; no transcription step.
 
-The framework restores `goal_lean` to its pre-spawn state on exit, so your exploratory edits don't leak into the codebase. Outputs in attempts_dir are what gets committed.
+`patch.lean` lives in attempts_dir and is sandboxed — your exploratory edits never touch the parent's source file. Outputs (patch.lean + new_*.lean) in attempts_dir are what the framework commits.
 
 ## Output
 

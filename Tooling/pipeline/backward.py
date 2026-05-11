@@ -5,17 +5,21 @@ sub-goals to alias bodies, places everything atomically.
 
 LSP-backed agent: Backward spawns claude with an `--mcp-config`
 pointing at the long-living `Tooling.lsp_gateway` HTTP server,
-target = `goal_lean`. The agent uses `apply_edit` / `goal_at` /
-`errors_at` to validate that each proposed sub-claim's statement
-type-checks before writing the final `new_*.lean` + `patch.lean`
-outputs to attempts_dir. Backward's output protocol is unchanged
-(multi-file `new_<slug>.lean` + `patch.lean`); LSP is just an
-in-session validation sandbox.
+target = `attempts_dir/patch.lean`. The agent uses `apply_edit` /
+`goal_at` / `errors_at` directly on `patch.lean` (which is pre-
+seeded with the F52 skeleton: imports + `theorem s<sid_token> ...
+:= by sorry`). The agent's last `apply_edit` produces the final
+patch.lean body — no transcription step. Sub-goal stubs are written
+to `attempts_dir/new_<slug>.lean` via the Write tool, then
+verified standalone via `validate_file`.
 
-Because the agent may apply_edit `goal_lean` during exploration,
-each spawn snapshots `goal_lean` to a `.backup` file before the
-spawn and restores it on every exit path — Backward's contract is
-"goal_lean unchanged; outputs are in attempts_dir + proofs/".
+Single-writer invariant for `goal_lean` (parent's Root.lean):
+the agent NEVER writes to it. Only the framework's `promote_to_alias`
+rewrites it on verify success. This eliminates the worker/main race
+where the worker's _restore_backup could stomp on a concurrently-
+written promote_to_alias alias. Backward's contract remains
+"goal_lean unchanged by this pipeline; outputs are in attempts_dir
++ proofs/".
 
 Public entry point: `run_backward`. Backward-specific helpers
 (`_ensure_imports_subgoal`, `_try_promote_sorry_free`,
@@ -295,33 +299,16 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             failure_detail=detail, proposal_md=proposal_md,
         )
 
-    # Spawn sandbox snapshot. SpawnWorkspace records the pre-spawn
-    # bytes of goal_lean (and other framework-managed paths) into
-    # `.attempts/<pid>/sandbox/`. Rollback (`__exit__` without commit,
-    # or daemon-startup sweep recovery) restores real paths from
-    # those snapshot bytes. `restore_to_snapshot` is used between
-    # in-pipeline retries: each retry resets goal_lean to pristine so
-    # the agent doesn't see prior-retry contamination (observed SG
-    # g217 in earlier code: each retry started from previous retry's
-    # broken partial proof, doubled `intro` lines etc.).
-    # See docs/dev/spawn_sandbox.md.
-    from .. import spawn_sandbox as _sandbox_mod
-    goal_lean = parent_abs_for_skeleton
-    workspace_ctx = _sandbox_mod.SpawnWorkspace(
-        workspace, pipeline_id, real_paths=[goal_lean])
-
-    def _restore_backup() -> None:
-        """Restore goal_lean from the spawn sandbox snapshot. Called
-        between in-pipeline retries and on every parse exit."""
-        workspace_ctx.restore_to_snapshot(goal_lean)
+    # MCP target = attempts_dir/patch.lean. Agent's apply_edit writes
+    # to this sandbox file, never touches goal_lean (Root.lean).
+    # promote_to_alias (run by verify_housekeeping in main thread) is
+    # the single writer of goal_lean — no race possible with worker.
+    # Previously this code path snapshotted goal_lean via
+    # SpawnWorkspace and _restore_backup'd between retries / on exit;
+    # with apply_edit no longer targeting goal_lean, neither snapshot
+    # nor restore is needed.
 
     def backward_spawn(ctx: SpawnCtx) -> int:
-        # Always start from the pristine snapshot. Agent's --resume
-        # session memory carries warm context; LSP slot state is in
-        # the gateway worker. On-disk goal_lean is reset each entry
-        # so prior-spawn apply_edits never leak into the next view.
-        _restore_backup()
-
         # Cold start (and fresh-rescue, which is also cold-with-fresh-
         # sid): agent has no session memory to resume. Compile
         # Context.md fresh and write the F52 skeleton so the agent's
@@ -334,22 +321,22 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         # prior turn, and patch.lean keeps whatever the agent wrote
         # last iteration so retry_context-driven fixes can be
         # incremental.
+        patch_lean = ctx.attempts_dir / "patch.lean"
         if ctx.cold:
             agent.compile_context(conn, goal=goal, mfst=mfst,
                                   attempts_dir=ctx.attempts_dir,
                                   strategy_id=strategy_id,
                                   kind="backward")
-            (ctx.attempts_dir / "patch.lean").write_text(
-                skeleton, encoding="utf-8")
+            patch_lean.write_text(skeleton, encoding="utf-8")
 
         # Register a gateway session so claude's MCP tools operate on
-        # goal_lean's content via the shared worker pool. Snapshot
-        # already taken once before the retry loop; pristine restore
-        # happened at the top of this function.
+        # patch.lean (in attempts_dir/) via the shared worker pool.
+        # The skeleton already includes `import Mathlib` etc., so LSP
+        # elaborates it standalone in the worker slot.
         mcp_config_path = _write_mcp_config(
             attempts_dir=ctx.attempts_dir,
             workspace=workspace,
-            target=goal_lean,
+            target=patch_lean,
             pipeline_id=pipeline_id,
             problem=goal["problem"],
         )
@@ -368,33 +355,30 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         )
 
     def backward_parse() -> "PipelineResult":  # noqa: F821
-        # LSP swap: restore goal_lean from the pre-spawn backup on
-        # every exit path. Backward's contract is "goal_lean
-        # unchanged"; the agent may have used apply_edit to test the
-        # decomposition, but the actual outputs (new_*.lean +
-        # patch.lean → proofs/_strategy_*.lean) live elsewhere.
-        try:
-            return _backward_parse_and_commit(
-                conn=conn, goal=goal, goal_id=goal_id, mfst=mfst,
-                workspace=workspace, attempts_dir=attempts_dir,
-                strategy_id=strategy_id, sid_token=sid_token,
-                skeleton_signature=skeleton_signature,
-                _abort=_abort,
-                _safe_glob=_safe_glob,
-                _extract_leading_comments=_extract_leading_comments,
-                _extract_decline_reason=_extract_decline_reason,
-                DECLINE_TO_FAILURE_REASON=DECLINE_TO_FAILURE_REASON,
-                _normalize_signature=_normalize_signature,
-                _signature_prefix=_signature_prefix,
-                _is_sorry_stub=_is_sorry_stub,
-                _grep_forbidden=_grep_forbidden,
-                _slug_from_filename=_slug_from_filename,
-                _inject_imports_for_subs=_inject_imports_for_subs,
-                _lean_path_to_module=_lean_path_to_module,
-                _extract_statement_from_lean=_extract_statement_from_lean,
-            )
-        finally:
-            _restore_backup()
+        # No goal_lean restore needed — agent's apply_edit targets
+        # patch.lean (sandboxed in attempts_dir), so goal_lean is
+        # never mutated during the spawn. Parse reads patch.lean +
+        # new_*.lean from attempts_dir; the only writer of goal_lean
+        # is verify_housekeeping's promote_to_alias (main thread).
+        return _backward_parse_and_commit(
+            conn=conn, goal=goal, goal_id=goal_id, mfst=mfst,
+            workspace=workspace, attempts_dir=attempts_dir,
+            strategy_id=strategy_id, sid_token=sid_token,
+            skeleton_signature=skeleton_signature,
+            _abort=_abort,
+            _safe_glob=_safe_glob,
+            _extract_leading_comments=_extract_leading_comments,
+            _extract_decline_reason=_extract_decline_reason,
+            DECLINE_TO_FAILURE_REASON=DECLINE_TO_FAILURE_REASON,
+            _normalize_signature=_normalize_signature,
+            _signature_prefix=_signature_prefix,
+            _is_sorry_stub=_is_sorry_stub,
+            _grep_forbidden=_grep_forbidden,
+            _slug_from_filename=_slug_from_filename,
+            _inject_imports_for_subs=_inject_imports_for_subs,
+            _lean_path_to_module=_lean_path_to_module,
+            _extract_statement_from_lean=_extract_statement_from_lean,
+        )
 
     def backward_postmortem(sid: str) -> None:
         _attempt_postmortem(
@@ -427,44 +411,24 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             prompt_dir=PROMPT_DIR,
         )
 
-    # SpawnWorkspace ensures goal_lean is rolled back on any non-
-    # success exit (exception, abort, or — recovered via sweep —
-    # daemon crash mid-spawn). On success, `commit()` marks the
-    # sandbox as completed; `__exit__` then drops the sandbox dir
-    # cleanly. The framework's parse + commit step writes outputs to
-    # real paths (scratch_path + new_*.lean) directly; goal_lean
-    # itself is NOT mutated by the pipeline's success path (verify
-    # housekeeping handles the alias rewrite separately).
-    with workspace_ctx as ws:
-        try:
-            result = run_with_session_retries(
-                conn=conn,
-                goal_id=goal_id,
-                pipeline_id=pipeline_id,
-                budget_threshold=dispatcher.SHELVE_THRESHOLD,
-                shelve_threshold=dispatcher.SHELVE_THRESHOLD,
-                attempts_dir=attempts_dir,
-                spawn_fn=backward_spawn,
-                parse_fn=backward_parse,
-                postmortem_fn=backward_postmortem,
-                workspace=workspace,
-                reflection_fn=backward_reflection,
-            )
-        finally:
-            # Belt-and-suspenders: helper exits (timeout, quota, crash)
-            # that skipped parse_fn never ran the parse-side restore.
-            # Reset goal_lean from snapshot here too. SpawnWorkspace's
-            # rollback path also does this on non-commit __exit__, but
-            # we want the restore visible to any cascade housekeeping
-            # before __exit__ fires.
-            _restore_backup()
-
-        # Mark the sandbox committed on success outcomes so __exit__
-        # cleans the snapshot without rolling back any drift (drift on
-        # goal_lean on a success path shouldn't happen — verify
-        # housekeeping will rewrite via promote_to_alias separately).
-        if result.outcome == "success":
-            ws.commit(real_writes=())
+    # No SpawnWorkspace — agent writes are confined to attempts_dir
+    # (patch.lean, new_*.lean), which WorkArea manages via the
+    # .attempts/<pid>/ rmtree on exit. goal_lean has a single writer
+    # (verify_housekeeping → promote_to_alias) and needs no per-spawn
+    # snapshot.
+    result = run_with_session_retries(
+        conn=conn,
+        goal_id=goal_id,
+        pipeline_id=pipeline_id,
+        budget_threshold=dispatcher.SHELVE_THRESHOLD,
+        shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+        attempts_dir=attempts_dir,
+        spawn_fn=backward_spawn,
+        parse_fn=backward_parse,
+        postmortem_fn=backward_postmortem,
+        workspace=workspace,
+        reflection_fn=backward_reflection,
+    )
 
     # Cleanup: any non-success outcome leaves the strategy at 'proposed'
     # with no scratch_path / no sub-goal links. Mark it dead so
