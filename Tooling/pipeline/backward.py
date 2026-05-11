@@ -804,6 +804,26 @@ def _backward_parse_and_commit(
         sub_dest_paths = [dest for _, dest in sub_dests]
         _inject_imports_for_subs(workspace, scratch_dest, sub_dest_paths)
 
+        # Assembly gate — strategy body must contain no `sorry` placeholder.
+        # `verify_strategy` is mechanical (promote_to_alias only); without
+        # this scan, an agent that forgets to transcribe
+        # `have h_<slug> := by sorry` → `have h_<slug> := <slug> <args>`
+        # ships a sorry-bearing proof that elaborates fine (sorry is a
+        # warning, not an error) but propagates sorryAx to `main`. In a
+        # multi-problem workspace, `library.maybe_promote`'s root axiom
+        # probe gates on ALL roots proved, so the failure can survive
+        # indefinitely. See `_assembly.py` for design.
+        from ._assembly import assembly_gate_check_sorry
+        ok, msg = assembly_gate_check_sorry(scratch_dest)
+        if not ok:
+            for p in placed:
+                try:
+                    if p.exists():
+                        p.unlink()
+                except OSError:
+                    pass
+            return _abort("patch_body_contains_sorry", msg, leading)
+
         # Verify-unification: sequential per-file verify through the
         # gateway worker pool (see docs/dev/verify_unification.md §3).
         # `placed` is in dependency order — sub-goal stubs first (each
