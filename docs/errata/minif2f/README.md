@@ -23,6 +23,20 @@ Counterexample (kernel-verified): `u 0 = 4, u 1 = 7, u 2 = 10000, u 3 = 0,
 u k = 0 for k ≥ 4`. Satisfies all hypotheses; `∑_{k<3} u k = 10011 > 10000`
 while `1999 > 3`.
 
+### `amc12a_2020_p13` — ℕ-division trivializes the equation
+
+**File:** [`amc12a_2020_p13_disproof.lean`](amc12a_2020_p13_disproof.lean)
+
+The exponents `1/a`, `1/b`, `1/c`, `1/36` are all evaluated as natural-
+number division because `a b c : ℕ` (and the literals `1`, `36` elaborate
+as ℕ). For any natural `k ≥ 2`, `1 / k = 0`. Hence `n ^ (1/k) = n ^ 0 = 1`
+under monoid power on `NNReal`, collapsing both sides of `h₂` to `1 = 1`
+regardless of `n`. The conclusion `b = 3` is completely unconstrained.
+
+Counterexample (kernel-verified): `a = b = c = 2, n = 2`. The original
+AMC 2020 12A #13 uses real exponents (a radical tower); the Lean
+transcription uses ℕ-division, trivializing the constraint.
+
 ### `aime_1984_p5` — Mathlib `log` is even, signs unconstrained
 
 **File:** [`aime_1984_p5_disproof.lean`](aime_1984_p5_disproof.lean)
@@ -108,6 +122,7 @@ PYTHONPATH=. python docs/errata/minif2f/audit.py
 ```
 cd <asterism-repo>
 lake env lean docs/errata/minif2f/aime_1984_p5_disproof.lean
+lake env lean docs/errata/minif2f/amc12a_2020_p13_disproof.lean
 lake env lean docs/errata/minif2f/aime_1988_p3_disproof.lean
 lake env lean docs/errata/minif2f/amc12a_2002_p21_disproof.lean
 lake env lean docs/errata/minif2f/mathd_numbertheory_126_disproof.lean
