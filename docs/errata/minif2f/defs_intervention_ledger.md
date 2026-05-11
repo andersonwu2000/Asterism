@@ -11,6 +11,7 @@ For benchmark-integrity reporting, these proofs should be counted as
 | Problem | Goal | Helper added | Date | Eventual outcome |
 |---|---|---|---|---|
 | `amc12a_2009_p25` | g596 | `noncomputable def θ : ℕ → ℝ` — Fibonacci angle sequence for the tan-addition / Pisano-period approach (θ 1 = π/4, θ 2 = π/6, θ (n+2) = θ n + θ (n+1)) | 2026-05-12 | (pending re-attempt) |
+| `imo_1993_p5` | g642 | `noncomputable def goldA (n : ℕ) : ℕ := ⌊n·φ⌋.toNat` — Wythoff lower row only, no supporting lemmas. **Stress-test minimal hint**: agent must invent witness shape (`goldF n := goldA (n+1) - 1`), discover Beatty pair identity `⌊n·φ²⌋ = ⌊n·φ⌋ + n`, and prove the Hofstadter identity `⌊⌊n·φ⌋·φ⌋ = ⌊n·φ⌋ + n - 1` itself. Expected success: ~5-15%. | 2026-05-12 | (pending re-attempt; on failure, draft will guide next Theorist iteration) |
 
 ## Shelved with `agent_shelved` but NOT actionable by Defs.lean alone
 
@@ -23,7 +24,12 @@ the shelve stands. Recorded for honesty.
 
 | Problem | Goal | Agent's approach | Why Defs.lean insufficient |
 |---|---|---|---|
-| `imo_1993_p5` | g642 | Beatty sequence `⌊n·φ⌋` or Zeckendorf-shift `F_{k₁+1}+…+F_{k_m+1}` | Witness alone is ≥hundreds of lines; needs Fibonacci-partition uniqueness or golden-ratio floor identities not in Mathlib. A `def beatty` without supporting lemmas gives the agent a name with no semantics for the three required properties. |
+<!-- imo_1993_p5 originally in this section (Defs.lean insufficient) — moved
+to the intervention table above as a deliberate stress test of the
+framework with only the minimal hint `def goldA`. Recorded honestly in
+both tables to reflect the design history. -->
+
+(currently empty)
 
 ## Policy
 
