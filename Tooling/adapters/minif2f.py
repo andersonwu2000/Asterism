@@ -42,6 +42,10 @@ _THEOREM_RE = re.compile(
     re.MULTILINE,
 )
 _OPEN_RE = re.compile(r'^open\s+(.+?)\s*$', re.MULTILINE)
+# miniF2F problems set `maxHeartbeats 0` to allow unbounded elaboration
+# time per declaration. Preserve so Asterism-generated proofs inherit the
+# same allowance.
+_SET_OPTION_RE = re.compile(r'^set_option\s+(.+?)\s*$', re.MULTILINE)
 # Files we know aren't problem files in miniF2F-lean4 layout
 _NON_PROBLEM_FILES = frozenset([
     "Minif2fImport.lean",
@@ -53,6 +57,7 @@ class ProblemSpec:
     name: str          # original theorem name (Lean identifier)
     signature: str     # text between `theorem NAME` and `:=`, trimmed
     opens: list[str]   # `open Foo Bar` clauses replayed in Defs.lean
+    set_options: list[str] = field(default_factory=list)  # set_option clauses
     source_file: Path | None = None  # for traceability
 
     @property
@@ -65,6 +70,7 @@ def parse_problem_file(path: Path) -> list[ProblemSpec]:
     Returns [] if no theorem matched (helper file, comment-only, etc)."""
     text = path.read_text(encoding='utf-8')
     opens = [m.group(1).strip() for m in _OPEN_RE.finditer(text)]
+    set_options = [m.group(1).strip() for m in _SET_OPTION_RE.finditer(text)]
     specs: list[ProblemSpec] = []
     for m in _THEOREM_RE.finditer(text):
         name = m.group(1).strip()
@@ -73,17 +79,23 @@ def parse_problem_file(path: Path) -> list[ProblemSpec]:
             # Malformed — skip rather than crash
             continue
         specs.append(ProblemSpec(
-            name=name, signature=sig, opens=opens, source_file=path,
+            name=name, signature=sig, opens=opens,
+            set_options=set_options, source_file=path,
         ))
     return specs
 
 
 def _defs_lean(spec: ProblemSpec) -> str:
     """Generate Defs.lean content. Pure-Mathlib problems get `import
-    Mathlib` + replayed opens. Empty namespace block satisfies the
-    Asterism convention of having a `Problems.<slug>` namespace
-    available for sub-goal aliases the framework may inject later."""
+    Mathlib` + replayed set_options + replayed opens. Empty namespace
+    block satisfies the Asterism convention of having a
+    `Problems.<slug>` namespace available for sub-goal aliases the
+    framework may inject later."""
     body = "import Mathlib\n\n"
+    for clause in spec.set_options:
+        body += f"set_option {clause}\n"
+    if spec.set_options:
+        body += "\n"
     for clause in spec.opens:
         body += f"open {clause}\n"
     if spec.opens:

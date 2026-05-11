@@ -51,6 +51,18 @@ import Mathlib
 def foo (x : ℕ) : ℕ := x + 1
 """
 
+# Real-world miniF2F (yangky11 fork) format
+_REAL_MINIF2F = """\
+import Mathlib
+
+set_option maxHeartbeats 0
+
+open BigOperators Real Nat Topology Rat
+
+theorem aime_1983_p9 (x : ℝ) (h₀ : 0 < x ∧ x < Real.pi) :
+  12 ≤ (9 * (x ^ 2 * Real.sin x ^ 2) + 4) / (x * Real.sin x) := by sorry
+"""
+
 
 def _write(source_dir: Path, name: str, body: str) -> Path:
     p = source_dir / name
@@ -93,6 +105,29 @@ def test_parse_no_theorem_returns_empty(tmp_path: Path):
     src = tmp_path / "helper.lean"
     src.write_text(_NO_THEOREM, encoding="utf-8")
     assert minif2f.parse_problem_file(src) == []
+
+
+def test_parse_captures_set_option_directives(tmp_path: Path):
+    """miniF2F (yangky11 fork) sets `maxHeartbeats 0` per problem so
+    Lean elaborator allows unbounded time. Without capturing this,
+    Asterism-generated proofs would inherit Mathlib's default heartbeat
+    cap and hit `(maxHeartbeats exceeded)` on heavy expressions."""
+    src = tmp_path / "p.lean"
+    src.write_text(_REAL_MINIF2F, encoding="utf-8")
+    specs = minif2f.parse_problem_file(src)
+    assert len(specs) == 1
+    assert specs[0].set_options == ["maxHeartbeats 0"]
+    assert specs[0].opens == ["BigOperators Real Nat Topology Rat"]
+
+
+def test_emit_defs_replays_set_options(tmp_path: Path):
+    src = tmp_path / "p.lean"
+    src.write_text(_REAL_MINIF2F, encoding="utf-8")
+    spec = minif2f.parse_problem_file(src)[0]
+    out = tmp_path / "Problems"
+    pdir = minif2f.emit_problem_dir(spec, out)
+    defs = (pdir / "Defs.lean").read_text(encoding="utf-8")
+    assert "set_option maxHeartbeats 0" in defs
 
 
 # ---------------------------------------------------------------------
