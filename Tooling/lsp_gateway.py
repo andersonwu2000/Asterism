@@ -35,8 +35,10 @@ Wire format (REST):
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import contextvars
+import functools
 import json
 import os
 import re
@@ -453,7 +455,37 @@ def _summarize_goal(result) -> str:
 mcp = FastMCP("lsp")
 
 
+def _offload_to_thread(fn):
+    """Wrap a sync function so it runs in `asyncio.to_thread`.
+
+    Critical for FastMCP `@mcp.tool()` handlers because FastMCP's
+    `call_fn_with_arg_validation` calls sync tool bodies INLINE on the
+    asyncio event loop (verified 2026-05-12: just `return fn(**args)`
+    with no thread pool). For tools that block (here: every one calls
+    sync `_acquire_slot` with up to 120s polling), inline execution
+    saturates the event loop under concurrent load — `/health` /
+    `/register` / `/release` HTTP requests all queue behind in-flight
+    tool calls and eventually time out at urllib's budget. The miniF2F
+    20-problem wider pilot 2026-05-12 hit this with pool=15: 15
+    concurrent claude.exe spawns × ~5 tool calls each saturated the
+    loop, daemon-side `urlopen('/register')` timed out at 120s,
+    propagated as TimeoutError → cascade classified as
+    transient_timeout → spawn re-dispatched → loop.
+
+    Wrapping with this decorator pushes each invocation onto
+    `asyncio.to_thread` (default executor, contextvars propagate so
+    `_session_ctx.get()` still resolves the X-Asterism-Session header).
+    Event loop stays responsive; sync polling no longer blocks other
+    handlers.
+    """
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        return await asyncio.to_thread(fn, *args, **kwargs)
+    return wrapper
+
+
 @mcp.tool()
+@_offload_to_thread
 def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
     """Replace lines [start_line..end_line] (1-indexed, inclusive) in
     the target Lean file with new_text. Set start_line == end_line to
@@ -547,6 +579,7 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
 
 
 @mcp.tool()
+@_offload_to_thread
 def goal_at(line: int, col: int) -> str:
     """Get the Lean proof goal state at a specific position.
 
@@ -585,6 +618,7 @@ def goal_at(line: int, col: int) -> str:
 
 
 @mcp.tool()
+@_offload_to_thread
 def errors_at(line: int | None = None) -> str:
     """Get current diagnostics for the file.
 
@@ -620,6 +654,7 @@ def errors_at(line: int | None = None) -> str:
 
 
 @mcp.tool()
+@_offload_to_thread
 def validate_file(content: str) -> str:
     """Validate a candidate Lean file (typically a `new_<slug>.lean`
     sub-goal stub). Auto-prepends Mathlib + the problem's Defs imports,

@@ -321,6 +321,35 @@ def test_acquire_slot_lock_excludes_concurrent_acquire(
     slots[0].lock.release()
 
 
+def test_mcp_tools_are_async_for_event_loop_safety() -> None:
+    """Regression guard for the miniF2F 20-problem pilot v2 deadlock
+    (2026-05-12 02:51): FastMCP's `call_fn_with_arg_validation` calls
+    sync tool bodies INLINE on the asyncio event loop (verified by
+    reading the SDK source — `return fn(**args)` with no thread
+    pool). Tools that block (every one calls `_acquire_slot` which
+    can poll up to 120s) saturate the event loop under concurrent
+    load, blocking /register / /release / /health and deadlocking
+    the daemon.
+
+    Fix: wrap each `@mcp.tool()` with `_offload_to_thread` so the
+    handler is async + dispatches sync work to `asyncio.to_thread`.
+
+    This test asserts ALL four MCP tools are coroutine functions
+    (i.e. the `_offload_to_thread` wrapper is in place). If a future
+    refactor accidentally removes the decorator from a tool, this
+    test catches it before it ships."""
+    import inspect
+    from Tooling import lsp_gateway as gw
+
+    for name in ("apply_edit", "goal_at", "errors_at", "validate_file"):
+        fn = getattr(gw, name)
+        assert inspect.iscoroutinefunction(fn), (
+            f"MCP tool `{name}` must be a coroutine function "
+            f"(wrap with `_offload_to_thread`) so its sync body "
+            f"doesn't block the asyncio event loop."
+        )
+
+
 def test_verify_endpoint_offloads_sync_body_to_thread(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
