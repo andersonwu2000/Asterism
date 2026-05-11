@@ -23,6 +23,22 @@ Counterexample (kernel-verified): `u 0 = 4, u 1 = 7, u 2 = 10000, u 3 = 0,
 u k = 0 for k ≥ 4`. Satisfies all hypotheses; `∑_{k<3} u k = 10011 > 10000`
 while `1999 > 3`.
 
+### `aime_1984_p5` — Mathlib `log` is even, signs unconstrained
+
+**File:** [`aime_1984_p5_disproof.lean`](aime_1984_p5_disproof.lean)
+
+Mathlib defines `Real.log` as the even extension of natural log:
+`Real.log_neg_eq_log : Real.log (-x) = Real.log x`. The transcribed
+statement gives the agent only logarithmic equations in `a` and `b`,
+which cannot distinguish signs; but the conclusion `a * b = 512` is
+sign-sensitive. The original AIME problem implicitly works over the
+positive reals — the intended unique solution is `(a, b) = (64, 8)`,
+but the Lean version drops the positivity assumption.
+
+Counterexample (kernel-verified): `a = 64, b = -8`. Both hypotheses
+hold (using `Real.log_neg_eq_log` to evaluate `logb 8 (-8) = logb 8 8 = 1`)
+yet `a * b = -512 ≠ 512`.
+
 ### `aime_1988_p3` — missing `x > 1` precondition
 
 **File:** [`aime_1988_p3_disproof.lean`](aime_1988_p3_disproof.lean)
@@ -91,6 +107,7 @@ PYTHONPATH=. python docs/errata/minif2f/audit.py
 
 ```
 cd <asterism-repo>
+lake env lean docs/errata/minif2f/aime_1984_p5_disproof.lean
 lake env lean docs/errata/minif2f/aime_1988_p3_disproof.lean
 lake env lean docs/errata/minif2f/amc12a_2002_p21_disproof.lean
 lake env lean docs/errata/minif2f/mathd_numbertheory_126_disproof.lean
