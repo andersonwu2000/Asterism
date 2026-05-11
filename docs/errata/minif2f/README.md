@@ -23,6 +23,20 @@ Counterexample (kernel-verified): `u 0 = 4, u 1 = 7, u 2 = 10000, u 3 = 0,
 u k = 0 for k ≥ 4`. Satisfies all hypotheses; `∑_{k<3} u k = 10011 > 10000`
 while `1999 > 3`.
 
+### `aime_1988_p3` — missing `x > 1` precondition
+
+**File:** [`aime_1988_p3_disproof.lean`](aime_1988_p3_disproof.lean)
+
+The transcribed statement only requires `0 < x` (not `x > 1`). At
+`x = 1`, both inner logarithms become `log_b 1 = 0`. Mathlib's convention
+`Real.log 0 = 0` (and hence `Real.logb _ 0 = 0`) makes `h₁` trivially
+`0 = 0`, while the conclusion `(Real.logb 2 1) ^ 2 = 27` evaluates to
+`0 = 27`, which is false.
+
+Counterexample (kernel-verified): `x = 1`. The original AIME problem
+implicitly assumes `x > 1` so the inner logs are well-defined as positive
+reals; the Lean statement drops that constraint.
+
 ### `mathd_numbertheory_126` — minimality scope error
 
 **File:** [`mathd_numbertheory_126_disproof.lean`](mathd_numbertheory_126_disproof.lean)
@@ -77,6 +91,7 @@ PYTHONPATH=. python docs/errata/minif2f/audit.py
 
 ```
 cd <asterism-repo>
+lake env lean docs/errata/minif2f/aime_1988_p3_disproof.lean
 lake env lean docs/errata/minif2f/amc12a_2002_p21_disproof.lean
 lake env lean docs/errata/minif2f/mathd_numbertheory_126_disproof.lean
 ```
