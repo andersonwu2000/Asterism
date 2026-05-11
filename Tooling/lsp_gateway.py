@@ -991,13 +991,34 @@ def main() -> None:
     app = SessionHeaderMiddleware(app)
 
     import uvicorn
-    # `loop="asyncio"` forces uvicorn to use the standard asyncio
-    # event loop (which respects the policy installed at top of main),
-    # NOT the auto-selected ProactorEventLoop on Windows. Without this,
-    # the global policy is ignored and IocpProactor.accept's
-    # WinError 64 race recurs (run #17 cut at +52min).
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning",
-                loop="asyncio")
+    # Important: uvicorn.run / uvicorn.Config(loop="asyncio") would
+    # internally call `asyncio.set_event_loop_policy(
+    # WindowsProactorEventLoopPolicy())` on Windows, OVERRIDING our
+    # earlier WindowsSelectorEventLoopPolicy install at main() top.
+    # Observed in SG run #18: gateway died at +82min with the same
+    # IocpProactor.accept WinError 64 race that 475c318 / 1db4e8c
+    # attempted to fix.
+    #
+    # Fix: build the asyncio loop manually with SelectorEventLoop,
+    # then use uvicorn.Config(loop="none") so uvicorn doesn't touch
+    # the policy. `Server.serve()` is an async coroutine — we run it
+    # on our pre-built loop directly. This is the only way to keep
+    # SelectorEventLoop active across uvicorn's startup.
+    if sys.platform == "win32":
+        import asyncio as _asyncio
+        loop = _asyncio.SelectorEventLoop()
+        _asyncio.set_event_loop(loop)
+        config = uvicorn.Config(app, host="127.0.0.1", port=port,
+                                 log_level="warning", loop="none")
+        server = uvicorn.Server(config)
+        try:
+            loop.run_until_complete(server.serve())
+        finally:
+            loop.close()
+    else:
+        # Non-Windows: stock uvicorn.run is fine; no IOCP race.
+        uvicorn.run(app, host="127.0.0.1", port=port,
+                    log_level="warning")
 
 
 def _install_windows_event_loop_policy() -> None:
