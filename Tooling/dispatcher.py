@@ -918,9 +918,13 @@ def run(workspace: Path, *, once: bool = False) -> int:
                 if removed:
                     print(f"[prune] {problem_name}: removed {len(removed)} "
                           f"orphan files", flush=True)
-                # F49 — promote proved root to Library/<Topic>/. Runs
-                # AFTER reconcile + prune so the file set is canonical
-                # before re-export. Idempotent + axiom-gated; safe to
+                # F49 + verify-collapse — promote proved root to
+                # Library/<Topic>/ AND serve as the cascade integrity
+                # gate (single root axiom_probe). On sorryAx detection
+                # the call rolls back the cascade chain via
+                # `verify.rollback_cascade_chain`, which leaves the
+                # culprit goal in 'open' state for fresh re-Backward
+                # on the next tick. Idempotent + axiom-gated; safe to
                 # call on every daemon exit.
                 library.maybe_promote(
                     conn, workspace, problem_name, manifests[problem_name])
@@ -928,8 +932,16 @@ def run(workspace: Path, *, once: bool = False) -> int:
                 # ran before the verify_housekeeping that cascade-proved
                 # the root, leaving TREE.md frozen at root=attempting.
                 tree.write(conn, workspace, problem_name)
-            pool.shutdown(wait=False, cancel_futures=True)
-            return 0
+            # Re-check root_proved: `library.maybe_promote` may have
+            # rolled back a cascade chain on sorryAx detection, in
+            # which case root status reverted to 'attempting'. Skip
+            # the daemon shutdown so the next tick re-Backwards the
+            # culprit goal.
+            if db.root_proved(conn):
+                pool.shutdown(wait=False, cancel_futures=True)
+                return 0
+            print("[dispatcher] cascade reverted by integrity gate — "
+                  "continuing dispatcher loop", flush=True)
 
         # Refill queue (uses in-memory `running` for dedup; cooldown_until
         # holds spawn_fast_fail back-offs from F46).

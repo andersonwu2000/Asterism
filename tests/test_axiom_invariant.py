@@ -114,63 +114,151 @@ def _seed_goal_with_strategy(conn, tmp_path):
     return gid, sid
 
 
-def test_verify_strategy_dead_on_axiom_violation(
+def test_bisect_sorryax_finds_culprit_strategy(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    _reject_probe,
 ) -> None:
-    """SG s64 reproducer: lake build passes (strategy file + alias both
-    elaborate; the imported sorry'd L_*.lean is legal Lean), but the
-    axiom probe finds sorryAx in the strategy's transitive closure.
-    Without the probe, the strategy would have been marked 'proved' and
-    the parent goal cascaded up to root_proved. With the probe, the
-    strategy is killed at verify time → 'dead'."""
+    """Root verify reported `rogue: [sorryAx]` and the framework must
+    walk 'succeeded' strategies (deepest first) to find which non-leaf
+    patch leaked it. Stub `verify_file` so that the strategy with
+    matching scratch_fq returns sorryAx, others return clean.
+    """
     _, sid = _seed_goal_with_strategy(conn, tmp_path)
-    # `_reject_probe` already stubbed `verify_file` to return ok+sorryAx.
-    monkeypatch.setattr(verify, "lean_path_to_module",
-                        lambda *a, **kw: "Problems.p.proofs._strategy_s")
-    monkeypatch.setattr(verify, "promote_to_alias",
-                        lambda *a, **kw: None)
-    monkeypatch.setattr(verify, "rollback_promote",
-                        lambda *a, **kw: None)
+    db.update_strategy_status(conn, sid, "succeeded")
 
-    mfst = manifest.Manifest(problem="p", statement="True",
-                              axioms_whitelist=["propext"])
-    out = verify.verify_strategy(
-        conn, workspace=tmp_path, strategy_id=sid,
-        manifests={"p": mfst},
-    )
-    assert out == "dead"
+    from Tooling import gateway_lifecycle
+
+    def stub(target_path, *, write_olean=True, axioms_for=None,
+             timeout=120.0, workspace=None):
+        return {
+            "ok": True,
+            "diagnostic_count": 0,
+            "diagnostics": [],
+            "olean_written": False,
+            "olean_path": None,
+            # Only flag sorryAx when probing the seeded strategy's scratch_fq
+            "axioms": ["sorryAx"] if axioms_for == f"Problems.p.s{sid}" else [],
+            "axiom_error": None,
+        }
+    monkeypatch.setattr(gateway_lifecycle, "verify_file", stub)
+
+    culprit = verify.bisect_sorryax_source(conn, tmp_path, "p")
+    assert culprit is not None
+    assert culprit["id"] == sid
 
 
-def test_verify_strategy_rolls_back_parent_on_axiom_violation(
+def test_bisect_sorryax_returns_none_when_clean(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    _reject_probe,
 ) -> None:
-    """When the axiom probe rejects after `promote_to_alias` has
-    already rewritten the parent file, `rollback_promote` MUST run so
-    the parent doesn't stay aliased to a tainted strategy."""
+    """When no 'succeeded' strategy carries sorryAx, bisect returns
+    None (defensive — shouldn't happen if root probe truly reported
+    sorryAx, but the caller logs + skips rather than crashing)."""
     _, sid = _seed_goal_with_strategy(conn, tmp_path)
-    calls = {"rollback": 0}
-    # `_reject_probe` already stubbed `verify_file` to return ok+sorryAx.
-    monkeypatch.setattr(verify, "lean_path_to_module",
-                        lambda *a, **kw: "Problems.p.proofs._strategy_s")
-    monkeypatch.setattr(verify, "promote_to_alias",
-                        lambda *a, **kw: tmp_path / "backup")
+    db.update_strategy_status(conn, sid, "succeeded")
 
-    def fake_rollback(*a, **kw):
-        calls["rollback"] += 1
-    monkeypatch.setattr(verify, "rollback_promote", fake_rollback)
+    from Tooling import gateway_lifecycle
 
-    mfst = manifest.Manifest(problem="p", statement="True",
-                              axioms_whitelist=["propext"])
-    out = verify.verify_strategy(
-        conn, workspace=tmp_path, strategy_id=sid,
-        manifests={"p": mfst},
+    def stub(target_path, *, write_olean=True, axioms_for=None,
+             timeout=120.0, workspace=None):
+        return {
+            "ok": True, "diagnostic_count": 0, "diagnostics": [],
+            "olean_written": False, "olean_path": None,
+            "axioms": [] if axioms_for else None,
+            "axiom_error": None,
+        }
+    monkeypatch.setattr(gateway_lifecycle, "verify_file", stub)
+    assert verify.bisect_sorryax_source(conn, tmp_path, "p") is None
+
+
+def test_rollback_cascade_chain_reverts_culprit_and_upstream(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rollback_cascade_chain walks from culprit upward, reverting
+    both DB state and (via `rollback_promote`) parent file content.
+    Culprit goes to 'dead' + goal 'open'; upstream stays alive
+    (strategy 'proposed', goal 'attempting')."""
+    # Two-level chain: parent strategy + culprit sub-strategy.
+    grand_gid = _seed_goal_with_strategy.__wrapped__ if False else None  # noqa
+    # Seed manually for clarity
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at) "
+        "VALUES (?, ?, ?)",
+        ("p", "Problems/p/Manifest.md", db.now()),
     )
-    assert out == "dead"
-    assert calls["rollback"] == 1
+    grand_gid = db.insert_goal(
+        conn, problem="p", slug="grand",
+        lean_path="Problems/p/proofs/L_grand.lean",
+        statement="T", origin="root", depth=0,
+    )
+    db.update_goal_status(conn, grand_gid, "proved")  # optimistic, will revert
+    grand_sid = db.insert_strategy(
+        conn, goal_id=grand_gid,
+        lean_path="Problems/p/proofs/L_grand.lean",
+        scratch_path="Problems/p/proofs/_strategy_grand.lean",
+        created_by="pid_g",
+    )
+    db.update_strategy_status(conn, grand_sid, "succeeded")
+    culprit_gid = db.insert_goal(
+        conn, problem="p", slug="culprit",
+        lean_path="Problems/p/proofs/L_culprit.lean",
+        statement="T", origin="backward", depth=1,
+    )
+    db.update_goal_status(conn, culprit_gid, "proved")
+    db.link_subgoal(conn, strategy_id=grand_sid,
+                    subgoal_id=culprit_gid, position=0)
+    culprit_sid = db.insert_strategy(
+        conn, goal_id=culprit_gid,
+        lean_path="Problems/p/proofs/L_culprit.lean",
+        scratch_path="Problems/p/proofs/_strategy_culprit.lean",
+        created_by="pid_c",
+    )
+    db.update_strategy_status(conn, culprit_sid, "succeeded")
+
+    # Stub rollback_promote so we don't need real backup files on disk
+    rollback_calls = []
+    monkeypatch.setattr(
+        verify, "rollback_promote",
+        lambda parent_abs, backup: rollback_calls.append(parent_abs))
+
+    rolled = verify.rollback_cascade_chain(conn, tmp_path, culprit_sid)
+    assert rolled == 2
+
+    # Culprit reverted to dead + open
+    cs = conn.execute("SELECT status FROM strategies WHERE id = ?",
+                      (culprit_sid,)).fetchone()
+    cg = db.get_goal(conn, culprit_gid)
+    assert cs["status"] == "dead"
+    assert cg["status"] == "open"
+
+    # Upstream reverted to proposed + attempting
+    gs = conn.execute("SELECT status FROM strategies WHERE id = ?",
+                      (grand_sid,)).fetchone()
+    gg = db.get_goal(conn, grand_gid)
+    assert gs["status"] == "proposed"
+    assert gg["status"] == "attempting"
+
+
+def test_cleanup_cascade_backups_unlinks_backup_files(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Happy path after root verify success: walk all 'succeeded'
+    strategies, unlink any leftover backup files keyed by sid_token."""
+    from Tooling.pipeline._skeleton import verify_backup_path
+    _, sid = _seed_goal_with_strategy(conn, tmp_path)
+    db.update_strategy_status(conn, sid, "succeeded")
+
+    parent_abs = tmp_path / "Problems/p/proofs/L_main.lean"
+    parent_abs.parent.mkdir(parents=True, exist_ok=True)
+    parent_abs.write_text("-- parent", encoding="utf-8")
+    backup = verify_backup_path(parent_abs, f"s{sid}")
+    backup.write_text("-- backup contents", encoding="utf-8")
+    assert backup.exists()
+
+    n = verify.cleanup_cascade_backups(conn, tmp_path, "p")
+    assert n == 1
+    assert not backup.exists()
 
 
 def test_verify_housekeeping_does_not_skip_probe_with_no_manifests(

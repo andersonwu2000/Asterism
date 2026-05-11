@@ -222,28 +222,39 @@ loop（最多 max_iters=8 圈）:
               import Problems.<p>.proofs._strategy_s<sid>
               namespace Problems.<p>
               def <parent_slug> := @Problems.<p>.s<sid>
-            F52 簽名鎖死保證 alias 的 type 跟 parent 完全相符
-    Step 2: gateway verify_file(_strategy_s<sid>.lean,
-                                axioms_for=Problems.<p>.s<sid>)
-            一次同時：
-              - elaborate agent 的證明 patch（import 各 sub-goal proofs）
-              - 寫 _strategy_s<sid>.olean 到 disk（給上層 cascade import 用）
-              - axiom 檢查：probe scratch theorem 的 transitive axiom set
-                vs Manifest.axioms_whitelist
-    
-    全過 → strategy='succeeded'、parent goal='proved'
+            F52 簽名鎖死保證 alias 的 type 跟 parent 完全相符。
+            純字串模板、microsecond 級、無 Lean 介入。
+            Backup 保留在 disk（verify_backup_path key by sid_token），
+            等 root verify 結果再 cleanup 或 rollback。
+
+    Step 2: strategy='succeeded'、parent goal='proved'（樂觀標）
             sibling strategies 標 'superseded'、strategy.proposal_md 寫進
             parent .lean 檔頂作 annotation（替代已退役的 F22 playbook 流程）
             鏈式：parent goal 可能是更上層 strategy 的 sub-goal、下一圈會撈到
-    任一壞 → backup 還原 parent、strategy='dead'
-            cascade 處理（attempts++、SHELVE 處理、_propagate_shelve 上拋）
 
-最終 root verify（library.maybe_promote、root goal flip 為 proved 後）：
-    Step F: gateway verify_file(Root.lean, axioms_for=main_fq, write_olean=True)
-            elaborate 完整 alias 鏈 → 抓任何 promote_to_alias drift
-            最終 axiom whitelist gate
-            通過後 library.promote 寫 Library/<Topic>/<problem>.lean
+最終 root verify（library.maybe_promote、root goal flip 為 proved 後、單一 integrity gate）：
+    Step F: axiom_probe(Root.lean, axioms_for=main_fq)
+            唯一 Lean elaboration 點 — lake serve worker 走完整 alias 鏈、
+            缺 olean 的 L_*.lean on-demand elaborate
+              - 抓 promote_to_alias drift（compile error → Lean 印 .lean 檔名+行號）
+              - 抓任何漏網 sorryAx（rogue: [sorryAx]）
+    Step Fa（happy）: cleanup_cascade_backups + library.promote 寫
+                     Library/<Topic>/<problem>.lean、daemon idle-exit
+    Step Fb（rogue sorryAx）:
+              - bisect_sorryax_source: 對每個 'succeeded' strategy 跑
+                #print axioms（deepest first）、找第一個 scratch 含 sorryAx 的
+              - rollback_cascade_chain: 從元凶往 root 走、每層
+                rollback_promote(parent_abs, backup) 恢復 sorry-stub、
+                culprit strategy='dead'/goal='open'、上游 strategy='proposed'
+                /goal='attempting'
+              - dispatcher re-check `db.root_proved`：False → 繼續 main loop、
+                下個 tick re-Backward culprit goal
 ```
+
+empirical: 41+ 次 cascade verify 0 次攔到任何 sorry / drift（F56 doc 26 +
+SG #19 10 + PN refactor 5）。唯一 caught sorryAx 案例（SG s378）發生在
+Backward leaf-bypass submit time、不是 cascade。Mechanical-only cascade
+把零收益的 verify 全省掉、failure path 用 bisect 補回 attribution。
 
 **為什麼是 stage 而非 worker_kind**：純框架操作沒 LLM、不該佔 worker pool slot。早期版本（pre-F56）把 Verify 當第三種 worker_kind、每輪佔一個 ThreadPool 格子 ~60s、無收益。
 

@@ -91,58 +91,72 @@ Monsky / Hadamard 級的目標問題會到 8-12 層、上百 goals。Concat 在
 這級會 quadratic 退化（root 級每次拼幾百檔上萬行）；per-file queue
 跟 lake 一樣 linear。
 
-### 3.1 進一步收斂：parent verify 改成隱式
+### 3.1 兩階段收斂：parent verify → 完全 mechanical
 
 per-file queue 在 SG-19 上跑出 cascade 慢的問題（10 層、每層 2 個
-verify_file ≈ 36s × 10 = 6 min）。檢視每層第二個 (parent) verify_file 做什麼：
+verify_file ≈ 36s × 10 = 6 min）。觀察 cascade verify 的攔截能力：
+
+**所有 sorry 注入點都已經在「葉子層」被攔截**：
+- Builder leaf：`pipeline/builder.py` 在 commit 時 axiom_check（有 axioms_for）
+- Backward leaf-bypass：`pipeline/backward.py:624-670` acceptance 時 axiom_check
+- 非葉子 strategy patch compile：`pipeline/backward.py:851` submit 時 verify
+
+唯一沒在 submit 時驗的：**非葉子 strategy patch 本身的 sorry**。submit 時
+sub-goal 還是 sorry-stub、`#print axioms` 看到的 sorryAx 無法分辨「自己寫的 sorry」
+跟「stub 帶來的 sorry」。
+
+這個檢查可推到 root：所有 sub-goal alias-in 後、`axiom_probe(Root.lean)` 看到
+main 用 sorryAx 即代表某 strategy 漏。**Bisect 找元凶 cost 1-2s、只在 rare
+failure 時付**。
+
+**第一階段（b8b6bc0）**：parent verify 拿掉、scratch verify 加 `axioms_for=scratch_fq`。
+6 min → 3.5 min。
+
+**第二階段（本 commit）**：cascade 完全 mechanical、root 才驗：
 
 ```
-parent file 內容 = `def <slug> := @<scratch_module>.s<id>` (alias)
-parent verify  = didChange + elaborate + writeOlean(parent.olean)
+verify_strategy (mechanical-only):
+  1. promote_to_alias(parent)              # 純字串模板、microsecond 級
+  2. return "proved"                       # 不呼叫 verify_file
+
+library.maybe_promote (cascade 完成後，integrity gate):
+  3. axiom_probe(Root.lean, axioms_for=main_fq)
+     - 唯一 Lean elaboration 點
+     - lake serve worker 走完整 alias 鏈、缺 olean 的 L_*.lean on-demand elaborate
+     - 抓 promote_to_alias drift（compile error → Lean 印檔名+行號）
+     - 抓任何漏網 sorryAx（rogue axioms: [sorryAx]）
+  4a. 若 ok → cleanup_cascade_backups + Library/<topic>/ 推進
+  4b. 若 rogue 含 sorryAx：
+      - bisect_sorryax_source：對每個 'succeeded' strategy 跑 #print axioms
+        找第一個 scratch 含 sorryAx（deepest first）
+      - rollback_cascade_chain：從元凶往 root 走、restore 每層 alias backup、
+        revert DB state（元凶 'dead'/'open'、上游 'proposed'/'attempting'）
+      - dispatcher re-check root_proved、繼續 main loop、下一個 tick re-Backward
 ```
 
-parent 是 promote_to_alias 生出的、純機械改寫；alias 的正確性等價於
-scratch theorem 的 type 跟 parent goal binders 對得上（F52 invariant）。
-歷史資料證實：F56 doc 自承「26 verifies 0 failure」、SG-19 也是 0 verify
-失敗 — **per-level parent verify 在實務上是空跑開銷**。
+收斂進度對照：
 
-故收斂為「scratch-only + 最終 root verify」：
+| 維度 | per-file queue | scratch-only (b8b6bc0) | mechanical-only (此 commit) |
+|---|---|---|---|
+| 每層 verify_file 次數 | 2 | 1 | 0 |
+| SG-class 10-level cascade 時間 | ~6 min | ~3.5 min | ~10s + root verify ~30-60s |
+| 每層 olean 寫入磁碟 | scratch + parent | scratch | 無新寫入（scratch.olean 在 submit time 已寫）|
+| Per-strategy 編譯錯誤偵測 | cascade time | cascade time | submit time（backward.py:851）|
+| Per-strategy sorryAx attribution | parent fq | scratch fq | failure path bisect（1-2s）|
+| Cascade 失敗復原 | 本層 rollback | 本層 rollback | bisect + rollback 整鏈 |
 
-```
-verify_strategy (single-call):
-  1. promote_to_alias(parent)              # 改寫 parent 為 alias
-  2. verify_file(scratch, axioms_for=s<id>) # 同時驗 compile + axiom
-     - 寫 scratch_module.olean 到 disk
-     - axiom check 從 parent fq 移到 scratch fq（等價：def slug := @s<id>
-       是 alias、#print axioms 走同樣 dependency graph）
-  3. 若 ok：done
-  4. 若 fail：rollback_promote(parent)
+empirical justification — cascade verify 「攔到過什麼」：
 
-library.maybe_promote (cascade 完成後):
-  5. verify_file(Root.lean, axioms_for=main_fq, write_olean=True)
-     - elaborate 完整 alias 鏈
-     - lake serve worker 對缺 olean 的 L_*.lean 隨 import 自動 elaborate
-     - 一次抓 promote_to_alias drift / 任何漏網 sorryAx
-```
-
-收斂後的 trade-off：
-
-| 維度 | per-file queue | scratch-only + root verify |
+| Run | Cascade verify 次數 | 攔到 |
 |---|---|---|
-| 每層 verify_file 次數 | 2 | 1 |
-| SG-class 10-level cascade 時間 | ~6 min | ~3.5-4 min（-30~40%）|
-| parent module olean 寫入磁碟 | ✅ 每層 | ❌ 跳過、後續 import 走 lake serve on-demand |
-| Per-strategy 編譯錯誤 attribution | ✅ | ✅（scratch verify 仍每層做） |
-| Per-strategy sorryAx attribution | ✅（parent fq） | ✅（scratch fq、等價 axiom set）|
-| promote_to_alias drift 偵測 | 每層 | 延後到 root verify、Lean 印檔名+行號 |
-| Root verify cost | 一次 axiom_probe | 同一次 axiom_probe + 完整鏈 elaborate |
+| F56 doc 統計（cantor + proj_nonexpansive 早期）| 26 | 0 |
+| SG run #19 | 10 | 0 |
+| PN refactor run | 5 | 0 |
+| **合計** | **41** | **0** |
 
-cost 加在 root verify（lake serve 要 walk 全鏈 elaborate 缺的 L_*.olean），
-但 alias 檔極小、warm Mathlib worker 處理 microsecond 級、累積 < per-level
-overhead 省下的時間。
-
-drift 風險 — promote_to_alias 在現行架構幾乎不會錯（純字串模板）。若真錯，
-root verify 失敗訊息會印出具體 .lean 檔名+行號、debug 不困難。
+s378 sorryAx 案例（SG #19 唯一 caught sorryAx）發生在 **Backward leaf-bypass
+submit time、不是 cascade**。Mechanical-only 設計把零收益的 41 次 verify 全
+省掉、failure path 用 bisect 補回 attribution。
 
 ---
 

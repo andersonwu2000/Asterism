@@ -163,7 +163,16 @@ def maybe_promote(conn, workspace: Path, problem: str,
                   mfst: manifest.Manifest) -> None:
     """Cascade hook: called whenever any Goal in `problem` flips to
     'proved'. No-ops unless the root is proved. Logs result of each
-    attempt to stdout (`[library] ...`); never raises."""
+    attempt to stdout (`[library] ...`); never raises.
+
+    Also acts as the single integrity gate under verify-collapse:
+    per-level cascade promotes are mechanical (no Lean elaboration);
+    `axiom_probe(Root.lean)` here is the actual proof validation.
+    On rogue-axiom failure (sorryAx in a non-leaf strategy patch)
+    invokes `verify.bisect_sorryax_source` + `rollback_cascade_chain`
+    to revert the cascade — framework cascade machinery will then
+    re-Backward the culprit goal on the next dispatcher tick.
+    """
     row = conn.execute(
         "SELECT statement FROM goals "
         "WHERE problem = ? AND origin = 'root' AND status = 'proved' "
@@ -176,6 +185,36 @@ def maybe_promote(conn, workspace: Path, problem: str,
         promoted, msg = promote(workspace, problem, mfst,
                                 str(row["statement"]))
         print(msg, flush=True)
+        if not promoted and ("rogue axioms" in msg or "sorryAx" in msg):
+            _handle_sorryax_at_root(conn, workspace, problem)
+            return
+        # Happy path: clean up cascade backups accumulated by
+        # `verify_strategy` during cascade promotion.
+        from . import verify as _verify
+        n = _verify.cleanup_cascade_backups(conn, workspace, problem)
+        if n:
+            print(f"[library] {problem}: cleaned {n} cascade backup(s)",
+                  flush=True)
     except Exception as e:
         print(f"[library] {problem}: promotion error ({e})",
               flush=True, file=sys.stderr)
+
+
+def _handle_sorryax_at_root(conn, workspace: Path, problem: str) -> None:
+    """Root axiom probe detected sorryAx. Bisect to find which
+    non-leaf strategy leaked it, rollback the cascade chain from
+    there. Framework cascade machinery will re-Backward the goal
+    on the next dispatcher tick."""
+    from . import verify as _verify
+    culprit = _verify.bisect_sorryax_source(conn, workspace, problem)
+    if culprit is None:
+        print(f"[library] {problem}: sorryAx detected at root but bisect "
+              f"found no source — manual investigation required",
+              flush=True, file=sys.stderr)
+        return
+    rolled = _verify.rollback_cascade_chain(
+        conn, workspace, int(culprit["id"]))
+    print(f"[library] {problem}: rolled back {rolled} strategy/goal pair(s)"
+          f" after sorryAx in strategy={culprit['id']}"
+          f" (goal {culprit['goal_slug']})",
+          flush=True)
