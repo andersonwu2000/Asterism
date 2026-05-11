@@ -1,14 +1,28 @@
-"""Tests for Tooling.adapters.minif2f — fixture-based, no real miniF2F
-clone needed. Each test synthesizes one or more miniF2F-style .lean
-files in tmp_path, runs the adapter, and inspects the emitted
-Problem dirs."""
+"""Tests for the miniF2F adapter. Fixture-based — no real miniF2F clone
+needed. Each test synthesizes one or more miniF2F-style .lean files in
+tmp_path, runs the adapter, and inspects the emitted Problem dirs.
+
+Lives under `Benchmarks/minif2f/` (not `tests/`) because this is a
+benchmark driver, not Asterism framework code. Run via:
+
+    python -m pytest Benchmarks/minif2f/test_adapter.py
+"""
 from __future__ import annotations
 
+import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
 
-from Tooling.adapters import minif2f
+# Load adapter.py as a module — sibling file in this directory, not a
+# package member, so we use importlib instead of `from X import Y`.
+_ADAPTER_PATH = Path(__file__).parent / "adapter.py"
+_spec = importlib.util.spec_from_file_location(
+    "minif2f_adapter", _ADAPTER_PATH)
+minif2f = importlib.util.module_from_spec(_spec)
+sys.modules["minif2f_adapter"] = minif2f
+_spec.loader.exec_module(minif2f)
 
 
 # ---------------------------------------------------------------------
