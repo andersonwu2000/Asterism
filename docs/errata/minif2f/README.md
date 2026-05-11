@@ -23,6 +23,17 @@ Counterexample (kernel-verified): `u 0 = 4, u 1 = 7, u 2 = 10000, u 3 = 0,
 u k = 0 for k ≥ 4`. Satisfies all hypotheses; `∑_{k<3} u k = 10011 > 10000`
 while `1999 > 3`.
 
+### `mathd_algebra_433` — answer simply wrong
+
+**File:** [`mathd_algebra_433_disproof.lean`](mathd_algebra_433_disproof.lean)
+
+The expected value is wrong. With `f x = 3 · √(2x - 7) - 8`,
+`f 8 = 3 · √9 - 8 = 9 - 8 = 1`, not 19. Either the source MATH-dataset
+problem asked for a different point or had a different expected value.
+
+Counterexample (kernel-verified): `f x = 3 · √(2x - 7) - 8` satisfies
+`h₀` reflexively but `f(8) = 1`.
+
 ### `mathd_algebra_282` — ℕ-division trivializes the cube root
 
 **File:** [`mathd_algebra_282_disproof.lean`](mathd_algebra_282_disproof.lean)
@@ -155,6 +166,7 @@ lake env lean docs/errata/minif2f/aime_1984_p5_disproof.lean
 lake env lean docs/errata/minif2f/amc12a_2020_p13_disproof.lean
 lake env lean docs/errata/minif2f/imo_1962_p4_disproof.lean
 lake env lean docs/errata/minif2f/mathd_algebra_282_disproof.lean
+lake env lean docs/errata/minif2f/mathd_algebra_433_disproof.lean
 lake env lean docs/errata/minif2f/aime_1988_p3_disproof.lean
 lake env lean docs/errata/minif2f/amc12a_2002_p21_disproof.lean
 lake env lean docs/errata/minif2f/mathd_numbertheory_126_disproof.lean
