@@ -717,6 +717,17 @@ def run(workspace: Path, *, once: bool = False) -> int:
     consec_fast_fails = 0
     SPAWN_COOLDOWN_SEC = 30.0
     CONSEC_SPAWN_FAIL_LIMIT = 10
+    # Independent counter for gateway_unreachable. d2dd861 prevents
+    # transient gateway hiccups from charging goal attempts (good),
+    # but a PERMANENT gateway death (e.g. accept loop crashed) means
+    # every dispatch instantly hits WinError 10061 → 30s cooldown →
+    # re-dispatch → new strategy row → infinite loop. Run #17 cut at
+    # +52min after 48 strategies piled up on 2 hard goals. The
+    # circuit breaker exits when consecutive gateway-unreachable
+    # crosses CONSEC_GATEWAY_UNREACHABLE_LIMIT — daemon refuses to
+    # busy-loop against a dead gateway and forces operator attention.
+    consec_gateway_unreachable = 0
+    CONSEC_GATEWAY_UNREACHABLE_LIMIT = 8
 
     conn = db.connect()
     manifests: dict[str, manifest.Manifest] = {}
@@ -797,12 +808,32 @@ def run(workspace: Path, *, once: bool = False) -> int:
                                       f"for the underlying error.", flush=True)
                                 pool.shutdown(wait=False, cancel_futures=True)
                                 return 2
+                        elif reason == "gateway_unreachable":
+                            consec_gateway_unreachable += 1
+                            print(f"[cooldown] {kind} {tk}={tid} cooled "
+                                  f"{SPAWN_COOLDOWN_SEC:.0f}s after "
+                                  f"gateway_unreachable "
+                                  f"(consec={consec_gateway_unreachable})",
+                                  flush=True)
+                            if (consec_gateway_unreachable
+                                    >= CONSEC_GATEWAY_UNREACHABLE_LIMIT):
+                                print(f"[dispatcher] "
+                                      f"{consec_gateway_unreachable} "
+                                      f"consecutive gateway_unreachable — "
+                                      f"gateway appears permanently dead; "
+                                      f"exiting. Restart daemon (gateway "
+                                      f"will be re-launched) and inspect "
+                                      f".asterism/logs/gateway.log for the "
+                                      f"underlying crash.", flush=True)
+                                pool.shutdown(wait=False, cancel_futures=True)
+                                return 2
                         else:
                             print(f"[cooldown] {kind} {tk}={tid} cooled "
                                   f"{SPAWN_COOLDOWN_SEC:.0f}s after {reason}",
                                   flush=True)
                     else:
                         consec_fast_fails = 0
+                        consec_gateway_unreachable = 0
                     print(f"[cascade] {kind} {tk}={tid} → {outcome}", flush=True)
                     tree.write_for_target(conn, workspace, tid, tk)
                 except Exception as exc:
@@ -841,9 +872,24 @@ def run(workspace: Path, *, once: bool = False) -> int:
                         if infra_reason == "gateway_unreachable":
                             cooldown_until[(tid, kind)] = (
                                 time.time() + SPAWN_COOLDOWN_SEC)
+                            consec_gateway_unreachable += 1
                             print(f"[cooldown] {kind} {tk}={tid} cooled "
                                   f"{SPAWN_COOLDOWN_SEC:.0f}s after "
-                                  f"gateway_unreachable", flush=True)
+                                  f"gateway_unreachable "
+                                  f"(consec={consec_gateway_unreachable})",
+                                  flush=True)
+                            if (consec_gateway_unreachable
+                                    >= CONSEC_GATEWAY_UNREACHABLE_LIMIT):
+                                print(f"[dispatcher] "
+                                      f"{consec_gateway_unreachable} "
+                                      f"consecutive gateway_unreachable — "
+                                      f"gateway appears permanently dead; "
+                                      f"exiting. Restart daemon (gateway "
+                                      f"will be re-launched) and inspect "
+                                      f".asterism/logs/gateway.log for the "
+                                      f"underlying crash.", flush=True)
+                                pool.shutdown(wait=False, cancel_futures=True)
+                                return 2
                     except Exception as exc2:
                         # Cascade itself bombing is a deeper bug; log
                         # but don't crash the daemon (other work may

@@ -945,6 +945,16 @@ class SessionHeaderMiddleware:
 # ─── Entrypoint ─────────────────────────────
 
 def main() -> None:
+    # Install SelectorEventLoop policy at the VERY TOP of main, before
+    # any thread or asyncio interaction. _start_workers (launched as a
+    # daemon thread below) uses asyncio internally via lsp_client, and
+    # uvicorn.run() creates its own event loop. Both must see the
+    # Selector policy at construction time. Doing this AFTER thread
+    # start (as the prior implementation did) was racy and uvicorn
+    # ignored the global policy because its default `loop="auto"`
+    # bypasses asyncio policy on Windows.
+    _install_windows_event_loop_policy()
+
     workspace_env = os.environ.get("ASTERISM_WORKSPACE")
     if not workspace_env:
         print("[gateway] ASTERISM_WORKSPACE env required",
@@ -980,10 +990,14 @@ def main() -> None:
     app = mcp.streamable_http_app()
     app = SessionHeaderMiddleware(app)
 
-    _install_windows_event_loop_policy()
-
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    # `loop="asyncio"` forces uvicorn to use the standard asyncio
+    # event loop (which respects the policy installed at top of main),
+    # NOT the auto-selected ProactorEventLoop on Windows. Without this,
+    # the global policy is ignored and IocpProactor.accept's
+    # WinError 64 race recurs (run #17 cut at +52min).
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning",
+                loop="asyncio")
 
 
 def _install_windows_event_loop_policy() -> None:
