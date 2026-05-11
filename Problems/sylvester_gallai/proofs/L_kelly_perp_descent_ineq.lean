@@ -1,9 +1,9 @@
 import Mathlib
 import Problems.sylvester_gallai.Defs
-import Problems.sylvester_gallai.proofs._strategy_s375
+import Problems.sylvester_gallai.proofs._strategy_s385
 
 namespace Problems.sylvester_gallai
 
-def main := @Problems.sylvester_gallai.s375
+def kelly_perp_descent_ineq := @Problems.sylvester_gallai.s385
 
 end Problems.sylvester_gallai
