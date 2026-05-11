@@ -23,6 +23,23 @@ Counterexample (kernel-verified): `u 0 = 4, u 1 = 7, u 2 = 10000, u 3 = 0,
 u k = 0 for k ≥ 4`. Satisfies all hypotheses; `∑_{k<3} u k = 10011 > 10000`
 while `1999 > 3`.
 
+### `imo_1962_p4` — answer-set step too fine (admits non-solutions)
+
+**File:** [`imo_1962_p4_disproof.lean`](imo_1962_p4_disproof.lean)
+
+The third and fourth branches of the answer set use step `π / 6`, but
+the IMO 1962 #4 solution `cos(3x) = 0` requires step `π / 3` (from
+`3x = π/2 + kπ`). The over-fine step admits `x = 0` as a member of
+the right-hand set (third branch, `m = -1`), but `cos²(0) · 3 = 3 ≠ 1`,
+so `0` is not in the left-hand set. Hence the universal set equality
+fails.
+
+Counterexample (kernel-verified): take `S` as the LHS set, then `0 ∈ RHS`
+but `0 ∉ S`. Note: this is one of the few errata where the
+[facebookresearch/miniF2F fork](https://github.com/facebookresearch/miniF2F/pull/36)
+has merged a fix, but `yangky11/miniF2F-lean4` (which our adapter pulls
+from) still ships the broken version.
+
 ### `amc12a_2020_p13` — ℕ-division trivializes the equation
 
 **File:** [`amc12a_2020_p13_disproof.lean`](amc12a_2020_p13_disproof.lean)
@@ -123,6 +140,7 @@ PYTHONPATH=. python docs/errata/minif2f/audit.py
 cd <asterism-repo>
 lake env lean docs/errata/minif2f/aime_1984_p5_disproof.lean
 lake env lean docs/errata/minif2f/amc12a_2020_p13_disproof.lean
+lake env lean docs/errata/minif2f/imo_1962_p4_disproof.lean
 lake env lean docs/errata/minif2f/aime_1988_p3_disproof.lean
 lake env lean docs/errata/minif2f/amc12a_2002_p21_disproof.lean
 lake env lean docs/errata/minif2f/mathd_numbertheory_126_disproof.lean
