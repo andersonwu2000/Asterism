@@ -506,11 +506,18 @@ def cmd_reset(args: argparse.Namespace) -> int:
                 else:
                     failed_files.append(f.name)
 
-    # Sweep workspace-root gateway artifacts (Phase 1+ gateway leaves
-    # `_gateway_slot_<i>.lean` per worker, `_gateway_smoke_*.lean` from
-    # cold start, `_axiom_probe_*.lean` from in-flight axiom checks).
-    # When the daemon dies hard these stay; reset is the canonical
-    # cleanup point.
+    # Sweep gateway warmup artifacts. Current location is
+    # `.asterism/runtime_slots/_gateway_slot_<i>.lean` (per-worker
+    # didOpen surface). The workspace-root patterns + legacy
+    # `_gateway_smoke_*.lean` / `_axiom_probe_*.lean` are retained for
+    # migration cleanup of pre-move daemons / pre-current-design runs.
+    runtime_slots = workspace / ".asterism" / "runtime_slots"
+    if runtime_slots.exists():
+        for f in runtime_slots.glob("_gateway_slot_*.lean"):
+            if _robust_unlink(f):
+                deleted_files.append(f"{runtime_slots.name}/{f.name}")
+            else:
+                failed_files.append(f.name)
     for pattern in ("_gateway_slot_*.lean", "_gateway_smoke_*.lean",
                      "_axiom_probe_*.lean"):
         for f in workspace.glob(pattern):
@@ -588,6 +595,10 @@ def cmd_reset(args: argparse.Namespace) -> int:
     for name in ("LESSONS.md", "Root.lean.backup", "TREE.md"):
         if (pdir / name).exists():
             leftovers.append(name)
+    runtime_slots = workspace / ".asterism" / "runtime_slots"
+    if runtime_slots.exists():
+        for f in runtime_slots.glob("_gateway_slot_*.lean"):
+            leftovers.append(f"{runtime_slots.name}/{f.name}")
     for pattern in ("_gateway_slot_*.lean", "_gateway_smoke_*.lean",
                      "_axiom_probe_*.lean"):
         for f in workspace.glob(pattern):

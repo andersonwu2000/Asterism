@@ -162,9 +162,18 @@ def _start_workers(workspace: Path, w_count: int) -> None:
         _state.backend = client
         _state.workspace = workspace
 
+        # Slot files are framework runtime artifacts (per-worker warmup
+        # surface for didOpen). Kept under `.asterism/runtime_slots/` so
+        # they don't pollute the workspace root and don't get glob'd by
+        # lake's `lean_lib` Asterism/Problems/Library blocks. The
+        # workspace root remains the cwd for lake serve, so import
+        # resolution is unaffected — file location only matters for the
+        # URI, not for Lean's LEAN_PATH.
+        slots_dir = workspace / ".asterism" / "runtime_slots"
+        slots_dir.mkdir(parents=True, exist_ok=True)
         slots: list[WorkerSlot] = []
         for i in range(w_count):
-            slot_path = workspace / f"_gateway_slot_{i}.lean"
+            slot_path = slots_dir / f"_gateway_slot_{i}.lean"
             slot_path.write_text(WARMUP_CONTENT, encoding="utf-8")
             slot = WorkerSlot(
                 slot_id=i,

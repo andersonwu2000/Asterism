@@ -235,15 +235,23 @@ def test_reset_idempotent_on_clean_problem(
 def test_reset_sweeps_workspace_gateway_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """reset cleans workspace-root LSP gateway leftovers
-    (`_gateway_slot_<i>.lean`, `_gateway_smoke_*.lean`,
-    `_axiom_probe_*.lean`). Without this, a hard-killed daemon's
-    artifacts pile up across runs and the next gateway startup
-    collides with stale slot files."""
+    """reset cleans LSP gateway leftovers from two locations:
+    the current `.asterism/runtime_slots/_gateway_slot_<i>.lean` (where
+    `lsp_gateway.warmup` now writes them) AND the legacy workspace-root
+    patterns (`_gateway_slot_<i>.lean`, `_gateway_smoke_*.lean`,
+    `_axiom_probe_*.lean`) kept for migration cleanup of pre-move
+    daemons. Without this, hard-killed daemon artifacts pile up across
+    runs and the next gateway startup collides with stale slot files."""
     _setup_problem(tmp_path)
     monkeypatch.chdir(tmp_path)
     cmd_init(argparse.Namespace(problem="wilson", force=False))
-    # Drop fake gateway leftovers in the workspace root.
+    # Drop fake gateway leftovers in the new location...
+    slots_dir = tmp_path / ".asterism" / "runtime_slots"
+    slots_dir.mkdir(parents=True, exist_ok=True)
+    for i in range(2):
+        (slots_dir / f"_gateway_slot_{i}.lean").write_text(
+            "import Mathlib\n", encoding="utf-8")
+    # ...and in the legacy workspace-root location.
     for name in ("_gateway_slot_0.lean", "_gateway_slot_1.lean",
                  "_gateway_smoke_abc12345.lean",
                  "_axiom_probe_def67890.lean"):
@@ -255,7 +263,10 @@ def test_reset_sweeps_workspace_gateway_artifacts(
 
     rc = cmd_reset(argparse.Namespace(problem="wilson"))
     assert rc == 0
-    # All gateway artifacts gone.
+    # New-location artifacts gone.
+    for i in range(2):
+        assert not (slots_dir / f"_gateway_slot_{i}.lean").exists()
+    # Legacy-location artifacts gone.
     for name in ("_gateway_slot_0.lean", "_gateway_slot_1.lean",
                  "_gateway_smoke_abc12345.lean",
                  "_axiom_probe_def67890.lean"):
