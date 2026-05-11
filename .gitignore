@@ -42,3 +42,7 @@ __pycache__/
 
 # Claude Code agent-side state (per-cwd transient)
 .claude/
+
+# External clones (miniF2F source repo, future benchmarks). Cloned on
+# demand by Benchmarks/<name>/ drivers; never committed to this repo.
+_ext/
