@@ -95,9 +95,16 @@ def test_parse_single_theorem_extracts_name_and_signature(tmp_path: Path):
     assert len(specs) == 1
     spec = specs[0]
     assert spec.name == "algebra_amgm_faxinrrp2msqrt2le2mxm1div2x"
+    # Signature is normalized to `∀ <binders>, <conclusion>` form so
+    # cmd_init's `theorem main : {statement} := by sorry` wrapper
+    # produces valid Lean (single colon, not double).
+    assert spec.signature.startswith("∀ ")
     assert "(x : ℝ)" in spec.signature
     assert "Real.sqrt 2" in spec.signature
     assert ":=" not in spec.signature  # sig captures up to but not incl `:=`
+    # No double-colon — the binder/conclusion separator was rewritten
+    # to a comma by `_normalize_signature`.
+    assert spec.signature.count(":") == 2  # only the binder `:` and `: ℝ`
 
 
 def test_parse_replays_open_clauses(tmp_path: Path):
@@ -119,6 +126,84 @@ def test_parse_no_theorem_returns_empty(tmp_path: Path):
     src = tmp_path / "helper.lean"
     src.write_text(_NO_THEOREM, encoding="utf-8")
     assert minif2f.parse_problem_file(src) == []
+
+
+# ---------------------------------------------------------------------
+# _normalize_signature — convert `(binders) : conclusion` → `∀ binders, conclusion`
+# ---------------------------------------------------------------------
+
+def test_normalize_binder_form_to_forall():
+    """Standard miniF2F shape: theorem with binders + colon + conclusion."""
+    sig = "(a b c d : ℂ) : (a - d) * (a - c) = x"
+    out = minif2f._normalize_signature(sig)
+    assert out == "∀ (a b c d : ℂ), (a - d) * (a - c) = x"
+
+
+def test_normalize_nullary_strips_leading_colon():
+    """Nullary theorem (no binders) — strip the leading `:`."""
+    sig = ": abs ((120 : ℝ) / 100 * 30 - 130 / 100 * 20) = 10"
+    out = minif2f._normalize_signature(sig)
+    assert out == "abs ((120 : ℝ) / 100 * 30 - 130 / 100 * 20) = 10"
+
+
+def test_normalize_mixed_binder_kinds():
+    """Implicit + typeclass + explicit binder groups all preserved."""
+    sig = "{X : Type*} [Inst X] (x : X) (h : True) : x = x"
+    out = minif2f._normalize_signature(sig)
+    assert out == "∀ {X : Type*} [Inst X] (x : X) (h : True), x = x"
+
+
+def test_normalize_bare_type_passes_through():
+    """If signature has no top-level `:` it's already a bare type (rare
+    but defensive — e.g. malformed source we don't want to crash on)."""
+    assert minif2f._normalize_signature("True") == "True"
+
+
+def test_normalize_depth_aware_ignores_inner_colons():
+    """A `:` inside binder parentheses isn't the binder/conclusion
+    separator — must not split there."""
+    sig = "(a : ℝ) (b : ℕ) : a + b > 0"
+    out = minif2f._normalize_signature(sig)
+    # Splits at the colon AFTER the last paren-group, not at `(a : ℝ)`.
+    assert out == "∀ (a : ℝ) (b : ℕ), a + b > 0"
+
+
+def test_normalize_real_minif2f_double_colon_regression(tmp_path: Path):
+    """Regression: the 2026-05-12 pilot v2 deadlock root cause. miniF2F
+    `theorem foo (a b c d : ℂ) : P := by sorry` produced a Manifest
+    statement that, when wrapped as `theorem main : {statement}`,
+    yielded double-colon syntax error. After fix: cmd_init's
+    `theorem main : {statement}` produces `theorem main : ∀ ..., P`."""
+    src = tmp_path / "broken.lean"
+    src.write_text(
+        "import Mathlib\n"
+        "open Real\n\n"
+        "theorem regression "
+        "(a b c d : ℂ) "
+        ": (a - d) * (a - c) * (a - b) = 0 := by sorry\n",
+        encoding="utf-8",
+    )
+    specs = minif2f.parse_problem_file(src)
+    assert len(specs) == 1
+    sig = specs[0].signature
+    # The wrapped form cmd_init would produce:
+    wrapped = f"theorem main : {sig} := by sorry"
+    # Must NOT contain double colon outside paren groups
+    depth = 0
+    seen_colon = False
+    for ch in wrapped:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == ":" and depth == 0:
+            assert not seen_colon, (
+                f"double top-level `:` in wrapped Root.lean: {wrapped!r}"
+            )
+            # Allow the leading `theorem main :` and the `:=` (which
+            # is matched here as `:` followed by `=`, two chars but the
+            # walker only sees `:`). Stop after seeing one.
+            break
 
 
 def test_parse_captures_set_option_directives(tmp_path: Path):

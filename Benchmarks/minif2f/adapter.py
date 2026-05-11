@@ -75,6 +75,56 @@ class ProblemSpec:
         return Path("Minif2f", self.name)
 
 
+def _normalize_signature(sig: str) -> str:
+    """Convert Lean theorem signature `(binders) : conclusion` form to a
+    self-contained type expression `∀ (binders), conclusion`.
+
+    miniF2F files have `theorem <name> (a b : ℝ) (h : ...) : <type> := by sorry`.
+    The raw signature captured between `theorem <name>` and `:=` is
+    `(a b : ℝ) (h : ...) : <type>`. Asterism's `cmd_init` then wraps the
+    Manifest's statement as `theorem main : {statement} := by sorry` —
+    producing `theorem main : (a b : ℝ) (h : ...) : <type> := by sorry`,
+    which has DOUBLE COLON (invalid Lean syntax). Backward agents reading
+    that broken Root.lean copy the same broken pattern into their patch
+    files; lake_build_error → exhausted → 0 proofs.
+
+    Fix: pre-normalize the signature so `cmd_init`'s wrapper produces
+    valid Lean. Use `∀` to bind the parameters, comma to separate from
+    the conclusion. The result composes correctly under `theorem main : `.
+
+    Depth-aware: tracks paren/bracket/brace nesting so colons INSIDE
+    binder groups (e.g. `(x : ℝ)`) aren't mistaken for the binder/
+    conclusion separator.
+
+    Edge cases:
+      - Nullary signature `: P`  →  `P`
+      - Just `P` (no leading colon, no binders) → `P`
+      - `(a : ℝ) : x = x` → `∀ (a : ℝ), x = x`
+      - `{X : Type} [Inst X] (x : X) : True` → `∀ {X : Type} [Inst X] (x : X), True`
+    """
+    sig = sig.strip()
+    if not sig:
+        return sig
+    depth = 0
+    sep_idx = -1
+    for i, ch in enumerate(sig):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == ":" and depth == 0:
+            sep_idx = i
+            break
+    if sep_idx == -1:
+        # No top-level `:` — signature is already a bare type expression.
+        return sig
+    binders = sig[:sep_idx].strip()
+    conclusion = sig[sep_idx + 1:].strip()
+    if not binders:
+        return conclusion
+    return f"∀ {binders}, {conclusion}"
+
+
 def parse_problem_file(path: Path) -> list[ProblemSpec]:
     """Extract every `theorem` declaration in a miniF2F .lean file.
     Returns [] if no theorem matched (helper file, comment-only, etc)."""
@@ -84,10 +134,10 @@ def parse_problem_file(path: Path) -> list[ProblemSpec]:
     specs: list[ProblemSpec] = []
     for m in _THEOREM_RE.finditer(text):
         name = m.group(1).strip()
-        sig = re.sub(r'\s+', ' ', m.group(2).strip()).strip()
-        if not sig.startswith(':') and not sig:
-            # Malformed — skip rather than crash
+        raw_sig = re.sub(r'\s+', ' ', m.group(2).strip()).strip()
+        if not raw_sig:
             continue
+        sig = _normalize_signature(raw_sig)
         specs.append(ProblemSpec(
             name=name, signature=sig, opens=opens,
             set_options=set_options, source_file=path,
