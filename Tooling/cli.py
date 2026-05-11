@@ -145,7 +145,7 @@ def _classify_root_body(text: str) -> str:
 def cmd_init(args: argparse.Namespace) -> int:
     workspace = Path.cwd()
     problem = args.problem
-    pdir = workspace / "Problems" / problem
+    pdir = db.problem_dir(workspace, problem)
     mfst_path = pdir / "Manifest.md"
     if not mfst_path.exists():
         print(f"FAIL: {mfst_path} not found", file=sys.stderr)
@@ -276,64 +276,73 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_init_batch(args: argparse.Namespace) -> int:
-    """Bulk-init every immediate subdir of <dir> that has a Manifest.md.
+    """Bulk-init every Problem dir under <root> that has a Manifest.md.
 
-    Idempotent: subdirs already in the DB are skipped silently. Useful
-    for benchmark imports — e.g. `Benchmarks/minif2f/adapter.py` writes
-    N Problem dirs, then `init-batch Problems/` (or a more specific
-    glob via shell) registers them all in one shot.
+    Walks `<root>` recursively to locate `Manifest.md` files. Each
+    Manifest's parent directory is treated as a Problem directory; the
+    problem slug is derived from its path relative to
+    `<workspace>/Problems/` with `/` → `.`.
 
-    Failures are reported per-problem; the batch keeps going so one
-    broken Manifest doesn't block the rest.
+    Examples:
+      Problems/sylvester_gallai/Manifest.md      → slug 'sylvester_gallai'
+      Problems/Minif2f/algebra_1/Manifest.md     → slug 'Minif2f.algebra_1'
+
+    `<root>` may be the workspace's `Problems/` itself (init everything
+    not yet in DB) or any subtree (e.g. `Problems/Minif2f` to init only
+    a benchmark batch).
+
+    Idempotent: subdirs already in the DB stay put (cmd_init's own
+    idempotency). Failures are reported per-problem; the batch keeps
+    going so one broken Manifest doesn't block the rest.
     """
+    workspace = Path.cwd()
     root = Path(args.root).resolve()
     if not root.is_dir():
         print(f"FAIL: {root} is not a directory", file=sys.stderr)
         return 1
-    candidates = sorted(p for p in root.iterdir()
-                        if p.is_dir() and (p / "Manifest.md").exists())
-    if not candidates:
-        print(f"OK: init-batch {root}: no candidate dirs "
-              f"(no <dir>/*/Manifest.md found)", flush=True)
+    problems_root = (workspace / "Problems").resolve()
+    try:
+        root.relative_to(problems_root)
+    except ValueError:
+        # Allow root == problems_root itself
+        if root != problems_root:
+            print(f"FAIL: {root} is not under {problems_root}",
+                  file=sys.stderr)
+            return 1
+
+    manifests = sorted(root.rglob("Manifest.md"))
+    if not manifests:
+        print(f"OK: init-batch {root}: no Manifest.md found", flush=True)
         return 0
 
     initialized: list[str] = []
-    already: list[str] = []
     failed: list[tuple[str, str]] = []
-    for pdir in candidates:
-        name = pdir.name
-        # Reuse cmd_init via a synthetic Namespace. cmd_init prints its
-        # own status, but it does so via "already initialized" /
-        # "OK: init <name> ..." messages — keep them but tag for summary.
-        ns = argparse.Namespace(problem=name, force=False)
+    for mpath in manifests:
+        pdir = mpath.parent.resolve()
+        try:
+            slug = db.slug_from_problem_dir(workspace, pdir)
+        except ValueError as e:
+            failed.append((str(pdir), str(e)))
+            continue
+        ns = argparse.Namespace(problem=slug, force=False)
         try:
             rc = cmd_init(ns)
         except SystemExit as e:
             rc = int(e.code) if isinstance(e.code, int) else 1
         except Exception as e:
-            failed.append((name, str(e)))
+            failed.append((slug, str(e)))
             continue
         if rc == 0:
-            # cmd_init prints "already initialized" or "OK: init ...",
-            # which lets the operator distinguish. We just count the new
-            # vs. existing buckets for the final summary.
-            #
-            # Re-inspect DB to find out if THIS call actually added a
-            # new root goal: simplest heuristic is to check whether the
-            # problem already had a root goal at the start of THIS
-            # iteration. Instead of a separate query, we just lump
-            # everything into `initialized` — the per-iteration cmd_init
-            # output disambiguates.
-            initialized.append(name)
+            initialized.append(slug)
         else:
-            failed.append((name, f"cmd_init returned {rc}"))
+            failed.append((slug, f"cmd_init returned {rc}"))
 
     print(f"\n[init-batch] {root} summary: "
           f"{len(initialized)} processed, {len(failed)} failed.",
           flush=True)
     if failed:
-        for name, why in failed:
-            print(f"  - FAIL {name}: {why}", file=sys.stderr)
+        for slug, why in failed:
+            print(f"  - FAIL {slug}: {why}", file=sys.stderr)
         return 1
     return 0
 
@@ -355,7 +364,7 @@ def _soft_reset(problem: str) -> int:
     after quota exhaust) to recover state without re-doing real work.
     """
     workspace = Path.cwd()
-    pdir = workspace / "Problems" / problem
+    pdir = db.problem_dir(workspace, problem)
     if not pdir.exists():
         print(f"FAIL: Problems/{problem}/ not found", file=sys.stderr)
         return 1
@@ -482,7 +491,7 @@ def cmd_reset(args: argparse.Namespace) -> int:
 
     workspace = Path.cwd()
     problem = args.problem
-    pdir = workspace / "Problems" / problem
+    pdir = db.problem_dir(workspace, problem)
     if not pdir.exists():
         print(f"FAIL: Problems/{problem}/ not found", file=sys.stderr)
         return 1

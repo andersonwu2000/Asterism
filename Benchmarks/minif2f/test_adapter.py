@@ -156,15 +156,17 @@ def test_emit_problem_dir_writes_manifest_and_defs(tmp_path: Path):
     out = tmp_path / "Problems"
     pdir = minif2f.emit_problem_dir(spec, out)
     assert pdir.exists()
-    assert pdir.name.startswith("minif2f_")
+    # Nested layout: Problems/Minif2f/<name>/
+    assert pdir.parent.name == "Minif2f"
+    assert pdir.name == spec.name
 
     manifest_text = (pdir / "Manifest.md").read_text(encoding="utf-8")
     assert "## Statement" in manifest_text
     assert "Real.sqrt 2" in manifest_text
     assert "## Entry kind\nBuilder" in manifest_text
     assert "axioms_whitelist:" in manifest_text
-    # Prefix ensures coexistence with hand-authored problems
-    assert f"problem: minif2f_{spec.name}" in manifest_text
+    # Dotted slug matches the nested filesystem layout
+    assert f"problem: Minif2f.{spec.name}" in manifest_text
 
     defs_text = (pdir / "Defs.lean").read_text(encoding="utf-8")
     assert "import Mathlib" in defs_text
@@ -182,10 +184,11 @@ def test_emit_idempotent_on_rerun(tmp_path: Path):
     out = tmp_path / "Problems"
     minif2f.emit_problem_dir(spec, out)
     # Drop a fake proofs/ to verify it's untouched on re-emit
-    (out / spec.slug / "proofs").mkdir()
-    (out / spec.slug / "proofs" / "marker.lean").write_text("--keep")
+    pdir = out / spec.rel_dir
+    (pdir / "proofs").mkdir()
+    (pdir / "proofs" / "marker.lean").write_text("--keep")
     minif2f.emit_problem_dir(spec, out)
-    assert (out / spec.slug / "proofs" / "marker.lean").exists()
+    assert (pdir / "proofs" / "marker.lean").exists()
 
 
 # ---------------------------------------------------------------------
@@ -208,10 +211,10 @@ def test_import_walks_source_dir_emits_all(tmp_path: Path):
     # 1 + 1 + 2 + 0 = 4 problems imported
     assert len(result.imported) == 4
     slugs = set(result.imported)
-    assert "minif2f_algebra_amgm_faxinrrp2msqrt2le2mxm1div2x" in slugs
-    assert "minif2f_mathd_numbertheory_185" in slugs
-    assert "minif2f_ex_first" in slugs
-    assert "minif2f_ex_second" in slugs
+    assert "Minif2f.algebra_amgm_faxinrrp2msqrt2le2mxm1div2x" in slugs
+    assert "Minif2f.mathd_numbertheory_185" in slugs
+    assert "Minif2f.ex_first" in slugs
+    assert "Minif2f.ex_second" in slugs
 
     # helper file: no theorem found
     assert "helper.lean" in result.skipped_no_theorem
@@ -260,7 +263,8 @@ def test_cli_main_returns_0_on_success(tmp_path: Path, capsys):
     assert rc == 0
     captured = capsys.readouterr()
     assert "Imported 1 problem" in captured.out
-    assert (out / "minif2f_algebra_amgm_faxinrrp2msqrt2le2mxm1div2x").exists()
+    assert (out / "Minif2f" /
+            "algebra_amgm_faxinrrp2msqrt2le2mxm1div2x").exists()
 
 
 def test_cli_main_fails_on_missing_source(tmp_path: Path, capsys):

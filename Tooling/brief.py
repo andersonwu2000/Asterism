@@ -23,7 +23,7 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-from . import manifest
+from . import db, manifest
 
 
 _BRIEF_FILENAME = "BRIEF.md"
@@ -62,7 +62,7 @@ def write(workspace: Path, mfst: manifest.Manifest) -> Path | None:
     """Write the rendered BRIEF to `Problems/<problem>/BRIEF.md`. Atomic
     via tmp-file + os.replace. Returns the path written, or None if the
     Problem dir does not exist (test fixtures, mid-reset races)."""
-    pdir = workspace / "Problems" / mfst.problem
+    pdir = db.problem_dir(workspace, mfst.problem)
     if not pdir.exists():
         return None
     target = pdir / _BRIEF_FILENAME

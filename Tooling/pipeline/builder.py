@@ -47,7 +47,7 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
     goal_row = db.get_goal(conn, goal_id)
     if goal_row is None:
         return PipelineResult(outcome="failed", failure_reason="goal_not_found")
-    problem_dir = workspace / "Problems" / goal_row["problem"]
+    problem_dir = db.problem_dir(workspace, goal_row["problem"])
     result = _run_builder_inner(conn, goal_id=goal_id, workspace=workspace,
                                 mfst=mfst, pipeline_id=pipeline_id)
     if result.outcome in ("proved", "moot"):
@@ -88,7 +88,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     source = goal_lean.read_text(encoding="utf-8")
 
     attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
-    problem_dir = workspace / "Problems" / goal["problem"]
+    problem_dir = db.problem_dir(workspace, goal["problem"])
 
     # Phase 1: tactic_try via Mathlib `hint` — only on fresh `:= by sorry`
     # stubs (skips post-Backward structured patches), and only on the

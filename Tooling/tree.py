@@ -33,6 +33,8 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
+from . import db
+
 
 _DEAD_CAUSE_SUBGOAL_SHELVED = "sub-goal shelved"
 _DEAD_CAUSE_VERIFY = "verify failed"
@@ -167,7 +169,7 @@ def write(conn: sqlite3.Connection, workspace: Path, problem: str) -> Path | Non
     tmp-file + os.replace so a reader never sees a half-written tree.
     Returns the path written, or None if the Problem dir does not exist
     (e.g. this is a unit-test conn with no on-disk Problem)."""
-    pdir = workspace / "Problems" / problem
+    pdir = db.problem_dir(workspace, problem)
     if not pdir.exists():
         return None
     target = pdir / "TREE.md"

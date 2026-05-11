@@ -15,6 +15,53 @@ from typing import Any
 DB_PATH = Path("asterism.db")
 
 
+# ---------------------------------------------------------------------
+# Problem name ↔ filesystem path mapping
+# ---------------------------------------------------------------------
+#
+# A problem's "name" (= the `problem` column / Manifest frontmatter
+# `problem:` field) is a dot-separated slug whose components map 1:1
+# to filesystem directory components under `Problems/`.
+#
+# Top-level problem (legacy / hand-authored):
+#   slug:        "sylvester_gallai"
+#   on disk:     Problems/sylvester_gallai/
+#   Lean ns:     Problems.sylvester_gallai
+#
+# Nested problem (benchmark imports, multi-category collections):
+#   slug:        "Minif2f.mathd_algebra_10"
+#   on disk:     Problems/Minif2f/mathd_algebra_10/
+#   Lean ns:     Problems.Minif2f.mathd_algebra_10
+#
+# The `.` separator is a deliberate choice — Lean namespace syntax
+# uses `.` natively, so `f"Problems.{problem}.Root"`-style string
+# concatenation in module path / namespace generation needs ZERO
+# changes for nested support. Only filesystem accesses need to
+# convert dots to path separators via `problem_dir()`.
+
+def problem_dir(workspace: Path, problem: str) -> Path:
+    """Map a problem slug to its filesystem directory.
+
+    `problem` is the dot-separated slug as stored in the `problems` /
+    `goals` `problem` columns. For legacy single-component slugs
+    (`"sylvester_gallai"`) this returns `workspace/Problems/sylvester_gallai/`.
+    For nested slugs (`"Minif2f.algebra_1"`) it returns
+    `workspace/Problems/Minif2f/algebra_1/`.
+    """
+    return workspace / "Problems" / Path(*problem.split("."))
+
+
+def slug_from_problem_dir(workspace: Path, pdir: Path) -> str:
+    """Inverse of `problem_dir`. Given a problem's filesystem
+    directory, return the dot-separated slug. Raises ValueError if
+    `pdir` is not under `workspace/Problems/`.
+    """
+    rel = pdir.resolve().relative_to((workspace / "Problems").resolve())
+    if not rel.parts:
+        raise ValueError(f"{pdir} resolves to Problems/ root, not a problem dir")
+    return ".".join(rel.parts)
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS problems (
     name           TEXT PRIMARY KEY,

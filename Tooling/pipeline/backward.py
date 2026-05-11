@@ -99,7 +99,7 @@ def _ensure_imports_subgoal(
     needed: list[str] = []
     if not re.search(r"(?m)^import\s+Mathlib\b", content):
         needed.append("import Mathlib")
-    defs_path = workspace / "Problems" / problem / "Defs.lean"
+    defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
     if defs_path.exists():
         defs_module = f"Problems.{problem}.Defs"
         if not re.search(rf"(?m)^import\s+{re.escape(defs_module)}\b",
@@ -192,7 +192,7 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
     goal_row = db.get_goal(conn, goal_id)
     if goal_row is None:
         return PipelineResult(outcome="failed", failure_reason="goal_not_found")
-    problem_dir = workspace / "Problems" / goal_row["problem"]
+    problem_dir = db.problem_dir(workspace, goal_row["problem"])
     result = _run_backward_inner(conn, goal_id=goal_id, workspace=workspace,
                                  mfst=mfst, pipeline_id=pipeline_id)
     if (result.outcome in ("success", "moot")
@@ -244,7 +244,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         return PipelineResult(outcome="failed", failure_reason="goal_not_found")
 
     attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
-    problem_dir = workspace / "Problems" / goal["problem"]
+    problem_dir = db.problem_dir(workspace, goal["problem"])
     namespace = f"Problems.{goal['problem']}"
 
     # Build the F52 skeleton text once. Used by spawn_fn (cold) to
@@ -596,7 +596,7 @@ def _backward_parse_and_commit(
         forbidden = _grep_forbidden(main_patch_text, mfst.forbidden_lemmas)
         if forbidden:
             return _abort("forbidden_lemma", forbidden, leading)
-        proofs_dir = workspace / "Problems" / goal["problem"] / "proofs"
+        proofs_dir = db.problem_dir(workspace, goal["problem"]) / "proofs"
         proofs_dir.mkdir(parents=True, exist_ok=True)
         scratch_dest = proofs_dir / f"_strategy_{sid_token}.lean"
         shutil.copy2(patches[0], scratch_dest)
@@ -795,7 +795,7 @@ def _backward_parse_and_commit(
     # sid_token (framework-locked, collision-free). Sub-goal `L_<slug>.lean`
     # paths use the agent-picked slug, whose problem-local uniqueness was
     # verified above; if the slug check passed, the path cannot collide.
-    proofs_dir = workspace / "Problems" / goal["problem"] / "proofs"
+    proofs_dir = db.problem_dir(workspace, goal["problem"]) / "proofs"
     proofs_dir.mkdir(parents=True, exist_ok=True)
     scratch_filename = f"_strategy_{sid_token}.lean"
     scratch_dest = proofs_dir / scratch_filename

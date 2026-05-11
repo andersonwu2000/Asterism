@@ -1,7 +1,7 @@
 """miniF2F → Asterism Problem dir adapter.
 
 Converts yangky11/miniF2F-lean4-style problem files into Asterism
-`Problems/minif2f_<name>/` dirs (Manifest.md + Defs.lean). The Asterism
+`Problems/Minif2f/<name>/` dirs (Manifest.md + Defs.lean). The Asterism
 CLI's `init` command writes Root.lean afterwards.
 
 miniF2F-lean4 ships one theorem per file under `MiniF2F/Valid/` and
@@ -15,8 +15,11 @@ miniF2F-lean4 ships one theorem per file under `MiniF2F/Valid/` and
 A few files have multiple theorems; this adapter emits one Problem dir
 per theorem regardless.
 
-Naming: original `<name>` (already a valid Lean identifier) prefixed with
-`minif2f_` to coexist with hand-authored problems in the same workspace.
+Naming: each theorem gets a dot-separated slug `Minif2f.<name>` matching
+the nested Problems layout. The framework's `db.problem_dir` helper
+resolves `Minif2f.<name>` to `Problems/Minif2f/<name>/` on disk, while
+Lean module/namespace paths use `Problems.Minif2f.<name>.<...>`
+naturally (dots are Lean's native namespace separator).
 
 Lemma hints / strategic notes: left empty by default. miniF2F is a
 black-box benchmark — we don't want to bias agents with per-problem
@@ -62,7 +65,14 @@ class ProblemSpec:
 
     @property
     def slug(self) -> str:
-        return f"minif2f_{self.name}"
+        # Nested Problems layout (db.problem_dir maps `.` → `/`):
+        # slug 'Minif2f.algebra_1' resolves to Problems/Minif2f/algebra_1/.
+        return f"Minif2f.{self.name}"
+
+    @property
+    def rel_dir(self) -> Path:
+        # `Minif2f/<name>` as a relative path under Problems/.
+        return Path("Minif2f", self.name)
 
 
 def parse_problem_file(path: Path) -> list[ProblemSpec]:
@@ -154,14 +164,17 @@ def _manifest_md(spec: ProblemSpec) -> str:
 
 
 def emit_problem_dir(spec: ProblemSpec, output_root: Path) -> Path:
-    """Materialize Problems/<slug>/{Manifest.md, Defs.lean}.
+    """Materialize Problems/Minif2f/<name>/{Manifest.md, Defs.lean}.
+
+    `output_root` should point at the workspace's `Problems/` directory;
+    the adapter creates the `Minif2f/` subdir for benchmark isolation.
 
     Idempotent: re-running on an existing slug overwrites Manifest.md
     + Defs.lean. Does NOT touch proofs/ or Root.lean — those are owned
     by `asterism init` and the dispatcher cascade. Operators who want
     a clean re-import should `asterism reset <slug>` first.
     """
-    pdir = output_root / spec.slug
+    pdir = output_root / spec.rel_dir
     pdir.mkdir(parents=True, exist_ok=True)
     (pdir / "Defs.lean").write_text(_defs_lean(spec), encoding="utf-8")
     (pdir / "Manifest.md").write_text(_manifest_md(spec), encoding="utf-8")
@@ -183,7 +196,7 @@ def import_minif2f(
     """Walk `source` directory, parse each .lean, emit Problem dirs.
 
     `prefix_filter` matches the ORIGINAL theorem name (before the
-    `minif2f_` slug prefix). Useful to slice a single section, e.g.
+    `Minif2f.` slug prefix). Useful to slice a single section, e.g.
     `algebra_` or `mathd_numbertheory_`.
     """
     result = ImportResult()
@@ -250,11 +263,9 @@ def main(argv: list[str] | None = None) -> int:
     if result.skipped_filter:
         print(f"Skipped {len(result.skipped_filter)} theorem(s) "
               f"by --filter.")
-    print(f"\nNext step: init each problem, then run the daemon:")
-    print(f"  for d in Problems/minif2f_*; do")
-    print(f"      python -m Tooling.cli init \"$(basename $d)\"")
-    print(f"  done")
-    print(f"  python -m Tooling.cli run")
+    print(f"\nNext step: bulk-init the batch, then run scoped:")
+    print(f"  python -m Tooling.cli init-batch Problems/Minif2f")
+    print(f"  python -m Tooling.cli run --scope 'Minif2f.%'")
     return 0
 
 

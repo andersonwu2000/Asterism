@@ -20,6 +20,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from . import db
+
 
 def _lean_path_to_module(workspace: Path, lean_path: Path) -> str:
     """workspace-relative path → Lean module name (mirrors pipeline.py)."""
@@ -198,7 +200,7 @@ def prune_problem(conn: sqlite3.Connection, workspace: Path,
     keep_rel = winning_chain(conn, problem)
     keep_abs = {(workspace / rel).resolve() for rel in keep_rel}
 
-    proofs_dir = workspace / "Problems" / problem / "proofs"
+    proofs_dir = db.problem_dir(workspace, problem) / "proofs"
     if not proofs_dir.exists():
         return []
 

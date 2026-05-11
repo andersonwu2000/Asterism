@@ -261,3 +261,25 @@ def test_init_batch_missing_root_returns_error(
     rc = cmd_init_batch(argparse.Namespace(root="does/not/exist"))
     assert rc == 1
     assert "not a directory" in capsys.readouterr().err
+
+
+def test_init_batch_handles_nested_problem_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """init-batch walks subtrees recursively. A nested problem dir at
+    Problems/Minif2f/algebra_1/Manifest.md gets initialized with slug
+    'Minif2f.algebra_1' (dot-separated, matching the filesystem nesting).
+
+    This is the canonical layout for benchmark imports — keeps 244 miniF2F
+    dirs visually grouped under Problems/Minif2f/ rather than mixed flat."""
+    pdir = tmp_path / "Problems" / "Minif2f" / "algebra_1"
+    pdir.mkdir(parents=True)
+    (pdir / "Manifest.md").write_text(_MIN_MANIFEST, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    rc = cmd_init_batch(argparse.Namespace(root="Problems/Minif2f"))
+    assert rc == 0
+    assert (pdir / "Root.lean").exists()
+    # Slug-with-dot in the generated Root.lean's namespace
+    root_text = (pdir / "Root.lean").read_text(encoding="utf-8")
+    assert "namespace Problems.Minif2f.algebra_1" in root_text

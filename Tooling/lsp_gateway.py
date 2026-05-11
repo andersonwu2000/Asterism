@@ -52,6 +52,7 @@ from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from . import db
 from .lsp_client import LspClient
 
 
@@ -424,7 +425,7 @@ def _ensure_imports(content: str, problem: str, workspace: Path) -> str:
     needed: list[str] = []
     if not re.search(r"(?m)^import\s+Mathlib\b", content):
         needed.append("import Mathlib")
-    defs_path = workspace / "Problems" / problem / "Defs.lean"
+    defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
     if defs_path.exists():
         defs_module = f"Problems.{problem}.Defs"
         if not re.search(rf"(?m)^import\s+{re.escape(defs_module)}\b",

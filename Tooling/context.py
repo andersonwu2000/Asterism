@@ -661,7 +661,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     so the resulting Context.md only contains sections with content.
     """
     workspace = attempts_dir.parent.parent  # .attempts/<pid> → workspace
-    problem_dir = workspace / "Problems" / goal["problem"]
+    problem_dir = db.problem_dir(workspace, goal["problem"])
 
     # Project DB rows into Event objects via events.py.
     # `_NON_AGENT_REASONS` filter lives in events.py; dedupe between

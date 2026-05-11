@@ -85,6 +85,8 @@ import time
 import uuid
 from pathlib import Path
 
+from . import db
+
 
 _THM_HEAD_RE = re.compile(r"\btheorem\s+\S+")
 _SORRY_BODY_RE = re.compile(r":=\s*by\s+sorry")
@@ -225,7 +227,7 @@ def _batch_provable_via_apply(
         return []
 
     lines: list[str] = ["import Mathlib"]
-    defs_path = workspace / "Problems" / problem / "Defs.lean"
+    defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
     if defs_path.exists():
         lines.append(f"import Problems.{problem}.Defs")
 
