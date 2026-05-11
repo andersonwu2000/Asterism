@@ -213,6 +213,17 @@ def _classify_worker_exception(exc: BaseException) -> str:
         winerror = getattr(exc, "winerror", None)
         if winerror in (10061, 10054, 10060, 10065, 64):
             return "gateway_unreachable"
+    # Pipeline-side LSP RPC timeouts (lsp_client.py raises TimeoutError
+    # when an `$/lean/rpc/call` doesn't complete within budget).
+    # Distinct from gateway_unreachable: gateway IS reachable but
+    # contended (e.g. miniF2F pilot's 5 simultaneous Builders vs 3
+    # worker slots → 2 spawns time out waiting for slot acquire).
+    # Same infra semantics (cooldown + retry, no attempts++), but
+    # MUST NOT contribute to the gateway-death circuit breaker —
+    # under healthy concurrency, transient_timeouts cluster and
+    # would prematurely kill the daemon if treated as gateway death.
+    if isinstance(exc, TimeoutError):
+        return "transient_timeout"
     # Fallback string scan for wrapped/chained exceptions whose outer
     # type didn't match either isinstance branch above.
     msg = repr(exc)
@@ -294,7 +305,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
     #                            shelved root goal by counting infra
     #                            refusals against attempts)
     _INFRA_REASONS = ("spawn_fast_fail", "quota_exhausted", "missing_dep",
-                      "gateway_unreachable")
+                      "gateway_unreachable", "transient_timeout")
     is_infra = (outcome == "failed" and failure_reason in _INFRA_REASONS)
 
     # Phase 7 — `moot` outcome: pipeline detected the goal already
@@ -789,7 +800,7 @@ def run(workspace: Path, *, once: bool = False) -> int:
                     # (quota recovers on its own; missing_dep is operator-fix).
                     if outcome == "failed" and reason in (
                         "spawn_fast_fail", "quota_exhausted", "missing_dep",
-                        "gateway_unreachable",
+                        "gateway_unreachable", "transient_timeout",
                     ):
                         cooldown_until[(tid, kind)] = (
                             time.time() + SPAWN_COOLDOWN_SEC)
@@ -866,10 +877,21 @@ def run(workspace: Path, *, once: bool = False) -> int:
                                     failure_reason=infra_reason)
                         tree.write_for_target(conn, workspace, tid, tk)
                         # Mirror the normal-result cooldown path so
-                        # gateway-unreachable also yields a 30s back-off
-                        # — without this, the same Backward gets
-                        # re-dispatched on the next tick and re-fails.
-                        if infra_reason == "gateway_unreachable":
+                        # gateway-unreachable / transient_timeout also
+                        # yield a 30s back-off — without this, the same
+                        # Backward gets re-dispatched on the next tick
+                        # and re-fails.
+                        if infra_reason == "transient_timeout":
+                            cooldown_until[(tid, kind)] = (
+                                time.time() + SPAWN_COOLDOWN_SEC)
+                            print(f"[cooldown] {kind} {tk}={tid} cooled "
+                                  f"{SPAWN_COOLDOWN_SEC:.0f}s after "
+                                  f"transient_timeout (slot contention "
+                                  f"or RPC budget exceeded; no consec "
+                                  f"increment — circuit breaker reserved "
+                                  f"for true gateway death)",
+                                  flush=True)
+                        elif infra_reason == "gateway_unreachable":
                             cooldown_until[(tid, kind)] = (
                                 time.time() + SPAWN_COOLDOWN_SEC)
                             consec_gateway_unreachable += 1

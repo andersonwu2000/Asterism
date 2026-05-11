@@ -24,7 +24,7 @@
 **cascade 共通規則**（以下表格欄省略相同部分、只列 reason 特異處）：
 - 預設：失敗 spawn 由 helper buffer 一筆 dead_attempt + attempts++（dispatcher 在 pipelines INSERT 後 flush）；達 SHELVE_THRESHOLD（預設 8）→ goal `shelved` + `_propagate_shelve` 上拋
 - 過 BUILDER_THRESHOLD（預設 3）→ 下次 dispatch 自動由 `next_worker_kind` 改派 Backward
-- spawn_fast_fail / quota_exhausted / missing_dep → 不增 attempts、不寫 dead_attempt、設 30s cooldown（CONSEC daemon-exit 只對 spawn_fast_fail 觸發）
+- spawn_fast_fail / quota_exhausted / missing_dep / gateway_unreachable / transient_timeout → 不增 attempts、不寫 dead_attempt、設 30s cooldown（CONSEC daemon-exit：spawn_fast_fail=10、gateway_unreachable=8、transient_timeout 不進 CONSEC）
 - agent_declined → cascade attempts++ 一次 + `entry_kind='Backward'`（路由不再用 attempts 灌到 BUILDER_THRESHOLD 的 hack）
 - agent_infeasible → cascade attempts++ 一次 + goal 直接 `shelved` + `_propagate_shelve`
 
@@ -58,6 +58,8 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 | `quota_exhausted` | Builder + Backward | rc=126（gemini quota 耗盡）| 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、不進 CONSEC | 不投影（infra） |
 | `missing_dep` | Builder + Backward | rc=127（CLI 缺）| 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、不進 CONSEC | 不投影（infra） |
 | `spawn_fast_fail` | Builder + Backward (F46) | rc≠0 且 wall-clock < 10s（claude.exe crash / cwd） | 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、CONSEC=10 觸發 daemon 退出 rc=2 | 不投影（infra） |
+| `gateway_unreachable` | Builder + Backward (1db4e8c) | worker thread 收到 URLError / OSError(ECONNREFUSED/ECONNRESET/ENETUNREACH/ETIMEDOUT) / Windows WinError 10061/10054/64 — gateway HTTP transport 完全失聯 | 早返（dispatcher 端、不進 helper）| **不增 attempts**、設 30s cooldown、CONSEC=8 觸發 daemon 退出 rc=2（gateway 永久死亡時不無限重試） | 不投影（infra） |
+| `transient_timeout` | Builder + Backward (post-pilot fix) | worker thread 收到 `TimeoutError`（lsp_client.py:169 的 `$/lean/rpc/call` 超時、slot 競爭 RPC 等不到等）| 早返（dispatcher 端）| **不增 attempts**、設 30s cooldown、**不進 CONSEC**（slot 競爭是健康過載、不是 gateway 死、若併計 circuit breaker 會在 244-題 benchmark 下誤殺） | 不投影（infra） |
 | `superseded` (legacy) | pre-F56 Verify worker | F56 後不再產生新 row、僅歷史 db 有 | n/a | n/a | 不投影 |
 
 **outcome 分類**（Phase 7 新增 / 變更）：

@@ -387,6 +387,38 @@ def test_classify_worker_exception_real_bug_returns_empty() -> None:
         ValueError("bad input")) == ""
 
 
+def test_classify_worker_exception_timeout_is_transient_timeout() -> None:
+    """Pipeline-side LSP RPC timeouts (lsp_client.py:169 raises
+    TimeoutError when `$/lean/rpc/call` exceeds budget) are infra-class
+    failures: no attempts++, cooldown + retry. But they MUST NOT count
+    toward the gateway-death circuit breaker — under healthy
+    concurrency (miniF2F pilot: 5 simultaneous Builders > 3 worker
+    slots), timeouts cluster on slot-wait and would prematurely kill
+    the daemon if classified as gateway_unreachable.
+
+    Reproducer: miniF2F pilot 2026-05-11 — Goal 435 + 439 timed out on
+    slot acquire during first wave; both eventually re-dispatched and
+    proved. Without this classification the attempts++ would have
+    counted as real failures toward SHELVE_THRESHOLD."""
+    from Tooling.dispatcher import _classify_worker_exception
+    assert _classify_worker_exception(
+        TimeoutError("LSP request '$/lean/rpc/call' timed out")
+    ) == "transient_timeout"
+    # Generic TimeoutError still routes through the same bucket
+    assert _classify_worker_exception(TimeoutError()) == "transient_timeout"
+
+
+def test_classify_worker_exception_oserror_etimedout_still_gateway() -> None:
+    """OSError with errno=ETIMEDOUT is socket-level timeout from
+    urllib (transport actually unreachable, peer didn't ACK).
+    Keep classifying as gateway_unreachable (existing behavior) —
+    distinct from the application-layer TimeoutError above."""
+    import errno
+    from Tooling.dispatcher import _classify_worker_exception
+    exc = OSError(errno.ETIMEDOUT, "Connection timed out")
+    assert _classify_worker_exception(exc) == "gateway_unreachable"
+
+
 # ---------------------------------------------------------------------
 # 4. bfs_refill respects cooldown_until
 # ---------------------------------------------------------------------
