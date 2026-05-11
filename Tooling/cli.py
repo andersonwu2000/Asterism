@@ -260,7 +260,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     sys.stdout = _Tee(orig_stdout, log_file)
     sys.stderr = _Tee(orig_stderr, log_file)
     try:
-        rc = dispatcher.run(workspace, once=getattr(args, "once", False))
+        rc = dispatcher.run(
+            workspace,
+            once=getattr(args, "once", False),
+            scope=getattr(args, "scope", None),
+        )
         return rc
     finally:
         sys.stdout = orig_stdout
@@ -269,6 +273,69 @@ def cmd_run(args: argparse.Namespace) -> int:
             log_file.close()
         except OSError:
             pass
+
+
+def cmd_init_batch(args: argparse.Namespace) -> int:
+    """Bulk-init every immediate subdir of <dir> that has a Manifest.md.
+
+    Idempotent: subdirs already in the DB are skipped silently. Useful
+    for benchmark imports — e.g. `Benchmarks/minif2f/adapter.py` writes
+    N Problem dirs, then `init-batch Problems/` (or a more specific
+    glob via shell) registers them all in one shot.
+
+    Failures are reported per-problem; the batch keeps going so one
+    broken Manifest doesn't block the rest.
+    """
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        print(f"FAIL: {root} is not a directory", file=sys.stderr)
+        return 1
+    candidates = sorted(p for p in root.iterdir()
+                        if p.is_dir() and (p / "Manifest.md").exists())
+    if not candidates:
+        print(f"OK: init-batch {root}: no candidate dirs "
+              f"(no <dir>/*/Manifest.md found)", flush=True)
+        return 0
+
+    initialized: list[str] = []
+    already: list[str] = []
+    failed: list[tuple[str, str]] = []
+    for pdir in candidates:
+        name = pdir.name
+        # Reuse cmd_init via a synthetic Namespace. cmd_init prints its
+        # own status, but it does so via "already initialized" /
+        # "OK: init <name> ..." messages — keep them but tag for summary.
+        ns = argparse.Namespace(problem=name, force=False)
+        try:
+            rc = cmd_init(ns)
+        except SystemExit as e:
+            rc = int(e.code) if isinstance(e.code, int) else 1
+        except Exception as e:
+            failed.append((name, str(e)))
+            continue
+        if rc == 0:
+            # cmd_init prints "already initialized" or "OK: init ...",
+            # which lets the operator distinguish. We just count the new
+            # vs. existing buckets for the final summary.
+            #
+            # Re-inspect DB to find out if THIS call actually added a
+            # new root goal: simplest heuristic is to check whether the
+            # problem already had a root goal at the start of THIS
+            # iteration. Instead of a separate query, we just lump
+            # everything into `initialized` — the per-iteration cmd_init
+            # output disambiguates.
+            initialized.append(name)
+        else:
+            failed.append((name, f"cmd_init returned {rc}"))
+
+    print(f"\n[init-batch] {root} summary: "
+          f"{len(initialized)} processed, {len(failed)} failed.",
+          flush=True)
+    if failed:
+        for name, why in failed:
+            print(f"  - FAIL {name}: {why}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _soft_reset(problem: str) -> int:
@@ -1006,7 +1073,22 @@ def main(argv: list[str] | None = None) -> int:
     p_run = sub.add_parser("run", help="run dispatcher")
     p_run.add_argument("--once", action="store_true",
                        help="exit when queue empties")
+    p_run.add_argument(
+        "--scope", type=str, default=None,
+        help="restrict dispatch to problems matching this SQL LIKE "
+             "pattern (e.g. 'minif2f_%%'). Other problems' goals stay "
+             "in their current state but are not dispatched this run.",
+    )
     p_run.set_defaults(func=cmd_run)
+
+    p_init_batch = sub.add_parser(
+        "init-batch",
+        help="bulk-init every <root>/<subdir>/ that has a Manifest.md",
+    )
+    p_init_batch.add_argument(
+        "root", help="directory whose immediate subdirs are problem dirs",
+    )
+    p_init_batch.set_defaults(func=cmd_init_batch)
 
     p_reset = sub.add_parser(
         "reset",

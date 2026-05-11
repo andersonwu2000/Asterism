@@ -448,6 +448,8 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
 def bfs_refill(conn: sqlite3.Connection,
                running: set[tuple[str, str]],
                cooldown_until: dict[tuple[str, str], float] | None = None,
+               *,
+               scope: str | None = None,
                ) -> None:
     """Enqueue dispatchable tasks. `running` is the in-memory live set
     of (target_id, kind) pairs currently executing in this daemon. F37
@@ -460,6 +462,11 @@ def bfs_refill(conn: sqlite3.Connection,
     until which dispatch is suppressed. Pairs whose cooldown is in the
     future are skipped this tick. Set after a spawn_fast_fail cascade
     so transient claude / network failures don't burst-retry at 2s/call.
+
+    `scope` (optional SQL LIKE pattern): when set, only enqueue goals
+    whose problem matches. Lets a daemon run be restricted to a
+    benchmark batch (e.g. `minif2f_%`) without disturbing unrelated
+    problems sitting in the same workspace.
     """
     now = time.time()
     cd = cooldown_until or {}
@@ -476,7 +483,7 @@ def bfs_refill(conn: sqlite3.Connection,
     # at the end of each tick.
 
     # Open goals → enqueue if no in-flight or queued attempt exists
-    for g in db.open_goals(conn):
+    for g in db.open_goals(conn, scope=scope):
         gid = str(g["id"])
         kind = next_worker_kind(g)
         if in_flight(gid, kind) == 0 and not cooled(gid, kind):
@@ -673,7 +680,8 @@ def _acquire_singleton_lock(workspace: Path) -> Path | None:
     return pid_file
 
 
-def run(workspace: Path, *, once: bool = False) -> int:
+def run(workspace: Path, *, once: bool = False,
+        scope: str | None = None) -> int:
     pid_lock = _acquire_singleton_lock(workspace)
     if pid_lock is None:
         return 1
@@ -767,7 +775,9 @@ def run(workspace: Path, *, once: bool = False) -> int:
     from . import brief
     brief.write_for_all_problems(conn, workspace, manifests)
 
-    print(f"[dispatcher] start, pool={pool_size}, problems={list(manifests)}",
+    scope_label = f", scope={scope!r}" if scope else ""
+    print(f"[dispatcher] start, pool={pool_size}, "
+          f"problems={list(manifests)}{scope_label}",
           flush=True)
     start_time = time.time()
 
@@ -966,8 +976,9 @@ def run(workspace: Path, *, once: bool = False) -> int:
                   "continuing dispatcher loop", flush=True)
 
         # Refill queue (uses in-memory `running` for dedup; cooldown_until
-        # holds spawn_fast_fail back-offs from F46).
-        bfs_refill(conn, running, cooldown_until)
+        # holds spawn_fast_fail back-offs from F46; scope restricts to
+        # a benchmark subset like `minif2f_%`).
+        bfs_refill(conn, running, cooldown_until, scope=scope)
 
         # Spawn from queue while pool has slots. F37: skip if a pipeline
         # of the same (target_id, kind) is already in flight in this

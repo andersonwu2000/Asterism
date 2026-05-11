@@ -284,7 +284,8 @@ def increment_goal_attempts(conn: sqlite3.Connection, goal_id: int) -> int:
     return int(row["attempts"]) if row else 0
 
 
-def open_goals(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def open_goals(conn: sqlite3.Connection,
+               *, scope: str | None = None) -> list[sqlite3.Row]:
     """Open goals eligible for dispatch.
 
     Walks the strategy DAG from each root: a goal is 'reachable' iff
@@ -295,8 +296,13 @@ def open_goals(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     The recursive CTE handles arbitrary depth — fixing the prior bug
     where a depth-2 sub-goal of a 'proposed' strategy was kept alive
     even when that strategy's own goal was orphaned upstream.
+
+    `scope` (optional SQL LIKE pattern): when set, only return goals
+    whose problem matches. Used by `dispatcher.run(scope=...)` so a
+    benchmark daemon doesn't dispatch unrelated research problems
+    sitting in the same workspace.
     """
-    return list(conn.execute(
+    sql = (
         "WITH RECURSIVE alive(id) AS ("
         "    SELECT id FROM goals WHERE origin = 'root'"
         "    UNION"
@@ -308,8 +314,13 @@ def open_goals(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         ") "
         "SELECT g.* FROM goals g "
         "WHERE g.status = 'open' AND g.id IN alive "
-        "ORDER BY g.id"
-    ))
+    )
+    params: tuple = ()
+    if scope is not None:
+        sql += "AND g.problem LIKE ? "
+        params = (scope,)
+    sql += "ORDER BY g.id"
+    return list(conn.execute(sql, params))
 
 
 def root_proved(conn: sqlite3.Connection, problem: str | None = None) -> bool:

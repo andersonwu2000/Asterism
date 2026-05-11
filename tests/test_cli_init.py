@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from Tooling.cli import _classify_root_body, cmd_init
+from Tooling.cli import _classify_root_body, cmd_init, cmd_init_batch
 
 
 # ---------------------------------------------------------------------
@@ -205,3 +205,59 @@ def test_init_missing_manifest_returns_error(
     rc = cmd_init(_init_args())
     assert rc == 1
     assert "Manifest.md" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------
+# cmd_init_batch — bulk init for benchmark imports
+# ---------------------------------------------------------------------
+
+def _setup_problem_named(tmp_path: Path, name: str, *,
+                          manifest_body: str = _MIN_MANIFEST) -> Path:
+    pdir = tmp_path / "Problems" / name
+    pdir.mkdir(parents=True)
+    (pdir / "Manifest.md").write_text(manifest_body, encoding="utf-8")
+    return pdir
+
+
+def test_init_batch_inits_every_subdir_with_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """init-batch walks <root>'s immediate subdirs, runs cmd_init on
+    each that has a Manifest.md. Subdirs without Manifest.md are
+    silently skipped (e.g. _archive/, .DS_Store dirs, etc)."""
+    _setup_problem_named(tmp_path, "alpha")
+    _setup_problem_named(tmp_path, "beta")
+    # An empty dir with no Manifest — must NOT crash the batch
+    (tmp_path / "Problems" / "no_manifest").mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    rc = cmd_init_batch(argparse.Namespace(root="Problems"))
+    assert rc == 0
+    assert (tmp_path / "Problems" / "alpha" / "Root.lean").exists()
+    assert (tmp_path / "Problems" / "beta" / "Root.lean").exists()
+    # no_manifest stays untouched
+    assert not (tmp_path / "Problems" / "no_manifest" / "Root.lean").exists()
+
+
+def test_init_batch_idempotent_on_already_initialized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Running init-batch twice is safe — second pass is a no-op for
+    already-initialized problems (matches cmd_init's existing
+    idempotency)."""
+    _setup_problem_named(tmp_path, "alpha")
+    monkeypatch.chdir(tmp_path)
+    rc1 = cmd_init_batch(argparse.Namespace(root="Problems"))
+    rc2 = cmd_init_batch(argparse.Namespace(root="Problems"))
+    assert rc1 == 0 and rc2 == 0
+
+
+def test_init_batch_missing_root_returns_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Nonexistent root dir → fail loudly with rc=1."""
+    monkeypatch.chdir(tmp_path)
+    rc = cmd_init_batch(argparse.Namespace(root="does/not/exist"))
+    assert rc == 1
+    assert "not a directory" in capsys.readouterr().err

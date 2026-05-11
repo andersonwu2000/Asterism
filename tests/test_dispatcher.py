@@ -953,6 +953,79 @@ def test_bfs_refill_no_duplicate_when_already_running(
     assert db.queue_count(conn, target_id=str(gid), kind="Backward") == 0
 
 
+def test_bfs_refill_scope_filters_by_problem(
+    conn: sqlite3.Connection,
+) -> None:
+    """`scope` (SQL LIKE) restricts dispatch to matching problems. Used
+    by `python -m Tooling.cli run --scope <pattern>` so a benchmark
+    daemon doesn't dispatch unrelated research problems sharing the
+    workspace."""
+    from Tooling.dispatcher import bfs_refill
+    gid_research = _seed_goal(conn, problem="sylvester_gallai")
+    # Second problem via direct insert (avoid _seed_goal's duplicate-problem
+    # behavior).
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at) "
+        "VALUES (?, ?, ?)",
+        ("minif2f_x", "Problems/minif2f_x/Manifest.md", db.now()),
+    )
+    gid_bench = db.insert_goal(
+        conn, problem="minif2f_x", slug="main",
+        lean_path="Problems/minif2f_x/Root.lean",
+        statement="T", origin="root",
+    )
+
+    # Scope to minif2f only → only benchmark goal queues
+    bfs_refill(conn, running=set(), scope="minif2f_%")
+    assert db.queue_count(conn, target_id=str(gid_bench), kind="Builder") == 1
+    assert db.queue_count(conn,
+                          target_id=str(gid_research), kind="Builder") == 0
+
+
+def test_bfs_refill_no_scope_dispatches_all(
+    conn: sqlite3.Connection,
+) -> None:
+    """Without scope arg, dispatch is workspace-wide (back-compat)."""
+    from Tooling.dispatcher import bfs_refill
+    gid1 = _seed_goal(conn, problem="sg")
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at) "
+        "VALUES (?, ?, ?)",
+        ("pn", "Problems/pn/Manifest.md", db.now()),
+    )
+    gid2 = db.insert_goal(
+        conn, problem="pn", slug="main",
+        lean_path="Problems/pn/Root.lean",
+        statement="T", origin="root",
+    )
+    bfs_refill(conn, running=set())  # no scope
+    assert db.queue_count(conn, target_id=str(gid1), kind="Builder") == 1
+    assert db.queue_count(conn, target_id=str(gid2), kind="Builder") == 1
+
+
+def test_open_goals_scope_filter(conn: sqlite3.Connection) -> None:
+    """Underlying `db.open_goals(scope=...)` SQL filter. Direct unit test
+    so the scope plumbing is covered even if bfs_refill restructures."""
+    _seed_goal(conn, problem="sg")
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at) "
+        "VALUES (?, ?, ?)",
+        ("minif2f_a", "Problems/minif2f_a/Manifest.md", db.now()),
+    )
+    db.insert_goal(
+        conn, problem="minif2f_a", slug="main",
+        lean_path="Problems/minif2f_a/Root.lean",
+        statement="T", origin="root",
+    )
+
+    all_open = db.open_goals(conn)
+    assert len(all_open) == 2
+
+    minif2f_only = db.open_goals(conn, scope="minif2f_%")
+    assert len(minif2f_only) == 1
+    assert minif2f_only[0]["problem"] == "minif2f_a"
+
+
 def _seed_ready_strategy(conn: sqlite3.Connection, *, goal_id: int,
                          slug: str = "s_x", lean_path: str | None = None) -> int:
     """Insert a strategy on `goal_id` with one already-proved sub-goal,
