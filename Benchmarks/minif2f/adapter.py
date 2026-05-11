@@ -122,10 +122,17 @@ def _manifest_md(spec: ProblemSpec) -> str:
     """Generate Manifest.md content.
 
     Defaults:
-      - Entry kind: Builder. miniF2F problems are high-school level
-        single-shot leaves; Backward decomposition rarely helps. If
-        Builder runs out of attempts, framework can re-dispatch as
-        Backward via cascade.
+      - Entry kind: Backward. Asterism's design value is decomposition
+        of hard problems — entry=Builder treats the framework as a
+        single-shot LLM wrapper, defeating the architectural thesis.
+        For trivial high-school problems Backward will produce a
+        shallow decomposition (often depth 0 — direct proof via
+        leaf-bypass) at small extra cost; for genuinely hard
+        miniF2F problems (amc12a / aime / imo) Backward is the
+        only path that has a chance. Empirical 2026-05-12 pilot:
+        entry=Builder shelved hard amc12a problems after 3 attempts
+        before escalating to Backward — wasted attempts on cases
+        where decomposition was always going to be the right move.
       - axioms_whitelist: standard Mathlib trio. Matches what
         `library.promote` would have accepted historically.
       - lemma_hints / strategic_notes: empty. Benchmark integrity —
@@ -151,7 +158,7 @@ def _manifest_md(spec: ProblemSpec) -> str:
         f"{spec.signature}\n"
         f"\n"
         f"## Entry kind\n"
-        f"Builder\n"
+        f"Backward\n"
         f"\n"
         f"## Lemma hints\n"
         f"\n"

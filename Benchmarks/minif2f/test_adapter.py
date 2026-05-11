@@ -163,7 +163,9 @@ def test_emit_problem_dir_writes_manifest_and_defs(tmp_path: Path):
     manifest_text = (pdir / "Manifest.md").read_text(encoding="utf-8")
     assert "## Statement" in manifest_text
     assert "Real.sqrt 2" in manifest_text
-    assert "## Entry kind\nBuilder" in manifest_text
+    # Backward: framework design is decomposition-first. Builder
+    # one-shot defeats the architectural thesis.
+    assert "## Entry kind\nBackward" in manifest_text
     assert "axioms_whitelist:" in manifest_text
     # Dotted slug matches the nested filesystem layout
     assert f"problem: Minif2f.{spec.name}" in manifest_text
