@@ -23,6 +23,19 @@ Counterexample (kernel-verified): `u 0 = 4, u 1 = 7, u 2 = 10000, u 3 = 0,
 u k = 0 for k ≥ 4`. Satisfies all hypotheses; `∑_{k<3} u k = 10011 > 10000`
 while `1999 > 3`.
 
+### `mathd_algebra_282` — ℕ-division trivializes the cube root
+
+**File:** [`mathd_algebra_282_disproof.lean`](mathd_algebra_282_disproof.lean)
+
+The first term `f (8 ^ (1 / 3))` intends `8^(1/3) = 2` (the cube root),
+but Lean elaborates `1 / 3` as ℕ-division (both literals are ℕ), so
+`1 / 3 = 0` and `(8 : ℝ) ^ (0 : ℕ) = 1`. Hence the term is `f(1) = 1`,
+not `f(2) = 2`, and the sum becomes `1 + 9 + 64 + 4 = 78 ≠ 79`.
+
+Counterexample (kernel-verified): any `f` satisfying both `h₀` and `h₁`
+is forced to `f(1) = 1`, `f(-π) = 9`, `f(√50) = 64`, `f(9/2) = 4` —
+sum 78. Same ℕ-division pattern as `amc12a_2020_p13`.
+
 ### `imo_1962_p4` — answer-set step too fine (admits non-solutions)
 
 **File:** [`imo_1962_p4_disproof.lean`](imo_1962_p4_disproof.lean)
@@ -141,6 +154,7 @@ cd <asterism-repo>
 lake env lean docs/errata/minif2f/aime_1984_p5_disproof.lean
 lake env lean docs/errata/minif2f/amc12a_2020_p13_disproof.lean
 lake env lean docs/errata/minif2f/imo_1962_p4_disproof.lean
+lake env lean docs/errata/minif2f/mathd_algebra_282_disproof.lean
 lake env lean docs/errata/minif2f/aime_1988_p3_disproof.lean
 lake env lean docs/errata/minif2f/amc12a_2002_p21_disproof.lean
 lake env lean docs/errata/minif2f/mathd_numbertheory_126_disproof.lean
