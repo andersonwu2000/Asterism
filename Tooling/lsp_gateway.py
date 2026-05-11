@@ -747,6 +747,13 @@ async def verify(request: Request):
       "target_path":  "/abs/path.lean",        # required
       "write_olean":  true,                    # default: true
       "axioms_for":   "Problems.foo.main",     # optional fq name
+      "rpc_timeout":  60,                      # default: 30 — applied to
+                                               #   writeOlean + printAxioms
+                                               #   RPCs. Caller-driven so
+                                               #   library promotion can
+                                               #   raise it for big Roots
+                                               #   without bloating
+                                               #   short-path callers.
     }
     Returns: {
       "ok":               bool,
@@ -781,6 +788,16 @@ async def verify(request: Request):
                             status_code=404)
     write_olean: bool = bool(data.get("write_olean", True))
     axioms_for: str | None = data.get("axioms_for")
+    # Caller-driven RPC timeout. Default 30 preserves prior behavior;
+    # library promotion / big-Root callers bump this via verify_file's
+    # `timeout` argument (minus HTTP overhead). Clamp to a positive
+    # integer; fall through on bad input.
+    try:
+        rpc_timeout = int(data.get("rpc_timeout", 30))
+        if rpc_timeout <= 0:
+            rpc_timeout = 30
+    except (TypeError, ValueError):
+        rpc_timeout = 30
 
     err = _ensure_backend_ready()
     if err:
@@ -829,7 +846,7 @@ async def verify(request: Request):
                                 slot.slot_uri,
                                 "Asterism.writeOlean",
                                 {"destPath": str(olean_path)},
-                                timeout=30,
+                                timeout=rpc_timeout,
                             )
                             olean_written = bool(r.get("ok"))
                             if not olean_written:
@@ -849,7 +866,7 @@ async def verify(request: Request):
                             slot.slot_uri,
                             "Asterism.printAxioms",
                             {"fqName": axioms_for},
-                            timeout=30,
+                            timeout=rpc_timeout,
                         )
                         if r.get("found"):
                             axioms = list(r.get("axioms") or [])

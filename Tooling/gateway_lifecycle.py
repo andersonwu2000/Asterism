@@ -174,6 +174,13 @@ def verify_file(target_path: Path,
     Logical errors (target file missing, HTTPError 4xx) are returned
     immediately with `transient=False`.
 
+    `timeout` is the HTTP read budget. The gateway's inner writeOlean /
+    printAxioms RPC budget is derived as `max(30, timeout - 30)` — the
+    30s slack covers HTTP + slot acquire + elaborate before the RPC
+    runs. Library promotion / big-Root callers bump `timeout` to give
+    writeOlean enough room to serialize a heavy environment; short-path
+    callers stay on the 120s default and get a 90s RPC budget.
+
     Replaces the older `check_build` + downstream `lake build` +
     `lake env lean #print axioms` chain. ~3-5s on a warm worker
     (Mathlib loaded), vs ~25-50s for the cold-lake path.
@@ -188,6 +195,12 @@ def verify_file(target_path: Path,
     }
     if axioms_for:
         body["axioms_for"] = axioms_for
+    # Propagate caller's timeout budget into the inner writeOlean /
+    # printAxioms RPCs. Reserve a slice for HTTP + slot-acquire +
+    # elaborate before the RPC even runs; what remains is the RPC's
+    # share. Floor at 30s to preserve prior small-call behavior.
+    rpc_share = max(30, int(timeout) - 30)
+    body["rpc_timeout"] = rpc_share
     req = urllib.request.Request(
         f"http://127.0.0.1:{_gateway_port(workspace)}/verify",
         data=json.dumps(body).encode("utf-8"),
