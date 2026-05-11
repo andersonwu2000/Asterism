@@ -25,7 +25,8 @@ Workflow:
    ```
 3. errors_at to check: only sorry warnings, no errors → each sub-claim's statement type-checks AND the combinator closes the parent goal.
 4. If errors: revise statement / combinator and apply_edit again.
-5. Once 0 errors (warnings tolerated), write each sub-goal stub as `new_<slug>.lean` in attempts_dir and call `validate_file` on each (catches stub-only failures the in-`patch` check can't see). `patch.lean` is already in its final form — your last apply_edit is what gets committed; no transcription step.
+5. Once 0 errors (warnings tolerated), write each sub-goal stub as `new_<slug>.lean` in attempts_dir and call `validate_file` on each (catches stub-only failures the in-`patch` check can't see).
+6. Final apply_edit on `patch.lean`: replace each `have h_<slug> : <type> := by sorry` placeholder with `have h_<slug> := <slug> <args>` (real sub-goal reference, threading whichever parent binders/hypotheses the sub-goal's signature requires). Without this step, patch.lean ships a sorry-bearing proof and `main` inherits sorryAx — promote_to_alias is mechanical and won't catch it.
 
 `patch.lean` lives in attempts_dir and is sandboxed — your exploratory edits never touch the parent's source file. Outputs (patch.lean + new_*.lean) in attempts_dir are what the framework commits.
 
