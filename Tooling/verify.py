@@ -34,18 +34,45 @@ def verify_strategy(
     conn: sqlite3.Connection, *, workspace: Path, strategy_id: int,
     manifests: dict[str, manifest.Manifest] | None = None,
 ) -> Literal["proved", "dead", "superseded", "retry"]:
-    """Pure framework verify: rewrite parent as alias, then build the
-    strategy patch + alias parent in one batched lake invocation.
-    Returns the terminal outcome only — state transitions (mark goal
-    proved / mark strategy succeeded / cascade-shelve etc) are the
-    caller's job (see `verify_housekeeping`).
+    """Pure framework verify: rewrite parent as alias, then verify the
+    strategy patch (which also gates axioms). Returns the terminal
+    outcome only — state transitions (mark goal proved / mark strategy
+    succeeded / cascade-shelve etc) are the caller's job (see
+    `verify_housekeeping`).
 
-    The promote-then-batch ordering replaces the prior 2-invocation
-    approach (build strategy → rewrite alias → build parent). lake's
-    internal scheduler resolves the parent-imports-strategy dependency
-    and builds in order within one process, halving the lake-startup
-    overhead per verify level. Rollback semantics unchanged: any build
-    failure restores the parent file from backup and returns 'dead'.
+    Verify shape: one `verify_file` per level (scratch only) instead
+    of the previous two (scratch + parent alias). Rationale:
+
+      * The parent alias file is `def <slug> := @<scratch>.s<id>` —
+        a tiny rewrite produced by `promote_to_alias`. Its correctness
+        is implied by the scratch theorem's type matching the parent
+        goal binders (F52 invariant). Per-level verification of the
+        alias was empirically a no-op (F56 doc: 0 failures across 26+
+        SG/cantor/proj runs; SG run #19 confirmed).
+
+      * Skipping parent verify omits writeOlean for the parent module.
+        That olean would have been needed by the next-level scratch's
+        `import <parent-module>`. lake serve handles this by
+        elaborating the parent .lean source on demand — the alias is
+        tiny so the cost is microseconds, and the scratch olean it
+        imports already exists on disk.
+
+      * Axiom check moves from parent (`Problems.<p>.<slug>`) to
+        scratch (`Problems.<p>.s<id>`). Both close over the same
+        proof — `def slug := @s<id>` is a definitional alias, so
+        `#print axioms` walks the same dependency graph either way.
+        Checking at scratch level preserves per-strategy attribution
+        when a sorryAx leak occurs (the `[verify] axiom_violation
+        strategy=<id>` log line still points at the right strategy).
+
+      * Final integrity gate is `library.promote`'s root-level
+        `axiom_probe(Root.lean, axioms_for=main_fq)` — that verify
+        elaborates the full alias chain in one shot, catches any
+        promote_to_alias drift, and applies the manifest whitelist
+        at the level where the proof is actually published.
+
+    Rollback semantics unchanged: scratch verify failure (compile or
+    axiom) restores the parent file from backup before returning.
     """
     s = conn.execute(
         "SELECT s.*, g.status AS goal_status, g.slug AS goal_slug,"
@@ -86,16 +113,30 @@ def verify_strategy(
         annotation=annotation,
     )
 
-    # Verify-unification: sequential per-file verify through the
-    # gateway worker pool. We can't concat (parent imports the strategy
-    # module by name; that needs an olean on disk), so we rely on the
-    # write_olean side-effect: verify the strategy first → its olean
-    # lands at .lake/build/lib/lean/<scratch-module>.olean → parent's
-    # `import <scratch-module>` resolves on the next verify_file call.
-    # See docs/dev/verify_unification.md §3.
+    # Resolve manifest's axiom whitelist before the verify call.
+    # `manifests=None` skips the axiom check — used by tests that
+    # don't ship a Manifest.md fixture; production callers
+    # (verify_housekeeping) always pass the dispatcher's manifests
+    # dict.
+    scratch_fq = f"Problems.{s['goal_problem']}.s{strategy_id}"
+    axioms_for: str | None = None
+    whitelist: list[str] = []
+    if manifests is not None:
+        mfst = manifests.get(s["goal_problem"]) or manifest.parse(
+            workspace / "Problems" / s["goal_problem"] / "Manifest.md"
+        )
+        whitelist = list(mfst.axioms_whitelist)
+        if whitelist:
+            axioms_for = scratch_fq
+
+    # Single verify: elaborate the scratch (agent's proof), write its
+    # olean for upstream cascade, and run the axiom probe in the same
+    # call so sorryAx leaks are attributed to the strategy that
+    # introduced them.
     from . import gateway_lifecycle
     v_strategy = gateway_lifecycle.verify_file(
-        scratch_abs, write_olean=True, workspace=workspace,
+        scratch_abs, write_olean=True, axioms_for=axioms_for,
+        workspace=workspace,
     )
     if "error" in v_strategy:
         rollback_promote(parent_abs, parent_backup)
@@ -113,45 +154,13 @@ def verify_strategy(
         rollback_promote(parent_abs, parent_backup)
         return "dead"
 
-    # Now verify the parent file (alias). Its `import <scratch-module>`
-    # resolves through the olean we just wrote. Also probes axioms in
-    # the same call. `manifests=None` skips the axiom check — used by
-    # tests that don't ship a Manifest.md fixture; production callers
-    # (verify_housekeeping) always pass the dispatcher's manifests
-    # dict.
-    fq_name = f"Problems.{s['goal_problem']}.{s['goal_slug']}"
-    axioms_for: str | None = None
-    whitelist: list[str] = []
-    if manifests is not None:
-        mfst = manifests.get(s["goal_problem"]) or manifest.parse(
-            workspace / "Problems" / s["goal_problem"] / "Manifest.md"
-        )
-        whitelist = list(mfst.axioms_whitelist)
-        if whitelist:
-            axioms_for = fq_name
-
-    v_parent = gateway_lifecycle.verify_file(
-        parent_abs, write_olean=True, axioms_for=axioms_for,
-        workspace=workspace,
-    )
-    if "error" in v_parent:
-        rollback_promote(parent_abs, parent_backup)
-        transient = bool(v_parent.get("transient"))
-        kind = "transient infra" if transient else "infra"
-        print(f"[verify] strategy={strategy_id} parent {kind} error: "
-              f"{v_parent['error']}", flush=True)
-        return "retry" if transient else "dead"
-    if not v_parent.get("ok"):
-        rollback_promote(parent_abs, parent_backup)
-        return "dead"
-
     if axioms_for and whitelist:
-        if v_parent.get("axiom_error"):
+        if v_strategy.get("axiom_error"):
             rollback_promote(parent_abs, parent_backup)
             print(f"[verify] axiom_violation strategy={strategy_id}: "
-                  f"{v_parent['axiom_error']}", flush=True)
+                  f"{v_strategy['axiom_error']}", flush=True)
             return "dead"
-        used = set(v_parent.get("axioms") or [])
+        used = set(v_strategy.get("axioms") or [])
         rogue = used - set(whitelist)
         if rogue:
             rollback_promote(parent_abs, parent_backup)

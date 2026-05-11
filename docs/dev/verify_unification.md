@@ -91,6 +91,59 @@ Monsky / Hadamard 級的目標問題會到 8-12 層、上百 goals。Concat 在
 這級會 quadratic 退化（root 級每次拼幾百檔上萬行）；per-file queue
 跟 lake 一樣 linear。
 
+### 3.1 進一步收斂：parent verify 改成隱式
+
+per-file queue 在 SG-19 上跑出 cascade 慢的問題（10 層、每層 2 個
+verify_file ≈ 36s × 10 = 6 min）。檢視每層第二個 (parent) verify_file 做什麼：
+
+```
+parent file 內容 = `def <slug> := @<scratch_module>.s<id>` (alias)
+parent verify  = didChange + elaborate + writeOlean(parent.olean)
+```
+
+parent 是 promote_to_alias 生出的、純機械改寫；alias 的正確性等價於
+scratch theorem 的 type 跟 parent goal binders 對得上（F52 invariant）。
+歷史資料證實：F56 doc 自承「26 verifies 0 failure」、SG-19 也是 0 verify
+失敗 — **per-level parent verify 在實務上是空跑開銷**。
+
+故收斂為「scratch-only + 最終 root verify」：
+
+```
+verify_strategy (single-call):
+  1. promote_to_alias(parent)              # 改寫 parent 為 alias
+  2. verify_file(scratch, axioms_for=s<id>) # 同時驗 compile + axiom
+     - 寫 scratch_module.olean 到 disk
+     - axiom check 從 parent fq 移到 scratch fq（等價：def slug := @s<id>
+       是 alias、#print axioms 走同樣 dependency graph）
+  3. 若 ok：done
+  4. 若 fail：rollback_promote(parent)
+
+library.maybe_promote (cascade 完成後):
+  5. verify_file(Root.lean, axioms_for=main_fq, write_olean=True)
+     - elaborate 完整 alias 鏈
+     - lake serve worker 對缺 olean 的 L_*.lean 隨 import 自動 elaborate
+     - 一次抓 promote_to_alias drift / 任何漏網 sorryAx
+```
+
+收斂後的 trade-off：
+
+| 維度 | per-file queue | scratch-only + root verify |
+|---|---|---|
+| 每層 verify_file 次數 | 2 | 1 |
+| SG-class 10-level cascade 時間 | ~6 min | ~3.5-4 min（-30~40%）|
+| parent module olean 寫入磁碟 | ✅ 每層 | ❌ 跳過、後續 import 走 lake serve on-demand |
+| Per-strategy 編譯錯誤 attribution | ✅ | ✅（scratch verify 仍每層做） |
+| Per-strategy sorryAx attribution | ✅（parent fq） | ✅（scratch fq、等價 axiom set）|
+| promote_to_alias drift 偵測 | 每層 | 延後到 root verify、Lean 印檔名+行號 |
+| Root verify cost | 一次 axiom_probe | 同一次 axiom_probe + 完整鏈 elaborate |
+
+cost 加在 root verify（lake serve 要 walk 全鏈 elaborate 缺的 L_*.olean），
+但 alias 檔極小、warm Mathlib worker 處理 microsecond 級、累積 < per-level
+overhead 省下的時間。
+
+drift 風險 — promote_to_alias 在現行架構幾乎不會錯（純字串模板）。若真錯，
+root verify 失敗訊息會印出具體 .lean 檔名+行號、debug 不困難。
+
 ---
 
 ## 4 設計

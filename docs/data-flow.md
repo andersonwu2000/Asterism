@@ -218,14 +218,18 @@ loop（最多 max_iters=8 圈）:
   若 ready 為空 → break
   
   對每條 strategy s（序列、單執行緒）:
-    Step 1: lake build _strategy_s<sid>.lean
-            （組裝 patch、import 各 sub-goal proofs）
-    Step 2: 把 parent goal 的 .lean 檔改寫成 alias（atomic os.replace）：
+    Step 1: 把 parent goal 的 .lean 檔改寫成 alias（atomic os.replace）：
               import Problems.<p>.proofs._strategy_s<sid>
               namespace Problems.<p>
               def <parent_slug> := @Problems.<p>.s<sid>
             F52 簽名鎖死保證 alias 的 type 跟 parent 完全相符
-    Step 3: lake build alias-form parent
+    Step 2: gateway verify_file(_strategy_s<sid>.lean,
+                                axioms_for=Problems.<p>.s<sid>)
+            一次同時：
+              - elaborate agent 的證明 patch（import 各 sub-goal proofs）
+              - 寫 _strategy_s<sid>.olean 到 disk（給上層 cascade import 用）
+              - axiom 檢查：probe scratch theorem 的 transitive axiom set
+                vs Manifest.axioms_whitelist
     
     全過 → strategy='succeeded'、parent goal='proved'
             sibling strategies 標 'superseded'、strategy.proposal_md 寫進
@@ -233,6 +237,12 @@ loop（最多 max_iters=8 圈）:
             鏈式：parent goal 可能是更上層 strategy 的 sub-goal、下一圈會撈到
     任一壞 → backup 還原 parent、strategy='dead'
             cascade 處理（attempts++、SHELVE 處理、_propagate_shelve 上拋）
+
+最終 root verify（library.maybe_promote、root goal flip 為 proved 後）：
+    Step F: gateway verify_file(Root.lean, axioms_for=main_fq, write_olean=True)
+            elaborate 完整 alias 鏈 → 抓任何 promote_to_alias drift
+            最終 axiom whitelist gate
+            通過後 library.promote 寫 Library/<Topic>/<problem>.lean
 ```
 
 **為什麼是 stage 而非 worker_kind**：純框架操作沒 LLM、不該佔 worker pool slot。早期版本（pre-F56）把 Verify 當第三種 worker_kind、每輪佔一個 ThreadPool 格子 ~60s、無收益。
