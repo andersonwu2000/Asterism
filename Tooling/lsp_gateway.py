@@ -747,77 +747,23 @@ def _olean_dest_for(workspace: Path, target_path: Path) -> Path | None:
             / rel.with_suffix(".olean"))
 
 
-@mcp.custom_route("/verify", methods=["POST"])
-async def verify(request: Request):
-    """Unified verify endpoint: didChange the file's content into a
-    worker slot, optionally write the resulting `.olean` to disk,
-    optionally run `Asterism.printAxioms` on a constant in it.
+def _verify_sync(target: Path, content: str, *, write_olean: bool,
+                  axioms_for: str | None, rpc_timeout: int) -> dict:
+    """Sync core of /verify. MUST run off the asyncio event loop —
+    `_acquire_slot` does blocking polling on a per-slot lock, which
+    starves all other handlers (/register, /release, /health, MCP tool
+    calls) when concurrent verify requests pile up.
 
-    Body: {
-      "target_path":  "/abs/path.lean",        # required
-      "write_olean":  true,                    # default: true
-      "axioms_for":   "Problems.foo.main",     # optional fq name
-      "rpc_timeout":  60,                      # default: 30 — applied to
-                                               #   writeOlean + printAxioms
-                                               #   RPCs. Caller-driven so
-                                               #   library promotion can
-                                               #   raise it for big Roots
-                                               #   without bloating
-                                               #   short-path callers.
-    }
-    Returns: {
-      "ok":               bool,
-      "diagnostics":      [{line,col,severity,message}, ...],
-      "diagnostic_count": int,
-      "olean_written":    bool,
-      "olean_path":       str | null,
-      "axioms":           [str, ...] | null,
-      "axiom_error":      str | null,
-    }
+    miniF2F 20-problem pilot 2026-05-12 hit this: 15 simultaneous
+    Builder spawns each calling /verify → event loop frozen for
+    cumulative slot-acquire durations → subsequent /register
+    requests time out at urllib's 120s budget → entire daemon
+    deadlocks despite gateway being technically alive.
 
-    Replaces the prior `lake build` + `lake env lean #print axioms`
-    pair: the verify, the olean publish, and the axiom probe all run
-    in the same worker process against the same just-elaborated
-    environment.
-
-    Slot ownership: marks loaded_pipeline_id=None after the call so
-    the next caller doesn't think this content "belongs" to anyone.
-    """
-    try:
-        data = await request.json()
-    except Exception as e:
-        return JSONResponse({"error": f"invalid JSON: {e}"},
-                            status_code=400)
-    target_path = data.get("target_path")
-    if not target_path:
-        return JSONResponse({"error": "missing target_path"},
-                            status_code=400)
-    target = Path(target_path).resolve()
-    if not target.exists():
-        return JSONResponse({"error": f"file not found: {target}"},
-                            status_code=404)
-    write_olean: bool = bool(data.get("write_olean", True))
-    axioms_for: str | None = data.get("axioms_for")
-    # Caller-driven RPC timeout. Default 30 preserves prior behavior;
-    # library promotion / big-Root callers bump this via verify_file's
-    # `timeout` argument (minus HTTP overhead). Clamp to a positive
-    # integer; fall through on bad input.
-    try:
-        rpc_timeout = int(data.get("rpc_timeout", 30))
-        if rpc_timeout <= 0:
-            rpc_timeout = 30
-    except (TypeError, ValueError):
-        rpc_timeout = 30
-
-    err = _ensure_backend_ready()
-    if err:
-        return JSONResponse({"error": err}, status_code=503)
-    try:
-        content = target.read_text(encoding="utf-8")
-    except OSError as e:
-        return JSONResponse({"error": f"read failed: {e}"},
-                            status_code=500)
-
+    The fix is to offload this whole sync section into asyncio's
+    default threadpool via `asyncio.to_thread(_verify_sync, ...)`
+    from the async handler. Event loop stays responsive; the slot-
+    acquire's blocking polling no longer blocks other endpoints."""
     backend = _state.backend
     workspace = _state.workspace or target.parent
     probe_id = f"verify:{uuid.uuid4().hex[:8]}"
@@ -892,14 +838,14 @@ async def verify(request: Request):
 
             slot.loaded_pipeline_id = None
     except Exception as e:
-        return JSONResponse(
-            {"error": f"slot acquire failed: {type(e).__name__}: {e}"},
-            status_code=500,
-        )
+        return {
+            "error": f"slot acquire failed: {type(e).__name__}: {e}",
+            "_status": 500,
+        }
 
     formatted = [_format_diag(d) for d in diags]
     has_error = any(f.get("severity") == "error" for f in formatted)
-    return JSONResponse({
+    return {
         "ok": not has_error,
         "diagnostic_count": len(formatted),
         "diagnostics": formatted,
@@ -907,7 +853,95 @@ async def verify(request: Request):
         "olean_path": str(olean_path) if olean_path else None,
         "axioms": axioms,
         "axiom_error": axiom_error,
-    })
+    }
+
+
+@mcp.custom_route("/verify", methods=["POST"])
+async def verify(request: Request):
+    """Unified verify endpoint: didChange the file's content into a
+    worker slot, optionally write the resulting `.olean` to disk,
+    optionally run `Asterism.printAxioms` on a constant in it.
+
+    Body: {
+      "target_path":  "/abs/path.lean",        # required
+      "write_olean":  true,                    # default: true
+      "axioms_for":   "Problems.foo.main",     # optional fq name
+      "rpc_timeout":  60,                      # default: 30 — applied to
+                                               #   writeOlean + printAxioms
+                                               #   RPCs. Caller-driven so
+                                               #   library promotion can
+                                               #   raise it for big Roots
+                                               #   without bloating
+                                               #   short-path callers.
+    }
+    Returns: {
+      "ok":               bool,
+      "diagnostics":      [{line,col,severity,message}, ...],
+      "diagnostic_count": int,
+      "olean_written":    bool,
+      "olean_path":       str | null,
+      "axioms":           [str, ...] | null,
+      "axiom_error":      str | null,
+    }
+
+    Replaces the prior `lake build` + `lake env lean #print axioms`
+    pair: the verify, the olean publish, and the axiom probe all run
+    in the same worker process against the same just-elaborated
+    environment.
+
+    Slot ownership: marks loaded_pipeline_id=None after the call so
+    the next caller doesn't think this content "belongs" to anyone.
+
+    Concurrency: the sync slot-acquire + LSP RPC work runs in a
+    thread offloaded from the asyncio event loop via
+    `asyncio.to_thread`. Without this, sync polling in
+    `_acquire_slot` would freeze the event loop and starve other
+    handlers (/register, /release, /health, MCP tool calls) under
+    concurrent verify load — observed under the miniF2F 20-problem
+    benchmark, 2026-05-12.
+    """
+    import asyncio
+    try:
+        data = await request.json()
+    except Exception as e:
+        return JSONResponse({"error": f"invalid JSON: {e}"},
+                            status_code=400)
+    target_path = data.get("target_path")
+    if not target_path:
+        return JSONResponse({"error": "missing target_path"},
+                            status_code=400)
+    target = Path(target_path).resolve()
+    if not target.exists():
+        return JSONResponse({"error": f"file not found: {target}"},
+                            status_code=404)
+    write_olean: bool = bool(data.get("write_olean", True))
+    axioms_for: str | None = data.get("axioms_for")
+    try:
+        rpc_timeout = int(data.get("rpc_timeout", 30))
+        if rpc_timeout <= 0:
+            rpc_timeout = 30
+    except (TypeError, ValueError):
+        rpc_timeout = 30
+
+    err = _ensure_backend_ready()
+    if err:
+        return JSONResponse({"error": err}, status_code=503)
+    try:
+        content = target.read_text(encoding="utf-8")
+    except OSError as e:
+        return JSONResponse({"error": f"read failed: {e}"},
+                            status_code=500)
+
+    # Off-load the blocking slot acquire + RPC work to a thread so the
+    # asyncio event loop stays free to serve /register, /release,
+    # /health, MCP tool calls, and other concurrent /verify requests.
+    result = await asyncio.to_thread(
+        _verify_sync, target, content,
+        write_olean=write_olean, axioms_for=axioms_for,
+        rpc_timeout=rpc_timeout,
+    )
+    status = result.pop("_status", 200)
+    return JSONResponse(result, status_code=status)
 
 
 @mcp.custom_route("/health", methods=["GET"])

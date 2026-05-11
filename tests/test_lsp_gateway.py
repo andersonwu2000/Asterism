@@ -321,6 +321,77 @@ def test_acquire_slot_lock_excludes_concurrent_acquire(
     slots[0].lock.release()
 
 
+def test_verify_endpoint_offloads_sync_body_to_thread(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Regression guard for the miniF2F 20-problem pilot deadlock
+    (2026-05-12): /verify's sync slot-acquire + LSP RPC work must NOT
+    run on the asyncio event loop. If it does, concurrent verify
+    requests serialize and starve /register / /release / /health
+    handlers (the daemon-side `register_session` urlopen hits its
+    120s timeout and the dispatcher worker raises TimeoutError).
+
+    Smoke test: the /verify handler must call asyncio.to_thread on
+    `_verify_sync`. We patch `_verify_sync` to a marker function and
+    confirm it's invoked off the event loop via `asyncio.to_thread`."""
+    import asyncio
+    from starlette.requests import Request
+
+    invoked_in_thread: dict[str, object] = {}
+
+    def _stub_verify_sync(target, content, *, write_olean, axioms_for,
+                          rpc_timeout):
+        # Off-thread invocation: in the main test thread our event loop
+        # is running; if to_thread was used we land in a *different*
+        # thread.
+        import threading
+        invoked_in_thread["tid"] = threading.get_ident()
+        return {"ok": True, "diagnostic_count": 0, "diagnostics": [],
+                "olean_written": False, "olean_path": None,
+                "axioms": None, "axiom_error": None}
+
+    monkeypatch.setattr(lsp_gateway, "_verify_sync", _stub_verify_sync)
+    monkeypatch.setattr(lsp_gateway, "_ensure_backend_ready",
+                        lambda **kw: None)
+
+    target = tmp_path / "x.lean"
+    target.write_text("import Mathlib\n", encoding="utf-8")
+
+    # Build a minimal ASGI request to feed the async handler
+    async def _run():
+        scope = {
+            "type": "http", "method": "POST", "path": "/verify",
+            "headers": [(b"content-type", b"application/json")],
+            "query_string": b"",
+        }
+        import json
+        body = json.dumps({
+            "target_path": str(target),
+            "write_olean": False,
+        }).encode("utf-8")
+
+        sent = []
+        async def receive():
+            return {"type": "http.request", "body": body, "more_body": False}
+        async def send(msg):
+            sent.append(msg)
+        # Use Request to feed the handler
+        req = Request(scope, receive=receive, send=send)
+        resp = await lsp_gateway.verify(req)
+        return resp
+
+    asyncio.run(_run())
+
+    assert "tid" in invoked_in_thread, "_verify_sync was not called"
+    import threading
+    main_tid = threading.get_ident()
+    assert invoked_in_thread["tid"] != main_tid, (
+        f"_verify_sync ran on the main thread (tid={main_tid}); "
+        f"event loop would have been blocked. Expected asyncio.to_thread "
+        f"to dispatch to a worker thread."
+    )
+
+
 def test_session_release_clears_slot_marker(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
