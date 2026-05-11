@@ -12,6 +12,19 @@ For benchmark-integrity reporting, these proofs should be counted as
 |---|---|---|---|---|
 | `amc12a_2009_p25` | g596 | `noncomputable def θ : ℕ → ℝ` — Fibonacci angle sequence for the tan-addition / Pisano-period approach (θ 1 = π/4, θ 2 = π/6, θ (n+2) = θ n + θ (n+1)) | 2026-05-12 | (pending re-attempt) |
 
+## Shelved with `agent_shelved` but NOT actionable by Defs.lean alone
+
+These goals had the agent decline with `agent_shelved` (a "I see a math
+approach but it doesn't fit Backward scope" signal), but the indicated
+approach requires more than a helper definition — it would need an
+entire supporting Mathlib-style library (hundreds of lines of lemmas,
+not just one `def`). Defs.lean intervention is left as `(no-op)` and
+the shelve stands. Recorded for honesty.
+
+| Problem | Goal | Agent's approach | Why Defs.lean insufficient |
+|---|---|---|---|
+| `imo_1993_p5` | g642 | Beatty sequence `⌊n·φ⌋` or Zeckendorf-shift `F_{k₁+1}+…+F_{k_m+1}` | Witness alone is ≥hundreds of lines; needs Fibonacci-partition uniqueness or golden-ratio floor identities not in Mathlib. A `def beatty` without supporting lemmas gives the agent a name with no semantics for the three required properties. |
+
 ## Policy
 
 When a Backward shelves with `agent_shelved` (NOT `agent_infeasible`),
