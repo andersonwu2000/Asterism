@@ -23,6 +23,22 @@ Counterexample (kernel-verified): `u 0 = 4, u 1 = 7, u 2 = 10000, u 3 = 0,
 u k = 0 for k ≥ 4`. Satisfies all hypotheses; `∑_{k<3} u k = 10011 > 10000`
 while `1999 > 3`.
 
+### `imo_1967_p3` — `∏` body precedence cuts off subtraction
+
+**File:** [`imo_1967_p3_disproof.lean`](imo_1967_p3_disproof.lean)
+
+Mathlib's `BigOperators` macro `∏ i ∈ s, body` declares body at
+precedence 67. Natural-subtraction is at 65 (lower), so
+
+  `∏ i ∈ Finset.Icc 1 n, c (m + i) - c k`
+
+parses as `(∏ i ∈ Finset.Icc 1 n, c (m + i)) - c k` — product, then
+subtract — not the intended IMO 1967 P3 product of differences
+`∏ i ∈ Finset.Icc 1 n, (c (m + i) - c k)`.
+
+Counterexample (kernel-verified): `k=5, m=1, n=2, c(s) = s*(s+1)`.
+All four hypotheses hold; LHS = 12, RHS = 72 - 30 = 42; 12 ∤ 42.
+
 ### `mathd_algebra_433` — answer simply wrong
 
 **File:** [`mathd_algebra_433_disproof.lean`](mathd_algebra_433_disproof.lean)
@@ -166,6 +182,7 @@ lake env lean docs/errata/minif2f/aime_1984_p5_disproof.lean
 lake env lean docs/errata/minif2f/amc12a_2020_p13_disproof.lean
 lake env lean docs/errata/minif2f/imo_1962_p4_disproof.lean
 lake env lean docs/errata/minif2f/mathd_algebra_282_disproof.lean
+lake env lean docs/errata/minif2f/imo_1967_p3_disproof.lean
 lake env lean docs/errata/minif2f/mathd_algebra_433_disproof.lean
 lake env lean docs/errata/minif2f/aime_1988_p3_disproof.lean
 lake env lean docs/errata/minif2f/amc12a_2002_p21_disproof.lean
