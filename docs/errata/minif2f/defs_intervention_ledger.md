@@ -13,6 +13,32 @@ For benchmark-integrity reporting, these proofs should be counted as
 | `amc12a_2009_p25` | g596 | `noncomputable def θ : ℕ → ℝ` — Fibonacci angle sequence for the tan-addition / Pisano-period approach (θ 1 = π/4, θ 2 = π/6, θ (n+2) = θ n + θ (n+1)) | 2026-05-12 | (pending re-attempt) |
 | `imo_1993_p5` | g642 | `noncomputable def goldA (n : ℕ) : ℕ := ⌊n·φ⌋.toNat` — Wythoff lower row only, no supporting lemmas. **Stress-test minimal hint**: agent must invent witness shape (`goldF n := goldA (n+1) - 1`), discover Beatty pair identity `⌊n·φ²⌋ = ⌊n·φ⌋ + n`, and prove the Hofstadter identity `⌊⌊n·φ⌋·φ⌋ = ⌊n·φ⌋ + n - 1` itself. Expected success: ~5-15%. | 2026-05-12 | (pending re-attempt; on failure, draft will guide next Theorist iteration) |
 
+## Adapter / framework bugs (NOT source bugs, NOT Defs.lean intervention)
+
+Distinct category: `Benchmarks/minif2f/adapter.py` generates Defs.lean
+with `open BigOperators Real Nat Topology Rat`, but the framework's
+`cmd_init` generates Root.lean WITHOUT those opens. Lean 4 `import`
+does NOT propagate `open` clauses across files, so symbols like `π`,
+`Real.sin`, etc. in the statement become auto-bound implicit
+parameters (e.g. `{π : ℝ}` free for ∀-quantification), making the
+theorem trivially unprovable.
+
+Agents correctly identified this and shelved with `agent_infeasible`.
+After hand-adding `open BigOperators Real Nat Topology Rat` to Root.lean
++ DB reset, these goals re-dispatch on the correctly-elaborated
+statement.
+
+| Problem | Goal | Fix | Date | Outcome |
+|---|---|---|---|---|
+| `aime_1997_p11` | g567 | Added `open BigOperators Real Nat Topology Rat` to Root.lean | 2026-05-12 | (re-dispatched) |
+| `imo_1965_p1` | g628 | same | 2026-05-12 | (re-dispatched) |
+| `imo_1966_p4` | g629 | same | 2026-05-12 | (re-dispatched) |
+| `imo_1962_p4` | g625 | same (consistency only — goal stays shelved, real source bug w/ kernel-verified disproof) | 2026-05-12 | shelved (real source bug, see errata) |
+
+**Framework follow-up**: `cmd_init` should propagate Defs.lean's `open`
+clauses into Root.lean (or always emit a standard set for miniF2F
+imports). Tracked as task #108 (added after this incident).
+
 ## Shelved with `agent_shelved` but NOT actionable by Defs.lean alone
 
 These goals had the agent decline with `agent_shelved` (a "I see a math
