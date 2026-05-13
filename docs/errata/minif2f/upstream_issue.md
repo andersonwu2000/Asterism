@@ -180,3 +180,11 @@ We checked `openai/miniF2F`, `facebookresearch/miniF2F`, and the
 prior GitHub issues and PRs on each repo — no existing report mentions
 any of these nine theorems (audited 2026-05-13). All three repos still
 ship the same false-as-written statements.
+
+We also reviewed the recent commit history of this repo
+(`1be24b7` Feb 2026 — Test-split 7 erratum cleanup; `1f8e11a` Jun 2025;
+`9505034`, `53bae3d` etc.) and confirmed that none of those existing
+fixes overlap with the nine theorems below. The bug classes we found
+are however identical in spirit to those fixed in `1be24b7` (missing
+hypothesis, `ℕ` vs `ℝ` types, ℕ-division traps, type-annotation gaps).
+This report extends that effort to the Valid split.
