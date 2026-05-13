@@ -142,6 +142,44 @@ def _classify_root_body(text: str) -> str:
     return "unknown"
 
 
+_DEFS_OPEN_RE = re.compile(r'^open\s+(.+?)\s*$', re.MULTILINE)
+
+
+def _render_root_stub(problem: str, statement: str, pdir: Path) -> str:
+    """Render Root.lean sorry-stub content. Replays `open` clauses from
+    Defs.lean when present.
+
+    Lean 4 `import` does not propagate `open` across files, so Root.lean
+    needs its OWN opens to use unqualified names like `π`, `Real.sin`,
+    `Topology.NhdsBasis` etc. in the theorem statement. miniF2F's
+    Defs.lean ships `open BigOperators Real Nat Topology Rat`; without
+    this replay, statements using `π` end up with auto-bound implicit
+    `{π : ℝ}` parameters → theorem becomes trivially unprovable and
+    Backward shelves with agent_infeasible. Affected this run:
+    aime_1997_p11 / imo_1965_p1 / imo_1966_p4 / imo_1962_p4 — all
+    manually patched + DB-reset before re-dispatch.
+    """
+    defs_path = pdir / "Defs.lean"
+    if defs_path.exists():
+        defs_text = defs_path.read_text(encoding="utf-8")
+        opens = [m.group(1).strip()
+                 for m in _DEFS_OPEN_RE.finditer(defs_text)]
+        defs_import = f"import Problems.{problem}.Defs\n"
+    else:
+        opens = []
+        defs_import = ""
+    opens_block = (
+        "\n".join(f"open {o}" for o in opens) + "\n\n" if opens else ""
+    )
+    return (
+        f"import Mathlib\n{defs_import}\n"
+        f"{opens_block}"
+        f"namespace Problems.{problem}\n\n"
+        f"theorem main : {statement} := by sorry\n\n"
+        f"end Problems.{problem}\n"
+    )
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     workspace = Path.cwd()
     problem = args.problem
@@ -160,15 +198,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     proofs_dir.mkdir(parents=True, exist_ok=True)
     root_lean = pdir / "Root.lean"
     if not root_lean.exists():
-        defs_import = (
-            f"import Problems.{problem}.Defs\n"
-            if (pdir / "Defs.lean").exists() else ""
-        )
         root_lean.write_text(
-            f"import Mathlib\n{defs_import}\n"
-            f"namespace Problems.{problem}\n\n"
-            f"theorem main : {mfst.statement} := by sorry\n\n"
-            f"end Problems.{problem}\n",
+            _render_root_stub(problem, mfst.statement, pdir),
             encoding="utf-8",
         )
     else:
@@ -646,15 +677,8 @@ def cmd_reset(args: argparse.Namespace) -> int:
     mfst = manifest.parse(mfst_path)
     root_lean = pdir / "Root.lean"
     if mfst.statement:
-        defs_import = (
-            f"import Problems.{problem}.Defs\n"
-            if (pdir / "Defs.lean").exists() else ""
-        )
         root_lean.write_text(
-            f"import Mathlib\n{defs_import}\n"
-            f"namespace Problems.{problem}\n\n"
-            f"theorem main : {mfst.statement} := by sorry\n\n"
-            f"end Problems.{problem}\n",
+            _render_root_stub(problem, mfst.statement, pdir),
             encoding="utf-8",
         )
 

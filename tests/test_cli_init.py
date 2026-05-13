@@ -115,6 +115,33 @@ def test_init_creates_root_when_missing(
     assert ":= by sorry" in root.read_text(encoding="utf-8")
 
 
+def test_init_replays_defs_opens_into_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Root.lean must replay every `open` clause from Defs.lean, since
+    Lean 4 import does NOT propagate `open` across files. Without this,
+    miniF2F statements using unqualified `π` / `Real.sin` / `Topology.x`
+    fall back to auto-bound implicit parameters and become trivially
+    unprovable. Confirmed bug 2026-05-12: aime_1997_p11 / imo_1965_p1
+    / imo_1966_p4 / imo_1962_p4 all shelved with agent_infeasible
+    until the operator manually added `open BigOperators Real Nat
+    Topology Rat` to Root.lean and DB-reset for re-dispatch."""
+    pdir = _setup_problem(tmp_path, manifest_body=_MIN_MANIFEST)
+    (pdir / "Defs.lean").write_text(
+        "import Mathlib\n\n"
+        "set_option maxHeartbeats 0\n\n"
+        "open BigOperators Real Nat Topology Rat\n\n"
+        "namespace Problems.wilson\n\nend Problems.wilson\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    rc = cmd_init(_init_args())
+    assert rc == 0
+    body = (pdir / "Root.lean").read_text(encoding="utf-8")
+    assert "open BigOperators Real Nat Topology Rat" in body
+    assert "import Problems.wilson.Defs" in body
+
+
 def test_init_idempotent_when_root_is_sorry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
