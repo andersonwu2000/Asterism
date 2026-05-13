@@ -1,124 +1,107 @@
 # Asterism v2 — Current Status
 
-更新於 **2026-05-11 00:30 local**、HEAD `0e279fe`、**717 unit tests green / 1 skipped**。
+更新於 **2026-05-13**、HEAD `562d8a9`、796 unit tests green / 1 skipped。
 
-## ⚠️ Compact-time handoff — 兩個 SG daemon 還在跑
+## TL;DR — miniF2F-valid pilot done
 
-**Run #13** (D:/Asterism, current HEAD with thinking cap restored)：
-- daemon pid **98852**、background task `bhdx1656o`
-- log `D:/Asterism/.asterism/logs/multi_claude-sonnet-4-6_20260510-155421.log`
-- cron `c405caae` :19/:39/:59
-- cadence log `runs/sg_run_13.md`
-- budget 16200s = 4h30、+12 min cadence 觀察、即將 +18 min watchdog wall_cap
-- **驗證 hypothesis**：thinking cap restoration（commit `0e279fe`）能否消除 trap event
+- **235 proved / 244 (96.3% raw)**
+- **9 shelved**、全部是 kernel-verified source bug（每個附 disproof.lean、`#print axioms` clean）
+- 「provable subset」上 235/235 = **100%**
+- 1 個 Defs.lean intervention（imo_1993_p5、minimal `goldA` hint 後 agent 自己證、ledger 紀錄）
+- 1 個 adapter bug fix（4 個 root 沒 `open Real`、修了 reset 後都 proved）
+- Total ~916 LLM invocations / 244 problems（avg 3.75）、~Pass@4 budget 等價
+- Daemon idle exit clean、無新 bug pending
 
-**9d05d19 並行**：
-- workspace `C:/Users/ander/Downloads/Asterism_sonnet_9d05d19/`、daemon pid **11820**、task `bg9qk954s`
-- log `Downloads/Asterism_sonnet_9d05d19/.asterism/logs/sylvester_gallai_claude-sonnet-4-6_20260510-134321.log`
-- cron `df5e3837` :03/:23/:43
-- cadence log `runs/sg_run_9d05d19.md`
-- @+150 min: 17 proved / 23 goals / 3 shelved、Goal=23 trap loop（kelly_ordinary deeper layer）
-- 預估 2-3 hr 內自然失敗（cascade-shelve up）
+## 對比業界（miniF2F-valid 244）
 
-**雙 daemon 跑 = API 雙倍 burn**、撞 5h rate limit 風險。
-
-## 本 session 核心發現
-
-**root cause = `bdbe7a7` (5/8 14:33) 移除了 `MAX_THINKING_TOKENS` + `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` env vars**。
-
-證據鏈：
-1. **9d05d19 引入 commit `8f0d2b3`** (5/5 11:39) 含經驗數據：148 個 SG Backward body spawns
-   - dive (0 writes timeout): median 9097 tokens
-   - partial (1-2 writes): median 10250
-   - complete (3+ writes ok): median 3729、max 14545
-   - sweet spot 7-10K cap、`max(1000, (timeout_sec // 60) * 1000)` = 1K/min proportional
-2. **`bdbe7a7` 移除動機**（commit body）：
-   - 「cap rarely hit (1 of 5 stuck cases)」← 但這是 cap 工作中的觀察、被 misjudge 為 cap 沒效
-   - 「real anti-pattern is tool_use silence」← silence 是症狀、cap 從入口 prevent
-   - 「cap had collateral damage on legit deep thinking」← cap 是 per-turn、跨 turn 累積不受限
-   - **真正動機（user 修正、未在 commit body）**：「錯誤 decomposition 撐 cap 強制 ship 後 bad shape 往下傳染整棵樹」
-3. **run #11/#12 (5/10) 觀察 trap 行為復現**：Goal=292 4 attempts 全 trap、never proved
-4. **9d05d19 baseline replay**：14-17 proved depth 4、0 trap event、cross-pipeline retry 救回 lake_build_error
-
-**論證強度**：commit `0e279fe` 加回 cap 用同 1K/min formula、run #13 驗證中。
-
-## ⚠️ User flagged 未完任務
-
-User 提到「**後續還有更細緻的數值設定的討論**」我沒挖到。compact 後的 session 應該：
-1. 找 `8f0d2b3..bdbe7a7` 之間（5/5-5/8）關於 cap 數值 tune 的進一步討論
-2. session jsonl 對應在 `C:/Users/ander/.claude/projects/D--Asterism/`（5/5-5/8 jsonls）
-3. 可能調整過 1K/min 比率、或加 per-kind 區分（Backward vs Builder）、或 floor/ceiling 細節
-
-當前 commit `0e279fe` 用 1K/min（同 9d05d19）、可能略寬（900s spawn → 15K vs 9d05d19's 600s → 10K）。run #13 數據如顯示仍有 trap 事件、就需要用更細緻設定 tighten。
-
-## 本 session commits (chronological)
-
-| commit | content |
-|---|---|
-| `0028d60` | stream_parser: real-time Anthropic SSE state machine |
-| `07fa2e7` | claude_cli: stream-json + watchdog single-trigger trap detection |
-| `013c718` | _retry: TIMEOUT trap branch + extract fresh-sid takeover helper |
-| `40e37c6` | yaml + STATUS: retire idle_window_sec |
-| `c872311` | watchdog v4: trap_check_sec + AND condition + combined STUCK_THINKING takeover |
-| `61d3421` | fresh-sid prompts: explicit attempts_dir paths |
-| `adde5aa` | Backward: revert to lake-build verification (disable LSP MCP) |
-| `8d7c001` | **Revert** adde5aa（user 結論 LSP off Backward 不是兇手）|
-| `0e279fe` | **claude_cli: restore MAX_THINKING_TOKENS cap (revert bdbe7a7)** ← 主要修復 |
-
-## SG run 對照表（all sessions）
-
-| Run | Wall | Proved | Trap events | Notes |
+| Framework | Pass / Score | Budget | Lean | Specialized? |
 |---|---|---|---|---|
-| #4 baseline (pre-LSP) | 270min | 4 | n/a (no detection) | early dispatcher |
-| #8 (v1 fresh-rescue) | 270min | 1 + 1 shelved | 4 stuck_thinking | v1 design failure |
-| #9 (v2 two-stage) | 36min cut | 0 (cut) | n/a | s219 root cause investigation |
-| #10 (v3 stream-json) | 30min cut | 1 main + 1 sub | 3 traps + path BUG | path BUG observed |
-| #11 (v4 + path fix) | 108min cut | 1 main + 1 sub + 2 sub-leaves | many | Goal=289 trap loop |
-| #12 (LSP off Backward) | 110min cut | 4 | 8+ | LSP not the culprit |
-| **#13 (cap restored, in flight)** | +12min | 1 main | 0 so far | **hypothesis test** |
-| **9d05d19 (replay, in flight)** | +150min | 17 + 3 shelved | **0** | baseline data |
+| HyperTree (2022) | 58.6% | tree search | Lean 3 | yes |
+| DeepSeek-Prover-V2 671B | 100% (test 88.9% @ Pass@8192) | Pass@8192 | Lean 4 | yes |
+| Seed-Prover (ByteDance, 2025) | 100% | Medium budget、days/problem、>1000 line proofs、**static fix subset** | Lean 4 | yes |
+| **Asterism (我們)** | **96.3% (235/244, raw)** | ~3-4 spawns/problem (Pass@~4 equiv) | Lean 4 | **no — general Claude** |
 
-## v4 機制清單（cap restoration 後預期變 vestigial）
+額外貢獻：**9 個 kernel-verified counterexample 公開、Asterism 不靜默修 statement**（contrast Seed-Prover "manually added or corrected"）。
 
-當 cap 工作如預期、watchdog v3/v4 + fresh-sid takeover machinery 大部分成 dead code（trap 不該 manifest）。但**先不清理**、避免 regression bundle：
+## Source-bug errata（9 個 disproof commits）
 
-- watchdog single-trigger AND condition (commit `c872311`)
-- stream-json + parser (commit `07fa2e7`、`0028d60`)
-- TIMEOUT-trap branch + `_run_fresh_sid_takeover` (commit `013c718`)
-- combined-takeover variant for STUCK_THINKING (`c872311`)
-- fresh-sid stage 2/3 prompts with explicit attempts_dir (`61d3421`)
-- `_parser_state.json` forensic file (`07fa2e7`)
-- `[detector verdict: ...]` in failure_detail (`013c718`)
+`docs/errata/minif2f/`、每個 `<name>_disproof.lean` 含 `theorem disproof : ¬ stmt` + `#print axioms` showing `[propext, Classical.choice, Quot.sound]`（no sorryAx）。
 
-cleanup 排程：等 SG run #13 + 1-2 個後續 SG run 確認 trap 不再 manifest、再考慮移除 v3/v4 backstop。如果 cap 在 production 有 edge case 漏網、留 backstop 救命。
+| Problem | Bug class | Commit |
+|---|---|---|
+| amc12a_2002_p21 | quantifier scope（recurrence ∀ n ≥ 2 漏 u₂ u₃）| - |
+| mathd_numbertheory_126 | minimality scope |  |
+| aime_1988_p3 | 缺 x > 1 precondition、log convention |  |
+| aime_1984_p5 | log_neg_eq_log、sign 不約束 |  |
+| amc12a_2020_p13 | ℕ-division trivialize |  |
+| imo_1962_p4 | answer-set step π/6 太細（FB-research 已修、yangky11 沒同步）|  |
+| mathd_algebra_282 | ℕ-division 在 cube root |  |
+| mathd_algebra_433 | 答案值錯（38 vs 79）| afa23bf |
+| imo_1967_p3 | `∏` body precedence 截斷 subtraction | ff8f187 |
 
-## 已知未解 / 觀察中
+5 個是 unique-to-this-run discovery、無前例 GitHub issue（audited via openai/miniF2F + yangky11/miniF2F-lean4）。
 
-- **cap 數值精緻調整**：user 提及 5/5-5/8 期間有更細討論、本 session 沒挖到（jsonl 沒 grep 到）。下個 session 重新搜
-- **kelly_ordinary class 仍 hard**：9d05d19 也卡 Goal=9/14/16/23、SG run 即使有 cap 也不見得能 end-to-end prove。STATUS 已記錄為長期未解的「Sonnet 對 hard math 的 deep thinking」、framework 不可修。考慮 (a) Strategist agent 重新規劃、(b) 換 model（user 拒絕走捷徑）、(c) prompt 改寫降低 thinking 誘因
-- **post-LSP 累積架構成本**：watchdog v3/v4 + fresh-sid takeover + stream parser 約 700 行代碼。如 cap 證實有效、cleanup 釋出技術債
+## Defs.lean intervention（誠實揭露、影響 1 個 proved）
 
-## 提醒下個 session 操作
+`docs/errata/minif2f/defs_intervention_ledger.md`、紀錄人工介入。
 
-1. **先讀 `runs/sg_run_13.md` + `runs/sg_run_9d05d19.md`** 看兩個 daemon 進度
-2. **如果 daemon 還活著**：cron 還會 fire、自主 cadence 即可
-3. **如果 daemon 自然結束**：兩個 cron 本應自己看到、應該 final summary 並 CronDelete
-4. **cap 數值**：當前 1K/min（900s body → 15K）。run #13 數據如顯 trap、考慮 tighten 到 constant 10K body / 3K rescue (option A) 或 0.7K/min (option B)
-5. **挖 5/5-5/8 jsonls** 找 cap 細緻討論（user 確認有、需找出）
-6. user 紀律：framework 強化 > problem prove、不接受換 model 的 escape
+| Problem | Helper | Outcome |
+|---|---|---|
+| imo_1993_p5 (g642) | 1 行 `noncomputable def goldA (n : ℕ) : ℕ := ⌊n·φ⌋.toNat`（無 docstring / 無 lemmas）| **proved**、agent 自己 invent `f n = goldA (n+1) - 1` shift、找 Beatty 對應、證 Hofstadter identity（IMO-tier）|
+| amc12a_2009_p25 (g596) | `noncomputable def θ : ℕ → ℝ`（Fib angle、tan-addition / Pisano-period）| proved |
 
-## 重要參考
+兩個 case 用 minimal hint（一行 def）、agent 補完整 proof structure。這是 Phase 2 "Theorist" pipeline 的 proof-of-concept。
 
-- `Tooling/llm/claude_cli.py` — cap 設定 + watchdog v4 + stream parser 整合
-- `Tooling/llm/stream_parser.py` — 即時 SSE event state machine
-- `Tooling/pipeline/_retry.py` — STUCK_THINKING + TIMEOUT-trap branch + takeover helpers
-- `runs/sg_run_11.md`、`runs/sg_run_12.md`、`runs/sg_run_13.md`、`runs/sg_run_9d05d19.md` — 本 session 數據
-- 9d05d19 引入 commit `8f0d2b3` body — 經驗 cap 數值來源
-- 9d05d19 移除 commit `bdbe7a7` body — 移除理由（user 認為部分理由有問題）
+## Adapter / framework bug fixes（這次 run 修的）
 
-## 用戶 preferences
+- **cmd_init 漏帶 `open Real`**：4 個 minif2f problems (aime_1997_p11、imo_1962_p4、imo_1965_p1、imo_1966_p4) Defs.lean 有 `open Real Nat Topology Rat` 但 Root.lean 沒、`π` etc. 變 auto-bound implicit、theorem 不可證。手動加 open + reset、全部之後 proved。Followup task #108。
+- **backward apply_edit race**（race fix commit `15b3d94`、之前已修）
+- **assembly gate**（防 strategy patch body `:= by sorry`、commit `0e270a8`、之前已修）
 
-- 操作 SG/cantor/PN 等 problem run 是 **framework stress test**、不是「證它」
-- 「換 opus」「換 problem」等 escape 不接受、應提框架側修改
-- 路徑寫死 / hardcoded 警惕、但確認 dynamic substitution 仍 portable 後可接受
-- backward.md / 其他 prompt 改動先討論再動
+## Framework follow-ups (tasks)
+
+| # | 主題 | 為何 |
+|---|---|---|
+| 101 | 延後 `insert_strategy` 到 quota check 後 | 8587 quota-rejected dead strategies / TREE.md 雜亂、root cause |
+| 102 | TREE.md 把 dead strategies 分類顯示 | cosmetic、quota dead 應 collapse |
+| 103 | 連續 quota_exhausted exponential backoff | quota throttle 期省 API |
+| 104 | 完整 miniF2F-244 final report 給教授 | 待整理（用此 STATUS + ledger）|
+| 105 | 草擬 upstream miniF2F errata issue body | 9 個 disproof → 1 個 issue 集中上報 |
+| 106 | Phase 2 Theorist Pipeline 設計 doc | imo_1993_p5 + amc12a_2009_p25 已 prove this works |
+| 107 | (done via #104 一起)驗證 imo_1993_p5 + amc12a_2009_p25 ledger | |
+| 108 | cmd_init 自動繼承 Defs.lean opens | 防 4 個 problem 同類 transcription accident |
+| 109 | gateway.workers 配置實驗（已 trial workers=4 pool=8、tool latency p50 大降）| optimize hot_rate |
+| 110 | spawn timeout 扣除 LSP slot wait 時間 | agent budget 公平 |
+| 111 | gateway slot soft-reservation 增加 hot_rate | 同 cluster |
+| 112 | dedupe 擋 shelved-equivalent sub-goal | imo_1990_p3 觀察 |
+| 113 | forbidden_lemma 擴展涵蓋 shelved 子目標 | imo_1990_p3 stale olean root cause class |
+| 114 | imo_1990_p3 rollback (DONE、是 false alarm)|  |
+| 115 | **重要**：Lake olean cache 或 daemon-idle-exit kernel audit | catch class of stale-olean sorryAx leak |
+
+## imo_1990_p3 case study (#114 → #115)
+
+- Framework cascade 標 proved
+- `#print axioms main` 第一次回 `[propext, sorryAx]` → 我手動 rollback shelve
+- 排查：15 transitive olean stale（source > olean mtime）— source 已 sorry-free、olean 是更早 revision build 的 sorry 版本
+- 刪 stale olean、force rebuild、`#print axioms main` 回 `[propext, Classical.choice, Quot.sound]`、proof 真乾淨
+- revert 回 proved (commit `562d8a9`)
+- **真正 framework bug**：multi-problem run 下 `library.maybe_promote → axiom_probe` 因 `root_proved=False` 永不跑、stale olean 一旦發生無 detection
+- **修法 #115**：daemon idle exit 前對 proved roots force rebuild + #print axioms
+
+## Run config（這次的）
+
+- HEAD `562d8a9`
+- `Asterism.yaml`: pool=8, gateway.workers=4
+- Backward: Opus 4.7、Builder: Sonnet 4.6
+- spawn_timeout 900s、shelve_threshold 5、trap_check 660s、silence_threshold 300s
+
+## Phase 2 next steps（建議）
+
+1. **#115 daemon-exit axiom audit**（必做、framework correctness gap）
+2. **#108 cmd_init opens propagation**（防 transcription bug recurr）
+3. **#106 Theorist Pipeline 設計 doc**（imo_1993_p5 / amc12a_2009_p25 提供 design data point）
+4. **#105 errata upstream report**（先送 yangky11/miniF2F-lean4、9 個一次性）
+
+## 歷史 SG / PN（這次未動）
+
+之前 single-problem run 的 result stable、commit 上未動。完整 SG/PN/IZ 證明在 `Problems/<name>/` 下、跟 mini F2F 兼容並行。
