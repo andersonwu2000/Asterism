@@ -13,6 +13,31 @@ For benchmark-integrity reporting, these proofs should be counted as
 | `amc12a_2009_p25` | g596 | `noncomputable def θ : ℕ → ℝ` — Fibonacci angle sequence for the tan-addition / Pisano-period approach (θ 1 = π/4, θ 2 = π/6, θ (n+2) = θ n + θ (n+1)) | 2026-05-12 | (pending re-attempt) |
 | `imo_1993_p5` | g642 | `noncomputable def goldA (n : ℕ) : ℕ := ⌊n·φ⌋.toNat` — Wythoff lower row only, no supporting lemmas. **Stress-test minimal hint**: agent must invent witness shape (`goldF n := goldA (n+1) - 1`), discover Beatty pair identity `⌊n·φ²⌋ = ⌊n·φ⌋ + n`, and prove the Hofstadter identity `⌊⌊n·φ⌋·φ⌋ = ⌊n·φ⌋ + n - 1` itself. Expected success: ~5-15%. | 2026-05-12 | (pending re-attempt; on failure, draft will guide next Theorist iteration) |
 
+## Framework cascade marked proved but kernel-tainted (manual rollback)
+
+These goals were marked `proved` by the framework's mechanical cascade
+(per-strategy `verify_strategy` + `promote_to_alias`), but a post-hoc
+`#print axioms` revealed `sorryAx` in `main`'s transitive closure. The
+framework's only kernel gate, `library.maybe_promote → axiom_probe`,
+fires only when **all** workspace roots are proved; under our
+multi-problem run with 9 shelved roots (source-bug errata),
+`db.root_proved` was permanently False and the gate never ran. The
+sorryAx slipped through unnoticed.
+
+Root cause: a sub-goal lemma `L_X.lean` that was created during a
+shelved branch's exploration retained its `:= by sorry` body and was
+later imported (by lemma name) by alive-chain strategies. `import` +
+`apply <lemma>` works at Lake build (sorry is a warning) and at LSP
+`verify_file` (Mathlib-cached, no kernel re-check), but the resulting
+proof inherits sorryAx.
+
+After manual rollback (`UPDATE goals SET status='shelved'`), these
+return to the final shelved tally.
+
+| Problem | Goal | Tainted strategy chain | Date | Note |
+|---|---|---|---|---|
+| `imo_1990_p3` | g641 | s9295 (root) → ... → s9590/s9652 imported shelved `L_no_prime_ge_five_dvd` / `L_two_sq_eq_one_of_prime_ge_five_dvd` / `L_coprime_m_p_sub_one` (all g1142/g1213/g1476 family). Cascade marked proved but `#print axioms main` = `[propext, sorryAx]`. | 2026-05-13 | Tracked as task #113 (forbidden_lemma should scan strategy imports against shelved goal lean_paths). |
+
 ## Adapter / framework bugs (NOT source bugs, NOT Defs.lean intervention)
 
 Distinct category: `Benchmarks/minif2f/adapter.py` generates Defs.lean
