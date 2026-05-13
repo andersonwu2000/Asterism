@@ -75,10 +75,7 @@ so `0` is not in the left-hand set. Hence the universal set equality
 fails.
 
 Counterexample (kernel-verified): take `S` as the LHS set, then `0 ∈ RHS`
-but `0 ∉ S`. Note: this is one of the few errata where the
-[facebookresearch/miniF2F fork](https://github.com/facebookresearch/miniF2F/pull/36)
-has merged a fix, but `yangky11/miniF2F-lean4` (which our adapter pulls
-from) still ships the broken version.
+but `0 ∉ S`.
 
 ### `amc12a_2020_p13` — ℕ-division trivializes the equation
 
@@ -156,8 +153,11 @@ statements remain in:
 - [yangky11/miniF2F-lean4](https://github.com/yangky11/miniF2F-lean4)
 - [facebookresearch/miniF2F](https://github.com/facebookresearch/miniF2F)
 
-No prior GitHub issue on any of these repos mentions either problem
-(audited 2026-05-12).
+No prior GitHub issue or PR on any of these repos mentions any of the
+nine errata (re-audited 2026-05-13 via direct search of issues and PRs
+across all three repos, including OR-joined query over all 9 theorem
+names — zero matches anywhere except `yangky11/miniF2F-lean4#31` which
+is an unrelated `lean-dojo` tracing error).
 
 [v2c]: https://github.com/roozbeh-yz/miniF2F_v2
 

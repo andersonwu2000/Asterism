@@ -72,9 +72,6 @@ admitting `x = 0` as a member (third branch, `m = -1`), but
 **Apparent intent**: the IMO 1962 #4 solution `cos(3x) = 0` has form
 `3x = π/2 + kπ`, giving step `π / 3`.
 
-**Note**: [facebookresearch/miniF2F PR #36](https://github.com/facebookresearch/miniF2F/pull/36)
-has merged a fix in their fork; this repo still ships the broken version.
-
 ### 3. `amc12a_2020_p13` — ℕ-division trivializes the equation
 
 The exponents `1/a`, `1/b`, `1/c`, `1/36` are evaluated as natural-number
@@ -180,7 +177,6 @@ then formalized each counterexample as a kernel-clean disproof.
 
 We checked `openai/miniF2F`, `facebookresearch/miniF2F`, and the
 [miniF2F_v2c](https://github.com/roozbeh-yz/miniF2F_v2) rewrite, plus
-prior GitHub issues on each repo — no existing issue mentions these
-nine theorems (audited 2026-05-12), with the one exception of
-`imo_1962_p4` (fixed in `facebookresearch` PR #36 but never synced
-here).
+prior GitHub issues and PRs on each repo — no existing report mentions
+any of these nine theorems (audited 2026-05-13). All three repos still
+ship the same false-as-written statements.
