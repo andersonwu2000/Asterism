@@ -188,3 +188,14 @@ fixes overlap with the nine theorems below. The bug classes we found
 are however identical in spirit to those fixed in `1be24b7` (missing
 hypothesis, `ℕ` vs `ℝ` types, ℕ-division traps, type-annotation gaps).
 This report extends that effort to the Valid split.
+
+Beyond these nine, our framework attempted every statement in
+`MiniF2F/Valid/` (244 total) and produced either a kernel-verified
+disproof (the nine above) or a Lean 4 proof (235 others). Whitelist
+auditing (`#print axioms` ⊆ `[propext, Classical.choice, Quot.sound]`)
+confirms the vast majority of those proofs are kernel-pure; a small
+number rely on `native_decide` (which extends trust to Lean's compiled
+bytecode). We did not encounter any further apparent transcription bug
+across the split — though we don't claim exhaustive certainty.
+Lean 4 proofs for any of the other 235 statements are available on
+request.
