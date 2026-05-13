@@ -13,30 +13,32 @@ For benchmark-integrity reporting, these proofs should be counted as
 | `amc12a_2009_p25` | g596 | `noncomputable def θ : ℕ → ℝ` — Fibonacci angle sequence for the tan-addition / Pisano-period approach (θ 1 = π/4, θ 2 = π/6, θ (n+2) = θ n + θ (n+1)) | 2026-05-12 | (pending re-attempt) |
 | `imo_1993_p5` | g642 | `noncomputable def goldA (n : ℕ) : ℕ := ⌊n·φ⌋.toNat` — Wythoff lower row only, no supporting lemmas. **Stress-test minimal hint**: agent must invent witness shape (`goldF n := goldA (n+1) - 1`), discover Beatty pair identity `⌊n·φ²⌋ = ⌊n·φ⌋ + n`, and prove the Hofstadter identity `⌊⌊n·φ⌋·φ⌋ = ⌊n·φ⌋ + n - 1` itself. Expected success: ~5-15%. | 2026-05-12 | (pending re-attempt; on failure, draft will guide next Theorist iteration) |
 
-## Framework cascade marked proved but kernel-tainted (manual rollback)
+## False sorryAx alarm — stale olean cache
 
-These goals were marked `proved` by the framework's mechanical cascade
-(per-strategy `verify_strategy` + `promote_to_alias`), but a post-hoc
-`#print axioms` revealed `sorryAx` in `main`'s transitive closure. The
-framework's only kernel gate, `library.maybe_promote → axiom_probe`,
-fires only when **all** workspace roots are proved; under our
-multi-problem run with 9 shelved roots (source-bug errata),
-`db.root_proved` was permanently False and the gate never ran. The
-sorryAx slipped through unnoticed.
+A first `#print axioms Problems.Minif2f.imo_1990_p3.main` returned
+`[propext, sorryAx]` and triggered manual rollback. Investigation
+revealed the sorryAx came from **stale `.olean` cache files** under
+`.lake/build/lib/lean/...`: 15 transitive-import `.olean`s were built
+from earlier source revisions that had imported sorry-bearing lemma
+files; the source code was later rewritten by retry spawns to no
+longer use those imports (sources became sorry-clean), but Lake's
+mtime check missed the upstream-cascade rebuild requirement and kept
+serving cached sorryAx-tainted `.olean`s. `lake env lean` used those
+cached `.olean`s, propagating sorryAx into `main`.
 
-Root cause: a sub-goal lemma `L_X.lean` that was created during a
-shelved branch's exploration retained its `:= by sorry` body and was
-later imported (by lemma name) by alive-chain strategies. `import` +
-`apply <lemma>` works at Lake build (sorry is a warning) and at LSP
-`verify_file` (Mathlib-cached, no kernel re-check), but the resulting
-proof inherits sorryAx.
+Resolution: deleted the 15 stale `.olean`s (source-newer-than-olean
+predicate), forced `lake build Problems.Minif2f.imo_1990_p3.Root`
+from scratch. Result: build successful, **0 sorry warnings**, and
+re-run `#print axioms main` returned the clean set
+`[propext, Classical.choice, Quot.sound]`. The proof is kernel-valid.
 
-After manual rollback (`UPDATE goals SET status='shelved'`), these
-return to the final shelved tally.
+This was a Lake build-system cache invalidation issue, not a
+framework or proof correctness issue. The agent's actual proof is
+correct. Tracked as task #115 (framework should force rebuild on
+strategy commit or at minimum run kernel axiom probe per strategy
+verify, not only at root_proved).
 
-| Problem | Goal | Tainted strategy chain | Date | Note |
-|---|---|---|---|---|
-| `imo_1990_p3` | g641 | s9295 (root) → ... → s9590/s9652 imported shelved `L_no_prime_ge_five_dvd` / `L_two_sq_eq_one_of_prime_ge_five_dvd` / `L_coprime_m_p_sub_one` (all g1142/g1213/g1476 family). Cascade marked proved but `#print axioms main` = `[propext, sorryAx]`. | 2026-05-13 | Tracked as task #113 (forbidden_lemma should scan strategy imports against shelved goal lean_paths). |
+g641 reverted to `status='proved'`; final tally 235 proved / 9 shelved.
 
 ## Adapter / framework bugs (NOT source bugs, NOT Defs.lean intervention)
 
