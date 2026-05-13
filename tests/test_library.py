@@ -181,7 +181,7 @@ def test_promote_idempotent_when_already_correct(
     p2, msg = library.promote(tmp_path, "foo", mfst, "T")
     assert p1 is True
     assert p2 is False
-    assert "up-to-date" in msg
+    assert "idempotent skip" in msg or "up-to-date" in msg
 
 
 def test_promote_replaces_index_entry_on_statement_change(

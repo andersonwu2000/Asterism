@@ -92,6 +92,34 @@ def promote(workspace: Path, problem: str,
     """Run a single promotion attempt. Returns (promoted, message).
     `promoted=False` covers idempotent skip and axiom-gate reject;
     callers log message either way."""
+    topic = topic_from_hints(mfst.all_hints)
+    topic_dir = workspace / "Library" / topic
+    target = topic_dir / f"{problem}.lean"
+    desired = _re_export_content(problem)
+    needle = f"- `{problem}`"
+    index = topic_dir / "INDEX.md"
+    desired_entry = _index_entry(problem, root_statement)
+
+    # Idempotence short-circuit: if the Library re-export already exists
+    # with the exact content we'd write AND INDEX.md already lists this
+    # problem with the current statement, this run was promoted in a
+    # prior tick — skip the axiom_probe (~3-5s of gateway work). Under
+    # per-problem gating in the dispatcher this path is hit on every
+    # subsequent tick for already-promoted problems, so it must not pay
+    # axiom-probe cost. Statement-edit case is not short-circuited so
+    # INDEX gets the fresh entry. Edge case (manual rewrite of Library/
+    # files between ticks) is accepted: the framework owns these files
+    # during a run.
+    if target.exists() and target.read_text(encoding="utf-8") == desired \
+            and index.exists():
+        for ln in index.read_text(encoding="utf-8").splitlines():
+            if ln.strip().startswith(needle):
+                if ln.strip() == desired_entry:
+                    return False, (f"[library] {problem}: already "
+                                   f"promoted in {topic}/ "
+                                   f"(idempotent skip)")
+                break
+
     # Empty whitelist = accept (legacy behavior, matches manifests
     # without an `axioms_whitelist:` field). Skip the probe entirely
     # in that case so we don't pay lake build time.
@@ -113,12 +141,7 @@ def promote(workspace: Path, problem: str,
         if not ok:
             return False, f"[library] {problem}: skip — {axiom_msg}"
 
-    topic = topic_from_hints(mfst.all_hints)
-    topic_dir = workspace / "Library" / topic
     topic_dir.mkdir(parents=True, exist_ok=True)
-
-    target = topic_dir / f"{problem}.lean"
-    desired = _re_export_content(problem)
     file_was_dirty = (
         not target.exists()
         or target.read_text(encoding="utf-8") != desired
@@ -126,13 +149,11 @@ def promote(workspace: Path, problem: str,
     if file_was_dirty:
         target.write_text(desired, encoding="utf-8")
 
-    index = topic_dir / "INDEX.md"
-    entry = _index_entry(problem, root_statement)
+    entry = desired_entry
     if index.exists():
         body = index.read_text(encoding="utf-8")
     else:
         body = f"# Library/{topic} — INDEX\n\n"
-    needle = f"- `{problem}`"
     existing_lines = body.splitlines()
     has_entry = any(ln.strip().startswith(needle) for ln in existing_lines)
     new_lines = []
