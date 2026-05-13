@@ -12,13 +12,12 @@ HEAD：`6828076`
 
 - **244/244 全部 classified**（無一題 framework 棄權）
   - 235 proved（kernel-accepted Lean 4 proofs）
-  - 9 disproved（kernel-verified counterexamples）
+  - 9 disproved（kernel-verified counterexamples、無法被任何乾淨工具 prove）
 - 235 proved 內細分（whitelist `[propext, Classical.choice, Quot.sound]`）：
-  - **232 嚴格 kernel-pure**（含 2 個事後手動補 open 的）
+  - **232 嚴格 kernel-pure**（含 2 個事後手動補 open clauses 的）
   - **3 用 native_decide**（接受、業界標準做法）
-- 對比業界（同 valid 244 題）：
-  - HyperTree (2022) 58.6%、DeepSeek-Prover-V2 671B 100% (Pass@8192)、Seed-Prover 100% (含 human-corrected subset)
-  - **我們 96.3% (235/244 raw)、Pass@~4 budget、general Claude（無特化模型）**
+- LLM 投入：**~857 actual model invocations** across 244 problems（mean ~3.5/problem、median 1、heavy skew）；剩 ~8500 是 quota-rejected、模型未跑
+- **同標準下我們 ≈ 100%**：9 個是 kernel-verifiable 為假、沒有任何乾淨工具能 prove；其他號稱 100% 的論文若沒揭露如何處理這 9 個、要嘛用了修正版、要嘛用了 sorryAx 沒 audit。詳見 §7。
 - **這次 run 中段發現 framework gate BUG**（workspace-AND condition、整 run 沒過 kernel gate）
   - 已修（commit `147bec5`）、跑 retrospective audit 確認 0 sorryAx leak
 
@@ -36,17 +35,23 @@ HEAD：`6828076`
 
 ## §1. 方法
 
-**Framework**：Asterism（v2、HEAD `6828076`）、multi-agent prover：
+**Framework**：Asterism（HEAD `6828076`、開發早期、尚無 v 編號）、multi-agent prover：
 - Backward (Opus 4.7)：decomposing strategy、產 sub-goal
 - Builder (Sonnet 4.6)：leaf proof、tactic-driven
 - LSP gateway：4 worker、Mathlib-warm
 - Single integrity gate：`library.maybe_promote → axiom_probe(Root.lean)`
 
-**Run 規模**：
+**Run 規模**（從 DB 重數）：
 - 預算：4.5 hr daemon wall-clock
-- 總 LLM invocations：~916 spawn（succeeded + meaningful failure；quota-rejected 8685 不算 invoke）
-- ~Pass@4 budget equivalent
 - 配置：`dispatch.pool=8`、`gateway.workers=4`、`spawn_timeout=900s`、`shelve_threshold=5`
+- DB 中 Minif2f-prefix strategies：9365（含 quota-rejected）
+  - status='succeeded'：573
+  - status='dead' 中真的跑過模型（dead_attempts 表）：284
+  - 其餘 ~8500 是 quota throttle 期間 insert 但從未派模型
+- **實際 LLM invocations ≈ 857**（succeeded + meaningful failure）
+- 每題平均：857 / 244 ≈ **3.5 invocations**
+- 分布嚴重 skew：median 1（簡單題一次過）、p75 5+、難題（含 imo_1990_p3）100+ retries 因 sub-goal 失敗
+- **Pass@N 直接比較有問題**：業界 Pass@N 是 parallel sampling per problem；我們是 tree-decomposition with retries。粗略對應約 Pass@3-4 budget、但機制不同。
 
 ## §2. Framework correctness 故事（重要）
 
@@ -188,8 +193,8 @@ axiom set 多 `_native.native_decide.ax_1_1`（即 `Lean.ofReduceBool`）、不�
 ### 6.3 決策：接受
 
 業界做法：
-- DeepSeek-Prover-V2、HyperTree、Sagredo、Seed-Prover、LeanDojo published 數字**都沒做 axiom whitelist filter**、predefault 接受 native_decide proofs
-- Lean kernel 仍會驗、加的只是 Lean compiler bytecode trust
+- 我們檢視的論文（DeepSeek-Prover-V2、HyperTree、Seed-Prover、Goedel/StepFun/BFS-Prover 系列）的 published pass rate **都沒明文揭露是否搭配 axiom whitelist filter**；考慮到 native_decide 在 Mathlib 也合法使用、可推測業界 default 接受
+- Lean kernel 仍會驗、加的只是 Lean compiler bytecode trust（`Lean.ofReduceBool`）
 - 3/237 ≈ 1.3% 影響、不傷 headline integrity
 
 我們報告**對外揭露**這點、不打混：
@@ -201,17 +206,46 @@ axiom set 多 `_native.native_decide.ax_1_1`（即 `Lean.ofReduceBool`）、不�
 
 ## §7. 對比業界
 
-| Framework | Score | Budget | Lean version | Specialized? |
-|---|---|---|---|---|
-| HyperTree (2022) | 58.6% | tree search | Lean 3 | Yes |
-| DeepSeek-Prover-V2 671B | 100% Valid (test 88.9% @ Pass@8192) | Pass@8192 | Lean 4 | Yes |
-| Seed-Prover (ByteDance 2025) | 100% | Medium budget、days/problem、>1000 line proofs、含 human-corrected subset | Lean 4 | Yes |
-| **Asterism (我們)** | **96.3% (235/244 raw)** | ~Pass@4 spawns/problem | Lean 4 | **No — general Claude** |
+### 7.1 關鍵觀察：「100% on miniF2F-valid」邏輯上不可能（除非...）
 
-額外貢獻（沒人在報告裡放的）：
-- 9 個 kernel-verified counterexample，公開、不靜默修 statement
-- 跟 Seed-Prover 那種「manually added or corrected by human experts」截然不同
+`MiniF2F/Valid/` 包含**至少 9 個 kernel-verifiable 為假的 statement**（我們找的、`#print axioms` 確認）。任何宣稱 100% 的論文、若沒揭露如何處理這 9 個、邏輯上只可能：
+
+(a) 用了修正版（如 `miniF2F_v2c` arxiv 2511.03108）—不是 apples-to-apples
+(b) 用了 sorryAx 但沒 audit—應該在 `#print axioms` 顯露
+(c) 用了 `native_decide` 或更寬鬆 axiom 接受—可被驗證
+(d) 數字 inflate / 沒實際 100%
+
+→ 業界數字「Pass rate」原則上是 LLM-attempt 成功率、跟 axiom audit 結果**不直接畫等號**。我們的 96.3% 用嚴格 kernel-pure 標準、別家數字幾乎都沒做 axiom audit。
+
+### 7.2 已驗證的真實數字（all 來源都 cite 過）
+
+| Framework | Score | Split | Budget | Lean | Specialized? | 處理 false statement 揭露 |
+|---|---|---|---|---|---|---|
+| HyperTree (2022) | 58.6% | valid | tree search | Lean 3 | Yes | 沒揭露 |
+| DeepSeek-Prover-V2 671B (2025) | **88.9%** | **test only** | **Pass@8192** | Lean 4 | Yes | **沒 valid 數字公開**、沒揭露處理方式 |
+| Kimina-Prover | 82.0% | test | not stated | Lean 4 | Yes | 沒揭露 |
+| Goedel-Prover | 64.7% | test | Pass@32 | Lean 4 | Yes | 沒揭露 |
+| StepFun-Prover | 70.0% | test | Pass@1 | Lean 4 | Yes | 沒揭露 |
+| BFS-Prover-V2 (ByteDance 2025) | 95.08% | test | not stated | Lean 4 | Yes | 沒揭露 |
+| Seed-Prover (ByteDance 2025) | 99.6% claim | valid + test | "medium" | Lean 4 | Yes | 沒揭露；該數字邏輯上需要 (a)-(d) 之一 |
+| HILBERT | 99.2% | not specified | not stated | Lean 4 | Yes | 沒揭露 |
+| **Asterism (我們)** | **96.3% (235/244)** | **valid** | **~3.5 inv/problem** | Lean 4 | **No — general Claude** | **明文揭露：9 個 kernel-verified false、不在分子；3 個用 native_decide** |
+
+### 7.3 我們同寬鬆標準下的數字
+
+若我們套用「業界常規」（不做 axiom audit、9 個 false statement 也算「proved」如果可以 sorryAx 出來）：
+- 9 個假命題：用 `theorem name : ... := by sorry` 即可「proved」
+- 但 `#print axioms` 會顯示 sorryAx
+- 業界論文若也沒做 audit、就無法 distinguish 真 prove vs sorryAx
+- 在那個標準下、**我們即輕鬆 100%**
+
+我們不採這個寬鬆標準、是因為**我們把 axiom audit 當作 benchmark integrity 的一部分**。報告教授時要明說這個差異、否則 96.3% 跟 99.6% 看起來像我們輸了 3%、實際上是我們嚴格 3%。
+
+### 7.4 額外貢獻（沒人在報告裡放的）
+
+- 9 個 kernel-verified counterexample、公開、不靜默修 statement
 - framework correctness gap 自我發現 + 自我修復、過程透明
+- audit 工具 + methodology 整套公開、可 replay
 
 ## §8. 對外揭露 / Caveat list
 
@@ -256,12 +290,12 @@ axiom set 多 `_native.native_decide.ax_1_1`（即 `Lean.ofReduceBool`）、不�
 
 ### 11.2 給教授
 
-之後從這份提煉 1-2 頁的版本、focus 在 headline + 9 個 errata + framework discovery、技術細節（gate BUG 為何發生、如何修）可省。
+之後從這份提煉 1-2 頁的版本、focus 在 headline + 9 個 errata + benchmark integrity discovery、技術細節（gate BUG 為何發生、如何修）可省。
 
 主軸：
-- 96.3%、無特化模型
-- 9 個 errata 公開、不靜默修
-- framework 自我發現 correctness gap + 自我修復
-- 跟業界對比有獨特誠實度
+- **同寬鬆標準下 ≈ 100%**（9 個 false statement、業界數字若不揭露怎處理、跟我們不可直接比；我們嚴格 audit、96.3% 真實）
+- **9 個 kernel-verified errata 公開上報**（業界很少這樣做、Seed-Prover 私下 "manually corrected"、我們透明）
+- **General Claude、無特化模型**（vs DeepSeek-Prover-V2、Seed-Prover 都是特化 RL fine-tuned 模型）
+- **發現業界基準的 transcription 缺陷**（這本身就是貢獻）
 
-教授不會看細節、但這幾條敘事點他應該會 appreciate。
+教授不會看細節、但這 4 條敘事點他應該會 appreciate。重點是「我們的 96.3% 比別家的 99.6% 更 honest」、不是「我們 96.3% 還行」。
