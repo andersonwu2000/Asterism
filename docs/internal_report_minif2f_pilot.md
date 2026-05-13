@@ -219,17 +219,25 @@ axiom set 多 `_native.native_decide.ax_1_1`（即 `Lean.ofReduceBool`）、不�
 
 ### 7.2 已驗證的真實數字（all 來源都 cite 過）
 
-| Framework | Score | Split | Budget | Lean | Specialized? | 處理 false statement 揭露 |
-|---|---|---|---|---|---|---|
-| HyperTree (2022) | 58.6% | valid | tree search | Lean 3 | Yes | 沒揭露 |
-| DeepSeek-Prover-V2 671B (2025) | **88.9%** | **test only** | **Pass@8192** | Lean 4 | Yes | **沒 valid 數字公開**、沒揭露處理方式 |
-| Kimina-Prover | 82.0% | test | not stated | Lean 4 | Yes | 沒揭露 |
-| Goedel-Prover | 64.7% | test | Pass@32 | Lean 4 | Yes | 沒揭露 |
-| StepFun-Prover | 70.0% | test | Pass@1 | Lean 4 | Yes | 沒揭露 |
-| BFS-Prover-V2 (ByteDance 2025) | 95.08% | test | not stated | Lean 4 | Yes | 沒揭露 |
-| Seed-Prover (ByteDance 2025) | 99.6% claim | valid + test | "medium" | Lean 4 | Yes | 沒揭露；該數字邏輯上需要 (a)-(d) 之一 |
-| HILBERT | 99.2% | not specified | not stated | Lean 4 | Yes | 沒揭露 |
-| **Asterism (我們)** | **96.3% (235/244)** | **valid** | **~3.5 inv/problem** | Lean 4 | **No — general Claude** | **明文揭露：9 個 kernel-verified false、不在分子；3 個用 native_decide** |
+按發布時間排序。
+
+| 發布 | Framework | Score | Split | Budget | Lean | Specialized? | 處理 false statement 揭露 |
+|---|---|---|---|---|---|---|---|
+| 2022-05 | HyperTree (Meta) | 58.6% | valid | tree search | Lean 3 | Yes | 沒揭露 |
+| 2025-02 | Goedel-Prover (V1) | 64.7% | test | Pass@32 | Lean 4 | Yes | 沒揭露 |
+| 2025-02 | BFS-Prover (V1, ByteDance) | (V1 數字) | test | step-tree | Lean 4 | Yes | 沒揭露 |
+| 2025-04 | Kimina-Prover (Moonshot) | 80.7%（paper）/ 82.0%（先前 cite）| test | Pass@8192 | Lean 4 | Yes | 沒揭露 |
+| 2025-04 | DeepSeek-Prover-V2 671B | **88.9%** | **test only** | **Pass@8192** | Lean 4 | Yes | **沒 valid 數字公開**、沒揭露處理方式 |
+| 2025-07 | StepFun-Prover | 70.0% | test | Pass@1 | Lean 4 | Yes | 沒揭露 |
+| 2025-07 | Seed-Prover (ByteDance) | 99.6% claim | valid + test | "medium" | Lean 4 | Yes | 沒揭露；該數字邏輯上需要 (a)-(d) 之一 |
+| 2025-08 | Goedel-Prover-V2 | (post-V1 新數字) | test | not stated | Lean 4 | Yes | 沒揭露 |
+| 2025-09 | BFS-Prover-V2 (ByteDance) | 95.08% | test | not stated | Lean 4 | Yes | 沒揭露 |
+| 2025-09 | HILBERT (Apple + Gemini 2.5 Pro + Goedel-V2) | 99.2% | not specified | not stated | Lean 4 | Yes（組合）| 沒揭露 |
+| **2026-05** | **Asterism (我們)** | **96.3% (235/244)** | **valid** | **~3.5 inv/problem** | Lean 4 | **No — general Claude** | **明文揭露：9 個 kernel-verified false、不在分子；3 個用 native_decide** |
+
+arxiv refs：HyperTree 2205.11491、Goedel-V1 2502.07640、BFS-V1 2502.03438、Kimina 2504.11354、DeepSeek-Prover-V2 2504.21801、StepFun 2507.20199、Seed-Prover 2507.23726、Goedel-V2 2508.03613、BFS-V2 2509.06493、HILBERT 2509.22819。
+
+**時間軸觀察**：2025 上半年到 2026 初是 Lean 4 LLM theorem prover 爆發期、9 個月 8 篇 paper、SOTA 從 ~65% 跳到 99%+。我們進場時序晚於 V2 浪潮、但用 architecture 而非 fine-tuned model、是這個 landscape 內獨特角度。
 
 ### 7.3 我們同寬鬆標準下的數字
 
