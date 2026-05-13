@@ -12,7 +12,7 @@ Covers:
   * force_rollback_sandbox for fresh-rescue takeover entry
   * append-on-enter when stale sandbox already exists
 
-See docs/dev/spawn_sandbox.md §3 + §4 for the design rationale.
+See docs/archive/spawn_sandbox.md §3 + §4 for the design rationale.
 """
 from __future__ import annotations
 

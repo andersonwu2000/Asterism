@@ -14,7 +14,7 @@ reflection's loss is at most one un-saved lesson.
 
 Trigger gating lives in `_retry.py`'s reflection_fn callback wiring;
 this module only knows how to RUN the reflection given an sid +
-problem context. See `docs/dev/agent_brief_lessons.md` (now archived)
+problem context. See `docs/archive/agent_brief_lessons.md` (now archived)
 for the design rationale.
 """
 from __future__ import annotations

@@ -6,7 +6,7 @@ on success (via pipeline-specific `real_writes` callback) or rolled
 back on failure. A daemon-startup sweep handles SIGKILL'd spawns that
 bypassed the cleanup hook.
 
-See `docs/dev/spawn_sandbox.md` for the full design rationale,
+See `docs/archive/spawn_sandbox.md` for the full design rationale,
 failure-mode coverage, and the BUG class this addresses.
 
 Used by `pipeline/backward.py`, `pipeline/builder.py`, `verify.py`,
@@ -98,7 +98,7 @@ class SpawnWorkspace:
     content, or content the caller explicitly wrote via commit().
     NEVER a partial mutation by the spawn process.
 
-    See docs/dev/spawn_sandbox.md §2 (core invariant) and §3.5.
+    See docs/archive/spawn_sandbox.md §2 (core invariant) and §3.5.
     """
 
     def __init__(self, workspace: Path, pipeline_id: str,

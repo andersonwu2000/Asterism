@@ -14,7 +14,7 @@ Behavior:
 If the gateway can't start (port in use / lake missing / mathlib
 init failure), this raises RuntimeError. Daemon refuses to start
 without gateway — Phase 1 has no fallback to per-spawn stdio MCP
-(by user decision, see docs/dev/lsp_gateway.md §3). Operator should
+(by user decision, see docs/archive/lsp_gateway.md §3). Operator should
 fix the underlying issue and retry.
 """
 from __future__ import annotations

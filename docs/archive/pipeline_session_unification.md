@@ -367,7 +367,7 @@ phase 拆分：
   各條
 - F55 timeout postmortem：`Tooling/pipeline/__init__.py:_attempt_postmortem`
   （Model B 下保留行為、但 trigger 邏輯內部化）
-- 後續 dependency：`docs/dev/agent_brief_lessons.md`（reflection 觸發點需
+- 後續 dependency：`docs/archive/agent_brief_lessons.md`（reflection 觸發點需
   Model B 才清晰落地）
 - 業界對照：K8s Job retry、Airflow task retry、Temporal workflow retry —
   scheduler-managed retry as separate task instances 是 Asterism 當前做法、

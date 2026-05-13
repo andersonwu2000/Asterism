@@ -825,7 +825,7 @@ def _backward_parse_and_commit(
             return _abort("patch_body_contains_sorry", msg, leading)
 
         # Verify-unification: sequential per-file verify through the
-        # gateway worker pool (see docs/dev/verify_unification.md §3).
+        # gateway worker pool (see docs/archive/verify_unification.md §3).
         # `placed` is in dependency order — sub-goal stubs first (each
         # independent, importing only Mathlib + Defs), strategy file
         # last (imports the sub-goal modules by name, resolves through

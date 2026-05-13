@@ -20,7 +20,7 @@ runs `Lean.collectAxioms` in the same warm worker that just elaborated
 the file. Replaces the prior `lake build <module>` + `lake env lean
 #print axioms` subprocess pair (~15-30s wall) with one in-worker call
 (~3-5s on warm Mathlib, ~50-200ms when olean is fresh from a sibling
-verify in the same slot). See `docs/dev/verify_unification.md`.
+verify in the same slot). See `docs/archive/verify_unification.md`.
 """
 from __future__ import annotations
 

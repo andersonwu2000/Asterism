@@ -2,7 +2,7 @@
 
 Phase 2: 1 server + W persistent workers + content swap on tool call.
 N pipelines compete for W workers via tool-call-level LRU (not pipeline
-hold). See `docs/dev/lsp_gateway.md` for design rationale.
+hold). See `docs/archive/lsp_gateway.md` for design rationale.
 
 Lifecycle:
   1. Daemon startup: launch this module as subprocess.

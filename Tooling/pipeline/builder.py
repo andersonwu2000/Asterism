@@ -190,7 +190,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     # daemon-startup sweep recovery) restores real goal_lean from
     # that snapshot. `restore_to_snapshot` is called between in-
     # pipeline retries so each retry sees pristine state.
-    # See docs/dev/spawn_sandbox.md.
+    # See docs/archive/spawn_sandbox.md.
     from .. import spawn_sandbox as _sandbox_mod
     workspace_ctx = _sandbox_mod.SpawnWorkspace(
         workspace, pipeline_id, real_paths=[goal_lean])
@@ -289,7 +289,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # spawn entry — overwrite goal_lean with the agent's final
         # patch.lean (the output contract).
         shutil.copy2(patch, goal_lean)
-        # Verify-unification (see docs/dev/verify_unification.md):
+        # Verify-unification (see docs/archive/verify_unification.md):
         # one /verify round trip elaborates the patch in a warm worker,
         # writes the .olean for downstream cascade consumers, and runs
         # `#print axioms` against the resulting environment. Replaces

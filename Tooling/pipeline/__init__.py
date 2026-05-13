@@ -14,7 +14,7 @@ Public API surfaced from this module (preserves pre-split callers):
   - _parse_hint_winner                               — Phase 1 hint output parser
   - DECLINE_*, DECLINE_DIRECTIVES, DECLINE_TO_FAILURE_REASON — unified
                                                        decline vocabulary
-                                                       (see docs/dev/decline_directives.md)
+                                                       (see docs/archive/decline_directives.md)
   - _extract_leading_comments, _extract_decline_reason — Phase 6 parsing
   - _drafts                                          — partial-output module
 
@@ -337,7 +337,7 @@ def _grep_forbidden(text: str, forbidden: list[str]) -> str | None:
 
 
 # ---------------------------------------------------------------------
-# Decline directives (unified vocabulary, see docs/dev/decline_directives.md)
+# Decline directives (unified vocabulary, see docs/archive/decline_directives.md)
 # ---------------------------------------------------------------------
 
 # Recognized values for the `-- decline: <directive>` directive an

@@ -756,7 +756,7 @@ def run(workspace: Path, *, once: bool = False,
     _recover_at_startup(conn, workspace)
 
     # Spawn-sandbox sweep: clean any orphan sandboxes left by SIGKILL'd
-    # spawns from a prior daemon run (per docs/dev/spawn_sandbox.md §3.3).
+    # spawns from a prior daemon run (per docs/archive/spawn_sandbox.md §3.3).
     # Runs after _recover_at_startup so DB state is consistent before
     # filesystem state is reconciled. Sweep skips sandboxes whose owner
     # daemon is alive (guards against concurrent daemons).

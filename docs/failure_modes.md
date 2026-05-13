@@ -88,7 +88,7 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 **Notes**：
 - spawn 失敗的三條 reason（`agent_timeout` / `agent_rc_nonzero` / `agent_no_output`）按 rc + agent 行為精確分類，retry agent / event renderer 可依 reason 直接 dispatch、不需要 parse `failure_detail`。
 - `agent_declined`（`needs_decomposition` directive）**只在 Builder**。Backward 是 decomposer 自己、沒有「需要拆解」的 escape；Backward agent 退出用 `unprovable` / `return_to_parent` / `shelve` 三條。
-- 詳細的 directive 詞彙設計（4 個 directive × 2 pipeline、何時用哪條、description 規範）見 `docs/dev/decline_directives.md`。
+- 詳細的 directive 詞彙設計（4 個 directive × 2 pipeline、何時用哪條、description 規範）見 `docs/archive/decline_directives.md`。
 - `lake_build_error` 在 Builder 來自 patch 套上去 build 失敗；在 Backward 來自 strategy 組裝（sub-goal sorry stubs + scratch 一起 build batch）失敗。
 
 ---
