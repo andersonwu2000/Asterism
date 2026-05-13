@@ -1,10 +1,14 @@
+-- Decomposition: pointwise identity 1/sin(2^k·x) = cot(2^(k-1)·x) - cot(2^k·x)
+-- combined with telescoping sum of cot differences. Combinator: Finset.sum_congr to
+-- rewrite each summand via pointwise identity, then exact application of telescope.
 import Mathlib
 import Problems.Minif2f.imo_1966_p4.Defs
+import Problems.Minif2f.imo_1966_p4.proofs._strategy_s9481
 
 open BigOperators Real Nat Topology Rat
 
 namespace Problems.Minif2f.imo_1966_p4
 
-theorem main : ∀ (n : ℕ) (x : ℝ) (h₀ : ∀ k : ℕ, 0 < k → ∀ m : ℤ, x ≠ m * π / 2 ^ k) (h₁ : 0 < n), (∑ k ∈ Finset.Icc 1 n, 1 / Real.sin (2 ^ k * x)) = 1 / Real.tan x - 1 / Real.tan (2 ^ n * x) := by sorry
+def main := @Problems.Minif2f.imo_1966_p4.s9481
 
 end Problems.Minif2f.imo_1966_p4
