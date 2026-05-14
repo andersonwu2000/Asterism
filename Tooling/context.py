@@ -273,8 +273,8 @@ def _digest_failure(failure_reason: str, failure_detail: str) -> str:
     The full content is written to PAST_DIRECT_ATTEMPTS.md by context_files —
     here we extract only what the agent needs at-a-glance: which class
     of failure + the actual error message (skipping LEAN_PATH dumps
-    and other lake-trace noise that the older inline-everything format
-    caught Sonnet looking at 76% of the time)."""
+    and other lake-trace noise that, under the older inline-everything
+    format, made up 76% of what Sonnet ended up reading)."""
     if not failure_detail:
         return ""
 

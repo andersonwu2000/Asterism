@@ -101,3 +101,18 @@ allowlist, separate from the main F-ID stream.
 | M1 | `1014d91` | M1+M2 — widen mathlib allowlist + force lemma-name verification |
 | M2 | `1014d91` | M1+M2 — widen mathlib allowlist + force lemma-name verification |
 | M3 | `d045e15` | M3 — add `--add-dir <packages>` so allowlist on Mathlib actually works |
+
+## Early framework checkpoints (W series)
+
+Pre-F-series structural milestones from the first iteration: worker
+kind split, defensive hardening, test coverage, reopen rule, etc.
+
+| ID | Commit | Subject |
+|---|---|---|
+| W1 | `99b864d` | W1: split Builder/Verify, add Strategy.proposal_md, trim schema enums |
+| W2 | `ca74f3c` | W2: defensive hardening — sorry-stub guard, WorkArea, WAL, balanced parser |
+| W3 | `b75a545` | W3: pytest coverage for pure functions |
+| W4 | `be338ea` | W4: fix stuck-attempting goal + surface Verify failures in goal Context |
+| W6 | `05a1d6e` | W6: fix Verify thrashing + cli auto-import Defs.lean |
+
+W5, W7, W8: introduction commits don't use the `W<n>:` prefix; locate via `git log --grep=W<n>`.
