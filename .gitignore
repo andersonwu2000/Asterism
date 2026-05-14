@@ -13,7 +13,7 @@ asterism.db.*
 *.lean.tmp
 *.lean.verify_backup
 # F20 lemma signature cache (toolchain-keyed; rebuilt on demand)
-Tooling/.lemma_cache.json
+Tooling/knowledge/.lemma_cache.json
 # F20 transient query file (created + unlinked per goal lookup)
 .lemma_lookup_query.lean
 # F28 — Asterism runtime state (logs, future scratch). Whole hidden
