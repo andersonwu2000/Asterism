@@ -120,7 +120,7 @@ theorem main : <stmt> := s<NN>
 1. cascade — 收割上一輪完成的 worker，更新 goal/strategy 狀態
 2. verify housekeeping — 撈所有 sub-goal 全 proved 的 strategy、組裝、編譯、寫 alias 進 parent
                          （遞迴最多 8 圈，深度 4 的題一輪可以連帶 4 層）
-3. 若 root proved → reconcile + prune + library promote + tree refresh，退出
+3. 對「proved 且尚未 integrity-verified」的 root → reconcile + prune + integrity gate + tree refresh，整 workspace 都 proved 則退出
 4. bfs_refill + spawn — 把 open Goal 排進 queue、有空格就 spawn
 ```
 
@@ -174,14 +174,24 @@ Backward 拆出新 sub-goal 時，框架查 DB 看是否有 statement 等價的 
 
 ## 10. Root integrity gate
 
-Root proved 後 daemon 對該 problem 跑 `verify.root_integrity_gate` —
+Root 翻 proved 那一刻 daemon 對該 problem 跑 `verify.root_integrity_gate` —
 `axiom_probe(Problems.<p>.Root, main)` 比對 Manifest `axioms_whitelist`、
 偵測到 sorryAx 就走 `bisect_sorryax_source` + `rollback_cascade_chain`、
 把元凶 strategy 撤回、下次 dispatcher tick 重 Backward。
 
 這是 verify-collapse 設計下「唯一一次 Lean elaboration」的時機 —
 per-level `verify_strategy` 純 mechanical alias rewrite。
-無 whitelist 的 Manifest 直接 accept、跳過 gateway 開銷。
+gate 強制執行：Manifest 沒設 `axioms_whitelist` 時 fallback 到
+framework default `(Classical.choice, propext, Quot.sound)` + log warning、
+**不** 因 optional field 缺席而 skip（framework safety invariant）。
+
+**觸發語意**：gate 由 `goals.integrity_verified` marker 守。pass → set 1、
+之後 daemon tick 不重跑；任何把 root status 翻離 'proved' 的路徑（cascade
+rollback、operator 手動 reset、未來 reseed）由 `db.update_goal_status`
+自動清 marker、root 重新進 proved 時 gate 再 fire。dispatcher query
+`db.unverified_proved_roots` 返回「proved AND marker=0」的 problem 名單、
+取代舊「每 tick 對所有 manifest 重跑 axiom_probe」設計（單 daemon run
+244 個 benchmark stall ~110min 的觀察、commit history 內可查）。
 
 **Library promotion 自動機制已停用**：`Tooling/quality/library.py`（含
 `promote` / `maybe_promote` / topic 推斷 + INDEX 維護）保留為 dormant code、

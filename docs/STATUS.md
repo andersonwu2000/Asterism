@@ -1,8 +1,7 @@
 # Asterism — Current Status
 
-更新於 **2026-05-15**、HEAD `58a9d8e`、796 unit tests green / 1 skipped /
-1 deselected（`tests/test_lemma_lookup.py::test_lookup_batch_real_lake` —
-真 lake 呼叫、超出 30s timeout、deselect 不算 fail）。
+更新於 **2026-05-15** (整補 §6 同類 bug fix)、HEAD pending commit、
+802 unit tests green / 1 skipped / 1 deselected。
 
 ## TL;DR — 本 session 做了什麼
 
@@ -82,14 +81,37 @@
 | `ca50f58` | docs: snapshot feature ID history before code cleanup |
 | `176c4ad` | chore: drop lean_shared_env/ gitignore entry |
 
+## 後續整補（同 2026-05-15、session 重啟後）
+
+PN smoke 觸發到上一輪沒料到的 mirror bug：dispatcher main loop 每 tick
+對 `for problem_name in manifests` 跑 `verify.root_integrity_gate`、每個
+root 一次 ~30s axiom_probe。整個 workspace 有 244 miniF2F + 1 PN +
+sylvester_gallai = 246 proved root → 每 tick 開銷 ~110min、PN smoke 永遠
+卡在 gate 階段、reach 不到 dispatch。同類於上一輪 `library.maybe_promote`
+auto-promote 的設計缺陷：state-driven 應該用 marker，不是每 tick reflexive
+scan。
+
+修法：
+- `goals` 加 `integrity_verified` column（migration + SCHEMA、idempotent）
+- `verify.root_integrity_gate` happy path → `db.set_integrity_verified` 設 1
+- `db.update_goal_status` 把 status 翻離 'proved' 時自動清 marker
+  （rollback_cascade_chain 不必特別處理 — 它呼叫 update_goal_status）
+- dispatcher query `db.unverified_proved_roots(conn)`、只對命中 problems
+  跑 gate；244 已 proved root 跑一次後不再重跑
+- migration backfill：pre-existing proved root `integrity_verified=1`、
+  承認 prior daemon run 已透過舊 library 路徑跑過 axiom_probe、不重驗
+- `dispatcher.run` startup 補 `db.init_schema` 呼叫、確保 migration
+  在 daemon 啟動時 run（pre-existing latent bug — 之前的 migration 都靠
+  cli init/reset 觸發、daemon 自己不會 migrate）
+
+invariant tests：5 個（unverified_proved_roots empty/excludes_verified、
+update_goal_status off-proved clears、ignores sub-goal、set helper persists、
+init_schema 對 legacy DB backfill 既有 proved root）。
+
 ## 沒做完的事
 
-1. **PN end-to-end smoke test 沒跑完**：refactor 完想用 PN 一次 daemon
-   run 驗 runtime path、跑了部分（gateway / library promote /
-   reconcile / axiom probe 路徑都動了、無 ImportError）、但被 244 個
-   miniF2F 的 auto-promote 卡了 15-20 分鐘沒到 PN dispatch、user 喊
-   停。stop 之後決定砍掉 auto-promote（即 §「本 session 做了什麼」#4）。
-   下次起步前可以重跑一次 PN smoke 確認 dispatch path 正常。
+1. **PN end-to-end smoke test**：上述 fix 後再啟動、驗證 dispatch path 真的
+   走通。狀態見 commit message 或 monitor log。
 2. **未 commit 的 working tree 變動 ~1555 個檔**：絕大多數是
    pre-session 累積（cantor_xi `proofs/` 大量 D、miniF2F problem 樹的
    各 Root.lean）+ 部分是這次 daemon run 寫了一半（reconcile 對 ~16

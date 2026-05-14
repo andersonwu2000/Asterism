@@ -750,6 +750,13 @@ def run(workspace: Path, *, once: bool = False,
     CONSEC_GATEWAY_UNREACHABLE_LIMIT = 8
 
     conn = db.connect()
+    # Idempotent — picks up additive migrations on an existing DB
+    # without requiring `cli init` / `cli reset`. SCHEMA itself is
+    # CREATE TABLE IF NOT EXISTS, and ALTER TABLE ADD COLUMN entries
+    # swallow "duplicate column name". Required because the daemon
+    # is the long-running consumer of the DB on a workspace that
+    # was init'd against an earlier schema version.
+    db.init_schema(conn)
     manifests: dict[str, manifest.Manifest] = {}
     for row in conn.execute("SELECT name, manifest_path FROM problems"):
         manifests[row["name"]] = manifest.parse(workspace / row["manifest_path"])
@@ -937,18 +944,26 @@ def run(workspace: Path, *, once: bool = False,
         verify.verify_housekeeping(conn, workspace=workspace,
                                    manifests=manifests)
 
-        # Per-problem gate: fire reconcile / prune / integrity-check /
-        # tree-refresh for every problem whose root is now proved.
-        # Pre-fix this was gated on `db.root_proved(conn)` (workspace-
-        # wide AND across all roots), which silently degraded to
-        # never-fires after the multi-problem init-batch refactor — a
-        # single shelved errata root blocked the gate for every other
-        # problem in the workspace, leaving 237/244 miniF2F roots
-        # cascade-proved but never kernel-axiom-validated.
-        # `verify.root_integrity_gate` short-circuits on no-whitelist
-        # manifests; otherwise it pays one gateway-driven axiom_probe.
-        for problem_name in manifests:
-            if not db.root_proved(conn, problem=problem_name):
+        # Per-problem post-proved gate. Only problems whose root just
+        # flipped to 'proved' AND haven't yet passed integrity_gate
+        # under this DB are visited — `db.unverified_proved_roots`
+        # returns at most that subset, dropping to [] once every root
+        # is verified. The earlier formulation iterated `manifests`
+        # every tick and paid one gateway-driven axiom_probe per
+        # proved root every loop iteration (244 miniF2F roots stalled
+        # dispatch for ~115min on every restart); the marker in
+        # `goals.integrity_verified` is what keeps this O(unverified)
+        # instead of O(all proved). Rollback paths flip the marker off
+        # transparently via `db.update_goal_status` whenever a goal
+        # leaves 'proved', so a once-failed root re-enters this gate
+        # on the next tick after cascade rollback.
+        for problem_name in db.unverified_proved_roots(conn):
+            if problem_name not in manifests:
+                # Root proved for a problem we don't have a Manifest
+                # for in-process (CLI invoked with a scope filter that
+                # excluded it, or DB row outlived its Manifest dir).
+                # Skip without flipping the marker — it'll get picked
+                # up the next run that loads this Manifest.
                 continue
             # Reconcile first (fix any FILE/DB drift from OR races),
             # THEN prune (delete orphans, now safe to remove).
@@ -962,10 +977,13 @@ def run(workspace: Path, *, once: bool = False,
                 print(f"[prune] {problem_name}: removed {len(removed)} "
                       f"orphan files", flush=True)
             # Root integrity gate — single root-level axiom_probe under
-            # verify-collapse. On sorryAx detection, rolls back the
-            # cascade chain via `verify.rollback_cascade_chain`, which
-            # leaves the culprit goal in 'open' state for fresh re-
-            # Backward on the next tick.
+            # verify-collapse. Sets `integrity_verified=1` on success
+            # so subsequent ticks skip this problem. On sorryAx
+            # detection, rolls back the cascade chain via
+            # `verify.rollback_cascade_chain`, which leaves the
+            # culprit goal in 'open' state and (via update_goal_status)
+            # clears integrity_verified on the root so the gate fires
+            # again once a fresh proof cascades back up.
             verify.root_integrity_gate(
                 conn, workspace, problem_name, manifests[problem_name])
             # Final TREE.md refresh — the per-cascade write_for_target

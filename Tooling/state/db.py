@@ -97,6 +97,18 @@ CREATE TABLE IF NOT EXISTS goals (
     -- turns out wrong).
     entry_kind  TEXT    NOT NULL DEFAULT 'Builder'
                     CHECK(entry_kind IN ('Builder','Backward')),
+    -- Set to 1 by `verify.root_integrity_gate` after a root goal's
+    -- axiom_probe passes; reset to 0 by `update_goal_status` whenever
+    -- the goal leaves 'proved' (cascade rollback, manual reset). The
+    -- dispatcher gate query consults this so a once-verified root is
+    -- not re-probed every tick — without this marker the gate runs an
+    -- axiom_probe per proved root per loop iteration, scaling O(N) over
+    -- proved problems (244 miniF2F + 1 → ~115min stall before any
+    -- dispatch on a benchmark-loaded workspace). Column is meaningful
+    -- only for origin='root' rows; sub-goals carry the default 0 and
+    -- it is never read for them.
+    integrity_verified INTEGER NOT NULL DEFAULT 0
+                    CHECK(integrity_verified IN (0,1)),
     -- (Phase 7-D removed `builder_session_id` and `backward_session_id`
     -- columns. The cross-pipeline session passing they served is now
     -- handled by `Tooling/pipeline/_retry.py` with sid as a local
@@ -224,12 +236,35 @@ def init_schema(conn: sqlite3.Connection) -> None:
         ("entry_kind",
          "ALTER TABLE goals ADD COLUMN entry_kind TEXT NOT NULL"
          " DEFAULT 'Builder'"),
+        # See SCHEMA comment on `goals.integrity_verified` for rationale.
+        # New rows default to 0; backfill below promotes pre-migration
+        # proved roots to 1.
+        ("integrity_verified",
+         "ALTER TABLE goals ADD COLUMN integrity_verified INTEGER NOT NULL"
+         " DEFAULT 0"),
     ):
         try:
             conn.execute(ddl)
         except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e).lower():
                 raise
+    # Backfill: mark every already-proved root as verified. Prior to
+    # this column existing, `library.maybe_promote` (later
+    # `verify.root_integrity_gate`) ran an axiom_probe on every proved
+    # root every dispatcher tick — so any row currently sitting at
+    # status='proved' has been kernel-axiom-validated under whatever
+    # gate code was active at the time, just without a persistent
+    # marker. The backfill turns that implicit history into explicit
+    # DB state so the first post-migration dispatcher tick doesn't
+    # re-pay ~30s × N proved roots (244 miniF2F + N stalls dispatch
+    # ~110min on a benchmark-loaded workspace). Only meaningful on
+    # the migration tick — on a fresh DB built from SCHEMA there are
+    # no proved rows yet, so this is a no-op.
+    conn.execute(
+        "UPDATE goals SET integrity_verified = 1"
+        " WHERE origin = 'root' AND status = 'proved'"
+        "   AND integrity_verified = 0"
+    )
     # Phase 7-D — drop the former cross-pipeline session_id columns.
     # The in-pipeline retry helper (Tooling/pipeline/_retry.py) keeps
     # sid as a local var for the pipeline's lifetime; the columns are
@@ -299,11 +334,47 @@ def aliases_pointing_at(conn: sqlite3.Connection,
 
 def update_goal_status(conn: sqlite3.Connection, goal_id: int,
                        status: str) -> None:
+    # Leaving 'proved' (rollback, manual reset) invalidates any prior
+    # axiom_probe pass — clear integrity_verified in the same UPDATE so
+    # the dispatcher gate picks the root up again on the next tick.
+    # No-op for rows that were never verified (still 0).
+    if status == 'proved':
+        conn.execute(
+            "UPDATE goals SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now(), goal_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE goals SET status = ?, integrity_verified = 0,"
+            " updated_at = ? WHERE id = ?",
+            (status, now(), goal_id),
+        )
+    conn.commit()
+
+
+def set_integrity_verified(conn: sqlite3.Connection, goal_id: int) -> None:
+    """Mark a proved root as having passed `root_integrity_gate`. The
+    flag stays set until `update_goal_status` flips the goal off
+    'proved' (cascade rollback path)."""
     conn.execute(
-        "UPDATE goals SET status = ?, updated_at = ? WHERE id = ?",
-        (status, now(), goal_id),
+        "UPDATE goals SET integrity_verified = 1, updated_at = ?"
+        " WHERE id = ?",
+        (now(), goal_id),
     )
     conn.commit()
+
+
+def unverified_proved_roots(conn: sqlite3.Connection) -> list[str]:
+    """Problems whose root is `proved` but `integrity_verified = 0`.
+    Replaces the per-tick `for problem_name in manifests` scan that
+    used to drive `verify.root_integrity_gate`. Ordering is by goals.id
+    so iteration is deterministic across ticks."""
+    return [str(r["problem"]) for r in conn.execute(
+        "SELECT problem FROM goals"
+        " WHERE origin = 'root' AND status = 'proved'"
+        "   AND integrity_verified = 0"
+        " ORDER BY id"
+    ).fetchall()]
 
 
 def update_goal_entry_kind(conn: sqlite3.Connection, goal_id: int,

@@ -392,7 +392,18 @@ def root_integrity_gate(
                   f"strategy={culprit['id']} (goal "
                   f"{culprit['goal_slug']})", flush=True)
         return
-    # Happy path
+    # Happy path — mark the root verified so the dispatcher gate skips
+    # it on subsequent ticks (without this every loop iteration paid
+    # one gateway-driven axiom_probe per proved root → 244 miniF2F
+    # benchmark roots stalled dispatch for ~115min on every restart).
+    root_id = conn.execute(
+        "SELECT id FROM goals"
+        " WHERE problem = ? AND origin = 'root' AND status = 'proved'"
+        " LIMIT 1",
+        (problem,),
+    ).fetchone()
+    if root_id is not None:
+        db.set_integrity_verified(conn, int(root_id["id"]))
     print(f"[integrity] {problem}: root axioms ok {axiom_msg}", flush=True)
     n = cleanup_cascade_backups(conn, workspace, problem)
     if n:

@@ -1108,6 +1108,137 @@ def test_strategies_ready_for_verify_includes_zero_subgoal_leaf_bypass(
     assert not any(s["id"] == sid2 for s in db.strategies_ready_for_verify(conn))
 
 
+# ---------------------------------------------------------------------
+# integrity_verified marker — gate fires once per root, not every tick.
+#
+# Regression: dispatcher used to iterate `manifests` every loop and
+# call `verify.root_integrity_gate` for every proved root, paying one
+# gateway-driven axiom_probe per problem per tick. A workspace with
+# 244 proved miniF2F benchmarks stalled new dispatch for ~115min on
+# every restart. The fix moves the gate trigger to a DB-driven query
+# (`db.unverified_proved_roots`) backed by a `goals.integrity_verified`
+# column that gets set once on pass and auto-cleared whenever the root
+# leaves 'proved' (cascade rollback path).
+# ---------------------------------------------------------------------
+
+def test_unverified_proved_roots_empty_until_root_proved(
+    conn: sqlite3.Connection,
+) -> None:
+    gid = _seed_goal(conn)
+    assert db.unverified_proved_roots(conn) == []
+    db.update_goal_status(conn, gid, "proved")
+    assert db.unverified_proved_roots(conn) == ["p"]
+
+
+def test_unverified_proved_roots_excludes_verified(
+    conn: sqlite3.Connection,
+) -> None:
+    """Once `set_integrity_verified` marks the root, the dispatcher gate
+    query must drop it. Without this the gate re-fires every tick."""
+    gid = _seed_goal(conn)
+    db.update_goal_status(conn, gid, "proved")
+    db.set_integrity_verified(conn, gid)
+    assert db.unverified_proved_roots(conn) == []
+
+
+def test_update_goal_status_off_proved_clears_integrity_verified(
+    conn: sqlite3.Connection,
+) -> None:
+    """Cascade rollback flips the root off 'proved' via
+    `update_goal_status`; that path must clear `integrity_verified` so
+    the next successful re-proof re-enters the gate. Tested at the
+    helper level so any caller flipping status (rollback, manual reset,
+    future code paths) inherits the invariant for free."""
+    gid = _seed_goal(conn)
+    db.update_goal_status(conn, gid, "proved")
+    db.set_integrity_verified(conn, gid)
+    db.update_goal_status(conn, gid, "attempting")  # rollback path
+    assert db.unverified_proved_roots(conn) == []  # not proved → not listed
+    db.update_goal_status(conn, gid, "proved")
+    assert db.unverified_proved_roots(conn) == ["p"]  # re-entered
+
+
+def test_unverified_proved_roots_ignores_sub_goal_integrity(
+    conn: sqlite3.Connection,
+) -> None:
+    """The marker is meaningful only for origin='root'. A sub-goal that
+    happens to be proved must never surface in the gate query (it has
+    no axiom_probe to run)."""
+    _seed_goal(conn)  # root, status='open'
+    sub = db.insert_goal(
+        conn, problem="p", slug="sub", lean_path="Problems/p/proofs/sub.lean",
+        statement="T", origin="backward",
+    )
+    db.update_goal_status(conn, sub, "proved")
+    assert db.unverified_proved_roots(conn) == []
+
+
+def test_init_schema_backfills_existing_proved_roots(tmp_path: Path) -> None:
+    """Migration-day invariant: on first init_schema call against a DB
+    that pre-dated `integrity_verified`, every already-proved root
+    flips to verified=1. Without this the first dispatcher tick on a
+    benchmark-loaded workspace would re-pay ~110min of axiom_probe.
+
+    Simulates the pre-migration state by stripping the column from a
+    fresh DB, inserting a proved root + an open root + a proved
+    sub-goal, then re-running init_schema and asserting only the
+    proved root picked up the backfill."""
+    import sqlite3 as _sql
+    path = tmp_path / "legacy.db"
+    c = _sql.connect(str(path))
+    c.row_factory = _sql.Row
+    c.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(c)
+    # Strip column to simulate a DB built against the prior schema.
+    c.execute("ALTER TABLE goals DROP COLUMN integrity_verified")
+    # Seed: one proved root (backfill target), one open root (no-op),
+    # one proved sub-goal (no-op — column meaningful only for roots).
+    c.execute(
+        "INSERT INTO problems (name, manifest_path, created_at)"
+        " VALUES (?, ?, ?)", ("p", "Problems/p/Manifest.md", db.now()))
+    proved_root = db.insert_goal(
+        c, problem="p", slug="main", lean_path="Problems/p/Root.lean",
+        statement="T", origin="root",
+    )
+    db.update_goal_status(c, proved_root, "proved")
+    open_root = db.insert_goal(
+        c, problem="p", slug="open_main",
+        lean_path="Problems/p/RootB.lean",
+        statement="U", origin="root",
+    )
+    proved_sub = db.insert_goal(
+        c, problem="p", slug="sub",
+        lean_path="Problems/p/proofs/sub.lean",
+        statement="V", origin="backward",
+    )
+    db.update_goal_status(c, proved_sub, "proved")
+    # Re-run migration: backfill should trigger.
+    db.init_schema(c)
+    row = lambda gid: c.execute(
+        "SELECT integrity_verified FROM goals WHERE id = ?", (gid,)
+    ).fetchone()["integrity_verified"]
+    assert row(proved_root) == 1, "proved root must be backfilled"
+    assert row(open_root) == 0, "non-proved root must stay 0"
+    assert row(proved_sub) == 0, "proved sub-goal must stay 0 (column is root-only)"
+    c.close()
+
+
+def test_set_integrity_verified_persists_only_when_marker_present(
+    conn: sqlite3.Connection,
+) -> None:
+    """Migration safety: fresh DB built from current SCHEMA must have
+    the column, and the helper must succeed without raising. Also
+    guards against accidentally dropping the column in a future
+    refactor (test would fail at the UPDATE)."""
+    gid = _seed_goal(conn)
+    db.update_goal_status(conn, gid, "proved")
+    db.set_integrity_verified(conn, gid)
+    row = conn.execute(
+        "SELECT integrity_verified FROM goals WHERE id = ?", (gid,)
+    ).fetchone()
+    assert row["integrity_verified"] == 1
+
+
 # F56 — `cascade_one(kind="Verify")` no longer exists. The W6
 # "stale proposed strategy on a proved goal" finalization is handled
 # by `verify.verify_strategy` returning "superseded"; see
