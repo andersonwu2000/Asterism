@@ -24,7 +24,7 @@ import shutil
 import sqlite3
 from pathlib import Path
 
-from .. import agent, db, diagnostics, manifest
+from .. import agent, context, db, diagnostics, manifest
 
 
 def run_builder(conn: sqlite3.Connection, *, goal_id: int,
@@ -216,7 +216,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # Warm: skip — agent's session memory carries the Context from
         # the prior call; retry_context inlines the prior lake error.
         if ctx.cold:
-            agent.compile_context(conn, goal=goal, mfst=mfst,
+            context.compile_context(conn, goal=goal, mfst=mfst,
                                   attempts_dir=ctx.attempts_dir,
                                   kind="builder")
 

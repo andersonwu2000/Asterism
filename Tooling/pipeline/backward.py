@@ -39,7 +39,7 @@ import shutil
 import sqlite3
 from pathlib import Path
 
-from .. import agent, db, dedupe, diagnostics, manifest
+from .. import agent, context, db, dedupe, diagnostics, manifest
 from . import _axiom
 
 
@@ -323,7 +323,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         # incremental.
         patch_lean = ctx.attempts_dir / "patch.lean"
         if ctx.cold:
-            agent.compile_context(conn, goal=goal, mfst=mfst,
+            context.compile_context(conn, goal=goal, mfst=mfst,
                                   attempts_dir=ctx.attempts_dir,
                                   strategy_id=strategy_id,
                                   kind="backward")

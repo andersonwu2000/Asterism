@@ -1,11 +1,9 @@
 """WorkArea + LLM dispatch.
 
-P2-#2: Context.md compilation moved to `Tooling.context`. This module
-keeps the responsibilities its docstring originally promised — sandbox
-dir, ephemeral pipeline workspace, and the synchronous dispatch
-shim into `Tooling.llm`. Section helpers + `compile_context` re-export
-below for back-compat with existing call sites
-(`agent.compile_context`, `agent._section_*`).
+P2-#2: Context.md compilation lives in `Tooling.context`. This module
+holds only the WorkArea sandbox lifecycle and the synchronous dispatch
+shim into `Tooling.llm`. Callers needing `compile_context` or the
+`_section_*` helpers import them from `Tooling.context` directly.
 """
 from __future__ import annotations
 
@@ -14,29 +12,6 @@ import uuid
 from pathlib import Path
 
 from . import config, llm
-
-# Re-export everything Context-related so legacy callers
-# (`agent.compile_context`, `agent._section_X`, `agent._digest_failure`)
-# keep working transparently. P2-#2 moved the implementation to
-# Tooling/context.py — these names live there now.
-from .context import (  # noqa: F401  (re-export)
-    _LEAN_PATH_DUMP_RE,
-    _FIRST_ERROR_RE,
-    _ago,
-    _digest_failure,
-    _section_goal_history,
-    _section_header,
-    _section_library_available,
-    _section_manifest_forbidden,
-    _section_manifest_notes,
-    _section_mathlib_hints_stable,
-    _section_mathlib_lemmas_from_deads,
-    _section_parent_strategy,
-    _section_prior_partial,
-    _section_sandbox,
-    _section_strategy_naming,
-    compile_context,
-)
 
 
 WORKER_TIMEOUT_SEC = 900  # 15 min. Phase 2 LSP cantor_xi had 6

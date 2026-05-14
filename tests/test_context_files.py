@@ -1,5 +1,5 @@
 """F26 — companion reference files (PAST_DIRECT_ATTEMPTS.md / PAST_VERIFY_FAILURES.md)
-+ agent._digest_failure helper. Tests cover digest extraction across
++ context._digest_failure helper. Tests cover digest extraction across
 all failure_reason kinds and the lazy-load size discipline."""
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from Tooling import context_files, db
-from Tooling.agent import (
+from Tooling.context import (
     _ago,
     _digest_failure,
     compile_context,

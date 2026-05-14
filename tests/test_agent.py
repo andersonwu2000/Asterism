@@ -1,4 +1,4 @@
-"""agent.compile_context — Context.md assembly from DB + Manifest."""
+"""context.compile_context — Context.md assembly from DB + Manifest."""
 from __future__ import annotations
 
 import sqlite3
@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from Tooling import db
-from Tooling.agent import compile_context
+from Tooling.context import compile_context
 from Tooling.manifest import Manifest
 
 

@@ -22,7 +22,7 @@ import sqlite3
 from pathlib import Path
 import pytest
 
-from Tooling import agent, db, manifest, pipeline as _pipeline
+from Tooling import agent, context, db, manifest, pipeline as _pipeline
 from Tooling.dispatcher import (
     cascade_one,
     BUILDER_THRESHOLD,
@@ -177,7 +177,7 @@ def test_backward_context_surfaces_decline_in_direct_attempts(
     attempts_dir.mkdir(parents=True)
 
     goal = db.get_goal(conn, gid)
-    agent.compile_context(conn, goal=goal, mfst=mfst,
+    context.compile_context(conn, goal=goal, mfst=mfst,
                           attempts_dir=attempts_dir,
                           strategy_id=None, kind="backward")
     body = (attempts_dir / "Context.md").read_text(encoding="utf-8")
@@ -210,7 +210,7 @@ def test_builder_context_also_sees_decline_history(
     attempts_dir.mkdir(parents=True)
 
     goal = db.get_goal(conn, gid)
-    agent.compile_context(conn, goal=goal, mfst=mfst,
+    context.compile_context(conn, goal=goal, mfst=mfst,
                           attempts_dir=attempts_dir,
                           strategy_id=None, kind="builder")
     body = (attempts_dir / "Context.md").read_text(encoding="utf-8")
@@ -233,7 +233,7 @@ def test_decline_section_absent_when_no_declines(
     attempts_dir.mkdir(parents=True)
 
     goal = db.get_goal(conn, gid)
-    agent.compile_context(conn, goal=goal, mfst=mfst,
+    context.compile_context(conn, goal=goal, mfst=mfst,
                           attempts_dir=attempts_dir,
                           strategy_id=None, kind="backward")
     body = (attempts_dir / "Context.md").read_text(encoding="utf-8")

@@ -317,7 +317,7 @@ def test_maybe_promote_swallows_exceptions(
 def test_library_section_renders_topic_entries(tmp_path: Path) -> None:
     """When lemma_hints include Library.<Topic>.* and that Topic's
     INDEX.md exists, the section appears with that topic's entries."""
-    from Tooling import agent
+    from Tooling import context
     (tmp_path / "Library" / "NumberTheory").mkdir(parents=True)
     (tmp_path / "Library" / "NumberTheory" / "INDEX.md").write_text(
         "# Library/NumberTheory — INDEX\n\n"
@@ -328,7 +328,7 @@ def test_library_section_renders_topic_entries(tmp_path: Path) -> None:
         problem="newprob", statement="T",
         lemma_hints=["Library.NumberTheory.wilson"],
     )
-    section = agent._section_library_available(mfst, tmp_path)
+    section = context._section_library_available(mfst, tmp_path)
     body = "\n".join(section)
     assert "## Library available" in body
     assert "### NumberTheory" in body
@@ -339,12 +339,12 @@ def test_library_section_empty_when_no_library_hints(
     tmp_path: Path,
 ) -> None:
     """Manifest with only Mathlib hints → empty section (no clutter)."""
-    from Tooling import agent
+    from Tooling import context
     mfst = manifest.Manifest(
         problem="x", statement="T",
         lemma_hints=["Mathlib.Data.Nat.Basic"],
     )
-    assert agent._section_library_available(mfst, tmp_path) == []
+    assert context._section_library_available(mfst, tmp_path) == []
 
 
 def test_library_section_skips_topics_with_no_index(
@@ -352,9 +352,9 @@ def test_library_section_skips_topics_with_no_index(
 ) -> None:
     """lemma_hints reference a topic whose INDEX.md doesn't exist yet
     (first promotion not happened) → don't dangle a header."""
-    from Tooling import agent
+    from Tooling import context
     mfst = manifest.Manifest(
         problem="x", statement="T",
         lemma_hints=["Library.Algebra.unknown"],
     )
-    assert agent._section_library_available(mfst, tmp_path) == []
+    assert context._section_library_available(mfst, tmp_path) == []
