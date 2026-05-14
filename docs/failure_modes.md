@@ -38,6 +38,10 @@ attempts ↔ dead_attempts 的 1:1 invariant：每個失敗 spawn 都 buffer 一
 crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbidden_lemma 等）
 只做 status transition、不再做 attempts++（已由 helper buffer 內計數）。
 
+> 名詞：「verify-collapse」= 把舊版的 Verify worker_kind 折疊成主迴圈 inline
+> housekeeping。pre-collapse 的 Strategy-target `dead_attempts` row 留在 DB
+> 作為歷史；新 pipeline 不再產生這類 row。詳見 `data-flow.md` §4。
+
 | failure_reason | 出處 | 觸發條件 | helper 處理 | cascade 處理 | event_type 投影 |
 |---|---|---|---|---|---|
 | `lake_build_error` | Builder + Backward | Phase 2 patch / Backward strategy 組裝 build 失敗 | buffer + 同 session 下一輪 retry（retry_context 帶 stderr） | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
