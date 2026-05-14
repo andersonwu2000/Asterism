@@ -46,3 +46,6 @@ __pycache__/
 # External clones (miniF2F source repo, future benchmarks). Cloned on
 # demand by Benchmarks/<name>/ drivers; never committed to this repo.
 _ext/
+
+# Local translated-prompt drafts; not committed (see 608bbc5 prior revert)
+Tooling/prompts_zhtw_ref/
