@@ -151,7 +151,7 @@ pipeline 入場（一次）：
   1. INSERT 新 strategy 拿 fresh strategy_id、sid_token=s<id>
      （Phase 7 — 每個 pipeline 永遠 fresh strategy_id；不再跨 pipeline 重用 dead strategy）
   2. 讀 parent stub 文字、用 _build_strategy_skeleton 算出 skeleton 文字 + skeleton_signature
-     （F52 把 `theorem <slug> <binders> : <type>` 簽名複製、改名 sX、body=sorry）
+     （skeleton 把 `theorem <slug> <binders> : <type>` 簽名複製、改名 sX、body=sorry）
 
 helper iter (cold attempt 0 / warm attempt 1+):
   cold: agent.compile_context(...) + 寫 patch.lean = skeleton → spawn --session-id <sid>
@@ -175,9 +175,9 @@ parse_fn（每輪一次、rc=0 才會 call）:
   10. 把檔案搬到永久路徑：
       - sub-goals: Problems/<p>/proofs/L_<slug>.lean
       - scratch:   Problems/<p>/proofs/_strategy_s<sid>.lean
-  11. F52 inject_imports_for_subs（agent 常忘 import）
+  11. inject_imports_for_subs（agent 常忘 import）
   12. lake build batch（subs + scratch 一起）→ 失敗則 unlink placed + lake_build_error
-  13. F24-A race guard：再讀 goal status；非 open/attempting → unlink + goal_no_longer_open
+  13. race guard：再讀 goal status；非 open/attempting → unlink + goal_no_longer_open
   14. INSERT goals + strategy_subgoals；dedupe-hit / sorry-free 的 sub 直接 mark proved
   15. UPDATE strategy.scratch_path + proposal_md → outcome='success'
 
@@ -222,14 +222,14 @@ loop（最多 max_iters=8 圈）:
               import Problems.<p>.proofs._strategy_s<sid>
               namespace Problems.<p>
               def <parent_slug> := @Problems.<p>.s<sid>
-            F52 簽名鎖死保證 alias 的 type 跟 parent 完全相符。
+            Strategy 簽名鎖死保證 alias 的 type 跟 parent 完全相符。
             純字串模板、microsecond 級、無 Lean 介入。
             Backup 保留在 disk（verify_backup_path key by sid_token），
             等 root verify 結果再 cleanup 或 rollback。
 
     Step 2: strategy='succeeded'、parent goal='proved'（樂觀標）
             sibling strategies 標 'superseded'、strategy.proposal_md 寫進
-            parent .lean 檔頂作 annotation（替代已退役的 F22 playbook 流程）
+            parent .lean 檔頂作 annotation（替代已退役的 per-problem playbook 流程）
             鏈式：parent goal 可能是更上層 strategy 的 sub-goal、下一圈會撈到
 
 最終 root verify（library.maybe_promote、root goal flip 為 proved 後、單一 integrity gate）：
@@ -251,18 +251,18 @@ loop（最多 max_iters=8 圈）:
                 下個 tick re-Backward culprit goal
 ```
 
-empirical: 41+ 次 cascade verify 0 次攔到任何 sorry / drift（F56 doc 26 +
-SG #19 10 + PN refactor 5）。唯一 caught sorryAx 案例（SG s378）發生在
+empirical: 41+ 次 cascade verify 0 次攔到任何 sorry / drift（verify-collapse
+rollout 26 + SG #19 10 + PN refactor 5）。唯一 caught sorryAx 案例（SG s378）發生在
 Backward leaf-bypass submit time、不是 cascade。Mechanical-only cascade
 把零收益的 verify 全省掉、failure path 用 bisect 補回 attribution。
 
-**為什麼是 stage 而非 worker_kind**：純框架操作沒 LLM、不該佔 worker pool slot。早期版本（pre-F56）把 Verify 當第三種 worker_kind、每輪佔一個 ThreadPool 格子 ~60s、無收益。
+**為什麼是 stage 而非 worker_kind**：純框架操作沒 LLM、不該佔 worker pool slot。早期版本（verify-collapse 之前）把 Verify 當第三種 worker_kind、每輪佔一個 ThreadPool 格子 ~60s、無收益。
 
 **為什麼遞迴 max_iters=8**：深度 4 的題可能一輪 sweep 連帶 4 層 strategy 全部 promote；上限避免病態 case 卡住整個 tick。
 
-**為什麼單執行緒**：housekeeping 在主迴圈 sequential 跑、自然解掉 OR-race（過去 P0-#1 的 `busy_parents` 已不需要）。
+**為什麼單執行緒**：housekeeping 在主迴圈 sequential 跑、自然解掉 OR-race（過去 per-goal Verify serialization 用的 `busy_parents` 已不需要）。
 
-**為什麼沒有 LLM 修復**：早期 F41 設計過「Step 1 失敗叫 LLM 修一次 patch」。實證 26 次 verify 0 觸發 — F52（鎖死 strategy 簽名）+ Backward commit 前先 build 過 sorry-stub 已過濾掉絕大部分組裝錯誤。再加 LLM 修復是為極罕見事件付架構成本。Step 1 真的開始失敗才回頭加。
+**為什麼沒有 LLM 修復**：早期設計過「Step 1 失敗叫 LLM 修一次 patch」。實證 26 次 verify 0 觸發 — 鎖死 strategy 簽名 + Backward commit 前先 build 過 sorry-stub 已過濾掉絕大部分組裝錯誤。再加 LLM 修復是為極罕見事件付架構成本。Step 1 真的開始失敗才回頭加。
 
 ---
 
@@ -280,7 +280,7 @@ FORBIDDEN_LEMMAS
 Strategic notes
 Library available
 Playbook
-Your previous progress note     ← F55 timeout 留下的進度筆記（§6）
+Your previous progress note     ← timeout 留下的進度筆記（§6）
 Goal history (umbrella)         ← v1 完成（C1+C2+C3）、4 sub-section：
   ### Direct attempts on this goal       (kind-agnostic；含 agent_declined)
   ### Sibling decompositions failed Verify (Backward/None gate)
@@ -290,7 +290,7 @@ Goal history (umbrella)         ← v1 完成（C1+C2+C3）、4 sub-section：
 
 `Goal history` umbrella 的 event 投影邏輯在 `Tooling/pipeline/events.py`（4 個函數 + `_NON_AGENT_REASONS` filter）。Empty bucket 整段省略；空 umbrella 連 `## Goal history` header 都不寫。完整設計與 audience 規則見 `docs/archive/goal_history_unified.md`。
 
-**Sandbox**（F44 + M1 + M3）：
+**Sandbox**（agent cwd anchored at problem_dir + mathlib allowlist + --add-dir packages）：
 - cwd = `Problems/<p>/`
 - claude `--add-dir` 列：problem_dir、attempts_dir、`.lake/packages/`
 - 讀允許：cwd subtree、`.lake/packages/mathlib/Mathlib/`
@@ -299,7 +299,7 @@ Goal history (umbrella)         ← v1 完成（C1+C2+C3）、4 sub-section：
 
 **預寫框架要鎖的檔**：
 - Builder：不預寫，agent 自由改 `patch.lean`（其實是 parent goal 的 lean 檔）
-- Backward：F52 預寫 `patch.lean` skeleton — copy parent stub 的 `theorem <slug> <binders> : <type>` 簽名、改名 `theorem s<sid>`、body 留 sorry。agent 只改 body、簽名邊動會被偵測
+- Backward：框架預寫 `patch.lean` skeleton — copy parent stub 的 `theorem <slug> <binders> : <type>` 簽名、改名 `theorem s<sid>`、body 留 sorry。agent 只改 body、簽名邊動會被偵測
 
 ---
 
@@ -324,7 +324,7 @@ helper 在 retry loop 內看 rc 分支處理；失敗種類對應到不同的 bu
 普通失敗不寫 `.drafts/`：session 記憶 + retry_context 在同個 pipeline 內已經是接續媒介；
 要跨 pipeline 的進度筆記只在 timeout 路徑留（§6.2）。
 
-### 6.2 Timeout（rc=124、process 被 SIGKILL）— F55 postmortem
+### 6.2 Timeout（rc=124、process 被 SIGKILL）— postmortem
 
 主 spawn 超過 600s（`WORKER_TIMEOUT_SEC`）被 SIGKILL。session memory 還在（pinned 在 disk），但 process 已死、沒機會把當下思考寫成檔。
 
@@ -351,14 +351,14 @@ agent 看到自己的回顧筆記、繼續做（fresh session）
 
 **為什麼 timeout 強制 exhaust 不繼續同 session retry**（決策 3）：timeout 表示 agent 思考路徑卡死；同 session resume 會撞同卡點。`.drafts/` 持久化的整個目的就是給 cold restart 用。
 
-**postmortem 自己也死怎麼辦**：180s cap + 任何 rc≠0 都當 best-effort 失敗（next pipeline 直接 cold start、不比沒 F55 差）。
+**postmortem 自己也死怎麼辦**：180s cap + 任何 rc≠0 都當 best-effort 失敗（next pipeline 直接 cold start、不比沒 postmortem 差）。
 
 `.drafts/` 在下次 pipeline 成功 commit 時自動清掉（success / moot 都 clear；exhausted 才 persist）。
 
 ### 6.3 Spawn fast-fail / quota_exhausted / missing_dep — infra 噪訊路徑
 
 三種 rc 走相同處理（不耗 budget、不寫 dead_attempt、設 cooldown）：
-- **spawn_fast_fail** (F46)：rc≠0 且 wall-clock < 10s。real claude.exe 啟動 ~3-5s、最快 legitimate 失敗（patch 結構錯）也至少要一個 model turn。低於 10s 的 rc≠0 幾乎肯定是 infra 故障：claude.exe crash、cwd 失效、network down。
+- **spawn_fast_fail**：rc≠0 且 wall-clock < 10s。real claude.exe 啟動 ~3-5s、最快 legitimate 失敗（patch 結構錯）也至少要一個 model turn。低於 10s 的 rc≠0 幾乎肯定是 infra 故障：claude.exe crash、cwd 失效、network down。
 - **quota_exhausted** (rc=126)：provider rate limit / quota 耗盡（gemini free-tier）。
 - **missing_dep** (rc=127)：CLI 二進位缺。
 
@@ -381,12 +381,12 @@ cooldown 期內 `bfs_refill` 跳過該 (target, kind)、queue 不會 burst-retry
 
 | 決策 | 為什麼 |
 |---|---|
-| Context.md 必看訊息 inline、companion 只當備援 | F43 教訓：agent 不會主動讀 companion |
+| Context.md 必看訊息 inline、companion 只當備援 | 教訓：agent 不會主動讀 companion |
 | Timeout 走 postmortem 而非邊想邊存 | 主任務不被 deliverable 維護分心 |
 | 進度筆記只保留最近一次（overwrite） | timeout postmortem 重寫即可、cold restart agent 看到的是最新一次 |
 | Pipeline = session lifecycle（Phase 7、in-pipeline retry helper） | retry 收進 pipeline 內、sid 是 local var；移除 `goals.*_session_id` columns + cross-pipeline 攜帶機制 |
 | Verify inline dispatcher 不佔 worker slot | 純框架操作沒理由佔 LLM pool 格子 |
-| F41 LLM Verify 修復取消 | 26 次實證 0 觸發、不為罕見事件付架構成本 |
+| Verify-time LLM 修復方案被取消 | 26 次實證 0 觸發、不為罕見事件付架構成本 |
 | OR passive (cap=1) 不 eager fanout | 強模型下純粹浪費 token |
 | Dedupe 用 Lean kernel isDefEq | 字串比對命中率低；schema 零改動、Lean 知道 α/β/η/defeq |
 | Phase 1 用 `by hint` + 寫回精確 winner | 把 mathlib `register_hint` curated set 接過來；artifact 留具名 tactic（forensic）；多花一個 confirm build 但搜尋集合自動跟 mathlib 同步 |

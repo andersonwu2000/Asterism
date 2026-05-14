@@ -43,7 +43,7 @@ Verify 早期是第三種 worker_kind；後來砍成 dispatcher 主迴圈末端�
 | **`Problems/<p>/Root.lean`** | 框架管的，有三個生命週期態（§5） |
 | **`Problems/<p>/proofs/L_<slug>.lean`** | 每個 sub-Goal 一份 Lean 檔；sorry stub → 真 proof |
 | **`Problems/<p>/proofs/_strategy_s<sid>.lean`** | 每條 Strategy 的組裝 patch；Verify 對它 lake build |
-| **`Problems/<p>/.drafts/<kind>_g<gid>.md`** | F55 timeout postmortem 留下的進度筆記，跨 spawn 持續 |
+| **`Problems/<p>/.drafts/<kind>_g<gid>.md`** | timeout postmortem 留下的進度筆記，跨 spawn 持續 |
 
 `.attempts/<pid>/` 是純暫存，pipeline 結束 unconditional rmtree。所有 agent 寫的東西在刪除前先打包進 `dead_attempts.artifacts` JSON，DB 永遠是 SoT。
 
@@ -186,8 +186,8 @@ Tooling/pipeline/
   builder.py     — run_builder + Phase 1/2
   backward.py    — run_backward + decomposition + sub-goal placement
   _lake.py       — lake build invocation
-  _skeleton.py   — F52 patch skeleton + alias promotion
-  _drafts.py     — F55 partial-output 持久化
+  _skeleton.py   — strategy skeleton + alias promotion
+  _drafts.py     — partial-output 持久化
 ```
 
 `compile_context` 在 `Tooling/context.py`、`Tooling/agent.py` 只剩 WorkArea + spawn。pipeline 分檔已完成（commit `9638eed`）。
@@ -210,7 +210,7 @@ FORBIDDEN_LEMMAS
 Strategic notes
 Library available
 Proved goals on this problem      ← grep 入口指針，0 個則整段省略
-Your previous progress note       ← F55 timeout 後留下的進度筆記
+Your previous progress note       ← timeout 後留下的進度筆記
 Goal history (umbrella):
   ### Direct attempts on this goal           (kind-agnostic；含 agent_declined 子類)
   ### Sibling decompositions that failed Verify (kind=Backward/None gate)

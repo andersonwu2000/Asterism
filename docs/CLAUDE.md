@@ -1,7 +1,7 @@
 # CLAUDE.md — Asterism operator 紀律
 
 operator session 起手 auto-load（cwd 在 repo root + Read 任一 `docs/` 檔時生效）。
-worker spawn 看不到本檔（F44 把 cwd 鎖在 `Problems/<p>/`、不會走進 `docs/`）。
+worker spawn 看不到本檔（worker cwd 鎖在 `Problems/<p>/`、不會走進 `docs/`）。
 
 設計細節在 `docs/architecture.md` / `data-flow.md` / `OPERATOR.md` / `STATUS.md`。
 本檔只放方法論。

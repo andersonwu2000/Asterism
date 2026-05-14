@@ -43,24 +43,24 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 | `lake_build_error` | Builder + Backward | Phase 2 patch / Backward strategy 組裝 build 失敗 | buffer + 同 session 下一輪 retry（retry_context 帶 stderr） | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `forbidden_lemma` | Builder + Backward | patch 文本命中 Manifest `forbidden_lemmas` | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `parse_proposal_fail` | Backward | patch.lean 缺；或 patch=1 new=0 + sorry body + 無 decline directive（Phase 6.5 後 patch body 非 sorry 視為 leaf-bypass、不算失敗）| buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
-| `patch_signature_mismatch` | Backward (F52) | agent 改了鎖死的 `theorem sX <binders> : <type>` 簽名 | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
+| `patch_signature_mismatch` | Backward | agent 改了鎖死的 `theorem sX <binders> : <type>` 簽名 | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `naming_violation` | Backward | sub-goal slug 違反 charset / length lint（lowercase `[a-z][a-z0-9_]*`、≤ 60 chars；衝突 framework auto-suffix、不算 violation） | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `agent_no_annotation` | Builder + Backward (Phase 2) | rc=0、build 過但 patch.lean leading comment 空白 | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `agent_no_output` | Builder Phase 2 | rc=0 但 agent 沒寫 `patch*.lean` | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `agent_rc_nonzero` | Builder + Backward | rc≠0、rc≠124/125/126/127、wall-clock ≥ 10s（一般 hard fail）| buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
-| `agent_timeout` | Builder + Backward | claude rc=124（SIGKILL at WORKER_TIMEOUT_SEC、預設 600s） | **salvage parse 一次**（idle-window guard 後 active agent 可能 disk 上有 valid output 但沒 exit 乾淨）：parse 返 terminal-success / decline → 直接 attach；返 non-terminal failure → fold 到 detail、走原 postmortem（寫 `.drafts/`、F55）+ buffer + 強制 exhaust（不再續 retry） | (helper 已 ++)；exhausted → status transition；salvage 成功時 reason 走 success/decline 而非 timeout | `direct_attempt` |
+| `agent_timeout` | Builder + Backward | claude rc=124（SIGKILL at WORKER_TIMEOUT_SEC、預設 600s） | **salvage parse 一次**（idle-window guard 後 active agent 可能 disk 上有 valid output 但沒 exit 乾淨）：parse 返 terminal-success / decline → 直接 attach；返 non-terminal failure → fold 到 detail、走原 postmortem（寫 `.drafts/`）+ buffer + 強制 exhaust（不再續 retry） | (helper 已 ++)；exhausted → status transition；salvage 成功時 reason 走 success/decline 而非 timeout | `direct_attempt` |
 | `agent_declined` | Builder | agent 寫 `-- decline: needs_decomposition`（unified directive system, 2026-05-10；舊名 `too_hard`） | terminal exit（不 buffer 自身）| **attempts++** + `entry_kind='Backward'`（路由用 entry_kind、不再灌 attempts 到 BUILDER_THRESHOLD） | `direct_attempt` |
 | `agent_infeasible` | Builder + Backward | agent 寫 `-- decline: unprovable`（含反例；舊名 `parent_type_infeasible`） | terminal exit（不 buffer 自身）| **attempts++** + goal `shelved` + `_propagate_shelve` | `infeasible_sub`（投到 parent goal、不到自己；filter `_NON_AGENT_REASONS` 排除 self） |
 | `parent_needs_fix` | Builder + Backward | agent 寫 `-- decline: return_to_parent`（含具體 fix hint：缺哪個 hypothesis / 換哪個結構） | terminal exit（不 buffer 自身）| **attempts++** + goal `shelved` + `_propagate_shelve`；description 投到 parent context 的 fix hint section | `infeasible_sub`（同上；renderer 用 `failure_reason` 區分 fix-hint vs counterexample） |
 | `agent_shelved` | Builder + Backward | agent 寫 `-- decline: shelve`（無反例、純 give up） | terminal exit（不 buffer 自身）| **attempts++** + goal `shelved` + `_propagate_shelve` | `infeasible_sub`（同上；soft 訊號、留給 Strategist 將來覆核） |
 | `agent_bailed` | Backward (rescue option d) | watchdog wall_cap → rescue spawn 中、agent 自評沒把握、寫 `_progress.md` 到 attempts_dir 後退出（無 patch.lean / 無 split） | terminal exit（不 buffer 自身）| **attempts++** + 過 SHELVE 才 shelve（goal 留 open / attempting、下次 dispatch 再派）；outer wrapper 把 `_progress.md` persist 到 `.drafts/backward_g<id>.md` 給下輪 cold-spawn 看 | `direct_attempt` |
-| `goal_no_longer_open` | Backward (F24-A) | parse 階段 race 偵測：lake build 完但 goal 已 proved/shelved | terminal exit（不 buffer 自身）| 走 generic `failed`/attempts++（dispatcher 寫 final dead_attempt） | `direct_attempt` |
+| `goal_no_longer_open` | Backward | parse 階段 race 偵測：lake build 完但 goal 已 proved/shelved | terminal exit（不 buffer 自身）| 走 generic `failed`/attempts++（dispatcher 寫 final dead_attempt） | `direct_attempt` |
 | `quota_exhausted` | Builder + Backward | rc=126（gemini quota 耗盡）| 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、不進 CONSEC | 不投影（infra） |
 | `missing_dep` | Builder + Backward | rc=127（CLI 缺）| 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、不進 CONSEC | 不投影（infra） |
-| `spawn_fast_fail` | Builder + Backward (F46) | rc≠0 且 wall-clock < 10s（claude.exe crash / cwd） | 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、CONSEC=10 觸發 daemon 退出 rc=2 | 不投影（infra） |
+| `spawn_fast_fail` | Builder + Backward | rc≠0 且 wall-clock < 10s（claude.exe crash / cwd） | 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、CONSEC=10 觸發 daemon 退出 rc=2 | 不投影（infra） |
 | `gateway_unreachable` | Builder + Backward (1db4e8c) | worker thread 收到 URLError / OSError(ECONNREFUSED/ECONNRESET/ENETUNREACH/ETIMEDOUT) / Windows WinError 10061/10054/64 — gateway HTTP transport 完全失聯 | 早返（dispatcher 端、不進 helper）| **不增 attempts**、設 30s cooldown、CONSEC=8 觸發 daemon 退出 rc=2（gateway 永久死亡時不無限重試） | 不投影（infra） |
 | `transient_timeout` | Builder + Backward (post-pilot fix) | worker thread 收到 `TimeoutError`（lsp_client.py:169 的 `$/lean/rpc/call` 超時、slot 競爭 RPC 等不到等）| 早返（dispatcher 端）| **不增 attempts**、設 30s cooldown、**不進 CONSEC**（slot 競爭是健康過載、不是 gateway 死、若併計 circuit breaker 會在 244-題 benchmark 下誤殺） | 不投影（infra） |
-| `superseded` (legacy) | pre-F56 Verify worker | F56 後不再產生新 row、僅歷史 db 有 | n/a | n/a | 不投影 |
+| `superseded` (legacy) | pre-collapse Verify worker | verify-collapse 後不再產生新 row、僅歷史 db 有 | n/a | n/a | 不投影 |
 
 **outcome 分類**（Phase 7 新增 / 變更）：
 
@@ -79,7 +79,7 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 | `goal_not_found` | Builder + Backward | `db.get_goal(goal_id)` 回 None（DB / dispatch race） |
 | `lean_file_missing` | Builder | parent goal 的 `.lean` 在 disk 不存在 |
 | `missing_parent_stub` | Backward | 讀 parent lean 失敗（OSError） |
-| `parent_stub_not_decomposable` | Backward | F52 skeleton 從 parent stub 抽不出簽名 |
+| `parent_stub_not_decomposable` | Backward | skeleton 從 parent stub 抽不出簽名 |
 | `goal_no_longer_open` | Backward | 跑到中途 goal status 已非 `'open'`（race protection、_abort 前回滾寫入的檔） |
 | `unknown_kind` | dispatcher | `_run_pipeline` 收到非 Builder/Backward 的 task_kind（unreachable in current code、enum 完整性保留） |
 
@@ -101,7 +101,7 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 | event_type | DB 來源 | digest 結構 | 注入到誰的 Context.md | actionability |
 |---|---|---|---|---|
 | `direct_attempt` | `dead_attempts` where `target_kind='Goal'` AND `failure_reason NOT IN _NON_AGENT_REASONS` | `failure_reason` + 截斷 `failure_detail` + 簡短 PROPOSAL excerpt | `dead_attempts.target_id`（自己這個 goal） | must-see |
-| `verify_failure` | `dead_attempts` where `target_kind='Strategy'`（pre-F56 row、F56 後不再產生） | strategy 的 `proposal_md` 截斷 + lake stderr 摘要 | `strategies.goal_id` | must-see |
+| `verify_failure` | `dead_attempts` where `target_kind='Strategy'`（pre-collapse row、verify-collapse 後不再產生） | strategy 的 `proposal_md` 截斷 + lake stderr 摘要 | `strategies.goal_id` | must-see |
 | `dead_strategy` | `strategies` where `status='dead'` AND `proposal_md != ''` AND ≥1 linked sub-goal | `proposal_md` 截斷 + 該 strategy 拆出的 sub-goal slug 列表 | `strategies.goal_id` | must-see |
 | `infeasible_sub` | `dead_attempts` where `failure_reason IN ('agent_infeasible','parent_needs_fix','agent_shelved')` JOIN `strategy_subgoals` 找 parent | sub-goal slug + `failure_reason` tag + 摘要（`_extract_root_cause` 抽 `## Root cause` / `## Fix hint` / `## Counterexample`）| **parent goal id**（不是失敗的 sub 自己） | must-see |
 | (filtered out) | `dead_attempts` where `failure_reason IN _NON_AGENT_REASONS` | — | — | 不投影 |
