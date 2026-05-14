@@ -30,12 +30,12 @@ python Benchmarks/minif2f/adapter.py \
     --limit 10
 
 # 3. Bulk-init every problem dir that has a Manifest.md
-python -m Tooling.cli init-batch Problems
+python -m Tooling.core.cli init-batch Problems
 #   (idempotent: hand-authored problems already in the DB stay put;
 #    only the newly imported minif2f_* dirs get registered)
 
 # 4. Run scoped — daemon only dispatches problems matching the pattern
-python -m Tooling.cli run --scope 'minif2f_%'
+python -m Tooling.core.cli run --scope 'minif2f_%'
 #   (SG, PN, etc remain in their current state but are not dispatched)
 ```
 
@@ -43,7 +43,7 @@ To remove a batch after a pilot:
 
 ```bash
 for d in Problems/minif2f_*; do
-    python -m Tooling.cli reset "$(basename $d)"
+    python -m Tooling.core.cli reset "$(basename $d)"
 done
 rm -rf Problems/minif2f_*
 rm -f Library/Misc/minif2f_*.lean

@@ -321,8 +321,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Skipped {len(result.skipped_filter)} theorem(s) "
               f"by --filter.")
     print(f"\nNext step: bulk-init the batch, then run scoped:")
-    print(f"  python -m Tooling.cli init-batch Problems/Minif2f")
-    print(f"  python -m Tooling.cli run --scope 'Minif2f.%'")
+    print(f"  python -m Tooling.core.cli init-batch Problems/Minif2f")
+    print(f"  python -m Tooling.core.cli run --scope 'Minif2f.%'")
     return 0
 
 

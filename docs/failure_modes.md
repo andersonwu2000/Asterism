@@ -99,7 +99,7 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 
 ## 3. Event types（goal_history v1）
 
-`Tooling/context.py` 的 `compile_context` 經 `events.py` 投影層產生 event 物件、注入到
+`Tooling/agent/context.py` 的 `compile_context` 經 `events.py` 投影層產生 event 物件、注入到
 `## Goal history` umbrella section（refactor 進行中、見 `goal_history_unified.md`）。
 
 | event_type | DB 來源 | digest 結構 | 注入到誰的 Context.md | actionability |

@@ -98,7 +98,7 @@ def start_gateway(workspace: Path,
     print(f"[gateway] launching subprocess (port {_gateway_port()}); "
           f"log={gateway_log}", flush=True)
     proc = subprocess.Popen(
-        [sys.executable, "-m", "Tooling.lsp_gateway"],
+        [sys.executable, "-m", "Tooling.lsp.gateway"],
         env=env,
         cwd=str(workspace),
         stdout=gateway_log_fp,

@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, ".")
-from Tooling.lsp_client import LspClient
+from Tooling.lsp.client import LspClient
 
 
 WARMUP = "import Mathlib\n"

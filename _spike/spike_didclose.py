@@ -14,7 +14,7 @@ from pathlib import Path
 import psutil
 
 sys.path.insert(0, ".")
-from Tooling.lsp_client import LspClient
+from Tooling.lsp.client import LspClient
 
 
 def list_lean_children(parent_pid: int) -> list[psutil.Process]:

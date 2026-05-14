@@ -13,12 +13,12 @@ Verify against the current tree before relying on prior-session memory.
 
 | Goal | Command |
 |---|---|
-| Inspect a Problem | `python -m Tooling.cli status <p> [--json]` |
-| Wipe a Problem | `python -m Tooling.cli reset <p>` |
-| Pre-flight | `python -m Tooling.cli doctor` |
-| Init a Problem | `python -m Tooling.cli init <p>` |
-| Run daemon | `python -m Tooling.cli run` |
-| List orphans | `python -m Tooling.cli prune --dry-run` |
+| Inspect a Problem | `python -m Tooling.core.cli status <p> [--json]` |
+| Wipe a Problem | `python -m Tooling.core.cli reset <p>` |
+| Pre-flight | `python -m Tooling.core.cli doctor` |
+| Init a Problem | `python -m Tooling.core.cli init <p>` |
+| Run daemon | `python -m Tooling.core.cli run` |
+| List orphans | `python -m Tooling.core.cli prune --dry-run` |
 
 Do not write ad-hoc `python -c "import sqlite3; ..."` or `rm Problems/<p>/proofs/...`
 — `status` / `reset` cover both.

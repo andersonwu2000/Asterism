@@ -190,7 +190,7 @@ Tooling/pipeline/
   _drafts.py     — partial-output 持久化
 ```
 
-`compile_context` 在 `Tooling/context.py`、`Tooling/agent.py` 只剩 WorkArea + spawn。pipeline 分檔已完成（commit `9638eed`）。
+`compile_context` 在 `Tooling/agent/context.py`、`Tooling/agent/runtime.py` 只剩 WorkArea + spawn。pipeline 分檔已完成（commit `9638eed`）。
 
 ---
 
