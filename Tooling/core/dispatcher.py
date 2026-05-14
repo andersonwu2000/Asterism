@@ -15,7 +15,7 @@ from pathlib import Path
 from .. import agent, pipeline
 from . import config
 from ..state import db, manifest, tree
-from ..quality import library, prune, verify
+from ..quality import prune, verify
 
 
 # Per-model defaults. Empirically:
@@ -937,17 +937,16 @@ def run(workspace: Path, *, once: bool = False,
         verify.verify_housekeeping(conn, workspace=workspace,
                                    manifests=manifests)
 
-        # Per-problem gate: fire reconcile/prune/promote/tree-refresh for
-        # every problem whose root is now proved. Pre-fix this was gated
-        # on `db.root_proved(conn)` (workspace-wide AND across all roots),
-        # which silently degraded to never-fires after the multi-problem
-        # init-batch refactor — a single shelved errata root blocked the
-        # gate for every other problem in the workspace, leaving 237/244
-        # miniF2F roots cascade-proved but never kernel-axiom-validated.
-        # Library re-exports + final TREE.md refresh + reconcile/prune
-        # are all per-problem concerns, so the gate must be per-problem.
-        # `library.maybe_promote` has an idempotence short-circuit so
-        # re-calls on already-promoted problems are cheap.
+        # Per-problem gate: fire reconcile / prune / integrity-check /
+        # tree-refresh for every problem whose root is now proved.
+        # Pre-fix this was gated on `db.root_proved(conn)` (workspace-
+        # wide AND across all roots), which silently degraded to
+        # never-fires after the multi-problem init-batch refactor — a
+        # single shelved errata root blocked the gate for every other
+        # problem in the workspace, leaving 237/244 miniF2F roots
+        # cascade-proved but never kernel-axiom-validated.
+        # `verify.root_integrity_gate` short-circuits on no-whitelist
+        # manifests; otherwise it pays one gateway-driven axiom_probe.
         for problem_name in manifests:
             if not db.root_proved(conn, problem=problem_name):
                 continue
@@ -962,15 +961,12 @@ def run(workspace: Path, *, once: bool = False,
             if removed:
                 print(f"[prune] {problem_name}: removed {len(removed)} "
                       f"orphan files", flush=True)
-            # Library promotion + verify-collapse — promote proved
-            # root to Library/<Topic>/ AND serve as the cascade
-            # integrity gate (single root axiom_probe). On sorryAx detection
-            # the call rolls back the cascade chain via
-            # `verify.rollback_cascade_chain`, which leaves the
-            # culprit goal in 'open' state for fresh re-Backward
-            # on the next tick. Idempotent (Library re-export
-            # content match short-circuits axiom_probe).
-            library.maybe_promote(
+            # Root integrity gate — single root-level axiom_probe under
+            # verify-collapse. On sorryAx detection, rolls back the
+            # cascade chain via `verify.rollback_cascade_chain`, which
+            # leaves the culprit goal in 'open' state for fresh re-
+            # Backward on the next tick.
+            verify.root_integrity_gate(
                 conn, workspace, problem_name, manifests[problem_name])
             # Final TREE.md refresh — the per-cascade write_for_target
             # ran before the verify_housekeeping that cascade-proved
@@ -978,7 +974,7 @@ def run(workspace: Path, *, once: bool = False,
             tree.write(conn, workspace, problem_name)
 
         # Workspace-wide exit: when every problem's root is proved.
-        # `library.maybe_promote` above may have called
+        # `verify.root_integrity_gate` above may have called
         # `rollback_cascade_chain` on sorryAx detection, reverting a
         # root to 'attempting'; in that case this check fails and the
         # dispatcher loop continues for re-Backward.

@@ -172,9 +172,20 @@ Backward 拆出新 sub-goal 時，框架查 DB 看是否有 statement 等價的 
 
 ---
 
-## 10. Library promotion
+## 10. Root integrity gate
 
-Root proved 後框架把這個 problem 的 goal tree 重新組裝、promote 進 `Library/<Topic>/`，下次別的 problem 就能在 `Lemma hints` 寫 `Library.<Topic>.<problem>` 引用。Axiom-gated（白名單外的軸不 promote）、idempotent。跨 problem 的 dedupe / lemma reuse 走這條路。
+Root proved 後 daemon 對該 problem 跑 `verify.root_integrity_gate` —
+`axiom_probe(Problems.<p>.Root, main)` 比對 Manifest `axioms_whitelist`、
+偵測到 sorryAx 就走 `bisect_sorryax_source` + `rollback_cascade_chain`、
+把元凶 strategy 撤回、下次 dispatcher tick 重 Backward。
+
+這是 verify-collapse 設計下「唯一一次 Lean elaboration」的時機 —
+per-level `verify_strategy` 純 mechanical alias rewrite。
+無 whitelist 的 Manifest 直接 accept、跳過 gateway 開銷。
+
+**Library promotion 自動機制已停用**：`Tooling/quality/library.py`（含
+`promote` / `maybe_promote` / topic 推斷 + INDEX 維護）保留為 dormant code、
+等之後依「人手決定哪些 problem 該進 Library」的新機制重新接上。
 
 ---
 

@@ -33,6 +33,7 @@ the actual failure rate without paying per-level Lean elaboration cost.
 from __future__ import annotations
 
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Literal
 
@@ -310,3 +311,77 @@ def cleanup_cascade_backups(
             except OSError:
                 pass
     return n
+
+
+def root_integrity_gate(
+    conn: sqlite3.Connection, workspace: Path, problem: str,
+    mfst: manifest.Manifest,
+) -> None:
+    """Single integrity gate that runs after a problem's root flips to
+    'proved'. Under verify-collapse, per-level `verify_strategy` is
+    mechanical (no Lean elaboration); the actual proof validation lives
+    here.
+
+    Performs `axiom_probe(Problems.<p>.Root, main)` against the
+    Manifest's `axioms_whitelist`. On rogue-axiom failure (sorryAx
+    leaked from a non-leaf strategy patch) invokes
+    `bisect_sorryax_source` + `rollback_cascade_chain` to revert the
+    cascade — framework cascade machinery will then re-Backward the
+    culprit goal on the next dispatcher tick.
+
+    Happy path: clean up cascade backups accumulated by
+    `verify_strategy` during cascade promotion.
+
+    No-op when Manifest has no `axioms_whitelist` (legacy behavior,
+    accept any axioms). No-op when root is not 'proved'.
+    """
+    from ..pipeline._axiom import axiom_probe
+    row = conn.execute(
+        "SELECT statement FROM goals "
+        "WHERE problem = ? AND origin = 'root' AND status = 'proved' "
+        "LIMIT 1",
+        (problem,),
+    ).fetchone()
+    if row is None:
+        return
+    if not mfst.axioms_whitelist:
+        # No whitelist → accept; still cleanup backups since the run
+        # itself reached the gate.
+        n = cleanup_cascade_backups(conn, workspace, problem)
+        if n:
+            print(f"[integrity] {problem}: cleaned {n} cascade backup(s) "
+                  f"(no whitelist)", flush=True)
+        return
+    try:
+        ok, axiom_msg = axiom_probe(
+            workspace,
+            fq_name=f"Problems.{problem}.main",
+            module=f"Problems.{problem}.Root",
+            whitelist=mfst.axioms_whitelist,
+        )
+    except Exception as e:
+        print(f"[integrity] {problem}: probe error ({e})",
+              flush=True, file=sys.stderr)
+        return
+    if not ok:
+        print(f"[integrity] {problem}: skip — {axiom_msg}", flush=True)
+        if "rogue axioms" in axiom_msg or "sorryAx" in axiom_msg:
+            culprit = bisect_sorryax_source(conn, workspace, problem)
+            if culprit is None:
+                print(f"[integrity] {problem}: sorryAx detected at root "
+                      f"but bisect found no source — manual investigation "
+                      f"required", flush=True, file=sys.stderr)
+                return
+            rolled = rollback_cascade_chain(
+                conn, workspace, int(culprit["id"]))
+            print(f"[integrity] {problem}: rolled back {rolled} "
+                  f"strategy/goal pair(s) after sorryAx in "
+                  f"strategy={culprit['id']} (goal "
+                  f"{culprit['goal_slug']})", flush=True)
+        return
+    # Happy path
+    print(f"[integrity] {problem}: root axioms ok {axiom_msg}", flush=True)
+    n = cleanup_cascade_backups(conn, workspace, problem)
+    if n:
+        print(f"[integrity] {problem}: cleaned {n} cascade backup(s)",
+              flush=True)
