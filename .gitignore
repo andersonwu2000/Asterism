@@ -49,3 +49,6 @@ _ext/
 
 # Local translated-prompt drafts; not committed (see 608bbc5 prior revert)
 Tooling/prompts_zhtw_ref/
+
+# Demo runtime artifacts written by demo/watcher.py
+demo/active/
