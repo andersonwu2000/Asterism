@@ -694,11 +694,10 @@ def test_sorry_hint_scoped_to_patch_not_substubs() -> None:
 
 
 def test_manifest_hint_placeholder_not_appended_when_empty() -> None:
-    """P1-#9 (d): when a Manifest hint is just `Foo.bar` with no
-    commentary, the rendered Mathlib-lemmas bullet must NOT carry a
-    spurious `(manifest hint)` placeholder — was previously a fallback
-    string, now silently omitted."""
-    from Tooling import agent as ag
+    """When a Manifest hint is just `Foo.bar` with no commentary, the
+    rendered Mathlib-lemmas bullet must NOT carry a spurious
+    `(manifest hint)` placeholder — was previously a fallback string,
+    now silently omitted."""
     from Tooling.manifest import Manifest
     # Stub lemma_lookup to "find" the name with a fake signature
     from unittest.mock import patch as _patch
@@ -710,7 +709,7 @@ def test_manifest_hint_placeholder_not_appended_when_empty() -> None:
     from Tooling import context as _ctx
     with _patch.object(_ctx.lemma_lookup, "lookup_batch",
                        return_value={"Nat.factorial": fake_info}):
-        section = ag._section_mathlib_hints_stable(mfst,
+        section = _ctx._section_mathlib_hints_stable(mfst,
                                              workspace=Path("/tmp"))
     body = "\n".join(section)
     assert "Nat.factorial" in body
@@ -722,7 +721,6 @@ def test_manifest_hint_keeps_real_commentary() -> None:
     """When a Manifest hint DOES carry author commentary
     (e.g. `Foo.bar — explanation`), preserve it next to the resolved
     signature."""
-    from Tooling import agent as ag
     from Tooling.manifest import Manifest
     from unittest.mock import patch as _patch
     mfst = Manifest(problem="p", statement="T",
@@ -733,7 +731,7 @@ def test_manifest_hint_keeps_real_commentary() -> None:
     from Tooling import context as _ctx
     with _patch.object(_ctx.lemma_lookup, "lookup_batch",
                        return_value={"Nat.factorial": fake_info}):
-        section = ag._section_mathlib_hints_stable(mfst,
+        section = _ctx._section_mathlib_hints_stable(mfst,
                                              workspace=Path("/tmp"))
     body = "\n".join(section)
     assert "n! is positive" in body
