@@ -11,8 +11,8 @@ from typing import Any
 
 import pytest
 
-from Tooling import config
-from Tooling.cli import cmd_doctor, cmd_init
+from Tooling.core import config
+from Tooling.core.cli import cmd_doctor, cmd_init
 
 
 _MIN_MANIFEST = (

@@ -4,7 +4,7 @@ from __future__ import annotations
 import sqlite3
 import pytest
 
-from Tooling import db
+from Tooling.state import db
 
 
 @pytest.fixture
@@ -96,7 +96,7 @@ def _stub_axiom_probe_by_default(monkeypatch: pytest.MonkeyPatch):
     def _stub_ok(*args, **kwargs):
         return True, "axioms ok: [] (test stub)"
     from Tooling.pipeline import _axiom
-    from Tooling import gateway_lifecycle as _gl
+    from Tooling.lsp import lifecycle as _gl
     monkeypatch.setattr(_axiom, "axiom_probe_file", _stub_ok)
     monkeypatch.setattr(_axiom, "axiom_probe", _stub_ok)
 

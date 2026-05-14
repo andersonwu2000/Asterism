@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import db, prune
+from Tooling.state import db
+from Tooling.quality import prune
 
 
 def _seed_problem(conn: sqlite3.Connection, name: str = "p") -> None:

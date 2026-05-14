@@ -19,7 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import agent, db, manifest, pipeline
+from Tooling import agent, pipeline
+from Tooling.state import db, manifest
 
 
 def _seed_root_goal(tmp_path: Path, conn: sqlite3.Connection) -> int:

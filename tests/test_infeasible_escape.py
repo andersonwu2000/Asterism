@@ -22,8 +22,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from Tooling import db
-from Tooling.dispatcher import cascade_one
+from Tooling.state import db
+from Tooling.core.dispatcher import cascade_one
 
 
 # ---------------------------------------------------------------------

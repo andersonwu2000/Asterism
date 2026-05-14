@@ -33,7 +33,7 @@ def _gateway_port(workspace: Path | None = None) -> int:
     """Resolve gateway HTTP port via env / yaml / default chain. Both
     daemon-side (this module) and gateway-side (lsp_gateway.main) read
     the same config so they always agree."""
-    from . import config as _cfg
+    from ..core import config as _cfg
     return _cfg.get(
         "gateway.port", default=8765,
         env_var="ASTERISM_GATEWAY_PORT", cast=int,

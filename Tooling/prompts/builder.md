@@ -78,5 +78,5 @@ Examples:
 Mathlib at `.lake/packages/mathlib/Mathlib/`. Pick by what you have — names drift across versions (`pow_le_pow_left` → `pow_le_pow_left₀`), so verify before citing:
 
 - name: `rg -n "(theorem|lemma) <name>\b" .lake/packages/mathlib/Mathlib/`
-- type pattern: `python -m Tooling.loogle '<pattern>'` (e.g. `'_ ^ _ = ENNReal.ofReal _'`)
+- type pattern: `python -m Tooling.knowledge.loogle '<pattern>'` (e.g. `'_ ^ _ = ENNReal.ofReal _'`)
 - notation / symbol: `rg -n "<symbol>" .lake/packages/mathlib/Mathlib/`

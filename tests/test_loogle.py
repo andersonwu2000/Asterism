@@ -18,7 +18,7 @@ from urllib.error import HTTPError, URLError
 
 import pytest
 
-from Tooling import loogle
+from Tooling.knowledge import loogle
 
 
 # ---------------------------------------------------------------------

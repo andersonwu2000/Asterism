@@ -60,7 +60,7 @@ def _reflection_enabled(workspace: Path | None) -> bool:
     Operator emergency switch: set `lessons.reflection_enabled: false`
     in Asterism.yaml (or `ASTERISM_LESSONS_REFLECTION_ENABLED=false` env)
     to disable reflection without redeploying."""
-    from .. import config
+    from ..core import config
     raw = config.get(
         "lessons.reflection_enabled",
         default=True,

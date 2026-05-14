@@ -20,7 +20,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from . import db
+from ..state import db
 
 
 def _lean_path_to_module(workspace: Path, lean_path: Path) -> str:

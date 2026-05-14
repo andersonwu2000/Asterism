@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from Tooling.diagnostics import (
+from Tooling.quality.diagnostics import (
     annotate_failure_detail,
     parse_lake_stderr,
     strip_lake_noise,
@@ -119,7 +119,7 @@ def test_annotate_handles_none() -> None:
 
 def test_smart_truncate_short_stderr_passthrough() -> None:
     """If stderr is already under budget, return verbatim."""
-    from Tooling.diagnostics import smart_truncate_stderr
+    from Tooling.quality.diagnostics import smart_truncate_stderr
     text = "error: foo\nwarning: bar"
     assert smart_truncate_stderr(text, budget=2000) == text
 
@@ -128,7 +128,7 @@ def test_smart_truncate_keeps_error_when_lean_path_dominates() -> None:
     """F13 root cause: Windows lake build emits LEAN_PATH=...;...;... as
     a giant first chunk. Naive truncation cuts the actual error. Smart
     truncate must surface error lines first."""
-    from Tooling.diagnostics import smart_truncate_stderr
+    from Tooling.quality.diagnostics import smart_truncate_stderr
     lean_path = "trace: .> LEAN_PATH=" + ";".join(
         f"D:/lake/packages/p{i}/lib/lean" for i in range(120)
     )  # ~3000+ chars
@@ -144,7 +144,7 @@ def test_smart_truncate_dedupes_repeated_error_lines() -> None:
     in the surfaced section (the head-trace fill might re-include it
     verbatim, so we only check the count after dedupe — that the
     extracted block has it once)."""
-    from Tooling.diagnostics import smart_truncate_stderr
+    from Tooling.quality.diagnostics import smart_truncate_stderr
     error = "error: bad import 'X'"
     # Force truncation by exceeding budget
     long_filler = "z" * 3000
@@ -170,7 +170,7 @@ def test_annotate_uses_smart_truncate_then_finds_hint() -> None:
 def test_smart_truncate_preserves_lean_unknown_identifier() -> None:
     """Lean errors like `unknown identifier 'foo'` (without file:line:col
     prefix) must also be preserved."""
-    from Tooling.diagnostics import smart_truncate_stderr
+    from Tooling.quality.diagnostics import smart_truncate_stderr
     long_trace = "x" * 3000
     stderr = long_trace + "\nerror: unknown identifier 'foo'\n"
     out = smart_truncate_stderr(stderr, budget=500)

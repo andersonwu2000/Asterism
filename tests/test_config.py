@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import config
+from Tooling.core import config
 
 
 # Reset the module-level cache around every test so workspace=tmp_path

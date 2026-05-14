@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import spawn_sandbox
-from Tooling.spawn_sandbox import (
+from Tooling.agent import sandbox as spawn_sandbox
+from Tooling.agent.sandbox import (
     MANIFEST_NAME,
     SpawnWorkspace,
     force_rollback_sandbox,

@@ -43,7 +43,7 @@ def render(workspace: Path, mfst: manifest.Manifest) -> str:
     # break a top-level import here. brief.render is only ever called
     # off the dispatch path (cli init / daemon startup), so the
     # one-time cost of the lazy import is moot.
-    from . import context
+    from ..agent import context
     sections: list[list[str]] = [
         _section_brief_header(mfst),
         context._section_sandbox(),

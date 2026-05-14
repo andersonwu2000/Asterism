@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import os
 
-from .. import config
+from ..core import config
 from .base import LLMRequest, Provider
 
 

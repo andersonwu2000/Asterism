@@ -16,8 +16,10 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import context_files, db, lemma_lookup, manifest
-from .pipeline import events
+from . import context_files
+from ..state import db, manifest
+from ..knowledge import lemma_lookup
+from ..pipeline import events
 
 
 # ---------------------------------------------------------------------
@@ -403,7 +405,7 @@ def _section_proved_goals(conn: sqlite3.Connection,
 def _section_library_available(mfst, workspace) -> list[str]:
     """List Library/<Topic>/INDEX.md entries for the topics inferred
     from `mfst.lemma_hints` (any `Library.<Topic>.*` entries)."""
-    from . import library  # local import to avoid cycle at module load
+    from ..quality import library  # local import to avoid cycle at module load
     topics = library.topics_from_hints(mfst.all_hints)
     if not topics:
         return []
@@ -605,7 +607,7 @@ def _section_prior_partial(kind: str | None, problem_dir: Path,
     if kind not in ("backward", "builder"):
         return []
     try:
-        from .pipeline import _drafts
+        from ..pipeline import _drafts
     except ImportError:
         return []
     body = _drafts.read_partial(problem_dir=problem_dir, kind=kind,

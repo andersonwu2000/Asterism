@@ -54,8 +54,8 @@ from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from . import db
-from .lsp_client import LspClient
+from ..state import db
+from .client import LspClient
 
 
 # ─── Worker slot ────────────────────────────────────────────────
@@ -1057,7 +1057,7 @@ def main() -> None:
               file=sys.stderr, flush=True)
         sys.exit(2)
     workspace = Path(workspace_env).resolve()
-    from . import config as _cfg
+    from ..core import config as _cfg
     port = _cfg.get(
         "gateway.port", default=8765,
         env_var="ASTERISM_GATEWAY_PORT", cast=int,

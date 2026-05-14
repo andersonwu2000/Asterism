@@ -28,7 +28,9 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import agent, cli, db, dispatcher, pipeline
+from Tooling import agent, pipeline
+from Tooling.core import cli, dispatcher
+from Tooling.state import db
 
 
 def _seed_workspace(tmp_path: Path) -> Path:
@@ -75,7 +77,7 @@ def test_e2e_root_proved_through_dispatcher(
     #     ok + empty axioms → proved
     # This short-circuits Phase 1 and exercises the cascade →
     # root_proved path without spawning an LLM.
-    from Tooling import gateway_lifecycle
+    from Tooling.lsp import lifecycle as gateway_lifecycle
     def fake_verify(target_path, *, write_olean=True, axioms_for=None, **kw):
         if not write_olean:
             return {
@@ -129,7 +131,7 @@ def test_e2e_root_proved_through_dispatcher(
     # subprocess at startup (mathlib pre-warm). For e2e test purposes
     # we stub start_gateway to a no-op — the conftest urlopen stub
     # handles per-spawn /register + /release.
-    from Tooling import gateway_lifecycle
+    from Tooling.lsp import lifecycle as gateway_lifecycle
 
     class _NoopGw:
         def poll(self): return None

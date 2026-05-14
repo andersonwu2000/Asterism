@@ -22,7 +22,9 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import db, dispatcher, verify
+from Tooling.state import db
+from Tooling.core import dispatcher
+from Tooling.quality import verify
 
 
 # ---------------------------------------------------------------------

@@ -16,7 +16,7 @@ import sqlite3
 
 import pytest
 
-from Tooling import db
+from Tooling.state import db
 from Tooling.pipeline import _parse_entry_kind
 
 

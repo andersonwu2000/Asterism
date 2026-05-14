@@ -16,7 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import agent, db, manifest, pipeline
+from Tooling import agent, pipeline
+from Tooling.state import db, manifest
 from Tooling.llm.base import SpawnRC
 
 
@@ -420,7 +421,7 @@ def test_backward_leaf_bypass_axiom_violation_rejects_at_acceptance(
     axiom_violation as a retryable failure (analogous to
     lake_build_error)."""
     gid = _seed_root_goal(tmp_path, conn)
-    from Tooling import gateway_lifecycle as _gl
+    from Tooling.lsp import lifecycle as _gl
     def _stub_verify_with_sorry_ax(target_path, *, write_olean=True,
                                     axioms_for=None, timeout=120.0,
                                     workspace=None):

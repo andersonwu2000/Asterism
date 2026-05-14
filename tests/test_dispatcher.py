@@ -7,9 +7,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from Tooling import db
-from Tooling import dispatcher as _dispatcher
-from Tooling.dispatcher import next_worker_kind, cascade_one, SHELVE_THRESHOLD
+from Tooling.state import db
+from Tooling.core import dispatcher as _dispatcher
+from Tooling.core.dispatcher import next_worker_kind, cascade_one, SHELVE_THRESHOLD
 
 
 # ---------------------------------------------------------------------
@@ -647,7 +647,7 @@ def test_open_goals_filters_orphan_subgoals(conn: sqlite3.Connection) -> None:
 
 
 def test_recover_at_startup_clears_queue(conn: sqlite3.Connection) -> None:
-    from Tooling.dispatcher import _recover_at_startup
+    from Tooling.core.dispatcher import _recover_at_startup
     db.enqueue(conn, kind="Backward", target_id="42")
     db.enqueue(conn, kind="Verify", target_id="9")
     _recover_at_startup(conn)
@@ -661,7 +661,7 @@ def test_recover_at_startup_kills_half_baked_strategies(
     """A 'proposed' strategy with empty scratch_path is from a Backward
     that crashed mid-flight (INSERT done, file/UPDATE not). Recovery must
     mark it 'dead' so subsequent Verify dispatch ignores it."""
-    from Tooling.dispatcher import _recover_at_startup
+    from Tooling.core.dispatcher import _recover_at_startup
     gid = _seed_goal(conn)
     half_baked = db.insert_strategy(conn, goal_id=gid,
                                      lean_path="Problems/p/Root.lean",
@@ -722,7 +722,7 @@ def test_recover_at_startup_clears_orphan_attempts_dirs(
     can keep writing to dead parent's dir. Startup must rmtree everything
     in .attempts/ (it's pure transient state; any pre-existing dir is
     stale by definition)."""
-    from Tooling.dispatcher import _recover_at_startup
+    from Tooling.core.dispatcher import _recover_at_startup
     attempts = tmp_path / ".attempts"
     (attempts / "stale-pid-aaa").mkdir(parents=True)
     (attempts / "stale-pid-aaa" / "PROPOSAL.md").write_text("zombie")
@@ -740,7 +740,7 @@ def test_recover_at_startup_skips_filesystem_when_workspace_none(
     conn: sqlite3.Connection,
 ) -> None:
     """DB-only call (test fixtures, etc.) must not crash."""
-    from Tooling.dispatcher import _recover_at_startup
+    from Tooling.core.dispatcher import _recover_at_startup
     _recover_at_startup(conn)  # workspace=None default
     # No assertion needed; reaching here means no exception.
 
@@ -751,7 +751,7 @@ def test_recover_at_startup_restores_backup_when_goal_not_proved(
     """F3: a `.lean.backup` left by a killed Builder/Verify means the
     pipeline didn't commit success. Goal is still open in DB. The
     current .lean may hold a half-applied patch; restore the backup."""
-    from Tooling.dispatcher import _recover_at_startup
+    from Tooling.core.dispatcher import _recover_at_startup
     _seed_problem_with_root(conn)  # creates goal at Problems/p/Root.lean
 
     proofs = tmp_path / "Problems" / "p"
@@ -772,7 +772,7 @@ def test_recover_at_startup_discards_backup_when_goal_proved(
     — the daemon died in the race window between lake-build success and
     backup.unlink. Current .lean is the validated proof; restoring the
     backup would destroy it. Just discard the backup."""
-    from Tooling.dispatcher import _recover_at_startup
+    from Tooling.core.dispatcher import _recover_at_startup
     gid = _seed_problem_with_root(conn)
     db.update_goal_status(conn, gid, "proved")
 
@@ -791,7 +791,7 @@ def test_recover_at_startup_handles_verify_backup(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
     """F3: same logic for `.lean.verify_backup` from killed Verify."""
-    from Tooling.dispatcher import _recover_at_startup
+    from Tooling.core.dispatcher import _recover_at_startup
     _seed_problem_with_root(conn)
 
     proofs = tmp_path / "Problems" / "p"
@@ -810,7 +810,7 @@ def test_recover_at_startup_removes_tmp_files(
 ) -> None:
     """F3: .lean.tmp from killed Verify (between write and os.replace)
     holds partial content. Never safe to use; always unlink."""
-    from Tooling.dispatcher import _recover_at_startup
+    from Tooling.core.dispatcher import _recover_at_startup
     proofs = tmp_path / "Problems" / "p"
     proofs.mkdir(parents=True)
     (proofs / "Root.lean").write_text("OK")
@@ -841,7 +841,7 @@ def test_recover_at_startup_reopens_stuck_attempting_goals(
     """Goal in 'attempting' with no surviving 'proposed' strategy is stuck
     — bfs_refill won't dispatch it. Recovery must reset to 'open'.
     Goals with at least one 'proposed' strategy are left alone."""
-    from Tooling.dispatcher import _recover_at_startup
+    from Tooling.core.dispatcher import _recover_at_startup
     # Stuck root: 'attempting' with only a 'dead' strategy
     stuck = _seed_goal(conn)
     db.update_goal_status(conn, stuck, "attempting")
@@ -923,7 +923,7 @@ def test_queue_count_helper(conn: sqlite3.Connection) -> None:
 def test_bfs_refill_backward_capped_at_one(conn: sqlite3.Connection) -> None:
     """F37 — for an open goal whose next worker is Backward, bfs_refill
     enqueues exactly one entry (passive trigger; sequential expansion)."""
-    from Tooling.dispatcher import bfs_refill, BUILDER_THRESHOLD
+    from Tooling.core.dispatcher import bfs_refill, BUILDER_THRESHOLD
     gid = _seed_goal(conn)
     # Bump attempts past BUILDER_THRESHOLD so next_worker_kind escalates
     # to Backward (the entry_kind=Builder default would otherwise route
@@ -936,7 +936,7 @@ def test_bfs_refill_backward_capped_at_one(conn: sqlite3.Connection) -> None:
 
 def test_bfs_refill_builder_capped_at_one(conn: sqlite3.Connection) -> None:
     """F37 — Builder is also single-attempt-per-goal."""
-    from Tooling.dispatcher import bfs_refill
+    from Tooling.core.dispatcher import bfs_refill
     gid = _seed_goal(conn)  # default entry_kind=Builder, attempts=0 → Builder
     bfs_refill(conn, running=set())
     assert db.queue_count(conn, target_id=str(gid), kind="Builder") == 1
@@ -947,7 +947,7 @@ def test_bfs_refill_no_duplicate_when_already_running(
 ) -> None:
     """F37 — bfs_refill must not enqueue if a pipeline of the same
     (target_id, kind) is already in flight (in `running` set)."""
-    from Tooling.dispatcher import bfs_refill
+    from Tooling.core.dispatcher import bfs_refill
     gid = _seed_goal(conn)
     bfs_refill(conn, running={(str(gid), "Backward")})
     assert db.queue_count(conn, target_id=str(gid), kind="Backward") == 0
@@ -960,7 +960,7 @@ def test_bfs_refill_scope_filters_by_problem(
     by `python -m Tooling.cli run --scope <pattern>` so a benchmark
     daemon doesn't dispatch unrelated research problems sharing the
     workspace."""
-    from Tooling.dispatcher import bfs_refill
+    from Tooling.core.dispatcher import bfs_refill
     gid_research = _seed_goal(conn, problem="sylvester_gallai")
     # Second problem via direct insert (avoid _seed_goal's duplicate-problem
     # behavior).
@@ -986,7 +986,7 @@ def test_bfs_refill_no_scope_dispatches_all(
     conn: sqlite3.Connection,
 ) -> None:
     """Without scope arg, dispatch is workspace-wide (back-compat)."""
-    from Tooling.dispatcher import bfs_refill
+    from Tooling.core.dispatcher import bfs_refill
     gid1 = _seed_goal(conn, problem="sg")
     conn.execute(
         "INSERT INTO problems (name, manifest_path, created_at) "

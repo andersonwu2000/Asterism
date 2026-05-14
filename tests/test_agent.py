@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import db
-from Tooling.context import compile_context
-from Tooling.manifest import Manifest
+from Tooling.state import db
+from Tooling.agent.context import compile_context
+from Tooling.state.manifest import Manifest
 
 
 def _empty_manifest(name: str = "p") -> Manifest:
@@ -242,7 +242,7 @@ def test_context_sandbox_section_always_rendered_for_builder(
     contracts) must appear so Builder agents know which paths are
     allowed without permission prompts. Lives in BRIEF.md (cross-spawn
     stable); compile_context inlines it into Context.md."""
-    from Tooling import brief
+    from Tooling.state import brief
     gid = _seed_problem_and_goal(conn)
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True, exist_ok=True)
@@ -266,7 +266,7 @@ def test_context_strategy_naming_only_for_backward_with_sid(
     """The Backward-specific naming section appears only when a
     strategy_id is supplied (Backward dispatch path). Builder kind
     has no sub-goals so this section stays absent."""
-    from Tooling import brief
+    from Tooling.state import brief
     gid = _seed_problem_and_goal(conn)
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True, exist_ok=True)
@@ -353,7 +353,7 @@ def test_context_emits_lemma_references_when_lookup_finds(
     LemmaInfo → Context.md's `## Mathlib lemmas` section (the merged
     successor of the F20 `## Lemma references` block) lists it with
     its resolved signature."""
-    from Tooling import lemma_lookup
+    from Tooling.knowledge import lemma_lookup
 
     gid = _seed_problem_and_goal(conn)
     _record_pipeline(conn, "pid-q", "Builder", str(gid), "Goal")
@@ -393,7 +393,7 @@ def test_context_skips_lemma_references_when_lookup_finds_nothing(
     """If every name resolves to found=False, don't emit an empty
     section — the raw stderr already carries the error and a header
     with no bullets is just clutter."""
-    from Tooling import lemma_lookup
+    from Tooling.knowledge import lemma_lookup
 
     gid = _seed_problem_and_goal(conn)
     _record_pipeline(conn, "pid-q", "Builder", str(gid), "Goal")
@@ -425,7 +425,7 @@ def test_context_lemma_lookup_failure_is_swallowed(
 ) -> None:
     """If lookup_batch crashes (e.g. no lake on PATH), Context.md must
     still be written. The agent can degrade gracefully without F20."""
-    from Tooling import lemma_lookup
+    from Tooling.knowledge import lemma_lookup
 
     gid = _seed_problem_and_goal(conn)
     _record_pipeline(conn, "pid-q", "Builder", str(gid), "Goal")
@@ -458,7 +458,8 @@ def test_brief_includes_manifest_hint_names(
     resolution moved out of compile_context (per-spawn) into brief
     render (cross-spawn cache, paid once at cli init / daemon
     startup) as part of the BRIEF.md split."""
-    from Tooling import brief, lemma_lookup
+    from Tooling.state import brief
+    from Tooling.knowledge import lemma_lookup
     captured: list[list[str]] = []
 
     def _spy(names, ws):
@@ -517,7 +518,8 @@ def test_workarea_exit_releases_gateway_session(
     pipelines) leaks — gateway accumulates SessionMetadata
     indefinitely (observed at /health: sessions_active=12 with
     workers_busy=0 after a run with 5-6 spawn fails on quota)."""
-    from Tooling import agent, gateway_lifecycle
+    from Tooling import agent
+    from Tooling.lsp import lifecycle as gateway_lifecycle
 
     pid = "test-pid-release"
     captured: list[str] = []
@@ -537,7 +539,8 @@ def test_workarea_exit_no_release_when_no_token(
     """If the pipeline never wrote a token (e.g. spawn-side
     _write_mcp_config crashed before /register completed), __exit__ must
     not call release."""
-    from Tooling import agent, gateway_lifecycle
+    from Tooling import agent
+    from Tooling.lsp import lifecycle as gateway_lifecycle
 
     captured: list[str] = []
     monkeypatch.setattr(gateway_lifecycle, "release_session",

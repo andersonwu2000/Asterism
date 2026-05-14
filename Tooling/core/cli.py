@@ -13,7 +13,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import brief, db, dispatcher, manifest, prune, tree
+from ..state import brief, db, manifest, tree
+from . import dispatcher
+from ..quality import prune
 
 
 # Daemon log lifecycle.
@@ -67,7 +69,7 @@ def _log_filename(workspace: Path) -> str:
     # with backward's model when they differ so a mixed-model run is
     # visible from the filename.
     try:
-        from .llm import claude_cli as _cc
+        from ..llm import claude_cli as _cc
         b_model = _cc.resolve_model("builder")
         w_model = _cc.resolve_model("backward")
         model = b_model if b_model == w_model else f"{b_model}+{w_model}"
@@ -884,7 +886,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     # Gemini CLI — use the same Windows-aware resolver the provider does
     # (npm ships gemini as a bash shim + gemini.cmd; subprocess.run on
     # Windows can only launch the .cmd).
-    from .llm.gemini_cli import resolve_gemini_executable
+    from ..llm.gemini_cli import resolve_gemini_executable
     gemini_exe = resolve_gemini_executable()
     if gemini_exe:
         try:
@@ -1036,7 +1038,7 @@ def cmd_config(args: argparse.Namespace) -> int:
     interact.
     """
     from . import config as _cfg
-    from .llm import claude_cli as _cc
+    from ..llm import claude_cli as _cc
     rows = [
         ("dispatch.pool",
          _cfg.get("dispatch.pool", env_var="ASTERISM_POOL", default=12, cast=int)),

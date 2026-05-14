@@ -7,8 +7,8 @@ Grep which handles keyword/name search.
 
 Agent-facing entry point (invoked through the restricted Bash tool):
 
-    python -m Tooling.loogle 'Nat.factorial _ = _'
-    python -m Tooling.loogle '?p.Prime → ∏ _ ∈ _, _ = -1'
+    python -m Tooling.knowledge.loogle 'Nat.factorial _ = _'
+    python -m Tooling.knowledge.loogle '?p.Prime → ∏ _ ∈ _, _ = -1'
 
 Output format: top-K matches, one per line:
     <name>  ::  <type>  [<module>]
@@ -18,7 +18,7 @@ matches. On network failure: prints diagnosis to stderr, rc=1 so
 the agent can fall back to Grep or decline.
 
 Why a CLI shim rather than a Python tool the agent calls directly:
-the claude CLI's `--allowed-tools "Bash(python -m Tooling.loogle*)"`
+the claude CLI's `--allowed-tools "Bash(python -m Tooling.knowledge.loogle*)"`
 restriction whitelists exactly this command pattern. Other Bash
 calls remain blocked — agent can't accidentally `rm -rf` or curl
 arbitrary URLs.
@@ -103,7 +103,7 @@ def _ensure_utf8_stdout() -> None:
 def main(argv: list[str] | None = None) -> int:
     _ensure_utf8_stdout()
     p = argparse.ArgumentParser(
-        prog="python -m Tooling.loogle",
+        prog="python -m Tooling.knowledge.loogle",
         description="Loogle type-pattern search over Mathlib.",
     )
     p.add_argument("pattern", help="Loogle query (type pattern)")

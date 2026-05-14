@@ -13,7 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import db, dedupe
+from Tooling.state import db
+from Tooling.quality import dedupe
 
 
 # ---------------------------------------------------------------------
@@ -528,7 +529,7 @@ def _patch_subprocess(monkeypatch: pytest.MonkeyPatch, *,
         return FakeResult()
 
     monkeypatch.setattr(openai_api_dedupe := __import__(
-        "Tooling.dedupe", fromlist=["subprocess"]).subprocess,
+        "Tooling.quality.dedupe", fromlist=["subprocess"]).subprocess,
                         "run", fake_run)
 
 
@@ -763,7 +764,7 @@ def test_batch_provable_via_apply_template_handles_hypothesis_extension(
             returncode = 0
         return _R()
 
-    import Tooling.dedupe as _d
+    import Tooling.quality.dedupe as _d
     monkeypatch.setattr(_d.subprocess, "run", capture_run)
 
     # cand has extra hypothesis (hcard) vs canonical

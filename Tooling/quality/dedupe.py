@@ -85,7 +85,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import db
+from ..state import db
 
 
 _THM_HEAD_RE = re.compile(r"\btheorem\s+\S+")
@@ -546,7 +546,7 @@ def find_canonicals_batch(
             # DB stores workspace-relative lean_path strings; resolve
             # to absolute before module conversion.
             anc_lean_path = workspace / anc_row["lean_path"]
-            from .pipeline._lake import lean_path_to_module
+            from ..pipeline._lake import lean_path_to_module
             try:
                 canonical_module = lean_path_to_module(workspace, anc_lean_path)
             except (ValueError, OSError):

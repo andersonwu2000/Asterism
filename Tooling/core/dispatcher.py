@@ -12,10 +12,10 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor, FIRST_COMPLETED, wait
 from pathlib import Path
 
-from . import (
-    agent, config, db, library, manifest, pipeline, prune, tree,
-    verify,
-)
+from .. import agent, pipeline
+from . import config
+from ..state import db, manifest, tree
+from ..quality import library, prune, verify
 
 
 # Per-model defaults. Empirically:
@@ -55,8 +55,8 @@ TICK_TIMEOUT = 30  # seconds
 # Recovery moved to Tooling/recovery.py. Re-exported here for
 # back-compat with existing test imports (`dispatcher._recover_at_startup`,
 # `dispatcher._sweep_lean_backups`).
-from .recovery import recover_at_startup as _recover_at_startup  # noqa: E402,F401
-from .recovery import sweep_lean_backups as _sweep_lean_backups  # noqa: E402,F401
+from ..state.recovery import recover_at_startup as _recover_at_startup  # noqa: E402,F401
+from ..state.recovery import sweep_lean_backups as _sweep_lean_backups  # noqa: E402,F401
 
 
 def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
@@ -761,7 +761,7 @@ def run(workspace: Path, *, once: bool = False,
     # Runs after _recover_at_startup so DB state is consistent before
     # filesystem state is reconciled. Sweep skips sandboxes whose owner
     # daemon is alive (guards against concurrent daemons).
-    from . import spawn_sandbox as _spawn_sandbox
+    from ..agent import sandbox as _spawn_sandbox
     _sb_counters = _spawn_sandbox.sweep_orphan_sandboxes(workspace)
     if any(_sb_counters[k] for k in
            ("rolled_back", "deleted_committed", "corrupt_manifest",
@@ -773,7 +773,7 @@ def run(workspace: Path, *, once: bool = False,
     # (daemon has no hot-reload; startup is the canonical refresh point).
     # Lemma resolution can take ~30s when Manifest hints are dense; only
     # paid once per startup, off the dispatch path.
-    from . import brief
+    from ..state import brief
     brief.write_for_all_problems(conn, workspace, manifests)
 
     scope_label = f", scope={scope!r}" if scope else ""
@@ -789,7 +789,7 @@ def run(workspace: Path, *, once: bool = False,
     # per daemon startup. start_gateway registers an atexit handler so
     # the subprocess dies with the daemon — we don't need to track the
     # Popen ourselves here.
-    from . import gateway_lifecycle
+    from ..lsp import lifecycle as gateway_lifecycle
     gateway_lifecycle.start_gateway(workspace)
 
     while True:

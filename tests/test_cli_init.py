@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from Tooling.cli import _classify_root_body, cmd_init, cmd_init_batch
+from Tooling.core.cli import _classify_root_body, cmd_init, cmd_init_batch
 
 
 # ---------------------------------------------------------------------

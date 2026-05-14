@@ -11,7 +11,8 @@ import shutil
 import uuid
 from pathlib import Path
 
-from . import config, llm
+from ..core import config
+from .. import llm
 
 
 WORKER_TIMEOUT_SEC = 900  # 15 min. Phase 2 LSP cantor_xi had 6
@@ -77,7 +78,7 @@ class WorkArea:
             except OSError:
                 token = ""
             if token:
-                from . import gateway_lifecycle
+                from ..lsp import lifecycle as gateway_lifecycle
                 gateway_lifecycle.release_session(token)
         for p in (self.attempts, self.backup):
             if p.exists():

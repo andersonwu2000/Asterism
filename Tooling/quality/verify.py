@@ -36,9 +36,9 @@ import sqlite3
 from pathlib import Path
 from typing import Literal
 
-from . import db, manifest
-from .pipeline._lake import lean_path_to_module
-from .pipeline._skeleton import (
+from ..state import db, manifest
+from ..pipeline._lake import lean_path_to_module
+from ..pipeline._skeleton import (
     promote_to_alias, rollback_promote, verify_backup_path,
 )
 
@@ -115,7 +115,7 @@ def verify_housekeeping(
     fenced via `busy_parents`. Each strategy's full transition commits
     before the next is processed.
     """
-    from . import dispatcher
+    from ..core import dispatcher
     counts = {"proved": 0, "dead": 0, "superseded": 0, "retry": 0}
     for _ in range(max_iters):
         ready = db.strategies_ready_for_verify(conn)
@@ -181,7 +181,7 @@ def bisect_sorryax_source(
     indicates either a transient infra failure during bisect or a
     deeper framework bug).
     """
-    from . import gateway_lifecycle
+    from ..lsp import lifecycle as gateway_lifecycle
     strategies = conn.execute(
         "SELECT s.*, g.depth AS goal_depth, g.problem AS goal_problem,"
         "       g.slug AS goal_slug"

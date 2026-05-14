@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import db
-from Tooling.cli import cmd_init, cmd_reset, cmd_status, _status_payload
+from Tooling.state import db
+from Tooling.core.cli import cmd_init, cmd_reset, cmd_status, _status_payload
 
 
 # ---------------------------------------------------------------------
@@ -293,7 +293,7 @@ def test_reset_raises_on_persistent_unlink_failure(
 
     # Simulate persistent file lock: monkeypatch _robust_unlink to
     # always return False on this specific file.
-    from Tooling import cli as cli_mod
+    from Tooling.core import cli as cli_mod
     real_unlink = cli_mod._robust_unlink
 
     def fake_unlink(path, **kw):

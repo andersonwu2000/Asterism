@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from Tooling.cli import (
+from Tooling.core.cli import (
     LOG_DIR,
     LOG_RETENTION_KEEP,
     _Tee,
@@ -74,7 +74,7 @@ def test_log_filename_uses_single_problem(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If exactly one problem in DB, that name appears in the log file."""
-    from Tooling import db
+    from Tooling.state import db
     monkeypatch.chdir(tmp_path)
     conn = db.connect()
     db.init_schema(conn)
@@ -93,7 +93,7 @@ def test_log_filename_multi_when_many(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Multiple problems → 'multi' tag (we don't pick a winner)."""
-    from Tooling import db
+    from Tooling.state import db
     monkeypatch.chdir(tmp_path)
     conn = db.connect()
     db.init_schema(conn)

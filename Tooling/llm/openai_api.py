@@ -54,7 +54,7 @@ def _resolve_model(kind: str | None) -> str | None:
     3. `ASTERISM_LLM_MODEL` env  (legacy openai-wide)
     4. None — caller surfaces rc=127 / returns None
     """
-    from .. import config
+    from ..core import config
     if kind:
         v = config.get(
             f"{kind}.model",

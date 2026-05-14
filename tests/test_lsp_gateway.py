@@ -17,8 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import lsp_gateway
-from Tooling.lsp_gateway import (
+from Tooling.lsp import gateway as lsp_gateway
+from Tooling.lsp.gateway import (
     SessionMetadata,
     _ensure_imports,
     _format_diag,
@@ -339,7 +339,7 @@ def test_mcp_tools_are_async_for_event_loop_safety() -> None:
     refactor accidentally removes the decorator from a tool, this
     test catches it before it ships."""
     import inspect
-    from Tooling import lsp_gateway as gw
+    from Tooling.lsp import gateway as gw
 
     for name in ("apply_edit", "goal_at", "errors_at", "validate_file"):
         fn = getattr(gw, name)

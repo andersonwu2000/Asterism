@@ -14,8 +14,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from Tooling import lemma_lookup
-from Tooling.lemma_lookup import (
+from Tooling.knowledge import lemma_lookup
+from Tooling.knowledge.lemma_lookup import (
     LemmaInfo,
     _parse_check_output,
     _toolchain_hash,

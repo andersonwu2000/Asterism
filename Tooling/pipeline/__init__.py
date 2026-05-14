@@ -34,7 +34,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .. import agent, diagnostics
+from .. import agent
+from ..quality import diagnostics
 
 
 def _write_mcp_config(attempts_dir: Path, workspace: Path,
@@ -53,7 +54,7 @@ def _write_mcp_config(attempts_dir: Path, workspace: Path,
     config_path = attempts_dir / "_mcp_config.json"
     log_path = attempts_dir / "_mcp.jsonl"
     token_file = attempts_dir / "_gateway_session.token"
-    from .. import config as _cfg
+    from ..core import config as _cfg
     gateway_port = _cfg.get(
         "gateway.port", default=8765,
         env_var="ASTERISM_GATEWAY_PORT", cast=int,

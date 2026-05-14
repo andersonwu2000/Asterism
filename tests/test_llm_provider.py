@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import config, llm
+from Tooling.core import config
+from Tooling import llm
 
 
 @pytest.fixture(autouse=True)
@@ -548,14 +549,14 @@ def test_retry_hint_uses_parent_path_for_loogle_query() -> None:
     from Tooling.llm import claude_cli
     hint = claude_cli._retry_hint_for_unknowns(["Multiplicative.toAdd_zpow"])
     assert "`Multiplicative.toAdd_zpow` not found" in hint
-    assert "python -m Tooling.loogle 'Multiplicative.toAdd _'" in hint
+    assert "python -m Tooling.knowledge.loogle 'Multiplicative.toAdd _'" in hint
 
 
 def test_retry_hint_handles_single_segment_name() -> None:
     """A bare identifier (no dot) Loogles itself rather than empty."""
     from Tooling.llm import claude_cli
     hint = claude_cli._retry_hint_for_unknowns(["wilson_lemma"])
-    assert "python -m Tooling.loogle 'wilson_lemma _'" in hint
+    assert "python -m Tooling.knowledge.loogle 'wilson_lemma _'" in hint
 
 
 def test_retry_hint_size_bounded(
@@ -596,7 +597,7 @@ def test_spawn_retry_appends_unknown_constant_hint(
     prompt = captured[0][captured[0].index("-p") + 1]
     assert "Multiplicative.toAdd_zpow" in prompt  # error preserved
     assert "verify the name in Mathlib" in prompt  # F51 hint preamble
-    assert "python -m Tooling.loogle" in prompt    # actionable command
+    assert "python -m Tooling.knowledge.loogle" in prompt    # actionable command
 
 
 def test_spawn_retry_no_unknown_constant_hint_for_other_errors(
@@ -625,7 +626,7 @@ def test_spawn_retry_no_unknown_constant_hint_for_other_errors(
     assert "typeclass instance problem is stuck" in prompt
     # F51-specific (unknown-constant) hint absent
     assert "verify the name in Mathlib" not in prompt
-    assert "python -m Tooling.loogle" not in prompt
+    assert "python -m Tooling.knowledge.loogle" not in prompt
 
 
 # ---------------------------------------------------------------------
@@ -698,7 +699,7 @@ def test_manifest_hint_placeholder_not_appended_when_empty() -> None:
     rendered Mathlib-lemmas bullet must NOT carry a spurious
     `(manifest hint)` placeholder — was previously a fallback string,
     now silently omitted."""
-    from Tooling.manifest import Manifest
+    from Tooling.state.manifest import Manifest
     # Stub lemma_lookup to "find" the name with a fake signature
     from unittest.mock import patch as _patch
     mfst = Manifest(problem="p", statement="T",
@@ -706,7 +707,7 @@ def test_manifest_hint_placeholder_not_appended_when_empty() -> None:
     fake_info = type("LI", (), {
         "name": "Nat.factorial", "signature": "ℕ → ℕ", "found": True,
     })()
-    from Tooling import context as _ctx
+    from Tooling.agent import context as _ctx
     with _patch.object(_ctx.lemma_lookup, "lookup_batch",
                        return_value={"Nat.factorial": fake_info}):
         section = _ctx._section_mathlib_hints_stable(mfst,
@@ -721,14 +722,14 @@ def test_manifest_hint_keeps_real_commentary() -> None:
     """When a Manifest hint DOES carry author commentary
     (e.g. `Foo.bar — explanation`), preserve it next to the resolved
     signature."""
-    from Tooling.manifest import Manifest
+    from Tooling.state.manifest import Manifest
     from unittest.mock import patch as _patch
     mfst = Manifest(problem="p", statement="T",
                     mathlib_hints=["Nat.factorial — n! is positive"])
     fake_info = type("LI", (), {
         "name": "Nat.factorial", "signature": "ℕ → ℕ", "found": True,
     })()
-    from Tooling import context as _ctx
+    from Tooling.agent import context as _ctx
     with _patch.object(_ctx.lemma_lookup, "lookup_batch",
                        return_value={"Nat.factorial": fake_info}):
         section = _ctx._section_mathlib_hints_stable(mfst,
@@ -1470,7 +1471,7 @@ def test_spawn_passes_allowed_tools_for_loogle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """F50 — Bash is gated via --allowed-tools so the agent can ONLY
-    invoke `python -m Tooling.loogle`. Other Bash commands (rm, curl,
+    invoke `python -m Tooling.knowledge.loogle`. Other Bash commands (rm, curl,
     git, ...) stay blocked by the permission system."""
     from pathlib import Path
     from Tooling import llm
@@ -1489,7 +1490,7 @@ def test_spawn_passes_allowed_tools_for_loogle(
     assert "--allowed-tools" in cmd
     val = cmd[cmd.index("--allowed-tools") + 1]
     # Must scope to loogle invocation; arbitrary Bash blocked
-    assert "Tooling.loogle" in val
+    assert "Tooling.knowledge.loogle" in val
     assert val.startswith("Bash(")
 
 
@@ -1577,7 +1578,7 @@ def test_allowed_tools_scopes_read_to_problem_and_mathlib(
     # is what F53 rerun showed Sonnet wandering across.
     assert "Read(/ws/Problems/other" not in val
     # Bash allowlist (Loogle) preserved
-    assert "Bash(python -m Tooling.loogle *)" in val
+    assert "Bash(python -m Tooling.knowledge.loogle *)" in val
 
 
 # ---------------------------------------------------------------------

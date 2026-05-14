@@ -19,7 +19,7 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable
 
-from . import diagnostics
+from ..quality import diagnostics
 
 
 # C2 (goal_history v1) — companion files renamed to align with the

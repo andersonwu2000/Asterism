@@ -34,7 +34,9 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import agent, db, manifest, pipeline, verify
+from Tooling import agent, pipeline
+from Tooling.state import db, manifest
+from Tooling.quality import verify
 from Tooling.pipeline import _axiom
 
 
@@ -62,7 +64,7 @@ def _reject_probe(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(_axiom, "axiom_probe_file", _stub_reject)
     monkeypatch.setattr(_axiom, "axiom_probe", _stub_reject)
 
-    from Tooling import gateway_lifecycle as _gl
+    from Tooling.lsp import lifecycle as _gl
     def _stub_verify_with_rogue(target_path, *, write_olean=True,
                                   axioms_for=None, timeout=120.0,
                                   workspace=None):
@@ -126,7 +128,7 @@ def test_bisect_sorryax_finds_culprit_strategy(
     _, sid = _seed_goal_with_strategy(conn, tmp_path)
     db.update_strategy_status(conn, sid, "succeeded")
 
-    from Tooling import gateway_lifecycle
+    from Tooling.lsp import lifecycle as gateway_lifecycle
 
     def stub(target_path, *, write_olean=True, axioms_for=None,
              timeout=120.0, workspace=None):
@@ -157,7 +159,7 @@ def test_bisect_sorryax_returns_none_when_clean(
     _, sid = _seed_goal_with_strategy(conn, tmp_path)
     db.update_strategy_status(conn, sid, "succeeded")
 
-    from Tooling import gateway_lifecycle
+    from Tooling.lsp import lifecycle as gateway_lifecycle
 
     def stub(target_path, *, write_olean=True, axioms_for=None,
              timeout=120.0, workspace=None):
@@ -327,7 +329,7 @@ def test_builder_phase1_axiom_violation_returns_failed(
     # with one that returns axioms = ['sorryAx'] when axioms_for is
     # given. We additionally need the Phase 1 hint probe path to
     # surface a Try-these info diagnostic so a winner is parsed.
-    from Tooling import gateway_lifecycle
+    from Tooling.lsp import lifecycle as gateway_lifecycle
     def stub(target_path, *, write_olean=True, axioms_for=None, **kw):
         if not write_olean:
             return {

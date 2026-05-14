@@ -22,8 +22,10 @@ import sqlite3
 from pathlib import Path
 import pytest
 
-from Tooling import agent, context, db, manifest, pipeline as _pipeline
-from Tooling.dispatcher import (
+from Tooling import agent, pipeline as _pipeline
+from Tooling.agent import context
+from Tooling.state import db, manifest
+from Tooling.core.dispatcher import (
     cascade_one,
     BUILDER_THRESHOLD,
     SHELVE_THRESHOLD,

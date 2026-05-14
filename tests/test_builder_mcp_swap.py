@@ -17,7 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import agent, db, manifest, pipeline
+from Tooling import agent, pipeline
+from Tooling.state import db, manifest
 
 
 def _seed_problem(conn: sqlite3.Connection, tmp_path: Path,
@@ -119,7 +120,7 @@ def test_restores_goal_lean_when_lake_build_fails(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     # Verify-unification: Builder Phase 2 verify goes through
     # gateway_lifecycle.verify_file now. Stub a failing elaborate.
-    from Tooling import gateway_lifecycle
+    from Tooling.lsp import lifecycle as gateway_lifecycle
     monkeypatch.setattr(gateway_lifecycle, "verify_file",
         lambda path, **kw: {
             "ok": False,

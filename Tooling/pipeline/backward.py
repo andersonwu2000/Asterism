@@ -39,7 +39,10 @@ import shutil
 import sqlite3
 from pathlib import Path
 
-from .. import agent, context, db, dedupe, diagnostics, manifest
+from .. import agent
+from ..agent import context
+from ..state import db, manifest
+from ..quality import dedupe, diagnostics
 from . import _axiom
 
 
@@ -241,7 +244,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         DECLINE_TO_FAILURE_REASON,
     )
     from ._retry import SpawnCtx, run_with_session_retries
-    from .. import dispatcher  # late: SHELVE_THRESHOLD live value
+    from ..core import dispatcher  # late: SHELVE_THRESHOLD live value
 
     goal = db.get_goal(conn, goal_id)
     if goal is None:
@@ -391,7 +394,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
 
     def backward_reflection(sid: str, result) -> None:
         from ._reflection import attempt_reflection
-        from .. import config
+        from ..core import config
         from ._reflection import _reflection_enabled
         if not _reflection_enabled(workspace):
             return
@@ -571,7 +574,7 @@ def _backward_parse_and_commit(
         # Single-file verify (no cross-module deps within the strategy
         # itself; it imports Mathlib + Defs, both already warm in every
         # slot).
-        from .. import gateway_lifecycle
+        from ..lsp import lifecycle as gateway_lifecycle
         # Run axiom probe at acceptance gate (single round trip — gateway
         # already computes axiom info during elaboration; passing
         # axioms_for just asks for it back). Catches the common Sonnet
@@ -830,7 +833,7 @@ def _backward_parse_and_commit(
         # independent, importing only Mathlib + Defs), strategy file
         # last (imports the sub-goal modules by name, resolves through
         # the .olean files we wrote in earlier iterations).
-        from .. import gateway_lifecycle
+        from ..lsp import lifecycle as gateway_lifecycle
         for path in placed:
             v = gateway_lifecycle.verify_file(
                 path, write_olean=True, workspace=workspace,

@@ -22,8 +22,9 @@ import sqlite3
 from pathlib import Path
 import pytest
 
-from Tooling import db, pipeline as _pipeline
-from Tooling.dispatcher import cascade_one
+from Tooling.state import db
+from Tooling import pipeline as _pipeline
+from Tooling.core.dispatcher import cascade_one
 
 
 # ---------------------------------------------------------------------
@@ -331,7 +332,7 @@ def test_classify_worker_exception_urlerror_is_gateway_unreachable() -> None:
     urllib.request.urlopen() raises it for any TCP-layer failure
     talking to the gateway HTTP endpoint."""
     import urllib.error
-    from Tooling.dispatcher import _classify_worker_exception
+    from Tooling.core.dispatcher import _classify_worker_exception
     exc = urllib.error.URLError("connection refused")
     assert _classify_worker_exception(exc) == "gateway_unreachable"
 
@@ -339,7 +340,7 @@ def test_classify_worker_exception_urlerror_is_gateway_unreachable() -> None:
 def test_classify_worker_exception_oserror_econnrefused() -> None:
     """OSError with ECONNREFUSED errno also maps (cross-platform)."""
     import errno
-    from Tooling.dispatcher import _classify_worker_exception
+    from Tooling.core.dispatcher import _classify_worker_exception
     exc = OSError(errno.ECONNREFUSED, "Connection refused")
     assert _classify_worker_exception(exc) == "gateway_unreachable"
 
@@ -349,7 +350,7 @@ def test_classify_worker_exception_oserror_winerror_10061() -> None:
     actual exception observed in SG run #14 was
     `<urlopen error [WinError 10061] ...>`. Test the winerror attr
     path directly with OSError carrying winerror=10061."""
-    from Tooling.dispatcher import _classify_worker_exception
+    from Tooling.core.dispatcher import _classify_worker_exception
     # OSError on Windows with winerror set (and errno often unset)
     exc = OSError(0, "actively refused", None, 10061)
     assert _classify_worker_exception(exc) == "gateway_unreachable"
@@ -359,7 +360,7 @@ def test_classify_worker_exception_oserror_winerror_64() -> None:
     """WinError 64 = ERROR_NETNAME_DELETED, the actual asyncio crash
     cause inside the gateway. Also classify as gateway_unreachable so
     the daemon side handles it consistently."""
-    from Tooling.dispatcher import _classify_worker_exception
+    from Tooling.core.dispatcher import _classify_worker_exception
     exc = OSError(0, "network name no longer available", None, 64)
     assert _classify_worker_exception(exc) == "gateway_unreachable"
 
@@ -368,7 +369,7 @@ def test_classify_worker_exception_message_fallback() -> None:
     """Fallback for wrapped/chained exceptions whose outer type isn't
     URLError/OSError but whose message still mentions the WinError
     code (e.g. RuntimeError wrapping the URLError text)."""
-    from Tooling.dispatcher import _classify_worker_exception
+    from Tooling.core.dispatcher import _classify_worker_exception
     exc = RuntimeError("worker bombed: [WinError 10061] refused")
     assert _classify_worker_exception(exc) == "gateway_unreachable"
 
@@ -378,7 +379,7 @@ def test_classify_worker_exception_real_bug_returns_empty() -> None:
     etc.) return empty string so cascade_one falls through to the
     normal attempts++ path — we still want to advance toward shelve
     when a real bug breaks repeatedly."""
-    from Tooling.dispatcher import _classify_worker_exception
+    from Tooling.core.dispatcher import _classify_worker_exception
     assert _classify_worker_exception(
         AttributeError("missing field")) == ""
     assert _classify_worker_exception(
@@ -400,7 +401,7 @@ def test_classify_worker_exception_timeout_is_transient_timeout() -> None:
     slot acquire during first wave; both eventually re-dispatched and
     proved. Without this classification the attempts++ would have
     counted as real failures toward SHELVE_THRESHOLD."""
-    from Tooling.dispatcher import _classify_worker_exception
+    from Tooling.core.dispatcher import _classify_worker_exception
     assert _classify_worker_exception(
         TimeoutError("LSP request '$/lean/rpc/call' timed out")
     ) == "transient_timeout"
@@ -414,7 +415,7 @@ def test_classify_worker_exception_oserror_etimedout_still_gateway() -> None:
     Keep classifying as gateway_unreachable (existing behavior) —
     distinct from the application-layer TimeoutError above."""
     import errno
-    from Tooling.dispatcher import _classify_worker_exception
+    from Tooling.core.dispatcher import _classify_worker_exception
     exc = OSError(errno.ETIMEDOUT, "Connection timed out")
     assert _classify_worker_exception(exc) == "gateway_unreachable"
 
@@ -429,7 +430,7 @@ def test_bfs_refill_skips_cooled_target(
     """When (target,kind) cooldown_until is in the future, bfs_refill
     does not enqueue. Once the cooldown expires it resumes normally."""
     import time
-    from Tooling.dispatcher import bfs_refill
+    from Tooling.core.dispatcher import bfs_refill
     gid = _seed_goal(conn)
     cooldown_until = {(str(gid), "Builder"): time.time() + 60.0}
     bfs_refill(conn, set(), cooldown_until)
@@ -440,7 +441,7 @@ def test_bfs_refill_dispatches_when_cooldown_expired(
     conn: sqlite3.Connection,
 ) -> None:
     import time
-    from Tooling.dispatcher import bfs_refill
+    from Tooling.core.dispatcher import bfs_refill
     gid = _seed_goal(conn)
     # Cooldown already in the past — should NOT block
     cooldown_until = {(str(gid), "Builder"): time.time() - 1.0}
@@ -453,7 +454,7 @@ def test_bfs_refill_no_cooldown_dict_back_compat(
 ) -> None:
     """Existing tests (and any external callers) still pass running
     only — cooldown_until=None must mean "no cooldown anywhere"."""
-    from Tooling.dispatcher import bfs_refill
+    from Tooling.core.dispatcher import bfs_refill
     gid = _seed_goal(conn)
     bfs_refill(conn, set())  # no cooldown arg
     assert db.queue_size(conn) == 1

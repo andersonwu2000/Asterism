@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 
 from Tooling import agent  # noqa - establishes import order, see brief.py
-from Tooling import brief
-from Tooling.manifest import Manifest
+from Tooling.state import brief
+from Tooling.state.manifest import Manifest
 
 
 def _mk_problem_dir(tmp_path: Path, name: str = "p") -> Path:
@@ -27,7 +27,7 @@ def test_render_minimal_manifest_includes_sandbox_header(
     """An almost-empty Manifest still renders the always-on Sandbox
     section + the BRIEF auto-render header."""
     # Stub lemma_lookup so the test doesn't shell out to lake.
-    from Tooling import lemma_lookup
+    from Tooling.knowledge import lemma_lookup
     monkeypatch.setattr(lemma_lookup, "lookup_batch", lambda names, ws: {})
 
     mfst = Manifest(problem="p", statement="True")
@@ -40,7 +40,7 @@ def test_render_minimal_manifest_includes_sandbox_header(
 def test_render_includes_forbidden_and_strategic_notes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from Tooling import lemma_lookup
+    from Tooling.knowledge import lemma_lookup
     monkeypatch.setattr(lemma_lookup, "lookup_batch", lambda names, ws: {})
 
     mfst = Manifest(
@@ -60,7 +60,7 @@ def test_render_resolves_manifest_mathlib_hints_via_lookup(
 ) -> None:
     """Manifest mathlib hints should hit lemma_lookup at render time.
     The signature, when resolved, lands inline next to the hint name."""
-    from Tooling import lemma_lookup
+    from Tooling.knowledge import lemma_lookup
     fake = type("LI", (), {
         "name": "Nat.factorial", "signature": "ℕ → ℕ", "found": True,
     })()
@@ -96,7 +96,7 @@ def test_write_produces_atomic_brief_file(
 ) -> None:
     """`brief.write` writes BRIEF.md atomically. Final file content
     equals what `render` would have produced."""
-    from Tooling import lemma_lookup
+    from Tooling.knowledge import lemma_lookup
     monkeypatch.setattr(lemma_lookup, "lookup_batch", lambda names, ws: {})
 
     pdir = _mk_problem_dir(tmp_path)
@@ -118,7 +118,7 @@ def test_write_for_all_problems_swallows_per_problem_errors(
 ) -> None:
     """If one problem's render raises, `write_for_all_problems` logs
     and continues so other problems still get refreshed."""
-    from Tooling import lemma_lookup
+    from Tooling.knowledge import lemma_lookup
     monkeypatch.setattr(lemma_lookup, "lookup_batch", lambda names, ws: {})
 
     _mk_problem_dir(tmp_path, "good")

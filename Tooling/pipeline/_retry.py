@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .. import db, tree
+from ..state import db, tree
 from ..llm.base import SpawnRC
 from . import PipelineResult, _spawn_failure, collect_artifacts
 
@@ -307,7 +307,7 @@ class _TakeoverOutcome:
 def _derive_stage2_budget(workspace: Path | None) -> int:
     """Stage 2 budget = spawn_timeout - trap_check_sec. Replaces the
     retired `dispatch.rescue_timeout_sec` config (2026-05-10 v4)."""
-    from .. import config as _cfg
+    from ..core import config as _cfg
     from ..agent import WORKER_TIMEOUT_SEC
     spawn_timeout = _cfg.get(
         "dispatch.spawn_timeout_sec",
@@ -326,7 +326,7 @@ def _derive_stage2_budget(workspace: Path | None) -> int:
 
 
 def _derive_postmortem_budget(workspace: Path | None) -> int:
-    from .. import config as _cfg
+    from ..core import config as _cfg
     from ..agent import POSTMORTEM_TIMEOUT_SEC
     return _cfg.get(
         "dispatch.postmortem_timeout_sec",

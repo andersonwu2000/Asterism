@@ -60,7 +60,7 @@ def axiom_probe(
     # Lazy import to avoid circular deps (gateway_lifecycle imports
     # nothing from pipeline, but pipeline package init shouldn't
     # depend on the daemon-side gateway module unconditionally).
-    from .. import gateway_lifecycle
+    from ..lsp import lifecycle as gateway_lifecycle
     result = gateway_lifecycle.verify_file(
         source, write_olean=True, axioms_for=fq_name,
         timeout=float(timeout), workspace=workspace,

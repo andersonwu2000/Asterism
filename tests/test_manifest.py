@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import manifest
+from Tooling.state import manifest
 
 
 def write(tmp_path: Path, name: str, body: str) -> Path:

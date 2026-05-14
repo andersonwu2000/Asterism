@@ -97,7 +97,7 @@ def _retry_hint_for_unknowns(names: list[str]) -> str:
         else:
             loogle_q = parts[0]  # bare identifier — query whole name
         lines.append(
-            f"- `{n}` not found. Try: `python -m Tooling.loogle "
+            f"- `{n}` not found. Try: `python -m Tooling.knowledge.loogle "
             f"'{loogle_q} _'`"
         )
     return "\n".join(lines)
@@ -277,7 +277,7 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
 
     Runs in a daemon thread; one spawn = one trigger.
     """
-    from .. import config as _cfg
+    from ..core import config as _cfg
     trap_check_sec = _cfg.get(
         "dispatch.trap_check_sec",
         default=_DEFAULT_TRAP_CHECK_SEC,
@@ -357,7 +357,7 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
 #   - `Grep`: keyword/name search over Mathlib source (e.g. find
 #     `Finset.prod_involution`'s exact signature in <0.5s)
 #   - `Bash`: scoped via `--allowed-tools` (see _spawn_allowed_tools
-#     below) so the agent can ONLY invoke `python -m Tooling.loogle`
+#     below) so the agent can ONLY invoke `python -m Tooling.knowledge.loogle`
 #     for type-pattern search via Loogle's HTTPS API. Other Bash
 #     commands stay blocked. Adds ~3K tokens of system-prompt
 #     overhead vs the strict trim, justified by removing the agent's
@@ -373,7 +373,7 @@ DEFAULT_TOOLS = "Read Write Edit Grep Bash"
 # `_compose_allowed_tools` below.
 #
 # Loogle: Mathlib type-pattern search via HTTPS.
-DEFAULT_BASH_ALLOWED = "Bash(python -m Tooling.loogle *)"
+DEFAULT_BASH_ALLOWED = "Bash(python -m Tooling.knowledge.loogle *)"
 
 
 def resolve_model(kind: str | None) -> str:
@@ -385,7 +385,7 @@ def resolve_model(kind: str | None) -> str:
     3. `ASTERISM_AGENT_MODEL` env  (legacy provider-wide)
     4. `DEFAULT_MODEL`
     """
-    from .. import config
+    from ..core import config
     if kind:
         v = config.get(
             f"{kind}.model",
@@ -504,7 +504,7 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
     # Qq when an agent legitimately needs to look at them.
     packages = (workspace / ".lake" / "packages").as_posix()
     # NB: claude CLI's `--allowed-tools` parser is paren-aware (the
-    # pre-existing `Bash(python -m Tooling.loogle *)` pattern carries
+    # pre-existing `Bash(python -m Tooling.knowledge.loogle *)` pattern carries
     # internal spaces unquoted), so a `Read(C:/My Project/...)` glob
     # does NOT need quoting either — pattern boundaries are pulled by
     # balanced parens, not whitespace. Verified empirically; the

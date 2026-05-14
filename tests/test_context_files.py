@@ -11,13 +11,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from Tooling import context_files, db
-from Tooling.context import (
+from Tooling.agent import context_files
+from Tooling.state import db
+from Tooling.agent.context import (
     _ago,
     _digest_failure,
     compile_context,
 )
-from Tooling.manifest import Manifest
+from Tooling.state.manifest import Manifest
 
 
 # ---------------------------------------------------------------------

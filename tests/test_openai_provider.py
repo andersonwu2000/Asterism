@@ -9,7 +9,8 @@ from unittest import mock
 
 import pytest
 
-from Tooling import config, llm
+from Tooling.core import config
+from Tooling import llm
 from Tooling.llm import openai_api
 
 

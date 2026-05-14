@@ -24,7 +24,10 @@ import shutil
 import sqlite3
 from pathlib import Path
 
-from .. import agent, context, db, diagnostics, manifest
+from .. import agent
+from ..agent import context
+from ..state import db, manifest
+from ..quality import diagnostics
 
 
 def run_builder(conn: sqlite3.Connection, *, goal_id: int,
@@ -73,7 +76,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         DECLINE_TO_FAILURE_REASON,
     )
     from ._retry import SpawnCtx, run_with_session_retries
-    from .. import dispatcher  # late: BUILDER_THRESHOLD live value
+    from ..core import dispatcher  # late: BUILDER_THRESHOLD live value
 
     goal = db.get_goal(conn, goal_id)
     if goal is None:
@@ -111,7 +114,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     # dispatch — Phase 1 doesn't terminate the pipeline early.
     if goal["attempts"] == 0 and _is_sorry_stub(source):
         backup_text = source
-        from .. import gateway_lifecycle
+        from ..lsp import lifecycle as gateway_lifecycle
 
         # Probe: `:= by hint` elaborates all `register_hint` tactics;
         # the `hint` tactic emits info diagnostics with a "Try these:
@@ -191,7 +194,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     # that snapshot. `restore_to_snapshot` is called between in-
     # pipeline retries so each retry sees pristine state.
     # See docs/archive/spawn_sandbox.md.
-    from .. import spawn_sandbox as _sandbox_mod
+    from ..agent import sandbox as _sandbox_mod
     workspace_ctx = _sandbox_mod.SpawnWorkspace(
         workspace, pipeline_id, real_paths=[goal_lean])
 
@@ -294,7 +297,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # writes the .olean for downstream cascade consumers, and runs
         # `#print axioms` against the resulting environment. Replaces
         # the prior check_build + lake build + lake env lean chain.
-        from .. import gateway_lifecycle
+        from ..lsp import lifecycle as gateway_lifecycle
         fq_name = f"Problems.{goal['problem']}.{goal['slug']}"
         v = gateway_lifecycle.verify_file(
             goal_lean, write_olean=True,
@@ -366,7 +369,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
 
     def builder_reflection(sid: str, result) -> None:
         from ._reflection import attempt_reflection, _reflection_enabled
-        from .. import config
+        from ..core import config
         if not _reflection_enabled(workspace):
             return
         cap = config.get(

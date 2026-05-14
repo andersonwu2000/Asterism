@@ -17,7 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import agent, db, manifest, pipeline
+from Tooling import agent, pipeline
+from Tooling.state import db, manifest
 
 
 def _seed_problem(conn: sqlite3.Connection, tmp_path: Path) -> int:
@@ -63,7 +64,7 @@ def _stub_verify_file_with_hint(monkeypatch, hint_message: str = _FAKE_HINT_OUT)
 
     Tests can choose which call's parameters to peek by inspecting
     the arguments via a list of captured kwargs (returned)."""
-    from Tooling import gateway_lifecycle
+    from Tooling.lsp import lifecycle as gateway_lifecycle
     captured: list[dict] = []
 
     def stub(target_path, *, write_olean=True, axioms_for=None, **kw):
@@ -230,7 +231,7 @@ def test_run_builder_lake_fail_restores_backup(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     # Verify-unification: Builder Phase 2 verify goes through
     # gateway_lifecycle.verify_file. Stub a failing elaborate.
-    from Tooling import gateway_lifecycle
+    from Tooling.lsp import lifecycle as gateway_lifecycle
     monkeypatch.setattr(gateway_lifecycle, "verify_file",
         lambda path, **kw: {
             "ok": False,
@@ -347,7 +348,7 @@ def test_run_builder_wrapper_no_persist_when_postmortem_skipped(
             "tried", encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
-    from Tooling import gateway_lifecycle
+    from Tooling.lsp import lifecycle as gateway_lifecycle
     monkeypatch.setattr(gateway_lifecycle, "verify_file",
         lambda path, **kw: {
             "ok": False,

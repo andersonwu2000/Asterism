@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from Tooling import gateway_lifecycle
+from Tooling.lsp import lifecycle as gateway_lifecycle
 
 # Capture the REAL verify_file before any test's conftest autouse
 # replaces it with a stub. Each test below restores this via the

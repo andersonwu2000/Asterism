@@ -51,7 +51,7 @@ def _resolve_model(kind: str | None) -> str:
     3. `ASTERISM_GEMINI_MODEL` env  (legacy gemini-wide)
     4. `DEFAULT_MODEL` (gemini-2.5-flash)
     """
-    from .. import config
+    from ..core import config
     if kind:
         v = config.get(
             f"{kind}.model",
