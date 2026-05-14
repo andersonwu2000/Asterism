@@ -1,8 +1,8 @@
 """WorkArea + LLM dispatch.
 
-P2-#2: Context.md compilation lives in `Tooling.context`. This module
-holds only the WorkArea sandbox lifecycle and the synchronous dispatch
-shim into `Tooling.llm`. Callers needing `compile_context` or the
+Context.md compilation lives in `Tooling.context`. This module holds
+only the WorkArea sandbox lifecycle and the synchronous dispatch shim
+into `Tooling.llm`. Callers needing `compile_context` or the
 `_section_*` helpers import them from `Tooling.context` directly.
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ WORKER_TIMEOUT_SEC = 900  # 15 min. Phase 2 LSP cantor_xi had 6
                           # paired with shelve_threshold=4 keeps total
                           # cost on stuck goals bounded.
 
-# F55 — postmortem spawn after a main-spawn timeout. Uses --resume so
+# Postmortem spawn after a main-spawn timeout. Uses --resume so
 # session memory is intact; agent writes a short state + blocker note
 # (`_progress.md`) and exits. 120s was empirically too tight for
 # Sonnet to write a usable note on dense root-level state; 180s gives
@@ -33,7 +33,7 @@ POSTMORTEM_TIMEOUT_SEC = 180
 def render_prompt_template(text: str, *, is_postmortem: bool = False) -> str:
     """Substitute `{timeout_min}` in a prompt template with the live
     timeout (in minutes). Body prompts report `WORKER_TIMEOUT_SEC`;
-    postmortem prompts (F55) report `POSTMORTEM_TIMEOUT_SEC`."""
+    postmortem prompts report `POSTMORTEM_TIMEOUT_SEC`."""
     timeout_sec = (POSTMORTEM_TIMEOUT_SEC if is_postmortem
                    else WORKER_TIMEOUT_SEC)
     return text.replace("{timeout_min}", str(timeout_sec // 60))
@@ -97,7 +97,7 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
               timeout_sec_override: int | None = None) -> int:
     """Dispatch to the configured LLM provider for one agent invocation.
 
-    Provider is resolved per-kind (F39): `ASTERISM_<KIND>_PROVIDER` →
+    Provider is resolved per-kind: `ASTERISM_<KIND>_PROVIDER` →
     `ASTERISM_LLM_PROVIDER` → 'claude'. Likewise the model string is
     looked up per-kind inside each provider. Returns the provider's
     rc (0 success, 124 timeout, 125 stale session, 126 quota
@@ -110,7 +110,7 @@ def spawn_llm(*, kind: str, prompt_path: Path, problem_dir: Path,
     (Phase 7 — sid is a local var owned by the retry helper, not
     persisted across pipeline calls).
 
-    `is_postmortem`: F55 — set on the postmortem spawn after a main
+    `is_postmortem`: set on the postmortem spawn after a main
     timeout. Provider uses `--resume <session_id>`, loads `prompt_path`
     verbatim (a short instruction asking the agent to dump state +
     blockers into `_progress.md`). `timeout_sec` defaults to

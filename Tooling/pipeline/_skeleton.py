@@ -1,8 +1,8 @@
-"""F52 skeleton-driven strategy patch helpers + def-alias promotion.
+"""Skeleton-driven strategy patch helpers + def-alias promotion.
 
-Extracted from `pipeline/__init__.py` (P2-#1). Pure module: shared
-helpers for Backward (skeleton + import injection) and Verify
-(promote + rollback).
+Extracted from `pipeline/__init__.py`. Pure module: shared helpers
+for Backward (skeleton + import injection) and Verify (promote +
+rollback).
 """
 from __future__ import annotations
 
@@ -108,9 +108,9 @@ def inject_imports_for_subs(
 
 
 def verify_backup_path(parent_abs: Path, sid_token: str) -> Path:
-    """Backup filename keyed by sid_token (P0-#1) so concurrent
-    Verifies on sibling strategies of the same parent goal can't
-    clobber each other's backup."""
+    """Backup filename keyed by sid_token so concurrent Verifies on
+    sibling strategies of the same parent goal can't clobber each
+    other's backup."""
     return parent_abs.with_suffix(
         parent_abs.suffix + f".verify_backup_{sid_token}")
 
@@ -121,7 +121,7 @@ def promote_to_alias(
     scratch_module: str,
     annotation: str = "",
 ) -> Path | None:
-    """F52 — rewrite parent stub as a re-export alias of the strategy:
+    """Rewrite parent stub as a re-export alias of the strategy:
         <annotation comment lines, if any>
         <orig imports + scratch_module>
         namespace <namespace>

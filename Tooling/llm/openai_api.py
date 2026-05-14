@@ -253,8 +253,8 @@ class OpenAIProvider:
     ) -> str | None:
         """One-shot completion against the configured OpenAI-compatible
         endpoint. Returns response text or None on any failure (no
-        model env, HTTP error, malformed response). Used by F22 — the
-        auxiliary call inherits the 'builder' tier (cheap-LLM role)."""
+        model env, HTTP error, malformed response). Used by short
+        auxiliary calls; inherits the 'builder' tier (cheap-LLM role)."""
         model = _resolve_model("builder")
         if not model:
             return None

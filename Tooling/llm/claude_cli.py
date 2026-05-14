@@ -3,14 +3,14 @@
 Inherits the existing claude CLI workflow: `--add-dir` for sandboxing,
 `acceptEdits` permission, text output. The agent reads `Context.md`
 from `attempts_dir/` and writes outputs back there. The prompt
-template content is inlined into `-p` (F45) so the agent doesn't
-need read access to the workspace `Tooling/prompts/` directory.
+template content is inlined into `-p` so the agent doesn't need read
+access to the workspace `Tooling/prompts/` directory.
 
 Model selection: `ASTERISM_AGENT_MODEL` env (default: Sonnet).
 
-System-prompt trim (F27): direct measurement of the claude CLI 2.1
-default vs the optimized flags below shows ~20.7K → ~7.8K prefix
-tokens per call (-62%) on Sonnet. The 4 flags strip tool descriptions
+System-prompt trim: direct measurement of the claude CLI 2.1 default
+vs the optimized flags below shows ~20.7K → ~7.8K prefix tokens per
+call (-62%) on Sonnet. The 4 flags strip tool descriptions
 Asterism doesn't use (Bash, Glob, Grep, WebFetch, WebSearch,
 NotebookEdit, mcp__*), skip CLAUDE.md / auto-memory / settings load,
 and stabilize per-machine sections so prompt caching reuses across
@@ -49,7 +49,7 @@ from .base import LLMRequest, SpawnRC
 from .stream_parser import StreamParser
 
 
-# F51 — extract names from "Unknown constant `X.Y.Z`" / "unknown identifier
+# Extract names from "Unknown constant `X.Y.Z`" / "unknown identifier
 # `X.Y.Z`" lake errors so the retry prompt can point the agent at Loogle/
 # Grep before it guesses again. Cap to keep prompt size bounded.
 _UNKNOWN_CONSTANT_RE = re.compile(
@@ -103,7 +103,7 @@ def _retry_hint_for_unknowns(names: list[str]) -> str:
     return "\n".join(lines)
 
 
-# F53/3b — generic stderr-pattern → diagnostic-hint table. Each entry
+# Generic stderr-pattern → diagnostic-hint table. Each entry
 # is (regex on stderr, short hint string). Hints are appended to the
 # retry prompt so the resumed agent gets a pointed clue instead of
 # spending several minutes inferring the failure class. Patterns use
@@ -146,7 +146,7 @@ _RETRY_PATTERN_HINTS: list[tuple[re.Pattern[str], str]] = [
     # lean_path (Builder copies patch onto goal_lean before building),
     # so we don't have a reliable filename signature for them — Builder
     # rarely emits `sorry` in practice; the strategy-patch case is what
-    # matters. P1-#9 / review follow-up.
+    # matters.
     (re.compile(
         r"_strategy_s\d+\.lean[^\n]*declaration uses\s+`sorry`",
         re.IGNORECASE),
@@ -353,14 +353,14 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
               flush=True)
 
 # Asterism's pipelines need Read / Write / Edit for sandbox file
-# manipulation, plus F50 search tools:
+# manipulation, plus lemma-discovery search tools:
 #   - `Grep`: keyword/name search over Mathlib source (e.g. find
 #     `Finset.prod_involution`'s exact signature in <0.5s)
 #   - `Bash`: scoped via `--allowed-tools` (see _spawn_allowed_tools
 #     below) so the agent can ONLY invoke `python -m Tooling.loogle`
 #     for type-pattern search via Loogle's HTTPS API. Other Bash
 #     commands stay blocked. Adds ~3K tokens of system-prompt
-#     overhead vs F27's strict trim, justified by removing the agent's
+#     overhead vs the strict trim, justified by removing the agent's
 #     "guess Mathlib lemma names without ground truth" failure mode
 #     (wilson 2026-05-02 evidence: 6.7-min thinking on a single goal
 #     was ~30% lemma-name enumeration).
@@ -372,7 +372,7 @@ DEFAULT_TOOLS = "Read Write Edit Grep Bash"
 # Grep patterns are appended per-spawn from problem_dir + Mathlib by
 # `_compose_allowed_tools` below.
 #
-# F50: Loogle (Mathlib type-pattern search via HTTPS).
+# Loogle: Mathlib type-pattern search via HTTPS.
 DEFAULT_BASH_ALLOWED = "Bash(python -m Tooling.loogle *)"
 
 
@@ -398,10 +398,10 @@ def resolve_model(kind: str | None) -> str:
 
 
 def _load_prompt(req: LLMRequest) -> str:
-    """Read the prompt template file. F45: inlined into `-p` instead
-    of pointed-to so the agent never needs read access to the workspace
+    """Read the prompt template file. Inlined into `-p` instead of
+    pointed-to so the agent never needs read access to the workspace
     `Tooling/prompts/` directory (which lives outside `--add-dir` after
-    F44 narrowed cwd to problem_dir). On read error, return a marker
+    cwd was narrowed to problem_dir). On read error, return a marker
     string so the spawn still proceeds and the failure surfaces as a
     normal agent error rather than a silent crash.
 
@@ -459,8 +459,8 @@ def _persist_parser_state(attempts_dir: Path,
 
 def _write_spawn_stderr(attempts_dir, stderr: str, stdout: str,
                         rc: int) -> None:
-    """F46 — write captured stderr to `attempts_dir/_spawn.stderr`
-    so pipeline forensics can include it in dead_attempts.failure_detail.
+    """Write captured stderr to `attempts_dir/_spawn.stderr` so pipeline
+    forensics can include it in dead_attempts.failure_detail.
     Best-effort: silent on IO errors (the spawn already failed; making
     forensics fatal would mask the real diagnosis).
 
@@ -495,21 +495,20 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
     # round-trip through subprocess argv as strings, so we normalize.
     problem = req.problem_dir.as_posix()
     attempts = req.attempts_dir.as_posix()
-    # M1: cover the whole `.lake/packages/` tree, not just
-    # `mathlib/Mathlib/`. Sonnet's natural `rg` query is rooted at
-    # `.lake/packages/mathlib/` (the package root, not the Mathlib
-    # source subdir), which the narrow prefix rejected — observed
-    # 18 denied Grep ops in a single proj_nonexpansive run, each
-    # wasting one agent turn. Allowing the whole packages tree also
-    # covers batteries / proofwidgets / aesop / Qq when an agent
-    # legitimately needs to look at them.
+    # Cover the whole `.lake/packages/` tree, not just `mathlib/Mathlib/`.
+    # Sonnet's natural `rg` query is rooted at `.lake/packages/mathlib/`
+    # (the package root, not the Mathlib source subdir), which the narrow
+    # prefix rejected — observed 18 denied Grep ops in a single
+    # proj_nonexpansive run, each wasting one agent turn. Allowing the
+    # whole packages tree also covers batteries / proofwidgets / aesop /
+    # Qq when an agent legitimately needs to look at them.
     packages = (workspace / ".lake" / "packages").as_posix()
     # NB: claude CLI's `--allowed-tools` parser is paren-aware (the
     # pre-existing `Bash(python -m Tooling.loogle *)` pattern carries
     # internal spaces unquoted), so a `Read(C:/My Project/...)` glob
     # does NOT need quoting either — pattern boundaries are pulled by
-    # balanced parens, not whitespace. P1-#9 verified this empirically;
-    # the pre-quoting attempt broke the Bash pattern's existing test.
+    # balanced parens, not whitespace. Verified empirically; the
+    # pre-quoting attempt broke the Bash pattern's existing test.
     patterns = [
         # Bash (Loogle, plus operator override)
         os.environ.get("ASTERISM_CLAUDE_ALLOWED_BASH", DEFAULT_BASH_ALLOWED),
@@ -597,7 +596,7 @@ class ClaudeCliProvider:
             session_flags = ["--session-id", req.session_id]
             session_lifetime_flag: list[str] = []
             prompt = req.inline_prompt
-        # F55 postmortem — main spawn timed out, agent's session memory
+        # Timeout postmortem — main spawn timed out, agent's session memory
         # is intact on disk. Resume the session with a short prompt
         # asking for a state + blocker note (`_progress.md`) into the
         # SAME attempts_dir. The wrapper then captures _progress.md as
@@ -618,14 +617,14 @@ class ClaudeCliProvider:
             session_flags = ["--resume", req.session_id]
             session_lifetime_flag = []  # session persists
             err = (req.retry_context or "(lake error not captured)").strip()
-            # F51 — when the prior failure cites unknown constants,
-            # nudge the agent to verify names via Loogle/Grep instead
-            # of repeating the same guess. Empty hint when no match.
+            # When the prior failure cites unknown constants, nudge the
+            # agent to verify names via Loogle/Grep instead of repeating
+            # the same guess. Empty hint when no match.
             unknown_hint = _retry_hint_for_unknowns(
                 _extract_unknown_constants(err))
-            # F53/3b — generic stderr → diagnostic hint table.
-            # Catches expected-token / typeclass-stuck / tactic-no-
-            # progress patterns the unknown-constant matcher misses.
+            # Generic stderr → diagnostic hint table. Catches
+            # expected-token / typeclass-stuck / tactic-no-progress
+            # patterns the unknown-constant matcher misses.
             pattern_hint = _retry_hint_for_patterns(err)
             prompt = (
                 f"Previous attempt failed lake build with:\n\n"
@@ -647,15 +646,15 @@ class ClaudeCliProvider:
             session_lifetime_flag = ["--no-session-persistence"]
             prompt = _build_cold_prompt(req)
 
-        # M3 — F44 narrows cwd to problem_dir, after which claude CLI's
-        # permission system treats `cwd subtree ∪ --add-dir paths` as the
-        # implicit trust boundary; absolute paths outside that boundary
-        # are denied even when listed in --allowed-tools. Mathlib lives
-        # outside problem_dir, so M1's `Read(.lake/packages/**/*.lean)`
-        # allowlist alone wasn't enough — proj_nonexpansive 2026-05-03
-        # rerun saw 75 mathlib Grep denials per run despite M1. Adding
-        # `.lake/packages` as a third --add-dir grants the explicit trust
-        # so the allowlist's path patterns actually take effect.
+        # Cwd narrowed to problem_dir, after which claude CLI's permission
+        # system treats `cwd subtree ∪ --add-dir paths` as the implicit
+        # trust boundary; absolute paths outside that boundary are denied
+        # even when listed in --allowed-tools. Mathlib lives outside
+        # problem_dir, so `Read(.lake/packages/**/*.lean)` allowlist alone
+        # wasn't enough — proj_nonexpansive 2026-05-03 rerun saw 75
+        # mathlib Grep denials per run. Adding `.lake/packages` as a third
+        # --add-dir grants the explicit trust so the allowlist's path
+        # patterns actually take effect.
         # Conditional: skip when the dir doesn't exist (fresh checkout
         # before `lake build`) — claude CLI errors on missing --add-dir.
         packages_dir = (_workspace_from_problem_dir(req.problem_dir)
@@ -681,7 +680,7 @@ class ClaudeCliProvider:
         # only kill mechanism). Cold spawns without session_id can't
         # be tracked across retries either — defensive guard, every
         # real dispatch sets session_id.
-        # Fresh-rescue stages 2/3 (inline_prompt) and F55 postmortem
+        # Fresh-rescue stages 2/3 (inline_prompt) and timeout postmortem
         # (is_postmortem) both fall in the no-watchdog bucket.
         watchdog_eligible = (
             not req.is_postmortem
@@ -848,9 +847,9 @@ class ClaudeCliProvider:
                                 f"(subprocess.TimeoutExpired after "
                                 f"{req.timeout_sec}s)", "", 124)
             return 124
-        # F46 — capture stderr to attempts_dir on failure so the
-        # pipeline can surface it in dead_attempts.failure_detail.
-        # Skipping on rc=0 keeps the sandbox tidy.
+        # Capture stderr to attempts_dir on failure so the pipeline can
+        # surface it in dead_attempts.failure_detail. Skipping on rc=0
+        # keeps the sandbox tidy.
         if rc != 0:
             _write_spawn_stderr(req.attempts_dir, stderr or "",
                                 stdout or "", rc)
@@ -884,10 +883,10 @@ class ClaudeCliProvider:
         self, *, prompt: str, timeout_sec: int = 60,
     ) -> str | None:
         """One-shot completion via `claude -p <prompt>`. Captures
-        stdout text rather than producing files. Used by F22 short
-        auxiliary calls (idiom extract / curate). complete_text never
-        invokes tools, but the same trim applies to the system prompt.
-        F22 auxiliary calls inherit the 'builder' tier (cheap-LLM role)."""
+        stdout text rather than producing files. Used by short auxiliary
+        calls (idiom extract / curate). complete_text never invokes
+        tools, but the same trim applies to the system prompt. Auxiliary
+        calls inherit the 'builder' tier (cheap-LLM role)."""
         if not shutil.which("claude"):
             return None
         model = resolve_model("builder")

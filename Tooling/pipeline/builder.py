@@ -31,7 +31,7 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
                 workspace: Path, mfst: manifest.Manifest,
                 pipeline_id: str) -> "PipelineResult":  # noqa: F821
     """Outer dispatch — runs the inner pipeline then persists or clears
-    the partial-output draft (F55) so a future spawn on this same goal
+    the partial-output draft so a future spawn on this same goal
     sees the in-flight patch from the prior failed attempt instead of
     starting from scratch.
 

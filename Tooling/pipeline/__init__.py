@@ -5,8 +5,8 @@ Split layout (planned by docs/dev/goal_history_unified.md):
   builder.py      — `run_builder` + Phase 1/2 logic
   backward.py     — `run_backward` + decomposition + sub-goal placement
   _lake.py        — lake invocation helpers (already split)
-  _skeleton.py    — F52 strategy skeleton + alias promotion (already split)
-  _drafts.py      — F55 partial-output persistence
+  _skeleton.py    — strategy skeleton + alias promotion (already split)
+  _drafts.py      — partial-output persistence
 
 Public API surfaced from this module (preserves pre-split callers):
   - run_builder, run_backward                        — dispatch entry points
@@ -110,14 +110,14 @@ def _write_mcp_config(attempts_dir: Path, workspace: Path,
     return config_path
 
 
-# P2-#1 regression fix: pipeline.py was converted to pipeline/ package,
-# bumping `__file__` one directory deeper. The prompts/ dir lives at
+# Regression fix from the pipeline.py → pipeline/ package split: that
+# bumped `__file__` one directory deeper. The prompts/ dir lives at
 # Tooling/prompts/ — go up one level to reach it. Without this, the
 # claude provider silently spawns with an "(prompt file unavailable)"
 # stub on every Builder/Backward dispatch.
 PROMPT_DIR = Path(__file__).parent.parent / "prompts"
 
-# F46 — wall-clock threshold under which a non-zero spawn is reclassified
+# Wall-clock threshold under which a non-zero spawn is reclassified
 # as `spawn_fast_fail`. Real claude.exe launches take ~3-5s and the
 # fastest legitimate failure (e.g. compilation rejection of malformed
 # patch) needs at least one model turn, so 10s is a conservative bound.
@@ -175,12 +175,12 @@ def _spawn_failure(rc: int, attempts_dir: Path,
     """Classify a non-zero `agent.spawn_llm` rc into
     (failure_reason, failure_detail). Three classes:
 
-      - `spawn_fast_fail` (F46) — wall-clock < 10s; agent almost
-        certainly never ran (claude.exe crashed at startup, prompt
-        parser rejected, cwd unreachable, ...). Cascade: no
-        goal-attempt increment, dispatcher sets per-target cooldown.
+      - `spawn_fast_fail` — wall-clock < 10s; agent almost certainly
+        never ran (claude.exe crashed at startup, prompt parser
+        rejected, cwd unreachable, ...). Cascade: no goal-attempt
+        increment, dispatcher sets per-target cooldown.
       - `agent_timeout` — rc=124, SIGKILL'd at WORKER_TIMEOUT_SEC.
-        Pipeline runs F55 postmortem on this same session before
+        Pipeline runs a postmortem on this same session before
         returning so next dispatch sees a `.drafts/` progress note.
       - `agent_rc_nonzero` — anything else (rc≠0, wall ≥ 10s,
         rc≠124). Generic agent / spawn error.
@@ -392,7 +392,7 @@ DECLINE_TO_FAILURE_REASON = {
 def _attempt_postmortem(*, kind: str, prompt_path: Path,
                         problem_dir: Path, attempts_dir: Path,
                         session_id: str) -> None:
-    """F55 — short follow-up spawn after a main-spawn timeout.
+    """Short follow-up spawn after a main-spawn timeout.
 
     Resumes `session_id` so the killed agent's session memory is
     intact; the postmortem prompt asks the agent to write a brief
@@ -402,9 +402,10 @@ def _attempt_postmortem(*, kind: str, prompt_path: Path,
 
     Best-effort: any failure (postmortem also times out, session GC'd,
     provider unavailable) is silently absorbed — the next dispatch
-    just cold-starts as it would have without F55. We log the rc to
-    the daemon log via the provider's own `[llm:claude] timed out
-    after Ns` line; no extra exception path needed.
+    just cold-starts as it would have without postmortem persistence.
+    We log the rc to the daemon log via the provider's own
+    `[llm:claude] timed out after Ns` line; no extra exception path
+    needed.
     """
     try:
         agent.spawn_llm(
@@ -551,7 +552,7 @@ def _extract_statement_from_lean(path: Path) -> str:
 # late-imports inside builder.py / backward.py find them ready).
 # ---------------------------------------------------------------------
 
-# Lake invocation helpers (P2-#1 split).
+# Lake invocation helpers (split out of this package).
 from ._lake import (  # noqa: E402
     lean_path_to_module as _lean_path_to_module,
     lake_build_modules as _lake_build_modules,
@@ -559,7 +560,7 @@ from ._lake import (  # noqa: E402
     lake_build_batch as _lake_build_batch,
 )
 
-# F52 skeleton + alias helpers (P2-#1 split).
+# Strategy skeleton + alias helpers (split out of this package).
 from ._skeleton import (  # noqa: E402
     signature_prefix as _signature_prefix,
     normalize_signature as _normalize_signature,
@@ -570,7 +571,7 @@ from ._skeleton import (  # noqa: E402
     rollback_promote as _rollback_promote,
 )
 
-# F55 — partial-output persistence so a timed-out / failed spawn's
+# Partial-output persistence so a timed-out / failed spawn's
 # in-flight work survives into the next attempt's Context.md.
 from . import _drafts  # noqa: E402
 

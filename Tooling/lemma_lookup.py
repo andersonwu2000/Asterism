@@ -4,9 +4,9 @@ When the agent's stderr surfaces an unknown / mistyped Mathlib name, or
 the Manifest hands the agent a curated lemma list, the agent has only
 the **name** — no signature, no parameter order, no instance shape.
 Strong models recall this from training; weaker models hallucinate
-arg counts and instance class. F20 closes the gap by fetching ground
-truth at runtime: a real Lean session resolves each name and emits
-its type.
+arg counts and instance class. This module closes the gap by fetching
+ground truth at runtime: a real Lean session resolves each name and
+emits its type.
 
 Cost: `lake env lean` cold-starts in ~20s on this repo (Mathlib import
 dominates). Batching every name a goal needs into ONE Lean session

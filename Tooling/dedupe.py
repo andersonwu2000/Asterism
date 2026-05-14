@@ -43,8 +43,8 @@ Two canonical sources, both with their own justification:
        scratch which transitively imports the alias which imports
        parent.lean_path.
 
-(2) **F42** — ORPHAN PROVED SUB-GOALS of dead/superseded strategies on
-    the same parent goal (cross-strategy reuse). Justifications:
+(2) **Orphan proved sub-goals** of dead/superseded strategies on the
+    same parent goal (cross-strategy reuse). Justifications:
 
     a. Lifetime: orphan's lean file already exists on disk (it was
        proved before its strategy died). prune retains it as long as
@@ -387,7 +387,7 @@ def _eligible_orphan_subgoals(conn: sqlite3.Connection, workspace: Path, *,
                               problem: str, parent_goal_id: int,
                               candidate_count: int,
                               ) -> list[tuple[sqlite3.Row, str]]:
-    """F42 — proved sub-goals from dead/superseded strategies on the
+    """Proved sub-goals from dead/superseded strategies on the
     same parent goal. They're orphaned by the alive-chain walk, but
     their lean files still hold valid proofs we can alias against.
     Filters by binder count (same as ancestors) and by file readability.
@@ -505,7 +505,7 @@ def find_canonicals_batch(
         return []
 
     # Per-candidate eligible canonicals: ancestors first (priority),
-    # then F42 orphan siblings, then cross-branch proved goals in the
+    # then orphan siblings, then cross-branch proved goals in the
     # same Problem. All three pre-filtered by binder count.
     cand_ancestors: list[list[tuple[sqlite3.Row, str]]] = []
     for slug, full_text in candidates:
@@ -534,7 +534,7 @@ def find_canonicals_batch(
     # Each pair: (cand_signature, canonical_module, canonical_theorem_name).
     # Canonical's module is derived from anc_row's lean_path; theorem
     # name extracted from anc_text directly (DB slug ≠ on-disk theorem
-    # name in some F49-promoted / aliased cases).
+    # name in some library-promoted / aliased cases).
     pairs: list[tuple[str, str, str]] = []
     pair_origin: list[tuple[int, sqlite3.Row]] = []
     for ci, (slug, full_text) in enumerate(candidates):

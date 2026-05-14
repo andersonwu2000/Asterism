@@ -1,4 +1,4 @@
-"""Per-pipeline progress-note persistence (F55).
+"""Per-pipeline progress-note persistence.
 
 When a worker spawn times out, the framework does a short follow-up
 "postmortem" spawn (`agent.spawn_llm(is_postmortem=True)`) that
@@ -16,7 +16,7 @@ session memory of each killed spawn carried plenty of useful thinking
 but the prior design discarded it. The postmortem spawn extracts that
 state into a short note before the session is lost.
 
-Why not "save PROPOSAL incrementally" (the original F55 design):
+Why not "save PROPOSAL incrementally" (the original design):
 - Pollutes the agent's attention budget — agent has to maintain a
   growing deliverable in parallel with thinking.
 - Encourages premature commitment to a decomposition shape that
@@ -28,8 +28,8 @@ narrowly-scoped LLM call.
 
 attempts_dir is per-spawn (random uuid path); `.drafts/` is per-(kind,
 goal) so the carry-over is stable across spawns. `.drafts/` lives
-inside `problem_dir`, so it's covered by the existing F44 sandbox + M1
-allowlist — no separate add-dir needed.
+inside `problem_dir`, so it's covered by the existing per-problem
+sandbox + mathlib allowlist — no separate add-dir needed.
 """
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ def persist_partials(*, attempts_dir: Path, problem_dir: Path,
     sources = PARTIAL_PERSIST.get(kind)
     if not sources:
         return None
-    # Nit-fix from F55 review: tolerate missing attempts_dir (early
+    # Nit-fix: tolerate missing attempts_dir (early
     # `goal_not_found` / `lean_file_missing` paths in the pipeline
     # wrapper can call us before any spawn touched disk).
     if not attempts_dir.exists():

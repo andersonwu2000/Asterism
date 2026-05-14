@@ -1,4 +1,4 @@
-"""F26 — companion reference files written into the attempts dir.
+"""Companion reference files written into the attempts dir.
 
 Context.md is the agent's primary briefing — must stay tight to keep
 attention focused on the goal at hand. Bulky / on-demand information
@@ -35,8 +35,8 @@ PAST_VERIFY_FAILURES_FILENAME = "PAST_VERIFY_FAILURES.md"
 # read-on-demand depth view.
 PAST_DEAD_STRATEGIES_FILENAME = "PAST_DEAD_STRATEGIES.md"
 
-# F30 — companion files are the lazy-load deeper-look reference, but
-# raw lake stderr still carries 1.5+ KB LEAN_PATH dump per attempt.
+# Companion files are the lazy-load deeper-look reference, but raw
+# lake stderr still carries 1.5+ KB LEAN_PATH dump per attempt.
 # When the agent does pull these files, every byte matters. Reuse
 # diagnostics.smart_truncate_stderr to surface error/warning lines
 # first; budget is wider than Context.md's inline cap (2000) since
@@ -91,7 +91,7 @@ def write_past_attempts(deads: Iterable[sqlite3.Row],
 
 def render_strategy_block(idx: int, row: sqlite3.Row) -> str:
     """Per-Verify-failure section. Same smart-truncate treatment as
-    render_attempt_block (F30)."""
+    render_attempt_block."""
     lines: list[str] = []
     lines.append(
         f"### Strategy {idx} (pid {row['pipeline_id'][:12]}): "
@@ -169,12 +169,11 @@ def write_past_backward(strat_deads: Iterable[sqlite3.Row],
     the full Verify-failure history for sibling strategies on THIS
     goal. No-op when `strat_deads` is empty.
 
-    F55 design note: the postmortem progress note from a prior
-    timed-out spawn lives ONLY in Context.md's inline section
+    Design note: the postmortem progress note from a prior timed-out
+    spawn lives ONLY in Context.md's inline section
     (`_section_prior_partial`), not here — agents reliably miss
-    companion files (F43 lesson), so the must-see channel is the
-    inline render, and this companion stays narrowly scoped to
-    "verify failure forensics"."""
+    companion files, so the must-see channel is the inline render, and
+    this companion stays narrowly scoped to "verify failure forensics"."""
     rows = list(strat_deads)
     if not rows:
         return None

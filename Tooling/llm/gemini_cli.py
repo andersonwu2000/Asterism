@@ -110,7 +110,7 @@ def _shared_flags() -> list[str]:
 
 def _write_spawn_stderr(attempts_dir: Path, stderr: str,
                         stdout: str, rc: int) -> None:
-    """F46 — mirror of claude_cli helper. Writes captured stderr to
+    """Mirror of claude_cli helper. Writes captured stderr to
     `attempts_dir/_spawn.stderr` for pipeline forensics. Best-effort:
     silent on IO errors so a sandbox-write failure doesn't mask the
     underlying spawn failure."""
@@ -153,9 +153,9 @@ class GeminiCliProvider:
 
         model = _resolve_model(req.kind)
 
-        # F45 — inline prompt body so the agent doesn't need read access
-        # to the workspace `Tooling/prompts/` dir (outside --include-
-        # directories after F44 narrowed cwd to problem_dir).
+        # Inline prompt body so the agent doesn't need read access to
+        # the workspace `Tooling/prompts/` dir (outside --include-
+        # directories after cwd was narrowed to problem_dir).
         from Tooling.agent import render_prompt_template
         try:
             body = req.prompt_path.read_text(encoding="utf-8")
@@ -186,9 +186,9 @@ class GeminiCliProvider:
                 cmd, timeout=req.timeout_sec,
                 capture_output=True, text=True,
                 encoding="utf-8", errors="replace",
-                # F44 — anchor agent cwd at problem_dir (matches
-                # claude_cli; soft-sandbox so relative reads/writes
-                # land inside the Problem instead of at workspace).
+                # Anchor agent cwd at problem_dir (matches claude_cli;
+                # soft-sandbox so relative reads/writes land inside the
+                # Problem instead of at workspace).
                 cwd=str(req.problem_dir),
             )
         except subprocess.TimeoutExpired:
@@ -207,8 +207,8 @@ class GeminiCliProvider:
             _write_spawn_stderr(req.attempts_dir, str(e), "", 127)
             return 127
 
-        # F46 — capture stderr to attempts_dir on failure so the
-        # pipeline can surface it in dead_attempts.failure_detail.
+        # Capture stderr to attempts_dir on failure so the pipeline
+        # can surface it in dead_attempts.failure_detail.
         if r.returncode != 0:
             _write_spawn_stderr(req.attempts_dir, r.stderr or "",
                                 r.stdout or "", r.returncode)
@@ -236,12 +236,12 @@ class GeminiCliProvider:
         self, *, prompt: str, timeout_sec: int = 60,
     ) -> str | None:
         """One-shot completion via `gemini -p`. Returns stdout text or
-        None on quota exhaustion / timeout / failure. Used by F22 short
+        None on quota exhaustion / timeout / failure. Used by short
         auxiliary calls (idiom extract / curate)."""
         gemini_exe = resolve_gemini_executable()
         if not gemini_exe:
             return None
-        # F22 auxiliary calls inherit the 'builder' tier.
+        # Auxiliary calls inherit the 'builder' tier.
         model = _resolve_model("builder")
         cmd = [
             gemini_exe,

@@ -1,4 +1,4 @@
-"""F50 — Loogle wrapper: type-pattern search over Mathlib via HTTPS API.
+"""Loogle wrapper: type-pattern search over Mathlib via HTTPS API.
 
 Loogle (https://loogle.lean-lang.org/) is the Lean community's
 type-pattern search service. Agents call it when they know the
@@ -47,7 +47,7 @@ def query(pattern: str, *, timeout: int = DEFAULT_TIMEOUT_SEC,
     limit = max(1, min(limit, MAX_LIMIT))
     url = f"{LOOGLE_URL}?q={urllib.parse.quote(pattern)}"
     req = urllib.request.Request(
-        url, headers={"User-Agent": "Asterism/F50 (lemma-search)"},
+        url, headers={"User-Agent": "Asterism (lemma-search)"},
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:

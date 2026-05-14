@@ -1,4 +1,4 @@
-"""F56 + verify-collapse (this commit) — strategy verification.
+"""Strategy verification (verify-collapse design).
 
 Per-level verify_strategy is now purely mechanical: rewrite the parent
 goal file as an alias to the winning strategy's scratch theorem. No
@@ -16,7 +16,7 @@ Why this is safe:
     at submit can't isolate strategy-own sorry from sorry-stub
     imports, so it's deferred to root verify after sub-goals alias-in.
   - `promote_to_alias` is pure mechanical string-template rewrite;
-    F52 signature lock at submit guarantees type compatibility.
+    the signature lock at Backward submit guarantees type compatibility.
 
 Failure path: if root `axiom_probe` returns `rogue: [sorryAx]`, the
 sole remaining sorry source is a non-leaf strategy patch. The dispatcher
@@ -26,9 +26,9 @@ theorem) followed by `rollback_cascade_chain` which walks from culprit
 to root, restoring each alias from its backup and reverting DB state.
 
 Empirical justification: 0 cascade-level verify failures observed
-across F56 doc's 26 runs + SG #19 (10 strategies) + PN run after refactor
-(5 strategies). The single-point gate matches the actual failure rate
-without paying per-level Lean elaboration cost.
+across the collapse-design rollout's 26 runs + SG #19 (10 strategies)
++ PN run after refactor (5 strategies). The single-point gate matches
+the actual failure rate without paying per-level Lean elaboration cost.
 """
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ def verify_strategy(
     if not scratch_abs.exists():
         return "dead"
 
-    # F52 — rewrite parent stub as a re-export alias. Pure string
+    # Rewrite parent stub as a re-export alias. Pure string
     # substitution; type correctness guaranteed by Backward's
     # submit-time signature lock. Backup retained on disk (keyed by
     # sid_token via `verify_backup_path`) — cleaned up at root verify

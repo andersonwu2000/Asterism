@@ -1,6 +1,6 @@
 """Lake-build helpers — shell out to `lake build` and parse rc.
 
-Extracted from `pipeline/__init__.py` (P2-#1). Pure module: no DB,
+Extracted from `pipeline/__init__.py`. Pure module: no DB,
 no agent, no provider — depends only on subprocess + Path.
 """
 from __future__ import annotations

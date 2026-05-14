@@ -121,7 +121,7 @@ _IMPORTANT_LINE_RE = re.compile(
     re.MULTILINE,
 )
 
-# F32 — pure-noise lines lake emits in every build-error stderr. These
+# Pure-noise lines lake emits in every build-error stderr. These
 # carry no signal beyond what the actual `error:` line already conveys,
 # but historically dominated failure_detail by 70-80% of bytes. We
 # delete them outright before any reorder / truncate logic.
@@ -180,13 +180,13 @@ def smart_truncate_stderr(stderr: str, *, budget: int = 2000,
 
     `force_reorder=True` skips the under-budget fast path so the
     LEAN_PATH dump is pushed past the error line even when the whole
-    stderr fits in budget. Used by F30 companion-file writers where
+    stderr fits in budget. Used by companion-file writers where
     the lazy-load file's reader still benefits from error-first order.
     """
     if not stderr:
         return stderr
 
-    # F32 — drop lake noise lines (LEAN_PATH dump, redundant exit
+    # Drop lake noise lines (LEAN_PATH dump, redundant exit
     # summaries) unconditionally. Every consumer of smart_truncate
     # benefits; force_reorder remains useful for ordering whatever
     # actionable content survives.

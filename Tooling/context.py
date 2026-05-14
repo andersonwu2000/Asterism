@@ -1,10 +1,9 @@
 """Context.md compilation — sections + orchestration.
 
-Extracted from `agent.py` (P2-#2 audit): ~75% of agent.py was Context
-assembly with no agent-dispatch concerns. This module owns the
-`_section_*` helpers, the failure-digest utilities, and
-`compile_context`. agent.py now keeps only WorkArea + spawn_llm +
-sandbox-path utilities and re-exports the public names for back-compat.
+Extracted from `agent.py`: ~75% of agent.py was Context assembly with
+no agent-dispatch concerns. This module owns the `_section_*` helpers,
+the failure-digest utilities, and `compile_context`. agent.py now
+keeps only WorkArea + spawn_llm + sandbox-path utilities.
 
 Each `_section_*` is pure: `(...) -> list[str]` of lines (with trailing
 empty string for blank-line separator). Empty list means "section
@@ -59,7 +58,7 @@ def _section_sandbox(strategy_id: int | None = None,
         "- `Context.md` + `PAST_*.md` companion files: read-only.",
         "- `patch.lean` is your single output. Lead with `--` annotation "
         "comments, then edit the body (Builder fills in the proof; "
-        "Backward edits the F52 skeleton's body — signature locked). "
+        "Backward edits the strategy skeleton's body — signature locked). "
         "See the kind-specific prompt for layout.",
         "",
     ]
@@ -274,8 +273,8 @@ def _digest_failure(failure_reason: str, failure_detail: str) -> str:
     The full content is written to PAST_DIRECT_ATTEMPTS.md by context_files —
     here we extract only what the agent needs at-a-glance: which class
     of failure + the actual error message (skipping LEAN_PATH dumps
-    and other lake-trace noise that 76% of pre-F26 dead_attempts
-    caught Sonnet looking at)."""
+    and other lake-trace noise that the older inline-everything format
+    caught Sonnet looking at 76% of the time)."""
     if not failure_detail:
         return ""
 
@@ -402,8 +401,8 @@ def _section_proved_goals(conn: sqlite3.Connection,
 
 
 def _section_library_available(mfst, workspace) -> list[str]:
-    """F49 — list Library/<Topic>/INDEX.md entries for the topics
-    inferred from `mfst.lemma_hints` (any `Library.<Topic>.*` entries)."""
+    """List Library/<Topic>/INDEX.md entries for the topics inferred
+    from `mfst.lemma_hints` (any `Library.<Topic>.*` entries)."""
     from . import library  # local import to avoid cycle at module load
     topics = library.topics_from_hints(mfst.all_hints)
     if not topics:
@@ -458,7 +457,7 @@ def _section_goal_history(*,
 
     Sub-sections (in order):
       ### Direct attempts on this goal              — direct_attempt events
-      ### Sibling decompositions that failed Verify — verify_failure (legacy F56)
+      ### Sibling decompositions that failed Verify — verify_failure (legacy event)
       ### Strategies whose decomposition died        — dead_strategy events
       ### Sub-goals reported infeasible              — infeasible_sub events (NEW)
 
@@ -594,8 +593,8 @@ def _section_goal_history(*,
 
 def _section_prior_partial(kind: str | None, problem_dir: Path,
                            goal_id: int) -> list[str]:
-    """F55 — surface the postmortem progress note (if any) from a
-    prior timed-out spawn on THIS (goal, kind) pair. The note is the
+    """Surface the postmortem progress note (if any) from a prior
+    timed-out spawn on THIS (goal, kind) pair. The note is the
     short state + blocker dump the framework collected via a
     `--resume`-based postmortem call right after the main spawn was
     SIGKILL'd; it's a starting sketch, not a partial deliverable.
@@ -638,9 +637,9 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     `strategy_id`: when set (Backward worker), write a 'Strategy
     naming' section pinning sub-goal slug prefixes to `s<sid>_`.
 
-    `kind` (F43): 'builder' | 'backward' | None — gates which Goal
-    history sub-sections render. C3 (step 4) collapsed most of the
-    kind-asymmetric gating; current state:
+    `kind`: 'builder' | 'backward' | None — gates which Goal history
+    sub-sections render. Most of the kind-asymmetric gating was
+    collapsed; current state:
       - `### Direct attempts on this goal` — kind-agnostic, always
         rendered (was builder-only; SG g142 needed it for Backward).
         Builder declines now appear here as `agent_declined` rows
@@ -651,7 +650,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
       - `### Sub-goals reported infeasible` — kind ∈ {backward, None};
         same reasoning.
 
-    F55 — also surfaces the persisted partial output (PROPOSAL.md for
+    Also surfaces the persisted partial output (PROPOSAL.md for
     backward, patch.lean for builder) from a prior failed/timed-out
     spawn, so the agent picks up where it left off instead of starting
     fresh.
@@ -665,9 +664,9 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
 
     # Project DB rows into Event objects via events.py.
     # `_NON_AGENT_REASONS` filter lives in events.py; dedupe between
-    # verify_failure and dead_strategy is here because P0-#4 requires
-    # Builder kind to skip verify_failure but still see dead_strategy
-    # intact — events.py can't know whether verify_failure is rendered.
+    # verify_failure and dead_strategy is here because Builder kind
+    # must skip verify_failure but still see dead_strategy intact —
+    # events.py can't know whether verify_failure is rendered.
     direct_events = events.direct_attempts(conn, int(goal["id"]), k=5)
     verify_events = events.verify_failures(conn, int(goal["id"]), k=5)
     infeasible_sub_events = events.infeasible_subs(
@@ -723,11 +722,11 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     out = attempts_dir / "Context.md"
     out.write_text("\n".join(parts), encoding="utf-8")
 
-    # F26 — write companion reference files for the bulky / lazy-load
-    # content (Context.md only carries digests + pointers). F55 — the
+    # Write companion reference files for the bulky / lazy-load
+    # content (Context.md only carries digests + pointers). The
     # progress note from a prior timed-out spawn is rendered ONLY in
     # Context.md (must-see channel), not duplicated into the companion
-    # — agents miss companion files (F43) so the inline section is the
+    # — agents miss companion files, so the inline section is the
     # canonical surface.
     context_files.write_past_attempts(direct_events, attempts_dir)
     context_files.write_past_backward(verify_events, attempts_dir)

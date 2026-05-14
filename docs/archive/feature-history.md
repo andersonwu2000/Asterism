@@ -90,3 +90,14 @@ P-phases mark refactoring / cleanup sweeps separate from feature work.
 
 P1-#6, P1-#7: batched into the P1-#5/#6/#7 commit at `8ebb964` (sqlite
 timeout + post-spawn session_id, alongside P1-#5).
+
+## Mathlib-allowlist (M) series
+
+A short companion series for fixes to the agent's mathlib read/grep
+allowlist, separate from the main F-ID stream.
+
+| ID | Commit | Subject |
+|---|---|---|
+| M1 | `1014d91` | M1+M2 — widen mathlib allowlist + force lemma-name verification |
+| M2 | `1014d91` | M1+M2 — widen mathlib allowlist + force lemma-name verification |
+| M3 | `d045e15` | M3 — add `--add-dir <packages>` so allowlist on Mathlib actually works |

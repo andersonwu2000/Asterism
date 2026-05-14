@@ -88,7 +88,7 @@ def _walk_goal(conn: sqlite3.Connection, goal_id: int,
     BEFORE this node's connector; this function handles only children
     of the given goal. The goal's own line was rendered by the caller."""
     if goal_id in visited:
-        # Defensive: under F25-retired model, a goal could in theory be
+        # Defensive: under the retired multi-parent model, a goal could in theory be
         # sub-goal of multiple strategies (not currently emitted by
         # Backward, but the schema permits). Show the cycle marker
         # instead of looping forever.

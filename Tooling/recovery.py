@@ -1,7 +1,7 @@
 """Daemon-startup recovery — reconcile transient state from a crashed
 prior daemon back to a consistent baseline.
 
-Extracted from `dispatcher.py` (P2-#4 audit). The dispatcher's main
+Extracted from `dispatcher.py`. The dispatcher's main
 loop concerns itself with steady-state work; FS↔DB reconciliation is
 a structurally separate phase that runs once at startup.
 
@@ -117,7 +117,7 @@ def sweep_lean_backups(conn: sqlite3.Connection,
         for r in conn.execute("SELECT lean_path, status FROM goals")
     }
 
-    # P0-#1 added sid-keyed backups (`.lean.verify_backup_s<id>`) so
+    # Sid-keyed backups (`.lean.verify_backup_s<id>`) ensure
     # concurrent Verifies on sibling strategies don't clobber each
     # other. Glob both the legacy plain suffix and the sid-suffixed
     # variant. Missing this would let sid-keyed orphans accumulate
@@ -143,7 +143,7 @@ def sweep_lean_backups(conn: sqlite3.Connection,
             except OSError:
                 pass
 
-    # P0-#1 also sid-keys the .tmp staging file (see _skeleton.py:
+    # The .tmp staging file is also sid-keyed (see _skeleton.py:
     # `tmp = parent_abs.with_suffix(parent_abs.suffix + f".tmp_{sid_token}")`)
     # so daemon-crash mid-Verify can leak `.lean.tmp_s<id>` files. Glob
     # both the legacy plain suffix and the sid-suffixed variant —

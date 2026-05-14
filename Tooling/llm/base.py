@@ -12,7 +12,7 @@ SpawnRC is an IntEnum):
   0   success (output files in attempts_dir; pipeline parses them)
   124 timeout
   125 stale session (claude --resume on a GC'd session UUID)
-  126 quota exhausted (gemini free-tier limit, F38)
+  126 quota exhausted (gemini free-tier limit)
   127 dependency missing (CLI not on PATH / SDK not installed)
   128 stuck thinking — watchdog killed spawn after >N min without any
       tool_use event in the session jsonl. Distinct from 124 (full
@@ -29,8 +29,8 @@ from typing import Protocol
 
 
 class SpawnRC(IntEnum):
-    """Typed names for the rc convention. P2-#3 — pipeline branches
-    on `rc == SpawnRC.TIMEOUT` etc. instead of magic numbers, while
+    """Typed names for the rc convention. Pipeline branches on
+    `rc == SpawnRC.TIMEOUT` etc. instead of magic numbers, while
     providers can still return raw int (IntEnum compares equal to
     its underlying int)."""
     OK = 0
@@ -76,7 +76,7 @@ class LLMRequest:
                     the provider inlines into the retry prompt. Lets
                     the agent see the error immediately without a
                     Read tool round-trip. Ignored when is_retry=False.
-      is_postmortem: F55 — postmortem call after a main-spawn timeout.
+      is_postmortem: postmortem call after a main-spawn timeout.
                     Uses --resume so the prior turn's session memory is
                     intact, loads `prompt_path` verbatim (a short prompt
                     asking the agent to summarize state + blockers into
@@ -120,8 +120,8 @@ class Provider(Protocol):
     `spawn` runs a full agent invocation that writes outputs to disk
     (Backward / Builder / Verify). `complete_text` is a one-shot
     text-in/text-out call retained for short auxiliary tasks where
-    file IO would be overkill (no current call sites since the F22
-    playbook flow was retired in favor of inline goal annotations,
+    file IO would be overkill (no current call sites since the
+    per-problem playbook flow was retired in favor of inline goal annotations,
     but the surface stays in place for future use).
     """
     def spawn(self, req: LLMRequest) -> int: ...

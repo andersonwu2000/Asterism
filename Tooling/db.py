@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS goals (
     -- handled by `Tooling/pipeline/_retry.py` with sid as a local
     -- pipeline-scope var. The migration in init_schema below drops
     -- these columns from older DBs.)
-    -- F42 — when this goal is an alias (its lean file's proof body
+    -- When this goal is an alias (its lean file's proof body
     -- delegates to another goal via `apply <canonical_slug> <;>
     -- assumption`), `alias_target_id` points at that canonical goal.
     -- prune.is_retained treats a goal as retained if any alive goal
@@ -189,7 +189,7 @@ def now() -> str:
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
-    # P1-#6: lift busy-timeout from sqlite3's 5s default to 30s.
+    # Lift busy-timeout from sqlite3's 5s default to 30s.
     # With pool=12 workers each holding their own conn and issuing
     # short bursts of UPDATEs / INSERTs through cascade_one, the 5s
     # ceiling is uncomfortably close to real bursts; 30s absorbs
@@ -211,7 +211,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     # needed to backfill columns added in later versions). Idempotent
     # via "duplicate column name" detection.
     for col, ddl in (
-        ("alias_target_id",     # F42
+        ("alias_target_id",
          "ALTER TABLE goals ADD COLUMN alias_target_id INTEGER NULL"
          " DEFAULT NULL REFERENCES goals(id)"),
         # Migration entry for older DBs created before entry_kind landed.
@@ -275,7 +275,7 @@ def get_goal(conn: sqlite3.Connection, goal_id: int) -> sqlite3.Row | None:
 
 def set_alias_target(conn: sqlite3.Connection, goal_id: int,
                      target_id: int) -> None:
-    """F42 — record that `goal_id` is an alias whose proof delegates
+    """Record that `goal_id` is an alias whose proof delegates
     to `target_id`'s file. The alias chain stays flat: if `target_id`
     is itself an alias, its own alias_target_id is followed transparently
     by the caller before passing in (see _resolve_alias_root in dedupe)."""
@@ -289,7 +289,7 @@ def set_alias_target(conn: sqlite3.Connection, goal_id: int,
 
 def aliases_pointing_at(conn: sqlite3.Connection,
                         target_id: int) -> list[int]:
-    """F42 — return ids of every goal whose alias_target_id == target_id.
+    """Return ids of every goal whose alias_target_id == target_id.
     Used by prune.is_retained to keep an orphan canonical alive while
     any live goal aliases to it."""
     return [int(r["id"]) for r in conn.execute(
@@ -468,10 +468,10 @@ def strategies_ready_for_verify(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         "    JOIN goals sg ON sg.id = ss.subgoal_id"
         "    WHERE ss.strategy_id = s.id AND sg.status != 'proved'"
         "  )"
-        # Deterministic order so per-goal Verify serialization
-        # (P0-#1 in bfs_refill) picks the same sibling on each tick
-        # — without this, sqlite's natural rowid order is nominal
-        # but documented-as-undefined.
+        # Deterministic order so per-goal Verify serialization (the
+        # per-goal-bfs cap in bfs_refill) picks the same sibling on
+        # each tick — without this, sqlite's natural rowid order is
+        # nominal but documented-as-undefined.
         " ORDER BY s.id"
     ))
 

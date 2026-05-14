@@ -12,15 +12,16 @@ Five projections currently live here:
                                   (see `_NON_AGENT_REASONS` for what's
                                   excluded).
   - `verify_failures(goal_id)`  — strategy-level dead_attempts on this
-                                  goal's strategies (legacy F56; not
-                                  produced by new pipelines but
+                                  goal's strategies (legacy event type;
+                                  not produced by new pipelines but
                                   retained for historical DB rows).
   - `dead_strategies(goal_id)`  — strategies for this goal that died
-                                  (cascade-shelve / F16 inward kill).
-                                  Built-in dedupe against `verify_failures`
-                                  so the same strategy id doesn't
-                                  appear in both buckets.
-  - `builder_declines(goal_id)` — F48 subset of `direct_attempts` where
+                                  (cascade-shelve / inward kill on
+                                  parent shelve). Built-in dedupe
+                                  against `verify_failures` so the same
+                                  strategy id doesn't appear in both
+                                  buckets.
+  - `builder_declines(goal_id)` — subset of `direct_attempts` where
                                   the Builder agent invoked the
                                   decline channel (PROPOSAL.md without
                                   patch.lean + `decline_reason: too_hard`).
@@ -51,7 +52,7 @@ from typing import Any
 
 # Reasons NOT projected as `direct_attempt`. Three sub-categories:
 #   1. infra noise (agent has no way to act on it):
-#        - spawn_fast_fail (rc≠0 wall<10s; F46)
+#        - spawn_fast_fail (rc≠0 wall<10s)
 #   2. cross-goal projected (handled by a different event_type):
 #        - agent_infeasible → projected to parent via `infeasible_subs`
 #   3. framework / DB / FS race (operator concern, not agent's):
@@ -152,10 +153,10 @@ def direct_attempts(conn: sqlite3.Connection,
 
 def verify_failures(conn: sqlite3.Connection,
                     goal_id: int, *, k: int = 5) -> list[Event]:
-    """Strategy-level dead_attempts on this goal's strategies. F56
-    removed Verify as a worker_kind so new pipelines don't write these
-    rows; this projection still surfaces historical rows from pre-F56
-    runs of the same DB."""
+    """Strategy-level dead_attempts on this goal's strategies. The
+    verify-pipeline collapse removed Verify as a worker_kind so new
+    pipelines don't write these rows; this projection still surfaces
+    historical rows from pre-collapse runs of the same DB."""
     rows = conn.execute(
         "SELECT da.id, da.target_id, da.failure_reason, da.failure_detail, "
         "       da.pipeline_id, da.ts, "
@@ -180,7 +181,8 @@ def dead_strategies(conn: sqlite3.Connection,
                     exclude_strategy_ids: set[int] | None = None,
                     ) -> list[Event]:
     """Strategies that were proposed for this goal and later died
-    (cascade-shelve / F16 inward kill / verify-housekeeping mark dead).
+    (cascade-shelve / inward kill on parent shelve /
+    verify-housekeeping mark dead).
     Filtered to non-empty proposal_md AND ≥ 1 linked sub-goal (drops
     half-baked recovery cleanups).
 
@@ -188,8 +190,8 @@ def dead_strategies(conn: sqlite3.Connection,
     `verify_failure` projection — same strategy id may appear in both
     buckets, and verify_failure carries more informative content
     (lake stderr). The caller knows whether verify_failure is being
-    rendered for this audience (P0-#4: Builder kind suppresses
-    verify_failure but should still see dead_strategy intact).
+    rendered for this audience (Builder kind suppresses verify_failure
+    but should still see dead_strategy intact).
 
     Each event's `payload['subs']` is the list of sub-goals the strategy
     spawned, with shelved subs annotated by `root_cause` excerpt + full

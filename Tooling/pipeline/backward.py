@@ -7,8 +7,8 @@ LSP-backed agent: Backward spawns claude with an `--mcp-config`
 pointing at the long-living `Tooling.lsp_gateway` HTTP server,
 target = `attempts_dir/patch.lean`. The agent uses `apply_edit` /
 `goal_at` / `errors_at` directly on `patch.lean` (which is pre-
-seeded with the F52 skeleton: imports + `theorem s<sid_token> ...
-:= by sorry`). The agent's last `apply_edit` produces the final
+seeded with the strategy skeleton: imports + `theorem s<sid_token>
+... := by sorry`). The agent's last `apply_edit` produces the final
 patch.lean body — no transcription step. Sub-goal stubs are written
 to `attempts_dir/new_<slug>.lean` via the Write tool, then
 verified standalone via `validate_file`.
@@ -177,9 +177,9 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
                  workspace: Path, mfst: manifest.Manifest,
                  pipeline_id: str) -> "PipelineResult":  # noqa: F821
     """Outer dispatch — runs the inner Backward then persists or clears
-    the partial-output draft (F55) so a future spawn on this same goal
-    sees the in-flight PROPOSAL.md from the prior failed/timed-out
-    attempt instead of starting from scratch.
+    the partial-output draft so a future spawn on this same goal sees
+    the in-flight PROPOSAL.md from the prior failed/timed-out attempt
+    instead of starting from scratch.
 
     Outcomes:
       - `success`: strategy committed → clear any prior draft.
@@ -225,8 +225,8 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     Phase 7 — strategy_id is reserved once before the retry helper loop
     and stays stable across all in-pipeline retries (so the agent's
     session memory anchored on `theorem s<sid_token>` remains valid
-    after `--resume`). The former F53/A cross-pipeline strategy reuse
-    is retired because each pipeline now mints fresh sid + strategy_id
+    after `--resume`). The former cross-pipeline strategy reuse is
+    retired because each pipeline now mints fresh sid + strategy_id
     (no cross-pipeline session continuity to misalign).
     """
     from . import (
@@ -251,8 +251,8 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     problem_dir = db.problem_dir(workspace, goal["problem"])
     namespace = f"Problems.{goal['problem']}"
 
-    # Build the F52 skeleton text once. Used by spawn_fn (cold) to
-    # pre-populate attempts_dir/patch.lean and by parse_fn for the
+    # Build the strategy skeleton text once. Used by spawn_fn (cold)
+    # to pre-populate attempts_dir/patch.lean and by parse_fn for the
     # signature lock check.
     parent_abs_for_skeleton = workspace / goal["lean_path"]
     try:
@@ -311,7 +311,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     def backward_spawn(ctx: SpawnCtx) -> int:
         # Cold start (and fresh-rescue, which is also cold-with-fresh-
         # sid): agent has no session memory to resume. Compile
-        # Context.md fresh and write the F52 skeleton so the agent's
+        # Context.md fresh and write the strategy skeleton so the agent's
         # first Read of patch.lean shows a clean `theorem s<sid_token>
         # ... := by sorry` template. For fresh-rescue, the helper has
         # already written `_prior_analysis.md` to attempts_dir; the
@@ -526,7 +526,7 @@ def _backward_parse_and_commit(
             leading,
         )
 
-    # F52 signature check applies to both decomp + leaf-bypass paths.
+    # Signature check applies to both decomp + leaf-bypass paths.
     agent_signature = _normalize_signature(
         _signature_prefix(main_patch_text, sid_token))
     if agent_signature != skeleton_signature:
@@ -797,8 +797,8 @@ def _backward_parse_and_commit(
         shutil.copy2(patches[0], scratch_dest)
         placed.append(scratch_dest)
 
-        # F52 — auto-inject `import` lines for sub-goal modules into
-        # the strategy patch. Agents reliably forget at least one;
+        # Auto-inject `import` lines for sub-goal modules into the
+        # strategy patch. Agents reliably forget at least one;
         # framework-managed imports avoid an entire class of
         # `unknown identifier` errors at lake build.
         sub_dest_paths = [dest for _, dest in sub_dests]
@@ -851,9 +851,9 @@ def _backward_parse_and_commit(
                     f"{err_lines or 'no error diagnostics'}"
                 )
 
-        # F24-A — race guard: between this Backward's dispatch and now
-        # (which is up to several minutes due to claude CLI + lake build),
-        # an OR-parallel sibling may have shelved or proved this goal.
+        # Race guard: between this Backward's dispatch and now (which
+        # is up to several minutes due to claude CLI + lake build), an
+        # OR-parallel sibling may have shelved or proved this goal.
         # Either way our new strategy is moot. Abort cleanly so cascade
         # has nothing to mutate; clean up sub-goal files we placed.
         # cascade_one's no-op guard handles the same race on its side
@@ -895,7 +895,7 @@ def _backward_parse_and_commit(
             )
             if canonical_id is not None:
                 db.update_goal_status(conn, new_gid, "proved")
-                # F42 — record alias relationship so prune retains the
+                # Record alias relationship so prune retains the
                 # canonical (in case it's an orphan from a dead strategy)
                 # for as long as this alias is alive.
                 db.set_alias_target(conn, new_gid, canonical_id)

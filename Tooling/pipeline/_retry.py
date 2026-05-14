@@ -1,7 +1,8 @@
 """In-pipeline retry helper (Phase 7).
 
-Replaces cross-pipeline session passing (former F33 / F53) with an
-in-pipeline retry loop sharing one claude session. Builder / Backward
+Replaces cross-pipeline session passing (former same-session retry
+that flowed through DB) with an in-pipeline retry loop sharing one
+claude session. Builder / Backward
 inner functions delegate retry control flow here and supply kind-
 specific spawn + parse callbacks.
 
@@ -172,7 +173,7 @@ class SpawnCtx:
     framework also pre-writes `attempts_dir/_broken_session.jsonl` so
     the agent can Read the broken session's history without needing
     add-dir access to `~/.claude/projects/`. The spawn still does
-    cold-prep (Context.md compile, F52 skeleton) so the standard
+    cold-prep (Context.md compile, strategy skeleton) so the standard
     workspace artifacts exist.
 
     `budget_override`: per-spawn timeout override (seconds). Set

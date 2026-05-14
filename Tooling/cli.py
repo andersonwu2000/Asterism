@@ -16,7 +16,7 @@ from pathlib import Path
 from . import brief, db, dispatcher, manifest, prune, tree
 
 
-# F28 — daemon log lifecycle.
+# Daemon log lifecycle.
 LOG_DIR = Path(".asterism") / "logs"
 LOG_RETENTION_KEEP = 20  # most-recent N logs kept; older deleted on startup
 
@@ -60,8 +60,8 @@ def _log_filename(workspace: Path) -> str:
     except Exception:
         # DB missing / unreadable: keep 'daemon' default
         pass
-    # P1-#8: resolve via the same chain as the actual workers (F39
-    # per-pipeline provider/model), not the legacy ASTERISM_AGENT_MODEL
+    # Resolve via the same chain as the actual workers (per-pipeline
+    # provider/model selection), not the legacy ASTERISM_AGENT_MODEL
     # env which lies when builder/backward use different models. Use
     # the builder's resolved model as the canonical label; combine
     # with backward's model when they differ so a mixed-model run is
@@ -108,7 +108,7 @@ def _retain_recent_logs(log_dir: Path, *, keep: int) -> list[Path]:
     return deleted
 
 
-# Root.lean lifecycle (F15):
+# Root.lean lifecycle:
 #  initial state — auto-written by `init`: `theorem main : <stmt> := by sorry`
 #  during run    — framework writes proofs/_strategy_sNN.lean files;
 #                  Root.lean unchanged.
@@ -203,8 +203,8 @@ def cmd_init(args: argparse.Namespace) -> int:
             encoding="utf-8",
         )
     else:
-        # F15 — guard: reject manually-written or in-progress Root.lean
-        # so a fresh init never silently wraps non-canonical state.
+        # Guard: reject manually-written or in-progress Root.lean so a
+        # fresh init never silently wraps non-canonical state.
         # 'sorry' (auto-shape) and 'wrap' (post-prove) are both fine;
         # anything else is operator confusion until --force overrides.
         body_kind = _classify_root_body(
@@ -279,10 +279,10 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     workspace = Path.cwd()
-    # F28 — auto-tee daemon stdout/stderr into .asterism/logs/<...>.log
-    # so post-run forensics + post-compact handoffs always have a
-    # canonical artifact, while the operator still sees real-time
-    # output on the terminal.
+    # Auto-tee daemon stdout/stderr into .asterism/logs/<...>.log so
+    # post-run forensics + post-compact handoffs always have a canonical
+    # artifact, while the operator still sees real-time output on the
+    # terminal.
     log_path = _open_run_log(workspace)
     log_file = log_path.open("w", encoding="utf-8")
     print(f"[cli] log → {log_path.relative_to(workspace).as_posix()}",
@@ -379,9 +379,9 @@ def cmd_init_batch(args: argparse.Namespace) -> int:
 
 
 def _soft_reset(problem: str) -> int:
-    """P2-#6: undo the cascade caused by spawn_fast_fail bursts (F46
-    detected provider-quota exhaustion as <10s rc=1 spam). The hard
-    reset wipes everything; soft reset is surgical:
+    """Undo the cascade caused by spawn_fast_fail bursts (the
+    spawn-fast-fail classifier sees provider-quota exhaustion as <10s
+    rc=1 spam). The hard reset wipes everything; soft reset is surgical:
 
       1. Find dead_attempts on this problem with failure_reason in
          the spurious-failure set ('spawn_fast_fail').
@@ -512,8 +512,8 @@ def cmd_reset(args: argparse.Namespace) -> int:
     is dead, the operator can `rm -rf .attempts/` separately.
 
     `--soft`: skip the file/DB wipe; just clear spurious dead_attempts
-    (spawn_fast_fail bursts) + revive cascade victims. Use after an
-    F46 quota-exhaust incident.
+    (spawn_fast_fail bursts) + revive cascade victims. Use after a
+    quota-exhaust incident.
 
     Refuses to reset if no Manifest.md exists (signals user typo).
     """
@@ -652,8 +652,8 @@ def cmd_reset(args: argparse.Namespace) -> int:
             else:
                 failed_files.append(name)
 
-    # Drop .drafts/ (F55 — postmortem progress notes from prior
-    # timed-out spawns). Reset is meant to wipe state for a clean
+    # Drop .drafts/ (postmortem progress notes from prior timed-out
+    # spawns). Reset is meant to wipe state for a clean
     # baseline run; carrying over partial sketches would pre-bias a
     # clean reset.
     drafts_dir = pdir / ".drafts"
@@ -999,7 +999,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def cmd_logs(args: argparse.Namespace) -> int:
-    """P2-#5: list / tail framework run logs from `.asterism/logs/`.
+    """List / tail framework run logs from `.asterism/logs/`.
     Default: list with sizes, mtime, sorted newest first.
     `--tail N`: print the last N lines of the most recent log.
     """
@@ -1029,7 +1029,7 @@ def cmd_logs(args: argparse.Namespace) -> int:
 
 
 def cmd_config(args: argparse.Namespace) -> int:
-    """P2-#5: print the resolved Asterism config — what `dispatch.*`,
+    """Print the resolved Asterism config — what `dispatch.*`,
     `builder.*`, `backward.*` actually evaluate to right now (env >
     Asterism.yaml > legacy env > built-in default). Eliminates
     "what's actually active?" confusion when env vars + yaml + defaults
@@ -1131,7 +1131,7 @@ def main(argv: list[str] | None = None) -> int:
     p_reset.add_argument(
         "--soft", action="store_true",
         help="surgical: only clear spurious dead_attempts + revive "
-             "cascade victims (use after F46 quota-exhaust incident)",
+             "cascade victims (use after a quota-exhaust incident)",
     )
     p_reset.set_defaults(func=cmd_reset)
 

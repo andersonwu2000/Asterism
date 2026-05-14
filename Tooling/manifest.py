@@ -37,7 +37,7 @@ class Manifest:
     entry_kind: str = "Backward"
     axioms_whitelist: list[str] = field(default_factory=list)
     forbidden_lemmas: list[str] = field(default_factory=list)
-    # F49 — `lemma_hints` unifies Mathlib + Library hint paths. Entries
+    # `lemma_hints` unifies Mathlib + Library hint paths. Entries
     # like `Mathlib.NumberTheory.ZMod.Basic` and `Library.NumberTheory.
     # wilson` flow through the same `lemma_lookup` (lake env lean
     # `#check`). For backward compat the legacy `## Mathlib hints`
@@ -160,7 +160,7 @@ def parse(path: Path) -> Manifest:
         )
         entry_kind = "Backward"
 
-    # F49 — read both `## Lemma hints` (canonical) and `## Mathlib hints`
+    # Read both `## Lemma hints` (canonical) and `## Mathlib hints`
     # (legacy alias). Either may be present; if both, lemma_hints wins
     # for the unified `all_hints` view but both raw lists stay tracked.
     mathlib_hints = _parse_bullet_list(sections.get('Mathlib hints', ''))

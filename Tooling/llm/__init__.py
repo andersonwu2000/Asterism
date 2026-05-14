@@ -5,9 +5,9 @@
   'openai'             — OpenAI-compatible HTTP API (vLLM / Ollama /
                          LM Studio / Anthropic-via-proxy / etc.)
   'gemini'             — Google Gemini CLI subprocess (Code Assist
-                         free-tier auth; flash model practical, F38)
+                         free-tier auth; flash model practical)
 
-F39 — per-pipeline overrides:
+Per-pipeline overrides:
   `ASTERISM_BUILDER_PROVIDER` / `ASTERISM_BACKWARD_PROVIDER` take
   precedence when caller passes `kind=` (e.g. spawn_llm forwards its
   own `kind`). Lets a single daemon run mix providers — typical use

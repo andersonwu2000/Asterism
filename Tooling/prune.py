@@ -38,7 +38,7 @@ def _canonical_alias_content(*, problem: str, goal_slug: str,
     """Canonical end-of-run content for a proved goal's lean_path.
 
     Same shape Verify Step 2's `_promote_to_alias` writes (def-alias
-    so Lean copies type from the strategy theorem; pre-F52 used
+    so Lean copies type from the strategy theorem; the older form used
     `theorem <slug> : <statement> := s<sid>` which lost binders).
     Difference from Verify-time promotion: reconcile DROPS any
     `_strategy_s*` imports other than the winning strategy's, so
@@ -75,13 +75,13 @@ def reconcile_proved_goals(conn: sqlite3.Connection, workspace: Path,
     lean_path to alias EXCLUSIVELY from that strategy's scratch — no
     stale imports from sibling strategies that finished concurrently.
 
-    Form matches Verify Step 2's `_promote_to_alias` (P0-#2: prior
-    version emitted `theorem <slug> : <statement> := s<sid>`, which
-    serializes only the goal's conclusion — binders from the original
-    stub were stripped, breaking elaboration on any non-trivially-
-    bound goal; this regenerated form would silently undo F52's fix
-    every end-of-run reconcile). Idempotent — already-canonical
-    files are left alone.
+    Form matches Verify Step 2's `_promote_to_alias` (a prior version
+    emitted `theorem <slug> : <statement> := s<sid>`, which serializes
+    only the goal's conclusion — binders from the original stub were
+    stripped, breaking elaboration on any non-trivially-bound goal;
+    that regenerated form would silently undo the def-alias fix every
+    end-of-run reconcile). Idempotent — already-canonical files are
+    left alone.
 
     Returns the list of repaired paths.
     """
@@ -142,7 +142,7 @@ def winning_chain(conn: sqlite3.Connection, problem: str) -> set[str]:
             return
         keep.add(goal["lean_path"])
 
-        # F42 — alias goals' lean files import their canonical's file.
+        # Alias goals' lean files import their canonical's file.
         # Walk into the canonical so its lean_path stays in `keep` even
         # when the canonical is an orphan from a dead/superseded
         # strategy. Visited-set prevents loops; chain stays flat in
