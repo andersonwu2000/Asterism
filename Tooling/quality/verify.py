@@ -313,6 +313,16 @@ def cleanup_cascade_backups(
     return n
 
 
+FRAMEWORK_DEFAULT_AXIOMS: tuple[str, ...] = (
+    "Classical.choice", "propext", "Quot.sound",
+)
+"""The three Lean kernel axioms accepted by default when a Manifest
+does not set `axioms_whitelist`. sorryAx is deliberately excluded —
+catching it is the entire reason this gate exists. Operators who
+need additional axioms (e.g. `native_decide`, `Lean.ofReduceBool`)
+must add them explicitly in the Manifest."""
+
+
 def root_integrity_gate(
     conn: sqlite3.Connection, workspace: Path, problem: str,
     mfst: manifest.Manifest,
@@ -320,20 +330,23 @@ def root_integrity_gate(
     """Single integrity gate that runs after a problem's root flips to
     'proved'. Under verify-collapse, per-level `verify_strategy` is
     mechanical (no Lean elaboration); the actual proof validation lives
-    here.
+    here. The probe ALWAYS runs once a root reaches 'proved' — framework
+    behavior must not depend on whether the Manifest sets
+    `axioms_whitelist`. When the Manifest omits it, fall back to
+    `FRAMEWORK_DEFAULT_AXIOMS` (the 3 standard Lean axioms) and log a
+    warning so the implicit fallback is operator-visible.
 
     Performs `axiom_probe(Problems.<p>.Root, main)` against the
-    Manifest's `axioms_whitelist`. On rogue-axiom failure (sorryAx
-    leaked from a non-leaf strategy patch) invokes
-    `bisect_sorryax_source` + `rollback_cascade_chain` to revert the
-    cascade — framework cascade machinery will then re-Backward the
-    culprit goal on the next dispatcher tick.
+    effective whitelist. On rogue-axiom failure (sorryAx leaked from a
+    non-leaf strategy patch) invokes `bisect_sorryax_source` +
+    `rollback_cascade_chain` to revert the cascade — framework cascade
+    machinery will then re-Backward the culprit goal on the next
+    dispatcher tick.
 
     Happy path: clean up cascade backups accumulated by
     `verify_strategy` during cascade promotion.
 
-    No-op when Manifest has no `axioms_whitelist` (legacy behavior,
-    accept any axioms). No-op when root is not 'proved'.
+    No-op when root is not 'proved'.
     """
     from ..pipeline._axiom import axiom_probe
     row = conn.execute(
@@ -344,20 +357,20 @@ def root_integrity_gate(
     ).fetchone()
     if row is None:
         return
-    if not mfst.axioms_whitelist:
-        # No whitelist → accept; still cleanup backups since the run
-        # itself reached the gate.
-        n = cleanup_cascade_backups(conn, workspace, problem)
-        if n:
-            print(f"[integrity] {problem}: cleaned {n} cascade backup(s) "
-                  f"(no whitelist)", flush=True)
-        return
+    if mfst.axioms_whitelist:
+        whitelist = list(mfst.axioms_whitelist)
+    else:
+        whitelist = list(FRAMEWORK_DEFAULT_AXIOMS)
+        print(f"[integrity] {problem}: Manifest didn't set "
+              f"axioms_whitelist; using framework default "
+              f"{list(FRAMEWORK_DEFAULT_AXIOMS)}",
+              flush=True)
     try:
         ok, axiom_msg = axiom_probe(
             workspace,
             fq_name=f"Problems.{problem}.main",
             module=f"Problems.{problem}.Root",
-            whitelist=mfst.axioms_whitelist,
+            whitelist=whitelist,
         )
     except Exception as e:
         print(f"[integrity] {problem}: probe error ({e})",
