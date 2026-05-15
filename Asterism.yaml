@@ -7,7 +7,7 @@
 # it; the framework only reads what's set.
 
 dispatch:
-  pool: 15                    # ThreadPoolExecutor workers (= max in-flight
+  pool: 8                     # ThreadPoolExecutor workers (= max in-flight
                               # pipelines). With Phase 2 LSP gateway, RAM
                               # cost per spawn is just claude.exe (~330 MB);
                               # worker pool RAM is bounded by gateway.workers
@@ -51,12 +51,29 @@ dispatch:
                               # [trap_check - 300, trap_check].
 
 gateway:                       # Phase 2 LSP gateway (Tooling/lsp_gateway.py)
-  workers: 3                  # Persistent lean workers in the pool. Each is
-                              # ~3 GB Mathlib elaborated state. RAM ≈ 1.6 +
-                              # 3.0×workers + 0.33×pool. Tune to RAM budget;
-                              # tool-call queue depth grows when pool>>workers
-                              # (each cache miss ~3-4s, see
-                              # docs/dev/lsp_gateway.md §6).
+  workers: 4                  # Persistent lean workers in the pool. Tune to
+                              # RAM budget; tool-call queue depth grows when
+                              # pool>>workers (each cache miss ~3-4s, see
+                              # docs/archive/lsp_gateway.md §6).
+                              #
+                              # RAM (32 GB workstation, 2026-05-14 PoC measured
+                              # against real gateway — see docs/research_log.md
+                              # entry of 2026-05-15):
+                              #   ~1.2 GB  base       (lake serve + lean --server)
+                              #   ~2.5 GB  mathlib mmap (shared across ALL workers
+                              #                         via kernel page cache;
+                              #                         counted once if W ≥ 1)
+                              #   ~0.6 GB  per worker  (private elaboration heap;
+                              #                         idle measurement, heavier
+                              #                         under elaboration load)
+                              #   ~0.35 GB per pool slot (claude pipeline WS;
+                              #                          Private commit can reach
+                              #                          ~1 GB but most not resident)
+                              # Approximation (W ≥ 1):
+                              #   RAM ≈ 3.7 + 0.6×workers + 0.35×pool
+                              # Prior comment said 3.0×workers — that double-counted
+                              # the shared mathlib mmap (Working Set vs Private
+                              # confusion); corrected here.
 #  port: 8765                  # HTTP MCP endpoint. Change only on conflict.
 
 builder:

@@ -137,3 +137,58 @@
 
 11 天 zero → 自動證掉 Sylvester-Gallai、現在在拆掉並行度的 RAM
 上限。
+
+---
+
+**2026-05-15（PoC：shared-mathlib RAM 校正）**
+
+從 `experiments/lean_shared_env/` PoC（Phase 1 讀 Lean 4 runtime
+源碼、Phase 2 在 Windows + WSL 雙環境量測）拼出來的結論、commit
+`176c4ad` 結案：
+
+**原以為要修 runtime 的事 — Lean 設計上其實已經做了**
+
+- olean 內 object 全標 `m_rc == 0` (`lean.h:117, 537-541`)、RC inc/dec
+  自動 short-circuit、不寫 mmap region
+- olean 載入用 `mmap(PROT_READ, MAP_PRIVATE)` (`module.cpp:298`)、
+  kernel 強制 read-only
+- 多 process map 同 inode、Linux page cache 設計上**已跨 process 共享
+  physical pages**
+
+→ task manager 看到的 "3 GB × N worker" 是 Working Set 假象、把 N
+個 process 的 view 重複計、實際 physical RAM 共享一份。
+
+**實測（2 個 lean worker、Asterism gateway + manual 兩種方式都驗）**
+
+| 操作 | 釋放 |
+|---|---|
+| Kill Worker 2（仍剩 Worker 1） | 559-661 MB |
+| Kill Worker 1（最後一個）| 2831-3416 MB（mathlib mmap 完全卸） |
+
+per-worker incremental ≈ **600 MB**、不是上面 5/8 estimate 寫的 ~3 GB。
+
+claude.exe pipeline overhead（這次補量）：WS ~350 MB、Private commit
+可達 ~1 GB（V8 heap reservation、多數不 resident）。
+
+**更新後容量公式**（W ≥ 1）：
+
+```
+RAM ≈ 1.2 (base) + 2.5 (mathlib mmap shared) + 0.6 × workers + 0.35 × pool
+    = 3.7 + 0.6 W + 0.35 N
+```
+
+W=4、N=8 → ~8.8 GB（舊公式 16 GB、overestimate ~7 GB）
+W=4、N=12 → ~10.2 GB（pool=12 在 32 GB 機器上**可行**、之前 RAM 牆
+是 measurement artifact）
+
+**caveat**：
+- 測的是 idle worker、跑證明時 private 會擴張、elaboration-heavy 題
+  可能上 GB
+- watchdog (`lean.exe`) 855→936→1102 MB 單調增長、每 kill worker
+  跳一次、新的 ~1 GB drift 沒人追、長 run 估算要留 buffer
+
+`Asterism.yaml` gateway section 公式已更新（之前 `3.0 × workers` 改
+`0.6 × workers` + 顯式列 mathlib base）。
+
+`docs/archive/lsp_gateway.md` §5 + `lsp_integration_tech.md` §1.1 §6.3
+§6.4 是當時 spike 結論的歷史快照、保留原數、不就地改。
