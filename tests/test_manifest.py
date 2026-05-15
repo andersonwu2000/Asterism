@@ -130,3 +130,115 @@ T
 """)
     m = manifest.parse(p)
     assert m.axioms_whitelist == ["propext", "Quot.sound"]
+
+
+# ---------------------------------------------------------------------
+# defs_opens + inject_defs_opens — Defs.lean `open` propagation.
+# These helpers exist because Lean 4 `import` does NOT propagate `open`
+# clauses across files. Without framework-managed injection, every
+# agent-authored .lean would have to remember to replay the opens
+# itself — a fragile dependency that caused the four miniF2F-Valid
+# mid-run repairs (aime_1997_p11, imo_1965_p1, imo_1966_p4,
+# imo_1962_p4) in pilot v5.
+# ---------------------------------------------------------------------
+
+
+def _make_problem_dir(tmp_path: Path, problem: str,
+                      defs_opens_lines: list[str]) -> Path:
+    pdir = tmp_path / "Problems" / problem
+    pdir.mkdir(parents=True)
+    body = "import Mathlib\n\n"
+    for line in defs_opens_lines:
+        body += f"open {line}\n"
+    body += f"\nnamespace Problems.{problem}\n\nend Problems.{problem}\n"
+    (pdir / "Defs.lean").write_text(body, encoding="utf-8")
+    return pdir
+
+
+def test_defs_opens_returns_top_level_opens(tmp_path: Path) -> None:
+    _make_problem_dir(tmp_path, "wilson",
+                      ["BigOperators Real Nat", "Topology"])
+    assert manifest.defs_opens(tmp_path, "wilson") == [
+        "BigOperators Real Nat", "Topology",
+    ]
+
+
+def test_defs_opens_returns_empty_when_no_defs(tmp_path: Path) -> None:
+    (tmp_path / "Problems" / "wilson").mkdir(parents=True)
+    assert manifest.defs_opens(tmp_path, "wilson") == []
+
+
+def test_defs_opens_skips_scope_limited_opens(tmp_path: Path) -> None:
+    pdir = tmp_path / "Problems" / "wilson"
+    pdir.mkdir(parents=True)
+    (pdir / "Defs.lean").write_text(
+        "import Mathlib\n\n"
+        "open Real\n"           # top-level → propagate
+        "open Topology in\n"    # scope-limited → DO NOT propagate
+        "theorem helper : True := trivial\n",
+        encoding="utf-8",
+    )
+    assert manifest.defs_opens(tmp_path, "wilson") == ["Real"]
+
+
+def test_inject_defs_opens_adds_missing_opens(tmp_path: Path) -> None:
+    _make_problem_dir(tmp_path, "wilson",
+                      ["BigOperators Real Nat Topology Rat"])
+    content = (
+        "import Mathlib\n"
+        "import Problems.wilson.Defs\n\n"
+        "namespace Problems.wilson\n\n"
+        "theorem foo : True := trivial\n\n"
+        "end Problems.wilson\n"
+    )
+    out = manifest.inject_defs_opens(content, problem="wilson",
+                                     workspace=tmp_path)
+    assert "open BigOperators Real Nat Topology Rat" in out
+    assert "import Problems.wilson.Defs" in out
+    # Open block should sit between imports and namespace.
+    idx_import = out.index("import Problems.wilson.Defs")
+    idx_open = out.index("open BigOperators")
+    idx_ns = out.index("namespace Problems.wilson")
+    assert idx_import < idx_open < idx_ns
+
+
+def test_inject_defs_opens_idempotent(tmp_path: Path) -> None:
+    _make_problem_dir(tmp_path, "wilson", ["Real"])
+    content = (
+        "import Mathlib\n\n"
+        "open Real\n\n"
+        "namespace Problems.wilson\n\n"
+        "theorem foo : True := trivial\n"
+    )
+    out = manifest.inject_defs_opens(content, problem="wilson",
+                                     workspace=tmp_path)
+    # No new open should be inserted; content unchanged.
+    assert out == content
+    assert out.count("open Real") == 1
+
+
+def test_inject_defs_opens_no_defs_returns_unchanged(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "Problems" / "wilson").mkdir(parents=True)
+    content = "import Mathlib\n\nnamespace Problems.wilson\n\nend\n"
+    assert manifest.inject_defs_opens(content, problem="wilson",
+                                      workspace=tmp_path) == content
+
+
+def test_inject_defs_opens_preserves_existing_subset(
+    tmp_path: Path,
+) -> None:
+    _make_problem_dir(tmp_path, "wilson",
+                      ["BigOperators", "Real Nat Topology"])
+    content = (
+        "import Mathlib\n\n"
+        "open BigOperators\n\n"  # already has this one
+        "namespace Problems.wilson\n\n"
+        "theorem foo : True := trivial\n"
+    )
+    out = manifest.inject_defs_opens(content, problem="wilson",
+                                     workspace=tmp_path)
+    # `BigOperators` already present → no duplicate; `Real Nat Topology` added.
+    assert out.count("open BigOperators") == 1
+    assert "open Real Nat Topology" in out

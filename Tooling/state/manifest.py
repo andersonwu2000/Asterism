@@ -186,3 +186,110 @@ def parse(path: Path) -> Manifest:
         mathlib_hints=mathlib_hints,
         strategic_notes=notes,
     )
+
+
+# ---------------------------------------------------------------------
+# Defs.lean `open` clause propagation
+# ---------------------------------------------------------------------
+
+# Top-level `open X Y Z` clauses in Defs.lean. Scope-limited
+# `open X in <decl>` forms are intentionally excluded — they belong to
+# a specific declaration and do not propagate to other files; only
+# file-level opens are part of the problem's shared notation surface.
+_DEFS_OPEN_RE = re.compile(r'^open\s+(.+?)\s*$', re.MULTILINE)
+
+
+def _scoped_open(line: str) -> bool:
+    """`open X in ...` (scope-limited to a single declaration) — not
+    a file-level open, exclude from propagation."""
+    return bool(re.search(r'\bin\b\s*$', line.strip()))
+
+
+def defs_opens(workspace: Path, problem: str) -> list[str]:
+    """Return the list of `open ...` clause arguments declared at file
+    scope in `Problems/<problem>/Defs.lean`.
+
+    Each entry is the raw text following `open ` (e.g. `'BigOperators
+    Real Nat Topology Rat'` for a single-line multi-namespace open).
+    Returns an empty list if Defs.lean is absent or has no top-level
+    opens.
+
+    `open X in <decl>` scope-limited forms are excluded — they belong
+    to a specific declaration in Defs.lean, not the file's exported
+    notation surface.
+    """
+    # Import here to avoid a circular import: state/db.py imports
+    # state/manifest.py for the Manifest dataclass via __init__.
+    from . import db
+    defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
+    if not defs_path.exists():
+        return []
+    text = defs_path.read_text(encoding="utf-8")
+    out: list[str] = []
+    for m in _DEFS_OPEN_RE.finditer(text):
+        # The regex captures up to end-of-line, so the match line for
+        # an `open X in ...` form has the trailing `in` token visible
+        # in the captured group.
+        captured = m.group(1).strip()
+        if re.search(r'\bin\b\s*$', captured):
+            continue
+        out.append(captured)
+    return out
+
+
+def inject_defs_opens(
+    content: str, *, problem: str, workspace: Path,
+) -> str:
+    """Inject any file-level `open ...` clauses from Defs.lean that are
+    not already present in `content`. Idempotent — exact-string match
+    against `^open <args>$` lines so re-running on already-injected
+    content is a no-op.
+
+    Lean 4's `import` does not propagate `open` clauses across files,
+    so every agent-authored proof file (sub-goal stubs, strategy
+    patches, Builder leaf proofs) must replay Defs.lean's opens to
+    avoid silently auto-binding shorthand names like `π` / `Real.sin`
+    as implicit parameters — a class of bug responsible for the four
+    miniF2F-Valid mid-run repairs aime_1997_p11 / imo_1965_p1 /
+    imo_1966_p4 / imo_1962_p4.
+
+    Insertion point: between the last existing `import` line and the
+    first `namespace` line; falls back to file head if neither is
+    present. New opens are emitted one per line in the order they
+    appear in Defs.lean.
+    """
+    needed_all = defs_opens(workspace, problem)
+    if not needed_all:
+        return content
+    existing = {m.group(1).strip()
+                for m in _DEFS_OPEN_RE.finditer(content)
+                if not _scoped_open(m.group(0))}
+    missing = [o for o in needed_all if o not in existing]
+    if not missing:
+        return content
+
+    block_lines = [f"open {o}" for o in missing]
+
+    # Insertion point: right after the last `import` line, with one
+    # blank line above and below — matches the cmd_init Root.lean
+    # template shape (`import ...\n\nopen ...\n\nnamespace ...`).
+    lines = content.split("\n")
+    last_import_idx = -1
+    for i, line in enumerate(lines):
+        if line.strip().startswith("import "):
+            last_import_idx = i
+    if last_import_idx < 0:
+        # No imports — prepend the open block to file head.
+        return "\n".join(block_lines) + "\n\n" + content
+
+    before = lines[: last_import_idx + 1]
+    after = lines[last_import_idx + 1 :]
+    # Drop leading blank lines from `after` so the injected block
+    # carries its own one-blank-line separation (no double blanks).
+    while after and after[0].strip() == "":
+        after.pop(0)
+    return (
+        "\n".join(before) + "\n\n"
+        + "\n".join(block_lines) + "\n\n"
+        + "\n".join(after)
+    )

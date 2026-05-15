@@ -795,9 +795,24 @@ def _backward_parse_and_commit(
                     src.read_text(encoding="utf-8"),
                     problem=goal["problem"], workspace=workspace,
                 )
+                content = manifest.inject_defs_opens(
+                    content, problem=goal["problem"], workspace=workspace,
+                )
                 dest.write_text(content, encoding="utf-8")
             placed.append(dest)
         shutil.copy2(patches[0], scratch_dest)
+        # Inject Defs.lean opens into the strategy patch as well — the
+        # patch carries the strategy body (which may reference `π` /
+        # `Real.sin` etc. via Defs's shared notation) and must replay
+        # opens for the same reason every other agent-authored file
+        # does. See state/manifest.py:inject_defs_opens docstring.
+        scratch_dest.write_text(
+            manifest.inject_defs_opens(
+                scratch_dest.read_text(encoding="utf-8"),
+                problem=goal["problem"], workspace=workspace,
+            ),
+            encoding="utf-8",
+        )
         placed.append(scratch_dest)
 
         # Auto-inject `import` lines for sub-goal modules into the

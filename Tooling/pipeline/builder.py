@@ -290,8 +290,16 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
 
         # Stage: copy patch over goal lean. Backup was already taken at
         # spawn entry — overwrite goal_lean with the agent's final
-        # patch.lean (the output contract).
+        # patch.lean (the output contract). Inject any Defs.lean opens
+        # the agent forgot to replay (see state/manifest.py:inject_defs_opens).
         shutil.copy2(patch, goal_lean)
+        goal_lean.write_text(
+            manifest.inject_defs_opens(
+                goal_lean.read_text(encoding="utf-8"),
+                problem=goal["problem"], workspace=workspace,
+            ),
+            encoding="utf-8",
+        )
         # Verify-unification (see docs/archive/verify_unification.md):
         # one /verify round trip elaborates the patch in a warm worker,
         # writes the .olean for downstream cascade consumers, and runs
