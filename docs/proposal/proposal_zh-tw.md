@@ -1,136 +1,109 @@
-# Asterism — 研究提案
+# 通用 LLM 和形式化驗證結合的定理證明框架
 
-**多 agent LLM 定理證明、結合 cascade 分解與 kernel 層級驗證。**
+## 摘要
 
-## 什麼是 Asterism
+Asterism 是一個結合 LLM 和 Lean 4 形式化驗證的證明框架。
+採用動態管線驅動多 agent 協作的設計架構，透過 AND/OR Graph 追蹤證明依賴，以克服 LLM 在長段推論中容易失準的問題；所有生成的證明均由 Lean 機械驗證。
+在 miniF2F-Valid 244 題的初次試驗中，Asterism 完成了所有真命題的證明，且為其中 9 個 benchmark 本身不可證的題目生成反例；同期亦完成 Sylvester-Gallai 定理、Cantor Set 測度為零等經典結果的證明。
+本文說明框架的設計動機、核心方法、已有成果和後續研究路徑。
 
-一個 framework、驅動 LLM 產出機械驗證過的 Lean 4 定理證明。Framework
-負責分解、驗證、cascade 升級；LLM（透過 Anthropic API）提供數學內容。
-Framework 是 **model-agnostic** — 換 model 只需改一行 config。
+## 一、為何需要 AI + Lean
 
-## 目前 headline 成果（miniF2F-Valid 244、2026 年 5 月）
+現代 LLM 具備可觀的數學知識和符號處理能力，且能 24 小時持續運作，可以大量產出看上去合理的推論。
+然而，人力逐一驗證並不具備與之匹配的效率，而 LLM 本身的特性決定其產出不可保證邏輯上的嚴謹性，這對於數學而言是無法接受的；換言之，效率和嚴謹性的錯配是 AI 應用於數學研究的主要瓶頸。
 
-| | |
-|---|---|
-| Proved | **235 / 244**（96.3% raw）— kernel-accepted Lean 4 proofs |
-| Disproved | **9 / 244** — 對 false-as-written transcription bug 的 kernel-verified counterexample |
-| Coverage | **244 / 244 全部 classified** — 沒有一題棄權 |
-| Audit 標準 | `#print axioms ⊆ [propext, Classical.choice, Quot.sound]` |
-| Model | 通用 Claude（Opus + Sonnet、無 fine-tuning）|
-| 預算 | 約 857 次 LLM 呼叫、244 題、~$50 API 費用 |
+對此，Lean 作為形式化驗證系統提供了最為合適的解決方案，以機械化的驗證方式彌補 LLM 所缺乏的嚴謹性。
+由 LLM 負責提出證明思路、Lean 負責檢驗證明，數學家有機會大幅度的減輕其繁瑣的證明工作。
+隨著 LLM 在程式編輯和邏輯推演能力的快速演進，可以預期 AI 和 Lean 結合的可行性和潛力將持續擴大，因此 LLM-based prover 近期在研究和應用的活躍度都有明顯的提升。
 
-**為何是 96.3% 而非 100%**：miniF2F-Valid 裡有 9 個 statement 其實**數學上
-為假**、跟原始競賽題不一致、不可能被任何乾淨工具 prove。我們發現後、
-附上 kernel-verified counterexample、整理成單一 upstream issue 送
-`yangky11/miniF2F-lean4`（Lean 4 port 事實標準）。
+## 二、方法
 
-**同標準比較**：業界號稱在 miniF2F-Valid 超過 96.3% 的數字
-（例如 Seed-Prover 99.6%）通常未揭露他們如何處理這 9 個 false statement。
-若套用我們的嚴格 axiom-audit 標準、Asterism 跟「業界 SOTA」的差距會
-消失；若套用他們的（沉默）標準、我們同樣會接近 100%。
+Asterism 使用 AND/OR Graph 追蹤證明的探索過程。
+Node 分為兩種：
+  OR Node 為待證目標 —— 只要該目標的任一證明策略成功，則 Node 被視為成功。
+  AND Node 為證明策略 —— 如果該策略的所有待證目標成功，則 Node 被視為成功。
+當接收到待證明的目標，框架生成一個證明策略和若干個較容易證明的子目標，分別判斷這些子目標是否需要進一步分解，並對每個子目標遞迴此過程。
+當所有子目標皆完成證明，框架會機械性的將子目標合成為原目標的證明。
+若遇到證明上的困難或謬誤，框架會捨棄舊的策略，並在原目標下生成新的證明策略。
 
-## 目前已建構完成
+Asterism 由動態管線驅動，可以即時管理多個平行運作的 pipeline。
+Backward pipeline 根據目標提出證明策略，Builder pipeline 負責完成葉節點的證明。
+架構保留充足的擴充空間，未來可新增其他 pipeline 負責策略規劃、事先預測所需的命題、發掘可重用的抽象 lemma 和文獻等工作。
+框架也設計了卡住和錯誤的處理方法，agent 在需要的時候可以主動要求重新設計策略、呼叫適合的 pipeline 接手任務、在察覺待證目標有誤時主動終止等，另外也提供證明技巧和失敗經驗的共用和傳承機制，讓證明能力可以隨時間提升。
 
-| Artifact | 狀態 |
-|---|---|
-| miniF2F-Valid 244 pilot | ✅ 96.3% proved + 9 errata disproved、單台工作站完成 |
-| Sylvester-Gallai 定理端到端證明 | ✅ depth 10、lake build 通過、axiom 乾淨 |
-| `proj_nonexpansive`、`cantor_xi_measure`、`compactness` 等 | ✅ 早期單問題 run 已完成 |
-| Multi-agent framework（Backward + Builder）| ✅ production hardening 完成 |
-| 自製 Lean LSP server + writeOlean / printAxioms RPC | ✅ |
-| OR-parallel cascade、含 dedupe + cascade-shelve | ✅ |
-| Crash 復原：sandbox + circuit breaker + watchdog v4 | ✅ |
-| Test suite | ✅ 781 tests、1 skipped |
+整體架構的設計目標是提供 LLM 舒適的協作環境，讓 AI 在框架的引導下進行分工和探索，透過自動化、高效率且嚴謹的證明能力，協助數學家完成邏輯驗證的繁重工作。
 
-## 方法論嚴謹度（一個具體案例）
+## 三、設計緣由
 
-在 miniF2F-Valid pilot 進行中、framework 的 kernel-axiom gate 因為一個
-多問題模式下的 regression 而沉默失效（`db.root_proved(conn)` 的語意是
-workspace-AND、而不是 per-problem）。237 個 proof 被 cascade 機械
-promote、kernel-axiom 完整性 gate 整輪沒跑過一次。
+#### **為何採用 multi-agent？** 
+透過 miniF2F 試驗觀察到，直接以 Builder pipeline 證明的成功率顯著低於 Backward + Builder 的協作模式。
+Multi-agent 帶來的結構性優勢包括但不限於：
+1. 平行協作讓不同子目標可同時推進，整體 wall-clock 大幅縮短；
+2. 輕量的證明可交由更便宜的模型負責，深度的策略規劃才交給進階模型，預算運用更為合理；
+3. agent 之間可透過共享文件累積與傳遞經驗，避免單一模型反覆嘗試錯誤的策略和路線；
+4. 單一模型的上下文長度和注意力有限，multi-agent 應對大範圍探索和超長證明的能力有顯著的優勢。
 
-我們在 run 中段抓到這個問題、用 `git blame` 追到 root cause（這個 helper
-是單問題年代留下來的、多問題模式 refactor 時沒同步改）、補修
-dispatcher、跑一次 retrospective audit、確認 237 個 proof **零** `sorryAx`
-洩漏。
+自 2025 年下半年起，BFS-Prover、Seed-Prover、HILBERT 等近期 SOTA prover 皆轉向 multi-agent 架構的發展和研究，已成為近期的明確趨勢。
 
-這種完整性紀律是 production-grade theorem proving 跟「demo 跑得起來一次」
-的差別、也是其他公開系統很少明文記錄的特性。
+#### **為何採用通用模型？** 
+過去的 prover 大多自行訓練規模由 7B 至 671B 不等的特化模型，訓練成本高昂；即便公開模型權重，多數研究者亦不具備運行所需的硬體。
+隨著 Claude（特別是 2026 年的 Claude Code 系列）編寫程式能力的快速躍升，minif2f benchmark 的測試結果顯示在妥善設計的框架支持下，通用模型的證明能力與特化訓練的大模型相當。
 
-## 研究問題（接下來 6 個月）
 
-**RQ1 — Multi-agent 優勢**。Backward agent 專門分解 + Builder agent 專門
-close leaf、這種角色分工在 depth > 3 的問題上、是否優於 single-agent？
-假設：是、multi-agent 隨 depth 增長呈現 graceful degradation、single-agent
-則是陡峭懸崖。
+採用通用模型額外帶來的長期效益：
+1. 模型的迭代由 API 服務方持續驅動、Asterism 自身無須重新訓練模型即可受益；
+2. 部署門檻只有訂閱費用和最小化的記憶體需求，不需要 GPU。
 
-**RQ2 — 架構 vs model**。Framework 固定時、模型選擇（Opus vs Sonnet vs
-Haiku）貢獻多少成功率、framework engineering（parallel exploration、
-dedupe、axiom gates）又貢獻多少？假設：depth ≥ 5 時 framework 主導、
-depth ≤ 3 時 model 主導。
+在當前公開的 LLM 定理證明系統中，Asterism 是極少數無需特殊硬體即可由一般使用者運行的選項。
 
-**RQ3 — 失敗特徵化**。系統無法 close goal 時、結構性原因是什麼？建立
-分類：sorryAx-shortcut / axiom-violation / type-mismatch /
-decomposition-divergence 等。用這個 taxonomy 來指導下一輪 framework +
-prompt 改進。
+## 四、初步成果
 
-**RQ4 — Library transfer**。累積的 `Library/<Topic>/` 已證 lemma 庫、
-能不能降低同領域後續問題的成本？兩階段實驗：先證 Set A、再證 Set B、
-比較有沒有 Set A library 可用的差異。
+開發第一個月內，Asterism 對 miniF2F-Valid 資料集的全部 244 題完成測試。
+其中 235 題（包含 20 題 IMO）的證明已被 Lean kernel 驗證為真；剩餘的 9 題被 Backward agent 發覺題目有誤並產出反例，並且其反例也已經被形式化驗證。
+我們比對 yangky11/miniF2F-lean4 的歷史 commits，確認這 9 題均為 Lean 4 transcription 階段的編碼錯誤；即，原始競賽題本身並無問題，但在形式化過程中遺漏了前提條件、誤用了自然數除法、或錯置了 quantifier 範圍。
+9 題反例已彙整成 upstream issue 並向 yangky11/miniF2F-lean4 維護者回報。
 
-## 具體 deliverables
+在大學以上程度的測試上，框架已完成包括 Sylvester-Gallai 定理（最快以 93 分鐘完成）、Cantor Set 在 Lebesgue 測度下為零、sl₂ cyclic highest-weight 表示不可約等結果。
+這些測試表明，在 AMC/AIME/IMO 程度的命題乃至於大學程度的問題上，當前架構皆有能力完成證明。
 
-| Milestone | Output | 狀態 |
-|---|---|---|
-| 1. miniF2F-Valid (244) | Pass rate、depth breakdown、failure taxonomy | **Done**（96.3%）|
-| 2. miniF2F-Test (244) | 最終 benchmark 數字、無 train leak | 接下來 |
-| 3. PutnamBench (270) | 大學競賽級 depth 測試 | Q3 |
-| 4. Multi-agent ablation | 同一批問題分別跑（Opus-only、Sonnet-only、Opus+Sonnet）| Q3 |
-| 5. Depth study | 100 題人工標 depth、畫 success-vs-depth 曲線 | Q4 |
-| 6. Library transfer study | 兩階段實驗、量化 transfer benefit | Q4 |
-| 7. Framework paper | 投 systems/ML conference | Q4-Q1 |
+## 五、研究方向
 
-## 所需資源
+目前規劃的研究階段如下：
 
-| 項目 | 估算 |
-|---|---|
-| API 預算（Anthropic、6 個月）| 約 $3-5k（miniF2F-Valid 用了 ~$50;  miniF2F-Test + PutnamBench 預估約 10×）|
-| 計算資源 | 本地工作站（SG + miniF2F pilot 全在單台 laptop 跑完、無 GPU）|
-| 時間 | 1 FTE-equivalent（目前單一開發者）、6-12 個月 |
-| Advisor 支援 | 架構 review + paper-writing 指導 |
+**Step 1. 新增 pipeline 以擴張框架能力。** 
 
-## 為何這值得 bet
+透過新增 Strategist、Forward、Librarian 等 pipeline，讓 Asterism 具備查找文獻及自行建構數學工具解決猜想的能力，並調整框架以支援更多 pipeline 所需的 Node 管理和協作溝通能力。
+最後透過 PutnamBench（270 題，目前公開 SOTA 仍低於 30%）做為驗證工具。
 
-1. **這個前沿是真的、且高度活躍。** DeepSeek-Prover-V2（miniF2F-test
-   88.9%、Pass@8192）、Seed-Prover、Kimina-Prover、Goedel-Prover 過去
-   12 個月都有公開成果。問題已經不是「LLM 能不能證定理」、而是
-   「什麼架構能 push 上限」。Asterism 帶著一個獨特的架構假設進場。
+**Step 2. 以已知但尚未形式化的定理為目標。** 
 
-2. **Asterism 的架構角度獨特。** 沒有其他公開系統做 multi-agent
-   分解 + persistent OR-parallel cascade + kernel-level 完整性 gate
-   的組合。既有系統競爭點是訓練資料 + 單 model 精緻化；Asterism 競爭
-   點是 framework + decomposition + verification integrity。
+Mathlib 與 Lean 社群長期累積了數百個已知但尚未進入形式化系統的命題清單，這類目標是社群明確需要的工作，也是檢驗框架能否獨立構建證明結構的合適場景。
+預計會選取 10–20 個目標進行端到端的形式化測試。
 
-3. **miniF2F 成果從 commit 開始可重現。** 每個 claim 都機械可驗：
-   任何 proved root 的 `lake build` 都通過；`#print axioms` 只回報
-   standard whitelist（除三個有文件揭露的 `native_decide` case 外）。
-   9 個 false-as-written statement 的反例檔都是 kernel-verified。
-   任何人 clone repo 都能自行再驗。
+**Step 3. 嘗試證明 Erdős 系列猜想中仍開放的命題。** 
 
-4. **工程基礎已償付完成。** 過去 6 個月的 framework hardening、讓系統
-   現在就 benchmark-ready：gateway crash 復原、sandbox、watchdog、
-   circuit breaker、axiom probe、per-problem 完整性 gate、open
-   propagation、自動 audit 工具。後續研究心力可集中在科學問題
-   （RQ1-RQ4）、而不是基礎設施。
+對應 Asterism 的長期願景：框架能在最小化人類介入的前提下，獨立驗證甚至發現新的數學結果。
 
-## 我所請求的
+計畫目標是讓 Asterism 從「能證明已知的命題」演進到「能獨立決定要探索什麼、需要哪些工具、並自行構建出證明」。
+框架已預留充足的擴充空間，後續的優化方向已有規劃。
 
-- **Advisor 支援**：proposal review + paper-writing 指導。
-- **API 預算**：6 個月 $3-5k、做 benchmark runs。
-- **時間**：framework 已就位、接下來 6 個月是上面那些科學實驗。
+## 六、預算
 
-研究成功與否、最終看 benchmark 數字。如果 miniF2F-Test、PutnamBench、
-depth study 三者複製出我們架構假設預期的結果（隨 depth 增長有
-graceful degradation、depth ≥ 5 時 multi-agent > single-agent）、
-架構主張就驗證。如果沒有、negative result 仍可發表、告訴我們下一步
-該往哪投資。
+- Token 預算：每個月 $300-500 (USD)
+- 計算資源：現有硬體即可運行；大型工作需擴增 pipeline pool (1.2 GB / pipeline)，可能需擴增 RAM
+- 時間：6–12 個月
+
+## 七、參考文獻
+
+Asterism 完整原始碼公開於 GitHub（andersonwu2000/Asterism）。
+本文引述的近期相關工作：
+
+- HyperTree Proof Search (arxiv 2205.11491)
+- Goedel-Prover V1 (2502.07640)、V2 (2508.03613)
+- BFS-Prover V1 (2502.03438)、V2 (2509.06493)
+- Kimina-Prover Preview (2504.11354)
+- DeepSeek-Prover-V2 (2504.21801)
+- StepFun-Prover (2507.20199)
+- Seed-Prover (2507.23726)
+- HILBERT (2509.22819)
+- miniF2F-Lean Revisited (2511.03108)

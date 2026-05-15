@@ -52,3 +52,6 @@ Tooling/prompts_zhtw_ref/
 
 # Demo runtime artifacts written by demo/watcher.py
 demo/active/
+
+# Internal-only reference docs (handoff state, strategy, operator runbook)
+docs/internal/

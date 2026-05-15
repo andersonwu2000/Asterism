@@ -3,15 +3,15 @@
 operator session 起手 auto-load（cwd 在 repo root + Read 任一 `docs/` 檔時生效）。
 worker spawn 看不到本檔（worker cwd 鎖在 `Problems/<p>/`、不會走進 `docs/`）。
 
-設計細節在 `docs/architecture.md` / `data-flow.md` / `OPERATOR.md` / `STATUS.md`。
-本檔只放方法論。
+設計細節在 `docs/architecture.md` / `data-flow.md` / `failure_modes.md`、
+operator 私人檔在 `docs/internal/`（gitignored）。本檔只放方法論。
 
 ---
 
 ## 起手
 
 1. `git log --oneline -15` — 真實近期狀態
-2. `docs/STATUS.md` — handoff（注意它會 drift）
+2. `docs/internal/STATUS.md` — handoff（注意它會 drift）
 3. 相關設計 doc
 
 ---

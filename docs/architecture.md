@@ -285,4 +285,3 @@ Goal history (umbrella):
 | sylvester_gallai | Sonnet / Opus | 4h16min / 2h48min |
 
 SG 是當前最深 sample（Kelly 1948 證法、Freek-100、不在 Mathlib 內）。
-`docs/STATUS.md` 是 canonical 狀態。

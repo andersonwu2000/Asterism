@@ -397,6 +397,4 @@ cooldown 期內 `bfs_refill` 跳過該 (target, kind)、queue 不會 burst-retry
 ## 8. 跨參考
 
 - 系統靜態形狀（角色、不變量、DB schema、cascade 規則完整版）：`docs/architecture.md`
-- 操作員 CLI / 環境變數：`docs/OPERATOR.md`
-- 當前狀態 / 待辦：`docs/STATUS.md`
 - Context.md `## Goal history` umbrella 設計史：`docs/archive/goal_history_unified.md`
