@@ -7,5 +7,6 @@ Capture only:
 1. The proof approach (one sentence — main lemma family + how you'd assemble the goal).
 2. Any tactic block with a clear shape (a few lines of Lean is fine).
 3. The specific blocker (unknown Mathlib lemma name, typeclass instance you couldn't synthesize, a case the tactic chain wouldn't close).
+4. **Alternative tactic line (≤ 60 words)**: if the blocker looks like the current tactic family is a dead end (wrong induction shape / wrong lemma family / wrong unfolding), sketch the alternative shape. Otherwise write "none — direction sound".
 
 Skip recapping the goal — Context.md already has it. Write `_progress.md` and exit. Do NOT finalize patch.lean in this turn.
