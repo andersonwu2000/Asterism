@@ -507,6 +507,80 @@ def test_register_session_claims_free_slot(
     assert slots[1].claimed_by == "pipe-A"      # claimed
 
 
+def test_acquire_slot_borrow_mode_uses_any_free_slot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Probe mode (`borrow=True`) bypasses the claim check — used by the
+    /verify endpoint which has no registered session. Grabs any free
+    slot (LRU first), didChanges in, clears content_pipeline_id so
+    the slot's registered owner reloads on its next acquire."""
+    slots = [_make_fake_slot(0, claimed_by="pipe-A",
+                             content_pipeline_id="pipe-A",
+                             last_used=20.0),
+             _make_fake_slot(1, claimed_by=None,
+                             content_pipeline_id=None,
+                             last_used=10.0)]
+    monkeypatch.setattr(lsp_gateway._state, "workers", slots)
+
+    class _FakeBackend:
+        def __init__(self): self.calls = []
+        def did_change_full(self, p, c, v): self.calls.append(("didChange", v))
+        def clear_diagnostics(self, *a): self.calls.append("clear")
+        def wait_for_diagnostics(self, *a, **kw): pass
+    fake = _FakeBackend()
+    monkeypatch.setattr(lsp_gateway._state, "backend", fake)
+
+    meta = lsp_gateway.SessionMetadata(
+        pipeline_id="verify:probe-xyz", target_path=tmp_path / "x.lean",
+        problem="", workspace=tmp_path, log_path=None,
+        file_content="probe content",
+    )
+    with lsp_gateway._acquire_slot(meta, swap_in=True, borrow=True) as (s, kind):
+        # LRU is slot 1 (last_used=10.0 < 20.0)
+        assert s.slot_id == 1
+        assert kind == "cold_warmup"
+    # After release: content_pipeline_id cleared so the owner (if any)
+    # re-loads on next acquire.
+    assert slots[1].content_pipeline_id is None
+    # Slot 0 (other pipeline's claim) untouched.
+    assert slots[0].claimed_by == "pipe-A"
+    assert slots[0].content_pipeline_id == "pipe-A"
+
+
+def test_acquire_slot_borrow_evicts_when_no_unclaimed_free(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """When all slots are claimed by registered sessions, borrow mode
+    still proceeds — it locks any unlocked slot, didChanges the probe
+    content, then clears `content_pipeline_id` so the claimed owner
+    pays one cold_warmup on its next acquire."""
+    slots = [_make_fake_slot(0, claimed_by="pipe-A",
+                             content_pipeline_id="pipe-A",
+                             last_used=20.0)]
+    monkeypatch.setattr(lsp_gateway._state, "workers", slots)
+
+    class _FakeBackend:
+        def __init__(self): self.calls = []
+        def did_change_full(self, p, c, v): self.calls.append("didChange")
+        def clear_diagnostics(self, *a): pass
+        def wait_for_diagnostics(self, *a, **kw): pass
+    fake = _FakeBackend()
+    monkeypatch.setattr(lsp_gateway._state, "backend", fake)
+
+    meta = lsp_gateway.SessionMetadata(
+        pipeline_id="verify:probe-xyz", target_path=tmp_path / "x.lean",
+        problem="", workspace=tmp_path, log_path=None,
+        file_content="probe content",
+    )
+    with lsp_gateway._acquire_slot(meta, swap_in=True, borrow=True) as (s, kind):
+        assert s.slot_id == 0
+        assert kind == "cold_warmup"
+    # Owner's claim preserved; content_pipeline_id cleared so the next
+    # acquire by pipe-A re-loads pipe-A's content (one cold_warmup).
+    assert slots[0].claimed_by == "pipe-A"
+    assert slots[0].content_pipeline_id is None
+
+
 def test_register_session_fails_when_pool_exhausted(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

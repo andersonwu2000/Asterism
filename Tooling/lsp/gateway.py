@@ -245,25 +245,31 @@ def _ensure_backend_ready(timeout: float = 240.0) -> str | None:
 # ─── Slot acquisition (the heart of Phase 2) ─────────────
 
 @contextlib.contextmanager
-def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True):
-    """Borrow this pipeline's claimed worker slot.
+def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True,
+                  borrow: bool = False):
+    """Acquire a worker slot for one tool op.
 
-    Under 1:1 binding (#118), every session claims one slot at
-    `register_session` and holds it for the session's lifetime. This
-    function locks the claimed slot for a single tool op:
+    Two modes:
 
-      Hot path:  slot already has our content didChanged in → no swap
-                 (~0.2s lock acquire).
-      Cold path: slot is warmup or holds stale content from a prior
-                 claim → didChange to meta.file_content (~3-4s on
-                 mathlib-loaded slot) then yield.
+      Default (`borrow=False`) — for registered sessions only. The
+      session has previously claimed a slot at `register_session`;
+      this function locks the claimed slot for the duration of one
+      tool op:
+        * Hot path:  slot already has our content didChanged in
+                     (`content_pipeline_id == pipeline_id`) → no swap.
+        * Cold path: first tool call on this claim, or content was
+                     cleared by a probe → didChange + set content_pipeline_id.
+
+      Probe mode (`borrow=True`) — for one-shot RPCs that don't have a
+      registered session (notably the framework's `/verify` endpoint).
+      Borrows any free-lock slot, didChanges the probe's content in,
+      and clears `content_pipeline_id` after release so the slot's
+      registered owner re-loads its own content on its next acquire.
+      Used sparingly; each borrow imposes one cold_warmup on the
+      owner's subsequent acquire.
 
     `swap_in=False` skips the didChange — used by apply_edit which
     will overwrite content via its own RPC.
-
-    The slot lock serialises tool ops from this single (single-threaded)
-    pipeline; concurrent calls from the same pipeline wait briefly
-    (counted in n_busy_polls).
     """
     backend = _state.backend
     if backend is None:
@@ -271,7 +277,56 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True):
     if not _state.workers:
         raise RuntimeError("no workers in pool")
 
-    # Locate this pipeline's claimed slot.
+    if borrow:
+        # Probe mode: find any unlocked slot. Prefer slots that are
+        # unclaimed or whose owner is between RPCs (lock not held)
+        # over forcing eviction on an actively-used slot.
+        sorted_slots = sorted(_state.workers, key=lambda s: s.last_used_ts)
+        deadline = time.monotonic() + 120.0
+        while time.monotonic() < deadline:
+            for slot in sorted_slots:
+                if slot.lock.acquire(blocking=False):
+                    try:
+                        if swap_in:
+                            slot.file_version += 1
+                            backend.clear_diagnostics(slot.slot_uri)
+                            backend.did_change_full(
+                                slot.slot_path, meta.file_content,
+                                slot.file_version,
+                            )
+                            try:
+                                backend.wait_for_diagnostics(
+                                    slot.slot_uri, slot.file_version,
+                                    timeout=120,
+                                )
+                            except (TimeoutError, RuntimeError):
+                                pass
+                            # Probe owns content for the borrow only;
+                            # clearing here forces the slot's registered
+                            # owner (if any) to didChange its own
+                            # content back in on its next acquire.
+                            slot.content_pipeline_id = None
+                            kind = "cold_warmup"
+                            with _state.counters_lock:
+                                _state.n_cold_warmup += 1
+                        else:
+                            kind = "cold_noswap"
+                            with _state.counters_lock:
+                                _state.n_cold_noswap += 1
+                        yield (slot, kind)
+                        slot.last_used_ts = time.time()
+                        return
+                    finally:
+                        slot.lock.release()
+            with _state.counters_lock:
+                _state.n_busy_polls += 1
+            time.sleep(0.1)
+        raise RuntimeError(
+            "no slot available for probe within 120s "
+            "(all slots locked by their registered sessions' tool ops)"
+        )
+
+    # Claimed-session mode: locate this pipeline's claimed slot.
     my_slot: WorkerSlot | None = None
     for slot in _state.workers:
         if slot.claimed_by == meta.pipeline_id:
@@ -294,8 +349,9 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True):
                             _state.n_hot += 1
                     else:
                         # First tool call on this claim — slot is either
-                        # in warmup state or carries a prior claim's
-                        # stale content. didChange to our content.
+                        # in warmup state, carries a prior claim's
+                        # stale content, or had its content cleared by a
+                        # /verify probe borrow.
                         kind = "cold_warmup"
                         with _state.counters_lock:
                             _state.n_cold_warmup += 1
@@ -830,7 +886,12 @@ def _verify_sync(target: Path, content: str, *, write_olean: bool,
     diags: list = []
 
     try:
-        with _acquire_slot(meta, swap_in=True) as (slot, _slot_kind):
+        # /verify is a one-shot probe with no registered session →
+        # use borrow mode to grab any free slot. After release the
+        # slot's content_pipeline_id is cleared so the slot's
+        # registered owner (if any) re-loads its own content on its
+        # next acquire (paying one cold_warmup).
+        with _acquire_slot(meta, swap_in=True, borrow=True) as (slot, _slot_kind):
             diags = backend.diagnostics_for(slot.slot_uri)
             formatted = [_format_diag(d) for d in diags]
             has_error = any(f.get("severity") == "error" for f in formatted)
