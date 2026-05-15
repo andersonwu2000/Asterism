@@ -7,12 +7,26 @@
 # it; the framework only reads what's set.
 
 dispatch:
-  pool: 8                     # ThreadPoolExecutor workers (= max in-flight
-                              # pipelines). With Phase 2 LSP gateway, RAM
-                              # cost per spawn is just claude.exe (~330 MB);
-                              # worker pool RAM is bounded by gateway.workers
-                              # below, so pool can scale higher than
-                              # gateway.workers.
+  pool: 8                     # Max in-flight pipelines, also = number of
+                              # persistent lean workers in the LSP gateway
+                              # pool (1:1 binding — every spawn claims one
+                              # dedicated worker for its lifetime, freed on
+                              # release). Tune to workstation RAM budget.
+                              #
+                              # RAM breakdown (32 GB workstation, 2026-05-14
+                              # PoC measured against real gateway):
+                              #   ~1.2 GB  base         (lake serve + lean --server)
+                              #   ~2.5 GB  mathlib mmap (shared across workers via
+                              #                          kernel page cache;
+                              #                          counted once when pool ≥ 1)
+                              #   ~0.6 GB  per worker  (private elaboration heap;
+                              #                         idle baseline, heavier
+                              #                         under elaboration load)
+                              #   ~0.35 GB per pool slot (claude pipeline WS;
+                              #                          Private commit can reach
+                              #                          ~1 GB but most not resident)
+                              # Approximation:
+                              #   RAM ≈ 3.7 + 0.95×pool  GB
   budget_sec: 16200           # 4h30min daemon wall-clock cutoff for SG run
   shelve_threshold: 5         # total attempts per goal before shelving
                               # (was 4; SG 2026-05-09 g224 hit 4 stuck-thinking
@@ -50,31 +64,6 @@ dispatch:
                               # silent through the entire window
                               # [trap_check - 300, trap_check].
 
-gateway:                       # Phase 2 LSP gateway (Tooling/lsp_gateway.py)
-  workers: 4                  # Persistent lean workers in the pool. Tune to
-                              # RAM budget; tool-call queue depth grows when
-                              # pool>>workers (each cache miss ~3-4s, see
-                              # docs/archive/lsp_gateway.md §6).
-                              #
-                              # RAM (32 GB workstation, 2026-05-14 PoC measured
-                              # against real gateway — see docs/research_log.md
-                              # entry of 2026-05-15):
-                              #   ~1.2 GB  base       (lake serve + lean --server)
-                              #   ~2.5 GB  mathlib mmap (shared across ALL workers
-                              #                         via kernel page cache;
-                              #                         counted once if W ≥ 1)
-                              #   ~0.6 GB  per worker  (private elaboration heap;
-                              #                         idle measurement, heavier
-                              #                         under elaboration load)
-                              #   ~0.35 GB per pool slot (claude pipeline WS;
-                              #                          Private commit can reach
-                              #                          ~1 GB but most not resident)
-                              # Approximation (W ≥ 1):
-                              #   RAM ≈ 3.7 + 0.6×workers + 0.35×pool
-                              # Prior comment said 3.0×workers — that double-counted
-                              # the shared mathlib mmap (Working Set vs Private
-                              # confusion); corrected here.
-#  port: 8765                  # HTTP MCP endpoint. Change only on conflict.
 
 builder:
   provider: claude

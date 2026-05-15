@@ -182,16 +182,22 @@ def test_session_header_middleware_no_header_yields_none(
     assert seen == [None]
 
 
-# ─── Phase 2: slot pool + LRU + lock contention ───────────────────
+# ─── Phase 2: slot pool + 1:1 binding + lock contention ───────────
 
-def _make_fake_slot(slot_id: int, *, loaded: str | None = None,
-                    last_used: float = 0.0) -> lsp_gateway.WorkerSlot:
-    """Bare WorkerSlot for in-memory tests — no real LSP."""
+def _make_fake_slot(
+    slot_id: int, *,
+    claimed_by: str | None = None,
+    content_pipeline_id: str | None = None,
+    last_used: float = 0.0,
+) -> lsp_gateway.WorkerSlot:
+    """Bare WorkerSlot for in-memory tests — no real LSP. Defaults
+    leave the slot unclaimed and content-less (post-warmup state)."""
     return lsp_gateway.WorkerSlot(
         slot_id=slot_id,
         slot_path=Path(f"/fake/slot_{slot_id}.lean"),
         slot_uri=f"file:///fake/slot_{slot_id}.lean",
-        loaded_pipeline_id=loaded,
+        claimed_by=claimed_by,
+        content_pipeline_id=content_pipeline_id,
         last_used_ts=last_used,
     )
 
@@ -199,12 +205,13 @@ def _make_fake_slot(slot_id: int, *, loaded: str | None = None,
 def test_acquire_slot_hot_path_no_swap(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """Slot already loaded with pipeline X's content → acquire WITHOUT
-    invoking LSP didChange (the hot path). Verify by stubbing backend
-    methods to assert they're never called."""
-    # Set up fake state: 2 slots, slot[1] loaded with pipe-A.
-    slots = [_make_fake_slot(0, loaded=None, last_used=10.0),
-             _make_fake_slot(1, loaded="pipe-A", last_used=20.0)]
+    """Pipeline's claimed slot already has its content didChanged in
+    (hot state) → acquire returns 'hot' WITHOUT invoking LSP
+    didChange. Verify by stubbing backend methods."""
+    slots = [_make_fake_slot(0),
+             _make_fake_slot(1, claimed_by="pipe-A",
+                             content_pipeline_id="pipe-A",
+                             last_used=20.0)]
     monkeypatch.setattr(lsp_gateway._state, "workers", slots)
 
     class _FakeBackend:
@@ -222,20 +229,22 @@ def test_acquire_slot_hot_path_no_swap(
         file_content="content for pipe-A",
     )
     with lsp_gateway._acquire_slot(meta, swap_in=True) as (s, kind):
-        assert s.slot_id == 1  # the one loaded with pipe-A
+        assert s.slot_id == 1  # the slot claimed for pipe-A
         assert kind == "hot"
     # No didChange / clear calls — pure hot-path acquire.
     assert fake.calls == []
 
 
-def test_acquire_slot_cold_path_picks_lru(
+def test_acquire_slot_first_tool_call_cold_warmup(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """No slot loaded with this pipeline → pick least-recently-used
-    AND swap content via didChange. LRU = lowest last_used_ts."""
-    slots = [_make_fake_slot(0, loaded="pipe-X", last_used=100.0),  # newest
-             _make_fake_slot(1, loaded="pipe-Y", last_used=50.0),
-             _make_fake_slot(2, loaded=None, last_used=10.0)]   # LRU
+    """First tool call after register_session: slot is claimed but its
+    content_pipeline_id doesn't match yet (still in warmup state or
+    holds a prior claim's stale content). Acquire didChanges this
+    pipeline's content in and returns 'cold_warmup'."""
+    slots = [_make_fake_slot(0),
+             _make_fake_slot(1, claimed_by="pipe-NEW",
+                             content_pipeline_id=None, last_used=10.0)]
     monkeypatch.setattr(lsp_gateway._state, "workers", slots)
 
     class _FakeBackend:
@@ -252,20 +261,20 @@ def test_acquire_slot_cold_path_picks_lru(
         file_content="hello",
     )
     with lsp_gateway._acquire_slot(meta, swap_in=True) as (s, kind):
-        assert s.slot_id == 2  # LRU
-        assert s.loaded_pipeline_id == "pipe-NEW"  # marked after swap
-        # Slot 2 starts at loaded=None → first-use warmup, not eviction.
+        assert s.slot_id == 1               # the claimed slot
+        assert s.content_pipeline_id == "pipe-NEW"  # set after swap
         assert kind == "cold_warmup"
-    assert ("didChange", 3) in fake.calls  # version bumped from 2 → 3
+    assert ("didChange", 3) in fake.calls   # version bumped from 2 → 3
 
 
 def test_acquire_slot_skip_swap_in_for_apply_edit(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """`swap_in=False` (apply_edit case) skips the didChange-to-mirror
-    step; caller will overwrite content anyway. Verify no didChange
-    is invoked during acquire."""
-    slots = [_make_fake_slot(0, loaded="other-pipe", last_used=10.0)]
+    step; caller will overwrite content via its own RPC. Acquire
+    returns 'cold_noswap' without invoking didChange."""
+    slots = [_make_fake_slot(0, claimed_by="pipe-A",
+                             content_pipeline_id=None, last_used=10.0)]
     monkeypatch.setattr(lsp_gateway._state, "workers", slots)
 
     class _FakeBackend:
@@ -282,19 +291,46 @@ def test_acquire_slot_skip_swap_in_for_apply_edit(
         file_content="hello",
     )
     with lsp_gateway._acquire_slot(meta, swap_in=False) as (s, kind):
-        # Got the slot; no swap-in performed.
         assert s.slot_id == 0
         assert kind == "cold_noswap"
     assert "didChange" not in fake.calls
     assert "clear" not in fake.calls
 
 
+def test_acquire_slot_no_claim_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """If `_acquire_slot` is called for a pipeline that has no
+    `register_session`-claimed slot, fail loudly (rather than silently
+    seizing some other pipeline's slot)."""
+    slots = [_make_fake_slot(0, claimed_by="pipe-OTHER",
+                             content_pipeline_id="pipe-OTHER"),
+             _make_fake_slot(1, claimed_by=None)]
+    monkeypatch.setattr(lsp_gateway._state, "workers", slots)
+
+    class _FakeBackend:
+        def did_change_full(self, *a, **kw): pass
+        def clear_diagnostics(self, *a): pass
+        def wait_for_diagnostics(self, *a, **kw): pass
+    monkeypatch.setattr(lsp_gateway._state, "backend", _FakeBackend())
+
+    meta = lsp_gateway.SessionMetadata(
+        pipeline_id="pipe-A", target_path=tmp_path / "x.lean",
+        problem="p", workspace=tmp_path, log_path=None,
+        file_content="x",
+    )
+    with pytest.raises(RuntimeError, match="no slot claimed"):
+        with lsp_gateway._acquire_slot(meta, swap_in=False):
+            pass
+
+
 def test_acquire_slot_lock_excludes_concurrent_acquire(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """When all slots are locked, second acquire blocks (briefly) and
-    fails with timeout. This guards the per-slot exclusion contract."""
-    slots = [_make_fake_slot(0)]
+    """When the pipeline's claimed slot is locked (concurrent tool call
+    from the same pipeline), second acquire waits briefly then times
+    out. Guards the per-slot mutual-exclusion contract."""
+    slots = [_make_fake_slot(0, claimed_by="pipe-A")]
     slots[0].lock.acquire()  # leak — simulates another thread holding
     monkeypatch.setattr(lsp_gateway._state, "workers", slots)
 
@@ -309,13 +345,11 @@ def test_acquire_slot_lock_excludes_concurrent_acquire(
         problem="p", workspace=tmp_path, log_path=None,
         file_content="x",
     )
-    # Patch the deadline check by monkeypatching time.monotonic to
-    # advance fast; we don't want to sit 120s.
     import time as _t
     real_mono = _t.monotonic()
     seq = iter([real_mono, real_mono + 0.05, real_mono + 130.0])
     monkeypatch.setattr(_t, "monotonic", lambda: next(seq))
-    with pytest.raises(RuntimeError, match="no slot available"):
+    with pytest.raises(RuntimeError, match="still busy"):
         with lsp_gateway._acquire_slot(meta, swap_in=False):
             pass
     slots[0].lock.release()
@@ -421,15 +455,17 @@ def test_verify_endpoint_offloads_sync_body_to_thread(
     )
 
 
-def test_session_release_clears_slot_marker(
+def test_session_release_clears_slot_claim(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """Releasing a session clears the loaded_pipeline_id marker on
-    any slot still bound to that pipeline. The slot's content stays
-    in place (next caller's swap will overwrite); only the OWNERSHIP
-    label clears."""
-    slots = [_make_fake_slot(0, loaded="pipe-A"),
-             _make_fake_slot(1, loaded="pipe-B")]
+    """Releasing a session clears the `claimed_by` marker on the
+    pipeline's claimed slot. `content_pipeline_id` stays in place —
+    the next claim will didChange its own content in regardless, so
+    eagerly clearing buys nothing."""
+    slots = [_make_fake_slot(0, claimed_by="pipe-A",
+                             content_pipeline_id="pipe-A"),
+             _make_fake_slot(1, claimed_by="pipe-B",
+                             content_pipeline_id="pipe-B")]
     monkeypatch.setattr(lsp_gateway._state, "workers", slots)
 
     meta = lsp_gateway.SessionMetadata(
@@ -441,7 +477,54 @@ def test_session_release_clears_slot_marker(
 
     lsp_gateway._release_session_internal("tok-A")
 
-    assert slots[0].loaded_pipeline_id is None  # cleared
-    assert slots[1].loaded_pipeline_id == "pipe-B"  # untouched
+    assert slots[0].claimed_by is None              # released
+    assert slots[0].content_pipeline_id == "pipe-A"  # left untouched
+    assert slots[1].claimed_by == "pipe-B"          # other slot untouched
     with lsp_gateway._state.sessions_lock:
         assert "tok-A" not in lsp_gateway._state.sessions
+
+
+def test_register_session_claims_free_slot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """register_session eagerly claims a free worker slot (1:1 binding).
+    The claim is recorded on the first slot whose `claimed_by is None`."""
+    target = tmp_path / "x.lean"
+    target.write_text("dummy", encoding="utf-8")
+    slots = [_make_fake_slot(0, claimed_by="other-pipe"),
+             _make_fake_slot(1, claimed_by=None)]
+    monkeypatch.setattr(lsp_gateway._state, "workers", slots)
+    monkeypatch.setattr(lsp_gateway, "_ensure_backend_ready",
+                        lambda **kw: None)
+
+    token, err = lsp_gateway._register_session_internal(
+        pipeline_id="pipe-A", target_path=target,
+        problem="p", workspace=tmp_path, log_path=None,
+    )
+    assert err is None
+    assert token
+    assert slots[0].claimed_by == "other-pipe"  # unchanged
+    assert slots[1].claimed_by == "pipe-A"      # claimed
+
+
+def test_register_session_fails_when_pool_exhausted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """If every worker slot is already claimed (dispatch.pool >
+    workers count — a configuration error), register_session refuses
+    instead of silently sharing a slot."""
+    target = tmp_path / "x.lean"
+    target.write_text("dummy", encoding="utf-8")
+    slots = [_make_fake_slot(0, claimed_by="pipe-X"),
+             _make_fake_slot(1, claimed_by="pipe-Y")]
+    monkeypatch.setattr(lsp_gateway._state, "workers", slots)
+    monkeypatch.setattr(lsp_gateway, "_ensure_backend_ready",
+                        lambda **kw: None)
+
+    token, err = lsp_gateway._register_session_internal(
+        pipeline_id="pipe-Z", target_path=target,
+        problem="p", workspace=tmp_path, log_path=None,
+    )
+    assert token == ""
+    assert err is not None
+    assert "pool exhausted" in err

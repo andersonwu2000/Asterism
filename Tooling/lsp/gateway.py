@@ -67,17 +67,27 @@ WARMUP_CONTENT = "import Mathlib\n"
 class WorkerSlot:
     """One persistent lean --worker holding a slot URI. Pre-warmed at
     startup with `import Mathlib`; subsequent loads are didChange swaps
-    on this URI (~3-4s vs ~27s fresh worker)."""
+    on this URI (~3-4s vs ~27s fresh worker).
+
+    1:1 lifecycle (#118): each spawn claims one slot at register_session
+    and holds it until release_session. `claimed_by` tracks ownership;
+    `content_pipeline_id` tracks which pipeline's content is actually
+    didChanged in (may lag `claimed_by` until the first tool call).
+    """
     slot_id: int
     slot_path: Path
     slot_uri: str
     lock: threading.Lock = field(default_factory=threading.Lock)
-    # Which pipeline's content is currently loaded. None = warmup state
-    # (no pipeline content). Set after successful didChange.
-    loaded_pipeline_id: str | None = None
+    # Lifetime ownership. None = available for claim. Set at
+    # register_session, cleared at release_session.
+    claimed_by: str | None = None
+    # Whose content is currently didChanged in this slot. May lag
+    # `claimed_by` until the first tool call (warmup state has neither
+    # set). Stale after release — next claim's first tool call rewrites.
+    content_pipeline_id: str | None = None
     # Monotonic version for LSP didChange. Starts at 2 (didOpen was 1).
     file_version: int = 2
-    # Wall-clock time of last release, for LRU eviction.
+    # Wall-clock time of last release, kept for diagnostics.
     last_used_ts: float = 0.0
 
 
@@ -109,16 +119,16 @@ class GatewayState:
     sessions_lock: threading.Lock = field(default_factory=threading.Lock)
     ready_event: threading.Event = field(default_factory=threading.Event)
     init_error: str | None = None
-    # Hot/cold path counters for slot acquire (visible via /health).
-    # The cost asymmetry — hot ~0.2s vs cold-swap ~5-30s for complex
-    # content — is the dominant framework overhead at pool > W. These
-    # let operators measure churn rate directly.
+    # Slot acquire path counters (visible via /health). Under 1:1
+    # binding (#118), cold_evicted never fires — slots are owned by a
+    # single pipeline for their lifetime and never serve another's
+    # content. Hot vs cold_warmup distinguishes first-tool-call (must
+    # didChange) from later calls on the same claim.
     counters_lock: threading.Lock = field(default_factory=threading.Lock)
-    n_hot: int = 0           # slot already loaded with this pipeline's content
-    n_cold_warmup: int = 0   # slot had warmup (`import Mathlib\n`) only
-    n_cold_evicted: int = 0  # slot held another pipeline's content (real churn)
+    n_hot: int = 0           # this slot already has our content loaded
+    n_cold_warmup: int = 0   # first tool call on this slot for this claim
     n_cold_noswap: int = 0   # swap_in=False (apply_edit / validate_file)
-    n_busy_polls: int = 0    # times we slept 0.1s waiting for any free slot
+    n_busy_polls: int = 0    # times we slept 0.1s waiting for our slot's lock
 
 
 _state = GatewayState()
@@ -236,23 +246,24 @@ def _ensure_backend_ready(timeout: float = 240.0) -> str | None:
 
 @contextlib.contextmanager
 def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True):
-    """Borrow a worker slot for this pipeline's content.
+    """Borrow this pipeline's claimed worker slot.
 
-    Step 1 (hot path): if any slot is already loaded with this
-    pipeline's content AND not busy, grab it. Tool op runs against
-    pre-loaded state, no didChange needed.
+    Under 1:1 binding (#118), every session claims one slot at
+    `register_session` and holds it for the session's lifetime. This
+    function locks the claimed slot for a single tool op:
 
-    Step 2 (cold path): no hot slot available. Pick LRU non-busy slot,
-    didChange to meta.file_content (~3-4s), then yield. After release,
-    slot is marked as loaded for this pipeline so the next call from
-    the same pipeline hits hot path.
+      Hot path:  slot already has our content didChanged in → no swap
+                 (~0.2s lock acquire).
+      Cold path: slot is warmup or holds stale content from a prior
+                 claim → didChange to meta.file_content (~3-4s on
+                 mathlib-loaded slot) then yield.
 
     `swap_in=False` skips the didChange — used by apply_edit which
-    will overwrite content anyway. After apply_edit, caller marks
-    slot as loaded to claim it for this pipeline.
+    will overwrite content via its own RPC.
 
-    Locks: per-slot threading.Lock acquired on grab, released on
-    yield exit. Holders should be brief (one tool op).
+    The slot lock serialises tool ops from this single (single-threaded)
+    pipeline; concurrent calls from the same pipeline wait briefly
+    (counted in n_busy_polls).
     """
     backend = _state.backend
     if backend is None:
@@ -260,76 +271,63 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True):
     if not _state.workers:
         raise RuntimeError("no workers in pool")
 
-    # Step 1: hot path — slot already loaded with this pipeline's content.
+    # Locate this pipeline's claimed slot.
+    my_slot: WorkerSlot | None = None
     for slot in _state.workers:
-        if slot.loaded_pipeline_id == meta.pipeline_id:
-            if slot.lock.acquire(blocking=False):
-                # Re-check after lock (avoids TOCTOU vs another thread
-                # snatching the slot for a different pipeline).
-                if slot.loaded_pipeline_id == meta.pipeline_id:
-                    try:
-                        with _state.counters_lock:
-                            _state.n_hot += 1
-                        yield (slot, "hot")
-                        slot.last_used_ts = time.time()
-                        return
-                    finally:
-                        slot.lock.release()
-                else:
-                    slot.lock.release()
+        if slot.claimed_by == meta.pipeline_id:
+            my_slot = slot
+            break
+    if my_slot is None:
+        raise RuntimeError(
+            f"no slot claimed for pipeline {meta.pipeline_id} "
+            "— register_session was not called (or release races with use)"
+        )
 
-    # Step 2: cold path — borrow a slot, swap content if needed.
-    # Sort by last_used (LRU); skip locked slots, take the first free one.
-    sorted_slots = sorted(_state.workers, key=lambda s: s.last_used_ts)
     deadline = time.monotonic() + 120.0
     while time.monotonic() < deadline:
-        for slot in sorted_slots:
-            if slot.lock.acquire(blocking=False):
-                try:
-                    if swap_in and slot.loaded_pipeline_id != meta.pipeline_id:
-                        # Distinguish "first time slot used for any
-                        # pipeline" vs "evicting another pipeline's
-                        # content". The latter is the real churn cost
-                        # of pool > W.
-                        if slot.loaded_pipeline_id is None:
-                            kind = "cold_warmup"
-                            with _state.counters_lock:
-                                _state.n_cold_warmup += 1
-                        else:
-                            kind = "cold_evicted"
-                            with _state.counters_lock:
-                                _state.n_cold_evicted += 1
-                        slot.file_version += 1
-                        backend.clear_diagnostics(slot.slot_uri)
+        if my_slot.lock.acquire(blocking=False):
+            try:
+                if swap_in:
+                    if my_slot.content_pipeline_id == meta.pipeline_id:
+                        kind = "hot"
+                        with _state.counters_lock:
+                            _state.n_hot += 1
+                    else:
+                        # First tool call on this claim — slot is either
+                        # in warmup state or carries a prior claim's
+                        # stale content. didChange to our content.
+                        kind = "cold_warmup"
+                        with _state.counters_lock:
+                            _state.n_cold_warmup += 1
+                        my_slot.file_version += 1
+                        backend.clear_diagnostics(my_slot.slot_uri)
                         backend.did_change_full(
-                            slot.slot_path, meta.file_content,
-                            slot.file_version
+                            my_slot.slot_path, meta.file_content,
+                            my_slot.file_version,
                         )
                         try:
                             backend.wait_for_diagnostics(
-                                slot.slot_uri, slot.file_version,
-                                timeout=120
+                                my_slot.slot_uri, my_slot.file_version,
+                                timeout=120,
                             )
                         except (TimeoutError, RuntimeError):
                             pass
-                        slot.loaded_pipeline_id = meta.pipeline_id
-                    else:
-                        # swap_in=False (apply_edit / validate_file
-                        # will overwrite content themselves) — caller
-                        # got a slot but no swap-in elaborate happened.
-                        kind = "cold_noswap"
-                        with _state.counters_lock:
-                            _state.n_cold_noswap += 1
-                    yield (slot, kind)
-                    slot.last_used_ts = time.time()
-                    return
-                finally:
-                    slot.lock.release()
-        # All slots busy. Wait briefly + retry.
+                        my_slot.content_pipeline_id = meta.pipeline_id
+                else:
+                    kind = "cold_noswap"
+                    with _state.counters_lock:
+                        _state.n_cold_noswap += 1
+                yield (my_slot, kind)
+                my_slot.last_used_ts = time.time()
+                return
+            finally:
+                my_slot.lock.release()
+        # Slot is locked by a concurrent tool op from this same pipeline
+        # (single-threaded spawn ⇒ this should be rare and brief).
         with _state.counters_lock:
             _state.n_busy_polls += 1
         time.sleep(0.1)
-    raise RuntimeError("no slot available within 120s")
+    raise RuntimeError("claimed slot still busy after 120s")
 
 
 # ─── Session ops ────────────────────────────────────
@@ -339,9 +337,12 @@ def _register_session_internal(
     problem: str, workspace: Path,
     log_path: Path | None,
 ) -> tuple[str, str | None]:
-    """Stash session metadata. NO didOpen — that's lazy-deferred to
-    first tool call (which goes through `_acquire_slot`). Returns
-    (session_token, error)."""
+    """Stash session metadata AND eagerly claim a worker slot
+    (#118, 1:1 binding). The claim is registered by setting
+    `slot.claimed_by`; the slot's `content_pipeline_id` stays at its
+    prior value until the first tool call's didChange. NO didOpen here
+    — that's lazy-deferred to first tool call. Returns (session_token,
+    error)."""
     err = _ensure_backend_ready()
     if err:
         return "", err
@@ -358,36 +359,46 @@ def _register_session_internal(
         log_path=log_path.resolve() if log_path else None,
         file_content=content,
     )
+    # Claim a free worker slot for this session's lifetime. With
+    # dispatch.pool == workers, there is always one free slot when a
+    # spawn is dispatched (the dispatcher's ThreadPoolExecutor caps
+    # in-flight spawns at pool size). If we still fail, that's a
+    # dispatcher misconfiguration, not a runtime contention case.
     with _state.sessions_lock:
+        free_slot = next(
+            (s for s in _state.workers if s.claimed_by is None), None,
+        )
+        if free_slot is None:
+            return "", (
+                "no free worker slot — pool exhausted "
+                "(dispatch.pool must not exceed actual worker count)"
+            )
+        free_slot.claimed_by = pipeline_id
         _state.sessions[token] = meta
     _log_for(meta, {"event": "session_registered",
                     "pipeline_id": pipeline_id,
+                    "claimed_slot": free_slot.slot_id,
                     "target": str(target_path)})
     return token, None
 
 
 def _release_session_internal(token: str) -> None:
-    """Drop session metadata. NO didClose — slots stay loaded (next
-    tool call from another pipeline will swap content as needed).
-    Idempotent on unknown tokens."""
+    """Drop session metadata and release this pipeline's claimed worker
+    slot (1:1 lifecycle, #118). `content_pipeline_id` is left untouched
+    — the next claim will didChange its own content in regardless, so
+    clearing it eagerly buys nothing. Idempotent on unknown tokens."""
     with _state.sessions_lock:
         meta = _state.sessions.pop(token, None)
-    if meta is None:
-        return
+        if meta is None:
+            return
+        # Clear claim under sessions_lock so a concurrent register
+        # cannot grab the slot before we release it.
+        for slot in _state.workers:
+            if slot.claimed_by == meta.pipeline_id:
+                slot.claimed_by = None
+                break
     _log_for(meta, {"event": "session_released",
                     "pipeline_id": meta.pipeline_id})
-    # If a slot still claims this pipeline_id, mark as orphan (next
-    # acquire will swap it). Don't didChange to warmup eagerly —
-    # other pipelines might want this slot's CPU more than warmup.
-    for slot in _state.workers:
-        if slot.loaded_pipeline_id == meta.pipeline_id:
-            # Acquire briefly to safely clear the marker.
-            if slot.lock.acquire(blocking=False):
-                try:
-                    if slot.loaded_pipeline_id == meta.pipeline_id:
-                        slot.loaded_pipeline_id = None
-                finally:
-                    slot.lock.release()
 
 
 def _current_session() -> SessionMetadata | None:
@@ -550,8 +561,8 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
             goal_text = _summarize_goal(result)
         except Exception as e:
             goal_text = f"<plainGoal failed: {type(e).__name__}: {e}>"
-        # Mark slot as loaded with this pipeline's NEW content.
-        slot.loaded_pipeline_id = meta.pipeline_id
+        # Slot now has this pipeline's NEW content didChanged in.
+        slot.content_pipeline_id = meta.pipeline_id
 
     # Update mirror + write through to disk so framework cascade sees
     # the agent's edits.
@@ -702,10 +713,11 @@ def validate_file(content: str) -> str:
             except (TimeoutError, RuntimeError):
                 pass
             diags = backend.diagnostics_for(slot.slot_uri)
-            # Mark slot as orphan: validate_file's content isn't the
-            # session's "real" mirror, just a probe; future tool calls
-            # from this session will didChange back to file_content.
-            slot.loaded_pipeline_id = None
+            # validate_file's content isn't the session's "real" mirror,
+            # just a probe. Clear content_pipeline_id so the next tool
+            # call (still on this claimed slot) didChanges back to the
+            # session's `file_content`.
+            slot.content_pipeline_id = None
     except Exception:
         elaborate_failed = True
         diags = []
@@ -871,7 +883,10 @@ def _verify_sync(target: Path, content: str, *, write_olean: bool,
                             f"{type(e).__name__}: {e}"
                         )
 
-            slot.loaded_pipeline_id = None
+            # Probe (verify_file) wrote stand-alone content into the
+            # slot; clear so next tool call didChanges the session's
+            # actual content back in.
+            slot.content_pipeline_id = None
     except Exception as e:
         return {
             "error": f"slot acquire failed: {type(e).__name__}: {e}",
@@ -924,8 +939,10 @@ async def verify(request: Request):
     in the same worker process against the same just-elaborated
     environment.
 
-    Slot ownership: marks loaded_pipeline_id=None after the call so
-    the next caller doesn't think this content "belongs" to anyone.
+    Slot ownership: the slot stays claimed by this session for its
+    lifetime (1:1 binding); only `content_pipeline_id` is cleared
+    after the verify call so the next tool call from the same session
+    didChanges the session's `file_content` back into the slot.
 
     Concurrency: the sync slot-acquire + LSP RPC work runs in a
     thread offloaded from the asyncio event loop via
@@ -994,12 +1011,11 @@ async def health(request: Request):
         counters = {
             "n_hot": _state.n_hot,
             "n_cold_warmup": _state.n_cold_warmup,
-            "n_cold_evicted": _state.n_cold_evicted,
             "n_cold_noswap": _state.n_cold_noswap,
             "n_busy_polls": _state.n_busy_polls,
         }
     total_acq = (counters["n_hot"] + counters["n_cold_warmup"]
-                 + counters["n_cold_evicted"] + counters["n_cold_noswap"])
+                 + counters["n_cold_noswap"])
     counters["hot_rate"] = (
         counters["n_hot"] / total_acq if total_acq else None
     )
@@ -1063,9 +1079,12 @@ def main() -> None:
         env_var="ASTERISM_GATEWAY_PORT", cast=int,
         workspace=workspace,
     )
+    # Worker count is locked to dispatch.pool — every spawn claims one
+    # dedicated worker for its lifetime (#118, 1:1 binding). No separate
+    # gateway.workers knob.
     w_count = _cfg.get(
-        "gateway.workers", default=4,
-        env_var="ASTERISM_GATEWAY_WORKERS", cast=int,
+        "dispatch.pool", default=4,
+        env_var="ASTERISM_POOL", cast=int,
         workspace=workspace,
     )
 
