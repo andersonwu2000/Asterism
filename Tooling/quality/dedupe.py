@@ -678,6 +678,15 @@ def find_canonicals_batch(
         if result[ci] is not None:
             continue
         result[ci] = CanonicalMatch(goal_id=int(anc_row["id"]), kind=kind)
+    # Lightweight metric — surfaces dedupe effectiveness in the daemon
+    # log so Phase 2 design (Strategist/Forward/Librarian) has empirical
+    # input on alias hit rate and shelved-collision frequency. Pre-fix
+    # the entire Windows-side dedupe pipeline was silently producing
+    # zeros here; this print is how we'll catch any future regression.
+    n_alias = sum(1 for m in result if m and m.kind == "alias")
+    n_shelved = sum(1 for m in result if m and m.kind == "shelved")
+    print(f"[dedupe] checked {n} candidate(s) against {len(pairs)} "
+          f"pair(s); alias={n_alias} shelved={n_shelved}", flush=True)
     return result
 
 
