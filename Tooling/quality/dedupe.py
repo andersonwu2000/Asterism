@@ -97,7 +97,17 @@ from ..state import db
 # := ...` shape. The name extractor below is what needs to see `def`.
 _THM_HEAD_RE = re.compile(r"\b(?:theorem|lemma)\s+\S+")
 _SORRY_BODY_RE = re.compile(r":=\s*by\s+sorry")
-_LAKE_ERR_RE = re.compile(r"^[^:]+:(\d+):\d+:\s*error", re.MULTILINE)
+# Lake/Lean error line: `<path>:<line>:<col>: error: ...`.
+# Old regex used `[^:]+` for the path part, which breaks on Windows
+# absolute paths starting with a drive letter (`D:\Asterism\...`) —
+# `[^:]+` stops at the drive-letter colon, the rest of the path is
+# not all-digits, so the entire regex misses. With no error lines
+# matched, `_batch_provable_via_apply` would then hit its "no
+# error_lines despite rc!=0" branch and return all-False, defeating
+# per-pair attribution. Using lazy `.+?` lets the path contain any
+# number of colons; the `\d+:\d+` line-col anchor at the right tail
+# unambiguously identifies the boundary.
+_LAKE_ERR_RE = re.compile(r"^.+?:(\d+):\d+:\s*error", re.MULTILINE)
 _BATCH_TIMEOUT_SEC = 240
 
 
@@ -267,9 +277,19 @@ def _batch_provable_via_apply(
             lines.append("")
             continue
         canonical_fqn = f"Problems.{problem}.{canonical_thm}"
+        # Flatten cand_sig whitespace: candidate signatures extracted
+        # from on-disk theorems often span multiple lines (long ∀-prefixed
+        # statements wrap for readability). Embedding a multi-line cand_sig
+        # via `lines.append(<one-string>)` makes the file's line count
+        # diverge from `len(lines)`, throwing off pair_start_lines and
+        # causing lake errors to land outside the (Python-tracked) pair
+        # range → global-error short-circuit → all pairs False. Collapse
+        # all whitespace runs to single spaces so the appended string
+        # remains one file line.
+        cand_sig_flat = " ".join(cand_sig.split())
         pair_start_lines.append(len(lines) + 1)
         lines.append(f"-- pair {i}")
-        lines.append(f"theorem _dc_{i} {cand_sig} := by")
+        lines.append(f"theorem _dc_{i} {cand_sig_flat} := by")
         lines.append(f"  apply @{canonical_fqn} <;> assumption")
         lines.append("")
 

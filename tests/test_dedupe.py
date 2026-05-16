@@ -676,6 +676,74 @@ def _patch_subprocess(monkeypatch: pytest.MonkeyPatch, *,
                         "run", fake_run)
 
 
+def test_lake_err_re_matches_windows_absolute_path() -> None:
+    """#112(c) follow-up — `_LAKE_ERR_RE` must match Windows-style
+    absolute paths emitted by lake under `cwd=workspace, file=str(tmp_file)`
+    where workspace is an absolute Path. The earlier `[^:]+` prefix
+    aborted at the drive-letter colon (`D:`), so error_lines came back
+    empty and the per-pair attribution was skipped in favor of the
+    'no error_lines despite rc!=0' all-False branch. Cost: every dedupe
+    call on Windows silently returned no matches."""
+    sample = (
+        r"D:\Asterism\.attempts\_x.lean:91:2: error: Tactic apply failed"
+        "\n"
+        r"D:\Asterism\.attempts\_x.lean:103:5: error: another"
+        "\n"
+    )
+    matches = dedupe._LAKE_ERR_RE.findall(sample)
+    assert matches == ["91", "103"]
+
+
+def test_lake_err_re_matches_posix_path() -> None:
+    """Regression for the original posix-style path that worked under
+    the old regex — ensure the relaxed `.+?` prefix didn't break it."""
+    sample = (
+        "/home/u/.attempts/_x.lean:42:1: error: foo\n"
+        "/home/u/.attempts/_x.lean:88:2: error: bar\n"
+    )
+    assert dedupe._LAKE_ERR_RE.findall(sample) == ["42", "88"]
+
+
+def test_batch_provable_via_apply_multiline_cand_sig_keeps_pair_attribution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#112(c) follow-up — `_extract_full_signature` returns the
+    candidate's signature text verbatim, which often spans multiple
+    lines for long ∀-prefixed statements. The original code appended
+    that multi-line string into `lines` as a single element, causing
+    the file's actual line count to diverge from `len(lines)` and
+    `pair_start_lines` to drift past lake's true error line numbers.
+    Errors then landed in the wrong pair (or outside any pair) and
+    every dedupe candidate came back False even when the lake batch
+    found a valid alias. Fix: flatten cand_sig whitespace before
+    embedding so each `lines.append` stays one file line.
+
+    This test stages a 3-pair batch where pair 1's cand_sig has
+    newlines; only pair 0 errors. Without the flatten fix, the error
+    on pair 0 would mis-attribute (pair_start_lines for pairs 1/2
+    drifted past where lake reports). With the fix, pair 0 stays
+    correctly attributed and pairs 1/2 stay True."""
+    # Build a synthetic lake response keyed to the post-flatten file
+    # layout. Each pair occupies exactly 4 lines: comment, theorem,
+    # apply, blank.
+    err_at_pair_0 = (
+        f"{tmp_path}/_x.lean:11:2: error: Tactic apply failed\n"
+    )
+    _patch_subprocess(monkeypatch, stdout=err_at_pair_0, stderr="", rc=1)
+    multi_line_sig = ": ∀ (m : ℕ),\n  2 ≤ m →\n  m ^ 2 ∣ 2 ^ m + 1"
+    pairs = [
+        (": Nat", "Mod.A", "thm_a"),         # pair 0 (start ~ line 9)
+        (multi_line_sig, "Mod.B", "thm_b"),  # pair 1 (start ~ line 13)
+        (": Bool", "Mod.C", "thm_c"),        # pair 2 (start ~ line 17)
+    ]
+    result = dedupe._batch_provable_via_apply(tmp_path, "p", pairs)
+    # Pair 0 fails (error in its range), pairs 1 and 2 pass.
+    assert result == [False, True, True], (
+        f"expected [False, True, True], got {result}; flatten "
+        f"likely regressed and pair_start_lines drifted"
+    )
+
+
 def test_batch_provable_via_apply_rc0_means_all_pairs_pass(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
