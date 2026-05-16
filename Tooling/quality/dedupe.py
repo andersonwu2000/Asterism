@@ -84,11 +84,18 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
+from typing import NamedTuple
 
 from ..state import db
 
 
-_THM_HEAD_RE = re.compile(r"\btheorem\s+\S+")
+# Signature extractor: matches declarations that always carry an
+# explicit type signature, i.e. `theorem` / `lemma` (lemma is just an
+# alias for theorem in Lean 4). NOT extended to `def` — definitional
+# entries may be of the form `def foo := value` with no signature, and
+# `_extract_full_signature` walks the text expecting `<binders> : ...
+# := ...` shape. The name extractor below is what needs to see `def`.
+_THM_HEAD_RE = re.compile(r"\b(?:theorem|lemma)\s+\S+")
 _SORRY_BODY_RE = re.compile(r":=\s*by\s+sorry")
 _LAKE_ERR_RE = re.compile(r"^[^:]+:(\d+):\d+:\s*error", re.MULTILINE)
 _BATCH_TIMEOUT_SEC = 240
@@ -188,12 +195,14 @@ def _to_forall_form(signature: str) -> str:
     return f"∀ {binders}, {conclusion}"
 
 
-_THM_NAME_RE = re.compile(r"\btheorem\s+(\S+)")
+# Match `theorem`, `lemma`, or `def` to cover framework-promoted ancestors
+# (see _THM_HEAD_RE for the case background).
+_THM_NAME_RE = re.compile(r"\b(?:theorem|lemma|def)\s+(\S+)")
 
 
 def _extract_theorem_name(text: str) -> str | None:
-    """Extract the theorem name from the first `theorem <name>` in the
-    file. Returns None if no theorem found."""
+    """Extract the declared name from the first `theorem|lemma|def
+    <name>` in the file. Returns None if none found."""
     m = _THM_NAME_RE.search(text)
     return m.group(1) if m else None
 
@@ -484,34 +493,101 @@ def _eligible_problem_proved(conn: sqlite3.Connection, workspace: Path, *,
     return eligible
 
 
+def _eligible_shelved(conn: sqlite3.Connection, workspace: Path, *,
+                      problem: str, parent_goal_id: int,
+                      candidate_count: int,
+                      ) -> list[tuple[sqlite3.Row, str]]:
+    """Shelved goals in same Problem whose lean files are still on disk
+    (prune kept them, or they were never pruned). Used to detect that a
+    candidate sub-goal recapitulates a previously-abandoned approach —
+    different semantics from the alive/proved pools: a shelved hit
+    means "decline this candidate", not "alias to canonical".
+
+    Excludes parent_goal_id (own-parent loop guard, same as other pools)
+    and alias rows (no alias chain). Binder count pre-filter same as
+    `_eligible_ancestors`.
+
+    The file existence check is best-effort: if the shelved goal's lean
+    file was pruned but the DB row survives, the pair simply can't be
+    elaborated by `_batch_provable_via_apply`. That's fine — the row
+    won't contribute to the batch and the candidate falls through to
+    the alive/proved comparison (matching the prior behavior for
+    pruned-file rows in other pools).
+    """
+    rows = conn.execute(
+        "SELECT g.id, g.statement, g.lean_path, g.status FROM goals g "
+        "WHERE g.problem = ? AND g.status = 'shelved' "
+        "  AND g.alias_target_id IS NULL "
+        "  AND g.id != ? "
+        "ORDER BY g.id ASC",
+        (problem, parent_goal_id),
+    ).fetchall()
+
+    eligible: list[tuple[sqlite3.Row, str]] = []
+    for r in rows:
+        try:
+            canon_text = (workspace / r["lean_path"]).read_text(
+                encoding="utf-8")
+        except OSError:
+            continue
+        if _signature_binder_count(canon_text) > candidate_count:
+            continue
+        eligible.append((r, canon_text))
+    return eligible
+
+
+class CanonicalMatch(NamedTuple):
+    """Result of a dedupe hit on one candidate.
+
+    `kind`:
+      - `"alias"`: canonical is alive/proved — caller should write an
+        alias body and insert the candidate as `proved` aliased to
+        `goal_id`.
+      - `"shelved"`: canonical is shelved — caller should decline this
+        candidate (the proposed approach already failed). `goal_id`
+        is the shelved goal so the caller can surface its
+        `failure_reason` / detail in the decline message.
+    """
+    goal_id: int
+    kind: str  # Literal["alias", "shelved"]
+
+
 def find_canonicals_batch(
     conn: sqlite3.Connection, workspace: Path, *,
     problem: str, parent_goal_id: int,
     candidates: list[tuple[str, str]],
-) -> list[int | None]:
-    """Batch dedupe lookup: for each candidate, return canonical
-    goal_id (or None).
+) -> list[CanonicalMatch | None]:
+    """Batch dedupe lookup: for each candidate, return a CanonicalMatch
+    (alias or shelved) or None.
 
     `candidates`: list of (slug, full_text) for each sub-goal proposed
     by the current Backward. Returns a list aligned with `candidates`.
 
     All eligible (candidate, canonical) pairs are bundled into a single
-    `_batch_isdefeq` subprocess call to amortize lake env startup
-    cost. Per-candidate canonical selection follows DB priority
-    (proved > open > attempting; earliest id tie-break).
+    `_batch_provable_via_apply` subprocess call to amortize lake env
+    startup cost. Per-candidate canonical selection follows priority:
+      1. Strict ancestors (alive lineage; proved > open > attempting)
+      2. Orphan proved siblings of dead/superseded strategies
+      3. Cross-branch proved goals in same problem
+      4. Shelved goals in same problem → kind="shelved" (decline)
+    Tiers 1-3 yield `kind="alias"`. Tier 4 yields `kind="shelved"`.
     """
     n = len(candidates)
     if n == 0:
         return []
 
-    # Per-candidate eligible canonicals: ancestors first (priority),
-    # then orphan siblings, then cross-branch proved goals in the
-    # same Problem. All three pre-filtered by binder count.
-    cand_ancestors: list[list[tuple[sqlite3.Row, str]]] = []
+    # Per-candidate eligible canonicals. Alive/proved tiers come first
+    # so they take precedence on first-hit. The shelved tier is appended
+    # afterwards and only contributes when no alive/proved canonical
+    # exists for the candidate. Tag each row with its source kind so
+    # the assembly loop below can emit the right `CanonicalMatch.kind`.
+    KIND_ALIAS = "alias"
+    KIND_SHELVED = "shelved"
+    cand_pools: list[list[tuple[sqlite3.Row, str, str]]] = []
     for slug, full_text in candidates:
         sig = _extract_full_signature(full_text)
         if sig is None or not sig.strip():
-            cand_ancestors.append([])
+            cand_pools.append([])
             continue
         cand_count = _signature_binder_count(full_text)
         anc = _eligible_ancestors(
@@ -528,20 +604,30 @@ def find_canonicals_batch(
             parent_goal_id=parent_goal_id, candidate_count=cand_count,
             exclude_ids=seen_ids,
         )
-        cand_ancestors.append(anc + orph + cross)
+        shelved = _eligible_shelved(
+            conn, workspace, problem=problem,
+            parent_goal_id=parent_goal_id, candidate_count=cand_count,
+        )
+        pool: list[tuple[sqlite3.Row, str, str]] = []
+        for r, t in anc + orph + cross:
+            pool.append((r, t, KIND_ALIAS))
+        for r, t in shelved:
+            pool.append((r, t, KIND_SHELVED))
+        cand_pools.append(pool)
 
-    # Build flat list of pairs to check; track origin (cand_idx, anc_row)
+    # Build flat list of pairs to check; track origin (cand_idx, row, kind).
     # Each pair: (cand_signature, canonical_module, canonical_theorem_name).
     # Canonical's module is derived from anc_row's lean_path; theorem
     # name extracted from anc_text directly (DB slug ≠ on-disk theorem
-    # name in some library-promoted / aliased cases).
+    # name in some framework-promoted / aliased cases, where the file
+    # body is `def <slug> := @s<sid>` — see _THM_HEAD_RE comment).
     pairs: list[tuple[str, str, str]] = []
-    pair_origin: list[tuple[int, sqlite3.Row]] = []
+    pair_origin: list[tuple[int, sqlite3.Row, str]] = []
     for ci, (slug, full_text) in enumerate(candidates):
         cand_sig = _extract_full_signature(full_text)
         if cand_sig is None:
             continue
-        for anc_row, anc_text in cand_ancestors[ci]:
+        for anc_row, anc_text, kind in cand_pools[ci]:
             canonical_thm = _extract_theorem_name(anc_text) or ""
             # DB stores workspace-relative lean_path strings; resolve
             # to absolute before module conversion.
@@ -552,23 +638,27 @@ def find_canonicals_batch(
             except (ValueError, OSError):
                 continue
             pairs.append((cand_sig, canonical_module, canonical_thm))
-            pair_origin.append((ci, anc_row))
+            pair_origin.append((ci, anc_row, kind))
 
     if not pairs:
         return [None] * n
 
     flags = _batch_provable_via_apply(workspace, problem, pairs)
 
-    # First-hit per candidate (pair_origin is already in DB priority order
-    # because cand_ancestors[ci] was sorted by query)
-    canonical_for: list[int | None] = [None] * n
-    for (ci, anc_row), is_eq in zip(pair_origin, flags):
+    # First-hit per candidate. pair_origin order is alive→shelved within
+    # each candidate (because cand_pools concatenates alive first), so
+    # the first True flag picked up is automatically the highest-priority
+    # match. An "alias" hit therefore shadows a later "shelved" hit on
+    # the same candidate — the desired behavior (an alive canonical is
+    # always more useful than a shelved precedent).
+    result: list[CanonicalMatch | None] = [None] * n
+    for (ci, anc_row, kind), is_eq in zip(pair_origin, flags):
         if not is_eq:
             continue
-        if canonical_for[ci] is not None:
-            continue  # already picked higher-priority canonical
-        canonical_for[ci] = int(anc_row["id"])
-    return canonical_for
+        if result[ci] is not None:
+            continue
+        result[ci] = CanonicalMatch(goal_id=int(anc_row["id"]), kind=kind)
+    return result
 
 
 def build_alias_content(*, original_content: str,

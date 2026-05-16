@@ -774,6 +774,31 @@ def _backward_parse_and_commit(
         candidates=candidates_for_dedupe,
     )
 
+    # #112(a) — if any candidate matches a previously-shelved goal in
+    # this problem, abort the whole strategy: the proposed approach
+    # recapitulates a known-failed direction and finishing the spawn
+    # would just waste a verify cycle to discover the same dead end.
+    # Decline-style abort surfaces the offending slug pairs so the
+    # next Backward (or the agent's retry context) can see what was
+    # already tried.
+    shelved_hits = [
+        (slug, m.goal_id)
+        for (slug, _), m in zip(sub_meta, canonical_for)
+        if m is not None and m.kind == "shelved"
+    ]
+    if shelved_hits:
+        detail = "; ".join(
+            f"{slug} ≡ shelved goal {gid} "
+            f"({db.get_goal(conn, gid)['slug']})"
+            for slug, gid in shelved_hits
+        )
+        return _abort(
+            "same_as_shelved",
+            f"sub-goal(s) recapitulate a previously-shelved approach in "
+            f"this problem: {detail}. Pick a different decomposition.",
+            leading,
+        )
+
     # Compute permanent paths under proofs/. Strategy patch path includes
     # sid_token (framework-locked, collision-free). Sub-goal `L_<slug>.lean`
     # paths use the agent-picked slug, whose problem-local uniqueness was
@@ -787,11 +812,14 @@ def _backward_parse_and_commit(
     placed: list[Path] = []
     try:
         # Place sub-goal files: alias body for dedupe-hits, original
-        # content for novel sub-goals.
-        for (slug, src), (_, dest), canonical_id in zip(
+        # content for novel sub-goals. By this point any shelved-kind
+        # match has aborted via the same_as_shelved early-return above,
+        # so a non-None `match` is guaranteed kind="alias".
+        for (slug, src), (_, dest), match in zip(
             sub_meta, sub_dests, canonical_for,
         ):
-            if canonical_id is not None:
+            if match is not None:
+                canonical_id = match.goal_id
                 canonical = db.get_goal(conn, canonical_id)
                 canonical_module = _lean_path_to_module(
                     workspace, workspace / canonical["lean_path"])
@@ -916,7 +944,7 @@ def _backward_parse_and_commit(
         # spares a redundant Backward/Builder spawn that would just
         # `promote_to_alias` over the same content.
         linked_ids: list[int] = []
-        for (slug, dest), canonical_id in zip(sub_dests, canonical_for):
+        for (slug, dest), match in zip(sub_dests, canonical_for):
             stmt = _extract_statement_from_lean(dest)
             rel = dest.relative_to(workspace).as_posix()
             entry_kind = _parse_entry_kind(
@@ -927,12 +955,13 @@ def _backward_parse_and_commit(
                 depth=goal["depth"] + 1,
                 entry_kind=entry_kind,
             )
-            if canonical_id is not None:
+            if match is not None:
+                # Past the same_as_shelved early-return → kind="alias".
                 db.update_goal_status(conn, new_gid, "proved")
                 # Record alias relationship so prune retains the
                 # canonical (in case it's an orphan from a dead strategy)
                 # for as long as this alias is alive.
-                db.set_alias_target(conn, new_gid, canonical_id)
+                db.set_alias_target(conn, new_gid, match.goal_id)
             else:
                 ok, msg = _try_promote_sorry_free(
                     dest=dest, problem=goal["problem"], slug=slug,

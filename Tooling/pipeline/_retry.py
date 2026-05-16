@@ -78,6 +78,11 @@ _TERMINAL_DECLINE_REASONS = frozenset({
     "agent_bailed",
     # Race-detected mid-parse: a sibling already terminated this goal.
     "goal_no_longer_open",
+    # #112(a) — agent's decomposition recapitulates a previously-shelved
+    # approach. Same-sid retry would re-emit the same split; only a fresh
+    # dispatch (and ideally a fresh-rescue prompt mentioning the shelved
+    # collision) has any chance of a different proposal.
+    "same_as_shelved",
 })
 
 

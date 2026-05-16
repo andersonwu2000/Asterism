@@ -377,7 +377,9 @@ def test_find_canonicals_batch_picks_proved_over_open(
         conn, tmp_path, problem="p", parent_goal_id=parent,
         candidates=[("cand", candidate_text)],
     )
-    assert canonicals == [proved_anc]
+    assert canonicals == [
+        dedupe.CanonicalMatch(goal_id=proved_anc, kind="alias"),
+    ]
 
 
 def test_find_canonicals_batch_no_match_returns_none(
@@ -417,6 +419,146 @@ def test_find_canonicals_batch_empty_candidates(
     ) == []
 
 
+def test_extract_theorem_name_matches_def_form() -> None:
+    """#112(c) — framework's promote_to_alias rewrites proved sub-goal
+    files into `def <slug> := @s<sid>` shape. The earlier regex only
+    matched `theorem`, so canonical_thm came back empty and
+    _batch_provable_via_apply emitted a deliberately-failing stub for
+    every alive-ancestor pair. Observed on imo_1990_p3 g1480 vs
+    byte-identical alive ancestor g1453, where the alias never landed."""
+    assert dedupe._extract_theorem_name(
+        "def two_sq_eq_one_given_no_seven := @Problems.X.s9833"
+    ) == "two_sq_eq_one_given_no_seven"
+    assert dedupe._extract_theorem_name(
+        "lemma foo (a : T) : X := by sorry"
+    ) == "foo"
+    assert dedupe._extract_theorem_name(
+        "theorem bar : True := trivial"
+    ) == "bar"
+
+
+def test_find_canonicals_batch_shelved_match_returns_shelved_kind(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#112(a) — when no alive canonical matches but a shelved goal in
+    the same problem does, dedupe emits CanonicalMatch(kind='shelved')
+    so the caller can decline the candidate rather than alias to a
+    dead-end."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    shelved_g = _seed_sub(conn, slug="dead_approach",
+                           statement="X", status="shelved")
+    _link(conn, root, [shelved_g])
+    parent = _seed_sub(conn, slug="parent", statement="Q", depth=2)
+    _link(conn, root, [parent])
+    _write_lean(tmp_path, "p", "dead_approach",
+        "import Mathlib\ntheorem dead_approach (a : T) : X := by sorry\n")
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : Q := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+
+    # Only the shelved canonical's name unifies with the candidate.
+    def fake(ws: Path, p: str,
+             pairs: list[tuple[str, str, str]]) -> list[bool]:
+        return [thm == "dead_approach" for _sig, _mod, thm in pairs]
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake)
+
+    cand = "import Mathlib\ntheorem c (a : T) (b : T) : X := by sorry\n"
+    canonicals = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("c", cand)],
+    )
+    assert canonicals == [
+        dedupe.CanonicalMatch(goal_id=shelved_g, kind="shelved"),
+    ]
+
+
+def test_find_canonicals_batch_alive_shadows_shelved(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#112(a) — alive/proved canonical takes priority over shelved
+    match. Caller should always prefer aliasing to a usable proof over
+    declining on a dead-end precedent."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    proved_anc = _seed_sub(conn, slug="proved_anc",
+                            statement="X", status="proved")
+    shelved_g = _seed_sub(conn, slug="dead_approach",
+                           statement="X", status="shelved")
+    _link(conn, root, [proved_anc, shelved_g])
+    parent = _seed_sub(conn, slug="parent", statement="Q", depth=2)
+    _link(conn, proved_anc, [parent])
+    for slug in ("proved_anc", "dead_approach", "parent"):
+        _write_lean(tmp_path, "p", slug,
+            f"import Mathlib\ntheorem {slug} (a : T) : X := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply",
+                        lambda ws, p, pairs: [True] * len(pairs))
+
+    cand = "import Mathlib\ntheorem c (a : T) (b : T) : X := by sorry\n"
+    canonicals = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("c", cand)],
+    )
+    assert canonicals == [
+        dedupe.CanonicalMatch(goal_id=proved_anc, kind="alias"),
+    ]
+
+
+def test_find_canonicals_batch_def_form_ancestor_resolves(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#112(c) — when an alive ancestor's lean file is in the framework-
+    promoted `def <slug> := @s<sid>` shape, name extraction still
+    succeeds and the candidate-canonical pair flows into the lake
+    batch. Pre-fix the regex missed `def`, yielding canonical_thm=''
+    and a force-fail stub — alias never landed."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    proved_anc = _seed_sub(conn, slug="promoted_anc",
+                            statement="X", status="proved")
+    _link(conn, root, [proved_anc])
+    parent = _seed_sub(conn, slug="parent", statement="Q", depth=2)
+    _link(conn, proved_anc, [parent])
+    # Promoted form: `def` instead of `theorem`.
+    _write_lean(tmp_path, "p", "promoted_anc",
+        "import Mathlib\nnamespace Problems.p\n"
+        "def promoted_anc := @Problems.p.s9999\n"
+        "end Problems.p\n")
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : Q := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+
+    captured: dict = {}
+
+    def fake(ws: Path, prob: str,
+             pairs: list[tuple[str, str, str]]) -> list[bool]:
+        captured["pairs"] = pairs
+        return [True] * len(pairs)
+
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake)
+
+    cand = "import Mathlib\ntheorem c (a : T) (b : T) : X := by sorry\n"
+    canonicals = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("c", cand)],
+    )
+    # canonical_thm must NOT be empty — the regex picks up the def.
+    assert captured["pairs"], "no pair produced — regex still misses def"
+    _cand_sig, _mod, canonical_thm = captured["pairs"][0]
+    assert canonical_thm == "promoted_anc"
+    assert canonicals == [
+        dedupe.CanonicalMatch(goal_id=proved_anc, kind="alias"),
+    ]
+
+
 def test_find_canonicals_batch_mixed_hits(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -454,7 +596,8 @@ def test_find_canonicals_batch_mixed_hits(
         conn, tmp_path, problem="p", parent_goal_id=p1,
         candidates=[("c1", cand1), ("c2", cand2)],
     )
-    assert canonicals[0] == g_anc1
+    assert canonicals[0] == dedupe.CanonicalMatch(
+        goal_id=g_anc1, kind="alias")
     assert canonicals[1] is None
 
 
