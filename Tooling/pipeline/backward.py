@@ -433,11 +433,27 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         reflection_fn=backward_reflection,
     )
 
-    # Cleanup: any non-success outcome leaves the strategy at 'proposed'
-    # with no scratch_path / no sub-goal links. Mark it dead so
-    # `strategies_ready_for_verify` doesn't hang on it.
+    # Cleanup: non-success outcomes split by whether the agent ran.
+    #
+    # #101 — Infra failures (quota / spawn / network / slot timeout) mean
+    # the agent never produced anything: no proposal_md, no scratch_path,
+    # no strategy_subgoals link. Marking these rows `dead` leaves forensic
+    # noise that misleads observation (SG run accumulated 8587 such empty
+    # shells). DELETE them — the row never reflected real agent output.
+    #
+    # Agent-side failures (parse / decline / verify / sorry / signature
+    # mismatch / etc.) are real attempts: the agent did work and we want
+    # the row to survive so TREE.md / `_strategy_dead_cause` can explain
+    # why it died, even though the strategy itself didn't succeed.
+    _INFRA_REASONS = {
+        "quota_exhausted", "spawn_fast_fail", "missing_dep",
+        "gateway_unreachable", "transient_timeout",
+    }
     if result.outcome != "success":
-        db.update_strategy_status(conn, strategy_id, "dead")
+        if result.failure_reason in _INFRA_REASONS:
+            db.delete_strategy(conn, strategy_id)
+        else:
+            db.update_strategy_status(conn, strategy_id, "dead")
 
     return result
 

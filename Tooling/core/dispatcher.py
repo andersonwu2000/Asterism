@@ -452,6 +452,7 @@ def bfs_refill(conn: sqlite3.Connection,
                cooldown_until: dict[tuple[str, str], float] | None = None,
                *,
                scope: str | None = None,
+               quota_cooldown_kind: dict[str, float] | None = None,
                ) -> None:
     """Enqueue dispatchable tasks. `running` is the in-memory live set
     of (target_id, kind) pairs currently executing in this daemon.
@@ -465,6 +466,11 @@ def bfs_refill(conn: sqlite3.Connection,
     are skipped this tick. Set after a spawn_fast_fail cascade so
     transient claude / network failures don't burst-retry at 2s/call.
 
+    `quota_cooldown_kind` is the kind-wide variant: quota_exhausted is
+    provider-level, not target-level — gating one (tid, kind) leaves
+    243 other Backwards free to burn through the cap. While a kind is
+    cooled here every enqueue of that kind is skipped this tick.
+
     `scope` (optional SQL LIKE pattern): when set, only enqueue goals
     whose problem matches. Lets a daemon run be restricted to a
     benchmark batch (e.g. `minif2f_%`) without disturbing unrelated
@@ -472,6 +478,7 @@ def bfs_refill(conn: sqlite3.Connection,
     """
     now = time.time()
     cd = cooldown_until or {}
+    qcd = quota_cooldown_kind or {}
 
     def in_flight(tid: str, kind: str) -> int:
         running_n = 1 if (tid, kind) in running else 0
@@ -479,6 +486,9 @@ def bfs_refill(conn: sqlite3.Connection,
 
     def cooled(tid: str, kind: str) -> bool:
         return cd.get((tid, kind), 0.0) > now
+
+    def kind_cooled(kind: str) -> bool:
+        return qcd.get(kind, 0.0) > now
 
     # Strategies ready for verify are no longer enqueued as Verify
     # pipelines. They're processed inline in `verify_housekeeping` at
@@ -488,6 +498,8 @@ def bfs_refill(conn: sqlite3.Connection,
     for g in db.open_goals(conn, scope=scope):
         gid = str(g["id"])
         kind = next_worker_kind(g)
+        if kind_cooled(kind):
+            continue
         if in_flight(gid, kind) == 0 and not cooled(gid, kind):
             priority = 5 if kind == "Builder" else 2
             db.enqueue(conn, kind=kind, target_id=gid, priority=priority)
@@ -748,6 +760,16 @@ def run(workspace: Path, *, once: bool = False,
     # busy-loop against a dead gateway and forces operator attention.
     consec_gateway_unreachable = 0
     CONSEC_GATEWAY_UNREACHABLE_LIMIT = 8
+    # Per-kind quota backoff (#103). quota_exhausted is provider-level,
+    # not target-level — gating one (tid, kind) leaves all other targets
+    # of the same kind free to keep hammering. Backoff doubles on each
+    # consecutive quota_exhausted for that kind, capped at 600s; any
+    # non-quota outcome (success or agent-side failure) resets the
+    # counter and clears the per-kind cooldown so dispatch resumes.
+    consec_quota_per_kind: dict[str, int] = {}
+    quota_cooldown_kind: dict[str, float] = {}
+    QUOTA_BACKOFF_BASE_SEC = 30.0
+    QUOTA_BACKOFF_CAP_SEC = 600.0
 
     conn = db.connect()
     # Idempotent — picks up additive migrations on an existing DB
@@ -816,8 +838,30 @@ def run(workspace: Path, *, once: bool = False,
                     # Phase 7 — quota_exhausted (rc=126) / missing_dep (rc=127)
                     # also cooldown but do NOT contribute to CONSEC tracking
                     # (quota recovers on its own; missing_dep is operator-fix).
-                    if outcome == "failed" and reason in (
-                        "spawn_fast_fail", "quota_exhausted", "missing_dep",
+                    # #103 — quota_exhausted is now handled separately with
+                    # per-kind exponential backoff: provider rate limit is
+                    # provider-level, not target-level, so the per-(tid, kind)
+                    # cooldown alone leaves 200+ siblings of the same kind
+                    # free to drain the queue and burn the cap.
+                    if outcome == "failed" and reason == "quota_exhausted":
+                        n = consec_quota_per_kind.get(kind, 0) + 1
+                        consec_quota_per_kind[kind] = n
+                        backoff = min(
+                            QUOTA_BACKOFF_BASE_SEC * (2 ** (n - 1)),
+                            QUOTA_BACKOFF_CAP_SEC,
+                        )
+                        quota_cooldown_kind[kind] = time.time() + backoff
+                        # Flush queued entries of this kind so the
+                        # pop loop doesn't keep draining the backlog
+                        # against an exhausted provider (each pop
+                        # would re-fire and bump consec further).
+                        flushed = db.flush_queue_kind(conn, kind=kind)
+                        print(f"[cooldown] {kind} quota_exhausted "
+                              f"(consec={n}, backoff={backoff:.0f}s, "
+                              f"flushed={flushed} queued; all {kind} "
+                              f"dispatch suspended)", flush=True)
+                    elif outcome == "failed" and reason in (
+                        "spawn_fast_fail", "missing_dep",
                         "gateway_unreachable", "transient_timeout",
                     ):
                         cooldown_until[(tid, kind)] = (
@@ -863,6 +907,18 @@ def run(workspace: Path, *, once: bool = False,
                     else:
                         consec_fast_fails = 0
                         consec_gateway_unreachable = 0
+                        # #103 — any non-quota, non-infra outcome on this
+                        # kind proves the provider responded: clear the
+                        # per-kind quota backoff so dispatch resumes
+                        # fresh. (Other infra reasons above are orthogonal
+                        # to quota — handled in their own branch and don't
+                        # touch quota state.)
+                        if kind in consec_quota_per_kind:
+                            consec_quota_per_kind.pop(kind, None)
+                            quota_cooldown_kind.pop(kind, None)
+                            print(f"[cooldown] {kind} quota state reset "
+                                  f"(non-quota outcome confirms provider "
+                                  f"responsive)", flush=True)
                     print(f"[cascade] {kind} {tk}={tid} → {outcome}", flush=True)
                     tree.write_for_target(conn, workspace, tid, tk)
                 except Exception as exc:
@@ -1002,9 +1058,11 @@ def run(workspace: Path, *, once: bool = False,
             return 0
 
         # Refill queue (uses in-memory `running` for dedup; cooldown_until
-        # holds spawn_fast_fail back-offs; scope restricts to
-        # a benchmark subset like `minif2f_%`).
-        bfs_refill(conn, running, cooldown_until, scope=scope)
+        # holds spawn_fast_fail back-offs; quota_cooldown_kind holds the
+        # per-kind quota backoff (#103); scope restricts to a benchmark
+        # subset like `minif2f_%`).
+        bfs_refill(conn, running, cooldown_until, scope=scope,
+                   quota_cooldown_kind=quota_cooldown_kind)
 
         # Spawn from queue while pool has slots. Skip if a pipeline of
         # the same (target_id, kind) is already in flight in this
@@ -1017,6 +1075,12 @@ def run(workspace: Path, *, once: bool = False,
             target_id = str(row["target_id"])
             kind = str(row["kind"])
             if (target_id, kind) in running:
+                continue
+            # #103 — defense-in-depth: even after bfs_refill skips
+            # cooled kinds, a race (cooldown set between bfs_refill
+            # and pop) could leave a queued row for a now-cooled
+            # kind. Drop it; bfs_refill will repopulate post-cooldown.
+            if quota_cooldown_kind.get(kind, 0.0) > time.time():
                 continue
             target_kind = "Goal"  # Verify removed; only Goal kinds left
             pipeline_id = agent.new_pipeline_id()

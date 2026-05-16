@@ -70,6 +70,61 @@ def test_first_dispatch_mints_session_id_and_passes_to_spawn(
     assert captured["retry_context"] is None
 
 
+def test_backward_quota_exhausted_deletes_strategy_row(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#101 — when the pipeline returns an infra failure (here:
+    quota_exhausted rc=126), the strategy row reserved at the top of
+    _run_backward_inner gets DELETEd rather than marked dead. The row
+    was an empty shell — no proposal_md, no scratch, no sub-goal
+    links — so leaving it around as 'dead' would be forensic noise."""
+    gid = _seed_root_goal(tmp_path, conn)
+    monkeypatch.setattr(agent, "spawn_llm", lambda **kw: SpawnRC.QUOTA_EXHAUSTED)
+
+    r = pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=manifest.Manifest(problem="p", statement="True"),
+        pipeline_id="pid-bw-quota")
+    assert r.outcome == "failed"
+    assert r.failure_reason == "quota_exhausted"
+    rows = conn.execute(
+        "SELECT id FROM strategies WHERE goal_id=?", (gid,)
+    ).fetchall()
+    assert rows == [], (
+        f"expected strategy row deleted on infra failure, got {len(rows)}"
+    )
+
+
+def test_backward_agent_failure_keeps_strategy_dead(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#101 — agent-side failures (parse error, decline, sorry stub
+    persistence, signature mismatch) keep the strategy row as 'dead'
+    for forensic review. Only infra reasons trigger DELETE."""
+    gid = _seed_root_goal(tmp_path, conn)
+    # Watchdog STUCK_THINKING for cold spawn AND fresh-rescue stage 2
+    # AND postmortem → entire flow exhausts attempts and bails with
+    # an agent-side failure_reason (not in _INFRA_REASONS).
+    monkeypatch.setattr(agent, "spawn_llm",
+                        lambda **kw: SpawnRC.STUCK_THINKING)
+    r = pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=manifest.Manifest(problem="p", statement="True"),
+        pipeline_id="pid-bw-agent-fail")
+    assert r.outcome != "success"
+    rows = conn.execute(
+        "SELECT id, status FROM strategies WHERE goal_id=?", (gid,)
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "dead", (
+        f"agent-side failure should leave strategy as 'dead', "
+        f"got {rows[0]['status']!r}; "
+        f"failure_reason={r.failure_reason!r}"
+    )
+
+
 def test_each_dispatch_mints_fresh_strategy_id(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

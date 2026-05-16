@@ -1003,6 +1003,87 @@ def test_bfs_refill_no_scope_dispatches_all(
     assert db.queue_count(conn, target_id=str(gid2), kind="Builder") == 1
 
 
+def test_bfs_refill_kind_cooldown_blocks_enqueue(
+    conn: sqlite3.Connection,
+) -> None:
+    """#103 — when a kind is in quota cooldown, bfs_refill skips every
+    target of that kind even if no per-target cooldown is set."""
+    import time
+    from Tooling.core.dispatcher import bfs_refill
+    _seed_goal(conn, problem="sg")  # default attempts=0 → Builder
+    qcd = {"Builder": time.time() + 60.0}
+    bfs_refill(conn, running=set(), quota_cooldown_kind=qcd)
+    assert db.queue_size(conn) == 0
+
+
+def test_bfs_refill_kind_cooldown_only_affects_matching_kind(
+    conn: sqlite3.Connection,
+) -> None:
+    """#103 — cooling Backward does not block Builder targets, and
+    vice versa. Per-kind isolation."""
+    import time
+    from Tooling.core.dispatcher import bfs_refill, BUILDER_THRESHOLD
+    gid_b = _seed_goal(conn, problem="sg")  # entry=Builder, attempts=0
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at) "
+        "VALUES (?, ?, ?)",
+        ("pn", "Problems/pn/Manifest.md", db.now()),
+    )
+    gid_bw = db.insert_goal(
+        conn, problem="pn", slug="main",
+        lean_path="Problems/pn/Root.lean",
+        statement="T", origin="root",
+    )
+    for _ in range(BUILDER_THRESHOLD):
+        db.increment_goal_attempts(conn, gid_bw)  # escalate to Backward
+    bfs_refill(conn, running=set(),
+               quota_cooldown_kind={"Backward": time.time() + 60.0})
+    assert db.queue_count(conn, target_id=str(gid_b), kind="Builder") == 1
+    assert db.queue_count(conn, target_id=str(gid_bw), kind="Backward") == 0
+
+
+def test_bfs_refill_expired_kind_cooldown_no_block(
+    conn: sqlite3.Connection,
+) -> None:
+    """#103 — past-epoch entry in quota_cooldown_kind doesn't gate."""
+    import time
+    from Tooling.core.dispatcher import bfs_refill
+    gid = _seed_goal(conn, problem="sg")
+    bfs_refill(conn, running=set(),
+               quota_cooldown_kind={"Builder": time.time() - 60.0})
+    assert db.queue_count(conn, target_id=str(gid), kind="Builder") == 1
+
+
+def test_flush_queue_kind_drops_only_matching(
+    conn: sqlite3.Connection,
+) -> None:
+    """#103 — `db.flush_queue_kind` clears every queued entry of `kind`
+    and leaves other kinds untouched. Used when quota cooldown engages
+    to drop the pre-cooldown backlog."""
+    _seed_goal(conn, problem="sg")  # → Builder enqueue via bfs_refill
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at) "
+        "VALUES (?, ?, ?)",
+        ("pn", "Problems/pn/Manifest.md", db.now()),
+    )
+    gid_bw = db.insert_goal(
+        conn, problem="pn", slug="main",
+        lean_path="Problems/pn/Root.lean",
+        statement="T", origin="root",
+    )
+    from Tooling.core.dispatcher import bfs_refill, BUILDER_THRESHOLD
+    for _ in range(BUILDER_THRESHOLD):
+        db.increment_goal_attempts(conn, gid_bw)
+    bfs_refill(conn, running=set())  # enqueues 1 Builder + 1 Backward
+    assert db.queue_size(conn) == 2
+
+    n = db.flush_queue_kind(conn, kind="Backward")
+    assert n == 1
+    assert db.queue_size(conn) == 1
+    rest = db.pop_queue(conn)
+    assert rest is not None and rest["kind"] == "Builder"
+
+
 def test_open_goals_scope_filter(conn: sqlite3.Connection) -> None:
     """Underlying `db.open_goals(scope=...)` SQL filter. Direct unit test
     so the scope plumbing is covered even if bfs_refill restructures."""

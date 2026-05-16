@@ -516,6 +516,25 @@ def update_strategy_status(conn: sqlite3.Connection, strategy_id: int,
     conn.commit()
 
 
+def delete_strategy(conn: sqlite3.Connection, strategy_id: int) -> None:
+    """Remove a strategy row outright.
+
+    #101 — When a pipeline fails before the agent did any real work
+    (quota_exhausted / spawn_fast_fail / missing_dep / gateway_unreachable
+    / transient_timeout), the strategy row is an empty shell: no
+    proposal_md, no scratch_path, no strategy_subgoals link. Marking it
+    `dead` would leave forensic noise (the SG run accumulated 8587 such
+    rows). Delete instead — the row never reflected real agent output.
+
+    Caller guarantees no `strategy_subgoals` rows exist (FK is enforced
+    by PRAGMA foreign_keys=ON; infra failures occur before
+    `_backward_parse_and_commit` would `link_subgoal`). dead_attempts
+    has no FK to strategies, so historical dead_attempts referencing
+    a deleted strategy_id stay readable."""
+    conn.execute("DELETE FROM strategies WHERE id = ?", (strategy_id,))
+    conn.commit()
+
+
 def strategies_ready_for_verify(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Strategies whose all sub-goals are proved AND whose own parent goal
     is still alive (not already proved by a sibling strategy). The
@@ -617,6 +636,18 @@ def pop_queue(conn: sqlite3.Connection) -> sqlite3.Row | None:
     conn.execute("DELETE FROM queue WHERE id = ?", (row["id"],))
     conn.commit()
     return row
+
+
+def flush_queue_kind(conn: sqlite3.Connection, *, kind: str) -> int:
+    """Drop every queued entry of `kind`. Returns rows deleted.
+
+    Used when a per-kind cooldown engages (e.g. quota_exhausted) so
+    the dispatcher's pop loop doesn't drain the pre-cooldown backlog
+    against an exhausted provider. bfs_refill repopulates after the
+    cooldown clears."""
+    cur = conn.execute("DELETE FROM queue WHERE kind = ?", (kind,))
+    conn.commit()
+    return cur.rowcount or 0
 
 
 # ---------------------------------------------------------------------
