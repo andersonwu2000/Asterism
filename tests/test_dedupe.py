@@ -437,19 +437,23 @@ def test_extract_theorem_name_matches_def_form() -> None:
     ) == "bar"
 
 
-def test_find_canonicals_batch_shelved_match_returns_shelved_kind(
+def test_find_canonicals_batch_disproved_match_returns_disproved_kind(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#112(a) — when no alive canonical matches but a shelved goal in
-    the same problem does, dedupe emits CanonicalMatch(kind='shelved')
-    so the caller can decline the candidate rather than alias to a
-    dead-end."""
+    """#112(a) — when no alive canonical matches but a disproved goal
+    in the same problem does, dedupe emits
+    CanonicalMatch(kind='disproved') so the caller can decline the
+    candidate rather than alias to a known-false statement.
+
+    Phase 2 — Tier 4 dedupe semantic shifted from 'shelved' to
+    'disproved' (agent counterexample only). Soft-terminal 'shelved'
+    goals no longer match this tier."""
     _seed_problem(conn)
     root = _seed_root(conn)
-    shelved_g = _seed_sub(conn, slug="dead_approach",
-                           statement="X", status="shelved")
-    _link(conn, root, [shelved_g])
+    disproved_g = _seed_sub(conn, slug="dead_approach",
+                            statement="X", status="disproved")
+    _link(conn, root, [disproved_g])
     parent = _seed_sub(conn, slug="parent", statement="Q", depth=2)
     _link(conn, root, [parent])
     _write_lean(tmp_path, "p", "dead_approach",
@@ -459,7 +463,7 @@ def test_find_canonicals_batch_shelved_match_returns_shelved_kind(
     _write_lean(tmp_path, "p", "main",
         "import Mathlib\ntheorem main : T := by sorry\n", root=True)
 
-    # Only the shelved canonical's name unifies with the candidate.
+    # Only the disproved canonical's name unifies with the candidate.
     def fake(ws: Path, p: str,
              pairs: list[tuple[str, str, str]]) -> list[bool]:
         return [thm == "dead_approach" for _sig, _mod, thm in pairs]
@@ -471,24 +475,66 @@ def test_find_canonicals_batch_shelved_match_returns_shelved_kind(
         candidates=[("c", cand)],
     )
     assert canonicals == [
-        dedupe.CanonicalMatch(goal_id=shelved_g, kind="shelved"),
+        dedupe.CanonicalMatch(goal_id=disproved_g, kind="disproved"),
     ]
 
 
-def test_find_canonicals_batch_alive_shadows_shelved(
+def test_find_canonicals_batch_shelved_does_not_block(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#112(a) — alive/proved canonical takes priority over shelved
+    """Phase 2 — soft-terminal 'shelved' goals (cascade descendants /
+    parent_needs_fix) do NOT block future proposals. Only 'disproved'
+    (counterexample) blocks via dedupe.
+
+    Setup: candidate would unify with the 'soft_dead' shelved goal's
+    statement (fake returns True only for its theorem name). Pre-Phase 2
+    this would emit kind='shelved'; post-Phase 2 the shelved goal is
+    excluded from the dedupe pool → result is None."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    shelved_g = _seed_sub(conn, slug="soft_dead",
+                          statement="X", status="shelved")
+    _link(conn, root, [shelved_g])
+    parent = _seed_sub(conn, slug="parent", statement="Q", depth=2)
+    _link(conn, root, [parent])
+    _write_lean(tmp_path, "p", "soft_dead",
+        "import Mathlib\ntheorem soft_dead (a : T) : X := by sorry\n")
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : Q := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+
+    # Only the shelved canonical's name would unify with the candidate.
+    # Since shelved is excluded from the dedupe pool, pairs list won't
+    # include it, fake never sees it, and no other canonical matches.
+    def fake(ws: Path, p: str,
+             pairs: list[tuple[str, str, str]]) -> list[bool]:
+        return [thm == "soft_dead" for _sig, _mod, thm in pairs]
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake)
+
+    cand = "import Mathlib\ntheorem c (a : T) (b : T) : X := by sorry\n"
+    canonicals = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("c", cand)],
+    )
+    assert canonicals == [None]
+
+
+def test_find_canonicals_batch_alive_shadows_disproved(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#112(a) — alive/proved canonical takes priority over disproved
     match. Caller should always prefer aliasing to a usable proof over
-    declining on a dead-end precedent."""
+    declining on a known-false precedent."""
     _seed_problem(conn)
     root = _seed_root(conn)
     proved_anc = _seed_sub(conn, slug="proved_anc",
                             statement="X", status="proved")
-    shelved_g = _seed_sub(conn, slug="dead_approach",
-                           statement="X", status="shelved")
-    _link(conn, root, [proved_anc, shelved_g])
+    disproved_g = _seed_sub(conn, slug="dead_approach",
+                            statement="X", status="disproved")
+    _link(conn, root, [proved_anc, disproved_g])
     parent = _seed_sub(conn, slug="parent", statement="Q", depth=2)
     _link(conn, proved_anc, [parent])
     for slug in ("proved_anc", "dead_approach", "parent"):

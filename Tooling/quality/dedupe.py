@@ -513,30 +513,36 @@ def _eligible_problem_proved(conn: sqlite3.Connection, workspace: Path, *,
     return eligible
 
 
-def _eligible_shelved(conn: sqlite3.Connection, workspace: Path, *,
-                      problem: str, parent_goal_id: int,
-                      candidate_count: int,
-                      ) -> list[tuple[sqlite3.Row, str]]:
-    """Shelved goals in same Problem whose lean files are still on disk
-    (prune kept them, or they were never pruned). Used to detect that a
-    candidate sub-goal recapitulates a previously-abandoned approach —
-    different semantics from the alive/proved pools: a shelved hit
+def _eligible_disproved(conn: sqlite3.Connection, workspace: Path, *,
+                        problem: str, parent_goal_id: int,
+                        candidate_count: int,
+                        ) -> list[tuple[sqlite3.Row, str]]:
+    """Disproved goals in same Problem whose lean files are still on
+    disk (prune kept them, or they were never pruned). Used to detect
+    that a candidate sub-goal recapitulates a statement we've already
+    confirmed false (agent gave a counterexample, status='disproved').
+    Different semantics from the alive/proved pools: a disproved hit
     means "decline this candidate", not "alias to canonical".
+
+    Phase 2 — previously this looked at `status='shelved'`. The status
+    enum split (see `docs/phase2/pipelines.md` §4.1) moved soft-terminal
+    goals (parent_needs_fix / ConfirmShelve cascade) to a separate
+    'shelved' that dedupe does NOT block. Only 'disproved' (agent
+    counterexample) blocks future proposals.
 
     Excludes parent_goal_id (own-parent loop guard, same as other pools)
     and alias rows (no alias chain). Binder count pre-filter same as
     `_eligible_ancestors`.
 
-    The file existence check is best-effort: if the shelved goal's lean
-    file was pruned but the DB row survives, the pair simply can't be
-    elaborated by `_batch_provable_via_apply`. That's fine — the row
+    The file existence check is best-effort: if the disproved goal's
+    lean file was pruned but the DB row survives, the pair simply can't
+    be elaborated by `_batch_provable_via_apply`. That's fine — the row
     won't contribute to the batch and the candidate falls through to
-    the alive/proved comparison (matching the prior behavior for
-    pruned-file rows in other pools).
+    the alive/proved comparison.
     """
     rows = conn.execute(
         "SELECT g.id, g.statement, g.lean_path, g.status FROM goals g "
-        "WHERE g.problem = ? AND g.status = 'shelved' "
+        "WHERE g.problem = ? AND g.status = 'disproved' "
         "  AND g.alias_target_id IS NULL "
         "  AND g.id != ? "
         "ORDER BY g.id ASC",
@@ -563,13 +569,14 @@ class CanonicalMatch(NamedTuple):
       - `"alias"`: canonical is alive/proved — caller should write an
         alias body and insert the candidate as `proved` aliased to
         `goal_id`.
-      - `"shelved"`: canonical is shelved — caller should decline this
-        candidate (the proposed approach already failed). `goal_id`
-        is the shelved goal so the caller can surface its
-        `failure_reason` / detail in the decline message.
+      - `"disproved"`: canonical is disproved (agent showed a
+        counterexample) — caller should decline this candidate. The
+        proposed statement is already known false. `goal_id` is the
+        disproved goal so the caller can surface its dead_attempt
+        forensic in the decline message.
     """
     goal_id: int
-    kind: str  # Literal["alias", "shelved"]
+    kind: str  # Literal["alias", "disproved"]
 
 
 def find_canonicals_batch(
@@ -578,7 +585,7 @@ def find_canonicals_batch(
     candidates: list[tuple[str, str]],
 ) -> list[CanonicalMatch | None]:
     """Batch dedupe lookup: for each candidate, return a CanonicalMatch
-    (alias or shelved) or None.
+    (alias or disproved) or None.
 
     `candidates`: list of (slug, full_text) for each sub-goal proposed
     by the current Backward. Returns a list aligned with `candidates`.
@@ -589,20 +596,24 @@ def find_canonicals_batch(
       1. Strict ancestors (alive lineage; proved > open > attempting)
       2. Orphan proved siblings of dead/superseded strategies
       3. Cross-branch proved goals in same problem
-      4. Shelved goals in same problem → kind="shelved" (decline)
-    Tiers 1-3 yield `kind="alias"`. Tier 4 yields `kind="shelved"`.
+      4. Disproved goals in same problem → kind="disproved" (decline)
+    Tiers 1-3 yield `kind="alias"`. Tier 4 yields `kind="disproved"`.
+
+    Phase 2 — Tier 4 looks at `status='disproved'` (was `'shelved'`).
+    Soft-terminal 'shelved' goals (parent_needs_fix / ConfirmShelve
+    cascade) no longer block future proposals.
     """
     n = len(candidates)
     if n == 0:
         return []
 
     # Per-candidate eligible canonicals. Alive/proved tiers come first
-    # so they take precedence on first-hit. The shelved tier is appended
+    # so they take precedence on first-hit. The disproved tier is appended
     # afterwards and only contributes when no alive/proved canonical
     # exists for the candidate. Tag each row with its source kind so
     # the assembly loop below can emit the right `CanonicalMatch.kind`.
     KIND_ALIAS = "alias"
-    KIND_SHELVED = "shelved"
+    KIND_DISPROVED = "disproved"
     cand_pools: list[list[tuple[sqlite3.Row, str, str]]] = []
     for slug, full_text in candidates:
         sig = _extract_full_signature(full_text)
@@ -624,15 +635,15 @@ def find_canonicals_batch(
             parent_goal_id=parent_goal_id, candidate_count=cand_count,
             exclude_ids=seen_ids,
         )
-        shelved = _eligible_shelved(
+        disproved = _eligible_disproved(
             conn, workspace, problem=problem,
             parent_goal_id=parent_goal_id, candidate_count=cand_count,
         )
         pool: list[tuple[sqlite3.Row, str, str]] = []
         for r, t in anc + orph + cross:
             pool.append((r, t, KIND_ALIAS))
-        for r, t in shelved:
-            pool.append((r, t, KIND_SHELVED))
+        for r, t in disproved:
+            pool.append((r, t, KIND_DISPROVED))
         cand_pools.append(pool)
 
     # Build flat list of pairs to check; track origin (cand_idx, row, kind).
@@ -665,12 +676,12 @@ def find_canonicals_batch(
 
     flags = _batch_provable_via_apply(workspace, problem, pairs)
 
-    # First-hit per candidate. pair_origin order is alive→shelved within
+    # First-hit per candidate. pair_origin order is alive→disproved within
     # each candidate (because cand_pools concatenates alive first), so
     # the first True flag picked up is automatically the highest-priority
-    # match. An "alias" hit therefore shadows a later "shelved" hit on
+    # match. An "alias" hit therefore shadows a later "disproved" hit on
     # the same candidate — the desired behavior (an alive canonical is
-    # always more useful than a shelved precedent).
+    # always more useful than a disproved precedent).
     result: list[CanonicalMatch | None] = [None] * n
     for (ci, anc_row, kind), is_eq in zip(pair_origin, flags):
         if not is_eq:
@@ -680,13 +691,13 @@ def find_canonicals_batch(
         result[ci] = CanonicalMatch(goal_id=int(anc_row["id"]), kind=kind)
     # Lightweight metric — surfaces dedupe effectiveness in the daemon
     # log so Phase 2 design (Strategist/Forward/Librarian) has empirical
-    # input on alias hit rate and shelved-collision frequency. Pre-fix
+    # input on alias hit rate and disproved-collision frequency. Pre-fix
     # the entire Windows-side dedupe pipeline was silently producing
     # zeros here; this print is how we'll catch any future regression.
     n_alias = sum(1 for m in result if m and m.kind == "alias")
-    n_shelved = sum(1 for m in result if m and m.kind == "shelved")
+    n_disproved = sum(1 for m in result if m and m.kind == "disproved")
     print(f"[dedupe] checked {n} candidate(s) against {len(pairs)} "
-          f"pair(s); alias={n_alias} shelved={n_shelved}", flush=True)
+          f"pair(s); alias={n_alias} disproved={n_disproved}", flush=True)
     return result
 
 

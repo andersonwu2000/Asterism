@@ -66,18 +66,18 @@ def _record_dead_attempt(conn: sqlite3.Connection, *, pipeline_id: str,
 # 2. cascade_one shelves the goal + skips attempts++ on infeasible
 # ---------------------------------------------------------------------
 
-def test_cascade_infeasible_builder_shelves_goal_immediately(
+def test_cascade_infeasible_builder_disproves_goal_immediately(
     conn: sqlite3.Connection,
 ) -> None:
-    """Infeasible Builder run shelves the goal directly (no further
-    Builder/Backward attempts) so `_propagate_shelve` cascades the
-    failure up to the parent strategy. Without this, the goal would
-    consume SHELVE_THRESHOLD attempts on a provably-unprovable type.
+    """Infeasible Builder run marks the goal `disproved` (hard terminal,
+    agent gave counterexample) so `_propagate_shelve` cascades up to
+    the parent strategy. Without this, the goal would consume
+    SHELVE_THRESHOLD attempts on a provably-unprovable type.
 
-    Phase 7 — attempts increments by exactly 1 (the infeasible LLM
-    call DID happen) to preserve the 1:1 attempts ↔ dead_attempts
-    invariant. The shelve happens regardless, so the +1 is cosmetic
-    (already-terminal goals don't reuse attempts)."""
+    Phase 2 — status changed from 'shelved' to 'disproved' (status
+    enum split by decline directive; see docs/phase2/pipelines.md
+    §4.2 Rule 1). attempts increments by exactly 1 to preserve the
+    1:1 attempts ↔ dead_attempts invariant."""
     gid = _seed_goal(conn)
     pid = "infeasible-1"
     _record_dead_attempt(conn, pipeline_id=pid, target_id=gid,
@@ -88,16 +88,15 @@ def test_cascade_infeasible_builder_shelves_goal_immediately(
                 target_id=str(gid), target_kind="Goal", outcome="failed",
                 failure_reason="agent_infeasible")
     row = db.get_goal(conn, gid)
-    assert row["status"] == "shelved"
-    assert row["attempts"] == 1  # one LLM call counted (decision 5/6)
+    assert row["status"] == "disproved"
+    assert row["attempts"] == 1  # one LLM call counted
 
 
-def test_cascade_infeasible_backward_shelves_goal_immediately(
+def test_cascade_infeasible_backward_disproves_goal_immediately(
     conn: sqlite3.Connection,
 ) -> None:
     """Mirror of the Builder branch: Backward agent escapes via the
-    same channel. Shelve directly; attempts++ once preserves 1:1
-    (Phase 7)."""
+    same channel. Phase 2 — status is 'disproved'; attempts++ once."""
     gid = _seed_goal(conn)
     pid = "infeasible-bw"
     _record_dead_attempt(conn, pipeline_id=pid, target_id=gid,
@@ -106,7 +105,7 @@ def test_cascade_infeasible_backward_shelves_goal_immediately(
                 target_id=str(gid), target_kind="Goal", outcome="failed",
                 failure_reason="agent_infeasible")
     row = db.get_goal(conn, gid)
-    assert row["status"] == "shelved"
+    assert row["status"] == "disproved"
     assert row["attempts"] == 1
 
 
@@ -148,8 +147,8 @@ def test_cascade_infeasible_propagates_to_parent_strategy(
                 target_id=str(sub_gid), target_kind="Goal",
                 outcome="failed", failure_reason="agent_infeasible")
 
-    # Sub-goal shelved
-    assert db.get_goal(conn, sub_gid)["status"] == "shelved"
+    # Sub-goal disproved (Phase 2 — was 'shelved' pre-split)
+    assert db.get_goal(conn, sub_gid)["status"] == "disproved"
     # Parent strategy killed
     s_status = conn.execute(
         "SELECT status FROM strategies WHERE id=?", (sid,)
@@ -203,10 +202,14 @@ def test_cascade_parent_needs_fix_shelves_goal(conn: sqlite3.Connection) -> None
     assert row["attempts"] == 1
 
 
-def test_cascade_agent_shelved_shelves_goal(conn: sqlite3.Connection) -> None:
-    """`shelve` directive routes to failure_reason 'agent_shelved' —
-    cascades same as agent_infeasible / parent_needs_fix. Distinction
-    is for downstream review (Strategist may revisit)."""
+def test_cascade_agent_shelved_routes_to_strategist_review(
+    conn: sqlite3.Connection,
+) -> None:
+    """Phase 2 — `shelve` directive routes goal to
+    'pending_strategist_review' (transitional, not terminal) and
+    enqueues a Strategist run on the problem's root. No
+    _propagate_shelve; upstream strategy chain stays alive until
+    Strategist commits ConfirmShelve / Reopen / Inject."""
     gid = _seed_goal(conn)
     pid = "shelve-1"
     _record_dead_attempt(conn, pipeline_id=pid, target_id=gid,
@@ -215,8 +218,17 @@ def test_cascade_agent_shelved_shelves_goal(conn: sqlite3.Connection) -> None:
                 target_id=str(gid), target_kind="Goal", outcome="failed",
                 failure_reason="agent_shelved")
     row = db.get_goal(conn, gid)
-    assert row["status"] == "shelved"
+    assert row["status"] == "pending_strategist_review"
     assert row["attempts"] == 1
+    # Strategist enqueued on this problem's root
+    root_id = conn.execute(
+        "SELECT id FROM goals WHERE problem='p' AND origin='root'"
+    ).fetchone()[0]
+    q = conn.execute(
+        "SELECT kind, target_id FROM queue WHERE kind='Strategist'"
+    ).fetchall()
+    assert len(q) == 1
+    assert int(q[0]["target_id"]) == root_id
 
 
 # ---------------------------------------------------------------------

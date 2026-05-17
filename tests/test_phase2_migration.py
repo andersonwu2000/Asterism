@@ -1,0 +1,467 @@
+"""Phase 2 DB schema migration tests.
+
+Covers `docs/internal/phase2_migration_plan.md §D` — forward migration,
+idempotency, preservation of pre-Phase 2 data, shelved→disproved
+backfill rule.
+
+Strategy: build a fixture DB at pre-Phase 2 schema via hand-rolled SQL,
+seed representative rows, run `init_schema` (which performs the
+migration), and assert post-conditions.
+"""
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from Tooling.state import db
+
+
+# ---------------------------------------------------------------------
+# Pre-Phase 2 schema fixture (verbatim from before this migration)
+# ---------------------------------------------------------------------
+
+_PRE_PHASE2_SCHEMA = """
+CREATE TABLE IF NOT EXISTS problems (
+    name           TEXT PRIMARY KEY,
+    manifest_path  TEXT NOT NULL,
+    created_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS goals (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    problem     TEXT    NOT NULL REFERENCES problems(name),
+    slug        TEXT    NOT NULL,
+    lean_path   TEXT    NOT NULL UNIQUE,
+    statement   TEXT    NOT NULL,
+    kind        TEXT    NOT NULL DEFAULT 'theorem'
+                    CHECK(kind IN ('theorem')),
+    origin      TEXT    NOT NULL
+                    CHECK(origin IN ('root','backward')),
+    status      TEXT    NOT NULL
+                    CHECK(status IN ('open','attempting','proved','shelved')),
+    depth       INTEGER NOT NULL DEFAULT 0,
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    entry_kind  TEXT    NOT NULL DEFAULT 'Builder'
+                    CHECK(entry_kind IN ('Builder','Backward')),
+    integrity_verified INTEGER NOT NULL DEFAULT 0
+                    CHECK(integrity_verified IN (0,1)),
+    alias_target_id INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    UNIQUE(problem, slug)
+);
+
+CREATE TABLE IF NOT EXISTS strategies (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    goal_id      INTEGER NOT NULL REFERENCES goals(id),
+    lean_path    TEXT    NOT NULL,
+    scratch_path TEXT    NOT NULL DEFAULT '',
+    status       TEXT    NOT NULL
+                     CHECK(status IN ('proposed','succeeded','dead','superseded')),
+    proposal_md  TEXT    NOT NULL DEFAULT '',
+    created_by   TEXT    NOT NULL,
+    created_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS strategy_subgoals (
+    strategy_id INTEGER NOT NULL REFERENCES strategies(id),
+    subgoal_id  INTEGER NOT NULL REFERENCES goals(id),
+    position    INTEGER NOT NULL,
+    PRIMARY KEY (strategy_id, subgoal_id)
+);
+
+CREATE TABLE IF NOT EXISTS pipelines (
+    id          TEXT PRIMARY KEY,
+    kind        TEXT NOT NULL CHECK(kind IN ('Builder','Backward','Verify')),
+    target_id   TEXT NOT NULL,
+    target_kind TEXT NOT NULL CHECK(target_kind IN ('Goal','Strategy')),
+    status      TEXT NOT NULL CHECK(status IN ('succeeded','failed')),
+    outcome     TEXT NOT NULL,
+    started_at  TEXT NOT NULL,
+    finished_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dead_attempts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id       INTEGER NOT NULL,
+    target_kind     TEXT NOT NULL,
+    pipeline_id     TEXT NOT NULL REFERENCES pipelines(id),
+    failure_reason  TEXT NOT NULL,
+    failure_detail  TEXT,
+    proposal_md     TEXT,
+    artifacts       TEXT,
+    ts              TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS queue (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT NOT NULL CHECK(kind IN ('Builder','Backward','Verify')),
+    target_id   TEXT NOT NULL,
+    priority    INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(status);
+CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue(priority DESC, id ASC);
+"""
+
+
+def _make_pre_phase2_db(tmp_path: Path) -> Path:
+    """Create a tmp DB at pre-Phase 2 schema with representative rows."""
+    db_path = tmp_path / "asterism.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript(_PRE_PHASE2_SCHEMA)
+    # PRAGMA user_version stays 0 (default)
+
+    ts = "2026-05-18T00:00:00+00:00"
+    # Seed: 2 problems, each with a root + 2 sub-goals + a strategy
+    for prob in ("alpha", "beta"):
+        conn.execute(
+            "INSERT INTO problems (name, manifest_path, created_at)"
+            " VALUES (?, ?, ?)", (prob, f"Problems/{prob}/Manifest.md", ts))
+        # Root goal — proved (alpha) or attempting (beta)
+        root_status = "proved" if prob == "alpha" else "attempting"
+        integrity = 1 if prob == "alpha" else 0
+        conn.execute(
+            "INSERT INTO goals (id, problem, slug, lean_path, statement,"
+            " kind, origin, status, depth, attempts, entry_kind,"
+            " integrity_verified, created_at, updated_at)"
+            " VALUES (NULL, ?, 'main', ?, 'T', 'theorem', 'root', ?,"
+            " 0, 0, 'Backward', ?, ?, ?)",
+            (prob, f"Problems/{prob}/Root.lean", root_status, integrity,
+             ts, ts))
+    # Sub-goal under alpha: shelved with agent_infeasible decline (→ disproved)
+    conn.execute(
+        "INSERT INTO goals (problem, slug, lean_path, statement,"
+        " kind, origin, status, depth, attempts, entry_kind,"
+        " integrity_verified, created_at, updated_at)"
+        " VALUES ('alpha', 'sub_infeasible',"
+        " 'Problems/alpha/proofs/L_sub_infeasible.lean', 'T',"
+        " 'theorem', 'backward', 'shelved', 1, 3, 'Builder', 0, ?, ?)",
+        (ts, ts))
+    # Sub-goal under alpha: shelved with agent_shelved decline (stays shelved)
+    conn.execute(
+        "INSERT INTO goals (problem, slug, lean_path, statement,"
+        " kind, origin, status, depth, attempts, entry_kind,"
+        " integrity_verified, created_at, updated_at)"
+        " VALUES ('alpha', 'sub_shelved',"
+        " 'Problems/alpha/proofs/L_sub_shelved.lean', 'T',"
+        " 'theorem', 'backward', 'shelved', 1, 3, 'Builder', 0, ?, ?)",
+        (ts, ts))
+    # Sub-goal under beta: open
+    conn.execute(
+        "INSERT INTO goals (problem, slug, lean_path, statement,"
+        " kind, origin, status, depth, attempts, entry_kind,"
+        " integrity_verified, created_at, updated_at)"
+        " VALUES ('beta', 'sub_open',"
+        " 'Problems/beta/proofs/L_sub_open.lean', 'T',"
+        " 'theorem', 'backward', 'open', 1, 0, 'Builder', 0, ?, ?)",
+        (ts, ts))
+
+    # Strategy for alpha
+    conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, scratch_path, status,"
+        " proposal_md, created_by, created_at)"
+        " VALUES (1, 'Problems/alpha/Root.lean',"
+        " 'Problems/alpha/proofs/_strategy_s1.lean', 'succeeded',"
+        " '', 'backward', ?)",
+        (ts,))
+    conn.execute(
+        "INSERT INTO strategy_subgoals (strategy_id, subgoal_id, position)"
+        " VALUES (1, 3, 1)")  # sub_infeasible
+
+    # Pipeline + dead_attempts: sub_infeasible has agent_infeasible decline
+    conn.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at, finished_at)"
+        " VALUES ('p1', 'Builder', '3', 'Goal', 'failed',"
+        " 'failed', ?, ?)", (ts, ts))
+    conn.execute(
+        "INSERT INTO dead_attempts (target_id, target_kind, pipeline_id,"
+        " failure_reason, failure_detail, ts)"
+        " VALUES (3, 'Goal', 'p1', 'agent_infeasible',"
+        " 'counterexample shown', ?)", (ts,))
+
+    # Queue: one Backward entry on beta's sub_open
+    conn.execute(
+        "INSERT INTO queue (kind, target_id, priority, created_at)"
+        " VALUES ('Backward', '5', 0, ?)", (ts,))
+
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+# ---------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------
+
+def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
+    """Forward migration path (D.1): pre-Phase 2 DB → init_schema →
+    Phase 2 schema in place with PRAGMA user_version = 2."""
+    db_path = _make_pre_phase2_db(tmp_path)
+
+    # Before migration: user_version = 0, goals lacks 'detached'
+    conn = sqlite3.connect(str(db_path))
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+    goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
+    assert "detached" not in goals_cols
+    assert "bootstrap_done" not in {
+        r[1] for r in conn.execute("PRAGMA table_info(problems)")
+    }
+    conn.close()
+
+    # Run migration
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(conn)
+
+    # Post: PRAGMA user_version = 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+
+    # New columns present
+    goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
+    assert "detached" in goals_cols
+    problems_cols = {r[1] for r in conn.execute("PRAGMA table_info(problems)")}
+    assert "bootstrap_done" in problems_cols
+    assert "strategist_directive" in problems_cols
+    assert "last_strategist_at" in problems_cols
+    queue_cols = {r[1] for r in conn.execute("PRAGMA table_info(queue)")}
+    assert "target_kind" in queue_cols
+    assert "decision_id" in queue_cols
+
+    # New table present
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='strategist_decisions'"
+    ).fetchall()
+    assert len(rows) == 1
+
+    # New CHECK values accepted on goals
+    conn.execute(
+        "INSERT INTO goals (problem, slug, lean_path, statement,"
+        " kind, origin, status, depth, attempts, entry_kind,"
+        " integrity_verified, created_at, updated_at)"
+        " VALUES ('alpha', 'fwd_lemma',"
+        " 'Problems/alpha/proofs/L_fwd_lemma.lean', 'T',"
+        " 'theorem', 'forward', 'open', 0, 0, 'Backward', 0,"
+        " '2026-05-18T00:00:00+00:00', '2026-05-18T00:00:00+00:00')")
+    conn.execute(
+        "UPDATE goals SET status='pending_strategist_review' WHERE slug='sub_open'")
+    conn.commit()
+
+    # FK integrity
+    fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+    assert fk_violations == [], f"FK violations: {fk_violations}"
+    conn.close()
+
+
+def test_shelved_split_by_decline_directive(tmp_path: Path) -> None:
+    """B.4 / D.1 backfill: existing 'shelved' rows whose dead_attempts
+    carry failure_reason='agent_infeasible' become 'disproved'; others
+    stay 'shelved'."""
+    db_path = _make_pre_phase2_db(tmp_path)
+
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(conn)
+
+    # sub_infeasible had failure_reason='agent_infeasible' → 'disproved'
+    row = conn.execute(
+        "SELECT status FROM goals WHERE slug='sub_infeasible'"
+    ).fetchone()
+    assert row["status"] == "disproved"
+
+    # sub_shelved had no agent_infeasible dead_attempt → stays 'shelved'
+    row = conn.execute(
+        "SELECT status FROM goals WHERE slug='sub_shelved'"
+    ).fetchone()
+    assert row["status"] == "shelved"
+    conn.close()
+
+
+def test_proved_root_preserved(tmp_path: Path) -> None:
+    """D.3: existing proved root (status='proved', integrity_verified=1)
+    is preserved by migration; db.root_proved still returns True."""
+    db_path = _make_pre_phase2_db(tmp_path)
+
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(conn)
+
+    row = conn.execute(
+        "SELECT status, integrity_verified, detached"
+        " FROM goals WHERE problem='alpha' AND slug='main'"
+    ).fetchone()
+    assert row["status"] == "proved"
+    assert row["integrity_verified"] == 1
+    assert row["detached"] == 0  # new column defaults to 0
+
+    assert db.root_proved(conn, problem="alpha") is True
+    assert db.root_proved(conn, problem="beta") is False
+    conn.close()
+
+
+def test_migration_idempotent(tmp_path: Path) -> None:
+    """D.2: running init_schema twice on the same DB does not fail and
+    leaves identical row counts. Tests that the user_version gate
+    prevents re-running the rebuild."""
+    db_path = _make_pre_phase2_db(tmp_path)
+
+    # First run
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(conn)
+
+    counts1 = {
+        "goals": conn.execute("SELECT COUNT(*) FROM goals").fetchone()[0],
+        "strategies": conn.execute("SELECT COUNT(*) FROM strategies").fetchone()[0],
+        "pipelines": conn.execute("SELECT COUNT(*) FROM pipelines").fetchone()[0],
+        "queue": conn.execute("SELECT COUNT(*) FROM queue").fetchone()[0],
+        "dead_attempts": conn.execute("SELECT COUNT(*) FROM dead_attempts").fetchone()[0],
+    }
+    conn.close()
+
+    # Second run — should be no-op (PRAGMA user_version == 2 already)
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(conn)
+
+    counts2 = {
+        "goals": conn.execute("SELECT COUNT(*) FROM goals").fetchone()[0],
+        "strategies": conn.execute("SELECT COUNT(*) FROM strategies").fetchone()[0],
+        "pipelines": conn.execute("SELECT COUNT(*) FROM pipelines").fetchone()[0],
+        "queue": conn.execute("SELECT COUNT(*) FROM queue").fetchone()[0],
+        "dead_attempts": conn.execute("SELECT COUNT(*) FROM dead_attempts").fetchone()[0],
+    }
+    assert counts1 == counts2
+
+    # Schema version still 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    conn.close()
+
+
+def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
+    """Fresh DB (created via current SCHEMA) skips _migrate_to_phase2
+    (detected via 'detached' column already present) but still sets
+    PRAGMA user_version = 2."""
+    db_path = tmp_path / "fresh.db"
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(conn)
+
+    # New schema present
+    goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
+    assert "detached" in goals_cols
+    # Version set
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    # strategist_decisions table created
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+        " AND name='strategist_decisions'"
+    ).fetchall()
+    assert len(rows) == 1
+    conn.close()
+
+
+def test_phase2_check_values_rejected_pre_migration(tmp_path: Path) -> None:
+    """Sanity: pre-migration DB rejects new CHECK values (e.g. origin='forward').
+    Confirms the fixture DB really does have the old CHECK constraints."""
+    db_path = _make_pre_phase2_db(tmp_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA foreign_keys = ON")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO goals (problem, slug, lean_path, statement,"
+            " kind, origin, status, depth, attempts, entry_kind,"
+            " integrity_verified, created_at, updated_at)"
+            " VALUES ('alpha', 'fwd', 'x.lean', 'T',"
+            " 'theorem', 'forward', 'open', 0, 0, 'Backward', 0,"
+            " '2026-05-18T00:00:00+00:00', '2026-05-18T00:00:00+00:00')")
+    conn.close()
+
+
+def test_new_columns_have_correct_defaults(tmp_path: Path) -> None:
+    """Migrated rows get the documented defaults for new columns."""
+    db_path = _make_pre_phase2_db(tmp_path)
+
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(conn)
+
+    # goals.detached default 0
+    for row in conn.execute("SELECT detached FROM goals"):
+        assert row["detached"] == 0
+
+    # problems columns defaults
+    for row in conn.execute(
+        "SELECT bootstrap_done, strategist_directive, last_strategist_at"
+        " FROM problems"
+    ):
+        assert row["bootstrap_done"] == 0
+        assert row["strategist_directive"] is None
+        assert row["last_strategist_at"] is None
+
+    # queue.target_kind defaults to 'Goal'; queue.decision_id NULL
+    for row in conn.execute("SELECT target_kind, decision_id FROM queue"):
+        assert row["target_kind"] == "Goal"
+        assert row["decision_id"] is None
+    conn.close()
+
+
+def test_strategist_decisions_table_usable_post_migration(tmp_path: Path) -> None:
+    """strategist_decisions accepts representative Phase 2 row shapes."""
+    db_path = _make_pre_phase2_db(tmp_path)
+
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(conn)
+
+    ts = "2026-05-18T01:00:00+00:00"
+    # Inject decision (target_id NULL, brief set)
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
+        " outcome, created_at, updated_at)"
+        " VALUES ('alpha', 5, 'routine', 'Inject', NULL,"
+        " '## Need\\n...', NULL, '{\"pipeline\": \"Forward\"}', NULL, ?, ?)",
+        (ts, ts))
+    # ConfirmShelve decision (target_id set, reason)
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
+        " outcome, created_at, updated_at)"
+        " VALUES ('alpha', 6, 'pending_review', 'ConfirmShelve', 3,"
+        " NULL, 'truly dead', '{}', NULL, ?, ?)",
+        (ts, ts))
+    conn.commit()
+
+    rows = conn.execute(
+        "SELECT decision_kind, target_id FROM strategist_decisions"
+        " ORDER BY id"
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[0]["decision_kind"] == "Inject"
+    assert rows[0]["target_id"] is None
+    assert rows[1]["decision_kind"] == "ConfirmShelve"
+    assert rows[1]["target_id"] == 3
+
+    # CHECK rejects unknown decision_kind
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+            " trigger_kind, decision_kind, payload, created_at, updated_at)"
+            " VALUES ('alpha', 7, 'routine', 'BogusKind', '{}', ?, ?)",
+            (ts, ts))
+    conn.close()

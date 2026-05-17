@@ -9,18 +9,15 @@ Format (see docs/architecture.md §3):
   # <name> — <description>
   ## Statement
   <Lean 4 type expression>
-  ## Entry kind
-  Builder | Backward
   ## Mathlib hints
   - <hint>
   ## Strategic notes
   <free-form>
 
-`## Entry kind` controls the dispatcher's first worker for the root goal:
-`Builder` for leaf-shaped statements (rare; tactic_try + one-shot patch
-might close the whole problem), `Backward` for everything that needs
-decomposition. Replaces the legacy `## Difficulty 1-10` field; the
-boolean directive is the only signal `cli init` actually consumed.
+Phase 2: dropped `## Entry kind` section. `cli init` now hardwires
+root.entry_kind='Backward' (Strategist handles initialisation routing).
+Existing Manifest.md files may still carry `## Entry kind` — parser
+silently ignores it (treated as unknown section, no warning).
 """
 from __future__ import annotations
 
@@ -34,7 +31,6 @@ from pathlib import Path
 class Manifest:
     problem: str
     statement: str
-    entry_kind: str = "Backward"
     axioms_whitelist: list[str] = field(default_factory=list)
     forbidden_lemmas: list[str] = field(default_factory=list)
     # `lemma_hints` unifies Mathlib + Library hint paths. Entries
@@ -150,15 +146,10 @@ def parse(path: Path) -> Manifest:
     if not statement:
         _warn(f"{path} missing ## Statement section")
 
-    entry_kind_str = sections.get('Entry kind', 'Backward').strip()
-    if entry_kind_str in ('Builder', 'Backward'):
-        entry_kind = entry_kind_str
-    else:
-        _warn(
-            f"{path} ## Entry kind unrecognized {entry_kind_str!r}; "
-            f"using 'Backward' (Builder|Backward expected)"
-        )
-        entry_kind = "Backward"
+    # Phase 2: `## Entry kind` section removed. Strategist handles
+    # routing; cli init hardwires root.entry_kind='Backward'. Existing
+    # Manifest files carrying `## Entry kind` are tolerated (section
+    # silently ignored) — no warning to avoid noise on legacy files.
 
     # Read both `## Lemma hints` (canonical) and `## Mathlib hints`
     # (legacy alias). Either may be present; if both, lemma_hints wins
@@ -179,7 +170,6 @@ def parse(path: Path) -> Manifest:
     return Manifest(
         problem=problem,
         statement=statement,
-        entry_kind=entry_kind,
         axioms_whitelist=list(axioms),
         forbidden_lemmas=list(forbidden),
         lemma_hints=lemma_hints,

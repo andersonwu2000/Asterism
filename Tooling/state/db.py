@@ -2,7 +2,11 @@
 
 Tables (see docs/architecture.md §4):
   problems, goals, strategies, strategy_subgoals,
-  pipelines, dead_attempts, queue
+  pipelines, dead_attempts, queue, strategist_decisions (Phase 2)
+
+Schema version tracked via `PRAGMA user_version`:
+  0 = pre-Phase 2 (everything before strategist_decisions)
+  2 = Phase 2 (new tables/columns/CHECK extensions; see docs/phase2/)
 """
 from __future__ import annotations
 
@@ -66,7 +70,21 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS problems (
     name           TEXT PRIMARY KEY,
     manifest_path  TEXT NOT NULL,
-    created_at     TEXT NOT NULL
+    created_at     TEXT NOT NULL,
+    -- Phase 2 — Strategist first-launch tracking.
+    -- `bootstrap_done=0` → T0 trigger fires on next dispatcher tick.
+    -- Set to 1 by Strategist's first commit (InitializeDefs / EmitDirective /
+    -- Noop) so subsequent ticks fall through to T1 (wall-clock routine).
+    bootstrap_done INTEGER NOT NULL DEFAULT 0
+                    CHECK(bootstrap_done IN (0,1)),
+    -- Phase 2 — standing directive set by Strategist EmitDirective /
+    -- Reopen-with-directive. Injected into Context.md `## Strategist
+    -- directive` section by `compile_context` for Backward / Builder /
+    -- Forward cold-start. Overwrite-on-write (single text slot, no history).
+    strategist_directive TEXT NULL DEFAULT NULL,
+    -- Phase 2 — wall-clock timestamp of last Strategist commit. Drives T1
+    -- trigger (routine ≥ `strategist.interval_min` since this).
+    last_strategist_at TEXT NULL DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS goals (
@@ -76,13 +94,26 @@ CREATE TABLE IF NOT EXISTS goals (
     lean_path   TEXT    NOT NULL UNIQUE,
     statement   TEXT    NOT NULL,
     -- kind / origin enums kept minimal; extend when implementing
-    -- forward / generalizer / refuter / construction (architecture.md §12).
+    -- generalizer / refuter / construction (architecture.md §12).
+    -- Phase 2 added 'forward' to origin (Forward pipeline-produced lemmas).
     kind        TEXT    NOT NULL DEFAULT 'theorem'
                     CHECK(kind IN ('theorem')),
     origin      TEXT    NOT NULL
-                    CHECK(origin IN ('root','backward')),
+                    CHECK(origin IN ('root','backward','forward')),
+    -- Phase 2 status additions:
+    --   'pending_strategist_review' (transitional) — agent declined with
+    --     `shelve` directive; Strategist judges (ConfirmShelve/Reopen/Inject).
+    --   'disproved' (terminal hard) — agent declined with `unprovable`;
+    --     dedupe blocks same-shape proposals.
+    -- Existing 'shelved' semantic shifted to soft terminal (reopenable; dedupe
+    -- doesn't block) covering: parent_needs_fix decline, ConfirmShelve from
+    -- Strategist, and cascade descendants of ConfirmShelve.
+    -- Split rule: failure_reason='agent_infeasible' → 'disproved';
+    --             failure_reason='agent_shelved' → 'pending_strategist_review';
+    --             failure_reason='parent_needs_fix' → 'shelved'.
     status      TEXT    NOT NULL
-                    CHECK(status IN ('open','attempting','proved','shelved')),
+                    CHECK(status IN ('open','attempting','proved','shelved',
+                                     'pending_strategist_review','disproved')),
     depth       INTEGER NOT NULL DEFAULT 0,
     attempts    INTEGER NOT NULL DEFAULT 0,
     -- Routing directive: which worker dispatches on the first attempt.
@@ -109,6 +140,15 @@ CREATE TABLE IF NOT EXISTS goals (
     -- it is never read for them.
     integrity_verified INTEGER NOT NULL DEFAULT 0
                     CHECK(integrity_verified IN (0,1)),
+    -- Phase 2 — Strategist Reopen on a goal whose upward strategy chain
+    -- is broken (any ancestor strategy ∈ {dead, superseded}) sets this
+    -- flag. BFS `open_goals` walk treats `detached=1` rows as if they
+    -- have an alive parent strategy, so the goal can be dispatched
+    -- standalone. Proof becomes a usable library lemma even though no
+    -- ancestor strategy threads it back to root. NULL/0 for goals with
+    -- live ancestor chains.
+    detached    INTEGER NOT NULL DEFAULT 0
+                    CHECK(detached IN (0,1)),
     -- (Phase 7-D removed `builder_session_id` and `backward_session_id`
     -- columns. The cross-pipeline session passing they served is now
     -- handled by `Tooling/pipeline/_retry.py` with sid as a local
@@ -156,11 +196,17 @@ CREATE TABLE IF NOT EXISTS strategy_subgoals (
 -- pipelines: only finished rows. No 'running' status.
 -- Live state ('this daemon has a worker on target X') is in-memory only.
 -- → daemon crash leaves no zombie rows; restart sees clean DB.
+-- Phase 2 — `kind` adds 'Strategist' / 'Forward'; `target_kind` adds 'Problem'.
+-- Forward target_id = problem_name (TEXT NOT NULL preserved; see
+-- migration_plan §C option 1). Strategist target = problem.root.id (Goal).
 CREATE TABLE IF NOT EXISTS pipelines (
     id          TEXT PRIMARY KEY,
-    kind        TEXT NOT NULL CHECK(kind IN ('Builder','Backward','Verify')),
+    kind        TEXT NOT NULL
+                    CHECK(kind IN ('Builder','Backward','Verify',
+                                   'Strategist','Forward')),
     target_id   TEXT NOT NULL,
-    target_kind TEXT NOT NULL CHECK(target_kind IN ('Goal','Strategy')),
+    target_kind TEXT NOT NULL
+                    CHECK(target_kind IN ('Goal','Strategy','Problem')),
     status      TEXT NOT NULL CHECK(status IN ('succeeded','failed')),
     outcome     TEXT NOT NULL,
     started_at  TEXT NOT NULL,
@@ -182,17 +228,57 @@ CREATE TABLE IF NOT EXISTS dead_attempts (
     ts              TEXT NOT NULL
 );
 
+-- queue: dispatch backlog. Phase 2 adds 'Strategist'/'Forward' kinds,
+-- explicit `target_kind` (was inferred from `kind` historically; with
+-- Forward using a Problem target the inference breaks), and `decision_id`
+-- (FK to strategist_decisions; non-null means this queue entry was
+-- emitted by a Strategist Inject decision — its brief flows to the
+-- spawned pipeline via Context.md `## Strategist brief`).
 CREATE TABLE IF NOT EXISTS queue (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind        TEXT NOT NULL CHECK(kind IN ('Builder','Backward','Verify')),
+    kind        TEXT NOT NULL
+                    CHECK(kind IN ('Builder','Backward','Verify',
+                                   'Strategist','Forward')),
     target_id   TEXT NOT NULL,
+    target_kind TEXT NOT NULL DEFAULT 'Goal'
+                    CHECK(target_kind IN ('Goal','Strategy','Problem')),
     priority    INTEGER NOT NULL DEFAULT 0,
+    decision_id INTEGER NULL DEFAULT NULL REFERENCES strategist_decisions(id),
     created_at  TEXT NOT NULL
+);
+
+-- Phase 2 — Strategist decision audit log + awaiting_human gate.
+-- One row per Strategist commit. `payload` JSON stores non-text-content
+-- structured params (pipeline name for Inject, scope/body for
+-- EmitDirective, file/proposed_body for RequestUserAmend, directive for
+-- Reopen). `outcome` is cascade-filled (e.g. 'forward_no_new_goal',
+-- 'awaiting_human', 'accepted', 'rejected', 'consumed').
+CREATE TABLE IF NOT EXISTS strategist_decisions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    problem             TEXT NOT NULL REFERENCES problems(name),
+    triggered_at_tick   INTEGER NOT NULL,
+    trigger_kind        TEXT NOT NULL
+                            CHECK(trigger_kind IN
+                                  ('first_launch','pending_review','routine')),
+    decision_kind       TEXT NOT NULL
+                            CHECK(decision_kind IN
+                                  ('Inject','ConfirmShelve','Reopen',
+                                   'EmitDirective','InitializeDefs',
+                                   'RequestUserAmend','Noop')),
+    target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+    brief               TEXT NULL DEFAULT NULL,
+    reason              TEXT NULL DEFAULT NULL,
+    payload             TEXT NOT NULL DEFAULT '{}',
+    outcome             TEXT NULL DEFAULT NULL,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
 CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(status);
 CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue(priority DESC, id ASC);
+CREATE INDEX IF NOT EXISTS idx_sd_problem ON strategist_decisions(problem);
+CREATE INDEX IF NOT EXISTS idx_sd_outcome ON strategist_decisions(outcome);
 """
 
 
@@ -242,6 +328,18 @@ def init_schema(conn: sqlite3.Connection) -> None:
         ("integrity_verified",
          "ALTER TABLE goals ADD COLUMN integrity_verified INTEGER NOT NULL"
          " DEFAULT 0"),
+        # Phase 2 — problems columns. Pure ADD COLUMN (no CHECK extension
+        # on existing columns); idempotent. See `docs/phase2/pipelines.md`
+        # §4.1 for semantics.
+        ("bootstrap_done",
+         "ALTER TABLE problems ADD COLUMN bootstrap_done INTEGER NOT NULL"
+         " DEFAULT 0 CHECK(bootstrap_done IN (0,1))"),
+        ("strategist_directive",
+         "ALTER TABLE problems ADD COLUMN strategist_directive TEXT"
+         " NULL DEFAULT NULL"),
+        ("last_strategist_at",
+         "ALTER TABLE problems ADD COLUMN last_strategist_at TEXT"
+         " NULL DEFAULT NULL"),
     ):
         try:
             conn.execute(ddl)
@@ -278,6 +376,160 @@ def init_schema(conn: sqlite3.Connection) -> None:
             if "no such column" not in str(e).lower():
                 raise
     conn.commit()
+
+    # Phase 2 migration — CHECK-extension table-rebuild for
+    # goals/pipelines/queue (SQLite cannot ALTER existing CHECK). Gated
+    # by `PRAGMA user_version < 2`; fresh DBs (built directly from the
+    # updated SCHEMA) skip the rebuild via the `'detached' in goals_cols`
+    # detection. Idempotent.
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v < 2:
+        goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
+        if 'detached' not in goals_cols:
+            _migrate_to_phase2(conn)
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+
+
+def _migrate_to_phase2(conn: sqlite3.Connection) -> None:
+    """Phase 2 schema migration for pre-Phase 2 DBs.
+
+    Rebuilds goals / pipelines / queue to widen CHECK constraints and
+    add new columns. Backfills existing `shelved` rows into `disproved`
+    based on dead_attempts.failure_reason = 'agent_infeasible'.
+
+    Pre-condition: PRAGMA user_version < 2 AND goals table lacks the
+    Phase 2 `detached` column (i.e. genuinely pre-Phase 2 schema).
+
+    Post-condition (caller sets PRAGMA user_version = 2):
+      - goals.origin CHECK accepts 'forward'
+      - goals.status CHECK accepts 'pending_strategist_review', 'disproved'
+      - goals has new `detached` column (default 0)
+      - pipelines.kind CHECK accepts 'Strategist', 'Forward'
+      - pipelines.target_kind CHECK accepts 'Problem'
+      - queue.kind CHECK accepts 'Strategist', 'Forward'
+      - queue has new `target_kind` column (default 'Goal') + `decision_id`
+        column (NULL FK)
+
+    Failure recovery: SQLite executescript implicit-commits between
+    statements, so a mid-rebuild failure leaves the DB in an
+    inconsistent state. Operator should `cp asterism.db
+    asterism.db.pre_phase2_<UTC>` before first daemon start under
+    Phase 2 code (per `docs/internal/phase2_migration_plan.md §E`).
+    """
+    # PRAGMA foreign_keys cannot be set inside a transaction.
+    # connect() leaves us at autocommit (isolation_level default).
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        # --- goals rebuild: extend origin/status CHECK + add detached ---
+        # INSERT SELECT lists columns explicitly (new `detached` not in
+        # source); it gets the DEFAULT 0 from _new_goals schema.
+        conn.executescript("""
+            CREATE TABLE _new_goals (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem     TEXT    NOT NULL REFERENCES problems(name),
+                slug        TEXT    NOT NULL,
+                lean_path   TEXT    NOT NULL UNIQUE,
+                statement   TEXT    NOT NULL,
+                kind        TEXT    NOT NULL DEFAULT 'theorem'
+                                CHECK(kind IN ('theorem')),
+                origin      TEXT    NOT NULL
+                                CHECK(origin IN ('root','backward','forward')),
+                status      TEXT    NOT NULL
+                                CHECK(status IN ('open','attempting','proved',
+                                                 'shelved',
+                                                 'pending_strategist_review',
+                                                 'disproved')),
+                depth       INTEGER NOT NULL DEFAULT 0,
+                attempts    INTEGER NOT NULL DEFAULT 0,
+                entry_kind  TEXT    NOT NULL DEFAULT 'Builder'
+                                CHECK(entry_kind IN ('Builder','Backward')),
+                integrity_verified INTEGER NOT NULL DEFAULT 0
+                                CHECK(integrity_verified IN (0,1)),
+                detached    INTEGER NOT NULL DEFAULT 0
+                                CHECK(detached IN (0,1)),
+                alias_target_id INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                UNIQUE(problem, slug)
+            );
+            INSERT INTO _new_goals (id, problem, slug, lean_path, statement,
+                kind, origin, status, depth, attempts, entry_kind,
+                integrity_verified, alias_target_id, created_at, updated_at)
+            SELECT id, problem, slug, lean_path, statement,
+                kind, origin, status, depth, attempts, entry_kind,
+                integrity_verified, alias_target_id, created_at, updated_at
+            FROM goals;
+            DROP TABLE goals;
+            ALTER TABLE _new_goals RENAME TO goals;
+            CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+        """)
+
+        # Backfill: existing 'shelved' rows whose latest decline gave a
+        # counterexample (failure_reason='agent_infeasible') represent
+        # the new 'disproved' semantic. Must run AFTER goals rebuild so
+        # the new CHECK accepts 'disproved'. dead_attempts is intact
+        # (no rebuild on it).
+        conn.execute("""
+            UPDATE goals SET status = 'disproved'
+            WHERE status = 'shelved'
+              AND id IN (
+                SELECT DISTINCT target_id FROM dead_attempts
+                WHERE target_kind = 'Goal'
+                  AND failure_reason = 'agent_infeasible'
+              )
+        """)
+
+        # --- pipelines rebuild: extend kind + target_kind CHECK ---
+        conn.executescript("""
+            CREATE TABLE _new_pipelines (
+                id          TEXT PRIMARY KEY,
+                kind        TEXT NOT NULL
+                                CHECK(kind IN ('Builder','Backward','Verify',
+                                               'Strategist','Forward')),
+                target_id   TEXT NOT NULL,
+                target_kind TEXT NOT NULL
+                                CHECK(target_kind IN ('Goal','Strategy','Problem')),
+                status      TEXT NOT NULL CHECK(status IN ('succeeded','failed')),
+                outcome     TEXT NOT NULL,
+                started_at  TEXT NOT NULL,
+                finished_at TEXT NOT NULL
+            );
+            INSERT INTO _new_pipelines SELECT * FROM pipelines;
+            DROP TABLE pipelines;
+            ALTER TABLE _new_pipelines RENAME TO pipelines;
+            CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(status);
+        """)
+
+        # --- queue rebuild: extend kind CHECK + add target_kind, decision_id ---
+        conn.executescript("""
+            CREATE TABLE _new_queue (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind        TEXT NOT NULL
+                                CHECK(kind IN ('Builder','Backward','Verify',
+                                               'Strategist','Forward')),
+                target_id   TEXT NOT NULL,
+                target_kind TEXT NOT NULL DEFAULT 'Goal'
+                                CHECK(target_kind IN ('Goal','Strategy','Problem')),
+                priority    INTEGER NOT NULL DEFAULT 0,
+                decision_id INTEGER NULL DEFAULT NULL REFERENCES strategist_decisions(id),
+                created_at  TEXT NOT NULL
+            );
+            INSERT INTO _new_queue (id, kind, target_id, priority, created_at)
+            SELECT id, kind, target_id, priority, created_at FROM queue;
+            DROP TABLE queue;
+            ALTER TABLE _new_queue RENAME TO queue;
+            CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue(priority DESC, id ASC);
+        """)
+
+        # Validate FK integrity post-rebuild
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 2 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 # ---------------------------------------------------------------------
@@ -619,10 +871,21 @@ def queue_size(conn: sqlite3.Connection) -> int:
 # ---------------------------------------------------------------------
 
 def enqueue(conn: sqlite3.Connection, *, kind: str, target_id: str,
-            priority: int = 0) -> None:
+            priority: int = 0, target_kind: str = "Goal",
+            decision_id: int | None = None) -> None:
+    """Insert a dispatch queue entry.
+
+    Phase 2 — `target_kind` defaults to 'Goal' (matches every pre-Phase 2
+    caller). Forward callers pass `target_kind='Problem'` with
+    `target_id=problem_name`. `decision_id` is non-None only when the
+    queue entry was emitted by a Strategist Inject decision — the
+    spawned pipeline pulls the brief from `strategist_decisions.brief`
+    via this FK at cold-start (see `compile_context`).
+    """
     conn.execute(
-        "INSERT INTO queue (kind, target_id, priority, created_at) VALUES (?, ?, ?, ?)",
-        (kind, target_id, priority, now()),
+        "INSERT INTO queue (kind, target_id, target_kind, priority,"
+        " decision_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (kind, target_id, target_kind, priority, decision_id, now()),
     )
     conn.commit()
 

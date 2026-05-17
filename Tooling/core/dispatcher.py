@@ -59,6 +59,185 @@ from ..state.recovery import recover_at_startup as _recover_at_startup  # noqa: 
 from ..state.recovery import sweep_lean_backups as _sweep_lean_backups  # noqa: E402,F401
 
 
+# ---------------------------------------------------------------------
+# Phase 2 — pending_strategist_review + cascade_shelve_descendants +
+# reopen_with_detach (used by cascade_one Rule 1 and the future
+# Strategist pipeline for ConfirmShelve / Reopen commits).
+# ---------------------------------------------------------------------
+
+def _enqueue_strategist_review(conn: sqlite3.Connection,
+                               goal_id: int) -> None:
+    """Phase 2 Rule 1 — agent_shelved branch.
+
+    Set the goal to `pending_strategist_review` (transitional, not
+    terminal) and enqueue a Strategist run on this problem's root.
+    Strategist later commits one of ConfirmShelve / Reopen / Inject;
+    until then the upward strategy chain stays alive.
+
+    Idempotent on duplicate Strategist enqueue: if the queue already
+    has a Strategist row for this problem's root, skip the second
+    enqueue (per-problem in-flight dedup; see pipelines.md §4.3).
+    """
+    g = db.get_goal(conn, goal_id)
+    if g is None:
+        return
+    # Status transition: pending_strategist_review (not 'shelved').
+    # update_goal_status() flips integrity_verified=0 for any
+    # non-'proved' transition; we want that for stability since the
+    # goal may later be Reopen'd.
+    db.update_goal_status(conn, goal_id, "pending_strategist_review")
+
+    # Find this problem's root goal — Strategist queue target.
+    root_row = conn.execute(
+        "SELECT id FROM goals WHERE problem = ? AND origin = 'root'",
+        (g["problem"],),
+    ).fetchone()
+    if root_row is None:
+        return
+    root_id = str(root_row["id"])
+
+    # Per-problem in-flight dedup: skip if a Strategist row already sits
+    # in the queue for this problem's root. dispatcher's main-loop
+    # in-memory `running` set covers active dispatches; this DB check
+    # covers queue-pending entries.
+    if db.is_in_queue(conn, target_id=root_id, kind="Strategist"):
+        return
+    db.enqueue(conn, kind="Strategist", target_id=root_id,
+               target_kind="Goal")
+
+
+def _cascade_shelve_descendants(conn: sqlite3.Connection,
+                                goal_id: int) -> int:
+    """Phase 2 Rule 2 — ConfirmShelve downward cascade.
+
+    Walk strategy_subgoals from `goal_id` to all reachable descendants
+    via alive strategies (BFS over goal → its strategies → their
+    sub-goals → ...). Flip every descendant whose status ∈ {open,
+    attempting, pending_strategist_review} to 'shelved'. Preserves
+    terminal states (proved / shelved / disproved) — Reopen still
+    works on the cascade-shelved goals because 'shelved' is soft.
+
+    Returns the number of goals transitioned.
+
+    Distinct from `_propagate_shelve`:
+      * _propagate_shelve walks UPWARD (parent strategies of this
+        goal; reopens or attempts++ parent goals on chain death).
+      * _cascade_shelve_descendants walks DOWNWARD (sub-goals of this
+        goal's own strategies; releases BFS hold on them).
+    Both helpers are called by Strategist's ConfirmShelve commit (see
+    docs/phase2/pipelines.md §4.2 Rule 2).
+    """
+    visited: set[int] = set()
+    frontier: list[int] = [goal_id]
+    transitioned = 0
+    while frontier:
+        next_frontier: list[int] = []
+        for gid in frontier:
+            # Find this goal's strategies' sub-goals (one hop down).
+            rows = conn.execute(
+                "SELECT ss.subgoal_id FROM strategies s"
+                " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+                " WHERE s.goal_id = ?",
+                (gid,),
+            ).fetchall()
+            for r in rows:
+                sub_id = int(r["subgoal_id"])
+                if sub_id in visited:
+                    continue
+                visited.add(sub_id)
+                # Read status; only transition non-terminal rows.
+                grow = conn.execute(
+                    "SELECT status FROM goals WHERE id = ?",
+                    (sub_id,),
+                ).fetchone()
+                if grow is None:
+                    continue
+                if grow["status"] in ("open", "attempting",
+                                      "pending_strategist_review"):
+                    db.update_goal_status(conn, sub_id, "shelved")
+                    transitioned += 1
+                # Continue BFS into this sub-goal's own strategies' subs
+                # regardless of its status (the descendants of a
+                # proved sub-goal can still include alive open goals
+                # under sibling strategies of the proved one).
+                next_frontier.append(sub_id)
+        frontier = next_frontier
+    return transitioned
+
+
+def _has_terminal_disproved_ancestor(conn: sqlite3.Connection,
+                                     goal_id: int) -> bool:
+    """Phase 2 Rule 3 — Reopen safety walk.
+
+    Return True iff any ancestor goal in the strategy_subgoals chain
+    has status='disproved'. 'shelved' ancestors do NOT count (soft
+    terminal; auto-detach handles broken upward chains).
+    Walks UPWARD via strategy_subgoals.subgoal_id = goal_id → parent
+    strategy → strategy.goal_id, recursively.
+    """
+    visited: set[int] = set()
+    frontier: list[int] = [goal_id]
+    while frontier:
+        next_frontier: list[int] = []
+        for gid in frontier:
+            # Find this goal's parent goals (one hop up via strategies
+            # that claim this goal as a sub-goal).
+            rows = conn.execute(
+                "SELECT s.goal_id FROM strategies s"
+                " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+                " WHERE ss.subgoal_id = ?",
+                (gid,),
+            ).fetchall()
+            for r in rows:
+                parent_id = int(r["goal_id"])
+                if parent_id in visited:
+                    continue
+                visited.add(parent_id)
+                grow = conn.execute(
+                    "SELECT status FROM goals WHERE id = ?",
+                    (parent_id,),
+                ).fetchone()
+                if grow is None:
+                    continue
+                if grow["status"] == "disproved":
+                    return True
+                next_frontier.append(parent_id)
+        frontier = next_frontier
+    return False
+
+
+def _has_dead_strategy_in_chain(conn: sqlite3.Connection,
+                                goal_id: int) -> bool:
+    """Phase 2 Rule 3 — auto-detach trigger detection.
+
+    Return True iff any ancestor strategy in the upward chain has
+    status ∈ {'dead', 'superseded'}. If so, Reopen sets `goals.detached
+    = 1` so BFS dispatches on the goal standalone (no live parent
+    strategy needed to thread the proof back to root).
+    """
+    visited: set[int] = set()
+    frontier: list[int] = [goal_id]
+    while frontier:
+        next_frontier: list[int] = []
+        for gid in frontier:
+            rows = conn.execute(
+                "SELECT s.id, s.goal_id, s.status FROM strategies s"
+                " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+                " WHERE ss.subgoal_id = ?",
+                (gid,),
+            ).fetchall()
+            for r in rows:
+                if r["status"] in ("dead", "superseded"):
+                    return True
+                parent_id = int(r["goal_id"])
+                if parent_id in visited:
+                    continue
+                visited.add(parent_id)
+                next_frontier.append(parent_id)
+        frontier = next_frontier
+    return False
+
+
 def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
     """Cascade a goal-shelve event in two directions:
 
@@ -342,22 +521,31 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 # Leave attempts unchanged; dispatcher will cool this
                 # (target,kind) for ~30s before the next dispatch.
                 return
-            # Decline directives: agent shipped a structured "this goal
-            # can't progress at this level" signal. Three of the four
-            # directives (unprovable / return_to_parent / shelve) all
-            # cascade up — they differ in DOWNSTREAM CONTEXT projection
-            # (verify.py / context.py read failure_reason to render the
-            # right section in parent's next dispatch), not in cascade
-            # routing. Net effect mirrors the legacy parent_type_
-            # infeasible path: increment attempts once (the LLM call
-            # happened, preserve 1:1 attempts ↔ dead_attempts), shelve
-            # directly, propagate up — don't burn the remaining
-            # SHELVE_THRESHOLD on a goal the agent already diagnosed.
-            if failure_reason in ("agent_infeasible", "parent_needs_fix",
-                                  "agent_shelved"):
+            # Phase 2 — decline directives split by intent (see
+            # `docs/phase2/pipelines.md` §4.2 Rule 1):
+            #   * agent_infeasible (counterexample shown) → 'disproved'
+            #     (hard terminal, dedupe blocks future same-shape proposals).
+            #   * parent_needs_fix → 'shelved' (soft terminal, Phase 1
+            #     behaviour preserved; Strategist may Reopen via auto-detach).
+            #   * agent_shelved → 'pending_strategist_review'
+            #     (transitional; defer judgment to Strategist via T2 trigger).
+            # All three increment attempts once (LLM call happened;
+            # preserve 1:1 attempts ↔ dead_attempts invariant) but only
+            # the first two cascade — agent_shelved leaves the upward
+            # strategy chain alive until Strategist commits a verdict.
+            if failure_reason == "agent_infeasible":
+                db.increment_goal_attempts(conn, int(target_id))
+                db.update_goal_status(conn, int(target_id), "disproved")
+                _propagate_shelve(conn, int(target_id))
+                return
+            if failure_reason == "parent_needs_fix":
                 db.increment_goal_attempts(conn, int(target_id))
                 db.update_goal_status(conn, int(target_id), "shelved")
                 _propagate_shelve(conn, int(target_id))
+                return
+            if failure_reason == "agent_shelved":
+                db.increment_goal_attempts(conn, int(target_id))
+                _enqueue_strategist_review(conn, int(target_id))
                 return
             # `needs_decomposition` directive (legacy `too_hard`):
             # Builder says "this goal needs decomposition first". Route
@@ -420,17 +608,26 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
         # failed
         if is_infra:
             return  # same skip-increment as Builder above
-        # Decline directives mirror the Builder branch above: agent
-        # shipped a structured failure signal — shelve + cascade up
-        # without burning the remaining SHELVE_THRESHOLD. Backward
-        # cannot send `needs_decomposition` (Builder-only); if a typo
-        # / unknown directive lands here it falls through to the
+        # Decline directives mirror the Builder branch above (Phase 2
+        # split: agent_infeasible → 'disproved' + propagate; parent_
+        # needs_fix → 'shelved' + propagate; agent_shelved → 'pending_
+        # strategist_review' + enqueue Strategist, no propagate).
+        # Backward cannot send `needs_decomposition` (Builder-only); if
+        # a typo / unknown directive lands here it falls through to the
         # generic attempts++ branch and eventually shelves at threshold.
-        if failure_reason in ("agent_infeasible", "parent_needs_fix",
-                              "agent_shelved"):
+        if failure_reason == "agent_infeasible":
+            db.increment_goal_attempts(conn, int(target_id))
+            db.update_goal_status(conn, int(target_id), "disproved")
+            _propagate_shelve(conn, int(target_id))
+            return
+        if failure_reason == "parent_needs_fix":
             db.increment_goal_attempts(conn, int(target_id))
             db.update_goal_status(conn, int(target_id), "shelved")
             _propagate_shelve(conn, int(target_id))
+            return
+        if failure_reason == "agent_shelved":
+            db.increment_goal_attempts(conn, int(target_id))
+            _enqueue_strategist_review(conn, int(target_id))
             return
         n = db.increment_goal_attempts(conn, int(target_id))
         if n >= SHELVE_THRESHOLD:

@@ -774,28 +774,31 @@ def _backward_parse_and_commit(
         candidates=candidates_for_dedupe,
     )
 
-    # #112(a) — if any candidate matches a previously-shelved goal in
-    # this problem, abort the whole strategy: the proposed approach
-    # recapitulates a known-failed direction and finishing the spawn
-    # would just waste a verify cycle to discover the same dead end.
-    # Decline-style abort surfaces the offending slug pairs so the
-    # next Backward (or the agent's retry context) can see what was
-    # already tried.
-    shelved_hits = [
+    # #112(a) — if any candidate matches a previously-disproved goal in
+    # this problem (agent gave a counterexample, status='disproved'),
+    # abort the whole strategy: the proposed approach recapitulates a
+    # statement known false. Decline-style abort surfaces the offending
+    # slug pairs so the next Backward (or the agent's retry context)
+    # can see what was already disproved.
+    #
+    # Phase 2 — Tier 4 dedupe semantic shifted from 'shelved' (any
+    # terminal) to 'disproved' (counterexample only). Soft-terminal
+    # 'shelved' goals no longer trigger this abort.
+    disproved_hits = [
         (slug, m.goal_id)
         for (slug, _), m in zip(sub_meta, canonical_for)
-        if m is not None and m.kind == "shelved"
+        if m is not None and m.kind == "disproved"
     ]
-    if shelved_hits:
+    if disproved_hits:
         detail = "; ".join(
-            f"{slug} ≡ shelved goal {gid} "
+            f"{slug} ≡ disproved goal {gid} "
             f"({db.get_goal(conn, gid)['slug']})"
-            for slug, gid in shelved_hits
+            for slug, gid in disproved_hits
         )
         return _abort(
-            "same_as_shelved",
-            f"sub-goal(s) recapitulate a previously-shelved approach in "
-            f"this problem: {detail}. Pick a different decomposition.",
+            "same_as_disproved",
+            f"sub-goal(s) recapitulate a previously-disproved statement "
+            f"in this problem: {detail}. Pick a different decomposition.",
             leading,
         )
 
@@ -812,8 +815,8 @@ def _backward_parse_and_commit(
     placed: list[Path] = []
     try:
         # Place sub-goal files: alias body for dedupe-hits, original
-        # content for novel sub-goals. By this point any shelved-kind
-        # match has aborted via the same_as_shelved early-return above,
+        # content for novel sub-goals. By this point any disproved-kind
+        # match has aborted via the same_as_disproved early-return above,
         # so a non-None `match` is guaranteed kind="alias".
         for (slug, src), (_, dest), match in zip(
             sub_meta, sub_dests, canonical_for,
@@ -956,7 +959,7 @@ def _backward_parse_and_commit(
                 entry_kind=entry_kind,
             )
             if match is not None:
-                # Past the same_as_shelved early-return → kind="alias".
+                # Past the same_as_disproved early-return → kind="alias".
                 db.update_goal_status(conn, new_gid, "proved")
                 # Record alias relationship so prune retains the
                 # canonical (in case it's an orphan from a dead strategy)

@@ -78,11 +78,14 @@ _TERMINAL_DECLINE_REASONS = frozenset({
     "agent_bailed",
     # Race-detected mid-parse: a sibling already terminated this goal.
     "goal_no_longer_open",
-    # #112(a) — agent's decomposition recapitulates a previously-shelved
-    # approach. Same-sid retry would re-emit the same split; only a fresh
-    # dispatch (and ideally a fresh-rescue prompt mentioning the shelved
-    # collision) has any chance of a different proposal.
-    "same_as_shelved",
+    # #112(a) — agent's decomposition recapitulates a previously-disproved
+    # statement (agent counterexample, status='disproved'). Same-sid retry
+    # would re-emit the same split; only a fresh dispatch (and ideally a
+    # fresh-rescue prompt mentioning the disproved collision) has any
+    # chance of a different proposal. Phase 2 — renamed from
+    # `same_as_shelved` after status enum split (see
+    # `docs/phase2/pipelines.md` §4.1).
+    "same_as_disproved",
 })
 
 

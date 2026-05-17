@@ -227,13 +227,17 @@ def cmd_init(args: argparse.Namespace) -> int:
     ).fetchone()
     if existing_goal is None:
         rel_root = (pdir / "Root.lean").relative_to(workspace).as_posix()
+        # Phase 2: root.entry_kind hardwired to 'Backward'. Strategist
+        # (T0 trigger via problems.bootstrap_done=false) handles initial
+        # planning and may EmitDirective if a different opening is wanted.
+        # Manifest.md no longer carries `## Entry kind` (silently ignored
+        # if still present in legacy files).
         gid = db.insert_goal(
             conn, problem=problem, slug="main",
             lean_path=rel_root, statement=mfst.statement,
-            origin="root", depth=0, entry_kind=mfst.entry_kind,
+            origin="root", depth=0, entry_kind="Backward",
         )
-        print(f"OK: init {problem}, root goal id={gid} "
-              f"entry_kind={mfst.entry_kind}")
+        print(f"OK: init {problem}, root goal id={gid}")
     else:
         print(f"OK: {problem} already initialized (goal id={existing_goal['id']})")
     conn.commit()
@@ -568,6 +572,20 @@ def cmd_reset(args: argparse.Namespace) -> int:
         conn.execute(
             f"DELETE FROM pipelines WHERE target_kind='Strategy' "
             f"AND target_id IN ({ph})", [str(s) for s in sids])
+    # Phase 2 — Forward / Strategist pipelines targeting this problem.
+    # Forward uses target_kind='Problem' + target_id=problem_name (see
+    # migration_plan §C option 1); Strategist uses target_kind='Goal'
+    # with target_id=problem.root.id (already covered by the goal-id
+    # loop above). Clean the Problem-targeted rows here. Strategist
+    # decision audit goes via FK on queue.decision_id (queue rows for
+    # this problem already deleted above by target_id IN gids).
+    conn.execute(
+        "DELETE FROM pipelines WHERE target_kind='Problem' AND target_id = ?",
+        (problem,),
+    )
+    conn.execute(
+        "DELETE FROM strategist_decisions WHERE problem = ?", (problem,),
+    )
     conn.execute("DELETE FROM problems WHERE name = ?", (problem,))
     conn.commit()
 
