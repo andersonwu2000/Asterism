@@ -627,17 +627,90 @@ def _section_prior_partial(kind: str | None, problem_dir: Path,
 
 
 # ---------------------------------------------------------------------
+# Phase 2 — Strategist directive / brief sections
+# ---------------------------------------------------------------------
+
+def _section_strategist_directive(conn: sqlite3.Connection,
+                                  problem: str) -> list[str]:
+    """Render `problems.strategist_directive` as a top-level Context.md
+    section if non-empty. Standing directive — applies to every pipeline
+    cold-start (Backward / Builder / Forward) until Strategist overwrites
+    with another EmitDirective / Reopen-with-directive commit.
+
+    Empty / NULL directive → returns []. No-op if the `problems` row's
+    Phase 2 columns are absent (pre-migration DB).
+    """
+    try:
+        row = conn.execute(
+            "SELECT strategist_directive FROM problems WHERE name = ?",
+            (problem,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        # Pre-Phase 2 schema (column missing).
+        return []
+    if row is None:
+        return []
+    directive = row["strategist_directive"]
+    if directive is None or not str(directive).strip():
+        return []
+    return [
+        "## Strategist directive",
+        "",
+        str(directive).strip(),
+        "",
+    ]
+
+
+def _section_strategist_brief(conn: sqlite3.Connection,
+                              decision_id: int | None) -> list[str]:
+    """Render `strategist_decisions.brief` as a top-level Context.md
+    section if `decision_id` is set and the row has non-empty brief.
+    Per-pipeline one-shot — this only renders for pipelines spawned
+    by a Strategist Inject decision (queue.decision_id FK).
+
+    decision_id=None (BFS-auto-dispatched pipeline) → returns []. No-op
+    if strategist_decisions table is absent.
+    """
+    if decision_id is None:
+        return []
+    try:
+        row = conn.execute(
+            "SELECT brief FROM strategist_decisions WHERE id = ?",
+            (int(decision_id),),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return []
+    if row is None:
+        return []
+    brief = row["brief"]
+    if brief is None or not str(brief).strip():
+        return []
+    return [
+        "## Strategist brief",
+        "",
+        str(brief).strip(),
+        "",
+    ]
+
+
+# ---------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------
 
 def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
                     mfst: manifest.Manifest, attempts_dir: Path,
                     strategy_id: int | None = None,
-                    kind: str | None = None) -> Path:
+                    kind: str | None = None,
+                    decision_id: int | None = None) -> Path:
     """Write Context.md into attempts_dir. Pulls from DB + Manifest.
 
     `strategy_id`: when set (Backward worker), write a 'Strategy
     naming' section pinning sub-goal slug prefixes to `s<sid>_`.
+
+    `decision_id`: Phase 2 — when set, the spawning queue row was
+    emitted by a Strategist Inject decision; pulls
+    `strategist_decisions.brief` into a `## Strategist brief` section.
+    None means BFS-auto-dispatched (no brief, only directive).
 
     `kind`: 'builder' | 'backward' | None — gates which Goal history
     sub-sections render. Most of the kind-asymmetric gating was
@@ -702,6 +775,12 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     sections: list[list[str]] = [
         _section_brief_inline(problem_dir),
         _section_lessons_inline(problem_dir),
+        # Phase 2 — Strategist injections sit between cross-spawn-stable
+        # content (BRIEF / LESSONS) and per-goal sections. Directive is
+        # problem-level standing (every cold-start); brief is per-decision
+        # one-shot (only when Strategist Inject spawned this pipeline).
+        _section_strategist_directive(conn, str(goal["problem"])),
+        _section_strategist_brief(conn, decision_id),
         _section_header(goal),
         _section_strategy_naming(strategy_id, goal),
         _section_parent_strategy(conn, goal),
