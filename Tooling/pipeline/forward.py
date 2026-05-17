@@ -220,41 +220,180 @@ def _extract_statement_string(body: str, slug: str) -> str | None:
 
 
 # ---------------------------------------------------------------------
-# Outer entry (stub — agent stage TODO)
+# Outer entry — full agent integration
 # ---------------------------------------------------------------------
 
 def run_forward(conn: sqlite3.Connection, *, problem: str,
-                workspace: Path, pipeline_id: str,
+                workspace: Path, mfst: "Any", pipeline_id: str,
                 decision_id: int | None = None) -> "Any":
-    """Outer entry — stages 1-2 (failure_replay + compile_context with
-    Strategist brief) + 4-6 (self_verify lake check, dedupe, commit)
-    are framework-side. Stage 3 (agent.spawn_llm dropping
-    `new_<slug>.lean`) is the next-session piece.
+    """Full Forward pipeline (Phase 2 §3.4).
 
-    Real implementation will:
-      1. compile_forward_context(conn, problem, decision_id, ...)
-         writes Context.md with Strategist brief + Library state +
-         Mathlib loogle candidates + past Forward history.
-      2. agent.spawn_llm(prompt_path=PROMPT_DIR/forward.md, ...) drops
-         either `new_<slug>.lean` or a decline file.
-      3. is_decline(text) -> forward_no_new_goal/agent declined.
-      4. extract_forward_metadata(text) -> validate + parse.
-      5. mcp__lsp__validate_file(text) -> type-check (leading sorry OK).
-      6. dedupe.find_canonicals_batch -> if any match alive/proved,
-         skip + return forward_no_new_goal/dedupe blocked.
-      7. commit_forward_lemma(...) -> proofs/L_<slug>.lean + INSERT.
+    Stages:
+      1. compile_forward_context  — Context.md with Strategist brief
+      2. agent                    — spawn LLM, drops new_<slug>.lean
+                                    or decline placeholder
+      3. parse                    — extract_forward_metadata
+                                    OR is_decline → forward_no_new_goal
+      4. self_verify              — LSP verify_file on the candidate
+      5. dedupe                   — find_canonicals_batch
+      6. commit                   — commit_forward_lemma
 
-    For now returns `failed/forward_unimplemented` matching the
-    dispatcher's _run_pipeline placeholder branch.
+    Returns `PipelineResult`:
+      - outcome='proved' on sorry-free leaf-bypass commit
+      - outcome='success' on regular sorry-stub commit (new goal in
+        pool for BFS to attack)
+      - outcome='failed', failure_reason='forward_no_new_goal' for
+        decline / dedupe-blocked / parse-rejected paths
+      - provider rc-based reasons on agent.spawn_llm rc != 0
     """
-    from . import PipelineResult
+    from .. import agent
+    from . import PipelineResult, PROMPT_DIR
+    from ..agent.phase2_context import compile_forward_context
+
+    attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
+    problem_dir = db.problem_dir(workspace, problem)
+
+    # Stage 1 — Context.md
+    compile_forward_context(
+        conn, problem=problem, decision_id=decision_id,
+        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+    )
+
+    # Stage 2 — agent spawn
+    rc = agent.spawn_llm(
+        kind="forward",
+        prompt_path=PROMPT_DIR / "forward.md",
+        problem_dir=problem_dir,
+        attempts_dir=attempts_dir,
+    )
+    if rc != 0:
+        return PipelineResult(
+            outcome="failed",
+            failure_reason=_rc_to_reason_fwd(rc),
+            failure_detail=f"agent rc={rc}",
+        )
+
+    # Stage 3 — find the agent's output file. Glob for new_*.lean.
+    candidates = list(attempts_dir.glob("new_*.lean"))
+    if not candidates:
+        return PipelineResult(
+            outcome="failed", failure_reason="forward_no_new_goal",
+            failure_detail="agent produced no new_*.lean file",
+        )
+    src = candidates[0]
+    try:
+        body = src.read_text(encoding="utf-8")
+    except OSError as e:
+        return PipelineResult(
+            outcome="failed", failure_reason="forward_no_new_goal",
+            failure_detail=f"new_*.lean unreadable: {e}",
+        )
+
+    # Stage 3b — decline path
+    if is_decline(body):
+        return PipelineResult(
+            outcome="failed", failure_reason="forward_no_new_goal",
+            failure_detail="agent declined: library_sufficient",
+        )
+
+    # Stage 4 — parse + self_verify metadata
+    metadata, parse_err = extract_forward_metadata(body)
+    if metadata is None:
+        return PipelineResult(
+            outcome="failed", failure_reason="forward_no_new_goal",
+            failure_detail=f"parse rejected: {parse_err}",
+        )
+
+    # Stage 4b — LSP type-check the candidate. A sorry-bearing body
+    # passes if and only if Lean elaborates the statement successfully
+    # (sorry warning is OK). Sorry-free body must elaborate clean — no
+    # errors. We re-use the existing /verify endpoint with
+    # write_olean=False (probe-mode): no olean side effect, fast.
+    from ..lsp import lifecycle as gateway_lifecycle
+    try:
+        v = gateway_lifecycle.verify_file(
+            src, write_olean=False, workspace=workspace,
+        )
+    except Exception as e:
+        return PipelineResult(
+            outcome="failed", failure_reason="forward_no_new_goal",
+            failure_detail=f"verify_file raised: {type(e).__name__}: {e}",
+        )
+    if not v.get("ok"):
+        return PipelineResult(
+            outcome="failed", failure_reason="forward_no_new_goal",
+            failure_detail=f"lake elaborate failed: {v.get('error', v)}",
+        )
+    # Allow `sorry` warnings — they're expected for the statement-only
+    # path. Reject other errors. The diagnostics filter is conservative
+    # (only `severity==1` = "error" hits us; `severity==2` warnings
+    # including sorry-warning are tolerated).
+    err_diag = [
+        d for d in (v.get("diagnostics") or [])
+        if d.get("severity") == 1 and "sorry" not in str(d.get("message", "")).lower()
+    ]
+    if err_diag:
+        return PipelineResult(
+            outcome="failed", failure_reason="forward_no_new_goal",
+            failure_detail=f"lake elaborate errors: {err_diag[:3]}",
+        )
+
+    # Stage 5 — dedupe. Forward proposals shouldn't clash with alive
+    # canonicals (Strategist brief should have steered around them);
+    # but the agent can still re-propose a near-duplicate. Phase 2
+    # dedupe blocks `disproved` only; `shelved` doesn't block — so an
+    # alias hit on an alive canonical means the agent's lemma is
+    # redundant with the existing library.
+    from ..quality import dedupe
+    hits = dedupe.find_canonicals_batch(
+        conn, workspace, problem=problem, parent_goal_id=0,
+        candidates=[(metadata.slug, body)],
+    )
+    if hits and hits[0] is not None and hits[0].kind == "alias":
+        return PipelineResult(
+            outcome="failed", failure_reason="forward_no_new_goal",
+            failure_detail=(
+                f"dedupe blocked: alias to existing goal "
+                f"{hits[0].goal_id}"
+            ),
+        )
+
+    # Stage 6 — commit
+    try:
+        outcome = commit_forward_lemma(
+            conn, problem=problem, workspace=workspace,
+            attempts_dir=attempts_dir, metadata=metadata,
+            source_filename=src.name,
+        )
+    except FileExistsError as e:
+        return PipelineResult(
+            outcome="failed", failure_reason="forward_no_new_goal",
+            failure_detail=f"slug collision: {e}",
+        )
+    except Exception as e:
+        return PipelineResult(
+            outcome="failed", failure_reason="forward_no_new_goal",
+            failure_detail=f"commit raised: {type(e).__name__}: {e}",
+        )
+
     return PipelineResult(
-        outcome="failed",
-        failure_reason="forward_unimplemented",
+        outcome="proved" if outcome.status == "proved" else "success",
+        failure_reason="",
         failure_detail=(
-            "run_forward body (agent.spawn_llm + lean validation) "
-            "is the next-session piece; framework-side commit logic "
-            "(extract_forward_metadata / commit_forward_lemma) "
-            "is implemented and unit-tested."
+            f"new forward goal {outcome.goal_id} at "
+            f"{outcome.lean_path} (status={outcome.status})"
         ),
     )
+
+
+def _rc_to_reason_fwd(rc: int) -> str:
+    """Same rc taxonomy as Strategist (see strategist._rc_to_reason)."""
+    if rc == 124:
+        return "transient_timeout"
+    if rc in (125, 128):
+        return "spawn_fast_fail"
+    if rc == 126:
+        return "quota_exhausted"
+    if rc == 127:
+        return "missing_dep"
+    return "spawn_fast_fail"

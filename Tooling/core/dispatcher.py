@@ -809,51 +809,121 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
         with agent.WorkArea(workspace, pipeline_id) as wa:
             attempts_dir = wa.attempts
 
-            # Phase 2 — Strategist / Forward kinds are NOT Goal-targeted
-            # at the same level as Builder / Backward. Strategist takes
-            # a Goal target (problem root id) but runs meta-level
-            # decisions, not goal-attacking work. Forward uses
-            # target_kind='Problem' + target_id=problem_name.
-            # Step 6 implements both; until then they return a
-            # placeholder "not yet implemented" result that cascade_one
-            # silently no-ops on (since cascade_one's kind branches
-            # only cover Builder / Backward).
-            if task_kind in ("Strategist", "Forward"):
+            # Phase 2 — Strategist + Forward dispatch.
+            #   Strategist: target_kind='Goal', target_id=problem.root.id;
+            #     pipeline operates problem-level via root's `problem`
+            #     column. decision_id is unused (Strategist EMITS decisions).
+            #   Forward:    target_kind='Problem', target_id=problem_name;
+            #     decision_id is the Strategist Inject row that spawned
+            #     this Forward.
+            if task_kind == "Strategist":
+                goal_id = int(target_id)
+                goal = db.get_goal(conn, goal_id)
+                if goal is None:
+                    db.record_pipeline(
+                        conn, pipeline_id=pipeline_id, kind=task_kind,
+                        target_id=target_id, target_kind=target_kind,
+                        status="failed", outcome="failed",
+                        started_at=started_at,
+                    )
+                    return (pipeline_id, task_kind, target_id, target_kind,
+                            "failed", "goal_not_found")
+                problem = str(goal["problem"])
+                mfst = manifests[problem]
+                # Determine trigger_kind heuristically from problem
+                # state (no explicit trigger column on queue rows; the
+                # trigger_kind is derived per Phase 2 §2.1):
+                #   bootstrap_done=0  → 'first_launch'
+                #   any pending_strategist_review goal in this problem
+                #                     → 'pending_review' + use that goal
+                #                       as pending_review_id
+                #   otherwise        → 'routine'
+                prob_row = conn.execute(
+                    "SELECT bootstrap_done FROM problems WHERE name = ?",
+                    (problem,),
+                ).fetchone()
+                bootstrapped = bool(prob_row["bootstrap_done"]) if prob_row else False
+                pending_row = conn.execute(
+                    "SELECT id FROM goals WHERE problem = ?"
+                    "   AND status = 'pending_strategist_review'"
+                    " ORDER BY id LIMIT 1",
+                    (problem,),
+                ).fetchone()
+                pending_id = int(pending_row["id"]) if pending_row else None
+                if not bootstrapped:
+                    trigger = "first_launch"
+                elif pending_id is not None:
+                    trigger = "pending_review"
+                else:
+                    trigger = "routine"
+
+                from ..pipeline import strategist
+                r = strategist.run_strategist(
+                    conn, problem=problem, trigger_kind=trigger,
+                    tick=0,  # tick concept TBD; 0 as placeholder for now
+                    workspace=workspace, mfst=mfst,
+                    pipeline_id=pipeline_id,
+                    pending_review_id=pending_id,
+                )
+                status = ("succeeded" if r.outcome in ("proved", "success")
+                          else "failed")
                 db.record_pipeline(
                     conn, pipeline_id=pipeline_id, kind=task_kind,
                     target_id=target_id, target_kind=target_kind,
-                    status="failed", outcome="failed",
+                    status=status, outcome=r.outcome,
                     started_at=started_at,
                 )
-                reason = (f"{task_kind.lower()}_unimplemented")
-                # Strategist target_id is a Goal id (problem root);
-                # Forward target_id is a problem name (TEXT). Forward's
-                # dead_attempts.target_id requires INTEGER; coerce to 0
-                # (the foreign id is forensic-only for the stub anyway).
-                _da_tid = (int(target_id) if target_kind == "Goal" else 0)
-                db.record_dead_attempt(
-                    conn, target_id=_da_tid, target_kind=target_kind,
-                    pipeline_id=pipeline_id, failure_reason=reason,
-                    failure_detail=(
-                        f"{task_kind} pipeline not yet implemented "
-                        "(Phase 2 Step 6 pending)"
-                    ),
-                )
-                # T0 spam guard: without Strategist Step 6 committing
-                # a decision (which would set bootstrap_done=1), the
-                # `problems_needing_t0` scan would re-enqueue Strategist
-                # every tick. Mark the problem as past-bootstrap here
-                # so T0 doesn't infinite-loop while Step 6 is pending.
-                # Step 6 replaces this stub with real commit logic; this
-                # branch is dead code after the new pipeline modules land.
-                if task_kind == "Strategist" and target_kind == "Goal":
-                    grow = db.get_goal(conn, int(target_id))
-                    if grow is not None:
-                        db.set_problem_bootstrap_done(conn, grow["problem"])
-                        db.update_problem_last_strategist_at(
-                            conn, grow["problem"])
+                if status == "failed":
+                    db.record_dead_attempt(
+                        conn, target_id=goal_id, target_kind=target_kind,
+                        pipeline_id=pipeline_id,
+                        failure_reason=str(r.failure_reason or "failed"),
+                        failure_detail=str(r.failure_detail or ""),
+                    )
                 return (pipeline_id, task_kind, target_id, target_kind,
-                        "failed", reason)
+                        r.outcome, str(r.failure_reason or ""))
+
+            if task_kind == "Forward":
+                # Forward target = problem name (TEXT); no goal lookup.
+                problem = target_id
+                if problem not in manifests:
+                    db.record_pipeline(
+                        conn, pipeline_id=pipeline_id, kind=task_kind,
+                        target_id=target_id, target_kind=target_kind,
+                        status="failed", outcome="failed",
+                        started_at=started_at,
+                    )
+                    return (pipeline_id, task_kind, target_id, target_kind,
+                            "failed", "problem_not_found")
+                mfst = manifests[problem]
+                from ..pipeline import forward
+                r = forward.run_forward(
+                    conn, problem=problem, workspace=workspace,
+                    mfst=mfst, pipeline_id=pipeline_id,
+                    decision_id=decision_id,
+                )
+                status = ("succeeded" if r.outcome in ("proved", "success")
+                          else "failed")
+                db.record_pipeline(
+                    conn, pipeline_id=pipeline_id, kind=task_kind,
+                    target_id=target_id, target_kind=target_kind,
+                    status=status, outcome=r.outcome,
+                    started_at=started_at,
+                )
+                if status == "failed":
+                    # target_id is the problem_name TEXT; dead_attempts
+                    # target_id column is INTEGER. Per migration_plan §C
+                    # option 1, Forward forensic uses target_kind='Problem'
+                    # but the int column is forced to 0 (the lookup index
+                    # is target_kind + decision_id for Forward audit).
+                    db.record_dead_attempt(
+                        conn, target_id=0, target_kind=target_kind,
+                        pipeline_id=pipeline_id,
+                        failure_reason=str(r.failure_reason or "failed"),
+                        failure_detail=str(r.failure_detail or ""),
+                    )
+                return (pipeline_id, task_kind, target_id, target_kind,
+                        r.outcome, str(r.failure_reason or ""))
 
             # Builder / Backward — Goal-targeted.
             goal_id = int(target_id)

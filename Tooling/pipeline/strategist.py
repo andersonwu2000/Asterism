@@ -408,45 +408,149 @@ def commit_decision(decision: Decision, conn: sqlite3.Connection,
 
 
 # ---------------------------------------------------------------------
-# Outer entry (stub — agent stage TODO)
+# Outer entry — full agent integration
 # ---------------------------------------------------------------------
 
 def run_strategist(conn: sqlite3.Connection, *, problem: str,
                    trigger_kind: str, tick: int,
                    workspace: Path,
-                   pipeline_id: str) -> "Any":
-    """Outer entry — stages 1-2 (input compile + failure_replay) + 4-5
-    (self_verify + commit) are implemented. Stage 3 (agent.spawn_llm
-    integration that drops `decision.json` into attempts_dir) is the
-    next-session piece; this stub returns a placeholder PipelineResult
-    indicating the agent stage is unimplemented.
+                   mfst: "Any",
+                   pipeline_id: str,
+                   pending_review_id: int | None = None) -> "Any":
+    """Full Strategist pipeline (Phase 2 §2.4).
 
-    Real implementation will:
-      1. compile_strategist_context(conn, problem, trigger_kind, ...)
-         writes Context.md with TREE.md + active goal list +
-         failure_replay + (T2-only) review context + (T0/T3-only)
-         Manifest + Defs preview.
-      2. agent.spawn_llm(prompt_path=PROMPT_DIR/strategist.md, ...)
-         drops decision.json.
-      3. parse_decision(decision_text) -> Decision
-      4. verify_decision(decision, conn, problem=problem) -> ok | err
-         err -> failure_reason='strategist_schema_invalid' (infra-reason)
-      5. commit_decision(decision, conn, problem=problem, tick=tick,
-                        trigger_kind=trigger_kind, workspace=workspace)
-      6. Noop -> failure_reason='strategist_noop' (infra-reason; not
-         counted against attempts).
+    Stages:
+      1. trigger_context   — compile Strategist-flavoured Context.md
+      2. agent             — spawn LLM, drops `decision.json` in
+                             attempts_dir
+      3. self_verify       — parse + verify_decision
+      4. commit            — commit_decision side effects
+      5. status mapping    — Noop / schema invalid → infra-reason
+                             (no attempts++); commit → success
 
-    For now this returns `failed/strategist_unimplemented` matching the
-    dispatcher's _run_pipeline placeholder branch.
+    Returns `PipelineResult` with one of:
+      - outcome='success' on a clean commit (any decision kind)
+      - outcome='failed', failure_reason='strategist_noop' on Noop
+        (treated as infra so cascade_one doesn't burn root.attempts)
+      - outcome='failed', failure_reason='strategist_schema_invalid'
+        when parse/verify rejects the agent's output
+      - outcome='failed', failure_reason='agent_no_output' if no
+        decision.json produced
+      - provider rc-based reasons (quota / spawn_fast_fail / ...) on
+        agent.spawn_llm rc != 0
     """
-    from . import PipelineResult
+    from .. import agent
+    from . import PipelineResult, PROMPT_DIR
+    from ..agent.phase2_context import compile_strategist_context
+
+    attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
+    problem_dir = db.problem_dir(workspace, problem)
+
+    # Stage 1 — Context.md
+    compile_strategist_context(
+        conn, problem=problem, trigger_kind=trigger_kind,
+        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        pending_review_id=pending_review_id,
+    )
+
+    # Stage 2 — agent spawn
+    rc = agent.spawn_llm(
+        kind="strategist",
+        prompt_path=PROMPT_DIR / "strategist.md",
+        problem_dir=problem_dir,
+        attempts_dir=attempts_dir,
+    )
+    if rc != 0:
+        return PipelineResult(
+            outcome="failed",
+            failure_reason=_rc_to_reason(rc),
+            failure_detail=f"agent rc={rc}",
+        )
+
+    # Stage 3 — parse decision.json
+    decision_path = attempts_dir / "decision.json"
+    if not decision_path.exists():
+        return PipelineResult(
+            outcome="failed", failure_reason="agent_no_output",
+            failure_detail="decision.json not produced",
+        )
+    try:
+        decision_text = decision_path.read_text(encoding="utf-8")
+    except OSError as e:
+        return PipelineResult(
+            outcome="failed", failure_reason="agent_no_output",
+            failure_detail=f"decision.json unreadable: {e}",
+        )
+    decision, parse_err = parse_decision(decision_text)
+    if decision is None:
+        return PipelineResult(
+            outcome="failed",
+            failure_reason="strategist_schema_invalid",
+            failure_detail=f"parse: {parse_err}",
+        )
+
+    # Stage 4 — self_verify
+    verify_err = verify_decision(decision, conn, problem=problem)
+    if verify_err:
+        return PipelineResult(
+            outcome="failed",
+            failure_reason="strategist_schema_invalid",
+            failure_detail=f"verify: {verify_err}",
+        )
+
+    # Stage 5 — commit + outcome mapping
+    if decision.kind == "Noop":
+        # Even Noop touches last_strategist_at + bootstrap_done via
+        # commit_decision; it's a real commit (audit row), just no
+        # cascade-visible effect. Map to infra-reason so cascade_one
+        # doesn't try to attempts++ on the root.
+        commit_decision(decision, conn, problem=problem, tick=tick,
+                        trigger_kind=trigger_kind, workspace=workspace)
+        return PipelineResult(
+            outcome="failed",
+            failure_reason="strategist_noop",
+            failure_detail=str(decision.reason or ""),
+        )
+
+    try:
+        outcome = commit_decision(
+            decision, conn, problem=problem, tick=tick,
+            trigger_kind=trigger_kind, workspace=workspace,
+        )
+    except Exception as e:
+        # Commit must succeed once verify passed; any error here is
+        # a framework bug. Surface as schema_invalid so dispatcher
+        # doesn't burn root.attempts on a framework-side issue.
+        return PipelineResult(
+            outcome="failed",
+            failure_reason="strategist_schema_invalid",
+            failure_detail=f"commit raised: {type(e).__name__}: {e}",
+        )
+
     return PipelineResult(
-        outcome="failed",
-        failure_reason="strategist_unimplemented",
+        outcome="success",
+        failure_reason="",
         failure_detail=(
-            "run_strategist body (agent.spawn_llm + decision parse) "
-            "is the next-session piece; framework-side commit logic "
-            "(parse_decision / verify_decision / commit_decision) "
-            "is implemented and unit-tested."
+            f"committed {decision.kind}"
+            + (f" (decision_row={outcome.decision_row_id}, "
+               f"forward_enqueued={outcome.enqueued_forward}, "
+               f"final_outcome={outcome.final_outcome})")
         ),
     )
+
+
+def _rc_to_reason(rc: int) -> str:
+    """Map agent.spawn_llm rc to failure_reason for Strategist / Forward.
+    Mirrors backward.py / builder.py rc handling but consolidated here
+    so the new pipelines share the same channel-failure taxonomy."""
+    if rc == 124:
+        return "transient_timeout"
+    if rc == 125:
+        return "spawn_fast_fail"
+    if rc == 126:
+        return "quota_exhausted"
+    if rc == 127:
+        return "missing_dep"
+    if rc == 128:
+        return "spawn_fast_fail"  # stuck thinking — treat as infra
+    return "spawn_fast_fail"

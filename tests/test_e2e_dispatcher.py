@@ -133,6 +133,18 @@ def test_e2e_root_proved_through_dispatcher(
                 encoding="utf-8")
             (attempts / "PROPOSAL.md").write_text(
                 "trivial fact, direct proof", encoding="utf-8")
+        elif kind == "strategist":
+            # Phase 2 — Strategist agent drops decision.json. For the
+            # e2e happy path we have a trivial Problem that Builder
+            # closes on its own; Strategist's T0 firing just needs to
+            # commit *something* so bootstrap_done flips and T0 stops
+            # re-enqueueing. A Noop decision is the cheapest valid
+            # commit (commit_decision still touches last_strategist_at
+            # + bootstrap_done for any decision kind).
+            import json as _json
+            (attempts / "decision.json").write_text(
+                _json.dumps({"kind": "Noop", "reason": "let BFS run"}),
+                encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
@@ -164,12 +176,13 @@ def test_e2e_root_proved_through_dispatcher(
         "WHERE outcome='proved' AND kind='Builder'").fetchone()
     assert finished["n"] >= 1
     # Phase 2 — Strategist T0 trigger fires on bootstrap_done=0; the
-    # Strategist pipeline module isn't implemented until Step 6, so its
-    # stub writes one `strategist_unimplemented` dead_attempt then sets
-    # bootstrap_done=1 to prevent re-trigger. Filter that row out when
-    # checking for unexpected failures on the Builder happy path.
+    # fake_spawn shipped a Noop decision, which commits cleanly but
+    # cascade-side maps to failure_reason='strategist_noop' (infra-
+    # reason so cascade_one doesn't burn root.attempts). Filter it out
+    # when checking for unexpected failures on the Builder happy path.
     deaths = conn2.execute(
         "SELECT COUNT(*) AS n FROM dead_attempts"
-        " WHERE failure_reason != 'strategist_unimplemented'"
+        " WHERE failure_reason NOT IN ('strategist_noop',"
+        "                              'strategist_unimplemented')"
     ).fetchone()
     assert deaths["n"] == 0, "no failures expected on the happy path"
