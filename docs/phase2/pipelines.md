@@ -326,7 +326,7 @@ T0 / T1 / T2 觸發邏輯：
 
 | Trigger | 偵測 |
 |---|---|
-| T0 | 任一 problem `bootstrap_done=false` → enqueue Strategist（target=該 problem root） |
+| T0 | 任一 problem `bootstrap_done=false` 且 root 非 terminal → enqueue Strategist（target=該 problem root）。Root 已 proved / shelved / disproved 的不算（與 T1 條件對齊）。 |
 | T1 | 任一 problem 最後 Strategist 完成至今 ≥ `strategist.interval_min` 分鐘、且 root 非 terminal → enqueue Strategist |
 | T2 | `goal_pending_review` event → 即時 enqueue Strategist |
 
