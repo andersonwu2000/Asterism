@@ -24,6 +24,7 @@ flash empty.
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import sqlite3
 import sys
@@ -34,6 +35,18 @@ WS = Path(__file__).resolve().parent.parent
 ACTIVE_DIR = WS / "demo" / "active"
 ATTEMPTS_DIR = WS / ".attempts"
 DB_PATH = WS / "asterism.db"
+
+# Spawn-kind detection runs off `Context.md` (compiled by
+# `Tooling/agent/{context,phase2_context}.py` at spawn cold-start),
+# not the `pipelines` table — that table is INSERT'd only at spawn
+# finish (db.record_pipeline docstring: "Live state... never persisted
+# to DB"), so a DB-based lookup never resolves while a spawn is alive.
+# Context.md exists from the first cold-start moment and carries the
+# slug + signature sections used to disambiguate kind below.
+_RE_CONTEXT_GOAL = re.compile(r"^# Context for goal (\S+)")
+_RE_STRATEGIST_CTX = re.compile(r"^# Strategist context — (\S+)")
+_RE_FORWARD_CTX = re.compile(r"^# Forward context — (\S+)")
+_RE_STRATEGY_NAMING = re.compile(r"^## Strategy naming\b")
 
 # Spawns whose dir contained a .lean touched in the last ACTIVE_WINDOW
 # seconds are treated as "live". Past that, the spawn has likely
@@ -106,40 +119,59 @@ def _latest_lean_in(spawn_dir: Path) -> Path | None:
 _LABEL_SLUG_MAX = 36
 
 
-def _lookup_spawn_info(pipeline_id: str) -> tuple[str, str] | None:
-    """Return `(kind_lower, goal_slug_or_problem)` for a spawn whose
-    `.attempts/<uuid>/` matches `pipeline_id`. Returns None if no
-    pipelines row exists yet (the worker just started and the
-    dispatcher hasn't recorded the row), or on DB error.
+def _lookup_spawn_info(spawn_dir: Path) -> tuple[str, str] | None:
+    """Identify the spawn's pipeline kind + label by parsing its
+    `Context.md`. Returns (kind, slug_or_problem) or None if Context.md
+    is missing / unreadable.
 
-    Forward (target_kind='Problem') falls back to the problem name as
-    the label since the spawn isn't tied to a single goal.
+    Why Context.md and not the `pipelines` table: pipelines rows are
+    INSERT'd at spawn FINISH (db.record_pipeline), but `.attempts/<uuid>/`
+    is rmtree'd shortly thereafter — so a DB lookup almost never resolves
+    while the spawn dir is still on disk. Context.md is written at the
+    start of cold spawn (`compile_context` / `compile_strategist_context`
+    / `compile_forward_context`) and carries unambiguous signatures.
     """
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT kind, target_id, target_kind FROM pipelines "
-            "WHERE id = ?", (pipeline_id,),
-        ).fetchone()
-        if row is None:
-            conn.close()
-            return None
-        kind = str(row["kind"]).lower()
-        if row["target_kind"] == "Problem":
-            label = str(row["target_id"])
-        else:
-            g = conn.execute(
-                "SELECT slug FROM goals WHERE id = ?",
-                (int(row["target_id"]),),
-            ).fetchone()
-            label = g["slug"] if g else str(row["target_id"])
-        conn.close()
-    except (sqlite3.Error, ValueError):
+    ctx = spawn_dir / "Context.md"
+    if not ctx.exists():
         return None
-    if len(label) > _LABEL_SLUG_MAX:
-        label = label[: _LABEL_SLUG_MAX - 1] + "…"
-    return (kind, label)
+    try:
+        # Signature lines all sit in the first ~50 lines; cap the read.
+        with open(ctx, "r", encoding="utf-8", errors="replace") as f:
+            head_lines = []
+            for i, line in enumerate(f):
+                if i >= 80:
+                    break
+                head_lines.append(line.rstrip("\n"))
+    except OSError:
+        return None
+    # Strategist / Forward declare themselves in the file's first header.
+    for line in head_lines[:6]:
+        m = _RE_STRATEGIST_CTX.match(line)
+        if m:
+            return ("strategist", m.group(1))
+        m = _RE_FORWARD_CTX.match(line)
+        if m:
+            return ("forward", m.group(1))
+    # Backward + Builder share `# Context for goal <slug>` header.
+    # Backward additionally renders a `## Strategy naming` section
+    # (context.py:_section_strategy_naming, omitted when strategy_id
+    # is None — i.e. Builder).
+    slug: str | None = None
+    has_strategy_naming = False
+    for line in head_lines:
+        if slug is None:
+            m = _RE_CONTEXT_GOAL.match(line)
+            if m:
+                slug = m.group(1)
+        if _RE_STRATEGY_NAMING.match(line):
+            has_strategy_naming = True
+            break
+    if slug is None:
+        return None
+    kind = "backward" if has_strategy_naming else "builder"
+    if len(slug) > _LABEL_SLUG_MAX:
+        slug = slug[: _LABEL_SLUG_MAX - 1] + "…"
+    return (kind, slug)
 
 
 def _update_worker_panes(
@@ -159,7 +191,7 @@ def _update_worker_panes(
             shutil.copy2(latest, target)
         except OSError:
             continue
-        info = _lookup_spawn_info(spawn.name)
+        info = _lookup_spawn_info(spawn)
         active_labels[i] = info if info is not None else ("spawning", "?")
     return active_labels
 
