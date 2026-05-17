@@ -6,13 +6,12 @@
 
 ## 1. 共通約定
 
-兩條新 pipeline 都 atomic、佔 worker pool slot、wall budget 沿用 `dispatch.spawn_timeout_sec`、retry 沿用 `run_with_session_retries`。Phase 2 不引入 continuous_task runtime。
-
 | 屬性 | Strategist | Forward |
 |---|---|---|
 | Family | Coordinator | Generator |
-| 觸發 | 見 §2.1 | 只能由 Strategist `InjectForward` |
-| 輸出 | 單一 decision object | 單一 lemma proposal |
+| 觸發 | §2.1 | 只能由 Strategist `Inject(pipeline="Forward")` |
+| 輸出 | 單一 decision object | 單一 `.lean` 檔（new lemma） |
+| Runtime | atomic、佔 worker pool slot、wall / retry 沿用既有 dispatch + `run_with_session_retries` | 同 |
 
 ---
 
@@ -25,7 +24,7 @@
 | **T0** | First-launch + Defs.lean 初寫（若需要） | `problems.bootstrap_done = false` |
 | **T1** | Routine：看局勢、決定 `Inject(...)` / `EmitDirective` / `Noop` | 每 `strategist.interval_min` 分鐘（預設 60） |
 | **T2** | `pending_strategist_review` Goal 判決 | `goal_pending_review` event |
-| **T3** | Defs.lean amend 提案 + 下次跑時補 `RequestHumanInput` | T1 / T2 衍生 |
+| **T3** | Defs.lean amend 提案（單一 `RequestDefsAmend` decision、一次 commit 含草稿 + 等 user） | T1 / T2 衍生 |
 
 優先序：T2 > T0 > T1。同時最多 1 條 Strategist（不重入）。
 
@@ -35,7 +34,7 @@
 - 主動 health check / framework alert（未來再加）
 - 開場擱置 root（Phase 2 不處理「先派 Forward 再攻 root」的場景；root 預設先試 Backward、卡住才走 T1 處理）
 
-**T0 機制**：`Manifest.entry_kind` 欄位 + `## Entry kind` Manifest section 刪除。新加 `problems.bootstrap_done` boolean column。cli init 插 `bootstrap_done=false`、dispatcher 偵測到該值就 enqueue Strategist（target=root）、Strategist commit 後設 `bootstrap_done=true`。`cli reset` 後該 flag 重設、自然 re-bootstrap。Strategist 失敗（schema_invalid 等）走 `_INFRA_REASONS` 路徑、不 burn root.attempts。
+T0 的 `bootstrap_done` 機制 + Manifest.entry_kind 移除細節見 §4.1；trigger logic 見 §4.3。
 
 ### 2.2 Input
 
@@ -49,7 +48,7 @@
 | review_context | 觸發的 Goal full statement + ancestor 鏈 + 失敗 reason summary + 既有 strategy 內容 | T2 |
 | problem_meta | Manifest + Defs.lean | T0 / T3 |
 
-TREE.md 已給結構 + status + slug、但缺 statement 文字；sidecar 補 active goals 的 statement、proved / shelved 不附（穩定、不會是 Inject target）。residue_thm scale 預期 ≤ 20 active goals、prompt 重量可控。未來大規模再考慮 MCP 懶載入。
+TREE.md 給結構但缺 statement 文字；sidecar 補 active goals 的 statement、proved / shelved 不附（不會是 Inject target）。
 
 ### 2.3 Output: decision schema
 
@@ -71,7 +70,12 @@ TREE.md 已給結構 + status + slug、但缺 statement 文字；sidecar 補 act
  "reason": "no viable approach found; statement may be open or out of scope"}
 
 {"kind": "EmitDirective", "scope": "problem:residue_thm",
- "reason": "Library now has contour_deformation_piecewise; prefer it over manual case-split."}
+ "body": "Library now has contour_deformation_piecewise; prefer it over manual case-split."}
+
+{"kind": "RequestDefsAmend", "problem": "residue_thm",
+ "proposed_body": "...new Defs.lean draft content...",
+ "question": "Manifest mentions piecewise-smooth contours but Defs.lean only abbreviates smooth case; propose adding `def Contour := ...`. Accept / reject / edit?",
+ "reason": "Bootstrap-time Defs covered only smooth contours; main proof needs piecewise."}
 ```
 
 完整 decision kinds：
@@ -81,21 +85,16 @@ TREE.md 已給結構 + status + slug、但缺 statement 文字；sidecar 補 act
 | `Inject(pipeline, brief)` | 派指定 pipeline；Phase 2 只接受 `pipeline="Forward"`；brief 是 Strategist 給 Forward 的自由描述 | `brief` |
 | `ConfirmShelve(target_goal_id)` | T2：真 dead end、轉終態 shelved | `reason` |
 | `Reopen(target_goal_id, directive?)` | T2：值得再試、轉回 attempting；directive 寫入 problem-level directive 欄位 | `reason` |
-| `EmitDirective(scope, body)` | 寫入 problem-level DB column、覆蓋既有；給未來下游 pipeline 看的提醒 | `reason`（提醒內容） |
+| `EmitDirective(scope, body)` | 寫入 `problems.strategist_directive` column、覆蓋既有；給未來下游 pipeline 看的提醒；`body` 是 directive 內容（不是 `reason`） | `body`（同時可附 `reason` 解釋決策動機） |
 | `InitializeDefs(problem, lean_body)` | T0：直接寫 `Defs.lean`（檔案不存在才能用） | `reason` |
-| `ProposeDefsAmend(problem, proposed_body)` | T3：寫 `.proposed_defs.lean` 草稿；下次 Strategist 跑時自動補 `RequestHumanInput` | `reason` |
-| `RequestHumanInput(scope, topic, question)` | 只用於 Manifest / Defs 相關（topic ∈ `{manifest_amend, defs_amend}`） | `reason` |
+| `RequestDefsAmend(problem, proposed_body, question)` | T3：一次 commit 寫 `.proposed_defs.lean` 草稿 + emit human input request、等 user 處置（見 §2.5 + §4.3 gate） | `reason`（含 `question` 給 user） |
 | `Noop` | 顯式不動 | `reason` |
 
-**Inject 為何沒 InjectBackward**：Backward 派發整路由 BFS structural refill 處理、Strategist 不介入。T0 bootstrap 後 BFS 自動 enqueue root；T1 routine 看到卡住的 Goal 不直接派 Backward、而是 InjectForward 補 library 後、BFS 自然再派 Backward 重試。
+**Inject 設計選擇**：
+- 沒 `InjectBackward`：Backward 整路由 BFS structural refill 派、Strategist 不介入
+- 沒 `target_goal_id`：Forward 不 tie 特定 Goal、產的 lemma 通用、Strategist 在 brief 自由描述需求
 
-**Inject 為何沒 target_goal_id**：Forward 不 tie 特定 Goal、輸出的 lemma 通用、可能多 Goal 都援引。Strategist 在 brief 內自由描述需求（可能提具體 Goal、可能提 domain、可能混合）、Forward agent 讀 brief + Library + Mathlib state 自行判斷產什麼 lemma。
-
-`strategist_decisions` schema 仍保留 `target_id` 欄位（給 ConfirmShelve / Reopen 等其他 decision 用）、Inject row 該欄位空。未來 Refuter / Curator 等 pipeline 若需要 target、re-use 同欄位。
-
-deferred 到 Phase 2.5+：
-- `ReformulateGoal(target, new_statement, rationale)` — 改寫 Goal statement、原 Goal 標 superseded。不可用於 root。需要 cluster relation 護欄、等 v3 doc §3 落地
-- `PauseGoal` / `UnpauseGoal` — 配套「先派 Forward、暫不攻 root」場景、Phase 2 不開
+`strategist_decisions.target_id` 欄位給 ConfirmShelve / Reopen 用、Inject row 該欄位空。
 
 ### 2.4 Stages
 
@@ -118,17 +117,24 @@ deferred 到 Phase 2.5+：
 | `problems.last_strategist_at` column | 每次 Strategist commit 更新、T1 wall-clock 計算用 |
 | `goals.status` | T2 commit 可改：`pending_strategist_review` → `shelved` / `attempting` |
 | `Problems/<p>/Defs.lean` | `InitializeDefs` 寫入（檔案不存在時） |
-| `Problems/<p>/.proposed_defs.lean` | `ProposeDefsAmend` 寫入草稿 |
+| `Problems/<p>/.proposed_defs.lean` | `RequestDefsAmend` 寫入草稿 |
 
 Inject 的 brief 不另寫檔——存 `strategist_decisions.brief` column、由被 Inject 派的 pipeline 在 cold-start 從 DB 拉出注入 Context.md 一段（見 §4.4）。
 
 Strategist **不直接修改既有的** `Defs.lean` / `Manifest.md`——只能初寫或寫草稿。維持 CLAUDE.md「Manifest + Defs.lean 是唯一人手檔」契約。
 
+**T3 / `RequestDefsAmend` 機制**：單一 decision、一次 commit 完成「寫草稿 + 等 user」兩件事。commit 階段做：
+1. `tmp_path.write_text(proposed_body) → fsync`
+2. INSERT `strategist_decisions` row（outcome 填 `awaiting_human`）
+3. `os.rename(tmp_path, .proposed_defs.lean)`
+
+任一步失敗、整個 transaction 失敗、下次重來。檔案與 row 永遠 in sync。
+
+dispatcher gate 直接看 DB：若該 problem 存在 outcome=`awaiting_human` 的 row → 跳過所有 Strategist 觸發、等 user 把 row 改成 `accepted` / `rejected`（手動 update DB 或未來補 CLI）。
+
 ### 2.6 Self-feedback loop
 
-下次 Strategist 跑時 `failure_replay` 拉近 5 條 decisions、agent 看到「上次我建議 X、結果 Y」、靠 trace 自己學。不需 explicit reward signal。
-
-例：上次 `Reopen(G=1480, directive=...)`、後續 Backward 仍失敗 → 學會該 directive 沒效、下次該 case 改 `ConfirmShelve`。
+`failure_replay` 拉近 5 條 decisions（含 outcome）、agent 看 trace 學「上次 X、結果 Y」。不需 explicit reward signal。
 
 ---
 
@@ -189,10 +195,8 @@ Context.md 跟 Backward / Builder 同模式（既有 `compile_context` 擴出 Fo
 
 ### 3.5 防亂提兩道防線
 
-1. **dedupe**：與既有 alive / proved 重複的直接濾掉、轉 `forward_all_dedupe` 結果
-2. **Strategist self-feedback**：上次 Forward 結果差（dedupe 全濾掉、或 lemma 始終攻不下來）→ 下次 Strategist 不再 InjectForward
-
-Forward 不負責 strategy 設計（那是 Backward 的事）。Forward 產的新 Goal 進池後、`bfs_refill` 自動派 Backward 去攻。
+1. **dedupe**：跟既有 alive / proved 重複的直接濾掉、轉 `forward_no_new_goal`（detail = `dedupe blocked`）
+2. **Strategist self-feedback**：上次 Forward 結果差 → 下次 Strategist 不再 InjectForward
 
 ---
 
@@ -206,7 +210,7 @@ Forward 不負責 strategy 設計（那是 Backward 的事）。Forward 產的�
 | `pipelines.target_id` | 允許 null（Forward case；既有 Backward / Builder 仍非空） |
 | `queue.decision_id` | 新欄位、int nullable、FK strategist_decisions(id)；非空表示此項由某 Inject decision 派出、pipeline cold-start 拉 brief 注入 Context.md |
 | `goals.origin` | enum 加 `forward` |
-| `goals.status` | enum 加 `pending_strategist_review` |
+| `goals.status` | enum 加 `pending_strategist_review`、`cascade_shelved` |
 | `problems.bootstrap_done` | 新欄位、boolean default false |
 | `problems.strategist_directive` | 新欄位、text nullable、長度由 prompt 約束（不做 schema CHECK） |
 | `problems.last_strategist_at` | 新欄位、ts nullable、用於 T1 wall-clock 計算 |
@@ -215,6 +219,13 @@ Forward 不負責 strategy 設計（那是 Backward 的事）。Forward 產的�
 | cli init | 改插入 `problems.bootstrap_done=false`、不再讀 Manifest entry_kind |
 
 `goals.entry_kind` 不擴 enum——Forward 產的新 Goal 預設 `Backward`（如 Backward agent 寫 sub-goal 一樣、leaf-適合直接攻就標 `Builder`）。
+
+**SQLite CHECK 約束 migration 注意**：擴 `pipelines.kind` / `queue.kind` / `goals.status` / `goals.origin` 這幾個帶 CHECK 的 enum、SQLite 不支援 ALTER 既有 CHECK。必須走 table-rebuild（`CREATE TABLE new_X` 帶新 CHECK → `INSERT SELECT FROM X` → `DROP X` → `RENAME new_X TO X`、保留 FK 重建）。既有 `init_schema` 用的 `ALTER TABLE ADD COLUMN` 對純加欄位 OK、但 enum 擴張必須走 rebuild、在 dispatcher 啟動的 migration 步驟做、需測試 rollback 路徑。
+
+**`cascade_shelved` 跟 `shelved` 的差別**：
+- `shelved`：agent 或 Strategist 主動判定該 Goal dead end、未來不再嘗試。**dedupe 會擋**形狀相同的新 Goal 提案（#112 機制）、防止 agent 提同樣 statement。
+- `cascade_shelved`：parent 被 ConfirmShelve 時、descendants 連帶 shelve 釋放 BFS。**dedupe 不擋**——descendants 本身可能有獨立價值、未來 Forward 提類似 lemma 不該被擋。BFS 同樣 skip、prune 同樣清檔。
+- dedupe 實作改：既有 `_eligible_shelved`（dedupe.py）只看 `status='shelved'`、不看 `cascade_shelved`。
 
 `strategist_decisions`：
 
@@ -233,17 +244,39 @@ Forward 不負責 strategy 設計（那是 Backward 的事）。Forward 產的�
 
 ### 4.2 Cascade 規則改動
 
-新增一條：
+**新規則 1（agent_shelved 不再直接 terminal）**：
 
 ```
 when failure_reason == agent_shelved AND goal.status in ('open','attempting'):
     goal.status ← 'pending_strategist_review'
-    emit goal_pending_review
+    enqueue Strategist (kind=Strategist, target=problem.root)
     (不直接 cascade 上游、等 Strategist review 後依結論再 cascade)
 ```
 
-`ConfirmShelve` commit 階段執行真正的 shelve cascade（沿用既有邏輯）。
-`Reopen` commit 階段：goal.status ← 'attempting'、若 directive 不空寫入 `problems.strategist_directive`、re-enqueue。
+直接 enqueue Strategist、不走 events 表（Asterism 目前無 event bus、polling 機制重）。dedup 靠既有 in-flight (kind, problem) 檢查。
+
+**新規則 2（ConfirmShelve 雙向 cascade）**：
+
+```
+ConfirmShelve(G) commit:
+    1. 上游：沿用既有 _propagate_shelve（G → parents → ... 走 strategy AND/OR 規則）
+    2. 下游：walk G 的所有 descendants（透過 strategy_subgoals）、
+            把 status ∈ {open, attempting, pending_strategist_review} 的全改 cascade_shelved
+            （不改 proved / shelved / 已 cascade_shelved 的、避免覆蓋 terminal）
+```
+
+下行用新 status `cascade_shelved` 而非 `shelved`：descendants 本身可能有獨立價值、未來 Forward 提類似 lemma 不該被 dedupe 擋（見 §4.1 status 差別說明）。
+
+**新規則 3（Reopen 安全閘）**：
+
+```
+Reopen(G) commit:
+    1. self_verify 前：walk G 的 ancestors、若任一 ancestor 狀態 ∈ {shelved, cascade_shelved}：
+       → 拒絕該 decision、agent 必須改 ConfirmShelve（ancestors terminal、Reopen 會 orphan G）
+    2. 通過後：goal.status ← 'attempting'、若 directive 不空寫入 problems.strategist_directive、re-enqueue
+```
+
+`pending_strategist_review` 不算 terminal（Strategist 還在 review）、可以是 ancestor。
 
 ### 4.3 Dispatcher 改動
 
@@ -262,25 +295,19 @@ T0 / T1 / T2 觸發邏輯：
 - `bfs_refill` 不主動派 Forward（必須 explicit inject）
 - Forward 同 problem 同時最多 1 條 in-flight（per-problem dedup、非 per-(target,kind)）
 - `pending_strategist_review` 狀態的 Goal **不入 bfs_refill 候選**
-- `strategist_awaiting_human` outcome 後、該 scope 後續 dispatch 暫停、需 operator 手動 resume
+- 若該 problem 存在 `strategist_decisions` row、`decision_kind=RequestDefsAmend` 且 `outcome='awaiting_human'`、跳過所有 Strategist 觸發（T0/T1/T2 都不 enqueue）、Backward / Builder / Forward 也暫停。operator 把 outcome 改成 `accepted` / `rejected` 後恢復 dispatch（手動 DB update 或未來補 CLI；無新 schema column）
 - Strategist 失敗（schema_invalid 等）走 `_INFRA_REASONS` 路徑、不 burn root.attempts
 
 ### 4.4 Context.md 整合（directive + brief）
 
-Backward / Builder / Forward cold-start 的 `compile_context` 增加兩段 markdown 注入：
+`compile_context`（Backward / Builder / Forward 共用）注入兩段：
 
 | 段名 | 來源 | 何時出現 |
 |---|---|---|
-| `## Strategist directive` | `problems.strategist_directive` column | 非空時、所有 pipeline cold-start 都附（problem-level、persistent） |
-| `## Strategist brief` | `strategist_decisions.brief`（依該 pipeline 對應 decision_id 查） | 該 pipeline 由 Inject 派出時才附（per-pipeline、one-shot） |
+| `## Strategist directive` | `problems.strategist_directive`（非空時） | 所有 pipeline cold-start（problem-level、覆蓋寫、無 expire） |
+| `## Strategist brief` | `strategist_decisions.brief`（透過 `queue.decision_id` FK 查） | 該 pipeline 由 Inject 派出時（per-pipeline one-shot） |
 
-純資料注入 Context.md、不動 prompt 措辭。
-
-**鏈接機制**：Strategist commit 階段 enqueue 時、queue row payload 帶 `decision_id`。dispatcher pop_queue 後派 pipeline、把 decision_id 傳給 `compile_context`、由它查 DB 拉 brief 文字注入 Context.md。
-
-- BFS 自動派的 pipeline 沒 decision_id、跳過 brief 段（只有 directive 段、若該 problem 有 directive 的話）
-- directive 無 expire 機制（單槽位、自然由下次覆蓋淘汰）
-- brief 是 per-decision、不複用、不會跨多次 pipeline 出現
+BFS 自動派的 pipeline 無 decision_id、只附 directive 段。純資料注入、不改 prompt 措辭。
 
 ### 4.5 新 failure_reason / event_type
 
@@ -290,15 +317,9 @@ failure_reason：
 |---|---|
 | `strategist_noop` | Noop decision 的乾淨退出（infra-reason、不 burn attempts） |
 | `strategist_schema_invalid` | self_verify 失敗（infra-reason、不 burn attempts） |
-| `strategist_awaiting_human` | RequestHumanInput 已 emit、等 user（infra-reason） |
-| `forward_no_useful_lemmas` | agent 認為 Library 已足夠 |
-| `forward_all_dedupe` | 提案全被 dedupe 濾掉 |
+| `forward_no_new_goal` | Forward 沒新 Goal 進池——含兩種：agent 主動 decline（Library 已足夠）/ 提案全被 dedupe 擋。具體哪種記在 failure_detail |
 
-events：`goal_pending_review`、`strategist_decision_committed`、`human_input_requested`。
-
-### 4.6 不需要動
-
-1:1 worker-pipeline binding、gateway、dedupe、existing Backward / Builder prompt 措辭、agent decline directive 集合（沿用既有 `shelve` 觸發 pending_review）。
+events：`strategist_decision_committed`（每條 decision commit 後 emit、給 dashboard / log 用）。其他狀態變化（goal pending_review、awaiting_human）靠 cascade 直接 enqueue 或 DB row 存在性 gate、不發 event。
 
 ---
 
@@ -319,9 +340,23 @@ events：`goal_pending_review`、`strategist_decision_committed`、`human_input_
 | `ReformulateGoal(target, new_statement)` | 延後 Phase 2.5+ | 需要 cluster relation 護欄、且不可用於 root |
 | `PauseGoal` / `UnpauseGoal` decisions | 延後 Phase 2.5+ | 配套「先派 Forward、暫不攻 root」場景、Phase 2 不開 |
 | 新 agent decline directive（如 `needs_review`） | 不加 | 沿用既有 `shelve`、cascade 規則處理差異 |
-| `RequestHumanInput` 用於非 Manifest 狀況 | 不啟用 | 目標最小化人類介入；只在 Manifest / Defs 相關才呼叫 |
+| 通用 `RequestHumanInput` decision（非 Defs 場景） | 不開 | 目標最小化人類介入；Phase 2 只 `RequestDefsAmend` 一個 human-input 入口、其他狀況 Strategist 自決 |
 | `HealthCheck / FrameworkAlert` | 不做 | Phase 2 先不做、未來若需要再加 |
 | `DetectCircularSubgoaling` 專用 decision | 不做 | 由 `EmitDirective` 涵蓋 |
 | 「subtree stuck」事件觸發 Strategist | 不做 | T1 wall-clock routine 順便處理、Strategist agent 自己看 inventory 判斷 |
 | Forward outcome 事件觸發 Strategist | 不做 | 同上、Phase 2 不開 forward_finished event |
 | 「queue idle」事件觸發 Strategist | 不做 | T1 wall-clock 涵蓋；queue idle 沒事做就讓系統等下次 routine |
+
+---
+
+## 7. 實作期細節（落地時決定、設計階段不 lock）
+
+設計層概念已 lock、以下實作細節等寫程式時 calibrate：
+
+- **Forward `target_id=NULL` 在 cascade 入口的分支**：既有 `_run_pipeline` 直接 `int(target_id)`、Forward target=null 要新 branch（target_kind=None / 略過 goal-row lookup）
+- **Strategist 失敗 retry 策略**：Strategist 無 root.attempts 概念、`_INFRA_REASONS` route 主要保證不 burn ancestor、但 retry / cooldown 細節由 `_retry.py` 介面決定（最簡：Strategist 失敗即終止本次、下次 trigger（T1 wall-clock 或 T2 event）再來）
+- **`asterism strategist resume <problem>` CLI**：實作細節 — 是 sub-command 還是 flag、是否支援 `--all`、是否要先 prompt 確認用戶看過 `.proposed_defs.lean`
+- **`forward_no_new_goal` 兩個 producer 路徑**：
+  - (a) agent 主動 decline：stage 3 寫一個 decline 文件（同 backward 既有 decline directive 機制）、stage 4 self_verify 認得、commit 不 INSERT、回 `forward_no_new_goal` + detail `agent declined: library sufficient`
+  - (b) dedupe 全擋：stage 5 把 agent 提的 lemma 都濾掉、commit 不 INSERT、回 `forward_no_new_goal` + detail `dedupe blocked`
+- **migration 順序**：cli reset 先清 queue（含 decision_id refs）再清 strategist_decisions、避免 FK orphan

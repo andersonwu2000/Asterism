@@ -69,21 +69,15 @@ Phase 2 補：
 
 簡化選擇：T1 走 wall-clock 而非 event-counter、因為事件權重不一致時 counter 容易誤觸發 / 漏觸發；wall-clock 預期穩定、`Noop` 決定也廉價。
 
-**人類介入最小化**：只在 Manifest / Defs 相關事務才呼叫 RequestHumanInput；其他狀況自己決定。
+**人類介入最小化**：Phase 2 只有 `RequestDefsAmend` 一個 human-input 入口（Defs.lean 修改提案）；其他狀況 Strategist 自決。
 
 ---
 
 ## 3. Forward 的位置
 
-**定位**：前沿研究 / 主動推進。看當前手上有什麼（Library / Mathlib / 已 proved Goals）、判斷該往哪擴展、產一條對未來通用的新 lemma。
+**定位**：前沿研究 / 主動推進。看當前手上有什麼（Library / Mathlib / 已 proved Goals）、判斷該往哪擴展、產一條對未來通用的新 lemma。Strategist 在 brief 內描述需求方向、Forward 自行判斷該產什麼。
 
-可能輸出包括：
-- 補既有 target 卡點的中間 lemma（gap-filling、僅其中一種模式）
-- 抽象工具（如 incidence structure 之類、給未來多 Goal 用）
-- mathlib 沒有的特殊 case lemma、generalize 已 proved 結果
-- 看 Library 進展、推測現在能組合出什麼新工具
-
-更接近數學家「看完當前進展、提出新工具」的角色、不只是「找缺失橋樑」。Strategist 在 brief 內描述需求方向、Forward 自行判斷該產什麼。
+可能輸出：補既有 target 卡點的中間 lemma、抽象工具、mathlib 沒有的特殊 case、generalize 已 proved 結果。
 
 跟 Backward 的本質差異：
 
@@ -151,5 +145,4 @@ main 沒 proved 但 cycle 跑通、各 pipeline 行為符合 spec、Phase 2 仍�
 1. Strategist + Forward prompt 草稿（先跟 user 對齊措辭、prompts/ 改動 discuss-first 規則）
 2. DB schema migration + dispatcher 觸發邏輯（純程式）
 3. residue_thm Problem 初始化（Manifest 預備）
-4. 跑 Phase 2 第一次驗證、量 Strategist 觸發頻率與 Forward 命中率
-5. 依實測 calibrate `K_strategist_routine`
+4. 跑 Phase 2 第一次驗證、量觸發頻率與 Forward 命中率、calibrate `strategist.interval_min`
