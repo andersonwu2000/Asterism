@@ -69,7 +69,7 @@ Phase 2 補：
 
 簡化選擇：T1 走 wall-clock 而非 event-counter、因為事件權重不一致時 counter 容易誤觸發 / 漏觸發；wall-clock 預期穩定、`Noop` 決定也廉價。
 
-**人類介入最小化**：Phase 2 只有 `RequestDefsAmend` 一個 human-input 入口（Defs.lean 修改提案）；其他狀況 Strategist 自決。
+**人類介入最小化**：Phase 2 只有 `RequestUserAmend(file)` 一個 human-input 入口（user-owned 檔修改提案、`file` ∈ Defs.lean / Manifest.md）；其他狀況 Strategist 自決。Manifest 也涵蓋是因經驗上 Manifest 的 hints / Entry kind 等指示也會錯導向。
 
 ---
 
