@@ -23,7 +23,7 @@
 |---|---|---|
 | **T0** | First-launch + Defs.lean 初寫（若需要） | `problems.bootstrap_done = false` |
 | **T1** | Routine：看局勢、決定 `Inject(...)` / `EmitDirective` / `Noop` | 每 `strategist.interval_min` 分鐘（預設 60） |
-| **T2** | `pending_strategist_review` Goal 判決 | `goal_pending_review` event |
+| **T2** | `pending_strategist_review` Goal 處置（不限終態判決——可 Inject Forward 先擴 library，G 留 pending、下輪再決定） | `goal_pending_review` event |
 | **T3** | Defs.lean amend 提案（單一 `RequestDefsAmend` decision、一次 commit 含草稿 + 等 user） | T1 / T2 衍生 |
 
 優先序：T2 > T0 > T1。同時最多 1 條 Strategist（不重入）。
@@ -95,6 +95,8 @@ TREE.md 給結構但缺 statement 文字；sidecar 補 active goals 的 statemen
 - 沒 `target_goal_id`：Forward 不 tie 特定 Goal、產的 lemma 通用、Strategist 在 brief 自由描述需求
 
 `strategist_decisions.target_id` 欄位給 ConfirmShelve / Reopen 用、Inject row 該欄位空。
+
+**T2 觸發下的 decision 不受限**：T2 看到 pending_review goal、若判斷「現有 library 不夠、直接 Reopen 會再 fail」、可輸出 `Inject(Forward, brief)` 先擴 library；G 留 pending_review 等下輪。只有 `ConfirmShelve` / `Reopen` 是 G 的終態判決、其他 decision 都保留 pending 狀態。next T1 routine 把 pending goal 帶進 sidecar 重新審視。
 
 ### 2.4 Stages
 
