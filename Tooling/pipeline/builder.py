@@ -32,11 +32,17 @@ from ..quality import diagnostics
 
 def run_builder(conn: sqlite3.Connection, *, goal_id: int,
                 workspace: Path, mfst: manifest.Manifest,
-                pipeline_id: str) -> "PipelineResult":  # noqa: F821
+                pipeline_id: str,
+                decision_id: int | None = None,
+                ) -> "PipelineResult":  # noqa: F821
     """Outer dispatch — runs the inner pipeline then persists or clears
     the partial-output draft so a future spawn on this same goal
     sees the in-flight patch from the prior failed attempt instead of
     starting from scratch.
+
+    Phase 2 — `decision_id` flows from the spawning queue row (non-NULL
+    only when a Strategist Inject decision emitted this entry). Passed
+    through to `compile_context` for the `## Strategist brief` section.
 
     Outcomes:
       - `proved`: success — clear any draft (no carry-over wanted).
@@ -52,7 +58,8 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
         return PipelineResult(outcome="failed", failure_reason="goal_not_found")
     problem_dir = db.problem_dir(workspace, goal_row["problem"])
     result = _run_builder_inner(conn, goal_id=goal_id, workspace=workspace,
-                                mfst=mfst, pipeline_id=pipeline_id)
+                                mfst=mfst, pipeline_id=pipeline_id,
+                                decision_id=decision_id)
     if result.outcome in ("proved", "moot"):
         _drafts.clear_partial(problem_dir=problem_dir, kind="builder",
                               goal_id=goal_id)
@@ -66,7 +73,9 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
 
 def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                        workspace: Path, mfst: manifest.Manifest,
-                       pipeline_id: str) -> "PipelineResult":  # noqa: F821
+                       pipeline_id: str,
+                       decision_id: int | None = None,
+                       ) -> "PipelineResult":  # noqa: F821
     from . import (
         PipelineResult, PROMPT_DIR,
         _attempt_postmortem, _extract_decline_reason,
@@ -221,7 +230,8 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         if ctx.cold:
             context.compile_context(conn, goal=goal, mfst=mfst,
                                   attempts_dir=ctx.attempts_dir,
-                                  kind="builder")
+                                  kind="builder",
+                                  decision_id=decision_id)
 
         # Register a gateway session so claude's MCP tools operate on
         # goal_lean's content via the shared worker pool. Snapshot was

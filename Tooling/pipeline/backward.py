@@ -178,11 +178,17 @@ def _parse_entry_kind(lean_text: str) -> str:
 
 def run_backward(conn: sqlite3.Connection, *, goal_id: int,
                  workspace: Path, mfst: manifest.Manifest,
-                 pipeline_id: str) -> "PipelineResult":  # noqa: F821
+                 pipeline_id: str,
+                 decision_id: int | None = None,
+                 ) -> "PipelineResult":  # noqa: F821
     """Outer dispatch — runs the inner Backward then persists or clears
     the partial-output draft so a future spawn on this same goal sees
     the in-flight PROPOSAL.md from the prior failed/timed-out attempt
     instead of starting from scratch.
+
+    Phase 2 — `decision_id` flows from the spawning queue row (non-NULL
+    only when a Strategist Inject decision emitted this entry). Passed
+    through to `compile_context` for the `## Strategist brief` section.
 
     Outcomes:
       - `success`: strategy committed → clear any prior draft.
@@ -201,7 +207,8 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
         return PipelineResult(outcome="failed", failure_reason="goal_not_found")
     problem_dir = db.problem_dir(workspace, goal_row["problem"])
     result = _run_backward_inner(conn, goal_id=goal_id, workspace=workspace,
-                                 mfst=mfst, pipeline_id=pipeline_id)
+                                 mfst=mfst, pipeline_id=pipeline_id,
+                                 decision_id=decision_id)
     if (result.outcome in ("success", "moot")
             or result.failure_reason == "goal_no_longer_open"):
         _drafts.clear_partial(problem_dir=problem_dir, kind="backward",
@@ -216,7 +223,9 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
 
 def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                         workspace: Path, mfst: manifest.Manifest,
-                        pipeline_id: str) -> "PipelineResult":  # noqa: F821
+                        pipeline_id: str,
+                        decision_id: int | None = None,
+                        ) -> "PipelineResult":  # noqa: F821
     """OR-parallel-safe Backward — Phase 7 in-pipeline retry.
 
     Each invocation reserves a fresh strategy id and writes its scratch +
@@ -329,7 +338,8 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             context.compile_context(conn, goal=goal, mfst=mfst,
                                   attempts_dir=ctx.attempts_dir,
                                   strategy_id=strategy_id,
-                                  kind="backward")
+                                  kind="backward",
+                                  decision_id=decision_id)
             patch_lean.write_text(skeleton, encoding="utf-8")
 
         # Register a gateway session so claude's MCP tools operate on

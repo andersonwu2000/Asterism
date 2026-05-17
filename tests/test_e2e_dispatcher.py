@@ -163,6 +163,13 @@ def test_e2e_root_proved_through_dispatcher(
         "SELECT COUNT(*) AS n FROM pipelines "
         "WHERE outcome='proved' AND kind='Builder'").fetchone()
     assert finished["n"] >= 1
+    # Phase 2 — Strategist T0 trigger fires on bootstrap_done=0; the
+    # Strategist pipeline module isn't implemented until Step 6, so its
+    # stub writes one `strategist_unimplemented` dead_attempt then sets
+    # bootstrap_done=1 to prevent re-trigger. Filter that row out when
+    # checking for unexpected failures on the Builder happy path.
     deaths = conn2.execute(
-        "SELECT COUNT(*) AS n FROM dead_attempts").fetchone()
+        "SELECT COUNT(*) AS n FROM dead_attempts"
+        " WHERE failure_reason != 'strategist_unimplemented'"
+    ).fetchone()
     assert deaths["n"] == 0, "no failures expected on the happy path"

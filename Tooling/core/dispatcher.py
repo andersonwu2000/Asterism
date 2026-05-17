@@ -691,8 +691,25 @@ def bfs_refill(conn: sqlite3.Connection,
     # pipelines. They're processed inline in `verify_housekeeping` at
     # the end of each tick.
 
-    # Open goals → enqueue if no in-flight or queued attempt exists
+    # Phase 2 — awaiting_human gate: cache per-problem to avoid N+1
+    # queries (one per open goal). A problem with an unresolved
+    # RequestUserAmend pauses all dispatch on it until operator
+    # resolves the strategist_decisions row.
+    awaiting_cache: dict[str, bool] = {}
+
+    def problem_paused(problem: str) -> bool:
+        if problem not in awaiting_cache:
+            awaiting_cache[problem] = db.problem_has_awaiting_human(
+                conn, problem)
+        return awaiting_cache[problem]
+
+    # Open goals → enqueue if no in-flight or queued attempt exists.
+    # Phase 2 — `pending_strategist_review` goals are excluded from
+    # `open_goals` (status='open' filter). `goals.detached=1` goals
+    # are included via the CTE seed change in db.open_goals.
     for g in db.open_goals(conn, scope=scope):
+        if problem_paused(str(g["problem"])):
+            continue
         gid = str(g["id"])
         kind = next_worker_kind(g)
         if kind_cooled(kind):
@@ -703,12 +720,73 @@ def bfs_refill(conn: sqlite3.Connection,
 
 
 # ---------------------------------------------------------------------
+# Phase 2 — Strategist T0 / T1 triggers
+# ---------------------------------------------------------------------
+
+def strategist_triggers(conn: sqlite3.Connection,
+                        running: set[tuple[str, str]],
+                        *,
+                        scope: str | None = None,
+                        interval_min: float = 60.0,
+                        ) -> None:
+    """T0 (first-launch) + T1 (wall-clock routine) enqueues for the
+    Strategist pipeline. T2 (pending_review) is handled by
+    `_enqueue_strategist_review` at cascade-time, not here.
+
+    T0 condition: `problems.bootstrap_done = 0`.
+    T1 condition: `last_strategist_at` older than `interval_min` minutes
+                   AND root not terminal.
+
+    Per-problem dedup: skip enqueue if a Strategist (target=root) is
+    already running or already in the queue. The awaiting_human gate
+    skips Strategist enqueue for problems whose human-input request
+    hasn't been resolved.
+
+    Called from `dispatcher.run` once per tick alongside `bfs_refill`.
+    """
+    max_age_sec = interval_min * 60.0
+
+    def already_inflight(root_id_str: str) -> bool:
+        return ((root_id_str, "Strategist") in running
+                or db.is_in_queue(conn, target_id=root_id_str,
+                                  kind="Strategist"))
+
+    # T0 — first launch (highest urgency among Strategist triggers)
+    for prob, root_id in db.problems_needing_t0(conn, scope=scope):
+        if db.problem_has_awaiting_human(conn, prob):
+            continue
+        rid = str(root_id)
+        if already_inflight(rid):
+            continue
+        # Higher priority than Backward (2) / Builder (5)? Phase 2 spec
+        # says Strategist > Backward/Builder but < Verify housekeeping.
+        # Verify is inline (not queued), so queue.priority just needs
+        # to put Strategist ahead of Backward/Builder.
+        db.enqueue(conn, kind="Strategist", target_id=rid,
+                   target_kind="Goal", priority=10)
+
+    # T1 — wall-clock routine
+    for prob, root_id in db.problems_needing_t1(
+        conn, scope=scope, max_age_sec=max_age_sec,
+    ):
+        if db.problem_has_awaiting_human(conn, prob):
+            continue
+        rid = str(root_id)
+        if already_inflight(rid):
+            continue
+        db.enqueue(conn, kind="Strategist", target_id=rid,
+                   target_kind="Goal", priority=10)
+
+
+# ---------------------------------------------------------------------
 # Worker thread body
 # ---------------------------------------------------------------------
 
 def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
                   task_kind: str, target_id: str, target_kind: str,
-                  pipeline_id: str) -> tuple[str, str, str, str, str]:
+                  pipeline_id: str,
+                  decision_id: int | None = None,
+                  ) -> tuple[str, str, str, str, str]:
     """Run one pipeline in worker thread. Returns (pipeline_id, kind, target_id,
     target_kind, outcome).
 
@@ -716,6 +794,12 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
       - INSERT one finished pipeline row (succeeded/failed)
       - On failure: INSERT dead_attempt row with full artifacts JSON
       - Always rmtree .attempts/<pid>/ + .attempts/_backup_<pid>/ via WorkArea
+
+    Phase 2 — `decision_id` carries the strategist_decisions row id
+    when the spawning queue entry came from a Strategist Inject
+    decision. Passed through to compile_context for the
+    `## Strategist brief` section. BFS-auto-dispatched pipelines have
+    decision_id=None.
 
     NB: opens its own DB conn (sqlite3 thread safety)."""
     import json as _json
@@ -725,8 +809,53 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
         with agent.WorkArea(workspace, pipeline_id) as wa:
             attempts_dir = wa.attempts
 
-            # Only Goal-targeting kinds remain (Builder / Backward).
-            # Strategy verify is housekeeping, not a worker.
+            # Phase 2 — Strategist / Forward kinds are NOT Goal-targeted
+            # at the same level as Builder / Backward. Strategist takes
+            # a Goal target (problem root id) but runs meta-level
+            # decisions, not goal-attacking work. Forward uses
+            # target_kind='Problem' + target_id=problem_name.
+            # Step 6 implements both; until then they return a
+            # placeholder "not yet implemented" result that cascade_one
+            # silently no-ops on (since cascade_one's kind branches
+            # only cover Builder / Backward).
+            if task_kind in ("Strategist", "Forward"):
+                db.record_pipeline(
+                    conn, pipeline_id=pipeline_id, kind=task_kind,
+                    target_id=target_id, target_kind=target_kind,
+                    status="failed", outcome="failed",
+                    started_at=started_at,
+                )
+                reason = (f"{task_kind.lower()}_unimplemented")
+                # Strategist target_id is a Goal id (problem root);
+                # Forward target_id is a problem name (TEXT). Forward's
+                # dead_attempts.target_id requires INTEGER; coerce to 0
+                # (the foreign id is forensic-only for the stub anyway).
+                _da_tid = (int(target_id) if target_kind == "Goal" else 0)
+                db.record_dead_attempt(
+                    conn, target_id=_da_tid, target_kind=target_kind,
+                    pipeline_id=pipeline_id, failure_reason=reason,
+                    failure_detail=(
+                        f"{task_kind} pipeline not yet implemented "
+                        "(Phase 2 Step 6 pending)"
+                    ),
+                )
+                # T0 spam guard: without Strategist Step 6 committing
+                # a decision (which would set bootstrap_done=1), the
+                # `problems_needing_t0` scan would re-enqueue Strategist
+                # every tick. Mark the problem as past-bootstrap here
+                # so T0 doesn't infinite-loop while Step 6 is pending.
+                # Step 6 replaces this stub with real commit logic; this
+                # branch is dead code after the new pipeline modules land.
+                if task_kind == "Strategist" and target_kind == "Goal":
+                    grow = db.get_goal(conn, int(target_id))
+                    if grow is not None:
+                        db.set_problem_bootstrap_done(conn, grow["problem"])
+                        db.update_problem_last_strategist_at(
+                            conn, grow["problem"])
+                return (pipeline_id, task_kind, target_id, target_kind,
+                        "failed", reason)
+
+            # Builder / Backward — Goal-targeted.
             goal_id = int(target_id)
             goal = db.get_goal(conn, goal_id)
             if goal is None:
@@ -745,11 +874,13 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
                 r = pipeline.run_builder(
                     conn, goal_id=goal_id, workspace=workspace,
                     mfst=mfst, pipeline_id=pipeline_id,
+                    decision_id=decision_id,
                 )
             elif task_kind == "Backward":
                 r = pipeline.run_backward(
                     conn, goal_id=goal_id, workspace=workspace,
                     mfst=mfst, pipeline_id=pipeline_id,
+                    decision_id=decision_id,
                 )
             else:
                 r = pipeline.PipelineResult(outcome="failed",
@@ -921,6 +1052,14 @@ def run(workspace: Path, *, once: bool = False,
     SHELVE_THRESHOLD = config.get(
         "dispatch.shelve_threshold", default=8,
         env_var="ASTERISM_SHELVE_THRESHOLD", cast=int, workspace=workspace)
+    # Phase 2 — T1 (wall-clock routine) interval in minutes. Default 60
+    # per `docs/phase2/pipelines.md` §5. Picked by `strategist_triggers`
+    # each tick. Override via env var or Asterism.yaml for calibration.
+    strategist_interval_min = config.get(
+        "strategist.interval_min", default=60.0,
+        env_var="ASTERISM_STRATEGIST_INTERVAL_MIN", cast=float,
+        workspace=workspace,
+    )
     if SHELVE_THRESHOLD <= BUILDER_THRESHOLD:
         # An invalid combo would mean Backward never gets a chance —
         # fail loudly rather than silently degrade behavior.
@@ -1261,6 +1400,13 @@ def run(workspace: Path, *, once: bool = False,
         bfs_refill(conn, running, cooldown_until, scope=scope,
                    quota_cooldown_kind=quota_cooldown_kind)
 
+        # Phase 2 — Strategist T0/T1 triggers (T2 fires at cascade time
+        # in `cascade_one`, not here). Skipped under awaiting_human gate
+        # per-problem inside `strategist_triggers`. Defaults to 60-min
+        # routine (`strategist.interval_min` in Asterism.yaml).
+        strategist_triggers(conn, running, scope=scope,
+                            interval_min=strategist_interval_min)
+
         # Spawn from queue while pool has slots. Skip if a pipeline of
         # the same (target_id, kind) is already in flight in this
         # daemon — bfs_refill caps at 1 but daemon recovery + race
@@ -1279,11 +1425,25 @@ def run(workspace: Path, *, once: bool = False,
             # kind. Drop it; bfs_refill will repopulate post-cooldown.
             if quota_cooldown_kind.get(kind, 0.0) > time.time():
                 continue
-            target_kind = "Goal"  # Verify removed; only Goal kinds left
+            # Phase 2 — queue.target_kind defaults to 'Goal' (post-
+            # migration column), and queue.decision_id is non-NULL when
+            # this row was emitted by a Strategist Inject decision.
+            # Both default-safe for pre-Phase 2 queue rows (target_kind
+            # has DEFAULT 'Goal', decision_id NULL).
+            try:
+                target_kind = str(row["target_kind"]) or "Goal"
+            except (IndexError, KeyError):
+                target_kind = "Goal"
+            try:
+                _did = row["decision_id"]
+                decision_id = int(_did) if _did is not None else None
+            except (IndexError, KeyError):
+                decision_id = None
             pipeline_id = agent.new_pipeline_id()
             running.add((target_id, kind))
             fut = pool.submit(_run_pipeline, workspace, manifests,
-                              kind, target_id, target_kind, pipeline_id)
+                              kind, target_id, target_kind, pipeline_id,
+                              decision_id)
             futures[fut] = (pipeline_id, kind, target_id, target_kind)
             print(f"[dispatch] {kind} {target_kind}={target_id} "
                   f"pid={pipeline_id[:8]}", flush=True)

@@ -629,6 +629,131 @@ def unverified_proved_roots(conn: sqlite3.Connection) -> list[str]:
     ).fetchall()]
 
 
+def set_goal_detached(conn: sqlite3.Connection, goal_id: int,
+                      detached: bool = True) -> None:
+    """Phase 2 — Strategist Reopen sets `detached=1` when the goal's
+    upward strategy chain is broken (any ancestor strategy ∈ {dead,
+    superseded}). BFS then dispatches on the goal standalone via the
+    `open_goals` recursive CTE's `detached=1` seed. Reset to 0 by
+    `update_goal_status` flipping non-'attempting' status (cascade
+    rollback would otherwise leave stale detach flag)."""
+    conn.execute(
+        "UPDATE goals SET detached = ?, updated_at = ? WHERE id = ?",
+        (1 if detached else 0, now(), goal_id),
+    )
+    conn.commit()
+
+
+# ---------------------------------------------------------------------
+# Phase 2 — problem-level Strategist state helpers
+# ---------------------------------------------------------------------
+
+def set_problem_bootstrap_done(conn: sqlite3.Connection, problem: str) -> None:
+    """Mark a problem as past the T0 first-launch trigger. Set after
+    Strategist's first commit on that problem (any decision kind)."""
+    conn.execute(
+        "UPDATE problems SET bootstrap_done = 1 WHERE name = ?",
+        (problem,),
+    )
+    conn.commit()
+
+
+def set_problem_strategist_directive(conn: sqlite3.Connection,
+                                     problem: str,
+                                     directive: str | None) -> None:
+    """Overwrite-on-write standing directive. EmitDirective /
+    Reopen-with-directive sets non-empty text; passing None / empty
+    clears it (the cascade reset path)."""
+    conn.execute(
+        "UPDATE problems SET strategist_directive = ? WHERE name = ?",
+        (directive if directive else None, problem),
+    )
+    conn.commit()
+
+
+def update_problem_last_strategist_at(conn: sqlite3.Connection,
+                                      problem: str) -> None:
+    """Touch the timestamp Strategist's T1 trigger reads to compute
+    `wall_clock_age >= interval_min`. Called on every Strategist commit
+    regardless of decision_kind."""
+    conn.execute(
+        "UPDATE problems SET last_strategist_at = ? WHERE name = ?",
+        (now(), problem),
+    )
+    conn.commit()
+
+
+def problems_needing_t0(conn: sqlite3.Connection,
+                        scope: str | None = None
+                        ) -> list[tuple[str, int]]:
+    """Return [(problem_name, root_goal_id)] for problems with
+    `bootstrap_done=0`. Caller is responsible for the awaiting_human
+    gate + in-flight Strategist dedup. Root goal id is computed via
+    the standard `origin='root'` join."""
+    sql = (
+        "SELECT p.name, g.id AS root_id"
+        " FROM problems p"
+        " JOIN goals g ON g.problem = p.name AND g.origin = 'root'"
+        " WHERE p.bootstrap_done = 0"
+    )
+    args: tuple = ()
+    if scope is not None:
+        sql += " AND p.name LIKE ?"
+        args = (scope,)
+    sql += " ORDER BY p.name"
+    return [(r["name"], int(r["root_id"])) for r in conn.execute(sql, args)]
+
+
+def problems_needing_t1(conn: sqlite3.Connection, *,
+                        max_age_sec: float,
+                        scope: str | None = None
+                        ) -> list[tuple[str, int]]:
+    """Return [(problem_name, root_goal_id)] for problems whose
+    `last_strategist_at` is older than `max_age_sec` seconds (or NULL).
+    Excludes problems whose root goal is already terminal (proved /
+    shelved / disproved) since Strategist has nothing to do there.
+    NULL last_strategist_at is treated as "ancient" (never strategist'd,
+    eligible for T1 immediately)."""
+    # SQLite julianday() yields fractional days; convert max_age_sec to
+    # days for arithmetic. NULL last_strategist_at → coalesce to '1970'.
+    max_age_days = max_age_sec / 86400.0
+    sql = (
+        "SELECT p.name, g.id AS root_id"
+        " FROM problems p"
+        " JOIN goals g ON g.problem = p.name AND g.origin = 'root'"
+        " WHERE p.bootstrap_done = 1"
+        "   AND g.status NOT IN ('proved','shelved','disproved')"
+        "   AND ("
+        "      p.last_strategist_at IS NULL"
+        "      OR julianday('now') - julianday(p.last_strategist_at) > ?"
+        "   )"
+    )
+    args: tuple = (max_age_days,)
+    if scope is not None:
+        sql += " AND p.name LIKE ?"
+        args = (max_age_days, scope)
+    sql += " ORDER BY p.name"
+    return [(r["name"], int(r["root_id"])) for r in conn.execute(sql, args)]
+
+
+def problem_has_awaiting_human(conn: sqlite3.Connection, problem: str) -> bool:
+    """True iff this problem has a `strategist_decisions` row with
+    `outcome='awaiting_human'`. While true the dispatcher should pause
+    all Strategist + Backward + Builder + Forward dispatch on this
+    problem until operator resolves the row (handled in dispatcher's
+    pop loop / strategist_triggers)."""
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM strategist_decisions"
+            " WHERE problem = ? AND outcome = 'awaiting_human' LIMIT 1",
+            (problem,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        # Pre-Phase 2 schema (table missing).
+        return False
+    return row is not None
+
+
 def update_goal_entry_kind(conn: sqlite3.Connection, goal_id: int,
                            entry_kind: str) -> None:
     """Persist the dispatch-routing directive on a goal. Used by
@@ -672,9 +797,16 @@ def open_goals(conn: sqlite3.Connection,
     benchmark daemon doesn't dispatch unrelated research problems
     sitting in the same workspace.
     """
+    # Phase 2 — `detached=1` goals are dispatchable independently
+    # (Strategist Reopen on a goal whose upward strategy chain is dead
+    # auto-flagged them; framework treats them as if they have a live
+    # parent strategy). UNION'd into the alive seed set so descendants
+    # via their own live strategies also propagate.
     sql = (
         "WITH RECURSIVE alive(id) AS ("
         "    SELECT id FROM goals WHERE origin = 'root'"
+        "    UNION"
+        "    SELECT id FROM goals WHERE detached = 1"
         "    UNION"
         "    SELECT g.id FROM goals g"
         "    JOIN strategy_subgoals ss ON ss.subgoal_id = g.id"
