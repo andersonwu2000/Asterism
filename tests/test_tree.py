@@ -85,9 +85,10 @@ def test_render_root_with_single_strategy_and_subgoals(conn) -> None:
     # Sub-goal labels
     assert "s1_sub_1  (proved)" in out
     assert "s1_sub_2  (open, attempts=2)" in out
-    # Tree connectors present
-    assert "├──" in out
-    assert "└──" in out
+    # Tree connectors present (2-char indent style, see _BRANCH_* in
+    # tree.py — keeps deep trees readable for descriptive slugs).
+    assert "├─" in out
+    assert "└─" in out
 
 
 def test_render_dead_strategy_shows_subgoal_shelved_cause(conn) -> None:
@@ -184,6 +185,54 @@ def test_render_cycle_defense_via_visited_set(conn) -> None:
     conn.commit()
     out = tree.render(conn, "p")
     assert "already shown above" in out
+
+
+def test_render_keeps_full_slug_even_when_long(conn) -> None:
+    """Long descriptive slugs render in FULL — the Strategist agent
+    reads TREE.md inline (`phase2_context._section_tree_inline`) and
+    needs the unambiguous slug to cross-reference with the
+    active_goals_sidecar + Manifest hints. Display-side truncation
+    would silently break that lookup. Tree width is managed via the
+    2-char indent style, not via slug clipping."""
+    root_id = _seed_root(conn)
+    s = _seed_strategy(conn, root_id)
+    long_slug = "e_pow_finset_sum_eq_scalar_v_variant_3"   # 38 chars
+    _seed_subgoal(conn, s, long_slug, status="proved", position=0)
+    out = tree.render(conn, "p")
+    assert long_slug in out
+    assert "…" not in out
+
+
+def test_render_forward_goals_get_their_own_section(conn) -> None:
+    """Forward-origin goals are independent lemmas — they render as
+    sub-trees under a separate `## Forward` header (not connected to
+    main's strategy tree). Backward sub-goals attached below a Forward
+    goal walk through the same `_walk_goal`."""
+    _seed_root(conn)
+    # Forward-produced lemma at top level (no parent strategy edge).
+    fwd_id = db.insert_goal(
+        conn, problem="p", slug="contour_lemma", lean_path="P/L.lean",
+        statement="True", origin="forward", depth=0,
+    )
+    # Backward later attacks the Forward lemma → its own strategy chain.
+    s_fwd = _seed_strategy(conn, fwd_id, status="proposed")
+    _seed_subgoal(conn, s_fwd, "contour_sub_1", status="proved", position=0)
+    out = tree.render(conn, "p")
+    # Main tree present (root)
+    assert "main  " in out
+    # Forward section header + lemma + its sub-tree
+    assert "## Forward" in out
+    assert "contour_lemma" in out
+    assert f"via s{s_fwd}" in out
+    assert "contour_sub_1  (proved)" in out
+
+
+def test_render_no_forward_section_when_no_forward_goals(conn) -> None:
+    """If a problem has no `origin='forward'` goals, the `## Forward`
+    header doesn't appear (keeps the tree clean for the common case)."""
+    _seed_root(conn)
+    out = tree.render(conn, "p")
+    assert "## Forward" not in out
 
 
 def test_render_counters_aggregate_all_statuses(conn) -> None:

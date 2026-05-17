@@ -39,6 +39,16 @@ from . import db
 _DEAD_CAUSE_SUBGOAL_SHELVED = "sub-goal shelved"
 _DEAD_CAUSE_VERIFY = "verify failed"
 
+# 2-char indent (vs 4) halves horizontal growth per nesting level —
+# the difference between a wrapping sl2 tree and a readable one at
+# typical editor widths. Slugs themselves stay full-length (the
+# Strategist agent reads TREE.md inline and needs unambiguous slug
+# names to cross-reference with active_goals_sidecar / Manifest).
+_BRANCH_LAST = "└─ "
+_BRANCH_MID = "├─ "
+_PAD_LAST = "   "
+_PAD_MID = "│  "
+
 
 def _strategy_dead_cause(conn: sqlite3.Connection, strategy_id: int
                          ) -> str | None:
@@ -103,8 +113,8 @@ def _walk_goal(conn: sqlite3.Connection, goal_id: int,
 
     for i, strat in enumerate(strategies):
         is_last_strat = (i == len(strategies) - 1)
-        connector = "└── " if is_last_strat else "├── "
-        child_prefix = "    " if is_last_strat else "│   "
+        connector = _BRANCH_LAST if is_last_strat else _BRANCH_MID
+        child_prefix = _PAD_LAST if is_last_strat else _PAD_MID
         lines.append(f"{prefix}{connector}{_strategy_label(conn, strat)}")
 
         sub_rows = conn.execute(
@@ -115,8 +125,8 @@ def _walk_goal(conn: sqlite3.Connection, goal_id: int,
         ).fetchall()
         for j, sub in enumerate(sub_rows):
             is_last_sub = (j == len(sub_rows) - 1)
-            sub_connector = "└── " if is_last_sub else "├── "
-            sub_child_prefix = "    " if is_last_sub else "│   "
+            sub_connector = _BRANCH_LAST if is_last_sub else _BRANCH_MID
+            sub_child_prefix = _PAD_LAST if is_last_sub else _PAD_MID
             lines.append(
                 f"{prefix}{child_prefix}{sub_connector}{_goal_label(sub)}"
             )
@@ -156,8 +166,32 @@ def render(conn: sqlite3.Connection, problem: str) -> str:
         "```",
         _goal_label(root),
     ]
-    _walk_goal(conn, int(root["id"]), set(), lines, "")
+    visited: set[int] = set()
+    _walk_goal(conn, int(root["id"]), visited, lines, "")
     lines.append("```")
+
+    # Forward-origin goals are independent lemmas (no parent strategy
+    # edge to root). Render each as its own sub-tree under a separate
+    # `## Forward` header so they're visible alongside the main
+    # decomposition. Backward sub-trees attached below a Forward goal
+    # are walked through the same `_walk_goal` (each Forward goal is a
+    # local root). See docs/phase2/design.md §3 — Forward lemmas are
+    # standalone tools the rest of the proof can reach for via dedupe.
+    forward_roots = conn.execute(
+        "SELECT * FROM goals WHERE problem = ? AND origin = 'forward' "
+        "ORDER BY id", (problem,),
+    ).fetchall()
+    if forward_roots:
+        lines += ["", "## Forward", "", "```"]
+        for fg in forward_roots:
+            lines.append(_goal_label(fg))
+            _walk_goal(conn, int(fg["id"]), visited, lines, "")
+            lines.append("")
+        # Strip the trailing blank inside the fenced block.
+        if lines[-1] == "":
+            lines.pop()
+        lines.append("```")
+
     lines.append("")
     lines.append(f"**Counters:** {summary}")
     lines.append("")
