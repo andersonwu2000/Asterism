@@ -195,52 +195,56 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     # sid lifecycle (cold first, --resume thereafter), per-retry
     # forensic. Builder-specific spawn / parse / postmortem are closures
     # over the pipeline scope below.
+    #
+    # Sandbox model (parity with Backward, see backward.py:316-321):
+    # `.attempts/<pid>/patch.lean` is the agent's scratch — apply_edit's
+    # write-through goes there, and the agent's final `patch.lean`
+    # output is parsed from the same file. goal_lean (the workspace
+    # `proofs/L_<slug>.lean`) is untouched during the spawn and is
+    # written exactly once, atomically, at commit time in
+    # `builder_parse` after all checks pass. This removes the prior
+    # SpawnWorkspace snapshot/restore machinery: there's no "dirty
+    # workspace mid-spawn" window for crash recovery to repair.
+    patch_lean = attempts_dir / "patch.lean"
+    goal_lean_original = source   # already read above
+    promote_done = False
 
-    # Spawn sandbox snapshot. Replaces the prior ad-hoc `.backup`
-    # mechanism: SpawnWorkspace records goal_lean's pre-pipeline bytes
-    # into `.attempts/<pid>/sandbox/`. Rollback (non-commit exit OR
-    # daemon-startup sweep recovery) restores real goal_lean from
-    # that snapshot. `restore_to_snapshot` is called between in-
-    # pipeline retries so each retry sees pristine state.
-    # See docs/archive/spawn_sandbox.md.
-    from ..agent import sandbox as _sandbox_mod
-    workspace_ctx = _sandbox_mod.SpawnWorkspace(
-        workspace, pipeline_id, real_paths=[goal_lean])
+    def _seed_patch_from_goal() -> None:
+        """Initialize patch.lean to goal_lean's current content so the
+        agent's first apply_edit / Read sees the original stub (or any
+        partial draft persisted by `_drafts.persist_partials` is
+        overwritten by the agent's own re-write — handled by spawn)."""
+        patch_lean.write_text(goal_lean_original, encoding="utf-8")
 
-    def _restore_backup() -> None:
-        """Restore goal_lean from the spawn sandbox snapshot. Called
-        between in-pipeline retries and on parse-fail paths."""
-        workspace_ctx.restore_to_snapshot(goal_lean)
+    def _restore_goal_lean() -> None:
+        """Undo a commit attempt on goal_lean. Only called after the
+        final post-verify failure paths in `builder_parse` — i.e. once
+        `shutil.copy2(patch, goal_lean)` has already mutated workspace
+        and the subsequent verify/axiom check rejected the patch."""
+        goal_lean.write_text(goal_lean_original, encoding="utf-8")
 
     def builder_spawn(ctx: SpawnCtx) -> int:
-        # Always start from the pristine snapshot. Agent's --resume
-        # session memory carries warm context; LSP slot state is in
-        # the gateway worker. On-disk goal_lean is reset each entry
-        # so prior-spawn apply_edits never leak into the next view.
-        _restore_backup()
-
-        # Cold start (and fresh-rescue, which is also cold-with-fresh-
-        # sid): fresh Context.md compile (snapshot Manifest + goal
-        # history at this exact attempt). For fresh-rescue, the helper
-        # has already written `_prior_analysis.md` to attempts_dir;
-        # the cold prompt's `is_fresh_rescue` flag injects a Read
-        # directive so the agent consumes it before any other action.
-        # Warm: skip — agent's session memory carries the Context from
-        # the prior call; retry_context inlines the prior lake error.
+        # Cold start: re-seed sandbox patch.lean from goal_lean's
+        # pristine content. Agent's --resume session memory carries
+        # warm context; LSP slot state is in the gateway worker.
+        # Warm retry: skip — patch.lean keeps whatever the agent wrote
+        # last iteration so retry_context-driven fixes can be
+        # incremental.
         if ctx.cold:
+            _seed_patch_from_goal()
             context.compile_context(conn, goal=goal, mfst=mfst,
                                   attempts_dir=ctx.attempts_dir,
                                   kind="builder",
                                   decision_id=decision_id)
 
         # Register a gateway session so claude's MCP tools operate on
-        # goal_lean's content via the shared worker pool. Snapshot was
-        # taken once before the retry loop; pristine restore happened
-        # at the top of this function.
+        # patch.lean (in attempts_dir/) via the shared worker pool.
+        # apply_edit's write-through stays inside the sandbox; only
+        # builder_parse commits to goal_lean.
         mcp_config_path = _write_mcp_config(
             attempts_dir=ctx.attempts_dir,
             workspace=workspace,
-            target=goal_lean,
+            target=patch_lean,
             pipeline_id=pipeline_id,
             problem=goal["problem"],
         )
@@ -259,9 +263,10 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         )
 
     def builder_parse() -> "PipelineResult":  # noqa: F821
+        nonlocal promote_done
         patches = _safe_glob(attempts_dir, "patch*.lean")
         if not patches:
-            _restore_backup()
+            # Sandbox model: goal_lean was never touched — no restore.
             return PipelineResult(
                 outcome="failed", failure_reason="agent_no_output",
                 failure_detail="no patch*.lean",
@@ -282,7 +287,6 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         leading = _extract_leading_comments(patch_text)
         decline = _extract_decline_reason(leading)
         if decline is not None:
-            _restore_backup()
             reason = DECLINE_TO_FAILURE_REASON.get(decline, "agent_declined")
             return PipelineResult(
                 outcome="failed", failure_reason=reason,
@@ -292,16 +296,28 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
 
         forbidden = _grep_forbidden(patch_text, mfst.forbidden_lemmas)
         if forbidden:
-            _restore_backup()
             return PipelineResult(
                 outcome="failed", failure_reason="forbidden_lemma",
                 failure_detail=forbidden, proposal_md=leading,
             )
 
-        # Stage: copy patch over goal lean. Backup was already taken at
-        # spawn entry — overwrite goal_lean with the agent's final
-        # patch.lean (the output contract). Inject any Defs.lean opens
-        # the agent forgot to replay (see state/manifest.py:inject_defs_opens).
+        # Annotation is a hard success condition: an empty leading-
+        # comment block means the agent skipped documentation. Reject
+        # before touching goal_lean.
+        if not leading.strip():
+            return PipelineResult(
+                outcome="failed",
+                failure_reason="agent_no_annotation",
+                failure_detail="patch built but had no leading comment block",
+            )
+
+        # ---- Commit window opens here ----
+        # Up to this point goal_lean is untouched. Now copy patch over
+        # goal_lean and verify; on any failure below, restore goal_lean
+        # from `goal_lean_original`. The commit window is the few
+        # hundred ms between this copy and the post-verify decision.
+        # Inject any Defs.lean opens the agent forgot to replay (see
+        # state/manifest.py:inject_defs_opens).
         shutil.copy2(patch, goal_lean)
         goal_lean.write_text(
             manifest.inject_defs_opens(
@@ -310,6 +326,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             ),
             encoding="utf-8",
         )
+        promote_done = True
         # Verify-unification (see docs/archive/verify_unification.md):
         # one /verify round trip elaborates the patch in a warm worker,
         # writes the .olean for downstream cascade consumers, and runs
@@ -323,7 +340,8 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             workspace=workspace,
         )
         if "error" in v:
-            _restore_backup()
+            _restore_goal_lean()
+            promote_done = False
             return PipelineResult(
                 outcome="failed", failure_reason="lake_build_error",
                 failure_detail=f"verify infra error: {v['error']}",
@@ -336,27 +354,19 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                 for d in (v.get("diagnostics") or [])
                 if d.get("severity") == "error"
             )
-            _restore_backup()
+            _restore_goal_lean()
+            promote_done = False
             return PipelineResult(
                 outcome="failed", failure_reason="lake_build_error",
                 failure_detail=diagnostics.annotate_failure_detail(
                     err_lines or "(no error diagnostics returned)"),
                 proposal_md=leading,
             )
-        # Annotation is a hard success condition: an empty leading-
-        # comment block means the agent skipped documentation. Roll
-        # back to the sorry-stub backup and retry.
-        if not leading.strip():
-            _restore_backup()
-            return PipelineResult(
-                outcome="failed",
-                failure_reason="agent_no_annotation",
-                failure_detail="patch built but had no leading comment block",
-            )
         # Axiom whitelist check on the just-collected axiom set.
         if mfst.axioms_whitelist:
             if v.get("axiom_error"):
-                _restore_backup()
+                _restore_goal_lean()
+                promote_done = False
                 return PipelineResult(
                     outcome="failed", failure_reason="axiom_violation",
                     failure_detail=f"axiom probe failed: {v['axiom_error']}",
@@ -365,15 +375,16 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             used = set(v.get("axioms") or [])
             rogue = used - set(mfst.axioms_whitelist)
             if rogue:
-                _restore_backup()
+                _restore_goal_lean()
+                promote_done = False
                 return PipelineResult(
                     outcome="failed", failure_reason="axiom_violation",
                     failure_detail=f"rogue axioms: {sorted(rogue)}",
                     proposal_md=leading,
                 )
-        # Success: nothing to undo on goal_lean — promote_to_alias
-        # via verify housekeeping will handle the alias rewrite
-        # separately. Sandbox commit is marked at pipeline outer.
+        # Success: goal_lean has the agent's proof + verified olean.
+        # promote_to_alias via verify housekeeping handles alias rewrite
+        # separately.
         return PipelineResult(outcome="proved", proposal_md=leading)
 
     def builder_postmortem(sid: str) -> None:
@@ -406,38 +417,31 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             prompt_dir=PROMPT_DIR,
         )
 
-    # SpawnWorkspace: rolls back goal_lean from sandbox snapshot on
-    # non-commit exit (exception or — recovered via sweep — daemon
-    # crash). On a proved outcome, Builder's parse-success path has
-    # written the agent's proof into goal_lean (this IS the commit);
-    # we mark the sandbox committed so __exit__ skips the snapshot
-    # rollback. Non-success outcomes leave goal_lean drifted; restore
-    # from snapshot before __exit__ so cascade housekeeping sees
-    # pristine state.
+    # No SpawnWorkspace — agent writes are confined to attempts_dir
+    # (patch.lean is the MCP apply_edit target), and goal_lean is
+    # written exactly once inside builder_parse's commit window.
+    # If the helper crashes between commit and verify (the only window
+    # where goal_lean is dirty), `promote_done=True` flags it: the
+    # outer finally restores goal_lean from snapshot.
     result = None
-    with workspace_ctx as ws:
-        try:
-            result = run_with_session_retries(
-                conn=conn,
-                goal_id=goal_id,
-                pipeline_id=pipeline_id,
-                budget_threshold=dispatcher.BUILDER_THRESHOLD,
-                shelve_threshold=dispatcher.SHELVE_THRESHOLD,
-                attempts_dir=attempts_dir,
-                spawn_fn=builder_spawn,
-                parse_fn=builder_parse,
-                postmortem_fn=builder_postmortem,
-                workspace=workspace,
-                reflection_fn=builder_reflection,
-            )
-        finally:
-            if result is None or result.outcome != "proved":
-                # Helper crashed or returned non-success; restore
-                # goal_lean to pre-spawn pristine so the next dispatch
-                # / cascade sees the original stub.
-                _restore_backup()
-        if result.outcome == "proved":
-            # Agent's proof is the commit; sandbox marked committed
-            # so __exit__ doesn't roll it back.
-            ws.commit(real_writes=())
+    try:
+        result = run_with_session_retries(
+            conn=conn,
+            goal_id=goal_id,
+            pipeline_id=pipeline_id,
+            budget_threshold=dispatcher.BUILDER_THRESHOLD,
+            shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+            attempts_dir=attempts_dir,
+            spawn_fn=builder_spawn,
+            parse_fn=builder_parse,
+            postmortem_fn=builder_postmortem,
+            workspace=workspace,
+            reflection_fn=builder_reflection,
+        )
+    finally:
+        # Crash mid-commit (or any path where promote_done was set but
+        # the final PipelineResult isn't 'proved') leaves goal_lean
+        # drifted. Restore so cascade housekeeping sees pristine state.
+        if promote_done and (result is None or result.outcome != "proved"):
+            _restore_goal_lean()
     return result

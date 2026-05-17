@@ -4,9 +4,12 @@ Verifies that:
   - `agent.spawn_llm` receives a `mcp_config_path` kwarg pointing at
     a freshly-written JSON config that connects to the long-living
     `Tooling.lsp_gateway` HTTP server.
-  - Builder backs up `goal_lean` BEFORE the agent runs (since the
-    agent now edits goal_lean in-session via LSP) and restores it on
-    a lake-build failure.
+  - The MCP `target` is the sandbox `attempts_dir/patch.lean`, NOT
+    `goal_lean` — agent's apply_edit write-through stays inside the
+    spawn dir; workspace is touched exactly once at commit time inside
+    `builder_parse`. Mirrors the Backward refactor (backward.py:316-321).
+  - On a post-commit verify failure, `goal_lean` is restored from the
+    pre-spawn snapshot the pipeline keeps in a closure variable.
 """
 from __future__ import annotations
 
@@ -92,25 +95,79 @@ def test_spawn_passes_mcp_config_path(
     assert server["headers"]["X-Asterism-Session"] == "test-stub-token"
 
 
+def test_mcp_target_is_sandbox_patch(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sandbox-model contract: the MCP gateway's `target_path` is
+    `attempts_dir/patch.lean`, NOT `goal_lean`. Agent apply_edit
+    write-through stays inside the spawn dir. Regression guard against
+    reverting to the workspace-target design (which created a dirty
+    workspace mid-spawn + needed SpawnWorkspace snapshot/restore)."""
+    captured: dict = {}
+    real_urlopen = None
+
+    def fake_urlopen(req, *, timeout=None):
+        # Capture /register body. Other endpoints (/release) pass through
+        # to the conftest stub.
+        try:
+            url = req.full_url if hasattr(req, "full_url") else req.get_full_url()
+        except Exception:
+            url = ""
+        if "/register" in url:
+            try:
+                body = req.data.decode("utf-8")
+                captured["register_body"] = json.loads(body)
+            except Exception:
+                pass
+        # Defer to whatever the conftest already installed.
+        return real_urlopen(req, timeout=timeout)
+
+    import urllib.request as _u
+    real_urlopen = _u.urlopen
+    monkeypatch.setattr(_u, "urlopen", fake_urlopen)
+
+    gid = _seed_problem(conn, tmp_path)
+
+    def fake_spawn(**kw):
+        # Real agent writes patch.lean inside attempts_dir. We mimic.
+        (kw["attempts_dir"] / "patch.lean").write_text(
+            "-- main: ok\nimport Mathlib\ntheorem main : True := trivial\n",
+            encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    monkeypatch.setattr(pipeline, "_lake_build", lambda ws, t: (True, ""))
+
+    r = pipeline.run_builder(conn, goal_id=gid, workspace=tmp_path,
+                              mfst=_mfst(), pipeline_id="pid-mcp-target")
+    assert r.outcome == "proved"
+    reg = captured.get("register_body") or {}
+    target = Path(reg.get("target_path", ""))
+    # target_path must point inside attempts_dir, not goal_lean.
+    assert ".attempts" in target.as_posix(), (
+        f"MCP target should be the sandbox patch.lean, got {target}"
+    )
+    assert target.name == "patch.lean"
+
+
 def test_restores_goal_lean_when_lake_build_fails(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When the agent (simulated) edits goal_lean via LSP and writes a
-    bad patch.lean, the lake-build failure must restore the original
-    sorry-stub from the pre-spawn backup. Otherwise the next retry
-    iteration would see the agent's broken intermediate state."""
+    """When the agent's patch.lean lake-builds with errors, the
+    post-verify failure path inside `builder_parse` restores
+    `goal_lean` from the in-closure snapshot taken before the commit.
+    Without restore, the next retry / cascade would see the agent's
+    broken patch committed."""
     gid = _seed_problem(conn, tmp_path, initial_body="  sorry")
     goal_row = db.get_goal(conn, gid)
     goal_lean = tmp_path / goal_row["lean_path"]
     original = goal_lean.read_text(encoding="utf-8")
 
     def fake_spawn(**kw):
-        # Simulate agent's LSP edit polluting goal_lean...
-        goal_lean.write_text(
-            "-- agent's bad LSP edit\nbroken garbage\n",
-            encoding="utf-8")
-        # ...and writing a patch.lean that lake build will reject.
+        # Sandbox model: agent writes to patch.lean only — never
+        # goal_lean. The agent's patch will lake-build-reject below.
         (kw["attempts_dir"] / "patch.lean").write_text(
             "-- main: this will fail\n"
             "import Mathlib\ntheorem main : True := nonsense_tactic\n",
@@ -143,37 +200,32 @@ def test_restores_goal_lean_when_lake_build_fails(
     )
 
 
-def test_restores_goal_lean_after_spawn_timeout(
+def test_goal_lean_untouched_on_spawn_timeout(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Spawn rc != 0 paths skip parse_fn, so the parse-side
-    `_restore_backup` doesn't fire. The outer try/finally around
-    `run_with_session_retries` must catch this and restore goal_lean.
-    Otherwise the agent's mid-session apply_edit state leaks into the
-    next retry as a broken baseline (observed cantor_xi g94)."""
+    """Sandbox-model contract: spawn rc != 0 paths skip parse_fn, so
+    no commit happens — goal_lean stays untouched the whole time.
+    Regression guard for the workspace-target era's bug where agent's
+    mid-session apply_edit leaked broken state into goal_lean even
+    when the spawn timed out (cantor_xi g94 incident)."""
     gid = _seed_problem(conn, tmp_path, initial_body="  sorry")
     goal_row = db.get_goal(conn, gid)
     goal_lean = tmp_path / goal_row["lean_path"]
     original = goal_lean.read_text(encoding="utf-8")
 
     def fake_spawn(**kw):
-        # Simulate agent's LSP edit polluting goal_lean...
-        if not kw.get("is_postmortem"):
-            goal_lean.write_text(
-                "-- agent's mid-session LSP edit (incomplete)\n"
-                "broken garbage\n",
-                encoding="utf-8")
-        # ...then spawn times out (rc=124). Parse never runs.
+        # Spawn times out before flushing any patch.lean. Sandbox is
+        # empty — the salvage path sees no parseable output and returns
+        # `agent_no_output`, parse never enters the commit window.
         return 124
 
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
     pipeline.run_builder(
         conn, goal_id=gid, workspace=tmp_path,
-        mfst=_mfst(), pipeline_id="pid-builder-timeout-restore")
+        mfst=_mfst(), pipeline_id="pid-builder-timeout-untouched")
 
-    restored = goal_lean.read_text(encoding="utf-8")
-    assert restored == original, (
-        "Builder must restore goal_lean even when spawn rc != 0 "
-        "and parse_fn never runs"
+    assert goal_lean.read_text(encoding="utf-8") == original, (
+        "Builder sandbox model: goal_lean must stay at pre-spawn "
+        "content when spawn rc != 0 and parse never commits"
     )
