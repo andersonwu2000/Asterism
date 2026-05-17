@@ -100,8 +100,56 @@ def _latest_lean_in(spawn_dir: Path) -> Path | None:
     return max(files, key=lambda p: p.stat().st_mtime)
 
 
-def _update_worker_panes(spawns: list[Path]) -> list[str | None]:
-    active_paths: list[str | None] = [None] * 4
+# Cap worker labels to keep stats.md visually narrow. Long miniF2F
+# slugs (`algebra_amgm_sqrtxymulxmyeqxpy_xpygeq4`) wrap badly in the
+# centre pane otherwise.
+_LABEL_SLUG_MAX = 36
+
+
+def _lookup_spawn_info(pipeline_id: str) -> tuple[str, str] | None:
+    """Return `(kind_lower, goal_slug_or_problem)` for a spawn whose
+    `.attempts/<uuid>/` matches `pipeline_id`. Returns None if no
+    pipelines row exists yet (the worker just started and the
+    dispatcher hasn't recorded the row), or on DB error.
+
+    Forward (target_kind='Problem') falls back to the problem name as
+    the label since the spawn isn't tied to a single goal.
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT kind, target_id, target_kind FROM pipelines "
+            "WHERE id = ?", (pipeline_id,),
+        ).fetchone()
+        if row is None:
+            conn.close()
+            return None
+        kind = str(row["kind"]).lower()
+        if row["target_kind"] == "Problem":
+            label = str(row["target_id"])
+        else:
+            g = conn.execute(
+                "SELECT slug FROM goals WHERE id = ?",
+                (int(row["target_id"]),),
+            ).fetchone()
+            label = g["slug"] if g else str(row["target_id"])
+        conn.close()
+    except (sqlite3.Error, ValueError):
+        return None
+    if len(label) > _LABEL_SLUG_MAX:
+        label = label[: _LABEL_SLUG_MAX - 1] + "…"
+    return (kind, label)
+
+
+def _update_worker_panes(
+    spawns: list[Path],
+) -> list[tuple[str, str] | None]:
+    """Copy each active spawn's latest .lean into the matching worker
+    pane and return per-pane (kind, slug) labels. The labels come from
+    the pipelines table — much more readable than the on-disk file
+    path (`patch.lean` everywhere) for the stats pane."""
+    active_labels: list[tuple[str, str] | None] = [None] * 4
     for i, spawn in enumerate(spawns):
         latest = _latest_lean_in(spawn)
         if latest is None:
@@ -111,11 +159,9 @@ def _update_worker_panes(spawns: list[Path]) -> list[str | None]:
             shutil.copy2(latest, target)
         except OSError:
             continue
-        try:
-            active_paths[i] = str(latest.relative_to(WS))
-        except ValueError:
-            active_paths[i] = str(latest)
-    return active_paths
+        info = _lookup_spawn_info(spawn.name)
+        active_labels[i] = info if info is not None else ("spawning", "?")
+    return active_labels
 
 
 def _update_tree(problem: str) -> bool:
@@ -127,7 +173,9 @@ def _update_tree(problem: str) -> bool:
 
 
 def _write_stats(
-    problem: str, active_paths: list[str | None], started_at: float,
+    problem: str,
+    active_labels: list[tuple[str, str] | None],
+    started_at: float,
 ) -> None:
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -168,11 +216,12 @@ def _write_stats(
     total = sum(gcounts.values())
 
     workers_block = ""
-    for i, p in enumerate(active_paths):
-        if p is None:
+    for i, label in enumerate(active_labels):
+        if label is None:
             workers_block += f"- worker {i + 1}: idle\n"
         else:
-            workers_block += f"- worker {i + 1}: `{p}`\n"
+            kind, slug = label
+            workers_block += f"- worker {i + 1}: {kind}, `{slug}`\n"
 
     body = (
         f"# {problem}\n\n"
@@ -228,9 +277,9 @@ def main() -> int:
     try:
         while True:
             spawns = _active_spawns()
-            active_paths = _update_worker_panes(spawns)
+            active_labels = _update_worker_panes(spawns)
             _update_tree(args.problem)
-            _write_stats(args.problem, active_paths, started_at)
+            _write_stats(args.problem, active_labels, started_at)
             time.sleep(args.interval)
     except KeyboardInterrupt:
         print("\n[demo-watcher] stopped", flush=True)
