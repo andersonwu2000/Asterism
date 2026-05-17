@@ -687,14 +687,25 @@ def problems_needing_t0(conn: sqlite3.Connection,
                         scope: str | None = None
                         ) -> list[tuple[str, int]]:
     """Return [(problem_name, root_goal_id)] for problems with
-    `bootstrap_done=0`. Caller is responsible for the awaiting_human
-    gate + in-flight Strategist dedup. Root goal id is computed via
-    the standard `origin='root'` join."""
+    `bootstrap_done=0` AND a non-terminal root goal. Caller is
+    responsible for the awaiting_human gate + in-flight Strategist
+    dedup. Root goal id is computed via the standard `origin='root'`
+    join.
+
+    The root-status gate matches T1's existing filter: Strategist has
+    nothing to bootstrap on a problem whose root is already
+    proved/shelved/disproved — common when Phase 2 was activated on
+    a workspace with pre-Phase-2 already-proved problems (their
+    bootstrap_done stays 0 from never having been Strategist'd).
+    Without this gate T0 would burn one Strategist spawn per such
+    problem on every fresh daemon start.
+    """
     sql = (
         "SELECT p.name, g.id AS root_id"
         " FROM problems p"
         " JOIN goals g ON g.problem = p.name AND g.origin = 'root'"
         " WHERE p.bootstrap_done = 0"
+        "   AND g.status NOT IN ('proved','shelved','disproved')"
     )
     args: tuple = ()
     if scope is not None:

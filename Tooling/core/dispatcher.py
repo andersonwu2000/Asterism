@@ -102,8 +102,12 @@ def _enqueue_strategist_review(conn: sqlite3.Connection,
     # covers queue-pending entries.
     if db.is_in_queue(conn, target_id=root_id, kind="Strategist"):
         return
+    # Priority 20 — above T0/T1 (=10) per pipelines.md §2.1 "T2 > T0 > T1".
+    # T2 is event-driven (an agent shelved, review needed); T0/T1 are
+    # routine. Without an explicit priority kwarg the default 0 would put
+    # T2 below Backward (=2) and Builder (=5), inverting the spec.
     db.enqueue(conn, kind="Strategist", target_id=root_id,
-               target_kind="Goal")
+               target_kind="Goal", priority=20)
 
 
 def _cascade_shelve_descendants(conn: sqlite3.Connection,

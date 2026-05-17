@@ -287,10 +287,13 @@ def test_enqueue_strategist_review_sets_status_and_queues(
 
     assert db.get_goal(conn, sub)["status"] == "pending_strategist_review"
     q = conn.execute(
-        "SELECT kind, target_id FROM queue WHERE kind='Strategist'"
+        "SELECT kind, target_id, priority FROM queue WHERE kind='Strategist'"
     ).fetchall()
     assert len(q) == 1
     assert int(q[0]["target_id"]) == root
+    # Priority 20 per pipelines.md §2.1 (T2 > T0/T1=10); regression guard
+    # against db.enqueue default=0 putting T2 below Backward / Builder.
+    assert q[0]["priority"] == 20
 
 
 def test_enqueue_strategist_review_dedups_in_flight(
@@ -312,3 +315,30 @@ def test_enqueue_strategist_review_dedups_in_flight(
     # Both sub-goals are pending
     assert db.get_goal(conn, sub_a)["status"] == "pending_strategist_review"
     assert db.get_goal(conn, sub_b)["status"] == "pending_strategist_review"
+
+
+def test_t2_pops_before_bfs(
+    conn: sqlite3.Connection,
+) -> None:
+    """A T2 (pending_review) Strategist enqueue must pop before any
+    Backward / Builder BFS enqueue already in the queue. Regression
+    guard: pre-fix, `_enqueue_strategist_review` omitted the priority
+    kwarg and inherited db.enqueue default=0, putting T2 below
+    Backward (=2) and Builder (=5) — inverting pipelines.md §2.1
+    'T2 > T0 > T1' (and the §4.3 implied 'Strategist > Backward /
+    Builder for pending review'). T2-vs-T0/T1 ordering is moot at
+    runtime because per-problem Strategist dedup in
+    `_enqueue_strategist_review` prevents simultaneous T0/T1+T2 rows
+    for the same root."""
+    root = _insert_goal(conn, slug="main", origin="root")
+    sub = _insert_goal(conn, slug="sub", status="attempting")
+
+    db.enqueue(conn, kind="Backward", target_id="999", priority=2)
+    db.enqueue(conn, kind="Builder",  target_id="998", priority=5)
+    _enqueue_strategist_review(conn, sub)
+
+    first = db.pop_queue(conn)
+    assert first is not None
+    assert first["kind"] == "Strategist"
+    assert first["priority"] == 20
+    assert int(first["target_id"]) == root

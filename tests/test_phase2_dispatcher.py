@@ -102,6 +102,26 @@ def test_t0_skips_bootstrapped_problems(conn: sqlite3.Connection) -> None:
     assert q["n"] == 0
 
 
+def test_t0_skips_proved_root(conn: sqlite3.Connection) -> None:
+    """T0 must not enqueue Strategist for a problem whose root is
+    already proved/shelved/disproved, even when bootstrap_done=0.
+    Regression: Phase-2-activated workspaces inherit pre-Phase-2
+    proved problems with bootstrap_done=0; without the root-status
+    gate, every fresh daemon start would burn one Strategist spawn
+    per such problem on Noop decisions.
+    """
+    for terminal in ("proved", "shelved", "disproved"):
+        _insert_problem(conn, name=f"p_{terminal}", bootstrap_done=0)
+        _insert_root(conn, f"p_{terminal}", status=terminal)
+
+    strategist_triggers(conn, running=set())
+
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert q["n"] == 0
+
+
 def test_t0_dedups_inflight_strategist(conn: sqlite3.Connection) -> None:
     """T0 won't enqueue a second Strategist if one is already running
     (in-memory running set) or already in queue."""
