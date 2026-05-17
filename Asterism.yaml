@@ -7,7 +7,7 @@
 # it; the framework only reads what's set.
 
 dispatch:
-  pool: 8                     # Max in-flight pipelines, also = number of
+  pool: 4                     # Max in-flight pipelines, also = number of
                               # persistent lean workers in the LSP gateway
                               # pool (1:1 binding — every spawn claims one
                               # dedicated worker for its lifetime, freed on

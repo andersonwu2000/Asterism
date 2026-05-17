@@ -57,11 +57,32 @@ def _ping_health(timeout: float = 2.0) -> dict | None:
 
 
 def start_gateway(workspace: Path,
-                  ready_timeout: float = 300.0) -> subprocess.Popen:
+                  ready_timeout: float | None = None) -> subprocess.Popen:
     """Launch `python -m Tooling.lsp_gateway` as subprocess. Blocks
     until /health reports backend_ready=true. Returns the Popen so
     callers can monitor / kill it. Registers atexit cleanup so daemon
-    shutdown propagates."""
+    shutdown propagates.
+
+    `ready_timeout` (seconds): outer wait budget. Default resolution:
+      1. `ASTERISM_GATEWAY_READY_TIMEOUT` env var (operator escape hatch
+         for under-spec workstations / cold mathlib caches)
+      2. 600.0 — must be ≥ the gateway subprocess's inner
+         `_ensure_backend_ready(timeout=600.0)` (gateway.py:1158),
+         otherwise the outer wait fires before the inner one even
+         had a chance to succeed. Pre-Phase 2 default was 300.0;
+         empirically tight on cold mathlib + low-RAM machines (PN
+         regression 2026-05-18 hit it with Civ VI / Chrome eating
+         ~25 GB).
+    """
+    if ready_timeout is None:
+        env_val = os.environ.get("ASTERISM_GATEWAY_READY_TIMEOUT")
+        if env_val:
+            try:
+                ready_timeout = float(env_val)
+            except ValueError:
+                pass
+        if ready_timeout is None:
+            ready_timeout = 600.0
     # Refuse if something is already on our port — likely a stale
     # gateway from a prior daemon run that didn't clean up. Operator
     # should kill it and retry.
