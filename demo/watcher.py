@@ -35,35 +35,41 @@ ACTIVE_DIR = WS / "demo" / "active"
 ATTEMPTS_DIR = WS / ".attempts"
 DB_PATH = WS / "asterism.db"
 
-# Spawns whose sandbox/ was touched in the last ACTIVE_WINDOW seconds are
-# treated as "live". Past that, the spawn has likely committed back and
-# wound down; we leave its pane on the last-seen content rather than
-# clearing, so the pane doesn't flash.
+# Spawns whose dir contained a .lean touched in the last ACTIVE_WINDOW
+# seconds are treated as "live". Past that, the spawn has likely
+# committed back and wound down; we leave its pane on the last-seen
+# content rather than clearing, so the pane doesn't flash.
 ACTIVE_WINDOW = 60.0
 
 
 def _spawn_score(pdir: Path) -> float:
-    """Most recent mtime of any .lean under <pdir>/sandbox/, or -inf."""
-    sandbox = pdir / "sandbox"
-    if not sandbox.exists():
-        return float("-inf")
+    """Most recent mtime of any .lean directly under `<pdir>/` (and any
+    sub-tree), or -inf if no .lean exists. Used to pick the most
+    recently active spawn dir.
+
+    Framework writes `patch.lean` / `new_*.lean` directly inside
+    `.attempts/<uuid>/` (flat layout); earlier framework versions used
+    `<uuid>/sandbox/` — `rglob` covers both transparently.
+    """
     latest = float("-inf")
-    for f in sandbox.rglob("*.lean"):
-        try:
-            t = f.stat().st_mtime
-        except OSError:
-            continue
-        if t > latest:
-            latest = t
+    try:
+        for f in pdir.rglob("*.lean"):
+            try:
+                t = f.stat().st_mtime
+            except OSError:
+                continue
+            if t > latest:
+                latest = t
+    except OSError:
+        return float("-inf")
     return latest
 
 
 def _active_spawns() -> list[Path]:
     """Return up to 4 most-recently-active spawn dirs (most recent first).
 
-    A spawn is "active" iff some .lean under its sandbox/ was touched
-    within ACTIVE_WINDOW seconds. Ignores spawns whose sandbox is empty
-    or whose all files are older than the window.
+    A spawn is "active" iff some .lean inside its dir was touched within
+    ACTIVE_WINDOW seconds. Empty / stale dirs are skipped.
     """
     if not ATTEMPTS_DIR.exists():
         return []
@@ -84,17 +90,17 @@ def _active_spawns() -> list[Path]:
 
 
 def _latest_lean_in(spawn_dir: Path) -> Path | None:
-    sandbox = spawn_dir / "sandbox"
-    if not sandbox.exists():
+    """The most-recently-modified .lean in this spawn dir tree, or None."""
+    try:
+        files = list(spawn_dir.rglob("*.lean"))
+    except OSError:
         return None
-    files = list(sandbox.rglob("*.lean"))
     if not files:
         return None
     return max(files, key=lambda p: p.stat().st_mtime)
 
 
-def _update_worker_panes() -> list[str | None]:
-    spawns = _active_spawns()
+def _update_worker_panes(spawns: list[Path]) -> list[str | None]:
     active_paths: list[str | None] = [None] * 4
     for i, spawn in enumerate(spawns):
         latest = _latest_lean_in(spawn)
@@ -189,27 +195,40 @@ def main() -> int:
         "--interval", type=float, default=1.0,
         help="poll period in seconds (default 1.0)",
     )
+    ap.add_argument(
+        "--keep-stale", action="store_true",
+        help=("don't clear worker_*.lean / tree.md on startup. Default "
+              "is to clear (better for demo recording — a fresh take "
+              "starts with clean placeholder content). Set this flag "
+              "to preserve last-take content between takes."),
+    )
     args = ap.parse_args()
 
     ACTIVE_DIR.mkdir(parents=True, exist_ok=True)
+    # Init placeholders. Default behavior (no --keep-stale): always
+    # overwrite, so a fresh watcher run starts with clean panes (new
+    # takes shouldn't inherit stale content from prior spawns).
+    placeholder_worker = "-- (idle, waiting for spawn)\n"
+    placeholder_tree = "_(waiting for framework to write TREE.md)_\n"
     for i in range(1, 5):
         f = ACTIVE_DIR / f"worker_{i}.lean"
-        if not f.exists():
-            f.write_text("-- (idle, waiting for spawn)\n", encoding="utf-8")
-    if not (ACTIVE_DIR / "tree.md").exists():
-        (ACTIVE_DIR / "tree.md").write_text(
-            "_(waiting for framework to write TREE.md)_\n",
-            encoding="utf-8",
-        )
+        if args.keep_stale and f.exists():
+            continue
+        f.write_text(placeholder_worker, encoding="utf-8")
+    tree = ACTIVE_DIR / "tree.md"
+    if not (args.keep_stale and tree.exists()):
+        tree.write_text(placeholder_tree, encoding="utf-8")
 
     started_at = time.time()
     print(f"[demo-watcher] problem={args.problem}, "
-          f"interval={args.interval}s, active dir={ACTIVE_DIR}",
+          f"interval={args.interval}s, active dir={ACTIVE_DIR}, "
+          f"keep_stale={args.keep_stale}",
           flush=True)
 
     try:
         while True:
-            active_paths = _update_worker_panes()
+            spawns = _active_spawns()
+            active_paths = _update_worker_panes(spawns)
             _update_tree(args.problem)
             _write_stats(args.problem, active_paths, started_at)
             time.sleep(args.interval)
