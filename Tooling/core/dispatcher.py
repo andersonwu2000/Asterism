@@ -68,9 +68,15 @@ from ..state.recovery import sweep_lean_backups as _sweep_lean_backups  # noqa: 
 
 
 # ---------------------------------------------------------------------
-# Phase 2 — pending_strategist_review + cascade_shelve_descendants +
-# reopen_with_detach (used by cascade_one Rule 1 and the future
-# Strategist pipeline for ConfirmShelve / Reopen commits).
+# Phase 2 — pending_strategist_review + reopen_with_detach (used by
+# cascade_one Rule 1 and the Strategist pipeline for ConfirmShelve /
+# Reopen commits). Downward shelve cascade was removed once shelved
+# became reopenable: BFS already skips dead-chain descendants via
+# `db.open_goals`'s alive seed, and Strategist's context view filters
+# them too, so flipping descendant status added no behavior and
+# blocked Reopen flow on the parent (cascade-shelved children stay
+# `shelved` and BFS's `status='open'` filter excludes them even after
+# a sibling/parent strategy revives the chain).
 # ---------------------------------------------------------------------
 
 def _record_inject_decision_outcome(conn: sqlite3.Connection,
@@ -179,65 +185,6 @@ def _enqueue_strategist_review(conn: sqlite3.Connection,
     # T2 below Backward (=2) and Builder (=5), inverting the spec.
     db.enqueue(conn, kind="Strategist", target_id=root_id,
                target_kind="Goal", priority=20)
-
-
-def _cascade_shelve_descendants(conn: sqlite3.Connection,
-                                goal_id: int) -> int:
-    """Phase 2 Rule 2 — ConfirmShelve downward cascade.
-
-    Walk strategy_subgoals from `goal_id` to all reachable descendants
-    via alive strategies (BFS over goal → its strategies → their
-    sub-goals → ...). Flip every descendant whose status ∈ {open,
-    attempting, pending_strategist_review} to 'shelved'. Preserves
-    terminal states (proved / shelved / disproved) — Reopen still
-    works on the cascade-shelved goals because 'shelved' is soft.
-
-    Returns the number of goals transitioned.
-
-    Distinct from `_propagate_shelve`:
-      * _propagate_shelve walks UPWARD (parent strategies of this
-        goal; reopens or attempts++ parent goals on chain death).
-      * _cascade_shelve_descendants walks DOWNWARD (sub-goals of this
-        goal's own strategies; releases BFS hold on them).
-    Both helpers are called by Strategist's ConfirmShelve commit (see
-    docs/phase2/pipelines.md §4.2 Rule 2).
-    """
-    visited: set[int] = set()
-    frontier: list[int] = [goal_id]
-    transitioned = 0
-    while frontier:
-        next_frontier: list[int] = []
-        for gid in frontier:
-            # Find this goal's strategies' sub-goals (one hop down).
-            rows = conn.execute(
-                "SELECT ss.subgoal_id FROM strategies s"
-                " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
-                " WHERE s.goal_id = ?",
-                (gid,),
-            ).fetchall()
-            for r in rows:
-                sub_id = int(r["subgoal_id"])
-                if sub_id in visited:
-                    continue
-                visited.add(sub_id)
-                # Read status; only transition non-terminal rows.
-                grow = conn.execute(
-                    "SELECT status FROM goals WHERE id = ?",
-                    (sub_id,),
-                ).fetchone()
-                if grow is None:
-                    continue
-                if grow["status"] in ("open", "attempting",
-                                      "pending_strategist_review"):
-                    db.update_goal_status(conn, sub_id, "shelved")
-                    transitioned += 1
-                # Continue BFS into this sub-goal's own strategies' subs
-                # regardless of its status (the descendants of a
-                # proved sub-goal can still include alive open goals
-                # under sibling strategies of the proved one).
-                next_frontier.append(sub_id)
-        frontier = next_frontier
-    return transitioned
 
 
 def _has_terminal_disproved_ancestor(conn: sqlite3.Connection,

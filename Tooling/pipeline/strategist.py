@@ -421,7 +421,14 @@ def commit_decision(decision: Decision, conn: sqlite3.Connection,
         gid = int(decision.target_id)  # type: ignore[arg-type]
         db.update_goal_status(conn, gid, "shelved")
         _dispatcher._propagate_shelve(conn, gid)
-        _dispatcher._cascade_shelve_descendants(conn, gid)
+        # Downward cascade removed: shelved is reopenable (split from
+        # disproved), descendants of a shelved goal stay invisible to
+        # BFS via the alive-set filter in `db.open_goals` regardless
+        # of their own status — no behavior gain from flipping them.
+        # Strategist's context view filters descendants of dead chains
+        # too (see `_section_active_goals`), so the surface area where
+        # status drift could mislead Strategist is closed at the view
+        # boundary, not the data boundary.
 
     elif k == "Reopen":
         gid = int(decision.target_id)  # type: ignore[arg-type]

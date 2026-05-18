@@ -1,12 +1,19 @@
 """Phase 2 cascade rules — helper functions in dispatcher.py.
 
 Covers:
-  Rule 2 — `_cascade_shelve_descendants` (ConfirmShelve downward cascade)
   Rule 3 — `_has_terminal_disproved_ancestor` (Reopen safety walk)
            `_has_dead_strategy_in_chain` (auto-detach trigger detection)
 
 Rule 1 (cascade_one decline-directive split) is covered in
 `tests/test_infeasible_escape.py`.
+
+Rule 2 was the original downward `_cascade_shelve_descendants` cascade;
+removed once `shelved` became reopenable and Strategist's context view
+gained an alive-set filter. BFS already excluded dead-chain descendants
+via `db.open_goals`'s recursive alive seed, so flipping descendant
+status added no behavior and broke Reopen flow on the parent (cascade-
+shelved children stayed `shelved` even after a sibling/parent strategy
+revived the chain, since `db.open_goals` filters `status='open'`).
 """
 from __future__ import annotations
 
@@ -16,7 +23,6 @@ from pathlib import Path
 import pytest
 
 from Tooling.core.dispatcher import (
-    _cascade_shelve_descendants,
     _has_terminal_disproved_ancestor,
     _has_dead_strategy_in_chain,
     _enqueue_strategist_review,
@@ -75,100 +81,6 @@ def _link(conn: sqlite3.Connection, strategy_id: int,
             (strategy_id, sg, pos),
         )
     conn.commit()
-
-
-# ---------------------------------------------------------------------
-# Rule 2: _cascade_shelve_descendants
-# ---------------------------------------------------------------------
-
-def test_cascade_shelve_descendants_one_level(conn: sqlite3.Connection) -> None:
-    """G with one strategy S, S claims sub_a (open) + sub_b (attempting).
-    ConfirmShelve(G) cascades both descendants to 'shelved'."""
-    g = _insert_goal(conn, slug="g", origin="root")
-    s = _insert_strategy(conn, goal_id=g)
-    sub_a = _insert_goal(conn, slug="sub_a", status="open")
-    sub_b = _insert_goal(conn, slug="sub_b", status="attempting")
-    _link(conn, s, [sub_a, sub_b])
-
-    transitioned = _cascade_shelve_descendants(conn, g)
-    assert transitioned == 2
-    assert db.get_goal(conn, sub_a)["status"] == "shelved"
-    assert db.get_goal(conn, sub_b)["status"] == "shelved"
-
-
-def test_cascade_shelve_descendants_multi_level(conn: sqlite3.Connection) -> None:
-    """G → S1 → sub_a → S2 → sub_b → S3 → sub_c. ConfirmShelve(G) walks
-    the entire downward DAG, shelves all three descendants."""
-    g = _insert_goal(conn, slug="g", origin="root")
-    s1 = _insert_strategy(conn, goal_id=g)
-    sub_a = _insert_goal(conn, slug="sub_a", status="open")
-    _link(conn, s1, [sub_a])
-    s2 = _insert_strategy(conn, goal_id=sub_a)
-    sub_b = _insert_goal(conn, slug="sub_b", status="attempting")
-    _link(conn, s2, [sub_b])
-    s3 = _insert_strategy(conn, goal_id=sub_b)
-    sub_c = _insert_goal(conn, slug="sub_c", status="open")
-    _link(conn, s3, [sub_c])
-
-    transitioned = _cascade_shelve_descendants(conn, g)
-    assert transitioned == 3
-    for sub in (sub_a, sub_b, sub_c):
-        assert db.get_goal(conn, sub)["status"] == "shelved"
-
-
-def test_cascade_shelve_descendants_preserves_terminals(
-    conn: sqlite3.Connection,
-) -> None:
-    """proved / shelved / disproved descendants are preserved (not
-    overwritten by the cascade)."""
-    g = _insert_goal(conn, slug="g", origin="root")
-    s = _insert_strategy(conn, goal_id=g)
-    sub_proved = _insert_goal(conn, slug="sub_proved", status="proved")
-    sub_disproved = _insert_goal(conn, slug="sub_disproved", status="disproved")
-    sub_shelved_already = _insert_goal(conn, slug="sub_shelved_already",
-                                       status="shelved")
-    sub_open = _insert_goal(conn, slug="sub_open", status="open")
-    _link(conn, s, [sub_proved, sub_disproved, sub_shelved_already, sub_open])
-
-    transitioned = _cascade_shelve_descendants(conn, g)
-    assert transitioned == 1  # only sub_open transitions
-    assert db.get_goal(conn, sub_proved)["status"] == "proved"
-    assert db.get_goal(conn, sub_disproved)["status"] == "disproved"
-    assert db.get_goal(conn, sub_shelved_already)["status"] == "shelved"
-    assert db.get_goal(conn, sub_open)["status"] == "shelved"
-
-
-def test_cascade_shelve_descendants_transitions_pending_review(
-    conn: sqlite3.Connection,
-) -> None:
-    """pending_strategist_review descendants transition to 'shelved'
-    (Strategist confirmed the parent is dead; pending review on the
-    descendant is now moot)."""
-    g = _insert_goal(conn, slug="g", origin="root")
-    s = _insert_strategy(conn, goal_id=g)
-    sub = _insert_goal(conn, slug="sub", status="pending_strategist_review")
-    _link(conn, s, [sub])
-
-    transitioned = _cascade_shelve_descendants(conn, g)
-    assert transitioned == 1
-    assert db.get_goal(conn, sub)["status"] == "shelved"
-
-
-def test_cascade_shelve_descendants_handles_dag(
-    conn: sqlite3.Connection,
-) -> None:
-    """A shared sub-goal under two distinct strategies (DAG, not tree)
-    is visited only once."""
-    g = _insert_goal(conn, slug="g", origin="root")
-    s1 = _insert_strategy(conn, goal_id=g)
-    s2 = _insert_strategy(conn, goal_id=g)
-    shared = _insert_goal(conn, slug="shared", status="open")
-    _link(conn, s1, [shared])
-    _link(conn, s2, [shared])
-
-    transitioned = _cascade_shelve_descendants(conn, g)
-    assert transitioned == 1  # not 2
-    assert db.get_goal(conn, shared)["status"] == "shelved"
 
 
 # ---------------------------------------------------------------------

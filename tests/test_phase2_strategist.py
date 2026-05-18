@@ -416,9 +416,16 @@ def test_commit_initialize_defs_writes_file(
     assert "open Real" in defs_path.read_text(encoding="utf-8")
 
 
-def test_commit_confirmshelve_cascades_descendants(
+def test_commit_confirmshelve_leaves_descendants_status_untouched(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
+    """Downward cascade removed: ConfirmShelve flips the target goal
+    to 'shelved' and propagates upward, but descendants keep their
+    current status. Their dispatchability is gated by the alive-set
+    filter in `db.open_goals` (parent strategy stays 'proposed' here
+    but its goal is now 'shelved' → BFS still skips via the recursive
+    CTE walking only `proposed/succeeded` strategies of `alive`
+    parents). See dispatcher comment near the removed helper."""
     root = _insert_root(conn)
     cur = conn.execute(
         "INSERT INTO strategies (goal_id, lean_path, scratch_path,"
@@ -446,7 +453,9 @@ def test_commit_confirmshelve_cascades_descendants(
         workspace=workspace,
     )
     assert db.get_goal(conn, root)["status"] == "shelved"
-    assert db.get_goal(conn, sub)["status"] == "shelved"
+    # Sub-goal status preserved — view-level filtering (Strategist
+    # context + bfs_refill alive walk) keeps it from being dispatched.
+    assert db.get_goal(conn, sub)["status"] == "open"
 
 
 def test_commit_reopen_with_broken_chain_sets_detached(

@@ -244,7 +244,7 @@ Context.md 跟 Backward / Builder 同模式（既有 `compile_context` 擴出 Fo
 - `shelved`：軟終態、可被 Strategist `Reopen`。**dedupe 不擋**——statement 在其他 scope 下可能有用、未來 Forward 提類似 lemma 不該被擋。涵蓋三條路徑：
   - agent decline `return_to_parent` → 直接 `shelved`（Phase 1 行為保留、無 Strategist review）
   - agent decline `shelve` → `pending_strategist_review` → Strategist `ConfirmShelve` → `shelved`
-  - Strategist `ConfirmShelve(G)` 上行 cascade 觸發 descendants → `shelved`
+  - Strategist `ConfirmShelve(G)` 上行 cascade（下行 cascade 已退場、見 §4.2 規則 2）
 - BFS 同樣 skip 兩種終態；prune 同樣清檔。
 - dedupe 實作：`_eligible_shelved`（dedupe.py）只看 `status='disproved'`、不看 `shelved`。（原 helper 名稱可保留、語義改、或重新命名 `_eligible_disproved`。）
 
@@ -287,20 +287,21 @@ when goal.status in ('open','attempting'):
 `agent_shelved`：agent 卡住無 counterexample、需 Strategist 判決、進 `pending_strategist_review`。enqueue 直接走 queue（無 event bus）、dedup 靠既有 in-flight (kind, problem) 檢查。
 `parent_needs_fix`：父策略修了就能證、Phase 1 維持直接 shelve。`agent_declined`（Builder needs_decomposition）走既有 entry_kind switch 路徑、不在本規則範圍。
 
-**新規則 2（ConfirmShelve 雙向 cascade）**：
+**新規則 2（ConfirmShelve 只上行 cascade）**：
 
 ```
 ConfirmShelve(G) commit:
     G.status ← 'shelved'
-    1. 上游：沿用既有 _propagate_shelve(G)（殺 parent strategies、attempts++、必要時 recurse）
-    2. 下游：新 helper _cascade_shelve_descendants(G)：BFS walk strategy_subgoals、
-            把後代 goal.status ∈ {open, attempting, pending_strategist_review} 的全改
-            shelved（不改 proved / shelved / disproved 的、避免覆蓋 terminal）
+    _propagate_shelve(G)  # 殺 parent strategies、attempts++、必要時 recurse
 ```
 
-實作備註：既有 `_propagate_shelve` 只殺 strategies + 觸發父 goal 的 attempts++、**不改 sub-goal status**。`_cascade_shelve_descendants` 是 ConfirmShelve 專用的新邏輯、與 `_propagate_shelve` 平行呼叫、互不替代。
+歷史備註：早期設計含下行 cascade（`_cascade_shelve_descendants` 把後代 open/attempting → shelved）。在 `shelved` 拆出 `disproved` + 變成 reopenable + auto-detach（規則 3）上線後**已退場**。原因：
 
-下行用 `shelved`（軟終態）而非 `disproved`：descendants 本身沒被獨立判過、statement 在他處可能有用、未來 Forward 提類似 lemma 不該被 dedupe 擋（見 §4.1 status 差別說明）。同樣的 `shelved` 也涵蓋 `parent_needs_fix` 和 Strategist `ConfirmShelve` 三條路徑、一致語義。
+1. **行為不變**：BFS 的 alive seed 是 `root ∪ detached=1 ∪ alive-strategy descendants`、死掉 strategy 的後代不在 alive set、根本不會被 dispatch。後代狀態是 `open` 還是 `shelved` 對 BFS 無差別。
+2. **下行 cascade 反而妨礙 Reopen**：cascade 後後代留 `shelved`、就算 parent 之後 Reopen 拉新 strategy reference 同一個後代、BFS 的 `status='open'` filter 還是會 skip、要 Strategist 逐個 Reopen 才會醒。不下行 cascade 才能讓 parent 的新 strategy 直接接過去用。
+3. **顧慮在 view 層處理**：Strategist context 的 `## Active goals` section 加 alive filter（mirror `db.open_goals` 的 recursive CTE）、orphan 後代不會出現在 Strategist 視野裡、不會被誤判為 actionable。data 保持 truthful、view 在 boundary 過濾。
+
+`shelved` 仍涵蓋 `parent_needs_fix` 和 Strategist `ConfirmShelve` 兩條路徑、一致語義；之前 spec 提到的「三條路徑」其中下行 cascade 那條一併退場。
 
 **新規則 3（Reopen 安全閘 + auto-detach）**：
 

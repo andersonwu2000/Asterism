@@ -255,12 +255,34 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
 
 def _section_active_goals(conn: sqlite3.Connection,
                           problem: str) -> list[str]:
+    # Alive filter (mirrors `db.open_goals`'s recursive CTE): only
+    # surface goals reachable from a root through `proposed/succeeded`
+    # strategies, or explicitly detached. Descendants of a dead/dead
+    # chain (`status='dead' / 'superseded'`) drop out — without this,
+    # Strategist sees the orphan open/attempting sub-goals of a
+    # shelved parent's old strategies as candidates and may
+    # over-Reopen. Replaces the prior downward `cascade_shelve`
+    # mechanism: data stays truthful, view filters at boundary.
     rows = list(conn.execute(
-        "SELECT id, slug, statement, depth, status, attempts"
+        "WITH RECURSIVE alive(id) AS ("
+        "    SELECT id FROM goals"
+        "      WHERE problem = ? AND origin = 'root'"
+        "    UNION"
+        "    SELECT id FROM goals"
+        "      WHERE problem = ? AND detached = 1"
+        "    UNION"
+        "    SELECT g.id FROM goals g"
+        "    JOIN strategy_subgoals ss ON ss.subgoal_id = g.id"
+        "    JOIN strategies s ON s.id = ss.strategy_id"
+        "    JOIN alive a ON a.id = s.goal_id"
+        "    WHERE s.status IN ('proposed','succeeded')"
+        ")"
+        " SELECT id, slug, statement, depth, status, attempts"
         " FROM goals WHERE problem = ?"
         "   AND status IN ('open','attempting','pending_strategist_review')"
+        "   AND id IN alive"
         " ORDER BY depth, id",
-        (problem,),
+        (problem, problem, problem),
     ))
     if not rows:
         return []

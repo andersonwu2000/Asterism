@@ -272,6 +272,80 @@ def test_first_launch_trigger_omits_review_sections(
 
 
 # ---------------------------------------------------------------------
+# `_section_active_goals` alive-set filter — replaces downward
+# `cascade_shelve_descendants` (removed once shelved became reopenable +
+# auto-detach landed). Strategist must NOT see open/attempting orphans
+# of dead-strategy branches as actionable candidates.
+# ---------------------------------------------------------------------
+
+def test_active_goals_excludes_dead_chain_orphans(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Parent G's strategy S is `dead` (e.g. all attempts exhausted +
+    G shelved via parent_needs_fix). Its sub-goal G_sub stays
+    `status='open'` in the DB — by design, so a future Reopen of G
+    can pick it up without an extra per-descendant Reopen. But it
+    must NOT appear in Strategist's `## Active goals` view, otherwise
+    Strategist sees it as live work and may over-Reopen the whole
+    subtree."""
+    _insert_problem(conn)
+    root = db.insert_goal(
+        conn, problem="p", slug="main", lean_path="P/main.lean",
+        statement="T", origin="root",
+    )
+    dead_strat = _insert_strategy(conn, root, status="dead")
+    orphan = db.insert_goal(
+        conn, problem="p", slug="orphan", lean_path="P/orphan.lean",
+        statement="T", origin="backward",
+    )
+    _link_subgoal(conn, strategy_id=dead_strat, subgoal_id=orphan)
+    # A second live strategy on root with its own sub-goal — that
+    # sub-goal SHOULD appear (alive chain via 'proposed').
+    live_strat = _insert_strategy(conn, root, status="proposed")
+    live_sub = db.insert_goal(
+        conn, problem="p", slug="live_sub", lean_path="P/live_sub.lean",
+        statement="T", origin="backward",
+    )
+    _link_subgoal(conn, strategy_id=live_strat, subgoal_id=live_sub)
+
+    lines = phase2_context._section_active_goals(conn, "p")
+    text = "\n".join(lines)
+    # root included (origin='root' is in alive seed; status is 'open' by default)
+    assert "`main`" in text
+    # live sub-goal included
+    assert "`live_sub`" in text
+    # orphan excluded — parent strategy dead, not in alive set
+    assert "`orphan`" not in text
+
+
+def test_active_goals_includes_detached_orphan(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """When Strategist Reopens an orphan sub-goal, `detached=1` is set
+    so BFS can dispatch it standalone. `_section_active_goals` must
+    surface detached goals too (their parent chain is dead but the
+    framework's auto-detach mechanism made them independently alive)."""
+    _insert_problem(conn)
+    root = db.insert_goal(
+        conn, problem="p", slug="main", lean_path="P/main.lean",
+        statement="T", origin="root",
+    )
+    dead_strat = _insert_strategy(conn, root, status="dead")
+    # Orphan that got Reopened → detached=1
+    detached_orphan = db.insert_goal(
+        conn, problem="p", slug="detached_orphan",
+        lean_path="P/detached_orphan.lean",
+        statement="T", origin="backward",
+    )
+    db.set_goal_detached(conn, detached_orphan, True)
+    _link_subgoal(conn, strategy_id=dead_strat, subgoal_id=detached_orphan)
+
+    lines = phase2_context._section_active_goals(conn, "p")
+    text = "\n".join(lines)
+    assert "`detached_orphan`" in text
+
+
+# ---------------------------------------------------------------------
 # Phase 2.5 — inject_batch_done section
 # ---------------------------------------------------------------------
 
