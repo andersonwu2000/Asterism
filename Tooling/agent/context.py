@@ -519,9 +519,7 @@ def _section_goal_history(*,
             "",
             "Earlier Backward attempts produced the decompositions below "
             "— each killed because at least one of its sub-goals could "
-            "not be proved (cascade-shelve). Do NOT re-propose a "
-            "decomposition that hinges on the same dead sub-goal — pick "
-            "a structurally different angle.",
+            "not be proved (cascade-shelve).",
             "",
         ]
         for s in dead_strat_events:
