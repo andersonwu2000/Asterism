@@ -17,16 +17,17 @@ Your **output is the statement**. Attempt a direct proof only when it's short an
 
 ## Output: new_<slug>.lean
 
-Write **one** file in attempts_dir. Match declaration to what the brief asks for:
+Match declaration to what the brief asks for:
 
 | Brief asks for | Use |
 |---|---|
-| Proposition / equality / inequality | `theorem <slug> : <type> := by sorry` |
-| Function returning a value (e.g. `ℝ × ℝ → ℝ`) | `def <slug> (...) : <return type> := <body>` |
-| Record bundle | `structure <slug> where ...` |
-| Typeclass | `class <slug> (α : Type) where ...` |
+| A proposition to prove (equality, inequality, ↔, ∃, ∀, any Prop) | `theorem <slug> : <type> := by sorry` |
+| A value, function, or construction | `def <slug> (...) : <return type> := <body>` |
+| A composite type bundling fields | `structure <slug> where ...` |
+| An abstract interface | `class <slug> (α : Type) where ...` |
 
-`def` / `structure` / `class` skip `entry_kind` and have no `sorry`. Wrapping a value-returning function as `theorem` triggers Prop-mode synthesis errors (e.g. `HSub ℝ ℝ`).
+Write **one** file in attempts_dir.
+`def` / `structure` / `class` skip `entry_kind`.
 
 ```lean
 namespace Problems.<problem>
