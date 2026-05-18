@@ -491,3 +491,160 @@ def test_commit_request_user_amend_writes_proposed_file_atomically(
         (outcome.decision_row_id,),
     ).fetchone()
     assert row["outcome"] == "awaiting_human"
+
+
+# ---------------------------------------------------------------------
+# Phase 2.5 — Inject(chain_briefs=[...]) batch path
+# ---------------------------------------------------------------------
+
+def test_verify_inject_chain_briefs_accepted(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Forward",
+        "chain_briefs": ["land lemma 1", "land lemma 2", "land lemma 3"],
+    }))
+    assert strategist.verify_decision(d, conn, problem="p") == ""
+
+
+def test_verify_inject_rejects_brief_and_chain_briefs_together(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Forward",
+        "brief": "solo",
+        "chain_briefs": ["a", "b"],
+    }))
+    err = strategist.verify_decision(d, conn, problem="p")
+    assert "brief" in err and "chain_briefs" in err
+
+
+def test_verify_inject_rejects_single_chain_brief(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Forward",
+        "chain_briefs": ["only one"],
+    }))
+    err = strategist.verify_decision(d, conn, problem="p")
+    assert ">= 2" in err
+
+
+def test_verify_inject_rejects_oversized_batch(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    cap = strategist.inject_batch_max()
+    too_many = [f"lemma {i}" for i in range(cap + 1)]
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Forward",
+        "chain_briefs": too_many,
+    }))
+    err = strategist.verify_decision(d, conn, problem="p")
+    assert "too large" in err
+
+
+def test_inject_batch_max_honours_env_override(
+    workspace: Path, conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """env / yaml override raises (or lowers) the batch cap without code
+    edit. Reads through the standard config.get chain at verify time."""
+    from Tooling.core import config
+    monkeypatch.setenv("ASTERISM_INJECT_BATCH_MAX", "3")
+    config._reset_cache()
+    try:
+        assert strategist.inject_batch_max() == 3
+        # Exactly 3 is OK, 4 is rejected
+        d_ok, _ = strategist.parse_decision(json.dumps({
+            "kind": "Inject", "pipeline": "Forward",
+            "chain_briefs": ["a", "b", "c"],
+        }))
+        assert strategist.verify_decision(d_ok, conn, problem="p") == ""
+        d_bad, _ = strategist.parse_decision(json.dumps({
+            "kind": "Inject", "pipeline": "Forward",
+            "chain_briefs": ["a", "b", "c", "d"],
+        }))
+        err = strategist.verify_decision(d_bad, conn, problem="p")
+        assert "too large" in err
+        assert "max 3" in err
+    finally:
+        config._reset_cache()
+
+
+def test_verify_inject_rejects_empty_brief_in_chain(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Forward",
+        "chain_briefs": ["valid", "   "],
+    }))
+    err = strategist.verify_decision(d, conn, problem="p")
+    assert "[1]" in err and "non-empty" in err
+
+
+def test_commit_inject_batch_inserts_n_rows_and_n_enqueues(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    _insert_root(conn)
+    briefs = ["land lineThrough", "land perpFoot", "land perpDistSq"]
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Forward",
+        "chain_briefs": briefs,
+    }))
+    outcome = strategist.commit_decision(
+        d, conn, problem="p", tick=1, trigger_kind="pending_review",
+        workspace=workspace,
+    )
+    assert outcome.batch_id is not None
+    assert outcome.enqueued_forward is True
+    assert len(outcome.batch_decision_row_ids) == len(briefs)
+    # Each row INSERTed with same batch_id, step_index 0..N-1
+    rows = list(conn.execute(
+        "SELECT id, brief, batch_id, payload, outcome FROM strategist_decisions"
+        " WHERE problem='p' AND decision_kind='Inject'"
+        " ORDER BY id"
+    ))
+    assert len(rows) == len(briefs)
+    assert {r["batch_id"] for r in rows} == {outcome.batch_id}
+    for i, (r, expected_brief) in enumerate(zip(rows, briefs)):
+        assert r["brief"] == expected_brief
+        assert r["outcome"] is None  # filled by cascade later
+        p = json.loads(r["payload"])
+        assert p["pipeline"] == "Forward"
+        assert p["step_index"] == i
+        assert p["batch_size"] == len(briefs)
+    # N Forward enqueues, each tagged with the matching decision_id
+    q_rows = list(conn.execute(
+        "SELECT target_id, target_kind, decision_id FROM queue"
+        " WHERE kind='Forward' ORDER BY id"
+    ))
+    assert len(q_rows) == len(briefs)
+    assert [int(r["decision_id"]) for r in q_rows] == \
+        outcome.batch_decision_row_ids
+    for r in q_rows:
+        assert r["target_id"] == "p"
+        assert r["target_kind"] == "Problem"
+
+
+def test_inject_solo_path_still_uses_brief_field(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Regression — solo Inject (brief field) must keep working
+    unchanged; the batch detection short-circuits on chain_briefs only."""
+    _insert_root(conn)
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Forward",
+        "brief": "solo brief",
+    }))
+    outcome = strategist.commit_decision(
+        d, conn, problem="p", tick=1, trigger_kind="routine",
+        workspace=workspace,
+    )
+    assert outcome.batch_id is None
+    assert outcome.batch_decision_row_ids == []
+    rows = list(conn.execute(
+        "SELECT brief, batch_id FROM strategist_decisions WHERE problem='p'"
+    ))
+    assert len(rows) == 1
+    assert rows[0]["batch_id"] is None
+    assert rows[0]["brief"] == "solo brief"

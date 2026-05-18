@@ -73,6 +73,69 @@ from ..state.recovery import sweep_lean_backups as _sweep_lean_backups  # noqa: 
 # Strategist pipeline for ConfirmShelve / Reopen commits).
 # ---------------------------------------------------------------------
 
+def _record_inject_decision_outcome(conn: sqlite3.Connection,
+                                    decision_id: int,
+                                    outcome: str,
+                                    failure_reason: str) -> None:
+    """Write the Forward pipeline's terminal outcome back into the
+    strategist_decisions row that emitted it.
+
+    Solo + batch Inject both go through this; the row's `outcome` was
+    NULL post-commit and gets filled here so failure_replay (Strategist
+    self-feedback) shows 'my Inject succeeded / failed because X'.
+    `failure_reason` joins outcome via ':' for compactness — full
+    forensic still lives in dead_attempts.failure_detail keyed by
+    pipeline_id.
+    """
+    text = outcome if not failure_reason else f"{outcome}:{failure_reason}"
+    conn.execute(
+        "UPDATE strategist_decisions SET outcome = ?, updated_at = ?"
+        " WHERE id = ? AND outcome IS NULL",
+        (text, db.now(), decision_id),
+    )
+    conn.commit()
+
+
+def _maybe_enqueue_inject_batch_done(conn: sqlite3.Connection,
+                                     decision_id: int) -> None:
+    """If `decision_id` belongs to an Inject batch (batch_id non-NULL)
+    AND every sibling row in the batch now has `outcome` filled, fire
+    a single 'inject_batch_done' Strategist trigger on this problem.
+
+    Idempotent via the queue dedup inside the helper: a duplicate
+    Strategist trigger for the same root is silently dropped. Solo
+    Inject (batch_id NULL) is a no-op.
+    """
+    row = conn.execute(
+        "SELECT batch_id, problem FROM strategist_decisions WHERE id = ?",
+        (decision_id,),
+    ).fetchone()
+    if row is None or row["batch_id"] is None:
+        return
+    batch_id = str(row["batch_id"])
+    problem = str(row["problem"])
+    pending = conn.execute(
+        "SELECT COUNT(*) AS n FROM strategist_decisions"
+        " WHERE batch_id = ? AND outcome IS NULL",
+        (batch_id,),
+    ).fetchone()
+    if int(pending["n"]) > 0:
+        return
+    root_row = conn.execute(
+        "SELECT id FROM goals WHERE problem = ? AND origin = 'root'",
+        (problem,),
+    ).fetchone()
+    if root_row is None:
+        return
+    root_id = str(root_row["id"])
+    if db.is_in_queue(conn, target_id=root_id, kind="Strategist"):
+        return
+    # Priority 20 — same band as T2 pending_review; batch completion is
+    # an event-driven follow-up that supersedes the routine T1 wall-clock.
+    db.enqueue(conn, kind="Strategist", target_id=root_id,
+               target_kind="Goal", priority=20)
+
+
 def _enqueue_strategist_review(conn: sqlite3.Connection,
                                goal_id: int) -> None:
     """Phase 2 Rule 1 — agent_shelved branch.
@@ -429,7 +492,8 @@ def _classify_worker_exception(exc: BaseException) -> str:
 
 def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 kind: str, target_id: str, target_kind: str,
-                outcome: str, failure_reason: str = "") -> None:
+                outcome: str, failure_reason: str = "",
+                decision_id: int | None = None) -> None:
     """Apply state transitions for one finished pipeline.
 
     Each worker_kind has a fixed target_kind:
@@ -594,6 +658,23 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
         # Strategist self_feedback sees the failed Inject in
         # `failure_replay` and converges on ConfirmShelve / different
         # Inject brief; without the re-enqueue the loop is broken.
+
+        # Phase 2.5 — multi-Inject batch tracking. Each Forward dispatch
+        # carries its source decision_id; the row's batch_id groups
+        # sibling Forwards from one Inject(chain_briefs=[...]) commit.
+        # Fill this row's `outcome` and, when the last batch sibling
+        # finishes, enqueue a single 'inject_batch_done' Strategist
+        # trigger that surfaces all N briefs + outcomes for review.
+        # Solo Inject (decision row without batch_id) writes outcome
+        # too but skips the batch-done check.
+        if (decision_id is not None
+                and not is_infra
+                and outcome
+                and outcome != "moot"):
+            _record_inject_decision_outcome(conn, decision_id, outcome,
+                                            failure_reason)
+            _maybe_enqueue_inject_batch_done(conn, decision_id)
+
         if outcome in ("proved", "success"):
             return
         if is_infra:
@@ -872,12 +953,19 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
                 mfst = manifests[problem]
                 # Determine trigger_kind heuristically from problem
                 # state (no explicit trigger column on queue rows; the
-                # trigger_kind is derived per Phase 2 §2.1):
+                # trigger_kind is derived per Phase 2 §2.1 + 2.5):
                 #   bootstrap_done=0  → 'first_launch'
+                #   unack Inject batch done → 'inject_batch_done'
                 #   any pending_strategist_review goal in this problem
                 #                     → 'pending_review' + use that goal
                 #                       as pending_review_id
                 #   otherwise        → 'routine'
+                #
+                # `inject_batch_done` takes precedence over `pending_
+                # review` because a batch completion is the freshest
+                # event (Strategist asked for those Forwards specifically
+                # to address the pending_review; the batch outcomes
+                # belong in that decision context).
                 prob_row = conn.execute(
                     "SELECT bootstrap_done FROM problems WHERE name = ?",
                     (problem,),
@@ -890,8 +978,12 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
                     (problem,),
                 ).fetchone()
                 pending_id = int(pending_row["id"]) if pending_row else None
+                unack_batches = (db.unacknowledged_inject_batches(conn, problem)
+                                 if bootstrapped else [])
                 if not bootstrapped:
                     trigger = "first_launch"
+                elif unack_batches:
+                    trigger = "inject_batch_done"
                 elif pending_id is not None:
                     trigger = "pending_review"
                 else:
@@ -1289,13 +1381,16 @@ def run(workspace: Path, *, once: bool = False,
             done, _ = wait(list(futures), timeout=0, return_when=FIRST_COMPLETED)
             for fut in done:
                 meta = futures.pop(fut)
-                # meta = (pipeline_id, kind, target_id, target_kind)
+                # meta = (pipeline_id, kind, target_id, target_kind,
+                #        decision_id)
                 running.discard((meta[2], meta[1]))
+                meta_decision_id = meta[4]
                 try:
                     pid, kind, tid, tk, outcome, reason = fut.result()
                     cascade_one(conn, pipeline_id=pid, kind=kind,
                                 target_id=tid, target_kind=tk,
-                                outcome=outcome, failure_reason=reason)
+                                outcome=outcome, failure_reason=reason,
+                                decision_id=meta_decision_id)
                     # Back-off + global counter for spawn fast-fails.
                     # Phase 7 — quota_exhausted (rc=126) / missing_dep (rc=127)
                     # also cooldown but do NOT contribute to CONSEC tracking
@@ -1399,7 +1494,7 @@ def run(workspace: Path, *, once: bool = False,
                     # Route through the _INFRA_REASONS short-circuit so
                     # attempts stay unchanged AND the per-target cooldown
                     # below kicks in.
-                    pid, kind, tid, tk = meta
+                    pid, kind, tid, tk, _did = meta
                     infra_reason = _classify_worker_exception(exc)
                     label = (f"{infra_reason} (no attempts++)"
                              if infra_reason else "treating as failed")
@@ -1410,7 +1505,8 @@ def run(workspace: Path, *, once: bool = False,
                         cascade_one(conn, pipeline_id=pid, kind=kind,
                                     target_id=tid, target_kind=tk,
                                     outcome="failed",
-                                    failure_reason=infra_reason)
+                                    failure_reason=infra_reason,
+                                    decision_id=_did)
                         tree.write_for_target(conn, workspace, tid, tk)
                         # Mirror the normal-result cooldown path so
                         # gateway-unreachable / transient_timeout also
@@ -1570,7 +1666,8 @@ def run(workspace: Path, *, once: bool = False,
             fut = pool.submit(_run_pipeline, workspace, manifests,
                               kind, target_id, target_kind, pipeline_id,
                               decision_id)
-            futures[fut] = (pipeline_id, kind, target_id, target_kind)
+            futures[fut] = (pipeline_id, kind, target_id, target_kind,
+                            decision_id)
             print(f"[dispatch] {kind} {target_kind}={target_id} "
                   f"pid={pipeline_id[:8]}", flush=True)
 

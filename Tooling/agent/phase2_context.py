@@ -184,6 +184,75 @@ def _section_pending_review_ancestors(
     return out
 
 
+def _section_inject_batch_outcomes(conn: sqlite3.Connection,
+                                   problem: str) -> list[str]:
+    """Surface every Inject batch on this problem that completed since
+    the last Strategist commit (`last_strategist_at` ratchet — see
+    `db.unacknowledged_inject_batches`).
+
+    Emitted on ANY trigger when unack batches exist, not gated on
+    `trigger_kind='inject_batch_done'`. Rationale: `_maybe_enqueue_
+    inject_batch_done` does not advance `last_strategist_at`; a
+    concurrent Strategist invocation under a different trigger (e.g.
+    pending_review) can commit between batch completion and the queued
+    inject_batch_done Strategist popping — that commit advances the
+    ratchet and the queued inject_batch_done call no longer recognises
+    the batch as unack. By always surfacing here, whichever Strategist
+    runs first sees the batch and gets a chance to act on it. Acking
+    via the ratchet still prevents double-processing across calls.
+
+    Per-step "produced lemma" lookup intentionally omitted: goals don't
+    carry decision_id, so attribution would have to match by
+    problem + created_at which can't disambiguate steps of the same
+    batch. Strategist reads `## Library` + `## TREE` for what actually
+    landed.
+    """
+    batch_ids = db.unacknowledged_inject_batches(conn, problem)
+    if not batch_ids:
+        return []
+    out = ["## Completed Inject batches (newest first)", ""]
+    placeholders = ",".join("?" * len(batch_ids))
+    rows = list(conn.execute(
+        f"SELECT id, batch_id, brief, payload, outcome, updated_at"
+        f" FROM strategist_decisions"
+        f" WHERE batch_id IN ({placeholders})"
+        f" ORDER BY MAX(updated_at) OVER (PARTITION BY batch_id) DESC,"
+        f"          batch_id, id",
+        batch_ids,
+    ))
+    grouped: dict[str, list[sqlite3.Row]] = {}
+    order: list[str] = []
+    for r in rows:
+        bid = str(r["batch_id"])
+        if bid not in grouped:
+            grouped[bid] = []
+            order.append(bid)
+        grouped[bid].append(r)
+
+    def _step_idx(r: sqlite3.Row) -> int:
+        try:
+            return int(json.loads(str(r["payload"]) or "{}")
+                       .get("step_index", 0))
+        except (ValueError, TypeError):
+            return 0
+
+    for bid in order:
+        steps = grouped[bid]
+        steps.sort(key=_step_idx)
+        out.append(f"### Batch `{bid[:8]}` ({len(steps)} steps)")
+        out.append("")
+        for r in steps:
+            idx = _step_idx(r)
+            brief = (r["brief"] or "").strip()
+            if len(brief) > 300:
+                brief = brief[:300].rstrip() + "…"
+            outcome_text = r["outcome"] or "(no outcome)"
+            out.append(f"- **step {idx}** outcome=`{outcome_text}`")
+            out.append(f"  brief: {brief}")
+        out.append("")
+    return out
+
+
 def _section_active_goals(conn: sqlite3.Connection,
                           problem: str) -> list[str]:
     rows = list(conn.execute(
@@ -319,7 +388,11 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
             _section_pending_review_strategies(conn, pending_review_id),
             _section_pending_review_ancestors(conn, pending_review_id),
         ]
+    # Phase 2.5 — surface unack Inject batches on every trigger when
+    # any exist (not gated on trigger_kind='inject_batch_done'). See
+    # `_section_inject_batch_outcomes` docstring for the race rationale.
     sections += [
+        _section_inject_batch_outcomes(conn, problem),
         _section_active_goals(conn, problem),
         _section_failure_replay(conn, problem),
         _section_tree_inline(workspace, problem),

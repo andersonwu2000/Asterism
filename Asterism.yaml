@@ -27,7 +27,9 @@ dispatch:
                               #                          ~1 GB but most not resident)
                               # Approximation:
                               #   RAM ≈ 3.7 + 0.95×pool  GB
-  budget_sec: 16200           # 4h30min daemon wall-clock cutoff for SG run
+  budget_sec: 18000           # 5hr daemon wall-clock cutoff for SG run
+                              # (was 7200 for miniF2F stress test, 16200
+                              # for older SG baselines)
   shelve_threshold: 5         # total attempts per goal before shelving
                               # (was 4; SG 2026-05-09 g224 hit 4 stuck-thinking
                               # in a row with the old escape-less rescue
@@ -75,3 +77,21 @@ builder:
 backward:
   provider: claude
   model: claude-opus-4-7
+
+strategist:
+  provider: claude
+  model: claude-opus-4-7       # meta-level reasoning (InitializeDefs /
+                               # RequestUserAmend / Inject Forward) —
+                               # same tier as Backward.
+#  interval_min: 60.0          # T1 routine cadence (default 60min)
+#  inject_batch_max: 10        # Phase 2.5 — upper bound on
+                               # Inject(chain_briefs=[...]) length. Each
+                               # brief becomes a Forward dispatch; >cap
+                               # is rejected at verify_decision time.
+                               # Solo Inject (brief field) is unaffected.
+
+forward:
+  provider: claude
+  model: claude-opus-4-7       # writes one Mathlib-style lemma per
+                               # spawn; needs strong typing + library
+                               # knowledge.

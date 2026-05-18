@@ -269,3 +269,166 @@ def test_first_launch_trigger_omits_review_sections(
     assert "### Recent failed attempts on this goal" not in text
     assert "### Existing strategies on this goal" not in text
     assert "### Ancestor chain" not in text
+
+
+# ---------------------------------------------------------------------
+# Phase 2.5 — inject_batch_done section
+# ---------------------------------------------------------------------
+
+def _seed_inject_batch_done(conn: sqlite3.Connection, *, problem: str = "p",
+                            batch_id: str, briefs: list[str],
+                            outcomes: list[str]) -> list[int]:
+    ts = db.now()
+    ids: list[int] = []
+    for i, (b, o) in enumerate(zip(briefs, outcomes)):
+        cur = conn.execute(
+            "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+            " trigger_kind, decision_kind, target_id, brief, reason,"
+            " payload, batch_id, outcome, created_at, updated_at)"
+            " VALUES (?, 0, 'pending_review', 'Inject', NULL, ?, NULL,"
+            "         ?, ?, ?, ?, ?)",
+            (problem, b,
+             '{"pipeline":"Forward","step_index":' + str(i)
+                + ',"batch_size":' + str(len(briefs)) + '}',
+             batch_id, o, ts, ts),
+        )
+        ids.append(int(cur.lastrowid))
+    conn.commit()
+    return ids
+
+
+def test_inject_batch_done_surfaces_briefs_and_outcomes(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, tmp_path: Path,
+) -> None:
+    """trigger_kind='inject_batch_done' Context surfaces each completed
+    batch's brief + outcome per step. Strategist needs the per-step
+    outcome to decide: all success → Reopen, partial fail → Inject
+    more / ConfirmShelve."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    _seed_inject_batch_done(
+        conn, batch_id="batch-X",
+        briefs=["land lineThrough", "land perpFoot", "land perpDistSq"],
+        outcomes=["success", "failed:lake_build_error", "success"],
+    )
+    attempts_dir = tmp_path / "_attempts_strategist"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="inject_batch_done",
+        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        pending_review_id=None,
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "## Completed Inject batches" in text
+    assert "Batch `batch-X" in text
+    assert "land lineThrough" in text
+    assert "land perpFoot" in text
+    assert "land perpDistSq" in text
+    assert "success" in text
+    assert "lake_build_error" in text
+
+
+def test_inject_batch_section_omitted_when_no_unack_batch(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, tmp_path: Path,
+) -> None:
+    """Without any unack batch, the section doesn't appear (defensive —
+    rendering must not show stale data)."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    attempts_dir = tmp_path / "_attempts_strategist"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="inject_batch_done",
+        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "## Completed Inject batches" not in text
+
+
+def test_routine_trigger_shows_unack_batch_section(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, tmp_path: Path,
+) -> None:
+    """Routine trigger (or any other non-inject_batch_done trigger)
+    MUST surface unack batch outcomes — otherwise a Strategist invoked
+    between batch completion and the queued inject_batch_done dispatch
+    advances `last_strategist_at` without seeing the batch (race; see
+    `_section_inject_batch_outcomes` docstring)."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    _seed_inject_batch_done(
+        conn, batch_id="batch-Y",
+        briefs=["lemma A", "lemma B"],
+        outcomes=["success", "success"],
+    )
+    attempts_dir = tmp_path / "_attempts_strategist"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="routine",
+        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "## Completed Inject batches" in text
+    assert "Batch `batch-Y" in text
+    assert "lemma A" in text
+
+
+def test_pending_review_trigger_shows_unack_batch_section(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, tmp_path: Path,
+) -> None:
+    """Same race-avoidance for pending_review: a T2 Strategist
+    invocation must see batches that completed since the last commit."""
+    _insert_problem(conn)
+    root = _insert_root(conn)
+    _seed_inject_batch_done(
+        conn, batch_id="batch-Z",
+        briefs=["b1", "b2"], outcomes=["success", "success"],
+    )
+    attempts_dir = tmp_path / "_attempts_strategist"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="pending_review",
+        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        pending_review_id=root,
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "## Completed Inject batches" in text
+    assert "Batch `batch-Z" in text
+
+
+def test_inject_batch_section_omits_produced_lemma(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, tmp_path: Path,
+) -> None:
+    """Batch section deliberately does NOT attribute Forward lemmas to
+    specific batch steps. Goals don't carry decision_id; attribution
+    by problem + created_at can't disambiguate batch steps (would
+    misattribute multiple lemmas to the earliest step). Strategist
+    reads `## Library` / `## TREE` for what landed."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    _seed_inject_batch_done(
+        conn, batch_id="batch-W",
+        briefs=["b1", "b2"], outcomes=["success", "success"],
+    )
+    # Add two Forward lemmas that would tempt the old heuristic to
+    # misattribute both to batch step 0.
+    db.insert_goal(
+        conn, problem="p", slug="forward_a", lean_path="P/forward_a.lean",
+        statement="A", origin="forward", depth=0,
+    )
+    db.insert_goal(
+        conn, problem="p", slug="forward_b", lean_path="P/forward_b.lean",
+        statement="B", origin="forward", depth=0,
+    )
+    attempts_dir = tmp_path / "_attempts_strategist"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="inject_batch_done",
+        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "produced:" not in text

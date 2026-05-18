@@ -202,7 +202,9 @@ def _make_pre_phase2_db(tmp_path: Path) -> Path:
 
 def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     """Forward migration path (D.1): pre-Phase 2 DB → init_schema →
-    Phase 2 schema in place with PRAGMA user_version = 2."""
+    Phase 2 schema in place with PRAGMA user_version at the latest
+    (Phase 2.5 bumped this from 2 to 3 for the strategist_decisions
+    trigger_kind CHECK widening + batch_id column)."""
     db_path = _make_pre_phase2_db(tmp_path)
 
     # Before migration: user_version = 0, goals lacks 'detached'
@@ -222,7 +224,7 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     db.init_schema(conn)
 
     # Post: PRAGMA user_version = 2
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -240,6 +242,15 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
         "SELECT name FROM sqlite_master WHERE type='table' AND name='strategist_decisions'"
     ).fetchall()
     assert len(rows) == 1
+
+    # Phase 2.5 — batch_id column + inject_batch_done trigger_kind
+    sd_cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(strategist_decisions)")}
+    assert "batch_id" in sd_cols
+    sd_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='strategist_decisions'"
+    ).fetchone()[0]
+    assert "inject_batch_done" in sd_sql
 
     # New CHECK values accepted on goals
     conn.execute(
@@ -329,7 +340,7 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     }
     conn.close()
 
-    # Second run — should be no-op (PRAGMA user_version == 2 already)
+    # Second run — should be no-op (PRAGMA user_version already at latest)
     conn = sqlite3.connect(str(db_path), timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -345,14 +356,14 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version still 2
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
     conn.close()
 
 
 def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     """Fresh DB (created via current SCHEMA) skips _migrate_to_phase2
-    (detected via 'detached' column already present) but still sets
-    PRAGMA user_version = 2."""
+    (detected via 'detached' column already present) but still bumps
+    PRAGMA user_version to the latest."""
     db_path = tmp_path / "fresh.db"
     conn = sqlite3.connect(str(db_path), timeout=30)
     conn.row_factory = sqlite3.Row
@@ -363,7 +374,7 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"

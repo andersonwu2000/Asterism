@@ -408,3 +408,183 @@ def test_t2_pops_before_bfs(
     assert first["kind"] == "Strategist"
     assert first["priority"] == 20
     assert int(first["target_id"]) == root
+
+
+# ---------------------------------------------------------------------
+# Phase 2.5 — Inject batch completion hook
+# ---------------------------------------------------------------------
+
+def _seed_inject_batch_rows(conn: sqlite3.Connection, *,
+                            problem: str = "p",
+                            batch_id: str,
+                            count: int) -> list[int]:
+    ts = db.now()
+    ids: list[int] = []
+    for i in range(count):
+        cur = conn.execute(
+            "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+            " trigger_kind, decision_kind, target_id, brief, reason,"
+            " payload, batch_id, outcome, created_at, updated_at)"
+            " VALUES (?, 0, 'pending_review', 'Inject', NULL, ?, NULL,"
+            "         ?, ?, NULL, ?, ?)",
+            (problem, f"brief {i}",
+             '{"pipeline":"Forward","step_index":' + str(i)
+                + ',"batch_size":' + str(count) + '}',
+             batch_id, ts, ts),
+        )
+        ids.append(int(cur.lastrowid))
+    conn.commit()
+    return ids
+
+
+def test_batch_partial_completion_does_not_enqueue_strategist(
+    conn: sqlite3.Connection,
+) -> None:
+    """2/3 Forwards done → no Strategist trigger yet. The hook only
+    fires when EVERY decision row in the batch has outcome filled."""
+    root = _insert_goal(conn, slug="main", origin="root", status="attempting")
+    ids = _seed_inject_batch_rows(conn, batch_id="batch-x", count=3)
+
+    cascade_one(conn, pipeline_id="pid1", kind="Forward",
+                target_id="p", target_kind="Problem",
+                outcome="success", decision_id=ids[0])
+    cascade_one(conn, pipeline_id="pid2", kind="Forward",
+                target_id="p", target_kind="Problem",
+                outcome="failed", failure_reason="lake_build_error",
+                decision_id=ids[1])
+    # 1 row still pending → no Strategist enqueue
+    q_strat = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert q_strat["n"] == 0
+    # Outcomes recorded on the two done rows
+    rows = list(conn.execute(
+        "SELECT outcome FROM strategist_decisions"
+        " WHERE batch_id='batch-x' ORDER BY id"
+    ))
+    assert rows[0]["outcome"] is not None
+    assert rows[1]["outcome"] is not None
+    assert rows[2]["outcome"] is None
+
+
+def test_batch_full_completion_enqueues_one_strategist(
+    conn: sqlite3.Connection,
+) -> None:
+    """All 3 Forwards done → exactly one Strategist enqueue with
+    priority=20. Idempotent: a second cascade for the same batch must
+    not double-enqueue (dedup via is_in_queue)."""
+    root = _insert_goal(conn, slug="main", origin="root", status="attempting")
+    ids = _seed_inject_batch_rows(conn, batch_id="batch-z", count=3)
+
+    for pid, rid in zip(["p1", "p2", "p3"], ids):
+        cascade_one(conn, pipeline_id=pid, kind="Forward",
+                    target_id="p", target_kind="Problem",
+                    outcome="success", decision_id=rid)
+
+    q = list(conn.execute(
+        "SELECT kind, target_id, priority FROM queue"
+        " WHERE kind='Strategist'"
+    ))
+    assert len(q) == 1
+    assert int(q[0]["target_id"]) == root
+    assert q[0]["priority"] == 20
+
+    # Re-fire cascade on the same last row (idempotent path); no second
+    # enqueue. (`is_in_queue` blocks the duplicate.)
+    cascade_one(conn, pipeline_id="p3-replay", kind="Forward",
+                target_id="p", target_kind="Problem",
+                outcome="success", decision_id=ids[-1])
+    q2 = list(conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ))
+    assert q2[0]["n"] == 1
+
+
+def test_batch_infra_failure_does_not_advance_completion(
+    conn: sqlite3.Connection,
+) -> None:
+    """Infra outcomes (spawn_fast_fail / gateway_unreachable / quota_
+    exhausted / transient_timeout / missing_dep) don't fill the batch
+    row's outcome — those are transport failures, not the agent's
+    Forward decision. Batch completion is not advanced; Strategist
+    not enqueued."""
+    _insert_goal(conn, slug="main", origin="root", status="attempting")
+    ids = _seed_inject_batch_rows(conn, batch_id="batch-infra", count=2)
+
+    cascade_one(conn, pipeline_id="pid1", kind="Forward",
+                target_id="p", target_kind="Problem",
+                outcome="failed", failure_reason="spawn_fast_fail",
+                decision_id=ids[0])
+    cascade_one(conn, pipeline_id="pid2", kind="Forward",
+                target_id="p", target_kind="Problem",
+                outcome="failed", failure_reason="gateway_unreachable",
+                decision_id=ids[1])
+    rows = list(conn.execute(
+        "SELECT outcome FROM strategist_decisions"
+        " WHERE batch_id='batch-infra'"
+    ))
+    assert all(r["outcome"] is None for r in rows)
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert q["n"] == 0
+
+
+def test_solo_inject_outcome_recorded_but_no_batch_trigger(
+    conn: sqlite3.Connection,
+) -> None:
+    """Solo Inject (batch_id NULL): outcome still recorded on the
+    decision row (useful for failure_replay) but the batch-done check
+    is a no-op — no Strategist enqueue via the batch hook (the existing
+    pending_review re-enqueue is a separate path)."""
+    _insert_goal(conn, slug="main", origin="root", status="attempting")
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
+        " batch_id, outcome, created_at, updated_at)"
+        " VALUES ('p', 0, 'pending_review', 'Inject', NULL, 'solo',"
+        "         NULL, '{}', NULL, NULL, ?, ?)",
+        (db.now(), db.now()),
+    )
+    rid = int(cur.lastrowid)
+    conn.commit()
+
+    cascade_one(conn, pipeline_id="pidsolo", kind="Forward",
+                target_id="p", target_kind="Problem",
+                outcome="success", decision_id=rid)
+    r = conn.execute(
+        "SELECT outcome FROM strategist_decisions WHERE id = ?", (rid,)
+    ).fetchone()
+    assert r["outcome"] is not None
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert q["n"] == 0
+
+
+def test_unacknowledged_inject_batches_helper(
+    conn: sqlite3.Connection,
+) -> None:
+    """db.unacknowledged_inject_batches returns batch_ids with all rows
+    outcome-filled AND a row update newer than last_strategist_at."""
+    _insert_goal(conn, slug="main", origin="root", status="attempting")
+    ids_a = _seed_inject_batch_rows(conn, batch_id="batch-A", count=2)
+    ids_b = _seed_inject_batch_rows(conn, batch_id="batch-B", count=2)
+
+    # A fully done
+    for rid in ids_a:
+        conn.execute(
+            "UPDATE strategist_decisions SET outcome='success', updated_at = ?"
+            " WHERE id = ?", (db.now(), rid))
+    # B half done
+    conn.execute(
+        "UPDATE strategist_decisions SET outcome='success', updated_at = ?"
+        " WHERE id = ?", (db.now(), ids_b[0]))
+    conn.commit()
+    batches = db.unacknowledged_inject_batches(conn, "p")
+    assert batches == ["batch-A"]
+
+    # Advance last_strategist_at; batch A becomes acknowledged
+    db.update_problem_last_strategist_at(conn, "p")
+    batches2 = db.unacknowledged_inject_batches(conn, "p")
+    assert batches2 == []

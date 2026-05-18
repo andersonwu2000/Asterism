@@ -39,6 +39,8 @@ Field map (Asterism.yaml → env var fallback → built-in default):
                                    ASTERISM_LLM_PROVIDER        'claude'
     backward.model                 ASTERISM_BACKWARD_MODEL →
                                    ASTERISM_AGENT_MODEL         provider-default
+    strategist.interval_min        ASTERISM_STRATEGIST_INTERVAL_MIN  60.0
+    strategist.inject_batch_max    ASTERISM_INJECT_BATCH_MAX    10
 
 Provider-specific knobs (gemini model / openai base url / claude
 tools) stay env-only — they're cross-cutting toggles that don't

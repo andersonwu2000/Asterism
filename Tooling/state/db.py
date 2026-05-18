@@ -259,7 +259,8 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
     triggered_at_tick   INTEGER NOT NULL,
     trigger_kind        TEXT NOT NULL
                             CHECK(trigger_kind IN
-                                  ('first_launch','pending_review','routine')),
+                                  ('first_launch','pending_review','routine',
+                                   'inject_batch_done')),
     decision_kind       TEXT NOT NULL
                             CHECK(decision_kind IN
                                   ('Inject','ConfirmShelve','Reopen',
@@ -269,6 +270,12 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
     brief               TEXT NULL DEFAULT NULL,
     reason              TEXT NULL DEFAULT NULL,
     payload             TEXT NOT NULL DEFAULT '{}',
+    -- batch_id: groups multiple Inject rows committed in one Strategist
+    -- decision (chain_briefs path). All rows in the same batch share
+    -- the UUID; framework fires Strategist with trigger_kind='inject_
+    -- batch_done' once every Forward spawned by the batch has reached
+    -- a terminal outcome. NULL for solo Inject + all non-Inject kinds.
+    batch_id            TEXT NULL DEFAULT NULL,
     outcome             TEXT NULL DEFAULT NULL,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
@@ -279,6 +286,7 @@ CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(status);
 CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue(priority DESC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_sd_problem ON strategist_decisions(problem);
 CREATE INDEX IF NOT EXISTS idx_sd_outcome ON strategist_decisions(outcome);
+CREATE INDEX IF NOT EXISTS idx_sd_batch_id ON strategist_decisions(batch_id);
 """
 
 
@@ -340,6 +348,15 @@ def init_schema(conn: sqlite3.Connection) -> None:
         ("last_strategist_at",
          "ALTER TABLE problems ADD COLUMN last_strategist_at TEXT"
          " NULL DEFAULT NULL"),
+        # Phase 2.5 — Strategist multi-Inject batch grouping. Same UUID
+        # across all Inject rows committed in one chain_briefs decision;
+        # cascade fires Strategist with trigger_kind='inject_batch_done'
+        # when the last Forward in the batch finishes. Pure ADD COLUMN
+        # (no CHECK on this column); the CHECK widening for trigger_kind
+        # happens via _migrate_to_phase3 below.
+        ("batch_id",
+         "ALTER TABLE strategist_decisions ADD COLUMN batch_id TEXT"
+         " NULL DEFAULT NULL"),
     ):
         try:
             conn.execute(ddl)
@@ -388,6 +405,15 @@ def init_schema(conn: sqlite3.Connection) -> None:
         if 'detached' not in goals_cols:
             _migrate_to_phase2(conn)
         conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+    if v < 3:
+        # Phase 2.5 — strategist_decisions.trigger_kind CHECK adds
+        # 'inject_batch_done'. SQLite cannot extend CHECK in place;
+        # rebuild required. Fresh DBs built from the updated SCHEMA
+        # already have the widened CHECK + idx_sd_batch_id; the rebuild
+        # short-circuits via the duplicate-index probe inside.
+        _migrate_to_phase3(conn)
+        conn.execute("PRAGMA user_version = 3")
         conn.commit()
 
 
@@ -527,6 +553,87 @@ def _migrate_to_phase2(conn: sqlite3.Connection) -> None:
         if fk_violations:
             raise RuntimeError(
                 f"Phase 2 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_phase3(conn: sqlite3.Connection) -> None:
+    """Phase 2.5 — widen strategist_decisions.trigger_kind CHECK to
+    accept 'inject_batch_done'. SQLite cannot ALTER a CHECK constraint;
+    rebuild the table with the new CHECK clause, copy rows, swap.
+
+    Pre-condition: PRAGMA user_version < 3. The previous phase 2 ALTER
+    TABLE ADD COLUMN block has already added `batch_id` to the live
+    table (additive, no CHECK on that column), so the rebuild here only
+    has to widen the trigger_kind CHECK and preserve every other column.
+
+    Post-condition (caller sets user_version = 3):
+      - strategist_decisions.trigger_kind CHECK accepts 'inject_batch_done'
+      - idx_sd_batch_id index present (matches SCHEMA constant)
+      - All existing rows preserved unchanged
+    """
+    # Skip if rebuild already happened (fresh DB built from current
+    # SCHEMA has the widened CHECK + index already; this lets the
+    # phase 3 guard be idempotent on those DBs).
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table'"
+        " AND name = 'strategist_decisions'"
+    ).fetchone()
+    if chk and "inject_batch_done" in (chk["sql"] or ""):
+        # CHECK already wide enough; just ensure the index exists.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sd_batch_id"
+            " ON strategist_decisions(batch_id)")
+        conn.commit()
+        return
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_strategist_decisions (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem             TEXT NOT NULL REFERENCES problems(name),
+                triggered_at_tick   INTEGER NOT NULL,
+                trigger_kind        TEXT NOT NULL
+                                        CHECK(trigger_kind IN
+                                              ('first_launch','pending_review',
+                                               'routine','inject_batch_done')),
+                decision_kind       TEXT NOT NULL
+                                        CHECK(decision_kind IN
+                                              ('Inject','ConfirmShelve','Reopen',
+                                               'EmitDirective','InitializeDefs',
+                                               'RequestUserAmend','Noop')),
+                target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                brief               TEXT NULL DEFAULT NULL,
+                reason              TEXT NULL DEFAULT NULL,
+                payload             TEXT NOT NULL DEFAULT '{}',
+                batch_id            TEXT NULL DEFAULT NULL,
+                outcome             TEXT NULL DEFAULT NULL,
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL
+            );
+            INSERT INTO _new_strategist_decisions
+                (id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                 target_id, brief, reason, payload, batch_id, outcome,
+                 created_at, updated_at)
+            SELECT id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                   target_id, brief, reason, payload, batch_id, outcome,
+                   created_at, updated_at
+            FROM strategist_decisions;
+            DROP TABLE strategist_decisions;
+            ALTER TABLE _new_strategist_decisions RENAME TO strategist_decisions;
+            CREATE INDEX IF NOT EXISTS idx_sd_problem
+                ON strategist_decisions(problem);
+            CREATE INDEX IF NOT EXISTS idx_sd_outcome
+                ON strategist_decisions(outcome);
+            CREATE INDEX IF NOT EXISTS idx_sd_batch_id
+                ON strategist_decisions(batch_id);
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 3 migration left FK violations: {fk_violations[:5]}"
             )
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
@@ -681,6 +788,45 @@ def update_problem_last_strategist_at(conn: sqlite3.Connection,
         (now(), problem),
     )
     conn.commit()
+
+
+def unacknowledged_inject_batches(conn: sqlite3.Connection,
+                                  problem: str) -> list[str]:
+    """Return batch_ids of Inject batches on this problem where every
+    row's `outcome` is filled (batch fully terminated) AND the most
+    recent row update is newer than the problem's last_strategist_at
+    (i.e. Strategist hasn't seen this completion yet).
+
+    Used by the dispatcher's trigger-derivation block to fire
+    `inject_batch_done` Strategist invocations. Per Phase 2.5 §X,
+    the acknowledgement ratchet is `last_strategist_at`: a Strategist
+    commit advances it, so subsequent batch-done queries naturally
+    deduplicate without a per-row `acked_at` column.
+
+    NULL `last_strategist_at` (problem never had a Strategist commit)
+    behaves as 'all batches are unacknowledged' — coalesced to
+    '1970-01-01T00:00:00' so SQL comparison works.
+    """
+    rows = conn.execute(
+        "SELECT batch_id,"
+        "       SUM(CASE WHEN outcome IS NULL THEN 1 ELSE 0 END) AS pending,"
+        "       MAX(updated_at) AS last_update"
+        " FROM strategist_decisions"
+        " WHERE problem = ? AND batch_id IS NOT NULL"
+        " GROUP BY batch_id"
+        " HAVING pending = 0",
+        (problem,),
+    ).fetchall()
+    if not rows:
+        return []
+    lsa_row = conn.execute(
+        "SELECT COALESCE(last_strategist_at, '1970-01-01T00:00:00+00:00')"
+        " AS lsa FROM problems WHERE name = ?",
+        (problem,),
+    ).fetchone()
+    lsa = str(lsa_row["lsa"]) if lsa_row else '1970-01-01T00:00:00+00:00'
+    return [str(r["batch_id"]) for r in rows
+            if str(r["last_update"]) > lsa]
 
 
 def problems_needing_t0(conn: sqlite3.Connection,
