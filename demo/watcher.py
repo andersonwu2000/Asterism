@@ -225,42 +225,81 @@ WORKER_PANE_COUNT = 4
 
 _PANE_IDLE_PLACEHOLDER = "-- (idle, waiting for spawn)\n"
 
+# Gateway pool slot id ∈ {0..pool-1}. Each spawn's _mcp.jsonl first
+# line is the `session_registered` event with `claimed_slot` = the
+# slot it acquired from the gateway pool (1:1 binding for the spawn's
+# lifetime per `lsp/gateway.py:WorkerSlot`). We map worker pane N to
+# gateway slot N-1 directly — stable for the entire spawn lifecycle,
+# no shifting, no UUID bookkeeping.
+import json as _json
+
+
+def _spawn_claimed_slot(pdir: Path) -> int | None:
+    """Read `claimed_slot` from the first `session_registered` event in
+    the spawn dir's `_mcp.jsonl`. Returns None if file missing /
+    unreadable / no register event yet (cold-start before slot
+    acquired). Cheap — reads at most a few lines."""
+    mcp = pdir / "_mcp.jsonl"
+    if not mcp.exists():
+        return None
+    try:
+        with open(mcp, "r", encoding="utf-8") as f:
+            for _ in range(5):  # register event is line 1; cap defensively
+                line = f.readline()
+                if not line:
+                    return None
+                try:
+                    obj = _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue
+                if obj.get("event") == "session_registered":
+                    slot = obj.get("claimed_slot")
+                    if isinstance(slot, int):
+                        return slot
+                    return None
+    except OSError:
+        return None
+    return None
+
 
 def _update_worker_panes(
     spawns: list[Path],
 ) -> list[tuple[str, str] | None]:
-    """Identify each active spawn's pipeline kind + slug for the stats
-    pipeline list (returned aligned with `spawns`), and map the first
-    WORKER_PANE_COUNT spawns that have a `.lean` file into the worker
-    panes. Strategist spawns (no `.lean` output) still appear in the
-    returned label list — they occupy a pool slot — but consume no
-    pane mapping (panes are intended to show agent-authored Lean).
+    """Map active spawns into worker panes by their gateway pool slot
+    id. Worker pane N+1 ↔ gateway slot N. Stable for the entire spawn
+    lifecycle: a spawn that grabbed slot 2 will stay in worker_3.lean
+    until it releases.
 
-    Panes beyond the last mapped spawn are reset to the idle
-    placeholder so they don't show stale content from an earlier tick
-    when more spawns were alive. Idempotent: the write only fires
-    when current content differs from the placeholder, so panes don't
-    flash on every tick.
+    Returns one label per spawn in input order (newest-first) for the
+    stats pipeline list. Strategist + any spawn that hasn't yet
+    written `session_registered` (cold pre-claim) appear in stats
+    labels but not in pane mapping (no slot id, nothing to map).
     """
     active_labels: list[tuple[str, str] | None] = [None] * len(spawns)
-    pane_idx = 0
+    # Collect (slot, spawn) pairs; spawns without a slot id (Strategist
+    # before any tool call, cold-start pre-register) get no pane.
+    slot_to_spawn: dict[int, Path] = {}
     for i, spawn in enumerate(spawns):
         info = _lookup_spawn_info(spawn)
         active_labels[i] = info if info is not None else ("spawning", "?")
-        latest = _latest_lean_in(spawn)
-        if latest is None:
+        slot = _spawn_claimed_slot(spawn)
+        if slot is not None and 0 <= slot < WORKER_PANE_COUNT:
+            # Last writer wins on duplicate slot — shouldn't happen
+            # under the gateway's 1:1 binding, but defensive.
+            slot_to_spawn[slot] = spawn
+
+    for slot in range(WORKER_PANE_COUNT):
+        target = ACTIVE_DIR / f"worker_{slot + 1}.lean"
+        spawn = slot_to_spawn.get(slot)
+        if spawn is not None:
+            latest = _latest_lean_in(spawn)
+            if latest is not None:
+                try:
+                    shutil.copy2(latest, target)
+                except OSError:
+                    pass
             continue
-        if pane_idx < WORKER_PANE_COUNT:
-            target = ACTIVE_DIR / f"worker_{pane_idx + 1}.lean"
-            try:
-                shutil.copy2(latest, target)
-            except OSError:
-                pass
-            pane_idx += 1
-    # Reset panes beyond the live spawn count to idle. Idempotent —
-    # only write when content actually changed.
-    for j in range(pane_idx, WORKER_PANE_COUNT):
-        target = ACTIVE_DIR / f"worker_{j + 1}.lean"
+        # Unassigned slot — idle placeholder, only write if changed.
         try:
             current = target.read_text(encoding="utf-8")
         except OSError:
