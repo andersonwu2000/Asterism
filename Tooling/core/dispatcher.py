@@ -647,26 +647,18 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
 
     if kind == "Forward":
         # Forward's target is the problem name (target_kind='Problem');
-        # no goal row to update. On any non-success outcome, give
-        # Strategist an immediate chance to re-decide rather than
-        # waiting for T1 (default 60 min). Without this, after Forward
-        # fails the queue can drain to empty while a `pending_strategist
-        # _review` goal still sits unresolved — the dispatcher's idle
-        # exit then trips before T1's wall-clock ever fires (observed
-        # SG run 2026-05-17: Strategist→Inject(Forward)→Forward failed
-        # on lake elaboration → daemon exited with root still attempting).
-        # Strategist self_feedback sees the failed Inject in
-        # `failure_replay` and converges on ConfirmShelve / different
-        # Inject brief; without the re-enqueue the loop is broken.
-
-        # Phase 2.5 — multi-Inject batch tracking. Each Forward dispatch
-        # carries its source decision_id; the row's batch_id groups
-        # sibling Forwards from one Inject(chain_briefs=[...]) commit.
-        # Fill this row's `outcome` and, when the last batch sibling
-        # finishes, enqueue a single 'inject_batch_done' Strategist
-        # trigger that surfaces all N briefs + outcomes for review.
-        # Solo Inject (decision row without batch_id) writes outcome
-        # too but skips the batch-done check.
+        # no goal row to update. Phase 2.5 unified — every Forward is
+        # dispatched from an Inject batch (queue.decision_id always
+        # set), so the batch-done hook covers the "give Strategist a
+        # chance to re-decide after Forward fails" need that the legacy
+        # pending_review re-enqueue used to handle separately.
+        #
+        # The hook: record this row's outcome, then if every sibling in
+        # the batch is now terminal, enqueue a single Strategist with
+        # trigger derivation → `inject_batch_done` (via the
+        # `unacknowledged_inject_batches` ratchet). Infra and moot
+        # outcomes do NOT advance the batch (Forward retries handle
+        # infra internally; moot = no real attempt happened).
         if (decision_id is not None
                 and not is_infra
                 and outcome
@@ -674,20 +666,6 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             _record_inject_decision_outcome(conn, decision_id, outcome,
                                             failure_reason)
             _maybe_enqueue_inject_batch_done(conn, decision_id)
-
-        if outcome in ("proved", "success"):
-            return
-        if is_infra:
-            return
-        problem = str(target_id)
-        pr_row = conn.execute(
-            "SELECT id FROM goals "
-            " WHERE problem = ? AND status = 'pending_strategist_review' "
-            " LIMIT 1",
-            (problem,),
-        ).fetchone()
-        if pr_row is not None:
-            _enqueue_strategist_review(conn, int(pr_row["id"]))
         return
 
     if kind == "Backward":

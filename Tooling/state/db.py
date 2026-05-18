@@ -277,11 +277,13 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
     brief               TEXT NULL DEFAULT NULL,
     reason              TEXT NULL DEFAULT NULL,
     payload             TEXT NOT NULL DEFAULT '{}',
-    -- batch_id: groups multiple Inject rows committed in one Strategist
-    -- decision (chain_briefs path). All rows in the same batch share
+    -- batch_id: groups the N Inject rows committed in one Strategist
+    -- decision (briefs list path; every Inject under unified Phase 2.5
+    -- is a batch, N=1 is degenerate). All rows in the same batch share
     -- the UUID; framework fires Strategist with trigger_kind='inject_
     -- batch_done' once every Forward spawned by the batch has reached
-    -- a terminal outcome. NULL for solo Inject + all non-Inject kinds.
+    -- a terminal outcome. NULL only for non-Inject decision kinds
+    -- (and any legacy / manually-inserted Inject row).
     batch_id            TEXT NULL DEFAULT NULL,
     outcome             TEXT NULL DEFAULT NULL,
     created_at          TEXT NOT NULL,
@@ -356,11 +358,13 @@ def init_schema(conn: sqlite3.Connection) -> None:
          "ALTER TABLE problems ADD COLUMN last_strategist_at TEXT"
          " NULL DEFAULT NULL"),
         # Phase 2.5 — Strategist multi-Inject batch grouping. Same UUID
-        # across all Inject rows committed in one chain_briefs decision;
-        # cascade fires Strategist with trigger_kind='inject_batch_done'
-        # when the last Forward in the batch finishes. Pure ADD COLUMN
-        # (no CHECK on this column); the CHECK widening for trigger_kind
-        # happens via _migrate_to_phase3 below.
+        # across all Inject rows committed in one briefs-list decision
+        # (every Inject is a batch under the unified schema; N=1 is
+        # degenerate). Cascade fires Strategist with
+        # trigger_kind='inject_batch_done' when the last Forward in
+        # the batch finishes. Pure ADD COLUMN (no CHECK on this column);
+        # the CHECK widening for trigger_kind happens via
+        # _migrate_to_phase3 below.
         ("batch_id",
          "ALTER TABLE strategist_decisions ADD COLUMN batch_id TEXT"
          " NULL DEFAULT NULL"),

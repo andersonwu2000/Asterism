@@ -55,12 +55,13 @@ TRIGGER_KINDS: frozenset[str] = frozenset({
 # Files allowed in RequestUserAmend(file=...).
 USER_AMEND_FILES: frozenset[str] = frozenset({"Defs.lean", "Manifest.md"})
 
-# Built-in default cap on Inject(chain_briefs=[...]) length. Each brief
+# Built-in default cap on Inject(briefs=[...]) length. Each brief
 # becomes its own Forward dispatch; a single Strategist invocation
 # queuing many Forwards is almost certainly an agent error and would
-# dominate the worker pool. Solo Inject (brief field) is unaffected.
-# Override via Asterism.yaml `strategist.inject_batch_max` or env
-# `ASTERISM_INJECT_BATCH_MAX`; see `inject_batch_max()` resolver.
+# dominate the worker pool. N=1 (degenerate single-Forward case) is
+# always allowed regardless of cap. Override via Asterism.yaml
+# `strategist.inject_batch_max` or env `ASTERISM_INJECT_BATCH_MAX`;
+# see `inject_batch_max()` resolver.
 _INJECT_BATCH_MAX_DEFAULT: int = 10
 
 
@@ -167,35 +168,30 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         if pipeline != "Forward":
             return (f"Inject.pipeline must be 'Forward' "
                     f"(got {pipeline!r}); Phase 2 only supports Forward")
-        chain_briefs = decision.payload.get("chain_briefs")
-        if chain_briefs is not None:
-            # Batch path: chain_briefs is a list of >=2 non-empty strings.
-            # Each element spawns its own Forward; the batch as a whole is
-            # tracked under a shared batch_id and fires a single
-            # `inject_batch_done` Strategist trigger when the last Forward
-            # finishes (success or failure).
-            if not isinstance(chain_briefs, list):
-                return (f"Inject.chain_briefs must be a list "
-                        f"(got {type(chain_briefs).__name__})")
-            if len(chain_briefs) < 2:
-                return ("Inject.chain_briefs must contain >= 2 briefs; "
-                        "use the solo `brief` field for a single Forward")
-            cap = inject_batch_max()
-            if len(chain_briefs) > cap:
-                return (f"Inject.chain_briefs too large "
-                        f"(got {len(chain_briefs)}, max {cap})")
-            for i, b in enumerate(chain_briefs):
-                if not isinstance(b, str) or not b.strip():
-                    return (f"Inject.chain_briefs[{i}] must be a "
-                            f"non-empty string")
-            if decision.brief and str(decision.brief).strip():
-                return ("Inject must not set both `brief` and `chain_briefs`; "
-                        "pick one (solo or batch)")
-            return ""
-        # Solo path — single Forward, single decision row.
-        if not decision.brief or not str(decision.brief).strip():
-            return ("Inject requires non-empty `brief` "
-                    "(or `chain_briefs` list for batch)")
+        # Phase 2.5 (unified) — Inject carries `briefs: list[str]`. N=1
+        # is the degenerate case (single Forward); N>1 is a parallel
+        # batch. Every commit creates a batch_id + N audit rows + N
+        # Forward enqueues; cascade fires one Strategist
+        # `inject_batch_done` trigger when the last sibling finishes.
+        briefs = decision.payload.get("briefs")
+        if briefs is None:
+            return ("Inject requires `briefs: list[str]` "
+                    "(use a 1-element list for a single Forward)")
+        if not isinstance(briefs, list):
+            return (f"Inject.briefs must be a list "
+                    f"(got {type(briefs).__name__})")
+        if len(briefs) < 1:
+            return "Inject.briefs must contain >= 1 brief"
+        cap = inject_batch_max()
+        if len(briefs) > cap:
+            return (f"Inject.briefs too large "
+                    f"(got {len(briefs)}, max {cap})")
+        for i, b in enumerate(briefs):
+            if not isinstance(b, str) or not b.strip():
+                return (f"Inject.briefs[{i}] must be a non-empty string")
+        if decision.brief and str(decision.brief).strip():
+            return ("Inject schema dropped the legacy `brief` field; "
+                    "wrap your single brief in a 1-element `briefs` list")
         return ""
 
     if k == "Noop":
@@ -297,16 +293,16 @@ class CommitOutcome:
     """What commit_decision did — for the caller (run_strategist) to
     record into the pipeline's PipelineResult and dead_attempt rows.
 
-    `decision_row_id`: id of the inserted strategist_decisions row,
-      for queue.decision_id FK when commit enqueues Forward. On batch
-      Inject this is the FIRST inserted row id; full row id list is in
-      `batch_decision_row_ids`.
-    `enqueued_forward`: True iff the commit emitted at least one
-      Inject(Forward) queue entry (solo: 1; batch: len(chain_briefs)).
-    `batch_id`: non-None when Inject was committed with chain_briefs;
-      groups the audit rows + flags cascade-side batch-completion hook.
-    `batch_decision_row_ids`: row ids in chain_briefs order (length 1
-      for solo Inject; length N for batch); empty for non-Inject kinds.
+    `decision_row_id`: id of the FIRST inserted strategist_decisions
+      row in the batch (for callers that need a single canonical id).
+      Full row id list in `batch_decision_row_ids`.
+    `enqueued_forward`: True iff the commit emitted >= 1 Inject(Forward)
+      queue entry.
+    `batch_id`: always non-None when the committed decision was Inject
+      (every Inject — including N=1 — is a batch under the unified
+      Phase 2.5 schema); None for non-Inject decision kinds.
+    `batch_decision_row_ids`: row ids in `briefs` list order (length N
+      for Inject; empty for non-Inject kinds).
     `final_outcome`: 'committed' (decision applied) / 'awaiting_human'
       (RequestUserAmend wrote .proposed_<file> + INSERT row, dispatcher
       blocks problem until operator resolves) / 'noop'.
@@ -321,24 +317,25 @@ class CommitOutcome:
 def _commit_inject_batch(decision: Decision, conn: sqlite3.Connection,
                          *, problem: str, tick: int,
                          trigger_kind: str) -> CommitOutcome:
-    """Atomically commit one Strategist Inject(chain_briefs=[...])
-    decision as N audit rows + N Forward enqueues sharing a single
-    batch_id. Wraps every side effect into one transaction so a mid-
-    commit failure leaves no orphan rows / enqueues.
+    """Atomically commit one Strategist Inject(briefs=[...]) decision
+    as N audit rows + N Forward enqueues sharing a single batch_id.
+    Wraps every side effect into one transaction so a mid-commit
+    failure leaves no orphan rows / enqueues.
 
-    Per-row payload carries `step_index` + `batch_size` so failure_replay
-    + the cascade-side batch_done hook can correlate completion order
-    without needing to re-derive from queue / pipelines state.
+    N=1 is the degenerate single-Forward case under the unified Phase 2.5
+    schema; the batch infrastructure (batch_id, step_index payload,
+    cascade-side `_maybe_enqueue_inject_batch_done` hook) handles it
+    uniformly with N>=2.
     """
-    chain_briefs: list[str] = list(decision.payload["chain_briefs"])
+    briefs: list[str] = list(decision.payload["briefs"])
     batch_id = uuid.uuid4().hex
     ts = db.now()
     row_ids: list[int] = []
-    for i, brief in enumerate(chain_briefs):
+    for i, brief in enumerate(briefs):
         row_payload = {
             "pipeline": "Forward",
             "step_index": i,
-            "batch_size": len(chain_briefs),
+            "batch_size": len(briefs),
         }
         cur = conn.execute(
             "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
@@ -388,11 +385,14 @@ def commit_decision(decision: Decision, conn: sqlite3.Connection,
     outcome = "committed"
     enqueued_forward = False
 
-    # Inject(chain_briefs=[...]) — batch path. Emits N audit rows +
-    # N Forward enqueues under one batch_id; cascade fires Strategist
-    # with trigger_kind='inject_batch_done' when the last Forward
-    # finishes (see dispatcher._maybe_enqueue_inject_batch_done).
-    if k == "Inject" and decision.payload.get("chain_briefs"):
+    # Phase 2.5 unified — every Inject is a batch (N=1 is degenerate).
+    # Emits N audit rows + N Forward enqueues under one batch_id;
+    # cascade fires Strategist with trigger_kind='inject_batch_done'
+    # when the last Forward finishes (see
+    # dispatcher._maybe_enqueue_inject_batch_done). Routes through the
+    # batch helper unconditionally — the legacy solo path that wrote
+    # a single batch_id-less row was removed.
+    if k == "Inject":
         return _commit_inject_batch(
             decision, conn, problem=problem, tick=tick,
             trigger_kind=trigger_kind,
@@ -441,11 +441,6 @@ def commit_decision(decision: Decision, conn: sqlite3.Connection,
         if isinstance(directive, str) and directive.strip():
             db.set_problem_strategist_directive(
                 conn, problem, directive.strip())
-
-    elif k == "Inject":
-        # Phase 2: pipeline always 'Forward'. enqueue with decision_id
-        # FK after we have the row id (handled below).
-        pass  # actual enqueue happens after we know the inserted row id
 
     elif k == "RequestUserAmend":
         # Atomic three-step: tmp write -> INSERT row -> rename
@@ -502,17 +497,10 @@ def commit_decision(decision: Decision, conn: sqlite3.Connection,
     )
     decision_row_id = int(cur.lastrowid)
 
-    # Post-INSERT side effects requiring the row id:
-    if k == "Inject":
-        # Enqueue Forward on this problem (Phase 2 §3.1 — Forward uses
-        # target_kind='Problem' + target_id=problem_name).
-        db.enqueue(
-            conn, kind="Forward", target_id=problem,
-            target_kind="Problem", priority=10,
-            decision_id=decision_row_id,
-        )
-        enqueued_forward = True
-    elif k == "RequestUserAmend":
+    # Post-INSERT side effects requiring the row id. Inject is handled
+    # earlier via _commit_inject_batch (returns early); only
+    # RequestUserAmend's atomic rename lives here.
+    if k == "RequestUserAmend":
         # Atomic rename: temp -> .proposed_<file>. If this fails the
         # audit row is rolled back via the outer transaction.
         os.rename(decision.payload["__tmp_path__"],

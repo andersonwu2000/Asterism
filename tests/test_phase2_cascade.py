@@ -318,69 +318,48 @@ def test_enqueue_strategist_review_dedups_in_flight(
     assert db.get_goal(conn, sub_b)["status"] == "pending_strategist_review"
 
 
-def test_forward_failure_re_enqueues_strategist_when_pending_review_exists(
+def test_forward_cascade_without_decision_id_is_noop(
     conn: sqlite3.Connection,
 ) -> None:
-    """Forward outcome=failed must re-enqueue Strategist when there's a
-    `pending_strategist_review` goal on the problem. Without this hook,
-    after Strategist→Inject(Forward)→Forward fails, the queue drains
-    to empty while the originating pending_review goal still waits for
-    a verdict — daemon idle-exits before T1's 60-min wall-clock fires.
-    SG run 2026-05-17 trace: cascade_one had no Forward branch, so a
-    Forward failure was a state-side no-op."""
-    root = _insert_goal(conn, slug="main", origin="root", status="attempting")
-    pr = _insert_goal(conn, slug="kelly_contrapositive",
-                      status="pending_strategist_review")
-
+    """Phase 2.5 unified — every Forward dispatches from an Inject batch
+    so `decision_id` is always set in practice. When the parameter is
+    absent (defensive / test edge), cascade does nothing: no audit-row
+    update, no Strategist enqueue. The legacy 'failed Forward + existing
+    pending_review → re-enqueue Strategist' shortcut was removed; the
+    batch-done hook is the single trigger path."""
+    _insert_goal(conn, slug="main", origin="root", status="attempting")
+    _insert_goal(conn, slug="kelly_contrapositive",
+                 status="pending_strategist_review")
     cascade_one(
         conn, pipeline_id="pid-fwd", kind="Forward",
         target_id="p", target_kind="Problem",
         outcome="failed", failure_reason="forward_no_new_goal",
     )
     q = conn.execute(
-        "SELECT kind, target_id FROM queue WHERE kind='Strategist'"
-    ).fetchall()
-    assert len(q) == 1
-    assert int(q[0]["target_id"]) == root  # Strategist targets the root
-
-
-def test_forward_success_does_not_re_enqueue_strategist(
-    conn: sqlite3.Connection,
-) -> None:
-    """Forward success (lemma committed) does NOT re-enqueue Strategist
-    — that's a separate decision. The pending_review goal would normally
-    be unblocked by Backward retry seeing the new lemma via dedupe."""
-    _insert_goal(conn, slug="main", origin="root", status="attempting")
-    _insert_goal(conn, slug="pending_lemma",
-                 status="pending_strategist_review")
-
-    cascade_one(
-        conn, pipeline_id="pid-fwd-ok", kind="Forward",
-        target_id="p", target_kind="Problem",
-        outcome="success",
-    )
-    q = conn.execute(
         "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
     ).fetchone()
     assert q["n"] == 0
 
 
-def test_forward_failure_no_op_when_no_pending_review(
+def test_forward_cascade_with_batch_decision_fires_strategist(
     conn: sqlite3.Connection,
 ) -> None:
-    """If no pending_review goal exists, Forward failure is a clean
-    no-op (no spurious Strategist enqueue). Covers the case where
-    Forward was Inject'd from T1 routine, not a T2 review event."""
-    _insert_goal(conn, slug="main", origin="root", status="attempting")
+    """Forward terminal outcome (success or failure) on a batch
+    decision_id advances the batch and, when the last sibling finishes,
+    enqueues Strategist. Mirrors the new single trigger path."""
+    root = _insert_goal(conn, slug="main", origin="root", status="attempting")
+    [rid] = _seed_inject_batch_rows(conn, batch_id="batch-A", count=1)
     cascade_one(
-        conn, pipeline_id="pid-fwd-noprev", kind="Forward",
+        conn, pipeline_id="pid-fwd", kind="Forward",
         target_id="p", target_kind="Problem",
         outcome="failed", failure_reason="forward_no_new_goal",
+        decision_id=rid,
     )
     q = conn.execute(
-        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
-    ).fetchone()
-    assert q["n"] == 0
+        "SELECT target_id FROM queue WHERE kind='Strategist'"
+    ).fetchall()
+    assert len(q) == 1
+    assert int(q[0]["target_id"]) == root
 
 
 def test_t2_pops_before_bfs(
@@ -530,13 +509,15 @@ def test_batch_infra_failure_does_not_advance_completion(
     assert q["n"] == 0
 
 
-def test_solo_inject_outcome_recorded_but_no_batch_trigger(
+def test_null_batch_id_row_records_outcome_but_no_batch_trigger(
     conn: sqlite3.Connection,
 ) -> None:
-    """Solo Inject (batch_id NULL): outcome still recorded on the
-    decision row (useful for failure_replay) but the batch-done check
-    is a no-op — no Strategist enqueue via the batch hook (the existing
-    pending_review re-enqueue is a separate path)."""
+    """Defensive: under unified Phase 2.5 every Inject is a batch and
+    every row carries batch_id. If a legacy or manually-inserted Inject
+    row has batch_id=NULL, cascade still records outcome (useful for
+    failure_replay) but the batch-done check no-ops via
+    `_maybe_enqueue_inject_batch_done`'s NULL guard — no Strategist
+    enqueue fires."""
     _insert_goal(conn, slug="main", origin="root", status="attempting")
     cur = conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"

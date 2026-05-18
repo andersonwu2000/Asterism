@@ -85,10 +85,11 @@ strategist:
                                # same tier as Backward.
 #  interval_min: 60.0          # T1 routine cadence (default 60min)
 #  inject_batch_max: 10        # Phase 2.5 — upper bound on
-                               # Inject(chain_briefs=[...]) length. Each
+                               # Inject(briefs=[...]) length. Each
                                # brief becomes a Forward dispatch; >cap
                                # is rejected at verify_decision time.
-                               # Solo Inject (brief field) is unaffected.
+                               # N=1 (single-Forward Inject) is always
+                               # allowed regardless of cap.
 
 forward:
   provider: claude

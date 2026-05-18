@@ -98,15 +98,16 @@ def test_run_strategist_inject_enqueues_forward(
     workspace: Path, conn: sqlite3.Connection,
     mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Strategist Inject(Forward, brief): commit enqueues Forward on
-    problem with decision_id FK."""
+    """Strategist Inject(Forward, briefs=[...]): commit enqueues
+    Forward on problem with decision_id FK (unified Phase 2.5; even
+    a 1-element briefs list goes through the batch helper)."""
     _insert_root(conn)
 
     def fake_spawn(**kw):
         (kw["attempts_dir"] / "decision.json").write_text(
             json.dumps({
                 "kind": "Inject", "pipeline": "Forward",
-                "brief": "## Need\nA contour lemma.",
+                "briefs": ["## Need\nA contour lemma."],
             }),
             encoding="utf-8")
         return 0
