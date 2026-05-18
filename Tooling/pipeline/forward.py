@@ -58,11 +58,18 @@ _DECLINE_RE = re.compile(
     r"^\s*--\s*decline\s*:\s*([a-z_]+)\b",
     re.MULTILINE | re.IGNORECASE,
 )
-# `theorem <slug> : <type> := by sorry` — captures slug.
-_THEOREM_HEAD_RE = re.compile(
-    r"^\s*theorem\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+# `<kind> <slug>` declaration head — captures kind + slug. kind ∈
+# {theorem, def, structure, class} (Phase 4). Non-theorem kinds are
+# Library toolkit artifacts that bypass the prove loop; see
+# `NON_THEOREM_KINDS` in dispatcher.py for downstream filtering.
+_DECL_HEAD_RE = re.compile(
+    r"^\s*(theorem|def|structure|class)\s+([A-Za-z_][A-Za-z0-9_]*)\b",
     re.MULTILINE,
 )
+# Kinds that have no proof obligation: status='proved' immediately on
+# commit, BFS never dispatches Backward/Builder, Library promotes
+# without axiom_probe. Theorem is the prove-loop default.
+NON_THEOREM_KINDS: frozenset[str] = frozenset({"def", "structure", "class"})
 
 
 # ---------------------------------------------------------------------
@@ -71,12 +78,13 @@ _THEOREM_HEAD_RE = re.compile(
 
 @dataclass
 class ForwardMetadata:
-    """Parsed leading-comment directives + theorem signature from a
+    """Parsed leading-comment directives + declaration head from a
     Forward agent's `new_<slug>.lean` output."""
     slug: str
     rationale: str
-    entry_kind: str  # 'Builder' or 'Backward'
+    entry_kind: str  # 'Builder' or 'Backward' (only meaningful when kind=='theorem')
     sorry_free: bool  # True iff body has no `sorry` token
+    kind: str = "theorem"  # 'theorem' | 'def' | 'structure' | 'class'
 
 
 def extract_forward_metadata(text: str) -> tuple[ForwardMetadata | None, str]:
@@ -87,10 +95,12 @@ def extract_forward_metadata(text: str) -> tuple[ForwardMetadata | None, str]:
     `failure_reason='forward_no_new_goal'` with the message as
     `failure_detail`.
     """
-    thm_m = _THEOREM_HEAD_RE.search(text)
-    if thm_m is None:
-        return None, "no `theorem <slug> : <type>` declaration found"
-    slug = thm_m.group(1)
+    decl_m = _DECL_HEAD_RE.search(text)
+    if decl_m is None:
+        return None, ("no `theorem <slug>`, `def <slug>`, `structure <slug>` "
+                      "or `class <slug>` declaration found")
+    kind = decl_m.group(1)
+    slug = decl_m.group(2)
     if not SLUG_RE.match(slug):
         return None, (
             f"slug {slug!r} must match {SLUG_RE.pattern} "
@@ -104,22 +114,27 @@ def extract_forward_metadata(text: str) -> tuple[ForwardMetadata | None, str]:
     rationale = rat_m.group(1).strip()
     if not rationale:
         return None, "Forward rationale comment is empty"
-    ek_m = _ENTRY_KIND_RE.search(text)
-    if ek_m is None:
-        # Default 'Backward' per prompt spec.
-        entry_kind = "Backward"
-    else:
-        entry_kind = ek_m.group(1)
-        if entry_kind not in ("Builder", "Backward"):
+    if kind == "theorem":
+        ek_m = _ENTRY_KIND_RE.search(text)
+        if ek_m is None:
             entry_kind = "Backward"
-    # sorry detection — any `sorry` token below the imports.
-    # Conservative: scan whole file; if `sorry` appears as a tactic /
-    # term, treat the body as sorry-bearing. Lean does have `by sorry`
-    # and term-mode `sorry`; both count.
+        else:
+            entry_kind = ek_m.group(1)
+            if entry_kind not in ("Builder", "Backward"):
+                entry_kind = "Backward"
+    else:
+        # Non-theorem kinds carry no proof obligation; entry_kind is
+        # ignored downstream but the column is NOT NULL, so default
+        # to 'Backward' to keep the DB happy.
+        entry_kind = "Backward"
+    # sorry detection — any `sorry` token below the imports. For non-
+    # theorem kinds this still tracks "did the agent leave a hole";
+    # commit uses kind alone to decide initial status (`sorry_free`
+    # is irrelevant when there's no proof to chase).
     sorry_free = re.search(r"\bsorry\b", text) is None
     return ForwardMetadata(
         slug=slug, rationale=rationale, entry_kind=entry_kind,
-        sorry_free=sorry_free,
+        sorry_free=sorry_free, kind=kind,
     ), ""
 
 
@@ -185,16 +200,27 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
 
     rel_lean_path = dest.relative_to(workspace).as_posix()
     # Pick statement string for goals.statement. Best-effort extract
-    # the theorem type signature. Backward uses the same approach;
-    # if extraction fails, store empty string (the lean_path is the
+    # the signature (text after the slug, before the body separator).
+    # If extraction fails, store empty string (lean_path is the
     # canonical artifact).
-    statement = _extract_statement_string(body, metadata.slug) or ""
+    statement = _extract_statement_string(body, metadata.slug,
+                                          metadata.kind) or ""
 
-    initial_status = "proved" if metadata.sorry_free else "open"
+    # Phase 4 — kind-based status init. theorem keeps the existing
+    # leaf-bypass split (sorry-free → proved, otherwise open for
+    # Backward / Builder attack). Non-theorem kinds (def / structure /
+    # class) carry no proof obligation: status='proved' immediately,
+    # BFS never dispatches workers on them, Library promotes without
+    # axiom_probe (which has no body to probe).
+    if metadata.kind == "theorem":
+        initial_status = "proved" if metadata.sorry_free else "open"
+    else:
+        initial_status = "proved"
     goal_id = db.insert_goal(
         conn, problem=problem, slug=metadata.slug,
         lean_path=rel_lean_path, statement=statement,
         origin="forward", depth=0, entry_kind=metadata.entry_kind,
+        kind=metadata.kind,
     )
     if initial_status == "proved":
         db.update_goal_status(conn, goal_id, "proved")
@@ -203,17 +229,27 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
                          status=initial_status)
 
 
-def _extract_statement_string(body: str, slug: str) -> str | None:
-    """Pull `theorem <slug> : <type>` substring up to `:=` or end of line.
-    Best-effort; returns None if pattern doesn't match."""
+def _extract_statement_string(body: str, slug: str,
+                              kind: str = "theorem") -> str | None:
+    """Pull the declaration signature substring after `<kind> <slug>`.
+    For theorem / def: up to `:=` or end of line (the type or value
+    signature without the proof body). For structure / class: up to
+    `where` or `extends` keyword (the fields block is the body).
+    Best-effort; returns None if pattern doesn't match.
+    """
+    if kind in ("structure", "class"):
+        terminator = r"(?:\bwhere\b|$)"
+    else:
+        terminator = r"(?::=|$)"
     m = re.search(
-        rf"theorem\s+{re.escape(slug)}\b\s*(.+?)(?::=|$)",
+        rf"{kind}\s+{re.escape(slug)}\b\s*(.+?){terminator}",
         body, re.DOTALL,
     )
     if m is None:
         return None
     s = m.group(1).strip()
-    # Strip leading `:` (type signature starts after the colon)
+    # Strip leading `:` (type signature starts after the colon) — only
+    # applies when the slug is followed by `:` (theorem / def).
     if s.startswith(":"):
         s = s[1:].strip()
     return s

@@ -224,7 +224,7 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     db.init_schema(conn)
 
     # Post: PRAGMA user_version = 2
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -251,6 +251,13 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
         "SELECT sql FROM sqlite_master WHERE name='strategist_decisions'"
     ).fetchone()[0]
     assert "inject_batch_done" in sd_sql
+
+    # Phase 4 — goals.kind CHECK widened to def / structure / class
+    goals_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='goals'"
+    ).fetchone()[0]
+    for kw in ("'def'", "'structure'", "'class'"):
+        assert kw in goals_sql
 
     # New CHECK values accepted on goals
     conn.execute(
@@ -356,7 +363,7 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version still 2
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
     conn.close()
 
 
@@ -374,7 +381,7 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"

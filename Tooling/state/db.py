@@ -97,7 +97,14 @@ CREATE TABLE IF NOT EXISTS goals (
     -- generalizer / refuter / construction (architecture.md §12).
     -- Phase 2 added 'forward' to origin (Forward pipeline-produced lemmas).
     kind        TEXT    NOT NULL DEFAULT 'theorem'
-                    CHECK(kind IN ('theorem')),
+                    -- Phase 4 — non-theorem kinds bypass the prove
+                    -- loop: Forward writes them, framework type-checks
+                    -- once, status='proved' immediately, BFS never
+                    -- dispatches Backward / Builder on them. See
+                    -- `NON_THEOREM_KINDS` in dispatcher.py for the
+                    -- single source of truth on which kinds skip
+                    -- dispatch / axiom probe / Library promotion gate.
+                    CHECK(kind IN ('theorem','def','structure','class')),
     origin      TEXT    NOT NULL
                     CHECK(origin IN ('root','backward','forward')),
     -- Phase 2 status additions:
@@ -415,6 +422,13 @@ def init_schema(conn: sqlite3.Connection) -> None:
         _migrate_to_phase3(conn)
         conn.execute("PRAGMA user_version = 3")
         conn.commit()
+    if v < 4:
+        # Phase 4 — goals.kind CHECK widens to accept 'def', 'structure',
+        # 'class' (non-theorem toolkit kinds Forward can produce). Same
+        # rebuild pattern as phase 3; idempotent via the in-DDL probe.
+        _migrate_to_phase4(conn)
+        conn.execute("PRAGMA user_version = 4")
+        conn.commit()
 
 
 def _migrate_to_phase2(conn: sqlite3.Connection) -> None:
@@ -553,6 +567,73 @@ def _migrate_to_phase2(conn: sqlite3.Connection) -> None:
         if fk_violations:
             raise RuntimeError(
                 f"Phase 2 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_phase4(conn: sqlite3.Connection) -> None:
+    """Phase 4 — widen `goals.kind` CHECK to accept Forward non-theorem
+    artifacts (`def`, `structure`, `class`). Rebuild required because
+    SQLite cannot ALTER a CHECK constraint in place.
+
+    Pre-condition: PRAGMA user_version < 4. Existing rows are preserved
+    unchanged — pre-Phase 4 DBs only had `kind='theorem'` so the
+    rebuild has no data-shape concerns.
+
+    Post-condition (caller sets user_version = 4):
+      - goals.kind CHECK accepts {'theorem','def','structure','class'}
+      - All existing rows + indexes preserved
+    """
+    # Skip if widened CHECK already in place (fresh DB built from
+    # current SCHEMA, or repeat migration).
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='goals'"
+    ).fetchone()
+    if chk and "'structure'" in (chk["sql"] or ""):
+        return
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_goals (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem     TEXT    NOT NULL REFERENCES problems(name),
+                slug        TEXT    NOT NULL,
+                lean_path   TEXT    NOT NULL UNIQUE,
+                statement   TEXT    NOT NULL,
+                kind        TEXT    NOT NULL DEFAULT 'theorem'
+                                CHECK(kind IN ('theorem','def',
+                                               'structure','class')),
+                origin      TEXT    NOT NULL
+                                CHECK(origin IN ('root','backward','forward')),
+                status      TEXT    NOT NULL
+                                CHECK(status IN ('open','attempting','proved',
+                                                 'shelved',
+                                                 'pending_strategist_review',
+                                                 'disproved')),
+                depth       INTEGER NOT NULL DEFAULT 0,
+                attempts    INTEGER NOT NULL DEFAULT 0,
+                entry_kind  TEXT    NOT NULL DEFAULT 'Builder'
+                                CHECK(entry_kind IN ('Builder','Backward')),
+                integrity_verified INTEGER NOT NULL DEFAULT 0
+                                CHECK(integrity_verified IN (0,1)),
+                detached    INTEGER NOT NULL DEFAULT 0
+                                CHECK(detached IN (0,1)),
+                alias_target_id INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                UNIQUE(problem, slug)
+            );
+            INSERT INTO _new_goals SELECT * FROM goals;
+            DROP TABLE goals;
+            ALTER TABLE _new_goals RENAME TO goals;
+            CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 4 migration left FK violations: {fk_violations[:5]}"
             )
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
@@ -973,6 +1054,14 @@ def open_goals(conn: sqlite3.Connection,
         ") "
         "SELECT g.* FROM goals g "
         "WHERE g.status = 'open' AND g.id IN alive "
+        # Phase 4 — non-theorem kinds (def / structure / class) carry
+        # no proof obligation: Forward commits them as status='proved'
+        # directly, so they shouldn't appear here. Defensive filter so
+        # any bug that leaves one at status='open' doesn't accidentally
+        # spawn a Backward / Builder worker on it (next_worker_kind
+        # would return Builder or Backward, neither of which knows
+        # how to "prove" a def).
+        "  AND g.kind = 'theorem' "
     )
     params: tuple = ()
     if scope is not None:

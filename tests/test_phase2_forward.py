@@ -199,3 +199,176 @@ def test_commit_collision_raises(
             attempts_dir=attempts, metadata=md,
             source_filename="new_<slug>.lean",
         )
+
+
+# ---------------------------------------------------------------------
+# Phase 4 — Forward produces def / structure / class
+# ---------------------------------------------------------------------
+
+_NEW_LEAN_DEF = """\
+namespace Problems.p
+
+-- Forward rationale: scaffolding `lineThrough` predicate referenced by
+-- the planned perpendicular-distance chain. No proof obligation.
+def line_through (q r : ℝ × ℝ) : Set (ℝ × ℝ) := { p | True }
+
+end Problems.p
+"""
+
+_NEW_LEAN_STRUCTURE = """\
+namespace Problems.p
+
+-- Forward rationale: bundle (foot, distance) so downstream lemmas can
+-- pass a single record instead of two parallel arguments.
+structure perp_data where
+  foot : ℝ × ℝ
+  dist : ℝ
+
+end Problems.p
+"""
+
+_NEW_LEAN_CLASS = """\
+namespace Problems.p
+
+-- Forward rationale: typeclass abstraction over the determinant test
+-- so future variants can plug in alternative collinearity oracles.
+class collinear_oracle (α : Type) where
+  test : α → α → α → Prop
+
+end Problems.p
+"""
+
+
+def test_extract_metadata_def_kind() -> None:
+    md, err = forward.extract_forward_metadata(_NEW_LEAN_DEF)
+    assert err == ""
+    assert md.kind == "def"
+    assert md.slug == "line_through"
+    # entry_kind is irrelevant for non-theorem kinds; default kept for
+    # NOT NULL column compatibility.
+    assert md.entry_kind == "Backward"
+
+
+def test_extract_metadata_structure_kind() -> None:
+    md, err = forward.extract_forward_metadata(_NEW_LEAN_STRUCTURE)
+    assert err == ""
+    assert md.kind == "structure"
+    assert md.slug == "perp_data"
+
+
+def test_extract_metadata_class_kind() -> None:
+    md, err = forward.extract_forward_metadata(_NEW_LEAN_CLASS)
+    assert err == ""
+    assert md.kind == "class"
+    assert md.slug == "collinear_oracle"
+
+
+def test_non_theorem_kinds_in_NON_THEOREM_KINDS_constant() -> None:
+    """Constant must list every non-theorem kind the parser accepts so
+    dispatch / library / verify share a single source of truth."""
+    assert forward.NON_THEOREM_KINDS == frozenset({"def", "structure", "class"})
+
+
+def test_commit_def_marks_goal_proved_immediately(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """def has no proof obligation: commit sets status='proved' directly,
+    bypassing BFS. sorry_free is irrelevant for non-theorem kinds."""
+    attempts = workspace / ".attempts" / "fwd-def"
+    attempts.mkdir(parents=True)
+    (attempts / "new_line_through.lean").write_text(_NEW_LEAN_DEF,
+                                                    encoding="utf-8")
+    md, _ = forward.extract_forward_metadata(_NEW_LEAN_DEF)
+    outcome = forward.commit_forward_lemma(
+        conn, problem="p", workspace=workspace,
+        attempts_dir=attempts, metadata=md,
+        source_filename="new_<slug>.lean",
+    )
+    g = db.get_goal(conn, outcome.goal_id)
+    assert g["kind"] == "def"
+    assert g["status"] == "proved"
+    assert g["origin"] == "forward"
+
+
+def test_commit_structure_marks_goal_proved_immediately(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    attempts = workspace / ".attempts" / "fwd-struct"
+    attempts.mkdir(parents=True)
+    (attempts / "new_perp_data.lean").write_text(_NEW_LEAN_STRUCTURE,
+                                                 encoding="utf-8")
+    md, _ = forward.extract_forward_metadata(_NEW_LEAN_STRUCTURE)
+    outcome = forward.commit_forward_lemma(
+        conn, problem="p", workspace=workspace,
+        attempts_dir=attempts, metadata=md,
+        source_filename="new_<slug>.lean",
+    )
+    g = db.get_goal(conn, outcome.goal_id)
+    assert g["kind"] == "structure"
+    assert g["status"] == "proved"
+
+
+def test_commit_class_marks_goal_proved_immediately(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    attempts = workspace / ".attempts" / "fwd-class"
+    attempts.mkdir(parents=True)
+    (attempts / "new_collinear_oracle.lean").write_text(_NEW_LEAN_CLASS,
+                                                        encoding="utf-8")
+    md, _ = forward.extract_forward_metadata(_NEW_LEAN_CLASS)
+    outcome = forward.commit_forward_lemma(
+        conn, problem="p", workspace=workspace,
+        attempts_dir=attempts, metadata=md,
+        source_filename="new_<slug>.lean",
+    )
+    g = db.get_goal(conn, outcome.goal_id)
+    assert g["kind"] == "class"
+    assert g["status"] == "proved"
+
+
+def test_non_theorem_goal_excluded_from_open_goals(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Defensive: even if a non-theorem goal somehow ends up with
+    status='open' (shouldn't, but bug-resistant), `db.open_goals` must
+    NOT return it — dispatch has no worker that knows how to 'prove' a
+    def. The SQL filter on `g.kind = 'theorem'` in open_goals enforces
+    this single source of truth."""
+    # Need a root so the CTE seeds the alive set; without one, no goal
+    # is reachable and the kind filter would be vacuously satisfied.
+    db.insert_goal(
+        conn, problem="p", slug="main", lean_path="P/main.lean",
+        statement="T", origin="root", depth=0, kind="theorem",
+    )
+    # Manually insert a def-kind goal with status='open' (bypasses
+    # commit_forward_lemma's auto-proved path to test the SQL filter).
+    bad_open = db.insert_goal(
+        conn, problem="p", slug="leaked_def",
+        lean_path="P/proofs/L_leaked_def.lean", statement="def line",
+        origin="forward", depth=0, kind="def",
+    )
+    # Force detach=1 so the recursive alive CTE includes the def even
+    # though no strategy edge connects it to the root.
+    db.set_goal_detached(conn, bad_open, True)
+    open_ids = {int(r["id"]) for r in db.open_goals(conn)}
+    assert bad_open not in open_ids
+    # Sanity: a theorem-kind open goal IS returned via the same path.
+    good_open = db.insert_goal(
+        conn, problem="p", slug="leaked_theorem",
+        lean_path="P/proofs/L_leaked_theorem.lean", statement="T",
+        origin="forward", depth=0, kind="theorem",
+    )
+    db.set_goal_detached(conn, good_open, True)
+    open_ids = {int(r["id"]) for r in db.open_goals(conn)}
+    assert good_open in open_ids
+
+
+def test_extract_metadata_no_declaration_lists_all_kinds() -> None:
+    """Error message must mention all 4 accepted kinds so the agent
+    knows what to write when it omits the declaration head."""
+    md, err = forward.extract_forward_metadata(
+        "-- Forward rationale: empty body\nnamespace Problems.p\nend Problems.p\n"
+    )
+    assert md is None
+    for kw in ("theorem", "def", "structure", "class"):
+        assert kw in err
