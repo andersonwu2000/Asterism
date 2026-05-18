@@ -55,6 +55,135 @@ def _section_trigger(trigger_kind: str, pending_review_id: int | None,
     return lines
 
 
+def _section_pending_review_failure(
+    conn: sqlite3.Connection, pending_review_id: int,
+) -> list[str]:
+    """Dead-attempt brief that triggered the review.
+
+    Phase 2 §2.2 review_context spec calls for the failure reason
+    summary. The agent's shelve description lives in
+    `dead_attempts.proposal_md` (Backward / Builder write the decline
+    body there before the cascade enqueues Strategist review). Without
+    this section, Strategist sees only the goal statement and has no
+    visibility into what the pipeline agent already articulated as
+    blockers — exactly the gap that caused the take-5 SG misfire where
+    Backward enumerated 5 missing Forward lemmas in `proposal_md` but
+    Strategist Reopen'd with a redundant Kelly directive.
+    """
+    rows = list(conn.execute(
+        "SELECT pipeline_id, failure_reason, failure_detail, proposal_md, ts"
+        " FROM dead_attempts WHERE target_kind = 'Goal' AND target_id = ?"
+        " ORDER BY id DESC LIMIT 3",
+        (str(pending_review_id),),
+    ))
+    if not rows:
+        return []
+    out = ["### Recent failed attempts on this goal (newest first)", ""]
+    for r in rows:
+        out.append(
+            f"- pipeline=`{str(r['pipeline_id'])[:8]}`  "
+            f"reason=`{r['failure_reason']}`  ts={r['ts']}"
+        )
+        detail = (r["failure_detail"] or "").strip()
+        if detail:
+            if len(detail) > 400:
+                detail = detail[:400].rstrip() + "…"
+            out.append(f"  detail: {detail}")
+        proposal = (r["proposal_md"] or "").strip()
+        if proposal:
+            if len(proposal) > 1500:
+                proposal = proposal[:1500].rstrip() + "\n…(truncated)"
+            out += ["", "  agent brief:", "  ```", proposal, "  ```"]
+        out.append("")
+    return out
+
+
+def _section_pending_review_strategies(
+    conn: sqlite3.Connection, pending_review_id: int,
+) -> list[str]:
+    """Existing strategies on the pending-review goal.
+
+    Phase 2 §2.2 review_context spec: '既有 strategy 內容'. Surfaces
+    what's already been tried structurally so Strategist can judge
+    'Reopen with directive' vs 'Inject Forward to expand toolkit' from
+    the actual proposal text — not from the goal statement alone.
+    """
+    rows = list(conn.execute(
+        "SELECT id, status, proposal_md, created_at"
+        " FROM strategies WHERE goal_id = ?"
+        " ORDER BY id",
+        (pending_review_id,),
+    ))
+    if not rows:
+        return []
+    out = ["### Existing strategies on this goal", ""]
+    for r in rows:
+        out.append(
+            f"- s{r['id']} status=`{r['status']}` created={r['created_at']}"
+        )
+        prop = (r["proposal_md"] or "").strip()
+        if prop:
+            if len(prop) > 800:
+                prop = prop[:800].rstrip() + "\n…(truncated)"
+            out += ["", "  proposal:", "  ```", prop, "  ```"]
+        out.append("")
+    return out
+
+
+def _section_pending_review_ancestors(
+    conn: sqlite3.Connection, pending_review_id: int,
+) -> list[str]:
+    """Walk goal → parent-strategy → strategy.goal_id chain upward to
+    root. Phase 2 §2.2 review_context spec: 'ancestor 鏈'.
+
+    At most one live parent strategy per goal (BFS invariant — others
+    are superseded or dead). Walk picks the live one if any, else the
+    most recently linked dead strategy (so context shows the historical
+    chain even after upstream death).
+    """
+    chain: list[sqlite3.Row] = []
+    seen: set[int] = set()
+    cur = pending_review_id
+    while cur not in seen:
+        seen.add(cur)
+        # Find parent strategy via strategy_subgoals
+        parent = conn.execute(
+            "SELECT s.id AS sid, s.goal_id AS pg, s.status AS sstatus"
+            " FROM strategy_subgoals ss"
+            " JOIN strategies s ON s.id = ss.strategy_id"
+            " WHERE ss.subgoal_id = ?"
+            " ORDER BY CASE s.status WHEN 'proposed' THEN 0"
+            "                       WHEN 'succeeded' THEN 1"
+            "                       ELSE 2 END, s.id DESC"
+            " LIMIT 1",
+            (cur,),
+        ).fetchone()
+        if parent is None:
+            break
+        pg = int(parent["pg"])
+        g = db.get_goal(conn, pg)
+        if g is None:
+            break
+        chain.append(g)
+        cur = pg
+    if not chain:
+        return ["### Ancestor chain", "",
+                "(none — this goal is its own root)", ""]
+    out = ["### Ancestor chain (parent → root)", ""]
+    for g in chain:
+        st = str(g["statement"])
+        if len(st) > 200:
+            st = st[:200].rstrip() + "…"
+        marker = " (ROOT)" if g["origin"] == "root" else ""
+        out.append(
+            f"- [{g['id']}] depth={g['depth']} status=`{g['status']}`"
+            f" `{g['slug']}`{marker}"
+        )
+        out.append(f"  `{st}`")
+    out.append("")
+    return out
+
+
 def _section_active_goals(conn: sqlite3.Connection,
                           problem: str) -> list[str]:
     rows = list(conn.execute(
@@ -180,6 +309,17 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     """
     sections: list[list[str]] = [
         _section_trigger(trigger_kind, pending_review_id, conn),
+    ]
+    # T2 review_context (Phase 2 §2.2) — failure brief + existing
+    # strategies + ancestor chain. Only emitted for pending_review trigger
+    # with a real target; T0 / T1 / first_launch skip these sections.
+    if trigger_kind == "pending_review" and pending_review_id is not None:
+        sections += [
+            _section_pending_review_failure(conn, pending_review_id),
+            _section_pending_review_strategies(conn, pending_review_id),
+            _section_pending_review_ancestors(conn, pending_review_id),
+        ]
+    sections += [
         _section_active_goals(conn, problem),
         _section_failure_replay(conn, problem),
         _section_tree_inline(workspace, problem),
