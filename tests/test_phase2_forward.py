@@ -136,6 +136,76 @@ def test_is_decline_not_matched_on_normal_file() -> None:
 # commit_forward_lemma
 # ---------------------------------------------------------------------
 
+def test_auto_prepend_candidate_imports_adds_mathlib_and_defs(
+    workspace: Path,
+) -> None:
+    """SG 2026-05-18 regression: `forward.md` tells agents not to write
+    imports, but framework's commit-side verify_file reads the file
+    as-is. Without auto-prepend, bare statements fail to elaborate
+    (e.g. `HSub ℝ ℝ` instance-resolution error). Mutate src so verify
+    AND commit both see the enriched body."""
+    pdir = workspace / "Problems" / "p"
+    (pdir / "Defs.lean").write_text(
+        "import Mathlib\nopen Real\n\nnamespace Problems.p\n"
+        "def Foo : Type := Unit\n\nend Problems.p\n",
+        encoding="utf-8",
+    )
+    attempts = workspace / ".attempts" / "fwd-imports"
+    attempts.mkdir(parents=True)
+    src = attempts / "new_bare.lean"
+    src.write_text(
+        "namespace Problems.p\n\n"
+        "-- Forward rationale: just check the import path\n"
+        "-- entry_kind: Backward\n"
+        "theorem bare (a b : ℝ) : a - b = a - b := by sorry\n\n"
+        "end Problems.p\n",
+        encoding="utf-8",
+    )
+
+    enriched = forward._auto_prepend_candidate_imports(
+        src, problem="p", workspace=workspace,
+    )
+
+    on_disk = src.read_text(encoding="utf-8")
+    assert on_disk == enriched, "src must be mutated on disk"
+    assert "import Mathlib" in on_disk
+    assert "import Problems.p.Defs" in on_disk
+    assert "open Real" in on_disk
+    # Original body preserved (not overwritten).
+    assert "theorem bare (a b : ℝ)" in on_disk
+
+
+def test_auto_prepend_candidate_imports_idempotent(
+    workspace: Path,
+) -> None:
+    """Re-running on already-enriched content is a no-op — agents who
+    DID write the imports themselves don't get duplicate lines."""
+    pdir = workspace / "Problems" / "p"
+    (pdir / "Defs.lean").write_text(
+        "import Mathlib\n\nnamespace Problems.p\n\nend Problems.p\n",
+        encoding="utf-8",
+    )
+    attempts = workspace / ".attempts" / "fwd-idem"
+    attempts.mkdir(parents=True)
+    src = attempts / "new_x.lean"
+    pre_body = (
+        "import Mathlib\nimport Problems.p.Defs\n\n"
+        "namespace Problems.p\n\n"
+        "-- Forward rationale: pre-imported\n"
+        "-- entry_kind: Backward\n"
+        "theorem x : True := by trivial\n\n"
+        "end Problems.p\n"
+    )
+    src.write_text(pre_body, encoding="utf-8")
+
+    enriched = forward._auto_prepend_candidate_imports(
+        src, problem="p", workspace=workspace,
+    )
+
+    assert enriched == pre_body
+    assert src.read_text(encoding="utf-8") == pre_body
+
+
 def test_commit_writes_lean_file_and_inserts_goal(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:

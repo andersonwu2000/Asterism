@@ -39,6 +39,43 @@ from pathlib import Path
 from ..state import db
 
 
+def _auto_prepend_candidate_imports(
+    src: Path, *, problem: str, workspace: Path,
+) -> str:
+    """Mutate the agent's `new_*.lean` candidate on disk to add
+    `import Mathlib` + `import Problems.<problem>.Defs` + any Defs-level
+    `open ...` clauses if missing, then return the enriched content.
+
+    `forward.md` tells the agent NOT to write imports ("Framework
+    auto-prepends..."), because the MCP `validate_file` tool the agent
+    uses during candidate work auto-prepends via `_ensure_imports`.
+    But the framework's commit-side `verify_file` (lifecycle.py) and
+    `commit_forward_lemma` (this module) both read the file from disk
+    as-is. Without this mutation, agents who follow the prompt
+    literally write bare statements like `theorem foo (a b : ℝ) :
+    a - b = ...`, verify_file sees no Mathlib, and Lean fails with
+    `HSub ℝ ℝ ?m.34` instance-resolution errors — observed SG
+    2026-05-18, 9/9 Forward attempts dead on the same error, Strategist
+    ConfirmShelve'd root after reading three batches of
+    `forward_no_new_goal`.
+
+    Mirrors `Tooling.pipeline.backward._ensure_imports_subgoal` +
+    `Tooling.state.manifest.inject_defs_opens`. Idempotent.
+    """
+    from .backward import _ensure_imports_subgoal
+    from ..state import manifest as _mfst
+    body = src.read_text(encoding="utf-8")
+    enriched = _ensure_imports_subgoal(
+        body, problem=problem, workspace=workspace,
+    )
+    enriched = _mfst.inject_defs_opens(
+        enriched, problem=problem, workspace=workspace,
+    )
+    if enriched != body:
+        src.write_text(enriched, encoding="utf-8")
+    return enriched
+
+
 # Same slug constraint as Backward sub-goals (Tooling/pipeline/backward.py).
 SLUG_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 SLUG_MAX_LEN = 60
@@ -372,6 +409,15 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                 outcome="failed", failure_reason="forward_no_new_goal",
                 failure_detail=f"parse rejected: {parse_err}",
             )
+
+        # Auto-prepend `import Mathlib` + `Problems.<p>.Defs` + opens —
+        # the prompt promises this, the MCP `validate_file` tool does
+        # it, but the framework's commit-side path does not. See
+        # `_auto_prepend_candidate_imports` for the SG 2026-05-18
+        # incident detail.
+        body = _auto_prepend_candidate_imports(
+            src, problem=problem, workspace=workspace,
+        )
 
         # LSP type-check the candidate. A sorry-bearing body passes if
         # and only if Lean elaborates the statement successfully (sorry
