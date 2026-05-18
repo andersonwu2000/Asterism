@@ -37,7 +37,7 @@ Place the directive immediately above the theorem, keep `:= by sorry`. Pick one:
 
 - `unprovable` — false in this hypothesis scope. Description must give a counterexample (specific values + arithmetic check).
 - `return_to_parent` — provable after parent strategy is fixed. Description must name the fix concretely (missing hypothesis, wrong substructure).
-- `shelve` — stuck without counterexample. Description briefly explains the block.
+- `shelve` — lacks math tools or scaffolding to proceed. Description must name what's needed (Forward lemma statements, supporting defs, related theorems).
 - `needs_decomposition` — too coarse for one Builder pass. Description hints at decomposition shape if you have one.
 
 ```lean

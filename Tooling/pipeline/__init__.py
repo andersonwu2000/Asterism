@@ -354,8 +354,13 @@ def _grep_forbidden(text: str, forbidden: list[str]) -> str | None:
 #                         description must name the fix.  Cascades up
 #                         to parent re-decompose with description as
 #                         fix hint.  failure_reason='parent_needs_fix'.
-#   shelve              — stuck without counterexample; framework
-#                         shelves; future Strategist may revisit.
+#   shelve              — lacks math tools / scaffolding to proceed;
+#                         description must name needed Forward lemma
+#                         statements / supporting defs / theorems.
+#                         Cascade routes to pending_strategist_review;
+#                         Strategist decides next move (Inject Forward
+#                         with the agent's brief / ConfirmShelve /
+#                         Reopen with directive).
 #                         failure_reason='agent_shelved'.
 #   needs_decomposition — Builder-only; routes to Backward via
 #                         entry_kind switch (legacy too_hard channel).
