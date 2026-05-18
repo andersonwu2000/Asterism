@@ -45,6 +45,30 @@ def recover_at_startup(conn: sqlite3.Connection,
                        workspace: Path | None = None) -> None:
     queue_cleared = conn.execute("DELETE FROM queue").rowcount
 
+    # Phase 2.5 — re-enqueue Forward rows for any in-flight Inject
+    # batch decisions whose outcome is still NULL. Unlike Builder /
+    # Backward (bfs_refill re-derives), Forward queue rows come only
+    # from Strategist Inject commits; if the daemon crashes between
+    # commit and Forward dispatch (or between dispatch and cascade),
+    # the queue row is gone forever and the batch never completes —
+    # inject_batch_done never fires, daemon idle-exits next run.
+    # Re-enqueue restores the missing Forward(s) so the batch ratchet
+    # can finish. Solo Inject (batch_id IS NULL) gets the same
+    # treatment: a NULL-outcome Inject row means the Forward never
+    # produced a terminal result.
+    inject_reenqueued = 0
+    for r in conn.execute(
+        "SELECT id, problem FROM strategist_decisions"
+        " WHERE decision_kind = 'Inject' AND outcome IS NULL"
+    ).fetchall():
+        conn.execute(
+            "INSERT INTO queue (kind, target_id, target_kind, priority,"
+            " decision_id, created_at) VALUES"
+            " ('Forward', ?, 'Problem', 10, ?, ?)",
+            (str(r["problem"]), int(r["id"]), db.now()),
+        )
+        inject_reenqueued += 1
+
     strategies_killed = conn.execute(
         "UPDATE strategies SET status = 'dead'"
         " WHERE status = 'proposed' AND scratch_path = ''"
@@ -78,9 +102,11 @@ def recover_at_startup(conn: sqlite3.Connection,
 
         backups_handled, tmps_removed = sweep_lean_backups(conn, workspace)
 
-    if (queue_cleared or strategies_killed or goals_reopened
-            or attempts_cleared or backups_handled or tmps_removed):
+    if (queue_cleared or inject_reenqueued or strategies_killed
+            or goals_reopened or attempts_cleared or backups_handled
+            or tmps_removed):
         print(f"[dispatcher] recovery: cleared {queue_cleared} queue rows, "
+              f"re-enqueued {inject_reenqueued} in-flight Inject Forwards, "
               f"killed {strategies_killed} half-baked strategies, "
               f"reopened {goals_reopened} stuck goals, "
               f"removed {attempts_cleared} orphan attempts dirs, "

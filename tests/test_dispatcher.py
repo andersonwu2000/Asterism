@@ -655,6 +655,52 @@ def test_recover_at_startup_clears_queue(conn: sqlite3.Connection) -> None:
     assert db.queue_count(conn, target_id="9", kind="Verify") == 0
 
 
+def test_recover_at_startup_reenqueues_incomplete_inject_forwards(
+    conn: sqlite3.Connection,
+) -> None:
+    """Phase 2.5 — a batched (or solo) Inject decision whose Forward
+    never produced a terminal outcome must have its queue row
+    restored at daemon recovery. Without this, a daemon crash
+    mid-batch leaves the strategist_decisions row with outcome=NULL
+    forever — inject_batch_done never fires.
+    """
+    from Tooling.core.dispatcher import _recover_at_startup
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at)"
+        " VALUES ('p', 'Problems/p/Manifest.md', ?)", (db.now(),))
+    ts = db.now()
+    # Three Inject rows: completed (outcome filled) + 2 still pending
+    # (one batched, one solo).
+    rids = []
+    for outcome, batch_id, brief in [
+        ("proved", "batch-A", "done brief"),
+        (None,     "batch-A", "pending batched brief"),
+        (None,      None,     "pending solo brief"),
+    ]:
+        cur = conn.execute(
+            "INSERT INTO strategist_decisions (problem,"
+            " triggered_at_tick, trigger_kind, decision_kind,"
+            " brief, payload, batch_id, outcome, created_at, updated_at)"
+            " VALUES ('p', 0, 'pending_review', 'Inject',"
+            "         ?, '{}', ?, ?, ?, ?)",
+            (brief, batch_id, outcome, ts, ts))
+        rids.append(int(cur.lastrowid))
+    conn.commit()
+
+    _recover_at_startup(conn)
+
+    # Two Forwards re-enqueued — one per pending Inject row. Completed
+    # row (outcome='proved') gets no re-enqueue.
+    q = list(conn.execute(
+        "SELECT kind, target_id, target_kind, decision_id FROM queue"
+        " WHERE kind='Forward' ORDER BY decision_id"))
+    assert len(q) == 2
+    assert {r["decision_id"] for r in q} == {rids[1], rids[2]}
+    for r in q:
+        assert r["target_id"] == "p"
+        assert r["target_kind"] == "Problem"
+
+
 def test_recover_at_startup_kills_half_baked_strategies(
     conn: sqlite3.Connection,
 ) -> None:
