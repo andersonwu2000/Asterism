@@ -590,7 +590,7 @@ def _read_parser_state(attempts_dir: Path) -> dict | None:
 def run_with_session_retries(
     *,
     conn: sqlite3.Connection,
-    goal_id: int,
+    goal_id: int | None,
     pipeline_id: str,
     budget_threshold: int,
     shelve_threshold: int,
@@ -627,24 +627,41 @@ def run_with_session_retries(
          ...) write dead_attempt, attempts++, continue.
 
     `budget_threshold` is the per-kind retry cap
-    (`BUILDER_THRESHOLD` for Builder, `SHELVE_THRESHOLD` for Backward).
+    (`BUILDER_THRESHOLD` for Builder, `SHELVE_THRESHOLD` for Backward,
+    `FORWARD_RETRY_BUDGET` for Forward).
     `shelve_threshold` is always the goals-level shelve cap; used in
     `goal_still_active` to detect external `_propagate_shelve` increments.
+
+    `goal_id` is None for goal-less pipelines (Phase 2 Forward, which
+    targets a problem name rather than a goal row). When None:
+      - budget = budget_threshold directly (no goal.attempts decrement —
+        each Forward Inject is independent of prior dispatches).
+      - cascade re-check via `goal_still_active` is skipped (no goal to
+        check; the originating Strategist Inject already authorised
+        this pipeline; Strategist self-feedback handles convergence).
+      - `buffer_failure` skips `increment_goal_attempts` + TREE refresh
+        (no goal counters to bump, no tree edge to redraw).
+      Forensic dead_attempts still buffer through `pending_failures`;
+      the dispatcher flushes them with target_kind='Problem'.
 
     On budget exhaustion without a terminal outcome, returns
     outcome='exhausted' carrying the most recent failure reason/detail
     for forensic visibility.
     """
-    goal = db.get_goal(conn, goal_id)
-    if goal is None:
-        return PipelineResult(outcome="failed",
-                              failure_reason="goal_not_found")
-
-    budget = budget_threshold - int(goal["attempts"])
-    if budget <= 0:
-        # Defensive — bfs_refill should already filter goals at/over
-        # threshold. Reach here only on dispatch races.
-        return PipelineResult(outcome="moot")
+    if goal_id is not None:
+        goal = db.get_goal(conn, goal_id)
+        if goal is None:
+            return PipelineResult(outcome="failed",
+                                  failure_reason="goal_not_found")
+        budget = budget_threshold - int(goal["attempts"])
+        if budget <= 0:
+            # Defensive — bfs_refill should already filter goals at/over
+            # threshold. Reach here only on dispatch races.
+            return PipelineResult(outcome="moot")
+    else:
+        # Goal-less pipeline (Forward): budget is the per-Inject cap;
+        # no prior attempts to subtract from.
+        budget = budget_threshold
 
     sid = str(uuid.uuid4())
     last_reason: str = ""
@@ -668,9 +685,15 @@ def run_with_session_retries(
         # crash mid-pipeline leaves attempts inflated by N relative to
         # dead_attempts, but the drift is cosmetic — bfs_refill /
         # threshold checks treat attempts as authoritative either way.
-        db.increment_goal_attempts(conn, goal_id)
-        if workspace is not None:
-            tree.write_for_target(conn, workspace, str(goal_id), "Goal")
+        #
+        # Goal-less pipelines (Forward, goal_id=None) skip both: no
+        # goal.attempts to increment and no goal-rooted tree edge to
+        # redraw. The Forward dispatch path also writes its own
+        # `## Forward` subtree on cascade (tree.py:render).
+        if goal_id is not None:
+            db.increment_goal_attempts(conn, goal_id)
+            if workspace is not None:
+                tree.write_for_target(conn, workspace, str(goal_id), "Goal")
 
     def attach(result: PipelineResult) -> PipelineResult:
         # Always thread the buffered failures through the return value.
@@ -713,7 +736,13 @@ def run_with_session_retries(
                   flush=True)
 
     for attempt in range(budget):
-        if not goal_still_active(conn, goal_id, shelve_threshold):
+        # Cascade re-check only applies to goal-bound pipelines (the
+        # check looks at goals.status / attempts). Goal-less pipelines
+        # (Forward) skip — the Strategist Inject already authorised
+        # this dispatch and there's no goal cascade to race against.
+        if goal_id is not None and not goal_still_active(
+            conn, goal_id, shelve_threshold,
+        ):
             return attach(PipelineResult(outcome="moot"))
 
         cold = (attempt == 0)

@@ -226,174 +226,203 @@ def _extract_statement_string(body: str, slug: str) -> str | None:
 def run_forward(conn: sqlite3.Connection, *, problem: str,
                 workspace: Path, mfst: "Any", pipeline_id: str,
                 decision_id: int | None = None) -> "Any":
-    """Full Forward pipeline (Phase 2 §3.4).
+    """Full Forward pipeline (Phase 2 §3.4) with in-pipeline retry.
 
     Stages:
       1. compile_forward_context  — Context.md with Strategist brief
+                                    (cold-start only)
       2. agent                    — spawn LLM, drops new_<slug>.lean
                                     or decline placeholder
       3. parse                    — extract_forward_metadata
-                                    OR is_decline → forward_no_new_goal
+                                    OR is_decline → agent_declined
       4. self_verify              — LSP verify_file on the candidate
       5. dedupe                   — find_canonicals_batch
       6. commit                   — commit_forward_lemma
 
-    Returns `PipelineResult`:
-      - outcome='proved' on sorry-free leaf-bypass commit
-      - outcome='success' on regular sorry-stub commit (new goal in
-        pool for BFS to attack)
-      - outcome='failed', failure_reason='forward_no_new_goal' for
-        decline / dedupe-blocked / parse-rejected paths
-      - provider rc-based reasons on agent.spawn_llm rc != 0
+    Retry semantics (parity with Builder / Backward via
+    `run_with_session_retries`): stages 2-6 run inside the helper's
+    loop. Terminal outcomes return immediately:
+      - 'proved' / 'success' (committed lemma) — terminal success
+      - 'agent_declined' (library_sufficient) — terminal decline,
+        equivalent to Builder's needs_decomposition pattern
+    Retryable failures (helper loops, --resume warms the same sid):
+      - forward_no_new_goal with lake elaborate errors — agent reads
+        the error in `retry_context` and corrects (e.g. missing
+        `import Problems.<p>.Defs` for a Defs-referenced lemma —
+        observed SG run 2026-05-17)
+      - parse_rejected (metadata extraction failed)
+      - dedupe-blocked (agent can try a different angle)
+      - commit raised (slug collision retry with different slug)
+
+    Budget = `dispatcher.FORWARD_RETRY_BUDGET` (default 3). Goal-less:
+    helper is called with `goal_id=None` so no goal.attempts is
+    incremented and no `goal_still_active` cascade check runs (Strategist
+    Inject already authorised this dispatch).
     """
     from .. import agent
     from . import PipelineResult, PROMPT_DIR
+    from ._retry import SpawnCtx, run_with_session_retries
     from ..agent.phase2_context import compile_forward_context
+    from ..core import dispatcher
 
     attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
     problem_dir = db.problem_dir(workspace, problem)
 
-    # Stage 1 — Context.md
-    compile_forward_context(
-        conn, problem=problem, decision_id=decision_id,
-        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
-    )
-
-    # Stage 2 — agent spawn
-    rc = agent.spawn_llm(
-        kind="forward",
-        prompt_path=PROMPT_DIR / "forward.md",
-        problem_dir=problem_dir,
-        attempts_dir=attempts_dir,
-    )
-    if rc != 0:
-        return PipelineResult(
-            outcome="failed",
-            failure_reason=_rc_to_reason_fwd(rc),
-            failure_detail=f"agent rc={rc}",
+    def forward_spawn(ctx: SpawnCtx) -> int:
+        # Cold start: compile Context.md (first attempt) + wipe any
+        # prior attempt's new_*.lean so glob in parse picks up only the
+        # fresh attempt's output.
+        if ctx.cold:
+            compile_forward_context(
+                conn, problem=problem, decision_id=decision_id,
+                attempts_dir=ctx.attempts_dir, workspace=workspace, mfst=mfst,
+            )
+            for f in ctx.attempts_dir.glob("new_*.lean"):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+        return agent.spawn_llm(
+            kind="forward",
+            prompt_path=PROMPT_DIR / "forward.md",
+            problem_dir=problem_dir,
+            attempts_dir=ctx.attempts_dir,
+            session_id=ctx.sid,
+            is_retry=not ctx.cold,
+            retry_context=ctx.retry_context,
+            inline_prompt=ctx.inline_prompt,
+            timeout_sec_override=ctx.budget_override,
         )
 
-    # Stage 3 — find the agent's output file. Glob for new_*.lean.
-    candidates = list(attempts_dir.glob("new_*.lean"))
-    if not candidates:
-        return PipelineResult(
-            outcome="failed", failure_reason="forward_no_new_goal",
-            failure_detail="agent produced no new_*.lean file",
-        )
-    src = candidates[0]
-    try:
-        body = src.read_text(encoding="utf-8")
-    except OSError as e:
-        return PipelineResult(
-            outcome="failed", failure_reason="forward_no_new_goal",
-            failure_detail=f"new_*.lean unreadable: {e}",
-        )
+    def forward_parse() -> "PipelineResult":  # noqa: F821
+        candidates = list(attempts_dir.glob("new_*.lean"))
+        if not candidates:
+            return PipelineResult(
+                outcome="failed", failure_reason="forward_no_new_goal",
+                failure_detail="agent produced no new_*.lean file",
+            )
+        src = candidates[0]
+        try:
+            body = src.read_text(encoding="utf-8")
+        except OSError as e:
+            return PipelineResult(
+                outcome="failed", failure_reason="forward_no_new_goal",
+                failure_detail=f"new_*.lean unreadable: {e}",
+            )
 
-    # Stage 3b — decline path
-    if is_decline(body):
-        return PipelineResult(
-            outcome="failed", failure_reason="forward_no_new_goal",
-            failure_detail="agent declined: library_sufficient",
-        )
+        # Agent decline — mapped to `agent_declined` so the retry
+        # helper treats it as terminal (no point spawning again when
+        # the agent says the library is sufficient). Mirrors Builder's
+        # `needs_decomposition` directive.
+        if is_decline(body):
+            return PipelineResult(
+                outcome="failed", failure_reason="agent_declined",
+                failure_detail="agent declined: library_sufficient",
+            )
 
-    # Stage 4 — parse + self_verify metadata
-    metadata, parse_err = extract_forward_metadata(body)
-    if metadata is None:
-        return PipelineResult(
-            outcome="failed", failure_reason="forward_no_new_goal",
-            failure_detail=f"parse rejected: {parse_err}",
-        )
+        metadata, parse_err = extract_forward_metadata(body)
+        if metadata is None:
+            return PipelineResult(
+                outcome="failed", failure_reason="forward_no_new_goal",
+                failure_detail=f"parse rejected: {parse_err}",
+            )
 
-    # Stage 4b — LSP type-check the candidate. A sorry-bearing body
-    # passes if and only if Lean elaborates the statement successfully
-    # (sorry warning is OK). Sorry-free body must elaborate clean — no
-    # errors. We re-use the existing /verify endpoint with
-    # write_olean=False (probe-mode): no olean side effect, fast.
-    from ..lsp import lifecycle as gateway_lifecycle
-    try:
-        v = gateway_lifecycle.verify_file(
-            src, write_olean=False, workspace=workspace,
-        )
-    except Exception as e:
-        return PipelineResult(
-            outcome="failed", failure_reason="forward_no_new_goal",
-            failure_detail=f"verify_file raised: {type(e).__name__}: {e}",
-        )
-    if not v.get("ok"):
-        return PipelineResult(
-            outcome="failed", failure_reason="forward_no_new_goal",
-            failure_detail=f"lake elaborate failed: {v.get('error', v)}",
-        )
-    # Allow `sorry` warnings — they're expected for the statement-only
-    # path. Reject other errors. The diagnostics filter is conservative
-    # (only `severity==1` = "error" hits us; `severity==2` warnings
-    # including sorry-warning are tolerated).
-    err_diag = [
-        d for d in (v.get("diagnostics") or [])
-        if d.get("severity") == 1 and "sorry" not in str(d.get("message", "")).lower()
-    ]
-    if err_diag:
-        return PipelineResult(
-            outcome="failed", failure_reason="forward_no_new_goal",
-            failure_detail=f"lake elaborate errors: {err_diag[:3]}",
-        )
+        # LSP type-check the candidate. A sorry-bearing body passes if
+        # and only if Lean elaborates the statement successfully (sorry
+        # warning is OK). Sorry-free body must elaborate clean — no
+        # errors. write_olean=False (probe-mode): no olean side effect.
+        from ..lsp import lifecycle as gateway_lifecycle
+        try:
+            v = gateway_lifecycle.verify_file(
+                src, write_olean=False, workspace=workspace,
+            )
+        except Exception as e:
+            return PipelineResult(
+                outcome="failed", failure_reason="forward_no_new_goal",
+                failure_detail=f"verify_file raised: {type(e).__name__}: {e}",
+            )
+        if not v.get("ok"):
+            return PipelineResult(
+                outcome="failed", failure_reason="forward_no_new_goal",
+                failure_detail=f"lake elaborate failed: {v.get('error', v)}",
+            )
+        err_diag = [
+            d for d in (v.get("diagnostics") or [])
+            if d.get("severity") == 1
+            and "sorry" not in str(d.get("message", "")).lower()
+        ]
+        if err_diag:
+            return PipelineResult(
+                outcome="failed", failure_reason="forward_no_new_goal",
+                failure_detail=f"lake elaborate errors: {err_diag[:3]}",
+            )
 
-    # Stage 5 — dedupe. Forward proposals shouldn't clash with alive
-    # canonicals (Strategist brief should have steered around them);
-    # but the agent can still re-propose a near-duplicate. Phase 2
-    # dedupe blocks `disproved` only; `shelved` doesn't block — so an
-    # alias hit on an alive canonical means the agent's lemma is
-    # redundant with the existing library.
-    from ..quality import dedupe
-    hits = dedupe.find_canonicals_batch(
-        conn, workspace, problem=problem, parent_goal_id=0,
-        candidates=[(metadata.slug, body)],
-    )
-    if hits and hits[0] is not None and hits[0].kind == "alias":
+        # Dedupe: Phase 2 `_eligible_disproved` only blocks on
+        # disproved; alias to a still-alive canonical means the agent's
+        # lemma is redundant with existing library. Retryable — agent
+        # can try a different angle.
+        from ..quality import dedupe
+        hits = dedupe.find_canonicals_batch(
+            conn, workspace, problem=problem, parent_goal_id=0,
+            candidates=[(metadata.slug, body)],
+        )
+        if hits and hits[0] is not None and hits[0].kind == "alias":
+            return PipelineResult(
+                outcome="failed", failure_reason="forward_no_new_goal",
+                failure_detail=(
+                    f"dedupe blocked: alias to existing goal "
+                    f"{hits[0].goal_id}"
+                ),
+            )
+
+        try:
+            outcome = commit_forward_lemma(
+                conn, problem=problem, workspace=workspace,
+                attempts_dir=attempts_dir, metadata=metadata,
+                source_filename=src.name,
+            )
+        except FileExistsError as e:
+            return PipelineResult(
+                outcome="failed", failure_reason="forward_no_new_goal",
+                failure_detail=f"slug collision: {e}",
+            )
+        except Exception as e:
+            return PipelineResult(
+                outcome="failed", failure_reason="forward_no_new_goal",
+                failure_detail=f"commit raised: {type(e).__name__}: {e}",
+            )
+
         return PipelineResult(
-            outcome="failed", failure_reason="forward_no_new_goal",
+            outcome="proved" if outcome.status == "proved" else "success",
+            failure_reason="",
             failure_detail=(
-                f"dedupe blocked: alias to existing goal "
-                f"{hits[0].goal_id}"
+                f"new forward goal {outcome.goal_id} at "
+                f"{outcome.lean_path} (status={outcome.status})"
             ),
         )
 
-    # Stage 6 — commit
-    try:
-        outcome = commit_forward_lemma(
-            conn, problem=problem, workspace=workspace,
-            attempts_dir=attempts_dir, metadata=metadata,
-            source_filename=src.name,
-        )
-    except FileExistsError as e:
-        return PipelineResult(
-            outcome="failed", failure_reason="forward_no_new_goal",
-            failure_detail=f"slug collision: {e}",
-        )
-    except Exception as e:
-        return PipelineResult(
-            outcome="failed", failure_reason="forward_no_new_goal",
-            failure_detail=f"commit raised: {type(e).__name__}: {e}",
-        )
+    def forward_postmortem(sid: str) -> None:
+        # Forward postmortem stage not yet implemented. Helper passes
+        # the sid on TIMEOUT after salvage parse fails; for now we
+        # accept the timeout silently — the buffered failure_detail
+        # already captures the spawn rc and the parser-state verdict.
+        return None
 
-    return PipelineResult(
-        outcome="proved" if outcome.status == "proved" else "success",
-        failure_reason="",
-        failure_detail=(
-            f"new forward goal {outcome.goal_id} at "
-            f"{outcome.lean_path} (status={outcome.status})"
-        ),
+    return run_with_session_retries(
+        conn=conn,
+        goal_id=None,   # Forward targets a problem, not a goal
+        pipeline_id=pipeline_id,
+        budget_threshold=dispatcher.FORWARD_RETRY_BUDGET,
+        shelve_threshold=0,   # unused when goal_id=None
+        attempts_dir=attempts_dir,
+        spawn_fn=forward_spawn,
+        parse_fn=forward_parse,
+        postmortem_fn=forward_postmortem,
+        workspace=workspace,
     )
 
 
-def _rc_to_reason_fwd(rc: int) -> str:
-    """Same rc taxonomy as Strategist (see strategist._rc_to_reason)."""
-    if rc == 124:
-        return "transient_timeout"
-    if rc in (125, 128):
-        return "spawn_fast_fail"
-    if rc == 126:
-        return "quota_exhausted"
-    if rc == 127:
-        return "missing_dep"
-    return "spawn_fast_fail"
+# `_rc_to_reason_fwd` removed: rc classification now lives in
+# `_retry.run_with_session_retries` (shared with Builder / Backward
+# via `_spawn_failure`). Forward's earlier one-shot path mapped rc
+# locally; the retry helper supersedes that.

@@ -44,6 +44,14 @@ from ..quality import prune, verify
 # Real values resolved in `run()` below per-process.
 BUILDER_THRESHOLD = 3
 SHELVE_THRESHOLD = 8
+# Forward retry budget per Inject. Each Inject is a Strategist meta-
+# decision; on Forward failure (lake error / parse rejected / dedupe
+# blocked) the agent --resume's next attempt sees the failure as
+# retry_context and can correct (e.g. missing `import` observed SG run
+# 2026-05-17: agent referenced `Collinear` without importing Defs).
+# Kept small (mirrors BUILDER_THRESHOLD) because Forward is a single
+# lemma write — diminishing returns past 3 retries.
+FORWARD_RETRY_BUDGET = 3
 
 TICK_TIMEOUT = 30  # seconds
 
@@ -942,12 +950,28 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
                     status=status, outcome=r.outcome,
                     started_at=started_at,
                 )
-                if status == "failed":
-                    # target_id is the problem_name TEXT; dead_attempts
-                    # target_id column is INTEGER. Per migration_plan §C
-                    # option 1, Forward forensic uses target_kind='Problem'
-                    # but the int column is forced to 0 (the lookup index
-                    # is target_kind + decision_id for Forward audit).
+                # Flush per-retry buffered failures from the retry
+                # helper. Phase 2 dead_attempts row for Forward uses
+                # target_id=0 + target_kind='Problem' (migration_plan
+                # §C option 1: dead_attempts.target_id is INTEGER, so
+                # Problem-targeted forensic uses 0 with the audit
+                # index living on target_kind + decision_id).
+                for pf in r.pending_failures:
+                    db.record_dead_attempt(
+                        conn, target_id=0, target_kind="Problem",
+                        pipeline_id=pipeline_id,
+                        failure_reason=pf["reason"],
+                        failure_detail=pf["detail"],
+                        proposal_md=pf.get("proposal_md", ""),
+                        artifacts=(_json.dumps(pf["artifacts"])
+                                   if pf.get("artifacts") else ""),
+                    )
+                # Pipeline-level dead_attempt for the final outcome.
+                # Skip when outcome is 'exhausted' — the helper has
+                # already buffered the last retry's failure (flushed
+                # above); duplicating here would over-count.
+                if (status == "failed"
+                        and r.outcome != "exhausted"):
                     db.record_dead_attempt(
                         conn, target_id=0, target_kind=target_kind,
                         pipeline_id=pipeline_id,

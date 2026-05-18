@@ -270,8 +270,14 @@ def test_run_forward_decline_path(
         conn, problem="p", workspace=workspace, mfst=mfst,
         pipeline_id="test-fwd-2",
     )
+    # Phase 2 + retry helper: explicit decline is mapped to
+    # `agent_declined` so the retry loop treats it as terminal — same
+    # treatment as Builder's needs_decomposition. Pre-retry the
+    # outcome was `forward_no_new_goal`; after wiring through
+    # `run_with_session_retries` the helper requires a distinct
+    # terminal failure_reason to short-circuit retries.
     assert r.outcome == "failed"
-    assert r.failure_reason == "forward_no_new_goal"
+    assert r.failure_reason == "agent_declined"
     assert "agent declined" in r.failure_detail
     # No new goal inserted
     g = conn.execute(
@@ -285,10 +291,16 @@ def test_run_forward_no_output(
     mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
     mock_lsp_verify,
 ) -> None:
-    """Agent rc=0 but no new_*.lean → forward_no_new_goal."""
+    """Agent rc=0 but no new_*.lean every retry → `exhausted` after
+    FORWARD_RETRY_BUDGET attempts. Pre-retry this returned 'failed'
+    directly; the retry refactor (see `run_forward`'s helper wiring)
+    treats no-output as retryable, then exhausts when no attempt
+    produces output."""
     _insert_root(conn)
+    spawn_calls = {"n": 0}
 
     def fake_spawn(**kw):
+        spawn_calls["n"] += 1
         return 0  # nothing produced
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
@@ -296,8 +308,11 @@ def test_run_forward_no_output(
         conn, problem="p", workspace=workspace, mfst=mfst,
         pipeline_id="test-fwd-3",
     )
-    assert r.outcome == "failed"
+    assert r.outcome == "exhausted"
     assert r.failure_reason == "forward_no_new_goal"
+    # Retry actually happened — not a single-shot.
+    from Tooling.core import dispatcher
+    assert spawn_calls["n"] == dispatcher.FORWARD_RETRY_BUDGET
 
 
 def test_run_forward_consumes_strategist_brief(
