@@ -56,17 +56,25 @@ ACTIVE_WINDOW = 60.0
 
 
 def _spawn_score(pdir: Path) -> float:
-    """Most recent mtime of any .lean directly under `<pdir>/` (and any
-    sub-tree), or -inf if no .lean exists. Used to pick the most
-    recently active spawn dir.
+    """Most recent mtime of any file under `<pdir>/`, or -inf if the
+    dir is unreachable / empty. Used to pick currently-active spawns.
 
-    Framework writes `patch.lean` / `new_*.lean` directly inside
-    `.attempts/<uuid>/` (flat layout); earlier framework versions used
-    `<uuid>/sandbox/` — `rglob` covers both transparently.
+    Looks at any file (not just `.lean`) so Strategist spawns — which
+    write `Context.md` + `decision.json` but no `.lean` — appear in
+    the active set. Without this, stats.md would silently hide
+    Strategist invocations and the "active pipelines (N/pool)" header
+    would underreport pool occupancy.
+
+    Framework writes `patch.lean` / `new_*.lean` / `Context.md` /
+    `decision.json` directly inside `.attempts/<uuid>/` (flat layout);
+    earlier framework versions used `<uuid>/sandbox/` — `rglob`
+    covers both transparently.
     """
     latest = float("-inf")
     try:
-        for f in pdir.rglob("*.lean"):
+        for f in pdir.rglob("*"):
+            if not f.is_file():
+                continue
             try:
                 t = f.stat().st_mtime
             except OSError:
@@ -204,35 +212,37 @@ def _lookup_spawn_info(spawn_dir: Path) -> tuple[str, str] | None:
 
 
 # Fixed VS Code layout: 4 file panes for worker spawn content. Pool
-# size can exceed this (stats will list all live pipelines; the panes
-# just show the 4 most recent). Pane content for inactive slots is
-# left on its last-seen value — clearing every tick would flash the
-# panes (cf. original ACTIVE_WINDOW comment).
+# size can exceed this; stats will list all live pipelines. Pane content
+# for inactive slots is left on its last-seen value — clearing every
+# tick would flash the panes (cf. original ACTIVE_WINDOW comment).
 WORKER_PANE_COUNT = 4
 
 
 def _update_worker_panes(
     spawns: list[Path],
 ) -> list[tuple[str, str] | None]:
-    """Copy the first WORKER_PANE_COUNT active spawns' latest .lean
-    into the worker panes; return one label per spawn (length =
-    len(spawns)) for the stats pipeline list. Stats list isn't capped
-    by pane count — when pool > WORKER_PANE_COUNT, the extra labels
-    surface in stats even though their content has no dedicated pane.
+    """Identify each active spawn's pipeline kind + slug for the stats
+    pipeline list (returned aligned with `spawns`), and map the first
+    WORKER_PANE_COUNT spawns that have a `.lean` file into the worker
+    panes. Strategist spawns (no `.lean` output) still appear in the
+    returned label list — they occupy a pool slot — but consume no
+    pane mapping (panes are intended to show agent-authored Lean).
     """
     active_labels: list[tuple[str, str] | None] = [None] * len(spawns)
+    pane_idx = 0
     for i, spawn in enumerate(spawns):
+        info = _lookup_spawn_info(spawn)
+        active_labels[i] = info if info is not None else ("spawning", "?")
         latest = _latest_lean_in(spawn)
         if latest is None:
             continue
-        if i < WORKER_PANE_COUNT:
-            target = ACTIVE_DIR / f"worker_{i + 1}.lean"
+        if pane_idx < WORKER_PANE_COUNT:
+            target = ACTIVE_DIR / f"worker_{pane_idx + 1}.lean"
             try:
                 shutil.copy2(latest, target)
             except OSError:
                 pass
-        info = _lookup_spawn_info(spawn)
-        active_labels[i] = info if info is not None else ("spawning", "?")
+            pane_idx += 1
     return active_labels
 
 

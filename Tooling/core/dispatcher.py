@@ -777,7 +777,10 @@ def bfs_refill(conn: sqlite3.Connection,
     qcd = quota_cooldown_kind or {}
 
     def in_flight(tid: str, kind: str) -> int:
-        running_n = 1 if (tid, kind) in running else 0
+        # Phase 2.5 — running key is (target_id, kind, decision_id);
+        # batch Inject can have multiple entries with same (tid, kind)
+        # but distinct decision_id. Sum across all matching entries.
+        running_n = sum(1 for r in running if r[0] == tid and r[1] == kind)
         return running_n + db.queue_count(conn, target_id=tid, kind=kind)
 
     def cooled(tid: str, kind: str) -> bool:
@@ -846,7 +849,14 @@ def strategist_triggers(conn: sqlite3.Connection,
     max_age_sec = interval_min * 60.0
 
     def already_inflight(root_id_str: str) -> bool:
-        return ((root_id_str, "Strategist") in running
+        # Phase 2.5 — running key is (target_id, kind, decision_id);
+        # Strategist queue rows always have decision_id=None (Strategist
+        # is never spawned from an Inject), so a tuple-match by (root,
+        # Strategist, *) covers the invariant.
+        in_running = any(
+            r[0] == root_id_str and r[1] == "Strategist" for r in running
+        )
+        return (in_running
                 or db.is_in_queue(conn, target_id=root_id_str,
                                   kind="Strategist"))
 
@@ -1360,8 +1370,10 @@ def run(workspace: Path, *, once: bool = False,
             for fut in done:
                 meta = futures.pop(fut)
                 # meta = (pipeline_id, kind, target_id, target_kind,
-                #        decision_id)
-                running.discard((meta[2], meta[1]))
+                #        decision_id). Phase 2.5 — running key includes
+                # decision_id so batch Inject siblings (same target+kind,
+                # different decision_id) don't share a slot.
+                running.discard((meta[2], meta[1], meta[4]))
                 meta_decision_id = meta[4]
                 try:
                     pid, kind, tid, tk, outcome, reason = fut.result()
@@ -1617,19 +1629,14 @@ def run(workspace: Path, *, once: bool = False,
                 break
             target_id = str(row["target_id"])
             kind = str(row["kind"])
-            if (target_id, kind) in running:
-                continue
-            # #103 — defense-in-depth: even after bfs_refill skips
-            # cooled kinds, a race (cooldown set between bfs_refill
-            # and pop) could leave a queued row for a now-cooled
-            # kind. Drop it; bfs_refill will repopulate post-cooldown.
-            if quota_cooldown_kind.get(kind, 0.0) > time.time():
-                continue
             # Phase 2 — queue.target_kind defaults to 'Goal' (post-
             # migration column), and queue.decision_id is non-NULL when
             # this row was emitted by a Strategist Inject decision.
             # Both default-safe for pre-Phase 2 queue rows (target_kind
-            # has DEFAULT 'Goal', decision_id NULL).
+            # has DEFAULT 'Goal', decision_id NULL). Decision_id must
+            # be read BEFORE the running-dedup check below so the
+            # 3-tuple key is complete (Phase 2.5: batch Inject siblings
+            # share target+kind but differ by decision_id).
             try:
                 target_kind = str(row["target_kind"]) or "Goal"
             except (IndexError, KeyError):
@@ -1639,8 +1646,16 @@ def run(workspace: Path, *, once: bool = False,
                 decision_id = int(_did) if _did is not None else None
             except (IndexError, KeyError):
                 decision_id = None
+            if (target_id, kind, decision_id) in running:
+                continue
+            # #103 — defense-in-depth: even after bfs_refill skips
+            # cooled kinds, a race (cooldown set between bfs_refill
+            # and pop) could leave a queued row for a now-cooled
+            # kind. Drop it; bfs_refill will repopulate post-cooldown.
+            if quota_cooldown_kind.get(kind, 0.0) > time.time():
+                continue
             pipeline_id = agent.new_pipeline_id()
-            running.add((target_id, kind))
+            running.add((target_id, kind, decision_id))
             fut = pool.submit(_run_pipeline, workspace, manifests,
                               kind, target_id, target_kind, pipeline_id,
                               decision_id)
