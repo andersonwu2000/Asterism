@@ -163,6 +163,51 @@ def test_reset_clears_pipelines_for_problem_only(
     assert "pid-c" in remaining  # cantor's pipeline preserved
 
 
+def test_reset_clears_forward_pipeline_with_dead_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Forward (target_kind='Problem') pipelines that wrote a
+    dead_attempt row must be cleanable by `cli reset`. Regression for
+    SG 2026-05-17: the earlier `DELETE dead_attempts` passes filtered
+    only on target_kind IN ('Strategy', 'Goal'), so a Forward
+    dead_attempt's pipeline_id FK to pipelines blocked the
+    `DELETE pipelines WHERE target_kind='Problem'` step with
+    `FOREIGN KEY constraint failed`. Fix: also DELETE dead_attempts
+    by pipeline_id under target_kind='Problem' before the pipelines
+    DELETE."""
+    _setup_problem(tmp_path, "sg")
+    monkeypatch.chdir(tmp_path)
+    cmd_init(argparse.Namespace(problem="sg", force=False))
+    conn = db.connect()
+    # Seed a Forward pipeline + its dead_attempt (mirroring what
+    # run_forward emits when self_verify fails).
+    fwd_pid = "pid-fwd-sg"
+    conn.execute(
+        "INSERT INTO pipelines "
+        "(id, kind, target_id, target_kind, status, outcome, "
+        " started_at, finished_at) "
+        "VALUES (?, 'Forward', 'sg', 'Problem', 'failed', 'failed', ?, ?)",
+        (fwd_pid, db.now(), db.now()))
+    conn.execute(
+        "INSERT INTO dead_attempts "
+        "(target_id, target_kind, pipeline_id, failure_reason, ts) "
+        "VALUES ('sg', 'Problem', ?, 'forward_no_new_goal', ?)",
+        (fwd_pid, db.now()))
+    conn.commit()
+
+    # Must NOT raise IntegrityError.
+    cmd_reset(argparse.Namespace(problem="sg"))
+
+    conn = db.connect()
+    assert conn.execute(
+        "SELECT count(*) FROM pipelines WHERE id = ?", (fwd_pid,)
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT count(*) FROM dead_attempts WHERE pipeline_id = ?",
+        (fwd_pid,),
+    ).fetchone()[0] == 0
+
+
 def test_reset_isolates_other_problems(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

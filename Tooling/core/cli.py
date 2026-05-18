@@ -579,6 +579,19 @@ def cmd_reset(args: argparse.Namespace) -> int:
     # loop above). Clean the Problem-targeted rows here. Strategist
     # decision audit goes via FK on queue.decision_id (queue rows for
     # this problem already deleted above by target_id IN gids).
+    #
+    # dead_attempts.pipeline_id FK blocks pipelines DELETE if any
+    # Forward dead_attempt rows still reference these pipelines —
+    # observed SG run 2026-05-17 (cli reset crashed `FOREIGN KEY
+    # constraint failed` because the earlier dead_attempts DELETE
+    # passes only filtered by target_kind IN ('Strategy', 'Goal'),
+    # missing the 'Problem' kind Forward writes).
+    conn.execute(
+        "DELETE FROM dead_attempts WHERE pipeline_id IN "
+        "(SELECT id FROM pipelines WHERE target_kind='Problem' "
+        " AND target_id = ?)",
+        (problem,),
+    )
     conn.execute(
         "DELETE FROM pipelines WHERE target_kind='Problem' AND target_id = ?",
         (problem,),
