@@ -632,9 +632,18 @@ def cmd_reset(args: argparse.Namespace) -> int:
         # `*.backup` covers `L_<slug>.lean.backup` left behind by
         # Backward / Builder spawn-retry path (`shutil.copy2(goal_lean,
         # backup_path)`) when the pipeline got watchdog-killed before
-        # `_restore_backup`. Without sweeping these, next reset+init
-        # leaves stale backup files that confuse future runs.
-        for pattern in ("L_*.lean", "_strategy_*.lean", "*.backup"):
+        # `_restore_backup`. `*.verify_backup` / `*.verify_backup_s*`
+        # cover Verify's atomic-write safety copy (sid-keyed so
+        # concurrent sibling Verifies don't clobber each other); these
+        # survived reset before — observed SG 2026-05-18, a stale
+        # `.verify_backup_s9983` outlived reset, recovery's
+        # sweep_lean_backups then copy2'd it back into a goal-less
+        # `L_*.lean` orphan that Strategist `have`'d into a downstream
+        # proof. `*.tmp` / `*.tmp_s*` are Verify's pre-replace staging
+        # — also sid-keyed and never safe to keep across runs.
+        for pattern in ("L_*.lean", "_strategy_*.lean", "*.backup",
+                        "*.verify_backup", "*.verify_backup_s*",
+                        "*.lean.tmp", "*.lean.tmp_s*"):
             for f in proofs_dir.glob(pattern):
                 if _robust_unlink(f):
                     deleted_files.append(f.name)
@@ -717,7 +726,9 @@ def cmd_reset(args: argparse.Namespace) -> int:
     # we forgot to sweep.
     leftovers: list[str] = []
     if proofs_dir.exists():
-        for pattern in ("L_*.lean", "_strategy_*.lean", "*.backup"):
+        for pattern in ("L_*.lean", "_strategy_*.lean", "*.backup",
+                        "*.verify_backup", "*.verify_backup_s*",
+                        "*.lean.tmp", "*.lean.tmp_s*"):
             for f in proofs_dir.glob(pattern):
                 leftovers.append(f"proofs/{f.name}")
     for name in ("LESSONS.md", "Root.lean.backup", "TREE.md"):

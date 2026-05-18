@@ -125,6 +125,15 @@ def sweep_lean_backups(conn: sqlite3.Connection,
         in the microsecond window between lake-build success and
         backup.unlink. The current .lean is the validated proof —
         just discard the backup.
+      - If no goal row references this lean_path, the operator wiped
+        state (`cli reset` / DB drop) but the backup survived because
+        the reset glob didn't cover this suffix variant. Restoring
+        would resurrect a goal-less .lean orphan with the original
+        mtime — observed SG 2026-05-18: `.verify_backup_s9983`
+        survived reset, sweep restored a sorry-bearing
+        `L_three_reals_pigeonhole_sign.lean`, then Strategist
+        injected a dependent decomposition that silently `have`'d the
+        unproven sorry. Discard the backup.
       - Otherwise (goal 'open' / 'attempting' / 'shelved'), the
         pipeline did not commit success. Restore .lean from backup,
         then unlink the backup.
@@ -160,7 +169,7 @@ def sweep_lean_backups(conn: sqlite3.Connection,
                 rel = ""
             status = goal_status.get(rel)
             try:
-                if status == "proved":
+                if status == "proved" or status is None:
                     backup.unlink()
                 else:
                     shutil.copy2(backup, original)

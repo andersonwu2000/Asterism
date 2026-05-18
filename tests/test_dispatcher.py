@@ -851,6 +851,31 @@ def test_recover_at_startup_handles_verify_backup(
     assert not (proofs / "Root.lean.verify_backup").exists()
 
 
+def test_recover_at_startup_discards_backup_when_goal_missing(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """F3 / SG 2026-05-18 regression: if no goal row references the
+    .lean path, the operator wiped state (cli reset / DB drop) but the
+    backup variant survived because reset's glob didn't cover it.
+    Restoring would resurrect a goal-less orphan that the next
+    Strategist could `have`-into a downstream proof — soft-corrupting
+    the tree with a sorry the framework never re-validates. Discard."""
+    from Tooling.core.dispatcher import _recover_at_startup
+    # NO goal row inserted — simulates post-reset state where the goal
+    # was wiped but a sid-keyed backup survived (the original bug).
+    proofs = tmp_path / "Problems" / "p"
+    proofs.mkdir(parents=True)
+    (proofs / "L_orphan.lean.verify_backup_s9983").write_text(
+        "theorem orphan : True := by sorry")
+
+    _recover_at_startup(conn, tmp_path)
+
+    # Backup discarded, NOT restored — no goal-less L_orphan.lean
+    # appears on disk.
+    assert not (proofs / "L_orphan.lean.verify_backup_s9983").exists()
+    assert not (proofs / "L_orphan.lean").exists()
+
+
 def test_recover_at_startup_removes_tmp_files(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:

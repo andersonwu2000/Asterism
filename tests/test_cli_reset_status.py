@@ -304,6 +304,38 @@ def test_reset_removes_proof_files_and_resets_root(
     assert ":= by sorry" in (pdir / "Root.lean").read_text(encoding="utf-8")
 
 
+def test_reset_sweeps_verify_backup_and_tmp_variants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SG 2026-05-18 regression: reset must sweep Verify's atomic-write
+    safety copies (`.verify_backup` / `.verify_backup_s<id>`) and
+    pre-replace staging (`.lean.tmp` / `.lean.tmp_s<id>`). Before the
+    fix the glob `*.backup` only matched files ENDING in `.backup`,
+    leaving the sid-keyed variants behind. Recovery's
+    sweep_lean_backups then copy2'd a stale `verify_backup_s9983`
+    back into a goal-less `L_three_reals_pigeonhole_sign.lean`."""
+    pdir = _setup_problem(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    cmd_init(argparse.Namespace(problem="wilson", force=False))
+
+    proofs = pdir / "proofs"
+    # All the variants left behind by killed Builder/Verify pipelines.
+    (proofs / "L_main.lean.backup").write_text("x", encoding="utf-8")
+    (proofs / "L_main.lean.verify_backup").write_text("x", encoding="utf-8")
+    (proofs / "L_main.lean.verify_backup_s9983").write_text(
+        "x", encoding="utf-8")
+    (proofs / "L_main.lean.tmp").write_text("x", encoding="utf-8")
+    (proofs / "L_main.lean.tmp_s9983").write_text("x", encoding="utf-8")
+
+    rc = cmd_reset(argparse.Namespace(problem="wilson"))
+    assert rc == 0
+    assert not (proofs / "L_main.lean.backup").exists()
+    assert not (proofs / "L_main.lean.verify_backup").exists()
+    assert not (proofs / "L_main.lean.verify_backup_s9983").exists()
+    assert not (proofs / "L_main.lean.tmp").exists()
+    assert not (proofs / "L_main.lean.tmp_s9983").exists()
+
+
 def test_reset_idempotent_on_clean_problem(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
