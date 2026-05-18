@@ -17,19 +17,26 @@ Your **output is the statement**. Attempt a direct proof only when it's short an
 
 ## Output: new_<slug>.lean
 
-Write **one** file in attempts_dir.
+Write **one** file in attempts_dir. Match declaration to what the brief asks for:
+
+| Brief asks for | Use |
+|---|---|
+| Proposition / equality / inequality | `theorem <slug> : <type> := by sorry` |
+| Function returning a value (e.g. `ℝ × ℝ → ℝ`) | `def <slug> (...) : <return type> := <body>` |
+| Record bundle | `structure <slug> where ...` |
+| Typeclass | `class <slug> (α : Type) where ...` |
+
+`def` / `structure` / `class` skip `entry_kind` and have no `sorry`. Wrapping a value-returning function as `theorem` triggers Prop-mode synthesis errors (e.g. `HSub ℝ ℝ`).
 
 ```lean
 namespace Problems.<problem>
 
--- Forward rationale: <detailed explanation of why this lemma, what gap it fills>
+-- Forward rationale: <why this lemma, what gap it fills>
 -- entry_kind: Backward
 theorem <slug> : <type> := by sorry
 
 end Problems.<problem>
 ```
-
-Other declaration kinds (`def`, `structure`, `class`) follow the same shape — namespace + `-- Forward rationale:` comment + declaration. No proof body / `entry_kind` line needed for those (framework type-checks at use sites; status='proved' immediately).
 
 - `<slug>`: `[a-z][a-z0-9_]*`, ≤ 60 chars, descriptive (e.g. `contour_deformation_piecewise`, `inner_pythag_for_orthogonal`). Framework auto-suffixes on collision.
 - `theorem` name MUST equal the slug encoded in the filename.
