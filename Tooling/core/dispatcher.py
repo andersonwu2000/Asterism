@@ -573,6 +573,34 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 _propagate_shelve(conn, int(target_id))
             return
 
+    if kind == "Forward":
+        # Forward's target is the problem name (target_kind='Problem');
+        # no goal row to update. On any non-success outcome, give
+        # Strategist an immediate chance to re-decide rather than
+        # waiting for T1 (default 60 min). Without this, after Forward
+        # fails the queue can drain to empty while a `pending_strategist
+        # _review` goal still sits unresolved — the dispatcher's idle
+        # exit then trips before T1's wall-clock ever fires (observed
+        # SG run 2026-05-17: Strategist→Inject(Forward)→Forward failed
+        # on lake elaboration → daemon exited with root still attempting).
+        # Strategist self_feedback sees the failed Inject in
+        # `failure_replay` and converges on ConfirmShelve / different
+        # Inject brief; without the re-enqueue the loop is broken.
+        if outcome in ("proved", "success"):
+            return
+        if is_infra:
+            return
+        problem = str(target_id)
+        pr_row = conn.execute(
+            "SELECT id FROM goals "
+            " WHERE problem = ? AND status = 'pending_strategist_review' "
+            " LIMIT 1",
+            (problem,),
+        ).fetchone()
+        if pr_row is not None:
+            _enqueue_strategist_review(conn, int(pr_row["id"]))
+        return
+
     if kind == "Backward":
         if outcome == "success":
             # Race guard: when a Backward leaf-bypass commits a strategy

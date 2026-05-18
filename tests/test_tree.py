@@ -343,6 +343,23 @@ def test_write_for_target_unknown_target_returns_none(
     assert out is None
 
 
+def test_write_for_target_problem_target_kind(
+    conn, tmp_path: Path,
+) -> None:
+    """target_kind='Problem' (Forward pipelines) uses target_id as the
+    problem name directly — no int() cast. Regression guard for an SG
+    run 2026-05-17 incident where the dispatcher logged
+    `[tree] write skipped: invalid literal for int() with base 10:
+    'sylvester_gallai'` after every Forward cascade because the
+    previous Goal/Strategy branches were the only ones handled."""
+    _seed_root(conn)
+    pdir = tmp_path / "Problems" / "p"
+    pdir.mkdir(parents=True)
+    out = tree.write_for_target(conn, tmp_path, "p", "Problem")
+    assert out == pdir / "TREE.md"
+    assert out.read_text(encoding="utf-8").startswith("# p — TREE")
+
+
 def test_write_for_target_swallows_exceptions(
     conn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

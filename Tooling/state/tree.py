@@ -234,9 +234,23 @@ def write_for_target(conn: sqlite3.Connection, workspace: Path,
     Problem owns the target, then write its tree. No-op if the target
     doesn't map to a known Problem (race on a freshly-deleted goal,
     test fixture without filesystem, etc.). Swallows all exceptions —
-    a tree-write failure must never break the dispatcher loop."""
+    a tree-write failure must never break the dispatcher loop.
+
+    target_kind dispatch:
+      - 'Goal'     — int(target_id) → goals.id → problem name
+      - 'Strategy' — int(target_id) → strategies.id → goal → problem
+      - 'Problem'  — target_id IS the problem name (Forward pipelines,
+                      see docs/phase2/pipelines.md §4.1). Don't int()
+                      it; Phase 2 introduced this target_kind and the
+                      original branch only handled Goal/Strategy.
+    """
     try:
-        if target_kind == "Strategy":
+        if target_kind == "Problem":
+            row = conn.execute(
+                "SELECT name AS problem FROM problems WHERE name = ?",
+                (target_id,),
+            ).fetchone()
+        elif target_kind == "Strategy":
             row = conn.execute(
                 "SELECT g.problem FROM strategies s "
                 "JOIN goals g ON g.id = s.goal_id WHERE s.id = ?",

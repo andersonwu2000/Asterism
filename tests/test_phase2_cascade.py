@@ -20,6 +20,7 @@ from Tooling.core.dispatcher import (
     _has_terminal_disproved_ancestor,
     _has_dead_strategy_in_chain,
     _enqueue_strategist_review,
+    cascade_one,
 )
 from Tooling.state import db
 
@@ -315,6 +316,71 @@ def test_enqueue_strategist_review_dedups_in_flight(
     # Both sub-goals are pending
     assert db.get_goal(conn, sub_a)["status"] == "pending_strategist_review"
     assert db.get_goal(conn, sub_b)["status"] == "pending_strategist_review"
+
+
+def test_forward_failure_re_enqueues_strategist_when_pending_review_exists(
+    conn: sqlite3.Connection,
+) -> None:
+    """Forward outcome=failed must re-enqueue Strategist when there's a
+    `pending_strategist_review` goal on the problem. Without this hook,
+    after Strategist→Inject(Forward)→Forward fails, the queue drains
+    to empty while the originating pending_review goal still waits for
+    a verdict — daemon idle-exits before T1's 60-min wall-clock fires.
+    SG run 2026-05-17 trace: cascade_one had no Forward branch, so a
+    Forward failure was a state-side no-op."""
+    root = _insert_goal(conn, slug="main", origin="root", status="attempting")
+    pr = _insert_goal(conn, slug="kelly_contrapositive",
+                      status="pending_strategist_review")
+
+    cascade_one(
+        conn, pipeline_id="pid-fwd", kind="Forward",
+        target_id="p", target_kind="Problem",
+        outcome="failed", failure_reason="forward_no_new_goal",
+    )
+    q = conn.execute(
+        "SELECT kind, target_id FROM queue WHERE kind='Strategist'"
+    ).fetchall()
+    assert len(q) == 1
+    assert int(q[0]["target_id"]) == root  # Strategist targets the root
+
+
+def test_forward_success_does_not_re_enqueue_strategist(
+    conn: sqlite3.Connection,
+) -> None:
+    """Forward success (lemma committed) does NOT re-enqueue Strategist
+    — that's a separate decision. The pending_review goal would normally
+    be unblocked by Backward retry seeing the new lemma via dedupe."""
+    _insert_goal(conn, slug="main", origin="root", status="attempting")
+    _insert_goal(conn, slug="pending_lemma",
+                 status="pending_strategist_review")
+
+    cascade_one(
+        conn, pipeline_id="pid-fwd-ok", kind="Forward",
+        target_id="p", target_kind="Problem",
+        outcome="success",
+    )
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert q["n"] == 0
+
+
+def test_forward_failure_no_op_when_no_pending_review(
+    conn: sqlite3.Connection,
+) -> None:
+    """If no pending_review goal exists, Forward failure is a clean
+    no-op (no spurious Strategist enqueue). Covers the case where
+    Forward was Inject'd from T1 routine, not a T2 review event."""
+    _insert_goal(conn, slug="main", origin="root", status="attempting")
+    cascade_one(
+        conn, pipeline_id="pid-fwd-noprev", kind="Forward",
+        target_id="p", target_kind="Problem",
+        outcome="failed", failure_reason="forward_no_new_goal",
+    )
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert q["n"] == 0
 
 
 def test_t2_pops_before_bfs(
