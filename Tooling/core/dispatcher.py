@@ -1600,7 +1600,11 @@ def run(workspace: Path, *, once: bool = False,
         # `rollback_cascade_chain` on sorryAx detection, reverting a
         # root to 'attempting'; in that case this check fails and the
         # dispatcher loop continues for re-Backward.
-        if db.root_proved(conn):
+        # `scope` filter: a `--scope sylvester_gallai` daemon must
+        # gate on its scoped problems only — without this filter,
+        # unrelated miniF2F roots sitting in the same workspace keep
+        # `root_proved` False forever.
+        if db.root_proved(conn, scope=scope):
             print("[dispatcher] all roots proved", flush=True)
             pool.shutdown(wait=False, cancel_futures=True)
             return 0
@@ -1678,10 +1682,11 @@ def run(workspace: Path, *, once: bool = False,
                 and db.queue_size(conn) == 0
                 and len(db.open_goals(conn)) == 0
                 and len(db.strategies_ready_for_verify(conn)) == 0):
+            scoped_proved = db.root_proved(conn, scope=scope)
             print(f"[dispatcher] no dispatchable work, exiting "
-                  f"(roots_proved={db.root_proved(conn)})", flush=True)
+                  f"(roots_proved={scoped_proved})", flush=True)
             pool.shutdown(wait=True)
-            return 0 if db.root_proved(conn) else 1
+            return 0 if scoped_proved else 1
 
         # Wait for any completion or tick
         if futures:

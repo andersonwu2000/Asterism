@@ -1273,6 +1273,42 @@ def test_strategies_ready_for_verify_includes_zero_subgoal_leaf_bypass(
 # leaves 'proved' (cascade rollback path).
 # ---------------------------------------------------------------------
 
+def test_root_proved_with_scope_filter_isolates_scoped_problem(
+    conn: sqlite3.Connection,
+) -> None:
+    """SG 2026-05-19 regression: `--scope sylvester_gallai` daemon
+    exited with `roots_proved=False` + rc=1 because the unfiltered
+    `db.root_proved(conn)` saw unrelated miniF2F roots in the same
+    workspace and reported global state, not scoped. Without the
+    scope filter, the scoped daemon's "success" can never be reached
+    via this exit path."""
+    # Seed: SG root proved, an unrelated miniF2F root still open.
+    sg_root = _seed_goal(conn, problem="sylvester_gallai")
+    db.update_goal_status(conn, sg_root, "proved")
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at)"
+        " VALUES (?, ?, ?)",
+        ("Minif2f.imo_1965_p1", "Problems/Minif2f/imo_1965_p1/Manifest.md",
+         db.now()),
+    )
+    db.insert_goal(
+        conn, problem="Minif2f.imo_1965_p1", slug="main",
+        lean_path="Problems/Minif2f/imo_1965_p1/Root.lean",
+        statement="T", origin="root",
+    )
+    conn.commit()
+
+    # Unfiltered: miniF2F root is open → False.
+    assert db.root_proved(conn) is False
+    # Scoped to SG: only SG root in scope, proved → True.
+    assert db.root_proved(conn, scope="sylvester_gallai") is True
+    # LIKE pattern that matches both: still False (miniF2F open).
+    assert db.root_proved(conn, scope="%") is False
+    # `problem=` exact match still works (back-compat).
+    assert db.root_proved(conn, problem="sylvester_gallai") is True
+    assert db.root_proved(conn, problem="Minif2f.imo_1965_p1") is False
+
+
 def test_unverified_proved_roots_empty_until_root_proved(
     conn: sqlite3.Connection,
 ) -> None:

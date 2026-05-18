@@ -366,11 +366,25 @@ def root_integrity_gate(
               f"{list(FRAMEWORK_DEFAULT_AXIOMS)}",
               flush=True)
     try:
+        # 900s (15min) budget. Root.lean's transitive import chain can
+        # be deep (SG: 23 sub-proofs, cold `lake env lean Root.lean`
+        # takes ~8min), and `reconcile_proved_goals` upstream may have
+        # just rewritten a batch of `proofs/L_*.lean` files —
+        # invalidating their oleans and forcing Lean to re-elaborate
+        # everything from source. Observed 2026-05-19 SG: probe ran
+        # at default 180s right after reconcile rewrote 13 files,
+        # gateway returned "no terminal snapshot:
+        # headerProcessed.result? is none (import failed)" — not a
+        # real import error, the worker just hadn't finished header
+        # elaboration in 180s. The non-root axiom_probe sites (Builder
+        # leaf-bypass, sub-goal stub promotion) keep 180s — their
+        # files import the same chain only at depth 1.
         ok, axiom_msg = axiom_probe(
             workspace,
             fq_name=f"Problems.{problem}.main",
             module=f"Problems.{problem}.Root",
             whitelist=whitelist,
+            timeout=900,
         )
     except Exception as e:
         print(f"[integrity] {problem}: probe error ({e})",

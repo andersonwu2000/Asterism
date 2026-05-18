@@ -1087,12 +1087,28 @@ def open_goals(conn: sqlite3.Connection,
     return list(conn.execute(sql, params))
 
 
-def root_proved(conn: sqlite3.Connection, problem: str | None = None) -> bool:
+def root_proved(conn: sqlite3.Connection, problem: str | None = None,
+                scope: str | None = None) -> bool:
+    """True iff all root goals in scope have status='proved'.
+
+    `problem`: exact-match filter (single problem).
+    `scope`: SQL LIKE pattern — matches `dispatcher.run(scope=...)`
+        usage. Required for scoped runs: an unfiltered call checks
+        every root in the DB, so a `--scope sylvester_gallai` run
+        whose SG root is proved returns False because miniF2F roots
+        sitting in the same workspace are still open. Observed
+        2026-05-19 SG run: root proved, daemon exit logged
+        `roots_proved=False` + returned exit code 1 even though the
+        scoped problem succeeded.
+    """
     sql = "SELECT count(*) AS c FROM goals WHERE origin = 'root' AND status != 'proved'"
     args: tuple = ()
     if problem:
         sql += " AND problem = ?"
         args = (problem,)
+    elif scope is not None:
+        sql += " AND problem LIKE ?"
+        args = (scope,)
     row = conn.execute(sql, args).fetchone()
     return row is not None and int(row["c"]) == 0
 
