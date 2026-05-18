@@ -78,8 +78,37 @@ def _spawn_score(pdir: Path) -> float:
     return latest
 
 
-def _active_spawns() -> list[Path]:
-    """Return up to 4 most-recently-active spawn dirs (most recent first).
+def _pool_size() -> int:
+    """Resolve dispatch.pool from Asterism.yaml, falling back to 4
+    (the framework default). Read directly rather than via
+    Tooling.core.config so the watcher stays standalone (no PYTHONPATH
+    setup) — the daemon and watcher just have to agree on the value,
+    not share the resolver. Reads once per daemon-run via caller."""
+    cfg = WS / "Asterism.yaml"
+    if not cfg.exists():
+        return 4
+    try:
+        import yaml  # PyYAML is already an Asterism dep (Manifest parser)
+        data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    except Exception:
+        return 4
+    if not isinstance(data, dict):
+        return 4
+    dispatch = data.get("dispatch")
+    if not isinstance(dispatch, dict):
+        return 4
+    v = dispatch.get("pool")
+    try:
+        return int(v) if v is not None else 4
+    except (TypeError, ValueError):
+        return 4
+
+
+def _active_spawns(limit: int) -> list[Path]:
+    """Return up to `limit` most-recently-active spawn dirs
+    (most recent first). `limit` is the dispatch pool size — at any
+    given moment the daemon can have at most that many spawns in
+    flight, so picking more would just surface stale dirs.
 
     A spawn is "active" iff some .lean inside its dir was touched within
     ACTIVE_WINDOW seconds. Empty / stale dirs are skipped.
@@ -99,7 +128,7 @@ def _active_spawns() -> list[Path]:
         if s >= cutoff:
             scored.append((s, pdir))
     scored.sort(reverse=True)
-    return [p for _, p in scored[:4]]
+    return [p for _, p in scored[:limit]]
 
 
 def _latest_lean_in(spawn_dir: Path) -> Path | None:
@@ -174,23 +203,34 @@ def _lookup_spawn_info(spawn_dir: Path) -> tuple[str, str] | None:
     return (kind, slug)
 
 
+# Fixed VS Code layout: 4 file panes for worker spawn content. Pool
+# size can exceed this (stats will list all live pipelines; the panes
+# just show the 4 most recent). Pane content for inactive slots is
+# left on its last-seen value — clearing every tick would flash the
+# panes (cf. original ACTIVE_WINDOW comment).
+WORKER_PANE_COUNT = 4
+
+
 def _update_worker_panes(
     spawns: list[Path],
 ) -> list[tuple[str, str] | None]:
-    """Copy each active spawn's latest .lean into the matching worker
-    pane and return per-pane (kind, slug) labels. The labels come from
-    the pipelines table — much more readable than the on-disk file
-    path (`patch.lean` everywhere) for the stats pane."""
-    active_labels: list[tuple[str, str] | None] = [None] * 4
+    """Copy the first WORKER_PANE_COUNT active spawns' latest .lean
+    into the worker panes; return one label per spawn (length =
+    len(spawns)) for the stats pipeline list. Stats list isn't capped
+    by pane count — when pool > WORKER_PANE_COUNT, the extra labels
+    surface in stats even though their content has no dedicated pane.
+    """
+    active_labels: list[tuple[str, str] | None] = [None] * len(spawns)
     for i, spawn in enumerate(spawns):
         latest = _latest_lean_in(spawn)
         if latest is None:
             continue
-        target = ACTIVE_DIR / f"worker_{i + 1}.lean"
-        try:
-            shutil.copy2(latest, target)
-        except OSError:
-            continue
+        if i < WORKER_PANE_COUNT:
+            target = ACTIVE_DIR / f"worker_{i + 1}.lean"
+            try:
+                shutil.copy2(latest, target)
+            except OSError:
+                pass
         info = _lookup_spawn_info(spawn)
         active_labels[i] = info if info is not None else ("spawning", "?")
     return active_labels
@@ -208,6 +248,7 @@ def _write_stats(
     problem: str,
     active_labels: list[tuple[str, str] | None],
     started_at: float,
+    pool_size: int,
 ) -> None:
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -247,13 +288,18 @@ def _write_stats(
     shelved = gcounts.get("shelved", 0)
     total = sum(gcounts.values())
 
-    workers_block = ""
-    for i, label in enumerate(active_labels):
-        if label is None:
-            workers_block += f"- worker {i + 1}: idle\n"
-        else:
-            kind, slug = label
-            workers_block += f"- worker {i + 1}: {kind}, `{slug}`\n"
+    # Pool-centric: the dispatch.pool size is the denominator and the
+    # listed rows are only the in-flight pipelines (no idle row noise).
+    # active_labels carries up to pool_size entries; non-None ones are
+    # the live pipelines. Pane mapping (worker_1.lean .. worker_4.lean)
+    # is independent of this listing — file panes stay capped at 4.
+    live = [lbl for lbl in active_labels if lbl is not None]
+    if live:
+        pipelines_block = "".join(
+            f"- {kind}, `{slug}`\n" for kind, slug in live
+        )
+    else:
+        pipelines_block = "(no pipelines in flight)\n"
 
     body = (
         f"# {problem}\n\n"
@@ -261,7 +307,8 @@ def _write_stats(
         f"**goals**: proved {proved} / attempting {attempting} / "
         f"open {open_g} / shelved {shelved}  (total {total})\n\n"
         f"**strategies**: {succeeded} succeeded / {strategies} total\n\n"
-        f"## active workers\n\n{workers_block}"
+        f"## active pipelines ({len(live)}/{pool_size})\n\n"
+        f"{pipelines_block}"
     )
     (ACTIVE_DIR / "stats.md").write_text(body, encoding="utf-8")
 
@@ -301,17 +348,19 @@ def main() -> int:
         tree.write_text(placeholder_tree, encoding="utf-8")
 
     started_at = time.time()
+    pool_size = _pool_size()
     print(f"[demo-watcher] problem={args.problem}, "
           f"interval={args.interval}s, active dir={ACTIVE_DIR}, "
-          f"keep_stale={args.keep_stale}",
+          f"keep_stale={args.keep_stale}, pool_size={pool_size}",
           flush=True)
 
     try:
         while True:
-            spawns = _active_spawns()
+            spawns = _active_spawns(limit=pool_size)
             active_labels = _update_worker_panes(spawns)
             _update_tree(args.problem)
-            _write_stats(args.problem, active_labels, started_at)
+            _write_stats(args.problem, active_labels, started_at,
+                         pool_size)
             time.sleep(args.interval)
     except KeyboardInterrupt:
         print("\n[demo-watcher] stopped", flush=True)
