@@ -32,18 +32,62 @@ def _lean_path_to_module(workspace: Path, lean_path: Path) -> str:
 _STRATEGY_IMPORT_PATTERN = "proofs._strategy_s"
 
 
+def _extract_leading_annotation(current: str) -> str:
+    """Preserve the `--` comment block at the top of `current` (before
+    any `import` line) — that's the Strategist's proposal_md that
+    `promote_to_alias` prepends as winner-strategy rationale for
+    human readers + agent grep.
+
+    Returns the block terminated by `\\n` (matching what
+    `promote_to_alias` emits before the imports), or empty if no
+    leading comments exist.
+    """
+    lines: list[str] = []
+    for ln in current.splitlines():
+        s = ln.strip()
+        if s.startswith("import"):
+            break
+        if s == "" or s.startswith("--"):
+            lines.append(ln)
+            continue
+        # Any other line type before the first import means this isn't
+        # a canonical-shaped header — bail (defensive; promote_to_alias
+        # only ever writes blanks + `--` comments before imports).
+        return ""
+    # Trim trailing blanks so the join below produces exactly the
+    # `promote_to_alias` shape (annotation immediately followed by
+    # imports, no extra blank line).
+    while lines and lines[-1].strip() == "":
+        lines.pop()
+    if not lines:
+        return ""
+    return "\n".join(lines) + "\n"
+
+
 def _canonical_alias_content(*, problem: str, goal_slug: str,
                              sid_token: str, scratch_module: str,
                              current: str) -> str:
     """Canonical end-of-run content for a proved goal's lean_path.
 
-    Same shape Verify Step 2's `_promote_to_alias` writes (def-alias
-    so Lean copies type from the strategy theorem; the older form used
-    `theorem <slug> : <statement> := s<sid>` which lost binders).
-    Difference from Verify-time promotion: reconcile DROPS any
-    `_strategy_s*` imports other than the winning strategy's, so
-    drift from sibling Verify races is repaired exclusively.
+    Mirrors what Verify Step 2's `promote_to_alias` writes:
+      <annotation>     ← `--` comment block from Strategist proposal_md
+      <imports>        ← Mathlib/Defs + winner strategy module
+      namespace ...
+      def <slug> := @<problem>.<sid>
+      end ...
+
+    Reconcile-specific repair (vs Verify-time promote):
+      - DROP `_strategy_s*` imports other than the winning strategy's,
+        in case a sibling Verify race left a stale strategy import.
+      - PRESERVE leading `--` comment block — without this, reconcile
+        sees Verify's annotated output as 'drift' on every run, rewrites
+        to strip the comments, invalidates olean for every proved goal,
+        forces a full chain re-elaborate on the next integrity probe.
+        Observed SG 2026-05-19: 13/13 strategy-proved goals all
+        rewritten with annotation stripped → integrity probe blocked
+        ~8min on a 180s budget → false "import failed".
     """
+    annotation = _extract_leading_annotation(current)
     keep_imports: list[str] = []
     seen: set[str] = set()
     for ln in current.splitlines():
@@ -60,7 +104,8 @@ def _canonical_alias_content(*, problem: str, goal_slug: str,
     if winner not in seen:
         keep_imports.append(winner)
     return (
-        "\n".join(keep_imports) + "\n\n"
+        annotation
+        + "\n".join(keep_imports) + "\n\n"
         f"namespace Problems.{problem}\n\n"
         f"def {goal_slug} := @Problems.{problem}.{sid_token}\n\n"
         f"end Problems.{problem}\n"

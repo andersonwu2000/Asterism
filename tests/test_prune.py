@@ -334,6 +334,86 @@ def test_reconcile_skips_goals_proved_by_builder(
     assert repaired == []
 
 
+def test_reconcile_idempotent_on_promote_output_with_annotation(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """SG 2026-05-19 regression: `promote_to_alias` (Verify time)
+    prepends a `--` comment block from `strategies.proposal_md` for
+    human readers + agent grep. Pre-fix `_canonical_alias_content`
+    dropped the annotation, so reconcile re-wrote every Verify-promoted
+    file → 13/13 strategy-proved SG goals invalidated their oleans,
+    integrity probe blocked ~8min on the 180s budget.
+
+    Reconcile must treat Verify's annotated output as already canonical.
+    """
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    sid = _seed_strategy(conn, goal_id=root, sid_label="s1",
+                         status="succeeded")
+    db.update_strategy_scratch_path(
+        conn, sid, f"Problems/p/proofs/_strategy_s{sid}.lean")
+    proofs = tmp_path / "Problems" / "p" / "proofs"
+    proofs.mkdir(parents=True)
+    (proofs / f"_strategy_s{sid}.lean").write_text("-- ok\n")
+    parent = tmp_path / "Problems/p/Root.lean"
+    parent.parent.mkdir(parents=True, exist_ok=True)
+    # Exactly what `promote_to_alias` would write for a strategy
+    # whose proposal_md starts with a rationale comment block.
+    parent.write_text(
+        "-- Strategy: cover the main case by reduction to s1.\n"
+        "-- Sub-claim: this reduction preserves the binder shape.\n"
+        f"import Mathlib\nimport Problems.p.proofs._strategy_s{sid}\n\n"
+        f"namespace Problems.p\n\n"
+        f"def main := @Problems.p.s{sid}\n\n"
+        f"end Problems.p\n",
+        encoding="utf-8",
+    )
+    before = parent.read_text(encoding="utf-8")
+    repaired = prune.reconcile_proved_goals(conn, tmp_path, "p")
+    assert repaired == []  # annotation-preserving canonical → no rewrite
+    assert parent.read_text(encoding="utf-8") == before
+
+
+def test_reconcile_repairs_drift_but_keeps_annotation(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Annotation preservation must compose with sibling-import
+    cleanup: stale `_strategy_s*` import dropped, but `--` rationale
+    block kept."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    winner = _seed_strategy(conn, goal_id=root, sid_label="s1",
+                            status="succeeded")
+    loser = _seed_strategy(conn, goal_id=root, sid_label="s2",
+                           status="superseded")
+    db.update_strategy_scratch_path(
+        conn, winner, f"Problems/p/proofs/_strategy_s{winner}.lean")
+    db.update_strategy_scratch_path(
+        conn, loser, f"Problems/p/proofs/_strategy_s{loser}.lean")
+    proofs = tmp_path / "Problems" / "p" / "proofs"
+    proofs.mkdir(parents=True)
+    (proofs / f"_strategy_s{winner}.lean").write_text("-- ok\n")
+    (proofs / f"_strategy_s{loser}.lean").write_text("-- stale\n")
+    parent = tmp_path / "Problems/p/Root.lean"
+    parent.parent.mkdir(parents=True, exist_ok=True)
+    parent.write_text(
+        "-- Strategy: pick winner.\n"
+        f"import Mathlib\n"
+        f"import Problems.p.proofs._strategy_s{winner}\n"
+        f"import Problems.p.proofs._strategy_s{loser}\n\n"
+        f"namespace Problems.p\n\n"
+        f"def main := @Problems.p.s{winner}\n\n"
+        f"end Problems.p\n",
+        encoding="utf-8",
+    )
+    repaired = prune.reconcile_proved_goals(conn, tmp_path, "p")
+    assert parent in repaired
+    new_content = parent.read_text(encoding="utf-8")
+    assert "-- Strategy: pick winner." in new_content
+    assert f"_strategy_s{winner}" in new_content
+    assert f"_strategy_s{loser}" not in new_content
+
+
 def test_reconcile_idempotent_on_f52_def_alias_form(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
