@@ -48,11 +48,16 @@ _RE_STRATEGIST_CTX = re.compile(r"^# Strategist context — (\S+)")
 _RE_FORWARD_CTX = re.compile(r"^# Forward context — (\S+)")
 _RE_STRATEGY_NAMING = re.compile(r"^## Strategy naming\b")
 
-# Spawns whose dir contained a .lean touched in the last ACTIVE_WINDOW
-# seconds are treated as "live". Past that, the spawn has likely
-# committed back and wound down; we leave its pane on the last-seen
-# content rather than clearing, so the pane doesn't flash.
-ACTIVE_WINDOW = 60.0
+# Spawns whose dir contained any file touched in the last ACTIVE_WINDOW
+# seconds are treated as "live". Set to match the framework's
+# `spawn_timeout_sec` (default 900s = 15min) — an agent in mid-thought
+# can go silent (no file writes between initial Context.md and final
+# patch.lean / decision.json) for several minutes, and a tighter
+# window would drop the spawn from the active list while the worker
+# is still genuinely running. Past spawn_timeout, the daemon would
+# have killed the worker, so any spawn dir older than that has either
+# wound down or been left behind by a crash.
+ACTIVE_WINDOW = 900.0
 
 
 def _spawn_score(pdir: Path) -> float:
@@ -218,6 +223,9 @@ def _lookup_spawn_info(spawn_dir: Path) -> tuple[str, str] | None:
 WORKER_PANE_COUNT = 4
 
 
+_PANE_IDLE_PLACEHOLDER = "-- (idle, waiting for spawn)\n"
+
+
 def _update_worker_panes(
     spawns: list[Path],
 ) -> list[tuple[str, str] | None]:
@@ -227,6 +235,12 @@ def _update_worker_panes(
     panes. Strategist spawns (no `.lean` output) still appear in the
     returned label list — they occupy a pool slot — but consume no
     pane mapping (panes are intended to show agent-authored Lean).
+
+    Panes beyond the last mapped spawn are reset to the idle
+    placeholder so they don't show stale content from an earlier tick
+    when more spawns were alive. Idempotent: the write only fires
+    when current content differs from the placeholder, so panes don't
+    flash on every tick.
     """
     active_labels: list[tuple[str, str] | None] = [None] * len(spawns)
     pane_idx = 0
@@ -243,6 +257,19 @@ def _update_worker_panes(
             except OSError:
                 pass
             pane_idx += 1
+    # Reset panes beyond the live spawn count to idle. Idempotent —
+    # only write when content actually changed.
+    for j in range(pane_idx, WORKER_PANE_COUNT):
+        target = ACTIVE_DIR / f"worker_{j + 1}.lean"
+        try:
+            current = target.read_text(encoding="utf-8")
+        except OSError:
+            current = ""
+        if current != _PANE_IDLE_PLACEHOLDER:
+            try:
+                target.write_text(_PANE_IDLE_PLACEHOLDER, encoding="utf-8")
+            except OSError:
+                pass
     return active_labels
 
 
