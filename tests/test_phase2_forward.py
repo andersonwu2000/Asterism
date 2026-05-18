@@ -363,6 +363,52 @@ def test_non_theorem_goal_excluded_from_open_goals(
     assert good_open in open_ids
 
 
+def test_commit_marks_forward_goal_detached(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Regression — Forward output goals must be `detached=1` so BFS
+    picks them up. `db.open_goals` alive CTE seeds = root ∪ detached
+    ∪ strategy descendants; Forward goals have NO parent strategy edge,
+    so without detached=1 a sorry-bearing Forward (status='open') is
+    invisible to BFS forever (silent stuck). SG 2026-05-18 take 7
+    trace: goal 1676 'kelly_step_inward_kernel' sat at open/detached=0
+    while bfs_refill silently skipped it; daemon idle-progressed
+    against root without ever closing the Forward sorry."""
+    # Sorry-bearing Forward — needs Backward attack
+    attempts = workspace / ".attempts" / "fwd-detach-open"
+    attempts.mkdir(parents=True)
+    (attempts / "new_contour_deformation_piecewise.lean").write_text(
+        _NEW_LEAN_OK, encoding="utf-8")
+    md, _ = forward.extract_forward_metadata(_NEW_LEAN_OK)
+    outcome = forward.commit_forward_lemma(
+        conn, problem="p", workspace=workspace,
+        attempts_dir=attempts, metadata=md,
+        source_filename="new_<slug>.lean",
+    )
+    g = db.get_goal(conn, outcome.goal_id)
+    assert g["status"] == "open"
+    assert g["detached"] == 1
+    # And it now appears in open_goals (BFS dispatch source).
+    open_ids = {int(r["id"]) for r in db.open_goals(conn)}
+    assert outcome.goal_id in open_ids
+
+    # Sorry-free Forward — proved at commit. detached still set
+    # defensively; open_goals filters by status so it doesn't surface.
+    attempts2 = workspace / ".attempts" / "fwd-detach-proved"
+    attempts2.mkdir(parents=True)
+    (attempts2 / "new_trivial_lemma.lean").write_text(
+        _NEW_LEAN_SORRY_FREE, encoding="utf-8")
+    md2, _ = forward.extract_forward_metadata(_NEW_LEAN_SORRY_FREE)
+    outcome2 = forward.commit_forward_lemma(
+        conn, problem="p", workspace=workspace,
+        attempts_dir=attempts2, metadata=md2,
+        source_filename="new_<slug>.lean",
+    )
+    g2 = db.get_goal(conn, outcome2.goal_id)
+    assert g2["status"] == "proved"
+    assert g2["detached"] == 1
+
+
 def test_extract_metadata_no_declaration_lists_all_kinds() -> None:
     """Error message must mention all 4 accepted kinds so the agent
     knows what to write when it omits the declaration head."""

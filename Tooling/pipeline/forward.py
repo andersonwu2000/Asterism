@@ -222,6 +222,16 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
         origin="forward", depth=0, entry_kind=metadata.entry_kind,
         kind=metadata.kind,
     )
+    # Forward-output goals have no parent strategy edge (Forward is a
+    # Library-toolkit producer, not part of any Backward decomposition).
+    # `db.open_goals` walks alive = root ∪ detached ∪ strategy descendants;
+    # without `detached=1` a sorry-bearing Forward goal (status='open')
+    # would never be picked up by BFS — silent stuck. Set unconditionally
+    # so Backward-on-Forward subtrees inherit aliveness via their own
+    # strategy_subgoals chain. Harmless for status='proved' (open_goals
+    # filters by status anyway). Non-theorem kinds (def / structure /
+    # class) also benefit defensively even though their status='proved'.
+    db.set_goal_detached(conn, goal_id, True)
     if initial_status == "proved":
         db.update_goal_status(conn, goal_id, "proved")
     conn.commit()
