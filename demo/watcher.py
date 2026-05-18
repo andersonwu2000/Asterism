@@ -266,49 +266,41 @@ def _update_worker_panes(
     spawns: list[Path],
 ) -> list[tuple[str, str] | None]:
     """Map active spawns into worker panes by their gateway pool slot
-    id. Worker pane N+1 ↔ gateway slot N. Stable for the entire spawn
-    lifecycle: a spawn that grabbed slot 2 will stay in worker_3.lean
-    until it releases.
+    id. Worker pane N+1 ↔ gateway slot N. The gateway holds 4
+    `lean-asterism-server` workers for the entire daemon run; spawns
+    claim and release their slot, but slot identity is permanent.
+    A pane therefore represents a long-lived gateway worker, not a
+    transient spawn.
+
+    Behaviour:
+      - Spawn currently in slot K → worker_(K+1).lean = its latest .lean
+      - No spawn in slot K → pane retains last spawn's content (the
+        "what this worker last did" view). No reset to idle, no flash.
+        Initial placeholder is written once at watcher startup by main().
 
     Returns one label per spawn in input order (newest-first) for the
-    stats pipeline list. Strategist + any spawn that hasn't yet
-    written `session_registered` (cold pre-claim) appear in stats
-    labels but not in pane mapping (no slot id, nothing to map).
+    stats pipeline list. Strategist + spawns that haven't yet emitted
+    `session_registered` (cold pre-claim) appear in stats labels but
+    consume no pane.
     """
     active_labels: list[tuple[str, str] | None] = [None] * len(spawns)
-    # Collect (slot, spawn) pairs; spawns without a slot id (Strategist
-    # before any tool call, cold-start pre-register) get no pane.
     slot_to_spawn: dict[int, Path] = {}
     for i, spawn in enumerate(spawns):
         info = _lookup_spawn_info(spawn)
         active_labels[i] = info if info is not None else ("spawning", "?")
         slot = _spawn_claimed_slot(spawn)
         if slot is not None and 0 <= slot < WORKER_PANE_COUNT:
-            # Last writer wins on duplicate slot — shouldn't happen
-            # under the gateway's 1:1 binding, but defensive.
             slot_to_spawn[slot] = spawn
 
-    for slot in range(WORKER_PANE_COUNT):
-        target = ACTIVE_DIR / f"worker_{slot + 1}.lean"
-        spawn = slot_to_spawn.get(slot)
-        if spawn is not None:
-            latest = _latest_lean_in(spawn)
-            if latest is not None:
-                try:
-                    shutil.copy2(latest, target)
-                except OSError:
-                    pass
+    for slot, spawn in slot_to_spawn.items():
+        latest = _latest_lean_in(spawn)
+        if latest is None:
             continue
-        # Unassigned slot — idle placeholder, only write if changed.
+        target = ACTIVE_DIR / f"worker_{slot + 1}.lean"
         try:
-            current = target.read_text(encoding="utf-8")
+            shutil.copy2(latest, target)
         except OSError:
-            current = ""
-        if current != _PANE_IDLE_PLACEHOLDER:
-            try:
-                target.write_text(_PANE_IDLE_PLACEHOLDER, encoding="utf-8")
-            except OSError:
-                pass
+            pass
     return active_labels
 
 
