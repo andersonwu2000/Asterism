@@ -92,7 +92,7 @@ def test_threshold_defaults_are_strong_tier() -> None:
 
 def _seed_goal(conn: sqlite3.Connection, *, problem: str = "p") -> int:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) VALUES (?, ?, ?, 1)",
         (problem, "Problems/p/Manifest.md", db.now()),
     )
     return db.insert_goal(
@@ -666,8 +666,8 @@ def test_recover_at_startup_reenqueues_incomplete_inject_forwards(
     """
     from Tooling.core.dispatcher import _recover_at_startup
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES ('p', 'Problems/p/Manifest.md', ?)", (db.now(),))
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done)"
+        " VALUES ('p', 'Problems/p/Manifest.md', ?, 1)", (db.now(),))
     ts = db.now()
     # Three Inject rows: completed (outcome filled) + 2 still pending
     # (one batched, one solo).
@@ -896,7 +896,7 @@ def test_recover_at_startup_removes_tmp_files(
 def _seed_problem_with_root(conn: sqlite3.Connection) -> int:
     """Helper: insert a problem + open root goal at Problems/p/Root.lean."""
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) VALUES (?, ?, ?, 1)",
         ("p", "Problems/p/Manifest.md", db.now()),
     )
     return db.insert_goal(
@@ -1036,8 +1036,8 @@ def test_bfs_refill_scope_filters_by_problem(
     # Second problem via direct insert (avoid _seed_goal's duplicate-problem
     # behavior).
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) "
-        "VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
+        "VALUES (?, ?, ?, 1)",
         ("minif2f_x", "Problems/minif2f_x/Manifest.md", db.now()),
     )
     gid_bench = db.insert_goal(
@@ -1060,8 +1060,8 @@ def test_bfs_refill_no_scope_dispatches_all(
     from Tooling.core.dispatcher import bfs_refill
     gid1 = _seed_goal(conn, problem="sg")
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) "
-        "VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
+        "VALUES (?, ?, ?, 1)",
         ("pn", "Problems/pn/Manifest.md", db.now()),
     )
     gid2 = db.insert_goal(
@@ -1096,8 +1096,8 @@ def test_bfs_refill_kind_cooldown_only_affects_matching_kind(
     from Tooling.core.dispatcher import bfs_refill, BUILDER_THRESHOLD
     gid_b = _seed_goal(conn, problem="sg")  # entry=Builder, attempts=0
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) "
-        "VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
+        "VALUES (?, ?, ?, 1)",
         ("pn", "Problems/pn/Manifest.md", db.now()),
     )
     gid_bw = db.insert_goal(
@@ -1133,8 +1133,8 @@ def test_flush_queue_kind_drops_only_matching(
     to drop the pre-cooldown backlog."""
     _seed_goal(conn, problem="sg")  # → Builder enqueue via bfs_refill
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) "
-        "VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
+        "VALUES (?, ?, ?, 1)",
         ("pn", "Problems/pn/Manifest.md", db.now()),
     )
     gid_bw = db.insert_goal(
@@ -1155,13 +1155,49 @@ def test_flush_queue_kind_drops_only_matching(
     assert rest is not None and rest["kind"] == "Builder"
 
 
+def test_open_goals_excludes_pre_bootstrap_problem(
+    conn: sqlite3.Connection,
+) -> None:
+    """residue_thm 2026-05-19 regression: when a problem has
+    `bootstrap_done=0` (just init'd, Strategist hasn't run T0 first_launch
+    yet), bfs_refill must NOT dispatch on its open goals — otherwise
+    Backward / Builder spawn in the same tick as Strategist's
+    `InitializeDefs` and reads stale Defs.lean / Manifest state,
+    declining `shelve` on a premise that's invalid by the next tick.
+    Strategist then burns a Reopen cycle correcting an agent that
+    observed truthfully at the time. The fix gates `db.open_goals` on
+    `problems.bootstrap_done = 1`."""
+    # Seed: problem with default (bootstrap_done=0) + open root.
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at) "
+        "VALUES (?, ?, ?)",
+        ("p", "Problems/p/Manifest.md", db.now()),
+    )
+    root = db.insert_goal(
+        conn, problem="p", slug="main",
+        lean_path="Problems/p/Root.lean",
+        statement="T", origin="root",
+    )
+    conn.commit()
+
+    # Pre-bootstrap: open_goals returns empty even though root is open.
+    assert db.open_goals(conn) == []
+
+    # After Strategist's first_launch commits (bootstrap_done=1),
+    # root surfaces normally.
+    db.set_problem_bootstrap_done(conn, "p")
+    after = db.open_goals(conn)
+    assert len(after) == 1
+    assert after[0]["id"] == root
+
+
 def test_open_goals_scope_filter(conn: sqlite3.Connection) -> None:
     """Underlying `db.open_goals(scope=...)` SQL filter. Direct unit test
     so the scope plumbing is covered even if bfs_refill restructures."""
     _seed_goal(conn, problem="sg")
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) "
-        "VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
+        "VALUES (?, ?, ?, 1)",
         ("minif2f_a", "Problems/minif2f_a/Manifest.md", db.now()),
     )
     db.insert_goal(
@@ -1286,8 +1322,8 @@ def test_root_proved_with_scope_filter_isolates_scoped_problem(
     sg_root = _seed_goal(conn, problem="sylvester_gallai")
     db.update_goal_status(conn, sg_root, "proved")
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done)"
+        " VALUES (?, ?, ?, 1)",
         ("Minif2f.imo_1965_p1", "Problems/Minif2f/imo_1965_p1/Manifest.md",
          db.now()),
     )
@@ -1382,8 +1418,8 @@ def test_init_schema_backfills_existing_proved_roots(tmp_path: Path) -> None:
     # Seed: one proved root (backfill target), one open root (no-op),
     # one proved sub-goal (no-op — column meaningful only for roots).
     c.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES (?, ?, ?)", ("p", "Problems/p/Manifest.md", db.now()))
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done)"
+        " VALUES (?, ?, ?, 1)", ("p", "Problems/p/Manifest.md", db.now()))
     proved_root = db.insert_goal(
         c, problem="p", slug="main", lean_path="Problems/p/Root.lean",
         statement="T", origin="root",

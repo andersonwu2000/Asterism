@@ -250,8 +250,8 @@ def test_promote_empty_whitelist_accepts_anything(
 
 def _seed_problem(conn: sqlite3.Connection, name: str = "p") -> None:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) "
-        "VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
+        "VALUES (?, ?, ?, 1)",
         (name, f"Problems/{name}/Manifest.md", db.now()),
     )
 

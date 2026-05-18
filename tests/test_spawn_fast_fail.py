@@ -214,7 +214,7 @@ def test_spawn_failure_handles_missing_stderr_file(tmp_path: Path) -> None:
 
 def _seed_goal(conn: sqlite3.Connection, *, problem: str = "p") -> int:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) VALUES (?, ?, ?, 1)",
         (problem, "Problems/p/Manifest.md", db.now()),
     )
     return db.insert_goal(

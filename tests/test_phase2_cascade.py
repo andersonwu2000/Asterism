@@ -37,8 +37,8 @@ def conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
     c = db.connect()
     db.init_schema(c)
     c.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) "
-        "VALUES ('p', 'Problems/p/Manifest.md', ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
+        "VALUES ('p', 'Problems/p/Manifest.md', ?, 1)",
         (db.now(),),
     )
     c.commit()

@@ -72,8 +72,8 @@ def test_parse_entry_kind_unrecognized_value_falls_back_to_builder() -> None:
 
 def test_insert_goal_persists_entry_kind(conn: sqlite3.Connection) -> None:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) "
-        "VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
+        "VALUES (?, ?, ?, 1)",
         ("p", "Problems/p/Manifest.md", db.now()),
     )
     gid_b = db.insert_goal(
@@ -92,8 +92,8 @@ def test_insert_goal_default_is_builder(conn: sqlite3.Connection) -> None:
     """Defaulting matters for the migration path — existing rows on
     disk DBs get 'Builder' via the column DEFAULT."""
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) "
-        "VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
+        "VALUES (?, ?, ?, 1)",
         ("p", "Problems/p/Manifest.md", db.now()),
     )
     gid = db.insert_goal(

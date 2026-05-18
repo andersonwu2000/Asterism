@@ -1069,6 +1069,7 @@ def open_goals(conn: sqlite3.Connection,
         "    WHERE s.status IN ('proposed','succeeded')"
         ") "
         "SELECT g.* FROM goals g "
+        "JOIN problems p ON p.name = g.problem "
         "WHERE g.status = 'open' AND g.id IN alive "
         # Phase 4 — non-theorem kinds (def / structure / class) carry
         # no proof obligation: Forward commits them as status='proved'
@@ -1078,6 +1079,20 @@ def open_goals(conn: sqlite3.Connection,
         # would return Builder or Backward, neither of which knows
         # how to "prove" a def).
         "  AND g.kind = 'theorem' "
+        # bootstrap_done gate: until Strategist's first_launch trigger
+        # completes (writes Defs.lean if missing, validates Manifest,
+        # etc.) NO Backward / Builder dispatch on the problem's open
+        # goals. Without this, Strategist's first-launch InitializeDefs
+        # races against a same-tick Backward dispatch — Backward's
+        # spawn compiles its Context.md before InitializeDefs commits
+        # Defs.lean, sees the unresolved symbols, declines `shelve`,
+        # and Strategist has to spend a Reopen cycle correcting a
+        # premise the agent observed truthfully at the time. Observed
+        # residue_thm 2026-05-19: first Backward burned ~2min on a
+        # doomed pass with `find Problems/residue_thm` returning no
+        # Defs.lean. Spec docs/phase2/pipelines.md §4.3 listed this
+        # gate but implementation was missing.
+        "  AND p.bootstrap_done = 1 "
     )
     params: tuple = ()
     if scope is not None:

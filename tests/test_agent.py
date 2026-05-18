@@ -17,7 +17,7 @@ def _empty_manifest(name: str = "p") -> Manifest:
 
 def _seed_problem_and_goal(conn: sqlite3.Connection, **goal_kw: object) -> int:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) VALUES (?, ?, ?, 1)",
         ("p", "Problems/p/Manifest.md", db.now()),
     )
     return db.insert_goal(

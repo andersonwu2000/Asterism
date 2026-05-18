@@ -120,6 +120,9 @@ def _make_pre_phase2_db(tmp_path: Path) -> Path:
     ts = "2026-05-18T00:00:00+00:00"
     # Seed: 2 problems, each with a root + 2 sub-goals + a strategy
     for prob in ("alpha", "beta"):
+        # Pre-Phase-2 schema intentionally has no bootstrap_done column — the
+        # migration this test exercises ADDs it. Keep this INSERT in the
+        # legacy 3-column form.
         conn.execute(
             "INSERT INTO problems (name, manifest_path, created_at)"
             " VALUES (?, ?, ?)", (prob, f"Problems/{prob}/Manifest.md", ts))

@@ -100,8 +100,8 @@ from Tooling.pipeline._retry import (
 def _seed_min_goal(conn: sqlite3.Connection) -> int:
     """Minimal problem + goal so run_with_session_retries can read DB."""
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) "
-        "VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
+        "VALUES (?, ?, ?, 1)",
         ("p", "Problems/p/Manifest.md", db.now()),
     )
     conn.commit()

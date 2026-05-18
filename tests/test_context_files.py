@@ -359,7 +359,7 @@ def test_compile_context_no_partial_section_when_no_draft(
 
 def _seed_goal(conn: sqlite3.Connection) -> int:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) VALUES (?, ?, ?, 1)",
         ("p", "Problems/p/Manifest.md", db.now()),
     )
     return db.insert_goal(

@@ -89,8 +89,8 @@ def _reject_probe(monkeypatch: pytest.MonkeyPatch):
 
 def _seed_goal_with_strategy(conn, tmp_path):
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) "
-        "VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
+        "VALUES (?, ?, ?, 1)",
         ("p", "Problems/p/Manifest.md", db.now()),
     )
     gid = db.insert_goal(
@@ -185,8 +185,8 @@ def test_rollback_cascade_chain_reverts_culprit_and_upstream(
     grand_gid = _seed_goal_with_strategy.__wrapped__ if False else None  # noqa
     # Seed manually for clarity
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) "
-        "VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
+        "VALUES (?, ?, ?, 1)",
         ("p", "Problems/p/Manifest.md", db.now()),
     )
     grand_gid = db.insert_goal(
@@ -298,8 +298,8 @@ def _seed_builder_problem(conn, tmp_path) -> int:
     (pdir / "Manifest.md").write_text(
         "---\nproblem: p\n---\n## Statement\nTrue\n", encoding="utf-8")
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) "
-        "VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
+        "VALUES (?, ?, ?, 1)",
         ("p", str(pdir / "Manifest.md"), db.now()))
     conn.commit()
     root = pdir / "Root.lean"

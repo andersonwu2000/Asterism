@@ -29,8 +29,8 @@ def _seed_problem(conn: sqlite3.Connection, tmp_path: Path) -> int:
     (pdir / "Manifest.md").write_text(
         "---\nproblem: p\n---\n## Statement\nTrue\n", encoding="utf-8")
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) "
-        "VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
+        "VALUES (?, ?, ?, 1)",
         (problem, str(pdir / "Manifest.md"), db.now()))
     conn.commit()
     root = pdir / "Root.lean"

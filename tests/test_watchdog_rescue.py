@@ -32,8 +32,8 @@ from Tooling.pipeline import PipelineResult
 
 def _seed_open_goal(conn: sqlite3.Connection, *, attempts: int = 0) -> int:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at) "
-        "VALUES (?, ?, ?)",
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
+        "VALUES (?, ?, ?, 1)",
         ("p", "Problems/p/Manifest.md", db.now()),
     )
     conn.commit()

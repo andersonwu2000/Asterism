@@ -33,8 +33,8 @@ def mfst() -> manifest.Manifest:
 
 def _insert_problem(conn: sqlite3.Connection, name: str = "p") -> None:
     conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at)"
-        " VALUES (?, '', ?)", (name, db.now()),
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done)"
+        " VALUES (?, '', ?, 1)", (name, db.now()),
     )
     conn.commit()
 
