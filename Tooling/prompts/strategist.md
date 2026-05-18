@@ -11,8 +11,8 @@ Time budget: {timeout_min} minutes. Tools: Read / Grep / Bash(`python -m Tooling
 You were called for one of:
 
 - **`first_launch`** — new problem, never run Strategist before. Read Manifest + Defs.lean. If Defs.lean is missing and Manifest implies definitions are needed: `InitializeDefs`. Otherwise `Noop`.
-- **`routine`** — wall-clock 60 min passed. Skim TREE.md + active goals + recent decision outcomes. Stuck on a tool gap → `Inject(Forward, brief=...)` describing the gap, domain, what's been tried, what to avoid. Wrong track → `EmitDirective`. No action needed → `Noop`.
-- **`pending_review`** — an agent shelved a goal; you decide its fate. Read the full statement, ancestor chain, decline reason. Genuinely intractable → `ConfirmShelve` (cascades descendants to `shelved`). Missing tool that would help → `Inject(Forward, brief=...)`, goal stays pending, decide again next time. Worth retrying with a different angle → `Reopen` with `directive`.
+- **`routine`** — wall-clock 60 min passed. Skim TREE.md + active goals + recent decision outcomes. Stuck on a tool gap → `Inject(Forward, briefs=...)` describing the gap, domain, what's been tried, what to avoid. Wrong track → `EmitDirective`. No action needed → `Noop`.
+- **`pending_review`** — an agent shelved a goal; you decide its fate. Read the full statement, ancestor chain, decline reason. Genuinely intractable → `ConfirmShelve` (cascades descendants to `shelved`). Missing tool that would help → `Inject(Forward, briefs=...)`, goal stays pending, decide again next time. Worth retrying with a different angle → `Reopen` with `directive`.
 - **`inject_batch_done`** — every Forward in a prior `Inject(briefs=...)` batch has finished. Context.md `## Completed Inject batches` lists each brief + outcome. Decide the follow-up.
 
 `Reopen` is rejected only if any ancestor is `disproved`. `shelved` ancestor is allowed.
