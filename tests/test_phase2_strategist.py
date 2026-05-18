@@ -676,3 +676,141 @@ def test_commit_inject_n1_is_degenerate_batch(
     ))
     assert len(q_rows) == 1
     assert q_rows[0]["decision_id"] == outcome.decision_row_id
+
+
+# ---------------------------------------------------------------------
+# residue_thm 2026-05-19 — Inject decision outcome semantics
+# ---------------------------------------------------------------------
+# Pre-fix: cascade_one filled decision.outcome as soon as the Forward
+# agent finished writing (sorry-bearing or not). inject_batch_done
+# could fire while produced lemmas were still `:= by sorry`, leading
+# Strategist to Reopen parent goals whose new deps were unproven and
+# Backward to leaf-bypass-cite them → axiom_probe rollback.
+#
+# Post-fix: when Forward commits a sorry-bearing lemma, it links the
+# decision via `set_inject_decision_produced_goal`. cascade_one then
+# defers filling `outcome` until the produced goal reaches a terminal
+# status (proved / shelved / disproved), via
+# `propagate_inject_outcome_from_goal`.
+
+def test_propagate_inject_outcome_proved(
+    conn: sqlite3.Connection,
+) -> None:
+    """Goal flips to 'proved' → decision.outcome becomes 'success'."""
+    root = _insert_root(conn)
+    forward_goal = db.insert_goal(
+        conn, problem="p", slug="fwd_lemma",
+        lean_path="Problems/p/proofs/L_fwd_lemma.lean",
+        statement="T", origin="forward",
+    )
+    decision_id = _insert_inject_decision(
+        conn, problem="p", batch_id="batch-1", step_index=0,
+        batch_size=1, brief="## Need\nX",
+    )
+    db.set_inject_decision_produced_goal(conn, decision_id, forward_goal)
+
+    assert _decision_outcome(conn, decision_id) is None
+
+    db.update_goal_status(conn, forward_goal, "proved")
+    affected = db.propagate_inject_outcome_from_goal(conn, forward_goal)
+    assert affected == decision_id
+    assert _decision_outcome(conn, decision_id) == "success"
+
+
+def test_propagate_inject_outcome_shelved(
+    conn: sqlite3.Connection,
+) -> None:
+    """Goal flips to 'shelved' → decision.outcome becomes
+    'failed:shelved' (lemma dead, Strategist must know)."""
+    _insert_root(conn)
+    fwd = db.insert_goal(
+        conn, problem="p", slug="fwd",
+        lean_path="Problems/p/proofs/L_fwd.lean",
+        statement="T", origin="forward",
+    )
+    decision_id = _insert_inject_decision(
+        conn, problem="p", batch_id="batch-2", step_index=0,
+        batch_size=1, brief="## Need\nY",
+    )
+    db.set_inject_decision_produced_goal(conn, decision_id, fwd)
+
+    db.update_goal_status(conn, fwd, "shelved")
+    affected = db.propagate_inject_outcome_from_goal(conn, fwd)
+    assert affected == decision_id
+    assert _decision_outcome(conn, decision_id) == "failed:shelved"
+
+
+def test_propagate_inject_outcome_noop_on_intermediate_status(
+    conn: sqlite3.Connection,
+) -> None:
+    """Non-terminal status flips (open/attempting) must not fill the
+    decision outcome — the lemma is still being worked on."""
+    _insert_root(conn)
+    fwd = db.insert_goal(
+        conn, problem="p", slug="fwd",
+        lean_path="Problems/p/proofs/L_fwd.lean",
+        statement="T", origin="forward",
+    )
+    decision_id = _insert_inject_decision(
+        conn, problem="p", batch_id="batch-3", step_index=0,
+        batch_size=1, brief="## Need\nZ",
+    )
+    db.set_inject_decision_produced_goal(conn, decision_id, fwd)
+
+    db.update_goal_status(conn, fwd, "attempting")
+    affected = db.propagate_inject_outcome_from_goal(conn, fwd)
+    assert affected is None
+    assert _decision_outcome(conn, decision_id) is None
+
+
+def test_propagate_inject_outcome_idempotent(
+    conn: sqlite3.Connection,
+) -> None:
+    """Re-running propagate on an already-filled decision is a no-op
+    (the `outcome IS NULL` guard)."""
+    _insert_root(conn)
+    fwd = db.insert_goal(
+        conn, problem="p", slug="fwd",
+        lean_path="Problems/p/proofs/L_fwd.lean",
+        statement="T", origin="forward",
+    )
+    decision_id = _insert_inject_decision(
+        conn, problem="p", batch_id="batch-4", step_index=0,
+        batch_size=1, brief="## Need\nQ",
+    )
+    db.set_inject_decision_produced_goal(conn, decision_id, fwd)
+
+    db.update_goal_status(conn, fwd, "proved")
+    first = db.propagate_inject_outcome_from_goal(conn, fwd)
+    second = db.propagate_inject_outcome_from_goal(conn, fwd)
+    assert first == decision_id
+    assert second is None  # already filled
+    assert _decision_outcome(conn, decision_id) == "success"
+
+
+def _insert_inject_decision(conn: sqlite3.Connection, *, problem: str,
+                            batch_id: str, step_index: int,
+                            batch_size: int, brief: str) -> int:
+    payload = json.dumps({
+        "pipeline": "Forward", "step_index": step_index,
+        "batch_size": batch_size,
+    })
+    ts = db.now()
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, reason,"
+        " payload, batch_id, outcome, created_at, updated_at)"
+        " VALUES (?, 0, 'pending_review', 'Inject', NULL, ?, NULL, ?,"
+        " ?, NULL, ?, ?)",
+        (problem, brief, payload, batch_id, ts, ts),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def _decision_outcome(conn: sqlite3.Connection, decision_id: int) -> str | None:
+    row = conn.execute(
+        "SELECT outcome FROM strategist_decisions WHERE id = ?",
+        (decision_id,),
+    ).fetchone()
+    return None if row is None or row["outcome"] is None else str(row["outcome"])

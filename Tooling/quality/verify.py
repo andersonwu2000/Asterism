@@ -139,7 +139,8 @@ def verify_housekeeping(
                 return counts
             if outcome == "proved":
                 db.update_strategy_status(conn, sid, "succeeded")
-                db.update_goal_status(conn, goal_id, "proved")
+                dispatcher._set_goal_terminal_and_propagate(
+                    conn, goal_id, "proved")
                 db.mark_other_strategies_superseded(
                     conn, goal_id=goal_id, winner_id=sid,
                 )
@@ -150,7 +151,8 @@ def verify_housekeeping(
                 db.update_strategy_status(conn, sid, "dead")
                 n = db.increment_goal_attempts(conn, goal_id)
                 if n >= dispatcher.SHELVE_THRESHOLD:
-                    db.update_goal_status(conn, goal_id, "shelved")
+                    dispatcher._set_goal_terminal_and_propagate(
+                        conn, goal_id, "shelved")
                     dispatcher._propagate_shelve(conn, goal_id)
                 else:
                     has_live = conn.execute(

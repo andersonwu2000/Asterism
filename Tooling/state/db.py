@@ -285,6 +285,17 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
     -- a terminal outcome. NULL only for non-Inject decision kinds
     -- (and any legacy / manually-inserted Inject row).
     batch_id            TEXT NULL DEFAULT NULL,
+    -- produced_goal_id: Inject decisions that successfully spawn a
+    -- Forward lemma store its goal id here. The `outcome` column is
+    -- then filled when that goal reaches a terminal status (proved /
+    -- shelved / disproved), NOT when the Forward agent finishes
+    -- writing — so `inject_batch_done` fires on real-completion
+    -- semantics rather than agent-finished semantics. Inject
+    -- decisions that fail to produce a lemma (forward_no_new_goal /
+    -- agent_declined / etc.) fill `outcome` immediately with NULL
+    -- here. Non-Inject decision kinds are always NULL.
+    produced_goal_id    INTEGER NULL DEFAULT NULL REFERENCES goals(id)
+                            ON DELETE SET NULL,
     outcome             TEXT NULL DEFAULT NULL,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
@@ -371,6 +382,23 @@ def init_schema(conn: sqlite3.Connection) -> None:
         ("batch_id",
          "ALTER TABLE strategist_decisions ADD COLUMN batch_id TEXT"
          " NULL DEFAULT NULL"),
+        # Phase 2.5 evolution — Inject decision's "completion" was
+        # originally filled when the Forward agent finished writing
+        # (sorry-bearing or otherwise). That caused inject_batch_done
+        # to fire while produced lemmas were still `:= by sorry`,
+        # leading Strategist to Reopen parent goals whose new deps
+        # were unproven and Backward to leaf-bypass-cite them →
+        # sorryAx rollback (observed residue_thm 2026-05-19, goals
+        # 1741 / 1768 / 1759 / 1753). The fix shifts "completion" to
+        # "produced lemma reached a terminal status (proved /
+        # shelved / disproved)" — the Inject decision tracks the
+        # goal it produced via `produced_goal_id` and its `outcome`
+        # is filled when that goal terminates, not when the agent
+        # finishes. Pure ADD COLUMN, no CHECK to widen.
+        ("produced_goal_id",
+         "ALTER TABLE strategist_decisions ADD COLUMN produced_goal_id"
+         " INTEGER NULL DEFAULT NULL"
+         " REFERENCES goals(id) ON DELETE SET NULL"),
     ):
         try:
             conn.execute(ddl)
@@ -846,6 +874,66 @@ def set_goal_detached(conn: sqlite3.Connection, goal_id: int,
         (1 if detached else 0, now(), goal_id),
     )
     conn.commit()
+
+
+def set_inject_decision_produced_goal(
+    conn: sqlite3.Connection, decision_id: int, goal_id: int,
+) -> None:
+    """Link an Inject decision row to the Forward goal it produced.
+    The decision's `outcome` stays NULL until the goal reaches a
+    terminal status — see `propagate_inject_outcome_from_goal`."""
+    conn.execute(
+        "UPDATE strategist_decisions SET produced_goal_id = ?,"
+        " updated_at = ? WHERE id = ?",
+        (goal_id, now(), decision_id),
+    )
+    conn.commit()
+
+
+def propagate_inject_outcome_from_goal(
+    conn: sqlite3.Connection, goal_id: int,
+) -> int | None:
+    """When `goal_id` reaches a terminal status, fill the outcome of
+    the Inject decision row whose `produced_goal_id` points at it
+    (if any, and if its outcome is still NULL).
+
+    Mapping: goal status='proved' → outcome='success'. shelved /
+    disproved → outcome='failed:<status>'. Other statuses are not
+    terminal and this function is a no-op for them.
+
+    Returns the affected decision row id (caller may then fire
+    `_maybe_enqueue_inject_batch_done`), or None if nothing was
+    propagated.
+
+    Idempotent: re-running on an already-propagated goal does
+    nothing (the `outcome IS NULL` guard).
+    """
+    row = conn.execute(
+        "SELECT id FROM strategist_decisions"
+        " WHERE produced_goal_id = ? AND outcome IS NULL",
+        (goal_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    g = conn.execute(
+        "SELECT status FROM goals WHERE id = ?", (goal_id,)
+    ).fetchone()
+    if g is None:
+        return None
+    status = str(g["status"])
+    if status == "proved":
+        outcome = "success"
+    elif status in ("shelved", "disproved"):
+        outcome = f"failed:{status}"
+    else:
+        return None  # not terminal; wait
+    conn.execute(
+        "UPDATE strategist_decisions SET outcome = ?, updated_at = ?"
+        " WHERE id = ? AND outcome IS NULL",
+        (outcome, now(), int(row["id"])),
+    )
+    conn.commit()
+    return int(row["id"])
 
 
 # ---------------------------------------------------------------------

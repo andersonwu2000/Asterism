@@ -391,6 +391,153 @@ def test_batch_full_completion_enqueues_one_strategist(
     assert q2[0]["n"] == 1
 
 
+def test_batch_done_defers_until_produced_lemma_proved(
+    conn: sqlite3.Connection,
+) -> None:
+    """residue_thm 2026-05-19 regression: Inject decision outcome must
+    be filled when produced lemma reaches terminal, not when Forward
+    agent finishes writing. With produced_goal_id linked, cascade_one
+    leaves outcome=NULL and inject_batch_done does not fire."""
+    root = _insert_goal(conn, slug="main", origin="root",
+                        status="attempting")
+    ids = _seed_inject_batch_rows(conn, batch_id="defer-batch", count=2)
+    # Two Forward-produced sorry-bearing goals
+    fwd_a = _insert_goal(conn, slug="fwd_a", origin="forward",
+                         status="open")
+    fwd_b = _insert_goal(conn, slug="fwd_b", origin="forward",
+                         status="open")
+    db.set_inject_decision_produced_goal(conn, ids[0], fwd_a)
+    db.set_inject_decision_produced_goal(conn, ids[1], fwd_b)
+
+    # Both Forward pipelines "finish writing" → cascade_one fires.
+    cascade_one(conn, pipeline_id="p1", kind="Forward",
+                target_id="p", target_kind="Problem",
+                outcome="success", decision_id=ids[0])
+    cascade_one(conn, pipeline_id="p2", kind="Forward",
+                target_id="p", target_kind="Problem",
+                outcome="success", decision_id=ids[1])
+
+    # Outcomes STILL NULL — deferred
+    rows = list(conn.execute(
+        "SELECT outcome FROM strategist_decisions"
+        " WHERE batch_id='defer-batch'"
+    ))
+    assert all(r["outcome"] is None for r in rows)
+    # No Strategist enqueued yet
+    q = list(conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ))
+    assert q[0]["n"] == 0
+
+    # First lemma proved → propagate → still one pending → no enqueue
+    from Tooling.core.dispatcher import _set_goal_terminal_and_propagate
+    _set_goal_terminal_and_propagate(conn, fwd_a, "proved")
+    rows = list(conn.execute(
+        "SELECT outcome FROM strategist_decisions"
+        " WHERE batch_id='defer-batch' ORDER BY id"
+    ))
+    assert rows[0]["outcome"] == "success"
+    assert rows[1]["outcome"] is None
+    q = list(conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ))
+    assert q[0]["n"] == 0
+
+    # Second lemma proved → batch complete → Strategist enqueued exactly once
+    _set_goal_terminal_and_propagate(conn, fwd_b, "proved")
+    rows = list(conn.execute(
+        "SELECT outcome FROM strategist_decisions"
+        " WHERE batch_id='defer-batch' ORDER BY id"
+    ))
+    assert all(r["outcome"] == "success" for r in rows)
+    q = list(conn.execute(
+        "SELECT kind, target_id FROM queue WHERE kind='Strategist'"
+    ))
+    assert len(q) == 1
+    assert int(q[0]["target_id"]) == root
+
+
+def test_batch_done_fires_when_produced_lemma_shelved(
+    conn: sqlite3.Connection,
+) -> None:
+    """If the produced lemma shelves (dead end), outcome is filled
+    with failure marker and batch can still complete."""
+    root = _insert_goal(conn, slug="main", origin="root",
+                        status="attempting")
+    ids = _seed_inject_batch_rows(conn, batch_id="shelve-batch", count=1)
+    fwd = _insert_goal(conn, slug="fwd", origin="forward", status="open")
+    db.set_inject_decision_produced_goal(conn, ids[0], fwd)
+
+    cascade_one(conn, pipeline_id="p1", kind="Forward",
+                target_id="p", target_kind="Problem",
+                outcome="success", decision_id=ids[0])
+    # Deferred
+    assert _seed_inject_batch_rows  # silence import-only lint
+
+    # Lemma shelves
+    from Tooling.core.dispatcher import _set_goal_terminal_and_propagate
+    _set_goal_terminal_and_propagate(conn, fwd, "shelved")
+    row = conn.execute(
+        "SELECT outcome FROM strategist_decisions WHERE id = ?",
+        (ids[0],),
+    ).fetchone()
+    assert row["outcome"] == "failed:shelved"
+    # Strategist enqueued (batch completion with shelved lemma — Strategist
+    # needs to decide what to do)
+    q = list(conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ))
+    assert q[0]["n"] == 1
+
+
+def test_batch_done_immediate_on_leaf_bypass(
+    conn: sqlite3.Connection,
+) -> None:
+    """Forward leaf-bypass (sorry-free) produces a goal already at
+    status='proved'. forward.forward_parse guards `outcome.status !=
+    'proved'` so it does NOT set produced_goal_id. cascade_one then
+    fills outcome immediately (legacy path), no defer."""
+    root = _insert_goal(conn, slug="main", origin="root",
+                        status="attempting")
+    ids = _seed_inject_batch_rows(conn, batch_id="leaf-batch", count=1)
+    # Simulate leaf-bypass: produced_goal_id is NOT set on decision.
+    # cascade_one Forward branch sees no produced_goal_id → fills
+    # outcome immediately.
+    cascade_one(conn, pipeline_id="p1", kind="Forward",
+                target_id="p", target_kind="Problem",
+                outcome="success", decision_id=ids[0])
+    row = conn.execute(
+        "SELECT outcome FROM strategist_decisions WHERE id = ?",
+        (ids[0],),
+    ).fetchone()
+    assert row["outcome"] is not None
+    q = list(conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ))
+    assert q[0]["n"] == 1
+
+
+def test_batch_done_immediate_on_forward_fail_no_goal(
+    conn: sqlite3.Connection,
+) -> None:
+    """Forward that doesn't produce a goal (forward_no_new_goal,
+    agent_declined, parse_rejected) leaves produced_goal_id=NULL.
+    cascade_one fills outcome immediately (legacy)."""
+    _insert_goal(conn, slug="main", origin="root", status="attempting")
+    ids = _seed_inject_batch_rows(conn, batch_id="fail-batch", count=1)
+
+    cascade_one(conn, pipeline_id="p1", kind="Forward",
+                target_id="p", target_kind="Problem",
+                outcome="failed", failure_reason="forward_no_new_goal",
+                decision_id=ids[0])
+    row = conn.execute(
+        "SELECT outcome FROM strategist_decisions WHERE id = ?",
+        (ids[0],),
+    ).fetchone()
+    assert row["outcome"] is not None
+    assert "forward_no_new_goal" in str(row["outcome"])
+
+
 def test_batch_infra_failure_does_not_advance_completion(
     conn: sqlite3.Connection,
 ) -> None:

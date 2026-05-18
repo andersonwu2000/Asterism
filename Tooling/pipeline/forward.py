@@ -484,6 +484,17 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                 failure_detail=f"commit raised: {type(e).__name__}: {e}",
             )
 
+        # Phase 2 — when a sorry-bearing Forward lemma comes from an
+        # Inject decision, link the goal to the decision row so the
+        # decision's outcome is filled when the goal reaches terminal
+        # (proved / shelved / disproved), not when this agent writes
+        # the sorry stub. Leaf-bypass (status='proved' immediately) is
+        # already terminal — cascade fills outcome the legacy way for
+        # those. See `docs/phase2/pipelines.md` §4.7.
+        if decision_id is not None and outcome.status != "proved":
+            db.set_inject_decision_produced_goal(
+                conn, decision_id, outcome.goal_id,
+            )
         return PipelineResult(
             outcome="proved" if outcome.status == "proved" else "success",
             failure_reason="",
@@ -491,6 +502,7 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                 f"new forward goal {outcome.goal_id} at "
                 f"{outcome.lean_path} (status={outcome.status})"
             ),
+            produced_goal_id=outcome.goal_id,
         )
 
     def forward_postmortem(sid: str) -> None:

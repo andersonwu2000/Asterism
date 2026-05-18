@@ -147,6 +147,14 @@ class PipelineResult:
     # entry, preserving the 1:1 invariant (decision 5/6).
     # Each entry has keys: reason, detail, proposal_md, artifacts.
     pending_failures: list[dict] = field(default_factory=list)
+    # Phase 2 — Forward pipeline only. When Forward commits a new lemma
+    # goal, populate this so cascade_one can link the Inject decision
+    # row to its produced goal. Cascade then defers the decision's
+    # `outcome` until the produced goal reaches a terminal status
+    # (proved / shelved / disproved), instead of filling outcome as
+    # soon as the agent writes the (possibly sorry-bearing) statement.
+    # See `docs/phase2/pipelines.md` §4.7 for the rationale.
+    produced_goal_id: int | None = None
 
 
 def collect_artifacts(attempts_dir: Path) -> dict[str, str]:

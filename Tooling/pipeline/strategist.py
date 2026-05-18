@@ -419,7 +419,7 @@ def commit_decision(decision: Decision, conn: sqlite3.Connection,
 
     elif k == "ConfirmShelve":
         gid = int(decision.target_id)  # type: ignore[arg-type]
-        db.update_goal_status(conn, gid, "shelved")
+        _dispatcher._set_goal_terminal_and_propagate(conn, gid, "shelved")
         _dispatcher._propagate_shelve(conn, gid)
         # Downward cascade removed: shelved is reopenable (split from
         # disproved), descendants of a shelved goal stay invisible to

@@ -79,6 +79,31 @@ from ..state.recovery import sweep_lean_backups as _sweep_lean_backups  # noqa: 
 # a sibling/parent strategy revives the chain).
 # ---------------------------------------------------------------------
 
+def _set_goal_terminal_and_propagate(
+    conn: sqlite3.Connection, goal_id: int, status: str,
+) -> None:
+    """Flip a goal to a terminal status (`proved` / `shelved` /
+    `disproved`) and, if the goal was Inject-produced (Forward output
+    of a Strategist Inject decision), fill the originating decision's
+    `outcome` column and fire `inject_batch_done` when its batch is
+    fully terminal.
+
+    Centralises the (`update_goal_status` →
+    `propagate_inject_outcome_from_goal` →
+    `_maybe_enqueue_inject_batch_done`) sequence so every terminal
+    flip site automatically completes the corresponding Inject
+    decision when applicable. Without this, `inject_batch_done`
+    could fire while a Forward-produced lemma was still
+    sorry-bearing (residue_thm 2026-05-19 failure mode).
+
+    `status` must be one of {'proved','shelved','disproved'}. The
+    propagation is a no-op for non-Inject goals."""
+    db.update_goal_status(conn, goal_id, status)
+    d = db.propagate_inject_outcome_from_goal(conn, goal_id)
+    if d is not None:
+        _maybe_enqueue_inject_batch_done(conn, d)
+
+
 def _record_inject_decision_outcome(conn: sqlite3.Connection,
                                     decision_id: int,
                                     outcome: str,
@@ -311,7 +336,7 @@ def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
                     # Cascading shelve: this parent has now run out of
                     # attempts as a result of the sub-goal's death.
                     # Recurse so its own parents propagate too.
-                    db.update_goal_status(conn, gid, "shelved")
+                    _set_goal_terminal_and_propagate(conn, gid, "shelved")
                     _propagate_shelve(conn, gid)
                 else:
                     db.update_goal_status(conn, gid, "open")
@@ -521,7 +546,8 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
 
     if kind == "Builder":
         if outcome == "proved":
-            db.update_goal_status(conn, int(target_id), "proved")
+            _set_goal_terminal_and_propagate(
+                conn, int(target_id), "proved")
             return
         # Phase 7 — `exhausted` outcome: in-pipeline retry helper
         # consumed its budget without a terminal outcome. Helper has
@@ -532,7 +558,8 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             cur = db.get_goal(conn, int(target_id))
             n = int(cur["attempts"]) if cur else 0
             if n >= SHELVE_THRESHOLD:
-                db.update_goal_status(conn, int(target_id), "shelved")
+                _set_goal_terminal_and_propagate(
+                    conn, int(target_id), "shelved")
                 _propagate_shelve(conn, int(target_id))
             # If n is at/over BUILDER_THRESHOLD but under SHELVE, the
             # next bfs_refill picks Backward via next_worker_kind
@@ -558,12 +585,14 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             # strategy chain alive until Strategist commits a verdict.
             if failure_reason == "agent_infeasible":
                 db.increment_goal_attempts(conn, int(target_id))
-                db.update_goal_status(conn, int(target_id), "disproved")
+                _set_goal_terminal_and_propagate(
+                    conn, int(target_id), "disproved")
                 _propagate_shelve(conn, int(target_id))
                 return
             if failure_reason == "parent_needs_fix":
                 db.increment_goal_attempts(conn, int(target_id))
-                db.update_goal_status(conn, int(target_id), "shelved")
+                _set_goal_terminal_and_propagate(
+                    conn, int(target_id), "shelved")
                 _propagate_shelve(conn, int(target_id))
                 return
             if failure_reason == "agent_shelved":
@@ -580,7 +609,8 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             if failure_reason == "agent_declined":
                 n = db.increment_goal_attempts(conn, int(target_id))
                 if n >= SHELVE_THRESHOLD:
-                    db.update_goal_status(conn, int(target_id), "shelved")
+                    _set_goal_terminal_and_propagate(
+                        conn, int(target_id), "shelved")
                     _propagate_shelve(conn, int(target_id))
                 else:
                     db.update_goal_entry_kind(conn, int(target_id),
@@ -588,7 +618,8 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 return
             n = db.increment_goal_attempts(conn, int(target_id))
             if n >= SHELVE_THRESHOLD:
-                db.update_goal_status(conn, int(target_id), "shelved")
+                _set_goal_terminal_and_propagate(
+                    conn, int(target_id), "shelved")
                 _propagate_shelve(conn, int(target_id))
             return
 
@@ -610,9 +641,29 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 and not is_infra
                 and outcome
                 and outcome != "moot"):
-            _record_inject_decision_outcome(conn, decision_id, outcome,
-                                            failure_reason)
-            _maybe_enqueue_inject_batch_done(conn, decision_id)
+            # Phase 2 (revised) — if Forward committed a sorry-bearing
+            # lemma it already linked `produced_goal_id` on this
+            # decision (see `forward.forward_parse`). In that case we
+            # MUST NOT fill `outcome` here: it will be filled when the
+            # produced goal reaches terminal (proved / shelved /
+            # disproved) via `propagate_inject_outcome_from_goal`.
+            # Filling early would fire `inject_batch_done` while the
+            # lemma is still `:= by sorry` → Strategist Reopens parent,
+            # Backward leaf-bypass-cites the sorry → axiom_probe
+            # rollback (the residue_thm 2026-05-19 failure mode).
+            row = conn.execute(
+                "SELECT produced_goal_id FROM strategist_decisions"
+                " WHERE id = ?", (decision_id,),
+            ).fetchone()
+            if row is not None and row["produced_goal_id"] is not None:
+                # Sorry-bearing Forward: defer outcome until the lemma
+                # terminates. inject_batch_done will fire at that time.
+                pass
+            else:
+                _record_inject_decision_outcome(
+                    conn, decision_id, outcome, failure_reason,
+                )
+                _maybe_enqueue_inject_batch_done(conn, decision_id)
         return
 
     if kind == "Backward":
@@ -648,7 +699,8 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             cur = db.get_goal(conn, int(target_id))
             n = int(cur["attempts"]) if cur else 0
             if n >= SHELVE_THRESHOLD:
-                db.update_goal_status(conn, int(target_id), "shelved")
+                _set_goal_terminal_and_propagate(
+                    conn, int(target_id), "shelved")
                 _propagate_shelve(conn, int(target_id))
             return
         # failed
@@ -663,12 +715,14 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
         # generic attempts++ branch and eventually shelves at threshold.
         if failure_reason == "agent_infeasible":
             db.increment_goal_attempts(conn, int(target_id))
-            db.update_goal_status(conn, int(target_id), "disproved")
+            _set_goal_terminal_and_propagate(
+                conn, int(target_id), "disproved")
             _propagate_shelve(conn, int(target_id))
             return
         if failure_reason == "parent_needs_fix":
             db.increment_goal_attempts(conn, int(target_id))
-            db.update_goal_status(conn, int(target_id), "shelved")
+            _set_goal_terminal_and_propagate(
+                conn, int(target_id), "shelved")
             _propagate_shelve(conn, int(target_id))
             return
         if failure_reason == "agent_shelved":
@@ -677,7 +731,8 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             return
         n = db.increment_goal_attempts(conn, int(target_id))
         if n >= SHELVE_THRESHOLD:
-            db.update_goal_status(conn, int(target_id), "shelved")
+            _set_goal_terminal_and_propagate(
+                conn, int(target_id), "shelved")
             _propagate_shelve(conn, int(target_id))
         return
 

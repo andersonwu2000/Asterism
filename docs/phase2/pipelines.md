@@ -321,6 +321,41 @@ Reopen(G) commit:
 
 設計選擇：把「鏈斷自動獨立」做進 framework、Strategist 不用在 Reopen / Inject(Forward) 之間糾結。Reopen 表達「這個 statement 值得攻」、framework 處理「怎麼讓它能被攻」。
 
+**新規則 4（Inject decision outcome 依 lemma terminal 填寫）**：
+
+`inject_batch_done` trigger 是 Strategist 等 Inject batch 收尾才醒來再決策的 hook（規則 3 之後加入）。原本實作把 batch 一員「完成」定義為 Forward agent 跑完寫好 statement、不管 lemma body 是不是 `:= by sorry`。residue_thm 2026-05-19 暴露問題：
+
+- 同 batch 兩個 Inject 跑完、Strategist 醒、Reopen 父 goal 1743
+- 但兩個 Inject 產出的 Forward lemma 都還是 sorry-bearing
+- Backward 再上、leaf-bypass cite 那兩個 lemma → axiom_probe 透視 transitive sorryAx → rollback
+- 父 goal 重 shelve → Strategist ConfirmShelve、整棵子樹放棄
+
+修法：把「Inject decision 完成」的語義從「agent 寫完」改成「產出的 lemma 翻 terminal（proved / shelved / disproved）」。
+
+```
+Forward agent commit lemma G:
+    if G.status == 'proved' (sorry-free leaf-bypass):
+        cascade 立刻填 decision.outcome（legacy 路徑）
+    else (sorry-bearing):
+        decision.produced_goal_id ← G.id
+        decision.outcome 留 NULL（defer）
+        ↑↑ cascade_one Forward branch 看到 produced_goal_id 非 NULL、不填 outcome
+
+每次 goal 翻 terminal status（任何 site）：
+    _set_goal_terminal_and_propagate(conn, gid, status):
+        update_goal_status(gid, status)
+        d := propagate_inject_outcome_from_goal(gid)
+            ↑↑ 若 gid 是某 Inject decision 的 produced_goal、依 status 填 outcome:
+                  proved → 'success'
+                  shelved → 'failed:shelved'
+                  disproved → 'failed:disproved'
+        if d 非空: _maybe_enqueue_inject_batch_done(d)
+```
+
+語義改變後、Strategist 醒來看到的 Inject 結果是「lemma 真實狀態」而非「agent 是否寫完」。inject_batch_done trigger 只在所有產出 lemma 都收尾後 fire、Reopen 父 goal 時 Backward leaf-bypass 引用的 lemma 已 proved、不再撞 axiom_probe rollback。
+
+實作備註：terminal flip site 集中過 `_set_goal_terminal_and_propagate` helper（dispatcher.py）、共 10 處 caller（cascade_one Builder/Backward 多分支、Strategist ConfirmShelve、verify_housekeeping proved + dead-threshold、`_propagate_shelve` recurse、Builder exhausted-threshold 等）。新增 column `strategist_decisions.produced_goal_id INTEGER NULL` 透過純 ALTER TABLE ADD COLUMN migration。
+
 ### 4.3 Dispatcher 改動
 
 T0 / T1 / T2 觸發邏輯：
