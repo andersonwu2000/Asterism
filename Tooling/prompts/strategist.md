@@ -25,7 +25,7 @@ Single JSON object in `decision.json`. **One decision per call** — multiple ac
 
 | Kind | Required | Optional |
 |---|---|---|
-| `Inject` | `pipeline="Forward"`, `brief` (multi-paragraph markdown) | — |
+| `Inject` | `pipeline="Forward"`, `briefs` (list of multi-paragraph markdown strings) | — |
 | `ConfirmShelve` | `target_goal_id`, `reason` | — |
 | `Reopen` | `target_goal_id`, `reason` | `directive` (written to problems.strategist_directive) |
 | `EmitDirective` | `scope="problem:<name>"`, `body`, `reason` | — |
@@ -37,10 +37,10 @@ Example:
 
 ```json
 {"kind": "Inject", "pipeline": "Forward",
- "brief": "## Need\nMain theorem requires X.\n\n## Context\nBackward tried Y, failed because Z.\n\n## Suggested angle\n...\n\n## Avoid\n..."}
+ "briefs": ["## Need\nMain theorem requires X.\n\n## Context\nBackward tried Y, failed because Z.\n\n## Suggested angle\n...\n\n## Avoid\n..."]}
 ```
 
-Inject's `brief` is substantive markdown (typically 100–400 words). Other decisions' `reason` is shorter (a paragraph).
+Each `briefs` entry is substantive markdown (typically 100–400 words). Other decisions' `reason` is shorter (a paragraph).
 
 ## Self-feedback
 
