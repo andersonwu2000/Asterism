@@ -557,6 +557,17 @@ def cmd_reset(args: argparse.Namespace) -> int:
         conn.execute(
             f"DELETE FROM queue WHERE kind!='Verify' AND target_id IN ({ph})",
             [str(g) for g in gids])
+        # strategist_decisions.target_id → goals.id FK: any
+        # ConfirmShelve / Reopen row with a non-NULL target_id pointing
+        # at one of these goals blocks the goals DELETE. The full sd
+        # cleanup happens below at the per-problem DELETE; here we
+        # just clear the cross-row FK before the goals delete.
+        # Observed SG 2026-05-17: 3 ConfirmShelve sd rows targeting
+        # distinct_collinear / sg_contrapositive / main blocked reset
+        # with `FOREIGN KEY constraint failed`.
+        conn.execute(
+            f"DELETE FROM strategist_decisions "
+            f"WHERE target_id IN ({ph})", gids)
         conn.execute(f"DELETE FROM goals WHERE id IN ({ph})", gids)
     # Clean pipelines targeting this problem's now-deleted goals /
     # strategies. Without this, pipelines accumulates orphan rows

@@ -163,6 +163,47 @@ def test_reset_clears_pipelines_for_problem_only(
     assert "pid-c" in remaining  # cantor's pipeline preserved
 
 
+def test_reset_clears_strategist_decisions_referencing_goals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Strategist `ConfirmShelve` / `Reopen` decisions carry a
+    `strategist_decisions.target_id` FK to goals.id. If sd rows are
+    deleted AFTER goals, the FK blocks the goals DELETE with
+    `FOREIGN KEY constraint failed`. Observed SG run 2026-05-17: 3
+    ConfirmShelve decisions targeting distinct_collinear /
+    sg_contrapositive / main froze cli reset entirely. Fix: clear
+    sd rows whose target_id is in this problem's goal set before the
+    goals DELETE."""
+    _setup_problem(tmp_path, "sg")
+    monkeypatch.chdir(tmp_path)
+    cmd_init(argparse.Namespace(problem="sg", force=False))
+    conn = db.connect()
+    gid = int(conn.execute(
+        "SELECT id FROM goals WHERE problem='sg'"
+    ).fetchone()["id"])
+    # Seed a ConfirmShelve sd row targeting this goal (mirrors what
+    # `strategist.commit_decision` writes for the ConfirmShelve case).
+    conn.execute(
+        "INSERT INTO strategist_decisions "
+        "(triggered_at_tick, trigger_kind, decision_kind, problem,"
+        " target_id, reason, payload, created_at, updated_at) "
+        "VALUES (0, 'pending_review', 'ConfirmShelve', 'sg',"
+        " ?, 'test', '{}', ?, ?)",
+        (gid, db.now(), db.now()))
+    conn.commit()
+
+    # Must NOT raise IntegrityError.
+    cmd_reset(argparse.Namespace(problem="sg"))
+
+    conn = db.connect()
+    assert conn.execute(
+        "SELECT count(*) FROM strategist_decisions WHERE problem='sg'"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT count(*) FROM goals WHERE problem='sg'"
+    ).fetchone()[0] == 0
+
+
 def test_reset_clears_forward_pipeline_with_dead_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
