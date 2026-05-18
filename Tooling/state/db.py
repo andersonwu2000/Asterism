@@ -295,7 +295,10 @@ CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(status);
 CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue(priority DESC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_sd_problem ON strategist_decisions(problem);
 CREATE INDEX IF NOT EXISTS idx_sd_outcome ON strategist_decisions(outcome);
-CREATE INDEX IF NOT EXISTS idx_sd_batch_id ON strategist_decisions(batch_id);
+-- idx_sd_batch_id: created after the batch_id ALTER TABLE migration
+-- in init_schema, not here. Inlining it in SCHEMA would fail on pre-
+-- Phase 2.5 DBs (executescript runs CREATE INDEX before the ALTER
+-- TABLE block that adds the column).
 """
 
 
@@ -374,6 +377,15 @@ def init_schema(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e).lower():
                 raise
+    # Phase 2.5 — index on the freshly-added batch_id column. Lives
+    # here (post-ALTER) rather than in SCHEMA because executescript
+    # runs CREATE INDEX in declaration order, before the additive
+    # ALTER block above ever runs — on pre-Phase 2.5 DBs that would
+    # fail with "no such column: batch_id".
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sd_batch_id"
+        " ON strategist_decisions(batch_id)"
+    )
     # Backfill: mark every already-proved root as verified. Prior to
     # this column existing, `library.maybe_promote` (later
     # `verify.root_integrity_gate`) ran an axiom_probe on every proved
