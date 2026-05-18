@@ -29,6 +29,8 @@ theorem <slug> : <type> := by sorry
 end Problems.<problem>
 ```
 
+Other declaration kinds (`def`, `structure`, `class`) follow the same shape — namespace + `-- Forward rationale:` comment + declaration. No proof body / `entry_kind` line needed for those (framework type-checks at use sites; status='proved' immediately).
+
 - `<slug>`: `[a-z][a-z0-9_]*`, ≤ 60 chars, descriptive (e.g. `contour_deformation_piecewise`, `inner_pythag_for_orthogonal`). Framework auto-suffixes on collision.
 - `theorem` name MUST equal the slug encoded in the filename.
 - `Forward rationale:` comment is required — it goes into `goals.evidence` and the next Strategist reads it.

@@ -80,7 +80,7 @@ Place the directive immediately above the theorem in `patch.lean`, keep `:= by s
 
 - `unprovable` — false in this hypothesis scope. Description must give a counterexample (specific values + arithmetic check).
 - `return_to_parent` — provable after parent strategy is fixed. Description must name the fix concretely (missing hypothesis, wrong substructure).
-- `shelve` — lacks math tools or scaffolding to proceed. Description must name what's needed (Forward lemma statements, supporting defs, related theorems).
+- `shelve` — lacks math tools or scaffolding to proceed. Description must name what's needed (Forward lemma statements, supporting defs / structures / classes, related theorems).
 
 ```lean
 namespace ...
