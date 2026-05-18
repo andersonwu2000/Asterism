@@ -426,8 +426,46 @@ def test_commit_reopen_with_broken_chain_sets_detached(
         workspace=workspace,
     )
     g = db.get_goal(conn, sub)
-    assert g["status"] == "attempting"
+    # Reopen sets 'open' (not 'attempting') so bfs_refill — which filters
+    # `status='open'` — can dispatch the goal on the next tick.
+    assert g["status"] == "open"
     assert g["detached"] == 1
+    # Regression guard: open_goals (the BFS dispatch source) returns it
+    # via the detached=1 seed even though no live ancestor strategy exists.
+    open_ids = {int(r["id"]) for r in db.open_goals(conn)}
+    assert sub in open_ids
+
+
+def test_commit_reopen_makes_goal_dispatchable_via_bfs(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Regression — take-5 failure: Reopen used to set status='attempting'
+    and skip enqueue, so `db.open_goals` (filters status='open') hid the
+    goal and bfs_refill never dispatched it → daemon idle-exited with
+    root in attempting limbo. After fix: status='open' makes the root
+    immediately visible to BFS without auto-detach (root is its own seed).
+    """
+    root = _insert_root(conn)
+    # Simulate the pre-Reopen state: root was marked
+    # pending_strategist_review (or attempting) and not dispatchable.
+    db.update_goal_status(conn, root, "pending_strategist_review")
+    assert root not in {int(r["id"]) for r in db.open_goals(conn)}
+
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Reopen", "target_goal_id": root,
+        "reason": "retry",
+    }))
+    strategist.commit_decision(
+        d, conn, problem="p", tick=1, trigger_kind="routine",
+        workspace=workspace,
+    )
+
+    g = db.get_goal(conn, root)
+    assert g["status"] == "open"
+    # detached=0 because root is its own dispatch seed; no broken chain.
+    assert g["detached"] == 0
+    open_ids = {int(r["id"]) for r in db.open_goals(conn)}
+    assert root in open_ids
 
 
 def test_commit_request_user_amend_writes_proposed_file_atomically(

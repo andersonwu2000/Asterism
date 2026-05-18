@@ -307,7 +307,13 @@ def commit_decision(decision: Decision, conn: sqlite3.Connection,
 
     elif k == "Reopen":
         gid = int(decision.target_id)  # type: ignore[arg-type]
-        db.update_goal_status(conn, gid, "attempting")
+        # Status must be 'open' (not 'attempting'): `db.open_goals` is
+        # the BFS dispatch source and filters `status = 'open'`. Setting
+        # 'attempting' without enqueueing leaves the goal invisible to
+        # bfs_refill → daemon idle-exits on a Reopen'd root. Symmetric
+        # with `_propagate_shelve` reopen branch (line 307) and verify
+        # rollback culprit branch (verify.py:263).
+        db.update_goal_status(conn, gid, "open")
         # Auto-detach: if upward strategy chain is broken, set
         # goals.detached so BFS still dispatches.
         if _dispatcher._has_dead_strategy_in_chain(conn, gid):
