@@ -247,41 +247,6 @@ def _build_fresh_rescue_stage2_prompt(
     )
 
 
-def _build_fresh_rescue_stage3_prompt(
-    attempts_dir: Path, jsonl_copied: bool, postmortem_min: int,
-) -> str:
-    """Stage-3 prompt: agent writes _progress.md based on broken jsonl.
-
-    Path discipline: same fix as stage 2 — explicit `attempts_dir/`
-    in every output reference."""
-    if jsonl_copied:
-        log_note = (
-            f"The previous session's log is at "
-            f"`{attempts_dir}/_broken_session.jsonl`. Read it (use "
-            f"offset/limit for large files) to see what was explored."
-        )
-    else:
-        log_note = (
-            "The previous session's log was not recoverable. Work "
-            f"from `{attempts_dir}/Context.md` alone."
-        )
-    return (
-        f"The previous session AND the stage-2 rescue both failed to "
-        f"ship. {log_note}\n\n"
-        f"Write `{attempts_dir}/_progress.md` (≤200 words) capturing:\n"
-        f"1. The decomposition shape converging to (1 sentence).\n"
-        f"2. Any sub-piece with clear formulation (slug + statement).\n"
-        f"3. The specific blocker (which Mathlib lemma, which case "
-        f"analysis, etc.).\n"
-        f"4. Alternative direction (≤60 words).\n\n"
-        f"Use the absolute path above — the framework only reads from "
-        f"`{attempts_dir}/`. Skip recapping the goal — "
-        f"`{attempts_dir}/Context.md` already has it. Write the file "
-        f"and exit. Do NOT finalize patch.lean. {postmortem_min} "
-        f"minutes left."
-    )
-
-
 SpawnFn = Callable[[SpawnCtx], int]
 ParseFn = Callable[[], PipelineResult]
 PostmortemFn = Callable[[str], None]
@@ -290,20 +255,21 @@ ReflectionFn = Callable[[str, "PipelineResult"], None]
 
 @dataclass
 class _TakeoverOutcome:
-    """Result of a v2 stage 2 + stage 3 fresh-sid takeover.
+    """Result of a combined fresh-sid takeover.
 
-    `terminal_result`: the PipelineResult to attach when stage 2 or
-        stage 3 reached a terminal outcome (success / decline). None
-        when both stages failed to converge — caller buffers
+    `terminal_result`: the PipelineResult to attach when the takeover
+        reached a terminal outcome (success / decline). None when the
+        single fresh spawn failed to converge — caller buffers
         `agent_stuck_thinking` and continues the retry loop.
-    `last_sid`: the most recent fresh sid (stage 2 if it terminated,
-        else stage 3). Subsequent warm retries within the same
-        pipeline use this sid; the broken sid is permanently abandoned.
-    `detail_parts`: forensic strings describing trigger, stage rcs,
-        durations, and parse outcomes; the caller joins these into
-        `failure_detail` when buffering `agent_stuck_thinking`.
-    `stage2_rc` / `stage3_rc`: subprocess rcs for each stage. stage3_rc
-        is None when stage 2 reached terminal (stage 3 didn't fire).
+    `last_sid`: the fresh sid used. Subsequent warm retries within the
+        same pipeline use this sid; the broken sid is permanently
+        abandoned.
+    `detail_parts`: forensic strings describing trigger, rc, duration,
+        and parse outcome; the caller joins these into `failure_detail`
+        when buffering `agent_stuck_thinking`.
+    `stage2_rc`: subprocess rc of the takeover spawn. `stage3_rc` is
+        retained for back-compat (legacy 2-stage path); always None
+        now that the combined path is the only caller.
     """
     terminal_result: PipelineResult | None
     last_sid: str
@@ -333,184 +299,42 @@ def _derive_stage2_budget(workspace: Path | None) -> int:
     return max(60, spawn_timeout - trap_check_sec)
 
 
-def _derive_postmortem_budget(workspace: Path | None) -> int:
-    from ..core import config as _cfg
-    from ..agent import POSTMORTEM_TIMEOUT_SEC
-    return _cfg.get(
-        "dispatch.postmortem_timeout_sec",
-        default=POSTMORTEM_TIMEOUT_SEC,
-        env_var="ASTERISM_POSTMORTEM_TIMEOUT_SEC", cast=int,
-        workspace=workspace,
-    )
-
-
-def _run_fresh_sid_takeover(
-    *, broken_sid: str, broken_sid_label: str,
-    attempts_dir: Path, workspace: Path | None,
-    spawn_fn: SpawnFn, parse_fn: ParseFn,
-) -> _TakeoverOutcome:
-    """Execute two-stage (stage 2 ship-or-bail + stage 3 postmortem)
-    fresh-sid takeover. Used by the TIMEOUT-with-thinking-trap branch
-    when subprocess timeout fires and parser final state shows trap.
-    The watchdog STUCK_THINKING branch uses the simpler combined
-    variant (`_run_fresh_sid_combined_takeover`) instead.
-
-    `broken_sid_label`: human description of why takeover fired,
-        prepended to detail_parts so dead_attempts.failure_detail
-        records the trigger source. Example:
-          'subprocess timeout + thinking trap (state=mid-thinking
-           last_stop_reason=max_tokens) broken_sid=cb7e1cde'
-    """
-    broken_jsonl_dest = attempts_dir / "_broken_session.jsonl"
-    jsonl_copied = _copy_broken_session_jsonl(
-        broken_sid, broken_jsonl_dest)
-
-    # ── Stage 2: fresh-rescue ship-or-bail ────────────────────────
-    stage2_budget = _derive_stage2_budget(workspace)
-    stage2_min = max(1, stage2_budget // 60)
-    stage2_prompt = _build_fresh_rescue_stage2_prompt(
-        attempts_dir, jsonl_copied, stage2_min)
-    sid_stage2 = str(uuid.uuid4())
-    print(f"[fresh-rescue stage2] broken_sid={broken_sid[:8]} → "
-          f"fresh_sid={sid_stage2[:8]} budget={stage2_budget}s "
-          f"jsonl_copied={jsonl_copied}", flush=True)
-    stage2_t0 = time.monotonic()
-    stage2_rc = spawn_fn(SpawnCtx(
-        sid=sid_stage2, cold=True, retry_context=None,
-        attempts_dir=attempts_dir,
-        inline_prompt=stage2_prompt,
-        budget_override=stage2_budget,
-    ))
-    stage2_dur = time.monotonic() - stage2_t0
-    print(f"[fresh-rescue stage2] sid={sid_stage2[:8]} "
-          f"rc={stage2_rc} dur={stage2_dur:.0f}s", flush=True)
-
-    stage2_result: PipelineResult | None = None
-    try:
-        stage2_result = parse_fn()
-    except Exception as exc:  # noqa: BLE001
-        print(f"[fresh-rescue stage2] sid={sid_stage2[:8]} "
-              f"parse raised {type(exc).__name__}: {exc}",
-              flush=True)
-    if stage2_result is not None and (
-        stage2_result.outcome in _TERMINAL_SUCCESS_OUTCOMES
-        or stage2_result.failure_reason in _TERMINAL_DECLINE_REASONS
-    ):
-        print(f"[fresh-rescue stage2] sid={sid_stage2[:8]} "
-              f"attached outcome={stage2_result.outcome} "
-              f"reason={stage2_result.failure_reason}", flush=True)
-        return _TakeoverOutcome(
-            terminal_result=stage2_result,
-            last_sid=sid_stage2,
-            detail_parts=[
-                broken_sid_label,
-                f"stage2 sid={sid_stage2[:8]} rc={stage2_rc} "
-                f"dur={stage2_dur:.0f}s",
-            ],
-            stage2_rc=int(stage2_rc),
-            stage3_rc=None,
-        )
-
-    # ── Stage 3: fresh-rescue postmortem ──────────────────────────
-    stage3_budget = _derive_postmortem_budget(workspace)
-    stage3_min = max(1, stage3_budget // 60)
-    stage3_prompt = _build_fresh_rescue_stage3_prompt(
-        attempts_dir, jsonl_copied, stage3_min)
-    sid_stage3 = str(uuid.uuid4())
-    print(f"[fresh-rescue stage3] stage2_sid={sid_stage2[:8]} → "
-          f"fresh_sid={sid_stage3[:8]} budget={stage3_budget}s",
-          flush=True)
-    stage3_t0 = time.monotonic()
-    stage3_rc = spawn_fn(SpawnCtx(
-        sid=sid_stage3, cold=True, retry_context=None,
-        attempts_dir=attempts_dir,
-        inline_prompt=stage3_prompt,
-        budget_override=stage3_budget,
-    ))
-    stage3_dur = time.monotonic() - stage3_t0
-    print(f"[fresh-rescue stage3] sid={sid_stage3[:8]} "
-          f"rc={stage3_rc} dur={stage3_dur:.0f}s", flush=True)
-
-    stage3_result: PipelineResult | None = None
-    try:
-        stage3_result = parse_fn()
-    except Exception as exc:  # noqa: BLE001
-        print(f"[fresh-rescue stage3] sid={sid_stage3[:8]} "
-              f"parse raised {type(exc).__name__}: {exc}",
-              flush=True)
-
-    detail_parts = [
-        broken_sid_label,
-        f"stage2 sid={sid_stage2[:8]} rc={stage2_rc} "
-        f"dur={stage2_dur:.0f}s",
-        f"stage3 sid={sid_stage3[:8]} rc={stage3_rc} "
-        f"dur={stage3_dur:.0f}s",
-    ]
-    if stage2_result is not None:
-        detail_parts.append(
-            f"stage2 parse: reason={stage2_result.failure_reason} "
-            f"detail={(stage2_result.failure_detail or '')[:120]}")
-    if stage3_result is not None:
-        detail_parts.append(
-            f"stage3 parse: reason={stage3_result.failure_reason} "
-            f"detail={(stage3_result.failure_detail or '')[:120]}")
-
-    if stage3_result is not None and (
-        stage3_result.outcome in _TERMINAL_SUCCESS_OUTCOMES
-        or stage3_result.failure_reason in _TERMINAL_DECLINE_REASONS
-    ):
-        print(f"[fresh-rescue stage3] sid={sid_stage3[:8]} "
-              f"attached outcome={stage3_result.outcome} "
-              f"reason={stage3_result.failure_reason}", flush=True)
-        return _TakeoverOutcome(
-            terminal_result=stage3_result,
-            last_sid=sid_stage3,
-            detail_parts=detail_parts,
-            stage2_rc=int(stage2_rc),
-            stage3_rc=int(stage3_rc),
-        )
-
-    return _TakeoverOutcome(
-        terminal_result=None,
-        last_sid=sid_stage3,
-        detail_parts=detail_parts,
-        stage2_rc=int(stage2_rc),
-        stage3_rc=int(stage3_rc),
-    )
-
-
 def _run_fresh_sid_combined_takeover(
     *, broken_sid: str, broken_sid_label: str,
     attempts_dir: Path, workspace: Path | None,
     spawn_fn: SpawnFn, parse_fn: ParseFn,
 ) -> _TakeoverOutcome:
-    """Single-stage fresh-sid takeover used by the watchdog
-    STUCK_THINKING branch (2026-05-10 v4). Combined budget =
-    stage2 + stage3 (postmortem); one spawn handles ship-or-bail
-    in a single window.
+    """Single-stage fresh-sid takeover used by both thinking-trap
+    paths (watchdog STUCK_THINKING and subprocess timeout-trap).
+    Combined budget = stage2 + stage3 (postmortem); one spawn handles
+    ship-or-bail in a single window.
 
-    Why one stage instead of stage 2 + stage 3:
-      Watchdog kills mid-thinking — by definition the broken jsonl
-      contains thinking text but no concrete decomposition. Stage 3
-      (which asks the agent to extract a `_progress.md` from the
-      jsonl) adds little value over stage 2's option (d) bail in
-      this case. Combining saves one spawn-startup overhead per
-      trap event.
-
-    The TIMEOUT-with-trap path keeps two stages — the broken jsonl
-    there may have completed turns with concrete reasoning the
-    agent didn't get to ship.
+    Why one stage instead of two:
+      When parser flags `is_thinking_trap`, the broken jsonl carries
+      only thinking text — no concrete decomposition. Stage 3 (which
+      asks the agent to extract a `_progress.md` from the jsonl) adds
+      little value over stage 2's option (d) bail in this case. The
+      previous 2-stage path (`_run_fresh_sid_takeover`, removed
+      2026-05-18) was based on a since-falsified assumption that the
+      timeout-trap broken jsonl might carry salvageable concrete
+      reasoning the agent didn't get to ship — in practice
+      `is_thinking_trap=True` means it doesn't.
 
     Returns _TakeoverOutcome with `stage3_rc=None` always (no stage 3
-    fired). Forensic detail says `combined sid=... rc=... dur=...`
-    instead of stage2/stage3 split.
+    fired). Forensic detail says `combined sid=... rc=... dur=...`.
     """
     broken_jsonl_dest = attempts_dir / "_broken_session.jsonl"
     jsonl_copied = _copy_broken_session_jsonl(
         broken_sid, broken_jsonl_dest)
 
-    combined_budget = (_derive_stage2_budget(workspace)
-                       + _derive_postmortem_budget(workspace))
+    # Budget = stage 2 alone (= spawn_timeout - trap_check_sec, default
+    # 240s / 4min). The legacy 2-stage path totalled stage2+postmortem
+    # = ~7min, but in practice the agent either bails fast (<1min,
+    # write _progress.md and exit) or ships fast (a couple of
+    # validate_file cycles); past 4 min the spawn isn't producing new
+    # information. Tighter cap = faster failure → next retry iteration
+    # sooner overall.
+    combined_budget = _derive_stage2_budget(workspace)
     combined_min = max(1, combined_budget // 60)
     # Reuse stage 2 prompt — it already covers ship (a/b/c) AND bail
     # (option d: write `_progress.md` only). The agent gets ~7 min
@@ -844,9 +668,17 @@ def run_with_session_retries(
                 print(f"[timeout-trap] sid={broken_sid[:8]} parser "
                       f"detected trap (state={state_label} "
                       f"last_stop_reason={stop_label}); running "
-                      f"fresh-sid takeover instead of --resume "
-                      f"postmortem", flush=True)
-                outcome = _run_fresh_sid_takeover(
+                      f"combined fresh-sid takeover instead of "
+                      f"--resume postmortem", flush=True)
+                # Same as the watchdog STUCK_THINKING path below — when
+                # parser sees a thinking trap, the broken jsonl carries
+                # only mid-thinking text regardless of whether the kill
+                # came from watchdog (mid-spawn) or subprocess timeout
+                # (end-of-spawn). The legacy 2-stage path here was
+                # carryover from when timeout-trap was assumed to have
+                # salvageable concrete reasoning; in practice
+                # `is_thinking_trap=True` means there isn't any.
+                outcome = _run_fresh_sid_combined_takeover(
                     broken_sid=broken_sid,
                     broken_sid_label=(
                         f"subprocess timeout + thinking trap "
@@ -862,8 +694,7 @@ def run_with_session_retries(
                 buffer_failure("agent_stuck_thinking",
                                "; ".join(outcome.detail_parts))
                 last_reason = "agent_stuck_thinking"
-                last_detail = (f"stage2 rc={outcome.stage2_rc}, "
-                               f"stage3 rc={outcome.stage3_rc}")
+                last_detail = f"combined rc={outcome.stage2_rc}"
                 continue
 
             # Active spawn at subprocess timeout — keep legacy
@@ -908,11 +739,11 @@ def run_with_session_retries(
         if rc == SpawnRC.STUCK_THINKING:
             # Watchdog detected thinking trap at trap_check_sec
             # (parser is_thinking_trap AND silence > threshold).
-            # Single-stage combined takeover — broken jsonl from a
-            # mid-thinking kill has only thinking text, so stage 3's
-            # extract-_progress.md task adds little value over
-            # stage 2's bail option. TIMEOUT-with-trap path keeps
-            # two-stage takeover via `_run_fresh_sid_takeover`.
+            # Same combined takeover as the timeout-trap branch above —
+            # whichever signal flagged the thinking trap, the broken
+            # jsonl carries only mid-thinking text, so stage 3's
+            # extract-_progress.md task adds little value over stage
+            # 2's bail option. Single fresh spawn handles ship-or-bail.
             broken_sid = sid
             outcome = _run_fresh_sid_combined_takeover(
                 broken_sid=broken_sid,

@@ -145,21 +145,20 @@ def test_stuck_thinking_combined_fails_buffers_and_continues(
     assert "stage3" not in stuck["detail"]
 
 
-def test_timeout_trap_two_stage_takeover(
+def test_timeout_trap_uses_combined_takeover(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
     """rc=124 + salvage parse fail + parser_state.json shows trap →
-    two-stage fresh-sid takeover (stage 2 ship-or-bail, stage 3
-    postmortem-only). Distinct from STUCK_THINKING's combined helper
-    because broken jsonl from a TIMEOUT-trap may have salvageable
-    completed turns the agent didn't get to ship."""
+    single-stage combined fresh-sid takeover (same shape as the
+    watchdog STUCK_THINKING path). The legacy 2-stage path
+    (_run_fresh_sid_takeover, removed 2026-05-18) assumed broken jsonl
+    might carry salvageable completed turns; in practice
+    `is_thinking_trap=True` means it doesn't, so the postmortem-only
+    stage 3 spawn added no value over stage 2's combined ship/bail."""
     import json
     gid = _seed_open_goal(conn)
     attempts_dir = tmp_path / ".attempts" / "pid-timeout"
     attempts_dir.mkdir(parents=True)
-    # Seed parser state file: trap=True simulates the watchdog deferring
-    # (silence < threshold) but parser flagged trap; subprocess timeout
-    # then fires and TIMEOUT path uses parser final state.
     (attempts_dir / "_parser_state.json").write_text(json.dumps({
         "state": "mid-thinking",
         "last_stop_reason": None,
@@ -174,18 +173,13 @@ def test_timeout_trap_two_stage_takeover(
         spawn_calls.append(ctx)
         if ctx.inline_prompt is None:
             return SpawnRC.TIMEOUT  # main: subprocess timeout
-        # stage 2 timeout, stage 3 ok
-        inline_count = sum(1 for c in spawn_calls if c.inline_prompt)
-        if inline_count == 1:
-            return SpawnRC.TIMEOUT
-        return SpawnRC.OK
+        return SpawnRC.OK  # combined takeover returns clean
 
     def parse() -> PipelineResult:
         parse_calls[0] += 1
         # parse 1: salvage on main TIMEOUT — non-terminal.
-        # parse 2: stage 2 — non-terminal.
-        # parse 3: stage 3 — terminal agent_bailed.
-        if parse_calls[0] <= 2:
+        # parse 2: combined takeover — terminal agent_bailed.
+        if parse_calls[0] == 1:
             return PipelineResult(outcome="failed",
                                   failure_reason="parse_proposal_fail",
                                   failure_detail="no usable output")
@@ -201,12 +195,15 @@ def test_timeout_trap_two_stage_takeover(
         postmortem_fn=lambda _sid: None,
     )
     assert r.failure_reason == "agent_bailed"
-    # main + stage 2 + stage 3 = 3 spawns
-    assert len(spawn_calls) == 3
+    # main + combined = 2 spawns (no stage 3).
+    assert len(spawn_calls) == 2, (
+        f"timeout-trap must NOT spawn stage 3 — expected 2 spawns "
+        f"(main + combined), got {len(spawn_calls)}")
+    # Combined uses the stage-2 ship-or-bail prompt (handles both paths).
     assert "ship ONE of" in spawn_calls[1].inline_prompt
-    assert "_progress.md" in spawn_calls[2].inline_prompt
-    assert "decomposition shape" in spawn_calls[2].inline_prompt.lower()
-    assert spawn_calls[2].sid != spawn_calls[1].sid
+    # Buffered failure detail should describe a single combined spawn,
+    # not stage2/stage3 split. (Only if a buffered failure exists —
+    # terminal agent_bailed returns immediately without buffering.)
 
 
 # ---------------------------------------------------------------------
@@ -223,30 +220,25 @@ def test_fresh_rescue_prompts_use_explicit_attempts_dir(
     the files. SG run #10 evidence: stage 2 wrote patch.lean +
     new_*.lean to Problems/sylvester_gallai/ root; takeover counted
     as no-deliverable despite agent having shipped valid content."""
-    from Tooling.pipeline._retry import (
-        _build_fresh_rescue_stage2_prompt,
-        _build_fresh_rescue_stage3_prompt,
-    )
+    from Tooling.pipeline._retry import _build_fresh_rescue_stage2_prompt
     attempts_dir = tmp_path / ".attempts" / "pid-test"
     attempts_dir.mkdir(parents=True)
     expected_prefix = str(attempts_dir)
 
     s2 = _build_fresh_rescue_stage2_prompt(attempts_dir, True, 4)
-    # Every output file must be qualified with attempts_dir.
+    # Every output file must be qualified with attempts_dir. The
+    # combined takeover (used by both trap paths post-2026-05-18)
+    # reuses this prompt; the legacy stage-3 prompt was removed
+    # together with `_run_fresh_sid_takeover`.
     assert f"{expected_prefix}\\patch.lean" in s2 or \
            f"{expected_prefix}/patch.lean" in s2, \
-        "stage 2 must qualify patch.lean with attempts_dir path"
+        "must qualify patch.lean with attempts_dir path"
     assert f"{expected_prefix}\\new_<slug>.lean" in s2 or \
            f"{expected_prefix}/new_<slug>.lean" in s2, \
-        "stage 2 must qualify new_<slug>.lean with attempts_dir path"
+        "must qualify new_<slug>.lean with attempts_dir path"
     assert f"{expected_prefix}\\_progress.md" in s2 or \
            f"{expected_prefix}/_progress.md" in s2, \
-        "stage 2 bail option must qualify _progress.md with attempts_dir path"
-
-    s3 = _build_fresh_rescue_stage3_prompt(attempts_dir, True, 3)
-    assert f"{expected_prefix}\\_progress.md" in s3 or \
-           f"{expected_prefix}/_progress.md" in s3, \
-        "stage 3 must qualify _progress.md with attempts_dir path"
+        "bail option must qualify _progress.md with attempts_dir path"
 
 
 def test_copy_broken_session_jsonl_succeeds(
