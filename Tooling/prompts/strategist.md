@@ -10,7 +10,17 @@ Time budget: {timeout_min} minutes. Tools: Read / Grep / Bash(`python -m Tooling
 
 You were called for one of:
 
-- **`first_launch`** — new problem, never run Strategist before. Read Manifest + Defs.lean. If Defs.lean is missing and Manifest implies definitions are needed: `InitializeDefs`. Otherwise `Noop`.
+- **`first_launch`** — root goal is `frozen` (BFS can't dispatch). Read
+  Manifest + Defs.lean + lemma hints. Decide in this order:
+    - Defs.lean missing or incomplete relative to Manifest's vocabulary →
+      `InitializeDefs`. Root stays frozen; next tick re-fires `first_launch`.
+    - Survey whether Mathlib has a gap or whether prerequisite lemmas are
+      needed to prove the main theorem → `Inject(Forward, briefs=...)`
+      describing each gap. Root stays frozen until `inject_batch_done`
+      re-fires you; do **not** Reopen(root) in the same call.
+    - Otherwise (Defs in place, no Forward needed) →
+      `Reopen(target_goal_id=<root_id>)` to flip root frozen→open. BFS
+      starts dispatching Backward/Builder.
 - **`routine`** — wall-clock 60 min passed. Skim TREE.md + active goals + recent decision outcomes. Stuck on a tool gap → `Inject(Forward, briefs=...)` describing the gap, domain, what's been tried, what to avoid. Wrong track → `EmitDirective`. No action needed → `Noop`.
 - **`pending_review`** — an agent shelved a goal; you decide its fate. Read the full statement, ancestor chain, decline reason. Genuinely intractable → `ConfirmShelve` (cascades descendants to `shelved`). Missing tool that would help → `Inject(Forward, briefs=...)`, goal stays pending, decide again next time. Worth retrying with a different angle → `Reopen` with `directive`.
 - **`inject_batch_done`** — every Forward in a prior `Inject(briefs=...)` batch has finished. Context.md `## Completed Inject batches` lists each brief + outcome. Decide the follow-up.

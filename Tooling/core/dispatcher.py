@@ -1013,24 +1013,28 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
                 mfst = manifests[problem]
                 # Determine trigger_kind heuristically from problem
                 # state (no explicit trigger column on queue rows; the
-                # trigger_kind is derived per Phase 2 §2.1 + 2.5):
-                #   bootstrap_done=0  → 'first_launch'
+                # trigger_kind is derived per Phase 2 §2.1 + 2.5 + 5):
                 #   unack Inject batch done → 'inject_batch_done'
+                #   root.status = 'frozen'  → 'first_launch'
                 #   any pending_strategist_review goal in this problem
-                #                     → 'pending_review' + use that goal
-                #                       as pending_review_id
-                #   otherwise        → 'routine'
+                #                           → 'pending_review' + use that
+                #                             goal as pending_review_id
+                #   otherwise               → 'routine'
                 #
-                # `inject_batch_done` takes precedence over `pending_
-                # review` because a batch completion is the freshest
-                # event (Strategist asked for those Forwards specifically
-                # to address the pending_review; the batch outcomes
-                # belong in that decision context).
-                prob_row = conn.execute(
-                    "SELECT bootstrap_done FROM problems WHERE name = ?",
+                # `inject_batch_done` takes precedence over everything
+                # because a batch completion is the freshest event;
+                # Strategist needs to decide follow-up (more Inject /
+                # Reopen(root) / etc) before any other reasoning. While
+                # root is still frozen, first_launch fires next so the
+                # initial planning loop (InitializeDefs → Inject → ...
+                # → Reopen(root)) runs to completion.
+                root_row = conn.execute(
+                    "SELECT status FROM goals "
+                    " WHERE problem = ? AND origin = 'root'",
                     (problem,),
                 ).fetchone()
-                bootstrapped = bool(prob_row["bootstrap_done"]) if prob_row else False
+                root_frozen = (root_row is not None
+                               and str(root_row["status"]) == 'frozen')
                 pending_row = conn.execute(
                     "SELECT id FROM goals WHERE problem = ?"
                     "   AND status = 'pending_strategist_review'"
@@ -1038,12 +1042,11 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
                     (problem,),
                 ).fetchone()
                 pending_id = int(pending_row["id"]) if pending_row else None
-                unack_batches = (db.unacknowledged_inject_batches(conn, problem)
-                                 if bootstrapped else [])
-                if not bootstrapped:
-                    trigger = "first_launch"
-                elif unack_batches:
+                unack_batches = db.unacknowledged_inject_batches(conn, problem)
+                if unack_batches:
                     trigger = "inject_batch_done"
+                elif root_frozen:
+                    trigger = "first_launch"
                 elif pending_id is not None:
                     trigger = "pending_review"
                 else:

@@ -1155,19 +1155,15 @@ def test_flush_queue_kind_drops_only_matching(
     assert rest is not None and rest["kind"] == "Builder"
 
 
-def test_open_goals_excludes_pre_bootstrap_problem(
+def test_open_goals_excludes_frozen_root(
     conn: sqlite3.Connection,
 ) -> None:
-    """residue_thm 2026-05-19 regression: when a problem has
-    `bootstrap_done=0` (just init'd, Strategist hasn't run T0 first_launch
-    yet), bfs_refill must NOT dispatch on its open goals — otherwise
-    Backward / Builder spawn in the same tick as Strategist's
-    `InitializeDefs` and reads stale Defs.lean / Manifest state,
-    declining `shelve` on a premise that's invalid by the next tick.
-    Strategist then burns a Reopen cycle correcting an agent that
-    observed truthfully at the time. The fix gates `db.open_goals` on
-    `problems.bootstrap_done = 1`."""
-    # Seed: problem with default (bootstrap_done=0) + open root.
+    """Phase 5: roots are inserted with status='frozen' until Strategist
+    issues `Reopen(root)` (frozen→open). `db.open_goals` filters
+    status='open' so frozen roots are invisible to BFS. Replaces the
+    legacy bootstrap_done-based gate while preserving the same first-launch
+    race protection.
+    """
     conn.execute(
         "INSERT INTO problems (name, manifest_path, created_at) "
         "VALUES (?, ?, ?)",
@@ -1176,16 +1172,15 @@ def test_open_goals_excludes_pre_bootstrap_problem(
     root = db.insert_goal(
         conn, problem="p", slug="main",
         lean_path="Problems/p/Root.lean",
-        statement="T", origin="root",
+        statement="T", origin="root", status="frozen",
     )
     conn.commit()
 
-    # Pre-bootstrap: open_goals returns empty even though root is open.
+    # Frozen root: open_goals returns empty.
     assert db.open_goals(conn) == []
 
-    # After Strategist's first_launch commits (bootstrap_done=1),
-    # root surfaces normally.
-    db.set_problem_bootstrap_done(conn, "p")
+    # After Strategist Reopen flips it to 'open', root surfaces.
+    db.update_goal_status(conn, root, "open")
     after = db.open_goals(conn)
     assert len(after) == 1
     assert after[0]["id"] == root

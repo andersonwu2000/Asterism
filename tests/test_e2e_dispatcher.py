@@ -77,7 +77,13 @@ def test_e2e_root_proved_through_dispatcher(
     conn.commit()
     root = conn.execute(
         "SELECT id, status FROM goals WHERE problem='p'").fetchone()
-    assert root is not None and root["status"] == "open"
+    # Phase 5: cli init creates roots as 'frozen'. This e2e test bypasses
+    # Strategist entirely (exercises Builder leaf-bypass + cascade →
+    # root_proved), so flip the root to 'open' manually to simulate
+    # Strategist's `Reopen(root)`.
+    assert root is not None and root["status"] == "frozen"
+    db.update_goal_status(conn, int(root["id"]), "open")
+    conn.commit()
 
     # Stub gateway_lifecycle.verify_file so:
     #   - Phase 1 hint probe (write_olean=False) returns ok + a

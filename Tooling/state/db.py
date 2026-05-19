@@ -115,12 +115,20 @@ CREATE TABLE IF NOT EXISTS goals (
     -- Existing 'shelved' semantic shifted to soft terminal (reopenable; dedupe
     -- doesn't block) covering: parent_needs_fix decline, ConfirmShelve from
     -- Strategist, and cascade descendants of ConfirmShelve.
+    -- Phase 5 — 'frozen' is the pre-launch state for root goals. cli init
+    -- creates roots as frozen; BFS `open_goals` filters status='open' so
+    -- frozen roots are invisible to dispatch. Strategist `first_launch`
+    -- trigger fires while root is frozen (may fire multiple times during
+    -- initial Inject batches); Strategist `Reopen(root)` flips frozen→open
+    -- to release BFS once vocabulary / lemmas are in place. Replaces the
+    -- earlier `problems.bootstrap_done` gate.
     -- Split rule: failure_reason='agent_infeasible' → 'disproved';
     --             failure_reason='agent_shelved' → 'pending_strategist_review';
     --             failure_reason='parent_needs_fix' → 'shelved'.
     status      TEXT    NOT NULL
                     CHECK(status IN ('open','attempting','proved','shelved',
-                                     'pending_strategist_review','disproved')),
+                                     'pending_strategist_review','disproved',
+                                     'frozen')),
     depth       INTEGER NOT NULL DEFAULT 0,
     attempts    INTEGER NOT NULL DEFAULT 0,
     -- Routing directive: which worker dispatches on the first attempt.
@@ -473,6 +481,15 @@ def init_schema(conn: sqlite3.Connection) -> None:
         _migrate_to_phase4(conn)
         conn.execute("PRAGMA user_version = 4")
         conn.commit()
+    if v < 5:
+        # Phase 5 — goals.status CHECK widens to accept 'frozen' (root
+        # pre-launch state). Same rebuild pattern. Backfill: roots in
+        # problems with bootstrap_done=0 flip to 'frozen' (matches the
+        # legacy gate semantic — those roots were waiting for first_launch
+        # anyway).
+        _migrate_to_phase5(conn)
+        conn.execute("PRAGMA user_version = 5")
+        conn.commit()
 
 
 def _migrate_to_phase2(conn: sqlite3.Connection) -> None:
@@ -683,6 +700,83 @@ def _migrate_to_phase4(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA foreign_keys = ON")
 
 
+def _migrate_to_phase5(conn: sqlite3.Connection) -> None:
+    """Phase 5 — widen `goals.status` CHECK to accept 'frozen' (root
+    pre-launch state). Same rebuild pattern as phase 4. Backfill: for
+    every problem with bootstrap_done=0 flip its root goal's status from
+    'open' to 'frozen' — the legacy bootstrap_done=0 condition is exactly
+    the new frozen condition.
+
+    Pre-condition: PRAGMA user_version < 5.
+
+    Post-condition (caller sets user_version = 5):
+      - goals.status CHECK accepts {'open','attempting','proved','shelved',
+        'pending_strategist_review','disproved','frozen'}
+      - Roots of bootstrap_done=0 problems are 'frozen'
+      - All other rows preserved unchanged
+    """
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='goals'"
+    ).fetchone()
+    if chk and "'frozen'" in (chk["sql"] or ""):
+        return
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_goals (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem     TEXT    NOT NULL REFERENCES problems(name),
+                slug        TEXT    NOT NULL,
+                lean_path   TEXT    NOT NULL UNIQUE,
+                statement   TEXT    NOT NULL,
+                kind        TEXT    NOT NULL DEFAULT 'theorem'
+                                CHECK(kind IN ('theorem','def',
+                                               'structure','class')),
+                origin      TEXT    NOT NULL
+                                CHECK(origin IN ('root','backward','forward')),
+                status      TEXT    NOT NULL
+                                CHECK(status IN ('open','attempting','proved',
+                                                 'shelved',
+                                                 'pending_strategist_review',
+                                                 'disproved','frozen')),
+                depth       INTEGER NOT NULL DEFAULT 0,
+                attempts    INTEGER NOT NULL DEFAULT 0,
+                entry_kind  TEXT    NOT NULL DEFAULT 'Builder'
+                                CHECK(entry_kind IN ('Builder','Backward')),
+                integrity_verified INTEGER NOT NULL DEFAULT 0
+                                CHECK(integrity_verified IN (0,1)),
+                detached    INTEGER NOT NULL DEFAULT 0
+                                CHECK(detached IN (0,1)),
+                alias_target_id INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                UNIQUE(problem, slug)
+            );
+            INSERT INTO _new_goals SELECT * FROM goals;
+            DROP TABLE goals;
+            ALTER TABLE _new_goals RENAME TO goals;
+            CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+        """)
+        prob_cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(problems)")}
+        if "bootstrap_done" in prob_cols:
+            conn.execute(
+                "UPDATE goals SET status = 'frozen', updated_at = ? "
+                " WHERE origin = 'root' AND status = 'open' "
+                "   AND problem IN (SELECT name FROM problems "
+                "                    WHERE bootstrap_done = 0)",
+                (now(),),
+            )
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 5 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
 def _migrate_to_phase3(conn: sqlite3.Connection) -> None:
     """Phase 2.5 — widen strategist_decisions.trigger_kind CHECK to
     accept 'inject_batch_done'. SQLite cannot ALTER a CHECK constraint;
@@ -772,15 +866,16 @@ def insert_goal(conn: sqlite3.Connection, *, problem: str, slug: str,
                 lean_path: str, statement: str, origin: str,
                 depth: int = 0,
                 kind: str = 'theorem',
-                entry_kind: str = 'Builder') -> int:
+                entry_kind: str = 'Builder',
+                status: str = 'open') -> int:
     ts = now()
     cur = conn.execute(
         "INSERT INTO goals (problem, slug, lean_path, statement,"
         " kind, origin, status, depth, attempts, entry_kind,"
         " created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, 'open', ?, 0, ?, ?, ?)",
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
         (problem, slug, lean_path, statement,
-         kind, origin, depth, entry_kind, ts, ts),
+         kind, origin, status, depth, entry_kind, ts, ts),
     )
     conn.commit()
     return int(cur.lastrowid)
@@ -1035,8 +1130,7 @@ def problems_needing_t0(conn: sqlite3.Connection,
         "SELECT p.name, g.id AS root_id"
         " FROM problems p"
         " JOIN goals g ON g.problem = p.name AND g.origin = 'root'"
-        " WHERE p.bootstrap_done = 0"
-        "   AND g.status NOT IN ('proved','shelved','disproved')"
+        " WHERE g.status = 'frozen'"
     )
     args: tuple = ()
     if scope is not None:
@@ -1063,8 +1157,7 @@ def problems_needing_t1(conn: sqlite3.Connection, *,
         "SELECT p.name, g.id AS root_id"
         " FROM problems p"
         " JOIN goals g ON g.problem = p.name AND g.origin = 'root'"
-        " WHERE p.bootstrap_done = 1"
-        "   AND g.status NOT IN ('proved','shelved','disproved')"
+        " WHERE g.status NOT IN ('proved','shelved','disproved','frozen')"
         "   AND ("
         "      p.last_strategist_at IS NULL"
         "      OR julianday('now') - julianday(p.last_strategist_at) > ?"
@@ -1167,20 +1260,13 @@ def open_goals(conn: sqlite3.Connection,
         # would return Builder or Backward, neither of which knows
         # how to "prove" a def).
         "  AND g.kind = 'theorem' "
-        # bootstrap_done gate: until Strategist's first_launch trigger
-        # completes (writes Defs.lean if missing, validates Manifest,
-        # etc.) NO Backward / Builder dispatch on the problem's open
-        # goals. Without this, Strategist's first-launch InitializeDefs
-        # races against a same-tick Backward dispatch — Backward's
-        # spawn compiles its Context.md before InitializeDefs commits
-        # Defs.lean, sees the unresolved symbols, declines `shelve`,
-        # and Strategist has to spend a Reopen cycle correcting a
-        # premise the agent observed truthfully at the time. Observed
-        # residue_thm 2026-05-19: first Backward burned ~2min on a
-        # doomed pass with `find Problems/residue_thm` returning no
-        # Defs.lean. Spec docs/phase2/pipelines.md §4.3 listed this
-        # gate but implementation was missing.
-        "  AND p.bootstrap_done = 1 "
+        # Phase 5 — first-launch race protection now lives in goals.status:
+        # root inits as 'frozen' and Strategist must explicitly
+        # `Reopen(root)` to release BFS. The `g.status = 'open'` filter
+        # above already excludes frozen roots, so no separate gate is
+        # needed here. (Sub-goals never become frozen — only roots — so
+        # this filter cleanly maps to the legacy bootstrap_done=1 gate
+        # without ambiguity.)
     )
     params: tuple = ()
     if scope is not None:
