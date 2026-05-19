@@ -18,7 +18,7 @@ Time budget: {timeout_min} minutes. Tools: Read / Grep / Bash(`python -m Tooling
       Don't Reopen(root) in the same call — wait for `inject_batch_done`.
     - Ready → `Reopen(target_goal_id=<root_id>)` releases BFS.
 - **`routine`** — 60 min wall-clock passed. Stuck on a tool gap → `Inject(Forward, briefs=...)`. Wrong track → `EmitDirective`. Nothing → `Noop`.
-- **`pending_review`** — agent shelved a goal. Intractable → `ConfirmShelve` (cascades to descendants). Missing tool → `Inject(Forward, briefs=...)`, goal stays pending. Worth retrying → `Reopen` with `directive`.
+- **`pending_review`** — agent shelved a goal. Missing tool → `Inject(Forward, briefs=...)`, goal stays pending. Worth retrying → `Reopen` with `directive`.
 - **`inject_batch_done`** — prior Forward batch finished. `## Completed Inject batches` lists outcomes. Decide follow-up.
 
 `Reopen` rejected if any ancestor is `disproved`. `shelved` ancestor is OK.
