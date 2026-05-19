@@ -120,12 +120,20 @@ def parse_decision(json_text: str) -> tuple[Decision | None, str]:
             f"missing or unknown 'kind' ({kind!r}); expected one of "
             f"{sorted(DECISION_KINDS)}"
         )
+    # target_id accepts int (goal_id) or str (slug). Slug → int lookup
+    # happens in verify_decision (it has `problem` context). Integer
+    # strings (e.g. "2019") are coerced here so callers don't need to
+    # special-case them.
     target_id = obj.get("target_goal_id") or obj.get("target_id")
-    if target_id is not None:
-        try:
-            target_id = int(target_id)
-        except (TypeError, ValueError):
-            return None, f"target_id must be int or null (got {target_id!r})"
+    if target_id is not None and not isinstance(target_id, int):
+        if isinstance(target_id, str):
+            try:
+                target_id = int(target_id)
+            except ValueError:
+                pass  # leave as str; verify_decision will lookup by slug
+        else:
+            return None, (f"target_id must be int, slug string, or null "
+                          f"(got {type(target_id).__name__})")
     brief = obj.get("brief")
     reason = obj.get("reason")
     # Pull all structured params (anything not already consumed) into
@@ -160,8 +168,26 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
       - Reopen ancestor safety walk (no `disproved` ancestor)
       - RequestUserAmend file ∈ {Defs.lean, Manifest.md}
       - RequestUserAmend dedup: no other awaiting_human row for this problem
+
+    Side effect: when `decision.target_id` is a slug string (e.g. agent
+    emitted `target_goal_id="main"`), looks up the corresponding goal_id
+    by (problem, slug) and rewrites `decision.target_id` to the int.
+    Unknown slug → error. Keeps the agent-facing schema forgiving
+    without leaking string IDs into commit_decision's int-typed paths.
     """
     k = decision.kind
+
+    # Slug → int normalization for kinds that carry target_id.
+    if isinstance(decision.target_id, str):
+        row = conn.execute(
+            "SELECT id FROM goals WHERE problem = ? AND slug = ?",
+            (problem, decision.target_id),
+        ).fetchone()
+        if row is None:
+            return (f"target_id={decision.target_id!r} (slug) not found "
+                    f"in problem {problem!r}; use the integer goal id "
+                    f"shown in Context.md's active goal list")
+        decision.target_id = int(row["id"])
 
     if k == "Inject":
         pipeline = decision.payload.get("pipeline")

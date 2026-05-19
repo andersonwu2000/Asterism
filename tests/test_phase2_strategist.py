@@ -214,6 +214,56 @@ def test_verify_confirmshelve_target_must_exist(
     assert "not found" in err.lower()
 
 
+def test_parse_target_id_accepts_slug_string(
+    conn: sqlite3.Connection,
+) -> None:
+    """parse_decision keeps a string target_id; verify_decision looks it
+    up by (problem, slug) and rewrites to int. Tolerates the agent
+    emitting `target_goal_id="main"` (slug) instead of the integer id."""
+    root = _insert_root(conn)
+    d, err = strategist.parse_decision(json.dumps({
+        "kind": "Reopen", "target_goal_id": "main", "reason": "ready",
+    }))
+    assert err == ""
+    assert d.target_id == "main"  # not yet normalized
+    assert strategist.verify_decision(d, conn, problem="p") == ""
+    assert d.target_id == root  # verify_decision rewrote it
+
+
+def test_verify_unknown_slug_rejected(
+    conn: sqlite3.Connection,
+) -> None:
+    _insert_root(conn)
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Reopen", "target_goal_id": "nonexistent",
+        "reason": "x",
+    }))
+    err = strategist.verify_decision(d, conn, problem="p")
+    assert "slug" in err.lower() and "not found" in err.lower()
+
+
+def test_parse_target_id_int_string_coerces(
+    conn: sqlite3.Connection,
+) -> None:
+    """`"2019"` (digit string) coerces to int 2019 at parse-time so it
+    doesn't hit the slug-lookup path unnecessarily."""
+    d, err = strategist.parse_decision(json.dumps({
+        "kind": "Reopen", "target_goal_id": "2019", "reason": "x",
+    }))
+    assert err == ""
+    assert d.target_id == 2019  # coerced to int
+
+
+def test_parse_target_id_rejects_non_str_non_int(
+    conn: sqlite3.Connection,
+) -> None:
+    d, err = strategist.parse_decision(json.dumps({
+        "kind": "Reopen", "target_goal_id": [1, 2], "reason": "x",
+    }))
+    assert d is None
+    assert "int, slug" in err.lower() or "list" in err.lower()
+
+
 def test_verify_reopen_rejected_when_ancestor_disproved(
     conn: sqlite3.Connection,
 ) -> None:
