@@ -26,7 +26,3 @@ forbidden_lemmas: []
 - `f` holomorphic on `U \ T`
 - `γ : ℝ → ℂ` closed C¹ curve on `[0,1]` whose image avoids the poles
 - conclusion: contour integral = 2πi · sum over poles of (winding) · (residue)
-
-## Vocabulary
-`Complex.windingNumber` and `Complex.residue` are defined in `Defs.lean`
-(classical existence-based definitions, total on all inputs).
