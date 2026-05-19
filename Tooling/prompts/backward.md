@@ -125,5 +125,5 @@ Ship as `:= by sorry` with `entry_kind: Builder`. Wrong types compile-fail in se
 - Each sub-goal must be **strictly simpler** and as abstract as possible — re-stating the parent in different notation does not count.
 - All universal binders (∀) and hypotheses from the parent must appear in each sub-goal.
 - Do NOT use any name in FORBIDDEN_LEMMAS — anywhere.
-- Verify lemma references before citing (names drift): Grep by name/symbol, Loogle by type pattern.
+- Cite only proved lemmas — Mathlib (Grep/Loogle), Defs.lean, or sibling goals marked (proved) in Context.md. Open siblings → declare as a sub-goal stub.
 - If a sorry-free direct proof builds cleanly, ship `patch.lean` alone (no `new_*.lean`); framework leaf-bypass takes it.

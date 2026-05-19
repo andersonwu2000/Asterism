@@ -127,6 +127,65 @@ def _ensure_imports_subgoal(
 # rare sorry-free case pays the axiom-probe cost.
 _SORRY_RE = re.compile(r"\b(?:sorry|sorryAx)\b")
 
+# Citation gate: detect `import Problems.<problem>.proofs.L_<slug>` lines
+# in a patch. Agents sometimes cite an open sibling goal via direct
+# import without declaring it as a sub-goal. The strategy then claims
+# success at verify_housekeeping (file rewrite only — no axiom check),
+# cascades up, and the sorryAx leak is caught only by `root_integrity_
+# gate` after many wasted Verify cycles. Catching it at commit time
+# bounces the agent immediately with a precise retry hint.
+_PROBLEM_IMPORT_RE = re.compile(
+    r"^\s*import\s+Problems\.([A-Za-z_][\w.]*)\.proofs\.L_([a-z][a-z0-9_]*)\s*$",
+    re.MULTILINE,
+)
+
+
+def _check_cite_unproved(
+    conn: sqlite3.Connection, *, problem: str, patch_text: str,
+    declared_slugs: set[str],
+) -> str | None:
+    """Scan `patch_text` for `import Problems.<problem>.proofs.L_<slug>`
+    lines and reject any whose slug is neither (a) a sub-goal the agent
+    declared in this commit (`declared_slugs`) nor (b) a proved goal in
+    DB. Cross-problem imports skip the check (no project-local soundness
+    invariant to enforce). Returns None on success, error string on
+    rejection.
+    """
+    bad: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for m in _PROBLEM_IMPORT_RE.finditer(patch_text):
+        if m.group(1) != problem:
+            continue
+        slug = m.group(2)
+        if slug in seen:
+            continue
+        seen.add(slug)
+        if slug in declared_slugs:
+            continue
+        row = conn.execute(
+            "SELECT status FROM goals WHERE problem = ? AND slug = ?"
+            " AND alias_target_id IS NULL",
+            (problem, slug),
+        ).fetchone()
+        if row is None:
+            # No matching goal — lake's "unknown identifier" path will
+            # catch genuinely invalid imports. Don't double-reject here.
+            continue
+        status = str(row["status"])
+        if status == "proved":
+            continue
+        bad.append((slug, status))
+    if not bad:
+        return None
+    lines = [f"  - `{slug}` (status={status})" for slug, status in bad]
+    return (
+        "Patch imports sibling goals that are not yet proved:\n"
+        + "\n".join(lines)
+        + "\n\nFix by declaring each as a sub-goal stub "
+        "(`new_<slug>.lean := by sorry`) so the framework dispatches it, "
+        "or rewrite the proof to avoid the citation."
+    )
+
 
 def _try_promote_sorry_free(
     *, dest: Path, problem: str, slug: str, workspace: Path,
@@ -589,6 +648,13 @@ def _backward_parse_and_commit(
         forbidden = _grep_forbidden(main_patch_text, mfst.forbidden_lemmas)
         if forbidden:
             return _abort("forbidden_lemma", forbidden, leading)
+        # Citation gate (leaf-bypass: no declared sub-goals).
+        cite_err = _check_cite_unproved(
+            conn, problem=goal["problem"], patch_text=main_patch_text,
+            declared_slugs=set(),
+        )
+        if cite_err:
+            return _abort("cite_unproved_sibling", cite_err, leading)
         proofs_dir = db.problem_dir(workspace, goal["problem"]) / "proofs"
         proofs_dir.mkdir(parents=True, exist_ok=True)
         scratch_dest = proofs_dir / f"_strategy_{sid_token}.lean"
@@ -878,6 +944,27 @@ def _backward_parse_and_commit(
         # `unknown identifier` errors at lake build.
         sub_dest_paths = [dest for _, dest in sub_dests]
         _inject_imports_for_subs(workspace, scratch_dest, sub_dest_paths)
+
+        # Citation gate — reject patches that import open sibling goals
+        # without declaring them as sub-goals (cite_unproved_sibling).
+        # Catches the leak that root_integrity_gate would otherwise find
+        # only after the whole cascade chain succeeded. Run after
+        # _inject_imports_for_subs so framework-injected imports for
+        # declared sub-goals don't false-trigger.
+        declared_slugs = {slug for slug, _ in sub_meta}
+        cite_err = _check_cite_unproved(
+            conn, problem=goal["problem"],
+            patch_text=scratch_dest.read_text(encoding="utf-8"),
+            declared_slugs=declared_slugs,
+        )
+        if cite_err:
+            for p in placed:
+                try:
+                    if p.exists():
+                        p.unlink()
+                except OSError:
+                    pass
+            return _abort("cite_unproved_sibling", cite_err, leading)
 
         # Assembly gate — strategy body must contain no `sorry` placeholder.
         # `verify_strategy` is mechanical (promote_to_alias only); without
