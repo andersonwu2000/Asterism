@@ -185,11 +185,13 @@ def test_cascade_decline_path_unaffected(conn: sqlite3.Connection) -> None:
 #    semantics as agent_infeasible: shelve immediately + propagate up.
 # ---------------------------------------------------------------------
 
-def test_cascade_parent_needs_fix_shelves_goal(conn: sqlite3.Connection) -> None:
-    """`return_to_parent` directive routes to failure_reason
-    'parent_needs_fix' — semantically distinct from agent_infeasible
-    (provable after parent fix vs unprovable in scope) but cascade
-    behavior identical: shelve + propagate."""
+def test_cascade_parent_needs_fix_marks_goal_dead(conn: sqlite3.Connection) -> None:
+    """Phase 6: `return_to_parent` directive routes to failure_reason
+    'parent_needs_fix' which flips the goal to status='dead' (the
+    parent strategy was wrong, this goal is moot in that context).
+    Distinct from 'shelved' (reopenable, soft) and 'disproved'
+    (counterexample, dedupe blocks). Same upward-kill cascade as
+    disproved so the parent goal retries with a different decomposition."""
     gid = _seed_goal(conn)
     pid = "rtp-1"
     _record_dead_attempt(conn, pipeline_id=pid, target_id=gid,
@@ -198,7 +200,7 @@ def test_cascade_parent_needs_fix_shelves_goal(conn: sqlite3.Connection) -> None
                 target_id=str(gid), target_kind="Goal", outcome="failed",
                 failure_reason="parent_needs_fix")
     row = db.get_goal(conn, gid)
-    assert row["status"] == "shelved"
+    assert row["status"] == "dead"
     assert row["attempts"] == 1
 
 

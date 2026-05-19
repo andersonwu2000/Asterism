@@ -26,6 +26,9 @@ from Tooling.core.dispatcher import (
     _has_terminal_disproved_ancestor,
     _has_dead_strategy_in_chain,
     _enqueue_strategist_review,
+    _propagate_shelve,
+    _propagate_disproved,
+    _propagate_dead,
     cascade_one,
 )
 from Tooling.state import db
@@ -264,6 +267,70 @@ def test_enqueue_strategist_review_dedups_in_flight(
     # Both sub-goals are pending
     assert db.get_goal(conn, sub_a)["status"] == "pending_strategist_review"
     assert db.get_goal(conn, sub_b)["status"] == "pending_strategist_review"
+
+
+def test_propagate_shelve_does_not_kill_upward(
+    conn: sqlite3.Connection,
+) -> None:
+    """Phase 6: `_propagate_shelve` does inward kill only. Upward
+    strategies stay 'proposed' because shelved is reopenable — they
+    can later succeed when the goal is Reopen'd and proved."""
+    parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
+    parent_s = _insert_strategy(conn, goal_id=parent_g, status="proposed")
+    target = _insert_goal(conn, slug="target", status="shelved")
+    _link(conn, parent_s, [target])
+
+    own_s = _insert_strategy(conn, goal_id=target, status="proposed")
+
+    _propagate_shelve(conn, target)
+
+    # Inward: own strategy killed
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id=?", (own_s,)
+    ).fetchone()["status"] == "dead"
+    # Upward: parent strategy still alive
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id=?", (parent_s,)
+    ).fetchone()["status"] == "proposed"
+    # Parent goal stays attempting
+    assert db.get_goal(conn, parent_g)["status"] == "attempting"
+
+
+def test_propagate_disproved_kills_upward(
+    conn: sqlite3.Connection,
+) -> None:
+    """Phase 6: `_propagate_disproved` (counterexample) kills upward
+    strategies AND inward strategies. Parent goal reopens for retry
+    via different decomposition."""
+    parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
+    parent_s = _insert_strategy(conn, goal_id=parent_g, status="proposed")
+    target = _insert_goal(conn, slug="target", status="disproved")
+    _link(conn, parent_s, [target])
+
+    _propagate_disproved(conn, target)
+
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id=?", (parent_s,)
+    ).fetchone()["status"] == "dead"
+    assert db.get_goal(conn, parent_g)["status"] == "open"
+
+
+def test_propagate_dead_kills_upward(
+    conn: sqlite3.Connection,
+) -> None:
+    """Phase 6: `_propagate_dead` (parent_needs_fix) kills upward and
+    inward. Parent reopens to try a different decomposition."""
+    parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
+    parent_s = _insert_strategy(conn, goal_id=parent_g, status="proposed")
+    target = _insert_goal(conn, slug="target", status="dead")
+    _link(conn, parent_s, [target])
+
+    _propagate_dead(conn, target)
+
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id=?", (parent_s,)
+    ).fetchone()["status"] == "dead"
+    assert db.get_goal(conn, parent_g)["status"] == "open"
 
 
 def test_forward_cascade_without_decision_id_is_noop(

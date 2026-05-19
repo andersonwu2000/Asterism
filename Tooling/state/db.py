@@ -122,13 +122,27 @@ CREATE TABLE IF NOT EXISTS goals (
     -- initial Inject batches); Strategist `Reopen(root)` flips frozen→open
     -- to release BFS once vocabulary / lemmas are in place. Replaces the
     -- earlier `problems.bootstrap_done` gate.
-    -- Split rule: failure_reason='agent_infeasible' → 'disproved';
-    --             failure_reason='agent_shelved' → 'pending_strategist_review';
-    --             failure_reason='parent_needs_fix' → 'shelved'.
+    -- Split rule (Phase 6 update):
+    --   failure_reason='agent_infeasible' → 'disproved' (counterexample;
+    --     dedupe blocks same-shape proposals).
+    --   failure_reason='agent_shelved' → 'pending_strategist_review'
+    --     (transitional; Strategist judges).
+    --   failure_reason='parent_needs_fix' → 'dead' (parent strategy
+    --     was wrong, goal moot under that context; kills upward
+    --     strategies so parent retries with new decomposition).
+    -- Terminal soft/hard semantics:
+    --   'shelved' — soft terminal; Strategist may Reopen, dedupe DOES
+    --     NOT block, upward strategies stay 'proposed' (wait for Reopen).
+    --   'disproved' — hard terminal; never Reopen, dedupe BLOCKS, kills
+    --     upward strategies.
+    --   'dead' — hard terminal in this strategy context; never Reopen,
+    --     dedupe DOES NOT block (same statement may be valid under a
+    --     different parent strategy), kills upward strategies so parent
+    --     goal retries.
     status      TEXT    NOT NULL
                     CHECK(status IN ('open','attempting','proved','shelved',
                                      'pending_strategist_review','disproved',
-                                     'frozen')),
+                                     'frozen','dead')),
     depth       INTEGER NOT NULL DEFAULT 0,
     attempts    INTEGER NOT NULL DEFAULT 0,
     -- Routing directive: which worker dispatches on the first attempt.
@@ -490,6 +504,18 @@ def init_schema(conn: sqlite3.Connection) -> None:
         _migrate_to_phase5(conn)
         conn.execute("PRAGMA user_version = 5")
         conn.commit()
+    if v < 6:
+        # Phase 6 — goals.status CHECK widens to accept 'dead' (terminal
+        # for parent_needs_fix decline). Hard terminal like disproved
+        # but doesn't block dedupe (same statement may be valid under a
+        # different parent strategy). Same rebuild pattern as phase 5.
+        # No backfill: pre-Phase-6 rows used 'shelved' for the
+        # parent_needs_fix case; leaving them as 'shelved' is safe (just
+        # means they're reopenable, which is harmless for already-completed
+        # runs).
+        _migrate_to_phase6(conn)
+        conn.execute("PRAGMA user_version = 6")
+        conn.commit()
 
 
 def _migrate_to_phase2(conn: sqlite3.Connection) -> None:
@@ -695,6 +721,71 @@ def _migrate_to_phase4(conn: sqlite3.Connection) -> None:
         if fk_violations:
             raise RuntimeError(
                 f"Phase 4 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_phase6(conn: sqlite3.Connection) -> None:
+    """Phase 6 — widen `goals.status` CHECK to accept 'dead' (terminal
+    for parent_needs_fix decline). Hard terminal but doesn't block dedupe
+    (same statement may be valid under a different parent strategy).
+    Same rebuild pattern as phase 5.
+
+    Pre-condition: PRAGMA user_version < 6.
+
+    Post-condition (caller sets user_version = 6):
+      - goals.status CHECK accepts {'open','attempting','proved','shelved',
+        'pending_strategist_review','disproved','frozen','dead'}
+      - All existing rows preserved unchanged
+    """
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='goals'"
+    ).fetchone()
+    if chk and "'dead'" in (chk["sql"] or ""):
+        return
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_goals (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem     TEXT    NOT NULL REFERENCES problems(name),
+                slug        TEXT    NOT NULL,
+                lean_path   TEXT    NOT NULL UNIQUE,
+                statement   TEXT    NOT NULL,
+                kind        TEXT    NOT NULL DEFAULT 'theorem'
+                                CHECK(kind IN ('theorem','def',
+                                               'structure','class')),
+                origin      TEXT    NOT NULL
+                                CHECK(origin IN ('root','backward','forward')),
+                status      TEXT    NOT NULL
+                                CHECK(status IN ('open','attempting','proved',
+                                                 'shelved',
+                                                 'pending_strategist_review',
+                                                 'disproved','frozen','dead')),
+                depth       INTEGER NOT NULL DEFAULT 0,
+                attempts    INTEGER NOT NULL DEFAULT 0,
+                entry_kind  TEXT    NOT NULL DEFAULT 'Builder'
+                                CHECK(entry_kind IN ('Builder','Backward')),
+                integrity_verified INTEGER NOT NULL DEFAULT 0
+                                CHECK(integrity_verified IN (0,1)),
+                detached    INTEGER NOT NULL DEFAULT 0
+                                CHECK(detached IN (0,1)),
+                alias_target_id INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                UNIQUE(problem, slug)
+            );
+            INSERT INTO _new_goals SELECT * FROM goals;
+            DROP TABLE goals;
+            ALTER TABLE _new_goals RENAME TO goals;
+            CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 6 migration left FK violations: {fk_violations[:5]}"
             )
     finally:
         conn.execute("PRAGMA foreign_keys = ON")

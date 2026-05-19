@@ -129,7 +129,7 @@ def _cascade_shelve_descendants(
             ).fetchall():
                 sub_id = int(r["id"])
                 sub_status = str(r["status"])
-                if sub_status in ("proved", "shelved", "disproved",
+                if sub_status in ("proved", "shelved", "disproved", "dead",
                                   "pending_strategist_review"):
                     # Walk past proved descendants (their own subtrees
                     # may still contain active goals worth cascading).
@@ -146,31 +146,28 @@ def _cascade_shelve_descendants(
 def _set_goal_terminal_and_propagate(
     conn: sqlite3.Connection, goal_id: int, status: str,
 ) -> None:
-    """Flip a goal to a terminal status (`proved` / `shelved` /
-    `disproved`) and:
+    """Flip a goal to a terminal status and:
 
       1. If the goal was Inject-produced (Forward output of a
          Strategist Inject decision), fill the originating decision's
          `outcome` column and fire `inject_batch_done` when its
          batch is fully terminal.
-      2. If the status is `shelved` or `disproved`, cascade
-         `shelved` to every still-active descendant via
-         `_cascade_shelve_descendants`. Display and Strategist
-         context view then converge on the same source of truth
-         (the goal status) rather than relying on view-level filters
-         to hide orphans of a dead chain.
+      2. For non-recoverable terminals (`shelved` / `disproved` /
+         `dead`), cascade `shelved` to every still-active descendant
+         via `_cascade_shelve_descendants`. Display and Strategist
+         context view then converge on the same source of truth.
 
     Centralises the sequence (`update_goal_status` →
     `propagate_inject_outcome_from_goal` →
     `_maybe_enqueue_inject_batch_done` → optional descendant
     cascade) so every terminal flip site applies them uniformly.
 
-    `status` must be one of {'proved','shelved','disproved'}."""
+    `status` ∈ {'proved','shelved','disproved','dead'}."""
     db.update_goal_status(conn, goal_id, status)
     d = db.propagate_inject_outcome_from_goal(conn, goal_id)
     if d is not None:
         _maybe_enqueue_inject_batch_done(conn, d)
-    if status in ("shelved", "disproved"):
+    if status in ("shelved", "disproved", "dead"):
         _cascade_shelve_descendants(conn, goal_id)
 
 
@@ -369,22 +366,47 @@ def _has_dead_strategy_in_chain(conn: sqlite3.Connection,
 
 
 def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
-    """Cascade a goal-shelve event in two directions:
+    """Inward strategy kill for a goal that just hit a terminal status.
 
-    Upward: every parent strategy that still depends on this goal as a
-    sub-goal can never become ready_for_verify (requires all sub-goals
-    'proved'). Kill those proposed strategies; for each affected parent
-    goal, if no live strategy survives, reopen it.
+    Phase 6: caller is responsible for the (separate) upward strategy
+    kill if the terminal status warrants it (disproved / dead, via
+    `_kill_upward_chain`). `shelved` is soft-terminal: parent strategies
+    stay 'proposed' until the goal is Reopen'd, so no upward kill from
+    this function.
 
-    Inward: strategies for proving the just-shelved goal are now moot.
-    Kill them as well. Their sub-goals become orphans — `open_goals`
-    walks the alive-strategy DAG and excludes them from dispatch, so no
-    further cleanup is required.
-
-    Iterative — a re-opened parent goal may shelve later via its own
-    increment_goal_attempts path; we don't recurse here.
+    The strategies this function kills (status='proposed' AND
+    goal_id == the terminal goal) are the ones trying to PROVE the
+    just-terminated goal. Their sub-goals (this goal's grandchildren)
+    become orphans of the alive-strategy DAG; `db.open_goals` filters
+    them out and Strategist's view section converges on the same
+    invariant.
     """
-    # Upward kill — strategies USING this goal as a sub-goal
+    # Inward kill — strategies whose goal IS this terminal goal.
+    # Explicit commit required: see commit 1052a5d comment for context.
+    conn.execute(
+        "UPDATE strategies SET status='dead' "
+        "WHERE goal_id = ? AND status='proposed'",
+        (goal_id,),
+    )
+    conn.commit()
+
+
+def _kill_upward_chain(conn: sqlite3.Connection, goal_id: int,
+                       *, parent_terminal_status: str) -> None:
+    """Phase 6 — kill the strategies USING this goal as a sub-goal,
+    then cascade to their parent goals.
+
+    Called only for hard terminals (`disproved` / `dead`). Soft
+    `shelved` deliberately leaves the upward chain alive so a future
+    Reopen can revive it.
+
+    `parent_terminal_status` ∈ {'shelved', 'dead'} — what to flip an
+    exhausted parent goal to when its attempts counter hits
+    SHELVE_THRESHOLD via this cascade. Disproved subgoals exhaust
+    their parents as 'shelved' (the parent could in principle try a
+    different decomposition); dead subgoals exhaust their parents as
+    'dead' (the whole subtree is in the wrong context).
+    """
     parent_strategies = conn.execute(
         "SELECT s.id, s.goal_id FROM strategies s "
         "JOIN strategy_subgoals ss ON ss.strategy_id = s.id "
@@ -395,13 +417,10 @@ def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
     for s in parent_strategies:
         db.update_strategy_status(conn, int(s["id"]), "dead")
 
-    # For each affected parent goal: if no 'proposed' strategy
-    # survives, transition 'attempting' → 'open' AND increment the
-    # goal's attempts counter. The increment ensures every dead
-    # strategy advances toward SHELVE_THRESHOLD; without it, passive
-    # OR=1 would spin Backward indefinitely producing strategies that
-    # all die to deeper sub-goal shelves without ever exhausting the
-    # goal's attempt budget.
+    # For each affected parent goal: if no live strategy survives,
+    # increment attempts and possibly cascade. See pre-Phase-6 comment
+    # block for the rationale on the increment side; behavior here is
+    # unchanged from the legacy `_propagate_shelve` upward branch.
     affected_parent_goals = {int(s["goal_id"]) for s in parent_strategies}
     for gid in affected_parent_goals:
         has_live = conn.execute(
@@ -416,26 +435,31 @@ def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
             if row and row["status"] == "attempting":
                 n = db.increment_goal_attempts(conn, gid)
                 if n >= SHELVE_THRESHOLD:
-                    # Cascading shelve: this parent has now run out of
-                    # attempts as a result of the sub-goal's death.
-                    # Recurse so its own parents propagate too.
-                    _set_goal_terminal_and_propagate(conn, gid, "shelved")
+                    _set_goal_terminal_and_propagate(
+                        conn, gid, parent_terminal_status)
                     _propagate_shelve(conn, gid)
+                    if parent_terminal_status in ("disproved", "dead"):
+                        _kill_upward_chain(
+                            conn, gid,
+                            parent_terminal_status=parent_terminal_status)
                 else:
                     db.update_goal_status(conn, gid, "open")
 
-    # Inward kill — strategies whose parent goal IS this shelved goal.
-    # Explicit commit required: previously the trailing UPDATE relied
-    # on a downstream `db.update_*` helper to flush. Most cascades
-    # do trigger one before the worker conn closes, but if the loop
-    # exits cleanly (budget exhausted, idle-exit) right after this
-    # function returns, the inward-kill row updates never reach disk.
-    conn.execute(
-        "UPDATE strategies SET status='dead' "
-        "WHERE goal_id = ? AND status='proposed'",
-        (goal_id,),
-    )
-    conn.commit()
+
+def _propagate_disproved(conn: sqlite3.Connection, goal_id: int) -> None:
+    """Composite: inward strategy kill + upward strategy chain kill
+    for a disproved goal (counterexample-based hard terminal)."""
+    _propagate_shelve(conn, goal_id)
+    _kill_upward_chain(conn, goal_id, parent_terminal_status="shelved")
+
+
+def _propagate_dead(conn: sqlite3.Connection, goal_id: int) -> None:
+    """Composite: inward strategy kill + upward strategy chain kill
+    for a dead goal (parent_needs_fix; parent strategy was wrong).
+    Exhausted parents cascade-die rather than cascade-shelve because
+    the entire subtree was in the wrong context."""
+    _propagate_shelve(conn, goal_id)
+    _kill_upward_chain(conn, goal_id, parent_terminal_status="dead")
 
 
 def next_worker_kind(goal: sqlite3.Row) -> str:
@@ -670,13 +694,13 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 db.increment_goal_attempts(conn, int(target_id))
                 _set_goal_terminal_and_propagate(
                     conn, int(target_id), "disproved")
-                _propagate_shelve(conn, int(target_id))
+                _propagate_disproved(conn, int(target_id))
                 return
             if failure_reason == "parent_needs_fix":
                 db.increment_goal_attempts(conn, int(target_id))
                 _set_goal_terminal_and_propagate(
-                    conn, int(target_id), "shelved")
-                _propagate_shelve(conn, int(target_id))
+                    conn, int(target_id), "dead")
+                _propagate_dead(conn, int(target_id))
                 return
             if failure_reason == "agent_shelved":
                 db.increment_goal_attempts(conn, int(target_id))
@@ -800,13 +824,13 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             db.increment_goal_attempts(conn, int(target_id))
             _set_goal_terminal_and_propagate(
                 conn, int(target_id), "disproved")
-            _propagate_shelve(conn, int(target_id))
+            _propagate_disproved(conn, int(target_id))
             return
         if failure_reason == "parent_needs_fix":
             db.increment_goal_attempts(conn, int(target_id))
             _set_goal_terminal_and_propagate(
-                conn, int(target_id), "shelved")
-            _propagate_shelve(conn, int(target_id))
+                conn, int(target_id), "dead")
+            _propagate_dead(conn, int(target_id))
             return
         if failure_reason == "agent_shelved":
             db.increment_goal_attempts(conn, int(target_id))
