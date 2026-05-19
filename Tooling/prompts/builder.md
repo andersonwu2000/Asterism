@@ -45,7 +45,7 @@ Place the directive immediately above the theorem, keep `:= by sorry`. Pick one:
 
 - `unprovable` — false in this hypothesis scope. Description must give a counterexample (specific values + arithmetic check).
 - `return_to_parent` — provable after parent strategy is fixed. Description must name the fix concretely (missing hypothesis, wrong substructure).
-- `shelve` — lacks vocabulary (def / structure / class) to close this goal at all, or a fundamental Mathlib API region is missing. Description must name the missing type / structure / class and how you'd use it. For theorem-shaped lacks ("I need lemma X to close this"), prefer `needs_decomposition` — let Backward break the goal into sub-goals you can each close on a future Builder pass.
+- `shelve` — lacks math tools or scaffolding to proceed. Description must name what's needed (Forward lemma statements, supporting defs, related theorems).
 - `needs_decomposition` — too coarse for one Builder pass. Description hints at decomposition shape if you have one.
 
 ```lean
