@@ -4,6 +4,7 @@
      anchor Edit tool relies on. -->
 
 <!-- LESSONS_BEGIN -->
-- To expand `‖x - t • y‖²` in a real inner product space, chain `norm_sub_sq_real` then `inner_smul_right`, `norm_smul`, `Real.norm_eq_abs`, `sq_abs` (no bundled lemma); to "divide by `t > 0`" through `0 ≤ t * (a + t·b)`, factor with `ring`, then derive `0 ≤ a + t·b` via `by_contra` + `mul_neg_of_pos_of_neg`.
-- For identities mixing scalar `•` with `+`/`-` on a normed space (e.g. `z - ((1-t) • a + t • b) = (z - a) - t • (b - a)`), use the `module` tactic; `abel` doesn't reason about `•`, and squaring a nonneg-base inequality goes via `pow_le_pow_left₀` (note the `₀`).
-- Use `abel` (not `ring`) for arithmetic on `X : NormedAddCommGroup` differences; combine with `← inner_sub_left` to fold sums of inner products into a single `⟪·, ·⟫`, then close with `real_inner_self_eq_norm_sq`.
+- After `rw [norm_smul]` on a real scalar `t`, the goal contains `‖t‖` (not `|t|`); apply `Real.norm_eq_abs` first, then `abs_of_pos` (or `abs_of_nonneg`) to simplify to `t` — using `abs_of_pos` directly without `Real.norm_eq_abs` fails with "did not find pattern `|t|`".
+- For division inequalities like `ε / (b + 1) * c < ε`, `div_lt_iff` is unavailable (unknown identifier); instead give `nlinarith` the hints `div_mul_cancel₀ ε (ne_of_gt hb) : ε / (b+1) * (b+1) = ε` and `div_pos hε hb : 0 < ε / (b+1)` to close the goal.
+- For vector equalities inside `rw [...]` arguments (e.g. `P y - P x = -(P x - P y)`), use `(by abel : ...)` not `(by ring : ...)`; the space is only an `AddCommGroup`, not a `CommRing`, so `ring` fails with "`ring_nf` made no progress".
+- To cancel a positive factor from `a * c ≤ b * c`, use `le_of_mul_le_mul_right h hpos`; `mul_le_mul_right` in Mathlib4 is NOT an iff and will type-error.

@@ -55,3 +55,11 @@ demo/active/
 
 # Internal-only reference docs (handoff state, strategy, operator runbook)
 docs/internal/
+
+# Operator discipline; loaded locally via Claude Code's CLAUDE.md walk, not tracked.
+docs/CLAUDE.md
+
+# Dated snapshots of benchmark problem dirs (local archive of "what was
+# proved on date X"; framework-state files inside should never be
+# committed per CLAUDE.md). Pattern: Problems/<name>_YYYYMMDD/.
+Problems/*_2[0-9][0-9][0-9][0-9][0-9][0-9][0-9]/

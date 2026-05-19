@@ -177,13 +177,15 @@ def _lookup_spawn_info(spawn_dir: Path) -> tuple[str, str] | None:
     if not ctx.exists():
         return None
     try:
-        # Signature lines all sit in the first ~50 lines; cap the read.
+        # Read the whole file. Earlier versions capped at 80 / 300 lines,
+        # but BRIEF.md inlined at the top grew with richer Manifests and
+        # kept overflowing the cap (residue_thm 2026-05-19: BRIEF 81
+        # lines pushed the `# Context for goal <slug>` header to line
+        # 82, stats showed every spawn as `spawning, ?`). Any constant
+        # is brittle. Context.md is tens of KB at most; reading the
+        # whole file each watcher tick is microseconds.
         with open(ctx, "r", encoding="utf-8", errors="replace") as f:
-            head_lines = []
-            for i, line in enumerate(f):
-                if i >= 80:
-                    break
-                head_lines.append(line.rstrip("\n"))
+            head_lines = [line.rstrip("\n") for line in f]
     except OSError:
         return None
     # Strategist / Forward declare themselves in the file's first header.
