@@ -296,13 +296,26 @@ def _enqueue_strategist_review(conn: sqlite3.Connection,
                target_kind="Goal", priority=20)
 
 
-def _has_terminal_disproved_ancestor(conn: sqlite3.Connection,
-                                     goal_id: int) -> bool:
-    """Phase 2 Rule 3 — Reopen safety walk.
+def _has_hard_terminal_ancestor(conn: sqlite3.Connection,
+                                goal_id: int) -> tuple[bool, str | None]:
+    """Phase 6 — Reopen safety walk.
 
-    Return True iff any ancestor goal in the strategy_subgoals chain
-    has status='disproved'. 'shelved' ancestors do NOT count (soft
-    terminal; auto-detach handles broken upward chains).
+    Return `(found, status)` where `found` is True iff any ancestor
+    goal in the strategy_subgoals chain has a HARD terminal status
+    (`disproved` or `dead`); `status` is which one if any.
+
+    Both hard terminals block Reopen on descendants:
+      - `disproved`: counterexample; descendant's statement depends on
+        a false hypothesis context — proving it is meaningless.
+      - `dead`: parent strategy was wrong; descendant was created for
+        that wrong context. Auto-detach can still salvage independently
+        useful lemmas, but the path through this descendant back to
+        root is permanently severed.
+
+    `shelved` ancestors do NOT count (soft terminal; auto-detach
+    handles broken upward chains so the descendant can run standalone
+    and may even be revived once the ancestor reopens).
+
     Walks UPWARD via strategy_subgoals.subgoal_id = goal_id → parent
     strategy → strategy.goal_id, recursively.
     """
@@ -311,8 +324,6 @@ def _has_terminal_disproved_ancestor(conn: sqlite3.Connection,
     while frontier:
         next_frontier: list[int] = []
         for gid in frontier:
-            # Find this goal's parent goals (one hop up via strategies
-            # that claim this goal as a sub-goal).
             rows = conn.execute(
                 "SELECT s.goal_id FROM strategies s"
                 " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
@@ -330,11 +341,20 @@ def _has_terminal_disproved_ancestor(conn: sqlite3.Connection,
                 ).fetchone()
                 if grow is None:
                     continue
-                if grow["status"] == "disproved":
-                    return True
+                if grow["status"] in ("disproved", "dead"):
+                    return True, str(grow["status"])
                 next_frontier.append(parent_id)
         frontier = next_frontier
-    return False
+    return False, None
+
+
+def _has_terminal_disproved_ancestor(conn: sqlite3.Connection,
+                                     goal_id: int) -> bool:
+    """Legacy alias — Phase 6 broadened the safety walk to include
+    `dead`. New code should call `_has_hard_terminal_ancestor` directly
+    for the more informative return shape."""
+    found, _ = _has_hard_terminal_ancestor(conn, goal_id)
+    return found
 
 
 def _has_dead_strategy_in_chain(conn: sqlite3.Connection,

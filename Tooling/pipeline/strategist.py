@@ -248,14 +248,26 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         if str(g["problem"]) != problem:
             return (f"target goal belongs to problem {g['problem']!r}, "
                     f"not this Strategist's {problem!r}")
-        # Phase 2 Rule 3 safety walk
-        if _dispatcher._has_terminal_disproved_ancestor(
+        # Phase 6 safety walk — block Reopen if any ancestor is
+        # `disproved` (counterexample) or `dead` (parent strategy was
+        # wrong, descendant moot in that context). `shelved` ancestor
+        # is OK — auto-detach in commit lets the goal run standalone.
+        bad, kind = _dispatcher._has_hard_terminal_ancestor(
             conn, decision.target_id
-        ):
+        )
+        if bad:
+            if kind == "disproved":
+                return (
+                    f"Reopen rejected: goal {decision.target_id} has a "
+                    f"'disproved' ancestor (counterexample already shown). "
+                    f"Use ConfirmShelve."
+                )
             return (
                 f"Reopen rejected: goal {decision.target_id} has a "
-                f"'disproved' ancestor (counterexample already shown). "
-                f"Use ConfirmShelve."
+                f"'dead' ancestor (parent strategy was wrong; this "
+                f"descendant exists only in that abandoned context). "
+                f"Inject(Backward, target=<parent-goal>) to try a "
+                f"different decomposition instead."
             )
         if not decision.reason or not str(decision.reason).strip():
             return "Reopen requires non-empty reason"

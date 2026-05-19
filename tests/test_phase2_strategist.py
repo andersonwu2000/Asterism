@@ -284,6 +284,39 @@ def test_verify_reopen_rejected_when_ancestor_disproved(
     assert "disproved" in err.lower()
 
 
+def test_verify_reopen_rejected_when_ancestor_dead(
+    conn: sqlite3.Connection,
+) -> None:
+    """Phase 6: `dead` ancestor also blocks Reopen on descendants
+    (parent strategy was wrong, descendant exists only in that
+    abandoned context). Same treatment as disproved; only `shelved`
+    is reopenable via auto-detach."""
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "dead")
+    sub = db.insert_goal(
+        conn, problem="p", slug="sub_under_dead",
+        lean_path="Problems/p/proofs/L_sub_dead.lean", statement="T",
+        origin="backward",
+    )
+    cur = conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, scratch_path,"
+        " status, proposal_md, created_by, created_at)"
+        " VALUES (?, '', '', 'proposed', '', 'test', ?)",
+        (root, db.now()))
+    conn.execute(
+        "INSERT INTO strategy_subgoals (strategy_id, subgoal_id, position)"
+        " VALUES (?, ?, 0)", (cur.lastrowid, sub))
+    conn.commit()
+
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Reopen", "target_goal_id": sub, "reason": "salvage",
+    }))
+    err = strategist.verify_decision(d, conn, problem="p")
+    assert "dead" in err.lower()
+    # Hint suggests the right alternative
+    assert "Inject(Backward" in err or "different decomposition" in err.lower()
+
+
 def test_verify_reopen_ok_with_shelved_ancestor(
     conn: sqlite3.Connection,
 ) -> None:

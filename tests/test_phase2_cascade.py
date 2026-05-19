@@ -24,6 +24,7 @@ import pytest
 
 from Tooling.core.dispatcher import (
     _has_terminal_disproved_ancestor,
+    _has_hard_terminal_ancestor,
     _has_dead_strategy_in_chain,
     _enqueue_strategist_review,
     _propagate_shelve,
@@ -132,6 +133,56 @@ def test_disproved_at_depth_2(conn: sqlite3.Connection) -> None:
     _link(conn, s2, [sub])
 
     assert _has_terminal_disproved_ancestor(conn, sub) is True
+
+
+def test_dead_ancestor_blocks_reopen(conn: sqlite3.Connection) -> None:
+    """Phase 6: `dead` ancestor (parent_needs_fix verdict) also blocks
+    Reopen on descendants. The descendant exists only in the wrong
+    context that produced the dead ancestor; reopening it would attempt
+    proof in an abandoned strategy direction. Salvage useful descendants
+    via Inject(Backward, target=<other-goal>) instead."""
+    g = _insert_goal(conn, slug="g_dead", origin="root", status="dead")
+    s = _insert_strategy(conn, goal_id=g)
+    sub = _insert_goal(conn, slug="sub_under_dead", status="shelved")
+    _link(conn, s, [sub])
+
+    found, kind = _has_hard_terminal_ancestor(conn, sub)
+    assert found is True
+    assert kind == "dead"
+    # Legacy alias keeps returning True for either disproved/dead.
+    assert _has_terminal_disproved_ancestor(conn, sub) is True
+
+
+def test_dead_at_depth_2_blocks_reopen(conn: sqlite3.Connection) -> None:
+    """G (open) → S1 → mid (dead) → S2 → sub. Walk finds mid='dead',
+    returns True with kind='dead'."""
+    g = _insert_goal(conn, slug="g_d2", origin="root")
+    s1 = _insert_strategy(conn, goal_id=g)
+    mid = _insert_goal(conn, slug="mid_d2", status="dead")
+    _link(conn, s1, [mid])
+    s2 = _insert_strategy(conn, goal_id=mid)
+    sub = _insert_goal(conn, slug="sub_d2", status="shelved")
+    _link(conn, s2, [sub])
+
+    found, kind = _has_hard_terminal_ancestor(conn, sub)
+    assert found is True
+    assert kind == "dead"
+
+
+def test_shelved_ancestor_not_a_hard_terminal(
+    conn: sqlite3.Connection,
+) -> None:
+    """Phase 6 helper returns (False, None) on shelved ancestors —
+    they don't block Reopen; auto-detach handles them."""
+    g = _insert_goal(conn, slug="g_shelved", origin="root",
+                    status="shelved")
+    s = _insert_strategy(conn, goal_id=g)
+    sub = _insert_goal(conn, slug="sub_under_shelved", status="shelved")
+    _link(conn, s, [sub])
+
+    found, kind = _has_hard_terminal_ancestor(conn, sub)
+    assert found is False
+    assert kind is None
 
 
 # ---------------------------------------------------------------------
