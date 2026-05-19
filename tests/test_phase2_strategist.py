@@ -54,14 +54,14 @@ def _insert_root(conn: sqlite3.Connection) -> int:
 def test_parse_inject_decision() -> None:
     text = json.dumps({
         "kind": "Inject", "pipeline": "Forward",
-        "briefs": ["## Need\nFoo"],
+        "brief": "## Need\nFoo",
     })
     d, err = strategist.parse_decision(text)
     assert err == ""
     assert d is not None
     assert d.kind == "Inject"
     assert d.payload.get("pipeline") == "Forward"
-    assert d.payload.get("briefs") == ["## Need\nFoo"]
+    assert d.brief == "## Need\nFoo"
 
 
 def test_parse_confirmshelve_decision() -> None:
@@ -147,60 +147,49 @@ def test_verify_inject_rejects_unknown_pipeline(
     assert "Forward" in err or "Reflection" in err
 
 
-def test_verify_inject_requires_briefs_field(
+def test_verify_inject_requires_brief_field(
     conn: sqlite3.Connection,
 ) -> None:
-    """Unified schema (Phase 2.5) requires `briefs: list[str]`. An Inject
-    with no briefs field is rejected even if some other payload key is
-    set."""
+    """Phase 6: Inject requires top-level `brief: str`. Missing brief
+    is rejected."""
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Forward",
     }))
     err = strategist.verify_decision(d, conn, problem="p")
-    assert "briefs" in err.lower()
+    assert "brief" in err.lower()
 
 
-def test_verify_inject_rejects_empty_brief_in_list(
+def test_verify_inject_rejects_empty_brief(
     conn: sqlite3.Connection,
 ) -> None:
     d, _ = strategist.parse_decision(json.dumps({
-        "kind": "Inject", "pipeline": "Forward", "briefs": ["  "],
+        "kind": "Inject", "pipeline": "Forward", "brief": "  ",
     }))
     err = strategist.verify_decision(d, conn, problem="p")
-    assert "[0]" in err and "non-empty" in err.lower()
+    assert "non-empty" in err.lower() or "brief" in err.lower()
 
 
-def test_verify_inject_rejects_legacy_brief_field(
+def test_verify_inject_rejects_legacy_briefs_list(
     conn: sqlite3.Connection,
 ) -> None:
-    """`brief` (singular, str) was the pre-unification field. Reject
-    with a migration hint pointing at `briefs` list."""
+    """`briefs: list` was the Phase 2.5 schema; Phase 6 uses single
+    `brief`. Reject with a hint pointing at the new schema."""
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Forward",
-        "brief": "legacy single brief",
+        "briefs": ["legacy multi-brief"],
     }))
     err = strategist.verify_decision(d, conn, problem="p")
-    # Either "missing briefs" or "legacy brief" path; both should
-    # mention briefs as the correct field.
-    assert "briefs" in err.lower()
+    assert "brief" in err.lower()
 
 
-def test_verify_inject_ok_single_brief_in_list(
+def test_verify_inject_ok_single_brief(
     conn: sqlite3.Connection,
 ) -> None:
-    """N=1 is valid — the degenerate single-Forward case under the
-    unified schema."""
+    """Forward Inject: one brief per decision (multi-Inject lands as
+    multiple decisions in the future multi-decision schema)."""
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Forward",
-        "briefs": ["## Need\nfoo"],
-    }))
-    assert strategist.verify_decision(d, conn, problem="p") == ""
-
-
-def test_verify_inject_ok_multi_briefs(conn: sqlite3.Connection) -> None:
-    d, _ = strategist.parse_decision(json.dumps({
-        "kind": "Inject", "pipeline": "Forward",
-        "briefs": ["a", "b", "c"],
+        "brief": "## Need\nfoo",
     }))
     assert strategist.verify_decision(d, conn, problem="p") == ""
 
@@ -365,7 +354,8 @@ def test_verify_inject_backward_requires_target_goal_id(
     conn: sqlite3.Connection,
 ) -> None:
     d, _ = strategist.parse_decision(json.dumps({
-        "kind": "Inject", "pipeline": "Backward", "reason": "retry",
+        "kind": "Inject", "pipeline": "Backward",
+        "brief": "try angle X", "reason": "retry",
     }))
     err = strategist.verify_decision(d, conn, problem="p")
     assert "target_goal_id" in err
@@ -378,24 +368,24 @@ def test_verify_inject_backward_rejects_terminal_target(
     db.update_goal_status(conn, root, "proved")
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": root, "directive": "try again",
+        "target_goal_id": root, "brief": "try again",
     }))
     err = strategist.verify_decision(d, conn, problem="p")
     assert "terminal" in err.lower() or "proved" in err.lower()
 
 
-def test_verify_inject_backward_rejects_briefs(
+def test_verify_inject_rejects_legacy_briefs_or_directive_on_backward(
     conn: sqlite3.Connection,
 ) -> None:
-    """Phase 6: Backward/Builder use `directive`, not `briefs` (Forward
-    semantic). Mixing schemas is rejected to keep agent output crisp."""
+    """Phase 6: legacy `briefs: list` / `directive` fields rejected for
+    all pipelines. Single `brief` is the unified field."""
     root = _insert_root(conn)
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": root, "briefs": ["x"],
+        "target_goal_id": root, "brief": "try X", "briefs": ["x"],
     }))
     err = strategist.verify_decision(d, conn, problem="p")
-    assert "briefs" in err.lower()
+    assert "brief" in err.lower()
 
 
 def test_verify_inject_backward_accepts_slug_target(
@@ -404,7 +394,7 @@ def test_verify_inject_backward_accepts_slug_target(
     root = _insert_root(conn)
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": "main", "directive": "switch angle",
+        "target_goal_id": "main", "brief": "switch angle",
     }))
     err = strategist.verify_decision(d, conn, problem="p")
     assert err == ""
@@ -422,7 +412,7 @@ def test_commit_inject_backward_enqueues_with_directive(
     db.update_goal_status(conn, root, "shelved")
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Backward",
-        "target_goal_id": root, "directive": "try the contour deformation angle",
+        "target_goal_id": root, "brief": "try the contour deformation angle",
         "reason": "previous decomp went through wrong primitive existence",
     }))
     assert strategist.verify_decision(d, conn, problem="p") == ""
@@ -459,7 +449,7 @@ def test_commit_inject_builder_works_similarly(
     root = _insert_root(conn)
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Builder",
-        "target_goal_id": root, "directive": "try linarith + Mathlib.Algebra.foo",
+        "target_goal_id": root, "brief": "try linarith + Mathlib.Algebra.foo",
     }))
     assert strategist.verify_decision(d, conn, problem="p") == ""
     outcome = strategist.commit_decision(
@@ -521,15 +511,16 @@ def test_commit_emitdirective_writes_problem_directive(
     assert p["strategist_directive"] == "Prefer L_x"
 
 
-def test_commit_inject_single_brief_enqueues_forward_with_decision_id(
+def test_commit_inject_forward_enqueues_with_decision_id(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
-    """N=1 Inject (unified Phase 2.5) — one Forward enqueue, decision
-    row carries batch_id (every Inject is a batch, N=1 is degenerate)."""
+    """Phase 6: one Inject(Forward) = one decision = one row + one
+    Forward enqueue. batch_id is set on the audit row so future
+    multi-decision support can group them under one Strategist call."""
     _insert_root(conn)
     d, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Forward",
-        "briefs": ["## Need\nfoo"],
+        "brief": "## Need\nfoo",
     }))
     outcome = strategist.commit_decision(
         d, conn, problem="p", tick=1, trigger_kind="routine",
@@ -546,7 +537,6 @@ def test_commit_inject_single_brief_enqueues_forward_with_decision_id(
     assert q["target_id"] == "p"
     assert q["target_kind"] == "Problem"
     assert q["decision_id"] == outcome.decision_row_id
-    # The audit row carries the batch_id even though N=1.
     row = conn.execute(
         "SELECT batch_id, brief FROM strategist_decisions WHERE id = ?",
         (outcome.decision_row_id,),
@@ -694,125 +684,6 @@ def test_commit_request_user_amend_writes_proposed_file_atomically(
 # ---------------------------------------------------------------------
 # Phase 2.5 (unified) — Inject(briefs=[...]) batch path
 # ---------------------------------------------------------------------
-
-def test_verify_inject_rejects_oversized_batch(
-    workspace: Path, conn: sqlite3.Connection,
-) -> None:
-    cap = strategist.inject_batch_max()
-    too_many = [f"lemma {i}" for i in range(cap + 1)]
-    d, _ = strategist.parse_decision(json.dumps({
-        "kind": "Inject", "pipeline": "Forward",
-        "briefs": too_many,
-    }))
-    err = strategist.verify_decision(d, conn, problem="p")
-    assert "too large" in err
-
-
-def test_inject_batch_max_honours_env_override(
-    workspace: Path, conn: sqlite3.Connection,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """env / yaml override raises (or lowers) the batch cap without code
-    edit. Reads through the standard config.get chain at verify time."""
-    from Tooling.core import config
-    monkeypatch.setenv("ASTERISM_INJECT_BATCH_MAX", "3")
-    config._reset_cache()
-    try:
-        assert strategist.inject_batch_max() == 3
-        # Exactly 3 is OK, 4 is rejected
-        d_ok, _ = strategist.parse_decision(json.dumps({
-            "kind": "Inject", "pipeline": "Forward",
-            "briefs": ["a", "b", "c"],
-        }))
-        assert strategist.verify_decision(d_ok, conn, problem="p") == ""
-        d_bad, _ = strategist.parse_decision(json.dumps({
-            "kind": "Inject", "pipeline": "Forward",
-            "briefs": ["a", "b", "c", "d"],
-        }))
-        err = strategist.verify_decision(d_bad, conn, problem="p")
-        assert "too large" in err
-        assert "max 3" in err
-    finally:
-        config._reset_cache()
-
-
-def test_commit_inject_batch_inserts_n_rows_and_n_enqueues(
-    workspace: Path, conn: sqlite3.Connection,
-) -> None:
-    _insert_root(conn)
-    briefs = ["land lineThrough", "land perpFoot", "land perpDistSq"]
-    d, _ = strategist.parse_decision(json.dumps({
-        "kind": "Inject", "pipeline": "Forward",
-        "briefs": briefs,
-    }))
-    outcome = strategist.commit_decision(
-        d, conn, problem="p", tick=1, trigger_kind="pending_review",
-        workspace=workspace,
-    )
-    assert outcome.batch_id is not None
-    assert outcome.enqueued_forward is True
-    assert len(outcome.batch_decision_row_ids) == len(briefs)
-    # Each row INSERTed with same batch_id, step_index 0..N-1
-    rows = list(conn.execute(
-        "SELECT id, brief, batch_id, payload, outcome FROM strategist_decisions"
-        " WHERE problem='p' AND decision_kind='Inject'"
-        " ORDER BY id"
-    ))
-    assert len(rows) == len(briefs)
-    assert {r["batch_id"] for r in rows} == {outcome.batch_id}
-    for i, (r, expected_brief) in enumerate(zip(rows, briefs)):
-        assert r["brief"] == expected_brief
-        assert r["outcome"] is None  # filled by cascade later
-        p = json.loads(r["payload"])
-        assert p["pipeline"] == "Forward"
-        assert p["step_index"] == i
-        assert p["batch_size"] == len(briefs)
-    # N Forward enqueues, each tagged with the matching decision_id
-    q_rows = list(conn.execute(
-        "SELECT target_id, target_kind, decision_id FROM queue"
-        " WHERE kind='Forward' ORDER BY id"
-    ))
-    assert len(q_rows) == len(briefs)
-    assert [int(r["decision_id"]) for r in q_rows] == \
-        outcome.batch_decision_row_ids
-    for r in q_rows:
-        assert r["target_id"] == "p"
-        assert r["target_kind"] == "Problem"
-
-
-def test_commit_inject_n1_is_degenerate_batch(
-    workspace: Path, conn: sqlite3.Connection,
-) -> None:
-    """N=1 Inject under the unified schema goes through the same batch
-    helper as N>1: one audit row, one Forward enqueue, batch_id set."""
-    _insert_root(conn)
-    d, _ = strategist.parse_decision(json.dumps({
-        "kind": "Inject", "pipeline": "Forward",
-        "briefs": ["solo brief"],
-    }))
-    outcome = strategist.commit_decision(
-        d, conn, problem="p", tick=1, trigger_kind="routine",
-        workspace=workspace,
-    )
-    assert outcome.batch_id is not None
-    assert len(outcome.batch_decision_row_ids) == 1
-    rows = list(conn.execute(
-        "SELECT brief, batch_id, payload FROM strategist_decisions"
-        " WHERE problem='p' AND decision_kind='Inject'"
-    ))
-    assert len(rows) == 1
-    assert rows[0]["batch_id"] == outcome.batch_id
-    assert rows[0]["brief"] == "solo brief"
-    p = json.loads(rows[0]["payload"])
-    assert p["step_index"] == 0
-    assert p["batch_size"] == 1
-    # Queue: one Forward enqueue
-    q_rows = list(conn.execute(
-        "SELECT decision_id FROM queue WHERE kind='Forward'"
-    ))
-    assert len(q_rows) == 1
-    assert q_rows[0]["decision_id"] == outcome.decision_row_id
-
 
 # ---------------------------------------------------------------------
 # residue_thm 2026-05-19 — Inject decision outcome semantics

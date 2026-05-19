@@ -55,29 +55,6 @@ TRIGGER_KINDS: frozenset[str] = frozenset({
 # Files allowed in RequestUserAmend(file=...).
 USER_AMEND_FILES: frozenset[str] = frozenset({"Defs.lean", "Manifest.md"})
 
-# Built-in default cap on Inject(briefs=[...]) length. Each brief
-# becomes its own Forward dispatch; a single Strategist invocation
-# queuing many Forwards is almost certainly an agent error and would
-# dominate the worker pool. N=1 (degenerate single-Forward case) is
-# always allowed regardless of cap. Override via Asterism.yaml
-# `strategist.inject_batch_max` or env `ASTERISM_INJECT_BATCH_MAX`;
-# see `inject_batch_max()` resolver.
-_INJECT_BATCH_MAX_DEFAULT: int = 10
-
-
-def inject_batch_max() -> int:
-    """Resolve the Inject batch upper bound through the standard
-    config chain (env → Asterism.yaml → built-in default). Read at
-    verify-time so tuning doesn't require a daemon restart."""
-    from ..core import config
-    return int(config.get(
-        "strategist.inject_batch_max",
-        default=_INJECT_BATCH_MAX_DEFAULT,
-        env_var="ASTERISM_INJECT_BATCH_MAX",
-        cast=int,
-    ))
-
-
 # ---------------------------------------------------------------------
 # Decision dataclass
 # ---------------------------------------------------------------------
@@ -201,11 +178,20 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         # pending_review: ConfirmShelve the failed-direction goal +
         # Inject(Backward, target=parent, directive=...) for the new
         # angle.
+        # Phase 6 unified — one Inject = one decision = one pipeline
+        # dispatch. `brief` is the agent-facing text payload across all
+        # three variants:
+        #   - Forward: lemma description (what to produce)
+        #   - Backward / Builder: directive (how to redispatch)
+        # Multi-Inject in one Strategist call lands later via the
+        # multi-decision schema, where each Inject is its own decision.
+        if not isinstance(decision.brief, str) or not decision.brief.strip():
+            return f"Inject({pipeline}) requires non-empty `brief` (string)"
+        if decision.payload.get("briefs") or decision.payload.get("directive"):
+            return (f"Inject schema uses top-level `brief: str`; "
+                    f"`briefs` / `directive` payload fields are legacy "
+                    f"— remove them and put your text in `brief`")
         if pipeline in ("Backward", "Builder"):
-            # target_goal_id flows through Decision.target_id (parse_
-            # decision lifts the `target_goal_id` key to the top-level
-            # field; slug→int normalization already ran at the top of
-            # verify_decision).
             target = decision.target_id
             if target is None:
                 return (f"Inject({pipeline}) requires `target_goal_id` "
@@ -221,35 +207,7 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
                 return (f"target_goal_id={target} is {g['status']!r}; "
                         f"Inject({pipeline}) cannot redispatch a terminal "
                         f"goal — Reopen first if appropriate")
-            directive = decision.payload.get("directive")
-            if directive is not None:
-                if not isinstance(directive, str):
-                    return (f"Inject({pipeline}).directive must be str "
-                            f"or null (got {type(directive).__name__})")
-            if decision.payload.get("briefs"):
-                return (f"Inject({pipeline}) uses `directive` not "
-                        f"`briefs`; briefs is Forward-only")
-            return ""
-        # Forward path (existing schema)
-        briefs = decision.payload.get("briefs")
-        if briefs is None:
-            return ("Inject(Forward) requires `briefs: list[str]` "
-                    "(use a 1-element list for a single Forward)")
-        if not isinstance(briefs, list):
-            return (f"Inject.briefs must be a list "
-                    f"(got {type(briefs).__name__})")
-        if len(briefs) < 1:
-            return "Inject.briefs must contain >= 1 brief"
-        cap = inject_batch_max()
-        if len(briefs) > cap:
-            return (f"Inject.briefs too large "
-                    f"(got {len(briefs)}, max {cap})")
-        for i, b in enumerate(briefs):
-            if not isinstance(b, str) or not b.strip():
-                return (f"Inject.briefs[{i}] must be a non-empty string")
-        if decision.brief and str(decision.brief).strip():
-            return ("Inject schema dropped the legacy `brief` field; "
-                    "wrap your single brief in a 1-element `briefs` list")
+        # Forward needs no extra validation beyond brief (above).
         return ""
 
     if k == "Noop":
@@ -396,42 +354,42 @@ def _commit_inject_batch(decision: Decision, conn: sqlite3.Connection,
 def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
                            *, problem: str, tick: int,
                            trigger_kind: str) -> CommitOutcome:
-    """Forward variant — N briefs → N rows + N Forward enqueues."""
-    briefs: list[str] = list(decision.payload["briefs"])
+    """Forward variant — 1 brief → 1 row + 1 Forward enqueue. Multi-
+    brief requests come in as multiple Inject decisions in one
+    Strategist call once the multi-decision schema lands; for now,
+    one Inject = one decision = one dispatch."""
+    brief = decision.brief.strip()
     batch_id = uuid.uuid4().hex
     ts = db.now()
-    row_ids: list[int] = []
-    for i, brief in enumerate(briefs):
-        row_payload = {
-            "pipeline": "Forward",
-            "step_index": i,
-            "batch_size": len(briefs),
-        }
-        cur = conn.execute(
-            "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
-            " trigger_kind, decision_kind, target_id, brief, reason, payload,"
-            " batch_id, outcome, created_at, updated_at)"
-            " VALUES (?, ?, ?, 'Inject', NULL, ?, ?, ?, ?, NULL, ?, ?)",
-            (problem, tick, trigger_kind, brief.strip(),
-             decision.reason, json.dumps(row_payload, ensure_ascii=False),
-             batch_id, ts, ts),
-        )
-        row_ids.append(int(cur.lastrowid))
-    for rid in row_ids:
-        db.enqueue(
-            conn, kind="Forward", target_id=problem,
-            target_kind="Problem", priority=10,
-            decision_id=rid,
-        )
+    row_payload = {
+        "pipeline": "Forward",
+        "step_index": 0,
+        "batch_size": 1,
+    }
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
+        " batch_id, outcome, created_at, updated_at)"
+        " VALUES (?, ?, ?, 'Inject', NULL, ?, ?, ?, ?, NULL, ?, ?)",
+        (problem, tick, trigger_kind, brief,
+         decision.reason, json.dumps(row_payload, ensure_ascii=False),
+         batch_id, ts, ts),
+    )
+    row_id = int(cur.lastrowid)
+    db.enqueue(
+        conn, kind="Forward", target_id=problem,
+        target_kind="Problem", priority=10,
+        decision_id=row_id,
+    )
     db.update_problem_last_strategist_at(conn, problem)
     db.set_problem_bootstrap_done(conn, problem)
     conn.commit()
     return CommitOutcome(
-        decision_row_id=row_ids[0],
+        decision_row_id=row_id,
         enqueued_forward=True,
         final_outcome="committed",
         batch_id=batch_id,
-        batch_decision_row_ids=row_ids,
+        batch_decision_row_ids=[row_id],
     )
 
 
@@ -448,7 +406,7 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
     to redispatch, not a brief for a new lemma).
     """
     target_id = int(decision.target_id)
-    directive = decision.payload.get("directive")
+    brief = decision.brief.strip()
     batch_id = uuid.uuid4().hex
     ts = db.now()
     row_payload = {
@@ -463,8 +421,8 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
         " batch_id, produced_goal_id, outcome, created_at, updated_at)"
         " VALUES (?, ?, ?, 'Inject', ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
         (problem, tick, trigger_kind, target_id,
-         (directive.strip() if directive else None),
-         decision.reason, json.dumps(row_payload, ensure_ascii=False),
+         brief, decision.reason,
+         json.dumps(row_payload, ensure_ascii=False),
          batch_id, target_id, ts, ts),
     )
     row_id = int(cur.lastrowid)
