@@ -1126,11 +1126,24 @@ def problems_needing_t0(conn: sqlite3.Connection,
     Without this gate T0 would burn one Strategist spawn per such
     problem on every fresh daemon start.
     """
+    # In-flight Inject batch dedup: if Strategist's prior commit on this
+    # problem produced Forward decisions still resolving (any batch row
+    # with outcome IS NULL), suppress T0. Strategist will be re-fired by
+    # the cascade-side `inject_batch_done` trigger when the last
+    # outcome lands; T0 firing in the meantime just burns spawns on
+    # Noop ("waiting for Forward"). Mirrors how a normal goal isn't
+    # re-dispatched while its current attempt is in flight.
     sql = (
         "SELECT p.name, g.id AS root_id"
         " FROM problems p"
         " JOIN goals g ON g.problem = p.name AND g.origin = 'root'"
         " WHERE g.status = 'frozen'"
+        "   AND NOT EXISTS ("
+        "     SELECT 1 FROM strategist_decisions sd"
+        "     WHERE sd.problem = p.name"
+        "       AND sd.batch_id IS NOT NULL"
+        "       AND sd.outcome IS NULL"
+        "   )"
     )
     args: tuple = ()
     if scope is not None:
@@ -1161,6 +1174,17 @@ def problems_needing_t1(conn: sqlite3.Connection, *,
         "   AND ("
         "      p.last_strategist_at IS NULL"
         "      OR julianday('now') - julianday(p.last_strategist_at) > ?"
+        "   )"
+        # In-flight Inject batch dedup — same rationale as T0 (see
+        # `problems_needing_t0`). Routine Strategist firing while a
+        # Forward batch is still resolving is wasted spawn — `inject_
+        # batch_done` will re-fire Strategist when the last outcome
+        # lands.
+        "   AND NOT EXISTS ("
+        "     SELECT 1 FROM strategist_decisions sd"
+        "     WHERE sd.problem = p.name"
+        "       AND sd.batch_id IS NOT NULL"
+        "       AND sd.outcome IS NULL"
         "   )"
     )
     args: tuple = (max_age_days,)

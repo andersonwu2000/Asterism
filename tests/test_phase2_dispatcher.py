@@ -139,6 +139,53 @@ def test_t0_dedups_inflight_strategist(conn: sqlite3.Connection) -> None:
     assert q["n"] == 1  # not 2
 
 
+def test_t0_skips_problem_with_inflight_inject_batch(
+    conn: sqlite3.Connection,
+) -> None:
+    """T0 must not enqueue Strategist while a Forward Inject batch
+    started by the previous Strategist run is still resolving (any
+    strategist_decisions row with batch_id set and outcome NULL). The
+    cascade-side `inject_batch_done` trigger fires Strategist when the
+    last outcome lands; T0 firing in the meantime burns spawns on Noop
+    decisions ("waiting for Forward"). Mirrors the principle that a
+    normal goal isn't re-dispatched while its current attempt is in
+    flight.
+    """
+    _insert_problem(conn, name="alpha")
+    root = _insert_root(conn, "alpha", status="frozen")
+    # Simulate a prior Strategist Inject(briefs=[...]) commit: one or
+    # more strategist_decisions rows with batch_id non-NULL and outcome
+    # still NULL (Forward not terminal yet).
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, brief, payload, batch_id,"
+        " outcome, created_at, updated_at)"
+        " VALUES (?, 0, 'first_launch', 'Inject', '## brief\n...',"
+        " '{\"pipeline\": \"Forward\"}', 'batchXYZ', NULL, ?, ?)",
+        ("alpha", db.now(), db.now()),
+    )
+    conn.commit()
+
+    strategist_triggers(conn, running=set())
+
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert q["n"] == 0
+    # Sanity: once the batch outcome lands, T0 must re-enqueue.
+    conn.execute(
+        "UPDATE strategist_decisions SET outcome='success'"
+        " WHERE batch_id='batchXYZ'"
+    )
+    conn.commit()
+    strategist_triggers(conn, running=set())
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert q["n"] == 1
+    assert root  # silence unused warning
+
+
 # ---------------------------------------------------------------------
 # T1 trigger
 # ---------------------------------------------------------------------
