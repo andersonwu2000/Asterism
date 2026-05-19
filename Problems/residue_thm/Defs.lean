@@ -20,6 +20,7 @@ noncomputable def windingNumber (γ : ℝ → ℂ) (a : ℂ) : ℤ :=
     then Classical.choose h
     else 0
 
+open Classical in
 /--
 Residue of `f` at the isolated singularity `z₀`.
 
