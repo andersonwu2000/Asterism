@@ -80,7 +80,7 @@ Place the directive immediately above the theorem in `patch.lean`, keep `:= by s
 
 - `unprovable` — false in this hypothesis scope. Description must give a counterexample (specific values + arithmetic check).
 - `return_to_parent` — provable after parent strategy is fixed. Description must name the fix concretely (missing hypothesis, wrong substructure).
-- `shelve` — lacks math tools or scaffolding to proceed. Description must name what's needed (Forward lemma statements, supporting defs / structures / classes, related theorems).
+- `shelve` — lacks vocabulary (def / structure / class) needed to even state your decomposition. Description must name the missing type / structure / class and how you'd use it; you may also mention accompanying theorems about that new vocabulary in the same description (helpful, not separately requested). For theorem-shaped helpers WITHOUT new vocabulary, prefer to write them as your own sub-goal stubs (`have h_<slug> : <stmt> := by sorry` + `new_<slug>.lean`) — that's exactly the decomposition workflow above. Shelving for a bare theorem is allowed but discouraged: do it only when the lemma is genuinely beyond what your decomposition could state.
 
 ```lean
 namespace ...
