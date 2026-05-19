@@ -8,9 +8,9 @@ Time budget: {timeout_min} minutes.
 
 ## Editing tools — LSP-backed (preferred for proof body)
 
-Three MCP tools talk to a live Lean server holding the actual goal file (the `L_*.lean` referenced in Context.md). Use them to iterate on the proof body without spawning lake builds:
+Three MCP tools talk to a live Lean server holding **`patch.lean`** (in attempts_dir, seeded from the goal file's current content). Use them to iterate on the proof body without spawning lake builds. Edits are sandboxed — they don't touch the workspace `L_*.lean` until the framework commits at the end:
 
-- `mcp__lsp__apply_edit(start_line, end_line, new_text)` — replace a 1-indexed inclusive line range. Returns post-edit goal at line=start_line and the file's diagnostics. Writes to disk.
+- `mcp__lsp__apply_edit(start_line, end_line, new_text)` — replace a 1-indexed inclusive line range. Returns post-edit goal at line=start_line and the file's diagnostics. Persists to `patch.lean` (write-through).
 - `mcp__lsp__goal_at(line, col)` — read the proof goal at any position without editing.
 - `mcp__lsp__errors_at(line=None)` — list current diagnostics (optional line filter).
 
@@ -18,7 +18,7 @@ Workflow recommendation:
 1. `mcp__lsp__goal_at` near the `sorry` to see what you're proving.
 2. `mcp__lsp__apply_edit` to write a tactic. Read the returned goal — did it shrink? Are there errors?
 3. Iterate: when stuck, query goal again before guessing another tactic.
-4. When 0 errors and 0 sorry, you are done. Write to `patch.lean` and exit. Warnings don't block — handle at annotation step.
+4. When 0 errors and 0 sorry, you are done. LSP edits already persisted to `patch.lean` — just exit. Warnings don't block — handle at annotation step.
 
 You may also use Read/Write/Edit/Grep/Bash as before — they're not blocked. But LSP gives the proof feedback that a `lake build` cycle would, in <1s instead of multiple seconds and within the same session.
 

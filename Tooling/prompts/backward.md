@@ -6,7 +6,7 @@ Time budget: {timeout_min} minutes.
 
 ## Validating decomposition via LSP (recommended)
 
-You have four MCP tools backed by a live Lean server holding **your `patch.lean`** (pre-seeded with the F52 skeleton: imports + `theorem s<id> ... := by sorry` matching the parent's signature):
+You have four MCP tools backed by a live Lean server holding **your `patch.lean`** (pre-seeded with imports + `theorem s<id> ... := by sorry` matching the parent's signature):
 
 - `mcp__lsp__apply_edit(start_line, end_line, new_text)` — replace a 1-indexed inclusive line range of `patch.lean`. Returns the post-edit goal at line=start_line and full-file diagnostics.
 - `mcp__lsp__goal_at(line, col)` — read the proof goal at any position in `patch.lean`.
