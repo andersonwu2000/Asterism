@@ -32,12 +32,33 @@ POSTMORTEM_TIMEOUT_SEC = 180
 
 
 def render_prompt_template(text: str, *, is_postmortem: bool = False) -> str:
-    """Substitute `{timeout_min}` in a prompt template with the live
-    timeout (in minutes). Body prompts report `WORKER_TIMEOUT_SEC`;
-    postmortem prompts report `POSTMORTEM_TIMEOUT_SEC`."""
+    """Substitute prompt template placeholders against live config.
+
+    Replacements:
+      - `{timeout_min}` — per-spawn wall-clock (WORKER_TIMEOUT_SEC for
+        body prompts, POSTMORTEM_TIMEOUT_SEC for postmortems).
+      - `{interval_min}` — Strategist T1 routine cadence (minutes;
+        `strategist.interval_min` config knob). Only strategist.md
+        uses this placeholder today; the substitution is a no-op for
+        other prompts.
+    """
     timeout_sec = (POSTMORTEM_TIMEOUT_SEC if is_postmortem
                    else WORKER_TIMEOUT_SEC)
-    return text.replace("{timeout_min}", str(timeout_sec // 60))
+    interval_min = config.get(
+        "strategist.interval_min", default=60.0,
+        env_var="ASTERISM_STRATEGIST_INTERVAL_MIN", cast=float,
+    )
+    return (text
+            .replace("{timeout_min}", str(timeout_sec // 60))
+            .replace("{interval_min}", _format_minutes(interval_min)))
+
+
+def _format_minutes(value: float) -> str:
+    """Render a minutes value compactly: integer when whole, one
+    decimal otherwise. Avoids '60.0' noise for the common default."""
+    if value == int(value):
+        return str(int(value))
+    return f"{value:.1f}"
 
 
 class WorkArea:

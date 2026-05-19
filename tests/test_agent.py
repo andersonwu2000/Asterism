@@ -550,3 +550,39 @@ def test_workarea_exit_no_release_when_no_token(
         pass
 
     assert captured == []
+
+
+# ---------------------------------------------------------------------
+# render_prompt_template — placeholder substitution
+# ---------------------------------------------------------------------
+
+def test_render_prompt_template_substitutes_timeout_min() -> None:
+    """`{timeout_min}` reflects WORKER_TIMEOUT_SEC for body prompts and
+    POSTMORTEM_TIMEOUT_SEC for postmortem prompts."""
+    from Tooling.agent.runtime import (
+        render_prompt_template, WORKER_TIMEOUT_SEC, POSTMORTEM_TIMEOUT_SEC,
+    )
+    body = render_prompt_template("budget {timeout_min}")
+    assert body == f"budget {WORKER_TIMEOUT_SEC // 60}"
+    pm = render_prompt_template("budget {timeout_min}", is_postmortem=True)
+    assert pm == f"budget {POSTMORTEM_TIMEOUT_SEC // 60}"
+
+
+def test_render_prompt_template_substitutes_interval_min(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`{interval_min}` reflects `strategist.interval_min`. Integer
+    values render without a decimal; fractional values get one decimal."""
+    from Tooling.agent.runtime import render_prompt_template
+    monkeypatch.setenv("ASTERISM_STRATEGIST_INTERVAL_MIN", "60")
+    assert render_prompt_template("every {interval_min}m") == "every 60m"
+    monkeypatch.setenv("ASTERISM_STRATEGIST_INTERVAL_MIN", "30.5")
+    assert render_prompt_template("every {interval_min}m") == "every 30.5m"
+
+
+def test_render_prompt_template_noop_on_unknown_placeholder() -> None:
+    """Unknown placeholders pass through unchanged; the helper only
+    replaces names it knows."""
+    from Tooling.agent.runtime import render_prompt_template
+    text = render_prompt_template("keep {unknown_var} as-is")
+    assert text == "keep {unknown_var} as-is"
