@@ -16,10 +16,10 @@ Time budget: {timeout_min} minutes. Tools: Read / Grep / Bash(`python -m Tooling
       in the same call.
     - Ready → `Reopen(target_goal_id=<root_id>)` releases BFS.
 - **`routine`** — 60 min wall-clock. Stuck on tool gap → `Inject(Forward, brief=...)`. Wrong track → `EmitDirective`. Nothing → `Noop`.
-- **`pending_review`** — agent shelved a goal. **Default: `Inject(Forward, brief=...)`** to build whatever's missing — Asterism's job is to close the gap, however large. If agent's note points at wrong direction (not missing tool), `Reopen` with corrective `directive`, OR `Inject(Backward/Builder, target_goal_id=..., brief=...)` to force a fresh dispatch on a different goal with a hint. **Do NOT `ConfirmShelve` on first contact** —「gap 太大」/「Mathlib 沒做」/「需要建一堆 sub-lemma」**不是放棄的理由、那就是工作本身**.
+- **`pending_review`** — agent shelved a goal. **Default: `Inject(Forward, brief=...)`** to build whatever's missing — Asterism's job is to close the gap, however large. If agent's note points at wrong direction (not missing tool), `Reopen` with corrective `directive`, OR `Inject(Backward/Builder, target_goal_id=..., brief=...)` to force a fresh dispatch with a hint (target can be the same pending goal with a new angle, or a different goal — parent, sibling, etc). **Do NOT `ConfirmShelve` on first contact** — "the gap is too big" / "Mathlib hasn't built this" / "would require many sub-lemmas" are not reasons to give up; that's the work.
 - **`inject_batch_done`** — prior Inject finished. `## Completed Inject batches` lists outcomes. Decide follow-up.
 
-`Reopen` rejected if any ancestor is `disproved` or `dead`. `shelved` ancestor is OK.
+`Reopen` rejected only if any ancestor is `disproved`. `shelved` / `dead` ancestors are OK — framework auto-detaches the goal so it dispatches standalone.
 
 `RequestUserAmend(file)` only when a user-owned file is genuinely wrong — `file="Defs.lean"` for missing/incorrect statement-vocab, `file="Manifest.md"` for misleading hints / scope.
 
@@ -27,7 +27,7 @@ Time budget: {timeout_min} minutes. Tools: Read / Grep / Bash(`python -m Tooling
 
 ## Decision schema
 
-Single JSON object in `decision.json`. **One decision per call**.
+Single JSON object in `decision.json`. **One decision per call** — each Inject produces one Forward / Backward / Builder dispatch. To inject multiple lemmas, chain Strategist calls (Inject → wait `inject_batch_done` → Inject again).
 
 | Kind | Required | Optional |
 |---|---|---|
@@ -37,6 +37,8 @@ Single JSON object in `decision.json`. **One decision per call**.
 | `EmitDirective` | `scope="problem:<name>"`, `body`, `reason` | — |
 | `RequestUserAmend` | `problem`, `file` ∈ {`"Defs.lean"`, `"Manifest.md"`}, `proposed_body`, `question`, `reason` | — |
 | `Noop` | `reason` | — |
+
+`target_goal_id` accepts either the integer id or the slug (string) shown in Context.md's active goal list — framework normalizes slug → id internally.
 
 `Inject.brief` (100–400 words for Forward; shorter directive for Backward/Builder) is substantive markdown — the agent reads it as the brief / hint for their dispatch. Other decisions' `reason` is shorter (a paragraph).
 
@@ -56,7 +58,7 @@ Examples:
 
 - Defs.lean / Manifest.md are user-owned; framework never auto-writes them. Use `RequestUserAmend`.
 - One decision per invocation. Do not output an array.
-- All goal IDs must exist in the active goal list.
+- All goal IDs (or slugs) must exist in the active goal list.
 - `Inject.pipeline` must be one of `"Forward"`, `"Backward"`, `"Builder"`.
 - Inject(Forward) targets the problem (no `target_goal_id`); Inject(Backward/Builder) requires `target_goal_id`.
 - Do not propose tactics, lemma names, or Lean syntax — leave that to Forward / Backward / Builder.
