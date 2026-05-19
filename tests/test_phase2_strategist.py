@@ -135,14 +135,16 @@ def test_parse_rejects_non_json() -> None:
 # verify_decision
 # ---------------------------------------------------------------------
 
-def test_verify_inject_requires_forward_pipeline(
+def test_verify_inject_rejects_unknown_pipeline(
     conn: sqlite3.Connection,
 ) -> None:
+    """Phase 6 widens Inject.pipeline to Forward/Backward/Builder. An
+    unknown value (legacy 'Reflection' etc.) is rejected."""
     d, _ = strategist.parse_decision(json.dumps({
-        "kind": "Inject", "pipeline": "Backward", "briefs": ["x"],
+        "kind": "Inject", "pipeline": "Reflection", "briefs": ["x"],
     }))
     err = strategist.verify_decision(d, conn, problem="p")
-    assert "Forward" in err
+    assert "Forward" in err or "Reflection" in err
 
 
 def test_verify_inject_requires_briefs_field(
@@ -353,6 +355,122 @@ def test_verify_request_user_amend_blocks_second_awaiting(
     }))
     err = strategist.verify_decision(d, conn, problem="p")
     assert "awaiting_human" in err.lower()
+
+
+# ---------------------------------------------------------------------
+# Phase 6 — Inject(Backward / Builder) redispatch
+# ---------------------------------------------------------------------
+
+def test_verify_inject_backward_requires_target_goal_id(
+    conn: sqlite3.Connection,
+) -> None:
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Backward", "reason": "retry",
+    }))
+    err = strategist.verify_decision(d, conn, problem="p")
+    assert "target_goal_id" in err
+
+
+def test_verify_inject_backward_rejects_terminal_target(
+    conn: sqlite3.Connection,
+) -> None:
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "proved")
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Backward",
+        "target_goal_id": root, "directive": "try again",
+    }))
+    err = strategist.verify_decision(d, conn, problem="p")
+    assert "terminal" in err.lower() or "proved" in err.lower()
+
+
+def test_verify_inject_backward_rejects_briefs(
+    conn: sqlite3.Connection,
+) -> None:
+    """Phase 6: Backward/Builder use `directive`, not `briefs` (Forward
+    semantic). Mixing schemas is rejected to keep agent output crisp."""
+    root = _insert_root(conn)
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Backward",
+        "target_goal_id": root, "briefs": ["x"],
+    }))
+    err = strategist.verify_decision(d, conn, problem="p")
+    assert "briefs" in err.lower()
+
+
+def test_verify_inject_backward_accepts_slug_target(
+    conn: sqlite3.Connection,
+) -> None:
+    root = _insert_root(conn)
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Backward",
+        "target_goal_id": "main", "directive": "switch angle",
+    }))
+    err = strategist.verify_decision(d, conn, problem="p")
+    assert err == ""
+    # Slug normalized to int (lifted to Decision.target_id by parse)
+    assert d.target_id == root
+
+
+def test_commit_inject_backward_enqueues_with_directive(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Inject(Backward, target, directive) writes a single batch row
+    with directive in the brief column, enqueues Backward on the goal,
+    and force-reopens if currently shelved."""
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "shelved")
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Backward",
+        "target_goal_id": root, "directive": "try the contour deformation angle",
+        "reason": "previous decomp went through wrong primitive existence",
+    }))
+    assert strategist.verify_decision(d, conn, problem="p") == ""
+    outcome = strategist.commit_decision(
+        d, conn, problem="p", tick=1, trigger_kind="pending_review",
+        workspace=workspace,
+    )
+    # Single-row batch
+    assert outcome.batch_id is not None
+    assert len(outcome.batch_decision_row_ids) == 1
+    # Decision row carries directive in brief + produced_goal_id linked
+    row = conn.execute(
+        "SELECT brief, produced_goal_id FROM strategist_decisions WHERE id=?",
+        (outcome.decision_row_id,),
+    ).fetchone()
+    assert "contour deformation" in row["brief"]
+    assert row["produced_goal_id"] == root
+    # Target force-reopened
+    assert db.get_goal(conn, root)["status"] == "open"
+    # Backward enqueued on the goal
+    q = conn.execute(
+        "SELECT kind, target_id, decision_id FROM queue WHERE kind='Backward'"
+    ).fetchone()
+    assert q is not None
+    assert int(q["target_id"]) == root
+    assert q["decision_id"] == outcome.decision_row_id
+
+
+def test_commit_inject_builder_works_similarly(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Inject(Builder) mirrors Backward — same redispatch semantic,
+    different pipeline target."""
+    root = _insert_root(conn)
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Builder",
+        "target_goal_id": root, "directive": "try linarith + Mathlib.Algebra.foo",
+    }))
+    assert strategist.verify_decision(d, conn, problem="p") == ""
+    outcome = strategist.commit_decision(
+        d, conn, problem="p", tick=1, trigger_kind="pending_review",
+        workspace=workspace,
+    )
+    q = conn.execute(
+        "SELECT kind FROM queue WHERE decision_id=?",
+        (outcome.decision_row_id,),
+    ).fetchone()
+    assert q["kind"] == "Builder"
 
 
 # ---------------------------------------------------------------------

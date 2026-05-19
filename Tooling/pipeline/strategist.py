@@ -191,17 +191,49 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
 
     if k == "Inject":
         pipeline = decision.payload.get("pipeline")
-        if pipeline != "Forward":
-            return (f"Inject.pipeline must be 'Forward' "
-                    f"(got {pipeline!r}); Phase 2 only supports Forward")
-        # Phase 2.5 (unified) — Inject carries `briefs: list[str]`. N=1
-        # is the degenerate case (single Forward); N>1 is a parallel
-        # batch. Every commit creates a batch_id + N audit rows + N
-        # Forward enqueues; cascade fires one Strategist
-        # `inject_batch_done` trigger when the last sibling finishes.
+        if pipeline not in ("Forward", "Backward", "Builder"):
+            return (f"Inject.pipeline must be one of "
+                    f"'Forward'/'Backward'/'Builder' (got {pipeline!r})")
+        # Phase 6: Backward/Builder Inject targets an existing goal with
+        # an optional directive — "Strategist tells pipeline X to dispatch
+        # on goal G with this hint." No briefs (only Forward produces new
+        # artifacts). Used for the "change direction" workflow on
+        # pending_review: ConfirmShelve the failed-direction goal +
+        # Inject(Backward, target=parent, directive=...) for the new
+        # angle.
+        if pipeline in ("Backward", "Builder"):
+            # target_goal_id flows through Decision.target_id (parse_
+            # decision lifts the `target_goal_id` key to the top-level
+            # field; slug→int normalization already ran at the top of
+            # verify_decision).
+            target = decision.target_id
+            if target is None:
+                return (f"Inject({pipeline}) requires `target_goal_id` "
+                        f"(integer id or slug shown in Context.md's "
+                        f"active goal list)")
+            g = db.get_goal(conn, int(target))
+            if g is None:
+                return f"target_goal_id={target} not found"
+            if str(g["problem"]) != problem:
+                return (f"target goal belongs to problem "
+                        f"{g['problem']!r}, not {problem!r}")
+            if str(g["status"]) in ("proved", "disproved"):
+                return (f"target_goal_id={target} is {g['status']!r}; "
+                        f"Inject({pipeline}) cannot redispatch a terminal "
+                        f"goal — Reopen first if appropriate")
+            directive = decision.payload.get("directive")
+            if directive is not None:
+                if not isinstance(directive, str):
+                    return (f"Inject({pipeline}).directive must be str "
+                            f"or null (got {type(directive).__name__})")
+            if decision.payload.get("briefs"):
+                return (f"Inject({pipeline}) uses `directive` not "
+                        f"`briefs`; briefs is Forward-only")
+            return ""
+        # Forward path (existing schema)
         briefs = decision.payload.get("briefs")
         if briefs is None:
-            return ("Inject requires `briefs: list[str]` "
+            return ("Inject(Forward) requires `briefs: list[str]` "
                     "(use a 1-element list for a single Forward)")
         if not isinstance(briefs, list):
             return (f"Inject.briefs must be a list "
@@ -329,16 +361,42 @@ class CommitOutcome:
 def _commit_inject_batch(decision: Decision, conn: sqlite3.Connection,
                          *, problem: str, tick: int,
                          trigger_kind: str) -> CommitOutcome:
-    """Atomically commit one Strategist Inject(briefs=[...]) decision
-    as N audit rows + N Forward enqueues sharing a single batch_id.
-    Wraps every side effect into one transaction so a mid-commit
-    failure leaves no orphan rows / enqueues.
+    """Atomically commit one Strategist Inject decision.
 
-    N=1 is the degenerate single-Forward case under the unified Phase 2.5
-    schema; the batch infrastructure (batch_id, step_index payload,
-    cascade-side `_maybe_enqueue_inject_batch_done` hook) handles it
-    uniformly with N>=2.
+    Three pipeline variants under a unified batch schema:
+      - `Inject(Forward, briefs=[...])`: N decision rows + N Forward
+        enqueues on the problem; produces N new lemma goals (one per
+        brief). Each row's `produced_goal_id` is filled by Forward
+        when its lemma is committed.
+      - `Inject(Backward, target_goal_id=G, directive=...)`: 1 decision
+        row + 1 Backward enqueue on goal G; `produced_goal_id=G` at
+        commit time (the target IS the affected goal). Target's status
+        is force-reopened (shelved/dead/pending_strategist_review →
+        open) so the dispatch can land.
+      - `Inject(Builder, ...)`: same as Backward but Builder pipeline.
+
+    All variants share the batch_id mechanism: cascade fires one
+    Strategist `inject_batch_done` trigger when the last row's outcome
+    fills (`_maybe_enqueue_inject_batch_done`).
     """
+    pipeline = decision.payload.get("pipeline")
+    if pipeline == "Forward":
+        return _commit_inject_forward(
+            decision, conn, problem=problem, tick=tick,
+            trigger_kind=trigger_kind)
+    if pipeline in ("Backward", "Builder"):
+        return _commit_inject_redispatch(
+            decision, conn, problem=problem, tick=tick,
+            trigger_kind=trigger_kind, pipeline=pipeline)
+    raise RuntimeError(
+        f"_commit_inject_batch: unhandled pipeline {pipeline!r} "
+        f"(verify_decision should have caught this)")
+
+
+def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
+                           *, problem: str, tick: int,
+                           trigger_kind: str) -> CommitOutcome:
+    """Forward variant — N briefs → N rows + N Forward enqueues."""
     briefs: list[str] = list(decision.payload["briefs"])
     batch_id = uuid.uuid4().hex
     ts = db.now()
@@ -374,6 +432,67 @@ def _commit_inject_batch(decision: Decision, conn: sqlite3.Connection,
         final_outcome="committed",
         batch_id=batch_id,
         batch_decision_row_ids=row_ids,
+    )
+
+
+def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
+                              *, problem: str, tick: int,
+                              trigger_kind: str,
+                              pipeline: str) -> CommitOutcome:
+    """Backward / Builder variant — 1 row + 1 enqueue on target goal.
+
+    `directive` (optional payload field) is stored in the decision
+    row's `brief` column so `_section_strategist_brief` in agent
+    context compilation surfaces it unchanged — same plumbing as
+    Forward's brief, different semantic (here it's a hint for how
+    to redispatch, not a brief for a new lemma).
+    """
+    target_id = int(decision.target_id)
+    directive = decision.payload.get("directive")
+    batch_id = uuid.uuid4().hex
+    ts = db.now()
+    row_payload = {
+        "pipeline": pipeline,
+        "step_index": 0,
+        "batch_size": 1,
+        "target_goal_id": target_id,
+    }
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
+        " batch_id, produced_goal_id, outcome, created_at, updated_at)"
+        " VALUES (?, ?, ?, 'Inject', ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+        (problem, tick, trigger_kind, target_id,
+         (directive.strip() if directive else None),
+         decision.reason, json.dumps(row_payload, ensure_ascii=False),
+         batch_id, target_id, ts, ts),
+    )
+    row_id = int(cur.lastrowid)
+
+    # Force-reopen target so BFS / inject dispatch can run on it.
+    # Auto-detach if the upward chain has died — same path Strategist
+    # Reopen takes.
+    g = db.get_goal(conn, target_id)
+    if g and str(g["status"]) in ("shelved", "pending_strategist_review",
+                                   "dead", "frozen"):
+        db.update_goal_status(conn, target_id, "open")
+        if _dispatcher._has_dead_strategy_in_chain(conn, target_id):
+            db.set_goal_detached(conn, target_id, True)
+
+    db.enqueue(
+        conn, kind=pipeline, target_id=str(target_id),
+        target_kind="Goal", priority=10,
+        decision_id=row_id,
+    )
+    db.update_problem_last_strategist_at(conn, problem)
+    db.set_problem_bootstrap_done(conn, problem)
+    conn.commit()
+    return CommitOutcome(
+        decision_row_id=row_id,
+        enqueued_forward=False,
+        final_outcome="committed",
+        batch_id=batch_id,
+        batch_decision_row_ids=[row_id],
     )
 
 
