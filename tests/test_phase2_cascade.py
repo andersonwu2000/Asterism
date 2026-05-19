@@ -269,6 +269,35 @@ def test_enqueue_strategist_review_dedups_in_flight(
     assert db.get_goal(conn, sub_b)["status"] == "pending_strategist_review"
 
 
+def test_enqueue_strategist_review_skips_orphan_guard_when_detached(
+    conn: sqlite3.Connection,
+) -> None:
+    """Phase 6: if the goal was explicitly detached (Strategist
+    Reopen+auto-detach or Inject(Backward)+auto-detach), the orphan-
+    chain guard does NOT fire — the detach flag signals that
+    Strategist owns this dispatch even though upward strategies are
+    dead. pending_review is the right next stop, not auto-shelve.
+    """
+    root = _insert_goal(conn, slug="main", origin="root")
+    parent = _insert_goal(conn, slug="parent_goal", status="open")
+    dead_strat = _insert_strategy(conn, goal_id=parent, status="dead")
+    sub = _insert_goal(conn, slug="detached_orphan_sub", status="attempting")
+    _link(conn, dead_strat, [sub])
+    # Strategist auto-detach simulation
+    db.set_goal_detached(conn, sub, True)
+
+    _enqueue_strategist_review(conn, sub)
+
+    # Strategist DOES enqueue (no orphan auto-shelve)
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert q["n"] == 1
+    # Goal moves to pending_strategist_review (not shelved)
+    assert db.get_goal(conn, sub)["status"] == "pending_strategist_review"
+    assert root  # silence unused warning
+
+
 def test_propagate_shelve_does_not_kill_upward(
     conn: sqlite3.Connection,
 ) -> None:

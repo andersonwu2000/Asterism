@@ -374,6 +374,37 @@ def test_verify_inject_backward_rejects_terminal_target(
     assert "terminal" in err.lower() or "proved" in err.lower()
 
 
+def test_verify_inject_backward_rejects_dead_target(
+    conn: sqlite3.Connection,
+) -> None:
+    """Phase 6: `dead` is a hard terminal (parent_needs_fix), not
+    reopenable. Inject(Backward) on a dead goal must be rejected at
+    verify time."""
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "dead")
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Backward",
+        "target_goal_id": root, "brief": "try again",
+    }))
+    err = strategist.verify_decision(d, conn, problem="p")
+    assert "dead" in err.lower() or "terminal" in err.lower()
+
+
+def test_verify_inject_forward_rejects_target_goal_id(
+    conn: sqlite3.Connection,
+) -> None:
+    """Forward Inject targets the problem and produces a new goal;
+    setting target_goal_id is a category error (agent confused Forward
+    with Backward/Builder). Reject with a hint."""
+    root = _insert_root(conn)
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Forward",
+        "target_goal_id": root, "brief": "## Need\nfoo",
+    }))
+    err = strategist.verify_decision(d, conn, problem="p")
+    assert "target_goal_id" in err.lower() or "forward" in err.lower()
+
+
 def test_verify_inject_rejects_legacy_briefs_or_directive_on_backward(
     conn: sqlite3.Connection,
 ) -> None:

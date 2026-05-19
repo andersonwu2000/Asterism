@@ -171,18 +171,13 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         if pipeline not in ("Forward", "Backward", "Builder"):
             return (f"Inject.pipeline must be one of "
                     f"'Forward'/'Backward'/'Builder' (got {pipeline!r})")
-        # Phase 6: Backward/Builder Inject targets an existing goal with
-        # an optional directive — "Strategist tells pipeline X to dispatch
-        # on goal G with this hint." No briefs (only Forward produces new
-        # artifacts). Used for the "change direction" workflow on
-        # pending_review: ConfirmShelve the failed-direction goal +
-        # Inject(Backward, target=parent, directive=...) for the new
-        # angle.
         # Phase 6 unified — one Inject = one decision = one pipeline
         # dispatch. `brief` is the agent-facing text payload across all
         # three variants:
-        #   - Forward: lemma description (what to produce)
-        #   - Backward / Builder: directive (how to redispatch)
+        #   - Forward: lemma description (what to produce on a new goal)
+        #   - Backward / Builder: directive (how to redispatch on an
+        #     existing goal — "try this angle"). Used for the change-
+        #     direction workflow on pending_review.
         # Multi-Inject in one Strategist call lands later via the
         # multi-decision schema, where each Inject is its own decision.
         if not isinstance(decision.brief, str) or not decision.brief.strip():
@@ -191,23 +186,30 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
             return (f"Inject schema uses top-level `brief: str`; "
                     f"`briefs` / `directive` payload fields are legacy "
                     f"— remove them and put your text in `brief`")
-        if pipeline in ("Backward", "Builder"):
-            target = decision.target_id
-            if target is None:
-                return (f"Inject({pipeline}) requires `target_goal_id` "
-                        f"(integer id or slug shown in Context.md's "
-                        f"active goal list)")
-            g = db.get_goal(conn, int(target))
-            if g is None:
-                return f"target_goal_id={target} not found"
-            if str(g["problem"]) != problem:
-                return (f"target goal belongs to problem "
-                        f"{g['problem']!r}, not {problem!r}")
-            if str(g["status"]) in ("proved", "disproved"):
-                return (f"target_goal_id={target} is {g['status']!r}; "
-                        f"Inject({pipeline}) cannot redispatch a terminal "
-                        f"goal — Reopen first if appropriate")
-        # Forward needs no extra validation beyond brief (above).
+        if pipeline == "Forward":
+            if decision.target_id is not None:
+                return ("Inject(Forward) targets the problem (no goal yet "
+                        "produced); `target_goal_id` must be null. Use "
+                        "Inject(Backward, target_goal_id=...) for "
+                        "redispatch on an existing goal.")
+            return ""
+        # Backward / Builder
+        target = decision.target_id
+        if target is None:
+            return (f"Inject({pipeline}) requires `target_goal_id` "
+                    f"(integer id or slug shown in Context.md's "
+                    f"active goal list)")
+        g = db.get_goal(conn, int(target))
+        if g is None:
+            return f"target_goal_id={target} not found"
+        if str(g["problem"]) != problem:
+            return (f"target goal belongs to problem "
+                    f"{g['problem']!r}, not {problem!r}")
+        if str(g["status"]) in ("proved", "disproved", "dead"):
+            return (f"target_goal_id={target} is {g['status']!r}; "
+                    f"Inject({pipeline}) cannot redispatch a terminal "
+                    f"goal. proved/disproved/dead are hard terminals; "
+                    f"open a different angle on a different goal instead.")
         return ""
 
     if k == "Noop":
@@ -429,10 +431,11 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
 
     # Force-reopen target so BFS / inject dispatch can run on it.
     # Auto-detach if the upward chain has died — same path Strategist
-    # Reopen takes.
+    # Reopen takes. `dead` is a hard terminal already rejected by
+    # verify_decision; this list intentionally excludes it.
     g = db.get_goal(conn, target_id)
     if g and str(g["status"]) in ("shelved", "pending_strategist_review",
-                                   "dead", "frozen"):
+                                   "frozen"):
         db.update_goal_status(conn, target_id, "open")
         if _dispatcher._has_dead_strategy_in_chain(conn, target_id):
             db.set_goal_detached(conn, target_id, True)

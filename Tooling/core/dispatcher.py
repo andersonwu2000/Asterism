@@ -252,14 +252,18 @@ def _enqueue_strategist_review(conn: sqlite3.Connection,
         return
     # Orphan-chain guard: if any ancestor strategy is dead / superseded
     # by the time this worker returns, the goal has no live path back to
-    # root and Strategist cannot do anything useful with it (Reopen
-    # would auto-detach a goal that's about to be shelve-cascaded anyway;
-    # Inject(Forward) would build a lemma nothing cites). Shelve in place
-    # and skip the wasted spawn. Observed residue_thm 2026-05-19:
+    # root and Strategist cannot do anything useful with it. Shelve in
+    # place and skip the wasted spawn. Observed residue_thm 2026-05-19:
     # Backward on g2107 finished agent_shelved after g2107's grandparent
     # strategy s10285 already died; Strategist still got enqueued, used
     # one full cycle, and committed ConfirmShelve — pure overhead.
-    if _has_dead_strategy_in_chain(conn, goal_id):
+    #
+    # Skip the guard when the goal is `detached`: Strategist explicitly
+    # authorised standalone dispatch (via Reopen + auto-detach or
+    # Inject(Backward) + auto-detach), so even if upward strategies are
+    # dead, this dispatch is intentional and pending_review still has
+    # signal value.
+    if not bool(g["detached"]) and _has_dead_strategy_in_chain(conn, goal_id):
         _set_goal_terminal_and_propagate(conn, goal_id, "shelved")
         _propagate_shelve(conn, goal_id)
         return
