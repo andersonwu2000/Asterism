@@ -469,9 +469,16 @@ def test_verify_inject_backward_accepts_slug_target(
 def test_commit_inject_backward_enqueues_with_directive(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
-    """Inject(Backward, target, directive) writes a single batch row
+    """Inject(Backward, target, directive) writes a single decision row
     with directive in the brief column, enqueues Backward on the goal,
-    and force-reopens if currently shelved."""
+    and force-reopens if currently shelved.
+
+    Backward/Builder Inject does NOT carry a batch_id (Strategist need
+    not be re-fired when the redispatched goal terminates — normal
+    cascade handles propagation). `produced_goal_id=target_id` is kept
+    so the decision row's `outcome` still fills via
+    `propagate_inject_outcome_from_goal` for failure_replay.
+    """
     root = _insert_root(conn)
     db.update_goal_status(conn, root, "shelved")
     d, _ = strategist.parse_decision(json.dumps({
@@ -484,16 +491,20 @@ def test_commit_inject_backward_enqueues_with_directive(
         d, conn, problem="p", tick=1, trigger_kind="pending_review",
         workspace=workspace,
     )
-    # Single-row batch
-    assert outcome.batch_id is not None
+    # No batch_id for B/B redispatch (would otherwise fire an
+    # unnecessary inject_batch_done when the target terminates).
+    assert outcome.batch_id is None
     assert len(outcome.batch_decision_row_ids) == 1
-    # Decision row carries directive in brief + produced_goal_id linked
+    # Decision row: directive in brief, produced_goal_id linked to
+    # target for outcome bookkeeping, batch_id NULL.
     row = conn.execute(
-        "SELECT brief, produced_goal_id FROM strategist_decisions WHERE id=?",
+        "SELECT brief, produced_goal_id, batch_id"
+        " FROM strategist_decisions WHERE id=?",
         (outcome.decision_row_id,),
     ).fetchone()
     assert "contour deformation" in row["brief"]
     assert row["produced_goal_id"] == root
+    assert row["batch_id"] is None
     # Target force-reopened
     assert db.get_goal(conn, root)["status"] == "open"
     # Backward enqueued on the goal
@@ -885,3 +896,301 @@ def _decision_outcome(conn: sqlite3.Connection, decision_id: int) -> str | None:
         (decision_id,),
     ).fetchone()
     return None if row is None or row["outcome"] is None else str(row["outcome"])
+
+
+# ---------------------------------------------------------------------
+# Multi-decision schema (parse_decisions / verify_decisions /
+# commit_decisions)
+# ---------------------------------------------------------------------
+
+def test_parse_decisions_accepts_dict_wraps_to_list() -> None:
+    """Backward-compat: a top-level JSON object is wrapped as [obj] so
+    agents still emitting a single object continue to work."""
+    text = json.dumps({"kind": "Noop", "reason": "wait"})
+    ds, err = strategist.parse_decisions(text)
+    assert err == ""
+    assert ds is not None
+    assert len(ds) == 1
+    assert ds[0].kind == "Noop"
+
+
+def test_parse_decisions_accepts_array_of_two() -> None:
+    text = json.dumps([
+        {"kind": "Inject", "pipeline": "Forward",
+         "brief": "## Need\nbridge lemma"},
+        {"kind": "ConfirmShelve", "target_goal_id": 7, "reason": "drop"},
+    ])
+    ds, err = strategist.parse_decisions(text)
+    assert err == ""
+    assert ds is not None and len(ds) == 2
+    assert ds[0].kind == "Inject"
+    assert ds[1].kind == "ConfirmShelve"
+    assert ds[1].target_id == 7
+
+
+def test_parse_decisions_rejects_empty_array() -> None:
+    ds, err = strategist.parse_decisions(json.dumps([]))
+    assert ds is None
+    assert "empty" in err.lower()
+
+
+def test_parse_decisions_rejects_scalar() -> None:
+    ds, err = strategist.parse_decisions(json.dumps("oops"))
+    assert ds is None
+    assert "object or array" in err.lower()
+
+
+def test_parse_decisions_indexes_per_item_error() -> None:
+    """Bad item in a multi-decision array reports its position so the
+    agent can fix the right one."""
+    text = json.dumps([
+        {"kind": "Noop", "reason": "wait"},
+        {"kind": "Telekinesis", "reason": "?"},
+    ])
+    ds, err = strategist.parse_decisions(text)
+    assert ds is None
+    assert "#1" in err and "unknown" in err.lower()
+
+
+def test_parse_decision_rejects_multi_when_single_expected() -> None:
+    """The single-decision wrapper rejects arrays of length != 1 so
+    legacy callers can't silently lose decisions."""
+    text = json.dumps([
+        {"kind": "Noop", "reason": "a"},
+        {"kind": "Noop", "reason": "b"},
+    ])
+    d, err = strategist.parse_decision(text)
+    assert d is None
+    assert "single decision" in err.lower()
+
+
+def test_verify_decisions_allows_two_request_user_amend_in_batch(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Multi-decision allows co-amending Defs.lean + Manifest.md in one
+    batch so the operator can review the coupled drafts side by side
+    (e.g. new def + Manifest hint pointing at it). The per-item
+    `problem_has_awaiting_human` gate naturally serialises across
+    batches — once the batch commits, both rows are
+    `outcome='awaiting_human'` and any subsequent Strategist amend
+    is blocked until the operator resolves them."""
+    _insert_root(conn)
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "RequestUserAmend", "problem": "p", "file": "Defs.lean",
+         "proposed_body": "-- new def body\n",
+         "question": "OK?", "reason": "need vocab"},
+        {"kind": "RequestUserAmend", "problem": "p", "file": "Manifest.md",
+         "proposed_body": "## Hints\n- prefer new def\n",
+         "question": "OK?", "reason": "point hints at new vocab"},
+    ]))
+    assert strategist.verify_decisions(ds, conn, problem="p") == ""
+    outcomes = strategist.commit_decisions(
+        ds, conn, problem="p", tick=1, trigger_kind="routine",
+        workspace=workspace,
+    )
+    assert len(outcomes) == 2
+    # Both audit rows are awaiting_human, both `.proposed_<file>`
+    # written.
+    rows = list(conn.execute(
+        "SELECT outcome FROM strategist_decisions"
+        " WHERE decision_kind='RequestUserAmend' ORDER BY id"
+    ))
+    assert [r["outcome"] for r in rows] == ["awaiting_human",
+                                            "awaiting_human"]
+    assert (workspace / "Problems" / "p" / ".proposed_Defs.lean").exists()
+    assert (workspace / "Problems" / "p" / ".proposed_Manifest.md").exists()
+
+
+def test_verify_decisions_rejects_contradictory_confirm_reopen(
+    conn: sqlite3.Connection,
+) -> None:
+    """ConfirmShelve(G) and Reopen(G) in one batch is contradictory —
+    reject so the agent picks one."""
+    root = _insert_root(conn)
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "ConfirmShelve", "target_goal_id": root, "reason": "x"},
+        {"kind": "Reopen", "target_goal_id": root, "reason": "y"},
+    ]))
+    err = strategist.verify_decisions(ds, conn, problem="p")
+    assert "contradictory" in err.lower() and "ConfirmShelve" in err
+
+
+def test_verify_decisions_rejects_confirmshelve_plus_inject_bb_same_target(
+    conn: sqlite3.Connection,
+) -> None:
+    """Same-target safety: Inject(Backward, target=G) force-reopens G;
+    a sibling ConfirmShelve(G) then shelves it, leaving a queued
+    Backward dispatch on a shelved goal (undefined). Reject at verify
+    time so the agent removes the ConfirmShelve (the Inject already
+    keeps G alive) or aims the Inject elsewhere.
+
+    Covers Backward; the Builder variant is symmetric.
+    """
+    root = _insert_root(conn)
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Inject", "pipeline": "Backward",
+         "target_goal_id": root, "brief": "try angle X"},
+        {"kind": "ConfirmShelve", "target_goal_id": root,
+         "reason": "give up"},
+    ]))
+    err = strategist.verify_decisions(ds, conn, problem="p")
+    assert "ConfirmShelve" in err and "Inject" in err
+    assert "shelved goal" in err.lower() or "queued retry" in err.lower()
+
+
+def test_verify_decisions_allows_confirmshelve_with_inject_bb_different_target(
+    conn: sqlite3.Connection,
+) -> None:
+    """The canonical pending_review multi-decision pattern: redispatch
+    a DIFFERENT goal while shelving the pending one. Must NOT be
+    blocked by the same-target safety check."""
+    root = _insert_root(conn)
+    other = db.insert_goal(
+        conn, problem="p", slug="other",
+        lean_path="Problems/p/proofs/L_other.lean", statement="T",
+        origin="backward",
+    )
+    db.update_goal_status(conn, root, "pending_strategist_review")
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Inject", "pipeline": "Backward",
+         "target_goal_id": other, "brief": "attack parent instead"},
+        {"kind": "ConfirmShelve", "target_goal_id": root,
+         "reason": "shelve pending; parent retry is the way"},
+    ]))
+    assert strategist.verify_decisions(ds, conn, problem="p") == ""
+
+
+def test_verify_decisions_indexes_per_item_failure(
+    conn: sqlite3.Connection,
+) -> None:
+    """Per-item verify failure in a multi-decision batch surfaces the
+    item index in the error so the agent can fix the right one."""
+    _insert_root(conn)
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Noop", "reason": "wait"},
+        {"kind": "Inject", "pipeline": "Forward"},  # missing brief
+    ]))
+    err = strategist.verify_decisions(ds, conn, problem="p")
+    assert err != ""
+    assert "#1" in err and "brief" in err.lower()
+
+
+def test_commit_decisions_multi_forward_share_one_batch_id(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Two Inject(Forward) in one Strategist call share one batch_id
+    so `inject_batch_done` fires once after both produced lemmas
+    terminate (single Strategist wake-up, not two)."""
+    _insert_root(conn)
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Inject", "pipeline": "Forward",
+         "brief": "## Need\nlemma A"},
+        {"kind": "Inject", "pipeline": "Forward",
+         "brief": "## Need\nlemma B"},
+    ]))
+    assert strategist.verify_decisions(ds, conn, problem="p") == ""
+    outcomes = strategist.commit_decisions(
+        ds, conn, problem="p", tick=1, trigger_kind="routine",
+        workspace=workspace,
+    )
+    assert len(outcomes) == 2
+    assert outcomes[0].batch_id is not None
+    assert outcomes[0].batch_id == outcomes[1].batch_id
+    # Both decision rows persist with the same batch_id.
+    rows = list(conn.execute(
+        "SELECT batch_id FROM strategist_decisions"
+        " WHERE id IN (?, ?) ORDER BY id",
+        (outcomes[0].decision_row_id, outcomes[1].decision_row_id),
+    ))
+    assert rows[0]["batch_id"] == rows[1]["batch_id"] == outcomes[0].batch_id
+
+
+def test_commit_decisions_mixed_forward_and_backward_batch_id_scoped(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """In a mixed batch, Forward Inject(s) share one batch_id while
+    Inject(Backward) gets none (no inject_batch_done fire on B/B
+    redispatch — cascade handles it)."""
+    root = _insert_root(conn)
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Inject", "pipeline": "Forward",
+         "brief": "## Need\nbridge lemma"},
+        {"kind": "Inject", "pipeline": "Backward",
+         "target_goal_id": root, "brief": "try a different angle"},
+    ]))
+    assert strategist.verify_decisions(ds, conn, problem="p") == ""
+    outcomes = strategist.commit_decisions(
+        ds, conn, problem="p", tick=1, trigger_kind="pending_review",
+        workspace=workspace,
+    )
+    assert outcomes[0].batch_id is not None  # Forward
+    assert outcomes[1].batch_id is None      # Backward
+    # And the persisted rows agree.
+    fwd_row = conn.execute(
+        "SELECT batch_id FROM strategist_decisions WHERE id=?",
+        (outcomes[0].decision_row_id,),
+    ).fetchone()
+    bwd_row = conn.execute(
+        "SELECT batch_id, produced_goal_id FROM strategist_decisions"
+        " WHERE id=?",
+        (outcomes[1].decision_row_id,),
+    ).fetchone()
+    assert fwd_row["batch_id"] == outcomes[0].batch_id
+    assert bwd_row["batch_id"] is None
+    # produced_goal_id still set on B/B so outcome bookkeeping works.
+    assert bwd_row["produced_goal_id"] == root
+
+
+def test_commit_decisions_inject_forward_plus_confirmshelve(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Canonical multi-decision use case during pending_review: inject
+    a missing tool, shelve the pending goal in one transaction so the
+    framework doesn't re-fire pending_review on the same goal."""
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "pending_strategist_review")
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Inject", "pipeline": "Forward",
+         "brief": "## Need\nthe missing bridge lemma"},
+        {"kind": "ConfirmShelve", "target_goal_id": root,
+         "reason": "shelve pending; rely on injected lemma later"},
+    ]))
+    assert strategist.verify_decisions(ds, conn, problem="p") == ""
+    outcomes = strategist.commit_decisions(
+        ds, conn, problem="p", tick=1, trigger_kind="pending_review",
+        workspace=workspace,
+    )
+    assert len(outcomes) == 2
+    # Forward enqueued.
+    fq = conn.execute(
+        "SELECT decision_id FROM queue WHERE kind='Forward'"
+    ).fetchone()
+    assert fq is not None
+    assert fq["decision_id"] == outcomes[0].decision_row_id
+    # Pending goal is now shelved (ConfirmShelve flipped it).
+    assert db.get_goal(conn, root)["status"] == "shelved"
+
+
+def test_run_strategist_noop_only_batch_maps_to_strategist_noop(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """A batch of N Noops still trips `strategist_noop` so cascade_one
+    doesn't burn root.attempts. Audit rows are written so the
+    decisions show up in failure_replay."""
+    _insert_root(conn)
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Noop", "reason": "wait A"},
+        {"kind": "Noop", "reason": "wait B"},
+    ]))
+    assert strategist.verify_decisions(ds, conn, problem="p") == ""
+    outcomes = strategist.commit_decisions(
+        ds, conn, problem="p", tick=1, trigger_kind="routine",
+        workspace=workspace,
+    )
+    assert len(outcomes) == 2
+    rows = list(conn.execute(
+        "SELECT decision_kind, reason FROM strategist_decisions"
+        " WHERE problem='p' ORDER BY id"
+    ))
+    assert [r["decision_kind"] for r in rows] == ["Noop", "Noop"]
+    assert [r["reason"] for r in rows] == ["wait A", "wait B"]

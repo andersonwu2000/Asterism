@@ -190,6 +190,135 @@ def test_run_strategist_quota_exhausted_rc(
 
 
 # ---------------------------------------------------------------------
+# Verify-retry — single in-pipeline retry when verify_decisions rejects
+# the first decision.json. Covers the failure modes most plausibly
+# fixable by re-prompting (bad slug, dead ancestor, missing brief,
+# cross-decision conflicts).
+# ---------------------------------------------------------------------
+
+def test_run_strategist_verify_retry_recovers(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """First attempt produces a Reopen against a non-existent target
+    (verify fails); retry produces a valid Noop. Run reports success."""
+    _insert_root(conn)
+    calls: list[dict] = []
+
+    def fake_spawn(**kw):
+        calls.append(kw)
+        attempts_dir = kw["attempts_dir"]
+        if len(calls) == 1:
+            (attempts_dir / "decision.json").write_text(
+                json.dumps({
+                    "kind": "Reopen", "target_goal_id": 9999,
+                    "reason": "stale id",
+                }),
+                encoding="utf-8")
+        else:
+            (attempts_dir / "decision.json").write_text(
+                json.dumps({"kind": "Noop", "reason": "ok"}),
+                encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    r = strategist.run_strategist(
+        conn, problem="p", trigger_kind="routine", tick=6,
+        workspace=workspace, mfst=mfst, pipeline_id="test-strat-retry-1",
+    )
+    # Noop maps to strategist_noop (infra-reason) but the retry IS the
+    # success path: it produced a parsable + verifiable decision.
+    assert r.failure_reason == "strategist_noop"
+    assert len(calls) == 2
+    # Same session_id across both spawns; second was is_retry=True with
+    # the first attempt's verify error in retry_context.
+    assert calls[0]["session_id"] == calls[1]["session_id"]
+    assert calls[0].get("is_retry", False) is False
+    assert calls[1]["is_retry"] is True
+    assert "9999" in calls[1]["retry_context"]
+
+
+def test_run_strategist_verify_retry_both_fail(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both attempts produce verify-failing output → schema_invalid
+    with both errors surfaced in failure_detail."""
+    _insert_root(conn)
+    calls: list[dict] = []
+
+    def fake_spawn(**kw):
+        calls.append(kw)
+        (kw["attempts_dir"] / "decision.json").write_text(
+            json.dumps({"kind": "Reopen", "target_goal_id": 9999,
+                        "reason": "stale"}),
+            encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    r = strategist.run_strategist(
+        conn, problem="p", trigger_kind="routine", tick=7,
+        workspace=workspace, mfst=mfst, pipeline_id="test-strat-retry-2",
+    )
+    assert r.failure_reason == "strategist_schema_invalid"
+    assert len(calls) == 2
+    assert "verify-retry" in r.failure_detail
+    assert "first-attempt" in r.failure_detail
+
+
+def test_run_strategist_parse_fail_is_not_retried(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Parse failure (malformed JSON) skips the retry path — session
+    breakage usually doesn't recover from one more shot at the same
+    prompt, so we don't burn the call."""
+    _insert_root(conn)
+    calls: list[dict] = []
+
+    def fake_spawn(**kw):
+        calls.append(kw)
+        (kw["attempts_dir"] / "decision.json").write_text(
+            "not valid json", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    r = strategist.run_strategist(
+        conn, problem="p", trigger_kind="routine", tick=8,
+        workspace=workspace, mfst=mfst, pipeline_id="test-strat-retry-3",
+    )
+    assert r.failure_reason == "strategist_schema_invalid"
+    assert len(calls) == 1  # no retry on parse fail
+
+
+def test_run_strategist_verify_retry_disabled_via_env(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ASTERISM_STRATEGIST_VERIFY_RETRY=0 disables the retry — first
+    verify failure returns immediately."""
+    _insert_root(conn)
+    monkeypatch.setenv("ASTERISM_STRATEGIST_VERIFY_RETRY", "0")
+    calls: list[dict] = []
+
+    def fake_spawn(**kw):
+        calls.append(kw)
+        (kw["attempts_dir"] / "decision.json").write_text(
+            json.dumps({"kind": "Reopen", "target_goal_id": 9999,
+                        "reason": "stale"}),
+            encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    r = strategist.run_strategist(
+        conn, problem="p", trigger_kind="routine", tick=9,
+        workspace=workspace, mfst=mfst, pipeline_id="test-strat-retry-4",
+    )
+    assert r.failure_reason == "strategist_schema_invalid"
+    assert len(calls) == 1  # no retry when env disables
+
+
+# ---------------------------------------------------------------------
 # run_forward — full chain with mocked spawn_llm + LSP verify
 # ---------------------------------------------------------------------
 

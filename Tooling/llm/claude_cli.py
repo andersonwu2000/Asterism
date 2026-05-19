@@ -616,24 +616,42 @@ class ClaudeCliProvider:
         elif req.is_retry and req.session_id:
             session_flags = ["--resume", req.session_id]
             session_lifetime_flag = []  # session persists
-            err = (req.retry_context or "(lake error not captured)").strip()
-            # When the prior failure cites unknown constants, nudge the
-            # agent to verify names via Loogle/Grep instead of repeating
-            # the same guess. Empty hint when no match.
-            unknown_hint = _retry_hint_for_unknowns(
-                _extract_unknown_constants(err))
-            # Generic stderr → diagnostic hint table. Catches
-            # expected-token / typeclass-stuck / tactic-no-progress
-            # patterns the unknown-constant matcher misses.
-            pattern_hint = _retry_hint_for_patterns(err)
-            prompt = (
-                f"Previous attempt failed lake build with:\n\n"
-                f"```\n{err}\n```{unknown_hint}{pattern_hint}\n\n"
-                f"Produce a fresh patch.lean (same scope) addressing "
-                f"this error. Reuse the prior PROPOSAL.md unless the "
-                f"strategy needs to change. Write outputs into "
-                f"{req.attempts_dir}/."
-            )
+            if req.kind == "strategist":
+                # Strategist retries on `verify_decisions` failure, not
+                # lake build. The prior turn already produced
+                # decision.json in this attempts_dir; the framework
+                # rejected it for the reason below. Same output target,
+                # different content.
+                err = (req.retry_context
+                       or "(verify error not captured)").strip()
+                prompt = (
+                    f"Your previous decision.json failed verification:"
+                    f"\n\n```\n{err}\n```\n\n"
+                    f"Produce a fresh decision.json fixing this. The "
+                    f"schema and rules from your initial Context.md are "
+                    f"unchanged. Write to "
+                    f"{req.attempts_dir}/decision.json."
+                )
+            else:
+                err = (req.retry_context
+                       or "(lake error not captured)").strip()
+                # When the prior failure cites unknown constants, nudge
+                # the agent to verify names via Loogle/Grep instead of
+                # repeating the same guess. Empty hint when no match.
+                unknown_hint = _retry_hint_for_unknowns(
+                    _extract_unknown_constants(err))
+                # Generic stderr → diagnostic hint table. Catches
+                # expected-token / typeclass-stuck / tactic-no-progress
+                # patterns the unknown-constant matcher misses.
+                pattern_hint = _retry_hint_for_patterns(err)
+                prompt = (
+                    f"Previous attempt failed lake build with:\n\n"
+                    f"```\n{err}\n```{unknown_hint}{pattern_hint}\n\n"
+                    f"Produce a fresh patch.lean (same scope) addressing "
+                    f"this error. Reuse the prior PROPOSAL.md unless the "
+                    f"strategy needs to change. Write outputs into "
+                    f"{req.attempts_dir}/."
+                )
         elif req.session_id:
             # Cold path with a caller-pinned session id (so a future
             # retry can resume).
