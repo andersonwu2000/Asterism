@@ -1026,8 +1026,9 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
                 # Strategist needs to decide follow-up (more Inject /
                 # Reopen(root) / etc) before any other reasoning. While
                 # root is still frozen, first_launch fires next so the
-                # initial planning loop (InitializeDefs → Inject → ...
-                # → Reopen(root)) runs to completion.
+                # initial planning loop (RequestUserAmend if vocab is
+                # missing → Inject(Forward) for lemma gaps → Reopen(root))
+                # runs to completion.
                 root_row = conn.execute(
                     "SELECT status FROM goals "
                     " WHERE problem = ? AND origin = 'root'",

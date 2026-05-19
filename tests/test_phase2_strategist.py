@@ -100,17 +100,6 @@ def test_parse_emitdirective() -> None:
     assert d.payload["body"] == "use L_x"
 
 
-def test_parse_initialize_defs() -> None:
-    text = json.dumps({
-        "kind": "InitializeDefs", "problem": "p",
-        "lean_body": "import Mathlib\n",
-        "reason": "scaffold",
-    })
-    d, err = strategist.parse_decision(text)
-    assert err == ""
-    assert d.payload["lean_body"] == "import Mathlib\n"
-
-
 def test_parse_request_user_amend() -> None:
     text = json.dumps({
         "kind": "RequestUserAmend", "problem": "p",
@@ -396,24 +385,6 @@ def test_commit_inject_single_brief_enqueues_forward_with_decision_id(
     ).fetchone()
     assert row["batch_id"] == outcome.batch_id
     assert row["brief"] == "## Need\nfoo"
-
-
-def test_commit_initialize_defs_writes_file(
-    workspace: Path, conn: sqlite3.Connection,
-) -> None:
-    _insert_root(conn)
-    d, _ = strategist.parse_decision(json.dumps({
-        "kind": "InitializeDefs", "problem": "p",
-        "lean_body": "import Mathlib\nopen Real\n",
-        "reason": "scaffold",
-    }))
-    strategist.commit_decision(
-        d, conn, problem="p", tick=1, trigger_kind="first_launch",
-        workspace=workspace,
-    )
-    defs_path = workspace / "Problems" / "p" / "Defs.lean"
-    assert defs_path.exists()
-    assert "open Real" in defs_path.read_text(encoding="utf-8")
 
 
 def test_commit_confirmshelve_cascades_shelved_to_descendants(

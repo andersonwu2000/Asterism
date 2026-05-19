@@ -88,5 +88,6 @@ Type-check the statement via `validate_file` and exit. Wrong types compile-fail 
 - Do NOT use any name in FORBIDDEN_LEMMAS (Context.md lists them).
 - Verify lemma references before citing (names drift): Grep by name/symbol, loogle by type pattern.
 - Statement must be **generic** — re-stating an alive Goal is rejected by dedup.
+- `def` / `structure` / `class` slugs must NOT match a symbol referenced in the user's Manifest statement (e.g. if Manifest uses `Complex.windingNumber`, Forward cannot define `windingNumber`). Statement-vocabulary belongs in user-owned `Defs.lean`. Framework rejects with `forward_no_new_goal` if violated.
 - Do not write imports yourself — framework auto-prepends.
 - Proof body is optional. If you include one, it must be sorry-free and `validate_file`-clean.

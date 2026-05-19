@@ -228,11 +228,12 @@ def cmd_init(args: argparse.Namespace) -> int:
     if existing_goal is None:
         rel_root = (pdir / "Root.lean").relative_to(workspace).as_posix()
         # Phase 5: root starts as `frozen`. Strategist's first_launch
-        # trigger fires on frozen roots and may chain InitializeDefs /
-        # Inject(Forward) before issuing Reopen(root) to release BFS into
-        # 'open' state. Replaces the earlier `problems.bootstrap_done`
-        # gate; the column persists for backwards-compat but is no longer
-        # read for dispatch decisions.
+        # trigger fires on frozen roots and may chain RequestUserAmend
+        # (for missing statement-vocabulary in Defs.lean) / Inject(Forward)
+        # (for missing prerequisite lemmas) before issuing Reopen(root) to
+        # flip root frozen→open and release BFS. Replaces the earlier
+        # `problems.bootstrap_done` gate; the column persists for
+        # backwards-compat but is no longer read for dispatch decisions.
         gid = db.insert_goal(
             conn, problem=problem, slug="main",
             lean_path=rel_root, statement=mfst.statement,

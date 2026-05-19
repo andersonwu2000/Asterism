@@ -1,7 +1,7 @@
 """Phase 2 — Strategist pipeline (Step 6 scaffolding).
 
 Strategist emits a single meta-level decision per invocation:
-  Inject / ConfirmShelve / Reopen / EmitDirective / InitializeDefs
+  Inject / ConfirmShelve / Reopen / EmitDirective
   / RequestUserAmend / Noop
 
 This module covers decision validation + commit; the agent stage
@@ -43,7 +43,7 @@ from ..core import dispatcher as _dispatcher
 # Decision kinds (mirrors strategist_decisions.decision_kind CHECK enum).
 DECISION_KINDS: frozenset[str] = frozenset({
     "Inject", "ConfirmShelve", "Reopen", "EmitDirective",
-    "InitializeDefs", "RequestUserAmend", "Noop",
+    "RequestUserAmend", "Noop",
 })
 
 # Trigger kinds (mirrors strategist_decisions.trigger_kind CHECK enum).
@@ -243,20 +243,6 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
             return "Reopen requires non-empty reason"
         return ""
 
-    if k == "InitializeDefs":
-        if decision.payload.get("problem") and \
-                decision.payload["problem"] != problem:
-            return (f"InitializeDefs.problem mismatch: payload says "
-                    f"{decision.payload['problem']!r}, expected {problem!r}")
-        lean_body = decision.payload.get("lean_body")
-        if not isinstance(lean_body, str) or not lean_body.strip():
-            return "InitializeDefs requires non-empty lean_body"
-        # File-existence guard (only-when-missing). Caller (commit) re-
-        # checks atomically; this is the friendlier early reject.
-        # `commit_decision` resolves workspace; verify_decision doesn't
-        # have workspace, so skip the existence check here.
-        return ""
-
     if k == "RequestUserAmend":
         if decision.payload.get("problem") and \
                 decision.payload["problem"] != problem:
@@ -406,16 +392,6 @@ def commit_decision(decision: Decision, conn: sqlite3.Connection,
         db.set_problem_strategist_directive(
             conn, problem, str(decision.payload.get("body", "")).strip()
         )
-
-    elif k == "InitializeDefs":
-        defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
-        if defs_path.exists():
-            raise RuntimeError(
-                f"InitializeDefs would overwrite existing {defs_path}; "
-                "verify_decision should have caught this"
-            )
-        defs_path.write_text(decision.payload["lean_body"],
-                             encoding="utf-8")
 
     elif k == "ConfirmShelve":
         gid = int(decision.target_id)  # type: ignore[arg-type]

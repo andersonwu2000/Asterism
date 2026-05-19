@@ -410,6 +410,29 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                 failure_detail=f"parse rejected: {parse_err}",
             )
 
+        # Soundness guard: Forward must not redefine a symbol that appears
+        # in the user's Manifest statement. Such symbols are statement-
+        # vocabulary — owned by Defs.lean (user-blessed). If Forward could
+        # write them, an agent could pick a definition that trivially
+        # satisfies the theorem (e.g. `windingNumber := 0` makes a sum
+        # vanish). Statement-vocabulary gaps must route through
+        # Strategist's `RequestUserAmend(file="Defs.lean")` instead.
+        # Word-boundary match catches both bare slugs and qualified forms
+        # (e.g. slug=`windingNumber` matches `Complex.windingNumber`
+        # because `.` is a word boundary).
+        if metadata.kind in NON_THEOREM_KINDS:
+            stmt = getattr(mfst, "statement", "") or ""
+            if re.search(rf"\b{re.escape(metadata.slug)}\b", stmt):
+                return PipelineResult(
+                    outcome="failed", failure_reason="forward_no_new_goal",
+                    failure_detail=(
+                        f"def name '{metadata.slug}' appears in user "
+                        f"Manifest statement; statement-vocabulary must "
+                        f"live in Defs.lean — use "
+                        f"`RequestUserAmend(file=\"Defs.lean\")` instead"
+                    ),
+                )
+
         # Auto-prepend `import Mathlib` + `Problems.<p>.Defs` + opens —
         # the prompt promises this, the MCP `validate_file` tool does
         # it, but the framework's commit-side path does not. See

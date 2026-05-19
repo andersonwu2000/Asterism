@@ -342,7 +342,8 @@ def _section_tree_inline(workspace: Path, problem: str) -> list[str]:
 def _section_manifest_meta(mfst: manifest.Manifest,
                            workspace: Path, problem: str) -> list[str]:
     """For T0 / T3 — surface Manifest statement + hints + Defs.lean
-    preview so Strategist can decide InitializeDefs / RequestUserAmend."""
+    preview so Strategist can decide whether RequestUserAmend on Defs.lean
+    is needed (statement-vocabulary missing)."""
     out = ["## Manifest", "", "### Statement", ""]
     out.append(f"```\n{mfst.statement}\n```")
     if mfst.all_hints:
@@ -361,7 +362,7 @@ def _section_manifest_meta(mfst: manifest.Manifest,
         except OSError:
             out.append("(Defs.lean unreadable)")
     else:
-        out.append("(Defs.lean does not exist — InitializeDefs candidate)")
+        out.append("(Defs.lean does not exist — RequestUserAmend candidate)")
     out.append("")
     return out
 
