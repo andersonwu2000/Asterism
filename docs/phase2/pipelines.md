@@ -287,21 +287,24 @@ when goal.status in ('open','attempting'):
 `agent_shelved`：agent 卡住無 counterexample、需 Strategist 判決、進 `pending_strategist_review`。enqueue 直接走 queue（無 event bus）、dedup 靠既有 in-flight (kind, problem) 檢查。
 `parent_needs_fix`：父策略修了就能證、Phase 1 維持直接 shelve。`agent_declined`（Builder needs_decomposition）走既有 entry_kind switch 路徑、不在本規則範圍。
 
-**新規則 2（ConfirmShelve 只上行 cascade）**：
+**新規則 2（ConfirmShelve / 任何 shelve 路徑都雙向 cascade）**：
 
 ```
-ConfirmShelve(G) commit:
-    G.status ← 'shelved'
-    _propagate_shelve(G)  # 殺 parent strategies、attempts++、必要時 recurse
+任何 goal 翻 'shelved' / 'disproved'（任何 site）:
+    G.status ← <terminal>
+    _propagate_shelve(G)             # 上行：殺 parent strategies、attempts++
+    _cascade_shelve_descendants(G)   # 下行：把活著的 descendants 標 'shelved'
 ```
 
-歷史備註：早期設計含下行 cascade（`_cascade_shelve_descendants` 把後代 open/attempting → shelved）。在 `shelved` 拆出 `disproved` + 變成 reopenable + auto-detach（規則 3）上線後**已退場**。原因：
+集中在 `dispatcher._set_goal_terminal_and_propagate` helper、所有 terminal flip site 一致走它。
 
-1. **行為不變**：BFS 的 alive seed 是 `root ∪ detached=1 ∪ alive-strategy descendants`、死掉 strategy 的後代不在 alive set、根本不會被 dispatch。後代狀態是 `open` 還是 `shelved` 對 BFS 無差別。
-2. **下行 cascade 反而妨礙 Reopen**：cascade 後後代留 `shelved`、就算 parent 之後 Reopen 拉新 strategy reference 同一個後代、BFS 的 `status='open'` filter 還是會 skip、要 Strategist 逐個 Reopen 才會醒。不下行 cascade 才能讓 parent 的新 strategy 直接接過去用。
-3. **顧慮在 view 層處理**：Strategist context 的 `## Active goals` section 加 alive filter（mirror `db.open_goals` 的 recursive CTE）、orphan 後代不會出現在 Strategist 視野裡、不會被誤判為 actionable。data 保持 truthful、view 在 boundary 過濾。
+設計演化：早期 Phase 2 spec 只 ConfirmShelve 走下行 cascade、後來一度拔掉（理由：view 層 alive filter 可代替）、最後加回來涵蓋所有 shelve / disproved site。回頭加的理由：
 
-`shelved` 仍涵蓋 `parent_needs_fix` 和 Strategist `ConfirmShelve` 兩條路徑、一致語義；之前 spec 提到的「三條路徑」其中下行 cascade 那條一併退場。
+1. **語義一致**：shelve 就是 shelve、不管來自 ConfirmShelve / parent_needs_fix / 鏈死 cascade、status='shelved' 統一表「不可 dispatch、可被 Strategist Reopen」。不引入 dormant / cascade_shelved 等中間狀態。
+2. **單一真相**：goal status 直接就是「能否 dispatch」的 source of truth、view（TREE.md、`asterism status`、Strategist context）不必再各自 mirror alive-set CTE。
+3. **descendants 用 `shelved` 不用 `disproved`**：descendants 沒被獨立判 counterexample、保留可 Reopen 的軟終態。`disproved` 嚴格保留給「這個 statement 被反例證偽」這語義、dedupe 才能放心擋同形狀提案。
+
+實作備註：下行 walker 跳過 already-terminal（proved / shelved / disproved）+ pending_strategist_review。pending review 等 Strategist 自己處理、避免 race。proved 不覆蓋但 walk past（subtree 內可能還有 active 後代要處理）。
 
 **新規則 3（Reopen 安全閘 + auto-detach）**：
 

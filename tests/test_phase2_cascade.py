@@ -302,6 +302,119 @@ def test_t2_pops_before_bfs(
 
 
 # ---------------------------------------------------------------------
+# Cascade-shelve descendants — `_set_goal_terminal_and_propagate`
+# applies a downward `shelved` cascade whenever any goal flips to
+# `shelved` or `disproved`. Single uniform terminology: status
+# `shelved` regardless of the path (own shelve, ConfirmShelve,
+# parent_needs_fix, descendant cascade).
+# ---------------------------------------------------------------------
+
+def test_shelve_cascades_to_open_descendant(conn: sqlite3.Connection) -> None:
+    from Tooling.core.dispatcher import _set_goal_terminal_and_propagate
+    parent = _insert_goal(conn, slug="parent", origin="root")
+    sid = _insert_strategy(conn, goal_id=parent)
+    child = _insert_goal(conn, slug="child", status="open")
+    _link(conn, sid, [child])
+
+    _set_goal_terminal_and_propagate(conn, parent, "shelved")
+    assert db.get_goal(conn, parent)["status"] == "shelved"
+    assert db.get_goal(conn, child)["status"] == "shelved"
+
+
+def test_shelve_cascades_to_attempting_descendant(
+    conn: sqlite3.Connection,
+) -> None:
+    from Tooling.core.dispatcher import _set_goal_terminal_and_propagate
+    parent = _insert_goal(conn, slug="parent", origin="root")
+    sid = _insert_strategy(conn, goal_id=parent)
+    child = _insert_goal(conn, slug="child", status="attempting")
+    _link(conn, sid, [child])
+
+    _set_goal_terminal_and_propagate(conn, parent, "shelved")
+    assert db.get_goal(conn, child)["status"] == "shelved"
+
+
+def test_shelve_preserves_proved_descendant_but_walks_past(
+    conn: sqlite3.Connection,
+) -> None:
+    """Cascade walks past `proved` descendants without overwriting
+    them, so deeper active descendants under the proved subtree still
+    get cascade-shelved."""
+    from Tooling.core.dispatcher import _set_goal_terminal_and_propagate
+    parent = _insert_goal(conn, slug="parent", origin="root")
+    sid = _insert_strategy(conn, goal_id=parent)
+    mid = _insert_goal(conn, slug="mid", status="proved")
+    _link(conn, sid, [mid])
+    sid2 = _insert_strategy(conn, goal_id=mid)
+    grand = _insert_goal(conn, slug="grand", status="open")
+    _link(conn, sid2, [grand])
+
+    _set_goal_terminal_and_propagate(conn, parent, "shelved")
+    assert db.get_goal(conn, mid)["status"] == "proved"  # untouched
+    assert db.get_goal(conn, grand)["status"] == "shelved"
+
+
+def test_shelve_skips_pending_review_descendant(
+    conn: sqlite3.Connection,
+) -> None:
+    """`pending_strategist_review` is transitional; Strategist will
+    decide. Cascading would race with that decision."""
+    from Tooling.core.dispatcher import _set_goal_terminal_and_propagate
+    parent = _insert_goal(conn, slug="parent", origin="root")
+    sid = _insert_strategy(conn, goal_id=parent)
+    pending = _insert_goal(conn, slug="pending",
+                           status="pending_strategist_review")
+    _link(conn, sid, [pending])
+
+    _set_goal_terminal_and_propagate(conn, parent, "shelved")
+    assert db.get_goal(conn, pending)["status"] == "pending_strategist_review"
+
+
+def test_disproved_cascades_descendants_as_shelved_not_disproved(
+    conn: sqlite3.Connection,
+) -> None:
+    """A disproved goal taints its descendants but they were not
+    independently disproved — they get `shelved` (soft terminal,
+    Reopenable), not `disproved`. Preserves `disproved`'s dedupe
+    semantics: only counterexample-shown statements block future
+    same-shape proposals."""
+    from Tooling.core.dispatcher import _set_goal_terminal_and_propagate
+    parent = _insert_goal(conn, slug="parent", origin="root")
+    sid = _insert_strategy(conn, goal_id=parent)
+    child = _insert_goal(conn, slug="child", status="open")
+    _link(conn, sid, [child])
+
+    _set_goal_terminal_and_propagate(conn, parent, "disproved")
+    assert db.get_goal(conn, parent)["status"] == "disproved"
+    assert db.get_goal(conn, child)["status"] == "shelved"
+
+
+def test_proved_does_not_cascade(conn: sqlite3.Connection) -> None:
+    from Tooling.core.dispatcher import _set_goal_terminal_and_propagate
+    parent = _insert_goal(conn, slug="parent", origin="root")
+    sid = _insert_strategy(conn, goal_id=parent)
+    child = _insert_goal(conn, slug="child", status="open")
+    _link(conn, sid, [child])
+
+    _set_goal_terminal_and_propagate(conn, parent, "proved")
+    # No shelve cascade on the proved path.
+    assert db.get_goal(conn, child)["status"] == "open"
+
+
+def test_shelve_idempotent(conn: sqlite3.Connection) -> None:
+    """Re-running on an already-shelved parent / child does nothing."""
+    from Tooling.core.dispatcher import _set_goal_terminal_and_propagate
+    parent = _insert_goal(conn, slug="parent", origin="root")
+    sid = _insert_strategy(conn, goal_id=parent)
+    child = _insert_goal(conn, slug="child", status="open")
+    _link(conn, sid, [child])
+
+    _set_goal_terminal_and_propagate(conn, parent, "shelved")
+    _set_goal_terminal_and_propagate(conn, parent, "shelved")  # 2nd run
+    assert db.get_goal(conn, child)["status"] == "shelved"
+
+
+# ---------------------------------------------------------------------
 # Phase 2.5 — Inject batch completion hook
 # ---------------------------------------------------------------------
 

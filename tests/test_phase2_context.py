@@ -278,29 +278,31 @@ def test_first_launch_trigger_omits_review_sections(
 # of dead-strategy branches as actionable candidates.
 # ---------------------------------------------------------------------
 
-def test_active_goals_excludes_dead_chain_orphans(
+def test_active_goals_filters_by_status_only(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
-    """Parent G's strategy S is `dead` (e.g. all attempts exhausted +
-    G shelved via parent_needs_fix). Its sub-goal G_sub stays
-    `status='open'` in the DB — by design, so a future Reopen of G
-    can pick it up without an extra per-descendant Reopen. But it
-    must NOT appear in Strategist's `## Active goals` view, otherwise
-    Strategist sees it as live work and may over-Reopen the whole
-    subtree."""
+    """`## Active goals` lists every non-terminal goal in the problem
+    (`open` / `attempting` / `pending_strategist_review`). Descendants
+    of a dead chain are cascade-shelved at the data layer (see
+    `dispatcher._cascade_shelve_descendants`), so their `status='shelved'`
+    already excludes them — no view-level filter needed. This test
+    pre-seeds an orphan with status='shelved' explicitly to mirror the
+    post-cascade state."""
     _insert_problem(conn)
     root = db.insert_goal(
         conn, problem="p", slug="main", lean_path="P/main.lean",
         statement="T", origin="root",
     )
+    # Simulate a fully cascade-shelved orphan (the state the framework
+    # converges on when its parent chain dies):
     dead_strat = _insert_strategy(conn, root, status="dead")
     orphan = db.insert_goal(
         conn, problem="p", slug="orphan", lean_path="P/orphan.lean",
         statement="T", origin="backward",
     )
+    db.update_goal_status(conn, orphan, "shelved")
     _link_subgoal(conn, strategy_id=dead_strat, subgoal_id=orphan)
-    # A second live strategy on root with its own sub-goal — that
-    # sub-goal SHOULD appear (alive chain via 'proposed').
+    # Live sub under live strategy — appears.
     live_strat = _insert_strategy(conn, root, status="proposed")
     live_sub = db.insert_goal(
         conn, problem="p", slug="live_sub", lean_path="P/live_sub.lean",
@@ -310,11 +312,10 @@ def test_active_goals_excludes_dead_chain_orphans(
 
     lines = phase2_context._section_active_goals(conn, "p")
     text = "\n".join(lines)
-    # root included (origin='root' is in alive seed; status is 'open' by default)
     assert "`main`" in text
-    # live sub-goal included
     assert "`live_sub`" in text
-    # orphan excluded — parent strategy dead, not in alive set
+    # Shelved orphan: excluded by status filter (status='shelved' is
+    # not in the active-status set).
     assert "`orphan`" not in text
 
 

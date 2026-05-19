@@ -79,29 +79,99 @@ from ..state.recovery import sweep_lean_backups as _sweep_lean_backups  # noqa: 
 # a sibling/parent strategy revives the chain).
 # ---------------------------------------------------------------------
 
+def _cascade_shelve_descendants(
+    conn: sqlite3.Connection, goal_id: int,
+) -> int:
+    """When `goal_id` flips to a non-recoverable status (`shelved` /
+    `disproved`), walk its strategy_subgoals chain downward and mark
+    every still-active descendant `shelved`.
+
+    Why all descendants become `shelved` (never `disproved`): a
+    descendant inherits inactivity from its ancestor, but it was not
+    independently judged with a counterexample. Keeping descendants
+    Reopenable preserves the semantics of `disproved` as "this exact
+    statement has been shown false" rather than diluting it to
+    "anything downstream of a false statement".
+
+    The walk skips:
+      - already-terminal descendants (`proved` / `shelved` /
+        `disproved`): don't overwrite settled state.
+      - `pending_strategist_review` descendants: Strategist will
+        decide their fate. Cascading would race.
+
+    Recursive in spirit but iterated with a frontier list to avoid
+    Python stack limits on deep proof trees. Idempotent — re-running
+    on the same root is a no-op once everything that can transition
+    has transitioned.
+
+    Returns the number of descendants transitioned (for forensics /
+    test assertions).
+
+    Note: terminology in the codebase reserves the literal status
+    string `shelved` regardless of how the goal got there
+    (ConfirmShelve, parent_needs_fix, descendant cascade, threshold
+    exhaustion). There is no separate `cascade_shelved` state."""
+    transitioned = 0
+    frontier = [goal_id]
+    seen: set[int] = set()
+    while frontier:
+        next_frontier: list[int] = []
+        for gid in frontier:
+            if gid in seen:
+                continue
+            seen.add(gid)
+            for r in conn.execute(
+                "SELECT g.id, g.status FROM strategies s"
+                " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+                " JOIN goals g ON g.id = ss.subgoal_id"
+                " WHERE s.goal_id = ?",
+                (gid,),
+            ).fetchall():
+                sub_id = int(r["id"])
+                sub_status = str(r["status"])
+                if sub_status in ("proved", "shelved", "disproved",
+                                  "pending_strategist_review"):
+                    # Walk past proved descendants (their own subtrees
+                    # may still contain active goals worth cascading).
+                    if sub_status == "proved":
+                        next_frontier.append(sub_id)
+                    continue
+                db.update_goal_status(conn, sub_id, "shelved")
+                transitioned += 1
+                next_frontier.append(sub_id)
+        frontier = next_frontier
+    return transitioned
+
+
 def _set_goal_terminal_and_propagate(
     conn: sqlite3.Connection, goal_id: int, status: str,
 ) -> None:
     """Flip a goal to a terminal status (`proved` / `shelved` /
-    `disproved`) and, if the goal was Inject-produced (Forward output
-    of a Strategist Inject decision), fill the originating decision's
-    `outcome` column and fire `inject_batch_done` when its batch is
-    fully terminal.
+    `disproved`) and:
 
-    Centralises the (`update_goal_status` →
+      1. If the goal was Inject-produced (Forward output of a
+         Strategist Inject decision), fill the originating decision's
+         `outcome` column and fire `inject_batch_done` when its
+         batch is fully terminal.
+      2. If the status is `shelved` or `disproved`, cascade
+         `shelved` to every still-active descendant via
+         `_cascade_shelve_descendants`. Display and Strategist
+         context view then converge on the same source of truth
+         (the goal status) rather than relying on view-level filters
+         to hide orphans of a dead chain.
+
+    Centralises the sequence (`update_goal_status` →
     `propagate_inject_outcome_from_goal` →
-    `_maybe_enqueue_inject_batch_done`) sequence so every terminal
-    flip site automatically completes the corresponding Inject
-    decision when applicable. Without this, `inject_batch_done`
-    could fire while a Forward-produced lemma was still
-    sorry-bearing (residue_thm 2026-05-19 failure mode).
+    `_maybe_enqueue_inject_batch_done` → optional descendant
+    cascade) so every terminal flip site applies them uniformly.
 
-    `status` must be one of {'proved','shelved','disproved'}. The
-    propagation is a no-op for non-Inject goals."""
+    `status` must be one of {'proved','shelved','disproved'}."""
     db.update_goal_status(conn, goal_id, status)
     d = db.propagate_inject_outcome_from_goal(conn, goal_id)
     if d is not None:
         _maybe_enqueue_inject_batch_done(conn, d)
+    if status in ("shelved", "disproved"):
+        _cascade_shelve_descendants(conn, goal_id)
 
 
 def _record_inject_decision_outcome(conn: sqlite3.Connection,
