@@ -209,6 +209,42 @@ def test_enqueue_strategist_review_sets_status_and_queues(
     assert q[0]["priority"] == 20
 
 
+def test_enqueue_strategist_review_skips_orphan_chain(
+    conn: sqlite3.Connection,
+) -> None:
+    """When a worker returns agent_shelved on a goal whose ancestor
+    strategy has already died (orphaned subtree), the cleanup path
+    must skip the Strategist enqueue and shelve the goal directly.
+    Strategist on a dead-chain goal is a wasted spawn: Reopen would
+    auto-detach a goal about to be shelve-cascaded, Inject(Forward)
+    would build a lemma nothing cites.
+
+    Residue_thm 2026-05-19 regression: Backward on g2107 returned
+    agent_shelved after its grandparent strategy s10285 died; the
+    framework still enqueued Strategist + ran one full cycle +
+    committed ConfirmShelve. Pure overhead the cascade walk would
+    catch later anyway.
+    """
+    root = _insert_goal(conn, slug="main", origin="root")
+    parent = _insert_goal(conn, slug="parent_goal", status="open")
+    dead_strat = _insert_strategy(conn, goal_id=parent, status="dead")
+    sub = _insert_goal(conn, slug="orphan_sub", status="attempting")
+    _link(conn, dead_strat, [sub])
+
+    _enqueue_strategist_review(conn, sub)
+
+    # Should NOT enqueue Strategist
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert q["n"] == 0
+    # Should shelve sub directly
+    assert db.get_goal(conn, sub)["status"] == "shelved"
+    # parent_goal stays open (its status flip is _propagate_shelve's job
+    # via increment_attempts threshold; out of scope for this unit test)
+    assert root  # silence unused warning
+
+
 def test_enqueue_strategist_review_dedups_in_flight(
     conn: sqlite3.Connection,
 ) -> None:
