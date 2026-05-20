@@ -413,6 +413,143 @@ def test_propagate_dead_kills_upward(
     assert db.get_goal(conn, parent_g)["status"] == "open"
 
 
+# ---------------------------------------------------------------------
+# Sibling-orphan sweep — when _kill_upward_chain kills a strategy, its
+# other subgoals become orphans of the alive-strategy DAG. Without the
+# sweep, their status disagrees with dispatchability — TREE.md /
+# Strategist context misrepresent active work that BFS cannot reach.
+# ---------------------------------------------------------------------
+
+def test_kill_upward_cascades_open_sibling_to_shelved(
+    conn: sqlite3.Connection,
+) -> None:
+    """strategy s1 has subgoals g_terminating + g_sibling (open).
+    When g_terminating goes dead, s1 dies; g_sibling has no other
+    parent strategy → status should flip 'shelved' so status reflects
+    'not dispatchable' (matches BFS's alive-set CTE)."""
+    parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
+    s1 = _insert_strategy(conn, goal_id=parent_g, status="proposed")
+    terminating = _insert_goal(conn, slug="terminating", status="dead")
+    sibling = _insert_goal(conn, slug="sibling", status="open")
+    _link(conn, s1, [terminating, sibling])
+
+    _propagate_dead(conn, terminating)
+
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id=?", (s1,)
+    ).fetchone()["status"] == "dead"
+    assert db.get_goal(conn, sibling)["status"] == "shelved"
+
+
+def test_kill_upward_cascades_attempting_sibling(
+    conn: sqlite3.Connection,
+) -> None:
+    """Attempting sibling — a worker may have been dispatched on it,
+    or its sub-strategy may already exist. Sibling sweep shelves it
+    so subsequent late worker results are race-guarded out (cascade_one's
+    terminal-status early-return)."""
+    parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
+    s1 = _insert_strategy(conn, goal_id=parent_g, status="proposed")
+    terminating = _insert_goal(conn, slug="t", status="disproved")
+    sibling = _insert_goal(conn, slug="sib_att", status="attempting")
+    _link(conn, s1, [terminating, sibling])
+
+    _propagate_disproved(conn, terminating)
+
+    assert db.get_goal(conn, sibling)["status"] == "shelved"
+
+
+def test_kill_upward_cascades_sibling_subtree(
+    conn: sqlite3.Connection,
+) -> None:
+    """The sibling can carry its own live sub-strategy + subgoals.
+    The sweep should propagate downward (via
+    `_set_goal_terminal_and_propagate` cascade-descendants), and inward-
+    kill the sibling's own strategy (via `_propagate_shelve`)."""
+    parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
+    s1 = _insert_strategy(conn, goal_id=parent_g, status="proposed")
+    terminating = _insert_goal(conn, slug="t", status="dead")
+    sibling = _insert_goal(conn, slug="sib", status="attempting")
+    _link(conn, s1, [terminating, sibling])
+    # Sibling's own sub-strategy
+    s_sib = _insert_strategy(conn, goal_id=sibling, status="proposed")
+    grand_a = _insert_goal(conn, slug="grand_a", status="attempting")
+    grand_b = _insert_goal(conn, slug="grand_b", status="open")
+    _link(conn, s_sib, [grand_a, grand_b])
+
+    _propagate_dead(conn, terminating)
+
+    assert db.get_goal(conn, sibling)["status"] == "shelved"
+    # Sibling's own strategy: inward-killed by _propagate_shelve(sibling)
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id=?", (s_sib,)
+    ).fetchone()["status"] == "dead"
+    # Grandchildren: cascade-shelved via _cascade_shelve_descendants(sibling)
+    assert db.get_goal(conn, grand_a)["status"] == "shelved"
+    assert db.get_goal(conn, grand_b)["status"] == "shelved"
+
+
+def test_kill_upward_skips_proved_sibling(
+    conn: sqlite3.Connection,
+) -> None:
+    """Proved siblings are valid library artifacts (Backward dedupe pool
+    cites them); the sweep must walk past without flipping status."""
+    parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
+    s1 = _insert_strategy(conn, goal_id=parent_g, status="proposed")
+    terminating = _insert_goal(conn, slug="t", status="dead")
+    sibling = _insert_goal(conn, slug="proved_sib", status="proved")
+    _link(conn, s1, [terminating, sibling])
+
+    _propagate_dead(conn, terminating)
+
+    # Proved is preserved.
+    assert db.get_goal(conn, sibling)["status"] == "proved"
+
+
+def test_kill_upward_skips_already_terminal_sibling(
+    conn: sqlite3.Connection,
+) -> None:
+    """Already-shelved / disproved / dead siblings are skipped — no
+    redundant re-flip, idempotent on re-cascade."""
+    parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
+    s1 = _insert_strategy(conn, goal_id=parent_g, status="proposed")
+    terminating = _insert_goal(conn, slug="t", status="dead")
+    already_shelved = _insert_goal(conn, slug="sh", status="shelved")
+    _link(conn, s1, [terminating, already_shelved])
+
+    _propagate_dead(conn, terminating)
+
+    # No re-flip; still 'shelved'.
+    assert db.get_goal(conn, already_shelved)["status"] == "shelved"
+
+
+def test_cascade_one_terminal_goal_guard_blocks_late_worker(
+    conn: sqlite3.Connection,
+) -> None:
+    """Race guard: a worker dispatched on g before g cascaded-shelved
+    (via sibling sweep) commits success after the cascade. The early-
+    return in cascade_one for goals already in terminal status
+    (shelved / disproved / dead / proved) must prevent the late commit
+    from flipping g back to attempting/proved."""
+    g = _insert_goal(conn, slug="g", status="shelved")
+    cascade_one(
+        conn, pipeline_id="late-pid", kind="Backward",
+        target_id=str(g), target_kind="Goal",
+        outcome="success", failure_reason="",
+    )
+    # Worker's commit did NOT mutate the shelved status.
+    assert db.get_goal(conn, g)["status"] == "shelved"
+
+    # Same for dead status
+    g2 = _insert_goal(conn, slug="g2", status="dead")
+    cascade_one(
+        conn, pipeline_id="late-pid2", kind="Builder",
+        target_id=str(g2), target_kind="Goal",
+        outcome="proved", failure_reason="",
+    )
+    assert db.get_goal(conn, g2)["status"] == "dead"
+
+
 def test_forward_cascade_without_decision_id_is_noop(
     conn: sqlite3.Connection,
 ) -> None:

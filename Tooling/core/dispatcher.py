@@ -439,7 +439,35 @@ def _kill_upward_chain(conn: sqlite3.Connection, goal_id: int,
     ).fetchall()
 
     for s in parent_strategies:
-        db.update_strategy_status(conn, int(s["id"]), "dead")
+        sid = int(s["id"])
+        db.update_strategy_status(conn, sid, "dead")
+        # Sibling-orphan sweep: every OTHER subgoal of this just-killed
+        # strategy is now an orphan — the strategy whose AND-chain held
+        # them together is dead, but the sibling's own status is
+        # untouched. Without this sweep the sibling stays `open` /
+        # `attempting` / `pending_strategist_review` in the DB while
+        # `open_goals`'s CTE filters them out (they're no longer
+        # reachable from the alive seed); status disagrees with
+        # dispatchability, misleading TREE.md / Strategist context.
+        # Soft-shelve siblings (and their downward subtrees via
+        # `_set_goal_terminal_and_propagate`) so status converges on
+        # the dispatchability invariant. `_propagate_shelve` inward-
+        # kills the sibling's own strategies (otherwise they linger
+        # 'proposed' on a now-shelved goal). Skip already-terminal
+        # siblings (proved is the most common — sub-AND chain partially
+        # done before its peer died).
+        for sib in conn.execute(
+            "SELECT g.id, g.status FROM strategy_subgoals ss"
+            " JOIN goals g ON g.id = ss.subgoal_id"
+            " WHERE ss.strategy_id = ? AND ss.subgoal_id != ?",
+            (sid, goal_id),
+        ).fetchall():
+            sib_id = int(sib["id"])
+            sib_status = str(sib["status"])
+            if sib_status in ("open", "attempting",
+                              "pending_strategist_review"):
+                _set_goal_terminal_and_propagate(conn, sib_id, "shelved")
+                _propagate_shelve(conn, sib_id)
 
     # For each affected parent goal: if no live strategy survives,
     # increment attempts and possibly cascade. See pre-Phase-6 comment
@@ -643,13 +671,19 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             "SELECT status FROM goals WHERE id = ?", (int(target_id),),
         ).fetchone()
         # Cascade race guard: once a goal reaches a terminal state
-        # (proved/shelved), late cascades from in-flight pipelines must
-        # not mutate it.
+        # (proved/shelved/disproved/dead), late cascades from in-flight
+        # pipelines must not mutate it.
         # Without the 'shelved' guard, a Backward 'success' that races
         # past the shelve transition would unconditionally flip status
         # back to 'attempting' (observed: goal stuck at attempts=N with
         # status='attempting' instead of 'shelved').
-        if row and row["status"] in ("proved", "shelved"):
+        # 'disproved' / 'dead' added with the sibling-orphan cascade
+        # (_kill_upward_chain sibling sweep): a worker dispatched on
+        # g2 before g2 cascaded-shelved (because its sibling g3 hit a
+        # hard terminal and killed their shared parent strategy) must
+        # not flip g2 back to attempting.
+        if row and row["status"] in ("proved", "shelved",
+                                      "disproved", "dead"):
             return
 
     # Provider/transport infra failures don't burn the goal's attempts
