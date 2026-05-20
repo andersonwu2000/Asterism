@@ -37,7 +37,7 @@ import sys
 from pathlib import Path
 from typing import Literal
 
-from ..state import db, manifest
+from ..state import db, manifest, tree
 from ..pipeline._lake import lean_path_to_module
 from ..pipeline._skeleton import (
     promote_to_alias, rollback_promote, verify_backup_path,
@@ -115,9 +115,20 @@ def verify_housekeeping(
     main loop sidesteps the OR-parallel race the legacy pipeline path
     fenced via `busy_parents`. Each strategy's full transition commits
     before the next is processed.
+
+    After the loop, each problem whose goal/strategy state changed gets
+    one TREE.md refresh. Without this, verify-side status flips
+    (attempting→proved via _set_goal_terminal_and_propagate, downward
+    cascade-shelve on disprove/dead) never reach TREE.md — only
+    cascade_one writes the tree, and verify-driven transitions don't
+    pass through cascade_one. Strategist reads TREE.md inline into
+    its Context.md; a stale TREE.md misled Strategist #115 (residue_thm
+    2026-05-20) into emitting Noop while the homotopy subtree had
+    already proved, contributing to a daemon idle-exit.
     """
     from ..core import dispatcher
     counts = {"proved": 0, "dead": 0, "superseded": 0, "retry": 0}
+    touched_goals: set[int] = set()
     for _ in range(max_iters):
         ready = db.strategies_ready_for_verify(conn)
         if not ready:
@@ -136,6 +147,7 @@ def verify_housekeeping(
                 counts["retry"] += 1
                 print(f"[verify] Strategy={sid} → retry (transient infra)",
                       flush=True)
+                _refresh_trees(conn, workspace, touched_goals)
                 return counts
             if outcome == "proved":
                 db.update_strategy_status(conn, sid, "succeeded")
@@ -146,6 +158,7 @@ def verify_housekeeping(
                 )
                 conn.commit()
                 counts["proved"] += 1
+                touched_goals.add(goal_id)
                 print(f"[verify] Strategy={sid} → proved", flush=True)
             elif outcome == "dead":
                 db.update_strategy_status(conn, sid, "dead")
@@ -164,10 +177,30 @@ def verify_housekeeping(
                         db.update_goal_status(conn, goal_id, "open")
                 conn.commit()
                 counts["dead"] += 1
+                touched_goals.add(goal_id)
                 print(f"[verify] Strategy={sid} → dead", flush=True)
             else:  # "superseded"
                 counts["superseded"] += 1
+    _refresh_trees(conn, workspace, touched_goals)
     return counts
+
+
+def _refresh_trees(conn: sqlite3.Connection, workspace: Path,
+                   touched_goals: set[int]) -> None:
+    """Write one TREE.md per problem whose state was touched by this
+    housekeeping pass. Multiple touched goals in the same problem
+    collapse to a single write (last-write-wins; the renderer reads
+    fresh DB state). Errors swallowed inside `write_for_target`.
+    """
+    if not touched_goals:
+        return
+    placeholders = ",".join("?" * len(touched_goals))
+    rows = conn.execute(
+        f"SELECT DISTINCT problem FROM goals WHERE id IN ({placeholders})",
+        list(touched_goals),
+    ).fetchall()
+    for r in rows:
+        tree.write_for_target(conn, workspace, str(r["problem"]), "Problem")
 
 
 def bisect_sorryax_source(
@@ -241,6 +274,7 @@ def rollback_cascade_chain(
     visited: set[int] = set()
     cursor_strategy_id: int | None = culprit_strategy_id
     is_culprit = True
+    touched_problem: str | None = None
     while cursor_strategy_id is not None and cursor_strategy_id not in visited:
         visited.add(cursor_strategy_id)
         s = conn.execute(
@@ -251,6 +285,7 @@ def rollback_cascade_chain(
         ).fetchone()
         if s is None:
             break
+        touched_problem = str(s["problem"])
         # Restore parent file from this strategy's backup, if any
         parent_abs = workspace / s["lean_path"]
         sid_token = f"s{s['id']}"
@@ -287,6 +322,13 @@ def rollback_cascade_chain(
         cursor_strategy_id = int(parent_row["strategy_id"])
         is_culprit = False
     conn.commit()
+    # TREE refresh — rollback walked one parent chain (all in the same
+    # problem), so one write covers every touched goal. Caller's
+    # subsequent re-Backward dispatch will overwrite this if it
+    # advances state, but a fresh snapshot in between keeps any
+    # operator status check / Strategist context inline-read honest.
+    if touched_problem is not None:
+        tree.write_for_target(conn, workspace, touched_problem, "Problem")
     return rolled
 
 
