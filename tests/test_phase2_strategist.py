@@ -1001,6 +1001,109 @@ def test_verify_decisions_allows_two_request_user_amend_in_batch(
     assert (workspace / "Problems" / "p" / ".proposed_Manifest.md").exists()
 
 
+def test_verify_decisions_rejects_lone_confirmshelve(
+    conn: sqlite3.Connection,
+) -> None:
+    """ConfirmShelve cannot be the only decision in a batch. Forces
+    Strategist to articulate the next step (build the missing tool,
+    redispatch a different goal, record the learning, etc.) — silent
+    give-up is blocked at the framework level so the prompt doesn't
+    have to police it."""
+    root = _insert_root(conn)
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "ConfirmShelve", "target_goal_id": root,
+         "reason": "looks intractable"},
+    ]))
+    err = strategist.verify_decisions(ds, conn, problem="p")
+    assert "ConfirmShelve" in err and "alone" in err.lower()
+
+
+def test_verify_decisions_rejects_confirmshelve_plus_only_noop(
+    conn: sqlite3.Connection,
+) -> None:
+    """Noop is not a constructive sibling — `[ConfirmShelve, Noop]`
+    is the same lazy pattern as a lone ConfirmShelve."""
+    root = _insert_root(conn)
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "ConfirmShelve", "target_goal_id": root, "reason": "x"},
+        {"kind": "Noop", "reason": "nothing else to do"},
+    ]))
+    err = strategist.verify_decisions(ds, conn, problem="p")
+    assert "ConfirmShelve" in err and "alone" in err.lower()
+
+
+def test_verify_decisions_rejects_multi_confirmshelve_without_constructive(
+    conn: sqlite3.Connection,
+) -> None:
+    """Bulk give-up: two ConfirmShelves with no constructive sibling
+    is still the lazy pattern. Same rule, different shape."""
+    root = _insert_root(conn)
+    sub = db.insert_goal(
+        conn, problem="p", slug="sub",
+        lean_path="Problems/p/proofs/L_sub.lean", statement="T",
+        origin="backward",
+    )
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "ConfirmShelve", "target_goal_id": root, "reason": "x"},
+        {"kind": "ConfirmShelve", "target_goal_id": sub, "reason": "y"},
+    ]))
+    err = strategist.verify_decisions(ds, conn, problem="p")
+    assert "ConfirmShelve" in err and "alone" in err.lower()
+
+
+def test_verify_decisions_accepts_confirmshelve_paired_with_inject(
+    conn: sqlite3.Connection,
+) -> None:
+    """The canonical pairing: ConfirmShelve(pending) + Inject(Forward)
+    to build the missing tool."""
+    root = _insert_root(conn)
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Inject", "pipeline": "Forward",
+         "brief": "## Need\nthe missing bridge lemma"},
+        {"kind": "ConfirmShelve", "target_goal_id": root,
+         "reason": "shelve while Forward builds the lemma"},
+    ]))
+    assert strategist.verify_decisions(ds, conn, problem="p") == ""
+
+
+def test_verify_decisions_rejects_confirmshelve_paired_only_with_request_user_amend(
+    conn: sqlite3.Connection,
+) -> None:
+    """RequestUserAmend is NOT a constructive sibling for ConfirmShelve.
+    It's the user-escalation channel for Defs.lean / Manifest.md errors,
+    not a way to dodge the 'articulate the next step' rule. If both
+    apply, send as separate Strategist calls (the user-amend pauses
+    dispatch anyway via the awaiting_human gate)."""
+    root = _insert_root(conn)
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "RequestUserAmend", "problem": "p", "file": "Manifest.md",
+         "proposed_body": "## Hints\n- new hint\n",
+         "question": "OK?", "reason": "hints look misleading"},
+        {"kind": "ConfirmShelve", "target_goal_id": root,
+         "reason": "give up while user reviews"},
+    ]))
+    err = strategist.verify_decisions(ds, conn, problem="p")
+    assert "ConfirmShelve" in err and "alone" in err.lower()
+
+
+def test_verify_decisions_accepts_confirmshelve_paired_with_emit_directive(
+    conn: sqlite3.Connection,
+) -> None:
+    """Articulate-the-learning pairing: when Strategist genuinely
+    confirms defeat after a Reopen retry, an EmitDirective recording
+    why is the right next-step articulation."""
+    root = _insert_root(conn)
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "EmitDirective", "scope": "problem:p",
+         "body": "Primitive-existence route is a Mathlib TODO; future "
+                 "strategies should avoid it.",
+         "reason": "record learning before shelving"},
+        {"kind": "ConfirmShelve", "target_goal_id": root,
+         "reason": "two Reopens failed; defer to the new directive"},
+    ]))
+    assert strategist.verify_decisions(ds, conn, problem="p") == ""
+
+
 def test_verify_decisions_rejects_contradictory_confirm_reopen(
     conn: sqlite3.Connection,
 ) -> None:

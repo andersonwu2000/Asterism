@@ -26,6 +26,8 @@ Time budget: {timeout_min} minutes. Tools: Read / Write / Edit / Grep / Bash(`py
 
 `RequestUserAmend(file)` only when a user-owned file is wrong — `file="Defs.lean"` for missing/incorrect statement-vocab, `file="Manifest.md"` for misleading hints / scope.
 
+`ConfirmShelve` cannot be sent alone — must pair with `Inject` / `Reopen` / `EmitDirective` in the same batch (RequestUserAmend doesn't count).
+
 ## Decision schema
 
 `decision.json` is a JSON array.

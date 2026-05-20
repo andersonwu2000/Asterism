@@ -416,6 +416,55 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
             f"ConfirmShelve (the redispatch already keeps the goal "
             f"alive) or aim the Inject at a different goal."
         )
+
+    # Cross-decision: ConfirmShelve cannot be sent alone (or paired only
+    # with other ConfirmShelves / Noops / RequestUserAmend). Forces
+    # Strategist to articulate the next step alongside any give-up.
+    # Catches three lazy patterns in one rule:
+    #   (a) lone first-contact ConfirmShelve — agent gave up without
+    #       trying the workflow's natural alternatives.
+    #   (b) silent zombie parent strategies — ConfirmShelve(G) where G
+    #       is a subgoal of a live parent strategy currently has no
+    #       framework-level upward kill (Phase 6 `_propagate_shelve`
+    #       is inward-only). Pairing forces the agent to handle the
+    #       parent explicitly (Inject(Backward, target=parent) or
+    #       Inject(Forward) to build the missing tool).
+    #   (c) mass-shelve runs — `[ConfirmShelve, ConfirmShelve, ...]`
+    #       with no constructive sibling = bulk give-up.
+    # The constructive set deliberately EXCLUDES RequestUserAmend:
+    # that's a user-escalation channel reserved for genuinely wrong
+    # Defs.lean / Manifest.md, not an escape hatch for "I want to
+    # ConfirmShelve without articulating an alternative". If the
+    # problem state truly needs both a user amend and a goal shelve,
+    # send them in separate Strategist calls (the user-amend pauses
+    # dispatch anyway via the awaiting_human gate).
+    if any(d.kind == "ConfirmShelve" for d in decisions):
+        constructive = sum(
+            1 for d in decisions
+            if d.kind in ("Inject", "Reopen", "EmitDirective")
+        )
+        if constructive == 0:
+            return (
+                "ConfirmShelve cannot be sent alone. Pair it with at "
+                "least one constructive decision in the same batch:\n"
+                "  - Inject(Forward, brief=...) to build the missing "
+                "tool the shelved goal needed.\n"
+                "  - Inject(Backward/Builder, target_goal_id=..., "
+                "brief=...) to redispatch a different goal (typically "
+                "the parent of the shelved subgoal — its strategy will "
+                "otherwise stay 'proposed' with an unfeasible subgoal).\n"
+                "  - Reopen(target=..., directive=...) to switch focus "
+                "to another goal.\n"
+                "  - EmitDirective(body=...) to record the learning "
+                "(\"X route doesn't work, future strategies avoid\").\n"
+                "RequestUserAmend does NOT count as a constructive "
+                "pairing — it's reserved for Defs.lean / Manifest.md "
+                "errors, not an escape hatch. If both apply, send them "
+                "as separate Strategist calls.\n"
+                "If you truly mean 'admit defeat on this goal and on "
+                "nothing else', pair with EmitDirective explaining "
+                "why — silent give-up without articulation is blocked."
+            )
     return ""
 
 
