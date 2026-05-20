@@ -1342,21 +1342,35 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
 
 def _pid_alive(pid: int) -> bool:
     """Cross-platform liveness check. POSIX: os.kill(pid, 0); Windows:
-    OpenProcess with PROCESS_QUERY_LIMITED_INFORMATION.
+    OpenProcess + GetExitCodeProcess.
 
     Note: On Windows, os.kill(pid, 0) raises SystemError because sig
     0 isn't a real Windows signal — Python's os.kill on Windows only
-    handles termination signals via TerminateProcess."""
+    handles termination signals via TerminateProcess.
+
+    Windows kernel keeps the Process object live for any handle holder
+    even AFTER the process has terminated, so OpenProcess succeeds on
+    a freshly-killed PID. GetExitCodeProcess distinguishes "still
+    running" (STILL_ACTIVE=259) from "terminated but handle-zombie".
+    Without this check, the singleton lock would refuse new daemons
+    for any PID the OS hasn't recycled yet."""
     if os.name == "nt":
         import ctypes
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
         kernel32 = ctypes.windll.kernel32
         h = kernel32.OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
         if not h:
             return False
-        kernel32.CloseHandle(h)
-        return True
+        try:
+            exit_code = ctypes.c_uint32(0)
+            ok = kernel32.GetExitCodeProcess(h, ctypes.byref(exit_code))
+            if not ok:
+                return False
+            return exit_code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(h)
     try:
         os.kill(pid, 0)
         return True
