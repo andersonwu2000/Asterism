@@ -140,17 +140,34 @@ _PROBLEM_IMPORT_RE = re.compile(
 )
 
 
-def _check_cite_unproved(
+def _resolve_cite_dependencies(
     conn: sqlite3.Connection, *, problem: str, patch_text: str,
-    declared_slugs: set[str],
-) -> str | None:
+    declared_slugs: set[str], allow_auto_link: bool,
+) -> tuple[set[int], str | None]:
     """Scan `patch_text` for `import Problems.<problem>.proofs.L_<slug>`
-    lines and reject any whose slug is neither (a) a sub-goal the agent
-    declared in this commit (`declared_slugs`) nor (b) a proved goal in
-    DB. Cross-problem imports skip the check (no project-local soundness
-    invariant to enforce). Returns None on success, error string on
-    rejection.
+    lines and classify each cited slug:
+
+      * declared sub-goal (in this commit's `new_<slug>.lean` files) → skip
+      * status='proved' goal → skip (legitimate citation)
+      * status ∈ ('open', 'attempting', 'pending_strategist_review'):
+        - if `allow_auto_link`: collect goal_id for caller to insert as
+          a sibling sub-goal via `strategy_subgoals` (the safe parallel
+          pattern — strategy waits in 'proposed' until cited goal proves
+          via `strategies_ready_for_verify`'s all-subgoals-proved check)
+        - else: reject (caller is a leaf-bypass that runs axiom probe
+          at submit, can't tolerate transitive sorry from cited stub)
+      * status ∈ ('shelved', 'disproved', 'dead') → reject (cited goal
+        can't be revived in this strategy's lifetime; agent must pick
+        a different angle)
+      * unknown slug / cross-problem import → skip (lake's
+        "unknown identifier" catches genuine typos)
+
+    Returns (auto_link_goal_ids, err). Caller commits the strategy
+    with the declared subgoals plus auto-linked goals as
+    additional `strategy_subgoals` rows. On err non-None the strategy
+    must abort (subgoals would be from a doomed dependency).
     """
+    auto_link: set[int] = set()
     bad: list[tuple[str, str]] = []
     seen: set[str] = set()
     for m in _PROBLEM_IMPORT_RE.finditer(patch_text):
@@ -163,7 +180,7 @@ def _check_cite_unproved(
         if slug in declared_slugs:
             continue
         row = conn.execute(
-            "SELECT status FROM goals WHERE problem = ? AND slug = ?"
+            "SELECT id, status FROM goals WHERE problem = ? AND slug = ?"
             " AND alias_target_id IS NULL",
             (problem, slug),
         ).fetchone()
@@ -174,16 +191,41 @@ def _check_cite_unproved(
         status = str(row["status"])
         if status == "proved":
             continue
+        if status in ("open", "attempting",
+                       "pending_strategist_review"):
+            if allow_auto_link:
+                auto_link.add(int(row["id"]))
+            else:
+                bad.append((slug, status))
+            continue
+        # ('shelved', 'disproved', 'dead') — terminal-failed, can't
+        # recover even with parallel wait.
         bad.append((slug, status))
     if not bad:
-        return None
+        return auto_link, None
     lines = [f"  - `{slug}` (status={status})" for slug, status in bad]
-    return (
-        "Patch imports sibling goals that are not yet proved:\n"
-        + "\n".join(lines)
-        + "\n\nFix by declaring each as a sub-goal stub "
-        "(`new_<slug>.lean := by sorry`) so the framework dispatches it, "
-        "or rewrite the proof to avoid the citation."
+    if allow_auto_link:
+        # Decomp path's only reject reason is terminal-failed cites
+        # — guide the agent toward a different angle.
+        hint = (
+            "\n\nThese goals are terminal-failed in this strategy's "
+            "context — they will not prove. Rewrite the proof to avoid "
+            "the citations, or pick a different decomposition angle."
+        )
+    else:
+        # Leaf-bypass path: any non-proved cite is rejected (immediate
+        # axiom probe can't tolerate transitive sorry). Auto-link is
+        # only available via decomp.
+        hint = (
+            "\n\nFix by declaring each as a sub-goal stub "
+            "(`new_<slug>.lean := by sorry`) — the decomposition path "
+            "auto-links open siblings as `strategy_subgoals` so the "
+            "strategy waits for them to prove. Leaf-bypass strategies "
+            "(no decomposition) can only cite already-proved siblings."
+        )
+    return auto_link, (
+        "Patch imports sibling goals that cannot be cited:\n"
+        + "\n".join(lines) + hint
     )
 
 
@@ -648,10 +690,16 @@ def _backward_parse_and_commit(
         forbidden = _grep_forbidden(main_patch_text, mfst.forbidden_lemmas)
         if forbidden:
             return _abort("forbidden_lemma", forbidden, leading)
-        # Citation gate (leaf-bypass: no declared sub-goals).
-        cite_err = _check_cite_unproved(
+        # Citation gate (leaf-bypass: no decomposition, axiom probe
+        # runs at submit). `allow_auto_link=False` — leaf-bypass cannot
+        # tolerate cited unproved siblings because the immediate axiom
+        # probe sees their `:= by sorry` body through the import chain.
+        # Cited open siblings must be handled via the decomp path's
+        # auto-link mechanism (which defers verification until cited
+        # goal proves).
+        _, cite_err = _resolve_cite_dependencies(
             conn, problem=goal["problem"], patch_text=main_patch_text,
-            declared_slugs=set(),
+            declared_slugs=set(), allow_auto_link=False,
         )
         if cite_err:
             return _abort("cite_unproved_sibling", cite_err, leading)
@@ -945,17 +993,22 @@ def _backward_parse_and_commit(
         sub_dest_paths = [dest for _, dest in sub_dests]
         _inject_imports_for_subs(workspace, scratch_dest, sub_dest_paths)
 
-        # Citation gate — reject patches that import open sibling goals
-        # without declaring them as sub-goals (cite_unproved_sibling).
-        # Catches the leak that root_integrity_gate would otherwise find
-        # only after the whole cascade chain succeeded. Run after
-        # _inject_imports_for_subs so framework-injected imports for
-        # declared sub-goals don't false-trigger.
+        # Citation gate — classify cited siblings:
+        #  - 'proved' siblings: pass through (legitimate citation)
+        #  - 'open'/'attempting'/'pending_strategist_review' siblings:
+        #    auto-linked as `strategy_subgoals` (the safe parallel
+        #    pattern — strategy waits in 'proposed' until cited goal
+        #    proves via `strategies_ready_for_verify`'s all-subgoals-
+        #    proved check, then alias-rewrites up).
+        #  - terminal-failed siblings (shelved/disproved/dead): reject
+        #    (can't recover in this strategy).
+        # Run after `_inject_imports_for_subs` so framework-injected
+        # imports for declared sub-goals don't false-trigger.
         declared_slugs = {slug for slug, _ in sub_meta}
-        cite_err = _check_cite_unproved(
+        auto_link_ids, cite_err = _resolve_cite_dependencies(
             conn, problem=goal["problem"],
             patch_text=scratch_dest.read_text(encoding="utf-8"),
-            declared_slugs=declared_slugs,
+            declared_slugs=declared_slugs, allow_auto_link=True,
         )
         if cite_err:
             for p in placed:
@@ -1076,6 +1129,17 @@ def _backward_parse_and_commit(
         for pos, gid in enumerate(linked_ids):
             db.link_subgoal(conn, strategy_id=strategy_id,
                             subgoal_id=gid, position=pos)
+        # Auto-linked dependencies — cited siblings the citation gate
+        # classified as parallel-buildable (open/attempting/pending_
+        # strategist_review). Sorted for deterministic position
+        # assignment. These extend `strategy_subgoals` past the
+        # declared sub-goals so `strategies_ready_for_verify` blocks
+        # until they prove — the strategy waits naturally for the
+        # parallel-built lemma to land before alias-rewrite proceeds.
+        next_pos = len(linked_ids)
+        for offset, auto_gid in enumerate(sorted(auto_link_ids)):
+            db.link_subgoal(conn, strategy_id=strategy_id,
+                            subgoal_id=auto_gid, position=next_pos + offset)
 
         scratch_rel = scratch_dest.relative_to(workspace).as_posix()
         db.update_strategy_scratch_path(conn, strategy_id, scratch_rel)

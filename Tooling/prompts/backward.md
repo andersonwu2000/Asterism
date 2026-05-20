@@ -125,5 +125,5 @@ Ship as `:= by sorry` with `entry_kind: Builder`. Wrong types compile-fail in se
 - Each sub-goal must be **strictly simpler** and as abstract as possible — re-stating the parent in different notation does not count.
 - All universal binders (∀) and hypotheses from the parent must appear in each sub-goal.
 - Do NOT use any name in FORBIDDEN_LEMMAS — anywhere.
-- Cite only proved lemmas — Mathlib (Grep/Loogle), Defs.lean, or sibling goals marked (proved) in Context.md. Open siblings → declare as a sub-goal stub.
+- Cite any sibling goal in this problem freely — proved siblings work directly; open / attempting / pending_review siblings are auto-linked into `strategy_subgoals` (your strategy waits for them to prove). Only terminal-failed siblings (shelved / disproved / dead) are rejected — pick a different angle.
 - If a sorry-free direct proof builds cleanly, ship `patch.lean` alone (no `new_*.lean`); framework leaf-bypass takes it.
