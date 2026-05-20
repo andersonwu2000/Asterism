@@ -1086,12 +1086,15 @@ def test_verify_decisions_rejects_confirmshelve_paired_only_with_request_user_am
     assert "ConfirmShelve" in err and "alone" in err.lower()
 
 
-def test_verify_decisions_accepts_confirmshelve_paired_with_emit_directive(
+def test_verify_decisions_rejects_confirmshelve_paired_only_with_emit_directive(
     conn: sqlite3.Connection,
 ) -> None:
-    """Articulate-the-learning pairing: when Strategist genuinely
-    confirms defeat after a Reopen retry, an EmitDirective recording
-    why is the right next-step articulation."""
+    """EmitDirective is articulation, not action. ConfirmShelve must
+    pair with at least one Inject or Reopen — writing a note about why
+    a goal is shelved doesn't actually dispatch a fresh attempt or
+    redirect focus to another goal. (EmitDirective IS allowed as an
+    EXTRA on top of an Inject/Reopen — see
+    test_verify_decisions_accepts_three_decision_batch_with_directive.)"""
     root = _insert_root(conn)
     ds, _ = strategist.parse_decisions(json.dumps([
         {"kind": "EmitDirective", "scope": "problem:p",
@@ -1100,6 +1103,27 @@ def test_verify_decisions_accepts_confirmshelve_paired_with_emit_directive(
          "reason": "record learning before shelving"},
         {"kind": "ConfirmShelve", "target_goal_id": root,
          "reason": "two Reopens failed; defer to the new directive"},
+    ]))
+    err = strategist.verify_decisions(ds, conn, problem="p")
+    assert "ConfirmShelve" in err and "action" in err.lower()
+
+
+def test_verify_decisions_accepts_three_decision_batch_with_directive(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """EmitDirective as an EXTRA on top of an Inject/Reopen + ConfirmShelve
+    is fine — the action requirement is satisfied by the Inject;
+    EmitDirective is bonus learning capture."""
+    root = _insert_root(conn)
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Inject", "pipeline": "Forward",
+         "brief": "## Need\nalternative angle around the blocked gap"},
+        {"kind": "ConfirmShelve", "target_goal_id": root,
+         "reason": "current direction exhausted"},
+        {"kind": "EmitDirective", "scope": "problem:p",
+         "body": "Avoid Cauchy-on-simply-connected reformulations.",
+         "reason": "lock in the learning so future strategists "
+                   "do not retry equivalent forms"},
     ]))
     assert strategist.verify_decisions(ds, conn, problem="p") == ""
 
