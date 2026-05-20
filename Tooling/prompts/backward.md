@@ -84,6 +84,7 @@ Place the directive immediately above the theorem in `patch.lean`, keep `:= by s
   your decomposition. Description must name the missing type / structure / class
   and how you'd use it; you may also mention accompanying theorems about that new
   vocabulary in the same description (helpful, not separately requested).
+  In doubt vs `return_to_parent`, pick this.
 
 ```lean
 namespace ...

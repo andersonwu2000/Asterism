@@ -530,19 +530,45 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     # .attempts/<pid>/ rmtree on exit. goal_lean has a single writer
     # (verify_housekeeping → promote_to_alias) and needs no per-spawn
     # snapshot.
-    result = run_with_session_retries(
-        conn=conn,
-        goal_id=goal_id,
-        pipeline_id=pipeline_id,
-        budget_threshold=dispatcher.SHELVE_THRESHOLD,
-        shelve_threshold=dispatcher.SHELVE_THRESHOLD,
-        attempts_dir=attempts_dir,
-        spawn_fn=backward_spawn,
-        parse_fn=backward_parse,
-        postmortem_fn=backward_postmortem,
-        workspace=workspace,
-        reflection_fn=backward_reflection,
-    )
+    #
+    # try/finally guards the reserved strategy row (inserted at line
+    # 380 above) against escaping exceptions — gateway crash, subprocess
+    # SIGKILL, internal pipeline bug. Without it, the row sits forever
+    # at status='proposed' with empty proposal_md/scratch_path/no
+    # sub-goals; recovery's startup sweep eventually cleans it but
+    # mid-lifecycle accumulation goes unbounded.
+    _INFRA_REASONS = {
+        "quota_exhausted", "spawn_fast_fail", "missing_dep",
+        "gateway_unreachable", "transient_timeout",
+    }
+    try:
+        result = run_with_session_retries(
+            conn=conn,
+            goal_id=goal_id,
+            pipeline_id=pipeline_id,
+            budget_threshold=dispatcher.SHELVE_THRESHOLD,
+            shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+            attempts_dir=attempts_dir,
+            spawn_fn=backward_spawn,
+            parse_fn=backward_parse,
+            postmortem_fn=backward_postmortem,
+            workspace=workspace,
+            reflection_fn=backward_reflection,
+        )
+    except BaseException:
+        # Escaped exception — strategy row is still in placeholder state
+        # if no commit ever happened. Delete to match _INFRA_REASONS
+        # semantics (agent never produced anything → no forensic value).
+        # Re-raise so dispatcher's worker-exception handler can synthesize
+        # the cascade as usual.
+        row = conn.execute(
+            "SELECT proposal_md, scratch_path FROM strategies WHERE id=?",
+            (strategy_id,),
+        ).fetchone()
+        if row and not (row["proposal_md"] or row["scratch_path"]):
+            db.delete_strategy(conn, strategy_id)
+            conn.commit()
+        raise
 
     # Cleanup: non-success outcomes split by whether the agent ran.
     #
@@ -556,10 +582,6 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     # mismatch / etc.) are real attempts: the agent did work and we want
     # the row to survive so TREE.md / `_strategy_dead_cause` can explain
     # why it died, even though the strategy itself didn't succeed.
-    _INFRA_REASONS = {
-        "quota_exhausted", "spawn_fast_fail", "missing_dep",
-        "gateway_unreachable", "transient_timeout",
-    }
     if result.outcome != "success":
         if result.failure_reason in _INFRA_REASONS:
             db.delete_strategy(conn, strategy_id)

@@ -96,6 +96,96 @@ def test_backward_quota_exhausted_deletes_strategy_row(
     )
 
 
+def test_backward_escaped_exception_deletes_orphan_strategy(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defensive try/finally — if `run_with_session_retries` raises
+    (gateway crash, subprocess SIGKILL, internal pipeline bug), the
+    strategy row reserved at the top of _run_backward_inner gets
+    DELETEd before the exception propagates. Without this guard, the
+    row sits forever at status='proposed' with empty proposal_md /
+    scratch_path / no sub-goals (observed: s10488, s10505 on
+    residue_thm 2026-05-20)."""
+    gid = _seed_root_goal(tmp_path, conn)
+
+    from Tooling.pipeline import _retry as _retry_mod
+
+    def boom(**kw):
+        raise RuntimeError("simulated worker crash mid-spawn")
+
+    monkeypatch.setattr(_retry_mod, "run_with_session_retries", boom)
+
+    with pytest.raises(RuntimeError, match="simulated worker crash"):
+        pipeline.run_backward(
+            conn, goal_id=gid, workspace=tmp_path,
+            mfst=manifest.Manifest(problem="p", statement="True"),
+            pipeline_id="pid-bw-crash")
+
+    rows = conn.execute(
+        "SELECT id, status, proposal_md, scratch_path"
+        " FROM strategies WHERE goal_id=?", (gid,)
+    ).fetchall()
+    assert rows == [], (
+        f"expected orphan strategy row deleted on escaped exception, "
+        f"got {[dict(r) for r in rows]}"
+    )
+
+
+def test_backward_escaped_exception_keeps_committed_strategy(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """try/finally only deletes the row when it's still in the empty
+    placeholder state (no proposal_md, no scratch_path). If a prior
+    in-pipeline retry already committed the strategy and a later phase
+    raised, the committed work must NOT be wiped."""
+    gid = _seed_root_goal(tmp_path, conn)
+    rel = db.get_goal(conn, gid)["lean_path"]
+
+    from Tooling.pipeline import _retry as _retry_mod
+
+    captured_sid = {"sid": None}
+
+    def fake_run(**kw):
+        # Find the most-recently inserted strategy row (the one just
+        # reserved by _run_backward_inner) and fill it in to mimic a
+        # successful commit phase. Then raise to simulate a downstream
+        # crash AFTER the row is no longer a placeholder.
+        row = conn.execute(
+            "SELECT id FROM strategies WHERE goal_id=?"
+            " ORDER BY id DESC LIMIT 1", (gid,)
+        ).fetchone()
+        sid = int(row["id"])
+        captured_sid["sid"] = sid
+        conn.execute(
+            "UPDATE strategies SET proposal_md='committed work',"
+            " scratch_path='Problems/p/proofs/_strategy_s.lean'"
+            " WHERE id=?", (sid,)
+        )
+        conn.commit()
+        raise RuntimeError("crash after commit")
+
+    monkeypatch.setattr(_retry_mod, "run_with_session_retries", fake_run)
+
+    with pytest.raises(RuntimeError, match="crash after commit"):
+        pipeline.run_backward(
+            conn, goal_id=gid, workspace=tmp_path,
+            mfst=manifest.Manifest(problem="p", statement="True"),
+            pipeline_id="pid-bw-commit-then-crash")
+
+    # Committed row survives — outer dispatcher will record the
+    # pipeline failure and the row stays at 'proposed' as a real
+    # forensic artifact (NOT a placeholder orphan).
+    rows = conn.execute(
+        "SELECT id, status, proposal_md FROM strategies WHERE goal_id=?",
+        (gid,),
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["id"] == captured_sid["sid"]
+    assert rows[0]["proposal_md"] == "committed work"
+
+
 def test_backward_agent_failure_keeps_strategy_dead(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
