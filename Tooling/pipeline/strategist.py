@@ -467,13 +467,19 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
             )
 
     # Cross-decision: if the root is in a state only Strategist can
-    # unfreeze (`shelved` or `frozen`), AND this batch dispatches no
-    # fresh work (no Inject, no Reopen), AND no Forward Inject batch
-    # is still in flight from a prior Strategist call — the daemon
-    # will idle-exit after this commit. BFS cannot dispatch the
-    # root's subtree (`db.open_goals`'s alive seed is `root ∪
-    # detached ∪ alive-strategy descendants`; a `shelved`/`frozen`
-    # root contributes no seed). Reject.
+    # unfreeze (`shelved` / `frozen` / `pending_strategist_review`),
+    # AND this batch dispatches no fresh work (no Inject, no Reopen),
+    # AND no Forward Inject batch is still in flight from a prior
+    # Strategist call — the daemon will idle-exit after this commit.
+    # BFS cannot dispatch the root's subtree (`db.open_goals`'s alive
+    # seed is `root ∪ detached ∪ alive-strategy descendants`; a non-
+    # actively-dispatchable root contributes no seed). Reject.
+    #
+    # `pending_strategist_review` is included because that state means
+    # "agent declined `shelve`, Strategist must decide" — the framework
+    # cannot make progress without a Strategist verdict. A Noop on a
+    # pending_review root is a logical contradiction (Strategist invoked
+    # specifically to break the impasse, declines to act).
     #
     # `disproved` / `dead` roots intentionally NOT covered: those are
     # genuine dead ends (counterexample / wrong parent context) where
@@ -484,7 +490,8 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
         " WHERE problem = ? AND origin = 'root'",
         (problem,),
     ).fetchone()
-    if root_row is not None and str(root_row["status"]) in ("shelved", "frozen"):
+    BLOCKED_STATES = ("shelved", "frozen", "pending_strategist_review")
+    if root_row is not None and str(root_row["status"]) in BLOCKED_STATES:
         has_action = any(d.kind in ("Inject", "Reopen") for d in decisions)
         if not has_action:
             has_inflight_forward = conn.execute(
@@ -497,13 +504,20 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
             if not has_inflight_forward:
                 rstat = str(root_row["status"])
                 rid = int(root_row["id"])
+                hint_for_pending = (
+                    " Pending-review state means the last Backward agent "
+                    "declined `shelve` on the root — you were invoked "
+                    "specifically to break the impasse. Noop here is a "
+                    "logical contradiction." if rstat == "pending_strategist_review"
+                    else ""
+                )
                 return (
                     f"Root (goal_id={rid}) is {rstat!r} and nothing in "
                     f"the framework will progress without your action: "
                     f"no in-flight Forward Inject batch, no Inject or "
                     f"Reopen in this batch. BFS cannot dispatch from a "
                     f"{rstat!r} root, so a Noop/EmitDirective-only batch "
-                    f"leaves the daemon idle.\n"
+                    f"leaves the daemon idle.{hint_for_pending}\n"
                     f"In most cases the right call is "
                     f"`Reopen(target_goal_id={rid}, ...)` — re-engage "
                     f"BFS on the root subtree with whatever toolkit is "

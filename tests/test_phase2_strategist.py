@@ -1051,6 +1051,28 @@ def test_verify_decisions_accepts_noop_when_root_attempting(
     assert strategist.verify_decisions(ds, conn, problem="p") == ""
 
 
+def test_verify_decisions_rejects_noop_alone_when_root_pending_review(
+    conn: sqlite3.Connection,
+) -> None:
+    """`pending_strategist_review` on root means the last Backward agent
+    declined `shelve` — Strategist was invoked specifically to break
+    that impasse. Noop is a logical contradiction in that state.
+
+    residue_thm 2026-05-20 run 4: Backward on root declined shelve;
+    cascade set root pending_review; T2 fired Strategist which emitted
+    Noop #116 ('let s10404 run' — but s10404 was already dead from
+    Backward cleanup). Daemon idle-exited."""
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "pending_strategist_review")
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Noop", "reason": "let the framework run"},
+    ]))
+    err = strategist.verify_decisions(ds, conn, problem="p")
+    assert "Reopen" in err
+    assert "pending_strategist_review" in err
+    assert "logical contradiction" in err.lower()
+
+
 def test_verify_decisions_rejects_noop_alone_when_root_frozen(
     conn: sqlite3.Connection,
 ) -> None:
