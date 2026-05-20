@@ -465,6 +465,57 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                 "in a separate Strategist call (which pauses dispatch "
                 "via the awaiting_human gate)."
             )
+
+    # Cross-decision: if the root is in a state only Strategist can
+    # unfreeze (`shelved` or `frozen`), AND this batch dispatches no
+    # fresh work (no Inject, no Reopen), AND no Forward Inject batch
+    # is still in flight from a prior Strategist call — the daemon
+    # will idle-exit after this commit. BFS cannot dispatch the
+    # root's subtree (`db.open_goals`'s alive seed is `root ∪
+    # detached ∪ alive-strategy descendants`; a `shelved`/`frozen`
+    # root contributes no seed). Reject.
+    #
+    # `disproved` / `dead` roots intentionally NOT covered: those are
+    # genuine dead ends (counterexample / wrong parent context) where
+    # Strategist legitimately cannot recover; Noop is the right
+    # acknowledgement.
+    root_row = conn.execute(
+        "SELECT id, status FROM goals"
+        " WHERE problem = ? AND origin = 'root'",
+        (problem,),
+    ).fetchone()
+    if root_row is not None and str(root_row["status"]) in ("shelved", "frozen"):
+        has_action = any(d.kind in ("Inject", "Reopen") for d in decisions)
+        if not has_action:
+            has_inflight_forward = conn.execute(
+                "SELECT 1 FROM strategist_decisions"
+                " WHERE problem = ?"
+                "   AND batch_id IS NOT NULL"
+                "   AND outcome IS NULL LIMIT 1",
+                (problem,),
+            ).fetchone() is not None
+            if not has_inflight_forward:
+                rstat = str(root_row["status"])
+                rid = int(root_row["id"])
+                return (
+                    f"Root (goal_id={rid}) is {rstat!r} and nothing in "
+                    f"the framework will progress without your action: "
+                    f"no in-flight Forward Inject batch, no Inject or "
+                    f"Reopen in this batch. BFS cannot dispatch from a "
+                    f"{rstat!r} root, so a Noop/EmitDirective-only batch "
+                    f"leaves the daemon idle.\n"
+                    f"In most cases the right call is "
+                    f"`Reopen(target_goal_id={rid}, ...)` — re-engage "
+                    f"BFS on the root subtree with whatever toolkit is "
+                    f"now available. Alternatives:\n"
+                    f"  - Inject(Forward, brief=...) to build a missing "
+                    f"tool (root stays {rstat!r}; inject_batch_done "
+                    f"will re-fire you), OR\n"
+                    f"  - Inject(Backward/Builder, target_goal_id=..., "
+                    f"brief=...) to redispatch a non-root goal, OR\n"
+                    f"  - RequestUserAmend(...) to escalate Defs.lean / "
+                    f"Manifest.md."
+                )
     return ""
 
 

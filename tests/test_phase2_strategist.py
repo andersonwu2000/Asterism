@@ -964,6 +964,109 @@ def test_parse_decision_rejects_multi_when_single_expected() -> None:
     assert "single decision" in err.lower()
 
 
+def test_verify_decisions_rejects_noop_alone_when_root_shelved_no_inflight(
+    conn: sqlite3.Connection,
+) -> None:
+    """The residue_thm 2026-05-20 case: Strategist parks root via
+    ConfirmShelve while a Forward Inject is in flight, then on
+    inject_batch_done re-fires it emits a lone Noop assuming BFS
+    will dispatch the sub-tree the Forward built. But root='shelved'
+    contributes no alive seed to open_goals's CTE — the whole
+    subtree is frozen until Strategist acts. Reject Noop-only batches
+    in this state."""
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "shelved")
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Noop", "reason": "let BFS run"},
+    ]))
+    err = strategist.verify_decisions(ds, conn, problem="p")
+    assert "Reopen" in err and "shelved" in err.lower()
+    assert str(root) in err  # hint references actual root goal_id
+
+
+def test_verify_decisions_rejects_emit_directive_alone_when_root_shelved(
+    conn: sqlite3.Connection,
+) -> None:
+    """EmitDirective is articulation, not action — same lazy pattern
+    as Noop when root is shelved with nothing in flight."""
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "shelved")
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "EmitDirective", "scope": "problem:p",
+         "body": "Avoid X route.", "reason": "lock in learning"},
+    ]))
+    err = strategist.verify_decisions(ds, conn, problem="p")
+    assert "Reopen" in err and "shelved" in err.lower()
+
+
+def test_verify_decisions_accepts_noop_when_root_shelved_but_inflight_forward(
+    conn: sqlite3.Connection,
+) -> None:
+    """If a prior Strategist's Inject(Forward) is still in flight
+    (batch_id non-NULL, outcome NULL), Noop is valid — the cascade-
+    side `inject_batch_done` trigger will re-fire Strategist when
+    the Forward terminates, so the framework IS making progress."""
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "shelved")
+    # Seed an in-flight Forward Inject row on this problem
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
+        " batch_id, outcome, created_at, updated_at)"
+        " VALUES ('p', 0, 'pending_review', 'Inject', NULL, '## brief',"
+        " NULL, '{\"pipeline\":\"Forward\"}', 'batch-x', NULL, ?, ?)",
+        (db.now(), db.now()),
+    )
+    conn.commit()
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Noop", "reason": "wait for in-flight Forward"},
+    ]))
+    assert strategist.verify_decisions(ds, conn, problem="p") == ""
+
+
+def test_verify_decisions_accepts_reopen_root_when_root_shelved(
+    conn: sqlite3.Connection,
+) -> None:
+    """The canonical unfreeze action: when root is shelved and no
+    in-flight Forward, Reopen(root) is exactly what the rule wants."""
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "shelved")
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Reopen", "target_goal_id": root,
+         "reason": "homotopy lemma proved; re-engage BFS on root"},
+    ]))
+    assert strategist.verify_decisions(ds, conn, problem="p") == ""
+
+
+def test_verify_decisions_accepts_noop_when_root_attempting(
+    conn: sqlite3.Connection,
+) -> None:
+    """When root is dispatchable (open/attempting), Noop is fine —
+    BFS will continue without Strategist intervention."""
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "attempting")
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Noop", "reason": "workers are progressing"},
+    ]))
+    assert strategist.verify_decisions(ds, conn, problem="p") == ""
+
+
+def test_verify_decisions_rejects_noop_alone_when_root_frozen(
+    conn: sqlite3.Connection,
+) -> None:
+    """`frozen` (first_launch initial state) is the same shape as
+    `shelved` for the rule: BFS cannot dispatch, only Strategist can
+    unfreeze. Noop alone is lazy here too."""
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "frozen")
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Noop", "reason": "first launch; nothing to do?"},
+    ]))
+    err = strategist.verify_decisions(ds, conn, problem="p")
+    assert "Reopen" in err and "frozen" in err.lower()
+    assert str(root) in err
+
+
 def test_verify_decisions_allows_two_request_user_amend_in_batch(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
