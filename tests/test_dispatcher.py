@@ -1032,6 +1032,49 @@ def test_recover_at_startup_skips_inject_with_committed_artifact(
     assert len(q) == 0  # Forward also skipped — goal already on disk
 
 
+def test_recover_at_startup_flips_open_to_attempting_when_strategy_live(
+    conn: sqlite3.Connection,
+) -> None:
+    """Daemon shutdown race: a Backward worker finishes after the main
+    thread already returned (quota fast-fail self-exit via pool.shutdown
+    wait=False), writing its strategy + pipeline rows but missing the
+    cascade callback that would have flipped goal to 'attempting'.
+    Next daemon's bfs_refill would otherwise see goal='open' + dispatch
+    a duplicate Backward, producing N parallel live strategies on the
+    same goal (residue_thm 2026-05-21 g2458 had s10596 + s10609
+    simultaneously). Recovery must reconcile: any 'open' goal with a
+    live 'proposed' strategy belongs in 'attempting'.
+    """
+    from Tooling.core.dispatcher import _recover_at_startup
+    # Open goal with a live strategy — the bug shape.
+    gid = _seed_goal(conn, problem="p")
+    db.update_goal_status(conn, gid, "open")
+    sid = db.insert_strategy(
+        conn, goal_id=gid,
+        lean_path="Problems/p/Root.lean",
+        scratch_path="Problems/p/proofs/_strategy_s.lean",
+        created_by="pid-orphan-success",
+    )
+
+    # A second seed goal that's correctly 'open' with NO live strategy
+    # — must NOT be touched.
+    gid_clean = db.insert_goal(
+        conn, problem="p", slug="clean_open",
+        lean_path="Problems/p/proofs/L_clean_open.lean",
+        statement="T", origin="backward", depth=1,
+    )
+    # status defaults to 'open' from insert_goal
+
+    _recover_at_startup(conn)
+
+    assert db.get_goal(conn, gid)["status"] == "attempting"
+    assert db.get_goal(conn, gid_clean)["status"] == "open"
+    # Strategy itself untouched.
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id=?", (sid,),
+    ).fetchone()["status"] == "proposed"
+
+
 def test_recover_at_startup_kills_half_baked_strategies(
     conn: sqlite3.Connection,
 ) -> None:

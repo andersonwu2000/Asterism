@@ -129,6 +129,29 @@ def recover_at_startup(conn: sqlite3.Connection,
         (db.now(),),
     ).rowcount
 
+    # Inverse reconciliation — goals stuck at 'open' despite having a
+    # live 'proposed' strategy. Daemon shutdown races leave this
+    # state behind: a Backward worker writes its strategy row + records
+    # the pipeline as 'succeeded' AFTER the main thread's
+    # `pool.shutdown(wait=False)` has returned (quota self-exit at
+    # `dispatcher.py`'s consec_spawn_fail trip path is the canonical
+    # trigger). The cascade callback that would have flipped the goal
+    # to 'attempting' never runs because the main loop is gone, and
+    # the next daemon's bfs_refill sees the goal as 'open' and
+    # dispatches a duplicate Backward — producing N parallel live
+    # strategies on the same goal with overlapping intent.
+    # Symptom from residue_thm 2026-05-21: g2458 had s10596 and
+    # s10609 both 'proposed' after daemon 023003 quota-died mid-pipe.
+    goals_attempting_fixup = conn.execute(
+        "UPDATE goals SET status = 'attempting', updated_at = ?"
+        " WHERE status = 'open'"
+        "   AND EXISTS ("
+        "     SELECT 1 FROM strategies"
+        "     WHERE goal_id = goals.id AND status = 'proposed'"
+        "   )",
+        (db.now(),),
+    ).rowcount
+
     conn.commit()
 
     attempts_cleared = 0
@@ -148,12 +171,14 @@ def recover_at_startup(conn: sqlite3.Connection,
         backups_handled, tmps_removed = sweep_lean_backups(conn, workspace)
 
     if (queue_cleared or inject_reenqueued or strategies_killed
-            or goals_reopened or attempts_cleared or backups_handled
-            or tmps_removed):
+            or goals_reopened or goals_attempting_fixup
+            or attempts_cleared or backups_handled or tmps_removed):
         print(f"[dispatcher] recovery: cleared {queue_cleared} queue rows, "
               f"re-enqueued {inject_reenqueued} in-flight Inject Forwards, "
               f"killed {strategies_killed} half-baked strategies, "
               f"reopened {goals_reopened} stuck goals, "
+              f"flipped {goals_attempting_fixup} open->attempting "
+              f"(orphan-success fixup), "
               f"removed {attempts_cleared} orphan attempts dirs, "
               f"handled {backups_handled} lean backups, "
               f"removed {tmps_removed} stale .tmp files",
