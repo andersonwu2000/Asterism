@@ -381,6 +381,14 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         conn, goal_id=goal_id, lean_path=goal["lean_path"],
         created_by=pipeline_id, proposal_md="", scratch_path="",
     )
+    # If this Backward was spawned by an Inject(Backward) decision,
+    # link the just-reserved strategy back to the decision row so
+    # propagate_inject_outcome_from_strategy can fill the decision's
+    # outcome when the strategy reaches terminal — and through it
+    # fire `inject_batch_done` for the originating batch.
+    if decision_id is not None:
+        db.set_inject_decision_produced_strategy(
+            conn, decision_id, strategy_id)
     sid_token = f"s{strategy_id}"
 
     skeleton = _build_strategy_skeleton(

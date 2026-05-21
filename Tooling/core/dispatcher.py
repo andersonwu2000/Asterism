@@ -194,44 +194,11 @@ def _record_inject_decision_outcome(conn: sqlite3.Connection,
     conn.commit()
 
 
-def _maybe_enqueue_inject_batch_done(conn: sqlite3.Connection,
-                                     decision_id: int) -> None:
-    """If `decision_id` belongs to an Inject batch (batch_id non-NULL)
-    AND every sibling row in the batch now has `outcome` filled, fire
-    a single 'inject_batch_done' Strategist trigger on this problem.
-
-    Idempotent via the queue dedup inside the helper: a duplicate
-    Strategist trigger for the same root is silently dropped. Solo
-    Inject (batch_id NULL) is a no-op.
-    """
-    row = conn.execute(
-        "SELECT batch_id, problem FROM strategist_decisions WHERE id = ?",
-        (decision_id,),
-    ).fetchone()
-    if row is None or row["batch_id"] is None:
-        return
-    batch_id = str(row["batch_id"])
-    problem = str(row["problem"])
-    pending = conn.execute(
-        "SELECT COUNT(*) AS n FROM strategist_decisions"
-        " WHERE batch_id = ? AND outcome IS NULL",
-        (batch_id,),
-    ).fetchone()
-    if int(pending["n"]) > 0:
-        return
-    root_row = conn.execute(
-        "SELECT id FROM goals WHERE problem = ? AND origin = 'root'",
-        (problem,),
-    ).fetchone()
-    if root_row is None:
-        return
-    root_id = str(root_row["id"])
-    if db.is_in_queue(conn, target_id=root_id, kind="Strategist"):
-        return
-    # Priority 20 — same band as T2 pending_review; batch completion is
-    # an event-driven follow-up that supersedes the routine T1 wall-clock.
-    db.enqueue(conn, kind="Strategist", target_id=root_id,
-               target_kind="Goal", priority=20)
+# Re-export of the helper that now lives in db.py — kept under the
+# pre-existing private name so callers and tests referencing it
+# continue to work. New code should call db.maybe_enqueue_inject_
+# batch_done directly.
+_maybe_enqueue_inject_batch_done = db.maybe_enqueue_inject_batch_done
 
 
 def _enqueue_strategist_review(conn: sqlite3.Connection,
@@ -406,13 +373,18 @@ def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
     invariant.
     """
     # Inward kill — strategies whose goal IS this terminal goal.
-    # Explicit commit required: see commit 1052a5d comment for context.
-    conn.execute(
-        "UPDATE strategies SET status='dead' "
-        "WHERE goal_id = ? AND status='proposed'",
+    # Iterates per-row through `update_strategy_status` so the
+    # inject-outcome propagation hook fires for each strategy a
+    # Strategist Inject decision had spawned. A bulk UPDATE silently
+    # bypasses the hook and leaves those decisions un-resolved,
+    # preventing inject_batch_done from firing.
+    sids = [int(r["id"]) for r in conn.execute(
+        "SELECT id FROM strategies"
+        " WHERE goal_id = ? AND status = 'proposed'",
         (goal_id,),
-    )
-    conn.commit()
+    ).fetchall()]
+    for sid in sids:
+        db.update_strategy_status(conn, sid, "dead")
 
 
 def _kill_upward_chain(conn: sqlite3.Connection, goal_id: int,

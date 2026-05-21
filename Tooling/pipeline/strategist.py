@@ -566,32 +566,36 @@ class CommitOutcome:
 def _commit_inject_batch(decision: Decision, conn: sqlite3.Connection,
                          *, problem: str, tick: int,
                          trigger_kind: str,
-                         forward_batch_id: str | None = None) -> CommitOutcome:
+                         inject_batch_id: str | None = None) -> CommitOutcome:
     """Commit one Strategist Inject decision. Dispatches to the
     pipeline-specific helper.
 
-    Batch semantics:
-      - `Inject(Forward)` carries a `batch_id` so cascade fires
-        `inject_batch_done` once the produced lemma terminates. Multi-
-        decision callers pass `forward_batch_id` to share one batch_id
-        across N Forward decisions, collapsing N completions into a
-        single Strategist wake-up.
-      - `Inject(Backward/Builder)` is a redispatch on an existing goal;
-        normal cascade handles whatever follows (parent strategy stays
-        live, BFS continues). No `batch_id` (no `inject_batch_done`
-        fire is needed) but `produced_goal_id=target_id` is kept so
-        `propagate_inject_outcome_from_goal` still fills the decision
-        row's `outcome` for failure_replay.
+    Batch semantics (unified across pipeline kinds): every Inject row
+    carries a `batch_id`. The framework fires Strategist with
+    `inject_batch_done` once every decision in the batch has reached
+    a terminal outcome.
+
+      - Forward outcome fills when the produced lemma reaches a
+        terminal goal status (proved / shelved / disproved / dead).
+      - Backward outcome fills when the produced strategy reaches
+        a terminal status (succeeded / dead / superseded).
+      - Builder outcome fills when the target goal reaches terminal
+        (Builder writes the proof directly into the goal's stub).
+
+    Multi-decision callers pass `inject_batch_id` to share one UUID
+    across the whole batch — including across pipeline kinds — so a
+    single wake-up coalesces all completions.
     """
     pipeline = decision.payload.get("pipeline")
     if pipeline == "Forward":
         return _commit_inject_forward(
             decision, conn, problem=problem, tick=tick,
-            trigger_kind=trigger_kind, batch_id_override=forward_batch_id)
+            trigger_kind=trigger_kind, batch_id_override=inject_batch_id)
     if pipeline in ("Backward", "Builder"):
         return _commit_inject_redispatch(
             decision, conn, problem=problem, tick=tick,
-            trigger_kind=trigger_kind, pipeline=pipeline)
+            trigger_kind=trigger_kind, pipeline=pipeline,
+            batch_id_override=inject_batch_id)
     raise RuntimeError(
         f"_commit_inject_batch: unhandled pipeline {pipeline!r} "
         f"(verify_decision should have caught this)")
@@ -646,19 +650,32 @@ def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
 def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
                               *, problem: str, tick: int,
                               trigger_kind: str,
-                              pipeline: str) -> CommitOutcome:
+                              pipeline: str,
+                              batch_id_override: str | None = None,
+                              ) -> CommitOutcome:
     """Backward / Builder variant — 1 row + 1 enqueue on target goal.
 
-    `brief` carries the agent's hint for the redispatch. No `batch_id`
-    (Strategist does not need to be re-fired when a redispatched goal
-    terminates — normal cascade handles propagation upward). The
-    `produced_goal_id=target_id` link is kept so
-    `propagate_inject_outcome_from_goal` still fills the decision
-    row's `outcome` for failure_replay when the target reaches
-    proved / shelved / disproved.
+    `brief` carries the agent's hint for the redispatch.
+
+    Every Inject row carries a `batch_id` (a fresh UUID for solo
+    commits, shared across the batch when multiple decisions commit
+    together) so the framework can fire `inject_batch_done` once the
+    batch's last decision reaches terminal — mirroring Forward.
+
+    `produced_goal_id = target_id`: lets the goal-side propagation
+    fill outcome when the target reaches a terminal goal status
+    (Builder's intent is to prove the goal directly, so this is the
+    canonical completion signal for Builder). For Backward the
+    worker additionally sets `produced_strategy_id` after reserving
+    its strategy id; outcome fills via whichever path resolves first
+    (idempotent via the `outcome IS NULL` guard), so a Backward
+    Inject whose injected strategy dies via cascade still surfaces a
+    wake-up even while the target goal stays 'attempting' under a
+    sibling.
     """
     target_id = int(decision.target_id)
     brief = decision.brief.strip()
+    batch_id = batch_id_override or uuid.uuid4().hex
     ts = db.now()
     row_payload = {
         "pipeline": pipeline,
@@ -670,11 +687,11 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, target_id, brief, reason, payload,"
         " batch_id, produced_goal_id, outcome, created_at, updated_at)"
-        " VALUES (?, ?, ?, 'Inject', ?, ?, ?, ?, NULL, ?, NULL, ?, ?)",
+        " VALUES (?, ?, ?, 'Inject', ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
         (problem, tick, trigger_kind, target_id,
          brief, decision.reason,
          json.dumps(row_payload, ensure_ascii=False),
-         target_id, ts, ts),
+         batch_id, target_id, ts, ts),
     )
     row_id = int(cur.lastrowid)
 
@@ -701,7 +718,7 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
         decision_row_id=row_id,
         enqueued_forward=False,
         final_outcome="committed",
-        batch_id=None,
+        batch_id=batch_id,
         batch_decision_row_ids=[row_id],
     )
 
@@ -720,22 +737,21 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     indicates a framework bug to investigate, not graceful recovery
     territory.
 
-    Multi-decision Inject(Forward) batching: when the list contains
-    ≥1 Inject(Forward) decision, all of them share one `batch_id`.
-    The `inject_batch_done` Strategist trigger fires once, only after
-    every produced lemma terminates. Inject(Backward/Builder) are
-    independent — no batch_id, no batch_done fire.
+    Inject batching is unified across pipeline kinds: every Inject
+    decision in `decisions` shares one `batch_id`, so the cascade
+    fires `inject_batch_done` exactly once — when the LAST of the
+    Forward / Backward / Builder injects reaches terminal. Each kind
+    has its own completion signal (see `_commit_inject_batch`).
 
     Returns one CommitOutcome per decision (same order).
     """
-    forward_batch_id: str | None = None
-    if any(d.kind == "Inject" and d.payload.get("pipeline") == "Forward"
-           for d in decisions):
-        forward_batch_id = uuid.uuid4().hex
+    inject_batch_id: str | None = None
+    if any(d.kind == "Inject" for d in decisions):
+        inject_batch_id = uuid.uuid4().hex
     return [
         _commit_one(d, conn, problem=problem, tick=tick,
                     trigger_kind=trigger_kind, workspace=workspace,
-                    forward_batch_id=forward_batch_id)
+                    inject_batch_id=inject_batch_id)
         for d in decisions
     ]
 
@@ -756,14 +772,15 @@ def commit_decision(decision: Decision, conn: sqlite3.Connection,
 def _commit_one(decision: Decision, conn: sqlite3.Connection,
                 *, problem: str, tick: int, trigger_kind: str,
                 workspace: Path,
-                forward_batch_id: str | None) -> CommitOutcome:
+                inject_batch_id: str | None) -> CommitOutcome:
     """Execute one decision's side effects + INSERT audit row.
 
     Caller must have already passed `verify_decision`. This is the
     write-path; errors here indicate a bug (or a race with another
-    Strategist commit), not user error. `forward_batch_id` is
-    threaded through to `_commit_inject_batch` for the multi-decision
-    Forward batching case (see `commit_decisions`).
+    Strategist commit), not user error. `inject_batch_id` is
+    threaded through to `_commit_inject_batch` so every Inject
+    decision in the same `commit_decisions` call shares one batch
+    UUID (Forward / Backward / Builder mixed; see `commit_decisions`).
     """
     # Resolve root id for enqueues.
     root_id_row = conn.execute(
@@ -780,7 +797,7 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
         return _commit_inject_batch(
             decision, conn, problem=problem, tick=tick,
             trigger_kind=trigger_kind,
-            forward_batch_id=forward_batch_id,
+            inject_batch_id=inject_batch_id,
         )
 
     if k == "Noop":

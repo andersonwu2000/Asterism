@@ -491,12 +491,14 @@ def test_commit_inject_backward_enqueues_with_directive(
         d, conn, problem="p", tick=1, trigger_kind="pending_review",
         workspace=workspace,
     )
-    # No batch_id for B/B redispatch (would otherwise fire an
-    # unnecessary inject_batch_done when the target terminates).
-    assert outcome.batch_id is None
+    # Backward/Builder injects now share Forward's batch_id mechanism
+    # so `inject_batch_done` fires when the produced strategy (set by
+    # the worker via `produced_strategy_id`) or the target goal
+    # reaches terminal. Solo commit gets a fresh batch UUID.
+    assert outcome.batch_id is not None
     assert len(outcome.batch_decision_row_ids) == 1
     # Decision row: directive in brief, produced_goal_id linked to
-    # target for outcome bookkeeping, batch_id NULL.
+    # target for outcome bookkeeping, batch_id present.
     row = conn.execute(
         "SELECT brief, produced_goal_id, batch_id"
         " FROM strategist_decisions WHERE id=?",
@@ -504,7 +506,7 @@ def test_commit_inject_backward_enqueues_with_directive(
     ).fetchone()
     assert "contour deformation" in row["brief"]
     assert row["produced_goal_id"] == root
-    assert row["batch_id"] is None
+    assert row["batch_id"] == outcome.batch_id
     # Target force-reopened
     assert db.get_goal(conn, root)["status"] == "open"
     # Backward enqueued on the goal
@@ -868,6 +870,159 @@ def test_propagate_inject_outcome_idempotent(
     assert first == decision_id
     assert second is None  # already filled
     assert _decision_outcome(conn, decision_id) == "success"
+
+
+def test_propagate_inject_outcome_dead(
+    conn: sqlite3.Connection,
+) -> None:
+    """Goal flips to 'dead' (cascade from parent_needs_fix) → decision
+    outcome becomes 'failed:dead'. Without this, 'dead' was silently
+    skipped (Phase 6 added the status; the propagate function was not
+    updated) and inject_batch_done never fired for batches whose
+    produced lemma died from descendant repudiation."""
+    _insert_root(conn)
+    fwd = db.insert_goal(
+        conn, problem="p", slug="fwd",
+        lean_path="Problems/p/proofs/L_fwd.lean",
+        statement="T", origin="forward",
+    )
+    decision_id = _insert_inject_decision(
+        conn, problem="p", batch_id="batch-dead", step_index=0,
+        batch_size=1, brief="## Need\nD",
+    )
+    db.set_inject_decision_produced_goal(conn, decision_id, fwd)
+
+    db.update_goal_status(conn, fwd, "dead")
+    affected = db.propagate_inject_outcome_from_goal(conn, fwd)
+    assert affected == decision_id
+    assert _decision_outcome(conn, decision_id) == "failed:dead"
+
+
+def test_propagate_inject_outcome_from_strategy_succeeded(
+    conn: sqlite3.Connection,
+) -> None:
+    """Inject(Backward) commits to track the produced strategy: when
+    that strategy reaches 'succeeded' (verify proved it), the
+    decision's outcome becomes 'success' and the batch can wake
+    Strategist. Mirrors the goal-side 'proved' path for Forward."""
+    _insert_root(conn)
+    gid = db.insert_goal(
+        conn, problem="p", slug="tgt",
+        lean_path="Problems/p/proofs/L_tgt.lean",
+        statement="T", origin="backward", depth=1,
+    )
+    sid = db.insert_strategy(
+        conn, goal_id=gid,
+        lean_path="Problems/p/proofs/L_tgt.lean",
+        scratch_path="Problems/p/proofs/_strategy_succ.lean",
+        created_by="pid",
+    )
+    decision_id = _insert_inject_decision(
+        conn, problem="p", batch_id="batch-bs", step_index=0,
+        batch_size=1, brief="hint",
+    )
+    db.set_inject_decision_produced_strategy(conn, decision_id, sid)
+
+    db.update_strategy_status(conn, sid, "succeeded")
+    assert _decision_outcome(conn, decision_id) == "success"
+
+
+def test_propagate_inject_outcome_from_strategy_dead_fires_batch_done(
+    conn: sqlite3.Connection,
+) -> None:
+    """Backward Inject scenario from session 2026-05-21: s10491 dies
+    via cascade with target goal staying 'attempting'. Old framework:
+    no propagation, decision outcome stays NULL, Strategist never
+    woken. New framework: produced_strategy_id linkage + update_
+    strategy_status hook fill outcome on strategy-dead and enqueue
+    `inject_batch_done` (visible as a new Strategist queue row)."""
+    root = _insert_root(conn)
+    gid = db.insert_goal(
+        conn, problem="p", slug="bd_target",
+        lean_path="Problems/p/proofs/L_bd_target.lean",
+        statement="T", origin="backward", depth=1,
+    )
+    db.update_goal_status(conn, gid, "attempting")
+    sid = db.insert_strategy(
+        conn, goal_id=gid,
+        lean_path="Problems/p/proofs/L_bd_target.lean",
+        scratch_path="Problems/p/proofs/_strategy_bd.lean",
+        created_by="pid",
+    )
+    decision_id = _insert_inject_decision(
+        conn, problem="p", batch_id="batch-bd", step_index=0,
+        batch_size=1, brief="hint",
+    )
+    db.set_inject_decision_produced_strategy(conn, decision_id, sid)
+
+    db.update_strategy_status(conn, sid, "dead")
+    assert _decision_outcome(conn, decision_id) == "failed:dead"
+    # And inject_batch_done fired: a Strategist queue row appeared on
+    # the root.
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue"
+        " WHERE kind = 'Strategist' AND target_id = ?", (str(root),),
+    ).fetchone()
+    assert int(q["n"]) == 1
+
+
+def test_inject_batch_done_waits_for_last_kind_in_mixed_batch(
+    conn: sqlite3.Connection,
+) -> None:
+    """Mixed Forward + Backward batch: outcome fills for each
+    independently; the batch-done wake-up fires only after BOTH have
+    reached terminal — even though Forward terminates via goal and
+    Backward via strategy. Closes the user's unified-batch request."""
+    root = _insert_root(conn)
+    # Forward decision tied to its produced lemma goal.
+    fwd_goal = db.insert_goal(
+        conn, problem="p", slug="fwd_lem",
+        lean_path="Problems/p/proofs/L_fwd_lem.lean",
+        statement="T", origin="forward",
+    )
+    d_fwd = _insert_inject_decision(
+        conn, problem="p", batch_id="batch-mix", step_index=0,
+        batch_size=2, brief="## Need\nL",
+    )
+    db.set_inject_decision_produced_goal(conn, d_fwd, fwd_goal)
+    # Backward decision tied to its produced strategy.
+    bw_goal = db.insert_goal(
+        conn, problem="p", slug="bw_target",
+        lean_path="Problems/p/proofs/L_bw_target.lean",
+        statement="T", origin="backward", depth=1,
+    )
+    bw_sid = db.insert_strategy(
+        conn, goal_id=bw_goal,
+        lean_path="Problems/p/proofs/L_bw_target.lean",
+        scratch_path="Problems/p/proofs/_strategy_mix.lean",
+        created_by="pid",
+    )
+    d_bw = _insert_inject_decision(
+        conn, problem="p", batch_id="batch-mix", step_index=1,
+        batch_size=2, brief="hint",
+    )
+    db.set_inject_decision_produced_strategy(conn, d_bw, bw_sid)
+
+    # Only Backward terminates first: batch not done yet, no wake-up.
+    db.update_strategy_status(conn, bw_sid, "dead")
+    assert _decision_outcome(conn, d_bw) == "failed:dead"
+    assert _decision_outcome(conn, d_fwd) is None
+    q1 = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue"
+        " WHERE kind = 'Strategist' AND target_id = ?", (str(root),),
+    ).fetchone()
+    assert int(q1["n"]) == 0
+
+    # Forward now terminates → batch fully resolved → wake fires.
+    db.update_goal_status(conn, fwd_goal, "proved")
+    affected = db.propagate_inject_outcome_from_goal(conn, fwd_goal)
+    assert affected == d_fwd
+    db.maybe_enqueue_inject_batch_done(conn, d_fwd)
+    q2 = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue"
+        " WHERE kind = 'Strategist' AND target_id = ?", (str(root),),
+    ).fetchone()
+    assert int(q2["n"]) == 1
 
 
 def _insert_inject_decision(conn: sqlite3.Connection, *, problem: str,
@@ -1357,12 +1512,15 @@ def test_commit_decisions_multi_forward_share_one_batch_id(
     assert rows[0]["batch_id"] == rows[1]["batch_id"] == outcomes[0].batch_id
 
 
-def test_commit_decisions_mixed_forward_and_backward_batch_id_scoped(
+def test_commit_decisions_mixed_forward_and_backward_share_batch_id(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
-    """In a mixed batch, Forward Inject(s) share one batch_id while
-    Inject(Backward) gets none (no inject_batch_done fire on B/B
-    redispatch — cascade handles it)."""
+    """In a mixed batch every Inject (Forward / Backward / Builder)
+    shares one batch_id so a single `inject_batch_done` Strategist
+    wake-up coalesces all completions — wake fires when the LAST
+    decision (across kinds) reaches terminal. Each kind has its own
+    completion signal: Forward via produced_goal_id, Backward via
+    produced_strategy_id, Builder via produced_goal_id."""
     root = _insert_root(conn)
     ds, _ = strategist.parse_decisions(json.dumps([
         {"kind": "Inject", "pipeline": "Forward",
@@ -1375,8 +1533,8 @@ def test_commit_decisions_mixed_forward_and_backward_batch_id_scoped(
         ds, conn, problem="p", tick=1, trigger_kind="pending_review",
         workspace=workspace,
     )
-    assert outcomes[0].batch_id is not None  # Forward
-    assert outcomes[1].batch_id is None      # Backward
+    assert outcomes[0].batch_id is not None
+    assert outcomes[0].batch_id == outcomes[1].batch_id
     # And the persisted rows agree.
     fwd_row = conn.execute(
         "SELECT batch_id FROM strategist_decisions WHERE id=?",
@@ -1388,8 +1546,9 @@ def test_commit_decisions_mixed_forward_and_backward_batch_id_scoped(
         (outcomes[1].decision_row_id,),
     ).fetchone()
     assert fwd_row["batch_id"] == outcomes[0].batch_id
-    assert bwd_row["batch_id"] is None
-    # produced_goal_id still set on B/B so outcome bookkeeping works.
+    assert bwd_row["batch_id"] == outcomes[0].batch_id
+    # produced_goal_id still set on B/B so the goal-terminal path also
+    # contributes to outcome filling (idempotent with the strategy path).
     assert bwd_row["produced_goal_id"] == root
 
 

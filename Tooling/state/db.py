@@ -318,6 +318,18 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
     -- here. Non-Inject decision kinds are always NULL.
     produced_goal_id    INTEGER NULL DEFAULT NULL REFERENCES goals(id)
                             ON DELETE SET NULL,
+    -- produced_strategy_id: Inject(Backward/Builder) decisions store
+    -- the strategy_id their dispatched worker created here. The
+    -- decision's `outcome` is filled when that strategy reaches a
+    -- terminal status (succeeded / dead / superseded), mirroring the
+    -- `produced_goal_id` mechanism for Forward. Lets `inject_batch_
+    -- done` fire for Backward/Builder injects too — previously the
+    -- per-kind asymmetry meant Strategist was only woken on Forward
+    -- batch completion. ON DELETE SET NULL covers the
+    -- placeholder-cleanup case (worker BaseException deletes the
+    -- empty strategy row).
+    produced_strategy_id INTEGER NULL DEFAULT NULL
+                            REFERENCES strategies(id) ON DELETE SET NULL,
     outcome             TEXT NULL DEFAULT NULL,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
@@ -421,6 +433,14 @@ def init_schema(conn: sqlite3.Connection) -> None:
          "ALTER TABLE strategist_decisions ADD COLUMN produced_goal_id"
          " INTEGER NULL DEFAULT NULL"
          " REFERENCES goals(id) ON DELETE SET NULL"),
+        # Inject(Backward/Builder) outcome-tracking — see the column
+        # comment in SCHEMA above. Closes the Strategist wake-up
+        # asymmetry where only Forward batches fired `inject_batch_
+        # done`.
+        ("produced_strategy_id",
+         "ALTER TABLE strategist_decisions ADD COLUMN produced_strategy_id"
+         " INTEGER NULL DEFAULT NULL"
+         " REFERENCES strategies(id) ON DELETE SET NULL"),
     ):
         try:
             conn.execute(ddl)
@@ -1084,8 +1104,8 @@ def propagate_inject_outcome_from_goal(
     (if any, and if its outcome is still NULL).
 
     Mapping: goal status='proved' → outcome='success'. shelved /
-    disproved → outcome='failed:<status>'. Other statuses are not
-    terminal and this function is a no-op for them.
+    disproved / dead → outcome='failed:<status>'. Other statuses are
+    not terminal and this function is a no-op for them.
 
     Returns the affected decision row id (caller may then fire
     `_maybe_enqueue_inject_batch_done`), or None if nothing was
@@ -1109,8 +1129,72 @@ def propagate_inject_outcome_from_goal(
     status = str(g["status"])
     if status == "proved":
         outcome = "success"
-    elif status in ("shelved", "disproved"):
+    elif status in ("shelved", "disproved", "dead"):
         outcome = f"failed:{status}"
+    else:
+        return None  # not terminal; wait
+    conn.execute(
+        "UPDATE strategist_decisions SET outcome = ?, updated_at = ?"
+        " WHERE id = ? AND outcome IS NULL",
+        (outcome, now(), int(row["id"])),
+    )
+    conn.commit()
+    return int(row["id"])
+
+
+def set_inject_decision_produced_strategy(
+    conn: sqlite3.Connection, decision_id: int, strategy_id: int,
+) -> None:
+    """Link an Inject(Backward/Builder) decision row to the strategy
+    its dispatched worker just created. The decision's `outcome`
+    stays NULL until the strategy reaches a terminal status — see
+    `propagate_inject_outcome_from_strategy`."""
+    conn.execute(
+        "UPDATE strategist_decisions SET produced_strategy_id = ?,"
+        " updated_at = ? WHERE id = ?",
+        (strategy_id, now(), decision_id),
+    )
+    conn.commit()
+
+
+def propagate_inject_outcome_from_strategy(
+    conn: sqlite3.Connection, strategy_id: int,
+) -> int | None:
+    """When `strategy_id` reaches a terminal status, fill the outcome
+    of the Inject(Backward/Builder) decision row whose
+    `produced_strategy_id` points at it (if any, and if outcome is
+    still NULL).
+
+    Mapping: strategy 'succeeded' → 'success'. 'superseded' → 'success'
+    (the goal got proved by a sibling — Strategist's intent of "make
+    this goal terminal-proved" was met, even though by a different
+    decomposition). 'dead' → 'failed:dead'. Other statuses are not
+    terminal and this function is a no-op for them.
+
+    Returns the affected decision row id (caller may then fire
+    `_maybe_enqueue_inject_batch_done`), or None if nothing was
+    propagated.
+
+    Idempotent: re-running on an already-propagated strategy is a
+    no-op via the `outcome IS NULL` guard.
+    """
+    row = conn.execute(
+        "SELECT id FROM strategist_decisions"
+        " WHERE produced_strategy_id = ? AND outcome IS NULL",
+        (strategy_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    s = conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (strategy_id,)
+    ).fetchone()
+    if s is None:
+        return None
+    status = str(s["status"])
+    if status in ("succeeded", "superseded"):
+        outcome = "success"
+    elif status == "dead":
+        outcome = "failed:dead"
     else:
         return None  # not terminal; wait
     conn.execute(
@@ -1453,14 +1537,21 @@ def mark_other_strategies_superseded(conn: sqlite3.Connection, *,
     """When one strategy wins Verify, mark all other live strategies of
     the same goal as 'superseded'. Returns the number of strategies
     affected. In-flight workers on those strategies' sub-goals will
-    cascade as no-op once goal is proved."""
-    cur = conn.execute(
-        "UPDATE strategies SET status = 'superseded'"
+    cascade as no-op once goal is proved.
+
+    Iterates per-row through `update_strategy_status` so the inject-
+    outcome propagation hook fires for each superseded strategy — a
+    bulk UPDATE would silently skip the per-row hook and leave any
+    associated Inject(Backward/Builder) decisions un-resolved.
+    """
+    rows = conn.execute(
+        "SELECT id FROM strategies"
         " WHERE goal_id = ? AND id != ? AND status = 'proposed'",
         (goal_id, winner_id),
-    )
-    conn.commit()
-    return int(cur.rowcount)
+    ).fetchall()
+    for r in rows:
+        update_strategy_status(conn, int(r["id"]), "superseded")
+    return len(rows)
 
 
 def link_subgoal(conn: sqlite3.Connection, *, strategy_id: int,
@@ -1480,6 +1571,62 @@ def update_strategy_status(conn: sqlite3.Connection, strategy_id: int,
         (status, strategy_id),
     )
     conn.commit()
+    # When a strategy reaches a terminal status, propagate the outcome
+    # back to any Inject(Backward/Builder) decision that produced it
+    # and fire the batch-done Strategist wake-up if its batch is now
+    # fully resolved. Mirrors the goal-side handling in
+    # `_set_goal_terminal_and_propagate`. No-op for non-terminal
+    # transitions and for strategies not tied to an Inject decision.
+    if status in ("succeeded", "dead", "superseded"):
+        d = propagate_inject_outcome_from_strategy(conn, strategy_id)
+        if d is not None:
+            maybe_enqueue_inject_batch_done(conn, d)
+
+
+def maybe_enqueue_inject_batch_done(conn: sqlite3.Connection,
+                                    decision_id: int) -> None:
+    """If `decision_id` belongs to an Inject batch (batch_id non-NULL)
+    AND every sibling row in the batch now has `outcome` filled, fire
+    a single 'inject_batch_done' Strategist trigger on this problem.
+
+    Idempotent via the queue dedup inside the helper: a duplicate
+    Strategist trigger for the same root is silently dropped. Solo
+    Inject (batch_id NULL) is a no-op.
+
+    Lives in db.py (not dispatcher.py) so that
+    `update_strategy_status` can call it without a backward import
+    when wiring strategy-terminal propagation; dispatcher.py
+    re-exports under its previous private name for tests that
+    referenced it.
+    """
+    row = conn.execute(
+        "SELECT batch_id, problem FROM strategist_decisions WHERE id = ?",
+        (decision_id,),
+    ).fetchone()
+    if row is None or row["batch_id"] is None:
+        return
+    batch_id = str(row["batch_id"])
+    problem = str(row["problem"])
+    pending = conn.execute(
+        "SELECT COUNT(*) AS n FROM strategist_decisions"
+        " WHERE batch_id = ? AND outcome IS NULL",
+        (batch_id,),
+    ).fetchone()
+    if int(pending["n"]) > 0:
+        return
+    root_row = conn.execute(
+        "SELECT id FROM goals WHERE problem = ? AND origin = 'root'",
+        (problem,),
+    ).fetchone()
+    if root_row is None:
+        return
+    root_id = str(root_row["id"])
+    if is_in_queue(conn, target_id=root_id, kind="Strategist"):
+        return
+    # Priority 20 — same band as T2 pending_review; batch completion is
+    # an event-driven follow-up that supersedes routine T1 wall-clock.
+    enqueue(conn, kind="Strategist", target_id=root_id,
+            target_kind="Goal", priority=20)
 
 
 def delete_strategy(conn: sqlite3.Connection, strategy_id: int) -> None:
