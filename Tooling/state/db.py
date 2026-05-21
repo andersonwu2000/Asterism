@@ -1087,7 +1087,39 @@ def set_inject_decision_produced_goal(
 ) -> None:
     """Link an Inject decision row to the Forward goal it produced.
     The decision's `outcome` stays NULL until the goal reaches a
-    terminal status — see `propagate_inject_outcome_from_goal`."""
+    terminal status — see `propagate_inject_outcome_from_goal`.
+
+    Single-write invariant: a given Strategist decision row produces
+    AT MOST one artifact (one goal OR one strategy, not both). If
+    either column is already populated, we are about to write a
+    second produced-artifact onto the same audit row — the symptom
+    of a double dispatch (e.g. residue_thm 2026-05-21: recovery
+    hardcoded-Forward re-enqueued an Inject(Backward) as Forward, so
+    decision #128 ended up with produced_strategy_id=s10559 from the
+    Backward path AND produced_goal_id=g2494 from the Forward
+    misroute). Reject the write and log; the decision's first
+    produced artifact stays canonical for outcome propagation.
+    """
+    existing = conn.execute(
+        "SELECT produced_goal_id, produced_strategy_id"
+        " FROM strategist_decisions WHERE id = ?",
+        (decision_id,),
+    ).fetchone()
+    if existing is None:
+        return
+    if existing["produced_goal_id"] is not None:
+        if int(existing["produced_goal_id"]) == int(goal_id):
+            return  # idempotent re-write — same goal, no-op
+        print(f"[db] refusing to overwrite produced_goal_id on decision "
+              f"{decision_id}: existing={existing['produced_goal_id']}, "
+              f"attempted={goal_id}", flush=True)
+        return
+    if existing["produced_strategy_id"] is not None:
+        print(f"[db] refusing to set produced_goal_id={goal_id} on "
+              f"decision {decision_id}: produced_strategy_id="
+              f"{existing['produced_strategy_id']} already set "
+              f"(double-dispatch indicator)", flush=True)
+        return
     conn.execute(
         "UPDATE strategist_decisions SET produced_goal_id = ?,"
         " updated_at = ? WHERE id = ?",
@@ -1148,7 +1180,32 @@ def set_inject_decision_produced_strategy(
     """Link an Inject(Backward/Builder) decision row to the strategy
     its dispatched worker just created. The decision's `outcome`
     stays NULL until the strategy reaches a terminal status — see
-    `propagate_inject_outcome_from_strategy`."""
+    `propagate_inject_outcome_from_strategy`.
+
+    Single-write invariant — see `set_inject_decision_produced_goal`
+    for the failure mode this guards against.
+    """
+    existing = conn.execute(
+        "SELECT produced_goal_id, produced_strategy_id"
+        " FROM strategist_decisions WHERE id = ?",
+        (decision_id,),
+    ).fetchone()
+    if existing is None:
+        return
+    if existing["produced_strategy_id"] is not None:
+        if int(existing["produced_strategy_id"]) == int(strategy_id):
+            return  # idempotent re-write
+        print(f"[db] refusing to overwrite produced_strategy_id on "
+              f"decision {decision_id}: existing="
+              f"{existing['produced_strategy_id']}, "
+              f"attempted={strategy_id}", flush=True)
+        return
+    if existing["produced_goal_id"] is not None:
+        print(f"[db] refusing to set produced_strategy_id={strategy_id} "
+              f"on decision {decision_id}: produced_goal_id="
+              f"{existing['produced_goal_id']} already set "
+              f"(double-dispatch indicator)", flush=True)
+        return
     conn.execute(
         "UPDATE strategist_decisions SET produced_strategy_id = ?,"
         " updated_at = ? WHERE id = ?",

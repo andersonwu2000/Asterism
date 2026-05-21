@@ -872,6 +872,142 @@ def test_propagate_inject_outcome_idempotent(
     assert _decision_outcome(conn, decision_id) == "success"
 
 
+def test_set_inject_decision_produced_goal_idempotent_same_value(
+    conn: sqlite3.Connection,
+) -> None:
+    """Re-writing the same produced_goal_id is a silent no-op (idempotent
+    — pipeline reentry / retry path can safely re-call)."""
+    _insert_root(conn)
+    fwd = db.insert_goal(
+        conn, problem="p", slug="fwd_idem",
+        lean_path="Problems/p/proofs/L_fwd_idem.lean",
+        statement="T", origin="forward",
+    )
+    decision_id = _insert_inject_decision(
+        conn, problem="p", batch_id="batch-idem", step_index=0,
+        batch_size=1, brief="x",
+    )
+    db.set_inject_decision_produced_goal(conn, decision_id, fwd)
+    db.set_inject_decision_produced_goal(conn, decision_id, fwd)  # no-op
+    row = conn.execute(
+        "SELECT produced_goal_id, produced_strategy_id FROM"
+        " strategist_decisions WHERE id=?", (decision_id,),
+    ).fetchone()
+    assert row["produced_goal_id"] == fwd
+    assert row["produced_strategy_id"] is None
+
+
+def test_set_inject_decision_produced_goal_refuses_overwrite_different(
+    conn: sqlite3.Connection, capsys: pytest.CaptureFixture,
+) -> None:
+    """Writing a DIFFERENT produced_goal_id is rejected — the first
+    write owns the decision's audit record. Symptom of a double dispatch
+    (recovery 2026-05-21 misroute scenario)."""
+    _insert_root(conn)
+    g_first = db.insert_goal(
+        conn, problem="p", slug="g_first",
+        lean_path="Problems/p/proofs/L_g_first.lean",
+        statement="T", origin="forward",
+    )
+    g_second = db.insert_goal(
+        conn, problem="p", slug="g_second",
+        lean_path="Problems/p/proofs/L_g_second.lean",
+        statement="T", origin="forward",
+    )
+    decision_id = _insert_inject_decision(
+        conn, problem="p", batch_id="batch-conflict", step_index=0,
+        batch_size=1, brief="x",
+    )
+    db.set_inject_decision_produced_goal(conn, decision_id, g_first)
+    db.set_inject_decision_produced_goal(conn, decision_id, g_second)
+    row = conn.execute(
+        "SELECT produced_goal_id FROM strategist_decisions WHERE id=?",
+        (decision_id,),
+    ).fetchone()
+    assert row["produced_goal_id"] == g_first  # first write stuck
+    captured = capsys.readouterr()
+    assert "refusing to overwrite produced_goal_id" in captured.out
+
+
+def test_set_inject_decision_produced_goal_refuses_when_strategy_set(
+    conn: sqlite3.Connection, capsys: pytest.CaptureFixture,
+) -> None:
+    """Cross-column guard: writing produced_goal_id when
+    produced_strategy_id is already set is rejected. This is the exact
+    residue_thm 2026-05-21 g2494 / s10559 confusion — a single Inject
+    decision row ended up tagged with both kinds of produced artifact
+    because recovery re-dispatched a Backward Inject as Forward."""
+    _insert_root(conn)
+    gid = db.insert_goal(
+        conn, problem="p", slug="tgt",
+        lean_path="Problems/p/proofs/L_tgt.lean",
+        statement="T", origin="backward", depth=1,
+    )
+    sid = db.insert_strategy(
+        conn, goal_id=gid,
+        lean_path="Problems/p/proofs/L_tgt.lean",
+        scratch_path="Problems/p/proofs/_strategy_s.lean",
+        created_by="pid",
+    )
+    fwd_goal = db.insert_goal(
+        conn, problem="p", slug="fwd_other",
+        lean_path="Problems/p/proofs/L_fwd_other.lean",
+        statement="T", origin="forward",
+    )
+    decision_id = _insert_inject_decision(
+        conn, problem="p", batch_id="batch-x", step_index=0,
+        batch_size=1, brief="x",
+    )
+    db.set_inject_decision_produced_strategy(conn, decision_id, sid)
+    db.set_inject_decision_produced_goal(conn, decision_id, fwd_goal)
+    row = conn.execute(
+        "SELECT produced_goal_id, produced_strategy_id FROM"
+        " strategist_decisions WHERE id=?", (decision_id,),
+    ).fetchone()
+    assert row["produced_strategy_id"] == sid
+    assert row["produced_goal_id"] is None  # rejected
+    captured = capsys.readouterr()
+    assert "double-dispatch indicator" in captured.out
+
+
+def test_set_inject_decision_produced_strategy_refuses_when_goal_set(
+    conn: sqlite3.Connection, capsys: pytest.CaptureFixture,
+) -> None:
+    """Inverse: writing produced_strategy_id when produced_goal_id is
+    already set is rejected."""
+    _insert_root(conn)
+    fwd = db.insert_goal(
+        conn, problem="p", slug="fwd",
+        lean_path="Problems/p/proofs/L_fwd.lean",
+        statement="T", origin="forward",
+    )
+    bwd_goal = db.insert_goal(
+        conn, problem="p", slug="bwd",
+        lean_path="Problems/p/proofs/L_bwd.lean",
+        statement="T", origin="backward", depth=1,
+    )
+    sid = db.insert_strategy(
+        conn, goal_id=bwd_goal,
+        lean_path="Problems/p/proofs/L_bwd.lean",
+        scratch_path="Problems/p/proofs/_strategy_b.lean",
+        created_by="pid",
+    )
+    decision_id = _insert_inject_decision(
+        conn, problem="p", batch_id="batch-y", step_index=0,
+        batch_size=1, brief="x",
+    )
+    db.set_inject_decision_produced_goal(conn, decision_id, fwd)
+    db.set_inject_decision_produced_strategy(conn, decision_id, sid)
+    row = conn.execute(
+        "SELECT produced_goal_id, produced_strategy_id FROM"
+        " strategist_decisions WHERE id=?", (decision_id,),
+    ).fetchone()
+    assert row["produced_goal_id"] == fwd
+    assert row["produced_strategy_id"] is None
+    captured = capsys.readouterr()
+    assert "double-dispatch indicator" in captured.out
+
+
 def test_propagate_inject_outcome_dead(
     conn: sqlite3.Connection,
 ) -> None:
