@@ -13,8 +13,6 @@ forbidden_lemmas: []
 ∀ {X : Type*} [NormedAddCommGroup X] [InnerProductSpace ℝ X] (x y : X),
   inner ℝ x y = 0 ↔ ∀ α : ℝ, ‖x + α • y‖ = ‖x - α • y‖
 
-## Entry kind
-Backward
 ## Lemma hints
 - `Mathlib.Analysis.InnerProductSpace.Basic` — inner product API
 - `norm_add_pow_two_real`, `norm_sub_pow_two_real` — `‖x ± αy‖²` expansion in real inner product

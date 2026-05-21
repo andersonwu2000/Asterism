@@ -15,8 +15,6 @@ forbidden_lemmas:
 ## Statement
 ∀ {α : Type} (S : Set (PropForm α)), (∀ T : Set (PropForm α), T ⊆ S → T.Finite → Sat T) → Sat S
 
-## Entry kind
-Backward
 ## Lemma hints
 - `Set.Finite`, `Set.Finite.toFinset`, `Set.subset_biUnion`
 - `Classical.choice`, `Classical.byCases`

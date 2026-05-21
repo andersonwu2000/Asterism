@@ -569,8 +569,10 @@ def next_worker_kind(goal: sqlite3.Row) -> str:
     entry_kind=Builder directive that turns out wrong).
 
     `entry_kind` is set by:
-      - cli init for the root goal, from `Manifest.entry_kind`
-        (`Builder` | `Backward`, human-authored in `## Entry kind`).
+      - cli init for the root goal: hardcoded to `'Backward'`. Root
+        entry is gated by Strategist's `first_launch` trigger before
+        any Builder/Backward dispatch; the `## Entry kind` Manifest
+        section was dropped in Phase 2 (see manifest.py module header).
       - Backward agent for each sub-goal it generates, via the
         `-- entry_kind: ...` directive in `new_<slug>.lean`'s docstring;
         framework parses + persists at sub-goal insertion time.

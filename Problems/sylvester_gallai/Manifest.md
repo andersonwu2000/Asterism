@@ -14,8 +14,6 @@ forbidden_lemmas: []
     (∃ a ∈ P, ∃ b ∈ P, ∃ c ∈ P, ¬ Collinear a b c) →
     ∃ p ∈ P, ∃ q ∈ P, p ≠ q ∧ ∀ r ∈ P, Collinear p q r → r = p ∨ r = q
 
-## Entry kind
-Backward
 ## Strategic notes
 
 Sylvester–Gallai theorem. Freek-100; known proven, NOT in Mathlib.

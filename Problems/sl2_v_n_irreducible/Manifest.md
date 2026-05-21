@@ -19,9 +19,6 @@ forbidden_lemmas: []
     W ≤ LieSubmodule.lieSpan R (t.toLieSubalgebra R) {v} →
     W = ⊥ ∨ W = LieSubmodule.lieSpan R (t.toLieSubalgebra R) {v}
 
-## Entry kind
-Backward
-
 ## Strategic notes
 
 Classical content (Humphreys §7.2): every cyclic highest-weight sl₂-module
