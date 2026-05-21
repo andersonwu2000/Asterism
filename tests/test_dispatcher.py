@@ -864,19 +864,21 @@ def test_recover_at_startup_clears_queue(conn: sqlite3.Connection) -> None:
 def test_recover_at_startup_reenqueues_incomplete_inject_forwards(
     conn: sqlite3.Connection,
 ) -> None:
-    """Phase 2.5 — a batched (or solo) Inject decision whose Forward
-    never produced a terminal outcome must have its queue row
-    restored at daemon recovery. Without this, a daemon crash
-    mid-batch leaves the strategist_decisions row with outcome=NULL
-    forever — inject_batch_done never fires.
+    """A batched (or solo) Inject(Forward) decision whose Forward never
+    produced a terminal outcome must have its queue row restored at
+    daemon recovery. Without this, a daemon crash mid-batch leaves
+    the strategist_decisions row with outcome=NULL forever —
+    inject_batch_done never fires.
+
+    payload.pipeline = 'Forward' → re-enqueue as Forward / Problem.
     """
     from Tooling.core.dispatcher import _recover_at_startup
+    import json as _json
     conn.execute(
         "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done)"
         " VALUES ('p', 'Problems/p/Manifest.md', ?, 1)", (db.now(),))
     ts = db.now()
-    # Three Inject rows: completed (outcome filled) + 2 still pending
-    # (one batched, one solo).
+    payload = _json.dumps({"pipeline": "Forward"})
     rids = []
     for outcome, batch_id, brief in [
         ("proved", "batch-A", "done brief"),
@@ -888,15 +890,13 @@ def test_recover_at_startup_reenqueues_incomplete_inject_forwards(
             " triggered_at_tick, trigger_kind, decision_kind,"
             " brief, payload, batch_id, outcome, created_at, updated_at)"
             " VALUES ('p', 0, 'pending_review', 'Inject',"
-            "         ?, '{}', ?, ?, ?, ?)",
-            (brief, batch_id, outcome, ts, ts))
+            "         ?, ?, ?, ?, ?, ?)",
+            (brief, payload, batch_id, outcome, ts, ts))
         rids.append(int(cur.lastrowid))
     conn.commit()
 
     _recover_at_startup(conn)
 
-    # Two Forwards re-enqueued — one per pending Inject row. Completed
-    # row (outcome='proved') gets no re-enqueue.
     q = list(conn.execute(
         "SELECT kind, target_id, target_kind, decision_id FROM queue"
         " WHERE kind='Forward' ORDER BY decision_id"))
@@ -905,6 +905,131 @@ def test_recover_at_startup_reenqueues_incomplete_inject_forwards(
     for r in q:
         assert r["target_id"] == "p"
         assert r["target_kind"] == "Problem"
+
+
+def test_recover_at_startup_reenqueues_inflight_inject_backward(
+    conn: sqlite3.Connection,
+) -> None:
+    """Inject(Backward) caught mid-flight by a daemon restart MUST be
+    re-enqueued as a Backward dispatch on its target goal, not as a
+    Forward (the pre-fix hardcoded path that fed Backward briefs into
+    Forward workers and produced nonsense lemmas — residue_thm
+    2026-05-21 g2494 / s10559).
+    """
+    from Tooling.core.dispatcher import _recover_at_startup
+    import json as _json
+    gid = _seed_goal(conn, problem="p")
+    ts = db.now()
+    payload = _json.dumps({"pipeline": "Backward", "target_goal_id": gid})
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem,"
+        " triggered_at_tick, trigger_kind, decision_kind, target_id,"
+        " brief, payload, batch_id, outcome, created_at, updated_at)"
+        " VALUES ('p', 0, 'pending_review', 'Inject', ?,"
+        "         'try fresh angle', ?, 'batch-bw', NULL, ?, ?)",
+        (gid, payload, ts, ts))
+    rid = int(cur.lastrowid)
+    conn.commit()
+
+    _recover_at_startup(conn)
+
+    q = list(conn.execute(
+        "SELECT kind, target_id, target_kind, decision_id FROM queue"))
+    assert len(q) == 1
+    assert q[0]["kind"] == "Backward"
+    assert int(q[0]["target_id"]) == gid
+    assert q[0]["target_kind"] == "Goal"
+    assert q[0]["decision_id"] == rid
+
+
+def test_recover_at_startup_reenqueues_inflight_inject_builder(
+    conn: sqlite3.Connection,
+) -> None:
+    """Same per-kind re-enqueue applies to Inject(Builder)."""
+    from Tooling.core.dispatcher import _recover_at_startup
+    import json as _json
+    gid = _seed_goal(conn, problem="p")
+    ts = db.now()
+    payload = _json.dumps({"pipeline": "Builder", "target_goal_id": gid})
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem,"
+        " triggered_at_tick, trigger_kind, decision_kind, target_id,"
+        " brief, payload, batch_id, outcome, created_at, updated_at)"
+        " VALUES ('p', 0, 'pending_review', 'Inject', ?,"
+        "         'hint', ?, 'batch-build', NULL, ?, ?)",
+        (gid, payload, ts, ts))
+    rid = int(cur.lastrowid)
+    conn.commit()
+
+    _recover_at_startup(conn)
+
+    q = list(conn.execute(
+        "SELECT kind, target_id, target_kind, decision_id FROM queue"))
+    assert len(q) == 1
+    assert q[0]["kind"] == "Builder"
+    assert int(q[0]["target_id"]) == gid
+    assert q[0]["decision_id"] == rid
+
+
+def test_recover_at_startup_skips_inject_with_committed_artifact(
+    conn: sqlite3.Connection,
+) -> None:
+    """When the Inject's worker already committed an artifact
+    (produced_goal_id for Forward / Builder, produced_strategy_id for
+    Backward), the next daemon must NOT re-enqueue: the worker's
+    write is on disk + DB, outcome will propagate naturally when the
+    artifact reaches terminal, and a second dispatch would spawn a
+    duplicate worker with a stale brief.
+    """
+    from Tooling.core.dispatcher import _recover_at_startup
+    import json as _json
+    gid = _seed_goal(conn, problem="p")
+    # Backward inject that already produced a strategy.
+    sid = db.insert_strategy(
+        conn, goal_id=gid,
+        lean_path="Problems/p/Root.lean",
+        scratch_path="Problems/p/proofs/_strategy_s.lean",
+        created_by="pid",
+    )
+    ts = db.now()
+    payload = _json.dumps({"pipeline": "Backward", "target_goal_id": gid})
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem,"
+        " triggered_at_tick, trigger_kind, decision_kind, target_id,"
+        " brief, payload, batch_id, produced_strategy_id, outcome,"
+        " created_at, updated_at)"
+        " VALUES ('p', 0, 'pending_review', 'Inject', ?,"
+        "         'hint', ?, 'batch-bw', ?, NULL, ?, ?)",
+        (gid, payload, sid, ts, ts))
+    conn.commit()
+
+    _recover_at_startup(conn)
+
+    q = list(conn.execute("SELECT * FROM queue"))
+    assert len(q) == 0  # no re-dispatch; outcome will propagate from
+                        # strategy terminal via update_strategy_status
+
+    # Forward inject that already produced a goal.
+    fwd_goal = db.insert_goal(
+        conn, problem="p", slug="fwd_lem",
+        lean_path="Problems/p/proofs/L_fwd_lem.lean",
+        statement="T", origin="forward",
+    )
+    fwd_payload = _json.dumps({"pipeline": "Forward"})
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem,"
+        " triggered_at_tick, trigger_kind, decision_kind,"
+        " brief, payload, batch_id, produced_goal_id, outcome,"
+        " created_at, updated_at)"
+        " VALUES ('p', 0, 'pending_review', 'Inject',"
+        "         '## Need\nL', ?, 'batch-fwd', ?, NULL, ?, ?)",
+        (fwd_payload, fwd_goal, ts, ts))
+    conn.commit()
+
+    _recover_at_startup(conn)
+
+    q = list(conn.execute("SELECT * FROM queue"))
+    assert len(q) == 0  # Forward also skipped — goal already on disk
 
 
 def test_recover_at_startup_kills_half_baked_strategies(
