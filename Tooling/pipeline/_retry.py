@@ -303,6 +303,7 @@ def _run_fresh_sid_combined_takeover(
     *, broken_sid: str, broken_sid_label: str,
     attempts_dir: Path, workspace: Path | None,
     spawn_fn: SpawnFn, parse_fn: ParseFn,
+    postmortem_fn: "PostmortemFn | None" = None,
 ) -> _TakeoverOutcome:
     """Single-stage fresh-sid takeover used by both thinking-trap
     paths (watchdog STUCK_THINKING and subprocess timeout-trap).
@@ -385,6 +386,43 @@ def _run_fresh_sid_combined_takeover(
             detail_parts=detail_parts,
             stage2_rc=int(rc),
             stage3_rc=None,
+        )
+
+    # Forced-progress fallback (residue_thm 2026-05-21 observation):
+    # combined takeover frequently ends without shipping AND without
+    # writing `_progress.md` — the agent picked the ship path (options
+    # a/b/c), produced patch.lean that fails downstream parse / verify
+    # (e.g. agent_no_annotation, signature mismatch, sorry-stub) within
+    # budget, so no timeout fires and the bail-and-write-progress path
+    # (option d) is never taken. The next attempt on the same goal
+    # then starts blind without any carry-over hint about what just
+    # failed.
+    #
+    # The legacy 2-stage path had an unconditional stage-3 spawn for
+    # this exact purpose, removed 2026-05-18 on the rationale that
+    # `--resume` of a thinking-trapped session re-enters the trap.
+    # That rationale doesn't apply here: the combined takeover spawned
+    # a FRESH sid; `--resume sid_combined` is resuming a fresh, non-
+    # trapped session, so the postmortem can actually run.
+    #
+    # Fire only when (combined didn't reach a terminal outcome) AND
+    # (`_progress.md` is missing) AND postmortem_fn was supplied —
+    # i.e. the option-d note wasn't written and a checkpoint hint is
+    # genuinely absent.
+    progress_path = attempts_dir / "_progress.md"
+    if postmortem_fn is not None and not progress_path.exists():
+        print(f"[fresh-rescue combined] sid={sid_combined[:8]} no "
+              f"terminal result and no _progress.md — forcing "
+              f"postmortem to write a checkpoint hint", flush=True)
+        try:
+            postmortem_fn(sid_combined)
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            print(f"[fresh-rescue forced-progress] sid="
+                  f"{sid_combined[:8]} postmortem raised "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+        wrote = progress_path.exists()
+        detail_parts.append(
+            f"forced-progress: wrote=_progress.md={wrote}"
         )
 
     return _TakeoverOutcome(
@@ -687,6 +725,7 @@ def run_with_session_retries(
                         f"broken_sid={broken_sid[:8]}"),
                     attempts_dir=attempts_dir, workspace=workspace,
                     spawn_fn=spawn_fn, parse_fn=parse_fn,
+                    postmortem_fn=postmortem_fn,
                 )
                 sid = outcome.last_sid
                 if outcome.terminal_result is not None:
@@ -751,6 +790,7 @@ def run_with_session_retries(
                     f"watchdog killed broken_sid={broken_sid[:8]}"),
                 attempts_dir=attempts_dir, workspace=workspace,
                 spawn_fn=spawn_fn, parse_fn=parse_fn,
+                postmortem_fn=postmortem_fn,
             )
             sid = outcome.last_sid
             if outcome.terminal_result is not None:

@@ -206,6 +206,116 @@ def test_timeout_trap_uses_combined_takeover(
     # terminal agent_bailed returns immediately without buffering.)
 
 
+def test_combined_takeover_forces_progress_when_ship_fails_without_note(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Combined takeover ends without a terminal outcome AND without a
+    `_progress.md` (agent chose ship path, ship's patch fails parse).
+    Helper must fire `postmortem_fn(sid_combined)` to give the agent a
+    second chance — using the same fresh sid — to write a checkpoint
+    hint for the next attempt. Without that, the next retry starts
+    blind (residue_thm 2026-05-21 g2407/g2563/g2565 pattern)."""
+    gid = _seed_open_goal(conn)
+    attempts_dir = tmp_path / ".attempts" / "pid-fp"
+    attempts_dir.mkdir(parents=True)
+    spawn_calls: list[SpawnCtx] = []
+
+    def spawn(ctx: SpawnCtx) -> int:
+        spawn_calls.append(ctx)
+        if ctx.inline_prompt is not None:
+            return SpawnRC.OK  # combined "shipped" — rc=0 but parse fails
+        non_inline = [c for c in spawn_calls if c.inline_prompt is None]
+        if len(non_inline) == 1:
+            return SpawnRC.STUCK_THINKING
+        return SpawnRC.OK  # iter1 warm: success after the rescue
+
+    parse_calls = [0]
+
+    def parse() -> PipelineResult:
+        parse_calls[0] += 1
+        if parse_calls[0] <= 1:
+            # combined parse: non-terminal (ship written but invalid).
+            return PipelineResult(outcome="failed",
+                                  failure_reason="parse_proposal_fail",
+                                  failure_detail="patch missing annotation")
+        return PipelineResult(outcome="proved")
+
+    postmortem_calls: list[str] = []
+
+    def postmortem(sid: str) -> None:
+        postmortem_calls.append(sid)
+
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-fp",
+        budget_threshold=5, shelve_threshold=8,
+        attempts_dir=attempts_dir,
+        spawn_fn=spawn, parse_fn=parse,
+        postmortem_fn=postmortem,
+    )
+    assert r.outcome == "proved"
+    # Forced-progress fired ONCE on the combined fresh sid (not on the
+    # broken main sid).
+    assert len(postmortem_calls) == 1, (
+        f"forced-progress should fire exactly once, fired "
+        f"{len(postmortem_calls)} times")
+    combined_sid = spawn_calls[1].sid
+    main_sid = spawn_calls[0].sid
+    assert postmortem_calls[0] == combined_sid, (
+        f"forced-progress must use the combined fresh sid, got "
+        f"{postmortem_calls[0]!r} (main={main_sid!r} combined="
+        f"{combined_sid!r})")
+
+
+def test_combined_takeover_skips_force_progress_when_note_exists(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Agent chose the bail path (option d) and DID write _progress.md.
+    Forced-progress must NOT fire — no need to spend another LLM call
+    on a checkpoint that's already there."""
+    gid = _seed_open_goal(conn)
+    attempts_dir = tmp_path / ".attempts" / "pid-skip"
+    attempts_dir.mkdir(parents=True)
+    spawn_calls: list[SpawnCtx] = []
+
+    def spawn(ctx: SpawnCtx) -> int:
+        spawn_calls.append(ctx)
+        if ctx.inline_prompt is not None:
+            # Combined "wrote" a bail note; framework finds it on disk.
+            (attempts_dir / "_progress.md").write_text("bailed", "utf-8")
+            return SpawnRC.OK
+        non_inline = [c for c in spawn_calls if c.inline_prompt is None]
+        if len(non_inline) == 1:
+            return SpawnRC.STUCK_THINKING
+        return SpawnRC.OK
+
+    parse_calls = [0]
+
+    def parse() -> PipelineResult:
+        parse_calls[0] += 1
+        if parse_calls[0] <= 1:
+            return PipelineResult(outcome="failed",
+                                  failure_reason="parse_proposal_fail",
+                                  failure_detail="no patch (bail path)")
+        return PipelineResult(outcome="proved")
+
+    postmortem_calls: list[str] = []
+
+    def postmortem(sid: str) -> None:
+        postmortem_calls.append(sid)
+
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-skip",
+        budget_threshold=5, shelve_threshold=8,
+        attempts_dir=attempts_dir,
+        spawn_fn=spawn, parse_fn=parse,
+        postmortem_fn=postmortem,
+    )
+    assert r.outcome == "proved"
+    assert len(postmortem_calls) == 0, (
+        f"forced-progress must NOT fire when _progress.md already "
+        f"exists, fired {len(postmortem_calls)} times")
+
+
 # ---------------------------------------------------------------------
 # _copy_broken_session_jsonl helper
 # ---------------------------------------------------------------------
