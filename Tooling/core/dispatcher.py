@@ -137,6 +137,17 @@ def _cascade_shelve_descendants(
                         next_frontier.append(sub_id)
                     continue
                 db.update_goal_status(conn, sub_id, "shelved")
+                # Symmetric with `_propagate_shelve`: a cascade-shelved
+                # descendant must also stop its own proposed strategies
+                # from trying to prove it. Without this, status='shelved'
+                # disagrees with the strategy table (proposed strategies
+                # still mapped to the just-shelved goal), the alive-DAG
+                # CTE keeps walking through them as if alive, and the
+                # subtree leaks "active" status into TREE.md / Strategist
+                # context. Inward-killing here keeps cascade's effect
+                # identical to "direct shelve of every transitioned
+                # descendant".
+                _inward_kill_strategies(conn, sub_id)
                 transitioned += 1
                 next_frontier.append(sub_id)
         frontier = next_frontier
@@ -356,6 +367,28 @@ def _has_dead_strategy_in_chain(conn: sqlite3.Connection,
     return False
 
 
+def _inward_kill_strategies(conn: sqlite3.Connection,
+                            goal_id: int) -> None:
+    """Mark every 'proposed' strategy whose `goal_id` equals this goal
+    as 'dead'. Shared by `_propagate_shelve` (direct shelve of one
+    goal) and `_cascade_shelve_descendants` (sweep of a subtree
+    rooted at a just-terminated ancestor).
+
+    Iterates per-row through `update_strategy_status` so the
+    inject-outcome propagation hook fires for each strategy a
+    Strategist Inject decision had spawned. A bulk UPDATE silently
+    bypasses the hook and leaves those decisions un-resolved,
+    preventing inject_batch_done from firing.
+    """
+    sids = [int(r["id"]) for r in conn.execute(
+        "SELECT id FROM strategies"
+        " WHERE goal_id = ? AND status = 'proposed'",
+        (goal_id,),
+    ).fetchall()]
+    for sid in sids:
+        db.update_strategy_status(conn, sid, "dead")
+
+
 def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
     """Inward strategy kill for a goal that just hit a terminal status.
 
@@ -372,19 +405,7 @@ def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
     them out and Strategist's view section converges on the same
     invariant.
     """
-    # Inward kill — strategies whose goal IS this terminal goal.
-    # Iterates per-row through `update_strategy_status` so the
-    # inject-outcome propagation hook fires for each strategy a
-    # Strategist Inject decision had spawned. A bulk UPDATE silently
-    # bypasses the hook and leaves those decisions un-resolved,
-    # preventing inject_batch_done from firing.
-    sids = [int(r["id"]) for r in conn.execute(
-        "SELECT id FROM strategies"
-        " WHERE goal_id = ? AND status = 'proposed'",
-        (goal_id,),
-    ).fetchall()]
-    for sid in sids:
-        db.update_strategy_status(conn, sid, "dead")
+    _inward_kill_strategies(conn, goal_id)
 
 
 def _kill_upward_chain(conn: sqlite3.Connection, goal_id: int,

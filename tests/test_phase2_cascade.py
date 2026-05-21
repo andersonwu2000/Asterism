@@ -709,6 +709,39 @@ def test_disproved_cascades_descendants_as_shelved_not_disproved(
     assert db.get_goal(conn, child)["status"] == "shelved"
 
 
+def test_cascade_shelve_inward_kills_descendant_strategies(
+    conn: sqlite3.Connection,
+) -> None:
+    """When `_cascade_shelve_descendants` flips a descendant from
+    attempting → shelved, the descendant's OWN proposed strategies must
+    also be inward-killed (same as a direct `_propagate_shelve` would
+    do). Without that symmetry the descendant ends up shelved in the
+    goal table but its proposed strategy still maps to it, the alive-
+    DAG CTE keeps walking that edge as live, and the subtree keeps
+    leaking 'active' status to TREE.md / Strategist context. Mirrors
+    the residue_thm 2026-05-21 cleanup where s10309/s10330 remained
+    'proposed' under cascade-shelved goals until manually re-shelved."""
+    from Tooling.core.dispatcher import _set_goal_terminal_and_propagate
+    parent = _insert_goal(conn, slug="parent", origin="root")
+    p_strat = _insert_strategy(conn, goal_id=parent)
+    mid = _insert_goal(conn, slug="mid", status="attempting")
+    _link(conn, p_strat, [mid])
+    # `mid` has its own proposed strategy that the cascade should
+    # inward-kill once `mid` itself flips to shelved.
+    mid_strat = _insert_strategy(conn, goal_id=mid, status="proposed")
+    leaf = _insert_goal(conn, slug="leaf", status="open")
+    _link(conn, mid_strat, [leaf])
+
+    _set_goal_terminal_and_propagate(conn, parent, "shelved")
+
+    assert db.get_goal(conn, mid)["status"] == "shelved"
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id=?", (mid_strat,),
+    ).fetchone()["status"] == "dead"
+    # Deeper descendants still get the cascade.
+    assert db.get_goal(conn, leaf)["status"] == "shelved"
+
+
 def test_proved_does_not_cascade(conn: sqlite3.Connection) -> None:
     from Tooling.core.dispatcher import _set_goal_terminal_and_propagate
     parent = _insert_goal(conn, slug="parent", origin="root")
