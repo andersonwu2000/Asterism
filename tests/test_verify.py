@@ -352,6 +352,48 @@ def test_housekeeping_dead_shelves_at_threshold(
     assert db.get_goal(conn, gid)["status"] == "shelved"
 
 
+def test_housekeeping_dead_at_threshold_defers_when_sibling_alive(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """verify dead at threshold MUST defer terminal when a sibling
+    strategy is still in-flight (e.g. Strategist parallel inject):
+    killing the goal here would kill that working sibling. Attempts
+    still records the failure; deferred terminal fires later when the
+    sibling resolves naturally.
+    """
+    gid = _seed_goal(conn)
+    db.update_goal_status(conn, gid, "attempting")
+    sid = _seed_strategy_with_proved_subs(conn, goal_id=gid)
+    # In-flight sibling: has an unproved sub-goal so it's NOT
+    # ready_for_verify yet (won't be picked up by housekeeping in this
+    # tick); represents a parallel-inject worker still computing.
+    sibling = db.insert_strategy(
+        conn, goal_id=gid,
+        lean_path="Problems/p/proofs/L_g0.lean",
+        scratch_path="Problems/p/proofs/_strategy_sibling.lean",
+        created_by="pid_sib",
+    )
+    pending_sub = db.insert_goal(
+        conn, problem="p", slug="pending_sub_for_sibling",
+        lean_path="Problems/p/proofs/L_pending.lean",
+        statement="T", origin="backward", depth=1,
+    )
+    db.link_subgoal(conn, strategy_id=sibling, subgoal_id=pending_sub, position=0)
+    for _ in range(dispatcher.SHELVE_THRESHOLD - 1):
+        db.increment_goal_attempts(conn, gid)
+    monkeypatch.setattr(verify, "verify_strategy",
+                        lambda *a, **kw: "dead")
+
+    verify.verify_housekeeping(conn, workspace=tmp_path)
+    grand_row = db.get_goal(conn, gid)
+    assert grand_row["status"] == "attempting"  # NOT shelved
+    assert grand_row["attempts"] == dispatcher.SHELVE_THRESHOLD
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (sibling,),
+    ).fetchone()["status"] == "proposed"  # sibling untouched
+
+
 def test_housekeeping_chain_promotes_through_layers(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

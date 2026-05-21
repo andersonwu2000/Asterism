@@ -163,18 +163,26 @@ def verify_housekeeping(
             elif outcome == "dead":
                 db.update_strategy_status(conn, sid, "dead")
                 n = db.increment_goal_attempts(conn, goal_id)
-                if n >= dispatcher.SHELVE_THRESHOLD:
+                has_live = conn.execute(
+                    "SELECT 1 FROM strategies WHERE goal_id = ?"
+                    " AND status = 'proposed' LIMIT 1",
+                    (goal_id,),
+                ).fetchone()
+                if has_live is not None:
+                    # Sibling strategy still in flight (e.g. Strategist
+                    # parallel inject): defer terminal so we don't kill
+                    # working work mid-flight. The deferred shelve
+                    # eventually fires when the surviving sibling's own
+                    # cascade arrives with no live siblings remaining
+                    # — mirrors `_kill_upward_chain`'s deferred-terminal
+                    # branch.
+                    pass
+                elif n >= dispatcher.SHELVE_THRESHOLD:
                     dispatcher._set_goal_terminal_and_propagate(
                         conn, goal_id, "shelved")
                     dispatcher._propagate_shelve(conn, goal_id)
                 else:
-                    has_live = conn.execute(
-                        "SELECT 1 FROM strategies WHERE goal_id = ?"
-                        " AND status = 'proposed' LIMIT 1",
-                        (goal_id,),
-                    ).fetchone()
-                    if has_live is None:
-                        db.update_goal_status(conn, goal_id, "open")
+                    db.update_goal_status(conn, goal_id, "open")
                 conn.commit()
                 counts["dead"] += 1
                 touched_goals.add(goal_id)

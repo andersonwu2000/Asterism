@@ -366,9 +366,13 @@ def test_parent_needs_fix_cascades_grand_when_at_threshold(
 def test_parent_needs_fix_keeps_goal_attempting_when_other_strategy_alive(
     conn: sqlite3.Connection,
 ) -> None:
-    """Phase 6: parent_needs_fix kills only the strategy that produced
-    the dead sub-goal. Sibling strategies on the grandparent stay alive;
-    grandparent doesn't reopen if any live strategy remains."""
+    """parent_needs_fix kills only the strategy that produced the dead
+    sub-goal. Sibling strategies on the grandparent stay alive and the
+    grandparent does NOT reopen (would displace a working sibling), but
+    attempts MUST still increment — the cascade carried a strong signal
+    (a descendant repudiated this decomposition), and silently dropping
+    it lets SHELVE_THRESHOLD never fire on goals stuck around a long-
+    lived but unviable sibling."""
     grand = _seed_goal(conn, problem="p")
     db.update_goal_status(conn, grand, "attempting")
 
@@ -401,7 +405,187 @@ def test_parent_needs_fix_keeps_goal_attempting_when_other_strategy_alive(
         "SELECT status FROM strategies WHERE id = ?", (s2,),
     ).fetchone()["status"] == "proposed"
     assert db.get_goal(conn, grand)["status"] == "attempting"
+    assert db.get_goal(conn, grand)["attempts"] == 1
     assert s2  # silence unused warning
+
+
+def test_cascade_at_threshold_with_sibling_alive_defers_terminal(
+    conn: sqlite3.Connection,
+) -> None:
+    """When a cascade strong-signal would tip SHELVE_THRESHOLD but a
+    sibling strategy is still in flight (e.g. Strategist parallel
+    inject), terminal shelving is deferred — attempts still records the
+    failure, but we don't kill the working sibling. The deferred
+    terminal fires later when that sibling's own cascade arrives with
+    no live siblings remaining.
+    """
+    grand = _seed_goal(conn, problem="p")
+    db.update_goal_status(conn, grand, "attempting")
+    # Pre-load attempts so one more cascade tips threshold.
+    conn.execute("UPDATE goals SET attempts = ? WHERE id = ?",
+                 (SHELVE_THRESHOLD - 1, grand))
+    conn.commit()
+
+    # In-flight sibling — represents a parallel-inject worker that
+    # must NOT be killed by the threshold-induced shelve.
+    sibling = db.insert_strategy(
+        conn, goal_id=grand,
+        lean_path="Problems/p/Root.lean",
+        scratch_path="Problems/p/proofs/_strategy_sibling.lean",
+        created_by="pid_sib",
+    )
+
+    sub = db.insert_goal(
+        conn, problem="p", slug="failing_sub",
+        lean_path="Problems/p/proofs/L_failing_sub.lean",
+        statement="T", origin="backward", depth=1,
+    )
+    s_failing = db.insert_strategy(
+        conn, goal_id=grand,
+        lean_path="Problems/p/Root.lean",
+        scratch_path="Problems/p/proofs/_strategy_failing.lean",
+        created_by="pid_fail",
+    )
+    db.link_subgoal(conn, strategy_id=s_failing, subgoal_id=sub, position=0)
+
+    cascade_one(conn, pipeline_id="pid", kind="Builder",
+                target_id=str(sub), target_kind="Goal", outcome="failed",
+                failure_reason="parent_needs_fix")
+
+    # Failing strategy killed, sub dead, attempts at threshold — but
+    # sibling untouched and grand still 'attempting' (deferred).
+    assert db.get_goal(conn, sub)["status"] == "dead"
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (s_failing,),
+    ).fetchone()["status"] == "dead"
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (sibling,),
+    ).fetchone()["status"] == "proposed"
+    grand_row = db.get_goal(conn, grand)
+    assert grand_row["status"] == "attempting"
+    assert grand_row["attempts"] == SHELVE_THRESHOLD
+
+
+def test_deferred_terminal_fires_when_last_sibling_dies(
+    conn: sqlite3.Connection,
+) -> None:
+    """After a threshold-deferred shelve, when the protecting sibling
+    itself dies via cascade the next _kill_upward_chain pass sees
+    has_live=False and attempts >= SHELVE_THRESHOLD → terminal fires.
+    """
+    grand = _seed_goal(conn, problem="p")
+    db.update_goal_status(conn, grand, "attempting")
+    conn.execute("UPDATE goals SET attempts = ? WHERE id = ?",
+                 (SHELVE_THRESHOLD - 1, grand))
+    conn.commit()
+
+    # Two strategies, each owning its own subgoal so we can cascade
+    # them independently.
+    sub_a = db.insert_goal(
+        conn, problem="p", slug="sub_a",
+        lean_path="Problems/p/proofs/L_sub_a.lean",
+        statement="T", origin="backward", depth=1,
+    )
+    s_a = db.insert_strategy(
+        conn, goal_id=grand,
+        lean_path="Problems/p/Root.lean",
+        scratch_path="Problems/p/proofs/_strategy_a.lean",
+        created_by="pid_a",
+    )
+    db.link_subgoal(conn, strategy_id=s_a, subgoal_id=sub_a, position=0)
+
+    sub_b = db.insert_goal(
+        conn, problem="p", slug="sub_b",
+        lean_path="Problems/p/proofs/L_sub_b.lean",
+        statement="T", origin="backward", depth=1,
+    )
+    s_b = db.insert_strategy(
+        conn, goal_id=grand,
+        lean_path="Problems/p/Root.lean",
+        scratch_path="Problems/p/proofs/_strategy_b.lean",
+        created_by="pid_b",
+    )
+    db.link_subgoal(conn, strategy_id=s_b, subgoal_id=sub_b, position=0)
+
+    # First cascade: tips threshold, sibling s_b still alive → defer.
+    cascade_one(conn, pipeline_id="pid_a", kind="Builder",
+                target_id=str(sub_a), target_kind="Goal", outcome="failed",
+                failure_reason="parent_needs_fix")
+    assert db.get_goal(conn, grand)["status"] == "attempting"
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (s_b,),
+    ).fetchone()["status"] == "proposed"
+
+    # Second cascade: kills s_b, no live sibling, attempts already past
+    # threshold → terminal fires (parent_terminal_status='dead').
+    cascade_one(conn, pipeline_id="pid_b", kind="Builder",
+                target_id=str(sub_b), target_kind="Goal", outcome="failed",
+                failure_reason="parent_needs_fix")
+    assert conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (s_b,),
+    ).fetchone()["status"] == "dead"
+    assert db.get_goal(conn, grand)["status"] == "dead"
+
+
+def test_reconcile_after_placeholder_delete_reopens_under_threshold(
+    conn: sqlite3.Connection,
+) -> None:
+    """When a worker-Exception placeholder deletion leaves a goal with
+    no live strategy and attempts < SHELVE_THRESHOLD, the reconciler
+    reopens the goal so bfs_refill can dispatch a fresh Backward.
+    Without this, the goal sits 'attempting' indefinitely until the
+    next daemon restart's recovery sweep.
+    """
+    from Tooling.core.dispatcher import _reconcile_goal_after_strategy_loss
+    grand = _seed_goal(conn, problem="p")
+    db.update_goal_status(conn, grand, "attempting")
+    db.increment_goal_attempts(conn, grand)  # attempts = 1, below threshold
+
+    # Simulate post-deletion state: goal has no live strategy.
+    _reconcile_goal_after_strategy_loss(conn, grand)
+
+    assert db.get_goal(conn, grand)["status"] == "open"
+
+
+def test_reconcile_after_placeholder_delete_shelves_at_threshold(
+    conn: sqlite3.Connection,
+) -> None:
+    """If accumulated deferred-cascade attempts already crossed
+    SHELVE_THRESHOLD, the reconciler shelves the goal instead of
+    reopening — the threshold-deferred terminal that was waiting on a
+    sibling to resolve naturally now fires because the sibling's been
+    wiped by the placeholder-deletion path.
+    """
+    from Tooling.core.dispatcher import _reconcile_goal_after_strategy_loss
+    grand = _seed_goal(conn, problem="p")
+    db.update_goal_status(conn, grand, "attempting")
+    conn.execute("UPDATE goals SET attempts = ? WHERE id = ?",
+                 (SHELVE_THRESHOLD, grand))
+    conn.commit()
+
+    _reconcile_goal_after_strategy_loss(conn, grand)
+
+    assert db.get_goal(conn, grand)["status"] == "shelved"
+
+
+def test_reconcile_noop_when_sibling_alive(
+    conn: sqlite3.Connection,
+) -> None:
+    """Reconciler does nothing if the goal still has any live strategy
+    — the deletion left other siblings in play, normal flow applies."""
+    from Tooling.core.dispatcher import _reconcile_goal_after_strategy_loss
+    grand = _seed_goal(conn, problem="p")
+    db.update_goal_status(conn, grand, "attempting")
+    db.insert_strategy(
+        conn, goal_id=grand,
+        lean_path="Problems/p/Root.lean",
+        scratch_path="Problems/p/proofs/_strategy_alive.lean",
+        created_by="pid",
+    )
+
+    _reconcile_goal_after_strategy_loss(conn, grand)
+
+    assert db.get_goal(conn, grand)["status"] == "attempting"
 
 
 def test_strategies_ready_for_verify_excludes_shelved_goal(

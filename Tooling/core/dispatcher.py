@@ -469,33 +469,85 @@ def _kill_upward_chain(conn: sqlite3.Connection, goal_id: int,
                 _set_goal_terminal_and_propagate(conn, sib_id, "shelved")
                 _propagate_shelve(conn, sib_id)
 
-    # For each affected parent goal: if no live strategy survives,
-    # increment attempts and possibly cascade. See pre-Phase-6 comment
-    # block for the rationale on the increment side; behavior here is
-    # unchanged from the legacy `_propagate_shelve` upward branch.
+    # For each affected parent goal: increment attempts unconditionally.
+    # Every cascade reaching this branch is rooted in a strong signal
+    # (agent_infeasible / parent_needs_fix) — a descendant actively
+    # repudiated the decomposition represented by the just-killed
+    # strategy. That repudiation counts as a failed attempt at the
+    # parent goal even when sibling strategies remain alive; otherwise
+    # SHELVE_THRESHOLD never fires on goals whose strategies keep dying
+    # around a stuck-but-still-'proposed' sibling (e.g. an AND-chain
+    # with a shelved hole), leaving the goal permanently 'attempting'
+    # with no automatic intervention path.
+    #
+    # Terminal-cascade firing is gated on no-live-sibling: when a
+    # sibling strategy is still alive we defer the shelve so we don't
+    # cut down a parallel-inject worker mid-flight (the Strategist
+    # fan-out case). Attempts accumulate past threshold; when the last
+    # sibling itself enters this branch (its own cascade) has_live
+    # becomes False and the deferred terminal fires then.
     affected_parent_goals = {int(s["goal_id"]) for s in parent_strategies}
     for gid in affected_parent_goals:
+        row = conn.execute(
+            "SELECT status FROM goals WHERE id = ?", (gid,),
+        ).fetchone()
+        if not row or row["status"] != "attempting":
+            continue
+        n = db.increment_goal_attempts(conn, gid)
         has_live = conn.execute(
             "SELECT 1 FROM strategies WHERE goal_id = ?"
             " AND status = 'proposed' LIMIT 1",
             (gid,),
         ).fetchone()
-        if has_live is None:
-            row = conn.execute(
-                "SELECT status FROM goals WHERE id = ?", (gid,),
-            ).fetchone()
-            if row and row["status"] == "attempting":
-                n = db.increment_goal_attempts(conn, gid)
-                if n >= SHELVE_THRESHOLD:
-                    _set_goal_terminal_and_propagate(
-                        conn, gid, parent_terminal_status)
-                    _propagate_shelve(conn, gid)
-                    if parent_terminal_status in ("disproved", "dead"):
-                        _kill_upward_chain(
-                            conn, gid,
-                            parent_terminal_status=parent_terminal_status)
-                else:
-                    db.update_goal_status(conn, gid, "open")
+        if has_live is not None:
+            # Sibling still in-flight: count the failure but defer the
+            # shelve/reopen decision until the sibling resolves.
+            continue
+        if n >= SHELVE_THRESHOLD:
+            _set_goal_terminal_and_propagate(
+                conn, gid, parent_terminal_status)
+            _propagate_shelve(conn, gid)
+            if parent_terminal_status in ("disproved", "dead"):
+                _kill_upward_chain(
+                    conn, gid,
+                    parent_terminal_status=parent_terminal_status)
+        else:
+            db.update_goal_status(conn, gid, "open")
+
+
+def _reconcile_goal_after_strategy_loss(
+    conn: sqlite3.Connection, goal_id: int,
+) -> None:
+    """Reopen / shelve an 'attempting' goal that just lost a strategy
+    via a non-cascade path (worker-Exception placeholder deletion in
+    backward.py's BaseException handler). Without this, that goal can
+    sit 'attempting' with no live strategy until the next daemon
+    restart's recovery sweep notices: bfs_refill filters open_goals
+    on status='open' so nothing picks it back up, and no cascade
+    fires to update status.
+
+    Mirrors `_kill_upward_chain`'s no-sibling branch: if attempts have
+    accumulated past SHELVE_THRESHOLD via earlier deferred cascades,
+    terminate; otherwise reopen for a fresh Backward attempt. No-op if
+    the goal still has any live strategy or is not 'attempting'."""
+    row = conn.execute(
+        "SELECT status, attempts FROM goals WHERE id = ?", (goal_id,),
+    ).fetchone()
+    if not row or row["status"] != "attempting":
+        return
+    has_live = conn.execute(
+        "SELECT 1 FROM strategies WHERE goal_id = ?"
+        " AND status = 'proposed' LIMIT 1",
+        (goal_id,),
+    ).fetchone()
+    if has_live is not None:
+        return
+    n = int(row["attempts"])
+    if n >= SHELVE_THRESHOLD:
+        _set_goal_terminal_and_propagate(conn, goal_id, "shelved")
+        _propagate_shelve(conn, goal_id)
+    else:
+        db.update_goal_status(conn, goal_id, "open")
 
 
 def _propagate_disproved(conn: sqlite3.Connection, goal_id: int) -> None:
@@ -1682,6 +1734,25 @@ def run(workspace: Path, *, once: bool = False,
                                     outcome="failed",
                                     failure_reason=infra_reason,
                                     decision_id=_did)
+                        # Backward's BaseException handler in
+                        # `backward.py` deletes the placeholder
+                        # strategy when the worker crashed before
+                        # writing proposal_md/scratch_path. Combined
+                        # with cascade_one's early-return on infra
+                        # reasons (no attempts++, no status touch),
+                        # the parent goal can be left 'attempting'
+                        # with no live strategy — bfs_refill skips it
+                        # (open_goals filter) and no cascade re-
+                        # checks. Reconcile here so the goal either
+                        # reopens for a fresh Backward (under
+                        # threshold) or shelves (deferred terminal
+                        # from earlier strong-signal cascades).
+                        if kind == "Backward" and tk == "Goal":
+                            try:
+                                _reconcile_goal_after_strategy_loss(
+                                    conn, int(tid))
+                            except (ValueError, TypeError):
+                                pass
                         tree.write_for_target(conn, workspace, tid, tk)
                         # Mirror the normal-result cooldown path so
                         # gateway-unreachable / transient_timeout also
