@@ -23,30 +23,47 @@ Nonempty (FundamentalGroup Circle 1 ≃* Multiplicative ℤ)
   corresponds to integer addition under the exponential cover)
 
 ## Lemma hints
+- `Circle.exp : C(ℝ, Circle)`, `Circle.exp_zero`, `Circle.exp_add`,
+  `Circle.periodic_exp`, `Circle.exp_eq_exp`, `Circle.exp_eq_one`
+  (`Mathlib/Analysis/SpecialFunctions/Complex/Circle.lean`)
+- `Circle.isCoveringMap_exp : IsCoveringMap Circle.exp` (same file)
+- `IsCoveringMap.liftPath`, `liftPath_lifts`, `liftPath_zero`,
+  `liftPath_trans`, `IsCoveringMap.HomotopyLift`,
+  `IsCoveringMap.monodromy`, `monodromy_refl`, `monodromy_trans_apply`,
+  `monodromy_bijective`, `IsCoveringMap.existsUnique_continuousMap_lifts`
+  (`Mathlib/Topology/Homotopy/Lifting.lean`)
+- `FundamentalGroup.toPath` / `FundamentalGroup.fromPath` bridge
+  `FundamentalGroup Circle 1` with `Path.Homotopic.Quotient (1:Circle) 1`
 
 ## Strategic notes
 Algebraic-topology route (operator preference; matches the standard
-undergraduate proof):
+undergraduate proof). Use Mathlib's existing covering-map machinery —
+do NOT rebuild `IsCoveringMap Circle.exp`, do NOT redefine `Circle.exp`,
+do NOT build a new `liftPath`.
 
-- Construct the universal cover `ℝ → Circle` via
-  `t ↦ ⟨Complex.exp (2 * π * I * t), ...⟩` (the unit-sphere membership
-  follows from `Complex.abs_exp_ofReal_mul_I` after rearranging).
-- Path lifting: every path in `Circle` starting at `1` lifts uniquely to
-  a path in `ℝ` starting at `0`.
-- Homotopy lifting: homotopic loops lift to paths with the same endpoint
-  in `ℝ`, giving a well-defined map `π₁(Circle, 1) → ℤ` via the
-  lifted-endpoint integer.
-- Group homomorphism (concatenation ↔ addition) + bijection ⇒
-  `MulEquiv` to `Multiplicative ℤ`.
+Standard assembly:
+- For a loop `γ : Path (1:Circle) 1`, lift via
+  `Circle.isCoveringMap_exp.liftPath γ.toContinuousMap 0 (by simp)`
+  to a path in `ℝ` starting at 0.
+- The lifted endpoint `Γ(1) : ℝ` satisfies `Circle.exp (Γ 1) = 1`, so
+  by `Circle.exp_eq_one` it lies in `2π · ℤ` — define `winding γ : ℤ`
+  via `Classical.choose` on that existential, with characterizing
+  equation `(Γ 1 : ℝ) = winding γ * (2 * π)`.
+- Homotopy invariance: `IsCoveringMap.monodromy` already packages the
+  lifted endpoint as a function on `Path.Homotopic.Quotient`, so
+  `winding` descends to `FundamentalGroup Circle 1` without re-deriving
+  homotopy lifting from scratch.
+- Group-hom: `monodromy_refl` gives `winding 1 = 0`;
+  `monodromy_trans_apply` gives `winding (a * b) = winding a + winding b`.
+- Bijection: `monodromy_bijective` + the standard-loop construction
+  `γ_n : Path (1:Circle) 1` with `winding γ_n = n` (e.g. via
+  `Circle.exp ∘ (·  * n * (2 * π))` traced over `[0, 1]`).
+- Assemble: `MulEquiv` from `FundamentalGroup Circle 1` to
+  `Multiplicative ℤ` via `winding` + its inverse.
 
 Do NOT use winding-number formulations (`Complex.windingNumber`,
-`exp_winding_integral_eq_one`, `circleIntegral`-based arguments, etc.).
+`exp_winding_integral_eq_one`, `circleIntegral`-based arguments).
 Those live in residue_thm's analytic toolkit and would short-circuit
-the stress test — the point is to surface gaps in covering-space /
-path-homotopy machinery, not to reuse a different topic's lemmas.
-
-Mathlib's covering-space theory is incomplete: no `UniversalCover` for
-topological spaces, no deck-transformation group, only homotopy-lifting
-(`Topology/Homotopy/Lifting.lean`) without covering-map foundations.
-Expect the framework to construct the minimal subset needed
-for this proof (path-lifting + monodromy-style endpoint integer).
+the stress test — the point is to exercise path-homotopy / quotient
+group / monodromy reasoning, not to reuse a different topic's
+contour-integral lemmas.
