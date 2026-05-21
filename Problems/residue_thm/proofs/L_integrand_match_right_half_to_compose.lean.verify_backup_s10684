@@ -1,0 +1,15 @@
+import Mathlib
+import Problems.residue_thm.Defs
+
+namespace Problems.residue_thm
+
+-- entry_kind: Builder
+theorem integrand_match_right_half_to_compose
+    {Q : ℂ → ℂ} {β' h : ℝ → ℂ}
+    (hβ' : ContDiffOn ℝ 1 β' (Set.Icc 0 1))
+    (hh : ContDiffOn ℝ 1 h (Set.Icc 0 1))
+    (hh_right : ∀ t ∈ Set.Icc ((1/2) : ℝ) 1, h t = β' (2*t - 1)) :
+    (∫ t in ((1/2) : ℝ)..1, Q (h t) * deriv h t) =
+      (∫ t in ((1/2) : ℝ)..1, Q (β' (2*t - 1)) * (2 * deriv β' (2*t - 1))) := by sorry
+
+end Problems.residue_thm
