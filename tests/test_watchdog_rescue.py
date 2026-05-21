@@ -266,6 +266,96 @@ def test_combined_takeover_forces_progress_when_ship_fails_without_note(
         f"{combined_sid!r})")
 
 
+def test_combined_takeover_trap_uses_fresh_cold_forced_progress(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Combined fresh-sid takeover itself ends in a thinking trap
+    (parser_state.is_thinking_trap=true). `--resume`-style postmortem
+    on a trapped session re-enters the trap and writes nothing —
+    exactly the failure mode that motivated commit 722472d (fresh-
+    rescue: abandon broken session, fresh cold spawn). Forced-progress
+    must mirror that design: spawn ANOTHER fresh sid, cold, with an
+    inline prompt pointing at the trapped sid's jsonl, and let it
+    write `_progress.md`. The postmortem_fn (--resume) path must NOT
+    be used in this branch.
+    """
+    gid = _seed_open_goal(conn)
+    attempts_dir = tmp_path / ".attempts" / "pid-trap"
+    attempts_dir.mkdir(parents=True)
+    spawn_calls: list[SpawnCtx] = []
+
+    def spawn(ctx: SpawnCtx) -> int:
+        spawn_calls.append(ctx)
+        if (ctx.inline_prompt is not None
+                and "ship ONE of" in ctx.inline_prompt):
+            # Combined takeover spawn — simulate trap-on-trap by
+            # writing a parser_state file and reporting TIMEOUT.
+            (attempts_dir / "_parser_state.json").write_text(
+                '{"state": "mid-thinking", "is_thinking_trap": true, '
+                '"last_stop_reason": null, "messages_seen": 22}',
+                encoding="utf-8")
+            return SpawnRC.TIMEOUT
+        if (ctx.inline_prompt is not None
+                and "fresh session brought in only" in ctx.inline_prompt):
+            # Forced-progress fresh-cold spawn — simulate the rescue
+            # agent writing the checkpoint note.
+            (attempts_dir / "_progress.md").write_text(
+                "trapped agent was attempting X; blocked on Y; try Z next",
+                encoding="utf-8")
+            return SpawnRC.OK
+        non_inline = [c for c in spawn_calls if c.inline_prompt is None]
+        if len(non_inline) == 1:
+            return SpawnRC.STUCK_THINKING
+        return SpawnRC.OK  # iter1 warm: proved
+
+    parse_calls = [0]
+
+    def parse() -> PipelineResult:
+        parse_calls[0] += 1
+        if parse_calls[0] <= 1:
+            return PipelineResult(outcome="failed",
+                                  failure_reason="parse_proposal_fail",
+                                  failure_detail="combined trapped")
+        return PipelineResult(outcome="proved")
+
+    postmortem_calls: list[str] = []
+
+    def postmortem(sid: str) -> None:
+        postmortem_calls.append(sid)
+
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-trap",
+        budget_threshold=5, shelve_threshold=8,
+        attempts_dir=attempts_dir,
+        spawn_fn=spawn, parse_fn=parse,
+        postmortem_fn=postmortem,
+    )
+    assert r.outcome == "proved"
+
+    # Crucial: --resume postmortem MUST NOT fire when combined is trapped.
+    assert len(postmortem_calls) == 0, (
+        f"trap-on-trap path must skip --resume postmortem (it would "
+        f"re-enter the trap); fired {len(postmortem_calls)} times")
+
+    # A forced-progress fresh-cold spawn ran with its own new sid.
+    main_sid = spawn_calls[0].sid
+    combined_sid = next(
+        c.sid for c in spawn_calls
+        if c.inline_prompt and "ship ONE of" in c.inline_prompt)
+    fp = [c for c in spawn_calls
+          if c.inline_prompt and "fresh session brought in only" in c.inline_prompt]
+    assert len(fp) == 1, (
+        f"expected exactly one fresh-cold forced-progress spawn, got "
+        f"{len(fp)}")
+    fresh_cold = fp[0]
+    assert fresh_cold.cold is True
+    assert fresh_cold.budget_override is not None
+    assert fresh_cold.sid not in {main_sid, combined_sid}, (
+        "forced-progress must mint a NEW sid, not reuse main or combined")
+    # And the checkpoint actually landed on disk.
+    assert (attempts_dir / "_progress.md").exists()
+
+
 def test_combined_takeover_skips_force_progress_when_note_exists(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:

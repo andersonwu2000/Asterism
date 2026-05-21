@@ -299,6 +299,100 @@ def _derive_stage2_budget(workspace: Path | None) -> int:
     return max(60, spawn_timeout - trap_check_sec)
 
 
+def _build_force_progress_prompt(attempts_dir: Path,
+                                 trapped_jsonl: Path,
+                                 jsonl_copied: bool) -> str:
+    """Cold-prompt for the trap-aware forced progress spawn. Tells the
+    fresh agent it is NOT in the trapped conversation, points at the
+    trapped session's jsonl as read-only input, and constrains the
+    deliverable to a single `_progress.md` write — no tool use beyond
+    Read of the jsonl and Write of `_progress.md`."""
+    if jsonl_copied:
+        log_note = (
+            f"The previous takeover session deadlocked in thinking "
+            f"mode and produced no usable output. Its full conversation "
+            f"log is at `{trapped_jsonl}`. Read it (use offset/limit "
+            f"for large files) to recover whatever concrete reasoning "
+            f"the trapped agent reached before getting stuck."
+        )
+    else:
+        log_note = (
+            "The previous takeover session deadlocked in thinking mode "
+            f"and its conversation log could not be recovered. Work "
+            f"from `{attempts_dir}/Context.md` alone."
+        )
+    return (
+        f"You are a fresh session brought in only to write a "
+        f"checkpoint note. {log_note}\n\n"
+        f"Constraints:\n"
+        f"  - Do NOT modify `{attempts_dir}/patch.lean`.\n"
+        f"  - Do NOT call MCP / Bash / Edit / Write on any file other "
+        f"than `{attempts_dir}/_progress.md`.\n"
+        f"  - Single Write: `{attempts_dir}/_progress.md` then exit.\n\n"
+        f"In ≤200 words capture: (1) the shape of decomposition / "
+        f"proof the trapped agent was converging to, (2) the specific "
+        f"blocker that prevented shipping, (3) the most promising "
+        f"alternative direction (≤60 words). This file is the only "
+        f"thing the next dispatch on this goal will see from the "
+        f"current attempt — make it concrete, name the Mathlib "
+        f"lemmas or sub-shapes you'd try next."
+    )
+
+
+def _force_progress_fresh_cold(
+    *, trapped_sid: str, attempts_dir: Path,
+    spawn_fn: SpawnFn, workspace: Path | None,
+) -> None:
+    """Mint another fresh sid and cold-spawn a progress-only agent
+    that reads the trapped session's jsonl and ships `_progress.md`.
+
+    Mirrors the 722472d fresh-rescue mechanism, applied one level
+    deeper: the *combined takeover's* fresh sid itself got stuck in
+    a thinking trap, so `--resume`-style postmortem cannot reach it.
+    A second fresh sid resumes nothing — it just reads the trapped
+    jsonl as input data and writes the checkpoint note.
+
+    Best-effort throughout: any failure is swallowed; the caller's
+    existing detail_parts record the outcome via the progress file's
+    existence check.
+    """
+    from ..core import config as _cfg
+
+    trapped_jsonl_dest = attempts_dir / "_broken_session_combined.jsonl"
+    jsonl_copied = _copy_broken_session_jsonl(trapped_sid, trapped_jsonl_dest)
+
+    # Short budget for a markdown-write-only spawn. 180s mirrors the
+    # legacy postmortem budget; cap from
+    # `dispatch.postmortem_timeout_sec` so operators can shorten via
+    # config if desired.
+    from ..agent import POSTMORTEM_TIMEOUT_SEC
+    budget = _cfg.get(
+        "dispatch.postmortem_timeout_sec",
+        default=POSTMORTEM_TIMEOUT_SEC,
+        env_var="ASTERISM_POSTMORTEM_TIMEOUT_SEC", cast=int,
+        workspace=workspace,
+    )
+    prompt = _build_force_progress_prompt(
+        attempts_dir, trapped_jsonl_dest, jsonl_copied)
+    fresh_sid = str(uuid.uuid4())
+    print(f"[force-progress fresh-cold] trapped_sid={trapped_sid[:8]} → "
+          f"fresh_sid={fresh_sid[:8]} budget={budget}s "
+          f"jsonl_copied={jsonl_copied}", flush=True)
+    try:
+        rc = spawn_fn(SpawnCtx(
+            sid=fresh_sid, cold=True, retry_context=None,
+            attempts_dir=attempts_dir,
+            inline_prompt=prompt,
+            budget_override=budget,
+        ))
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        print(f"[force-progress fresh-cold] fresh_sid={fresh_sid[:8]} "
+              f"spawn raised {type(exc).__name__}: {exc}", flush=True)
+        return
+    print(f"[force-progress fresh-cold] fresh_sid={fresh_sid[:8]} "
+          f"rc={rc}", flush=True)
+
+
 def _run_fresh_sid_combined_takeover(
     *, broken_sid: str, broken_sid_label: str,
     attempts_dir: Path, workspace: Path | None,
@@ -390,7 +484,7 @@ def _run_fresh_sid_combined_takeover(
 
     # Forced-progress fallback (residue_thm 2026-05-21 observation):
     # combined takeover frequently ends without shipping AND without
-    # writing `_progress.md` — the agent picked the ship path (options
+    # writing `_progress.md` — agent picked the ship path (options
     # a/b/c), produced patch.lean that fails downstream parse / verify
     # (e.g. agent_no_annotation, signature mismatch, sorry-stub) within
     # budget, so no timeout fires and the bail-and-write-progress path
@@ -398,32 +492,58 @@ def _run_fresh_sid_combined_takeover(
     # then starts blind without any carry-over hint about what just
     # failed.
     #
-    # The legacy 2-stage path had an unconditional stage-3 spawn for
-    # this exact purpose, removed 2026-05-18 on the rationale that
-    # `--resume` of a thinking-trapped session re-enters the trap.
-    # That rationale doesn't apply here: the combined takeover spawned
-    # a FRESH sid; `--resume sid_combined` is resuming a fresh, non-
-    # trapped session, so the postmortem can actually run.
+    # Two branches depending on whether the combined fresh sid itself
+    # got stuck in a thinking trap:
     #
-    # Fire only when (combined didn't reach a terminal outcome) AND
-    # (`_progress.md` is missing) AND postmortem_fn was supplied —
-    # i.e. the option-d note wasn't written and a checkpoint hint is
-    # genuinely absent.
+    #   * NOT-trap (combined sid finalized / mid-tool, just no result
+    #     of interest) → `--resume sid_combined` postmortem is safe.
+    #     Same mechanism as the active-timeout `postmortem_fn(sid)`
+    #     path in the main retry loop. The agent receives a new user
+    #     message instructing it to write `_progress.md`; for an active
+    #     session, that prompt elicits a response.
+    #
+    #   * THINKING-TRAP (combined sid itself dead-locked in thinking
+    #     after spawn timeout — residue_thm 2026-05-21 g2601/g2603/
+    #     g2604 pattern) → `--resume` re-enters the trap and produces
+    #     0 events, the very failure mode that motivated commit
+    #     722472d (fresh-rescue: abandon broken session, dump thinking,
+    #     fresh cold spawn). We mirror that design: copy the combined
+    #     sid's jsonl into the sandbox, mint another fresh sid, and
+    #     cold-spawn a short progress-only prompt. The new agent reads
+    #     the broken jsonl and ships a `_progress.md` without ever
+    #     being part of the trapped conversation.
+    #
+    # Fire only when combined didn't reach a terminal outcome AND
+    # `_progress.md` is missing (option-d note absent).
     progress_path = attempts_dir / "_progress.md"
-    if postmortem_fn is not None and not progress_path.exists():
-        print(f"[fresh-rescue combined] sid={sid_combined[:8]} no "
-              f"terminal result and no _progress.md — forcing "
-              f"postmortem to write a checkpoint hint", flush=True)
-        try:
-            postmortem_fn(sid_combined)
-        except Exception as exc:  # noqa: BLE001 — best-effort
-            print(f"[fresh-rescue forced-progress] sid="
-                  f"{sid_combined[:8]} postmortem raised "
-                  f"{type(exc).__name__}: {exc}", flush=True)
-        wrote = progress_path.exists()
-        detail_parts.append(
-            f"forced-progress: wrote=_progress.md={wrote}"
-        )
+    if not progress_path.exists():
+        combined_state = _read_parser_state(attempts_dir)
+        combined_trap = bool(
+            combined_state and combined_state.get("is_thinking_trap"))
+        if combined_trap:
+            _force_progress_fresh_cold(
+                trapped_sid=sid_combined,
+                attempts_dir=attempts_dir,
+                spawn_fn=spawn_fn,
+                workspace=workspace,
+            )
+            wrote = progress_path.exists()
+            detail_parts.append(
+                f"forced-progress: trap-fresh wrote={wrote}")
+        elif postmortem_fn is not None:
+            print(f"[fresh-rescue combined] sid={sid_combined[:8]} no "
+                  f"terminal result and no _progress.md — forcing "
+                  f"--resume postmortem (combined sid not trapped)",
+                  flush=True)
+            try:
+                postmortem_fn(sid_combined)
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                print(f"[fresh-rescue forced-progress] sid="
+                      f"{sid_combined[:8]} postmortem raised "
+                      f"{type(exc).__name__}: {exc}", flush=True)
+            wrote = progress_path.exists()
+            detail_parts.append(
+                f"forced-progress: resume wrote={wrote}")
 
     return _TakeoverOutcome(
         terminal_result=None,
