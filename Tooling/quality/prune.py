@@ -17,6 +17,7 @@ and via `asterism prune` CLI for partial state.
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -223,6 +224,63 @@ def winning_chain(conn: sqlite3.Connection, problem: str) -> set[str]:
     return keep
 
 
+_IMPORT_RE = re.compile(
+    r'^\s*import\s+(Problems\.[\w_]+\.proofs\.[\w_]+)\s*$',
+    re.MULTILINE,
+)
+
+
+def _expand_keep_via_imports(workspace: Path, problem: str,
+                              keep_rel: set[str]) -> set[str]:
+    """Transitively follow `import Problems.<problem>.proofs.<name>`
+    lines starting from every .lean already in `keep_rel`, plus the
+    problem's `Root.lean`. Returns the expanded keep set as repo-
+    relative paths.
+
+    Rationale (residue_thm 2026-05-21): the DB-only `winning_chain`
+    walks `strategy_subgoals`, which captures Backward's decomposition
+    edges but NOT Builder wrapper bodies that cite a proved sibling's
+    short name (LESSONS line 1 anti-pattern that the framework's
+    auto-import helper papers over). Without an import-aware expansion
+    here, prune deletes the cited file as an "orphan" and the next
+    cold lake build fails on `bad import` — even though the artifact
+    is part of the winning chain at the .lean source level.
+
+    Bounded by `Problems.<problem>.proofs.*` namespace so Mathlib /
+    Defs / cross-problem imports never enlarge the keep set (those
+    files aren't prune targets anyway).
+    """
+    proofs_prefix = f"Problems.{problem}.proofs."
+    expanded = set(keep_rel)
+    # Seed with Root.lean's imports too — Root sits outside proofs/
+    # so it's never pruned, but its `import _strategy_s<root>` line
+    # is the entry point to the chain.
+    root_rel = f"Problems/{problem}/Root.lean"
+    frontier = list(expanded) + [root_rel]
+    proofs_dir_rel_prefix = f"Problems/{problem}/proofs/"
+    visited: set[str] = set()
+    while frontier:
+        rel = frontier.pop()
+        if rel in visited:
+            continue
+        visited.add(rel)
+        abs_path = workspace / rel
+        try:
+            text = abs_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for m in _IMPORT_RE.findall(text):
+            if not m.startswith(proofs_prefix):
+                continue
+            mod_name = m.removeprefix(proofs_prefix)
+            target_rel = f"{proofs_dir_rel_prefix}{mod_name}.lean"
+            if target_rel in expanded:
+                continue
+            expanded.add(target_rel)
+            frontier.append(target_rel)
+    return expanded
+
+
 def prune_problem(conn: sqlite3.Connection, workspace: Path,
                   problem: str, *, dry_run: bool = False) -> list[Path]:
     """Delete every `.lean` in `Problems/<problem>/proofs/` that is not
@@ -243,6 +301,10 @@ def prune_problem(conn: sqlite3.Connection, workspace: Path,
         return []
 
     keep_rel = winning_chain(conn, problem)
+    # Expand keep set by following actual .lean import statements so
+    # wrapper-cites-sibling pattern doesn't get its target file pruned.
+    # See `_expand_keep_via_imports` docstring for incident reference.
+    keep_rel = _expand_keep_via_imports(workspace, problem, keep_rel)
     keep_abs = {(workspace / rel).resolve() for rel in keep_rel}
 
     proofs_dir = db.problem_dir(workspace, problem) / "proofs"

@@ -222,6 +222,114 @@ def test_prune_problem_dry_run_does_not_delete(
     assert files["_strategy_s99.lean"].exists()
 
 
+def test_prune_problem_keeps_files_reached_only_via_import(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Wrapper-cites-sibling anti-pattern: the winning chain contains
+    `_strategy_s1.lean` + `L_s1_main_sub_1.lean`, but the sub-goal
+    wrapper's body imports `L_sibling_lemma.lean` (a separate proved
+    lemma that the wrapper cites by short name, bypassing the
+    strategy_subgoals DB edge via the auto-import helper). DB-only
+    `winning_chain` doesn't see this — without import-aware expansion
+    prune would delete L_sibling_lemma and the next cold lake build
+    fails on `bad import`. Residue_thm 2026-05-21 incident shape.
+    """
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    win = _seed_strategy(conn, goal_id=root, sid_label="s1")
+    sub = _seed_subgoal(conn, problem="p", slug="s1_main_sub_1")
+    db.link_subgoal(conn, strategy_id=win, subgoal_id=sub, position=0)
+
+    # `L_sibling_lemma.lean` is a real on-disk file (some proved sibling
+    # lemma) that the wrapper imports + cites by short name.
+    files = _build_proofs_tree(tmp_path, "p", [
+        "_strategy_s1.lean",
+        "L_s1_main_sub_1.lean",
+        "L_sibling_lemma.lean",   # imported by wrapper, NOT in DB chain
+        "L_truly_orphan.lean",    # actually orphan, nobody imports
+    ])
+    # Wrapper body cites + imports a sibling lemma file.
+    files["L_s1_main_sub_1.lean"].write_text(
+        "import Mathlib\n"
+        "import Problems.p.proofs.L_sibling_lemma\n"
+        "namespace Problems.p\n"
+        "theorem s1_main_sub_1 := sibling_lemma\n"
+        "end Problems.p\n",
+        encoding="utf-8",
+    )
+    # Also seed Root.lean with a realistic import of the winning strat,
+    # to confirm the Root-seeded walk reaches strategy files.
+    (tmp_path / "Problems/p/Root.lean").write_text(
+        "import Problems.p.proofs._strategy_s1\n", encoding="utf-8")
+
+    removed = prune.prune_problem(conn, tmp_path, "p")
+    removed_names = {p.name for p in removed}
+
+    # The DB-invisible-but-imported sibling stays; the truly-orphan goes.
+    assert "L_sibling_lemma.lean" not in removed_names, (
+        "import-walked sibling must NOT be pruned")
+    assert "L_truly_orphan.lean" in removed_names, (
+        "files no one imports / no DB edge MUST be pruned")
+    assert files["L_sibling_lemma.lean"].exists()
+    assert not files["L_truly_orphan.lean"].exists()
+
+
+def test_prune_problem_import_walk_handles_cycles(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Two wrappers importing each other (a sloppy pattern, but legal)
+    must not infinite-loop the import-walk."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    win = _seed_strategy(conn, goal_id=root, sid_label="s1")
+    sub = _seed_subgoal(conn, problem="p", slug="s1_main_sub_1")
+    db.link_subgoal(conn, strategy_id=win, subgoal_id=sub, position=0)
+    files = _build_proofs_tree(tmp_path, "p", [
+        "_strategy_s1.lean",
+        "L_s1_main_sub_1.lean",
+        "L_cycle_a.lean",
+        "L_cycle_b.lean",
+    ])
+    files["L_s1_main_sub_1.lean"].write_text(
+        "import Problems.p.proofs.L_cycle_a\n", encoding="utf-8")
+    files["L_cycle_a.lean"].write_text(
+        "import Problems.p.proofs.L_cycle_b\n", encoding="utf-8")
+    files["L_cycle_b.lean"].write_text(
+        "import Problems.p.proofs.L_cycle_a\n", encoding="utf-8")
+
+    removed = prune.prune_problem(conn, tmp_path, "p")
+    assert files["L_cycle_a.lean"].exists()
+    assert files["L_cycle_b.lean"].exists()
+
+
+def test_prune_problem_import_walk_ignores_external_imports(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """`import Mathlib` and cross-problem imports must not enlarge
+    the keep set (they aren't prune targets anyway, but the regex
+    should filter them so the walk stays cheap and clean)."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    win = _seed_strategy(conn, goal_id=root, sid_label="s1")
+    sub = _seed_subgoal(conn, problem="p", slug="s1_main_sub_1")
+    db.link_subgoal(conn, strategy_id=win, subgoal_id=sub, position=0)
+    files = _build_proofs_tree(tmp_path, "p", [
+        "_strategy_s1.lean",
+        "L_s1_main_sub_1.lean",
+        "L_unrelated.lean",
+    ])
+    files["L_s1_main_sub_1.lean"].write_text(
+        "import Mathlib\n"
+        "import Problems.p.Defs\n"
+        "import Problems.q.proofs.L_qthing\n"   # cross-problem; ignore
+        "namespace Problems.p\nend Problems.p\n",
+        encoding="utf-8",
+    )
+
+    removed = prune.prune_problem(conn, tmp_path, "p")
+    assert "L_unrelated.lean" in {p.name for p in removed}
+
+
 # ---------------------------------------------------------------------
 # reconcile_proved_goals (E6: file/DB drift repair)
 # ---------------------------------------------------------------------
