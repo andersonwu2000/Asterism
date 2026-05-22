@@ -22,7 +22,7 @@ Time budget: {timeout_min} minutes. Tools: Read / Write / Edit / Grep / Bash(`py
     - Missing tool → `Inject(Forward, brief=...)` and shelve the original goal.
     - Retry → `Reopen(target, directive=...)`.
     - Change direction → `Inject(Backward/Builder, target_goal_id=..., brief=...)` and shelve the original goal.
-- **`inject_batch_done`** — prior Inject finished. `## Completed Inject batches` lists outcomes per item. Decide follow-up.
+- **`inject_batch_done`** — prior Inject finished. `## Completed Inject batches` (what landed) + `## Pending reopen-promises` (which shelved goals it may now unblock) carry the inputs; decide `Reopen`, another `Inject`, or `ConfirmShelve` follow-up.
 
 `Reopen` is rejected only when an ancestor is `disproved` or `dead`.
 

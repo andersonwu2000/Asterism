@@ -253,6 +253,100 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
     return out
 
 
+def _section_pending_reopens(conn: sqlite3.Connection,
+                             problem: str,
+                             trigger_kind: str) -> list[str]:
+    """Cross-reference shelved goals against Forward-origin goals proved
+    since their shelve event.
+
+    Strategist's ConfirmShelve reasons frequently promise "retry once
+    the injected Forward lands" but the framework has no automatic
+    re-evaluate when the promised Forward proves — empirically (brouwer
+    run 2026-05-22) 7/9 ConfirmShelve reasons in this run wrote that
+    kind of promise, 0 Reopen decisions followed. This section surfaces
+    the candidate Reopen list so the agent can decide
+    `Reopen(target_goal_id=...)` instead of injecting yet another
+    toolkit piece.
+
+    Gated on `trigger_kind == 'inject_batch_done'` — that's the wake
+    type where a batch just terminated (one or more Forwards may have
+    just proved), making Reopen-check most actionable. Other triggers
+    (routine / pending_review / first_launch) skip this section to
+    reduce per-call Context.md noise; historic promises still surface
+    via the next inject_batch_done wake.
+
+    Per shelved goal:
+      * latest ConfirmShelve `reason` (truncated to ~200 chars) — the
+        explicit promise the agent made when shelving;
+      * Forward-origin goals that proved *after* the shelve event —
+        candidate prereqs the agent can match against its own promise.
+
+    Output omitted when trigger is not `inject_batch_done` or when
+    there are no shelved goals.
+    """
+    if trigger_kind != "inject_batch_done":
+        return []
+    shelved = list(conn.execute(
+        "SELECT id, slug, updated_at FROM goals"
+        " WHERE problem = ? AND status = 'shelved'"
+        " ORDER BY updated_at DESC LIMIT 12",
+        (problem,),
+    ))
+    if not shelved:
+        return []
+
+    out = [
+        "## Pending reopen-promises",
+        "",
+        "Shelved goals whose ConfirmShelve reason may have promised "
+        "retry once a Forward toolkit landed. Cross-referenced against "
+        "Forward-origin goals that proved since the shelve. If a "
+        "shelved goal's promise matches a now-proved Forward, "
+        "`Reopen(target_goal_id=<shelved_id>)` may close the loop "
+        "instead of injecting another toolkit piece.",
+        "",
+    ]
+    for g in shelved:
+        gid = int(g["id"])
+        slug = str(g["slug"])
+        shelved_at = str(g["updated_at"])
+        # Latest ConfirmShelve reason for this goal (if any).
+        cs_row = conn.execute(
+            "SELECT reason FROM strategist_decisions"
+            " WHERE problem = ? AND decision_kind = 'ConfirmShelve'"
+            "  AND target_id = ? AND reason IS NOT NULL"
+            " ORDER BY id DESC LIMIT 1",
+            (problem, str(gid)),
+        ).fetchone()
+        reason = str(cs_row["reason"]).strip() if cs_row else ""
+        if reason and len(reason) > 220:
+            reason = reason[:220].rstrip() + "…"
+        # Forward-origin goals proved AFTER this shelve.
+        fwd_rows = list(conn.execute(
+            "SELECT slug FROM goals"
+            " WHERE problem = ? AND origin = 'forward' AND status = 'proved'"
+            "  AND updated_at > ?"
+            " ORDER BY updated_at",
+            (problem, shelved_at),
+        ))
+        fwd_slugs = [str(r["slug"]) for r in fwd_rows]
+
+        out.append(f"### `{slug}` (id={gid}, shelved {shelved_at[:19]})")
+        if reason:
+            out.append(f"shelve reason: {reason}")
+        else:
+            out.append("shelve reason: (no ConfirmShelve decision recorded — "
+                       "framework shelve, not Strategist-confirmed)")
+        if fwd_slugs:
+            joined = ", ".join(f"`{s}`" for s in fwd_slugs)
+            out.append(f"Forwards proved since shelve ({len(fwd_slugs)}): "
+                       f"{joined}")
+        else:
+            out.append("Forwards proved since shelve: (none yet)")
+        out.append("")
+    return out
+
+
 def _section_active_goals(conn: sqlite3.Connection,
                           problem: str) -> list[str]:
     # Status-based filter: any non-terminal status (open / attempting /
@@ -398,8 +492,15 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     # Phase 2.5 — surface unack Inject batches on every trigger when
     # any exist (not gated on trigger_kind='inject_batch_done'). See
     # `_section_inject_batch_outcomes` docstring for the race rationale.
+    # `_section_pending_reopens` runs on every trigger too — Strategist
+    # may discover a Reopen candidate while waking on pending_review /
+    # routine / inject_batch_done alike. Empirically (brouwer 2026-05-22)
+    # the loop "ConfirmShelve promises retry → Forward lands → Strategist
+    # never Reopens" was never closed by the agent on its own; surfacing
+    # the cross-reference gives it a structured cue.
     sections += [
         _section_inject_batch_outcomes(conn, problem),
+        _section_pending_reopens(conn, problem, trigger_kind),
         _section_active_goals(conn, problem),
         _section_failure_replay(conn, problem),
         _section_tree_inline(workspace, problem),
