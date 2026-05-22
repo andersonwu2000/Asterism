@@ -28,6 +28,7 @@ from .. import agent
 from ..agent import context
 from ..state import db, manifest
 from ..quality import diagnostics
+from ._cite_gate import _resolve_cite_dependencies
 
 
 def run_builder(conn: sqlite3.Connection, *, goal_id: int,
@@ -299,6 +300,24 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             return PipelineResult(
                 outcome="failed", failure_reason="forbidden_lemma",
                 failure_detail=forbidden, proposal_md=leading,
+            )
+
+        # Citation gate — Builder is leaf-bypass (no decomposition);
+        # reject any cited sibling not status='proved'. Without this,
+        # Builder could import a shelved sibling's L_<slug>.lean
+        # wrapper (whose underlying strategy is sorry-bearing), have
+        # the lake verify succeed (sorry is a warning not an error),
+        # and propagate sorryAx silently until root_integrity_gate
+        # catches it many cycles later. Mirror of the leaf-bypass call
+        # in backward.py around the leaf-bypass commit window.
+        _, cite_err = _resolve_cite_dependencies(
+            conn, problem=goal["problem"], patch_text=patch_text,
+            declared_slugs=set(), allow_auto_link=False,
+        )
+        if cite_err:
+            return PipelineResult(
+                outcome="failed", failure_reason="cite_unproved_sibling",
+                failure_detail=cite_err, proposal_md=leading,
             )
 
         # Annotation is a hard success condition: an empty leading-

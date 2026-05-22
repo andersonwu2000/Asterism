@@ -44,6 +44,7 @@ from ..agent import context
 from ..state import db, manifest
 from ..quality import dedupe, diagnostics
 from . import _axiom
+from ._cite_gate import _PROBLEM_IMPORT_RE, _resolve_cite_dependencies
 
 
 # Sub-goal slug pattern: lowercase letter start, then lowercase letters,
@@ -126,108 +127,6 @@ def _ensure_imports_subgoal(
 # match first (microseconds; 99% of placements have sorry); only the
 # rare sorry-free case pays the axiom-probe cost.
 _SORRY_RE = re.compile(r"\b(?:sorry|sorryAx)\b")
-
-# Citation gate: detect `import Problems.<problem>.proofs.L_<slug>` lines
-# in a patch. Agents sometimes cite an open sibling goal via direct
-# import without declaring it as a sub-goal. The strategy then claims
-# success at verify_housekeeping (file rewrite only — no axiom check),
-# cascades up, and the sorryAx leak is caught only by `root_integrity_
-# gate` after many wasted Verify cycles. Catching it at commit time
-# bounces the agent immediately with a precise retry hint.
-_PROBLEM_IMPORT_RE = re.compile(
-    r"^\s*import\s+Problems\.([A-Za-z_][\w.]*)\.proofs\.L_([a-z][a-z0-9_]*)\s*$",
-    re.MULTILINE,
-)
-
-
-def _resolve_cite_dependencies(
-    conn: sqlite3.Connection, *, problem: str, patch_text: str,
-    declared_slugs: set[str], allow_auto_link: bool,
-) -> tuple[set[int], str | None]:
-    """Scan `patch_text` for `import Problems.<problem>.proofs.L_<slug>`
-    lines and classify each cited slug:
-
-      * declared sub-goal (in this commit's `new_<slug>.lean` files) → skip
-      * status='proved' goal → skip (legitimate citation)
-      * status ∈ ('open', 'attempting', 'pending_strategist_review'):
-        - if `allow_auto_link`: collect goal_id for caller to insert as
-          a sibling sub-goal via `strategy_subgoals` (the safe parallel
-          pattern — strategy waits in 'proposed' until cited goal proves
-          via `strategies_ready_for_verify`'s all-subgoals-proved check)
-        - else: reject (caller is a leaf-bypass that runs axiom probe
-          at submit, can't tolerate transitive sorry from cited stub)
-      * status ∈ ('shelved', 'disproved', 'dead') → reject (cited goal
-        can't be revived in this strategy's lifetime; agent must pick
-        a different angle)
-      * unknown slug / cross-problem import → skip (lake's
-        "unknown identifier" catches genuine typos)
-
-    Returns (auto_link_goal_ids, err). Caller commits the strategy
-    with the declared subgoals plus auto-linked goals as
-    additional `strategy_subgoals` rows. On err non-None the strategy
-    must abort (subgoals would be from a doomed dependency).
-    """
-    auto_link: set[int] = set()
-    bad: list[tuple[str, str]] = []
-    seen: set[str] = set()
-    for m in _PROBLEM_IMPORT_RE.finditer(patch_text):
-        if m.group(1) != problem:
-            continue
-        slug = m.group(2)
-        if slug in seen:
-            continue
-        seen.add(slug)
-        if slug in declared_slugs:
-            continue
-        row = conn.execute(
-            "SELECT id, status FROM goals WHERE problem = ? AND slug = ?"
-            " AND alias_target_id IS NULL",
-            (problem, slug),
-        ).fetchone()
-        if row is None:
-            # No matching goal — lake's "unknown identifier" path will
-            # catch genuinely invalid imports. Don't double-reject here.
-            continue
-        status = str(row["status"])
-        if status == "proved":
-            continue
-        if status in ("open", "attempting",
-                       "pending_strategist_review"):
-            if allow_auto_link:
-                auto_link.add(int(row["id"]))
-            else:
-                bad.append((slug, status))
-            continue
-        # ('shelved', 'disproved', 'dead') — terminal-failed, can't
-        # recover even with parallel wait.
-        bad.append((slug, status))
-    if not bad:
-        return auto_link, None
-    lines = [f"  - `{slug}` (status={status})" for slug, status in bad]
-    if allow_auto_link:
-        # Decomp path's only reject reason is terminal-failed cites
-        # — guide the agent toward a different angle.
-        hint = (
-            "\n\nThese goals are terminal-failed in this strategy's "
-            "context — they will not prove. Rewrite the proof to avoid "
-            "the citations, or pick a different decomposition angle."
-        )
-    else:
-        # Leaf-bypass path: any non-proved cite is rejected (immediate
-        # axiom probe can't tolerate transitive sorry). Auto-link is
-        # only available via decomp.
-        hint = (
-            "\n\nFix by declaring each as a sub-goal stub "
-            "(`new_<slug>.lean := by sorry`) — the decomposition path "
-            "auto-links open siblings as `strategy_subgoals` so the "
-            "strategy waits for them to prove. Leaf-bypass strategies "
-            "(no decomposition) can only cite already-proved siblings."
-        )
-    return auto_link, (
-        "Patch imports sibling goals that cannot be cited:\n"
-        + "\n".join(lines) + hint
-    )
-
 
 def _try_promote_sorry_free(
     *, dest: Path, problem: str, slug: str, workspace: Path,
