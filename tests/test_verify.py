@@ -440,7 +440,8 @@ def test_housekeeping_no_op_when_nothing_ready(
 ) -> None:
     """No strategies ready → return zero counts, no DB mutations."""
     counts = verify.verify_housekeeping(conn, workspace=tmp_path)
-    assert counts == {"proved": 0, "dead": 0, "superseded": 0, "retry": 0}
+    assert counts == {"proved": 0, "dead": 0, "superseded": 0,
+                       "retry": 0, "revived": 0}
 
 
 def test_housekeeping_caps_iterations(
@@ -479,5 +480,177 @@ def test_housekeeping_caps_iterations(
     # grandparent strategy waits for the next call.
     assert counts["proved"] == 1
     assert db.get_goal(conn, grand_gid)["status"] != "proved"
+
+
+# ---------------------------------------------------------------------
+# G1 — shelved-revival pass
+# ---------------------------------------------------------------------
+
+def _seed_shelved_aliased_to_proved_forward(
+    conn: sqlite3.Connection, tmp_path: Path, *,
+    parent_status: str = "attempting",
+) -> tuple[int, int, int]:
+    """Build the brouwer-shape minimal scenario:
+      root → parent_strategy → shelved sub-goal S (status='shelved',
+                              aliased to X)
+      detached Forward output X (status='proved') with a small lean file
+
+    Returns (root_id, shelved_id, forward_id).
+    Lean files exist so `build_alias_content` can rewrite S in place.
+    """
+    _seed_problem(conn)
+    root = _seed_goal(conn)
+    db.update_goal_status(conn, root, "attempting")
+    # Backward sub-goal (shelved) under root's strategy
+    parent_sid = db.insert_strategy(
+        conn, goal_id=root,
+        lean_path="Problems/p/proofs/L_main.lean",
+        scratch_path="Problems/p/proofs/_strategy_root.lean",
+        created_by="pid")
+    shelved = db.insert_goal(
+        conn, problem="p", slug="shelved_s",
+        lean_path="Problems/p/proofs/L_shelved_s.lean",
+        statement="X", origin="backward", depth=1,
+    )
+    db.update_goal_status(conn, shelved, "shelved")
+    db.link_subgoal(conn, strategy_id=parent_sid, subgoal_id=shelved,
+                    position=0)
+    # Forward output (proved, detached)
+    forward = db.insert_goal(
+        conn, problem="p", slug="forward_x",
+        lean_path="Problems/p/proofs/L_forward_x.lean",
+        statement="X", origin="forward", depth=0,
+    )
+    db.set_goal_detached(conn, forward, True)
+    db.update_goal_status(conn, forward, "proved")
+    db.set_alias_target(conn, shelved, forward)
+    # Write on-disk lean files (S has the sorry stub; X is a one-liner)
+    pdir = tmp_path / "Problems" / "p" / "proofs"
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "L_shelved_s.lean").write_text(
+        "import Mathlib\nnamespace Problems.p\n"
+        "theorem shelved_s : True := by sorry\n"
+        "end Problems.p\n", encoding="utf-8")
+    (pdir / "L_forward_x.lean").write_text(
+        "import Mathlib\nnamespace Problems.p\n"
+        "theorem forward_x : True := by trivial\n"
+        "end Problems.p\n", encoding="utf-8")
+    return root, shelved, forward
+
+
+def test_pending_shelved_revivals_finds_proved_canonical_links(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """_pending_shelved_revivals returns (shelved, canonical) where
+    shelved.alias_target_id = canonical AND canonical.status='proved'."""
+    _, shelved, forward = _seed_shelved_aliased_to_proved_forward(
+        conn, tmp_path)
+    pairs = verify._pending_shelved_revivals(conn)
+    assert pairs == [(shelved, forward)]
+
+
+def test_pending_shelved_revivals_excludes_unproved_canonical(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """If the canonical is still 'open', the link is pending; revival
+    pass must NOT trigger yet."""
+    _, shelved, forward = _seed_shelved_aliased_to_proved_forward(
+        conn, tmp_path)
+    # Flip canonical back to open
+    db.update_goal_status(conn, forward, "open")
+    pairs = verify._pending_shelved_revivals(conn)
+    assert pairs == []
+
+
+def test_pending_shelved_revivals_excludes_already_revived(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Once S has flipped to 'proved' the link is consumed — no
+    re-revival on subsequent ticks."""
+    _, shelved, _ = _seed_shelved_aliased_to_proved_forward(
+        conn, tmp_path)
+    db.update_goal_status(conn, shelved, "proved")
+    pairs = verify._pending_shelved_revivals(conn)
+    assert pairs == []
+
+
+def test_revive_shelved_alias_writes_alias_body_and_flips_status(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """`_revive_shelved_alias` rewrites S.lean_path with the
+    `apply <canonical> <;> assumption` body and transitions S to
+    'proved' via the centralized terminal hook."""
+    _, shelved, forward = _seed_shelved_aliased_to_proved_forward(
+        conn, tmp_path)
+    ok = verify._revive_shelved_alias(
+        conn, tmp_path, shelved_id=shelved, canonical_id=forward)
+    assert ok is True
+    body = (tmp_path / "Problems/p/proofs/L_shelved_s.lean").read_text(
+        encoding="utf-8")
+    assert "apply forward_x" in body
+    assert "import Problems.p.proofs.L_forward_x" in body
+    assert db.get_goal(conn, shelved)["status"] == "proved"
+
+
+def test_revive_shelved_alias_refuses_when_sorry_stub_missing(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """If S's lean file body doesn't carry `:= by sorry` (manual edit /
+    partial proof), refuse to overwrite. Link stays for operator
+    inspection; status untouched."""
+    _, shelved, forward = _seed_shelved_aliased_to_proved_forward(
+        conn, tmp_path)
+    (tmp_path / "Problems/p/proofs/L_shelved_s.lean").write_text(
+        "import Mathlib\nnamespace Problems.p\n"
+        "theorem shelved_s : True := by trivial\n"
+        "end Problems.p\n", encoding="utf-8")
+    ok = verify._revive_shelved_alias(
+        conn, tmp_path, shelved_id=shelved, canonical_id=forward)
+    assert ok is False
+    assert db.get_goal(conn, shelved)["status"] == "shelved"
+
+
+def test_housekeeping_revives_shelved_then_chains_parent_strategy(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: shelved S aliased to proved X gets revived. S → proved
+    makes parent strategy's all-subs-proved gate fire on the next loop
+    iteration; verify_strategy (stubbed 'proved') closes parent goal."""
+    root, shelved, forward = _seed_shelved_aliased_to_proved_forward(
+        conn, tmp_path)
+    # Make scratch file exist so verify_strategy's pre-check passes if
+    # the parent strategy gets re-evaluated.
+    scratch = tmp_path / "Problems/p/proofs/_strategy_root.lean"
+    scratch.parent.mkdir(parents=True, exist_ok=True)
+    scratch.write_text("-- stub", encoding="utf-8")
+    # Stub verify_strategy so we don't shell out to lake.
+    monkeypatch.setattr(verify, "verify_strategy",
+                        lambda *a, **kw: "proved")
+
+    counts = verify.verify_housekeeping(conn, workspace=tmp_path)
+    assert counts["revived"] >= 1
+    assert db.get_goal(conn, shelved)["status"] == "proved"
+    # Parent strategy fired in a later iteration (root proved).
+    assert db.get_goal(conn, root)["status"] == "proved"
+    assert forward  # silence unused
+
+
+def test_housekeeping_no_revivals_when_canonical_unproved(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Link exists but canonical X is still open → revival pass quiet,
+    S stays shelved, no chain to parent."""
+    root, shelved, forward = _seed_shelved_aliased_to_proved_forward(
+        conn, tmp_path)
+    db.update_goal_status(conn, forward, "open")
+    monkeypatch.setattr(verify, "verify_strategy",
+                        lambda *a, **kw: "proved")
+
+    counts = verify.verify_housekeeping(conn, workspace=tmp_path)
+    assert counts["revived"] == 0
+    assert db.get_goal(conn, shelved)["status"] == "shelved"
+    assert db.get_goal(conn, root)["status"] in ("open", "attempting")
 
 

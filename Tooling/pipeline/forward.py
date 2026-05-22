@@ -518,6 +518,24 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
             db.set_inject_decision_produced_goal(
                 conn, decision_id, outcome.goal_id,
             )
+
+        # G1 shelved-revival linkage — when Strategist-Injected Forward
+        # output restates a previously-shelved sub-goal (alpha-equivalent
+        # modulo specialization), link each match so the verify revival
+        # pass (`verify_housekeeping`) writes the alias body + flips
+        # status when this Forward eventually proves. Without this link,
+        # the shelved goal stays terminal even after a functionally-
+        # identical Forward lemma is proved (brouwer 2026-05-22: g2717
+        # `stdsimplex_lattice_triangulation_at_scale` stayed shelved
+        # while g2718 `stdsimplex_kuhn_triangulation_exists` re-proved
+        # the same content independently — parent strategy never
+        # released).
+        revivals = dedupe.find_shelved_revivals_for_forward(
+            conn, workspace, problem=problem,
+            forward_goal_id=outcome.goal_id,
+        )
+        for s_id in revivals:
+            db.set_alias_target(conn, s_id, outcome.goal_id)
         return PipelineResult(
             outcome="proved" if outcome.status == "proved" else "success",
             failure_reason="",

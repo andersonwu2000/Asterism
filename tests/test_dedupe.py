@@ -1046,6 +1046,199 @@ def test_batch_provable_via_apply_template_handles_hypothesis_extension(
     assert "import Problems.p.proofs.L_canon" in body
 
 
+# ---------------------------------------------------------------------
+# G1 — find_shelved_revivals_for_forward
+# ---------------------------------------------------------------------
+
+def _seed_forward(conn: sqlite3.Connection, *, slug: str,
+                   statement: str = "T") -> int:
+    """Insert a Forward-origin goal as if `commit_forward_lemma` had
+    just landed it. detached=1 mirrors the runtime behaviour."""
+    gid = db.insert_goal(
+        conn, problem="p", slug=slug,
+        lean_path=f"Problems/p/proofs/L_{slug}.lean",
+        statement=statement, origin="forward", depth=0,
+    )
+    db.set_goal_detached(conn, gid, True)
+    return gid
+
+
+def test_find_shelved_revivals_links_matching_shelved(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Forward output X has a signature an existing shelved S restates
+    (modulo specialization). The probe pairs (S_signature, X_module,
+    X_name) and returns S's id so caller can link via set_alias_target.
+    """
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    shelved = _seed_sub(conn, slug="shelved_eq", statement="X",
+                        status="shelved")
+    _link(conn, root, [shelved])
+    forward = _seed_forward(conn, slug="forward_eq")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+    _write_lean(tmp_path, "p", "shelved_eq",
+        "import Mathlib\nnamespace Problems.p\n"
+        "theorem shelved_eq (n : Nat) : n = n := by sorry\n"
+        "end Problems.p\n")
+    _write_lean(tmp_path, "p", "forward_eq",
+        "import Mathlib\nnamespace Problems.p\n"
+        "theorem forward_eq (n : Nat) : n = n := by sorry\n"
+        "end Problems.p\n")
+
+    captured: dict = {}
+
+    def fake_apply(ws, p, pairs):
+        captured["pairs"] = pairs
+        return [True] * len(pairs)
+
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake_apply)
+
+    out = dedupe.find_shelved_revivals_for_forward(
+        conn, tmp_path, problem="p", forward_goal_id=forward,
+    )
+    assert out == [shelved]
+    # Probe direction: S as candidate (signature side), X as canonical
+    # (module + thm name side).
+    assert len(captured["pairs"]) == 1
+    cand_sig, mod, thm = captured["pairs"][0]
+    assert "n = n" in cand_sig
+    assert thm == "forward_eq"
+    assert "L_forward_eq" in mod.replace(".", "/")
+
+
+def test_find_shelved_revivals_skips_non_shelved(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only status='shelved' candidates enter the probe — open / proved
+    / disproved are out of scope for G1."""
+    _seed_problem(conn)
+    _seed_root(conn)
+    open_sub = _seed_sub(conn, slug="open_sub", statement="X",
+                         status="open")
+    proved_sub = _seed_sub(conn, slug="proved_sub", statement="X",
+                           status="proved")
+    forward = _seed_forward(conn, slug="f")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+    _write_lean(tmp_path, "p", "open_sub",
+        "import Mathlib\nnamespace Problems.p\n"
+        "theorem open_sub : True := by sorry\nend Problems.p\n")
+    _write_lean(tmp_path, "p", "proved_sub",
+        "import Mathlib\nnamespace Problems.p\n"
+        "theorem proved_sub : True := by sorry\nend Problems.p\n")
+    _write_lean(tmp_path, "p", "f",
+        "import Mathlib\nnamespace Problems.p\n"
+        "theorem f : True := by sorry\nend Problems.p\n")
+
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply",
+                        lambda ws, p, pairs: [True] * len(pairs))
+
+    out = dedupe.find_shelved_revivals_for_forward(
+        conn, tmp_path, problem="p", forward_goal_id=forward,
+    )
+    assert out == []
+    assert open_sub  # silence unused
+    assert proved_sub
+
+
+def test_find_shelved_revivals_skips_already_aliased(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shelved goals already linked via alias_target_id are skipped —
+    each link is at-most-once to keep alias chains flat."""
+    _seed_problem(conn)
+    _seed_root(conn)
+    s1 = _seed_sub(conn, slug="s1", statement="X", status="shelved")
+    s2 = _seed_sub(conn, slug="s2", statement="X", status="shelved")
+    earlier_forward = _seed_forward(conn, slug="earlier")
+    db.set_alias_target(conn, s1, earlier_forward)
+    forward = _seed_forward(conn, slug="f")
+    for slug in ("main",):
+        _write_lean(tmp_path, "p", slug,
+            "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+    for slug in ("s1", "s2", "earlier", "f"):
+        _write_lean(tmp_path, "p", slug,
+            f"import Mathlib\nnamespace Problems.p\n"
+            f"theorem {slug} : True := by sorry\nend Problems.p\n")
+
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply",
+                        lambda ws, p, pairs: [True] * len(pairs))
+
+    out = dedupe.find_shelved_revivals_for_forward(
+        conn, tmp_path, problem="p", forward_goal_id=forward,
+    )
+    assert out == [s2]
+
+
+def test_find_shelved_revivals_no_match_returns_empty(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Probe returns all-False → no links."""
+    _seed_problem(conn)
+    _seed_root(conn)
+    _seed_sub(conn, slug="s", statement="X", status="shelved")
+    forward = _seed_forward(conn, slug="f")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+    _write_lean(tmp_path, "p", "s",
+        "import Mathlib\nnamespace Problems.p\n"
+        "theorem s : True := by sorry\nend Problems.p\n")
+    _write_lean(tmp_path, "p", "f",
+        "import Mathlib\nnamespace Problems.p\n"
+        "theorem f : True := by sorry\nend Problems.p\n")
+
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply",
+                        lambda ws, p, pairs: [False] * len(pairs))
+
+    out = dedupe.find_shelved_revivals_for_forward(
+        conn, tmp_path, problem="p", forward_goal_id=forward,
+    )
+    assert out == []
+
+
+def test_find_shelved_revivals_binder_rule_skips_underbinned_candidate(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Candidate (shelved S) must have ≥ binder GROUPS than canonical X
+    so `apply @X <;> assumption` can specialize. Underbinned S can't be
+    discharged via apply + assumption → pre-filter excludes. Note
+    `_signature_binder_count` counts top-level groups, not individual
+    names — `(x y z : Nat)` is one group."""
+    _seed_problem(conn)
+    _seed_root(conn)
+    s = _seed_sub(conn, slug="s", statement="X", status="shelved")
+    forward = _seed_forward(conn, slug="f")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+    # S has 0 binder groups (no parameters before the type colon)
+    _write_lean(tmp_path, "p", "s",
+        "import Mathlib\nnamespace Problems.p\n"
+        "theorem s : True := by sorry\nend Problems.p\n")
+    # X has 2 binder groups — strictly more, so S underbinned for X
+    _write_lean(tmp_path, "p", "f",
+        "import Mathlib\nnamespace Problems.p\n"
+        "theorem f (x : Nat) (h : True) : True := by sorry\nend Problems.p\n")
+
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply",
+                        lambda ws, p, pairs: [True] * len(pairs))
+
+    out = dedupe.find_shelved_revivals_for_forward(
+        conn, tmp_path, problem="p", forward_goal_id=forward,
+    )
+    assert s not in out
+
+
+# ---------------------------------------------------------------------
+# real-lake integration (kept last, skip if lake missing)
+# ---------------------------------------------------------------------
+
 @pytest.mark.skipif(shutil.which("lake") is None,
                     reason="requires lake CLI on PATH")
 def test_batch_provable_via_apply_real_lake(tmp_path: Path) -> None:

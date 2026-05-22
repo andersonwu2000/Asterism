@@ -203,6 +203,12 @@ leading comment 的 `Forward rationale:` 寫入 goal.evidence 欄位、後續 St
                               「Forward 產的、無上游」靠 origin=forward 識別)；
                               若 self_verify 偵測 sorry-free → goal.status='proved'、
                               不入 BFS（leaf-bypass、跟 Backward sorry-free patch.lean 機制對稱）
+7. shelved_link     (pure)   跑 `find_shelved_revivals_for_forward`：把 commit 的 Forward
+                              當 canonical、probe 同 problem 內 shelved goals 哪些 statement
+                              alpha-equiv（`apply @<forward> <;> assumption` 通過 Lean kernel
+                              check）。命中 → `set_alias_target(S, X)`、log `[shelved-link]`。
+                              此時不寫 alias body（Forward 還沒 proved）；body 由 verify
+                              housekeeping 的 revival pass 在 X→proved 時 deferred 寫入。
 ```
 
 Context.md 跟 Backward / Builder 同模式（既有 `compile_context` 擴出 Forward 變體）、brief 直接成為 Context.md 內一段。`new_<slug>.lean` 落地路徑沿用 backward.py 內既有 helper。
@@ -211,6 +217,12 @@ Context.md 跟 Backward / Builder 同模式（既有 `compile_context` 擴出 Fo
 
 1. **dedupe**：跟既有 alive / proved 重複的直接濾掉、轉 `forward_no_new_goal`（detail = `dedupe blocked`）
 2. **Strategist self-feedback**：上次 Forward 結果差 → 下次 Strategist 不再 InjectForward
+
+### 3.6 Shelved-revival 後勤（G1）
+
+Forward 提的 lemma 可能跟先前已 shelved 的 Backward sub-goal 統計上「同一條」。Stage 7 在 commit 之後跑 `find_shelved_revivals_for_forward` 把這類 shelved goal S `set_alias_target(S, X)`（X = 剛 commit 的 Forward）。一旦 X 真的被 proved、`verify_housekeeping` 的 revival pass 偵測到 S.alias_target_id 指向 proved goal、套 `build_alias_content` 重寫 S.lean_path（`:= by apply <X> <;> assumption`）、`_set_goal_terminal_and_propagate(S, 'proved')`、parent strategy `strategies_ready_for_verify` 自然收尾。
+
+實證：brouwer 2026-05-22 stress run、g2717 `stdsimplex_lattice_triangulation_at_scale`（shelved Backward sub）和 g2718 `stdsimplex_kuhn_triangulation_exists`（Strategist 為頂掉前者 inject 的 Forward）statement alpha-equivalent、舊機制下 g2717 永遠 shelved、parent strategy 永遠 attempting；G1 上線後類似情形可自動解。
 
 ---
 

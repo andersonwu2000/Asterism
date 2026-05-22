@@ -725,3 +725,85 @@ def build_alias_content(*, original_content: str,
         original_content,
         count=1,
     )
+
+
+def find_shelved_revivals_for_forward(
+    conn: sqlite3.Connection, workspace: Path, *,
+    problem: str, forward_goal_id: int,
+) -> list[int]:
+    """For a freshly-committed Forward output goal X, return the list of
+    shelved goal IDs in the same problem whose signatures can be
+    discharged by `apply @X <;> assumption`.
+
+    Direction note (vs `find_canonicals_batch`): here X is the canonical
+    (would-be discharger) and shelved goals are candidates (would-be
+    revived). At link time X's lean file may carry `:= by sorry`, but
+    Lean still elaborates the declaration's type, so the alpha-equivalence
+    probe is sound. The actual alias body is written later by the verify
+    revival pass when X transitions to `proved`.
+
+    Binder rule mirrors the standard alias direction: X (canonical) must
+    have ≤ binders than the candidate so `apply @X` can specialize and
+    let `assumption` discharge the extras.
+
+    Returns shelved goal IDs that pass the probe. Caller is expected to
+    set `S.alias_target_id = X.id` for each. Fail-open on any
+    extraction / subprocess error (returns []).
+    """
+    x_row = conn.execute(
+        "SELECT id, slug, lean_path FROM goals WHERE id = ?",
+        (forward_goal_id,),
+    ).fetchone()
+    if x_row is None:
+        return []
+    try:
+        x_text = (workspace / x_row["lean_path"]).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    x_thm = _extract_theorem_name(x_text)
+    if not x_thm:
+        return []
+    from ..pipeline._lake import lean_path_to_module
+    try:
+        x_module = lean_path_to_module(workspace, workspace / x_row["lean_path"])
+    except (ValueError, OSError):
+        return []
+    x_binder_count = _signature_binder_count(x_text)
+
+    rows = conn.execute(
+        "SELECT g.id, g.slug, g.lean_path FROM goals g "
+        "WHERE g.problem = ? AND g.status = 'shelved' "
+        "  AND g.alias_target_id IS NULL "
+        "  AND g.id != ? "
+        "ORDER BY g.id ASC",
+        (problem, forward_goal_id),
+    ).fetchall()
+
+    pairs: list[tuple[str, str, str]] = []
+    pair_origin: list[int] = []
+    for r in rows:
+        try:
+            cand_text = (workspace / r["lean_path"]).read_text(
+                encoding="utf-8")
+        except OSError:
+            continue
+        cand_sig = _extract_full_signature(cand_text)
+        if cand_sig is None or not cand_sig.strip():
+            continue
+        if _signature_binder_count(cand_text) < x_binder_count:
+            # Candidate has fewer binders than X — `apply @X` would need
+            # arguments the candidate's context can't supply via
+            # `assumption`. Standard binder rule (see `_eligible_*`).
+            continue
+        pairs.append((cand_sig, x_module, x_thm))
+        pair_origin.append(int(r["id"]))
+
+    if not pairs:
+        return []
+    flags = _batch_provable_via_apply(workspace, problem, pairs)
+    revivals = [gid for gid, ok in zip(pair_origin, flags) if ok]
+    if revivals:
+        print(f"[dedupe] shelved-revival probe: forward={forward_goal_id} "
+              f"matched {len(revivals)} shelved goal(s) {revivals}",
+              flush=True)
+    return revivals

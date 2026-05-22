@@ -127,11 +127,13 @@ def verify_housekeeping(
     already proved, contributing to a daemon idle-exit.
     """
     from ..core import dispatcher
-    counts = {"proved": 0, "dead": 0, "superseded": 0, "retry": 0}
+    counts = {"proved": 0, "dead": 0, "superseded": 0, "retry": 0,
+              "revived": 0}
     touched_goals: set[int] = set()
     for _ in range(max_iters):
         ready = db.strategies_ready_for_verify(conn)
-        if not ready:
+        revivals = _pending_shelved_revivals(conn)
+        if not ready and not revivals:
             break
         for s in ready:
             sid = int(s["id"])
@@ -189,8 +191,106 @@ def verify_housekeeping(
                 print(f"[verify] Strategy={sid} → dead", flush=True)
             else:  # "superseded"
                 counts["superseded"] += 1
+        # G1 shelved-revival pass (post-strategy housekeeping). Forward
+        # commit links a shelved goal S to a newly-produced Forward
+        # output X via `S.alias_target_id = X`. Once X transitions to
+        # 'proved' (via the strategy pass above, or via a prior
+        # iteration / pipeline), generate S's alias body, rewrite its
+        # lean file, and flip S → proved. The outer loop's next
+        # iteration picks up parent strategies whose remaining sub-goal
+        # constraint was the now-revived S, chaining naturally up the
+        # tree. Without this, S sits shelved forever even after a
+        # functionally-identical lemma proves (brouwer 2026-05-22
+        # G1 incident).
+        for s_id, x_id in revivals:
+            ok = _revive_shelved_alias(
+                conn, workspace,
+                shelved_id=s_id, canonical_id=x_id,
+            )
+            if ok:
+                counts["revived"] += 1
+                touched_goals.add(s_id)
+                print(f"[verify] shelved-revival: g{s_id} ← g{x_id}",
+                      flush=True)
     _refresh_trees(conn, workspace, touched_goals)
     return counts
+
+
+def _pending_shelved_revivals(
+    conn: sqlite3.Connection,
+) -> list[tuple[int, int]]:
+    """Return (shelved_goal_id, canonical_goal_id) pairs where the
+    shelved goal aliases to an already-proved canonical and hasn't been
+    revived yet. Ordered by shelved goal id for determinism.
+    """
+    rows = conn.execute(
+        "SELECT s.id AS s_id, s.alias_target_id AS x_id"
+        " FROM goals s"
+        " JOIN goals x ON x.id = s.alias_target_id"
+        " WHERE s.status = 'shelved'"
+        "   AND s.alias_target_id IS NOT NULL"
+        "   AND x.status = 'proved'"
+        " ORDER BY s.id"
+    ).fetchall()
+    return [(int(r["s_id"]), int(r["x_id"])) for r in rows]
+
+
+def _revive_shelved_alias(
+    conn: sqlite3.Connection, workspace: Path, *,
+    shelved_id: int, canonical_id: int,
+) -> bool:
+    """Generate the alias body for shelved goal S delegating to
+    canonical goal X, write it to S.lean_path, and flip S → proved.
+
+    Returns True on successful revival, False if any pre-condition fails
+    (S or X missing, X has no extractable theorem name, S.lean_path
+    unreadable, etc.) — fail-open so a malformed link never blocks the
+    rest of housekeeping.
+    """
+    from . import dedupe as _dedupe
+    from ..core import dispatcher
+    s_row = conn.execute(
+        "SELECT lean_path FROM goals WHERE id = ?", (shelved_id,),
+    ).fetchone()
+    x_row = conn.execute(
+        "SELECT lean_path FROM goals WHERE id = ?", (canonical_id,),
+    ).fetchone()
+    if s_row is None or x_row is None:
+        return False
+    s_abs = workspace / s_row["lean_path"]
+    x_abs = workspace / x_row["lean_path"]
+    try:
+        s_text = s_abs.read_text(encoding="utf-8")
+        x_text = x_abs.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    x_thm = _dedupe._extract_theorem_name(x_text)
+    if not x_thm:
+        return False
+    try:
+        x_module = lean_path_to_module(workspace, x_abs)
+    except (ValueError, OSError):
+        return False
+    if not _dedupe._SORRY_BODY_RE.search(s_text):
+        # S's body isn't a fresh `:= by sorry` stub (manual edit, partial
+        # proof, or already promoted). Refuse to overwrite arbitrary
+        # content; the link stays so an operator can inspect / a later
+        # prune / rewrite path can pick it up if S's file gets reset.
+        return False
+    new_text = _dedupe.build_alias_content(
+        original_content=s_text,
+        canonical_module=x_module,
+        canonical_slug=x_thm,
+    )
+    if new_text == s_text:
+        return False
+    try:
+        s_abs.write_text(new_text, encoding="utf-8")
+    except OSError:
+        return False
+    dispatcher._set_goal_terminal_and_propagate(conn, shelved_id, "proved")
+    conn.commit()
+    return True
 
 
 def _refresh_trees(conn: sqlite3.Connection, workspace: Path,
