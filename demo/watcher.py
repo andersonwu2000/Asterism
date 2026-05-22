@@ -145,14 +145,34 @@ def _active_spawns(limit: int) -> list[Path]:
 
 
 def _latest_lean_in(spawn_dir: Path) -> Path | None:
-    """The most-recently-modified .lean in this spawn dir tree, or None."""
+    """The most-recently-modified .lean in this spawn dir tree, or None.
+
+    TOCTOU-safe against framework cleanup: the framework rmtree's spawn
+    dirs at spawn finish, and both the rglob walk and the per-file
+    stat() can race that deletion. The earlier `max(..., key=p.stat())`
+    let any FileNotFoundError from a vanished file kill the whole
+    watcher process (observed 2026-05-22 on the Topology.brouwer run:
+    `new_closedball_stdsimplex_homeo_data_zero.lean` was rmtree'd
+    between rglob and stat → watcher exited 1 → demo panes stopped
+    refreshing). Drop any file whose stat() fails instead.
+    """
     try:
         files = list(spawn_dir.rglob("*.lean"))
     except OSError:
         return None
     if not files:
         return None
-    return max(files, key=lambda p: p.stat().st_mtime)
+    latest: Path | None = None
+    latest_mtime = float("-inf")
+    for f in files:
+        try:
+            mt = f.stat().st_mtime
+        except OSError:
+            continue
+        if mt > latest_mtime:
+            latest_mtime = mt
+            latest = f
+    return latest
 
 
 # Cap worker labels to keep stats.md visually narrow. Long miniF2F
@@ -307,7 +327,12 @@ def _update_worker_panes(
 
 
 def _update_tree(problem: str) -> bool:
-    src = WS / "Problems" / problem / "TREE.md"
+    # Dotted slug -> nested path (same convention as db.problem_dir):
+    # "Topology.brouwer_fixed_point" -> Problems/Topology/brouwer_fixed_point/.
+    # Earlier code used `Problems / problem` literally, which silently
+    # missed any dotted slug (Minif2f.*, Topology.*, etc) — the TREE pane
+    # then stayed on the startup placeholder for the entire run.
+    src = WS / "Problems" / Path(*problem.split(".")) / "TREE.md"
     if not src.exists():
         return False
     shutil.copy2(src, ACTIVE_DIR / "tree.md")
