@@ -17,19 +17,23 @@ Strategy  = AND : 所有 sub-Goal 成功 → Strategy 成功
 
 ---
 
-## 2. 兩個 worker、一個 housekeeping
+## 2. 四個 worker、一個 housekeeping
 
-**Worker 是 LLM 介入點，純框架操作不佔 worker slot。** 這條原則決定下面三個角色的位置。
+**Worker 是 LLM 介入點，純框架操作不佔 worker slot。** 這條原則決定下面五個角色的位置。
 
-| 角色 | 對誰 | 做什麼 | 有 LLM 嗎 |
+| 角色 | target_kind | 做什麼 | 有 LLM 嗎 |
 |---|---|---|---|
 | **Builder** | Goal | 試一輪 deterministic tactic、不行就請 LLM 寫一份 patch 收尾 | 第二階段有 |
 | **Backward** | Goal | 請 LLM 把這個 Goal 拆成一條 Strategy + N 個 sub-Goal | 有 |
-| **Verify housekeeping** | Strategy | sub-Goal 全 proved 後，把 Strategy 組裝起來編譯、寫進 parent 的 `.lean` 檔 | 沒有 |
+| **Forward** | Problem | 由 Strategist `Inject(Forward)` 派、產一條新 toolkit lemma (kind ∈ {theorem,def,structure,class})、進 BFS 或 leaf-bypass | 有 |
+| **Strategist** | Goal (root) | 讀 problem state、決定 Inject / ConfirmShelve / Reopen / EmitDirective / RequestUserAmend / Noop | 有 |
+| **Verify housekeeping** | Strategy | sub-Goal 全 proved 後，把 Strategy 組裝起來編譯、寫進 parent 的 `.lean` 檔；同時跑 G1 shelved-revival pass | 沒有 |
 
 Verify 早期是第三種 worker_kind；後來砍成 dispatcher 主迴圈末端的步驟，因為它既無 LLM 也不該佔 pool 格子。
 
 每個 Goal 最多同時一條 Builder 或一條 Backward 在跑（passive OR、cap=1）。死掉之後才生下一條。早期是 eager fanout（同 Goal 並行多條 Strategy），實證在強模型下純粹浪費 token。
+
+Strategist trigger 種類：`first_launch`（root frozen 第一次喚醒）/ `routine`（定期）/ `pending_review`（agent 自己 shelve 後等審）/ `inject_batch_done`（前一批 Inject 全部 terminal）。同 problem 內 Strategist queue dedup、最多一條 in-flight。Forward 同 problem 內最多一條 in-flight（dispatcher 檢查、避免並發 toolkit 衝突）。
 
 ---
 
@@ -47,15 +51,16 @@ Verify 早期是第三種 worker_kind；後來砍成 dispatcher 主迴圈末端�
 
 `.attempts/<pid>/` 是純暫存，pipeline 結束 unconditional rmtree。所有 agent 寫的東西在刪除前先打包進 `dead_attempts.artifacts` JSON，DB 永遠是 SoT。
 
-DB schema 見 `Tooling/db.py`（程式碼即文件）；7 張表的意義：
+DB schema 見 `Tooling/state/db.py`（程式碼即文件）；8 張表的意義：
 
-- `problems` — 註冊表
-- `goals` — graph 的 OR 節點，含 `entry_kind`（Builder/Backward 第一手怎麼派、可被 cascade `agent_declined` 改寫成 `Backward`）、`status`（open/attempting/proved/shelved）、`alias_target_id`（dedupe）。Phase 7 後 retry 在 pipeline 內共用同一 claude session、不再用 DB column 跨 pipeline 攜帶 sid
-- `strategies` — graph 的 AND 節點，含 `lean_path`（parent 的目標檔，**Verify 勝出才會被改**）、`scratch_path`（這條 Strategy 獨佔的組裝檔）
+- `problems` — 註冊表，含 `bootstrap_done` / `last_strategist_at` / `strategist_directive`（最近一次 EmitDirective 的 body）
+- `goals` — graph 的 OR 節點。columns：`kind`（theorem/def/structure/class、Curry-Howard 統一前 def 不入 BFS、現在 sorry-bearing 一律 open）、`origin`（root/backward/forward）、`status`（open/attempting/proved/shelved/disproved/dead/frozen/pending_strategist_review）、`entry_kind`（Builder/Backward）、`detached`（Strategist Reopen / Forward output 用、繞過 strategy-chain 邏輯讓 BFS dispatch）、`integrity_verified`（root axiom_probe 通過的 marker）、`alias_target_id`（dedupe + G1 shelved-revival）、`depth` / `attempts`
+- `strategies` — graph 的 AND 節點，含 `lean_path`（parent 的目標檔，**Verify 勝出才會被改**）、`scratch_path`（這條 Strategy 獨佔的組裝檔）、`proposal_md`（Backward agent 寫的 decomposition rationale、最終 promote 為 parent 檔頂 annotation）
 - `strategy_subgoals` — 多對多，dedupe 把重複 sub-Goal 收成同一個 row
 - `pipelines` — 只放 finished rows，沒有 'running' 狀態（daemon 死了重啟見乾淨表面）
 - `dead_attempts` — 失敗的 forensic（所有 agent 輸出 artifact 全留在 JSON 欄）
-- `queue` — dispatch ready 的 (kind, target_id) 排隊
+- `queue` — dispatch ready 的 (kind, target_id, target_kind, decision_id) 排隊
+- `strategist_decisions` — Phase 2 加；每筆 Strategist 決策一行，columns：`decision_kind`（Inject/ConfirmShelve/Reopen/EmitDirective/RequestUserAmend/Noop）、`target_id`、`brief`、`reason`、`payload`、`batch_id`（同 decision array 內所有 row 共享、用於 `inject_batch_done` 觸發）、`produced_goal_id` / `produced_strategy_id`（Inject 產出的 goal/strategy 反向 link）、`outcome`
 
 ---
 
@@ -75,9 +80,6 @@ forbidden_lemmas: []
 ## Statement
 <lean expr>
 
-## Entry kind          ← Builder | Backward；root Goal 第一手怎麼派
-Backward
-
 ## Lemma hints
 - <hint 1>
 - ...
@@ -87,6 +89,8 @@ Backward
 ```
 
 `init` 寬解：缺欄位給 default + warning，不 crash。
+
+註：早期有 `## Entry kind` section、Phase 2 後 root 一律走 Strategist `first_launch` 派、entry_kind 已 vestigial、commit `c05a3c3` 刪除。
 
 ---
 
@@ -114,17 +118,23 @@ theorem main : <stmt> := s<NN>
 
 ## 6. Dispatcher 主迴圈（概念骨架）
 
-每個 tick 做四件事，順序固定：
+每個 tick 做五件事、順序固定：
 
 ```
-1. cascade — 收割上一輪完成的 worker，更新 goal/strategy 狀態
-2. verify housekeeping — 撈所有 sub-goal 全 proved 的 strategy、組裝、編譯、寫 alias 進 parent
-                         （遞迴最多 8 圈，深度 4 的題一輪可以連帶 4 層）
-3. 對「proved 且尚未 integrity-verified」的 root → reconcile + prune + integrity gate + tree refresh，整 workspace 都 proved 則退出
-4. bfs_refill + spawn — 把 open Goal 排進 queue、有空格就 spawn
+1. cascade               — 收割上一輪完成的 worker、套狀態轉移
+2. verify housekeeping   — 撈 ready strategy 寫 alias 進 parent；同 loop 內跑 G1 revival pass
+                           （遞迴最多 8 圈、深度 4 的題一輪可連帶 4 層）
+3. root proved? exit     — 對 proved 但尚未 integrity_verified 的 root 跑 reconcile + prune
+                           + integrity gate、root_proved 全到位 → 退出
+4. bfs_refill            — open goal 走 alive CTE 過濾、按 entry_kind 排進 queue
+5. spawn                 — pool 有空格 → 從 queue 拉、ThreadPoolExecutor.submit 進 worker
+                           thread；Forward 走 pre-spawn /register + 取 session token
+                           + 跑 LLM
 ```
 
 **紀律**：cascade 永遠在主線程 sequential（worker thread 只 INSERT finished pipeline row、絕不直接改 goal/strategy 狀態）。這條規則消除了所有 OR-race 災難。
+
+dispatch.pool == gateway workers（locked together、#118 1:1 binding）— 每條 spawn 永遠拿到 1 個 dedicated gateway slot。
 
 ---
 
@@ -136,12 +146,17 @@ theorem main : <stmt> := s<NN>
 - **Builder failed** → `attempts++`；若達 SHELVE_THRESHOLD → `shelved` 並上拋
 - **Backward success** → goal `attempting`（還沒 proved，等 Verify）
 - **Backward failed** → 同 Builder 的 attempts 處理
+- **Forward success** → 新 goal INSERT、origin='forward'、detached=1、sorry-free → 直接 proved（leaf-bypass）、sorry-bearing → open + 等 BFS（Curry-Howard 後 def/structure/class 跟 theorem 一致對待）
+- **Forward failed** → 不影響任何既有 goal、只 fill 對應 strategist_decision row 的 outcome
+- **Strategist** → 多 row INSERT 到 `strategist_decisions`、各 decision_kind 各自副作用（Inject 走 enqueue / ConfirmShelve 走 `_set_goal_terminal_and_propagate(shelved)` / Reopen 走 open + 必要時 detached / EmitDirective 寫 problems.strategist_directive）
 
-Verify 的 `succeeded`/`dead` 轉移在 `verify_housekeeping` 內套，不走 cascade（因為它根本不是 worker）。
+Verify 的 `succeeded`/`dead` 轉移在 `verify_housekeeping` 內套；同時 G1 shelved-revival pass 把「shelved goal aliased to 已 proved 的 Forward output」自動生 alias body + 轉 proved + 上拋（不走 cascade、housekeeping 內 inline）。
+
+**inject_batch_done 觸發**：每筆 Inject decision 寫 `strategy_decisions.outcome`；當 batch 內所有 row 都 outcome 非 NULL、`db.maybe_enqueue_inject_batch_done` enqueue 一筆 Strategist task on root + trigger_kind=`inject_batch_done`。同 root in-queue dedup。
 
 **Shelve 上拋**：goal `shelved` 會殺掉所有「依賴它做 sub-goal」的 parent strategy；parent goal 若無 live strategy → attempts++ → 視情況自己也 shelve、繼續上拋。
 
-`open_goals` 用 recursive CTE 過濾掉 dead/superseded 分支下的 orphan sub-goal，所以 dispatcher 不會浪費 spawn 在死樹枝上。
+`open_goals` 用 recursive CTE 過濾掉 dead/superseded 分支下的 orphan sub-goal，所以 dispatcher 不會浪費 spawn 在死樹枝上。`detached=1` 的 goal 額外 union 進 alive seed（Forward output / Strategist Reopen with broken chain 用）。
 
 ---
 
@@ -159,16 +174,19 @@ Verify 的 `succeeded`/`dead` 轉移在 `verify_housekeeping` 內套，不走 ca
 
 ## 9. Dedupe（同 problem 內 sub-goal 共享）
 
-Backward 拆出新 sub-goal 時，框架查 DB 看是否有 statement 等價的 ancestor 或 orphan-proved 的 sibling。命中就：
+Backward 拆出新 sub-goal 時、框架查 DB 看是否有 statement 等價的既有 goal。命中就：
 - 不 INSERT 新 goal、`strategy_subgoals` link 到 canonical
-- sub-goal 的檔寫成 alias，body 是 `apply <canonical> <;> assumption`
+- sub-goal 的檔寫成 alias、body 是 `apply <canonical> <;> assumption`
 
-等價判定用 Lean kernel `isDefEq`（單一 batch lake-env 呼叫、所有候選一次比完）。Schema 零改動，靠 `strategy_subgoals` 多對多就把 DAG 變成 graph。命中失敗（statement 解析爛）一律 fail-open，不阻斷主流程。
+等價判定走 Lean kernel `apply @<canonical> <;> assumption` probe（單一 batch lake-env 呼叫、所有候選一次比完、容忍 hypothesis-extension）。Schema 零改動、靠 `strategy_subgoals` 多對多就把 DAG 變成 graph。命中失敗（statement 解析爛）一律 fail-open、不阻斷主流程。
 
-候選池：
+候選池（Backward dedupe）：
 1. 嚴格 ancestor chain（lifetime 對齊、無 import cycle 風險）
 2. 同一 parent 的 orphan-proved sub-goal（sibling Strategy 死了但 sub-goal 留下）
-3. 跨 branch 的任何 `proved` goal（最近開放，proved goal 沒下游依賴所以無 cycle 風險）
+3. 跨 branch 的任何 `proved` goal（proved 無下游依賴、無 cycle 風險）
+4. 同 problem 的 `disproved` goal（Phase 2、命中 = "agent 已給過反例、別再提"、整批 Backward proposal abort 走 `same_as_disproved`）
+
+**G1 shelved-revival**（Forward 端、反向 link）：Forward 落地新 goal X 時、跑 `find_shelved_revivals_for_forward`：對同 problem 內 shelved goals S 探「`apply @X <;> assumption` 能否 discharge S」。命中 → `set_alias_target(S, X)`（注意方向是 shelved 指向新 Forward、跟標準 dedupe 反向）；此時 X 尚未 proved、不寫 alias body。當 X 後續 reach proved、`verify_housekeeping` 的 revival pass 偵測 `S.alias_target_id == X AND X.status='proved'`、套 `build_alias_content` 重寫 S.lean_path、`_set_goal_terminal_and_propagate(S, 'proved')`、parent strategy `ready_for_verify` 自然收尾。設計用例：Strategist 為「頂掉某條 shelved sub-goal」inject 的 Forward 跟原 shelved 同形時、不必 Strategist 自己回頭 Reopen。
 
 ---
 
@@ -203,45 +221,67 @@ rollback、operator 手動 reset、未來 reseed）由 `db.update_goal_status`
 
 ```
 Tooling/pipeline/
-  __init__.py    — shared helpers + DTO + re-export
-  builder.py     — run_builder + Phase 1/2
+  __init__.py    — shared helpers + DTO + re-export + /register + /release
+  builder.py     — run_builder + Phase 1 (hint) + Phase 2 (LLM patch)
   backward.py    — run_backward + decomposition + sub-goal placement
+  forward.py     — run_forward + 新 toolkit lemma 落地 + G1 shelved-link
+  strategist.py  — run_strategist + parse_decision + commit_decisions
+  _retry.py      — kind-agnostic in-pipeline retry helper（Phase 7）
+  _assembly.py   — Backward 後段：sub-goal 檔搬遷 + strategy_subgoals 寫入
+  _axiom.py      — axiom_probe wrapper + sorryAx bisect
+  _cite_gate.py  — cited sibling 必須 proved 守門（Backward leaf-bypass + Builder commit）
+  _drafts.py     — timeout postmortem 進度筆記持久化
+  _infra.py      — _INFRA_REASONS 等
   _lake.py       — lake build invocation
-  _skeleton.py   — strategy skeleton + alias promotion
-  _drafts.py     — partial-output 持久化
+  _reflection.py — proved/success/decline 後跑、寫 lessons / brief
+  _skeleton.py   — strategy skeleton + alias promotion + 統一 (theorem|def|structure|class) 解析
+  events.py      — Context.md `Goal history` 段的 4 條 SQL 投影
 ```
 
-`compile_context` 在 `Tooling/agent/context.py`、`Tooling/agent/runtime.py` 只剩 WorkArea + spawn。pipeline 分檔已完成（commit `9638eed`）。
+`compile_context`（Builder/Backward/Forward 共用）在 `Tooling/agent/context.py`、`compile_strategist_context` 在 `Tooling/agent/phase2_context.py`、`Tooling/agent/runtime.py` 只剩 WorkArea + spawn_llm。
 
 ---
 
 ## 12. Context.md：agent 唯一介面
 
-每次 spawn 之前，框架從 DB 編一份 Context.md 寫進 `.attempts/<pid>/`。**agent 看到的所有訊息都從這裡來**（companion file 是備援、agent 經常不主動讀）。
+每次 spawn 之前、框架從 DB 編一份 Context.md 寫進 `.attempts/<pid>/`。**agent 看到的所有訊息都從這裡來**（companion file 是備援、agent 經常不主動讀）。
 
-當前 sections（順序固定）：
+Builder / Backward / Forward 共用 `compile_context`（`Tooling/agent/context.py`）；Strategist 自己一支 `compile_strategist_context`（`Tooling/agent/phase2_context.py`）。
+
+### Builder / Backward / Forward sections（順序固定）
 
 ```
 Goal statement
 Sandbox（讀寫權限邊界 + 框架預寫的檔名約定）
 Strategy naming                   ← Backward 才有；agent 自選 sub-goal 描述性 slug
 Parent goal & strategy            ← origin='backward' 才有
+Forward brief                     ← Forward only：Strategist Inject 的 brief
+Library inventory                 ← Forward only：avoid 重複提案
+Forward history                   ← Forward only：past Forward outputs
 Mathlib hints
 FORBIDDEN_LEMMAS
 Strategic notes
-Library available
-Proved goals on this problem      ← grep 入口指針，0 個則整段省略
+Proved goals on this problem      ← grep 入口指針、0 個則整段省略
 Your previous progress note       ← timeout 後留下的進度筆記
-Goal history (umbrella):
-  ### Direct attempts on this goal           (kind-agnostic；含 agent_declined 子類)
-  ### Sibling decompositions that failed Verify (kind=Backward/None gate)
-  ### Strategies whose decomposition died     (kind-agnostic)
-  ### Sub-goals reported infeasible           (cross-goal、kind=Backward/None gate)
+Goal history (umbrella)           ← Builder/Backward only：4 sub-section
 ```
 
-`Goal history` umbrella 來自 v1（C1 + C2 + C3、commit 8712ce5 onward）— 舊版四個獨立 `##` section 合併、event 投影邏輯抽到 `Tooling/pipeline/events.py` 的 4 個函數。`infeasible_sub` 是 cross-goal 投影：sub-goal 的 `agent_infeasible` 反向投到 parent goal 的 next Backward。完整設計見 `docs/archive/goal_history_unified.md`、reason→event 對照見 `docs/failure_modes.md` §3。
+### Strategist sections（順序固定）
 
-`Proved goals on this problem` 是 Phase 4 加的入口指針 — 只給 count + path，不 push candidate list。agent 用 grep + Read 自食其力（同 mathlib 的 grep + loogle 模式）。每個 proved goal 的 `.lean` 檔頂被 Builder / Verify 寫上 `-- <slug>: <summary>` annotation block（goal_naming_annotation Phase 2，cc934ff），grep 時這就是索引。playbook 機制 + `## Past wins on this problem (playbook)` section 在 Phase 3 退役（5be9a33）— 被這條取代。
+```
+Trigger                                  ← trigger_kind + 若 pending_review 帶 target
+Pending review failure / strategies / ancestors  ← pending_review only
+Completed Inject batches                 ← Phase 2.5：任何 trigger、有未 ack 的 batch 就顯
+Pending reopen-promises                  ← G2：trigger=inject_batch_done 且 batch_id link 完整時、只列 promised 那筆 shelved goal
+Active goals                             ← 非 terminal status 的 goal 速覽
+Failure replay                           ← 最近 Strategist 自己決策 + outcome
+TREE                                     ← problem 樹狀 snapshot
+Manifest meta                            ← first_launch / amend-relevant 時
+```
+
+`Goal history` umbrella 4 sub-section（`Direct attempts on this goal` / `Sibling decompositions that failed Verify` / `Strategies whose decomposition died` / `Sub-goals reported infeasible`）的 event 投影邏輯在 `Tooling/pipeline/events.py`。`infeasible_sub` 是 cross-goal 投影：sub-goal 的 `agent_infeasible` 反向投到 parent goal 的 next Backward。完整設計見 `docs/archive/goal_history_unified.md`。
+
+`Proved goals on this problem` 是 Phase 4 加的入口指針 — 只給 count + path、不 push candidate list。agent 用 grep + Read 自食其力（同 mathlib 的 grep + loogle 模式）。每個 proved goal 的 `.lean` 檔頂被 Builder / Verify 寫上 `-- <slug>: <summary>` annotation block、grep 時這就是索引。`## Past wins on this problem (playbook)` section Phase 3 退役（commit `5be9a33`）— 被這條取代。
 
 ---
 
@@ -251,7 +291,7 @@ Goal history (umbrella):
 |---|---|
 | 'running' state 在 pipelines 表 | 只放 finished rows，daemon 死了不留 zombie |
 | Active cancellation propagation 表 | cascade 入口 no-op 已被動接住 OR 落敗者 |
-| 額外 worker_kind（Forward / Generalizer / Refuter / ConstructionSearch / Strategist） | schema 留洞、實作 deferred；先把 Builder/Backward 跑穩 |
+| 額外 worker_kind（Generalizer / Refuter / ConstructionSearch） | schema 留洞、實作 deferred；Forward / Strategist 已 Phase 2 上線 |
 | 主動清 OR 落敗 strategy 檔 | 留 forensics；root proved 後 dispatcher exit 自動 reconcile + prune 一次（也有 `asterism prune` 給手動跑） |
 | 跨 problem 的 OR pool / 並發 | 等 Library 階段才有意義 |
 | events 表 audit log | dead_attempts.artifacts JSON + stdout 夠 |
@@ -265,23 +305,29 @@ Goal history (umbrella):
 - Worker thread 只 INSERT finished pipeline row、不更新 goal/strategy 狀態
 - `pipelines` 表只存 finished rows
 - `.attempts/<pid>/` 在 `WorkArea.__exit__` unconditional rmtree（agent 輸出先打包進 `dead_attempts.artifacts`）
-- Worker_kind ↔ target_kind 只一一對應 Goal；Verify 不是 worker_kind
+- Worker_kind ↔ target_kind 對應：Builder/Backward → Goal、Forward → Problem、Strategist → Goal (root)；Verify 不是 worker_kind
 - Strategy 的 `scratch_path` 一旦被 INSERT 後 immutable
 - `goals.lean_path` UNIQUE；`strategies.lean_path` 不 UNIQUE（多 strategies 共享 parent target）
 - Backward sub-goal slug 必含 `s<sid>_` 前綴（防 sequential strategies 命名碰撞）
 - Schema 修改要 bump 版本 + 寫 migration（不能光改 CHECK constraint）
+- Strategist 的 `ConfirmShelve` 不能單獨送、必須跟 `Inject` 或 `Reopen` 同 decision array；同 array 內所有 row 共享 batch_id（含 ConfirmShelve）— G2 機制靠這條 link 把 promise 跟 follow-up 配對
+- `strategist_decisions.batch_id` 一旦寫入後 immutable；framework 用「所有 row outcome 非 NULL」推導 batch 完成
+- Forward output goal 必 `detached=1`（無 strategy 上游、靠 detached seed 進 alive set）
 
 ---
 
 ## 15. 已證題目
 
-| Problem | Prover | Wall-clock |
-|---|---|---|
-| compactness | Opus / Sonnet | ~25 / ~60 min |
-| gen_generates | Sonnet | ~30 min |
-| inner_zero_iff_smul | Sonnet | ~21 min |
-| proj_nonexpansive | Sonnet | ~58 min |
-| cantor_xi_measure | Sonnet | ~4 hr |
-| sylvester_gallai | Sonnet / Opus | 4h16min / 2h48min |
+| Problem | Prover | Wall-clock | 備註 |
+|---|---|---|---|
+| compactness | Opus / Sonnet | ~25 / ~60 min | |
+| gen_generates | Sonnet | ~30 min | |
+| inner_zero_iff_smul | Sonnet | ~21 min | |
+| proj_nonexpansive | Sonnet | ~58 min | |
+| cantor_xi_measure | Sonnet | ~4 hr | |
+| sylvester_gallai | Sonnet / Opus | 4h16min / 2h48min | Kelly 1948、Freek-100、mathlib 沒有 |
+| sl2_v_n_irreducible | — | — | (見 git history) |
+| residue_thm | Sonnet+Opus mix | ~6 hr | Cauchy Residue Theorem、PhD-level mathlib gap、Strategist Phase 2 第一個 stress test、8 個 framework 修 |
+| pi1_circle | Sonnet+Opus mix | 140 min | π₁(S¹) ≅ ℤ、24 個 sub-goals、0 framework 修（soft signal）|
 
-SG 是當前最深 sample（Kelly 1948 證法、Freek-100、不在 Mathlib 內）。
+進行中：`Topology.brouwer_fixed_point`（singular homology spine、Phase 2 stress on G1/G2/Curry-Howard/parallel-Forward 等改動）。
