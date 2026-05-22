@@ -878,6 +878,18 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
     # INSERT audit row. brief and reason live in dedicated columns;
     # other structured params go in payload JSON (excluding the tmp
     # path bookkeeping for RequestUserAmend).
+    #
+    # `batch_id` is shared with the batch's Inject rows: when a
+    # ConfirmShelve / Reopen / etc. ships in the same JSON decision
+    # array as one or more Inject(s), it inherits the same UUID. The
+    # `_section_pending_reopens` Context.md section uses this link to
+    # surface a shelved goal ONLY when the Strategist-promised batch
+    # of follow-up Injects has completed — instead of re-surfacing
+    # the goal on every unrelated inject_batch_done wake (brouwer
+    # 2026-05-22: g2771 ConfirmShelve'd 4× because Context.md kept
+    # listing it on every wake regardless of who was woken). For
+    # solo non-Inject batches (no paired Inject), inject_batch_id is
+    # None and the column stays NULL, matching the pre-fix shape.
     payload_for_audit = {
         k: v for k, v in decision.payload.items()
         if not str(k).startswith("__")
@@ -886,11 +898,12 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
     cur = conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, target_id, brief, reason, payload,"
-        " outcome, created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " batch_id, outcome, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (problem, tick, trigger_kind, decision.kind,
          decision.target_id, decision.brief, decision.reason,
          json.dumps(payload_for_audit, ensure_ascii=False),
+         inject_batch_id,
          outcome if outcome != "committed" else None,
          ts, ts),
     )

@@ -507,3 +507,184 @@ def test_inject_batch_section_omits_produced_lemma(
     )
     text = out.read_text(encoding="utf-8")
     assert "produced:" not in text
+
+
+# ---------------------------------------------------------------------
+# _section_pending_reopens — batch-scoped surfacing (brouwer 2026-05-22 G2)
+# ---------------------------------------------------------------------
+
+def _seed_shelved_goal(conn: sqlite3.Connection, *, slug: str,
+                       problem: str = "p") -> int:
+    gid = db.insert_goal(
+        conn, problem=problem, slug=slug,
+        lean_path=f"Problems/{problem}/proofs/L_{slug}.lean",
+        statement="T", origin="backward",
+    )
+    db.update_goal_status(conn, gid, "shelved")
+    return gid
+
+
+def _seed_confirmshelve_with_inject_batch(
+    conn: sqlite3.Connection, *, problem: str = "p",
+    goal_id: int, batch_id: str, inject_outcomes: list[str | None],
+    cs_reason: str = "deferred; injecting follow-up brick",
+) -> int:
+    """Seed one ConfirmShelve(goal_id) + N Inject(Forward) rows sharing
+    `batch_id`. `inject_outcomes` length controls N (None means still
+    in-flight, str means terminal). Returns the ConfirmShelve row id.
+    """
+    ts = db.now()
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
+        " batch_id, outcome, created_at, updated_at)"
+        " VALUES (?, 0, 'inject_batch_done', 'ConfirmShelve', ?, NULL, ?, '{}', ?,"
+        "         NULL, ?, ?)",
+        (problem, str(goal_id), cs_reason, batch_id, ts, ts),
+    )
+    cs_id = int(cur.lastrowid)
+    for i, oc in enumerate(inject_outcomes):
+        conn.execute(
+            "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+            " trigger_kind, decision_kind, target_id, brief, reason,"
+            " payload, batch_id, outcome, created_at, updated_at)"
+            " VALUES (?, 0, 'inject_batch_done', 'Inject', NULL, ?, NULL,"
+            "         ?, ?, ?, ?, ?)",
+            (problem, f"## Need\nbrick {i}",
+             '{"pipeline":"Forward","step_index":' + str(i) + '}',
+             batch_id, oc, ts, ts),
+        )
+    conn.commit()
+    return cs_id
+
+
+def test_pending_reopens_surfaces_promised_goal_when_batch_complete(
+    conn: sqlite3.Connection,
+) -> None:
+    """Happy path — ConfirmShelve(G) + Inject batch shipped together,
+    all Injects landed → G surfaces with the promised batch's
+    completion summary."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    g = _seed_shelved_goal(conn, slug="g_shelved")
+    _seed_confirmshelve_with_inject_batch(
+        conn, goal_id=g, batch_id="batch-promised",
+        inject_outcomes=["success", "success"],
+    )
+    lines = phase2_context._section_pending_reopens(
+        conn, "p", "inject_batch_done")
+    body = "\n".join(lines)
+    assert "## Pending reopen-promises" in body
+    assert "g_shelved" in body
+
+
+def test_pending_reopens_suppresses_when_promised_batch_inflight(
+    conn: sqlite3.Connection,
+) -> None:
+    """Inject batch still has a row with outcome=NULL → the promise
+    hasn't landed yet; don't surface the goal."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    g = _seed_shelved_goal(conn, slug="g_pending")
+    _seed_confirmshelve_with_inject_batch(
+        conn, goal_id=g, batch_id="batch-inflight",
+        inject_outcomes=["success", None],  # one still in flight
+    )
+    lines = phase2_context._section_pending_reopens(
+        conn, "p", "inject_batch_done")
+    assert lines == []
+
+
+def test_pending_reopens_suppresses_after_already_addressed(
+    conn: sqlite3.Connection,
+) -> None:
+    """Once Strategist has emitted a later ConfirmShelve/Reopen on the
+    same goal, the previously-promised batch is "addressed"; don't
+    re-surface (brouwer g2771 re-ConfirmShelve x4 incident)."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    g = _seed_shelved_goal(conn, slug="g_addressed")
+    _seed_confirmshelve_with_inject_batch(
+        conn, goal_id=g, batch_id="batch-first",
+        inject_outcomes=["success"],
+    )
+    # Strategist already considered + re-shelved with a fresher batch.
+    _seed_confirmshelve_with_inject_batch(
+        conn, goal_id=g, batch_id="batch-second",
+        inject_outcomes=["success"],
+    )
+    lines = phase2_context._section_pending_reopens(
+        conn, "p", "inject_batch_done")
+    body = "\n".join(lines)
+    # The fresher (batch-second) WAS the latest CS — and its batch is
+    # complete — so it should surface; but the original "batch-first"
+    # surfacing must not. Single appearance only.
+    assert body.count("g_addressed") == 1
+
+
+def test_pending_reopens_skips_legacy_cs_with_null_batch_id(
+    conn: sqlite3.Connection,
+) -> None:
+    """Pre-fix ConfirmShelve rows have batch_id=NULL (no link to
+    promised Injects). Such rows can't surface because the promise
+    can't be reconstructed; the goal stays shelved until a fresher
+    ConfirmShelve binds it to a batch. Documents intentional
+    forward-only behavior — no retro-fix for legacy data."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    g = _seed_shelved_goal(conn, slug="g_legacy")
+    ts = db.now()
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
+        " batch_id, outcome, created_at, updated_at)"
+        " VALUES ('p', 0, 'inject_batch_done', 'ConfirmShelve', ?, NULL,"
+        "         'old', '{}', NULL, NULL, ?, ?)",
+        (str(g), ts, ts),
+    )
+    conn.commit()
+    lines = phase2_context._section_pending_reopens(
+        conn, "p", "inject_batch_done")
+    assert lines == []
+
+
+def test_pending_reopens_skips_batch_with_only_confirmshelve_reopen(
+    conn: sqlite3.Connection,
+) -> None:
+    """A ConfirmShelve+Reopen pair (no Inject) carries no follow-up
+    promise to wait on, so surfacing makes no sense even when the
+    batch_id is set."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    g = _seed_shelved_goal(conn, slug="g_no_inject")
+    ts = db.now()
+    # ConfirmShelve in batch, no Inject sibling.
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
+        " batch_id, outcome, created_at, updated_at)"
+        " VALUES ('p', 0, 'inject_batch_done', 'ConfirmShelve', ?, NULL,"
+        "         'r', '{}', 'batch-no-inj', NULL, ?, ?)",
+        (str(g), ts, ts),
+    )
+    conn.commit()
+    lines = phase2_context._section_pending_reopens(
+        conn, "p", "inject_batch_done")
+    assert lines == []
+
+
+def test_pending_reopens_skipped_on_non_inject_batch_done_trigger(
+    conn: sqlite3.Connection,
+) -> None:
+    """Other trigger kinds (routine / pending_review / first_launch)
+    skip this section entirely — the inject_batch_done gate is what
+    makes "promised batch completion" semantically meaningful."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    g = _seed_shelved_goal(conn, slug="g_skip")
+    _seed_confirmshelve_with_inject_batch(
+        conn, goal_id=g, batch_id="batch-X",
+        inject_outcomes=["success"],
+    )
+    for trig in ("routine", "pending_review", "first_launch"):
+        assert phase2_context._section_pending_reopens(conn, "p", trig) == []

@@ -256,93 +256,147 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
 def _section_pending_reopens(conn: sqlite3.Connection,
                              problem: str,
                              trigger_kind: str) -> list[str]:
-    """Cross-reference shelved goals against Forward-origin goals proved
-    since their shelve event.
+    """Surface shelved goals whose promised follow-up batch just landed.
 
-    Strategist's ConfirmShelve reasons frequently promise "retry once
-    the injected Forward lands" but the framework has no automatic
-    re-evaluate when the promised Forward proves — empirically (brouwer
-    run 2026-05-22) 7/9 ConfirmShelve reasons in this run wrote that
-    kind of promise, 0 Reopen decisions followed. This section surfaces
-    the candidate Reopen list so the agent can decide
-    `Reopen(target_goal_id=...)` instead of injecting yet another
-    toolkit piece.
+    Promise model: when Strategist ships a decision array `[ConfirmShelve(G),
+    Inject(F1), Inject(F2), ...]` it's implicitly saying "I'm shelving G
+    because I'm injecting F1/F2 to unblock it; wake me to re-evaluate G
+    when they're done". `_commit_one` writes the shared `batch_id` on
+    every row in the array, so the framework can later recover the
+    promise by querying ConfirmShelve rows whose batch siblings (Inject
+    rows) have all reached terminal `outcome`.
 
     Gated on `trigger_kind == 'inject_batch_done'` — that's the wake
-    type where a batch just terminated (one or more Forwards may have
-    just proved), making Reopen-check most actionable. Other triggers
-    (routine / pending_review / first_launch) skip this section to
-    reduce per-call Context.md noise; historic promises still surface
-    via the next inject_batch_done wake.
+    fired when a batch's last Inject reaches terminal. Other triggers
+    (routine / pending_review / first_launch) skip this section.
 
-    Per shelved goal:
-      * latest ConfirmShelve `reason` (truncated to ~200 chars) — the
-        explicit promise the agent made when shelving;
-      * Forward-origin goals that proved *after* the shelve event —
-        candidate prereqs the agent can match against its own promise.
+    Scoping rule (brouwer 2026-05-22 G2): pre-fix this section dumped
+    *every* shelved goal in the problem on every inject_batch_done
+    wake, causing Strategist to re-ConfirmShelve g2771 four times with
+    no new evidence between calls. Post-fix it lists ONLY goals whose
+    own promised batch (the one cited by their latest ConfirmShelve)
+    is now complete — i.e., goals where the Inject(s) Strategist
+    explicitly designed to address them have produced their outcomes
+    and there's now genuine new evidence to re-evaluate.
 
-    Output omitted when trigger is not `inject_batch_done` or when
-    there are no shelved goals.
+    Fortuitous unblock (a Forward designed for an unrelated batch
+    happens to make a shelved goal provable) is handled separately by
+    the G1 dedupe revival pass (`find_shelved_revivals_for_forward` →
+    `_revive_shelved_alias`) — no need to re-surface unrelated
+    shelved goals here.
+
+    Per surfaced goal:
+      * latest ConfirmShelve `reason` (the explicit promise);
+      * the now-complete promised batch's Inject decisions + their
+        produced goals (so Strategist sees exactly what landed).
     """
     if trigger_kind != "inject_batch_done":
         return []
-    shelved = list(conn.execute(
-        "SELECT id, slug, updated_at FROM goals"
-        " WHERE problem = ? AND status = 'shelved'"
-        " ORDER BY updated_at DESC LIMIT 12",
-        (problem,),
+
+    # Find shelved goals whose latest ConfirmShelve was committed in a
+    # batch whose every sibling Inject row has `outcome IS NOT NULL`
+    # (batch fully terminal). Latest-per-goal so a goal that's been
+    # re-ConfirmShelved across multiple batches surfaces against its
+    # most recent promise — older batches' completion is moot.
+    rows = list(conn.execute(
+        """
+        WITH latest_cs AS (
+            SELECT g.id AS goal_id, g.slug AS goal_slug,
+                   g.updated_at AS shelved_at,
+                   MAX(d.id) AS cs_decision_id
+            FROM goals g
+            JOIN strategist_decisions d
+              ON d.target_id = CAST(g.id AS TEXT)
+             AND d.decision_kind = 'ConfirmShelve'
+             AND d.problem = g.problem
+             AND d.batch_id IS NOT NULL
+            WHERE g.problem = ? AND g.status = 'shelved'
+            GROUP BY g.id
+        )
+        SELECT lcs.goal_id, lcs.goal_slug, lcs.shelved_at,
+               cs.id AS cs_id, cs.reason AS cs_reason,
+               cs.batch_id AS cs_batch_id
+        FROM latest_cs lcs
+        JOIN strategist_decisions cs ON cs.id = lcs.cs_decision_id
+        WHERE cs.batch_id NOT IN (
+            -- exclude batches still in-flight: any Inject sibling
+            -- with outcome NULL means the promise hasn't landed yet
+            SELECT batch_id FROM strategist_decisions
+            WHERE problem = ?
+              AND decision_kind = 'Inject'
+              AND batch_id IS NOT NULL
+              AND outcome IS NULL
+        )
+        AND EXISTS (
+            -- and the batch must contain at least one Inject — pure
+            -- ConfirmShelve+Reopen batches carry no promise to wait on
+            SELECT 1 FROM strategist_decisions sib
+            WHERE sib.batch_id = cs.batch_id
+              AND sib.decision_kind = 'Inject'
+        )
+        AND NOT EXISTS (
+            -- and Strategist hasn't already addressed this completed
+            -- batch with a newer ConfirmShelve / Reopen on the same
+            -- goal (i.e., this surfacing has actually new
+            -- information vs the last time we surfaced)
+            SELECT 1 FROM strategist_decisions later
+            WHERE later.problem = ?
+              AND later.target_id = CAST(lcs.goal_id AS TEXT)
+              AND later.decision_kind IN ('ConfirmShelve', 'Reopen')
+              AND later.id > cs.id
+        )
+        ORDER BY lcs.shelved_at DESC
+        LIMIT 12
+        """,
+        (problem, problem, problem),
     ))
-    if not shelved:
+    if not rows:
         return []
 
     out = [
         "## Pending reopen-promises",
         "",
-        "Shelved goals whose ConfirmShelve reason may have promised "
-        "retry once a Forward toolkit landed. Cross-referenced against "
-        "Forward-origin goals that proved since the shelve. If a "
-        "shelved goal's promise matches a now-proved Forward, "
-        "`Reopen(target_goal_id=<shelved_id>)` may close the loop "
-        "instead of injecting another toolkit piece.",
+        "Shelved goal(s) whose ConfirmShelve batch promised a follow-up "
+        "Inject set — and that follow-up set has now fully landed. "
+        "Strategist's own batch-time promise is the trigger; this is "
+        "the moment to evaluate `Reopen(target_goal_id=<id>)` vs a "
+        "further `Inject` vs a second `ConfirmShelve` with a refined "
+        "promise. Fortuitous unblock by unrelated Forwards is handled "
+        "automatically by the G1 dedupe revival pass — no need to "
+        "re-surface unrelated shelved goals here.",
         "",
     ]
-    for g in shelved:
-        gid = int(g["id"])
-        slug = str(g["slug"])
-        shelved_at = str(g["updated_at"])
-        # Latest ConfirmShelve reason for this goal (if any).
-        cs_row = conn.execute(
-            "SELECT reason FROM strategist_decisions"
-            " WHERE problem = ? AND decision_kind = 'ConfirmShelve'"
-            "  AND target_id = ? AND reason IS NOT NULL"
-            " ORDER BY id DESC LIMIT 1",
-            (problem, str(gid)),
-        ).fetchone()
-        reason = str(cs_row["reason"]).strip() if cs_row else ""
-        if reason and len(reason) > 220:
-            reason = reason[:220].rstrip() + "…"
-        # Forward-origin goals proved AFTER this shelve.
-        fwd_rows = list(conn.execute(
-            "SELECT slug FROM goals"
-            " WHERE problem = ? AND origin = 'forward' AND status = 'proved'"
-            "  AND updated_at > ?"
-            " ORDER BY updated_at",
-            (problem, shelved_at),
-        ))
-        fwd_slugs = [str(r["slug"]) for r in fwd_rows]
+    for r in rows:
+        gid = int(r["goal_id"])
+        slug = str(r["goal_slug"])
+        shelved_at = str(r["shelved_at"])[:19]
+        reason = str(r["cs_reason"] or "").strip()
+        if len(reason) > 240:
+            reason = reason[:240].rstrip() + "…"
+        batch_id = str(r["cs_batch_id"])
 
-        out.append(f"### `{slug}` (id={gid}, shelved {shelved_at[:19]})")
-        if reason:
-            out.append(f"shelve reason: {reason}")
-        else:
-            out.append("shelve reason: (no ConfirmShelve decision recorded — "
-                       "framework shelve, not Strategist-confirmed)")
-        if fwd_slugs:
-            joined = ", ".join(f"`{s}`" for s in fwd_slugs)
-            out.append(f"Forwards proved since shelve ({len(fwd_slugs)}): "
-                       f"{joined}")
-        else:
-            out.append("Forwards proved since shelve: (none yet)")
+        out.append(f"### `{slug}` (id={gid}, shelved {shelved_at})")
+        out.append(f"shelve reason: {reason}" if reason
+                   else "shelve reason: (empty)")
+        # Pull what the promised batch actually produced.
+        siblings = list(conn.execute(
+            "SELECT d.id, d.brief, d.target_id, d.produced_goal_id,"
+            " d.outcome, g.slug AS produced_slug, g.status AS produced_status"
+            " FROM strategist_decisions d"
+            " LEFT JOIN goals g ON g.id = d.produced_goal_id"
+            " WHERE d.batch_id = ? AND d.decision_kind = 'Inject'"
+            " ORDER BY d.id",
+            (batch_id,),
+        ))
+        out.append(f"promised batch ({len(siblings)} Inject(s)):")
+        for s in siblings:
+            brief_head = (s["brief"] or "").strip().split("\n", 1)[0][:70]
+            if s["produced_slug"] is not None:
+                tail = (f"→ `{s['produced_slug']}` "
+                        f"(status={s['produced_status']})")
+            else:
+                tail = f"→ outcome={s['outcome'] or 'pending'}"
+            out.append(f"  - {brief_head}  {tail}")
         out.append("")
     return out
 

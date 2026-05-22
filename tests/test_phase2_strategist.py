@@ -661,6 +661,98 @@ def test_commit_confirmshelve_cascades_shelved_to_descendants(
     assert db.get_goal(conn, sub)["status"] == "shelved"
 
 
+def test_commit_paired_confirmshelve_shares_inject_batch_id(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """When `[ConfirmShelve(G), Inject(Forward, ...)]` ships in one
+    decision array, the ConfirmShelve row must inherit the same
+    batch_id as the Inject row(s). _section_pending_reopens relies on
+    this link to re-surface G only when the explicit promised batch
+    has completed. Pre-fix the ConfirmShelve row's batch_id stayed
+    NULL, breaking the linkage (brouwer 2026-05-22: g2771
+    ConfirmShelve'd 4x because surfacing fell back to "all shelved"
+    when the promise link was missing)."""
+    root = _insert_root(conn)
+    cur = conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, scratch_path,"
+        " status, proposal_md, created_by, created_at)"
+        " VALUES (?, '', '', 'proposed', '', 'test', ?)",
+        (root, db.now()))
+    sid = int(cur.lastrowid)
+    sub = db.insert_goal(
+        conn, problem="p", slug="sub",
+        lean_path="Problems/p/proofs/L_sub.lean", statement="T",
+        origin="backward",
+    )
+    db.update_goal_status(conn, sub, "pending_strategist_review")
+    conn.execute(
+        "INSERT INTO strategy_subgoals (strategy_id, subgoal_id, position)"
+        " VALUES (?, ?, 0)", (sid, sub))
+    conn.commit()
+
+    cs, _ = strategist.parse_decision(json.dumps({
+        "kind": "ConfirmShelve", "target_goal_id": sub,
+        "reason": "shelving; injected Forward will unblock",
+    }))
+    ij, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Forward",
+        "brief": "## Need\nFollow-up brick to unblock sub",
+    }))
+    outcomes = strategist.commit_decisions(
+        [cs, ij], conn, problem="p", tick=1,
+        trigger_kind="pending_review", workspace=workspace,
+    )
+    # Pull both rows back; ConfirmShelve and Inject must share batch_id.
+    cs_row = conn.execute(
+        "SELECT batch_id FROM strategist_decisions WHERE id = ?",
+        (outcomes[0].decision_row_id,),
+    ).fetchone()
+    ij_row = conn.execute(
+        "SELECT batch_id FROM strategist_decisions WHERE id = ?",
+        (outcomes[1].decision_row_id,),
+    ).fetchone()
+    assert cs_row["batch_id"] is not None
+    assert cs_row["batch_id"] == ij_row["batch_id"]
+
+
+def test_commit_solo_confirmshelve_no_inject_keeps_batch_id_null(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """ConfirmShelve alone (no Inject in the same decision array — the
+    schema forbids this in practice, but the commit path should still
+    behave) writes batch_id=NULL. Only batches containing >=1 Inject
+    get a shared UUID; this preserves _section_pending_reopens'
+    "promised batch landed" semantics (a non-Inject batch has nothing
+    to wait on)."""
+    root = _insert_root(conn)
+    sub = db.insert_goal(
+        conn, problem="p", slug="sub",
+        lean_path="Problems/p/proofs/L_sub.lean", statement="T",
+        origin="backward",
+    )
+    db.update_goal_status(conn, sub, "pending_strategist_review")
+    conn.commit()
+    re_op, _ = strategist.parse_decision(json.dumps({
+        "kind": "Reopen", "target_goal_id": sub, "reason": "try again",
+    }))
+    cs, _ = strategist.parse_decision(json.dumps({
+        "kind": "ConfirmShelve", "target_goal_id": sub,
+        "reason": "actually shelve",
+    }))
+    # Schema's strict pair is CS + Inject/Reopen — pair with Reopen
+    # (which itself doesn't carry batch_id). Outcome: both batch_id
+    # NULL since no Inject was in the array.
+    outcomes = strategist.commit_decisions(
+        [cs, re_op], conn, problem="p", tick=1,
+        trigger_kind="routine", workspace=workspace,
+    )
+    cs_row = conn.execute(
+        "SELECT batch_id FROM strategist_decisions WHERE id = ?",
+        (outcomes[0].decision_row_id,),
+    ).fetchone()
+    assert cs_row["batch_id"] is None
+
+
 def test_commit_reopen_with_broken_chain_sets_detached(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
