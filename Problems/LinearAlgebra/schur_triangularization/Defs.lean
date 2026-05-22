@@ -1,0 +1,3 @@
+namespace Problems.LinearAlgebra.schur_triangularization
+
+end Problems.LinearAlgebra.schur_triangularization
