@@ -602,3 +602,151 @@ def test_register_session_fails_when_pool_exhausted(
     assert token == ""
     assert err is not None
     assert "pool exhausted" in err
+
+
+# ---------------------------------------------------------------------
+# Stale-claim sweep (#118 follow-up — gateway activity-TTL leak fix)
+# ---------------------------------------------------------------------
+
+def _build_fake_pool(monkeypatch: pytest.MonkeyPatch,
+                     tmp_path: Path, n: int = 2) -> list:
+    """Stub out _state.workers with `n` fresh WorkerSlot rows. Yields
+    the slots for inspection. Cleans sessions on exit (per-test)."""
+    from Tooling.lsp.gateway import WorkerSlot
+    slots = [WorkerSlot(slot_id=i,
+                        slot_path=tmp_path / f"slot_{i}.lean",
+                        slot_uri=f"file:///slot_{i}",
+                        file_version=0)
+             for i in range(n)]
+    monkeypatch.setattr(lsp_gateway._state, "workers", slots)
+    return slots
+
+
+def _make_meta(tmp_path: Path, *, pipeline_id: str,
+               last_active: float) -> SessionMetadata:
+    return SessionMetadata(
+        pipeline_id=pipeline_id,
+        target_path=tmp_path / f"{pipeline_id}.lean",
+        problem="p", workspace=tmp_path, log_path=None,
+        file_content="", last_active=last_active,
+    )
+
+
+def test_sweep_reclaims_session_inactive_beyond_ttl(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Session whose `last_active` is older than `_LEASE_TTL_SEC`
+    must be popped + its claimed slot freed."""
+    import time as _t
+    slots = _build_fake_pool(monkeypatch, tmp_path, n=2)
+    now = _t.monotonic()
+    stale = _make_meta(tmp_path, pipeline_id="pipe-stale",
+                       last_active=now - lsp_gateway._LEASE_TTL_SEC - 1.0)
+    slots[0].claimed_by = "pipe-stale"
+    with _state.sessions_lock:
+        _state.sessions["stale-tok"] = stale
+    try:
+        n = lsp_gateway._sweep_stale_claims()
+        assert n == 1
+        assert "stale-tok" not in _state.sessions
+        assert slots[0].claimed_by is None
+    finally:
+        with _state.sessions_lock:
+            _state.sessions.pop("stale-tok", None)
+
+
+def test_sweep_preserves_fresh_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Session with `last_active` newer than TTL stays put."""
+    import time as _t
+    slots = _build_fake_pool(monkeypatch, tmp_path, n=2)
+    now = _t.monotonic()
+    fresh = _make_meta(tmp_path, pipeline_id="pipe-fresh",
+                       last_active=now - 1.0)
+    slots[0].claimed_by = "pipe-fresh"
+    with _state.sessions_lock:
+        _state.sessions["fresh-tok"] = fresh
+    try:
+        n = lsp_gateway._sweep_stale_claims()
+        assert n == 0
+        assert "fresh-tok" in _state.sessions
+        assert slots[0].claimed_by == "pipe-fresh"
+    finally:
+        with _state.sessions_lock:
+            _state.sessions.pop("fresh-tok", None)
+        slots[0].claimed_by = None
+
+
+def test_sweep_handles_mixed_stale_and_fresh(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Real-world steady-state: some slots are active mid-spawn, some
+    are leaks from prior crashes. Sweep reclaims only the stale ones."""
+    import time as _t
+    slots = _build_fake_pool(monkeypatch, tmp_path, n=4)
+    now = _t.monotonic()
+    fresh = _make_meta(tmp_path, pipeline_id="pipe-fresh",
+                       last_active=now - 5.0)
+    stale1 = _make_meta(tmp_path, pipeline_id="pipe-stale1",
+                        last_active=now - lsp_gateway._LEASE_TTL_SEC - 10)
+    stale2 = _make_meta(tmp_path, pipeline_id="pipe-stale2",
+                        last_active=now - lsp_gateway._LEASE_TTL_SEC - 999)
+    slots[0].claimed_by = "pipe-fresh"
+    slots[1].claimed_by = "pipe-stale1"
+    slots[2].claimed_by = "pipe-stale2"
+    # slots[3] genuinely free
+    with _state.sessions_lock:
+        _state.sessions.update({
+            "fresh-tok": fresh, "stale1-tok": stale1, "stale2-tok": stale2,
+        })
+    try:
+        n = lsp_gateway._sweep_stale_claims()
+        assert n == 2
+        assert "fresh-tok" in _state.sessions
+        assert "stale1-tok" not in _state.sessions
+        assert "stale2-tok" not in _state.sessions
+        # Fresh slot untouched; stale slots freed.
+        assert slots[0].claimed_by == "pipe-fresh"
+        assert slots[1].claimed_by is None
+        assert slots[2].claimed_by is None
+        assert slots[3].claimed_by is None
+    finally:
+        with _state.sessions_lock:
+            for t in ("fresh-tok", "stale1-tok", "stale2-tok"):
+                _state.sessions.pop(t, None)
+        for s in slots:
+            s.claimed_by = None
+
+
+def test_sweep_no_op_on_empty_session_map(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Steady-state hot path: no sessions → no work, no errors."""
+    _build_fake_pool(monkeypatch, tmp_path, n=4)
+    assert lsp_gateway._sweep_stale_claims() == 0
+
+
+def test_sweep_orphan_session_without_matching_slot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Defensive: session in `sessions` whose pipeline_id matches no
+    slot (e.g. mid-state corruption) still gets popped — sweep doesn't
+    require slot match to drop the session entry."""
+    import time as _t
+    slots = _build_fake_pool(monkeypatch, tmp_path, n=2)
+    now = _t.monotonic()
+    orphan = _make_meta(tmp_path, pipeline_id="pipe-orphan",
+                        last_active=now - lsp_gateway._LEASE_TTL_SEC - 1)
+    # No slot has claimed_by="pipe-orphan"
+    with _state.sessions_lock:
+        _state.sessions["orphan-tok"] = orphan
+    try:
+        n = lsp_gateway._sweep_stale_claims()
+        assert n == 1
+        assert "orphan-tok" not in _state.sessions
+        # Slots untouched (none matched).
+        assert all(s.claimed_by is None for s in slots)
+    finally:
+        with _state.sessions_lock:
+            _state.sessions.pop("orphan-tok", None)

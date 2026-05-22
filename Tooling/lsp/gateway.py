@@ -99,13 +99,21 @@ class SessionMetadata:
     of the agent's accumulated edits; slot URIs are transient stages
     we push this content onto for elaboration. target_path is the
     real on-disk goal_lean — write-through ensures the framework's
-    post-spawn cascade reads the agent's final state."""
+    post-spawn cascade reads the agent's final state.
+
+    `last_active` is the activity-TTL liveness signal: updated by
+    `_acquire_slot` on every successful tool acquire and consumed by
+    the `_sweep_stale_claims` background loop to reclaim leaked
+    slots. Initialized to register-time so a fresh session that
+    hasn't issued a tool call yet still gets the full LEASE_TTL grace
+    window."""
     pipeline_id: str
     target_path: Path
     problem: str
     workspace: Path
     log_path: Path | None = None
     file_content: str = ""
+    last_active: float = field(default_factory=time.monotonic)
 
 
 # ─── Gateway global state ─────────────────────────────────
@@ -373,8 +381,10 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True,
                     kind = "cold_noswap"
                     with _state.counters_lock:
                         _state.n_cold_noswap += 1
+                meta.last_active = time.monotonic()
                 yield (my_slot, kind)
                 my_slot.last_used_ts = time.time()
+                meta.last_active = time.monotonic()
                 return
             finally:
                 my_slot.lock.release()
@@ -463,6 +473,80 @@ def _current_session() -> SessionMetadata | None:
         return None
     with _state.sessions_lock:
         return _state.sessions.get(token)
+
+
+# ─── Stale-claim sweep (#118 follow-up) ────────────────
+
+# Worker timeouts are 600s (main) + 180s (postmortem); a healthy
+# pipeline issues tool calls every few seconds during agent work, so
+# silence > 900s reliably means the claim has leaked (release_session
+# urlopen failed silently, or the worker / dispatcher crashed before
+# AttemptsContext.__exit__ ran). Set well above WORKER_TIMEOUT to
+# leave a comfortable buffer so long agent reasoning between tool
+# calls is never mistakenly reclaimed.
+_LEASE_TTL_SEC = 900.0
+_SWEEP_INTERVAL_SEC = 60.0
+
+
+def _sweep_stale_claims() -> int:
+    """One sweep pass: walk active sessions, reclaim any claim whose
+    `last_active` is older than LEASE_TTL. Returns the count of slots
+    reclaimed (0 in the steady-state hot path).
+
+    Reclaim semantics match `_release_session_internal` — pop from
+    `sessions` + clear `claimed_by` on the matching slot. We DO NOT
+    clear `content_pipeline_id` (mirrors release semantics; the next
+    claim's first tool call will didChange its own content in
+    regardless).
+
+    Brouwer 2026-05-23: observed 4/4 slots claimed but only 2 active
+    spawn dirs on disk + workers_busy=0. /release urlopen failures
+    silently leaked claims; the daemon eventually self-exited via
+    CONSEC_GATEWAY_UNREACHABLE_LIMIT=8 once concurrent dispatches
+    couldn't find any free slot. Activity-TTL self-heals before that
+    safety net trips."""
+    now = time.monotonic()
+    reclaimed = 0
+    with _state.sessions_lock:
+        # Snapshot then mutate — we hold the lock for the whole sweep
+        # because reclaim writes `claimed_by` and `sessions.pop` need
+        # the same lock that /register / /release use to serialize
+        # claim transitions. The work per session is O(workers) for
+        # the slot lookup which is bounded (~4 in production), so
+        # holding the lock for the full pass is cheap.
+        stale = [
+            (tok, meta) for tok, meta in _state.sessions.items()
+            if now - meta.last_active > _LEASE_TTL_SEC
+        ]
+        for tok, meta in stale:
+            _state.sessions.pop(tok, None)
+            for slot in _state.workers:
+                if slot.claimed_by == meta.pipeline_id:
+                    slot.claimed_by = None
+                    break
+            reclaimed += 1
+            inactive_for = now - meta.last_active
+            print(
+                f"[gateway] reclaimed leaked slot for "
+                f"pipeline {meta.pipeline_id[:8]} "
+                f"({inactive_for:.0f}s inactive > "
+                f"{_LEASE_TTL_SEC:.0f}s TTL)",
+                file=sys.stderr, flush=True,
+            )
+    return reclaimed
+
+
+def _stale_claim_sweep_loop() -> None:
+    """Background daemon thread. Runs every `_SWEEP_INTERVAL_SEC`
+    forever; any per-pass exception is logged and swallowed so a
+    bad-state session can't crash the sweeper."""
+    while True:
+        try:
+            time.sleep(_SWEEP_INTERVAL_SEC)
+            _sweep_stale_claims()
+        except Exception as exc:  # noqa: BLE001 — keep loop alive
+            print(f"[gateway] stale-claim sweep raised: {exc}",
+                  file=sys.stderr, flush=True)
 
 
 # ─── Diag + import helpers ─────────────────────────
@@ -1155,6 +1239,11 @@ def main() -> None:
 
     threading.Thread(target=_start_workers, args=(workspace, w_count),
                      daemon=True).start()
+    # Stale-claim sweep: reclaims gateway slots whose /release was
+    # dropped (urlopen failure during teardown, worker crash before
+    # AttemptsContext.__exit__, etc.). Cheap when nothing is stale.
+    threading.Thread(target=_stale_claim_sweep_loop,
+                     daemon=True, name="gateway-stale-claim-sweep").start()
     err = _ensure_backend_ready(timeout=600.0)
     if err:
         print(f"[gateway] FATAL: {err}", file=sys.stderr, flush=True)
