@@ -243,16 +243,22 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
     statement = _extract_statement_string(body, metadata.slug,
                                           metadata.kind) or ""
 
-    # Phase 4 — kind-based status init. theorem keeps the existing
-    # leaf-bypass split (sorry-free → proved, otherwise open for
-    # Backward / Builder attack). Non-theorem kinds (def / structure /
-    # class) carry no proof obligation: status='proved' immediately,
-    # BFS never dispatches workers on them, Library promotes without
-    # axiom_probe (which has no body to probe).
-    if metadata.kind == "theorem":
-        initial_status = "proved" if metadata.sorry_free else "open"
-    else:
-        initial_status = "proved"
+    # Curry-Howard unified — every kind is a request for an inhabitant
+    # of some type (theorem = inhabitant of a Prop, def/structure/class
+    # = inhabitant of a Type). A sorry-bearing body is a deferred
+    # obligation regardless of kind; a sorry-free body is a concrete
+    # artifact.
+    #
+    # Pre-unification, non-theorem kinds were unconditionally marked
+    # proved on the assumption that they "carry no proof obligation".
+    # That mishandled `def foo := sorry`, which Lean accepts (sorry is
+    # a polymorphic placeholder term) but is semantically an empty
+    # shell: downstream lemmas about `foo`'s value have nothing to
+    # unfold. Brouwer 2026-05-22: g2766 / g2767 `singular_chain_
+    # boundary` shipped as `def := sorry`, framework marked them
+    # proved, downstream g2771 stuck unprovable until Strategist
+    # spotted the stubs via direct file read.
+    initial_status = "proved" if metadata.sorry_free else "open"
     goal_id = db.insert_goal(
         conn, problem=problem, slug=metadata.slug,
         lean_path=rel_lean_path, statement=statement,

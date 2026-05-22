@@ -1508,14 +1508,17 @@ def open_goals(conn: sqlite3.Connection,
         "SELECT g.* FROM goals g "
         "JOIN problems p ON p.name = g.problem "
         "WHERE g.status = 'open' AND g.id IN alive "
-        # Phase 4 — non-theorem kinds (def / structure / class) carry
-        # no proof obligation: Forward commits them as status='proved'
-        # directly, so they shouldn't appear here. Defensive filter so
-        # any bug that leaves one at status='open' doesn't accidentally
-        # spawn a Backward / Builder worker on it (next_worker_kind
-        # would return Builder or Backward, neither of which knows
-        # how to "prove" a def).
-        "  AND g.kind = 'theorem' "
+        # Curry-Howard unified — any kind whose body carries `sorry`
+        # is a deferred obligation and enters BFS. Forward commits
+        # sorry-free outputs as 'proved' directly; sorry-bearing
+        # outputs land here regardless of kind. `next_worker_kind`
+        # returns Builder/Backward; `_skeleton.build_strategy_skeleton`
+        # preserves the original `theorem|def|structure|class` keyword
+        # in the strategy patch so the elaborator sees a matching
+        # declaration head. Pre-unification this filter was
+        # `g.kind = 'theorem'`, which silently stranded any
+        # `def := sorry` Forward output at status='open' or hid the
+        # stub behind a fake-proved status (brouwer 2026-05-22 G3).
         # Phase 5 — first-launch race protection now lives in goals.status:
         # root inits as 'frozen' and Strategist must explicitly
         # `Reopen(root)` to release BFS. The `g.status = 'open'` filter

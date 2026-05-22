@@ -199,10 +199,18 @@ leading comment 的 `Forward rationale:` 寫入 goal.evidence 欄位、後續 St
 4. self_verify      (pure)   .lean 檔 type-checks（leading sorry OK；偵測是否 sorry-free）
 5. dedupe           (pure)   跨 Library + alive Goals 去重（沿用既有 find_canonicals_batch）
 6. commit           (pure)   move 到 proofs/L_<slug>.lean、INSERT goal
-                              (kind=theorem, origin=forward；goals 表本身無 parent 欄位、
-                              「Forward 產的、無上游」靠 origin=forward 識別)；
-                              若 self_verify 偵測 sorry-free → goal.status='proved'、
-                              不入 BFS（leaf-bypass、跟 Backward sorry-free patch.lean 機制對稱）
+                              (kind ∈ {theorem,def,structure,class}, origin=forward；
+                              goals 表本身無 parent 欄位、「Forward 產的、無上游」
+                              靠 origin=forward 識別)；
+                              **Curry-Howard unified**：所有 kind 一致套 sorry-free
+                              判定 — body 無 `sorry` → goal.status='proved'、不入 BFS
+                              （leaf-bypass、跟 Backward sorry-free patch.lean 對稱）；
+                              body 含 `sorry` → goal.status='open' + detached=1、進
+                              BFS 由 Backward / Builder 攻。`_skeleton.build_strategy_
+                              skeleton` 保留原 kind keyword 寫 strategy patch。
+                              （Pre-unification 非 theorem kind 無條件 proved、
+                              brouwer 2026-05-22 G3：`def := sorry` 偽 proved 把
+                              downstream 證明卡死）
 7. shelved_link     (pure)   跑 `find_shelved_revivals_for_forward`：把 commit 的 Forward
                               當 canonical、probe 同 problem 內 shelved goals 哪些 statement
                               alpha-equiv（`apply @<forward> <;> assumption` 通過 Lean kernel

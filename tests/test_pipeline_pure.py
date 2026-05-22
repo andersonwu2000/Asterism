@@ -458,9 +458,18 @@ def test_signature_prefix_picks_named_theorem_among_aux() -> None:
     assert "helper" not in out
 
 
-def test_signature_prefix_missing_returns_empty() -> None:
+def test_signature_prefix_missing_decl_returns_empty() -> None:
     from Tooling.pipeline import _signature_prefix
-    assert _signature_prefix("def foo := 0", "foo") == ""
+    # No theorem/def/structure/class head named `foo` → empty.
+    assert _signature_prefix("notation \"x\" => y", "foo") == ""
+
+
+def test_signature_prefix_supports_def_with_type() -> None:
+    """Curry-Howard unified — `def <name> : <type> := ...` parses the
+    same way as `theorem <name> : <type> := ...`."""
+    from Tooling.pipeline import _signature_prefix
+    src = "def foo : Nat := 0\n"
+    assert _signature_prefix(src, "foo") == "def foo : Nat "
 
 
 def test_normalize_signature_collapses_whitespace() -> None:
@@ -499,7 +508,9 @@ def test_build_strategy_skeleton_renames_and_stubs() -> None:
 
 def test_build_strategy_skeleton_returns_none_when_parent_already_promoted() -> None:
     """Race-safe: if a sibling Verify already replaced parent stub with
-    `def g := @ns.s5`, there's no `theorem g` to copy from."""
+    `def g := @ns.s5`, the resulting decl has no top-level type colon.
+    `_has_top_level_type_colon` returns False → skeleton aborts cleanly
+    instead of producing a meaningless `def s_new := by sorry` patch."""
     from Tooling.pipeline import _build_strategy_skeleton
     parent = (
         "import Mathlib\nnamespace Problems.p\n\n"
@@ -509,6 +520,47 @@ def test_build_strategy_skeleton_returns_none_when_parent_already_promoted() -> 
     sk = _build_strategy_skeleton(
         parent, parent_slug="g", sid_token="s9", namespace="Problems.p")
     assert sk is None
+
+
+def test_build_strategy_skeleton_preserves_def_kind() -> None:
+    """Curry-Howard unified — a `def parent : T := by sorry` stub is a
+    Type-valued obligation, attacked the same way as a theorem. The
+    skeleton preserves the `def` keyword so the strategy patch elaborates
+    as a def (not a theorem, which would need explicit type and refuse
+    the alias-time `def s := @...` promotion shape)."""
+    from Tooling.pipeline import _build_strategy_skeleton
+    parent = (
+        "import Mathlib\nnamespace Problems.p\n\n"
+        "def boundary (n : Nat) : Nat → Nat := by sorry\n\n"
+        "end Problems.p\n"
+    )
+    sk = _build_strategy_skeleton(
+        parent, parent_slug="boundary", sid_token="s12",
+        namespace="Problems.p",
+    )
+    assert sk is not None
+    assert "def s12" in sk
+    assert "theorem s12" not in sk
+    assert "(n : Nat) : Nat → Nat" in sk
+    assert ":= by sorry" in sk
+
+
+def test_build_strategy_skeleton_preserves_structure_kind() -> None:
+    """structure parent with a `:= by sorry` body (rare but legal Lean
+    when fields are absent and a default term is provided): preserve
+    `structure` keyword."""
+    from Tooling.pipeline import _build_strategy_skeleton
+    parent = (
+        "import Mathlib\nnamespace Problems.p\n\n"
+        "structure data : Type := by sorry\n\n"
+        "end Problems.p\n"
+    )
+    sk = _build_strategy_skeleton(
+        parent, parent_slug="data", sid_token="s33",
+        namespace="Problems.p",
+    )
+    assert sk is not None
+    assert "structure s33" in sk
 
 
 def test_inject_imports_for_subs_adds_missing(tmp_path: Path) -> None:

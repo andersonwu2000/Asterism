@@ -342,8 +342,11 @@ def test_non_theorem_kinds_in_NON_THEOREM_KINDS_constant() -> None:
 def test_commit_def_marks_goal_proved_immediately(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
-    """def has no proof obligation: commit sets status='proved' directly,
-    bypassing BFS. sorry_free is irrelevant for non-theorem kinds."""
+    """A concrete (sorry-free) def is a leaf artifact and commits as
+    status='proved' directly, bypassing BFS. Curry-Howard unified: the
+    same sorry-free rule applies to theorem / def / structure / class
+    — the kind only changes the universe (Prop vs Type) of the
+    inhabitant being constructed."""
     attempts = workspace / ".attempts" / "fwd-def"
     attempts.mkdir(parents=True)
     (attempts / "new_line_through.lean").write_text(_NEW_LEAN_DEF,
@@ -396,41 +399,76 @@ def test_commit_class_marks_goal_proved_immediately(
     assert g["status"] == "proved"
 
 
-def test_non_theorem_goal_excluded_from_open_goals(
+_NEW_LEAN_DEF_WITH_SORRY = """\
+namespace Problems.p
+
+-- Forward rationale: stub for the singular-chain boundary operator;
+-- a real value will land in a follow-up.
+def singular_chain_boundary (n : Nat) : Nat := sorry
+
+end Problems.p
+"""
+
+
+def test_commit_def_with_sorry_enters_bfs_as_open(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
-    """Defensive: even if a non-theorem goal somehow ends up with
-    status='open' (shouldn't, but bug-resistant), `db.open_goals` must
-    NOT return it — dispatch has no worker that knows how to 'prove' a
-    def. The SQL filter on `g.kind = 'theorem'` in open_goals enforces
-    this single source of truth."""
-    # Need a root so the CTE seeds the alive set; without one, no goal
-    # is reachable and the kind filter would be vacuously satisfied.
+    """Curry-Howard unified — a `def := sorry` is a deferred Type-valued
+    inhabitant request, semantically the same shape as `theorem := by
+    sorry`. Pre-unification framework rubber-stamped it as 'proved'
+    and downstream lemmas about its value hit an unprovable wall
+    (brouwer 2026-05-22 G3: g2767 `singular_chain_boundary` fake-
+    proved → downstream g2771 stuck). Post-fix the goal lands at
+    status='open' + detached=1 and enters BFS like any sorry-bearing
+    theorem."""
+    attempts = workspace / ".attempts" / "fwd-def-sorry"
+    attempts.mkdir(parents=True)
+    (attempts / "new_singular_chain_boundary.lean").write_text(
+        _NEW_LEAN_DEF_WITH_SORRY, encoding="utf-8")
+    md, _ = forward.extract_forward_metadata(_NEW_LEAN_DEF_WITH_SORRY)
+    assert md.kind == "def"
+    assert md.sorry_free is False
+    outcome = forward.commit_forward_lemma(
+        conn, problem="p", workspace=workspace,
+        attempts_dir=attempts, metadata=md,
+        source_filename="new_<slug>.lean",
+    )
+    g = db.get_goal(conn, outcome.goal_id)
+    assert g["kind"] == "def"
+    assert g["status"] == "open"
+    assert g["detached"] == 1
+    # And it must surface via db.open_goals so dispatch picks it up.
+    open_ids = {int(r["id"]) for r in db.open_goals(conn)}
+    assert outcome.goal_id in open_ids
+
+
+def test_open_goals_returns_non_theorem_kinds(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Curry-Howard unified — a def / structure / class goal at
+    status='open' (i.e. shipped with a sorry-bearing body) must enter
+    BFS so Backward / Builder can attack it. Pre-unification the SQL
+    filter `g.kind = 'theorem'` silently stranded these; brouwer
+    2026-05-22 G3 incident."""
     db.insert_goal(
         conn, problem="p", slug="main", lean_path="P/main.lean",
         statement="T", origin="root", depth=0, kind="theorem",
     )
-    # Manually insert a def-kind goal with status='open' (bypasses
-    # commit_forward_lemma's auto-proved path to test the SQL filter).
-    bad_open = db.insert_goal(
-        conn, problem="p", slug="leaked_def",
-        lean_path="P/proofs/L_leaked_def.lean", statement="def line",
+    def_open = db.insert_goal(
+        conn, problem="p", slug="deferred_def",
+        lean_path="P/proofs/L_deferred_def.lean", statement="def sig",
         origin="forward", depth=0, kind="def",
     )
-    # Force detach=1 so the recursive alive CTE includes the def even
-    # though no strategy edge connects it to the root.
-    db.set_goal_detached(conn, bad_open, True)
-    open_ids = {int(r["id"]) for r in db.open_goals(conn)}
-    assert bad_open not in open_ids
-    # Sanity: a theorem-kind open goal IS returned via the same path.
-    good_open = db.insert_goal(
-        conn, problem="p", slug="leaked_theorem",
-        lean_path="P/proofs/L_leaked_theorem.lean", statement="T",
+    db.set_goal_detached(conn, def_open, True)
+    theorem_open = db.insert_goal(
+        conn, problem="p", slug="deferred_theorem",
+        lean_path="P/proofs/L_deferred_theorem.lean", statement="T",
         origin="forward", depth=0, kind="theorem",
     )
-    db.set_goal_detached(conn, good_open, True)
+    db.set_goal_detached(conn, theorem_open, True)
     open_ids = {int(r["id"]) for r in db.open_goals(conn)}
-    assert good_open in open_ids
+    assert def_open in open_ids
+    assert theorem_open in open_ids
 
 
 def test_commit_marks_forward_goal_detached(

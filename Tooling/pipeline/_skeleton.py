@@ -14,15 +14,24 @@ from pathlib import Path
 from ._lake import lean_path_to_module
 
 
+# Curry-Howard unified — the prove loop accepts any declaration head
+# whose body is `:= by sorry`-shaped (theorem / def / structure / class).
+# The keyword is captured so `build_strategy_skeleton` can preserve it
+# in the rewritten skeleton; Lean's elaborator picks the same form for
+# the strategy patch as the parent stub.
+_DECL_HEAD_RE = r"\b(theorem|def|structure|class)\s+"
+
+
 def signature_prefix(text: str, name: str) -> str:
-    """Return the substring `theorem <name> <binders> : <type>` (up to but
-    not including `:=`). Returns "" if `theorem <name>` not found.
+    """Return the substring `<kind> <name> <binders> : <type>` (up to
+    but not including `:=`). `<kind>` ∈ {theorem, def, structure,
+    class}. Returns "" if no matching declaration head found.
 
     Walks balanced paren/brace/bracket depth so a top-level `:=` is
     distinguished from `:=` inside a binder default value or anonymous
     constructor literal.
     """
-    m = re.search(rf"\btheorem\s+{re.escape(name)}\b", text)
+    m = re.search(_DECL_HEAD_RE + re.escape(name) + r"\b", text)
     if not m:
         return ""
     pos = m.end()
@@ -40,6 +49,32 @@ def signature_prefix(text: str, name: str) -> str:
     return text[m.start():]
 
 
+def _has_top_level_type_colon(sig: str, name: str) -> bool:
+    """True iff `sig` contains a top-level `:` (i.e. a type colon
+    between the binders and the body), excluding any `:` nested inside
+    binder groups `( ... )` / `{ ... }` / `[ ... ]`.
+
+    Walks after the declaration head `<kind> <name>` so a stray `:`
+    inside `<kind>` itself can't false-positive.
+    """
+    m = re.search(_DECL_HEAD_RE + re.escape(name) + r"\b", sig)
+    if not m:
+        return False
+    pos = m.end()
+    depth = 0
+    n = len(sig)
+    while pos < n:
+        ch = sig[pos]
+        if ch in "({[":
+            depth += 1
+        elif ch in ")}]":
+            depth = max(0, depth - 1)
+        elif depth == 0 and ch == ":":
+            return True
+        pos += 1
+    return False
+
+
 def normalize_signature(s: str) -> str:
     """Collapse all whitespace runs to single spaces. Lets agents reformat
     indentation freely without tripping the diff check; only meaningful
@@ -52,19 +87,28 @@ def build_strategy_skeleton(
     namespace: str,
 ) -> str | None:
     """Construct a strategy patch skeleton by copying the parent stub's
-    `theorem <parent_slug> ...` declaration verbatim, then renaming the
-    theorem to `<sid_token>` and stubbing the body as `by sorry`.
+    `<kind> <parent_slug> ...` declaration verbatim, then renaming the
+    declaration to `<sid_token>` and stubbing the body as `by sorry`.
 
-    Returns None if `theorem <parent_slug>` is not found (e.g. parent
-    was already promoted by a sibling and now contains `def ... := @...`
-    instead — race-safe handling: caller aborts cleanly).
+    `<kind>` ∈ {theorem, def, structure, class} — the parent's keyword
+    is preserved so the elaborator sees a matching declaration head
+    (a `def`-parent's strategy patch stays a `def`, not a `theorem`).
+
+    Returns None if no matching declaration head is found, or if the
+    matched head has no top-level type colon. The latter case catches
+    promoted-alias parents (`def g := @ns.sN`, no `:` between name
+    and `:=`) and bare-value defs (`def g := 42`): Backward's
+    signature lock requires a typed signature to be meaningful, so
+    skip these cleanly rather than producing a typeless `def s := by
+    sorry` skeleton that would fail at lake build with an unhelpful
+    elaboration error.
     """
     sig = signature_prefix(parent_text, parent_slug)
-    if not sig:
+    if not sig or not _has_top_level_type_colon(sig, parent_slug):
         return None
     new_sig = re.sub(
-        rf"\btheorem\s+{re.escape(parent_slug)}\b",
-        f"theorem {sid_token}", sig, count=1,
+        _DECL_HEAD_RE + re.escape(parent_slug) + r"\b",
+        lambda m: f"{m.group(1)} {sid_token}", sig, count=1,
     )
     imports = [ln for ln in parent_text.splitlines()
                if ln.strip().startswith("import")]
