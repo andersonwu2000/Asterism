@@ -80,11 +80,10 @@ Place the directive immediately above the theorem in `patch.lean`, keep `:= by s
 
 - `unprovable` — false in this hypothesis scope. Description must give a counterexample (specific values + arithmetic check).
 - `return_to_parent` — provable after parent strategy is fixed. Description must name the fix concretely (missing hypothesis, wrong substructure).
-- `shelve` — lacks vocabulary (def / structure / class) needed to even state
-  your decomposition. Description must name the missing type / structure / class
-  and how you'd use it; you may also mention accompanying theorems about that new
-  vocabulary in the same description (helpful, not separately requested).
-  In doubt vs `return_to_parent`, pick this.
+- `shelve` — lacks vocabulary or theorems needed to even state / proceed
+  with your decomposition. Description must name the missing piece (def /
+  structure / class / theorem statement) and how you'd use it. In doubt
+  vs `return_to_parent`, pick this.
 
 ```lean
 namespace ...
