@@ -51,7 +51,9 @@ Examples:
 
 ```json
 [{"kind": "Inject", "pipeline": "Forward",
-  "brief": "## Need\nMain theorem requires X.\n\n## Context\n...\n\n## Suggested angle\n...\n\n## Avoid\n..."}]
+  "brief": "## Need\nBrick A (parallel-buildable with B; no shared deps).\n\n## Context\n...\n\n## Suggested angle\n...\n\n## Avoid\n..."},
+ {"kind": "Inject", "pipeline": "Forward",
+  "brief": "## Need\nBrick B.\n\n## Context\n...\n\n## Suggested angle\n..."}]
 ```
 
 ```json
