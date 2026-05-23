@@ -15,18 +15,19 @@ You have four MCP tools backed by a live Lean server holding **your `patch.lean`
 
 Workflow:
 
-1. `Read patch.lean` to see the skeleton (imports + `theorem s<id> ... := by sorry`) and its line numbers.
-2. apply_edit `patch.lean`'s body (after `:= by`) to insert your candidate skeleton:
+1. **Read**: `Read patch.lean` for the skeleton (imports + `theorem s<id> ... := by sorry`) and line numbers.
+2. **Sketch**: apply_edit `patch.lean`'s body to insert a candidate skeleton:
    ```
      intro ...
      have h_<slug_1> : <stmt_1> := by sorry
      have h_<slug_2> : <stmt_2> := by sorry
      exact <combinator> h_<slug_1> h_<slug_2>
    ```
-3. errors_at to check: only sorry warnings, no errors → each sub-claim's statement type-checks AND the combinator closes the parent goal.
-4. If errors: revise statement / combinator and apply_edit again.
-5. Once 0 errors (warnings tolerated), write each sub-goal stub as `new_<slug>.lean` in attempts_dir and call `validate_file` on each (catches stub-only failures the in-`patch` check can't see).
-6. Final apply_edit on `patch.lean`: replace each `have h_<slug> : <type> := by sorry` placeholder with `have h_<slug> := <slug> <args>` (real sub-goal reference, threading whichever parent binders/hypotheses the sub-goal's signature requires). Without this step, patch.lean ships a sorry-bearing proof and `main` inherits sorryAx — promote_to_alias is mechanical and won't catch it.
+3. **Check**: errors_at — only sorry warnings, no errors → each sub-claim's type checks AND the combinator closes the parent goal.
+4. **Revise**: errors → revise + apply_edit, loop until clean.
+5. **Cite**: for each sub-claim, grep mathlib + scan proved siblings / Library / `## Lessons learned` for a direct replacement. If found, drop the `have h_<slug>` from the skeleton and cite inline (`apply @X <;> assumption`-style) — one less sub-goal to register.
+6. **Stub**: for each remaining sub-claim, write `new_<slug>.lean` stub in attempts_dir (`:= by sorry` + `entry_kind` directive) and `validate_file` each.
+7. **Link**: final apply_edit on `patch.lean` — replace each `have h_<slug> : <type> := by sorry` placeholder with `have h_<slug> := <slug> <args>` (real sub-goal reference). Without this, patch.lean ships sorry → main inherits sorryAx.
 
 `patch.lean` lives in attempts_dir and is sandboxed — your exploratory edits never touch the parent's source file. Outputs (patch.lean + new_*.lean) in attempts_dir are what the framework commits.
 
@@ -125,7 +126,7 @@ Ship as `:= by sorry` with `entry_kind: Builder`. Wrong types compile-fail in se
 ## Rules
 
 - Each sub-goal must be **strictly simpler** and as abstract as possible — re-stating the parent in different notation does not count.
-- All universal binders (∀) and hypotheses from the parent must appear in each sub-goal.
+- Each sub-goal is a stand-alone Lean theorem — re-declare any parent binder its type uses, or that you anticipate its own sub-goals will thread. When unsure, keep — over-keeping is mild bloat, dropping a future-needed binder is a wasted attempt.
 - Do NOT use any name in FORBIDDEN_LEMMAS — anywhere.
 - Cite any sibling goal in this problem freely — proved siblings work directly; open / attempting / pending_review siblings are auto-linked into `strategy_subgoals` (your strategy waits for them to prove). Only terminal-failed siblings (shelved / disproved / dead) are rejected — pick a different angle.
 - If a sorry-free direct proof builds cleanly, ship `patch.lean` alone (no `new_*.lean`); framework leaf-bypass takes it.
