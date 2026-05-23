@@ -36,7 +36,7 @@ dispatch:
                               # prompt; with the new rescue prompt listing
                               # decline + leaf-bypass paths, give 1 more
                               # attempt to find an escape before shelving)
-  spawn_timeout_sec: 900      # 15min per-spawn wall budget. SG empirical
+  spawn_timeout_sec: 960      # 16min per-spawn wall budget. SG empirical
                               # showed sonnet stuck-thinking on hard sub-goals
                               # eats most of any larger budget without
                               # emitting tool_use; tighter watchdog cap
