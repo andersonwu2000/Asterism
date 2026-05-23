@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Literal
 
 from ..state import db, manifest, tree
-from ..pipeline._lake import lean_path_to_module
+from ..pipeline._lake import lake_build, lean_path_to_module
 from ..pipeline._skeleton import (
     promote_to_alias, rollback_promote, verify_backup_path,
 )
@@ -99,6 +99,43 @@ def verify_strategy(
         annotation=annotation,
     )
     return "proved"
+
+
+def _lake_build_goal_lemma(conn: sqlite3.Connection, workspace: Path,
+                            goal_id: int) -> None:
+    """Lake-build the .lean file backing a freshly-proved goal so its
+    .olean is materialized for downstream dedupe + IDE.
+
+    Background — there is no other code path that explicitly invokes
+    `lake build` for sub-goal lemma files (`_lake.py`'s helpers are
+    exported but otherwise unused). .olean files exist today only as
+    a side effect of LSP gateway elaboration, which is non-
+    deterministic for newly-proved leaves (the gateway only
+    materializes deps when *something* later imports them). Dedupe's
+    `_batch_provable_via_apply` runs `lake env lean` on a batch file
+    that imports canonical lemmas; lake env lean does NOT cascade-
+    build, so any canonical without an .olean trips a global
+    'object file does not exist' error that fail-opens the whole
+    batch to all-False.
+
+    Best-effort: any lake build failure is logged and swallowed —
+    the goal is already proved in the DB; a stale .olean only
+    degrades dedupe quality, doesn't poison correctness.
+    """
+    g = db.get_goal(conn, goal_id)
+    if g is None:
+        return
+    lean_rel = g["lean_path"]
+    if not lean_rel:
+        return
+    lean_abs = workspace / lean_rel
+    if not lean_abs.exists():
+        return
+    ok, out = lake_build(workspace, lean_abs)
+    if not ok:
+        snippet = out[-400:] if out else "(no output)"
+        print(f"[verify] lake build {lean_rel} FAILED (post-proved "
+              f"olean materialization): {snippet}", flush=True)
 
 
 def verify_housekeeping(
@@ -162,6 +199,21 @@ def verify_housekeeping(
                 counts["proved"] += 1
                 touched_goals.add(goal_id)
                 print(f"[verify] Strategy={sid} → proved", flush=True)
+                # Materialize .olean for the newly-proved lemma so
+                # downstream dedupe (which `lake env lean`-imports
+                # canonicals — does NOT cascade-build) sees a real
+                # .olean instead of a global "object file does not
+                # exist" error that fail-opens the whole batch.
+                # Pre-fix: gateway/LSP elaboration produced .olean as
+                # a side effect, but only when something else imported
+                # the lemma — newly-proved leaves often had no .olean,
+                # so every dedupe batch importing them hit a global
+                # error and returned all False (jordan_normal_form
+                # 2026-05-23 daemon log: 12+ consecutive `[dedupe]
+                # ... alias=0 disproved=0` lines, masking real alias
+                # candidates like ker_range_complement_2 ~=
+                # ker_range_complement).
+                _lake_build_goal_lemma(conn, workspace, goal_id)
             elif outcome == "dead":
                 db.update_strategy_status(conn, sid, "dead")
                 n = db.increment_goal_attempts(conn, goal_id)
@@ -288,6 +340,9 @@ def _revive_shelved_alias(
         return False
     dispatcher._set_goal_terminal_and_propagate(conn, shelved_id, "proved")
     conn.commit()
+    # Materialize .olean for the revived alias — same rationale as
+    # `_lake_build_goal_lemma` after a strategy-pass proved transition.
+    _lake_build_goal_lemma(conn, workspace, shelved_id)
     return True
 
 

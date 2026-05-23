@@ -245,6 +245,47 @@ def test_housekeeping_proved_marks_strategy_and_goal(
     assert db.get_goal(conn, gid)["status"] == "proved"
 
 
+def test_housekeeping_proved_triggers_lake_build_for_olean(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a goal transitions to 'proved' via the strategy pass,
+    verify must lake-build the goal's .lean to materialize its .olean.
+    Pre-fix dedupe's batch `lake env lean` hit "object file does not
+    exist" globally on any canonical without a pre-built .olean and
+    fail-opened the entire batch to alias=0 disproved=0
+    (jordan_normal_form 2026-05-23 daemon log: 12+ consecutive zero-
+    alias batches).
+
+    Stub `lake_build` instead of shelling out (test isolation +
+    avoids needing a real Mathlib in tmp_path).
+    """
+    gid = _seed_goal(conn)
+    sid = _seed_strategy_with_proved_subs(conn, goal_id=gid)
+    monkeypatch.setattr(verify, "verify_strategy",
+                        lambda *a, **kw: "proved")
+    # Ensure the goal's lean_path file exists so the helper proceeds
+    # past the existence guard.
+    g = db.get_goal(conn, gid)
+    lean_abs = tmp_path / g["lean_path"]
+    lean_abs.parent.mkdir(parents=True, exist_ok=True)
+    lean_abs.write_text("import Mathlib\n", encoding="utf-8")
+
+    called: list[tuple[Path, Path]] = []
+    def fake_lake_build(workspace: Path, target_lean: Path):
+        called.append((workspace, target_lean))
+        return (True, "")
+    monkeypatch.setattr(verify, "lake_build", fake_lake_build)
+
+    verify.verify_housekeeping(conn, workspace=tmp_path)
+    assert len(called) == 1, (
+        f"expected exactly one lake_build call after proved transition; "
+        f"got {len(called)}")
+    ws, target = called[0]
+    assert ws == tmp_path
+    assert target == lean_abs
+
+
 def test_housekeeping_proved_supersedes_siblings(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
