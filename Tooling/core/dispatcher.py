@@ -173,7 +173,35 @@ def _set_goal_terminal_and_propagate(
     `_maybe_enqueue_inject_batch_done` → optional descendant
     cascade) so every terminal flip site applies them uniformly.
 
-    `status` ∈ {'proved','shelved','disproved','dead'}."""
+    `status` ∈ {'proved','shelved','disproved','dead'}.
+
+    Instrument: every terminal flip prints a caller-trace line so we
+    can attribute unexpected shelves (polar 2026-05-23: `square_root_
+    of_positive` shelved at attempts=5 < SHELVE_THRESHOLD=8 via a
+    path none of the documented cascade rules explain). The 1-line
+    trace pulls the immediate caller's filename+line+function from
+    the Python stack — enough to disambiguate the cascade entry
+    point on next reproduction."""
+    if status in ("shelved", "disproved", "dead"):
+        import traceback as _tb
+        frames = _tb.extract_stack()[-4:-1]
+        caller = ""
+        if frames:
+            f = frames[-1]
+            fname = f.filename.replace("\\", "/").rsplit("/", 1)[-1]
+            caller = f"{fname}:{f.lineno}({f.name})"
+        try:
+            row = conn.execute(
+                "SELECT slug, attempts FROM goals WHERE id = ?",
+                (goal_id,),
+            ).fetchone()
+            slug = row["slug"] if row else "?"
+            n = int(row["attempts"]) if row else -1
+        except sqlite3.OperationalError:
+            slug, n = "?", -1
+        print(f"[goal-terminal] g{goal_id} ({slug}) → {status} "
+              f"attempts={n} caller={caller}",
+              flush=True)
     db.update_goal_status(conn, goal_id, status)
     d = db.propagate_inject_outcome_from_goal(conn, goal_id)
     if d is not None:
@@ -497,13 +525,23 @@ def _kill_upward_chain(conn: sqlite3.Connection, goal_id: int,
             # shelve/reopen decision until the sibling resolves.
             continue
         if n >= SHELVE_THRESHOLD:
-            _set_goal_terminal_and_propagate(
-                conn, gid, parent_terminal_status)
-            _propagate_shelve(conn, gid)
-            if parent_terminal_status in ("disproved", "dead"):
+            if parent_terminal_status == "dead":
+                # Hard terminal (`dead` = structurally wrong subtree):
+                # keep direct dead-shelve + upward kill. Not Strategist-
+                # actionable.
+                _set_goal_terminal_and_propagate(
+                    conn, gid, parent_terminal_status)
+                _propagate_shelve(conn, gid)
                 _kill_upward_chain(
                     conn, gid,
                     parent_terminal_status=parent_terminal_status)
+            else:
+                # Soft terminal (`shelved` cascade from disproved sub):
+                # exhaustion is Strategist's call. Route through
+                # pending_strategist_review so Strategist sees the
+                # exhausted parent and decides ConfirmShelve / Reopen /
+                # Inject. Mirrors the agent_shelved path.
+                _enqueue_strategist_review(conn, gid)
         else:
             db.update_goal_status(conn, gid, "open")
 
@@ -537,8 +575,7 @@ def _reconcile_goal_after_strategy_loss(
         return
     n = int(row["attempts"])
     if n >= SHELVE_THRESHOLD:
-        _set_goal_terminal_and_propagate(conn, goal_id, "shelved")
-        _propagate_shelve(conn, goal_id)
+        _enqueue_strategist_review(conn, goal_id)
     else:
         db.update_goal_status(conn, goal_id, "open")
 
@@ -770,9 +807,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             cur = db.get_goal(conn, int(target_id))
             n = int(cur["attempts"]) if cur else 0
             if n >= SHELVE_THRESHOLD:
-                _set_goal_terminal_and_propagate(
-                    conn, int(target_id), "shelved")
-                _propagate_shelve(conn, int(target_id))
+                _enqueue_strategist_review(conn, int(target_id))
             # If n is at/over BUILDER_THRESHOLD but under SHELVE, the
             # next bfs_refill picks Backward via next_worker_kind
             # — no extra cascade work needed (no session_id column to
@@ -821,18 +856,14 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             if failure_reason == "agent_declined":
                 n = db.increment_goal_attempts(conn, int(target_id))
                 if n >= SHELVE_THRESHOLD:
-                    _set_goal_terminal_and_propagate(
-                        conn, int(target_id), "shelved")
-                    _propagate_shelve(conn, int(target_id))
+                    _enqueue_strategist_review(conn, int(target_id))
                 else:
                     db.update_goal_entry_kind(conn, int(target_id),
                                               "Backward")
                 return
             n = db.increment_goal_attempts(conn, int(target_id))
             if n >= SHELVE_THRESHOLD:
-                _set_goal_terminal_and_propagate(
-                    conn, int(target_id), "shelved")
-                _propagate_shelve(conn, int(target_id))
+                _enqueue_strategist_review(conn, int(target_id))
             return
 
     if kind == "Forward":
@@ -911,9 +942,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             cur = db.get_goal(conn, int(target_id))
             n = int(cur["attempts"]) if cur else 0
             if n >= SHELVE_THRESHOLD:
-                _set_goal_terminal_and_propagate(
-                    conn, int(target_id), "shelved")
-                _propagate_shelve(conn, int(target_id))
+                _enqueue_strategist_review(conn, int(target_id))
             return
         # failed
         if is_infra:
@@ -943,9 +972,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             return
         n = db.increment_goal_attempts(conn, int(target_id))
         if n >= SHELVE_THRESHOLD:
-            _set_goal_terminal_and_propagate(
-                conn, int(target_id), "shelved")
-            _propagate_shelve(conn, int(target_id))
+            _enqueue_strategist_review(conn, int(target_id))
         return
 
     # Verify removed as a worker_kind. Strategy verification + parent
@@ -1092,6 +1119,31 @@ def strategist_triggers(conn: sqlite3.Connection,
     for prob, root_id in db.problems_needing_t1(
         conn, scope=scope, max_age_sec=max_age_sec,
     ):
+        if db.problem_has_awaiting_human(conn, prob):
+            continue
+        rid = str(root_id)
+        if already_inflight(rid):
+            continue
+        db.enqueue(conn, kind="Strategist", target_id=rid,
+                   target_kind="Goal", priority=10)
+
+    # T4 — structural stall trigger.
+    # Fires when a problem has no open goals (BFS has nothing to
+    # dispatch), no in-flight Backward/Builder/Forward worker, and
+    # the root is not yet proved. Captures the failure mode polar
+    # 2026-05-23 hit: a parent strategy with a shelved sub-goal sat
+    # 'proposed' forever, parent goal stayed 'attempting' (filtered
+    # out of `open_goals`), no spawn fired for 174 min until budget
+    # exhaust. Routine T1 (60 min) eventually fires but Strategist
+    # Noop'd 4 times because the snapshot ("X proved") didn't change
+    # between ticks. T4 is the structural backstop: if we hit this
+    # signal we KNOW the framework is deadlocked, so we wake
+    # Strategist immediately + surface the stall in Context.md (see
+    # `_section_stall_warning` in phase2_context). Strategist prompt
+    # has the corresponding rule: don't Noop when stall section is
+    # present.
+    for prob, root_id in db.problems_stalled(conn, scope=scope,
+                                              running=running):
         if db.problem_has_awaiting_human(conn, prob):
             continue
         rid = str(root_id)

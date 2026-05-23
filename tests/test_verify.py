@@ -334,22 +334,22 @@ def test_housekeeping_retry_leaves_strategy_in_ready_state(
     assert g["attempts"] == starting_attempts
 
 
-def test_housekeeping_dead_shelves_at_threshold(
+def test_housekeeping_dead_at_threshold_routes_to_pending_review(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When goal attempts hit SHELVE_THRESHOLD on the dead transition,
-    the goal shelves and `_propagate_shelve` runs."""
+    """When verify housekeeping's `dead` transition pushes attempts to
+    SHELVE_THRESHOLD, the goal routes to `pending_strategist_review`
+    (B-1 fix, was: auto-shelve)."""
     gid = _seed_goal(conn)
     sid = _seed_strategy_with_proved_subs(conn, goal_id=gid)
-    # Push attempts to threshold-1 so this dead transition triggers shelve
     for _ in range(dispatcher.SHELVE_THRESHOLD - 1):
         db.increment_goal_attempts(conn, gid)
     monkeypatch.setattr(verify, "verify_strategy",
                         lambda *a, **kw: "dead")
 
     verify.verify_housekeeping(conn, workspace=tmp_path)
-    assert db.get_goal(conn, gid)["status"] == "shelved"
+    assert db.get_goal(conn, gid)["status"] == "pending_strategist_review"
 
 
 def test_housekeeping_dead_at_threshold_defers_when_sibling_alive(

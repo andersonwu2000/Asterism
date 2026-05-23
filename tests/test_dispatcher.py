@@ -118,13 +118,22 @@ def test_cascade_builder_failed_increments_attempts(conn: sqlite3.Connection) ->
     assert row["status"] == "open"
 
 
-def test_cascade_builder_shelves_at_threshold(conn: sqlite3.Connection) -> None:
+def test_cascade_builder_at_threshold_routes_to_pending_review(
+    conn: sqlite3.Connection,
+) -> None:
+    """After SHELVE_THRESHOLD attempts, the goal is no longer auto-
+    shelved — it transitions to `pending_strategist_review` so the
+    Strategist gets to commit ConfirmShelve / Reopen / Inject /
+    EmitDirective / RequestUserAmend with full goal context. Mirrors
+    the agent_shelved escalation path. Orphan-chain fallback (auto
+    `shelved` when no live ancestor strategy exists) is exercised
+    separately."""
     gid = _seed_goal(conn)
     for _ in range(SHELVE_THRESHOLD):
         cascade_one(conn, pipeline_id="pid", kind="Builder",
                     target_id=str(gid), target_kind="Goal", outcome="failed")
     row = db.get_goal(conn, gid)
-    assert row["status"] == "shelved"
+    assert row["status"] == "pending_strategist_review"
     assert row["attempts"] == SHELVE_THRESHOLD
 
 
@@ -248,17 +257,15 @@ def test_cascade_backward_failed_increments(conn: sqlite3.Connection) -> None:
 # F12 — sub-goal shelve propagates to parent strategies
 # ---------------------------------------------------------------------
 
-def test_subgoal_shelve_does_not_kill_upward_strategy_phase6(
+def test_subgoal_at_threshold_routes_to_pending_review(
     conn: sqlite3.Connection,
 ) -> None:
-    """Phase 6: shelved is soft-terminal (reopenable). A sub-goal hitting
-    SHELVE_THRESHOLD via repeated failures shelves itself but does NOT
-    kill its parent strategy — the parent stays 'proposed' waiting for
-    the sub-goal to be Reopen'd and proved. Distinct from disproved /
-    dead which DO kill upward (see
-    `test_subgoal_disproved_kills_parent_strategy` and
-    `test_parent_needs_fix_kills_upward_chain`).
-    """
+    """Sub-goal hitting SHELVE_THRESHOLD via repeated failures now
+    transitions to `pending_strategist_review` (not auto `shelved`).
+    Parent strategy stays 'proposed' (Strategist decides whether to
+    ConfirmShelve / Reopen / Inject); grandparent stays attempting
+    until Strategist acts. Distinct from disproved / dead which
+    kill the upward chain unconditionally."""
     grand = _seed_goal(conn, problem="p")
     db.update_goal_status(conn, grand, "attempting")
 
@@ -281,8 +288,8 @@ def test_subgoal_shelve_does_not_kill_upward_strategy_phase6(
                     target_id=str(doomed_sub), target_kind="Goal",
                     outcome="failed")
 
-    assert db.get_goal(conn, doomed_sub)["status"] == "shelved"
-    # Phase 6: parent strategy stays 'proposed' (NOT 'dead')
+    assert db.get_goal(conn, doomed_sub)["status"] == "pending_strategist_review"
+    # Parent strategy stays 'proposed' (Strategist may Reopen later)
     assert conn.execute(
         "SELECT status FROM strategies WHERE id = ?", (sid,),
     ).fetchone()["status"] == "proposed"
@@ -547,15 +554,13 @@ def test_reconcile_after_placeholder_delete_reopens_under_threshold(
     assert db.get_goal(conn, grand)["status"] == "open"
 
 
-def test_reconcile_after_placeholder_delete_shelves_at_threshold(
+def test_reconcile_after_placeholder_delete_routes_to_pending_review_at_threshold(
     conn: sqlite3.Connection,
 ) -> None:
     """If accumulated deferred-cascade attempts already crossed
-    SHELVE_THRESHOLD, the reconciler shelves the goal instead of
-    reopening — the threshold-deferred terminal that was waiting on a
-    sibling to resolve naturally now fires because the sibling's been
-    wiped by the placeholder-deletion path.
-    """
+    SHELVE_THRESHOLD, the reconciler routes the goal to
+    `pending_strategist_review` (was: auto-shelve). Strategist decides
+    final disposition."""
     from Tooling.core.dispatcher import _reconcile_goal_after_strategy_loss
     grand = _seed_goal(conn, problem="p")
     db.update_goal_status(conn, grand, "attempting")
@@ -565,7 +570,7 @@ def test_reconcile_after_placeholder_delete_shelves_at_threshold(
 
     _reconcile_goal_after_strategy_loss(conn, grand)
 
-    assert db.get_goal(conn, grand)["status"] == "shelved"
+    assert db.get_goal(conn, grand)["status"] == "pending_strategist_review"
 
 
 def test_reconcile_noop_when_sibling_alive(
@@ -689,18 +694,22 @@ def test_cascade_strategy_on_shelved_parent_marks_dead(
 
 
 # ---------------------------------------------------------------------
-# F16 — goal-shelve symmetric cascade: kill its own strategies
+# F16 — at SHELVE_THRESHOLD, goal routes to pending_strategist_review
+# (was: auto-shelve with strategy kill). Strategies stay alive while
+# the goal is transitional, since Strategist may Reopen.
 # ---------------------------------------------------------------------
 
-def test_goal_shelve_kills_own_strategies(
+def test_goal_at_threshold_preserves_own_strategies(
     conn: sqlite3.Connection,
 ) -> None:
-    """F16: when goal X shelves, strategies for proving X are moot.
-    They must transition 'proposed' → 'dead' so DB invariant holds:
-    strategy.status='proposed' implies parent goal alive."""
+    """B-1 (linalg series 2026-05-23 followup): after SHELVE_THRESHOLD
+    failures, the goal transitions to `pending_strategist_review`,
+    NOT `shelved`. Its own strategies stay 'proposed' because the
+    goal isn't terminal yet — Strategist may Reopen, in which case
+    those strategies are still useful. Cascade-shelve of own
+    strategies only fires when Strategist commits a true ConfirmShelve."""
     gid = _seed_goal(conn)
 
-    # Two proposed strategies on this goal
     s1 = db.insert_strategy(conn, goal_id=gid,
                             lean_path="Problems/p/Root.lean",
                             scratch_path="Problems/p/proofs/_strategy_a.lean",
@@ -710,20 +719,17 @@ def test_goal_shelve_kills_own_strategies(
                             scratch_path="Problems/p/proofs/_strategy_b.lean",
                             created_by="pid2")
 
-    # Push goal itself to SHELVE_THRESHOLD via Backward failures
     for _ in range(SHELVE_THRESHOLD):
         cascade_one(conn, pipeline_id="pid", kind="Backward",
                     target_id=str(gid), target_kind="Goal",
                     outcome="failed")
 
-    assert db.get_goal(conn, gid)["status"] == "shelved"
-    # Both strategies on the shelved goal should now be dead
-    assert conn.execute(
-        "SELECT status FROM strategies WHERE id = ?", (s1,),
-    ).fetchone()["status"] == "dead"
-    assert conn.execute(
-        "SELECT status FROM strategies WHERE id = ?", (s2,),
-    ).fetchone()["status"] == "dead"
+    assert db.get_goal(conn, gid)["status"] == "pending_strategist_review"
+    # Strategies stay alive (parent not terminal yet).
+    for sid in (s1, s2):
+        assert conn.execute(
+            "SELECT status FROM strategies WHERE id = ?", (sid,),
+        ).fetchone()["status"] == "proposed"
 
 
 def test_dead_goal_combined_upward_and_inward_cascade(

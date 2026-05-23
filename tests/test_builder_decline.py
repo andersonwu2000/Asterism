@@ -116,17 +116,16 @@ def test_cascade_decline_at_high_attempts_still_increments_one(
     assert db.get_goal(conn, gid)["attempts"] == starting + 1
 
 
-def test_cascade_decline_can_trigger_shelve_at_threshold(
+def test_cascade_decline_at_threshold_routes_to_pending_review(
     conn: sqlite3.Connection,
 ) -> None:
-    """A decline that pushes attempts to SHELVE_THRESHOLD shelves the
-    goal as expected. (Edge case: BUILDER_THRESHOLD jump lands exactly
-    at or past SHELVE_THRESHOLD.)"""
+    """A decline that pushes attempts to SHELVE_THRESHOLD routes the
+    goal to `pending_strategist_review` (B-1 fix, was: auto-shelve).
+    Strategist decides ConfirmShelve / Reopen / Inject."""
     gid = _seed_goal(conn)
-    # Push attempts so a single +1 hits SHELVE_THRESHOLD
     for _ in range(SHELVE_THRESHOLD - 1):
         db.increment_goal_attempts(conn, gid)
-    pid = "decline-shelve"
+    pid = "decline-pending"
     _record_dead_attempt(conn, pipeline_id=pid, target_id=gid,
                          reason="agent_declined", proposal="hopeless")
     cascade_one(conn, pipeline_id=pid, kind="Builder",
@@ -134,7 +133,7 @@ def test_cascade_decline_can_trigger_shelve_at_threshold(
                 failure_reason="agent_declined")
     row = db.get_goal(conn, gid)
     assert row["attempts"] >= SHELVE_THRESHOLD
-    assert row["status"] == "shelved"
+    assert row["status"] == "pending_strategist_review"
 
 
 def test_cascade_normal_failure_unchanged_by_f48(

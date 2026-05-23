@@ -455,3 +455,125 @@ def test_set_goal_detached(conn: sqlite3.Connection) -> None:
 
     db.set_goal_detached(conn, gid, False)
     assert db.get_goal(conn, gid)["detached"] == 0
+
+
+# ---------------------------------------------------------------------
+# B-2 — T4 structural-stall trigger
+# ---------------------------------------------------------------------
+
+def test_t4_stall_enqueues_when_no_open_goals_and_no_inflight(
+    conn: sqlite3.Connection,
+) -> None:
+    """T4 fires when root not terminal AND no open goal AND no
+    in-flight Backward/Builder/Forward. Polar 2026-05-23 deadlock
+    pattern (parent strategy with shelved sub-goal, no automatic
+    Reopen trigger) — Strategist must intervene; without T4 the
+    routine T1 wall-clock wait is up to 60 min, often Noop'd."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    root = _insert_root(conn, "alpha", status="attempting")
+    # The only other goal is also non-open (mimics polar pattern:
+    # attempting goal whose only strategy is stuck on shelved sub-goal).
+    other = db.insert_goal(
+        conn, problem="alpha", slug="stuck",
+        lean_path="Problems/alpha/proofs/L_stuck.lean",
+        statement="T", origin="backward",
+    )
+    db.update_goal_status(conn, other, "attempting")
+
+    strategist_triggers(conn, running=set())
+
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert q["n"] == 1
+
+
+def test_t4_stall_skipped_when_open_goal_exists(
+    conn: sqlite3.Connection,
+) -> None:
+    """If any open goal exists, BFS will dispatch — no stall, T4
+    should not fire (let BFS do its work). Also set
+    last_strategist_at recent to exclude T1 routine firing for this
+    isolation test."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1,
+                    last_strategist_at=db.now())
+    _insert_root(conn, "alpha", status="attempting")
+    db.insert_goal(
+        conn, problem="alpha", slug="open_one",
+        lean_path="Problems/alpha/proofs/L_open_one.lean",
+        statement="T", origin="backward",
+    )
+    # Default insert_goal status is 'open' already.
+
+    strategist_triggers(conn, running=set())
+
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert q["n"] == 0
+
+
+def test_t4_stall_skipped_when_inflight_inject_batch(
+    conn: sqlite3.Connection,
+) -> None:
+    """Inject batch in flight = Strategist already acting on this
+    problem; `inject_batch_done` will re-fire it. T4 must not enqueue
+    redundantly."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    _insert_root(conn, "alpha", status="attempting")
+    db.insert_goal(
+        conn, problem="alpha", slug="other",
+        lean_path="Problems/alpha/proofs/L_other.lean",
+        statement="T", origin="backward",
+    )
+    db.update_goal_status(conn, 2, "attempting")  # not 'open'
+    # Outstanding Inject batch (Forward not landed yet).
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, brief, payload, batch_id,"
+        " outcome, created_at, updated_at)"
+        " VALUES ('alpha', 0, 'first_launch', 'Inject', '## brief',"
+        " '{\"pipeline\":\"Forward\"}', 'b1', NULL, ?, ?)",
+        (db.now(), db.now()),
+    )
+    conn.commit()
+
+    strategist_triggers(conn, running=set())
+
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert q["n"] == 0
+
+
+def test_t4_stall_skipped_when_root_terminal(
+    conn: sqlite3.Connection,
+) -> None:
+    """If root already proved, stall trigger is moot."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    _insert_root(conn, "alpha", status="proved")
+
+    strategist_triggers(conn, running=set())
+
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert q["n"] == 0
+
+
+def test_t4_stall_dedup_with_existing_strategist_queue_entry(
+    conn: sqlite3.Connection,
+) -> None:
+    """If a Strategist task is already queued for this root, T4 must
+    not add a duplicate."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    root = _insert_root(conn, "alpha", status="attempting")
+    db.enqueue(conn, kind="Strategist", target_id=str(root),
+               target_kind="Goal", priority=10)
+
+    strategist_triggers(conn, running=set())
+
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert q["n"] == 1  # still just one

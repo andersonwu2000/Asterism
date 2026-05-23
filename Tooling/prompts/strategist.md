@@ -30,6 +30,8 @@ Time budget: {timeout_min} minutes. Tools: Read / Write / Edit / Grep / Bash(`py
 
 `ConfirmShelve` cannot be sent alone — must pair with `Inject` or `Reopen` in the same batch.
 
+If `## Framework stalled` is in Context.md, `Noop` is not appropriate. Pick one of `Reopen` / `Inject` / `ConfirmShelve` (paired) / `RequestUserAmend` based on the diagnosis there.
+
 ## Decision schema
 
 `decision.json` is a JSON array.

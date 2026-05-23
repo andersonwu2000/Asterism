@@ -55,6 +55,85 @@ def _section_trigger(trigger_kind: str, pending_review_id: int | None,
     return lines
 
 
+def _section_stall_warning(conn: sqlite3.Connection,
+                           problem: str) -> list[str]:
+    """Structural stall detection (B-2 fix).
+
+    Surfaces a header when:
+      - root not yet terminal AND
+      - zero open goals reachable AND
+      - no in-flight Backward/Builder/Forward worker.
+
+    These conditions mean BFS literally cannot dispatch anything until
+    Strategist intervenes. Polar 2026-05-23 hit this for 174 min while
+    Strategist routine-Noop'd 4 times reading the unchanging "X proved"
+    snapshot. With this header surfaced, Strategist sees the structural
+    deadlock signal directly; prompt rule (`strategist.md`) requires
+    non-Noop when this section is present.
+
+    Re-checks the same signal that `dispatcher.strategist_triggers` T4
+    uses to enqueue; safe to compute redundantly here at context-
+    compile time (the queue enqueue may pre-date the actual Strategist
+    spawn by seconds, during which a parallel goal could land —
+    re-checking ensures the warning reflects current state)."""
+    # 1. root not terminal
+    root = conn.execute(
+        "SELECT id, status FROM goals"
+        "  WHERE problem = ? AND origin = 'root' LIMIT 1",
+        (problem,),
+    ).fetchone()
+    if root is None or root["status"] in ("proved", "shelved", "disproved"):
+        return []
+    # 2. zero open goals
+    if conn.execute(
+        "SELECT 1 FROM goals WHERE problem = ?"
+        "  AND status = 'open' LIMIT 1",
+        (problem,),
+    ).fetchone() is not None:
+        return []
+    # 3. no in-flight Backward/Builder/Forward in the queue
+    if conn.execute(
+        "SELECT 1 FROM queue q"
+        " JOIN goals g ON g.id = CAST(q.target_id AS INTEGER)"
+        " WHERE g.problem = ?"
+        "   AND q.kind IN ('Backward','Builder')"
+        " LIMIT 1",
+        (problem,),
+    ).fetchone() is not None:
+        return []
+    if conn.execute(
+        "SELECT 1 FROM queue WHERE target_id = ? AND kind = 'Forward' LIMIT 1",
+        (problem,),
+    ).fetchone() is not None:
+        return []
+    return [
+        "## Framework stalled",
+        "",
+        "Structural deadlock detected: root is not yet proved, no `open`"
+        " goal is reachable for BFS dispatch, and no Backward/Builder/"
+        "Forward worker is in flight. The framework cannot dispatch"
+        " any worker on this problem until you intervene.",
+        "",
+        "Typical causes:",
+        "",
+        "- A parent strategy has a `shelved` sub-goal — the strategy"
+        " stays `proposed` waiting for the sub-goal to be Reopen'd"
+        " but no automatic Reopen trigger fires.",
+        "- A `pending_strategist_review` goal blocks dispatch through"
+        " its ancestor chain.",
+        "- All live strategies have a missing prerequisite that no"
+        " current Forward batch is addressing.",
+        "",
+        "**`Noop` is not appropriate while this section is present.**"
+        " Choose one of: `Reopen` (revive a `shelved` /"
+        " `pending_strategist_review` goal), `Inject(Forward)` (build"
+        " the missing prerequisite), `ConfirmShelve` (truly cannot"
+        " proceed — followed by an Inject that pivots), or"
+        " `RequestUserAmend` (Manifest scope decision needed).",
+        "",
+    ]
+
+
 def _section_pending_review_failure(
     conn: sqlite3.Connection, pending_review_id: int,
 ) -> list[str]:
@@ -553,6 +632,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     # never Reopens" was never closed by the agent on its own; surfacing
     # the cross-reference gives it a structured cue.
     sections += [
+        _section_stall_warning(conn, problem),
         _section_inject_batch_outcomes(conn, problem),
         _section_pending_reopens(conn, problem, trigger_kind),
         _section_active_goals(conn, problem),

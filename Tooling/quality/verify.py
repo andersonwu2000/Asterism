@@ -180,9 +180,7 @@ def verify_housekeeping(
                     # branch.
                     pass
                 elif n >= dispatcher.SHELVE_THRESHOLD:
-                    dispatcher._set_goal_terminal_and_propagate(
-                        conn, goal_id, "shelved")
-                    dispatcher._propagate_shelve(conn, goal_id)
+                    dispatcher._enqueue_strategist_review(conn, goal_id)
                 else:
                     db.update_goal_status(conn, goal_id, "open")
                 conn.commit()

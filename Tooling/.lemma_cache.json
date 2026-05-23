@@ -1,0 +1,10 @@
+{
+  "toolchain_hash": "e3b0c44298fc1c14",
+  "entries": {
+    "Foo.bar": {
+      "name": "Foo.bar",
+      "signature": "",
+      "found": false
+    }
+  }
+}

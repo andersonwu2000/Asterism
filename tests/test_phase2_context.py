@@ -688,3 +688,75 @@ def test_pending_reopens_skipped_on_non_inject_batch_done_trigger(
     )
     for trig in ("routine", "pending_review", "first_launch"):
         assert phase2_context._section_pending_reopens(conn, "p", trig) == []
+
+
+# ---------------------------------------------------------------------
+# B-2 — _section_stall_warning (structural-deadlock signal)
+# ---------------------------------------------------------------------
+
+def test_stall_warning_surfaces_when_no_open_goal_no_inflight(
+    conn: sqlite3.Connection,
+) -> None:
+    """Root attempting, no open goals, queue empty → stall warning
+    section surfaces."""
+    _insert_problem(conn)
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "attempting")
+    # Make a non-open goal so we exercise the "no open goal" branch
+    other = db.insert_goal(
+        conn, problem="p", slug="other",
+        lean_path="P/proofs/L_other.lean", statement="T",
+        origin="backward",
+    )
+    db.update_goal_status(conn, other, "attempting")
+
+    lines = phase2_context._section_stall_warning(conn, "p")
+    body = "\n".join(lines)
+    assert "## Framework stalled" in body
+    assert "Noop` is not appropriate" in body
+
+
+def test_stall_warning_silent_when_open_goal_exists(
+    conn: sqlite3.Connection,
+) -> None:
+    """An open goal means BFS can dispatch — no stall, no warning."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    db.insert_goal(
+        conn, problem="p", slug="open_one",
+        lean_path="P/proofs/L_open_one.lean", statement="T",
+        origin="backward",
+    )
+
+    assert phase2_context._section_stall_warning(conn, "p") == []
+
+
+def test_stall_warning_silent_when_backward_in_queue(
+    conn: sqlite3.Connection,
+) -> None:
+    """In-flight Backward via queue means a dispatch is imminent — no
+    stall."""
+    _insert_problem(conn)
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "attempting")
+    other = db.insert_goal(
+        conn, problem="p", slug="other",
+        lean_path="P/proofs/L_other.lean", statement="T",
+        origin="backward",
+    )
+    db.update_goal_status(conn, other, "attempting")
+    db.enqueue(conn, kind="Backward", target_id=str(other),
+               target_kind="Goal", priority=2)
+
+    assert phase2_context._section_stall_warning(conn, "p") == []
+
+
+def test_stall_warning_silent_when_root_proved(
+    conn: sqlite3.Connection,
+) -> None:
+    """Root already proved — problem is done, no stall."""
+    _insert_problem(conn)
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "proved")
+
+    assert phase2_context._section_stall_warning(conn, "p") == []
