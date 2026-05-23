@@ -894,6 +894,31 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
         k: v for k, v in decision.payload.items()
         if not str(k).startswith("__")
     }
+    # DB outcome ≠ caller signal (CommitOutcome.final_outcome). Inject
+    # rows write NULL here (filled later by propagate_inject_outcome_
+    # from_goal/strategy when produced_goal/strategy terminates) — but
+    # Inject returns early via _commit_inject_batch and never reaches
+    # this INSERT. Everything that lands here is a synchronous decision:
+    # its side effect already executed above, so the row is terminal
+    # at INSERT time. RequestUserAmend keeps 'awaiting_human' (terminal
+    # from framework POV — blocked on operator). All other kinds
+    # (ConfirmShelve/Reopen/EmitDirective/Noop) write 'success'.
+    #
+    # Pre-fix bug: this column wrote NULL for ConfirmShelve+friends.
+    # Solo (batch_id=NULL) was harmless. Paired with Inject in same
+    # batch (e.g. ConfirmShelve(G) + Inject(Forward, prereq)), the
+    # NULL outcome blocked `WHERE batch_id IS NOT NULL AND outcome IS
+    # NULL` guards in maybe_enqueue_inject_batch_done /
+    # problems_needing_t1 / problems_stalled — Strategist never woke
+    # to fire the promised follow-up Reopen. Observed jordan_normal_
+    # form 2026-05-23: ConfirmShelve(succ_glue) paired with Inject of
+    # the index-layout brick chain; bricks proved, batch_id stayed
+    # "incomplete" forever, all three triggers stayed gated, daemon
+    # idle.
+    if outcome == "awaiting_human":
+        db_outcome: str | None = "awaiting_human"
+    else:
+        db_outcome = "success"
     ts = db.now()
     cur = conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
@@ -904,7 +929,7 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
          decision.target_id, decision.brief, decision.reason,
          json.dumps(payload_for_audit, ensure_ascii=False),
          inject_batch_id,
-         outcome if outcome != "committed" else None,
+         db_outcome,
          ts, ts),
     )
     decision_row_id = int(cur.lastrowid)

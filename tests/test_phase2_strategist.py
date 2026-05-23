@@ -850,6 +850,106 @@ def test_commit_request_user_amend_writes_proposed_file_atomically(
     assert row["outcome"] == "awaiting_human"
 
 
+def test_synchronous_decisions_write_outcome_success_at_commit(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """jordan_normal_form 2026-05-23 regression. Pre-fix `_commit_one`
+    wrote `outcome=NULL` for ConfirmShelve/Reopen/EmitDirective/Noop
+    (the "committed → NULL" mapping at the INSERT site conflated the
+    caller-signal `final_outcome` with the DB row's terminal-state
+    column). NULL outcome on a non-Inject row inside a batch with a
+    paired Inject made the batch-completion SQL guard
+    `WHERE batch_id IS NOT NULL AND outcome IS NULL` see the row as
+    "still pending" forever — `maybe_enqueue_inject_batch_done`,
+    `problems_needing_t1`, and `problems_stalled` all stayed gated
+    even after every Inject in the batch resolved. Jordan stalled
+    silently after Brick C landed because Strategist's earlier
+    `ConfirmShelve(succ_glue) + Inject(Forward, prereq)` batch could
+    never reach "complete".
+
+    Fix: synchronous decisions (whose side effect ran at commit time)
+    write `outcome='success'` immediately. Inject keeps NULL (filled
+    later by `propagate_inject_outcome_from_goal/strategy`).
+    RequestUserAmend keeps its explicit `'awaiting_human'`."""
+    _insert_root(conn)
+    sub = db.insert_goal(
+        conn, problem="p", slug="sub",
+        lean_path="Problems/p/proofs/L_sub.lean", statement="T",
+        origin="backward",
+    )
+    db.update_goal_status(conn, sub, "shelved")
+    conn.commit()
+
+    # ConfirmShelve + Reopen + EmitDirective + Noop, paired with an
+    # Inject so they all carry a shared batch_id (worst-case shape).
+    cs, _ = strategist.parse_decision(json.dumps({
+        "kind": "ConfirmShelve", "target_goal_id": sub, "reason": "x",
+    }))
+    re_op, _ = strategist.parse_decision(json.dumps({
+        "kind": "Reopen", "target_goal_id": sub, "reason": "y",
+    }))
+    ed, _ = strategist.parse_decision(json.dumps({
+        "kind": "EmitDirective", "scope": "problem:p",
+        "body": "Note.", "reason": "doc",
+    }))
+    noop, _ = strategist.parse_decision(json.dumps({
+        "kind": "Noop", "reason": "pacing",
+    }))
+    ij, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Forward",
+        "brief": "## Need\nbridge lemma",
+    }))
+    # ConfirmShelve + Reopen on same goal is rejected as contradictory,
+    # so split into two batches: (CS, Inject), then (Reopen, EmitDirective,
+    # Noop, Inject). Each batch independently exercises the rule for its
+    # decision kinds.
+    out_a = strategist.commit_decisions(
+        [cs, ij], conn, problem="p", tick=1,
+        trigger_kind="pending_review", workspace=workspace,
+    )
+    # Reset goal state so Reopen has something to act on.
+    db.update_goal_status(conn, sub, "pending_strategist_review")
+    conn.commit()
+    ij2, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Forward",
+        "brief": "## Need\nsecond bridge",
+    }))
+    out_b = strategist.commit_decisions(
+        [re_op, ed, noop, ij2], conn, problem="p", tick=2,
+        trigger_kind="routine", workspace=workspace,
+    )
+
+    def _row(decision_id: int) -> sqlite3.Row:
+        return conn.execute(
+            "SELECT decision_kind, outcome, batch_id"
+            " FROM strategist_decisions WHERE id = ?",
+            (decision_id,),
+        ).fetchone()
+
+    cs_row = _row(out_a[0].decision_row_id)
+    ij_row_a = _row(out_a[1].decision_row_id)
+    assert cs_row["decision_kind"] == "ConfirmShelve"
+    assert cs_row["outcome"] == "success"
+    assert cs_row["batch_id"] is not None  # paired with Inject
+    assert ij_row_a["decision_kind"] == "Inject"
+    assert ij_row_a["outcome"] is None  # async, filled later
+    assert ij_row_a["batch_id"] == cs_row["batch_id"]
+
+    re_row = _row(out_b[0].decision_row_id)
+    ed_row = _row(out_b[1].decision_row_id)
+    noop_row = _row(out_b[2].decision_row_id)
+    ij_row_b = _row(out_b[3].decision_row_id)
+    for r, kind in ((re_row, "Reopen"), (ed_row, "EmitDirective"),
+                    (noop_row, "Noop")):
+        assert r["decision_kind"] == kind
+        assert r["outcome"] == "success", (
+            f"{kind} row should write outcome='success' at commit; "
+            f"got {r['outcome']!r}. Batch-completion SQL guards key "
+            f"off this column.")
+        assert r["batch_id"] is not None
+    assert ij_row_b["outcome"] is None
+
+
 # ---------------------------------------------------------------------
 # Phase 2.5 (unified) — Inject(briefs=[...]) batch path
 # ---------------------------------------------------------------------
