@@ -14,6 +14,7 @@ asterism.db.*
 *.lean.verify_backup
 # F20 lemma signature cache (toolchain-keyed; rebuilt on demand)
 Tooling/knowledge/.lemma_cache.json
+Tooling/.lemma_cache.json
 # F20 transient query file (created + unlinked per goal lookup)
 .lemma_lookup_query.lean
 # F28 — Asterism runtime state (logs, future scratch). Whole hidden
@@ -55,6 +56,12 @@ demo/active/
 
 # Internal-only reference docs (handoff state, strategy, operator runbook)
 docs/internal/
+
+# Frozen external deliverables (proposal package, slide deck) — working
+# tree retains them so the operator can re-open locally; git doesn't
+# track new changes. See docs/archive/README.md for the two-lifecycle
+# split (design/ tracked vs delivered/ ignored).
+docs/archive/delivered/
 
 # Operator discipline; loaded locally via Claude Code's CLAUDE.md walk, not tracked.
 docs/CLAUDE.md
