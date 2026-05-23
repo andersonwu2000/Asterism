@@ -211,3 +211,127 @@ def test_inject_defs_opens_preserves_existing_subset(
     # `BigOperators` already present → no duplicate; `Real Nat Topology` added.
     assert out.count("open BigOperators") == 1
     assert "open Real Nat Topology" in out
+
+
+# ---------------------------------------------------------------------
+# ManifestCache — hot-reload on mtime change
+# ---------------------------------------------------------------------
+
+import os
+import time as _time
+
+
+def _write_manifest(path: Path, statement: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "---\nproblem: p\n---\n\n## Statement\n" + statement + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_manifest_cache_hot_reload_on_mtime_change(tmp_path: Path) -> None:
+    """User edits Manifest.md mid-run → next `cache[problem]` access
+    re-parses and returns the new content. Pre-fix the daemon cached
+    the startup parse; user edits were ignored until restart."""
+    mpath = tmp_path / "Problems" / "p" / "Manifest.md"
+    _write_manifest(mpath, "T_original")
+    cache = manifest.ManifestCache(tmp_path)
+    cache.load("p", "Problems/p/Manifest.md")
+    assert cache["p"].statement == "T_original"
+
+    # Edit + bump mtime explicitly (filesystems may not see sub-second
+    # changes between successive writes; setting +2s guarantees stat
+    # picks up the change without sleeping the test runner).
+    _write_manifest(mpath, "T_edited")
+    new_mtime = _time.time() + 2
+    os.utime(mpath, (new_mtime, new_mtime))
+
+    fresh = cache["p"]
+    assert fresh.statement == "T_edited"
+
+
+def test_manifest_cache_returns_cached_when_mtime_unchanged(
+    tmp_path: Path,
+) -> None:
+    """No edit → no re-parse. Avoids per-spawn filesystem reads of the
+    full Manifest body when nothing has changed."""
+    mpath = tmp_path / "Problems" / "p" / "Manifest.md"
+    _write_manifest(mpath, "T_stable")
+    cache = manifest.ManifestCache(tmp_path)
+    first = cache.load("p", "Problems/p/Manifest.md")
+    second = cache["p"]
+    # Same object identity — no re-parse, returned the cached instance.
+    assert first is second
+
+
+def test_manifest_cache_keeps_prior_when_reparse_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture,
+) -> None:
+    """If a mid-run edit introduces malformed YAML / sections that
+    `parse` raises on, the cache logs the failure and keeps the prior
+    successful parse. Daemon does not crash. mtime advances so we
+    don't retry-fail every subsequent access."""
+    mpath = tmp_path / "Problems" / "p" / "Manifest.md"
+    _write_manifest(mpath, "T_good")
+    cache = manifest.ManifestCache(tmp_path)
+    cache.load("p", "Problems/p/Manifest.md")
+
+    # Overwrite with content that breaks parse — _parse_frontmatter
+    # tolerates many shapes; force a real Exception by deleting the
+    # file so parse's read_text raises FileNotFoundError.
+    mpath.unlink()
+    new_mtime = _time.time() + 2
+    # Recreate as a directory at the same path so stat() succeeds with
+    # changed mtime but parse fails on read_text.
+    placeholder = mpath.parent / "_placeholder"
+    placeholder.write_text("x", encoding="utf-8")
+    os.utime(placeholder, (new_mtime, new_mtime))
+    # Simulate the file being replaced with a broken one by writing
+    # then making it unreadable. Simpler: just point at a missing file
+    # via the cache's resolved path.
+    # Instead exercise the recovery: re-create with valid content but
+    # bad YAML that breaks downstream parse expectations.
+    _write_manifest(mpath, "T_replaced")
+    os.utime(mpath, (new_mtime, new_mtime))
+    # Monkeypatch parse to raise once to simulate transient parse fail.
+    real_parse = manifest.parse
+    calls = {"n": 0}
+    def flaky_parse(p):
+        calls["n"] += 1
+        raise ValueError("simulated parse failure")
+    # Use a private attribute swap.
+    manifest.parse = flaky_parse  # type: ignore[assignment]
+    try:
+        out = cache["p"]
+    finally:
+        manifest.parse = real_parse  # type: ignore[assignment]
+    # Returned the pre-edit cached manifest (T_good).
+    assert out.statement == "T_good"
+    captured = capsys.readouterr()
+    assert "manifest-reload" in captured.out
+    assert "parse failed" in captured.out
+
+
+def test_manifest_cache_dict_compat(tmp_path: Path) -> None:
+    """Quack-compatible with dict[str, Manifest] for the operations
+    framework uses elsewhere (brief.write_for_all_problems iterates;
+    dispatcher does `problem in manifests` guards)."""
+    mpath_a = tmp_path / "Problems" / "a" / "Manifest.md"
+    mpath_b = tmp_path / "Problems" / "b" / "Manifest.md"
+    _write_manifest(mpath_a, "T_a")
+    _write_manifest(mpath_b, "T_b")
+    # Adjust problem name per loaded entry.
+    mpath_a.write_text(
+        "---\nproblem: a\n---\n\n## Statement\nT_a\n", encoding="utf-8")
+    mpath_b.write_text(
+        "---\nproblem: b\n---\n\n## Statement\nT_b\n", encoding="utf-8")
+    cache = manifest.ManifestCache(tmp_path)
+    cache.load("a", "Problems/a/Manifest.md")
+    cache.load("b", "Problems/b/Manifest.md")
+    assert "a" in cache
+    assert "missing" not in cache
+    assert len(cache) == 2
+    assert set(cache) == {"a", "b"}
+    assert sorted(cache.keys()) == ["a", "b"]
+    items = dict(cache.items())
+    assert items["a"].statement == "T_a"

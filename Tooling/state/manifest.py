@@ -132,6 +132,88 @@ def _parse_bullet_list(text: str) -> list[str]:
     return items
 
 
+class ManifestCache:
+    """Mtime-aware Manifest cache. Each `__getitem__` re-stat's the
+    backing Manifest.md and reparses if its mtime has changed since
+    the last load. Lets a long-running daemon pick up user edits
+    mid-run instead of requiring restart (dispatcher previously had
+    no hot-reload — `dispatcher.run` parsed once at startup and
+    forever served the cached copy).
+
+    Quack-compatible with `dict[str, Manifest]` for the operations
+    the rest of the framework uses: `__getitem__`, `__contains__`,
+    `__iter__`, `__len__`, `keys()`, `items()`. Mutation goes through
+    `load()` (initial registration at startup or post-init).
+
+    Reload failure (Manifest parse raises after a mid-run edit
+    introduced bad syntax) keeps the prior cached entry and logs —
+    daemon does not crash on transient bad edits. The mtime cache
+    advances so we don't retry-fail every spawn.
+    """
+
+    def __init__(self, workspace: Path) -> None:
+        self._workspace = workspace
+        # problem -> (manifest_path_str, last_mtime, manifest)
+        self._entries: dict[str, tuple[str, float, Manifest]] = {}
+
+    def load(self, problem: str, manifest_path: str) -> Manifest:
+        """Initial parse. Caller (dispatcher.run startup loop +
+        post-init registration paths) supplies the manifest_path
+        from `problems.manifest_path`. Returns the parsed Manifest;
+        subsequent `cache[problem]` access uses mtime-keyed re-parse
+        on top of this baseline."""
+        full = self._workspace / manifest_path
+        mtime = _stat_mtime(full)
+        mfst = parse(full)
+        self._entries[problem] = (manifest_path, mtime, mfst)
+        return mfst
+
+    def __getitem__(self, problem: str) -> Manifest:
+        entry = self._entries.get(problem)
+        if entry is None:
+            raise KeyError(problem)
+        manifest_path, last_mtime, mfst = entry
+        full = self._workspace / manifest_path
+        cur_mtime = _stat_mtime(full)
+        if cur_mtime == last_mtime:
+            return mfst
+        try:
+            new_mfst = parse(full)
+        except Exception as e:
+            print(f"[manifest-reload] {problem} parse failed "
+                  f"(keeping cached): {type(e).__name__}: {e}",
+                  flush=True)
+            # Advance mtime so we don't retry-fail every spawn.
+            self._entries[problem] = (manifest_path, cur_mtime, mfst)
+            return mfst
+        self._entries[problem] = (manifest_path, cur_mtime, new_mfst)
+        print(f"[manifest-reload] {problem} (mtime changed)", flush=True)
+        return new_mfst
+
+    def __contains__(self, problem: object) -> bool:
+        return problem in self._entries
+
+    def __iter__(self):
+        return iter(self._entries)
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def keys(self):
+        return self._entries.keys()
+
+    def items(self):
+        # Materialize via __getitem__ so callers see fresh manifests.
+        return [(p, self[p]) for p in self._entries]
+
+
+def _stat_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def parse(path: Path) -> Manifest:
     text = path.read_text(encoding='utf-8')
     fm = _parse_frontmatter(text)

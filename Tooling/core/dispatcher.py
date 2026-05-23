@@ -1218,7 +1218,8 @@ def _derive_strategist_trigger(conn: sqlite3.Connection,
     return ("routine", pending_id)
 
 
-def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
+def _run_pipeline(workspace: Path,
+                  manifests: "manifest.ManifestCache | dict[str, manifest.Manifest]",
                   task_kind: str, target_id: str, target_kind: str,
                   pipeline_id: str,
                   decision_id: int | None = None,
@@ -1627,9 +1628,13 @@ def run(workspace: Path, *, once: bool = False,
     # is the long-running consumer of the DB on a workspace that
     # was init'd against an earlier schema version.
     db.init_schema(conn)
-    manifests: dict[str, manifest.Manifest] = {}
+    # ManifestCache hot-reloads on Manifest.md mtime change at each
+    # spawn-time access — daemon previously locked in the startup-time
+    # parse, so user edits mid-run were invisible until restart. Cache
+    # quacks like dict[str, Manifest] for downstream callers.
+    manifests = manifest.ManifestCache(workspace)
     for row in conn.execute("SELECT name, manifest_path FROM problems"):
-        manifests[row["name"]] = manifest.parse(workspace / row["manifest_path"])
+        manifests.load(row["name"], row["manifest_path"])
 
     _recover_at_startup(conn, workspace)
 
