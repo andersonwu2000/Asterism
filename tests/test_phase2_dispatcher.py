@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from Tooling.core.dispatcher import (
+    _derive_strategist_trigger,
     bfs_refill,
     strategist_triggers,
 )
@@ -577,3 +578,97 @@ def test_t4_stall_dedup_with_existing_strategist_queue_entry(
         "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
     ).fetchone()
     assert q["n"] == 1  # still just one
+
+
+# ---------------------------------------------------------------------
+# _derive_strategist_trigger — trigger_kind selection from DB state
+# ---------------------------------------------------------------------
+
+def test_derive_trigger_first_launch_only_when_bootstrap_done_zero(
+    conn: sqlite3.Connection,
+) -> None:
+    """`first_launch` fires only when bootstrap_done=0 (truly first
+    Strategist wake on this problem). Pre-fix the dispatcher picked
+    first_launch whenever root.status='frozen', regardless of how
+    many decisions had landed — jordan_normal_form 2026-05-23:
+    200+ decisions committed but root still frozen because Strategist
+    had been injecting prereq bricks rather than Reopen(root); pre-
+    fix a manually-injected routine wake repeatedly hit
+    first_launch.md instead of routine.md.
+    """
+    _insert_problem(conn, name="alpha", bootstrap_done=0)
+    _insert_root(conn, "alpha", status="frozen")
+
+    trigger, pending = _derive_strategist_trigger(conn, "alpha")
+    assert trigger == "first_launch"
+    assert pending is None
+
+
+def test_derive_trigger_routine_when_frozen_root_but_bootstrap_done(
+    conn: sqlite3.Connection,
+) -> None:
+    """Root frozen + bootstrap_done=1 → routine (Strategist has acted
+    before; subsequent wakes should run the active-audit checklist,
+    not the bootstrap survey)."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    _insert_root(conn, "alpha", status="frozen")
+
+    trigger, pending = _derive_strategist_trigger(conn, "alpha")
+    assert trigger == "routine"
+    assert pending is None
+
+
+def test_derive_trigger_routine_when_root_open_and_no_pending(
+    conn: sqlite3.Connection,
+) -> None:
+    """Steady state — open root, no pending review, no unack inject
+    batch → routine."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    _insert_root(conn, "alpha", status="open")
+
+    trigger, _ = _derive_strategist_trigger(conn, "alpha")
+    assert trigger == "routine"
+
+
+def test_derive_trigger_pending_review_beats_frozen_root(
+    conn: sqlite3.Connection,
+) -> None:
+    """A goal in pending_strategist_review must take priority over
+    a frozen root — even on bootstrap_done=0, that specific goal
+    needs a verdict before any other planning."""
+    _insert_problem(conn, name="alpha", bootstrap_done=0)
+    _insert_root(conn, "alpha", status="frozen")
+    sub = _insert_sub(conn, "alpha", "sub_a",
+                       status="pending_strategist_review")
+
+    trigger, pending = _derive_strategist_trigger(conn, "alpha")
+    assert trigger == "pending_review"
+    assert pending == sub
+
+
+def test_derive_trigger_inject_batch_done_beats_pending_review(
+    conn: sqlite3.Connection,
+) -> None:
+    """An unacknowledged Inject batch is the freshest event — beats
+    pending_review and everything else. Strategist must consume the
+    batch result before any other reasoning."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    _insert_root(conn, "alpha", status="attempting")
+    _insert_sub(conn, "alpha", "sub_a",
+                status="pending_strategist_review")
+    # Seed an unack batch (an Inject decision with batch_id, outcome
+    # filled, no Strategist response after).
+    ts = db.now()
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, brief, payload, batch_id,"
+        " outcome, created_at, updated_at)"
+        " VALUES ('alpha', 0, 'first_launch', 'Inject', '## brief',"
+        " '{\"pipeline\":\"Forward\",\"step_index\":0,\"batch_size\":1}',"
+        " 'batch-abc', 'success', ?, ?)",
+        (ts, ts),
+    )
+    conn.commit()
+
+    trigger, _ = _derive_strategist_trigger(conn, "alpha")
+    assert trigger == "inject_batch_done"

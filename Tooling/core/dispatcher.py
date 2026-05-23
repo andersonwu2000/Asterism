@@ -1157,6 +1157,67 @@ def strategist_triggers(conn: sqlite3.Connection,
 # Worker thread body
 # ---------------------------------------------------------------------
 
+def _derive_strategist_trigger(conn: sqlite3.Connection,
+                                problem: str) -> tuple[str, int | None]:
+    """Pick `trigger_kind` for a Strategist run on `problem`. Returns
+    `(trigger, pending_review_id)` where pending_review_id is non-None
+    iff trigger is 'pending_review'.
+
+    Priority order (Phase 2 §2.1 + 2.5 + 5):
+
+      1. `inject_batch_done` — unacknowledged Inject batch resolved.
+         A batch completion is the freshest event; Strategist must
+         decide follow-up (Reopen / Inject / etc) before any other
+         reasoning, even if root happens to be frozen meanwhile.
+      2. `pending_review` — at least one goal in pending_strategist_
+         review status. A goal explicitly waiting on a verdict is more
+         focused than a generic root-status check.
+      3. `first_launch` — root is `frozen` AND bootstrap_done=0.
+         "Strategist has never committed any decision yet on this
+         problem". Once any decision lands, bootstrap_done flips
+         (`_commit_one` calls `set_problem_bootstrap_done` on every
+         commit), and subsequent wakes on a still-frozen root become
+         routine check-ins.
+
+         Pre-fix this branch fired whenever root.status='frozen'
+         regardless of bootstrap_done. Observed jordan_normal_form
+         2026-05-23: 200+ decisions had landed but root was still
+         frozen because Strategist had been injecting prereq bricks
+         rather than Reopen(root); manually-injected routine wake-
+         ups repeatedly hit first_launch.md ("no decisions recorded
+         yet") instead of routine.md's active-audit checklist.
+      4. `routine` — default; wall-clock check-in.
+    """
+    pending_row = conn.execute(
+        "SELECT id FROM goals WHERE problem = ?"
+        "   AND status = 'pending_strategist_review'"
+        " ORDER BY id LIMIT 1",
+        (problem,),
+    ).fetchone()
+    pending_id = int(pending_row["id"]) if pending_row else None
+    unack_batches = db.unacknowledged_inject_batches(conn, problem)
+    if unack_batches:
+        return ("inject_batch_done", pending_id)
+    if pending_id is not None:
+        return ("pending_review", pending_id)
+    root_row = conn.execute(
+        "SELECT status FROM goals "
+        " WHERE problem = ? AND origin = 'root'",
+        (problem,),
+    ).fetchone()
+    root_frozen = (root_row is not None
+                   and str(root_row["status"]) == 'frozen')
+    bootstrap_row = conn.execute(
+        "SELECT bootstrap_done FROM problems WHERE name = ?",
+        (problem,),
+    ).fetchone()
+    bootstrap_done = bool(bootstrap_row
+                          and int(bootstrap_row["bootstrap_done"]))
+    if root_frozen and not bootstrap_done:
+        return ("first_launch", pending_id)
+    return ("routine", pending_id)
+
+
 def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
                   task_kind: str, target_id: str, target_kind: str,
                   pipeline_id: str,
@@ -1205,47 +1266,8 @@ def _run_pipeline(workspace: Path, manifests: dict[str, manifest.Manifest],
                             "failed", "goal_not_found")
                 problem = str(goal["problem"])
                 mfst = manifests[problem]
-                # Determine trigger_kind heuristically from problem
-                # state (no explicit trigger column on queue rows; the
-                # trigger_kind is derived per Phase 2 §2.1 + 2.5 + 5):
-                #   unack Inject batch done → 'inject_batch_done'
-                #   root.status = 'frozen'  → 'first_launch'
-                #   any pending_strategist_review goal in this problem
-                #                           → 'pending_review' + use that
-                #                             goal as pending_review_id
-                #   otherwise               → 'routine'
-                #
-                # `inject_batch_done` takes precedence over everything
-                # because a batch completion is the freshest event;
-                # Strategist needs to decide follow-up (more Inject /
-                # Reopen(root) / etc) before any other reasoning. While
-                # root is still frozen, first_launch fires next so the
-                # initial planning loop (RequestUserAmend if vocab is
-                # missing → Inject(Forward) for lemma gaps → Reopen(root))
-                # runs to completion.
-                root_row = conn.execute(
-                    "SELECT status FROM goals "
-                    " WHERE problem = ? AND origin = 'root'",
-                    (problem,),
-                ).fetchone()
-                root_frozen = (root_row is not None
-                               and str(root_row["status"]) == 'frozen')
-                pending_row = conn.execute(
-                    "SELECT id FROM goals WHERE problem = ?"
-                    "   AND status = 'pending_strategist_review'"
-                    " ORDER BY id LIMIT 1",
-                    (problem,),
-                ).fetchone()
-                pending_id = int(pending_row["id"]) if pending_row else None
-                unack_batches = db.unacknowledged_inject_batches(conn, problem)
-                if unack_batches:
-                    trigger = "inject_batch_done"
-                elif root_frozen:
-                    trigger = "first_launch"
-                elif pending_id is not None:
-                    trigger = "pending_review"
-                else:
-                    trigger = "routine"
+                trigger, pending_id = _derive_strategist_trigger(
+                    conn, problem)
 
                 from ..pipeline import strategist
                 r = strategist.run_strategist(
