@@ -999,7 +999,21 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
 
     attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
     problem_dir = db.problem_dir(workspace, problem)
-    prompt_path = PROMPT_DIR / "strategist.md"
+    # Per-trigger prompt: each trigger has its own focused prompt so
+    # the agent sees only the guidance relevant to this wake's kind
+    # (first_launch / routine / pending_review / inject_batch_done).
+    # Loader validates that every TRIGGER_KIND has a corresponding
+    # file at startup via test_strategist_prompts_cover_all_triggers.
+    prompt_path = PROMPT_DIR / "strategist" / f"{trigger_kind}.md"
+    if not prompt_path.exists():
+        return PipelineResult(
+            outcome="failed",
+            failure_reason="strategist_schema_invalid",
+            failure_detail=(
+                f"missing prompt file for trigger_kind={trigger_kind!r}: "
+                f"{prompt_path}"
+            ),
+        )
 
     # Stage 1 — Context.md
     compile_strategist_context(

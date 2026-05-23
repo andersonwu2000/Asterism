@@ -760,3 +760,45 @@ def test_stall_warning_silent_when_root_proved(
     db.update_goal_status(conn, root, "proved")
 
     assert phase2_context._section_stall_warning(conn, "p") == []
+
+
+def test_current_directive_section_silent_when_unset(
+    conn: sqlite3.Connection,
+) -> None:
+    """No directive → no section. Strategist Context.md stays compact."""
+    _insert_problem(conn)
+    assert phase2_context._section_current_directive(conn, "p") == []
+
+
+def test_current_directive_section_surfaces_existing_body(
+    conn: sqlite3.Connection,
+) -> None:
+    """When directive is set, Strategist Context.md surfaces it under
+    `## Current standing directive` so Strategist can diff-update it
+    on the next routine wake instead of overwriting blindly.
+
+    Worker Context.md (separate code path,
+    `context._section_strategist_directive`) already surfaces directive
+    to workers; this test covers the Strategist-side mirror. Each
+    Strategist invocation is a fresh agent session — without this
+    section the agent has no memory of what it (or a prior wake) wrote.
+    """
+    _insert_problem(conn)
+    db.set_problem_strategist_directive(
+        conn, "p",
+        "## Mathlib hints\n- Module.End.exists_eigenvalue\n- Basis.card_eq_finrank")
+
+    lines = phase2_context._section_current_directive(conn, "p")
+    body = "\n".join(lines)
+    assert "## Current standing directive" in body
+    assert "Module.End.exists_eigenvalue" in body
+    assert "rolling curated document" in body
+
+
+def test_current_directive_section_silent_when_only_whitespace(
+    conn: sqlite3.Connection,
+) -> None:
+    """Whitespace-only directive treated as empty — no noise section."""
+    _insert_problem(conn)
+    db.set_problem_strategist_directive(conn, "p", "   \n\n  ")
+    assert phase2_context._section_current_directive(conn, "p") == []

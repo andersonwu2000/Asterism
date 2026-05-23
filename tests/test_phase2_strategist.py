@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from Tooling.pipeline import strategist
+from Tooling.pipeline import PROMPT_DIR, strategist
 from Tooling.state import db
 
 
@@ -848,6 +848,48 @@ def test_commit_request_user_amend_writes_proposed_file_atomically(
         (outcome.decision_row_id,),
     ).fetchone()
     assert row["outcome"] == "awaiting_human"
+
+
+def test_strategist_prompts_cover_all_triggers() -> None:
+    """Every TRIGGER_KIND must have a corresponding prompt file under
+    Tooling/prompts/strategist/<trigger>.md. `run_strategist` resolves
+    prompt path by trigger_kind; a missing file would fail an
+    in-flight Strategist pipeline with `strategist_schema_invalid`."""
+    prompt_dir = PROMPT_DIR / "strategist"
+    assert prompt_dir.is_dir(), f"missing {prompt_dir}"
+    for tk in strategist.TRIGGER_KINDS:
+        p = prompt_dir / f"{tk}.md"
+        assert p.exists(), f"missing prompt file for trigger_kind={tk!r}: {p}"
+        text = p.read_text(encoding="utf-8")
+        assert text.strip(), f"empty prompt file: {p}"
+        # Each prompt must mention its trigger_kind explicitly so
+        # human reviewers can grep to find the right file.
+        assert tk in text, (
+            f"prompt {p} does not mention its trigger_kind {tk!r} in body")
+
+
+def test_strategist_prompts_share_decision_kind_vocabulary() -> None:
+    """Each per-trigger prompt must reference at least the decision
+    kinds it can legitimately emit. Catches drift where a prompt
+    silently drops a decision kind without removing it from the
+    framework verify path (or vice versa). Per-trigger allowed sets
+    track what `run_strategist` actually validates downstream.
+    """
+    expected_kinds = {
+        "first_launch": {"Inject", "Reopen", "EmitDirective",
+                         "RequestUserAmend"},
+        "routine": {"Inject", "ConfirmShelve", "Reopen", "EmitDirective",
+                    "RequestUserAmend", "Noop"},
+        "pending_review": {"Inject", "ConfirmShelve", "Reopen"},
+        "inject_batch_done": {"Reopen", "Inject", "ConfirmShelve", "Noop"},
+    }
+    prompt_dir = PROMPT_DIR / "strategist"
+    for tk, kinds in expected_kinds.items():
+        text = (prompt_dir / f"{tk}.md").read_text(encoding="utf-8")
+        for k in kinds:
+            assert k in text, (
+                f"prompt {tk}.md is expected to reference decision kind "
+                f"{k!r} but does not")
 
 
 def test_synchronous_decisions_write_outcome_success_at_commit(

@@ -553,6 +553,48 @@ def _section_failure_replay(conn: sqlite3.Connection,
     return out
 
 
+def _section_current_directive(conn: sqlite3.Connection,
+                               problem: str) -> list[str]:
+    """Surface the current `problems.strategist_directive` so Strategist
+    can see what it (or a prior wake) wrote previously and maintain it
+    as a rolling hint document — typically a curated list of mathlib
+    lemmas / API surface relevant to the active branches, accumulated
+    across routine ticks.
+
+    EmitDirective writes overwrite this slot. Showing the current
+    contents lets Strategist diff-update (keep useful entries, prune
+    stale ones, add new findings) instead of either blindly appending
+    or wiping prior context.
+
+    Empty / NULL directive → returns []. Pre-Phase-2 schema (column
+    missing) → returns []. Mirror of `context._section_strategist_
+    directive` (which surfaces directive to *workers*); this variant
+    surfaces it to Strategist itself.
+    """
+    try:
+        row = conn.execute(
+            "SELECT strategist_directive FROM problems WHERE name = ?",
+            (problem,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return []
+    if row is None:
+        return []
+    directive = row["strategist_directive"]
+    if directive is None or not str(directive).strip():
+        return []
+    return [
+        "## Current standing directive",
+        "",
+        "(Visible to every worker's Context.md until you overwrite it. "
+        "Treat as a rolling curated document — diff-update each routine "
+        "tick: keep useful entries, prune stale, append new findings.)",
+        "",
+        str(directive).strip(),
+        "",
+    ]
+
+
 def _section_tree_inline(workspace: Path, problem: str) -> list[str]:
     """Inline the problem's TREE.md (precompiled artifact). If absent
     (fresh problem post-init), return a stub note."""
@@ -633,6 +675,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     # the cross-reference gives it a structured cue.
     sections += [
         _section_stall_warning(conn, problem),
+        _section_current_directive(conn, problem),
         _section_inject_batch_outcomes(conn, problem),
         _section_pending_reopens(conn, problem, trigger_kind),
         _section_active_goals(conn, problem),
