@@ -16,17 +16,22 @@ Bar — only write if all three:
 Default is skip. Most reflections should be `skip`.
 
 Restrictions:
-  - You may ONLY write to `Problems/{problem}/LESSONS.md`. Do NOT touch any other file.
-  - Use the Edit tool. The file contains a `<!-- LESSONS_BEGIN -->` anchor line; insert new lessons immediately AFTER it.
+  - You may ONLY write to `Problems/{problem}/LESSONS.md` and sub-goal lean files in `Problems/{problem}/proofs/L_*.lean` (the ones you just committed). Do NOT touch any other file.
+  - Use the Edit tool. LESSONS.md contains a `<!-- LESSONS_BEGIN -->` anchor line; insert new lessons immediately AFTER it.
 
 Action:
   - No signal → exit without editing.
   - Signal + cap not full → Edit the file, replace `<!-- LESSONS_BEGIN -->\n` with `<!-- LESSONS_BEGIN -->\n- <one-sentence lesson>\n` (preserving any existing bullet lines after the anchor).
   - Signal + cap full → compare your candidate vs each existing bullet. If strictly stronger than the weakest, Edit the weakest line in place. Otherwise skip.
 
+Per-subgoal HINT (Backward success only): for each sub-goal you committed, if it restates an existing lemma (`mathlib`, `library`, `same-problem`, or `other-problem` when surfaced in Context), Edit a
+  `-- HINT [<source>: <target>]: <one-sentence reason>`
+block above the `theorem` line in that sub-goal's .lean file.
+
 Reply with one of:
   - `skip`
   - `wrote: <lesson>`
   - `replaced N: <lesson>`  (N = 1-indexed bullet index you replaced)
+  - `hint: <subgoal slug>, <subgoal slug>, ...`  (one or more HINTs added; combine with another reply via `+` if also wrote LESSONS, e.g. `wrote: ... + hint: foo`)
 
 Time budget: {timeout_min} min. Exit promptly after the Edit (or immediately on `skip`).
