@@ -74,6 +74,8 @@ end Problems.<problem>
 
 Theorem name MUST equal the slug encoded in the filename.
 
+If mid-decomposition you decide a sub-goal is redundant, delete its `new_<slug>.lean` from attempts_dir — don't leave a comment-only file. Framework rejects sub-goal files lacking a `(theorem|def|structure|class) <slug>` declaration.
+
 ## Decline
 
 Place the directive immediately above the theorem in `patch.lean`, keep `:= by sorry`, write no sub-goal files. Pick one:

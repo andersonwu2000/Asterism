@@ -808,6 +808,31 @@ def _backward_parse_and_commit(
         for orig, final, path in resolved
     ]
 
+    # Bug B (polar 2026-05-23): each `new_<slug>.lean` must contain a
+    # real `(theorem|def|structure|class) <slug>` declaration. A
+    # comment-only or placeholder file passes slug-filename + lake-
+    # build checks silently (lake elaborates an empty namespace fine),
+    # then later Backward attempts to decompose this stub-less goal
+    # hit `parent_stub_not_decomposable` repeatedly until the goal
+    # exhausts attempts. Validate at commit time using the same
+    # `signature_prefix` regex that `_build_strategy_skeleton` runs at
+    # decomp time — if the regex can't find the declaration later,
+    # reject now instead of persisting the garbage.
+    for slug, src in sub_meta:
+        try:
+            text = src.read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        if not _signature_prefix(text, slug):
+            return _abort(
+                "parse_proposal_fail",
+                f"new_{slug}.lean has no `(theorem|def|structure|class) "
+                f"{slug} ...` declaration. If this sub-goal turned out "
+                f"redundant during your decomposition, delete the file "
+                f"before submitting (don't leave a placeholder comment).",
+                leading,
+            )
+
     # Dedupe scan: batch-call Lean kernel isDefEq for all candidate
     # sub-goals × eligible ancestors in one subprocess. Hits → write an
     # alias lean file that delegates to canonical via `apply <;>

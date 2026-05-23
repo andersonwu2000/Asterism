@@ -472,6 +472,24 @@ def test_signature_prefix_supports_def_with_type() -> None:
     assert _signature_prefix(src, "foo") == "def foo : Nat "
 
 
+def test_signature_prefix_rejects_comment_only_subgoal_file() -> None:
+    """Bug B regression — Backward agent occasionally writes a
+    `new_<slug>.lean` containing only imports + an `-- obsolete:
+    superseded by ...` comment (polar 2026-05-22's
+    `square_root_of_positive`). The framework relies on
+    `signature_prefix` returning empty for such files so the parse-fn
+    `_abort`s with `parse_proposal_fail` and forces the agent to
+    delete the redundant file rather than leaving a comment placeholder."""
+    from Tooling.pipeline import _signature_prefix
+    src = (
+        "import Mathlib\n"
+        "import Problems.foo.Defs\n"
+        "\n"
+        "-- obsolete: superseded by other_lemma\n"
+    )
+    assert _signature_prefix(src, "square_root_of_positive") == ""
+
+
 def test_normalize_signature_collapses_whitespace() -> None:
     from Tooling.pipeline import _normalize_signature
     a = "theorem  s1 \n   {X : Type*}  \t : True"
