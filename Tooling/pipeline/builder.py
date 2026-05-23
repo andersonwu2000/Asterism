@@ -64,6 +64,10 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
     if result.outcome in ("proved", "moot"):
         _drafts.clear_partial(problem_dir=problem_dir, kind="builder",
                               goal_id=goal_id)
+        # Also drop any salvaged patch.lean from a prior orphan spawn
+        # — once this one succeeded, the prior attempt is moot.
+        _drafts.clear_partial_patch(problem_dir=problem_dir,
+                                    kind="builder", goal_id=goal_id)
     else:
         attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
         _drafts.persist_partials(attempts_dir=attempts_dir,

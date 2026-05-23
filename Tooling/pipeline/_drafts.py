@@ -120,3 +120,161 @@ def read_partial(*, problem_dir: Path, kind: str, goal_id: int) -> str | None:
         return p.read_text(encoding="utf-8")
     except OSError:
         return None
+
+
+# ---------------------------------------------------------------------
+# patch.lean salvage — orphan-attempts startup recovery
+# ---------------------------------------------------------------------
+# When daemon is hard-killed (user Stop-Process) the workers' patch.lean
+# is orphaned. The postmortem path only fires on watchdog-detected
+# timeout (via SIGKILL hook) and even then only captures `_progress.md`.
+# This module's salvage hooks below scan orphan attempts dirs at
+# startup, extract the theorem name from each patch.lean, map to the
+# DB goal, and persist the patch text under a separate drafts slot
+# so the next worker on that goal sees it.
+
+import re as _re
+import sqlite3 as _sqlite3
+
+_PATCH_FILENAME = "patch.lean"
+_PATCH_DRAFTS_BUDGET = 6000  # patch bodies can run longer than progress notes
+_PATCH_DRAFT_KIND_SUFFIX = "patch"
+
+# Extract theorem/lemma/def head name. Mirrors dedupe._THM_NAME_RE.
+_PATCH_THM_NAME_RE = _re.compile(r"\b(?:theorem|lemma|def)\s+(\S+)")
+
+# Anti-noise: bodies containing only `:= by sorry` (or empty proof)
+# carry no useful signal; skip.
+_SORRY_ONLY_RE = _re.compile(r":=\s*by\s+sorry\s*$", _re.MULTILINE)
+
+
+def patch_drafts_path(problem_dir: Path, kind: str, goal_id: int) -> Path:
+    """Drafts slot for salvaged patch.lean — distinct from progress
+    note slot (`drafts_path`) so the two surfaces don't clobber each
+    other and surface independently in Context.md."""
+    return (problem_dir / ".drafts"
+            / f"{kind}_g{goal_id}_{_PATCH_DRAFT_KIND_SUFFIX}.lean")
+
+
+def read_partial_patch(*, problem_dir: Path,
+                       kind: str, goal_id: int) -> str | None:
+    """Companion to `read_partial` for the patch.lean drafts slot."""
+    p = patch_drafts_path(problem_dir, kind, goal_id)
+    if not p.exists():
+        return None
+    try:
+        return p.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def clear_partial_patch(*, problem_dir: Path,
+                        kind: str, goal_id: int) -> None:
+    """Drop the salvaged patch on pipeline success."""
+    try:
+        patch_drafts_path(problem_dir, kind, goal_id).unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _patch_is_substantive(text: str) -> bool:
+    """True iff the patch carries a proof body beyond the original
+    sorry stub. Empty bodies and `:= by sorry`-only files are skipped
+    — surfacing them as a "previous attempt" would mislead."""
+    if not text or not text.strip():
+        return False
+    # If the file contains a `:= by sorry` line, treat it as the stub
+    # unless there are also non-sorry lines doing real work. The most
+    # common shape is import + theorem header + `:= by sorry`; reject.
+    if _SORRY_ONLY_RE.search(text):
+        # Count any other tactic-shaped line. Crude heuristic.
+        non_trivial = sum(
+            1 for ln in text.splitlines()
+            if ln.strip()
+            and not ln.strip().startswith(("import", "namespace",
+                                           "end", "--", "/-", "*/"))
+            and ":= by sorry" not in ln
+            and ":" in ln or "exact" in ln or "apply" in ln
+        )
+        if non_trivial < 2:
+            return False
+    return True
+
+
+def _resolve_goal_for_slug(conn: "_sqlite3.Connection",
+                           slug: str) -> tuple[int, str, str] | None:
+    """Look up the goal id + problem + kind hint for a slug. patch.lean
+    is Builder-emitted so kind defaults to 'builder'; the kind is used
+    as the drafts slot key.
+
+    Returns (goal_id, problem, kind) or None when slug doesn't match
+    any goal (could mean the goal was deleted by reset / prune / the
+    slug was framework-generated under a different name).
+    """
+    row = conn.execute(
+        "SELECT id, problem, entry_kind FROM goals WHERE slug = ?",
+        (slug,),
+    ).fetchone()
+    if row is None:
+        return None
+    return (int(row["id"]), str(row["problem"]), "builder")
+
+
+def salvage_orphan_patches(conn: "_sqlite3.Connection",
+                           workspace: Path) -> int:
+    """Scan `.attempts/<uuid>/patch.lean` files and persist any
+    substantive proof bodies as per-goal drafts. Called at startup
+    BEFORE the recovery sweep deletes the orphan dirs.
+
+    Returns the count of patches salvaged. Best-effort: any per-dir
+    failure (missing file, unparseable theorem name, slug not in DB,
+    DB problem dir not resolvable) is logged and skipped — the
+    surrounding cleanup still removes the orphan dir.
+    """
+    attempts_root = workspace / ".attempts"
+    if not attempts_root.exists():
+        return 0
+    salvaged = 0
+    for d in attempts_root.iterdir():
+        if not d.is_dir():
+            continue
+        patch_path = d / _PATCH_FILENAME
+        if not patch_path.exists():
+            continue
+        try:
+            text = patch_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if not _patch_is_substantive(text):
+            continue
+        m = _PATCH_THM_NAME_RE.search(text)
+        if m is None:
+            continue
+        slug = m.group(1).strip()
+        resolved = _resolve_goal_for_slug(conn, slug)
+        if resolved is None:
+            print(f"[patch-salvage] orphan {d.name}: slug {slug!r} "
+                  f"not in DB; skip", flush=True)
+            continue
+        goal_id, problem, kind = resolved
+        try:
+            from ..state import db as _db
+            problem_dir = _db.problem_dir(workspace, problem)
+        except Exception:
+            continue
+        out = patch_drafts_path(problem_dir, kind, goal_id)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        budget_text = text if len(text) <= _PATCH_DRAFTS_BUDGET else (
+            text[:_PATCH_DRAFTS_BUDGET]
+            + f"\n\n-- (truncated; full patch was {len(text)} chars)"
+        )
+        try:
+            out.write_text(budget_text, encoding="utf-8")
+            salvaged += 1
+            print(f"[patch-salvage] orphan {d.name} → "
+                  f"{out.relative_to(workspace).as_posix()} "
+                  f"(slug={slug}, g{goal_id})", flush=True)
+        except OSError as e:
+            print(f"[patch-salvage] write failed for g{goal_id}: {e}",
+                  flush=True)
+    return salvaged

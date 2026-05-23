@@ -157,7 +157,23 @@ def recover_at_startup(conn: sqlite3.Connection,
     attempts_cleared = 0
     backups_handled = 0
     tmps_removed = 0
+    patches_salvaged = 0
     if workspace is not None:
+        # Patch salvage FIRST — capture orphan patch.lean bodies
+        # before the rmtree pass drops them. Hard-kill of daemon
+        # (user Stop-Process, OS crash) leaves workers' in-flight
+        # proofs in .attempts/<uuid>/patch.lean; the postmortem
+        # path only fires on watchdog timeouts. Salvage extracts
+        # the theorem name, maps to the goal, persists under
+        # `.drafts/<kind>_g<gid>_patch.lean`; next Builder dispatch
+        # surfaces via context._section_prior_patch.
+        try:
+            from ..pipeline import _drafts as _drafts_mod
+            patches_salvaged = _drafts_mod.salvage_orphan_patches(
+                conn, workspace)
+        except Exception as e:  # noqa: BLE001 — best-effort
+            print(f"[dispatcher] patch salvage skipped: {e}", flush=True)
+
         attempts_root = workspace / ".attempts"
         if attempts_root.exists():
             for d in attempts_root.iterdir():
@@ -172,13 +188,15 @@ def recover_at_startup(conn: sqlite3.Connection,
 
     if (queue_cleared or inject_reenqueued or strategies_killed
             or goals_reopened or goals_attempting_fixup
-            or attempts_cleared or backups_handled or tmps_removed):
+            or attempts_cleared or backups_handled or tmps_removed
+            or patches_salvaged):
         print(f"[dispatcher] recovery: cleared {queue_cleared} queue rows, "
               f"re-enqueued {inject_reenqueued} in-flight Inject Forwards, "
               f"killed {strategies_killed} half-baked strategies, "
               f"reopened {goals_reopened} stuck goals, "
               f"flipped {goals_attempting_fixup} open->attempting "
               f"(orphan-success fixup), "
+              f"salvaged {patches_salvaged} orphan patches, "
               f"removed {attempts_cleared} orphan attempts dirs, "
               f"handled {backups_handled} lean backups, "
               f"removed {tmps_removed} stale .tmp files",

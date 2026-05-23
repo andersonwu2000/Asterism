@@ -624,6 +624,46 @@ def _section_prior_partial(kind: str | None, problem_dir: Path,
     ]
 
 
+def _section_prior_patch(kind: str | None, problem_dir: Path,
+                         goal_id: int) -> list[str]:
+    """Surface the patch.lean salvaged from a prior orphaned spawn —
+    the daemon's startup recovery captures any substantive patch.lean
+    body left in an orphan `.attempts/<uuid>/` dir (Builder writes
+    patch.lean during proof attempts; user `Stop-Process` on daemon
+    or OS crash leaves it behind without ever promoting to the
+    workspace file).
+
+    Unlike `_section_prior_partial`'s narrative note, this surfaces
+    the actual proof code the previous spawn was working on. The
+    next Builder reads it as an unverified starting point — may copy
+    intact, refactor, or discard.
+    """
+    if kind != "builder":
+        return []
+    try:
+        from ..pipeline import _drafts
+    except ImportError:
+        return []
+    body = _drafts.read_partial_patch(
+        problem_dir=problem_dir, kind=kind, goal_id=goal_id)
+    if not body:
+        return []
+    return [
+        "## Your previous patch.lean attempt (unverified)",
+        "",
+        "A prior spawn on this goal was interrupted before its "
+        "patch.lean could be promoted to the workspace. The body "
+        "below is what that spawn last wrote. It may be a complete "
+        "proof, a partial sketch, or a wrong direction — treat as a "
+        "starting point, validate via the LSP before relying on it.",
+        "",
+        "```lean",
+        body.rstrip(),
+        "```",
+        "",
+    ]
+
+
 # ---------------------------------------------------------------------
 # Phase 2 — Strategist directive / brief sections
 # ---------------------------------------------------------------------
@@ -785,6 +825,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_mathlib_lemmas_from_deads(direct_events, workspace),
         _section_proved_goals(conn, goal),
         _section_prior_partial(kind, problem_dir, int(goal["id"])),
+        _section_prior_patch(kind, problem_dir, int(goal["id"])),
         _section_goal_history(
             direct_events=direct_events,
             verify_events=verify_events,

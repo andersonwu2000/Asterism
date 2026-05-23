@@ -194,3 +194,146 @@ def test_per_kind_isolation(tmp_path: Path) -> None:
         problem_dir=problem_dir, kind="builder", goal_id=10)
     assert "backward note" in bk and "builder note" not in bk
     assert "builder note" in bd and "backward note" not in bd
+
+
+# ---------------------------------------------------------------------
+# salvage_orphan_patches — startup patch.lean recovery
+# ---------------------------------------------------------------------
+
+import sqlite3
+from Tooling.state import db
+
+
+@pytest.fixture
+def conn(tmp_path: Path,
+         monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
+    monkeypatch.chdir(tmp_path)
+    c = db.connect()
+    db.init_schema(c)
+    c.execute("INSERT INTO problems (name, manifest_path, created_at) "
+              "VALUES ('p', 'Problems/p/Manifest.md', ?)", (db.now(),))
+    c.commit()
+    return c
+
+
+def _seed_goal(conn: sqlite3.Connection, slug: str) -> int:
+    return db.insert_goal(
+        conn, problem="p", slug=slug,
+        lean_path=f"Problems/p/proofs/L_{slug}.lean",
+        statement="T", origin="backward",
+        depth=1, entry_kind="Builder",
+    )
+
+
+def _write_orphan(tmp_path: Path, uuid: str, body: str) -> Path:
+    d = tmp_path / ".attempts" / uuid
+    d.mkdir(parents=True)
+    (d / "patch.lean").write_text(body, encoding="utf-8")
+    return d
+
+
+def test_salvage_persists_substantive_patch(
+    tmp_path: Path, conn: sqlite3.Connection,
+) -> None:
+    """Orphan patch.lean with a real proof body → persisted under
+    `.drafts/builder_g<id>_patch.lean`. Next builder spawn reads via
+    `read_partial_patch`."""
+    gid = _seed_goal(conn, "foo")
+    _write_orphan(tmp_path, "abc", (
+        "import Mathlib\n"
+        "namespace Problems.p\n"
+        "theorem foo : True := by\n"
+        "  trivial\n"
+        "end Problems.p\n"
+    ))
+    n = _drafts.salvage_orphan_patches(conn, tmp_path)
+    assert n == 1
+    body = _drafts.read_partial_patch(
+        problem_dir=tmp_path / "Problems" / "p",
+        kind="builder", goal_id=gid)
+    assert body is not None
+    assert "theorem foo" in body
+    assert "trivial" in body
+
+
+def test_salvage_skips_sorry_only_stub(
+    tmp_path: Path, conn: sqlite3.Connection,
+) -> None:
+    """A patch.lean that just carries the original `:= by sorry` stub
+    is not substantive — surfacing it as a "previous attempt" would
+    mislead. Skip."""
+    gid = _seed_goal(conn, "bar")
+    _write_orphan(tmp_path, "abc", (
+        "import Mathlib\n"
+        "namespace Problems.p\n"
+        "theorem bar : True := by sorry\n"
+        "end Problems.p\n"
+    ))
+    n = _drafts.salvage_orphan_patches(conn, tmp_path)
+    assert n == 0
+    body = _drafts.read_partial_patch(
+        problem_dir=tmp_path / "Problems" / "p",
+        kind="builder", goal_id=gid)
+    assert body is None
+
+
+def test_salvage_skips_unknown_slug(
+    tmp_path: Path, conn: sqlite3.Connection,
+) -> None:
+    """Patch with a theorem name that isn't in the DB (slug was
+    deleted by reset / pruned / never landed) — skip, no draft
+    written. Log only."""
+    _seed_goal(conn, "real_one")
+    _write_orphan(tmp_path, "abc", (
+        "theorem ghost_slug : True := by trivial\n"
+    ))
+    n = _drafts.salvage_orphan_patches(conn, tmp_path)
+    assert n == 0
+
+
+def test_salvage_no_attempts_dir(
+    tmp_path: Path, conn: sqlite3.Connection,
+) -> None:
+    """No `.attempts/` dir → 0 salvaged, no error."""
+    _seed_goal(conn, "foo")
+    assert _drafts.salvage_orphan_patches(conn, tmp_path) == 0
+
+
+def test_salvage_truncates_oversize_patch(
+    tmp_path: Path, conn: sqlite3.Connection,
+) -> None:
+    """Very large patches get truncated to `_PATCH_DRAFTS_BUDGET`
+    with a footer note. Avoids ballooning Context.md."""
+    gid = _seed_goal(conn, "big")
+    body = (
+        "theorem big : True := by\n"
+        + "  -- " + "x" * 20_000 + "\n"
+        + "  trivial\n"
+    )
+    _write_orphan(tmp_path, "abc", body)
+    n = _drafts.salvage_orphan_patches(conn, tmp_path)
+    assert n == 1
+    saved = _drafts.read_partial_patch(
+        problem_dir=tmp_path / "Problems" / "p",
+        kind="builder", goal_id=gid)
+    assert saved is not None
+    assert "truncated" in saved
+    assert len(saved) < len(body) + 200  # within budget + footer
+
+
+def test_clear_partial_patch_drops_drafts(
+    tmp_path: Path, conn: sqlite3.Connection,
+) -> None:
+    """Pipeline success → clear salvaged patch."""
+    gid = _seed_goal(conn, "ok")
+    _write_orphan(tmp_path, "abc", (
+        "theorem ok : True := by trivial\n"
+    ))
+    _drafts.salvage_orphan_patches(conn, tmp_path)
+    pdir = tmp_path / "Problems" / "p"
+    assert _drafts.read_partial_patch(
+        problem_dir=pdir, kind="builder", goal_id=gid) is not None
+    _drafts.clear_partial_patch(problem_dir=pdir, kind="builder",
+                                goal_id=gid)
+    assert _drafts.read_partial_patch(
+        problem_dir=pdir, kind="builder", goal_id=gid) is None
