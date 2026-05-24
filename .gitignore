@@ -66,6 +66,13 @@ docs/archive/delivered/
 # Operator discipline; loaded locally via Claude Code's CLAUDE.md walk, not tracked.
 docs/CLAUDE.md
 
+# xelatex / LaTeX 編譯副產物 (docs/*.tex 來源檔)
+docs/*.aux
+docs/*.log
+docs/*.out
+docs/*.toc
+docs/*.synctex.gz
+
 # Dated snapshots of benchmark problem dirs (local archive of "what was
 # proved on date X"; framework-state files inside should never be
 # committed per CLAUDE.md). Pattern: Problems/<name>_YYYYMMDD/.
