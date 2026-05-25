@@ -156,15 +156,32 @@ class ManifestCache:
         # problem -> (manifest_path_str, last_mtime, manifest)
         self._entries: dict[str, tuple[str, float, Manifest]] = {}
 
-    def load(self, problem: str, manifest_path: str) -> Manifest:
+    def load(self, problem: str, manifest_path: str) -> Manifest | None:
         """Initial parse. Caller (dispatcher.run startup loop +
         post-init registration paths) supplies the manifest_path
         from `problems.manifest_path`. Returns the parsed Manifest;
         subsequent `cache[problem]` access uses mtime-keyed re-parse
-        on top of this baseline."""
+        on top of this baseline.
+
+        Missing file or parse error → log + skip (do not register).
+        Defensive: orphan `problems` rows (legitimate-but-no-longer-
+        on-disk problem, e.g. manifest dir manually removed) must not
+        crash daemon startup. Downstream iteration over
+        `manifests.keys()` then naturally omits the skipped problem,
+        which leaves any leftover goals/strategies in DB undispatched
+        but stable (and surfaceable via `asterism doctor`)."""
         full = self._workspace / manifest_path
-        mtime = _stat_mtime(full)
-        mfst = parse(full)
+        try:
+            mtime = _stat_mtime(full)
+            mfst = parse(full)
+        except (FileNotFoundError, OSError) as e:
+            print(f"[manifest-load] {problem} skipped (file missing): "
+                  f"{type(e).__name__}: {e}", flush=True)
+            return None
+        except Exception as e:
+            print(f"[manifest-load] {problem} skipped (parse failed): "
+                  f"{type(e).__name__}: {e}", flush=True)
+            return None
         self._entries[problem] = (manifest_path, mtime, mfst)
         return mfst
 
