@@ -224,8 +224,16 @@ def winning_chain(conn: sqlite3.Connection, problem: str) -> set[str]:
     return keep
 
 
+# Match `import Problems.<problem>.proofs.<X>` where <problem> may
+# itself be dotted (Domain.slug naming convention, e.g. Minif2f.aime_1997_p11
+# or LinearAlgebra.jordan_normal_form). The historical pattern only
+# allowed a single segment between Problems and proofs, silently failing
+# to find any imports under the new convention. Combined with leaf-bypass
+# strategies (strategy_subgoals=0 in DB; chain reachable only via .lean
+# imports), this caused jordan_normal_form's prune (2026-05-25) to delete
+# every cited proof file as orphan.
 _IMPORT_RE = re.compile(
-    r'^\s*import\s+(Problems\.[\w_]+\.proofs\.[\w_]+)\s*$',
+    r'^\s*import\s+(Problems(?:\.[\w_]+)+\.proofs\.[\w_]+)\s*$',
     re.MULTILINE,
 )
 
@@ -250,14 +258,23 @@ def _expand_keep_via_imports(workspace: Path, problem: str,
     Defs / cross-problem imports never enlarge the keep set (those
     files aren't prune targets anyway).
     """
+    # Module-name prefix (Lean: dot-separated) vs filesystem prefix
+    # (path-separated): Domain.slug problems (LinearAlgebra.jordan_normal_form,
+    # Minif2f.aime_1997_p11) require splitting dots into path segments at
+    # the filesystem layer — `Problems/LinearAlgebra/jordan_normal_form/`,
+    # not `Problems/LinearAlgebra.jordan_normal_form/`. `db.problem_dir`
+    # owns this mapping; using f"Problems/{problem}/..." directly produced
+    # a phantom path (Jordan 2026-05-25: every expand probe OSError'd on
+    # the wrong path, frontier never grew, regex+expand both failed silently).
     proofs_prefix = f"Problems.{problem}.proofs."
     expanded = set(keep_rel)
     # Seed with Root.lean's imports too — Root sits outside proofs/
     # so it's never pruned, but its `import _strategy_s<root>` line
     # is the entry point to the chain.
-    root_rel = f"Problems/{problem}/Root.lean"
+    pdir_rel = db.problem_dir(workspace, problem).relative_to(workspace).as_posix()
+    root_rel = f"{pdir_rel}/Root.lean"
     frontier = list(expanded) + [root_rel]
-    proofs_dir_rel_prefix = f"Problems/{problem}/proofs/"
+    proofs_dir_rel_prefix = f"{pdir_rel}/proofs/"
     visited: set[str] = set()
     while frontier:
         rel = frontier.pop()

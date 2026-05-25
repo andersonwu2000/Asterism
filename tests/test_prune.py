@@ -274,6 +274,93 @@ def test_prune_problem_keeps_files_reached_only_via_import(
     assert not files["L_truly_orphan.lean"].exists()
 
 
+def test_prune_problem_import_walk_handles_dotted_problem_name(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Domain.slug naming convention (e.g. LinearAlgebra.jordan_normal_form,
+    Minif2f.aime_1997_p11) produces import paths like
+    `Problems.LinearAlgebra.jordan_normal_form.proofs.L_xxx` with multiple
+    segments between Problems and proofs. The pre-fix `_IMPORT_RE` only
+    allowed one segment, silently failing to find any imports under the
+    new convention.
+
+    Combined with a Backward leaf-bypass strategy (strategy_subgoals
+    table empty; chain reachable only via .lean imports — by design,
+    `_expand_keep_via_imports` is the compensating mechanism),
+    jordan_normal_form 2026-05-25 had its entire proof tree (122 sub-goal
+    files) deleted as orphans, leaving the framework with status='proved'
+    in DB but no on-disk artifacts to lake build.
+    """
+    name = "LinearAlgebra.jordan_normal_form"
+    # `db.problem_dir` splits dots into path segments
+    # (Problems/LinearAlgebra/jordan_normal_form/). Build DB rows + on-disk
+    # paths using that same shape so they match the framework's resolution
+    # at prune time.
+    pdir_rel = "Problems/LinearAlgebra/jordan_normal_form"
+
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done)"
+        " VALUES (?, ?, ?, 1)",
+        (name, f"{pdir_rel}/Manifest.md", db.now()),
+    )
+    root = db.insert_goal(
+        conn, problem=name, slug="main",
+        lean_path=f"{pdir_rel}/Root.lean",
+        statement="T", origin="root",
+    )
+    db.update_goal_status(conn, root, "proved")
+    win = db.insert_strategy(
+        conn, goal_id=root,
+        lean_path=f"{pdir_rel}/Root.lean",
+        scratch_path=f"{pdir_rel}/proofs/_strategy_s1.lean",
+        created_by="pid-x",
+    )
+    db.update_strategy_status(conn, win, "succeeded")
+    # Strategy_subgoals deliberately empty — mimics Backward leaf-bypass.
+    # The strategy file cites a sibling proved lemma via .lean import.
+    # cited goal is in DB (proved) but NOT linked via strategy_subgoals;
+    # reachable from the winning strategy only at the .lean import level.
+    cited = db.insert_goal(
+        conn, problem=name, slug="cited_lemma",
+        lean_path=f"{pdir_rel}/proofs/L_cited_lemma.lean",
+        statement="T", origin="backward", depth=1,
+    )
+    db.update_goal_status(conn, cited, "proved")
+
+    # Build proofs/ at the same Path(*split('.')) shape db.problem_dir uses.
+    proofs = tmp_path / pdir_rel / "proofs"
+    proofs.mkdir(parents=True, exist_ok=True)
+    strategy_file = proofs / "_strategy_s1.lean"
+    cited_file = proofs / "L_cited_lemma.lean"
+    orphan_file = proofs / "L_truly_orphan.lean"
+    for p in (strategy_file, cited_file, orphan_file):
+        p.write_text("-- placeholder\n", encoding="utf-8")
+    strategy_file.write_text(
+        "import Mathlib\n"
+        f"import Problems.{name}.proofs.L_cited_lemma\n"
+        f"namespace Problems.{name}\n"
+        "theorem s1 : True := cited_lemma\n"
+        f"end Problems.{name}\n",
+        encoding="utf-8",
+    )
+    root_lean = tmp_path / pdir_rel / "Root.lean"
+    root_lean.write_text(
+        f"import Problems.{name}.proofs._strategy_s1\n", encoding="utf-8")
+
+    removed = prune.prune_problem(conn, tmp_path, name)
+    removed_names = {p.name for p in removed}
+
+    assert "L_cited_lemma.lean" not in removed_names, (
+        f"Domain.slug-named problem's leaf-bypass cite must NOT be pruned; "
+        f"removed={removed_names}")
+    assert "L_truly_orphan.lean" in removed_names, (
+        f"truly orphan file MUST be pruned; removed={removed_names}")
+    assert "_strategy_s1.lean" not in removed_names, (
+        f"winning strategy file MUST NOT be pruned; removed={removed_names}")
+    assert cited_file.exists()
+    assert not orphan_file.exists()
+
+
 def test_prune_problem_import_walk_handles_cycles(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
