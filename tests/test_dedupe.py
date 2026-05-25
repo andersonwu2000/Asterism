@@ -1236,6 +1236,85 @@ def test_find_shelved_revivals_binder_rule_skips_underbinned_candidate(
 
 
 # ---------------------------------------------------------------------
+# _batch_provable_via_apply pre-flight (lake build canonical modules)
+# ---------------------------------------------------------------------
+
+def test_batch_provable_pre_flight_lake_builds_unique_canonical_modules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Before `lake env lean` runs over the dedupe check file, the
+    function must `lake_build` every unique canonical module to
+    materialize their .oleans. Without this pre-flight, any canonical
+    whose .olean is missing trips a global 'object file does not exist'
+    error and fail-opens the entire batch to all-False (see comment
+    in _batch_provable_via_apply for the regression rationale).
+
+    Replaces the prior 9cc7322 scheme that materialized .oleans inline
+    in verify_housekeeping — that path stalled the dispatcher main
+    thread on every cascade chain.
+    """
+    from Tooling.pipeline import _lake as _lake_module
+    # Stub the subprocess.run that _batch_provable_via_apply ultimately
+    # invokes so we don't shell out. Return rc=0 (no errors) for fast
+    # path = all-True result.
+    import subprocess as _subprocess
+    class _R:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+    monkeypatch.setattr(_subprocess, "run", lambda *a, **k: _R())
+
+    called: list[tuple[Path, list[str]]] = []
+    def fake_lake_build_modules(workspace, modules):
+        called.append((workspace, list(modules)))
+        return (True, "")
+    monkeypatch.setattr(_lake_module, "lake_build_modules",
+                        fake_lake_build_modules)
+
+    pairs = [
+        ("(x : Nat) : x = x", "Problems.p.proofs.L_a", "thm_a"),
+        ("(y : Nat) : y = y", "Problems.p.proofs.L_b", "thm_b"),
+        # Duplicate canonical module — must dedupe before lake build
+        ("(z : Nat) : z = z", "Problems.p.proofs.L_a", "thm_a2"),
+    ]
+    result = dedupe._batch_provable_via_apply(tmp_path, "p", pairs)
+    assert len(result) == 3
+    assert len(called) == 1, (
+        f"expected exactly one batched pre-flight lake build call; "
+        f"got {len(called)}")
+    ws, modules = called[0]
+    assert ws == tmp_path
+    # Modules must be unique + sorted for determinism
+    assert modules == ["Problems.p.proofs.L_a", "Problems.p.proofs.L_b"]
+
+
+def test_batch_provable_pre_flight_swallows_lake_build_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pre-flight failure must NOT prevent the subsequent `lake env lean`
+    elaboration from running; the existing fail-open path takes over
+    (the batch returns all-False if Lean can't import a missing
+    canonical, but dedupe still proceeds rather than crashing)."""
+    from Tooling.pipeline import _lake as _lake_module
+    import subprocess as _subprocess
+    class _R:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+    monkeypatch.setattr(_subprocess, "run", lambda *a, **k: _R())
+
+    def boom_lake_build(workspace, modules):
+        raise RuntimeError("lake binary missing in test env")
+    monkeypatch.setattr(_lake_module, "lake_build_modules", boom_lake_build)
+
+    pairs = [("(x : Nat) : x = x", "Mod.X", "thm_x")]
+    # Should not raise; dedupe proceeds despite the pre-flight failure
+    result = dedupe._batch_provable_via_apply(tmp_path, "p", pairs)
+    assert isinstance(result, list)
+    assert len(result) == 1
+
+
+# ---------------------------------------------------------------------
 # real-lake integration (kept last, skip if lake missing)
 # ---------------------------------------------------------------------
 

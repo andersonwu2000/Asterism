@@ -245,16 +245,38 @@ def _batch_provable_via_apply(
     if not pairs:
         return []
 
+    # Pre-flight: materialize .olean for every canonical module we're
+    # about to import. `lake env lean` does NOT cascade-build, so a
+    # missing .olean trips a global "object file does not exist" error
+    # that fail-opens the whole batch to all-False. Running `lake build`
+    # over the unique module set ensures every canonical is on disk
+    # before elaboration starts. Lake's scheduler builds independent
+    # modules in parallel; first call within a daemon run pays full
+    # cost (~30-60s for Jordan-deep modules), subsequent calls hit
+    # cache. Best-effort: any failure here leaves the original fail-
+    # open behaviour intact, so dedupe quality degrades gracefully.
+    # Replaces the prior inline-in-verify-housekeeping materialization
+    # (jordan_normal_form 2026-05-25: that scheme stalled the
+    # dispatcher main thread N × ~30-60s on every cascade chain).
+    seen_modules: set[str] = set()
+    for _, mod, _ in pairs:
+        if mod:
+            seen_modules.add(mod)
+    if seen_modules:
+        from ..pipeline._lake import lake_build_modules as _lake_build_modules
+        try:
+            _lake_build_modules(workspace, sorted(seen_modules))
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            print(f"[dedupe] pre-flight lake build failed "
+                  f"(non-fatal): {exc}", flush=True)
+
     lines: list[str] = ["import Mathlib"]
     defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
     if defs_path.exists():
         lines.append(f"import Problems.{problem}.Defs")
 
-    seen_modules: set[str] = set()
-    for _, mod, _ in pairs:
-        if mod and mod not in seen_modules:
-            lines.append(f"import {mod}")
-            seen_modules.add(mod)
+    for mod in sorted(seen_modules):
+        lines.append(f"import {mod}")
 
     lines.append("")
     lines.append("namespace dedupe_check")
