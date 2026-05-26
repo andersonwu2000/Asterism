@@ -200,7 +200,12 @@ def _aggregate_tokens(problem: str, since_ts: float) -> dict:
             "offset": 0,
             "kind": None,
             "model": None,
-            "counted_spawn": False,
+            "saw_usage": False,
+            # Per-file cumulative usage. The per-tick `buckets` dict is
+            # local + fresh each call; with offset caching we'd only
+            # see incremental bytes per tick. Store accumulated counts
+            # here so totals are CUMULATIVE since watcher start.
+            "in": 0, "out": 0, "cr": 0, "cw": 0,
         })
 
         try:
@@ -236,24 +241,32 @@ def _aggregate_tokens(problem: str, since_ts: float) -> dict:
                         usage = msg.get("usage")
                         ts_iso = d.get("timestamp")
                         if usage and _iso_ge(ts_iso or "", since_ts):
-                            key = (state["kind"] or "unknown",
-                                   state["model"] or "unknown")
-                            b = buckets.setdefault(key, {
-                                "in": 0, "out": 0, "cr": 0, "cw": 0,
-                                "spawns": 0,
-                            })
-                            b["in"] += int(usage.get("input_tokens", 0) or 0)
-                            b["out"] += int(usage.get("output_tokens", 0) or 0)
-                            b["cr"] += int(usage.get(
+                            state["in"] += int(usage.get(
+                                "input_tokens", 0) or 0)
+                            state["out"] += int(usage.get(
+                                "output_tokens", 0) or 0)
+                            state["cr"] += int(usage.get(
                                 "cache_read_input_tokens", 0) or 0)
-                            b["cw"] += int(usage.get(
+                            state["cw"] += int(usage.get(
                                 "cache_creation_input_tokens", 0) or 0)
-                            if not state["counted_spawn"]:
-                                b["spawns"] += 1
-                                state["counted_spawn"] = True
+                            state["saw_usage"] = True
                 state["offset"] = f.tell()
         except OSError:
             continue
+
+    # Aggregate per-file cumulative state into (kind, model) buckets.
+    for st in _token_state.values():
+        if not st["saw_usage"]:
+            continue
+        key = (st["kind"] or "unknown", st["model"] or "unknown")
+        b = buckets.setdefault(key, {
+            "in": 0, "out": 0, "cr": 0, "cw": 0, "spawns": 0,
+        })
+        b["in"] += st["in"]
+        b["out"] += st["out"]
+        b["cr"] += st["cr"]
+        b["cw"] += st["cw"]
+        b["spawns"] += 1  # one spawn per JSONL with any usage
 
     totals = {"in": 0, "out": 0, "cr": 0, "cw": 0, "spawns": 0}
     for b in buckets.values():
