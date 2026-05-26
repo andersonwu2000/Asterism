@@ -141,6 +141,12 @@ def _pool_size() -> int:
 # ---------------------------------------------------------------------
 
 _KIND_RE = re.compile(r"^You are running a (\w+) task")
+# Inline-prompt path used when the watchdog kills a stuck-thinking
+# session and spawns a fresh sid to take over (see
+# `Tooling/pipeline/_retry.py` `_rescue_prompt`). The takeover JSONL
+# has no "You are running" header — surface it as its own kind so
+# "framework retry overhead" is visible separately from main spawns.
+_RESCUE_RE = re.compile(r"^The previous session was killed mid-think")
 
 # Persistent per-file state. Survives across watcher ticks so we only
 # parse the new bytes appended since the last read. Cleared if watcher
@@ -252,6 +258,8 @@ def _aggregate_tokens(problem: str, since_ts: float) -> dict:
                             m = _KIND_RE.match(content)
                             if m:
                                 state["kind"] = m.group(1).lower()
+                            elif _RESCUE_RE.match(content):
+                                state["kind"] = "rescue"
                     # Accumulate usage on assistant messages.
                     if d.get("type") == "assistant":
                         msg = d.get("message", {})
