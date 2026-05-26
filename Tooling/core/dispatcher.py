@@ -44,6 +44,36 @@ from ..quality import prune, verify
 # Real values resolved in `run()` below per-process.
 BUILDER_THRESHOLD = 3
 SHELVE_THRESHOLD = 8
+
+
+def _exit_pool_fast(pool: ThreadPoolExecutor) -> None:
+    """Shutdown pool from an abort path (budget exceeded / gateway
+    permadown / root proved). `pool.shutdown(wait=False)` is not enough
+    on its own — when the caller subsequently `return`s from the main
+    loop, Python's `concurrent.futures._python_exit` atexit hook joins
+    every still-active worker thread regardless of the wait flag, and
+    each worker blocks in `proc.wait(timeout=req.timeout_sec)` until
+    its claude subprocess hits the per-spawn cap (default 960s). With
+    pool_size workers all mid-spawn at abort time, total shutdown wall
+    grew to ~16min × pool_size before the bash wrapper saw the daemon
+    exit and the harness fired its task-notification (2026-05-27
+    Banach-Tarski run: observed ~30min shutdown).
+
+    Fix: kill every in-flight claude subprocess via
+    `claude_cli.request_shutdown`. Workers unblock from `proc.wait`,
+    return through their normal dead_attempt cleanup paths (per-thread
+    DB conns make this concurrent-safe), and on next retry-loop entry
+    see the shutdown event and bail with `daemon_shutdown`. Pool joins
+    in seconds; atexit cleanup (gateway terminate, pid_lock unlink)
+    runs as designed.
+    """
+    from ..llm import claude_cli
+    killed = claude_cli.request_shutdown()
+    if killed:
+        print(f"[dispatcher] killed {killed} in-flight claude "
+              f"subprocess(es) to unblock worker shutdown",
+              flush=True)
+    pool.shutdown(wait=True, cancel_futures=True)
 # Forward retry budget per Inject. Each Inject is a Strategist meta-
 # decision; on Forward failure (lake error / parse rejected / dedupe
 # blocked) the agent --resume's next attempt sees the failure as
@@ -1737,7 +1767,7 @@ def run(workspace: Path, *, once: bool = False,
                                       f"exiting. Inspect "
                                       f".attempts/<pid>/_spawn.stderr "
                                       f"for the underlying error.", flush=True)
-                                pool.shutdown(wait=False, cancel_futures=True)
+                                _exit_pool_fast(pool)
                                 return 2
                         elif reason == "gateway_unreachable":
                             consec_gateway_unreachable += 1
@@ -1756,7 +1786,7 @@ def run(workspace: Path, *, once: bool = False,
                                       f"will be re-launched) and inspect "
                                       f".asterism/logs/gateway.log for the "
                                       f"underlying crash.", flush=True)
-                                pool.shutdown(wait=False, cancel_futures=True)
+                                _exit_pool_fast(pool)
                                 return 2
                         else:
                             print(f"[cooldown] {kind} {tk}={tid} cooled "
@@ -1862,7 +1892,7 @@ def run(workspace: Path, *, once: bool = False,
                                       f"will be re-launched) and inspect "
                                       f".asterism/logs/gateway.log for the "
                                       f"underlying crash.", flush=True)
-                                pool.shutdown(wait=False, cancel_futures=True)
+                                _exit_pool_fast(pool)
                                 return 2
                     except Exception as exc2:
                         # Cascade itself bombing is a deeper bug; log
@@ -1937,7 +1967,7 @@ def run(workspace: Path, *, once: bool = False,
         # `root_proved` False forever.
         if db.root_proved(conn, scope=scope):
             print("[dispatcher] all roots proved", flush=True)
-            pool.shutdown(wait=False, cancel_futures=True)
+            _exit_pool_fast(pool)
             return 0
 
         # Refill queue (uses in-memory `running` for dedup; cooldown_until
@@ -2041,7 +2071,7 @@ def run(workspace: Path, *, once: bool = False,
         if time.time() - start_time > budget_sec:
             print(f"[dispatcher] {budget_sec}s budget exceeded; stopping",
                   flush=True)
-            pool.shutdown(wait=False, cancel_futures=True)
+            _exit_pool_fast(pool)
             return 1
 
 

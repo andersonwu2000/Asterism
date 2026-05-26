@@ -663,3 +663,104 @@ def test_dispatcher_flush_preserves_1to1_invariant(conn: sqlite3.Connection,
         (gid,),
     ).fetchone()["n"]
     assert final_attempts == da_count == 3
+
+
+# ---------------------------------------------------------------------
+# Dispatcher abort short-circuit (2026-05-27 budget-shutdown bug)
+# ---------------------------------------------------------------------
+
+@pytest.fixture
+def _shutdown_state():
+    """Clear claude_cli's module-level shutdown event before AND after
+    each test so order doesn't leak shutdown state."""
+    from Tooling.llm import claude_cli
+    claude_cli._reset_shutdown_for_tests()
+    yield
+    claude_cli._reset_shutdown_for_tests()
+
+
+def test_retry_loop_bails_when_shutdown_requested_at_entry(
+    conn: sqlite3.Connection, tmp_path: Path, _shutdown_state,
+) -> None:
+    """`request_shutdown()` called before retry loop runs → first
+    iteration sees the flag, returns daemon_shutdown without spawning.
+    Regression: 2026-05-27 Banach-Tarski budget-exit hung ~30min while
+    workers each waited subprocess_timeout=960s on their claude proc."""
+    from Tooling.llm import claude_cli
+    gid = _seed_goal(conn, attempts=0)
+    seen, spawn_fn = _spawn_returning([])  # would raise StopIteration if called
+    _, parse_fn = _parse_returning([])
+    _, pm_fn = _make_postmortem_recorder()
+
+    claude_cli.request_shutdown()
+
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-sd-entry",
+        budget_threshold=3, shelve_threshold=8,
+        attempts_dir=tmp_path,
+        spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
+    )
+    assert r.outcome == "failed"
+    assert r.failure_reason == "daemon_shutdown"
+    assert seen == []  # spawn never invoked
+    assert r.pending_failures == []  # no dead_attempt for teardown
+
+
+def test_retry_loop_bails_when_shutdown_requested_mid_loop(
+    conn: sqlite3.Connection, tmp_path: Path, _shutdown_state,
+) -> None:
+    """Iter 0 runs normally and fails; before iter 1, dispatcher calls
+    request_shutdown(); retry loop's iter-1 entry sees the flag and
+    bails. Iter 0's dead_attempt is preserved (real failure happened);
+    iter 1's spawn is never invoked."""
+    from Tooling.llm import claude_cli
+    gid = _seed_goal(conn, attempts=0)
+    # spawn_fn for iter 0 returns 0 (success rc); iter 1 spawn must NOT
+    # be invoked, so the rcs list has only one entry.
+    def spawn_iter(_ctx: SpawnCtx) -> int:
+        # On first call, set shutdown before parse_fn runs. Effect: parse
+        # returns failure, retry loop continues, next iter sees event.
+        claude_cli.request_shutdown()
+        return 0
+    parse_count, parse_fn = _parse_returning([
+        PipelineResult(outcome="failed", failure_reason="lake_build_error",
+                       failure_detail="iter0 err"),
+    ])
+    _, pm_fn = _make_postmortem_recorder()
+
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-sd-mid",
+        budget_threshold=3, shelve_threshold=8,
+        attempts_dir=tmp_path,
+        spawn_fn=spawn_iter, parse_fn=parse_fn, postmortem_fn=pm_fn,
+    )
+    assert r.outcome == "failed"
+    assert r.failure_reason == "daemon_shutdown"
+    # iter 0's failure is preserved
+    assert len(r.pending_failures) == 1
+    assert r.pending_failures[0]["reason"] == "lake_build_error"
+    assert parse_count[0] == 1  # parse ran once, iter-1 never reached spawn
+
+
+def test_retry_loop_handles_SpawnRC_SHUTDOWN(
+    conn: sqlite3.Connection, tmp_path: Path, _shutdown_state,
+) -> None:
+    """spawn_fn returns SpawnRC.SHUTDOWN (the rc spawn_llm short-
+    circuits with when shutdown is already requested). Retry loop
+    treats as terminal-no-retry, no dead_attempt buffered."""
+    gid = _seed_goal(conn, attempts=0)
+    seen, spawn_fn = _spawn_returning([int(SpawnRC.SHUTDOWN)])
+    parse_count, parse_fn = _parse_returning([])
+    _, pm_fn = _make_postmortem_recorder()
+
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-sd-rc",
+        budget_threshold=3, shelve_threshold=8,
+        attempts_dir=tmp_path,
+        spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
+    )
+    assert r.outcome == "failed"
+    assert r.failure_reason == "daemon_shutdown"
+    assert len(seen) == 1  # one spawn happened, returned SHUTDOWN
+    assert parse_count[0] == 0  # parse never invoked
+    assert r.pending_failures == []

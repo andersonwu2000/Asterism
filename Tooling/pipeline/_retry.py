@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..state import db, tree
+from ..llm import claude_cli
 from ..llm.base import SpawnRC
 from . import PipelineResult, _spawn_failure, collect_artifacts
 
@@ -718,6 +719,18 @@ def run_with_session_retries(
                   flush=True)
 
     for attempt in range(budget):
+        # Dispatcher abort (budget exceeded / gateway permadown):
+        # `claude_cli.request_shutdown` killed any in-flight subprocess
+        # so we're back at the loop top. Bail before launching a fresh
+        # claude invocation so the worker thread exits in seconds and
+        # ThreadPoolExecutor join completes promptly. No dead_attempt
+        # write — this is daemon teardown, not a real agent failure.
+        if claude_cli.is_shutdown_requested():
+            return attach(PipelineResult(
+                outcome="failed",
+                failure_reason="daemon_shutdown",
+                failure_detail="dispatcher exiting; retry loop bailed",
+            ))
         # Cascade re-check only applies to goal-bound pipelines (the
         # check looks at goals.status / attempts). Goal-less pipelines
         # (Forward) skip — the Strategist Inject already authorised
@@ -746,6 +759,16 @@ def run_with_session_retries(
                                    retry_context=last_detail or None,
                                    attempts_dir=attempts_dir))
             spawn_dur = time.monotonic() - spawn_t0
+
+        # Shutdown short-circuit: spawn_llm saw the dispatcher abort
+        # flag and returned without invoking the CLI. Treat as terminal
+        # no-retry. No dead_attempt write (no real failure happened).
+        if rc == SpawnRC.SHUTDOWN:
+            return attach(PipelineResult(
+                outcome="failed",
+                failure_reason="daemon_shutdown",
+                failure_detail="spawn aborted; dispatcher exiting",
+            ))
 
         # Provider-level infrastructure failures: bail without
         # consuming budget. Dispatcher applies cooldown (and, for

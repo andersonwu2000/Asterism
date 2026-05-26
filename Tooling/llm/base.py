@@ -18,6 +18,11 @@ SpawnRC is an IntEnum):
       tool_use event in the session jsonl. Distinct from 124 (full
       wall hit) so the retry helper can route to a tight-budget
       rescue spawn rather than a regular retry.
+  129 shutdown — dispatcher requested abort (budget exceeded / gateway
+      permanently down). spawn_llm short-circuits without invoking the
+      CLI; the retry helper treats it as terminal-no-retry so the
+      worker thread exits in seconds instead of waiting through the
+      remaining retry budget × subprocess_timeout.
   other non-zero  agent error / API failure
 """
 from __future__ import annotations
@@ -39,6 +44,7 @@ class SpawnRC(IntEnum):
     QUOTA_EXHAUSTED = 126
     MISSING_DEP = 127
     STUCK_THINKING = 128
+    SHUTDOWN = 129
 
 
 # Watchdog 2026-05-10 v4: trap_check_sec replaces rescue_timeout_sec

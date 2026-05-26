@@ -49,6 +49,56 @@ from .base import LLMRequest, SpawnRC
 from .stream_parser import StreamParser
 
 
+# Dispatcher abort signal: tracks every in-flight claude CLI subprocess
+# so the dispatcher's exit paths (budget exceeded, gateway permanently
+# unreachable, ...) can kill them all in one shot. Without this, when
+# the main loop returns, Python's concurrent.futures._python_exit atexit
+# hook joins each ThreadPoolExecutor worker thread regardless of
+# `pool.shutdown(wait=False)`, and each worker blocks in proc.wait
+# until subprocess_timeout (default 960s) — worst-case shutdown was
+# ~16min × pool_size before the bash wrapper saw the daemon exit and
+# the harness fired its task-notification. Killing the subprocess lets
+# proc.wait return immediately so worker threads exit naturally through
+# their dead_attempt cleanup paths in seconds.
+_live_procs: set[subprocess.Popen] = set()
+_live_procs_lock = threading.Lock()
+_shutdown_event = threading.Event()
+
+
+def request_shutdown() -> int:
+    """Signal in-flight and future `spawn_llm` calls to bail and kill
+    every currently-running claude subprocess. Returns the count killed
+    for log visibility. Idempotent — safe for multiple dispatcher exit
+    paths to call without coordination."""
+    _shutdown_event.set()
+    with _live_procs_lock:
+        procs = list(_live_procs)
+    killed = 0
+    for proc in procs:
+        try:
+            proc.kill()
+            killed += 1
+        except OSError:
+            pass
+    return killed
+
+
+def is_shutdown_requested() -> bool:
+    """True after `request_shutdown` has been called. Checked by the
+    in-pipeline retry loop at iteration entry so the worker bails
+    instead of spawning fresh CLI invocations during teardown."""
+    return _shutdown_event.is_set()
+
+
+def _reset_shutdown_for_tests() -> None:
+    """Clear the module-level shutdown state. Tests that exercise
+    `request_shutdown` use this in their teardown so test order doesn't
+    leak shutdown state into unrelated cases."""
+    _shutdown_event.clear()
+    with _live_procs_lock:
+        _live_procs.clear()
+
+
 # Extract names from "Unknown constant `X.Y.Z`" / "unknown identifier
 # `X.Y.Z`" lake errors so the retry prompt can point the agent at Loogle/
 # Grep before it guesses again. Cap to keep prompt size bounded.
@@ -575,6 +625,11 @@ def _trim_flags(req: LLMRequest | None = None) -> list[str]:
 
 class ClaudeCliProvider:
     def spawn(self, req: LLMRequest) -> int:
+        # Dispatcher abort already fired — skip the CLI invocation so
+        # the worker thread can exit through its dead_attempt + cleanup
+        # path without burning another `claude` subprocess startup.
+        if is_shutdown_requested():
+            return SpawnRC.SHUTDOWN
         if not shutil.which("claude"):
             print("[llm:claude] claude CLI not found; skipping spawn",
                   flush=True)
@@ -758,6 +813,24 @@ class ClaudeCliProvider:
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace",
         )
+        # Register so dispatcher's request_shutdown can kill us on
+        # budget-exceeded / gateway-permadown exit paths. Without this
+        # the proc.wait below blocks for up to req.timeout_sec (~960s)
+        # even after the dispatcher main loop has returned, dragging
+        # daemon shutdown out 16min × pool_size.
+        with _live_procs_lock:
+            _live_procs.add(proc)
+        try:
+            return self._run_proc(req, proc, watchdog_eligible)
+        finally:
+            with _live_procs_lock:
+                _live_procs.discard(proc)
+
+    def _run_proc(self, req: LLMRequest, proc: subprocess.Popen,
+                  watchdog_eligible: bool) -> int:
+        """Body of `spawn` once the Popen has been created and tracked.
+        Split out so the parent can wrap the lifetime in a register/
+        unregister try/finally without indenting the entire ~150 lines."""
         stuck_flag: list[bool] = [False]
         wd_thread: threading.Thread | None = None
         reader_thread: threading.Thread | None = None

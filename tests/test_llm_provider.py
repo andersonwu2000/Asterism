@@ -1733,3 +1733,120 @@ def test_claude_spawn_thinking_budget_floors_at_1000(
     ))
     env = calls[0]["kwargs"]["env"]
     assert env.get("MAX_THINKING_TOKENS") == "1000"
+
+
+# ---------------------------------------------------------------------
+# Dispatcher abort short-circuit (2026-05-27 budget-shutdown bug fix)
+# ---------------------------------------------------------------------
+
+@pytest.fixture
+def _shutdown_state():
+    """Clear claude_cli's module-level shutdown event before AND after
+    each test so order doesn't leak shutdown state into unrelated cases."""
+    from Tooling.llm import claude_cli
+    claude_cli._reset_shutdown_for_tests()
+    yield
+    claude_cli._reset_shutdown_for_tests()
+
+
+def test_request_shutdown_sets_flag_and_returns_killed_count(
+    _shutdown_state,
+) -> None:
+    """No live procs → returns 0 but flag is set. Subsequent
+    is_shutdown_requested() returns True."""
+    from Tooling.llm import claude_cli
+    assert claude_cli.is_shutdown_requested() is False
+    assert claude_cli.request_shutdown() == 0
+    assert claude_cli.is_shutdown_requested() is True
+
+
+def test_request_shutdown_kills_registered_procs(_shutdown_state) -> None:
+    """request_shutdown iterates the live proc registry and calls .kill
+    on each. Returns count for log visibility."""
+    from Tooling.llm import claude_cli
+
+    class _FakeKillable:
+        def __init__(self) -> None:
+            self.killed = False
+        def kill(self) -> None:
+            self.killed = True
+
+    p1, p2 = _FakeKillable(), _FakeKillable()
+    with claude_cli._live_procs_lock:
+        claude_cli._live_procs.add(p1)
+        claude_cli._live_procs.add(p2)
+    try:
+        assert claude_cli.request_shutdown() == 2
+        assert p1.killed is True
+        assert p2.killed is True
+    finally:
+        # _reset_shutdown_for_tests in the fixture's teardown clears
+        # the set; explicit discard here keeps the assertion's
+        # ordering independent of teardown ordering.
+        with claude_cli._live_procs_lock:
+            claude_cli._live_procs.discard(p1)
+            claude_cli._live_procs.discard(p2)
+
+
+def test_request_shutdown_tolerates_kill_oserror(_shutdown_state) -> None:
+    """If a proc has already exited, .kill() may raise OSError on some
+    platforms. Don't let one failure abort the broadcast."""
+    from Tooling.llm import claude_cli
+
+    class _ExitedProc:
+        def kill(self) -> None:
+            raise OSError("already exited")
+
+    class _LiveProc:
+        def __init__(self) -> None:
+            self.killed = False
+        def kill(self) -> None:
+            self.killed = True
+
+    dead, live = _ExitedProc(), _LiveProc()
+    with claude_cli._live_procs_lock:
+        claude_cli._live_procs.add(dead)
+        claude_cli._live_procs.add(live)
+    try:
+        # killed count is 1 (the live one); dead one swallowed.
+        assert claude_cli.request_shutdown() == 1
+        assert live.killed is True
+    finally:
+        with claude_cli._live_procs_lock:
+            claude_cli._live_procs.discard(dead)
+            claude_cli._live_procs.discard(live)
+
+
+def test_claude_spawn_short_circuits_when_shutdown_requested(
+    monkeypatch: pytest.MonkeyPatch, _shutdown_state,
+) -> None:
+    """spawn() entered after request_shutdown returns SpawnRC.SHUTDOWN
+    without invoking subprocess.Popen. Regression for 2026-05-27
+    Banach-Tarski: workers re-entering spawn after the dispatcher abort
+    would otherwise launch a fresh `claude` subprocess that
+    immediately gets killed → wasted ~30s of startup per retry slot."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+    from Tooling.llm.base import SpawnRC
+
+    # Patch Popen to detect any invocation — none should happen.
+    popen_called: list = []
+    def _fake_popen(*a, **kw):
+        popen_called.append((a, kw))
+        return _FakePopen(rc=0)
+    monkeypatch.setattr(claude_cli.shutil, "which", lambda _: "/fake/claude")
+    monkeypatch.setattr(claude_cli.subprocess, "Popen", _fake_popen)
+
+    claude_cli.request_shutdown()
+
+    p = claude_cli.ClaudeCliProvider()
+    rc = p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/Problems/myproblem"),
+        attempts_dir=Path("/x/.attempts/abc"),
+        timeout_sec=60,
+    ))
+    assert rc == SpawnRC.SHUTDOWN
+    assert popen_called == []  # subprocess never launched
