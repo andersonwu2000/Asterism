@@ -78,6 +78,23 @@ def verify_strategy(
     if not scratch_abs.exists():
         return "dead"
 
+    # Second-line sorry tripwire (2026-05-26, post-Jordan): even though
+    # Backward's submit-time `assembly_gate_check_sorry` already rejects
+    # sorry-bearing patches, the strategy file may be subsequently
+    # rewritten (by operator recovery scripts, by manual edit, by a
+    # future framework path). Re-checking here means mechanical promote
+    # is never invoked on a sorry-bearing source — the contract that
+    # `promote_to_alias` produces an alias to a real proof stays intact.
+    # On hit, mark the strategy dead so the parent goal re-enters the
+    # dispatch loop (rather than silently aliasing to a stub).
+    from ..pipeline._assembly import assembly_gate_check_sorry
+    ok, msg = assembly_gate_check_sorry(scratch_abs)
+    if not ok:
+        conn.execute("UPDATE strategies SET status='dead' WHERE id = ?",
+                     (strategy_id,))
+        conn.commit()
+        return "dead"
+
     # Rewrite parent stub as a re-export alias. Pure string
     # substitution; type correctness guaranteed by Backward's
     # submit-time signature lock. Backup retained on disk (keyed by

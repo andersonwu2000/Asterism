@@ -222,6 +222,51 @@ def test_verify_strategy_dead_when_scratch_file_missing(
     assert out == "dead"
 
 
+def test_verify_strategy_dead_when_scratch_has_sorry(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Second-line sorry tripwire (2026-05-26 post-Jordan): if the
+    strategy scratch file has been rewritten with `sorry` after
+    Backward's submit-time assembly_gate (operator recovery scripts,
+    manual edit, future framework path), verify_strategy must refuse
+    to promote — return 'dead' and mark the strategy dead.
+
+    Jordan 2026-05-25: my recovery scripts wrote sorry-stub bodies for
+    several previously-succeeded strategies without resetting DB status.
+    The next verify_strategy then mechanical-promoted, aliasing root to
+    a sorry-bearing chain. axiom_probe at the integrity gate eventually
+    caught it but only at end-of-run — wasted dispatch cycles in
+    between. This tripwire fails fast at promote time."""
+    gid = _seed_goal(conn)
+    sid = _seed_strategy_with_proved_subs(conn, goal_id=gid)
+    scratch_abs = tmp_path / "Problems/p/proofs/_strategy_s.lean"
+    scratch_abs.parent.mkdir(parents=True)
+    # Sorry-bearing body — should be rejected
+    scratch_abs.write_text(
+        "import Mathlib\n"
+        "namespace Problems.p\n"
+        "theorem s : True := by sorry\n"
+        "end Problems.p\n",
+        encoding="utf-8",
+    )
+    # Stub promote_to_alias so a successful path wouldn't actually mutate
+    # files; the test asserts we never reach that code at all.
+    called = {"promote": False}
+    def _record_promote(*a, **kw): called["promote"] = True
+    monkeypatch.setattr(verify, "promote_to_alias", _record_promote)
+
+    out = verify.verify_strategy(conn, workspace=tmp_path, strategy_id=sid)
+    assert out == "dead"
+    assert called["promote"] is False, (
+        "promote_to_alias must NOT be called when scratch has sorry")
+    # And the strategy row is marked dead in DB
+    status = conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (sid,)
+    ).fetchone()["status"]
+    assert status == "dead"
+
+
 # ---------------------------------------------------------------------
 # verify_housekeeping — state transitions
 # ---------------------------------------------------------------------
