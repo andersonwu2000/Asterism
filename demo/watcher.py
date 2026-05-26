@@ -141,12 +141,19 @@ def _pool_size() -> int:
 # ---------------------------------------------------------------------
 
 _KIND_RE = re.compile(r"^You are running a (\w+) task")
-# Inline-prompt path used when the watchdog kills a stuck-thinking
-# session and spawns a fresh sid to take over (see
-# `Tooling/pipeline/_retry.py` `_rescue_prompt`). The takeover JSONL
-# has no "You are running" header — surface it as its own kind so
-# "framework retry overhead" is visible separately from main spawns.
-_RESCUE_RE = re.compile(r"^The previous session was killed mid-think")
+# Inline-prompt paths used by `Tooling/pipeline/_retry.py` after the
+# watchdog kills a stuck-thinking session. Two stages, both surfaced
+# as the `rescue` kind so total framework retry overhead is visible
+# separately from main pipeline spawns:
+#   * stage 2 takeover (`_rescue_prompt`): fresh sid re-runs the
+#     original task from the broken session's log.
+#   * stage 3 postmortem (`_checkpoint_prompt`): if stage 2 also
+#     deadlocks, a fresh sid writes a `_progress.md` checkpoint so
+#     the next regular spawn has context to resume from.
+_RESCUE_RE = re.compile(
+    r"^(The previous session was killed mid-think"
+    r"|You are a fresh session brought in only to write a checkpoint)"
+)
 
 # Persistent per-file state. Survives across watcher ticks so we only
 # parse the new bytes appended since the last read. Cleared if watcher
