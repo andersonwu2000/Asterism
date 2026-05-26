@@ -1115,11 +1115,22 @@ def set_inject_decision_produced_goal(
               f"attempted={goal_id}", flush=True)
         return
     if existing["produced_strategy_id"] is not None:
-        print(f"[db] refusing to set produced_goal_id={goal_id} on "
-              f"decision {decision_id}: produced_strategy_id="
-              f"{existing['produced_strategy_id']} already set "
-              f"(double-dispatch indicator)", flush=True)
-        return
+        # Backward Inject dual-set is legitimate: the decision row
+        # already has produced_goal_id=target written at INSERT
+        # (`_commit_inject_redispatch`), and the worker later sets
+        # produced_strategy_id on a strategy whose goal_id == target.
+        # Only refuse when the strategy points at a DIFFERENT goal —
+        # the residue_thm misroute symptom this guard exists for.
+        strat = conn.execute(
+            "SELECT goal_id FROM strategies WHERE id = ?",
+            (int(existing["produced_strategy_id"]),),
+        ).fetchone()
+        if strat is None or int(strat["goal_id"]) != int(goal_id):
+            print(f"[db] refusing to set produced_goal_id={goal_id} on "
+                  f"decision {decision_id}: produced_strategy_id="
+                  f"{existing['produced_strategy_id']} already set "
+                  f"(double-dispatch indicator)", flush=True)
+            return
     conn.execute(
         "UPDATE strategist_decisions SET produced_goal_id = ?,"
         " updated_at = ? WHERE id = ?",
@@ -1201,11 +1212,22 @@ def set_inject_decision_produced_strategy(
               f"attempted={strategy_id}", flush=True)
         return
     if existing["produced_goal_id"] is not None:
-        print(f"[db] refusing to set produced_strategy_id={strategy_id} "
-              f"on decision {decision_id}: produced_goal_id="
-              f"{existing['produced_goal_id']} already set "
-              f"(double-dispatch indicator)", flush=True)
-        return
+        # Backward Inject dual-set is legitimate: the decision row's
+        # produced_goal_id was written at INSERT (via
+        # `_commit_inject_redispatch`) and equals target_id; the
+        # worker's just-reserved strategy lives on that same goal.
+        # Refuse only when the strategy is on a DIFFERENT goal — the
+        # residue_thm 2026-05-21 misroute symptom this guard exists for.
+        strat = conn.execute(
+            "SELECT goal_id FROM strategies WHERE id = ?",
+            (int(strategy_id),),
+        ).fetchone()
+        if strat is None or int(strat["goal_id"]) != int(existing["produced_goal_id"]):
+            print(f"[db] refusing to set produced_strategy_id={strategy_id} "
+                  f"on decision {decision_id}: produced_goal_id="
+                  f"{existing['produced_goal_id']} already set "
+                  f"(double-dispatch indicator)", flush=True)
+            return
     conn.execute(
         "UPDATE strategist_decisions SET produced_strategy_id = ?,"
         " updated_at = ? WHERE id = ?",

@@ -1242,6 +1242,93 @@ def test_set_inject_decision_produced_strategy_refuses_when_goal_set(
     assert "double-dispatch indicator" in captured.out
 
 
+def test_set_inject_decision_dual_set_consistent_backward_inject(
+    conn: sqlite3.Connection, capsys: pytest.CaptureFixture,
+) -> None:
+    """Backward Inject's legitimate dual-set: `_commit_inject_redispatch`
+    writes produced_goal_id=target_id at decision INSERT, then the
+    Backward worker reserves a strategy on that same goal and calls
+    `set_inject_decision_produced_strategy`. Both columns end up set
+    and consistent (strategy.goal_id == produced_goal_id).
+
+    Regression: 2026-05-26 Banach-Tarski daemon storm — the cross-column
+    guard mis-identified this consistent dual-set as the residue_thm
+    misroute and silently refused the strategy write, leaving the
+    decision's outcome perpetually NULL while bfs_refill re-enqueued the
+    open target goal → 34+ empty `dead` strategies in 4 minutes.
+    """
+    _insert_root(conn)
+    target = db.insert_goal(
+        conn, problem="p", slug="tgt",
+        lean_path="Problems/p/proofs/L_tgt.lean",
+        statement="T", origin="backward", depth=1,
+    )
+    sid = db.insert_strategy(
+        conn, goal_id=target,
+        lean_path="Problems/p/proofs/L_tgt.lean",
+        scratch_path="Problems/p/proofs/_strategy_s.lean",
+        created_by="pid",
+    )
+    decision_id = _insert_inject_decision(
+        conn, problem="p", batch_id="batch-z", step_index=0,
+        batch_size=1, brief="x",
+    )
+    # Mirror _commit_inject_redispatch's pre-set at INSERT.
+    conn.execute(
+        "UPDATE strategist_decisions SET produced_goal_id = ?"
+        " WHERE id = ?", (target, decision_id),
+    )
+    conn.commit()
+    db.set_inject_decision_produced_strategy(conn, decision_id, sid)
+    row = conn.execute(
+        "SELECT produced_goal_id, produced_strategy_id FROM"
+        " strategist_decisions WHERE id=?", (decision_id,),
+    ).fetchone()
+    assert row["produced_goal_id"] == target
+    assert row["produced_strategy_id"] == sid  # accepted (consistent)
+    captured = capsys.readouterr()
+    assert "double-dispatch indicator" not in captured.out
+
+
+def test_set_inject_decision_produced_goal_dual_set_consistent(
+    conn: sqlite3.Connection, capsys: pytest.CaptureFixture,
+) -> None:
+    """Mirror of the Backward-Inject dual-set case: setting
+    produced_goal_id when an existing produced_strategy_id points at a
+    strategy whose goal_id matches the new produced_goal_id is allowed.
+    Distinguishes consistent dual-set from the residue_thm misroute
+    (different goals).
+    """
+    _insert_root(conn)
+    target = db.insert_goal(
+        conn, problem="p", slug="tgt",
+        lean_path="Problems/p/proofs/L_tgt.lean",
+        statement="T", origin="backward", depth=1,
+    )
+    sid = db.insert_strategy(
+        conn, goal_id=target,
+        lean_path="Problems/p/proofs/L_tgt.lean",
+        scratch_path="Problems/p/proofs/_strategy_s.lean",
+        created_by="pid",
+    )
+    decision_id = _insert_inject_decision(
+        conn, problem="p", batch_id="batch-w", step_index=0,
+        batch_size=1, brief="x",
+    )
+    db.set_inject_decision_produced_strategy(conn, decision_id, sid)
+    # Now setting produced_goal_id on the same target should succeed
+    # (strategy.goal_id == target).
+    db.set_inject_decision_produced_goal(conn, decision_id, target)
+    row = conn.execute(
+        "SELECT produced_goal_id, produced_strategy_id FROM"
+        " strategist_decisions WHERE id=?", (decision_id,),
+    ).fetchone()
+    assert row["produced_goal_id"] == target
+    assert row["produced_strategy_id"] == sid
+    captured = capsys.readouterr()
+    assert "double-dispatch indicator" not in captured.out
+
+
 def test_propagate_inject_outcome_dead(
     conn: sqlite3.Connection,
 ) -> None:
