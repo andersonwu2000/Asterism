@@ -1318,6 +1318,118 @@ def test_batch_provable_pre_flight_swallows_lake_build_failure(
 # real-lake integration (kept last, skip if lake missing)
 # ---------------------------------------------------------------------
 
+# ---------------------------------------------------------------------
+# Tier 1 slug-pattern dedupe (2026-05-26 post-Jordan)
+# ---------------------------------------------------------------------
+
+def test_slug_match_strips_alias_suffix(conn: sqlite3.Connection) -> None:
+    """`<base>_alias` candidate should match proved `<base>` in same problem."""
+    _seed_problem(conn)
+    root = _seed_root(conn, status="proved")
+    base = _seed_sub(conn, slug="pushforward_d_eq", statement="T",
+                    status="proved")
+    hit = dedupe._slug_match_proved(
+        conn, problem="p", candidate_slug="pushforward_d_eq_alias",
+        parent_goal_id=root,
+    )
+    assert hit == base
+
+
+def test_slug_match_strips_numeric_suffix(conn: sqlite3.Connection) -> None:
+    """`<base>_2`, `<base>_3` etc. should match proved `<base>`."""
+    _seed_problem(conn)
+    root = _seed_root(conn, status="proved")
+    base = _seed_sub(conn, slug="jordan_add_const_diag", statement="T",
+                    status="proved")
+    for suffix in ("_2", "_3", "_4", "_5"):
+        hit = dedupe._slug_match_proved(
+            conn, problem="p",
+            candidate_slug=f"jordan_add_const_diag{suffix}",
+            parent_goal_id=root,
+        )
+        assert hit == base, f"slug{suffix} should match {base}"
+
+
+def test_slug_match_does_not_strip_strong(conn: sqlite3.Connection) -> None:
+    """`_strong` is NOT a duplicate suffix (it's a strict logical
+    strengthening — different statement). Must NOT strip."""
+    _seed_problem(conn)
+    root = _seed_root(conn, status="proved")
+    _seed_sub(conn, slug="family_li_span", statement="T", status="proved")
+    hit = dedupe._slug_match_proved(
+        conn, problem="p", candidate_slug="family_li_span_strong",
+        parent_goal_id=root,
+    )
+    assert hit is None
+
+
+def test_slug_match_returns_none_when_base_missing(
+    conn: sqlite3.Connection,
+) -> None:
+    """Stripped name not in DB → no match (don't false-positive)."""
+    _seed_problem(conn)
+    root = _seed_root(conn, status="proved")
+    hit = dedupe._slug_match_proved(
+        conn, problem="p", candidate_slug="nonexistent_2",
+        parent_goal_id=root,
+    )
+    assert hit is None
+
+
+def test_slug_match_skips_unproved_base(conn: sqlite3.Connection) -> None:
+    """Base exists but not proved (open/dead/shelved) → no match."""
+    _seed_problem(conn)
+    root = _seed_root(conn, status="proved")
+    _seed_sub(conn, slug="some_lemma", statement="T", status="dead")
+    hit = dedupe._slug_match_proved(
+        conn, problem="p", candidate_slug="some_lemma_2",
+        parent_goal_id=root,
+    )
+    assert hit is None
+
+
+def test_slug_match_excludes_parent_goal(conn: sqlite3.Connection) -> None:
+    """Anti-cycle: never alias to parent_goal_id even if slug-stripped
+    name would match."""
+    _seed_problem(conn)
+    root = _seed_root(conn, status="proved")
+    # If parent itself has slug 'main' and candidate is 'main_2', it
+    # shouldn't alias to parent.
+    hit = dedupe._slug_match_proved(
+        conn, problem="p", candidate_slug="main_2",
+        parent_goal_id=root,
+    )
+    assert hit is None
+
+
+def test_find_canonicals_batch_uses_tier1_without_kernel_probe(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When Tier 1 hits, kernel probe should NOT be invoked. Tier 1
+    short-circuits to save the lake-env startup cost when the answer
+    is already clear from the slug."""
+    _seed_problem(conn)
+    root = _seed_root(conn, status="proved")
+    base = _seed_sub(conn, slug="lem_x", statement="T", status="proved")
+    # Tripwire: any kernel probe call is a failure of the short-circuit
+    called = {"probe": False}
+    def _fail_probe(*a, **kw):
+        called["probe"] = True
+        return []
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", _fail_probe)
+    result = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=root,
+        candidates=[("lem_x_alias", "theorem lem_x_alias : T := by sorry")],
+    )
+    assert len(result) == 1
+    assert result[0] is not None
+    assert result[0].goal_id == base
+    assert result[0].kind == "alias"
+    assert called["probe"] is False, (
+        "Tier 1 slug hit must short-circuit; kernel probe must not run")
+
+
 @pytest.mark.skipif(shutil.which("lake") is None,
                     reason="requires lake CLI on PATH")
 def test_batch_provable_via_apply_real_lake(tmp_path: Path) -> None:

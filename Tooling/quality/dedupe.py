@@ -601,6 +601,50 @@ class CanonicalMatch(NamedTuple):
     kind: str  # Literal["alias", "disproved"]
 
 
+_SLUG_DUP_SUFFIXES = ("_alias", "_2", "_3", "_4", "_5")
+
+
+def _slug_match_proved(conn: sqlite3.Connection, *, problem: str,
+                       candidate_slug: str,
+                       parent_goal_id: int) -> int | None:
+    """Tier 1 dedupe (2026-05-26 post-Jordan): cheap slug-pattern check.
+
+    Backward agent often names a duplicate sub-goal by suffixing a
+    known proved goal with `_alias` / `_2` / `_3` (e.g.
+    `pushforward_d_eq` → `pushforward_d_eq_alias`,
+    `jordan_add_const_diag` → `jordan_add_const_diag_2`). The kernel-
+    probe Tier 2 below should catch these by signature, but is fragile
+    to subtle binder reorderings and silent lake errors — Jordan's
+    9 confirmed duplicate pairs all slipped through.
+
+    This pre-check strips any known duplicate suffix and looks for a
+    proved goal in the same problem with the stripped name. On hit:
+    return its goal_id so the caller can alias without elaborating.
+    Conservative: `_strong` is NOT stripped (different semantics —
+    weak-hypothesis dropping); arbitrary `_vN` / `_new` patterns also
+    not stripped to avoid false positives.
+
+    Excludes `parent_goal_id` (anti-cycle) and alias-target goals
+    (no alias chains), mirroring `_eligible_problem_proved`.
+    """
+    for suffix in _SLUG_DUP_SUFFIXES:
+        if not candidate_slug.endswith(suffix):
+            continue
+        base = candidate_slug[:-len(suffix)]
+        if not base:
+            continue
+        row = conn.execute(
+            "SELECT id FROM goals "
+            "WHERE problem = ? AND slug = ? AND status = 'proved' "
+            "  AND id != ? AND alias_target_id IS NULL "
+            "LIMIT 1",
+            (problem, base, parent_goal_id),
+        ).fetchone()
+        if row is not None:
+            return int(row["id"])
+    return None
+
+
 def find_canonicals_batch(
     conn: sqlite3.Connection, workspace: Path, *,
     problem: str, parent_goal_id: int,
@@ -629,6 +673,18 @@ def find_canonicals_batch(
     if n == 0:
         return []
 
+    # Initialize result with Tier 1 slug-pattern hits (cheap; no lake).
+    # Per-candidate kernel-probe (Tier 2) below skips any candidate whose
+    # slot is already filled here.
+    result: list[CanonicalMatch | None] = [None] * n
+    for ci, (slug, _) in enumerate(candidates):
+        hit_id = _slug_match_proved(
+            conn, problem=problem, candidate_slug=slug,
+            parent_goal_id=parent_goal_id,
+        )
+        if hit_id is not None:
+            result[ci] = CanonicalMatch(goal_id=hit_id, kind="alias")
+
     # Per-candidate eligible canonicals. Alive/proved tiers come first
     # so they take precedence on first-hit. The disproved tier is appended
     # afterwards and only contributes when no alive/proved canonical
@@ -637,7 +693,11 @@ def find_canonicals_batch(
     KIND_ALIAS = "alias"
     KIND_DISPROVED = "disproved"
     cand_pools: list[list[tuple[sqlite3.Row, str, str]]] = []
-    for slug, full_text in candidates:
+    for ci, (slug, full_text) in enumerate(candidates):
+        # Tier 1 already hit: no need to enumerate kernel-probe pool.
+        if result[ci] is not None:
+            cand_pools.append([])
+            continue
         sig = _extract_full_signature(full_text)
         if sig is None or not sig.strip():
             cand_pools.append([])
@@ -694,7 +754,14 @@ def find_canonicals_batch(
             pair_origin.append((ci, anc_row, kind))
 
     if not pairs:
-        return [None] * n
+        # No kernel work to do (either every candidate was Tier 1-hit
+        # or had no eligible pool). Still report metric for forensic.
+        n_alias = sum(1 for m in result if m and m.kind == "alias")
+        n_disproved = sum(1 for m in result if m and m.kind == "disproved")
+        print(f"[dedupe] checked {n} candidate(s) against 0 pair(s); "
+              f"alias={n_alias} disproved={n_disproved} (slug-tier only)",
+              flush=True)
+        return result
 
     flags = _batch_provable_via_apply(workspace, problem, pairs)
 
@@ -703,8 +770,9 @@ def find_canonicals_batch(
     # the first True flag picked up is automatically the highest-priority
     # match. An "alias" hit therefore shadows a later "disproved" hit on
     # the same candidate — the desired behavior (an alive canonical is
-    # always more useful than a disproved precedent).
-    result: list[CanonicalMatch | None] = [None] * n
+    # always more useful than a disproved precedent). Slot-already-filled
+    # by Tier 1 is also skipped here so Tier 1 hits aren't overwritten
+    # (e.g. by a disproved tier match that would change `kind`).
     for (ci, anc_row, kind), is_eq in zip(pair_origin, flags):
         if not is_eq:
             continue
