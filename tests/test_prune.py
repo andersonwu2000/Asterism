@@ -18,13 +18,19 @@ def _seed_problem(conn: sqlite3.Connection, name: str = "p") -> None:
 
 
 def _seed_root(conn: sqlite3.Connection, name: str = "p",
-               status: str = "proved") -> int:
+               status: str = "proved", *, verified: bool = True) -> int:
+    """Seed a root goal. By default sets integrity_verified=1 so the
+    post-2026-05-26 prune integrity gate (added after Jordan disaster)
+    doesn't refuse on every existing test. Tests that exercise the
+    gate-refuse path explicitly pass `verified=False`."""
     gid = db.insert_goal(
         conn, problem=name, slug="main",
         lean_path=f"Problems/{name}/Root.lean",
         statement="T", origin="root",
     )
     db.update_goal_status(conn, gid, status)
+    if verified and status == "proved":
+        db.set_integrity_verified(conn, gid)
     return gid
 
 
@@ -309,6 +315,7 @@ def test_prune_problem_import_walk_handles_dotted_problem_name(
         statement="T", origin="root",
     )
     db.update_goal_status(conn, root, "proved")
+    db.set_integrity_verified(conn, root)
     win = db.insert_strategy(
         conn, goal_id=root,
         lean_path=f"{pdir_rel}/Root.lean",
@@ -710,3 +717,142 @@ def test_winning_chain_handles_alias_chain_without_loop(
     # All three files retained; no infinite loop
     for slug in ("alias_a", "alias_b", "concrete"):
         assert f"Problems/p/proofs/L_{slug}.lean" in keep
+
+
+def test_prune_problem_moves_to_backup_dir_not_unlinks(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Defense-in-depth (2026-05-26 post-Jordan): prune must MOVE orphan
+    files to a timestamped `.pruned/<ts>/` directory rather than
+    `unlink`, so the operator can restore from disk if a cold build
+    breaks post-prune. The Jordan 2026-05-25 wipe (~235 unrecoverable
+    files) motivated this — even with all known logic bugs fixed, the
+    delete step itself must be reversible."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    win = _seed_strategy(conn, goal_id=root, sid_label="s1")
+    sub = _seed_subgoal(conn, problem="p", slug="s1_main_sub_1")
+    db.link_subgoal(conn, strategy_id=win, subgoal_id=sub, position=0)
+    files = _build_proofs_tree(tmp_path, "p", [
+        "_strategy_s1.lean", "L_s1_main_sub_1.lean",
+        "_strategy_s99.lean",   # orphan
+    ])
+    proofs_dir = tmp_path / "Problems/p/proofs"
+    pruned_root = proofs_dir.parent / ".pruned"
+
+    removed = prune.prune_problem(conn, tmp_path, "p")
+    assert {p.name for p in removed} == {"_strategy_s99.lean"}
+    # Source gone from proofs/
+    assert not files["_strategy_s99.lean"].exists()
+    # But preserved under .pruned/<ts>/
+    assert pruned_root.exists(), "prune must create .pruned/ backup dir"
+    ts_dirs = list(pruned_root.iterdir())
+    assert len(ts_dirs) == 1, "exactly one timestamp dir expected per prune run"
+    assert (ts_dirs[0] / "_strategy_s99.lean").exists(), (
+        "orphan file must be moved (not unlinked) into .pruned/<ts>/")
+    # Dry-run should NOT create the backup dir
+    pruned_root_again = pruned_root  # capture for later assertion
+
+
+def test_prune_problem_dry_run_does_not_create_backup_dir(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    win = _seed_strategy(conn, goal_id=root, sid_label="s1")
+    _build_proofs_tree(tmp_path, "p", ["_strategy_s1.lean", "_strategy_s99.lean"])
+    prune.prune_problem(conn, tmp_path, "p", dry_run=True)
+    pruned_root = tmp_path / "Problems/p/.pruned"
+    assert not pruned_root.exists(), (
+        "dry_run must not create .pruned/ — that would be a write-side-effect")
+
+
+def test_prune_problem_warns_on_missing_keep_file(
+    conn: sqlite3.Connection, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When a keep-set file (referenced by winning_chain) is missing from
+    disk, prune must warn loudly. Silently skipping means that file's
+    `import` edges weren't walked, so downstream dependencies could be
+    miscounted as orphan."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    win = _seed_strategy(conn, goal_id=root, sid_label="s1")
+    sub = _seed_subgoal(conn, problem="p", slug="s1_main_sub_1")
+    db.link_subgoal(conn, strategy_id=win, subgoal_id=sub, position=0)
+    # Only seed the strategy file + Root.lean, NOT the sub-goal file.
+    # winning_chain expects L_s1_main_sub_1.lean per the subgoal row.
+    _build_proofs_tree(tmp_path, "p", ["_strategy_s1.lean", "L_orphan.lean"])
+
+    prune.prune_problem(conn, tmp_path, "p", dry_run=True)
+    captured = capsys.readouterr()
+    assert "missing from disk" in captured.err, (
+        f"expected missing-file warning in stderr, got: {captured.err!r}")
+    assert "L_s1_main_sub_1.lean" in captured.err
+
+
+def test_prune_refuses_when_root_not_integrity_verified(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Defense (2026-05-26 post-Jordan): prune must refuse if the root
+    has status='proved' but integrity_verified=0 (axiom_probe not yet
+    passed). Mechanically-promoted "proved" roots can carry sorry in
+    transitive closure; pruning before integrity check could delete
+    alternative-chain files needed to bisect the sorryAx.
+
+    The Jordan 2026-05-25 incident saw a chain of mechanically-promoted
+    strategies cascade-promote root to 'proved', then auto-prune fire
+    before any axiom check, wiping ~235 files. This guard is the
+    framework-level counterpart to the `auto-prune removed from
+    dispatcher` change.
+    """
+    _seed_problem(conn)
+    _seed_root(conn, verified=False)  # NOT integrity-verified
+    _build_proofs_tree(tmp_path, "p", ["_strategy_s99.lean"])
+
+    with pytest.raises(RuntimeError, match="integrity_verified"):
+        prune.prune_problem(conn, tmp_path, "p", dry_run=True)
+
+
+def test_prune_force_bypasses_integrity_gate(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """force=True (CLI: --force) bypasses the integrity_verified gate
+    for emergency situations where axiom_probe is known broken."""
+    _seed_problem(conn)
+    _seed_root(conn, verified=False)
+    _build_proofs_tree(tmp_path, "p", ["_strategy_s99.lean"])
+
+    # With force, the gate is skipped and prune runs normally
+    removed = prune.prune_problem(conn, tmp_path, "p",
+                                  dry_run=True, force=True)
+    assert {p.name for p in removed} == {"_strategy_s99.lean"}
+
+
+def test_dispatcher_does_not_auto_prune() -> None:
+    """dispatcher.run must NOT auto-fire prune.prune_problem. Auto-prune
+    was removed 2026-05-26 after the jordan_normal_form 2026-05-25 wipe
+    incident: two bugs (_IMPORT_RE missed Domain.slug + phantom root path)
+    caused prune to delete ~235 of ~252 winning-chain files. Both bugs are
+    now fixed (1660200) + tested above, but the blast radius of an
+    auto-delete loop firing in production warrants explicit operator
+    opt-in. CLI verb `asterism prune <p>` (preferably with `--dry-run`)
+    remains the supported path. Reconcile (file/DB drift repair, no
+    deletes) stays automatic since it only rewrites file contents.
+
+    Asserts via source inspection rather than a behavioral mock because
+    the auto-prune call lived inside dispatcher.run's per-root loop,
+    which requires a fully wired daemon to exercise; static check is the
+    cheapest tripwire.
+    """
+    import inspect
+    from Tooling.core import dispatcher
+    src = inspect.getsource(dispatcher.run)
+    assert "prune.prune_problem(" not in src, (
+        "dispatcher.run must not call prune.prune_problem; see incident "
+        "note in dispatcher.py (the comment block where the call used to "
+        "live).")
+    # Reconcile must remain automatic.
+    assert "prune.reconcile_proved_goals(" in src, (
+        "dispatcher.run should still call prune.reconcile_proved_goals "
+        "to repair OR-race file/DB drift.")

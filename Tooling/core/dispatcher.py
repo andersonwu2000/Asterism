@@ -1899,17 +1899,18 @@ def run(workspace: Path, *, once: bool = False,
                 # Skip without flipping the marker — it'll get picked
                 # up the next run that loads this Manifest.
                 continue
-            # Reconcile first (fix any FILE/DB drift from OR races),
-            # THEN prune (delete orphans, now safe to remove).
+            # Reconcile FILE/DB drift from OR races. Auto-prune was
+            # removed 2026-05-26 after Jordan 2026-05-25 incident exposed
+            # how easily a single bad keep-set computation wipes a chain;
+            # the bugs that caused that wipe were fixed (1660200), but the
+            # blast radius of an auto-delete loop is large enough that
+            # explicit operator opt-in is the safer default. Manual GC via
+            # `asterism prune <problem>` (preferably `--dry-run` first).
             repaired = prune.reconcile_proved_goals(
                 conn, workspace, problem_name)
             if repaired:
                 print(f"[reconcile] {problem_name}: repaired "
                       f"{len(repaired)} drifted files", flush=True)
-            removed = prune.prune_problem(conn, workspace, problem_name)
-            if removed:
-                print(f"[prune] {problem_name}: removed {len(removed)} "
-                      f"orphan files", flush=True)
             # Root integrity gate — single root-level axiom_probe under
             # verify-collapse. Sets `integrity_verified=1` on success
             # so subsequent ticks skip this problem. On sorryAx

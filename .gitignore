@@ -12,6 +12,9 @@ asterism.db.*
 *.lean.backup
 *.lean.tmp
 *.lean.verify_backup
+# prune_problem backup-move target (2026-05-26). Operator cleans manually
+# after verifying cold build still works.
+Problems/**/.pruned/
 # F20 lemma signature cache (toolchain-keyed; rebuilt on demand)
 Tooling/knowledge/.lemma_cache.json
 Tooling/.lemma_cache.json

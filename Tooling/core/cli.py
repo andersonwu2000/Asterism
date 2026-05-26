@@ -1120,7 +1120,13 @@ def cmd_prune(args: argparse.Namespace) -> int:
             repaired = prune.reconcile_proved_goals(conn, workspace, p)
             if repaired:
                 print(f"[reconcile] {p}: repaired {len(repaired)} drifted files")
-        removed = prune.prune_problem(conn, workspace, p, dry_run=args.dry_run)
+        try:
+            removed = prune.prune_problem(conn, workspace, p,
+                                          dry_run=args.dry_run,
+                                          force=args.force)
+        except RuntimeError as exc:
+            print(f"[prune] {p}: REFUSED — {exc}", flush=True)
+            continue
         total_removed += len(removed)
         verb = "would remove" if args.dry_run else "removed"
         if removed:
@@ -1202,6 +1208,9 @@ def main(argv: list[str] | None = None) -> int:
                          help="optional; default = all problems")
     p_prune.add_argument("--dry-run", action="store_true",
                          help="list files without deleting")
+    p_prune.add_argument("--force", action="store_true",
+                         help="bypass integrity_verified gate "
+                              "(use only when axiom_probe is known broken)")
     p_prune.set_defaults(func=cmd_prune)
 
     p_logs = sub.add_parser(

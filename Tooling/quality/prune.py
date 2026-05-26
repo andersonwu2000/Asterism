@@ -299,15 +299,29 @@ def _expand_keep_via_imports(workspace: Path, problem: str,
 
 
 def prune_problem(conn: sqlite3.Connection, workspace: Path,
-                  problem: str, *, dry_run: bool = False) -> list[Path]:
-    """Delete every `.lean` in `Problems/<problem>/proofs/` that is not
-    in the winning chain. Returns the list of removed paths.
+                  problem: str, *, dry_run: bool = False,
+                  force: bool = False) -> list[Path]:
+    """Move every `.lean` in `Problems/<problem>/proofs/` that is not
+    in the winning chain into a timestamped `.pruned/<ts>/` directory
+    (NOT unlinked — reversible). Returns the list of moved paths.
 
     No-op (returns []) when the problem's root goal is not yet proved —
-    we don't know what's safe to delete during a running proof attempt.
+    we don't know what's safe to move during a running proof attempt.
 
-    Idempotent: a second call after the first has cleaned everything
-    finds nothing to remove.
+    Idempotent: a second call after the first finds nothing to move.
+
+    Safety net (2026-05-26, post-Jordan): operator can `mv .pruned/<ts>/* ./`
+    back into proofs/ if a cold build breaks post-prune. The Jordan
+    2026-05-25 wipe (~235 files, unrecoverable via prune) motivated this:
+    even with all known prune logic bugs fixed (1660200) + dispatcher
+    auto-prune removed (2026-05-26), defense-in-depth on the actual
+    delete-step costs little and the recovery value is large. Operator
+    cleans `.pruned/` manually after confirming the build still works.
+
+    Also warns to stderr if any keep-set file is missing from disk —
+    that's a sign of prior incomplete state (a past disaster's residue,
+    or DB drift) and means the import-walk seeded from that missing file
+    failed silently, potentially under-counting the keep set.
     """
     has_proved_root = conn.execute(
         "SELECT 1 FROM goals"
@@ -316,6 +330,29 @@ def prune_problem(conn: sqlite3.Connection, workspace: Path,
     ).fetchone()
     if has_proved_root is None:
         return []
+
+    # Integrity gate (2026-05-26, post-Jordan): refuse to prune unless
+    # the root has passed `axiom_probe` (integrity_verified=1). Without
+    # this guard, a mechanically-promoted "proved" root that actually
+    # contains sorry in its transitive closure can trigger prune, which
+    # then deletes "orphan" files that may include the very alternatives
+    # needed to bisect the sorry chain (Jordan 2026-05-25). Operator
+    # opts out via `force=True` (CLI: `asterism prune --force`) for
+    # emergency situations where the integrity gate is known broken.
+    if not force:
+        ig = conn.execute(
+            "SELECT integrity_verified FROM goals"
+            " WHERE problem = ? AND origin = 'root' AND status = 'proved'"
+            " ORDER BY id LIMIT 1",
+            (problem,),
+        ).fetchone()
+        if ig is None or int(ig["integrity_verified"]) != 1:
+            raise RuntimeError(
+                f"prune refused for {problem!r}: root's "
+                f"integrity_verified != 1 (axiom_probe has not passed). "
+                f"Run the dispatcher to completion (which triggers "
+                f"root_integrity_gate) or pass force=True to override."
+            )
 
     keep_rel = winning_chain(conn, problem)
     # Expand keep set by following actual .lean import statements so
@@ -328,14 +365,42 @@ def prune_problem(conn: sqlite3.Connection, workspace: Path,
     if not proofs_dir.exists():
         return []
 
+    # Diagnostic: warn on keep-set files missing from disk. Walk skipped
+    # those silently (read fails → continue), so their imports' files
+    # may have been miscounted as orphan. Operator should investigate
+    # before running with dry_run=False.
+    import sys as _sys
+    missing = [rel for rel in keep_rel if not (workspace / rel).exists()]
+    if missing:
+        print(f"[prune] WARNING: {len(missing)} keep-set files missing "
+              f"from disk; their import edges were not walked. Sample:",
+              file=_sys.stderr, flush=True)
+        for rel in sorted(missing)[:5]:
+            print(f"[prune]   - {rel}", file=_sys.stderr)
+        if len(missing) > 5:
+            print(f"[prune]   ... and {len(missing) - 5} more",
+                  file=_sys.stderr)
+
+    import shutil as _shutil
+    from datetime import datetime as _dt
+    pruned_dir: Path | None = None
     removed: list[Path] = []
     for f in proofs_dir.glob("*.lean"):
         if f.resolve() in keep_abs:
             continue
         if not dry_run:
+            if pruned_dir is None:
+                ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+                pruned_dir = proofs_dir.parent / ".pruned" / ts
+                pruned_dir.mkdir(parents=True, exist_ok=True)
             try:
-                f.unlink()
+                _shutil.move(str(f), str(pruned_dir / f.name))
             except OSError:
                 continue
         removed.append(f)
+    if pruned_dir is not None and removed:
+        print(f"[prune] {len(removed)} files moved to {pruned_dir} "
+              f"(NOT unlinked). Restore: `mv {pruned_dir}/* {proofs_dir}/`. "
+              f"Delete after build verification: `rm -rf {pruned_dir}`.",
+              flush=True)
     return removed
