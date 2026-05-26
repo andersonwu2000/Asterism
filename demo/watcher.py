@@ -381,50 +381,47 @@ def _render_token_section(usage: dict) -> str:
     }
     weighted_total = sum(weighted_map.values()) or 1.0  # avoid div-by-0
 
-    header = (
-        f"{'kind':<11} {'model':<18} {'in':>6} {'out':>7} "
-        f"{'cache_r':>8} {'cache_w':>8} {'spawns':>3} "
-        f"{'weighted':>8} {'share':>6}"
-    )
-    sep = "-" * len(header)
-    rows = [header, sep]
+    rows = [
+        "| kind | model | in | out | cache_r | cache_w | spawns "
+        "| weighted | share |",
+        "|---|---|--:|--:|--:|--:|--:|--:|--:|",
+    ]
     # Sort by weighted (cost share) descending — most expensive line on top.
     for (kind, model), b in sorted(
         buckets.items(), key=lambda kv: -weighted_map[kv[0]],
     ):
         w = weighted_map[(kind, model)]
         rows.append(
-            f"{kind:<11} {model:<18} "
-            f"{_fmt_tokens(b['in']):>6} {_fmt_tokens(b['out']):>7} "
-            f"{_fmt_tokens(b['cr']):>8} {_fmt_tokens(b['cw']):>8} "
-            f"{b['spawns']:>3} "
-            f"{_fmt_tokens(int(w)):>8} {w / weighted_total * 100:>5.1f}%"
+            f"| {kind} | {model} | {_fmt_tokens(b['in'])} "
+            f"| {_fmt_tokens(b['out'])} | {_fmt_tokens(b['cr'])} "
+            f"| {_fmt_tokens(b['cw'])} | {b['spawns']} "
+            f"| {_fmt_tokens(int(w))} | {w / weighted_total * 100:.1f}% |"
         )
     t = usage["totals"]
-    rows.append(sep)
     rows.append(
-        f"{'total':<30} "
-        f"{_fmt_tokens(t['in']):>6} {_fmt_tokens(t['out']):>7} "
-        f"{_fmt_tokens(t['cr']):>8} {_fmt_tokens(t['cw']):>8} "
-        f"{t['spawns']:>3} "
-        f"{_fmt_tokens(int(weighted_total)):>8}"
+        f"| **total** | | **{_fmt_tokens(t['in'])}** "
+        f"| **{_fmt_tokens(t['out'])}** | **{_fmt_tokens(t['cr'])}** "
+        f"| **{_fmt_tokens(t['cw'])}** | **{t['spawns']}** "
+        f"| **{_fmt_tokens(int(weighted_total))}** | |"
     )
     # Cache "hit" share over the full input bill — fresh input + cache
     # writes (paid 1.25×) + cache reads (paid 0.1×). Higher = more of
     # the prompt was served from the cheap cache slot vs re-billed.
     total_input = t["in"] + t["cw"] + t["cr"]
-    footnote_lines = []
+    footnote_lines = [""]
     if total_input > 0:
         footnote_lines.append(
-            f"cache hit share: {t['cr'] / total_input * 100:.1f}%  "
-            f"(cache_r / (in + cache_w + cache_r))"
+            f"cache hit share: **{t['cr'] / total_input * 100:.1f}%**  "
+            f"(`cache_r / (in + cache_w + cache_r)`)"
         )
+        footnote_lines.append("")
     footnote_lines.append(
-        "weighted basis: Opus-4.7 output = 1 unit  "
+        "weighted basis: Opus 4.7 output = 1 unit  "
         "(Sonnet 4.x out = 0.6, in = 0.12; Opus 4.1 out = 3.0)"
     )
     return ("## token usage (since daemon start)\n\n"
-            "```\n" + "\n".join(rows) + "\n" + "\n".join(footnote_lines) + "\n```\n")
+            + "\n".join(rows) + "\n"
+            + "\n".join(footnote_lines) + "\n")
 
 
 def _active_spawns(limit: int) -> list[Path]:
