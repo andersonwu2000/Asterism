@@ -369,15 +369,59 @@ def _section_lessons_inline(problem_dir: Path) -> list[str]:
     ]
 
 
+_PROVED_GOAL_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]+")
+# Tokens that appear in virtually every Lean theorem and add no
+# discriminative signal. Conservative drop set — keep mathlib-namespace
+# words like Module/LinearMap/Matrix because they ARE informative for
+# domain-specific matching.
+_PROVED_GOAL_NOISE_TOKENS = frozenset({
+    "type", "prop", "sort", "forall", "fun", "have", "show", "sorry",
+    "true", "false", "self", "this", "iff", "imp", "exact", "intro",
+    "apply", "rfl", "simp", "rcases", "obtain", "refine", "use",
+    "let", "match", "fix", "with", "where", "from", "then", "else",
+    "and", "the", "for", "all", "any",
+})
+
+
+def _section_proved_goals_tokens(text: str) -> set[str]:
+    """Identifier-shaped tokens from a Lean statement, used for keyword
+    overlap scoring against the current goal's parent statement.
+
+    Lowercased + min length 4 to drop short noise (`x`, `y`, `n`, `Fin`).
+    `_PROVED_GOAL_NOISE_TOKENS` removes universally-frequent words.
+    """
+    tokens: set[str] = set()
+    for tok in _PROVED_GOAL_TOKEN_RE.findall(text or ""):
+        if len(tok) < 4 or tok.isdigit():
+            continue
+        low = tok.lower()
+        if low in _PROVED_GOAL_NOISE_TOKENS:
+            continue
+        tokens.add(low)
+    return tokens
+
+
 def _section_proved_goals(conn: sqlite3.Connection,
                           goal: sqlite3.Row) -> list[str]:
-    """Grep entrypoint for proved goals in this problem. Section omitted
-    when the count is zero (fresh problem).
+    """Top-K curated proved siblings + grep entrypoint footer.
 
-    Each proved goal source carries a `-- <slug>: <summary>` leading
-    comment block (Builder Phase 6 / Verify propagate). Framework only
-    points the agent at the directory; it doesn't push a candidate list.
-    Same pattern as Mathlib (grep `.lake/packages/mathlib/`) and Library.
+    Pre-2026-05-26: pure grep entrypoint ("N goals — go search proofs/")
+    on the principle that framework shouldn't push a candidate list
+    (avoid noise from 100+ proved goals). Jordan 2026-05-25→26 disaster
+    exposed the gap: Backward agent didn't actually grep, defensively
+    decomposed into `_alias` / `_2` variants of already-proved siblings
+    (9 confirmed cases). Cite step in backward.md was advisory only —
+    agents skipped it without enforcement.
+
+    Pragmatic upgrade: framework runs cheap keyword extraction on the
+    parent statement, intersects with each proved sibling's statement
+    tokens, surfaces the top 3 by overlap as a curated list. Agents
+    still self-help via grep for broader search — the footer points to
+    that. Top 3 is the cognitive sweet spot (1 → spotty, 5+ → noisy
+    enough that agent skims past).
+
+    Lower bound: at least 1 overlap-token. If parent statement is so
+    generic nothing scores, fall back to the grep-only entrypoint.
     """
     row = conn.execute(
         "SELECT COUNT(*) AS n FROM goals "
@@ -388,18 +432,48 @@ def _section_proved_goals(conn: sqlite3.Connection,
     if row is None or int(row["n"]) == 0:
         return []
     n = int(row["n"])
-    return [
-        "## Proved goals on this problem (grep entrypoint)",
-        f"- {n} proved goal{'s' if n != 1 else ''} so far. Sources at "
-        f"`Problems/{goal['problem']}/proofs/L_<slug>.lean`, each opening "
-        "with a `-- <slug>: <summary>` comment block.",
-        "- Grep the directory for slugs / summary text matching the "
-        "current goal — e.g. `rg -l 'cross.*inner' Problems/"
-        f"{goal['problem']}/proofs/` then Read the hits. Useful for "
-        "spotting an already-proved sub-goal to alias against, or a "
-        "prior bridge lemma to apply.",
-        "",
-    ]
+
+    parent_tokens = _section_proved_goals_tokens(goal["statement"] or "")
+    scored: list[tuple[int, sqlite3.Row]] = []
+    if parent_tokens:
+        for r in conn.execute(
+            "SELECT id, slug, statement FROM goals "
+            "WHERE problem = ? AND status = 'proved' "
+            "  AND id != ? AND alias_target_id IS NULL",
+            (goal["problem"], goal["id"]),
+        ):
+            cand_tokens = _section_proved_goals_tokens(r["statement"] or "")
+            score = len(parent_tokens & cand_tokens)
+            if score >= 1:
+                scored.append((score, r))
+        scored.sort(key=lambda sr: (-sr[0], sr[1]["id"]))
+    top = scored[:3]
+
+    lines = [f"## Proved siblings on this problem ({n} total)"]
+    if top:
+        lines.append(
+            "Top 3 by keyword overlap with your parent statement (framework-"
+            "computed via token intersection). **Consider citing one inline** "
+            "(`exact <slug> args` or `apply @Problems.<problem>.<slug> "
+            "<;> assumption`) before registering a sub-goal that may "
+            "duplicate. Tier 1 dedupe at submit catches `_alias`/`_N` "
+            "suffix variants regardless; this section surfaces alpha-"
+            "equivalent siblings whose names diverge.")
+        lines.append("")
+        for score, r in top:
+            stmt = (r["statement"] or "").strip().replace("\n", " ")
+            # Single-line preview; truncate gracefully
+            preview = stmt if len(stmt) <= 140 else stmt[:137] + "…"
+            lines.append(
+                f"- `{r['slug']}` (overlap={score}): `{preview}`")
+        lines.append("")
+    lines.append(
+        f"For broader search beyond the curated 3, grep "
+        f"`Problems/{goal['problem']}/proofs/L_<slug>.lean` for slugs / "
+        "summary text matching the current goal — each file opens with "
+        "a `-- <slug>: <summary>` comment block.")
+    lines.append("")
+    return lines
 
 
 def _section_library_available(mfst, workspace) -> list[str]:

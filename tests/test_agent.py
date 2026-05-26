@@ -183,16 +183,14 @@ def test_context_omits_proved_goals_section_when_none_proved(
     assert "Proved goals on this problem" not in text
 
 
-def test_context_includes_proved_goals_grep_pointer_when_some_proved(
+def test_context_proved_goals_section_when_some_proved(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """When ≥ 1 non-alias proved goal exists for the same problem
-    (excluding the current goal itself), Context.md surfaces a count
-    + grep target pointer — no inline candidate list, agent does its
-    own grep / Read."""
+    """≥ 1 non-alias proved goal → section surfaces total count + grep
+    footer. When parent statement is too generic to extract keyword
+    tokens (e.g. "T"), the curated top-3 list is empty; only count and
+    grep pointer appear."""
     gid = _seed_problem_and_goal(conn)
-    # Seed two proved sibling goals, one alias one canonical, plus one
-    # open goal (none of which should be counted as the current one).
     canon = db.insert_goal(
         conn, problem="p", slug="cross_sq_add_inner_sq",
         lean_path="Problems/p/proofs/L_cross_sq_add_inner_sq.lean",
@@ -219,14 +217,97 @@ def test_context_includes_proved_goals_grep_pointer_when_some_proved(
     out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
                           attempts_dir=attempts_dir)
     text = out.read_text(encoding="utf-8")
-    assert "## Proved goals on this problem (grep entrypoint)" in text
-    # Two non-alias proved goals counted (alias excluded)
-    assert "2 proved goals" in text
-    # Path target surfaces the per-problem proofs/ dir
+    # New section title with count
+    assert "## Proved siblings on this problem (2 total)" in text
+    # Grep footer always surfaces
     assert "Problems/p/proofs/L_<slug>.lean" in text
-    # No inline list of candidates — agent runs its own grep
+    # Parent stmt "T" has no extractable tokens → empty curated list →
+    # candidate slugs NOT in text
     assert "cross_sq_add_inner_sq" not in text
     assert "metric_triangle" not in text
+
+
+def test_context_proved_goals_curates_top3_by_keyword_overlap(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """When parent statement has real Lean keyword tokens, framework
+    intersects with each proved sibling's statement and surfaces top 3
+    by overlap score. Catches alpha-equivalent siblings whose names
+    don't match the slug-pattern Tier 1 dedupe (e.g. agent named the
+    new sub-goal completely differently from the existing proved one).
+
+    Defense-in-depth (2026-05-26 post-Jordan): Jordan's `_alias`/`_2`
+    duplicates are caught by Tier 1; this section catches "same
+    statement, different name" duplicates by surfacing high-overlap
+    siblings as the agent reads Context.md, before they decompose.
+    """
+    # Seed problem row first (FK constraint)
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at, "
+        "bootstrap_done) VALUES (?, ?, ?, 1)",
+        ("p", "Problems/p/Manifest.md", db.now()),
+    )
+    # Parent statement mentions LinearMap, kernel, finrank, Module
+    gid = db.insert_goal(
+        conn, problem="p", slug="parent_target",
+        lean_path="Problems/p/proofs/L_parent_target.lean",
+        statement=(
+            "(M : R →ₗ[K] R) (d : Module.Basis ι K R) :\n"
+            "    Module.finrank K (LinearMap.ker M) = Fintype.card {t : Fin p // 0 < l t}"
+        ),
+        origin="backward",
+    )
+
+    # High overlap: shares LinearMap, kernel, finrank, Module, Basis
+    g_high = db.insert_goal(
+        conn, problem="p", slug="kernel_finrank_basis",
+        lean_path="Problems/p/proofs/L_kernel_finrank_basis.lean",
+        statement=(
+            "(N : R →ₗ[K] R) (b : Module.Basis ι K R) :\n"
+            "  Module.finrank K (LinearMap.ker N) = card_things"
+        ),
+        origin="backward",
+    )
+    db.update_goal_status(conn, g_high, "proved")
+
+    # Medium overlap: shares LinearMap, Module
+    g_med = db.insert_goal(
+        conn, problem="p", slug="linmap_module_fact",
+        lean_path="Problems/p/proofs/L_linmap_module_fact.lean",
+        statement="(M : R →ₗ[K] R) : Module.id_thing M",
+        origin="backward",
+    )
+    db.update_goal_status(conn, g_med, "proved")
+
+    # Low overlap: no shared tokens
+    g_low = db.insert_goal(
+        conn, problem="p", slug="unrelated_lemma",
+        lean_path="Problems/p/proofs/L_unrelated_lemma.lean",
+        statement="(x y : Nat) : x + y = y + x",
+        origin="backward",
+    )
+    db.update_goal_status(conn, g_low, "proved")
+
+    attempts_dir = tmp_path / ".attempts" / "pid-q"
+    attempts_dir.mkdir(parents=True)
+    goal = db.get_goal(conn, gid)
+    out = compile_context(conn, goal=goal, mfst=_empty_manifest(),
+                          attempts_dir=attempts_dir)
+    text = out.read_text(encoding="utf-8")
+
+    # Section appears with total count
+    assert "## Proved siblings on this problem (3 total)" in text
+    # Top match by overlap — must appear inline
+    assert "kernel_finrank_basis" in text
+    # Medium match — also appears (top 3 cap, only 3 candidates total)
+    assert "linmap_module_fact" in text
+    # Low-overlap candidate has 0 shared tokens (`xy=yx` is short noise) —
+    # excluded by min-overlap threshold
+    # Allow it OR not based on token threshold — main assertion is order
+    high_pos = text.find("kernel_finrank_basis")
+    med_pos = text.find("linmap_module_fact")
+    assert high_pos < med_pos, (
+        "highest-overlap sibling must appear before lower-overlap ones")
 
 
 # ---------------------------------------------------------------------
