@@ -318,46 +318,113 @@ def _fmt_tokens(n: int) -> str:
     return str(n)
 
 
+# Per-model price weights, normalized so Claude Opus 4.7 OUTPUT = 1.0
+# unit. Sourced from Anthropic public pricing:
+# https://platform.claude.com/docs/en/about-claude/pricing
+# Weighted totals expose "share of effective cost / quota burn" rather
+# than raw token volume — useful when comparing Opus (Backward) vs
+# Sonnet (Builder, Rescue) spend on a monthly-subscription account
+# where quota is metered approximately to backend cost.
+_PRICE_WEIGHTS: dict[str, dict[str, float]] = {
+    # Opus 4.5 / 4.6 / 4.7 share the new (cheaper) pricing tier:
+    # $5 input / $25 output / $6.25 cw_5m / $0.50 cr per MTok.
+    "claude-opus-4-7": {"in": 0.20, "cw": 0.25, "cr": 0.02, "out": 1.00},
+    "claude-opus-4-6": {"in": 0.20, "cw": 0.25, "cr": 0.02, "out": 1.00},
+    "claude-opus-4-5": {"in": 0.20, "cw": 0.25, "cr": 0.02, "out": 1.00},
+    # Opus 4.1 / 4 legacy tier: 3x the new-Opus rates.
+    "claude-opus-4-1": {"in": 0.60, "cw": 0.75, "cr": 0.06, "out": 3.00},
+    "claude-opus-4":   {"in": 0.60, "cw": 0.75, "cr": 0.06, "out": 3.00},
+    # Sonnet 4.x: $3 / $15 / $3.75 / $0.30 — 0.6x Opus output.
+    "claude-sonnet-4-6": {"in": 0.12, "cw": 0.15, "cr": 0.012, "out": 0.60},
+    "claude-sonnet-4-5": {"in": 0.12, "cw": 0.15, "cr": 0.012, "out": 0.60},
+    "claude-sonnet-4":   {"in": 0.12, "cw": 0.15, "cr": 0.012, "out": 0.60},
+    # Haiku 4.5: $1 / $5 / $1.25 / $0.10 — 0.2x Opus output.
+    "claude-haiku-4-5": {"in": 0.04, "cw": 0.05, "cr": 0.004, "out": 0.20},
+}
+# Default for unknown models — assume Sonnet-tier so we don't
+# under-count on a new release whose name we haven't catalogued yet.
+_DEFAULT_WEIGHTS = _PRICE_WEIGHTS["claude-sonnet-4-6"]
+
+
+def _weighted_units(bucket: dict, model: str) -> float:
+    """Convert a (kind, model) bucket's raw token counts into
+    Opus-4.7-output-equivalent units using the per-model price weights
+    table. Used to render cost share regardless of which model handled
+    each kind."""
+    w = _PRICE_WEIGHTS.get(model, _DEFAULT_WEIGHTS)
+    return (
+        bucket["in"] * w["in"]
+        + bucket["cw"] * w["cw"]
+        + bucket["cr"] * w["cr"]
+        + bucket["out"] * w["out"]
+    )
+
+
 def _render_token_section(usage: dict) -> str:
     """Markdown table of token usage by (kind, model). Returns empty
-    string when no data — keeps stats.md tidy on first ticks."""
+    string when no data — keeps stats.md tidy on first ticks.
+
+    Adds a `weighted` column (Opus-4.7-output-equivalent units, using
+    Anthropic's published per-model token prices) and a `share` column
+    showing each row's percentage of total weighted cost. This lets the
+    operator compare Opus (Backward) vs Sonnet (Builder, Rescue) spend
+    on the same axis, since Opus 4.7 is ~1.67× Sonnet per token, not
+    the 5× of older Opus 4.1 tier.
+    """
     buckets = usage["buckets"]
     if not buckets:
         return "## token usage (since daemon start)\n\n(no data yet)\n"
 
+    # Compute weighted units per bucket + grand total.
+    weighted_map: dict[tuple[str, str], float] = {
+        k: _weighted_units(b, k[1]) for k, b in buckets.items()
+    }
+    weighted_total = sum(weighted_map.values()) or 1.0  # avoid div-by-0
+
     header = (
-        f"{'kind':<12} {'model':<22} {'in':>8} {'out':>7} "
-        f"{'cache_r':>9} {'cache_w':>8} {'spawns':>6}"
+        f"{'kind':<11} {'model':<18} {'in':>6} {'out':>7} "
+        f"{'cache_r':>8} {'cache_w':>8} {'spawns':>3} "
+        f"{'weighted':>8} {'share':>6}"
     )
     sep = "-" * len(header)
     rows = [header, sep]
-    for (kind, model), b in sorted(buckets.items(),
-                                    key=lambda kv: -kv[1]["in"]):
+    # Sort by weighted (cost share) descending — most expensive line on top.
+    for (kind, model), b in sorted(
+        buckets.items(), key=lambda kv: -weighted_map[kv[0]],
+    ):
+        w = weighted_map[(kind, model)]
         rows.append(
-            f"{kind:<12} {model:<22} "
-            f"{_fmt_tokens(b['in']):>8} {_fmt_tokens(b['out']):>7} "
-            f"{_fmt_tokens(b['cr']):>9} {_fmt_tokens(b['cw']):>8} "
-            f"{b['spawns']:>6}"
+            f"{kind:<11} {model:<18} "
+            f"{_fmt_tokens(b['in']):>6} {_fmt_tokens(b['out']):>7} "
+            f"{_fmt_tokens(b['cr']):>8} {_fmt_tokens(b['cw']):>8} "
+            f"{b['spawns']:>3} "
+            f"{_fmt_tokens(int(w)):>8} {w / weighted_total * 100:>5.1f}%"
         )
     t = usage["totals"]
     rows.append(sep)
     rows.append(
-        f"{'total':<35} "
-        f"{_fmt_tokens(t['in']):>8} {_fmt_tokens(t['out']):>7} "
-        f"{_fmt_tokens(t['cr']):>9} {_fmt_tokens(t['cw']):>8} "
-        f"{t['spawns']:>6}"
+        f"{'total':<30} "
+        f"{_fmt_tokens(t['in']):>6} {_fmt_tokens(t['out']):>7} "
+        f"{_fmt_tokens(t['cr']):>8} {_fmt_tokens(t['cw']):>8} "
+        f"{t['spawns']:>3} "
+        f"{_fmt_tokens(int(weighted_total)):>8}"
     )
     # Cache "hit" share over the full input bill — fresh input + cache
     # writes (paid 1.25×) + cache reads (paid 0.1×). Higher = more of
     # the prompt was served from the cheap cache slot vs re-billed.
     total_input = t["in"] + t["cw"] + t["cr"]
-    cache_line = ""
+    footnote_lines = []
     if total_input > 0:
-        cache_line = (f"\ncache hit share: "
-                      f"{t['cr'] / total_input * 100:.1f}%  "
-                      f"(cache_r / (in + cache_w + cache_r))")
+        footnote_lines.append(
+            f"cache hit share: {t['cr'] / total_input * 100:.1f}%  "
+            f"(cache_r / (in + cache_w + cache_r))"
+        )
+    footnote_lines.append(
+        "weighted basis: Opus-4.7 output = 1 unit  "
+        "(Sonnet 4.x out = 0.6, in = 0.12; Opus 4.1 out = 3.0)"
+    )
     return ("## token usage (since daemon start)\n\n"
-            "```\n" + "\n".join(rows) + cache_line + "\n```\n")
+            "```\n" + "\n".join(rows) + "\n" + "\n".join(footnote_lines) + "\n```\n")
 
 
 def _active_spawns(limit: int) -> list[Path]:
