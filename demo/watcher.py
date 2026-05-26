@@ -148,6 +148,25 @@ _KIND_RE = re.compile(r"^You are running a (\w+) task")
 _token_state: dict[Path, dict] = {}
 
 
+def _daemon_start_time() -> float | None:
+    """Returns the active daemon's start epoch by reading
+    `.asterism/daemon.pid` mtime (singleton-lock file created at the
+    top of `dispatcher.run`). Returns None if no daemon is running.
+
+    Used as `since_ts` for token aggregation so the displayed totals
+    are cumulative since the CURRENT daemon's start — surviving
+    watcher restarts (state re-derived from JSONLs filtered by
+    message timestamp >= daemon start) while resetting on daemon
+    restart (caller detects mtime change + clears `_token_state`)."""
+    pid_file = WS / ".asterism" / "daemon.pid"
+    if not pid_file.exists():
+        return None
+    try:
+        return pid_file.stat().st_mtime
+    except OSError:
+        return None
+
+
 def _encoded_dir_for_problem(problem: str) -> Path:
     """Mirror claude CLI's project-dir encoding for a problem's cwd.
 
@@ -669,6 +688,10 @@ def main() -> int:
     TOKEN_REFRESH_SEC = 60.0
     last_token_refresh = 0.0
     token_section_cache = ""
+    # Daemon-restart detection: if `daemon.pid` mtime advances mid-watcher
+    # we're tracking a different daemon now → reset per-file accumulator
+    # so we don't mix old daemon's tokens into the new run's totals.
+    last_daemon_start: float | None = None
 
     try:
         while True:
@@ -678,8 +701,22 @@ def main() -> int:
             now = time.time()
             if now - last_token_refresh >= TOKEN_REFRESH_SEC:
                 try:
-                    usage = _aggregate_tokens(args.problem,
-                                              since_ts=started_at)
+                    # Anchor token accounting to current daemon's start
+                    # (pid file mtime). Fall back to watcher start if no
+                    # daemon is running — display shows "(no data)" but
+                    # the call doesn't crash.
+                    daemon_start = _daemon_start_time()
+                    since = daemon_start if daemon_start is not None \
+                        else started_at
+                    if last_daemon_start is not None \
+                            and daemon_start is not None \
+                            and daemon_start > last_daemon_start + 1.0:
+                        # Daemon restarted while watcher kept running.
+                        # Per-file cumulative state belongs to the old
+                        # daemon's run — drop and re-aggregate fresh.
+                        _token_state.clear()
+                    last_daemon_start = daemon_start
+                    usage = _aggregate_tokens(args.problem, since_ts=since)
                     token_section_cache = _render_token_section(usage)
                 except Exception as exc:  # noqa: BLE001
                     token_section_cache = (
