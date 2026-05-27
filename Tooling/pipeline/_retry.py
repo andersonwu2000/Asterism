@@ -640,6 +640,10 @@ def run_with_session_retries(
         if budget <= 0:
             # Defensive — bfs_refill should already filter goals at/over
             # threshold. Reach here only on dispatch races.
+            print(f"[retry-moot] g{goal_id} pre-loop: budget={budget} "
+                  f"(budget_threshold={budget_threshold} - "
+                  f"attempts={int(goal['attempts'])}); status="
+                  f"{goal['status']}", flush=True)
             return PipelineResult(outcome="moot")
     else:
         # Goal-less pipeline (Forward): budget is the per-Inject cap;
@@ -738,6 +742,14 @@ def run_with_session_retries(
         if goal_id is not None and not goal_still_active(
             conn, goal_id, shelve_threshold,
         ):
+            g_now = db.get_goal(conn, goal_id)
+            if g_now is None:
+                print(f"[retry-moot] g{goal_id} iter={attempt}: "
+                      f"goal row vanished", flush=True)
+            else:
+                print(f"[retry-moot] g{goal_id} iter={attempt}: "
+                      f"status={g_now['status']} attempts={g_now['attempts']} "
+                      f"shelve_threshold={shelve_threshold}", flush=True)
             return attach(PipelineResult(outcome="moot"))
 
         cold = (attempt == 0)
