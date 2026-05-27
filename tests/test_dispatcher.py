@@ -43,31 +43,32 @@ def test_next_worker_kind_easy_first_attempts() -> None:
         _fake_goal(attempts=2)) == "Builder"
 
 
-def test_next_worker_kind_ignores_attempts(
+def test_next_worker_kind_boundary_at_builder_threshold() -> None:
+    """attempts >= BUILDER_THRESHOLD overrides entry_kind=Builder
+    (safety net): the Backward agent's directive can be wrong, but
+    after N consecutive Builder failures we escalate regardless."""
+    bt = _dispatcher.BUILDER_THRESHOLD
+    assert next_worker_kind(
+        _fake_goal(attempts=bt - 1)) == "Builder"
+    assert next_worker_kind(
+        _fake_goal(attempts=bt)) == "Backward"
+    # Even with entry_kind=Builder, attempts threshold wins
+    assert next_worker_kind(
+        _fake_goal(attempts=bt, entry_kind="Builder")
+    ) == "Backward"
+
+
+def test_next_worker_kind_respects_runtime_threshold(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """entry_kind is the only routing signal — attempts is NOT.
-
-    The legacy attempts >= BUILDER_THRESHOLD override (escalate to
-    Backward) was removed 2026-05-28 because it bypassed Strategist
-    Inject(Builder) re-pinning on goals that had accumulated Backward
-    shelves (LU lu_step_assembly). Escalation when Builder keeps failing
-    is now handled by attempts → SHELVE_THRESHOLD → pending_strategist_
-    review → Strategist re-decides.
-    """
+    """F18: BUILDER_THRESHOLD is module-level mutable so env override
+    in `run` takes effect without re-import. Direct assignment is the
+    same channel."""
     monkeypatch.setattr(_dispatcher, "BUILDER_THRESHOLD", 3)
-    # entry_kind=Builder always routes to Builder regardless of attempts
     assert next_worker_kind(
-        _fake_goal(attempts=0, entry_kind="Builder")) == "Builder"
+        _fake_goal(attempts=2)) == "Builder"
     assert next_worker_kind(
-        _fake_goal(attempts=3, entry_kind="Builder")) == "Builder"
-    assert next_worker_kind(
-        _fake_goal(attempts=99, entry_kind="Builder")) == "Builder"
-    # entry_kind=Backward always routes to Backward regardless of attempts
-    assert next_worker_kind(
-        _fake_goal(attempts=0, entry_kind="Backward")) == "Backward"
-    assert next_worker_kind(
-        _fake_goal(attempts=99, entry_kind="Backward")) == "Backward"
+        _fake_goal(attempts=3)) == "Backward"
 
 
 # ---------------------------------------------------------------------
@@ -1373,13 +1374,13 @@ def test_queue_count_helper(conn: sqlite3.Connection) -> None:
 def test_bfs_refill_backward_capped_at_one(conn: sqlite3.Connection) -> None:
     """F37 — for an open goal whose next worker is Backward, bfs_refill
     enqueues exactly one entry (passive trigger; sequential expansion)."""
-    from Tooling.core.dispatcher import bfs_refill
+    from Tooling.core.dispatcher import bfs_refill, BUILDER_THRESHOLD
     gid = _seed_goal(conn)
-    # Pin entry_kind=Backward so next_worker_kind routes to Backward.
-    # (Pre-2026-05-28 this test used attempts >= BUILDER_THRESHOLD as
-    # the safety-net escalation trigger; that override was removed —
-    # entry_kind is now the only routing signal.)
-    db.update_goal_entry_kind(conn, gid, "Backward")
+    # Bump attempts past BUILDER_THRESHOLD so next_worker_kind escalates
+    # to Backward (the entry_kind=Builder default would otherwise route
+    # to Builder; threshold is the safety-net escalation).
+    for _ in range(BUILDER_THRESHOLD):
+        db.increment_goal_attempts(conn, gid)
     bfs_refill(conn, running=set())
     assert db.queue_count(conn, target_id=str(gid), kind="Backward") == 1
 
@@ -1521,8 +1522,9 @@ def test_flush_queue_kind_drops_only_matching(
         lean_path="Problems/pn/Root.lean",
         statement="T", origin="root",
     )
-    from Tooling.core.dispatcher import bfs_refill
-    db.update_goal_entry_kind(conn, gid_bw, "Backward")
+    from Tooling.core.dispatcher import bfs_refill, BUILDER_THRESHOLD
+    for _ in range(BUILDER_THRESHOLD):
+        db.increment_goal_attempts(conn, gid_bw)
     bfs_refill(conn, running=set())  # enqueues 1 Builder + 1 Backward
     assert db.queue_size(conn) == 2
 

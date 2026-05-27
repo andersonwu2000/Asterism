@@ -583,7 +583,6 @@ def run_with_session_retries(
     postmortem_fn: PostmortemFn,
     workspace: Path | None = None,
     reflection_fn: ReflectionFn | None = None,
-    decision_id: int | None = None,
 ) -> PipelineResult:
     """Run a kind-agnostic in-pipeline retry loop.
 
@@ -637,21 +636,7 @@ def run_with_session_retries(
         if goal is None:
             return PipelineResult(outcome="failed",
                                   failure_reason="goal_not_found")
-        if decision_id is not None:
-            # Strategist Inject authorised this dispatch with full
-            # knowledge of the goal's attempts history (failure_replay
-            # section in the Strategist context). Honour that decision
-            # with a fresh budget instead of subtracting prior attempts
-            # from threshold — otherwise an Inject(Builder) on a goal
-            # whose attempts already match BUILDER_THRESHOLD moots
-            # immediately and the Inject silently no-ops (LU lu_step_
-            # assembly 2026-05-28: 1ms Builder moot on attempts=3,
-            # BUILDER_THRESHOLD=3). The absolute upper bound is still
-            # the per-iteration goal_still_active check against
-            # shelve_threshold.
-            budget = budget_threshold
-        else:
-            budget = budget_threshold - int(goal["attempts"])
+        budget = budget_threshold - int(goal["attempts"])
         if budget <= 0:
             # Defensive — bfs_refill should already filter goals at/over
             # threshold. Reach here only on dispatch races.

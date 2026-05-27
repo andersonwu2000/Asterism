@@ -159,33 +159,6 @@ def test_budget_zero_at_entry_returns_moot(conn: sqlite3.Connection,
     assert parse_count[0] == 0
 
 
-def test_inject_dispatch_gets_fresh_budget(
-    conn: sqlite3.Connection, tmp_path: Path,
-) -> None:
-    """Regression: when decision_id is set (Strategist Inject), the
-    budget gate doesn't subtract goal.attempts — Strategist authorised
-    this dispatch with full knowledge of the attempts history (LU
-    lu_step_assembly 2026-05-28: 1ms Builder moot on attempts=3,
-    BUILDER_THRESHOLD=3). Without this, Inject(Builder) on a goal at
-    or above BUILDER_THRESHOLD silently no-ops."""
-    gid = _seed_goal(conn, attempts=3)
-    seen, spawn_fn = _spawn_returning([0])
-    _, parse_fn = _parse_returning([PipelineResult(outcome="proved")])
-    _, pm_fn = _make_postmortem_recorder()
-
-    r = run_with_session_retries(
-        conn=conn, goal_id=gid, pipeline_id="pid-inject",
-        budget_threshold=3, shelve_threshold=8,
-        attempts_dir=tmp_path,
-        spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
-        decision_id=42,  # ← Strategist Inject sets this
-    )
-    # Without the fresh-budget path, this would moot (budget=3-3=0).
-    # With the fix, budget=3 (fresh) → spawn runs → proves.
-    assert r.outcome == "proved"
-    assert len(seen) == 1
-
-
 def test_first_iter_proved_returns_proved_with_empty_pending(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:

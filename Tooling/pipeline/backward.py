@@ -461,7 +461,6 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             postmortem_fn=backward_postmortem,
             workspace=workspace,
             reflection_fn=backward_reflection,
-            decision_id=decision_id,
         )
     except BaseException:
         # Escaped exception — strategy row is still in placeholder state

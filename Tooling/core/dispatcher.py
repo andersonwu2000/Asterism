@@ -629,32 +629,32 @@ def _propagate_dead(conn: sqlite3.Connection, goal_id: int) -> None:
 def next_worker_kind(goal: sqlite3.Row) -> str:
     """Pure-ish: input goal row → 'Builder' or 'Backward'.
 
-    Routing is `entry_kind`-driven, period. Whatever entry_kind says
-    wins; bfs_refill never overrides it.
+    Routing is `entry_kind`-driven with an attempts-threshold safety net.
+    While attempts < `BUILDER_THRESHOLD` we honor the `entry_kind`
+    directive (`'Builder'` | `'Backward'`); once attempts reach the
+    threshold, escalation to Backward is forced (safety net for an
+    entry_kind=Builder directive that turns out wrong).
 
-    `entry_kind` is set by (highest authority first):
-      - Strategist Inject(Backward|Builder): pinned at decision commit
-        time (`_commit_inject_redispatch` → `update_goal_entry_kind`).
-        This is Phase 2's authoritative re-routing mechanism.
-      - cli init for the root goal: hardcoded to `'Backward'`.
+    `entry_kind` is set by:
+      - cli init for the root goal: hardcoded to `'Backward'`. Root
+        entry is gated by Strategist's `first_launch` trigger before
+        any Builder/Backward dispatch; the `## Entry kind` Manifest
+        section was dropped in Phase 2 (see manifest.py module header).
       - Backward agent for each sub-goal it generates, via the
-        `-- entry_kind: ...` directive in `new_<slug>.lean`'s docstring.
-      - cascade_one for `agent_declined` (Builder needs_decomposition):
-        flips to `'Backward'` to route the next dispatch as Backward
-        without inflating attempts.
+        `-- entry_kind: ...` directive in `new_<slug>.lean`'s docstring;
+        framework parses + persists at sub-goal insertion time.
 
-    Earlier iterations had an attempts >= `BUILDER_THRESHOLD` override
-    here ("safety net for an entry_kind=Builder directive that turns
-    out wrong"). Removed (2026-05-28) because it bypassed Strategist's
-    explicit Inject(Builder) re-pin on goals that had accumulated
-    Backward shelves: bfs_refill saw attempts=3, ignored the new
-    entry_kind=Builder, enqueued a parallel Backward, which raced the
-    Inject'd Builder and dominated the outcome (LU lu_step_assembly
-    2026-05-28). The natural escalation path when Builder repeatedly
-    fails is now attempts → SHELVE_THRESHOLD → pending_strategist_review
-    → Strategist re-decides (Inject Backward / EmitDirective / Confirm-
-    Shelve), instead of a hard-coded routing override.
+    Earlier iterations gated on a numeric `difficulty` (1-10): a hard
+    `>=4 → Backward` rule was unreliable because the agent's estimate
+    tracked conceptual complexity, not Builder-tractability. The boolean
+    directive is now the only routing signal — `difficulty` was removed
+    from both Manifest and the goals table.
+
+    `BUILDER_THRESHOLD` is module-level so test/env overrides are visible
+    without re-importing.
     """
+    if int(goal["attempts"]) >= BUILDER_THRESHOLD:
+        return "Backward"
     if str(goal["entry_kind"]) == "Backward":
         return "Backward"
     return "Builder"
