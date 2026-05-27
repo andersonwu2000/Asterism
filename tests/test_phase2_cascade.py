@@ -1094,3 +1094,75 @@ def test_unacknowledged_inject_batches_helper(
     db.update_problem_last_strategist_at(conn, "p")
     batches2 = db.unacknowledged_inject_batches(conn, "p")
     assert batches2 == []
+
+
+# ---------------------------------------------------------------------
+# cascade_one Strategist failure handling (2026-05-27 Banach-Tarski bug)
+# ---------------------------------------------------------------------
+
+def test_cascade_strategist_infra_failure_re_enqueues(
+    conn: sqlite3.Connection, capsys: pytest.CaptureFixture,
+) -> None:
+    """An infra failure on a Strategist spawn (watchdog stuck-kill,
+    claude.exe crash, gateway transient) leaves the originating T0/T1/T2
+    trigger unfulfilled. Re-enqueue so the next tick retries; without
+    this fix the framework waits up to `strategist.interval_min` for the
+    next T1 wake.
+
+    Regression: 2026-05-27 Banach-Tarski daemon — Strategist spawn died
+    rc=128 (stuck_thinking); g3246 stuck in pending_strategist_review
+    for 30+ min until the next T1.
+    """
+    root = _insert_goal(conn, slug="main", origin="root")
+    cascade_one(
+        conn, pipeline_id="pid-strat-infra",
+        kind="Strategist", target_id=str(root), target_kind="Goal",
+        outcome="failed", failure_reason="spawn_fast_fail",
+    )
+    rows = conn.execute(
+        "SELECT kind, target_id, target_kind, priority FROM queue"
+        " WHERE kind='Strategist'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert int(rows[0]["target_id"]) == root
+    assert rows[0]["target_kind"] == "Goal"
+    assert rows[0]["priority"] == 20
+    captured = capsys.readouterr()
+    assert "[strategist-retry]" in captured.out
+
+
+def test_cascade_strategist_success_does_not_re_enqueue(
+    conn: sqlite3.Connection,
+) -> None:
+    """Happy path: a successful Strategist commit must NOT trigger
+    re-enqueue (would race with the next T2 trigger and double-spawn)."""
+    root = _insert_goal(conn, slug="main", origin="root")
+    cascade_one(
+        conn, pipeline_id="pid-strat-ok",
+        kind="Strategist", target_id=str(root), target_kind="Goal",
+        outcome="success",
+    )
+    rows = conn.execute(
+        "SELECT COUNT(*) c FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert rows["c"] == 0
+
+
+def test_cascade_strategist_non_infra_failure_does_not_re_enqueue(
+    conn: sqlite3.Connection,
+) -> None:
+    """Agent-quality failures (decisions all rejected by verify_decision,
+    etc.) ARE deterministic — re-enqueueing would just re-fail the same
+    way. Only infra reasons re-enqueue; everything else waits for the
+    next T1 routine wake.
+    """
+    root = _insert_goal(conn, slug="main", origin="root")
+    cascade_one(
+        conn, pipeline_id="pid-strat-bad-decision",
+        kind="Strategist", target_id=str(root), target_kind="Goal",
+        outcome="failed", failure_reason="agent_no_annotation",
+    )
+    rows = conn.execute(
+        "SELECT COUNT(*) c FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert rows["c"] == 0

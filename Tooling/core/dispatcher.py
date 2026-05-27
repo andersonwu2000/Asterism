@@ -1005,6 +1005,32 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             _enqueue_strategist_review(conn, int(target_id))
         return
 
+    if kind == "Strategist":
+        # Strategist has no equivalent of bfs_refill's auto-pickup —
+        # queue rows arrive only from T0/T1/T2 triggers. An infra
+        # failure (stuck-thinking / quota / gateway / spawn crash) on
+        # a Strategist spawn therefore leaves the originating trigger's
+        # intent unfulfilled: for T2 specifically, the goal that hit
+        # agent_shelved stays in `pending_strategist_review` until the
+        # next T1 routine wake — up to `strategist.interval_min`
+        # (default 60min, often 120min) away.
+        #
+        # Re-enqueue on infra failure so the next tick retries. The
+        # existing `consec_fast_fails` cap (10) protects against
+        # persistent breakage: after 10 in a row the dispatcher exits
+        # with code 2 for operator inspection.
+        #
+        # Observed: 2026-05-27 Banach-Tarski run, Strategist spawn
+        # f0eb5be6 killed by watchdog at 660s (rc=128 stuck_thinking)
+        # → failed → g3246 stuck in pending_review with no recovery
+        # for 30+ min until the next T1 wake.
+        if outcome == "failed" and is_infra:
+            db.enqueue(conn, kind="Strategist", target_id=target_id,
+                       target_kind=target_kind, priority=20)
+            print(f"[strategist-retry] re-queued {target_kind}={target_id}"
+                  f" after {failure_reason}", flush=True)
+        return
+
     # Verify removed as a worker_kind. Strategy verification + parent
     # promotion happens in `verify.verify_housekeeping`, called at the
     # end of each dispatcher tick (see `run` below).
