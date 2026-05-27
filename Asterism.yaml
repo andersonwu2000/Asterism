@@ -7,7 +7,7 @@
 # it; the framework only reads what's set.
 
 dispatch:
-  pool: 4                     # Max in-flight pipelines, also = number of
+  pool: 2                     # Max in-flight pipelines, also = number of
                               # persistent lean workers in the LSP gateway
                               # pool (1:1 binding — every spawn claims one
                               # dedicated worker for its lifetime, freed on
@@ -27,8 +27,8 @@ dispatch:
                               #                          ~1 GB but most not resident)
                               # Approximation:
                               #   RAM ≈ 3.7 + 0.95×pool  GB
-  budget_sec: 18000           # 5hr daemon wall-clock cutoff for SG run
-                              # (was 7200 for miniF2F stress test, 16200
+  budget_sec: 86400           # 24hr daemon wall-clock cutoff (was 18000
+                              # = 5hr; 7200 for miniF2F stress test, 16200
                               # for older SG baselines)
   shelve_threshold: 5         # total attempts per goal before shelving
                               # (was 4; SG 2026-05-09 g224 hit 4 stuck-thinking
@@ -83,7 +83,7 @@ strategist:
   model: claude-opus-4-7       # meta-level reasoning (InitializeDefs /
                                # RequestUserAmend / Inject Forward) —
                                # same tier as Backward.
-#  interval_min: 60.0          # T1 routine cadence (default 60min)
+  interval_min: 120.0          # T1 routine cadence (default 60min)
 #  inject_batch_max: 10        # Phase 2.5 — upper bound on
                                # Inject(briefs=[...]) length. Each
                                # brief becomes a Forward dispatch; >cap
