@@ -1842,3 +1842,94 @@ def test_set_integrity_verified_persists_only_when_marker_present(
 # "stale proposed strategy on a proved goal" finalization is handled
 # by `verify.verify_strategy` returning "superseded"; see
 # `tests/test_verify.py`.
+
+
+# ---------------------------------------------------------------------
+# _problem_of_target — resolve problem from a dispatch target
+# ---------------------------------------------------------------------
+
+def test_problem_of_target_resolves_goal_to_problem(
+    conn: sqlite3.Connection,
+) -> None:
+    gid = _seed_goal(conn, problem="alpha")
+    assert _dispatcher._problem_of_target(
+        conn, str(gid), "Goal") == "alpha"
+
+
+def test_problem_of_target_forward_target_is_problem_name(
+    conn: sqlite3.Connection,
+) -> None:
+    """Forward dispatches use target_kind='Problem'; the target_id IS
+    the problem name (string), no goal lookup needed."""
+    assert _dispatcher._problem_of_target(
+        conn, "some_problem_name", "Problem") == "some_problem_name"
+
+
+def test_problem_of_target_unknown_goal_returns_none(
+    conn: sqlite3.Connection,
+) -> None:
+    """Defensive: stale queue row pointing at a nonexistent goal must
+    not crash the pop loop. _problem_of_target returns None; caller
+    skips dispatch."""
+    assert _dispatcher._problem_of_target(
+        conn, "9999999", "Goal") is None
+
+
+def test_problem_of_target_non_numeric_goal_returns_none(
+    conn: sqlite3.Connection,
+) -> None:
+    """Defensive: malformed target_id (not int-castable) on a Goal
+    dispatch returns None instead of raising ValueError."""
+    assert _dispatcher._problem_of_target(
+        conn, "not-a-number", "Goal") is None
+
+
+# ---------------------------------------------------------------------
+# bfs_refill — verified_problems quarantine
+# ---------------------------------------------------------------------
+
+def test_bfs_refill_skips_quarantined_problem(
+    conn: sqlite3.Connection,
+) -> None:
+    """A problem flagged False in `verified_problems` must NOT have its
+    goals enqueued. Prevents the daemon from burning worker spawns on
+    a problem whose Defs.lean / Root.lean failed lake build."""
+    from Tooling.core.dispatcher import bfs_refill
+    gid = _seed_goal(conn, problem="bad_problem")
+    bfs_refill(conn, set(), verified_problems={"bad_problem": False})
+    rows = conn.execute(
+        "SELECT COUNT(*) c FROM queue WHERE target_id = ?",
+        (str(gid),),
+    ).fetchone()
+    assert rows["c"] == 0
+
+
+def test_bfs_refill_enqueues_unverified_problem(
+    conn: sqlite3.Connection,
+) -> None:
+    """An UNVERIFIED problem (not yet in verified_problems) is still
+    enqueued — verification is lazy and happens at the pop site, not
+    here. Without this we'd never dispatch the first goal of a new
+    problem (chicken/egg)."""
+    from Tooling.core.dispatcher import bfs_refill
+    gid = _seed_goal(conn, problem="fresh_problem")
+    bfs_refill(conn, set(), verified_problems={})  # not yet verified
+    rows = conn.execute(
+        "SELECT COUNT(*) c FROM queue WHERE target_id = ?",
+        (str(gid),),
+    ).fetchone()
+    assert rows["c"] == 1
+
+
+def test_bfs_refill_enqueues_passed_problem(
+    conn: sqlite3.Connection,
+) -> None:
+    """A problem flagged True passes through normally."""
+    from Tooling.core.dispatcher import bfs_refill
+    gid = _seed_goal(conn, problem="good_problem")
+    bfs_refill(conn, set(), verified_problems={"good_problem": True})
+    rows = conn.execute(
+        "SELECT COUNT(*) c FROM queue WHERE target_id = ?",
+        (str(gid),),
+    ).fetchone()
+    assert rows["c"] == 1

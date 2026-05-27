@@ -1040,12 +1040,61 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
 # BFS queue refill
 # ---------------------------------------------------------------------
 
+def _problem_of_target(conn: sqlite3.Connection, target_id: str,
+                       target_kind: str) -> str | None:
+    """Resolve the Asterism problem name for a dispatch target.
+    Forward targets the problem directly (target_kind='Problem',
+    target_id=problem name); everything else targets a goal whose
+    `problem` column we look up."""
+    if target_kind == "Problem":
+        return target_id
+    try:
+        g = db.get_goal(conn, int(target_id))
+    except (TypeError, ValueError):
+        return None
+    return g["problem"] if g else None
+
+
+def _verify_problem(workspace: Path, problem: str) -> bool:
+    """Lake-build the problem's Defs.lean + Root.lean. Both must
+    type-check cleanly. Lazy verification gate: run on first dispatch
+    for the problem this daemon run; cached in-memory thereafter.
+
+    Why lazy (vs at-startup): wide-scope daemons (e.g. miniF2F=244
+    problems) would pay 30-60min upfront. Lazy pays only for problems
+    that actually get dispatched (BFS may never touch a problem whose
+    parent is dead/shelved). Per-problem ~5-15s amortizes over a long
+    run.
+    """
+    pdir = db.problem_dir(workspace, problem)
+    defs_path = pdir / "Defs.lean"
+    root_path = pdir / "Root.lean"
+    missing = [p.name for p in (defs_path, root_path) if not p.exists()]
+    if missing:
+        print(f"[verify] {problem}: FAILED — missing {missing}",
+              flush=True)
+        return False
+    from ..pipeline._lake import lake_build_modules, lean_path_to_module
+    modules = [
+        lean_path_to_module(workspace, defs_path),
+        lean_path_to_module(workspace, root_path),
+    ]
+    ok, msg = lake_build_modules(workspace, modules)
+    if not ok:
+        snippet = (msg or "")[:500]
+        print(f"[verify] {problem}: FAILED\n{snippet}", flush=True)
+    else:
+        print(f"[verify] {problem}: OK", flush=True)
+    return ok
+
+
 def bfs_refill(conn: sqlite3.Connection,
                running: set[tuple[str, str]],
                cooldown_until: dict[tuple[str, str], float] | None = None,
                *,
                scope: str | None = None,
                quota_cooldown_kind: dict[str, float] | None = None,
+               verified_problems: dict[str, bool] | None = None,
                ) -> None:
     """Enqueue dispatchable tasks. `running` is the in-memory live set
     of (target_id, kind) pairs currently executing in this daemon.
@@ -1106,8 +1155,17 @@ def bfs_refill(conn: sqlite3.Connection,
     # Phase 2 — `pending_strategist_review` goals are excluded from
     # `open_goals` (status='open' filter). `goals.detached=1` goals
     # are included via the CTE seed change in db.open_goals.
+    vp = verified_problems if verified_problems is not None else {}
     for g in db.open_goals(conn, scope=scope):
-        if problem_paused(str(g["problem"])):
+        problem = str(g["problem"])
+        # Lazy-verify quarantine: a problem whose Defs.lean / Root.lean
+        # failed a prior dispatch's verify is skipped here (and at the
+        # pop site, defense in depth) so worker spawns don't burn quota
+        # on a broken spec. `True` and `unset` both fall through; only
+        # explicit `False` triggers the skip.
+        if vp.get(problem, True) is False:
+            continue
+        if problem_paused(problem):
             continue
         gid = str(g["id"])
         kind = next_worker_kind(g)
@@ -1647,6 +1705,12 @@ def run(workspace: Path, *, once: bool = False,
     # a spawn_fast_fail cascade; bfs_refill skips cooled pairs so the
     # daemon doesn't burst-retry a broken claude.exe at 2s/call.
     cooldown_until: dict[tuple[str, str], float] = {}
+    # Lazy verify cache: problem → True (Defs.lean + Root.lean built
+    # cleanly) | False (build error; problem is quarantined for this
+    # daemon run; restart re-verifies). Filled at first dispatch for
+    # the problem; bfs_refill and the pop loop both consult it so a
+    # quarantined problem never burns worker spawns.
+    verified_problems: dict[str, bool] = {}
     # Global counter of consecutive spawn_fast_fail outcomes (across
     # all targets). Reset by any non-fast-fail cascade. If it crosses
     # CONSEC_SPAWN_FAIL_LIMIT the daemon exits with a clear message —
@@ -2001,7 +2065,8 @@ def run(workspace: Path, *, once: bool = False,
         # per-kind quota backoff (#103); scope restricts to a benchmark
         # subset like `minif2f_%`).
         bfs_refill(conn, running, cooldown_until, scope=scope,
-                   quota_cooldown_kind=quota_cooldown_kind)
+                   quota_cooldown_kind=quota_cooldown_kind,
+                   verified_problems=verified_problems)
 
         # Phase 2 — Strategist T0/T1 triggers (T2 fires at cascade time
         # in `cascade_one`, not here). Skipped under awaiting_human gate
@@ -2044,6 +2109,21 @@ def run(workspace: Path, *, once: bool = False,
             # and pop) could leave a queued row for a now-cooled
             # kind. Drop it; bfs_refill will repopulate post-cooldown.
             if quota_cooldown_kind.get(kind, 0.0) > time.time():
+                continue
+            # Lazy verify gate — must hold before any worker spawn.
+            # First dispatch for a problem this daemon run pays a one-
+            # time `lake build Defs.lean + Root.lean` (~5-15s). Failure
+            # quarantines the problem in `verified_problems` so neither
+            # the pop loop nor bfs_refill dispatches further on it.
+            problem_name = _problem_of_target(conn, target_id, target_kind)
+            if problem_name is None:
+                # Defensive: unknown target shape (DB drift?). Skip
+                # rather than wedge the pop loop.
+                continue
+            if problem_name not in verified_problems:
+                verified_problems[problem_name] = _verify_problem(
+                    workspace, problem_name)
+            if not verified_problems[problem_name]:
                 continue
             pipeline_id = agent.new_pipeline_id()
             running.add((target_id, kind, decision_id))
