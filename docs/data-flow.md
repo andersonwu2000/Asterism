@@ -40,7 +40,7 @@ agent 寫進 `.attempts/<pid>/` 的所有東西（成敗與否）在 dir 被 rmt
 
 **Stage 3 — root proved exit**：root goal 進入 proved 後跑：`prune.reconcile_proved_goals`（修 OR-race 留下的 file/DB drift）→ `prune.prune_problem`（GC orphan 檔）→ `library.maybe_promote`（dormant、目前不自動 promote、見 architecture.md §10）、然後 dispatcher 退出。
 
-**Stage 4 — bfs_refill**：對 open goal 走 recursive CTE 過濾掉 dead/superseded 分支下的 orphan、剩下的依 `entry_kind`（Manifest 寫的或 Backward agent 標的、attempts ≥ BUILDER_THRESHOLD 強制升 Backward）排進 queue。每個 (target_id, kind) 同時最多一條 in-flight（passive OR cap=1）。Strategist 喚醒走另一路徑：`maybe_enqueue_inject_batch_done`（cascade 期間 / `update_strategy_status` hook）+ routine interval timer + pending_review enqueue（agent_shelved 後）。
+**Stage 4 — bfs_refill**：對 open goal 走 recursive CTE 過濾掉 dead/superseded 分支下的 orphan、剩下的依 `entry_kind`（Strategist Inject pin / Manifest / Backward agent / cascade agent_declined flip 任一）排進 queue。entry_kind 是唯一 routing signal、不再有 attempts ≥ BUILDER_THRESHOLD 的 override（移除 2026-05-28、Inject 是 authoritative re-router）。每個 (target_id, kind) 同時最多一條 in-flight（passive OR cap=1）。Strategist 喚醒走另一路徑：`maybe_enqueue_inject_batch_done`（cascade 期間 / `update_strategy_status` hook）+ routine interval timer + pending_review enqueue（agent_shelved 後）。
 
 **Stage 5 — spawn**：從 queue 拉一個、用 `ThreadPoolExecutor.submit` 派一條 pipeline 進 worker thread。pipeline 入場前 POST `/register` 給 gateway 拿 session token、再寫 `_mcp_config.json` 給 claude.exe。pipeline 內部 flow 是 §3 主題。dispatch.pool == gateway workers、locked together（#118 1:1 binding）。
 
@@ -141,7 +141,7 @@ Phase 1 自身可能直接 return：`forbidden_lemma`（hint 結果命中 forbid
 
 cascade 對 Builder：
 - `proved` → goal proved
-- `exhausted` → 讀當前 attempts；過 SHELVE 就 shelved + propagate；過 BUILDER 不額外動（下次 dispatch 由 `next_worker_kind` 改派 Backward）
+- `exhausted` → 讀當前 attempts；過 SHELVE 就 shelved + propagate；否則 status 不動（entry_kind 不變、bfs_refill 下次仍派 Builder 直到 Strategist 介入或攻過 SHELVE）
 - `moot` → no-op
 - `failed/agent_declined` → attempts++ 一次 + `entry_kind='Backward'`
 - `failed/agent_infeasible` → attempts++ 一次 + 直接 disproved + propagate

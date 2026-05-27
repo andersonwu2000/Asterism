@@ -23,7 +23,7 @@
 
 **cascade 共通規則**（以下表格欄省略相同部分、只列 reason 特異處）：
 - 預設：失敗 spawn 由 helper buffer 一筆 dead_attempt + attempts++（dispatcher 在 pipelines INSERT 後 flush）；達 SHELVE_THRESHOLD（預設 8）→ goal `shelved` + `_propagate_shelve` 上拋
-- 過 BUILDER_THRESHOLD（預設 3）→ 下次 dispatch 自動由 `next_worker_kind` 改派 Backward
+- BUILDER_THRESHOLD（預設 3）= Builder pipeline 內 in-pipeline retry helper 的 budget cap；不是 routing 信號。Builder 在單一 pipeline 內最多重試 BUILDER_THRESHOLD-attempts 次。不再由 `next_worker_kind` 用 attempts override 改派 Backward（移除 2026-05-28；Strategist Inject 是 authoritative re-router）
 - spawn_fast_fail / quota_exhausted / missing_dep / gateway_unreachable / transient_timeout → 不增 attempts、不寫 dead_attempt、設 30s cooldown（CONSEC daemon-exit：spawn_fast_fail=10、gateway_unreachable=8、transient_timeout 不進 CONSEC）
 - agent_declined → cascade attempts++ 一次 + `entry_kind='Backward'`（路由不再用 attempts 灌到 BUILDER_THRESHOLD 的 hack）
 - agent_infeasible → cascade attempts++ 一次 + goal 直接 `disproved` + `_propagate_disproved`
