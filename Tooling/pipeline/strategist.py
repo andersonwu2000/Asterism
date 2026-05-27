@@ -706,6 +706,16 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
         if _dispatcher._has_dead_strategy_in_chain(conn, target_id):
             db.set_goal_detached(conn, target_id, True)
 
+    # Pin entry_kind to the requested pipeline so bfs_refill doesn't
+    # enqueue a parallel pipeline of the prior kind. Without this, an
+    # Inject(Builder) on an entry_kind='Backward' goal lets bfs_refill
+    # enqueue a Backward of its own on the same goal — both spawn in
+    # parallel under pool=2, the Backward's outcome dominates, and
+    # Strategist's redispatch intent is bypassed (LU lu_step_assembly
+    # 2026-05-28: 3 consecutive Backward shelves while Strategist
+    # explicitly Injected Builder).
+    db.update_goal_entry_kind(conn, target_id, pipeline)
+
     db.enqueue(
         conn, kind=pipeline, target_id=str(target_id),
         target_kind="Goal", priority=10,

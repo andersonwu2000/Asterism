@@ -300,7 +300,7 @@ commit_decisions:
   8. inject_batch_id = uuid4().hex if any Inject in array else None
   9. 對每筆 decision：
      - Inject(Forward) → enqueue Forward + INSERT strategist_decision row、batch_id 寫上
-     - Inject(Backward|Builder) → 強制 reopen target + 必要時 detached=1 + enqueue
+     - Inject(Backward|Builder) → 強制 reopen target + 必要時 detached=1 + `entry_kind ← pipeline`（防 bfs_refill 平行排錯誤 kind）+ enqueue
      - ConfirmShelve → _set_goal_terminal_and_propagate(shelved) + _propagate_shelve；
                        row INSERT 時 batch_id = inject_batch_id（同 array 內 link）
      - Reopen → update_goal_status('open') + 必要時 detached=1 + optional directive 寫

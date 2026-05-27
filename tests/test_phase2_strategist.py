@@ -540,6 +540,44 @@ def test_commit_inject_builder_works_similarly(
     assert q["kind"] == "Builder"
 
 
+def test_commit_inject_pins_entry_kind(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Regression: Inject(Builder) on an entry_kind='Backward' goal must
+    flip entry_kind to 'Builder' so bfs_refill doesn't enqueue a
+    parallel Backward (LU lu_step_assembly 2026-05-28). Symmetric for
+    Inject(Backward) on an entry_kind='Builder' goal."""
+    root = _insert_root(conn)  # default entry_kind='Backward'
+
+    # Inject(Builder) → entry_kind flips to 'Builder'
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Builder",
+        "target_goal_id": root, "brief": "use refine + Matrix.fromBlocks",
+    }))
+    strategist.commit_decision(
+        d, conn, problem="p", tick=1, trigger_kind="pending_review",
+        workspace=workspace,
+    )
+    g = conn.execute(
+        "SELECT entry_kind FROM goals WHERE id=?", (root,)
+    ).fetchone()
+    assert g["entry_kind"] == "Builder"
+
+    # Inject(Backward) → entry_kind flips back to 'Backward'
+    d2, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Backward",
+        "target_goal_id": root, "brief": "decompose via Schur complement",
+    }))
+    strategist.commit_decision(
+        d2, conn, problem="p", tick=2, trigger_kind="pending_review",
+        workspace=workspace,
+    )
+    g = conn.execute(
+        "SELECT entry_kind FROM goals WHERE id=?", (root,)
+    ).fetchone()
+    assert g["entry_kind"] == "Backward"
+
+
 # ---------------------------------------------------------------------
 # commit_decision — side effects
 # ---------------------------------------------------------------------
