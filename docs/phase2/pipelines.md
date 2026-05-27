@@ -293,19 +293,19 @@ Forward 提的 lemma 可能跟先前已 shelved 的 Backward sub-goal 統計上�
 when goal.status in ('open','attempting'):
     if failure_reason == agent_infeasible:    # directive `unprovable`
         goal.status ← 'disproved'
-        _propagate_shelve(goal_id)            # 上游 cascade 沿用、descendants 走 Rule 2
+        _propagate_disproved(goal_id)         # 上游 cascade 沿用、descendants 走 Rule 2
     elif failure_reason == agent_shelved:     # directive `shelve`
         goal.status ← 'pending_strategist_review'
         enqueue Strategist (kind=Strategist, target=problem.root)
         (不直接 cascade 上游、等 Strategist review 後依結論再 cascade)
     elif failure_reason == parent_needs_fix:  # directive `return_to_parent`
-        goal.status ← 'shelved'                # Phase 1 行為保留、無 Strategist review
-        _propagate_shelve(goal_id)
+        goal.status ← 'dead'                   # 父策略錯了、整 subtree 走 cascade-die
+        _propagate_dead(goal_id)
 ```
 
 `agent_infeasible`：agent 給了 counterexample、語義硬終態、直接 `disproved`、dedupe 之後會擋同形狀提案、不走 Strategist。
 `agent_shelved`：agent 卡住無 counterexample、需 Strategist 判決、進 `pending_strategist_review`。enqueue 直接走 queue（無 event bus）、dedup 靠既有 in-flight (kind, problem) 檢查。
-`parent_needs_fix`：父策略修了就能證、Phase 1 維持直接 shelve。`agent_declined`（Builder needs_decomposition）走既有 entry_kind switch 路徑、不在本規則範圍。
+`parent_needs_fix`：父策略修了就能證、整 subtree 走 cascade-die（goal `dead` + `_propagate_dead`）、Strategist 之後可 Reopen 父 + auto-detach。`agent_declined`（Builder needs_decomposition）走既有 entry_kind switch 路徑、不在本規則範圍。
 
 **新規則 2（ConfirmShelve / 任何 shelve 路徑都雙向 cascade）**：
 
@@ -320,7 +320,7 @@ when goal.status in ('open','attempting'):
 
 設計演化：早期 Phase 2 spec 只 ConfirmShelve 走下行 cascade、後來一度拔掉（理由：view 層 alive filter 可代替）、最後加回來涵蓋所有 shelve / disproved site。回頭加的理由：
 
-1. **語義一致**：shelve 就是 shelve、不管來自 ConfirmShelve / parent_needs_fix / 鏈死 cascade、status='shelved' 統一表「不可 dispatch、可被 Strategist Reopen」。不引入 dormant / cascade_shelved 等中間狀態。
+1. **語義一致**：shelve 就是 shelve、不管來自 ConfirmShelve / SHELVE_THRESHOLD exhaustion / 鏈死 cascade、status='shelved' 統一表「不可 dispatch、可被 Strategist Reopen」。不引入 dormant / cascade_shelved 等中間狀態。
 2. **單一真相**：goal status 直接就是「能否 dispatch」的 source of truth、view（TREE.md、`asterism status`、Strategist context）不必再各自 mirror alive-set CTE。
 3. **descendants 用 `shelved` 不用 `disproved`**：descendants 沒被獨立判 counterexample、保留可 Reopen 的軟終態。`disproved` 嚴格保留給「這個 statement 被反例證偽」這語義、dedupe 才能放心擋同形狀提案。
 

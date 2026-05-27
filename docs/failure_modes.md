@@ -26,7 +26,9 @@
 - 過 BUILDER_THRESHOLD（預設 3）→ 下次 dispatch 自動由 `next_worker_kind` 改派 Backward
 - spawn_fast_fail / quota_exhausted / missing_dep / gateway_unreachable / transient_timeout → 不增 attempts、不寫 dead_attempt、設 30s cooldown（CONSEC daemon-exit：spawn_fast_fail=10、gateway_unreachable=8、transient_timeout 不進 CONSEC）
 - agent_declined → cascade attempts++ 一次 + `entry_kind='Backward'`（路由不再用 attempts 灌到 BUILDER_THRESHOLD 的 hack）
-- agent_infeasible → cascade attempts++ 一次 + goal 直接 `shelved` + `_propagate_shelve`
+- agent_infeasible → cascade attempts++ 一次 + goal 直接 `disproved` + `_propagate_disproved`
+- parent_needs_fix → cascade attempts++ 一次 + goal 直接 `dead` + `_propagate_dead`
+- agent_shelved → cascade attempts++ 一次 + `_enqueue_strategist_review`（轉 pending_strategist_review、不 propagate）
 
 ---
 
@@ -54,9 +56,9 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 | `agent_rc_nonzero` | Builder + Backward | rc≠0、rc≠124/125/126/127、wall-clock ≥ 10s（一般 hard fail）| buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `agent_timeout` | Builder + Backward | claude rc=124（SIGKILL at WORKER_TIMEOUT_SEC、預設 600s） | **salvage parse 一次**（idle-window guard 後 active agent 可能 disk 上有 valid output 但沒 exit 乾淨）：parse 返 terminal-success / decline → 直接 attach；返 non-terminal failure → fold 到 detail、走原 postmortem（寫 `.drafts/`）+ buffer + 強制 exhaust（不再續 retry） | (helper 已 ++)；exhausted → status transition；salvage 成功時 reason 走 success/decline 而非 timeout | `direct_attempt` |
 | `agent_declined` | Builder | agent 寫 `-- decline: needs_decomposition`（unified directive system, 2026-05-10；舊名 `too_hard`） | terminal exit（不 buffer 自身）| **attempts++** + `entry_kind='Backward'`（路由用 entry_kind、不再灌 attempts 到 BUILDER_THRESHOLD） | `direct_attempt` |
-| `agent_infeasible` | Builder + Backward | agent 寫 `-- decline: unprovable`（含反例；舊名 `parent_type_infeasible`） | terminal exit（不 buffer 自身）| **attempts++** + goal `shelved` + `_propagate_shelve` | `infeasible_sub`（投到 parent goal、不到自己；filter `_NON_AGENT_REASONS` 排除 self） |
-| `parent_needs_fix` | Builder + Backward | agent 寫 `-- decline: return_to_parent`（含具體 fix hint：缺哪個 hypothesis / 換哪個結構） | terminal exit（不 buffer 自身）| **attempts++** + goal `shelved` + `_propagate_shelve`；description 投到 parent context 的 fix hint section | `infeasible_sub`（同上；renderer 用 `failure_reason` 區分 fix-hint vs counterexample） |
-| `agent_shelved` | Builder + Backward | agent 寫 `-- decline: shelve`（無反例、純 give up） | terminal exit（不 buffer 自身）| **attempts++** + goal `shelved` + `_propagate_shelve` | `infeasible_sub`（同上；soft 訊號、留給 Strategist 將來覆核） |
+| `agent_infeasible` | Builder + Backward | agent 寫 `-- decline: unprovable`（含反例；舊名 `parent_type_infeasible`） | terminal exit（不 buffer 自身）| **attempts++** + goal `disproved` + `_propagate_disproved` | `infeasible_sub`（投到 parent goal、不到自己；filter `_NON_AGENT_REASONS` 排除 self） |
+| `parent_needs_fix` | Builder + Backward | agent 寫 `-- decline: return_to_parent`（含具體 fix hint：缺哪個 hypothesis / 換哪個結構） | terminal exit（不 buffer 自身）| **attempts++** + goal `dead` + `_propagate_dead`；description 投到 parent context 的 fix hint section | `infeasible_sub`（同上；renderer 用 `failure_reason` 區分 fix-hint vs counterexample） |
+| `agent_shelved` | Builder + Backward | agent 寫 `-- decline: shelve`（無反例、純 give up） | terminal exit（不 buffer 自身）| **attempts++** + `_enqueue_strategist_review`（轉 pending_strategist_review、不 propagate） | `infeasible_sub`（同上；soft 訊號、留給 Strategist 將來覆核） |
 | `agent_bailed` | Backward (rescue option d) | watchdog wall_cap → rescue spawn 中、agent 自評沒把握、寫 `_progress.md` 到 attempts_dir 後退出（無 patch.lean / 無 split） | terminal exit（不 buffer 自身）| **attempts++** + 過 SHELVE 才 shelve（goal 留 open / attempting、下次 dispatch 再派）；outer wrapper 把 `_progress.md` persist 到 `.drafts/backward_g<id>.md` 給下輪 cold-spawn 看 | `direct_attempt` |
 | `goal_no_longer_open` | Backward | parse 階段 race 偵測：lake build 完但 goal 已 proved/shelved | terminal exit（不 buffer 自身）| 走 generic `failed`/attempts++（dispatcher 寫 final dead_attempt） | `direct_attempt` |
 | `quota_exhausted` | Builder + Backward | rc=126（gemini quota 耗盡）| 早返、不 buffer 自身、不耗 budget | **不增 attempts**、設 30s cooldown、不進 CONSEC | 不投影（infra） |

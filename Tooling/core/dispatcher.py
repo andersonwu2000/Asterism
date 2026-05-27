@@ -852,8 +852,9 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             # `docs/phase2/pipelines.md` §4.2 Rule 1):
             #   * agent_infeasible (counterexample shown) → 'disproved'
             #     (hard terminal, dedupe blocks future same-shape proposals).
-            #   * parent_needs_fix → 'shelved' (soft terminal, Phase 1
-            #     behaviour preserved; Strategist may Reopen via auto-detach).
+            #   * parent_needs_fix → 'dead' (parent strategy was wrong;
+            #     cascade-die rather than cascade-shelve because the
+            #     entire subtree was in the wrong context).
             #   * agent_shelved → 'pending_strategist_review'
             #     (transitional; defer judgment to Strategist via T2 trigger).
             # All three increment attempts once (LLM call happened;
@@ -979,7 +980,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             return  # same skip-increment as Builder above
         # Decline directives mirror the Builder branch above (Phase 2
         # split: agent_infeasible → 'disproved' + propagate; parent_
-        # needs_fix → 'shelved' + propagate; agent_shelved → 'pending_
+        # needs_fix → 'dead' + propagate; agent_shelved → 'pending_
         # strategist_review' + enqueue Strategist, no propagate).
         # Backward cannot send `needs_decomposition` (Builder-only); if
         # a typo / unknown directive lands here it falls through to the

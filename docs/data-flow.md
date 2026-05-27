@@ -111,8 +111,9 @@ helper iter (cold attempt 0 / warm attempt 1+):
 parse_fn:
   1. _safe_glob patch*.lean → 缺檔則 failed/agent_no_output
   2. extract leading comments；分流 decline directive：
-     `-- decline: too_hard` → terminal failed/agent_declined
-     `-- decline: parent_type_infeasible` → terminal failed/agent_infeasible
+     `-- decline: needs_decomposition` → terminal failed/agent_declined
+     `-- decline: unprovable` → terminal failed/agent_infeasible
+     `-- decline: return_to_parent` → terminal failed/parent_needs_fix
      `-- decline: shelve` → failed/agent_shelved（轉 pending_strategist_review）
      leading 空白 → failed/agent_no_annotation
   3. forbidden_lemmas grep → failed/forbidden_lemma
@@ -143,7 +144,9 @@ cascade 對 Builder：
 - `exhausted` → 讀當前 attempts；過 SHELVE 就 shelved + propagate；過 BUILDER 不額外動（下次 dispatch 由 `next_worker_kind` 改派 Backward）
 - `moot` → no-op
 - `failed/agent_declined` → attempts++ 一次 + `entry_kind='Backward'`
-- `failed/agent_infeasible` → attempts++ 一次 + 直接 shelved + propagate
+- `failed/agent_infeasible` → attempts++ 一次 + 直接 disproved + propagate
+- `failed/parent_needs_fix` → attempts++ 一次 + 直接 dead + propagate
+- `failed/agent_shelved` → attempts++ 一次 + 轉 pending_strategist_review（不 propagate）
 - `failed/spawn_fast_fail` / `quota_exhausted` / `missing_dep` → 不 ++、設 30s cooldown
 - `failed/<其他>`（多為 Phase 1 直接 return）→ attempts++、過 SHELVE 就 shelved
 
@@ -169,7 +172,9 @@ helper iter (cold attempt 0 / warm attempt 1+):
 parse_fn（每輪一次、rc=0 才會 call）:
   3. _safe_glob patch*.lean → 缺檔則 parse_proposal_fail
   4. extract patch.lean 檔頂 `--` leading comments
-     `-- decline: parent_type_infeasible` → terminal agent_infeasible
+     `-- decline: unprovable` → terminal agent_infeasible
+     `-- decline: return_to_parent` → terminal parent_needs_fix
+     `-- decline: shelve` → terminal agent_shelved（轉 pending_strategist_review）
      leading 空白 → agent_no_annotation（retryable）
   5. patch.lean 簽名沒被改（normalize whitespace 後比對 skeleton_signature）
      不符 → patch_signature_mismatch
@@ -205,13 +210,15 @@ budget 用盡 → outcome='exhausted'。rc=124 → backward postmortem 寫 `.dra
 
 **特殊 placement**：agent 偶爾把整段 valid proof 寫進 `new_*.lean` 而不是留 sorry stub。framework 偵測到 sorry-free + axioms 在白名單就直接把該 sub-goal mark proved、跳過後續 Backward dispatch（`_try_promote_sorry_free`）。
 
-**Backward 失敗模式**：parse_fn 走 `parse_proposal_fail` / `agent_no_annotation` / `patch_signature_mismatch` / `naming_violation` / `forbidden_lemma` / `lake_build_error` / `goal_no_longer_open`（race guard、terminal）。terminal 從 helper 直返：`agent_infeasible` / `goal_no_longer_open`。spawn 層 helper 處理：`agent_rc_nonzero` / `agent_timeout`（postmortem）/ `spawn_fast_fail` / `quota_exhausted` / `missing_dep`。Backward **沒有 `agent_declined` channel**（agent 想退出走 `agent_infeasible` 含反例）、也**沒有 `agent_no_output`**（rc=0 但少檔走 `parse_proposal_fail`）。
+**Backward 失敗模式**：parse_fn 走 `parse_proposal_fail` / `agent_no_annotation` / `patch_signature_mismatch` / `naming_violation` / `forbidden_lemma` / `lake_build_error` / `goal_no_longer_open`（race guard、terminal）。terminal 從 helper 直返：`agent_infeasible` / `parent_needs_fix` / `agent_shelved` / `goal_no_longer_open`。spawn 層 helper 處理：`agent_rc_nonzero` / `agent_timeout`（postmortem）/ `spawn_fast_fail` / `quota_exhausted` / `missing_dep`。Backward **沒有 `agent_declined` channel**（agent 想退出走 `unprovable` 含反例 / `return_to_parent` 含 fix hint / `shelve` 等 Strategist 覆核 三條）、也**沒有 `agent_no_output`**（rc=0 但少檔走 `parse_proposal_fail`）。
 
 cascade 對 Backward：
 - `success` → goal `attempting`（**還沒 proved**、等 Verify housekeeping promote）
 - `exhausted` → 過 SHELVE 就 shelved + propagate；否則 status 不動讓下次 dispatch 重派
 - `moot` → no-op
-- `failed/agent_infeasible` → attempts++ 一次 + 直接 shelved + propagate
+- `failed/agent_infeasible` → attempts++ 一次 + 直接 disproved + propagate
+- `failed/parent_needs_fix` → attempts++ 一次 + 直接 dead + propagate
+- `failed/agent_shelved` → attempts++ 一次 + 轉 pending_strategist_review（不 propagate）
 - `failed/spawn_fast_fail` / `quota_exhausted` / `missing_dep` → 不 ++、設 cooldown
 - `failed/<其他>`（goal_not_found / missing_parent_stub 等 framework race）→ generic attempts++
 
