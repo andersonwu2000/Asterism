@@ -130,6 +130,25 @@ _SORRY_BODY_RE = re.compile(
 _WRAP_BODY_RE = re.compile(
     r"theorem\s+main\b.*?:=\s*s\d+\b", re.DOTALL)
 
+# Capture the `<stmt>` part of `theorem main : <stmt> := by sorry`.
+# Used by `cmd_init` to pull goals.statement out of the hand-written
+# Root.lean (the canonical source of truth — Manifest's `## Statement`
+# section is no longer consumed by the framework).
+_ROOT_STATEMENT_RE = re.compile(
+    r"theorem\s+main\s*:\s*(.+?)\s*:=\s*by\s+sorry\b",
+    re.DOTALL,
+)
+
+
+def _extract_root_statement(text: str) -> str | None:
+    """Return the type-expression string from Root.lean's
+    `theorem main : <stmt> := by sorry`, stripped of surrounding
+    whitespace. Returns None if no matching declaration is present."""
+    m = _ROOT_STATEMENT_RE.search(text)
+    if m is None:
+        return None
+    return m.group(1).strip()
+
 
 def _classify_root_body(text: str) -> str:
     """Classify Root.lean's `theorem main` body as one of:
@@ -175,39 +194,64 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"FAIL: {mfst_path} not found", file=sys.stderr)
         return 1
 
-    mfst = manifest.parse(mfst_path)
-    if not mfst.statement:
-        print(f"FAIL: Manifest.md missing ## Statement section", file=sys.stderr)
+    mfst = manifest.parse(mfst_path)  # Statement section now optional
+
+    # Require hand-written Defs.lean + Root.lean. The framework no longer
+    # auto-generates Root.lean from the Manifest — the canonical statement
+    # lives in the Lean signature so type errors / vocab bugs surface at
+    # init time instead of after dispatching dozens of sub-goals against
+    # a malformed spec (Polar 2026-05-23 lost ~50 goals to a typo'd
+    # statement before agent RequestUserAmend caught it).
+    defs_lean = pdir / "Defs.lean"
+    root_lean = pdir / "Root.lean"
+    if not defs_lean.exists():
+        print(f"FAIL: {defs_lean} not found — author it manually",
+              file=sys.stderr)
+        return 1
+    if not root_lean.exists():
+        print(
+            f"FAIL: {root_lean} not found. Author it manually with the\n"
+            f"  canonical shape:\n"
+            f"    import Mathlib\n"
+            f"    import Problems.{problem}.Defs\n"
+            f"    namespace Problems.{problem}\n"
+            f"    theorem main : <your statement> := by sorry\n"
+            f"    end Problems.{problem}",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Dual type-check gate: both files must build cleanly before the
+    # framework wires up the problem in the DB. --force bypasses the
+    # gate for transitional situations only (e.g. operator knows the
+    # error is in an unrelated downstream module).
+    if not args.force:
+        from ..pipeline._lake import lake_build
+        for path in (defs_lean, root_lean):
+            ok, msg = lake_build(workspace, path)
+            if not ok:
+                rel = path.relative_to(workspace).as_posix()
+                print(
+                    f"FAIL: {rel} did not type-check.\n{msg}",
+                    file=sys.stderr,
+                )
+                return 1
+
+    # Extract `goals.statement` from Root.lean's theorem signature.
+    statement = _extract_root_statement(
+        root_lean.read_text(encoding="utf-8"))
+    if statement is None:
+        print(
+            f"FAIL: could not parse `theorem main : <stmt> := by sorry`\n"
+            f"  from {root_lean.relative_to(workspace).as_posix()}.\n"
+            f"  Use the canonical shape so init can extract the statement\n"
+            f"  for the goals.statement DB column.",
+            file=sys.stderr,
+        )
         return 1
 
     proofs_dir = pdir / "proofs"
     proofs_dir.mkdir(parents=True, exist_ok=True)
-    root_lean = pdir / "Root.lean"
-    if not root_lean.exists():
-        root_lean.write_text(
-            _render_root_stub(problem, mfst.statement, pdir, workspace),
-            encoding="utf-8",
-        )
-    else:
-        # Guard: reject manually-written or in-progress Root.lean so a
-        # fresh init never silently wraps non-canonical state.
-        # 'sorry' (auto-shape) and 'wrap' (post-prove) are both fine;
-        # anything else is operator confusion until --force overrides.
-        body_kind = _classify_root_body(
-            root_lean.read_text(encoding="utf-8"))
-        if body_kind == "unknown" and not args.force:
-            print(
-                f"FAIL: {root_lean} has a non-sorry, non-wrap proof body.\n"
-                f"  Asterism manages Root.lean's lifecycle: it should be\n"
-                f"  `:= by sorry` initially, and gets rewritten to the\n"
-                f"  wrap form `:= sNN` automatically when root_proved.\n"
-                f"  If you wrote a hand sketch intentionally, re-run\n"
-                f"  with `--force` to bypass this check; otherwise reset\n"
-                f"  Root.lean to `:= by sorry` (or delete it and let\n"
-                f"  init recreate it).",
-                file=sys.stderr,
-            )
-            return 1
 
     conn = db.connect()
     db.init_schema(conn)
@@ -236,7 +280,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         # backwards-compat but is no longer read for dispatch decisions.
         gid = db.insert_goal(
             conn, problem=problem, slug="main",
-            lean_path=rel_root, statement=mfst.statement,
+            lean_path=rel_root, statement=statement,
             origin="root", depth=0, entry_kind="Backward",
             status="frozen",
         )
@@ -713,14 +757,12 @@ def cmd_reset(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 2
 
-    # Restore Root.lean to sorry stub (same template as cmd_init).
-    mfst = manifest.parse(mfst_path)
+    # Root.lean is user-owned — `cmd_reset` no longer rewrites it. If
+    # the file is in post-prove wrap form (`:= sNN`) the user must
+    # restore the `:= by sorry` body before re-running `init`. (Old
+    # behavior: auto-rewrite from Manifest.statement, which is no
+    # longer the canonical source.)
     root_lean = pdir / "Root.lean"
-    if mfst.statement:
-        root_lean.write_text(
-            _render_root_stub(problem, mfst.statement, pdir, workspace),
-            encoding="utf-8",
-        )
 
     # Post-reset verification: scan the directories we cleaned and
     # raise loudly if anything we expected gone is still there. This

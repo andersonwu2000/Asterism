@@ -26,12 +26,25 @@ def _setup_problem(tmp_path: Path, name: str = "wilson",
     pdir = tmp_path / "Problems" / name
     pdir.mkdir(parents=True)
     (pdir / "Manifest.md").write_text(manifest_body, encoding="utf-8")
+    # Defs.lean + Root.lean are now required by cmd_init.
+    (pdir / "Defs.lean").write_text(
+        f"import Mathlib\n\nnamespace Problems.{name}\n\nend Problems.{name}\n",
+        encoding="utf-8",
+    )
+    (pdir / "Root.lean").write_text(
+        f"import Mathlib\nimport Problems.{name}.Defs\n\n"
+        f"namespace Problems.{name}\n\n"
+        f"theorem main : True := by sorry\n\n"
+        f"end Problems.{name}\n",
+        encoding="utf-8",
+    )
     return pdir
 
 
 def _seed_via_init(tmp_path: Path, name: str = "wilson") -> int:
-    """Run cmd_init and return the root goal id."""
-    cmd_init(argparse.Namespace(problem=name, force=False))
+    """Run cmd_init and return the root goal id. Uses --force to skip
+    the dual lake build gate (tests don't have a live lake env)."""
+    cmd_init(argparse.Namespace(problem=name, force=True))
     conn = db.connect()
     row = conn.execute(
         "SELECT id FROM goals WHERE problem = ? AND slug = 'main'",
@@ -129,8 +142,8 @@ def test_reset_clears_pipelines_for_problem_only(
     _setup_problem(tmp_path, "cantor",
                    manifest_body="# cantor\n\n## Statement\n\nTrue\n")
     monkeypatch.chdir(tmp_path)
-    cmd_init(argparse.Namespace(problem="wilson", force=False))
-    cmd_init(argparse.Namespace(problem="cantor", force=False))
+    cmd_init(argparse.Namespace(problem="wilson", force=True))
+    cmd_init(argparse.Namespace(problem="cantor", force=True))
     conn = db.connect()
     wilson_gid = int(conn.execute(
         "SELECT id FROM goals WHERE problem='wilson'").fetchone()["id"])
@@ -176,7 +189,7 @@ def test_reset_clears_strategist_decisions_referencing_goals(
     goals DELETE."""
     _setup_problem(tmp_path, "sg")
     monkeypatch.chdir(tmp_path)
-    cmd_init(argparse.Namespace(problem="sg", force=False))
+    cmd_init(argparse.Namespace(problem="sg", force=True))
     conn = db.connect()
     gid = int(conn.execute(
         "SELECT id FROM goals WHERE problem='sg'"
@@ -218,7 +231,7 @@ def test_reset_clears_forward_pipeline_with_dead_attempt(
     DELETE."""
     _setup_problem(tmp_path, "sg")
     monkeypatch.chdir(tmp_path)
-    cmd_init(argparse.Namespace(problem="sg", force=False))
+    cmd_init(argparse.Namespace(problem="sg", force=True))
     conn = db.connect()
     # Seed a Forward pipeline + its dead_attempt (mirroring what
     # run_forward emits when self_verify fails).
@@ -257,8 +270,8 @@ def test_reset_isolates_other_problems(
     _setup_problem(tmp_path, "cantor",
                    manifest_body="# cantor\n\n## Statement\n\nTrue\n")
     monkeypatch.chdir(tmp_path)
-    cmd_init(argparse.Namespace(problem="wilson", force=False))
-    cmd_init(argparse.Namespace(problem="cantor", force=False))
+    cmd_init(argparse.Namespace(problem="wilson", force=True))
+    cmd_init(argparse.Namespace(problem="cantor", force=True))
     conn = db.connect()
     cantor_gid = conn.execute(
         "SELECT id FROM goals WHERE problem='cantor'").fetchone()["id"]
@@ -278,12 +291,15 @@ def test_reset_isolates_other_problems(
     ).fetchone()[0] == 1
 
 
-def test_reset_removes_proof_files_and_resets_root(
+def test_reset_removes_proof_files_leaves_root_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """reset wipes generated proof files but no longer touches Root.lean
+    (Root is user-owned now — operator must restore sorry body manually
+    if Root was rewritten to wrap form by a previous proved run)."""
     pdir = _setup_problem(tmp_path)
     monkeypatch.chdir(tmp_path)
-    cmd_init(argparse.Namespace(problem="wilson", force=False))
+    cmd_init(argparse.Namespace(problem="wilson", force=True))
 
     proofs = pdir / "proofs"
     (proofs / "L_main_sub_1.lean").write_text("foo", encoding="utf-8")
@@ -291,9 +307,10 @@ def test_reset_removes_proof_files_and_resets_root(
     (proofs / "_strategy_s5.lean").write_text("foo", encoding="utf-8")
     # File NOT matching the deletion patterns must survive (defensive).
     (proofs / "Helpers.lean").write_text("foo", encoding="utf-8")
-    # Mutate Root.lean to a non-sorry shape; reset should restore stub.
-    (pdir / "Root.lean").write_text(
-        "theorem main : True := by trivial\n", encoding="utf-8")
+    # Operator has hand-mutated Root.lean to a custom shape; reset must
+    # leave it as the operator authored.
+    custom_root = "theorem main : True := by trivial\n"
+    (pdir / "Root.lean").write_text(custom_root, encoding="utf-8")
 
     cmd_reset(argparse.Namespace(problem="wilson"))
 
@@ -301,7 +318,8 @@ def test_reset_removes_proof_files_and_resets_root(
     assert not (proofs / "L_s5_sub_2.lean").exists()
     assert not (proofs / "_strategy_s5.lean").exists()
     assert (proofs / "Helpers.lean").exists()  # untouched
-    assert ":= by sorry" in (pdir / "Root.lean").read_text(encoding="utf-8")
+    # Root.lean preserved verbatim — framework does not own Root.lean
+    assert (pdir / "Root.lean").read_text(encoding="utf-8") == custom_root
 
 
 def test_reset_sweeps_verify_backup_and_tmp_variants(
@@ -316,7 +334,7 @@ def test_reset_sweeps_verify_backup_and_tmp_variants(
     back into a goal-less `L_three_reals_pigeonhole_sign.lean`."""
     pdir = _setup_problem(tmp_path)
     monkeypatch.chdir(tmp_path)
-    cmd_init(argparse.Namespace(problem="wilson", force=False))
+    cmd_init(argparse.Namespace(problem="wilson", force=True))
 
     proofs = pdir / "proofs"
     # All the variants left behind by killed Builder/Verify pipelines.
@@ -344,7 +362,7 @@ def test_reset_idempotent_on_clean_problem(
     reset should still be valid)."""
     _setup_problem(tmp_path)
     monkeypatch.chdir(tmp_path)
-    cmd_init(argparse.Namespace(problem="wilson", force=False))
+    cmd_init(argparse.Namespace(problem="wilson", force=True))
     rc1 = cmd_reset(argparse.Namespace(problem="wilson"))
     rc2 = cmd_reset(argparse.Namespace(problem="wilson"))
     assert rc1 == 0 and rc2 == 0
@@ -362,7 +380,7 @@ def test_reset_sweeps_workspace_gateway_artifacts(
     runs and the next gateway startup collides with stale slot files."""
     _setup_problem(tmp_path)
     monkeypatch.chdir(tmp_path)
-    cmd_init(argparse.Namespace(problem="wilson", force=False))
+    cmd_init(argparse.Namespace(problem="wilson", force=True))
     # Drop fake gateway leftovers in the new location...
     slots_dir = tmp_path / ".asterism" / "runtime_slots"
     slots_dir.mkdir(parents=True, exist_ok=True)
@@ -405,7 +423,7 @@ def test_reset_raises_on_persistent_unlink_failure(
     state."""
     pdir = _setup_problem(tmp_path)
     monkeypatch.chdir(tmp_path)
-    cmd_init(argparse.Namespace(problem="wilson", force=False))
+    cmd_init(argparse.Namespace(problem="wilson", force=True))
     proofs = pdir / "proofs"
     (proofs / "L_stuck.lean").write_text("foo", encoding="utf-8")
 
@@ -503,8 +521,8 @@ def test_status_recent_pipelines_filtered_to_problem(
     _setup_problem(tmp_path, "cantor",
                    manifest_body="# cantor\n\n## Statement\n\nTrue\n")
     monkeypatch.chdir(tmp_path)
-    cmd_init(argparse.Namespace(problem="wilson", force=False))
-    cmd_init(argparse.Namespace(problem="cantor", force=False))
+    cmd_init(argparse.Namespace(problem="wilson", force=True))
+    cmd_init(argparse.Namespace(problem="cantor", force=True))
     conn = db.connect()
     wilson_gid = conn.execute(
         "SELECT id FROM goals WHERE problem='wilson'").fetchone()["id"]

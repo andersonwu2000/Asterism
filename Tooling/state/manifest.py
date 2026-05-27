@@ -241,9 +241,12 @@ def parse(path: Path) -> Manifest:
     body = text[body_start.end():] if body_start else text
     sections = _parse_sections(body)
 
+    # Statement section is optional (was required pre-Phase-?). The
+    # canonical statement now lives in the hand-written Root.lean theorem
+    # signature; cli init extracts it from there. A Manifest may still
+    # include `## Statement` as human-readable description, but the
+    # framework does not consume it for dispatch.
     statement = sections.get('Statement', '').strip()
-    if not statement:
-        _warn(f"{path} missing ## Statement section")
 
     # Phase 2: `## Entry kind` section removed. Strategist handles
     # routing; cli init hardwires root.entry_kind='Backward'. Existing

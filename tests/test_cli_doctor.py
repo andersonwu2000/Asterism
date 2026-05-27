@@ -79,6 +79,17 @@ def _setup_problem(tmp_path: Path, name: str = "wilson") -> Path:
     pdir = tmp_path / "Problems" / name
     pdir.mkdir(parents=True)
     (pdir / "Manifest.md").write_text(_MIN_MANIFEST, encoding="utf-8")
+    (pdir / "Defs.lean").write_text(
+        f"import Mathlib\n\nnamespace Problems.{name}\n\nend Problems.{name}\n",
+        encoding="utf-8",
+    )
+    (pdir / "Root.lean").write_text(
+        f"import Mathlib\nimport Problems.{name}.Defs\n\n"
+        f"namespace Problems.{name}\n\n"
+        f"theorem main : True := by sorry\n\n"
+        f"end Problems.{name}\n",
+        encoding="utf-8",
+    )
     return pdir
 
 
@@ -95,7 +106,7 @@ def test_doctor_all_green(
     _setup_tools(monkeypatch)
     _setup_problem(tmp_path)
     monkeypatch.chdir(tmp_path)
-    cmd_init(argparse.Namespace(problem="wilson", force=False))
+    cmd_init(argparse.Namespace(problem="wilson", force=True))
     capsys.readouterr()  # discard init's stdout
 
     rc = cmd_doctor(argparse.Namespace())
@@ -168,7 +179,7 @@ def test_doctor_initialized_problem_with_missing_manifest_fails(
     _setup_tools(monkeypatch)
     _setup_problem(tmp_path)
     monkeypatch.chdir(tmp_path)
-    cmd_init(argparse.Namespace(problem="wilson", force=False))
+    cmd_init(argparse.Namespace(problem="wilson", force=True))
     # Delete Manifest.md after init
     (tmp_path / "Problems" / "wilson" / "Manifest.md").unlink()
     capsys.readouterr()

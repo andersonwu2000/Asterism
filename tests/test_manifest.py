@@ -69,7 +69,10 @@ Builder
     assert not hasattr(m, "entry_kind")
 
 
-def test_missing_statement_warn(tmp_path: Path, capsys) -> None:
+def test_missing_statement_is_silent(tmp_path: Path, capsys) -> None:
+    """`## Statement` section is now optional (canonical statement lives
+    in Root.lean's theorem signature). Missing section → empty field,
+    no warning."""
     p = write(tmp_path / "p", "Manifest.md", """---
 problem: p
 ---
@@ -77,7 +80,7 @@ problem: p
     m = manifest.parse(p)
     assert m.statement == ""
     err = capsys.readouterr().err
-    assert "missing ## Statement" in err
+    assert "missing ## Statement" not in err
 
 
 def test_problem_falls_back_to_dirname(tmp_path: Path) -> None:
