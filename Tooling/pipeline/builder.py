@@ -460,6 +460,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             postmortem_fn=builder_postmortem,
             workspace=workspace,
             reflection_fn=builder_reflection,
+            decision_id=decision_id,
         )
     finally:
         # Crash mid-commit (or any path where promote_done was set but

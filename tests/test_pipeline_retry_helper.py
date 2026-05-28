@@ -159,6 +159,79 @@ def test_budget_zero_at_entry_returns_moot(conn: sqlite3.Connection,
     assert parse_count[0] == 0
 
 
+def test_inject_dispatch_gets_fresh_budget(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Strategist Inject (decision_id set) bypasses the pre-loop budget
+    gate. Without this, Inject(Builder) on a goal at/above
+    BUILDER_THRESHOLD silently no-ops — Strategist's explicit re-dispatch
+    is ignored (LU lu_step_assembly 2026-05-28)."""
+    gid = _seed_goal(conn, attempts=3)
+    seen, spawn_fn = _spawn_returning([0])
+    _, parse_fn = _parse_returning([PipelineResult(outcome="proved")])
+    _, pm_fn = _make_postmortem_recorder()
+
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-inject",
+        budget_threshold=3, shelve_threshold=8,
+        attempts_dir=tmp_path,
+        spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
+        decision_id=42,
+    )
+    # Without the fresh-budget path, this would moot (budget=3-3=0).
+    assert r.outcome == "proved"
+    assert len(seen) == 1
+
+
+def test_inject_dispatch_bypasses_attempts_shelve_cap(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Strategist Inject also bypasses the per-iteration attempts >=
+    shelve_threshold cap in goal_still_active. attempts becomes a
+    forensic counter; Strategist's ConfirmShelve discipline is the only
+    convergence signal."""
+    gid = _seed_goal(conn, attempts=10)  # way above shelve_threshold
+    seen, spawn_fn = _spawn_returning([0])
+    _, parse_fn = _parse_returning([PipelineResult(outcome="proved")])
+    _, pm_fn = _make_postmortem_recorder()
+
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-inject-shelve",
+        budget_threshold=3, shelve_threshold=5,  # 10 >> 5
+        attempts_dir=tmp_path,
+        spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
+        decision_id=43,
+    )
+    # Without bypass, goal_still_active(attempts=10, shelve_threshold=5)
+    # would return False → moot. With bypass, Inject runs.
+    assert r.outcome == "proved"
+
+
+def test_inject_dispatch_still_moots_on_terminal_status(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Inject bypasses attempts cap but NOT the status check. If a
+    parallel cascade flipped the goal to a terminal status mid-Inject,
+    the loop still moots — prevents Inject from infinite-looping on a
+    goal that's already proved/disproved/dead elsewhere."""
+    gid = _seed_goal(conn, attempts=2, status="shelved")
+    seen, spawn_fn = _spawn_returning([])
+    _, parse_fn = _parse_returning([])
+    _, pm_fn = _make_postmortem_recorder()
+
+    r = run_with_session_retries(
+        conn=conn, goal_id=gid, pipeline_id="pid-inject-terminal",
+        budget_threshold=3, shelve_threshold=8,
+        attempts_dir=tmp_path,
+        spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
+        decision_id=44,
+    )
+    # status='shelved' → goal_still_active returns False even with
+    # decision_id (status check is unconditional).
+    assert r.outcome == "moot"
+    assert seen == []
+
+
 def test_first_iter_proved_returns_proved_with_empty_pending(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:

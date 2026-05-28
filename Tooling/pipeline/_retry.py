@@ -91,7 +91,8 @@ _TERMINAL_DECLINE_REASONS = frozenset({
 
 
 def goal_still_active(conn: sqlite3.Connection, goal_id: int,
-                      shelve_threshold: int) -> bool:
+                      shelve_threshold: int,
+                      *, decision_id: int | None = None) -> bool:
     """Cascade re-check before each retry-loop spawn. Returns False
     when a parallel cascade has already terminated the goal:
       * goal row missing (race / DB drift)
@@ -105,6 +106,15 @@ def goal_still_active(conn: sqlite3.Connection, goal_id: int,
     those two coincide for Backward but differ for Builder, so the
     helper takes them as separate parameters.
 
+    When `decision_id` is set, the pipeline was dispatched by a
+    Strategist Inject decision. Strategist authored the routing with
+    full knowledge of the attempts history (visible in its context's
+    failure_replay), so the attempts cap is skipped — only the status
+    check still applies (a parallel cascade that flipped the goal to
+    proved/disproved/dead still moots, so Inject can't infinite-loop
+    on a terminated goal). See `docs/data-flow.md` §3 for the design
+    rationale.
+
     The loop returns `outcome="moot"` on False — no state mutation,
     no attempts++, no dead_attempt write.
     """
@@ -113,7 +123,7 @@ def goal_still_active(conn: sqlite3.Connection, goal_id: int,
         return False
     if g["status"] not in ("open", "attempting"):
         return False
-    if int(g["attempts"]) >= shelve_threshold:
+    if decision_id is None and int(g["attempts"]) >= shelve_threshold:
         return False
     return True
 
@@ -583,6 +593,7 @@ def run_with_session_retries(
     postmortem_fn: PostmortemFn,
     workspace: Path | None = None,
     reflection_fn: ReflectionFn | None = None,
+    decision_id: int | None = None,
 ) -> PipelineResult:
     """Run a kind-agnostic in-pipeline retry loop.
 
@@ -636,7 +647,18 @@ def run_with_session_retries(
         if goal is None:
             return PipelineResult(outcome="failed",
                                   failure_reason="goal_not_found")
-        budget = budget_threshold - int(goal["attempts"])
+        if decision_id is not None:
+            # Strategist Inject authored this dispatch with full knowledge
+            # of the goal's attempts history (failure_replay section in
+            # the Strategist context). Honour that with a fresh budget
+            # instead of subtracting prior attempts — otherwise Inject
+            # on a goal at/above budget_threshold moots immediately and
+            # silently no-ops the Strategist decision (LU lu_step_assembly
+            # 2026-05-28). The absolute upper bound is now Strategist's
+            # own ConfirmShelve discipline, not a framework attempts cap.
+            budget = budget_threshold
+        else:
+            budget = budget_threshold - int(goal["attempts"])
         if budget <= 0:
             # Defensive — bfs_refill should already filter goals at/over
             # threshold. Reach here only on dispatch races.
@@ -740,7 +762,7 @@ def run_with_session_retries(
         # (Forward) skip — the Strategist Inject already authorised
         # this dispatch and there's no goal cascade to race against.
         if goal_id is not None and not goal_still_active(
-            conn, goal_id, shelve_threshold,
+            conn, goal_id, shelve_threshold, decision_id=decision_id,
         ):
             g_now = db.get_goal(conn, goal_id)
             if g_now is None:
@@ -749,7 +771,8 @@ def run_with_session_retries(
             else:
                 print(f"[retry-moot] g{goal_id} iter={attempt}: "
                       f"status={g_now['status']} attempts={g_now['attempts']} "
-                      f"shelve_threshold={shelve_threshold}", flush=True)
+                      f"shelve_threshold={shelve_threshold} "
+                      f"decision_id={decision_id}", flush=True)
             return attach(PipelineResult(outcome="moot"))
 
         cold = (attempt == 0)

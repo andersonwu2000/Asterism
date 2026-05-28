@@ -56,6 +56,15 @@ Phase 7 — pipeline = 一個 claude session 的 lifecycle。retry 收進 pipeli
 `--resume <sid>`。helper 的 budget = `(BUILDER|SHELVE)_THRESHOLD - goal.attempts`
 動態算出。
 
+**Strategist Inject 例外**：若 `decision_id` 非 None（pipeline 由 Strategist
+Inject 認可而非 bfs_refill organic dispatch），helper 跳過 budget 扣 attempts、
+fresh budget = `(BUILDER|SHELVE)_THRESHOLD`；同時 `goal_still_active` 跳過
+`attempts ≥ shelve_threshold` 檢查。Strategist 已在 failure_replay 看完 attempts
+歷史、認可後仍下指令、framework 不二猜。唯一守住的硬上限是 goal status
+（已 proved / disproved / dead / pending_strategist_review 仍 moot、防 Inject
+撞 parallel cascade terminal）。收斂責任落在 Strategist 自身的 ConfirmShelve
+紀律（見 `Tooling/prompts/strategist/pending_review.md`）。
+
 ```
 框架側準備（pipeline 入場一次）：
   - 預寫框架要鎖的檔（Backward 預寫 patch.lean skeleton；Builder 不需要）
