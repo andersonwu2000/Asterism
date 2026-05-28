@@ -117,19 +117,20 @@ def _section_stall_warning(conn: sqlite3.Connection,
         "Typical causes:",
         "",
         "- A parent strategy has a `shelved` sub-goal — the strategy"
-        " stays `proposed` waiting for the sub-goal to be Reopen'd"
-        " but no automatic Reopen trigger fires.",
+        " stays `proposed` waiting for the sub-goal to be re-dispatched"
+        " but no automatic trigger fires.",
         "- A `pending_strategist_review` goal blocks dispatch through"
         " its ancestor chain.",
         "- All live strategies have a missing prerequisite that no"
         " current Forward batch is addressing.",
         "",
         "**`Noop` is not appropriate while this section is present.**"
-        " Choose one of: `Reopen` (revive a `shelved` /"
-        " `pending_strategist_review` goal), `Inject(Forward)` (build"
-        " the missing prerequisite), `ConfirmShelve` (truly cannot"
-        " proceed — followed by an Inject that pivots), or"
-        " `RequestUserAmend` (Manifest scope decision needed).",
+        " Choose one of: `Inject(Backward|Builder, target_goal_id=...)`"
+        " (revive a `shelved` / `pending_strategist_review` goal with"
+        " an explicit pipeline + brief), `Inject(Forward)` (build the"
+        " missing prerequisite), `ConfirmShelve` (truly cannot proceed"
+        " — followed by an Inject that pivots), or `RequestUserAmend`"
+        " (Manifest scope decision needed).",
         "",
     ]
 
@@ -438,9 +439,10 @@ def _section_pending_reopens(conn: sqlite3.Connection,
         "Shelved goal(s) whose ConfirmShelve batch promised a follow-up "
         "Inject set — and that follow-up set has now fully landed. "
         "Strategist's own batch-time promise is the trigger; this is "
-        "the moment to evaluate `Reopen(target_goal_id=<id>)` vs a "
-        "further `Inject` vs a second `ConfirmShelve` with a refined "
-        "promise. Fortuitous unblock by unrelated Forwards is handled "
+        "the moment to evaluate `Inject(Backward|Builder, target_goal_id"
+        "=<id>, brief=...)` vs a further `Inject` vs a second "
+        "`ConfirmShelve` with a refined promise. Fortuitous unblock by "
+        "unrelated Forwards is handled "
         "automatically by the G1 dedupe revival pass — no need to "
         "re-surface unrelated shelved goals here.",
         "",
