@@ -539,10 +539,12 @@ def _robust_rmtree(path: Path, retries: int = 5,
 
 
 def cmd_reset(args: argparse.Namespace) -> int:
-    """Wipe one Problem's DB rows + on-disk proof files + Root.lean back
-    to sorry-stub form. Manifest.md / Defs.lean / lean files outside
-    `Problems/<p>/proofs/` untouched. Idempotent — running on a clean
-    Problem yields the same `OK` output without errors.
+    """Wipe one Problem's DB rows + on-disk `proofs/` files. User-owned
+    files (`Manifest.md`, `Defs.lean`, `Root.lean`) and anything outside
+    `Problems/<p>/proofs/` are untouched — task #66 made Root.lean user-
+    owned, so an operator who wants to re-init after reset must restore
+    `theorem main : <stmt> := by sorry` manually. Idempotent — running
+    on a clean Problem yields the same `OK` output without errors.
 
     Does NOT touch `.attempts/` (per-pipeline ephemeral state, possibly
     in-flight when other Problems are running). If the problem's daemon
@@ -797,7 +799,8 @@ def cmd_reset(args: argparse.Namespace) -> int:
 
     print(f"OK: reset {problem}")
     print(f"  DB rows: {len(gids)} goals, {len(sids)} strategies cleared")
-    print(f"  Files: {len(deleted_files)} file(s) removed; Root.lean reset")
+    print(f"  Files: {len(deleted_files)} file(s) removed from proofs/; "
+          f"Root.lean preserved (rewrite to sorry-stub manually before re-init)")
     attempts_dir = workspace / ".attempts"
     if attempts_dir.exists():
         att_n = sum(1 for _ in attempts_dir.iterdir())
