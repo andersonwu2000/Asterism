@@ -343,20 +343,34 @@ def _batch_provable_via_apply(
         except OSError:
             pass
 
-    # Fast path: if Lean is happy with the entire file, every pair passed.
-    if rc == 0:
-        return [True] * len(pairs)
-
-    # rc != 0 means at least one error. Walk error lines and partition
-    # them by which pair's range they fall into. Errors outside any
-    # pair range are GLOBAL (e.g. import not found, namespace mis-parse,
-    # earlier example bailing the elaborator). A global error invalidates
-    # the run — Lean may have stopped before reaching later pairs, so
-    # absence-of-error in their line range does NOT mean isDefEq passed.
-    # Conservative: treat all pairs as False on global error.
+    # Walk error lines and partition them by which pair's range they
+    # fall into. Errors outside any pair range are GLOBAL (e.g. import
+    # not found, namespace mis-parse, earlier example bailing the
+    # elaborator). A global error invalidates the run — Lean may have
+    # stopped before reaching later pairs, so absence-of-error in their
+    # line range does NOT mean unify passed. Conservative: treat all
+    # pairs as False on global error.
+    #
+    # NB (2026-05-29 BT bug): we do NOT fast-path on rc=0. `lake env
+    # lean` emits per-line `error(<kind>): ...` for tactic / elaboration
+    # failures but propagates rc=0 anyway, so the old fast-path silently
+    # accepted every pair when Lean had actually rejected the apply
+    # body. The error-line scan below is now the sole truth-source for
+    # the probe's per-pair verdict, regardless of process exit code.
     error_lines: set[int] = set()
     for m in _LAKE_ERR_RE.finditer(output):
         error_lines.add(int(m.group(1)))
+
+    if not error_lines:
+        # No error lines parsed from the output. Two sub-cases:
+        #   - rc == 0 AND no errors → genuinely clean elaboration, every
+        #     pair passed.
+        #   - rc != 0 AND no errors → failure pattern is unfamiliar
+        #     (Lean crashed pre-elaboration, lake env setup error, etc.);
+        #     refuse all rather than silently accept.
+        if rc == 0:
+            return [True] * len(pairs)
+        return [False] * len(pairs)
 
     in_any_pair = set()
     for el in error_lines:
@@ -368,14 +382,8 @@ def _batch_provable_via_apply(
                 break
 
     if error_lines - in_any_pair:
-        # Global error present: rc said failure but the failure is not
-        # attributable to a single pair. Refuse all.
-        return [False] * len(pairs)
-
-    if not error_lines:
-        # rc != 0 but regex matched no line-prefixed errors. Conservative:
-        # the failure pattern is unfamiliar; refuse all rather than
-        # silently accept.
+        # Global error present: failure is not attributable to a single
+        # pair. Refuse all.
         return [False] * len(pairs)
 
     # Per-pair attribution: pair fails iff at least one error line falls
