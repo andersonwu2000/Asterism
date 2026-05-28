@@ -76,11 +76,11 @@ builder:
 
 backward:
   provider: claude
-  model: claude-opus-4-7
+  model: claude-opus-4-8
 
 strategist:
   provider: claude
-  model: claude-opus-4-7       # meta-level reasoning (InitializeDefs /
+  model: claude-opus-4-8       # meta-level reasoning (InitializeDefs /
                                # RequestUserAmend / Inject Forward) —
                                # same tier as Backward.
   interval_min: 120.0          # T1 routine cadence (default 60min)
@@ -93,6 +93,6 @@ strategist:
 
 forward:
   provider: claude
-  model: claude-opus-4-7       # writes one Mathlib-style lemma per
+  model: claude-opus-4-8       # writes one Mathlib-style lemma per
                                # spawn; needs strong typing + library
                                # knowledge.
