@@ -22,8 +22,7 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
 
 ## Decision kinds
 - `Inject` — `pipeline ∈ {"Forward","Backward","Builder"}`, `brief`; Backward/Builder require `target_goal_id`
-- `ConfirmShelve` — `target_goal_id`, `reason`. Pairs with `Inject` or `Reopen`
-- `Reopen` — `target_goal_id`, `reason`; optional `directive`. Rejected if ancestor `disproved` / `dead`
+- `ConfirmShelve` — `target_goal_id`, `reason`. Pairs with `Inject`
 - `EmitDirective` — `scope="problem:<name>"`, `body`, `reason`. Rolling curated doc; diff-update
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Manifest.md"}`, `proposed_body`, `question`, `reason`. Only when a user file is wrong
 - `Noop` — `reason`. Only when no valuable option exists.

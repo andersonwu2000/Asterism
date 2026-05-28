@@ -7,17 +7,19 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
 1. **Read Context.md** (target in `## Trigger`, agent reasoning in `### Recent failed attempts`, `### Existing strategies on this goal`, `### Ancestor chain`).
 
 2. **Translate the agent's verdict.** The agent's claim ("missing tool" / "wrong decomposition" / "false invariant") is a hypothesis to evaluate. Analyze: what was it trying? Why did it fail?
+Also check `## Failure replay` for past attempts.
 
-3. **Locate the failure in the proof.** Answer each:
-   - Tactical — goal is sound; agent missed mathlib API or picked a bad sub-path?
-   - Structural — the decomposition above this goal is wrong; ancestor needs reframing?
-   - Ontological — the goal-as-stated is provably false / wrong abstraction; should not exist in this form?
+3. **Locate the failure in the proof.** For each:
+   - Tactical — goal is sound; agent missed mathlib API or picked a bad sub-path
+   - Structural — the decomposition above this goal is wrong; ancestor needs reframing
+   - Ontological — the goal-as-stated is provably false / wrong abstraction; should not exist in this form
+   - Missing prereq — needed vocabulary / theorem / abstraction is absent; needs Forward to build
 
 4. **Decide.** Multiple decisions in one batch are fine. Output as `decision.json` — JSON array of one or more decisions.
-   - Tactical → `Reopen` with `directive` pointing at the missed API or correct sub-path
+   - Tactical → `Inject(<pipeline>, brief=...)` back to the original goal pointing at the missed API or correct sub-path
    - Structural → `ConfirmShelve` this goal + `Inject` on ancestor with reframed angle
-   - Missing prereq → `Inject(Forward)` to build the brick + `ConfirmShelve` to park
    - Ontological → `ConfirmShelve` + escalate upward (or `RequestUserAmend` if user file is wrong)
+   - Missing prereq → `Inject(Forward)` to build the brick + `ConfirmShelve` to park
 
 Before committing, `Grep` mathlib briefly for any concept the agent claims is missing.
 
@@ -25,8 +27,8 @@ Before committing, `Grep` mathlib briefly for any concept the agent claims is mi
 
 ## Decision kinds
 - `Inject` — `pipeline ∈ {"Forward","Backward","Builder"}`, `brief`; Backward/Builder require `target_goal_id`
-- `ConfirmShelve` — `target_goal_id`, `reason`. Must pair with `Inject` or `Reopen` in same batch
-- `Reopen` — `target_goal_id`, `reason`; optional `directive`. Rejected if ancestor `disproved` / `dead`
+- `ConfirmShelve` — `target_goal_id`, `reason`. Must pair with `Inject` in same batch
+- `EmitDirective` — `scope="problem:<name>"`, `body`, `reason`. Use when the hint should reach all workers on the problem
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Manifest.md"}`, `proposed_body`, `question`, `reason`. Only when a user file is wrong.
 
 `target_goal_id` accepts integer id or slug.
@@ -40,9 +42,8 @@ Before committing, `Grep` mathlib briefly for any concept the agent claims is mi
 
 ```json
 // tactical — agent missed existing mathlib API
-[{"kind": "Reopen", "target_goal_id": "sub_lemma_X",
-  "reason": "Agent shelved citing 'mathlib lacks X', but Grep confirmed Module.End.X exists.",
-  "directive": "Use `Module.End.X` explicitly; don't reconstruct."}]
+[{"kind": "Inject", "pipeline": "Builder", "target_goal_id": "sub_lemma_X",
+  "brief": "Agent shelved citing 'mathlib lacks X', but Grep confirmed `Module.End.X` exists. Cite it directly — don't reconstruct."}]
 ```
 
 ```json

@@ -7,16 +7,15 @@ Time budget: {timeout_min} minutes. Tools: Read / Write / Edit / Grep / Bash(`py
 2. **Curate into `EmitDirective(body=...)`** — bullet form, named entries, brief signature notes. Surfaces to every worker.
 3. **Plus one dispatch action**:
    - Statement-vocab missing in Defs.lean → `RequestUserAmend(file="Defs.lean", proposed_body=...)`.
-   - Need prereq lemmas → `Inject(Forward, brief=...)`. Root stays `frozen` until `inject_batch_done` re-fires you; **don't `Reopen(root)` in the same call**.
-   - Ready → `Reopen(target_goal_id=<root_id>)`.
+   - Need prereq lemmas → `Inject(Forward, brief=...)`. Root stays `frozen` until `inject_batch_done` re-fires you; **don't `Inject(Backward, target=root)` in the same call** — wait for the Forward bricks to land.
+   - Ready → `Inject(Backward, target_goal_id=<root_id>, brief=...)`.
 
 Solo `EmitDirective` is invalid — it closes the first-launch window without advancing root (~60 min idle until next routine).
 
 **Difficulty alone is not a reason to give up.** "Hard problem" / "Mathlib lacks X" / "would need many sub-lemmas" describe work, not stop signs.
 
 ## Decision kinds you may emit
-- `Inject` — `pipeline ∈ {"Forward"}`, `brief` (markdown string, ~100–400 words)
-- `Reopen` — `target_goal_id` (root), `reason`; optional `directive`
+- `Inject` — `pipeline ∈ {"Forward","Backward","Builder"}`, `brief` (markdown string, ~100–400 words); Backward/Builder require `target_goal_id`
 - `EmitDirective` — `scope="problem:<name>"`, `body`, `reason`
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Manifest.md"}`, `proposed_body`, `question`, `reason`
 
@@ -38,11 +37,11 @@ Survey + Inject prereqs:
   "brief": "## Need\nBridge lemma X.\n\n## Context\n..."}]
 ```
 
-Survey + Reopen root (ready to dispatch directly):
+Survey + Inject root (ready to dispatch directly):
 ```json
 [{"kind": "EmitDirective", "scope": "problem:Topology.brouwer_fixed_point",
   "body": "Mathlib provides:\n- ...",
   "reason": "first-launch survey"},
- {"kind": "Reopen", "target_goal_id": "main",
-  "reason": "Standard mathlib vocab; Manifest gives full skeleton."}]
+ {"kind": "Inject", "pipeline": "Backward", "target_goal_id": "main",
+  "brief": "Standard mathlib vocab; Manifest gives the full skeleton. Bootstrap from `theorem main := by sorry` per Manifest."}]
 ```

@@ -913,13 +913,16 @@ def test_strategist_prompts_share_decision_kind_vocabulary() -> None:
     framework verify path (or vice versa). Per-trigger allowed sets
     track what `run_strategist` actually validates downstream.
     """
+    # Reopen removed from Strategist prompts 2026-05-28: Inject(Backward|Builder)
+    # now handles all "reactivate + dispatch" cases (LU lu_step_assembly bug class).
+    # The Reopen decision kind still exists in the framework schema for backward
+    # compat with old DB rows + tests; just no longer emitted by the prompts.
     expected_kinds = {
-        "first_launch": {"Inject", "Reopen", "EmitDirective",
-                         "RequestUserAmend"},
-        "routine": {"Inject", "ConfirmShelve", "Reopen", "EmitDirective",
+        "first_launch": {"Inject", "EmitDirective", "RequestUserAmend"},
+        "routine": {"Inject", "ConfirmShelve", "EmitDirective",
                     "RequestUserAmend", "Noop"},
-        "pending_review": {"Inject", "ConfirmShelve", "Reopen"},
-        "inject_batch_done": {"Reopen", "Inject", "ConfirmShelve", "Noop"},
+        "pending_review": {"Inject", "ConfirmShelve"},
+        "inject_batch_done": {"Inject", "ConfirmShelve", "Noop"},
     }
     prompt_dir = PROMPT_DIR / "strategist"
     for tk, kinds in expected_kinds.items():
