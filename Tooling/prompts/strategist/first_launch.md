@@ -15,7 +15,10 @@ Solo `EmitDirective` is invalid — it closes the first-launch window without ad
 **Difficulty alone is not a reason to give up.** "Hard problem" / "Mathlib lacks X" / "would need many sub-lemmas" describe work, not stop signs.
 
 ## Decision kinds you may emit
-- `Inject` — `pipeline ∈ {"Forward","Backward","Builder"}`, `brief` (markdown string, ~100–400 words); Backward/Builder require `target_goal_id`
+- `Inject` — `target_goal_id`, `brief` (markdown string, ~100-400 words). `pipeline`:
+  - `Forward`: produces one new def/theorem into `proofs/L_<slug>.lean`; no `target_goal_id`. Do not add defs via `Defs.lean`.
+  - `Backward`: decompose into strategy + N sub-goals, each in its own `.lean`.
+  - `Builder`: single file inline, one tactic block.
 - `EmitDirective` — `scope="problem:<name>"`, `body`, `reason`
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Manifest.md"}`, `proposed_body`, `question`, `reason`
 

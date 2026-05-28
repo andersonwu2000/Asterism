@@ -26,7 +26,10 @@ Before committing, `Grep` mathlib briefly for any concept the agent claims is mi
 **Difficulty alone is not a reason to give up.** "Hard problem" / "Mathlib lacks X" describe work, not stop signs.
 
 ## Decision kinds
-- `Inject` — `pipeline ∈ {"Forward","Backward","Builder"}`, `brief`; Backward/Builder require `target_goal_id`
+- `Inject` — `target_goal_id`, `brief`. `pipeline`:
+  - `Forward`: produces one new def/theorem into `proofs/L_<slug>.lean`; no `target_goal_id`. Do not add defs via `Defs.lean`.
+  - `Backward`: decompose into strategy + N sub-goals, each in its own `.lean`.
+  - `Builder`: single file inline, one tactic block.
 - `ConfirmShelve` — `target_goal_id`, `reason`. Must pair with `Inject` in same batch
 - `EmitDirective` — `scope="problem:<name>"`, `body`, `reason`. Use when the hint should reach all workers on the problem
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Manifest.md"}`, `proposed_body`, `question`, `reason`. Only when a user file is wrong.

@@ -21,7 +21,10 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
 **Difficulty alone is not a reason to give up.** "Hard problem" / "Mathlib lacks X" describe work, not stop signs.
 
 ## Decision kinds
-- `Inject` — `pipeline ∈ {"Forward","Backward","Builder"}`, `brief`; Backward/Builder require `target_goal_id`
+- `Inject` — `target_goal_id`, `brief`. `pipeline`:
+  - `Forward`: produces one new def/theorem into `proofs/L_<slug>.lean`; no `target_goal_id`. Do not add defs via `Defs.lean`.
+  - `Backward`: decompose into strategy + N sub-goals, each in its own `.lean`.
+  - `Builder`: single file inline, one tactic block.
 - `ConfirmShelve` — `target_goal_id`, `reason`. Pairs with `Inject`
 - `EmitDirective` — `scope="problem:<name>"`, `body`, `reason`. Rolling curated doc; diff-update
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Manifest.md"}`, `proposed_body`, `question`, `reason`. Only when a user file is wrong
@@ -44,8 +47,8 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
 ```
 
 ```json
-[{"kind": "ConfirmShelve", "target_goal_id": "wagon_class1_col1_three_invariant",
-  "reason": "Six descendants tried per-entry / mod-3 invariants; all dead or disproved. The pattern is structural — the entry-level abstraction is wrong, not that any individual branch needed more work. The canonical Wagon argument tracks M_ω · e_3 as a single integer triple with 3 ∤ gcd, never per-entry."},
- {"kind": "Inject", "pipeline": "Backward", "target_goal_id": "wagon_head_class1_col1_joint_signed_invariant",
-  "brief": "Reframe: stop tracking matrix entries. State ∃ a b c : ℤ, 3 ∤ gcd(a,b,c) ∧ M_ω · e_3 = (a,b,c)/3^|ω|. Induct on word length; nil gives (0,0,1); cons multiplies by the head rotation and re-extracts (a',b',c'). The mod-3 reasoning lives on the integer triple, not on matrix entries."}]
+[{"kind": "ConfirmShelve", "target_goal_id": "lu_step_assembly",
+  "reason": "Six dead Backward strategies all shelved with the same structural complaint: the four conjuncts bind to the same `Matrix.reindex (Matrix.fromBlocks …)` witness, which replicates verbatim across each sub-goal signature."},
+ {"kind": "Inject", "pipeline": "Forward",
+  "brief": "## Need\nA `noncomputable def lu_assembled_lower` packaging `Matrix.reindex e e (Matrix.fromBlocks 1 0 w L')` so Backward sub-goals can cite the witness by name instead of replicating it. (Grep + Loogle confirmed no mathlib analogue.)"}]
 ```
