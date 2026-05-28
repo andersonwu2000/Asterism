@@ -1876,6 +1876,51 @@ def test_verify_decisions_rejects_confirmshelve_plus_inject_bb_same_target(
     assert "shelved goal" in err.lower() or "queued retry" in err.lower()
 
 
+def test_verify_decisions_rejects_confirmshelve_ancestor_plus_inject_descendant(
+    conn: sqlite3.Connection,
+) -> None:
+    """ConfirmShelve(ancestor) + Inject(Backward/Builder, target=descendant)
+    is rejected. _set_goal_terminal_and_propagate cascades shelve to all
+    descendants via _cascade_shelve_descendants AFTER the Inject's
+    auto-reopen in the same batch, silently overriding it. The queued
+    redispatch then moots on a goal that's been flipped back to shelved.
+
+    Repro: BT 2026-05-29 batch [Inject(g3298 sphere_paradoxical),
+    ConfirmShelve(g3296 main)] — Inject reopened g3298 at .475,
+    ConfirmShelve cascade re-shelved it at .486, Builder dispatched at
+    .494 and the goal_still_active check on entry returned False
+    (status='shelved') → moot.
+    """
+    root = _insert_root(conn)
+    # Build a 2-level chain: root → strategy → sub
+    sub = db.insert_goal(
+        conn, problem="p", slug="sub",
+        lean_path="Problems/p/proofs/L_sub.lean", statement="T",
+        origin="backward",
+    )
+    cur = conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, scratch_path,"
+        " status, proposal_md, created_by, created_at)"
+        " VALUES (?, '', '', 'proposed', '', 'test', ?)",
+        (root, db.now()))
+    conn.execute(
+        "INSERT INTO strategy_subgoals (strategy_id, subgoal_id, position)"
+        " VALUES (?, ?, 0)", (cur.lastrowid, sub))
+    conn.commit()
+
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Inject", "pipeline": "Builder",
+         "target_goal_id": sub,
+         "brief": "rescue this sub now that brick X landed"},
+        {"kind": "ConfirmShelve", "target_goal_id": root,
+         "reason": "current decomposition exhausted"},
+    ]))
+    err = strategist.verify_decisions(ds, conn, problem="p")
+    assert "descendant" in err.lower()
+    assert "_cascade_shelve_descendants" in err or "cascade" in err.lower()
+    assert str(root) in err and str(sub) in err
+
+
 def test_verify_decisions_allows_confirmshelve_with_inject_bb_different_target(
     conn: sqlite3.Connection,
 ) -> None:

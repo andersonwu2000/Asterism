@@ -396,6 +396,65 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
             f"alive) or aim the Inject at a different goal."
         )
 
+    # Cross-decision: ConfirmShelve(ancestor) + Inject(Backward/Builder,
+    # target=descendant) is also rejected. ConfirmShelve flips the
+    # ancestor to 'shelved' and dispatcher._set_goal_terminal_and_
+    # propagate cascades that shelve down through strategy_subgoals to
+    # every still-active descendant (dispatcher._cascade_shelve_
+    # descendants). The cascade fires AFTER the Inject's auto-reopen
+    # within the same batch, silently overriding it. The queued
+    # Backward/Builder then dispatches on a goal whose status got flipped
+    # back to shelved underneath it and moots immediately — observed BT
+    # 2026-05-29 batch [Inject(g3298 sphere_paradoxical), ConfirmShelve(
+    # g3296 main)]: Inject reopened g3298 at .475, ConfirmShelve cascade
+    # re-shelved it at .486, Builder dispatched at .494 and the
+    # goal_still_active check on entry returned False (status='shelved')
+    # → moot, Strategist's rescue attempt dropped on the floor.
+    if confirm_targets and inject_bb_targets:
+        for ij_target in inject_bb_targets:
+            if ij_target in confirm_targets:
+                continue  # already caught above
+            ancestors: set[int] = set()
+            frontier = [ij_target]
+            visited: set[int] = set()
+            while frontier:
+                next_frontier: list[int] = []
+                for gid in frontier:
+                    if gid in visited:
+                        continue
+                    visited.add(gid)
+                    for r in conn.execute(
+                        "SELECT s.goal_id FROM strategies s"
+                        " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+                        " WHERE ss.subgoal_id = ?",
+                        (gid,),
+                    ).fetchall():
+                        pid = int(r["goal_id"])
+                        if pid not in ancestors:
+                            ancestors.add(pid)
+                            next_frontier.append(pid)
+                frontier = next_frontier
+            bad = ancestors & confirm_targets
+            if bad:
+                anc_id = next(iter(bad))
+                return (
+                    f"batch contains ConfirmShelve(goal {anc_id}) and "
+                    f"Inject(Backward/Builder, target_goal_id={ij_target})"
+                    f" where target is a descendant of the ConfirmShelve"
+                    f" target through strategy_subgoals. ConfirmShelve"
+                    f" cascades shelve to all descendants (dispatcher._"
+                    f"cascade_shelve_descendants), which fires AFTER the"
+                    f" Inject's auto-reopen and silently overrides it —"
+                    f" the queued Backward/Builder dispatches on a now-"
+                    f"shelved goal and moots immediately. Pick one"
+                    f" intent: drop the ConfirmShelve and Inject(target="
+                    f"{anc_id}, brief=\"…retry with the new tools at"
+                    f" hand…\") to re-attack the whole subtree with the"
+                    f" sub-rescue brief; OR keep the ConfirmShelve and"
+                    f" drop this Inject (the descendant is acknowledged"
+                    f" as cascade-dead)."
+                )
+
     # Cross-decision: ConfirmShelve must be paired with at least one
     # ACTION decision in the same batch — Inject. EmitDirective is notes
     # only (not action); RequestUserAmend is the user-escalation channel
