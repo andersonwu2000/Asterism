@@ -40,9 +40,13 @@ from ..state import db
 from ..core import dispatcher as _dispatcher
 
 
-# Decision kinds (mirrors strategist_decisions.decision_kind CHECK enum).
+# Decision kinds Strategist may emit (subset of the DB CHECK enum —
+# the schema still accepts 'Reopen' for legacy rows from before
+# 2026-05-28, but the parser/verifier/commit handler no longer
+# recognise it; Inject(Backward|Builder) is the unified reactivation
+# mechanism).
 DECISION_KINDS: frozenset[str] = frozenset({
-    "Inject", "ConfirmShelve", "Reopen", "EmitDirective",
+    "Inject", "ConfirmShelve", "EmitDirective",
     "RequestUserAmend", "Noop",
 })
 
@@ -260,6 +264,28 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
                     f"Inject({pipeline}) cannot redispatch a terminal "
                     f"goal. proved/disproved/dead are hard terminals; "
                     f"open a different angle on a different goal instead.")
+        # Ancestor safety walk (was Reopen's responsibility pre-2026-05-28;
+        # now Inject(Backward|Builder) takes over as the unified
+        # reactivation mechanism). disproved ancestor = counterexample
+        # already shown for a parent statement; descendant is moot. dead
+        # ancestor is also a hard terminal (parent strategy was wrong);
+        # commit's auto-detach handles `shelved` chains but not these.
+        bad, anc_kind = _dispatcher._has_hard_terminal_ancestor(
+            conn, int(target))
+        if bad:
+            if anc_kind == "disproved":
+                return (
+                    f"Inject({pipeline}) rejected: goal {target} has a "
+                    f"'disproved' ancestor (counterexample already shown). "
+                    f"Use ConfirmShelve."
+                )
+            return (
+                f"Inject({pipeline}) rejected: goal {target} has a "
+                f"'dead' ancestor (parent strategy was wrong; this "
+                f"descendant exists only in that abandoned context). "
+                f"Inject(Backward, target=<parent-goal>) to try a "
+                f"different decomposition instead."
+            )
         return ""
 
     if k == "Noop":
@@ -287,40 +313,6 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
                     f"not this Strategist's {problem!r}")
         if not decision.reason or not str(decision.reason).strip():
             return "ConfirmShelve requires non-empty reason"
-        return ""
-
-    if k == "Reopen":
-        if decision.target_id is None:
-            return "Reopen requires target_goal_id"
-        g = db.get_goal(conn, decision.target_id)
-        if g is None:
-            return f"target_goal_id={decision.target_id} not found"
-        if str(g["problem"]) != problem:
-            return (f"target goal belongs to problem {g['problem']!r}, "
-                    f"not this Strategist's {problem!r}")
-        # Phase 6 safety walk — block Reopen if any ancestor is
-        # `disproved` (counterexample) or `dead` (parent strategy was
-        # wrong, descendant moot in that context). `shelved` ancestor
-        # is OK — auto-detach in commit lets the goal run standalone.
-        bad, kind = _dispatcher._has_hard_terminal_ancestor(
-            conn, decision.target_id
-        )
-        if bad:
-            if kind == "disproved":
-                return (
-                    f"Reopen rejected: goal {decision.target_id} has a "
-                    f"'disproved' ancestor (counterexample already shown). "
-                    f"Use ConfirmShelve."
-                )
-            return (
-                f"Reopen rejected: goal {decision.target_id} has a "
-                f"'dead' ancestor (parent strategy was wrong; this "
-                f"descendant exists only in that abandoned context). "
-                f"Inject(Backward, target=<parent-goal>) to try a "
-                f"different decomposition instead."
-            )
-        if not decision.reason or not str(decision.reason).strip():
-            return "Reopen requires non-empty reason"
         return ""
 
     if k == "RequestUserAmend":
@@ -374,23 +366,6 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
         if err:
             return (f"decision #{i}: {err}" if len(decisions) > 1 else err)
 
-    # Cross-decision: no ConfirmShelve(G) + Reopen(G) pair.
-    confirm_targets: set[int] = {
-        int(d.target_id) for d in decisions
-        if d.kind == "ConfirmShelve" and d.target_id is not None
-    }
-    reopen_targets: set[int] = {
-        int(d.target_id) for d in decisions
-        if d.kind == "Reopen" and d.target_id is not None
-    }
-    overlap = confirm_targets & reopen_targets
-    if overlap:
-        gid = next(iter(overlap))
-        return (
-            f"batch contains both ConfirmShelve and Reopen for goal "
-            f"{gid} — contradictory. Pick one."
-        )
-
     # Cross-decision: no ConfirmShelve(G) + Inject(Backward/Builder,
     # target=G) pair. The Inject force-reopens G (shelved /
     # pending_strategist_review / frozen → open in
@@ -399,6 +374,10 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     # shelved but a Backward/Builder dispatch sits in the queue
     # targeting it. BFS would then try to dispatch a worker on a
     # shelved goal — undefined behaviour.
+    confirm_targets: set[int] = {
+        int(d.target_id) for d in decisions
+        if d.kind == "ConfirmShelve" and d.target_id is not None
+    }
     inject_bb_targets: set[int] = {
         int(d.target_id) for d in decisions
         if d.kind == "Inject"
@@ -418,57 +397,40 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
         )
 
     # Cross-decision: ConfirmShelve must be paired with at least one
-    # ACTION decision in the same batch — Inject or Reopen. Constructive
-    # set is deliberately narrow: it excludes EmitDirective (notes are
-    # not action), RequestUserAmend (user-escalation channel reserved
-    # for Defs.lean / Manifest.md errors), Noop, and other ConfirmShelves.
-    # Forces Strategist to keep trying — articulating defeat without
-    # also dispatching a fresh attempt or redirecting to another goal is
-    # the lazy pattern this rule catches. Patterns blocked:
-    #   (a) lone first-contact ConfirmShelve.
-    #   (b) ConfirmShelve(G) where G is a subgoal of a live parent
-    #       strategy — Phase 6 `_propagate_shelve` is inward-only, so
-    #       the parent stays 'proposed' with an unfeasible subgoal.
-    #       Pairing forces the agent to handle the parent explicitly
-    #       (Inject(Backward, target=parent) or Inject(Forward) to
-    #       build the missing tool).
-    #   (c) mass-shelve runs without follow-up action.
-    #   (d) ConfirmShelve + EmitDirective alone — documenting why a
-    #       goal is shelved is good practice but is not action. Pair
-    #       with Inject/Reopen too; EmitDirective is an OPTIONAL extra,
-    #       not the action itself.
+    # ACTION decision in the same batch — Inject. EmitDirective is notes
+    # only (not action); RequestUserAmend is the user-escalation channel
+    # reserved for Defs.lean / Manifest.md errors. Forces Strategist to
+    # keep trying — articulating defeat without dispatching a fresh
+    # attempt or redirecting focus is the lazy pattern this rule catches.
     if any(d.kind == "ConfirmShelve" for d in decisions):
-        action = sum(
-            1 for d in decisions if d.kind in ("Inject", "Reopen")
-        )
+        action = sum(1 for d in decisions if d.kind == "Inject")
         if action == 0:
             return (
-                "ConfirmShelve must be paired with at least one ACTION "
-                "decision in the same batch — Inject or Reopen. Notes "
-                "alone (EmitDirective) and user escalation "
-                "(RequestUserAmend) do not count: they don't dispatch a "
-                "fresh attempt or redirect focus to another goal. "
-                "Pair it with one of:\n"
+                "ConfirmShelve must be paired with at least one Inject "
+                "decision in the same batch. EmitDirective alone (notes) "
+                "and RequestUserAmend alone (user escalation) do not "
+                "count — they don't dispatch a fresh attempt or redirect "
+                "focus. Pair with one of:\n"
                 "  - Inject(Forward, brief=...) to build the missing "
                 "tool the shelved goal needed.\n"
                 "  - Inject(Backward/Builder, target_goal_id=..., "
                 "brief=...) to redispatch another goal (typically the "
                 "parent of the shelved subgoal — its strategy will "
-                "otherwise stay 'proposed' with an unfeasible subgoal).\n"
-                "  - Reopen(target=..., directive=...) to switch focus "
-                "to another goal worth attacking with a fresh hint.\n"
+                "otherwise stay 'proposed' with an unfeasible subgoal), "
+                "or to refocus on another goal worth attacking with a "
+                "fresh hint.\n"
                 "EmitDirective is fine as an EXTRA decision in the "
                 "same batch to record learning, but it cannot be the "
                 "sole sibling. If you genuinely have no fresh action "
-                "to dispatch and no other goal to reopen, the problem "
-                "is upstream-blocked — escalate via RequestUserAmend "
-                "in a separate Strategist call (which pauses dispatch "
-                "via the awaiting_human gate)."
+                "to dispatch, the problem is upstream-blocked — "
+                "escalate via RequestUserAmend in a separate Strategist "
+                "call (which pauses dispatch via the awaiting_human "
+                "gate)."
             )
 
     # Cross-decision: if the root is in a state only Strategist can
     # unfreeze (`shelved` / `frozen` / `pending_strategist_review`),
-    # AND this batch dispatches no fresh work (no Inject, no Reopen),
+    # AND this batch dispatches no fresh work (no Inject),
     # AND no Forward Inject batch is still in flight from a prior
     # Strategist call — the daemon will idle-exit after this commit.
     # BFS cannot dispatch the root's subtree (`db.open_goals`'s alive
@@ -492,7 +454,7 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     ).fetchone()
     BLOCKED_STATES = ("shelved", "frozen", "pending_strategist_review")
     if root_row is not None and str(root_row["status"]) in BLOCKED_STATES:
-        has_action = any(d.kind in ("Inject", "Reopen") for d in decisions)
+        has_action = any(d.kind == "Inject" for d in decisions)
         if not has_action:
             has_inflight_forward = conn.execute(
                 "SELECT 1 FROM strategist_decisions"
@@ -514,14 +476,14 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                 return (
                     f"Root (goal_id={rid}) is {rstat!r} and nothing in "
                     f"the framework will progress without your action: "
-                    f"no in-flight Forward Inject batch, no Inject or "
-                    f"Reopen in this batch. BFS cannot dispatch from a "
+                    f"no in-flight Forward Inject batch, no Inject "
+                    f"in this batch. BFS cannot dispatch from a "
                     f"{rstat!r} root, so a Noop/EmitDirective-only batch "
                     f"leaves the daemon idle.{hint_for_pending}\n"
                     f"In most cases the right call is "
-                    f"`Reopen(target_goal_id={rid}, ...)` — re-engage "
-                    f"BFS on the root subtree with whatever toolkit is "
-                    f"now available. Alternatives:\n"
+                    f"`Inject(Backward, target_goal_id={rid}, brief=...)` "
+                    f"— re-engage BFS on the root subtree with whatever "
+                    f"toolkit is now available. Alternatives:\n"
                     f"  - Inject(Forward, brief=...) to build a missing "
                     f"tool (root stays {rstat!r}; inject_batch_done "
                     f"will re-fire you), OR\n"
@@ -831,25 +793,6 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
         # too (see `_section_active_goals`), so the surface area where
         # status drift could mislead Strategist is closed at the view
         # boundary, not the data boundary.
-
-    elif k == "Reopen":
-        gid = int(decision.target_id)  # type: ignore[arg-type]
-        # Status must be 'open' (not 'attempting'): `db.open_goals` is
-        # the BFS dispatch source and filters `status = 'open'`. Setting
-        # 'attempting' without enqueueing leaves the goal invisible to
-        # bfs_refill → daemon idle-exits on a Reopen'd root. Symmetric
-        # with `_propagate_shelve` reopen branch (line 307) and verify
-        # rollback culprit branch (verify.py:263).
-        db.update_goal_status(conn, gid, "open")
-        # Auto-detach: if upward strategy chain is broken, set
-        # goals.detached so BFS still dispatches.
-        if _dispatcher._has_dead_strategy_in_chain(conn, gid):
-            db.set_goal_detached(conn, gid, True)
-        # Optional directive: write to problems.strategist_directive
-        directive = decision.payload.get("directive")
-        if isinstance(directive, str) and directive.strip():
-            db.set_problem_strategist_directive(
-                conn, problem, directive.strip())
 
     elif k == "RequestUserAmend":
         # Atomic three-step: tmp write -> INSERT row -> rename

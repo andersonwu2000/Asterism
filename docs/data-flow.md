@@ -281,7 +281,7 @@ cascade 對 Forward：
 ### 3.4 Strategist
 
 target_kind='Goal'（root）。trigger 種類：
-- `first_launch`：root frozen、第一次喚醒、必須選 RequestUserAmend / Inject(Forward) / Reopen(root) 其一
+- `first_launch`：root frozen、第一次喚醒、必須選 RequestUserAmend / Inject(Forward) / Inject(Backward, target=root) 其一
 - `routine`：離上次 strategist run ≥ interval（預設 30 min）
 - `pending_review`：goal `pending_strategist_review`（agent 自己 shelve 後等審）；payload 帶 target_goal_id
 - `inject_batch_done`：某條 Inject batch 內所有 row outcome 非 NULL；同 root in-queue dedup
@@ -298,9 +298,9 @@ parse_fn:
   4. _safe_glob decision.json → 缺檔則 agent_no_output
   5. parse_decisions：JSON array、每 row schema verify（kind / 必填欄位）
   6. verify_decisions：cross-decision invariant
-     - ConfirmShelve 不能單獨送（必 pair Inject 或 Reopen 同 array）
+     - ConfirmShelve 不能單獨送（必 pair Inject 同 array）
      - target_id 在 active goal list（normalize int / slug）
-     - Reopen target 的 ancestor 不在 disproved/dead
+     - Inject(Backward|Builder) target 的 ancestor 不在 disproved/dead
      - Inject pipeline ∈ {Forward, Backward, Builder}
      不過 → strategist_schema_invalid（infra-reason、不 ++）
   7. all-Noop batch → strategist_noop（infra-reason）
@@ -312,8 +312,6 @@ commit_decisions:
      - Inject(Backward|Builder) → 強制 reopen target + 必要時 detached=1 + `entry_kind ← pipeline`（防 bfs_refill 平行排錯誤 kind）+ enqueue
      - ConfirmShelve → _set_goal_terminal_and_propagate(shelved) + _propagate_shelve；
                        row INSERT 時 batch_id = inject_batch_id（同 array 內 link）
-     - Reopen → update_goal_status('open') + 必要時 detached=1 + optional directive 寫
-                problems.strategist_directive
      - EmitDirective → set_problem_strategist_directive
      - RequestUserAmend → 寫 .proposed_<file> + INSERT row outcome='awaiting_human'
      - Noop → 只 INSERT audit row

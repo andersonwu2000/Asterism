@@ -26,7 +26,7 @@ Strategy  = AND : 所有 sub-Goal 成功 → Strategy 成功
 | **Builder** | Goal | 試一輪 deterministic tactic、不行就請 LLM 寫一份 patch 收尾 | 第二階段有 |
 | **Backward** | Goal | 請 LLM 把這個 Goal 拆成一條 Strategy + N 個 sub-Goal | 有 |
 | **Forward** | Problem | 由 Strategist `Inject(Forward)` 派、產一條新 toolkit lemma (kind ∈ {theorem,def,structure,class})、進 BFS 或 leaf-bypass | 有 |
-| **Strategist** | Goal (root) | 讀 problem state、決定 Inject / ConfirmShelve / Reopen / EmitDirective / RequestUserAmend / Noop | 有 |
+| **Strategist** | Goal (root) | 讀 problem state、決定 Inject / ConfirmShelve / EmitDirective / RequestUserAmend / Noop | 有 |
 | **Verify housekeeping** | Strategy | sub-Goal 全 proved 後，把 Strategy 組裝起來編譯、寫進 parent 的 `.lean` 檔；同時跑 G1 shelved-revival pass | 沒有 |
 
 Verify 早期是第三種 worker_kind；後來砍成 dispatcher 主迴圈末端的步驟，因為它既無 LLM 也不該佔 pool 格子。
@@ -148,7 +148,7 @@ dispatch.pool == gateway workers（locked together、#118 1:1 binding）— 每�
 - **Backward failed** → 同 Builder 的 attempts 處理
 - **Forward success** → 新 goal INSERT、origin='forward'、detached=1、sorry-free → 直接 proved（leaf-bypass）、sorry-bearing → open + 等 BFS（Curry-Howard 後 def/structure/class 跟 theorem 一致對待）
 - **Forward failed** → 不影響任何既有 goal、只 fill 對應 strategist_decision row 的 outcome
-- **Strategist** → 多 row INSERT 到 `strategist_decisions`、各 decision_kind 各自副作用（Inject 走 enqueue / ConfirmShelve 走 `_set_goal_terminal_and_propagate(shelved)` / Reopen 走 open + 必要時 detached / EmitDirective 寫 problems.strategist_directive）
+- **Strategist** → 多 row INSERT 到 `strategist_decisions`、各 decision_kind 各自副作用（Inject 走 enqueue + 必要時 reopen/detached + entry_kind pin / ConfirmShelve 走 `_set_goal_terminal_and_propagate(shelved)` / EmitDirective 寫 problems.strategist_directive）
 
 Verify 的 `succeeded`/`dead` 轉移在 `verify_housekeeping` 內套；同時 G1 shelved-revival pass 把「shelved goal aliased to 已 proved 的 Forward output」自動生 alias body + 轉 proved + 上拋（不走 cascade、housekeeping 內 inline）。
 
@@ -310,7 +310,7 @@ Manifest meta                            ← first_launch / amend-relevant 時
 - `goals.lean_path` UNIQUE；`strategies.lean_path` 不 UNIQUE（多 strategies 共享 parent target）
 - Backward sub-goal slug 必含 `s<sid>_` 前綴（防 sequential strategies 命名碰撞）
 - Schema 修改要 bump 版本 + 寫 migration（不能光改 CHECK constraint）
-- Strategist 的 `ConfirmShelve` 不能單獨送、必須跟 `Inject` 或 `Reopen` 同 decision array；同 array 內所有 row 共享 batch_id（含 ConfirmShelve）— G2 機制靠這條 link 把 promise 跟 follow-up 配對
+- Strategist 的 `ConfirmShelve` 不能單獨送、必須跟 `Inject` 同 decision array；同 array 內所有 row 共享 batch_id（含 ConfirmShelve）— G2 機制靠這條 link 把 promise 跟 follow-up 配對
 - `strategist_decisions.batch_id` 一旦寫入後 immutable；framework 用「所有 row outcome 非 NULL」推導 batch 完成
 - Forward output goal 必 `detached=1`（無 strategy 上游、靠 detached seed 進 alive set）
 

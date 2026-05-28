@@ -76,18 +76,6 @@ def test_parse_confirmshelve_decision() -> None:
     assert d.reason == "dead end"
 
 
-def test_parse_reopen_with_directive() -> None:
-    text = json.dumps({
-        "kind": "Reopen", "target_goal_id": 7,
-        "reason": "retry with hint",
-        "directive": "Prefer L_x",
-    })
-    d, err = strategist.parse_decision(text)
-    assert err == ""
-    assert d.kind == "Reopen"
-    assert d.payload.get("directive") == "Prefer L_x"
-
-
 def test_parse_emitdirective() -> None:
     text = json.dumps({
         "kind": "EmitDirective",
@@ -213,7 +201,8 @@ def test_parse_target_id_accepts_slug_string(
     emitting `target_goal_id="main"` (slug) instead of the integer id."""
     root = _insert_root(conn)
     d, err = strategist.parse_decision(json.dumps({
-        "kind": "Reopen", "target_goal_id": "main", "reason": "ready",
+        "kind": "Inject", "pipeline": "Backward",
+        "target_goal_id": "main", "brief": "ready",
     }))
     assert err == ""
     assert d.target_id == "main"  # not yet normalized
@@ -226,8 +215,8 @@ def test_verify_unknown_slug_rejected(
 ) -> None:
     _insert_root(conn)
     d, _ = strategist.parse_decision(json.dumps({
-        "kind": "Reopen", "target_goal_id": "nonexistent",
-        "reason": "x",
+        "kind": "Inject", "pipeline": "Backward",
+        "target_goal_id": "nonexistent", "brief": "x",
     }))
     err = strategist.verify_decision(d, conn, problem="p")
     assert "slug" in err.lower() and "not found" in err.lower()
@@ -239,7 +228,8 @@ def test_parse_target_id_int_string_coerces(
     """`"2019"` (digit string) coerces to int 2019 at parse-time so it
     doesn't hit the slug-lookup path unnecessarily."""
     d, err = strategist.parse_decision(json.dumps({
-        "kind": "Reopen", "target_goal_id": "2019", "reason": "x",
+        "kind": "Inject", "pipeline": "Backward",
+        "target_goal_id": "2019", "brief": "x",
     }))
     assert err == ""
     assert d.target_id == 2019  # coerced to int
@@ -249,15 +239,17 @@ def test_parse_target_id_rejects_non_str_non_int(
     conn: sqlite3.Connection,
 ) -> None:
     d, err = strategist.parse_decision(json.dumps({
-        "kind": "Reopen", "target_goal_id": [1, 2], "reason": "x",
+        "kind": "Inject", "pipeline": "Backward",
+        "target_goal_id": [1, 2], "brief": "x",
     }))
     assert d is None
     assert "int, slug" in err.lower() or "list" in err.lower()
 
 
-def test_verify_reopen_rejected_when_ancestor_disproved(
+def test_verify_inject_rejected_when_ancestor_disproved(
     conn: sqlite3.Connection,
 ) -> None:
+    """Ancestor safety walk (moved from Reopen to Inject 2026-05-28)."""
     root = _insert_root(conn)
     # Make root disproved, sub under it
     db.update_goal_status(conn, root, "disproved")
@@ -277,20 +269,19 @@ def test_verify_reopen_rejected_when_ancestor_disproved(
     conn.commit()
 
     d, _ = strategist.parse_decision(json.dumps({
-        "kind": "Reopen", "target_goal_id": sub,
-        "reason": "retry",
+        "kind": "Inject", "pipeline": "Backward",
+        "target_goal_id": sub, "brief": "retry",
     }))
     err = strategist.verify_decision(d, conn, problem="p")
     assert "disproved" in err.lower()
 
 
-def test_verify_reopen_rejected_when_ancestor_dead(
+def test_verify_inject_rejected_when_ancestor_dead(
     conn: sqlite3.Connection,
 ) -> None:
-    """Phase 6: `dead` ancestor also blocks Reopen on descendants
+    """Phase 6 / 2026-05-28: `dead` ancestor blocks Inject on descendants
     (parent strategy was wrong, descendant exists only in that
-    abandoned context). Same treatment as disproved; only `shelved`
-    is reopenable via auto-detach."""
+    abandoned context). Only `shelved` is reopenable via auto-detach."""
     root = _insert_root(conn)
     db.update_goal_status(conn, root, "dead")
     sub = db.insert_goal(
@@ -309,7 +300,8 @@ def test_verify_reopen_rejected_when_ancestor_dead(
     conn.commit()
 
     d, _ = strategist.parse_decision(json.dumps({
-        "kind": "Reopen", "target_goal_id": sub, "reason": "salvage",
+        "kind": "Inject", "pipeline": "Backward",
+        "target_goal_id": sub, "brief": "salvage",
     }))
     err = strategist.verify_decision(d, conn, problem="p")
     assert "dead" in err.lower()
@@ -317,11 +309,11 @@ def test_verify_reopen_rejected_when_ancestor_dead(
     assert "Inject(Backward" in err or "different decomposition" in err.lower()
 
 
-def test_verify_reopen_ok_with_shelved_ancestor(
+def test_verify_inject_ok_with_shelved_ancestor(
     conn: sqlite3.Connection,
 ) -> None:
-    """Phase 2 — `shelved` ancestor doesn't block Reopen (framework
-    auto-detaches the descendant)."""
+    """`shelved` ancestor doesn't block Inject (framework auto-detaches
+    the descendant)."""
     root = _insert_root(conn)
     db.update_goal_status(conn, root, "shelved")
     sub = db.insert_goal(
@@ -340,7 +332,8 @@ def test_verify_reopen_ok_with_shelved_ancestor(
     conn.commit()
 
     d, _ = strategist.parse_decision(json.dumps({
-        "kind": "Reopen", "target_goal_id": sub, "reason": "x",
+        "kind": "Inject", "pipeline": "Backward",
+        "target_goal_id": sub, "brief": "x",
     }))
     assert strategist.verify_decision(d, conn, problem="p") == ""
 
@@ -753,45 +746,7 @@ def test_commit_paired_confirmshelve_shares_inject_batch_id(
     assert cs_row["batch_id"] == ij_row["batch_id"]
 
 
-def test_commit_solo_confirmshelve_no_inject_keeps_batch_id_null(
-    workspace: Path, conn: sqlite3.Connection,
-) -> None:
-    """ConfirmShelve alone (no Inject in the same decision array — the
-    schema forbids this in practice, but the commit path should still
-    behave) writes batch_id=NULL. Only batches containing >=1 Inject
-    get a shared UUID; this preserves _section_pending_reopens'
-    "promised batch landed" semantics (a non-Inject batch has nothing
-    to wait on)."""
-    root = _insert_root(conn)
-    sub = db.insert_goal(
-        conn, problem="p", slug="sub",
-        lean_path="Problems/p/proofs/L_sub.lean", statement="T",
-        origin="backward",
-    )
-    db.update_goal_status(conn, sub, "pending_strategist_review")
-    conn.commit()
-    re_op, _ = strategist.parse_decision(json.dumps({
-        "kind": "Reopen", "target_goal_id": sub, "reason": "try again",
-    }))
-    cs, _ = strategist.parse_decision(json.dumps({
-        "kind": "ConfirmShelve", "target_goal_id": sub,
-        "reason": "actually shelve",
-    }))
-    # Schema's strict pair is CS + Inject/Reopen — pair with Reopen
-    # (which itself doesn't carry batch_id). Outcome: both batch_id
-    # NULL since no Inject was in the array.
-    outcomes = strategist.commit_decisions(
-        [cs, re_op], conn, problem="p", tick=1,
-        trigger_kind="routine", workspace=workspace,
-    )
-    cs_row = conn.execute(
-        "SELECT batch_id FROM strategist_decisions WHERE id = ?",
-        (outcomes[0].decision_row_id,),
-    ).fetchone()
-    assert cs_row["batch_id"] is None
-
-
-def test_commit_reopen_with_broken_chain_sets_detached(
+def test_commit_inject_with_broken_chain_sets_detached(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
     root = _insert_root(conn)
@@ -813,16 +768,16 @@ def test_commit_reopen_with_broken_chain_sets_detached(
     conn.commit()
 
     d, _ = strategist.parse_decision(json.dumps({
-        "kind": "Reopen", "target_goal_id": sub,
-        "reason": "try again",
+        "kind": "Inject", "pipeline": "Backward",
+        "target_goal_id": sub, "brief": "try again",
     }))
     strategist.commit_decision(
         d, conn, problem="p", tick=1, trigger_kind="routine",
         workspace=workspace,
     )
     g = db.get_goal(conn, sub)
-    # Reopen sets 'open' (not 'attempting') so bfs_refill — which filters
-    # `status='open'` — can dispatch the goal on the next tick.
+    # Inject force-reopens to 'open' (not 'attempting') so bfs_refill —
+    # which filters `status='open'` — can dispatch on the next tick.
     assert g["status"] == "open"
     assert g["detached"] == 1
     # Regression guard: open_goals (the BFS dispatch source) returns it
@@ -831,24 +786,23 @@ def test_commit_reopen_with_broken_chain_sets_detached(
     assert sub in open_ids
 
 
-def test_commit_reopen_makes_goal_dispatchable_via_bfs(
+def test_commit_inject_makes_goal_dispatchable_via_bfs(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
-    """Regression — take-5 failure: Reopen used to set status='attempting'
-    and skip enqueue, so `db.open_goals` (filters status='open') hid the
-    goal and bfs_refill never dispatched it → daemon idle-exited with
-    root in attempting limbo. After fix: status='open' makes the root
-    immediately visible to BFS without auto-detach (root is its own seed).
+    """Inject force-reopens its target to 'open' (not 'attempting'), so
+    `db.open_goals` (filters status='open') exposes it to bfs_refill /
+    Inject's own enqueued pipeline. Pre-2026-05-28 Reopen-via-attempting
+    bug regression preserved with Inject as the unified reactivation.
     """
     root = _insert_root(conn)
-    # Simulate the pre-Reopen state: root was marked
-    # pending_strategist_review (or attempting) and not dispatchable.
+    # Simulate the pre-Inject state: root was marked
+    # pending_strategist_review and not dispatchable.
     db.update_goal_status(conn, root, "pending_strategist_review")
     assert root not in {int(r["id"]) for r in db.open_goals(conn)}
 
     d, _ = strategist.parse_decision(json.dumps({
-        "kind": "Reopen", "target_goal_id": root,
-        "reason": "retry",
+        "kind": "Inject", "pipeline": "Backward",
+        "target_goal_id": root, "brief": "retry root",
     }))
     strategist.commit_decision(
         d, conn, problem="p", tick=1, trigger_kind="routine",
@@ -968,9 +922,6 @@ def test_synchronous_decisions_write_outcome_success_at_commit(
     cs, _ = strategist.parse_decision(json.dumps({
         "kind": "ConfirmShelve", "target_goal_id": sub, "reason": "x",
     }))
-    re_op, _ = strategist.parse_decision(json.dumps({
-        "kind": "Reopen", "target_goal_id": sub, "reason": "y",
-    }))
     ed, _ = strategist.parse_decision(json.dumps({
         "kind": "EmitDirective", "scope": "problem:p",
         "body": "Note.", "reason": "doc",
@@ -982,23 +933,20 @@ def test_synchronous_decisions_write_outcome_success_at_commit(
         "kind": "Inject", "pipeline": "Forward",
         "brief": "## Need\nbridge lemma",
     }))
-    # ConfirmShelve + Reopen on same goal is rejected as contradictory,
-    # so split into two batches: (CS, Inject), then (Reopen, EmitDirective,
-    # Noop, Inject). Each batch independently exercises the rule for its
-    # decision kinds.
+    # Two batches: (CS, Inject) exercises CS's commit-time outcome, then
+    # (EmitDirective, Noop, Inject) exercises ED/Noop's commit-time
+    # outcome. Each batch independently sets the shared batch_id via
+    # the Inject.
     out_a = strategist.commit_decisions(
         [cs, ij], conn, problem="p", tick=1,
         trigger_kind="pending_review", workspace=workspace,
     )
-    # Reset goal state so Reopen has something to act on.
-    db.update_goal_status(conn, sub, "pending_strategist_review")
-    conn.commit()
     ij2, _ = strategist.parse_decision(json.dumps({
         "kind": "Inject", "pipeline": "Forward",
         "brief": "## Need\nsecond bridge",
     }))
     out_b = strategist.commit_decisions(
-        [re_op, ed, noop, ij2], conn, problem="p", tick=2,
+        [ed, noop, ij2], conn, problem="p", tick=2,
         trigger_kind="routine", workspace=workspace,
     )
 
@@ -1018,12 +966,10 @@ def test_synchronous_decisions_write_outcome_success_at_commit(
     assert ij_row_a["outcome"] is None  # async, filled later
     assert ij_row_a["batch_id"] == cs_row["batch_id"]
 
-    re_row = _row(out_b[0].decision_row_id)
-    ed_row = _row(out_b[1].decision_row_id)
-    noop_row = _row(out_b[2].decision_row_id)
-    ij_row_b = _row(out_b[3].decision_row_id)
-    for r, kind in ((re_row, "Reopen"), (ed_row, "EmitDirective"),
-                    (noop_row, "Noop")):
+    ed_row = _row(out_b[0].decision_row_id)
+    noop_row = _row(out_b[1].decision_row_id)
+    ij_row_b = _row(out_b[2].decision_row_id)
+    for r, kind in ((ed_row, "EmitDirective"), (noop_row, "Noop")):
         assert r["decision_kind"] == kind
         assert r["outcome"] == "success", (
             f"{kind} row should write outcome='success' at commit; "
@@ -1633,7 +1579,7 @@ def test_verify_decisions_rejects_noop_alone_when_root_shelved_no_inflight(
         {"kind": "Noop", "reason": "let BFS run"},
     ]))
     err = strategist.verify_decisions(ds, conn, problem="p")
-    assert "Reopen" in err and "shelved" in err.lower()
+    assert "Inject" in err and "shelved" in err.lower()
     assert str(root) in err  # hint references actual root goal_id
 
 
@@ -1649,7 +1595,7 @@ def test_verify_decisions_rejects_emit_directive_alone_when_root_shelved(
          "body": "Avoid X route.", "reason": "lock in learning"},
     ]))
     err = strategist.verify_decisions(ds, conn, problem="p")
-    assert "Reopen" in err and "shelved" in err.lower()
+    assert "Inject" in err and "shelved" in err.lower()
 
 
 def test_verify_decisions_accepts_noop_when_root_shelved_but_inflight_forward(
@@ -1677,16 +1623,17 @@ def test_verify_decisions_accepts_noop_when_root_shelved_but_inflight_forward(
     assert strategist.verify_decisions(ds, conn, problem="p") == ""
 
 
-def test_verify_decisions_accepts_reopen_root_when_root_shelved(
+def test_verify_decisions_accepts_inject_root_when_root_shelved(
     conn: sqlite3.Connection,
 ) -> None:
     """The canonical unfreeze action: when root is shelved and no
-    in-flight Forward, Reopen(root) is exactly what the rule wants."""
+    in-flight Forward, Inject(Backward, target=root) is exactly what
+    the rule wants."""
     root = _insert_root(conn)
     db.update_goal_status(conn, root, "shelved")
     ds, _ = strategist.parse_decisions(json.dumps([
-        {"kind": "Reopen", "target_goal_id": root,
-         "reason": "homotopy lemma proved; re-engage BFS on root"},
+        {"kind": "Inject", "pipeline": "Backward", "target_goal_id": root,
+         "brief": "homotopy lemma proved; re-engage BFS on root"},
     ]))
     assert strategist.verify_decisions(ds, conn, problem="p") == ""
 
@@ -1721,7 +1668,7 @@ def test_verify_decisions_rejects_noop_alone_when_root_pending_review(
         {"kind": "Noop", "reason": "let the framework run"},
     ]))
     err = strategist.verify_decisions(ds, conn, problem="p")
-    assert "Reopen" in err
+    assert "Inject" in err
     assert "pending_strategist_review" in err
     assert "logical contradiction" in err.lower()
 
@@ -1738,7 +1685,7 @@ def test_verify_decisions_rejects_noop_alone_when_root_frozen(
         {"kind": "Noop", "reason": "first launch; nothing to do?"},
     ]))
     err = strategist.verify_decisions(ds, conn, problem="p")
-    assert "Reopen" in err and "frozen" in err.lower()
+    assert "Inject" in err and "frozen" in err.lower()
     assert str(root) in err
 
 
@@ -1904,20 +1851,6 @@ def test_verify_decisions_accepts_three_decision_batch_with_directive(
                    "do not retry equivalent forms"},
     ]))
     assert strategist.verify_decisions(ds, conn, problem="p") == ""
-
-
-def test_verify_decisions_rejects_contradictory_confirm_reopen(
-    conn: sqlite3.Connection,
-) -> None:
-    """ConfirmShelve(G) and Reopen(G) in one batch is contradictory —
-    reject so the agent picks one."""
-    root = _insert_root(conn)
-    ds, _ = strategist.parse_decisions(json.dumps([
-        {"kind": "ConfirmShelve", "target_goal_id": root, "reason": "x"},
-        {"kind": "Reopen", "target_goal_id": root, "reason": "y"},
-    ]))
-    err = strategist.verify_decisions(ds, conn, problem="p")
-    assert "contradictory" in err.lower() and "ConfirmShelve" in err
 
 
 def test_verify_decisions_rejects_confirmshelve_plus_inject_bb_same_target(

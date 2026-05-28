@@ -200,7 +200,7 @@ def test_run_strategist_verify_retry_recovers(
     workspace: Path, conn: sqlite3.Connection,
     mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """First attempt produces a Reopen against a non-existent target
+    """First attempt produces an Inject against a non-existent target
     (verify fails); retry produces a valid Noop. Run reports success."""
     _insert_root(conn)
     calls: list[dict] = []
@@ -211,8 +211,8 @@ def test_run_strategist_verify_retry_recovers(
         if len(calls) == 1:
             (attempts_dir / "decision.json").write_text(
                 json.dumps({
-                    "kind": "Reopen", "target_goal_id": 9999,
-                    "reason": "stale id",
+                    "kind": "Inject", "pipeline": "Backward",
+                    "target_goal_id": 9999, "brief": "stale id",
                 }),
                 encoding="utf-8")
         else:
@@ -250,8 +250,8 @@ def test_run_strategist_verify_retry_both_fail(
     def fake_spawn(**kw):
         calls.append(kw)
         (kw["attempts_dir"] / "decision.json").write_text(
-            json.dumps({"kind": "Reopen", "target_goal_id": 9999,
-                        "reason": "stale"}),
+            json.dumps({"kind": "Inject", "pipeline": "Backward",
+                        "target_goal_id": 9999, "brief": "stale"}),
             encoding="utf-8")
         return 0
 
@@ -304,8 +304,8 @@ def test_run_strategist_verify_retry_disabled_via_env(
     def fake_spawn(**kw):
         calls.append(kw)
         (kw["attempts_dir"] / "decision.json").write_text(
-            json.dumps({"kind": "Reopen", "target_goal_id": 9999,
-                        "reason": "stale"}),
+            json.dumps({"kind": "Inject", "pipeline": "Backward",
+                        "target_goal_id": 9999, "brief": "stale"}),
             encoding="utf-8")
         return 0
 
