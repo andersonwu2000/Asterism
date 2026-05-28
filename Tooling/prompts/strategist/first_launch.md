@@ -31,13 +31,15 @@ Solo `EmitDirective` is invalid — it closes the first-launch window without ad
 
 ## Examples
 
-Survey + Inject prereqs:
+Survey + Inject prereqs (N `Inject(Forward)` allowed in one batch — share one `inject_batch_done`):
 ```json
 [{"kind": "EmitDirective", "scope": "problem:LinearAlgebra.svd",
   "body": "Mathlib already provides:\n- `T.singularValues` at Mathlib.Analysis.InnerProductSpace.SingularValues\n- `Module.End.exists_eigenvalue` (algClosed K)\n- ...",
   "reason": "first-launch survey"},
  {"kind": "Inject", "pipeline": "Forward",
-  "brief": "## Need\nBridge lemma X.\n\n## Context\n..."}]
+  "brief": "## Need\nBridge lemma X.\n\n## Context\n..."},
+ {"kind": "Inject", "pipeline": "Forward",
+  "brief": "## Need\nBridge lemma Y (independent of X).\n\n## Context\n..."}]
 ```
 
 Survey + Inject root (ready to dispatch directly):

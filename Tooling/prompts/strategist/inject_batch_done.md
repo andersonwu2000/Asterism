@@ -46,11 +46,13 @@ Output as `decision.json` — JSON array of one or more decisions.
 ```
 
 ```json
-// brick landed but gap remains → next brick + keep parked
+// gap remains → brick(s) + keep parked (N Forward allowed per batch)
 [{"kind": "Inject", "pipeline": "Forward",
   "brief": "## Need\nFollow-up brick Y to fill remaining gap..."},
+ {"kind": "Inject", "pipeline": "Forward",
+  "brief": "## Need\nBrick Z, independent of Y..."},
  {"kind": "ConfirmShelve", "target_goal_id": 2950,
-  "reason": "Still parked; awaits new brick Y"}]
+  "reason": "Still parked; awaits bricks Y + Z"}]
 ```
 
 ```json

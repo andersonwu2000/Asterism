@@ -58,9 +58,11 @@ Before committing, `Grep` mathlib briefly for any concept the agent claims is mi
 ```
 
 ```json
-// missing prereq → Forward + park
+// missing prereq(s) → Forward(s) + park (N Forward allowed per batch)
 [{"kind": "Inject", "pipeline": "Forward",
   "brief": "## Need\nA composition lemma for Equidecomp.trans over partial bijections... (Grep + Loogle confirmed missing)..."},
+ {"kind": "Inject", "pipeline": "Forward",
+  "brief": "## Need\nThe inverse lemma for Equidecomp.symm, independent of the above... (Grep + Loogle confirmed missing)..."},
  {"kind": "ConfirmShelve", "target_goal_id": 1743,
-  "reason": "Parked pending the Forward brick; reassess after it lands."}]
+  "reason": "Parked pending both Forward bricks; reassess after they land."}]
 ```
