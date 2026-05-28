@@ -1404,6 +1404,39 @@ def test_bfs_refill_no_duplicate_when_already_running(
     assert db.queue_count(conn, target_id=str(gid), kind="Backward") == 0
 
 
+def test_bfs_refill_skips_goal_with_any_kind_in_flight(
+    conn: sqlite3.Connection,
+) -> None:
+    """2026-05-28: bfs_refill defers when ANY pipeline (any kind) is
+    already in flight on the goal. Prevents racing Strategist Inject —
+    Inject(Builder) enqueues a Builder; bfs_refill must not enqueue a
+    parallel Backward of its own under threshold escalation.
+    (LU lu_step_assembly 2026-05-28 regression.)"""
+    from Tooling.core.dispatcher import bfs_refill
+    gid = _seed_goal(conn)
+    db.update_goal_entry_kind(conn, gid, "Backward")
+    # Simulate Strategist Inject(Builder) sitting in queue.
+    db.enqueue(conn, kind="Builder", target_id=str(gid), priority=10,
+               decision_id=None)
+    bfs_refill(conn, running=set())
+    # No additional Backward should be enqueued.
+    assert db.queue_count(conn, target_id=str(gid), kind="Backward") == 0
+    assert db.queue_count(conn, target_id=str(gid), kind="Builder") == 1
+
+
+def test_bfs_refill_skips_goal_with_any_kind_running(
+    conn: sqlite3.Connection,
+) -> None:
+    """Symmetric to the queued-Builder case: a Builder already running
+    (in `running` set) blocks bfs_refill from enqueueing a Backward of
+    its own."""
+    from Tooling.core.dispatcher import bfs_refill
+    gid = _seed_goal(conn)
+    db.update_goal_entry_kind(conn, gid, "Backward")
+    bfs_refill(conn, running={(str(gid), "Builder", None)})
+    assert db.queue_count(conn, target_id=str(gid), kind="Backward") == 0
+
+
 def test_bfs_refill_scope_filters_by_problem(
     conn: sqlite3.Connection,
 ) -> None:

@@ -1130,6 +1130,27 @@ def bfs_refill(conn: sqlite3.Connection,
         running_n = sum(1 for r in running if r[0] == tid and r[1] == kind)
         return running_n + db.queue_count(conn, target_id=tid, kind=kind)
 
+    def goal_has_any_pipeline(tid: str) -> bool:
+        # 2026-05-28: any queued or running pipeline (of any kind) on
+        # the same goal blocks bfs_refill from enqueueing another.
+        # Strategist Inject(Backward|Builder) already enqueues a row at
+        # commit time; without this guard bfs_refill would still pick
+        # up the goal on the next tick and enqueue an organic-routing
+        # pipeline of a different kind, racing the Inject (LU lu_step_
+        # assembly 2026-05-28 — Strategist Inject(Builder) + bfs_refill
+        # parallel Backward).
+        #
+        # Inject's OR-fanout semantic isn't lost: a Strategist batch can
+        # still emit multiple Injects on the same target by emitting
+        # them itself; bfs_refill's job is organic routing, and organic
+        # routing should defer to whatever Strategist already authored.
+        if any(r[0] == tid for r in running):
+            return True
+        row = conn.execute(
+            "SELECT 1 FROM queue WHERE target_id = ? LIMIT 1", (tid,),
+        ).fetchone()
+        return row is not None
+
     def cooled(tid: str, kind: str) -> bool:
         return cd.get((tid, kind), 0.0) > now
 
@@ -1169,6 +1190,10 @@ def bfs_refill(conn: sqlite3.Connection,
         if problem_paused(problem):
             continue
         gid = str(g["id"])
+        # Strategist Inject (or a prior bfs_refill enqueue of any kind)
+        # already covers this goal — defer organic routing this tick.
+        if goal_has_any_pipeline(gid):
+            continue
         kind = next_worker_kind(g)
         if kind_cooled(kind):
             continue

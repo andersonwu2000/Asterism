@@ -40,7 +40,7 @@ agent 寫進 `.attempts/<pid>/` 的所有東西（成敗與否）在 dir 被 rmt
 
 **Stage 3 — root proved exit**：root goal 進入 proved 後跑：`prune.reconcile_proved_goals`（修 OR-race 留下的 file/DB drift）→ `prune.prune_problem`（GC orphan 檔）→ `library.maybe_promote`（dormant、目前不自動 promote、見 architecture.md §10）、然後 dispatcher 退出。
 
-**Stage 4 — bfs_refill**：對 open goal 走 recursive CTE 過濾掉 dead/superseded 分支下的 orphan、剩下的依 `entry_kind`（Manifest 寫的或 Backward agent 標的、attempts ≥ BUILDER_THRESHOLD 強制升 Backward）排進 queue。每個 (target_id, kind) 同時最多一條 in-flight（passive OR cap=1）。Strategist 喚醒走另一路徑：`maybe_enqueue_inject_batch_done`（cascade 期間 / `update_strategy_status` hook）+ routine interval timer + pending_review enqueue（agent_shelved 後）。
+**Stage 4 — bfs_refill**：對 open goal 走 recursive CTE 過濾掉 dead/superseded 分支下的 orphan、剩下的依 `entry_kind`（Manifest 寫的或 Backward agent 標的、attempts ≥ BUILDER_THRESHOLD 強制升 Backward）排進 queue。一個 goal **同時最多一條 pipeline**（任意 kind）—— 若該 goal 已有 queue 或 running 的 pipeline（含 Strategist Inject 排的）、本輪 organic routing 一律 defer、避免跟 Strategist 決策的 kind 互打。Strategist 喚醒走另一路徑：`maybe_enqueue_inject_batch_done`（cascade 期間 / `update_strategy_status` hook）+ routine interval timer + pending_review enqueue（agent_shelved 後）。
 
 **Stage 5 — spawn**：從 queue 拉一個、用 `ThreadPoolExecutor.submit` 派一條 pipeline 進 worker thread。pipeline 入場前 POST `/register` 給 gateway 拿 session token、再寫 `_mcp_config.json` 給 claude.exe。pipeline 內部 flow 是 §3 主題。dispatch.pool == gateway workers、locked together（#118 1:1 binding）。
 
