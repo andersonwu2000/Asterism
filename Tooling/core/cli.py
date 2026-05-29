@@ -31,13 +31,24 @@ class _Tee:
 
     def write(self, s):
         for st in self._streams:
-            st.write(s)
-            st.flush()
+            # Per-stream resilience: a write failure on one stream (e.g. a
+            # legacy cp950 console choking on a char outside its range)
+            # must not kill the daemon nor starve the other streams (the
+            # UTF-8 log file is the canonical forensic artifact). Belt to
+            # `_force_utf8_io`'s reconfigure suspenders.
+            try:
+                st.write(s)
+                st.flush()
+            except (UnicodeEncodeError, OSError, ValueError):
+                pass
         return len(s)
 
     def flush(self):
         for st in self._streams:
-            st.flush()
+            try:
+                st.flush()
+            except (OSError, ValueError):
+                pass
 
     def isatty(self):
         # Some downstream tools query isatty; report based on the
@@ -1184,7 +1195,36 @@ def cmd_prune(args: argparse.Namespace) -> int:
     return 0
 
 
+def _force_utf8_io() -> None:
+    """Force UTF-8 for this process's console I/O and for every spawned
+    subprocess. On a locale-default (e.g. cp950 Traditional-Chinese)
+    Windows console, emitting a char outside that codepage — a Lean goal
+    routinely carries `∃` (U+2203), `∀`, `≃ᵢ`, etc. — raised
+    UnicodeEncodeError mid-pipeline and was mis-recorded as a spurious
+    lake_build_error (BT 2026-05-29 g3410 exists_rotation_shift_disjoint:
+    3 of 5 attempts died on `cp950 can't encode '\\u2203'`, blocking a
+    goal that was otherwise fine). Every framework file write already
+    pins encoding='utf-8'; the gap was the inherited console encoding and
+    child-process default. Reconfiguring stdout/stderr fixes this
+    process's prints (and the _Tee that wraps them); exporting
+    PYTHONUTF8 / PYTHONIOENCODING makes claude / lake / gateway children
+    inherit UTF-8 so they don't reintroduce the crash one layer down.
+
+    Idempotent and safe under pytest's captured streams (reconfigure is
+    skipped when the stream doesn't support it)."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+            except (ValueError, OSError):
+                pass
+    os.environ.setdefault("PYTHONUTF8", "1")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_io()
     parser = argparse.ArgumentParser(prog="asterism")
     sub = parser.add_subparsers(dest="cmd", required=True)
 

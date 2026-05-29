@@ -226,3 +226,35 @@ def test_tee_isatty_reports_primary() -> None:
         def isatty(self): return True
     tee = _Tee(_Tty(), io.StringIO())
     assert tee.isatty() is True
+
+
+def test_tee_survives_unencodable_char_on_one_stream(tmp_path: Path) -> None:
+    """BT 2026-05-29 g3410: a Lean goal carries `∃` (U+2203); a legacy
+    cp950 console raised UnicodeEncodeError on write, killing the
+    pipeline and mis-recording it as a lake_build_error. _Tee must
+    swallow a per-stream write failure and still deliver the text to the
+    surviving (UTF-8 log) stream."""
+    class _Cp950Console:
+        def write(self, s):
+            s.encode("cp950")  # raises on ∃, exactly like the real console
+            return len(s)
+        def flush(self):
+            pass
+    good = io.StringIO()
+    tee = _Tee(_Cp950Console(), good)
+    n = tee.write("rotation ∃ R, P R\n")  # must NOT raise
+    assert n == len("rotation ∃ R, P R\n")
+    assert good.getvalue() == "rotation ∃ R, P R\n"
+
+
+def test_force_utf8_io_idempotent_and_sets_child_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_force_utf8_io exports UTF-8 to the child-process env and is safe
+    to call when streams don't support reconfigure (pytest capture)."""
+    from Tooling.core.cli import _force_utf8_io
+    monkeypatch.delenv("PYTHONUTF8", raising=False)
+    monkeypatch.delenv("PYTHONIOENCODING", raising=False)
+    _force_utf8_io()  # must not raise under captured streams
+    assert os.environ["PYTHONUTF8"] == "1"
+    assert os.environ["PYTHONIOENCODING"] == "utf-8"
