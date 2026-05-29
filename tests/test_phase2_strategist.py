@@ -692,6 +692,65 @@ def test_commit_confirmshelve_cascades_shelved_to_descendants(
     assert db.get_goal(conn, sub)["status"] == "shelved"
 
 
+def test_commit_confirmshelve_noop_on_proved_goal(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """ConfirmShelve on an already-proved goal is a silent no-op — it
+    must NOT regress proved → shelved. BT 2026-05-29 g3380: a goal whose
+    strategy fully succeeded (all subs proved, alias written on disk) got
+    ConfirmShelve'd by a Strategist retiring a proved-but-superseded
+    orphan; the shelve overrode the completed proof. The command commits
+    (no batch bounce) but leaves the goal proved."""
+    root = _insert_root(conn)
+    proved = db.insert_goal(
+        conn, problem="p", slug="proved_orphan",
+        lean_path="Problems/p/proofs/L_proved_orphan.lean", statement="T",
+        origin="backward",
+    )
+    db.update_goal_status(conn, proved, "proved")
+    conn.commit()
+
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "ConfirmShelve", "target_goal_id": proved,
+        "reason": "superseded orphan; retire",
+    }))
+    strategist.commit_decision(
+        d, conn, problem="p", tick=1, trigger_kind="routine",
+        workspace=workspace,
+    )
+    assert db.get_goal(conn, proved)["status"] == "proved"
+
+
+def test_set_goal_terminal_refuses_downgrade_of_terminal(
+    conn: sqlite3.Connection,
+) -> None:
+    """Class-level backstop: _set_goal_terminal_and_propagate must refuse
+    to flip a proved / disproved / dead goal to shelved (any caller, not
+    just ConfirmShelve). Legitimate transitions still pass."""
+    from Tooling.core import dispatcher
+    for terminal in ("proved", "disproved", "dead"):
+        g = db.insert_goal(
+            conn, problem="p", slug=f"g_{terminal}",
+            lean_path=f"Problems/p/proofs/L_{terminal}.lean", statement="T",
+            origin="backward",
+        )
+        db.update_goal_status(conn, g, terminal)
+        conn.commit()
+        dispatcher._set_goal_terminal_and_propagate(conn, g, "shelved")
+        assert db.get_goal(conn, g)["status"] == terminal, (
+            f"{terminal} goal was downgraded to shelved")
+    # An open goal still shelves normally.
+    g_open = db.insert_goal(
+        conn, problem="p", slug="g_open",
+        lean_path="Problems/p/proofs/L_open.lean", statement="T",
+        origin="backward",
+    )
+    db.update_goal_status(conn, g_open, "open")
+    conn.commit()
+    dispatcher._set_goal_terminal_and_propagate(conn, g_open, "shelved")
+    assert db.get_goal(conn, g_open)["status"] == "shelved"
+
+
 def test_commit_paired_confirmshelve_shares_inject_batch_id(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:

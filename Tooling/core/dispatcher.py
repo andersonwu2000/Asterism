@@ -211,7 +211,30 @@ def _set_goal_terminal_and_propagate(
     path none of the documented cascade rules explain). The 1-line
     trace pulls the immediate caller's filename+line+function from
     the Python stack — enough to disambiguate the cascade entry
-    point on next reproduction."""
+    point on next reproduction.
+
+    Guard (BT 2026-05-29 g3380): never DOWNGRADE a goal that is already
+    a hard terminal (`proved` / `disproved` / `dead`) to `shelved`.
+    `proved` is a completed proof — shelving it regresses a true theorem
+    and breaks the invariant `proved ⟺ some strategy's subs all proved`;
+    `disproved`/`dead` are stronger negative terminals than `shelved`.
+    The observed trigger was a Strategist ConfirmShelve on a proved-but-
+    superseded orphan goal (it had no clean "retire orphan" verb so it
+    misused ConfirmShelve). The ConfirmShelve commit path also no-ops
+    this case at the decision layer; this is the class-level backstop so
+    ANY caller is blocked, not just ConfirmShelve. Idempotent re-flips to
+    the same status, and legitimate upgrades to `proved`, still pass."""
+    if status == "shelved":
+        cur = conn.execute(
+            "SELECT status FROM goals WHERE id = ?", (goal_id,),
+        ).fetchone()
+        if cur is not None and str(cur["status"]) in (
+            "proved", "disproved", "dead",
+        ):
+            print(f"[goal-terminal] g{goal_id} shelve SKIPPED — already "
+                  f"{cur['status']!r} (no downgrade of a terminal goal)",
+                  flush=True)
+            return
     if status in ("shelved", "disproved", "dead"):
         import traceback as _tb
         frames = _tb.extract_stack()[-4:-1]

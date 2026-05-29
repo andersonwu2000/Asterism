@@ -842,8 +842,27 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
 
     elif k == "ConfirmShelve":
         gid = int(decision.target_id)  # type: ignore[arg-type]
-        _dispatcher._set_goal_terminal_and_propagate(conn, gid, "shelved")
-        _dispatcher._propagate_shelve(conn, gid)
+        # No-op guard (BT 2026-05-29 g3380): a ConfirmShelve on a goal
+        # that is already a hard terminal (proved / disproved / dead) is
+        # silently ignored — it does NOT bounce the batch back to the
+        # Strategist for re-issue. The Strategist sometimes ConfirmShelves
+        # a proved-but-superseded orphan (it has no clean "retire orphan"
+        # verb); shelving it would regress a completed proof and break
+        # `proved ⟺ subs proved`. The rest of the batch (paired Injects,
+        # directives) commits normally. The dispatcher's
+        # _set_goal_terminal_and_propagate carries the same guard as a
+        # class-level backstop, but short-circuiting here also skips the
+        # _propagate_shelve cascade and keeps the decision's outcome benign.
+        _g = db.get_goal(conn, gid)
+        if _g is not None and str(_g["status"]) in (
+            "proved", "disproved", "dead",
+        ):
+            print(f"[strategist] ConfirmShelve(g{gid}) no-op — goal already "
+                  f"{_g['status']!r}; not downgrading a terminal goal",
+                  flush=True)
+        else:
+            _dispatcher._set_goal_terminal_and_propagate(conn, gid, "shelved")
+            _dispatcher._propagate_shelve(conn, gid)
         # Downward cascade removed: shelved is reopenable (split from
         # disproved), descendants of a shelved goal stay invisible to
         # BFS via the alive-set filter in `db.open_goals` regardless
