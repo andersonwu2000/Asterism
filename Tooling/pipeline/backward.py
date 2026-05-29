@@ -897,34 +897,72 @@ def _backward_parse_and_commit(
         # content for novel sub-goals. By this point any disproved-kind
         # match has aborted via the same_as_disproved early-return above,
         # so a non-None `match` is guaranteed kind="alias".
-        for (slug, src), (_, dest), match in zip(
+        def _novel_content(raw: str) -> str:
+            """Sub-goal placed for normal dispatch: base imports + Defs
+            opens injected so it elaborates standalone."""
+            c = _ensure_imports_subgoal(
+                raw, problem=goal["problem"], workspace=workspace)
+            return manifest.inject_defs_opens(
+                c, problem=goal["problem"], workspace=workspace)
+
+        for idx, ((slug, src), (_, dest), match) in enumerate(zip(
             sub_meta, sub_dests, canonical_for,
-        ):
+        )):
+            raw = src.read_text(encoding="utf-8")
             if match is not None:
                 canonical_id = match.goal_id
                 canonical = db.get_goal(conn, canonical_id)
                 canonical_module = _lean_path_to_module(
                     workspace, workspace / canonical["lean_path"])
-                original_content = src.read_text(encoding="utf-8")
-                dest.write_text(
-                    dedupe.build_alias_content(
-                        original_content=original_content,
-                        canonical_module=canonical_module,
-                        canonical_slug=canonical["slug"],
-                    ),
-                    encoding="utf-8",
+                # Build the alias body on top of import/opens-injected
+                # content so the file elaborates standalone (agent
+                # `new_<slug>.lean` files often omit `import Mathlib`).
+                alias_content = dedupe.build_alias_content(
+                    original_content=_novel_content(raw),
+                    canonical_module=canonical_module,
+                    canonical_slug=canonical["slug"],
                 )
-                print(f"[dedupe] {slug} → goal {canonical_id} "
-                      f"({canonical['slug']})", flush=True)
+                dest.write_text(alias_content, encoding="utf-8")
+                # Build-verify the alias before trusting the dedupe probe.
+                # The probe (`_batch_provable_via_apply`) elaborates the
+                # candidate in a `dedupe_check` namespace WITHOUT the
+                # problem's namespace/opens, so problem-local names (e.g.
+                # the `E := EuclideanSpace ℝ (Fin 3)` abbrev) resolve
+                # differently than in the real file — the probe's verdict
+                # can diverge from the real build (BT 2026-05-29 g3410:
+                # `rotation_family_avoiding_disjoint_axis` got aliased to
+                # the unrelated `endo_finrank_le_one_eq_det_smul`, probe
+                # said OK, real `apply @… <;> assumption` failed to unify).
+                # rc-based checks alone are unreliable here (lake env lean
+                # emits errors with rc=0, fixed separately at b17fec7);
+                # the gateway verify returns structured diagnostics so we
+                # accept the alias only when it genuinely elaborates.
+                from ..lsp import lifecycle as gateway_lifecycle
+                av = gateway_lifecycle.verify_file(
+                    dest, write_olean=True, workspace=workspace)
+                if av.get("ok") and not av.get("error"):
+                    print(f"[dedupe] {slug} → goal {canonical_id} "
+                          f"({canonical['slug']}) [build-verified]",
+                          flush=True)
+                else:
+                    # Probe false-positive (or infra error): the alias body
+                    # does not build. Discard it and fall back to a novel
+                    # sub-goal — write original content + dispatch normally.
+                    # Clear the match so the downstream INSERT records this
+                    # goal 'open' instead of aliasing it 'proved'.
+                    why = av.get("error") or "; ".join(
+                        d.get("message", "")
+                        for d in (av.get("diagnostics") or [])
+                        if d.get("severity") == "error"
+                    ) or "alias body failed to build"
+                    print(f"[dedupe] {slug} → goal {canonical_id} "
+                          f"({canonical['slug']}) REJECTED — build-verify "
+                          f"failed ({why[:160]}); treating as novel sub-goal",
+                          flush=True)
+                    canonical_for[idx] = None
+                    dest.write_text(_novel_content(raw), encoding="utf-8")
             else:
-                content = _ensure_imports_subgoal(
-                    src.read_text(encoding="utf-8"),
-                    problem=goal["problem"], workspace=workspace,
-                )
-                content = manifest.inject_defs_opens(
-                    content, problem=goal["problem"], workspace=workspace,
-                )
-                dest.write_text(content, encoding="utf-8")
+                dest.write_text(_novel_content(raw), encoding="utf-8")
             placed.append(dest)
         shutil.copy2(patches[0], scratch_dest)
         # Inject Defs.lean opens into the strategy patch as well — the

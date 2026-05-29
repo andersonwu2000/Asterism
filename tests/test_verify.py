@@ -742,3 +742,36 @@ def test_housekeeping_no_revivals_when_canonical_unproved(
     assert db.get_goal(conn, root)["status"] in ("open", "attempting")
 
 
+def test_revive_shelved_alias_rejected_when_build_verify_fails(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Build-verify guard (BT 2026-05-29): if the rewritten alias body
+    does not elaborate (dedupe probe false-positive — its dedupe_check
+    namespace mis-resolves problem-local names vs the real file), the
+    revival must NOT flip S to proved. S stays shelved and its on-disk
+    file is restored to the sorry-stub so the false alias is never
+    recorded as a proof."""
+    root, shelved, forward = _seed_shelved_aliased_to_proved_forward(
+        conn, tmp_path)
+    s_path = tmp_path / "Problems/p/proofs/L_shelved_s.lean"
+    original = s_path.read_text(encoding="utf-8")
+
+    # Force the gateway build-verify to report a logical build failure.
+    from Tooling.lsp import lifecycle as _gl
+    monkeypatch.setattr(_gl, "verify_file", lambda *a, **kw: {
+        "ok": False,
+        "diagnostics": [{"severity": "error",
+                         "message": "apply failed: could not unify"}],
+    })
+    monkeypatch.setattr(verify, "verify_strategy",
+                        lambda *a, **kw: "proved")
+
+    counts = verify.verify_housekeeping(conn, workspace=tmp_path)
+    assert counts["revived"] == 0
+    assert db.get_goal(conn, shelved)["status"] == "shelved"
+    # File restored to the sorry-stub (no false alias body left behind).
+    assert s_path.read_text(encoding="utf-8") == original
+    assert "sorry" in s_path.read_text(encoding="utf-8")
+
+

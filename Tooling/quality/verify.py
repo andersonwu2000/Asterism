@@ -313,6 +313,31 @@ def _revive_shelved_alias(
         s_abs.write_text(new_text, encoding="utf-8")
     except OSError:
         return False
+    # Build-verify the revived alias before flipping S to 'proved'. Same
+    # rationale as the Backward alias-placement site: the dedupe probe
+    # (`_batch_provable_via_apply`) elaborates in a `dedupe_check`
+    # namespace without the problem's namespace/opens, so its verdict can
+    # diverge from the real build (BT 2026-05-29). Trusting the probe here
+    # wrote 9 invalid g3322 aliases that were flipped 'proved' but didn't
+    # build. Restore the sorry-stub and keep S shelved on failure so the
+    # link can be retried / inspected rather than recording a false proof.
+    from ..lsp import lifecycle as gateway_lifecycle
+    av = gateway_lifecycle.verify_file(
+        s_abs, write_olean=True, workspace=workspace)
+    if not (av.get("ok") and not av.get("error")):
+        why = av.get("error") or "; ".join(
+            d.get("message", "")
+            for d in (av.get("diagnostics") or [])
+            if d.get("severity") == "error"
+        ) or "alias body failed to build"
+        print(f"[verify] shelved-revival g{shelved_id} ← g{canonical_id} "
+              f"REJECTED — build-verify failed ({why[:160]}); "
+              f"restoring stub, staying shelved", flush=True)
+        try:
+            s_abs.write_text(s_text, encoding="utf-8")
+        except OSError:
+            pass
+        return False
     dispatcher._set_goal_terminal_and_propagate(conn, shelved_id, "proved")
     conn.commit()
     # .olean materialization deferred to dedupe site (see strategy-pass
