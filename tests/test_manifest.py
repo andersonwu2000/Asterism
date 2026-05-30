@@ -338,3 +338,70 @@ def test_manifest_cache_dict_compat(tmp_path: Path) -> None:
     assert sorted(cache.keys()) == ["a", "b"]
     items = dict(cache.items())
     assert items["a"].statement == "T_a"
+
+
+def test_library_flag_true(tmp_path: Path) -> None:
+    """`library: true` opts the Problem into Library-ization (M0)."""
+    mfst = manifest.parse(write(tmp_path, "Manifest.md", """---
+problem: optin
+library: true
+---
+# optin
+
+## Statement
+True
+"""))
+    assert mfst.library is True
+
+
+def test_library_flag_absent_defaults_false(tmp_path: Path) -> None:
+    """Missing `library:` -> False (conservative: never auto-promote)."""
+    mfst = manifest.parse(write(tmp_path, "Manifest.md", """---
+problem: noflag
+---
+# noflag
+
+## Statement
+True
+"""))
+    assert mfst.library is False
+
+
+def test_library_flag_explicit_false(tmp_path: Path) -> None:
+    mfst = manifest.parse(write(tmp_path, "Manifest.md", """---
+problem: optout
+library: false
+---
+# optout
+
+## Statement
+True
+"""))
+    assert mfst.library is False
+
+
+def test_library_flag_garbage_is_false(tmp_path: Path) -> None:
+    """Unparseable value -> False, not a crash (typo must not opt in)."""
+    mfst = manifest.parse(write(tmp_path, "Manifest.md", """---
+problem: typo
+library: maybe?
+---
+# typo
+
+## Statement
+True
+"""))
+    assert mfst.library is False
+
+
+def test_library_flag_case_insensitive(tmp_path: Path) -> None:
+    mfst = manifest.parse(write(tmp_path, "Manifest.md", """---
+problem: caps
+library: True
+---
+# caps
+
+## Statement
+True
+"""))
+    assert mfst.library is True

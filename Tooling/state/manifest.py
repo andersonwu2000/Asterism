@@ -42,6 +42,11 @@ class Manifest:
     lemma_hints: list[str] = field(default_factory=list)
     mathlib_hints: list[str] = field(default_factory=list)
     strategic_notes: str = ""
+    # Opt-in: should this Problem's proved decls be Library-ized for
+    # cross-problem reuse + mathlib upstreaming (see
+    # docs/internal/librarian_plan.md). Scope flag, NOT a safety gate —
+    # default False so a missing/garbled field never auto-promotes.
+    library: bool = False
 
     @property
     def all_hints(self) -> list[str]:
@@ -63,6 +68,19 @@ _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 
 def _warn(msg: str) -> None:
     print(f"[manifest] WARN: {msg}", file=sys.stderr)
+
+
+def _coerce_bool(value: object) -> bool:
+    """Frontmatter scalars arrive as strings (`_parse_frontmatter`
+    stores `key: val` as the raw string). Accept `true`/`yes`/`1`
+    (case-insensitive) as True; everything else — including a missing
+    field or unparseable junk — is False. Conservative by design: the
+    `library:` opt-in must never default to True on a typo."""
+    if isinstance(value, bool):
+        return value
+    return str(value if value is not None else "").strip().lower() in (
+        "true", "yes", "1",
+    )
 
 
 def _parse_yaml_list(value: str) -> list[str]:
@@ -277,6 +295,7 @@ def parse(path: Path) -> Manifest:
         lemma_hints=lemma_hints,
         mathlib_hints=mathlib_hints,
         strategic_notes=notes,
+        library=_coerce_bool(fm.get('library')),
     )
 
 
