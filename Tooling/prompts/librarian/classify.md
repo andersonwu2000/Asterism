@@ -14,7 +14,7 @@ Group the declarations into files and order them, mirroring how mathlib organise
 
 A file may depend only on Mathlib and other Library files (never on `Problems/` or a problem's `Defs`). Definitions (e.g. a predicate every lemma mentions) usually belong in their own foundational file that the rest import.
 
-## Output (emit one JSON object)
+## Output: `plan.json` — a single JSON object
 
 ```json
 {
@@ -37,4 +37,4 @@ A file may depend only on Mathlib and other Library files (never on `Problems/` 
 - Keep files cohesive but not huge — split by sub-topic the way mathlib would, not one-decl-per-file unless a decl is genuinely standalone.
 - The dependency graph being acyclic is a hard requirement — if two files would need each other, merge them or move the shared piece down.
 
-Now read `Context.md` and emit your layout plan.
+Now read `Context.md` and write your layout plan to `plan.json`.

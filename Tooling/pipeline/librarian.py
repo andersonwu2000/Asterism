@@ -153,6 +153,16 @@ def parse_classify(json_text: str) -> tuple[ClassifyPlan | None, str]:
 # Verify (semantic checks before commit)
 # ---------------------------------------------------------------------
 
+def dedup_slug_universe(inv) -> set[str]:
+    """Slugs a dedup batch may pass verify: proved declarations PLUS
+    Defs.lean decls. The dedup agent is asked to judge both (a def can
+    reinvent a mathlib notion — see prompts/librarian/dedup.md), so the
+    verify slug set must match the universe shown in Context.md. Keep this
+    the single source of that union — _run_structured and the candidate-row
+    upsert both derive from it."""
+    return {d.slug for d in inv.decls} | set(inv.defs_decls)
+
+
 def verify_dedup(verdicts: list[DedupVerdict],
                  inventory_slugs: set[str]) -> str:
     """Reject a dedup batch that is not actionable. Returns "" on ok."""
@@ -558,7 +568,8 @@ def _run_structured(conn, *, problem, work_kind, workspace,
                                   failure_reason="librarian_schema_invalid",
                                   failure_detail=err)
         inv = _inv.build_inventory(conn, workspace, problem)
-        slugs = {d.slug for d in inv.decls}
+        # Proved declarations AND Defs.lean decls — see dedup_slug_universe.
+        slugs = dedup_slug_universe(inv)
         verr = verify_dedup(verdicts, slugs)
         if verr:
             return PipelineResult(outcome="failed",
@@ -567,6 +578,10 @@ def _run_structured(conn, *, problem, work_kind, workspace,
         for d in inv.decls:
             db.upsert_library_decl(conn, problem=problem, slug=d.slug,
                                    source_goal_id=d.goal_id)
+        for name in inv.defs_decls:
+            # Defs decls have no proof goal — source_goal_id is None.
+            db.upsert_library_decl(conn, problem=problem, slug=name,
+                                   source_goal_id=None)
         commit_dedup(conn, problem, verdicts)
         return PipelineResult(outcome="success")
 

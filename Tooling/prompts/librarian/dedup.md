@@ -22,7 +22,7 @@ Mathlib at `.lake/packages/mathlib/Mathlib/`, our Library at `Library/`. Names d
 - type pattern: `python -m Tooling.knowledge.loogle '<pattern>'`
 - to test lemma-reinvention: strip the declaration's hypotheses to its bare conclusion and ask whether mathlib proves that conclusion directly.
 
-## Verdicts (emit a JSON array, one per declaration)
+## Output: `plan.json` — a JSON array of verdicts, one per declaration
 
 ```json
 { "slug": "...", "verdict": "...", ... }
@@ -41,4 +41,4 @@ Mathlib at `.lake/packages/mathlib/Mathlib/`, our Library at `Library/`. Names d
 - When unsure between `cite-mathlib` and `drop`: `drop` means the call site can inline the mathlib lemma; `cite-mathlib` means it's worth a thin named bridge. If in doubt, `cite-mathlib`.
 - Definitions: prefer `cite-mathlib` (map our def to the mathlib one) over `keep` whenever a mathlib equivalent exists, even under different encoding.
 
-Now audit `Context.md` and emit your verdict array.
+Now audit `Context.md` and write your verdict array to `plan.json`.
