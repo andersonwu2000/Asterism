@@ -144,3 +144,76 @@ def test_dir_all_clean_passes(tmp_path: Path):
         "import Mathlib\nimport Library.foo\n", encoding="utf-8")
     res = gates.check_dir_import_closure(tmp_path)
     assert res.ok
+
+
+# ---------------------------------------------------------------------
+# Gate B — root re-derivation (M3)
+# `prober` is injected (no live gateway needed); these isolate the
+# import-closure + one-liner-budget logic. Real 秒殺 is verified manually
+# against the full reshaped Jordan Library.
+# ---------------------------------------------------------------------
+
+def _ok_prober(*a, **k):
+    return (True, "axioms ok: []")
+
+
+def _fail_prober(msg):
+    def _p(*a, **k):
+        return (False, msg)
+    return _p
+
+
+def _bridge(tmp_path: Path, body: str, imports: str = "import Library.X") -> Path:
+    p = tmp_path / "Root.lean"
+    p.write_text(f"{imports}\ntheorem main := {body}\n", encoding="utf-8")
+    return p
+
+
+def test_gateB_clean_oneliner_passes(tmp_path):
+    p = _bridge(tmp_path, "Library.X.keystone h1 h2")
+    res = gates.check_root_rederivation(
+        p, fq_name="m", module="Root", whitelist=["propext"],
+        workspace=tmp_path, prober=_ok_prober)
+    assert res.ok, res.issues
+
+
+def test_gateB_problems_import_rejected(tmp_path):
+    """A bridge that still imports Problems is not Defs-free."""
+    p = _bridge(tmp_path, "Library.X.keystone",
+                imports="import Library.X\nimport Problems.P.Defs")
+    res = gates.check_root_rederivation(
+        p, fq_name="m", module="Root", whitelist=["propext"],
+        workspace=tmp_path, prober=_ok_prober)
+    assert not res.ok
+    assert any("Problems.P.Defs" in i for i in res.issues)
+
+
+def test_gateB_axiom_failure_rejected(tmp_path):
+    """sorryAx / rogue axiom in the re-derivation chain → reject."""
+    p = _bridge(tmp_path, "Library.X.keystone")
+    res = gates.check_root_rederivation(
+        p, fq_name="m", module="Root", whitelist=["propext"],
+        workspace=tmp_path, prober=_fail_prober("rogue axioms: ['sorryAx']"))
+    assert not res.ok
+    assert any("sorryAx" in i for i in res.issues)
+
+
+def test_gateB_long_proof_flags_missing_keystone(tmp_path):
+    """A long re-derivation body = Library missing a keystone (the
+    completeness half of Gate B). Build may pass but the soft signal
+    fires."""
+    long_body = "by\n  " + " ".join(f"step{i}" for i in range(60))
+    p = _bridge(tmp_path, long_body)
+    res = gates.check_root_rederivation(
+        p, fq_name="m", module="Root", whitelist=["propext"],
+        workspace=tmp_path, prober=_ok_prober)
+    assert not res.ok
+    assert any("missing a keystone" in i for i in res.issues)
+
+
+def test_gateB_missing_bridge_file(tmp_path):
+    res = gates.check_root_rederivation(
+        tmp_path / "nope.lean", fq_name="m", module="Root",
+        whitelist=["propext"], workspace=tmp_path, prober=_ok_prober)
+    assert not res.ok
+    assert any("does not exist" in i for i in res.issues)

@@ -89,12 +89,15 @@ def check_import_closure(
     if not res.ok or not build_verify:
         return res
     # Text check passed and caller wants the authoritative build.
+    # NOTE: verify_file returns a dict (see lsp/lifecycle.py:170), not a
+    # tuple — keys: ok / diagnostics / error / axioms.
     from ...lsp import lifecycle as gateway_lifecycle
-    ok, err = gateway_lifecycle.verify_file(
+    result = gateway_lifecycle.verify_file(
         path, write_olean=False, workspace=workspace)
-    if not ok:
+    if not result.get("ok"):
+        detail = result.get("error") or result.get("diagnostics")
         return GateResult(False, [f"{path.name}: build-verify failed "
-                                  f"({err})"])
+                                  f"({detail})"])
     return GateResult(True, [])
 
 
@@ -109,4 +112,81 @@ def check_dir_import_closure(
         r = check_import_closure(
             f, build_verify=build_verify, workspace=workspace)
         issues.extend(r.issues)
+    return GateResult(not issues, issues)
+
+
+# ---------------------------------------------------------------------
+# Gate B — root re-derivation ("秒殺 root"), plan §2
+# ---------------------------------------------------------------------
+
+# A re-derivation proof should be a one-liner: `:= Library.foo args` or a
+# short `by exact …` / `by simpa … using …`. If deriving the original root
+# from the Library needs *real* work, the Library is missing a keystone
+# (the completeness half of Gate B). This counts the proof-body tokens as
+# a soft signal; the hard gates are import-closure + build + axiom_probe.
+_REDERIVATION_TOKEN_BUDGET = 40
+
+
+def _proof_body(text: str) -> str:
+    """Everything after the first top-level `:=` — best-effort. The
+    bridge file is tiny (imports + one theorem), so the first `:=` is the
+    theorem's definition site."""
+    idx = text.find(":=")
+    return text[idx + 2:] if idx >= 0 else ""
+
+
+def check_root_rederivation(
+    bridge_path: Path, *, fq_name: str, module: str,
+    whitelist: list[str], workspace: Path | None = None,
+    token_budget: int = _REDERIVATION_TOKEN_BUDGET,
+    prober=None,
+) -> GateResult:
+    """Gate B: the original root must be re-derivable from the Library in
+    one short step (plan §2, the 定海神針).
+
+    `bridge_path` is the candidate re-derivation file — a Defs-free
+    `Root.lean` of the shape `import Library.…; theorem main := <one-line>`.
+    `fq_name` / `module` name the theorem + its module for `axiom_probe`.
+
+    Three checks, all hard except the token-budget soft signal:
+      1. import-closure — the bridge imports only Mathlib/Library (Gate A).
+      2. axiom_probe — the bridge builds AND `main`'s axiom set ⊆ whitelist
+         (reuses pipeline/_axiom.axiom_probe — one warm-gateway shot).
+      3. soft: the proof body is short (a long body ⇒ Library missing a
+         keystone; reported as an issue but the build/axiom gates are the
+         authority).
+
+    `prober` overrides the axiom_probe callable (signature
+    `(workspace, *, fq_name, module, whitelist) -> (ok, msg)`) — for tests
+    that must not hit a live gateway. Defaults to the real probe.
+    """
+    issues: list[str] = []
+
+    if not bridge_path.exists():
+        return GateResult(False, [f"{bridge_path}: file does not exist"])
+
+    text = bridge_path.read_text(encoding="utf-8", errors="replace")
+
+    # 1. import-closure (Defs-free: only Mathlib/Library)
+    closure = check_import_closure_text(text, label=bridge_path.name)
+    issues.extend(closure.issues)
+
+    # 2. build + axiom_probe (one shot). `prober` is injectable for
+    # testing; defaults to the real warm-gateway axiom_probe.
+    if prober is None:
+        from ...pipeline._axiom import axiom_probe as prober
+    ws = workspace or bridge_path.parent
+    ok, msg = prober(
+        ws, fq_name=fq_name, module=module, whitelist=whitelist)
+    if not ok:
+        issues.append(f"{bridge_path.name}: re-derivation build/axiom "
+                      f"failed — {msg}")
+
+    # 3. soft signal: re-derivation should be a one-liner
+    body_tokens = len(_proof_body(text).split())
+    if body_tokens > token_budget:
+        issues.append(f"{bridge_path.name}: re-derivation proof is long "
+                      f"({body_tokens} tokens > {token_budget}) — Library "
+                      f"likely missing a keystone (completeness check)")
+
     return GateResult(not issues, issues)

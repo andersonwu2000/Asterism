@@ -1,0 +1,667 @@
+"""Librarian pipeline — turn a proved problem into a mathlib-shaped Library.
+
+Multi-work-kind agent (mirrors Strategist's multi-decision shape), with
+the migrate kind borrowing Builder's LSP + commit-retry loop. See
+docs/internal/librarian_plan.md §12.
+
+Work kinds:
+  - dedup    — emit per-decl verdicts (keep/cite-*/drop/merge) → library_decls
+  - classify — emit a file-layout plan → library_decls target_file/order
+  - migrate  — reshape one decl into its Library file (LSP + retry; later stage)
+
+This module (stage A) is the pure parse + verify + commit core for the
+two structured-JSON work kinds (dedup, classify). The agent stage
+(spawn + Context.md) and the migrate LSP loop are later stages.
+
+Pure surface (no gateway / no LLM):
+  - VERDICTS / DEDUP keys
+  - parse_dedup(json_text)     -> (list[DedupVerdict] | None, err)
+  - parse_classify(json_text)  -> (ClassifyPlan | None, err)
+  - verify_dedup(verdicts, inventory_slugs) -> "" | err
+  - verify_classify(plan, kept_slugs)       -> "" | err
+  - commit_dedup(conn, problem, verdicts)
+  - commit_classify(conn, problem, plan)
+"""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+
+from ..state import db
+
+
+# Verdicts the dedup work kind may emit (mirrors prompts/librarian/dedup.md).
+VERDICTS: frozenset[str] = frozenset({
+    "keep", "cite-mathlib", "cite-library", "drop", "merge",
+})
+
+# Verdicts that must name a citation/canonical target to be actionable.
+_NAMED_VERDICTS: frozenset[str] = frozenset({
+    "cite-mathlib", "cite-library", "drop", "merge",
+})
+
+
+# ---------------------------------------------------------------------
+# Data model
+# ---------------------------------------------------------------------
+
+@dataclass
+class DedupVerdict:
+    slug: str
+    verdict: str
+    citation: str | None = None   # mathlib_name / library_name / canonical
+    reason: str = ""
+
+
+@dataclass
+class ClassifyFile:
+    path: str
+    imports: list[str] = field(default_factory=list)
+    decls: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ClassifyPlan:
+    files: list[ClassifyFile]
+
+
+# ---------------------------------------------------------------------
+# JSON parsing (mirrors strategist.parse_decisions fence-stripping)
+# ---------------------------------------------------------------------
+
+def _load_json(json_text: str):
+    """Strip ```json fences and parse. Returns (obj, "") or (None, err)."""
+    text = json_text.strip()
+    if text.startswith("```"):
+        lines = [ln for ln in text.splitlines()
+                 if not ln.strip().startswith("```")]
+        text = "\n".join(lines)
+    try:
+        return json.loads(text), ""
+    except json.JSONDecodeError as e:
+        return None, f"invalid JSON: {e}"
+
+
+def parse_dedup(json_text: str) -> tuple[list[DedupVerdict] | None, str]:
+    """Parse the dedup agent's verdict array. Accepts a single object or
+    an array. All-or-nothing: any malformed entry rejects the batch."""
+    obj, err = _load_json(json_text)
+    if err:
+        return None, err
+    if isinstance(obj, dict):
+        obj = [obj]
+    if not isinstance(obj, list):
+        return None, f"expected object or array, got {type(obj).__name__}"
+    if not obj:
+        return None, "empty verdict array"
+
+    out: list[DedupVerdict] = []
+    for i, e in enumerate(obj):
+        if not isinstance(e, dict):
+            return None, f"entry {i}: not an object"
+        slug = e.get("slug")
+        verdict = e.get("verdict")
+        if not slug or not isinstance(slug, str):
+            return None, f"entry {i}: missing/invalid 'slug'"
+        if verdict not in VERDICTS:
+            return None, (f"entry {i} ({slug}): verdict {verdict!r} not in "
+                          f"{sorted(VERDICTS)}")
+        # Citation can arrive under several keys depending on verdict.
+        citation = (e.get("citation") or e.get("mathlib_name")
+                    or e.get("library_name") or e.get("canonical"))
+        out.append(DedupVerdict(
+            slug=slug, verdict=verdict,
+            citation=citation if isinstance(citation, str) else None,
+            reason=str(e.get("reason", "")),
+        ))
+    return out, ""
+
+
+def parse_classify(json_text: str) -> tuple[ClassifyPlan | None, str]:
+    """Parse the classify agent's layout plan: `{"files": [...]}`."""
+    obj, err = _load_json(json_text)
+    if err:
+        return None, err
+    if not isinstance(obj, dict):
+        return None, f"expected object with 'files', got {type(obj).__name__}"
+    files_raw = obj.get("files")
+    if not isinstance(files_raw, list) or not files_raw:
+        return None, "missing/empty 'files' array"
+
+    files: list[ClassifyFile] = []
+    for i, f in enumerate(files_raw):
+        if not isinstance(f, dict):
+            return None, f"file {i}: not an object"
+        path = f.get("path")
+        if not path or not isinstance(path, str):
+            return None, f"file {i}: missing/invalid 'path'"
+        decls = f.get("decls")
+        if not isinstance(decls, list) or not decls:
+            return None, f"file {i} ({path}): missing/empty 'decls'"
+        if not all(isinstance(d, str) for d in decls):
+            return None, f"file {i} ({path}): non-string in 'decls'"
+        imports = f.get("imports") or []
+        if not isinstance(imports, list) or \
+                not all(isinstance(m, str) for m in imports):
+            return None, f"file {i} ({path}): 'imports' must be string list"
+        files.append(ClassifyFile(path=path, imports=list(imports),
+                                  decls=list(decls)))
+    return ClassifyPlan(files=files), ""
+
+
+# ---------------------------------------------------------------------
+# Verify (semantic checks before commit)
+# ---------------------------------------------------------------------
+
+def verify_dedup(verdicts: list[DedupVerdict],
+                 inventory_slugs: set[str]) -> str:
+    """Reject a dedup batch that is not actionable. Returns "" on ok."""
+    seen: set[str] = set()
+    for v in verdicts:
+        if v.slug not in inventory_slugs:
+            return f"{v.slug}: not in this problem's inventory"
+        if v.slug in seen:
+            return f"{v.slug}: duplicate verdict"
+        seen.add(v.slug)
+        if v.verdict in _NAMED_VERDICTS and not v.citation:
+            return (f"{v.slug}: verdict {v.verdict!r} requires a named "
+                    f"target (mathlib lemma / Library entry / canonical "
+                    f"sibling)")
+        if v.verdict == "merge" and v.citation not in inventory_slugs:
+            return (f"{v.slug}: merge canonical {v.citation!r} is not a "
+                    f"sibling in this problem")
+    return ""
+
+
+def verify_classify(plan: ClassifyPlan, kept_slugs: set[str]) -> str:
+    """Reject a layout plan that doesn't cover exactly the kept decls,
+    imports a non-Library module, or has an import cycle. "" on ok."""
+    # Every kept decl placed exactly once; no stray slugs.
+    placed: list[str] = [d for f in plan.files for d in f.decls]
+    placed_set = set(placed)
+    if len(placed) != len(placed_set):
+        dup = next(d for d in placed if placed.count(d) > 1)
+        return f"decl {dup!r} placed in more than one file"
+    missing = kept_slugs - placed_set
+    if missing:
+        return f"kept decls not placed: {sorted(missing)}"
+    stray = placed_set - kept_slugs
+    if stray:
+        return f"plan places non-kept decls: {sorted(stray)}"
+
+    # Imports must be Library modules; build the file-module graph.
+    modules = {_path_to_module(f.path): f for f in plan.files}
+    for f in plan.files:
+        for imp in f.imports:
+            if not imp.startswith("Library."):
+                return f"{f.path}: import {imp!r} is not a Library module"
+    # Acyclicity over the intra-plan dependency edges.
+    cycle = _find_cycle({
+        _path_to_module(f.path): [m for m in f.imports if m in modules]
+        for f in plan.files
+    })
+    if cycle:
+        return f"import cycle: {' -> '.join(cycle)}"
+    return ""
+
+
+def _path_to_module(path: str) -> str:
+    """`Library/LinearAlgebra/Jordan.lean` -> `Library.LinearAlgebra.Jordan`."""
+    p = path[:-5] if path.endswith(".lean") else path
+    return p.replace("/", ".").replace("\\", ".")
+
+
+def _find_cycle(graph: dict[str, list[str]]) -> list[str] | None:
+    """DFS cycle detection; returns a cycle path or None."""
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {n: WHITE for n in graph}
+    stack: list[str] = []
+
+    def dfs(n: str) -> list[str] | None:
+        color[n] = GRAY
+        stack.append(n)
+        for m in graph.get(n, []):
+            if color.get(m, BLACK) == GRAY:
+                return stack[stack.index(m):] + [m]
+            if color.get(m, BLACK) == WHITE:
+                r = dfs(m)
+                if r:
+                    return r
+        stack.pop()
+        color[n] = BLACK
+        return None
+
+    for n in graph:
+        if color[n] == WHITE:
+            r = dfs(n)
+            if r:
+                return r
+    return None
+
+
+# ---------------------------------------------------------------------
+# Commit (side effects into library_decls)
+# ---------------------------------------------------------------------
+
+def commit_dedup(conn, problem: str,
+                 verdicts: list[DedupVerdict]) -> None:
+    """Persist dedup verdicts. Each slug must already have a candidate
+    row (created by Step 0 inventory); set_library_verdict advances its
+    lifecycle by the verdict→state map."""
+    for v in verdicts:
+        db.set_library_verdict(conn, problem=problem, slug=v.slug,
+                               verdict=v.verdict, citation=v.citation)
+
+
+def commit_classify(conn, problem: str, plan: ClassifyPlan) -> None:
+    """Persist the layout plan: per decl, its target file + in-file
+    order. Only `deduped` (kept) decls advance to `classified`."""
+    for f in plan.files:
+        for order, slug in enumerate(f.decls):
+            db.set_library_classification(
+                conn, problem=problem, slug=slug,
+                target_file=f.path, target_name=None, file_order=order)
+
+
+# ---------------------------------------------------------------------
+# Stage B — migrate work: commit gate (Gate A import-closure + build)
+# ---------------------------------------------------------------------
+# The migrate work kind reshapes one classified decl into its target
+# Library file, using the same LSP + session-retry loop as Builder
+# (run_with_session_retries). The agent writes `patch.lean` in the
+# sandbox; on a clean spawn the framework runs this commit gate, and on
+# success copies patch.lean to the target Library file + marks the decl
+# 'migrated'. Mirrors builder.py's builder_parse commit window.
+#
+# `migrate_commit_gate` is the pure, gateway-optional core: it takes the
+# candidate patch text + target path and returns (ok, detail). The
+# build-verify step is injectable (`build_verifier`) so it is unit-
+# testable without a live gateway, same pattern as gates.check_root_
+# rederivation's `prober`.
+
+from pathlib import Path as _Path
+
+
+@dataclass
+class MigrateResult:
+    ok: bool
+    detail: str = ""
+
+
+def migrate_commit_gate(
+    patch_text: str, target_path: "_Path", *,
+    build_verifier=None, workspace: "_Path | None" = None,
+) -> MigrateResult:
+    """Decide whether a migrate patch may be committed to its Library
+    file. Two hard checks (mirrors plan §2 Gate A + build):
+
+      1. import-closure — patch imports only Mathlib/Library (Gate A).
+      2. build — `lake env lean` clean (0 errors, 0 sorry) via the warm
+         gateway. Injectable as `build_verifier(text) -> (ok, detail)`
+         so tests run without a gateway; defaults to the real warm probe.
+
+    Does NOT write anything — the caller (migrate parse_fn) does the
+    file copy + `mark_library_migrated` on ok=True.
+    """
+    from ..quality.librarian import gates
+
+    closure = gates.check_import_closure_text(
+        patch_text, label=target_path.name)
+    if not closure.ok:
+        return MigrateResult(False, "; ".join(closure.issues))
+
+    if "sorry" in patch_text:
+        # Cheap pre-check; the build also catches it, but a clear message
+        # here beats a generic "declaration uses sorry" diagnostic.
+        return MigrateResult(False, "patch still contains `sorry`")
+
+    if build_verifier is None:
+        build_verifier = _warm_build_verifier(workspace)
+    ok, detail = build_verifier(patch_text)
+    if not ok:
+        return MigrateResult(False, f"build failed: {detail}")
+    return MigrateResult(True, "")
+
+
+def _warm_build_verifier(workspace):
+    """Default build_verifier: write the candidate to a temp file under
+    the workspace and run the warm-gateway verify. Returns (ok, detail).
+
+    The temp file lives under `Library/` so the gateway resolves the
+    Library import path; it is removed after the probe."""
+    import os
+    import tempfile
+
+    def _verify(patch_text: str) -> tuple[bool, str]:
+        from ..lsp import lifecycle as gateway_lifecycle
+        ws = workspace or _Path(".")
+        libdir = ws / "Library"
+        libdir.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(suffix=".lean", prefix="_migrate_probe_",
+                                   dir=str(libdir))
+        tmp_path = _Path(tmp)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(patch_text)
+            r = gateway_lifecycle.verify_file(
+                tmp_path, write_olean=False, workspace=ws)
+            if "error" in r and r.get("error"):
+                return False, f"verify infra error: {r['error']}"
+            if not r.get("ok"):
+                errs = "; ".join(
+                    d.get("message", "")[:120]
+                    for d in (r.get("diagnostics") or [])
+                    if d.get("severity") == "error"
+                )[:300]
+                return False, errs or "(no error diagnostics)"
+            return True, ""
+        finally:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+    return _verify
+
+
+# ---------------------------------------------------------------------
+# Stage C — Context.md compiler (per work kind)
+# ---------------------------------------------------------------------
+# Librarian context is problem/decl-centric (vs Strategist's goal-tree
+# Context.md). Each work kind sees only what it needs:
+#   dedup    — every proved decl + its statement (the audit surface)
+#   classify — the kept (deduped) decls + their deps (the layout surface)
+#   migrate  — the one target decl's original source + its dedup verdict
+
+
+def _read_statement(conn, problem: str, slug: str) -> str:
+    row = conn.execute(
+        "SELECT statement FROM goals WHERE problem = ? AND slug = ?",
+        (problem, slug),
+    ).fetchone()
+    return (row["statement"] if row else "") or ""
+
+
+def compile_librarian_context(
+    conn, *, problem: str, work_kind: str, attempts_dir,
+    workspace, target_slug: str | None = None,
+) -> "_Path":
+    """Write attempts_dir/Context.md for a Librarian work spawn.
+
+    `work_kind` ∈ {dedup, classify, migrate}. `target_slug` is required
+    for migrate (the single decl to reshape)."""
+    from ..quality.librarian import inventory as _inv
+
+    lines: list[str] = [f"# Librarian — {work_kind} — {problem}", ""]
+
+    if work_kind == "dedup":
+        inv = _inv.build_inventory(conn, workspace, problem)
+        lines.append(f"_{len(inv.decls)} proved declarations to audit._")
+        lines.append("")
+        if inv.defs_decls:
+            lines.append("## Defs.lean declarations")
+            for n in inv.defs_decls:
+                lines.append(f"- `{n}`")
+            lines.append("")
+        lines.append("## Declarations (slug + statement)")
+        lines.append("")
+        for d in inv.decls:
+            stmt = " ".join(_read_statement(conn, problem, d.slug).split())
+            lines.append(f"### {d.slug}")
+            lines.append(f"`{stmt}`" if stmt else "_(no statement)_")
+            lines.append("")
+
+    elif work_kind == "classify":
+        kept = db.library_decls_for(conn, problem, lifecycle="deduped")
+        lines.append(f"_{len(kept)} kept declarations to lay out._")
+        lines.append("")
+        inv = _inv.build_inventory(conn, workspace, problem)
+        deps_by_slug = {d.slug: d.deps for d in inv.decls}
+        lines.append("## Kept declarations (slug + deps + statement)")
+        lines.append("")
+        for r in kept:
+            slug = r["slug"]
+            deps = ", ".join(f"`{s}`" for s in deps_by_slug.get(slug, [])) \
+                or "—"
+            stmt = " ".join(_read_statement(conn, problem, slug).split())
+            lines.append(f"### {slug}")
+            lines.append(f"- deps: {deps}")
+            lines.append(f"- `{stmt}`" if stmt else "- _(no statement)_")
+            lines.append("")
+
+    elif work_kind == "migrate":
+        if not target_slug:
+            raise ValueError("migrate work requires target_slug")
+        row = conn.execute(
+            "SELECT * FROM library_decls WHERE problem = ? AND slug = ?",
+            (problem, target_slug),
+        ).fetchone()
+        lines.append(f"## Migrate `{target_slug}`")
+        lines.append("")
+        if row is not None:
+            lines.append(f"- target file: `{row['target_file']}`")
+            tn = row["target_name"]
+            if tn:
+                lines.append(f"- target name: `{tn}`")
+            if row["verdict"] and row["verdict"] != "keep":
+                lines.append(f"- dedup verdict: {row['verdict']} "
+                             f"→ cite `{row['citation']}`")
+            lines.append("")
+        # Original source — the verbatim signature the agent must copy.
+        src_path = None
+        grow = conn.execute(
+            "SELECT lean_path FROM goals WHERE problem = ? AND slug = ?",
+            (problem, target_slug),
+        ).fetchone()
+        if grow and grow["lean_path"]:
+            src_path = workspace / grow["lean_path"]
+        lines.append("## Original source (copy the signature verbatim)")
+        lines.append("")
+        if src_path and src_path.exists():
+            lines.append("```lean")
+            lines.append(src_path.read_text(encoding="utf-8",
+                                            errors="replace").rstrip())
+            lines.append("```")
+        else:
+            lines.append("_(original source file not found)_")
+        lines.append("")
+
+    else:
+        raise ValueError(f"unknown work_kind: {work_kind!r}")
+
+    ctx = attempts_dir / "Context.md"
+    ctx.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return ctx
+
+
+# ---------------------------------------------------------------------
+# Stage D — run_librarian outer entry (work-kind dispatch)
+# ---------------------------------------------------------------------
+# dedup / classify: one-shot spawn -> parse -> verify -> commit (mirrors
+#   strategist.run_strategist).
+# migrate: LSP + session-retry loop (mirrors builder via
+#   run_with_session_retries); commit gate = migrate_commit_gate.
+
+WORK_KINDS: frozenset[str] = frozenset({"dedup", "classify", "migrate"})
+
+
+def run_librarian(conn, *, problem: str, work_kind: str,
+                  workspace, pipeline_id: str,
+                  target_slug: str | None = None):
+    """Outer Librarian entry. Returns PipelineResult.
+
+    `work_kind` selects the prompt (prompts/librarian/<kind>.md) and the
+    commit path. `target_slug` is required for migrate."""
+    from . import PipelineResult, PROMPT_DIR
+    from .. import agent
+
+    if work_kind not in WORK_KINDS:
+        return PipelineResult(
+            outcome="failed", failure_reason="librarian_bad_work_kind",
+            failure_detail=f"unknown work_kind={work_kind!r}")
+
+    prompt_path = PROMPT_DIR / "librarian" / f"{work_kind}.md"
+    if not prompt_path.exists():
+        return PipelineResult(
+            outcome="failed", failure_reason="librarian_missing_prompt",
+            failure_detail=str(prompt_path))
+
+    attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
+    problem_dir = db.problem_dir(workspace, problem)
+
+    if work_kind == "migrate":
+        return _run_migrate(
+            conn, problem=problem, workspace=workspace,
+            pipeline_id=pipeline_id, target_slug=target_slug,
+            attempts_dir=attempts_dir, problem_dir=problem_dir,
+            prompt_path=prompt_path)
+    return _run_structured(
+        conn, problem=problem, work_kind=work_kind, workspace=workspace,
+        attempts_dir=attempts_dir, problem_dir=problem_dir,
+        prompt_path=prompt_path)
+
+
+def _run_structured(conn, *, problem, work_kind, workspace,
+                    attempts_dir, problem_dir, prompt_path):
+    """dedup / classify: one-shot spawn emitting plan.json, then parse +
+    verify + commit (all-or-nothing). Mirrors run_strategist."""
+    import uuid
+    from . import PipelineResult
+    from .. import agent
+    from ..quality.librarian import inventory as _inv
+
+    compile_librarian_context(
+        conn, problem=problem, work_kind=work_kind,
+        attempts_dir=attempts_dir, workspace=workspace)
+
+    sid = str(uuid.uuid4())
+    rc = agent.spawn_llm(
+        kind="librarian", prompt_path=prompt_path,
+        problem_dir=problem_dir, attempts_dir=attempts_dir,
+        session_id=sid)
+    if rc != 0:
+        return PipelineResult(
+            outcome="failed", failure_reason="agent_error",
+            failure_detail=f"agent rc={rc}")
+
+    out_path = attempts_dir / "plan.json"
+    if not out_path.exists():
+        return PipelineResult(
+            outcome="failed", failure_reason="agent_no_output",
+            failure_detail="no plan.json")
+    text = out_path.read_text(encoding="utf-8")
+
+    if work_kind == "dedup":
+        verdicts, err = parse_dedup(text)
+        if err:
+            return PipelineResult(outcome="failed",
+                                  failure_reason="librarian_schema_invalid",
+                                  failure_detail=err)
+        inv = _inv.build_inventory(conn, workspace, problem)
+        slugs = {d.slug for d in inv.decls}
+        verr = verify_dedup(verdicts, slugs)
+        if verr:
+            return PipelineResult(outcome="failed",
+                                  failure_reason="librarian_verify_failed",
+                                  failure_detail=verr)
+        for d in inv.decls:
+            db.upsert_library_decl(conn, problem=problem, slug=d.slug,
+                                   source_goal_id=d.goal_id)
+        commit_dedup(conn, problem, verdicts)
+        return PipelineResult(outcome="success")
+
+    # classify
+    plan, err = parse_classify(text)
+    if err:
+        return PipelineResult(outcome="failed",
+                              failure_reason="librarian_schema_invalid",
+                              failure_detail=err)
+    kept = {r["slug"] for r in db.library_decls_for(conn, problem,
+                                                    lifecycle="deduped")}
+    verr = verify_classify(plan, kept)
+    if verr:
+        return PipelineResult(outcome="failed",
+                              failure_reason="librarian_verify_failed",
+                              failure_detail=verr)
+    commit_classify(conn, problem, plan)
+    return PipelineResult(outcome="success")
+
+
+def _run_migrate(conn, *, problem, workspace, pipeline_id, target_slug,
+                 attempts_dir, problem_dir, prompt_path):
+    """migrate: LSP + session-retry loop (mirrors builder). The agent
+    writes patch.lean; on a clean spawn migrate_commit_gate decides, and
+    on ok we copy to the target Library file + mark migrated."""
+    import shutil
+    from . import PipelineResult, _write_mcp_config, _safe_glob
+    from ._retry import SpawnCtx, run_with_session_retries
+    from .. import agent
+    from ..core import dispatcher
+
+    if not target_slug:
+        return PipelineResult(outcome="failed",
+                              failure_reason="librarian_bad_work_kind",
+                              failure_detail="migrate requires target_slug")
+    row = conn.execute(
+        "SELECT * FROM library_decls WHERE problem = ? AND slug = ?",
+        (problem, target_slug),
+    ).fetchone()
+    if row is None or row["lifecycle"] != "classified":
+        return PipelineResult(
+            outcome="failed", failure_reason="librarian_not_classified",
+            failure_detail=f"{target_slug} not in 'classified' state")
+    target_file = workspace / row["target_file"]
+    patch_lean = attempts_dir / "patch.lean"
+
+    def migrate_spawn(ctx: SpawnCtx) -> int:
+        if ctx.cold:
+            compile_librarian_context(
+                conn, problem=problem, work_kind="migrate",
+                attempts_dir=ctx.attempts_dir, workspace=workspace,
+                target_slug=target_slug)
+            patch_lean.write_text("", encoding="utf-8")
+        mcp_config_path = _write_mcp_config(
+            attempts_dir=ctx.attempts_dir, workspace=workspace,
+            target=patch_lean, pipeline_id=pipeline_id, problem=problem)
+        return agent.spawn_llm(
+            kind="librarian", prompt_path=prompt_path,
+            problem_dir=problem_dir, attempts_dir=ctx.attempts_dir,
+            session_id=ctx.sid, is_retry=not ctx.cold,
+            retry_context=ctx.retry_context,
+            mcp_config_path=mcp_config_path,
+            inline_prompt=ctx.inline_prompt,
+            timeout_sec_override=ctx.budget_override)
+
+    def migrate_parse():
+        patches = _safe_glob(attempts_dir, "patch*.lean")
+        if not patches:
+            return PipelineResult(outcome="failed",
+                                  failure_reason="agent_no_output",
+                                  failure_detail="no patch.lean")
+        patch_text = patches[0].read_text(encoding="utf-8")
+        if "-- decline:" in patch_text:
+            return PipelineResult(outcome="failed",
+                                  failure_reason="agent_declined",
+                                  failure_detail="migrate declined",
+                                  proposal_md=patch_text)
+        gate = migrate_commit_gate(patch_text, target_file,
+                                   workspace=workspace)
+        if not gate.ok:
+            return PipelineResult(outcome="failed",
+                                  failure_reason="librarian_gate_failed",
+                                  failure_detail=gate.detail)
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(patches[0], target_file)
+        db.mark_library_migrated(conn, problem=problem, slug=target_slug)
+        return PipelineResult(outcome="success")
+
+    def migrate_postmortem(sid: str) -> None:
+        pass  # librarian postmortem prompt optional; skip for now
+
+    return run_with_session_retries(
+        conn=conn, goal_id=None, pipeline_id=pipeline_id,
+        budget_threshold=dispatcher.BUILDER_THRESHOLD,
+        shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+        attempts_dir=attempts_dir,
+        spawn_fn=migrate_spawn, parse_fn=migrate_parse,
+        postmortem_fn=migrate_postmortem, workspace=workspace)

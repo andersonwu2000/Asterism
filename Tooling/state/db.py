@@ -335,11 +335,46 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
     updated_at          TEXT NOT NULL
 );
 
+-- Librarian (docs/internal/librarian_plan.md) — per-declaration state
+-- for turning a proved problem into a mathlib-shaped Library. One row
+-- per original Problems declaration. Pure new table (no FK widening on
+-- existing tables), so a plain CREATE TABLE IF NOT EXISTS suffices for
+-- both fresh and existing DBs — no user_version bump needed.
+--
+-- Columns fill across the three Librarian work kinds:
+--   dedup    → verdict, citation
+--   classify → target_file, target_name, file_order
+--   migrate  → lifecycle advances to 'migrated'
+-- `lifecycle` is the per-decl state machine (plan §7). Terminal states:
+-- 'migrated' (kept + reshaped into Library), 'dropped' (reinvents
+-- mathlib OR merged into a canonical sibling), 'cited' (mathlib/Library
+-- already states it; call sites cite, nothing written).
+CREATE TABLE IF NOT EXISTS library_decls (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    problem         TEXT NOT NULL REFERENCES problems(name),
+    slug            TEXT NOT NULL,
+    source_goal_id  INTEGER NULL DEFAULT NULL REFERENCES goals(id)
+                        ON DELETE SET NULL,
+    verdict         TEXT NULL DEFAULT NULL,
+    citation        TEXT NULL DEFAULT NULL,
+    target_file     TEXT NULL DEFAULT NULL,
+    target_name     TEXT NULL DEFAULT NULL,
+    file_order      INTEGER NULL DEFAULT NULL,
+    lifecycle       TEXT NOT NULL DEFAULT 'candidate'
+                        CHECK(lifecycle IN (
+                          'candidate','deduped','classified',
+                          'migrated','dropped','cited')),
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    UNIQUE(problem, slug)
+);
+
 CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
 CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(status);
 CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue(priority DESC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_sd_problem ON strategist_decisions(problem);
 CREATE INDEX IF NOT EXISTS idx_sd_outcome ON strategist_decisions(outcome);
+CREATE INDEX IF NOT EXISTS idx_libdecls_problem ON library_decls(problem);
 -- idx_sd_batch_id: created after the batch_id ALTER TABLE migration
 -- in init_schema, not here. Inlining it in SCHEMA would fail on pre-
 -- Phase 2.5 DBs (executescript runs CREATE INDEX before the ALTER
@@ -1993,4 +2028,96 @@ def recent_dead_attempts(conn: sqlite3.Connection, *, target_id: int,
         "SELECT * FROM dead_attempts WHERE target_id = ? AND target_kind = ?"
         " ORDER BY id DESC LIMIT ?",
         (target_id, target_kind, k),
+    ))
+
+
+# ---------------------------------------------------------------------
+# library_decls — Librarian per-declaration state (plan §7)
+# ---------------------------------------------------------------------
+
+def upsert_library_decl(conn: sqlite3.Connection, *, problem: str,
+                        slug: str, source_goal_id: int | None) -> int:
+    """Insert a candidate library_decl, or return the existing row's id.
+    Idempotent on (problem, slug) so re-running Step 0 inventory / dedup
+    is safe (re-entrancy, plan §8). Does not reset verdict/lifecycle on
+    an existing row — later work-kind setters advance those."""
+    ts = now()
+    conn.execute(
+        "INSERT INTO library_decls (problem, slug, source_goal_id,"
+        " created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+        " ON CONFLICT(problem, slug) DO NOTHING",
+        (problem, slug, source_goal_id, ts, ts),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT id FROM library_decls WHERE problem = ? AND slug = ?",
+        (problem, slug),
+    ).fetchone()
+    return int(row["id"])
+
+
+def set_library_verdict(conn: sqlite3.Connection, *, problem: str,
+                        slug: str, verdict: str,
+                        citation: str | None = None) -> None:
+    """dedup work: record a verdict + optional citation, advance to
+    'deduped' (or terminal 'dropped'/'cited' when the verdict is final).
+    Verdict→lifecycle: keep→deduped, cite-mathlib/cite-library→cited,
+    drop/merge→dropped."""
+    lifecycle = {
+        "keep": "deduped",
+        "cite-mathlib": "cited",
+        "cite-library": "cited",
+        "drop": "dropped",
+        "merge": "dropped",
+    }.get(verdict, "deduped")
+    conn.execute(
+        "UPDATE library_decls SET verdict = ?, citation = ?,"
+        " lifecycle = ?, updated_at = ? WHERE problem = ? AND slug = ?",
+        (verdict, citation, lifecycle, now(), problem, slug),
+    )
+    conn.commit()
+
+
+def set_library_classification(conn: sqlite3.Connection, *, problem: str,
+                               slug: str, target_file: str,
+                               target_name: str | None,
+                               file_order: int) -> None:
+    """classify work: record file placement + in-file order, advance a
+    'deduped' (keep) decl to 'classified'. No-op on already-terminal
+    (dropped/cited) rows."""
+    conn.execute(
+        "UPDATE library_decls SET target_file = ?, target_name = ?,"
+        " file_order = ?, lifecycle = 'classified', updated_at = ?"
+        " WHERE problem = ? AND slug = ? AND lifecycle = 'deduped'",
+        (target_file, target_name, file_order, now(), problem, slug),
+    )
+    conn.commit()
+
+
+def mark_library_migrated(conn: sqlite3.Connection, *, problem: str,
+                          slug: str) -> None:
+    """migrate work: a 'classified' decl was reshaped into its Library
+    file and passed Gate A + build. Advance to terminal 'migrated'."""
+    conn.execute(
+        "UPDATE library_decls SET lifecycle = 'migrated', updated_at = ?"
+        " WHERE problem = ? AND slug = ? AND lifecycle = 'classified'",
+        (now(), problem, slug),
+    )
+    conn.commit()
+
+
+def library_decls_for(conn: sqlite3.Connection, problem: str,
+                      *, lifecycle: str | None = None) -> list[sqlite3.Row]:
+    """All library_decls for a problem, optionally filtered to one
+    lifecycle state. Ordered by file_order then id for stable display."""
+    if lifecycle is None:
+        return list(conn.execute(
+            "SELECT * FROM library_decls WHERE problem = ?"
+            " ORDER BY file_order IS NULL, file_order, id",
+            (problem,),
+        ))
+    return list(conn.execute(
+        "SELECT * FROM library_decls WHERE problem = ? AND lifecycle = ?"
+        " ORDER BY file_order IS NULL, file_order, id",
+        (problem, lifecycle),
     ))
