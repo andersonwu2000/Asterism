@@ -608,7 +608,7 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_slug,
     writes patch.lean; on a clean spawn migrate_commit_gate decides, and
     on ok we copy to the target Library file + mark migrated."""
     import shutil
-    from . import PipelineResult, _write_mcp_config, _safe_glob
+    from . import PipelineResult, _write_mcp_config
     from ._retry import SpawnCtx, run_with_session_retries
     from .. import agent
     from ..core import dispatcher
@@ -648,12 +648,15 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_slug,
             timeout_sec_override=ctx.budget_override)
 
     def migrate_parse():
-        patches = _safe_glob(attempts_dir, "patch*.lean")
-        if not patches:
+        # The migrate sandbox is exactly `patch.lean` (written on cold spawn,
+        # edited in place via LSP). Read that one file — a glob + [0] would
+        # pick a nondeterministic match if a stray patch*.lean lingered, and
+        # could commit the wrong file into the Library.
+        if not patch_lean.exists():
             return PipelineResult(outcome="failed",
                                   failure_reason="agent_no_output",
                                   failure_detail="no patch.lean")
-        patch_text = patches[0].read_text(encoding="utf-8")
+        patch_text = patch_lean.read_text(encoding="utf-8")
         if "-- decline:" in patch_text:
             return PipelineResult(outcome="failed",
                                   failure_reason="agent_declined",
@@ -666,7 +669,7 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_slug,
                                   failure_reason="librarian_gate_failed",
                                   failure_detail=gate.detail)
         target_file.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(patches[0], target_file)
+        shutil.copy2(patch_lean, target_file)
         db.mark_library_migrated(conn, problem=problem, slug=target_slug)
         return PipelineResult(outcome="success")
 

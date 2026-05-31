@@ -29,16 +29,16 @@ Mathlib at `.lake/packages/mathlib/Mathlib/`, our Library at `Library/`. Names d
 ```
 
 - **keep** — genuine contribution, not in mathlib/Library. `{"slug":"...","verdict":"keep","reason":"..."}`
-- **cite-mathlib** — a mathlib lemma already states this. `{"slug":"...","verdict":"cite-mathlib","mathlib_name":"...","reason":"..."}`
+- **cite-mathlib** — reinvents a mathlib definition or load-bearing lemma; it does NOT enter the Library — dependents switch to the mathlib one directly. The recorded name is the substitution map reshaping uses. `{"slug":"...","verdict":"cite-mathlib","mathlib_name":"...","reason":"..."}`
 - **cite-library** — already in our Library. `{"slug":"...","verdict":"cite-library","library_name":"...","reason":"..."}`
-- **drop** — reinvents mathlib; not worth even a citation (trivial once the right mathlib lemma is named). `{"slug":"...","verdict":"drop","mathlib_name":"...","reason":"..."}`
+- **drop** — reinvents a throwaway mathlib lemma nothing else references; dependents just call the mathlib lemma inline. `{"slug":"...","verdict":"drop","mathlib_name":"...","reason":"..."}`
 - **merge** — duplicate of a sibling in THIS problem. `{"slug":"...","verdict":"merge","canonical":"<sibling slug>","reason":"..."}`
 
 ## Guidance
 
 - Every non-`keep` verdict must name the concrete mathlib lemma / Library entry / canonical sibling. A verdict without a name is not actionable — search harder or mark `keep`.
 - Default to `keep` only after a real search came up empty. Most of a problem's value is a handful of keystone lemmas; the bulk is often scaffolding that reduces to mathlib.
-- When unsure between `cite-mathlib` and `drop`: `drop` means the call site can inline the mathlib lemma; `cite-mathlib` means it's worth a thin named bridge. If in doubt, `cite-mathlib`.
+- Reinvented decls never get a Library copy — both `cite-mathlib` and `drop` mean "use mathlib's instead". Pick `cite-mathlib` when the name mapping matters for reshaping dependents (a definition, or a lemma other kept statements mention); `drop` when nothing else references it. If in doubt, `cite-mathlib`.
 - Definitions: prefer `cite-mathlib` (map our def to the mathlib one) over `keep` whenever a mathlib equivalent exists, even under different encoding.
 
 Now audit `Context.md` and write your verdict array to `plan.json`.
