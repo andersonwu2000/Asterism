@@ -163,17 +163,22 @@ def _fail_prober(msg):
     return _p
 
 
-def _bridge(tmp_path: Path, body: str, imports: str = "import Library.X") -> Path:
+_STMT = "True"
+
+
+def _bridge(tmp_path: Path, body: str, imports: str = "import Library.X",
+            statement: str = _STMT) -> Path:
     p = tmp_path / "Root.lean"
-    p.write_text(f"{imports}\ntheorem main := {body}\n", encoding="utf-8")
+    p.write_text(f"{imports}\ntheorem main : {statement} := {body}\n",
+                 encoding="utf-8")
     return p
 
 
 def test_gateB_clean_oneliner_passes(tmp_path):
     p = _bridge(tmp_path, "Library.X.keystone h1 h2")
     res = gates.check_root_rederivation(
-        p, fq_name="m", module="Root", whitelist=["propext"],
-        workspace=tmp_path, prober=_ok_prober)
+        p, statement=_STMT, fq_name="m", module="Root",
+        whitelist=["propext"], workspace=tmp_path, prober=_ok_prober)
     assert res.ok, res.issues
 
 
@@ -182,8 +187,8 @@ def test_gateB_problems_import_rejected(tmp_path):
     p = _bridge(tmp_path, "Library.X.keystone",
                 imports="import Library.X\nimport Problems.P.Defs")
     res = gates.check_root_rederivation(
-        p, fq_name="m", module="Root", whitelist=["propext"],
-        workspace=tmp_path, prober=_ok_prober)
+        p, statement=_STMT, fq_name="m", module="Root",
+        whitelist=["propext"], workspace=tmp_path, prober=_ok_prober)
     assert not res.ok
     assert any("Problems.P.Defs" in i for i in res.issues)
 
@@ -192,7 +197,8 @@ def test_gateB_axiom_failure_rejected(tmp_path):
     """sorryAx / rogue axiom in the re-derivation chain → reject."""
     p = _bridge(tmp_path, "Library.X.keystone")
     res = gates.check_root_rederivation(
-        p, fq_name="m", module="Root", whitelist=["propext"],
+        p, statement=_STMT, fq_name="m", module="Root",
+        whitelist=["propext"],
         workspace=tmp_path, prober=_fail_prober("rogue axioms: ['sorryAx']"))
     assert not res.ok
     assert any("sorryAx" in i for i in res.issues)
@@ -205,15 +211,41 @@ def test_gateB_long_proof_flags_missing_keystone(tmp_path):
     long_body = "by\n  " + " ".join(f"step{i}" for i in range(60))
     p = _bridge(tmp_path, long_body)
     res = gates.check_root_rederivation(
-        p, fq_name="m", module="Root", whitelist=["propext"],
-        workspace=tmp_path, prober=_ok_prober)
+        p, statement=_STMT, fq_name="m", module="Root",
+        whitelist=["propext"], workspace=tmp_path, prober=_ok_prober)
     assert not res.ok
     assert any("missing a keystone" in i for i in res.issues)
 
 
 def test_gateB_missing_bridge_file(tmp_path):
     res = gates.check_root_rederivation(
-        tmp_path / "nope.lean", fq_name="m", module="Root",
+        tmp_path / "nope.lean", statement=_STMT, fq_name="m", module="Root",
         whitelist=["propext"], workspace=tmp_path, prober=_ok_prober)
     assert not res.ok
     assert any("does not exist" in i for i in res.issues)
+
+
+def test_gateB_wrong_statement_rejected(tmp_path):
+    """Statement-pin (check 0): a bridge that builds, has clean axioms,
+    imports only Library, and is one line — but proves a DIFFERENT
+    (weaker) theorem than the original root — must be rejected. Without
+    this, `theorem main : True := trivial` would silently pass and void
+    the whole `Library ≥ original` guarantee."""
+    p = _bridge(tmp_path, "by trivial", statement="True")
+    res = gates.check_root_rederivation(
+        p, statement="0 < 1", fq_name="m", module="Root",
+        whitelist=["propext"], workspace=tmp_path, prober=_ok_prober)
+    assert not res.ok
+    assert any("does not prove the original root statement" in i
+               for i in res.issues)
+
+
+def test_gateB_statement_pin_ignores_whitespace(tmp_path):
+    """The pin compares modulo whitespace, so the bridge may format the
+    signature differently (extra spaces / line breaks) without tripping
+    the pin — only a genuine statement mismatch is rejected."""
+    p = _bridge(tmp_path, "Library.X.k", statement="0  <\n  1")
+    res = gates.check_root_rederivation(
+        p, statement="0 < 1", fq_name="m", module="Root",
+        whitelist=["propext"], workspace=tmp_path, prober=_ok_prober)
+    assert res.ok, res.issues

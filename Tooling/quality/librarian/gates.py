@@ -135,8 +135,15 @@ def _proof_body(text: str) -> str:
     return text[idx + 2:] if idx >= 0 else ""
 
 
+def _normalize_ws(s: str) -> str:
+    """Collapse all runs of whitespace to a single space + strip. Used to
+    compare the bridge's `theorem main` signature against the original
+    root statement modulo formatting (newlines, indentation, alignment)."""
+    return " ".join(s.split())
+
+
 def check_root_rederivation(
-    bridge_path: Path, *, fq_name: str, module: str,
+    bridge_path: Path, *, statement: str, fq_name: str, module: str,
     whitelist: list[str], workspace: Path | None = None,
     token_budget: int = _REDERIVATION_TOKEN_BUDGET,
     prober=None,
@@ -145,10 +152,20 @@ def check_root_rederivation(
     one short step (plan §2, the 定海神針).
 
     `bridge_path` is the candidate re-derivation file — a Defs-free
-    `Root.lean` of the shape `import Library.…; theorem main := <one-line>`.
-    `fq_name` / `module` name the theorem + its module for `axiom_probe`.
+    `Root.lean` of the shape `import Library.…; theorem main : <stmt> :=
+    <one-line>`. `statement` is the ORIGINAL root's statement (verbatim
+    from `goals.statement`); the bridge MUST prove exactly it. `fq_name`
+    / `module` name the theorem + its module for `axiom_probe`.
 
-    Three checks, all hard except the token-budget soft signal:
+    Four checks, all hard except the token-budget soft signal:
+      0. statement-pin — the bridge's `theorem main : <sig> :=` signature
+         equals the original statement (modulo whitespace). WITHOUT this,
+         a bridge `theorem main : True := trivial` passes import-closure,
+         builds, has clean axioms, and is one line — silently "proving"
+         the wrong theorem and defeating the entire gate. The agent has
+         filesystem edit access to the Library dir (it may need to fix a
+         mis-stated Library lemma), so it CAN clobber the signature; this
+         re-checks rather than trusting framework skeleton generation.
       1. import-closure — the bridge imports only Mathlib/Library (Gate A).
       2. axiom_probe — the bridge builds AND `main`'s axiom set ⊆ whitelist
          (reuses pipeline/_axiom.axiom_probe — one warm-gateway shot).
@@ -166,6 +183,17 @@ def check_root_rederivation(
         return GateResult(False, [f"{bridge_path}: file does not exist"])
 
     text = bridge_path.read_text(encoding="utf-8", errors="replace")
+
+    # 0. statement-pin — the bridge must prove the original statement, not
+    # a weaker/different one. Look for `theorem main : <statement> :=` in
+    # the whitespace-normalized file. The needle's `:=` terminator stops a
+    # prefix-match (e.g. statement `P` falsely matching `P ∧ Q`).
+    needle = f"theorem main : {_normalize_ws(statement)} :="
+    if needle not in _normalize_ws(text):
+        issues.append(
+            f"{bridge_path.name}: bridge does not prove the original root "
+            f"statement (expected `theorem main : {_normalize_ws(statement)} "
+            f":=`)")
 
     # 1. import-closure (Defs-free: only Mathlib/Library)
     closure = check_import_closure_text(text, label=bridge_path.name)
