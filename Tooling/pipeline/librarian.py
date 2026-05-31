@@ -644,6 +644,14 @@ def compile_librarian_context(
         ).fetchone()
         if grow and grow["lean_path"]:
             src_path = workspace / grow["lean_path"]
+        else:
+            # Defs.lean declarations are not goals (no lean_path) — fall back
+            # to the problem's Defs.lean so the agent still sees the verbatim
+            # definition it must reproduce (Gate D rfl-checks it afterwards).
+            cand = db.problem_dir(workspace, problem) / "Defs.lean"
+            if target_slug in _inv.defs_decls(workspace, problem) \
+                    and cand.exists():
+                src_path = cand
         lines.append("## Original source (copy the signature verbatim)")
         lines.append("")
         if src_path and src_path.exists():

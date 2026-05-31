@@ -437,6 +437,29 @@ def test_context_migrate_embeds_source(conn, tmp_path):
     assert "signature verbatim" in text
 
 
+def test_context_migrate_defs_decl_embeds_defs_source(conn, tmp_path):
+    # A Defs.lean declaration has no goal row (no lean_path); the migrate
+    # context falls back to the problem's Defs.lean for the verbatim source.
+    pdir = tmp_path / "Problems" / "p"
+    pdir.mkdir(parents=True)
+    (pdir / "Defs.lean").write_text(
+        "import Mathlib\nnamespace Problems.p\n"
+        "def IsFoo : Prop := True\nend Problems.p\n", encoding="utf-8")
+    db.upsert_library_decl(conn, problem="p", slug="IsFoo",
+                           source_goal_id=None)
+    db.set_library_verdict(conn, problem="p", slug="IsFoo", verdict="keep")
+    db.set_library_classification(conn, problem="p", slug="IsFoo",
+                                  target_file="Library/P/Defs.lean",
+                                  target_name=None, file_order=0)
+    ad = tmp_path / "att"; ad.mkdir()
+    ctx = lib.compile_librarian_context(
+        conn, problem="p", work_kind="migrate", attempts_dir=ad,
+        workspace=tmp_path, target_slug="IsFoo")
+    text = ctx.read_text(encoding="utf-8")
+    assert "def IsFoo : Prop := True" in text   # Defs.lean source embedded
+    assert "Library/P/Defs.lean" in text
+
+
 def test_context_migrate_requires_target(conn, tmp_path):
     ad = tmp_path / "att"; ad.mkdir()
     with pytest.raises(ValueError):
