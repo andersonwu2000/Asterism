@@ -261,6 +261,35 @@ def cmd_init(args: argparse.Namespace) -> int:
         )
         return 1
 
+    # Statement-hygiene gate: the root statement must not hard-code its
+    # own `Problems.<problem>.` namespace prefix. The theorem already
+    # lives inside `namespace Problems.<problem>` (+ `import …Defs`), so
+    # every self-namespace name resolves bare — writing the fully-
+    # qualified form is a style slip, not a necessity. It matters
+    # downstream: the Librarian re-derives this exact statement from a
+    # Defs-free Library bridge (Gate B 秒殺). A bare `IsJordanForm`
+    # re-resolves to the migrated `Library.…` version by swapping the
+    # import/open; a hard-coded `Problems.<problem>.IsJordanForm` would
+    # have to be string-rewritten — fragile, and the whole reason to
+    # catch it at the source. (Cross-problem `Problems.<other>.` refs are
+    # out of scope: 0 exist today, and a real one should be a Library
+    # citation, not a raw Problems reference.)
+    self_prefix = f"Problems.{problem}."
+    if self_prefix in statement:
+        print(
+            f"FAIL: root statement hard-codes its own namespace "
+            f"`{self_prefix}`.\n"
+            f"  Drop the prefix and use the bare name — the theorem is "
+            f"already inside\n"
+            f"  `namespace Problems.{problem}` with `import "
+            f"Problems.{problem}.Defs`,\n"
+            f"  so e.g. `{self_prefix}Foo` should be written `Foo`.\n"
+            f"  (Keeps the statement Library-portable for the Librarian's "
+            f"re-derivation gate.)",
+            file=sys.stderr,
+        )
+        return 1
+
     proofs_dir = pdir / "proofs"
     proofs_dir.mkdir(parents=True, exist_ok=True)
 
