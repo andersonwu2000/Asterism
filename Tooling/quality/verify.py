@@ -622,6 +622,22 @@ def root_integrity_gate(
     ).fetchone()
     if root_id is not None:
         db.set_integrity_verified(conn, int(root_id["id"]))
+        # Library opt-in (plan §6): a clean, fully-proved root is the
+        # Librarian's entry trigger. Enqueue once here — this gate body
+        # runs exactly once per root becoming integrity-verified (the
+        # dispatcher's `unverified_proved_roots` loop skips already-marked
+        # roots; the marker only clears on cascade rollback, which re-runs
+        # the gate after re-proof, the correct re-trigger). priority=0 is
+        # the queue floor (proof work runs at 2-20), so library harvest
+        # never preempts proof search — it drains only when the daemon is
+        # otherwise idle. The Librarian pipeline derives its own work-kind
+        # (dedup→classify→migrate) from library_decls state and
+        # re-enqueues itself until every kept decl is migrated.
+        if mfst.library:
+            db.enqueue(conn, kind="Librarian", target_id=problem,
+                       target_kind="Problem", priority=0)
+            print(f"[integrity] {problem}: library opt-in — "
+                  f"enqueued Librarian", flush=True)
     print(f"[integrity] {problem}: root axioms ok {axiom_msg}", flush=True)
     n = cleanup_cascade_backups(conn, workspace, problem)
     if n:

@@ -289,6 +289,78 @@ def test_verify_housekeeping_does_not_skip_probe_with_no_manifests(
 
 
 # ---------------------------------------------------------------------
+# root_integrity_gate — library opt-in enqueues the Librarian (Phase 2)
+# ---------------------------------------------------------------------
+
+def _seed_proved_root(conn, problem="p"):
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
+        "VALUES (?, ?, ?, 1)",
+        (problem, f"Problems/{problem}/Manifest.md", db.now()),
+    )
+    gid = db.insert_goal(
+        conn, problem=problem, slug="main",
+        lean_path=f"Problems/{problem}/proofs/L_main.lean",
+        statement="True", origin="root", depth=0,
+    )
+    db.update_goal_status(conn, gid, "proved")
+    return gid
+
+
+def _queue_rows(conn):
+    return list(conn.execute(
+        "SELECT kind, target_id, target_kind, priority FROM queue"))
+
+
+def test_gate_enqueues_librarian_when_library_optin(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """A clean, fully-proved root with `library: true` opt-in enqueues
+    one Librarian job at the queue floor (priority 0). The autouse
+    conftest stub returns an axiom-clean probe → happy path."""
+    _seed_proved_root(conn)
+    mfst = manifest.Manifest(problem="p", statement="True", library=True)
+    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    rows = _queue_rows(conn)
+    assert len(rows) == 1
+    r = rows[0]
+    assert (r["kind"], r["target_id"], r["target_kind"]) == (
+        "Librarian", "p", "Problem")
+    # priority 0 = queue floor: never preempts proof work (2-20).
+    assert r["priority"] == 0
+
+
+def test_gate_no_librarian_when_library_optout(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Default (`library` unset) must NOT harvest — opt-in only."""
+    _seed_proved_root(conn)
+    mfst = manifest.Manifest(problem="p", statement="True")
+    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    assert _queue_rows(conn) == []
+
+
+def test_gate_no_librarian_on_rogue_axiom_even_if_optin(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dirty root (rogue axioms) must never be harvested, even with
+    the opt-in set — the gate returns at the probe-failure branch,
+    before the integrity-verified + enqueue block."""
+    _seed_proved_root(conn)
+    monkeypatch.setattr("Tooling.pipeline._axiom.axiom_probe",
+                        lambda *a, **k: (False, "rogue axioms: ['sorryAx']"))
+    # Stub the cascade bisect (it would otherwise reach the real
+    # gateway). None mirrors "sorryAx at root but no source found" —
+    # the gate logs and returns without enqueueing.
+    monkeypatch.setattr(verify, "bisect_sorryax_source",
+                        lambda *a, **k: None)
+    mfst = manifest.Manifest(problem="p", statement="True", library=True)
+    verify.root_integrity_gate(conn, tmp_path, "p", mfst)
+    assert _queue_rows(conn) == []
+
+
+# ---------------------------------------------------------------------
 # Builder — rejects axiom-violation in both Phase 1 and Phase 2
 # ---------------------------------------------------------------------
 

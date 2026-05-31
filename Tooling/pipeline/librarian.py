@@ -501,9 +501,17 @@ def run_librarian(conn, *, problem: str, work_kind: str,
     """Outer Librarian entry. Returns PipelineResult.
 
     `work_kind` selects the prompt (prompts/librarian/<kind>.md) and the
-    commit path. `target_slug` is required for migrate."""
+    commit path. `target_slug` is required for migrate.
+
+    `finish` is the terminal, agentless step (plan §4/§5): no prompt, no
+    LLM — it records provenance into Library/INDEX.md and terminates the
+    chain. Handled before the prompt-path so the missing-prompt guard
+    doesn't reject it."""
     from . import PipelineResult, PROMPT_DIR
     from .. import agent
+
+    if work_kind == "finish":
+        return _run_finish(conn, problem=problem, workspace=workspace)
 
     if work_kind not in WORK_KINDS:
         return PipelineResult(
@@ -683,3 +691,90 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_slug,
         attempts_dir=attempts_dir,
         spawn_fn=migrate_spawn, parse_fn=migrate_parse,
         postmortem_fn=migrate_postmortem, workspace=workspace)
+
+
+# ---------------------------------------------------------------------
+# Stage E — finish (terminal, agentless): provenance + chain termination
+# ---------------------------------------------------------------------
+
+def _upsert_index_section(index_text: str, problem: str,
+                          section_body: str) -> str:
+    """Idempotently replace (or append) the `## <problem>` section in
+    INDEX.md. A re-run of finish for the same problem rewrites its
+    section in place rather than duplicating it. Sections are delimited
+    by `## ` headers; the replaced span runs to the next `## ` (or EOF)."""
+    header = f"## {problem}"
+    lines = index_text.splitlines()
+    start = None
+    for i, ln in enumerate(lines):
+        if ln.strip() == header:
+            start = i
+            break
+    new_section = f"{header}\n\n{section_body.rstrip()}\n"
+    if start is None:
+        base = index_text.rstrip()
+        prefix = (base + "\n\n") if base else _INDEX_PREAMBLE
+        return prefix + new_section
+    # Find end of this section (next top-level `## ` or EOF).
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        if lines[j].startswith("## "):
+            end = j
+            break
+    before = "\n".join(lines[:start]).rstrip()
+    after = "\n".join(lines[end:]).strip()
+    out = (before + "\n\n" if before else _INDEX_PREAMBLE) + new_section
+    if after:
+        out += "\n" + after + "\n"
+    return out
+
+
+_INDEX_PREAMBLE = (
+    "# Library Index\n\n"
+    "Provenance of declarations harvested from proved Problems, by "
+    "source problem. Written by the Librarian `finish` step.\n\n"
+)
+
+
+def _run_finish(conn, *, problem: str, workspace):
+    """Terminal Librarian step (plan §5): record migrated provenance into
+    `Library/INDEX.md` and terminate the chain. Agentless, mechanical.
+
+    INDEX presence is the idempotent 'finish done' marker the dispatcher's
+    `_derive_librarian_work` reads — so this step MUST write INDEX even
+    when the (deferred) live Gate B re-derivation is unavailable, else the
+    `all-migrated → finish` derivation would re-enqueue forever.
+
+    Live Gate B (`check_root_rederivation`) is deferred: it needs a
+    Defs-free bridge `Root.lean` placed under the `Library/` lake source
+    root (gateway `axiom_probe` compiles a dotted module), which is the
+    same probe-file-staging design point logged as tech debt. Until that
+    staging exists, the bridge is not built and Gate B is recorded as
+    `deferred` rather than replicating the orphan-on-kill pattern."""
+    from . import PipelineResult
+
+    migrated = db.library_decls_for(conn, problem, lifecycle="migrated")
+    if not migrated:
+        # Nothing was harvested into the Library (e.g. dedup kept nothing,
+        # everything cited/dropped). No provenance to record; clean no-op.
+        return PipelineResult(outcome="success")
+
+    lines = [f"_Harvested {db.now()} — {len(migrated)} declaration(s)._", ""]
+    for r in migrated:
+        name = r["target_name"] or r["slug"]
+        target = r["target_file"] or "?"
+        lines.append(f"- `{name}` → `{target}`")
+    lines.append("")
+    lines.append(
+        "Gate B (root re-derivation): deferred — live `axiom_probe` "
+        "needs a Defs-free bridge under the Library lake root "
+        "(probe-file staging, see STATUS tech debt).")
+    section = "\n".join(lines)
+
+    index = workspace / "Library" / "INDEX.md"
+    index.parent.mkdir(parents=True, exist_ok=True)
+    existing = (index.read_text(encoding="utf-8", errors="replace")
+                if index.exists() else "")
+    index.write_text(_upsert_index_section(existing, problem, section),
+                     encoding="utf-8")
+    return PipelineResult(outcome="success")

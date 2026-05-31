@@ -45,6 +45,16 @@ def _seed_workspace(tmp_path: Path) -> Path:
         "# p\n\n## Statement\nTrue\n",
         encoding="utf-8")
     (pdir / "Defs.lean").write_text("import Mathlib\n", encoding="utf-8")
+    # cmd_init requires a hand-written Root.lean (the framework no longer
+    # auto-generates it from the Manifest). Author the canonical-shape
+    # stub so init can extract `goals.statement` from the signature.
+    (pdir / "Root.lean").write_text(
+        "import Mathlib\n"
+        "import Problems.p.Defs\n"
+        "namespace Problems.p\n"
+        "theorem main : True := by sorry\n"
+        "end Problems.p\n",
+        encoding="utf-8")
     # Asterism.yaml: pool=1 to keep the test deterministic; budget high.
     (tmp_path / "Asterism.yaml").write_text(
         "dispatch:\n  pool: 1\n  budget_sec: 60\n", encoding="utf-8")
@@ -63,6 +73,19 @@ def test_e2e_root_proved_through_dispatcher(
     """
     monkeypatch.chdir(tmp_path)
     pdir = _seed_workspace(tmp_path)
+
+    # Stub the real-toolchain lake builds. Two gates added by the
+    # "hand-written Root.lean + dual type-check" change run a subprocess
+    # `lake build` that needs a lakefile + Lean toolchain this tmp
+    # workspace doesn't have:
+    #   - cmd_init's dual type-check gate (pipeline._lake.lake_build)
+    #   - dispatcher._verify_problem lazy gate (lake_build_modules)
+    # Neither is what this e2e exercises (the dispatcher loop is); the
+    # gateway-driven verify is already stubbed below. Stub both green.
+    from Tooling.pipeline import _lake as _lake_mod
+    monkeypatch.setattr(_lake_mod, "lake_build", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(_lake_mod, "lake_build_modules",
+                        lambda *a, **k: (True, ""))
 
     # Init Problem (Root.lean + DB row)
     cli_args = argparse.Namespace(problem="p", force=False)
@@ -169,6 +192,16 @@ def test_e2e_root_proved_through_dispatcher(
 
     # Run dispatcher; once=True exits when the queue empties.
     dispatcher.run(tmp_path, once=True)
+
+    # dispatcher.run's exit paths call claude_cli.request_shutdown(),
+    # which SETs a module-global threading.Event. It is process-global
+    # and survives this test — leaving it set makes every later test's
+    # claude_cli.spawn() bail early (SpawnRC.SHUTDOWN) before reaching
+    # the captured Popen, so e.g. test_llm_provider's `calls[0]` is
+    # empty → IndexError. Reset it here (the dedicated test hook) so
+    # this e2e doesn't pollute downstream tests via run-order.
+    from Tooling.llm import claude_cli
+    claude_cli._reset_shutdown_for_tests()
 
     # Assert root proved + a Builder pipeline finished + no spurious
     # dead_attempts (cascade should be clean).

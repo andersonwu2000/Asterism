@@ -2087,6 +2087,22 @@ def flush_queue_kind(conn: sqlite3.Connection, *, kind: str) -> int:
     return cur.rowcount or 0
 
 
+def queue_contains(conn: sqlite3.Connection, *, kind: str,
+                   target_id: str) -> bool:
+    """True iff a queue entry of `kind` for `target_id` is pending.
+
+    The dispatcher's pop loop dedups only against the in-flight `running`
+    set; it does NOT dedup two queued rows against each other (and a row
+    popped while a same-key job runs is silently dropped). The Librarian
+    re-enqueue path calls this before enqueueing so a chain step is never
+    queued twice for one problem."""
+    row = conn.execute(
+        "SELECT 1 FROM queue WHERE kind = ? AND target_id = ? LIMIT 1",
+        (kind, target_id),
+    ).fetchone()
+    return row is not None
+
+
 # ---------------------------------------------------------------------
 # Dead attempt helpers
 # ---------------------------------------------------------------------

@@ -1381,6 +1381,78 @@ def _derive_strategist_trigger(conn: sqlite3.Connection,
     return ("routine", pending_id)
 
 
+def _librarian_index_has(workspace: Path, problem: str) -> bool:
+    """True iff `Library/INDEX.md` already records `problem` — the
+    idempotent 'finish done' marker. Reading the file (rather than a DB
+    column) keeps the lifecycle state machine at four states
+    (candidate→deduped→classified→migrated); INDEX presence is the only
+    thing distinguishing 'all migrated, finish pending' from 'finished'."""
+    index = workspace / "Library" / "INDEX.md"
+    if not index.exists():
+        return False
+    text = index.read_text(encoding="utf-8", errors="replace")
+    # Line-exact match on the section header — a substring test would let
+    # problem `p` falsely match section `## pp`. Mirrors the header
+    # comparison in librarian._upsert_index_section.
+    header = f"## {problem}"
+    return any(ln.strip() == header for ln in text.splitlines())
+
+
+def _derive_librarian_work(
+    conn: sqlite3.Connection, problem: str, workspace: Path,
+) -> tuple[str | None, str | None]:
+    """Derive the next Librarian work_kind from library_decls state
+    (plan §5). Pure read. Returns (work_kind, target_slug):
+
+      - no rows                        → ('dedup', None)
+      - any 'candidate' (un-verdicted) → ('dedup', None)   [defensive]
+      - any 'deduped' (kept, unplaced) → ('classify', None)
+      - any 'classified'               → ('migrate', <first classified slug>)
+      - 'migrated' exist, not finished → ('finish', None)
+      - otherwise (terminal + done)    → (None, None)
+
+    migrate picks the first classified slug in layout order
+    (library_decls_for orders by file_order) — one slug per run, the
+    re-enqueue chain advances the rest. finish is gated on the INDEX
+    marker so it fires once, not in a loop."""
+    rows = db.library_decls_for(conn, problem)
+    if not rows:
+        return ("dedup", None)
+    by_state: dict[str, list] = {}
+    for r in rows:
+        by_state.setdefault(str(r["lifecycle"]), []).append(r)
+    if by_state.get("candidate"):
+        return ("dedup", None)
+    if by_state.get("deduped"):
+        return ("classify", None)
+    classified = by_state.get("classified")
+    if classified:
+        return ("migrate", str(classified[0]["slug"]))
+    if by_state.get("migrated") and not _librarian_index_has(workspace, problem):
+        return ("finish", None)
+    return (None, None)
+
+
+def _reenqueue_librarian_if_more(
+    conn: sqlite3.Connection, workspace: Path, problem: str,
+) -> None:
+    """After a Librarian pipeline succeeds, enqueue the next chain step
+    if the state machine has more work (plan §5). Runs in the dispatcher
+    completion handler — AFTER the finished future has been discarded
+    from `running` — so the freshly-enqueued row isn't pop-skipped (and
+    silently dropped) by the in-flight dedup. The queue guard prevents a
+    duplicate when a root re-verify re-enqueues a chain already pending."""
+    work_kind, _ = _derive_librarian_work(conn, problem, workspace)
+    if work_kind is None:
+        return  # chain complete — all terminal and finish done
+    if db.queue_contains(conn, kind="Librarian", target_id=problem):
+        return
+    db.enqueue(conn, kind="Librarian", target_id=problem,
+               target_kind="Problem", priority=0)
+    print(f"[librarian] {problem}: re-enqueued (next={work_kind})",
+          flush=True)
+
+
 def _run_pipeline(workspace: Path,
                   manifests: "manifest.ManifestCache | dict[str, manifest.Manifest]",
                   task_kind: str, target_id: str, target_kind: str,
@@ -1513,6 +1585,69 @@ def _run_pipeline(workspace: Path,
                         pipeline_id=pipeline_id,
                         failure_reason=str(r.failure_reason or "failed"),
                         failure_detail=str(r.failure_detail or ""),
+                    )
+                return (pipeline_id, task_kind, target_id, target_kind,
+                        r.outcome, str(r.failure_reason or ""))
+
+            if task_kind == "Librarian":
+                # Problem-targeted background harvest (plan §5). Derive
+                # the work_kind from library_decls state — work_kind is
+                # NOT in the queue row (mirrors strategist deriving its
+                # trigger), so a re-enqueued chain step always reflects
+                # the latest state.
+                problem = target_id
+                if problem not in manifests:
+                    db.record_pipeline(
+                        conn, pipeline_id=pipeline_id, kind=task_kind,
+                        target_id=target_id, target_kind=target_kind,
+                        status="failed", outcome="failed",
+                        started_at=started_at,
+                    )
+                    return (pipeline_id, task_kind, target_id, target_kind,
+                            "failed", "problem_not_found")
+                work_kind, target_slug = _derive_librarian_work(
+                    conn, problem, workspace)
+                if work_kind is None:
+                    # Chain already drained (all terminal + finish done,
+                    # or dedup kept nothing). Record a clean no-op so the
+                    # pipelines row reflects the drain; no re-enqueue.
+                    db.record_pipeline(
+                        conn, pipeline_id=pipeline_id, kind=task_kind,
+                        target_id=target_id, target_kind=target_kind,
+                        status="succeeded", outcome="success",
+                        started_at=started_at,
+                    )
+                    return (pipeline_id, task_kind, target_id, target_kind,
+                            "success", "")
+                from ..pipeline import librarian
+                r = librarian.run_librarian(
+                    conn, problem=problem, work_kind=work_kind,
+                    workspace=workspace, pipeline_id=pipeline_id,
+                    target_slug=target_slug,
+                )
+                status = ("succeeded" if r.outcome in ("proved", "success")
+                          else "failed")
+                db.record_pipeline(
+                    conn, pipeline_id=pipeline_id, kind=task_kind,
+                    target_id=target_id, target_kind=target_kind,
+                    status=status, outcome=r.outcome,
+                    started_at=started_at,
+                )
+                # Problem-targeted forensic uses target_id=0 (mirrors
+                # Forward — dead_attempts.target_id is INTEGER). Librarian
+                # is background: a failure is logged but never blocks
+                # proof work, and the chain does not auto-retry a
+                # schema/verify failure (operator inspects).
+                if status == "failed":
+                    artifacts = pipeline.collect_artifacts(attempts_dir)
+                    db.record_dead_attempt(
+                        conn, target_id=0, target_kind="Problem",
+                        pipeline_id=pipeline_id,
+                        failure_reason=str(r.failure_reason or "failed"),
+                        failure_detail=str(r.failure_detail or ""),
+                        proposal_md=r.proposal_md,
+                        artifacts=(_json.dumps(artifacts) if artifacts
+                                   else ""),
                     )
                 return (pipeline_id, task_kind, target_id, target_kind,
                         r.outcome, str(r.failure_reason or ""))
@@ -1861,6 +1996,12 @@ def run(workspace: Path, *, once: bool = False,
                                 target_id=tid, target_kind=tk,
                                 outcome=outcome, failure_reason=reason,
                                 decision_id=meta_decision_id)
+                    # Librarian chain advance (plan §5). Safe here: the
+                    # finished future is already out of `running` (line
+                    # above), so the next chain step won't be pop-skipped.
+                    if kind == "Librarian" and outcome in ("success",
+                                                           "proved"):
+                        _reenqueue_librarian_if_more(conn, workspace, tid)
                     # Back-off + global counter for spawn fast-fails.
                     # Phase 7 — quota_exhausted (rc=126) / missing_dep (rc=127)
                     # also cooldown but do NOT contribute to CONSEC tracking
