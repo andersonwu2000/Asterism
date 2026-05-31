@@ -232,7 +232,7 @@ CREATE TABLE IF NOT EXISTS pipelines (
     id          TEXT PRIMARY KEY,
     kind        TEXT NOT NULL
                     CHECK(kind IN ('Builder','Backward','Verify',
-                                   'Strategist','Forward')),
+                                   'Strategist','Forward','Librarian')),
     target_id   TEXT NOT NULL,
     target_kind TEXT NOT NULL
                     CHECK(target_kind IN ('Goal','Strategy','Problem')),
@@ -267,7 +267,7 @@ CREATE TABLE IF NOT EXISTS queue (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     kind        TEXT NOT NULL
                     CHECK(kind IN ('Builder','Backward','Verify',
-                                   'Strategist','Forward')),
+                                   'Strategist','Forward','Librarian')),
     target_id   TEXT NOT NULL,
     target_kind TEXT NOT NULL DEFAULT 'Goal'
                     CHECK(target_kind IN ('Goal','Strategy','Problem')),
@@ -571,6 +571,93 @@ def init_schema(conn: sqlite3.Connection) -> None:
         _migrate_to_phase6(conn)
         conn.execute("PRAGMA user_version = 6")
         conn.commit()
+    if v < 7:
+        # Phase 7 — pipelines.kind + queue.kind CHECK widen to accept
+        # 'Librarian' (the Library-ization pipeline). Same rebuild
+        # pattern as earlier phases; idempotent via in-DDL CHECK probe.
+        # No backfill: no pre-Phase-7 rows ever had kind='Librarian'.
+        _migrate_to_phase7(conn)
+        conn.execute("PRAGMA user_version = 7")
+        conn.commit()
+
+
+def _migrate_to_phase7(conn: sqlite3.Connection) -> None:
+    """Phase 7 — widen `pipelines.kind` and `queue.kind` CHECK to accept
+    'Librarian'. SQLite cannot ALTER a CHECK constraint; rebuild each
+    table with the new CHECK clause, copy rows, swap.
+
+    Pre-condition: PRAGMA user_version < 7.
+
+    Post-condition (caller sets user_version = 7):
+      - pipelines.kind CHECK accepts 'Librarian'
+      - queue.kind CHECK accepts 'Librarian'
+      - All existing rows preserved unchanged
+    """
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        # --- pipelines rebuild (skip if CHECK already wide) ---
+        chk = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table'"
+            " AND name='pipelines'"
+        ).fetchone()
+        if not (chk and "'Librarian'" in (chk["sql"] or "")):
+            conn.executescript("""
+                CREATE TABLE _new_pipelines (
+                    id          TEXT PRIMARY KEY,
+                    kind        TEXT NOT NULL
+                                    CHECK(kind IN ('Builder','Backward','Verify',
+                                                   'Strategist','Forward',
+                                                   'Librarian')),
+                    target_id   TEXT NOT NULL,
+                    target_kind TEXT NOT NULL
+                                    CHECK(target_kind IN ('Goal','Strategy','Problem')),
+                    status      TEXT NOT NULL CHECK(status IN ('succeeded','failed')),
+                    outcome     TEXT NOT NULL,
+                    started_at  TEXT NOT NULL,
+                    finished_at TEXT NOT NULL
+                );
+                INSERT INTO _new_pipelines SELECT * FROM pipelines;
+                DROP TABLE pipelines;
+                ALTER TABLE _new_pipelines RENAME TO pipelines;
+                CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(status);
+            """)
+
+        # --- queue rebuild (skip if CHECK already wide) ---
+        chk = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table'"
+            " AND name='queue'"
+        ).fetchone()
+        if not (chk and "'Librarian'" in (chk["sql"] or "")):
+            conn.executescript("""
+                CREATE TABLE _new_queue (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind        TEXT NOT NULL
+                                    CHECK(kind IN ('Builder','Backward','Verify',
+                                                   'Strategist','Forward',
+                                                   'Librarian')),
+                    target_id   TEXT NOT NULL,
+                    target_kind TEXT NOT NULL DEFAULT 'Goal'
+                                    CHECK(target_kind IN ('Goal','Strategy','Problem')),
+                    priority    INTEGER NOT NULL DEFAULT 0,
+                    decision_id INTEGER NULL DEFAULT NULL REFERENCES strategist_decisions(id),
+                    created_at  TEXT NOT NULL
+                );
+                INSERT INTO _new_queue (id, kind, target_id, target_kind,
+                    priority, decision_id, created_at)
+                SELECT id, kind, target_id, target_kind,
+                    priority, decision_id, created_at FROM queue;
+                DROP TABLE queue;
+                ALTER TABLE _new_queue RENAME TO queue;
+                CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue(priority DESC, id ASC);
+            """)
+
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 7 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _migrate_to_phase2(conn: sqlite3.Connection) -> None:
