@@ -1,6 +1,6 @@
-﻿# Asterism
+# Asterism
 
-> _Project overview ??fill in._
+<!-- Add your project overview here. -->
 
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
