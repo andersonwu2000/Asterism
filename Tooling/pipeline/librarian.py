@@ -25,6 +25,7 @@ Pure surface (no gateway / no LLM):
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 
 from ..state import db
@@ -298,17 +299,57 @@ class MigrateResult:
     detail: str = ""
 
 
+_DECL_KW = ("theorem", "lemma", "def", "abbrev", "structure",
+            "class", "instance")
+_DECL_RE = re.compile(
+    r"^\s*(?:noncomputable\s+|private\s+|protected\s+|scoped\s+)*"
+    r"(?:" + "|".join(_DECL_KW) + r")\s+([A-Za-z_][\w']*)")
+_NS_RE = re.compile(r"^\s*namespace\s+([A-Za-z_][\w.]*)")
+
+
+def extract_decl_fq_name(patch_text: str) -> str | None:
+    """The fully-qualified name of the single declaration a migrate patch
+    introduces — `<namespace>.<decl>` — for `#print axioms`. The decl's
+    FQ name is namespace-derived, independent of the (temp) file name, so
+    the axiom probe resolves it regardless of where the patch is written.
+
+    Scans for the last `namespace …` before the first named declaration.
+    Returns None when no named decl is found (anonymous `instance : …` or
+    a malformed patch) — the caller fails the gate rather than skipping
+    the axiom check, keeping the per-file invariant honest."""
+    ns: str | None = None
+    for line in patch_text.splitlines():
+        m = _DECL_RE.match(line)
+        if m:
+            return f"{ns}.{m.group(1)}" if ns else m.group(1)
+        m = _NS_RE.match(line)
+        if m:
+            ns = m.group(1)
+    return None
+
+
 def migrate_commit_gate(
     patch_text: str, target_path: "_Path", *,
-    build_verifier=None, workspace: "_Path | None" = None,
+    whitelist: "list[str] | None" = None,
+    build_verifier=None, axiom_verifier=None,
+    workspace: "_Path | None" = None,
 ) -> MigrateResult:
     """Decide whether a migrate patch may be committed to its Library
-    file. Two hard checks (mirrors plan §2 Gate A + build):
+    file. Hard checks (plan §2 Gate A + build + per-file axiom check):
 
       1. import-closure — patch imports only Mathlib/Library (Gate A).
       2. build — `lake env lean` clean (0 errors, 0 sorry) via the warm
          gateway. Injectable as `build_verifier(text) -> (ok, detail)`
          so tests run without a gateway; defaults to the real warm probe.
+      3. axiom check — when `whitelist` is set, the migrated declaration's
+         transitive axiom set must be ⊆ whitelist (operator's authorized
+         axioms; falls back to the 3 standard axioms upstream). This is
+         the per-Library-file `#print axioms` the operator requires:
+         build alone accepts a file whose imports carry `sorry`, only
+         `#print axioms` walks the kernel graph. Injectable as
+         `axiom_verifier(text, fq_name, whitelist) -> (ok, detail)`;
+         defaults to the real warm probe. `whitelist=None` skips it
+         (unit tests that only exercise closure/build don't pass one).
 
     Does NOT write anything — the caller (migrate parse_fn) does the
     file copy + `mark_library_migrated` on ok=True.
@@ -330,6 +371,18 @@ def migrate_commit_gate(
     ok, detail = build_verifier(patch_text)
     if not ok:
         return MigrateResult(False, f"build failed: {detail}")
+
+    if whitelist is not None:
+        fq_name = extract_decl_fq_name(patch_text)
+        if fq_name is None:
+            return MigrateResult(
+                False, "axiom check: could not extract the declaration "
+                       "name (anonymous or malformed decl)")
+        if axiom_verifier is None:
+            axiom_verifier = _warm_axiom_verifier(workspace)
+        ok, detail = axiom_verifier(patch_text, fq_name, whitelist)
+        if not ok:
+            return MigrateResult(False, f"axiom check failed: {detail}")
     return MigrateResult(True, "")
 
 
@@ -364,6 +417,50 @@ def _warm_build_verifier(workspace):
                     if d.get("severity") == "error"
                 )[:300]
                 return False, errs or "(no error diagnostics)"
+            return True, ""
+        finally:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+    return _verify
+
+
+def _warm_axiom_verifier(workspace):
+    """Default axiom_verifier: write the candidate under `Library/`, run
+    the warm-gateway verify with `axioms_for=<fq_name>`, and check the
+    reported axiom set ⊆ whitelist. Returns (ok, detail). Mirrors
+    `_warm_build_verifier`'s temp-file staging; the rogue-axiom logic
+    matches `pipeline/_axiom.axiom_probe` (which can't be reused directly
+    — it resolves a module to an existing source path, but the migrate
+    candidate is a throwaway temp file)."""
+    import os
+    import tempfile
+
+    def _verify(patch_text: str, fq_name: str,
+                whitelist: list[str]) -> tuple[bool, str]:
+        from ..lsp import lifecycle as gateway_lifecycle
+        ws = workspace or _Path(".")
+        libdir = ws / "Library"
+        libdir.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(suffix=".lean", prefix="_migrate_axiom_",
+                                   dir=str(libdir))
+        tmp_path = _Path(tmp)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(patch_text)
+            r = gateway_lifecycle.verify_file(
+                tmp_path, write_olean=False, axioms_for=fq_name,
+                workspace=ws)
+            if "error" in r and r.get("error"):
+                return False, f"axiom probe infra error: {r['error']}"
+            if r.get("axiom_error"):
+                return False, f"axiom probe error: {r['axiom_error']}"
+            used: set[str] = set(r.get("axioms") or [])
+            rogue = used - set(whitelist)
+            if rogue:
+                return False, f"rogue axioms: {sorted(rogue)}"
             return True, ""
         finally:
             try:
@@ -497,11 +594,15 @@ WORK_KINDS: frozenset[str] = frozenset({"dedup", "classify", "migrate"})
 
 def run_librarian(conn, *, problem: str, work_kind: str,
                   workspace, pipeline_id: str,
-                  target_slug: str | None = None):
+                  target_slug: str | None = None,
+                  whitelist: "list[str] | None" = None):
     """Outer Librarian entry. Returns PipelineResult.
 
     `work_kind` selects the prompt (prompts/librarian/<kind>.md) and the
-    commit path. `target_slug` is required for migrate.
+    commit path. `target_slug` is required for migrate. `whitelist` is the
+    problem's authorized axiom set (Manifest `axioms_whitelist`, or the
+    framework default) — threaded to the migrate commit gate's per-file
+    axiom check; only the migrate kind uses it.
 
     `finish` is the terminal, agentless step (plan §4/§5): no prompt, no
     LLM — it records provenance into Library/INDEX.md and terminates the
@@ -532,7 +633,7 @@ def run_librarian(conn, *, problem: str, work_kind: str,
             conn, problem=problem, workspace=workspace,
             pipeline_id=pipeline_id, target_slug=target_slug,
             attempts_dir=attempts_dir, problem_dir=problem_dir,
-            prompt_path=prompt_path)
+            prompt_path=prompt_path, whitelist=whitelist)
     return _run_structured(
         conn, problem=problem, work_kind=work_kind, workspace=workspace,
         attempts_dir=attempts_dir, problem_dir=problem_dir,
@@ -611,7 +712,7 @@ def _run_structured(conn, *, problem, work_kind, workspace,
 
 
 def _run_migrate(conn, *, problem, workspace, pipeline_id, target_slug,
-                 attempts_dir, problem_dir, prompt_path):
+                 attempts_dir, problem_dir, prompt_path, whitelist=None):
     """migrate: LSP + session-retry loop (mirrors builder). The agent
     writes patch.lean; on a clean spawn migrate_commit_gate decides, and
     on ok we copy to the target Library file + mark migrated."""
@@ -671,7 +772,7 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_slug,
                                   failure_detail="migrate declined",
                                   proposal_md=patch_text)
         gate = migrate_commit_gate(patch_text, target_file,
-                                   workspace=workspace)
+                                   whitelist=whitelist, workspace=workspace)
         if not gate.ok:
             return PipelineResult(outcome="failed",
                                   failure_reason="librarian_gate_failed",

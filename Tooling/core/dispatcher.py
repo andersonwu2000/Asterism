@@ -1620,10 +1620,18 @@ def _run_pipeline(workspace: Path,
                     return (pipeline_id, task_kind, target_id, target_kind,
                             "success", "")
                 from ..pipeline import librarian
+                # Per-file axiom check uses the operator's authorized
+                # axioms (Manifest `axioms_whitelist`), falling back to
+                # the 3 standard axioms — same source + fallback as
+                # root_integrity_gate. Only migrate consumes it.
+                mfst = manifests[problem]
+                whitelist = (list(mfst.axioms_whitelist)
+                             if mfst.axioms_whitelist
+                             else list(verify.FRAMEWORK_DEFAULT_AXIOMS))
                 r = librarian.run_librarian(
                     conn, problem=problem, work_kind=work_kind,
                     workspace=workspace, pipeline_id=pipeline_id,
-                    target_slug=target_slug,
+                    target_slug=target_slug, whitelist=whitelist,
                 )
                 status = ("succeeded" if r.outcome in ("proved", "success")
                           else "failed")

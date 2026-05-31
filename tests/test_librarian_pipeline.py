@@ -277,6 +277,89 @@ def test_migrate_gate_closure_checked_before_build():
 
 
 # ---------------------------------------------------------------------
+# extract_decl_fq_name + per-file axiom check (whitelist + axiom_verifier)
+# ---------------------------------------------------------------------
+
+def test_extract_decl_fq_name_with_namespace():
+    patch = ("import Mathlib\nnamespace Library.A.Foo\n"
+             "theorem bar (h : True) : True := h\nend Library.A.Foo\n")
+    assert lib.extract_decl_fq_name(patch) == "Library.A.Foo.bar"
+
+
+def test_extract_decl_fq_name_no_namespace():
+    assert lib.extract_decl_fq_name(
+        "import Mathlib\ndef baz : Nat := 0\n") == "baz"
+
+
+def test_extract_decl_fq_name_skips_modifiers():
+    patch = ("namespace Library.A\nnoncomputable def q : Nat := 0\n"
+             "end Library.A\n")
+    assert lib.extract_decl_fq_name(patch) == "Library.A.q"
+
+
+def test_extract_decl_fq_name_none_when_anonymous():
+    # An anonymous `instance : … :=` has no name to print axioms for.
+    patch = "import Mathlib\ninstance : Inhabited Nat := ⟨0⟩\n"
+    assert lib.extract_decl_fq_name(patch) is None
+
+
+def _ok_axiom(_text, _fq, _wl):
+    return (True, "")
+
+
+def _rogue_axiom(_text, _fq, _wl):
+    return (False, "rogue axioms: ['sorryAx']")
+
+
+def test_migrate_gate_axiom_clean_passes():
+    patch = ("import Mathlib\nnamespace Library.A\n"
+             "theorem t : True := trivial\nend Library.A\n")
+    r = lib.migrate_commit_gate(
+        patch, _P("Library/A/Bar.lean"), whitelist=["propext"],
+        build_verifier=_ok_build, axiom_verifier=_ok_axiom)
+    assert r.ok, r.detail
+
+
+def test_migrate_gate_rejects_rogue_axiom():
+    """build passes but the decl's transitive axiom set escapes the
+    whitelist (e.g. sorryAx from an imported stub) → reject."""
+    patch = ("import Mathlib\nnamespace Library.A\n"
+             "theorem t : True := trivial\nend Library.A\n")
+    r = lib.migrate_commit_gate(
+        patch, _P("Library/A/Bar.lean"), whitelist=["propext"],
+        build_verifier=_ok_build, axiom_verifier=_rogue_axiom)
+    assert not r.ok
+    assert "axiom check failed" in r.detail and "sorryAx" in r.detail
+
+
+def test_migrate_gate_axiom_skipped_without_whitelist():
+    """whitelist=None (the unit-test default) skips the axiom check — the
+    axiom_verifier must not even be called."""
+    patch = ("import Mathlib\nnamespace Library.A\n"
+             "theorem t : True := trivial\nend Library.A\n")
+    called = {"n": 0}
+    def _spy(_t, _fq, _wl):
+        called["n"] += 1
+        return (True, "")
+    r = lib.migrate_commit_gate(
+        patch, _P("Library/A/Bar.lean"),
+        build_verifier=_ok_build, axiom_verifier=_spy)
+    assert r.ok and called["n"] == 0
+
+
+def test_migrate_gate_axiom_unextractable_name_rejected():
+    """whitelist set but the patch has no named decl → the gate fails
+    rather than silently skipping the axiom check (keeps the per-file
+    invariant honest)."""
+    patch = "import Mathlib\ninstance : Inhabited Nat := ⟨0⟩\n"
+    r = lib.migrate_commit_gate(
+        patch, _P("Library/A/Bar.lean"), whitelist=["propext"],
+        build_verifier=_ok_build, axiom_verifier=_ok_axiom)
+    assert not r.ok
+    assert "could not extract the declaration name" in r.detail
+
+
+# ---------------------------------------------------------------------
 # Stage C — compile_librarian_context
 # ---------------------------------------------------------------------
 
