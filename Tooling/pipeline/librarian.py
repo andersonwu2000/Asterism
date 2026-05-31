@@ -328,6 +328,88 @@ def extract_decl_fq_name(patch_text: str) -> str | None:
     return None
 
 
+# Decl-kind detector (Gate D must distinguish def/abbrev from nominal
+# kinds). Reuses _DECL_KW; captures the keyword rather than the name.
+_DECL_KW_RE = re.compile(
+    r"^\s*(?:noncomputable\s+|private\s+|protected\s+|scoped\s+)*"
+    r"(def|abbrev|theorem|lemma|structure|class|inductive|instance)\b")
+
+# Nominal kinds: two separate declarations are never definitionally equal
+# even with identical fields, so `rfl` (Gate D) cannot equate them.
+_NOMINAL_KINDS = ("structure", "class", "inductive")
+
+
+def extract_decl_kind(patch_text: str) -> str | None:
+    """The keyword (`def` / `abbrev` / `theorem` / `structure` / …) of the
+    first named declaration in a patch, or None when none is found.
+    Mirrors `extract_decl_fq_name`'s scan; together they classify the
+    migrated declaration for Gate D."""
+    for line in patch_text.splitlines():
+        m = _DECL_KW_RE.match(line)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _library_module_of(rel_lean_path: str) -> str:
+    """Map a Library file's repo-relative path to its Lean module name:
+    `Library/LinearAlgebra/JordanForm/Defs.lean` →
+    `Library.LinearAlgebra.JordanForm.Defs`."""
+    p = rel_lean_path.replace("\\", "/")
+    if p.endswith(".lean"):
+        p = p[:-5]
+    return p.replace("/", ".")
+
+
+def migrate_defeq_gate(
+    patch_text: str, *, problem: str, target_slug: str,
+    defs_decls: "list[str]", target_module: str,
+    defeq_verifier=None, workspace: "_Path | None" = None,
+) -> MigrateResult:
+    """Gate D for the migrate path — the def-tampering guard (plan §2).
+
+    Only Defs-originated declarations are checked; a regular migrated
+    lemma passes untouched. The kernel can't prove a strong root from a
+    weakened lemma, so lemmas need no defeq pin — only a `def` body, which
+    spans a statement's hypothesis AND conclusion, can be silently
+    tampered while every other gate still passes.
+
+      - `target_slug` not in `defs_decls` → ok (not a Defs decl).
+      - structure / class / inductive Defs decl → fail (nominal; `rfl`
+        cannot equate two declarations — decline-and-flag for a verbatim
+        special-case).
+      - def / abbrev Defs decl → `@Problems.<p>.<slug> = @<target> := rfl`
+        must elaborate (via `gates.check_def_equivalence`). The probe
+        imports the problem's Defs and the migrated Library module, so the
+        caller MUST have the Library file on disk before calling.
+
+    `defeq_verifier` is injectable (forwarded to check_def_equivalence) so
+    unit tests run gateway-free."""
+    if target_slug not in defs_decls:
+        return MigrateResult(True, "")
+    kind = extract_decl_kind(patch_text)
+    if kind in _NOMINAL_KINDS:
+        return MigrateResult(
+            False, f"Gate D: Defs decl `{target_slug}` is a {kind} "
+                   "(nominal) — `rfl` cannot equate two separate "
+                   "declarations; needs a verbatim special-case "
+                   "(decline-and-flag).")
+    target_fq = extract_decl_fq_name(patch_text)
+    if target_fq is None:
+        return MigrateResult(
+            False, "Gate D: could not extract the migrated declaration's "
+                   "name (anonymous or malformed decl)")
+    from ..quality.librarian import gates
+    defs_fq = f"Problems.{problem}.{target_slug}"
+    res = gates.check_def_equivalence(
+        defs_fq, target_fq,
+        imports=[f"Problems.{problem}.Defs", target_module],
+        verifier=defeq_verifier, workspace=workspace)
+    if res.ok:
+        return MigrateResult(True, "")
+    return MigrateResult(False, "; ".join(res.issues))
+
+
 def migrate_commit_gate(
     patch_text: str, target_path: "_Path", *,
     whitelist: "list[str] | None" = None,
@@ -777,9 +859,31 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_slug,
             return PipelineResult(outcome="failed",
                                   failure_reason="librarian_gate_failed",
                                   failure_detail=gate.detail)
+        # The Library decl's fully-qualified name — backfills target_name
+        # (classify wrote it NULL) and is Gate D's rfl target.
+        target_fq = extract_decl_fq_name(patch_text)
+        from ..quality.librarian import inventory as _inv
+        defs_names = _inv.defs_decls(workspace, problem)
+        # Stage the file: Gate D's rfl probe imports the Library module,
+        # so the target must be on disk. Roll back if Gate D rejects.
         target_file.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(patch_lean, target_file)
-        db.mark_library_migrated(conn, problem=problem, slug=target_slug)
+        dgate = migrate_defeq_gate(
+            patch_text, problem=problem, target_slug=target_slug,
+            defs_decls=defs_names,
+            target_module=_library_module_of(row["target_file"]),
+            workspace=workspace)
+        if not dgate.ok:
+            try:
+                target_file.unlink()
+            except OSError:
+                pass
+            return PipelineResult(outcome="failed",
+                                  failure_reason="librarian_gate_failed",
+                                  failure_detail=dgate.detail,
+                                  proposal_md=patch_text)
+        db.mark_library_migrated(conn, problem=problem, slug=target_slug,
+                                 target_name=target_fq)
         return PipelineResult(outcome="success")
 
     def migrate_postmortem(sid: str) -> None:

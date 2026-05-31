@@ -2198,13 +2198,20 @@ def set_library_classification(conn: sqlite3.Connection, *, problem: str,
 
 
 def mark_library_migrated(conn: sqlite3.Connection, *, problem: str,
-                          slug: str) -> None:
+                          slug: str, target_name: str | None = None) -> None:
     """migrate work: a 'classified' decl was reshaped into its Library
-    file and passed Gate A + build. Advance to terminal 'migrated'."""
+    file and passed Gate A + build. Advance to terminal 'migrated'.
+
+    `target_name` backfills the migrated Library declaration's fully-
+    qualified name — classify wrote it NULL because the Library decl name
+    isn't known until the migrate patch exists. `COALESCE` keeps any
+    existing value when called without one, so no caller regresses a name
+    already recorded."""
     conn.execute(
-        "UPDATE library_decls SET lifecycle = 'migrated', updated_at = ?"
+        "UPDATE library_decls SET lifecycle = 'migrated',"
+        " target_name = COALESCE(?, target_name), updated_at = ?"
         " WHERE problem = ? AND slug = ? AND lifecycle = 'classified'",
-        (now(), problem, slug),
+        (target_name, now(), problem, slug),
     )
     conn.commit()
 
