@@ -218,3 +218,102 @@ def check_root_rederivation(
                       f"likely missing a keystone (completeness check)")
 
     return GateResult(not issues, issues)
+
+
+# ---------------------------------------------------------------------
+# Gate D — Defs definition-equivalence (`rfl` defeq), plan §2/§3b
+# ---------------------------------------------------------------------
+# A migrated `def` is the one thing build + axiom秒殺 cannot guard. A def
+# named in the root statement appears in BOTH the theorem's hypotheses
+# and its conclusion, so silently changing the def's body (`def IsFoo :=
+# True`) changes the meaning of the very theorem Gate B re-derives — the
+# bridge then re-derives the WRONG statement and still passes every gate.
+# `rfl` is the precise "not tampered" check: `@Problems.p.foo =
+# @<target>.foo := rfl` succeeds iff the two are definitionally equal,
+# and the kernel transitively unfolds the whole dependency chain (a def
+# citing a sibling def is covered as long as the sibling also passes).
+#
+# def / abbrev only. structure / class / inductive are NOMINAL — two
+# separate declarations are never defeq even with identical fields, so
+# rfl cannot equate them; the caller decline-and-flags those kinds.
+
+
+def def_equivalence_probe(defs_fq: str, target_fq: str, *,
+                          imports: list[str]) -> str:
+    """The throwaway `.lean` that proves the two definitions defeq. It is
+    a verification probe, NOT a Library file, so it MAY import the
+    problem's `Defs` (the Defs-free north star governs Library files, not
+    the prober that checks them). `@` makes every binder explicit so the
+    equation is between the bare definition values; a migrate that changed
+    the signature makes the `=` itself ill-typed → the probe fails to
+    elaborate → tampering caught."""
+    import_block = "\n".join(f"import {m}" for m in imports)
+    return (f"{import_block}\n"
+            f"example : @{defs_fq} = @{target_fq} := rfl\n")
+
+
+def check_def_equivalence(
+    defs_fq: str, target_fq: str, *, imports: list[str],
+    verifier=None, workspace: Path | None = None,
+) -> GateResult:
+    """Gate D: the Defs definition `defs_fq` is definitionally equal to
+    its migrated (Library) or cited (mathlib) counterpart `target_fq`.
+
+    Builds `example : @defs_fq = @target_fq := rfl` (importing `imports`,
+    which must cover both sides — the problem's Defs plus the Library
+    file or Mathlib) and checks it elaborates clean. A clean build IS the
+    proof of defeq; `rfl` uses no axioms, so no axiom check is needed.
+
+    `verifier(probe_text) -> (ok, detail)` is injectable so unit tests
+    run gateway-free; defaults to the warm-gateway build. Only for
+    def/abbrev — nominal kinds (structure/class/inductive) can never be
+    rfl-equal across two declarations and must be handled by the caller.
+    """
+    probe = def_equivalence_probe(defs_fq, target_fq, imports=imports)
+    if verifier is None:
+        verifier = _warm_defeq_verifier(workspace)
+    ok, detail = verifier(probe)
+    if ok:
+        return GateResult(True, [])
+    return GateResult(False, [
+        f"def-equivalence failed: `{defs_fq}` is not defeq to "
+        f"`{target_fq}` — {detail}"])
+
+
+def _warm_defeq_verifier(workspace):
+    """Default verifier: stage the probe under `Library/` (so Library
+    imports resolve) and run one warm-gateway build. Clean build → defeq
+    holds. Mirrors librarian._warm_build_verifier's temp-file staging."""
+    import os
+    import tempfile
+
+    def _verify(probe_text: str) -> tuple[bool, str]:
+        from ...lsp import lifecycle as gateway_lifecycle
+        ws = workspace or Path(".")
+        libdir = ws / "Library"
+        libdir.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(suffix=".lean", prefix="_defeq_probe_",
+                                   dir=str(libdir))
+        tmp_path = Path(tmp)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(probe_text)
+            r = gateway_lifecycle.verify_file(
+                tmp_path, write_olean=False, workspace=ws)
+            if "error" in r and r.get("error"):
+                return False, f"verify infra error: {r['error']}"
+            if not r.get("ok"):
+                errs = "; ".join(
+                    d.get("message", "")[:120]
+                    for d in (r.get("diagnostics") or [])
+                    if d.get("severity") == "error"
+                )[:300]
+                return False, errs or "(no error diagnostics)"
+            return True, ""
+        finally:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+    return _verify

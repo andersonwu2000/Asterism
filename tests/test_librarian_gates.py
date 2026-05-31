@@ -249,3 +249,62 @@ def test_gateB_statement_pin_ignores_whitespace(tmp_path):
         p, statement="0 < 1", fq_name="m", module="Root",
         whitelist=["propext"], workspace=tmp_path, prober=_ok_prober)
     assert res.ok, res.issues
+
+
+# ---------------------------------------------------------------------
+# Gate D — def-equivalence (rfl defeq); injected verifier, no gateway
+# ---------------------------------------------------------------------
+
+def _defeq_ok(_probe):
+    return (True, "")
+
+
+def _defeq_fail(msg):
+    def _v(_probe):
+        return (False, msg)
+    return _v
+
+
+def test_defeq_probe_text_shape():
+    """The probe imports both sides and equates the @-explicit values."""
+    probe = gates.def_equivalence_probe(
+        "Problems.p.IsFoo", "Library.A.IsFoo",
+        imports=["Problems.p.Defs", "Library.A.Basic"])
+    assert "import Problems.p.Defs" in probe
+    assert "import Library.A.Basic" in probe
+    assert "@Problems.p.IsFoo = @Library.A.IsFoo := rfl" in probe
+
+
+def test_defeq_passes_when_rfl_builds():
+    """Clean build of the rfl probe = the two defs are definitionally
+    equal = not tampered."""
+    res = gates.check_def_equivalence(
+        "Problems.p.IsFoo", "Library.A.IsFoo",
+        imports=["Problems.p.Defs", "Library.A.Basic"],
+        verifier=_defeq_ok)
+    assert res.ok, res.issues
+
+
+def test_defeq_rejects_when_rfl_fails():
+    """The probe fails to build — either a tampered body (not defeq) or a
+    changed signature (the `=` is ill-typed). Either way: reject."""
+    res = gates.check_def_equivalence(
+        "Problems.p.IsFoo", "Library.A.IsFoo",
+        imports=["Problems.p.Defs", "Library.A.Basic"],
+        verifier=_defeq_fail("type mismatch / not defeq"))
+    assert not res.ok
+    assert any("def-equivalence failed" in i for i in res.issues)
+    assert any("IsFoo" in i for i in res.issues)
+
+
+def test_defeq_works_for_cite_mathlib_target():
+    """The same gate validates a cite-mathlib mapping: the Defs def must
+    be defeq to the mathlib declaration the dedup verdict named."""
+    probe = gates.def_equivalence_probe(
+        "Problems.p.IsFoo", "Mathlib.Foo.isFoo",
+        imports=["Problems.p.Defs", "Mathlib"])
+    assert "@Problems.p.IsFoo = @Mathlib.Foo.isFoo := rfl" in probe
+    res = gates.check_def_equivalence(
+        "Problems.p.IsFoo", "Mathlib.Foo.isFoo",
+        imports=["Problems.p.Defs", "Mathlib"], verifier=_defeq_ok)
+    assert res.ok, res.issues
