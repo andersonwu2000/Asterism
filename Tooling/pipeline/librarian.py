@@ -636,6 +636,32 @@ def _warm_axiom_verifier(workspace):
     return _verify
 
 
+def _warm_olean_writer(workspace):
+    """Default olean_writer: build the committed Library file and persist its
+    `.olean` (write_olean=True), so a later-dispatched importer builds against
+    a FRESH dependency olean — proof-time does the same per proved lemma
+    (builder.py). The gateway's `lake serve` imports deps from on-disk oleans
+    and does NOT rebuild stale ones, so without this every cross-file build
+    (migrate / cleanup re-gate / bridge) risks a stale dependency (R1b)."""
+    def _write(target_path) -> tuple[bool, str]:
+        from ..lsp import lifecycle as gateway_lifecycle
+        ws = workspace or _Path(".")
+        r = gateway_lifecycle.verify_file(
+            target_path, write_olean=True, workspace=ws)
+        if r.get("error"):
+            return False, f"olean write infra error: {r['error']}"
+        if not r.get("ok"):
+            errs = "; ".join(
+                d.get("message", "")[:120]
+                for d in (r.get("diagnostics") or [])
+                if d.get("severity") == "error")[:300]
+            return False, errs or "(build failed on olean write)"
+        if not r.get("olean_written"):
+            return False, "olean not written"
+        return True, ""
+    return _write
+
+
 # ---------------------------------------------------------------------
 # File-level dependency DAG (GAP 2 — reconstructed, no schema column)
 # ---------------------------------------------------------------------
@@ -1335,7 +1361,8 @@ def _mechanical_migrate_file(
 def _commit_migrated_file(
     patch_text, *, conn, problem, workspace, target_path, target_module,
     ordered_slugs, defs_names, whitelist,
-    build_verifier=None, axiom_verifier=None, defeq_verifier=None):
+    build_verifier=None, axiom_verifier=None, defeq_verifier=None,
+    olean_writer=None):
     """Validate a whole-file migrate candidate and, on success, commit it
     (write the file + mark every decl migrated). Shared by both the LLM
     path (migrate_parse) and the mechanical relabel pre-pass, so the
@@ -1389,6 +1416,18 @@ def _commit_migrated_file(
                 outcome="failed", failure_reason="librarian_gate_failed",
                 failure_detail=f"{slug}: {dgate.detail}",
                 proposal_md=patch_text)
+    # Persist the committed file's .olean so its importers (dispatched later
+    # in topological order) build against a fresh dependency, not a stale one
+    # (R1b). Mirrors proof-time's per-lemma write_olean=True.
+    ok, detail = (olean_writer or _warm_olean_writer(workspace))(target_path)
+    if not ok:
+        try:
+            target_path.unlink()
+        except OSError:
+            pass
+        return PipelineResult(
+            outcome="failed", failure_reason="librarian_gate_failed",
+            failure_detail=f"olean write: {detail}", proposal_md=patch_text)
     # All gates passed — advance every decl to 'migrated', backfilling each
     # one's fully-qualified Library name (classify wrote it NULL).
     for slug, decl in zip(ordered_slugs, decls):
@@ -1584,34 +1623,91 @@ def _restore_snapshot(workspace, snap, files) -> None:
             p.write_text(content, encoding="utf-8")
 
 
+def _affected_cone(graph: dict, touched: set) -> set:
+    """`touched` ∪ every file transitively importing one — a signature change
+    in F invalidates every G that (transitively) imports F."""
+    rev: dict = {}
+    for f, deps in graph.items():
+        for d in deps:
+            rev.setdefault(d, set()).add(f)
+    cone, frontier = set(touched), list(touched)
+    while frontier:
+        x = frontier.pop()
+        for imp in rev.get(x, ()):
+            if imp not in cone:
+                cone.add(imp)
+                frontier.append(imp)
+    return cone
+
+
+def _topo_files(graph: dict, files: set) -> list:
+    """Topologically order `files` deps-first (a file after every dep that is
+    also in the set) so a write_olean rebuild publishes fresh dependency
+    oleans before their importers build. Stable; cycle → leftovers appended."""
+    files = set(files)
+    indeg = {f: len([d for d in graph.get(f, ()) if d in files]) for f in files}
+    users: dict = {f: [] for f in files}
+    for f in files:
+        for d in graph.get(f, ()):
+            if d in files:
+                users[d].append(f)
+    ready = sorted(f for f in files if indeg[f] == 0)
+    out: list = []
+    while ready:
+        f = ready.pop(0)
+        out.append(f)
+        for u in users[f]:
+            indeg[u] -= 1
+            if indeg[u] == 0:
+                ready = sorted(ready + [u])
+    out += [f for f in files if f not in out]   # cycle fallback
+    return out
+
+
+def _default_regate_build(whitelist, workspace):
+    """Per-file re-gate build: Gate A import-closure (text) + build the REAL
+    file with write_olean=True (persist a fresh olean for downstream importers,
+    R1b). No per-decl axiom check — cleanup removes hyps / adds docstrings,
+    which can't introduce axioms, and the bridge Gate B axiom-checks the
+    main cone afterwards."""
+    from ..quality.librarian import gates as _gates
+
+    def _build(path, text) -> tuple[bool, str]:
+        clo = _gates.check_import_closure_text(text, label=path.name)
+        if not clo.ok:
+            return False, "; ".join(clo.issues)[:200]
+        return _warm_olean_writer(workspace)(path)
+    return _build
+
+
 def _regate_touched(conn, *, problem, workspace, snap_before, whitelist,
                     regate=None) -> "tuple[bool, str, list[str]]":
     """Re-gate the Library files an agent edited in place. Diffs `snap_before`
-    vs disk → touched files, then runs the migrate commit gate (Gate A
-    import-closure + build + per-decl axiom) on each touched file AND every
-    file importing one — a signature change in F breaks any G that calls into
-    F. Returns `(ok, detail, touched)`; does NOT roll back (caller decides).
+    vs disk → touched files, expands to the affected cone (touched + every
+    transitive importer), and rebuilds the cone **in dependency (topological)
+    order with write_olean=True** — so each importer builds against its
+    dependency's freshly-written olean, not a stale one (R1b). Returns
+    `(ok, detail, touched)`; does NOT roll back (caller decides).
 
     Shared by cleanup (Step 4) and bridge (Gate B): both let an agent edit
-    committed Library files, so both must re-verify what was touched rather
-    than trust the agent. `regate` (path, text) -> (ok, detail) is injectable
-    for offline tests."""
+    committed Library files, so both must re-verify the cone rather than
+    trust the agent. `regate` (path, text) -> (ok, detail) is injectable for
+    offline tests (replaces the per-file build; cone + order still apply)."""
     def _read(rel):
         p = workspace / rel
         return p.read_text(encoding="utf-8") if p.exists() else None
     touched = sorted(f for f in snap_before if _read(f) != snap_before[f])
     if not touched:
         return True, "", []
-    to_check = set(touched) | _importers_of(
-        conn, problem=problem, workspace=workspace, files=set(touched))
-    _g = regate or (lambda path, text: (
-        (lambda r: (r.ok, r.detail))(migrate_commit_gate(
-            text, path, whitelist=whitelist, workspace=workspace))))
-    for rel in sorted(to_check):
+    graph = file_dependency_graph(conn, problem=problem, workspace=workspace)
+    cone = _affected_cone(graph, set(touched))
+    order = _topo_files(graph, cone)
+    _build = regate or _default_regate_build(whitelist, workspace)
+    for rel in order:
         p = workspace / rel
         if not p.exists():
             return False, f"{rel}: vanished during edit", touched
-        ok, detail = _g(p, p.read_text(encoding="utf-8"))
+        ok, detail = _build(p, p.read_text(encoding="utf-8"))
         if not ok:
             return False, f"re-gate {rel}: {detail}"[:400], touched
     return True, "", touched

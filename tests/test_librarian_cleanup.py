@@ -122,6 +122,44 @@ def test_commit_cleanup_lint_fail_rolls_back(conn, tmp_path):
     assert not db.library_decls_for(conn, "p", lifecycle="cleaned")
 
 
+# --- affected cone + topo order (R1b: write_olean propagation) ---
+
+def test_affected_cone_includes_transitive_importers():
+    graph = {"Bar": set(), "Foo": {"Bar"}, "Main": {"Foo", "Bar"}}
+    assert lib._affected_cone(graph, {"Bar"}) == {"Bar", "Foo", "Main"}
+    assert lib._affected_cone(graph, {"Main"}) == {"Main"}   # nothing imports
+    assert lib._affected_cone(graph, {"Foo"}) == {"Foo", "Main"}
+
+
+def test_topo_files_deps_first():
+    graph = {"Bar": set(), "Foo": {"Bar"}, "Main": {"Foo", "Bar"}}
+    order = lib._topo_files(graph, {"Bar", "Foo", "Main"})
+    assert order.index("Bar") < order.index("Foo") < order.index("Main")
+
+
+def test_regate_rebuilds_cone_in_topo_order(conn, tmp_path, monkeypatch):
+    # Editing a dependency (Bar) must re-gate Bar → Foo → Main in that order
+    # (deps first), so each importer builds against the fresh olean.
+    graph = {"Library/P/Bar.lean": set(),
+             "Library/P/Foo.lean": {"Library/P/Bar.lean"},
+             "Library/P/Main.lean": {"Library/P/Foo.lean"}}
+    monkeypatch.setattr(lib, "file_dependency_graph",
+                        lambda conn, *, problem, workspace: graph)
+    for rel in graph:
+        _write_lib(tmp_path, rel, "import Mathlib\n-- v1\n")
+    snap = {rel: "import Mathlib\n-- v1\n" for rel in graph}
+    # edit only Bar (the dependency)
+    _write_lib(tmp_path, "Library/P/Bar.lean", "import Mathlib\n-- edited\n")
+    built: list = []
+    ok, detail, touched = lib._regate_touched(
+        conn, problem="p", workspace=tmp_path, snap_before=snap, whitelist=[],
+        regate=lambda path, text: (built.append(path.name), (True, ""))[1])
+    assert ok
+    assert touched == ["Library/P/Bar.lean"]
+    # whole cone rebuilt, deps first
+    assert built == ["Bar.lean", "Foo.lean", "Main.lean"]
+
+
 # --- _regate_touched (shared by cleanup + bridge, G1) ---
 
 def test_regate_touched_detects_and_passes(conn, tmp_path):

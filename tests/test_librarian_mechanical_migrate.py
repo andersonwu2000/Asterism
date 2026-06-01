@@ -103,7 +103,8 @@ def test_commit_migrated_file_marks_all(conn, tmp_path):
         target_path=tmp_path / tf, target_module="Library.P.Foo",
         ordered_slugs=["lem_a", "lem_b"], defs_names=[],
         whitelist=None,
-        build_verifier=lambda _t: (True, ""))
+        build_verifier=lambda _t: (True, ""),
+        olean_writer=lambda _p: (True, ""))
     assert res.outcome == "success", res.failure_detail
     migrated = {r["slug"] for r in db.library_decls_for(conn, "p",
                                                         lifecycle="migrated")}
