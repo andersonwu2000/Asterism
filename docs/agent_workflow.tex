@@ -1,17 +1,27 @@
+% !TEX program = xelatex
 % Asterism agent_workflow — DeepMind co-math 教授簡介稿
-% xelatex 編譯。中文 PMingLiU + Microsoft JhengHei。
+% xelatex 編譯。Windows 本機用 PMingLiU + Microsoft JhengHei；
+% Overleaf / Linux 自動退回 Noto Serif/Sans CJK TC。
 \documentclass[11pt]{article}
 \usepackage[a4paper, margin=2cm]{geometry}
 \usepackage{xeCJK}
-% Body: serif (LaTeX convention). Latin = CM Roman (default), CJK = PMingLiU.
-\setCJKmainfont[AutoFakeBold=2.5, AutoFakeSlant=0.18]{PMingLiU}
-% Figure sans (used in agent boxes for visual distinction): Microsoft JhengHei.
-\setCJKsansfont{Microsoft JhengHei}
-\setCJKmonofont{Microsoft JhengHei}
+% Body: serif (LaTeX convention). Latin = CM Roman (default), CJK = PMingLiU on Windows / Noto Serif CJK TC elsewhere.
+\IfFontExistsTF{PMingLiU}
+  {\setCJKmainfont[AutoFakeBold=2.5, AutoFakeSlant=0.18]{PMingLiU}}
+  {\setCJKmainfont{Noto Serif CJK TC}}
+% Figure sans (used in agent boxes for visual distinction): Microsoft JhengHei on Windows / Noto Sans CJK TC elsewhere.
+\IfFontExistsTF{Microsoft JhengHei}
+  {\setCJKsansfont{Microsoft JhengHei}}
+  {\setCJKsansfont{Noto Sans CJK TC}}
+\IfFontExistsTF{Microsoft JhengHei}
+  {\setCJKmonofont{Microsoft JhengHei}}
+  {\setCJKmonofont{Noto Sans CJK TC}}
+\usepackage{graphicx}
 \usepackage{tikz}
 \usetikzlibrary{positioning, arrows.meta, shapes.geometric, fit, backgrounds, calc}
 \usepackage{booktabs, array}
 \usepackage{enumitem}
+\usepackage{amssymb}  % \checkmark
 \setlist{topsep=0.3em, itemsep=0.15em, parsep=0pt}
 
 \setlength{\parindent}{0em}
@@ -46,7 +56,13 @@
                  sloped=false},
 }
 
-\title{Asterism 系統介紹：自動化定理證明的多代理協作}
+\renewcommand{\contentsname}{目錄}
+% 章節命令：每章另起一頁、手動 §N 標題（不自動編號）、並登記進目錄。
+\newcommand{\chap}[1]{\clearpage\section*{#1}\addcontentsline{toc}{section}{#1}}
+% 同上，但不強制換頁（接續前一章）。
+\newcommand{\chapcont}[1]{\section*{#1}\addcontentsline{toc}{section}{#1}}
+
+\title{LLM $\times$ Lean 4}
 \author{}
 \date{}
 
@@ -54,582 +70,225 @@
 
 \maketitle
 
-本文件介紹 Asterism 框架的整體架構與運作流程。讀者預設熟悉數學與 Lean 4、但無工程背景。文中依主題搭配示意圖、表格或純文字說明。
+Asterism 是結合 LLM 與 Lean 4 形式化驗證的自動定理證明框架。
 
-「代理」（agent）指一次大型語言模型的呼叫；「框架」指環繞代理運作的調度、驗證、狀態管理基礎設施。
+框架採用動態管線（pipeline）驅動多 agent 協作，透過 AND/OR Graph 追蹤證明依賴，以克服 LLM 在長段推論中容易失準的問題；所有生成的證明均由 Lean 內核機械驗證。
 
-% =====================================================================
-\section*{§1 \quad 動機}
-% =====================================================================
+\chapcont{§1\quad 總覽}
 
-直接請大型語言模型對一條 Lean 4 定理產出完整證明，往往失敗。常見失敗有三類：幻覺（援引不存在的引理）、無回饋（寫完後不知自己錯）、多步推理崩潰（單次呼叫的注意力無法處理數十步分解與串接）。
+由一個常駐的 daemon 主迴圈調度，從佇列依序派發多條 pipeline 執行任務。
 
-Asterism 的設計針對此三點：
+\begin{center}
+\includegraphics[width=0.82\linewidth]{fig/fig2_overview.png}
+\end{center}
 
-\begin{itemize}
-  \item \textbf{以 Lean 4 內核為事實依據}：任何證明步驟皆需通過型別檢查，杜絕幻覺。
-  \item \textbf{透過 LSP 即時回饋}：代理寫一步即見編譯結果，無需等冷啟 \texttt{lake build}。
-  \item \textbf{將大目標分派多個小代理}：每個代理只處理單一職責，避開單次呼叫的多步推理瓶頸。
-\end{itemize}
+步驟概述：
 
-% =====================================================================
-\section*{§2 \quad 系統總覽：daemon 與 worker}
-% =====================================================================
+\begin{enumerate}
+  \item 使用者寫好 Manifest.md 與 Defs.lean 並啟動主迴圈；等待 Lean worker 就緒。
+  \item 將 Manifest、LESSONS 等檔案匯整為 Context，派發一條 pipeline 並將 Context 導入。
+  \item LLM 編輯 .lean 寫證明，透過 Lean worker 即時查看錯誤。
+  \item 收尾：更新對應 goal 的狀態，並寫回經驗（LESSONS）或執行決策（Strategist）。
+  \item 釋放完成任務的 pipeline，從佇列派發下一條 pipeline，回到 step 2。
+\end{enumerate}
 
-Asterism 在一次完整執行中由兩種角色構成：常駐 daemon 主導調度，按需 spawn 多個短命 worker 進行 LLM 呼叫。下圖顯示典型生命週期。
+\chap{§2\quad AND/OR 圖}
 
 \begin{center}
 \begin{tikzpicture}[
-  header/.style={draw, fill=white, font=\sffamily\footnotesize,
-                 inner sep=4pt, minimum height=0.7cm, align=center},
-  note/.style ={draw, fill=white, font=\sffamily\scriptsize,
-                inner sep=4pt, align=center},
-  cond/.style ={draw, dashed, fill=white, font=\sffamily\scriptsize\itshape,
-                inner sep=3pt},
-  loopf/.style={draw, fill=white, font=\sffamily\scriptsize\itshape,
-                inner sep=2pt},
-  msg/.style  ={font=\sffamily\scriptsize, midway, above, fill=white,
-                inner sep=2pt},
-  ret/.style  ={font=\sffamily\scriptsize, midway, above, fill=white,
-                inner sep=2pt},
-  lane/.style ={thin, gray!60},
+  goal/.style ={draw, circle, minimum size=1cm, font=\sffamily\scriptsize, fill=white},
+  strat/.style={st, minimum width=2.4cm, minimum height=0.7cm, align=center},
+  edge/.style ={-, semithick},
 ]
-  % --- swimlane headers ---
-  \node[header] (uH) at (0,    5)   {使用者};
-  \node[header] (dH) at (3.5,  5)   {daemon\\(常駐)};
-  \node[header] (wH) at (8,    5)   {worker\\(短命)};
-  \node[header] (lH) at (12,   5)   {Lean 內核};
-  \node[header] (uF) at (0,   -5.2) {使用者};
-  \node[header] (dF) at (3.5, -5.2) {daemon};
-  \node[header] (wF) at (8,   -5.2) {worker};
-  \node[header] (lF) at (12,  -5.2) {Lean 內核};
-  \draw[lane] (uH.south) -- (uF.north);
-  \draw[lane] (dH.south) -- (dF.north);
-  \draw[lane] (wH.south) -- (wF.north);
-  \draw[lane] (lH.south) -- (lF.north);
-  % --- entry: cli run ---
-  \draw[arr] (0, 4) -- (3.5, 4) node[msg]{cli run};
+  \node[goal]  (root) at (4.5, 4)   {main};
+  \node[strat] (s1)   at (2,   2.1) {strategy 1};
+  \node[strat] (s2)   at (7,   2.1) {strategy 2};
+  \node[goal]  (g1) at (0.5, 0.2) {$g_1$};
+  \node[goal]  (g2) at (2,   0.2) {$g_2$};
+  \node[goal]  (g3) at (3.5, 0.2) {$g_3$};
+  \node[goal]  (g4) at (6,   0.2) {$g_4$};
+  \node[goal, dashed]  (g5) at (8,   0.2) {$g_5$};
 
-  % --- loop fragment (UML-style): rectangle around the iterated section ---
-  \draw[thin] (1.6, 3.5) rectangle (13.2, -3.0);
-  \node[loopf, anchor=north west] at (1.6, 3.5) {loop \upshape\sffamily{[未達根目標 \texttt{proved}]}};
-
-  % --- messages inside loop ---
-  \node[note] at (3.5, 2.7) {主迴圈：每輪掃描 +\\worker 完成觸發};
-  \draw[arr] (3.5, 1.8) -- (8, 1.8) node[msg]{spawn worker (一次 LLM 呼叫)};
-  \draw[arr] (8, 1.0) -- (12, 1.0) node[msg]{即時查詢編譯結果};
-  \draw[arr, dashed] (12, 0.3) -- (8, 0.3) node[ret]{錯誤 / 目前 goal};
-  \draw[arr, dashed] (8, -0.5) -- (3.5, -0.5) node[ret]{提交結果};
-  \node[note] at (3.5, -1.4) {更新資料庫 + 串聯處理};
-  \node[cond, anchor=west] at (4.5, -2.5) {跳出條件：所有根目標 \texttt{proved}};
-
-  % --- exit ---
-  \draw[arr, dashed] (3.5, -4.0) -- (0, -4.0) node[ret]{daemon 退出};
-\end{tikzpicture}
-\end{center}
-
-\begin{itemize}
-  \item \textbf{daemon}：常駐 Python 進程、負責調度迴圈。每次掃描判定「下一步該派哪個 worker」、收到 worker 結果後更新資料庫並決定串聯效應（例如某個子目標證出後是否解鎖父目標）。
-  \item \textbf{worker}：每個 worker 即一次 LLM 呼叫的容器、做完即退出。沙盒目錄為 \texttt{.attempts/<uuid>/}，預設工作池容量為 4（即同一時間最多 4 個 worker 並行）。
-  \item \textbf{Lean 內核}：daemon 在背景駐留一個 Lean 伺服器、提供 worker 寫每一步證明時的即時編譯回饋（無需冷啟 \texttt{lake build} 的 30–60 秒成本）。
-\end{itemize}
-
-整個生命週期由 daemon 主導；worker 僅回傳結果即退出，直至所有納入該次執行的問題之根目標皆達 \texttt{proved}，daemon 才終止。
-
-% =====================================================================
-\section*{§3 \quad 檔案的所有權與讀寫權限}
-% =====================================================================
-
-各 pipeline 對檔案的動作分為兩個階段。圖中實線箭頭表示寫動作、虛線箭頭表示讀動作；箭頭旁的小字標註觸發時機。雙框節點為人手檔（pipeline 只讀）、單框節點為框架檔。
-
-\subsection*{A.\quad 啟動階段（一次性）}
-
-\begin{center}
-\begin{tikzpicture}
-  \node[agent] (user)  at (0,  1.5) {使用者};
-  \node[human] (manif) at (4,  2.4) {Manifest.md};
-  \node[human] (defs)  at (4,  0.6) {Defs.lean};
-  \node[agent] (cli)   at (8,  1.5) {cli init};
-  \node[ffile] (root)  at (12, 2.4) {Root.lean};
-  \node[db]    (db)    at (12, 0.6) {asterism.db};
-
-  \draw[write] (user) to[bend left=10]  node[lbl, above]{建立 / 編輯} (manif);
-  \draw[write] (user) to[bend right=10] node[lbl, below]{建立 / 編輯} (defs);
-  \draw[read]  (manif) to[bend left=10] node[lbl, above]{讀} (cli);
-  \draw[read]  (defs)  to[bend right=10] node[lbl, below]{讀} (cli);
-  \draw[write] (cli) to[bend left=10]   node[lbl, above]{寫含 \texttt{sorry} 的占位檔} (root);
-  \draw[write] (cli) to[bend right=10]  node[lbl, below]{寫 schema} (db);
-\end{tikzpicture}
-\end{center}
-
-使用者寫好問題定義（\texttt{Manifest.md} 框出 root theorem 與 axioms whitelist；\texttt{Defs.lean} 補必要的 def / structure）後 \texttt{cli init} 一次性把 \texttt{Root.lean}（含 \texttt{sorry} 占位）與 \texttt{asterism.db}（schema 建好、root goal 入庫）寫出。其後該問題的人手檔不再被任何 pipeline 寫。
-
-\subsection*{B1.\quad 運作階段 — 正常讀寫流（每 spawn）}
-
-\begin{center}
-\begin{tikzpicture}[
-  ephem/.style ={draw, dashed, inner sep=3pt,
-                 font=\ttfamily\scriptsize, fill=white},
-]
-  \node[human] (manif)   at (0,   5.5) {Manifest.md};
-  \node[ffile] (lessons) at (0,   3.7) {LESSONS.md};
-  \node[ephem] (ctx)     at (3.5, 4.6) {Context.md};
-  \node[agent] (strat)   at (7,   6.8) {Strategist};
-  \node[agent] (back)    at (7,   5.0) {Backward};
-  \node[agent] (build)   at (7,   3.2) {Builder};
-  \node[agent] (fwd)     at (7,   0.6) {Forward};
-  \node[ephem] (att)     at (10.5, 1.9) {.attempts/<pid>/};
-  \node[db]    (db)      at (13.5, 6.8) {asterism.db};
-  \node[ffile] (strat_f) at (13.5, 5.0) {\_strategy\_s*.lean};
-  \node[ffile] (proofs)  at (13.5, 3.2) {proofs/L\_*.lean};
-
-  \draw[write] (manif)   to[bend left=4]  node[lbl, above, pos=0.6]{spawn 前 框架編譯} (ctx);
-  \draw[write] (lessons) to[bend right=4] node[lbl, below, pos=0.6]{(Backward/Builder 才含)} (ctx);
-  \draw[read]  (ctx) to[bend left=4]  node[lbl, above, pos=0.6]{spawn 時 讀} (strat);
-  \draw[read]  (ctx) -- (back);
-  \draw[read]  (ctx) to[bend right=2] (build);
-  \draw[read]  (ctx) to[bend right=10] (fwd);
-  \draw[write] (back)  to[bend left=8]  node[lbl, above, pos=0.45]{分解輸出} (att);
-  \draw[write] (build) to[bend left=4]  node[lbl, above]{證明輸出} (att);
-  \draw[write] (fwd)   to[bend right=15] node[lbl, below, pos=0.55]{新引理輸出} (att);
-  \draw[write] (att) to[bend left=14] node[lbl, above, pos=0.5]{框架 promote} (strat_f);
-  \draw[write] (att) to[bend right=8] node[lbl, below, pos=0.5]{框架 promote} (proofs);
-  \draw[write] (strat) -- node[lbl, below]{commit decision + directive} (db);
-\end{tikzpicture}
-\end{center}
-
-\texttt{Context.md} 與 \texttt{.attempts/<pid>/} 皆為 per-spawn ephemeral（虛框）：框架在 spawn 開始前寫入、worker 退出時 \texttt{WorkArea.\_\_exit\_\_} 整目錄 \texttt{rmtree}。Agent 從不直接讀 \texttt{Manifest.md} 與 \texttt{LESSONS.md}，一律讀框架已編譯好的當輪 \texttt{Context.md}；agent 輸出也是先寫 sandbox、框架驗證通過後才 promote 到永久檔，驗證失敗則 sandbox 整目錄 rmtree、永久檔不被汙染。
-
-Context 內容因 agent 種類而異：Strategist 與 Forward 額外注入 \texttt{TREE.md}（problem snapshot），Strategist 另含 db 狀態切片（active goals、近期決策）；\texttt{Defs.lean} 不進 Context，agent 透過 Lean LSP 在 elaboration 時間取用。
-
-\subsection*{B2.\quad 運作階段 — 框架托管（每 tick／pipeline 收尾／超時）}
-
-\begin{center}
-\begin{tikzpicture}[
-  ephem/.style ={draw, dashed, inner sep=3pt,
-                 font=\ttfamily\scriptsize, fill=white},
-]
-  \node[ephem] (att)    at (0,   3.5) {.attempts/<pid>/};
-  \node[ffile] (drafts) at (4.5, 3.5) {.drafts/};
-  \node[ephem] (ctxN)   at (9.5, 3.5) {Context.md \textit{(下次 spawn)}};
-  \draw[write] (att)    -- node[lbl, above]{超時 postmortem 寫筆記} (drafts);
-  \draw[write] (drafts) -- node[lbl, above]{重派時 注入} (ctxN);
-
-  \node[agent] (refl)    at (0,   1.8) {reflection};
-  \node[ffile] (lessons) at (4.5, 1.8) {LESSONS.md};
-  \draw[write] (refl) -- node[lbl, above]{pipeline 收尾 寫追加} (lessons);
-
-  \node[agent] (verify)  at (0,  -0.8) {verify};
-  \node[db]    (db)      at (5,   0.5) {asterism.db};
-  \node[ffile] (root)    at (5,  -2.4) {Root.lean};
-  \node[ffile] (proofs)  at (9.5,-0.8) {proofs/L\_*.lean};
-  \draw[write] (verify) to[bend left=10] node[lbl, above, pos=0.55]{每輪 寫狀態} (db);
-  \draw[write] (verify) to[bend right=10] node[lbl, above, pos=0.65]{每輪 reconcile (Root)} (root);
-  \draw[write] (verify) -- node[lbl, above, pos=0.6]{每輪 reconcile (L\_*)} (proofs);
-\end{tikzpicture}
-\end{center}
-
-B2 的三條流程都不涉及 LLM：postmortem 寫筆記由 daemon 處理（agent 不參與）；reflection 由框架在 pipeline 收尾時自動 spawn 短呼叫；verify housekeeping 在 dispatcher 主迴圈每輪執行（純 Python、不佔 worker pool）。
-
-人手只動 \texttt{Manifest.md} 與 \texttt{Defs.lean}，其餘檔案皆框架擁有；手改會使 \texttt{asterism.db}（SoT）與檔案系統失同步。代理欲修正人手檔須走 \texttt{RequestUserAmend} 暫停問題等待人工確認。
-
-% =====================================================================
-\section*{§4 \quad 四個代理}
-% =====================================================================
-
-Asterism 將證明工作分派給四個專責代理。各代理對應一次大型語言模型呼叫，輸入輸出與時間預算各異：
-
-\begin{center}
-\renewcommand{\arraystretch}{1.3}
-\begin{tabular}{@{}p{2.2cm} p{6cm} p{6cm}@{}}
-\toprule
-\textbf{代理} & \textbf{輸入} & \textbf{輸出} \\
-\midrule
-Strategist & 全域進度視圖、最近決策歷史、TREE 快照、注入批次結果、\texttt{pending\_strategist\_review} 待裁決清單、Manifest meta & 一筆或多筆決策（注入、放行、確認擱置等可組成 batch） \\
-\midrule
-Backward & 一個待拆目標 + 父策略提示 & 0 至 N 個子目標 + 結構性組合命令（0 個 = 葉節點直接證） \\
-\midrule
-Builder & 一個原子目標 & 完整證明（可通過型別檢查與 axiom 探針） \\
-\midrule
-Forward & Strategist 給的 brief & 一條新的 theorem / def / structure / class 檔案 \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-四者形成分層分工：Strategist 規劃調度、Backward 結構分解、Builder 完成原子證明、Forward 補前置引理。
-
-% =====================================================================
-\section*{§5 \quad 端到端流程}
-% =====================================================================
-
-以下時序圖為一條典型問題從提交到證完的完整過程。
-
-\begin{center}
-\begin{tikzpicture}[
-  header/.style={draw, fill=white, font=\sffamily\footnotesize,
-                 inner sep=4pt, minimum height=0.7cm, align=center,
-                 minimum width=1.7cm},
-  note/.style ={draw, fill=white, font=\sffamily\scriptsize,
-                inner sep=3pt, align=center},
-  phase/.style={draw, dashed, fill=white, font=\sffamily\scriptsize\itshape,
-                inner xsep=6pt, inner ysep=2pt},
-  loopf/.style={draw, fill=white, font=\sffamily\scriptsize\itshape,
-                inner sep=2pt},
-  msg/.style  ={font=\sffamily\scriptsize, midway, above, fill=white,
-                inner sep=1.5pt},
-  lane/.style ={thin, gray!60},
-]
-  % --- swimlane headers ---
-  \node[header] (uH)  at (0,     11)   {使用者};
-  \node[header] (sH)  at (2.6,   11)   {Strategist};
-  \node[header] (dH)  at (5.2,   11)   {Dispatcher};
-  \node[header] (fH)  at (7.8,   11)   {Forward};
-  \node[header] (bH)  at (10.4,  11)   {Backward};
-  \node[header] (bdH) at (13,    11)   {Builder};
-  % --- footers ---
-  \node[header] (uF)  at (0,    -8.5)  {使用者};
-  \node[header] (sF)  at (2.6,  -8.5)  {Strategist};
-  \node[header] (dF)  at (5.2,  -8.5)  {Dispatcher};
-  \node[header] (fF)  at (7.8,  -8.5)  {Forward};
-  \node[header] (bF)  at (10.4, -8.5)  {Backward};
-  \node[header] (bdF) at (13,   -8.5)  {Builder};
-  % --- lifelines ---
-  \foreach \x in {0, 2.6, 5.2, 7.8, 10.4, 13} \draw[lane] (\x, 10.6) -- (\x, -8.1);
-
-  % --- Phase 1: bootstrap + first_launch ---
-  \node[phase, anchor=west] at (-1, 10.2) {Phase 1 — bootstrap};
-  \draw[arr] (0,    9.6) -- (5.2,  9.6) node[msg]{寫 Manifest + Defs};
-  \draw[arr] (5.2,  8.8) -- (2.6,  8.8) node[msg]{\texttt{first\_launch} 觸發};
-  \node[note] at (2.6, 8.0) {Grep mathlib +\\EmitDirective};
-  \draw[arr, dashed] (2.6, 7.0) -- (5.2, 7.0) node[msg]{\texttt{Inject(brief=X)} 決策};
-  \draw[arr] (5.2,  6.2) -- (7.8,  6.2) node[msg]{下一輪 BFS enqueue};
-  \draw[arr, dashed] (7.8, 5.4) -- (5.2, 5.4) node[msg]{X 已證 (cascade)};
-  \draw[arr] (5.2,  4.6) -- (2.6,  4.6) node[msg]{\texttt{inject\_batch\_done} 觸發};
-  \draw[arr, dashed] (2.6, 3.8) -- (5.2, 3.8) node[msg]{Reopen 根目標};
-
-  % --- Phase 2: BFS dispatch + Backward + parallel Builder ---
-  % loop fragment: dispatcher iterates BFS until queue empty / all proved
-  \node[phase, anchor=west] at (-1, 3.0) {Phase 2 — BFS（dispatcher 反覆派工）};
-  \draw[thin] (1.2, 2.7) rectangle (13.6, -0.4);
-  \node[loopf, anchor=north west] at (1.2, 2.7)
-        {loop \upshape\sffamily{[queue 不空]}};
-  \draw[arr] (5.2,  2.0) -- (10.4, 2.0) node[msg]{BFS enqueue};
-  \draw[arr, dashed] (10.4, 1.3) -- (5.2, 1.3) node[msg]{拆出 g1, g2, g3};
-  \draw[arr] (5.2,  0.6) -- (13,   0.6) node[msg]{三個並行 enqueue};
-  \draw[arr, dashed] (13, -0.1) -- (5.2, -0.1) node[msg]{g1, g3 proved；g2 \texttt{return\_to\_parent}};
-
-  % --- Phase 3: pending_review + reopen + success ---
-  \node[phase, anchor=west] at (-1, -0.8) {Phase 3 — 失敗恢復};
-  \draw[arr] (5.2, -1.4) -- (2.6, -1.4) node[msg]{\texttt{pending\_review} 觸發 (g2)};
-  \draw[arr, dashed] (2.6, -2.2) -- (5.2, -2.2) node[msg]{Reopen g2 換角度};
-  \draw[arr] (5.2, -3.0) -- (10.4, -3.0) node[msg]{BFS enqueue g2};
-  \draw[arr, dashed] (10.4, -3.8) -- (5.2, -3.8) node[msg]{新拆 g4–g7};
-  \draw[arr] (5.2, -4.6) -- (13,  -4.6) node[msg]{並行 enqueue};
-  \draw[arr, dashed] (13, -5.4) -- (5.2, -5.4) node[msg]{全部 proved};
-  \node[note] at (5.2, -6.2) {root 連鎖 \texttt{proved}};
-  \draw[arr, dashed] (5.2, -7.0) -- (0, -7.0) node[msg]{daemon 退出};
-\end{tikzpicture}
-\end{center}
-
-每個步驟皆由框架自動觸發、無需人工介入。Strategist 只寫決策（Inject / Reopen / ConfirmShelve 等），不直接派工；Dispatcher 是唯一的「行動者」，在下一輪 BFS 中根據 Strategist 寫入的決策與當前 goal 狀態 enqueue worker。失敗（如 g2 的 \texttt{return\_to\_parent} 宣告）為一等公民、由 Strategist 介入後重新規劃。
-
-% =====================================================================
-\section*{§6 \quad AND/OR 圖：證明搜索的資料結構}
-% =====================================================================
-
-證明搜索的中心資料結構為 AND/OR 圖。OR 節點為目標、AND 節點為策略：
-
-\begin{center}
-\begin{tikzpicture}[
-  goal/.style={hex, minimum size=1cm},
-  proved/.style={hex, minimum size=1cm, fill=black!10},
-  dead/.style={hex, minimum size=1cm, dashed, very thick},
-  strat/.style={st, minimum width=2cm, minimum height=0.7cm, align=center},
-  deadstrat/.style={st, minimum width=2cm, minimum height=0.7cm, dashed, very thick, align=center},
-  edge/.style={-, semithick},
-  deadedge/.style={-, semithick, dashed},
-]
-  \node[goal] (root) at (5, 5) {main};
-  \node[strat] (s1) at (2.5, 3) {策略 s1\\歸納分解};
-  \node[deadstrat] (s2) at (7.5, 3) {策略 s2\\反證法 (死)};
-  \node[proved] (g1) at (0.5, 0.5) {g1 \checkmark};
-  \node[goal] (g2) at (2.5, 0.5) {g2};
-  \node[goal] (g3) at (4.5, 0.5) {g3};
-  \node[dead] (g4) at (6.5, 0.5) {g4};
-  \node[dead] (g5) at (8.5, 0.5) {g5};
-
-  \draw[edge] (root) -- node[lbl, left, pos=0.5]{擇一即可} (s1);
-  \draw[deadedge] (root) -- (s2);
-  \draw[edge] (s1) -- node[lbl, left, pos=0.6]{皆需證} (g1);
+  \draw[edge] (root) -- (s1);
+  \draw[edge, dashed] (root) -- (s2);
+  \draw[edge] (s1) -- (g1);
   \draw[edge] (s1) -- (g2);
   \draw[edge] (s1) -- (g3);
-  \draw[deadedge] (s2) -- (g4);
-  \draw[deadedge] (s2) -- (g5);
+  \draw[edge] (s2) -- (g4);
+  \draw[edge, dashed] (s2) -- (g5);
+
+  \node[lbl] at (4.5, 3.0)  {OR：任一 strategy 證出即可};
+  \node[lbl] at (2, 1.15) {AND：sub-goal 皆須證出};
+  \node[lbl] at (7, 1.15) {任一目標失敗，則放棄策略};
 \end{tikzpicture}
 \end{center}
 
+證明搜尋的資料結構為 AND/OR 圖，遞迴分解：
+
 \begin{itemize}
-  \item 六邊形節點為\textbf{目標}（OR）；任一掛在其下的策略證出即視為證明。
-  \item 矩形節點為\textbf{策略}（AND）；所有掛在其下的子目標皆需證出，策略才算成功。
-  \item 實線 + 細邊：活路徑。粗虛線：已死路徑（圖中策略 s2 與其子目標 g4、g5）。淺灰底：已證子目標（圖中 g1）。
-  \item 同一目標下多個策略\textbf{序列}嘗試而非並行（passive OR、cap = 1）：當前活策略死透後，框架才允許 Backward 為該目標生第二條策略。早期 eager fanout 在強模型下實證為純粹浪費 token。
-  \item 同一策略下的兄弟子目標可並行（受 \texttt{dispatch.pool} 上限約束、預設 4）。
-  \item 框架以廣度優先搜尋掃描所有「存活鏈通達根」的 \texttt{open} 目標、按優先級派工；死路徑不影響其他路徑繼續推進。
+  \item 圓形的 goal 為 OR 節點，任一 strategy 成功即視 goal 成立
+  \item 矩形的 strategy 為 AND 節點，須所有 sub-goal 皆成立，該 strategy 才成功
 \end{itemize}
 
-% =====================================================================
-\section*{§7 \quad 目標狀態機}
-% =====================================================================
+一旦 strategy 成功，框架會機械性的把 sub-goal 合成為有效證明，逐層回溯。 \\\\
 
-每個目標在資料庫中有一個狀態欄位，所有狀態轉移由框架統一管理：
+\chapcont{§3\quad Pipeline}
+
+Pipeline 目前分為四種，各對應一次特定職責的 LLM 呼叫：
 
 \begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{@{}p{1.8cm} p{2.8cm} p{4.6cm} p{5cm}@{}}
+\toprule
+pipeline & 職責 & 輸入 & 輸出 \\
+\midrule
+Strategist & 規劃和調度 & AND/OR 圖等 & 決策，見下表 \\
+\midrule
+Backward & 結構分解 & 一個 goal + 父策略 & N 個 sub-goal + 證明策略 \\
+\midrule
+Builder & 完成終端證明 & 一個終端 goal & 完整證明 \\
+\midrule
+Forward & 補前置引理 & Strategist 的指示 & 新的定理或定義 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\clearpage
+
+Strategist 輸出模式，可一次性下達多個指令：
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{@{}p{3.2cm} p{11.5cm}@{}}
+\toprule
+指令 & 說明 \\
+\midrule
+Inject & 注入新 pipeline（Forward / Backward / Builder） \\
+\midrule
+Reopen & 把 goal 從 frozen / shelved 改為 open  \\
+\midrule
+ConfirmShelve & 查看 goal 為何 shelve，透過 Inject 或 Reopen 滿足其需求 \\
+\midrule
+EmitDirective & 給予其他 worker 指引 \\
+\midrule
+Noop & 不動作 \\
+\midrule
+RequestUserAmend & 暫停主迴圈，請人工介入 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+四條 pipeline 共用同一套生命週期：
+
+\begin{center}
+\scalebox{1.1}{%
 \begin{tikzpicture}[
-  s/.style    ={state, minimum width=2cm, minimum height=0.75cm},
-  init/.style ={circle, fill=black, inner sep=2pt},
-  termmark/.style={state, double, minimum width=2cm, minimum height=0.75cm},
+  dot/.style={circle, fill, inner sep=1.8pt},
+  nm/.style ={font=\sffamily\footnotesize},
+  ex/.style ={font=\sffamily\scriptsize, align=left},
+  ln/.style ={thick},
+  fl/.style ={->, >=Stealth, thick},
 ]
-  % --- initial dot + main horizontal axis at y=0 ---
-  \node[init] (start) at (-1.8, 0)  {};
-  \node[s] (frozen) at (0,    0)    {frozen};
-  \node[s] (open)   at (4,    0)    {open};
-  \node[s] (atte)   at (9,    0)    {attempting};
-  \node[s] (psr)    at (14,   0)    {pending\_review};
-  \node[s, dashed] (shelv) at (14, -4) {shelved};
-  % --- proved above attempting (success goes up, rollback comes down) ---
-  \node[termmark] (proved) at (9, 4) {proved};
-  % --- hard terminals: dead well left of attempting, disproved well right ---
-  \node[termmark] (dead)  at (4.5,  -4) {dead};
-  \node[termmark] (dispr) at (10,   -4) {disproved};
+  % ── 垂直主軸（間隔 1.5）──
+  \node[dot] (spawn) at (2, 12)   {};
+  \node[dot] (retry) at (2, 10.5) {};
+  \node[dot] (wd)    at (2, 9)    {};
+  \node[dot] (out)   at (2, 7.5)  {};
+  \node[dot] (to)    at (2, 6)    {};
+  \node[dot] (pm)    at (2, 4.5)  {};
+  \draw[ln] (spawn) -- (pm);
+  \node[nm] (drafts) at (2, 3) {.drafts/};
+  \draw[fl] (pm) -- (drafts);
+  \node[nm, anchor=east] at (1.7, 12)   {spawn};
+  \node[ex, anchor=west] at (2.3, 12) {編譯 Context、呼叫 LLM};
+  \node[nm, anchor=east] at (1.7, 10.5) {(retry)};
+  \node[ex, anchor=west] at (2.3, 10.5) {增加 attempts 計數，重新 spawn 嘗試};
+  \node[nm, anchor=east] at (1.7, 9)    {watchdog};
+  \node[ex, anchor=west] at (2.3, 9)    {檢測 agent 是否卡在 thinking mode};
+  \node[nm, anchor=east] at (1.7, 7.5)  {(outcome)};
+  \node[nm, anchor=east] at (1.7, 6)    {timeout};
+  \node[nm, anchor=east] at (1.7, 4.5)  {postmortem};
+  \node[ex, anchor=west] at (2.3, 4.5)  {180s 紀錄進度};
 
-  % ─── forward axis (y=0) ─────────────────────────────────────────
-  \draw[arr] (start)  -- node[lbl, above]{cli init} (frozen);
-  \draw[arr] (frozen) -- node[lbl, above]{first\_launch Reopen} (open);
-  \draw[arr] (open)   -- node[lbl, above]{BFS 派工} (atte);
-  \draw[arr] (atte) -- node[lbl, above]{agent shelve / 達上限} (psr);
+  % ── outcome → success（往右）──
+  \node[dot] (jct)  at (5,  7.5) {};
+  \node[dot] (refl) at (10, 7.5) {};
+  \draw[ln] (out) -- (jct);
+  \draw[ln] (jct) -- (refl);
+  \node[nm] (less) at (12.9, 7.5) {LESSONS.md};
+  \draw[fl] (refl) -- (less);
+  \node[nm, anchor=south] at (7.5, 7.6) {success};
+  \node[nm, anchor=south] at (10, 7.7) {reflection};
+  \node[ex, anchor=north]  at (10, 7.3) {寫註解、整理格式};
 
-  % ─── attempting ↔ proved (parallel arrows, offset to avoid overlap) ──
-  \draw[arr] ([xshift=-0.3cm]atte.north) -- node[lbl, left]{所有 sub-goal 證出} ([xshift=-0.3cm]proved.south);
-  \draw[arr, dashed] ([xshift=0.3cm]proved.south) -- node[lbl, right]{rollback（sorryAx 偵測，罕見）} ([xshift=0.3cm]atte.north);
+  % ── decline（往下，間隔 1.5）──
+  \node[nm, anchor=east] at (4.7, 6.8) {decline};
+  \node[dot] (l1) at (8, 6.0) {};
+  \node[dot] (l2) at (8, 4.5) {};
+  \node[dot] (l3) at (8, 3.0) {};
+  \node[dot] (l4) at (8, 1.5) {};
+  \draw[ln] (jct) -- (5, 1.5);
+  \draw[ln] (5, 6.0) -- (l1);
+  \draw[ln] (5, 4.5) -- (l2);
+  \draw[ln] (5, 3.0) -- (l3);
+  \draw[ln] (5, 1.5) -- (l4);
+  \node[nm, anchor=south west] at (5.1, 6.12) {unprovable};
+  \node[ex, anchor=west]       at (8.3, 6.0) {disproved（給反例）};
+  \node[nm, anchor=south west] at (5.1, 4.62) {return\_to\_parent};
+  \node[ex, anchor=west]       at (8.3, 4.5) {dead，向父節點傳播};
+  \node[nm, anchor=south west] at (5.1, 3.12) {shelve};
+  \node[ex, anchor=west]       at (8.3, 3.0) {待 Strategist 判斷};
+  \node[nm, anchor=south west] at (5.1, 1.62) {needs\_decomposition};
+  \node[ex, anchor=west]       at (8.3, 1.5) {交給 Backward 處理};
+\end{tikzpicture}%
+}
+\end{center}
 
-  % ─── attempting → hard terminals (below, label on outer side) ────
-  \draw[arr] (atte) -- node[lbl, left, pos=0.6]{父策略 cascade} (dead);
-  \draw[arr] (atte) -- node[lbl, right, pos=0.6]{agent 給反例} (dispr);
+\chap{§4\quad Goal 狀態機}
 
-  % ─── retry loop: attempting → open (clean low-bend below axis) ──
-  \draw[arr] (atte) to[bend left=18]
-      node[lbl, below, pos=0.5]{retry（\texttt{attempts++} < threshold）} (open);
+每個 goal 在資料庫中有一個 state 欄位，由框架統一管理。
 
-  % ─── pending_review → open (上方大弧 Reopen) ──────────────────
-  \draw[arr] (psr) to[bend right=22]
-      node[lbl, above, pos=0.5]{Strategist Reopen} (open);
+\begin{center}
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[
+  s/.style    ={state, minimum width=2cm, minimum height=0.7cm},
+  term/.style ={state, double, minimum width=2cm, minimum height=0.7cm},
+  soft/.style ={state, dashed, minimum width=2cm, minimum height=0.7cm},
+  init/.style ={circle, fill, inner sep=2pt},
+]
+  \node[init] (start) at (0.8, 4.5) {};
+  \node[s] (frozen) at (0.8,  2.8) {frozen};
+  \node[s] (open)   at (4,    0) {open};
+  \node[s] (atte)   at (9,    0) {attempting};
+  \node[s] (psr)    at (13.5, 0) {pending\_review};
+  \node[term] (proved) at (9,    4)  {proved};
+  \node[term] (dead)   at (6,   -4)  {dead};
+  \node[term] (dispr)  at (11,  -4)  {disproved};
+  \node[soft] (shelv)  at (13.5,-4)  {shelved};
 
-  % ─── pending_review → shelved (vertical, ConfirmShelve) ──────
+  \draw[arr] (start)  -- node[lbl, right]{cli init} (frozen);
+  \draw[arr] (frozen) |- node[lbl, above, pos=0.72]{first\_launch} node[lbl, below, pos=0.72]{Reopen} (open.west);
+  \draw[arr] (open) to[bend left=20] node[lbl, above]{BFS 派發 pipeline} (atte);
+  \draw[arr] (atte)   -- node[lbl, above]{agent shelve} node[lbl, below]{attempts 上限} (psr);
+  \draw[arr] (atte)   -- node[lbl, right]{成功證明} (proved);
+  \draw[arr] (atte)   -- node[lbl, left, pos=0.55]{父策略 cascade} (dead);
+  \draw[arr] (atte)   -- node[lbl, right, pos=0.55]{給反例} (dispr);
+  \draw[arr] (atte) to[bend left=20]
+        node[lbl, above, pos=0.5, yshift=4pt]{retry} node[lbl, below, pos=0.5]{attempts++} (open);
+  \draw[arr, rounded corners=8pt] (psr.north) -- (13.5,5) -- (4,5) -- (open.north);
+  \node[lbl] at (8.5, 5.3) {Strategist Reopen};
   \draw[arr] (psr) -- node[lbl, right]{ConfirmShelve} (shelv);
-
-  % ─── shelved → open (軟可逆 Reopen，繞最下方避開 dead/disproved) ─
-  \draw[arr, rounded corners=8pt] (shelv) |- ($(open.south)+(0,-6)$) -| (open.south);
-  \node[lbl, anchor=south] at (9, -6.2) {Strategist Reopen（軟可逆）};
-
-\end{tikzpicture}
+  \draw[arr, rounded corners=8pt] (shelv.south) -- (13.5,-5.2) -- (4,-5.2) -- (open.south);
+  \node[lbl] at (8.5, -5.5) {Strategist Reopen};
+\end{tikzpicture}%
+}
 \end{center}
 
-關鍵設計：
-
 \begin{itemize}
-  \item \texttt{shelved} 與 \texttt{dead} 區分軟硬終結。\texttt{shelved} 仍可被 Strategist 透過 Reopen 復活（例如後續注入的引理改變了可證性）。\texttt{dead} 為母策略整個被否決所致，本目標於該策略內不再嘗試。
-  \item \texttt{pending\_strategist\_review} 為過渡狀態，代理主動聲明無解後置入，等候 Strategist 裁決；本身不終結，故串聯不向上傳播。
-  \item \texttt{proved} 非絕對終態：root integrity gate 在每次 root 完工時對 \texttt{Root.lean} 做 axiom probe，若偵測到 \texttt{sorryAx} 殘留即走 \texttt{bisect\_sorryax\_source} + \texttt{rollback\_cascade\_chain}，元凶策略撤回、下游 goal 回 \texttt{attempting}。實證自 verify-collapse 以來 41+ 輪 0 次觸發，gate 設計用於極端 corner case 而非常規路徑。
+  \item shelved goal 可以由 Strategist 以 Reopen 指令復活。
+  \item dead（父策略被否決）和 disproved（有反例）代表 goal 死亡，不可復活。
+  \item pending\_review 為過渡狀態：agent 要求 shelve 或 attempts 達上限時，等候 Strategist 確認。
+  \item proved goal 須通過型別和公理驗證。
 \end{itemize}
-
-% =====================================================================
-\section*{§8 \quad 失敗處理流程}
-% =====================================================================
-
-\begin{center}
-\begin{tikzpicture}[
-  proc/.style ={draw, rounded corners=2pt, inner sep=4pt,
-                font=\sffamily\scriptsize, fill=white,
-                minimum height=0.6cm, align=center},
-  decis/.style={draw, diamond, aspect=2.2, inner sep=2pt,
-                font=\sffamily\scriptsize, fill=white},
-  term/.style ={draw, inner sep=4pt, font=\sffamily\scriptsize,
-                fill=white, align=center},
-  cyl/.style  ={cylinder, draw, shape border rotate=90, aspect=0.4,
-                minimum width=1.6cm, minimum height=0.7cm,
-                font=\ttfamily\scriptsize, fill=white},
-  elabel/.style={font=\sffamily\scriptsize, fill=white, inner sep=2pt},
-]
-  % ─── Top: worker + outcome decision ─────────────────────────────
-  \node[proc]  (work) at (8, 9.5) {Worker 執行};
-  \node[decis] (res)  at (8, 8.2) {結果?};
-  \draw[arr] (work) -- (res);
-
-  % ─── 4 first-level outcome columns ──────────────────────────────
-  \node[proc] (ok)    at (1.5,  6.8) {推進至 workspace\\+ axiom 探針};
-  \node[decis] (kind) at (5.5,  6.8) {哪種?};
-  \node[proc] (kill)  at (10.5, 6.8) {Watchdog SIGKILL};
-  \node[proc] (infra) at (14.5, 6.8) {infra 退避 30\,s\\冷卻};
-  \draw[arr] (res) -- node[elabel, above, pos=0.7]{成功} (ok);
-  \draw[arr] (res) -- node[elabel, right, pos=0.55]{寫 decline} (kind);
-  \draw[arr] (res) -- node[elabel, above, pos=0.7]{超時} (kill);
-  \draw[arr] (res) -- node[elabel, above, pos=0.8]{spawn 失敗} (infra);
-
-  % ─── Branch 1: 成功 → reflection → LESSONS ─────────────────────
-  \node[proc] (refl) at (1.5, 4.7) {reflection 寫追加};
-  \node[cyl]  (less) at (1.5, 2.8) {LESSONS.md};
-  \draw[arr] (ok)   -- (refl);
-  \draw[arr] (refl) -- (less);
-
-  % ─── Branch 2: decline → 3 sub-cases (vertical stack below kind) ─
-  \node[term] (dispr) at (5.5, 5.1) {\texttt{unprovable} \;$\to$\; disproved};
-  \node[term] (dead)  at (5.5, 3.9) {\texttt{return\_to\_parent} \;$\to$\; dead};
-  \node[term] (psr)   at (5.5, 2.7) {\texttt{shelve} \;$\to$\; pending\_review};
-  \draw[arr] (kind) -- (dispr);
-  \draw[arr] (dispr) -- (dead);
-  \draw[arr] (dead)  -- (psr);
-
-  \node[term] (casc) at (5.5, 1.4)
-        {dead 後續：Cascade（標記父策略 + \texttt{attempts++}）};
-  \draw[arr, dashed] (dead.east) to[bend right=20] (casc.east);
-
-  % ─── Branch 3: 超時 → postmortem → .drafts/ ─────────────────────
-  \node[proc] (pm)     at (10.5, 4.9) {postmortem\\(180\,s, \texttt{--resume sid})};
-  \node[cyl]  (drafts) at (10.5, 2.8) {.drafts/};
-  \draw[arr] (kill) -- (pm);
-  \draw[arr] (pm)   -- (drafts);
-
-\end{tikzpicture}
-\end{center}
-
-四類失敗對應不同處理路徑。所有處理由框架統一執行、代理無自主決定權。
-
-\begin{itemize}
-  \item \textbf{decline 指令}：代理在沙盒中探索後判定無解、主動聲明，附理由與修正建議。
-  \item \textbf{超時}：watchdog 偵測長時間無工具呼叫即 SIGKILL；接著 pipeline 自動以 \texttt{claude --resume <sid>} 從磁碟救回該 session、再 spawn 一輪短呼叫（180s 上限）請代理寫進度筆記。此筆記隨後注入新代理的 Context、使重派時不致從零開始。
-  \item \textbf{spawn 失敗}：外部基礎設施問題（如配額耗盡），不計入嘗試次數。
-  \item \textbf{成功}：reflection 短呼叫請代理回看本次經驗、寫入跨 spawn 累積的 \texttt{LESSONS.md}。
-\end{itemize}
-
-% =====================================================================
-\section*{§9 \quad Strategist 的四種觸發條件}
-% =====================================================================
-
-Strategist 不主動工作，必待事件觸發。當前定義四種觸發類型，每種對應一份獨立的指引提示：
-
-\begin{center}
-\renewcommand{\arraystretch}{1.3}
-\begin{tabular}{@{}p{3.3cm} p{6.5cm} p{4.5cm}@{}}
-\toprule
-\textbf{觸發} & \textbf{何時觸發} & \textbf{主要任務} \\
-\midrule
-\texttt{first\_launch} & 問題首次啟動（root 仍 \texttt{frozen} 且尚無任何 Strategist 決策） & 調研 mathlib、發布指導、派出前置 \\
-\midrule
-\texttt{routine} & 每小時定期 & 稽核分支、識別停滯、發現重造輪子 \\
-\midrule
-\texttt{pending\_review} & 子目標出現「待審」 & 裁決失敗：重派、改方向、確認放棄 \\
-\midrule
-\texttt{inject\_batch\_done} & 注入批次全部終結 & 評估結果、決定後續（多半 Reopen 被擱置目標） \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-每個觸發對應一份獨立 prompt：代理被呼叫時只見該觸發的指引、不受其他模式干擾、注意力集中。觸發優先級由上而下：\texttt{inject\_batch\_done} 最高、\texttt{routine} 最低。
-
-\texttt{routine} 為唯一無事件驅動的觸發、其職責為防止系統長時間停滯而無人察覺；當前 prompt 明確要求代理執行品質稽核清單、而非預設回應「無事可做」。
-
-% =====================================================================
-\section*{§10 \quad 工具與資料管道}
-% =====================================================================
-
-每個代理被呼叫時，框架提供一組工具與分層資料來源。
-
-\subsection*{工具}
-
-\begin{itemize}
-  \item 檔案操作：\texttt{Read} / \texttt{Write} / \texttt{Edit} / \texttt{Grep}，標準命令列語意。
-  \item 與 Lean 伺服器交互：\texttt{apply\_edit} / \texttt{goal\_at} / \texttt{errors\_at} / \texttt{validate\_file}，皆於 1 秒內回應，避免冷啟 \texttt{lake build} 的 30–60 秒成本。
-  \item Mathlib 搜尋：\texttt{Grep} 適用於關鍵字、\texttt{loogle} 適用於以陳述形狀搜尋。
-\end{itemize}
-
-\subsection*{資料來源（三層）}
-
-第一層為\textbf{任務簡報} \texttt{Context.md}：每次呼叫前框架即時編譯一份、即用即棄。內容因代理種類而異——Strategist 看全域進度視圖與最近決策歷史；Backward 與 Builder 看當前目標陳述、父策略提示、可引用的兄弟證明；Forward 看 Strategist 指定的注入 brief。
-
-第二層為\textbf{跨 spawn 累積的經驗} \texttt{LESSONS.md}：由 reflection 階段在 worker 收場時寫入，典型內容如「mathlib 已有 X 引理、不必重造」「Y 路線是死路」「Z 型別陷阱」等戰術提示。每個代理冷啟時皆會於 Context 中看到當前內容。
-
-第三層為\textbf{問題級常駐指引} Strategist directive：Strategist 透過 \texttt{EmitDirective} 寫入，作為該問題下所有後續代理的長期方向。每次更新覆寫前次內容；每個 worker 冷啟皆會看到最新版本。
-
-資料的流動方向呈一鏈狀：使用者寫 Manifest → Strategist 讀取後寫 directive 與 LESSONS 一同進到 worker → worker 工作完畢由 reflection 寫回 LESSONS → 下一次代理冷啟時讀到。此鏈使知識跨多次嘗試累積、不致每次冷啟皆從零開始。
-
-% =====================================================================
-\section*{§11 \quad 現況與成果}
-% =====================================================================
-
-\textbf{已自動證出問題涵蓋：}
-
-\begin{center}
-\renewcommand{\arraystretch}{1.3}
-\begin{tabular}{@{}p{2.5cm} p{12cm}@{}}
-\toprule
-\textbf{領域} & \textbf{代表問題} \\
-\midrule
-數論 & Wilson 定理、Pythagorean 三元組、若干 Minif2f 競賽題 \\
-\midrule
-拓樸 & $\pi_1(S^1)$ 基本群、Sylvester–Gallai 共線定理 \\
-\midrule
-線性代數 & Schur 三角化、SVD、極分解、QR 分解 \\
-\midrule
-分析 & 留數定理 \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\textbf{典型成本}：每個問題從提交到證完，平均耗時 2–8 小時、佔 LLM 呼叫 50–300 次。問題的內在複雜度（分解深度、引用 mathlib 引理數量、是否需要新工具）決定實際成本。
-
-\textbf{框架自身}：累計 1141 項自動測試、涵蓋狀態機轉換、串聯規則、注入決策、復原邏輯等核心不變式。每次程式碼變更皆需通過全部測試。
-
-\textbf{近期觀察到的失敗模式：}
-
-\begin{itemize}
-  \item \textbf{重造輪子}：深度極大的子目標常為 Backward 拆題時未識別到 mathlib 已有對應引理。已新增 Citation pass 流程。
-  \item \textbf{觸發保護過嚴}：早期 Strategist 觸發互不覆蓋導致停滯。已加結構性停滯偵測。
-  \item \textbf{代理注意力被稀釋}：LESSONS 累積過多時代理略讀。下一步規劃關鍵字標籤化。
-\end{itemize}
-
-% =====================================================================
-\section*{§12 \quad 設計取捨}
-% =====================================================================
-
-\begin{center}
-\renewcommand{\arraystretch}{1.3}
-\begin{tabular}{@{}p{2.3cm} p{6.5cm} p{6cm}@{}}
-\toprule
-\textbf{取捨} & \textbf{我們的選擇} & \textbf{代價} \\
-\midrule
-驗證方式 & Lean 4 內核（唯一事實源） & 速度較慢、受限 mathlib 覆蓋範圍 \\
-\midrule
-狀態源 & SQLite 資料庫（檔案系統為衍生物） & 手動編輯狀態檔風險極高 \\
-\midrule
-代理結構 & 多代理分工（4 種角色） & 上下文連續性犧牲、換取注意力聚焦 \\
-\midrule
-失敗處理 & 代理可自主 decline + Strategist 接手 & 仰賴 Strategist 判斷品質 \\
-\midrule
-反思機制 & reflection 後寫 LESSONS、跨 spawn 累積 & LESSONS 過長時略讀風險 \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\textbf{取捨核心}：選擇 Lean 4 作為唯一事實依據，意味系統無需另設「評審代理」（如其他類似系統採用）——Lean 內核即評審。代價為代理寫的每一步皆需通過嚴格型別檢查、產出較慢。
-
-\textbf{未解問題：}
-
-\begin{itemize}
-  \item \textbf{跨問題重用}：「Library」子模組尚未啟用，不同問題間無法共享已證引理。
-  \item \textbf{長尾子目標}：少數深度極大的子目標耗時遠超預期。
-  \item \textbf{經驗傳遞對齊}：LESSONS 與 directive 的代理利用率仍待提升。
-\end{itemize}
-
-下一階段規劃將成熟的引理自動晉升為 Library 條目，並引入關鍵字標籤化機制集中代理注意力於最相關的歷史經驗。
 
 \end{document}
