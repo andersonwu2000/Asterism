@@ -345,10 +345,12 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
 --   dedup    → verdict, citation
 --   classify → target_file, target_name, file_order
 --   migrate  → lifecycle advances to 'migrated'
--- `lifecycle` is the per-decl state machine (plan §7). Terminal states:
--- 'migrated' (kept + reshaped into Library), 'dropped' (reinvents
--- mathlib OR merged into a canonical sibling), 'cited' (mathlib/Library
--- already states it; call sites cite, nothing written).
+-- `lifecycle` is the per-decl state machine (plan §7). Flow:
+-- candidate→deduped→classified→migrated→cleaned. Terminal states:
+-- 'cleaned' (migrated + PR-ready: unused hyps removed, variables factored,
+-- docstrings — Step 4), 'migrated' (kept + reshaped, pre-cleanup),
+-- 'dropped' (reinvents mathlib OR merged into a canonical sibling),
+-- 'cited' (mathlib/Library already states it; call sites cite).
 CREATE TABLE IF NOT EXISTS library_decls (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     problem         TEXT NOT NULL REFERENCES problems(name),
@@ -363,7 +365,7 @@ CREATE TABLE IF NOT EXISTS library_decls (
     lifecycle       TEXT NOT NULL DEFAULT 'candidate'
                         CHECK(lifecycle IN (
                           'candidate','deduped','classified',
-                          'migrated','dropped','cited')),
+                          'migrated','cleaned','dropped','cited')),
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
     UNIQUE(problem, slug)
@@ -579,6 +581,66 @@ def init_schema(conn: sqlite3.Connection) -> None:
         _migrate_to_phase7(conn)
         conn.execute("PRAGMA user_version = 7")
         conn.commit()
+    if v < 8:
+        # Phase 8 — library_decls.lifecycle CHECK widens to accept 'cleaned'
+        # (Step 4 PR-ready state, after 'migrated'). Same rebuild pattern;
+        # idempotent via the in-DDL CHECK probe. No backfill: pre-Phase-8
+        # rows never had 'cleaned'.
+        _migrate_to_phase8(conn)
+        conn.execute("PRAGMA user_version = 8")
+        conn.commit()
+
+
+def _migrate_to_phase8(conn: sqlite3.Connection) -> None:
+    """Phase 8 — widen `library_decls.lifecycle` CHECK to accept 'cleaned'.
+    SQLite cannot ALTER a CHECK; rebuild the table with the new clause, copy
+    rows, swap. Idempotent: skips when the CHECK is already wide.
+
+    Pre-condition: PRAGMA user_version < 8.
+    Post-condition (caller sets user_version = 8):
+      - library_decls.lifecycle CHECK accepts 'cleaned'
+      - All existing rows preserved unchanged
+    """
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table'"
+        " AND name='library_decls'"
+    ).fetchone()
+    # Table absent (pre-Librarian DB) → init_schema's CREATE already built the
+    # wide CHECK; nothing to rebuild. Wide already → skip.
+    if not chk or "'cleaned'" in (chk["sql"] or ""):
+        return
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_library_decls (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem         TEXT NOT NULL REFERENCES problems(name),
+                slug            TEXT NOT NULL,
+                source_goal_id  INTEGER NULL DEFAULT NULL REFERENCES goals(id)
+                                    ON DELETE SET NULL,
+                verdict         TEXT NULL DEFAULT NULL,
+                citation        TEXT NULL DEFAULT NULL,
+                target_file     TEXT NULL DEFAULT NULL,
+                target_name     TEXT NULL DEFAULT NULL,
+                file_order      INTEGER NULL DEFAULT NULL,
+                lifecycle       TEXT NOT NULL DEFAULT 'candidate'
+                                    CHECK(lifecycle IN (
+                                      'candidate','deduped','classified',
+                                      'migrated','cleaned','dropped','cited')),
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL,
+                UNIQUE(problem, slug)
+            );
+            INSERT INTO _new_library_decls SELECT * FROM library_decls;
+            DROP TABLE library_decls;
+            ALTER TABLE _new_library_decls RENAME TO library_decls;
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 8 migration left FK violations: {fk_violations[:5]}")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _migrate_to_phase7(conn: sqlite3.Connection) -> None:
@@ -2212,6 +2274,19 @@ def mark_library_migrated(conn: sqlite3.Connection, *, problem: str,
         " target_name = COALESCE(?, target_name), updated_at = ?"
         " WHERE problem = ? AND slug = ? AND lifecycle = 'classified'",
         (target_name, now(), problem, slug),
+    )
+    conn.commit()
+
+
+def mark_library_cleaned(conn: sqlite3.Connection, *, problem: str,
+                         slug: str) -> None:
+    """cleanup work (Step 4): a 'migrated' decl was reshaped to PR-ready form
+    (unused hyps removed, variables factored, docstring) and passed the
+    re-gate. Advance to terminal 'cleaned'."""
+    conn.execute(
+        "UPDATE library_decls SET lifecycle = 'cleaned', updated_at = ?"
+        " WHERE problem = ? AND slug = ? AND lifecycle = 'migrated'",
+        (now(), problem, slug),
     )
     conn.commit()
 
