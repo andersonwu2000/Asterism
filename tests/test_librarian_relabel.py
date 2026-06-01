@@ -190,6 +190,49 @@ def test_unmapped_defs_symbol_declines():
     assert "IsJordanForm" in r.reason and "no migrated" in r.reason
 
 
+def test_citation_map_redirects_verbatim_merge():
+    # body calls a merged sibling by bare name + args; citation_map
+    # redirects it to the canonical Library name.
+    src = (
+        "import Mathlib\n"
+        f"import {PNS}.proofs.L_gaps_for_starts\n"
+        f"namespace {PNS}\n"
+        "theorem foo : True := by\n"
+        "  have h := gaps_for_starts S h0 p g\n"
+        "  trivial\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS,
+        keep_slugs={"foo"},
+        citation_map={"gaps_for_starts": "gaps_of_starts"})
+    assert r.ok, r.reason
+    assert "gaps_for_starts" not in r.text          # redirected
+    assert "have h := gaps_of_starts S h0 p g" in r.text
+    assert "Problems." not in r.text
+
+
+def test_citation_map_word_boundary_safe():
+    # a longer identifier containing the slug as a substring must NOT be
+    # rewritten.
+    src = (
+        "import Mathlib\n"
+        f"import {PNS}.proofs.L_gap\n"
+        f"namespace {PNS}\n"
+        "theorem foo : True := by\n"
+        "  have h := gap x\n"
+        "  have h2 := gap_extra y\n"   # gap_extra must survive
+        "  trivial\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS,
+        keep_slugs={"foo"}, citation_map={"gap": "canonical_gap"})
+    assert r.ok, r.reason
+    assert "canonical_gap x" in r.text
+    assert "gap_extra y" in r.text                  # untouched
+
+
 def test_inline_alias_nonkeep_sibling_declines():
     alias = (
         "import Mathlib\n"

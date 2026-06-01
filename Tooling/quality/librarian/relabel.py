@@ -74,6 +74,7 @@ def relabel_self_contained(
     rename_decl: "tuple[str, str] | None" = None,
     defs_imports: "dict[str, str] | None" = None,
     all_defs_syms: "set[str] | None" = None,
+    citation_map: "dict[str, str] | None" = None,
 ) -> RelabelResult:
     """Mechanically relabel a single proof file.
 
@@ -134,9 +135,11 @@ def relabel_self_contained(
                 sub = sub_mod[2:]
                 if keep_slugs is not None and sub in keep_slugs:
                     continue  # keep sibling — drop import, resolved via Library
+                if citation_map and sub in citation_map:
+                    continue  # verbatim-merge → body rename below resolves it
                 return RelabelResult(
                     False, reason=f"imports non-keep sibling `{sub_mod}` — "
-                                  "citation rewrite not in this cut")
+                                  "no verbatim citation, needs Phase 2")
             # _strategy_* import inside a body we're relabelling: shouldn't
             # appear except in alias files (handled by inline_alias).
             return RelabelResult(
@@ -193,6 +196,14 @@ def relabel_self_contained(
         # word-boundary so a substring of another identifier is untouched.
         text = re.sub(rf"\b(theorem|lemma|def|abbrev)\s+{re.escape(old)}\b",
                       rf"\1 {new}", text)
+    if citation_map:
+        # Redirect verbatim-merge sibling references in the body to their
+        # canonical name. Word-boundary token rename — safe because a Lean
+        # identifier never spans whitespace, so `\b<slug>\b` can't straddle
+        # a larger name. Only slugs the caller vetted as verbatim-equal are
+        # here; everything else already declined above.
+        for src_slug, dst in citation_map.items():
+            text = re.sub(rf"\b{re.escape(src_slug)}\b", dst, text)
     if not text.endswith("\n"):
         text += "\n"
     if "Problems." in text:
@@ -208,6 +219,7 @@ def inline_alias(
     keep_slugs: "set[str] | None" = None,
     defs_imports: "dict[str, str] | None" = None,
     all_defs_syms: "set[str] | None" = None,
+    citation_map: "dict[str, str] | None" = None,
 ) -> RelabelResult:
     """Inline an alias `def <slug> := @<PNS>.<strategy>` by relabelling the
     STRATEGY file's theorem and renaming `<strategy>` → `<slug>`.
@@ -225,4 +237,4 @@ def inline_alias(
         strategy_text, problem_namespace=problem_namespace,
         target_namespace=target_namespace, keep_slugs=keep_slugs,
         rename_decl=(strat, slug), defs_imports=defs_imports,
-        all_defs_syms=all_defs_syms)
+        all_defs_syms=all_defs_syms, citation_map=citation_map)
