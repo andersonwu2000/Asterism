@@ -5,6 +5,9 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-01
+Asterism's Librarian pipeline received the bulk of the day's work, gaining a mechanical-migration pre-pass that mechanically assembles and relabels declarations (with seeded `sorry` holes and fixed citation signatures) and live agentic gates—a `bridge` work-kind that re-gates edited Library files and an upstream-reshape re-open cascade—while the dispatcher learned to re-enqueue failed chain steps and per-step `.olean` maintenance and a new `library_decls` "cleaned" lifecycle closed several cross-file staleness and stall gaps. Alongside this, the dead auto root-promotion path in the old `quality/library` module was retired in favor of the Librarian, and the agent workflow documentation was rewritten with a new overview figure and rebuilt PDF.
+
 ### 2026-05-31
 Migrated the first Librarian artifact—the Jordan `IsJordanForm` keystone—into the shared Library, validating the new end-to-end migration path. Built out the Librarian agent pipeline (dedup/classify/migrate) with its database schema, dispatcher routing, and Gate B/D safety checks (bridge-statement pinning and rfl def-equivalence verification) to ensure migrated declarations stay faithful to their originals. Hardened supporting infrastructure with per-file axiom checks against the Manifest whitelist and stricter root-statement namespace validation during CLI init.
 
