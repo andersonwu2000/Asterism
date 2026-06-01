@@ -4,13 +4,13 @@ Read `Context.md`: the target file + module, its declarations, the sibling files
 
 Time budget: {timeout_min} minutes.
 
-## What "cleanup" means
+## The three steps
 
-Edit the target file **in place** (the LSP server holds it; `apply_edit` writes through), per `mathlib_conventions.md`:
+Reshape the target file in place (the LSP server holds it; `apply_edit` writes through) per `mathlib_conventions.md`, in this order — each step changes the signatures the next one sees:
 
-- **Remove every unused hypothesis** (`linter.unusedVariables`). If dropping a binder changes a signature, update its call sites in the files Context.md lists — edit those with `Edit`.
-- **Factor shared binders** into `variable` where declarations repeat them.
-- **Add a `/-! … -/` module docstring** (title + summary + Main results). Keep each `/-- … -/` decl docstring.
+1. **Remove every unused hypothesis** (`linter.unusedVariables`). Dropping a binder changes the signature, so update its call sites in the files Context.md lists (edit those with `Edit`).
+2. **Factor shared binders** into `variable` where the now-final signatures repeat them.
+3. **Document** — add a `/-! … -/` module docstring (title + summary + Main results); keep each `/-- … -/` decl docstring.
 
 ## The one rule: don't change meaning
 
