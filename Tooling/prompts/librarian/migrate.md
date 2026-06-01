@@ -12,9 +12,13 @@ The originals live in `Problems/<problem>/` — in a problem namespace, importin
 - Drop the `Problems.<problem>.Defs` import. If an original used a Defs symbol, either it was already migrated to a Library file (import that sibling — Context.md lists the ones you may import) or it was a thin wrapper over a mathlib notion (use the mathlib one directly).
 - If a dedup verdict says a step reinvents a mathlib lemma, replace that step with the named mathlib lemma.
 
+## If `patch.lean` is pre-seeded, finish it — don't rewrite
+
+When `Context.md` carries a seed banner, `patch.lean` already holds a mechanically-relabelled draft: imports, namespace, and every non-hole declaration are final. Fill the `sorry` holes it marks (⛏) and change nothing else. With no banner, `patch.lean` is empty — author the file from scratch as below.
+
 ## Copy each signature verbatim
 
-A declaration's **signature** — the head up to `:=`, name aside: its binders and type (a `def`/`structure`'s type and fields) — must reproduce the original verbatim: same hypotheses, same conclusion, same order. Don't tidy it, weaken it, or write it from memory; copy it from `Context.md`. A signature that builds but states something subtly different silently corrupts the Library — nothing re-checks it until the problem's root is re-derived.
+A declaration's **signature** — the head up to `:=`, name aside: its binders and type (a `def`/`structure`'s type and fields) — must reproduce the original verbatim: same hypotheses, same conclusion, same order. Don't tidy it, weaken it, or reconstruct it from memory; copy it from the **proof source** named below — the statement line in Context.md is only the conclusion, not the binders. A signature that builds but states something subtly different silently corrupts the Library — nothing re-checks it until the problem's root is re-derived.
 
 The **body** (a proof, or a definition's right-hand side) is yours to rewrite — that's the point: drop Defs, cite mathlib. Only the signature is locked.
 
