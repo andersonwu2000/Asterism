@@ -948,6 +948,27 @@ def compile_librarian_context(
                 lines.append("- proof source (read for the body to port): "
                              f"`{grow['lean_path']}`")
             lines.append("")
+        # Redirect table (G3): non-keep siblings these decls cite + what to
+        # replace each with. A `sorry`-hole body that referenced a merged /
+        # dropped / cited sibling must use the canonical / mathlib / Library
+        # name instead — surface it so the agent doesn't have to rediscover it.
+        ref = _inv.referenced_slugs(workspace, problem,
+                                    [r["slug"] for r in rows])
+        all_refs: set[str] = set().union(*ref.values()) if ref else set()
+        by_slug = {r["slug"]: r for r in db.library_decls_for(conn, problem)}
+        redirects = [
+            (s, by_slug[s]["verdict"], by_slug[s]["citation"])
+            for s in sorted(all_refs)
+            if s in by_slug and by_slug[s]["citation"]
+            and by_slug[s]["verdict"] in (
+                "merge", "drop", "cite-mathlib", "cite-library")]
+        if redirects:
+            lines.append("## Sibling redirects (a referenced sibling was not "
+                         "kept — use the replacement)")
+            lines.append("")
+            for s, verdict, cit in redirects:
+                lines.append(f"- `{s}` → `{cit}`  ({verdict})")
+            lines.append("")
 
     elif work_kind == "cleanup":
         if not target_file:

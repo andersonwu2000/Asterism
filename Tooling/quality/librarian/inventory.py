@@ -212,6 +212,43 @@ def usage_graph(
     return out
 
 
+def referenced_slugs(
+    workspace: Path, problem: str, slugs,
+) -> "dict[str, set[str]]":
+    """Per slug, the RAW set of sibling slugs its proof imports — same
+    alias→strategy→`L_<sub>` walk as `usage_graph` but UNfiltered and
+    UNremapped (keeps non-keep / dropped / merged siblings). Used to surface
+    the non-keep siblings a decl cites — with their dedup verdict→citation —
+    to the migrate agent, so it knows what to redirect a `sorry`-hole's
+    reference to (G3)."""
+    proofs = db.problem_dir(workspace, problem) / "proofs"
+
+    def imports_of(mod: str) -> list[str]:
+        p = proofs / f"{mod}.lean"
+        if not p.exists():
+            return []
+        return _PROOFS_IMPORT_RE.findall(p.read_text(encoding="utf-8"))
+
+    out: dict[str, set[str]] = {}
+    for x in slugs:
+        refs: set[str] = set()
+        seen_mods: set[str] = set()
+        frontier = [f"L_{x}"]
+        while frontier:
+            mod = frontier.pop()
+            if mod in seen_mods:
+                continue
+            seen_mods.add(mod)
+            for imp in imports_of(mod):
+                if imp.startswith("L_"):
+                    if imp[2:] != x:
+                        refs.add(imp[2:])
+                elif imp.startswith("_strategy_"):
+                    frontier.append(imp)
+        out[x] = refs
+    return out
+
+
 # ---------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------

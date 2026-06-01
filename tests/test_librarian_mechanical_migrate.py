@@ -213,6 +213,37 @@ def test_merge_different_binders_declines_citation(conn, tmp_path):
     assert "bar_of_h" not in text          # body (with the bad ref) dropped
 
 
+# --- G3: migrate Context surfaces sibling redirects ---
+
+def test_migrate_context_shows_sibling_redirects(conn, tmp_path):
+    # `foo` (keep) cites a dropped sibling `bar` whose dedup citation is a
+    # mathlib lemma → migrate Context must list the redirect so the seed LLM
+    # knows what to replace `bar` with when filling foo's body.
+    tf = "Library/P/Foo.lean"
+    _seed_classified(conn, "foo", "True", tf, 0)
+    g = db.insert_goal(conn, problem="p", slug="bar",
+                       lean_path="proofs/L_bar.lean", statement="True",
+                       origin="backward", kind="theorem")
+    conn.execute("UPDATE goals SET status='proved' WHERE id=?", (g,))
+    db.upsert_library_decl(conn, problem="p", slug="bar", source_goal_id=g)
+    db.set_library_verdict(conn, problem="p", slug="bar", verdict="drop",
+                           citation="Mathlib.foo_thm")
+    conn.commit()
+    _write_proof(tmp_path, "foo",
+                 "import Mathlib\nimport " + PNS + ".proofs.L_bar\n"
+                 "namespace " + PNS + "\n"
+                 "theorem foo : True := by have := bar; trivial\n"
+                 "end " + PNS + "\n")
+    attempts = tmp_path / ".attempts"
+    attempts.mkdir()
+    ctx = lib.compile_librarian_context(
+        conn, problem="p", work_kind="migrate", attempts_dir=attempts,
+        workspace=tmp_path, target_file=tf)
+    body = ctx.read_text(encoding="utf-8")
+    assert "Sibling redirects" in body
+    assert "`bar` → `Mathlib.foo_thm`" in body
+
+
 # --- seed mode: best-effort assembly with sorry holes ---
 
 def test_seed_mode_clean_decl_plus_hole(conn, tmp_path):
