@@ -1402,19 +1402,20 @@ def _derive_librarian_work(
     conn: sqlite3.Connection, problem: str, workspace: Path,
 ) -> tuple[str | None, str | None]:
     """Derive the next Librarian work_kind from library_decls state
-    (plan §5). Pure read. Returns (work_kind, target_slug):
+    (plan §5). Pure read. Returns (work_kind, target):
 
       - no rows                        → ('dedup', None)
       - any 'candidate' (un-verdicted) → ('dedup', None)   [defensive]
       - any 'deduped' (kept, unplaced) → ('classify', None)
-      - any 'classified'               → ('migrate', <first classified slug>)
+      - any 'classified'               → ('migrate', <next ready file>)
       - 'migrated' exist, not finished → ('finish', None)
       - otherwise (terminal + done)    → (None, None)
 
-    migrate picks the first classified slug in layout order
-    (library_decls_for orders by file_order) — one slug per run, the
-    re-enqueue chain advances the rest. finish is gated on the INDEX
-    marker so it fires once, not in a loop."""
+    migrate's target is a Library FILE, not a slug — the parallel unit is
+    the whole file (plan §5 Step 3). `next_migrate_file` picks a file whose
+    dependency files are all already migrated (topological order over the
+    reconstructed file DAG); the re-enqueue chain advances the rest. finish
+    is gated on the INDEX marker so it fires once, not in a loop."""
     rows = db.library_decls_for(conn, problem)
     if not rows:
         return ("dedup", None)
@@ -1425,9 +1426,10 @@ def _derive_librarian_work(
         return ("dedup", None)
     if by_state.get("deduped"):
         return ("classify", None)
-    classified = by_state.get("classified")
-    if classified:
-        return ("migrate", str(classified[0]["slug"]))
+    if by_state.get("classified"):
+        from ..pipeline import librarian
+        return ("migrate", librarian.next_migrate_file(
+            conn, problem=problem, workspace=workspace))
     if by_state.get("migrated") and not _librarian_index_has(workspace, problem):
         return ("finish", None)
     return (None, None)
@@ -1605,7 +1607,7 @@ def _run_pipeline(workspace: Path,
                     )
                     return (pipeline_id, task_kind, target_id, target_kind,
                             "failed", "problem_not_found")
-                work_kind, target_slug = _derive_librarian_work(
+                work_kind, target = _derive_librarian_work(
                     conn, problem, workspace)
                 if work_kind is None:
                     # Chain already drained (all terminal + finish done,
@@ -1631,7 +1633,7 @@ def _run_pipeline(workspace: Path,
                 r = librarian.run_librarian(
                     conn, problem=problem, work_kind=work_kind,
                     workspace=workspace, pipeline_id=pipeline_id,
-                    target_slug=target_slug, whitelist=whitelist,
+                    target=target, whitelist=whitelist,
                 )
                 status = ("succeeded" if r.outcome in ("proved", "success")
                           else "failed")

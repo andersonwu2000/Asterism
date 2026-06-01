@@ -300,36 +300,16 @@ class MigrateResult:
 
 
 _DECL_KW = ("theorem", "lemma", "def", "abbrev", "structure",
-            "class", "instance")
+            "class", "instance", "inductive")
 _DECL_RE = re.compile(
     r"^\s*(?:noncomputable\s+|private\s+|protected\s+|scoped\s+)*"
     r"(?:" + "|".join(_DECL_KW) + r")\s+([A-Za-z_][\w']*)")
 _NS_RE = re.compile(r"^\s*namespace\s+([A-Za-z_][\w.]*)")
 
 
-def extract_decl_fq_name(patch_text: str) -> str | None:
-    """The fully-qualified name of the single declaration a migrate patch
-    introduces — `<namespace>.<decl>` — for `#print axioms`. The decl's
-    FQ name is namespace-derived, independent of the (temp) file name, so
-    the axiom probe resolves it regardless of where the patch is written.
-
-    Scans for the last `namespace …` before the first named declaration.
-    Returns None when no named decl is found (anonymous `instance : …` or
-    a malformed patch) — the caller fails the gate rather than skipping
-    the axiom check, keeping the per-file invariant honest."""
-    ns: str | None = None
-    for line in patch_text.splitlines():
-        m = _DECL_RE.match(line)
-        if m:
-            return f"{ns}.{m.group(1)}" if ns else m.group(1)
-        m = _NS_RE.match(line)
-        if m:
-            ns = m.group(1)
-    return None
-
-
 # Decl-kind detector (Gate D must distinguish def/abbrev from nominal
-# kinds). Reuses _DECL_KW; captures the keyword rather than the name.
+# kinds, and per-file migrate maps each decl positionally). Reuses
+# _DECL_KW; captures the keyword rather than the name.
 _DECL_KW_RE = re.compile(
     r"^\s*(?:noncomputable\s+|private\s+|protected\s+|scoped\s+)*"
     r"(def|abbrev|theorem|lemma|structure|class|inductive|instance)\b")
@@ -338,17 +318,63 @@ _DECL_KW_RE = re.compile(
 # even with identical fields, so `rfl` (Gate D) cannot equate them.
 _NOMINAL_KINDS = ("structure", "class", "inductive")
 
+# `end <ns>` closes a namespace opened by `namespace <ns>`.
+_END_RE = re.compile(r"^\s*end\s+([A-Za-z_][\w.]*)")
+
+
+@dataclass
+class MigratedDecl:
+    """A top-level declaration found in a migrate patch: its keyword
+    (`def`/`theorem`/…), bare name, and namespace-qualified name."""
+    kind: str | None
+    name: str
+    fq_name: str
+
+
+def extract_decls(patch_text: str) -> "list[MigratedDecl]":
+    """Every named top-level declaration in a patch, in source order.
+
+    Per-file migrate pairs these positionally with the file's classified
+    slugs (file_order) to backfill each `target_name`, run the per-decl
+    axiom check, and drive Gate D. Tracks the open namespace(s) so each
+    name is fully qualified; an `end <ns>` matching the innermost open
+    namespace pops it, so multi-section files qualify correctly."""
+    ns_stack: list[str] = []
+    out: list[MigratedDecl] = []
+    for line in patch_text.splitlines():
+        m = _NS_RE.match(line)
+        if m:
+            ns_stack.append(m.group(1))
+            continue
+        me = _END_RE.match(line)
+        if me and ns_stack and ns_stack[-1] == me.group(1):
+            ns_stack.pop()
+            continue
+        m = _DECL_RE.match(line)
+        if m:
+            mk = _DECL_KW_RE.match(line)
+            ns = ".".join(ns_stack)
+            out.append(MigratedDecl(
+                kind=mk.group(1) if mk else None, name=m.group(1),
+                fq_name=f"{ns}.{m.group(1)}" if ns else m.group(1)))
+    return out
+
+
+def extract_decl_fq_name(patch_text: str) -> str | None:
+    """The fully-qualified name of the FIRST named declaration in a patch
+    (`<namespace>.<decl>`), or None when none is found. Convenience over
+    `extract_decls` for single-decl callers (e.g. Gate D's fallback when
+    no explicit name is supplied). The FQ name is namespace-derived, so it
+    resolves under `#print axioms` regardless of the (temp) file name."""
+    decls = extract_decls(patch_text)
+    return decls[0].fq_name if decls else None
+
 
 def extract_decl_kind(patch_text: str) -> str | None:
-    """The keyword (`def` / `abbrev` / `theorem` / `structure` / …) of the
-    first named declaration in a patch, or None when none is found.
-    Mirrors `extract_decl_fq_name`'s scan; together they classify the
-    migrated declaration for Gate D."""
-    for line in patch_text.splitlines():
-        m = _DECL_KW_RE.match(line)
-        if m:
-            return m.group(1)
-    return None
+    """The keyword (`def` / `abbrev` / `theorem` / …) of the first named
+    declaration in a patch, or None. Convenience over `extract_decls`."""
+    decls = extract_decls(patch_text)
+    return decls[0].kind if decls else None
 
 
 def _library_module_of(rel_lean_path: str) -> str:
@@ -364,6 +390,7 @@ def _library_module_of(rel_lean_path: str) -> str:
 def migrate_defeq_gate(
     patch_text: str, *, problem: str, target_slug: str,
     defs_decls: "list[str]", target_module: str,
+    target_fq: "str | None" = None, kind: "str | None" = None,
     defeq_verifier=None, workspace: "_Path | None" = None,
 ) -> MigrateResult:
     """Gate D for the migrate path — the def-tampering guard (plan §2).
@@ -384,17 +411,23 @@ def migrate_defeq_gate(
         caller MUST have the Library file on disk before calling.
 
     `defeq_verifier` is injectable (forwarded to check_def_equivalence) so
-    unit tests run gateway-free."""
+    unit tests run gateway-free. `target_fq`/`kind` may be supplied
+    explicitly (per-file migrate, where the patch holds several decls and
+    the positional pairing already knows this slug's name and keyword); if
+    omitted they fall back to the patch's first declaration (single-decl
+    callers and tests)."""
     if target_slug not in defs_decls:
         return MigrateResult(True, "")
-    kind = extract_decl_kind(patch_text)
+    if kind is None:
+        kind = extract_decl_kind(patch_text)
     if kind in _NOMINAL_KINDS:
         return MigrateResult(
             False, f"Gate D: Defs decl `{target_slug}` is a {kind} "
                    "(nominal) — `rfl` cannot equate two separate "
                    "declarations; needs a verbatim special-case "
                    "(decline-and-flag).")
-    target_fq = extract_decl_fq_name(patch_text)
+    if target_fq is None:
+        target_fq = extract_decl_fq_name(patch_text)
     if target_fq is None:
         return MigrateResult(
             False, "Gate D: could not extract the migrated declaration's "
@@ -455,16 +488,21 @@ def migrate_commit_gate(
         return MigrateResult(False, f"build failed: {detail}")
 
     if whitelist is not None:
-        fq_name = extract_decl_fq_name(patch_text)
-        if fq_name is None:
+        # Per-file: every migrated declaration's transitive axioms must be
+        # ⊆ whitelist — `build` alone accepts a file whose cited lemmas
+        # carry a rogue axiom; only `#print axioms` walks the kernel graph.
+        decls = extract_decls(patch_text)
+        if not decls:
             return MigrateResult(
-                False, "axiom check: could not extract the declaration "
-                       "name (anonymous or malformed decl)")
+                False, "axiom check: no named declaration found "
+                       "(anonymous or malformed patch)")
         if axiom_verifier is None:
             axiom_verifier = _warm_axiom_verifier(workspace)
-        ok, detail = axiom_verifier(patch_text, fq_name, whitelist)
-        if not ok:
-            return MigrateResult(False, f"axiom check failed: {detail}")
+        for d in decls:
+            ok, detail = axiom_verifier(patch_text, d.fq_name, whitelist)
+            if not ok:
+                return MigrateResult(
+                    False, f"axiom check failed for `{d.fq_name}`: {detail}")
     return MigrateResult(True, "")
 
 
@@ -554,6 +592,67 @@ def _warm_axiom_verifier(workspace):
 
 
 # ---------------------------------------------------------------------
+# File-level dependency DAG (GAP 2 — reconstructed, no schema column)
+# ---------------------------------------------------------------------
+# classify computed the cross-file import DAG (ClassifyFile.imports,
+# verify_classify checks acyclicity) but commit_classify drops it and
+# library_decls has no imports column. migrate needs that DAG to (a) pick
+# the next ready file in topological order and (b) tell the agent which
+# sibling Library modules it may import. Rebuild it from per-decl deps
+# (inventory / tree.py ground truth) + the slug→target_file mapping, so
+# no schema migration is needed.
+
+
+def file_dependency_graph(conn, *, problem: str,
+                          workspace) -> "dict[str, set[str]]":
+    """Map each placed Library file to the set of OTHER placed files it
+    depends on. A file F depends on file G iff some decl in F uses (per the
+    inventory dep graph) a decl placed in G. Only decls with a target_file
+    (classified or migrated) participate; cited/dropped decls are terminal
+    and never placed."""
+    from ..quality.librarian import inventory as _inv
+    rows = db.library_decls_for(conn, problem)
+    file_of = {r["slug"]: r["target_file"] for r in rows
+               if r["target_file"]
+               and r["lifecycle"] in ("classified", "migrated")}
+    inv = _inv.build_inventory(conn, workspace, problem)
+    deps_by_slug = {d.slug: d.deps for d in inv.decls}
+    graph: "dict[str, set[str]]" = {f: set() for f in set(file_of.values())}
+    for slug, f in file_of.items():
+        for dep in deps_by_slug.get(slug, []):
+            g = file_of.get(dep)
+            if g and g != f:
+                graph[f].add(g)
+    return graph
+
+
+def next_migrate_file(conn, *, problem: str, workspace) -> "str | None":
+    """The next Library file ready to migrate: one with classified
+    (not-yet-migrated) decls whose every dependency file is already
+    migrated. Per-file migrate marks all of a file's decls 'migrated'
+    together, so a file is either wholly classified or wholly migrated —
+    'fully migrated' is just lifecycle=='migrated'. Ties broken by path so
+    the chain is reproducible. Returns None when no classified decls
+    remain. Falls back to the first classified file when none is ready —
+    an acyclic DAG always has a ready file, so this only fires on a
+    classify bug, and the build gate then surfaces the unresolved import
+    honestly rather than the chain silently stalling."""
+    rows = db.library_decls_for(conn, problem)
+    classified = sorted({r["target_file"] for r in rows
+                         if r["lifecycle"] == "classified"
+                         and r["target_file"]})
+    if not classified:
+        return None
+    migrated = {r["target_file"] for r in rows
+                if r["lifecycle"] == "migrated" and r["target_file"]}
+    graph = file_dependency_graph(conn, problem=problem, workspace=workspace)
+    for f in classified:
+        if all(dep in migrated for dep in graph.get(f, set())):
+            return f
+    return classified[0]
+
+
+# ---------------------------------------------------------------------
 # Stage C — Context.md compiler (per work kind)
 # ---------------------------------------------------------------------
 # Librarian context is problem/decl-centric (vs Strategist's goal-tree
@@ -573,12 +672,13 @@ def _read_statement(conn, problem: str, slug: str) -> str:
 
 def compile_librarian_context(
     conn, *, problem: str, work_kind: str, attempts_dir,
-    workspace, target_slug: str | None = None,
+    workspace, target_file: str | None = None,
 ) -> "_Path":
     """Write attempts_dir/Context.md for a Librarian work spawn.
 
-    `work_kind` ∈ {dedup, classify, migrate}. `target_slug` is required
-    for migrate (the single decl to reshape)."""
+    `work_kind` ∈ {dedup, classify, migrate}. `target_file` is required
+    for migrate (the Library file to write — its classified decls in
+    file_order, plus the sibling modules it may import)."""
     from ..quality.librarian import inventory as _inv
 
     lines: list[str] = [f"# Librarian — {work_kind} — {problem}", ""]
@@ -619,49 +719,72 @@ def compile_librarian_context(
             lines.append("")
 
     elif work_kind == "migrate":
-        if not target_slug:
-            raise ValueError("migrate work requires target_slug")
-        row = conn.execute(
-            "SELECT * FROM library_decls WHERE problem = ? AND slug = ?",
-            (problem, target_slug),
-        ).fetchone()
-        lines.append(f"## Migrate `{target_slug}`")
+        if not target_file:
+            raise ValueError("migrate work requires target_file")
+        rows = [r for r in db.library_decls_for(conn, problem)
+                if r["target_file"] == target_file
+                and r["lifecycle"] == "classified"]
+        rows.sort(key=lambda r: (r["file_order"]
+                                 if r["file_order"] is not None else 0))
+        target_module = _library_module_of(target_file)
+        lines.append(f"## Migrate file `{target_file}`")
         lines.append("")
-        if row is not None:
-            lines.append(f"- target file: `{row['target_file']}`")
-            tn = row["target_name"]
-            if tn:
-                lines.append(f"- target name: `{tn}`")
-            if row["verdict"] and row["verdict"] != "keep":
-                lines.append(f"- dedup verdict: {row['verdict']} "
-                             f"→ cite `{row['citation']}`")
+        lines.append(f"- module: `{target_module}`")
+        # Derived sibling imports (GAP 2): the Library modules this file's
+        # decls depend on — already migrated (topological order).
+        graph = file_dependency_graph(conn, problem=problem,
+                                      workspace=workspace)
+        dep_files = sorted(graph.get(target_file, set()))
+        if dep_files:
+            lines.append("- sibling Library modules you may import:")
+            for df in dep_files:
+                lines.append(f"    - `{_library_module_of(df)}`")
+        else:
+            lines.append("- sibling Library modules you may import: "
+                         "none (Mathlib only)")
+        lines.append("")
+        lines.append(f"_{len(rows)} declaration(s) to migrate, in this "
+                     "exact order:_")
+        lines.append("")
+        defs_names = set(_inv.defs_decls(workspace, problem))
+        # A Defs declaration's body is Gate-D-locked — show the verbatim
+        # Defs.lean once so the agent reproduces it character for character.
+        if any(r["slug"] in defs_names for r in rows):
+            defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
+            if defs_path.exists():
+                lines.append("## Defs.lean (definitions are locked — "
+                             "reproduce verbatim)")
+                lines.append("")
+                lines.append("```lean")
+                lines.append(defs_path.read_text(
+                    encoding="utf-8", errors="replace").rstrip())
+                lines.append("```")
+                lines.append("")
+        lines.append("## Declarations")
+        lines.append("")
+        for i, r in enumerate(rows, 1):
+            slug = r["slug"]
+            lines.append(f"### {i}. `{slug}`")
+            if r["verdict"] and r["verdict"] != "keep":
+                lines.append(f"- dedup verdict: {r['verdict']} → cite "
+                             f"`{r['citation']}`")
+            if slug in defs_names:
+                lines.append("- a Defs declaration — see the locked "
+                             "Defs.lean above; reproduce its signature "
+                             "and body.")
+                lines.append("")
+                continue
+            stmt = " ".join(_read_statement(conn, problem, slug).split())
+            lines.append("- statement (signature — copy verbatim):")
+            lines.append(f"  `{stmt}`" if stmt else "  _(no statement)_")
+            grow = conn.execute(
+                "SELECT lean_path FROM goals WHERE problem = ? AND slug = ?",
+                (problem, slug),
+            ).fetchone()
+            if grow and grow["lean_path"]:
+                lines.append("- proof source (read for the body to port): "
+                             f"`{grow['lean_path']}`")
             lines.append("")
-        # Original source — the verbatim signature the agent must copy.
-        src_path = None
-        grow = conn.execute(
-            "SELECT lean_path FROM goals WHERE problem = ? AND slug = ?",
-            (problem, target_slug),
-        ).fetchone()
-        if grow and grow["lean_path"]:
-            src_path = workspace / grow["lean_path"]
-        else:
-            # Defs.lean declarations are not goals (no lean_path) — fall back
-            # to the problem's Defs.lean so the agent still sees the verbatim
-            # definition it must reproduce (Gate D rfl-checks it afterwards).
-            cand = db.problem_dir(workspace, problem) / "Defs.lean"
-            if target_slug in _inv.defs_decls(workspace, problem) \
-                    and cand.exists():
-                src_path = cand
-        lines.append("## Original source (copy the signature verbatim)")
-        lines.append("")
-        if src_path and src_path.exists():
-            lines.append("```lean")
-            lines.append(src_path.read_text(encoding="utf-8",
-                                            errors="replace").rstrip())
-            lines.append("```")
-        else:
-            lines.append("_(original source file not found)_")
-        lines.append("")
 
     else:
         raise ValueError(f"unknown work_kind: {work_kind!r}")
@@ -684,13 +807,14 @@ WORK_KINDS: frozenset[str] = frozenset({"dedup", "classify", "migrate"})
 
 def run_librarian(conn, *, problem: str, work_kind: str,
                   workspace, pipeline_id: str,
-                  target_slug: str | None = None,
+                  target: str | None = None,
                   whitelist: "list[str] | None" = None):
     """Outer Librarian entry. Returns PipelineResult.
 
     `work_kind` selects the prompt (prompts/librarian/<kind>.md) and the
-    commit path. `target_slug` is required for migrate. `whitelist` is the
-    problem's authorized axiom set (Manifest `axioms_whitelist`, or the
+    commit path. `target` is required for migrate — the Library FILE to
+    write (per-file is the parallel unit, plan §5 Step 3). `whitelist` is
+    the problem's authorized axiom set (Manifest `axioms_whitelist`, or the
     framework default) — threaded to the migrate commit gate's per-file
     axiom check; only the migrate kind uses it.
 
@@ -721,7 +845,7 @@ def run_librarian(conn, *, problem: str, work_kind: str,
     if work_kind == "migrate":
         return _run_migrate(
             conn, problem=problem, workspace=workspace,
-            pipeline_id=pipeline_id, target_slug=target_slug,
+            pipeline_id=pipeline_id, target_file=target,
             attempts_dir=attempts_dir, problem_dir=problem_dir,
             prompt_path=prompt_path, whitelist=whitelist)
     return _run_structured(
@@ -801,30 +925,37 @@ def _run_structured(conn, *, problem, work_kind, workspace,
     return PipelineResult(outcome="success")
 
 
-def _run_migrate(conn, *, problem, workspace, pipeline_id, target_slug,
+def _run_migrate(conn, *, problem, workspace, pipeline_id, target_file,
                  attempts_dir, problem_dir, prompt_path, whitelist=None):
-    """migrate: LSP + session-retry loop (mirrors builder). The agent
-    writes patch.lean; on a clean spawn migrate_commit_gate decides, and
-    on ok we copy to the target Library file + mark migrated."""
+    """migrate (per-file, plan §5 Step 3): one agent writes the whole
+    Library file holding that file's classified decls (in file_order). The
+    commit gate builds the whole file once + checks every decl's axioms,
+    Gate D rfl-checks each migrated `def`, and all the file's decls advance
+    to 'migrated' together. LSP + session-retry loop mirrors Builder."""
     import shutil
     from . import PipelineResult, _write_mcp_config
     from ._retry import SpawnCtx, run_with_session_retries
     from .. import agent
     from ..core import dispatcher
+    from ..quality.librarian import inventory as _inv
 
-    if not target_slug:
+    if not target_file:
         return PipelineResult(outcome="failed",
                               failure_reason="librarian_bad_work_kind",
-                              failure_detail="migrate requires target_slug")
-    row = conn.execute(
-        "SELECT * FROM library_decls WHERE problem = ? AND slug = ?",
-        (problem, target_slug),
-    ).fetchone()
-    if row is None or row["lifecycle"] != "classified":
+                              failure_detail="migrate requires target_file")
+    rows = [r for r in db.library_decls_for(conn, problem)
+            if r["target_file"] == target_file
+            and r["lifecycle"] == "classified"]
+    if not rows:
         return PipelineResult(
             outcome="failed", failure_reason="librarian_not_classified",
-            failure_detail=f"{target_slug} not in 'classified' state")
-    target_file = workspace / row["target_file"]
+            failure_detail=f"{target_file}: no classified decls")
+    rows.sort(key=lambda r: (r["file_order"]
+                             if r["file_order"] is not None else 0))
+    ordered_slugs = [r["slug"] for r in rows]
+    target_path = workspace / target_file
+    target_module = _library_module_of(target_file)
+    defs_names = _inv.defs_decls(workspace, problem)
     patch_lean = attempts_dir / "patch.lean"
 
     def migrate_spawn(ctx: SpawnCtx) -> int:
@@ -832,7 +963,7 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_slug,
             compile_librarian_context(
                 conn, problem=problem, work_kind="migrate",
                 attempts_dir=ctx.attempts_dir, workspace=workspace,
-                target_slug=target_slug)
+                target_file=target_file)
             patch_lean.write_text("", encoding="utf-8")
         mcp_config_path = _write_mcp_config(
             attempts_dir=ctx.attempts_dir, workspace=workspace,
@@ -861,37 +992,51 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_slug,
                                   failure_reason="agent_declined",
                                   failure_detail="migrate declined",
                                   proposal_md=patch_text)
-        gate = migrate_commit_gate(patch_text, target_file,
+        # Gate A import-closure + whole-file build + per-decl axiom check.
+        gate = migrate_commit_gate(patch_text, target_path,
                                    whitelist=whitelist, workspace=workspace)
         if not gate.ok:
             return PipelineResult(outcome="failed",
                                   failure_reason="librarian_gate_failed",
-                                  failure_detail=gate.detail)
-        # The Library decl's fully-qualified name — backfills target_name
-        # (classify wrote it NULL) and is Gate D's rfl target.
-        target_fq = extract_decl_fq_name(patch_text)
-        from ..quality.librarian import inventory as _inv
-        defs_names = _inv.defs_decls(workspace, problem)
-        # Stage the file: Gate D's rfl probe imports the Library module,
-        # so the target must be on disk. Roll back if Gate D rejects.
-        target_file.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(patch_lean, target_file)
-        dgate = migrate_defeq_gate(
-            patch_text, problem=problem, target_slug=target_slug,
-            defs_decls=defs_names,
-            target_module=_library_module_of(row["target_file"]),
-            workspace=workspace)
-        if not dgate.ok:
-            try:
-                target_file.unlink()
-            except OSError:
-                pass
-            return PipelineResult(outcome="failed",
-                                  failure_reason="librarian_gate_failed",
-                                  failure_detail=dgate.detail,
+                                  failure_detail=gate.detail,
                                   proposal_md=patch_text)
-        db.mark_library_migrated(conn, problem=problem, slug=target_slug,
-                                 target_name=target_fq)
+        # Positional slug ↔ declaration pairing (migrate.md mandates exactly
+        # the listed decls, in order). A mismatch breaks target_name backfill
+        # and Gate D — fail with a clear, retryable message.
+        decls = extract_decls(patch_text)
+        if len(decls) != len(ordered_slugs):
+            return PipelineResult(
+                outcome="failed", failure_reason="librarian_gate_failed",
+                failure_detail=(
+                    f"file declares {len(decls)} top-level declaration(s) "
+                    f"but {len(ordered_slugs)} were classified into it "
+                    f"({ordered_slugs}); emit exactly the listed "
+                    "declarations, in order"),
+                proposal_md=patch_text)
+        # Stage the whole file: Gate D's rfl probe imports the module, so the
+        # target must be on disk. Roll back if any decl's Gate D rejects.
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(patch_lean, target_path)
+        for slug, decl in zip(ordered_slugs, decls):
+            dgate = migrate_defeq_gate(
+                patch_text, problem=problem, target_slug=slug,
+                defs_decls=defs_names, target_module=target_module,
+                target_fq=decl.fq_name, kind=decl.kind, workspace=workspace)
+            if not dgate.ok:
+                try:
+                    target_path.unlink()
+                except OSError:
+                    pass
+                return PipelineResult(
+                    outcome="failed",
+                    failure_reason="librarian_gate_failed",
+                    failure_detail=f"{slug}: {dgate.detail}",
+                    proposal_md=patch_text)
+        # All gates passed — advance every decl to 'migrated', backfilling
+        # each one's fully-qualified Library name (classify wrote it NULL).
+        for slug, decl in zip(ordered_slugs, decls):
+            db.mark_library_migrated(conn, problem=problem, slug=slug,
+                                     target_name=decl.fq_name)
         return PipelineResult(outcome="success")
 
     def migrate_postmortem(sid: str) -> None:

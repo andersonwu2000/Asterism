@@ -61,7 +61,7 @@ def _migrated(conn, slug, problem="p", order=0):
 
 
 # ---------------------------------------------------------------------
-# _derive_librarian_work — pure state → (work_kind, target_slug)
+# _derive_librarian_work — pure state → (work_kind, target)
 # ---------------------------------------------------------------------
 
 def test_derive_no_rows_is_dedup(tmp_path: Path):
@@ -84,14 +84,15 @@ def test_derive_deduped_is_classify(tmp_path: Path):
         "classify", None)
 
 
-def test_derive_classified_is_migrate_first_slug(tmp_path: Path):
+def test_derive_classified_is_migrate_ready_file(tmp_path: Path):
     conn = _mem()
-    # file_order drives "first" — seed out of order to prove ordering.
-    _classified(conn, "bbb", order=1)
-    _classified(conn, "aaa", order=0)
-    work, slug = dispatcher._derive_librarian_work(conn, "p", tmp_path)
+    # migrate's target is a FILE now (per-file is the parallel unit). With
+    # no cross-file deps, the first ready file is the first by path.
+    _classified(conn, "bbb", order=1)   # → Library/P/bbb.lean
+    _classified(conn, "aaa", order=0)   # → Library/P/aaa.lean
+    work, target = dispatcher._derive_librarian_work(conn, "p", tmp_path)
     assert work == "migrate"
-    assert slug == "aaa"  # lowest file_order, not insertion order
+    assert target == "Library/P/aaa.lean"
 
 
 def test_derive_migrated_no_index_is_finish(tmp_path: Path):
@@ -131,6 +132,72 @@ def test_derive_mixed_prioritises_earliest_stage(tmp_path: Path):
     _deduped(conn, "unplaced")
     work, _ = dispatcher._derive_librarian_work(conn, "p", tmp_path)
     assert work == "classify"
+
+
+# ---------------------------------------------------------------------
+# file_dependency_graph + next_migrate_file (GAP 1/2 — per-file migrate)
+# ---------------------------------------------------------------------
+
+def _classified_in(conn, slug, target_file, problem="p", order=0):
+    """Classify `slug` into an explicit (possibly shared) file — per-file
+    migrate places several decls in one file."""
+    _deduped(conn, slug, problem)
+    db.set_library_classification(
+        conn, problem=problem, slug=slug, target_file=target_file,
+        target_name=None, file_order=order)
+
+
+def _fake_inventory(monkeypatch, deps_by_slug):
+    """Patch build_inventory so the file DAG is driven by an explicit
+    slug→deps map instead of on-disk proof files."""
+    from Tooling.quality.librarian import inventory as inv_mod
+    inv = inv_mod.Inventory(
+        problem="p",
+        decls=[inv_mod.InvDecl(
+            goal_id=i, slug=s, status="proved", kind="sub",
+            origin="backward", lean_path=None, deps=list(d))
+            for i, (s, d) in enumerate(deps_by_slug.items())],
+        defs_decls=[])
+    monkeypatch.setattr(inv_mod, "build_inventory", lambda *a, **k: inv)
+
+
+def test_next_migrate_file_groups_decls(tmp_path: Path):
+    conn = _mem()
+    _classified_in(conn, "a", "Library/P/Foo.lean", order=0)
+    _classified_in(conn, "b", "Library/P/Foo.lean", order=1)
+    assert librarian.next_migrate_file(
+        conn, problem="p", workspace=tmp_path) == "Library/P/Foo.lean"
+
+
+def test_file_dependency_graph_cross_file(tmp_path: Path, monkeypatch):
+    conn = _mem()
+    _classified_in(conn, "a", "Library/P/Foo.lean")   # a uses b
+    _classified_in(conn, "b", "Library/P/Bar.lean")
+    _fake_inventory(monkeypatch, {"a": ["b"], "b": []})
+    g = librarian.file_dependency_graph(conn, problem="p", workspace=tmp_path)
+    assert g == {"Library/P/Foo.lean": {"Library/P/Bar.lean"},
+                 "Library/P/Bar.lean": set()}
+
+
+def test_next_migrate_file_topological(tmp_path: Path, monkeypatch):
+    conn = _mem()
+    # Foo depends on Bar; Bar must migrate first even though Foo sorts
+    # earlier by path.
+    _classified_in(conn, "a", "Library/P/Foo.lean")   # a uses b
+    _classified_in(conn, "b", "Library/P/Bar.lean")
+    _fake_inventory(monkeypatch, {"a": ["b"], "b": []})
+    assert librarian.next_migrate_file(
+        conn, problem="p", workspace=tmp_path) == "Library/P/Bar.lean"
+    db.mark_library_migrated(conn, problem="p", slug="b")
+    assert librarian.next_migrate_file(
+        conn, problem="p", workspace=tmp_path) == "Library/P/Foo.lean"
+
+
+def test_next_migrate_file_none_when_no_classified(tmp_path: Path):
+    conn = _mem()
+    _migrated(conn, "a")
+    assert librarian.next_migrate_file(
+        conn, problem="p", workspace=tmp_path) is None
 
 
 # ---------------------------------------------------------------------

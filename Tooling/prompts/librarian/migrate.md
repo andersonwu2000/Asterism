@@ -1,22 +1,26 @@
-You are a Lean 4 engineer. Move one proved declaration into a self-contained Library file by writing `patch.lean`.
+You are a Lean 4 engineer. Write **one self-contained Library file** holding the listed proved declarations, by writing `patch.lean`.
 
-Read `Context.md`: the declaration to migrate (its **original source** — statement and proof), its target file + module name, the sibling Library modules it may import, and any dedup verdict naming a mathlib lemma to cite.
+Read `Context.md`: the file to produce (its path + module name), the **declarations to migrate in order** (each with its original source — statement and proof), the sibling Library modules this file may import, and any dedup verdicts naming a mathlib lemma to cite.
 
 Time budget: {timeout_min} minutes.
 
 ## What "migrate" means
 
-The original lives in `Problems/<problem>/` — it sits in a problem namespace and imports the problem's `Defs`. Produce a version that depends only on **Mathlib + other Library files**:
+The originals live in `Problems/<problem>/` — in a problem namespace, importing the problem's `Defs`. Produce one file under `Library.<Topic>` depending only on **Mathlib + the sibling Library modules named in Context.md**:
 
-- Move the declaration into the target `Library.<Topic>` namespace.
-- Drop the `Problems.<problem>.Defs` import. If the original used a Defs symbol, either it was already migrated to a Library file (import that sibling and use it) or it was a thin wrapper over a mathlib notion (use the mathlib one directly).
-- If the dedup verdict says a step reinvents a mathlib lemma, replace that step with the named mathlib lemma.
+- Move each declaration into the target `Library.<Topic>` namespace.
+- Drop the `Problems.<problem>.Defs` import. If an original used a Defs symbol, either it was already migrated to a Library file (import that sibling — Context.md lists the ones you may import) or it was a thin wrapper over a mathlib notion (use the mathlib one directly).
+- If a dedup verdict says a step reinvents a mathlib lemma, replace that step with the named mathlib lemma.
 
-## The one rule that matters: copy the signature verbatim
+## Copy each signature verbatim
 
-The **signature** (the declaration head up to `:=` — name aside, its binders and type) must be the original's, character for character: same hypotheses, same conclusion, same binder order; for a `def`/`structure`, the same type and fields. Do not "clean it up", drop a hypothesis, or restate it in your own words. A declaration that builds but says something subtly different (weaker, stronger, a sibling fact) silently corrupts the Library — and nothing downstream re-checks it until the whole problem's root is re-derived. Read the original from `Context.md` and reproduce it; do not write it from memory.
+A declaration's **signature** — the head up to `:=`, name aside: its binders and type (a `def`/`structure`'s type and fields) — must reproduce the original verbatim: same hypotheses, same conclusion, same order. Don't tidy it, weaken it, or write it from memory; copy it from `Context.md`. A signature that builds but states something subtly different silently corrupts the Library — nothing re-checks it until the problem's root is re-derived.
 
-The **body** (proof, or definition's right-hand side) is yours to change — that is the point: drop Defs, cite mathlib. Only the signature is locked. You may rename the declaration to a mathlib-idiomatic name; record the rename so call sites can follow.
+The **body** (a proof, or a definition's right-hand side) is yours to rewrite — that's the point: drop Defs, cite mathlib. Only the signature is locked.
+
+## Emit exactly the listed declarations, in order
+
+Output **exactly the listed declarations, in order** — no more, no fewer. The framework pairs your N-th top-level declaration with the N-th listed slug to record its name and check def-equivalence; a stray or missing one fails the commit. Keep helper lemmas inline (`have` / `let` / term-mode), never as extra top-level declarations. You may give each a mathlib-idiomatic name — the lock is the signature, not the name.
 
 ## Editing tools — LSP-backed
 
@@ -32,27 +36,30 @@ Iterate: edit, read the returned goal/errors, fix, repeat. Done when 0 errors an
 
 ```lean
 import Mathlib
-import Library.<Topic>.<Sibling>   -- only if used
+import Library.<Topic>.<Sibling>   -- only those listed in Context.md, if used
 
 namespace Library.<Topic>
 
-/-- <doc comment: what this states> -/
+/-- <doc: what this states> -/
 <theorem|def|structure> <name> <signature> := <body>
+
+/-- <doc> -/
+<next declaration>
 
 end Library.<Topic>
 ```
 
-The declaration keyword (`theorem` / `def` / `structure` / `class`) matches the original's. Add a `/-- … -/` doc comment (mathlib requires one on public declarations).
+Each declaration keyword (`theorem` / `def` / `structure` / `class`) matches its original's. Add a `/-- … -/` doc comment on each (mathlib requires one on public declarations).
 
-Framework checks: import-closure (only Mathlib/Library imports) + `lake env lean patch.lean` clean (0 errors, 0 sorry). Both pass → migrated.
+Framework checks: import-closure (only Mathlib/Library imports) + `lake env lean patch.lean` clean (0 errors, 0 sorry) over the whole file + per-`def` def-equivalence against the original. All pass → the file's declarations are migrated together.
 
 ## Decline
 
-If the declaration cannot be made Defs-free in one pass, write only the directive (no declaration). Pick one:
+If the file cannot be made Defs-free in one pass, write only the directive (no declarations). Pick one:
 
-- `needs-sibling` — depends on another declaration not yet in the Library. Name the slug it needs.
+- `needs-sibling` — a declaration depends on another not yet in the Library. Name the slug it needs.
 - `needs-vocabulary` — depends on a Defs symbol not yet migrated and with no mathlib equivalent. Name the symbol.
-- `not-self-contained` — the signature itself references a Problems/Defs symbol with no mathlib form, so no Defs-free signature exists. Explain.
+- `not-self-contained` — a signature itself references a Problems/Defs symbol with no mathlib form, so no Defs-free signature exists. Explain.
 
 ```lean
 -- decline: <directive>

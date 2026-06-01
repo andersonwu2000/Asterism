@@ -1,0 +1,213 @@
+"""Phase-1 mechanical relabel (Tooling/quality/librarian/relabel.py).
+
+Pure offline unit tests — no gateway, no build. Verifies the relabel core
+ships the self-contained `keep` case and conservatively declines the rest.
+"""
+from __future__ import annotations
+
+from Tooling.quality.librarian import relabel
+
+PNS = "Problems.LinearAlgebra.jordan_normal_form"
+TNS = "Library.LinearAlgebra.JordanForm.KernelChain"
+
+
+def test_self_contained_keep_relabels():
+    src = (
+        "import Mathlib\n"
+        f"import {PNS}.Defs\n"
+        "\n"
+        f"namespace {PNS}\n"
+        "\n"
+        "theorem chain_bottoms_li (M : Nat) : True := by\n"
+        "  trivial\n"
+        "\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS)
+    assert r.ok, r.reason
+    # Defs import dropped, Mathlib kept.
+    assert "import Mathlib" in r.text
+    assert f"import {PNS}.Defs" not in r.text
+    assert "Problems." not in r.text
+    # namespace + end renamed to target.
+    assert f"namespace {TNS}" in r.text
+    assert f"end {TNS}" in r.text
+    # Body byte-for-byte intact.
+    assert "theorem chain_bottoms_li (M : Nat) : True := by\n  trivial" in r.text
+
+
+def test_alias_declines():
+    src = (
+        "import Mathlib\n"
+        f"import {PNS}.Defs\n"
+        f"import {PNS}.proofs._strategy_s11000\n"
+        f"namespace {PNS}\n"
+        f"def inf_ker_card := @{PNS}.s11000\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS)
+    assert not r.ok
+    assert "alias" in r.reason
+
+
+def test_problems_sibling_import_declines():
+    src = (
+        "import Mathlib\n"
+        f"import {PNS}.proofs.L_some_sibling\n"
+        f"namespace {PNS}\n"
+        "theorem foo : True := by exact some_sibling\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS)
+    assert not r.ok
+    assert "sibling" in r.reason
+
+
+def test_residual_problems_reference_declines():
+    # Body cites a Problems symbol directly (no import line caught it) →
+    # the residual-Problems guard must catch it.
+    src = (
+        "import Mathlib\n"
+        f"namespace {PNS}\n"
+        f"theorem foo : True := by exact {PNS}.bar\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS)
+    assert not r.ok
+    assert "residual" in r.reason
+
+
+def test_no_namespace_declines():
+    src = "import Mathlib\ntheorem foo : True := trivial\n"
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS)
+    assert not r.ok
+    assert "no `namespace" in r.reason
+
+
+# --- sibling imports (keep_slugs-aware) ---
+
+def test_keep_sibling_import_ok():
+    src = (
+        "import Mathlib\n"
+        f"import {PNS}.proofs.L_helper\n"
+        f"namespace {PNS}\n"
+        "theorem foo : True := by exact helper_fact\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS,
+        keep_slugs={"helper"})
+    assert r.ok, r.reason
+    assert "Problems." not in r.text          # sibling import dropped
+    assert f"import {PNS}.proofs.L_helper" not in r.text
+
+
+def test_nonkeep_sibling_import_declines():
+    src = (
+        "import Mathlib\n"
+        f"import {PNS}.proofs.L_reinvented\n"
+        f"namespace {PNS}\n"
+        "theorem foo : True := by exact reinvented\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS,
+        keep_slugs={"foo"})  # reinvented not in keep
+    assert not r.ok
+    assert "non-keep sibling" in r.reason
+
+
+# --- alias inlining ---
+
+def test_inline_alias_renames_strategy_to_slug():
+    alias = (
+        "import Mathlib\n"
+        f"import {PNS}.Defs\n"
+        f"import {PNS}.proofs._strategy_s11000\n"
+        f"namespace {PNS}\n"
+        f"def inf_ker_card := @{PNS}.s11000\n"
+        f"end {PNS}\n"
+    )
+    strategy = (
+        "import Mathlib\n"
+        f"import {PNS}.Defs\n"
+        f"import {PNS}.proofs.L_bridge\n"
+        f"namespace {PNS}\n"
+        "theorem s11000 (N : Nat) : True := by\n"
+        "  exact bridge_fact\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.inline_alias(
+        alias, strategy, slug="inf_ker_card",
+        problem_namespace=PNS, target_namespace=TNS,
+        keep_slugs={"bridge", "inf_ker_card"})
+    assert r.ok, r.reason
+    assert "theorem inf_ker_card" in r.text   # s11000 renamed to slug
+    assert "s11000" not in r.text
+    assert "Problems." not in r.text
+    assert f"namespace {TNS}" in r.text
+
+
+def test_defs_symbol_readds_library_import():
+    src = (
+        "import Mathlib\n"
+        f"import {PNS}.Defs\n"
+        f"namespace {PNS}\n"
+        "theorem foo (M : Nat) (h : IsJordanForm M) : IsJordanForm M := by\n"
+        "  unfold IsJordanForm at *\n"
+        "  exact h\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS,
+        defs_imports={"IsJordanForm": "Library.LinearAlgebra.JordanForm.Defs"})
+    assert r.ok, r.reason
+    # Problems Defs import dropped, Library Defs import added.
+    assert f"import {PNS}.Defs" not in r.text
+    assert "import Library.LinearAlgebra.JordanForm.Defs" in r.text
+    # added right after import Mathlib, before namespace
+    assert r.text.index("import Library.LinearAlgebra.JordanForm.Defs") \
+        < r.text.index(f"namespace {TNS}")
+
+
+def test_unmapped_defs_symbol_declines():
+    src = (
+        "import Mathlib\n"
+        f"import {PNS}.Defs\n"
+        f"namespace {PNS}\n"
+        "theorem foo (M : Nat) (h : IsJordanForm M) : True := trivial\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS,
+        defs_imports={}, all_defs_syms={"IsJordanForm"})  # used but not migrated
+    assert not r.ok
+    assert "IsJordanForm" in r.reason and "no migrated" in r.reason
+
+
+def test_inline_alias_nonkeep_sibling_declines():
+    alias = (
+        "import Mathlib\n"
+        f"import {PNS}.proofs._strategy_s999\n"
+        f"namespace {PNS}\n"
+        f"def foo := @{PNS}.s999\n"
+        f"end {PNS}\n"
+    )
+    strategy = (
+        "import Mathlib\n"
+        f"import {PNS}.proofs.L_reinvented\n"
+        f"namespace {PNS}\n"
+        "theorem s999 : True := by exact reinvented\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.inline_alias(
+        alias, strategy, slug="foo",
+        problem_namespace=PNS, target_namespace=TNS,
+        keep_slugs={"foo"})
+    assert not r.ok
+    assert "non-keep sibling" in r.reason

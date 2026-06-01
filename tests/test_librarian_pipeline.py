@@ -303,6 +303,23 @@ def test_extract_decl_fq_name_none_when_anonymous():
     assert lib.extract_decl_fq_name(patch) is None
 
 
+def test_extract_decls_multiple_in_order():
+    patch = ("import Mathlib\nnamespace Library.A\n"
+             "/-- d -/\ntheorem t1 : True := trivial\n"
+             "/-- d -/\ndef d2 : Nat := 0\n"
+             "end Library.A\n")
+    decls = lib.extract_decls(patch)
+    assert [(d.kind, d.fq_name) for d in decls] == [
+        ("theorem", "Library.A.t1"), ("def", "Library.A.d2")]
+
+
+def test_extract_decls_namespace_pop():
+    # `end <ns>` pops the namespace so a later section qualifies correctly.
+    patch = ("namespace A\ndef x : Nat := 0\nend A\n"
+             "namespace B\ndef y : Nat := 0\nend B\n")
+    assert [d.fq_name for d in lib.extract_decls(patch)] == ["A.x", "B.y"]
+
+
 def _ok_axiom(_text, _fq, _wl):
     return (True, "")
 
@@ -356,7 +373,7 @@ def test_migrate_gate_axiom_unextractable_name_rejected():
         patch, _P("Library/A/Bar.lean"), whitelist=["propext"],
         build_verifier=_ok_build, axiom_verifier=_ok_axiom)
     assert not r.ok
-    assert "could not extract the declaration name" in r.detail
+    assert "no named declaration found" in r.detail
 
 
 # ---------------------------------------------------------------------
@@ -409,16 +426,14 @@ def test_context_classify_only_kept(conn, tmp_path):
     assert "drop_me" not in text  # dropped decls not in layout surface
 
 
-def test_context_migrate_embeds_source(conn, tmp_path):
-    # Original source file on disk
-    pdir = tmp_path / "Problems" / "p" / "proofs"
-    pdir.mkdir(parents=True)
-    src = pdir / "L_lemma_a.lean"
-    src.write_text("import Mathlib\ntheorem lemma_a : True := trivial\n",
-                   encoding="utf-8")
+def test_context_migrate_lists_decls(conn, tmp_path):
+    # Per-file: the migrate context lists each decl with its statement
+    # (signature to copy) + a pointer to the proof source, not the whole
+    # embedded file.
     g = db.insert_goal(conn, problem="p", slug="lemma_a",
                        lean_path="Problems/p/proofs/L_lemma_a.lean",
-                       statement="S", origin="backward", kind="theorem")
+                       statement="lemma_a : True", origin="backward",
+                       kind="theorem")
     conn.execute("UPDATE goals SET status='proved' WHERE id=?", (g,))
     conn.commit()
     db.upsert_library_decl(conn, problem="p", slug="lemma_a",
@@ -426,20 +441,23 @@ def test_context_migrate_embeds_source(conn, tmp_path):
     db.set_library_verdict(conn, problem="p", slug="lemma_a", verdict="keep")
     db.set_library_classification(conn, problem="p", slug="lemma_a",
                                   target_file="Library/A/Foo.lean",
-                                  target_name="lemmaA", file_order=0)
+                                  target_name=None, file_order=0)
     ad = tmp_path / "att"; ad.mkdir()
     ctx = lib.compile_librarian_context(
         conn, problem="p", work_kind="migrate", attempts_dir=ad,
-        workspace=tmp_path, target_slug="lemma_a")
+        workspace=tmp_path, target_file="Library/A/Foo.lean")
     text = ctx.read_text(encoding="utf-8")
-    assert "theorem lemma_a : True := trivial" in text   # verbatim source
-    assert "Library/A/Foo.lean" in text
-    assert "signature verbatim" in text
+    assert "Library/A/Foo.lean" in text          # target file
+    assert "Library.A.Foo" in text               # module name
+    assert "lemma_a" in text                      # decl listed
+    assert "lemma_a : True" in text               # statement (signature)
+    assert "L_lemma_a.lean" in text               # proof source pointer
+    assert "copy verbatim" in text
 
 
 def test_context_migrate_defs_decl_embeds_defs_source(conn, tmp_path):
-    # A Defs.lean declaration has no goal row (no lean_path); the migrate
-    # context falls back to the problem's Defs.lean for the verbatim source.
+    # A Defs.lean declaration has no goal row; the migrate context embeds
+    # the problem's Defs.lean so the agent reproduces the locked body.
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True)
     (pdir / "Defs.lean").write_text(
@@ -454,7 +472,7 @@ def test_context_migrate_defs_decl_embeds_defs_source(conn, tmp_path):
     ad = tmp_path / "att"; ad.mkdir()
     ctx = lib.compile_librarian_context(
         conn, problem="p", work_kind="migrate", attempts_dir=ad,
-        workspace=tmp_path, target_slug="IsFoo")
+        workspace=tmp_path, target_file="Library/P/Defs.lean")
     text = ctx.read_text(encoding="utf-8")
     assert "def IsFoo : Prop := True" in text   # Defs.lean source embedded
     assert "Library/P/Defs.lean" in text

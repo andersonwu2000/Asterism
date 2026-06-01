@@ -30,8 +30,8 @@ def test_extract_decl_kind_structure():
 
 
 def test_extract_decl_kind_inductive():
-    # inductive isn't in the shared _DECL_KW (axiom path) but Gate D's
-    # nominal check must still recognise it.
+    # inductive is a recognised decl keyword so Gate D's nominal check sees
+    # it (and the positional per-file pairing counts it as a declaration).
     assert lib.extract_decl_kind("inductive I\n  | a") == "inductive"
 
 

@@ -320,6 +320,43 @@ commit_decisions:
 
 cascade 對 Strategist：committed decisions 各自副作用已在 commit 內套；cascade 只負責設 pipeline outcome。`inject_batch_done` 不在這裡 enqueue、而在 `propagate_inject_outcome_from_goal` / `update_strategy_status` 等 hook 內、由 `maybe_enqueue_inject_batch_done` 偵測「同 batch_id 所有 row outcome 非 NULL」時 fire。
 
+### 3.5 Librarian
+
+Problem-targeted background harvest (plan §5): turn a proved problem into a
+mathlib-shaped `Library/`. Chained `dedup → classify → migrate → finish`;
+each step derives its work-kind from `library_decls` lifecycle state
+(dispatcher `_derive_librarian_work`, pure read), and the chain re-enqueues
+itself after every success until the state machine drains.
+
+```
+dedup     one-shot JSON spawn  per-decl verdict (keep/cite-*/drop/merge)
+                               → library_decls.{verdict,lifecycle}
+classify  one-shot JSON spawn  file layout + in-file order
+                               → library_decls.{target_file,file_order}
+migrate   LSP + commit-retry   WHOLE FILE per run (plan §5 Step 3)
+                               → write Library file + lifecycle='migrated'
+finish    agentless            Library/INDEX.md provenance, terminate chain
+```
+
+- **migrate unit = a whole file.** `next_migrate_file` picks the next
+  classified file whose dependency files are all already migrated — a
+  topological order over the file DAG that `file_dependency_graph`
+  reconstructs from per-decl deps (inventory / `goals.parent_id` tree) +
+  the classify `target_file` map. No imports column: the DAG is rebuilt on
+  demand. One agent writes the file's decls in `file_order`; the framework
+  pairs the N-th top-level declaration positionally with the N-th slug to
+  backfill `target_name` and drive Gate D.
+- **commit gate** (per migrate): Gate A import-closure + whole-file
+  `lake env lean` (0 errors / 0 sorry) + per-decl `#print axioms` ⊆
+  whitelist + per-`def` Gate D (rfl def-equivalence vs the original Defs
+  decl). Any failure rolls the staged file back; the file's decls stay
+  `classified` and the chain stops at that file (no auto-retry).
+- **terminal states** are per-decl: `migrated` / `dropped` (reinvents
+  mathlib or merged) / `cited` (mathlib/Library already states it).
+- Gate B (Defs-free root re-derivation, the "秒殺") is the meaning check
+  over the whole harvest; live wiring into `finish` is deferred (recorded
+  as `deferred` in INDEX until the bridge-under-Library staging exists).
+
 ---
 
 ## 4. Verify housekeeping
