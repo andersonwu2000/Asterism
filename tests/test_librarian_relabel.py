@@ -99,12 +99,30 @@ def test_keep_sibling_import_ok():
         "theorem foo : True := by exact helper_fact\n"
         f"end {PNS}\n"
     )
+    HELP_MOD = "Library.LinearAlgebra.JordanForm.Helpers"
     r = relabel.relabel_self_contained(
         src, problem_namespace=PNS, target_namespace=TNS,
-        keep_slugs={"helper"})
+        keep_slugs={"helper"}, sibling_modules={"helper": HELP_MOD})
     assert r.ok, r.reason
-    assert "Problems." not in r.text          # sibling import dropped
-    assert f"import {PNS}.proofs.L_helper" not in r.text
+    assert "Problems." not in r.text                 # Problems import gone
+    assert f"import {HELP_MOD}" in r.text            # Library import added
+    assert f"open {HELP_MOD}" in r.text              # opened for bare name
+
+
+def test_keep_sibling_no_module_declines():
+    # keep sibling whose Library module isn't known yet → decline to Phase 2
+    src = (
+        "import Mathlib\n"
+        f"import {PNS}.proofs.L_helper\n"
+        f"namespace {PNS}\n"
+        "theorem foo : True := by exact helper_fact\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS,
+        keep_slugs={"helper"}, sibling_modules={})
+    assert not r.ok
+    assert "no known Library module" in r.reason
 
 
 def test_nonkeep_sibling_import_declines():
@@ -142,14 +160,18 @@ def test_inline_alias_renames_strategy_to_slug():
         "  exact bridge_fact\n"
         f"end {PNS}\n"
     )
+    BRIDGE_MOD = "Library.LinearAlgebra.JordanForm.Bridge"
     r = relabel.inline_alias(
         alias, strategy, slug="inf_ker_card",
         problem_namespace=PNS, target_namespace=TNS,
-        keep_slugs={"bridge", "inf_ker_card"})
+        keep_slugs={"bridge", "inf_ker_card"},
+        sibling_modules={"bridge": BRIDGE_MOD})
     assert r.ok, r.reason
     assert "theorem inf_ker_card" in r.text   # s11000 renamed to slug
     assert "s11000" not in r.text
     assert "Problems." not in r.text
+    assert f"import {BRIDGE_MOD}" in r.text    # sibling Library import added
+    assert f"open {BRIDGE_MOD}" in r.text
     assert f"namespace {TNS}" in r.text
 
 

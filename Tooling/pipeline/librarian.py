@@ -925,6 +925,187 @@ def _run_structured(conn, *, problem, work_kind, workspace,
     return PipelineResult(outcome="success")
 
 
+def _normalize_stmt(s: "str | None") -> str:
+    return " ".join((s or "").split())
+
+
+def _mechanical_migrate_file(
+    conn, *, problem, workspace, target_file, target_module, rows,
+) -> "str | None":
+    """Try to relabel a whole classified file mechanically (librarian_plan
+    §4 Phase 1) — no LLM. Returns the assembled file text on success, or
+    None if any decl declines (caller falls through to the LLM path; the
+    build gate downstream is still the final arbiter).
+
+    Builds the three relabel inputs from DB state:
+      - keep_slugs    : every `keep` decl (becomes a Library sibling)
+      - defs_imports  : migrated Defs symbol → its Library module
+      - citation_map  : verbatim-merge sibling → canonical (statement-equal
+                        only; near-merge / drop / cite-mathlib are NOT here
+                        and therefore decline → LLM path)
+    """
+    import re as _re
+    from ..quality.librarian import inventory as _inv
+    from ..quality.librarian import relabel as _relabel
+
+    all_rows = db.library_decls_for(conn, problem)
+    keep_slugs = {r["slug"] for r in all_rows if r["verdict"] == "keep"}
+    all_defs = set(_inv.defs_decls(workspace, problem))
+
+    # sibling_modules: keep-slug → its Library module. A cross-file sibling
+    # reference needs `import <mod>` + `open <mod>` (different namespace).
+    # Only slugs with a known target_file participate; a keep sibling not
+    # yet classified has no module → relabel declines that file to LLM.
+    sibling_modules: dict[str, str] = {}
+    for r in all_rows:
+        if r["verdict"] == "keep" and r["target_file"]:
+            sibling_modules[r["slug"]] = _library_module_of(r["target_file"])
+
+    # defs_imports: a Defs symbol that has been migrated → its Library module.
+    defs_imports: dict[str, str] = {}
+    for r in all_rows:
+        if r["slug"] in all_defs and r["lifecycle"] == "migrated" \
+                and r["target_file"]:
+            defs_imports[r["slug"]] = _library_module_of(r["target_file"])
+
+    # citation_map: verbatim-merge (statement byte-equal to canonical).
+    def _stmt(slug):
+        row = conn.execute(
+            "SELECT statement FROM goals WHERE problem = ? AND slug = ?",
+            (problem, slug)).fetchone()
+        return _normalize_stmt(row["statement"] if row else "")
+    citation_map: dict[str, str] = {}
+    for r in all_rows:
+        if r["verdict"] == "merge" and r["citation"]:
+            s1, s2 = _stmt(r["slug"]), _stmt(r["citation"])
+            if s1 and s2 and s1 == s2:
+                citation_map[r["slug"]] = r["citation"]
+
+    pns = f"Problems.{problem}"
+    problem_dir = db.problem_dir(workspace, problem)
+    proofs = problem_dir / "proofs"
+    alias_re = _re.compile(
+        r"def\s+\w+\s*:=\s*@?Problems\.[\w.]+\.(s\d+)")
+
+    import_set: set[str] = set()
+    open_set: set[str] = set()
+    chunks: list[str] = []
+    for r in rows:
+        slug = r["slug"]
+        src_path = proofs / f"L_{slug}.lean"
+        if not src_path.exists():
+            return None  # Defs decl / no proof file — not this path
+        src = src_path.read_text(encoding="utf-8")
+        kw = dict(problem_namespace=pns, target_namespace=target_module,
+                  keep_slugs=keep_slugs, defs_imports=defs_imports,
+                  all_defs_syms=all_defs, citation_map=citation_map,
+                  sibling_modules=sibling_modules)
+        m = alias_re.search(src)
+        if m:
+            strat_path = proofs / f"_strategy_{m.group(1)}.lean"
+            if not strat_path.exists():
+                return None
+            res = _relabel.inline_alias(
+                src, strat_path.read_text(encoding="utf-8"), slug=slug, **kw)
+        else:
+            res = _relabel.relabel_self_contained(src, **kw)
+        if not res.ok:
+            return None  # any decline → whole file goes to the LLM path
+        # Split into imports + open lines + the namespace body, to merge
+        # all decls into one file (imports + opens hoisted, dedup'd).
+        inside = False
+        body: list[str] = []
+        for ln in res.text.splitlines():
+            if ln.startswith("import "):
+                import_set.add(ln)
+                continue
+            if ln.startswith("open "):
+                open_set.add(ln)
+                continue
+            if ln.startswith(f"namespace {target_module}"):
+                inside = True
+                continue
+            if ln.startswith(f"end {target_module}"):
+                inside = False
+                continue
+            if inside:
+                body.append(ln)
+        chunks.append("\n".join(body).strip("\n"))
+
+    header = "\n".join(sorted(import_set))
+    if open_set:
+        header += "\n\n" + "\n".join(sorted(open_set))
+    return (header
+            + f"\n\nnamespace {target_module}\n\n"
+            + "\n\n".join(chunks)
+            + f"\n\nend {target_module}\n")
+
+
+def _commit_migrated_file(
+    patch_text, *, conn, problem, workspace, target_path, target_module,
+    ordered_slugs, defs_names, whitelist,
+    build_verifier=None, axiom_verifier=None, defeq_verifier=None):
+    """Validate a whole-file migrate candidate and, on success, commit it
+    (write the file + mark every decl migrated). Shared by both the LLM
+    path (migrate_parse) and the mechanical relabel pre-pass, so the
+    commit contract is single-sourced — no two-implementation drift.
+
+    Returns a PipelineResult. The verifier args are injectable for offline
+    tests; production passes None → real warm-gateway probes.
+    """
+    from . import PipelineResult
+
+    # Gate A import-closure + whole-file build + per-decl axiom check.
+    gate = migrate_commit_gate(patch_text, target_path, whitelist=whitelist,
+                               workspace=workspace,
+                               build_verifier=build_verifier,
+                               axiom_verifier=axiom_verifier)
+    if not gate.ok:
+        return PipelineResult(outcome="failed",
+                              failure_reason="librarian_gate_failed",
+                              failure_detail=gate.detail,
+                              proposal_md=patch_text)
+    # Positional slug ↔ declaration pairing (migrate.md mandates exactly
+    # the listed decls, in order). A mismatch breaks target_name backfill
+    # and Gate D — fail with a clear, retryable message.
+    decls = extract_decls(patch_text)
+    if len(decls) != len(ordered_slugs):
+        return PipelineResult(
+            outcome="failed", failure_reason="librarian_gate_failed",
+            failure_detail=(
+                f"file declares {len(decls)} top-level declaration(s) "
+                f"but {len(ordered_slugs)} were classified into it "
+                f"({ordered_slugs}); emit exactly the listed "
+                "declarations, in order"),
+            proposal_md=patch_text)
+    # Stage the whole file: Gate D's rfl probe imports the module, so the
+    # target must be on disk. Roll back if any decl's Gate D rejects.
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(target_path, "w", encoding="utf-8") as f:
+        f.write(patch_text)
+    for slug, decl in zip(ordered_slugs, decls):
+        dgate = migrate_defeq_gate(
+            patch_text, problem=problem, target_slug=slug,
+            defs_decls=defs_names, target_module=target_module,
+            target_fq=decl.fq_name, kind=decl.kind, workspace=workspace,
+            defeq_verifier=defeq_verifier)
+        if not dgate.ok:
+            try:
+                target_path.unlink()
+            except OSError:
+                pass
+            return PipelineResult(
+                outcome="failed", failure_reason="librarian_gate_failed",
+                failure_detail=f"{slug}: {dgate.detail}",
+                proposal_md=patch_text)
+    # All gates passed — advance every decl to 'migrated', backfilling each
+    # one's fully-qualified Library name (classify wrote it NULL).
+    for slug, decl in zip(ordered_slugs, decls):
+        db.mark_library_migrated(conn, problem=problem, slug=slug,
+                                 target_name=decl.fq_name)
+    return PipelineResult(outcome="success")
+
+
 def _run_migrate(conn, *, problem, workspace, pipeline_id, target_file,
                  attempts_dir, problem_dir, prompt_path, whitelist=None):
     """migrate (per-file, plan §5 Step 3): one agent writes the whole
@@ -932,7 +1113,6 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_file,
     commit gate builds the whole file once + checks every decl's axioms,
     Gate D rfl-checks each migrated `def`, and all the file's decls advance
     to 'migrated' together. LSP + session-retry loop mirrors Builder."""
-    import shutil
     from . import PipelineResult, _write_mcp_config
     from ._retry import SpawnCtx, run_with_session_retries
     from .. import agent
@@ -957,6 +1137,33 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_file,
     target_module = _library_module_of(target_file)
     defs_names = _inv.defs_decls(workspace, problem)
     patch_lean = attempts_dir / "patch.lean"
+
+    # Phase 1 — mechanical relabel pre-pass (librarian_plan §4). Try to
+    # build the whole file by pure relabel (no LLM); if it assembles AND
+    # passes the same commit gate, we're done with zero spawn. Any decline
+    # or gate failure falls through to the LLM path below unchanged.
+    mech_text = _mechanical_migrate_file(
+        conn, problem=problem, workspace=workspace, target_file=target_file,
+        target_module=target_module, rows=rows)
+    if mech_text is not None:
+        mech_res = _commit_migrated_file(
+            mech_text, conn=conn, problem=problem, workspace=workspace,
+            target_path=target_path, target_module=target_module,
+            ordered_slugs=ordered_slugs, defs_names=defs_names,
+            whitelist=whitelist)
+        if mech_res.outcome == "success":
+            print(f"[librarian] {target_file}: migrated mechanically "
+                  f"(Phase 1, {len(ordered_slugs)} decls, no LLM)",
+                  flush=True)
+            return mech_res
+        # Sanitize before print: Lean diagnostics carry unicode (e.g. `✝`,
+        # `⊢`) that a cp950/legacy console can't encode — an unsanitized
+        # print raises UnicodeEncodeError and aborts the pipeline. Keep the
+        # framework's own logging ASCII-safe.
+        _detail = (mech_res.failure_detail or "")[:120].encode(
+            "ascii", "replace").decode("ascii")
+        print(f"[librarian] {target_file}: mechanical relabel assembled but "
+              f"gate failed ({_detail}); falling through to LLM", flush=True)
 
     def migrate_spawn(ctx: SpawnCtx) -> int:
         if ctx.cold:
@@ -992,52 +1199,11 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_file,
                                   failure_reason="agent_declined",
                                   failure_detail="migrate declined",
                                   proposal_md=patch_text)
-        # Gate A import-closure + whole-file build + per-decl axiom check.
-        gate = migrate_commit_gate(patch_text, target_path,
-                                   whitelist=whitelist, workspace=workspace)
-        if not gate.ok:
-            return PipelineResult(outcome="failed",
-                                  failure_reason="librarian_gate_failed",
-                                  failure_detail=gate.detail,
-                                  proposal_md=patch_text)
-        # Positional slug ↔ declaration pairing (migrate.md mandates exactly
-        # the listed decls, in order). A mismatch breaks target_name backfill
-        # and Gate D — fail with a clear, retryable message.
-        decls = extract_decls(patch_text)
-        if len(decls) != len(ordered_slugs):
-            return PipelineResult(
-                outcome="failed", failure_reason="librarian_gate_failed",
-                failure_detail=(
-                    f"file declares {len(decls)} top-level declaration(s) "
-                    f"but {len(ordered_slugs)} were classified into it "
-                    f"({ordered_slugs}); emit exactly the listed "
-                    "declarations, in order"),
-                proposal_md=patch_text)
-        # Stage the whole file: Gate D's rfl probe imports the module, so the
-        # target must be on disk. Roll back if any decl's Gate D rejects.
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(patch_lean, target_path)
-        for slug, decl in zip(ordered_slugs, decls):
-            dgate = migrate_defeq_gate(
-                patch_text, problem=problem, target_slug=slug,
-                defs_decls=defs_names, target_module=target_module,
-                target_fq=decl.fq_name, kind=decl.kind, workspace=workspace)
-            if not dgate.ok:
-                try:
-                    target_path.unlink()
-                except OSError:
-                    pass
-                return PipelineResult(
-                    outcome="failed",
-                    failure_reason="librarian_gate_failed",
-                    failure_detail=f"{slug}: {dgate.detail}",
-                    proposal_md=patch_text)
-        # All gates passed — advance every decl to 'migrated', backfilling
-        # each one's fully-qualified Library name (classify wrote it NULL).
-        for slug, decl in zip(ordered_slugs, decls):
-            db.mark_library_migrated(conn, problem=problem, slug=slug,
-                                     target_name=decl.fq_name)
-        return PipelineResult(outcome="success")
+        return _commit_migrated_file(
+            patch_text, conn=conn, problem=problem, workspace=workspace,
+            target_path=target_path, target_module=target_module,
+            ordered_slugs=ordered_slugs, defs_names=defs_names,
+            whitelist=whitelist)
 
     def migrate_postmortem(sid: str) -> None:
         pass  # librarian postmortem prompt optional; skip for now

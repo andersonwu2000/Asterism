@@ -75,6 +75,7 @@ def relabel_self_contained(
     defs_imports: "dict[str, str] | None" = None,
     all_defs_syms: "set[str] | None" = None,
     citation_map: "dict[str, str] | None" = None,
+    sibling_modules: "dict[str, str] | None" = None,
 ) -> RelabelResult:
     """Mechanically relabel a single proof file.
 
@@ -116,6 +117,13 @@ def relabel_self_contained(
             False, reason="alias decl (def := @strategy) — use inline_alias")
 
     defs_imports = defs_imports or {}
+    sibling_modules = sibling_modules or {}
+    # Keep-sibling modules this file must import + `open` (collected as we
+    # drop the Problems sibling imports below). A cross-file sibling lemma
+    # lives in a DIFFERENT Library namespace (e.g. `…JordanForm.IndexEnum`),
+    # so a bare-name reference only resolves if we both import AND open that
+    # module — dropping the import (an earlier bug) left the name unknown.
+    needed_sibling_mods: set[str] = set()
     # Which Defs symbols does the body use? Detect over the FULL Defs symbol
     # set (all_defs_syms), not just the migrated ones — else a used-but-
     # unmigrated symbol would slip through with no import and build-fail.
@@ -134,7 +142,17 @@ def relabel_self_contained(
             if sub_mod.startswith("L_"):
                 sub = sub_mod[2:]
                 if keep_slugs is not None and sub in keep_slugs:
-                    continue  # keep sibling — drop import, resolved via Library
+                    # Keep sibling: replace the Problems import with its
+                    # Library module import + open (added at assembly). A
+                    # sibling whose Library module isn't known yet (not
+                    # migrated / not classified) → decline.
+                    mod = sibling_modules.get(sub)
+                    if not mod:
+                        return RelabelResult(
+                            False, reason=f"keep sibling `{sub}` has no known "
+                                          "Library module yet — needs Phase 2")
+                    needed_sibling_mods.add(mod)
+                    continue
                 if citation_map and sub in citation_map:
                     continue  # verbatim-merge → body rename below resolves it
                 return RelabelResult(
@@ -166,28 +184,38 @@ def relabel_self_contained(
         return RelabelResult(
             False, reason=f"no `namespace {problem_namespace}` found")
 
-    # Re-add the Library Defs import for each Defs symbol the body uses
-    # (the original Problems Defs import was dropped above). A used Defs
-    # symbol with no migrated Library module → decline.
-    if used_defs:
-        modules = []
-        for sym in used_defs:
-            mod = defs_imports.get(sym)
-            if not mod:
-                return RelabelResult(
-                    False, reason=f"uses Defs symbol `{sym}` with no migrated "
-                                  "Library module — needs Phase 2")
-            if mod not in modules:
-                modules.append(mod)
-        # Insert the Library Defs imports right after the leading
-        # `import Mathlib` (keep import block contiguous at the top).
+    # Re-add Library imports dropped above:
+    #  - Defs Library module for each Defs symbol the body uses (bare name
+    #    resolves via the ancestor Defs namespace — no `open` needed).
+    #  - keep-sibling Library module for each cross-file sibling reference,
+    #    WITH `open <module>` so the bare name resolves (sibling lives in a
+    #    different namespace, so import alone is not enough).
+    extra_imports: list[str] = []
+    for sym in used_defs:
+        mod = defs_imports.get(sym)
+        if not mod:
+            return RelabelResult(
+                False, reason=f"uses Defs symbol `{sym}` with no migrated "
+                              "Library module — needs Phase 2")
+        if mod not in extra_imports:
+            extra_imports.append(mod)
+    sibling_imports = sorted(needed_sibling_mods - set(extra_imports))
+    for mod in sibling_imports:
+        if mod not in extra_imports:
+            extra_imports.append(mod)
+
+    if extra_imports or needed_sibling_mods:
+        # Insert imports right after the leading `import Mathlib`, and any
+        # `open <sibling-module>` right after the import block.
         insert_at = 0
         for i, ln in enumerate(out):
             if ln.strip() == "import Mathlib":
                 insert_at = i + 1
                 break
-        for j, mod in enumerate(sorted(modules)):
-            out.insert(insert_at + j, f"import {mod}")
+        block = [f"import {m}" for m in sorted(extra_imports)]
+        block += [f"open {m}" for m in sorted(needed_sibling_mods)]
+        for j, line in enumerate(block):
+            out.insert(insert_at + j, line)
 
     text = "\n".join(out)
     if rename_decl is not None:
@@ -220,6 +248,7 @@ def inline_alias(
     defs_imports: "dict[str, str] | None" = None,
     all_defs_syms: "set[str] | None" = None,
     citation_map: "dict[str, str] | None" = None,
+    sibling_modules: "dict[str, str] | None" = None,
 ) -> RelabelResult:
     """Inline an alias `def <slug> := @<PNS>.<strategy>` by relabelling the
     STRATEGY file's theorem and renaming `<strategy>` → `<slug>`.
@@ -237,4 +266,5 @@ def inline_alias(
         strategy_text, problem_namespace=problem_namespace,
         target_namespace=target_namespace, keep_slugs=keep_slugs,
         rename_decl=(strat, slug), defs_imports=defs_imports,
-        all_defs_syms=all_defs_syms, citation_map=citation_map)
+        all_defs_syms=all_defs_syms, citation_map=citation_map,
+        sibling_modules=sibling_modules)
