@@ -95,11 +95,13 @@ def test_derive_classified_is_migrate_ready_file(tmp_path: Path):
     assert target == "Library/P/aaa.lean"
 
 
-def test_derive_migrated_no_index_is_finish(tmp_path: Path):
+def test_derive_migrated_no_index_is_bridge(tmp_path: Path):
+    # All migrated, INDEX not yet written → the terminal agentic Gate B step
+    # (bridge re-derives the root, then writes INDEX = done-marker).
     conn = _mem()
     _migrated(conn, "foo")
     assert dispatcher._derive_librarian_work(conn, "p", tmp_path) == (
-        "finish", None)
+        "bridge", None)
 
 
 def test_derive_migrated_with_index_is_none(tmp_path: Path):

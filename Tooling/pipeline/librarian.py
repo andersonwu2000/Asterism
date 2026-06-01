@@ -884,6 +884,41 @@ def compile_librarian_context(
                              f"`{grow['lean_path']}`")
             lines.append("")
 
+    elif work_kind == "bridge":
+        # Gate B: re-derive the original root `theorem main` from the Library.
+        root = conn.execute(
+            "SELECT slug, statement FROM goals WHERE problem = ? AND "
+            "origin = 'root' AND status = 'proved' ORDER BY id LIMIT 1",
+            (problem,)).fetchone()
+        stmt = " ".join((root["statement"] if root else "").split())
+        lines.append("## Re-derive the original root from the Library")
+        lines.append("")
+        lines.append("- original statement (prove this **verbatim** as "
+                     "`theorem main : <statement>`):")
+        lines.append(f"  `{stmt}`" if stmt else "  _(no root statement)_")
+        lines.append("")
+        # Keystone candidates: the migrated forms of the decls the root's
+        # winning strategy used directly — the most likely one-liner.
+        migrated = {r["slug"]: r for r in
+                    db.library_decls_for(conn, problem, lifecycle="migrated")}
+        inv = _inv.build_inventory(conn, workspace, problem)
+        root_deps = next((d.deps for d in inv.decls
+                          if d.origin == "root"), [])
+        keystones = [migrated[s] for s in root_deps if s in migrated]
+        if keystones:
+            lines.append("- likely keystone(s) (migrated form of what the "
+                         "original proof used):")
+            for r in keystones:
+                lines.append(f"    - `{r['target_name'] or r['slug']}` "
+                             f"(`{r['target_file']}`)")
+            lines.append("")
+        lines.append(f"## Library declarations from this problem "
+                     f"({len(migrated)})")
+        lines.append("")
+        for r in migrated.values():
+            lines.append(f"- `{r['target_name'] or r['slug']}` "
+                         f"→ `{r['target_file']}`")
+
     else:
         raise ValueError(f"unknown work_kind: {work_kind!r}")
 
@@ -900,7 +935,8 @@ def compile_librarian_context(
 # migrate: LSP + session-retry loop (mirrors builder via
 #   run_with_session_retries); commit gate = migrate_commit_gate.
 
-WORK_KINDS: frozenset[str] = frozenset({"dedup", "classify", "migrate"})
+WORK_KINDS: frozenset[str] = frozenset(
+    {"dedup", "classify", "migrate", "bridge"})
 
 
 def run_librarian(conn, *, problem: str, work_kind: str,
@@ -946,6 +982,12 @@ def run_librarian(conn, *, problem: str, work_kind: str,
             pipeline_id=pipeline_id, target_file=target,
             attempts_dir=attempts_dir, problem_dir=problem_dir,
             prompt_path=prompt_path, whitelist=whitelist)
+    if work_kind == "bridge":
+        return _run_bridge(
+            conn, problem=problem, workspace=workspace,
+            pipeline_id=pipeline_id, attempts_dir=attempts_dir,
+            problem_dir=problem_dir, prompt_path=prompt_path,
+            whitelist=whitelist)
     return _run_structured(
         conn, problem=problem, work_kind=work_kind, workspace=workspace,
         attempts_dir=attempts_dir, problem_dir=problem_dir,
@@ -1437,6 +1479,174 @@ _INDEX_PREAMBLE = (
 )
 
 
+def _write_library_index(conn, *, problem, workspace, gate_b_line: str):
+    """Write/refresh the `## <problem>` section of `Library/INDEX.md`:
+    migrated-decl provenance + the Gate B status line. INDEX presence is the
+    chain's idempotent done-marker (`_derive_librarian_work`). Shared by the
+    bridge step (Gate B PASSED) and the agentless finish no-op."""
+    migrated = db.library_decls_for(conn, problem, lifecycle="migrated")
+    lines = [f"_Harvested {db.now()} — {len(migrated)} declaration(s)._", ""]
+    for r in migrated:
+        name = r["target_name"] or r["slug"]
+        lines.append(f"- `{name}` → `{r['target_file'] or '?'}`")
+    lines.append("")
+    lines.append(gate_b_line)
+    index = workspace / "Library" / "INDEX.md"
+    index.parent.mkdir(parents=True, exist_ok=True)
+    existing = (index.read_text(encoding="utf-8", errors="replace")
+                if index.exists() else "")
+    index.write_text(
+        _upsert_index_section(existing, problem, "\n".join(lines)),
+        encoding="utf-8")
+
+
+def _rederivation_prober(bridge_path):
+    """A `check_root_rederivation` prober bound to an already-staged bridge
+    file: build it via the warm gateway and report whether `fq_name`'s axiom
+    set ⊆ whitelist. Used instead of the default `axiom_probe` (which
+    resolves a module to a committed source path) because the bridge is a
+    THROWAWAY probe — verify_file compiles the staged temp file directly,
+    the same staging `_warm_axiom_verifier` uses for migrate candidates."""
+    def _probe(ws, *, fq_name, module, whitelist):
+        from ..lsp import lifecycle as gw
+        r = gw.verify_file(bridge_path, write_olean=False,
+                           axioms_for=fq_name, workspace=ws)
+        if r.get("error"):
+            return False, f"verify infra error: {r['error']}"
+        if not r.get("ok"):
+            errs = "; ".join(
+                d.get("message", "")[:120]
+                for d in (r.get("diagnostics") or [])
+                if d.get("severity") == "error")[:300]
+            return False, errs or "(no error diagnostics)"
+        if r.get("axiom_error"):
+            return False, f"axiom probe error: {r['axiom_error']}"
+        rogue = set(r.get("axioms") or []) - set(whitelist)
+        if rogue:
+            return False, f"rogue axioms: {sorted(rogue)}"
+        return True, ""
+    return _probe
+
+
+def _commit_bridge(patch_text, *, conn, problem, workspace, statement,
+                   whitelist, prober=None):
+    """Gate B commit (plan §2): stage the agent's bridge as a throwaway probe
+    under `Library/`, run `check_root_rederivation` (statement-pin + import-
+    closure + build + axiom-whitelist), then delete the probe. On pass, write
+    INDEX (Gate B PASSED) — the chain done-marker. The bridge file is NEVER
+    committed (it is framework-shaped, not mathlib content); any Library lemma
+    the agent fixed en route already persists as a real file. `prober` is
+    injectable for offline tests."""
+    from . import PipelineResult
+    from ..quality.librarian import gates
+    import os
+    import tempfile
+
+    libdir = workspace / "Library"
+    libdir.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(suffix=".lean", prefix="_bridge_probe_",
+                               dir=str(libdir))
+    tmp_path = _Path(tmp)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(patch_text)
+        module = _library_module_of(f"Library/{tmp_path.name}")
+        gate = gates.check_root_rederivation(
+            tmp_path, statement=statement, fq_name="main", module=module,
+            whitelist=whitelist, workspace=workspace,
+            prober=prober or _rederivation_prober(tmp_path))
+        if not gate.ok:
+            return PipelineResult(
+                outcome="failed", failure_reason="librarian_gate_failed",
+                failure_detail="; ".join(gate.issues)[:400],
+                proposal_md=patch_text)
+        _write_library_index(
+            conn, problem=problem, workspace=workspace,
+            gate_b_line="Gate B (root re-derivation): PASSED — original "
+                        "`main` re-derived from the Library alone; axioms "
+                        "within whitelist.")
+        return PipelineResult(outcome="success", proposal_md=patch_text)
+    finally:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+
+
+def _run_bridge(conn, *, problem, workspace, pipeline_id,
+                attempts_dir, problem_dir, prompt_path, whitelist=None):
+    """Gate B step (plan §2 定海神針, plan §5): an agent re-derives the
+    original root `theorem main` from the Library alone (`bridge.md`). The
+    bridge Root is a throwaway verification probe (see `_commit_bridge`).
+    On success writes INDEX (the done-marker); a decline / gate failure is
+    retryable and, if the Library genuinely lacks a keystone, correctly
+    blocks the chain from finishing. LSP + session-retry loop mirrors
+    migrate."""
+    from . import PipelineResult, _write_mcp_config
+    from ._retry import SpawnCtx, run_with_session_retries
+    from .. import agent
+    from ..core import dispatcher
+
+    migrated = db.library_decls_for(conn, problem, lifecycle="migrated")
+    if not migrated:
+        return PipelineResult(outcome="success")  # nothing harvested
+
+    root = conn.execute(
+        "SELECT statement FROM goals WHERE problem = ? AND origin = 'root' "
+        "AND status = 'proved' ORDER BY id LIMIT 1", (problem,)).fetchone()
+    if not root or not (root["statement"] or "").strip():
+        return PipelineResult(
+            outcome="failed", failure_reason="librarian_no_root",
+            failure_detail="no proved root statement for the bridge")
+    statement = " ".join(root["statement"].split())
+    patch_lean = attempts_dir / "patch.lean"
+
+    def bridge_spawn(ctx: SpawnCtx) -> int:
+        if ctx.cold:
+            compile_librarian_context(
+                conn, problem=problem, work_kind="bridge",
+                attempts_dir=ctx.attempts_dir, workspace=workspace)
+            patch_lean.write_text("", encoding="utf-8")
+        mcp_config_path = _write_mcp_config(
+            attempts_dir=ctx.attempts_dir, workspace=workspace,
+            target=patch_lean, pipeline_id=pipeline_id, problem=problem)
+        return agent.spawn_llm(
+            kind="librarian", prompt_path=prompt_path,
+            problem_dir=problem_dir, attempts_dir=ctx.attempts_dir,
+            session_id=ctx.sid, is_retry=not ctx.cold,
+            retry_context=ctx.retry_context,
+            mcp_config_path=mcp_config_path,
+            inline_prompt=ctx.inline_prompt,
+            timeout_sec_override=ctx.budget_override)
+
+    def bridge_parse():
+        if not patch_lean.exists():
+            return PipelineResult(outcome="failed",
+                                  failure_reason="agent_no_output",
+                                  failure_detail="no patch.lean")
+        patch_text = patch_lean.read_text(encoding="utf-8")
+        if "-- decline:" in patch_text:
+            return PipelineResult(outcome="failed",
+                                  failure_reason="agent_declined",
+                                  failure_detail="bridge declined "
+                                                 "(missing keystone?)",
+                                  proposal_md=patch_text)
+        return _commit_bridge(
+            patch_text, conn=conn, problem=problem, workspace=workspace,
+            statement=statement, whitelist=whitelist or [])
+
+    def bridge_postmortem(sid: str) -> None:
+        pass
+
+    return run_with_session_retries(
+        conn=conn, goal_id=None, pipeline_id=pipeline_id,
+        budget_threshold=dispatcher.BUILDER_THRESHOLD,
+        shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+        attempts_dir=attempts_dir,
+        spawn_fn=bridge_spawn, parse_fn=bridge_parse,
+        postmortem_fn=bridge_postmortem, workspace=workspace)
+
+
 def _run_finish(conn, *, problem: str, workspace):
     """Terminal Librarian step (plan §5): record migrated provenance into
     `Library/INDEX.md` and terminate the chain. Agentless, mechanical.
@@ -1460,22 +1670,10 @@ def _run_finish(conn, *, problem: str, workspace):
         # everything cited/dropped). No provenance to record; clean no-op.
         return PipelineResult(outcome="success")
 
-    lines = [f"_Harvested {db.now()} — {len(migrated)} declaration(s)._", ""]
-    for r in migrated:
-        name = r["target_name"] or r["slug"]
-        target = r["target_file"] or "?"
-        lines.append(f"- `{name}` → `{target}`")
-    lines.append("")
-    lines.append(
-        "Gate B (root re-derivation): deferred — live `axiom_probe` "
-        "needs a Defs-free bridge under the Library lake root "
-        "(probe-file staging, see STATUS tech debt).")
-    section = "\n".join(lines)
-
-    index = workspace / "Library" / "INDEX.md"
-    index.parent.mkdir(parents=True, exist_ok=True)
-    existing = (index.read_text(encoding="utf-8", errors="replace")
-                if index.exists() else "")
-    index.write_text(_upsert_index_section(existing, problem, section),
-                     encoding="utf-8")
+    # Normal harvested chains reach INDEX via the bridge step (Gate B PASSED).
+    # This agentless path is a fallback that records provenance without a live
+    # Gate B verdict — kept for manual/edge invocation.
+    _write_library_index(
+        conn, problem=problem, workspace=workspace,
+        gate_b_line="Gate B (root re-derivation): not run on this path.")
     return PipelineResult(outcome="success")

@@ -35,7 +35,7 @@ Catching an incomplete or mis-stated Library is the entire point. If you cannot 
 
 ## Editing tools — LSP-backed
 
-Three MCP tools talk to a live Lean server holding **`patch.lean`** (in attempts_dir). Edits are sandboxed — the framework commits to the Library only after all checks pass:
+Three MCP tools talk to a live Lean server holding **`patch.lean`** (in attempts_dir). Your bridge `Root.lean` is a one-shot **verification probe** — checked, then discarded; it is never added to the Library. Only a Library lemma you edit directly (per the rule above) persists.
 
 - `mcp__lsp__apply_edit(start_line, end_line, new_text)` — replace a 1-indexed inclusive line range; returns the goal at start_line + diagnostics. Write-through to `patch.lean`.
 - `mcp__lsp__goal_at(line, col)` — read the goal at a position.
