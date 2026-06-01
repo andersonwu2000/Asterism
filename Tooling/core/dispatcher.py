@@ -45,6 +45,13 @@ from ..quality import prune, verify
 BUILDER_THRESHOLD = 3
 SHELVE_THRESHOLD = 8
 
+# A Librarian chain step (dedup/classify/migrate/cleanup/bridge) that fails
+# after its own internal session-retries is re-enqueued up to this many times
+# (the next tick re-derives the same step), then the chain stalls and is left
+# for the operator — bounds a genuinely-stuck step from looping forever while
+# still surviving a transient gateway/harness failure.
+LIBRARIAN_MAX_CHAIN_RETRIES = 2
+
 
 def _exit_pool_fast(pool: ThreadPoolExecutor) -> None:
     """Shutdown pool from an abort path (budget exceeded / gateway
@@ -1447,6 +1454,34 @@ def _derive_librarian_work(
     return (None, None)
 
 
+def _advance_librarian_chain(
+    conn: sqlite3.Connection, workspace: Path, problem: str, *,
+    outcome: str, reason: str, fail_counts: dict,
+) -> None:
+    """After a Librarian pipeline finishes, drive the chain (plan §5).
+
+    On success: reset the per-problem fail counter and enqueue the next step.
+    On failure: re-enqueue the SAME step (the next tick re-derives it) up to
+    `LIBRARIAN_MAX_CHAIN_RETRIES` — surviving a transient gateway/harness
+    failure — then let the chain stall for the operator. Without the failure
+    branch a single failed step strands the whole Library-ization until a root
+    re-verify re-triggers it. Mutates `fail_counts`."""
+    if outcome in ("success", "proved"):
+        fail_counts.pop(problem, None)
+        _reenqueue_librarian_if_more(conn, workspace, problem)
+        return
+    n = fail_counts.get(problem, 0) + 1
+    fail_counts[problem] = n
+    if n <= LIBRARIAN_MAX_CHAIN_RETRIES:
+        _reenqueue_librarian_if_more(conn, workspace, problem)
+        print(f"[librarian] {problem}: chain step failed ({reason}); "
+              f"re-enqueued (attempt {n}/{LIBRARIAN_MAX_CHAIN_RETRIES})",
+              flush=True)
+    else:
+        print(f"[librarian] {problem}: chain STALLED after {n} failures "
+              f"({reason}) — needs operator", flush=True)
+
+
 def _reenqueue_librarian_if_more(
     conn: sqlite3.Connection, workspace: Path, problem: str,
 ) -> None:
@@ -1911,6 +1946,10 @@ def run(workspace: Path, *, once: bool = False,
     # a spawn_fast_fail cascade; bfs_refill skips cooled pairs so the
     # daemon doesn't burst-retry a broken claude.exe at 2s/call.
     cooldown_until: dict[tuple[str, str], float] = {}
+    # Per-problem consecutive Librarian chain-step failures (in-memory;
+    # reset on a success). Bounds re-enqueue of a stuck step to
+    # LIBRARIAN_MAX_CHAIN_RETRIES before letting the chain stall.
+    librarian_fail_counts: dict[str, int] = {}
     # Lazy verify cache: problem → True (Defs.lean + Root.lean built
     # cleanly) | False (build error; problem is quarantined for this
     # daemon run; restart re-verifies). Filled at first dispatch for
@@ -2021,9 +2060,16 @@ def run(workspace: Path, *, once: bool = False,
                     # Librarian chain advance (plan §5). Safe here: the
                     # finished future is already out of `running` (line
                     # above), so the next chain step won't be pop-skipped.
-                    if kind == "Librarian" and outcome in ("success",
-                                                           "proved"):
-                        _reenqueue_librarian_if_more(conn, workspace, tid)
+                    # On success, advance + reset the fail counter. On
+                    # failure, re-enqueue the same step up to
+                    # LIBRARIAN_MAX_CHAIN_RETRIES (surviving a transient
+                    # gateway/harness failure) then let the chain stall —
+                    # without this a single failed step strands the whole
+                    # Library-ization until a root re-verify re-triggers it.
+                    if kind == "Librarian":
+                        _advance_librarian_chain(
+                            conn, workspace, tid, outcome=outcome,
+                            reason=reason, fail_counts=librarian_fail_counts)
                     # Back-off + global counter for spawn fast-fails.
                     # Phase 7 — quota_exhausted (rc=126) / missing_dep (rc=127)
                     # also cooldown but do NOT contribute to CONSEC tracking

@@ -268,6 +268,35 @@ def test_reenqueue_migrated_no_index_enqueues_more(tmp_path: Path):
     assert len(_queue(conn)) == 1
 
 
+def test_advance_chain_success_resets_and_advances(tmp_path: Path):
+    conn = _mem()
+    _migrated(conn, "foo")           # derive → cleanup (non-None)
+    fc = {"p": 2}
+    dispatcher._advance_librarian_chain(
+        conn, tmp_path, "p", outcome="success", reason="", fail_counts=fc)
+    assert "p" not in fc             # counter reset on success
+    assert len(_queue(conn)) == 1    # chain advanced
+
+
+def test_advance_chain_failure_reenqueues_then_stalls(tmp_path: Path):
+    # A failed step re-enqueues up to the cap, then stalls (no re-enqueue).
+    conn = _mem()
+    _migrated(conn, "foo")
+    fc: dict = {}
+    for attempt in (1, 2):           # LIBRARIAN_MAX_CHAIN_RETRIES = 2
+        conn.execute("DELETE FROM queue")   # prior step popped it
+        dispatcher._advance_librarian_chain(
+            conn, tmp_path, "p", outcome="failed", reason="boom",
+            fail_counts=fc)
+        assert fc["p"] == attempt
+        assert len(_queue(conn)) == 1       # re-enqueued
+    conn.execute("DELETE FROM queue")
+    dispatcher._advance_librarian_chain(
+        conn, tmp_path, "p", outcome="failed", reason="boom", fail_counts=fc)
+    assert fc["p"] == 3
+    assert _queue(conn) == []               # capped → chain stalls
+
+
 # ---------------------------------------------------------------------
 # run_finish — INDEX provenance + chain termination
 # ---------------------------------------------------------------------
