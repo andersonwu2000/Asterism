@@ -184,7 +184,7 @@ def conn():
     return c
 
 
-def test_commit_dedup_then_classify(conn):
+def test_commit_dedup_then_classify(conn, tmp_path):
     for s in ("a", "b", "c"):
         db.upsert_library_decl(conn, problem="p", slug=s, source_goal_id=None)
     lib.commit_dedup(conn, "p", [
@@ -201,7 +201,7 @@ def test_commit_dedup_then_classify(conn):
     plan = lib.ClassifyPlan([
         lib.ClassifyFile("Library/A/Foo.lean", [], ["a", "b"]),
     ])
-    lib.commit_classify(conn, "p", plan)
+    lib.commit_classify(conn, "p", plan, tmp_path)
     classified = db.library_decls_for(conn, "p", lifecycle="classified")
     by_slug = {r["slug"]: r for r in classified}
     assert set(by_slug) == {"a", "b"}

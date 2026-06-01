@@ -148,17 +148,14 @@ def _classified_in(conn, slug, target_file, problem="p", order=0):
 
 
 def _fake_inventory(monkeypatch, deps_by_slug):
-    """Patch build_inventory so the file DAG is driven by an explicit
-    slug→deps map instead of on-disk proof files."""
+    """Patch usage_graph so the file DAG is driven by an explicit slug→uses
+    map instead of on-disk proof files. The cross-file graph now follows the
+    USAGE DAG (proof-term citations), not decomposition deps."""
     from Tooling.quality.librarian import inventory as inv_mod
-    inv = inv_mod.Inventory(
-        problem="p",
-        decls=[inv_mod.InvDecl(
-            goal_id=i, slug=s, status="proved", kind="sub",
-            origin="backward", lean_path=None, deps=list(d))
-            for i, (s, d) in enumerate(deps_by_slug.items())],
-        defs_decls=[])
-    monkeypatch.setattr(inv_mod, "build_inventory", lambda *a, **k: inv)
+    monkeypatch.setattr(
+        inv_mod, "usage_graph",
+        lambda ws, prob, slugs, **k: {
+            s: set(deps_by_slug.get(s, [])) for s in slugs})
 
 
 def test_next_migrate_file_groups_decls(tmp_path: Path):

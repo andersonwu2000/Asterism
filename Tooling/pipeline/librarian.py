@@ -20,7 +20,7 @@ Pure surface (no gateway / no LLM):
   - verify_dedup(verdicts, inventory_slugs) -> "" | err
   - verify_classify(plan, kept_slugs)       -> "" | err
   - commit_dedup(conn, problem, verdicts)
-  - commit_classify(conn, problem, plan)
+  - commit_classify(conn, problem, plan, workspace)
 """
 from __future__ import annotations
 
@@ -264,11 +264,56 @@ def commit_dedup(conn, problem: str,
                                verdict=v.verdict, citation=v.citation)
 
 
-def commit_classify(conn, problem: str, plan: ClassifyPlan) -> None:
-    """Persist the layout plan: per decl, its target file + in-file
-    order. Only `deduped` (kept) decls advance to `classified`."""
+def _toposort_intra_file(decls: list[str],
+                         usage: "dict[str, set[str]]") -> list[str]:
+    """Order one file's decls so each is emitted AFTER every same-file
+    sibling it cites (Lean resolves names top-to-bottom). Stable Kahn: where
+    usage doesn't force an order, the agent's original sequence is preserved
+    (tie-break by original position). A cycle (shouldn't arise from a valid
+    proof forest) leaves the offending decls in original order — the build
+    gate then surfaces the unresolved reference honestly."""
+    in_file = set(decls)
+    pos = {s: i for i, s in enumerate(decls)}
+    dep = {s: {u for u in usage.get(s, set()) if u in in_file and u != s}
+           for s in decls}
+    users: dict[str, list[str]] = {s: [] for s in decls}
+    for s in decls:
+        for u in dep[s]:
+            users[u].append(s)
+    indeg = {s: len(dep[s]) for s in decls}
+    ready = sorted((s for s in decls if indeg[s] == 0), key=lambda s: pos[s])
+    result: list[str] = []
+    placed: set[str] = set()
+    while ready:
+        s = ready.pop(0)
+        result.append(s)
+        placed.add(s)
+        newly = []
+        for w in users[s]:
+            indeg[w] -= 1
+            if indeg[w] == 0:
+                newly.append(w)
+        if newly:
+            ready = sorted(ready + newly, key=lambda s: pos[s])
+    if len(result) != len(decls):           # cycle fallback
+        result += [s for s in decls if s not in placed]
+    return result
+
+
+def commit_classify(conn, problem: str, plan: ClassifyPlan,
+                    workspace) -> None:
+    """Persist the layout plan: per decl, its target file + in-file order.
+    Only `deduped` (kept) decls advance to `classified`. Each file's decls
+    are topologically re-ordered by the USAGE DAG (proof-term citations,
+    `inventory.usage_graph`) before `file_order` is assigned — the agent's
+    layout is by meaning, but Lean needs a cited sibling to precede its user,
+    so the persisted order must be a valid emission order."""
+    from ..quality.librarian import inventory as _inv
+    placed = [d for f in plan.files for d in f.decls]
+    usage = _inv.usage_graph(workspace, problem, placed,
+                             alias_map=_merge_alias_map(conn, problem))
     for f in plan.files:
-        for order, slug in enumerate(f.decls):
+        for order, slug in enumerate(_toposort_intra_file(f.decls, usage)):
             db.set_library_classification(
                 conn, problem=problem, slug=slug,
                 target_file=f.path, target_name=None, file_order=order)
@@ -603,6 +648,24 @@ def _warm_axiom_verifier(workspace):
 # no schema migration is needed.
 
 
+def _merge_alias_map(conn, problem: str) -> "dict[str, str]":
+    """Each dedup-`merge` slug → its canonical placed slug, chains resolved
+    to the final target. A proof that imports a merged-away sibling's
+    `L_<Y>` resolves, in the migrated Library, to this canonical — so the
+    usage DAG must remap Y→canonical or it loses the citation edge."""
+    raw = {r["slug"]: r["citation"]
+           for r in db.library_decls_for(conn, problem)
+           if r["verdict"] == "merge" and r["citation"]}
+    out: dict[str, str] = {}
+    for s in raw:
+        seen, cur = {s}, raw[s]
+        while cur in raw and cur not in seen:
+            seen.add(cur)
+            cur = raw[cur]
+        out[s] = cur
+    return out
+
+
 def file_dependency_graph(conn, *, problem: str,
                           workspace) -> "dict[str, set[str]]":
     """Map each placed Library file to the set of OTHER placed files it
@@ -615,11 +678,14 @@ def file_dependency_graph(conn, *, problem: str,
     file_of = {r["slug"]: r["target_file"] for r in rows
                if r["target_file"]
                and r["lifecycle"] in ("classified", "migrated")}
-    inv = _inv.build_inventory(conn, workspace, problem)
-    deps_by_slug = {d.slug: d.deps for d in inv.decls}
+    # Cross-file edges follow the USAGE DAG (which lemma a proof term cites),
+    # not the decomposition DAG (`InvDecl.deps`) — a file must migrate after
+    # the files it actually references, else its imports don't resolve.
+    usage = _inv.usage_graph(workspace, problem, file_of.keys(),
+                             alias_map=_merge_alias_map(conn, problem))
     graph: "dict[str, set[str]]" = {f: set() for f in set(file_of.values())}
     for slug, f in file_of.items():
-        for dep in deps_by_slug.get(slug, []):
+        for dep in usage.get(slug, set()):
             g = file_of.get(dep)
             if g and g != f:
                 graph[f].add(g)
@@ -921,12 +987,44 @@ def _run_structured(conn, *, problem, work_kind, workspace,
         return PipelineResult(outcome="failed",
                               failure_reason="librarian_verify_failed",
                               failure_detail=verr)
-    commit_classify(conn, problem, plan)
+    commit_classify(conn, problem, plan, workspace)
     return PipelineResult(outcome="success")
 
 
 def _normalize_stmt(s: "str | None") -> str:
     return " ".join((s or "").split())
+
+
+# Decl head up to and including the name — its end is where the binders start.
+_DECL_HEAD_RE = re.compile(
+    r"(?:noncomputable\s+|private\s+|protected\s+|scoped\s+)*"
+    r"(?:def|abbrev|theorem|lemma|instance)\s+[A-Za-z_][\w']*")
+
+
+def _decl_signature(text: str) -> str:
+    """The NAME-STRIPPED, whitespace-normalized signature (binders +
+    conclusion type) of the first theorem/def in a proof file — everything
+    from just after the decl name up to the proof body (`:= by`, or the last
+    term-mode `:=`).
+
+    Used to test whether a verbatim-merge pair is *callable-compatible*:
+    `goals.statement` holds only the CONCLUSION, so two lemmas with the same
+    conclusion but different binders (e.g. `..._of_sum_zero` taking an extra
+    hypothesis) compare equal there yet have different argument lists — a
+    citation rename then mis-positions call-site args (root cause 1). Comparing
+    the full signature catches that and declines the rename to the LLM path."""
+    m = _DECL_HEAD_RE.search(text)
+    if not m:
+        return ""
+    region = text[m.end():]
+    bym = re.search(r":=\s*by\b", region)
+    cut = bym.start() if bym else None
+    if cut is None:
+        last = None
+        for mm in re.finditer(r":=", region):
+            last = mm
+        cut = last.start() if last else len(region)
+    return " ".join(region[:cut].split())
 
 
 def _mechanical_migrate_file(
@@ -968,22 +1066,28 @@ def _mechanical_migrate_file(
                 and r["target_file"]:
             defs_imports[r["slug"]] = _library_module_of(r["target_file"])
 
-    # citation_map: verbatim-merge (statement byte-equal to canonical).
-    def _stmt(slug):
-        row = conn.execute(
-            "SELECT statement FROM goals WHERE problem = ? AND slug = ?",
-            (problem, slug)).fetchone()
-        return _normalize_stmt(row["statement"] if row else "")
-    citation_map: dict[str, str] = {}
-    for r in all_rows:
-        if r["verdict"] == "merge" and r["citation"]:
-            s1, s2 = _stmt(r["slug"]), _stmt(r["citation"])
-            if s1 and s2 and s1 == s2:
-                citation_map[r["slug"]] = r["citation"]
-
     pns = f"Problems.{problem}"
     problem_dir = db.problem_dir(workspace, problem)
     proofs = problem_dir / "proofs"
+
+    # citation_map: verbatim-merge → canonical sibling. A merge is only safe
+    # to rename mechanically when slug and canonical share the SAME callable
+    # signature (binders + conclusion), not just the same conclusion: dedup's
+    # verbatim compares `goals.statement` (conclusion only), so a `merge` whose
+    # canonical takes a different binder list would mis-position call-site args
+    # on rename (root cause 1). We re-check the full signature from the proof
+    # files here; any mismatch / missing file declines that decl to the LLM.
+    def _full_sig(slug):
+        p = proofs / f"L_{slug}.lean"
+        if not p.exists():
+            return None
+        return _decl_signature(p.read_text(encoding="utf-8"))
+    citation_map: dict[str, str] = {}
+    for r in all_rows:
+        if r["verdict"] == "merge" and r["citation"]:
+            sig1, sig2 = _full_sig(r["slug"]), _full_sig(r["citation"])
+            if sig1 and sig2 and sig1 == sig2:
+                citation_map[r["slug"]] = r["citation"]
     alias_re = _re.compile(
         r"def\s+\w+\s*:=\s*@?Problems\.[\w.]+\.(s\d+)")
 

@@ -141,6 +141,78 @@ def defs_decls(workspace: Path, problem: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------
+# Usage DAG (proof-term citation edges, ≠ decomposition deps)
+# ---------------------------------------------------------------------
+
+# A `proofs/`-local import: `import Problems.<p>.proofs.<MOD>` → captures
+# MOD (an `L_<slug>` alias or a `_strategy_s<NNNN>` proof module).
+_PROOFS_IMPORT_RE = re.compile(
+    r"^\s*import\s+Problems\.[\w.]+\.proofs\.([A-Za-z_]\w*)\s*$",
+    re.MULTILINE,
+)
+
+
+def usage_graph(
+    workspace: Path, problem: str, slugs, *,
+    alias_map: "dict[str, str] | None" = None,
+) -> "dict[str, set[str]]":
+    """Map each slug to the set of sibling slugs its proof ACTUALLY cites —
+    the *usage* DAG, distinct from `InvDecl.deps` (the *decomposition* DAG).
+
+    Asterism proofs are layered: `proofs/L_<X>.lean` is an alias
+    `def X := @…s<N>` importing `_strategy_s<N>.lean`, and the strategy file
+    imports `proofs/L_<Y>.lean` for each sibling lemma Y its proof term uses.
+    So a usage edge X→Y is read by walking X's alias into its strategy
+    file(s) — recursing through any nested `_strategy_*` imports — and
+    collecting the `L_<Y>` imports found there. A direct (non-alias) proof
+    that imports `L_<Y>` yields the edge directly.
+
+    `alias_map` remaps an imported sibling slug to its canonical placed slug
+    (e.g. a dedup `merge`: the proof imports `L_<Y>` but Y was merged into a
+    kept canonical Z, and the migrated reference resolves to Z). Without it a
+    proof that cites a merged-away sibling would record no edge and the
+    user/dep pair would mis-order. Only edges whose (remapped) target is in
+    `slugs` are kept — cited-mathlib / external siblings are never placed, so
+    they can't order a file. Missing files are skipped: the edge set is
+    best-effort and the build gate stays the final arbiter.
+
+    Why this matters: Lean is order-sensitive, so within one Library file a
+    decl must be emitted AFTER every same-file sibling it cites, and a file
+    must migrate AFTER the files it cites. `InvDecl.deps` (winning-strategy
+    subgoals) is the decomposition structure, NOT the proof-term reference
+    structure — ordering by it leaves forward references that fail to build.
+    """
+    slug_set = set(slugs)
+    alias_map = alias_map or {}
+    proofs = db.problem_dir(workspace, problem) / "proofs"
+
+    def imports_of(mod: str) -> list[str]:
+        p = proofs / f"{mod}.lean"
+        if not p.exists():
+            return []
+        return _PROOFS_IMPORT_RE.findall(p.read_text(encoding="utf-8"))
+
+    out: dict[str, set[str]] = {s: set() for s in slug_set}
+    for x in slug_set:
+        seen_mods: set[str] = set()
+        frontier = [f"L_{x}"]
+        while frontier:
+            mod = frontier.pop()
+            if mod in seen_mods:
+                continue
+            seen_mods.add(mod)
+            for imp in imports_of(mod):
+                if imp.startswith("L_"):
+                    y = imp[2:]
+                    y = alias_map.get(y, y)   # merged sibling → canonical
+                    if y in slug_set and y != x:
+                        out[x].add(y)
+                elif imp.startswith("_strategy_"):
+                    frontier.append(imp)   # walk the strategy chain
+    return out
+
+
+# ---------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------
 
