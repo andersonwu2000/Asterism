@@ -122,6 +122,48 @@ def test_commit_cleanup_lint_fail_rolls_back(conn, tmp_path):
     assert not db.library_decls_for(conn, "p", lifecycle="cleaned")
 
 
+# --- _regate_touched (shared by cleanup + bridge, G1) ---
+
+def test_regate_touched_detects_and_passes(conn, tmp_path):
+    tf = "Library/P/Foo.lean"
+    _migrated(conn, "a", tf)
+    _write_lib(tmp_path, tf, "import Mathlib\n-- v1\n")
+    snap = {tf: "import Mathlib\n-- v0\n"}   # disk differs → touched
+    ok, detail, touched = lib._regate_touched(
+        conn, problem="p", workspace=tmp_path, snap_before=snap,
+        whitelist=[], regate=lambda path, text: (True, ""))
+    assert ok and touched == [tf]
+
+
+def test_regate_touched_no_edit_is_empty(conn, tmp_path):
+    tf = "Library/P/Foo.lean"
+    _migrated(conn, "a", tf)
+    _write_lib(tmp_path, tf, "import Mathlib\n")
+    snap = {tf: "import Mathlib\n"}   # unchanged
+    ok, detail, touched = lib._regate_touched(
+        conn, problem="p", workspace=tmp_path, snap_before=snap,
+        whitelist=[], regate=lambda path, text: (False, "should not run"))
+    assert ok and touched == []        # nothing touched → no gate, ok
+
+
+def test_regate_touched_reports_failure(conn, tmp_path):
+    tf = "Library/P/Foo.lean"
+    _migrated(conn, "a", tf)
+    _write_lib(tmp_path, tf, "import Mathlib\n-- broken\n")
+    snap = {tf: "import Mathlib\n"}
+    ok, detail, touched = lib._regate_touched(
+        conn, problem="p", workspace=tmp_path, snap_before=snap,
+        whitelist=[], regate=lambda path, text: (False, "build error"))
+    assert not ok and "build error" in detail and touched == [tf]
+
+
+def test_restore_snapshot_reverts(tmp_path):
+    tf = "Library/P/Foo.lean"
+    _write_lib(tmp_path, tf, "edited\n")
+    lib._restore_snapshot(tmp_path, {tf: "original\n"}, [tf])
+    assert (tmp_path / tf).read_text(encoding="utf-8") == "original\n"
+
+
 # --- dispatcher routing ---
 
 def test_derive_migrated_routes_to_cleanup(conn, tmp_path):

@@ -1564,71 +1564,85 @@ _INDEX_PREAMBLE = (
 )
 
 
-def _commit_cleanup(conn, *, problem, workspace, target_file, slugs,
-                    snap_before, whitelist, regate=None, lint=None):
-    """Validate a cleanup edit (Step 4) and commit or roll back.
+def _snapshot_problem_library(conn, problem, workspace) -> dict:
+    """{rel_path: content|None} for every problem-Library file — captured
+    before an agent edits files in place, for touched-diff + rollback."""
+    return {f: ((workspace / f).read_text(encoding="utf-8")
+                if (workspace / f).exists() else None)
+            for f in _problem_library_files(conn, problem)}
 
-    `snap_before` is {rel_path: content|None} for every problem-Library file,
-    captured before the agent ran. We diff to find touched files, re-gate
-    each touched file + its importers (Gate A + build + per-decl axiom —
-    catches un-updated call sites / sorry / rogue axioms a signature change
-    introduced), and require the target file to have NO `unusedVariables`
-    linter warnings left (the cleanup objective). All pass → the file's decls
-    advance to 'cleaned'. Any fail → restore the touched files to
-    `snap_before` (retry starts clean) and report failed.
 
-    `regate` (path, text) -> (ok, detail) and `lint` (path) -> list[str]
-    (warning messages) are injectable for offline tests; production uses the
-    warm-gateway build + a verify_file diagnostics scan."""
-    from . import PipelineResult
+def _restore_snapshot(workspace, snap, files) -> None:
+    """Restore `files` to their `snap` content (None → delete)."""
+    for f in files:
+        p = workspace / f
+        content = snap.get(f)
+        if content is None:
+            if p.exists():
+                p.unlink()
+        else:
+            p.write_text(content, encoding="utf-8")
 
+
+def _regate_touched(conn, *, problem, workspace, snap_before, whitelist,
+                    regate=None) -> "tuple[bool, str, list[str]]":
+    """Re-gate the Library files an agent edited in place. Diffs `snap_before`
+    vs disk → touched files, then runs the migrate commit gate (Gate A
+    import-closure + build + per-decl axiom) on each touched file AND every
+    file importing one — a signature change in F breaks any G that calls into
+    F. Returns `(ok, detail, touched)`; does NOT roll back (caller decides).
+
+    Shared by cleanup (Step 4) and bridge (Gate B): both let an agent edit
+    committed Library files, so both must re-verify what was touched rather
+    than trust the agent. `regate` (path, text) -> (ok, detail) is injectable
+    for offline tests."""
     def _read(rel):
         p = workspace / rel
         return p.read_text(encoding="utf-8") if p.exists() else None
-
-    touched = sorted(f for f in snap_before
-                     if _read(f) != snap_before[f])
-    if target_file not in touched:
-        # The agent must at least have edited the target (docstring, etc.).
-        return PipelineResult(
-            outcome="failed", failure_reason="librarian_gate_failed",
-            failure_detail=f"{target_file}: agent made no edit to the target")
-
-    def _restore():
-        for f in touched:
-            p = workspace / f
-            content = snap_before.get(f)
-            if content is None:
-                if p.exists():
-                    p.unlink()
-            else:
-                p.write_text(content, encoding="utf-8")
-
-    # Re-gate touched files + everything importing them.
+    touched = sorted(f for f in snap_before if _read(f) != snap_before[f])
+    if not touched:
+        return True, "", []
     to_check = set(touched) | _importers_of(
         conn, problem=problem, workspace=workspace, files=set(touched))
-    _regate = regate or (lambda path, text: (
-        (lambda g: (g.ok, g.detail))(migrate_commit_gate(
+    _g = regate or (lambda path, text: (
+        (lambda r: (r.ok, r.detail))(migrate_commit_gate(
             text, path, whitelist=whitelist, workspace=workspace))))
     for rel in sorted(to_check):
         p = workspace / rel
         if not p.exists():
-            _restore()
-            return PipelineResult(
-                outcome="failed", failure_reason="librarian_gate_failed",
-                failure_detail=f"{rel}: vanished during cleanup")
-        ok, detail = _regate(p, p.read_text(encoding="utf-8"))
+            return False, f"{rel}: vanished during edit", touched
+        ok, detail = _g(p, p.read_text(encoding="utf-8"))
         if not ok:
-            _restore()
-            return PipelineResult(
-                outcome="failed", failure_reason="librarian_gate_failed",
-                failure_detail=f"re-gate {rel}: {detail}"[:400])
+            return False, f"re-gate {rel}: {detail}"[:400], touched
+    return True, "", touched
 
-    # Cleanup objective: no unused-variable linter warnings left in target.
-    _lint = lint or _unused_var_warnings
-    warns = _lint(workspace / target_file)
+
+def _commit_cleanup(conn, *, problem, workspace, target_file, slugs,
+                    snap_before, whitelist, regate=None, lint=None):
+    """Validate a cleanup edit (Step 4) and commit or roll back. Re-gates the
+    touched files + importers (`_regate_touched`) and requires the target to
+    have NO `unusedVariables` warnings left (the cleanup objective). All pass
+    → the file's decls advance to 'cleaned'. Any fail → restore the touched
+    files (retry starts clean). `lint` (path) -> list[str] is injectable."""
+    from . import PipelineResult
+
+    ok, detail, touched = _regate_touched(
+        conn, problem=problem, workspace=workspace, snap_before=snap_before,
+        whitelist=whitelist, regate=regate)
+    if target_file not in touched:
+        _restore_snapshot(workspace, snap_before, touched)
+        return PipelineResult(
+            outcome="failed", failure_reason="librarian_gate_failed",
+            failure_detail=f"{target_file}: agent made no edit to the target")
+    if not ok:
+        _restore_snapshot(workspace, snap_before, touched)
+        return PipelineResult(
+            outcome="failed", failure_reason="librarian_gate_failed",
+            failure_detail=detail)
+
+    warns = (lint or _unused_var_warnings)(workspace / target_file)
     if warns:
-        _restore()
+        _restore_snapshot(workspace, snap_before, touched)
         return PipelineResult(
             outcome="failed", failure_reason="librarian_gate_failed",
             failure_detail=f"{target_file}: {len(warns)} unused-variable "
@@ -1676,10 +1690,7 @@ def _run_cleanup(conn, *, problem, workspace, pipeline_id, target_file,
             outcome="failed", failure_reason="librarian_not_migrated",
             failure_detail=f"{target_file}: no migrated decls on disk")
 
-    lib_files = _problem_library_files(conn, problem)
-    snap_before = {f: ((workspace / f).read_text(encoding="utf-8")
-                       if (workspace / f).exists() else None)
-                   for f in lib_files}
+    snap_before = _snapshot_problem_library(conn, problem, workspace)
     patch_lean = attempts_dir / "patch.lean"   # decline channel only
 
     def cleanup_spawn(ctx: SpawnCtx) -> int:
@@ -1848,6 +1859,11 @@ def _run_bridge(conn, *, problem, workspace, pipeline_id,
             failure_detail="no proved root statement for the bridge")
     statement = " ".join(root["statement"].split())
     patch_lean = attempts_dir / "patch.lean"
+    # Snapshot for re-gating any Library lemma the bridge agent edits in place
+    # (bridge.md lets it fix a too-weak lemma). The bridge probe build only
+    # transitively touches imported files; re-gate makes "the framework
+    # re-checks every file you touch" actually true.
+    snap_before = _snapshot_problem_library(conn, problem, workspace)
 
     def bridge_spawn(ctx: SpawnCtx) -> int:
         if ctx.cold:
@@ -1873,15 +1889,31 @@ def _run_bridge(conn, *, problem, workspace, pipeline_id,
                                   failure_reason="agent_no_output",
                                   failure_detail="no patch.lean")
         patch_text = patch_lean.read_text(encoding="utf-8")
+        # Re-gate any Library file the agent edited en route (rollback on a
+        # failed run, like cleanup). Done before the decline check so a
+        # decline that also left edits doesn't leave them half-applied.
+        ok, detail, touched = _regate_touched(
+            conn, problem=problem, workspace=workspace,
+            snap_before=snap_before, whitelist=whitelist or [])
+        if not ok:
+            _restore_snapshot(workspace, snap_before, touched)
+            return PipelineResult(
+                outcome="failed", failure_reason="librarian_gate_failed",
+                failure_detail=f"bridge edited a Library file that fails "
+                               f"re-gate: {detail}")
         if "-- decline:" in patch_text:
+            _restore_snapshot(workspace, snap_before, touched)
             return PipelineResult(outcome="failed",
                                   failure_reason="agent_declined",
                                   failure_detail="bridge declined "
                                                  "(missing keystone?)",
                                   proposal_md=patch_text)
-        return _commit_bridge(
+        res = _commit_bridge(
             patch_text, conn=conn, problem=problem, workspace=workspace,
             statement=statement, whitelist=whitelist or [])
+        if res.outcome != "success":
+            _restore_snapshot(workspace, snap_before, touched)
+        return res
 
     def bridge_postmortem(sid: str) -> None:
         pass
