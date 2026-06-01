@@ -61,7 +61,7 @@ Framework checks: import-closure (only Mathlib/Library imports) + `lake env lean
 
 If the file cannot be made Defs-free in one pass, write only the directive (no declarations). Pick one:
 
-- `needs-sibling` — a declaration depends on another not yet in the Library. Name the slug it needs.
+- `needs-upstream <slug> <constraint>` — a declaration already in the Library must be reshaped before this file can build. Put the constraint on this line (not the block below); the framework reverts that declaration plus its consumers and re-processes them with it recorded.
 - `needs-vocabulary` — depends on a Defs symbol not yet migrated and with no mathlib equivalent. Name the symbol.
 - `not-self-contained` — a signature itself references a Problems/Defs symbol with no mathlib form, so no Defs-free signature exists. Explain.
 

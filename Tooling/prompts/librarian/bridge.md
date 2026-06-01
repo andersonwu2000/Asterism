@@ -30,8 +30,8 @@ The statement may mention vocabulary that came from the problem's `Defs` (e.g. a
 
 Catching an incomplete or mis-stated Library is the entire point. If you cannot prove the statement in a short step, diagnose which:
 
-- **A Library lemma is stated too weakly or wrongly** — fix that Library file directly. Keep it Defs-free (Mathlib + Library imports only) and `sorry`-free; the framework re-checks every file you touch.
-- **The Library is missing a keystone** the original proof needed (dropped or never migrated) — do **not** inline the missing proof into the bridge to force it through. Decline so the gap is recorded.
+- **A Library lemma is stated too weakly or wrongly** — if the fix is contained to that one file, edit it directly (keep it Defs-free, `sorry`-free, and PR-ready — the framework re-gates build + import-closure on every file you touch, not cleanup's conventions, so quality is on you). If reshaping it would ripple to other declarations, hand it back rather than patch the cone by hand — decline `needs-upstream` (see below).
+- **The Library is missing a keystone** the original proof needed (dropped or never migrated) — do **not** inline the missing proof to force it through. Decline `missing-keystone` so the gap is recorded.
 
 ## Editing tools — LSP-backed
 
@@ -59,7 +59,8 @@ Framework checks (Gate B): signature equals the original statement + import-clos
 
 If the root genuinely cannot be re-derived from the Library, write only the directive (no `theorem main`):
 
-- `missing-keystone` — name the Library declaration (or the dropped slug) the proof needs but the Library lacks.
+- `needs-upstream <slug> <constraint>` — an existing Library declaration must be reshaped and the change ripples beyond a single file. Put the constraint on this line (not the block below); the framework reverts that declaration plus its consumers and re-processes them with it recorded.
+- `missing-keystone` — name the Library declaration (or dropped slug) the proof needs but the Library lacks. Recalling a dropped declaration is currently a manual step.
 - `not-rederivable` — the statement references vocabulary with no Defs-free Library form. Explain.
 
 ```lean

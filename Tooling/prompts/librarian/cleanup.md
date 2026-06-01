@@ -28,11 +28,19 @@ Edit **call-site files** with `Edit` / `Read`; check them with `lake env lean <f
 
 ## Framework checks
 
-On submit, the framework re-gates every file you touched + the files importing them (import-closure + build + axioms) and rolls back all edits if any fail, then advances the file's declarations to 'cleaned'. (Gate D no longer applies — you intentionally change signatures.)
+On submit, the framework re-gates every file you touched + the files importing them (import-closure + build, in dependency order) and rolls back all edits if any fail, then advances the file's declarations to 'cleaned'. (Gate D no longer applies — you intentionally change signatures.)
 
 ## Decline
 
-If the file genuinely cannot be cleaned, write `-- decline: <reason>` to `patch.lean` (in attempts_dir) and make no edits.
+Write the directive to `patch.lean` (in attempts_dir) and make no edits. Pick one:
+
+- `needs-upstream <slug> <constraint>` — cleaning this file requires reshaping a finalized Library declaration it imports (beyond this task's scope). Put the constraint on this line (not the block below); the framework reverts that declaration plus its consumers and re-processes them with it recorded.
+- `<reason>` — the file genuinely cannot be cleaned. Explain.
+
+```lean
+-- decline: <directive>
+-- ## <reason>
+```
 
 ## Discovery
 

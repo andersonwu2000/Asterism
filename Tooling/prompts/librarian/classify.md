@@ -9,7 +9,7 @@ Read `Context.md`: the surviving declarations (those marked `keep`), each with i
 Group the declarations into files and order them, mirroring how mathlib organises a topic:
 
 - **Directory + file** per declaration, under `Library/<Topic>/`. `<Topic>` follows mathlib's top-level layout (`Algebra`, `LinearAlgebra`, `Analysis`, `Geometry`, `Topology`, `NumberTheory`, …). Cohesive declarations share a file; a large keystone may stand alone.
-- **Order within a file** — a declaration must appear after everything it uses.
+- **Order within a file** — list each declaration after what it uses; the framework topo-sorts this on commit, so it's a hint, not a hard constraint.
 - **Cross-file dependency** — which Library file imports which. The graph must be acyclic.
 
 A file may depend only on Mathlib and other Library files (never on `Problems/` or a problem's `Defs`). Definitions (e.g. a predicate every lemma mentions) usually belong in their own foundational file that the rest import.
@@ -28,11 +28,11 @@ A file may depend only on Mathlib and other Library files (never on `Problems/` 
 
 - `path` — the file's path; its module name is the path with `/`→`.` minus `.lean`.
 - `imports` — sibling Library modules this file needs (Mathlib is always available; don't list it).
-- `decls` — slugs in this file, in dependency order.
+- `decls` — the slugs placed in this file (any order; the framework re-sorts).
 
 ## Guidance
 
-- Every `keep`/`cite-*` declaration appears in exactly one file's `decls`.
+- Every declaration appears in exactly one file's `decls`.
 - Put shared definitions in a foundational file; lemmas about them import it.
 - Keep files cohesive but not huge — split by sub-topic the way mathlib would, not one-decl-per-file unless a decl is genuinely standalone.
 - The dependency graph being acyclic is a hard requirement — if two files would need each other, merge them or move the shared piece down.
