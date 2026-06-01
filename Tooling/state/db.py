@@ -366,6 +366,7 @@ CREATE TABLE IF NOT EXISTS library_decls (
                         CHECK(lifecycle IN (
                           'candidate','deduped','classified',
                           'migrated','cleaned','dropped','cited')),
+    reopen_note     TEXT NULL DEFAULT NULL,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
     UNIQUE(problem, slug)
@@ -588,6 +589,19 @@ def init_schema(conn: sqlite3.Connection) -> None:
         # rows never had 'cleaned'.
         _migrate_to_phase8(conn)
         conn.execute("PRAGMA user_version = 8")
+        conn.commit()
+    if v < 9:
+        # Phase 9 — library_decls gains `reopen_note` (the constraint a
+        # downstream `needs-upstream` decline passes to a re-opened upstream's
+        # re-cleanup). Plain ADD COLUMN (nullable) — no table rebuild. Guarded
+        # so a fresh DB built from the updated SCHEMA (column already present)
+        # doesn't double-add.
+        cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(library_decls)")}
+        if "reopen_note" not in cols:
+            conn.execute(
+                "ALTER TABLE library_decls ADD COLUMN reopen_note TEXT")
+        conn.execute("PRAGMA user_version = 9")
         conn.commit()
 
 

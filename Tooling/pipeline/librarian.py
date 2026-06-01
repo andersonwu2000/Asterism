@@ -981,6 +981,17 @@ def compile_librarian_context(
             for g in importers:
                 lines.append(f"    - `{g}`")
             lines.append("")
+        # Re-open constraints: if a decl here was reopened because a downstream
+        # needed it reshaped, surface what was needed so this re-cleanup
+        # produces a DIFFERENT result than the one that was rejected.
+        reopened = [r for r in decls if r["reopen_note"]]
+        if reopened:
+            lines.append("## ⚠️ Reshape constraints (a downstream needs these)")
+            lines.append("")
+            for r in reopened:
+                lines.append(f"- `{r['target_name'] or r['slug']}`: "
+                             f"{r['reopen_note']}")
+            lines.append("")
         lines.append(f"## Declarations in this file ({len(decls)})")
         lines.append("")
         for r in decls:
@@ -1538,10 +1549,9 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_file,
                                   failure_detail="no patch.lean")
         patch_text = patch_lean.read_text(encoding="utf-8")
         if "-- decline:" in patch_text:
-            return PipelineResult(outcome="failed",
-                                  failure_reason="agent_declined",
-                                  failure_detail="migrate declined",
-                                  proposal_md=patch_text)
+            return _decline_or_reopen(
+                conn, problem=problem, workspace=workspace,
+                patch_text=patch_text, stage="migrate")
         return _commit_migrated_file(
             patch_text, conn=conn, problem=problem, workspace=workspace,
             target_path=target_path, target_module=target_module,
@@ -1713,6 +1723,94 @@ def _regate_touched(conn, *, problem, workspace, snap_before, whitelist,
     return True, "", touched
 
 
+_NEEDS_UPSTREAM_RE = re.compile(
+    r"--\s*decline\s*:\s*needs-upstream\s+([A-Za-z_]\w*)\s*(.*)")
+
+
+def _parse_needs_upstream(text: str) -> "tuple[str, str] | None":
+    """Parse a `-- decline: needs-upstream <slug> [reason]` directive →
+    (upstream_slug, reason). The Librarian analog of proof-time
+    `return_to_parent`: a downstream node signals that a finalized upstream
+    Library decl must be reshaped before it can proceed."""
+    m = _NEEDS_UPSTREAM_RE.search(text)
+    if not m:
+        return None
+    return m.group(1), m.group(2).strip()
+
+
+def _reopen_upstream_cascade(conn, *, problem, workspace, upstream_slug,
+                             note) -> list:
+    """Re-open a finalized upstream decl + its consumer cone (the Librarian
+    analog of proof-time `return_to_parent`, but it RESHAPES nodes rather
+    than re-decomposing — the dependency topology is kept).
+
+    The named upstream's file and every file transitively importing it
+    (`_affected_cone`) revert migrated/cleaned → 'classified'; their on-disk
+    Library files + oleans are deleted (file↔DB paired, CLAUDE rule 10) so
+    the next derive re-migrates the faithful baseline and then re-cleans —
+    this time with `note` (what the downstream needed) recorded on the
+    upstream so its re-cleanup can reshape DIFFERENTLY (else a faithful
+    re-migrate would loop to the same result). Bounding is the dispatcher's
+    per-problem fail cap. Returns the reopened target_files."""
+    rows = db.library_decls_for(conn, problem)
+    up = next((r for r in rows if r["slug"] == upstream_slug
+               and r["target_file"]), None)
+    if up is None:
+        return []
+    graph = file_dependency_graph(conn, problem=problem, workspace=workspace)
+    reopened: list = []
+    for f in sorted(_affected_cone(graph, {up["target_file"]})):
+        n = conn.execute(
+            "UPDATE library_decls SET lifecycle='classified', updated_at=? "
+            "WHERE problem=? AND target_file=? AND lifecycle IN "
+            "('migrated','cleaned')", (db.now(), problem, f)).rowcount
+        if not n:
+            continue
+        reopened.append(f)
+        p = workspace / f
+        if p.exists():
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        mod = _library_module_of(f)
+        olean = (workspace / ".lake" / "build" / "lib" / "lean"
+                 / (mod.replace(".", "/") + ".olean"))
+        if olean.exists():
+            try:
+                olean.unlink()
+            except OSError:
+                pass
+    if note:
+        conn.execute(
+            "UPDATE library_decls SET reopen_note=? WHERE problem=? AND slug=?",
+            (note, problem, upstream_slug))
+    conn.commit()
+    return reopened
+
+
+def _decline_or_reopen(conn, *, problem, workspace, patch_text, stage):
+    """Map a Librarian agent decline to a PipelineResult. A
+    `needs-upstream <slug>` directive triggers the re-open cascade (reshape
+    a finalized upstream + its cone); anything else is a plain decline. The
+    dispatcher re-enqueues the failure (bounded), so after a cascade the next
+    derive re-migrates the reopened cone."""
+    from . import PipelineResult
+    nu = _parse_needs_upstream(patch_text)
+    if nu:
+        slug, reason = nu
+        reopened = _reopen_upstream_cascade(
+            conn, problem=problem, workspace=workspace, upstream_slug=slug,
+            note=reason or f"reshape needed by {stage}")
+        return PipelineResult(
+            outcome="failed", failure_reason="librarian_reopened_upstream",
+            failure_detail=f"{stage}: reopened upstream `{slug}` + cone "
+                           f"{reopened}", proposal_md=patch_text)
+    return PipelineResult(
+        outcome="failed", failure_reason="agent_declined",
+        failure_detail=f"{stage} declined", proposal_md=patch_text)
+
+
 def _commit_cleanup(conn, *, problem, workspace, target_file, slugs,
                     snap_before, whitelist, regate=None, lint=None):
     """Validate a cleanup edit (Step 4) and commit or roll back. Re-gates the
@@ -1813,10 +1911,10 @@ def _run_cleanup(conn, *, problem, workspace, pipeline_id, target_file,
     def cleanup_parse():
         if patch_lean.exists() and "-- decline:" in patch_lean.read_text(
                 encoding="utf-8"):
-            return PipelineResult(
-                outcome="failed", failure_reason="agent_declined",
-                failure_detail="cleanup declined",
-                proposal_md=patch_lean.read_text(encoding="utf-8"))
+            return _decline_or_reopen(
+                conn, problem=problem, workspace=workspace,
+                patch_text=patch_lean.read_text(encoding="utf-8"),
+                stage="cleanup")
         return _commit_cleanup(
             conn, problem=problem, workspace=workspace,
             target_file=target_file, slugs=slugs, snap_before=snap_before,
@@ -1999,11 +2097,9 @@ def _run_bridge(conn, *, problem, workspace, pipeline_id,
                                f"re-gate: {detail}")
         if "-- decline:" in patch_text:
             _restore_snapshot(workspace, snap_before, touched)
-            return PipelineResult(outcome="failed",
-                                  failure_reason="agent_declined",
-                                  failure_detail="bridge declined "
-                                                 "(missing keystone?)",
-                                  proposal_md=patch_text)
+            return _decline_or_reopen(
+                conn, problem=problem, workspace=workspace,
+                patch_text=patch_text, stage="bridge")
         res = _commit_bridge(
             patch_text, conn=conn, problem=problem, workspace=workspace,
             statement=statement, whitelist=whitelist or [])
