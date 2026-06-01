@@ -54,24 +54,27 @@ def test_mechanical_assembles_self_contained_file(conn, tmp_path):
                  f"end {PNS}\n")
     rows = [r for r in db.library_decls_for(conn, "p")
             if r["target_file"] == tf and r["lifecycle"] == "classified"]
-    text = lib._mechanical_migrate_file(
+    text, holes = lib._mechanical_migrate_file(
         conn, problem="p", workspace=tmp_path, target_file=tf,
         target_module="Library.P.Foo", rows=rows)
     assert text is not None
+    assert holes == []
     assert "namespace Library.P.Foo" in text
     assert "theorem lem_a : True := by trivial" in text
     assert "Problems." not in text
 
 
 def test_mechanical_declines_when_no_proof_file(conn, tmp_path):
-    # classified decl with no L_<slug>.lean on disk → None (LLM path)
+    # classified decl with no L_<slug>.lean on disk → (None, []): can't even
+    # seed a signature, so the whole file cold-spawns.
     _seed_classified(conn, "ghost", "True", "Library/P/Bar.lean", 0)
     rows = [r for r in db.library_decls_for(conn, "p")
             if r["lifecycle"] == "classified"]
-    text = lib._mechanical_migrate_file(
+    text, holes = lib._mechanical_migrate_file(
         conn, problem="p", workspace=tmp_path, target_file="Library/P/Bar.lean",
         target_module="Library.P.Bar", rows=rows)
     assert text is None
+    assert holes == []
 
 
 def test_commit_migrated_file_marks_all(conn, tmp_path):
@@ -89,10 +92,11 @@ def test_commit_migrated_file_marks_all(conn, tmp_path):
     rows = [r for r in db.library_decls_for(conn, "p")
             if r["target_file"] == tf and r["lifecycle"] == "classified"]
     rows.sort(key=lambda r: r["file_order"])
-    text = lib._mechanical_migrate_file(
+    text, holes = lib._mechanical_migrate_file(
         conn, problem="p", workspace=tmp_path, target_file=tf,
         target_module="Library.P.Foo", rows=rows)
     assert text is not None
+    assert holes == []
 
     res = lib._commit_migrated_file(
         text, conn=conn, problem="p", workspace=tmp_path,
@@ -121,7 +125,7 @@ def test_commit_rolls_back_on_gate_fail(conn, tmp_path):
                  f"end {PNS}\n")
     rows = [r for r in db.library_decls_for(conn, "p")
             if r["target_file"] == tf and r["lifecycle"] == "classified"]
-    text = lib._mechanical_migrate_file(
+    text, _holes = lib._mechanical_migrate_file(
         conn, problem="p", workspace=tmp_path, target_file=tf,
         target_module="Library.P.Foo", rows=rows)
     res = lib._commit_migrated_file(
@@ -195,9 +199,78 @@ def test_merge_different_binders_declines_citation(conn, tmp_path):
     rows = [r for r in db.library_decls_for(conn, "p")
             if r["target_file"] == tf and r["lifecycle"] == "classified"]
     rows.sort(key=lambda r: r["file_order"])
-    text = lib._mechanical_migrate_file(
+    text, holes = lib._mechanical_migrate_file(
         conn, problem="p", workspace=tmp_path, target_file=tf,
         target_module="Library.P.Foo", rows=rows)
-    # bar_of_h NOT redirected → foo's body still cites a non-keep-style merge
-    # sibling that can't resolve → decline whole file to LLM.
-    assert text is None
+    # bar_of_h NOT redirected (binder mismatch) → foo can't be completed
+    # mechanically, but its signature is clean → seeded as a sorry hole
+    # (NOT silently mis-renamed to `bar`, which would build-fail).
+    assert text is not None
+    assert holes == ["foo"]
+    assert "theorem foo (n : Nat) : True :=" in text
+    assert "sorry" in text
+    assert "bar_of_h" not in text          # body (with the bad ref) dropped
+
+
+# --- seed mode: best-effort assembly with sorry holes ---
+
+def test_seed_mode_clean_decl_plus_hole(conn, tmp_path):
+    # `clean` relabels fully; `holey` cites a non-keep sibling in its body →
+    # seeded as a sorry hole. Result: full text + holes == ["holey"], all
+    # decls present and in order (positional pairing preserved).
+    tf = "Library/P/Foo.lean"
+    _seed_classified(conn, "clean", "True", tf, 0)
+    _seed_classified(conn, "holey", "True", tf, 1)
+    # a dropped (non-keep) sibling `gone` that holey's body references
+    g = db.insert_goal(conn, problem="p", slug="gone",
+                       lean_path="proofs/L_gone.lean", statement="True",
+                       origin="backward", kind="theorem")
+    conn.execute("UPDATE goals SET status='proved' WHERE id=?", (g,))
+    db.upsert_library_decl(conn, problem="p", slug="gone", source_goal_id=g)
+    db.set_library_verdict(conn, problem="p", slug="gone", verdict="drop",
+                           citation="Trivial.thing")
+    conn.commit()
+    _write_proof(tmp_path, "clean",
+                 "import Mathlib\n" + f"namespace {PNS}\n"
+                 "theorem clean : True := by trivial\n" + f"end {PNS}\n")
+    _write_proof(tmp_path, "holey",
+                 "import Mathlib\n" + f"import {PNS}.proofs.L_gone\n"
+                 + f"namespace {PNS}\n"
+                 "theorem holey (n : Nat) : True := by\n"
+                 "  have := gone\n  trivial\n" + f"end {PNS}\n")
+    rows = [r for r in db.library_decls_for(conn, "p")
+            if r["target_file"] == tf and r["lifecycle"] == "classified"]
+    rows.sort(key=lambda r: r["file_order"])
+    text, holes = lib._mechanical_migrate_file(
+        conn, problem="p", workspace=tmp_path, target_file=tf,
+        target_module="Library.P.Foo", rows=rows)
+    assert text is not None
+    assert holes == ["holey"]
+    assert "theorem clean : True := by trivial" in text   # clean intact
+    assert "theorem holey (n : Nat) : True :=" in text     # sig seeded
+    assert "sorry" in text
+    assert "gone" not in text                              # body dropped
+    # all N decls present in order → positional pairing holds
+    decls = lib.extract_decls(text)
+    assert [d.name for d in decls] == ["clean", "holey"]
+
+
+def test_context_md_marks_holes_in_seed_mode(conn, tmp_path):
+    # compile_librarian_context(holes=[...]) emits the seed banner + marks
+    # the hole decl; holes=None (cold) emits neither.
+    tf = "Library/P/Foo.lean"
+    _seed_classified(conn, "a", "True", tf, 0)
+    _seed_classified(conn, "b", "True", tf, 1)
+    attempts = tmp_path / ".attempts"
+    attempts.mkdir()
+    ctx = lib.compile_librarian_context(
+        conn, problem="p", work_kind="migrate", attempts_dir=attempts,
+        workspace=tmp_path, target_file=tf, holes=["b"])
+    body = ctx.read_text(encoding="utf-8")
+    assert "finish it, don't rewrite" in body
+    assert "HOLE" in body
+    # cold (holes=None) → no seed banner
+    ctx2 = lib.compile_librarian_context(
+        conn, problem="p", work_kind="migrate", attempts_dir=attempts,
+        workspace=tmp_path, target_file=tf, holes=None)
+    assert "finish it, don't rewrite" not in ctx2.read_text(encoding="utf-8")

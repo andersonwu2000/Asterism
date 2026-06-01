@@ -739,12 +739,20 @@ def _read_statement(conn, problem: str, slug: str) -> str:
 def compile_librarian_context(
     conn, *, problem: str, work_kind: str, attempts_dir,
     workspace, target_file: str | None = None,
+    holes: "list[str] | None" = None,
 ) -> "_Path":
     """Write attempts_dir/Context.md for a Librarian work spawn.
 
     `work_kind` ∈ {dedup, classify, migrate}. `target_file` is required
     for migrate (the Library file to write — its classified decls in
-    file_order, plus the sibling modules it may import)."""
+    file_order, plus the sibling modules it may import).
+
+    `holes` (migrate only, seed mode): when non-None, `patch.lean` is
+    pre-seeded with a mechanically-relabelled draft and the agent's job is
+    to finish it, not write it. A non-empty list names the decls left as
+    `sorry` holes to fill; an empty list means the draft is complete but
+    build-failed (fix it). When None, the agent writes the file from
+    scratch (cold)."""
     from ..quality.librarian import inventory as _inv
 
     lines: list[str] = [f"# Librarian — {work_kind} — {problem}", ""]
@@ -826,11 +834,35 @@ def compile_librarian_context(
                     encoding="utf-8", errors="replace").rstrip())
                 lines.append("```")
                 lines.append("")
+        hole_set = set(holes or [])
+        if holes is not None:
+            # Seed mode: patch.lean already holds a mechanically-relabelled
+            # draft. Tell the agent to FINISH it, not rewrite it.
+            lines.append("## You are given a seed — finish it, don't rewrite")
+            lines.append("")
+            lines.append(
+                "`patch.lean` is pre-filled with a mechanically-relabelled "
+                "draft of this whole file: namespaces, imports and every "
+                "non-hole declaration are already correct. **Do not rewrite "
+                "the working declarations or change their signatures.**")
+            lines.append("")
+            if hole_set:
+                lines.append(
+                    f"Fill the **{len(hole_set)} `sorry` hole(s)** below "
+                    "(marked ⛏), keeping each signature exactly as seeded:")
+                for h in holes:
+                    lines.append(f"  - `{h}`")
+            else:
+                lines.append(
+                    "The draft is complete but does not build — fix the "
+                    "build error(s) without weakening any signature.")
+            lines.append("")
         lines.append("## Declarations")
         lines.append("")
         for i, r in enumerate(rows, 1):
             slug = r["slug"]
-            lines.append(f"### {i}. `{slug}`")
+            tag = " ⛏ HOLE — fill this" if slug in hole_set else ""
+            lines.append(f"### {i}. `{slug}`{tag}")
             if r["verdict"] and r["verdict"] != "keep":
                 lines.append(f"- dedup verdict: {r['verdict']} → cite "
                              f"`{r['citation']}`")
@@ -1029,18 +1061,30 @@ def _decl_signature(text: str) -> str:
 
 def _mechanical_migrate_file(
     conn, *, problem, workspace, target_file, target_module, rows,
-) -> "str | None":
-    """Try to relabel a whole classified file mechanically (librarian_plan
-    §4 Phase 1) — no LLM. Returns the assembled file text on success, or
-    None if any decl declines (caller falls through to the LLM path; the
-    build gate downstream is still the final arbiter).
+) -> "tuple[str | None, list[str]]":
+    """Best-effort relabel of a whole classified file (librarian_plan §4
+    Phase 1) — no LLM. Returns `(assembled_text, holes)`:
 
-    Builds the three relabel inputs from DB state:
+      - Every decl relabels cleanly → `(text, [])`: a fully mechanical file
+        the caller commits with zero spawn.
+      - Some decls decline (body cites a non-keep sibling that can't be
+        mechanically redirected) → they are emitted as `<relabelled-sig> :=
+        sorry` and their slugs returned in `holes`. The text is then a SEED:
+        a real Lean file (sorry only warns) the LLM finishes by filling the
+        holes, instead of writing the whole file from scratch (the prior
+        ChainAssembly-timeout root cause). All N decls are present and in
+        order, so positional pairing still holds.
+      - A decl can't even be seeded (no proof file, or its SIGNATURE itself
+        cites a non-keep symbol so `body_to_sorry` also declines) → `(None,
+        [])`: the caller cold-spawns the whole file. Per the §4 data all
+        Jordan holes have clean signatures, so this is the rare path.
+
+    Builds the relabel inputs from DB state:
       - keep_slugs    : every `keep` decl (becomes a Library sibling)
       - defs_imports  : migrated Defs symbol → its Library module
-      - citation_map  : verbatim-merge sibling → canonical (statement-equal
-                        only; near-merge / drop / cite-mathlib are NOT here
-                        and therefore decline → LLM path)
+      - citation_map  : verbatim-merge sibling → canonical (full-signature
+                        equal only; near-merge / drop / cite-mathlib are NOT
+                        here → those decls become holes)
     """
     import re as _re
     from ..quality.librarian import inventory as _inv
@@ -1094,27 +1138,42 @@ def _mechanical_migrate_file(
     import_set: set[str] = set()
     open_set: set[str] = set()
     chunks: list[str] = []
+    holes: list[str] = []
     for r in rows:
         slug = r["slug"]
         src_path = proofs / f"L_{slug}.lean"
         if not src_path.exists():
-            return None  # Defs decl / no proof file — not this path
+            return None, []  # Defs decl / no proof file — can't seed a sig
         src = src_path.read_text(encoding="utf-8")
         kw = dict(problem_namespace=pns, target_namespace=target_module,
                   keep_slugs=keep_slugs, defs_imports=defs_imports,
                   all_defs_syms=all_defs, citation_map=citation_map,
                   sibling_modules=sibling_modules)
         m = alias_re.search(src)
+        strat_text = None
         if m:
             strat_path = proofs / f"_strategy_{m.group(1)}.lean"
             if not strat_path.exists():
-                return None
-            res = _relabel.inline_alias(
-                src, strat_path.read_text(encoding="utf-8"), slug=slug, **kw)
-        else:
-            res = _relabel.relabel_self_contained(src, **kw)
+                return None, []
+            strat_text = strat_path.read_text(encoding="utf-8")
+
+        def _relabel_one(body_to_sorry: bool):
+            if strat_text is not None:
+                return _relabel.inline_alias(
+                    src, strat_text, slug=slug, body_to_sorry=body_to_sorry,
+                    **kw)
+            return _relabel.relabel_self_contained(
+                src, body_to_sorry=body_to_sorry, **kw)
+
+        res = _relabel_one(body_to_sorry=False)
         if not res.ok:
-            return None  # any decline → whole file goes to the LLM path
+            # Decline → seed a hole: relabel just the SIGNATURE, body = sorry.
+            # If the signature itself cites a non-keep symbol, body_to_sorry
+            # also declines → this decl can't be seeded → cold-spawn the file.
+            res = _relabel_one(body_to_sorry=True)
+            if not res.ok:
+                return None, []
+            holes.append(slug)
         # Split into imports + open lines + the namespace body, to merge
         # all decls into one file (imports + opens hoisted, dedup'd).
         inside = False
@@ -1139,10 +1198,11 @@ def _mechanical_migrate_file(
     header = "\n".join(sorted(import_set))
     if open_set:
         header += "\n\n" + "\n".join(sorted(open_set))
-    return (header
+    text = (header
             + f"\n\nnamespace {target_module}\n\n"
             + "\n\n".join(chunks)
             + f"\n\nend {target_module}\n")
+    return text, holes
 
 
 def _commit_migrated_file(
@@ -1242,40 +1302,53 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_file,
     defs_names = _inv.defs_decls(workspace, problem)
     patch_lean = attempts_dir / "patch.lean"
 
-    # Phase 1 — mechanical relabel pre-pass (librarian_plan §4). Try to
-    # build the whole file by pure relabel (no LLM); if it assembles AND
-    # passes the same commit gate, we're done with zero spawn. Any decline
-    # or gate failure falls through to the LLM path below unchanged.
-    mech_text = _mechanical_migrate_file(
+    # Phase 1 — mechanical relabel pre-pass (librarian_plan §4). Best-effort
+    # assemble the whole file by pure relabel (no LLM):
+    #   - 0 holes + commit passes → done with zero spawn.
+    #   - otherwise the assembled draft becomes the LLM's SEED (the prior
+    #     ChainAssembly-timeout fix): the agent fills `sorry` holes / fixes a
+    #     build error on a near-complete file instead of writing from scratch.
+    #   - mech_text None (a decl can't even be seeded) → cold-spawn the file.
+    seed_text: "str | None" = None
+    holes: list[str] = []
+    mech_text, holes = _mechanical_migrate_file(
         conn, problem=problem, workspace=workspace, target_file=target_file,
         target_module=target_module, rows=rows)
     if mech_text is not None:
-        mech_res = _commit_migrated_file(
-            mech_text, conn=conn, problem=problem, workspace=workspace,
-            target_path=target_path, target_module=target_module,
-            ordered_slugs=ordered_slugs, defs_names=defs_names,
-            whitelist=whitelist)
-        if mech_res.outcome == "success":
-            print(f"[librarian] {target_file}: migrated mechanically "
-                  f"(Phase 1, {len(ordered_slugs)} decls, no LLM)",
+        if not holes:
+            mech_res = _commit_migrated_file(
+                mech_text, conn=conn, problem=problem, workspace=workspace,
+                target_path=target_path, target_module=target_module,
+                ordered_slugs=ordered_slugs, defs_names=defs_names,
+                whitelist=whitelist)
+            if mech_res.outcome == "success":
+                print(f"[librarian] {target_file}: migrated mechanically "
+                      f"(Phase 1, {len(ordered_slugs)} decls, no LLM)",
+                      flush=True)
+                return mech_res
+            # Sanitize before print: Lean diagnostics carry unicode (e.g.
+            # `✝`, `⊢`) a cp950/legacy console can't encode — an unsanitized
+            # print raises UnicodeEncodeError and aborts the pipeline.
+            _detail = (mech_res.failure_detail or "")[:120].encode(
+                "ascii", "replace").decode("ascii")
+            print(f"[librarian] {target_file}: mechanical relabel assembled "
+                  f"but gate failed ({_detail}); seeding LLM with the draft",
                   flush=True)
-            return mech_res
-        # Sanitize before print: Lean diagnostics carry unicode (e.g. `✝`,
-        # `⊢`) that a cp950/legacy console can't encode — an unsanitized
-        # print raises UnicodeEncodeError and aborts the pipeline. Keep the
-        # framework's own logging ASCII-safe.
-        _detail = (mech_res.failure_detail or "")[:120].encode(
-            "ascii", "replace").decode("ascii")
-        print(f"[librarian] {target_file}: mechanical relabel assembled but "
-              f"gate failed ({_detail}); falling through to LLM", flush=True)
+        else:
+            print(f"[librarian] {target_file}: mechanical seed "
+                  f"({len(ordered_slugs) - len(holes)} decls relabelled, "
+                  f"{len(holes)} hole(s): {holes}); LLM fills holes",
+                  flush=True)
+        # Seed the LLM (whether 0-hole-but-gate-failed or holes present).
+        seed_text = mech_text
 
     def migrate_spawn(ctx: SpawnCtx) -> int:
         if ctx.cold:
             compile_librarian_context(
                 conn, problem=problem, work_kind="migrate",
                 attempts_dir=ctx.attempts_dir, workspace=workspace,
-                target_file=target_file)
-            patch_lean.write_text("", encoding="utf-8")
+                target_file=target_file, holes=holes if seed_text else None)
+            patch_lean.write_text(seed_text or "", encoding="utf-8")
         mcp_config_path = _write_mcp_config(
             attempts_dir=ctx.attempts_dir, workspace=workspace,
             target=patch_lean, pipeline_id=pipeline_id, problem=problem)
