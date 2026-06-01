@@ -1408,14 +1408,17 @@ def _derive_librarian_work(
       - any 'candidate' (un-verdicted) → ('dedup', None)   [defensive]
       - any 'deduped' (kept, unplaced) → ('classify', None)
       - any 'classified'               → ('migrate', <next ready file>)
-      - 'migrated' exist, no INDEX yet → ('bridge', None)
+      - any 'migrated' (not cleaned)   → ('cleanup', <next file to clean>)
+      - 'cleaned' exist, no INDEX yet  → ('bridge', None)
       - otherwise (terminal + done)    → (None, None)
 
-    bridge (Gate B, plan §2) is the terminal agentic step: it re-derives the
-    original root from the Library and, on success, writes INDEX — so INDEX
-    presence remains the single done-marker and a Library that fails to
-    re-derive correctly never 'finishes'. (The agentless `finish` work-kind
-    is a manual/edge fallback, not routed here.)
+    cleanup (Step 4) reshapes each migrated file to PR-ready form
+    ('migrated'→'cleaned'). bridge (Gate B, plan §2) is the terminal agentic
+    step: once every decl is 'cleaned' it re-derives the original root from
+    the Library and, on success, writes INDEX — so INDEX presence remains the
+    single done-marker and a Library that fails to re-derive correctly never
+    'finishes'. (The agentless `finish` work-kind is a manual/edge fallback,
+    not routed here.)
 
     migrate's target is a Library FILE, not a slug — the parallel unit is
     the whole file (plan §5 Step 3). `next_migrate_file` picks a file whose
@@ -1436,7 +1439,10 @@ def _derive_librarian_work(
         from ..pipeline import librarian
         return ("migrate", librarian.next_migrate_file(
             conn, problem=problem, workspace=workspace))
-    if by_state.get("migrated") and not _librarian_index_has(workspace, problem):
+    if by_state.get("migrated"):
+        from ..pipeline import librarian
+        return ("cleanup", librarian.next_cleanup_file(conn, problem=problem))
+    if by_state.get("cleaned") and not _librarian_index_has(workspace, problem):
         return ("bridge", None)
     return (None, None)
 

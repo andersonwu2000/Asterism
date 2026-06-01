@@ -718,6 +718,45 @@ def next_migrate_file(conn, *, problem: str, workspace) -> "str | None":
     return classified[0]
 
 
+def next_cleanup_file(conn, *, problem: str) -> "str | None":
+    """The next Library file to clean (Step 4): one with 'migrated' (not yet
+    'cleaned') decls. Cleanup re-gates touched files itself, so order only
+    needs to be stable — ties broken by path. Returns None when every
+    migrated decl is cleaned (the chain moves on to bridge)."""
+    rows = db.library_decls_for(conn, problem)
+    migrated = sorted({r["target_file"] for r in rows
+                       if r["lifecycle"] == "migrated" and r["target_file"]})
+    return migrated[0] if migrated else None
+
+
+def _harvested_decls(conn, problem: str) -> list:
+    """Decls actually placed in the Library — 'migrated' (pre-cleanup) plus
+    'cleaned' (Step 4 done). The set bridge re-derives against and INDEX
+    records, robust to whether cleanup has run."""
+    return [r for r in db.library_decls_for(conn, problem)
+            if r["lifecycle"] in ("migrated", "cleaned")]
+
+
+def _problem_library_files(conn, problem: str) -> "set[str]":
+    """Every Library file holding a placed (migrated/cleaned) decl of this
+    problem — the set the cleanup re-gate snapshots and re-verifies."""
+    return {r["target_file"] for r in db.library_decls_for(conn, problem)
+            if r["target_file"]
+            and r["lifecycle"] in ("migrated", "cleaned")}
+
+
+def _importers_of(conn, *, problem, workspace, files: "set[str]") -> "set[str]":
+    """Files that import any file in `files` (reverse of the usage DAG) —
+    cleanup must re-build these too: a signature change in F breaks any G
+    that calls into F."""
+    graph = file_dependency_graph(conn, problem=problem, workspace=workspace)
+    out: set[str] = set()
+    for g, deps in graph.items():
+        if deps & files:
+            out.add(g)
+    return out
+
+
 # ---------------------------------------------------------------------
 # Stage C — Context.md compiler (per work kind)
 # ---------------------------------------------------------------------
@@ -884,6 +923,47 @@ def compile_librarian_context(
                              f"`{grow['lean_path']}`")
             lines.append("")
 
+    elif work_kind == "cleanup":
+        if not target_file:
+            raise ValueError("cleanup work requires target_file")
+        target_module = _library_module_of(target_file)
+        decls = [r for r in db.library_decls_for(conn, problem)
+                 if r["target_file"] == target_file
+                 and r["lifecycle"] == "migrated"]
+        lines.append(f"## Clean up `{target_file}` for mathlib PR")
+        lines.append("")
+        lines.append(f"- module: `{target_module}`")
+        lines.append("- edit this file **in place** (LSP holds it); follow "
+                     "`docs/internal/mathlib_conventions.md`.")
+        lines.append("- goals: remove every **unused hypothesis** "
+                     "(`linter.unusedVariables`), factor shared binders into "
+                     "`variable`, add a `/-! … -/` module docstring. Keep each "
+                     "`/-- … -/` decl docstring.")
+        lines.append("- **do NOT weaken any statement's meaning** — only drop "
+                     "genuinely unused binders. The root re-derivation (Gate "
+                     "B) re-checks the whole Library afterwards.")
+        lines.append("")
+        # Call sites: files importing this one must be updated if a signature
+        # changes (removing a hyp). List them so the agent edits them too.
+        graph = file_dependency_graph(conn, problem=problem,
+                                      workspace=workspace)
+        importers = sorted(g for g, deps in graph.items()
+                           if target_file in deps)
+        if importers:
+            lines.append("- **call sites to update if you change a signature** "
+                         "(edit these files too, via Edit):")
+            for g in importers:
+                lines.append(f"    - `{g}`")
+            lines.append("")
+        lines.append(f"## Declarations in this file ({len(decls)})")
+        lines.append("")
+        for r in decls:
+            lines.append(f"- `{r['target_name'] or r['slug']}`")
+        lines.append("")
+        lines.append("If the file genuinely cannot be cleaned (e.g. a "
+                     "hypothesis looks unused but removing it breaks a proof), "
+                     "write `-- decline: <reason>` to `patch.lean`.")
+
     elif work_kind == "bridge":
         # Gate B: re-derive the original root `theorem main` from the Library.
         root = conn.execute(
@@ -897,10 +977,9 @@ def compile_librarian_context(
                      "`theorem main : <statement>`):")
         lines.append(f"  `{stmt}`" if stmt else "  _(no root statement)_")
         lines.append("")
-        # Keystone candidates: the migrated forms of the decls the root's
+        # Keystone candidates: the placed forms of the decls the root's
         # winning strategy used directly — the most likely one-liner.
-        migrated = {r["slug"]: r for r in
-                    db.library_decls_for(conn, problem, lifecycle="migrated")}
+        migrated = {r["slug"]: r for r in _harvested_decls(conn, problem)}
         inv = _inv.build_inventory(conn, workspace, problem)
         root_deps = next((d.deps for d in inv.decls
                           if d.origin == "root"), [])
@@ -936,7 +1015,7 @@ def compile_librarian_context(
 #   run_with_session_retries); commit gate = migrate_commit_gate.
 
 WORK_KINDS: frozenset[str] = frozenset(
-    {"dedup", "classify", "migrate", "bridge"})
+    {"dedup", "classify", "migrate", "cleanup", "bridge"})
 
 
 def run_librarian(conn, *, problem: str, work_kind: str,
@@ -978,6 +1057,12 @@ def run_librarian(conn, *, problem: str, work_kind: str,
 
     if work_kind == "migrate":
         return _run_migrate(
+            conn, problem=problem, workspace=workspace,
+            pipeline_id=pipeline_id, target_file=target,
+            attempts_dir=attempts_dir, problem_dir=problem_dir,
+            prompt_path=prompt_path, whitelist=whitelist)
+    if work_kind == "cleanup":
+        return _run_cleanup(
             conn, problem=problem, workspace=workspace,
             pipeline_id=pipeline_id, target_file=target,
             attempts_dir=attempts_dir, problem_dir=problem_dir,
@@ -1479,12 +1564,175 @@ _INDEX_PREAMBLE = (
 )
 
 
+def _commit_cleanup(conn, *, problem, workspace, target_file, slugs,
+                    snap_before, whitelist, regate=None, lint=None):
+    """Validate a cleanup edit (Step 4) and commit or roll back.
+
+    `snap_before` is {rel_path: content|None} for every problem-Library file,
+    captured before the agent ran. We diff to find touched files, re-gate
+    each touched file + its importers (Gate A + build + per-decl axiom —
+    catches un-updated call sites / sorry / rogue axioms a signature change
+    introduced), and require the target file to have NO `unusedVariables`
+    linter warnings left (the cleanup objective). All pass → the file's decls
+    advance to 'cleaned'. Any fail → restore the touched files to
+    `snap_before` (retry starts clean) and report failed.
+
+    `regate` (path, text) -> (ok, detail) and `lint` (path) -> list[str]
+    (warning messages) are injectable for offline tests; production uses the
+    warm-gateway build + a verify_file diagnostics scan."""
+    from . import PipelineResult
+
+    def _read(rel):
+        p = workspace / rel
+        return p.read_text(encoding="utf-8") if p.exists() else None
+
+    touched = sorted(f for f in snap_before
+                     if _read(f) != snap_before[f])
+    if target_file not in touched:
+        # The agent must at least have edited the target (docstring, etc.).
+        return PipelineResult(
+            outcome="failed", failure_reason="librarian_gate_failed",
+            failure_detail=f"{target_file}: agent made no edit to the target")
+
+    def _restore():
+        for f in touched:
+            p = workspace / f
+            content = snap_before.get(f)
+            if content is None:
+                if p.exists():
+                    p.unlink()
+            else:
+                p.write_text(content, encoding="utf-8")
+
+    # Re-gate touched files + everything importing them.
+    to_check = set(touched) | _importers_of(
+        conn, problem=problem, workspace=workspace, files=set(touched))
+    _regate = regate or (lambda path, text: (
+        (lambda g: (g.ok, g.detail))(migrate_commit_gate(
+            text, path, whitelist=whitelist, workspace=workspace))))
+    for rel in sorted(to_check):
+        p = workspace / rel
+        if not p.exists():
+            _restore()
+            return PipelineResult(
+                outcome="failed", failure_reason="librarian_gate_failed",
+                failure_detail=f"{rel}: vanished during cleanup")
+        ok, detail = _regate(p, p.read_text(encoding="utf-8"))
+        if not ok:
+            _restore()
+            return PipelineResult(
+                outcome="failed", failure_reason="librarian_gate_failed",
+                failure_detail=f"re-gate {rel}: {detail}"[:400])
+
+    # Cleanup objective: no unused-variable linter warnings left in target.
+    _lint = lint or _unused_var_warnings
+    warns = _lint(workspace / target_file)
+    if warns:
+        _restore()
+        return PipelineResult(
+            outcome="failed", failure_reason="librarian_gate_failed",
+            failure_detail=f"{target_file}: {len(warns)} unused-variable "
+                           f"warning(s) remain: {warns[:3]}")
+
+    for slug in slugs:
+        db.mark_library_cleaned(conn, problem=problem, slug=slug)
+    return PipelineResult(outcome="success")
+
+
+def _unused_var_warnings(target_path) -> "list[str]":
+    """Warm-gateway verify of `target_path`; return the `unusedVariables`
+    linter warning messages (the cleanup objective is to leave none)."""
+    from ..lsp import lifecycle as gw
+    r = gw.verify_file(target_path, write_olean=False)
+    out = []
+    for d in (r.get("diagnostics") or []):
+        msg = d.get("message", "")
+        if "unused" in msg.lower():
+            out.append(msg[:120])
+    return out
+
+
+def _run_cleanup(conn, *, problem, workspace, pipeline_id, target_file,
+                 attempts_dir, problem_dir, prompt_path, whitelist=None):
+    """Step 4 cleanup (plan §5): an agent reshapes one migrated Library file
+    to PR-ready form (remove unused hyps + update call sites, factor
+    `variable`, add a module docstring) per mathlib_conventions.md, editing
+    the committed Library files in place (LSP holds the target file; siblings
+    via Edit). The commit re-gates touched files + importers and rolls back on
+    failure; Gate D no longer applies (signatures intentionally change) — the
+    meaning net is the later bridge Gate B. On pass the file's decls →
+    'cleaned'. Same warm-gateway / session-retry machinery as migrate."""
+    from . import PipelineResult, _write_mcp_config
+    from ._retry import SpawnCtx, run_with_session_retries
+    from .. import agent
+    from ..core import dispatcher
+
+    target_path = workspace / target_file
+    slugs = [r["slug"] for r in db.library_decls_for(conn, problem)
+             if r["target_file"] == target_file
+             and r["lifecycle"] == "migrated"]
+    if not slugs or not target_path.exists():
+        return PipelineResult(
+            outcome="failed", failure_reason="librarian_not_migrated",
+            failure_detail=f"{target_file}: no migrated decls on disk")
+
+    lib_files = _problem_library_files(conn, problem)
+    snap_before = {f: ((workspace / f).read_text(encoding="utf-8")
+                       if (workspace / f).exists() else None)
+                   for f in lib_files}
+    patch_lean = attempts_dir / "patch.lean"   # decline channel only
+
+    def cleanup_spawn(ctx: SpawnCtx) -> int:
+        if ctx.cold:
+            compile_librarian_context(
+                conn, problem=problem, work_kind="cleanup",
+                attempts_dir=ctx.attempts_dir, workspace=workspace,
+                target_file=target_file)
+            patch_lean.write_text("", encoding="utf-8")
+        # The LSP server holds the REAL target Library file — apply_edit
+        # write-through edits it in place (siblings go via Edit/Bash).
+        mcp_config_path = _write_mcp_config(
+            attempts_dir=ctx.attempts_dir, workspace=workspace,
+            target=target_path, pipeline_id=pipeline_id, problem=problem)
+        return agent.spawn_llm(
+            kind="librarian", prompt_path=prompt_path,
+            problem_dir=problem_dir, attempts_dir=ctx.attempts_dir,
+            session_id=ctx.sid, is_retry=not ctx.cold,
+            retry_context=ctx.retry_context,
+            mcp_config_path=mcp_config_path,
+            inline_prompt=ctx.inline_prompt,
+            timeout_sec_override=ctx.budget_override)
+
+    def cleanup_parse():
+        if patch_lean.exists() and "-- decline:" in patch_lean.read_text(
+                encoding="utf-8"):
+            return PipelineResult(
+                outcome="failed", failure_reason="agent_declined",
+                failure_detail="cleanup declined",
+                proposal_md=patch_lean.read_text(encoding="utf-8"))
+        return _commit_cleanup(
+            conn, problem=problem, workspace=workspace,
+            target_file=target_file, slugs=slugs, snap_before=snap_before,
+            whitelist=whitelist or [])
+
+    def cleanup_postmortem(sid: str) -> None:
+        pass
+
+    return run_with_session_retries(
+        conn=conn, goal_id=None, pipeline_id=pipeline_id,
+        budget_threshold=dispatcher.BUILDER_THRESHOLD,
+        shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+        attempts_dir=attempts_dir,
+        spawn_fn=cleanup_spawn, parse_fn=cleanup_parse,
+        postmortem_fn=cleanup_postmortem, workspace=workspace)
+
+
 def _write_library_index(conn, *, problem, workspace, gate_b_line: str):
     """Write/refresh the `## <problem>` section of `Library/INDEX.md`:
     migrated-decl provenance + the Gate B status line. INDEX presence is the
     chain's idempotent done-marker (`_derive_librarian_work`). Shared by the
     bridge step (Gate B PASSED) and the agentless finish no-op."""
-    migrated = db.library_decls_for(conn, problem, lifecycle="migrated")
+    migrated = _harvested_decls(conn, problem)
     lines = [f"_Harvested {db.now()} — {len(migrated)} declaration(s)._", ""]
     for r in migrated:
         name = r["target_name"] or r["slug"]
@@ -1587,7 +1835,7 @@ def _run_bridge(conn, *, problem, workspace, pipeline_id,
     from .. import agent
     from ..core import dispatcher
 
-    migrated = db.library_decls_for(conn, problem, lifecycle="migrated")
+    migrated = _harvested_decls(conn, problem)
     if not migrated:
         return PipelineResult(outcome="success")  # nothing harvested
 
@@ -1664,8 +1912,7 @@ def _run_finish(conn, *, problem: str, workspace):
     `deferred` rather than replicating the orphan-on-kill pattern."""
     from . import PipelineResult
 
-    migrated = db.library_decls_for(conn, problem, lifecycle="migrated")
-    if not migrated:
+    if not _harvested_decls(conn, problem):
         # Nothing was harvested into the Library (e.g. dedup kept nothing,
         # everything cited/dropped). No provenance to record; clean no-op.
         return PipelineResult(outcome="success")

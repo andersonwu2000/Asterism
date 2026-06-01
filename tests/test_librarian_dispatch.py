@@ -60,6 +60,11 @@ def _migrated(conn, slug, problem="p", order=0):
     db.mark_library_migrated(conn, problem=problem, slug=slug)
 
 
+def _cleaned(conn, slug, problem="p", order=0):
+    _migrated(conn, slug, problem, order)
+    db.mark_library_cleaned(conn, problem=problem, slug=slug)
+
+
 # ---------------------------------------------------------------------
 # _derive_librarian_work — pure state → (work_kind, target)
 # ---------------------------------------------------------------------
@@ -95,18 +100,26 @@ def test_derive_classified_is_migrate_ready_file(tmp_path: Path):
     assert target == "Library/P/aaa.lean"
 
 
-def test_derive_migrated_no_index_is_bridge(tmp_path: Path):
-    # All migrated, INDEX not yet written → the terminal agentic Gate B step
-    # (bridge re-derives the root, then writes INDEX = done-marker).
+def test_derive_migrated_is_cleanup(tmp_path: Path):
+    # A migrated (not-yet-cleaned) decl → Step 4 cleanup on its file.
     conn = _mem()
     _migrated(conn, "foo")
+    assert dispatcher._derive_librarian_work(conn, "p", tmp_path) == (
+        "cleanup", "Library/P/foo.lean")
+
+
+def test_derive_cleaned_no_index_is_bridge(tmp_path: Path):
+    # All cleaned, INDEX not yet written → the terminal agentic Gate B step
+    # (bridge re-derives the root, then writes INDEX = done-marker).
+    conn = _mem()
+    _cleaned(conn, "foo")
     assert dispatcher._derive_librarian_work(conn, "p", tmp_path) == (
         "bridge", None)
 
 
-def test_derive_migrated_with_index_is_none(tmp_path: Path):
+def test_derive_cleaned_with_index_is_none(tmp_path: Path):
     conn = _mem()
-    _migrated(conn, "foo")
+    _cleaned(conn, "foo")
     (tmp_path / "Library").mkdir()
     (tmp_path / "Library" / "INDEX.md").write_text(
         "# Library Index\n\n## p\n\nx\n", encoding="utf-8")
@@ -239,7 +252,7 @@ def test_reenqueue_no_duplicate(tmp_path: Path):
 
 def test_reenqueue_stops_when_chain_done(tmp_path: Path):
     conn = _mem()
-    _migrated(conn, "foo")
+    _cleaned(conn, "foo")
     (tmp_path / "Library").mkdir()
     (tmp_path / "Library" / "INDEX.md").write_text(
         "# Library Index\n\n## p\n\nx\n", encoding="utf-8")
@@ -247,8 +260,8 @@ def test_reenqueue_stops_when_chain_done(tmp_path: Path):
     assert _queue(conn) == []
 
 
-def test_reenqueue_migrated_no_index_enqueues_finish(tmp_path: Path):
-    # all migrated, no INDEX yet → derive says finish → re-enqueue.
+def test_reenqueue_migrated_no_index_enqueues_more(tmp_path: Path):
+    # migrated, no INDEX yet → derive says cleanup → re-enqueue.
     conn = _mem()
     _migrated(conn, "foo")
     dispatcher._reenqueue_librarian_if_more(conn, tmp_path, "p")
@@ -261,8 +274,8 @@ def test_reenqueue_migrated_no_index_enqueues_finish(tmp_path: Path):
 
 def test_finish_writes_index_provenance(tmp_path: Path):
     conn = _mem()
-    _migrated(conn, "foo", order=0)
-    _migrated(conn, "bar", order=1)
+    _cleaned(conn, "foo", order=0)
+    _cleaned(conn, "bar", order=1)
     r = librarian.run_librarian(
         conn, problem="p", work_kind="finish",
         workspace=tmp_path, pipeline_id="pid-finish")
