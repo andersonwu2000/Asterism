@@ -42,6 +42,32 @@ _ALIAS_RE = re.compile(
     r"^\s*def\s+\w+\s*:=\s*@?(Problems\.[\w.]+)\s*$", re.MULTILINE)
 
 
+def _replace_body_with_sorry(text: str, target_namespace: str) -> "str | None":
+    """Replace a single declaration's proof body with `sorry`, keeping the
+    signature intact — used to seed a hole the LLM will fill (Phase-1 best
+    effort, librarian_plan §4). The proof starts at the first `:= by` (or,
+    failing that, the last top-level `:=` before the closing `end`); the
+    signature is everything before it. Returns None if no boundary is found.
+
+    Statements (the conclusion type) here don't use `:= by`, so matching it
+    is reliable; the fallback covers `:=`-term proofs."""
+    end_m = re.search(rf"^\s*end\s+{re.escape(target_namespace)}\s*$",
+                      text, re.MULTILINE)
+    end_pos = end_m.start() if end_m else len(text)
+    decl_region = text[:end_pos]
+    # Prefer `:= by` (almost all proofs); fall back to the last `:=`.
+    bym = re.search(r":=\s*by\b", decl_region)
+    cut = bym.start() if bym else None
+    if cut is None:
+        last = None
+        for m in re.finditer(r":=", decl_region):
+            last = m
+        cut = last.start() if last else None
+    if cut is None:
+        return None
+    return text[:cut] + ":= sorry\n" + text[end_pos:]
+
+
 @dataclass
 class RelabelResult:
     """ok=True → `text` is the Library declaration, ready for the commit
@@ -76,8 +102,18 @@ def relabel_self_contained(
     all_defs_syms: "set[str] | None" = None,
     citation_map: "dict[str, str] | None" = None,
     sibling_modules: "dict[str, str] | None" = None,
+    body_to_sorry: bool = False,
 ) -> RelabelResult:
     """Mechanically relabel a single proof file.
+
+    `body_to_sorry`      seed-a-hole mode (librarian_plan §4): keep the
+        relabelled SIGNATURE but replace the proof body with `sorry`. Used
+        when the body references a non-keep sibling that can't be
+        mechanically redirected — instead of declining the whole file, we
+        emit `<sig> := sorry` so the file still assembles and the LLM only
+        fills this one hole. Body references to non-keep siblings are
+        dropped (they vanish with the body); the signature must still be
+        clean (a non-keep ref in the signature itself → still declines).
 
     `problem_namespace`  e.g. "Problems.LinearAlgebra.jordan_normal_form"
     `target_namespace`   e.g. "Library.LinearAlgebra.JordanForm.KernelChain"
@@ -151,10 +187,16 @@ def relabel_self_contained(
                         return RelabelResult(
                             False, reason=f"keep sibling `{sub}` has no known "
                                           "Library module yet — needs Phase 2")
-                    needed_sibling_mods.add(mod)
+                    # Same-file sibling: it lands in THIS module/namespace, so
+                    # the bare name is already visible — no self-import (which
+                    # would reference a not-yet-existing module).
+                    if mod != target_namespace:
+                        needed_sibling_mods.add(mod)
                     continue
                 if citation_map and sub in citation_map:
                     continue  # verbatim-merge → body rename below resolves it
+                if body_to_sorry:
+                    continue  # body (and this ref) will be replaced by sorry
                 return RelabelResult(
                     False, reason=f"imports non-keep sibling `{sub_mod}` — "
                                   "no verbatim citation, needs Phase 2")
@@ -232,12 +274,22 @@ def relabel_self_contained(
         # here; everything else already declined above.
         for src_slug, dst in citation_map.items():
             text = re.sub(rf"\b{re.escape(src_slug)}\b", dst, text)
+    if body_to_sorry:
+        # Seed-a-hole: drop the proof body, keep the signature. Done before
+        # the residual-Problems check so body refs to non-keep siblings (the
+        # reason we're seeding) vanish with the body.
+        seeded = _replace_body_with_sorry(text, target_namespace)
+        if seeded is None:
+            return RelabelResult(
+                False, reason="body_to_sorry: could not locate proof body "
+                              "boundary")
+        text = seeded
     if not text.endswith("\n"):
         text += "\n"
     if "Problems." in text:
         return RelabelResult(
             False, reason="residual `Problems.` reference after relabel "
-                          "(body cites a problem symbol) — needs Phase 2")
+                          "(signature cites a problem symbol) — needs Phase 2")
     return RelabelResult(True, text=text)
 
 
@@ -249,6 +301,7 @@ def inline_alias(
     all_defs_syms: "set[str] | None" = None,
     citation_map: "dict[str, str] | None" = None,
     sibling_modules: "dict[str, str] | None" = None,
+    body_to_sorry: bool = False,
 ) -> RelabelResult:
     """Inline an alias `def <slug> := @<PNS>.<strategy>` by relabelling the
     STRATEGY file's theorem and renaming `<strategy>` → `<slug>`.
@@ -267,4 +320,4 @@ def inline_alias(
         target_namespace=target_namespace, keep_slugs=keep_slugs,
         rename_decl=(strat, slug), defs_imports=defs_imports,
         all_defs_syms=all_defs_syms, citation_map=citation_map,
-        sibling_modules=sibling_modules)
+        sibling_modules=sibling_modules, body_to_sorry=body_to_sorry)

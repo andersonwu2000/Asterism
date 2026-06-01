@@ -255,6 +255,45 @@ def test_citation_map_word_boundary_safe():
     assert "gap_extra y" in r.text                  # untouched
 
 
+def test_body_to_sorry_seeds_hole():
+    # A decl whose body refs a non-keep sibling: body_to_sorry keeps the
+    # signature and replaces the proof with `sorry` (seed a hole).
+    src = (
+        "import Mathlib\n"
+        f"import {PNS}.proofs.L_reinvented\n"
+        f"namespace {PNS}\n"
+        "theorem foo (n : Nat) : n = n := by\n"
+        "  exact reinvented n\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS,
+        keep_slugs={"foo"}, body_to_sorry=True)
+    assert r.ok, r.reason
+    assert "theorem foo (n : Nat) : n = n :=" in r.text   # signature kept
+    assert "sorry" in r.text
+    assert "reinvented" not in r.text                      # body (ref) gone
+    assert "Problems." not in r.text
+
+
+def test_same_file_sibling_no_self_import():
+    # A keep sibling whose Library module IS this file's target namespace
+    # must NOT produce a self-import (the module doesn't exist standalone).
+    src = (
+        "import Mathlib\n"
+        f"import {PNS}.proofs.L_helper\n"
+        f"namespace {PNS}\n"
+        "theorem foo : True := by exact helper\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS,
+        keep_slugs={"helper"}, sibling_modules={"helper": TNS})  # same module
+    assert r.ok, r.reason
+    assert f"import {TNS}" not in r.text     # no self-import
+    assert f"open {TNS}" not in r.text       # no self-open
+
+
 def test_inline_alias_nonkeep_sibling_declines():
     alias = (
         "import Mathlib\n"
