@@ -1730,6 +1730,23 @@ def _commit_migrated_file(
     return PipelineResult(outcome="success")
 
 
+def _release_session(attempts_dir) -> None:
+    """Release the gateway session registered in `attempts_dir` (best-effort).
+    Each incremental per-decl spawn registers its own session in its
+    `decl-<slug>/` dir; nothing else releases it, so without this every
+    per-decl spawn leaks a gateway worker slot and the Nth register 500s on
+    slot exhaustion."""
+    from ..lsp import lifecycle as _gw
+    tok = attempts_dir / "_gateway_session.token"
+    if tok.exists():
+        t = tok.read_text(encoding="utf-8").strip()
+        if t:
+            try:
+                _gw.release_session(t)
+            except Exception:  # noqa: BLE001 — best-effort teardown
+                pass
+
+
 def _migrate_file_incremental(
         conn, *, problem, workspace, pipeline_id, target_file,
         target_path, target_module, ordered_slugs, defs_names, whitelist,
@@ -1860,12 +1877,18 @@ def _migrate_file_incremental(
             cap["imports"] = [im for im in imports if im not in seed_imports]
             return PipelineResult(outcome="success")
 
-        res = run_with_session_retries(
-            conn=conn, goal_id=None, pipeline_id=dpid,
-            budget_threshold=dispatcher.BUILDER_THRESHOLD,
-            shelve_threshold=dispatcher.SHELVE_THRESHOLD,
-            attempts_dir=dattempts, spawn_fn=spawn, parse_fn=parse,
-            postmortem_fn=lambda sid: None, workspace=workspace)
+        try:
+            res = run_with_session_retries(
+                conn=conn, goal_id=None, pipeline_id=dpid,
+                budget_threshold=dispatcher.BUILDER_THRESHOLD,
+                shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+                attempts_dir=dattempts, spawn_fn=spawn, parse_fn=parse,
+                postmortem_fn=lambda sid: None, workspace=workspace)
+        finally:
+            # Free this decl's gateway worker slot before the next decl
+            # registers — sequential per-decl spawns would otherwise exhaust
+            # the pool (each leaks a slot).
+            _release_session(dattempts)
         if res.outcome == "success":
             return (cap["chunk"], cap["imports"]), None
         return None, cap.get("decline")
