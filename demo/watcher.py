@@ -506,6 +506,16 @@ def _lookup_spawn_info(spawn_dir: Path) -> tuple[str, str] | None:
     """
     ctx = spawn_dir / "Context.md"
     if not ctx.exists():
+        # The incremental migrate spawns each hole in a `decl-<slug>/`
+        # subdir, each with its own Context.md; the top-level spawn dir has
+        # none. Fall back to any one subdir's Context.md so the pipeline is
+        # still labelled (e.g. "migrate") instead of "spawning, ?". The
+        # watcher adapts to the on-disk layout — the pipeline code is never
+        # changed for the observer's benefit (non-invasive).
+        for sub in sorted(spawn_dir.glob("*/Context.md")):
+            info = _lookup_spawn_info(sub.parent)
+            if info is not None:
+                return info
         return None
     try:
         # Read the whole file. Earlier versions capped at 80 / 300 lines,
