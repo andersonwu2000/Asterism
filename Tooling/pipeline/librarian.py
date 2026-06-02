@@ -312,7 +312,8 @@ def commit_classify(conn, problem: str, plan: ClassifyPlan,
     from ..quality.librarian import inventory as _inv
     placed = [d for f in plan.files for d in f.decls]
     usage = _inv.usage_graph(workspace, problem, placed,
-                             alias_map=_merge_alias_map(conn, problem))
+                             alias_map=_merge_alias_map(conn, problem),
+                             root_source=_root_source(conn, problem, workspace))
     for f in plan.files:
         for order, slug in enumerate(_toposort_intra_file(f.decls, usage)):
             db.set_library_classification(
@@ -693,6 +694,20 @@ def _merge_alias_map(conn, problem: str) -> "dict[str, str]":
     return out
 
 
+def _root_source(conn, problem, workspace) -> "tuple[str, str] | None":
+    """(root_slug, abs_path) for the problem's proved root decl, whose proof
+    lives in Root.lean (its lean_path), not proofs/L_<slug>.lean — so the
+    usage / reference scanners read the root's sibling citations from the
+    right file instead of seeing it as dependency-free."""
+    r = conn.execute(
+        "SELECT slug, lean_path FROM goals WHERE problem = ? "
+        "AND origin = 'root' AND status = 'proved' ORDER BY id LIMIT 1",
+        (problem,)).fetchone()
+    if r and r["lean_path"]:
+        return (r["slug"], str(workspace / r["lean_path"]))
+    return None
+
+
 def file_dependency_graph(conn, *, problem: str,
                           workspace) -> "dict[str, set[str]]":
     """Map each placed Library file to the set of OTHER placed files it
@@ -709,7 +724,8 @@ def file_dependency_graph(conn, *, problem: str,
     # not the decomposition DAG (`InvDecl.deps`) — a file must migrate after
     # the files it actually references, else its imports don't resolve.
     usage = _inv.usage_graph(workspace, problem, file_of.keys(),
-                             alias_map=_merge_alias_map(conn, problem))
+                             alias_map=_merge_alias_map(conn, problem),
+                             root_source=_root_source(conn, problem, workspace))
     graph: "dict[str, set[str]]" = {f: set() for f in set(file_of.values())}
     for slug, f in file_of.items():
         for dep in usage.get(slug, set()):
@@ -975,8 +991,9 @@ def compile_librarian_context(
         # replace each with. A `sorry`-hole body that referenced a merged /
         # dropped / cited sibling must use the canonical / mathlib / Library
         # name instead — surface it so the agent doesn't have to rediscover it.
-        ref = _inv.referenced_slugs(workspace, problem,
-                                    [r["slug"] for r in rows])
+        ref = _inv.referenced_slugs(
+            workspace, problem, [r["slug"] for r in rows],
+            root_source=_root_source(conn, problem, workspace))
         all_refs: set[str] = set().union(*ref.values()) if ref else set()
         by_slug = {r["slug"]: r for r in db.library_decls_for(conn, problem)}
         redirects = [

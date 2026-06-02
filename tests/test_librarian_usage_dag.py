@@ -129,6 +129,48 @@ def test_usage_graph_self_merge_recursion_terminates(tmp_path):
     assert g["x"] == set()
 
 
+def test_usage_graph_root_source_reads_root_lean(tmp_path):
+    # The root decl's proof is Root.lean (an alias to a strategy), not
+    # proofs/L_main.lean. Without root_source its citations are invisible
+    # (Main.lean would look dependency-free → mis-ordered before the files it
+    # imports); with it, the strategy walk finds the cited sibling.
+    pdir = tmp_path / "Problems" / "p"
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "Root.lean").write_text(
+        "import Mathlib\n"
+        f"import {PNS}.Defs\n"
+        f"import {PNS}.proofs._strategy_s9\n"
+        f"namespace {PNS}\n"
+        f"def main := @{PNS}.s9\n"
+        f"end {PNS}\n", encoding="utf-8")
+    _strategy(tmp_path, 9, uses=["dep"])
+    _alias(tmp_path, "dep", 10)
+    _strategy(tmp_path, 10, uses=[])
+    # without root_source: no L_main.lean → root looks dependency-free
+    assert inv.usage_graph(tmp_path, "p", {"main", "dep"})["main"] == set()
+    # with root_source: Root.lean → strategy s9 → L_dep → edge main→dep
+    g = inv.usage_graph(tmp_path, "p", {"main", "dep"},
+                        root_source=("main", str(pdir / "Root.lean")))
+    assert g["main"] == {"dep"}
+
+
+def test_referenced_slugs_root_source_reads_root_lean(tmp_path):
+    # Same root-source fix for the redirect-table scanner.
+    pdir = tmp_path / "Problems" / "p"
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "Root.lean").write_text(
+        "import Mathlib\n"
+        f"import {PNS}.proofs._strategy_s9\n"
+        f"namespace {PNS}\n"
+        f"def main := @{PNS}.s9\n"
+        f"end {PNS}\n", encoding="utf-8")
+    _strategy(tmp_path, 9, uses=["dep"])
+    assert inv.referenced_slugs(tmp_path, "p", ["main"])["main"] == set()
+    r = inv.referenced_slugs(tmp_path, "p", ["main"],
+                             root_source=("main", str(pdir / "Root.lean")))
+    assert "dep" in r["main"]
+
+
 def test_merge_alias_map_resolves_chain(conn, tmp_path):
     # a merges into b, b merges into c (kept) → alias map a→c, b→c.
     for s in ("a", "b", "c"):

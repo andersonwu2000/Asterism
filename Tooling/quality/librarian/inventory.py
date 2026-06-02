@@ -155,6 +155,7 @@ _PROOFS_IMPORT_RE = re.compile(
 def usage_graph(
     workspace: Path, problem: str, slugs, *,
     alias_map: "dict[str, str] | None" = None,
+    root_source: "tuple[str, str] | None" = None,
 ) -> "dict[str, set[str]]":
     """Map each slug to the set of sibling slugs its proof ACTUALLY cites —
     the *usage* DAG, distinct from `InvDecl.deps` (the *decomposition* DAG).
@@ -185,9 +186,15 @@ def usage_graph(
     slug_set = set(slugs)
     alias_map = alias_map or {}
     proofs = db.problem_dir(workspace, problem) / "proofs"
+    # The root decl's proof lives in Root.lean, not proofs/L_<slug>.lean, so
+    # its `L_<root>` module is read from there — else the root's sibling
+    # citations (and therefore Main.lean's file dependencies) are invisible
+    # and Main is mis-ordered before the files it imports.
+    root_mod = f"L_{root_source[0]}" if root_source else None
+    root_path = Path(root_source[1]) if root_source else None
 
     def imports_of(mod: str) -> list[str]:
-        p = proofs / f"{mod}.lean"
+        p = root_path if (root_mod and mod == root_mod) else proofs / f"{mod}.lean"
         if not p.exists():
             return []
         return _PROOFS_IMPORT_RE.findall(p.read_text(encoding="utf-8"))
@@ -227,17 +234,21 @@ def usage_graph(
 
 def referenced_slugs(
     workspace: Path, problem: str, slugs,
+    root_source: "tuple[str, str] | None" = None,
 ) -> "dict[str, set[str]]":
     """Per slug, the RAW set of sibling slugs its proof imports — same
     alias→strategy→`L_<sub>` walk as `usage_graph` but UNfiltered and
     UNremapped (keeps non-keep / dropped / merged siblings). Used to surface
     the non-keep siblings a decl cites — with their dedup verdict→citation —
     to the migrate agent, so it knows what to redirect a `sorry`-hole's
-    reference to (G3)."""
+    reference to (G3). `root_source` (slug, abs_path) reads the root decl's
+    references from Root.lean, not the absent proofs/L_<root>.lean."""
     proofs = db.problem_dir(workspace, problem) / "proofs"
+    root_mod = f"L_{root_source[0]}" if root_source else None
+    root_path = Path(root_source[1]) if root_source else None
 
     def imports_of(mod: str) -> list[str]:
-        p = proofs / f"{mod}.lean"
+        p = root_path if (root_mod and mod == root_mod) else proofs / f"{mod}.lean"
         if not p.exists():
             return []
         return _PROOFS_IMPORT_RE.findall(p.read_text(encoding="utf-8"))
