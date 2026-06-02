@@ -49,6 +49,10 @@ CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 _RE_CONTEXT_GOAL = re.compile(r"^# Context for goal (\S+)")
 _RE_STRATEGIST_CTX = re.compile(r"^# Strategist context — (\S+)")
 _RE_FORWARD_CTX = re.compile(r"^# Forward context — (\S+)")
+# Librarian Context.md header: `# Librarian — <work_kind> — <problem>`
+# (compile_librarian_context). Without this the librarian work-kinds fall
+# through to the ("spawning", "?") placeholder.
+_RE_LIBRARIAN_CTX = re.compile(r"^# Librarian — (\w+) — (\S+)")
 _RE_STRATEGY_NAMING = re.compile(r"^## Strategy naming\b")
 
 # Spawns whose dir contained any file touched in the last ACTIVE_WINDOW
@@ -523,6 +527,14 @@ def _lookup_spawn_info(spawn_dir: Path) -> tuple[str, str] | None:
         m = _RE_FORWARD_CTX.match(line)
         if m:
             return ("forward", m.group(1))
+        m = _RE_LIBRARIAN_CTX.match(line)
+        if m:
+            # kind = the work-kind (dedup/classify/migrate/cleanup/bridge);
+            # label = the problem (truncated like the goal-slug labels).
+            kind, prob = m.group(1), m.group(2)
+            if len(prob) > _LABEL_SLUG_MAX:
+                prob = prob[: _LABEL_SLUG_MAX - 1] + "…"
+            return (kind, prob)
     # Backward + Builder share `# Context for goal <slug>` header.
     # Backward additionally renders a `## Strategy naming` section
     # (context.py:_section_strategy_naming, omitted when strategy_id
