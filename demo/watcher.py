@@ -646,6 +646,76 @@ def _update_tree(problem: str) -> bool:
     return True
 
 
+# Librarian library_decls lifecycle, in pipeline order. Terminal dropped/cited
+# are excluded — they never get a Library file. Used by the Librarian section.
+_LIB_STAGES = ("candidate", "deduped", "classified", "migrated", "cleaned")
+
+
+def _librarian_index_has(problem: str) -> bool:
+    """Read-only: True iff Library/INDEX.md records `problem` (Librarian
+    finished). Inlined from dispatcher._librarian_index_has to keep the
+    watcher import-light and strictly observational."""
+    index = WS / "Library" / "INDEX.md"
+    if not index.exists():
+        return False
+    header = f"## {problem}"
+    return any(ln.strip() == header for ln in
+               index.read_text(encoding="utf-8", errors="replace").splitlines())
+
+
+def _librarian_section(conn, problem: str) -> str:
+    """Markdown for the Librarian pipeline (dedup→classify→migrate→cleanup→
+    bridge), or '' when it isn't running — no `library_decls` rows yet (still
+    in the proof phase) or INDEX already written (finished). Pure SELECT +
+    file read; non-invasive like the rest of the watcher."""
+    from collections import Counter, defaultdict
+    try:
+        rows = conn.execute(
+            "SELECT lifecycle, target_file FROM library_decls WHERE problem=?",
+            (problem,),
+        ).fetchall()
+    except sqlite3.Error:
+        return ""
+    if not rows or _librarian_index_has(problem):
+        return ""  # not started, or finished → hide (only show while running)
+
+    counts = Counter(r["lifecycle"] for r in rows)
+    keep = sum(counts.get(s, 0) for s in _LIB_STAGES)
+    # Phase = the least-advanced in-pipeline stage still present.
+    if counts.get("candidate"):
+        phase = "dedup"
+    elif counts.get("deduped"):
+        phase = "classify"
+    elif counts.get("classified"):
+        phase = "migrate"
+    elif counts.get("migrated"):
+        phase = "cleanup"
+    else:
+        phase = "bridge"  # all cleaned, INDEX pending
+    migrated = counts.get("migrated", 0) + counts.get("cleaned", 0)
+    cleaned = counts.get("cleaned", 0)
+
+    # Per-file state = the least-advanced stage among its decls (a file only
+    # advances once ALL its decls migrate / clean together).
+    byf: dict = defaultdict(list)
+    for r in rows:
+        if r["target_file"] and r["lifecycle"] in _LIB_STAGES:
+            byf[r["target_file"]].append(r["lifecycle"])
+    lines = [
+        "## library (Librarian)", "",
+        f"**phase**: {phase}  ·  keep {keep} / dropped "
+        f"{counts.get('dropped', 0)} / cited {counts.get('cited', 0)}", "",
+        f"decls: migrated {migrated}/{keep} · cleaned {cleaned}/{keep}", "",
+    ]
+    if byf:
+        lines += ["| file | decls | state |", "|---|--:|---|"]
+        for tf in sorted(byf):
+            st = min(byf[tf], key=_LIB_STAGES.index)
+            lines.append(f"| {tf.split('/')[-1]} | {len(byf[tf])} | {st} |")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def _write_stats(
     problem: str,
     active_labels: list[tuple[str, str] | None],
@@ -673,6 +743,7 @@ def _write_stats(
             "WHERE g.problem = ? AND s.status = 'succeeded'",
             (problem,),
         ).fetchone()[0]
+        lib_section = _librarian_section(conn, problem)
         conn.close()
     except sqlite3.Error as e:
         (ACTIVE_DIR / "stats.md").write_text(
@@ -710,7 +781,8 @@ def _write_stats(
         f"**goals**: proved {proved} / attempting {attempting} / "
         f"open {open_g} / shelved {shelved}  (total {total})\n\n"
         f"**strategies**: {succeeded} succeeded / {strategies} total\n\n"
-        f"## active pipelines ({len(live)}/{pool_size})\n\n"
+        + (lib_section + "\n" if lib_section else "")
+        + f"## active pipelines ({len(live)}/{pool_size})\n\n"
         f"{pipelines_block}"
     )
     if token_section:
