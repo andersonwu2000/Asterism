@@ -98,6 +98,45 @@ def _spawn_score(pdir: Path) -> float:
     return latest
 
 
+def _session_open(pdir: Path) -> "bool | None":
+    """Whether the spawn (or any of its per-decl subdirs) still holds an
+    OPEN gateway session, read from `_mcp.jsonl` (the gateway logs
+    `session_registered` / `session_released` there). Returns:
+      - True  — a session's last event is `session_registered` → genuinely live;
+      - False — every session has been `session_released` → the spawn FINISHED,
+                even if its files were touched within ACTIVE_WINDOW (the
+                lingering-dir over-count: a driver that doesn't rmtree finished
+                dirs, e.g. the e2e driver, otherwise shows them as live);
+      - None  — no `_mcp.jsonl` yet → cold-starting before the first register
+                (caller keeps it via the mtime window so a just-started spawn
+                isn't dropped before it registers).
+    Read-only; tolerates partial / locked files mid-write."""
+    found = False
+    open_any = False
+    try:
+        mcps = list(pdir.rglob("_mcp.jsonl"))
+    except OSError:
+        return None
+    for mcp in mcps:
+        last: str | None = None
+        try:
+            with open(mcp, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if '"session_registered"' in line:
+                        last = "reg"
+                    elif '"session_released"' in line:
+                        last = "rel"
+        except OSError:
+            continue
+        if last is not None:
+            found = True
+            if last == "reg":
+                open_any = True
+    if not found:
+        return None
+    return open_any
+
+
 def _pool_size() -> int:
     """Resolve dispatch.pool from Asterism.yaml, falling back to 4
     (the framework default). Read directly rather than via
@@ -434,8 +473,12 @@ def _active_spawns(limit: int) -> list[Path]:
     given moment the daemon can have at most that many spawns in
     flight, so picking more would just surface stale dirs.
 
-    A spawn is "active" iff some .lean inside its dir was touched within
-    ACTIVE_WINDOW seconds. Empty / stale dirs are skipped.
+    A spawn is "active" iff some file inside its dir was touched within
+    ACTIVE_WINDOW seconds AND its gateway session has not been released
+    (`_session_open`). The session check excludes a FINISHED spawn whose dir
+    still lingers (a driver that doesn't rmtree, e.g. the e2e driver) — mtime
+    alone would keep counting it live for up to ACTIVE_WINDOW. Empty / stale
+    dirs are skipped.
     """
     if not ATTEMPTS_DIR.exists():
         return []
@@ -449,8 +492,11 @@ def _active_spawns(limit: int) -> list[Path]:
         if pdir.name.startswith("_"):
             continue
         s = _spawn_score(pdir)
-        if s >= cutoff:
-            scored.append((s, pdir))
+        if s < cutoff:
+            continue
+        if _session_open(pdir) is False:
+            continue  # session released → finished; don't count the lingering dir
+        scored.append((s, pdir))
     scored.sort(reverse=True)
     return [p for _, p in scored[:limit]]
 
