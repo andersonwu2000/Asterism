@@ -1820,9 +1820,37 @@ def _decline_or_reopen(conn, *, problem, workspace, patch_text, stage):
     nu = _parse_needs_upstream(patch_text)
     if nu:
         slug, reason = nu
+        # Only a finalized (placed → has target_file) upstream can be reshaped.
+        # A slug that is unknown, or dropped/cited/merged (no target_file, i.e.
+        # it already has a REPLACEMENT and is not a Library decl), can't be
+        # reshaped — fail LOUD with the verdict→replacement, instead of letting
+        # the cascade silently no-op and the chain stall at the fail cap.
+        row = next((r for r in db.library_decls_for(conn, problem)
+                    if r["slug"] == slug), None)
+        if row is None or not row["target_file"]:
+            if row is None:
+                why = (f"`{slug}` is not a declaration in this problem "
+                       f"(check the slug)")
+            else:
+                why = (f"`{slug}` is {row['verdict']}→`{row['citation'] or '(none)'}`"
+                       f", not a Library decl to reshape — cite the replacement, "
+                       f"or this is a wrong dedup verdict (revive `{slug}`)")
+            return PipelineResult(
+                outcome="failed",
+                failure_reason="librarian_needs_upstream_unresolvable",
+                failure_detail=f"{stage}: needs-upstream {why}",
+                proposal_md=patch_text)
         reopened = _reopen_upstream_cascade(
             conn, problem=problem, workspace=workspace, upstream_slug=slug,
             note=reason or f"reshape needed by {stage}")
+        if not reopened:
+            return PipelineResult(
+                outcome="failed",
+                failure_reason="librarian_needs_upstream_unresolvable",
+                failure_detail=f"{stage}: needs-upstream `{slug}` matched no "
+                               f"finalized (migrated/cleaned) decl to reshape "
+                               f"(already classified / in-flight?)",
+                proposal_md=patch_text)
         return PipelineResult(
             outcome="failed", failure_reason="librarian_reopened_upstream",
             failure_detail=f"{stage}: reopened upstream `{slug}` + cone "
