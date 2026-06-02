@@ -310,9 +310,10 @@ def test_context_md_marks_holes_in_seed_mode(conn, tmp_path):
 
 
 def test_context_md_solo_hole_scopes_to_one(conn, tmp_path):
-    # Per-hole mode (#87): with several holes but solo_hole set, the banner
-    # tells the agent to fill exactly one and leave the rest as sorry; only
-    # the solo hole is tagged FILL THIS.
+    # Incremental per-decl mode (#87): with solo_hole set, the banner scopes
+    # the agent to finishing exactly that one declaration; only the solo hole
+    # is tagged FILL THIS, and the other decl carries no ⛏ tag (it is an
+    # imported sibling, not an in-seed hole).
     tf = "Library/P/Foo.lean"
     _seed_classified(conn, "a", "True", tf, 0)
     _seed_classified(conn, "b", "True", tf, 1)
@@ -322,10 +323,11 @@ def test_context_md_solo_hole_scopes_to_one(conn, tmp_path):
         conn, problem="p", work_kind="migrate", attempts_dir=attempts,
         workspace=tmp_path, target_file=tf, holes=["a", "b"], solo_hole="a")
     body = ctx.read_text(encoding="utf-8")
-    assert "Fill **exactly one**" in body and "`a`" in body
-    assert "leave those `sorry` untouched" in body
+    assert "Finish exactly that one declaration" in body
+    assert "Finish one declaration" in body
     assert "### 1. `a` ⛏ FILL THIS" in body
-    assert "leave as sorry — filled in parallel" in body   # the other hole `b`
+    assert "### 2. `b`\n" in body          # other decl: no ⛏ tag
+    assert "filled in parallel" not in body
 
 
 # --- _MechAssembly / _reassemble: the per-hole merge foundation (#87) ---
@@ -488,6 +490,54 @@ def test_incremental_prior_build_fail_is_integrity(conn, tmp_path, monkeypatch):
     assert res.outcome == "failed"
     assert res.failure_reason == "librarian_integrity_error"
     assert not (tmp_path / "Library/P/Foo.lean").exists()
+
+
+def test_demote_to_hole_sorry_ifies_body():
+    seed = lib._demote_to_hole("theorem b (n : Nat) : True := by exact trivial",
+                               "Library.P.Foo")
+    assert seed is not None
+    assert "theorem b (n : Nat) : True" in seed   # signature kept
+    assert "sorry" in seed                         # body replaced
+    assert "exact trivial" not in seed             # original body dropped
+
+
+def test_incremental_localize_demotes_breaking_mechanical_decl(
+        conn, tmp_path, monkeypatch):
+    # path 2 incremental-ised: a 0-hole assembly (all mechanical) is routed
+    # with localize=True. Decl `b`'s mechanical relabel breaks the build, so
+    # it is demoted to a per-decl LLM fill; `a`/`c` (which build) are kept.
+    asm = lib._MechAssembly(
+        header="import Mathlib", target_module="Library.P.Foo",
+        slugs=["a", "b", "c"],
+        chunks={"a": "theorem a : True := trivial",
+                "b": "theorem b : True := bad_relabel",   # breaks the build
+                "c": "theorem c : True := trivial"})
+    monkeypatch.setattr(lib, "file_dependency_graph", lambda *a, **k: {})
+    captured = {}
+
+    def fake_commit(merged, **kw):
+        captured["merged"] = merged
+        return PipelineResult(outcome="success")
+    monkeypatch.setattr(lib, "_commit_migrated_file", fake_commit)
+
+    # The staging build fails iff the partial file still carries the bad body.
+    def olw(p):
+        return ("bad_relabel" not in p.read_text(encoding="utf-8")), "boom"
+
+    fills = []
+
+    def mock_fill(slug):
+        fills.append(slug)
+        return (f"theorem {slug} : True := by exact trivial", []), None
+
+    res = lib._migrate_file_incremental(
+        **_inc_kwargs(conn, tmp_path, asm, []),
+        fill_fn=mock_fill, olean_writer=olw, localize=True)
+    assert res.outcome == "success"
+    assert fills == ["b"]                       # only the breaker was filled
+    assert "bad_relabel" not in captured["merged"]
+    assert "sorry" not in captured["merged"]
+    assert "theorem a : True := trivial" in captured["merged"]   # kept as-is
 
 
 # --- unified per-decl source: Defs / root / signature-hole / drift (#87) ---
