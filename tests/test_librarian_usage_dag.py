@@ -223,6 +223,37 @@ def conn():
     return c
 
 
+def test_merge_file_sccs_collapses_cycle():
+    # A<->B mutually import (a usage SCC) -> merged to the bigger file (A, 3
+    # decls); the acyclic singleton C is left untouched.
+    fgraph = {"A.lean": {"B.lean"}, "B.lean": {"A.lean", "C.lean"},
+              "C.lean": set()}
+    decls_in = {"A.lean": ["a1", "a2", "a3"], "B.lean": ["b1"],
+                "C.lean": ["c1"]}
+    canon = lib._merge_file_sccs(fgraph, decls_in)
+    assert canon == {"A.lean": "A.lean", "B.lean": "A.lean"}
+
+
+def test_commit_classify_merges_cyclic_files(conn, tmp_path):
+    # `foo` (in Foo.lean) cites `bar` (in Bar.lean) and vice versa — a
+    # file-level usage cycle the agent split across two files. commit_classify
+    # must merge them into ONE file (else circular import, un-orderable).
+    for s in ("foo", "bar"):
+        db.upsert_library_decl(conn, problem="p", slug=s, source_goal_id=None)
+        db.set_library_verdict(conn, problem="p", slug=s, verdict="keep")
+    _alias(tmp_path, "foo", 100); _strategy(tmp_path, 100, uses=["bar"])
+    _alias(tmp_path, "bar", 200); _strategy(tmp_path, 200, uses=["foo"])
+    plan = lib.ClassifyPlan([
+        lib.ClassifyFile("Library/P/Foo.lean", [], ["foo"]),
+        lib.ClassifyFile("Library/P/Bar.lean", [], ["bar"]),
+    ])
+    lib.commit_classify(conn, "p", plan, tmp_path)
+    rows = db.library_decls_for(conn, "p", lifecycle="classified")
+    files = {r["target_file"] for r in rows}
+    assert len(files) == 1                      # merged into one file
+    assert {r["slug"] for r in rows} == {"foo", "bar"}   # both decls kept
+
+
 def test_commit_classify_reorders_by_usage(conn, tmp_path):
     # `user` cites `dep`; the agent listed them user-first. After commit the
     # persisted file_order must put dep (0) before user (1).

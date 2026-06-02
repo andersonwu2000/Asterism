@@ -301,24 +301,82 @@ def _toposort_intra_file(decls: list[str],
     return result
 
 
+def _merge_file_sccs(fgraph: dict, decls_in: dict) -> dict:
+    """Collapse each strongly-connected component of the file-usage graph to
+    one canonical file. A set of files that (transitively) import each other
+    is physically un-splittable across Lean modules — leaving them apart is a
+    circular import that can't be topologically ordered or built. The SCC's
+    decls all belong in ONE file. Returns {file_path: canonical_path}; a file
+    not in a multi-file SCC maps to itself. Canonical = the member with the
+    most decls (lexicographic tie-break), for a deterministic choice."""
+    nodes = list(fgraph)
+    reach: dict = {n: set() for n in nodes}
+    for n in nodes:
+        stack = list(fgraph.get(n, ()))
+        while stack:
+            m = stack.pop()
+            if m not in reach[n]:
+                reach[n].add(m)
+                stack.extend(fgraph.get(m, ()))
+    canon: dict = {}
+    seen: set = set()
+    for n in nodes:
+        if n in seen:
+            continue
+        comp = {n} | {m for m in nodes if m in reach[n] and n in reach[m]}
+        seen |= comp
+        if len(comp) > 1:
+            rep = sorted(comp, key=lambda p: (-len(decls_in.get(p, [])), p))[0]
+            for m in comp:
+                canon[m] = rep
+    return canon
+
+
 def commit_classify(conn, problem: str, plan: ClassifyPlan,
                     workspace) -> None:
     """Persist the layout plan: per decl, its target file + in-file order.
-    Only `deduped` (kept) decls advance to `classified`. Each file's decls
-    are topologically re-ordered by the USAGE DAG (proof-term citations,
-    `inventory.usage_graph`) before `file_order` is assigned — the agent's
-    layout is by meaning, but Lean needs a cited sibling to precede its user,
-    so the persisted order must be a valid emission order."""
+    Only `deduped` (kept) decls advance to `classified`.
+
+    Two corrections to the agent's layout, both driven by the ground-truth
+    USAGE DAG (proof-term citations, `inventory.usage_graph`), since the
+    agent lays out by meaning but Lean is import-/order-sensitive:
+      - files whose decls form a usage cycle are merged into one file (an SCC
+        is an un-splittable circular import — `_merge_file_sccs`);
+      - within each (possibly merged) file, decls are topologically reordered
+        so a cited sibling precedes its user.
+    """
     from ..quality.librarian import inventory as _inv
     placed = [d for f in plan.files for d in f.decls]
     usage = _inv.usage_graph(workspace, problem, placed,
                              alias_map=_merge_alias_map(conn, problem),
                              root_source=_root_source(conn, problem, workspace))
+    # File-level usage graph: file F depends on file G iff a decl in F cites a
+    # decl placed in G. Merge cyclic file groups (circular imports) into one.
+    decl_file = {d: f.path for f in plan.files for d in f.decls}
+    decls_in = {f.path: list(f.decls) for f in plan.files}
+    fgraph: dict = {f.path: set() for f in plan.files}
+    for d, deps in usage.items():
+        fa = decl_file.get(d)
+        for dep in deps:
+            fb = decl_file.get(dep)
+            if fa and fb and fa != fb:
+                fgraph[fa].add(fb)
+    canon = _merge_file_sccs(fgraph, decls_in)
+    if canon:
+        for orig, rep in sorted(canon.items()):
+            if orig != rep:
+                print(f"[librarian] classify: merging cyclic file {orig} -> "
+                      f"{rep} (un-splittable usage SCC)", flush=True)
+    # Regroup decls under their canonical file (SCC members merged), keeping
+    # the agent's intra-group order before the usage toposort.
+    merged: dict = {}
     for f in plan.files:
-        for order, slug in enumerate(_toposort_intra_file(f.decls, usage)):
+        merged.setdefault(canon.get(f.path, f.path), []).extend(f.decls)
+    for cf, decls in merged.items():
+        for order, slug in enumerate(_toposort_intra_file(decls, usage)):
             db.set_library_classification(
                 conn, problem=problem, slug=slug,
-                target_file=f.path, target_name=None, file_order=order)
+                target_file=cf, target_name=None, file_order=order)
 
 
 # ---------------------------------------------------------------------
