@@ -389,6 +389,13 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# The schema version the current code expects. Every `init_schema` migration
+# phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
+# stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
+# in init_schema (an invariant test asserts they match).
+_CURRENT_USER_VERSION = 9
+
+
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
     # Lift busy-timeout from sqlite3's 5s default to 30s.
     # With pool=12 workers each holding their own conn and issuing
@@ -402,6 +409,21 @@ def connect(path: Path = DB_PATH) -> sqlite3.Connection:
     # WAL: readers don't block writers; reduces contention with 12
     # workers concurrently INSERTing into pipelines + dead_attempts.
     conn.execute("PRAGMA journal_mode = WAL")
+    # Auto-migrate a STALE but POPULATED on-disk DB so no caller silently
+    # operates on an old schema (the v6→v9 incident: a standalone driver used
+    # `connect` without `init_schema` and crashed on the missing reopen_note
+    # column). Only act when the DB already has tables AND its user_version is
+    # behind — a FRESH DB (no `goals` table, e.g. a `:memory:` test fixture)
+    # is left untouched for the caller's explicit `init_schema`, and a current
+    # DB pays only one PRAGMA read. init_schema is idempotent; the daemon's own
+    # startup init_schema then becomes a no-op.
+    ver = conn.execute("PRAGMA user_version").fetchone()[0]
+    if ver < _CURRENT_USER_VERSION and conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='goals'"
+    ).fetchone():
+        print(f"[db] auto-migrating stale schema {ver} -> "
+              f"{_CURRENT_USER_VERSION} at {path}", flush=True)
+        init_schema(conn)
     return conn
 
 

@@ -486,3 +486,42 @@ def test_strategist_decisions_table_usable_post_migration(tmp_path: Path) -> Non
             " VALUES ('alpha', 7, 'routine', 'BogusKind', '{}', ?, ?)",
             (ts, ts))
     conn.close()
+
+
+# --- connect-time auto-migration of a stale-but-populated DB (#81) ---
+
+def test_current_user_version_matches_init_schema(tmp_path):
+    # Drift guard: init_schema must leave user_version at _CURRENT_USER_VERSION.
+    # If a new phase bumps the version but forgets the constant, this fails.
+    conn = db.connect(tmp_path / "v.db")
+    db.init_schema(conn)
+    assert (conn.execute("PRAGMA user_version").fetchone()[0]
+            == db._CURRENT_USER_VERSION)
+    conn.close()
+
+
+def test_connect_leaves_fresh_db_uninitialized(tmp_path):
+    # A FRESH DB (no tables) is NOT auto-initialized by connect — the caller's
+    # explicit init_schema still owns first-time setup.
+    conn = db.connect(tmp_path / "fresh.db")
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "goals" not in tables
+    conn.close()
+
+
+def test_connect_auto_migrates_stale_populated_db(tmp_path):
+    # A populated DB whose user_version is behind must be auto-migrated on
+    # connect (the v6->v9 incident), so no caller operates on a stale schema.
+    p = tmp_path / "stale.db"
+    c0 = db.connect(p)
+    db.init_schema(c0)                       # fresh → CURRENT
+    c0.execute("PRAGMA user_version = 6")    # pretend it's an old on-disk DB
+    c0.commit()
+    c0.close()
+    c1 = db.connect(p)                       # stale + populated → auto-migrate
+    assert (c1.execute("PRAGMA user_version").fetchone()[0]
+            == db._CURRENT_USER_VERSION)
+    cols = {r[1] for r in c1.execute("PRAGMA table_info(library_decls)")}
+    assert "reopen_note" in cols             # phase-9 column present after migrate
+    c1.close()
