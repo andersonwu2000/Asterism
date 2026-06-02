@@ -72,10 +72,16 @@ def _replace_body_with_sorry(text: str, target_namespace: str) -> "str | None":
 class RelabelResult:
     """ok=True → `text` is the Library declaration, ready for the commit
     gate. ok=False → `reason` says why this decl can't be relabelled
-    mechanically; caller routes it to the Phase-2 LLM path."""
+    mechanically; caller routes it to the Phase-2 LLM path.
+
+    `degraded` (best-effort mode only): ok=True but a Phase-2-level
+    reference could not be resolved mechanically and was left in place —
+    the text is a SIGNATURE hole (it may not build) for the LLM to restate
+    Defs-free, not a finished declaration. `reason` carries what was left."""
     ok: bool
     text: str = ""
     reason: str = ""
+    degraded: bool = False
 
 
 # Imported sub-lemma proof module: `import <PNS>.proofs.L_<sub>` or a
@@ -103,8 +109,22 @@ def relabel_self_contained(
     citation_map: "dict[str, str] | None" = None,
     sibling_modules: "dict[str, str] | None" = None,
     body_to_sorry: bool = False,
+    best_effort: bool = False,
 ) -> RelabelResult:
     """Mechanically relabel a single proof file.
+
+    `best_effort` (signature-hole mode, librarian_plan §4 / #87): used only
+    with `body_to_sorry=True`, after a normal seed already declined because
+    the SIGNATURE — not just the body — cites something with no mechanical
+    Library form (an unmigrated Defs symbol, a residual `Problems.` ref, a
+    keep sibling with no module yet). Instead of declining the whole file to
+    a cold from-scratch spawn, downgrade those Phase-2 declines: drop the
+    offending import / leave the bare reference in place, set the body to
+    `sorry`, and return ok=True with `degraded=True`. The result is a
+    SIGNATURE hole — it may not build (the unresolved reference stays) — for
+    the per-hole LLM to restate Defs-free and prove. Structural problems (no
+    namespace, alias indirection) still decline hard. No-op when
+    `body_to_sorry` is False.
 
     `body_to_sorry`      seed-a-hole mode (librarian_plan §4): keep the
         relabelled SIGNATURE but replace the proof body with `sorry`. Used
@@ -154,6 +174,10 @@ def relabel_self_contained(
 
     defs_imports = defs_imports or {}
     sibling_modules = sibling_modules or {}
+    # best_effort downgrades Phase-2 declines into a signature hole; track
+    # whether any such downgrade fired so the caller knows the result is a
+    # (possibly non-building) hole, not a finished declaration.
+    degraded = False
     # Keep-sibling modules this file must import + `open` (collected as we
     # drop the Problems sibling imports below). A cross-file sibling lemma
     # lives in a DIFFERENT Library namespace (e.g. `…JordanForm.IndexEnum`),
@@ -184,6 +208,9 @@ def relabel_self_contained(
                     # migrated / not classified) → decline.
                     mod = sibling_modules.get(sub)
                     if not mod:
+                        if best_effort:
+                            degraded = True
+                            continue  # drop the import; ref left for the LLM
                         return RelabelResult(
                             False, reason=f"keep sibling `{sub}` has no known "
                                           "Library module yet — needs Phase 2")
@@ -209,6 +236,9 @@ def relabel_self_contained(
             mod = m_imp.group(1)
             if mod.endswith(".Defs"):
                 continue  # drop Defs import
+            if best_effort:
+                degraded = True
+                continue  # drop the Problems import; ref left for the LLM
             return RelabelResult(
                 False, reason=f"imports Problems `{mod}` — needs Phase 2")
         m_ns = _NS_RE.match(ln)
@@ -236,6 +266,9 @@ def relabel_self_contained(
     for sym in used_defs:
         mod = defs_imports.get(sym)
         if not mod:
+            if best_effort:
+                degraded = True
+                continue  # leave the bare Defs symbol for the LLM to resolve
             return RelabelResult(
                 False, reason=f"uses Defs symbol `{sym}` with no migrated "
                               "Library module — needs Phase 2")
@@ -287,10 +320,15 @@ def relabel_self_contained(
     if not text.endswith("\n"):
         text += "\n"
     if "Problems." in text:
+        if best_effort:
+            # The unresolved `Problems.` reference is in the signature (the
+            # body is already sorry). Leave it — this is the signature hole.
+            degraded = True
+            return RelabelResult(True, text=text, degraded=True)
         return RelabelResult(
             False, reason="residual `Problems.` reference after relabel "
                           "(signature cites a problem symbol) — needs Phase 2")
-    return RelabelResult(True, text=text)
+    return RelabelResult(True, text=text, degraded=degraded)
 
 
 def inline_alias(
@@ -302,6 +340,7 @@ def inline_alias(
     citation_map: "dict[str, str] | None" = None,
     sibling_modules: "dict[str, str] | None" = None,
     body_to_sorry: bool = False,
+    best_effort: bool = False,
 ) -> RelabelResult:
     """Inline an alias `def <slug> := @<PNS>.<strategy>` by relabelling the
     STRATEGY file's theorem and renaming `<strategy>` → `<slug>`.
@@ -320,4 +359,5 @@ def inline_alias(
         target_namespace=target_namespace, keep_slugs=keep_slugs,
         rename_decl=(strat, slug), defs_imports=defs_imports,
         all_defs_syms=all_defs_syms, citation_map=citation_map,
-        sibling_modules=sibling_modules, body_to_sorry=body_to_sorry)
+        sibling_modules=sibling_modules, body_to_sorry=body_to_sorry,
+        best_effort=best_effort)

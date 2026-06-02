@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from ..state import db
 
@@ -805,6 +806,7 @@ def compile_librarian_context(
     conn, *, problem: str, work_kind: str, attempts_dir,
     workspace, target_file: str | None = None,
     holes: "list[str] | None" = None,
+    solo_hole: "str | None" = None,
 ) -> "_Path":
     """Write attempts_dir/Context.md for a Librarian work spawn.
 
@@ -911,7 +913,18 @@ def compile_librarian_context(
                 "non-hole declaration are already correct. **Do not rewrite "
                 "the working declarations or change their signatures.**")
             lines.append("")
-            if hole_set:
+            if solo_hole is not None:
+                # Per-hole mode (#87): the seed carries several `sorry`
+                # holes, each filled by its own parallel spawn. This spawn
+                # owns exactly one — touching the others would clobber a
+                # sibling's work and break the anchor-based merge.
+                lines.append(
+                    f"Fill **exactly one** `sorry` hole — `{solo_hole}` "
+                    "(marked ⛏ FILL THIS) — keeping its signature exactly as "
+                    "seeded. Every **other** `sorry` is a sibling hole being "
+                    "filled in parallel: **leave those `sorry` untouched** "
+                    "(do not edit, reorder, or delete them).")
+            elif hole_set:
                 lines.append(
                     f"Fill the **{len(hole_set)} `sorry` hole(s)** below "
                     "(marked ⛏), keeping each signature exactly as seeded:")
@@ -926,7 +939,13 @@ def compile_librarian_context(
         lines.append("")
         for i, r in enumerate(rows, 1):
             slug = r["slug"]
-            tag = " ⛏ HOLE — fill this" if slug in hole_set else ""
+            if slug == solo_hole:
+                tag = " ⛏ FILL THIS"
+            elif slug in hole_set:
+                tag = (" ⛏ (leave as sorry — filled in parallel)"
+                       if solo_hole is not None else " ⛏ HOLE — fill this")
+            else:
+                tag = ""
             lines.append(f"### {i}. `{slug}`{tag}")
             if r["verdict"] and r["verdict"] != "keep":
                 lines.append(f"- dedup verdict: {r['verdict']} → cite "
@@ -1244,9 +1263,113 @@ def _decl_signature(text: str) -> str:
     return " ".join(region[:cut].split())
 
 
+class _MechAssembly(NamedTuple):
+    """Structured form of a mechanically-assembled migrate file, so per-hole
+    fills can swap a single decl's chunk and reassemble WITHOUT re-parsing
+    Lean decl boundaries (the chunks are already split per decl). `chunks`
+    maps slug → that decl's namespace-body text; `slugs` is the emission order;
+    `header` is the hoisted imports (+ opens) block."""
+    header: str
+    target_module: str
+    slugs: list
+    chunks: dict
+
+
+def _reassemble(asm: "_MechAssembly", overrides: "dict | None" = None) -> str:
+    """Rebuild the whole-file text from an assembly, optionally replacing some
+    slugs' chunks (per-hole fills). `_reassemble(asm)` reproduces the original
+    mechanical text exactly — the migrate text and the merge path share this
+    one formatter so they can never drift."""
+    chunks = dict(asm.chunks)
+    if overrides:
+        chunks.update(overrides)
+    body = "\n\n".join(chunks[s] for s in asm.slugs)
+    return (asm.header
+            + f"\n\nnamespace {asm.target_module}\n\n"
+            + body
+            + f"\n\nend {asm.target_module}\n")
+
+
+def _extract_single_decl(text: str, target_module: str) -> "tuple[str, list]":
+    """Split a per-decl staging file (the incremental migrate seed:
+    `import … + namespace target + ONE decl + end`) into `(decl_chunk,
+    extra_imports)`. The decl is alone in the namespace body, so extraction
+    is exact — no anchor heuristics. `extra_imports` are the `import` lines
+    the agent added (e.g. a Mathlib lemma's module), to fold into the final
+    file's header; the self-import of the partial target module is dropped
+    by the caller."""
+    body: list[str] = []
+    imports: list[str] = []
+    inside = False
+    for ln in text.splitlines():
+        if ln.startswith("import "):
+            imports.append(ln)
+            continue
+        if ln.startswith(f"namespace {target_module}"):
+            inside = True
+            continue
+        if ln.startswith(f"end {target_module}"):
+            inside = False
+            continue
+        if inside:
+            body.append(ln)
+    return "\n".join(body).strip("\n"), imports
+
+
+def _merge_header(header: str, extra_imports: "set[str]") -> str:
+    """Fold `extra_imports` into a `_MechAssembly.header` (sorted imports,
+    then a blank line, then `open`s), de-duplicating."""
+    lines = header.splitlines()
+    imports = {l for l in lines if l.startswith("import ")}
+    opens = [l for l in lines if l.startswith("open ")]
+    for e in extra_imports:
+        if e.startswith("import "):
+            imports.add(e)
+        elif e.startswith("open ") and e not in opens:
+            opens.append(e)
+    out = "\n".join(sorted(imports))
+    if opens:
+        out += "\n\n" + "\n".join(sorted(set(opens)))
+    return out
+
+
+def _hole_still_unfilled(chunk: str, seed_chunk: str) -> bool:
+    """True when an extracted hole chunk was not actually filled — still
+    carries a `sorry`, or is byte-identical to the seed stub. A distinct,
+    no-sorry failure is the Strategist-escalation hook; a `sorry` must
+    never reach the commit gate."""
+    if chunk.strip() == seed_chunk.strip():
+        return True
+    return re.search(r"(^|\W)sorry(\W|$)", chunk) is not None
+
+
+class _MechIntegrityError(Exception):
+    """A decl's source can't be located where the DB says it should be —
+    file↔DB drift (CLAUDE.md rule 10), not a 'needs the LLM' case. Surfaced
+    as a loud, distinct migrate failure rather than masked by a cold
+    from-scratch spawn (which would hide the corruption)."""
+
+
+def _defs_decl_source(defs_text: str, name: str) -> "str | None":
+    """The verbatim slice of `Defs.lean` declaring `name` — its keyword head
+    through to the next top-level declaration (or EOF). Defs decls have no
+    `proofs/L_<slug>.lean`; this gives them the same per-decl source every
+    other migratable decl has, so they relabel through the one mechanical
+    path instead of forcing the whole file to a cold from-scratch spawn."""
+    from ..quality.librarian.inventory import _DEFS_DECL_RE
+    matches = list(_DEFS_DECL_RE.finditer(defs_text))
+    for i, m in enumerate(matches):
+        if m.group(2) == name:
+            start = m.start()
+            end = (matches[i + 1].start()
+                   if i + 1 < len(matches) else len(defs_text))
+            return defs_text[start:end].rstrip()
+    return None
+
+
 def _mechanical_migrate_file(
     conn, *, problem, workspace, target_file, target_module, rows,
-) -> "tuple[str | None, list[str]]":
+) -> "tuple[str | None, list[str], _MechAssembly | None]":
     """Best-effort relabel of a whole classified file (librarian_plan §4
     Phase 1) — no LLM. Returns `(assembled_text, holes)`:
 
@@ -1320,45 +1443,92 @@ def _mechanical_migrate_file(
     alias_re = _re.compile(
         r"def\s+\w+\s*:=\s*@?Problems\.[\w.]+\.(s\d+)")
 
+    defs_text = ""
+    defs_lean = problem_dir / "Defs.lean"
+    if defs_lean.exists():
+        defs_text = defs_lean.read_text(encoding="utf-8")
+
     import_set: set[str] = set()
     open_set: set[str] = set()
-    chunks: list[str] = []
+    chunk_by_slug: dict[str, str] = {}
     holes: list[str] = []
     for r in rows:
         slug = r["slug"]
-        src_path = proofs / f"L_{slug}.lean"
-        if not src_path.exists():
-            return None, []  # Defs decl / no proof file — can't seed a sig
-        src = src_path.read_text(encoding="utf-8")
+        # Resolve this decl's per-decl source uniformly by kind, so Defs
+        # decls and the root theorem migrate through the SAME mechanical
+        # path as ordinary lemmas — no special cold from-scratch spawn:
+        #   - Defs decl (no source goal)  → its slice of Defs.lean
+        #   - any goal (lemma OR root)    → its `lean_path` file
+        #                                   (root → Root.lean; lemma →
+        #                                    proofs/L_<slug>.lean)
+        # A source the DB points at but that is missing is file↔DB drift —
+        # raised loud, never masked by from-scratch (CLAUDE.md rule 10).
+        strat_text = None
+        if r["source_goal_id"] is None:
+            defs_slice = _defs_decl_source(defs_text, slug)
+            if defs_slice is None:
+                raise _MechIntegrityError(
+                    f"Defs decl `{slug}` not found in Defs.lean")
+            # Preserve Defs.lean's import/open header so any notation the
+            # decl relies on still resolves after migration (relabel drops
+            # the Problems imports as usual); ensure the Mathlib umbrella.
+            hdr = "\n".join(ln for ln in defs_text.splitlines()
+                            if ln.startswith(("import ", "open ")))
+            if "import Mathlib" not in hdr:
+                hdr = ("import Mathlib\n" + hdr) if hdr else "import Mathlib"
+            src = f"{hdr}\nnamespace {pns}\n{defs_slice}\nend {pns}\n"
+        else:
+            g = db.get_goal(conn, r["source_goal_id"])
+            src_path = (workspace / g["lean_path"]) if g else None
+            if src_path is None or not src_path.exists():
+                raise _MechIntegrityError(
+                    f"`{slug}`: proof source "
+                    f"{g['lean_path'] if g else '?'} missing (file↔DB drift)")
+            src = src_path.read_text(encoding="utf-8")
+            m = alias_re.search(src)
+            if m:
+                strat_path = proofs / f"_strategy_{m.group(1)}.lean"
+                if not strat_path.exists():
+                    raise _MechIntegrityError(
+                        f"`{slug}`: alias → missing {strat_path.name} "
+                        "(file↔DB drift)")
+                strat_text = strat_path.read_text(encoding="utf-8")
         kw = dict(problem_namespace=pns, target_namespace=target_module,
                   keep_slugs=keep_slugs, defs_imports=defs_imports,
-                  all_defs_syms=all_defs, citation_map=citation_map,
+                  # Exclude this decl's own name: a Defs decl's source contains
+                  # its own name (`def <slug>`), which must not be mistaken for
+                  # a dependency on an unmigrated Defs symbol. No-op for lemmas
+                  # / root (their slug isn't a Defs decl).
+                  all_defs_syms=all_defs - {slug}, citation_map=citation_map,
                   sibling_modules=sibling_modules)
-        m = alias_re.search(src)
-        strat_text = None
-        if m:
-            strat_path = proofs / f"_strategy_{m.group(1)}.lean"
-            if not strat_path.exists():
-                return None, []
-            strat_text = strat_path.read_text(encoding="utf-8")
 
-        def _relabel_one(body_to_sorry: bool):
+        def _relabel_one(body_to_sorry: bool, best_effort: bool = False):
             if strat_text is not None:
                 return _relabel.inline_alias(
                     src, strat_text, slug=slug, body_to_sorry=body_to_sorry,
-                    **kw)
+                    best_effort=best_effort, **kw)
             return _relabel.relabel_self_contained(
-                src, body_to_sorry=body_to_sorry, **kw)
+                src, body_to_sorry=body_to_sorry, best_effort=best_effort,
+                **kw)
 
         res = _relabel_one(body_to_sorry=False)
         if not res.ok:
-            # Decline → seed a hole: relabel just the SIGNATURE, body = sorry.
-            # If the signature itself cites a non-keep symbol, body_to_sorry
-            # also declines → this decl can't be seeded → cold-spawn the file.
+            # Body cites a non-keep sibling → seed a body hole (sig clean).
             res = _relabel_one(body_to_sorry=True)
-            if not res.ok:
-                return None, []
-            holes.append(slug)
+            if res.ok:
+                holes.append(slug)
+            else:
+                # The SIGNATURE itself isn't Defs-free → seed a SIGNATURE
+                # hole (best-effort: leave the unresolved ref, body = sorry)
+                # for the per-hole LLM to restate Defs-free. Only a
+                # structural fault (no namespace / broken alias) fails even
+                # this — that is drift, raised loud.
+                res = _relabel_one(body_to_sorry=True, best_effort=True)
+                if not res.ok:
+                    raise _MechIntegrityError(
+                        f"`{slug}`: cannot relabel even best-effort "
+                        f"({res.reason})")
+                holes.append(slug)
         # Split into imports + open lines + the namespace body, to merge
         # all decls into one file (imports + opens hoisted, dedup'd).
         inside = False
@@ -1378,16 +1548,14 @@ def _mechanical_migrate_file(
                 continue
             if inside:
                 body.append(ln)
-        chunks.append("\n".join(body).strip("\n"))
+        chunk_by_slug[slug] = "\n".join(body).strip("\n")
 
     header = "\n".join(sorted(import_set))
     if open_set:
         header += "\n\n" + "\n".join(sorted(open_set))
-    text = (header
-            + f"\n\nnamespace {target_module}\n\n"
-            + "\n\n".join(chunks)
-            + f"\n\nend {target_module}\n")
-    return text, holes
+    asm = _MechAssembly(header=header, target_module=target_module,
+                        slugs=[r["slug"] for r in rows], chunks=chunk_by_slug)
+    return _reassemble(asm), holes, asm
 
 
 def _commit_migrated_file(
@@ -1468,6 +1636,188 @@ def _commit_migrated_file(
     return PipelineResult(outcome="success")
 
 
+def _migrate_file_incremental(
+        conn, *, problem, workspace, pipeline_id, target_file,
+        target_path, target_module, ordered_slugs, defs_names, whitelist,
+        attempts_dir, problem_dir, prompt_path, holes, mech_asm,
+        fill_fn=None, olean_writer=None):
+    """migrate Phase 2 (#87) — incremental, per-declaration. Build the target
+    file declaration-by-declaration in file_order: a mechanically-relabelled
+    decl is appended directly; a decl that needs the LLM is staged ALONE —
+    `import <the target module built so far> + the one decl seed` — filled by
+    its own small spawn and BUILT against the prior decls before it joins the
+    file. So every decl is build-verified the moment it lands (mirroring the
+    proof phase's per-lemma topological build), the LLM never synthesises more
+    than one declaration (no whole-file over-think), and there is no
+    from-scratch path.
+
+    Sequential within the file (each spawn is tiny → no over-think); files
+    migrate in parallel at the dispatcher level (`dispatch.pool`), so no nested
+    pool is needed. A decl that can't be filled → distinct no-`sorry` failure
+    (`librarian_migrate_hole_unfilled`, the Strategist-escalation hook); a
+    `-- decline: needs-upstream` routes through the shared cascade. `fill_fn` /
+    `olean_writer` are injectable for offline tests.
+    """
+    from . import PipelineResult, PROMPT_DIR, _write_mcp_config
+    from ._retry import SpawnCtx, run_with_session_retries
+    from .. import agent
+    from ..core import dispatcher
+
+    holes_set = set(holes)
+    olw = olean_writer or _warm_olean_writer(workspace)
+    # The per-decl prompt finalises with the user (wording last); until it
+    # lands, fall back to the whole-file migrate prompt.
+    hole_prompt = PROMPT_DIR / "librarian" / "migrate_hole.md"
+    if not hole_prompt.exists():
+        hole_prompt = prompt_path
+    dep_modules = sorted(
+        _library_module_of(df)
+        for df in file_dependency_graph(
+            conn, problem=problem, workspace=workspace).get(target_file, set()))
+    target_existed = target_path.exists()
+
+    def _drop_partial():
+        # The target file is CREATED by this migrate; remove a partial staging
+        # write on failure (don't touch a pre-existing file — there shouldn't
+        # be one).
+        if not target_existed and target_path.exists():
+            try:
+                target_path.unlink()
+            except OSError:
+                pass
+
+    def _default_fill_decl(slug):
+        """Stage `import <partial target> + the one decl seed`, spawn one
+        agent to finish that single declaration, build-verify, and return
+        `((chunk, extra_imports), None)`. Returns `(None, decline_text)` on a
+        `-- decline:`, `(None, None)` on exhaustion."""
+        dattempts = attempts_dir / f"decl-{slug}"
+        dattempts.mkdir(parents=True, exist_ok=True)
+        patch = dattempts / "patch.lean"
+        dpid = f"{pipeline_id}:decl-{slug}"
+        seed = ("import Mathlib\n"
+                + "".join(f"import {m}\n" for m in dep_modules)
+                + f"import {target_module}\n"
+                + f"\nnamespace {target_module}\n\n"
+                + mech_asm.chunks[slug]
+                + f"\n\nend {target_module}\n")
+        cap: dict = {}
+
+        def spawn(ctx: SpawnCtx) -> int:
+            if ctx.cold:
+                compile_librarian_context(
+                    conn, problem=problem, work_kind="migrate",
+                    attempts_dir=ctx.attempts_dir, workspace=workspace,
+                    target_file=target_file, holes=holes, solo_hole=slug)
+                patch.write_text(seed, encoding="utf-8")
+            mcp_config_path = _write_mcp_config(
+                attempts_dir=ctx.attempts_dir, workspace=workspace,
+                target=patch, pipeline_id=dpid, problem=problem)
+            return agent.spawn_llm(
+                kind="librarian", prompt_path=hole_prompt,
+                problem_dir=problem_dir, attempts_dir=ctx.attempts_dir,
+                session_id=ctx.sid, is_retry=not ctx.cold,
+                retry_context=ctx.retry_context,
+                mcp_config_path=mcp_config_path,
+                inline_prompt=ctx.inline_prompt,
+                timeout_sec_override=ctx.budget_override)
+
+        def parse() -> PipelineResult:
+            if not patch.exists():
+                return PipelineResult(
+                    outcome="failed", failure_reason="agent_no_output",
+                    failure_detail=f"decl {slug}: no patch.lean")
+            text = patch.read_text(encoding="utf-8")
+            if "-- decline:" in text:
+                cap["decline"] = text
+                return PipelineResult(
+                    outcome="agent_declined", failure_reason="agent_declined",
+                    failure_detail=f"decl {slug} declined", proposal_md=text)
+            chunk, imports = _extract_single_decl(text, target_module)
+            if not chunk:
+                return PipelineResult(
+                    outcome="failed", failure_reason="librarian_gate_failed",
+                    failure_detail=f"decl {slug}: no declaration in the "
+                                   f"`{target_module}` namespace",
+                    proposal_md=text)
+            if _hole_still_unfilled(chunk, mech_asm.chunks[slug]):
+                return PipelineResult(
+                    outcome="failed",
+                    failure_reason="librarian_migrate_hole_unfilled",
+                    failure_detail=f"decl {slug}: still `sorry` after fill",
+                    proposal_md=text)
+            # Keep only genuinely new imports the agent added; drop the seed's
+            # own (Mathlib umbrella, dep siblings, the partial-target self-
+            # import which must never appear in the committed file).
+            seed_imports = ({"import Mathlib", f"import {target_module}"}
+                            | {f"import {m}" for m in dep_modules})
+            cap["chunk"] = chunk
+            cap["imports"] = [im for im in imports if im not in seed_imports]
+            return PipelineResult(outcome="success")
+
+        res = run_with_session_retries(
+            conn=conn, goal_id=None, pipeline_id=dpid,
+            budget_threshold=dispatcher.BUILDER_THRESHOLD,
+            shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+            attempts_dir=dattempts, spawn_fn=spawn, parse_fn=parse,
+            postmortem_fn=lambda sid: None, workspace=workspace)
+        if res.outcome == "success":
+            return (cap["chunk"], cap["imports"]), None
+        return None, cap.get("decline")
+
+    fill = fill_fn or _default_fill_decl
+    done: dict[str, str] = {}        # slug -> final namespace-body chunk
+    extra_imports: set[str] = set()
+
+    for i, slug in enumerate(ordered_slugs):
+        if slug not in holes_set:
+            done[slug] = mech_asm.chunks[slug]   # mechanical: append directly
+            continue
+        # Expose every prior decl via a compiled partial target so the LLM
+        # decl can `import` them (R1b per-file olean), then fill + build it.
+        prior = list(ordered_slugs[:i])
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(
+            _reassemble(mech_asm._replace(slugs=prior), overrides=done),
+            encoding="utf-8")
+        ok, detail = olw(target_path)
+        if not ok:
+            _drop_partial()
+            _d = (detail or "")[:120].encode("ascii", "replace").decode("ascii")
+            return PipelineResult(
+                outcome="failed", failure_reason="librarian_integrity_error",
+                failure_detail=f"{slug}: prior decls do not build ({_d})")
+        filled, decline = fill(slug)
+        if decline:
+            _drop_partial()
+            return _decline_or_reopen(
+                conn, problem=problem, workspace=workspace,
+                patch_text=decline, stage="migrate")
+        if filled is None:
+            _drop_partial()
+            return PipelineResult(
+                outcome="failed",
+                failure_reason="librarian_migrate_hole_unfilled",
+                failure_detail=(
+                    f"{target_path.name}: decl `{slug}` could not be filled — "
+                    "the proof obligation exceeds migration; escalate to the "
+                    "Strategist. No `sorry` is committed."))
+        done[slug] = filled[0]
+        extra_imports.update(filled[1])
+
+    header = (_merge_header(mech_asm.header, extra_imports)
+              if extra_imports else mech_asm.header)
+    merged = _reassemble(mech_asm._replace(header=header), overrides=done)
+    res = _commit_migrated_file(
+        merged, conn=conn, problem=problem, workspace=workspace,
+        target_path=target_path, target_module=target_module,
+        ordered_slugs=ordered_slugs, defs_names=defs_names,
+        whitelist=whitelist, olean_writer=olean_writer)
+    if res.outcome != "success":
+        _drop_partial()
+    return res
+
+
 def _run_migrate(conn, *, problem, workspace, pipeline_id, target_file,
                  attempts_dir, problem_dir, prompt_path, whitelist=None):
     """migrate (per-file, plan §5 Step 3): one agent writes the whole
@@ -1509,9 +1859,17 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_file,
     #   - mech_text None (a decl can't even be seeded) → cold-spawn the file.
     seed_text: "str | None" = None
     holes: list[str] = []
-    mech_text, holes = _mechanical_migrate_file(
-        conn, problem=problem, workspace=workspace, target_file=target_file,
-        target_module=target_module, rows=rows)
+    try:
+        mech_text, holes, mech_asm = _mechanical_migrate_file(
+            conn, problem=problem, workspace=workspace,
+            target_file=target_file, target_module=target_module, rows=rows)
+    except _MechIntegrityError as e:
+        # file↔DB drift — surface loud, do NOT fall back to a cold spawn
+        # that would mask the corruption (CLAUDE.md rule 9 + 10).
+        _detail = str(e)[:200].encode("ascii", "replace").decode("ascii")
+        return PipelineResult(
+            outcome="failed", failure_reason="librarian_integrity_error",
+            failure_detail=_detail)
     if mech_text is not None:
         if not holes:
             mech_res = _commit_migrated_file(
@@ -1535,9 +1893,22 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_file,
         else:
             print(f"[librarian] {target_file}: mechanical seed "
                   f"({len(ordered_slugs) - len(holes)} decls relabelled, "
-                  f"{len(holes)} hole(s): {holes}); LLM fills holes",
+                  f"{len(holes)} hole(s): {holes}); incremental per-decl fill",
                   flush=True)
-        # Seed the LLM (whether 0-hole-but-gate-failed or holes present).
+            # Phase 2 (#87): build the file declaration-by-declaration in
+            # file_order — mechanical decls appended directly, each LLM decl
+            # staged ALONE (import the partial target + one decl) and
+            # build-verified before it joins. One small spawn per decl → no
+            # whole-file over-think; no from-scratch path.
+            return _migrate_file_incremental(
+                conn, problem=problem, workspace=workspace,
+                pipeline_id=pipeline_id, target_file=target_file,
+                target_path=target_path, target_module=target_module,
+                ordered_slugs=ordered_slugs, defs_names=defs_names,
+                whitelist=whitelist, attempts_dir=attempts_dir,
+                problem_dir=problem_dir, prompt_path=prompt_path,
+                holes=holes, mech_asm=mech_asm)
+        # Seed the LLM (0-hole-but-gate-failed: finish the near-complete draft).
         seed_text = mech_text
 
     def migrate_spawn(ctx: SpawnCtx) -> int:

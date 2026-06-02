@@ -10,6 +10,7 @@ import pytest
 
 from Tooling.state import db
 from Tooling.pipeline import librarian as lib
+from Tooling.pipeline import PipelineResult
 
 PNS = "Problems.p"  # problem name "p" → namespace Problems.p
 
@@ -26,7 +27,7 @@ def conn():
 
 def _seed_classified(conn, slug, stmt, target_file, order):
     g = db.insert_goal(conn, problem="p", slug=slug,
-                       lean_path=f"proofs/L_{slug}.lean",
+                       lean_path=f"Problems/p/proofs/L_{slug}.lean",
                        statement=stmt, origin="backward", kind="theorem")
     conn.execute("UPDATE goals SET status='proved' WHERE id=?", (g,))
     conn.commit()
@@ -54,7 +55,7 @@ def test_mechanical_assembles_self_contained_file(conn, tmp_path):
                  f"end {PNS}\n")
     rows = [r for r in db.library_decls_for(conn, "p")
             if r["target_file"] == tf and r["lifecycle"] == "classified"]
-    text, holes = lib._mechanical_migrate_file(
+    text, holes, _asm = lib._mechanical_migrate_file(
         conn, problem="p", workspace=tmp_path, target_file=tf,
         target_module="Library.P.Foo", rows=rows)
     assert text is not None
@@ -64,17 +65,17 @@ def test_mechanical_assembles_self_contained_file(conn, tmp_path):
     assert "Problems." not in text
 
 
-def test_mechanical_declines_when_no_proof_file(conn, tmp_path):
-    # classified decl with no L_<slug>.lean on disk → (None, []): can't even
-    # seed a signature, so the whole file cold-spawns.
+def test_mechanical_missing_proof_file_is_integrity_error(conn, tmp_path):
+    # A goal-backed classified decl whose proof file is missing on disk is
+    # file↔DB drift — raised loud (not masked by a cold from-scratch spawn).
     _seed_classified(conn, "ghost", "True", "Library/P/Bar.lean", 0)
     rows = [r for r in db.library_decls_for(conn, "p")
             if r["lifecycle"] == "classified"]
-    text, holes = lib._mechanical_migrate_file(
-        conn, problem="p", workspace=tmp_path, target_file="Library/P/Bar.lean",
-        target_module="Library.P.Bar", rows=rows)
-    assert text is None
-    assert holes == []
+    with pytest.raises(lib._MechIntegrityError):
+        lib._mechanical_migrate_file(
+            conn, problem="p", workspace=tmp_path,
+            target_file="Library/P/Bar.lean",
+            target_module="Library.P.Bar", rows=rows)
 
 
 def test_commit_migrated_file_marks_all(conn, tmp_path):
@@ -92,7 +93,7 @@ def test_commit_migrated_file_marks_all(conn, tmp_path):
     rows = [r for r in db.library_decls_for(conn, "p")
             if r["target_file"] == tf and r["lifecycle"] == "classified"]
     rows.sort(key=lambda r: r["file_order"])
-    text, holes = lib._mechanical_migrate_file(
+    text, holes, _asm = lib._mechanical_migrate_file(
         conn, problem="p", workspace=tmp_path, target_file=tf,
         target_module="Library.P.Foo", rows=rows)
     assert text is not None
@@ -126,7 +127,7 @@ def test_commit_rolls_back_on_gate_fail(conn, tmp_path):
                  f"end {PNS}\n")
     rows = [r for r in db.library_decls_for(conn, "p")
             if r["target_file"] == tf and r["lifecycle"] == "classified"]
-    text, _holes = lib._mechanical_migrate_file(
+    text, _holes, _asm = lib._mechanical_migrate_file(
         conn, problem="p", workspace=tmp_path, target_file=tf,
         target_module="Library.P.Foo", rows=rows)
     res = lib._commit_migrated_file(
@@ -170,7 +171,7 @@ def test_merge_different_binders_declines_citation(conn, tmp_path):
     # bar is the canonical keep sibling (1 binder); bar_of_h merges into it
     # but takes an extra hypothesis (2 binders), same conclusion.
     g_bar = db.insert_goal(conn, problem="p", slug="bar",
-                           lean_path="proofs/L_bar.lean",
+                           lean_path="Problems/p/proofs/L_bar.lean",
                            statement="n = n", origin="backward", kind="theorem")
     conn.execute("UPDATE goals SET status='proved' WHERE id=?", (g_bar,))
     db.upsert_library_decl(conn, problem="p", slug="bar", source_goal_id=g_bar)
@@ -178,7 +179,7 @@ def test_merge_different_binders_declines_citation(conn, tmp_path):
     db.set_library_classification(conn, problem="p", slug="bar",
                                   target_file=tf, target_name=None, file_order=0)
     g_h = db.insert_goal(conn, problem="p", slug="bar_of_h",
-                         lean_path="proofs/L_bar_of_h.lean",
+                         lean_path="Problems/p/proofs/L_bar_of_h.lean",
                          statement="n = n", origin="backward", kind="theorem")
     conn.execute("UPDATE goals SET status='proved' WHERE id=?", (g_h,))
     db.upsert_library_decl(conn, problem="p", slug="bar_of_h", source_goal_id=g_h)
@@ -200,7 +201,7 @@ def test_merge_different_binders_declines_citation(conn, tmp_path):
     rows = [r for r in db.library_decls_for(conn, "p")
             if r["target_file"] == tf and r["lifecycle"] == "classified"]
     rows.sort(key=lambda r: r["file_order"])
-    text, holes = lib._mechanical_migrate_file(
+    text, holes, _asm = lib._mechanical_migrate_file(
         conn, problem="p", workspace=tmp_path, target_file=tf,
         target_module="Library.P.Foo", rows=rows)
     # bar_of_h NOT redirected (binder mismatch) → foo can't be completed
@@ -222,7 +223,7 @@ def test_migrate_context_shows_sibling_redirects(conn, tmp_path):
     tf = "Library/P/Foo.lean"
     _seed_classified(conn, "foo", "True", tf, 0)
     g = db.insert_goal(conn, problem="p", slug="bar",
-                       lean_path="proofs/L_bar.lean", statement="True",
+                       lean_path="Problems/p/proofs/L_bar.lean", statement="True",
                        origin="backward", kind="theorem")
     conn.execute("UPDATE goals SET status='proved' WHERE id=?", (g,))
     db.upsert_library_decl(conn, problem="p", slug="bar", source_goal_id=g)
@@ -255,7 +256,7 @@ def test_seed_mode_clean_decl_plus_hole(conn, tmp_path):
     _seed_classified(conn, "holey", "True", tf, 1)
     # a dropped (non-keep) sibling `gone` that holey's body references
     g = db.insert_goal(conn, problem="p", slug="gone",
-                       lean_path="proofs/L_gone.lean", statement="True",
+                       lean_path="Problems/p/proofs/L_gone.lean", statement="True",
                        origin="backward", kind="theorem")
     conn.execute("UPDATE goals SET status='proved' WHERE id=?", (g,))
     db.upsert_library_decl(conn, problem="p", slug="gone", source_goal_id=g)
@@ -273,7 +274,7 @@ def test_seed_mode_clean_decl_plus_hole(conn, tmp_path):
     rows = [r for r in db.library_decls_for(conn, "p")
             if r["target_file"] == tf and r["lifecycle"] == "classified"]
     rows.sort(key=lambda r: r["file_order"])
-    text, holes = lib._mechanical_migrate_file(
+    text, holes, _asm = lib._mechanical_migrate_file(
         conn, problem="p", workspace=tmp_path, target_file=tf,
         target_module="Library.P.Foo", rows=rows)
     assert text is not None
@@ -306,3 +307,313 @@ def test_context_md_marks_holes_in_seed_mode(conn, tmp_path):
         conn, problem="p", work_kind="migrate", attempts_dir=attempts,
         workspace=tmp_path, target_file=tf, holes=None)
     assert "finish it, don't rewrite" not in ctx2.read_text(encoding="utf-8")
+
+
+def test_context_md_solo_hole_scopes_to_one(conn, tmp_path):
+    # Per-hole mode (#87): with several holes but solo_hole set, the banner
+    # tells the agent to fill exactly one and leave the rest as sorry; only
+    # the solo hole is tagged FILL THIS.
+    tf = "Library/P/Foo.lean"
+    _seed_classified(conn, "a", "True", tf, 0)
+    _seed_classified(conn, "b", "True", tf, 1)
+    attempts = tmp_path / ".attempts"
+    attempts.mkdir()
+    ctx = lib.compile_librarian_context(
+        conn, problem="p", work_kind="migrate", attempts_dir=attempts,
+        workspace=tmp_path, target_file=tf, holes=["a", "b"], solo_hole="a")
+    body = ctx.read_text(encoding="utf-8")
+    assert "Fill **exactly one**" in body and "`a`" in body
+    assert "leave those `sorry` untouched" in body
+    assert "### 1. `a` ⛏ FILL THIS" in body
+    assert "leave as sorry — filled in parallel" in body   # the other hole `b`
+
+
+# --- _MechAssembly / _reassemble: the per-hole merge foundation (#87) ---
+
+def test_reassemble_roundtrip_and_override():
+    asm = lib._MechAssembly(
+        header="import Mathlib",
+        target_module="Library.P.Foo",
+        slugs=["a", "b", "c"],
+        chunks={"a": "theorem a : True := trivial",
+                "b": "theorem b : True := by sorry",
+                "c": "theorem c : True := trivial"})
+    # No override reproduces a deterministic whole file, holes intact, in order.
+    full = lib._reassemble(asm)
+    assert "namespace Library.P.Foo" in full and "end Library.P.Foo" in full
+    assert "theorem b : True := by sorry" in full
+    assert full.index("theorem a") < full.index("theorem b") < full.index("theorem c")
+    # Overriding b's chunk (a per-hole fill) swaps ONLY b; a/c untouched, order kept.
+    merged = lib._reassemble(asm, {"b": "theorem b : True := by exact trivial"})
+    assert "theorem b : True := by exact trivial" in merged
+    assert "sorry" not in merged
+    assert "theorem a : True := trivial" in merged
+    assert (merged.index("theorem a") < merged.index("theorem b")
+            < merged.index("theorem c"))
+
+
+# --- incremental per-decl migrate: extraction + orchestration (#87) ---
+
+def _asm3(hole="b"):
+    """3-decl assembly a,b,c with `hole` seeded as a `sorry` stub."""
+    chunks = {"a": "theorem a : True := trivial",
+              "b": "theorem b (n : Nat) : True := trivial",
+              "c": "theorem c : True := trivial"}
+    chunks[hole] = f"theorem {hole} : True := by sorry"
+    return lib._MechAssembly(header="import Mathlib",
+                             target_module="Library.P.Foo",
+                             slugs=["a", "b", "c"], chunks=chunks)
+
+
+def test_extract_single_decl_splits_imports_and_body():
+    # The incremental seed is `import … + namespace + ONE decl + end`; the
+    # decl is alone in the namespace body, so extraction is exact (no anchors).
+    text = ("import Mathlib\nimport Library.P.Dep\n"
+            "namespace Library.P.Foo\n"
+            "theorem b : True := by exact trivial\n"
+            "end Library.P.Foo\n")
+    chunk, imports = lib._extract_single_decl(text, "Library.P.Foo")
+    assert chunk == "theorem b : True := by exact trivial"
+    assert "import Mathlib" in imports and "import Library.P.Dep" in imports
+
+
+def test_merge_header_folds_new_imports_dedup():
+    h = "import Mathlib\nimport Library.P.A\n\nopen Matrix"
+    merged = lib._merge_header(h, {"import Library.P.B", "import Mathlib"})
+    assert merged.count("import Mathlib") == 1            # de-duplicated
+    assert "import Library.P.B" in merged                 # new import folded in
+    assert "open Matrix" in merged                        # open preserved
+
+
+def test_hole_still_unfilled_detects_sorry_and_noop():
+    seed = "theorem b : True := by sorry"
+    assert lib._hole_still_unfilled(seed, seed) is True          # untouched
+    assert lib._hole_still_unfilled("theorem b := by sorry", seed) is True
+    assert lib._hole_still_unfilled("theorem b : True := trivial", seed) is False
+
+
+def _inc_kwargs(conn, tmp_path, asm, holes):
+    return dict(
+        conn=conn, problem="p", workspace=tmp_path, pipeline_id="pid",
+        target_file="Library/P/Foo.lean",
+        target_path=tmp_path / "Library/P/Foo.lean",
+        target_module="Library.P.Foo",
+        ordered_slugs=asm.slugs, defs_names=[], whitelist=None,
+        attempts_dir=tmp_path / ".attempts", problem_dir=tmp_path / "Problems/p",
+        prompt_path=tmp_path / "migrate.md", holes=holes, mech_asm=asm)
+
+
+def test_incremental_mechanical_and_filled_commit(conn, tmp_path, monkeypatch):
+    # a, c relabel mechanically; b is filled by the (mocked) per-decl spawn.
+    # The final file carries all three in order, no sorry, committed once.
+    asm = _asm3("b")
+    captured = {}
+    monkeypatch.setattr(lib, "file_dependency_graph", lambda *a, **k: {})
+
+    def fake_commit(merged, **kw):
+        captured["merged"] = merged
+        return PipelineResult(outcome="success")
+    monkeypatch.setattr(lib, "_commit_migrated_file", fake_commit)
+
+    res = lib._migrate_file_incremental(
+        **_inc_kwargs(conn, tmp_path, asm, ["b"]),
+        fill_fn=lambda slug: ((f"theorem {slug} : True := by exact trivial", []),
+                              None),
+        olean_writer=lambda p: (True, ""))
+    assert res.outcome == "success"
+    merged = captured["merged"]
+    assert "sorry" not in merged
+    assert "theorem b : True := by exact trivial" in merged
+    assert "theorem a : True := trivial" in merged       # mechanical untouched
+    assert "theorem c : True := trivial" in merged
+    assert (merged.index("theorem a") < merged.index("theorem b")
+            < merged.index("theorem c"))
+
+
+def test_incremental_unfilled_is_distinct_no_sorry_failure(
+        conn, tmp_path, monkeypatch):
+    # The LLM decl can't be filled (spawn exhausted → (None, None)). Result is
+    # a DISTINCT no-sorry failure (escalation hook); commit never runs; the
+    # partial staging write is cleaned up.
+    asm = _asm3("b")
+    monkeypatch.setattr(lib, "file_dependency_graph", lambda *a, **k: {})
+    monkeypatch.setattr(lib, "_commit_migrated_file",
+                        lambda *a, **k: pytest.fail("commit must not run"))
+
+    res = lib._migrate_file_incremental(
+        **_inc_kwargs(conn, tmp_path, asm, ["b"]),
+        fill_fn=lambda slug: (None, None), olean_writer=lambda p: (True, ""))
+    assert res.outcome == "failed"
+    assert res.failure_reason == "librarian_migrate_hole_unfilled"
+    assert "b" in res.failure_detail and "Strategist" in res.failure_detail
+    assert not (tmp_path / "Library/P/Foo.lean").exists()   # partial removed
+
+
+def test_incremental_decline_routes_to_cascade(conn, tmp_path, monkeypatch):
+    # The decl agent emits `-- decline: needs-upstream ...` → routed through
+    # the shared cascade on the main conn.
+    asm = _asm3("b")
+    seen = {}
+    monkeypatch.setattr(lib, "file_dependency_graph", lambda *a, **k: {})
+
+    def fake_reopen(conn, **kw):
+        seen["patch"] = kw["patch_text"]
+        return PipelineResult(outcome="agent_declined",
+                              failure_reason="librarian_needs_upstream")
+    monkeypatch.setattr(lib, "_decline_or_reopen", fake_reopen)
+    monkeypatch.setattr(lib, "_commit_migrated_file",
+                        lambda *a, **k: pytest.fail("commit must not run"))
+
+    decline = "-- decline: needs-upstream foo needs a stronger shape\n"
+    res = lib._migrate_file_incremental(
+        **_inc_kwargs(conn, tmp_path, asm, ["b"]),
+        fill_fn=lambda slug: (None, decline), olean_writer=lambda p: (True, ""))
+    assert res.failure_reason == "librarian_needs_upstream"
+    assert "needs-upstream" in seen["patch"]
+
+
+def test_incremental_prior_build_fail_is_integrity(conn, tmp_path, monkeypatch):
+    # Staging the prior decls fails to build (olean writer says no) before the
+    # LLM decl is even spawned → loud integrity failure, fill never runs.
+    asm = _asm3("b")
+    monkeypatch.setattr(lib, "file_dependency_graph", lambda *a, **k: {})
+    monkeypatch.setattr(lib, "_commit_migrated_file",
+                        lambda *a, **k: pytest.fail("commit must not run"))
+
+    def fill_must_not_run(slug):
+        pytest.fail("fill must not run when priors don't build")
+    res = lib._migrate_file_incremental(
+        **_inc_kwargs(conn, tmp_path, asm, ["b"]),
+        fill_fn=fill_must_not_run, olean_writer=lambda p: (False, "boom"))
+    assert res.outcome == "failed"
+    assert res.failure_reason == "librarian_integrity_error"
+    assert not (tmp_path / "Library/P/Foo.lean").exists()
+
+
+# --- unified per-decl source: Defs / root / signature-hole / drift (#87) ---
+
+def _write_defs(tmp_path, body):
+    pdir = tmp_path / "Problems" / "p"
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "Defs.lean").write_text(body, encoding="utf-8")
+
+
+def test_defs_decl_migrates_from_defs_lean(conn, tmp_path):
+    # A Defs decl (no source goal, no L_<slug>.lean) classified into a file
+    # migrates through the SAME mechanical path — its source is its slice of
+    # Defs.lean. No hole, no cold from-scratch.
+    tf = "Library/P/Defs.lean"
+    db.upsert_library_decl(conn, problem="p", slug="MyPred", source_goal_id=None)
+    db.set_library_verdict(conn, problem="p", slug="MyPred", verdict="keep")
+    db.set_library_classification(conn, problem="p", slug="MyPred",
+                                  target_file=tf, target_name=None, file_order=0)
+    conn.commit()
+    _write_defs(tmp_path,
+                "import Mathlib\n" + f"namespace {PNS}\n"
+                "def MyPred (n : Nat) : Prop := n = n\n" + f"end {PNS}\n")
+    rows = [r for r in db.library_decls_for(conn, "p")
+            if r["target_file"] == tf and r["lifecycle"] == "classified"]
+    text, holes, _asm = lib._mechanical_migrate_file(
+        conn, problem="p", workspace=tmp_path, target_file=tf,
+        target_module="Library.P.Defs", rows=rows)
+    assert text is not None
+    assert holes == []                                   # relabels cleanly
+    assert "def MyPred (n : Nat) : Prop := n = n" in text
+    assert "namespace Library.P.Defs" in text
+    assert "Problems." not in text
+
+
+def test_defs_decl_preserves_open_header(conn, tmp_path):
+    # A Defs decl relying on notation behind an `open` must keep that `open`
+    # after migration (else the merged file's Gate A build would fail).
+    tf = "Library/P/Defs.lean"
+    db.upsert_library_decl(conn, problem="p", slug="MyMat", source_goal_id=None)
+    db.set_library_verdict(conn, problem="p", slug="MyMat", verdict="keep")
+    db.set_library_classification(conn, problem="p", slug="MyMat",
+                                  target_file=tf, target_name=None, file_order=0)
+    conn.commit()
+    _write_defs(tmp_path,
+                "import Mathlib\nopen Matrix\n" + f"namespace {PNS}\n"
+                "def MyMat : Nat := 0\n" + f"end {PNS}\n")
+    rows = [r for r in db.library_decls_for(conn, "p")
+            if r["target_file"] == tf and r["lifecycle"] == "classified"]
+    text, holes, _asm = lib._mechanical_migrate_file(
+        conn, problem="p", workspace=tmp_path, target_file=tf,
+        target_module="Library.P.Defs", rows=rows)
+    assert text is not None and holes == []
+    assert "open Matrix" in text                 # notation header preserved
+
+
+def test_root_decl_migrates_from_root_lean(conn, tmp_path):
+    # The root theorem's source is Root.lean (its lean_path), not an L_ file.
+    # It migrates uniformly — no cold path.
+    tf = "Library/P/Main.lean"
+    g = db.insert_goal(conn, problem="p", slug="main",
+                       lean_path="Problems/p/Root.lean", statement="True",
+                       origin="root", kind="theorem")
+    conn.execute("UPDATE goals SET status='proved' WHERE id=?", (g,))
+    db.upsert_library_decl(conn, problem="p", slug="main", source_goal_id=g)
+    db.set_library_verdict(conn, problem="p", slug="main", verdict="keep")
+    db.set_library_classification(conn, problem="p", slug="main",
+                                  target_file=tf, target_name=None, file_order=0)
+    conn.commit()
+    pdir = tmp_path / "Problems" / "p"
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "Root.lean").write_text(
+        "import Mathlib\n" + f"namespace {PNS}\n"
+        "theorem main : True := by trivial\n" + f"end {PNS}\n",
+        encoding="utf-8")
+    rows = [r for r in db.library_decls_for(conn, "p")
+            if r["target_file"] == tf and r["lifecycle"] == "classified"]
+    text, holes, _asm = lib._mechanical_migrate_file(
+        conn, problem="p", workspace=tmp_path, target_file=tf,
+        target_module="Library.P.Main", rows=rows)
+    assert text is not None
+    assert holes == []
+    assert "theorem main : True := by trivial" in text
+    assert "namespace Library.P.Main" in text
+
+
+def test_signature_hole_when_sig_cites_unmigrated_defs(conn, tmp_path):
+    # `foo`'s SIGNATURE references a Defs symbol `MyT` with no migrated
+    # Library module → not even body_to_sorry is Defs-free → best-effort
+    # SIGNATURE hole (NOT a cold from-scratch spawn). The unresolved ref is
+    # left in the seed for the per-hole LLM to restate.
+    tf = "Library/P/Foo.lean"
+    _seed_classified(conn, "foo", "True", tf, 0)
+    _write_defs(tmp_path,
+                "import Mathlib\n" + f"namespace {PNS}\n"
+                "def MyT : Type := Nat\n" + f"end {PNS}\n")
+    _write_proof(tmp_path, "foo",
+                 "import Mathlib\n" + f"import {PNS}.Defs\n"
+                 + f"namespace {PNS}\n"
+                 "theorem foo (x : MyT) : True := by trivial\n"
+                 + f"end {PNS}\n")
+    rows = [r for r in db.library_decls_for(conn, "p")
+            if r["target_file"] == tf and r["lifecycle"] == "classified"]
+    text, holes, _asm = lib._mechanical_migrate_file(
+        conn, problem="p", workspace=tmp_path, target_file=tf,
+        target_module="Library.P.Foo", rows=rows)
+    assert text is not None                  # NOT None / cold
+    assert holes == ["foo"]                  # seeded as a (signature) hole
+    assert "sorry" in text
+    assert "MyT" in text                     # unresolved sig ref left for LLM
+
+
+def test_alias_missing_strategy_is_integrity_error(conn, tmp_path):
+    # An alias L_ file pointing at a _strategy_s* file that is missing on
+    # disk is file↔DB drift → raised loud (never a silent cold spawn).
+    tf = "Library/P/Foo.lean"
+    _seed_classified(conn, "aliased", "True", tf, 0)
+    _write_proof(tmp_path, "aliased",
+                 "import Mathlib\n"
+                 + f"import {PNS}.proofs._strategy_s9999\n"
+                 + f"namespace {PNS}\n"
+                 + f"def aliased := @{PNS}.s9999\n"
+                 + f"end {PNS}\n")
+    rows = [r for r in db.library_decls_for(conn, "p")
+            if r["target_file"] == tf and r["lifecycle"] == "classified"]
+    with pytest.raises(lib._MechIntegrityError):
+        lib._mechanical_migrate_file(
+            conn, problem="p", workspace=tmp_path, target_file=tf,
+            target_module="Library.P.Foo", rows=rows)
