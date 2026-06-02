@@ -2046,7 +2046,21 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_file,
           f"({len(ordered_slugs) - len(holes)} decls relabelled, "
           f"{len(holes)} hole(s): {holes}); incremental per-decl fill",
           flush=True)
-    return _incremental(localize=False)
+    res = _incremental(localize=False)
+    # A mechanical relabel can yield a non-building proof (e.g. a dropped Defs
+    # import the tactic relied on for simp lemmas / instances) — Phase-1 relabel
+    # never reads proof meaning, so the build is the arbiter (plan §4).
+    # localize=False surfaces that as the prior-build integrity error; retry
+    # per-decl so the offending mechanical decl is localized and demoted to an
+    # LLM fill rather than blocking the file.
+    if (res.outcome == "failed"
+            and res.failure_reason == "librarian_integrity_error"
+            and "do not build" in (res.failure_detail or "")):
+        print(f"[librarian] {target_file}: mechanical prefix failed to build; "
+              "retrying with per-decl localize (demote the breaker)",
+              flush=True)
+        res = _incremental(localize=True)
+    return res
 
 
 # ---------------------------------------------------------------------
