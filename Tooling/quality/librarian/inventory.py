@@ -203,9 +203,22 @@ def usage_graph(
             seen_mods.add(mod)
             for imp in imports_of(mod):
                 if imp.startswith("L_"):
-                    y = imp[2:]
-                    y = alias_map.get(y, y)   # merged sibling → canonical
-                    if y in slug_set and y != x:
+                    raw_y = imp[2:]
+                    y = alias_map.get(raw_y, raw_y)   # merged sibling → canonical
+                    if y == x:
+                        # `raw_y` was dedup-merged INTO x itself: it is dropped,
+                        # so x's migrated body must INLINE raw_y's proof — and
+                        # therefore transitively depends on whatever raw_y's
+                        # proof cites. Walk into raw_y's proof (don't just drop
+                        # the self-edge), else a cross-file dep that only appears
+                        # through the inlined self-merged sibling is lost from
+                        # the layout (real Jordan: block_jordan_basis_exists
+                        # cites assemble_block_jordan_strong (merge→itself) whose
+                        # proof uses extended_jordan_family_strong in another
+                        # file). seen_mods bounds the recursion.
+                        if raw_y != x:
+                            frontier.append(f"L_{raw_y}")
+                    elif y in slug_set:
                         out[x].add(y)
                 elif imp.startswith("_strategy_"):
                     frontier.append(imp)   # walk the strategy chain

@@ -98,6 +98,37 @@ def test_usage_graph_remaps_merged_sibling(tmp_path):
     assert g["x"] == {"y"}
 
 
+def test_usage_graph_folds_self_merged_sibling_transitive_deps(tmp_path):
+    # x's proof cites `m`, but `m` was dedup-merged INTO x itself (self-merge),
+    # so `m` is dropped and x's migrated body must INLINE m's proof — which cites
+    # the cross-file kept sibling `z`. The edge x→z exists ONLY through the
+    # inlined self-merged sibling and must not be lost (real Jordan:
+    # block_jordan_basis_exists cites assemble_block_jordan_strong (merge→itself)
+    # whose proof uses extended_jordan_family_strong in another file).
+    _alias(tmp_path, "x", 100)
+    _strategy(tmp_path, 100, uses=["m"])
+    _alias(tmp_path, "m", 200)
+    _strategy(tmp_path, 200, uses=["z"])
+    _alias(tmp_path, "z", 300)
+    _strategy(tmp_path, 300, uses=[])
+    # Pre-fix: m→x self-edge dropped, m's proof never walked → edge x→z lost.
+    g = inv.usage_graph(tmp_path, "p", {"x", "z"}, alias_map={"m": "x"})
+    assert g["x"] == {"z"}
+    # z, having no self-merged sibling, stays a leaf.
+    assert g["z"] == set()
+
+
+def test_usage_graph_self_merge_recursion_terminates(tmp_path):
+    # Pathological: m merges into x and m's proof cites x's own L_ (cycle).
+    # seen_mods must bound the walk — no infinite recursion, no crash.
+    _alias(tmp_path, "x", 100)
+    _strategy(tmp_path, 100, uses=["m"])
+    _alias(tmp_path, "m", 200)
+    _strategy(tmp_path, 200, uses=["x"])
+    g = inv.usage_graph(tmp_path, "p", {"x"}, alias_map={"m": "x"})
+    assert g["x"] == set()
+
+
 def test_merge_alias_map_resolves_chain(conn, tmp_path):
     # a merges into b, b merges into c (kept) → alias map a→c, b→c.
     for s in ("a", "b", "c"):
