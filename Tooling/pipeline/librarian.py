@@ -2703,19 +2703,53 @@ def _commit_bridge(patch_text, *, conn, problem, workspace, statement,
             pass
 
 
+def _bridge_probe_text(conn, *, problem, statement, migrated) -> "str | None":
+    """v0.3 mechanical Gate B probe (plan §2/§3). Build a throwaway Root that
+    imports every migrated Library module, opens every migrated namespace (so
+    the original statement's bare symbols — e.g. a `Defs` predicate now living
+    in the Library — resolve), and re-derives the original `main` by citing its
+    migrated form: `theorem main : <statement> := by exact <main_fq>`. Returns
+    None when the migrated root decl has no Library name (cannot build a probe).
+
+    No agent: the migrated `main` IS the original theorem relabelled, so a
+    direct citation is the whole derivation. If it does not typecheck, the
+    statement needs a non-mechanical bridge (load-bearing Defs / RequestUserAmend)
+    — surfaced as a hard fail upstream, not patched by an LLM."""
+    root_slug = conn.execute(
+        "SELECT slug FROM goals WHERE problem = ? AND origin = 'root' "
+        "AND status = 'proved' ORDER BY id LIMIT 1", (problem,)).fetchone()
+    root_slug = root_slug["slug"] if root_slug else "main"
+    main_row = next((r for r in migrated if r["slug"] == root_slug), None)
+    if main_row is None or not main_row["target_name"]:
+        return None
+    main_fq = main_row["target_name"]
+    modules, namespaces = set(), set()
+    for r in migrated:
+        if r["target_file"]:
+            modules.add(_library_module_of(r["target_file"]))
+        if r["target_name"] and "." in r["target_name"]:
+            namespaces.add(r["target_name"].rsplit(".", 1)[0])
+    lines = [f"import {m}" for m in sorted(modules)]
+    lines += [f"open {ns}" for ns in sorted(namespaces)]
+    lines += ["", f"theorem main : {statement} := by exact {main_fq}", ""]
+    return "\n".join(lines)
+
+
 def _run_bridge(conn, *, problem, workspace, pipeline_id,
-                attempts_dir, problem_dir, prompt_path, whitelist=None):
-    """Gate B step (plan §2 定海神針, plan §5): an agent re-derives the
-    original root `theorem main` from the Library alone (`bridge.md`). The
-    bridge Root is a throwaway verification probe (see `_commit_bridge`).
-    On success writes INDEX (the done-marker); a decline / gate failure is
-    retryable and, if the Library genuinely lacks a keystone, correctly
-    blocks the chain from finishing. LSP + session-retry loop mirrors
-    migrate."""
-    from . import PipelineResult, _write_mcp_config
-    from ._retry import SpawnCtx, run_with_session_retries
-    from .. import agent
-    from ..core import dispatcher
+                attempts_dir=None, problem_dir=None, prompt_path=None,
+                whitelist=None):
+    """Gate B step (plan §2 定海神針) — v0.3 MECHANICAL probe, no agent, no LLM.
+
+    Re-derive the original root `theorem main` from the Library alone by citing
+    `main`'s migrated form (`_bridge_probe_text`), then `_commit_bridge` stages
+    it as a throwaway probe and runs `check_root_rederivation` (statement-pin +
+    import-closure + build + axiom-whitelist). On pass writes INDEX (the chain
+    done-marker). If the mechanical citation does not typecheck, the
+    Library/statement needs a non-mechanical bridge (load-bearing Defs that
+    mathlib can't express → RequestUserAmend) — HARD FAIL + flag operator, not a
+    silent LLM patch. `attempts_dir`/`problem_dir`/`prompt_path` are unused
+    (kept for signature parity with the dispatcher's run_librarian call)."""
+    from . import PipelineResult
 
     migrated = _harvested_decls(conn, problem)
     if not migrated:
@@ -2729,71 +2763,28 @@ def _run_bridge(conn, *, problem, workspace, pipeline_id,
             outcome="failed", failure_reason="librarian_no_root",
             failure_detail="no proved root statement for the bridge")
     statement = " ".join(root["statement"].split())
-    patch_lean = attempts_dir / "patch.lean"
-    # Snapshot for re-gating any Library lemma the bridge agent edits in place
-    # (bridge.md lets it fix a too-weak lemma). The bridge probe build only
-    # transitively touches imported files; re-gate makes "the framework
-    # re-checks every file you touch" actually true.
-    snap_before = _snapshot_problem_library(conn, problem, workspace)
 
-    def bridge_spawn(ctx: SpawnCtx) -> int:
-        if ctx.cold:
-            compile_librarian_context(
-                conn, problem=problem, work_kind="bridge",
-                attempts_dir=ctx.attempts_dir, workspace=workspace)
-            patch_lean.write_text("", encoding="utf-8")
-        mcp_config_path = _write_mcp_config(
-            attempts_dir=ctx.attempts_dir, workspace=workspace,
-            target=patch_lean, pipeline_id=pipeline_id, problem=problem)
-        return agent.spawn_llm(
-            kind="librarian", prompt_path=prompt_path,
-            problem_dir=problem_dir, attempts_dir=ctx.attempts_dir,
-            session_id=ctx.sid, is_retry=not ctx.cold,
-            retry_context=ctx.retry_context,
-            mcp_config_path=mcp_config_path,
-            inline_prompt=ctx.inline_prompt,
-            timeout_sec_override=ctx.budget_override)
+    probe = _bridge_probe_text(
+        conn, problem=problem, statement=statement, migrated=migrated)
+    if probe is None:
+        return PipelineResult(
+            outcome="failed", failure_reason="librarian_no_root",
+            failure_detail="migrated root decl has no Library name; "
+                           "cannot build the Gate B probe")
 
-    def bridge_parse():
-        if not patch_lean.exists():
-            return PipelineResult(outcome="failed",
-                                  failure_reason="agent_no_output",
-                                  failure_detail="no patch.lean")
-        patch_text = patch_lean.read_text(encoding="utf-8")
-        # Re-gate any Library file the agent edited en route (rollback on a
-        # failed run, like cleanup). Done before the decline check so a
-        # decline that also left edits doesn't leave them half-applied.
-        ok, detail, touched = _regate_touched(
-            conn, problem=problem, workspace=workspace,
-            snap_before=snap_before, whitelist=whitelist or [])
-        if not ok:
-            _restore_snapshot(workspace, snap_before, touched)
-            return PipelineResult(
-                outcome="failed", failure_reason="librarian_gate_failed",
-                failure_detail=f"bridge edited a Library file that fails "
-                               f"re-gate: {detail}")
-        if "-- decline:" in patch_text:
-            _restore_snapshot(workspace, snap_before, touched)
-            return _decline_or_reopen(
-                conn, problem=problem, workspace=workspace,
-                patch_text=patch_text, stage="bridge")
-        res = _commit_bridge(
-            patch_text, conn=conn, problem=problem, workspace=workspace,
-            statement=statement, whitelist=whitelist or [])
-        if res.outcome != "success":
-            _restore_snapshot(workspace, snap_before, touched)
-        return res
-
-    def bridge_postmortem(sid: str) -> None:
-        pass
-
-    return run_with_session_retries(
-        conn=conn, goal_id=None, pipeline_id=pipeline_id,
-        budget_threshold=dispatcher.BUILDER_THRESHOLD,
-        shelve_threshold=dispatcher.SHELVE_THRESHOLD,
-        attempts_dir=attempts_dir,
-        spawn_fn=bridge_spawn, parse_fn=bridge_parse,
-        postmortem_fn=bridge_postmortem, workspace=workspace)
+    res = _commit_bridge(
+        probe, conn=conn, problem=problem, workspace=workspace,
+        statement=statement, whitelist=whitelist or [])
+    if res.outcome != "success":
+        # Mechanical re-derivation failed → the Library/statement needs a
+        # non-mechanical bridge. Re-frame as the v0.3 operator-flag outcome.
+        return PipelineResult(
+            outcome="failed", failure_reason="librarian_bridge_not_mechanical",
+            failure_detail=(
+                "Gate B mechanical re-derivation failed (needs operator / "
+                "RequestUserAmend — load-bearing Defs mathlib can't express): "
+                + (res.failure_detail or "")[:300]))
+    return res
 
 
 def _run_finish(conn, *, problem: str, workspace):

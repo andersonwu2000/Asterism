@@ -117,3 +117,60 @@ def test_bridge_context_lists_statement_and_decls(conn, tmp_path):
     assert "MyProp x y" in body                       # verbatim statement
     assert "`Library.P.Foo.keystone`" in body         # migrated decls listed
     assert "`Library.P.Foo.helper`" in body
+
+
+# --- v0.3 mechanical bridge (no agent) ---
+
+from Tooling.pipeline import PipelineResult as _PR
+
+
+def _migrate_existing(conn, slug, target_name, target_file, goal_id):
+    """Add a migrated library_decl for an ALREADY-inserted goal (avoids the
+    goals UNIQUE(problem,slug) clash when the decl IS the root `main`)."""
+    db.upsert_library_decl(conn, problem="p", slug=slug, source_goal_id=goal_id)
+    db.set_library_verdict(conn, problem="p", slug=slug, verdict="keep")
+    db.set_library_classification(conn, problem="p", slug=slug,
+                                  target_file=target_file,
+                                  target_name=target_name, file_order=0)
+    db.mark_library_migrated(conn, problem="p", slug=slug)
+    conn.commit()
+
+
+def test_bridge_probe_text_cites_migrated_main(conn, tmp_path):
+    # v0.3 (plan §2/§3): the mechanical Gate B probe imports every migrated
+    # module, opens every migrated namespace, and re-derives the original
+    # `main` by citing its migrated form.
+    root_g = _root(conn, "True")
+    _migrate_existing(conn, "main", "Library.P.Foo.main",
+                      "Library/P/Foo.lean", root_g)
+    _migrated(conn, "lem", "Library.P.Bar.lem", "Library/P/Bar.lean")
+    migrated = lib._harvested_decls(conn, "p")
+    probe = lib._bridge_probe_text(conn, problem="p", statement="True",
+                                   migrated=migrated)
+    assert "import Library.P.Foo" in probe
+    assert "import Library.P.Bar" in probe
+    assert "open Library.P.Foo" in probe
+    assert "theorem main : True := by exact Library.P.Foo.main" in probe
+
+
+def test_run_bridge_pass_writes_index(conn, tmp_path, monkeypatch):
+    root_g = _root(conn, "True")
+    _migrate_existing(conn, "main", "Library.P.Foo.main",
+                      "Library/P/Foo.lean", root_g)
+    monkeypatch.setattr(lib, "_commit_bridge",
+                        lambda *a, **k: _PR(outcome="success"))
+    r = lib._run_bridge(conn, problem="p", workspace=tmp_path, pipeline_id="pid")
+    assert r.outcome == "success"
+
+
+def test_run_bridge_fail_is_not_mechanical(conn, tmp_path, monkeypatch):
+    # Mechanical citation that doesn't typecheck → operator-flag outcome, no LLM.
+    root_g = _root(conn, "True")
+    _migrate_existing(conn, "main", "Library.P.Foo.main",
+                      "Library/P/Foo.lean", root_g)
+    monkeypatch.setattr(lib, "_commit_bridge", lambda *a, **k: _PR(
+        outcome="failed", failure_reason="librarian_gate_failed",
+        failure_detail="type mismatch"))
+    r = lib._run_bridge(conn, problem="p", workspace=tmp_path, pipeline_id="pid")
+    assert r.outcome == "failed"
+    assert r.failure_reason == "librarian_bridge_not_mechanical"
