@@ -238,6 +238,20 @@ def usage_graph(
             p = resolve_ci(proofs, f"{mod}.lean")   # L_/l_ case-insensitive
         return p.read_text(encoding="utf-8") if (p and p.exists()) else None
 
+    # `sN` (a strategy proof-term) → the kept lemma slug whose proof IS that
+    # strategy (`def <slug> := @sN`). A strategy body that cites another
+    # strategy's RAW term (instead of that lemma's name) still depends on the
+    # LEMMA — record the edge to it (below), so the lemma stays reachable
+    # instead of being walked-through-and-dropped.
+    _alias_re = re.compile(r"def\s+\w+\s*:=\s*@?Problems\.[\w.]+\.(s\d+)")
+    strat_alias: dict[str, str] = {}
+    for s in slug_set:
+        t = read_mod(f"L_{s}")
+        if t:
+            m = _alias_re.search(t)
+            if m:
+                strat_alias[m.group(1)] = s
+
     out: dict[str, set[str]] = {s: set() for s in slug_set}
     for x in slug_set:
         seen_mods: set[str] = set()
@@ -270,7 +284,14 @@ def usage_graph(
                     elif y in slug_set:
                         out[x].add(y)
                 elif imp.startswith("_strategy_"):
-                    frontier.append(imp)   # walk the strategy chain
+                    sib = strat_alias.get(imp[len("_strategy_"):])
+                    if sib is not None and sib != x and sib in slug_set:
+                        # The raw strategy term IS a kept sibling lemma's proof
+                        # → depend on that LEMMA; it owns its own transitive deps
+                        # (don't walk into the raw term).
+                        out[x].add(sib)
+                    else:
+                        frontier.append(imp)   # x's own strategy / unknown → walk
             # Defs-symbol edges: this module imports the problem's Defs and
             # names a placed Defs decl → x depends on it, exactly like a
             # cross-file sibling (orders the file, joins the import closure).

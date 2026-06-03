@@ -1744,6 +1744,20 @@ def _mechanical_migrate_file(
     alias_re = _re.compile(
         r"def\s+\w+\s*:=\s*@?Problems\.[\w.]+\.(s\d+)")
 
+    # strategy_aliases: `sN` → the kept sibling slug whose proof IS that
+    # strategy term (the lemma is `def <slug> := @sN`). Lets relabel redirect a
+    # NESTED strategy reference (a strategy body that cites another strategy's
+    # raw proof-term instead of the lemma name) to the kept sibling lemma.
+    strategy_aliases: dict[str, str] = {}
+    for r in all_rows:
+        if r["verdict"] == "keep" and r["target_file"]:
+            ap = _inv.resolve_ci(proofs, f"L_{r['slug']}.lean")
+            if ap is not None:
+                am = alias_re.search(ap.read_text(encoding="utf-8",
+                                                  errors="replace"))
+                if am:
+                    strategy_aliases[am.group(1)] = r["slug"]
+
     defs_text = ""
     defs_lean = problem_dir / "Defs.lean"
     if defs_lean.exists():
@@ -1808,7 +1822,8 @@ def _mechanical_migrate_file(
                   # / root (their slug isn't a Defs decl).
                   all_defs_syms=all_defs - {slug}, local_defs=local_defs,
                   citation_map=citation_map,
-                  sibling_modules=sibling_modules)
+                  sibling_modules=sibling_modules,
+                  strategy_aliases=strategy_aliases)
 
         def _relabel_one(body_to_sorry: bool, best_effort: bool = False):
             if strat_text is not None:

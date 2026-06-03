@@ -109,6 +109,7 @@ def relabel_self_contained(
     local_defs: "set[str] | None" = None,
     citation_map: "dict[str, str] | None" = None,
     sibling_modules: "dict[str, str] | None" = None,
+    strategy_aliases: "dict[str, str] | None" = None,
     body_to_sorry: bool = False,
     best_effort: bool = False,
 ) -> RelabelResult:
@@ -185,6 +186,10 @@ def relabel_self_contained(
     # so a bare-name reference only resolves if we both import AND open that
     # module — dropping the import (an earlier bug) left the name unknown.
     needed_sibling_mods: set[str] = set()
+    strategy_aliases = strategy_aliases or {}
+    # Nested-strategy redirects collected below: bare `sN` (a strategy term
+    # that is actually a kept sibling lemma's proof) → that lemma's name.
+    strategy_renames: dict[str, str] = {}
     # Which Defs symbols does the body use? Detect over the FULL Defs symbol
     # set (all_defs_syms), not just the migrated ones — else a used-but-
     # unmigrated symbol would slip through with no import and build-fail.
@@ -236,9 +241,25 @@ def relabel_self_contained(
             # the strategy's signature is generally not def-eq to the wrapper's
             # specialised goal, so a rename won't do either. Demoting it to a
             # per-decl LLM hole (its signature is Defs-free) is the robust path.
-            # Outside a body-hole pass it is a real strategy indirection we
-            # cannot relabel mechanically.
+            # Outside a body-hole pass: if the strategy's proof-term IS a kept
+            # sibling lemma (the lemma is `def <slug> := @sN`), the proof cited
+            # the raw strategy term instead of the lemma name — redirect to that
+            # sibling lemma (import + open its module, rename `sN`→slug in the
+            # body), exactly like a normal sibling reference. Otherwise it is a
+            # real strategy indirection we cannot relabel mechanically.
             if body_to_sorry:
+                continue
+            sN = sub_mod[len("_strategy_"):]   # `_strategy_s123` → `s123`
+            sib = strategy_aliases.get(sN)
+            if sib is not None:
+                mod = sibling_modules.get(sib)
+                if mod is None:
+                    return RelabelResult(
+                        False, reason=f"strategy `{sub_mod}` → sibling `{sib}` "
+                                      "has no known Library module yet — Phase 2")
+                if mod != target_namespace:
+                    needed_sibling_mods.add(mod)
+                strategy_renames[sN] = sib     # bare `sN` → sibling lemma name
                 continue
             return RelabelResult(
                 False, reason=f"imports `{sub_mod}` — strategy indirection")
@@ -320,6 +341,12 @@ def relabel_self_contained(
         # here; everything else already declined above.
         for src_slug, dst in citation_map.items():
             text = re.sub(rf"\b{re.escape(src_slug)}\b", dst, text)
+    if strategy_renames:
+        # Redirect nested strategy-term references (`sN`) to the kept sibling
+        # lemma that strategy proves — its module is import+open'd above, so the
+        # bare lemma name resolves. Word-boundary like citation_map.
+        for sN, sib in strategy_renames.items():
+            text = re.sub(rf"\b{re.escape(sN)}\b", sib, text)
     if body_to_sorry:
         # Seed-a-hole: drop the proof body, keep the signature. Done before
         # the residual-Problems check so body refs to non-keep siblings (the
@@ -367,6 +394,7 @@ def inline_alias(
     local_defs: "set[str] | None" = None,
     citation_map: "dict[str, str] | None" = None,
     sibling_modules: "dict[str, str] | None" = None,
+    strategy_aliases: "dict[str, str] | None" = None,
     body_to_sorry: bool = False,
     best_effort: bool = False,
 ) -> RelabelResult:
@@ -388,5 +416,5 @@ def inline_alias(
         rename_decl=(strat, slug), defs_imports=defs_imports,
         all_defs_syms=all_defs_syms, local_defs=local_defs,
         citation_map=citation_map,
-        sibling_modules=sibling_modules, body_to_sorry=body_to_sorry,
-        best_effort=best_effort)
+        sibling_modules=sibling_modules, strategy_aliases=strategy_aliases,
+        body_to_sorry=body_to_sorry, best_effort=best_effort)

@@ -312,3 +312,21 @@ def test_commit_classify_reorders_by_usage(conn, tmp_path):
           for r in db.library_decls_for(conn, "p", lifecycle="classified")}
     assert by["dep"] == 0
     assert by["user"] == 1
+
+
+def test_usage_graph_nested_strategy_term_edges_to_lemma(tmp_path):
+    # X's strategy cites another lemma Y's RAW strategy term (_strategy_s200)
+    # instead of L_Y. Y is a kept lemma (`def y := @s200`) → record edge X→Y
+    # and DON'T walk into s200 (Y owns its deps). (BT nested-strategy fix —
+    # without this Y is walked-through and dropped from reachability.)
+    _alias(tmp_path, "x", 100)
+    _alias(tmp_path, "y", 200)
+    (_proofs(tmp_path) / "_strategy_s100.lean").write_text(
+        "import Mathlib\n"
+        f"import {PNS}.proofs._strategy_s200\n"
+        f"namespace {PNS}\n"
+        "theorem s100 : True := by exact s200\n"
+        f"end {PNS}\n", encoding="utf-8")
+    _strategy(tmp_path, 200, uses=[])
+    g = inv.usage_graph(tmp_path, "p", {"x", "y"})
+    assert "y" in g["x"]      # edge to the lemma via the raw-strategy redirect

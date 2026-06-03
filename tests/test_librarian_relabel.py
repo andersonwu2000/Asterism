@@ -421,3 +421,27 @@ def test_inline_alias_nonkeep_sibling_declines():
         keep_slugs={"foo"})
     assert not r.ok
     assert "non-keep sibling" in r.reason
+
+
+def test_nested_strategy_redirects_to_sibling_lemma():
+    # A proof body that cites another lemma's RAW strategy term (`s99`) instead
+    # of the lemma name → redirect to the kept sibling lemma `helper`: import +
+    # open its module, rename `s99` → `helper`. (BT nested-strategy fix.)
+    src = (
+        "import Mathlib\n"
+        f"import {PNS}.proofs._strategy_s99\n"
+        f"namespace {PNS}\n"
+        "theorem foo : True := by exact s99\n"
+        f"end {PNS}\n"
+    )
+    HELP = "Library.LinearAlgebra.JordanForm.Helper"
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS,
+        keep_slugs={"helper"}, sibling_modules={"helper": HELP},
+        strategy_aliases={"s99": "helper"})
+    assert r.ok, r.reason
+    assert f"import {HELP}" in r.text and f"open {HELP}" in r.text
+    assert "_strategy_s99" not in r.text          # raw strategy import dropped
+    assert "exact helper" in r.text               # s99 → the lemma name
+    import re as _re
+    assert not _re.search(r"\bs99\b", r.text)     # no bare strategy term left
