@@ -276,6 +276,40 @@ def test_body_to_sorry_seeds_hole():
     assert "Problems." not in r.text
 
 
+def test_strategy_import_thin_wrapper_seeds_hole():
+    # A thin `theorem foo … := by exact sN args` wrapper (NOT a `def := @`
+    # alias) imports its `_strategy_s*` module directly. inline_alias only
+    # handles the `def := @` form, so this lands in relabel_self_contained.
+    # Outside a body-hole pass it declines (real strategy indirection); in a
+    # body-hole pass the body→sorry makes the strategy import dead, so it is
+    # dropped and the decl seeds a clean hole for the per-decl LLM. Regression
+    # for the BlockEnum.lean e2e STOP (block_enum := by exact s10915 k).
+    src = (
+        "import Mathlib\n"
+        f"import {PNS}.proofs._strategy_s10915\n"
+        f"namespace {PNS}\n"
+        "theorem block_enum (r : Nat) : r = r := by\n"
+        "  exact s10915 r\n"
+        f"end {PNS}\n"
+    )
+    # body_to_sorry=False → still declines (cannot relabel mechanically).
+    r0 = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS)
+    assert not r0.ok
+    assert "strategy indirection" in r0.reason
+    # body_to_sorry=True → seeds a hole: signature kept, strategy import +
+    # body dropped.
+    r1 = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS,
+        keep_slugs={"block_enum"}, body_to_sorry=True)
+    assert r1.ok, r1.reason
+    assert "theorem block_enum (r : Nat) : r = r :=" in r1.text
+    assert "sorry" in r1.text
+    assert "_strategy_s10915" not in r1.text
+    assert "s10915 r" not in r1.text
+    assert "Problems." not in r1.text
+
+
 def test_same_file_sibling_no_self_import():
     # A keep sibling whose Library module IS this file's target namespace
     # must NOT produce a self-import (the module doesn't exist standalone).

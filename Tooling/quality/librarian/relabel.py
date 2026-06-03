@@ -227,8 +227,18 @@ def relabel_self_contained(
                 return RelabelResult(
                     False, reason=f"imports non-keep sibling `{sub_mod}` — "
                                   "no verbatim citation, needs Phase 2")
-            # _strategy_* import inside a body we're relabelling: shouldn't
-            # appear except in alias files (handled by inline_alias).
+            # _strategy_* import. In a body-hole pass the body (and this
+            # reference) becomes `sorry`, so the strategy import is dead —
+            # drop it and let the decl seed a hole. A thin
+            # `theorem foo … := by exact sN args` wrapper (NOT a `def := @`
+            # alias) lands here: inline_alias only handles the alias form, and
+            # the strategy's signature is generally not def-eq to the wrapper's
+            # specialised goal, so a rename won't do either. Demoting it to a
+            # per-decl LLM hole (its signature is Defs-free) is the robust path.
+            # Outside a body-hole pass it is a real strategy indirection we
+            # cannot relabel mechanically.
+            if body_to_sorry:
+                continue
             return RelabelResult(
                 False, reason=f"imports `{sub_mod}` — strategy indirection")
         m_imp = _PROBLEMS_IMPORT_RE.match(ln)
