@@ -332,6 +332,20 @@ def relabel_self_contained(
         text = seeded
     if not text.endswith("\n"):
         text += "\n"
+    # Strip inline fully-qualified SELF-namespace references to bare names, but
+    # ONLY for symbols that are available bare here — a keep sibling or a Defs
+    # symbol (its module is imported + opened above). Without this, a statement
+    # citing `Problems.<p>.IsJordanForm` (the root theorem's Defs-shaped goal,
+    # or any qualified self-reference to a kept symbol) survives as a residual
+    # `Problems.` ref and declines, even though the symbol IS available. A
+    # qualified ref to an UNKNOWN symbol (not kept / not a Defs decl) is left
+    # untouched so the residual check below still catches it cheaply; a
+    # `Problems.<other>.…` cross-problem ref is likewise left and caught.
+    _known_bare = (keep_slugs or set()) | set(detect_syms)
+    text = re.sub(
+        rf"{re.escape(problem_namespace)}\.(\w+)",
+        lambda m: m.group(1) if m.group(1) in _known_bare else m.group(0),
+        text)
     if "Problems." in text:
         if best_effort:
             # The unresolved `Problems.` reference is in the signature (the

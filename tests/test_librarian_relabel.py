@@ -261,6 +261,29 @@ def test_same_file_defs_symbol_ok():
     assert "IsJordanForm" in r.text               # bare name kept (same namespace)
 
 
+def test_qualified_self_ref_to_known_symbol_stripped():
+    # A statement citing a fully-qualified SELF ref to a KNOWN symbol (a Defs
+    # decl / keep sibling, whose module is opened) is stripped to the bare name
+    # — not left as a residual `Problems.` decline. This is what lets the root
+    # theorem, whose Defs-shaped statement names `Problems.<p>.IsJordanForm`,
+    # migrate. An unknown symbol stays qualified (caught by the residual check —
+    # see test_residual_problems_reference_declines).
+    src = (
+        "import Mathlib\n"
+        f"import {PNS}.Defs\n"
+        f"namespace {PNS}\n"
+        f"theorem foo (M : Nat) : {PNS}.IsJordanForm M := by sorry\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS,
+        defs_imports={"IsJordanForm": "Library.LinearAlgebra.JordanForm.Defs"},
+        all_defs_syms={"IsJordanForm"})
+    assert r.ok, r.reason
+    assert "Problems." not in r.text                  # qualified self-ref stripped
+    assert "open Library.LinearAlgebra.JordanForm.Defs" in r.text  # bare resolves
+
+
 def test_citation_map_redirects_verbatim_merge():
     # body calls a merged sibling by bare name + args; citation_map
     # redirects it to the canonical Library name.
