@@ -117,26 +117,19 @@ def test_derive_classified_is_migrate_ready_file(tmp_path: Path):
     assert target == "Library/P/aaa.lean"
 
 
-def test_derive_migrated_is_cleanup(tmp_path: Path):
-    # A migrated (not-yet-cleaned) decl → Step 4 cleanup on its file.
+def test_derive_migrated_no_index_is_bridge(tmp_path: Path):
+    # v0.3: all files migrated (no classified left) + no INDEX → bridge Gate B
+    # (cleanup removed; migrated goes straight to bridge).
     conn = _mem()
     _migrated(conn, "foo")
-    assert dispatcher._derive_librarian_work(conn, "p", tmp_path) == (
-        "cleanup", "Library/P/foo.lean")
-
-
-def test_derive_cleaned_no_index_is_bridge(tmp_path: Path):
-    # All cleaned, INDEX not yet written → the terminal agentic Gate B step
-    # (bridge re-derives the root, then writes INDEX = done-marker).
-    conn = _mem()
-    _cleaned(conn, "foo")
     assert dispatcher._derive_librarian_work(conn, "p", tmp_path) == (
         "bridge", None)
 
 
-def test_derive_cleaned_with_index_is_none(tmp_path: Path):
+def test_derive_migrated_with_index_is_none(tmp_path: Path):
+    # INDEX present = done-marker → no further work.
     conn = _mem()
-    _cleaned(conn, "foo")
+    _migrated(conn, "foo")
     (tmp_path / "Library").mkdir()
     (tmp_path / "Library" / "INDEX.md").write_text(
         "# Library Index\n\n## p\n\nx\n", encoding="utf-8")
@@ -305,14 +298,15 @@ def test_librarian_refill_skips_inflight_and_queued(tmp_path: Path):
     assert len(_queue(conn)) == 1
 
 
-def test_librarian_refill_cleanup_phase_per_file(tmp_path: Path):
+def test_librarian_refill_migrated_enqueues_bridge_serial(tmp_path: Path):
+    # v0.3: a wholly-migrated problem (no classified left) → bridge, which is a
+    # whole-problem SERIAL step → one plain `problem` row (no per-file cleanup).
     conn = _mem()
-    _migrated(conn, "foo")   # wholly migrated → cleanup-ready
+    _migrated(conn, "foo")
     dispatcher._librarian_refill(conn, tmp_path, set(), _manifests(), fail_counts={})
     rows = _queue(conn)
     assert len(rows) == 1
-    assert rows[0]["target_id"] == dispatcher._lib_encode(
-        "p", "Library/P/foo.lean")
+    assert (rows[0]["kind"], rows[0]["target_id"]) == ("Librarian", "p")
 
 
 def test_librarian_refill_skips_stalled_file(tmp_path: Path):

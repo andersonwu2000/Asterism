@@ -97,8 +97,8 @@ def test_mechanical_header_carries_filedep_imports(conn, tmp_path,
 
 def test_ready_file_work_dag_scheduling(conn, tmp_path, monkeypatch):
     # #92 scheduler primitive: independent files are ready together; a file
-    # depending on another waits until that dep is DONE (wholly cleaned);
-    # a wholly-migrated file is cleanup-ready; in_flight files are excluded.
+    # depending on another waits until that dep is migrated (v0.3: done =
+    # migrated, no cleanup); in_flight files are excluded.
     def _seed(slug, tf, lifecycle):
         g = db.insert_goal(conn, problem="p", slug=slug,
                            lean_path=f"Problems/p/proofs/L_{slug}.lean",
@@ -129,16 +129,13 @@ def test_ready_file_work_dag_scheduling(conn, tmp_path, monkeypatch):
                                in_flight={"A.lean"})
     assert work == [("migrate", "C.lean")]
 
-    # (3) A done (cleaned) + C migrated: B becomes migrate-ready, C cleanup-ready.
-    conn.execute("UPDATE library_decls SET lifecycle='cleaned' WHERE problem='p'"
-                 " AND slug='a'")
+    # (3) A and C migrated: B becomes migrate-ready (dep A importable); A and C
+    #     are done (v0.3: migrated = done, no per-file cleanup work).
     conn.execute("UPDATE library_decls SET lifecycle='migrated' WHERE problem='p'"
-                 " AND slug='c'")
+                 " AND slug IN ('a','c')")
     conn.commit()
     work = lib.ready_file_work(conn, problem="p", workspace=tmp_path)
-    assert ("migrate", "B.lean") in work      # A is done → B unblocked
-    assert ("cleanup", "C.lean") in work      # C wholly migrated → cleanup-ready
-    assert all(f != "A.lean" for _, f in work)  # A done → no longer work
+    assert work == [("migrate", "B.lean")]    # only B left; A and C done
 
 
 def test_mechanical_missing_proof_file_is_integrity_error(conn, tmp_path):

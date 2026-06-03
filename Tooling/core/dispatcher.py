@@ -1435,21 +1435,22 @@ def _derive_librarian_work(
     """Derive the next Librarian work_kind from library_decls state
     (plan §5). Pure read. Returns (work_kind, target):
 
-      - no rows                        → ('dedup', None)
+      - no rows                        → ('dedup', None)   [mechanical keep-all]
       - any 'candidate' (un-verdicted) → ('dedup', None)   [defensive]
       - any 'deduped' (kept, unplaced) → ('classify', None)
       - any 'classified'               → ('migrate', <next ready file>)
-      - any 'migrated' (not cleaned)   → ('cleanup', <next file to clean>)
-      - 'cleaned' exist, no INDEX yet  → ('bridge', None)
+      - any 'migrated', no INDEX yet   → ('bridge', None)  [v0.3: no cleanup]
       - otherwise (terminal + done)    → (None, None)
 
-    cleanup (Step 4) reshapes each migrated file to PR-ready form
-    ('migrated'→'cleaned'). bridge (Gate B, plan §2) is the terminal agentic
-    step: once every decl is 'cleaned' it re-derives the original root from
-    the Library and, on success, writes INDEX — so INDEX presence remains the
-    single done-marker and a Library that fails to re-derive correctly never
-    'finishes'. (The agentless `finish` work-kind is a manual/edge fallback,
-    not routed here.)
+    v0.3 (plan §3): `dedup` is the mechanical keep-all (`_run_keepall`, no
+    agent); cleanup is removed — `migrated` goes straight to the bridge Gate B
+    probe. The `cleaned` lifecycle is no longer produced.
+
+    bridge (Gate B, plan §2) is the terminal step: once every file is
+    'migrated' it re-derives the original root from the Library and, on
+    success, writes INDEX — so INDEX presence remains the single done-marker
+    and a Library that fails to re-derive correctly never 'finishes'. (The
+    agentless `finish` work-kind is a manual/edge fallback, not routed here.)
 
     migrate's target is a Library FILE, not a slug — the parallel unit is
     the whole file (plan §5 Step 3). `next_migrate_file` picks a file whose
@@ -1470,10 +1471,10 @@ def _derive_librarian_work(
         from ..pipeline import librarian
         return ("migrate", librarian.next_migrate_file(
             conn, problem=problem, workspace=workspace))
-    if by_state.get("migrated"):
-        from ..pipeline import librarian
-        return ("cleanup", librarian.next_cleanup_file(conn, problem=problem))
-    if by_state.get("cleaned") and not _librarian_index_has(workspace, problem):
+    # v0.3 (plan §3): cleanup is removed from the chain — `migrated` (no
+    # `classified` left = all files migrated) goes straight to the bridge
+    # Gate B probe. INDEX presence stays the done-marker.
+    if by_state.get("migrated") and not _librarian_index_has(workspace, problem):
         return ("bridge", None)
     return (None, None)
 

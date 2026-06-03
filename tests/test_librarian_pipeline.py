@@ -514,50 +514,27 @@ def test_run_librarian_bad_work_kind(conn, tmp_path):
     assert r.failure_reason == "librarian_bad_work_kind"
 
 
-def test_run_dedup_end_to_end(conn, tmp_path, monkeypatch):
+def _no_spawn(**kw):
+    raise AssertionError("mechanical step must not spawn an agent")
+
+
+def test_run_keepall_marks_all_keep(conn, tmp_path, monkeypatch):
+    # v0.3: `dedup` is the mechanical keep-all (`_run_keepall`) — NO spawn,
+    # every proved decl becomes deduped/keep, nothing dropped.
     _seed_proved(conn, "main", "M", origin="root")
     _seed_proved(conn, "lemma_a", "A")
     _seed_proved(conn, "lemma_b", "B")
 
     import Tooling.agent as agent
-    ad = agent.attempts_dir_for(tmp_path, "pid")
-    ad.mkdir(parents=True, exist_ok=True)
-
-    def fake_spawn(**kw):
-        (ad / "plan.json").write_text(json.dumps([
-            {"slug": "main", "verdict": "keep"},
-            {"slug": "lemma_a", "verdict": "keep"},
-            {"slug": "lemma_b", "verdict": "drop", "mathlib_name": "map_sum"},
-        ]), encoding="utf-8")
-        return 0
-    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    monkeypatch.setattr(agent, "spawn_llm", _no_spawn)   # keepall is spawn-free
 
     r = lib.run_librarian(conn, problem="p", work_kind="dedup",
                           workspace=tmp_path, pipeline_id="pid")
     assert r.outcome == "success", r.failure_detail
     deduped = {x["slug"] for x in db.library_decls_for(conn, "p",
                                                        lifecycle="deduped")}
-    assert deduped == {"main", "lemma_a"}
-    dropped = {x["slug"] for x in db.library_decls_for(conn, "p",
-                                                       lifecycle="dropped")}
-    assert dropped == {"lemma_b"}
-
-
-def test_run_dedup_rejects_bad_schema(conn, tmp_path, monkeypatch):
-    _seed_proved(conn, "main", "M", origin="root")
-    import Tooling.agent as agent
-    ad = agent.attempts_dir_for(tmp_path, "pid")
-    ad.mkdir(parents=True, exist_ok=True)
-
-    def fake_spawn(**kw):
-        (ad / "plan.json").write_text('[{"slug":"main","verdict":"xyz"}]',
-                                      encoding="utf-8")
-        return 0
-    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
-    r = lib.run_librarian(conn, problem="p", work_kind="dedup",
-                          workspace=tmp_path, pipeline_id="pid")
-    assert r.outcome == "failed"
-    assert r.failure_reason == "librarian_schema_invalid"
+    assert deduped == {"main", "lemma_a", "lemma_b"}
+    assert db.library_decls_for(conn, "p", lifecycle="dropped") == []
 
 
 def test_run_classify_end_to_end(conn, tmp_path, monkeypatch):
@@ -587,11 +564,15 @@ def test_run_classify_end_to_end(conn, tmp_path, monkeypatch):
 
 
 def test_run_no_output_fails(conn, tmp_path, monkeypatch):
+    # A structured agentic step (classify) whose agent emits no plan.json fails.
+    # (v0.3: dedup is mechanical, so classify is the structured step to check.)
     _seed_proved(conn, "main", "M", origin="root")
+    db.upsert_library_decl(conn, problem="p", slug="main", source_goal_id=None)
+    db.set_library_verdict(conn, problem="p", slug="main", verdict="keep")
     import Tooling.agent as agent
     ad = agent.attempts_dir_for(tmp_path, "pid")
     ad.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(agent, "spawn_llm", lambda **kw: 0)
-    r = lib.run_librarian(conn, problem="p", work_kind="dedup",
+    r = lib.run_librarian(conn, problem="p", work_kind="classify",
                           workspace=tmp_path, pipeline_id="pid")
     assert r.outcome == "failed" and r.failure_reason == "agent_no_output"

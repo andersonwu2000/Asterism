@@ -831,68 +831,56 @@ def next_cleanup_file(conn, *, problem: str) -> "str | None":
 
 
 def file_work_kind(conn, *, problem: str, target_file: str) -> "str | None":
-    """The current step for ONE Library file (#92 per-file unit dispatch):
-    'migrate' if it still has `classified` decls, 'cleanup' if it is wholly
-    `migrated` (not yet cleaned), else None (done / unknown file)."""
+    """The current step for ONE Library file (#92 per-file unit dispatch).
+    v0.3 (plan §3): 'migrate' if the file still has `classified` decls, else
+    None — a wholly `migrated` file is done (cleanup removed; the whole-problem
+    bridge follows once every file is migrated)."""
     ls = {r["lifecycle"] for r in db.library_decls_for(conn, problem)
           if r["target_file"] == target_file}
     if "classified" in ls:
         return "migrate"
-    if "migrated" in ls:
-        return "cleanup"
     return None
 
 
 def ready_file_work(conn, *, problem: str, workspace,
                     in_flight: "set[str] | tuple" = ()) -> "list[tuple[str, str]]":
-    """The set of Library FILES dispatchable RIGHT NOW as independent units
-    (#92 dynamic file pipeline), each as `(work_kind, target_file)`:
+    """The set of Library FILES dispatchable RIGHT NOW as independent migrate
+    units (#92 dynamic file pipeline), each as `('migrate', target_file)`:
 
-      - `('migrate', f)`  — f's decls are still `classified` AND every file f
-                            depends on is **done** (fully `cleaned`). A file
-                            migrates only against its deps' FINAL (cleaned)
-                            form, so a later cleanup can't break it.
-      - `('cleanup', f)`  — f is fully `migrated` (cleanup runs per-file, right
-                            after that file's migrate, before its importers).
+      - f's decls are still `classified` AND every file f depends on is already
+        `migrated` (importable). A file migrates against its deps' migrated
+        (original-signature) form — consistent with the original proofs.
 
-    A file's placed decls share one lifecycle (migrate/cleanup move a whole
-    file), so the file's phase is well-defined. `done = wholly cleaned` is the
-    readiness currency, so the dependency chain is migrate→cleanup→(unblock
-    importers). Files in `in_flight` are excluded (already being worked). The
-    returned list is order-stable (by path); independent files appear together
-    so the dispatcher can run them concurrently in the pool.
+    v0.3 (plan §3): cleanup is removed, so migrate is the only per-file work;
+    a wholly `migrated` file is done (the whole-problem bridge follows once all
+    files are migrated). `done = migrated` is the readiness currency. Files in
+    `in_flight` are excluded; order-stable by path so independent files run
+    concurrently in the pool.
     """
     from collections import defaultdict
     in_flight = set(in_flight)
     rows = db.library_decls_for(conn, problem)
     by_file: dict[str, list] = defaultdict(list)
     for r in rows:
-        if r["target_file"] and r["lifecycle"] in (
-                "classified", "migrated", "cleaned"):
+        if r["target_file"] and r["lifecycle"] in ("classified", "migrated"):
             by_file[r["target_file"]].append(r)
 
     def _phase(rs) -> str:
         # Least-advanced lifecycle present — defensive against a half-moved
         # file (treat as the earlier stage; never double-dispatch).
         ls = {r["lifecycle"] for r in rs}
-        for ph in ("classified", "migrated", "cleaned"):
-            if ph in ls:
-                return ph
-        return "cleaned"
+        return "classified" if "classified" in ls else "migrated"
 
     phase = {f: _phase(rs) for f, rs in by_file.items()}
-    done = {f for f, ph in phase.items() if ph == "cleaned"}
+    migrated = {f for f, ph in phase.items() if ph == "migrated"}
     graph = file_dependency_graph(conn, problem=problem, workspace=workspace)
     work: list[tuple[str, str]] = []
     for f in sorted(phase):
         if f in in_flight:
             continue
-        ph = phase[f]
-        if ph == "migrated":
-            work.append(("cleanup", f))
-        elif ph == "classified":
-            if all(dep in done for dep in graph.get(f, set())):
-                work.append(("migrate", f))
+        if phase[f] == "classified" and all(
+                dep in migrated for dep in graph.get(f, set())):
+            work.append(("migrate", f))
     return work
 
 
@@ -1320,6 +1308,14 @@ def run_librarian(conn, *, problem: str, work_kind: str,
     if work_kind == "finish":
         return _run_finish(conn, problem=problem, workspace=workspace)
 
+    # v0.3 (plan §0/§3): dedup is no longer an agentic keep/drop judgment —
+    # it is a mechanical "inventory + keep everything" step (no spawn, no
+    # prompt). Keeping all decls is precisely what lets migrate be mechanical
+    # (every proof-term reference resolves to a kept sibling → no holes → no
+    # LLM). Routed before the prompt-path guard, like `finish`.
+    if work_kind == "dedup":
+        return _run_keepall(conn, problem=problem, workspace=workspace)
+
     if work_kind not in WORK_KINDS:
         return PipelineResult(
             outcome="failed", failure_reason="librarian_bad_work_kind",
@@ -1358,10 +1354,43 @@ def run_librarian(conn, *, problem: str, work_kind: str,
         prompt_path=prompt_path)
 
 
+def _run_keepall(conn, *, problem, workspace):
+    """v0.3 mechanical replacement for the agentic `dedup` step (plan §0/§3).
+
+    Build the inventory (proved-goal decls + Defs.lean decls) and mark EVERY
+    decl `keep` — no keep/drop/cite/merge judgment, no spawn. The high-variance
+    agentic dedup (Jordan kept 81↔22 run-to-run) is gone; keeping everything is
+    deterministic AND is what makes the downstream migrate purely mechanical
+    (no non-keep references → no sorry holes → no LLM). Advances every
+    candidate to `deduped` so the existing classify step ingests them all.
+
+    Trade-off (accepted, plan §0): the Library keeps reconstructed mathlib
+    wrappers, scaffolding, and near-duplicates — verbose but self-contained and
+    reproducible. Curation (goal #2 / mathlib-PR form) is deferred to a future
+    opt-in pass, not the main chain."""
+    from . import PipelineResult
+    from ..quality.librarian import inventory as _inv
+
+    inv = _inv.build_inventory(conn, workspace, problem)
+    for d in inv.decls:
+        db.upsert_library_decl(conn, problem=problem, slug=d.slug,
+                               source_goal_id=d.goal_id)
+    for name in inv.defs_decls:
+        # Defs decls have no proof goal — source_goal_id is None.
+        db.upsert_library_decl(conn, problem=problem, slug=name,
+                               source_goal_id=None)
+    for r in db.library_decls_for(conn, problem):
+        if r["lifecycle"] == "candidate":
+            db.set_library_verdict(conn, problem=problem, slug=r["slug"],
+                                   verdict="keep")
+    return PipelineResult(outcome="success")
+
+
 def _run_structured(conn, *, problem, work_kind, workspace,
                     attempts_dir, problem_dir, prompt_path):
-    """dedup / classify: one-shot spawn emitting plan.json, then parse +
-    verify + commit (all-or-nothing). Mirrors run_strategist."""
+    """classify: one-shot spawn emitting plan.json, then parse + verify +
+    commit (all-or-nothing). Mirrors run_strategist. (v0.3: `dedup` no longer
+    routes here — it is the mechanical `_run_keepall`.)"""
     import uuid
     from . import PipelineResult
     from .. import agent

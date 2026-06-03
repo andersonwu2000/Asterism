@@ -204,15 +204,10 @@ def test_restore_snapshot_reverts(tmp_path):
 
 # --- dispatcher routing ---
 
-def test_derive_migrated_routes_to_cleanup(conn, tmp_path):
+def test_derive_migrated_routes_to_bridge(conn, tmp_path):
+    # v0.3: cleanup removed — a wholly-migrated problem (no classified) routes
+    # straight to the whole-problem bridge Gate B step.
     _migrated(conn, "a", "Library/P/Foo.lean")
-    work, target = dispatcher._derive_librarian_work(conn, "p", tmp_path)
-    assert work == "cleanup"
-    assert target == "Library/P/Foo.lean"
-
-
-def test_derive_cleaned_no_index_routes_to_bridge(conn, tmp_path):
-    _migrated(conn, "a", "Library/P/Foo.lean", lifecycle="cleaned")
     assert dispatcher._derive_librarian_work(conn, "p", tmp_path) == (
         "bridge", None)
 
