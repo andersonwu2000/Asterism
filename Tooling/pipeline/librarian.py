@@ -548,6 +548,21 @@ def migrate_defeq_gate(
     return MigrateResult(False, "; ".join(res.issues))
 
 
+def _uses_sorry(text: str) -> bool:
+    """True iff `text` actually USES the `sorry` term/tactic — ignoring
+    comments. A `--` line comment or `/- … -/` (incl. `/-- … -/` doc) comment
+    may legitimately contain the word 'sorry' (e.g. a note 'Builds sorry-free'),
+    which a naive `"sorry" in text` substring check wrongly flags. The kernel
+    axiom probe (sorryAx ∉ whitelist) is the authoritative detector; this is a
+    fast, clear pre-check, so a comment-stripped word-boundary scan suffices.
+    `sorry` as an identifier prefix (`sorry_free`) is safe — `_` is a word char,
+    so `\\bsorry\\b` won't match it."""
+    import re as _r
+    no_block = _r.sub(r"/-.*?-/", " ", text, flags=_r.DOTALL)  # /- … -/, /-- -/
+    no_line = _r.sub(r"--[^\n]*", " ", no_block)               # -- line comments
+    return bool(_r.search(r"\bsorry\b", no_line))
+
+
 def migrate_commit_gate(
     patch_text: str, target_path: "_Path", *,
     whitelist: "list[str] | None" = None,
@@ -581,9 +596,10 @@ def migrate_commit_gate(
     if not closure.ok:
         return MigrateResult(False, "; ".join(closure.issues))
 
-    if "sorry" in patch_text:
-        # Cheap pre-check; the build also catches it, but a clear message
-        # here beats a generic "declaration uses sorry" diagnostic.
+    if _uses_sorry(patch_text):
+        # Cheap pre-check (comment-aware; the kernel axiom probe below is the
+        # authoritative sorryAx detector). A clear message here beats a generic
+        # "declaration uses sorry" diagnostic.
         return MigrateResult(False, "patch still contains `sorry`")
 
     if build_verifier is None:

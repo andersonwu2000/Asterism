@@ -809,3 +809,14 @@ def test_run_migrate_holes_hard_fail_no_llm(conn, tmp_path, monkeypatch):
         prompt_path=tmp_path / "x.md", whitelist=[])
     assert r.outcome == "failed"
     assert r.failure_reason == "librarian_migrate_not_mechanical"
+
+
+def test_uses_sorry_ignores_comments():
+    # The migrate gate's sorry pre-check must ignore comments — a note like
+    # "Builds sorry-free" or a doc-comment mentioning sorry is NOT a real sorry
+    # (BT FreeGroupWord false-positive). The kernel axiom probe is authoritative.
+    assert lib._uses_sorry("theorem x : True := by sorry")            # real
+    assert lib._uses_sorry("theorem x : True := by\n  sorry  -- note")  # real + trailing comment
+    assert not lib._uses_sorry("-- Builds sorry-free\ntheorem x : True := trivial")
+    assert not lib._uses_sorry("/-- historically used sorry -/\ntheorem x : True := trivial")
+    assert not lib._uses_sorry("theorem sorry_free : True := trivial")  # identifier prefix
