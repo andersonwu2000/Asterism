@@ -177,7 +177,7 @@ def test_commit_migrated_file_marks_all(conn, tmp_path):
         target_path=tmp_path / tf, target_module="Library.P.Foo",
         ordered_slugs=["lem_a", "lem_b"], defs_names=[],
         whitelist=None,
-        build_verifier=lambda _t: (True, ""),
+        probe_verifier=lambda _t: (True, "", {}),
         olean_writer=lambda _p: (True, ""))
     assert res.outcome == "success", res.failure_detail
     migrated = {r["slug"] for r in db.library_decls_for(conn, "p",
@@ -207,7 +207,7 @@ def test_commit_rolls_back_on_gate_fail(conn, tmp_path):
         text, conn=conn, problem="p", workspace=tmp_path,
         target_path=tmp_path / tf, target_module="Library.P.Foo",
         ordered_slugs=["lem_a"], defs_names=[], whitelist=None,
-        build_verifier=lambda _t: (False, "boom"))
+        probe_verifier=lambda _t: (False, "boom", {}))
     assert res.outcome == "failed"
     # not advanced to migrated; file rolled back (build gate fails pre-write)
     assert db.library_decls_for(conn, "p", lifecycle="migrated") == []

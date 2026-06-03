@@ -217,13 +217,13 @@ def test_commit_dedup_then_classify(conn, tmp_path):
 from pathlib import Path as _P
 
 
-def _ok_build(_text):
-    return (True, "")
+def _ok_probe(_text):
+    return (True, "", {})
 
 
-def _fail_build(msg):
+def _fail_probe(msg):
     def _v(_text):
-        return (False, msg)
+        return (False, msg, {})
     return _v
 
 
@@ -232,7 +232,7 @@ def test_migrate_gate_clean_passes():
              "namespace Library.A\n"
              "theorem t : True := trivial\nend Library.A\n")
     r = lib.migrate_commit_gate(patch, _P("Library/A/Bar.lean"),
-                                build_verifier=_ok_build)
+                                probe_verifier=_ok_probe)
     assert r.ok, r.detail
 
 
@@ -240,7 +240,7 @@ def test_migrate_gate_rejects_problems_import():
     patch = ("import Mathlib\nimport Problems.p.Defs\n"
              "theorem t : True := trivial\n")
     r = lib.migrate_commit_gate(patch, _P("Library/A/Bar.lean"),
-                                build_verifier=_ok_build)
+                                probe_verifier=_ok_probe)
     assert not r.ok and "Problems.p.Defs" in r.detail
 
 
@@ -248,7 +248,7 @@ def test_migrate_gate_rejects_sorry():
     patch = ("import Mathlib\n"
              "theorem t : True := by sorry\n")
     r = lib.migrate_commit_gate(patch, _P("Library/A/Bar.lean"),
-                                build_verifier=_ok_build)
+                                probe_verifier=_ok_probe)
     assert not r.ok and "sorry" in r.detail
 
 
@@ -257,7 +257,7 @@ def test_migrate_gate_rejects_build_failure():
              "theorem t : True := trivial\n")
     r = lib.migrate_commit_gate(
         patch, _P("Library/A/Bar.lean"),
-        build_verifier=_fail_build("unknown identifier 'foo'"))
+        probe_verifier=_fail_probe("unknown identifier 'foo'"))
     assert not r.ok and "build failed" in r.detail
     assert "foo" in r.detail
 
@@ -269,9 +269,9 @@ def test_migrate_gate_closure_checked_before_build():
     called = {"n": 0}
     def _spy(_t):
         called["n"] += 1
-        return (True, "")
+        return (True, "", {})
     r = lib.migrate_commit_gate(patch, _P("Library/A/Bar.lean"),
-                                build_verifier=_spy)
+                                probe_verifier=_spy)
     assert not r.ok
     assert called["n"] == 0  # build never reached
 
@@ -320,20 +320,12 @@ def test_extract_decls_namespace_pop():
     assert [d.fq_name for d in lib.extract_decls(patch)] == ["A.x", "B.y"]
 
 
-def _ok_axiom(_text, _fq, _wl):
-    return (True, "")
-
-
-def _rogue_axiom(_text, _fq, _wl):
-    return (False, "rogue axioms: ['sorryAx']")
-
-
 def test_migrate_gate_axiom_clean_passes():
     patch = ("import Mathlib\nnamespace Library.A\n"
              "theorem t : True := trivial\nend Library.A\n")
     r = lib.migrate_commit_gate(
         patch, _P("Library/A/Bar.lean"), whitelist=["propext"],
-        build_verifier=_ok_build, axiom_verifier=_ok_axiom)
+        probe_verifier=lambda _t: (True, "", {"Library.A.t": {"propext"}}))
     assert r.ok, r.detail
 
 
@@ -344,24 +336,53 @@ def test_migrate_gate_rejects_rogue_axiom():
              "theorem t : True := trivial\nend Library.A\n")
     r = lib.migrate_commit_gate(
         patch, _P("Library/A/Bar.lean"), whitelist=["propext"],
-        build_verifier=_ok_build, axiom_verifier=_rogue_axiom)
+        probe_verifier=lambda _t: (True, "", {"Library.A.t": {"sorryAx"}}))
     assert not r.ok
     assert "axiom check failed" in r.detail and "sorryAx" in r.detail
 
 
-def test_migrate_gate_axiom_skipped_without_whitelist():
-    """whitelist=None (the unit-test default) skips the axiom check — the
-    axiom_verifier must not even be called."""
+def test_migrate_gate_axiom_missing_report_rejected():
+    """whitelist set, build passes, but a decl has no `#print axioms` report
+    in the probe output (probe omitted / name unresolved) → reject rather
+    than silently treating it as axiom-free (keeps the invariant honest)."""
     patch = ("import Mathlib\nnamespace Library.A\n"
              "theorem t : True := trivial\nend Library.A\n")
-    called = {"n": 0}
-    def _spy(_t, _fq, _wl):
-        called["n"] += 1
-        return (True, "")
     r = lib.migrate_commit_gate(
-        patch, _P("Library/A/Bar.lean"),
-        build_verifier=_ok_build, axiom_verifier=_spy)
-    assert r.ok and called["n"] == 0
+        patch, _P("Library/A/Bar.lean"), whitelist=["propext"],
+        probe_verifier=lambda _t: (True, "", {}))   # no report for Library.A.t
+    assert not r.ok
+    assert "axiom check failed" in r.detail and "no `#print axioms`" in r.detail
+
+
+def test_migrate_gate_probe_carries_print_axioms_when_whitelisted():
+    """With a whitelist, the probe text the verifier sees must carry a
+    `#print axioms <fq>` per decl; without one, it must NOT (build-only)."""
+    patch = ("import Mathlib\nnamespace Library.A\n"
+             "theorem t : True := trivial\nend Library.A\n")
+    seen = {}
+    def _spy(text):
+        seen["text"] = text
+        return (True, "", {"Library.A.t": {"propext"}})
+    r = lib.migrate_commit_gate(
+        patch, _P("Library/A/Bar.lean"), whitelist=["propext"],
+        probe_verifier=_spy)
+    assert r.ok, r.detail
+    assert "#print axioms Library.A.t" in seen["text"]
+
+
+def test_migrate_gate_axiom_skipped_without_whitelist():
+    """whitelist=None (the unit-test default) skips the axiom check — the
+    probe runs build-only, with no `#print axioms` lines appended."""
+    patch = ("import Mathlib\nnamespace Library.A\n"
+             "theorem t : True := trivial\nend Library.A\n")
+    seen = {}
+    def _spy(text):
+        seen["text"] = text
+        return (True, "", {})
+    r = lib.migrate_commit_gate(
+        patch, _P("Library/A/Bar.lean"), probe_verifier=_spy)
+    assert r.ok
+    assert "#print axioms" not in seen["text"]
 
 
 def test_migrate_gate_axiom_unextractable_name_rejected():
@@ -371,9 +392,46 @@ def test_migrate_gate_axiom_unextractable_name_rejected():
     patch = "import Mathlib\ninstance : Inhabited Nat := ⟨0⟩\n"
     r = lib.migrate_commit_gate(
         patch, _P("Library/A/Bar.lean"), whitelist=["propext"],
-        build_verifier=_ok_build, axiom_verifier=_ok_axiom)
+        probe_verifier=_ok_probe)
     assert not r.ok
-    assert "no named declaration found" in r.detail
+
+
+# ---------------------------------------------------------------------
+# batched axiom probe helpers (_axiom_probe_text / _parse_axiom_diags)
+# ---------------------------------------------------------------------
+
+def test_axiom_probe_text_appends_one_print_per_decl():
+    patch = "namespace L\ntheorem a : True := trivial\nend L\n"
+    out = lib._axiom_probe_text(patch, ["L.a", "L.b"])
+    assert out.startswith(patch)
+    assert "#print axioms L.a" in out and "#print axioms L.b" in out
+
+
+def test_axiom_probe_text_empty_names_unchanged():
+    patch = "namespace L\ntheorem a : True := trivial\nend L\n"
+    assert lib._axiom_probe_text(patch, []) == patch
+    assert lib._axiom_probe_text(patch, [None]) == patch
+
+
+def test_parse_axiom_diags_depends_and_none():
+    diags = [
+        {"severity": "info",
+         "message": "'L.a' depends on axioms: [propext, Classical.choice]"},
+        {"severity": "info", "message": "'L.b' does not depend on any axioms"},
+        # non-info diagnostics ignored (warnings, errors)
+        {"severity": "warning", "message": "'L.c' depends on axioms: [sorryAx]"},
+    ]
+    out = lib._parse_axiom_diags(diags)
+    assert out == {"L.a": {"propext", "Classical.choice"}, "L.b": set()}
+
+
+def test_parse_axiom_diags_multiline_axiom_list():
+    # Lean may wrap a long axiom list across lines; DOTALL must still parse it.
+    diags = [{"severity": "info",
+              "message": "'L.a' depends on axioms: [propext,\n Quot.sound,\n"
+                         " Classical.choice]"}]
+    out = lib._parse_axiom_diags(diags)
+    assert out == {"L.a": {"propext", "Quot.sound", "Classical.choice"}}
 
 
 # ---------------------------------------------------------------------

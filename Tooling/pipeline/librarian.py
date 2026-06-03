@@ -391,7 +391,7 @@ def commit_classify(conn, problem: str, plan: ClassifyPlan,
 #
 # `migrate_commit_gate` is the pure, gateway-optional core: it takes the
 # candidate patch text + target path and returns (ok, detail). The
-# build-verify step is injectable (`build_verifier`) so it is unit-
+# build+axiom step is injectable (`probe_verifier`) so it is unit-
 # testable without a live gateway, same pattern as gates.check_root_
 # rederivation's `prober`.
 
@@ -566,25 +566,28 @@ def _uses_sorry(text: str) -> bool:
 def migrate_commit_gate(
     patch_text: str, target_path: "_Path", *,
     whitelist: "list[str] | None" = None,
-    build_verifier=None, axiom_verifier=None,
+    probe_verifier=None,
     workspace: "_Path | None" = None,
 ) -> MigrateResult:
     """Decide whether a migrate patch may be committed to its Library
     file. Hard checks (plan §2 Gate A + build + per-file axiom check):
 
       1. import-closure — patch imports only Mathlib/Library (Gate A).
-      2. build — `lake env lean` clean (0 errors, 0 sorry) via the warm
-         gateway. Injectable as `build_verifier(text) -> (ok, detail)`
-         so tests run without a gateway; defaults to the real warm probe.
-      3. axiom check — when `whitelist` is set, the migrated declaration's
-         transitive axiom set must be ⊆ whitelist (operator's authorized
-         axioms; falls back to the 3 standard axioms upstream). This is
-         the per-Library-file `#print axioms` the operator requires:
-         build alone accepts a file whose imports carry `sorry`, only
-         `#print axioms` walks the kernel graph. Injectable as
-         `axiom_verifier(text, fq_name, whitelist) -> (ok, detail)`;
-         defaults to the real warm probe. `whitelist=None` skips it
-         (unit tests that only exercise closure/build don't pass one).
+      2. build + axiom check — ONE warm-gateway elaboration. The probe text
+         is the file plus a `#print axioms <fq>` per declaration; that single
+         build yields BOTH the build diagnostics (0 errors, 0 sorry) AND every
+         decl's transitive axiom set (emitted as `info` diagnostics). When a
+         `whitelist` is set, each decl's axioms must be ⊆ whitelist (operator's
+         authorized axioms). `build` alone accepts a file whose imports carry
+         `sorry`; only `#print axioms` walks the kernel graph.
+
+         Injectable as `probe_verifier(probe_text) -> (build_ok, build_detail,
+         axioms_map)` so tests run without a gateway; defaults to the real warm
+         probe. `whitelist=None` skips the axiom check (and the `#print axioms`
+         lines) — unit tests that only exercise closure/build don't pass one.
+
+         This replaces the old build + per-decl axiom re-elaboration loop: a
+         147-decl file went from ~148 full elaborations to 1.
 
     Does NOT write anything — the caller (migrate parse_fn) does the
     file copy + `mark_library_migrated` on ok=True.
@@ -602,41 +605,95 @@ def migrate_commit_gate(
         # "declaration uses sorry" diagnostic.
         return MigrateResult(False, "patch still contains `sorry`")
 
-    if build_verifier is None:
-        build_verifier = _warm_build_verifier(workspace)
-    ok, detail = build_verifier(patch_text)
-    if not ok:
-        return MigrateResult(False, f"build failed: {detail}")
+    # Per-file axiom invariant needs a named decl for every declaration. Only
+    # extracted when a whitelist is set (the axiom probe needs the fq names);
+    # an anonymous/malformed patch then fails honestly rather than silently
+    # skipping the check.
+    decls = extract_decls(patch_text) if whitelist is not None else []
+    if whitelist is not None and not decls:
+        return MigrateResult(
+            False, "axiom check: no named declaration found "
+                   "(anonymous or malformed patch)")
+
+    if probe_verifier is None:
+        probe_verifier = _warm_probe_verifier(workspace)
+    probe_text = (patch_text if whitelist is None
+                  else _axiom_probe_text(patch_text,
+                                         [d.fq_name for d in decls]))
+    build_ok, build_detail, axioms_map = probe_verifier(probe_text)
+    if not build_ok:
+        return MigrateResult(False, f"build failed: {build_detail}")
 
     if whitelist is not None:
-        # Per-file: every migrated declaration's transitive axioms must be
-        # ⊆ whitelist — `build` alone accepts a file whose cited lemmas
-        # carry a rogue axiom; only `#print axioms` walks the kernel graph.
-        decls = extract_decls(patch_text)
-        if not decls:
-            return MigrateResult(
-                False, "axiom check: no named declaration found "
-                       "(anonymous or malformed patch)")
-        if axiom_verifier is None:
-            axiom_verifier = _warm_axiom_verifier(workspace)
+        wl = set(whitelist)
         for d in decls:
-            ok, detail = axiom_verifier(patch_text, d.fq_name, whitelist)
-            if not ok:
+            used = axioms_map.get(d.fq_name)
+            if used is None:
                 return MigrateResult(
-                    False, f"axiom check failed for `{d.fq_name}`: {detail}")
+                    False, f"axiom check failed for `{d.fq_name}`: no "
+                           "`#print axioms` report in the build output "
+                           "(probe omitted or name unresolved)")
+            rogue = used - wl
+            if rogue:
+                return MigrateResult(
+                    False, f"axiom check failed for `{d.fq_name}`: "
+                           f"rogue axioms: {sorted(rogue)}")
     return MigrateResult(True, "")
 
 
-def _warm_build_verifier(workspace):
-    """Default build_verifier: write the candidate to a temp file under
-    the workspace and run the warm-gateway verify. Returns (ok, detail).
+_AX_DEP_RE = re.compile(
+    r"^'(?P<fq>.+?)' depends on axioms:\s*\[(?P<ax>.*)\]\s*$", re.DOTALL)
+_AX_NONE_RE = re.compile(
+    r"^'(?P<fq>.+?)' does not depend on any axioms\s*$", re.DOTALL)
 
-    The temp file lives under `Library/` so the gateway resolves the
-    Library import path; it is removed after the probe."""
+
+def _axiom_probe_text(patch_text: str, fq_names: "list[str]") -> str:
+    """Append a `#print axioms <fq>` per declaration so ONE build elaboration
+    also emits every decl's transitive axiom set (as `info` diagnostics). The
+    commands sit after the file body — full names resolve at top level — and
+    appear ONLY in this throwaway probe; the committed file never carries
+    them. Empty / nameless list → the file unchanged (build-only probe)."""
+    lines = [f"#print axioms {fq}" for fq in fq_names if fq]
+    if not lines:
+        return patch_text
+    sep = "" if patch_text.endswith("\n") else "\n"
+    return patch_text + sep + "\n".join(lines) + "\n"
+
+
+def _parse_axiom_diags(diagnostics) -> "dict[str, set[str]]":
+    """Parse `#print axioms` `info` diagnostics into `{fq: {axioms}}`. The
+    Lean output is stable: `'<fq>' depends on axioms: [a, b]` or
+    `'<fq>' does not depend on any axioms`. Keyed by the fq name the message
+    carries, so attribution survives line shifts."""
+    out: dict = {}
+    for d in diagnostics or []:
+        if d.get("severity") != "info":
+            continue
+        msg = (d.get("message") or "").strip()
+        m = _AX_DEP_RE.match(msg)
+        if m:
+            out[m.group("fq")] = {a.strip()
+                                  for a in m.group("ax").split(",")
+                                  if a.strip()}
+            continue
+        m = _AX_NONE_RE.match(msg)
+        if m:
+            out[m.group("fq")] = set()
+    return out
+
+
+def _warm_probe_verifier(workspace):
+    """Default probe_verifier: write the probe text (the file + `#print axioms`
+    commands) to a temp file under `Library/`, run ONE warm-gateway build, and
+    return `(build_ok, build_detail, axioms_map)`. The single elaboration
+    yields both the build result (error diagnostics) and every decl's
+    transitive axiom set (info diagnostics) — replacing the old separate build
+    + per-decl axiom re-elaboration. The temp file lives under `Library/` so
+    the gateway resolves the Library import path; it is removed after."""
     import os
     import tempfile
 
-    def _verify(patch_text: str) -> tuple[bool, str]:
+    def _verify(probe_text: str):
         from ..lsp import lifecycle as gateway_lifecycle
         ws = workspace or _Path(".")
         libdir = ws / "Library"
@@ -646,63 +703,20 @@ def _warm_build_verifier(workspace):
         tmp_path = _Path(tmp)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(patch_text)
+                f.write(probe_text)
             r = gateway_lifecycle.verify_file(
                 tmp_path, write_olean=False, workspace=ws)
             if "error" in r and r.get("error"):
-                return False, f"verify infra error: {r['error']}"
+                return (False, f"verify infra error: {r['error']}", {})
+            axioms_map = _parse_axiom_diags(r.get("diagnostics"))
             if not r.get("ok"):
                 errs = "; ".join(
                     d.get("message", "")[:120]
                     for d in (r.get("diagnostics") or [])
                     if d.get("severity") == "error"
                 )[:300]
-                return False, errs or "(no error diagnostics)"
-            return True, ""
-        finally:
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
-
-    return _verify
-
-
-def _warm_axiom_verifier(workspace):
-    """Default axiom_verifier: write the candidate under `Library/`, run
-    the warm-gateway verify with `axioms_for=<fq_name>`, and check the
-    reported axiom set ⊆ whitelist. Returns (ok, detail). Mirrors
-    `_warm_build_verifier`'s temp-file staging; the rogue-axiom logic
-    matches `pipeline/_axiom.axiom_probe` (which can't be reused directly
-    — it resolves a module to an existing source path, but the migrate
-    candidate is a throwaway temp file)."""
-    import os
-    import tempfile
-
-    def _verify(patch_text: str, fq_name: str,
-                whitelist: list[str]) -> tuple[bool, str]:
-        from ..lsp import lifecycle as gateway_lifecycle
-        ws = workspace or _Path(".")
-        libdir = ws / "Library"
-        libdir.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(suffix=".lean", prefix="_migrate_axiom_",
-                                   dir=str(libdir))
-        tmp_path = _Path(tmp)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(patch_text)
-            r = gateway_lifecycle.verify_file(
-                tmp_path, write_olean=False, axioms_for=fq_name,
-                workspace=ws)
-            if "error" in r and r.get("error"):
-                return False, f"axiom probe infra error: {r['error']}"
-            if r.get("axiom_error"):
-                return False, f"axiom probe error: {r['axiom_error']}"
-            used: set[str] = set(r.get("axioms") or [])
-            rogue = used - set(whitelist)
-            if rogue:
-                return False, f"rogue axioms: {sorted(rogue)}"
-            return True, ""
+                return (False, errs or "(no error diagnostics)", axioms_map)
+            return (True, "", axioms_map)
         finally:
             try:
                 tmp_path.unlink()
@@ -1917,7 +1931,7 @@ def _mechanical_migrate_file(
 def _commit_migrated_file(
     patch_text, *, conn, problem, workspace, target_path, target_module,
     ordered_slugs, defs_names, whitelist,
-    build_verifier=None, axiom_verifier=None, defeq_verifier=None,
+    probe_verifier=None, defeq_verifier=None,
     olean_writer=None):
     """Validate a whole-file migrate candidate and, on success, commit it
     (write the file + mark every decl migrated). Shared by the 0-hole
@@ -1929,11 +1943,10 @@ def _commit_migrated_file(
     """
     from . import PipelineResult
 
-    # Gate A import-closure + whole-file build + per-decl axiom check.
+    # Gate A import-closure + one-elaboration build + per-decl axiom check.
     gate = migrate_commit_gate(patch_text, target_path, whitelist=whitelist,
                                workspace=workspace,
-                               build_verifier=build_verifier,
-                               axiom_verifier=axiom_verifier)
+                               probe_verifier=probe_verifier)
     if not gate.ok:
         return PipelineResult(outcome="failed",
                               failure_reason="librarian_gate_failed",
@@ -2729,7 +2742,7 @@ def _rederivation_prober(bridge_path):
     set ⊆ whitelist. Used instead of the default `axiom_probe` (which
     resolves a module to a committed source path) because the bridge is a
     THROWAWAY probe — verify_file compiles the staged temp file directly,
-    the same staging `_warm_axiom_verifier` uses for migrate candidates."""
+    the same staging `_warm_probe_verifier` uses for migrate candidates."""
     def _probe(ws, *, fq_name, module, whitelist):
         from ..lsp import lifecycle as gw
         r = gw.verify_file(bridge_path, write_olean=False,
