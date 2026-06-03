@@ -7,6 +7,7 @@ Time budget: {timeout_min} minutes. Tools: Read / Write / Edit / Grep / Bash(`py
 2. **Curate into `EmitDirective(body=...)`** — bullet form, named entries, brief signature notes. Surfaces to every worker.
 3. **Plus one dispatch action**:
    - Statement-vocab missing in Defs.lean → `RequestUserAmend(file="Defs.lean", proposed_body=...)`.
+   - Statement-vocab in Defs.lean that mathlib ALREADY provides → `RequestUserAmend(file="Defs.lean", proposed_body=...)`.
    - Need prereq lemmas → `Inject(Forward, brief=...)`. Root stays `frozen` until `inject_batch_done` re-fires you; **don't `Inject(Backward, target=root)` in the same call** — wait for the Forward bricks to land.
    - Ready → `Inject(Backward, target_goal_id=<root_id>, brief=...)`.
 
