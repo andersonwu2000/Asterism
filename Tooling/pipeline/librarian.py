@@ -876,6 +876,28 @@ def _read_statement(conn, problem: str, slug: str) -> str:
     return (row["statement"] if row else "") or ""
 
 
+def _strategy_proofs_of(workspace, lean_path_rel: str) -> "list[str]":
+    """Workspace-relative paths of the `_strategy_s<N>.lean` files that a goal's
+    `L_<slug>.lean` (at `lean_path_rel`) imports — the files holding the ACTUAL
+    tactic proof (the `def := @…sN` alias / thin `theorem … := by exact sN`
+    wrapper just points there). Lets a hole's context point past the one-line
+    alias to the real proof to port. Best-effort: empty if missing / no strategy
+    import."""
+    import re as _re
+    from pathlib import Path as _Path
+    p = workspace / lean_path_rel
+    if not p.exists():
+        return []
+    proofs_rel = _Path(lean_path_rel).parent
+    rx = _re.compile(r"import\s+Problems\.[\w.]+\.proofs\.(_strategy_s\d+)\b")
+    out: list[str] = []
+    for m in rx.finditer(p.read_text(encoding="utf-8", errors="replace")):
+        sp = (proofs_rel / f"{m.group(1)}.lean").as_posix()
+        if (workspace / sp).exists() and sp not in out:
+            out.append(sp)
+    return out
+
+
 def compile_librarian_context(
     conn, *, problem: str, work_kind: str, attempts_dir,
     workspace, target_file: str | None = None,
@@ -1016,8 +1038,24 @@ def compile_librarian_context(
             lines.append("")
         lines.append("## Declarations")
         lines.append("")
+        # Precompute proof-term references (raw, per slug), dedup verdicts, and
+        # goal proof paths once: a hole gets handed (a) its real proof source
+        # (alias resolved to the `_strategy_s<N>.lean` holding the tactic body)
+        # and (b) the proofs of any sibling dedup'd INTO it, which it must
+        # inline — not just a name to rediscover. Reused by the redirect table.
+        ref = _inv.referenced_slugs(
+            workspace, problem, [r["slug"] for r in rows],
+            root_source=_root_source(conn, problem, workspace))
+        by_slug = {r["slug"]: r for r in db.library_decls_for(conn, problem)}
+        lean_paths = {
+            row["slug"]: row["lean_path"]
+            for row in conn.execute(
+                "SELECT slug, lean_path FROM goals WHERE problem = ?",
+                (problem,)).fetchall()}
         for i, r in enumerate(rows, 1):
             slug = r["slug"]
+            is_hole = (slug == solo_hole
+                       or (solo_hole is None and slug in hole_set))
             if slug == solo_hole:
                 tag = " ⛏ FILL THIS"
             elif solo_hole is None and slug in hole_set:
@@ -1037,23 +1075,42 @@ def compile_librarian_context(
             stmt = " ".join(_read_statement(conn, problem, slug).split())
             lines.append("- statement (signature — copy verbatim):")
             lines.append(f"  `{stmt}`" if stmt else "  _(no statement)_")
-            grow = conn.execute(
-                "SELECT lean_path FROM goals WHERE problem = ? AND slug = ?",
-                (problem, slug),
-            ).fetchone()
-            if grow and grow["lean_path"]:
+            lp = lean_paths.get(slug)
+            if lp:
                 lines.append("- proof source (read for the body to port): "
-                             f"`{grow['lean_path']}`")
+                             f"`{lp}`")
+                # The L_<slug>.lean is a thin alias/wrapper; the real tactic
+                # proof lives in the `_strategy_s<N>.lean` it imports.
+                for sp in _strategy_proofs_of(workspace, lp):
+                    lines.append(f"    - actual proof body: `{sp}`")
+            # Holes only: surface the proofs of siblings dedup'd INTO this decl
+            # (merge / drop, no Library home). The hole exists to ABSORB them,
+            # so the agent must INLINE their proofs — hand over the sources
+            # instead of making it discover the drop and hunt the files.
+            if is_hole:
+                absorbed = []
+                for dep in sorted(ref.get(slug, set())):
+                    drow = by_slug.get(dep)
+                    if (drow and drow["verdict"] in ("merge", "drop")
+                            and not drow["target_file"]):
+                        absorbed.append((dep, drow["verdict"]))
+                if absorbed:
+                    lines.append(
+                        "- absorbed siblings (dedup'd into this decl — they have "
+                        "no Library home, so inline their proofs):")
+                    for dep, verdict in absorbed:
+                        dlp = lean_paths.get(dep)
+                        loc = f" — proof: `{dlp}`" if dlp else ""
+                        for sp in (_strategy_proofs_of(workspace, dlp)
+                                   if dlp else []):
+                            loc += f", body: `{sp}`"
+                        lines.append(f"    - `{dep}` ({verdict}){loc}")
             lines.append("")
         # Redirect table (G3): non-keep siblings these decls cite + what to
-        # replace each with. A `sorry`-hole body that referenced a merged /
-        # dropped / cited sibling must use the canonical / mathlib / Library
-        # name instead — surface it so the agent doesn't have to rediscover it.
-        ref = _inv.referenced_slugs(
-            workspace, problem, [r["slug"] for r in rows],
-            root_source=_root_source(conn, problem, workspace))
+        # replace each with (reuses `ref` / `by_slug` precomputed above). A
+        # `sorry`-hole body that referenced a merged / dropped / cited sibling
+        # must use the canonical / mathlib / Library name instead.
         all_refs: set[str] = set().union(*ref.values()) if ref else set()
-        by_slug = {r["slug"]: r for r in db.library_decls_for(conn, problem)}
         redirects = [
             (s, by_slug[s]["verdict"], by_slug[s]["citation"])
             for s in sorted(all_refs)
@@ -1796,10 +1853,6 @@ def _migrate_file_incremental(
     # migrate.md is the per-decl prompt (rewritten for this scope; there is no
     # separate migrate_hole.md).
     hole_prompt = prompt_path
-    dep_modules = sorted(
-        _library_module_of(df)
-        for df in file_dependency_graph(
-            conn, problem=problem, workspace=workspace).get(target_file, set()))
     target_existed = target_path.exists()
     # mech is rebound when a mechanical relabel is demoted to a hole, so the
     # nested helpers read the latest chunks.
@@ -1834,10 +1887,15 @@ def _migrate_file_incremental(
         dattempts.mkdir(parents=True, exist_ok=True)
         patch = dattempts / "patch.lean"
         dpid = f"{pipeline_id}:decl-{slug}"
-        seed = ("import Mathlib\n"
-                + "".join(f"import {m}\n" for m in dep_modules)
-                + f"import {target_module}\n"
-                + f"\nnamespace {target_module}\n\n"
+        # Seed the LLM with the SAME header the assembled file will have
+        # (`mech.header`: every cross-file sibling + Defs import AND its `open`,
+        # added by relabel) plus a self-`import` of the partial target so prior
+        # decls are in scope. This way the fill's compile environment == the
+        # final file's: bare sibling / Defs names resolve exactly as they will
+        # after assembly (no `?m` autobind from a missing Defs `open`).
+        seed_header = _merge_header(mech.header, {f"import {target_module}"})
+        seed = (seed_header
+                + f"\n\nnamespace {target_module}\n\n"
                 + mech.chunks[slug]
                 + f"\n\nend {target_module}\n")
         cap: dict = {}
@@ -1886,10 +1944,11 @@ def _migrate_file_incremental(
                     failure_detail=f"decl {slug}: still `sorry` after fill",
                     proposal_md=text)
             # Keep only genuinely new imports the agent added; drop the seed's
-            # own (Mathlib umbrella, dep siblings, the partial-target self-
-            # import which must never appear in the committed file).
-            seed_imports = ({"import Mathlib", f"import {target_module}"}
-                            | {f"import {m}" for m in dep_modules})
+            # own (mech.header's siblings/Defs + Mathlib + the partial-target
+            # self-import, which must never appear in the committed file —
+            # mech.header already carries the real ones).
+            seed_imports = {l for l in seed_header.splitlines()
+                            if l.startswith("import ")}
             cap["chunk"] = chunk
             cap["imports"] = [im for im in imports if im not in seed_imports]
             return PipelineResult(outcome="success")

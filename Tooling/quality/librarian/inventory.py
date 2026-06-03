@@ -151,6 +151,18 @@ _PROOFS_IMPORT_RE = re.compile(
     re.MULTILINE,
 )
 
+# A `Problems.<p>.Defs` import: the proof uses the problem's definitions. Defs
+# decls are normal Library decls (classified + migrated like any lemma), but
+# they are referenced by bare NAME (not via a `proofs/L_<x>` import), so a usage
+# edge to a Defs decl is read by spotting this import + the decl's name in the
+# body — NOT by the proofs-import walk. Without this the dependency graph misses
+# every edge into a migrated Defs decl (mis-orders files, drops it from a hole's
+# seed import closure).
+_DEFS_IMPORT_RE = re.compile(
+    r"^\s*import\s+Problems\.[\w.]+\.Defs\s*$",
+    re.MULTILINE,
+)
+
 
 def usage_graph(
     workspace: Path, problem: str, slugs, *,
@@ -193,11 +205,13 @@ def usage_graph(
     root_mod = f"L_{root_source[0]}" if root_source else None
     root_path = Path(root_source[1]) if root_source else None
 
-    def imports_of(mod: str) -> list[str]:
+    # Defs decls that landed in the layout: referenced by bare NAME (not a
+    # `proofs/L_<x>` import), so their usage edges are read from the body, below.
+    defs_names = {d for d in defs_decls(workspace, problem) if d in slug_set}
+
+    def read_mod(mod: str) -> "str | None":
         p = root_path if (root_mod and mod == root_mod) else proofs / f"{mod}.lean"
-        if not p.exists():
-            return []
-        return _PROOFS_IMPORT_RE.findall(p.read_text(encoding="utf-8"))
+        return p.read_text(encoding="utf-8") if p.exists() else None
 
     out: dict[str, set[str]] = {s: set() for s in slug_set}
     for x in slug_set:
@@ -208,7 +222,10 @@ def usage_graph(
             if mod in seen_mods:
                 continue
             seen_mods.add(mod)
-            for imp in imports_of(mod):
+            text = read_mod(mod)
+            if text is None:
+                continue
+            for imp in _PROOFS_IMPORT_RE.findall(text):
                 if imp.startswith("L_"):
                     raw_y = imp[2:]
                     y = alias_map.get(raw_y, raw_y)   # merged sibling → canonical
@@ -229,6 +246,13 @@ def usage_graph(
                         out[x].add(y)
                 elif imp.startswith("_strategy_"):
                     frontier.append(imp)   # walk the strategy chain
+            # Defs-symbol edges: this module imports the problem's Defs and
+            # names a placed Defs decl → x depends on it, exactly like a
+            # cross-file sibling (orders the file, joins the import closure).
+            if defs_names and _DEFS_IMPORT_RE.search(text):
+                for nm in defs_names:
+                    if nm != x and re.search(rf"\b{re.escape(nm)}\b", text):
+                        out[x].add(nm)
     return out
 
 
@@ -247,11 +271,11 @@ def referenced_slugs(
     root_mod = f"L_{root_source[0]}" if root_source else None
     root_path = Path(root_source[1]) if root_source else None
 
-    def imports_of(mod: str) -> list[str]:
+    defs_names = set(defs_decls(workspace, problem))
+
+    def read_mod(mod: str) -> "str | None":
         p = root_path if (root_mod and mod == root_mod) else proofs / f"{mod}.lean"
-        if not p.exists():
-            return []
-        return _PROOFS_IMPORT_RE.findall(p.read_text(encoding="utf-8"))
+        return p.read_text(encoding="utf-8") if p.exists() else None
 
     out: dict[str, set[str]] = {}
     for x in slugs:
@@ -263,12 +287,21 @@ def referenced_slugs(
             if mod in seen_mods:
                 continue
             seen_mods.add(mod)
-            for imp in imports_of(mod):
+            text = read_mod(mod)
+            if text is None:
+                continue
+            for imp in _PROOFS_IMPORT_RE.findall(text):
                 if imp.startswith("L_"):
                     if imp[2:] != x:
                         refs.add(imp[2:])
                 elif imp.startswith("_strategy_"):
                     frontier.append(imp)
+            # Defs-symbol references: same bare-name detection as usage_graph,
+            # so a Defs decl a proof depends on is surfaced like any sibling.
+            if defs_names and _DEFS_IMPORT_RE.search(text):
+                for nm in defs_names:
+                    if nm != x and re.search(rf"\b{re.escape(nm)}\b", text):
+                        refs.add(nm)
         out[x] = refs
     return out
 

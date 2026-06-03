@@ -275,6 +275,50 @@ def test_migrate_context_shows_sibling_redirects(conn, tmp_path):
     assert "`bar` → `Mathlib.foo_thm`" in body
 
 
+def test_migrate_context_surfaces_absorbed_sibling_and_strategy(conn, tmp_path):
+    # A hole `foo` whose proof alias points to a strategy that uses a sibling
+    # `helper` dedup'd INTO it (merge, no Library home). Context must (②) resolve
+    # the alias to the real `_strategy_s*.lean`, and (①) list the absorbed
+    # sibling + its proof so the agent inlines it instead of hunting.
+    tf = "Library/P/Foo.lean"
+    _seed_classified(conn, "foo", "True", tf, 0)          # the hole
+    g = db.insert_goal(conn, problem="p", slug="helper",
+                       lean_path="Problems/p/proofs/L_helper.lean",
+                       statement="True", origin="backward", kind="theorem")
+    conn.execute("UPDATE goals SET status='proved' WHERE id=?", (g,))
+    db.upsert_library_decl(conn, problem="p", slug="helper", source_goal_id=g)
+    db.set_library_verdict(conn, problem="p", slug="helper", verdict="merge",
+                           citation="foo")          # merged INTO foo, no home
+    conn.commit()
+    # foo's proof: alias → strategy s700, which imports (uses) L_helper.
+    _write_proof(tmp_path, "foo",
+                 "import Mathlib\nimport " + PNS + ".proofs._strategy_s700\n"
+                 "namespace " + PNS + "\ndef foo := @" + PNS + ".s700\n"
+                 "end " + PNS + "\n")
+    proofs = tmp_path / "Problems" / "p" / "proofs"
+    (proofs / "_strategy_s700.lean").write_text(
+        "import Mathlib\nimport " + PNS + ".proofs.L_helper\n"
+        "namespace " + PNS + "\n"
+        "theorem s700 : True := by have := helper; trivial\nend " + PNS + "\n",
+        encoding="utf-8")
+    _write_proof(tmp_path, "helper",
+                 "import Mathlib\nnamespace " + PNS +
+                 "\ntheorem helper : True := by trivial\nend " + PNS + "\n")
+    attempts = tmp_path / ".attempts"
+    attempts.mkdir()
+    ctx = lib.compile_librarian_context(
+        conn, problem="p", work_kind="migrate", attempts_dir=attempts,
+        workspace=tmp_path, target_file=tf, holes=["foo"], solo_hole="foo")
+    body = ctx.read_text(encoding="utf-8")
+    # ② alias resolved to the real strategy proof body
+    assert "actual proof body" in body
+    assert "_strategy_s700.lean" in body
+    # ① absorbed sibling surfaced with its proof source
+    assert "absorbed siblings" in body
+    assert "`helper` (merge)" in body
+    assert "L_helper.lean" in body
+
+
 # --- seed mode: best-effort assembly with sorry holes ---
 
 def test_seed_mode_clean_decl_plus_hole(conn, tmp_path):

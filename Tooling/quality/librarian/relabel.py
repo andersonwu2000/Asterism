@@ -266,13 +266,12 @@ def relabel_self_contained(
         return RelabelResult(
             False, reason=f"no `namespace {problem_namespace}` found")
 
-    # Re-add Library imports dropped above:
-    #  - Defs Library module for each Defs symbol the body uses (bare name
-    #    resolves via the ancestor Defs namespace — no `open` needed).
-    #  - keep-sibling Library module for each cross-file sibling reference,
-    #    WITH `open <module>` so the bare name resolves (sibling lives in a
-    #    different namespace, so import alone is not enough).
-    extra_imports: list[str] = []
+    # Re-add Library imports dropped above. A migrated Defs symbol's module is
+    # treated EXACTLY like a cross-file sibling: `import` + `open`. The migrated
+    # Defs decl lives in its own Library namespace — a SIBLING of this file's,
+    # not an ancestor — so `import` alone leaves the bare name unresolved (it
+    # autobinds to `?m`, "function expected"). Defs decls are ordinary Library
+    # decls; there is no privileged Defs handling.
     for sym in used_defs:
         mod = defs_imports.get(sym)
         if not mod:
@@ -282,22 +281,18 @@ def relabel_self_contained(
             return RelabelResult(
                 False, reason=f"uses Defs symbol `{sym}` with no migrated "
                               "Library module — needs Phase 2")
-        if mod not in extra_imports:
-            extra_imports.append(mod)
-    sibling_imports = sorted(needed_sibling_mods - set(extra_imports))
-    for mod in sibling_imports:
-        if mod not in extra_imports:
-            extra_imports.append(mod)
+        if mod != target_namespace:        # co-located Defs decl: no self-import
+            needed_sibling_mods.add(mod)
 
-    if extra_imports or needed_sibling_mods:
-        # Insert imports right after the leading `import Mathlib`, and any
-        # `open <sibling-module>` right after the import block.
+    if needed_sibling_mods:
+        # Insert imports right after the leading `import Mathlib`, then the
+        # matching `open`s right after the import block.
         insert_at = 0
         for i, ln in enumerate(out):
             if ln.strip() == "import Mathlib":
                 insert_at = i + 1
                 break
-        block = [f"import {m}" for m in sorted(extra_imports)]
+        block = [f"import {m}" for m in sorted(needed_sibling_mods)]
         block += [f"open {m}" for m in sorted(needed_sibling_mods)]
         for j, line in enumerate(block):
             out.insert(insert_at + j, line)

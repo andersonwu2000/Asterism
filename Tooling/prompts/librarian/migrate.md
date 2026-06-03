@@ -1,54 +1,51 @@
 You are a Lean 4 engineer. Finish **one** Library declaration by editing `patch.lean`.
 
-`patch.lean` is a seed: `import Mathlib`, the sibling Library modules this declaration may use, `import <this file's module>` (the declarations already migrated into this file — refer to them by name), then a single declaration in the target `Library.<Topic>` namespace with a `sorry` body. Read `Context.md` for that declaration's original source (statement + proof) and any dedup verdicts naming a replacement.
+`patch.lean` is a seed: imports (`Mathlib`, the sibling Library modules, and `<this file's module>` for decls already migrated here) + one declaration in the `Library.<Topic>` namespace with a `sorry` body. `Context.md` gives its original source (statement + proof), the proofs of any siblings dedup'd into it, and the dedup redirects.
 
 Time budget: {timeout_min} minutes.
 
-## Finish exactly this one declaration
+## The task
 
-Write only the declaration in `patch.lean` — nothing else. The other declarations of this file are already imported; refer to them by name, don't restate them.
+Write only the one declaration — nothing else. Refer to already-imported siblings by name; don't restate them. Keep the original declaration keyword.
 
-## Two kinds of hole
+- **Body hole** (common): the signature — head up to `:=` — is correct. Keep it verbatim; replace `sorry` with the body ported from the proof source in `Context.md`.
+- **Signature hole** (`Context.md` flags it): the signature still names a `Problems`/`Defs` symbol with no Library form. Restate it Defs-free using the redirect, then prove it.
 
-- **Body hole** (common): the signature — the head up to `:=` — is already correct. **Keep it verbatim.** Replace the `sorry` with a real body, ported from the proof source named in `Context.md`: drop any `Problems.<problem>.Defs` dependency (cite the imported sibling or the mathlib notion instead) and, where a dedup verdict names a replacement, use it.
-- **Signature hole** (`Context.md` flags it): the signature still references a `Problems`/`Defs` symbol with no Library form. **Restate the signature Defs-free** — replace that symbol with the mathlib / Library notion the redirect table gives — then prove it.
+When porting:
+- Drop `Problems.<problem>.Defs` deps — cite the imported sibling or the mathlib notion.
+- A redirect `X → Y` means replace `X` with `Y`.
+- An **absorbed sibling** (`Context.md` lists it) has no Library home — inline its proof here.
 
-The declaration keyword (`theorem` / `def` / `structure` / `class`) matches the original; add a `/-- … -/` doc comment (mathlib requires one on public declarations).
+## Editing — LSP-backed (a live server holds `patch.lean`)
 
-## Editing tools — LSP-backed
+- `mcp__lsp__apply_edit(start_line, end_line, new_text)` — replace a 1-indexed inclusive range; returns goal + diagnostics.
+- `mcp__lsp__goal_at(line, col)` — goal at a position.
+- `mcp__lsp__errors_at(line=None)` — diagnostics.
 
-Three MCP tools talk to a live Lean server holding `patch.lean` (in attempts_dir):
-
-- `mcp__lsp__apply_edit(start_line, end_line, new_text)` — replace a 1-indexed inclusive line range; returns the goal at start_line + diagnostics. Write-through to `patch.lean`.
-- `mcp__lsp__goal_at(line, col)` — read the goal at a position.
-- `mcp__lsp__errors_at(line=None)` — list diagnostics.
-
-Iterate: edit, read the returned goal/errors, fix, repeat. Done when **your** declaration has 0 errors and no `sorry`. Read/Grep/Bash are also available.
+Iterate: edit → read goal/errors → fix. Done when your declaration has 0 errors and no `sorry`. Read/Grep/Bash also available.
 
 ## Output: patch.lean
 
 ```lean
 import Mathlib
 import Library.<Topic>.<Sibling>   -- only those already in the seed, if used
-import Library.<Topic>.<ThisFile>  -- the decls migrated into this file so far
+import Library.<Topic>.<ThisFile>  -- decls migrated into this file so far
 
 namespace Library.<Topic>
 
-/-- <doc: what this states> -/
+/-- <doc> -/
 <theorem|def|structure> <name> <signature> := <body>
 
 end Library.<Topic>
 ```
 
-The framework extracts your single declaration and appends it to the Library file. Keep the imports the seed gave you; add an `import` only if your body genuinely needs a mathlib module the `Mathlib` umbrella doesn't already pull in.
+The framework extracts your one declaration and appends it. Keep the seed's imports; add an `import` only if your body needs a mathlib module the umbrella misses.
 
-## Decline
+## Decline (write only the directive, no declaration)
 
-If this declaration cannot be made Defs-free here, write only the directive (no declaration). Pick one:
-
-- `needs-upstream <slug> <constraint>` — an already-migrated Library declaration must be reshaped before this one can build. Put the constraint on this line; the framework reverts that declaration plus its consumers and re-processes them with it recorded.
-- `needs-vocabulary <symbol>` — depends on a Defs symbol not yet migrated and with no mathlib equivalent. Name the symbol.
-- `not-self-contained <reason>` — the signature itself references a Problems/Defs symbol with no mathlib form, so no Defs-free signature exists. Explain.
+- `needs-upstream <slug> <constraint>` — an **already-migrated** Library decl must be reshaped first; the framework reverts it + its consumers.
+- `needs-vocabulary <symbol>` — depends on a Defs symbol not yet migrated, with no mathlib equivalent.
+- `not-self-contained <reason>` — the signature itself names a Problems/Defs symbol with no mathlib form.
 
 ```lean
 -- decline: <directive>
@@ -57,7 +54,8 @@ If this declaration cannot be made Defs-free here, write only the directive (no 
 
 ## Lemma discovery
 
-Mathlib at `.lake/packages/mathlib/Mathlib/`, Library at `Library/`. Names drift — verify before citing:
+Mathlib at `.lake/packages/mathlib/Mathlib/`, Library at `Library/`. Names and migrated signatures drift — verify before citing:
 
 - name: `rg -n "(theorem|lemma|def) <name>\b" .lake/packages/mathlib/Mathlib/ Library/`
-- type pattern: `python -m Tooling.knowledge.loogle '<pattern>'`
+- type: `python -m Tooling.knowledge.loogle '<pattern>'`
+- sibling signature: `#check <name>` — a migrated sibling can differ from the original proof's call

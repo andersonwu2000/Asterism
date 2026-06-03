@@ -192,6 +192,10 @@ def test_defs_symbol_readds_library_import():
     # Problems Defs import dropped, Library Defs import added.
     assert f"import {PNS}.Defs" not in r.text
     assert "import Library.LinearAlgebra.JordanForm.Defs" in r.text
+    # A migrated Defs decl lives in a SIBLING namespace, not an ancestor, so the
+    # bare name `IsJordanForm` only resolves with an `open` (import alone leaves
+    # it `?m`). Defs is now handled exactly like a cross-file sibling.
+    assert "open Library.LinearAlgebra.JordanForm.Defs" in r.text
     # added right after import Mathlib, before namespace
     assert r.text.index("import Library.LinearAlgebra.JordanForm.Defs") \
         < r.text.index(f"namespace {TNS}")

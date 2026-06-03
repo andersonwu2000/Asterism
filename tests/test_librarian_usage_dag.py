@@ -70,6 +70,46 @@ def test_usage_graph_recurses_nested_strategies(tmp_path):
     assert g["x"] == {"z"}
 
 
+def _defs(workspace, *names):
+    (workspace / "Problems" / "p").mkdir(parents=True, exist_ok=True)
+    body = ["import Mathlib", f"namespace {PNS}"]
+    body += [f"def {nm} (n : Nat) : Prop := n = n" for nm in names]
+    body += [f"end {PNS}"]
+    (workspace / "Problems" / "p" / "Defs.lean").write_text(
+        "\n".join(body) + "\n", encoding="utf-8")
+
+
+def test_usage_graph_adds_defs_symbol_edge(tmp_path):
+    # A migrated Defs decl is a normal placed node: a proof that imports the
+    # problem's Defs and names it depends on it (edge x->MyPred), exactly like a
+    # cross-file sibling. Without this the file layout/ordering loses the edge.
+    _defs(tmp_path, "MyPred")
+    _alias(tmp_path, "x", 100)
+    (_proofs(tmp_path) / "_strategy_s100.lean").write_text(
+        "import Mathlib\n"
+        f"import {PNS}.Defs\n"
+        f"namespace {PNS}\n"
+        "theorem s100 : True := by have := MyPred 0; trivial\n"
+        f"end {PNS}\n", encoding="utf-8")
+    g = inv.usage_graph(tmp_path, "p", {"x", "MyPred"})
+    assert "MyPred" in g["x"]
+    assert g["MyPred"] == set()          # the Defs decl itself depends on nothing
+
+
+def test_usage_graph_no_defs_edge_without_import(tmp_path):
+    # Guard: the bare name alone is not enough — the proof must actually import
+    # the problem's Defs for the edge to be recorded (avoids false positives).
+    _defs(tmp_path, "MyPred")
+    _alias(tmp_path, "x", 100)
+    (_proofs(tmp_path) / "_strategy_s100.lean").write_text(
+        "import Mathlib\n"
+        f"namespace {PNS}\n"                       # NO `import …Defs`
+        "theorem s100 : True := by trivial\n"
+        f"end {PNS}\n", encoding="utf-8")
+    g = inv.usage_graph(tmp_path, "p", {"x", "MyPred"})
+    assert "MyPred" not in g["x"]
+
+
 def test_usage_graph_drops_edges_outside_slug_set(tmp_path):
     # X uses Y, but Y isn't in the placed set → no edge (Y won't order a file).
     _alias(tmp_path, "x", 10)
