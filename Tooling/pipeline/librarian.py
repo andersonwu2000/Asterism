@@ -1644,6 +1644,23 @@ def _mechanical_migrate_file(
                 body.append(ln)
         chunk_by_slug[slug] = "\n".join(body).strip("\n")
 
+    # Fold in the file-level cross-file dependency imports from the
+    # authoritative file_dependency_graph. relabel only emits a sibling
+    # `import` when the source carried an explicit `import …proofs.L_<sub>`;
+    # a citation that reaches a sibling transitively (or bundled inside a
+    # `_strategy_*` file) is missed, so its full-qualified reference relabels
+    # cleanly but lands in a header with no import for that module → Unknown
+    # identifier. The dependency graph knows the edge regardless (it drives
+    # the migrate order), so the header must carry it. This covers all three
+    # consumers of `header` — the 0-hole mechanical commit, the incremental
+    # per-decl staging (`_stage`), and the final assembled file. The graph is
+    # a DAG over already-classified files and we only import upstream deps, so
+    # no cycle; a redundant import is build-harmless.
+    dep_imports = {
+        f"import {_library_module_of(df)}"
+        for df in file_dependency_graph(
+            conn, problem=problem, workspace=workspace).get(target_file, set())}
+    import_set |= dep_imports
     header = "\n".join(sorted(import_set))
     if open_set:
         header += "\n\n" + "\n".join(sorted(open_set))

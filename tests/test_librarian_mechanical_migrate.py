@@ -65,6 +65,36 @@ def test_mechanical_assembles_self_contained_file(conn, tmp_path):
     assert "Problems." not in text
 
 
+def test_mechanical_header_carries_filedep_imports(conn, tmp_path,
+                                                   monkeypatch):
+    # A decl can cite a cross-file sibling transitively (no explicit
+    # `import …proofs.L_<sub>` in its own source), so relabel never emits the
+    # sibling import. The authoritative file_dependency_graph still records the
+    # edge (it drives migrate order), so the assembled header must carry it —
+    # else the full-qualified reference lands in a header with no import for
+    # that module and build-fails with Unknown identifier. Regression for the
+    # BlockBasis → NilpotentFamily e2e failure (mech.header is the single
+    # source consumed by the 0-hole commit, incremental `_stage`, and the
+    # final assembled file).
+    tf = "Library/P/Foo.lean"
+    dep = "Library/P/Dep.lean"
+    _seed_classified(conn, "lem_a", "True", tf, 0)
+    _write_proof(tmp_path, "lem_a",
+                 "import Mathlib\n"
+                 f"namespace {PNS}\n"
+                 "theorem lem_a : True := by trivial\n"
+                 f"end {PNS}\n")
+    monkeypatch.setattr(lib, "file_dependency_graph",
+                        lambda *a, **k: {tf: {dep}})
+    rows = [r for r in db.library_decls_for(conn, "p")
+            if r["target_file"] == tf and r["lifecycle"] == "classified"]
+    text, holes, asm = lib._mechanical_migrate_file(
+        conn, problem="p", workspace=tmp_path, target_file=tf,
+        target_module="Library.P.Foo", rows=rows)
+    assert "import Library.P.Dep" in asm.header
+    assert "import Library.P.Dep" in text
+
+
 def test_mechanical_missing_proof_file_is_integrity_error(conn, tmp_path):
     # A goal-backed classified decl whose proof file is missing on disk is
     # file↔DB drift — raised loud (not masked by a cold from-scratch spawn).
