@@ -213,7 +213,7 @@ def test_next_migrate_file_none_when_no_classified(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------
-# db.queue_contains + _reenqueue_librarian_if_more
+# db.queue_contains
 # ---------------------------------------------------------------------
 
 def test_queue_contains(tmp_path: Path):
@@ -232,69 +232,102 @@ def _queue(conn):
         "SELECT kind, target_id, target_kind, priority FROM queue"))
 
 
-def test_reenqueue_when_more_work(tmp_path: Path):
+def test_librarian_refill_serial_phase_enqueues_one(tmp_path: Path):
+    # #92 — a serial phase (here: classify) enqueues ONE plain `problem` row.
     conn = _mem()
     _deduped(conn, "foo")  # next step is classify
-    dispatcher._reenqueue_librarian_if_more(conn, tmp_path, "p")
+    dispatcher._librarian_refill(conn, tmp_path, set(), fail_counts={})
     rows = _queue(conn)
     assert len(rows) == 1
     assert (rows[0]["kind"], rows[0]["target_id"], rows[0]["target_kind"],
             rows[0]["priority"]) == ("Librarian", "p", "Problem", 0)
 
 
-def test_reenqueue_no_duplicate(tmp_path: Path):
+def test_librarian_refill_serial_no_duplicate(tmp_path: Path):
     conn = _mem()
     _deduped(conn, "foo")
-    dispatcher._reenqueue_librarian_if_more(conn, tmp_path, "p")
-    dispatcher._reenqueue_librarian_if_more(conn, tmp_path, "p")
-    assert len(_queue(conn)) == 1  # guard prevents the second row
+    dispatcher._librarian_refill(conn, tmp_path, set(), fail_counts={})
+    dispatcher._librarian_refill(conn, tmp_path, set(), fail_counts={})
+    assert len(_queue(conn)) == 1  # queue_contains guard
 
 
-def test_reenqueue_stops_when_chain_done(tmp_path: Path):
+def test_librarian_refill_stops_when_chain_done(tmp_path: Path):
     conn = _mem()
     _cleaned(conn, "foo")
     (tmp_path / "Library").mkdir()
     (tmp_path / "Library" / "INDEX.md").write_text(
         "# Library Index\n\n## p\n\nx\n", encoding="utf-8")
-    dispatcher._reenqueue_librarian_if_more(conn, tmp_path, "p")
+    dispatcher._librarian_refill(conn, tmp_path, set(), fail_counts={})
     assert _queue(conn) == []
 
 
-def test_reenqueue_migrated_no_index_enqueues_more(tmp_path: Path):
-    # migrated, no INDEX yet → derive says cleanup → re-enqueue.
+def test_librarian_refill_migrate_phase_parallel_per_file(tmp_path: Path):
+    # #92 — two INDEPENDENT classified files both enqueue as per-file migrate
+    # units (parallel), each target_id = `problem\x1ffile`.
     conn = _mem()
-    _migrated(conn, "foo")
-    dispatcher._reenqueue_librarian_if_more(conn, tmp_path, "p")
+    _classified(conn, "foo", order=0)   # Library/P/foo.lean
+    _classified(conn, "bar", order=1)   # Library/P/bar.lean
+    dispatcher._librarian_refill(conn, tmp_path, set(), fail_counts={})
+    tids = sorted(r["target_id"] for r in _queue(conn))
+    assert tids == sorted([
+        dispatcher._lib_encode("p", "Library/P/bar.lean"),
+        dispatcher._lib_encode("p", "Library/P/foo.lean")])
+
+
+def test_librarian_refill_skips_inflight_and_queued(tmp_path: Path):
+    conn = _mem()
+    _classified(conn, "foo", order=0)
+    _classified(conn, "bar", order=1)
+    foo_tid = dispatcher._lib_encode("p", "Library/P/foo.lean")
+    running = {(foo_tid, "Librarian", None)}    # foo already in flight
+    dispatcher._librarian_refill(conn, tmp_path, running, fail_counts={})
+    assert [r["target_id"] for r in _queue(conn)] == [
+        dispatcher._lib_encode("p", "Library/P/bar.lean")]
+    # second refill: bar now queued → no duplicate, foo still in-flight
+    dispatcher._librarian_refill(conn, tmp_path, running, fail_counts={})
     assert len(_queue(conn)) == 1
 
 
-def test_advance_chain_success_resets_and_advances(tmp_path: Path):
+def test_librarian_refill_cleanup_phase_per_file(tmp_path: Path):
     conn = _mem()
-    _migrated(conn, "foo")           # derive → cleanup (non-None)
-    fc = {"p": 2}
+    _migrated(conn, "foo")   # wholly migrated → cleanup-ready
+    dispatcher._librarian_refill(conn, tmp_path, set(), fail_counts={})
+    rows = _queue(conn)
+    assert len(rows) == 1
+    assert rows[0]["target_id"] == dispatcher._lib_encode(
+        "p", "Library/P/foo.lean")
+
+
+def test_librarian_refill_skips_stalled_file(tmp_path: Path):
+    conn = _mem()
+    _classified(conn, "foo", order=0)
+    tid = dispatcher._lib_encode("p", "Library/P/foo.lean")
+    fc = {tid: dispatcher.LIBRARIAN_MAX_CHAIN_RETRIES + 1}   # stalled unit
+    dispatcher._librarian_refill(conn, tmp_path, set(), fail_counts=fc)
+    assert _queue(conn) == []   # stalled file is not re-enqueued
+
+
+def test_advance_chain_success_clears_count_no_enqueue(tmp_path: Path):
+    # #92 — _advance only tracks fail counts now; re-enqueue is the refill's job.
+    conn = _mem()
+    tid = dispatcher._lib_encode("p", "Library/P/foo.lean")
+    fc = {tid: 2}
     dispatcher._advance_librarian_chain(
-        conn, tmp_path, "p", outcome="success", reason="", fail_counts=fc)
-    assert "p" not in fc             # counter reset on success
-    assert len(_queue(conn)) == 1    # chain advanced
+        conn, tmp_path, tid, outcome="success", reason="", fail_counts=fc)
+    assert tid not in fc            # counter cleared on success
+    assert _queue(conn) == []       # advance never enqueues
 
 
-def test_advance_chain_failure_reenqueues_then_stalls(tmp_path: Path):
-    # A failed step re-enqueues up to the cap, then stalls (no re-enqueue).
+def test_advance_chain_failure_counts_no_enqueue(tmp_path: Path):
     conn = _mem()
-    _migrated(conn, "foo")
+    tid = dispatcher._lib_encode("p", "Library/P/foo.lean")
     fc: dict = {}
-    for attempt in (1, 2):           # LIBRARIAN_MAX_CHAIN_RETRIES = 2
-        conn.execute("DELETE FROM queue")   # prior step popped it
+    for attempt in (1, 2, 3):
         dispatcher._advance_librarian_chain(
-            conn, tmp_path, "p", outcome="failed", reason="boom",
+            conn, tmp_path, tid, outcome="failed", reason="boom",
             fail_counts=fc)
-        assert fc["p"] == attempt
-        assert len(_queue(conn)) == 1       # re-enqueued
-    conn.execute("DELETE FROM queue")
-    dispatcher._advance_librarian_chain(
-        conn, tmp_path, "p", outcome="failed", reason="boom", fail_counts=fc)
-    assert fc["p"] == 3
-    assert _queue(conn) == []               # capped → chain stalls
+        assert fc[tid] == attempt   # per-unit count climbs
+        assert _queue(conn) == []   # advance never enqueues (refill does)
 
 
 # ---------------------------------------------------------------------

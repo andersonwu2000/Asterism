@@ -95,6 +95,52 @@ def test_mechanical_header_carries_filedep_imports(conn, tmp_path,
     assert "import Library.P.Dep" in text
 
 
+def test_ready_file_work_dag_scheduling(conn, tmp_path, monkeypatch):
+    # #92 scheduler primitive: independent files are ready together; a file
+    # depending on another waits until that dep is DONE (wholly cleaned);
+    # a wholly-migrated file is cleanup-ready; in_flight files are excluded.
+    def _seed(slug, tf, lifecycle):
+        g = db.insert_goal(conn, problem="p", slug=slug,
+                           lean_path=f"Problems/p/proofs/L_{slug}.lean",
+                           statement="True", origin="backward", kind="theorem")
+        conn.execute("UPDATE goals SET status='proved' WHERE id=?", (g,))
+        db.upsert_library_decl(conn, problem="p", slug=slug, source_goal_id=g)
+        db.set_library_verdict(conn, problem="p", slug=slug, verdict="keep")
+        db.set_library_classification(conn, problem="p", slug=slug,
+                                      target_file=tf, target_name=None,
+                                      file_order=0)
+        conn.execute("UPDATE library_decls SET lifecycle=? WHERE problem='p' "
+                     "AND slug=?", (lifecycle, slug))
+        conn.commit()
+    # B depends on A; C is independent.
+    monkeypatch.setattr(lib, "file_dependency_graph",
+                        lambda *a, **k: {"B.lean": {"A.lean"}, "A.lean": set(),
+                                         "C.lean": set()})
+
+    # (1) all classified: A and C migrate-ready; B blocked (A not done).
+    _seed("a", "A.lean", "classified")
+    _seed("b", "B.lean", "classified")
+    _seed("c", "C.lean", "classified")
+    work = lib.ready_file_work(conn, problem="p", workspace=tmp_path)
+    assert work == [("migrate", "A.lean"), ("migrate", "C.lean")]
+
+    # (2) in_flight excludes A.
+    work = lib.ready_file_work(conn, problem="p", workspace=tmp_path,
+                               in_flight={"A.lean"})
+    assert work == [("migrate", "C.lean")]
+
+    # (3) A done (cleaned) + C migrated: B becomes migrate-ready, C cleanup-ready.
+    conn.execute("UPDATE library_decls SET lifecycle='cleaned' WHERE problem='p'"
+                 " AND slug='a'")
+    conn.execute("UPDATE library_decls SET lifecycle='migrated' WHERE problem='p'"
+                 " AND slug='c'")
+    conn.commit()
+    work = lib.ready_file_work(conn, problem="p", workspace=tmp_path)
+    assert ("migrate", "B.lean") in work      # A is done → B unblocked
+    assert ("cleanup", "C.lean") in work      # C wholly migrated → cleanup-ready
+    assert all(f != "A.lean" for _, f in work)  # A done → no longer work
+
+
 def test_mechanical_missing_proof_file_is_integrity_error(conn, tmp_path):
     # A goal-backed classified decl whose proof file is missing on disk is
     # file↔DB drift — raised loud (not masked by a cold from-scratch spawn).

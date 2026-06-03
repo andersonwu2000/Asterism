@@ -830,6 +830,72 @@ def next_cleanup_file(conn, *, problem: str) -> "str | None":
     return migrated[0] if migrated else None
 
 
+def file_work_kind(conn, *, problem: str, target_file: str) -> "str | None":
+    """The current step for ONE Library file (#92 per-file unit dispatch):
+    'migrate' if it still has `classified` decls, 'cleanup' if it is wholly
+    `migrated` (not yet cleaned), else None (done / unknown file)."""
+    ls = {r["lifecycle"] for r in db.library_decls_for(conn, problem)
+          if r["target_file"] == target_file}
+    if "classified" in ls:
+        return "migrate"
+    if "migrated" in ls:
+        return "cleanup"
+    return None
+
+
+def ready_file_work(conn, *, problem: str, workspace,
+                    in_flight: "set[str] | tuple" = ()) -> "list[tuple[str, str]]":
+    """The set of Library FILES dispatchable RIGHT NOW as independent units
+    (#92 dynamic file pipeline), each as `(work_kind, target_file)`:
+
+      - `('migrate', f)`  — f's decls are still `classified` AND every file f
+                            depends on is **done** (fully `cleaned`). A file
+                            migrates only against its deps' FINAL (cleaned)
+                            form, so a later cleanup can't break it.
+      - `('cleanup', f)`  — f is fully `migrated` (cleanup runs per-file, right
+                            after that file's migrate, before its importers).
+
+    A file's placed decls share one lifecycle (migrate/cleanup move a whole
+    file), so the file's phase is well-defined. `done = wholly cleaned` is the
+    readiness currency, so the dependency chain is migrate→cleanup→(unblock
+    importers). Files in `in_flight` are excluded (already being worked). The
+    returned list is order-stable (by path); independent files appear together
+    so the dispatcher can run them concurrently in the pool.
+    """
+    from collections import defaultdict
+    in_flight = set(in_flight)
+    rows = db.library_decls_for(conn, problem)
+    by_file: dict[str, list] = defaultdict(list)
+    for r in rows:
+        if r["target_file"] and r["lifecycle"] in (
+                "classified", "migrated", "cleaned"):
+            by_file[r["target_file"]].append(r)
+
+    def _phase(rs) -> str:
+        # Least-advanced lifecycle present — defensive against a half-moved
+        # file (treat as the earlier stage; never double-dispatch).
+        ls = {r["lifecycle"] for r in rs}
+        for ph in ("classified", "migrated", "cleaned"):
+            if ph in ls:
+                return ph
+        return "cleaned"
+
+    phase = {f: _phase(rs) for f, rs in by_file.items()}
+    done = {f for f, ph in phase.items() if ph == "cleaned"}
+    graph = file_dependency_graph(conn, problem=problem, workspace=workspace)
+    work: list[tuple[str, str]] = []
+    for f in sorted(phase):
+        if f in in_flight:
+            continue
+        ph = phase[f]
+        if ph == "migrated":
+            work.append(("cleanup", f))
+        elif ph == "classified":
+            if all(dep in done for dep in graph.get(f, set())):
+                work.append(("migrate", f))
+    return work
+
+
 def _harvested_decls(conn, problem: str) -> list:
     """Decls actually placed in the Library — 'migrated' (pre-cleanup) plus
     'cleaned' (Step 4 done). The set bridge re-derives against and INDEX

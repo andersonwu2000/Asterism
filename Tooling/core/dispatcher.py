@@ -1078,7 +1078,9 @@ def _problem_of_target(conn: sqlite3.Connection, target_id: str,
     target_id=problem name); everything else targets a goal whose
     `problem` column we look up."""
     if target_kind == "Problem":
-        return target_id
+        # Strip a Librarian per-file suffix (problem\x1ffile); a plain
+        # problem (Forward / phase-step Librarian) is returned unchanged.
+        return _lib_decode(target_id)[0]
     try:
         g = db.get_goal(conn, int(target_id))
     except (TypeError, ValueError):
@@ -1405,6 +1407,28 @@ def _librarian_index_has(workspace: Path, problem: str) -> bool:
     return any(ln.strip() == header for ln in text.splitlines())
 
 
+# #92 — a Librarian queue row for the parallel phases (migrate/cleanup) encodes
+# its target FILE in the target_id as `problem\x1ffile`, so the generic pop /
+# running-dedup / submit machinery treats each file as a distinct unit (the
+# running key (target_id, kind, decision_id) is naturally per-file) with NO
+# change to that machinery. Phase steps (dedup/classify/bridge) stay a plain
+# `problem` target_id. Only Librarian-aware code decodes; proving target_ids are
+# goal ints and never contain the separator, so they are unaffected.
+_LIB_SEP = "\x1f"
+
+
+def _lib_encode(problem: str, target_file: str) -> str:
+    return f"{problem}{_LIB_SEP}{target_file}"
+
+
+def _lib_decode(target_id: str) -> "tuple[str, str | None]":
+    """`problem\\x1ffile` → (problem, file); a plain `problem` → (problem, None)."""
+    if _LIB_SEP in target_id:
+        problem, target_file = target_id.split(_LIB_SEP, 1)
+        return problem, target_file
+    return target_id, None
+
+
 def _derive_librarian_work(
     conn: sqlite3.Connection, problem: str, workspace: Path,
 ) -> tuple[str | None, str | None]:
@@ -1455,51 +1479,98 @@ def _derive_librarian_work(
 
 
 def _advance_librarian_chain(
-    conn: sqlite3.Connection, workspace: Path, problem: str, *,
+    conn: sqlite3.Connection, workspace: Path, target_id: str, *,
     outcome: str, reason: str, fail_counts: dict,
 ) -> None:
-    """After a Librarian pipeline finishes, drive the chain (plan §5).
+    """Per-unit fail tracking for the Librarian chain (#92).
 
-    On success: reset the per-problem fail counter and enqueue the next step.
-    On failure: re-enqueue the SAME step (the next tick re-derives it) up to
-    `LIBRARIAN_MAX_CHAIN_RETRIES` — surviving a transient gateway/harness
-    failure — then let the chain stall for the operator. Without the failure
-    branch a single failed step strands the whole Library-ization until a root
-    re-verify re-triggers it. Mutates `fail_counts`."""
+    Re-enqueue is owned by the tick-level `_librarian_refill` (the DAG
+    scheduler) — here we only COUNT failures so a unit that keeps failing is
+    skipped (stalled) by the refill instead of looping forever. `target_id` is
+    the finished row's queue id: a plain `problem` (serial phase step) or
+    `problem\\x1ffile` (per-file migrate/cleanup unit). Mutates `fail_counts`,
+    keyed by `target_id` so each file/phase stalls independently. Surviving a
+    transient gateway/harness failure: the refill re-enqueues the same unit
+    next tick until the count crosses `LIBRARIAN_MAX_CHAIN_RETRIES`."""
     if outcome in ("success", "proved"):
-        fail_counts.pop(problem, None)
-        _reenqueue_librarian_if_more(conn, workspace, problem)
+        fail_counts.pop(target_id, None)
         return
-    n = fail_counts.get(problem, 0) + 1
-    fail_counts[problem] = n
-    if n <= LIBRARIAN_MAX_CHAIN_RETRIES:
-        _reenqueue_librarian_if_more(conn, workspace, problem)
-        print(f"[librarian] {problem}: chain step failed ({reason}); "
-              f"re-enqueued (attempt {n}/{LIBRARIAN_MAX_CHAIN_RETRIES})",
-              flush=True)
+    n = fail_counts.get(target_id, 0) + 1
+    fail_counts[target_id] = n
+    problem, target_file = _lib_decode(target_id)
+    unit = target_file or "chain step"
+    if n > LIBRARIAN_MAX_CHAIN_RETRIES:
+        print(f"[librarian] {problem}: unit `{unit}` STALLED after {n} "
+              f"failures ({reason}) — needs operator", flush=True)
     else:
-        print(f"[librarian] {problem}: chain STALLED after {n} failures "
-              f"({reason}) — needs operator", flush=True)
+        print(f"[librarian] {problem}: unit `{unit}` failed ({reason}); "
+              f"will retry (attempt {n}/{LIBRARIAN_MAX_CHAIN_RETRIES})",
+              flush=True)
 
 
-def _reenqueue_librarian_if_more(
-    conn: sqlite3.Connection, workspace: Path, problem: str,
+def _librarian_refill(
+    conn: sqlite3.Connection, workspace: Path,
+    running: "set[tuple]", *, scope: str | None = None,
+    fail_counts: dict,
 ) -> None:
-    """After a Librarian pipeline succeeds, enqueue the next chain step
-    if the state machine has more work (plan §5). Runs in the dispatcher
-    completion handler — AFTER the finished future has been discarded
-    from `running` — so the freshly-enqueued row isn't pop-skipped (and
-    silently dropped) by the in-flight dedup. The queue guard prevents a
-    duplicate when a root re-verify re-enqueues a chain already pending."""
-    work_kind, _ = _derive_librarian_work(conn, problem, workspace)
-    if work_kind is None:
-        return  # chain complete — all terminal and finish done
-    if db.queue_contains(conn, kind="Librarian", target_id=problem):
-        return
-    db.enqueue(conn, kind="Librarian", target_id=problem,
-               target_kind="Problem", priority=0)
-    print(f"[librarian] {problem}: re-enqueued (next={work_kind})",
-          flush=True)
+    """Tick-level DAG scheduler for the Librarian chain (#92) — the analogue of
+    `bfs_refill` for proving. For every problem whose chain is active:
+
+      - serial phase (dedup/classify/bridge): ensure ONE plain `problem`
+        Librarian row is queued.
+      - per-file phase (migrate/cleanup): enqueue one `problem\\x1ffile` row per
+        READY file (its dep-files are all done, and it is neither in-flight nor
+        already queued) so independent files run concurrently in the pool.
+
+    Units whose fail count crossed `LIBRARIAN_MAX_CHAIN_RETRIES` are skipped
+    (stalled — operator inspects). Only problems that ALREADY have
+    `library_decls` rows are driven; the first `dedup` is still seeded by the
+    verify hook on root proof, so this never starts a chain on its own."""
+    from ..pipeline import librarian
+    if scope:
+        prob_rows = conn.execute(
+            "SELECT DISTINCT problem FROM library_decls WHERE problem LIKE ?",
+            (scope,)).fetchall()
+    else:
+        prob_rows = conn.execute(
+            "SELECT DISTINCT problem FROM library_decls").fetchall()
+    for (problem,) in prob_rows:
+        work_kind, _ = _derive_librarian_work(conn, problem, workspace)
+        if work_kind is None:
+            continue
+        if work_kind in ("migrate", "cleanup"):
+            # Files already in flight (running) or queued for this problem.
+            inflight: set[str] = set()
+            for r in running:
+                if r[1] != "Librarian":
+                    continue
+                rp, rf = _lib_decode(r[0])
+                if rp == problem and rf is not None:
+                    inflight.add(rf)
+            queued = set()
+            for (qtid,) in conn.execute(
+                    "SELECT target_id FROM queue WHERE kind='Librarian'"):
+                qp, qf = _lib_decode(str(qtid))
+                if qp == problem and qf is not None:
+                    queued.add(qf)
+            skip = inflight | queued
+            for _wk, f in librarian.ready_file_work(
+                    conn, problem=problem, workspace=workspace, in_flight=skip):
+                tid = _lib_encode(problem, f)
+                if fail_counts.get(tid, 0) > LIBRARIAN_MAX_CHAIN_RETRIES:
+                    continue  # stalled file — operator
+                db.enqueue(conn, kind="Librarian", target_id=tid,
+                           target_kind="Problem", priority=0)
+        else:
+            # Serial phase — a single plain `problem` row.
+            if fail_counts.get(problem, 0) > LIBRARIAN_MAX_CHAIN_RETRIES:
+                continue
+            if (problem, "Librarian", None) in running:
+                continue
+            if db.queue_contains(conn, kind="Librarian", target_id=problem):
+                continue
+            db.enqueue(conn, kind="Librarian", target_id=problem,
+                       target_kind="Problem", priority=0)
 
 
 def _run_pipeline(workspace: Path,
@@ -1644,7 +1715,10 @@ def _run_pipeline(workspace: Path,
                 # NOT in the queue row (mirrors strategist deriving its
                 # trigger), so a re-enqueued chain step always reflects
                 # the latest state.
-                problem = target_id
+                # #92 — target_id is `problem\x1ffile` for a per-file
+                # migrate/cleanup unit, or a plain `problem` for a serial phase
+                # step (dedup/classify/bridge).
+                problem, target_file = _lib_decode(target_id)
                 if problem not in manifests:
                     db.record_pipeline(
                         conn, pipeline_id=pipeline_id, kind=task_kind,
@@ -1654,12 +1728,23 @@ def _run_pipeline(workspace: Path,
                     )
                     return (pipeline_id, task_kind, target_id, target_kind,
                             "failed", "problem_not_found")
-                work_kind, target = _derive_librarian_work(
-                    conn, problem, workspace)
+                from ..pipeline import librarian
+                if target_file is not None:
+                    # Per-file unit: run THIS file's current step.
+                    work_kind = librarian.file_work_kind(
+                        conn, problem=problem, target_file=target_file)
+                    target = target_file
+                else:
+                    # Serial phase step. If state has advanced to a per-file
+                    # phase (migrate/cleanup), `_librarian_refill` owns it —
+                    # this plain row is a no-op (the per-file rows do the work).
+                    work_kind, target = _derive_librarian_work(
+                        conn, problem, workspace)
+                    if work_kind in ("migrate", "cleanup"):
+                        work_kind = None
                 if work_kind is None:
-                    # Chain already drained (all terminal + finish done,
-                    # or dedup kept nothing). Record a clean no-op so the
-                    # pipelines row reflects the drain; no re-enqueue.
+                    # Nothing to do for this row (chain drained, or a stale
+                    # plain row whose phase is now per-file). Clean no-op.
                     db.record_pipeline(
                         conn, pipeline_id=pipeline_id, kind=task_kind,
                         target_id=target_id, target_kind=target_kind,
@@ -1668,7 +1753,6 @@ def _run_pipeline(workspace: Path,
                     )
                     return (pipeline_id, task_kind, target_id, target_kind,
                             "success", "")
-                from ..pipeline import librarian
                 # Per-file axiom check uses the operator's authorized
                 # axioms (Manifest `axioms_whitelist`), falling back to
                 # the 3 standard axioms — same source + fallback as
@@ -2057,15 +2141,11 @@ def run(workspace: Path, *, once: bool = False,
                                 target_id=tid, target_kind=tk,
                                 outcome=outcome, failure_reason=reason,
                                 decision_id=meta_decision_id)
-                    # Librarian chain advance (plan §5). Safe here: the
-                    # finished future is already out of `running` (line
-                    # above), so the next chain step won't be pop-skipped.
-                    # On success, advance + reset the fail counter. On
-                    # failure, re-enqueue the same step up to
-                    # LIBRARIAN_MAX_CHAIN_RETRIES (surviving a transient
-                    # gateway/harness failure) then let the chain stall —
-                    # without this a single failed step strands the whole
-                    # Library-ization until a root re-verify re-triggers it.
+                    # Librarian chain advance (#92). Only COUNTS this unit's
+                    # outcome (per-target_id fail tracking); re-enqueue is owned
+                    # by the tick-level `_librarian_refill` DAG scheduler. A
+                    # unit that keeps failing crosses LIBRARIAN_MAX_CHAIN_RETRIES
+                    # and the refill then skips it (stalled) instead of looping.
                     if kind == "Librarian":
                         _advance_librarian_chain(
                             conn, workspace, tid, outcome=outcome,
@@ -2325,6 +2405,12 @@ def run(workspace: Path, *, once: bool = False,
         bfs_refill(conn, running, cooldown_until, scope=scope,
                    quota_cooldown_kind=quota_cooldown_kind,
                    verified_problems=verified_problems)
+
+        # #92 — Librarian DAG scheduler: enqueue every dispatchable file
+        # (and the serial phase steps) so independent files migrate/clean in
+        # parallel in the pool, the same way bfs_refill fans out proving goals.
+        _librarian_refill(conn, workspace, running, scope=scope,
+                          fail_counts=librarian_fail_counts)
 
         # Phase 2 — Strategist T0/T1 triggers (T2 fires at cascade time
         # in `cascade_one`, not here). Skipped under awaiting_human gate
