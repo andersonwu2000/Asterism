@@ -53,6 +53,9 @@ _RE_FORWARD_CTX = re.compile(r"^# Forward context — (\S+)")
 # (compile_librarian_context). Without this the librarian work-kinds fall
 # through to the ("spawning", "?") placeholder.
 _RE_LIBRARIAN_CTX = re.compile(r"^# Librarian — (\w+) — (\S+)")
+# Migrate Context.md also carries `## Migrate file `<path>`` — surface the
+# file basename in the pipeline label so stats reads "migrate <File>.lean".
+_RE_LIBRARIAN_MIGRATE_FILE = re.compile(r"^## Migrate file `([^`]+)`")
 _RE_STRATEGY_NAMING = re.compile(r"^## Strategy naming\b")
 
 # Spawns whose dir contained any file touched in the last ACTIVE_WINDOW
@@ -588,6 +591,14 @@ def _lookup_spawn_info(spawn_dir: Path) -> tuple[str, str] | None:
             # kind = the work-kind (dedup/classify/migrate/cleanup/bridge);
             # label = the problem (truncated like the goal-slug labels).
             kind, prob = m.group(1), m.group(2)
+            # migrate carries `## Migrate file `<path>`` — append the file
+            # basename so stats reads "migrate <File>.lean" (which file is in
+            # flight), not just "migrate". Read-only; the line already exists.
+            for ln in head_lines:
+                fm = _RE_LIBRARIAN_MIGRATE_FILE.match(ln)
+                if fm:
+                    kind = f"{kind} {fm.group(1).rsplit('/', 1)[-1]}"
+                    break
             if len(prob) > _LABEL_SLUG_MAX:
                 prob = prob[: _LABEL_SLUG_MAX - 1] + "…"
             return (kind, prob)
