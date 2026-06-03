@@ -1508,11 +1508,48 @@ def _advance_librarian_chain(
               flush=True)
 
 
+def _librarian_selfstart_problems(
+    conn: sqlite3.Connection, workspace: Path,
+    manifests, *, scope: str | None,
+) -> "list[str]":
+    """In-scope problems whose Librarian chain should START this run but has
+    no durable trigger left (#92 Bug B): opted-in (`Manifest.library`), root
+    proved, no INDEX yet, and no `library_decls` rows (chain never began, or
+    the library was reset). The verify hook (verify.py) only enqueues `dedup`
+    at the instant a root becomes integrity-verified — a historically-proved
+    or library-reset problem never re-fires it, and a manual enqueue is wiped
+    by `recover_at_startup`'s blanket queue clear. So the refill self-seeds
+    `dedup` for these, making the daemon resume Library-ization across a
+    restart instead of stranding it. Gated on the per-problem `library: true`
+    opt-in (default False), so this never auto-Library-izes a problem the
+    operator didn't mark."""
+    if scope:
+        proved = conn.execute(
+            "SELECT DISTINCT problem FROM goals WHERE origin='root' "
+            "AND status='proved' AND problem LIKE ?", (scope,)).fetchall()
+    else:
+        proved = conn.execute(
+            "SELECT DISTINCT problem FROM goals WHERE origin='root' "
+            "AND status='proved'").fetchall()
+    out: list[str] = []
+    for (problem,) in proved:
+        if problem not in manifests:
+            continue
+        if not manifests[problem].library:
+            continue
+        if _librarian_index_has(workspace, problem):
+            continue
+        if db.library_decls_for(conn, problem):
+            continue  # already has rows — driven by the library_decls path
+        out.append(problem)
+    return out
+
+
 def _librarian_refill(
     conn: sqlite3.Connection, workspace: Path,
-    running: "set[tuple]", *, scope: str | None = None,
+    running: "set[tuple]", manifests, *, scope: str | None = None,
     fail_counts: dict,
-) -> None:
+) -> bool:
     """Tick-level DAG scheduler for the Librarian chain (#92) — the analogue of
     `bfs_refill` for proving. For every problem whose chain is active:
 
@@ -1522,10 +1559,18 @@ def _librarian_refill(
         READY file (its dep-files are all done, and it is neither in-flight nor
         already queued) so independent files run concurrently in the pool.
 
-    Units whose fail count crossed `LIBRARIAN_MAX_CHAIN_RETRIES` are skipped
-    (stalled — operator inspects). Only problems that ALREADY have
-    `library_decls` rows are driven; the first `dedup` is still seeded by the
-    verify hook on root proof, so this never starts a chain on its own."""
+    Drives problems that already have `library_decls` rows PLUS opted-in
+    proved problems with no chain yet (`_librarian_selfstart_problems`, Bug B)
+    — so the daemon (re)starts and resumes Library-ization on its own, not just
+    when the verify hook fires at proof time.
+
+    Returns whether any LIVE Librarian work remains in scope (something was
+    enqueued this tick, or a unit is in-flight / already queued). The
+    workspace-exit gate uses this so the daemon does NOT quit with Library-ization
+    pending — proof work alone no longer keeps it alive (Bug A). Units whose
+    fail count crossed `LIBRARIAN_MAX_CHAIN_RETRIES` are skipped (stalled — they
+    do NOT count as pending, so a fully-stalled chain lets the daemon exit for
+    the operator to inspect)."""
     from ..pipeline import librarian
     if scope:
         prob_rows = conn.execute(
@@ -1534,7 +1579,16 @@ def _librarian_refill(
     else:
         prob_rows = conn.execute(
             "SELECT DISTINCT problem FROM library_decls").fetchall()
-    for (problem,) in prob_rows:
+    problems = [p for (p,) in prob_rows]
+    seen = set(problems)
+    for p in _librarian_selfstart_problems(
+            conn, workspace, manifests, scope=scope):
+        if p not in seen:
+            problems.append(p)
+            seen.add(p)
+
+    pending = False
+    for problem in problems:
         work_kind, _ = _derive_librarian_work(conn, problem, workspace)
         if work_kind is None:
             continue
@@ -1554,6 +1608,8 @@ def _librarian_refill(
                 if qp == problem and qf is not None:
                     queued.add(qf)
             skip = inflight | queued
+            if skip:
+                pending = True  # a file is mid-flight or already queued
             for _wk, f in librarian.ready_file_work(
                     conn, problem=problem, workspace=workspace, in_flight=skip):
                 tid = _lib_encode(problem, f)
@@ -1561,16 +1617,21 @@ def _librarian_refill(
                     continue  # stalled file — operator
                 db.enqueue(conn, kind="Librarian", target_id=tid,
                            target_kind="Problem", priority=0)
+                pending = True
         else:
             # Serial phase — a single plain `problem` row.
             if fail_counts.get(problem, 0) > LIBRARIAN_MAX_CHAIN_RETRIES:
-                continue
+                continue  # stalled — not pending, daemon may exit
             if (problem, "Librarian", None) in running:
+                pending = True
                 continue
             if db.queue_contains(conn, kind="Librarian", target_id=problem):
+                pending = True
                 continue
             db.enqueue(conn, kind="Librarian", target_id=problem,
                        target_kind="Problem", priority=0)
+            pending = True
+    return pending
 
 
 def _run_pipeline(workspace: Path,
@@ -2384,16 +2445,30 @@ def run(workspace: Path, *, once: bool = False,
             # the root, leaving TREE.md frozen at root=attempting.
             tree.write(conn, workspace, problem_name)
 
-        # Workspace-wide exit: when every problem's root is proved.
-        # `verify.root_integrity_gate` above may have called
-        # `rollback_cascade_chain` on sorryAx detection, reverting a
-        # root to 'attempting'; in that case this check fails and the
-        # dispatcher loop continues for re-Backward.
-        # `scope` filter: a `--scope sylvester_gallai` daemon must
-        # gate on its scoped problems only — without this filter,
-        # unrelated miniF2F roots sitting in the same workspace keep
-        # `root_proved` False forever.
-        if db.root_proved(conn, scope=scope):
+        # #92 — Librarian DAG scheduler: enqueue every dispatchable file
+        # (and the serial phase steps), self-starting opted-in proved
+        # problems, so independent files migrate/clean in parallel in the
+        # pool, the same way bfs_refill fans out proving goals. Run BEFORE the
+        # exit gate so its `pending` return can hold the daemon alive while
+        # Library-ization is outstanding (Bug A — proof work alone no longer
+        # keeps the daemon up once every root is proved).
+        librarian_pending = _librarian_refill(
+            conn, workspace, running, manifests, scope=scope,
+            fail_counts=librarian_fail_counts)
+
+        # Workspace-wide exit: every problem's root is proved AND no Librarian
+        # work remains. `verify.root_integrity_gate` above may have called
+        # `rollback_cascade_chain` on sorryAx detection, reverting a root to
+        # 'attempting'; in that case this check fails and the dispatcher loop
+        # continues for re-Backward.
+        # `scope` filter: a `--scope sylvester_gallai` daemon must gate on its
+        # scoped problems only — without this filter, unrelated miniF2F roots
+        # sitting in the same workspace keep `root_proved` False forever.
+        # `librarian_pending`: without it a scoped run over an already-proved
+        # problem (or the last root proving in any run) exits before the
+        # Library-ization chain — dedup→classify→migrate→cleanup→bridge→INDEX —
+        # has a chance to run, since that chain spans many ticks (Bug A).
+        if db.root_proved(conn, scope=scope) and not librarian_pending:
             print("[dispatcher] all roots proved", flush=True)
             _exit_pool_fast(pool)
             return 0
@@ -2405,12 +2480,6 @@ def run(workspace: Path, *, once: bool = False,
         bfs_refill(conn, running, cooldown_until, scope=scope,
                    quota_cooldown_kind=quota_cooldown_kind,
                    verified_problems=verified_problems)
-
-        # #92 — Librarian DAG scheduler: enqueue every dispatchable file
-        # (and the serial phase steps) so independent files migrate/clean in
-        # parallel in the pool, the same way bfs_refill fans out proving goals.
-        _librarian_refill(conn, workspace, running, scope=scope,
-                          fail_counts=librarian_fail_counts)
 
         # Phase 2 — Strategist T0/T1 triggers (T2 fires at cascade time
         # in `cascade_one`, not here). Skipped under awaiting_human gate

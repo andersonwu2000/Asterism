@@ -65,6 +65,23 @@ def _cleaned(conn, slug, problem="p", order=0):
     db.mark_library_cleaned(conn, problem=problem, slug=slug)
 
 
+def _manifests(**opt_in):
+    """ManifestCache stand-in: `problem -> obj with .library`. `dict` supports
+    the `in` / `[]` access `_librarian_selfstart_problems` uses. Pass
+    `_manifests(p=True)` to mark problem `p` library-opted-in."""
+    from types import SimpleNamespace
+    return {p: SimpleNamespace(library=v) for p, v in opt_in.items()}
+
+
+def _proved_root(conn, problem="p"):
+    """Insert a proved root goal so `_librarian_selfstart_problems`'
+    `goals WHERE origin='root' AND status='proved'` query sees `problem`."""
+    _seed_problem(conn, problem)
+    db.insert_goal(conn, problem=problem, slug="main",
+                   lean_path=f"Problems/{problem}/Root.lean",
+                   statement="x", origin="root", status="proved")
+
+
 # ---------------------------------------------------------------------
 # _derive_librarian_work — pure state → (work_kind, target)
 # ---------------------------------------------------------------------
@@ -236,7 +253,7 @@ def test_librarian_refill_serial_phase_enqueues_one(tmp_path: Path):
     # #92 — a serial phase (here: classify) enqueues ONE plain `problem` row.
     conn = _mem()
     _deduped(conn, "foo")  # next step is classify
-    dispatcher._librarian_refill(conn, tmp_path, set(), fail_counts={})
+    dispatcher._librarian_refill(conn, tmp_path, set(), _manifests(), fail_counts={})
     rows = _queue(conn)
     assert len(rows) == 1
     assert (rows[0]["kind"], rows[0]["target_id"], rows[0]["target_kind"],
@@ -246,8 +263,8 @@ def test_librarian_refill_serial_phase_enqueues_one(tmp_path: Path):
 def test_librarian_refill_serial_no_duplicate(tmp_path: Path):
     conn = _mem()
     _deduped(conn, "foo")
-    dispatcher._librarian_refill(conn, tmp_path, set(), fail_counts={})
-    dispatcher._librarian_refill(conn, tmp_path, set(), fail_counts={})
+    dispatcher._librarian_refill(conn, tmp_path, set(), _manifests(), fail_counts={})
+    dispatcher._librarian_refill(conn, tmp_path, set(), _manifests(), fail_counts={})
     assert len(_queue(conn)) == 1  # queue_contains guard
 
 
@@ -257,7 +274,7 @@ def test_librarian_refill_stops_when_chain_done(tmp_path: Path):
     (tmp_path / "Library").mkdir()
     (tmp_path / "Library" / "INDEX.md").write_text(
         "# Library Index\n\n## p\n\nx\n", encoding="utf-8")
-    dispatcher._librarian_refill(conn, tmp_path, set(), fail_counts={})
+    dispatcher._librarian_refill(conn, tmp_path, set(), _manifests(), fail_counts={})
     assert _queue(conn) == []
 
 
@@ -267,7 +284,7 @@ def test_librarian_refill_migrate_phase_parallel_per_file(tmp_path: Path):
     conn = _mem()
     _classified(conn, "foo", order=0)   # Library/P/foo.lean
     _classified(conn, "bar", order=1)   # Library/P/bar.lean
-    dispatcher._librarian_refill(conn, tmp_path, set(), fail_counts={})
+    dispatcher._librarian_refill(conn, tmp_path, set(), _manifests(), fail_counts={})
     tids = sorted(r["target_id"] for r in _queue(conn))
     assert tids == sorted([
         dispatcher._lib_encode("p", "Library/P/bar.lean"),
@@ -280,18 +297,18 @@ def test_librarian_refill_skips_inflight_and_queued(tmp_path: Path):
     _classified(conn, "bar", order=1)
     foo_tid = dispatcher._lib_encode("p", "Library/P/foo.lean")
     running = {(foo_tid, "Librarian", None)}    # foo already in flight
-    dispatcher._librarian_refill(conn, tmp_path, running, fail_counts={})
+    dispatcher._librarian_refill(conn, tmp_path, running, _manifests(), fail_counts={})
     assert [r["target_id"] for r in _queue(conn)] == [
         dispatcher._lib_encode("p", "Library/P/bar.lean")]
     # second refill: bar now queued → no duplicate, foo still in-flight
-    dispatcher._librarian_refill(conn, tmp_path, running, fail_counts={})
+    dispatcher._librarian_refill(conn, tmp_path, running, _manifests(), fail_counts={})
     assert len(_queue(conn)) == 1
 
 
 def test_librarian_refill_cleanup_phase_per_file(tmp_path: Path):
     conn = _mem()
     _migrated(conn, "foo")   # wholly migrated → cleanup-ready
-    dispatcher._librarian_refill(conn, tmp_path, set(), fail_counts={})
+    dispatcher._librarian_refill(conn, tmp_path, set(), _manifests(), fail_counts={})
     rows = _queue(conn)
     assert len(rows) == 1
     assert rows[0]["target_id"] == dispatcher._lib_encode(
@@ -303,8 +320,82 @@ def test_librarian_refill_skips_stalled_file(tmp_path: Path):
     _classified(conn, "foo", order=0)
     tid = dispatcher._lib_encode("p", "Library/P/foo.lean")
     fc = {tid: dispatcher.LIBRARIAN_MAX_CHAIN_RETRIES + 1}   # stalled unit
-    dispatcher._librarian_refill(conn, tmp_path, set(), fail_counts=fc)
+    dispatcher._librarian_refill(conn, tmp_path, set(), _manifests(), fail_counts=fc)
     assert _queue(conn) == []   # stalled file is not re-enqueued
+
+
+# ---------------------------------------------------------------------
+# #92 Bug A/B — pending return + self-start of opted-in proved problems
+# ---------------------------------------------------------------------
+
+def test_librarian_refill_returns_pending_when_work(tmp_path: Path):
+    # Live work (a serial step here) → pending True so the exit gate holds.
+    conn = _mem()
+    _deduped(conn, "foo")  # classify pending
+    pending = dispatcher._librarian_refill(
+        conn, tmp_path, set(), _manifests(), fail_counts={})
+    assert pending is True
+
+
+def test_librarian_refill_not_pending_when_drained(tmp_path: Path):
+    # Chain done (cleaned + INDEX) → no work → not pending → daemon may exit.
+    conn = _mem()
+    _cleaned(conn, "foo")
+    (tmp_path / "Library").mkdir()
+    (tmp_path / "Library" / "INDEX.md").write_text(
+        "# Library Index\n\n## p\n\nx\n", encoding="utf-8")
+    pending = dispatcher._librarian_refill(
+        conn, tmp_path, set(), _manifests(), fail_counts={})
+    assert pending is False
+    assert _queue(conn) == []
+
+
+def test_librarian_refill_not_pending_when_fully_stalled(tmp_path: Path):
+    # Only remaining work is a stalled unit → NOT pending (daemon exits for
+    # the operator instead of looping forever).
+    conn = _mem()
+    _classified(conn, "foo", order=0)
+    tid = dispatcher._lib_encode("p", "Library/P/foo.lean")
+    fc = {tid: dispatcher.LIBRARIAN_MAX_CHAIN_RETRIES + 1}
+    pending = dispatcher._librarian_refill(
+        conn, tmp_path, set(), _manifests(), fail_counts=fc)
+    assert pending is False
+
+
+def test_librarian_refill_selfstart_opted_in_proved(tmp_path: Path):
+    # Bug B — opted-in (library:true) proved problem with NO library_decls and
+    # no INDEX self-starts dedup (no verify-hook / manual seed needed).
+    conn = _mem()
+    _proved_root(conn, "p")
+    pending = dispatcher._librarian_refill(
+        conn, tmp_path, set(), _manifests(p=True), fail_counts={})
+    assert pending is True
+    rows = _queue(conn)
+    assert len(rows) == 1
+    assert (rows[0]["kind"], rows[0]["target_id"]) == ("Librarian", "p")
+
+
+def test_librarian_refill_no_selfstart_when_not_opted_in(tmp_path: Path):
+    # A proved problem WITHOUT library:true is never auto-Library-ized.
+    conn = _mem()
+    _proved_root(conn, "p")
+    pending = dispatcher._librarian_refill(
+        conn, tmp_path, set(), _manifests(p=False), fail_counts={})
+    assert pending is False
+    assert _queue(conn) == []
+
+
+def test_librarian_refill_no_selfstart_when_index_present(tmp_path: Path):
+    # Opted-in + proved but INDEX already written (chain done) → no self-start.
+    conn = _mem()
+    _proved_root(conn, "p")
+    (tmp_path / "Library").mkdir()
+    (tmp_path / "Library" / "INDEX.md").write_text(
+        "# Library Index\n\n## p\n\nx\n", encoding="utf-8")
+    pending = dispatcher._librarian_refill(
+        conn, tmp_path, set(), _manifests(p=True), fail_counts={})
+    assert pending is False
+    assert _queue(conn) == []
 
 
 def test_advance_chain_success_clears_count_no_enqueue(tmp_path: Path):
