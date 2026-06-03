@@ -239,6 +239,28 @@ def test_unmapped_defs_symbol_declines():
     assert "IsJordanForm" in r.reason and "no migrated" in r.reason
 
 
+def test_same_file_defs_symbol_ok():
+    # A Defs symbol classify co-located in THIS file (migrated together) lands
+    # in this module's namespace — bare name visible, no import, no "not yet
+    # migrated" decline. Without `local_defs` this wrongly declined whenever
+    # classify grouped a Defs decl with a lemma that uses it (nondeterministic).
+    src = (
+        "import Mathlib\n"
+        f"import {PNS}.Defs\n"
+        f"namespace {PNS}\n"
+        "theorem foo (M : Nat) (h : IsJordanForm M) : True := trivial\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS,
+        defs_imports={},                      # IsJordanForm not migrated yet
+        all_defs_syms={"IsJordanForm"},
+        local_defs={"IsJordanForm"})          # but co-located in THIS file
+    assert r.ok, r.reason
+    assert f"import {PNS}.Defs" not in r.text     # Problems Defs import dropped
+    assert "IsJordanForm" in r.text               # bare name kept (same namespace)
+
+
 def test_citation_map_redirects_verbatim_merge():
     # body calls a merged sibling by bare name + args; citation_map
     # redirects it to the canonical Library name.

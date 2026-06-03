@@ -1711,6 +1711,14 @@ def _mechanical_migrate_file(
                 and r["target_file"]:
             defs_imports[r["slug"]] = _library_module_of(r["target_file"])
 
+    # local_defs: Defs symbols classify placed in THIS file — they migrate
+    # together with their users, so they land in the same module namespace
+    # (bare name visible, no import, no "not yet migrated" decline). Without
+    # this, a file holding both a Defs decl and a lemma that uses it can't
+    # migrate (classify is free to co-locate them; layout is nondeterministic).
+    local_defs = {r["slug"] for r in all_rows
+                  if r["slug"] in all_defs and r["target_file"] == target_file}
+
     pns = f"Problems.{problem}"
     problem_dir = db.problem_dir(workspace, problem)
     proofs = problem_dir / "proofs"
@@ -1792,7 +1800,8 @@ def _mechanical_migrate_file(
                   # its own name (`def <slug>`), which must not be mistaken for
                   # a dependency on an unmigrated Defs symbol. No-op for lemmas
                   # / root (their slug isn't a Defs decl).
-                  all_defs_syms=all_defs - {slug}, citation_map=citation_map,
+                  all_defs_syms=all_defs - {slug}, local_defs=local_defs,
+                  citation_map=citation_map,
                   sibling_modules=sibling_modules)
 
         def _relabel_one(body_to_sorry: bool, best_effort: bool = False):

@@ -106,6 +106,7 @@ def relabel_self_contained(
     rename_decl: "tuple[str, str] | None" = None,
     defs_imports: "dict[str, str] | None" = None,
     all_defs_syms: "set[str] | None" = None,
+    local_defs: "set[str] | None" = None,
     citation_map: "dict[str, str] | None" = None,
     sibling_modules: "dict[str, str] | None" = None,
     body_to_sorry: bool = False,
@@ -272,7 +273,14 @@ def relabel_self_contained(
     # not an ancestor — so `import` alone leaves the bare name unresolved (it
     # autobinds to `?m`, "function expected"). Defs decls are ordinary Library
     # decls; there is no privileged Defs handling.
+    local_defs = local_defs or set()
     for sym in used_defs:
+        if sym in local_defs:
+            # Co-located in THIS file (classify put this Defs decl in the same
+            # target file, migrated together) → it lands in this module's
+            # namespace, so the bare name is already visible. No import, no
+            # "not yet migrated" decline — mirrors the same-file sibling case.
+            continue
         mod = defs_imports.get(sym)
         if not mod:
             if best_effort:
@@ -342,6 +350,7 @@ def inline_alias(
     keep_slugs: "set[str] | None" = None,
     defs_imports: "dict[str, str] | None" = None,
     all_defs_syms: "set[str] | None" = None,
+    local_defs: "set[str] | None" = None,
     citation_map: "dict[str, str] | None" = None,
     sibling_modules: "dict[str, str] | None" = None,
     body_to_sorry: bool = False,
@@ -363,6 +372,7 @@ def inline_alias(
         strategy_text, problem_namespace=problem_namespace,
         target_namespace=target_namespace, keep_slugs=keep_slugs,
         rename_decl=(strat, slug), defs_imports=defs_imports,
-        all_defs_syms=all_defs_syms, citation_map=citation_map,
+        all_defs_syms=all_defs_syms, local_defs=local_defs,
+        citation_map=citation_map,
         sibling_modules=sibling_modules, body_to_sorry=body_to_sorry,
         best_effort=best_effort)
