@@ -445,3 +445,50 @@ def test_nested_strategy_redirects_to_sibling_lemma():
     assert "exact helper" in r.text               # s99 → the lemma name
     import re as _re
     assert not _re.search(r"\bs99\b", r.text)     # no bare strategy term left
+
+
+def test_transitive_strategy_slot_redirects_to_sibling_lemma():
+    # A proof body cites a sibling's strategy slot `s99` as a bare identifier
+    # while importing only that sibling's `L_` ALIAS (not `_strategy_s99`) — so
+    # `s99` is in scope transitively and the import-driven redirect never fires.
+    # The token-driven pass must still redirect `s99` → the sibling lemma and
+    # carry its module. (BT cone_is_decomp → s11475 / isometry_… fix.)
+    src = (
+        "import Mathlib\n"
+        f"import {PNS}.proofs.L_helper\n"          # the lemma alias, NOT _strategy_
+        f"namespace {PNS}\n"
+        "-- references s99 in a comment too\n"
+        "theorem foo : True := by exact s99\n"
+        f"end {PNS}\n"
+    )
+    HELP = "Library.LinearAlgebra.JordanForm.Helper"
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS,
+        keep_slugs={"helper"}, sibling_modules={"helper": HELP},
+        strategy_aliases={"s99": "helper"})
+    assert r.ok, r.reason
+    assert f"import {HELP}" in r.text and f"open {HELP}" in r.text
+    assert "exact helper" in r.text               # bare s99 in code → lemma name
+    import re as _re
+    assert not _re.search(r"\bs99\b", r.text)     # no bare strategy term left
+
+
+def test_comment_only_strategy_slot_adds_no_import():
+    # A strategy slot named ONLY in a comment must not pull in a spurious
+    # sibling import (comments are stripped for slot detection). Here the
+    # sibling lands in THIS file's namespace, so even a real code ref needs no
+    # import — but a comment-only mention of a cross-file slot must stay inert.
+    OTHER = "Library.LinearAlgebra.JordanForm.Other"
+    src = (
+        "import Mathlib\n"
+        f"namespace {PNS}\n"
+        "-- this proof is morally like s77 but does not use it\n"
+        "theorem foo : True := by trivial\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS,
+        keep_slugs={"other"}, sibling_modules={"other": OTHER},
+        strategy_aliases={"s77": "other"})
+    assert r.ok, r.reason
+    assert f"import {OTHER}" not in r.text         # comment-only → no import

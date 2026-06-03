@@ -313,6 +313,38 @@ def relabel_self_contained(
         if mod != target_namespace:        # co-located Defs decl: no self-import
             needed_sibling_mods.add(mod)
 
+    # Bare strategy-slot references (`sN`) reached TRANSITIVELY. A proof body
+    # can cite a sibling's strategy proof-term `sN` as a bare identifier while
+    # importing only that sibling's `L_<slug>` alias (which itself imports the
+    # `_strategy_sN` file) — so `sN` is in scope without an explicit
+    # `_strategy_sN` import here, and the import-driven redirect above never
+    # fires. Catch it token-driven: any `sN` that names a kept sibling's
+    # strategy term, and appears in CODE (comments stripped, so a slot named
+    # only in a comment adds no spurious import), is redirected to that sibling
+    # lemma exactly like the import-driven case (import+open if cross-file,
+    # rename `sN`→slug in the body).
+    if strategy_aliases:
+        _code = re.sub(r"/-.*?-/", " ", source_text, flags=re.DOTALL)
+        _code = re.sub(r"--[^\n]*", " ", _code)
+        for sN, sib in strategy_aliases.items():
+            if sN in strategy_renames:
+                continue  # already redirected via its explicit import above
+            if not re.search(rf"\b{re.escape(sN)}\b", _code):
+                continue
+            if keep_slugs is not None and sib not in keep_slugs:
+                continue  # slot of a non-kept lemma — leave for the decline path
+            mod = sibling_modules.get(sib)
+            if mod is None:
+                if best_effort:
+                    degraded = True
+                    continue
+                return RelabelResult(
+                    False, reason=f"strategy slot `{sN}` → sibling `{sib}` has "
+                                  "no known Library module yet — needs Phase 2")
+            if mod != target_namespace:
+                needed_sibling_mods.add(mod)
+            strategy_renames[sN] = sib
+
     if needed_sibling_mods:
         # Insert imports right after the leading `import Mathlib`, then the
         # matching `open`s right after the import block.
