@@ -226,7 +226,7 @@ def usage_graph(
             if text is None:
                 continue
             for imp in _PROOFS_IMPORT_RE.findall(text):
-                if imp.startswith("L_"):
+                if imp[:2].lower() == "l_":   # L_<sub> / l_<sub> (case-insensitive)
                     raw_y = imp[2:]
                     y = alias_map.get(raw_y, raw_y)   # merged sibling → canonical
                     if y == x:
@@ -291,7 +291,7 @@ def referenced_slugs(
             if text is None:
                 continue
             for imp in _PROOFS_IMPORT_RE.findall(text):
-                if imp.startswith("L_"):
+                if imp[:2].lower() == "l_":   # L_<sub> / l_<sub> (case-insensitive)
                     if imp[2:] != x:
                         refs.add(imp[2:])
                 elif imp.startswith("_strategy_"):

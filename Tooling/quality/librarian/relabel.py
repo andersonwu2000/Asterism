@@ -199,7 +199,7 @@ def relabel_self_contained(
         m_proof = _PROOF_IMPORT_RE.match(ln)
         if m_proof:
             sub_mod = m_proof.group(2)        # L_<sub> or _strategy_s<NNNN>
-            if sub_mod.startswith("L_"):
+            if sub_mod[:2].lower() == "l_":   # L_<sub> / l_<sub> (case-insensitive)
                 sub = sub_mod[2:]
                 if keep_slugs is not None and sub in keep_slugs:
                     # Keep sibling: replace the Problems import with its

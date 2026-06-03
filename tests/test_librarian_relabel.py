@@ -109,6 +109,29 @@ def test_keep_sibling_import_ok():
     assert f"open {HELP_MOD}" in r.text              # opened for bare name
 
 
+def test_keep_sibling_import_lowercase_l_ok():
+    # Proof files on disk use a lowercase `l_<slug>` prefix (Jordan: 121/165);
+    # the keep-sibling import must be recognised case-insensitively, else the
+    # edge is missed (usage_graph under-counts reachability + relabel declines
+    # it as "strategy indirection"). Mirrors test_keep_sibling_import_ok with
+    # a lowercase import.
+    src = (
+        "import Mathlib\n"
+        f"import {PNS}.proofs.l_helper\n"
+        f"namespace {PNS}\n"
+        "theorem foo : True := by exact helper_fact\n"
+        f"end {PNS}\n"
+    )
+    HELP_MOD = "Library.LinearAlgebra.JordanForm.Helpers"
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS,
+        keep_slugs={"helper"}, sibling_modules={"helper": HELP_MOD})
+    assert r.ok, r.reason
+    assert "Problems." not in r.text
+    assert f"import {HELP_MOD}" in r.text
+    assert f"open {HELP_MOD}" in r.text
+
+
 def test_keep_sibling_no_module_declines():
     # keep sibling whose Library module isn't known yet → decline to Phase 2
     src = (
