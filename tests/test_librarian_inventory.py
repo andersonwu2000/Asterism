@@ -206,3 +206,21 @@ def test_render_view_shows_slugs_not_statements(conn):
     assert "main" in view and "lemma_a" in view
     assert "2 proved declaration" in view
     assert "Defs-free" in view  # no Defs decls in this fixture
+
+
+def test_resolve_ci_case_insensitive(tmp_path):
+    # proofs files are written `L_<slug>.lean` but a case-insensitive FS can
+    # preserve a pre-existing lowercase `l_<slug>.lean`; reads must resolve
+    # either. (Fix for the latent case-sensitive-FS bug — option 3.)
+    # Assert by CONTENT (platform-robust): on a case-insensitive FS the exact
+    # path already opens the file; on a case-sensitive FS the dir scan finds
+    # the lowercase variant. Either way the right bytes come back.
+    d = tmp_path
+    (d / "l_foo.lean").write_text("x", encoding="utf-8")   # on-disk lowercase
+    got = inv.resolve_ci(d, "L_foo.lean")                  # code asks uppercase
+    assert got is not None and got.read_text(encoding="utf-8") == "x"
+    # exact match still works
+    (d / "Bar.lean").write_text("y", encoding="utf-8")
+    assert inv.resolve_ci(d, "Bar.lean").read_text(encoding="utf-8") == "y"
+    # genuinely absent → None
+    assert inv.resolve_ci(d, "L_missing.lean") is None

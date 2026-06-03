@@ -1731,8 +1731,8 @@ def _mechanical_migrate_file(
     # on rename (root cause 1). We re-check the full signature from the proof
     # files here; any mismatch / missing file declines that decl to the LLM.
     def _full_sig(slug):
-        p = proofs / f"L_{slug}.lean"
-        if not p.exists():
+        p = _inv.resolve_ci(proofs, f"L_{slug}.lean")   # L_/l_ case-insensitive
+        if p is None:
             return None
         return _decl_signature(p.read_text(encoding="utf-8"))
     citation_map: dict[str, str] = {}
@@ -1780,18 +1780,24 @@ def _mechanical_migrate_file(
             src = f"{hdr}\nnamespace {pns}\n{defs_slice}\nend {pns}\n"
         else:
             g = db.get_goal(conn, r["source_goal_id"])
-            src_path = (workspace / g["lean_path"]) if g else None
-            if src_path is None or not src_path.exists():
+            # L_/l_ case-insensitive: resolve the proof file's basename within
+            # its dir (DB lean_path is uppercase L_; disk may be lowercase l_).
+            src_path = None
+            if g:
+                _lp = workspace / g["lean_path"]
+                src_path = _inv.resolve_ci(_lp.parent, _lp.name)
+            if src_path is None:
                 raise _MechIntegrityError(
                     f"`{slug}`: proof source "
                     f"{g['lean_path'] if g else '?'} missing (file↔DB drift)")
             src = src_path.read_text(encoding="utf-8")
             m = alias_re.search(src)
             if m:
-                strat_path = proofs / f"_strategy_{m.group(1)}.lean"
-                if not strat_path.exists():
+                strat_name = f"_strategy_{m.group(1)}.lean"
+                strat_path = _inv.resolve_ci(proofs, strat_name)
+                if strat_path is None:
                     raise _MechIntegrityError(
-                        f"`{slug}`: alias → missing {strat_path.name} "
+                        f"`{slug}`: alias → missing {strat_name} "
                         "(file↔DB drift)")
                 strat_text = strat_path.read_text(encoding="utf-8")
         kw = dict(problem_namespace=pns, target_namespace=target_module,

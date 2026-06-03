@@ -164,6 +164,28 @@ _DEFS_IMPORT_RE = re.compile(
 )
 
 
+def resolve_ci(directory: Path, filename: str) -> "Path | None":
+    """Resolve `directory/filename` case-INsensitively → the actual path, or
+    None if no case-variant exists. proofs/ files are written `L_<slug>.lean`
+    (uppercase) by the framework, but on a case-insensitive FS a pre-existing
+    lowercase `l_<slug>.lean` is preserved — so the DB/code's uppercase name
+    and the on-disk name can differ in case. Reads must not assume either: an
+    exact hit wins; otherwise scan the dir for a case-fold match. (On a
+    case-sensitive FS the framework's writes are uppercase-consistent, so the
+    exact hit fires; the scan only matters for legacy/Windows-drifted files.)"""
+    exact = directory / filename
+    if exact.exists():
+        return exact
+    target = filename.lower()
+    try:
+        for p in directory.iterdir():
+            if p.name.lower() == target:
+                return p
+    except OSError:
+        pass
+    return None
+
+
 def usage_graph(
     workspace: Path, problem: str, slugs, *,
     alias_map: "dict[str, str] | None" = None,
@@ -210,8 +232,11 @@ def usage_graph(
     defs_names = {d for d in defs_decls(workspace, problem) if d in slug_set}
 
     def read_mod(mod: str) -> "str | None":
-        p = root_path if (root_mod and mod == root_mod) else proofs / f"{mod}.lean"
-        return p.read_text(encoding="utf-8") if p.exists() else None
+        if root_mod and mod == root_mod:
+            p = root_path
+        else:
+            p = resolve_ci(proofs, f"{mod}.lean")   # L_/l_ case-insensitive
+        return p.read_text(encoding="utf-8") if (p and p.exists()) else None
 
     out: dict[str, set[str]] = {s: set() for s in slug_set}
     for x in slug_set:
@@ -274,8 +299,11 @@ def referenced_slugs(
     defs_names = set(defs_decls(workspace, problem))
 
     def read_mod(mod: str) -> "str | None":
-        p = root_path if (root_mod and mod == root_mod) else proofs / f"{mod}.lean"
-        return p.read_text(encoding="utf-8") if p.exists() else None
+        if root_mod and mod == root_mod:
+            p = root_path
+        else:
+            p = resolve_ci(proofs, f"{mod}.lean")   # L_/l_ case-insensitive
+        return p.read_text(encoding="utf-8") if (p and p.exists()) else None
 
     out: dict[str, set[str]] = {}
     for x in slugs:
