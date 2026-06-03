@@ -5,6 +5,9 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-02
+Auto-migrated a stale-but-populated database on connect, and hardened the librarian subsystem with a series of correctness and prompting improvements?aking it fail loudly when an upstream dependency targets a non-reshapeable node, correctly folding transitive dependencies through self-merged siblings, and restructuring the cleanup prompt into three explicit reshape steps while teaching the needs-upstream cascade and fixing decline/gate drift.
+
 ### 2026-06-01
 Asterism's Librarian pipeline received the bulk of the day's work, gaining a mechanical-migration pre-pass that mechanically assembles and relabels declarations (with seeded `sorry` holes and fixed citation signatures) and live agentic gates—a `bridge` work-kind that re-gates edited Library files and an upstream-reshape re-open cascade—while the dispatcher learned to re-enqueue failed chain steps and per-step `.olean` maintenance and a new `library_decls` "cleaned" lifecycle closed several cross-file staleness and stall gaps. Alongside this, the dead auto root-promotion path in the old `quality/library` module was retired in favor of the Librarian, and the agent workflow documentation was rewritten with a new overview figure and rebuilt PDF.
 
