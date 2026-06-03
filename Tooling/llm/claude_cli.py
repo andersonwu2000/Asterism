@@ -590,8 +590,18 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
 
 
 def _workspace_from_problem_dir(problem_dir: Path) -> Path:
-    """problem_dir = <workspace>/Problems/<name>; walk up two."""
-    return problem_dir.parent.parent
+    """problem_dir = <workspace>/Problems/<name…>; return <workspace>.
+
+    `<name>` may be namespaced (dot→slash, e.g. `LinearAlgebra/jordan_normal_form`
+    → 3 levels deep), so locate the `Problems` path component instead of
+    assuming a fixed `.parent.parent` depth — the old hard-coded 2-level walk
+    silently returned `…/Problems` for namespaced problems, which dropped the
+    `.lake/packages` (mathlib) and `Library/` --add-dir grants."""
+    p = Path(problem_dir)
+    for parent in p.parents:
+        if parent.name == "Problems":
+            return parent.parent
+    return p.parent.parent  # fallback: legacy flat layout
 
 
 def _trim_flags(req: LLMRequest | None = None) -> list[str]:
@@ -734,6 +744,16 @@ class ClaudeCliProvider:
                         / ".lake" / "packages")
         add_dir_packages: list[str] = (
             ["--add-dir", str(packages_dir)] if packages_dir.is_dir() else [])
+        # Librarian work (migrate / cleanup / bridge) operates on the `Library/`
+        # staging tree, which lives outside problem_dir. cleanup/bridge edit a
+        # Library file IN PLACE, so the agent must Read/Grep it (and its
+        # call-site importers) — not just blind-edit via the LSP. Grant
+        # `Library/` only to librarian spawns; proving workers stay scoped to
+        # their problem so a proof can't cite cross-problem Library decls.
+        library_dir = _workspace_from_problem_dir(req.problem_dir) / "Library"
+        add_dir_library: list[str] = (
+            ["--add-dir", str(library_dir)]
+            if req.kind == "librarian" and library_dir.is_dir() else [])
         # MCP config — Builder pipeline (Phase 1 LSP swap) sets
         # mcp_config_path to a JSON file describing the LSP MCP
         # server. claude spawns the server itself as a child process
@@ -784,6 +804,7 @@ class ClaudeCliProvider:
             "--add-dir", str(req.problem_dir),
             "--add-dir", str(req.attempts_dir),
             *add_dir_packages,
+            *add_dir_library,
             *mcp_flags,
             *output_flags,
             *session_flags,

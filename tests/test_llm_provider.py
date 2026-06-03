@@ -278,6 +278,52 @@ def test_claude_spawn_includes_trim_flags(
     assert "--exclude-dynamic-system-prompt-sections" in cmd
 
 
+def test_librarian_spawn_adds_library_dir(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Librarian spawns (cleanup/bridge edit Library files in place) get
+    --add-dir <workspace>/Library so the agent can Read/Grep the target.
+    Also exercises namespaced-problem workspace resolution (3 levels deep)."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    (tmp_path / "Library").mkdir()
+    pd = tmp_path / "Problems" / "LinearAlgebra" / "jordan_normal_form"
+    pd.mkdir(parents=True)
+    att = tmp_path / ".attempts" / "x"
+    att.mkdir(parents=True)
+    captured = _capture_cmd(monkeypatch)
+    claude_cli.ClaudeCliProvider().spawn(llm.LLMRequest(
+        kind="librarian", prompt_path=Path("/x/p.md"),
+        problem_dir=pd, attempts_dir=att, timeout_sec=60))
+    cmd = captured[0]
+    add_dirs = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--add-dir"]
+    assert str(tmp_path / "Library") in add_dirs, add_dirs
+
+
+def test_nonlibrarian_spawn_no_library_dir(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proving workers stay scoped to their problem — no Library/ access."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    (tmp_path / "Library").mkdir()
+    pd = tmp_path / "Problems" / "p"
+    pd.mkdir(parents=True)
+    att = tmp_path / ".attempts" / "x"
+    att.mkdir(parents=True)
+    captured = _capture_cmd(monkeypatch)
+    claude_cli.ClaudeCliProvider().spawn(llm.LLMRequest(
+        kind="backward", prompt_path=Path("/x/p.md"),
+        problem_dir=pd, attempts_dir=att, timeout_sec=60))
+    cmd = captured[0]
+    add_dirs = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--add-dir"]
+    assert str(tmp_path / "Library") not in add_dirs, add_dirs
+
+
 def test_claude_complete_text_includes_trim_flags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
