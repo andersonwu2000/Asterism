@@ -2180,58 +2180,43 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_file,
             outcome="failed", failure_reason="librarian_integrity_error",
             failure_detail=_detail)
 
-    def _incremental(localize):
-        return _migrate_file_incremental(
-            conn, problem=problem, workspace=workspace,
-            pipeline_id=pipeline_id, target_file=target_file,
-            target_path=target_path, target_module=target_module,
-            ordered_slugs=ordered_slugs, defs_names=defs_names,
-            whitelist=whitelist, attempts_dir=attempts_dir,
-            problem_dir=problem_dir, prompt_path=prompt_path,
-            holes=holes, mech_asm=mech_asm, localize=localize)
+    # v0.3 (plan §3): migrate is MECHANICAL-ONLY — no Phase-2 LLM. With every
+    # decl kept (no dedup), every proof-term reference resolves to a kept
+    # sibling, so a clean relabel has no holes. A hole — or a 0-hole assembly
+    # that does not build — is therefore a mechanical-relabel limitation (e.g.
+    # an alias→strategy body that doesn't inline syntactically, or a dropped
+    # Defs import a tactic relied on), surfaced as a HARD FAIL for the operator,
+    # NOT silently patched by an LLM (which would reintroduce the variance/risk
+    # v0.3 removed). `attempts_dir` / `problem_dir` / `prompt_path` are now
+    # unused here (kept in the signature for the dormant incremental path).
+    if holes:
+        return PipelineResult(
+            outcome="failed",
+            failure_reason="librarian_migrate_not_mechanical",
+            failure_detail=(
+                f"{target_file}: {len(holes)} decl(s) not mechanically "
+                f"relabelable: {holes}. v0.3 migrate is mechanical-only — "
+                "needs operator (fix relabel.py, or decide per-decl). "
+                "No LLM fallback, no sorry committed."))
 
-    if not holes:
-        # Fast path: every decl relabelled cleanly — try one whole-file
-        # build/commit. Passes → done with zero spawn.
-        mech_res = _commit_migrated_file(
-            mech_text, conn=conn, problem=problem, workspace=workspace,
-            target_path=target_path, target_module=target_module,
-            ordered_slugs=ordered_slugs, defs_names=defs_names,
-            whitelist=whitelist)
-        if mech_res.outcome == "success":
-            print(f"[librarian] {target_file}: migrated mechanically "
-                  f"(Phase 1, {len(ordered_slugs)} decls, no LLM)", flush=True)
-            return mech_res
-        # The clean assembly does not build — a mechanical relabel is subtly
-        # wrong. Localize per-decl: rebuild incrementally and demote the
-        # decl(s) that break the build to a per-decl LLM fill (no whole-file
-        # from-scratch spawn). Sanitize: Lean diagnostics carry unicode a
-        # legacy console can't encode.
-        _detail = (mech_res.failure_detail or "")[:120].encode(
-            "ascii", "replace").decode("ascii")
-        print(f"[librarian] {target_file}: 0-hole assembly failed the build "
-              f"({_detail}); localizing per-decl", flush=True)
-        return _incremental(localize=True)
-
-    print(f"[librarian] {target_file}: mechanical seed "
-          f"({len(ordered_slugs) - len(holes)} decls relabelled, "
-          f"{len(holes)} hole(s): {holes}); incremental per-decl fill",
-          flush=True)
-    res = _incremental(localize=False)
-    # A mechanical relabel can yield a non-building proof (e.g. a dropped Defs
-    # import the tactic relied on for simp lemmas / instances) — Phase-1 relabel
-    # never reads proof meaning, so the build is the arbiter (plan §4).
-    # localize=False surfaces that as the prior-build integrity error; retry
-    # per-decl so the offending mechanical decl is localized and demoted to an
-    # LLM fill rather than blocking the file.
-    if (res.outcome == "failed"
-            and res.failure_reason == "librarian_integrity_error"
-            and "do not build" in (res.failure_detail or "")):
-        print(f"[librarian] {target_file}: mechanical prefix failed to build; "
-              "retrying with per-decl localize (demote the breaker)",
-              flush=True)
-        res = _incremental(localize=True)
-    return res
+    mech_res = _commit_migrated_file(
+        mech_text, conn=conn, problem=problem, workspace=workspace,
+        target_path=target_path, target_module=target_module,
+        ordered_slugs=ordered_slugs, defs_names=defs_names,
+        whitelist=whitelist)
+    if mech_res.outcome == "success":
+        print(f"[librarian] {target_file}: migrated mechanically "
+              f"({len(ordered_slugs)} decls, no LLM)", flush=True)
+        return mech_res
+    # Clean relabel that does not build = subtle mechanical bug; commit gate
+    # already removed the partial file. Hard-fail + flag (sanitize unicode).
+    _detail = (mech_res.failure_detail or "")[:200].encode(
+        "ascii", "replace").decode("ascii")
+    return PipelineResult(
+        outcome="failed", failure_reason="librarian_migrate_build_failed",
+        failure_detail=(
+            f"{target_file}: mechanical relabel does not build: {_detail}. "
+            "v0.3 mechanical-only — needs operator."))
 
 
 # ---------------------------------------------------------------------

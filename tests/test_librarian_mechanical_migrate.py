@@ -784,3 +784,28 @@ def test_alias_missing_strategy_is_integrity_error(conn, tmp_path):
         lib._mechanical_migrate_file(
             conn, problem="p", workspace=tmp_path, target_file=tf,
             target_module="Library.P.Foo", rows=rows)
+
+
+def test_run_migrate_holes_hard_fail_no_llm(conn, tmp_path, monkeypatch):
+    # v0.3 (plan §3): a mechanical relabel hole → HARD FAIL, no LLM fallback,
+    # no agent spawn. (In v0.2 a hole fell through to a per-decl LLM fill.)
+    tf = "Library/P/Foo.lean"
+    _seed_classified(conn, "lem_a", "True", tf, 0)
+    _write_proof(tmp_path, "lem_a",
+                 "import Mathlib\ntheorem lem_a : True := by trivial\n")
+    # Force a hole regardless of the real relabel outcome.
+    monkeypatch.setattr(lib, "_mechanical_migrate_file",
+                        lambda *a, **k: ("seed", ["lem_a"], object()))
+    import Tooling.agent as agent
+
+    def _no_spawn(**kw):
+        raise AssertionError("v0.3 migrate must not spawn an agent")
+    monkeypatch.setattr(agent, "spawn_llm", _no_spawn)
+
+    r = lib._run_migrate(
+        conn, problem="p", workspace=tmp_path, pipeline_id="pid",
+        target_file=tf, attempts_dir=tmp_path / ".a",
+        problem_dir=tmp_path / "Problems" / "p",
+        prompt_path=tmp_path / "x.md", whitelist=[])
+    assert r.outcome == "failed"
+    assert r.failure_reason == "librarian_migrate_not_mechanical"
