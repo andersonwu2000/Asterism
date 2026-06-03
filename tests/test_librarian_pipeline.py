@@ -518,22 +518,28 @@ def _no_spawn(**kw):
     raise AssertionError("mechanical step must not spawn an agent")
 
 
-def test_run_keepall_marks_all_keep(conn, tmp_path, monkeypatch):
-    # v0.3: `dedup` is the mechanical keep-all (`_run_keepall`) — NO spawn,
-    # every proved decl becomes deduped/keep, nothing dropped.
+def test_run_keepall_keeps_reachable_closure(conn, tmp_path, monkeypatch):
+    # v0.3: `dedup` is the mechanical keep step (`_run_keepall`) — NO spawn,
+    # keeps main's LIVE dependency closure; orphan proved goals (unreachable
+    # from main) are skipped as debris.
     _seed_proved(conn, "main", "M", origin="root")
     _seed_proved(conn, "lemma_a", "A")
-    _seed_proved(conn, "lemma_b", "B")
+    _seed_proved(conn, "orphan", "O")    # proved but unreachable from main
 
     import Tooling.agent as agent
-    monkeypatch.setattr(agent, "spawn_llm", _no_spawn)   # keepall is spawn-free
+    monkeypatch.setattr(agent, "spawn_llm", _no_spawn)   # keep is spawn-free
+    # main reaches lemma_a; `orphan` is proving debris.
+    monkeypatch.setattr(lib, "_reachable_from_root",
+                        lambda *a, **k: {"main", "lemma_a"})
 
     r = lib.run_librarian(conn, problem="p", work_kind="dedup",
                           workspace=tmp_path, pipeline_id="pid")
     assert r.outcome == "success", r.failure_detail
     deduped = {x["slug"] for x in db.library_decls_for(conn, "p",
                                                        lifecycle="deduped")}
-    assert deduped == {"main", "lemma_a", "lemma_b"}
+    assert deduped == {"main", "lemma_a"}        # orphan excluded
+    all_slugs = {x["slug"] for x in db.library_decls_for(conn, "p")}
+    assert "orphan" not in all_slugs             # debris not inventoried
     assert db.library_decls_for(conn, "p", lifecycle="dropped") == []
 
 

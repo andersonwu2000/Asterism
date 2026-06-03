@@ -1354,29 +1354,76 @@ def run_librarian(conn, *, problem: str, work_kind: str,
         prompt_path=prompt_path)
 
 
+def _reachable_from_root(conn, problem, workspace, slugs) -> "set[str]":
+    """The slugs in the proved root's LIVE dependency closure — `main` plus
+    every decl it transitively cites through the proof-term usage DAG
+    (`inventory.usage_graph`, root edges read from Root.lean via `_root_source`,
+    fix db00977). A proved goal NOT reachable from `main` is proving DEBRIS:
+    an abandoned re-derivation / duplicate the daemon marked `proved` but the
+    final root proof does not use (Jordan: 54 of 143). Returns the reachable
+    set (always includes the root slug)."""
+    from ..quality.librarian import inventory as _inv
+    rs = _root_source(conn, problem, workspace)
+    root_slug = rs[0] if rs else "main"
+    usage = _inv.usage_graph(workspace, problem, set(slugs), root_source=rs)
+    reachable: set[str] = set()
+    stack = [root_slug]
+    while stack:
+        s = stack.pop()
+        if s in reachable:
+            continue
+        reachable.add(s)
+        for dep in usage.get(s, set()):
+            if dep not in reachable:
+                stack.append(dep)
+    return reachable
+
+
 def _run_keepall(conn, *, problem, workspace):
     """v0.3 mechanical replacement for the agentic `dedup` step (plan §0/§3).
 
-    Build the inventory (proved-goal decls + Defs.lean decls) and mark EVERY
-    decl `keep` — no keep/drop/cite/merge judgment, no spawn. The high-variance
-    agentic dedup (Jordan kept 81↔22 run-to-run) is gone; keeping everything is
-    deterministic AND is what makes the downstream migrate purely mechanical
-    (no non-keep references → no sorry holes → no LLM). Advances every
-    candidate to `deduped` so the existing classify step ingests them all.
+    Inventory the proved-goal decls, restrict to the proved root's LIVE
+    dependency closure (`_reachable_from_root`), and mark every survivor `keep`
+    — no keep/drop/cite/merge judgment, no spawn.
 
-    Trade-off (accepted, plan §0): the Library keeps reconstructed mathlib
-    wrappers, scaffolding, and near-duplicates — verbose but self-contained and
-    reproducible. Curation (goal #2 / mathlib-PR form) is deferred to a future
-    opt-in pass, not the main chain."""
+    Two reasons for the reachability filter (vs naive keep-ALL):
+      1. North-star (plan §1): the Library should be exactly what `main` needs.
+         Proving leaves ORPHAN DEBRIS — abandoned re-derivations / duplicate
+         lemmas marked `proved` but unreachable from `main` (Jordan: 54/143).
+         Library-izing them pollutes the Library with proof-thrash.
+      2. Debris is often un-migratable anyway: an orphan decl can cite a DEAD
+         sibling (e.g. `gaps_from_boundaries_2` → dead `gap_terms_sum`), which
+         no mechanical relabel can resolve — it would hard-fail the file and
+         block the chain. Filtering removes the junk before it can.
+
+    Keeping everything in the LIVE closure is what makes migrate mechanical
+    (every reference resolves to a kept sibling → no holes → no LLM) and
+    deterministic (the high-variance agentic dedup — Jordan 81↔22 — is gone).
+    Gate B (bridge) is the safety net if the filter ever drops a needed decl:
+    `main` would fail to re-derive, loudly. Advances survivors to `deduped` so
+    the existing classify step ingests them.
+
+    Trade-off (accepted, plan §0): the kept closure still has reconstructed
+    mathlib wrappers + scaffolding — verbose but self-contained; mathlib-PR
+    curation (goal #2) is a future opt-in pass, not the main chain."""
     from . import PipelineResult
     from ..quality.librarian import inventory as _inv
 
     inv = _inv.build_inventory(conn, workspace, problem)
-    for d in inv.decls:
+    proved_slugs = {d.slug for d in inv.decls}
+    reachable = _reachable_from_root(conn, problem, workspace, proved_slugs)
+    kept = [d for d in inv.decls if d.slug in reachable]
+    n_orphan = len(inv.decls) - len(kept)
+    if n_orphan:
+        print(f"[librarian] {problem}: keep over root's live closure — "
+              f"{len(kept)} reachable kept, {n_orphan} orphan proved decl(s) "
+              f"skipped (debris)", flush=True)
+    for d in kept:
         db.upsert_library_decl(conn, problem=problem, slug=d.slug,
                                source_goal_id=d.goal_id)
     for name in inv.defs_decls:
-        # Defs decls have no proof goal — source_goal_id is None.
+        # Defs decls have no proof goal — source_goal_id is None. Kept whole
+        # (foundational + few); the statement / closure references them.
         db.upsert_library_decl(conn, problem=problem, slug=name,
                                source_goal_id=None)
     for r in db.library_decls_for(conn, problem):
