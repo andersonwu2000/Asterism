@@ -5,6 +5,9 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-03
+Migrated the librarian's v0.3 migrate pipeline to a per-decl, incremental model?etiring the whole-file spawn in favor of per-decl source assembly, build, and gateway sessions?nd restructured it into mechanical-only phases (keep-all dedup, no-LLM migration, and a mechanical Gate B bridge) to eliminate reliance on per-step agents. Alongside this, the file-watcher gained a read-only Librarian pipeline view with clearer, session- and work-kind-aware labelling, and the scheduler was reworked for dynamic DAG-based file parallelism, fixing several daemon lifecycle and session-slot leak bugs (#92).
+
 ### 2026-06-02
 Auto-migrated a stale-but-populated database on connect, and hardened the librarian subsystem with a series of correctness and prompting improvements?aking it fail loudly when an upstream dependency targets a non-reshapeable node, correctly folding transitive dependencies through self-merged siblings, and restructuring the cleanup prompt into three explicit reshape steps while teaching the needs-upstream cascade and fixing decline/gate drift.
 
