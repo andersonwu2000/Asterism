@@ -492,3 +492,30 @@ def test_comment_only_strategy_slot_adds_no_import():
         strategy_aliases={"s77": "other"})
     assert r.ok, r.reason
     assert f"import {OTHER}" not in r.text         # comment-only → no import
+
+
+def test_external_library_import_preserved():
+    """Library-as-input round-trip: a proof that CITES another problem's
+    Library entry (`import Library.X` + a body reference) must survive
+    relabel verbatim so the NEW problem can itself be Library-ized. The
+    Library import is neither a Problems sibling nor Defs, so it passes
+    through untouched, and the cross-Library reference is not stripped by
+    the residual-Problems guard (which only targets the problem's own
+    namespace)."""
+    LIB = "Library.LinearAlgebra.SchurTriangularization.Triangularization"
+    src = (
+        "import Mathlib\n"
+        f"import {LIB}\n"
+        f"import {PNS}.Defs\n"
+        f"namespace {PNS}\n"
+        "theorem foo : True := by\n"
+        f"  have := @{LIB}.main\n"
+        "  trivial\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS)
+    assert r.ok, r.reason
+    assert f"import {LIB}" in r.text            # external Library import kept
+    assert f"{LIB}.main" in r.text              # cross-Library reference kept
+    assert f"import {PNS}.Defs" not in r.text   # own Defs still dropped
