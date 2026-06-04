@@ -39,7 +39,7 @@ Phase 2 補：
 | Tier 3 | **ConstructionSearch** | construction-kind 專用 | research-mode |
 
 合併原則：
-- 反方攻擊（Refuter + Counterexample）合一條、兩 mode
+- 反方攻擊（Refuter + Counterexample）合一條、兩 mode（**Tier 1、Phase 2 不含**；見 §1 表中 Tier 標籤 + line 112 Inject 範圍）
 - Library 維護（PromotionJudge + LibraryCurator）合一條
 - 抽資訊（PatternMiner + Abstractor）合一條、兩 output mode
 - ConjectureProposer 與 ConsistencyChecker 下沉到 research-mode、Phase 2 不刻

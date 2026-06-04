@@ -1,5 +1,13 @@
 # Bridge lemma layer
 
+> **Archived 2026-05-22** — stalled at the design stage (single commit
+> 2026-05-06 stub, 6 open design decisions never resolved, no
+> implementation work since). Moved here from `docs/dev/` to clear the
+> active design tray. The motivation (SG cascade re-derives
+> cross-product algebra ~100× rather than building a problem-specific
+> bridge layer once) is still real; re-open as a fresh design round
+> when the operator wants to act on it.
+
 Status: planned (2026-05-06). New design round; previous v1 work
 (`goal_history_unified.md`) shipped, this is the next architectural item.
 
