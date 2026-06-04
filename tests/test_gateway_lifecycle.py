@@ -203,3 +203,63 @@ def test_verify_file_http_4xx_returns_immediately_non_transient(
     assert out["transient"] is False
     assert "400" in out["error"]
     assert calls["n"] == 1  # no retry on 4xx
+
+
+# ---------------------------------------------------------------------
+# start_gateway: reconcile reused gateway's worker count vs dispatch.pool
+# ---------------------------------------------------------------------
+
+class _FakeProc:
+    def poll(self): return None
+    def terminate(self): pass
+    def wait(self, timeout=None): return 0
+
+
+def test_start_gateway_reuses_when_workers_match(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Healthy gateway whose workers_total == dispatch.pool → reused (no
+    relaunch, no kill)."""
+    monkeypatch.setattr(gateway_lifecycle, "_ping_health",
+        lambda timeout=1.0: {"backend_ready": True, "workers_total": 4,
+                             "pid": 999})
+    monkeypatch.setattr(gateway_lifecycle, "_desired_pool", lambda ws: 4)
+    killed = {"n": 0}
+    monkeypatch.setattr(gateway_lifecycle, "_kill_stale_gateway",
+                        lambda pid: killed.__setitem__("n", killed["n"] + 1))
+
+    def _no_launch(*a, **k):
+        raise AssertionError("should reuse, not relaunch")
+    monkeypatch.setattr(gateway_lifecycle.subprocess, "Popen", _no_launch)
+
+    proc = gateway_lifecycle.start_gateway(tmp_path)
+    assert proc.poll() is None          # the reuse stub
+    assert killed["n"] == 0
+
+
+def test_start_gateway_relaunches_on_worker_mismatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Healthy gateway with workers_total != dispatch.pool → kill the stale
+    one (by its /health pid) and relaunch a fresh gateway."""
+    calls = {"n": 0}
+
+    def ping(timeout=1.0):
+        calls["n"] += 1
+        # 1st: the reuse check sees the stale 2-worker gateway.
+        # later: the post-launch readiness poll sees the fresh 4-worker one.
+        if calls["n"] == 1:
+            return {"backend_ready": True, "workers_total": 2, "pid": 777}
+        return {"backend_ready": True, "workers_total": 4, "pid": 888}
+    monkeypatch.setattr(gateway_lifecycle, "_ping_health", ping)
+    monkeypatch.setattr(gateway_lifecycle, "_desired_pool", lambda ws: 4)
+    killed = {"pid": None}
+    monkeypatch.setattr(gateway_lifecycle, "_kill_stale_gateway",
+                        lambda pid: killed.__setitem__("pid", pid))
+    monkeypatch.setattr(gateway_lifecycle.subprocess, "Popen",
+                        lambda *a, **k: _FakeProc())
+    monkeypatch.setattr(gateway_lifecycle.time, "sleep", lambda s: None)
+
+    proc = gateway_lifecycle.start_gateway(tmp_path)
+    assert killed["pid"] == 777          # killed the stale gateway by pid
+    assert isinstance(proc, _FakeProc)   # relaunched a fresh one

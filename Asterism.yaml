@@ -7,7 +7,7 @@
 # it; the framework only reads what's set.
 
 dispatch:
-  pool: 2                     # Max in-flight pipelines, also = number of
+  pool: 4                     # Max in-flight pipelines, also = number of
                               # persistent lean workers in the LSP gateway
                               # pool (1:1 binding — every spawn claims one
                               # dedicated worker for its lifetime, freed on
@@ -36,14 +36,15 @@ dispatch:
                               # prompt; with the new rescue prompt listing
                               # decline + leaf-bypass paths, give 1 more
                               # attempt to find an escape before shelving)
-  spawn_timeout_sec: 960      # 16min per-spawn wall budget. SG empirical
-                              # showed sonnet stuck-thinking on hard sub-goals
-                              # eats most of any larger budget without
-                              # emitting tool_use; tighter watchdog cap
-                              # (720s = 12min) → rescue path engages sooner.
+  spawn_timeout_sec: 960      # 16min/spawn. SG empirical: sonnet stuck-
+                              # thinking eats any larger budget without
+                              # tool_use, so the watchdog (trap_check_sec)
+                              # still bounds genuine stalls.
 #  postmortem_timeout_sec: 180  # F55 postmortem spawn budget (writes
                               # _progress.md after a main timeout).
-  trap_check_sec: 660         # Watchdog 2026-05-10 v4: single
+  trap_check_sec: 660         # watchdog single check at 11min (≈5min rescue
+                              # tail before the 960s spawn cutoff).
+                              # Watchdog 2026-05-10 v4: single
                               # point-in-time check at this many
                               # seconds into the spawn. At trigger,
                               # kill iff BOTH conditions hold:

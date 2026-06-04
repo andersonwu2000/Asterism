@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import atexit
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -56,6 +57,43 @@ def _ping_health(timeout: float = 2.0) -> dict | None:
         return None
 
 
+def _desired_pool(workspace: Path) -> int | None:
+    """The worker count a fresh gateway would launch with — i.e. the
+    current `dispatch.pool` (gateway.py sizes its pool from this). Returns
+    None if config can't be read (then reuse is left as-is, never worse
+    than the old unconditional-reuse behaviour)."""
+    try:
+        from ..core import config
+        return config.get("dispatch.pool", default=4, env_var="ASTERISM_POOL",
+                          cast=int, workspace=workspace)
+    except Exception:  # noqa: BLE001 — config read is best-effort
+        return None
+
+
+def _kill_stale_gateway(pid) -> None:
+    """Kill a reused gateway whose worker count no longer matches
+    `dispatch.pool`, then wait for the port to free so a fresh gateway can
+    bind. `os.kill(pid, SIGTERM)` terminates the process on both POSIX and
+    Windows (Windows maps any non-CTRL signal to TerminateProcess)."""
+    if not pid:
+        raise RuntimeError(
+            "existing gateway worker count != dispatch.pool, but its /health "
+            "reports no pid (old gateway build) — kill it manually and retry")
+    try:
+        os.kill(int(pid), signal.SIGTERM)
+    except (ProcessLookupError, OSError) as e:
+        print(f"[gateway] kill stale gateway pid={pid}: {e} "
+              "(already gone?)", flush=True)
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        if _ping_health(timeout=1.0) is None:
+            return
+        time.sleep(0.5)
+    raise RuntimeError(
+        f"stale gateway pid={pid} did not release port "
+        f"{_gateway_port()} within 30s")
+
+
 def start_gateway(workspace: Path,
                   ready_timeout: float | None = None) -> subprocess.Popen:
     """Launch `python -m Tooling.lsp_gateway` as subprocess. Blocks
@@ -83,23 +121,40 @@ def start_gateway(workspace: Path,
                 pass
         if ready_timeout is None:
             ready_timeout = 600.0
-    # Refuse if something is already on our port — likely a stale
-    # gateway from a prior daemon run that didn't clean up. Operator
-    # should kill it and retry.
+    # A healthy gateway already on our port is reused (warming Mathlib
+    # costs minutes, so reuse across runs is a feature) — BUT only if its
+    # worker count matches the current `dispatch.pool`. The gateway sizes
+    # its worker pool from `dispatch.pool` AT LAUNCH (gateway.py); a
+    # gateway started under a different pool (or orphaned across a pool
+    # change) keeps a stale count, and reusing it either starves spawns
+    # (pool > workers → slot-exhaustion 500s) or wastes workers. Worker
+    # count must track the yaml, so on a mismatch we kill the stale
+    # gateway and relaunch with the right size.
     pre = _ping_health(timeout=1.0)
     if pre is not None:
         if pre.get("backend_ready"):
-            print(f"[gateway] reusing existing gateway on port "
-                  f"{_gateway_port()} (already healthy)", flush=True)
-            # Don't atexit-kill someone else's process.
-            class _Stub:
-                def poll(self): return None
-                def terminate(self): pass
-                def wait(self, timeout=None): return 0
-            return _Stub()  # type: ignore[return-value]
-        raise RuntimeError(
-            f"port {_gateway_port()} occupied by an unhealthy server: "
-            f"{pre}; kill it and retry")
+            want = _desired_pool(workspace)
+            have = pre.get("workers_total")
+            if want is not None and have is not None and int(have) != int(want):
+                print(f"[gateway] existing gateway has workers={have} but "
+                      f"dispatch.pool={want} — killing it and relaunching to "
+                      f"match the yaml", flush=True)
+                _kill_stale_gateway(pre.get("pid"))
+                # fall through to launch a fresh gateway below
+            else:
+                print(f"[gateway] reusing existing gateway on port "
+                      f"{_gateway_port()} (already healthy, "
+                      f"workers={have})", flush=True)
+                # Don't atexit-kill someone else's process.
+                class _Stub:
+                    def poll(self): return None
+                    def terminate(self): pass
+                    def wait(self, timeout=None): return 0
+                return _Stub()  # type: ignore[return-value]
+        else:
+            raise RuntimeError(
+                f"port {_gateway_port()} occupied by an unhealthy server: "
+                f"{pre}; kill it and retry")
 
     env = dict(os.environ)
     env["ASTERISM_WORKSPACE"] = str(workspace.resolve())

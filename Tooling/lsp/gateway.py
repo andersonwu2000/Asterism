@@ -1171,6 +1171,9 @@ async def health(request: Request):
         "sessions_active": n_sessions,
         "init_error": _state.init_error,
         "acquires": counters,
+        # PID so a reusing daemon can detect a stale worker-count (≠
+        # dispatch.pool) and kill+relaunch this gateway to match the yaml.
+        "pid": os.getpid(),
     })
 
 
