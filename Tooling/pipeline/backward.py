@@ -161,6 +161,13 @@ _ENTRY_KIND_RE = re.compile(
     r"(?m)^\s*--\s*entry_kind\s*:\s*(Builder|Backward)\b"
 )
 
+# Line-level variant for stripping: consumes the whole directive line
+# (including any trailing text and the newline) so removal leaves no
+# blank residue. Anchored the same way as _ENTRY_KIND_RE.
+_ENTRY_KIND_LINE_RE = re.compile(
+    r"(?m)^[ \t]*--[ \t]*entry_kind[ \t]*:[ \t]*(?:Builder|Backward)\b.*\r?\n?"
+)
+
 
 def _parse_entry_kind(lean_text: str) -> str:
     """Extract the `-- entry_kind: ...` directive from a sub-goal lean
@@ -170,6 +177,18 @@ def _parse_entry_kind(lean_text: str) -> str:
     so a missing directive doesn't change behavior."""
     m = _ENTRY_KIND_RE.search(lean_text)
     return m.group(1) if m else "Builder"
+
+
+def _strip_entry_kind(lean_text: str) -> str:
+    """Remove the `-- entry_kind:` directive line(s) once the framework
+    has consumed it into the DB `goals.entry_kind` column. That column is
+    the routing SoT thereafter, so the comment left in the permanent
+    `proofs/L_<slug>.lean` is dead residue — and it propagates into the
+    curated Library on migrate. Stripping at consume-time keeps the parse
+    channel (agent still writes it in `new_<slug>.lean`) intact while
+    keeping downstream files clean. Rationale comments below the
+    directive sit on their own `--` lines and are untouched."""
+    return _ENTRY_KIND_LINE_RE.sub("", lean_text)
 
 
 # ---------------------------------------------------------------------
@@ -1119,8 +1138,16 @@ def _backward_parse_and_commit(
         for (slug, dest), match in zip(sub_dests, canonical_for):
             stmt = _extract_statement_from_lean(dest)
             rel = dest.relative_to(workspace).as_posix()
-            entry_kind = _parse_entry_kind(
-                dest.read_text(encoding="utf-8"))
+            raw = dest.read_text(encoding="utf-8")
+            entry_kind = _parse_entry_kind(raw)
+            # Directive consumed → DB column is the routing SoT now.
+            # Strip the comment from the permanent file so it doesn't
+            # linger in proofs/ or propagate into the curated Library on
+            # migrate. (stmt already extracted above; downstream reads
+            # don't depend on this line.)
+            cleaned = _strip_entry_kind(raw)
+            if cleaned != raw:
+                dest.write_text(cleaned, encoding="utf-8")
             new_gid = db.insert_goal(
                 conn, problem=goal["problem"], slug=slug,
                 lean_path=rel, statement=stmt, origin="backward",

@@ -595,6 +595,7 @@ from .backward import (  # noqa: E402
     _ensure_imports_subgoal,
     _try_promote_sorry_free,
     _parse_entry_kind,
+    _strip_entry_kind,
     _SORRY_RE,
     run_backward,
 )
