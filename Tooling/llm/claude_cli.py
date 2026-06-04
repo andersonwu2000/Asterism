@@ -744,16 +744,19 @@ class ClaudeCliProvider:
                         / ".lake" / "packages")
         add_dir_packages: list[str] = (
             ["--add-dir", str(packages_dir)] if packages_dir.is_dir() else [])
-        # Librarian work (migrate / cleanup / bridge) operates on the `Library/`
-        # staging tree, which lives outside problem_dir. cleanup/bridge edit a
-        # Library file IN PLACE, so the agent must Read/Grep it (and its
-        # call-site importers) — not just blind-edit via the LSP. Grant
-        # `Library/` only to librarian spawns; proving workers stay scoped to
-        # their problem so a proof can't cite cross-problem Library decls.
+        # `Library/` (reusable theorems harvested from prior proved
+        # Problems) lives outside problem_dir. Granted to ALL spawn kinds:
+        #   - librarian (migrate / cleanup / bridge) edits Library files in
+        #     place and must Read/Grep them + their call-site importers.
+        #   - proving / forward / strategist workers READ it to CITE existing
+        #     Library theorems instead of re-deriving (Library-as-input;
+        #     surfaced in Context.md by `_section_library_available`). A
+        #     cross-problem citation is sound — Library holds only OTHER,
+        #     already-proved problems, so no cycle is possible, and the verify
+        #     lake build resolves the `import Library.…` against its olean.
         library_dir = _workspace_from_problem_dir(req.problem_dir) / "Library"
         add_dir_library: list[str] = (
-            ["--add-dir", str(library_dir)]
-            if req.kind == "librarian" and library_dir.is_dir() else [])
+            ["--add-dir", str(library_dir)] if library_dir.is_dir() else [])
         # MCP config — Builder pipeline (Phase 1 LSP swap) sets
         # mcp_config_path to a JSON file describing the LSP MCP
         # server. claude spawns the server itself as a child process

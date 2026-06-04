@@ -477,42 +477,77 @@ def _section_proved_goals(conn: sqlite3.Connection,
 
 
 def _section_library_available(mfst, workspace) -> list[str]:
-    """List Library/<Topic>/INDEX.md entries for the topics inferred
-    from `mfst.lemma_hints` (any `Library.<Topic>.*` entries)."""
-    from ..quality import library  # local import to avoid cycle at module load
-    topics = library.topics_from_hints(mfst.all_hints)
-    if not topics:
+    """Surface the reusable Library — theorems Asterism already proved and
+    harvested from prior Problems — to the PROVING agent, so it can cite
+    them instead of re-deriving (Library-as-input).
+
+    Reads the single `Library/INDEX.md` (the Librarian `finish` marker),
+    parses its `## <problem>` sections, and renders a COMPACT menu of the
+    Library modules in this problem's own domain (e.g. a `LinearAlgebra.*`
+    problem sees the `LinearAlgebra.*` Library), plus any `Library.*`
+    entries named in the Manifest's `lemma_hints` (highlighted as suggested
+    citations, cross-domain allowed). The agent has read access to
+    `Library/` — it greps there for exact signatures; the menu just tells
+    it what exists and how to cite. Returns [] when the Library has nothing
+    relevant (keeps unrelated problems' Context clean)."""
+    import re as _re
+    index = workspace / "Library" / "INDEX.md"
+    if not index.exists():
         return []
-    lib_root = workspace / "Library"
-    chunks: list[str] = []
-    for topic in topics:
-        idx_file = lib_root / topic / "INDEX.md"
-        if not idx_file.exists():
-            continue
-        try:
-            body = idx_file.read_text(encoding="utf-8").strip()
-        except OSError:
-            continue
-        entries = [
-            ln for ln in body.splitlines()
-            if ln.strip().startswith("- `")
-        ]
-        if entries:
-            chunks.append(f"### {topic}")
-            chunks.extend(entries)
-            chunks.append("")
-    if not chunks:
+    try:
+        text = index.read_text(encoding="utf-8")
+    except OSError:
         return []
-    return [
-        "## Library available (filtered by lemma_hints topics)",
+    sections: list[tuple[str, list[str]]] = []
+    cur: str | None = None
+    decls: list[str] = []
+    for ln in text.splitlines():
+        m = _re.match(r"^##\s+(.+?)\s*$", ln)
+        if m:
+            if cur is not None:
+                sections.append((cur, decls))
+            cur, decls = m.group(1), []
+            continue
+        m = _re.match(r"^-\s+`([\w.]+)`", ln)
+        if m and cur is not None:
+            decls.append(m.group(1))
+    if cur is not None:
+        sections.append((cur, decls))
+    if not sections:
+        return []
+
+    problem = mfst.problem or ""
+    domain = problem.split(".")[0] if "." in problem else problem
+    relevant = [(p, d) for p, d in sections
+                if d and (p.split(".")[0] == domain)]
+    hinted = [h for h in mfst.all_hints if h.startswith("Library.")]
+    if not relevant and not hinted:
+        return []
+
+    out = [
+        "## Library available (reusable — proved in prior Problems)",
         "",
-        "Theorems already proved by Asterism in prior Problems. Import "
-        "via `import Library.<Topic>.<problem>` and use the theorem "
-        "name `<problem>`. Signatures resolve through the same lemma "
-        "lookup as Mathlib hints.",
+        "Theorems Asterism already proved and harvested into `Library/`. "
+        "**Prefer citing these over re-deriving.** To use one: "
+        "`import <module>` (the dotted prefix before the decl's last "
+        "component) and reference it by its full name. You have read "
+        "access to `Library/` — grep there for exact signatures. The R1 "
+        "search-before-reconstruct rule covers Library too.",
         "",
-        *chunks,
     ]
+    if hinted:
+        out.append("Suggested citations (this problem's `lemma_hints`):")
+        out += [f"- `{h}`" for h in hinted]
+        out.append("")
+    if relevant:
+        out.append(f"Library modules in the `{domain}` domain "
+                   "(grep `Library/` for signatures):")
+        for p, d in relevant:
+            keystone = next((x for x in d if x.endswith(".main")), None)
+            tag = f" — keystone `{keystone}`" if keystone else ""
+            out.append(f"- **{p}** ({len(d)} decls){tag}")
+        out.append("")
+    return out
 
 
 def _section_goal_history(*,
@@ -894,6 +929,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_strategist_directive(conn, str(goal["problem"])),
         _section_strategist_brief(conn, decision_id),
         _section_header(goal),
+        _section_library_available(mfst, workspace),
         _section_strategy_naming(strategy_id, goal),
         _section_parent_strategy(conn, goal),
         _section_mathlib_lemmas_from_deads(direct_events, workspace),

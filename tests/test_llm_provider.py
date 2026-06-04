@@ -302,15 +302,40 @@ def test_librarian_spawn_adds_library_dir(
     assert str(tmp_path / "Library") in add_dirs, add_dirs
 
 
-def test_nonlibrarian_spawn_no_library_dir(
+def test_proving_spawn_adds_library_dir(
     tmp_path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Proving workers stay scoped to their problem — no Library/ access."""
+    """Library-as-input: proving workers ALSO get --add-dir <workspace>/Library
+    so they can Read/Grep and CITE reusable theorems harvested from prior
+    proved Problems (policy reversed — Library is a citable input, not just a
+    librarian-edited staging tree). Cross-problem citation is cycle-safe."""
     from pathlib import Path
     from Tooling import llm
     from Tooling.llm import claude_cli
 
     (tmp_path / "Library").mkdir()
+    pd = tmp_path / "Problems" / "p"
+    pd.mkdir(parents=True)
+    att = tmp_path / ".attempts" / "x"
+    att.mkdir(parents=True)
+    captured = _capture_cmd(monkeypatch)
+    claude_cli.ClaudeCliProvider().spawn(llm.LLMRequest(
+        kind="backward", prompt_path=Path("/x/p.md"),
+        problem_dir=pd, attempts_dir=att, timeout_sec=60))
+    cmd = captured[0]
+    add_dirs = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--add-dir"]
+    assert str(tmp_path / "Library") in add_dirs, add_dirs
+
+
+def test_spawn_no_library_dir_when_absent(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No `Library/` on disk (fresh checkout) → no --add-dir for it
+    (claude CLI errors on a missing --add-dir path)."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
     pd = tmp_path / "Problems" / "p"
     pd.mkdir(parents=True)
     att = tmp_path / ".attempts" / "x"

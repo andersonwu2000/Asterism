@@ -83,25 +83,55 @@ def test_topics_from_hints_dedups_and_preserves_order() -> None:
 # 3. Context section — Library available
 # ---------------------------------------------------------------------
 
-def test_library_section_renders_topic_entries(tmp_path: Path) -> None:
-    """When lemma_hints include Library.<Topic>.* and that Topic's
-    INDEX.md exists, the section appears with that topic's entries."""
-    from Tooling.agent import context
-    (tmp_path / "Library" / "NumberTheory").mkdir(parents=True)
-    (tmp_path / "Library" / "NumberTheory" / "INDEX.md").write_text(
-        "# Library/NumberTheory — INDEX\n\n"
-        "- `wilson` — ∀ p, Nat.Prime p → ...\n",
+def _write_index(tmp_path: Path) -> None:
+    (tmp_path / "Library").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "Library" / "INDEX.md").write_text(
+        "# Library Index\n\n"
+        "## LinearAlgebra.schur_triangularization\n\n"
+        "_Harvested … — 2 declaration(s)._\n\n"
+        "- `Library.LinearAlgebra.SchurTriangularization.Triangularization.main` → a\n"
+        "- `Library.LinearAlgebra.SchurTriangularization.FlagBasis.foo` → b\n\n"
+        "## Geometry.banach_tarski\n\n"
+        "- `Library.Geometry.BanachTarski.Equidecomp.bar` → c\n",
         encoding="utf-8",
     )
+
+
+def test_library_section_domain_menu_and_hint(tmp_path: Path) -> None:
+    """New single Library/INDEX.md: same-domain problems appear as a compact
+    menu (with keystone tag); lemma_hints Library.* entries are highlighted;
+    other domains are excluded from the menu."""
+    from Tooling.agent import context
+    _write_index(tmp_path)
     mfst = manifest.Manifest(
-        problem="newprob", statement="T",
-        lemma_hints=["Library.NumberTheory.wilson"],
+        problem="LinearAlgebra.normal_diagonalization", statement="T",
+        lemma_hints=[
+            "Library.LinearAlgebra.SchurTriangularization.Triangularization.main"],
     )
-    section = context._section_library_available(mfst, tmp_path)
-    body = "\n".join(section)
+    body = "\n".join(context._section_library_available(mfst, tmp_path))
     assert "## Library available" in body
-    assert "### NumberTheory" in body
-    assert "`wilson`" in body
+    # same-domain (LinearAlgebra) listed with keystone
+    assert "LinearAlgebra.schur_triangularization" in body
+    assert "keystone" in body and ".Triangularization.main" in body
+    # cross-domain (Geometry) NOT in the domain menu
+    assert "banach_tarski" not in body
+    # lemma_hints highlighted
+    assert "Suggested citations" in body
+
+
+def test_library_section_cross_domain_via_hint(tmp_path: Path) -> None:
+    """A Geometry Library entry named in an LA problem's lemma_hints is
+    surfaced (cross-domain explicit citation), even though Geometry is not
+    the problem's domain so it's absent from the domain menu."""
+    from Tooling.agent import context
+    _write_index(tmp_path)
+    mfst = manifest.Manifest(
+        problem="LinearAlgebra.x", statement="T",
+        lemma_hints=["Library.Geometry.BanachTarski.Equidecomp.bar"],
+    )
+    body = "\n".join(context._section_library_available(mfst, tmp_path))
+    assert "Suggested citations" in body
+    assert "Library.Geometry.BanachTarski.Equidecomp.bar" in body
 
 
 def test_library_section_empty_when_no_library_hints(tmp_path: Path) -> None:

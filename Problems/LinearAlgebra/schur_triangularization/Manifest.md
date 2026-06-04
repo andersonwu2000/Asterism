@@ -1,5 +1,6 @@
 ---
 problem: LinearAlgebra.schur_triangularization
+library: true
 axioms_whitelist:
   - propext
   - Quot.sound
