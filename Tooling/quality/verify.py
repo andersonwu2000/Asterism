@@ -35,10 +35,13 @@ from __future__ import annotations
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TYPE_CHECKING
 
 from ..state import db, manifest, tree
 from ..pipeline._lake import lean_path_to_module
+
+if TYPE_CHECKING:
+    from ..pipeline._olean_warm import OleanWarmer
 from ..pipeline._skeleton import (
     promote_to_alias, rollback_promote, verify_backup_path,
 )
@@ -121,6 +124,7 @@ def verify_strategy(
 def verify_housekeeping(
     conn: sqlite3.Connection, *, workspace: Path, max_iters: int = 8,
     manifests: dict[str, manifest.Manifest] | None = None,
+    olean_warmer: "OleanWarmer | None" = None,
 ) -> dict[str, int]:
     """Run inline at the end of each dispatcher tick. Polls strategies
     in `ready_for_verify` state, runs `verify_strategy` on each, and
@@ -179,16 +183,21 @@ def verify_housekeeping(
                 counts["proved"] += 1
                 touched_goals.add(goal_id)
                 print(f"[verify] Strategy={sid} → proved", flush=True)
-                # .olean materialization for downstream dedupe deferred
-                # to dedupe's own pre-flight (`_ensure_canonical_oleans`
-                # in dedupe._batch_provable_via_apply). Inlining lake
-                # build here previously stalled the dispatcher main
-                # thread (Jordan 2026-05-25: 10-strategy cascade × 30-60s
-                # lake build = ~10 min blocked, worker pool 0/4). The
-                # critical-path contract for verify_housekeeping is
-                # microsecond-level (db + string rewrites only); lake
-                # build is owned by the dedupe site that needs the
-                # .olean, batched + parallel via lake's own scheduler.
+                # .olean materialization for the just-rewritten parent
+                # alias spine is handed to the background warmer (#103).
+                # Inlining lake build here previously stalled the
+                # dispatcher main thread (Jordan 2026-05-25: 10-strategy
+                # cascade × 30-60s lake build = ~10 min blocked, worker
+                # pool 0/4 — fixed by 4128212). The critical-path
+                # contract for verify_housekeeping stays microsecond-level
+                # (db + string rewrites + a non-blocking submit); the
+                # warmer's daemon thread runs a cold `lake build` of the
+                # alias module off both the main thread and the LLM pool,
+                # so the later root integrity probe finds the spine warm
+                # instead of paying a cold closure build. Best-effort: a
+                # missing/late olean only slows dedupe + the probe.
+                if olean_warmer is not None:
+                    olean_warmer.submit(workspace / s["lean_path"])
             elif outcome == "dead":
                 db.update_strategy_status(conn, sid, "dead")
                 n = db.increment_goal_attempts(conn, goal_id)

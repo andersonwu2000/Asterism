@@ -437,6 +437,13 @@ hook 偵測「同 batch_id 所有 row outcome 非 NULL」時 fire。
 2. strategy → `succeeded`、parent goal → `proved`（樂觀標）；sibling strategies → `superseded`；
    `proposal_md` 寫進 parent `.lean` 檔頂作 annotation。
    > 鏈式：parent goal 可能是更上層 strategy 的 sub-goal，下一圈會撈到。
+3. **背景 olean 暖機（#103）**：把剛改寫的 alias module 丟給 `OleanWarmer`（`pipeline/_olean_warm.py`）——
+   一條 daemon thread 序列跑 cold `lake build`，**離開主執行緒、也不佔 LLM worker pool**。alias 是全新內容（無 olean）、
+   且 scratch 的舊 olean 因 sub-goal 由 sorry→proof 而失效；不暖的話，後面 root integrity probe 會在主執行緒
+   付一次 cold 閉包 build（曾觀察到「validate 突然 120s」）。best-effort：olean 缺/晚只拖慢 dedupe + probe，
+   `proved`-in-DB 仍是 SoT。kill switch `verify.olean_warm`。
+   > 史：#64（9cc7322 加 inline build → 4128212 移出）證明 olean build 不能放主執行緒（Jordan 10-strategy
+   > cascade × 30-60s 卡死 pool）；#103 用獨立背景 builder 補回暖機、不回到主執行緒。
 
 **對每個 revival (S, X)（G1）**
 
@@ -450,7 +457,8 @@ hook 偵測「同 batch_id 所有 row outcome 非 NULL」時 fire。
 root goal flip `proved` 後，在 post-proved gate 跑單一 integrity gate `verify.root_integrity_gate`。
 
 **probe** — `axiom_probe(Problems.<p>.main, module=Problems.<p>.Root)`，唯一的 Lean elaboration 點（900s cap）。
-lake serve worker 走完整 alias 鏈、缺 olean 的 `L_*.lean` on-demand elaborate，同時抓兩件事：
+lake serve worker 走完整 alias 鏈、缺 olean 的檔 on-demand elaborate（葉子 `L_*.lean` 在 proof 時已 warm；alias 脊柱
+由 §4 step 3 的背景 warmer 暖好，正常情況 probe 不必再付 cold 閉包），同時抓兩件事：
 
 - alias 改寫的 drift（compile error → Lean 印檔名 + 行號）
 - 任何漏網 sorryAx（`rogue: [sorryAx]`）

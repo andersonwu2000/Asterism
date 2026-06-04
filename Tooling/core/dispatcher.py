@@ -2082,6 +2082,21 @@ def run(workspace: Path, *, once: bool = False,
             f"builder_threshold ({BUILDER_THRESHOLD}); otherwise "
             f"the goal shelves before any Backward attempt fires.")
     pool = ThreadPoolExecutor(max_workers=pool_size)
+    # Background .olean warmer (#103): after verify_housekeeping promotes
+    # a strategy (parent → alias rewrite), the alias spine needs a fresh
+    # .olean so the later root integrity probe doesn't pay a cold closure
+    # build on this main thread. The warmer runs that `lake build` on its
+    # own daemon thread — off the main thread AND off this LLM worker pool
+    # (which is gateway-bound, #118). Kill switch: `verify.olean_warm`.
+    from ..pipeline._olean_warm import OleanWarmer
+    _olean_warm_raw = config.get(
+        "verify.olean_warm", default=True,
+        env_var="ASTERISM_OLEAN_WARM", workspace=workspace)
+    olean_warm_enabled = (
+        _olean_warm_raw if isinstance(_olean_warm_raw, bool)
+        else str(_olean_warm_raw).strip().lower() in ("true", "1", "yes", "on"))
+    olean_warmer = OleanWarmer(workspace, enabled=olean_warm_enabled)
+    atexit.register(lambda: olean_warmer.shutdown(wait=False))
     futures: dict[Future, tuple[str, str, str, str]] = {}
     # In-memory live set of (target_id, kind) pairs currently executing in
     # this daemon. Passive trigger means at most one of each kind per
@@ -2396,7 +2411,8 @@ def run(workspace: Path, *, once: bool = False,
         # `ready_for_verify` poll. Inline + recursive (chain follow-up
         # for multi-layer strategies in one tick).
         verify.verify_housekeeping(conn, workspace=workspace,
-                                   manifests=manifests)
+                                   manifests=manifests,
+                                   olean_warmer=olean_warmer)
 
         # Per-problem post-proved gate. Only problems whose root just
         # flipped to 'proved' AND haven't yet passed integrity_gate
