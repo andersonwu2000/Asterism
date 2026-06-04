@@ -153,10 +153,11 @@ def test_eligible_ancestors_excludes_immediate_parent(
 ) -> None:
     """parent_goal_id itself is excluded from ancestors (anti-cycle).
     Need a depth-3 chain so parent has a strict ancestor we can verify
-    is INCLUDED (and parent itself is EXCLUDED)."""
+    is INCLUDED (and parent itself is EXCLUDED). Ancestors must be PROVED
+    to be alias candidates (unproved ancestors are the no_progress tier)."""
     _seed_problem(conn)
-    root = _seed_root(conn)
-    grand = _seed_sub(conn, slug="grand", statement="X")
+    root = _seed_root(conn, status="proved")
+    grand = _seed_sub(conn, slug="grand", statement="X", status="proved")
     _link(conn, root, [grand])
     parent = _seed_sub(conn, slug="parent", statement="OTHER", depth=2)
     _link(conn, grand, [parent])
@@ -180,10 +181,11 @@ def test_eligible_ancestors_excludes_immediate_parent(
 def test_eligible_ancestors_filters_by_binder_count(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """Ancestors with more binders than candidate are excluded."""
+    """Ancestors with more binders than candidate are excluded.
+    Ancestor must be PROVED to be an alias candidate."""
     _seed_problem(conn)
-    root = _seed_root(conn)
-    grand = _seed_sub(conn, slug="grand", statement="Sat M")
+    root = _seed_root(conn, status="proved")
+    grand = _seed_sub(conn, slug="grand", statement="Sat M", status="proved")
     _link(conn, root, [grand])
     parent = _seed_sub(conn, slug="parent", statement="OTHER", depth=2)
     _link(conn, grand, [parent])
@@ -612,8 +614,8 @@ def test_find_canonicals_batch_mixed_hits(
     """One candidate matches its ancestor, another doesn't. Verify
     per-candidate alignment of canonical_for return list."""
     _seed_problem(conn)
-    root = _seed_root(conn)
-    g_anc1 = _seed_sub(conn, slug="ga1", statement="X")
+    root = _seed_root(conn, status="proved")
+    g_anc1 = _seed_sub(conn, slug="ga1", statement="X", status="proved")
     _link(conn, root, [g_anc1])
     p1 = _seed_sub(conn, slug="p1", statement="OT1", depth=2)
     _link(conn, g_anc1, [p1])
@@ -645,6 +647,46 @@ def test_find_canonicals_batch_mixed_hits(
     assert canonicals[0] == dedupe.CanonicalMatch(
         goal_id=g_anc1, kind="alias")
     assert canonicals[1] is None
+
+
+def test_find_canonicals_batch_no_progress_on_unproved_parent(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sub-goal definitionally equal to the (still-unproved) goal being
+    decomposed is `no_progress`, never an alias — the self-similar `X ⊢ X`
+    decomposition that caused 13/13 of the Jordan intra-problem dups. The
+    parent goal itself is the canonical the match points at."""
+    _seed_problem(conn)
+    root = _seed_root(conn, status="proved")
+    parent = _seed_sub(conn, slug="par", statement="X", depth=1)  # OPEN
+    _link(conn, root, [parent])
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+    _write_lean(tmp_path, "p", "par",
+        "import Mathlib\ntheorem par : X := by sorry\n")
+
+    # fake: candidate provable from canonical iff canonical is the parent.
+    def fake(ws: Path, prob: str,
+             pairs: list[tuple[str, str, str]]) -> list[bool]:
+        return [thm == "par" for _sig, _mod, thm in pairs]
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake)
+
+    cand = "import Mathlib\ntheorem c : X := by sorry\n"
+    res = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("c", cand)])
+    assert res[0] == dedupe.CanonicalMatch(goal_id=parent, kind="no_progress")
+
+
+def test_no_progress_is_retryable_not_terminal() -> None:
+    """`no_progress` must NOT be a terminal decline — the in-pipeline retry
+    helper should re-prompt the same agent to decompose smaller / prove
+    directly, rather than killing the strategy on a fresh cold dispatch."""
+    from Tooling.pipeline._retry import _TERMINAL_DECLINE_REASONS
+    assert "no_progress" not in _TERMINAL_DECLINE_REASONS
+    # contrast: same_as_disproved IS terminal (re-prompt would re-emit it)
+    assert "same_as_disproved" in _TERMINAL_DECLINE_REASONS
 
 
 # ---------------------------------------------------------------------

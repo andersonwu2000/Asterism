@@ -881,6 +881,32 @@ def _backward_parse_and_commit(
             leading,
         )
 
+    # No-progress guard: a sub-goal definitionally equal to the goal being
+    # decomposed (or one of its still-unproved ancestors) is a self-similar
+    # `X ⊢ X` reduction — it can never be aliased (circular) and just spawns
+    # another identical goal. Decline-and-RETRY (NOT terminal): re-prompt the
+    # same agent to split smaller or prove directly. Root cause of the Jordan
+    # intra-problem duplication (13/13 dups were such self-decomposition
+    # chains — the dedupe pool never checked the parent goal itself).
+    no_progress_hits = [
+        (slug, m.goal_id)
+        for (slug, _), m in zip(sub_meta, canonical_for)
+        if m is not None and m.kind == "no_progress"
+    ]
+    if no_progress_hits:
+        detail = "; ".join(
+            f"`{slug}` ≡ goal {gid} ({db.get_goal(conn, gid)['slug']})"
+            for slug, gid in no_progress_hits
+        )
+        return _abort(
+            "no_progress",
+            f"sub-goal(s) make no progress — definitionally equal to the goal "
+            f"you are decomposing or an unproved ancestor: {detail}. Restating "
+            f"the goal as its own sub-goal is circular. Decompose into STRICTLY "
+            f"SMALLER sub-goals, or prove the goal directly in patch.lean.",
+            leading,
+        )
+
     # Compute permanent paths under proofs/. Strategy patch path includes
     # sid_token (framework-locked, collision-free). Sub-goal `L_<slug>.lean`
     # paths use the agent-picked slug, whose problem-local uniqueness was
@@ -895,8 +921,8 @@ def _backward_parse_and_commit(
     try:
         # Place sub-goal files: alias body for dedupe-hits, original
         # content for novel sub-goals. By this point any disproved-kind
-        # match has aborted via the same_as_disproved early-return above,
-        # so a non-None `match` is guaranteed kind="alias".
+        # and no_progress-kind match has aborted via the early-returns
+        # above, so a non-None `match` is guaranteed kind="alias".
         def _novel_content(raw: str) -> str:
             """Sub-goal placed for normal dispatch: base imports + Defs
             opens injected so it elaborates standalone."""

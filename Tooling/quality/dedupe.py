@@ -400,9 +400,14 @@ def _batch_provable_via_apply(
 def _eligible_ancestors(conn: sqlite3.Connection, workspace: Path, *,
                         problem: str, parent_goal_id: int,
                         candidate_count: int) -> list[sqlite3.Row]:
-    """Strict ancestors of `parent_goal_id` whose binder count ≤
-    `candidate_count`. Filtered to alive lineage and status in
-    proved/open/attempting. Sorted by status='proved' DESC, id ASC."""
+    """Strict ancestors of `parent_goal_id` that are PROVED and whose
+    binder count ≤ `candidate_count`. Filtered to alive lineage.
+
+    Proved-only by design: aliasing a candidate to a NOT-yet-proved
+    ancestor is circular (the ancestor's own proof depends on this very
+    sub-goal). Unproved ancestors — and `parent_goal_id` itself — are
+    instead handled by `_eligible_self_and_unproved_ancestors` as the
+    `no_progress` tier (decline-and-retry, never alias)."""
     rows = conn.execute(
         "WITH RECURSIVE alive(id) AS ("
         "  SELECT id FROM goals WHERE problem = ? AND origin = 'root'"
@@ -424,12 +429,67 @@ def _eligible_ancestors(conn: sqlite3.Connection, workspace: Path, *,
         "SELECT g.id, g.statement, g.lean_path, g.status FROM goals g "
         "WHERE g.id IN alive AND g.id IN ancestors "
         "  AND g.problem = ? "
-        "  AND g.status IN ('proved','open','attempting') "
-        "ORDER BY (g.status = 'proved') DESC, g.id ASC",
+        "  AND g.status = 'proved' "
+        "ORDER BY g.id ASC",
         (problem, parent_goal_id, problem),
     ).fetchall()
 
     eligible = []
+    for r in rows:
+        try:
+            canon_text = (workspace / r["lean_path"]).read_text(
+                encoding="utf-8")
+        except OSError:
+            continue
+        if _signature_binder_count(canon_text) > candidate_count:
+            continue
+        eligible.append((r, canon_text))
+    return eligible
+
+
+def _eligible_self_and_unproved_ancestors(
+        conn: sqlite3.Connection, workspace: Path, *,
+        problem: str, parent_goal_id: int,
+        candidate_count: int) -> list[tuple[sqlite3.Row, str]]:
+    """The `no_progress` pool: `parent_goal_id` itself PLUS its still-
+    unproved (open/attempting) alive ancestors, binder count ≤
+    `candidate_count`.
+
+    A proposed sub-goal definitionally equal to one of these is a
+    self-similar `X ⊢ X` decomposition — proving X by reducing to X (or
+    to an ancestor whose proof in turn needs X). It can never be aliased
+    (circular) and is pure no-progress, so the caller declines-and-retries
+    instead of creating yet another identical goal. `parent_goal_id` is
+    included because the dominant case is decomposing a goal into a
+    sub-goal identical to that very goal — invisible to the ancestor walk,
+    which starts ABOVE the parent."""
+    rows = conn.execute(
+        "WITH RECURSIVE alive(id) AS ("
+        "  SELECT id FROM goals WHERE problem = ? AND origin = 'root'"
+        "  UNION"
+        "  SELECT g.id FROM goals g"
+        "  JOIN strategy_subgoals ss ON ss.subgoal_id = g.id"
+        "  JOIN strategies s ON s.id = ss.strategy_id"
+        "  JOIN alive a ON a.id = s.goal_id"
+        "  WHERE s.status IN ('proposed','succeeded')"
+        "), ancestors(id) AS ("
+        "  SELECT s.goal_id FROM strategies s"
+        "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        "    WHERE ss.subgoal_id = ?"
+        "  UNION"
+        "  SELECT s.goal_id FROM strategies s"
+        "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        "    JOIN ancestors a ON a.id = ss.subgoal_id"
+        ") "
+        "SELECT g.id, g.statement, g.lean_path, g.status FROM goals g "
+        "WHERE g.problem = ? "
+        "  AND (g.id = ? OR (g.id IN alive AND g.id IN ancestors)) "
+        "  AND g.status IN ('open','attempting') "
+        "ORDER BY g.id ASC",
+        (problem, parent_goal_id, problem, parent_goal_id),
+    ).fetchall()
+
+    eligible: list[tuple[sqlite3.Row, str]] = []
     for r in rows:
         try:
             canon_text = (workspace / r["lean_path"]).read_text(
@@ -596,7 +656,7 @@ class CanonicalMatch(NamedTuple):
     """Result of a dedupe hit on one candidate.
 
     `kind`:
-      - `"alias"`: canonical is alive/proved — caller should write an
+      - `"alias"`: canonical is PROVED — caller should write an
         alias body and insert the candidate as `proved` aliased to
         `goal_id`.
       - `"disproved"`: canonical is disproved (agent showed a
@@ -604,9 +664,16 @@ class CanonicalMatch(NamedTuple):
         proposed statement is already known false. `goal_id` is the
         disproved goal so the caller can surface its dead_attempt
         forensic in the decline message.
+      - `"no_progress"`: candidate is definitionally the goal being
+        decomposed (`parent_goal_id`) or one of its still-unproved
+        ancestors — proving it from there is circular and makes no
+        progress (the self-similar `X ⊢ X` decomposition). Caller should
+        decline-and-RETRY: re-prompt the same agent to decompose into
+        strictly smaller sub-goals or prove the goal directly. `goal_id`
+        is the matched ancestor/self for the message.
     """
     goal_id: int
-    kind: str  # Literal["alias", "disproved"]
+    kind: str  # Literal["alias", "disproved", "no_progress"]
 
 
 _SLUG_DUP_SUFFIXES = ("_alias", "_2", "_3", "_4", "_5")
@@ -700,6 +767,7 @@ def find_canonicals_batch(
     # the assembly loop below can emit the right `CanonicalMatch.kind`.
     KIND_ALIAS = "alias"
     KIND_DISPROVED = "disproved"
+    KIND_NO_PROGRESS = "no_progress"
     cand_pools: list[list[tuple[sqlite3.Row, str, str]]] = []
     for ci, (slug, full_text) in enumerate(candidates):
         # Tier 1 already hit: no need to enumerate kernel-probe pool.
@@ -729,11 +797,21 @@ def find_canonicals_batch(
             conn, workspace, problem=problem,
             parent_goal_id=parent_goal_id, candidate_count=cand_count,
         )
+        no_progress = _eligible_self_and_unproved_ancestors(
+            conn, workspace, problem=problem,
+            parent_goal_id=parent_goal_id, candidate_count=cand_count,
+        )
+        # Order = priority on first-hit: a PROVED canonical (alias) wins over
+        # both a disproved precedent and a no-progress self/ancestor match —
+        # if the candidate can be discharged by an existing proof, do that.
+        # disproved (statement known false) outranks no_progress (retryable).
         pool: list[tuple[sqlite3.Row, str, str]] = []
         for r, t in anc + orph + cross:
             pool.append((r, t, KIND_ALIAS))
         for r, t in disproved:
             pool.append((r, t, KIND_DISPROVED))
+        for r, t in no_progress:
+            pool.append((r, t, KIND_NO_PROGRESS))
         cand_pools.append(pool)
 
     # Build flat list of pairs to check; track origin (cand_idx, row, kind).
@@ -766,8 +844,10 @@ def find_canonicals_batch(
         # or had no eligible pool). Still report metric for forensic.
         n_alias = sum(1 for m in result if m and m.kind == "alias")
         n_disproved = sum(1 for m in result if m and m.kind == "disproved")
+        n_noprog = sum(1 for m in result if m and m.kind == "no_progress")
         print(f"[dedupe] checked {n} candidate(s) against 0 pair(s); "
-              f"alias={n_alias} disproved={n_disproved} (slug-tier only)",
+              f"alias={n_alias} disproved={n_disproved} "
+              f"no_progress={n_noprog} (slug-tier only)",
               flush=True)
         return result
 
@@ -794,8 +874,10 @@ def find_canonicals_batch(
     # zeros here; this print is how we'll catch any future regression.
     n_alias = sum(1 for m in result if m and m.kind == "alias")
     n_disproved = sum(1 for m in result if m and m.kind == "disproved")
+    n_noprog = sum(1 for m in result if m and m.kind == "no_progress")
     print(f"[dedupe] checked {n} candidate(s) against {len(pairs)} "
-          f"pair(s); alias={n_alias} disproved={n_disproved}", flush=True)
+          f"pair(s); alias={n_alias} disproved={n_disproved} "
+          f"no_progress={n_noprog}", flush=True)
     return result
 
 
