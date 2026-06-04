@@ -1,0 +1,86 @@
+# Topology.brouwer_fixed_point — TREE
+
+_Auto-updated by dispatcher on every cascade._
+
+```
+main  (attempting, attempts=1)
+├─ via s10825  (dead)
+└─ via s10826  (proposed)
+   ├─ brouwer_homeo_dispatch  (proved)
+   └─ brouwer_transport_via_homeo  (attempting)
+      └─ via s10827  (proposed)
+         ├─ brouwer_closed_ball  (attempting)
+         │  └─ via s10828  (proposed)
+         │     ├─ brouwer_closed_ball_zero_case  (proved)
+         │     ├─ fp_from_no_retraction  (attempting, attempts=1)
+         │     │  └─ via s10831  (proposed)
+         │     │     └─ ray_retraction_of_subtype_no_fp  (attempting, attempts=1)
+         │     │        └─ via s10833  (proposed)
+         │     │           └─ extend_subtype_self_map_no_fp  (open)
+         │     └─ no_retraction_disk_to_sphere  (pending_strategist_review, attempts=1)
+         │        └─ via s10832  (dead)
+         └─ fixed_point_transfer_via_homeo  (proved)
+            └─ via s10829  (succeeded)
+               ├─ fixed_point_subtype_via_homeo  (proved)
+               │  └─ via s10830  (succeeded)
+               └─ restricted_self_map_continuous  (proved)
+```
+
+## Forward
+
+```
+not_id_factor_through_subsingleton  (proved)
+└─ via s10808  (succeeded)
+
+exists_homeomorph_closed_ball_of_convex_compact  (proved)
+└─ via s10807  (succeeded)
+   └─ homeomorph_closed_ball_of_not_singleton  (proved, attempts=1)
+      └─ via s10809  (succeeded)
+         ├─ compact_convex_interior_homeo_closed_ball  (proved)
+         │  └─ via s10811  (succeeded)
+         │     ├─ compact_convex_origin_interior_homeo_unit_ball  (proved, attempts=1)
+         │     │  └─ via s10812  (succeeded)
+         │     │     └─ exists_self_homeo_sending_to_unit_ball  (proved)
+         │     └─ recenter_compact_convex_to_origin  (proved)
+         └─ realize_in_euclidean_with_interior  (proved, attempts=1)
+            └─ via s10810  (succeeded)
+               ├─ realize_in_subspace_with_interior  (proved)
+               │  └─ via s10814  (succeeded)
+               │     ├─ convex_compact_span_top_has_interior  (proved)
+               │     │  └─ via s10816  (succeeded)
+               │     │     └─ affine_span_eq_top_of_zero_mem  (proved)
+               │     └─ translate_into_subspace_at_zero  (proved)
+               │        └─ via s10815  (succeeded)
+               │           ├─ embed_into_span_submodule  (proved)
+               │           │  └─ via s10817  (succeeded)
+               │           │     ├─ span_preimage_eq_top  (proved)
+               │           │     └─ subspace_preimage_props  (proved)
+               │           └─ translate_compact_convex_to_origin  (proved)
+               └─ subspace_set_homeo_euclidean_image  (proved)
+                  └─ via s10813  (succeeded)
+                     ├─ exists_linear_isometry_to_euclidean  (proved)
+                     └─ linear_isometry_image_set_props  (proved)
+
+exists_ray_retraction_of_no_fixed_point  (proved)
+└─ via s10818  (succeeded)
+   ├─ exists_continuous_ray_parameter  (proved)
+   │  └─ via s10820  (succeeded)
+   │     ├─ continuous_ray_parameter_of_nonzero  (proved)
+   │     │  └─ via s10821  (succeeded)
+   │     │     ├─ ray_param_continuous  (proved)
+   │     │     │  └─ via s10822  (succeeded)
+   │     │     ├─ ray_param_norm_eq_one  (proved)
+   │     │     │  └─ via s10823  (succeeded)
+   │     │     │     └─ ray_param_norm_sq_eq_one  (proved)
+   │     │     │        └─ via s10824  (succeeded)
+   │     │     │           ├─ ray_param_norm_add_smul_sq_expand  (proved)
+   │     │     │           └─ ray_param_norm_sq_alg_identity  (proved)
+   │     │     └─ ray_param_zero_on_sphere  (proved)
+   │     └─ sphere_inner_diff_nonneg  (proved)
+   └─ ray_retraction_from_parameter  (proved)
+
+closed_ball_contractible_space  (proved)
+└─ via s10819  (succeeded)
+```
+
+**Counters:** 36 proved / 5 attempting / 1 open
