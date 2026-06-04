@@ -1,5 +1,6 @@
 ---
 problem: Geometry.banach_tarski
+library: true
 axioms_whitelist:
   - propext
   - Quot.sound

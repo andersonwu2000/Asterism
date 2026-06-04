@@ -4,13 +4,16 @@ _Auto-updated by dispatcher on every cascade._
 
 ```
 main  (proved)
-└─ via s9961  (succeeded)
-   ├─ inner_bound_from_pair_variational  (proved)
-   ├─ metric_proj_variational_ineq  (proved)
-   │  └─ via s9962  (succeeded)
-   │     ├─ le_zero_of_forall_pos_le_t_mul  (proved)
-   │     └─ var_ineq_for_t  (proved)
-   └─ norm_le_of_sq_le_inner  (proved)
+└─ via s11334  (succeeded)
+   ├─ cross_sq_ineq  (proved)
+   │  └─ via s11335  (succeeded)
+   │     ├─ cross_sq_alg  (proved)
+   │     └─ var_ineq  (proved)
+   │        └─ via s11337  (succeeded)
+   ├─ nonexp_from_sq  (proved)
+   └─ variational  (proved)
+      └─ via s11336  (succeeded)
+         └─ iinf_eq_norm_sub_proj  (proved)
 ```
 
-**Counters:** 6 proved
+**Counters:** 7 proved

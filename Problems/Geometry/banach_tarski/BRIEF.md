@@ -61,3 +61,10 @@ Statement-altering moves only — proof route is free.
 - **Replacing closed ball with open ball or with the sphere `S²`** —
   different theorem (Hausdorff paradox is the sphere version).
   Surface via `RequestUserAmend` if you want to retarget.
+
+## Library available (reusable — proved in prior Problems)
+
+Theorems Asterism already proved and harvested into `Library/`. **Prefer citing these over re-deriving.** To use one: `import <module>` (the dotted prefix before the decl's last component) and reference it by its full name. You have read access to `Library/` — grep there for exact signatures. The R1 search-before-reconstruct rule covers Library too.
+
+Library modules in the `Geometry` domain (grep `Library/` for signatures):
+- **Geometry.banach_tarski** (155 decls) — keystone `Library.Geometry.BanachTarski.Equidecomp.main`
