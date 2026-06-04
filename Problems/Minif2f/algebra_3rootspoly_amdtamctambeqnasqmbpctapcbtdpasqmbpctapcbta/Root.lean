@@ -1,0 +1,9 @@
+import Mathlib
+import Problems.Minif2f.algebra_3rootspoly_amdtamctambeqnasqmbpctapcbtdpasqmbpctapcbta.Defs
+import Problems.Minif2f.algebra_3rootspoly_amdtamctambeqnasqmbpctapcbtdpasqmbpctapcbta.proofs._strategy_s505
+
+namespace Problems.Minif2f.algebra_3rootspoly_amdtamctambeqnasqmbpctapcbtdpasqmbpctapcbta
+
+def main := @Problems.Minif2f.algebra_3rootspoly_amdtamctambeqnasqmbpctapcbtdpasqmbpctapcbta.s505
+
+end Problems.Minif2f.algebra_3rootspoly_amdtamctambeqnasqmbpctapcbtdpasqmbpctapcbta

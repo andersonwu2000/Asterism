@@ -1,0 +1,9 @@
+import Mathlib
+import Problems.Minif2f.algebra_2varlineareq_xpeeq7_2xpeeq3_eeq11_xeqn4.Defs
+import Problems.Minif2f.algebra_2varlineareq_xpeeq7_2xpeeq3_eeq11_xeqn4.proofs._strategy_s509
+
+namespace Problems.Minif2f.algebra_2varlineareq_xpeeq7_2xpeeq3_eeq11_xeqn4
+
+def main := @Problems.Minif2f.algebra_2varlineareq_xpeeq7_2xpeeq3_eeq11_xeqn4.s509
+
+end Problems.Minif2f.algebra_2varlineareq_xpeeq7_2xpeeq3_eeq11_xeqn4

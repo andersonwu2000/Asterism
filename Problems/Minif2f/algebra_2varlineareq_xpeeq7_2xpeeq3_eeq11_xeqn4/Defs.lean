@@ -1,0 +1,9 @@
+import Mathlib
+
+set_option maxHeartbeats 0
+
+open BigOperators Real Nat Topology Rat
+
+namespace Problems.Minif2f.algebra_2varlineareq_xpeeq7_2xpeeq3_eeq11_xeqn4
+
+end Problems.Minif2f.algebra_2varlineareq_xpeeq7_2xpeeq3_eeq11_xeqn4
