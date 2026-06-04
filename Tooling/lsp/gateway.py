@@ -834,6 +834,7 @@ def validate_file(content: str) -> str:
     t0 = time.perf_counter()
     diags: list = []
     elaborate_failed = False
+    timed_out = False
     _slot_kind: str = "unknown"
     backend = _state.backend
     # validate_file uses a slot like apply_edit — swap_in=False (we'll
@@ -851,7 +852,10 @@ def validate_file(content: str) -> str:
                                               slot.file_version,
                                               timeout=120)
             except (TimeoutError, RuntimeError):
-                pass
+                # Elaboration didn't confirm within the budget. Do NOT
+                # swallow into a clean verdict — record it so the response
+                # reports indeterminate, not a false ok:true (#102).
+                timed_out = True
             diags = backend.diagnostics_for(slot.slot_uri)
             # validate_file's content isn't the session's "real" mirror,
             # just a probe. Clear content_pipeline_id so the next tool
@@ -868,18 +872,25 @@ def validate_file(content: str) -> str:
         has_error = True
     dur = time.perf_counter() - t0
     response = {
-        "ok": not has_error,
+        # A timeout means we never confirmed the file is clean, so it must
+        # not surface as ok:true — report indeterminate (#102).
+        "ok": not has_error and not timed_out,
         "diagnostic_count": len(formatted),
         "diagnostics": formatted,
         "_server_recv_ts": _recv_ts,
         "_server_send_ts": _ts_now(),
     }
+    if timed_out:
+        response["timed_out"] = True
+        response["error"] = ("validate_file elaboration did not complete "
+                             "within 120s; result indeterminate")
     _log_for(meta, {"event": "tool_call", "name": "validate_file",
                     "args": {"content_lines": full_content.count("\n") + 1},
                     "duration_s": dur,
                     "slot_kind": _slot_kind,
                     "diagnostic_count": len(formatted),
-                    "has_error": has_error})
+                    "has_error": has_error,
+                    "timed_out": timed_out})
     return json.dumps(response, ensure_ascii=False)
 
 

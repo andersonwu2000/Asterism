@@ -12,6 +12,7 @@ validation in Phase 2 acceptance.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -505,6 +506,79 @@ def test_register_session_claims_free_slot(
     assert token
     assert slots[0].claimed_by == "other-pipe"  # unchanged
     assert slots[1].claimed_by == "pipe-A"      # claimed
+
+
+def _setup_validate_session(monkeypatch, tmp_path, backend):
+    """Wire a claimed slot + session + ready backend so `validate_file`
+    can run against an in-memory FakeBackend. Returns a reset callback."""
+    slots = [_make_fake_slot(0, claimed_by="pipe-A",
+                             content_pipeline_id="pipe-A")]
+    monkeypatch.setattr(lsp_gateway._state, "workers", slots)
+    monkeypatch.setattr(lsp_gateway._state, "backend", backend)
+    monkeypatch.setattr(lsp_gateway, "_ensure_backend_ready",
+                        lambda *a, **kw: None)
+    monkeypatch.setattr(lsp_gateway, "_ensure_imports",
+                        lambda content, problem, ws: content)
+    meta = lsp_gateway.SessionMetadata(
+        pipeline_id="pipe-A", target_path=tmp_path / "x.lean",
+        problem="p", workspace=tmp_path, log_path=None,
+        file_content="theorem t : True := trivial\n",
+    )
+    with lsp_gateway._state.sessions_lock:
+        lsp_gateway._state.sessions["tok-A"] = meta
+    ctx = lsp_gateway._session_ctx.set("tok-A")
+    return ctx
+
+
+class _DiagBackend:
+    """Minimal backend for validate_file: `wait` behavior is injectable;
+    `diagnostics_for` returns a fixed list."""
+    def __init__(self, *, wait_raises=None, diags=None):
+        self._wait_raises = wait_raises
+        self._diags = diags or []
+    def clear_diagnostics(self, *a, **kw): pass
+    def did_change_full(self, *a, **kw): pass
+    def wait_for_diagnostics(self, *a, **kw):
+        if self._wait_raises is not None:
+            raise self._wait_raises
+    def diagnostics_for(self, *a, **kw): return list(self._diags)
+
+
+def test_validate_file_timeout_reports_indeterminate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """#102 — when elaboration doesn't confirm within the wait budget,
+    validate_file must NOT report a false ok:true. It reports ok:false +
+    timed_out + an error, even though no error diagnostics arrived."""
+    backend = _DiagBackend(wait_raises=TimeoutError("budget"))
+    ctx = _setup_validate_session(monkeypatch, tmp_path, backend)
+    try:
+        out = json.loads(asyncio.run(lsp_gateway.validate_file(
+            "theorem t : True := by sorry\n")))
+    finally:
+        lsp_gateway._session_ctx.reset(ctx)
+        lsp_gateway._state.sessions.pop("tok-A", None)
+    assert out["ok"] is False
+    assert out["timed_out"] is True
+    assert "error" in out
+    assert out["diagnostic_count"] == 0  # no diagnostics, yet not "clean"
+
+
+def test_validate_file_clean_when_no_diags(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Regression guard: the normal path (wait completes, zero error
+    diagnostics) still returns ok:true with no timed_out marker."""
+    backend = _DiagBackend(wait_raises=None, diags=[])
+    ctx = _setup_validate_session(monkeypatch, tmp_path, backend)
+    try:
+        out = json.loads(asyncio.run(lsp_gateway.validate_file(
+            "theorem t : True := trivial\n")))
+    finally:
+        lsp_gateway._session_ctx.reset(ctx)
+        lsp_gateway._state.sessions.pop("tok-A", None)
+    assert out["ok"] is True
+    assert "timed_out" not in out
 
 
 def test_acquire_slot_borrow_mode_uses_any_free_slot(
