@@ -1,5 +1,6 @@
 ---
 problem: LinearAlgebra.svd
+library: true
 axioms_whitelist:
   - propext
   - Quot.sound

@@ -1,0 +1,9 @@
+import Mathlib
+import Problems.LinearAlgebra.jordan_normal_form.Defs
+import Problems.LinearAlgebra.jordan_normal_form.proofs._strategy_s10895
+
+namespace Problems.LinearAlgebra.jordan_normal_form
+
+def jordan_form_assembly_from_decomposition := @Problems.LinearAlgebra.jordan_normal_form.s10895
+
+end Problems.LinearAlgebra.jordan_normal_form
