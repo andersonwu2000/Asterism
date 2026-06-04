@@ -158,6 +158,7 @@ def recover_at_startup(conn: sqlite3.Connection,
     backups_handled = 0
     tmps_removed = 0
     patches_salvaged = 0
+    probes_removed = 0
     if workspace is not None:
         # Patch salvage FIRST — capture orphan patch.lean bodies
         # before the rmtree pass drops them. Hard-kill of daemon
@@ -186,10 +187,26 @@ def recover_at_startup(conn: sqlite3.Connection,
 
         backups_handled, tmps_removed = sweep_lean_backups(conn, workspace)
 
+        # Stale Library/_migrate_probe_* (#104): the Librarian Gate B /
+        # migrate verify writes a temp probe under Library/ and unlinks
+        # it in a `finally` — but a hard kill (Stop-Process / power loss)
+        # mid-verify skips the finally, orphaning the probe in the
+        # curated Library/, where it pollutes the import closure and the
+        # next inventory. The prefix is framework-owned, so sweeping it is
+        # always safe. Best-effort.
+        libdir = workspace / "Library"
+        if libdir.exists():
+            for p in libdir.glob("_migrate_probe_*"):
+                try:
+                    p.unlink()
+                    probes_removed += 1
+                except OSError:
+                    pass
+
     if (queue_cleared or inject_reenqueued or strategies_killed
             or goals_reopened or goals_attempting_fixup
             or attempts_cleared or backups_handled or tmps_removed
-            or patches_salvaged):
+            or patches_salvaged or probes_removed):
         print(f"[dispatcher] recovery: cleared {queue_cleared} queue rows, "
               f"re-enqueued {inject_reenqueued} in-flight Inject Forwards, "
               f"killed {strategies_killed} half-baked strategies, "
@@ -199,7 +216,8 @@ def recover_at_startup(conn: sqlite3.Connection,
               f"salvaged {patches_salvaged} orphan patches, "
               f"removed {attempts_cleared} orphan attempts dirs, "
               f"handled {backups_handled} lean backups, "
-              f"removed {tmps_removed} stale .tmp files",
+              f"removed {tmps_removed} stale .tmp files, "
+              f"swept {probes_removed} stale migrate probes",
               flush=True)
 
 

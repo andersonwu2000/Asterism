@@ -867,6 +867,32 @@ def test_recover_at_startup_clears_queue(conn: sqlite3.Connection) -> None:
     assert db.queue_count(conn, target_id="9", kind="Verify") == 0
 
 
+def test_recover_at_startup_sweeps_stale_migrate_probes(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """#104 — crash-orphan Library/_migrate_probe_* (the Librarian Gate B
+    verify temp, normally unlinked in a finally, leaked by a hard kill)
+    are swept at startup; real Library files stay untouched."""
+    from Tooling.core.dispatcher import _recover_at_startup
+    libdir = tmp_path / "Library"
+    (libdir / "LinearAlgebra").mkdir(parents=True)
+    probe1 = libdir / "_migrate_probe_abc123.lean"
+    probe2 = libdir / "_migrate_probe_def456.lean"
+    index = libdir / "INDEX.md"
+    real_lean = libdir / "LinearAlgebra" / "SVD.lean"
+    for f, body in ((probe1, "-- probe\n"), (probe2, "-- probe\n"),
+                    (index, "# index\n"),
+                    (real_lean, "theorem t : True := trivial\n")):
+        f.write_text(body, encoding="utf-8")
+
+    _recover_at_startup(conn, tmp_path)
+
+    assert not probe1.exists()
+    assert not probe2.exists()
+    assert index.exists()        # real Library file untouched
+    assert real_lean.exists()    # nested real file untouched
+
+
 def test_recover_at_startup_reenqueues_incomplete_inject_forwards(
     conn: sqlite3.Connection,
 ) -> None:
