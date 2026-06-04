@@ -308,24 +308,42 @@ def _find_session_jsonl(sid: str) -> Path | None:
 
 _DEFAULT_TRAP_CHECK_SEC = 660
 _DEFAULT_SILENCE_THRESHOLD_SEC = 300
+# Grace window for the completion-reclaim branch: how long a clean
+# finish (finalized + end_turn) must PERSIST with the process still
+# alive before the watchdog terminates it. Must exceed normal claude
+# self-exit latency after end_turn (~1-3s) so cleanly-exiting spawns
+# are never cut; small enough to reclaim most of a hung tail.
+_DEFAULT_COMPLETION_GRACE_SEC = 20
 
 
 def _watchdog(proc: subprocess.Popen, sid: str, *,
-              stuck_flag: list, timeout_sec: int,
+              stuck_flag: list, done_flag: list, timeout_sec: int,
               parser: StreamParser) -> None:
-    """Sleep until `trap_check_sec`. At that single trigger point
-    sample BOTH parser-trap state AND silence; kill iff both fire.
-    `stuck_flag[0] = True` on kill routes the spawn to STUCK_THINKING
-    → combined fresh-sid takeover (no separate stage 3). When AND
-    fails (one signal but not the other), exit quietly — the spawn
-    runs to its full subprocess timeout and the TIMEOUT path's
-    parser-only trap check picks up the trap-without-silence cases
-    via two-stage takeover.
+    """Two jobs while the spawn runs:
+
+    (1) Completion reclaim (rolling): poll the parser; if a CLEAN finish
+    (state=finalized, last_stop_reason=end_turn) PERSISTS for
+    `completion_grace_sec` while the process is still alive, the agent
+    is done but the subprocess is hung (e.g. a stranded background shell
+    keeps `claude -p` from exiting — primary_decomposition sid 77403824
+    wasted ~535s). Terminate and set `done_flag[0]=True` so the spawn
+    routes through the normal parse/salvage path (the on-disk output is
+    complete). A new message_start resets the timer (the parser clears
+    last_stop_reason), so a still-working agent is never cut; a normally
+    exiting spawn closes its pipes well within the grace window and is
+    picked up by the natural-exit return below.
+
+    (2) Trap check at `trap_check_sec` (single-shot): sample BOTH
+    parser-trap state AND silence; kill iff both fire. `stuck_flag[0]`
+    on kill routes the spawn to STUCK_THINKING → combined fresh-sid
+    takeover. When AND fails, exit quietly — the spawn runs to its full
+    subprocess timeout and the TIMEOUT path's parser-only trap check
+    picks up the trap-without-silence cases.
 
     If `proc` finishes naturally before the trap-check moment, exit
     without sampling (no decision to make).
 
-    Runs in a daemon thread; one spawn = one trigger.
+    Runs in a daemon thread.
     """
     from ..core import config as _cfg
     trap_check_sec = _cfg.get(
@@ -345,15 +363,48 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
     trap_check_sec = max(_MIN_TRAP_CHECK_SEC, trap_check_sec)
     trigger_at = spawn_start + trap_check_sec
 
-    # Wait until trigger time, in short slices so a fast-finishing
-    # spawn unblocks the thread promptly. 1s slice keeps the thread
-    # responsive without burning CPU.
+    completion_grace_sec = _cfg.get(
+        "dispatch.completion_grace_sec",
+        default=_DEFAULT_COMPLETION_GRACE_SEC,
+        env_var="ASTERISM_COMPLETION_GRACE_SEC", cast=int,
+    )
+
+    # Rolling poll until the trap-check moment. Each slice also runs the
+    # completion-reclaim check (job 1). 2s slices keep the thread cheap
+    # and responsive to a fast-finishing spawn.
+    completion_since: float | None = None
     while proc.poll() is None:
         now = time.monotonic()
-        remaining = trigger_at - now
-        if remaining <= 0:
+        if now >= trigger_at:
             break
-        time.sleep(min(1.0, remaining))
+        snap = parser.snapshot()
+        if (snap.state.value == "finalized"
+                and snap.last_stop_reason == "end_turn"):
+            # Clean terminal finish. Start (or continue) the grace timer.
+            if completion_since is None:
+                completion_since = now
+            elif now - completion_since >= completion_grace_sec:
+                # Held the whole grace window but proc still alive → the
+                # agent is done and the subprocess is hung. Terminate and
+                # flag for the parse/salvage path (on-disk output is
+                # complete; a real timeout would salvage it identically).
+                if proc.poll() is None:
+                    done_flag[0] = True
+                    print(f"[watchdog] sid={sid[:8]} agent finalized "
+                          f"(end_turn) and idle {completion_grace_sec}s "
+                          f"but proc alive; terminating to reclaim — "
+                          f"salvaging on-disk output", flush=True)
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                return
+        else:
+            # A new turn started (parser cleared last_stop_reason) or the
+            # agent is mid-work — reset the grace timer.
+            completion_since = None
+        time.sleep(min(2.0, max(0.0, trigger_at - time.monotonic())))
 
     if proc.poll() is not None:
         return  # Proc finished naturally before trap_check_sec.
@@ -856,6 +907,7 @@ class ClaudeCliProvider:
         Split out so the parent can wrap the lifetime in a register/
         unregister try/finally without indenting the entire ~150 lines."""
         stuck_flag: list[bool] = [False]
+        done_flag: list[bool] = [False]
         wd_thread: threading.Thread | None = None
         reader_thread: threading.Thread | None = None
         parser: StreamParser | None = None
@@ -898,6 +950,7 @@ class ClaudeCliProvider:
                 args=(proc, req.session_id),
                 kwargs={
                     "stuck_flag": stuck_flag,
+                    "done_flag": done_flag,
                     "timeout_sec": req.timeout_sec,
                     "parser": parser,
                 },
@@ -951,6 +1004,19 @@ class ClaudeCliProvider:
                                 "line above)", stdout or "",
                                 SpawnRC.STUCK_THINKING)
             return SpawnRC.STUCK_THINKING
+        # Watchdog completion-reclaim: agent finalized (end_turn) but the
+        # process hung past the grace window. The on-disk output is
+        # complete, so route through the same TIMEOUT salvage path
+        # (parse_fn) a real subprocess timeout uses — rc=124. Distinct
+        # log so this isn't mistaken for a genuine wall-cap timeout.
+        if done_flag[0]:
+            print(f"[llm:claude] watchdog completion-reclaim "
+                  f"(agent done, process hung) — salvaging", flush=True)
+            _write_spawn_stderr(req.attempts_dir,
+                                "(watchdog completion-reclaim: agent "
+                                "finalized end_turn but process hung — "
+                                "see [watchdog] log line above)", "", 124)
+            return 124
         # Subprocess timeout (full wall budget hit without watchdog
         # firing — i.e., agent kept emitting tool_use but couldn't
         # converge). Distinct from stuck-thinking; falls through to

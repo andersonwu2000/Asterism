@@ -48,12 +48,18 @@ PARTIAL_PERSIST: dict[str, list[str]] = {
 # section in Context.md stays tight ("agent 看到的資訊要清楚簡潔");
 # `_progress.md` is bounded by the postmortem prompt (~150 words target),
 # so the cap is a hard backstop more than a typical-case constraint.
+# Raised 2000→3000 (2026-06-05): a detailed real blocker note (RCF
+# s11596, 2290 chars) was tail-truncated, dropping its "Alternative
+# direction" conclusion — the highest-value carry-over. 3000 covers
+# observed notes whole. NOTE: this is still TAIL truncation; if notes
+# >3000 recur and lose their conclusion, switch to head+tail (keep both
+# ends, elide the middle) rather than raising the cap further.
 PARTIAL_BUDGETS: dict[str, int] = {
-    "backward": 2000,
-    "builder":  2000,
+    "backward": 3000,
+    "builder":  3000,
 }
 # Back-compat for callers that don't pass `kind`.
-PARTIAL_BUDGET = 2000
+PARTIAL_BUDGET = 3000
 
 
 def drafts_path(problem_dir: Path, kind: str, goal_id: int) -> Path:

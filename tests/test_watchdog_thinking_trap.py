@@ -95,21 +95,23 @@ def _seed_active_tool_use(parser: StreamParser) -> None:
 
 def _run_watchdog(proc, sid: str, parser: StreamParser, *,
                   timeout_sec: int,
-                  monkeypatch: pytest.MonkeyPatch) -> list[bool]:
-    """Run `_watchdog` in a thread with the wall_cap floor lowered
-    so trigger fires fast. Returns the stuck_flag once thread exits."""
+                  monkeypatch: pytest.MonkeyPatch) -> tuple[list[bool], list[bool]]:
+    """Run `_watchdog` in a thread with the trap-check floor lowered so
+    the trigger fires fast. Returns (stuck_flag, done_flag) once the
+    thread exits."""
     monkeypatch.setattr(claude_cli, "_MIN_TRAP_CHECK_SEC", 0)
-    flag: list[bool] = [False]
+    stuck: list[bool] = [False]
+    done: list[bool] = [False]
     th = threading.Thread(
         target=claude_cli._watchdog,
         args=(proc, sid),
-        kwargs={"stuck_flag": flag, "timeout_sec": timeout_sec,
-                "parser": parser},
+        kwargs={"stuck_flag": stuck, "done_flag": done,
+                "timeout_sec": timeout_sec, "parser": parser},
         daemon=True,
     )
     th.start()
-    th.join(timeout=5.0)
-    return flag
+    th.join(timeout=8.0)
+    return stuck, done
 
 
 # ---------------------------------------------------------------------
@@ -127,7 +129,7 @@ def test_watchdog_kills_when_mid_thinking_at_trigger(
     parser = StreamParser()
     _seed_mid_thinking(parser)
     proc = _FakeProc()
-    flag = _run_watchdog(proc, "abc12345", parser, timeout_sec=2,
+    flag, _done = _run_watchdog(proc, "abc12345", parser, timeout_sec=2,
                          monkeypatch=monkeypatch)
     assert flag[0] is True
     assert proc.term_calls + proc.kill_calls >= 1
@@ -145,7 +147,7 @@ def test_watchdog_kills_when_finalized_max_tokens_at_trigger(
     parser = StreamParser()
     _seed_finalized_max_tokens(parser)
     proc = _FakeProc()
-    flag = _run_watchdog(proc, "abc23456", parser, timeout_sec=2,
+    flag, _done = _run_watchdog(proc, "abc23456", parser, timeout_sec=2,
                          monkeypatch=monkeypatch)
     assert flag[0] is True
     assert proc.term_calls + proc.kill_calls >= 1
@@ -166,7 +168,7 @@ def test_watchdog_defers_when_mid_tool_at_trigger(
     parser = StreamParser()
     _seed_active_tool_use(parser)
     proc = _FakeProc()
-    flag = _run_watchdog(proc, "abc34567", parser, timeout_sec=2,
+    flag, _done = _run_watchdog(proc, "abc34567", parser, timeout_sec=2,
                          monkeypatch=monkeypatch)
     assert flag[0] is False
     assert proc.term_calls == 0
@@ -183,7 +185,7 @@ def test_watchdog_defers_when_idle_at_trigger(
     monkeypatch.setenv("ASTERISM_SILENCE_THRESHOLD_SEC", "0")
     parser = StreamParser()  # initial state: IDLE, no events fed
     proc = _FakeProc()
-    flag = _run_watchdog(proc, "abc45678", parser, timeout_sec=2,
+    flag, _done = _run_watchdog(proc, "abc45678", parser, timeout_sec=2,
                          monkeypatch=monkeypatch)
     assert flag[0] is False
     assert proc.term_calls == 0
@@ -210,10 +212,71 @@ def test_watchdog_defers_when_finalized_clean_stop(
         "type": "message_delta", "delta": {"stop_reason": "tool_use"}}))
     parser.feed_line(_stream_event({"type": "message_stop"}))
     proc = _FakeProc()
-    flag = _run_watchdog(proc, "abc56789", parser, timeout_sec=2,
+    flag, _done = _run_watchdog(proc, "abc56789", parser, timeout_sec=2,
                          monkeypatch=monkeypatch)
     assert flag[0] is False
     assert proc.term_calls == 0
+
+
+# ---------------------------------------------------------------------
+# Completion reclaim — clean end_turn that persists while proc hangs
+# ---------------------------------------------------------------------
+
+def _seed_finalized_end_turn(parser: StreamParser) -> None:
+    """Drive the parser to FINALIZED with last_stop_reason=end_turn
+    (a clean terminal finish — the agent chose to stop, no tool call)."""
+    parser.feed_line(_stream_event({"type": "message_start",
+                                    "message": {"id": "m"}}))
+    parser.feed_line(_stream_event({
+        "type": "content_block_start", "index": 0,
+        "content_block": {"type": "text", "text": ""}}))
+    parser.feed_line(_stream_event({
+        "type": "content_block_stop", "index": 0}))
+    parser.feed_line(_stream_event({
+        "type": "message_delta", "delta": {"stop_reason": "end_turn"}}))
+    parser.feed_line(_stream_event({"type": "message_stop"}))
+
+
+def test_watchdog_reclaims_when_finalized_end_turn_and_proc_hangs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Agent finalized (end_turn) but the process stays alive past the
+    grace window → watchdog terminates and sets done_flag (NOT
+    stuck_flag), routing the spawn through the parse/salvage path. This
+    is the primary_decomposition sid 77403824 hang (a stranded
+    background shell kept `claude -p` alive ~535s past completion)."""
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "30")  # far; completion fires first
+    monkeypatch.setenv("ASTERISM_COMPLETION_GRACE_SEC", "0")
+    parser = StreamParser()
+    _seed_finalized_end_turn(parser)
+    proc = _FakeProc()  # stays alive (poll None) until terminated
+    stuck, done = _run_watchdog(proc, "donehang", parser, timeout_sec=40,
+                                monkeypatch=monkeypatch)
+    assert done[0] is True, (
+        "clean end_turn persisting while the process hangs must trigger "
+        "completion-reclaim")
+    assert stuck[0] is False, "reclaim is not a stuck-thinking kill"
+    assert proc.term_calls + proc.kill_calls >= 1
+
+
+def test_watchdog_no_reclaim_when_proc_exits_within_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Agent finalized (end_turn) and the process exits promptly (the
+    normal case) → watchdog must NOT reclaim; the natural-exit return
+    fires, no terminate, done_flag stays False."""
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "30")
+    monkeypatch.setenv("ASTERISM_COMPLETION_GRACE_SEC", "60")  # never reached
+    parser = StreamParser()
+    _seed_finalized_end_turn(parser)
+    # poll() returns None once (loop entry) then 0 — proc exits right after.
+    proc = _RacingProc(poll_returns_none_count=1)
+    stuck, done = _run_watchdog(proc, "exitfast", parser, timeout_sec=40,
+                                monkeypatch=monkeypatch)
+    assert done[0] is False, "a normally-exiting spawn must not be reclaimed"
+    assert stuck[0] is False
+    assert proc.term_calls == 0
+    assert proc.kill_calls == 0
 
 
 # ---------------------------------------------------------------------
@@ -237,7 +300,7 @@ def test_watchdog_exits_when_proc_finishes_before_trigger(
     _seed_mid_thinking(parser)  # would trigger trap if sampled
     proc = _FakeProc()
     proc._done = True  # already finished
-    flag = _run_watchdog(proc, "abc67890", parser, timeout_sec=2,
+    flag, _done = _run_watchdog(proc, "abc67890", parser, timeout_sec=2,
                          monkeypatch=monkeypatch)
     assert flag[0] is False
     assert proc.term_calls == 0
@@ -273,7 +336,7 @@ def test_watchdog_defers_when_trap_but_not_silent(
         "type": "content_block_start", "index": 1,
         "content_block": {"type": "thinking", "thinking": ""}}))
     proc = _FakeProc()
-    flag = _run_watchdog(proc, "trapnsil", parser, timeout_sec=2,
+    flag, _done = _run_watchdog(proc, "trapnsil", parser, timeout_sec=2,
                          monkeypatch=monkeypatch)
     assert flag[0] is False, (
         "AND condition: trap state alone (without silence) must NOT "
@@ -297,7 +360,7 @@ def test_watchdog_defers_when_silent_but_not_trap(
     # Actually with threshold=0, silence > 0 trips, but parser state
     # is MID_TOOL → NOT trap → AND fails.
     proc = _FakeProc()
-    flag = _run_watchdog(proc, "silnotr", parser, timeout_sec=2,
+    flag, _done = _run_watchdog(proc, "silnotr", parser, timeout_sec=2,
                          monkeypatch=monkeypatch)
     assert flag[0] is False, (
         "AND condition: silence alone (without trap state) must NOT "
@@ -358,7 +421,7 @@ def test_watchdog_skips_kill_when_proc_dies_during_sample(
     # (returns None → continues to sample), (3) trap-branch re-poll
     # (returns 0 → skip kill).
     proc = _RacingProc(poll_returns_none_count=2)
-    flag = _run_watchdog(proc, "raceabcd", parser, timeout_sec=2,
+    flag, _done = _run_watchdog(proc, "raceabcd", parser, timeout_sec=2,
                          monkeypatch=monkeypatch)
     assert flag[0] is False, (
         "stuck_flag must NOT be set when proc finishes during the "
