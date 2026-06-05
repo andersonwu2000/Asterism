@@ -2311,7 +2311,15 @@ def run(workspace: Path, *, once: bool = False,
                             print(f"[cooldown] {kind} quota state reset "
                                   f"(non-quota outcome confirms provider "
                                   f"responsive)", flush=True)
-                    print(f"[cascade] {kind} {tk}={tid} → {outcome}", flush=True)
+                    # `strategist_noop` is a non-success outcome but means
+                    # "nothing to propose" (often: root already proved by
+                    # the time the trigger fired) — not an error. Render it
+                    # as `noop` so the log doesn't read as a failure.
+                    _disp_outcome = (
+                        "noop" if outcome == "failed"
+                        and reason == "strategist_noop" else outcome)
+                    print(f"[cascade] {kind} {tk}={tid} → {_disp_outcome}",
+                          flush=True)
                     tree.write_for_target(conn, workspace, tid, tk)
                 except Exception as exc:
                     # Worker thread raised an unhandled exception (e.g.
@@ -2561,7 +2569,12 @@ def run(workspace: Path, *, once: bool = False,
                               decision_id)
             futures[fut] = (pipeline_id, kind, target_id, target_kind,
                             decision_id)
-            print(f"[dispatch] {kind} {target_kind}={target_id} "
+            # Librarian per-file rows encode `problem\x1ffile` (#92); the
+            # \x1f is non-printing, so render it readably in the log.
+            _disp_prob, _disp_file = _lib_decode(target_id)
+            _disp_tid = (f"{_disp_prob} file={_disp_file}"
+                         if _disp_file else target_id)
+            print(f"[dispatch] {kind} {target_kind}={_disp_tid} "
                   f"pid={pipeline_id[:8]}", flush=True)
 
         if once and not futures and db.pop_queue(conn) is None:
