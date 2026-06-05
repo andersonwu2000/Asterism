@@ -41,6 +41,28 @@ from pathlib import Path
 from . import db
 
 
+def _attempt_owner_alive(attempt_dir: Path) -> bool:
+    """True iff `<attempt_dir>/sandbox/_manifest.json` names a still-live
+    `owner_pid`. A missing / unparseable manifest or a dead pid → False
+    (treat as a genuine orphan, safe to clean).
+
+    #90: the startup sweep must spare in-flight spawns owned by a
+    concurrent NON-daemon driver/e2e — the singleton lock only fences
+    other daemons, so a driver sharing this workspace's `.attempts/`
+    would otherwise have its live spawn dirs nuked. Every SpawnWorkspace
+    records its `owner_pid` here, so a per-dir liveness check distinguishes
+    a live spawn from a crashed-run orphan. Errs toward preservation (any
+    doubt → reported alive=False only when we can prove the owner is gone)."""
+    import json
+    from ..agent.sandbox import MANIFEST_NAME, _pid_alive
+    manifest = attempt_dir / "sandbox" / MANIFEST_NAME
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return _pid_alive(data.get("owner_pid"))
+
+
 def recover_at_startup(conn: sqlite3.Connection,
                        workspace: Path | None = None) -> None:
     queue_cleared = conn.execute("DELETE FROM queue").rowcount
@@ -155,6 +177,7 @@ def recover_at_startup(conn: sqlite3.Connection,
     conn.commit()
 
     attempts_cleared = 0
+    attempts_live_skipped = 0
     backups_handled = 0
     tmps_removed = 0
     patches_salvaged = 0
@@ -178,12 +201,19 @@ def recover_at_startup(conn: sqlite3.Connection,
         attempts_root = workspace / ".attempts"
         if attempts_root.exists():
             for d in attempts_root.iterdir():
-                if d.is_dir():
-                    try:
-                        shutil.rmtree(d)
-                        attempts_cleared += 1
-                    except OSError:
-                        pass  # claude subprocess may still hold a handle
+                if not d.is_dir():
+                    continue
+                # #90 — spare a live spawn's dir owned by a concurrent
+                # non-daemon driver/e2e; only nuke genuine orphans (the
+                # singleton lock already fences other daemons).
+                if _attempt_owner_alive(d):
+                    attempts_live_skipped += 1
+                    continue
+                try:
+                    shutil.rmtree(d)
+                    attempts_cleared += 1
+                except OSError:
+                    pass  # claude subprocess may still hold a handle
 
         backups_handled, tmps_removed = sweep_lean_backups(conn, workspace)
 
@@ -205,7 +235,8 @@ def recover_at_startup(conn: sqlite3.Connection,
 
     if (queue_cleared or inject_reenqueued or strategies_killed
             or goals_reopened or goals_attempting_fixup
-            or attempts_cleared or backups_handled or tmps_removed
+            or attempts_cleared or attempts_live_skipped
+            or backups_handled or tmps_removed
             or patches_salvaged or probes_removed):
         print(f"[dispatcher] recovery: cleared {queue_cleared} queue rows, "
               f"re-enqueued {inject_reenqueued} in-flight Inject Forwards, "
@@ -214,7 +245,8 @@ def recover_at_startup(conn: sqlite3.Connection,
               f"flipped {goals_attempting_fixup} open->attempting "
               f"(orphan-success fixup), "
               f"salvaged {patches_salvaged} orphan patches, "
-              f"removed {attempts_cleared} orphan attempts dirs, "
+              f"removed {attempts_cleared} orphan attempts dirs "
+              f"(spared {attempts_live_skipped} live), "
               f"handled {backups_handled} lean backups, "
               f"removed {tmps_removed} stale .tmp files, "
               f"swept {probes_removed} stale migrate probes",

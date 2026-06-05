@@ -917,6 +917,55 @@ def test_strategist_row_is_stale(conn: sqlite3.Connection) -> None:
     assert _strategist_row_is_stale(conn, "not-an-int", "Strategist") is False
 
 
+def test_attempt_owner_alive(tmp_path: Path) -> None:
+    """#90 liveness probe: live owner_pid → True; dead pid or missing
+    manifest → False (orphan, safe to clean)."""
+    import os
+    import json
+    from Tooling.state.recovery import _attempt_owner_alive
+    live = tmp_path / "live"
+    (live / "sandbox").mkdir(parents=True)
+    (live / "sandbox" / "_manifest.json").write_text(
+        json.dumps({"owner_pid": os.getpid()}), encoding="utf-8")
+    assert _attempt_owner_alive(live) is True
+    dead = tmp_path / "dead"
+    (dead / "sandbox").mkdir(parents=True)
+    (dead / "sandbox" / "_manifest.json").write_text(
+        json.dumps({"owner_pid": 2147483646}), encoding="utf-8")  # not running
+    assert _attempt_owner_alive(dead) is False
+    nomani = tmp_path / "nomani"
+    nomani.mkdir()
+    assert _attempt_owner_alive(nomani) is False
+
+
+def test_recover_at_startup_spares_live_attempts(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """#90 — recovery nukes orphan .attempts but spares a live spawn's
+    dir (owner_pid alive), so a concurrent non-daemon driver/e2e isn't
+    clobbered."""
+    import os
+    import json
+    from Tooling.core.dispatcher import _recover_at_startup
+    att = tmp_path / ".attempts"
+    live = att / "live-uuid" / "sandbox"
+    live.mkdir(parents=True)
+    (live / "_manifest.json").write_text(
+        json.dumps({"owner_pid": os.getpid()}), encoding="utf-8")
+    dead = att / "dead-uuid" / "sandbox"
+    dead.mkdir(parents=True)
+    (dead / "_manifest.json").write_text(
+        json.dumps({"owner_pid": 2147483646}), encoding="utf-8")
+    nomani = att / "nomani-uuid"
+    nomani.mkdir(parents=True)
+
+    _recover_at_startup(conn, tmp_path)
+
+    assert (att / "live-uuid").exists()       # live spawn spared
+    assert not (att / "dead-uuid").exists()   # dead-owner orphan nuked
+    assert not (att / "nomani-uuid").exists()  # manifest-less orphan nuked
+
+
 def test_recover_at_startup_reenqueues_incomplete_inject_forwards(
     conn: sqlite3.Connection,
 ) -> None:
