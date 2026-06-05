@@ -1390,6 +1390,33 @@ def _derive_strategist_trigger(conn: sqlite3.Connection,
     return ("routine", pending_id)
 
 
+def _strategist_row_is_stale(conn: sqlite3.Connection,
+                             target_id: str, kind: str) -> bool:
+    """A queued Strategist whose root goal is already `proved` has nothing
+    left to decide — it would only spawn, Noop, and advance
+    `last_strategist_at`. The dispatcher drops such a popped row.
+
+    Safe by construction (see inject_batch_done ack lifecycle): the
+    Strategist enqueue is event-driven (`maybe_enqueue_inject_batch_done`
+    at cascade + T0/T1 in `strategist_triggers`), never a per-tick poll on
+    un-acknowledged batches, so dropping the row doesn't busy-loop. The
+    daemon exit check (`root_proved && no librarian`) is independent of
+    un-acked batches, so a lingering un-acked batch doesn't block exit.
+    And if root later un-proves (rogue-sorryAx rollback), it re-enters the
+    queue via the normal triggers — the `last_strategist_at` ratchet still
+    sees the batch as unacknowledged.
+
+    `target_id` of a Strategist row is always the root goal id.
+    """
+    if kind != "Strategist":
+        return False
+    try:
+        g = db.get_goal(conn, int(target_id))
+    except (ValueError, TypeError):
+        return False
+    return g is not None and str(g["status"]) == "proved"
+
+
 def _librarian_index_has(workspace: Path, problem: str) -> bool:
     """True iff `Library/INDEX.md` already records `problem` — the
     idempotent 'finish done' marker. Reading the file (rather than a DB
@@ -2546,6 +2573,14 @@ def run(workspace: Path, *, once: bool = False,
             # and pop) could leave a queued row for a now-cooled
             # kind. Drop it; bfs_refill will repopulate post-cooldown.
             if quota_cooldown_kind.get(kind, 0.0) > time.time():
+                continue
+            # Drop a queued Strategist whose root already proved (e.g. an
+            # inject_batch_done that landed just before the proof, or a
+            # routine T1 that raced the promotion). It would only spawn +
+            # Noop. See `_strategist_row_is_stale` for the safety argument.
+            if _strategist_row_is_stale(conn, target_id, kind):
+                print(f"[dispatch] skip Strategist Goal={target_id} "
+                      f"— root already proved", flush=True)
                 continue
             # Lazy verify gate — must hold before any worker spawn.
             # First dispatch for a problem this daemon run pays a one-

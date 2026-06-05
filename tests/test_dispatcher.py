@@ -893,6 +893,30 @@ def test_recover_at_startup_sweeps_stale_migrate_probes(
     assert real_lean.exists()    # nested real file untouched
 
 
+def test_strategist_row_is_stale(conn: sqlite3.Connection) -> None:
+    """A queued Strategist whose root already proved is dropped at spawn
+    (would only Noop). Guards: open root → keep; proved root → drop;
+    non-Strategist kind → never stale; bad/unknown target → not stale."""
+    from Tooling.core.dispatcher import _strategist_row_is_stale
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at, "
+        "bootstrap_done) VALUES (?, ?, ?, 1)",
+        ("p", "Problems/p/Manifest.md", db.now()),
+    )
+    gid = db.insert_goal(
+        conn, problem="p", slug="main", lean_path="Problems/p/Root.lean",
+        statement="T", origin="root",
+    )
+    assert _strategist_row_is_stale(conn, str(gid), "Strategist") is False
+    db.update_goal_status(conn, gid, "proved")
+    assert _strategist_row_is_stale(conn, str(gid), "Strategist") is True
+    # A non-Strategist row is never gated by this rule.
+    assert _strategist_row_is_stale(conn, str(gid), "Backward") is False
+    # Defensive: unknown / non-integer target → not stale (don't wedge).
+    assert _strategist_row_is_stale(conn, "999999", "Strategist") is False
+    assert _strategist_row_is_stale(conn, "not-an-int", "Strategist") is False
+
+
 def test_recover_at_startup_reenqueues_incomplete_inject_forwards(
     conn: sqlite3.Connection,
 ) -> None:
