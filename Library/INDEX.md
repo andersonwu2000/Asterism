@@ -448,3 +448,30 @@ _Harvested 2026-06-04T22:09:46.510221+00:00 — 19 declaration(s)._
 - `Library.LinearAlgebra.RationalCanonicalForm.DirectSumDecomp.block_diag` → `Library/LinearAlgebra/RationalCanonicalForm/DirectSumDecomp.lean`
 
 Gate B (root re-derivation): PASSED — original `main` re-derived from the Library alone; axioms within whitelist.
+
+## LinearAlgebra.sylvester_criterion
+
+_Harvested 2026-06-05T01:05:33.531827+00:00 — 20 declaration(s)._
+
+- `Library.LinearAlgebra.SylvesterCriterion.posdef_of_possemidef_det_ne_zero` → `Library/LinearAlgebra/SylvesterCriterion.lean`
+- `Library.LinearAlgebra.LeadingPrincipalMinorBlock.block_conjtranspose` → `Library/LinearAlgebra/LeadingPrincipalMinorBlock.lean`
+- `Library.LinearAlgebra.SchurComplementPosDef.possemidef_of_det_pos_fin_one` → `Library/LinearAlgebra/SchurComplementPosDef.lean`
+- `Library.LinearAlgebra.LeadingPrincipalMinor.leadingPrincipalMinor` → `Library/LinearAlgebra/LeadingPrincipalMinor.lean`
+- `Library.LinearAlgebra.SylvesterCriterion.posdef_of_possemidef_det_ne_zero_2` → `Library/LinearAlgebra/SylvesterCriterion.lean`
+- `Library.LinearAlgebra.SchurComplementPosDef.mdet_pos_2` → `Library/LinearAlgebra/SchurComplementPosDef.lean`
+- `Library.LinearAlgebra.LeadingPrincipalMinorBlock.block_conjtranspose_factor` → `Library/LinearAlgebra/LeadingPrincipalMinorBlock.lean`
+- `Library.LinearAlgebra.SylvesterCriterion.posdef_empty` → `Library/LinearAlgebra/SylvesterCriterion.lean`
+- `Library.LinearAlgebra.LeadingPrincipalMinorBlock.block_hermitian` → `Library/LinearAlgebra/LeadingPrincipalMinorBlock.lean`
+- `Library.LinearAlgebra.SchurComplementPosDef.schur_det_factor_2` → `Library/LinearAlgebra/SchurComplementPosDef.lean`
+- `Library.LinearAlgebra.SylvesterCriterion.posdef_succ_det_ne_zero` → `Library/LinearAlgebra/SylvesterCriterion.lean`
+- `Library.LinearAlgebra.LeadingPrincipalMinorBlock.block_minors_pos` → `Library/LinearAlgebra/LeadingPrincipalMinorBlock.lean`
+- `Library.LinearAlgebra.SchurComplementPosDef.schur_det_pos` → `Library/LinearAlgebra/SchurComplementPosDef.lean`
+- `Library.LinearAlgebra.SylvesterCriterion.leading_block_posdef` → `Library/LinearAlgebra/SylvesterCriterion.lean`
+- `Library.LinearAlgebra.SchurComplementPosDef.schur_complement_possemidef` → `Library/LinearAlgebra/SchurComplementPosDef.lean`
+- `Library.LinearAlgebra.SylvesterCriterion.posdef_succ_possemidef` → `Library/LinearAlgebra/SylvesterCriterion.lean`
+- `Library.LinearAlgebra.SylvesterCriterion.posdef_succ_step` → `Library/LinearAlgebra/SylvesterCriterion.lean`
+- `Library.LinearAlgebra.SylvesterCriterion.minors_pos_of_posdef` → `Library/LinearAlgebra/SylvesterCriterion.lean`
+- `Library.LinearAlgebra.SylvesterCriterion.posdef_of_minors_pos` → `Library/LinearAlgebra/SylvesterCriterion.lean`
+- `Library.LinearAlgebra.SylvesterCriterion.main` → `Library/LinearAlgebra/SylvesterCriterion.lean`
+
+Gate B (root re-derivation): PASSED — original `main` re-derived from the Library alone; axioms within whitelist.
