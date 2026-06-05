@@ -520,3 +520,47 @@ _Harvested 2026-06-05T03:16:04.222474+00:00 — 38 declaration(s)._
 - `Library.LinearAlgebra.CourantFischer.EigenbasisExpansion.weighted_eigenvalue_sum_ge` → `Library/LinearAlgebra/CourantFischer/EigenbasisExpansion.lean`
 
 Gate B (root re-derivation): PASSED — original `main` re-derived from the Library alone; axioms within whitelist.
+
+## LinearAlgebra.eckart_young
+
+_Harvested 2026-06-05T08:00:32.554523+00:00 — 37 declaration(s)._
+
+- `Library.LinearAlgebra.EckartYoung.EigenExpansion.re_inner_symm_eq_sum_eigenvalues` → `Library/LinearAlgebra/EckartYoung/EigenExpansion.lean`
+- `Library.LinearAlgebra.EckartYoung.EckartYoung.exists_kernel_vector_norm_lower` → `Library/LinearAlgebra/EckartYoung/EckartYoung.lean`
+- `Library.LinearAlgebra.EckartYoung.Auxiliary.opnorm_ge_of_vector_bound` → `Library/LinearAlgebra/EckartYoung/Auxiliary.lean`
+- `Library.LinearAlgebra.EckartYoung.TopSingularSubspace.finrank_span_top_singular_eigenvectors` → `Library/LinearAlgebra/EckartYoung/TopSingularSubspace.lean`
+- `Library.LinearAlgebra.EckartYoung.SingularEigenRelations.sq_singular_k_le_eigenvalue` → `Library/LinearAlgebra/EckartYoung/SingularEigenRelations.lean`
+- `Library.LinearAlgebra.EckartYoung.BottomSpanBound.termwise_le_singular_k` → `Library/LinearAlgebra/EckartYoung/BottomSpanBound.lean`
+- `Library.LinearAlgebra.EckartYoung.EckartYoung.kernel_witness_singularvalue` → `Library/LinearAlgebra/EckartYoung/EckartYoung.lean`
+- `Library.LinearAlgebra.EckartYoung.Auxiliary.opnorm_ge_of_pointwise_bound` → `Library/LinearAlgebra/EckartYoung/Auxiliary.lean`
+- `Library.LinearAlgebra.EckartYoung.TopSingularSubspace.finrank_span_top_singular_eigenvectors_2` → `Library/LinearAlgebra/EckartYoung/TopSingularSubspace.lean`
+- `Library.LinearAlgebra.EckartYoung.EigenExpansion.re_inner_symm_eq_sum_eigenvalues_2` → `Library/LinearAlgebra/EckartYoung/EigenExpansion.lean`
+- `Library.LinearAlgebra.EckartYoung.BottomSpanBound.bottom_span_norm_sq_le` → `Library/LinearAlgebra/EckartYoung/BottomSpanBound.lean`
+- `Library.LinearAlgebra.EckartYoung.SingularEigenRelations.eigen_ge_low` → `Library/LinearAlgebra/EckartYoung/SingularEigenRelations.lean`
+- `Library.LinearAlgebra.EckartYoung.EckartYoung.eckart_young_lower_bound` → `Library/LinearAlgebra/EckartYoung/EckartYoung.lean`
+- `Library.LinearAlgebra.EckartYoung.Auxiliary.exists_nonzero_mem_inf_of_finrank` → `Library/LinearAlgebra/EckartYoung/Auxiliary.lean`
+- `Library.LinearAlgebra.EckartYoung.EigenExpansion.norm_sq_eq_sum_eigen` → `Library/LinearAlgebra/EckartYoung/EigenExpansion.lean`
+- `Library.LinearAlgebra.EckartYoung.TopSingularSubspace.termwise_eigenvalue_bound` → `Library/LinearAlgebra/EckartYoung/TopSingularSubspace.lean`
+- `Library.LinearAlgebra.EckartYoung.BottomSpanBound.bottom_span_norm_le` → `Library/LinearAlgebra/EckartYoung/BottomSpanBound.lean`
+- `Library.LinearAlgebra.EckartYoung.SingularEigenRelations.eig_le_sigma_sq` → `Library/LinearAlgebra/EckartYoung/SingularEigenRelations.lean`
+- `Library.LinearAlgebra.EckartYoung.EckartYoung.singularvalue_mem_lowerbounds` → `Library/LinearAlgebra/EckartYoung/EckartYoung.lean`
+- `Library.LinearAlgebra.EckartYoung.Auxiliary.exists_nonzero_mem_inf_of_finrank_2` → `Library/LinearAlgebra/EckartYoung/Auxiliary.lean`
+- `Library.LinearAlgebra.EckartYoung.BottomSpanBound.exists_truncation_projection` → `Library/LinearAlgebra/EckartYoung/BottomSpanBound.lean`
+- `Library.LinearAlgebra.EckartYoung.TopSingularSubspace.eigen_pointwise_lower_bound` → `Library/LinearAlgebra/EckartYoung/TopSingularSubspace.lean`
+- `Library.LinearAlgebra.EckartYoung.SingularEigenRelations.inner_eigenvector_high_eq_zero` → `Library/LinearAlgebra/EckartYoung/SingularEigenRelations.lean`
+- `Library.LinearAlgebra.EckartYoung.EigenExpansion.norm_sq_eq_sum_eigen_2` → `Library/LinearAlgebra/EckartYoung/EigenExpansion.lean`
+- `Library.LinearAlgebra.EckartYoung.EckartYoung.eckart_young_membership` → `Library/LinearAlgebra/EckartYoung/EckartYoung.lean`
+- `Library.LinearAlgebra.EckartYoung.Auxiliary.ker_finrank_ge` → `Library/LinearAlgebra/EckartYoung/Auxiliary.lean`
+- `Library.LinearAlgebra.EckartYoung.BottomSpanBound.exists_truncation_pointwise_le_singularvalue` → `Library/LinearAlgebra/EckartYoung/BottomSpanBound.lean`
+- `Library.LinearAlgebra.EckartYoung.TopSingularSubspace.sum_eigen_lower_bound` → `Library/LinearAlgebra/EckartYoung/TopSingularSubspace.lean`
+- `Library.LinearAlgebra.EckartYoung.SingularEigenRelations.inner_zero_high` → `Library/LinearAlgebra/EckartYoung/SingularEigenRelations.lean`
+- `Library.LinearAlgebra.EckartYoung.EckartYoung.main` → `Library/LinearAlgebra/EckartYoung/EckartYoung.lean`
+- `Library.LinearAlgebra.EckartYoung.BottomSpanBound.exists_truncation_norm_le_singularvalue` → `Library/LinearAlgebra/EckartYoung/BottomSpanBound.lean`
+- `Library.LinearAlgebra.EckartYoung.TopSingularSubspace.norm_lower_bound_top_singular_span` → `Library/LinearAlgebra/EckartYoung/TopSingularSubspace.lean`
+- `Library.LinearAlgebra.EckartYoung.Auxiliary.norm_sub_starprojection_le` → `Library/LinearAlgebra/EckartYoung/Auxiliary.lean`
+- `Library.LinearAlgebra.EckartYoung.SingularEigenRelations.inner_eigvec_orthogonal` → `Library/LinearAlgebra/EckartYoung/SingularEigenRelations.lean`
+- `Library.LinearAlgebra.EckartYoung.TopSingularSubspace.norm_lower_bound_top_singular_span_2` → `Library/LinearAlgebra/EckartYoung/TopSingularSubspace.lean`
+- `Library.LinearAlgebra.EckartYoung.TopSingularSubspace.exists_top_singular_subspace` → `Library/LinearAlgebra/EckartYoung/TopSingularSubspace.lean`
+- `Library.LinearAlgebra.EckartYoung.TopSingularSubspace.top_singular_subspace_bound` → `Library/LinearAlgebra/EckartYoung/TopSingularSubspace.lean`
+
+Gate B (root re-derivation): PASSED — original `main` re-derived from the Library alone; axioms within whitelist.
