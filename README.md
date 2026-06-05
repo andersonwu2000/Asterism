@@ -5,6 +5,9 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-04
+The day's work centered on the librarian subsystem, which gained a more robust reference-relabeling and migration pipeline: case-insensitive proof-file and sibling-import resolution, redirection of transitive, nested, and qualified self-references to kept lemmas, batched axiom checking, a comment-aware sorry check to eliminate false positives, and a v0.3 inventory that tracks only main's live dependency closure to drop orphan debris. Alongside this, the proving pipeline was extended so that spawns can cite a reusable Library as input, with the gateway relaunch logic and a no-progress backward guard hardened and the strategist now requesting a user amend when Defs vocabulary collides with mathlib.
+
 ### 2026-06-03
 Migrated the librarian's v0.3 migrate pipeline to a per-decl, incremental model?etiring the whole-file spawn in favor of per-decl source assembly, build, and gateway sessions?nd restructured it into mechanical-only phases (keep-all dedup, no-LLM migration, and a mechanical Gate B bridge) to eliminate reliance on per-step agents. Alongside this, the file-watcher gained a read-only Librarian pipeline view with clearer, session- and work-kind-aware labelling, and the scheduler was reworked for dynamic DAG-based file parallelism, fixing several daemon lifecycle and session-slot leak bugs (#92).
 
