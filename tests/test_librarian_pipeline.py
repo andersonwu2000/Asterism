@@ -1,5 +1,5 @@
 """Librarian pipeline stage A — pure parse + verify + commit for the
-dedup and classify work kinds (no gateway / no LLM)."""
+classify work kind (no gateway / no LLM)."""
 from __future__ import annotations
 
 import json
@@ -8,52 +8,6 @@ import pytest
 
 from Tooling.state import db
 from Tooling.pipeline import librarian as lib
-
-
-# ---------------------------------------------------------------------
-# parse_dedup
-# ---------------------------------------------------------------------
-
-def test_parse_dedup_array():
-    js = json.dumps([
-        {"slug": "a", "verdict": "keep", "reason": "novel"},
-        {"slug": "b", "verdict": "cite-mathlib", "mathlib_name": "map_sum"},
-    ])
-    out, err = lib.parse_dedup(js)
-    assert err == ""
-    assert [v.slug for v in out] == ["a", "b"]
-    assert out[1].citation == "map_sum"
-
-
-def test_parse_dedup_single_object():
-    out, err = lib.parse_dedup('{"slug":"a","verdict":"keep"}')
-    assert err == "" and len(out) == 1
-
-
-def test_parse_dedup_strips_fences():
-    js = "```json\n[{\"slug\":\"a\",\"verdict\":\"drop\",\"mathlib_name\":\"x\"}]\n```"
-    out, err = lib.parse_dedup(js)
-    assert err == "" and out[0].verdict == "drop"
-
-
-def test_parse_dedup_bad_verdict():
-    out, err = lib.parse_dedup('[{"slug":"a","verdict":"frobnicate"}]')
-    assert out is None and "not in" in err
-
-
-def test_parse_dedup_missing_slug():
-    out, err = lib.parse_dedup('[{"verdict":"keep"}]')
-    assert out is None and "slug" in err
-
-
-def test_parse_dedup_invalid_json():
-    out, err = lib.parse_dedup("not json {")
-    assert out is None and "invalid JSON" in err
-
-
-def test_parse_dedup_empty():
-    out, err = lib.parse_dedup("[]")
-    assert out is None and "empty" in err
 
 
 # ---------------------------------------------------------------------
@@ -81,41 +35,6 @@ def test_parse_classify_empty_decls():
     plan, err = lib.parse_classify(
         '{"files":[{"path":"Library/X.lean","decls":[]}]}')
     assert plan is None and "decls" in err
-
-
-# ---------------------------------------------------------------------
-# verify_dedup
-# ---------------------------------------------------------------------
-
-def test_verify_dedup_ok():
-    vs = [lib.DedupVerdict("a", "keep"),
-          lib.DedupVerdict("b", "cite-mathlib", "map_sum")]
-    assert lib.verify_dedup(vs, {"a", "b"}) == ""
-
-
-def test_verify_dedup_unknown_slug():
-    vs = [lib.DedupVerdict("ghost", "keep")]
-    assert "inventory" in lib.verify_dedup(vs, {"a"})
-
-
-def test_verify_dedup_named_verdict_without_citation():
-    vs = [lib.DedupVerdict("a", "cite-mathlib", None)]
-    assert "named target" in lib.verify_dedup(vs, {"a"})
-
-
-def test_verify_dedup_merge_to_nonsibling():
-    vs = [lib.DedupVerdict("a", "merge", "outsider")]
-    assert "sibling" in lib.verify_dedup(vs, {"a", "b"})
-
-
-def test_verify_dedup_merge_to_sibling_ok():
-    vs = [lib.DedupVerdict("a", "merge", "b")]
-    assert lib.verify_dedup(vs, {"a", "b"}) == ""
-
-
-def test_verify_dedup_duplicate():
-    vs = [lib.DedupVerdict("a", "keep"), lib.DedupVerdict("a", "drop", "x")]
-    assert "duplicate" in lib.verify_dedup(vs, {"a"})
 
 
 # ---------------------------------------------------------------------
@@ -184,20 +103,10 @@ def conn():
     return c
 
 
-def test_commit_dedup_then_classify(conn, tmp_path):
-    for s in ("a", "b", "c"):
+def test_commit_classify(conn, tmp_path):
+    for s in ("a", "b"):
         db.upsert_library_decl(conn, problem="p", slug=s, source_goal_id=None)
-    lib.commit_dedup(conn, "p", [
-        lib.DedupVerdict("a", "keep"),
-        lib.DedupVerdict("b", "keep"),
-        lib.DedupVerdict("c", "drop", "mathlib_thing"),
-    ])
-    deduped = {r["slug"] for r in db.library_decls_for(conn, "p",
-                                                       lifecycle="deduped")}
-    assert deduped == {"a", "b"}
-    assert {r["slug"] for r in db.library_decls_for(conn, "p",
-                                                    lifecycle="dropped")} == {"c"}
-
+        db.set_library_verdict(conn, problem="p", slug=s, verdict="keep")
     plan = lib.ClassifyPlan([
         lib.ClassifyFile("Library/A/Foo.lean", [], ["a", "b"]),
     ])
@@ -442,23 +351,6 @@ def _goal_with_stmt(conn, slug, stmt):
     return db.insert_goal(conn, problem="p", slug=slug,
                           lean_path=f"proofs/L_{slug}.lean",
                           statement=stmt, origin="backward", kind="theorem")
-
-
-def test_context_dedup_lists_statements(conn, tmp_path):
-    root = db.insert_goal(conn, problem="p", slug="main",
-                          lean_path="Problems/p/Root.lean",
-                          statement="MainStmt", origin="root", kind="theorem")
-    conn.execute("UPDATE goals SET status='proved' WHERE id=?", (root,))
-    g = _goal_with_stmt(conn, "lemma_a", "LemmaAStmt")
-    conn.execute("UPDATE goals SET status='proved' WHERE id=?", (g,))
-    conn.commit()
-    ad = tmp_path / "att"; ad.mkdir()
-    ctx = lib.compile_librarian_context(
-        conn, problem="p", work_kind="dedup", attempts_dir=ad,
-        workspace=tmp_path)
-    text = ctx.read_text(encoding="utf-8")
-    assert "lemma_a" in text and "LemmaAStmt" in text
-    assert "main" in text and "MainStmt" in text
 
 
 def test_context_classify_only_kept(conn, tmp_path):

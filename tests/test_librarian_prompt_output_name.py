@@ -15,9 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PROMPTS = ROOT / "Tooling" / "prompts" / "librarian"
 PIPELINE = ROOT / "Tooling" / "pipeline" / "librarian.py"
 
-# work_kind -> the output filename the agent must produce
+# work_kind -> the output filename the agent must produce.
+# (dedup is mechanical keep-all — no prompt/agent; bridge is agentless.)
 OUTPUT_FILE = {
-    "dedup": "plan.json",
     "classify": "plan.json",
     "migrate": "patch.lean",
 }

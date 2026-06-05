@@ -45,7 +45,7 @@ from ..quality import prune, verify
 BUILDER_THRESHOLD = 3
 SHELVE_THRESHOLD = 8
 
-# A Librarian chain step (dedup/classify/migrate/cleanup/bridge) that fails
+# A Librarian chain step (dedup/classify/migrate/bridge) that fails
 # after its own internal session-retries is re-enqueued up to this many times
 # (the next tick re-derives the same step), then the chain stalls and is left
 # for the operator — bounds a genuinely-stuck step from looping forever while
@@ -1449,13 +1449,12 @@ def _derive_librarian_work(
     bridge (Gate B, plan §2) is the terminal step: once every file is
     'migrated' it re-derives the original root from the Library and, on
     success, writes INDEX — so INDEX presence remains the single done-marker
-    and a Library that fails to re-derive correctly never 'finishes'. (The
-    agentless `finish` work-kind is a manual/edge fallback, not routed here.)
+    and a Library that fails to re-derive correctly never 'finishes'.
 
     migrate's target is a Library FILE, not a slug — the parallel unit is
     the whole file (plan §5 Step 3). `next_migrate_file` picks a file whose
     dependency files are all already migrated (topological order over the
-    reconstructed file DAG); the re-enqueue chain advances the rest. finish
+    reconstructed file DAG); the re-enqueue chain advances the rest. bridge
     is gated on the INDEX marker so it fires once, not in a loop."""
     rows = db.library_decls_for(conn, problem)
     if not rows:
@@ -1593,7 +1592,7 @@ def _librarian_refill(
         work_kind, _ = _derive_librarian_work(conn, problem, workspace)
         if work_kind is None:
             continue
-        if work_kind in ("migrate", "cleanup"):
+        if work_kind == "migrate":
             # Files already in flight (running) or queued for this problem.
             inflight: set[str] = set()
             for r in running:
@@ -1802,7 +1801,7 @@ def _run_pipeline(workspace: Path,
                     # this plain row is a no-op (the per-file rows do the work).
                     work_kind, target = _derive_librarian_work(
                         conn, problem, workspace)
-                    if work_kind in ("migrate", "cleanup"):
+                    if work_kind == "migrate":
                         work_kind = None
                 if work_kind is None:
                     # Nothing to do for this row (chain drained, or a stale
@@ -2483,7 +2482,7 @@ def run(workspace: Path, *, once: bool = False,
         # sitting in the same workspace keep `root_proved` False forever.
         # `librarian_pending`: without it a scoped run over an already-proved
         # problem (or the last root proving in any run) exits before the
-        # Library-ization chain — dedup→classify→migrate→cleanup→bridge→INDEX —
+        # Library-ization chain — dedup→classify→migrate→bridge→INDEX —
         # has a chance to run, since that chain spans many ticks (Bug A).
         if db.root_proved(conn, scope=scope) and not librarian_pending:
             print("[dispatcher] all roots proved", flush=True)

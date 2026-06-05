@@ -384,9 +384,9 @@ hook 偵測「同 batch_id 所有 row outcome 非 NULL」時 fire。
 | **migrate** | LSP + commit-retry | 一次寫**整個檔**的 decls（照 `file_order`）→ 過 commit gate → `migrated` |
 | **bridge** | 無 agent | Gate B 整體意義驗證（見下），PASS 就寫 `Library/INDEX.md`、終止 chain |
 
-**lifecycle 狀態**：`candidate → deduped → classified → migrated`。終態集合是 `migrated / cleaned / dropped / cited`，
-但目前 live 的 keep-all chain 只產生 `migrated`（`cleaned`/`dropped`/`cited` 與 agentic-dedup verdict 機制仍在 source、
-但不在 live chain 上）。
+**lifecycle 狀態**：`candidate → deduped → classified → migrated`。keep-all 只走這條主線。
+`cleaned`/`dropped`/`cited` 仍是合法 schema 終態（由 `set_library_verdict` 的非-`keep` verdict 寫入），
+但機械 dedup 只發 `keep`，所以現行 chain 不會產生它們。
 
 **migrate 單位 = 一個檔**：`next_migrate_file` 挑「依賴檔都已 migrated」的下一個 classified 檔
 （file DAG 的拓樸序）。DAG 由 `file_dependency_graph` 從 per-decl 用量圖 + classify 的 `target_file` map 即時重建，
@@ -408,7 +408,6 @@ hook 偵測「同 batch_id 所有 row outcome 非 NULL」時 fire。
 所以 INDEX 存在 = 整個 Library 真的能重證原題。
 
 > 三道 Gate：**A** import 閉包、**B** root 重推、**D** Defs def-equivalence。**沒有 Gate C。**
-> 另有無 agent 的 `finish` work-kind，是手動 / 邊界 fallback，正常 chain 不走它。
 
 ---
 

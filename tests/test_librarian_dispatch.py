@@ -1,8 +1,8 @@
 """Librarian dispatcher wiring — P0 phases 3 + 4.
 
 Covers the derive-from-state routing, the race-safe re-enqueue chain,
-and the terminal agentless `finish` step (INDEX provenance + chain
-termination). These are the glue between the verify-hook enqueue
+and INDEX provenance writing (`_write_library_index`, shared by the
+terminal bridge step). These are the glue between the verify-hook enqueue
 (phase 2) and the already-tested librarian work-kind cores.
 """
 from __future__ import annotations
@@ -416,17 +416,18 @@ def test_advance_chain_failure_counts_no_enqueue(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------
-# run_finish — INDEX provenance + chain termination
+# INDEX provenance — _write_library_index (live; shared by the bridge step)
 # ---------------------------------------------------------------------
 
-def test_finish_writes_index_provenance(tmp_path: Path):
+_GATE_B_PASS = "Gate B (root re-derivation): PASSED."
+
+
+def test_index_write_then_derive_terminates(tmp_path: Path):
     conn = _mem()
-    _cleaned(conn, "foo", order=0)
-    _cleaned(conn, "bar", order=1)
-    r = librarian.run_librarian(
-        conn, problem="p", work_kind="finish",
-        workspace=tmp_path, pipeline_id="pid-finish")
-    assert r.outcome == "success"
+    _migrated(conn, "foo", order=0)
+    _migrated(conn, "bar", order=1)
+    librarian._write_library_index(
+        conn, problem="p", workspace=tmp_path, gate_b_line=_GATE_B_PASS)
     index = tmp_path / "Library" / "INDEX.md"
     assert index.exists()
     text = index.read_text(encoding="utf-8")
@@ -438,41 +439,29 @@ def test_finish_writes_index_provenance(tmp_path: Path):
         None, None)
 
 
-def test_finish_is_idempotent(tmp_path: Path):
+def test_index_write_idempotent(tmp_path: Path):
     conn = _mem()
     _migrated(conn, "foo")
-    librarian.run_librarian(conn, problem="p", work_kind="finish",
-                            workspace=tmp_path, pipeline_id="pid1")
-    librarian.run_librarian(conn, problem="p", work_kind="finish",
-                            workspace=tmp_path, pipeline_id="pid2")
+    for _ in range(2):
+        librarian._write_library_index(
+            conn, problem="p", workspace=tmp_path, gate_b_line=_GATE_B_PASS)
     text = (tmp_path / "Library" / "INDEX.md").read_text(encoding="utf-8")
     # Section appears exactly once (no duplicate ## p).
     assert text.count("## p") == 1
 
 
-def test_finish_two_problems_coexist(tmp_path: Path):
+def test_index_two_problems_coexist(tmp_path: Path):
     conn = _mem()
     _migrated(conn, "foo", problem="p")
     _migrated(conn, "baz", problem="q")
-    librarian.run_librarian(conn, problem="p", work_kind="finish",
-                            workspace=tmp_path, pipeline_id="pid1")
-    librarian.run_librarian(conn, problem="q", work_kind="finish",
-                            workspace=tmp_path, pipeline_id="pid2")
+    for prob in ("p", "q"):
+        librarian._write_library_index(
+            conn, problem=prob, workspace=tmp_path, gate_b_line=_GATE_B_PASS)
     text = (tmp_path / "Library" / "INDEX.md").read_text(encoding="utf-8")
     assert "## p" in text and "## q" in text
     assert "`foo`" in text and "`baz`" in text
     # Preamble written once.
     assert text.count("# Library Index") == 1
-
-
-def test_finish_noop_when_nothing_migrated(tmp_path: Path):
-    conn = _mem()
-    _deduped(conn, "foo")  # kept but never migrated
-    r = librarian.run_librarian(conn, problem="p", work_kind="finish",
-                                workspace=tmp_path, pipeline_id="pid")
-    assert r.outcome == "success"
-    # Nothing harvested → no INDEX written.
-    assert not (tmp_path / "Library" / "INDEX.md").exists()
 
 
 def test_index_has_requires_exact_section(tmp_path: Path):
