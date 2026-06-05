@@ -487,13 +487,15 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
             conn, workspace, problem=problem, parent_goal_id=0,
             candidates=[(metadata.slug, body)],
         )
-        if hits and hits[0] is not None and hits[0].kind == "alias":
+        if hits and hits[0] is not None and hits[0].kind in (
+                "alias", "library_alias"):
+            h = hits[0]
+            where = (f"Library decl {h.library_fqn}"
+                     if h.kind == "library_alias"
+                     else f"existing goal {h.goal_id}")
             return PipelineResult(
                 outcome="failed", failure_reason="forward_no_new_goal",
-                failure_detail=(
-                    f"dedupe blocked: alias to existing goal "
-                    f"{hits[0].goal_id}"
-                ),
+                failure_detail=f"dedupe blocked: alias to {where}",
             )
 
         try:

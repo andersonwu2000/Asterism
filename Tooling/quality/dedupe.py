@@ -22,9 +22,12 @@ redundant hypotheses; rfl said "different types"; alias would have
 worked because `apply <;> assumption` discharges extras). The
 provability check matches alias semantics exactly.
 
-Cost: ~3-5s lake-env startup + per-pair elaboration; one batch call
-per `find_canonicals_batch`. For Asterism scale (~30 Backwards per
-problem × 1 batch each) this is bounded few-minutes overhead.
+Stays COLD (not the warm gateway): task #108 measured a gateway
+`verify_file` of this throwaway Mathlib-importing file at ~24s every
+call (warmth only helps incremental re-edits of the same slot, not a
+fresh file's import environment) — no faster than cold `lake env lean`
+(~20s) and it would tie up a gateway worker slot. So the cold subprocess
+is kept (one of the few deliberate cold-lake exceptions, data-flow §0).
 
 **Safety rules**
 
@@ -76,6 +79,7 @@ theorem candidate_slug <original binders> : <conclusion> := by
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
@@ -97,16 +101,9 @@ from ..state import db
 # := ...` shape. The name extractor below is what needs to see `def`.
 _THM_HEAD_RE = re.compile(r"\b(?:theorem|lemma)\s+\S+")
 _SORRY_BODY_RE = re.compile(r":=\s*by\s+sorry")
-# Lake/Lean error line: `<path>:<line>:<col>: error: ...`.
-# Old regex used `[^:]+` for the path part, which breaks on Windows
-# absolute paths starting with a drive letter (`D:\Asterism\...`) —
-# `[^:]+` stops at the drive-letter colon, the rest of the path is
-# not all-digits, so the entire regex misses. With no error lines
-# matched, `_batch_provable_via_apply` would then hit its "no
-# error_lines despite rc!=0" branch and return all-False, defeating
-# per-pair attribution. Using lazy `.+?` lets the path contain any
-# number of colons; the `\d+:\d+` line-col anchor at the right tail
-# unambiguously identifies the boundary.
+# Lake/Lean error line: `<path>:<line>:<col>: error: ...`. Lazy `.+?` for
+# the path part so a Windows drive-letter colon (`D:\...`) doesn't abort
+# the match; the `\d+:\d+` line-col anchor identifies the boundary.
 _LAKE_ERR_RE = re.compile(r"^.+?:(\d+):\d+:\s*error", re.MULTILINE)
 _BATCH_TIMEOUT_SEC = 240
 
@@ -217,19 +214,215 @@ def _extract_theorem_name(text: str) -> str | None:
     return m.group(1) if m else None
 
 
+# ---------------------------------------------------------------------
+# Library reuse pool (A — cross-problem dedup)
+#
+# A freshly-proposed Backward sub-goal that an already-proved `Library/`
+# decl can close via `apply @<fqn> <;> assumption` should be aliased to
+# that decl (proved immediately) instead of being re-derived. This is the
+# in-problem dedup machinery pointed at a cross-problem pool: the
+# canonical lives in Library/, not the `goals` table, so it carries
+# (module, fqn) rather than a goal row. Domain-scoped; pre-filtered by
+# binder count + distinctive-token overlap so the probe never imports the
+# whole domain Library (import-closure cost, not pair count, dominates).
+# Source of truth = `Library/INDEX.md` (the Librarian done-marker): each
+# line is `- `<fqn>` → `<rel path>``; module = fqn minus last segment.
+# ---------------------------------------------------------------------
+
+_LIB_INDEX_ENTRY_RE = re.compile(r"^-\s+`([\w.]+)`\s*(?:→|->)\s*`([^`]+)`")
+_LIB_DECL_HEAD_RE = re.compile(
+    r"(?m)^[ \t]*(?:@\[[^\]]*\][ \t]*)*"
+    r"(?:private[ \t]+|protected[ \t]+|noncomputable[ \t]+|scoped[ \t]+)*"
+    r"(theorem|lemma|def)[ \t]+([A-Za-z_][\w'.]*)")
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_']*")
+# Identifiers too common to be distinctive for the overlap pre-filter.
+_LIB_STOPWORDS = frozenset({
+    "fun", "Type", "Prop", "Sort", "by", "with", "fun", "Eq", "And", "Or",
+})
+
+
+def _conclusion_of_signature(signature: str) -> str:
+    """The `<conclusion>` of `<binders> : <conclusion>` — text after the
+    LAST top-level colon (same boundary scan as `_to_forall_form`)."""
+    n = len(signature)
+    pos = 0
+    dp = db_ = dk = 0
+    boundary = -1
+    while pos < n:
+        c = signature[pos]
+        if c == "(": dp += 1
+        elif c == ")": dp -= 1
+        elif c == "{": db_ += 1
+        elif c == "}": db_ -= 1
+        elif c == "[": dk += 1
+        elif c == "]": dk -= 1
+        elif c == ":" and dp == 0 and db_ == 0 and dk == 0:
+            boundary = pos
+        pos += 1
+    return signature[boundary + 1:].strip() if boundary >= 0 else signature.strip()
+
+
+def _distinctive_tokens(text: str) -> "frozenset[str]":
+    """Identifier tokens (len > 1, minus stopwords) in a conclusion — the
+    cheap signal for the overlap pre-filter. No Lean parsing, so robust to
+    notation / pretty-printing differences."""
+    return frozenset(t for t in _IDENT_RE.findall(text)
+                     if len(t) > 1 and t not in _LIB_STOPWORDS)
+
+
+def _parse_library_decl_sigs(text: str) -> "dict[str, tuple[int, str]]":
+    """Map each theorem/lemma decl in a (multi-decl) Library file to
+    (binder_count, conclusion). `def`s are skipped: `apply @def` rarely
+    discharges a goal and `def foo := v` has no signature to extract. Each
+    decl's text chunk (header → next header) runs through the SAME tested
+    `_extract_full_signature` / `_signature_binder_count` used for
+    single-decl sub-goal files."""
+    heads = list(_LIB_DECL_HEAD_RE.finditer(text))
+    out: dict[str, tuple[int, str]] = {}
+    for i, m in enumerate(heads):
+        if m.group(1) == "def":
+            continue
+        name = m.group(2)
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        chunk = text[m.start():end]
+        sig = _extract_full_signature(chunk)
+        if sig is None or not sig.strip():
+            continue
+        out[name] = (_signature_binder_count(chunk),
+                     _conclusion_of_signature(sig))
+    return out
+
+
+class _LibCanon(NamedTuple):
+    fqn: str            # fully-qualified name to `apply @`
+    module: str         # Library module to import
+    binder_count: int
+    concl_tokens: "frozenset[str]"
+
+
+# Per-process cache keyed by (workspace, domain, INDEX mtime) — Library is
+# static during a problem run; mtime in the key invalidates on edit.
+_LIBRARY_INDEX_CACHE: "dict[tuple[str, str, float], list[_LibCanon]]" = {}
+
+
+def _library_canonicals(workspace: Path, domain: str) -> "list[_LibCanon]":
+    """All theorem/lemma Library decls in `domain`, with binder count +
+    conclusion tokens, parsed from `Library/INDEX.md` + the referenced
+    files. Cached per (workspace, domain, INDEX mtime)."""
+    index = workspace / "Library" / "INDEX.md"
+    try:
+        mtime = index.stat().st_mtime
+    except OSError:
+        return []
+    key = (str(workspace), domain, mtime)
+    cached = _LIBRARY_INDEX_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        text = index.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    by_file: dict[str, list[str]] = {}
+    for ln in text.splitlines():
+        m = _LIB_INDEX_ENTRY_RE.match(ln.strip())
+        if not m:
+            continue
+        fqn, rel = m.group(1), m.group(2).strip()
+        parts = rel.replace("\\", "/").split("/")
+        if len(parts) >= 2 and parts[0] == "Library" and parts[1] == domain:
+            by_file.setdefault(rel, []).append(fqn)
+    out: list[_LibCanon] = []
+    for rel, fqns in by_file.items():
+        try:
+            sigs = _parse_library_decl_sigs(
+                (workspace / rel).read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        for fqn in fqns:
+            decl = fqn.rsplit(".", 1)[-1]
+            sc = sigs.get(decl)
+            if sc is None:
+                continue  # def / unparsed → not an apply-canonical
+            bc, concl = sc
+            out.append(_LibCanon(
+                fqn=fqn, module=fqn.rsplit(".", 1)[0],
+                binder_count=bc, concl_tokens=_distinctive_tokens(concl)))
+    _LIBRARY_INDEX_CACHE[key] = out
+    return out
+
+
+# Safety bound on how many Library decls a single candidate probes against
+# (caps the probe's import closure — measured to dominate cost). Logged,
+# never silent, when it bites. With IDF ranking a real reuse match shares
+# RARE tokens → high score → ranks within the cap, so a modest K is safe.
+# Calibrated by measurement (task #108).
+_LIBRARY_MAX_PAIRS_PER_CAND = 25
+
+
+def _eligible_library(workspace: Path, *, domain: str,
+                      candidate_count: int, candidate_concl: str,
+                      ) -> "list[tuple[str, str]]":
+    """Library decls in `domain` that plausibly close a candidate with
+    conclusion `candidate_concl` and `candidate_count` binder groups.
+    Pre-filter: binder_count ≤ candidate_count (specialization direction,
+    same rule as the in-problem pools) AND ≥1 shared distinctive token (so
+    the probe imports only matched modules, not the whole domain). Ranked
+    by overlap, capped at `_LIBRARY_MAX_PAIRS_PER_CAND`. Returns
+    (module, fqn)."""
+    canons = _library_canonicals(workspace, domain)
+    if not canons:
+        return []
+    cand_tokens = _distinctive_tokens(candidate_concl)
+    if not cand_tokens:
+        return []
+    # IDF-weighted overlap. Plain "≥1 shared token" is far too loose:
+    # measured, ~40+ LinearAlgebra decls share a token (Submodule /
+    # finrank / LinearMap…) with any LA sub-goal. So rank by the RARITY of
+    # the shared tokens — a shared `singularValues` / `jordan` is real
+    # reuse signal; a shared `Submodule` is noise. df = how many domain
+    # canonicals contain the token; idf down-weights ubiquitous ones.
+    n_docs = len(canons)
+    df: dict[str, int] = {}
+    for c in canons:
+        for t in c.concl_tokens:
+            df[t] = df.get(t, 0) + 1
+
+    def _idf(t: str) -> float:
+        return math.log((n_docs + 1) / (df.get(t, 0) + 1)) + 1.0
+
+    scored: list[tuple[float, tuple[str, str]]] = []
+    for c in canons:
+        if c.binder_count > candidate_count:
+            continue
+        shared = cand_tokens & c.concl_tokens
+        if not shared:
+            continue
+        scored.append((sum(_idf(t) for t in shared), (c.module, c.fqn)))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    if len(scored) > _LIBRARY_MAX_PAIRS_PER_CAND:
+        print(f"[dedupe] library pool ({domain}): {len(scored)} plausible "
+              f"decls over cap {_LIBRARY_MAX_PAIRS_PER_CAND}; probing top "
+              f"{_LIBRARY_MAX_PAIRS_PER_CAND} by token overlap", flush=True)
+        scored = scored[:_LIBRARY_MAX_PAIRS_PER_CAND]
+    return [mf for _, mf in scored]
+
+
 def _batch_provable_via_apply(
     workspace: Path,
     problem: str,
     pairs: list[tuple[str, str, str]],
 ) -> list[bool]:
-    """For each (cand_signature, canonical_module, canonical_thm_name)
-    pair, check if `apply @canonical <;> assumption` proves
+    """For each (cand_signature, canonical_module, canonical_fqn)
+    pair, check if `apply @canonical_fqn <;> assumption` proves
     `<cand_signature>`.
 
     `cand_signature` is `<binders> : <conclusion>` (output of
     `_extract_full_signature`).
     `canonical_module` is the Lean module to import for canonical.
-    `canonical_thm_name` is the theorem name inside that module.
+    `canonical_fqn` is the fully-qualified name to `apply @` — built by
+    the caller, NOT reconstructed here. In-problem canonicals pass
+    `Problems.<problem>.<thm>`; cross-problem Library decls pass
+    `Library.<...>.<decl>` (whose namespace ≠ `Problems.<problem>`).
 
     Replaces the prior `_batch_isdefeq` (2026-05-11). The rfl check
     rejected hypothesis-extension cases (Goals 323 vs 329 in SG run
@@ -283,22 +476,20 @@ def _batch_provable_via_apply(
     lines.append("")
 
     pair_start_lines: list[int] = []
-    for i, (cand_sig, canonical_module, canonical_thm) in enumerate(pairs):
-        # canonical_thm should already be the bare theorem name (e.g.
-        # "kelly_min_exists"). The canonical_module's namespace
-        # convention for sub-goals is `Problems.<problem>` (matches
-        # files in Problems/<problem>/proofs/). We invoke via the FQN
-        # to disambiguate when an ancestor and a sibling share a name.
-        if not canonical_thm:
-            # No theorem name extracted — pair is unusable; emit a
+    for i, (cand_sig, canonical_module, canonical_fqn) in enumerate(pairs):
+        # canonical_fqn is the fully-qualified name to `apply @`, already
+        # built by the caller. The probe does NOT reconstruct a namespace
+        # from `problem`, so a Library decl (namespace `Library.<...>` ≠
+        # `Problems.<problem>`) is invoked exactly like an in-problem one.
+        if not canonical_fqn:
+            # No fqn resolved — pair is unusable; emit a
             # syntactically-broken stub so its line attributes the error
             # to this pair only (not a global error swallowing siblings).
             pair_start_lines.append(len(lines) + 1)
-            lines.append(f"-- pair {i} (no canonical theorem name)")
+            lines.append(f"-- pair {i} (no canonical fqn)")
             lines.append(f"theorem _dc_{i} : True := by trivial_unknown_tac_force_fail")
             lines.append("")
             continue
-        canonical_fqn = f"Problems.{problem}.{canonical_thm}"
         # Flatten cand_sig whitespace: candidate signatures extracted
         # from on-disk theorems often span multiple lines (long ∀-prefixed
         # statements wrap for readability). Embedding a multi-line cand_sig
@@ -357,6 +548,14 @@ def _batch_provable_via_apply(
     # accepted every pair when Lean had actually rejected the apply
     # body. The error-line scan below is now the sole truth-source for
     # the probe's per-pair verdict, regardless of process exit code.
+    #
+    # NB (task #108): this stays a COLD `lake env lean`, not the warm
+    # gateway. Measured: a gateway `verify_file` of this throwaway
+    # Mathlib-importing file costs ~24s EVERY call (the warm worker still
+    # elaborates a fresh file's import environment from scratch; warmth
+    # only helps incremental re-edits of the same slot) — no faster than
+    # cold lake (~20s) and it ties up a gateway worker slot. So the cold
+    # subprocess (separate process, no gateway contention) is kept.
     error_lines: set[int] = set()
     for m in _LAKE_ERR_RE.finditer(output):
         error_lines.add(int(m.group(1)))
@@ -671,9 +870,16 @@ class CanonicalMatch(NamedTuple):
         decline-and-RETRY: re-prompt the same agent to decompose into
         strictly smaller sub-goals or prove the goal directly. `goal_id`
         is the matched ancestor/self for the message.
+      - `"library_alias"` (A — cross-problem reuse): canonical is an
+        already-proved `Library/` decl (no in-DB goal). Caller writes an
+        alias delegating to `library_fqn` (importing `library_module`)
+        and inserts the candidate as `proved`. `goal_id` is -1 (no goal);
+        the citation is `library_fqn`.
     """
     goal_id: int
-    kind: str  # Literal["alias", "disproved", "no_progress"]
+    kind: str  # "alias" | "disproved" | "no_progress" | "library_alias"
+    library_module: str | None = None  # set iff kind == "library_alias"
+    library_fqn: str | None = None
 
 
 _SLUG_DUP_SUFFIXES = ("_alias", "_2", "_3", "_4", "_5")
@@ -821,8 +1027,15 @@ def find_canonicals_batch(
     # name in some framework-promoted / aliased cases, where the file
     # body is `def <slug> := @s<sid>` — see _THM_HEAD_RE comment).
     pairs: list[tuple[str, str, str]] = []
-    pair_origin: list[tuple[int, sqlite3.Row, str]] = []
+    # origin per pair: (cand_idx, kind, payload). payload is an sqlite Row
+    # for the in-problem tiers, or a (module, fqn) tuple for the Library
+    # tier (A). Kept uniform so the result loop dispatches on `kind`.
+    pair_origin: list[tuple[int, str, object]] = []
+    from ..pipeline._lake import lean_path_to_module
+    domain = problem.split(".")[0] if "." in problem else problem
     for ci, (slug, full_text) in enumerate(candidates):
+        if result[ci] is not None:
+            continue  # Tier 1 slug hit already filled this slot
         cand_sig = _extract_full_signature(full_text)
         if cand_sig is None:
             continue
@@ -831,13 +1044,29 @@ def find_canonicals_batch(
             # DB stores workspace-relative lean_path strings; resolve
             # to absolute before module conversion.
             anc_lean_path = workspace / anc_row["lean_path"]
-            from ..pipeline._lake import lean_path_to_module
             try:
                 canonical_module = lean_path_to_module(workspace, anc_lean_path)
             except (ValueError, OSError):
                 continue
-            pairs.append((cand_sig, canonical_module, canonical_thm))
-            pair_origin.append((ci, anc_row, kind))
+            # In-problem canonical: namespace is `Problems.<problem>`
+            # (the sub-goal file declares `namespace Problems.<problem>`),
+            # so the FQN is `Problems.<problem>.<thm>`. Empty thm → empty
+            # fqn → probe emits its force-fail stub for this pair.
+            canonical_fqn = (f"Problems.{problem}.{canonical_thm}"
+                             if canonical_thm else "")
+            pairs.append((cand_sig, canonical_module, canonical_fqn))
+            pair_origin.append((ci, kind, anc_row))
+        # Library tier (A) — cross-problem reuse. Appended LAST so an
+        # in-problem match (alias/disproved/no_progress) shadows it on
+        # first-hit: prefer local reuse, keep deps in-problem; only reach
+        # to Library when nothing in-problem matches.
+        cand_count = _signature_binder_count(full_text)
+        cand_concl = _conclusion_of_signature(cand_sig)
+        for lib_module, lib_fqn in _eligible_library(
+                workspace, domain=domain, candidate_count=cand_count,
+                candidate_concl=cand_concl):
+            pairs.append((cand_sig, lib_module, lib_fqn))
+            pair_origin.append((ci, "library_alias", (lib_module, lib_fqn)))
 
     if not pairs:
         # No kernel work to do (either every candidate was Tier 1-hit
@@ -847,7 +1076,7 @@ def find_canonicals_batch(
         n_noprog = sum(1 for m in result if m and m.kind == "no_progress")
         print(f"[dedupe] checked {n} candidate(s) against 0 pair(s); "
               f"alias={n_alias} disproved={n_disproved} "
-              f"no_progress={n_noprog} (slug-tier only)",
+              f"no_progress={n_noprog} library=0 (slug-tier only)",
               flush=True)
         return result
 
@@ -861,32 +1090,49 @@ def find_canonicals_batch(
     # always more useful than a disproved precedent). Slot-already-filled
     # by Tier 1 is also skipped here so Tier 1 hits aren't overwritten
     # (e.g. by a disproved tier match that would change `kind`).
-    for (ci, anc_row, kind), is_eq in zip(pair_origin, flags):
+    for (ci, kind, payload), is_eq in zip(pair_origin, flags):
         if not is_eq:
             continue
         if result[ci] is not None:
             continue
-        result[ci] = CanonicalMatch(goal_id=int(anc_row["id"]), kind=kind)
+        if kind == "library_alias":
+            lib_module, lib_fqn = payload  # type: ignore[misc]
+            result[ci] = CanonicalMatch(
+                goal_id=-1, kind="library_alias",
+                library_module=lib_module, library_fqn=lib_fqn)
+        else:
+            result[ci] = CanonicalMatch(
+                goal_id=int(payload["id"]), kind=kind)  # type: ignore[index]
     # Lightweight metric — surfaces dedupe effectiveness in the daemon
     # log so Phase 2 design (Strategist/Forward/Librarian) has empirical
-    # input on alias hit rate and disproved-collision frequency. Pre-fix
-    # the entire Windows-side dedupe pipeline was silently producing
-    # zeros here; this print is how we'll catch any future regression.
+    # input on alias hit rate and disproved-collision frequency. `library`
+    # is the cross-problem reuse counter (A) — the seed of the reuse
+    # instrumentation. Pre-fix the entire Windows-side dedupe pipeline was
+    # silently producing zeros here; this print catches any regression.
     n_alias = sum(1 for m in result if m and m.kind == "alias")
     n_disproved = sum(1 for m in result if m and m.kind == "disproved")
     n_noprog = sum(1 for m in result if m and m.kind == "no_progress")
+    n_library = sum(1 for m in result if m and m.kind == "library_alias")
     print(f"[dedupe] checked {n} candidate(s) against {len(pairs)} "
           f"pair(s); alias={n_alias} disproved={n_disproved} "
-          f"no_progress={n_noprog}", flush=True)
+          f"no_progress={n_noprog} library={n_library}", flush=True)
     return result
 
 
 def build_alias_content(*, original_content: str,
                         canonical_module: str,
-                        canonical_slug: str) -> str:
+                        canonical_slug: str,
+                        apply_expr: str | None = None) -> str:
     """Take the candidate's original sub-goal lean text and produce its
     alias version: inject `import canonical_module` and rewrite the
     sorry-stub body to delegate to canonical via tactics.
+
+    `apply_expr` overrides what follows `apply ` in the body. In-problem
+    aliases leave it None → `apply <canonical_slug>` (bare slug resolves
+    because the alias file shares the canonical's `Problems.<problem>`
+    namespace). The Library tier (A) passes `@<fqn>` because a Library
+    decl's namespace (`Library.<...>`) is NOT open in the sub-goal file —
+    only the fully-qualified name resolves.
     """
     if f"import {canonical_module}" not in original_content:
         lines = original_content.split("\n")
@@ -900,8 +1146,9 @@ def build_alias_content(*, original_content: str,
             lines.insert(0, f"import {canonical_module}")
         original_content = "\n".join(lines)
 
+    body = apply_expr if apply_expr is not None else canonical_slug
     return _SORRY_BODY_RE.sub(
-        f":= by apply {canonical_slug} <;> assumption",
+        f":= by apply {body} <;> assumption",
         original_content,
         count=1,
     )
@@ -975,7 +1222,9 @@ def find_shelved_revivals_for_forward(
             # arguments the candidate's context can't supply via
             # `assumption`. Standard binder rule (see `_eligible_*`).
             continue
-        pairs.append((cand_sig, x_module, x_thm))
+        # X is the canonical here; its file declares `namespace
+        # Problems.<problem>`, so its FQN is `Problems.<problem>.<x_thm>`.
+        pairs.append((cand_sig, x_module, f"Problems.{problem}.{x_thm}"))
         pair_origin.append(int(r["id"]))
 
     if not pairs:

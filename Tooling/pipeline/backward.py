@@ -955,18 +955,31 @@ def _backward_parse_and_commit(
         )):
             raw = src.read_text(encoding="utf-8")
             if match is not None:
-                canonical_id = match.goal_id
-                canonical = db.get_goal(conn, canonical_id)
-                canonical_module = _lean_path_to_module(
-                    workspace, workspace / canonical["lean_path"])
                 # Build the alias body on top of import/opens-injected
                 # content so the file elaborates standalone (agent
                 # `new_<slug>.lean` files often omit `import Mathlib`).
-                alias_content = dedupe.build_alias_content(
-                    original_content=_novel_content(raw),
-                    canonical_module=canonical_module,
-                    canonical_slug=canonical["slug"],
-                )
+                if match.kind == "library_alias":
+                    # A — cross-problem reuse: canonical is a proved
+                    # `Library/` decl (no in-DB goal). Delegate via the
+                    # fully-qualified name (its namespace isn't open here).
+                    alias_content = dedupe.build_alias_content(
+                        original_content=_novel_content(raw),
+                        canonical_module=match.library_module,
+                        canonical_slug=match.library_fqn,
+                        apply_expr=f"@{match.library_fqn}",
+                    )
+                    canonical_label = f"Library {match.library_fqn}"
+                else:
+                    canonical_id = match.goal_id
+                    canonical = db.get_goal(conn, canonical_id)
+                    canonical_module = _lean_path_to_module(
+                        workspace, workspace / canonical["lean_path"])
+                    alias_content = dedupe.build_alias_content(
+                        original_content=_novel_content(raw),
+                        canonical_module=canonical_module,
+                        canonical_slug=canonical["slug"],
+                    )
+                    canonical_label = f"goal {canonical_id} ({canonical['slug']})"
                 dest.write_text(alias_content, encoding="utf-8")
                 # Build-verify the alias before trusting the dedupe probe.
                 # The probe (`_batch_provable_via_apply`) elaborates the
@@ -986,8 +999,8 @@ def _backward_parse_and_commit(
                 av = gateway_lifecycle.verify_file(
                     dest, write_olean=True, workspace=workspace)
                 if av.get("ok") and not av.get("error"):
-                    print(f"[dedupe] {slug} → goal {canonical_id} "
-                          f"({canonical['slug']}) [build-verified]",
+                    print(f"[dedupe] {slug} → {canonical_label} "
+                          f"[build-verified]",
                           flush=True)
                 else:
                     # Probe false-positive (or infra error): the alias body
@@ -1000,9 +1013,9 @@ def _backward_parse_and_commit(
                         for d in (av.get("diagnostics") or [])
                         if d.get("severity") == "error"
                     ) or "alias body failed to build"
-                    print(f"[dedupe] {slug} → goal {canonical_id} "
-                          f"({canonical['slug']}) REJECTED — build-verify "
-                          f"failed ({why[:160]}); treating as novel sub-goal",
+                    print(f"[dedupe] {slug} → {canonical_label} REJECTED — "
+                          f"build-verify failed ({why[:160]}); treating as "
+                          f"novel sub-goal",
                           flush=True)
                     canonical_for[idx] = None
                     dest.write_text(_novel_content(raw), encoding="utf-8")
@@ -1155,12 +1168,20 @@ def _backward_parse_and_commit(
                 entry_kind=entry_kind,
             )
             if match is not None:
-                # Past the same_as_disproved early-return → kind="alias".
+                # Past the same_as_disproved / no_progress early-returns →
+                # kind is "alias" (in-problem) or "library_alias" (A).
                 db.update_goal_status(conn, new_gid, "proved")
-                # Record alias relationship so prune retains the
-                # canonical (in case it's an orphan from a dead strategy)
-                # for as long as this alias is alive.
-                db.set_alias_target(conn, new_gid, match.goal_id)
+                if match.kind == "library_alias":
+                    # Canonical is a committed Library decl, not an in-DB
+                    # goal — no alias_target_id (prune doesn't manage
+                    # Library; the proof IS the `apply @<fqn>` body on
+                    # disk). The reuse citation is logged at dedupe time.
+                    pass
+                else:
+                    # Record alias relationship so prune retains the
+                    # canonical (in case it's an orphan from a dead
+                    # strategy) for as long as this alias is alive.
+                    db.set_alias_target(conn, new_gid, match.goal_id)
             else:
                 ok, msg = _try_promote_sorry_free(
                     dest=dest, problem=goal["problem"], slug=slug,

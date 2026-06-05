@@ -468,7 +468,7 @@ def test_find_canonicals_batch_disproved_match_returns_disproved_kind(
     # Only the disproved canonical's name unifies with the candidate.
     def fake(ws: Path, p: str,
              pairs: list[tuple[str, str, str]]) -> list[bool]:
-        return [thm == "dead_approach" for _sig, _mod, thm in pairs]
+        return [thm == "Problems.p.dead_approach" for _sig, _mod, thm in pairs]
     monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake)
 
     cand = "import Mathlib\ntheorem c (a : T) (b : T) : X := by sorry\n"
@@ -512,7 +512,7 @@ def test_find_canonicals_batch_shelved_does_not_block(
     # include it, fake never sees it, and no other canonical matches.
     def fake(ws: Path, p: str,
              pairs: list[tuple[str, str, str]]) -> list[bool]:
-        return [thm == "soft_dead" for _sig, _mod, thm in pairs]
+        return [thm == "Problems.p.soft_dead" for _sig, _mod, thm in pairs]
     monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake)
 
     cand = "import Mathlib\ntheorem c (a : T) (b : T) : X := by sorry\n"
@@ -598,10 +598,11 @@ def test_find_canonicals_batch_def_form_ancestor_resolves(
         conn, tmp_path, problem="p", parent_goal_id=parent,
         candidates=[("c", cand)],
     )
-    # canonical_thm must NOT be empty — the regex picks up the def.
+    # canonical fqn must NOT be empty — the regex picks up the def, then
+    # find_canonicals_batch wraps it as `Problems.<problem>.<name>`.
     assert captured["pairs"], "no pair produced — regex still misses def"
-    _cand_sig, _mod, canonical_thm = captured["pairs"][0]
-    assert canonical_thm == "promoted_anc"
+    _cand_sig, _mod, canonical_fqn = captured["pairs"][0]
+    assert canonical_fqn == "Problems.p.promoted_anc"
     assert canonicals == [
         dedupe.CanonicalMatch(goal_id=proved_anc, kind="alias"),
     ]
@@ -631,7 +632,7 @@ def test_find_canonicals_batch_mixed_hits(
     # conclusion (ga1 has conclusion X; main has conclusion T).
     def fake(ws: Path, prob: str,
              pairs: list[tuple[str, str, str]]) -> list[bool]:
-        return [(": X" in cand_sig and thm == "ga1")
+        return [(": X" in cand_sig and thm == "Problems.p.ga1")
                 for cand_sig, _mod, thm in pairs]
 
     monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake)
@@ -669,7 +670,7 @@ def test_find_canonicals_batch_no_progress_on_unproved_parent(
     # fake: candidate provable from canonical iff canonical is the parent.
     def fake(ws: Path, prob: str,
              pairs: list[tuple[str, str, str]]) -> list[bool]:
-        return [thm == "par" for _sig, _mod, thm in pairs]
+        return [thm == "Problems.p.par" for _sig, _mod, thm in pairs]
     monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake)
 
     cand = "import Mathlib\ntheorem c : X := by sorry\n"
@@ -759,32 +760,27 @@ def _patch_subprocess(monkeypatch: pytest.MonkeyPatch, *,
     def fake_run(*args, **kwargs):  # noqa: ANN001, ANN002, ANN003
         return FakeResult()
 
-    monkeypatch.setattr(openai_api_dedupe := __import__(
-        "Tooling.quality.dedupe", fromlist=["subprocess"]).subprocess,
-                        "run", fake_run)
+    monkeypatch.setattr(
+        __import__("Tooling.quality.dedupe",
+                   fromlist=["subprocess"]).subprocess, "run", fake_run)
 
 
 def test_lake_err_re_matches_windows_absolute_path() -> None:
-    """#112(c) follow-up — `_LAKE_ERR_RE` must match Windows-style
-    absolute paths emitted by lake under `cwd=workspace, file=str(tmp_file)`
-    where workspace is an absolute Path. The earlier `[^:]+` prefix
-    aborted at the drive-letter colon (`D:`), so error_lines came back
-    empty and the per-pair attribution was skipped in favor of the
-    'no error_lines despite rc!=0' all-False branch. Cost: every dedupe
-    call on Windows silently returned no matches."""
+    """`_LAKE_ERR_RE` must match Windows-style absolute paths emitted by
+    lake (`D:\\...`). The lazy `.+?` prefix lets the path contain the
+    drive-letter colon; the `\\d+:\\d+` line-col anchor finds the
+    boundary."""
     sample = (
         r"D:\Asterism\.attempts\_x.lean:91:2: error: Tactic apply failed"
         "\n"
         r"D:\Asterism\.attempts\_x.lean:103:5: error: another"
         "\n"
     )
-    matches = dedupe._LAKE_ERR_RE.findall(sample)
-    assert matches == ["91", "103"]
+    assert dedupe._LAKE_ERR_RE.findall(sample) == ["91", "103"]
 
 
 def test_lake_err_re_matches_posix_path() -> None:
-    """Regression for the original posix-style path that worked under
-    the old regex — ensure the relaxed `.+?` prefix didn't break it."""
+    """Posix-style path still matches."""
     sample = (
         "/home/u/.attempts/_x.lean:42:1: error: foo\n"
         "/home/u/.attempts/_x.lean:88:2: error: bar\n"
@@ -838,9 +834,9 @@ def test_batch_provable_via_apply_rc0_means_all_pairs_pass(
     """F14: rc==0 from Lean is the canonical 'no errors anywhere' signal.
     Skip line-error parsing entirely in the happy path."""
     _patch_subprocess(monkeypatch, stdout="", stderr="", rc=0)
-    # New 3-tuple shape: (cand_signature, canonical_module, canonical_thm).
-    pairs = [(": Nat", "Mod.A", "thm_a"),
-             (": Bool", "Mod.B", "thm_b")]
+    # 3-tuple shape: (cand_signature, canonical_module, canonical_fqn).
+    pairs = [(": Nat", "Mod.A", "Problems.p.thm_a"),
+             (": Bool", "Mod.B", "Problems.p.thm_b")]
     result = dedupe._batch_provable_via_apply(tmp_path, "p", pairs)
     assert result == [True, True]
 
@@ -855,7 +851,8 @@ def test_batch_provable_via_apply_global_error_outside_pair_range_rejects_all(
     # Pair lines start around 5; error at line 1 is global.
     stdout = "/tmp/x.lean:1:0: error: object file does not exist"
     _patch_subprocess(monkeypatch, stdout=stdout, stderr="", rc=1)
-    pairs = [(": A", "Mod.A", "thm_a"), (": C", "Mod.C", "thm_c")]
+    pairs = [(": A", "Mod.A", "Problems.p.thm_a"),
+             (": C", "Mod.C", "Problems.p.thm_c")]
     result = dedupe._batch_provable_via_apply(tmp_path, "p", pairs)
     assert result == [False, False]
 
@@ -883,7 +880,8 @@ def test_batch_provable_via_apply_per_pair_attribution(
     """
     stdout = "/tmp/x.lean:12:0: error: type mismatch"
     _patch_subprocess(monkeypatch, stdout=stdout, stderr="", rc=1)
-    pairs = [(": A", "Mod.A", "thm_a"), (": B", "Mod.B", "thm_b")]
+    pairs = [(": A", "Mod.A", "Problems.p.thm_a"),
+             (": B", "Mod.B", "Problems.p.thm_b")]
     result = dedupe._batch_provable_via_apply(tmp_path, "p", pairs)
     assert result == [True, False]
 
@@ -894,7 +892,7 @@ def test_batch_provable_via_apply_unknown_failure_pattern_rejects_all(
     """rc != 0 but no line-prefixed errors matched. Could be a parser
     panic / Lean crash. Conservative: reject all pairs."""
     _patch_subprocess(monkeypatch, stdout="", stderr="lean: panic", rc=1)
-    pairs = [(": A", "Mod.A", "thm_a")]
+    pairs = [(": A", "Mod.A", "Problems.p.thm_a")]
     result = dedupe._batch_provable_via_apply(tmp_path, "p", pairs)
     assert result == [False]
 
@@ -1051,8 +1049,6 @@ def test_batch_provable_via_apply_template_handles_hypothesis_extension(
     captured = {}
 
     def capture_run(*args, **kwargs):
-        # First positional arg is the cmd list; we want the input file
-        # path (last element) to read what got written.
         cmd = args[0]
         lean_file = Path(cmd[-1])
         captured["content"] = lean_file.read_text(encoding="utf-8")
@@ -1066,18 +1062,18 @@ def test_batch_provable_via_apply_template_handles_hypothesis_extension(
     import Tooling.quality.dedupe as _d
     monkeypatch.setattr(_d.subprocess, "run", capture_run)
 
-    # cand has extra hypothesis (hcard) vs canonical
+    # cand has extra hypothesis (hcard) vs canonical. The 3rd tuple slot
+    # is now the FULL fqn to `apply @` (caller-built), not a bare name;
+    # the probe no longer reconstructs `Problems.<problem>.<thm>` itself.
     pairs = [
         ("(Q : Finset Nat) (h : Q.Nonempty) (hcard : 3 ≤ Q.card) : Q.Nonempty",
          "Problems.p.proofs.L_canon",
-         "canon_thm"),
+         "Problems.p.canon_thm"),
     ]
     dedupe._batch_provable_via_apply(tmp_path, "p", pairs)
     body = captured["content"]
-    # Template shape: theorem _dc_0 with apply + assumption.
-    # Canonical FQN is `Problems.<problem>.<thm_name>` because the
-    # canonical's lean file declares `namespace Problems.<problem>`,
-    # not nested under proofs. The MODULE path
+    # Template shape: theorem _dc_0 with apply + assumption. The fqn is
+    # emitted verbatim from the pair. The MODULE path
     # `Problems.<problem>.proofs.L_<slug>` is for the import.
     assert "theorem _dc_0" in body
     assert "apply @Problems.p.canon_thm" in body
@@ -1147,7 +1143,7 @@ def test_find_shelved_revivals_links_matching_shelved(
     assert len(captured["pairs"]) == 1
     cand_sig, mod, thm = captured["pairs"][0]
     assert "n = n" in cand_sig
-    assert thm == "forward_eq"
+    assert thm == "Problems.p.forward_eq"
     assert "L_forward_eq" in mod.replace(".", "/")
 
 
@@ -1288,17 +1284,13 @@ def test_batch_provable_pre_flight_lake_builds_unique_canonical_modules(
     function must `lake_build` every unique canonical module to
     materialize their .oleans. Without this pre-flight, any canonical
     whose .olean is missing trips a global 'object file does not exist'
-    error and fail-opens the entire batch to all-False (see comment
-    in _batch_provable_via_apply for the regression rationale).
+    error and fail-opens the entire batch to all-False.
 
     Replaces the prior 9cc7322 scheme that materialized .oleans inline
     in verify_housekeeping — that path stalled the dispatcher main
     thread on every cascade chain.
     """
     from Tooling.pipeline import _lake as _lake_module
-    # Stub the subprocess.run that _batch_provable_via_apply ultimately
-    # invokes so we don't shell out. Return rc=0 (no errors) for fast
-    # path = all-True result.
     import subprocess as _subprocess
     class _R:
         returncode = 0
@@ -1314,10 +1306,10 @@ def test_batch_provable_pre_flight_lake_builds_unique_canonical_modules(
                         fake_lake_build_modules)
 
     pairs = [
-        ("(x : Nat) : x = x", "Problems.p.proofs.L_a", "thm_a"),
-        ("(y : Nat) : y = y", "Problems.p.proofs.L_b", "thm_b"),
+        ("(x : Nat) : x = x", "Problems.p.proofs.L_a", "Problems.p.thm_a"),
+        ("(y : Nat) : y = y", "Problems.p.proofs.L_b", "Problems.p.thm_b"),
         # Duplicate canonical module — must dedupe before lake build
-        ("(z : Nat) : z = z", "Problems.p.proofs.L_a", "thm_a2"),
+        ("(z : Nat) : z = z", "Problems.p.proofs.L_a", "Problems.p.thm_a2"),
     ]
     result = dedupe._batch_provable_via_apply(tmp_path, "p", pairs)
     assert len(result) == 3
@@ -1349,7 +1341,7 @@ def test_batch_provable_pre_flight_swallows_lake_build_failure(
         raise RuntimeError("lake binary missing in test env")
     monkeypatch.setattr(_lake_module, "lake_build_modules", boom_lake_build)
 
-    pairs = [("(x : Nat) : x = x", "Mod.X", "thm_x")]
+    pairs = [("(x : Nat) : x = x", "Mod.X", "Problems.p.thm_x")]
     # Should not raise; dedupe proceeds despite the pre-flight failure
     result = dedupe._batch_provable_via_apply(tmp_path, "p", pairs)
     assert isinstance(result, list)
@@ -1478,17 +1470,211 @@ def test_batch_provable_via_apply_real_lake(tmp_path: Path) -> None:
     """Spin up the actual Lean kernel on a tiny pair to confirm the
     subprocess plumbing + parsing work. Slow (lake env startup ~3-5s);
     skipped unless lake is on PATH."""
-    # Need a minimal lakefile in tmp_path so `lake env` works
     (tmp_path / "lakefile.lean").write_text(
         "import Lake\nopen Lake DSL\npackage tmp where\n"
         "@[default_target]\nlean_lib tmp where\n",
         encoding="utf-8")
     (tmp_path / "lean-toolchain").write_text("leanprover/lean4:v4.0.0\n",
                                               encoding="utf-8")
-    # This may still fail because Mathlib isn't present in tmp_path's
-    # lake project. We accept that and just verify the call-flow doesn't
-    # crash; equality decision is opaque without Mathlib.
-    pairs = [("(x : Nat) : x = x", "Mod.X", "thm_x")]
+    # May still fail because Mathlib isn't present in tmp_path's lake
+    # project; we just verify the call-flow doesn't crash.
+    pairs = [("(x : Nat) : x = x", "Mod.X", "Problems.tmp.thm_x")]
     result = dedupe._batch_provable_via_apply(tmp_path, "tmp", pairs)
     assert isinstance(result, list)
     assert len(result) == 1
+
+
+# ---------------------------------------------------------------------
+# A — Library-as-dedupe-pool (cross-problem reuse)
+# ---------------------------------------------------------------------
+
+def _write_library(workspace: Path, *,
+                   index_entries: list[tuple[str, str]],
+                   files: dict[str, str]) -> None:
+    """Stage a Library/ with an INDEX.md + decl files for reuse tests."""
+    lib = workspace / "Library"
+    lib.mkdir(parents=True, exist_ok=True)
+    lines = ["# Library Index", ""]
+    for fqn, rel in index_entries:
+        lines.append(f"- `{fqn}` → `{rel}`")
+    (lib / "INDEX.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    for rel, content in files.items():
+        p = workspace / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+
+
+def test_conclusion_of_signature() -> None:
+    assert dedupe._conclusion_of_signature("(x : Nat) : x = x") == "x = x"
+    assert dedupe._conclusion_of_signature(": True") == "True"
+    # colon inside a binder group is not the boundary
+    assert dedupe._conclusion_of_signature(
+        "(S : Submodule) : finrank S > 0") == "finrank S > 0"
+
+
+def test_distinctive_tokens_drops_stopwords_and_singletons() -> None:
+    toks = dedupe._distinctive_tokens("Submodule.finrank S + n > 0")
+    assert "Submodule" in toks and "finrank" in toks
+    assert "S" not in toks and "n" not in toks  # single-char names dropped
+    assert "by" not in dedupe._distinctive_tokens("p by q")  # stopword
+
+
+def test_parse_library_decl_sigs_multidecl_skips_def() -> None:
+    text = (
+        "import Mathlib\n"
+        "namespace Library.LinearAlgebra.SVD.Basic\n"
+        "theorem alpha (x : Nat) : x = x := by rfl\n"
+        "def helper := 5\n"
+        "lemma beta {α} (s : Set α) : s ⊆ s := by simp\n"
+        "end Library.LinearAlgebra.SVD.Basic\n"
+    )
+    sigs = dedupe._parse_library_decl_sigs(text)
+    assert set(sigs) == {"alpha", "beta"}  # `def helper` skipped
+    assert sigs["alpha"][0] == 1            # (x : Nat)
+    assert "x = x" in sigs["alpha"][1]
+    assert sigs["beta"][0] == 2             # {α} (s : Set α)
+    assert "⊆" in sigs["beta"][1]
+
+
+def test_library_canonicals_domain_filtered(tmp_path: Path) -> None:
+    _write_library(
+        tmp_path,
+        index_entries=[
+            ("Library.LinearAlgebra.SVD.Basic.alpha",
+             "Library/LinearAlgebra/SVD/Basic.lean"),
+            ("Library.Topology.Foo.beta", "Library/Topology/Foo.lean"),
+        ],
+        files={
+            "Library/LinearAlgebra/SVD/Basic.lean":
+                "import Mathlib\ntheorem alpha (x : Nat) : x = x := by rfl\n",
+            "Library/Topology/Foo.lean":
+                "import Mathlib\ntheorem beta : True := by trivial\n",
+        },
+    )
+    canons = dedupe._library_canonicals(tmp_path, "LinearAlgebra")
+    assert {c.fqn for c in canons} == {"Library.LinearAlgebra.SVD.Basic.alpha"}
+    c = canons[0]
+    assert c.module == "Library.LinearAlgebra.SVD.Basic"
+    assert c.binder_count == 1
+
+
+def test_eligible_library_filters_by_token_and_binder(tmp_path: Path) -> None:
+    _write_library(
+        tmp_path,
+        index_entries=[
+            ("Library.LinearAlgebra.A.match_decl", "Library/LinearAlgebra/A.lean"),
+            ("Library.LinearAlgebra.A.no_token", "Library/LinearAlgebra/A.lean"),
+            ("Library.LinearAlgebra.A.too_many_binders",
+             "Library/LinearAlgebra/A.lean"),
+        ],
+        files={
+            "Library/LinearAlgebra/A.lean":
+                "import Mathlib\n"
+                "theorem match_decl (S : Submodule) : "
+                "Submodule.finrank S > 0 := by sorry\n"
+                "theorem no_token (n : Nat) : n = n := by rfl\n"
+                "theorem too_many_binders (a b c : Submodule) (h : True) : "
+                "Submodule.finrank a > 0 := by sorry\n",
+        },
+    )
+    out = dedupe._eligible_library(
+        tmp_path, domain="LinearAlgebra", candidate_count=1,
+        candidate_concl="Submodule.finrank T > 0")
+    fqns = {fqn for _, fqn in out}
+    assert "Library.LinearAlgebra.A.match_decl" in fqns       # token + binder ok
+    assert "Library.LinearAlgebra.A.no_token" not in fqns     # no shared token
+    assert "Library.LinearAlgebra.A.too_many_binders" not in fqns  # 2 groups > 1
+
+
+def test_find_canonicals_batch_library_hit(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A candidate sub-goal that a domain Library decl can close → the
+    cross-problem `library_alias` match (goal_id=-1, carries module+fqn)."""
+    _seed_problem(conn, "LinearAlgebra.t")
+    root = _seed_root(conn, problem="LinearAlgebra.t", status="proved")
+    parent = _seed_sub(conn, problem="LinearAlgebra.t", slug="parent",
+                       statement="P")
+    _link(conn, root, [parent], problem="LinearAlgebra.t")
+    # No in-problem lean files on disk → the in-problem pools skip (OSError),
+    # so only the Library tier produces pairs.
+    _write_library(
+        tmp_path,
+        index_entries=[("Library.LinearAlgebra.A.match_decl",
+                        "Library/LinearAlgebra/A.lean")],
+        files={"Library/LinearAlgebra/A.lean":
+               "import Mathlib\ntheorem match_decl (S : Submodule) : "
+               "Submodule.finrank S > 0 := by sorry\n"},
+    )
+
+    # Probe accepts only the Library pair (defends against an in-problem
+    # pair sneaking in and shadowing on first-hit).
+    def fake(ws: Path, p: str,
+             pairs: list[tuple[str, str, str]]) -> list[bool]:
+        return [fqn.startswith("Library.") for _sig, _mod, fqn in pairs]
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake)
+
+    cand = ("import Mathlib\ntheorem c (S : Submodule) : "
+            "Submodule.finrank S > 0 := by sorry\n")
+    res = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="LinearAlgebra.t", parent_goal_id=parent,
+        candidates=[("c", cand)])
+    assert res[0] == dedupe.CanonicalMatch(
+        goal_id=-1, kind="library_alias",
+        library_module="Library.LinearAlgebra.A",
+        library_fqn="Library.LinearAlgebra.A.match_decl")
+
+
+def test_find_canonicals_batch_inproblem_shadows_library(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When both an in-problem proved ancestor AND a Library decl match,
+    the in-problem alias wins (Library tier is appended last → lower
+    first-hit priority: prefer local reuse, keep deps in-problem)."""
+    _seed_problem(conn, "LinearAlgebra.t")
+    root = _seed_root(conn, problem="LinearAlgebra.t", status="proved")
+    anc = _seed_sub(conn, problem="LinearAlgebra.t", slug="anc",
+                    statement="X", status="proved")
+    _link(conn, root, [anc], problem="LinearAlgebra.t")
+    parent = _seed_sub(conn, problem="LinearAlgebra.t", slug="parent",
+                       statement="OTHER", depth=2)
+    _link(conn, anc, [parent], problem="LinearAlgebra.t")
+    _write_lean(tmp_path, "LinearAlgebra.t", "anc",
+        "import Mathlib\ntheorem anc (S : Submodule) : "
+        "Submodule.finrank S > 0 := by sorry\n")
+    _write_lean(tmp_path, "LinearAlgebra.t", "parent",
+        "import Mathlib\ntheorem parent : OTHER := by sorry\n")
+    _write_library(
+        tmp_path,
+        index_entries=[("Library.LinearAlgebra.A.match_decl",
+                        "Library/LinearAlgebra/A.lean")],
+        files={"Library/LinearAlgebra/A.lean":
+               "import Mathlib\ntheorem match_decl (S : Submodule) : "
+               "Submodule.finrank S > 0 := by sorry\n"},
+    )
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply",
+                        lambda ws, p, pairs: [True] * len(pairs))
+    cand = ("import Mathlib\ntheorem c (S : Submodule) : "
+            "Submodule.finrank S > 0 := by sorry\n")
+    res = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="LinearAlgebra.t", parent_goal_id=parent,
+        candidates=[("c", cand)])
+    assert res[0] == dedupe.CanonicalMatch(goal_id=anc, kind="alias")
+
+
+def test_build_alias_with_apply_expr_uses_full_fqn() -> None:
+    """Library alias body delegates via the fully-qualified `@<fqn>`
+    (its namespace isn't open in the sub-goal file)."""
+    original = "import Mathlib\ntheorem c (S : T) : P := by sorry\n"
+    out = dedupe.build_alias_content(
+        original_content=original,
+        canonical_module="Library.LinearAlgebra.A",
+        canonical_slug="Library.LinearAlgebra.A.match_decl",
+        apply_expr="@Library.LinearAlgebra.A.match_decl",
+    )
+    assert "import Library.LinearAlgebra.A" in out
+    assert (":= by apply @Library.LinearAlgebra.A.match_decl <;> assumption"
+            in out)
+    assert ":= by sorry" not in out
