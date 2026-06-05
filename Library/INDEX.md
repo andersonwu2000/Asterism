@@ -475,3 +475,48 @@ _Harvested 2026-06-05T01:05:33.531827+00:00 — 20 declaration(s)._
 - `Library.LinearAlgebra.SylvesterCriterion.main` → `Library/LinearAlgebra/SylvesterCriterion.lean`
 
 Gate B (root re-derivation): PASSED — original `main` re-derived from the Library alone; axioms within whitelist.
+
+## LinearAlgebra.courant_fischer
+
+_Harvested 2026-06-05T03:16:04.222474+00:00 — 38 declaration(s)._
+
+- `Library.LinearAlgebra.CourantFischer.SubmoduleLemmas.subspace_inter_nonzero_of_finrank` → `Library/LinearAlgebra/CourantFischer/SubmoduleLemmas.lean`
+- `Library.LinearAlgebra.CourantFischer.EigenbasisExpansion.inner_tx_eigenvector` → `Library/LinearAlgebra/CourantFischer/EigenbasisExpansion.lean`
+- `Library.LinearAlgebra.CourantFischer.CourantFischer.exists_vector_rayleigh_le_eigenvalue` → `Library/LinearAlgebra/CourantFischer/CourantFischer.lean`
+- `Library.LinearAlgebra.CourantFischer.RayleighBounds.rayleigh_ge_neg_bound` → `Library/LinearAlgebra/CourantFischer/RayleighBounds.lean`
+- `Library.LinearAlgebra.CourantFischer.TestSubspaces.bottom_eigenspace_with_support` → `Library/LinearAlgebra/CourantFischer/TestSubspaces.lean`
+- `Library.LinearAlgebra.CourantFischer.EigenbasisExpansion.rayleigh_numerator_eigenbasis` → `Library/LinearAlgebra/CourantFischer/EigenbasisExpansion.lean`
+- `Library.LinearAlgebra.CourantFischer.CourantFischer.inf_rayleigh_le_eigenvalue` → `Library/LinearAlgebra/CourantFischer/CourantFischer.lean`
+- `Library.LinearAlgebra.CourantFischer.TestSubspaces.bottom_eigenspace_exists` → `Library/LinearAlgebra/CourantFischer/TestSubspaces.lean`
+- `Library.LinearAlgebra.CourantFischer.SubmoduleLemmas.subspace_inter_nonzero` → `Library/LinearAlgebra/CourantFischer/SubmoduleLemmas.lean`
+- `Library.LinearAlgebra.CourantFischer.RayleighBounds.rayleigh_le_bound` → `Library/LinearAlgebra/CourantFischer/RayleighBounds.lean`
+- `Library.LinearAlgebra.CourantFischer.CourantFischer.eigenvalue_le_sup_inf_rayleigh` → `Library/LinearAlgebra/CourantFischer/CourantFischer.lean`
+- `Library.LinearAlgebra.CourantFischer.SubmoduleLemmas.exists_subspace_finrank` → `Library/LinearAlgebra/CourantFischer/SubmoduleLemmas.lean`
+- `Library.LinearAlgebra.CourantFischer.RayleighBounds.rayleigh_set_bddbelow` → `Library/LinearAlgebra/CourantFischer/RayleighBounds.lean`
+- `Library.LinearAlgebra.CourantFischer.TestSubspaces.topeig_set_nonempty` → `Library/LinearAlgebra/CourantFischer/TestSubspaces.lean`
+- `Library.LinearAlgebra.CourantFischer.EigenbasisExpansion.norm_sq_eq_sum_repr_sq` → `Library/LinearAlgebra/CourantFischer/EigenbasisExpansion.lean`
+- `Library.LinearAlgebra.CourantFischer.CourantFischer.sup_inf_rayleigh_le_eigenvalue` → `Library/LinearAlgebra/CourantFischer/CourantFischer.lean`
+- `Library.LinearAlgebra.CourantFischer.TestSubspaces.topeig_subspace_finrank` → `Library/LinearAlgebra/CourantFischer/TestSubspaces.lean`
+- `Library.LinearAlgebra.CourantFischer.SubmoduleLemmas.exists_nonzero_mem_of_finrank_pos` → `Library/LinearAlgebra/CourantFischer/SubmoduleLemmas.lean`
+- `Library.LinearAlgebra.CourantFischer.RayleighBounds.rayleigh_bddbelow_for_subspace` → `Library/LinearAlgebra/CourantFischer/RayleighBounds.lean`
+- `Library.LinearAlgebra.CourantFischer.EigenbasisExpansion.norm_sq_eq_sum_repr_sq_2` → `Library/LinearAlgebra/CourantFischer/EigenbasisExpansion.lean`
+- `Library.LinearAlgebra.CourantFischer.CourantFischer.main` → `Library/LinearAlgebra/CourantFischer/CourantFischer.lean`
+- `Library.LinearAlgebra.CourantFischer.TestSubspaces.exists_test_subspace_inf_ge_eigenvalue` → `Library/LinearAlgebra/CourantFischer/TestSubspaces.lean`
+- `Library.LinearAlgebra.CourantFischer.RayleighBounds.rayleigh_components_vanish` → `Library/LinearAlgebra/CourantFischer/RayleighBounds.lean`
+- `Library.LinearAlgebra.CourantFischer.EigenbasisExpansion.rayleigh_numerator_in_eigenbasis` → `Library/LinearAlgebra/CourantFischer/EigenbasisExpansion.lean`
+- `Library.LinearAlgebra.CourantFischer.SubmoduleLemmas.card_fin_subtype_ge` → `Library/LinearAlgebra/CourantFischer/SubmoduleLemmas.lean`
+- `Library.LinearAlgebra.CourantFischer.TestSubspaces.rayleigh_sup_set_bdd_above` → `Library/LinearAlgebra/CourantFischer/TestSubspaces.lean`
+- `Library.LinearAlgebra.CourantFischer.RayleighBounds.numerator_ge_eigenvalue` → `Library/LinearAlgebra/CourantFischer/RayleighBounds.lean`
+- `Library.LinearAlgebra.CourantFischer.SubmoduleLemmas.linear_independent_basis_subset` → `Library/LinearAlgebra/CourantFischer/SubmoduleLemmas.lean`
+- `Library.LinearAlgebra.CourantFischer.EigenbasisExpansion.numerator_eigenbasis_expand` → `Library/LinearAlgebra/CourantFischer/EigenbasisExpansion.lean`
+- `Library.LinearAlgebra.CourantFischer.RayleighBounds.rayleigh_ge_on_topeig` → `Library/LinearAlgebra/CourantFischer/RayleighBounds.lean`
+- `Library.LinearAlgebra.CourantFischer.SubmoduleLemmas.finrank_span_image_high` → `Library/LinearAlgebra/CourantFischer/SubmoduleLemmas.lean`
+- `Library.LinearAlgebra.CourantFischer.EigenbasisExpansion.inner_eq_zero_of_mem_span_high` → `Library/LinearAlgebra/CourantFischer/EigenbasisExpansion.lean`
+- `Library.LinearAlgebra.CourantFischer.RayleighBounds.rayleigh_le_of_low_modes_zero` → `Library/LinearAlgebra/CourantFischer/RayleighBounds.lean`
+- `Library.LinearAlgebra.CourantFischer.SubmoduleLemmas.topeig_eigenbasis_linindep_on_set` → `Library/LinearAlgebra/CourantFischer/SubmoduleLemmas.lean`
+- `Library.LinearAlgebra.CourantFischer.EigenbasisExpansion.orthobasis_repr_vanish_outside_span` → `Library/LinearAlgebra/CourantFischer/EigenbasisExpansion.lean`
+- `Library.LinearAlgebra.CourantFischer.EigenbasisExpansion.weighted_eigenvalue_sum_le` → `Library/LinearAlgebra/CourantFischer/EigenbasisExpansion.lean`
+- `Library.LinearAlgebra.CourantFischer.SubmoduleLemmas.topeig_le_subtype_card` → `Library/LinearAlgebra/CourantFischer/SubmoduleLemmas.lean`
+- `Library.LinearAlgebra.CourantFischer.EigenbasisExpansion.weighted_eigenvalue_sum_ge` → `Library/LinearAlgebra/CourantFischer/EigenbasisExpansion.lean`
+
+Gate B (root re-derivation): PASSED — original `main` re-derived from the Library alone; axioms within whitelist.
