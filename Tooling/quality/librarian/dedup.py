@@ -462,6 +462,31 @@ def _load_decls(workspace: Path, problem: str
     return scope, pool
 
 
+def _external_consumer(workspace: Path, X: _Decl,
+                       scope_rels: "set[str]") -> "str | None":
+    """Return the rel-path of a Library file OUTSIDE the scope problem that
+    references decl X (by fqn, or by bare name while importing X's module),
+    or None. v1a only rewrites/rebuilds the scope problem's files, so a decl
+    with a CROSS-PROBLEM consumer must NOT be dropped here (the scope-only
+    build gate wouldn't catch the breakage) — it's deferred to v1b's
+    cross-problem rewire. Cross-problem Library→Library refs are real
+    (e.g. NormalDiagonalization→SchurTriangularization, RCF→InvariantFactor)."""
+    lib = workspace / "Library"
+    for f in lib.rglob("*.lean"):
+        rel = f.relative_to(workspace).as_posix()
+        if rel in scope_rels:
+            continue
+        try:
+            t = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if replace_token(t, X.fqn, X.fqn)[1] > 0:
+            return rel
+        if f"import {X.module}" in t and replace_token(t, X.name, X.name)[1] > 0:
+            return rel
+    return None
+
+
 def _apply_drop(workspace: Path, scope_rels: "list[str]",
                 X: _Decl, Y: _Decl) -> bool:
     """Drop X (survivor Y): drop_decl + rewire refs across the problem's
@@ -547,6 +572,12 @@ def run_dedup_campaign(workspace: Path, problem: str, *, apply: bool = False
                              if Y.fqn not in dropped
                              and _survivor(X.fqn, Y.fqn) == Y.fqn), None)
             if loser_to is None:
+                continue
+            ext = _external_consumer(workspace, X, set(scope_rels))
+            if ext:
+                print(f"[dedup] {X.name}: defeq twin {loser_to.name} but a "
+                      f"cross-problem consumer ({ext}) references it → kept "
+                      f"(cross-problem rewire = v1b)", flush=True)
                 continue
             if not apply:
                 dropped[X.fqn] = loser_to.fqn

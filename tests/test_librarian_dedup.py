@@ -160,3 +160,66 @@ def test_drop_last_decl_stops_at_end() -> None:
 def test_drop_absent_decl_is_noop() -> None:
     out, ok = dedup.drop_decl(_SAMPLE, "zeta")
     assert not ok and out == _SAMPLE
+
+
+# ---------------------------------------------------------------------
+# _external_consumer — cross-problem-consumer safety guard
+# ---------------------------------------------------------------------
+
+def _mk_lib(tmp_path, files: dict[str, str]) -> None:
+    for rel, content in files.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+
+
+def _decl(fqn: str) -> "dedup._Decl":
+    return dedup._Decl(fqn=fqn, rel="Library/" + "/".join(fqn.split(".")[1:-1])
+                       + ".lean", module=fqn.rsplit(".", 1)[0],
+                       name=fqn.rsplit(".", 1)[-1], sig=": True",
+                       binders=0, concl_tokens=frozenset())
+
+
+def test_external_consumer_detects_cross_problem_ref(tmp_path) -> None:
+    X = _decl("Library.LinearAlgebra.P1.F.foo")
+    _mk_lib(tmp_path, {
+        X.rel: "import Mathlib\ntheorem foo : True := by trivial\n",
+        "Library/LinearAlgebra/P2/G.lean":
+            "import Mathlib\nimport Library.LinearAlgebra.P1.F\n"
+            "theorem bar : True := by exact foo\n",
+    })
+    assert dedup._external_consumer(tmp_path, X, {X.rel}) \
+        == "Library/LinearAlgebra/P2/G.lean"
+
+
+def test_external_consumer_detects_fqn_ref(tmp_path) -> None:
+    X = _decl("Library.LinearAlgebra.P1.F.foo")
+    _mk_lib(tmp_path, {
+        X.rel: "import Mathlib\ntheorem foo : True := by trivial\n",
+        "Library/LinearAlgebra/P2/G.lean":
+            "import Mathlib\ntheorem bar := Library.LinearAlgebra.P1.F.foo\n",
+    })
+    assert dedup._external_consumer(tmp_path, X, {X.rel}) is not None
+
+
+def test_external_consumer_none_when_no_cross_ref(tmp_path) -> None:
+    X = _decl("Library.LinearAlgebra.P1.F.foo")
+    _mk_lib(tmp_path, {
+        X.rel: "import Mathlib\ntheorem foo : True := by trivial\n",
+        "Library/LinearAlgebra/P2/G.lean":
+            "import Mathlib\ntheorem bar : True := by trivial\n",
+    })
+    assert dedup._external_consumer(tmp_path, X, {X.rel}) is None
+
+
+def test_external_consumer_ignores_scope_files(tmp_path) -> None:
+    # a same-(scope)-problem consumer is NOT "external" (scope rebuild covers it)
+    X = _decl("Library.LinearAlgebra.P1.F.foo")
+    _mk_lib(tmp_path, {
+        X.rel: "import Mathlib\ntheorem foo : True := by trivial\n",
+        "Library/LinearAlgebra/P1/H.lean":
+            "import Mathlib\nimport Library.LinearAlgebra.P1.F\n"
+            "theorem baz : True := by exact foo\n",
+    })
+    scope = {X.rel, "Library/LinearAlgebra/P1/H.lean"}
+    assert dedup._external_consumer(tmp_path, X, scope) is None
