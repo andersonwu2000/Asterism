@@ -5,6 +5,9 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-05
+Sustained the linear-algebra proving campaign, mechanizing and Library-izing a cluster of spectral and positivity results?ckart?oung low-rank approximation (SVD), the Courant?ischer min-max theorem, and Sylvester's criterion?hile reorganizing the problem set under domain folders and harvesting the campaign's lemmas into a reusable cross-problem Library to enable proof deduplication. Hardened the orchestration runtime with improved crash recovery (sparing live attempt directories, sweeping stale migration and Library probe artifacts at startup), dispatcher fixes that drop redundant Strategist work once a root goal is proved, and watchdog-driven completion reclaim with a wider carry-over budget. Retired dead librarian code from v0.3 and refreshed the design and data-flow documentation against the current implementation.
+
 ### 2026-06-04
 The day's work centered on the librarian subsystem, which gained a more robust reference-relabeling and migration pipeline: case-insensitive proof-file and sibling-import resolution, redirection of transitive, nested, and qualified self-references to kept lemmas, batched axiom checking, a comment-aware sorry check to eliminate false positives, and a v0.3 inventory that tracks only main's live dependency closure to drop orphan debris. Alongside this, the proving pipeline was extended so that spawns can cite a reusable Library as input, with the gateway relaunch logic and a no-progress backward guard hardened and the strategist now requesting a user amend when Defs vocabulary collides with mathlib.
 
