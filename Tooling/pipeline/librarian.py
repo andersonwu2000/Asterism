@@ -1133,7 +1133,7 @@ def compile_librarian_context(
 #   run_with_session_retries); commit gate = migrate_commit_gate.
 
 WORK_KINDS: frozenset[str] = frozenset(
-    {"dedup", "classify", "migrate", "bridge"})
+    {"dedup", "classify", "migrate", "cleanup", "bridge"})
 
 
 def run_librarian(conn, *, problem: str, work_kind: str,
@@ -1158,6 +1158,13 @@ def run_librarian(conn, *, problem: str, work_kind: str,
     # LLM). Routed before the prompt-path guard.
     if work_kind == "dedup":
         return _run_keepall(conn, problem=problem, workspace=workspace)
+
+    # v0.4 (plan §10/§11): cleanup runs the per-file dedup-audit engine on the
+    # migrated (staging) Library — drop/merge/bridge, each rewire-or-revert
+    # build-gated, bridge's Gate B the final backstop. Like dedup it owns its
+    # prompts/spawns → routed before the prompt-path guard.
+    if work_kind == "cleanup":
+        return _run_cleanup(conn, problem=problem, workspace=workspace)
 
     if work_kind not in WORK_KINDS:
         return PipelineResult(
@@ -1267,6 +1274,47 @@ def _run_keepall(conn, *, problem, workspace):
         if r["lifecycle"] == "candidate":
             db.set_library_verdict(conn, problem=problem, slug=r["slug"],
                                    verdict="keep")
+    return PipelineResult(outcome="success")
+
+
+def _run_cleanup(conn, *, problem, workspace):
+    """v0.4 cleanup stage (plan §10/§11): run the per-file dedup-audit engine
+    in-place on the migrated (staging) Library, then advance lifecycle so the
+    chain proceeds to bridge.
+
+    The engine (`dedup.run_file_audit_dedup`) owns its agent spawns + the
+    rewire-or-revert build gate; bridge's Gate B is the final backstop. INDEX
+    isn't written until bridge, so the engine can't read the problem's own
+    decls from INDEX — we feed them from the DB (`scope_index` = migrated rows'
+    target_name/target_file); the pool still comes from INDEX (= other,
+    already-promoted problems).
+
+    Lifecycle: dropped decls (incl wrapper-merges) → `dropped`; every surviving
+    `migrated` decl → `cleaned`. ALL `migrated` rows must advance, else
+    `_derive_librarian_work` re-routes to cleanup forever."""
+    from . import PipelineResult
+    from ..quality.librarian import dedup as _dedup
+
+    migrated = [r for r in db.library_decls_for(conn, problem, lifecycle="migrated")]
+    scope_index = [(r["target_name"], r["target_file"]) for r in migrated
+                   if r["target_name"] and r["target_file"]]
+    res = _dedup.run_file_audit_dedup(
+        workspace, problem, apply=True, scope_index=scope_index)
+    dropped = res.get("dropped", {})                # {dropped_fqn: survivor_fqn}
+    dropped_leaves = {f.rsplit(".", 1)[-1] for f in dropped}
+    n_drop = 0
+    for r in migrated:
+        tn = r["target_name"] or ""
+        leaf = tn.rsplit(".", 1)[-1] if tn else str(r["slug"])
+        if tn in dropped or leaf in dropped_leaves:
+            db.set_library_verdict(conn, problem=problem, slug=r["slug"],
+                                   verdict="drop", citation=dropped.get(tn))
+            n_drop += 1
+        else:
+            db.mark_library_cleaned(conn, problem=problem, slug=r["slug"])
+    print(f"[librarian] {problem}: cleanup — {n_drop} dropped, "
+          f"{len(res.get('bridged', {}))} bridged; survivors → cleaned",
+          flush=True)
     return PipelineResult(outcome="success")
 
 

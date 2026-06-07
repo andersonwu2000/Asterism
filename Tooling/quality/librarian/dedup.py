@@ -508,10 +508,17 @@ def _update_index(workspace: Path, dropped_fqns: "set[str]") -> None:
     idx.write_text("".join(kept), encoding="utf-8")
 
 
-def _load_decls(workspace: Path, problem: str
+def _load_decls(workspace: Path, problem: str,
+                scope_index: "list[tuple[str, str]] | None" = None
                 ) -> "tuple[list[_Decl], list[_Decl]]":
     """(scope decls for `problem`, domain pool decls). Both theorem/lemma
-    with parseable sigs."""
+    with parseable sigs.
+
+    `scope_index`: optional `[(fqn, rel)]` for the scope. In-chain, cleanup
+    runs BEFORE bridge writes `INDEX.md`, so the problem's own decls aren't in
+    INDEX yet — the caller supplies them from the DB (migrated rows'
+    target_name/target_file). None → read scope from INDEX (standalone). The
+    pool always comes from INDEX (= other, already-promoted problems)."""
     domain = problem.split(".")[0] if "." in problem else problem
     index = _parse_index(workspace)
     sig_cache: dict[str, dict[str, str]] = {}
@@ -533,7 +540,8 @@ def _load_decls(workspace: Path, problem: str
         return _Decl(fqn, rel, _mod_of_fqn(fqn), name, sig, bc,
                      _dd._distinctive_tokens(concl))
 
-    scope = [d for d in (decl(f, r) for f, r in index.get(problem, [])) if d]
+    scope_src = scope_index if scope_index is not None else index.get(problem, [])
+    scope = [d for d in (decl(f, r) for f, r in scope_src) if d]
     pool: list[_Decl] = []
     for ents in index.values():
         for f, r in ents:
@@ -891,7 +899,8 @@ def _resolve_y(by_fqn: "dict[str, _Decl]", y_fqn: str) -> "tuple[_Decl, bool]":
 
 
 def apply_llm_pairs(workspace: Path, problem: str,
-                    pairs: "list[tuple[str, str]]", *, apply: bool = False
+                    pairs: "list[tuple[str, str]]", *, apply: bool = False,
+                    scope_index: "list[tuple[str, str]] | None" = None
                     ) -> "dict":
     """3.0→3.1a: run LLM-marked candidate pairs `(x_fqn dups y_fqn)` through
     the mechanical exact-defeq gate. `x` must be a scope decl; `y` any domain
@@ -900,7 +909,7 @@ def apply_llm_pairs(workspace: Path, problem: str,
     (rewire-or-revert), identical to v1a. Returns
     `{'dropped': {x:y}, 'near': [(x,y)], 'skipped': [(x,y)]}`; `near` =
     marked but not defeq → the 3.1b bridger's input."""
-    scope, pool = _load_decls(workspace, problem)
+    scope, pool = _load_decls(workspace, problem, scope_index)
     by_fqn = {d.fqn: d for d in (*pool, *scope)}   # scope wins name clashes
     scope_fqns = {d.fqn for d in scope}
     scope_rels = sorted({d.rel for d in scope})
@@ -1031,10 +1040,11 @@ def run_llm_dedup(workspace: Path, problem: str, *, apply: bool = False,
 
 
 def bridge_context(workspace: Path, problem: str,
-                   near_pairs: "list[tuple[str, str]]") -> str:
+                   near_pairs: "list[tuple[str, str]]",
+                   scope_index: "list[tuple[str, str]] | None" = None) -> str:
     """Context for the 3.1b bridger: for each near-dup pair, X's full source
     block (statement + the proof to collapse) and Y's signature/fqn to cite."""
-    scope, pool = _load_decls(workspace, problem)
+    scope, pool = _load_decls(workspace, problem, scope_index)
     by_fqn = {d.fqn: d for d in (*pool, *scope)}
     cache: dict[str, str] = {}
 
@@ -1066,7 +1076,8 @@ def bridge_context(workspace: Path, problem: str,
 
 
 def run_llm_bridge(workspace: Path, problem: str,
-                   near_pairs: "list[tuple[str, str]]", *, apply: bool = False
+                   near_pairs: "list[tuple[str, str]]", *, apply: bool = False,
+                   scope_index: "list[tuple[str, str]] | None" = None
                    ) -> "dict":
     """v1b-②: spawn the bridger (Context = `bridge_context`, prompt =
     librarian/dedup_bridge.md, JSON out = bridges.json), then collapse each
@@ -1074,14 +1085,15 @@ def run_llm_bridge(workspace: Path, problem: str,
     Returns `{'bridged': {x:y}, 'failed': [(x,y)], 'rc', 'error'}`."""
     import json
     from ... import agent
-    scope, pool = _load_decls(workspace, problem)
+    scope, pool = _load_decls(workspace, problem, scope_index)
     by_fqn = {d.fqn: d for d in (*pool, *scope)}
     scope_rels = sorted({d.rel for d in scope})
     fail = {"bridged": {}, "failed": list(near_pairs)}
     pid = agent.new_pipeline_id()
     attempts = agent.attempts_dir_for(workspace, pid)
     (attempts / "Context.md").write_text(
-        bridge_context(workspace, problem, near_pairs), encoding="utf-8")
+        bridge_context(workspace, problem, near_pairs, scope_index),
+        encoding="utf-8")
     prompt_path = workspace / "Tooling" / "prompts" / "librarian" / "dedup_bridge.md"
     problem_dir = workspace.joinpath("Problems", *problem.split("."))
     rc = agent.spawn_llm(
@@ -1244,7 +1256,9 @@ def _audit_one_file(workspace: Path, problem: str, rel: str,
 
 
 def run_file_audit_dedup(workspace: Path, problem: str, *, apply: bool = False,
-                         bridge: bool = True, concurrency: int = 4) -> "dict":
+                         bridge: bool = True, concurrency: int = 4,
+                         scope_index: "list[tuple[str, str]] | None" = None
+                         ) -> "dict":
     """Per-file audit dedup: one agent per Library file emits a verdict for each
     decl; non-keep verdicts → the same mechanical gate (`apply_llm_pairs` +
     bridger). DB-free, spawn-only. The MARKING runs `concurrency` files in
@@ -1252,7 +1266,7 @@ def run_file_audit_dedup(workspace: Path, problem: str, *, apply: bool = False,
     (per-drop rebuilds of the same problem cannot overlap). Returns the gate
     dict + audit stats."""
     from concurrent.futures import ThreadPoolExecutor
-    scope, pool = _load_decls(workspace, problem)
+    scope, pool = _load_decls(workspace, problem, scope_index)
     scope_by_leaf = {d.name: d for d in scope}
     all_by_leaf = {d.name: d for d in (*pool, *scope)}
     files = sorted({d.rel for d in scope})
@@ -1271,10 +1285,12 @@ def run_file_audit_dedup(workspace: Path, problem: str, *, apply: bool = False,
             all_pairs.extend(fp)
 
     uniq = sorted({p for p in all_pairs})
-    res = apply_llm_pairs(workspace, problem, uniq, apply=apply)
+    res = apply_llm_pairs(workspace, problem, uniq, apply=apply,
+                          scope_index=scope_index)
     result = {**res, "proposed": len(uniq), "bridged": {}, "bridge_failed": []}
     if apply and res["near"] and bridge:
-        br = run_llm_bridge(workspace, problem, res["near"], apply=apply)
+        br = run_llm_bridge(workspace, problem, res["near"], apply=apply,
+                            scope_index=scope_index)
         result["bridged"] = br.get("bridged", {})
         result["bridge_failed"] = br.get("failed", [])
     return result

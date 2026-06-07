@@ -117,19 +117,26 @@ def test_derive_classified_is_migrate_ready_file(tmp_path: Path):
     assert target == "Library/P/aaa.lean"
 
 
-def test_derive_migrated_no_index_is_bridge(tmp_path: Path):
-    # v0.3: all files migrated (no classified left) + no INDEX → bridge Gate B
-    # (cleanup removed; migrated goes straight to bridge).
+def test_derive_migrated_is_cleanup(tmp_path: Path):
+    # v0.4: all files migrated → cleanup-dedup stage (runs before bridge).
     conn = _mem()
     _migrated(conn, "foo")
+    assert dispatcher._derive_librarian_work(conn, "p", tmp_path) == (
+        "cleanup", None)
+
+
+def test_derive_cleaned_no_index_is_bridge(tmp_path: Path):
+    # cleanup done (all decls cleaned) + no INDEX → bridge Gate B.
+    conn = _mem()
+    _cleaned(conn, "foo")
     assert dispatcher._derive_librarian_work(conn, "p", tmp_path) == (
         "bridge", None)
 
 
-def test_derive_migrated_with_index_is_none(tmp_path: Path):
-    # INDEX present = done-marker → no further work.
+def test_derive_cleaned_with_index_is_none(tmp_path: Path):
+    # INDEX present (bridge promoted) = done-marker → no further work.
     conn = _mem()
-    _migrated(conn, "foo")
+    _cleaned(conn, "foo")
     (tmp_path / "Library").mkdir()
     (tmp_path / "Library" / "INDEX.md").write_text(
         "# Library Index\n\n## p\n\nx\n", encoding="utf-8")
@@ -424,8 +431,8 @@ _GATE_B_PASS = "Gate B (root re-derivation): PASSED."
 
 def test_index_write_then_derive_terminates(tmp_path: Path):
     conn = _mem()
-    _migrated(conn, "foo", order=0)
-    _migrated(conn, "bar", order=1)
+    _cleaned(conn, "foo", order=0)        # post-cleanup state (bridge writes INDEX)
+    _cleaned(conn, "bar", order=1)
     librarian._write_library_index(
         conn, problem="p", workspace=tmp_path, gate_b_line=_GATE_B_PASS)
     index = tmp_path / "Library" / "INDEX.md"

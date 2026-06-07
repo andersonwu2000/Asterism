@@ -120,6 +120,51 @@ def test_commit_classify(conn, tmp_path):
 
 
 # ---------------------------------------------------------------------
+# cleanup stage — _run_cleanup (engine monkeypatched; no lake)
+# ---------------------------------------------------------------------
+
+def _seed_migrated(conn, slug, fqn, *, problem="p", target_file="Library/P/F.lean"):
+    db.upsert_library_decl(conn, problem=problem, slug=slug, source_goal_id=None)
+    db.set_library_verdict(conn, problem=problem, slug=slug, verdict="keep")
+    db.set_library_classification(conn, problem=problem, slug=slug,
+                                  target_file=target_file, target_name=fqn,
+                                  file_order=0)
+    db.mark_library_migrated(conn, problem=problem, slug=slug)
+
+
+def _patch_engine(monkeypatch, result):
+    from Tooling.quality.librarian import dedup as _dedup
+    monkeypatch.setattr(_dedup, "run_file_audit_dedup",
+                        lambda ws, prob, **kw: result)
+
+
+def test_run_cleanup_drops_and_cleans(conn, tmp_path, monkeypatch):
+    _seed_migrated(conn, "foo", "Library.P.F.foo")
+    _seed_migrated(conn, "bar", "Library.P.F.bar")
+    _patch_engine(monkeypatch, {
+        "dropped": {"Library.P.F.foo": "Library.P.F.bar"},
+        "merged": set(), "near": [], "skipped": [], "bridged": {}})
+    res = lib._run_cleanup(conn, problem="p", workspace=tmp_path)
+    assert res.outcome == "success"
+    life = {r["slug"]: r["lifecycle"] for r in db.library_decls_for(conn, "p")}
+    assert life["foo"] == "dropped"        # engine-dropped → terminal dropped
+    assert life["bar"] == "cleaned"        # survivor → cleaned
+    # no `migrated` left → derive won't loop back to cleanup
+    assert not db.library_decls_for(conn, "p", lifecycle="migrated")
+
+
+def test_run_cleanup_noop_still_cleans_all(conn, tmp_path, monkeypatch):
+    # zero drops must still advance every migrated decl → no infinite cleanup loop
+    _seed_migrated(conn, "foo", "Library.P.F.foo")
+    _patch_engine(monkeypatch, {"dropped": {}, "merged": set(), "near": [],
+                                "skipped": [], "bridged": {}})
+    lib._run_cleanup(conn, problem="p", workspace=tmp_path)
+    life = {r["slug"]: r["lifecycle"] for r in db.library_decls_for(conn, "p")}
+    assert life["foo"] == "cleaned"
+    assert not db.library_decls_for(conn, "p", lifecycle="migrated")
+
+
+# ---------------------------------------------------------------------
 # Stage B — migrate_commit_gate (injectable build_verifier, no gateway)
 # ---------------------------------------------------------------------
 

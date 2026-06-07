@@ -1497,10 +1497,12 @@ def _derive_librarian_work(
         from ..pipeline import librarian
         return ("migrate", librarian.next_migrate_file(
             conn, problem=problem, workspace=workspace))
-    # v0.3 (plan §3): cleanup is removed from the chain — `migrated` (no
-    # `classified` left = all files migrated) goes straight to the bridge
-    # Gate B probe. INDEX presence stays the done-marker.
-    if by_state.get("migrated") and not _librarian_index_has(workspace, problem):
+    # v0.4 (plan §10/§11): once all files are migrated, the cleanup-dedup stage
+    # runs on the staging Library (advances migrated → cleaned/dropped) BEFORE
+    # the bridge Gate B probe. Bridge then writes INDEX (= promote / done-marker).
+    if by_state.get("migrated"):
+        return ("cleanup", None)
+    if by_state.get("cleaned") and not _librarian_index_has(workspace, problem):
         return ("bridge", None)
     return (None, None)
 

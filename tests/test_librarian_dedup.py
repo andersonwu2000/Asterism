@@ -440,6 +440,25 @@ def test_resolve_y_library_pool_decl() -> None:
     assert Y is d and is_mathlib is False
 
 
+def test_load_decls_scope_index_overrides_index(tmp_path) -> None:
+    # in-chain: the problem's own decls aren't in INDEX yet (bridge writes it
+    # later); scope comes from the supplied list, pool still from INDEX.
+    _mk_lib(tmp_path, {
+        "Library/INDEX.md":
+            "## LinearAlgebra.other\n"
+            "- `Library.LinearAlgebra.O.G.bar` → `Library/LinearAlgebra/O/G.lean`\n",
+        "Library/LinearAlgebra/P1/F.lean":
+            "import Mathlib\ntheorem foo (n : Nat) : n = n := by rfl\n",
+        "Library/LinearAlgebra/O/G.lean":
+            "import Mathlib\ntheorem bar (m : Nat) : m = m := by rfl\n",
+    })
+    scope, pool = dedup._load_decls(
+        tmp_path, "LinearAlgebra.p1",
+        [("Library.LinearAlgebra.P1.F.foo", "Library/LinearAlgebra/P1/F.lean")])
+    assert [d.name for d in scope] == ["foo"]                 # from scope_index
+    assert "Library.LinearAlgebra.O.G.bar" in {d.fqn for d in pool}  # from INDEX
+
+
 def test_resolve_y_mathlib_when_not_in_pool() -> None:
     Y, is_mathlib = dedup._resolve_y({}, "Finset.sum_comm")
     assert is_mathlib is True
