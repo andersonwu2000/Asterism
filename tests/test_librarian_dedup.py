@@ -162,6 +162,34 @@ def test_drop_absent_decl_is_noop() -> None:
     assert not ok and out == _SAMPLE
 
 
+_SAMPLE_BLOCKDOC = (
+    "import Mathlib\n\n"
+    "namespace Foo\n\n"
+    "/-- single-line doc for alpha -/\n"
+    "theorem alpha : True := trivial\n\n"
+    "/-- multi-line doc\n  for beta -/\n"
+    "theorem beta : True := trivial\n\n"
+    "end Foo\n"
+)
+
+
+def test_drop_decl_with_single_line_block_doc() -> None:
+    # regression: _block_start must treat a self-contained `/-- … -/` as ONE
+    # comment line, not the end of a block that swallows everything above it.
+    out, ok = dedup.drop_decl(_SAMPLE_BLOCKDOC, "alpha")
+    assert ok
+    assert "alpha" not in out and "doc for alpha" not in out
+    assert "import Mathlib" in out and "namespace Foo" in out  # not over-eaten
+    assert "theorem beta" in out and "multi-line doc" in out
+
+
+def test_drop_decl_with_multi_line_block_doc() -> None:
+    out, ok = dedup.drop_decl(_SAMPLE_BLOCKDOC, "beta")
+    assert ok
+    assert "beta" not in out and "multi-line doc" not in out
+    assert "theorem alpha" in out and "single-line doc for alpha" in out
+
+
 # ---------------------------------------------------------------------
 # _external_consumer — cross-problem-consumer safety guard
 # ---------------------------------------------------------------------
@@ -223,3 +251,180 @@ def test_external_consumer_ignores_scope_files(tmp_path) -> None:
     })
     scope = {X.rel, "Library/LinearAlgebra/P1/H.lean"}
     assert dedup._external_consumer(tmp_path, X, scope) is None
+
+
+# ---------------------------------------------------------------------
+# v1b-① — parse_dedup_pairs / _strip_json_fence / mark_context
+# ---------------------------------------------------------------------
+
+def test_strip_json_fence_plain() -> None:
+    assert dedup._strip_json_fence('[{"x":"a"}]') == '[{"x":"a"}]'
+
+
+def test_strip_json_fence_fenced() -> None:
+    assert dedup._strip_json_fence('```json\n[{"x":"a"}]\n```') == '[{"x":"a"}]'
+    assert dedup._strip_json_fence('```\n[]\n```') == '[]'
+
+
+def test_parse_dedup_pairs_ok() -> None:
+    txt = ('[{"x":"L.A.foo","y":"L.B.bar","kind":"exact","why":"same"},'
+           ' {"x":"L.A.baz","y":"L.C.qux","kind":"near","why":"bridge"}]')
+    pairs, err = dedup.parse_dedup_pairs(txt)
+    assert err == ""
+    assert pairs == [("L.A.foo", "L.B.bar"), ("L.A.baz", "L.C.qux")]
+
+
+def test_parse_dedup_pairs_empty_array() -> None:
+    pairs, err = dedup.parse_dedup_pairs("[]")
+    assert err == "" and pairs == []
+
+
+def test_parse_dedup_pairs_fenced() -> None:
+    pairs, err = dedup.parse_dedup_pairs('```json\n[{"x":"a","y":"b"}]\n```')
+    assert err == "" and pairs == [("a", "b")]
+
+
+def test_parse_dedup_pairs_bad_json() -> None:
+    pairs, err = dedup.parse_dedup_pairs("not json")
+    assert pairs is None and "valid JSON" in err
+
+
+def test_parse_dedup_pairs_not_array() -> None:
+    pairs, err = dedup.parse_dedup_pairs('{"x":"a","y":"b"}')
+    assert pairs is None and "array" in err
+
+
+def test_parse_dedup_pairs_missing_key() -> None:
+    pairs, err = dedup.parse_dedup_pairs('[{"x":"a"}]')
+    assert pairs is None and "missing" in err
+
+
+def test_parse_dedup_pairs_nonstring_value() -> None:
+    pairs, err = dedup.parse_dedup_pairs('[{"x":"a","y":3}]')
+    assert pairs is None and "strings" in err
+
+
+_INDEX = (
+    "## LinearAlgebra.p1\n"
+    "- `Library.LinearAlgebra.P1.F.foo` → `Library/LinearAlgebra/P1/F.lean`\n"
+    "## LinearAlgebra.p2\n"
+    "- `Library.LinearAlgebra.P2.G.bar` → `Library/LinearAlgebra/P2/G.lean`\n"
+)
+
+
+def test_mark_context_lists_scope_and_pool(tmp_path) -> None:
+    _mk_lib(tmp_path, {
+        "Library/INDEX.md": _INDEX,
+        "Library/LinearAlgebra/P1/F.lean":
+            "import Mathlib\ntheorem foo (n : Nat) : n = n := by rfl\n",
+        "Library/LinearAlgebra/P2/G.lean":
+            "import Mathlib\ntheorem bar (m : Nat) : m = m := by rfl\n",
+    })
+    out = dedup.mark_context(tmp_path, "LinearAlgebra.p1")
+    assert "# dedup marking — LinearAlgebra.p1" in out
+    assert "SCOPE (1 decls)" in out and "POOL (2 decls)" in out
+    # scope decl present with its signature
+    assert "Library.LinearAlgebra.P1.F.foo :: (n : Nat) : n = n" in out
+    # same-domain pool includes both p1 and p2 decls
+    assert "Library.LinearAlgebra.P2.G.bar :: (m : Nat) : m = m" in out
+
+
+def test_apply_llm_pairs_skips_invalid_without_lake(tmp_path) -> None:
+    # x not in SCOPE → skipped; no valid probe pair → lake is never touched.
+    _mk_lib(tmp_path, {
+        "Library/INDEX.md": _INDEX,
+        "Library/LinearAlgebra/P1/F.lean":
+            "import Mathlib\ntheorem foo (n : Nat) : n = n := by rfl\n",
+        "Library/LinearAlgebra/P2/G.lean":
+            "import Mathlib\ntheorem bar (m : Nat) : m = m := by rfl\n",
+    })
+    # both pairs invalid: first has unknown x, second's x is a POOL (not SCOPE) decl
+    res = dedup.apply_llm_pairs(tmp_path, "LinearAlgebra.p1", [
+        ("Library.LinearAlgebra.P1.F.nope", "Library.LinearAlgebra.P2.G.bar"),
+        ("Library.LinearAlgebra.P2.G.bar", "Library.LinearAlgebra.P1.F.foo"),
+    ], apply=True)
+    assert res["dropped"] == {} and res["near"] == []
+    assert len(res["skipped"]) == 2
+
+
+# ---------------------------------------------------------------------
+# v1b-② — _proof_assign_pos / replace_proof (near-dup proof collapse)
+# ---------------------------------------------------------------------
+
+def test_proof_assign_pos_simple() -> None:
+    s = "theorem f : T := pf"
+    assert s[dedup._proof_assign_pos(s, 0):][:2] == ":="
+
+
+def test_proof_assign_pos_skips_binder_default() -> None:
+    # the `:=` inside `(x : Nat := 0)` (depth>0) must be skipped; the proof
+    # `:=` is the first at depth 0.
+    s = "theorem f (x : Nat := 0) : T := pf"
+    p = dedup._proof_assign_pos(s, 0)
+    assert s[p:] == ":= pf"
+
+
+def test_proof_assign_pos_skips_structure_instance() -> None:
+    s = "theorem f : T := by exact { a := 1 }"
+    p = dedup._proof_assign_pos(s, 0)
+    assert s[p:] == ":= by exact { a := 1 }"   # proof :=, not the inner one
+
+
+_SAMPLE2 = (
+    "import Mathlib\n\n"
+    "namespace Foo\n\n"
+    "/-- doc for foo -/\n"
+    "theorem foo (n : Nat) : n = n := by\n  rfl\n\n"
+    "/-- doc for bar -/\n"
+    "theorem bar : True := trivial\n\n"
+    "end Foo\n"
+)
+
+
+def test_replace_proof_collapses_keeps_signature() -> None:
+    out, ok = dedup.replace_proof(_SAMPLE2, "foo", "by simp")
+    assert ok
+    assert "theorem foo (n : Nat) : n = n := by simp" in out
+    assert "rfl" not in out                      # old proof gone
+    assert "/-- doc for foo -/" in out           # header/doc kept
+    assert "theorem bar : True := trivial" in out  # next decl untouched
+    assert "/-- doc for bar -/" in out
+    assert "end Foo" in out
+
+
+def test_replace_proof_term_mode() -> None:
+    out, ok = dedup.replace_proof(_SAMPLE2, "bar", "Foo.foo_bridge")
+    assert ok
+    assert "theorem bar : True := Foo.foo_bridge" in out
+    assert "theorem foo (n : Nat) : n = n := by" in out  # foo untouched
+
+
+def test_replace_proof_absent_is_noop() -> None:
+    out, ok = dedup.replace_proof(_SAMPLE2, "zeta", "by simp")
+    assert not ok and out == _SAMPLE2
+
+
+def test_replace_proof_preserves_following_blank_separation() -> None:
+    out, _ = dedup.replace_proof(_SAMPLE2, "foo", "by simp")
+    # the blank line + next decl's doc block survive the collapse
+    assert "by simp\n\n/-- doc for bar -/" in out
+
+
+def test_decl_proof_body_tactic() -> None:
+    assert dedup.decl_proof_body(_SAMPLE2, "foo") == "by\n  rfl"
+
+
+def test_decl_proof_body_term() -> None:
+    assert dedup.decl_proof_body(_SAMPLE2, "bar") == "trivial"
+
+
+def test_decl_proof_body_absent() -> None:
+    assert dedup.decl_proof_body(_SAMPLE2, "zeta") is None
+
+
+def test_replace_proof_with_moved_body_round_trip() -> None:
+    # the wrapper-merge core: move foo's body onto bar
+    body = dedup.decl_proof_body(_SAMPLE2, "foo")
+    out, ok = dedup.replace_proof(_SAMPLE2, "bar", body)
+    assert ok
+    assert "theorem bar : True := by\n  rfl" in out

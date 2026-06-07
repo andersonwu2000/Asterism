@@ -285,8 +285,11 @@ def _block_start(text: str, header_pos: int) -> int:
         if s.startswith("--"):
             ls = pls
             continue
+        if s.startswith("/-") and s.endswith("-/"):
+            ls = pls                             # self-contained block comment
+            continue                             # (single-line /-- … -/)
         if s.endswith("-/"):
-            in_block = True
+            in_block = True                      # end of a multi-line block
             ls = pls
             continue
         break                                    # code line → stop
@@ -323,6 +326,86 @@ def drop_decl(text: str, name: str) -> "tuple[str, bool]":
         return text, False
     s, e = span
     return text[:s] + text[e:], True
+
+
+# ---------------------------------------------------------------------
+# replace_proof — collapse a near-dup's proof to a one-line bridge (v1b-②)
+#
+# A `near` pair (X defeq-ish to Y but not drop-in substitutable at call sites,
+# so X cannot be dropped) is deduped by replacing X's *proof* with a one-liner
+# citing Y, keeping X's statement intact → consumers are untouched. Kills the
+# duplicated reasoning, keeps the interface. Build-gated (apply_bridge).
+# ---------------------------------------------------------------------
+
+def _proof_assign_pos(text: str, header_start: int) -> int:
+    """Char index of the proof `:=` for the decl whose header starts at
+    `header_start` — the first depth-0 `:=` after it. Binder/type `:=`
+    (structure-instance `{f := v}`) sit at depth > 0; the proof assignment is
+    the first at depth 0. Comment-borne `:=` are not special-cased (rare in a
+    binder/type; build-gated)."""
+    dp = db = dk = da = 0
+    i, n = header_start, len(text)
+    while i < n - 1:
+        c = text[i]
+        if c == "(":
+            dp += 1
+        elif c == ")":
+            dp -= 1
+        elif c == "{":
+            db += 1
+        elif c == "}":
+            db -= 1
+        elif c == "[":
+            dk += 1
+        elif c == "]":
+            dk -= 1
+        elif c == "⦃":
+            da += 1
+        elif c == "⦄":
+            da -= 1
+        elif c == ":" and text[i + 1] == "=" and dp == db == dk == da == 0:
+            return i
+        i += 1
+    return -1
+
+
+def replace_proof(text: str, name: str, new_proof: str) -> "tuple[str, bool]":
+    """Replace decl `name`'s proof (everything from its `:=`) with
+    `:= <new_proof>`, leaving the header/signature and the trailing blank
+    lines intact. Returns `(new_text, replaced)`."""
+    heads = list(_DECL_NAME_RE.finditer(text))
+    idx = next((i for i, m in enumerate(heads) if m.group(1) == name), None)
+    if idx is None:
+        return text, False
+    span = decl_span(text, name)
+    if span is None:
+        return text, False
+    _, block_end = span
+    assign = _proof_assign_pos(text, heads[idx].start())
+    if assign < 0 or assign >= block_end:
+        return text, False
+    pe = block_end                       # trim trailing whitespace → preserve it
+    while pe > assign and text[pe - 1] in " \t\r\n":
+        pe -= 1
+    return text[:assign] + f":= {new_proof}" + text[pe:], True
+
+
+def decl_proof_body(text: str, name: str) -> "str | None":
+    """The proof body of decl `name` — everything after its `:=`, trimmed —
+    or None if absent. Used by the wrapper-merge to move a real proof onto a
+    thin-wrapper survivor."""
+    heads = list(_DECL_NAME_RE.finditer(text))
+    idx = next((i for i, m in enumerate(heads) if m.group(1) == name), None)
+    if idx is None:
+        return None
+    span = decl_span(text, name)
+    if span is None:
+        return None
+    _, end = span
+    assign = _proof_assign_pos(text, heads[idx].start())
+    if assign < 0 or assign >= end:
+        return None
+    return text[assign + 2:end].strip()
 
 
 # ---------------------------------------------------------------------
@@ -525,6 +608,90 @@ def _apply_drop(workspace: Path, scope_rels: "list[str]",
     return False
 
 
+def apply_bridge(workspace: Path, scope_rels: "list[str]",
+                 X: _Decl, Y: _Decl, bridge: str) -> bool:
+    """Collapse X's proof to `:= <bridge>` (a one-liner citing Y), keeping X's
+    statement so consumers are untouched (the v1b-② near-dup move). Ensure the
+    import of Y's module, then build the problem's modules → keep on success,
+    else restore the snapshot. Returns True iff committed."""
+    from ...pipeline._lake import lake_build_modules
+    snap = {}
+    for rel in scope_rels:
+        try:
+            snap[rel] = (workspace / rel).read_text(encoding="utf-8")
+        except OSError:
+            return False
+    try:
+        new_t, ok = replace_proof(snap[X.rel], X.name, bridge)
+        if not ok:
+            return False
+        if _mod_of_rel(X.rel) != Y.module:
+            new_t = _ensure_import(new_t, Y.module)
+        (workspace / X.rel).write_text(new_t, encoding="utf-8")
+        prob_modules = sorted({_mod_of_rel(r) for r in scope_rels})
+        ok2, _msg = lake_build_modules(workspace, prob_modules)
+        if ok2:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    for rel, t in snap.items():       # revert
+        (workspace / rel).write_text(t, encoding="utf-8")
+    return False
+
+
+def apply_merge(workspace: Path, scope_rels: "list[str]",
+                X: _Decl, Y: _Decl) -> bool:
+    """Wrapper-merge: when a defeq pair can't be plain-dropped because survivor
+    Y is a thin wrapper whose proof cites X (so dropping X would break Y), move
+    X's real proof onto Y, then drop X + rewire X refs → Y. Result: Y keeps its
+    (better) name and gains the real proof; the wrapper-named X is gone. Build-
+    gated; revert on any failure. Returns True iff committed.
+
+    The common harvest pattern: `X_of_finrank` (real proof) + thin `X`
+    (`:= by apply X_of_finrank <;> assumption`) — identical statements."""
+    from ...pipeline._lake import lake_build_modules
+    snap = {}
+    for rel in scope_rels:
+        try:
+            snap[rel] = (workspace / rel).read_text(encoding="utf-8")
+        except OSError:
+            return False
+    try:
+        x_body = decl_proof_body(snap[X.rel], X.name)
+        if not x_body:
+            return False
+        new = dict(snap)
+        # 1. move X's real proof onto Y (Y no longer cites X). Same file is
+        #    fine: new[X.rel] and new[Y.rel] are one entry, edited in sequence.
+        ytext, ok = replace_proof(new[Y.rel], Y.name, x_body)
+        if not ok:
+            return False
+        new[Y.rel] = ytext
+        # 2. drop X + rewire its refs → Y
+        dropped_text, removed = drop_decl(new[X.rel], X.name)
+        if not removed:
+            return False
+        new[X.rel] = dropped_text
+        for rel in new:
+            t = new[rel]
+            t, _ = replace_token(t, X.fqn, Y.fqn)
+            t, _ = replace_token(t, X.name, Y.fqn)
+            if _mod_of_rel(rel) != Y.module and Y.fqn in t:
+                t = _ensure_import(t, Y.module)
+            new[rel] = t
+        for rel, t in new.items():
+            (workspace / rel).write_text(t, encoding="utf-8")
+        ok2, _msg = lake_build_modules(
+            workspace, sorted({_mod_of_rel(r) for r in scope_rels}))
+        if ok2:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    for rel, t in snap.items():       # revert
+        (workspace / rel).write_text(t, encoding="utf-8")
+    return False
+
+
 def run_dedup_campaign(workspace: Path, problem: str, *, apply: bool = False
                        ) -> "dict[str, str]":
     """Mechanical dedup over `problem`'s Library decls (v1a). Returns
@@ -589,9 +756,15 @@ def run_dedup_campaign(workspace: Path, problem: str, *, apply: bool = False
                 print(f"[dedup] dropped {X.name} → cite {loser_to.name}",
                       flush=True)
                 break          # state changed → restart pass
+            elif apply_merge(workspace, scope_rels, X, loser_to):
+                dropped[X.fqn] = loser_to.fqn
+                changed = True
+                print(f"[dedup] merged {X.name} → {loser_to.name} "
+                      f"(wrapper; moved real proof)", flush=True)
+                break
             else:
-                print(f"[dedup] {X.name}: defeq-hit but rewire build failed "
-                      f"→ kept as-is (v1b LLM will revisit; no persisted mark)",
+                print(f"[dedup] {X.name}: defeq-hit but drop+merge build failed "
+                      f"→ kept as-is (genuine near; v1b LLM bridger)",
                       flush=True)
         if not apply:
             break   # dry-run: one pass is enough (no state mutation)
@@ -601,13 +774,306 @@ def run_dedup_campaign(workspace: Path, problem: str, *, apply: bool = False
     return dropped
 
 
+# ---------------------------------------------------------------------
+# v1b — LLM dedup layer (standalone, operator/Agent-orchestrated)
+#
+# v1a's mechanical pass only tests pairs that survive a token-Jaccard
+# pre-filter (≥0.5), which misses exact dups stated with different tokens
+# (renamed binders, reformulated conclusions). v1b-① adds a 3.0 LLM
+# wide-marking pass: the marker scans `mark_context` (every scope decl +
+# the domain pool) at high recall and proposes candidate pairs; those feed
+# the SAME mechanical exact-defeq gate (`batch_defeq` → `_apply_drop`,
+# rewire-or-revert). Pairs the marker flagged but that are NOT defeq are the
+# 3.1b near-dup tier (one-line bridge — separate increment).
+#
+# The LLM step is operator/Agent-driven (this stays DB-free + spawn-free):
+# `mark_context` → marker Agent returns pairs → `apply_llm_pairs`. Python
+# proposes nothing semantic; it only mechanically validates + gates, exactly
+# as the framework's proposer/validator split.
+# ---------------------------------------------------------------------
+
+def mark_context(workspace: Path, problem: str) -> str:
+    """Compact `<fqn> :: <signature>` listing for the 3.0 wide-marking pass:
+    every scope decl (dedup candidates) then the domain pool (potential
+    twins/survivors). Pure — reads the Library, no lake."""
+    scope, pool = _load_decls(workspace, problem)
+
+    def row(d: _Decl) -> str:                  # one line per decl
+        return f"{d.fqn} :: {' '.join(d.sig.split())}"
+
+    lines = [f"# dedup marking — {problem}",
+             f"# SCOPE ({len(scope)} decls) — propose to drop these if a twin exists:"]
+    lines += [row(d) for d in sorted(scope, key=lambda d: d.fqn)]
+    lines.append(f"# POOL ({len(pool)} decls) — potential survivors/twins:")
+    lines += [row(d) for d in sorted(pool, key=lambda d: d.fqn)]
+    return "\n".join(lines)
+
+
+def apply_llm_pairs(workspace: Path, problem: str,
+                    pairs: "list[tuple[str, str]]", *, apply: bool = False
+                    ) -> "dict":
+    """3.0→3.1a: run LLM-marked candidate pairs `(x_fqn dups y_fqn)` through
+    the mechanical exact-defeq gate. `x` must be a scope decl; `y` any domain
+    decl. A pair lands a DROP only when x≡y (defeq), y is the deterministic
+    survivor, and x has no cross-problem consumer — then drop x + rewire
+    (rewire-or-revert), identical to v1a. Returns
+    `{'dropped': {x:y}, 'near': [(x,y)], 'skipped': [(x,y)]}`; `near` =
+    marked but not defeq → the 3.1b bridger's input."""
+    scope, pool = _load_decls(workspace, problem)
+    by_fqn = {d.fqn: d for d in (*pool, *scope)}   # scope wins name clashes
+    scope_fqns = {d.fqn for d in scope}
+    scope_rels = sorted({d.rel for d in scope})
+
+    # Resolve + validate pairs. batch_defeq builds the canonical oleans it
+    # imports (pre-flight) and _apply_drop builds the scope modules, so no
+    # top-level pool build is needed; with no valid pair we touch no lake.
+    probe: list[tuple[str, str, str]] = []
+    pair_decls: list[tuple[_Decl, _Decl]] = []
+    skipped: list[tuple[str, str]] = []
+    for x_fqn, y_fqn in pairs:
+        X, Y = by_fqn.get(x_fqn), by_fqn.get(y_fqn)
+        if X is None or Y is None or x_fqn not in scope_fqns or x_fqn == y_fqn:
+            skipped.append((x_fqn, y_fqn))
+            continue
+        probe.append((X.sig, Y.module, Y.fqn))
+        pair_decls.append((X, Y))
+    flags = batch_defeq(workspace, problem, probe) if probe else []
+
+    dropped: dict[str, str] = {}
+    merged: set[str] = set()
+    near: list[tuple[str, str]] = []
+    for (X, Y), ok in zip(pair_decls, flags):
+        if not ok:
+            near.append((X.fqn, Y.fqn))
+            continue
+        if X.fqn in dropped:
+            continue
+        if _survivor(X.fqn, Y.fqn) != Y.fqn:
+            skipped.append((X.fqn, Y.fqn))      # x is the better survivor
+            continue
+        if _external_consumer(workspace, X, set(scope_rels)):
+            skipped.append((X.fqn, Y.fqn))      # cross-problem consumer → v1b-c
+            continue
+        if not apply:
+            dropped[X.fqn] = Y.fqn
+            continue
+        if _apply_drop(workspace, scope_rels, X, Y):
+            dropped[X.fqn] = Y.fqn
+            print(f"[dedup-llm] dropped {X.name} → cite {Y.name}", flush=True)
+        elif apply_merge(workspace, scope_rels, X, Y):
+            dropped[X.fqn] = Y.fqn               # wrapper-merge (moved proof)
+            merged.add(X.fqn)
+            print(f"[dedup-llm] merged {X.name} → {Y.name} (moved real proof)",
+                  flush=True)
+        else:
+            near.append((X.fqn, Y.fqn))         # genuine near → LLM bridger
+    if apply and dropped:
+        _update_index(workspace, set(dropped))
+    return {"dropped": dropped, "merged": merged, "near": near,
+            "skipped": skipped}
+
+
+def _strip_json_fence(text: str) -> str:
+    """Drop a leading ```json / trailing ``` fence if the agent wrapped its
+    array (the classify runner tolerates the same — `_load_json`)."""
+    t = text.strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[A-Za-z0-9]*\n", "", t)
+        t = re.sub(r"\n?```$", "", t.strip())
+    return t.strip()
+
+
+def parse_dedup_pairs(text: str
+                      ) -> "tuple[list[tuple[str, str]] | None, str]":
+    """Parse the marker agent's `pairs.json` into `[(x_fqn, y_fqn), ...]`.
+    `kind`/`why` are advisory (the mechanical gate decides exact/near) and are
+    ignored here. Returns `(pairs, "")` or `(None, error)`."""
+    import json
+    try:
+        data = json.loads(_strip_json_fence(text))
+    except Exception as e:  # noqa: BLE001
+        return None, f"pairs.json is not valid JSON: {e}"
+    if not isinstance(data, list):
+        return None, "pairs.json must be a JSON array"
+    pairs: list[tuple[str, str]] = []
+    for i, item in enumerate(data):
+        if not isinstance(item, dict) or "x" not in item or "y" not in item:
+            return None, f"pair {i} missing 'x'/'y'"
+        x, y = item["x"], item["y"]
+        if not isinstance(x, str) or not isinstance(y, str):
+            return None, f"pair {i} 'x'/'y' must be strings"
+        pairs.append((x, y))
+    return pairs, ""
+
+
+def run_llm_dedup(workspace: Path, problem: str, *, apply: bool = False,
+                  bridge: bool = True, timeout_sec: int | None = None) -> "dict":
+    """v1b-① standalone LLM dedup. Spawns the marker agent via the framework's
+    `spawn_llm` (Context.md = `mark_context`, prompt = librarian/dedup.md, JSON
+    out = pairs.json) — same proposer pattern as classify — then runs the
+    proposed pairs through the mechanical exact-defeq gate (`apply_llm_pairs`,
+    rewire-or-revert). DB-free + dispatcher-free: `spawn_llm` takes only paths.
+    Returns `apply_llm_pairs`'s dict augmented with `rc`/`error`/`proposed`."""
+    from ... import agent
+    fail = {"dropped": {}, "near": [], "skipped": [], "proposed": 0}
+    pid = agent.new_pipeline_id()
+    attempts = agent.attempts_dir_for(workspace, pid)
+    (attempts / "Context.md").write_text(
+        mark_context(workspace, problem), encoding="utf-8")
+    prompt_path = workspace / "Tooling" / "prompts" / "librarian" / "dedup.md"
+    problem_dir = workspace.joinpath("Problems", *problem.split("."))
+    rc = agent.spawn_llm(
+        kind="librarian", prompt_path=prompt_path, problem_dir=problem_dir,
+        attempts_dir=attempts, session_id=agent.new_pipeline_id(),
+        timeout_sec=timeout_sec)
+    if rc != 0:
+        return {**fail, "rc": rc, "error": f"marker agent rc={rc}"}
+    out = attempts / "pairs.json"
+    if not out.exists():
+        return {**fail, "rc": rc, "error": "marker wrote no pairs.json"}
+    pairs, err = parse_dedup_pairs(out.read_text(encoding="utf-8"))
+    if err:
+        return {**fail, "rc": rc, "error": err}
+    print(f"[dedup-llm] marker proposed {len(pairs)} pair(s)", flush=True)
+    res = apply_llm_pairs(workspace, problem, pairs, apply=apply)
+    out = {**res, "rc": rc, "error": "", "proposed": len(pairs),
+           "bridged": {}, "bridge_failed": []}
+    if apply and res["near"] and bridge:          # 3.1b on the near-dups
+        br = run_llm_bridge(workspace, problem, res["near"], apply=apply)
+        out["bridged"] = br.get("bridged", {})
+        out["bridge_failed"] = br.get("failed", [])
+    return out
+
+
+def bridge_context(workspace: Path, problem: str,
+                   near_pairs: "list[tuple[str, str]]") -> str:
+    """Context for the 3.1b bridger: for each near-dup pair, X's full source
+    block (statement + the proof to collapse) and Y's signature/fqn to cite."""
+    scope, pool = _load_decls(workspace, problem)
+    by_fqn = {d.fqn: d for d in (*pool, *scope)}
+    cache: dict[str, str] = {}
+
+    def block(d: _Decl) -> str:
+        if d.rel not in cache:
+            try:
+                cache[d.rel] = (workspace / d.rel).read_text(encoding="utf-8")
+            except OSError:
+                cache[d.rel] = ""
+        span = decl_span(cache[d.rel], d.name)
+        return cache[d.rel][span[0]:span[1]].strip() if span else ""
+
+    lines = [f"# dedup bridge — {problem}",
+             "# Each pair: X is defeq-ish to Y but not drop-in substitutable, so",
+             "# X stays. Collapse X's PROOF to a one-liner citing Y (keep X's",
+             "# statement). Give the bridge as a tactic/term for `:= <bridge>`.", ""]
+    for i, (x, y) in enumerate(near_pairs):
+        X, Y = by_fqn.get(x), by_fqn.get(y)
+        if X is None or Y is None:
+            continue
+        lines += [f"## pair {i}", f"### x = {X.fqn}  (replace its proof)",
+                  "```lean", block(X), "```",
+                  f"### y = {Y.fqn}  (cite this)",
+                  f"{Y.fqn} :: {' '.join(Y.sig.split())}", ""]
+    return "\n".join(lines)
+
+
+def run_llm_bridge(workspace: Path, problem: str,
+                   near_pairs: "list[tuple[str, str]]", *, apply: bool = False
+                   ) -> "dict":
+    """v1b-②: spawn the bridger (Context = `bridge_context`, prompt =
+    librarian/dedup_bridge.md, JSON out = bridges.json), then collapse each
+    proposed near-dup's proof via `apply_bridge` (build-gated; revert on fail).
+    Returns `{'bridged': {x:y}, 'failed': [(x,y)], 'rc', 'error'}`."""
+    import json
+    from ... import agent
+    scope, pool = _load_decls(workspace, problem)
+    by_fqn = {d.fqn: d for d in (*pool, *scope)}
+    scope_rels = sorted({d.rel for d in scope})
+    fail = {"bridged": {}, "failed": list(near_pairs)}
+    pid = agent.new_pipeline_id()
+    attempts = agent.attempts_dir_for(workspace, pid)
+    (attempts / "Context.md").write_text(
+        bridge_context(workspace, problem, near_pairs), encoding="utf-8")
+    prompt_path = workspace / "Tooling" / "prompts" / "librarian" / "dedup_bridge.md"
+    problem_dir = workspace.joinpath("Problems", *problem.split("."))
+    rc = agent.spawn_llm(
+        kind="librarian", prompt_path=prompt_path, problem_dir=problem_dir,
+        attempts_dir=attempts, session_id=agent.new_pipeline_id())
+    if rc != 0:
+        return {**fail, "rc": rc, "error": f"bridger agent rc={rc}"}
+    out = attempts / "bridges.json"
+    if not out.exists():
+        return {**fail, "rc": rc, "error": "bridger wrote no bridges.json"}
+    try:
+        data = json.loads(_strip_json_fence(out.read_text(encoding="utf-8")))
+    except Exception as e:  # noqa: BLE001
+        return {**fail, "rc": rc, "error": f"bridges.json invalid: {e}"}
+    if not isinstance(data, list):
+        return {**fail, "rc": rc, "error": "bridges.json must be a JSON array"}
+    bridged: dict[str, str] = {}
+    failed: list[tuple[str, str]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        x, y, br = item.get("x"), item.get("y"), item.get("bridge")
+        X, Y = by_fqn.get(x), by_fqn.get(y)
+        if X is None or Y is None or not isinstance(br, str) or not br.strip():
+            continue
+        if not apply:
+            bridged[x] = y
+            continue
+        if apply_bridge(workspace, scope_rels, X, Y, br.strip()):
+            bridged[x] = y
+            print(f"[dedup-bridge] collapsed {X.name} → cite {Y.name}",
+                  flush=True)
+        else:
+            failed.append((x, y))
+    return {"bridged": bridged, "failed": failed, "rc": rc, "error": ""}
+
+
 if __name__ == "__main__":
+    import json
     import sys
     ws = Path(".").resolve()
     prob = sys.argv[1] if len(sys.argv) > 1 else ""
     do_apply = "--apply" in sys.argv
-    res = run_dedup_campaign(ws, prob, apply=do_apply)
-    print(f"\n=== dedup {'APPLIED' if do_apply else 'DRY'} on {prob}: "
-          f"{len(res)} drop(s) ===")
-    for x, y in res.items():
-        print(f"  drop {x.rsplit('.', 1)[-1]}  →  cite {y.rsplit('.', 1)[-1]}")
+    if "--mark" in sys.argv:                      # 3.0 context for the marker
+        print(mark_context(ws, prob))
+    elif "--llm" in sys.argv:                     # v1b: spawn marker (+bridger)
+        res = run_llm_dedup(ws, prob, apply=do_apply,
+                            bridge="--no-bridge" not in sys.argv)
+        if res.get("error"):
+            print(f"[dedup-llm] FAILED: {res['error']}")
+        bridged = res.get("bridged", {})
+        merged = res.get("merged", set())
+        ndrop = len(res["dropped"]) - len(merged)
+        print(f"\n=== dedup-llm {'APPLIED' if do_apply else 'DRY'} on {prob}: "
+              f"{ndrop} drop(s), {len(merged)} merged, {len(bridged)} bridged, "
+              f"{len(res['near'])} near, {len(res['skipped'])} skipped "
+              f"(of {res.get('proposed', 0)} proposed) ===")
+        for x, y in res["dropped"].items():
+            kind = "merge" if x in merged else "drop "
+            print(f"  {kind}  {x.rsplit('.', 1)[-1]}  →  cite {y.rsplit('.', 1)[-1]}")
+        for x, y in bridged.items():
+            print(f"  bridge {x.rsplit('.', 1)[-1]}  →  cite {y.rsplit('.', 1)[-1]}")
+        for x, y in res["near"]:
+            if x not in bridged:
+                print(f"  near   {x.rsplit('.', 1)[-1]}  ~  {y.rsplit('.', 1)[-1]}")
+    elif "--pairs" in sys.argv:                   # 3.1a on LLM-marked pairs
+        pf = sys.argv[sys.argv.index("--pairs") + 1]
+        marked = json.loads(Path(pf).read_text(encoding="utf-8"))
+        pairs = [(p["x"], p["y"]) for p in marked]
+        res = apply_llm_pairs(ws, prob, pairs, apply=do_apply)
+        print(f"\n=== dedup-llm {'APPLIED' if do_apply else 'DRY'} on {prob}: "
+              f"{len(res['dropped'])} drop(s), {len(res['near'])} near, "
+              f"{len(res['skipped'])} skipped ===")
+        for x, y in res["dropped"].items():
+            print(f"  drop {x.rsplit('.', 1)[-1]}  →  cite {y.rsplit('.', 1)[-1]}")
+        for x, y in res["near"]:
+            print(f"  near {x.rsplit('.', 1)[-1]}  ~  {y.rsplit('.', 1)[-1]}  (3.1b)")
+    else:                                          # v1a mechanical pass
+        res = run_dedup_campaign(ws, prob, apply=do_apply)
+        print(f"\n=== dedup {'APPLIED' if do_apply else 'DRY'} on {prob}: "
+              f"{len(res)} drop(s) ===")
+        for x, y in res.items():
+            print(f"  drop {x.rsplit('.', 1)[-1]}  →  cite {y.rsplit('.', 1)[-1]}")
