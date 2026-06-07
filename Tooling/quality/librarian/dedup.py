@@ -194,6 +194,60 @@ def batch_defeq(workspace: Path, problem: str,
     return results
 
 
+def _build_decl_isolated(workspace: Path, *, sig: str, proof: str,
+                         modules: "list[str]", namespaces: "list[str]",
+                         timeout: int = _BATCH_TIMEOUT_SEC
+                         ) -> "tuple[bool, str]":
+    """Per-decl isolation gate (option-1 inner gate): does
+    `theorem _cleanup_probe : <∀-form of sig> := <proof>` typecheck on its own?
+
+    The scratch imports `modules` — the decl's OWN file module (built post-
+    migrate, so its same-file siblings + cross-file deps resolve from oleans)
+    plus any module the new `proof` cites — and `open`s `namespaces` so bare
+    same-namespace references in the proof/sig resolve. This is the cheap inner
+    check for a sig-preserving edit (bridge / proof-golf): no whole-file or
+    whole-problem rebuild. Returns `(ok, detail)`. Cold `lake env lean` (a warm
+    gateway is no faster on a fresh Mathlib file — #108).
+
+    `sig` is kept in BINDER form (`<binders> : <concl>`), NOT ∀-collapsed: a
+    real proof references the binders by name, so they must be theorem
+    parameters (in scope for the body), not bound under a leading ∀."""
+    raw_sig = " ".join(sig.split())
+    real_mods = sorted({m for m in modules if m})
+    if real_mods:
+        from ...pipeline._lake import lake_build_modules
+        try:
+            lake_build_modules(workspace, real_mods)
+        except Exception:  # noqa: BLE001 — best-effort pre-flight
+            pass
+    lines = ["import Mathlib"]
+    lines += [f"import {m}" for m in real_mods]
+    lines.append("")
+    lines += [f"open {ns}" for ns in namespaces if ns]
+    lines.append(f"theorem _cleanup_probe {raw_sig} := {proof}")
+    content = "\n".join(lines)
+
+    tmp_dir = workspace / ".attempts"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_file = tmp_dir / f"_cleanup_probe_{uuid.uuid4().hex}.lean"
+    tmp_file.write_text(content, encoding="utf-8")
+    try:
+        r = subprocess.run(
+            ["lake", "env", "lean", str(tmp_file)], cwd=str(workspace),
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=timeout)
+        output = r.stdout + r.stderr
+        ok = r.returncode == 0 and not _dd._LAKE_ERR_RE.search(output)
+        return ok, ("" if ok else output[-2000:])
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return False, str(e)
+    finally:
+        try:
+            tmp_file.unlink()
+        except OSError:
+            pass
+
+
 def _code_spans(text: str) -> list[tuple[int, int]]:
     """`(start, end)` of CODE regions — everything outside Lean comments.
     Handles `--` line comments and `/- … -/` block comments (nestable, which
@@ -619,31 +673,44 @@ def _apply_drop(workspace: Path, scope_rels: "list[str]",
 def apply_bridge(workspace: Path, scope_rels: "list[str]",
                  X: _Decl, Y: _Decl, bridge: str) -> bool:
     """Collapse X's proof to `:= <bridge>` (a one-liner citing Y), keeping X's
-    statement so consumers are untouched (the v1b-② near-dup move). Ensure the
-    import of Y's module, then build the problem's modules → keep on success,
-    else restore the snapshot. Returns True iff committed."""
+    statement so consumers are untouched (the v1b-② near-dup move). Option-1
+    gate hierarchy (sig-preserving → file-local):
+
+      1. per-decl ISOLATED build (`_build_decl_isolated`) — cheaply reject a bad
+         bridge with no file write, no whole-problem rebuild;
+      2. replace the proof in X's OWN file (+ import Y's module);
+      3. per-FILE build of X's module only — the edit is sig-preserving, so
+         consumers are unaffected (no whole-problem rebuild needed).
+
+    Reverts X's file on any failure. (`scope_rels` kept for signature
+    compatibility; only X's file is touched.)"""
     from ...pipeline._lake import lake_build_modules
-    snap = {}
-    for rel in scope_rels:
-        try:
-            snap[rel] = (workspace / rel).read_text(encoding="utf-8")
-        except OSError:
-            return False
+    # (1) inner gate: build the bridged decl in isolation (Library file
+    # namespace == its module, so `open X.module` resolves bare sibling refs).
+    mods = [X.module] + ([Y.module] if Y.module else [])
+    ok, _detail = _build_decl_isolated(
+        workspace, sig=X.sig, proof=bridge, modules=mods, namespaces=[X.module])
+    if not ok:
+        return False
+    # (2) stage: replace X's proof in its own file.
     try:
-        new_t, ok = replace_proof(snap[X.rel], X.name, bridge)
-        if not ok:
-            return False
-        if Y.module and _mod_of_rel(X.rel) != Y.module:
-            new_t = _ensure_import(new_t, Y.module)   # '' = Mathlib, no import
-        (workspace / X.rel).write_text(new_t, encoding="utf-8")
-        prob_modules = sorted({_mod_of_rel(r) for r in scope_rels})
-        ok2, _msg = lake_build_modules(workspace, prob_modules)
-        if ok2:
+        orig = (workspace / X.rel).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    new_t, replaced = replace_proof(orig, X.name, bridge)
+    if not replaced:
+        return False
+    if Y.module and _mod_of_rel(X.rel) != Y.module:
+        new_t = _ensure_import(new_t, Y.module)       # '' = Mathlib, no import
+    (workspace / X.rel).write_text(new_t, encoding="utf-8")
+    # (3) per-file build: only X's module is affected (sig unchanged).
+    try:
+        ok3, _msg = lake_build_modules(workspace, [_mod_of_rel(X.rel)])
+        if ok3:
             return True
     except Exception:  # noqa: BLE001
         pass
-    for rel, t in snap.items():       # revert
-        (workspace / rel).write_text(t, encoding="utf-8")
+    (workspace / X.rel).write_text(orig, encoding="utf-8")    # revert
     return False
 
 
