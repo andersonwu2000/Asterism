@@ -5,7 +5,7 @@ You emit a list of duplicate **candidate pairs** (JSON); you do not edit Lean.
 Read `Context.md`: declarations listed as `<fqn> :: <signature>`, in two groups:
 
 - **SCOPE** — this problem's declarations (candidates to drop if a twin exists).
-- **POOL** — declarations already in the Library (this problem and others) that a SCOPE declaration could be redundant against.
+- **POOL** — declarations already in the Library (this problem and others), and **Mathlib itself**: a SCOPE decl that restates a standard Mathlib lemma should cite it, not re-prove it. Find / confirm a Mathlib name with loogle: `python -m Tooling.knowledge.loogle '<type pattern>'`.
 
 ## Your job
 
@@ -27,7 +27,7 @@ In each pair, `x` is the SCOPE declaration to drop and `y` the survivor to cite.
 ```
 
 - `x` — fully-qualified name of the SCOPE declaration to drop.
-- `y` — fully-qualified name of the surviving twin to cite.
+- `y` — fully-qualified name of the survivor to cite: a POOL declaration or a Mathlib lemma (e.g. `Submodule.finrank_le`).
 - `kind` — your read: `exact` or `near` (advisory only; the mechanical check decides).
 - `why` — a short reason, for the log.
 
@@ -35,6 +35,6 @@ In each pair, `x` is the SCOPE declaration to drop and `y` the survivor to cite.
 
 - An empty array `[]` is the right answer when nothing is redundant — say so rather than forcing weak pairs.
 - The mechanical gate is conservative and safe: a non-duplicate pair is simply rejected, never applied, so a wrong guess costs only a build, not correctness.
-- Prefer citing a POOL declaration from another problem (or Mathlib-shaped keystone) over a same-problem sibling when both state the fact — it concentrates the canonical form.
+- When several twins state the fact, pick the most canonical survivor — Mathlib, then a cross-problem Library decl, then a same-problem sibling — to concentrate the canonical form.
 
 Now read `Context.md` and write your candidate pairs to `pairs.json`.

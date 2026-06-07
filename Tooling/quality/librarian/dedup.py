@@ -592,8 +592,8 @@ def _apply_drop(workspace: Path, scope_rels: "list[str]",
             t = new[rel]
             t, _ = replace_token(t, X.fqn, Y.fqn)     # FQN refs
             t, _ = replace_token(t, X.name, Y.fqn)    # bare refs → full Y
-            if _mod_of_rel(rel) != Y.module and Y.fqn in t:
-                t = _ensure_import(t, Y.module)
+            if Y.module and _mod_of_rel(rel) != Y.module and Y.fqn in t:
+                t = _ensure_import(t, Y.module)   # '' = Mathlib, no import
             new[rel] = t
         for rel, t in new.items():
             (workspace / rel).write_text(t, encoding="utf-8")
@@ -625,8 +625,8 @@ def apply_bridge(workspace: Path, scope_rels: "list[str]",
         new_t, ok = replace_proof(snap[X.rel], X.name, bridge)
         if not ok:
             return False
-        if _mod_of_rel(X.rel) != Y.module:
-            new_t = _ensure_import(new_t, Y.module)
+        if Y.module and _mod_of_rel(X.rel) != Y.module:
+            new_t = _ensure_import(new_t, Y.module)   # '' = Mathlib, no import
         (workspace / X.rel).write_text(new_t, encoding="utf-8")
         prob_modules = sorted({_mod_of_rel(r) for r in scope_rels})
         ok2, _msg = lake_build_modules(workspace, prob_modules)
@@ -676,8 +676,8 @@ def apply_merge(workspace: Path, scope_rels: "list[str]",
             t = new[rel]
             t, _ = replace_token(t, X.fqn, Y.fqn)
             t, _ = replace_token(t, X.name, Y.fqn)
-            if _mod_of_rel(rel) != Y.module and Y.fqn in t:
-                t = _ensure_import(t, Y.module)
+            if Y.module and _mod_of_rel(rel) != Y.module and Y.fqn in t:
+                t = _ensure_import(t, Y.module)   # '' = Mathlib, no import
             new[rel] = t
         for rel, t in new.items():
             (workspace / rel).write_text(t, encoding="utf-8")
@@ -809,6 +809,20 @@ def mark_context(workspace: Path, problem: str) -> str:
     return "\n".join(lines)
 
 
+def _resolve_y(by_fqn: "dict[str, _Decl]", y_fqn: str) -> "tuple[_Decl, bool]":
+    """Resolve a marked survivor `y_fqn`. A domain-pool Library decl → that
+    _Decl, is_mathlib=False. Otherwise treat it as a Mathlib lemma (the
+    mathlib-tier): a synthetic _Decl with module='' (sentinel — Mathlib is
+    imported everywhere, so no extra import / no olean to build), is_mathlib=
+    True. Unknown/typo names also land here and are harmlessly rejected by the
+    isDefEq gate (`@<name>` fails to elaborate)."""
+    Y = by_fqn.get(y_fqn)
+    if Y is not None:
+        return Y, False
+    return _Decl(fqn=y_fqn, rel="", module="", name=y_fqn.rsplit(".", 1)[-1],
+                 sig="", binders=0, concl_tokens=frozenset()), True
+
+
 def apply_llm_pairs(workspace: Path, problem: str,
                     pairs: "list[tuple[str, str]]", *, apply: bool = False
                     ) -> "dict":
@@ -827,30 +841,33 @@ def apply_llm_pairs(workspace: Path, problem: str,
     # Resolve + validate pairs. batch_defeq builds the canonical oleans it
     # imports (pre-flight) and _apply_drop builds the scope modules, so no
     # top-level pool build is needed; with no valid pair we touch no lake.
+    # y not in the domain pool → a Mathlib lemma (the mathlib-tier "kill the
+    # wheel"): module='' sentinel, no import, always the survivor.
     probe: list[tuple[str, str, str]] = []
-    pair_decls: list[tuple[_Decl, _Decl]] = []
+    pair_decls: list[tuple[_Decl, _Decl, bool]] = []
     skipped: list[tuple[str, str]] = []
     for x_fqn, y_fqn in pairs:
-        X, Y = by_fqn.get(x_fqn), by_fqn.get(y_fqn)
-        if X is None or Y is None or x_fqn not in scope_fqns or x_fqn == y_fqn:
+        X = by_fqn.get(x_fqn)
+        if X is None or x_fqn not in scope_fqns or x_fqn == y_fqn:
             skipped.append((x_fqn, y_fqn))
             continue
+        Y, is_mathlib = _resolve_y(by_fqn, y_fqn)
         probe.append((X.sig, Y.module, Y.fqn))
-        pair_decls.append((X, Y))
+        pair_decls.append((X, Y, is_mathlib))
     flags = batch_defeq(workspace, problem, probe) if probe else []
 
     dropped: dict[str, str] = {}
     merged: set[str] = set()
     near: list[tuple[str, str]] = []
-    for (X, Y), ok in zip(pair_decls, flags):
+    for (X, Y, is_mathlib), ok in zip(pair_decls, flags):
         if not ok:
             near.append((X.fqn, Y.fqn))
             continue
         if X.fqn in dropped:
             continue
-        if _survivor(X.fqn, Y.fqn) != Y.fqn:
+        if not is_mathlib and _survivor(X.fqn, Y.fqn) != Y.fqn:
             skipped.append((X.fqn, Y.fqn))      # x is the better survivor
-            continue
+            continue                            # (mathlib always wins)
         if _external_consumer(workspace, X, set(scope_rels)):
             skipped.append((X.fqn, Y.fqn))      # cross-problem consumer → v1b-c
             continue
@@ -859,8 +876,9 @@ def apply_llm_pairs(workspace: Path, problem: str,
             continue
         if _apply_drop(workspace, scope_rels, X, Y):
             dropped[X.fqn] = Y.fqn
-            print(f"[dedup-llm] dropped {X.name} → cite {Y.name}", flush=True)
-        elif apply_merge(workspace, scope_rels, X, Y):
+            print(f"[dedup-llm] dropped {X.name} → cite "
+                  f"{'mathlib ' if is_mathlib else ''}{Y.name}", flush=True)
+        elif not is_mathlib and apply_merge(workspace, scope_rels, X, Y):
             dropped[X.fqn] = Y.fqn               # wrapper-merge (moved proof)
             merged.add(X.fqn)
             print(f"[dedup-llm] merged {X.name} → {Y.name} (moved real proof)",
@@ -967,13 +985,16 @@ def bridge_context(workspace: Path, problem: str,
              "# X stays. Collapse X's PROOF to a one-liner citing Y (keep X's",
              "# statement). Give the bridge as a tactic/term for `:= <bridge>`.", ""]
     for i, (x, y) in enumerate(near_pairs):
-        X, Y = by_fqn.get(x), by_fqn.get(y)
-        if X is None or Y is None:
+        X = by_fqn.get(x)
+        if X is None:
             continue
+        Y, is_mathlib = _resolve_y(by_fqn, y)
+        ysig = "(Mathlib lemma — confirm its statement with loogle)" \
+            if is_mathlib else " ".join(Y.sig.split())
         lines += [f"## pair {i}", f"### x = {X.fqn}  (replace its proof)",
                   "```lean", block(X), "```",
                   f"### y = {Y.fqn}  (cite this)",
-                  f"{Y.fqn} :: {' '.join(Y.sig.split())}", ""]
+                  f"{Y.fqn} :: {ysig}", ""]
     return "\n".join(lines)
 
 
@@ -1016,9 +1037,10 @@ def run_llm_bridge(workspace: Path, problem: str,
         if not isinstance(item, dict):
             continue
         x, y, br = item.get("x"), item.get("y"), item.get("bridge")
-        X, Y = by_fqn.get(x), by_fqn.get(y)
-        if X is None or Y is None or not isinstance(br, str) or not br.strip():
+        X = by_fqn.get(x)
+        if X is None or not isinstance(br, str) or not br.strip():
             continue
+        Y, _is_mathlib = _resolve_y(by_fqn, y)   # y may be a Mathlib lemma
         if not apply:
             bridged[x] = y
             continue

@@ -428,3 +428,20 @@ def test_replace_proof_with_moved_body_round_trip() -> None:
     out, ok = dedup.replace_proof(_SAMPLE2, "bar", body)
     assert ok
     assert "theorem bar : True := by\n  rfl" in out
+
+
+# ---------------------------------------------------------------------
+# mathlib-tier — _resolve_y
+# ---------------------------------------------------------------------
+
+def test_resolve_y_library_pool_decl() -> None:
+    d = _decl("Library.LinearAlgebra.P1.F.foo")
+    Y, is_mathlib = dedup._resolve_y({d.fqn: d}, d.fqn)
+    assert Y is d and is_mathlib is False
+
+
+def test_resolve_y_mathlib_when_not_in_pool() -> None:
+    Y, is_mathlib = dedup._resolve_y({}, "Finset.sum_comm")
+    assert is_mathlib is True
+    assert Y.fqn == "Finset.sum_comm" and Y.name == "sum_comm"
+    assert Y.module == ""        # sentinel: Mathlib imported, no extra import
