@@ -5,6 +5,9 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-06
+Continued Phase 3 library cleanup by mechanically deduplicating redundant declarations in the librarian (the v1a pass), while adding a safety guard to ensure that declarations consumed across multiple problems are never dropped during this process, preserving correctness as the library is trimmed.
+
 ### 2026-06-05
 Sustained the linear-algebra proving campaign, mechanizing and Library-izing a cluster of spectral and positivity results?ckart?oung low-rank approximation (SVD), the Courant?ischer min-max theorem, and Sylvester's criterion?hile reorganizing the problem set under domain folders and harvesting the campaign's lemmas into a reusable cross-problem Library to enable proof deduplication. Hardened the orchestration runtime with improved crash recovery (sparing live attempt directories, sweeping stale migration and Library probe artifacts at startup), dispatcher fixes that drop redundant Strategist work once a root goal is proved, and watchdog-driven completion reclaim with a wider carry-over budget. Retired dead librarian code from v0.3 and refreshed the design and data-flow documentation against the current implementation.
 
