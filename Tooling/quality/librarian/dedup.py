@@ -806,7 +806,74 @@ def mark_context(workspace: Path, problem: str) -> str:
     lines += [row(d) for d in sorted(scope, key=lambda d: d.fqn)]
     lines.append(f"# POOL ({len(pool)} decls) — potential survivors/twins:")
     lines += [row(d) for d in sorted(pool, key=lambda d: d.fqn)]
+
+    # Thin-proof evidence the signature listing can't show (a thin wrapper's
+    # proof names its twin). Surfacing it here is the fix for the marker's
+    # statement-only blindness — SUSPECT each as a dedup/inline candidate.
+    thin = find_thin_wrappers(workspace, problem)
+    if thin:
+        lines.append(f"# THIN-PROOF scope decls ({len(thin)}) — one-liners; SUSPECT each "
+                     "as a dedup/inline candidate:")
+        lines.append("#   delegating (`by exact/apply/simpa using <L>`, or `<L> args`) "
+                     "→ propose that <L> as y (Library or Mathlib).")
+        lines.append("#   automation (`by simp/norm_num/grind/…`) → trivially standard; "
+                     "very likely a Mathlib one-liner — loogle it.")
+        for fqn, proof, cited in sorted(thin):
+            tag = f"   → cite {cited}" if cited else "   (automation)"
+            lines.append(f"{fqn}  ::=  {proof}{tag}")
     return "\n".join(lines)
+
+
+_THIN_MAX_LEN = 120
+_AUTOMATION_HEADS = (
+    "simp", "simpa", "norm_num", "omega", "aesop", "decide", "rfl", "trivial",
+    "assumption", "linarith", "nlinarith", "positivity", "ring", "ring_nf",
+    "field_simp", "tauto", "norm_cast", "push_cast", "constructor")
+
+
+def _cited_lemma(body: str) -> "str | None":
+    """The lemma a thin *delegating* proof hands off to — the token after
+    `exact`/`apply`/`refine`/`using`, or a term-mode head — or None for a
+    pure-automation proof (`by simp` / `norm_num` / …; an inline candidate
+    rather than a rename of one lemma)."""
+    s = " ".join(body.split())
+    m = re.match(r"(?:by\s+)?(?:exact|apply|refine)\s+@?([A-Za-z_][\w'.]*)", s)
+    if not m:
+        m = re.search(r"\busing\s+@?([A-Za-z_][\w'.]*)", s)
+    if not m and not s.startswith("by"):
+        m = re.match(r"@?([A-Za-z_][\w'.]*)", s)         # term-mode head
+    if not m:
+        return None
+    name = m.group(1)
+    # a bare automation head ("by simp …") is not a delegated lemma
+    return None if name in _AUTOMATION_HEADS else name
+
+
+def find_thin_wrappers(workspace: Path, problem: str
+                       ) -> "list[tuple[str, str, str | None]]":
+    """Flag THIN-proof scope decls — one-liners — as dedup/inline suspicions.
+    This is the evidence the marker structurally can't see (`mark_context` is
+    signature-only); a thin wrapper's proof literally names its twin. Returns
+    `[(fqn, oneline_proof, cited_lemma_or_None)]`: `cited` = the lemma a
+    delegating one-liner hands off to (its likely twin → a dedup pair), None
+    for pure automation (`by simp`/`norm_num` — an inline candidate)."""
+    scope, _ = _load_decls(workspace, problem)
+    cache: dict[str, str] = {}
+    out: list[tuple[str, str, str | None]] = []
+    for d in scope:
+        if d.rel not in cache:
+            try:
+                cache[d.rel] = (workspace / d.rel).read_text(encoding="utf-8")
+            except OSError:
+                cache[d.rel] = ""
+        body = decl_proof_body(cache[d.rel], d.name)
+        if body is None or body.count("\n") > 1:
+            continue
+        one = " ".join(body.split())
+        if len(one) > _THIN_MAX_LEN:
+            continue
+        out.append((d.fqn, one, _cited_lemma(body)))
+    return out
 
 
 def _resolve_y(by_fqn: "dict[str, _Decl]", y_fqn: str) -> "tuple[_Decl, bool]":
@@ -1061,6 +1128,16 @@ if __name__ == "__main__":
     do_apply = "--apply" in sys.argv
     if "--mark" in sys.argv:                      # 3.0 context for the marker
         print(mark_context(ws, prob))
+    elif "--thin" in sys.argv:                    # mechanical thin-wrapper scan
+        rows = find_thin_wrappers(ws, prob)
+        deleg = [(f, p, c) for f, p, c in rows if c]
+        auto = [(f, p, c) for f, p, c in rows if not c]
+        print(f"=== thin wrappers in {prob}: {len(rows)} "
+              f"({len(deleg)} delegating, {len(auto)} automation) ===")
+        for f, p, c in deleg:
+            print(f"  [cite {c}]  {f.rsplit('.', 1)[-1]}  ::=  {p}")
+        for f, p, c in auto:
+            print(f"  [auto]  {f.rsplit('.', 1)[-1]}  ::=  {p}")
     elif "--llm" in sys.argv:                     # v1b: spawn marker (+bridger)
         res = run_llm_dedup(ws, prob, apply=do_apply,
                             bridge="--no-bridge" not in sys.argv)

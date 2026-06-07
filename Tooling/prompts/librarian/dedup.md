@@ -14,7 +14,9 @@ Find pairs where a SCOPE declaration states the **same proposition** as a POOL d
 - **exact** restatement — renamed or reordered binders, trivially-equal formulations of one fact; or
 - **near** duplicate — the same content, derivable from the other by a one-liner.
 
-Favor **recall**: a cheap mechanical `isDefEq` check confirms every pair you propose, so when two statements look like the same fact, include the pair. Do **not** pair declarations that merely share domain vocabulary (`Module`, `finrank`, …) but assert different facts — that only wastes a build.
+The **THIN-PROOF** list in `Context.md` flags one-liner decls — prime suspects: a delegating proof names its twin (propose it as `y`); an automation proof (`by simp`/`norm_num`/…) is almost always a Mathlib one-liner.
+
+Favor **recall**: the mechanical `isDefEq`/build gate is the arbiter, so a wrong guess costs only one build. Include a pair when two statements look like the same fact, or when a SCOPE statement reads like a standard result rather than something tied to this problem's own definitions — when unsure, mark it. Only skip declarations that merely share domain vocabulary (`Module`, `finrank`, …) while asserting different facts.
 
 In each pair, `x` is the SCOPE declaration to drop and `y` the survivor to cite. `x` must come from SCOPE; pick the more general / standard / shorter-named declaration as `y`.
 

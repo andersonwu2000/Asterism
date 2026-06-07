@@ -445,3 +445,47 @@ def test_resolve_y_mathlib_when_not_in_pool() -> None:
     assert is_mathlib is True
     assert Y.fqn == "Finset.sum_comm" and Y.name == "sum_comm"
     assert Y.module == ""        # sentinel: Mathlib imported, no extra import
+
+
+# ---------------------------------------------------------------------
+# thin-wrapper detection — _cited_lemma / find_thin_wrappers
+# ---------------------------------------------------------------------
+
+def test_cited_lemma_exact() -> None:
+    assert dedup._cited_lemma("by exact Module.End.isNilpotent.restrict h hN") \
+        == "Module.End.isNilpotent.restrict"
+
+
+def test_cited_lemma_apply_and_using() -> None:
+    assert dedup._cited_lemma("by apply foo_of_bar <;> assumption") == "foo_of_bar"
+    assert dedup._cited_lemma("by simpa [x] using Baz.qux") == "Baz.qux"
+
+
+def test_cited_lemma_term_mode_head() -> None:
+    assert dedup._cited_lemma("Submodule.finrank_le U") == "Submodule.finrank_le"
+
+
+def test_cited_lemma_automation_is_none() -> None:
+    for p in ("by norm_num", "by simp [foo]", "by grind", "by omega",
+              "by rfl", "by aesop"):
+        assert dedup._cited_lemma(p) is None
+
+
+def test_find_thin_wrappers(tmp_path) -> None:
+    idx = ("## LinearAlgebra.p1\n"
+           "- `Library.LinearAlgebra.P1.F.thin_deleg` → `Library/LinearAlgebra/P1/F.lean`\n"
+           "- `Library.LinearAlgebra.P1.F.thin_auto` → `Library/LinearAlgebra/P1/F.lean`\n"
+           "- `Library.LinearAlgebra.P1.F.fat` → `Library/LinearAlgebra/P1/F.lean`\n")
+    _mk_lib(tmp_path, {
+        "Library/INDEX.md": idx,
+        "Library/LinearAlgebra/P1/F.lean":
+            "import Mathlib\n"
+            "theorem thin_deleg (n : Nat) : n = n := by exact Nat.refl_dummy n\n\n"
+            "theorem thin_auto (n : Nat) : n = n := by norm_num\n\n"
+            "theorem fat (n : Nat) : n = n := by\n  have h := 1\n  have k := 2\n  rfl\n",
+    })
+    rows = dedup.find_thin_wrappers(tmp_path, "LinearAlgebra.p1")
+    by_name = {f.rsplit(".", 1)[-1]: (p, c) for f, p, c in rows}
+    assert "thin_deleg" in by_name and by_name["thin_deleg"][1] == "Nat.refl_dummy"
+    assert "thin_auto" in by_name and by_name["thin_auto"][1] is None
+    assert "fat" not in by_name        # multi-line proof → not thin
