@@ -1216,42 +1216,59 @@ def _file_audit_context(workspace: Path, problem: str, rel: str,
     return "\n".join(lines)
 
 
+def _audit_one_file(workspace: Path, problem: str, rel: str,
+                    scope: "list[_Decl]", pool: "list[_Decl]",
+                    scope_by_leaf: "dict[str, _Decl]",
+                    all_by_leaf: "dict[str, _Decl]", prompt_path: Path,
+                    problem_dir: Path) -> "tuple[list[tuple[str, str]], str]":
+    """Audit ONE file: spawn an agent over its focused context, parse verdicts,
+    return (non-keep pairs, log line). Pure marking — no Library mutation — so
+    files run concurrently (each in its own attempts dir)."""
+    from ... import agent
+    leaf = rel.split("/")[-1]
+    attempts = agent.attempts_dir_for(workspace, agent.new_pipeline_id())
+    (attempts / "Context.md").write_text(
+        _file_audit_context(workspace, problem, rel, scope, pool),
+        encoding="utf-8")
+    rc = agent.spawn_llm(kind="librarian", prompt_path=prompt_path,
+                         problem_dir=problem_dir, attempts_dir=attempts,
+                         session_id=agent.new_pipeline_id())
+    out = attempts / "verdicts.json"
+    if rc != 0 or not out.exists():
+        return [], f"[dedup-audit] {leaf}: rc={rc}, no verdicts"
+    vds, err = parse_verdicts(out.read_text(encoding="utf-8"))
+    if err:
+        return [], f"[dedup-audit] {leaf}: {err}"
+    fp = _audit_pairs(vds, scope_by_leaf, all_by_leaf)
+    return fp, f"[dedup-audit] {leaf}: {len(vds)} verdicts, {len(fp)} non-keep"
+
+
 def run_file_audit_dedup(workspace: Path, problem: str, *, apply: bool = False,
-                         bridge: bool = True) -> "dict":
+                         bridge: bool = True, concurrency: int = 4) -> "dict":
     """Per-file audit dedup: one agent per Library file emits a verdict for each
     decl; non-keep verdicts → the same mechanical gate (`apply_llm_pairs` +
-    bridger). DB-free, spawn-only. Returns the gate dict + audit stats."""
-    from ... import agent
+    bridger). DB-free, spawn-only. The MARKING runs `concurrency` files in
+    parallel (independent, each its own attempts dir); the GATE stays sequential
+    (per-drop rebuilds of the same problem cannot overlap). Returns the gate
+    dict + audit stats."""
+    from concurrent.futures import ThreadPoolExecutor
     scope, pool = _load_decls(workspace, problem)
     scope_by_leaf = {d.name: d for d in scope}
     all_by_leaf = {d.name: d for d in (*pool, *scope)}
     files = sorted({d.rel for d in scope})
-    print(f"[dedup-audit] {problem}: {len(files)} files, {len(scope)} decls",
-          flush=True)
+    print(f"[dedup-audit] {problem}: {len(files)} files, {len(scope)} decls "
+          f"(marking ×{max(1, concurrency)} parallel)", flush=True)
     prompt_path = workspace / "Tooling" / "prompts" / "librarian" / "dedup_audit.md"
     problem_dir = workspace.joinpath("Problems", *problem.split("."))
     all_pairs: list[tuple[str, str]] = []
-    for rel in files:
-        attempts = agent.attempts_dir_for(workspace, agent.new_pipeline_id())
-        (attempts / "Context.md").write_text(
-            _file_audit_context(workspace, problem, rel, scope, pool),
-            encoding="utf-8")
-        rc = agent.spawn_llm(kind="librarian", prompt_path=prompt_path,
-                             problem_dir=problem_dir, attempts_dir=attempts,
-                             session_id=agent.new_pipeline_id())
-        out = attempts / "verdicts.json"
-        if rc != 0 or not out.exists():
-            print(f"[dedup-audit] {rel.split('/')[-1]}: rc={rc}, no verdicts",
-                  flush=True)
-            continue
-        vds, err = parse_verdicts(out.read_text(encoding="utf-8"))
-        if err:
-            print(f"[dedup-audit] {rel.split('/')[-1]}: {err}", flush=True)
-            continue
-        fp = _audit_pairs(vds, scope_by_leaf, all_by_leaf)
-        print(f"[dedup-audit] {rel.split('/')[-1]}: {len(vds)} verdicts, "
-              f"{len(fp)} non-keep", flush=True)
-        all_pairs.extend(fp)
+    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
+        futs = [ex.submit(_audit_one_file, workspace, problem, rel, scope, pool,
+                          scope_by_leaf, all_by_leaf, prompt_path, problem_dir)
+                for rel in files]
+        for fut in futs:                       # submission order = stable logs
+            fp, log = fut.result()
+            print(log, flush=True)
+            all_pairs.extend(fp)
 
     uniq = sorted({p for p in all_pairs})
     res = apply_llm_pairs(workspace, problem, uniq, apply=apply)
@@ -1282,8 +1299,11 @@ if __name__ == "__main__":
         for f, p, c in auto:
             print(f"  [auto]  {f.rsplit('.', 1)[-1]}  ::=  {p}")
     elif "--audit" in sys.argv:                   # per-file audit marker → gate
+        jobs = int(sys.argv[sys.argv.index("--jobs") + 1]) \
+            if "--jobs" in sys.argv else 4
         res = run_file_audit_dedup(ws, prob, apply=do_apply,
-                                   bridge="--no-bridge" not in sys.argv)
+                                   bridge="--no-bridge" not in sys.argv,
+                                   concurrency=jobs)
         merged = res.get("merged", set())
         bridged = res.get("bridged", {})
         ndrop = len(res["dropped"]) - len(merged)
