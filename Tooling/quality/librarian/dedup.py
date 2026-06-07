@@ -1574,6 +1574,49 @@ def _staged_drop(workspace: Path, scope_rels: "list[str]", X: _Decl, Y: _Decl,
     return True
 
 
+def _staged_merge(workspace: Path, scope_rels: "list[str]", X: _Decl, Y: _Decl,
+                  topo_order: "list[str]", splicer: "_Splicer") -> bool:
+    """§13 wrapper-merge (staged fallback when plain drop breaks survivor Y):
+    Y is a thin wrapper whose proof cites X, so move X's real proof onto Y, then
+    drop X + rewire X→Y. Same isolate-then-splice gate as `_staged_drop`.
+    Returns True iff applied."""
+    orig: dict[str, str] = {}
+    for rel in scope_rels:
+        try:
+            orig[rel] = (workspace / rel).read_text(encoding="utf-8")
+        except OSError:
+            return False
+    if X.rel not in orig or Y.rel not in orig:
+        return False
+    x_body = decl_proof_body(orig[X.rel], X.name)
+    if not x_body:
+        return False
+    new = dict(orig)
+    ytext, ok = replace_proof(new[Y.rel], Y.name, x_body)   # Y gains real proof
+    if not ok:
+        return False
+    new[Y.rel] = ytext
+    dropped, removed = drop_decl(new[X.rel], X.name)
+    if not removed:
+        return False
+    new[X.rel] = dropped
+    for rel in scope_rels:
+        t, _ = replace_token(new[rel], X.fqn, Y.fqn)
+        t, _ = replace_token(t, X.name, Y.fqn)
+        if Y.module and _mod_of_rel(rel) != Y.module and Y.fqn in t:
+            t = _ensure_import(t, Y.module)
+        new[rel] = t
+    touched = [rel for rel in topo_order if new.get(rel, orig.get(rel)) != orig.get(rel)]
+    extra = [Y.module] if Y.module else []
+    for rel in touched:
+        ok2, _d = _build_file_copy_isolated(workspace, new[rel], extra_modules=extra)
+        if not ok2:
+            return False
+    for rel in touched:
+        splicer.write(rel, new[rel])
+    return True
+
+
 def _staged_bridge_apply(workspace: Path, X: _Decl, Y: _Decl, bridge: str,
                          splicer: "_Splicer") -> bool:
     """§13 (c) apply a proposed bridge: isolate-build the collapsed proof
@@ -1626,6 +1669,7 @@ def run_staged_cleanup(workspace: Path, problem: str, *, apply: bool = False,
         by_rel.setdefault(d.rel, []).append(d)
     splicer = _Splicer(workspace)
     dropped: dict[str, str] = {}
+    merged: set[str] = set()
     bridged: dict[str, str] = {}
     near: list[tuple[str, str]] = []
     failed: list[tuple[str, str]] = []
@@ -1641,6 +1685,11 @@ def run_staged_cleanup(workspace: Path, problem: str, *, apply: bool = False,
                 elif _staged_drop(workspace, scope_rels, d, Y, order, splicer):
                     dropped[d.fqn] = Y.fqn
                     print(f"[staged] dropped {d.name} → cite {Y.name}", flush=True)
+                elif _staged_merge(workspace, scope_rels, d, Y, order, splicer):
+                    dropped[d.fqn] = Y.fqn         # wrapper-merge (moved proof)
+                    merged.add(d.fqn)
+                    print(f"[staged] merged {d.name} → {Y.name} (moved real proof)",
+                          flush=True)
                 else:
                     near.append((d.fqn, Y.fqn))    # drop failed → leftover near
             else:                                  # bridge
@@ -1658,7 +1707,7 @@ def run_staged_cleanup(workspace: Path, problem: str, *, apply: bool = False,
     if apply and dropped:
         _update_index(workspace, set(dropped))     # bridged keep their statement
     return {"dropped": dropped, "bridged": bridged, "near": near,
-            "skipped": skipped, "bridge_failed": failed, "merged": set(),
+            "skipped": skipped, "bridge_failed": failed, "merged": merged,
             "proposed": len(uniq)}
 
 
@@ -1707,13 +1756,16 @@ if __name__ == "__main__":
                                  bridge="--no-bridge" not in sys.argv,
                                  concurrency=jobs)
         bridged = res.get("bridged", {})
+        merged = res.get("merged", set())
+        ndrop = len(res["dropped"]) - len(merged)
         print(f"\n=== staged-cleanup {'APPLIED' if do_apply else 'DRY'} on {prob}: "
-              f"{len(res['dropped'])} drop, {len(bridged)} bridge, "
+              f"{ndrop} drop, {len(merged)} merge, {len(bridged)} bridge, "
               f"{len(res['near'])} near, {len(res['skipped'])} skip, "
               f"{len(res.get('bridge_failed', []))} bridge-fail "
               f"(of {res.get('proposed', 0)} verdict-pairs) ===")
         for x, y in res["dropped"].items():
-            print(f"  drop   {x.rsplit('.', 1)[-1]}  →  cite {y.rsplit('.', 1)[-1]}")
+            kind = "merge" if x in merged else "drop "
+            print(f"  {kind}  {x.rsplit('.', 1)[-1]}  →  cite {y.rsplit('.', 1)[-1]}")
         for x, y in bridged.items():
             print(f"  bridge {x.rsplit('.', 1)[-1]}  →  cite {y.rsplit('.', 1)[-1]}")
     elif "--audit" in sys.argv:                   # per-file audit marker → gate

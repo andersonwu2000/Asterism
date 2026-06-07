@@ -134,7 +134,7 @@ def _seed_migrated(conn, slug, fqn, *, problem="p", target_file="Library/P/F.lea
 
 def _patch_engine(monkeypatch, result):
     from Tooling.quality.librarian import dedup as _dedup
-    monkeypatch.setattr(_dedup, "run_file_audit_dedup",
+    monkeypatch.setattr(_dedup, "run_staged_cleanup",
                         lambda ws, prob, **kw: result)
 
 

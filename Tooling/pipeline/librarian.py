@@ -1282,12 +1282,12 @@ def _run_cleanup(conn, *, problem, workspace):
     in-place on the migrated (staging) Library, then advance lifecycle so the
     chain proceeds to bridge.
 
-    The engine (`dedup.run_file_audit_dedup`) owns its agent spawns + the
-    rewire-or-revert build gate; bridge's Gate B is the final backstop. INDEX
-    isn't written until bridge, so the engine can't read the problem's own
-    decls from INDEX — we feed them from the DB (`scope_index` = migrated rows'
-    target_name/target_file); the pool still comes from INDEX (= other,
-    already-promoted problems).
+    The engine (`dedup.run_staged_cleanup`, §13) owns its agent spawns + the
+    per-decl isolate-then-splice gate; bridge's Gate B is the integration
+    backstop. INDEX isn't written until bridge, so the engine can't read the
+    problem's own decls from INDEX — we feed them from the DB (`scope_index` =
+    migrated rows' target_name/target_file); the pool still comes from INDEX
+    (= other, already-promoted problems).
 
     Lifecycle: dropped decls (incl wrapper-merges) → `dropped`; every surviving
     `migrated` decl → `cleaned`. ALL `migrated` rows must advance, else
@@ -1298,7 +1298,7 @@ def _run_cleanup(conn, *, problem, workspace):
     migrated = [r for r in db.library_decls_for(conn, problem, lifecycle="migrated")]
     scope_index = [(r["target_name"], r["target_file"]) for r in migrated
                    if r["target_name"] and r["target_file"]]
-    res = _dedup.run_file_audit_dedup(
+    res = _dedup.run_staged_cleanup(
         workspace, problem, apply=True, scope_index=scope_index)
     dropped = res.get("dropped", {})                # {dropped_fqn: survivor_fqn}
     dropped_leaves = {f.rsplit(".", 1)[-1] for f in dropped}
