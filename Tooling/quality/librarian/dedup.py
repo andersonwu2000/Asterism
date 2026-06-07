@@ -194,6 +194,35 @@ def batch_defeq(workspace: Path, problem: str,
     return results
 
 
+def _lake_check(workspace: Path, content: str, *,
+                prefix: str = "_cleanup_probe",
+                timeout: int = _BATCH_TIMEOUT_SEC) -> "tuple[bool, str]":
+    """Write `content` to a throwaway .lean under .attempts and `lake env lean`
+    it (cold; typecheck only, no olean). Returns `(ok, detail)` — ok iff rc==0
+    and no lake error line. Shared isolate-typecheck primitive behind
+    `_build_decl_isolated` (per-decl probe) and `_build_file_copy_isolated`
+    (whole-file copy, §13 (d))."""
+    tmp_dir = workspace / ".attempts"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_file = tmp_dir / f"{prefix}_{uuid.uuid4().hex}.lean"
+    tmp_file.write_text(content, encoding="utf-8")
+    try:
+        r = subprocess.run(
+            ["lake", "env", "lean", str(tmp_file)], cwd=str(workspace),
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=timeout)
+        output = r.stdout + r.stderr
+        ok = r.returncode == 0 and not _dd._LAKE_ERR_RE.search(output)
+        return ok, ("" if ok else output[-2000:])
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return False, str(e)
+    finally:
+        try:
+            tmp_file.unlink()
+        except OSError:
+            pass
+
+
 def _build_decl_isolated(workspace: Path, *, sig: str, proof: str,
                          modules: "list[str]", namespaces: "list[str]",
                          timeout: int = _BATCH_TIMEOUT_SEC
@@ -226,26 +255,29 @@ def _build_decl_isolated(workspace: Path, *, sig: str, proof: str,
     lines += [f"open {ns}" for ns in namespaces if ns]
     lines.append(f"theorem _cleanup_probe {raw_sig} := {proof}")
     content = "\n".join(lines)
+    return _lake_check(workspace, content, timeout=timeout)
 
-    tmp_dir = workspace / ".attempts"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_file = tmp_dir / f"_cleanup_probe_{uuid.uuid4().hex}.lean"
-    tmp_file.write_text(content, encoding="utf-8")
-    try:
-        r = subprocess.run(
-            ["lake", "env", "lean", str(tmp_file)], cwd=str(workspace),
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=timeout)
-        output = r.stdout + r.stderr
-        ok = r.returncode == 0 and not _dd._LAKE_ERR_RE.search(output)
-        return ok, ("" if ok else output[-2000:])
-    except (subprocess.TimeoutExpired, OSError) as e:
-        return False, str(e)
-    finally:
+
+def _build_file_copy_isolated(workspace: Path, new_text: str, *,
+                              extra_modules: "list[str]" = (),
+                              timeout: int = _BATCH_TIMEOUT_SEC
+                              ) -> "tuple[bool, str]":
+    """Isolate-typecheck a WHOLE Library file's proposed new content (§13 (d)
+    consumer rewire): `lake env lean` a throwaway copy of `new_text`. The copy
+    is NOT registered as its module (no path clash), so this verifies the edit
+    without overwriting the real file or producing an olean — the real file's
+    olean is rebuilt later (its own (e) / Gate B). `extra_modules` (e.g. a
+    survivor's module newly `import`ed by the rewire) are pre-flight built so
+    their oleans exist. Returns `(ok, detail)`."""
+    real = sorted({m for m in extra_modules if m})
+    if real:
+        from ...pipeline._lake import lake_build_modules
         try:
-            tmp_file.unlink()
-        except OSError:
+            lake_build_modules(workspace, real)
+        except Exception:  # noqa: BLE001 — best-effort pre-flight
             pass
+    return _lake_check(workspace, new_text, prefix="_cleanup_filecopy",
+                       timeout=timeout)
 
 
 def _code_spans(text: str) -> list[tuple[int, int]]:
@@ -1320,6 +1352,46 @@ def _audit_one_file(workspace: Path, problem: str, rel: str,
         return [], f"[dedup-audit] {leaf}: {err}"
     fp = _audit_pairs(vds, scope_by_leaf, all_by_leaf)
     return fp, f"[dedup-audit] {leaf}: {len(vds)} verdicts, {len(fp)} non-keep"
+
+
+def _file_topo_order(workspace: Path, scope: "list[_Decl]") -> "list[str]":
+    """Bottom-up topo order (deps first) of the problem's scope file rels, read
+    from their `import` lines: file R depends on scope file S iff R imports S's
+    module. A file lands after every in-scope dep, so a rebuild publishes fresh
+    dependency oleans before importers (and §13's per-file cleanup cleans the
+    foundation before its consumers). Cycle → leftovers appended (stable).
+
+    Mirrors `pipeline.librarian._topo_files` (the framework twin 3c-2 will use
+    via the dispatcher); inlined to keep this engine standalone / DB-free."""
+    mod2rel = {d.module: d.rel for d in scope if d.module}
+    files = sorted({d.rel for d in scope})
+    deps: dict[str, set[str]] = {r: set() for r in files}
+    imp_re = re.compile(r"^\s*import\s+([\w.]+)", re.M)
+    for r in files:
+        try:
+            text = (workspace / r).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for m in imp_re.findall(text):
+            d = mod2rel.get(m)
+            if d and d != r:
+                deps[r].add(d)
+    indeg = {r: len(deps[r]) for r in files}
+    users: dict[str, list[str]] = {r: [] for r in files}
+    for r in files:
+        for d in deps[r]:
+            users[d].append(r)
+    ready = sorted(r for r in files if indeg[r] == 0)
+    out: list[str] = []
+    while ready:
+        f = ready.pop(0)
+        out.append(f)
+        for u in users[f]:
+            indeg[u] -= 1
+            if indeg[u] == 0:
+                ready = sorted(ready + [u])
+    out += [r for r in files if r not in out]      # cycle fallback
+    return out
 
 
 def run_file_audit_dedup(workspace: Path, problem: str, *, apply: bool = False,

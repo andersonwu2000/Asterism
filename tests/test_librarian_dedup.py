@@ -551,3 +551,42 @@ def test_audit_pairs_maps_and_resolves() -> None:
     assert ("Library.LinearAlgebra.P1.F.foo", "Submodule.finrank_le") in pairs
     assert ("Library.LinearAlgebra.P1.F.bar", "Library.LinearAlgebra.P1.F.foo") in pairs
     assert len(pairs) == 2        # keep skipped, unknown-slug skipped
+
+
+# ---------------------------------------------------------------------
+# _file_topo_order — bottom-up (deps first), from import lines (§13 3c-1)
+# ---------------------------------------------------------------------
+
+def test_file_topo_order_chain_deps_first(tmp_path) -> None:
+    base = _decl("Library.LA.P.Base.b")
+    mid = _decl("Library.LA.P.Mid.m")
+    top = _decl("Library.LA.P.Top.t")
+    _mk_lib(tmp_path, {
+        base.rel: "import Mathlib\ntheorem b : True := trivial\n",
+        mid.rel: f"import Mathlib\nimport {base.module}\n"
+                 "theorem m : True := trivial\n",
+        top.rel: f"import Mathlib\nimport {mid.module}\n"
+                 "theorem t : True := trivial\n",
+    })
+    # unsorted input → deps strictly before importers
+    assert dedup._file_topo_order(tmp_path, [top, mid, base]) \
+        == [base.rel, mid.rel, top.rel]
+
+
+def test_file_topo_order_diamond_and_independent(tmp_path) -> None:
+    base = _decl("Library.LA.P.Base.b")
+    l = _decl("Library.LA.P.L.l")
+    r = _decl("Library.LA.P.R.r")
+    top = _decl("Library.LA.P.Top.t")            # imports both L and R
+    _mk_lib(tmp_path, {
+        base.rel: "import Mathlib\ntheorem b : True := trivial\n",
+        l.rel: f"import Mathlib\nimport {base.module}\ntheorem l : True := trivial\n",
+        r.rel: f"import Mathlib\nimport {base.module}\ntheorem r : True := trivial\n",
+        top.rel: f"import Mathlib\nimport {l.module}\nimport {r.module}\n"
+                 "theorem t : True := trivial\n",
+    })
+    order = dedup._file_topo_order(tmp_path, [top, r, l, base])
+    pos = {f: i for i, f in enumerate(order)}
+    assert pos[base.rel] < pos[l.rel] < pos[top.rel]   # base first, top last
+    assert pos[base.rel] < pos[r.rel] < pos[top.rel]
+    assert order[0] == base.rel and order[-1] == top.rel
