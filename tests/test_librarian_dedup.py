@@ -590,3 +590,29 @@ def test_file_topo_order_diamond_and_independent(tmp_path) -> None:
     assert pos[base.rel] < pos[l.rel] < pos[top.rel]   # base first, top last
     assert pos[base.rel] < pos[r.rel] < pos[top.rel]
     assert order[0] == base.rel and order[-1] == top.rel
+
+
+# ---------------------------------------------------------------------
+# _resolve_drop_chains — X→Y→Z drop chains repoint to the final survivor
+# ---------------------------------------------------------------------
+
+def test_resolve_drop_chains_follows_to_final_survivor() -> None:
+    z = _decl("Library.LA.P.F.aa")        # final survivor (not dropped)
+    y = _decl("Library.LA.P.F.bbb")       # dropped → z
+    x = _decl("Library.LA.P.F.cccc")      # dropped → y
+    by_fqn = {d.fqn: d for d in (x, y, z)}
+    plan = {x.fqn: (y, "drop"), y.fqn: (z, "drop")}
+    out = dedup._resolve_drop_chains(plan, by_fqn)
+    assert out[x.fqn][0].fqn == z.fqn     # x repointed past dropped y → z
+    assert out[y.fqn][0].fqn == z.fqn
+
+
+def test_resolve_drop_chains_leaves_non_chained_and_bridge() -> None:
+    surv = _decl("Library.LA.P.F.aa")     # survivor (not dropped)
+    x = _decl("Library.LA.P.F.bbb")       # drop → surv (no chain)
+    b = _decl("Library.LA.P.F.cccc")      # bridge → surv (untouched by resolver)
+    by_fqn = {d.fqn: d for d in (surv, x, b)}
+    plan = {x.fqn: (surv, "drop"), b.fqn: (surv, "bridge")}
+    out = dedup._resolve_drop_chains(plan, by_fqn)
+    assert out[x.fqn] == (surv, "drop")   # unchanged
+    assert out[b.fqn] == (surv, "bridge")  # bridge entries never repointed

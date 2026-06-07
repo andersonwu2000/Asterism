@@ -1394,16 +1394,13 @@ def _file_topo_order(workspace: Path, scope: "list[_Decl]") -> "list[str]":
     return out
 
 
-def run_file_audit_dedup(workspace: Path, problem: str, *, apply: bool = False,
-                         bridge: bool = True, concurrency: int = 4,
-                         scope_index: "list[tuple[str, str]] | None" = None
-                         ) -> "dict":
-    """Per-file audit dedup: one agent per Library file emits a verdict for each
-    decl; non-keep verdicts → the same mechanical gate (`apply_llm_pairs` +
-    bridger). DB-free, spawn-only. The MARKING runs `concurrency` files in
-    parallel (independent, each its own attempts dir); the GATE stays sequential
-    (per-drop rebuilds of the same problem cannot overlap). Returns the gate
-    dict + audit stats."""
+def _collect_marked_pairs(workspace: Path, problem: str, *, concurrency: int = 4,
+                          scope_index: "list[tuple[str, str]] | None" = None
+                          ) -> "tuple[list[tuple[str, str]], list[_Decl], list[_Decl]]":
+    """Per-file audit marking (parallel): one agent per Library file emits a
+    verdict per decl → uniq (x_fqn, y_fqn) pairs. The shared precursor of both
+    the legacy batch gate (`run_file_audit_dedup`) and the staged pipeline
+    (`run_staged_cleanup`). Returns (uniq_pairs, scope, pool)."""
     from concurrent.futures import ThreadPoolExecutor
     scope, pool = _load_decls(workspace, problem, scope_index)
     scope_by_leaf = {d.name: d for d in scope}
@@ -1422,8 +1419,258 @@ def run_file_audit_dedup(workspace: Path, problem: str, *, apply: bool = False,
             fp, log = fut.result()
             print(log, flush=True)
             all_pairs.extend(fp)
+    return sorted({p for p in all_pairs}), scope, pool
 
-    uniq = sorted({p for p in all_pairs})
+
+def _resolve_drop_chains(plan: "dict[str, tuple[_Decl, str]]",
+                         by_fqn: "dict[str, _Decl]"
+                         ) -> "dict[str, tuple[_Decl, str]]":
+    """Repoint each drop's survivor to the FINAL non-dropped survivor, so no
+    drop cites a decl that is itself dropped this round (X→Y→Z ⇒ X→Z). The
+    stale-olean isolate gate cannot catch an intermediate-survivor breakage, so
+    we resolve chains up front (§13 soundness). Mutates + returns `plan`."""
+    drop_fqns = {x for x, (_Y, k) in plan.items() if k == "drop"}
+
+    def _final(fqn: str, depth: int = 0) -> str:
+        ent = plan.get(fqn)
+        if ent and ent[1] == "drop" and fqn in drop_fqns and depth < 64:
+            return _final(ent[0].fqn, depth + 1)
+        return fqn
+    for x, (Y, k) in list(plan.items()):
+        if k == "drop":
+            fz = _final(Y.fqn)
+            if fz != Y.fqn and fz in by_fqn:
+                plan[x] = (by_fqn[fz], "drop")
+    return plan
+
+
+def _classify_pairs(workspace: Path, problem: str,
+                    pairs: "list[tuple[str, str]]", *,
+                    scope_index: "list[tuple[str, str]] | None" = None
+                    ) -> "tuple[dict[str, tuple[_Decl, str]], list[tuple[str, str]]]":
+    """Plan the staged gate WITHOUT applying (§13). Classify each marked
+    (x_fqn, y_fqn) into drop / bridge / skip — mirrors `apply_llm_pairs`'s
+    mechanical gate: exact-defeq + Y-is-survivor + no cross-problem consumer →
+    drop; not-defeq → bridge; else skip. Drop wins over bridge for the same x.
+    Drop targets are then chain-resolved to a final non-dropped survivor (so no
+    drop cites a decl that is itself dropped this round — the stale-olean
+    isolate gate would miss that, see §13 soundness). Returns
+    (plan{x_fqn:(Y,'drop'|'bridge')}, skipped)."""
+    scope, pool = _load_decls(workspace, problem, scope_index)
+    by_fqn = {d.fqn: d for d in (*pool, *scope)}
+    scope_fqns = {d.fqn for d in scope}
+    scope_rels = {d.rel for d in scope}
+    probe: list[tuple[str, str, str]] = []
+    decls: list[tuple[_Decl, _Decl, bool]] = []
+    skipped: list[tuple[str, str]] = []
+    for x_fqn, y_fqn in pairs:
+        X = by_fqn.get(x_fqn)
+        if X is None or x_fqn not in scope_fqns or x_fqn == y_fqn:
+            skipped.append((x_fqn, y_fqn))
+            continue
+        Y, is_mathlib = _resolve_y(by_fqn, y_fqn)
+        probe.append((X.sig, Y.module, Y.fqn))
+        decls.append((X, Y, is_mathlib))
+    flags = batch_defeq(workspace, problem, probe) if probe else []
+    plan: dict[str, tuple[_Decl, str]] = {}
+    for (X, Y, is_mathlib), ok in zip(decls, flags):
+        if not ok:
+            plan.setdefault(X.fqn, (Y, "bridge"))      # drop (below) overrides
+            continue
+        if plan.get(X.fqn, (None, ""))[1] == "drop":
+            continue
+        if not is_mathlib and _survivor(X.fqn, Y.fqn) != Y.fqn:
+            skipped.append((X.fqn, Y.fqn))             # x is the better survivor
+            continue
+        if _external_consumer(workspace, X, scope_rels):
+            skipped.append((X.fqn, Y.fqn))             # cross-problem consumer
+            continue
+        plan[X.fqn] = (Y, "drop")
+    return _resolve_drop_chains(plan, by_fqn), skipped
+
+
+def _propose_bridges(workspace: Path, problem: str,
+                     pairs: "list[tuple[str, str]]", *,
+                     scope_index: "list[tuple[str, str]] | None" = None
+                     ) -> "dict[str, str]":
+    """Spawn the bridger for `pairs` (the 'bridge'-classified near-dups) and
+    return {x_fqn: bridge_str} — proposed one-line proofs, NOT applied (the
+    staged loop applies them per-decl via isolate-build + splice). Batch spawn;
+    empty dict on any failure."""
+    import json
+    from ... import agent
+    if not pairs:
+        return {}
+    pid = agent.new_pipeline_id()
+    attempts = agent.attempts_dir_for(workspace, pid)
+    (attempts / "Context.md").write_text(
+        bridge_context(workspace, problem, pairs, scope_index), encoding="utf-8")
+    prompt_path = workspace / "Tooling" / "prompts" / "librarian" / "dedup_bridge.md"
+    problem_dir = workspace.joinpath("Problems", *problem.split("."))
+    rc = agent.spawn_llm(
+        kind="librarian", prompt_path=prompt_path, problem_dir=problem_dir,
+        attempts_dir=attempts, session_id=agent.new_pipeline_id())
+    out = attempts / "bridges.json"
+    if rc != 0 or not out.exists():
+        return {}
+    try:
+        data = json.loads(_strip_json_fence(out.read_text(encoding="utf-8")))
+    except Exception:  # noqa: BLE001
+        return {}
+    bridges: dict[str, str] = {}
+    if isinstance(data, list):
+        for it in data:
+            if (isinstance(it, dict) and it.get("x")
+                    and isinstance(it.get("bridge"), str) and it["bridge"].strip()):
+                bridges[it["x"]] = it["bridge"].strip()
+    return bridges
+
+
+class _Splicer:
+    """Serializes the only shared write in staged cleanup — the mechanical
+    splice of an isolate-verified edit into a real file. 3c-1: plain write
+    (serial). 3c-2: per-target-file lock (in-process → cross-process)."""
+
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
+
+    def write(self, rel: str, text: str) -> None:
+        (self.workspace / rel).write_text(text, encoding="utf-8")
+
+
+def _staged_drop(workspace: Path, scope_rels: "list[str]", X: _Decl, Y: _Decl,
+                 topo_order: "list[str]", splicer: "_Splicer") -> bool:
+    """§13 staged drop: remove X + rewire X→Y across consumers, computed from
+    the CURRENT real files (earlier splices already applied). Each touched file
+    is isolate-typechecked (copy) BEFORE any real write; splice all on full
+    pass, else abort writing nothing. Returns True iff applied."""
+    orig: dict[str, str] = {}
+    for rel in scope_rels:
+        try:
+            orig[rel] = (workspace / rel).read_text(encoding="utf-8")
+        except OSError:
+            return False
+    if X.rel not in orig:
+        return False
+    new = dict(orig)
+    dropped, removed = drop_decl(new[X.rel], X.name)
+    if not removed:
+        return False
+    new[X.rel] = dropped
+    for rel in scope_rels:
+        t, _ = replace_token(new[rel], X.fqn, Y.fqn)
+        t, _ = replace_token(t, X.name, Y.fqn)
+        if Y.module and _mod_of_rel(rel) != Y.module and Y.fqn in t:
+            t = _ensure_import(t, Y.module)        # '' = Mathlib, no import
+        new[rel] = t
+    touched = [rel for rel in topo_order if new.get(rel, orig.get(rel)) != orig.get(rel)]
+    extra = [Y.module] if Y.module else []
+    for rel in touched:                            # isolate-typecheck, no write
+        ok, _d = _build_file_copy_isolated(workspace, new[rel], extra_modules=extra)
+        if not ok:
+            return False
+    for rel in touched:                            # all verified → splice
+        splicer.write(rel, new[rel])
+    return True
+
+
+def _staged_bridge_apply(workspace: Path, X: _Decl, Y: _Decl, bridge: str,
+                         splicer: "_Splicer") -> bool:
+    """§13 (c) apply a proposed bridge: isolate-build the collapsed proof
+    (binders in header) → splice into X's own file (+ import Y). Sig-preserving
+    → no consumer rewire. Returns True iff applied."""
+    ok, _d = _build_decl_isolated(
+        workspace, sig=X.sig, proof=bridge, namespaces=[X.module],
+        modules=[X.module] + ([Y.module] if Y.module else []))
+    if not ok:
+        return False
+    try:
+        orig = (workspace / X.rel).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    new_t, replaced = replace_proof(orig, X.name, bridge)
+    if not replaced:
+        return False
+    if Y.module and _mod_of_rel(X.rel) != Y.module:
+        new_t = _ensure_import(new_t, Y.module)
+    splicer.write(X.rel, new_t)
+    return True
+
+
+def run_staged_cleanup(workspace: Path, problem: str, *, apply: bool = False,
+                       bridge: bool = True, concurrency: int = 4,
+                       scope_index: "list[tuple[str, str]] | None" = None
+                       ) -> "dict":
+    """§13 staged cleanup (3c-1, SERIAL): mark (per-file batch parallel) →
+    classify (drop/bridge/skip, chain-resolved) → for each file in TOPO order,
+    each decl in source order, apply via isolate-then-splice — drop = mechanical
+    drop+rewire with each touched file isolate-typechecked before any write;
+    bridge = collapse proof, per-decl isolate build. decl-cleanup / file-cleanup
+    stages are no-op (dedup only). No per-edit whole-problem rebuild: the
+    isolate gates are the fast pre-checks and the chain's bridge Gate B (or a
+    manual build for the standalone CLI) is the integration backstop. Returns
+    the run_file_audit_dedup shape. 3c-2 lifts this to a per-file dispatcher
+    work-kind + parallel via a locking `_Splicer`."""
+    uniq, scope, _pool = _collect_marked_pairs(
+        workspace, problem, concurrency=concurrency, scope_index=scope_index)
+    plan, skipped = _classify_pairs(workspace, problem, uniq,
+                                    scope_index=scope_index)
+    bridge_pairs = [(x, Y.fqn) for x, (Y, k) in plan.items() if k == "bridge"]
+    bridges = (_propose_bridges(workspace, problem, bridge_pairs,
+                                scope_index=scope_index)
+               if (apply and bridge) else {})
+    order = _file_topo_order(workspace, scope)
+    scope_rels = sorted({d.rel for d in scope})
+    by_rel: dict[str, list[_Decl]] = {}
+    for d in scope:                                # _load_decls keeps source order
+        by_rel.setdefault(d.rel, []).append(d)
+    splicer = _Splicer(workspace)
+    dropped: dict[str, str] = {}
+    bridged: dict[str, str] = {}
+    near: list[tuple[str, str]] = []
+    failed: list[tuple[str, str]] = []
+    for rel in order:                              # files: deps first
+        for d in by_rel.get(rel, []):              # decls: source order
+            ent = plan.get(d.fqn)
+            if ent is None:
+                continue                           # unmarked → decl-cleanup no-op
+            Y, kind = ent
+            if kind == "drop":
+                if not apply:
+                    dropped[d.fqn] = Y.fqn
+                elif _staged_drop(workspace, scope_rels, d, Y, order, splicer):
+                    dropped[d.fqn] = Y.fqn
+                    print(f"[staged] dropped {d.name} → cite {Y.name}", flush=True)
+                else:
+                    near.append((d.fqn, Y.fqn))    # drop failed → leftover near
+            else:                                  # bridge
+                if not apply:
+                    near.append((d.fqn, Y.fqn))
+                    continue
+                br = bridges.get(d.fqn)
+                if Y.fqn in dropped:               # target itself dropped → skip
+                    failed.append((d.fqn, Y.fqn))
+                elif br and _staged_bridge_apply(workspace, d, Y, br, splicer):
+                    bridged[d.fqn] = Y.fqn
+                    print(f"[staged] bridged {d.name} → cite {Y.name}", flush=True)
+                else:
+                    failed.append((d.fqn, Y.fqn))
+    if apply and dropped:
+        _update_index(workspace, set(dropped))     # bridged keep their statement
+    return {"dropped": dropped, "bridged": bridged, "near": near,
+            "skipped": skipped, "bridge_failed": failed, "merged": set(),
+            "proposed": len(uniq)}
+
+
+def run_file_audit_dedup(workspace: Path, problem: str, *, apply: bool = False,
+                         bridge: bool = True, concurrency: int = 4,
+                         scope_index: "list[tuple[str, str]] | None" = None
+                         ) -> "dict":
+    """Legacy batch gate (pre-§13): per-file audit marking → batch mechanical
+    gate (`apply_llm_pairs` whole-problem rebuild + batch bridger). Kept for the
+    standalone `--audit` CLI; the chain uses `run_staged_cleanup`."""
+    uniq, _scope, _pool = _collect_marked_pairs(
+        workspace, problem, concurrency=concurrency, scope_index=scope_index)
     res = apply_llm_pairs(workspace, problem, uniq, apply=apply,
                           scope_index=scope_index)
     result = {**res, "proposed": len(uniq), "bridged": {}, "bridge_failed": []}
@@ -1453,6 +1700,22 @@ if __name__ == "__main__":
             print(f"  [cite {c}]  {f.rsplit('.', 1)[-1]}  ::=  {p}")
         for f, p, c in auto:
             print(f"  [auto]  {f.rsplit('.', 1)[-1]}  ::=  {p}")
+    elif "--staged" in sys.argv:                  # §13 staged per-decl pipeline
+        jobs = int(sys.argv[sys.argv.index("--jobs") + 1]) \
+            if "--jobs" in sys.argv else 4
+        res = run_staged_cleanup(ws, prob, apply=do_apply,
+                                 bridge="--no-bridge" not in sys.argv,
+                                 concurrency=jobs)
+        bridged = res.get("bridged", {})
+        print(f"\n=== staged-cleanup {'APPLIED' if do_apply else 'DRY'} on {prob}: "
+              f"{len(res['dropped'])} drop, {len(bridged)} bridge, "
+              f"{len(res['near'])} near, {len(res['skipped'])} skip, "
+              f"{len(res.get('bridge_failed', []))} bridge-fail "
+              f"(of {res.get('proposed', 0)} verdict-pairs) ===")
+        for x, y in res["dropped"].items():
+            print(f"  drop   {x.rsplit('.', 1)[-1]}  →  cite {y.rsplit('.', 1)[-1]}")
+        for x, y in bridged.items():
+            print(f"  bridge {x.rsplit('.', 1)[-1]}  →  cite {y.rsplit('.', 1)[-1]}")
     elif "--audit" in sys.argv:                   # per-file audit marker → gate
         jobs = int(sys.argv[sys.argv.index("--jobs") + 1]) \
             if "--jobs" in sys.argv else 4
