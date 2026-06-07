@@ -489,3 +489,46 @@ def test_find_thin_wrappers(tmp_path) -> None:
     assert "thin_deleg" in by_name and by_name["thin_deleg"][1] == "Nat.refl_dummy"
     assert "thin_auto" in by_name and by_name["thin_auto"][1] is None
     assert "fat" not in by_name        # multi-line proof → not thin
+
+
+# ---------------------------------------------------------------------
+# per-file audit — parse_verdicts / _audit_pairs
+# ---------------------------------------------------------------------
+
+def test_parse_verdicts_ok() -> None:
+    txt = ('[{"slug":"foo","verdict":"keep","reason":"genuine"},'
+           ' {"slug":"bar","verdict":"cite-mathlib","mathlib_name":"Nat.add_comm"},'
+           ' {"slug":"baz","verdict":"merge","canonical":"foo"}]')
+    vds, err = dedup.parse_verdicts(txt)
+    assert err == ""
+    assert vds[0]["verdict"] == "keep" and vds[0]["name"] == ""
+    assert vds[1]["name"] == "Nat.add_comm"
+    assert vds[2]["verdict"] == "merge" and vds[2]["name"] == "foo"
+
+
+def test_parse_verdicts_bad_verdict() -> None:
+    vds, err = dedup.parse_verdicts('[{"slug":"a","verdict":"nuke"}]')
+    assert vds is None and "unknown verdict" in err
+
+
+def test_parse_verdicts_missing_slug() -> None:
+    vds, err = dedup.parse_verdicts('[{"verdict":"keep"}]')
+    assert vds is None and "missing" in err
+
+
+def test_audit_pairs_maps_and_resolves() -> None:
+    foo = _decl("Library.LinearAlgebra.P1.F.foo")
+    bar = _decl("Library.LinearAlgebra.P1.F.bar")
+    baz = _decl("Library.LinearAlgebra.P2.G.baz")
+    scope_by_leaf = {"foo": foo, "bar": bar}
+    all_by_leaf = {"foo": foo, "bar": bar, "baz": baz}
+    vds = [
+        {"slug": "foo", "verdict": "keep", "name": ""},
+        {"slug": "foo", "verdict": "cite-mathlib", "name": "Submodule.finrank_le"},
+        {"slug": "bar", "verdict": "merge", "name": "foo"},        # bare → fqn
+        {"slug": "ghost", "verdict": "drop", "name": "X.y"},        # unknown slug → skip
+    ]
+    pairs = dedup._audit_pairs(vds, scope_by_leaf, all_by_leaf)
+    assert ("Library.LinearAlgebra.P1.F.foo", "Submodule.finrank_le") in pairs
+    assert ("Library.LinearAlgebra.P1.F.bar", "Library.LinearAlgebra.P1.F.foo") in pairs
+    assert len(pairs) == 2        # keep skipped, unknown-slug skipped

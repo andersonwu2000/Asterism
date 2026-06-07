@@ -1120,6 +1120,149 @@ def run_llm_bridge(workspace: Path, problem: str,
     return {"bridged": bridged, "failed": failed, "rc": rc, "error": ""}
 
 
+# ---------------------------------------------------------------------
+# per-file audit marker (replaces the flat one-shot marker)
+#
+# The flat marker (`mark_context` → one call over scope+pool+THIN) disperses
+# attention over hundreds of lines and is statement-only. The old v0.2 design
+# audited every decl with a verdict — high recall, but its variance went
+# straight into the Library (no gate). This revives the per-decl AUDIT but at
+# the FILE grain (focused, sees within-file siblings, matches the librarian's
+# per-file unit) and keeps the mechanical gate as the variance absorber: one
+# agent per file emits a verdict per decl, verdicts → apply_llm_pairs.
+# ---------------------------------------------------------------------
+
+_AUDIT_VERDICTS = ("keep", "drop", "cite-mathlib", "cite-library", "merge")
+
+
+def parse_verdicts(text: str) -> "tuple[list[dict] | None, str]":
+    """Parse an audit's verdicts.json → `[{slug, verdict, name}]` (`name` = the
+    cited Mathlib/Library lemma or canonical sibling; '' for keep)."""
+    import json
+    try:
+        data = json.loads(_strip_json_fence(text))
+    except Exception as e:  # noqa: BLE001
+        return None, f"verdicts.json is not valid JSON: {e}"
+    if not isinstance(data, list):
+        return None, "verdicts.json must be a JSON array"
+    out: list[dict] = []
+    for i, it in enumerate(data):
+        if not isinstance(it, dict) or "slug" not in it or "verdict" not in it:
+            return None, f"verdict {i} missing 'slug'/'verdict'"
+        v = it["verdict"]
+        if v not in _AUDIT_VERDICTS:
+            return None, f"verdict {i} unknown verdict {v!r}"
+        name = (it.get("name") or it.get("mathlib_name") or it.get("library_name")
+                or it.get("canonical") or "")
+        out.append({"slug": it["slug"], "verdict": v, "name": str(name)})
+    return out, ""
+
+
+def _audit_pairs(verdicts: "list[dict]", scope_by_leaf: "dict[str, _Decl]",
+                 all_by_leaf: "dict[str, _Decl]") -> "list[tuple[str, str]]":
+    """Non-keep verdicts → (x_fqn, y) gate pairs. A bare canonical/library slug
+    is resolved to its fqn; dotted (Mathlib/Library) names pass through."""
+    pairs: list[tuple[str, str]] = []
+    for vd in verdicts:
+        if vd["verdict"] == "keep" or not vd["name"]:
+            continue
+        X = scope_by_leaf.get(vd["slug"])
+        if X is None:
+            continue
+        y = vd["name"]
+        if "." not in y:
+            yd = all_by_leaf.get(y)
+            if yd:
+                y = yd.fqn
+        if y != X.fqn:
+            pairs.append((X.fqn, y))
+    return pairs
+
+
+def _file_audit_context(workspace: Path, problem: str, rel: str,
+                        scope: "list[_Decl]", pool: "list[_Decl]",
+                        *, shortlist: int = 30) -> str:
+    """Focused context for ONE file's audit: each decl's statement + proof (so
+    thin wrappers are visible), same-problem siblings (for `merge`), and a
+    token-nearest Library-pool shortlist (for `cite-library`). Mathlib is via
+    loogle, not dumped."""
+    try:
+        text = (workspace / rel).read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    file_decls = [d for d in scope if d.rel == rel]
+    ftokens: "frozenset[str]" = frozenset().union(
+        *(d.concl_tokens for d in file_decls)) if file_decls else frozenset()
+    lines = [f"# dedup audit — {problem}", f"# file: {rel}",
+             f"# Give a verdict for EACH of these {len(file_decls)} decls.", ""]
+    for d in file_decls:
+        proof = " ".join((decl_proof_body(text, d.name) or "").split())
+        if len(proof) > 240:
+            proof = proof[:240] + " …"
+        lines += [f"## {d.fqn}",
+                  f"  statement :: {' '.join(d.sig.split())}",
+                  f"  proof     :: {proof}", ""]
+    sibs = [d for d in scope if d.rel != rel]
+    if sibs:
+        lines.append(f"# same-problem siblings ({len(sibs)}) — targets for `merge`:")
+        lines += [f"{d.fqn} :: {' '.join(d.sig.split())}"
+                  for d in sorted(sibs, key=lambda d: d.fqn)]
+    ranked = sorted((d for d in pool if d.concl_tokens & ftokens),
+                    key=lambda d: len(d.concl_tokens & ftokens), reverse=True)
+    near_pool = ranked[:shortlist]
+    if near_pool:
+        lines.append(f"# nearest Library pool ({len(near_pool)}) — targets for `cite-library`:")
+        lines += [f"{d.fqn} :: {' '.join(d.sig.split())}" for d in near_pool]
+    return "\n".join(lines)
+
+
+def run_file_audit_dedup(workspace: Path, problem: str, *, apply: bool = False,
+                         bridge: bool = True) -> "dict":
+    """Per-file audit dedup: one agent per Library file emits a verdict for each
+    decl; non-keep verdicts → the same mechanical gate (`apply_llm_pairs` +
+    bridger). DB-free, spawn-only. Returns the gate dict + audit stats."""
+    from ... import agent
+    scope, pool = _load_decls(workspace, problem)
+    scope_by_leaf = {d.name: d for d in scope}
+    all_by_leaf = {d.name: d for d in (*pool, *scope)}
+    files = sorted({d.rel for d in scope})
+    print(f"[dedup-audit] {problem}: {len(files)} files, {len(scope)} decls",
+          flush=True)
+    prompt_path = workspace / "Tooling" / "prompts" / "librarian" / "dedup_audit.md"
+    problem_dir = workspace.joinpath("Problems", *problem.split("."))
+    all_pairs: list[tuple[str, str]] = []
+    for rel in files:
+        attempts = agent.attempts_dir_for(workspace, agent.new_pipeline_id())
+        (attempts / "Context.md").write_text(
+            _file_audit_context(workspace, problem, rel, scope, pool),
+            encoding="utf-8")
+        rc = agent.spawn_llm(kind="librarian", prompt_path=prompt_path,
+                             problem_dir=problem_dir, attempts_dir=attempts,
+                             session_id=agent.new_pipeline_id())
+        out = attempts / "verdicts.json"
+        if rc != 0 or not out.exists():
+            print(f"[dedup-audit] {rel.split('/')[-1]}: rc={rc}, no verdicts",
+                  flush=True)
+            continue
+        vds, err = parse_verdicts(out.read_text(encoding="utf-8"))
+        if err:
+            print(f"[dedup-audit] {rel.split('/')[-1]}: {err}", flush=True)
+            continue
+        fp = _audit_pairs(vds, scope_by_leaf, all_by_leaf)
+        print(f"[dedup-audit] {rel.split('/')[-1]}: {len(vds)} verdicts, "
+              f"{len(fp)} non-keep", flush=True)
+        all_pairs.extend(fp)
+
+    uniq = sorted({p for p in all_pairs})
+    res = apply_llm_pairs(workspace, problem, uniq, apply=apply)
+    result = {**res, "proposed": len(uniq), "bridged": {}, "bridge_failed": []}
+    if apply and res["near"] and bridge:
+        br = run_llm_bridge(workspace, problem, res["near"], apply=apply)
+        result["bridged"] = br.get("bridged", {})
+        result["bridge_failed"] = br.get("failed", [])
+    return result
+
+
 if __name__ == "__main__":
     import json
     import sys
@@ -1138,6 +1281,21 @@ if __name__ == "__main__":
             print(f"  [cite {c}]  {f.rsplit('.', 1)[-1]}  ::=  {p}")
         for f, p, c in auto:
             print(f"  [auto]  {f.rsplit('.', 1)[-1]}  ::=  {p}")
+    elif "--audit" in sys.argv:                   # per-file audit marker → gate
+        res = run_file_audit_dedup(ws, prob, apply=do_apply,
+                                   bridge="--no-bridge" not in sys.argv)
+        merged = res.get("merged", set())
+        bridged = res.get("bridged", {})
+        ndrop = len(res["dropped"]) - len(merged)
+        print(f"\n=== dedup-audit {'APPLIED' if do_apply else 'DRY'} on {prob}: "
+              f"{ndrop} drop, {len(merged)} merge, {len(bridged)} bridge, "
+              f"{len(res['near'])} near, {len(res['skipped'])} skip "
+              f"(of {res.get('proposed', 0)} verdict-pairs) ===")
+        for x, y in res["dropped"].items():
+            kind = "merge" if x in merged else "drop "
+            print(f"  {kind}  {x.rsplit('.', 1)[-1]}  →  cite {y.rsplit('.', 1)[-1]}")
+        for x, y in bridged.items():
+            print(f"  bridge {x.rsplit('.', 1)[-1]}  →  cite {y.rsplit('.', 1)[-1]}")
     elif "--llm" in sys.argv:                     # v1b: spawn marker (+bridger)
         res = run_llm_dedup(ws, prob, apply=do_apply,
                             bridge="--no-bridge" not in sys.argv)
