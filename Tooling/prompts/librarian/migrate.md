@@ -1,6 +1,6 @@
 You are a Lean 4 engineer. Finish **one** Library declaration by editing `patch.lean`.
 
-`patch.lean` is a seed: imports (`Mathlib`, the sibling Library modules, and `<this file's module>` for decls already migrated here) + one declaration in the `Library.<Topic>` namespace with a `sorry` body. `Context.md` gives its original source (statement + proof), the proofs of any siblings dedup'd into it, and the dedup redirects.
+`patch.lean` is a seed: imports (`Mathlib`, the sibling Library modules, and `<this file's module>` for decls already migrated here) + one declaration in the `Library.<Topic>` namespace with a `sorry` body. `Context.md` gives its original source (statement + proof).
 
 Time budget: {timeout_min} minutes.
 
@@ -9,12 +9,9 @@ Time budget: {timeout_min} minutes.
 Write only the one declaration — nothing else. Refer to already-imported siblings by name; don't restate them. Keep the original declaration keyword.
 
 - **Body hole** (common): the signature — head up to `:=` — is correct. Keep it verbatim; replace `sorry` with the body ported from the proof source in `Context.md`.
-- **Signature hole** (`Context.md` flags it): the signature still names a `Problems`/`Defs` symbol with no Library form. Restate it Defs-free using the redirect, then prove it.
+- **Signature hole** (`Context.md` flags it): the signature still names a `Problems`/`Defs` symbol with no Library form. Restate it Defs-free (cite the migrated sibling or the mathlib notion), then prove it.
 
-When porting:
-- Drop `Problems.<problem>.Defs` deps — cite the imported sibling or the mathlib notion.
-- A redirect `X → Y` means replace `X` with `Y`.
-- An **absorbed sibling** (`Context.md` lists it) has no Library home — inline its proof here.
+When porting, drop `Problems.<problem>.Defs` deps — cite the imported sibling or the mathlib notion.
 
 ## Editing — LSP-backed (a live server holds `patch.lean`)
 

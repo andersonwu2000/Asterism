@@ -848,6 +848,68 @@ def test_file_topo_order_diamond_and_independent(tmp_path) -> None:
 # _resolve_drop_chains — X→Y→Z drop chains repoint to the final survivor
 # ---------------------------------------------------------------------
 
+def _mk_decl_file(tmp_path, rel, names):
+    p = tmp_path / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    body = "import Mathlib\n" + "\n".join(
+        f"theorem {n} : True := by trivial" for n in names) + "\n"
+    p.write_text(body, encoding="utf-8")
+
+
+def _classify_setup(monkeypatch):
+    monkeypatch.setattr(dedup, "batch_defeq",
+                        lambda ws, p, probe: [True] * len(probe))
+    monkeypatch.setattr(dedup, "_nonscope_library_texts", lambda ws, rels: [])
+
+
+def test_classify_same_file_trusts_marker_over_survivor(tmp_path, monkeypatch) -> None:
+    # Marker: drop the SHORTER-named `aa`, keep the longer `aa_much_longer`.
+    # `_survivor` prefers the shorter name (disagrees), but same-file → trust the
+    # marker and DROP (Finding A — skipping here lost recall).
+    P = "LinearAlgebra.p"
+    rel = "Library/LinearAlgebra/P/F.lean"
+    mod = "Library.LinearAlgebra.P.F"
+    _mk_decl_file(tmp_path, rel, ["aa", "aa_much_longer"])
+    _classify_setup(monkeypatch)
+    si = [(f"{mod}.aa", rel), (f"{mod}.aa_much_longer", rel)]
+    plan, skipped = dedup._classify_pairs(
+        tmp_path, P, [(f"{mod}.aa", f"{mod}.aa_much_longer")], scope_index=si)
+    assert plan.get(f"{mod}.aa", (None, ""))[1] == "drop"   # dropped, not skipped
+    assert skipped == []
+
+
+def test_classify_cross_file_keeps_deterministic_survivor(tmp_path, monkeypatch) -> None:
+    # Same disagreement but CROSS-file: keep the deterministic survivor (skip) so
+    # parallel per-file workers stay race-safe.
+    P = "LinearAlgebra.p"
+    relF = "Library/LinearAlgebra/P/F.lean"
+    relG = "Library/LinearAlgebra/P/G.lean"
+    mod = "Library.LinearAlgebra.P"
+    _mk_decl_file(tmp_path, relF, ["aa"])
+    _mk_decl_file(tmp_path, relG, ["aa_much_longer"])
+    _classify_setup(monkeypatch)
+    si = [(f"{mod}.F.aa", relF), (f"{mod}.G.aa_much_longer", relG)]
+    plan, skipped = dedup._classify_pairs(
+        tmp_path, P, [(f"{mod}.F.aa", f"{mod}.G.aa_much_longer")], scope_index=si)
+    assert plan == {}                                       # skipped (canonical kept)
+    assert len(skipped) == 1
+
+
+def test_classify_drops_when_survivor_agrees(tmp_path, monkeypatch) -> None:
+    # Marker drops the LONGER `aa_2`, keeps shorter `aa` — `_survivor` agrees →
+    # drop regardless of file (the common, always-worked case).
+    P = "LinearAlgebra.p"
+    rel = "Library/LinearAlgebra/P/F.lean"
+    mod = "Library.LinearAlgebra.P.F"
+    _mk_decl_file(tmp_path, rel, ["aa", "aa_2"])
+    _classify_setup(monkeypatch)
+    si = [(f"{mod}.aa", rel), (f"{mod}.aa_2", rel)]
+    plan, skipped = dedup._classify_pairs(
+        tmp_path, P, [(f"{mod}.aa_2", f"{mod}.aa")], scope_index=si)
+    assert plan.get(f"{mod}.aa_2", (None, ""))[1] == "drop"
+    assert skipped == []
+
+
 def test_resolve_drop_chains_follows_to_final_survivor() -> None:
     z = _decl("Library.LA.P.F.aa")        # final survivor (not dropped)
     y = _decl("Library.LA.P.F.bbb")       # dropped → z

@@ -154,6 +154,10 @@ def batch_defeq(workspace: Path, problem: str,
 
     error_lines = {int(m.group(1)) for m in _dd._LAKE_ERR_RE.finditer(output)}
     if not error_lines:
+        if rc != 0:
+            print(f"[dedup] batch_defeq: rc={rc} with no parsed Lean error line "
+                  f"— refusing all {len(pairs)} pair(s) (probe env issue); "
+                  f"tail: {output[-300:].strip()}", flush=True)
         return [True] * len(pairs) if rc == 0 else [False] * len(pairs)
     in_pair = set()
     for el in error_lines:
@@ -163,7 +167,14 @@ def batch_defeq(workspace: Path, problem: str,
             if start <= el <= end:
                 in_pair.add(el)
                 break
-    if error_lines - in_pair:        # global error → refuse all
+    if error_lines - in_pair:        # global error (import/env) → cannot judge any
+        # NOT a "not defeq" verdict — the probe environment is broken (commonly a
+        # stale/missing dependency olean mid-cleanup). Refuse all, but LOUDLY: a
+        # silent all-False here masks lost dedups as "near/bridge" (Finding B).
+        print(f"[dedup] batch_defeq: GLOBAL probe error (rc={rc}, "
+              f"{len(error_lines - in_pair)} error line(s) outside pair blocks) "
+              f"— refusing all {len(pairs)} pair(s); likely stale/missing olean. "
+              f"tail: {output[-400:].strip()}", flush=True)
         return [False] * len(pairs)
     results = []
     for i, start in enumerate(pair_start_lines):
@@ -1520,8 +1531,16 @@ def _classify_pairs(workspace: Path, problem: str,
             continue
         if plan.get(X.fqn, (None, ""))[1] == "drop":
             continue
-        if not is_mathlib and _survivor(X.fqn, Y.fqn) != Y.fqn:
-            skipped.append((X.fqn, Y.fqn))             # x is the better survivor
+        # `_survivor` (shorter name) may disagree with the marker's chosen
+        # survivor Y. batch_defeq only verified `@Y proves X` (the drop-X
+        # direction), so we can never safely REVERSE to drop Y. Cross-file: defer
+        # to the deterministic survivor so two parallel per-file workers that both
+        # mark the pair (X→Y and Y→X) pick the same loser (race-safe). Same-file:
+        # one worker owns both decls (no race) → trust the marker and drop X→Y;
+        # skipping the same-file case merely because the dup had the shorter name
+        # was a recall bug (Finding A — `termwise_eigenvalue_bound` et al.).
+        if not is_mathlib and X.rel != Y.rel and _survivor(X.fqn, Y.fqn) != Y.fqn:
+            skipped.append((X.fqn, Y.fqn))             # cross-file: keep canonical
             continue
         if X.fqn in prior_survivors or Y.fqn in prior_dropped:
             skipped.append((X.fqn, Y.fqn))             # per-file cross-file chain
