@@ -243,7 +243,8 @@ def _build_decl_isolated(workspace: Path, *, sig: str, proof: str,
     real proof references the binders by name, so they must be theorem
     parameters (in scope for the body), not bound under a leading ∀."""
     raw_sig = " ".join(sig.split())
-    missing = _missing_oleans(workspace, [m for m in modules if m])   # O1
+    real_mods = sorted({m for m in modules if m})
+    missing = _missing_oleans(workspace, real_mods)                   # O1
     if missing:
         from ...pipeline._lake import lake_build_modules
         try:
@@ -1482,16 +1483,24 @@ def _resolve_drop_chains(plan: "dict[str, tuple[_Decl, str]]",
 
 def _classify_pairs(workspace: Path, problem: str,
                     pairs: "list[tuple[str, str]]", *,
-                    scope_index: "list[tuple[str, str]] | None" = None
+                    scope_index: "list[tuple[str, str]] | None" = None,
+                    prior_dropped: "set[str]" = frozenset(),
+                    prior_survivors: "set[str]" = frozenset()
                     ) -> "tuple[dict[str, tuple[_Decl, str]], list[tuple[str, str]]]":
     """Plan the staged gate WITHOUT applying (§13). Classify each marked
     (x_fqn, y_fqn) into drop / bridge / skip — mirrors `apply_llm_pairs`'s
     mechanical gate: exact-defeq + Y-is-survivor + no cross-problem consumer →
     drop; not-defeq → bridge; else skip. Drop wins over bridge for the same x.
-    Drop targets are then chain-resolved to a final non-dropped survivor (so no
-    drop cites a decl that is itself dropped this round — the stale-olean
-    isolate gate would miss that, see §13 soundness). Returns
-    (plan{x_fqn:(Y,'drop'|'bridge')}, skipped)."""
+    Within-run drop targets are chain-resolved to a final non-dropped survivor
+    (X→Y→Z ⇒ X→Z; the stale-olean isolate gate would miss an intermediate-
+    survivor breakage, §13 soundness). Returns (plan{x_fqn:(Y,'drop'|'bridge')},
+    skipped).
+
+    Per-file (3c-2) cross-file chain guard: `prior_survivors` = decls already
+    cited as a drop survivor by an EARLIER (cleaned) file — must NOT be dropped
+    (those files are done citing them); `prior_dropped` = decls already dropped
+    by an earlier file — never a valid new survivor (stale target). Both → skip
+    (conservative; the rare cross-file chain becomes a leftover, not a misfire)."""
     scope, pool = _load_decls(workspace, problem, scope_index)
     by_fqn = {d.fqn: d for d in (*pool, *scope)}
     scope_fqns = {d.fqn for d in scope}
@@ -1518,6 +1527,9 @@ def _classify_pairs(workspace: Path, problem: str,
             continue
         if not is_mathlib and _survivor(X.fqn, Y.fqn) != Y.fqn:
             skipped.append((X.fqn, Y.fqn))             # x is the better survivor
+            continue
+        if X.fqn in prior_survivors or Y.fqn in prior_dropped:
+            skipped.append((X.fqn, Y.fqn))             # per-file cross-file chain
             continue
         if nonscope is None:
             nonscope = _nonscope_library_texts(workspace, scope_rels)
@@ -1739,6 +1751,74 @@ def run_staged_cleanup(workspace: Path, problem: str, *, apply: bool = False,
     return {"dropped": dropped, "bridged": bridged, "near": near,
             "skipped": skipped, "bridge_failed": failed, "merged": merged,
             "proposed": len(uniq)}
+
+
+def _decl_from_fqn(fqn: str, by_fqn: "dict[str, _Decl]") -> _Decl:
+    """Minimal `_Decl` for a rename endpoint known only by FQN (a DB-recorded
+    drop / survivor in the per-file path). Prefer the loaded decl (correct
+    module); else reconstruct — module='' when the FQN is not a known Library
+    decl (= a Mathlib survivor, needs no import)."""
+    d = by_fqn.get(fqn)
+    if d is not None:
+        return d
+    return _Decl(fqn=fqn, rel="", module="", name=fqn.rsplit(".", 1)[-1],
+                 sig="", binders=0, concl_tokens=frozenset())
+
+
+def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
+                            scope_index: "list[tuple[str, str]] | None" = None,
+                            prior_renames: "dict[str, str] | None" = None,
+                            apply: bool = True, bridge: bool = True) -> "dict":
+    """§13 3c-2 per-file cleanup unit (the dispatcher's per-file work item).
+    Clean ONE Library file: mark it → classify (with the cross-file chain guard
+    from `prior_renames` = earlier files' {dropped_fqn: survivor_fqn}) → propose
+    bridges → `_cleanup_one_file` (deferred-rewire: apply incoming renames from
+    `prior_renames`, write ONLY this file). Returns
+    `{dropped:{x:y}, merged:set, bridged:{x:y}, near, failed}` — the caller
+    records drops to DB so later (consumer) files self-apply them.
+
+    Generic stage shell (P2-ready): the dedup stage is active; decl-cleanup +
+    per-file build (e) are P2 hooks inside `_cleanup_one_file`. Same per-decl
+    logic as the serial `run_staged_cleanup`, one file at a time."""
+    prior_renames = dict(prior_renames or {})
+    scope, pool = _load_decls(workspace, problem, scope_index)
+    by_fqn = {d.fqn: d for d in (*pool, *scope)}
+    decls_in_file = [d for d in scope if d.rel == target_file]
+    empty = {"dropped": {}, "merged": set(), "bridged": {}, "near": [], "failed": []}
+    if not decls_in_file:
+        return empty
+    scope_by_leaf = {d.name: d for d in scope}
+    all_by_leaf = {d.name: d for d in (*pool, *scope)}
+    prompt_path = workspace / "Tooling" / "prompts" / "librarian" / "dedup_audit.md"
+    problem_dir = workspace.joinpath("Problems", *problem.split("."))
+    pairs, log = _audit_one_file(workspace, problem, target_file, scope, pool,
+                                 scope_by_leaf, all_by_leaf, prompt_path, problem_dir)
+    print(log, flush=True)
+    plan, _skipped = _classify_pairs(
+        workspace, problem, sorted(set(pairs)), scope_index=scope_index,
+        prior_dropped=set(prior_renames),
+        prior_survivors=set(prior_renames.values()))
+    if not apply:
+        return {**empty,
+                "dropped": {x: Y.fqn for x, (Y, k) in plan.items() if k == "drop"},
+                "near": [(x, Y.fqn) for x, (Y, k) in plan.items() if k == "bridge"]}
+    bridge_pairs = [(x, Y.fqn) for x, (Y, k) in plan.items() if k == "bridge"]
+    bridges = (_propose_bridges(workspace, problem, bridge_pairs,
+                                scope_index=scope_index)
+               if (bridge and bridge_pairs) else {})
+    rename_map = [(_decl_from_fqn(xf, by_fqn), _decl_from_fqn(yf, by_fqn))
+                  for xf, yf in prior_renames.items()]
+    r = _cleanup_one_file(workspace, target_file, decls_in_file, plan, bridges,
+                          rename_map, _Splicer(workspace))
+    for xf, Yd in r["drops"].items():
+        tag = "merged" if xf in r["merged"] else "dropped"
+        print(f"[staged] {tag} {xf.rsplit('.', 1)[-1]} → cite {Yd.name}", flush=True)
+    for xf, Yd in r["bridged"]:
+        print(f"[staged] bridged {xf.rsplit('.', 1)[-1]} → cite {Yd.name}", flush=True)
+    return {"dropped": {x: Yd.fqn for x, Yd in r["drops"].items()},
+            "merged": set(r["merged"]),
+            "bridged": {x: Yd.fqn for x, Yd in r["bridged"]},
+            "near": r["near"], "failed": r["failed"]}
 
 
 def run_file_audit_dedup(workspace: Path, problem: str, *, apply: bool = False,
