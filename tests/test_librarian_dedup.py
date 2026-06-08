@@ -117,6 +117,258 @@ def test_code_spans_partition_round_trips() -> None:
 
 
 # ---------------------------------------------------------------------
+# code_token_invariant — the docstring (e) safety gate (P2a)
+# ---------------------------------------------------------------------
+
+def test_code_token_invariant_comment_only_change() -> None:
+    old = "import Mathlib\ntheorem foo : True := by trivial\n"
+    new = "import Mathlib\n/-- foo is true. -/\ntheorem foo : True := by trivial\n"
+    assert dedup.code_token_invariant(old, new) is True
+
+
+def test_code_token_invariant_detects_code_change() -> None:
+    old = "theorem foo : True := by trivial\n"
+    new = "/-- doc -/\ntheorem foo : True := by simp\n"   # tactic changed
+    assert dedup.code_token_invariant(old, new) is False
+
+
+def test_code_token_invariant_ignores_whitespace_in_comments() -> None:
+    old = "theorem foo : True := by trivial\n"
+    new = "theorem foo : True := by trivial  -- note\n\n"
+    assert dedup.code_token_invariant(old, new) is True
+
+
+# ---------------------------------------------------------------------
+# file_cleanup_docstrings — (e) whole-file docstring pass with retry (P2a)
+# ---------------------------------------------------------------------
+
+def _setup_docstring(tmp_path, rel, content, *, prompt=True):
+    if prompt:
+        pd = tmp_path / "Tooling" / "prompts" / "librarian"
+        pd.mkdir(parents=True, exist_ok=True)
+        (pd / "docstring.md").write_text("polish docstrings", encoding="utf-8")
+    p = tmp_path / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    return p
+
+
+def _fake_spawn(monkeypatch, responses):
+    """Patch agent.spawn_llm to write responses[i] (str|None) as annotated.lean
+    on the i-th call; returns the call counter dict."""
+    from Tooling import agent
+    calls = {"n": 0}
+
+    def _spawn(*, kind, prompt_path, problem_dir, attempts_dir, session_id):
+        i = calls["n"]
+        calls["n"] += 1
+        if i < len(responses) and responses[i] is not None:
+            (attempts_dir / "annotated.lean").write_text(
+                responses[i], encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", _spawn)
+    return calls
+
+
+_ORIG = "import Mathlib\ntheorem foo : True := by trivial\n"
+_DOC = "import Mathlib\n/-- foo is true. -/\ntheorem foo : True := by trivial\n"
+
+
+def test_file_cleanup_docstrings_success(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    _setup_docstring(tmp_path, rel, _ORIG)
+    _fake_spawn(monkeypatch, [_DOC])
+    monkeypatch.setattr(dedup, "_build_file_copy_isolated",
+                        lambda ws, txt, **k: (True, ""))
+    assert dedup.file_cleanup_docstrings(tmp_path, "p", rel, ["foo"]) is True
+    assert (tmp_path / rel).read_text(encoding="utf-8") == _DOC
+
+
+def test_file_cleanup_docstrings_rejects_code_change(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    _setup_docstring(tmp_path, rel, _ORIG)
+    bad = "import Mathlib\ntheorem foo : True := by simp\n"     # code touched
+    calls = _fake_spawn(monkeypatch, [bad, bad, bad])
+    monkeypatch.setattr(dedup, "_build_file_copy_isolated",
+                        lambda ws, txt, **k: (True, ""))
+    assert dedup.file_cleanup_docstrings(
+        tmp_path, "p", rel, ["foo"], max_retries=2) is False
+    assert (tmp_path / rel).read_text(encoding="utf-8") == _ORIG   # untouched
+    assert calls["n"] == 3                                         # retried
+
+
+def test_file_cleanup_docstrings_build_fail_keeps_original(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    _setup_docstring(tmp_path, rel, _ORIG)
+    _fake_spawn(monkeypatch, [_DOC, _DOC, _DOC])
+    monkeypatch.setattr(dedup, "_build_file_copy_isolated",
+                        lambda ws, txt, **k: (False, "parse error"))
+    assert dedup.file_cleanup_docstrings(
+        tmp_path, "p", rel, ["foo"], max_retries=2) is False
+    assert (tmp_path / rel).read_text(encoding="utf-8") == _ORIG
+
+
+def test_file_cleanup_docstrings_retry_then_success(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    _setup_docstring(tmp_path, rel, _ORIG)
+    bad = "import Mathlib\ntheorem foo : True := by simp\n"
+    _fake_spawn(monkeypatch, [bad, _DOC])           # 1st rejected, 2nd accepted
+    monkeypatch.setattr(dedup, "_build_file_copy_isolated",
+                        lambda ws, txt, **k: (True, ""))
+    assert dedup.file_cleanup_docstrings(
+        tmp_path, "p", rel, ["foo"], max_retries=2) is True
+    assert (tmp_path / rel).read_text(encoding="utf-8") == _DOC
+
+
+def test_file_cleanup_docstrings_noop_when_prompt_absent(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    _setup_docstring(tmp_path, rel, _ORIG, prompt=False)     # no prompt file
+    called = _fake_spawn(monkeypatch, [_DOC])
+    assert dedup.file_cleanup_docstrings(tmp_path, "p", rel, ["foo"]) is False
+    assert called["n"] == 0                                  # never spawned
+    assert (tmp_path / rel).read_text(encoding="utf-8") == _ORIG
+
+
+def test_file_cleanup_docstrings_noop_when_unchanged(tmp_path, monkeypatch) -> None:
+    # agent returns the file verbatim → nothing to do, no write, no build.
+    rel = "Library/P/F.lean"
+    _setup_docstring(tmp_path, rel, _ORIG)
+    _fake_spawn(monkeypatch, [_ORIG])
+    built = {"n": 0}
+
+    def _b(ws, txt, **k):
+        built["n"] += 1
+        return (True, "")
+    monkeypatch.setattr(dedup, "_build_file_copy_isolated", _b)
+    assert dedup.file_cleanup_docstrings(tmp_path, "p", rel, ["foo"]) is False
+    assert built["n"] == 0                                   # skipped the build
+
+
+# ---------------------------------------------------------------------
+# proof simplification — (c) per-decl, marked-only, session-retry (P2b)
+# ---------------------------------------------------------------------
+
+_FILE2 = ("import Mathlib\n"
+          "theorem foo : True := by trivial\n"
+          "theorem bar : True := by trivial\n")
+
+
+def _decl(name, module="Library.P.F", rel="Library/P/F.lean"):
+    return dedup._Decl(fqn=f"{module}.{name}", rel=rel, module=module,
+                       name=name, sig=f"{name} : True", binders=0,
+                       concl_tokens=frozenset())
+
+
+def _setup_simplify(tmp_path, rel, content, *, prompt="decl_simplify.md"):
+    if prompt:
+        pd = tmp_path / "Tooling" / "prompts" / "librarian"
+        pd.mkdir(parents=True, exist_ok=True)
+        (pd / prompt).write_text("simplify", encoding="utf-8")
+    p = tmp_path / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+
+
+def _fake_simplify_spawn(monkeypatch, responses):
+    """Patch agent.spawn_llm to write responses[i] (str|None) as simplified.txt."""
+    from Tooling import agent
+    calls = {"n": 0}
+
+    def _spawn(*, kind, prompt_path, problem_dir, attempts_dir, session_id):
+        i = calls["n"]
+        calls["n"] += 1
+        r = responses[i] if i < len(responses) else None
+        if r is not None:
+            (attempts_dir / "simplified.txt").write_text(r, encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", _spawn)
+    return calls
+
+
+def test_parse_simplify_marks() -> None:
+    assert dedup._parse_simplify_marks('["a","b"]') == {"a", "b"}
+    assert dedup._parse_simplify_marks('[{"decl":"a"},{"decl":"b"}]') == {"a", "b"}
+    assert dedup._parse_simplify_marks("not json") == set()
+
+
+def test_simplify_success_replaces_only_marked(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    _setup_simplify(tmp_path, rel, _FILE2)
+    _fake_simplify_spawn(monkeypatch, ["by simp"])
+    monkeypatch.setattr(dedup, "_build_decl_isolated", lambda ws, **k: (True, ""))
+    n = dedup.decl_cleanup_simplify_file(
+        tmp_path, "p", rel, [_decl("foo"), _decl("bar")], {"foo"})
+    assert n == 1
+    txt = (tmp_path / rel).read_text(encoding="utf-8")
+    assert "theorem foo : True := by simp" in txt
+    assert "theorem bar : True := by trivial" in txt        # unmarked untouched
+
+
+def test_simplify_decline_keeps_original(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    _setup_simplify(tmp_path, rel, _FILE2)
+    _fake_simplify_spawn(monkeypatch, [None])               # agent produced none
+    monkeypatch.setattr(dedup, "_build_decl_isolated", lambda ws, **k: (True, ""))
+    assert dedup.decl_cleanup_simplify_file(
+        tmp_path, "p", rel, [_decl("foo")], {"foo"}) == 0
+    assert (tmp_path / rel).read_text(encoding="utf-8") == _FILE2
+
+
+def test_simplify_no_change_skips_build(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    _setup_simplify(tmp_path, rel, _FILE2)
+    _fake_simplify_spawn(monkeypatch, ["by trivial"])       # == current proof
+    built = {"n": 0}
+
+    def _b(ws, **k):
+        built["n"] += 1
+        return (True, "")
+    monkeypatch.setattr(dedup, "_build_decl_isolated", _b)
+    assert dedup.decl_cleanup_simplify_file(
+        tmp_path, "p", rel, [_decl("foo")], {"foo"}) == 0
+    assert built["n"] == 0
+
+
+def test_simplify_build_fail_keeps_original(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    _setup_simplify(tmp_path, rel, _FILE2)
+    _fake_simplify_spawn(monkeypatch, ["by simp", "by simp", "by simp"])
+    monkeypatch.setattr(dedup, "_build_decl_isolated",
+                        lambda ws, **k: (False, "boom"))
+    assert dedup.decl_cleanup_simplify_file(
+        tmp_path, "p", rel, [_decl("foo")], {"foo"}, max_retries=2) == 0
+    assert (tmp_path / rel).read_text(encoding="utf-8") == _FILE2
+
+
+def test_simplify_retry_then_success(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    _setup_simplify(tmp_path, rel, _FILE2)
+    _fake_simplify_spawn(monkeypatch, ["by bad", "by simp"])
+    seq = iter([(False, "err"), (True, "")])
+    monkeypatch.setattr(dedup, "_build_decl_isolated", lambda ws, **k: next(seq))
+    assert dedup.decl_cleanup_simplify_file(
+        tmp_path, "p", rel, [_decl("foo")], {"foo"}, max_retries=2) == 1
+    assert "theorem foo : True := by simp" in (
+        tmp_path / rel).read_text(encoding="utf-8")
+
+
+def test_simplify_noop_when_nothing_marked(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    _setup_simplify(tmp_path, rel, _FILE2)
+    calls = _fake_simplify_spawn(monkeypatch, ["by simp"])
+    assert dedup.decl_cleanup_simplify_file(
+        tmp_path, "p", rel, [_decl("foo")], set()) == 0
+    assert calls["n"] == 0                                   # never spawned
+
+
+def test_mark_simplify_noop_when_prompt_absent(tmp_path, monkeypatch) -> None:
+    calls = _fake_simplify_spawn(monkeypatch, [])
+    assert dedup._mark_simplify_file(
+        tmp_path, "p", "Library/P/F.lean", ["foo"], tmp_path) == set()
+    assert calls["n"] == 0
+
+
+# ---------------------------------------------------------------------
 # drop_decl / decl_span
 # ---------------------------------------------------------------------
 

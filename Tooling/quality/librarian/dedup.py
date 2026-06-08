@@ -295,6 +295,23 @@ def _code_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
+def _code_tokens(text: str) -> "list[str]":
+    """Whitespace-split tokens of the CODE regions only (comments stripped via
+    `_code_spans`). The basis for the docstring (e) pass's safety gate: a pure
+    doc-comment edit leaves this list identical."""
+    return " ".join(text[s:e] for s, e in _code_spans(text)).split()
+
+
+def code_token_invariant(old: str, new: str) -> bool:
+    """True iff `old` and `new` have identical CODE content (comments aside) —
+    i.e. the edit ONLY touched comments. The whole-file docstring pass's safety
+    net (§13 (e), §3 non-code-token diff): an agent that merely adds/fixes doc
+    comments leaves every code token untouched; ANY code change → reject (the
+    blind-rewrite-corruption guard, #91). Build is the second gate (a malformed
+    `/-- -/` still parses-breaks even with code unchanged)."""
+    return _code_tokens(old) == _code_tokens(new)
+
+
 def replace_token(text: str, old: str, new: str) -> tuple[str, int]:
     """Replace whole-token occurrences of `old` with `new`, in CODE regions
     only. `old` may be a bare name (`col_sum_collapse`) or a dotted FQN
@@ -1743,10 +1760,260 @@ def _decl_from_fqn(fqn: str, by_fqn: "dict[str, _Decl]") -> _Decl:
                  sig="", binders=0, concl_tokens=frozenset())
 
 
+# ---------------------------------------------------------------------
+# P2a — docstring polish (§13 (e) file-cleanup, whole-file)
+#
+# After a file's per-decl passes (dedup), one agent rewrites the WHOLE file
+# adding/fixing decl docstrings + a module note. Two gates: code-token
+# invariance (`code_token_invariant` — only comments may change, the #91
+# blind-rewrite guard) then a whole-file isolate build (`_build_file_copy_
+# isolated` — a malformed `/-- -/` still parse-breaks with code unchanged).
+# Build failure feeds the lake error back and re-spawns up to a threshold;
+# exhaustion keeps the original file (decline = safe no-op on the green
+# baseline). Comment-only, so it never changes a signature → no consumer
+# rewrite (no step (d)).
+# ---------------------------------------------------------------------
+
+_DOCSTRING_PROMPT = "docstring.md"
+_DOCSTRING_MAX_RETRIES = 2
+
+
+def _docstring_context(workspace: Path, problem: str, rel: str,
+                       decl_names: "list[str]", prev_error: str = "") -> str:
+    """Per-file context for the docstring agent: the module, its declarations,
+    the verbatim current file, and (on retry) the previous build error to fix."""
+    try:
+        body = (workspace / rel).read_text(encoding="utf-8")
+    except OSError:
+        body = ""
+    lines = [
+        f"# Docstring polish — {problem} — `{rel}`", "",
+        f"Module: `{_mod_of_rel(rel)}`.",
+        f"Declarations: {', '.join(decl_names) or '(none)'}", "",
+        "## Current file (reproduce ALL code verbatim — only doc comments "
+        "may change)", "", "```lean", body.rstrip(), "```", "",
+    ]
+    if prev_error:
+        lines += ["## Your previous attempt failed — fix and retry", "",
+                  "```", prev_error[-1500:], "```", ""]
+    return "\n".join(lines) + "\n"
+
+
+def file_cleanup_docstrings(workspace: Path, problem: str, target_file: str,
+                            decl_names: "list[str]", *,
+                            max_retries: int = _DOCSTRING_MAX_RETRIES) -> bool:
+    """§13 (e) docstring pass for ONE file. Spawn → code-token-invariance gate
+    → whole-file isolate build → on fail feed the error & re-spawn (≤
+    max_retries) → exhaustion keeps the original. Writes `target_file` in place
+    on success. Returns whether the file changed. No-op (False) if the prompt
+    is absent (lets the chain enable P2 before the prompt is finalised)."""
+    from ... import agent
+    prompt_path = workspace / "Tooling" / "prompts" / "librarian" / _DOCSTRING_PROMPT
+    if not prompt_path.exists():
+        return False
+    try:
+        original = (workspace / target_file).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    problem_dir = workspace.joinpath("Problems", *problem.split("."))
+    leaf = target_file.split("/")[-1]
+    prev_error = ""
+    for attempt in range(max_retries + 1):
+        attempts = agent.attempts_dir_for(workspace, agent.new_pipeline_id())
+        (attempts / "Context.md").write_text(
+            _docstring_context(workspace, problem, target_file, decl_names,
+                               prev_error), encoding="utf-8")
+        rc = agent.spawn_llm(kind="librarian", prompt_path=prompt_path,
+                             problem_dir=problem_dir, attempts_dir=attempts,
+                             session_id=agent.new_pipeline_id())
+        out = attempts / "annotated.lean"
+        if rc != 0 or not out.exists():
+            prev_error = "no annotated.lean was produced"
+            continue
+        new_text = out.read_text(encoding="utf-8")
+        if new_text.strip() == original.strip():
+            return False                          # nothing to add — clean no-op
+        if not code_token_invariant(original, new_text):
+            prev_error = ("you changed CODE — only doc comments (`/-- -/`, "
+                          "`--`, `/-! -/`) may change; reproduce every "
+                          "declaration's code verbatim")
+            continue
+        ok, detail = _build_file_copy_isolated(workspace, new_text)
+        if ok:
+            (workspace / target_file).write_text(new_text, encoding="utf-8")
+            print(f"[staged] docstring `{leaf}` — polished "
+                  f"(try {attempt + 1})", flush=True)
+            return True
+        prev_error = detail
+    print(f"[staged] docstring `{leaf}` — kept original "
+          f"(no green annotation in {max_retries + 1} tries)", flush=True)
+    return False
+
+
+# ---------------------------------------------------------------------
+# P2b — proof simplification (§13 (c) decl-cleanup, marked-only per-decl)
+#
+# Whole-proof rewrite is too expensive to attempt on every decl, so a per-file
+# marker (one agent) first picks which proofs are worth shortening; only those
+# pay the per-decl cost. Each marked survivor is then simplified in isolation:
+# spawn → `_build_decl_isolated` (sig-preserving probe, reused from bridge) → on
+# build failure feed the lake error & re-spawn up to a threshold → exhaustion
+# (or a decline / no-change) keeps the original proof (safe no-op on the green
+# baseline). Sig-preserving → no consumer rewrite. Runs on POST-dedup text, and
+# skips dropped (gone) / bridged (already one-liners) decls (precedence
+# drop > bridge > simplify).
+# ---------------------------------------------------------------------
+
+_SIMPLIFY_MARK_PROMPT = "cleanup_mark.md"
+_SIMPLIFY_PROMPT = "decl_simplify.md"
+_SIMPLIFY_MAX_RETRIES = 2
+
+
+def _parse_simplify_marks(text: str) -> "set[str]":
+    """Parse the simplify marker's JSON array → a set of decl (leaf) names.
+    Accepts `["a","b"]` or `[{"decl":"a"}, …]`; ignores malformed entries."""
+    import json
+    try:
+        data = json.loads(_strip_json_fence(text))
+    except Exception:  # noqa: BLE001
+        return set()
+    out: set[str] = set()
+    if isinstance(data, list):
+        for it in data:
+            if isinstance(it, str) and it.strip():
+                out.add(it.strip())
+            elif isinstance(it, dict) and isinstance(it.get("decl"), str):
+                out.add(it["decl"].strip())
+    return out
+
+
+def _simplify_mark_context(workspace: Path, problem: str, rel: str,
+                           decl_names: "list[str]") -> str:
+    try:
+        body = (workspace / rel).read_text(encoding="utf-8")
+    except OSError:
+        body = ""
+    return "\n".join([
+        f"# Proof-simplification triage — {problem} — `{rel}`", "",
+        f"Module: `{_mod_of_rel(rel)}`.",
+        f"Candidate declarations: {', '.join(decl_names) or '(none)'}", "",
+        "## Current file", "", "```lean", body.rstrip(), "```", "",
+    ]) + "\n"
+
+
+def _simplify_decl_context(workspace: Path, problem: str, rel: str, name: str,
+                           sig: str, proof: str, prev_error: str = "") -> str:
+    lines = [
+        f"# Simplify one proof — {problem} — `{name}`", "",
+        f"Module: `{_mod_of_rel(rel)}` (its declarations + imports are in scope).",
+        "", "## Statement (keep verbatim)", "", "```lean", sig.strip(), "```",
+        "", "## Current proof (everything after `:=`)", "",
+        "```lean", proof.strip(), "```", "",
+    ]
+    if prev_error:
+        lines += ["## Your previous attempt failed to build — fix and retry", "",
+                  "```", prev_error[-1500:], "```", ""]
+    return "\n".join(lines) + "\n"
+
+
+def _mark_simplify_file(workspace: Path, problem: str, rel: str,
+                        decl_names: "list[str]", problem_dir: Path) -> "set[str]":
+    """Spawn the simplify marker over one file; return the subset of `decl_names`
+    worth proof-simplifying. No-op (empty) if the prompt is absent."""
+    from ... import agent
+    prompt_path = (workspace / "Tooling" / "prompts" / "librarian"
+                   / _SIMPLIFY_MARK_PROMPT)
+    if not prompt_path.exists() or not decl_names:
+        return set()
+    attempts = agent.attempts_dir_for(workspace, agent.new_pipeline_id())
+    (attempts / "Context.md").write_text(
+        _simplify_mark_context(workspace, problem, rel, decl_names),
+        encoding="utf-8")
+    rc = agent.spawn_llm(kind="librarian", prompt_path=prompt_path,
+                         problem_dir=problem_dir, attempts_dir=attempts,
+                         session_id=agent.new_pipeline_id())
+    out = attempts / "simplify.json"
+    if rc != 0 or not out.exists():
+        return set()
+    return _parse_simplify_marks(out.read_text(encoding="utf-8")) & set(decl_names)
+
+
+def _propose_simplify(workspace: Path, problem: str, rel: str, name: str,
+                      sig: str, proof: str, problem_dir: Path,
+                      prev_error: str = "") -> "str | None":
+    """One simplify spawn for decl `name`; return the proposed new proof body
+    (text after `:=`), or None on decline / failure."""
+    from ... import agent
+    prompt_path = (workspace / "Tooling" / "prompts" / "librarian"
+                   / _SIMPLIFY_PROMPT)
+    if not prompt_path.exists():
+        return None
+    attempts = agent.attempts_dir_for(workspace, agent.new_pipeline_id())
+    (attempts / "Context.md").write_text(
+        _simplify_decl_context(workspace, problem, rel, name, sig, proof,
+                               prev_error), encoding="utf-8")
+    rc = agent.spawn_llm(kind="librarian", prompt_path=prompt_path,
+                         problem_dir=problem_dir, attempts_dir=attempts,
+                         session_id=agent.new_pipeline_id())
+    out = attempts / "simplified.txt"
+    if rc != 0 or not out.exists():
+        return None
+    new_proof = out.read_text(encoding="utf-8").strip()
+    return new_proof or None
+
+
+def decl_cleanup_simplify_file(workspace: Path, problem: str, target_file: str,
+                               decls: "list[_Decl]", marked: "set[str]", *,
+                               max_retries: int = _SIMPLIFY_MAX_RETRIES) -> int:
+    """§13 (c) per-decl proof simplification for ONE file. For each `marked`
+    survivor (source order): spawn → `_build_decl_isolated` (sig-preserving) →
+    on fail feed the error & retry (≤ max_retries) → decline / no-change /
+    exhaustion keeps the original proof. Writes `target_file` in place if any
+    proof changed. Returns the count simplified. No-op (0) if the prompt is
+    absent or nothing is marked."""
+    if not marked:
+        return 0
+    problem_dir = workspace.joinpath("Problems", *problem.split("."))
+    try:
+        text = (workspace / target_file).read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    n = 0
+    for d in decls:                                # source order, marked only
+        if d.name not in marked:
+            continue
+        cur = decl_proof_body(text, d.name)
+        if cur is None:
+            continue
+        prev_error = ""
+        for _attempt in range(max_retries + 1):
+            new_proof = _propose_simplify(
+                workspace, problem, target_file, d.name, d.sig, cur,
+                problem_dir, prev_error)
+            if not new_proof or new_proof.strip() == cur.strip():
+                break                              # decline / no change → keep
+            ok, detail = _build_decl_isolated(
+                workspace, sig=d.sig, proof=new_proof,
+                modules=[d.module], namespaces=[d.module])
+            if ok:
+                nt, replaced = replace_proof(text, d.name, new_proof)
+                if replaced:
+                    text = nt
+                    n += 1
+                    print(f"[staged] simplified {d.name}", flush=True)
+                break
+            prev_error = detail
+    if n:
+        (workspace / target_file).write_text(text, encoding="utf-8")
+    return n
+
+
 def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
                             scope_index: "list[tuple[str, str]] | None" = None,
                             prior_renames: "dict[str, str] | None" = None,
-                            apply: bool = True, bridge: bool = True) -> "dict":
+                            apply: bool = True, bridge: bool = True,
+                            docstring: bool = False,
+                            simplify: bool = False) -> "dict":
     """§13 3c-2 per-file cleanup unit (the dispatcher's per-file work item).
     Clean ONE Library file: mark it → classify (with the cross-file chain guard
     from `prior_renames` = earlier files' {dropped_fqn: survivor_fqn}) → propose
@@ -1793,10 +2060,32 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
         print(f"[staged] {tag} {xf.rsplit('.', 1)[-1]} → cite {Yd.name}", flush=True)
     for xf, Yd in r["bridged"]:
         print(f"[staged] bridged {xf.rsplit('.', 1)[-1]} → cite {Yd.name}", flush=True)
+    # Survivors of this file's dedup pass: not dropped, not bridged (bridges are
+    # already one-liners). The (c) simplify + (e) docstring passes run on these.
+    bridged_fqns = {x for x, _ in r["bridged"]}
+    survivor_decls = [d for d in decls_in_file
+                      if d.fqn not in r["drops"] and d.fqn not in bridged_fqns]
+    # (c) decl-cleanup — per-decl proof simplification (marked-only). Sig-
+    # preserving → no consumer rewrite. Runs BEFORE docstrings (§13 order).
+    n_simplified = 0
+    if simplify and survivor_decls:
+        marked = _mark_simplify_file(
+            workspace, problem, target_file,
+            [d.name for d in survivor_decls],
+            workspace.joinpath("Problems", *problem.split(".")))
+        n_simplified = decl_cleanup_simplify_file(
+            workspace, problem, target_file, survivor_decls, marked)
+    # (e) file-cleanup — docstring polish on the (now simplified) file. Comment-
+    # only → no signature change. Own gates + retry; failure keeps the file.
+    docstringed = False
+    if docstring:
+        docstringed = file_cleanup_docstrings(
+            workspace, problem, target_file, [d.name for d in survivor_decls])
     return {"dropped": {x: Yd.fqn for x, Yd in r["drops"].items()},
             "merged": set(r["merged"]),
             "bridged": {x: Yd.fqn for x, Yd in r["bridged"]},
-            "near": r["near"], "failed": r["failed"]}
+            "near": r["near"], "failed": r["failed"],
+            "simplified": n_simplified, "docstringed": docstringed}
 
 
 def run_file_audit_dedup(workspace: Path, problem: str, *, apply: bool = False,

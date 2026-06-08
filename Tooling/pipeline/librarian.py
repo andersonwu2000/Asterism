@@ -1399,7 +1399,8 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None):
             and r["target_name"] and r["citation"]}
         res = _dedup.run_staged_cleanup_file(
             workspace, problem, target_file, scope_index=scope_index,
-            prior_renames=prior_renames, apply=True)
+            prior_renames=prior_renames, apply=True,
+            simplify=True, docstring=True)
         rows = [r for r in db.library_decls_for(conn, problem, lifecycle="migrated")
                 if r["target_file"] == target_file]
         n_drop = _advance_cleanup_decls(conn, problem, rows, res.get("dropped", {}))
