@@ -658,24 +658,41 @@ def _load_decls(workspace: Path, problem: str,
     return scope, pool
 
 
-def _external_consumer(workspace: Path, X: _Decl,
-                       scope_rels: "set[str]") -> "str | None":
-    """Return the rel-path of a Library file OUTSIDE the scope problem that
-    references decl X (by fqn, or by bare name while importing X's module),
-    or None. v1a only rewrites/rebuilds the scope problem's files, so a decl
-    with a CROSS-PROBLEM consumer must NOT be dropped here (the scope-only
-    build gate wouldn't catch the breakage) — it's deferred to v1b's
-    cross-problem rewire. Cross-problem Library→Library refs are real
-    (e.g. NormalDiagonalization→SchurTriangularization, RCF→InvariantFactor)."""
+def _nonscope_library_texts(workspace: Path, scope_rels: "set[str]"
+                            ) -> "list[tuple[str, str]]":
+    """Read every Library `.lean` OUTSIDE the scope problem ONCE — the corpus
+    `_external_consumer` scans. Built once per classify run + reused across all
+    drop candidates, so the cross-problem guard is O(library) not O(library ×
+    candidates) (§12 scaling fix; the per-candidate rglob+read was classify's
+    #1 cost — ~220s on courant)."""
+    out: list[tuple[str, str]] = []
     lib = workspace / "Library"
+    sset = set(scope_rels)
     for f in lib.rglob("*.lean"):
         rel = f.relative_to(workspace).as_posix()
-        if rel in scope_rels:
+        if rel in sset:
             continue
         try:
-            t = f.read_text(encoding="utf-8")
+            out.append((rel, f.read_text(encoding="utf-8")))
         except OSError:
             continue
+    return out
+
+
+def _external_consumer(workspace: Path, X: _Decl, scope_rels: "set[str]", *,
+                       nonscope: "list[tuple[str, str]] | None" = None
+                       ) -> "str | None":
+    """Return the rel-path of a Library file OUTSIDE the scope problem that
+    references decl X (by fqn, or by bare name while importing X's module),
+    or None. Cleanup only rewrites the scope problem's files, so a decl with a
+    CROSS-PROBLEM consumer must NOT be dropped here (the scope-only gate would
+    not catch the breakage) — deferred to the future cross-problem rewire.
+    Cross-problem Library→Library refs are real (NormalDiagonalization→Schur,
+    RCF→InvariantFactor). `nonscope` = a pre-read corpus (caller builds it once
+    per classify run); falls back to a fresh read for ad-hoc callers."""
+    items = (nonscope if nonscope is not None
+             else _nonscope_library_texts(workspace, scope_rels))
+    for rel, t in items:
         if replace_token(t, X.fqn, X.fqn)[1] > 0:
             return rel
         if f"import {X.module}" in t and replace_token(t, X.name, X.name)[1] > 0:
@@ -1491,6 +1508,7 @@ def _classify_pairs(workspace: Path, problem: str,
         probe.append((X.sig, Y.module, Y.fqn))
         decls.append((X, Y, is_mathlib))
     flags = batch_defeq(workspace, problem, probe) if probe else []
+    nonscope = None        # cross-problem corpus, read once on first drop candidate
     plan: dict[str, tuple[_Decl, str]] = {}
     for (X, Y, is_mathlib), ok in zip(decls, flags):
         if not ok:
@@ -1501,7 +1519,9 @@ def _classify_pairs(workspace: Path, problem: str,
         if not is_mathlib and _survivor(X.fqn, Y.fqn) != Y.fqn:
             skipped.append((X.fqn, Y.fqn))             # x is the better survivor
             continue
-        if _external_consumer(workspace, X, scope_rels):
+        if nonscope is None:
+            nonscope = _nonscope_library_texts(workspace, scope_rels)
+        if _external_consumer(workspace, X, scope_rels, nonscope=nonscope):
             skipped.append((X.fqn, Y.fqn))             # cross-problem consumer
             continue
         plan[X.fqn] = (Y, "drop")
@@ -1658,14 +1678,23 @@ def run_staged_cleanup(workspace: Path, problem: str, *, apply: bool = False,
     manual build for the standalone CLI) is the integration backstop. Returns
     the run_file_audit_dedup shape. 3c-2 lifts this to a per-file dispatcher
     work-kind + parallel via a locking `_Splicer`."""
+    import time as _t
+    _c = _t.perf_counter
+    _t0 = _c()
     uniq, scope, _pool = _collect_marked_pairs(
         workspace, problem, concurrency=concurrency, scope_index=scope_index)
+    _t1 = _c()
     plan, skipped = _classify_pairs(workspace, problem, uniq,
                                     scope_index=scope_index)
+    _t2 = _c()
     bridge_pairs = [(x, Y.fqn) for x, (Y, k) in plan.items() if k == "bridge"]
     bridges = (_propose_bridges(workspace, problem, bridge_pairs,
                                 scope_index=scope_index)
                if (apply and bridge) else {})
+    _t3 = _c()
+    print(f"[staged-timing] mark={_t1 - _t0:.0f}s classify={_t2 - _t1:.0f}s "
+          f"bridge-propose={_t3 - _t2:.0f}s "
+          f"({len(bridge_pairs)} bridge-pairs)", flush=True)
     order = _file_topo_order(workspace, scope)
     by_fqn = {d.fqn: d for d in scope}
     by_rel: dict[str, list[_Decl]] = {}
@@ -1703,6 +1732,8 @@ def run_staged_cleanup(workspace: Path, problem: str, *, apply: bool = False,
                   flush=True)
         near.extend(r["near"])
         failed.extend(r["failed"])
+    print(f"[staged-timing] apply(per-file drop/merge/bridge-isolate)="
+          f"{_c() - _t3:.0f}s  total={_c() - _t0:.0f}s", flush=True)
     if dropped:
         _update_index(workspace, set(dropped))     # bridged keep their statement
     return {"dropped": dropped, "bridged": bridged, "near": near,
