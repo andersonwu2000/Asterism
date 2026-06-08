@@ -698,18 +698,24 @@ def _root_source(conn, problem, workspace) -> "tuple[str, str] | None":
     return None
 
 
-def file_dependency_graph(conn, *, problem: str,
-                          workspace) -> "dict[str, set[str]]":
+def file_dependency_graph(conn, *, problem: str, workspace,
+                          lifecycles: "tuple[str, ...]" = ("classified", "migrated"),
+                          ) -> "dict[str, set[str]]":
     """Map each placed Library file to the set of OTHER placed files it
     depends on. A file F depends on file G iff some decl in F uses (per the
-    inventory dep graph) a decl placed in G. Only decls with a target_file
-    (classified or migrated) participate; cited/dropped decls are terminal
+    inventory dep graph) a decl placed in G.
+
+    `lifecycles` selects which decls count as "placed" — the migrate phase
+    uses the default `('classified','migrated')`; the cleanup phase passes
+    `('migrated','cleaned','dropped')` so the import edges stay STABLE as
+    decls advance migrated→cleaned/dropped within the phase (a dropped decl
+    still physically lived in its file, so its consumers' F→G edge is real
+    and must order F after G — §13 deferred-rewire). Cited decls are terminal
     and never placed."""
     from ..quality.librarian import inventory as _inv
     rows = db.library_decls_for(conn, problem)
     file_of = {r["slug"]: r["target_file"] for r in rows
-               if r["target_file"]
-               and r["lifecycle"] in ("classified", "migrated")}
+               if r["target_file"] and r["lifecycle"] in lifecycles}
     # Cross-file edges follow the USAGE DAG (which lemma a proof term cites),
     # not the decomposition DAG (`InvDecl.deps`) — a file must migrate after
     # the files it actually references, else its imports don't resolve.
@@ -753,13 +759,16 @@ def next_migrate_file(conn, *, problem: str, workspace) -> "str | None":
 
 def file_work_kind(conn, *, problem: str, target_file: str) -> "str | None":
     """The current step for ONE Library file (#92 per-file unit dispatch).
-    v0.3 (plan §3): 'migrate' if the file still has `classified` decls, else
-    None — a wholly `migrated` file is done (cleanup removed; the whole-problem
-    bridge follows once every file is migrated)."""
+    'migrate' if the file still has `classified` decls; else 'cleanup' if it
+    still has `migrated` (un-cleaned) decls (§13 3c-2 per-file dedup); else
+    None — a file whose decls are all `cleaned`/`dropped` is done (the
+    whole-problem bridge Gate B follows once every file is cleaned)."""
     ls = {r["lifecycle"] for r in db.library_decls_for(conn, problem)
           if r["target_file"] == target_file}
     if "classified" in ls:
         return "migrate"
+    if "migrated" in ls:
+        return "cleanup"
     return None
 
 
@@ -802,6 +811,52 @@ def ready_file_work(conn, *, problem: str, workspace,
         if phase[f] == "classified" and all(
                 dep in migrated for dep in graph.get(f, set())):
             work.append(("migrate", f))
+    return work
+
+
+def ready_cleanup_files(conn, *, problem: str, workspace,
+                        in_flight: "set[str] | tuple" = ()) -> "list[tuple[str, str]]":
+    """The set of Library FILES dispatchable RIGHT NOW as independent cleanup
+    units (§13 3c-2 per-file dedup), each as `('cleanup', target_file)`:
+
+      - f still has `migrated` (un-cleaned) decls AND every file f depends on is
+        already DONE (all its decls `cleaned`/`dropped`). Bottom-up: a file is
+        cleaned only after the files it imports, so when a consumer runs, every
+        drop from its dependencies is already recorded in the DB rename-map and
+        it can self-apply them (deferred-rewire, lock-free — §13). A fully-
+        `dropped` file (no survivors) counts as done.
+
+    Mirrors `ready_file_work` (the migrate analogue): `done = cleaned/dropped`
+    is the readiness currency, files in `in_flight` are excluded, order-stable
+    by path so independent files run concurrently in the pool. The dependency
+    graph spans `migrated`/`cleaned`/`dropped` so its import edges stay stable
+    as decls advance within the phase."""
+    from collections import defaultdict
+    in_flight = set(in_flight)
+    rows = db.library_decls_for(conn, problem)
+    by_file: dict[str, list] = defaultdict(list)
+    for r in rows:
+        if r["target_file"] and r["lifecycle"] in (
+                "migrated", "cleaned", "dropped"):
+            by_file[r["target_file"]].append(r)
+
+    def _phase(rs) -> str:
+        # 'migrated' (work left) if any decl is still un-cleaned, else 'done'.
+        return "migrated" if any(r["lifecycle"] == "migrated" for r in rs) \
+            else "done"
+
+    phase = {f: _phase(rs) for f, rs in by_file.items()}
+    done = {f for f, ph in phase.items() if ph == "done"}
+    graph = file_dependency_graph(
+        conn, problem=problem, workspace=workspace,
+        lifecycles=("migrated", "cleaned", "dropped"))
+    work: list[tuple[str, str]] = []
+    for f in sorted(phase):
+        if f in in_flight:
+            continue
+        if phase[f] == "migrated" and all(
+                dep in done for dep in graph.get(f, set())):
+            work.append(("cleanup", f))
     return work
 
 
@@ -1159,12 +1214,14 @@ def run_librarian(conn, *, problem: str, work_kind: str,
     if work_kind == "dedup":
         return _run_keepall(conn, problem=problem, workspace=workspace)
 
-    # v0.4 (plan §10/§11): cleanup runs the per-file dedup-audit engine on the
-    # migrated (staging) Library — drop/merge/bridge, each rewire-or-revert
-    # build-gated, bridge's Gate B the final backstop. Like dedup it owns its
-    # prompts/spawns → routed before the prompt-path guard.
+    # v0.4 (plan §10/§11, §13): cleanup runs the dedup-audit engine on the
+    # migrated (staging) Library — drop/merge/bridge, each isolate-gated,
+    # bridge's Gate B the final backstop. Like dedup it owns its prompts/spawns
+    # → routed before the prompt-path guard. `target` is the per-file unit
+    # (§13 3c-2); None = whole-problem serial pass.
     if work_kind == "cleanup":
-        return _run_cleanup(conn, problem=problem, workspace=workspace)
+        return _run_cleanup(conn, problem=problem, workspace=workspace,
+                            target_file=target)
 
     if work_kind not in WORK_KINDS:
         return PipelineResult(
@@ -1277,33 +1334,27 @@ def _run_keepall(conn, *, problem, workspace):
     return PipelineResult(outcome="success")
 
 
-def _run_cleanup(conn, *, problem, workspace):
-    """v0.4 cleanup stage (plan §10/§11): run the per-file dedup-audit engine
-    in-place on the migrated (staging) Library, then advance lifecycle so the
-    chain proceeds to bridge.
+def _cleanup_scope_index(conn, problem) -> "list[tuple[str, str]]":
+    """The dedup engine's scope = this problem's decls still LIVE in the
+    staging Library (migrated, not-yet-cleaned + already-cleaned survivors;
+    dropped ones are gone). INDEX isn't written until bridge, so the engine
+    reads the problem's own decls from here instead; the pool still comes from
+    INDEX (= other, already-promoted problems)."""
+    return [(r["target_name"], r["target_file"])
+            for r in db.library_decls_for(conn, problem)
+            if r["lifecycle"] in ("migrated", "cleaned")
+            and r["target_name"] and r["target_file"]]
 
-    The engine (`dedup.run_staged_cleanup`, §13) owns its agent spawns + the
-    per-decl isolate-then-splice gate; bridge's Gate B is the integration
-    backstop. INDEX isn't written until bridge, so the engine can't read the
-    problem's own decls from INDEX — we feed them from the DB (`scope_index` =
-    migrated rows' target_name/target_file); the pool still comes from INDEX
-    (= other, already-promoted problems).
 
-    Lifecycle: dropped decls (incl wrapper-merges) → `dropped`; every surviving
-    `migrated` decl → `cleaned`. ALL `migrated` rows must advance, else
-    `_derive_librarian_work` re-routes to cleanup forever."""
-    from . import PipelineResult
-    from ..quality.librarian import dedup as _dedup
-
-    migrated = [r for r in db.library_decls_for(conn, problem, lifecycle="migrated")]
-    scope_index = [(r["target_name"], r["target_file"]) for r in migrated
-                   if r["target_name"] and r["target_file"]]
-    res = _dedup.run_staged_cleanup(
-        workspace, problem, apply=True, scope_index=scope_index)
-    dropped = res.get("dropped", {})                # {dropped_fqn: survivor_fqn}
+def _advance_cleanup_decls(conn, problem, rows, dropped) -> int:
+    """Advance a set of `migrated` rows past cleanup: engine-dropped (incl
+    wrapper-merges) → terminal `dropped` (verdict drop + survivor citation),
+    every survivor → `cleaned`. ALL must advance, else the chain re-routes to
+    cleanup forever. Returns the drop count. `dropped` = {dropped_fqn:
+    survivor_fqn} from the engine."""
     dropped_leaves = {f.rsplit(".", 1)[-1] for f in dropped}
     n_drop = 0
-    for r in migrated:
+    for r in rows:
         tn = r["target_name"] or ""
         leaf = tn.rsplit(".", 1)[-1] if tn else str(r["slug"])
         if tn in dropped or leaf in dropped_leaves:
@@ -1312,6 +1363,55 @@ def _run_cleanup(conn, *, problem, workspace):
             n_drop += 1
         else:
             db.mark_library_cleaned(conn, problem=problem, slug=r["slug"])
+    return n_drop
+
+
+def _run_cleanup(conn, *, problem, workspace, target_file=None):
+    """v0.4 cleanup stage (plan §10/§11, §13): run the dedup-audit engine on the
+    migrated (staging) Library, then advance lifecycle so the chain proceeds to
+    bridge. The engine owns its agent spawns + the per-decl isolate-then-splice
+    gate; bridge's Gate B is the integration backstop.
+
+    Two modes:
+      - `target_file` given (§13 3c-2, the dispatcher's per-file unit): clean
+        ONLY this file via `run_staged_cleanup_file`. Earlier (dependency) files'
+        drops are read from the DB as `prior_renames` and applied to this file
+        first (deferred-rewire — each file is written exactly once by its own
+        worker, lock-free); this file's own drops are then recorded so its
+        consumers self-apply them when their turn comes.
+      - `target_file` None (whole-problem serial path / CLI / tests): clean every
+        file in one topological pass via `run_staged_cleanup`.
+
+    Lifecycle: dropped decls (incl wrapper-merges) → `dropped`; every surviving
+    `migrated` decl → `cleaned`."""
+    from . import PipelineResult
+    from ..quality.librarian import dedup as _dedup
+
+    scope_index = _cleanup_scope_index(conn, problem)
+    if target_file is not None:
+        # prior_renames: every decl already dropped by an EARLIER (dependency)
+        # file — {dropped_fqn → final survivor_fqn} — so this consumer file
+        # self-applies them before cleaning itself (§13).
+        prior_renames = {
+            r["target_name"]: r["citation"]
+            for r in db.library_decls_for(conn, problem)
+            if r["lifecycle"] == "dropped" and r["verdict"] == "drop"
+            and r["target_name"] and r["citation"]}
+        res = _dedup.run_staged_cleanup_file(
+            workspace, problem, target_file, scope_index=scope_index,
+            prior_renames=prior_renames, apply=True)
+        rows = [r for r in db.library_decls_for(conn, problem, lifecycle="migrated")
+                if r["target_file"] == target_file]
+        n_drop = _advance_cleanup_decls(conn, problem, rows, res.get("dropped", {}))
+        print(f"[librarian] {problem}: cleanup `{target_file}` — {n_drop} "
+              f"dropped, {len(res.get('bridged', {}))} bridged; "
+              "survivors → cleaned", flush=True)
+        return PipelineResult(outcome="success")
+
+    migrated = list(db.library_decls_for(conn, problem, lifecycle="migrated"))
+    res = _dedup.run_staged_cleanup(
+        workspace, problem, apply=True, scope_index=scope_index)
+    n_drop = _advance_cleanup_decls(conn, problem, migrated, res.get("dropped", {}))
     print(f"[librarian] {problem}: cleanup — {n_drop} dropped, "
           f"{len(res.get('bridged', {}))} bridged; survivors → cleaned",
           flush=True)

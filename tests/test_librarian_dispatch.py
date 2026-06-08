@@ -230,6 +230,126 @@ def test_next_migrate_file_none_when_no_classified(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------
+# ready_cleanup_files + file_work_kind cleanup (§13 3c-2 per-file cleanup)
+# ---------------------------------------------------------------------
+
+def _migrated_in(conn, slug, target_file, problem="p", order=0):
+    """Migrate `slug` into an explicit (possibly shared) file — the cleanup
+    phase's per-file unit groups a file's migrated decls together."""
+    _classified_in(conn, slug, target_file, problem, order)
+    db.mark_library_migrated(conn, problem=problem, slug=slug)
+
+
+def _drop(conn, slug, citation, problem="p"):
+    """Advance a migrated decl to terminal `dropped` (engine drop) — used to
+    simulate an earlier cleanup file's drop when testing readiness/ordering."""
+    db.set_library_verdict(conn, problem=problem, slug=slug,
+                           verdict="drop", citation=citation)
+
+
+def test_ready_cleanup_files_parallel_independent(tmp_path: Path, monkeypatch):
+    # Two independent migrated files → both ready to clean (parallel).
+    conn = _mem()
+    _migrated_in(conn, "a", "Library/P/Foo.lean")
+    _migrated_in(conn, "b", "Library/P/Bar.lean")
+    _fake_inventory(monkeypatch, {"a": [], "b": []})
+    assert librarian.ready_cleanup_files(
+        conn, problem="p", workspace=tmp_path) == [
+            ("cleanup", "Library/P/Bar.lean"),
+            ("cleanup", "Library/P/Foo.lean")]
+
+
+def test_ready_cleanup_files_topological_deps_first(tmp_path: Path, monkeypatch):
+    # Foo depends on Bar (a uses b). Bottom-up: Bar cleans first; Foo only
+    # becomes ready once Bar is DONE (its decls cleaned/dropped).
+    conn = _mem()
+    _migrated_in(conn, "a", "Library/P/Foo.lean")   # a uses b
+    _migrated_in(conn, "b", "Library/P/Bar.lean")
+    _fake_inventory(monkeypatch, {"a": ["b"], "b": []})
+    assert librarian.ready_cleanup_files(
+        conn, problem="p", workspace=tmp_path) == [
+            ("cleanup", "Library/P/Bar.lean")]
+    db.mark_library_cleaned(conn, problem="p", slug="b")   # Bar done
+    assert librarian.ready_cleanup_files(
+        conn, problem="p", workspace=tmp_path) == [
+            ("cleanup", "Library/P/Foo.lean")]
+
+
+def test_ready_cleanup_files_dropped_dep_counts_as_done(tmp_path: Path,
+                                                        monkeypatch):
+    # A dependency file whose only decl was DROPPED is still "done" — its
+    # consumer becomes ready (deferred-rewire records the drop for self-apply).
+    conn = _mem()
+    _migrated_in(conn, "a", "Library/P/Foo.lean")   # a uses b
+    _migrated_in(conn, "b", "Library/P/Bar.lean")
+    _fake_inventory(monkeypatch, {"a": ["b"], "b": []})
+    _drop(conn, "b", citation="Mathlib.thing")      # Bar fully dropped → done
+    assert librarian.ready_cleanup_files(
+        conn, problem="p", workspace=tmp_path) == [
+            ("cleanup", "Library/P/Foo.lean")]
+
+
+def test_ready_cleanup_files_skips_inflight(tmp_path: Path, monkeypatch):
+    conn = _mem()
+    _migrated_in(conn, "a", "Library/P/Foo.lean")
+    _migrated_in(conn, "b", "Library/P/Bar.lean")
+    _fake_inventory(monkeypatch, {"a": [], "b": []})
+    assert librarian.ready_cleanup_files(
+        conn, problem="p", workspace=tmp_path,
+        in_flight={"Library/P/Foo.lean"}) == [("cleanup", "Library/P/Bar.lean")]
+
+
+def test_ready_cleanup_files_none_when_all_done(tmp_path: Path):
+    conn = _mem()
+    _cleaned(conn, "a")
+    assert librarian.ready_cleanup_files(
+        conn, problem="p", workspace=tmp_path) == []
+
+
+def test_file_work_kind_cleanup_for_migrated(tmp_path: Path):
+    # A file with migrated (un-cleaned) decls → 'cleanup'; classified → migrate.
+    conn = _mem()
+    _migrated_in(conn, "a", "Library/P/Foo.lean")
+    assert librarian.file_work_kind(
+        conn, problem="p", target_file="Library/P/Foo.lean") == "cleanup"
+
+
+def test_file_work_kind_migrate_takes_priority(tmp_path: Path):
+    # Mixed file (still has a classified decl) → migrate before cleanup.
+    conn = _mem()
+    _migrated_in(conn, "a", "Library/P/Foo.lean", order=0)
+    _classified_in(conn, "b", "Library/P/Foo.lean", order=1)
+    assert librarian.file_work_kind(
+        conn, problem="p", target_file="Library/P/Foo.lean") == "migrate"
+
+
+def test_file_work_kind_none_when_cleaned(tmp_path: Path):
+    conn = _mem()
+    _cleaned(conn, "a")
+    assert librarian.file_work_kind(
+        conn, problem="p", target_file="Library/P/a.lean") is None
+
+
+def test_file_dependency_graph_cleanup_keeps_dropped_edge(tmp_path: Path,
+                                                          monkeypatch):
+    # The cleanup-phase graph spans migrated/cleaned/DROPPED so a consumer's
+    # import edge to a dropped dependency survives (stable ordering, §13).
+    conn = _mem()
+    _migrated_in(conn, "a", "Library/P/Foo.lean")   # a uses b
+    _migrated_in(conn, "b", "Library/P/Bar.lean")
+    _fake_inventory(monkeypatch, {"a": ["b"], "b": []})
+    _drop(conn, "b", citation="Mathlib.thing")
+    # default lifecycles (classified/migrated) drop b → edge lost
+    assert librarian.file_dependency_graph(
+        conn, problem="p", workspace=tmp_path)["Library/P/Foo.lean"] == set()
+    # cleanup lifecycles keep b → edge preserved
+    g = librarian.file_dependency_graph(
+        conn, problem="p", workspace=tmp_path,
+        lifecycles=("migrated", "cleaned", "dropped"))
+    assert g["Library/P/Foo.lean"] == {"Library/P/Bar.lean"}
+
+
+# ---------------------------------------------------------------------
 # db.queue_contains
 # ---------------------------------------------------------------------
 
@@ -305,11 +425,38 @@ def test_librarian_refill_skips_inflight_and_queued(tmp_path: Path):
     assert len(_queue(conn)) == 1
 
 
-def test_librarian_refill_migrated_enqueues_bridge_serial(tmp_path: Path):
-    # v0.3: a wholly-migrated problem (no classified left) → bridge, which is a
-    # whole-problem SERIAL step → one plain `problem` row (no per-file cleanup).
+def test_librarian_refill_migrated_enqueues_cleanup_per_file(tmp_path: Path):
+    # §13 3c-2: a wholly-migrated problem (no classified left) → cleanup, a
+    # PER-FILE phase → one `problem\x1ffile` row per ready file (not a serial
+    # plain `problem` row). Two independent files enqueue in parallel.
     conn = _mem()
-    _migrated(conn, "foo")
+    _migrated(conn, "foo", order=0)   # Library/P/foo.lean
+    _migrated(conn, "bar", order=1)   # Library/P/bar.lean
+    dispatcher._librarian_refill(conn, tmp_path, set(), _manifests(), fail_counts={})
+    tids = sorted(r["target_id"] for r in _queue(conn))
+    assert tids == sorted([
+        dispatcher._lib_encode("p", "Library/P/bar.lean"),
+        dispatcher._lib_encode("p", "Library/P/foo.lean")])
+
+
+def test_librarian_refill_cleanup_skips_inflight_file(tmp_path: Path):
+    # A cleanup file already in flight is not re-enqueued; its independent
+    # sibling still is (per-file parallelism, like migrate).
+    conn = _mem()
+    _migrated(conn, "foo", order=0)
+    _migrated(conn, "bar", order=1)
+    foo_tid = dispatcher._lib_encode("p", "Library/P/foo.lean")
+    running = {(foo_tid, "Librarian", None)}
+    dispatcher._librarian_refill(conn, tmp_path, running, _manifests(), fail_counts={})
+    assert [r["target_id"] for r in _queue(conn)] == [
+        dispatcher._lib_encode("p", "Library/P/bar.lean")]
+
+
+def test_librarian_refill_cleaned_enqueues_bridge_serial(tmp_path: Path):
+    # Once every file is cleaned (no migrated left) the chain advances to the
+    # bridge Gate B — a whole-problem SERIAL step → one plain `problem` row.
+    conn = _mem()
+    _cleaned(conn, "foo")
     dispatcher._librarian_refill(conn, tmp_path, set(), _manifests(), fail_counts={})
     rows = _queue(conn)
     assert len(rows) == 1

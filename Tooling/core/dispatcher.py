@@ -1497,9 +1497,12 @@ def _derive_librarian_work(
         from ..pipeline import librarian
         return ("migrate", librarian.next_migrate_file(
             conn, problem=problem, workspace=workspace))
-    # v0.4 (plan §10/§11): once all files are migrated, the cleanup-dedup stage
-    # runs on the staging Library (advances migrated → cleaned/dropped) BEFORE
-    # the bridge Gate B probe. Bridge then writes INDEX (= promote / done-marker).
+    # v0.4 (plan §10/§11, §13 3c-2): once all files are migrated, the cleanup-
+    # dedup stage runs PER FILE (advances migrated → cleaned/dropped) BEFORE the
+    # bridge Gate B probe. Like migrate it is a per-file phase — `_librarian_
+    # refill` enqueues ready files (`ready_cleanup_files`) and the plain `problem`
+    # row is a no-op; the `None` target signals "per-file phase" here. Bridge
+    # then writes INDEX (= promote / done-marker).
     if by_state.get("migrated"):
         return ("cleanup", None)
     if by_state.get("cleaned") and not _librarian_index_has(workspace, problem):
@@ -1621,8 +1624,12 @@ def _librarian_refill(
         work_kind, _ = _derive_librarian_work(conn, problem, workspace)
         if work_kind is None:
             continue
-        if work_kind == "migrate":
-            # Files already in flight (running) or queued for this problem.
+        if work_kind in ("migrate", "cleanup"):
+            # Both are per-file phases (#92 migrate, §13 3c-2 cleanup): enqueue
+            # one `problem\x1ffile` row per READY file so independent files run
+            # concurrently. The per-file row's step is resolved at run time by
+            # `file_work_kind` (migrate while classified, cleanup once migrated),
+            # so the two phases share the same encode/in-flight machinery.
             inflight: set[str] = set()
             for r in running:
                 if r[1] != "Librarian":
@@ -1639,7 +1646,9 @@ def _librarian_refill(
             skip = inflight | queued
             if skip:
                 pending = True  # a file is mid-flight or already queued
-            for _wk, f in librarian.ready_file_work(
+            ready = (librarian.ready_file_work if work_kind == "migrate"
+                     else librarian.ready_cleanup_files)
+            for _wk, f in ready(
                     conn, problem=problem, workspace=workspace, in_flight=skip):
                 tid = _lib_encode(problem, f)
                 if fail_counts.get(tid, 0) > LIBRARIAN_MAX_CHAIN_RETRIES:
@@ -1830,7 +1839,7 @@ def _run_pipeline(workspace: Path,
                     # this plain row is a no-op (the per-file rows do the work).
                     work_kind, target = _derive_librarian_work(
                         conn, problem, workspace)
-                    if work_kind == "migrate":
+                    if work_kind in ("migrate", "cleanup"):
                         work_kind = None
                 if work_kind is None:
                     # Nothing to do for this row (chain drained, or a stale

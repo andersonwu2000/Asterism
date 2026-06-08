@@ -165,6 +165,69 @@ def test_run_cleanup_noop_still_cleans_all(conn, tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------
+# cleanup stage — per-file path (§13 3c-2 dispatcher unit)
+# ---------------------------------------------------------------------
+
+def _patch_engine_file(monkeypatch, result, captured=None):
+    from Tooling.quality.librarian import dedup as _dedup
+
+    def _fake(ws, prob, target_file, **kw):
+        if captured is not None:
+            captured.update(target_file=target_file, **kw)
+        return result
+    monkeypatch.setattr(_dedup, "run_staged_cleanup_file", _fake)
+
+
+def test_run_cleanup_per_file_only_advances_that_file(conn, tmp_path, monkeypatch):
+    # Per-file unit advances ONLY its own file's decls; other files untouched.
+    _seed_migrated(conn, "foo", "Library.P.F.foo", target_file="Library/P/F.lean")
+    _seed_migrated(conn, "baz", "Library.P.G.baz", target_file="Library/P/G.lean")
+    cap: dict = {}
+    _patch_engine_file(monkeypatch, {"dropped": {}, "merged": set(),
+                                     "bridged": {}, "near": [], "failed": []}, cap)
+    res = lib._run_cleanup(conn, problem="p", workspace=tmp_path,
+                           target_file="Library/P/F.lean")
+    assert res.outcome == "success"
+    life = {r["slug"]: r["lifecycle"] for r in db.library_decls_for(conn, "p")}
+    assert life["foo"] == "cleaned"     # this file advanced
+    assert life["baz"] == "migrated"    # other file untouched
+    assert cap["target_file"] == "Library/P/F.lean"
+
+
+def test_run_cleanup_per_file_drop_records_citation(conn, tmp_path, monkeypatch):
+    _seed_migrated(conn, "foo", "Library.P.F.foo", target_file="Library/P/F.lean")
+    _seed_migrated(conn, "bar", "Library.P.F.bar", target_file="Library/P/F.lean")
+    _patch_engine_file(monkeypatch, {
+        "dropped": {"Library.P.F.foo": "Library.P.F.bar"},
+        "merged": set(), "bridged": {}, "near": [], "failed": []})
+    lib._run_cleanup(conn, problem="p", workspace=tmp_path,
+                     target_file="Library/P/F.lean")
+    by_slug = {r["slug"]: r for r in db.library_decls_for(conn, "p")}
+    assert by_slug["foo"]["lifecycle"] == "dropped"
+    assert by_slug["foo"]["citation"] == "Library.P.F.bar"
+    assert by_slug["bar"]["lifecycle"] == "cleaned"
+
+
+def test_run_cleanup_per_file_reads_prior_renames_from_db(conn, tmp_path,
+                                                          monkeypatch):
+    # An earlier (dependency) file already dropped `gone`→`keep`; cleaning a
+    # later consumer file must surface that drop as `prior_renames` so the
+    # consumer self-applies the rewire (deferred-rewire, §13).
+    _seed_migrated(conn, "keep", "Library.P.G.keep", target_file="Library/P/G.lean")
+    db.mark_library_cleaned(conn, problem="p", slug="keep")    # survivor, done
+    _seed_migrated(conn, "gone", "Library.P.D.gone", target_file="Library/P/D.lean")
+    db.set_library_verdict(conn, problem="p", slug="gone", verdict="drop",
+                           citation="Library.P.G.keep")        # earlier drop
+    _seed_migrated(conn, "user", "Library.P.U.user", target_file="Library/P/U.lean")
+    cap: dict = {}
+    _patch_engine_file(monkeypatch, {"dropped": {}, "merged": set(),
+                                     "bridged": {}, "near": [], "failed": []}, cap)
+    lib._run_cleanup(conn, problem="p", workspace=tmp_path,
+                     target_file="Library/P/U.lean")
+    assert cap["prior_renames"] == {"Library.P.D.gone": "Library.P.G.keep"}
+
+
+# ---------------------------------------------------------------------
 # Stage B — migrate_commit_gate (injectable build_verifier, no gateway)
 # ---------------------------------------------------------------------
 
