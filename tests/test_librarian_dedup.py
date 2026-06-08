@@ -506,7 +506,7 @@ def test_external_consumer_ignores_scope_files(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------
-# v1b-① — parse_dedup_pairs / _strip_json_fence / mark_context
+# _strip_json_fence (shared by the verdict / simplify parsers)
 # ---------------------------------------------------------------------
 
 def test_strip_json_fence_plain() -> None:
@@ -518,67 +518,12 @@ def test_strip_json_fence_fenced() -> None:
     assert dedup._strip_json_fence('```\n[]\n```') == '[]'
 
 
-def test_parse_dedup_pairs_ok() -> None:
-    txt = ('[{"x":"L.A.foo","y":"L.B.bar","kind":"exact","why":"same"},'
-           ' {"x":"L.A.baz","y":"L.C.qux","kind":"near","why":"bridge"}]')
-    pairs, err = dedup.parse_dedup_pairs(txt)
-    assert err == ""
-    assert pairs == [("L.A.foo", "L.B.bar"), ("L.A.baz", "L.C.qux")]
-
-
-def test_parse_dedup_pairs_empty_array() -> None:
-    pairs, err = dedup.parse_dedup_pairs("[]")
-    assert err == "" and pairs == []
-
-
-def test_parse_dedup_pairs_fenced() -> None:
-    pairs, err = dedup.parse_dedup_pairs('```json\n[{"x":"a","y":"b"}]\n```')
-    assert err == "" and pairs == [("a", "b")]
-
-
-def test_parse_dedup_pairs_bad_json() -> None:
-    pairs, err = dedup.parse_dedup_pairs("not json")
-    assert pairs is None and "valid JSON" in err
-
-
-def test_parse_dedup_pairs_not_array() -> None:
-    pairs, err = dedup.parse_dedup_pairs('{"x":"a","y":"b"}')
-    assert pairs is None and "array" in err
-
-
-def test_parse_dedup_pairs_missing_key() -> None:
-    pairs, err = dedup.parse_dedup_pairs('[{"x":"a"}]')
-    assert pairs is None and "missing" in err
-
-
-def test_parse_dedup_pairs_nonstring_value() -> None:
-    pairs, err = dedup.parse_dedup_pairs('[{"x":"a","y":3}]')
-    assert pairs is None and "strings" in err
-
-
 _INDEX = (
     "## LinearAlgebra.p1\n"
     "- `Library.LinearAlgebra.P1.F.foo` → `Library/LinearAlgebra/P1/F.lean`\n"
     "## LinearAlgebra.p2\n"
     "- `Library.LinearAlgebra.P2.G.bar` → `Library/LinearAlgebra/P2/G.lean`\n"
 )
-
-
-def test_mark_context_lists_scope_and_pool(tmp_path) -> None:
-    _mk_lib(tmp_path, {
-        "Library/INDEX.md": _INDEX,
-        "Library/LinearAlgebra/P1/F.lean":
-            "import Mathlib\ntheorem foo (n : Nat) : n = n := by rfl\n",
-        "Library/LinearAlgebra/P2/G.lean":
-            "import Mathlib\ntheorem bar (m : Nat) : m = m := by rfl\n",
-    })
-    out = dedup.mark_context(tmp_path, "LinearAlgebra.p1")
-    assert "# dedup marking — LinearAlgebra.p1" in out
-    assert "SCOPE (1 decls)" in out and "POOL (2 decls)" in out
-    # scope decl present with its signature
-    assert "Library.LinearAlgebra.P1.F.foo :: (n : Nat) : n = n" in out
-    # same-domain pool includes both p1 and p2 decls
-    assert "Library.LinearAlgebra.P2.G.bar :: (m : Nat) : m = m" in out
 
 
 def test_apply_llm_pairs_skips_invalid_without_lake(tmp_path) -> None:

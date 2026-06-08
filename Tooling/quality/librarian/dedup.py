@@ -927,52 +927,15 @@ def run_dedup_campaign(workspace: Path, problem: str, *, apply: bool = False
 # ---------------------------------------------------------------------
 # v1b — LLM dedup layer (standalone, operator/Agent-orchestrated)
 #
-# v1a's mechanical pass only tests pairs that survive a token-Jaccard
-# pre-filter (≥0.5), which misses exact dups stated with different tokens
-# (renamed binders, reformulated conclusions). v1b-① adds a 3.0 LLM
-# wide-marking pass: the marker scans `mark_context` (every scope decl +
-# the domain pool) at high recall and proposes candidate pairs; those feed
-# the SAME mechanical exact-defeq gate (`batch_defeq` → `_apply_drop`,
-# rewire-or-revert). Pairs the marker flagged but that are NOT defeq are the
-# 3.1b near-dup tier (one-line bridge — separate increment).
-#
-# The LLM step is operator/Agent-driven (this stays DB-free + spawn-free):
-# `mark_context` → marker Agent returns pairs → `apply_llm_pairs`. Python
-# proposes nothing semantic; it only mechanically validates + gates, exactly
-# as the framework's proposer/validator split.
+# A high-recall LLM marker proposes redundancy; Python proposes nothing
+# semantic — it only feeds proposals to the SAME mechanical exact-defeq gate
+# (`batch_defeq` → `_apply_drop`, rewire-or-revert) and gates them. The live
+# chain uses the per-file AUDIT marker (`_audit_one_file` → `dedup_audit.md` →
+# per-decl verdicts). The flat one-shot marker (`mark_context` → `dedup.md` →
+# `pairs.json`) was its attention-dispersed precursor and has been retired;
+# `find_thin_wrappers` (its mechanical thin-proof detector) is kept for the
+# standalone `--thin` scan.
 # ---------------------------------------------------------------------
-
-def mark_context(workspace: Path, problem: str) -> str:
-    """Compact `<fqn> :: <signature>` listing for the 3.0 wide-marking pass:
-    every scope decl (dedup candidates) then the domain pool (potential
-    twins/survivors). Pure — reads the Library, no lake."""
-    scope, pool = _load_decls(workspace, problem)
-
-    def row(d: _Decl) -> str:                  # one line per decl
-        return f"{d.fqn} :: {' '.join(d.sig.split())}"
-
-    lines = [f"# dedup marking — {problem}",
-             f"# SCOPE ({len(scope)} decls) — propose to drop these if a twin exists:"]
-    lines += [row(d) for d in sorted(scope, key=lambda d: d.fqn)]
-    lines.append(f"# POOL ({len(pool)} decls) — potential survivors/twins:")
-    lines += [row(d) for d in sorted(pool, key=lambda d: d.fqn)]
-
-    # Thin-proof evidence the signature listing can't show (a thin wrapper's
-    # proof names its twin). Surfacing it here is the fix for the marker's
-    # statement-only blindness — SUSPECT each as a dedup/inline candidate.
-    thin = find_thin_wrappers(workspace, problem)
-    if thin:
-        lines.append(f"# THIN-PROOF scope decls ({len(thin)}) — one-liners; SUSPECT each "
-                     "as a dedup/inline candidate:")
-        lines.append("#   delegating (`by exact/apply/simpa using <L>`, or `<L> args`) "
-                     "→ propose that <L> as y (Library or Mathlib).")
-        lines.append("#   automation (`by simp/norm_num/grind/…`) → trivially standard; "
-                     "very likely a Mathlib one-liner — loogle it.")
-        for fqn, proof, cited in sorted(thin):
-            tag = f"   → cite {cited}" if cited else "   (automation)"
-            lines.append(f"{fqn}  ::=  {proof}{tag}")
-    return "\n".join(lines)
-
 
 _THIN_MAX_LEN = 120
 _AUTOMATION_HEADS = (
@@ -1001,9 +964,9 @@ def _cited_lemma(body: str) -> "str | None":
 
 def find_thin_wrappers(workspace: Path, problem: str
                        ) -> "list[tuple[str, str, str | None]]":
-    """Flag THIN-proof scope decls — one-liners — as dedup/inline suspicions.
-    This is the evidence the marker structurally can't see (`mark_context` is
-    signature-only); a thin wrapper's proof literally names its twin. Returns
+    """Flag THIN-proof scope decls — one-liners — as dedup/inline suspicions
+    (a thin wrapper's proof literally names its twin). Mechanical detector
+    behind the standalone `--thin` scan. Returns
     `[(fqn, oneline_proof, cited_lemma_or_None)]`: `cited` = the lemma a
     delegating one-liner hands off to (its likely twin → a dedup pair), None
     for pure automation (`by simp`/`norm_num` — an inline candidate)."""
@@ -1119,68 +1082,6 @@ def _strip_json_fence(text: str) -> str:
     return t.strip()
 
 
-def parse_dedup_pairs(text: str
-                      ) -> "tuple[list[tuple[str, str]] | None, str]":
-    """Parse the marker agent's `pairs.json` into `[(x_fqn, y_fqn), ...]`.
-    `kind`/`why` are advisory (the mechanical gate decides exact/near) and are
-    ignored here. Returns `(pairs, "")` or `(None, error)`."""
-    import json
-    try:
-        data = json.loads(_strip_json_fence(text))
-    except Exception as e:  # noqa: BLE001
-        return None, f"pairs.json is not valid JSON: {e}"
-    if not isinstance(data, list):
-        return None, "pairs.json must be a JSON array"
-    pairs: list[tuple[str, str]] = []
-    for i, item in enumerate(data):
-        if not isinstance(item, dict) or "x" not in item or "y" not in item:
-            return None, f"pair {i} missing 'x'/'y'"
-        x, y = item["x"], item["y"]
-        if not isinstance(x, str) or not isinstance(y, str):
-            return None, f"pair {i} 'x'/'y' must be strings"
-        pairs.append((x, y))
-    return pairs, ""
-
-
-def run_llm_dedup(workspace: Path, problem: str, *, apply: bool = False,
-                  bridge: bool = True, timeout_sec: int | None = None) -> "dict":
-    """v1b-① standalone LLM dedup. Spawns the marker agent via the framework's
-    `spawn_llm` (Context.md = `mark_context`, prompt = librarian/dedup.md, JSON
-    out = pairs.json) — same proposer pattern as classify — then runs the
-    proposed pairs through the mechanical exact-defeq gate (`apply_llm_pairs`,
-    rewire-or-revert). DB-free + dispatcher-free: `spawn_llm` takes only paths.
-    Returns `apply_llm_pairs`'s dict augmented with `rc`/`error`/`proposed`."""
-    from ... import agent
-    fail = {"dropped": {}, "near": [], "skipped": [], "proposed": 0}
-    pid = agent.new_pipeline_id()
-    attempts = agent.attempts_dir_for(workspace, pid)
-    (attempts / "Context.md").write_text(
-        mark_context(workspace, problem), encoding="utf-8")
-    prompt_path = workspace / "Tooling" / "prompts" / "librarian" / "dedup.md"
-    problem_dir = workspace.joinpath("Problems", *problem.split("."))
-    rc = agent.spawn_llm(
-        kind="librarian", prompt_path=prompt_path, problem_dir=problem_dir,
-        attempts_dir=attempts, session_id=agent.new_pipeline_id(),
-        timeout_sec=timeout_sec)
-    if rc != 0:
-        return {**fail, "rc": rc, "error": f"marker agent rc={rc}"}
-    out = attempts / "pairs.json"
-    if not out.exists():
-        return {**fail, "rc": rc, "error": "marker wrote no pairs.json"}
-    pairs, err = parse_dedup_pairs(out.read_text(encoding="utf-8"))
-    if err:
-        return {**fail, "rc": rc, "error": err}
-    print(f"[dedup-llm] marker proposed {len(pairs)} pair(s)", flush=True)
-    res = apply_llm_pairs(workspace, problem, pairs, apply=apply)
-    out = {**res, "rc": rc, "error": "", "proposed": len(pairs),
-           "bridged": {}, "bridge_failed": []}
-    if apply and res["near"] and bridge:          # 3.1b on the near-dups
-        br = run_llm_bridge(workspace, problem, res["near"], apply=apply)
-        out["bridged"] = br.get("bridged", {})
-        out["bridge_failed"] = br.get("failed", [])
-    return out
-
-
 def bridge_context(workspace: Path, problem: str,
                    near_pairs: "list[tuple[str, str]]",
                    scope_index: "list[tuple[str, str]] | None" = None) -> str:
@@ -1275,15 +1176,13 @@ def run_llm_bridge(workspace: Path, problem: str,
 
 
 # ---------------------------------------------------------------------
-# per-file audit marker (replaces the flat one-shot marker)
+# per-file audit marker (the live chain marker)
 #
-# The flat marker (`mark_context` → one call over scope+pool+THIN) disperses
-# attention over hundreds of lines and is statement-only. The old v0.2 design
-# audited every decl with a verdict — high recall, but its variance went
-# straight into the Library (no gate). This revives the per-decl AUDIT but at
-# the FILE grain (focused, sees within-file siblings, matches the librarian's
-# per-file unit) and keeps the mechanical gate as the variance absorber: one
-# agent per file emits a verdict per decl, verdicts → apply_llm_pairs.
+# One agent per Library file emits a verdict per decl (high recall) at the FILE
+# grain — focused, sees within-file siblings, matches the librarian's per-file
+# unit — and the mechanical gate absorbs the variance (verdicts → the defeq
+# gate; the LLM proposes, lake decides). This is the per-decl AUDIT from the
+# old v0.2 design, but gated; it superseded the flat statement-only marker.
 # ---------------------------------------------------------------------
 
 _AUDIT_VERDICTS = ("keep", "drop", "cite-mathlib", "cite-library", "merge")
@@ -2133,9 +2032,7 @@ if __name__ == "__main__":
     ws = Path(".").resolve()
     prob = sys.argv[1] if len(sys.argv) > 1 else ""
     do_apply = "--apply" in sys.argv
-    if "--mark" in sys.argv:                      # 3.0 context for the marker
-        print(mark_context(ws, prob))
-    elif "--thin" in sys.argv:                    # mechanical thin-wrapper scan
+    if "--thin" in sys.argv:                      # mechanical thin-wrapper scan
         rows = find_thin_wrappers(ws, prob)
         deleg = [(f, p, c) for f, p, c in rows if c]
         auto = [(f, p, c) for f, p, c in rows if not c]
@@ -2182,26 +2079,6 @@ if __name__ == "__main__":
             print(f"  {kind}  {x.rsplit('.', 1)[-1]}  →  cite {y.rsplit('.', 1)[-1]}")
         for x, y in bridged.items():
             print(f"  bridge {x.rsplit('.', 1)[-1]}  →  cite {y.rsplit('.', 1)[-1]}")
-    elif "--llm" in sys.argv:                     # v1b: spawn marker (+bridger)
-        res = run_llm_dedup(ws, prob, apply=do_apply,
-                            bridge="--no-bridge" not in sys.argv)
-        if res.get("error"):
-            print(f"[dedup-llm] FAILED: {res['error']}")
-        bridged = res.get("bridged", {})
-        merged = res.get("merged", set())
-        ndrop = len(res["dropped"]) - len(merged)
-        print(f"\n=== dedup-llm {'APPLIED' if do_apply else 'DRY'} on {prob}: "
-              f"{ndrop} drop(s), {len(merged)} merged, {len(bridged)} bridged, "
-              f"{len(res['near'])} near, {len(res['skipped'])} skipped "
-              f"(of {res.get('proposed', 0)} proposed) ===")
-        for x, y in res["dropped"].items():
-            kind = "merge" if x in merged else "drop "
-            print(f"  {kind}  {x.rsplit('.', 1)[-1]}  →  cite {y.rsplit('.', 1)[-1]}")
-        for x, y in bridged.items():
-            print(f"  bridge {x.rsplit('.', 1)[-1]}  →  cite {y.rsplit('.', 1)[-1]}")
-        for x, y in res["near"]:
-            if x not in bridged:
-                print(f"  near   {x.rsplit('.', 1)[-1]}  ~  {y.rsplit('.', 1)[-1]}")
     elif "--pairs" in sys.argv:                   # 3.1a on LLM-marked pairs
         pf = sys.argv[sys.argv.index("--pairs") + 1]
         marked = json.loads(Path(pf).read_text(encoding="utf-8"))
