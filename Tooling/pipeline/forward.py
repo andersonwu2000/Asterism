@@ -35,6 +35,7 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any  # noqa: F401 — used in string annotations (mfst/return)
 
 from ..state import db
 
