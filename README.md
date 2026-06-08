@@ -5,6 +5,9 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-07
+Per-decl audit markers became the dedup pipeline's backbone, gaining parallel per-file marking with focused context and a marker-recall fix, alongside mechanical thin-wrapper detection. Building on this, an LLM dedup layer (v1b) was added to merge wrappers, bridge equivalent declarations, and cite or drop lemmas already proved at Mathlib tier, advancing the librarian's chain-integration work into its first phase.
+
 ### 2026-06-06
 Continued Phase 3 library cleanup by mechanically deduplicating redundant declarations in the librarian (the v1a pass), while adding a safety guard to ensure that declarations consumed across multiple problems are never dropped during this process, preserving correctness as the library is trimmed.
 
