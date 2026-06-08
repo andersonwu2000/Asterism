@@ -1926,11 +1926,249 @@ def decl_cleanup_simplify_file(workspace: Path, problem: str, target_file: str,
     return n
 
 
+# ---------------------------------------------------------------------
+# P3-(2) — variable extraction (§13 (e) file-cleanup, whole-file)
+#
+# migrate emits decls in a raw style: every binder is crammed into a leading
+# `∀ …,` in the statement and re-`intro`d at the top of the proof, and binders
+# shared across the file are repeated on every decl. This pass rewrites the file
+# into idiomatic form — un-∀ the prefix into the binder list, hoist file-wide
+# shared binders into one `variable` block — WITHOUT changing any decl's
+# elaborated type, so no caller breaks.
+#
+# Safety (the user-chosen gate): not code-token (the code legitimately changes)
+# and not a consumer cone build. Instead `#check @<decl>` each decl's fully-
+# applied type before and after (one isolate build, also the proof gate, via
+# `lean --json`); any type that differs → session-retry → revert. This enforces
+# call-site-invariance by building ONLY this file — Lean resolves `variable`
+# inclusion (which a textual parser can't: e.g. `Submodule K V` silently pulls
+# in `[Module K V]`), we just compare its answer. A mechanical pre-filter skips
+# files with nothing to un-∀ and no shared binders.
+# ---------------------------------------------------------------------
+
+_VARIABLE_PROMPT = "variable_extract.md"
+_VARIABLE_OUTPUT = "refactored.lean"
+_VARIABLE_MAX_RETRIES = 2
+
+
+def _bracket_groups(region: str) -> "list[str]":
+    """Top-level `{..}` / `[..]` / `(..)` binder atoms in `region`, normalized.
+    Bracket-balanced (counts only the opening kind, so inner `[K]` in
+    `(f : V →ₗ[K] V)` doesn't end the group)."""
+    out: list[str] = []
+    i, n = 0, len(region)
+    closing = {"(": ")", "{": "}", "[": "]"}
+    while i < n:
+        c = region[i]
+        if c in closing:
+            close, depth, j = closing[c], 1, i + 1
+            while j < n and depth > 0:
+                if region[j] == c:
+                    depth += 1
+                elif region[j] == close:
+                    depth -= 1
+                j += 1
+            out.append(" ".join(region[i:j].split()))
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def _binder_atoms(sig: str) -> "list[str]":
+    """Leading binder atoms a caller of this decl supplies, in order — the
+    explicit binders before the type colon plus, for a ∀-prenex statement, the
+    binders under the leading `∀ …,`. Approximate (a hint + skip heuristic for
+    the variable pass); the #check gate is the real check."""
+    cp = _type_colon_pos(sig)
+    region = sig[:cp].strip() if cp >= 0 else ""
+    concl = (sig[cp + 1:] if cp >= 0 else sig).lstrip()
+    if concl.startswith("∀"):
+        rest, depth = concl[1:], 0
+        for i, c in enumerate(rest):
+            if c in "([{":
+                depth += 1
+            elif c in ")]}":
+                depth -= 1
+            elif c == "," and depth == 0:
+                region = (region + " " + rest[:i]).strip()
+                break
+    return _bracket_groups(region)
+
+
+def _is_prenex(sig: str) -> bool:
+    """Statement's conclusion opens with a `∀` binder prefix (un-∀ candidate)."""
+    cp = _type_colon_pos(sig)
+    return (sig[cp + 1:] if cp >= 0 else sig).lstrip().startswith("∀")
+
+
+def _shared_binders(decls: "list[_Decl]") -> "list[str]":
+    """Binder atoms appearing on ≥2 of `decls` (the file-wide hoist candidates),
+    most-shared first."""
+    from collections import Counter
+    cnt: "Counter[str]" = Counter()
+    for d in decls:
+        for a in set(_binder_atoms(d.sig)):
+            cnt[a] += 1
+    return [a for a, c in sorted(cnt.items(), key=lambda kv: (-kv[1], kv[0]))
+            if c >= 2]
+
+
+def _norm_type(s: str) -> str:
+    """Canonical form for comparing `#check` types: collapse whitespace and
+    erase auto universe names (`u_1`→`u`) so a binder reorder that only renames
+    universes isn't a false mismatch."""
+    return " ".join(re.sub(r"\bu_\d+\b", "u", s).split())
+
+
+def _typecheck_capturing_types(workspace: Path, file_text: str,
+                               fqns: "list[str]", *,
+                               timeout: int = _BATCH_TIMEOUT_SEC
+                               ) -> "tuple[bool, str, dict[str, str]]":
+    """Isolate-build `file_text` with `#check @<fqn>` appended for each decl
+    (`lean --json`), returning `(ok, detail, {fqn: normalized_type})`. One build
+    serves as both the proof gate (an error → ok False) and the signature
+    snapshot. `@` forces all args explicit so implicit/explicit flips show up."""
+    import json
+    checks = "\n".join(f"#check @{f}" for f in fqns)
+    content = file_text.rstrip() + "\n\n" + checks + "\n"
+    tmp_dir = workspace / ".attempts"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_file = tmp_dir / f"_cleanup_vcheck_{uuid.uuid4().hex}.lean"
+    tmp_file.write_text(content, encoding="utf-8")
+    try:
+        r = subprocess.run(
+            ["lake", "env", "lean", "--json", str(tmp_file)], cwd=str(workspace),
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return False, str(e), {}
+    finally:
+        try:
+            tmp_file.unlink()
+        except OSError:
+            pass
+    ok, errs, types = r.returncode == 0, [], {}
+    for line in (r.stdout + "\n" + r.stderr).splitlines():
+        s = line.strip()
+        if not (s.startswith("{") and s.endswith("}")):
+            continue
+        try:
+            msg = json.loads(s)
+        except Exception:  # noqa: BLE001
+            continue
+        sev, data = msg.get("severity"), msg.get("data", "")
+        if sev == "error":
+            ok = False
+            errs.append(data)
+        elif sev == "information":
+            for f in fqns:
+                if data.startswith(f"@{f} :"):
+                    types[f] = _norm_type(data[len(f"@{f} :"):])
+                    break
+    if ok and len(types) != len(fqns):
+        return False, "could not read #check output for every declaration", types
+    detail = "" if ok else ("\n\n".join(errs)[-2000:] or (r.stdout + r.stderr)[-2000:])
+    return ok, detail, types
+
+
+def _variable_context(workspace: Path, problem: str, rel: str,
+                      decl_names: "list[str]", shared: "list[str]",
+                      prev_error: str = "") -> str:
+    """Per-file context for the variable-extraction agent: module, declarations,
+    the mechanically-detected shared binders (hoist hints), the verbatim file,
+    and (on retry) the previous failure to fix."""
+    try:
+        body = (workspace / rel).read_text(encoding="utf-8")
+    except OSError:
+        body = ""
+    lines = [
+        f"# Variable extraction — {problem} — `{rel}`", "",
+        f"Module: `{_mod_of_rel(rel)}`.",
+        f"Declarations: {', '.join(decl_names) or '(none)'}", "",
+        "Binders detected as shared across this file (candidates to hoist into a "
+        "`variable` block):", "",
+    ]
+    lines += ([f"- `{a}`" for a in shared]
+              if shared else ["- (none detected — focus on un-∀)"])
+    lines += ["", "## Current file", "", "```lean", body.rstrip(), "```", ""]
+    if prev_error:
+        lines += ["## Your previous attempt failed — fix and retry", "",
+                  "```", prev_error[-1500:], "```", ""]
+    return "\n".join(lines) + "\n"
+
+
+def file_cleanup_variables(workspace: Path, problem: str, target_file: str,
+                           decls_in_file: "list[_Decl]", *,
+                           max_retries: int = _VARIABLE_MAX_RETRIES) -> bool:
+    """§13 (e) variable-extraction pass for ONE file. Pre-filter (skip if nothing
+    to un-∀ and no shared binders) → snapshot decl types → spawn → #check gate
+    (proof builds AND every decl's elaborated type unchanged) → on fail feed the
+    error & re-spawn (≤ max_retries) → exhaustion keeps the original. Writes
+    `target_file` in place on success. Returns whether the file changed. No-op
+    (False) if the prompt is absent, nothing to do, or the snapshot can't be
+    read (don't risk an unverifiable edit)."""
+    from ... import agent
+    prompt_path = workspace / "Tooling" / "prompts" / "librarian" / _VARIABLE_PROMPT
+    if not prompt_path.exists() or not decls_in_file:
+        return False
+    leaf = target_file.split("/")[-1]
+    shared = _shared_binders(decls_in_file)
+    if not shared and not any(_is_prenex(d.sig) for d in decls_in_file):
+        return False                          # already idiomatic, nothing shared
+    try:
+        original = (workspace / target_file).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    fqns = [d.fqn for d in decls_in_file]
+    ok0, _d0, base_types = _typecheck_capturing_types(workspace, original, fqns)
+    if not ok0:
+        print(f"[staged] variables `{leaf}` — skip (no type snapshot)", flush=True)
+        return False
+    decl_names = [d.name for d in decls_in_file]
+    problem_dir = workspace.joinpath("Problems", *problem.split("."))
+    prev_error = ""
+    for attempt in range(max_retries + 1):
+        attempts = agent.attempts_dir_for(workspace, agent.new_pipeline_id())
+        (attempts / "Context.md").write_text(
+            _variable_context(workspace, problem, target_file, decl_names,
+                              shared, prev_error), encoding="utf-8")
+        rc = agent.spawn_llm(kind="librarian", prompt_path=prompt_path,
+                             problem_dir=problem_dir, attempts_dir=attempts,
+                             session_id=agent.new_pipeline_id())
+        out = attempts / _VARIABLE_OUTPUT
+        if rc != 0 or not out.exists():
+            prev_error = f"no {_VARIABLE_OUTPUT} was produced"
+            continue
+        new_text = out.read_text(encoding="utf-8")
+        if new_text.strip() == original.strip():
+            return False                      # already idiomatic — clean no-op
+        ok, detail, new_types = _typecheck_capturing_types(
+            workspace, new_text, fqns)
+        if not ok:
+            prev_error = detail
+            continue
+        changed = [f for f in fqns if base_types.get(f) != new_types.get(f)]
+        if changed:
+            prev_error = ("the elaborated type changed for: "
+                          + ", ".join(f.rsplit(".", 1)[-1] for f in changed)
+                          + " — restructure the spelling, never the type")
+            continue
+        (workspace / target_file).write_text(new_text, encoding="utf-8")
+        print(f"[staged] variables `{leaf}` — extracted (try {attempt + 1})",
+              flush=True)
+        return True
+    print(f"[staged] variables `{leaf}` — kept original "
+          f"(no green refactor in {max_retries + 1} tries)", flush=True)
+    return False
+
+
 def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
                             scope_index: "list[tuple[str, str]] | None" = None,
                             prior_renames: "dict[str, str] | None" = None,
                             apply: bool = True, bridge: bool = True,
                             docstring: bool = False,
+                            variables: bool = False,
                             simplify: bool = False) -> "dict":
     """§13 3c-2 per-file cleanup unit (the dispatcher's per-file work item).
     Clean ONE Library file: mark it → classify (with the cross-file chain guard
@@ -1993,7 +2231,14 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
             workspace.joinpath("Problems", *problem.split(".")))
         n_simplified = decl_cleanup_simplify_file(
             workspace, problem, target_file, survivor_decls, marked)
-    # (e) file-cleanup — docstring polish on the (now simplified) file. Comment-
+    # (e) variable extraction — un-∀ + hoist file-wide shared binders. Type-
+    # preserving (call-site-invariant), enforced by the #check gate. Runs BEFORE
+    # docstrings (structure first, then comments → no re-touch).
+    variabled = False
+    if variables and survivor_decls:
+        variabled = file_cleanup_variables(
+            workspace, problem, target_file, survivor_decls)
+    # (e) file-cleanup — docstring polish on the (now refactored) file. Comment-
     # only → no signature change. Own gates + retry; failure keeps the file.
     docstringed = False
     if docstring:
@@ -2003,7 +2248,8 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
             "merged": set(r["merged"]),
             "bridged": {x: Yd.fqn for x, Yd in r["bridged"]},
             "near": r["near"], "failed": r["failed"],
-            "simplified": n_simplified, "docstringed": docstringed}
+            "simplified": n_simplified, "variabled": variabled,
+            "docstringed": docstringed}
 
 
 def run_file_audit_dedup(workspace: Path, problem: str, *, apply: bool = False,
