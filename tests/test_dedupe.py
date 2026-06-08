@@ -1512,6 +1512,24 @@ def test_conclusion_of_signature() -> None:
         "(S : Submodule) : finrank S > 0") == "finrank S > 0"
 
 
+def test_conclusion_of_signature_quantifier_colon_not_missplit() -> None:
+    # Regression (§13 latent bug): a `∃ x : T,` / `∀ x : T,` colon in the
+    # conclusion is unparenthesised → the OLD last-depth-0-colon scan split
+    # there and returned a mangled tail. The type colon is the FIRST depth-0 `:`.
+    assert dedupe._conclusion_of_signature(
+        "(U : S) (h : P) : ∃ x : E, x ∈ U") == "∃ x : E, x ∈ U"
+    assert dedupe._conclusion_of_signature(
+        ": ∀ y : T, P y") == "∀ y : T, P y"
+
+
+def test_to_forall_form_quantifier_colon_not_missplit() -> None:
+    assert dedupe._to_forall_form(
+        "(U : S) : ∃ x : E, x ∈ U") == "∀ (U : S), ∃ x : E, x ∈ U"
+    # strict-implicit `⦃ ⦄` binder colon is bracketed, not the boundary
+    assert dedupe._to_forall_form(
+        "⦃s : S⦄ : P s") == "∀ ⦃s : S⦄, P s"
+
+
 def test_distinctive_tokens_drops_stopwords_and_singletons() -> None:
     toks = dedupe._distinctive_tokens("Submodule.finrank S + n > 0")
     assert "Submodule" in toks and "finrank" in toks

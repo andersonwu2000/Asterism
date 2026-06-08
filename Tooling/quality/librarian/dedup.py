@@ -56,34 +56,12 @@ _BATCH_TIMEOUT_SEC = 240
 _BATCH_MAX_PAIRS = 40
 
 
-def _type_colon_pos(sig: str) -> int:
-    """Index of the type colon in `<binders> : <conclusion>` — the FIRST
-    depth-0 `:`. Binder colons (`(x : T)`, `{n : ℕ}`) are bracketed
-    (depth > 0); the conclusion's own colons (`∃ x : E, …`, `fun y : T =>`)
-    come AFTER. `dedupe._to_forall_form` / `_conclusion_of_signature` split
-    on the LAST depth-0 colon and so mangle ∃/∀/fun-bearing conclusions —
-    this splitter is correct for the defeq probe."""
-    dp = db = dk = da = 0
-    for i, c in enumerate(sig):
-        if c == "(":
-            dp += 1
-        elif c == ")":
-            dp -= 1
-        elif c == "{":
-            db += 1
-        elif c == "}":
-            db -= 1
-        elif c == "[":
-            dk += 1
-        elif c == "]":
-            dk -= 1
-        elif c == "⦃":
-            da += 1
-        elif c == "⦄":
-            da -= 1
-        elif c == ":" and dp == db == dk == da == 0:
-            return i
-    return -1
+# Type-colon splitter (FIRST depth-0 `:`) — single source in the lower
+# `dedupe` module (already imported as `_dd`). `dedupe._to_forall_form` /
+# `_conclusion_of_signature` share it too; the §13 latent bug was their old
+# LAST-colon scan mangling ∃/∀/fun-bearing conclusions. Aliased (not
+# re-defined) so there is exactly one implementation.
+_type_colon_pos = _dd._type_colon_pos
 
 
 def sig_to_forall(sig: str) -> str:

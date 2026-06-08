@@ -171,35 +171,40 @@ def _extract_full_signature(text: str) -> str | None:
     return None
 
 
-def _to_forall_form(signature: str) -> str:
-    """Convert `<binders> : <conclusion>` to `∀ <binders>, <conclusion>`.
-
-    The boundary is the LAST top-level `:` (depth 0 on parens/braces/
-    brackets). Empty binders are handled by returning the conclusion
-    alone.
-    """
-    n = len(signature)
-    pos = 0
-    dp = db_ = dk = 0
-    boundary = -1
-    while pos < n:
-        c = signature[pos]
+def _type_colon_pos(signature: str) -> int:
+    """Index of the type colon in `<binders> : <conclusion>` — the FIRST
+    depth-0 `:`. Binder colons (`(x : T)`, `{n : ℕ}`, `[i : I]`, `⦃s : S⦄`)
+    are bracketed (depth > 0); a colon in the CONCLUSION itself (`∃ x : E, …`,
+    `∀ x : T, …`, `fun y : T => …`) comes AFTER the type colon, so the FIRST
+    depth-0 colon is the true split. Returns -1 if none (no binders, e.g. a
+    bare conclusion). The old LAST-depth-0-colon scan mangled ∃/∀/fun-bearing
+    conclusions — this is the canonical splitter both `_to_forall_form` and
+    `_conclusion_of_signature` use; `librarian.dedup.sig_to_forall` shares it."""
+    dp = db_ = dk = da = 0
+    for i, c in enumerate(signature):
         if c == "(": dp += 1
         elif c == ")": dp -= 1
         elif c == "{": db_ += 1
         elif c == "}": db_ -= 1
         elif c == "[": dk += 1
         elif c == "]": dk -= 1
-        elif c == ":" and dp == 0 and db_ == 0 and dk == 0:
-            boundary = pos
-        pos += 1
-    if boundary < 0:
-        return signature
-    binders = signature[:boundary].strip()
-    conclusion = signature[boundary + 1:].strip()
-    if not binders:
-        return conclusion
-    return f"∀ {binders}, {conclusion}"
+        elif c == "⦃": da += 1
+        elif c == "⦄": da -= 1
+        elif c == ":" and dp == db_ == dk == da == 0:
+            return i
+    return -1
+
+
+def _to_forall_form(signature: str) -> str:
+    """Convert `<binders> : <conclusion>` to `∀ <binders>, <conclusion>`.
+    Splits at the type colon (`_type_colon_pos`, the FIRST depth-0 `:`);
+    empty binders return the conclusion alone."""
+    p = _type_colon_pos(signature)
+    if p < 0:
+        return signature.strip()
+    binders = signature[:p].strip()
+    conclusion = signature[p + 1:].strip()
+    return f"∀ {binders}, {conclusion}" if binders else conclusion
 
 
 # Match `theorem`, `lemma`, or `def` to cover framework-promoted ancestors
@@ -242,24 +247,12 @@ _LIB_STOPWORDS = frozenset({
 
 
 def _conclusion_of_signature(signature: str) -> str:
-    """The `<conclusion>` of `<binders> : <conclusion>` — text after the
-    LAST top-level colon (same boundary scan as `_to_forall_form`)."""
-    n = len(signature)
-    pos = 0
-    dp = db_ = dk = 0
-    boundary = -1
-    while pos < n:
-        c = signature[pos]
-        if c == "(": dp += 1
-        elif c == ")": dp -= 1
-        elif c == "{": db_ += 1
-        elif c == "}": db_ -= 1
-        elif c == "[": dk += 1
-        elif c == "]": dk -= 1
-        elif c == ":" and dp == 0 and db_ == 0 and dk == 0:
-            boundary = pos
-        pos += 1
-    return signature[boundary + 1:].strip() if boundary >= 0 else signature.strip()
+    """The `<conclusion>` of `<binders> : <conclusion>` — text after the type
+    colon (`_type_colon_pos`, the FIRST depth-0 `:`). A `∃ x : T,` / `∀ x : T,`
+    / `fun y : T =>` colon in the conclusion is NOT the boundary (the old
+    LAST-colon scan returned a mangled tail for those)."""
+    p = _type_colon_pos(signature)
+    return signature[p + 1:].strip() if p >= 0 else signature.strip()
 
 
 def _distinctive_tokens(text: str) -> "frozenset[str]":
