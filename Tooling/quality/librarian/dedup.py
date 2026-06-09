@@ -1574,8 +1574,17 @@ def _cleanup_one_file(workspace: Path, rel: str, decls: "list[_Decl]",
         return out
 
     def _rewire(text: str, xfqn: str, xname: str, Y: _Decl) -> str:
+        # Qualified refs (`Mod.xname`) always → Y.fqn. BARE refs: a SAME-MODULE
+        # rewrite (a P4 rename, or a same-module wrapper-merge) keeps them bare
+        # (Y.name) — the consumer's existing `open`/import of that module resolves
+        # the new name, it stays idiomatic, AND it stays matchable by downstream
+        # bare-name passes (cite-drop's `_inline_wrapper_call` ignores an FQN
+        # tail, so an over-qualified rename ref would dangle when its alias is
+        # later dropped). A CROSS-MODULE drop must fully-qualify (the consumer may
+        # not open the survivor's namespace).
         t, n1 = replace_token(text, xfqn, Y.fqn)
-        t, n2 = replace_token(t, xname, Y.fqn)
+        bare = Y.name if (Y.module and _mod_of_fqn(xfqn) == Y.module) else Y.fqn
+        t, n2 = replace_token(t, xname, bare)
         if (n1 or n2) and Y.module and _mod_of_rel(rel) != Y.module:
             t = _ensure_import(t, Y.module)
         return t

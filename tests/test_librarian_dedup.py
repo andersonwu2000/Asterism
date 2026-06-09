@@ -1224,6 +1224,44 @@ def test_inline_wrapper_call_skips_partial_application() -> None:
 
 
 # ---------------------------------------------------------------------
+# deferred-rewire — same-module rename keeps bare refs bare (else cite-drop's
+# bare-name matcher misses an over-qualified ref → dangling drop)
+# ---------------------------------------------------------------------
+
+def test_cleanup_one_file_same_module_rename_keeps_bare(tmp_path) -> None:
+    rel = "Library/P/U.lean"
+    p = tmp_path / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("import Library.P.M\nopen Library.P.M\n"
+                 "theorem a : T := by exact foo x\n"
+                 "theorem b : T := by exact Library.P.M.foo x\n",
+                 encoding="utf-8")
+    X = _vdecl("foo", ": T", module="Library.P.M", rel="Library/P/M.lean")
+    Y = _vdecl("bar", ": T", module="Library.P.M", rel="Library/P/M.lean")
+    dedup._cleanup_one_file(tmp_path, rel, [], {}, {}, [(X, Y)],
+                            dedup._Splicer(tmp_path))
+    out = p.read_text(encoding="utf-8")
+    assert "exact bar x" in out                       # bare ref stays bare
+    assert "exact Library.P.M.bar x" in out           # qualified ref → new fqn
+    assert "foo" not in out
+
+
+def test_cleanup_one_file_cross_module_drop_qualifies(tmp_path) -> None:
+    rel = "Library/P/U.lean"
+    p = tmp_path / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("import Library.P.M\nopen Library.P.M\n"
+                 "theorem a : T := by exact foo x\n", encoding="utf-8")
+    X = _vdecl("foo", ": T", module="Library.P.M", rel="Library/P/M.lean")
+    Y = _vdecl("surv", ": T", module="Library.P.N", rel="Library/P/N.lean")
+    dedup._cleanup_one_file(tmp_path, rel, [], {}, {}, [(X, Y)],
+                            dedup._Splicer(tmp_path))
+    out = p.read_text(encoding="utf-8")
+    assert "exact Library.P.N.surv x" in out          # cross-module → fully qualified
+    assert "import Library.P.N" in out                # survivor's module imported
+
+
+# ---------------------------------------------------------------------
 # P4 — rename (naming alignment): parse / validate / mechanical apply
 # ---------------------------------------------------------------------
 
