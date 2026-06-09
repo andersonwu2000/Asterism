@@ -144,6 +144,33 @@ def test_derive_cleaned_with_index_is_none(tmp_path: Path):
         None, None)
 
 
+def test_drop_index_section_removes_only_that_problem(tmp_path: Path):
+    from Tooling.pipeline import librarian
+    text = "# Library Index\n\n## p\n\nx\n\n## q\n\ny\n"
+    out = librarian._drop_index_section(text, "p")
+    assert "## p" not in out and "## q\n\ny" in out and "# Library Index" in out
+    # absent → unchanged; line-exact (won't match `## pp`)
+    assert librarian._drop_index_section(text, "pp") == text
+
+
+def test_reclean_invalidates_stale_index_so_bridge_refires(tmp_path: Path):
+    # The stale-INDEX bug: re-cleaning a promoted problem (migrated decls +
+    # leftover INDEX) would skip the terminal bridge/Gate B.
+    conn = _mem()
+    _migrated(conn, "foo")
+    (tmp_path / "Library").mkdir()
+    idx = tmp_path / "Library" / "INDEX.md"
+    idx.write_text("# Library Index\n\n## p\n\nfoo\n", encoding="utf-8")
+    # cleanup still runs (migrated present), but INDEX is stale.
+    assert dispatcher._derive_librarian_work(conn, "p", tmp_path)[0] == "cleanup"
+    dispatcher._librarian_invalidate_index(tmp_path, "p")
+    assert "## p" not in idx.read_text(encoding="utf-8")
+    # once cleanup finishes (decls cleaned) the now-absent INDEX → bridge re-fires
+    # (was wrongly (None, None) before the fix).
+    conn.execute("UPDATE library_decls SET lifecycle='cleaned' WHERE problem='p'")
+    assert dispatcher._derive_librarian_work(conn, "p", tmp_path) == ("bridge", None)
+
+
 def test_derive_all_terminal_cited_dropped_is_none(tmp_path: Path):
     conn = _mem()
     _candidate(conn, "a")

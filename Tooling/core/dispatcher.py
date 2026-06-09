@@ -1434,6 +1434,28 @@ def _librarian_index_has(workspace: Path, problem: str) -> bool:
     return any(ln.strip() == header for ln in text.splitlines())
 
 
+def _librarian_invalidate_index(workspace: Path, problem: str) -> None:
+    """Drop `problem`'s stale INDEX section when it is being RE-cleaned (already
+    promoted, but its Library is now being rewritten). Without this the stale
+    entry reads as 'finished' (`_derive_librarian_work`'s INDEX done-marker) and
+    the terminal bridge/Gate B is skipped — the re-cleaned Library would be
+    re-exposed without re-verifying it re-derives the root. Clearing it makes
+    bridge re-fire + re-promote. Called from the single-threaded tick (no
+    concurrent INDEX writer during a problem's cleanup phase — bridge runs only
+    once all its decls are cleaned)."""
+    from ..pipeline import librarian
+    index = workspace / "Library" / "INDEX.md"
+    try:
+        text = index.read_text(encoding="utf-8")
+    except OSError:
+        return
+    new = librarian._drop_index_section(text, problem)
+    if new != text:
+        index.write_text(new, encoding="utf-8")
+        print(f"[librarian] {problem}: re-clean detected → cleared stale INDEX "
+              f"entry (bridge/Gate B will re-verify + re-promote)", flush=True)
+
+
 # #92 — a Librarian queue row for the parallel phases (migrate/cleanup) encodes
 # its target FILE in the target_id as `problem\x1ffile`, so the generic pop /
 # running-dedup / submit machinery treats each file as a distinct unit (the
@@ -1624,6 +1646,12 @@ def _librarian_refill(
         work_kind, _ = _derive_librarian_work(conn, problem, workspace)
         if work_kind is None:
             continue
+        # Re-cleaning an already-promoted problem: its INDEX entry is stale, and
+        # `_derive_librarian_work` would read it as "done" after cleanup, skipping
+        # the terminal bridge/Gate B. Invalidate it now (single-threaded tick) so
+        # bridge re-fires once the rewritten Library is all cleaned.
+        if work_kind == "cleanup" and _librarian_index_has(workspace, problem):
+            _librarian_invalidate_index(workspace, problem)
         if work_kind in ("migrate", "cleanup"):
             # Both are per-file phases (#92 migrate, §13 3c-2 cleanup): enqueue
             # one `problem\x1ffile` row per READY file so independent files run

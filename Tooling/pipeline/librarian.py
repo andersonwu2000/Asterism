@@ -2291,6 +2291,29 @@ def _upsert_index_section(index_text: str, problem: str,
     return out
 
 
+def _drop_index_section(index_text: str, problem: str) -> str:
+    """Remove the `## <problem>` section from INDEX.md (inverse of
+    `_upsert_index_section`) — returns the text unchanged if the section is
+    absent. Used to invalidate a stale INDEX entry when an already-promoted
+    problem is re-cleaned, so the terminal bridge/Gate B re-fires + re-promotes
+    on the rewritten Library (the section span runs to the next `## ` or EOF,
+    same delimiting as the upsert)."""
+    header = f"## {problem}"
+    lines = index_text.splitlines()
+    start = next((i for i, ln in enumerate(lines) if ln.strip() == header), None)
+    if start is None:
+        return index_text
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        if lines[j].startswith("## "):
+            end = j
+            break
+    before = "\n".join(lines[:start]).rstrip()
+    after = "\n".join(lines[end:]).strip()
+    parts = [p for p in (before, after) if p]
+    return ("\n\n".join(parts) + "\n") if parts else ""
+
+
 _INDEX_PREAMBLE = (
     "# Library Index\n\n"
     "Provenance of declarations harvested from proved Problems, by "
