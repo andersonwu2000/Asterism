@@ -2691,22 +2691,29 @@ def _run_bridge(conn, *, problem, workspace, pipeline_id,
     from . import PipelineResult
     from ..quality.librarian import dedup as _dedup
 
-    # Point 4 — refine bridges into cite-mathlib DROPS: a wrapper whose body is a
-    # pure mathlib citation (`X := Ideal.iInf_span_singleton hg`) is removed and
-    # its consumers inlined to the mathlib lemma directly. 'cited' lifecycle drops
-    # it from `_harvested_decls` (so the probe + INDEX below exclude it); the
-    # probe's olean rebuild + re-derivation is the integration gate.
-    cited = _dedup.cite_drop_aliases(
-        workspace, problem, _dedup._load_decls(workspace, problem)[0])
-    for fqn, head in cited.items():
-        conn.execute("UPDATE library_decls SET lifecycle = 'cited', citation = ? "
-                     "WHERE problem = ? AND target_name = ?", (head, problem, fqn))
-    if cited:
-        conn.commit()
-
     migrated = _harvested_decls(conn, problem)
     if not migrated:
         return PipelineResult(outcome="success")  # nothing harvested
+
+    # Point 4 — refine bridges into cite-mathlib DROPS: a wrapper whose body is a
+    # pure mathlib citation (`X := Ideal.iInf_span_singleton hg`) is removed and
+    # its consumers inlined to the mathlib lemma directly. 'cited' lifecycle drops
+    # it from the harvest (so the probe + INDEX below exclude it); the probe's
+    # olean rebuild + re-derivation is the integration gate.
+    # NB: pass the DB-derived scope_index — at bridge time INDEX.md is empty (it's
+    # written only on a bridge PASS, and the re-clean path clears it), so
+    # `_load_decls`'s INDEX fallback would see no scope.
+    scope_index = [(r["target_name"], r["target_file"]) for r in migrated
+                   if r["target_name"] and r["target_file"]]
+    cited = _dedup.cite_drop_aliases(
+        workspace, problem, _dedup._load_decls(workspace, problem, scope_index)[0])
+    if cited:
+        for fqn, head in cited.items():
+            conn.execute("UPDATE library_decls SET lifecycle = 'cited', "
+                         "citation = ? WHERE problem = ? AND target_name = ?",
+                         (head, problem, fqn))
+        conn.commit()
+        migrated = _harvested_decls(conn, problem)   # cited rows drop out
 
     root = conn.execute(
         "SELECT statement FROM goals WHERE problem = ? AND origin = 'root' "

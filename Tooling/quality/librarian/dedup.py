@@ -2453,10 +2453,17 @@ def cite_drop_aliases(workspace: Path, problem: str,
     # or every gate fails (and cite-drop silently no-ops).
     from ...pipeline._lake import lake_build_modules
     try:
-        lake_build_modules(workspace, sorted({_mod_of_rel(r) for r in rels}))
-    except Exception:  # noqa: BLE001 — best-effort pre-flight
-        pass
+        mods = sorted({_mod_of_rel(r) for r in rels})
+        lake_build_modules(workspace, mods)
+        miss = [m.split(".")[-1] for m in _missing_oleans(workspace, mods)]
+        if miss:
+            print(f"[staged] cite-drop: oleans still missing after pre-flight: "
+                  f"{miss}", flush=True)
+    except Exception as e:  # noqa: BLE001 — best-effort pre-flight
+        print(f"[staged] cite-drop: pre-flight build raised: {str(e)[:200]}",
+              flush=True)
     cited: "dict[str, str]" = {}
+    cands = 0
     for W in scope:
         body = decl_proof_body(gettext(W.rel), W.name)
         if not body:
@@ -2464,6 +2471,7 @@ def cite_drop_aliases(workspace: Path, problem: str,
         cite = _pure_mathlib_citation(body)
         if not cite:
             continue
+        cands += 1
         params = _explicit_param_names(W.sig)
         edits: "dict[str, str]" = {}
         n_inlined = 0
@@ -2476,8 +2484,11 @@ def cite_drop_aliases(workspace: Path, problem: str,
         if not removed:
             continue
         edits[W.rel] = dropped
-        if not all(_build_file_copy_isolated(workspace, t)[0]
-                   for t in edits.values()):
+        gate = [_build_file_copy_isolated(workspace, t) for t in edits.values()]
+        if not all(ok for ok, _ in gate):
+            why = next(d for ok, d in gate if not ok)
+            print(f"[staged] cite-drop SKIP `{W.name}` (inlined {n_inlined}): "
+                  f"gate failed: {why[-200:]}", flush=True)
             continue                              # keep wrapper (bridge stays)
         for rel, t in edits.items():
             (workspace / rel).write_text(t, encoding="utf-8")
@@ -2485,6 +2496,8 @@ def cite_drop_aliases(workspace: Path, problem: str,
         cited[W.fqn] = cite.split()[0]
         print(f"[staged] cite-drop `{W.name}` → inline {n_inlined} call(s) to "
               f"{cite.split()[0]}", flush=True)
+    print(f"[staged] cite-drop: scanned {len(scope)} decls → {cands} pure-mathlib "
+          f"candidate(s), {len(cited)} dropped", flush=True)
     return cited
 
 
