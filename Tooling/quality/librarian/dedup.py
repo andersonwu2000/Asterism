@@ -2169,6 +2169,179 @@ def _variable_context(workspace: Path, problem: str, rel: str,
     return "\n".join(lines) + "\n"
 
 
+def _build_with_output(workspace: Path, content: str, *, prefix: str,
+                       timeout: int = _BATCH_TIMEOUT_SEC) -> "tuple[bool, str]":
+    """Like `_lake_check` but ALWAYS returns the full build output (stdout+stderr),
+    even on success — needed to read linter WARNINGS (rc==0), which `_lake_check`
+    discards. `ok` iff rc==0 and no lake error line."""
+    tmp = workspace / ".attempts" / f"{prefix}_{uuid.uuid4().hex}.lean"
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_text(content, encoding="utf-8")
+    try:
+        r = subprocess.run(
+            ["lake", "env", "lean", str(tmp)], cwd=str(workspace),
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=timeout)
+        out = r.stdout + r.stderr
+        return (r.returncode == 0 and not _dd._LAKE_ERR_RE.search(out)), out
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return False, str(e)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def _inject_linter(text: str, *options: str) -> str:
+    """Return `text` with `set_option <opt> true` injected after the import block
+    (file-level — these linters don't take `… in <command>`). Used to force a
+    default-OFF linter on for a detection build."""
+    lines = text.splitlines(keepends=True)
+    k = max((i + 1 for i, l in enumerate(lines)
+             if l.lstrip().startswith("import ")), default=0)
+    inj = "".join(f"set_option {o} true\n" for o in options)
+    return "".join(lines[:k]) + inj + "".join(lines[k:])
+
+
+_UNUSED_HYP_HEAD = re.compile(
+    r"`([A-Za-z_][\w'.]*)` does not use the following hypotheses in its type")
+_UNUSED_HYP_BULLET = re.compile(r"^\s*[•·]\s*(.+?)\s*\(#\d+\)\s*$")
+
+
+def _parse_unused_hyps(build_output: str) -> "dict[str, list[str]]":
+    """Parse mathlib's `unusedArguments` linter → {decl_leaf: [binder_text]}.
+    Each warning is `\\`decl\\` does not use the following hypotheses in its type:`
+    followed by bullet lines `• <binder> (#N)`. Binder text is verbatim
+    (`[DecidableEq α]`, `(h : P)`, …)."""
+    out: "dict[str, list[str]]" = {}
+    lines = build_output.splitlines()
+    i = 0
+    while i < len(lines):
+        m = _UNUSED_HYP_HEAD.search(lines[i])
+        if not m:
+            i += 1
+            continue
+        name, binders, j = m.group(1), [], i + 1
+        while j < len(lines):
+            b = _UNUSED_HYP_BULLET.match(lines[j])
+            if not b:
+                break
+            binders.append(" ".join(b.group(1).split()))
+            j += 1
+        if binders:
+            out.setdefault(name, []).extend(binders)
+        i = j if j > i else i + 1
+    return out
+
+
+def _strip_instance_binders(text: str, name: str,
+                            binders: "list[str]") -> "tuple[str, bool]":
+    """Remove each `[…]` instance binder in `binders` from decl `name`'s header
+    (the span between its name and the proof `:=`). String-exact (the binder is
+    'unused in type' → it cannot appear in the conclusion, so the only match in
+    the header is the binder itself). Returns `(new_text, changed)`."""
+    m = next((h for h in _DECL_NAME_RE.finditer(text) if h.group(1) == name), None)
+    if m is None:
+        return text, False
+    pa = _proof_assign_pos(text, m.start())
+    if pa < 0:
+        return text, False
+    lo, hi = m.end(), pa
+    region, changed = text[lo:hi], False
+    for b in binders:
+        if not b.startswith("["):
+            continue                              # instance binders only (v1)
+        for cand in (" " + b, b):
+            if cand in region:
+                region = region.replace(cand, "", 1)
+                changed = True
+                break
+    return (text[:lo] + region + text[hi:], True) if changed else (text, False)
+
+
+def _insert_classical(text: str, name: str) -> str:
+    """Insert `classical` as the first tactic of decl `name`'s `by` proof (so a
+    removed `[DecidableEq …]` the proof relied on is re-synthesized). Term-mode
+    proofs are left untouched (v1 reverts those)."""
+    m = next((h for h in _DECL_NAME_RE.finditer(text) if h.group(1) == name), None)
+    if m is None:
+        return text
+    pa = _proof_assign_pos(text, m.start())
+    if pa < 0:
+        return text
+    mm = re.match(r":=\s*by\b", text[pa:])
+    if not mm:
+        return text
+    at = pa + mm.end()
+    return text[:at] + "\n  classical" + text[at:]
+
+
+def file_cleanup_unused_args(workspace: Path, problem: str, target_file: str,
+                             decls_in_file: "list[_Decl]") -> bool:
+    """§13 P2 — drop signature hypotheses the mathlib `unusedArguments` linter
+    flags as unused in the TYPE. MECHANICAL + rebuild-gated. v1 scope = **`[…]`
+    instance binders only** (the machine-generated `[DecidableEq α]` bulk):
+    consumer-safe — instances are auto-synthesized at call sites, so removal only
+    GENERALIZES the lemma, no caller changes; `classical` re-synthesizes a
+    Decidable the proof needed. Implicit `{…}` / explicit `(…)` (consumer-
+    impacting) are deferred to a later LLM pass. Writes the file on a green
+    rebuild; reverts (no-op) otherwise. Type-CHANGING → gated by rebuild, NOT the
+    type-preserving #check used by the variable pass.
+
+    v1 = the `unusedDecidableInType` linter only (classical re-synthesizes a
+    `Decidable`). `unusedFintypeInType` wants `Fintype.ofFinite`/a `Finite`
+    instance, not classical — deferred."""
+    leaf = target_file.split("/")[-1]
+    try:
+        original = (workspace / target_file).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    missing = _missing_oleans(workspace, re.findall(
+        r"^\s*import\s+(Library\.[\w.]+)", original, re.M))
+    if missing:
+        from ...pipeline._lake import lake_build_modules
+        try:
+            lake_build_modules(workspace, missing)
+        except Exception:  # noqa: BLE001 — best-effort pre-flight
+            pass
+    # detection build: force the (default-OFF) unused-Decidable linter on.
+    scan = _inject_linter(original, "linter.unusedDecidableInType")
+    ok0, out0 = _build_with_output(workspace, scan, prefix="_unused_scan")
+    if not ok0:
+        return False                              # file itself doesn't build — bail
+    names = {d.name for d in decls_in_file}
+    targets = {n: [b for b in bs if b.startswith("[")]
+               for n, bs in _parse_unused_hyps(out0).items() if n in names}
+    targets = {n: bs for n, bs in targets.items() if bs}
+    if not targets:
+        return False
+    new_text, edited = original, []
+    for name, binders in targets.items():
+        nt, did = _strip_instance_binders(new_text, name, binders)
+        if did:
+            new_text, _ = nt, edited.append(name)
+    if not edited:
+        return False
+    ok, detail = _build_with_output(workspace, new_text, prefix="_unused_try")
+    if not ok and re.search(r"(?i)synthesize|instance|Decidable", detail):
+        nt = new_text
+        for name in edited:
+            nt = _insert_classical(nt, name)
+        ok2, _d2 = _build_with_output(workspace, nt, prefix="_unused_cls")
+        if ok2:
+            new_text, ok = nt, True
+    if not ok:
+        print(f"[staged] unused-args `{leaf}` — reverted (rebuild failed)",
+              flush=True)
+        return False
+    n_hyp = sum(len(b) for b in targets.values())
+    (workspace / target_file).write_text(new_text, encoding="utf-8")
+    print(f"[staged] unused-args `{leaf}` — removed {n_hyp} instance hyp(s) "
+          f"from {len(edited)} decl(s)", flush=True)
+    return True
+
+
 def file_cleanup_variables(workspace: Path, problem: str, target_file: str,
                            decls_in_file: "list[_Decl]", *,
                            max_retries: int = _VARIABLE_MAX_RETRIES) -> bool:
@@ -2240,6 +2413,7 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
                             apply: bool = True, bridge: bool = True,
                             docstring: bool = False,
                             variables: bool = False,
+                            unused_args: bool = False,
                             simplify: bool = False) -> "dict":
     """§13 3c-2 per-file cleanup unit (the dispatcher's per-file work item).
     Clean ONE Library file: mark it → classify (with the cross-file chain guard
@@ -2308,6 +2482,15 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
         n_simplified = decl_cleanup_simplify_file(
             workspace, problem, target_file, survivor_decls, marked)
     _T["simplify"] = _t()
+    # (c) unused-arg removal — drop signature hypotheses unused in the type
+    # (mathlib `unusedArguments`). Mechanical, type-CHANGING (rebuild-gated, not
+    # #check); v1 = `[…]` instance binders (consumer-safe). Runs BEFORE variable
+    # extraction so it doesn't hoist a binder about to be deleted.
+    unused_removed = False
+    if unused_args and survivor_decls:
+        unused_removed = file_cleanup_unused_args(
+            workspace, problem, target_file, survivor_decls)
+    _T["unused"] = _t()
     # (e) variable extraction — un-∀ + hoist file-wide shared binders. Type-
     # preserving (call-site-invariant), enforced by the #check gate. Runs BEFORE
     # docstrings (structure first, then comments → no re-touch).
@@ -2326,15 +2509,16 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
     print(f"[staged-timing] {target_file.split('/')[-1]}: "
           f"mark={_T['mark']-_T['0']:.0f}s dedup={_T['dedup']-_T['mark']:.0f}s "
           f"simplify={_T['simplify']-_T['dedup']:.0f}s "
-          f"variables={_T['variables']-_T['simplify']:.0f}s "
+          f"unused={_T['unused']-_T['simplify']:.0f}s "
+          f"variables={_T['variables']-_T['unused']:.0f}s "
           f"docstring={_T['docstring']-_T['variables']:.0f}s "
           f"total={_T['docstring']-_T['0']:.0f}s", flush=True)
     return {"dropped": {x: Yd.fqn for x, Yd in r["drops"].items()},
             "merged": set(r["merged"]),
             "bridged": {x: Yd.fqn for x, Yd in r["bridged"]},
             "near": r["near"], "failed": r["failed"],
-            "simplified": n_simplified, "variabled": variabled,
-            "docstringed": docstringed}
+            "simplified": n_simplified, "unused_removed": unused_removed,
+            "variabled": variabled, "docstringed": docstringed}
 
 
 def run_file_audit_dedup(workspace: Path, problem: str, *, apply: bool = False,

@@ -1107,3 +1107,49 @@ def test_file_cleanup_variables_reverts_on_sig_change(tmp_path, monkeypatch) -> 
                     + [(True, "", {d.fqn: "CHANGED"})] * 3)    # type drifts each try
     assert dedup.file_cleanup_variables(tmp_path, "p", rel, [d]) is False
     assert (tmp_path / rel).read_text(encoding="utf-8") == original   # kept
+
+
+# ---------------------------------------------------------------------
+# A — unused-arg removal (mechanical): parse linter + strip instance binders
+# ---------------------------------------------------------------------
+
+_LINT_OUT = """\
+warning: Library/X.lean:14:0: `directsum_prod_uncurry` does not use the following hypotheses in its type:
+  • [DecidableEq α] (#5)
+  • [DecidableEq β] (#6)
+
+Consider removing these hypotheses and using `classical` in the proof instead.
+warning: Library/X.lean:30:0: `other_lemma` does not use the following hypotheses in its type:
+  • (h : P) (#3)
+"""
+
+
+def test_parse_unused_hyps() -> None:
+    assert dedup._parse_unused_hyps(_LINT_OUT) == {
+        "directsum_prod_uncurry": ["[DecidableEq α]", "[DecidableEq β]"],
+        "other_lemma": ["(h : P)"]}
+
+
+def test_strip_instance_binders_removes_only_instances() -> None:
+    text = ("theorem foo {α : Type} [DecidableEq α] [Fintype α] (h : P α) : Q :="
+            " by exact h\n")
+    out, changed = dedup._strip_instance_binders(text, "foo", ["[DecidableEq α]"])
+    assert changed
+    assert "[DecidableEq α]" not in out
+    assert "{α : Type}" in out and "[Fintype α]" in out and "(h : P α)" in out
+
+
+def test_strip_instance_binders_skips_explicit() -> None:
+    text = "theorem foo (h : P) : Q := by exact h\n"
+    out, changed = dedup._strip_instance_binders(text, "foo", ["(h : P)"])
+    assert not changed and out == text          # explicit binders are not v1 scope
+
+
+def test_insert_classical_after_by() -> None:
+    out = dedup._insert_classical("theorem foo {α} : Q := by\n  exact rfl\n", "foo")
+    assert ":= by\n  classical\n  exact rfl" in out
+
+
+def test_insert_classical_skips_term_mode() -> None:
+    text = "theorem foo {α} : Q := rfl\n"
+    assert dedup._insert_classical(text, "foo") == text   # term-mode untouched
