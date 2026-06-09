@@ -44,6 +44,47 @@ def test_non_migrate_librarian_label_unchanged(tmp_path):
         "dedup", "LinearAlgebra.jordan_normal_form")
 
 
+def test_cleanup_variables_label(tmp_path):
+    d = _ctx(
+        tmp_path,
+        "# Variable extraction — LinearAlgebra.jordan_normal_form — "
+        "`Library/LinearAlgebra/JordanForm/FamilyCoeffs.lean`\n\nbody…\n",
+    )
+    assert watcher._lookup_spawn_info(d) == ("cleanup:variables",
+                                             "FamilyCoeffs.lean")
+
+
+def test_cleanup_docstring_label(tmp_path):
+    d = _ctx(
+        tmp_path,
+        "# Docstring polish — LinearAlgebra.jordan_normal_form — "
+        "`Library/LinearAlgebra/JordanForm/BlockEnum.lean`\n\nbody…\n",
+    )
+    assert watcher._lookup_spawn_info(d) == ("cleanup:docstring",
+                                             "BlockEnum.lean")
+
+
+def test_cleanup_simplify_label_uses_decl_name(tmp_path):
+    d = _ctx(
+        tmp_path,
+        "# Simplify one proof — LinearAlgebra.jordan_normal_form — "
+        "`chain_bottoms_li`\n\nbody…\n",
+    )
+    assert watcher._lookup_spawn_info(d) == ("cleanup:simplify",
+                                             "chain_bottoms_li")
+
+
+def test_cleanup_dedup_label_reads_file_line(tmp_path):
+    # dedup audit's header has no `— `<file>``; the file is on line 2.
+    d = _ctx(
+        tmp_path,
+        "# dedup audit — LinearAlgebra.jordan_normal_form\n"
+        "# file: Library/LinearAlgebra/JordanForm/ChainKernel.lean\n\nbody…\n",
+    )
+    assert watcher._lookup_spawn_info(d) == ("cleanup:dedup",
+                                             "ChainKernel.lean")
+
+
 def test_migrate_label_falls_back_to_decl_subdir(tmp_path):
     # The incremental migrate's top-level spawn dir has no Context.md; each
     # hole lives in a `decl-<slug>/` subdir. The label must still resolve

@@ -57,6 +57,20 @@ _RE_LIBRARIAN_CTX = re.compile(r"^# Librarian — (\w+) — (\S+)")
 # file basename in the pipeline label so stats reads "migrate <File>.lean".
 _RE_LIBRARIAN_MIGRATE_FILE = re.compile(r"^## Migrate file `([^`]+)`")
 _RE_STRATEGY_NAMING = re.compile(r"^## Strategy naming\b")
+# Cleanup sub-agent Context.md headers. Unlike migrate (whose top-level spawn
+# carries `# Librarian — <kind> —`), the cleanup stage spawns one sub-agent per
+# (file, operation), each writing its own `# <Title> — <problem>[ — `<file>`]`
+# header. Map the title → a short `cleanup:<stage>` label so stats.md shows which
+# stage each worker is on instead of the ("spawning", "?") placeholder.
+_CLEANUP_TITLES = {
+    "dedup audit": "cleanup:dedup",
+    "Proof-simplification triage": "cleanup:simp-mark",
+    "Simplify one proof": "cleanup:simplify",
+    "Variable extraction": "cleanup:variables",
+    "Docstring polish": "cleanup:docstring",
+}
+_RE_CLEANUP_CTX = re.compile(r"^# (.+?) — (\S.*?)(?: — `([^`]+)`)?\s*$")
+_RE_CLEANUP_FILE = re.compile(r"^# file: (\S+)")  # dedup audit's file is line 2
 
 # Spawns whose dir contained any file touched in the last ACTIVE_WINDOW
 # seconds are treated as "live". Set to match the framework's
@@ -602,6 +616,21 @@ def _lookup_spawn_info(spawn_dir: Path) -> tuple[str, str] | None:
             if len(prob) > _LABEL_SLUG_MAX:
                 prob = prob[: _LABEL_SLUG_MAX - 1] + "…"
             return (kind, prob)
+        # Cleanup sub-agents: `# <Title> — <problem>[ — `<file>`]`. Label by the
+        # stage (`cleanup:variables` etc.) + the file/decl it's working on.
+        m = _RE_CLEANUP_CTX.match(line)
+        if m and m.group(1) in _CLEANUP_TITLES:
+            kind, label = _CLEANUP_TITLES[m.group(1)], m.group(3)
+            if label is None:           # dedup audit: file is on `# file: <rel>`
+                for ln in head_lines[:4]:
+                    fm = _RE_CLEANUP_FILE.match(ln)
+                    if fm:
+                        label = fm.group(1)
+                        break
+            label = (label or m.group(2)).rsplit("/", 1)[-1]
+            if len(label) > _LABEL_SLUG_MAX:
+                label = label[: _LABEL_SLUG_MAX - 1] + "…"
+            return (kind, label)
     # Backward + Builder share `# Context for goal <slug>` header.
     # Backward additionally renders a `## Strategy naming` section
     # (context.py:_section_strategy_naming, omitted when strategy_id
@@ -755,10 +784,17 @@ def _librarian_section(conn, problem: str) -> str:
         ).fetchall()
     except sqlite3.Error:
         return ""
-    if not rows or _librarian_index_has(problem):
-        return ""  # not started, or finished → hide (only show while running)
-
+    if not rows:
+        return ""  # not started (still proving) → hide
     counts = Counter(r["lifecycle"] for r in rows)
+    # Show while any in-pipeline work remains; hide only when truly finished —
+    # INDEX written AND nothing left mid-pipeline. "INDEX present" alone isn't
+    # "done": re-cleaning an already-promoted problem (dev-scratch re-test via
+    # `run --scope`) keeps its stale INDEX entry while decls sit at `migrated`.
+    active = any(counts.get(s) for s in
+                 ("candidate", "deduped", "classified", "migrated"))
+    if _librarian_index_has(problem) and not active:
+        return ""
     keep = sum(counts.get(s, 0) for s in _LIB_STAGES)
     # Phase = the least-advanced in-pipeline stage still present.
     if counts.get("candidate"):
