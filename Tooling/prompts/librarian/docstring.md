@@ -9,6 +9,7 @@ Read `Context.md` — it shows the file's module, its declarations, and the curr
 - **Each declaration** gets a `/-- … -/` docstring directly above it: one or two full sentences stating what it says (and, if not obvious, why it is useful). Capitalised, ending with a period; mathlib voice — precise, no filler, no restating the Lean syntax.
 - **The file** gets a module docstring `/-! … -/` at the top (after the `import` lines): a short paragraph naming what this file provides.
 - Replace an existing docstring only to improve it; keep a good one.
+- **No framework jargon.** This file came from an automated prover. A docstring states what a declaration *means*, never how its proof was found — so drop any wording about the proof search: `entry_kind`/`Builder` tags, `sub-goal` / `combinator` / `Closer` / `(was: …)` narration, decomposition strategy. mathlib has none of it.
 
 ## The one hard rule — change comments only
 
