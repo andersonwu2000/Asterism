@@ -85,6 +85,17 @@ def test_cleanup_dedup_label_reads_file_line(tmp_path):
                                              "ChainKernel.lean")
 
 
+def test_cleanup_bridge_label(tmp_path):
+    # bridge spans multiple pairs (no single file) → label by the problem.
+    d = _ctx(
+        tmp_path,
+        "# dedup bridge — LinearAlgebra.jordan_normal_form\n"
+        "# Each pair: X is defeq-ish to Y…\n\nbody…\n",
+    )
+    assert watcher._lookup_spawn_info(d) == ("cleanup:bridge",
+                                             "LinearAlgebra.jordan_normal_form")
+
+
 def test_migrate_label_falls_back_to_decl_subdir(tmp_path):
     # The incremental migrate's top-level spawn dir has no Context.md; each
     # hole lives in a `decl-<slug>/` subdir. The label must still resolve

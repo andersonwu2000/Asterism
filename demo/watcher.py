@@ -64,6 +64,7 @@ _RE_STRATEGY_NAMING = re.compile(r"^## Strategy naming\b")
 # stage each worker is on instead of the ("spawning", "?") placeholder.
 _CLEANUP_TITLES = {
     "dedup audit": "cleanup:dedup",
+    "dedup bridge": "cleanup:bridge",
     "Proof-simplification triage": "cleanup:simp-mark",
     "Simplify one proof": "cleanup:simplify",
     "Variable extraction": "cleanup:variables",
