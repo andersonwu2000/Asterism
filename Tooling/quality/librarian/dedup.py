@@ -2343,7 +2343,7 @@ def file_cleanup_unused_args(workspace: Path, problem: str, target_file: str,
 
 
 _FW_COMMENT_MARKER = re.compile(
-    r"entry_kind|sub-goal|combinator|Closer:|\(was:|pad_and_place")
+    r"entry_kind|sub-goal|\bcombinator\b|Closer:|\(was:|pad_and_place")
 
 
 def file_cleanup_strip_framework_comments(workspace: Path, problem: str,
