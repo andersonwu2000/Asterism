@@ -996,6 +996,44 @@ def test_file_cleanup_variables_success(tmp_path, monkeypatch) -> None:
     assert (tmp_path / rel).read_text(encoding="utf-8") == new
 
 
+def _json_info(data):
+    import json
+    return json.dumps({"severity": "information", "data": data})
+
+
+def test_parse_check_output_at_prefixed() -> None:
+    out = _json_info("@L.A.foo : ∀ {n : ℕ}, n = n")
+    types, errs = dedup._parse_check_output(out, ["L.A.foo"])
+    assert errs == [] and types == {"L.A.foo": "∀ {n : ℕ}, n = n"}
+
+
+def test_parse_check_output_no_at_when_no_implicit() -> None:
+    # Lean drops the `@` for a decl with only explicit binders (the bug that
+    # skipped whole files: parser matched only `@foo :`).
+    out = _json_info("L.A.foo : ∀ (S : T), P S")
+    types, _ = dedup._parse_check_output(out, ["L.A.foo"])
+    assert types == {"L.A.foo": "∀ (S : T), P S"}
+
+
+def test_parse_check_output_universe_annotation() -> None:
+    out = _json_info("@L.A.foo.{u_1} : Type u_1 → Type u_1")
+    types, _ = dedup._parse_check_output(out, ["L.A.foo"])
+    assert types == {"L.A.foo": "Type u → Type u"}        # u_1 normalized
+
+
+def test_parse_check_output_no_prefix_collision() -> None:
+    out = "\n".join([_json_info("@L.A.foo_bar : Bar"), _json_info("@L.A.foo : Foo")])
+    types, _ = dedup._parse_check_output(out, ["L.A.foo", "L.A.foo_bar"])
+    assert types == {"L.A.foo": "Foo", "L.A.foo_bar": "Bar"}
+
+
+def test_parse_check_output_collects_errors() -> None:
+    import json
+    out = json.dumps({"severity": "error", "data": "unknown identifier 'baz'"})
+    types, errs = dedup._parse_check_output(out, ["L.A.foo"])
+    assert types == {} and errs == ["unknown identifier 'baz'"]
+
+
 def test_file_cleanup_variables_reverts_on_sig_change(tmp_path, monkeypatch) -> None:
     rel = "Library/P/F.lean"
     original = "import Mathlib\n-- orig\n"

@@ -2021,6 +2021,40 @@ def _norm_type(s: str) -> str:
     return " ".join(re.sub(r"\bu_\d+\b", "u", s).split())
 
 
+def _parse_check_output(output: str, fqns: "list[str]"
+                        ) -> "tuple[dict[str, str], list[str]]":
+    """Parse `lean --json` output into `({fqn: normalized_type}, [error_data])`.
+    `#check @foo` prints `@foo : T`, but Lean drops the `@` when foo has no
+    implicit args to expose (`foo : T`) and annotates universes when foo is
+    universe-polymorphic (`@foo.{u} : T`) — match all three. The `: ` anchor
+    keeps a prefix name (`foo`) from matching a longer one (`foo_bar`)."""
+    import json
+    types: "dict[str, str]" = {}
+    errs: "list[str]" = []
+    for line in output.splitlines():
+        s = line.strip()
+        if not (s.startswith("{") and s.endswith("}")):
+            continue
+        try:
+            msg = json.loads(s)
+        except Exception:  # noqa: BLE001
+            continue
+        sev, data = msg.get("severity"), msg.get("data", "")
+        if sev == "error":
+            errs.append(data)
+        elif sev == "information":
+            d = data[1:] if data.startswith("@") else data
+            for f in fqns:
+                if f in types:
+                    continue
+                m = re.match(re.escape(f) + r"(?:\.\{[^}]*\})?\s*:\s*(.*)",
+                             d, re.S)
+                if m:
+                    types[f] = _norm_type(m.group(1))
+                    break
+    return types, errs
+
+
 def _typecheck_capturing_types(workspace: Path, file_text: str,
                                fqns: "list[str]", *,
                                timeout: int = _BATCH_TIMEOUT_SEC
@@ -2029,7 +2063,14 @@ def _typecheck_capturing_types(workspace: Path, file_text: str,
     (`lean --json`), returning `(ok, detail, {fqn: normalized_type})`. One build
     serves as both the proof gate (an error → ok False) and the signature
     snapshot. `@` forces all args explicit so implicit/explicit flips show up."""
-    import json
+    missing = _missing_oleans(workspace, re.findall(    # O1: imported sibling
+        r"^\s*import\s+(Library\.[\w.]+)", file_text, re.M))   # oleans must exist
+    if missing:
+        from ...pipeline._lake import lake_build_modules
+        try:
+            lake_build_modules(workspace, missing)
+        except Exception:  # noqa: BLE001 — best-effort pre-flight
+            pass
     checks = "\n".join(f"#check @{f}" for f in fqns)
     content = file_text.rstrip() + "\n\n" + checks + "\n"
     tmp_dir = workspace / ".attempts"
@@ -2048,24 +2089,8 @@ def _typecheck_capturing_types(workspace: Path, file_text: str,
             tmp_file.unlink()
         except OSError:
             pass
-    ok, errs, types = r.returncode == 0, [], {}
-    for line in (r.stdout + "\n" + r.stderr).splitlines():
-        s = line.strip()
-        if not (s.startswith("{") and s.endswith("}")):
-            continue
-        try:
-            msg = json.loads(s)
-        except Exception:  # noqa: BLE001
-            continue
-        sev, data = msg.get("severity"), msg.get("data", "")
-        if sev == "error":
-            ok = False
-            errs.append(data)
-        elif sev == "information":
-            for f in fqns:
-                if data.startswith(f"@{f} :"):
-                    types[f] = _norm_type(data[len(f"@{f} :"):])
-                    break
+    types, errs = _parse_check_output(r.stdout + "\n" + r.stderr, fqns)
+    ok = r.returncode == 0 and not errs
     if ok and len(types) != len(fqns):
         return False, "could not read #check output for every declaration", types
     detail = "" if ok else ("\n\n".join(errs)[-2000:] or (r.stdout + r.stderr)[-2000:])
@@ -2192,9 +2217,13 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
     all_by_leaf = {d.name: d for d in (*pool, *scope)}
     prompt_path = workspace / "Tooling" / "prompts" / "librarian" / "dedup_audit.md"
     problem_dir = workspace.joinpath("Problems", *problem.split("."))
+    import time as _tm
+    _t = _tm.perf_counter
+    _T = {"0": _t()}
     pairs, log = _audit_one_file(workspace, problem, target_file, scope, pool,
                                  scope_by_leaf, all_by_leaf, prompt_path, problem_dir)
     print(log, flush=True)
+    _T["mark"] = _t()
     plan, _skipped = _classify_pairs(
         workspace, problem, sorted(set(pairs)), scope_index=scope_index,
         prior_dropped=set(prior_renames),
@@ -2211,6 +2240,7 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
                   for xf, yf in prior_renames.items()]
     r = _cleanup_one_file(workspace, target_file, decls_in_file, plan, bridges,
                           rename_map, _Splicer(workspace))
+    _T["dedup"] = _t()
     for xf, Yd in r["drops"].items():
         tag = "merged" if xf in r["merged"] else "dropped"
         print(f"[staged] {tag} {xf.rsplit('.', 1)[-1]} → cite {Yd.name}", flush=True)
@@ -2231,6 +2261,7 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
             workspace.joinpath("Problems", *problem.split(".")))
         n_simplified = decl_cleanup_simplify_file(
             workspace, problem, target_file, survivor_decls, marked)
+    _T["simplify"] = _t()
     # (e) variable extraction — un-∀ + hoist file-wide shared binders. Type-
     # preserving (call-site-invariant), enforced by the #check gate. Runs BEFORE
     # docstrings (structure first, then comments → no re-touch).
@@ -2238,12 +2269,20 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
     if variables and survivor_decls:
         variabled = file_cleanup_variables(
             workspace, problem, target_file, survivor_decls)
+    _T["variables"] = _t()
     # (e) file-cleanup — docstring polish on the (now refactored) file. Comment-
     # only → no signature change. Own gates + retry; failure keeps the file.
     docstringed = False
     if docstring:
         docstringed = file_cleanup_docstrings(
             workspace, problem, target_file, [d.name for d in survivor_decls])
+    _T["docstring"] = _t()
+    print(f"[staged-timing] {target_file.split('/')[-1]}: "
+          f"mark={_T['mark']-_T['0']:.0f}s dedup={_T['dedup']-_T['mark']:.0f}s "
+          f"simplify={_T['simplify']-_T['dedup']:.0f}s "
+          f"variables={_T['variables']-_T['simplify']:.0f}s "
+          f"docstring={_T['docstring']-_T['variables']:.0f}s "
+          f"total={_T['docstring']-_T['0']:.0f}s", flush=True)
     return {"dropped": {x: Yd.fqn for x, Yd in r["drops"].items()},
             "merged": set(r["merged"]),
             "bridged": {x: Yd.fqn for x, Yd in r["bridged"]},
