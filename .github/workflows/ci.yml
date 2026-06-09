@@ -1,0 +1,45 @@
+# CI gate: ruff F821 + full pytest suite.
+#
+# - windows-latest is blocking — it is the production platform (the
+#   daemon runs on a Windows workstation; win32-specific branches exist
+#   in lsp/gateway.py and core/dispatcher.py).
+# - ubuntu-latest is informational (continue-on-error) until proven
+#   green, then flip `blocking` to true. It exercises the non-win32
+#   branches that never run locally.
+# - No Lean toolchain on runners: lake-dependent tests
+#   (tests/test_dedupe.py, tests/test_lemma_lookup.py) skip themselves
+#   via `skipif(shutil.which("lake") is None)`.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            blocking: true
+          - os: ubuntu-latest
+            blocking: false
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ !matrix.blocking }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install (editable + dev extras)
+        run: pip install -e ".[dev]"
+      - name: Lint (ruff F821, scope per pyproject)
+        run: ruff check --no-cache Tooling
+      - name: Tests
+        run: pytest -q

@@ -37,6 +37,10 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+.ruff_cache/
+# pip install -e . build artifacts
+*.egg-info/
+dist/
 
 # Editor
 .vscode/

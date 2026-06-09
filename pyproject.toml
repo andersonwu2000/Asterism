@@ -1,0 +1,54 @@
+# Asterism packaging + tool config.
+#
+# Editable install is the supported mode (`pip install -e ".[dev]"`) — the
+# framework needs the repo root at runtime (lakefile.lean, Problems/,
+# Library/, Tooling/prompts/), so a wheel install is intentionally not a
+# goal. This file exists to (a) pin dependencies, (b) expose the
+# `asterism` console entry point, (c) centralize tool config (ruff,
+# pytest) for CI and local runs.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asterism"
+version = "0.1.0"
+description = "LLM-orchestrated Lean 4 theorem-proving framework (AND/OR-graph BFS over Builder/Backward/Forward/Strategist agents)"
+readme = "README.md"
+requires-python = ">=3.12"
+# Floors = versions in the 2026-06-10 dev environment (verified working).
+dependencies = [
+    "mcp>=1.27",
+    "starlette>=0.52",
+    "uvicorn>=0.42",
+    "PyYAML>=6.0",
+    "psutil>=7.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.4",
+    "ruff>=0.15",
+]
+
+[project.scripts]
+asterism = "Tooling.core.cli:main"
+
+[tool.setuptools.packages.find]
+# Explicit include: the repo root also holds Lean dirs (Problems/,
+# Library/, Benchmarks/) and loose scripts (_bridge_scan.py, _ttime.py);
+# setuptools flat-layout auto-discovery would refuse to guess.
+include = ["Tooling*"]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+# F821 only, matching tests/test_lint_undefined_names.py — a targeted,
+# noise-free guard against NameError-class regressions ("real_mods"
+# 2026-06-08). Widen the selection deliberately, not by default.
+select = ["F821"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
