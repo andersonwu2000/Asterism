@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,9 @@ from Tooling.lsp.gateway import (
 )
 
 
+@pytest.mark.skipif(sys.platform != "win32",
+                    reason="asyncio.WindowsSelectorEventLoopPolicy does not "
+                           "exist in POSIX asyncio builds")
 def test_install_windows_event_loop_policy_on_win32(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

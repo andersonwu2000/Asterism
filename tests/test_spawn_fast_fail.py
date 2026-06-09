@@ -19,6 +19,7 @@ contract here is sufficient to keep the regression from reappearing.
 from __future__ import annotations
 
 import sqlite3
+import sys
 from pathlib import Path
 import pytest
 
@@ -345,6 +346,9 @@ def test_classify_worker_exception_oserror_econnrefused() -> None:
     assert _classify_worker_exception(exc) == "gateway_unreachable"
 
 
+@pytest.mark.skipif(sys.platform != "win32",
+                    reason="the OSError winerror slot is only populated on "
+                           "Windows CPython builds")
 def test_classify_worker_exception_oserror_winerror_10061() -> None:
     """Windows wraps connection-refused as WinError 10061 — the
     actual exception observed in SG run #14 was
@@ -356,6 +360,9 @@ def test_classify_worker_exception_oserror_winerror_10061() -> None:
     assert _classify_worker_exception(exc) == "gateway_unreachable"
 
 
+@pytest.mark.skipif(sys.platform != "win32",
+                    reason="the OSError winerror slot is only populated on "
+                           "Windows CPython builds")
 def test_classify_worker_exception_oserror_winerror_64() -> None:
     """WinError 64 = ERROR_NETNAME_DELETED, the actual asyncio crash
     cause inside the gateway. Also classify as gateway_unreachable so

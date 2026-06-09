@@ -3,9 +3,10 @@
 # - windows-latest is blocking — it is the production platform (the
 #   daemon runs on a Windows workstation; win32-specific branches exist
 #   in lsp/gateway.py and core/dispatcher.py).
-# - ubuntu-latest is informational (continue-on-error) until proven
-#   green, then flip `blocking` to true. It exercises the non-win32
-#   branches that never run locally.
+# - ubuntu-latest exercises the non-win32 branches that never run
+#   locally. Blocking since the win32-only tests gained platform
+#   skipifs (first informational run: 3 failed / 1614 passed, all
+#   three were tests of Windows-only contracts).
 # - No Lean toolchain on runners: lake-dependent tests
 #   (tests/test_dedupe.py, tests/test_lemma_lookup.py) skip themselves
 #   via `skipif(shutil.which("lake") is None)`.
@@ -26,7 +27,7 @@ jobs:
           - os: windows-latest
             blocking: true
           - os: ubuntu-latest
-            blocking: false
+            blocking: true
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ !matrix.blocking }}
     timeout-minutes: 30
