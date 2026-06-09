@@ -345,6 +345,9 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
 --   dedup    → verdict, citation
 --   classify → target_file, target_name, file_order
 --   migrate  → lifecycle advances to 'migrated'
+--   cleanup  → lifecycle advances to 'cleaned'; a P4 rename records the
+--              new name in target_name + the ORIGINAL fqn in renamed_from
+--              (so consumer files self-apply the rename via deferred-rewire)
 -- `lifecycle` is the per-decl state machine (plan §7). Flow:
 -- candidate→deduped→classified→migrated→cleaned. Terminal states:
 -- 'cleaned' (migrated + PR-ready: unused hyps removed, variables factored,
@@ -367,6 +370,7 @@ CREATE TABLE IF NOT EXISTS library_decls (
                           'candidate','deduped','classified',
                           'migrated','cleaned','dropped','cited')),
     reopen_note     TEXT NULL DEFAULT NULL,
+    renamed_from    TEXT NULL DEFAULT NULL,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
     UNIQUE(problem, slug)
@@ -393,7 +397,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 9
+_CURRENT_USER_VERSION = 10
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -624,6 +628,19 @@ def init_schema(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "ALTER TABLE library_decls ADD COLUMN reopen_note TEXT")
         conn.execute("PRAGMA user_version = 9")
+        conn.commit()
+    if v < 10:
+        # Phase 10 — library_decls gains `renamed_from` (the ORIGINAL fqn of a
+        # P4-renamed kept decl; target_name holds the new fqn). Consumer files
+        # read {renamed_from → target_name} as deferred-rewire renames. Plain
+        # ADD COLUMN (nullable) — no table rebuild. Guarded so a fresh DB built
+        # from the updated SCHEMA (column already present) doesn't double-add.
+        cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(library_decls)")}
+        if "renamed_from" not in cols:
+            conn.execute(
+                "ALTER TABLE library_decls ADD COLUMN renamed_from TEXT")
+        conn.execute("PRAGMA user_version = 10")
         conn.commit()
 
 
@@ -2323,6 +2340,26 @@ def mark_library_cleaned(conn: sqlite3.Connection, *, problem: str,
         "UPDATE library_decls SET lifecycle = 'cleaned', updated_at = ?"
         " WHERE problem = ? AND slug = ? AND lifecycle = 'migrated'",
         (now(), problem, slug),
+    )
+    conn.commit()
+
+
+def set_library_renamed(conn: sqlite3.Connection, *, problem: str,
+                        slug: str, old_fqn: str, new_fqn: str) -> None:
+    """cleanup work (Step 4, P4 rename): a kept decl was renamed to a mathlib-
+    aligned name. Record the new fqn in `target_name` (INDEX harvest + Gate B
+    re-derivation use it) and the ORIGINAL fqn in `renamed_from` so consumer
+    files self-apply `{old → new}` via deferred-rewire when their turn comes.
+
+    `renamed_from` uses COALESCE: a decl renamed more than once across re-cleans
+    keeps its FIRST (pre-cleanup) fqn, so the consumer rewrite chain stays
+    anchored to the name consumers actually wrote. Lifecycle is untouched — the
+    decl survives; `mark_library_cleaned` advances it separately."""
+    conn.execute(
+        "UPDATE library_decls SET target_name = ?,"
+        " renamed_from = COALESCE(renamed_from, ?), updated_at = ?"
+        " WHERE problem = ? AND slug = ?",
+        (new_fqn, old_fqn, now(), problem, slug),
     )
     conn.commit()
 

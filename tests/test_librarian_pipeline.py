@@ -227,6 +227,52 @@ def test_run_cleanup_per_file_reads_prior_renames_from_db(conn, tmp_path,
     assert cap["prior_renames"] == {"Library.P.D.gone": "Library.P.G.keep"}
 
 
+def _patch_olean_refresh(monkeypatch, captured=None):
+    """Stub the renamed-file olean rebuild (no lake in unit tests)."""
+    from Tooling.pipeline import _lake
+
+    def _build(ws, modules):
+        if captured is not None:
+            captured.append(list(modules))
+        return True, ""
+    monkeypatch.setattr(_lake, "lake_build_modules", _build)
+
+
+def test_run_cleanup_per_file_records_rename(conn, tmp_path, monkeypatch):
+    # A P4 rename of a kept survivor: target_name → new fqn, renamed_from → old,
+    # decl still advances to cleaned, and the file's olean is refreshed.
+    _seed_migrated(conn, "foo", "Library.P.F.foo", target_file="Library/P/F.lean")
+    _patch_engine_file(monkeypatch, {
+        "dropped": {}, "merged": set(), "bridged": {}, "near": [], "failed": [],
+        "renamed": {"Library.P.F.foo": "Library.P.F.foo_aligned"}})
+    built: list = []
+    _patch_olean_refresh(monkeypatch, built)
+    lib._run_cleanup(conn, problem="p", workspace=tmp_path,
+                     target_file="Library/P/F.lean")
+    row = {r["slug"]: r for r in db.library_decls_for(conn, "p")}["foo"]
+    assert row["lifecycle"] == "cleaned"
+    assert row["target_name"] == "Library.P.F.foo_aligned"
+    assert row["renamed_from"] == "Library.P.F.foo"
+    assert built == [["Library.P.F"]]            # olean refreshed for this module
+
+
+def test_run_cleanup_per_file_prior_renames_includes_renames(conn, tmp_path,
+                                                             monkeypatch):
+    # An earlier file renamed `old`→`new` (kept survivor). A later consumer file
+    # must surface that as a prior_rename so it self-applies the token rewrite.
+    _seed_migrated(conn, "k", "Library.P.G.new", target_file="Library/P/G.lean")
+    db.set_library_renamed(conn, problem="p", slug="k",
+                           old_fqn="Library.P.G.old", new_fqn="Library.P.G.new")
+    db.mark_library_cleaned(conn, problem="p", slug="k")
+    _seed_migrated(conn, "user", "Library.P.U.user", target_file="Library/P/U.lean")
+    cap: dict = {}
+    _patch_engine_file(monkeypatch, {"dropped": {}, "merged": set(),
+                                     "bridged": {}, "near": [], "failed": []}, cap)
+    lib._run_cleanup(conn, problem="p", workspace=tmp_path,
+                     target_file="Library/P/U.lean")
+    assert cap["prior_renames"] == {"Library.P.G.old": "Library.P.G.new"}
+
+
 # ---------------------------------------------------------------------
 # Stage B — migrate_commit_gate (injectable build_verifier, no gateway)
 # ---------------------------------------------------------------------

@@ -226,8 +226,8 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
     db.init_schema(conn)
 
-    # Post: PRAGMA user_version at latest (bumped to 8 in phase 8).
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
+    # Post: PRAGMA user_version at latest (bumped to 10 in phase 10).
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -366,7 +366,7 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version at latest (8); idempotent re-run leaves it unchanged.
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
     conn.close()
 
 
@@ -384,7 +384,7 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"

@@ -2621,6 +2621,161 @@ def file_cleanup_variables(workspace: Path, problem: str, target_file: str,
     return False
 
 
+# ---------------------------------------------------------------------
+# §13 (P4) rename — naming alignment to mathlib conventions
+# ---------------------------------------------------------------------
+# The LAST per-file stage (after docstring), on the final shape. Propose =
+# pipeline-managed librarian spawn (kind="librarian" + rename.md) emitting
+# {old_leaf: new_leaf}; apply = MECHANICAL whole-token rename of this file's
+# decl header + in-file references, per-file rebuild-gated, reverted on failure.
+# Cross-file consumers self-apply via the SAME deferred-rewire as drops (the
+# caller records {old_fqn → new_fqn} to the DB rename channel). Rename is the
+# only stage that changes a file's EXPORTED names, so the caller refreshes the
+# renamed file's olean on completion (consumers cleaned later typecheck against
+# the new names, not the stale migrate-time olean).
+# ---------------------------------------------------------------------
+
+_RENAME_PROMPT = "rename.md"
+_RENAME_OUTPUT = "renames.json"
+_RENAME_MAX_RETRIES = 1
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_']*$")
+
+
+def _parse_renames(text: str) -> "dict[str, str]":
+    """Parse the rename agent's output → {old_leaf: new_leaf}. Accepts a JSON
+    object `{"old":"new", …}` or a list `[{"old":..,"new":..}, …]`; ignores
+    malformed entries (the caller re-validates every pair)."""
+    import json
+    try:
+        data = json.loads(_strip_json_fence(text))
+    except Exception:  # noqa: BLE001
+        return {}
+    out: dict[str, str] = {}
+    if isinstance(data, dict):
+        for k, v in data.items():
+            if (isinstance(k, str) and isinstance(v, str)
+                    and k.strip() and v.strip()):
+                out[k.strip()] = v.strip()
+    elif isinstance(data, list):
+        for it in data:
+            if (isinstance(it, dict) and isinstance(it.get("old"), str)
+                    and isinstance(it.get("new"), str)):
+                o, n = it["old"].strip(), it["new"].strip()
+                if o and n:
+                    out[o] = n
+    return out
+
+
+def _valid_renames(proposed: "dict[str, str]", *, own_leaves: "set[str]",
+                   existing_leaves: "set[str]") -> "dict[str, str]":
+    """Keep only safe rename pairs: `old` ∈ this file's renamable survivors,
+    `new` a fresh valid identifier — distinct, not colliding with any other
+    domain decl's leaf, not equal to any proposed `old` (no rename chains /
+    swaps), not a duplicate target. The per-file rebuild gate is the real
+    correctness check; this is the cheap structural pre-filter."""
+    olds = set(proposed)
+    seen_new: "set[str]" = set()
+    out: dict[str, str] = {}
+    for old, new in proposed.items():
+        if (old in own_leaves and _IDENT_RE.match(new) and new != old
+                and new not in olds and new not in seen_new
+                and new not in existing_leaves):
+            out[old] = new
+            seen_new.add(new)
+    return out
+
+
+def _rename_context(workspace: Path, problem: str, rel: str,
+                    decls_in_file: "list[_Decl]", prev_error: str = "") -> str:
+    """Per-file context for the rename agent: module, the renamable declarations
+    with their statements, the verbatim file, and (on retry) the build error."""
+    try:
+        body = (workspace / rel).read_text(encoding="utf-8")
+    except OSError:
+        body = ""
+    lines = [
+        f"# Naming alignment — {problem} — `{rel}`", "",
+        f"Module: `{_mod_of_rel(rel)}`.",
+        "Declarations you may rename (kept survivors in THIS file):", "",
+    ]
+    lines += [f"- `{d.name}` : `{' '.join(d.sig.split())}`"
+              for d in decls_in_file] or ["- (none)"]
+    lines += ["", "## Current file", "", "```lean", body.rstrip(), "```", ""]
+    if prev_error:
+        lines += ["## Your previous proposal failed to build — fix and retry",
+                  "", "```", prev_error[-1500:], "```", ""]
+    return "\n".join(lines) + "\n"
+
+
+def file_cleanup_rename(workspace: Path, problem: str, target_file: str,
+                        decls_in_file: "list[_Decl]", *,
+                        scope: "list[_Decl]", pool: "list[_Decl]",
+                        max_retries: int = _RENAME_MAX_RETRIES
+                        ) -> "dict[str, str]":
+    """§13 (P4) naming-alignment pass for ONE file: propose mathlib-aligned names
+    for this file's kept survivors (pipeline-managed librarian spawn) → validate
+    → apply MECHANICALLY (whole-token rename of the decl header + every in-file
+    reference) → per-file rebuild gate → revert on failure. Writes ONLY
+    `target_file`. Returns `{old_fqn: new_fqn}` of renames actually applied
+    (empty = nothing to align / prompt absent / no green rename). Consumer files
+    in OTHER files self-apply these via deferred-rewire — the caller records them
+    to the DB rename channel and refreshes this file's olean."""
+    from ... import agent
+    prompt_path = workspace / "Tooling" / "prompts" / "librarian" / _RENAME_PROMPT
+    if not prompt_path.exists() or not decls_in_file:
+        return {}
+    leaf = target_file.split("/")[-1]
+    module = _mod_of_rel(target_file)
+    own_leaves = {d.name for d in decls_in_file}
+    existing_leaves = {d.name for d in (*scope, *pool)} - own_leaves
+    try:
+        original = (workspace / target_file).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    problem_dir = workspace.joinpath("Problems", *problem.split("."))
+    prev_error = ""
+    for attempt in range(max_retries + 1):
+        attempts = agent.attempts_dir_for(workspace, agent.new_pipeline_id())
+        (attempts / "Context.md").write_text(
+            _rename_context(workspace, problem, target_file, decls_in_file,
+                            prev_error), encoding="utf-8")
+        rc = agent.spawn_llm(kind="librarian", prompt_path=prompt_path,
+                             problem_dir=problem_dir, attempts_dir=attempts,
+                             session_id=agent.new_pipeline_id())
+        out = attempts / _RENAME_OUTPUT
+        if rc != 0 or not out.exists():
+            prev_error = f"no {_RENAME_OUTPUT} was produced"
+            continue
+        renames = _valid_renames(
+            _parse_renames(out.read_text(encoding="utf-8")),
+            own_leaves=own_leaves, existing_leaves=existing_leaves)
+        if not renames:
+            print(f"[staged] rename `{leaf}` — nothing to align", flush=True)
+            return {}
+        new_text = original
+        applied: dict[str, str] = {}
+        for old, new in renames.items():
+            t, n = replace_token(new_text, old, new)
+            if n:
+                new_text = t
+                applied[f"{module}.{old}"] = f"{module}.{new}"
+        if not applied or new_text == original:
+            return {}
+        ok, detail = _build_file_copy_isolated(workspace, new_text)
+        if not ok:
+            prev_error = detail
+            continue
+        (workspace / target_file).write_text(new_text, encoding="utf-8")
+        print(f"[staged] rename `{leaf}` — {len(applied)} renamed "
+              f"(try {attempt + 1}): "
+              + ", ".join(f"{o.rsplit('.', 1)[-1]}→{n.rsplit('.', 1)[-1]}"
+                          for o, n in applied.items()), flush=True)
+        return applied
+    print(f"[staged] rename `{leaf}` — kept original "
+          f"(no green rename in {max_retries + 1} tries)", flush=True)
+    return {}
+
+
 def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
                             scope_index: "list[tuple[str, str]] | None" = None,
                             prior_renames: "dict[str, str] | None" = None,
@@ -2629,6 +2784,7 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
                             strip_comments: bool = False,
                             variables: bool = False,
                             unused_args: bool = False,
+                            rename: bool = False,
                             simplify: bool = False) -> "dict":
     """§13 3c-2 per-file cleanup unit (the dispatcher's per-file work item).
     Clean ONE Library file: mark it → classify (with the cross-file chain guard
@@ -2726,19 +2882,30 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
         docstringed = file_cleanup_docstrings(
             workspace, problem, target_file, [d.name for d in survivor_decls])
     _T["docstring"] = _t()
+    # (P4) rename — LAST step, on the final shape: align kept survivors' names
+    # to mathlib conventions. Mechanical apply + per-file rebuild gate; consumer
+    # files self-apply via deferred-rewire (caller records {old_fqn:new_fqn}).
+    renamed: dict[str, str] = {}
+    if rename and survivor_decls:
+        renamed = file_cleanup_rename(
+            workspace, problem, target_file, survivor_decls,
+            scope=scope, pool=pool)
+    _T["rename"] = _t()
     print(f"[staged-timing] {target_file.split('/')[-1]}: "
           f"mark={_T['mark']-_T['0']:.0f}s dedup={_T['dedup']-_T['mark']:.0f}s "
           f"simplify={_T['simplify']-_T['dedup']:.0f}s "
           f"unused={_T['unused']-_T['simplify']:.0f}s "
           f"variables={_T['variables']-_T['unused']:.0f}s "
           f"docstring={_T['docstring']-_T['variables']:.0f}s "
-          f"total={_T['docstring']-_T['0']:.0f}s", flush=True)
+          f"rename={_T['rename']-_T['docstring']:.0f}s "
+          f"total={_T['rename']-_T['0']:.0f}s", flush=True)
     return {"dropped": {x: Yd.fqn for x, Yd in r["drops"].items()},
             "merged": set(r["merged"]),
             "bridged": {x: Yd.fqn for x, Yd in r["bridged"]},
             "near": r["near"], "failed": r["failed"],
             "simplified": n_simplified, "unused_removed": unused_removed,
-            "variabled": variabled, "docstringed": docstringed}
+            "variabled": variabled, "docstringed": docstringed,
+            "renamed": renamed}
 
 
 def run_file_audit_dedup(workspace: Path, problem: str, *, apply: bool = False,

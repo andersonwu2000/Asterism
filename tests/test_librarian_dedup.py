@@ -1221,3 +1221,132 @@ def test_inline_wrapper_call_skips_partial_application() -> None:
     text = "theorem use : T → T := wrap a\n"               # only 1 of 2 args
     out, n = dedup._inline_wrapper_call(text, "wrap", ["g", "hg"], "M.l hg")
     assert n == 0 and out == text
+
+
+# ---------------------------------------------------------------------
+# P4 — rename (naming alignment): parse / validate / mechanical apply
+# ---------------------------------------------------------------------
+
+def test_parse_renames_object_and_list() -> None:
+    assert dedup._parse_renames('{"a":"x","b":"y"}') == {"a": "x", "b": "y"}
+    assert dedup._parse_renames('[{"old":"a","new":"x"}]') == {"a": "x"}
+    assert dedup._parse_renames("```json\n{\"a\":\"x\"}\n```") == {"a": "x"}
+    assert dedup._parse_renames("not json") == {}
+    assert dedup._parse_renames('{"a": 3}') == {}            # non-str value
+
+
+def test_valid_renames_filters() -> None:
+    own = {"lemma_3", "step_aux", "good_name"}
+    existing = {"add_comm", "step_aux"}    # step_aux also defined elsewhere
+    proposed = {
+        "lemma_3": "det_smul",        # ok
+        "step_aux": "add_comm",       # new collides with existing → drop
+        "missing": "foo",            # old not in own → drop
+        "good_name": "good_name",     # new == old → drop
+        "x": "bad-name",             # invalid ident → drop (and old not own)
+    }
+    assert dedup._valid_renames(proposed, own_leaves=own,
+                                existing_leaves=existing) == {"lemma_3": "det_smul"}
+
+
+def test_valid_renames_no_chain_or_dup_target() -> None:
+    own = {"a", "b", "c"}
+    # a→b would chain (b is itself an old); two olds → same new is a dup target
+    proposed = {"a": "b", "b": "z", "c": "z"}
+    out = dedup._valid_renames(proposed, own_leaves=own, existing_leaves=set())
+    assert "a" not in out                       # new 'b' is an old → dropped
+    assert out == {"b": "z"}                    # 'c':'z' dropped as dup target
+
+
+def _setup_rename(tmp_path, rel, content):
+    pd = tmp_path / "Tooling" / "prompts" / "librarian"
+    pd.mkdir(parents=True, exist_ok=True)
+    (pd / "rename.md").write_text("x", encoding="utf-8")
+    p = tmp_path / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+
+
+def _fake_rename_spawn(monkeypatch, outputs):
+    """Patch agent.spawn_llm to write outputs[i] (str|None) as renames.json."""
+    from Tooling import agent
+    calls = {"n": 0}
+
+    def _spawn(*, kind, prompt_path, problem_dir, attempts_dir, session_id):
+        i = calls["n"]
+        calls["n"] += 1
+        o = outputs[i] if i < len(outputs) else None
+        if o is not None:
+            (attempts_dir / "renames.json").write_text(o, encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", _spawn)
+    return calls
+
+
+def _fake_filecopy(monkeypatch, results):
+    seq = {"n": 0}
+
+    def _bc(ws, text, **k):
+        i = seq["n"]
+        seq["n"] += 1
+        return results[i]
+    monkeypatch.setattr(dedup, "_build_file_copy_isolated", _bc)
+    return seq
+
+
+def test_file_cleanup_rename_noop_without_prompt(tmp_path) -> None:
+    rel = "Library/P/F.lean"
+    p = tmp_path / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("import Mathlib\n", encoding="utf-8")     # no prompt file
+    d = _vdecl("lemma_3", "(a : T) : P")
+    assert dedup.file_cleanup_rename(tmp_path, "p", rel, [d],
+                                     scope=[d], pool=[]) == {}
+
+
+def test_file_cleanup_rename_success_renames_header_and_refs(tmp_path,
+                                                             monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    module = "Library.P.F"
+    content = ("import Mathlib\n"
+               "theorem lemma_3 (a : T) : P := by trivial\n"
+               "theorem uses_it : P := lemma_3 x\n")   # in-file reference
+    _setup_rename(tmp_path, rel, content)
+    d3 = _vdecl("lemma_3", "(a : T) : P", module=module, rel=rel)
+    du = _vdecl("uses_it", ": P", module=module, rel=rel)
+    _fake_rename_spawn(monkeypatch, ['{"lemma_3":"trivial_P"}'])
+    _fake_filecopy(monkeypatch, [(True, "")])
+    out = dedup.file_cleanup_rename(tmp_path, "p", rel, [d3, du],
+                                    scope=[d3, du], pool=[])
+    assert out == {f"{module}.lemma_3": f"{module}.trivial_P"}
+    txt = (tmp_path / rel).read_text(encoding="utf-8")
+    assert "theorem trivial_P (a : T)" in txt
+    assert "lemma_3" not in txt                  # header + ref both renamed
+    assert "trivial_P x" in txt                  # the in-file reference rewired
+
+
+def test_file_cleanup_rename_reverts_on_build_failure(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    module = "Library.P.F"
+    content = "import Mathlib\ntheorem lemma_3 (a : T) : P := by trivial\n"
+    _setup_rename(tmp_path, rel, content)
+    d = _vdecl("lemma_3", "(a : T) : P", module=module, rel=rel)
+    # 1 try + 1 retry, both proposals fail to build → keep original, return {}
+    _fake_rename_spawn(monkeypatch, ['{"lemma_3":"foo"}', '{"lemma_3":"bar"}'])
+    _fake_filecopy(monkeypatch, [(False, "collision"), (False, "collision")])
+    assert dedup.file_cleanup_rename(tmp_path, "p", rel, [d],
+                                     scope=[d], pool=[]) == {}
+    assert (tmp_path / rel).read_text(encoding="utf-8") == content   # unchanged
+
+
+def test_file_cleanup_rename_noop_when_nothing_to_align(tmp_path,
+                                                        monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    _setup_rename(tmp_path, rel,
+                  "import Mathlib\ntheorem add_comm (a : T) : P := by trivial\n")
+    d = _vdecl("add_comm", "(a : T) : P", rel=rel)
+    spy = _fake_rename_spawn(monkeypatch, ['{}'])     # agent: nothing to rename
+    bc = _fake_filecopy(monkeypatch, [])
+    assert dedup.file_cleanup_rename(tmp_path, "p", rel, [d],
+                                     scope=[d], pool=[]) == {}
+    assert spy["n"] == 1 and bc["n"] == 0             # spawned once, never built

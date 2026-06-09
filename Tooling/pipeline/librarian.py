@@ -1389,25 +1389,49 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None):
 
     scope_index = _cleanup_scope_index(conn, problem)
     if target_file is not None:
-        # prior_renames: every decl already dropped by an EARLIER (dependency)
-        # file — {dropped_fqn → final survivor_fqn} — so this consumer file
-        # self-applies them before cleaning itself (§13).
+        # prior_renames: incoming renames this consumer file must self-apply
+        # before cleaning itself (§13 deferred-rewire), from EARLIER (dependency)
+        # files — both {dropped_fqn → survivor_fqn} (drops) and
+        # {old_fqn → new_fqn} (P4 renames of kept survivors). Same mechanical
+        # token rewrite for both.
+        all_rows = db.library_decls_for(conn, problem)
         prior_renames = {
             r["target_name"]: r["citation"]
-            for r in db.library_decls_for(conn, problem)
+            for r in all_rows
             if r["lifecycle"] == "dropped" and r["verdict"] == "drop"
             and r["target_name"] and r["citation"]}
+        prior_renames.update({
+            r["renamed_from"]: r["target_name"]
+            for r in all_rows if r["renamed_from"] and r["target_name"]})
         res = _dedup.run_staged_cleanup_file(
             workspace, problem, target_file, scope_index=scope_index,
             prior_renames=prior_renames, apply=True,
             simplify=True, unused_args=True, variables=True,
-            strip_comments=True, docstring=True)
+            strip_comments=True, docstring=True, rename=True)
         rows = [r for r in db.library_decls_for(conn, problem, lifecycle="migrated")
                 if r["target_file"] == target_file]
+        # P4 rename: record {old_fqn → new_fqn} so consumer files self-apply it,
+        # and refresh THIS file's olean (rename is the only stage that changes
+        # exported names — consumers cleaned later typecheck against the new
+        # names, not the stale migrate-time olean). Record before advancing
+        # lifecycle (set_library_renamed only updates target_name/renamed_from).
+        renamed = res.get("renamed", {})
+        if renamed:
+            slug_by_fqn = {r["target_name"]: r["slug"] for r in rows}
+            for old_fqn, new_fqn in renamed.items():
+                slug = slug_by_fqn.get(old_fqn)
+                if slug:
+                    db.set_library_renamed(conn, problem=problem, slug=slug,
+                                           old_fqn=old_fqn, new_fqn=new_fqn)
+            from ._lake import lake_build_modules
+            try:
+                lake_build_modules(workspace, [_dedup._mod_of_rel(target_file)])
+            except Exception:  # noqa: BLE001 — best-effort olean refresh
+                pass
         n_drop = _advance_cleanup_decls(conn, problem, rows, res.get("dropped", {}))
         print(f"[librarian] {problem}: cleanup `{target_file}` — {n_drop} "
-              f"dropped, {len(res.get('bridged', {}))} bridged; "
-              "survivors → cleaned", flush=True)
+              f"dropped, {len(res.get('bridged', {}))} bridged, "
+              f"{len(renamed)} renamed; survivors → cleaned", flush=True)
         return PipelineResult(outcome="success")
 
     migrated = list(db.library_decls_for(conn, problem, lifecycle="migrated"))
