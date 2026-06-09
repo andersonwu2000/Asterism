@@ -2639,10 +2639,6 @@ _RENAME_PROMPT = "rename.md"
 _RENAME_OUTPUT = "renames.json"
 _RENAME_MAX_RETRIES = 1
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_']*$")
-# Reserved leaf names rename must never touch: `main` is the Library keystone
-# convention (`Library.<Domain>.<Mod>.main`) that INDEX harvest + Gate B
-# re-derivation key on; renaming it would break the problem's public entry point.
-_RESERVED_RENAME = {"main"}
 
 
 def _parse_renames(text: str) -> "dict[str, str]":
@@ -2681,9 +2677,7 @@ def _valid_renames(proposed: "dict[str, str]", *, own_leaves: "set[str]",
     seen_new: "set[str]" = set()
     out: dict[str, str] = {}
     for old, new in proposed.items():
-        if (old in own_leaves and old not in _RESERVED_RENAME
-                and _IDENT_RE.match(new) and new != old
-                and new not in _RESERVED_RENAME
+        if (old in own_leaves and _IDENT_RE.match(new) and new != old
                 and new not in olds and new not in seen_new
                 and new not in existing_leaves):
             out[old] = new
@@ -2732,6 +2726,14 @@ def file_cleanup_rename(workspace: Path, problem: str, target_file: str,
         return {}
     leaf = target_file.split("/")[-1]
     module = _mod_of_rel(target_file)
+    # No cross-problem guard: by design a problem is cleaned BEFORE any other
+    # problem may cite it (clean-before-cite), so at rename time this problem has
+    # no external citer — the keystone `main` and every other decl rename freely,
+    # and same-problem consumers self-apply via deferred-rewire. Gate B / INDEX
+    # cite the keystone by DB target_name (which set_library_renamed updates), so
+    # renaming `main` flows through. (A stray dev-phase cross-problem ref can only
+    # arise from cleaning out of dependency order; cross-problem rewire, if ever
+    # needed, is future work — as for drops.)
     own_leaves = {d.name for d in decls_in_file}
     existing_leaves = {d.name for d in (*scope, *pool)} - own_leaves
     try:

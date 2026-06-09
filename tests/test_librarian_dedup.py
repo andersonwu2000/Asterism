@@ -1249,15 +1249,6 @@ def test_valid_renames_filters() -> None:
                                 existing_leaves=existing) == {"lemma_3": "det_smul"}
 
 
-def test_valid_renames_protects_keystone_main() -> None:
-    # `main` is the Library keystone convention — never rename it, and never
-    # rename anything else TO `main`.
-    own = {"main", "lemma_3"}
-    out = dedup._valid_renames({"main": "schur_decomp", "lemma_3": "main"},
-                               own_leaves=own, existing_leaves=set())
-    assert out == {}
-
-
 def test_valid_renames_no_chain_or_dup_target() -> None:
     own = {"a", "b", "c"}
     # a→b would chain (b is itself an old); two olds → same new is a dup target
@@ -1346,6 +1337,23 @@ def test_file_cleanup_rename_reverts_on_build_failure(tmp_path, monkeypatch) -> 
     assert dedup.file_cleanup_rename(tmp_path, "p", rel, [d],
                                      scope=[d], pool=[]) == {}
     assert (tmp_path / rel).read_text(encoding="utf-8") == content   # unchanged
+
+
+def test_file_cleanup_rename_renames_keystone_main(tmp_path, monkeypatch) -> None:
+    # `main` is the framework keystone placeholder — it renames like any other
+    # decl (Gate B / INDEX cite it by DB target_name, updated on rename).
+    rel = "Library/P/F.lean"
+    module = "Library.P.F"
+    content = "import Mathlib\ntheorem main (a : T) : P := by trivial\n"
+    _setup_rename(tmp_path, rel, content)
+    d = _vdecl("main", "(a : T) : P", module=module, rel=rel)
+    _fake_rename_spawn(monkeypatch, ['{"main":"svd_decomposition"}'])
+    _fake_filecopy(monkeypatch, [(True, "")])
+    out = dedup.file_cleanup_rename(tmp_path, "p", rel, [d],
+                                    scope=[d], pool=[])
+    assert out == {f"{module}.main": f"{module}.svd_decomposition"}
+    assert "theorem svd_decomposition (a : T)" in (
+        tmp_path / rel).read_text(encoding="utf-8")
 
 
 def test_file_cleanup_rename_noop_when_nothing_to_align(tmp_path,

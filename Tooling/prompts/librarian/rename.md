@@ -15,6 +15,7 @@ Read `Context.md` — it shows the file's module, the renamable declarations wit
 
 1. For each declaration, decide whether its current name is already a reasonable mathlib name. **If it is, leave it out of the map** — do not rename for the sake of renaming. Churn is worse than an imperfect-but-clear name.
 2. Rename only names that are clearly non-idiomatic: numbered/auto names (`lemma_3`, `claim2`), framework jargon (`entry_kind`, `sub_goal`, `combinator`, `closer`, `builder`, `step_…`, `aux_…`, `_main_helper`), or names that don't describe the statement. Never put framework jargon **into** a new name.
+   - **`main` is always non-idiomatic** — it is the framework's placeholder for the problem's headline theorem. mathlib has no theorem called `main`. If a `main` declaration is present, give it a proper descriptive name (the statement is the theorem the whole file proves, e.g. `svd_decomposition`, `schur_triangularization`).
 3. Pick the new name from the **statement**, following the conventions above. Keep it concise; match the granularity of sibling names already in the file.
 4. Do not rename to a name already used by another declaration (in this file or elsewhere in the library) — the rebuild will reject collisions.
 
