@@ -2448,6 +2448,14 @@ def cite_drop_aliases(workspace: Path, problem: str,
         return cache[rel]
 
     rels = sorted({d.rel for d in scope})
+    # cleanup just edited these files → their oleans are stale; the per-file gate
+    # (`_build_file_copy_isolated`) imports siblings via olean, so rebuild first
+    # or every gate fails (and cite-drop silently no-ops).
+    from ...pipeline._lake import lake_build_modules
+    try:
+        lake_build_modules(workspace, sorted({_mod_of_rel(r) for r in rels}))
+    except Exception:  # noqa: BLE001 — best-effort pre-flight
+        pass
     cited: "dict[str, str]" = {}
     for W in scope:
         body = decl_proof_body(gettext(W.rel), W.name)
