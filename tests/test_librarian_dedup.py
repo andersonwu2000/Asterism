@@ -1249,6 +1249,15 @@ def test_valid_renames_filters() -> None:
                                 existing_leaves=existing) == {"lemma_3": "det_smul"}
 
 
+def test_valid_renames_protects_keystone_main() -> None:
+    # `main` is the Library keystone convention — never rename it, and never
+    # rename anything else TO `main`.
+    own = {"main", "lemma_3"}
+    out = dedup._valid_renames({"main": "schur_decomp", "lemma_3": "main"},
+                               own_leaves=own, existing_leaves=set())
+    assert out == {}
+
+
 def test_valid_renames_no_chain_or_dup_target() -> None:
     own = {"a", "b", "c"}
     # a→b would chain (b is itself an old); two olds → same new is a dup target

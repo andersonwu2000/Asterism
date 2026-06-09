@@ -2639,6 +2639,10 @@ _RENAME_PROMPT = "rename.md"
 _RENAME_OUTPUT = "renames.json"
 _RENAME_MAX_RETRIES = 1
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_']*$")
+# Reserved leaf names rename must never touch: `main` is the Library keystone
+# convention (`Library.<Domain>.<Mod>.main`) that INDEX harvest + Gate B
+# re-derivation key on; renaming it would break the problem's public entry point.
+_RESERVED_RENAME = {"main"}
 
 
 def _parse_renames(text: str) -> "dict[str, str]":
@@ -2677,7 +2681,9 @@ def _valid_renames(proposed: "dict[str, str]", *, own_leaves: "set[str]",
     seen_new: "set[str]" = set()
     out: dict[str, str] = {}
     for old, new in proposed.items():
-        if (old in own_leaves and _IDENT_RE.match(new) and new != old
+        if (old in own_leaves and old not in _RESERVED_RENAME
+                and _IDENT_RE.match(new) and new != old
+                and new not in _RESERVED_RENAME
                 and new not in olds and new not in seen_new
                 and new not in existing_leaves):
             out[old] = new
