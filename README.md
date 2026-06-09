@@ -5,6 +5,9 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-08
+Asterism's deduplication and librarian subsystems received substantial reliability and performance work, including a fix for mis-splitting quantifier-bearing conclusions, repair of a `real_mods` regression that had been crashing bridges, and a corpus-classification optimization that cut runtime from 240s to roughly 1s by reading the cross-problem corpus only once. The librarian's per-file dispatcher was refactored into a staged per-declaration cleanup pipeline with topological file ordering, isolated typecheck helpers, and a gated hierarchy for bridge handling, while a ruff F821 lint gate was added to guard against undefined-name regressions.
+
 ### 2026-06-07
 Per-decl audit markers became the dedup pipeline's backbone, gaining parallel per-file marking with focused context and a marker-recall fix, alongside mechanical thin-wrapper detection. Building on this, an LLM dedup layer (v1b) was added to merge wrappers, bridge equivalent declarations, and cite or drop lemmas already proved at Mathlib tier, advancing the librarian's chain-integration work into its first phase.
 
