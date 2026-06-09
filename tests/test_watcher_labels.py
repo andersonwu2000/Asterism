@@ -96,6 +96,21 @@ def test_cleanup_bridge_label(tmp_path):
                                              "LinearAlgebra.jordan_normal_form")
 
 
+def test_produced_output_scaffolding_only_is_running(tmp_path):
+    # A cleanup sub-agent mid-run has only its input + framework scaffolding.
+    (tmp_path / "Context.md").write_text("# Simplify one proof — p — `f`\n")
+    (tmp_path / "_parser_state.json").write_text("{}")
+    assert watcher._produced_output(tmp_path) is False
+
+
+def test_produced_output_deliverable_means_finished(tmp_path):
+    # Once it writes its deliverable it's done — the lingering-retry over-count.
+    (tmp_path / "Context.md").write_text("# Simplify one proof — p — `f`\n")
+    (tmp_path / "_parser_state.json").write_text("{}")
+    (tmp_path / "simplified.txt").write_text("by simp")
+    assert watcher._produced_output(tmp_path) is True
+
+
 def test_migrate_label_falls_back_to_decl_subdir(tmp_path):
     # The incremental migrate's top-level spawn dir has no Context.md; each
     # hole lives in a `decl-<slug>/` subdir. The label must still resolve

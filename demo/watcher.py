@@ -485,6 +485,24 @@ def _render_token_section(usage: dict) -> str:
             + "\n".join(footnote_lines) + "\n")
 
 
+def _produced_output(pdir: Path) -> bool:
+    """Whether a spawn has written a deliverable (not just input scaffolding).
+    The finished-signal for cleanup sub-agents, which open no gateway session
+    (so `_session_open` returns None and can't tell finished from running): each
+    writes its one output — `simplified.txt` / `refactored.lean` / `annotated.lean`
+    / `*.json` — as its last act, so any top-level file that isn't `Context.md`
+    or a `_`-prefixed scaffold (`_mcp.jsonl`, `_parser_state.json`, `_progress.md`)
+    means the agent finished. Read-only; tolerates a vanishing dir."""
+    try:
+        for f in pdir.iterdir():
+            if (f.is_file() and f.name != "Context.md"
+                    and not f.name.startswith("_")):
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def _active_spawns(limit: int) -> list[Path]:
     """Return up to `limit` most-recently-active spawn dirs
     (most recent first). `limit` is the dispatch pool size — at any
@@ -512,8 +530,12 @@ def _active_spawns(limit: int) -> list[Path]:
         s = _spawn_score(pdir)
         if s < cutoff:
             continue
-        if _session_open(pdir) is False:
-            continue  # session released → finished; don't count the lingering dir
+        sess = _session_open(pdir)
+        if sess is False:
+            continue  # gateway session released → finished; skip lingering dir
+        if sess is None and _produced_output(pdir):
+            continue  # cleanup sub-agent (no gateway session) that already wrote
+            #            its deliverable → finished; skip the lingering retry dir
         scored.append((s, pdir))
     scored.sort(reverse=True)
     return [p for _, p in scored[:limit]]
