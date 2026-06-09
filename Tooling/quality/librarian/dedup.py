@@ -1336,6 +1336,42 @@ def _file_topo_order(workspace: Path, scope: "list[_Decl]") -> "list[str]":
     return out
 
 
+def _file_dep_closure(workspace: Path, scope: "list[_Decl]"
+                      ) -> "dict[str, frozenset[str]]":
+    """{rel: every scope file rel it TRANSITIVELY imports}. A cross-file drop
+    X→Y is only safe when Y's file is in X's file's closure (or same file): then
+    every consumer of X (each imports X's file) sees Y transitively, with no
+    import cycle. A survivor in a topo-LATER (consumer) file inverts the deps and
+    breaks the rewire — the `GridConstruction.monotone_grid → GridReindex.sorted_grid`
+    bug, where the chosen (shorter-named) survivor lived in X's consumer."""
+    mod2rel = {d.module: d.rel for d in scope if d.module}
+    files = sorted({d.rel for d in scope})
+    direct: dict[str, set[str]] = {r: set() for r in files}
+    imp_re = re.compile(r"^\s*import\s+([\w.]+)", re.M)
+    for r in files:
+        try:
+            text = (workspace / r).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for m in imp_re.findall(text):
+            d = mod2rel.get(m)
+            if d and d != r:
+                direct[r].add(d)
+
+    def reach(r: str) -> set[str]:
+        seen: set[str] = set()
+        stack = list(direct.get(r, ()))
+        while stack:
+            d = stack.pop()
+            if d in seen:
+                continue
+            seen.add(d)
+            stack.extend(direct.get(d, ()))
+        return seen
+
+    return {r: frozenset(reach(r)) for r in files}
+
+
 def _collect_marked_pairs(workspace: Path, problem: str, *, concurrency: int = 4,
                           scope_index: "list[tuple[str, str]] | None" = None
                           ) -> "tuple[list[tuple[str, str]], list[_Decl], list[_Decl]]":
@@ -1410,6 +1446,7 @@ def _classify_pairs(workspace: Path, problem: str,
     by_fqn = {d.fqn: d for d in (*pool, *scope)}
     scope_fqns = {d.fqn for d in scope}
     scope_rels = {d.rel for d in scope}
+    dep_closure = _file_dep_closure(workspace, scope)   # X.rel → its imports
     probe: list[tuple[str, str, str]] = []
     decls: list[tuple[_Decl, _Decl, bool]] = []
     skipped: list[tuple[str, str]] = []
@@ -1438,8 +1475,17 @@ def _classify_pairs(workspace: Path, problem: str,
         # one worker owns both decls (no race) → trust the marker and drop X→Y;
         # skipping the same-file case merely because the dup had the shorter name
         # was a recall bug (Finding A — `termwise_eigenvalue_bound` et al.).
-        if not is_mathlib and X.rel != Y.rel and _survivor(X.fqn, Y.fqn) != Y.fqn:
-            skipped.append((X.fqn, Y.fqn))             # cross-file: keep canonical
+        #
+        # Cross-file ALSO requires the survivor Y to live in X's dependency
+        # closure: dropping X rewires its consumers to Y, which only type-checks
+        # if every consumer of X (each imports X's file) can see Y. If Y sits in a
+        # topo-LATER (consumer) file the rewire inverts deps → unbuildable Library
+        # (the GridConstruction→GridReindex bug; per-file #check missed it because
+        # it builds against the dependency's STALE pre-drop olean).
+        if not is_mathlib and X.rel != Y.rel and (
+                _survivor(X.fqn, Y.fqn) != Y.fqn
+                or Y.rel not in dep_closure.get(X.rel, frozenset())):
+            skipped.append((X.fqn, Y.fqn))             # cross-file: not safely rewirable
             continue
         if X.fqn in prior_survivors or Y.fqn in prior_dropped:
             skipped.append((X.fqn, Y.fqn))             # per-file cross-file chain

@@ -855,6 +855,69 @@ def test_classify_drops_when_survivor_agrees(tmp_path, monkeypatch) -> None:
     assert skipped == []
 
 
+def _mk_decl_file_imports(tmp_path, rel, names, imports):
+    p = tmp_path / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    body = "import Mathlib\n" + "".join(f"import {m}\n" for m in imports)
+    body += "\n".join(f"theorem {n} : True := by trivial" for n in names) + "\n"
+    p.write_text(body, encoding="utf-8")
+
+
+def test_file_dep_closure_transitive(tmp_path) -> None:
+    mod = "Library.LinearAlgebra.P"
+    _mk_decl_file_imports(tmp_path, "Library/LinearAlgebra/P/Base.lean", ["b"], [])
+    _mk_decl_file_imports(tmp_path, "Library/LinearAlgebra/P/Mid.lean", ["m"],
+                          [f"{mod}.Base"])
+    _mk_decl_file_imports(tmp_path, "Library/LinearAlgebra/P/Top.lean", ["t"],
+                          [f"{mod}.Mid"])
+    scope = [_vdecl("b", "b : True", module=f"{mod}.Base",
+                    rel="Library/LinearAlgebra/P/Base.lean"),
+             _vdecl("m", "m : True", module=f"{mod}.Mid",
+                    rel="Library/LinearAlgebra/P/Mid.lean"),
+             _vdecl("t", "t : True", module=f"{mod}.Top",
+                    rel="Library/LinearAlgebra/P/Top.lean")]
+    cl = dedup._file_dep_closure(tmp_path, scope)
+    assert cl["Library/LinearAlgebra/P/Top.lean"] == frozenset(
+        {"Library/LinearAlgebra/P/Mid.lean", "Library/LinearAlgebra/P/Base.lean"})
+    assert cl["Library/LinearAlgebra/P/Base.lean"] == frozenset()
+
+
+def test_classify_cross_file_skips_survivor_in_consumer(tmp_path, monkeypatch) -> None:
+    # The GridConstruction→GridReindex bug: X (dropped, longer name) is in the
+    # DEPENDENCY; the shorter-named survivor Y is in the CONSUMER (imports X's
+    # file). `_survivor` agrees (Y shorter) but Y is downstream → unsafe rewire →
+    # must SKIP, not drop.
+    P = "LinearAlgebra.p"
+    mod = "Library.LinearAlgebra.P"
+    dep = "Library/LinearAlgebra/P/Dep.lean"
+    cons = "Library/LinearAlgebra/P/Cons.lean"
+    _mk_decl_file_imports(tmp_path, dep, ["aa_much_longer"], [])
+    _mk_decl_file_imports(tmp_path, cons, ["aa"], [f"{mod}.Dep"])   # Cons imports Dep
+    _classify_setup(monkeypatch)
+    si = [(f"{mod}.Dep.aa_much_longer", dep), (f"{mod}.Cons.aa", cons)]
+    plan, skipped = dedup._classify_pairs(
+        tmp_path, P, [(f"{mod}.Dep.aa_much_longer", f"{mod}.Cons.aa")], scope_index=si)
+    assert plan == {} and len(skipped) == 1                 # survivor downstream → skip
+
+
+def test_classify_cross_file_drops_when_survivor_is_dependency(tmp_path, monkeypatch) -> None:
+    # Safe cross-file: X (dropped, longer) is in the CONSUMER; the shorter
+    # survivor Y is in the DEPENDENCY (X's file imports Y's) → every consumer of X
+    # already sees Y → drop is safe.
+    P = "LinearAlgebra.p"
+    mod = "Library.LinearAlgebra.P"
+    dep = "Library/LinearAlgebra/P/Dep.lean"
+    cons = "Library/LinearAlgebra/P/Cons.lean"
+    _mk_decl_file_imports(tmp_path, dep, ["aa"], [])
+    _mk_decl_file_imports(tmp_path, cons, ["aa_much_longer"], [f"{mod}.Dep"])
+    _classify_setup(monkeypatch)
+    si = [(f"{mod}.Dep.aa", dep), (f"{mod}.Cons.aa_much_longer", cons)]
+    plan, skipped = dedup._classify_pairs(
+        tmp_path, P, [(f"{mod}.Cons.aa_much_longer", f"{mod}.Dep.aa")], scope_index=si)
+    assert plan.get(f"{mod}.Cons.aa_much_longer", (None, ""))[1] == "drop"
+    assert skipped == []
+
+
 def test_resolve_drop_chains_follows_to_final_survivor() -> None:
     z = _decl("Library.LA.P.F.aa")        # final survivor (not dropped)
     y = _decl("Library.LA.P.F.bbb")       # dropped → z
