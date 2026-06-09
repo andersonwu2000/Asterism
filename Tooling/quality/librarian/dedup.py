@@ -2342,6 +2342,144 @@ def file_cleanup_unused_args(workspace: Path, problem: str, target_file: str,
     return True
 
 
+_MATHLIB_CITE = re.compile(r"^(?:by\s+exact\s+)?([A-Za-z_][\w']*(?:\.[\w']+)+)(.*)$",
+                           re.S)
+
+
+def _pure_mathlib_citation(proof: str) -> "str | None":
+    """If `proof` is a single dotted citation `Namespace.lemma args` (optionally
+    `by exact …`) with NO tactic structure, return it without the `by exact`
+    wrapper; else None. A `Library.…` head is a Library alias, not mathlib →
+    None. The check that the head names a mathlib (not Library) decl is the
+    caller's; here we only require a dotted head + a term-shaped tail."""
+    s = " ".join(proof.split())
+    m = _MATHLIB_CITE.match(s)
+    if not m or m.group(1).startswith("Library."):
+        return None
+    if re.search(r"<;>|;|\bby\b|=>|\bfun\b|\bmatch\b|\bcalc\b", m.group(2)):
+        return None
+    return (m.group(1) + m.group(2)).rstrip()
+
+
+def _explicit_param_names(sig: str) -> "list[str]":
+    """Explicit `(name … : type)` binder names of `sig`, in caller order. (Inline
+    substitution maps these to a consumer call's positional arguments.)"""
+    names: "list[str]" = []
+    for g in _binder_atoms(sig):
+        if g.startswith("("):
+            names += g[1:-1].split(":")[0].split()
+    return names
+
+
+def _take_args(s: str, k: int) -> "tuple[list[str], int]":
+    """Read up to k application args from the start of `s` (the text after a head
+    name). Each arg is a balanced (…)/[…]/{…} group or a bare atom; stops at a
+    depth-0 terminator (`:=`, `,`, `;`, `)`, newline). Returns (args, consumed)."""
+    args: "list[str]" = []
+    i, n = 0, len(s)
+    while len(args) < k and i < n:
+        while i < n and s[i] in " \t":
+            i += 1
+        if i >= n or s[i] in ",;)\n" or (s[i] == ":" and s[i:i + 2] == ":="):
+            break
+        start, depth = i, 0
+        while i < n:
+            c = s[i]
+            if c in "([{":
+                depth += 1
+            elif c in ")]}":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif depth == 0 and (c in " \t\n,;" or s[i:i + 2] == ":="):
+                break
+            i += 1
+        args.append(s[start:i])
+    return args, i
+
+
+def _inline_wrapper_call(text: str, name: str, params: "list[str]",
+                         body: str) -> "tuple[str, int]":
+    """Replace every call `name <a1..an>` in `text` (n = len(params), NOT the
+    decl header) with `(body[params→args])`. Bracket-aware arg read; whole-word
+    param substitution. Partial applications (fewer than n args) are left alone.
+    Returns (new_text, n_inlined). Build-gated by the caller — a bad substitution
+    just fails the rebuild."""
+    pat = re.compile(r"(?<![\w'.])" + re.escape(name) + r"(?![\w'])")
+    pieces: "list[str]" = []
+    pos, n_inlined = 0, 0
+    for m in pat.finditer(text):
+        if m.start() < pos:
+            continue
+        pre = text[max(0, m.start() - 12):m.start()]
+        if re.search(r"\b(?:theorem|lemma|def)\s+$", pre):   # the decl header
+            continue
+        args, consumed = _take_args(text[m.end():], len(params))
+        if len(args) != len(params) or not params:
+            continue
+        sub = body
+        for p, a in zip(params, args):
+            sub = re.sub(r"(?<![\w'])" + re.escape(p) + r"(?![\w'])",
+                         lambda _m, a=a: a.strip(), sub)
+        pieces.append(text[pos:m.start()])
+        pieces.append(f"({sub})")
+        pos = m.end() + consumed
+        n_inlined += 1
+    pieces.append(text[pos:])
+    return "".join(pieces), n_inlined
+
+
+def cite_drop_aliases(workspace: Path, problem: str,
+                      scope: "list[_Decl]") -> "dict[str, str]":
+    """Point 4 — DROP pure mathlib-alias wrappers (`cited` lifecycle) and inline
+    every consumer to the mathlib lemma directly. A wrapper qualifies when its
+    proof body is a single `Namespace.lemma args` citation (Namespace ≠ Library;
+    `_pure_mathlib_citation`). For each, inline all calls across the problem's
+    files (`_inline_wrapper_call`), drop the decl, and whole-file rebuild-gate
+    every touched file — a failed inline keeps the wrapper (so the bridge that
+    already cites mathlib stays; strict improvement). Returns {dropped_fqn:
+    mathlib_head} for the DB. mathlib is already imported by every Library file,
+    so no import is added."""
+    cache: "dict[str, str]" = {}
+
+    def gettext(rel: str) -> str:
+        if rel not in cache:
+            cache[rel] = (workspace / rel).read_text(encoding="utf-8")
+        return cache[rel]
+
+    rels = sorted({d.rel for d in scope})
+    cited: "dict[str, str]" = {}
+    for W in scope:
+        body = decl_proof_body(gettext(W.rel), W.name)
+        if not body:
+            continue
+        cite = _pure_mathlib_citation(body)
+        if not cite:
+            continue
+        params = _explicit_param_names(W.sig)
+        edits: "dict[str, str]" = {}
+        n_inlined = 0
+        for rel in rels:
+            nt, n = _inline_wrapper_call(gettext(rel), W.name, params, body)
+            if n:
+                edits[rel] = nt
+                n_inlined += n
+        dropped, removed = drop_decl(edits.get(W.rel, gettext(W.rel)), W.name)
+        if not removed:
+            continue
+        edits[W.rel] = dropped
+        if not all(_build_file_copy_isolated(workspace, t)[0]
+                   for t in edits.values()):
+            continue                              # keep wrapper (bridge stays)
+        for rel, t in edits.items():
+            (workspace / rel).write_text(t, encoding="utf-8")
+            cache[rel] = t
+        cited[W.fqn] = cite.split()[0]
+        print(f"[staged] cite-drop `{W.name}` → inline {n_inlined} call(s) to "
+              f"{cite.split()[0]}", flush=True)
+    return cited
+
+
 _FW_COMMENT_MARKER = re.compile(
     r"entry_kind|sub-goal|\bcombinator\b|Closer:|\(was:|pad_and_place")
 

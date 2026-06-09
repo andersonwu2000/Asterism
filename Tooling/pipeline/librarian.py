@@ -2689,6 +2689,20 @@ def _run_bridge(conn, *, problem, workspace, pipeline_id,
     silent LLM patch. `attempts_dir`/`problem_dir`/`prompt_path` are unused
     (kept for signature parity with the dispatcher's run_librarian call)."""
     from . import PipelineResult
+    from ..quality.librarian import dedup as _dedup
+
+    # Point 4 — refine bridges into cite-mathlib DROPS: a wrapper whose body is a
+    # pure mathlib citation (`X := Ideal.iInf_span_singleton hg`) is removed and
+    # its consumers inlined to the mathlib lemma directly. 'cited' lifecycle drops
+    # it from `_harvested_decls` (so the probe + INDEX below exclude it); the
+    # probe's olean rebuild + re-derivation is the integration gate.
+    cited = _dedup.cite_drop_aliases(
+        workspace, problem, _dedup._load_decls(workspace, problem)[0])
+    for fqn, head in cited.items():
+        conn.execute("UPDATE library_decls SET lifecycle = 'cited', citation = ? "
+                     "WHERE problem = ? AND target_name = ?", (head, problem, fqn))
+    if cited:
+        conn.commit()
 
     migrated = _harvested_decls(conn, problem)
     if not migrated:

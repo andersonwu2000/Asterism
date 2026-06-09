@@ -1186,3 +1186,38 @@ def test_strip_framework_comments_noop_when_clean(tmp_path, monkeypatch) -> None
         encoding="utf-8")
     monkeypatch.setattr(dedup, "_lake_check", lambda ws, content, **k: (True, ""))
     assert dedup.file_cleanup_strip_framework_comments(tmp_path, "p", rel) is False
+
+
+# ---------------------------------------------------------------------
+# point 4 — cite-mathlib drop: detect pure alias + mechanical inline
+# ---------------------------------------------------------------------
+
+def test_pure_mathlib_citation() -> None:
+    assert (dedup._pure_mathlib_citation("Ideal.iInf_span_singleton hg")
+            == "Ideal.iInf_span_singleton hg")
+    assert (dedup._pure_mathlib_citation("by exact Ideal.iInf_span_singleton hg")
+            == "Ideal.iInf_span_singleton hg")             # `by exact` stripped
+    assert dedup._pure_mathlib_citation("by simp") is None  # no dotted head
+    assert dedup._pure_mathlib_citation("Library.P.foo x") is None   # Library alias
+    assert dedup._pure_mathlib_citation("fun x => Foo.bar x") is None  # not a citation
+
+
+def test_explicit_param_names() -> None:
+    sig = "(g : ι → K) (hg : ∀ i, P i) {α : Type} [Inst α] : Concl"
+    assert dedup._explicit_param_names(sig) == ["g", "hg"]
+
+
+def test_inline_wrapper_call_substitutes_and_skips_header() -> None:
+    text = ("theorem wrap (g : X) (hg : Y) : T := Ideal.iInf_span_singleton hg\n"
+            "theorem use : T := wrap a b\n")
+    out, n = dedup._inline_wrapper_call(
+        text, "wrap", ["g", "hg"], "Ideal.iInf_span_singleton hg")
+    assert n == 1                                           # only the call site
+    assert ":= (Ideal.iInf_span_singleton b)\n" in out     # hg→b substituted
+    assert "theorem wrap (g : X)" in out                   # header untouched
+
+
+def test_inline_wrapper_call_skips_partial_application() -> None:
+    text = "theorem use : T → T := wrap a\n"               # only 1 of 2 args
+    out, n = dedup._inline_wrapper_call(text, "wrap", ["g", "hg"], "M.l hg")
+    assert n == 0 and out == text
