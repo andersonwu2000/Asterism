@@ -1224,6 +1224,33 @@ def test_inline_wrapper_call_skips_partial_application() -> None:
 
 
 # ---------------------------------------------------------------------
+# batch_defeq — INFRA (timeout / broken env) is logged, not a silent verdict
+# ---------------------------------------------------------------------
+
+def test_batch_defeq_infra_logs_and_keeps(tmp_path, monkeypatch, capsys) -> None:
+    # A probe timeout (or broken env) must NOT be conflated with "not defeq":
+    # return all-False (safe keep) but LOUDLY, so a load-dependent miss is
+    # auditable (Fable-5 review; the old timeout path was a silent [False]*n).
+    monkeypatch.setattr(dedup, "_missing_oleans", lambda ws, mods: [])
+    monkeypatch.setattr(
+        dedup._lp, "run_lean_source",
+        lambda ws, content, **k: dedup._lp.LeanRun(None, "timeout after 240s", True))
+    pairs = [(": True", "Mathlib", "trivial"), (": True", "Mathlib", "trivial")]
+    out = dedup.batch_defeq(tmp_path, "p", pairs)
+    assert out == [False, False]                  # infra → keep, not a verdict
+    assert "INFRA" in capsys.readouterr().out     # audit trail
+
+
+def test_batch_defeq_clean_build_all_defeq(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(dedup, "_missing_oleans", lambda ws, mods: [])
+    monkeypatch.setattr(
+        dedup._lp, "run_lean_source",
+        lambda ws, content, **k: dedup._lp.LeanRun(0, "", False))   # clean
+    pairs = [(": True", "Mathlib", "trivial"), (": True", "Mathlib", "trivial")]
+    assert dedup.batch_defeq(tmp_path, "p", pairs) == [True, True]
+
+
+# ---------------------------------------------------------------------
 # deferred-rewire — same-module rename keeps bare refs bare (else cite-drop's
 # bare-name matcher misses an over-qualified ref → dangling drop)
 # ---------------------------------------------------------------------

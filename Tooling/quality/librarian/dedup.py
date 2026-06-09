@@ -24,12 +24,11 @@ through `replace_token` with the appropriate `old`.
 from __future__ import annotations
 
 import re
-import subprocess
-import uuid
 from pathlib import Path
 from typing import NamedTuple
 
 from .. import dedupe as _dd
+from .. import lake_probe as _lp
 
 
 # ---------------------------------------------------------------------
@@ -133,32 +132,23 @@ def batch_defeq(workspace: Path, problem: str,
     lines.append("end dedup_defeq_check")
     content = "\n".join(lines)
 
-    tmp_dir = workspace / ".attempts"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_file = tmp_dir / f"_dedup_defeq_{uuid.uuid4().hex}.lean"
-    tmp_file.write_text(content, encoding="utf-8")
-    try:
-        r = subprocess.run(
-            ["lake", "env", "lean", str(tmp_file)], cwd=str(workspace),
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=_BATCH_TIMEOUT_SEC)
-        output = r.stdout + r.stderr
-        rc = r.returncode
-    except (subprocess.TimeoutExpired, OSError):
+    run = _lp.run_lean_source(workspace, content, prefix="_dedup_defeq",
+                              timeout=_BATCH_TIMEOUT_SEC)
+    if run.infra:
+        # INFRA — timeout / spawn error / rc≠0 with no attributable error line —
+        # is NOT a "not defeq" verdict: the probe environment is broken (commonly
+        # a load-induced timeout or a stale/missing dependency olean mid-cleanup).
+        # Refuse all pairs, but LOUDLY + auditable: the old silent all-False on
+        # timeout masked lost dedups as "near/bridge" and made campaigns load-
+        # dependent with no audit trail (Finding B; Fable-5 review).
+        kind = "timeout" if run.timed_out else "probe env error"
+        print(f"[dedup] batch_defeq: INFRA ({kind}, rc={run.returncode}) — "
+              f"no verdict for {len(pairs)} pair(s), treated as keep; "
+              f"tail: {run.output[-400:].strip()}", flush=True)
         return [False] * len(pairs)
-    finally:
-        try:
-            tmp_file.unlink()
-        except OSError:
-            pass
-
-    error_lines = {int(m.group(1)) for m in _dd._LAKE_ERR_RE.finditer(output)}
-    if not error_lines:
-        if rc != 0:
-            print(f"[dedup] batch_defeq: rc={rc} with no parsed Lean error line "
-                  f"— refusing all {len(pairs)} pair(s) (probe env issue); "
-                  f"tail: {output[-300:].strip()}", flush=True)
-        return [True] * len(pairs) if rc == 0 else [False] * len(pairs)
+    error_lines = run.error_lines
+    if not error_lines:                  # clean build → every pair is defeq
+        return [True] * len(pairs)
     in_pair = set()
     for el in error_lines:
         for i, start in enumerate(pair_start_lines):
@@ -167,14 +157,13 @@ def batch_defeq(workspace: Path, problem: str,
             if start <= el <= end:
                 in_pair.add(el)
                 break
-    if error_lines - in_pair:        # global error (import/env) → cannot judge any
-        # NOT a "not defeq" verdict — the probe environment is broken (commonly a
-        # stale/missing dependency olean mid-cleanup). Refuse all, but LOUDLY: a
-        # silent all-False here masks lost dedups as "near/bridge" (Finding B).
-        print(f"[dedup] batch_defeq: GLOBAL probe error (rc={rc}, "
-              f"{len(error_lines - in_pair)} error line(s) outside pair blocks) "
+    if error_lines - in_pair:        # error outside every pair = global env break
+        # Same INFRA class (Lean attributed a line, just not to a pair block) —
+        # refuse all, loudly.
+        print(f"[dedup] batch_defeq: GLOBAL probe error "
+              f"({len(error_lines - in_pair)} error line(s) outside pair blocks) "
               f"— refusing all {len(pairs)} pair(s); likely stale/missing olean. "
-              f"tail: {output[-400:].strip()}", flush=True)
+              f"tail: {run.output[-400:].strip()}", flush=True)
         return [False] * len(pairs)
     results = []
     for i, start in enumerate(pair_start_lines):
@@ -192,25 +181,8 @@ def _lake_check(workspace: Path, content: str, *,
     and no lake error line. Shared isolate-typecheck primitive behind
     `_build_decl_isolated` (per-decl probe) and `_build_file_copy_isolated`
     (whole-file copy, §13 (d))."""
-    tmp_dir = workspace / ".attempts"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_file = tmp_dir / f"{prefix}_{uuid.uuid4().hex}.lean"
-    tmp_file.write_text(content, encoding="utf-8")
-    try:
-        r = subprocess.run(
-            ["lake", "env", "lean", str(tmp_file)], cwd=str(workspace),
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=timeout)
-        output = r.stdout + r.stderr
-        ok = r.returncode == 0 and not _dd._LAKE_ERR_RE.search(output)
-        return ok, ("" if ok else output[-2000:])
-    except (subprocess.TimeoutExpired, OSError) as e:
-        return False, str(e)
-    finally:
-        try:
-            tmp_file.unlink()
-        except OSError:
-            pass
+    run = _lp.run_lean_source(workspace, content, prefix=prefix, timeout=timeout)
+    return run.ok, ("" if run.ok else run.output[-2000:])
 
 
 def _build_decl_isolated(workspace: Path, *, sig: str, proof: str,
@@ -2128,27 +2100,15 @@ def _typecheck_capturing_types(workspace: Path, file_text: str,
             pass
     checks = "\n".join(f"#check @{f}" for f in fqns)
     content = file_text.rstrip() + "\n\n" + checks + "\n"
-    tmp_dir = workspace / ".attempts"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_file = tmp_dir / f"_cleanup_vcheck_{uuid.uuid4().hex}.lean"
-    tmp_file.write_text(content, encoding="utf-8")
-    try:
-        r = subprocess.run(
-            ["lake", "env", "lean", "--json", str(tmp_file)], cwd=str(workspace),
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=timeout)
-    except (subprocess.TimeoutExpired, OSError) as e:
-        return False, str(e), {}
-    finally:
-        try:
-            tmp_file.unlink()
-        except OSError:
-            pass
-    types, errs = _parse_check_output(r.stdout + "\n" + r.stderr, fqns)
-    ok = r.returncode == 0 and not errs
+    run = _lp.run_lean_source(workspace, content, prefix="_cleanup_vcheck",
+                              json=True, timeout=timeout)
+    if run.infra:
+        return False, run.output, {}
+    types, errs = _parse_check_output(run.output, fqns)
+    ok = run.returncode == 0 and not errs
     if ok and len(types) != len(fqns):
         return False, "could not read #check output for every declaration", types
-    detail = "" if ok else ("\n\n".join(errs)[-2000:] or (r.stdout + r.stderr)[-2000:])
+    detail = "" if ok else ("\n\n".join(errs)[-2000:] or run.output[-2000:])
     return ok, detail, types
 
 
@@ -2183,23 +2143,8 @@ def _build_with_output(workspace: Path, content: str, *, prefix: str,
     """Like `_lake_check` but ALWAYS returns the full build output (stdout+stderr),
     even on success — needed to read linter WARNINGS (rc==0), which `_lake_check`
     discards. `ok` iff rc==0 and no lake error line."""
-    tmp = workspace / ".attempts" / f"{prefix}_{uuid.uuid4().hex}.lean"
-    tmp.parent.mkdir(parents=True, exist_ok=True)
-    tmp.write_text(content, encoding="utf-8")
-    try:
-        r = subprocess.run(
-            ["lake", "env", "lean", str(tmp)], cwd=str(workspace),
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=timeout)
-        out = r.stdout + r.stderr
-        return (r.returncode == 0 and not _dd._LAKE_ERR_RE.search(out)), out
-    except (subprocess.TimeoutExpired, OSError) as e:
-        return False, str(e)
-    finally:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+    run = _lp.run_lean_source(workspace, content, prefix=prefix, timeout=timeout)
+    return run.ok, run.output
 
 
 def _inject_linter(text: str, *options: str) -> str:
