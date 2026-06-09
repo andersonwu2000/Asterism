@@ -2342,6 +2342,61 @@ def file_cleanup_unused_args(workspace: Path, problem: str, target_file: str,
     return True
 
 
+_FW_COMMENT_MARKER = re.compile(
+    r"entry_kind|sub-goal|combinator|Closer:|\(was:|pad_and_place")
+
+
+def file_cleanup_strip_framework_comments(workspace: Path, problem: str,
+                                          target_file: str) -> bool:
+    """§13 (e) — strip framework-process `--` comment blocks that migrate carries
+    from the proof: `entry_kind` tags + proof-search narration (`sub-goal` /
+    `combinator` / `Closer:` / `(was: …)`). These describe HOW the proof was found
+    — zero reader value, never in mathlib. Keeps `/-- … -/` docstrings and any
+    `--` block WITHOUT a framework marker. Mechanical, comment-only; rebuild-gated
+    against the rare case a stripped line sat inside a `/- … -/` block comment."""
+    try:
+        original = (workspace / target_file).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    lines = original.splitlines(keepends=True)
+    out: "list[str]" = []
+    i, n, stripped = 0, len(lines), 0
+    while i < n:
+        s = lines[i].lstrip()
+        if s.startswith("--") and not s.startswith("/--"):   # a `--` comment block
+            j = i
+            while (j < n and lines[j].lstrip().startswith("--")
+                   and not lines[j].lstrip().startswith("/--")):
+                j += 1
+            block = lines[i:j]
+            if _FW_COMMENT_MARKER.search("".join(block)):
+                stripped += len(block)                       # drop the whole block
+            else:
+                out.extend(block)
+            i = j
+        else:
+            out.append(lines[i])
+            i += 1
+    if not stripped:
+        return False
+    new_text = "".join(out)
+    missing = _missing_oleans(workspace, re.findall(
+        r"^\s*import\s+(Library\.[\w.]+)", original, re.M))
+    if missing:
+        from ...pipeline._lake import lake_build_modules
+        try:
+            lake_build_modules(workspace, missing)
+        except Exception:  # noqa: BLE001
+            pass
+    ok, _d = _lake_check(workspace, new_text, prefix="_fwcomment")
+    if not ok:
+        return False
+    (workspace / target_file).write_text(new_text, encoding="utf-8")
+    print(f"[staged] strip-fw-comments `{target_file.split('/')[-1]}` — "
+          f"removed {stripped} framework comment line(s)", flush=True)
+    return True
+
+
 def file_cleanup_variables(workspace: Path, problem: str, target_file: str,
                            decls_in_file: "list[_Decl]", *,
                            max_retries: int = _VARIABLE_MAX_RETRIES) -> bool:
@@ -2412,6 +2467,7 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
                             prior_renames: "dict[str, str] | None" = None,
                             apply: bool = True, bridge: bool = True,
                             docstring: bool = False,
+                            strip_comments: bool = False,
                             variables: bool = False,
                             unused_args: bool = False,
                             simplify: bool = False) -> "dict":
@@ -2499,6 +2555,11 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
         variabled = file_cleanup_variables(
             workspace, problem, target_file, survivor_decls)
     _T["variables"] = _t()
+    # (e) strip framework-process `--` comments (entry_kind / sub-goal / Closer:
+    # / combinator / (was: …)) migrate carried from the proof. Mechanical,
+    # comment-only. Before docstring polish so the agent sees a clean file.
+    if strip_comments:
+        file_cleanup_strip_framework_comments(workspace, problem, target_file)
     # (e) file-cleanup — docstring polish on the (now refactored) file. Comment-
     # only → no signature change. Own gates + retry; failure keeps the file.
     docstringed = False

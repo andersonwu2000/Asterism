@@ -1153,3 +1153,36 @@ def test_insert_classical_after_by() -> None:
 def test_insert_classical_skips_term_mode() -> None:
     text = "theorem foo {α} : Q := rfl\n"
     assert dedup._insert_classical(text, "foo") == text   # term-mode untouched
+
+
+def test_strip_framework_comments(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    (tmp_path / "Library" / "P").mkdir(parents=True)
+    src = (
+        "import Mathlib\n\n"
+        "/-- Real docstring, keep me. -/\n"
+        "-- entry_kind: Builder\n"
+        "-- Direct construction (was: circular `pad_and_place`).\n"
+        "--   `sorted_enum` (sub-goal): enumerate in order.\n"
+        "theorem foo : True := by trivial\n\n"
+        "-- a legit clarifying note (no framework jargon)\n"
+        "theorem bar : True := by trivial\n")
+    (tmp_path / rel).write_text(src, encoding="utf-8")
+    monkeypatch.setattr(dedup, "_missing_oleans", lambda ws, mods: [])
+    monkeypatch.setattr(dedup, "_lake_check", lambda ws, content, **k: (True, ""))
+    assert dedup.file_cleanup_strip_framework_comments(tmp_path, "p", rel) is True
+    out = (tmp_path / rel).read_text(encoding="utf-8")
+    assert "entry_kind" not in out and "(was:" not in out and "sub-goal" not in out
+    assert "/-- Real docstring, keep me. -/" in out          # docstring kept
+    assert "-- a legit clarifying note" in out               # non-framework kept
+    assert "theorem foo" in out and "theorem bar" in out      # decls intact
+
+
+def test_strip_framework_comments_noop_when_clean(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/G.lean"
+    (tmp_path / "Library" / "P").mkdir(parents=True)
+    (tmp_path / rel).write_text(
+        "import Mathlib\n\n/-- doc -/\ntheorem foo : True := by trivial\n",
+        encoding="utf-8")
+    monkeypatch.setattr(dedup, "_lake_check", lambda ws, content, **k: (True, ""))
+    assert dedup.file_cleanup_strip_framework_comments(tmp_path, "p", rel) is False
