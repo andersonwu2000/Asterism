@@ -2702,6 +2702,27 @@ def _run_bridge(conn, *, problem, workspace, pipeline_id,
             failure_detail="no proved root statement for the bridge")
     statement = " ".join(root["statement"].split())
 
+    # Gate B re-derives the root from the CLEANED Library, so its modules' oleans
+    # must be current first. Cleanup edited the sources, leaving the migrate-time
+    # oleans stale, and the gateway prober imports the on-disk olean as-is — it
+    # does NOT rebuild a stale (or missing) dependency. Rebuild them so the probe
+    # verifies the CURRENT cleaned Library, not a stale pre-cleanup snapshot. A
+    # build failure here means the cleaned Library itself is broken (a cleanup
+    # bug, e.g. a dangling cross-file reference) — a DISTINCT failure from a
+    # genuinely non-mechanical statement, surfaced with the real lake error
+    # rather than relabelled "load-bearing Defs".
+    from ._lake import lake_build_modules
+    modules = sorted({_library_module_of(r["target_file"])
+                      for r in migrated if r["target_file"]})
+    if modules:
+        ok, detail = lake_build_modules(workspace, modules)
+        if not ok:
+            return PipelineResult(
+                outcome="failed", failure_reason="librarian_cleaned_build_failed",
+                failure_detail=("cleaned Library does not build — a cleanup bug, "
+                                "NOT a non-mechanical statement: "
+                                + (detail or "")[:600]))
+
     probe = _bridge_probe_text(
         conn, problem=problem, statement=statement, migrated=migrated)
     if probe is None:
@@ -2714,12 +2735,15 @@ def _run_bridge(conn, *, problem, workspace, pipeline_id,
         probe, conn=conn, problem=problem, workspace=workspace,
         statement=statement, whitelist=whitelist or [])
     if res.outcome != "success":
-        # Mechanical re-derivation failed → the Library/statement needs a
-        # non-mechanical bridge. Re-frame as the v0.3 operator-flag outcome.
+        # The cleaned Library builds (checked above) but the original statement
+        # cannot be re-derived from it by direct citation → a genuinely non-
+        # mechanical bridge (load-bearing Defs mathlib can't express → operator /
+        # RequestUserAmend). Surface the real gate error, not just a label.
         return PipelineResult(
             outcome="failed", failure_reason="librarian_bridge_not_mechanical",
             failure_detail=(
-                "Gate B mechanical re-derivation failed (needs operator / "
-                "RequestUserAmend — load-bearing Defs mathlib can't express): "
-                + (res.failure_detail or "")[:300]))
+                "Gate B mechanical re-derivation failed — statement not re-derivable "
+                "from the (buildable) cleaned Library by citation; likely a load-"
+                "bearing Defs needing operator / RequestUserAmend: "
+                + (res.failure_detail or "")[:600]))
     return res

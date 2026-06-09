@@ -153,10 +153,19 @@ def test_bridge_probe_text_cites_migrated_main(conn, tmp_path):
     assert "theorem main : True := by exact Library.P.Foo.main" in probe
 
 
+def _mock_lake_ok(monkeypatch):
+    # Gate B now rebuilds the cleaned modules' oleans before the probe; stub the
+    # real `lake build` (no lake project under tmp_path) so the test reaches the
+    # probe/commit step.
+    import Tooling.pipeline._lake as _lake
+    monkeypatch.setattr(_lake, "lake_build_modules", lambda ws, mods: (True, ""))
+
+
 def test_run_bridge_pass_writes_index(conn, tmp_path, monkeypatch):
     root_g = _root(conn, "True")
     _migrate_existing(conn, "main", "Library.P.Foo.main",
                       "Library/P/Foo.lean", root_g)
+    _mock_lake_ok(monkeypatch)
     monkeypatch.setattr(lib, "_commit_bridge",
                         lambda *a, **k: _PR(outcome="success"))
     r = lib._run_bridge(conn, problem="p", workspace=tmp_path, pipeline_id="pid")
@@ -164,13 +173,33 @@ def test_run_bridge_pass_writes_index(conn, tmp_path, monkeypatch):
 
 
 def test_run_bridge_fail_is_not_mechanical(conn, tmp_path, monkeypatch):
-    # Mechanical citation that doesn't typecheck → operator-flag outcome, no LLM.
+    # Cleaned Library builds but the citation doesn't typecheck → operator-flag.
     root_g = _root(conn, "True")
     _migrate_existing(conn, "main", "Library.P.Foo.main",
                       "Library/P/Foo.lean", root_g)
+    _mock_lake_ok(monkeypatch)
     monkeypatch.setattr(lib, "_commit_bridge", lambda *a, **k: _PR(
         outcome="failed", failure_reason="librarian_gate_failed",
         failure_detail="type mismatch"))
     r = lib._run_bridge(conn, problem="p", workspace=tmp_path, pipeline_id="pid")
     assert r.outcome == "failed"
     assert r.failure_reason == "librarian_bridge_not_mechanical"
+    assert "type mismatch" in r.failure_detail        # real error surfaced
+
+
+def test_run_bridge_cleaned_build_failed_is_distinct(conn, tmp_path, monkeypatch):
+    # Cleaned Library doesn't build (a cleanup bug, e.g. dangling cross-file ref)
+    # → distinct reason + real lake error, NOT relabelled "load-bearing Defs".
+    # The probe is never reached.
+    root_g = _root(conn, "True")
+    _migrate_existing(conn, "main", "Library.P.Foo.main",
+                      "Library/P/Foo.lean", root_g)
+    import Tooling.pipeline._lake as _lake
+    monkeypatch.setattr(_lake, "lake_build_modules",
+                        lambda ws, mods: (False, "unknown identifier 'dropped_lemma'"))
+    monkeypatch.setattr(lib, "_commit_bridge", lambda *a, **k: pytest.fail(
+        "_commit_bridge must not run when the cleaned Library fails to build"))
+    r = lib._run_bridge(conn, problem="p", workspace=tmp_path, pipeline_id="pid")
+    assert r.outcome == "failed"
+    assert r.failure_reason == "librarian_cleaned_build_failed"
+    assert "unknown identifier 'dropped_lemma'" in r.failure_detail
