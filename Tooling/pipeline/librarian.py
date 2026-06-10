@@ -1409,7 +1409,7 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None):
             workspace, problem, target_file, scope_index=scope_index,
             prior_renames=prior_renames, apply=True,
             simplify=True, unused_args=True,
-            strip_comments=True, polish=True, decide=True)
+            strip_comments=True, polish=True, decide=True, audit=True)
         rows = [r for r in db.library_decls_for(conn, problem, lifecycle="migrated")
                 if r["target_file"] == target_file]
         # P4 decide: record {old_fqn → new_fqn} so consumer files self-apply it,
@@ -1420,6 +1420,7 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None):
         # (set_library_renamed only updates target_name/renamed_from).
         renamed = res.get("renamed", {})
         imports_min = bool(res.get("imports_min"))
+        audited = bool(res.get("audited"))
         if renamed:
             slug_by_fqn = {r["target_name"]: r["slug"] for r in rows}
             for old_fqn, new_fqn in renamed.items():
@@ -1427,7 +1428,7 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None):
                 if slug:
                     db.set_library_renamed(conn, problem=problem, slug=slug,
                                            old_fqn=old_fqn, new_fqn=new_fqn)
-        if renamed or imports_min:
+        if renamed or imports_min or audited:
             from ._lake import lake_build_modules
             # NOT best-effort: this rebuild is load-bearing. `lake_build_modules`
             # returns (ok, out) and does NOT raise on a build failure (only an
@@ -1446,8 +1447,8 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None):
         n_drop = _advance_cleanup_decls(conn, problem, rows, res.get("dropped", {}))
         print(f"[librarian] {problem}: cleanup `{target_file}` — {n_drop} "
               f"dropped, {len(res.get('bridged', {}))} bridged, "
-              f"{len(renamed)} renamed, imports_min={imports_min}; "
-              f"survivors → cleaned", flush=True)
+              f"{len(renamed)} renamed, imports_min={imports_min}, "
+              f"audited={audited}; survivors → cleaned", flush=True)
         return PipelineResult(outcome="success")
 
     migrated = list(db.library_decls_for(conn, problem, lifecycle="migrated"))

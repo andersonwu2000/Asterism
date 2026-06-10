@@ -1486,3 +1486,118 @@ def test_cite_drop_inlines_and_drops_full_application(tmp_path,
     g = (tmp_path / "Library/P/G.lean").read_text(encoding="utf-8")
     assert "(Nat.pos_of_ne_zero hx)" in g                     # inlined
     assert "w 3 hx" not in g
+
+
+# ---------------------------------------------------------------------
+# audit — final free-form review (fences + declared-rename gate)
+# ---------------------------------------------------------------------
+
+def _setup_audit(tmp_path, rel, content):
+    pd = tmp_path / "Tooling" / "prompts" / "librarian"
+    pd.mkdir(parents=True, exist_ok=True)
+    (pd / "audit.md").write_text("x", encoding="utf-8")
+    p = tmp_path / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+
+
+def _fake_audit_spawn(monkeypatch, outputs):
+    """outputs[i] = (audited_text|None, renames_json|None)."""
+    from Tooling import agent
+    calls = {"n": 0}
+
+    def _spawn(*, kind, prompt_path, problem_dir, attempts_dir, session_id):
+        i = calls["n"]
+        calls["n"] += 1
+        text, ren = outputs[i] if i < len(outputs) else (None, None)
+        if text is not None:
+            (attempts_dir / "audited.lean").write_text(text, encoding="utf-8")
+        if ren is not None:
+            (attempts_dir / "renames.json").write_text(ren, encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", _spawn)
+    return calls
+
+
+def _fake_audit_types(monkeypatch, type_of):
+    """Stub typecheck: every requested fqn gets type_of(fqn)."""
+    monkeypatch.setattr(
+        dedup, "_typecheck_capturing_types",
+        lambda ws, text, fqns, **k: (True, "", {f: type_of(f) for f in fqns}))
+    monkeypatch.setattr(dedup, "_build_with_output",
+                        lambda ws, text, **k: (True, ""))
+
+
+_AUDIT_SRC = ("import Mathlib.A.B\n\nnamespace Library.P.F\n\n"
+              "theorem foo_bar : P := trivial\n\nend Library.P.F\n")
+
+
+def test_audit_free_rewrite_accepted(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    _setup_audit(tmp_path, rel, _AUDIT_SRC)
+    rewritten = _AUDIT_SRC.replace("theorem foo_bar",
+                                   "/-- doc -/\ntheorem foo_bar")
+    _fake_audit_spawn(monkeypatch, [(rewritten, None)])
+    _fake_audit_types(monkeypatch, lambda f: "T")
+    d = _vdecl("foo_bar", ": P", module="Library.P.F", rel=rel)
+    out = dedup.file_cleanup_audit(tmp_path, "p", rel, [d], scope=[d], pool=[])
+    assert out == ({}, True)
+    assert "/-- doc -/" in (tmp_path / rel).read_text(encoding="utf-8")
+
+
+def test_audit_declared_rename_flows(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    _setup_audit(tmp_path, rel, _AUDIT_SRC)
+    rewritten = _AUDIT_SRC.replace("foo_bar", "bar_of_foo")
+    _fake_audit_spawn(monkeypatch, [(rewritten, '{"foo_bar":"bar_of_foo"}')])
+    # type mentions the decl's own leaf — must be compared modulo the rename
+    _fake_audit_types(monkeypatch,
+                      lambda f: f"T {f.rsplit('.', 1)[-1]}")
+    d = _vdecl("foo_bar", ": P", module="Library.P.F", rel=rel)
+    out = dedup.file_cleanup_audit(tmp_path, "p", rel, [d], scope=[d], pool=[])
+    assert out == ({"Library.P.F.foo_bar": "Library.P.F.bar_of_foo"}, True)
+    assert "bar_of_foo" in (tmp_path / rel).read_text(encoding="utf-8")
+
+
+def test_audit_import_and_namespace_fences(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    _setup_audit(tmp_path, rel, _AUDIT_SRC)
+    bad_import = _AUDIT_SRC.replace("import Mathlib.A.B", "import Mathlib")
+    bad_ns = _AUDIT_SRC.replace("namespace Library.P.F", "namespace Module.End")
+    _fake_audit_spawn(monkeypatch, [(bad_import, None), (bad_ns, None),
+                                    (None, None)])
+    _fake_audit_types(monkeypatch, lambda f: "T")
+    d = _vdecl("foo_bar", ": P", module="Library.P.F", rel=rel)
+    out = dedup.file_cleanup_audit(tmp_path, "p", rel, [d], scope=[d], pool=[])
+    assert out == ({}, False)                                 # both rejected
+    assert (tmp_path / rel).read_text(encoding="utf-8") == _AUDIT_SRC
+
+
+def test_audit_type_change_reverts(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    _setup_audit(tmp_path, rel, _AUDIT_SRC)
+    rewritten = _AUDIT_SRC.replace(": P :=", ": Q :=")
+    _fake_audit_spawn(monkeypatch, [(rewritten, None)] * 3)
+    calls = {"n": 0}
+
+    def _types(ws, text, fqns, **k):
+        calls["n"] += 1
+        t = "P" if calls["n"] == 1 else "Q"       # snapshot then drifted
+        return True, "", {f: t for f in fqns}
+    monkeypatch.setattr(dedup, "_typecheck_capturing_types", _types)
+    monkeypatch.setattr(dedup, "_build_with_output",
+                        lambda ws, text, **k: (True, ""))
+    d = _vdecl("foo_bar", ": P", module="Library.P.F", rel=rel)
+    out = dedup.file_cleanup_audit(tmp_path, "p", rel, [d], scope=[d], pool=[])
+    assert out == ({}, False)
+    assert (tmp_path / rel).read_text(encoding="utf-8") == _AUDIT_SRC
+
+
+def test_audit_noop_when_unchanged(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    _setup_audit(tmp_path, rel, _AUDIT_SRC)
+    _fake_audit_spawn(monkeypatch, [(_AUDIT_SRC, None)])
+    _fake_audit_types(monkeypatch, lambda f: "T")
+    d = _vdecl("foo_bar", ": P", module="Library.P.F", rel=rel)
+    assert dedup.file_cleanup_audit(tmp_path, "p", rel, [d],
+                                    scope=[d], pool=[]) == ({}, False)

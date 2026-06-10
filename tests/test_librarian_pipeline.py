@@ -275,6 +275,21 @@ def test_run_cleanup_per_file_imports_min_refreshes_olean(conn, tmp_path,
     assert built == [["Library.P.F"]]            # but olean still refreshed
 
 
+def test_run_cleanup_per_file_audited_refreshes_olean(conn, tmp_path,
+                                                      monkeypatch):
+    # audit's free rewrite changes the file without renames/imports — the olean
+    # is stale all the same, so audited alone must trigger the refresh.
+    _seed_migrated(conn, "foo", "Library.P.F.foo", target_file="Library/P/F.lean")
+    _patch_engine_file(monkeypatch, {
+        "dropped": {}, "merged": set(), "bridged": {}, "near": [], "failed": [],
+        "renamed": {}, "imports_min": False, "audited": True})
+    built: list = []
+    _patch_olean_refresh(monkeypatch, built)
+    lib._run_cleanup(conn, problem="p", workspace=tmp_path,
+                     target_file="Library/P/F.lean")
+    assert built == [["Library.P.F"]]
+
+
 def test_run_cleanup_per_file_rename_olean_fail_is_loud(conn, tmp_path, monkeypatch):
     # The renamed-file olean rebuild is load-bearing (consumers gate against the
     # new names). `lake_build_modules` returns (False, out) on failure — it does
