@@ -106,6 +106,14 @@ def test_decline_or_reopen_routes(conn, tmp_path, monkeypatch):
         conn, problem="p", workspace=tmp_path,
         patch_text="-- decline: not-rederivable", stage="bridge")
     assert r2.failure_reason == "agent_declined"
+    assert "not-rederivable" in r2.failure_detail   # reason surfaced, not buried
+
+
+def test_decline_summary_extracts_reason() -> None:
+    assert lib._decline_summary("-- decline: needs X\nmore") == "needs X"
+    assert lib._decline_summary("blah\n  -- decline:  spaced  ") == "spaced"
+    assert lib._decline_summary("free text reason\nline2") == "free text reason"
+    assert lib._decline_summary("\n\n") == ""
 
 
 def test_decline_or_reopen_unknown_slug_fails_loud(conn, tmp_path):

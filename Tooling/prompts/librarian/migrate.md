@@ -40,13 +40,12 @@ The framework extracts your one declaration and appends it. Keep the seed's impo
 
 ## Decline (write only the directive, no declaration)
 
-- `needs-upstream <slug> <constraint>` — an **already-migrated** Library decl must be reshaped first; the framework reverts it + its consumers.
-- `needs-vocabulary <symbol>` — depends on a Defs symbol not yet migrated, with no mathlib equivalent.
-- `not-self-contained <reason>` — the signature itself names a Problems/Defs symbol with no mathlib form.
+- `needs-upstream <slug> <constraint>` — an **already-migrated** Library decl must be reshaped first; the framework reverts it + its consumers. This is the **only** directive the framework acts on automatically.
+- **Can't be made Defs-free** — the signature or body needs a `Problems`/`Defs` symbol that has no migrated-Library or mathlib form. There is no automation for this case: decline in free text, with the **first line a one-sentence reason that names the missing symbol** (it is surfaced verbatim into the failure log).
 
 ```lean
--- decline: <directive>
--- ## <reason>
+-- decline: <`needs-upstream …`, or a one-line reason naming the missing symbol>
+-- ## <detail>
 ```
 
 ## Lemma discovery

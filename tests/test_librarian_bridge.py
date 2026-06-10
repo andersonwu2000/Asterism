@@ -203,3 +203,15 @@ def test_run_bridge_cleaned_build_failed_is_distinct(conn, tmp_path, monkeypatch
     assert r.outcome == "failed"
     assert r.failure_reason == "librarian_cleaned_build_failed"
     assert "unknown identifier 'dropped_lemma'" in r.failure_detail
+
+
+def test_run_librarian_bridge_dispatches_without_prompt(conn, tmp_path,
+                                                        monkeypatch) -> None:
+    # bridge is a mechanical (no-agent, no-prompt) probe — run_librarian must
+    # dispatch it BEFORE the prompt-existence guard, so the deleted bridge.md
+    # never trips librarian_missing_prompt.
+    sentinel = _PR(outcome="success")
+    monkeypatch.setattr(lib, "_run_bridge", lambda *a, **k: sentinel)
+    r = lib.run_librarian(conn, problem="p", work_kind="bridge",
+                          workspace=tmp_path, pipeline_id="x")
+    assert r is sentinel

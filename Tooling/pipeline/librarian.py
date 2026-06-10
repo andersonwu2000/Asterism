@@ -1223,6 +1223,14 @@ def run_librarian(conn, *, problem: str, work_kind: str,
         return _run_cleanup(conn, problem=problem, workspace=workspace,
                             target_file=target)
 
+    # v0.3 mechanical Gate B (plan §2 定海神針): `_run_bridge` is a no-agent,
+    # no-prompt probe (its attempts_dir/problem_dir/prompt_path are unused) —
+    # route it before the prompt-path guard, like dedup/cleanup, so the orphan
+    # `bridge.md` can be deleted without tripping `librarian_missing_prompt`.
+    if work_kind == "bridge":
+        return _run_bridge(conn, problem=problem, workspace=workspace,
+                           pipeline_id=pipeline_id, whitelist=whitelist)
+
     if work_kind not in WORK_KINDS:
         return PipelineResult(
             outcome="failed", failure_reason="librarian_bad_work_kind",
@@ -1243,12 +1251,6 @@ def run_librarian(conn, *, problem: str, work_kind: str,
             pipeline_id=pipeline_id, target_file=target,
             attempts_dir=attempts_dir, problem_dir=problem_dir,
             prompt_path=prompt_path, whitelist=whitelist)
-    if work_kind == "bridge":
-        return _run_bridge(
-            conn, problem=problem, workspace=workspace,
-            pipeline_id=pipeline_id, attempts_dir=attempts_dir,
-            problem_dir=problem_dir, prompt_path=prompt_path,
-            whitelist=whitelist)
     return _run_structured(
         conn, problem=problem, work_kind=work_kind, workspace=workspace,
         attempts_dir=attempts_dir, problem_dir=problem_dir,
@@ -2095,7 +2097,10 @@ def _migrate_file_incremental(
                 cap["decline"] = text
                 return PipelineResult(
                     outcome="agent_declined", failure_reason="agent_declined",
-                    failure_detail=f"decl {slug} declined", proposal_md=text)
+                    failure_detail=(f"decl {slug} declined: {d}"
+                                    if (d := _decline_summary(text))
+                                    else f"decl {slug} declined"),
+                    proposal_md=text)
             chunk, imports = _extract_single_decl(text, target_module)
             if not chunk:
                 return PipelineResult(
@@ -2532,6 +2537,20 @@ def _reopen_upstream_cascade(conn, *, problem, workspace, upstream_slug,
     return reopened
 
 
+def _decline_summary(text: str) -> str:
+    """The agent's decline reason, surfaced into `failure_detail` so the STALL
+    log + dead_attempts are self-explanatory (the reason used to be buried in
+    `proposal_md` behind a bare '{stage} declined'). Prefers the
+    `-- decline: <reason>` directive; else the first non-blank line. Capped."""
+    for line in (text or "").splitlines():
+        if "-- decline:" in line:
+            return line.split("-- decline:", 1)[1].strip()[:300]
+    for line in (text or "").splitlines():
+        if line.strip():
+            return line.strip()[:300]
+    return ""
+
+
 def _decline_or_reopen(conn, *, problem, workspace, patch_text, stage):
     """Map a Librarian agent decline to a PipelineResult. A
     `needs-upstream <slug>` directive triggers the re-open cascade (reshape
@@ -2579,7 +2598,10 @@ def _decline_or_reopen(conn, *, problem, workspace, patch_text, stage):
                            f"{reopened}", proposal_md=patch_text)
     return PipelineResult(
         outcome="failed", failure_reason="agent_declined",
-        failure_detail=f"{stage} declined", proposal_md=patch_text)
+        failure_detail=(f"{stage} declined: {d}"
+                        if (d := _decline_summary(patch_text))
+                        else f"{stage} declined"),
+        proposal_md=patch_text)
 
 
 def _write_library_index(conn, *, problem, workspace, gate_b_line: str):
