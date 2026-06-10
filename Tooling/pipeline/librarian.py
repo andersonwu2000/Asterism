@@ -1740,11 +1740,30 @@ def _defs_decl_source(defs_text: str, name: str) -> "str | None":
     the one mechanical path instead of forcing a cold from-scratch spawn."""
     from ..quality.librarian.inventory import _DEFS_DECL_RE
     matches = list(_DEFS_DECL_RE.finditer(defs_text))
+
+    def _head_start(pos: int) -> int:
+        """Extend a decl-head offset backwards over its immediately-preceding
+        `/-- ... -/` docstring, so the docstring travels in the decl's OWN
+        slice. With next-decl-head slicing alone, decl N+1's docstring sits at
+        the tail of decl N's slice -- harmless while slices were concatenated
+        verbatim, but the per-slice `variable` replay then lands BETWEEN a
+        docstring and its decl -> `unexpected token 'variable'; expected
+        'lemma'` (stokes bdry_chart 2026-06-11)."""
+        head = defs_text[:pos].rstrip()
+        if not head.endswith("-/"):
+            return pos
+        k = head.rfind("/--")
+        # the trailing `-/` must close THIS `/--` (no closer in between) --
+        # otherwise it ends some other comment form (`/-!`, `/- ... -/`).
+        if k == -1 or "-/" in head[k + 3:-2]:
+            return pos
+        return k
+
     for i, m in enumerate(matches):
         if m.group(2) != name:
             continue
-        start = m.start()
-        end = (matches[i + 1].start()
+        start = _head_start(m.start())
+        end = (_head_start(matches[i + 1].start())
                if i + 1 < len(matches) else len(defs_text))
         body = defs_text[start:end]
         # Trim trailing `end <X>` closers that the next-decl/EOF cut dragged

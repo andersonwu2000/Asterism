@@ -911,3 +911,24 @@ def test_run_migrate_refuses_file_owned_by_other_problem(conn, tmp_path):
     assert r.outcome == "failed"
     assert r.failure_reason == "librarian_file_owned_by_other"
     assert "q" in r.failure_detail
+
+
+def test_defs_decl_source_docstring_travels_with_decl():
+    # decl N+1's docstring sits between decl N and decl N+1 — next-decl-head
+    # slicing put it at the TAIL of N's slice, and the per-slice variable
+    # replay then separated `/-- doc -/` from its decl → parse error
+    # (`unexpected token 'variable'`, stokes bdry_chart 2026-06-11). The
+    # docstring must travel in its own decl's slice, AFTER the variables.
+    text = ("namespace Problems.p\n\nvariable {n : Nat}\n\n"
+            "def first (k : Nat) : Nat := k + n\n\n"
+            "/-- doc of second. -/\n"
+            "def second : Nat := n\n\nend Problems.p\n")
+    first = lib._defs_decl_source(text, "first")
+    assert "doc of second" not in first              # not in N's tail
+    second = lib._defs_decl_source(text, "second")
+    assert second.index("variable {n : Nat}") \
+        < second.index("/-- doc of second. -/") \
+        < second.index("def second")                 # vars BEFORE the docstring
+    # a /-! module docstring above a decl is NOT a decl docstring — no extension
+    text2 = ("/-! # title -/\n\ndef d : Nat := 0\n")
+    assert "title" not in lib._defs_decl_source(text2, "d")
