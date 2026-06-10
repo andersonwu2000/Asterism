@@ -376,6 +376,20 @@ CREATE TABLE IF NOT EXISTS library_decls (
     UNIQUE(problem, slug)
 );
 
+-- librarian_fail_counts — persistent per-unit failure tally for the Librarian
+-- chain (#92 cap). The dispatcher keeps an in-memory dict for the hot read path
+-- but loads it from here at startup + writes through on every mutation, so a
+-- genuinely-stuck unit's count survives a daemon restart and STALLs at the cap
+-- instead of looping forever. `target_id` = a `problem` (serial phase step) or
+-- `problem\x1ffile` (per-file migrate/cleanup unit). Pure new table → a plain
+-- CREATE TABLE IF NOT EXISTS suffices for fresh + existing DBs (no user_version
+-- bump; init_schema re-runs SCHEMA each start).
+CREATE TABLE IF NOT EXISTS librarian_fail_counts (
+    target_id   TEXT PRIMARY KEY,
+    n           INTEGER NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
 CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(status);
 CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue(priority DESC, id ASC);
@@ -2361,6 +2375,40 @@ def set_library_renamed(conn: sqlite3.Connection, *, problem: str,
         " WHERE problem = ? AND slug = ?",
         (new_fqn, old_fqn, now(), problem, slug),
     )
+    conn.commit()
+
+
+# ---------------------------------------------------------------------
+# librarian_fail_counts — persistent Librarian chain retry cap (#92, B#3)
+# ---------------------------------------------------------------------
+
+def librarian_fail_counts_all(conn: sqlite3.Connection) -> "dict[str, int]":
+    """The whole persisted per-unit fail tally — loaded into the dispatcher's
+    in-memory dict at daemon startup so the chain retry cap survives a restart
+    (a genuinely-stuck unit STALLs instead of looping forever across restarts)."""
+    return {r["target_id"]: r["n"] for r in conn.execute(
+        "SELECT target_id, n FROM librarian_fail_counts")}
+
+
+def set_librarian_fail_count(conn: sqlite3.Connection, *, target_id: str,
+                             n: int) -> None:
+    """Write-through a unit's fail count (upsert) when the in-memory dict is
+    bumped."""
+    ts = now()
+    conn.execute(
+        "INSERT INTO librarian_fail_counts (target_id, n, updated_at)"
+        " VALUES (?, ?, ?) ON CONFLICT(target_id) DO UPDATE SET"
+        " n = excluded.n, updated_at = excluded.updated_at",
+        (target_id, n, ts),
+    )
+    conn.commit()
+
+
+def clear_librarian_fail_count(conn: sqlite3.Connection, *,
+                               target_id: str) -> None:
+    """Drop a unit's fail count on success (mirrors the in-memory pop)."""
+    conn.execute("DELETE FROM librarian_fail_counts WHERE target_id = ?",
+                 (target_id,))
     conn.commit()
 
 

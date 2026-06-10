@@ -1578,9 +1578,11 @@ def _advance_librarian_chain(
     next tick until the count crosses `LIBRARIAN_MAX_CHAIN_RETRIES`."""
     if outcome in ("success", "proved"):
         fail_counts.pop(target_id, None)
+        db.clear_librarian_fail_count(conn, target_id=target_id)   # write-through
         return
     n = fail_counts.get(target_id, 0) + 1
     fail_counts[target_id] = n
+    db.set_librarian_fail_count(conn, target_id=target_id, n=n)    # survives restart
     problem, target_file = _lib_decode(target_id)
     unit = target_file or "chain step"
     if n > LIBRARIAN_MAX_CHAIN_RETRIES:
@@ -2202,9 +2204,10 @@ def run(workspace: Path, *, once: bool = False,
     # a spawn_fast_fail cascade; bfs_refill skips cooled pairs so the
     # daemon doesn't burst-retry a broken claude.exe at 2s/call.
     cooldown_until: dict[tuple[str, str], float] = {}
-    # Per-problem consecutive Librarian chain-step failures (in-memory;
-    # reset on a success). Bounds re-enqueue of a stuck step to
-    # LIBRARIAN_MAX_CHAIN_RETRIES before letting the chain stall.
+    # Per-unit consecutive Librarian chain failures (#92 cap). In-memory hot
+    # read path, but LOADED from `librarian_fail_counts` after init_schema +
+    # write-through on every mutation, so a stuck unit's count survives a daemon
+    # restart and STALLs at LIBRARIAN_MAX_CHAIN_RETRIES instead of looping forever.
     librarian_fail_counts: dict[str, int] = {}
     # Lazy verify cache: problem → True (Defs.lean + Root.lean built
     # cleanly) | False (build error; problem is quarantined for this
@@ -2249,6 +2252,9 @@ def run(workspace: Path, *, once: bool = False,
     # is the long-running consumer of the DB on a workspace that
     # was init'd against an earlier schema version.
     db.init_schema(conn)
+    # Restore the Librarian chain fail cap across restarts (#92 B#3): a stuck
+    # unit's tally persists so it STALLs instead of looping forever.
+    librarian_fail_counts.update(db.librarian_fail_counts_all(conn))
     # ManifestCache hot-reloads on Manifest.md mtime change at each
     # spawn-time access — daemon previously locked in the startup-time
     # parse, so user edits mid-run were invisible until restart. Cache

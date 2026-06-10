@@ -596,6 +596,23 @@ def test_advance_chain_failure_counts_no_enqueue(tmp_path: Path):
         assert _queue(conn) == []   # advance never enqueues (refill does)
 
 
+def test_advance_chain_fail_count_persists_across_restart(tmp_path: Path):
+    # #92 B#3 — the cap must survive a daemon restart: _advance write-throughs to
+    # the DB, and the dict the daemon rebuilds at startup sees the stuck count.
+    conn = _mem()
+    tid = dispatcher._lib_encode("p", "Library/P/foo.lean")
+    fc: dict = {}
+    for _ in (1, 2):
+        dispatcher._advance_librarian_chain(
+            conn, tmp_path, tid, outcome="failed", reason="boom", fail_counts=fc)
+    # simulate restart: fresh dict rebuilt from DB (what run() does post-init_schema)
+    assert db.librarian_fail_counts_all(conn) == {tid: 2}      # survived
+    # a later success clears it from the DB too (not just the in-memory dict)
+    dispatcher._advance_librarian_chain(
+        conn, tmp_path, tid, outcome="success", reason="", fail_counts=fc)
+    assert db.librarian_fail_counts_all(conn) == {}
+
+
 # ---------------------------------------------------------------------
 # INDEX provenance — _write_library_index (live; shared by the bridge step)
 # ---------------------------------------------------------------------
