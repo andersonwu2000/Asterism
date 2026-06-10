@@ -153,6 +153,36 @@ def test_bridge_probe_text_cites_migrated_main(conn, tmp_path):
     assert "theorem main : True := by exact Library.P.Foo.main" in probe
 
 
+def test_bridge_probe_text_replays_defs_opens(conn, tmp_path):
+    # A statement is AUTHORED under Defs.lean's file-level opens — scoped
+    # notation (`open scoped Manifold` → `𝓡∂`/`∞`) doesn't even PARSE without
+    # them, and the probe then fails as a false
+    # `librarian_bridge_not_mechanical` (stokes 2026-06-11). The probe must
+    # replay them, like every other proof-file author (inject_defs_opens).
+    pd = tmp_path / "Problems" / "p"
+    pd.mkdir(parents=True, exist_ok=True)
+    (pd / "Defs.lean").write_text(
+        "import Mathlib\n\nopen scoped Manifold Bundle ContDiff\n"
+        "open MeasureTheory\nopen Foo in\nexample : True := trivial\n",
+        encoding="utf-8")
+    root_g = _root(conn, "True")
+    _migrate_existing(conn, "main", "Library.P.Foo.main",
+                      "Library/P/Foo.lean", root_g)
+    migrated = lib._harvested_decls(conn, "p")
+    probe = lib._bridge_probe_text(conn, problem="p", statement="True",
+                                   migrated=migrated, workspace=tmp_path)
+    assert "open scoped Manifold Bundle ContDiff" in probe
+    assert "open MeasureTheory" in probe
+    assert "open Foo" not in probe          # `open X in` is decl-scoped — excluded
+    # opens land between the imports and the theorem
+    assert probe.index("import Library.P.Foo") \
+        < probe.index("open scoped Manifold") < probe.index("theorem main")
+    # without a workspace the probe is unchanged (back-compat)
+    bare = lib._bridge_probe_text(conn, problem="p", statement="True",
+                                  migrated=migrated)
+    assert "Manifold" not in bare
+
+
 def _mock_lake_ok(monkeypatch):
     # Gate B now rebuilds the cleaned modules' oleans before the probe; stub the
     # real `lake build` (no lake project under tmp_path) so the test reaches the

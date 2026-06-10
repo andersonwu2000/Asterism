@@ -2749,11 +2749,16 @@ def _commit_bridge(patch_text, *, conn, problem, workspace, statement,
             pass
 
 
-def _bridge_probe_text(conn, *, problem, statement, migrated) -> "str | None":
+def _bridge_probe_text(conn, *, problem, statement, migrated,
+                       workspace=None) -> "str | None":
     """v0.3 mechanical Gate B probe (plan §2/§3). Build a throwaway Root that
     imports every migrated Library module, opens every migrated namespace (so
     the original statement's bare symbols — e.g. a `Defs` predicate now living
-    in the Library — resolve), and re-derives the original `main` by citing its
+    in the Library — resolve), replays the problem's Defs.lean file-level
+    `open` clauses (the statement was AUTHORED under them — without e.g.
+    `open scoped Manifold` a statement using `𝓡∂`/`∞` notation doesn't even
+    PARSE, and the probe fails as a false `librarian_bridge_not_mechanical`;
+    stokes 2026-06-11), and re-derives the original `main` by citing its
     migrated form: `theorem main : <statement> := by exact <main_fq>`. Returns
     None when the migrated root decl has no Library name (cannot build a probe).
 
@@ -2778,7 +2783,14 @@ def _bridge_probe_text(conn, *, problem, statement, migrated) -> "str | None":
     lines = [f"import {m}" for m in sorted(modules)]
     lines += [f"open {ns}" for ns in sorted(namespaces)]
     lines += ["", f"theorem main : {statement} := by exact {main_fq}", ""]
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    if workspace is not None:
+        # Same replay every proof-file author gets (backward/builder/forward);
+        # inserts after the last import, before the opens/theorem.
+        from ..state import manifest as _mfst
+        text = _mfst.inject_defs_opens(text, problem=problem,
+                                       workspace=workspace)
+    return text
 
 
 def _run_bridge(conn, *, problem, workspace, pipeline_id,
@@ -2853,7 +2865,8 @@ def _run_bridge(conn, *, problem, workspace, pipeline_id,
                                 + (detail or "")[:600]))
 
     probe = _bridge_probe_text(
-        conn, problem=problem, statement=statement, migrated=migrated)
+        conn, problem=problem, statement=statement, migrated=migrated,
+        workspace=workspace)
     if probe is None:
         return PipelineResult(
             outcome="failed", failure_reason="librarian_no_root",
