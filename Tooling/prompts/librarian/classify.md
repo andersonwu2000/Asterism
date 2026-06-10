@@ -35,6 +35,7 @@ A file may depend only on Mathlib and other Library files (never on `Problems/` 
 - Every declaration appears in exactly one file's `decls`.
 - Put shared definitions in a foundational file; lemmas about them import it.
 - Keep files cohesive but not huge — split by sub-topic the way mathlib would, not one-decl-per-file unless a decl is genuinely standalone.
+- **Hard size budget: a file's declarations may sum to at most ~1100 source lines** (each declaration's size is listed in `Context.md`; mathlib's `longFile` linter caps files at 1500 lines and later stages add docstrings). A plan with an oversized file is rejected mechanically — split by sub-topic until every file fits.
 - The dependency graph being acyclic is a hard requirement — if two files would need each other, merge them or move the shared piece down.
 
 Now read `Context.md` and write your layout plan to `plan.json`.

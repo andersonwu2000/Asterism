@@ -17,7 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 # {relative path: max line count}
 _WATERMARKS = {
     "Tooling/quality/librarian/dedup.py": 1900,
-    "Tooling/pipeline/librarian.py": 2850,
+    # 2850 → 2900 (2026-06-11): classify file-size gate (BT giant-file fix) —
+    # conscious bump.
+    "Tooling/pipeline/librarian.py": 2900,
     "Tooling/core/dispatcher.py": 2750,
     "Tooling/state/db.py": 2450,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,

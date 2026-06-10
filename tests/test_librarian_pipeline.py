@@ -89,6 +89,28 @@ def test_verify_classify_import_cycle():
     assert "cycle" in lib.verify_classify(plan, {"a", "b"})
 
 
+def test_verify_classify_file_size_budget():
+    # The giant-file gate (BT Equidecomp, 2026-06-11): a planned file whose
+    # decls sum over CLASSIFY_FILE_LINE_BUDGET is rejected with a split
+    # instruction; under budget passes; no decl_lines → no size check.
+    plan = _plan([{"path": "Library/A/Big.lean", "imports": [],
+                   "decls": ["a", "b"]}])
+    over = {"a": lib.CLASSIFY_FILE_LINE_BUDGET, "b": 1}
+    err = lib.verify_classify(plan, {"a", "b"}, decl_lines=over)
+    assert "Library/A/Big.lean" in err and "split" in err
+    under = {"a": 500, "b": 500}
+    assert lib.verify_classify(plan, {"a", "b"}, decl_lines=under) == ""
+    assert lib.verify_classify(plan, {"a", "b"}) == ""   # back-compat
+
+
+def test_decl_line_counts_reads_proof_files(tmp_path):
+    proofs = tmp_path / "Problems" / "p" / "proofs"
+    proofs.mkdir(parents=True)
+    (proofs / "L_foo.lean").write_text("import Mathlib\nx\ny\n", encoding="utf-8")
+    out = lib._decl_line_counts(tmp_path, "p", ["foo", "ghost"])
+    assert out == {"foo": 3, "ghost": 0}    # missing file counts 0
+
+
 # ---------------------------------------------------------------------
 # commit (into library_decls)
 # ---------------------------------------------------------------------

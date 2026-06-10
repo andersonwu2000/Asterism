@@ -97,9 +97,39 @@ def parse_classify(json_text: str) -> tuple[ClassifyPlan | None, str]:
 # Verify (semantic checks before commit)
 # ---------------------------------------------------------------------
 
-def verify_classify(plan: ClassifyPlan, kept_slugs: set[str]) -> str:
+# mathlib's `linter.style.longFile` warns at 1500 lines — oversize files are
+# a PR blocker, and a cleanup-time file-split would be the hairiest possible
+# stage (move decls + rewire imports + consumers). Root-cause instead: cap the
+# file size at CLASSIFY time so the giant file is never born. The budget is on
+# the SOURCE-line estimate (sum of the decls' proof-file line counts, which
+# overcounts a little — each L_ file carries its own import header); polish
+# later adds docstrings/variables (~15%), so 1100 estimated lands well under
+# 1500 final. Born from BT's Equidecomp.lean: 147 decls / 3568 lines in one
+# classify-planned file (2026-06-11).
+CLASSIFY_FILE_LINE_BUDGET = 1100
+
+
+def _decl_line_counts(workspace, problem: str,
+                      slugs: "set[str] | list[str]") -> "dict[str, int]":
+    """{slug: line count of its proof file} — the classify size estimate.
+    A missing proof file counts 0 (other gates own that failure)."""
+    from ..quality.librarian import inventory as _inv
+    proofs = db.problem_dir(workspace, problem) / "proofs"
+    out: dict[str, int] = {}
+    for slug in slugs:
+        p = _inv.resolve_ci(proofs, f"L_{slug}.lean")
+        try:
+            out[slug] = len(p.read_text(encoding="utf-8").splitlines()) if p else 0
+        except OSError:
+            out[slug] = 0
+    return out
+
+
+def verify_classify(plan: ClassifyPlan, kept_slugs: set[str],
+                    decl_lines: "dict[str, int] | None" = None) -> str:
     """Reject a layout plan that doesn't cover exactly the kept decls,
-    imports a non-Library module, or has an import cycle. "" on ok."""
+    imports a non-Library module, has an import cycle, or (when `decl_lines`
+    is given) plans a file over the size budget. "" on ok."""
     # Every kept decl placed exactly once; no stray slugs.
     placed: list[str] = [d for f in plan.files for d in f.decls]
     placed_set = set(placed)
@@ -126,6 +156,16 @@ def verify_classify(plan: ClassifyPlan, kept_slugs: set[str]) -> str:
     })
     if cycle:
         return f"import cycle: {' -> '.join(cycle)}"
+
+    # Size budget (mathlib longFile, see CLASSIFY_FILE_LINE_BUDGET above).
+    if decl_lines is not None:
+        for f in plan.files:
+            est = sum(decl_lines.get(d, 0) for d in f.decls)
+            if est > CLASSIFY_FILE_LINE_BUDGET:
+                return (f"{f.path}: ~{est} source lines "
+                        f"(budget {CLASSIFY_FILE_LINE_BUDGET}; mathlib's "
+                        f"longFile linter caps files at 1500) — split it "
+                        f"into sub-topic files")
     return ""
 
 
@@ -955,7 +995,11 @@ def compile_librarian_context(
         lines.append("")
         inv = _inv.build_inventory(conn, workspace, problem)
         deps_by_slug = {d.slug: d.deps for d in inv.decls}
-        lines.append("## Kept declarations (slug + deps + statement)")
+        # Source size per decl — the agent budgets file sizes with these
+        # (verify_classify enforces CLASSIFY_FILE_LINE_BUDGET per planned file).
+        sizes = _decl_line_counts(workspace, problem,
+                                  [r["slug"] for r in kept])
+        lines.append("## Kept declarations (slug + size + deps + statement)")
         lines.append("")
         for r in kept:
             slug = r["slug"]
@@ -963,6 +1007,7 @@ def compile_librarian_context(
                 or "—"
             stmt = " ".join(_read_statement(conn, problem, slug).split())
             lines.append(f"### {slug}")
+            lines.append(f"- ~{sizes.get(slug, 0)} source lines")
             lines.append(f"- deps: {deps}")
             lines.append(f"- `{stmt}`" if stmt else "- _(no statement)_")
             lines.append("")
@@ -1498,7 +1543,8 @@ def _run_structured(conn, *, problem, work_kind, workspace,
                               failure_detail=err)
     kept = {r["slug"] for r in db.library_decls_for(conn, problem,
                                                     lifecycle="deduped")}
-    verr = verify_classify(plan, kept)
+    verr = verify_classify(plan, kept,
+                           decl_lines=_decl_line_counts(workspace, problem, kept))
     if verr:
         return PipelineResult(outcome="failed",
                               failure_reason="librarian_verify_failed",
