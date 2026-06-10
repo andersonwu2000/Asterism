@@ -117,134 +117,6 @@ def test_code_spans_partition_round_trips() -> None:
 
 
 # ---------------------------------------------------------------------
-# code_token_invariant — the docstring (e) safety gate (P2a)
-# ---------------------------------------------------------------------
-
-def test_code_token_invariant_comment_only_change() -> None:
-    old = "import Mathlib\ntheorem foo : True := by trivial\n"
-    new = "import Mathlib\n/-- foo is true. -/\ntheorem foo : True := by trivial\n"
-    assert dedup.code_token_invariant(old, new) is True
-
-
-def test_code_token_invariant_detects_code_change() -> None:
-    old = "theorem foo : True := by trivial\n"
-    new = "/-- doc -/\ntheorem foo : True := by simp\n"   # tactic changed
-    assert dedup.code_token_invariant(old, new) is False
-
-
-def test_code_token_invariant_ignores_whitespace_in_comments() -> None:
-    old = "theorem foo : True := by trivial\n"
-    new = "theorem foo : True := by trivial  -- note\n\n"
-    assert dedup.code_token_invariant(old, new) is True
-
-
-# ---------------------------------------------------------------------
-# file_cleanup_docstrings — (e) whole-file docstring pass with retry (P2a)
-# ---------------------------------------------------------------------
-
-def _setup_docstring(tmp_path, rel, content, *, prompt=True):
-    if prompt:
-        pd = tmp_path / "Tooling" / "prompts" / "librarian"
-        pd.mkdir(parents=True, exist_ok=True)
-        (pd / "docstring.md").write_text("polish docstrings", encoding="utf-8")
-    p = tmp_path / rel
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content, encoding="utf-8")
-    return p
-
-
-def _fake_spawn(monkeypatch, responses):
-    """Patch agent.spawn_llm to write responses[i] (str|None) as annotated.lean
-    on the i-th call; returns the call counter dict."""
-    from Tooling import agent
-    calls = {"n": 0}
-
-    def _spawn(*, kind, prompt_path, problem_dir, attempts_dir, session_id):
-        i = calls["n"]
-        calls["n"] += 1
-        if i < len(responses) and responses[i] is not None:
-            (attempts_dir / "annotated.lean").write_text(
-                responses[i], encoding="utf-8")
-        return 0
-    monkeypatch.setattr(agent, "spawn_llm", _spawn)
-    return calls
-
-
-_ORIG = "import Mathlib\ntheorem foo : True := by trivial\n"
-_DOC = "import Mathlib\n/-- foo is true. -/\ntheorem foo : True := by trivial\n"
-
-
-def test_file_cleanup_docstrings_success(tmp_path, monkeypatch) -> None:
-    rel = "Library/P/F.lean"
-    _setup_docstring(tmp_path, rel, _ORIG)
-    _fake_spawn(monkeypatch, [_DOC])
-    monkeypatch.setattr(dedup, "_build_file_copy_isolated",
-                        lambda ws, txt, **k: (True, ""))
-    assert dedup.file_cleanup_docstrings(tmp_path, "p", rel, ["foo"]) is True
-    assert (tmp_path / rel).read_text(encoding="utf-8") == _DOC
-
-
-def test_file_cleanup_docstrings_rejects_code_change(tmp_path, monkeypatch) -> None:
-    rel = "Library/P/F.lean"
-    _setup_docstring(tmp_path, rel, _ORIG)
-    bad = "import Mathlib\ntheorem foo : True := by simp\n"     # code touched
-    calls = _fake_spawn(monkeypatch, [bad, bad, bad])
-    monkeypatch.setattr(dedup, "_build_file_copy_isolated",
-                        lambda ws, txt, **k: (True, ""))
-    assert dedup.file_cleanup_docstrings(
-        tmp_path, "p", rel, ["foo"], max_retries=2) is False
-    assert (tmp_path / rel).read_text(encoding="utf-8") == _ORIG   # untouched
-    assert calls["n"] == 3                                         # retried
-
-
-def test_file_cleanup_docstrings_build_fail_keeps_original(tmp_path, monkeypatch) -> None:
-    rel = "Library/P/F.lean"
-    _setup_docstring(tmp_path, rel, _ORIG)
-    _fake_spawn(monkeypatch, [_DOC, _DOC, _DOC])
-    monkeypatch.setattr(dedup, "_build_file_copy_isolated",
-                        lambda ws, txt, **k: (False, "parse error"))
-    assert dedup.file_cleanup_docstrings(
-        tmp_path, "p", rel, ["foo"], max_retries=2) is False
-    assert (tmp_path / rel).read_text(encoding="utf-8") == _ORIG
-
-
-def test_file_cleanup_docstrings_retry_then_success(tmp_path, monkeypatch) -> None:
-    rel = "Library/P/F.lean"
-    _setup_docstring(tmp_path, rel, _ORIG)
-    bad = "import Mathlib\ntheorem foo : True := by simp\n"
-    _fake_spawn(monkeypatch, [bad, _DOC])           # 1st rejected, 2nd accepted
-    monkeypatch.setattr(dedup, "_build_file_copy_isolated",
-                        lambda ws, txt, **k: (True, ""))
-    assert dedup.file_cleanup_docstrings(
-        tmp_path, "p", rel, ["foo"], max_retries=2) is True
-    assert (tmp_path / rel).read_text(encoding="utf-8") == _DOC
-
-
-def test_file_cleanup_docstrings_noop_when_prompt_absent(tmp_path, monkeypatch) -> None:
-    rel = "Library/P/F.lean"
-    _setup_docstring(tmp_path, rel, _ORIG, prompt=False)     # no prompt file
-    called = _fake_spawn(monkeypatch, [_DOC])
-    assert dedup.file_cleanup_docstrings(tmp_path, "p", rel, ["foo"]) is False
-    assert called["n"] == 0                                  # never spawned
-    assert (tmp_path / rel).read_text(encoding="utf-8") == _ORIG
-
-
-def test_file_cleanup_docstrings_noop_when_unchanged(tmp_path, monkeypatch) -> None:
-    # agent returns the file verbatim → nothing to do, no write, no build.
-    rel = "Library/P/F.lean"
-    _setup_docstring(tmp_path, rel, _ORIG)
-    _fake_spawn(monkeypatch, [_ORIG])
-    built = {"n": 0}
-
-    def _b(ws, txt, **k):
-        built["n"] += 1
-        return (True, "")
-    monkeypatch.setattr(dedup, "_build_file_copy_isolated", _b)
-    assert dedup.file_cleanup_docstrings(tmp_path, "p", rel, ["foo"]) is False
-    assert built["n"] == 0                                   # skipped the build
-
-
-# ---------------------------------------------------------------------
 # proof simplification — (c) per-decl, marked-only, session-retry (P2b)
 # ---------------------------------------------------------------------
 
@@ -994,22 +866,6 @@ def _setup_var(tmp_path, rel, content, *, prompt="variable_extract.md"):
     p.write_text(content, encoding="utf-8")
 
 
-def _fake_var_spawn(monkeypatch, outputs):
-    """Patch agent.spawn_llm to write outputs[i] (str|None) as refactored.lean."""
-    from Tooling import agent
-    calls = {"n": 0}
-
-    def _spawn(*, kind, prompt_path, problem_dir, attempts_dir, session_id):
-        i = calls["n"]
-        calls["n"] += 1
-        o = outputs[i] if i < len(outputs) else None
-        if o is not None:
-            (attempts_dir / "refactored.lean").write_text(o, encoding="utf-8")
-        return 0
-    monkeypatch.setattr(agent, "spawn_llm", _spawn)
-    return calls
-
-
 def _fake_typecheck(monkeypatch, results):
     seq = {"n": 0}
 
@@ -1019,44 +875,6 @@ def _fake_typecheck(monkeypatch, results):
         return results[i]
     monkeypatch.setattr(dedup, "_typecheck_capturing_types", _tc)
     return seq
-
-
-def test_file_cleanup_variables_noop_without_prompt(tmp_path) -> None:
-    rel = "Library/P/F.lean"
-    _setup_var(tmp_path, rel, "import Mathlib\n", prompt=None)   # no prompt file
-    d = _vdecl("foo", ": ∀ {K : Type*}, P")
-    assert dedup.file_cleanup_variables(tmp_path, "p", rel, [d]) is False
-
-
-def test_file_cleanup_variables_skip_when_idiomatic(tmp_path, monkeypatch) -> None:
-    rel = "Library/P/F.lean"
-    _setup_var(tmp_path, rel, "import Mathlib\n")
-    spy = _fake_var_spawn(monkeypatch, [])
-    d = _vdecl("foo", "(a : T) : P")            # not prenex, single decl → nothing
-    assert dedup.file_cleanup_variables(tmp_path, "p", rel, [d]) is False
-    assert spy["n"] == 0                         # pre-filter skipped before spawn
-
-
-def test_file_cleanup_variables_skip_when_no_snapshot(tmp_path, monkeypatch) -> None:
-    rel = "Library/P/F.lean"
-    _setup_var(tmp_path, rel, "import Mathlib\n")
-    spy = _fake_var_spawn(monkeypatch, ["whatever"])
-    _fake_typecheck(monkeypatch, [(False, "snapshot build broke", {})])
-    d = _vdecl("foo", ": ∀ {K : Type*}, P")
-    assert dedup.file_cleanup_variables(tmp_path, "p", rel, [d]) is False
-    assert spy["n"] == 0                         # never spawned without a baseline
-
-
-def test_file_cleanup_variables_success(tmp_path, monkeypatch) -> None:
-    rel = "Library/P/F.lean"
-    _setup_var(tmp_path, rel, "import Mathlib\n-- orig\n")
-    d = _vdecl("foo", ": ∀ {K : Type*} [Field K], P")
-    new = "import Mathlib\nvariable {K : Type*} [Field K]\n-- refactored\n"
-    _fake_var_spawn(monkeypatch, [new])
-    _fake_typecheck(monkeypatch, [(True, "", {d.fqn: "T"}),    # snapshot
-                                  (True, "", {d.fqn: "T"})])   # post: same type
-    assert dedup.file_cleanup_variables(tmp_path, "p", rel, [d]) is True
-    assert (tmp_path / rel).read_text(encoding="utf-8") == new
 
 
 def _json_info(data):
@@ -1095,18 +913,6 @@ def test_parse_check_output_collects_errors() -> None:
     out = json.dumps({"severity": "error", "data": "unknown identifier 'baz'"})
     types, errs = dedup._parse_check_output(out, ["L.A.foo"])
     assert types == {} and errs == ["unknown identifier 'baz'"]
-
-
-def test_file_cleanup_variables_reverts_on_sig_change(tmp_path, monkeypatch) -> None:
-    rel = "Library/P/F.lean"
-    original = "import Mathlib\n-- orig\n"
-    _setup_var(tmp_path, rel, original)
-    d = _vdecl("foo", ": ∀ {K : Type*}, P")
-    _fake_var_spawn(monkeypatch, ["v1\n", "v2\n", "v3\n"])     # 1 + 2 retries
-    _fake_typecheck(monkeypatch, [(True, "", {d.fqn: "T"})]    # snapshot
-                    + [(True, "", {d.fqn: "CHANGED"})] * 3)    # type drifts each try
-    assert dedup.file_cleanup_variables(tmp_path, "p", rel, [d]) is False
-    assert (tmp_path / rel).read_text(encoding="utf-8") == original   # kept
 
 
 # ---------------------------------------------------------------------

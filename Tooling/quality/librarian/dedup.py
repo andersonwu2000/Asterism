@@ -278,23 +278,6 @@ def _code_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
-def _code_tokens(text: str) -> "list[str]":
-    """Whitespace-split tokens of the CODE regions only (comments stripped via
-    `_code_spans`). The basis for the docstring (e) pass's safety gate: a pure
-    doc-comment edit leaves this list identical."""
-    return " ".join(text[s:e] for s, e in _code_spans(text)).split()
-
-
-def code_token_invariant(old: str, new: str) -> bool:
-    """True iff `old` and `new` have identical CODE content (comments aside) —
-    i.e. the edit ONLY touched comments. The whole-file docstring pass's safety
-    net (§13 (e), §3 non-code-token diff): an agent that merely adds/fixes doc
-    comments leaves every code token untouched; ANY code change → reject (the
-    blind-rewrite-corruption guard, #91). Build is the second gate (a malformed
-    `/-- -/` still parses-breaks even with code unchanged)."""
-    return _code_tokens(old) == _code_tokens(new)
-
-
 def replace_token(text: str, old: str, new: str) -> tuple[str, int]:
     """Replace whole-token occurrences of `old` with `new`, in CODE regions
     only. `old` may be a bare name (`col_sum_collapse`) or a dotted FQN
@@ -1706,96 +1689,6 @@ def _decl_from_fqn(fqn: str, by_fqn: "dict[str, _Decl]") -> _Decl:
 
 
 # ---------------------------------------------------------------------
-# P2a — docstring polish (§13 (e) file-cleanup, whole-file)
-#
-# After a file's per-decl passes (dedup), one agent rewrites the WHOLE file
-# adding/fixing decl docstrings + a module note. Two gates: code-token
-# invariance (`code_token_invariant` — only comments may change, the #91
-# blind-rewrite guard) then a whole-file isolate build (`_build_file_copy_
-# isolated` — a malformed `/-- -/` still parse-breaks with code unchanged).
-# Build failure feeds the lake error back and re-spawns up to a threshold;
-# exhaustion keeps the original file (decline = safe no-op on the green
-# baseline). Comment-only, so it never changes a signature → no consumer
-# rewrite (no step (d)).
-# ---------------------------------------------------------------------
-
-_DOCSTRING_PROMPT = "docstring.md"
-_DOCSTRING_MAX_RETRIES = 2
-
-
-def _docstring_context(workspace: Path, problem: str, rel: str,
-                       decl_names: "list[str]", prev_error: str = "") -> str:
-    """Per-file context for the docstring agent: the module, its declarations,
-    the verbatim current file, and (on retry) the previous build error to fix."""
-    try:
-        body = (workspace / rel).read_text(encoding="utf-8")
-    except OSError:
-        body = ""
-    lines = [
-        f"# Docstring polish — {problem} — `{rel}`", "",
-        f"Module: `{_mod_of_rel(rel)}`.",
-        f"Declarations: {', '.join(decl_names) or '(none)'}", "",
-        "## Current file (reproduce ALL code verbatim — only doc comments "
-        "may change)", "", "```lean", body.rstrip(), "```", "",
-    ]
-    if prev_error:
-        lines += ["## Your previous attempt failed — fix and retry", "",
-                  "```", prev_error[-1500:], "```", ""]
-    return "\n".join(lines) + "\n"
-
-
-def file_cleanup_docstrings(workspace: Path, problem: str, target_file: str,
-                            decl_names: "list[str]", *,
-                            max_retries: int = _DOCSTRING_MAX_RETRIES) -> bool:
-    """§13 (e) docstring pass for ONE file. Spawn → code-token-invariance gate
-    → whole-file isolate build → on fail feed the error & re-spawn (≤
-    max_retries) → exhaustion keeps the original. Writes `target_file` in place
-    on success. Returns whether the file changed. No-op (False) if the prompt
-    is absent (lets the chain enable P2 before the prompt is finalised)."""
-    from ... import agent
-    prompt_path = workspace / "Tooling" / "prompts" / "librarian" / _DOCSTRING_PROMPT
-    if not prompt_path.exists():
-        return False
-    try:
-        original = (workspace / target_file).read_text(encoding="utf-8")
-    except OSError:
-        return False
-    problem_dir = workspace.joinpath("Problems", *problem.split("."))
-    leaf = target_file.split("/")[-1]
-    prev_error = ""
-    for attempt in range(max_retries + 1):
-        attempts = agent.attempts_dir_for(workspace, agent.new_pipeline_id())
-        (attempts / "Context.md").write_text(
-            _docstring_context(workspace, problem, target_file, decl_names,
-                               prev_error), encoding="utf-8")
-        rc = agent.spawn_llm(kind="librarian", prompt_path=prompt_path,
-                             problem_dir=problem_dir, attempts_dir=attempts,
-                             session_id=agent.new_pipeline_id())
-        out = attempts / "annotated.lean"
-        if rc != 0 or not out.exists():
-            prev_error = "no annotated.lean was produced"
-            continue
-        new_text = out.read_text(encoding="utf-8")
-        if new_text.strip() == original.strip():
-            return False                          # nothing to add — clean no-op
-        if not code_token_invariant(original, new_text):
-            prev_error = ("you changed CODE — only doc comments (`/-- -/`, "
-                          "`--`, `/-! -/`) may change; reproduce every "
-                          "declaration's code verbatim")
-            continue
-        ok, detail = _build_file_copy_isolated(workspace, new_text)
-        if ok:
-            (workspace / target_file).write_text(new_text, encoding="utf-8")
-            print(f"[staged] docstring `{leaf}` — polished "
-                  f"(try {attempt + 1})", flush=True)
-            return True
-        prev_error = detail
-    print(f"[staged] docstring `{leaf}` — kept original "
-          f"(no green annotation in {max_retries + 1} tries)", flush=True)
-    return False
-
-
-# ---------------------------------------------------------------------
 # P2b — proof simplification (§13 (c) decl-cleanup, marked-only per-decl)
 #
 # Whole-proof rewrite is too expensive to attempt on every decl, so a per-file
@@ -1973,10 +1866,6 @@ def decl_cleanup_simplify_file(workspace: Path, problem: str, target_file: str,
 # files with nothing to un-∀ and no shared binders.
 # ---------------------------------------------------------------------
 
-_VARIABLE_PROMPT = "variable_extract.md"
-_VARIABLE_OUTPUT = "refactored.lean"
-_VARIABLE_MAX_RETRIES = 2
-
 
 def _bracket_groups(region: str) -> "list[str]":
     """Top-level `{..}` / `[..]` / `(..)` binder atoms in `region`, normalized.
@@ -2110,32 +1999,6 @@ def _typecheck_capturing_types(workspace: Path, file_text: str,
         return False, "could not read #check output for every declaration", types
     detail = "" if ok else ("\n\n".join(errs)[-2000:] or run.output[-2000:])
     return ok, detail, types
-
-
-def _variable_context(workspace: Path, problem: str, rel: str,
-                      decl_names: "list[str]", shared: "list[str]",
-                      prev_error: str = "") -> str:
-    """Per-file context for the variable-extraction agent: module, declarations,
-    the mechanically-detected shared binders (hoist hints), the verbatim file,
-    and (on retry) the previous failure to fix."""
-    try:
-        body = (workspace / rel).read_text(encoding="utf-8")
-    except OSError:
-        body = ""
-    lines = [
-        f"# Variable extraction — {problem} — `{rel}`", "",
-        f"Module: `{_mod_of_rel(rel)}`.",
-        f"Declarations: {', '.join(decl_names) or '(none)'}", "",
-        "Binders detected as shared across this file (candidates to hoist into a "
-        "`variable` block):", "",
-    ]
-    lines += ([f"- `{a}`" for a in shared]
-              if shared else ["- (none detected — focus on un-∀)"])
-    lines += ["", "## Current file", "", "```lean", body.rstrip(), "```", ""]
-    if prev_error:
-        lines += ["## Your previous attempt failed — fix and retry", "",
-                  "```", prev_error[-1500:], "```", ""]
-    return "\n".join(lines) + "\n"
 
 
 def _build_with_output(workspace: Path, content: str, *, prefix: str,
@@ -2508,71 +2371,6 @@ def file_cleanup_strip_framework_comments(workspace: Path, problem: str,
     print(f"[staged] strip-fw-comments `{target_file.split('/')[-1]}` — "
           f"removed {stripped} framework comment line(s)", flush=True)
     return True
-
-
-def file_cleanup_variables(workspace: Path, problem: str, target_file: str,
-                           decls_in_file: "list[_Decl]", *,
-                           max_retries: int = _VARIABLE_MAX_RETRIES) -> bool:
-    """§13 (e) variable-extraction pass for ONE file. Pre-filter (skip if nothing
-    to un-∀ and no shared binders) → snapshot decl types → spawn → #check gate
-    (proof builds AND every decl's elaborated type unchanged) → on fail feed the
-    error & re-spawn (≤ max_retries) → exhaustion keeps the original. Writes
-    `target_file` in place on success. Returns whether the file changed. No-op
-    (False) if the prompt is absent, nothing to do, or the snapshot can't be
-    read (don't risk an unverifiable edit)."""
-    from ... import agent
-    prompt_path = workspace / "Tooling" / "prompts" / "librarian" / _VARIABLE_PROMPT
-    if not prompt_path.exists() or not decls_in_file:
-        return False
-    leaf = target_file.split("/")[-1]
-    shared = _shared_binders(decls_in_file)
-    if not shared and not any(_is_prenex(d.sig) for d in decls_in_file):
-        return False                          # already idiomatic, nothing shared
-    try:
-        original = (workspace / target_file).read_text(encoding="utf-8")
-    except OSError:
-        return False
-    fqns = [d.fqn for d in decls_in_file]
-    ok0, _d0, base_types = _typecheck_capturing_types(workspace, original, fqns)
-    if not ok0:
-        print(f"[staged] variables `{leaf}` — skip (no type snapshot)", flush=True)
-        return False
-    decl_names = [d.name for d in decls_in_file]
-    problem_dir = workspace.joinpath("Problems", *problem.split("."))
-    prev_error = ""
-    for attempt in range(max_retries + 1):
-        attempts = agent.attempts_dir_for(workspace, agent.new_pipeline_id())
-        (attempts / "Context.md").write_text(
-            _variable_context(workspace, problem, target_file, decl_names,
-                              shared, prev_error), encoding="utf-8")
-        rc = agent.spawn_llm(kind="librarian", prompt_path=prompt_path,
-                             problem_dir=problem_dir, attempts_dir=attempts,
-                             session_id=agent.new_pipeline_id())
-        out = attempts / _VARIABLE_OUTPUT
-        if rc != 0 or not out.exists():
-            prev_error = f"no {_VARIABLE_OUTPUT} was produced"
-            continue
-        new_text = out.read_text(encoding="utf-8")
-        if new_text.strip() == original.strip():
-            return False                      # already idiomatic — clean no-op
-        ok, detail, new_types = _typecheck_capturing_types(
-            workspace, new_text, fqns)
-        if not ok:
-            prev_error = detail
-            continue
-        changed = [f for f in fqns if base_types.get(f) != new_types.get(f)]
-        if changed:
-            prev_error = ("the elaborated type changed for: "
-                          + ", ".join(f.rsplit(".", 1)[-1] for f in changed)
-                          + " — restructure the spelling, never the type")
-            continue
-        (workspace / target_file).write_text(new_text, encoding="utf-8")
-        print(f"[staged] variables `{leaf}` — extracted (try {attempt + 1})",
-              flush=True)
-        return True
-    print(f"[staged] variables `{leaf}` — kept original "
-          f"(no green refactor in {max_retries + 1} tries)", flush=True)
-    return False
 
 
 # ---------------------------------------------------------------------
