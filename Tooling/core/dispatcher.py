@@ -939,8 +939,38 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
         # the batch is now terminal, enqueue a single Strategist with
         # trigger derivation → `inject_batch_done` (via the
         # `unacknowledged_inject_batches` ratchet). Infra and moot
-        # outcomes do NOT advance the batch (Forward retries handle
-        # infra internally; moot = no real attempt happened).
+        # outcomes do NOT advance the batch (moot = no real attempt
+        # happened; infra = re-enqueued below).
+        #
+        # Infra failure that escapes the in-pipeline retries would
+        # otherwise wedge the whole problem: this queue row is already
+        # consumed, outcome stays NULL, so `inject_batch_done` can
+        # never fire AND every Strategist wake on the problem is
+        # suppressed by the in-flight-batch NOT EXISTS clause (T0 / T1
+        # / T4 alike — see `db.problems_needing_t0/_t1` and
+        # `db.problems_stalled`). Nothing re-creates the Forward until
+        # daemon restart (recovery's NULL-outcome re-enqueue). Mirror
+        # the Strategist infra re-enqueue below; the `consec_fast_
+        # fails` cap (10) and per-kind quota cooldown bound persistent
+        # breakage exactly as they do there. Skip when the decision
+        # already linked a produced goal (sorry-bearing lemma landed
+        # before the failure): outcome will arrive via `propagate_
+        # inject_outcome_from_goal` when the lemma terminates, and
+        # re-spawning would mint a second lemma (same guard as
+        # recovery's in-flight Inject re-enqueue).
+        if decision_id is not None and is_infra:
+            row = conn.execute(
+                "SELECT produced_goal_id FROM strategist_decisions"
+                " WHERE id = ?", (decision_id,),
+            ).fetchone()
+            if row is not None and row["produced_goal_id"] is None:
+                db.enqueue(conn, kind="Forward", target_id=target_id,
+                           target_kind=target_kind, priority=20,
+                           decision_id=decision_id)
+                print(f"[forward-retry] re-queued {target_kind}="
+                      f"{target_id} decision_id={decision_id} after "
+                      f"{failure_reason}", flush=True)
+            return
         if (decision_id is not None
                 and not is_infra
                 and outcome

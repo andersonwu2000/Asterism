@@ -1166,3 +1166,72 @@ def test_cascade_strategist_non_infra_failure_does_not_re_enqueue(
         "SELECT COUNT(*) c FROM queue WHERE kind='Strategist'"
     ).fetchone()
     assert rows["c"] == 0
+
+
+# ---------------------------------------------------------------------
+# cascade_one Forward infra failure re-enqueue (batch-wedge fix)
+# ---------------------------------------------------------------------
+
+def test_cascade_forward_infra_failure_re_enqueues(
+    conn: sqlite3.Connection, capsys: pytest.CaptureFixture,
+) -> None:
+    """An infra failure on an Inject Forward consumes the queue row
+    WITHOUT filling the decision outcome (by design — no real attempt
+    happened). Without a re-enqueue the batch can never complete: the
+    NULL outcome suppresses every Strategist wake on the problem (T0 /
+    T1 / T4 all carry the in-flight-batch NOT EXISTS clause) and
+    `inject_batch_done` never fires — the problem wedges until a daemon
+    restart. cascade must re-enqueue the Forward with the same
+    decision_id, mirroring the Strategist infra re-enqueue."""
+    _insert_goal(conn, slug="main", origin="root", status="attempting")
+    [rid] = _seed_inject_batch_rows(conn, batch_id="batch-fwd-infra",
+                                    count=1)
+
+    cascade_one(conn, pipeline_id="pid-fwd-infra", kind="Forward",
+                target_id="p", target_kind="Problem",
+                outcome="failed", failure_reason="spawn_fast_fail",
+                decision_id=rid)
+
+    rows = conn.execute(
+        "SELECT target_id, target_kind, priority, decision_id FROM queue"
+        " WHERE kind='Forward'").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["target_id"] == "p"
+    assert rows[0]["target_kind"] == "Problem"
+    assert int(rows[0]["decision_id"]) == rid
+    # Outcome must STAY NULL — the retried attempt fills it; filling
+    # here would fire inject_batch_done before the lemma exists.
+    r = conn.execute(
+        "SELECT outcome FROM strategist_decisions WHERE id = ?",
+        (rid,)).fetchone()
+    assert r["outcome"] is None
+    assert "[forward-retry]" in capsys.readouterr().out
+
+
+def test_cascade_forward_infra_with_produced_goal_no_re_enqueue(
+    conn: sqlite3.Connection,
+) -> None:
+    """If the Forward already linked `produced_goal_id` (sorry-bearing
+    lemma committed before the infra failure), the outcome arrives via
+    `propagate_inject_outcome_from_goal` when the lemma terminates —
+    re-spawning would mint a second lemma onto the same decision row.
+    Guard mirrors recovery's in-flight Inject re-enqueue."""
+    _insert_goal(conn, slug="main", origin="root", status="attempting")
+    lemma = _insert_goal(conn, slug="s1_lemma", status="open")
+    [rid] = _seed_inject_batch_rows(conn, batch_id="batch-fwd-prod",
+                                    count=1)
+    db.set_inject_decision_produced_goal(conn, rid, lemma)
+
+    cascade_one(conn, pipeline_id="pid-fwd-infra2", kind="Forward",
+                target_id="p", target_kind="Problem",
+                outcome="failed", failure_reason="quota_exhausted",
+                decision_id=rid)
+
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Forward'").fetchone()
+    assert q["n"] == 0
+    # Outcome stays NULL here too — it belongs to the lemma's terminal.
+    r = conn.execute(
+        "SELECT outcome FROM strategist_decisions WHERE id = ?",
+        (rid,)).fetchone()
+    assert r["outcome"] is None

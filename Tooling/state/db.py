@@ -1603,19 +1603,19 @@ def unacknowledged_inject_batches(conn: sqlite3.Connection,
 def problems_needing_t0(conn: sqlite3.Connection,
                         scope: str | None = None
                         ) -> list[tuple[str, int]]:
-    """Return [(problem_name, root_goal_id)] for problems with
-    `bootstrap_done=0` AND a non-terminal root goal. Caller is
-    responsible for the awaiting_human gate + in-flight Strategist
-    dedup. Root goal id is computed via the standard `origin='root'`
-    join.
+    """Return [(problem_name, root_goal_id)] for problems whose root
+    goal is `frozen` — the pre-first_launch state cli init writes
+    (Phase 5). Caller is responsible for the awaiting_human gate +
+    in-flight Strategist dedup. Root goal id is computed via the
+    standard `origin='root'` join.
 
-    The root-status gate matches T1's existing filter: Strategist has
-    nothing to bootstrap on a problem whose root is already
-    proved/shelved/disproved — common when Phase 2 was activated on
-    a workspace with pre-Phase-2 already-proved problems (their
-    bootstrap_done stays 0 from never having been Strategist'd).
-    Without this gate T0 would burn one Strategist spawn per such
-    problem on every fresh daemon start.
+    Filtering on `status='frozen'` (NOT on `bootstrap_done`) naturally
+    excludes terminal roots: pre-Phase-2 already-proved problems keep
+    `bootstrap_done=0` forever (never Strategist'd), and gating on that
+    column would burn one Strategist spawn per such problem on every
+    fresh daemon start. A root that is `open` without ever being
+    Strategist'd (legacy reset paths) is instead covered by T1's
+    NULL-`last_strategist_at` = ancient rule.
     """
     # In-flight Inject batch dedup: if Strategist's prior commit on this
     # problem produced Forward decisions still resolving (any batch row
