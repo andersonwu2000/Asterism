@@ -1406,8 +1406,8 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None):
         res = _dedup.run_staged_cleanup_file(
             workspace, problem, target_file, scope_index=scope_index,
             prior_renames=prior_renames, apply=True,
-            simplify=True, unused_args=True, variables=True,
-            strip_comments=True, docstring=True, rename=True)
+            simplify=True, unused_args=True,
+            strip_comments=True, polish=True, rename=True)
         rows = [r for r in db.library_decls_for(conn, problem, lifecycle="migrated")
                 if r["target_file"] == target_file]
         # P4 rename: record {old_fqn → new_fqn} so consumer files self-apply it,

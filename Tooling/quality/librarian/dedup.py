@@ -2576,6 +2576,129 @@ def file_cleanup_variables(workspace: Path, problem: str, target_file: str,
 
 
 # ---------------------------------------------------------------------
+# §13 (e) polish — one agentic, type-PRESERVING whole-file rewrite that merges
+# variable-extraction + docstrings + module docstring + mathlib style + local
+# (type-preserving) warning cleanup. Surface conformance only; semantic idiom
+# alignment is the separate `audit` stage, and name/signature changes are
+# `rename` / `unused_args` (type-CHANGING, consumer-impacting). Gate = build +
+# every decl's elaborated type unchanged (#check, the silent-statement-drift
+# guard) + clearable warnings reduced (retry feeding the residual warnings).
+# ---------------------------------------------------------------------
+
+_POLISH_PROMPT = "polish.md"
+_POLISH_OUTPUT = "polished.lean"
+_POLISH_MAX_RETRIES = 2
+# The warnings polish OWNS — type-preserving + local. `dupNamespace` (a naming /
+# namespace issue) and `unusedArguments` (signature-changing → consumer impact)
+# are audit / decide's job, never touched here.
+_POLISH_WARN_RE = re.compile(
+    r"warning:.*?(unused variable|exceeds the \d+ character|"
+    r"linter\.style|unnecessary)", re.I)
+
+
+def _polish_warnings(build_output: str) -> "list[str]":
+    """The clearable, type-preserving warnings polish is responsible for."""
+    return [m.group(0)[:160] for m in _POLISH_WARN_RE.finditer(build_output)]
+
+
+def _polish_context(workspace: Path, problem: str, rel: str,
+                    decl_names: "list[str]", prev_error: str = "") -> str:
+    """Per-file context for the polish agent: module, declarations, the verbatim
+    file, and (on retry) the failure / residual warnings to fix."""
+    try:
+        body = (workspace / rel).read_text(encoding="utf-8")
+    except OSError:
+        body = ""
+    lines = [
+        f"# PR-style polish — {problem} — `{rel}`", "",
+        f"Module: `{_mod_of_rel(rel)}`.",
+        f"Declarations: {', '.join(decl_names) or '(none)'}", "",
+        "## Current file", "", "```lean", body.rstrip(), "```", "",
+    ]
+    if prev_error:
+        lines += ["## Fix these and re-emit", "", "```", prev_error[-1800:],
+                  "```", ""]
+    return "\n".join(lines) + "\n"
+
+
+def file_cleanup_polish(workspace: Path, problem: str, target_file: str,
+                        decls_in_file: "list[_Decl]", *,
+                        max_retries: int = _POLISH_MAX_RETRIES) -> bool:
+    """§13 (e) PR-style polish for ONE file — merges variable-extraction +
+    docstrings + module docstring + mathlib style + local warning cleanup into a
+    single agentic, TYPE-PRESERVING whole-file rewrite. Snapshot decl types →
+    spawn → gate (builds AND every decl's elaborated type unchanged) → if
+    clearable warnings remain, retry feeding them; on a type/build failure retry
+    feeding the error. Keep the best green + type-safe version (fewest warnings),
+    else the original. Returns whether the file changed.
+
+    Type-preserving by contract: the #check snapshot rejects any silent statement
+    change an LLM might slip into a free-form rewrite (the #91 blind-rewrite
+    guard) — style/comments/structure may change, types never."""
+    from ... import agent
+    prompt_path = workspace / "Tooling" / "prompts" / "librarian" / _POLISH_PROMPT
+    if not prompt_path.exists() or not decls_in_file:
+        return False
+    leaf = target_file.split("/")[-1]
+    try:
+        original = (workspace / target_file).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    fqns = [d.fqn for d in decls_in_file]
+    ok0, _d0, base_types = _typecheck_capturing_types(workspace, original, fqns)
+    if not ok0:
+        print(f"[staged] polish `{leaf}` — skip (no type snapshot)", flush=True)
+        return False
+    decl_names = [d.name for d in decls_in_file]
+    problem_dir = workspace.joinpath("Problems", *problem.split("."))
+    prev_error = ""
+    best: "tuple[int, str] | None" = None       # (warning count, text)
+    for attempt in range(max_retries + 1):
+        attempts = agent.attempts_dir_for(workspace, agent.new_pipeline_id())
+        (attempts / "Context.md").write_text(
+            _polish_context(workspace, problem, target_file, decl_names,
+                            prev_error), encoding="utf-8")
+        rc = agent.spawn_llm(kind="librarian", prompt_path=prompt_path,
+                             problem_dir=problem_dir, attempts_dir=attempts,
+                             session_id=agent.new_pipeline_id())
+        out = attempts / _POLISH_OUTPUT
+        if rc != 0 or not out.exists():
+            prev_error = f"no {_POLISH_OUTPUT} was produced"
+            continue
+        new_text = out.read_text(encoding="utf-8")
+        if new_text.strip() == original.strip():
+            return False                          # already idiomatic — clean no-op
+        ok, detail, new_types = _typecheck_capturing_types(
+            workspace, new_text, fqns)
+        if not ok:
+            prev_error = detail
+            continue
+        changed = [f for f in fqns if base_types.get(f) != new_types.get(f)]
+        if changed:
+            prev_error = ("the elaborated type changed for: "
+                          + ", ".join(f.rsplit(".", 1)[-1] for f in changed)
+                          + " — polish spelling/comments/style, NEVER the type")
+            continue
+        warns = _polish_warnings(
+            _build_with_output(workspace, new_text, prefix="_polish_warn")[1])
+        if best is None or len(warns) < best[0]:
+            best = (len(warns), new_text)
+        if not warns:
+            break                                 # clean — done
+        prev_error = ("the rewrite still builds + types match, but these "
+                      "warnings remain — clear them:\n" + "\n".join(warns[:10]))
+    if best is None:
+        print(f"[staged] polish `{leaf}` — kept original "
+              f"(no green polish in {max_retries + 1} tries)", flush=True)
+        return False
+    n_warn, text = best
+    (workspace / target_file).write_text(text, encoding="utf-8")
+    print(f"[staged] polish `{leaf}` — applied ({n_warn} residual warning(s))",
+          flush=True)
+    return True
+
+
+# ---------------------------------------------------------------------
 # §13 (P4) rename — naming alignment to mathlib conventions
 # ---------------------------------------------------------------------
 # The LAST per-file stage (after docstring), on the final shape. Propose =
@@ -2742,10 +2865,9 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
                             scope_index: "list[tuple[str, str]] | None" = None,
                             prior_renames: "dict[str, str] | None" = None,
                             apply: bool = True, bridge: bool = True,
-                            docstring: bool = False,
                             strip_comments: bool = False,
-                            variables: bool = False,
                             unused_args: bool = False,
+                            polish: bool = False,
                             rename: bool = False,
                             simplify: bool = False) -> "dict":
     """§13 3c-2 per-file cleanup unit (the dispatcher's per-file work item).
@@ -2824,29 +2946,23 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
         unused_removed = file_cleanup_unused_args(
             workspace, problem, target_file, survivor_decls)
     _T["unused"] = _t()
-    # (e) variable extraction — un-∀ + hoist file-wide shared binders. Type-
-    # preserving (call-site-invariant), enforced by the #check gate. Runs BEFORE
-    # docstrings (structure first, then comments → no re-touch).
-    variabled = False
-    if variables and survivor_decls:
-        variabled = file_cleanup_variables(
-            workspace, problem, target_file, survivor_decls)
-    _T["variables"] = _t()
     # (e) strip framework-process `--` comments (entry_kind / sub-goal / Closer:
     # / combinator / (was: …)) migrate carried from the proof. Mechanical,
-    # comment-only. Before docstring polish so the agent sees a clean file.
+    # comment-only. Before polish so the agent sees a clean file.
     if strip_comments:
         file_cleanup_strip_framework_comments(workspace, problem, target_file)
-    # (e) file-cleanup — docstring polish on the (now refactored) file. Comment-
-    # only → no signature change. Own gates + retry; failure keeps the file.
-    docstringed = False
-    if docstring:
-        docstringed = file_cleanup_docstrings(
-            workspace, problem, target_file, [d.name for d in survivor_decls])
-    _T["docstring"] = _t()
-    # (P4) rename — LAST step, on the final shape: align kept survivors' names
-    # to mathlib conventions. Mechanical apply + per-file rebuild gate; consumer
-    # files self-apply via deferred-rewire (caller records {old_fqn:new_fqn}).
+    # (e) polish — ONE type-preserving agentic rewrite: variable extraction +
+    # docstrings + module docstring + mathlib style + local warning cleanup,
+    # under the #check type-invariant gate. Supersedes the separate variables +
+    # docstring passes. After the mechanical (c) passes, before rename.
+    polished = False
+    if polish and survivor_decls:
+        polished = file_cleanup_polish(
+            workspace, problem, target_file, survivor_decls)
+    _T["polish"] = _t()
+    # (P4) rename — LAST agentic step, on the polished shape: align kept
+    # survivors' names to mathlib conventions. Mechanical apply + per-file rebuild
+    # gate; consumers self-apply via deferred-rewire (caller records {old:new}).
     renamed: dict[str, str] = {}
     if rename and survivor_decls:
         renamed = file_cleanup_rename(
@@ -2857,17 +2973,15 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
           f"mark={_T['mark']-_T['0']:.0f}s dedup={_T['dedup']-_T['mark']:.0f}s "
           f"simplify={_T['simplify']-_T['dedup']:.0f}s "
           f"unused={_T['unused']-_T['simplify']:.0f}s "
-          f"variables={_T['variables']-_T['unused']:.0f}s "
-          f"docstring={_T['docstring']-_T['variables']:.0f}s "
-          f"rename={_T['rename']-_T['docstring']:.0f}s "
+          f"polish={_T['polish']-_T['unused']:.0f}s "
+          f"rename={_T['rename']-_T['polish']:.0f}s "
           f"total={_T['rename']-_T['0']:.0f}s", flush=True)
     return {"dropped": {x: Yd.fqn for x, Yd in r["drops"].items()},
             "merged": set(r["merged"]),
             "bridged": {x: Yd.fqn for x, Yd in r["bridged"]},
             "near": r["near"], "failed": r["failed"],
             "simplified": n_simplified, "unused_removed": unused_removed,
-            "variabled": variabled, "docstringed": docstringed,
-            "renamed": renamed}
+            "polished": polished, "renamed": renamed}
 
 
 def run_file_audit_dedup(workspace: Path, problem: str, *, apply: bool = False,
