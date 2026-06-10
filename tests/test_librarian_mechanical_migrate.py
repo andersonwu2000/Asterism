@@ -820,3 +820,94 @@ def test_uses_sorry_ignores_comments():
     assert not lib._uses_sorry("-- Builds sorry-free\ntheorem x : True := trivial")
     assert not lib._uses_sorry("/-- historically used sorry -/\ntheorem x : True := trivial")
     assert not lib._uses_sorry("theorem sorry_free : True := trivial")  # identifier prefix
+
+
+# ---------------------------------------------------------------------
+# Defs-decl extraction: section/variable context (stokes form_coord)
+# ---------------------------------------------------------------------
+
+_SECTIONED_DEFS = """import Mathlib
+
+open Foo
+
+namespace Problems.p
+
+variable {a : Type*}
+
+section S
+
+variable [Inhabited a] (x : a)
+
+noncomputable def inSection : a := x
+
+end S
+
+def afterSection : a := default
+
+end Problems.p
+"""
+
+
+def test_defs_decl_source_replays_section_variables():
+    # A Defs decl inside `section / variable … / end` loses its binders if
+    # sliced alone — auto-bound implicits drop the instance constraints →
+    # synthInstanceFailed at migrate build (stokes form_coord 2026-06-11).
+    out = lib._defs_decl_source(_SECTIONED_DEFS, "inSection")
+    assert "variable {a : Type*}" in out                  # namespace-level
+    assert "variable [Inhabited a] (x : a)" in out        # section-level
+    assert "noncomputable def inSection" in out
+    assert "end S" not in out                             # stray end trimmed
+    assert out.index("variable {a") < out.index("variable [Inhabited") \
+        < out.index("def inSection")                      # source order
+
+
+def test_defs_decl_source_scopes_die_at_end():
+    # A decl AFTER `end S` must NOT inherit the section's variables.
+    out = lib._defs_decl_source(_SECTIONED_DEFS, "afterSection")
+    assert "variable {a : Type*}" in out                  # still in scope
+    assert "Inhabited" not in out                         # died at `end S`
+    assert "def afterSection" in out
+    assert "end Problems.p" not in out                    # EOF tail trimmed
+
+
+def test_defs_decl_source_multiline_variable_block():
+    text = ("namespace Problems.p\n\nvariable\n  {E : Type*} [Zero E]\n"
+            "  {H : Type*}\n\ndef d : E := 0\n\nend Problems.p\n")
+    out = lib._defs_decl_source(text, "d")
+    assert "{E : Type*} [Zero E]" in out and "{H : Type*}" in out
+    assert out.rstrip().endswith("def d : E := 0")
+
+
+# ---------------------------------------------------------------------
+# cross-problem target_file ownership guard (stokes definition-tower)
+# ---------------------------------------------------------------------
+
+def test_run_migrate_refuses_file_owned_by_other_problem(conn, tmp_path):
+    # Two problems classified decls into the SAME Library file; the second
+    # migrate would clobber the first's committed content (whole-file write).
+    # Loud fail instead — merge/layout policy is a design decision.
+    tf = "Library/P/Shared.lean"
+    _seed_classified(conn, "lem_a", "True", tf, 0)
+    # the OTHER problem already migrated into tf
+    conn.execute("INSERT INTO problems (name, manifest_path, created_at, "
+                 "bootstrap_done) VALUES ('q','',?,1)", (db.now(),))
+    conn.commit()
+    g = db.insert_goal(conn, problem="q", slug="other",
+                       lean_path="Problems/q/proofs/L_other.lean",
+                       statement="True", origin="backward", kind="theorem")
+    conn.execute("UPDATE goals SET status='proved' WHERE id=?", (g,))
+    conn.commit()
+    db.upsert_library_decl(conn, problem="q", slug="other", source_goal_id=g)
+    db.set_library_verdict(conn, problem="q", slug="other", verdict="keep")
+    db.set_library_classification(conn, problem="q", slug="other",
+                                  target_file=tf, target_name="Library.P.Shared.other",
+                                  file_order=0)
+    db.mark_library_migrated(conn, problem="q", slug="other")
+    r = lib._run_migrate(
+        conn, problem="p", workspace=tmp_path, pipeline_id="pid",
+        target_file=tf, attempts_dir=tmp_path / ".a",
+        problem_dir=tmp_path / "Problems" / "p",
+        prompt_path=tmp_path / "x.md", whitelist=[])
+    assert r.outcome == "failed"
+    assert r.failure_reason == "librarian_file_owned_by_other"
+    assert "q" in r.failure_detail

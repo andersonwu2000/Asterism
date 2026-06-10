@@ -1691,20 +1691,100 @@ class _MechIntegrityError(Exception):
     from-scratch spawn (which would hide the corruption)."""
 
 
+def _variable_block_spans(defs_text: str) -> "list[tuple[int, int, str]]":
+    """Every file/section-level `variable` command in `defs_text` as
+    `(start_offset, end_offset, text)`. A command runs from its `variable`
+    keyword through its indented continuation lines (binders wrap; any line
+    starting with whitespace continues the command)."""
+    spans: list[tuple[int, int, str]] = []
+    lines = defs_text.splitlines(keepends=True)
+    pos = 0
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        if re.match(r"variable\b", ln.strip()):
+            start = pos
+            j = i + 1
+            block = ln
+            p2 = pos + len(ln)
+            while j < len(lines) and lines[j][:1] in (" ", "\t"):
+                block += lines[j]
+                p2 += len(lines[j])
+                j += 1
+            spans.append((start, p2, block.rstrip()))
+            pos = p2
+            i = j
+            continue
+        pos += len(ln)
+        i += 1
+    return spans
+
+
 def _defs_decl_source(defs_text: str, name: str) -> "str | None":
-    """The verbatim slice of `Defs.lean` declaring `name` — its keyword head
-    through to the next top-level declaration (or EOF). Defs decls have no
-    `proofs/L_<slug>.lean`; this gives them the same per-decl source every
-    other migratable decl has, so they relabel through the one mechanical
-    path instead of forcing the whole file to a cold from-scratch spawn."""
+    """A SELF-CONTAINED slice of `Defs.lean` declaring `name`: the decl's
+    keyword head through to the next top-level declaration / enclosing `end`,
+    PREPENDED with every `variable` command in scope at the decl's position.
+
+    A Defs decl authored inside `section X / variable {E …} [inst …] / end X`
+    references its binders through the section context — slicing the decl
+    alone loses them (auto-bound implicits then drop the instance constraints
+    → `synthInstanceFailed` at migrate build, stokes form_coord 2026-06-11)
+    and drags the stray `end X` along. Scope tracking: `variable` commands are
+    in scope from their position until the `end` that closes their enclosing
+    `section`/`namespace`; the wrapping namespace is re-created by the caller,
+    so only the variable lines (not `section`/`end` markers) are replayed.
+
+    Defs decls have no `proofs/L_<slug>.lean`; this gives them the same
+    per-decl source every other migratable decl has, so they relabel through
+    the one mechanical path instead of forcing a cold from-scratch spawn."""
     from ..quality.librarian.inventory import _DEFS_DECL_RE
     matches = list(_DEFS_DECL_RE.finditer(defs_text))
     for i, m in enumerate(matches):
-        if m.group(2) == name:
-            start = m.start()
-            end = (matches[i + 1].start()
-                   if i + 1 < len(matches) else len(defs_text))
-            return defs_text[start:end].rstrip()
+        if m.group(2) != name:
+            continue
+        start = m.start()
+        end = (matches[i + 1].start()
+               if i + 1 < len(matches) else len(defs_text))
+        body = defs_text[start:end]
+        # Trim trailing `end <X>` closers that the next-decl/EOF cut dragged
+        # in — they close scopes the slice does not open.
+        body_lines = body.rstrip().splitlines()
+        while body_lines and (not body_lines[-1].strip()
+                              or re.match(r"\s*end\b", body_lines[-1])):
+            body_lines.pop()
+        body = "\n".join(body_lines).rstrip()
+        # `variable` commands in scope at the decl: declared before it, and
+        # not closed by an `end` between their position and the decl. Track
+        # scope depth: each `section`/`namespace` line pushes, `end` pops —
+        # a variable at depth d dies when depth drops below d.
+        in_scope: list[str] = []
+        var_spans = _variable_block_spans(defs_text)
+        depth = 0
+        var_depth: dict[int, int] = {}      # span index -> depth at decl
+        events: list[tuple[int, str, int]] = []
+        for mm in re.finditer(r"^[ \t]*(section\b|namespace\b|end\b)",
+                              defs_text, re.M):
+            events.append((mm.start(), mm.group(1).strip(), 0))
+        for k, (s, _e, _t) in enumerate(var_spans):
+            events.append((s, "var", k))
+        events.sort()
+        alive: dict[int, int] = {}          # span index -> birth depth
+        for off, kind, k in events:
+            if off >= start:
+                break
+            if kind in ("section", "namespace"):
+                depth += 1
+            elif kind == "end":
+                depth -= 1
+                for vk, bd in list(alive.items()):
+                    if bd > depth:
+                        del alive[vk]
+            else:
+                alive[k] = depth
+        in_scope = [var_spans[k][2] for k in sorted(alive)]
+        if in_scope:
+            return ("\n".join(in_scope) + "\n\n" + body).rstrip()
+        return body
     return None
 
 
@@ -2292,6 +2372,26 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_file,
     target_path = workspace / target_file
     target_module = _library_module_of(target_file)
     defs_names = _inv.defs_decls(workspace, problem)
+
+    # Cross-problem ownership guard: migrate WRITES target_path whole — if
+    # another problem's decls already live in this file (definition-tower
+    # obligations independently classifying their shared Defs def into the
+    # same natural path, stokes form_coord 2026-06-11), committing would
+    # silently CLOBBER the owner's decls while its DB rows keep pointing at
+    # vanished content. Loud fail; the layout/merge policy for shared files
+    # is a design decision, not something to improvise here.
+    owner = conn.execute(
+        "SELECT DISTINCT problem FROM library_decls WHERE target_file = ? "
+        "AND problem != ? AND lifecycle IN ('migrated', 'cleaned')",
+        (target_file, problem)).fetchone()
+    if owner is not None:
+        return PipelineResult(
+            outcome="failed", failure_reason="librarian_file_owned_by_other",
+            failure_detail=(
+                f"{target_file} already holds migrated decls of "
+                f"{owner['problem']} — committing would clobber them. "
+                f"Re-classify this problem's decls to a different file, or "
+                f"cite the owner's migrated decls instead of re-emitting."))
 
     # Phase 1 — mechanical relabel pre-pass (librarian_plan §4): best-effort
     # assemble the whole file by pure relabel (no LLM). file↔DB drift raises
