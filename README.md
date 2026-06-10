@@ -5,6 +5,9 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-09
+Hardened the librarian's deduplication pipeline by fixing same-file recall, requiring cross-file drops to have a surviving declaration in the dropped declaration's import closure, rebuilding stale oleans before correctness gates, and retiring the legacy flat pair-marker path. Advanced the P2/P3 cleanup stages with mechanical removal of unused Decidable arguments, proof simplification and docstring polish that strips framework-process jargon and comments from migrated proofs, and a more robust variable-extraction pass that un-prenexes and hoists shared binders with section grouping and per-stage timing. Also improved orchestration reliability: the dispatcher now re-fires the bridge gate when re-cleaning already-promoted problems, and the watcher correctly labels and retires cleanup sub-agents to fix an active-agent over-count.
+
 ### 2026-06-08
 Asterism's deduplication and librarian subsystems received substantial reliability and performance work, including a fix for mis-splitting quantifier-bearing conclusions, repair of a `real_mods` regression that had been crashing bridges, and a corpus-classification optimization that cut runtime from 240s to roughly 1s by reading the cross-problem corpus only once. The librarian's per-file dispatcher was refactored into a staged per-declaration cleanup pipeline with topological file ordering, isolated typecheck helpers, and a gated hierarchy for bridge handling, while a ruff F821 lint gate was added to guard against undefined-name regressions.
 
