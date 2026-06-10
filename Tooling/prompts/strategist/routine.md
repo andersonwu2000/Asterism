@@ -4,7 +4,7 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
 
 ## What to do
 
-1. **Read Context.md** (TREE, active goals, recent failures, standing directive, LESSONS).
+1. **Read Context.md** (TREE, active goals, recent decisions, standing directive).
 
 2. **Re-derive and organize the proof's overall architecture.** Don't paraphrase the Lean statement — write the proof outline a mathematician would.
 

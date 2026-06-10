@@ -274,7 +274,7 @@ Pending review failure / strategies / ancestors  ← pending_review only
 Completed Inject batches                 ← Phase 2.5：任何 trigger、有未 ack 的 batch 就顯
 Pending reopen-promises                  ← G2：trigger=inject_batch_done 且 batch_id link 完整時、只列 promised 那筆 shelved goal
 Active goals                             ← 非 terminal status 的 goal 速覽
-Failure replay                           ← 最近 Strategist 自己決策 + outcome
+Recent decisions                         ← 最近 Strategist 自己決策 + outcome
 TREE                                     ← problem 樹狀 snapshot
 Manifest meta                            ← first_launch / amend-relevant 時
 ```

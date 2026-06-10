@@ -37,7 +37,7 @@ theorem <slug> : ... := by <tactic block>
 end Problems.<problem>
 ```
 
-Framework checks: forbidden-lemma grep + `lake env lean patch.lean` clean + non-empty `--` annotation present anywhere before the theorem. All three pass → proved.
+Framework checks: forbidden-lemma grep + `patch.lean` elaborates clean (framework verify) + non-empty `--` annotation present anywhere before the theorem. All three pass → proved.
 
 ## Decline
 

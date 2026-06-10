@@ -38,9 +38,9 @@ def render_prompt_template(text: str, *, is_postmortem: bool = False) -> str:
       - `{timeout_min}` — per-spawn wall-clock (WORKER_TIMEOUT_SEC for
         body prompts, POSTMORTEM_TIMEOUT_SEC for postmortems).
       - `{interval_min}` — Strategist T1 routine cadence (minutes;
-        `strategist.interval_min` config knob). Only strategist.md
-        uses this placeholder today; the substitution is a no-op for
-        other prompts.
+        `strategist.interval_min` config knob). Only the strategist
+        prompts (`strategist/*.md`) use this placeholder today; the
+        substitution is a no-op for other prompts.
     """
     timeout_sec = (POSTMORTEM_TIMEOUT_SEC if is_postmortem
                    else WORKER_TIMEOUT_SEC)

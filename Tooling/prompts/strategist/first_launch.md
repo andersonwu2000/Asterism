@@ -11,7 +11,7 @@ Time budget: {timeout_min} minutes. Tools: Read / Write / Edit / Grep / Bash(`py
    - Need prereq lemmas → `Inject(Forward, brief=...)`. Root stays `frozen` until `inject_batch_done` re-fires you; **don't `Inject(Backward, target=root)` in the same call** — wait for the Forward bricks to land.
    - Ready → `Inject(Backward, target_goal_id=<root_id>, brief=...)`.
 
-Solo `EmitDirective` is invalid — it closes the first-launch window without advancing root (~60 min idle until next routine).
+Solo `EmitDirective` is invalid — it closes the first-launch window without advancing root (~{interval_min} min idle until next routine).
 
 **Difficulty alone is not a reason to give up.** "Hard problem" / "Mathlib lacks X" / "would need many sub-lemmas" describe work, not stop signs.
 

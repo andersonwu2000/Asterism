@@ -4,10 +4,10 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
 
 ## What to do
 
-1. **Read Context.md** (target in `## Trigger`, agent reasoning in `### Recent failed attempts`, `### Existing strategies on this goal`, `### Ancestor chain`).
+1. **Read Context.md** (target in `## Trigger`, agent reasoning in `### Recent failed attempts on this goal`, `### Existing strategies on this goal`, `### Ancestor chain`).
 
 2. **Translate the agent's verdict.** The agent's claim ("missing tool" / "wrong decomposition" / "false invariant") is a hypothesis to evaluate. Analyze: what was it trying? Why did it fail?
-Also check `## Failure replay` for past attempts.
+Also check `## Recent decisions` for your prior decisions and their outcomes.
 
 3. **Locate the failure in the proof.** For each:
    - Tactical — goal is sound; agent missed mathlib API or picked a bad sub-path
