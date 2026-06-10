@@ -2,6 +2,11 @@
 from __future__ import annotations
 
 from Tooling.quality.librarian import dedup
+from Tooling.quality.librarian.cleanup import _common as cl_common
+from Tooling.quality.librarian.cleanup import decide as cl_decide
+from Tooling.quality.librarian.cleanup import mechanical as cl_mechanical
+from Tooling.quality.librarian.cleanup import polish as cl_polish
+from Tooling.quality.librarian.cleanup import simplify as cl_simplify
 
 
 # ---------------------------------------------------------------------
@@ -107,7 +112,7 @@ def test_type_colon_pos_skips_bracketed_colons() -> None:
 
 def test_code_spans_partition_round_trips() -> None:
     text = "code1 -- c\ncode2 /- b -/ code3"
-    spans = dedup._code_spans(text)
+    spans = cl_common._code_spans(text)
     # concatenating the code spans + the gaps must reconstruct the text
     assert spans[0][0] == 0
     assert spans[-1][1] == len(text)
@@ -158,16 +163,16 @@ def _fake_simplify_spawn(monkeypatch, responses):
 
 
 def test_parse_simplify_marks() -> None:
-    assert dedup._parse_simplify_marks('["a","b"]') == {"a", "b"}
-    assert dedup._parse_simplify_marks('[{"decl":"a"},{"decl":"b"}]') == {"a", "b"}
-    assert dedup._parse_simplify_marks("not json") == set()
+    assert cl_simplify._parse_simplify_marks('["a","b"]') == {"a", "b"}
+    assert cl_simplify._parse_simplify_marks('[{"decl":"a"},{"decl":"b"}]') == {"a", "b"}
+    assert cl_simplify._parse_simplify_marks("not json") == set()
 
 
 def test_simplify_success_replaces_only_marked(tmp_path, monkeypatch) -> None:
     rel = "Library/P/F.lean"
     _setup_simplify(tmp_path, rel, _FILE2)
     _fake_simplify_spawn(monkeypatch, ["by simp"])
-    monkeypatch.setattr(dedup, "_build_decl_isolated", lambda ws, **k: (True, ""))
+    monkeypatch.setattr(cl_common, "_build_decl_isolated", lambda ws, **k: (True, ""))
     n = dedup.decl_cleanup_simplify_file(
         tmp_path, "p", rel, [_decl("foo"), _decl("bar")], {"foo"})
     assert n == 1
@@ -180,7 +185,7 @@ def test_simplify_decline_keeps_original(tmp_path, monkeypatch) -> None:
     rel = "Library/P/F.lean"
     _setup_simplify(tmp_path, rel, _FILE2)
     _fake_simplify_spawn(monkeypatch, [None])               # agent produced none
-    monkeypatch.setattr(dedup, "_build_decl_isolated", lambda ws, **k: (True, ""))
+    monkeypatch.setattr(cl_common, "_build_decl_isolated", lambda ws, **k: (True, ""))
     assert dedup.decl_cleanup_simplify_file(
         tmp_path, "p", rel, [_decl("foo")], {"foo"}) == 0
     assert (tmp_path / rel).read_text(encoding="utf-8") == _FILE2
@@ -195,7 +200,7 @@ def test_simplify_no_change_skips_build(tmp_path, monkeypatch) -> None:
     def _b(ws, **k):
         built["n"] += 1
         return (True, "")
-    monkeypatch.setattr(dedup, "_build_decl_isolated", _b)
+    monkeypatch.setattr(cl_common, "_build_decl_isolated", _b)
     assert dedup.decl_cleanup_simplify_file(
         tmp_path, "p", rel, [_decl("foo")], {"foo"}) == 0
     assert built["n"] == 0
@@ -205,7 +210,7 @@ def test_simplify_build_fail_keeps_original(tmp_path, monkeypatch) -> None:
     rel = "Library/P/F.lean"
     _setup_simplify(tmp_path, rel, _FILE2)
     _fake_simplify_spawn(monkeypatch, ["by simp", "by simp", "by simp"])
-    monkeypatch.setattr(dedup, "_build_decl_isolated",
+    monkeypatch.setattr(cl_common, "_build_decl_isolated",
                         lambda ws, **k: (False, "boom"))
     assert dedup.decl_cleanup_simplify_file(
         tmp_path, "p", rel, [_decl("foo")], {"foo"}, max_retries=2) == 0
@@ -217,7 +222,7 @@ def test_simplify_retry_then_success(tmp_path, monkeypatch) -> None:
     _setup_simplify(tmp_path, rel, _FILE2)
     _fake_simplify_spawn(monkeypatch, ["by bad", "by simp"])
     seq = iter([(False, "err"), (True, "")])
-    monkeypatch.setattr(dedup, "_build_decl_isolated", lambda ws, **k: next(seq))
+    monkeypatch.setattr(cl_common, "_build_decl_isolated", lambda ws, **k: next(seq))
     assert dedup.decl_cleanup_simplify_file(
         tmp_path, "p", rel, [_decl("foo")], {"foo"}, max_retries=2) == 1
     assert "theorem foo : True := by simp" in (
@@ -235,7 +240,7 @@ def test_simplify_noop_when_nothing_marked(tmp_path, monkeypatch) -> None:
 
 def test_mark_simplify_noop_when_prompt_absent(tmp_path, monkeypatch) -> None:
     calls = _fake_simplify_spawn(monkeypatch, [])
-    assert dedup._mark_simplify_file(
+    assert cl_simplify._mark_simplify_file(
         tmp_path, "p", "Library/P/F.lean", ["foo"], tmp_path) == set()
     assert calls["n"] == 0
 
@@ -382,12 +387,12 @@ def test_external_consumer_ignores_scope_files(tmp_path) -> None:
 # ---------------------------------------------------------------------
 
 def test_strip_json_fence_plain() -> None:
-    assert dedup._strip_json_fence('[{"x":"a"}]') == '[{"x":"a"}]'
+    assert cl_common._strip_json_fence('[{"x":"a"}]') == '[{"x":"a"}]'
 
 
 def test_strip_json_fence_fenced() -> None:
-    assert dedup._strip_json_fence('```json\n[{"x":"a"}]\n```') == '[{"x":"a"}]'
-    assert dedup._strip_json_fence('```\n[]\n```') == '[]'
+    assert cl_common._strip_json_fence('```json\n[{"x":"a"}]\n```') == '[{"x":"a"}]'
+    assert cl_common._strip_json_fence('```\n[]\n```') == '[]'
 
 
 _INDEX = (
@@ -422,20 +427,20 @@ def test_apply_llm_pairs_skips_invalid_without_lake(tmp_path) -> None:
 
 def test_proof_assign_pos_simple() -> None:
     s = "theorem f : T := pf"
-    assert s[dedup._proof_assign_pos(s, 0):][:2] == ":="
+    assert s[cl_common._proof_assign_pos(s, 0):][:2] == ":="
 
 
 def test_proof_assign_pos_skips_binder_default() -> None:
     # the `:=` inside `(x : Nat := 0)` (depth>0) must be skipped; the proof
     # `:=` is the first at depth 0.
     s = "theorem f (x : Nat := 0) : T := pf"
-    p = dedup._proof_assign_pos(s, 0)
+    p = cl_common._proof_assign_pos(s, 0)
     assert s[p:] == ":= pf"
 
 
 def test_proof_assign_pos_skips_structure_instance() -> None:
     s = "theorem f : T := by exact { a := 1 }"
-    p = dedup._proof_assign_pos(s, 0)
+    p = cl_common._proof_assign_pos(s, 0)
     assert s[p:] == ":= by exact { a := 1 }"   # proof :=, not the inner one
 
 
@@ -852,7 +857,7 @@ def test_shared_binders_intersection() -> None:
 
 
 def test_norm_type_collapses_ws_and_universes() -> None:
-    assert (dedup._norm_type("∀ {K : Type u_1}  {V : Type u_2},\n  P")
+    assert (cl_common._norm_type("∀ {K : Type u_1}  {V : Type u_2},\n  P")
             == "∀ {K : Type u} {V : Type u}, P")
 
 
@@ -873,7 +878,7 @@ def _fake_typecheck(monkeypatch, results):
         i = seq["n"]
         seq["n"] += 1
         return results[i]
-    monkeypatch.setattr(dedup, "_typecheck_capturing_types", _tc)
+    monkeypatch.setattr(cl_common, "_typecheck_capturing_types", _tc)
     return seq
 
 
@@ -884,7 +889,7 @@ def _json_info(data):
 
 def test_parse_check_output_at_prefixed() -> None:
     out = _json_info("@L.A.foo : ∀ {n : ℕ}, n = n")
-    types, errs = dedup._parse_check_output(out, ["L.A.foo"])
+    types, errs = cl_common._parse_check_output(out, ["L.A.foo"])
     assert errs == [] and types == {"L.A.foo": "∀ {n : ℕ}, n = n"}
 
 
@@ -892,26 +897,26 @@ def test_parse_check_output_no_at_when_no_implicit() -> None:
     # Lean drops the `@` for a decl with only explicit binders (the bug that
     # skipped whole files: parser matched only `@foo :`).
     out = _json_info("L.A.foo : ∀ (S : T), P S")
-    types, _ = dedup._parse_check_output(out, ["L.A.foo"])
+    types, _ = cl_common._parse_check_output(out, ["L.A.foo"])
     assert types == {"L.A.foo": "∀ (S : T), P S"}
 
 
 def test_parse_check_output_universe_annotation() -> None:
     out = _json_info("@L.A.foo.{u_1} : Type u_1 → Type u_1")
-    types, _ = dedup._parse_check_output(out, ["L.A.foo"])
+    types, _ = cl_common._parse_check_output(out, ["L.A.foo"])
     assert types == {"L.A.foo": "Type u → Type u"}        # u_1 normalized
 
 
 def test_parse_check_output_no_prefix_collision() -> None:
     out = "\n".join([_json_info("@L.A.foo_bar : Bar"), _json_info("@L.A.foo : Foo")])
-    types, _ = dedup._parse_check_output(out, ["L.A.foo", "L.A.foo_bar"])
+    types, _ = cl_common._parse_check_output(out, ["L.A.foo", "L.A.foo_bar"])
     assert types == {"L.A.foo": "Foo", "L.A.foo_bar": "Bar"}
 
 
 def test_parse_check_output_collects_errors() -> None:
     import json
     out = json.dumps({"severity": "error", "data": "unknown identifier 'baz'"})
-    types, errs = dedup._parse_check_output(out, ["L.A.foo"])
+    types, errs = cl_common._parse_check_output(out, ["L.A.foo"])
     assert types == {} and errs == ["unknown identifier 'baz'"]
 
 
@@ -931,7 +936,7 @@ warning: Library/X.lean:30:0: `other_lemma` does not use the following hypothese
 
 
 def test_parse_unused_hyps() -> None:
-    assert dedup._parse_unused_hyps(_LINT_OUT) == {
+    assert cl_mechanical._parse_unused_hyps(_LINT_OUT) == {
         "directsum_prod_uncurry": ["[DecidableEq α]", "[DecidableEq β]"],
         "other_lemma": ["(h : P)"]}
 
@@ -939,7 +944,7 @@ def test_parse_unused_hyps() -> None:
 def test_strip_instance_binders_removes_only_instances() -> None:
     text = ("theorem foo {α : Type} [DecidableEq α] [Fintype α] (h : P α) : Q :="
             " by exact h\n")
-    out, changed = dedup._strip_instance_binders(text, "foo", ["[DecidableEq α]"])
+    out, changed = cl_mechanical._strip_instance_binders(text, "foo", ["[DecidableEq α]"])
     assert changed
     assert "[DecidableEq α]" not in out
     assert "{α : Type}" in out and "[Fintype α]" in out and "(h : P α)" in out
@@ -947,18 +952,18 @@ def test_strip_instance_binders_removes_only_instances() -> None:
 
 def test_strip_instance_binders_skips_explicit() -> None:
     text = "theorem foo (h : P) : Q := by exact h\n"
-    out, changed = dedup._strip_instance_binders(text, "foo", ["(h : P)"])
+    out, changed = cl_mechanical._strip_instance_binders(text, "foo", ["(h : P)"])
     assert not changed and out == text          # explicit binders are not v1 scope
 
 
 def test_insert_classical_after_by() -> None:
-    out = dedup._insert_classical("theorem foo {α} : Q := by\n  exact rfl\n", "foo")
+    out = cl_mechanical._insert_classical("theorem foo {α} : Q := by\n  exact rfl\n", "foo")
     assert ":= by\n  classical\n  exact rfl" in out
 
 
 def test_insert_classical_skips_term_mode() -> None:
     text = "theorem foo {α} : Q := rfl\n"
-    assert dedup._insert_classical(text, "foo") == text   # term-mode untouched
+    assert cl_mechanical._insert_classical(text, "foo") == text   # term-mode untouched
 
 
 def test_strip_framework_comments(tmp_path, monkeypatch) -> None:
@@ -974,8 +979,8 @@ def test_strip_framework_comments(tmp_path, monkeypatch) -> None:
         "-- a legit clarifying note (no framework jargon)\n"
         "theorem bar : True := by trivial\n")
     (tmp_path / rel).write_text(src, encoding="utf-8")
-    monkeypatch.setattr(dedup, "_missing_oleans", lambda ws, mods: [])
-    monkeypatch.setattr(dedup, "_lake_check", lambda ws, content, **k: (True, ""))
+    monkeypatch.setattr(cl_common, "_missing_oleans", lambda ws, mods: [])
+    monkeypatch.setattr(cl_common, "_lake_check", lambda ws, content, **k: (True, ""))
     assert dedup.file_cleanup_strip_framework_comments(tmp_path, "p", rel) is True
     out = (tmp_path / rel).read_text(encoding="utf-8")
     assert "entry_kind" not in out and "(was:" not in out and "sub-goal" not in out
@@ -990,7 +995,7 @@ def test_strip_framework_comments_noop_when_clean(tmp_path, monkeypatch) -> None
     (tmp_path / rel).write_text(
         "import Mathlib\n\n/-- doc -/\ntheorem foo : True := by trivial\n",
         encoding="utf-8")
-    monkeypatch.setattr(dedup, "_lake_check", lambda ws, content, **k: (True, ""))
+    monkeypatch.setattr(cl_common, "_lake_check", lambda ws, content, **k: (True, ""))
     assert dedup.file_cleanup_strip_framework_comments(tmp_path, "p", rel) is False
 
 
@@ -1100,19 +1105,19 @@ def test_cleanup_one_file_cross_module_drop_qualifies(tmp_path) -> None:
 
 def test_parse_decide_canonical_and_legacy_shapes() -> None:
     # canonical {"renames":…, "imports":…}
-    r, i = dedup._parse_decide(
+    r, i = cl_decide._parse_decide(
         '{"renames":{"a":"x"},"imports":["Mathlib.A.B"," Mathlib.C ",3]}')
     assert r == {"a": "x"} and i == ["Mathlib.A.B", "Mathlib.C"]
     # either key alone
-    assert dedup._parse_decide('{"imports":["Mathlib.A"]}') == ({}, ["Mathlib.A"])
-    assert dedup._parse_decide('{"renames":[{"old":"a","new":"x"}]}') == (
+    assert cl_decide._parse_decide('{"imports":["Mathlib.A"]}') == ({}, ["Mathlib.A"])
+    assert cl_decide._parse_decide('{"renames":[{"old":"a","new":"x"}]}') == (
         {"a": "x"}, [])
     # legacy bare str→str object = renames-only
-    assert dedup._parse_decide('{"a":"x","b":"y"}') == ({"a": "x", "b": "y"}, [])
-    assert dedup._parse_decide("```json\n{\"a\":\"x\"}\n```") == ({"a": "x"}, [])
-    assert dedup._parse_decide("not json") == ({}, [])
-    assert dedup._parse_decide('{"a": 3}') == ({}, [])       # non-str value
-    assert dedup._parse_decide('{"renames":{}, "imports":"x"}') == ({}, [])
+    assert cl_decide._parse_decide('{"a":"x","b":"y"}') == ({"a": "x", "b": "y"}, [])
+    assert cl_decide._parse_decide("```json\n{\"a\":\"x\"}\n```") == ({"a": "x"}, [])
+    assert cl_decide._parse_decide("not json") == ({}, [])
+    assert cl_decide._parse_decide('{"a": 3}') == ({}, [])       # non-str value
+    assert cl_decide._parse_decide('{"renames":{}, "imports":"x"}') == ({}, [])
 
 
 def _mathlib_tree(tmp_path, *modules):
@@ -1136,7 +1141,7 @@ def test_valid_imports_existence_and_shape(tmp_path) -> None:
         "Library.P.F",                            # not Mathlib.* → dropped
         "Mathlib.Bad-Seg",                        # invalid segment → dropped
     ]
-    assert dedup._valid_imports(proposed, tmp_path) == [
+    assert cl_decide._valid_imports(proposed, tmp_path) == [
         "Mathlib.LinearAlgebra.Matrix.Block",
         "Mathlib.RingTheory.PolynomialAlgebra"]
 
@@ -1144,15 +1149,15 @@ def test_valid_imports_existence_and_shape(tmp_path) -> None:
 def test_swap_umbrella_import() -> None:
     text = ("import Library.P.Sib\nimport Mathlib\n\nopen Foo\n\n"
             "theorem t : P := by trivial\n")
-    out, changed = dedup._swap_umbrella_import(
+    out, changed = cl_decide._swap_umbrella_import(
         text, ["Mathlib.A.B", "Mathlib.C"])
     assert changed
     assert ("import Library.P.Sib\nimport Mathlib.A.B\nimport Mathlib.C\n\n"
             "open Foo") in out
     # umbrella absent / body mention only → no-op (body never touched)
     body = "import Mathlib.A.B\n\n-- import Mathlib\ntheorem t : P := trivial\n"
-    assert dedup._swap_umbrella_import(body, ["Mathlib.C"]) == (body, False)
-    assert dedup._swap_umbrella_import(text, []) == (text, False)
+    assert cl_decide._swap_umbrella_import(body, ["Mathlib.C"]) == (body, False)
+    assert cl_decide._swap_umbrella_import(text, []) == (text, False)
 
 
 def test_valid_renames_filters() -> None:
@@ -1165,7 +1170,7 @@ def test_valid_renames_filters() -> None:
         "good_name": "good_name",     # new == old → drop
         "x": "bad-name",             # invalid ident → drop (and old not own)
     }
-    assert dedup._valid_renames(proposed, own_leaves=own,
+    assert cl_common._valid_renames(proposed, own_leaves=own,
                                 existing_leaves=existing) == {"lemma_3": "det_smul"}
 
 
@@ -1173,7 +1178,7 @@ def test_valid_renames_no_chain_or_dup_target() -> None:
     own = {"a", "b", "c"}
     # a→b would chain (b is itself an old); two olds → same new is a dup target
     proposed = {"a": "b", "b": "z", "c": "z"}
-    out = dedup._valid_renames(proposed, own_leaves=own, existing_leaves=set())
+    out = cl_common._valid_renames(proposed, own_leaves=own, existing_leaves=set())
     assert "a" not in out                       # new 'b' is an old → dropped
     assert out == {"b": "z"}                    # 'c':'z' dropped as dup target
 
@@ -1210,7 +1215,7 @@ def _fake_filecopy(monkeypatch, results):
         i = seq["n"]
         seq["n"] += 1
         return results[i]
-    monkeypatch.setattr(dedup, "_build_file_copy_isolated", _bc)
+    monkeypatch.setattr(cl_common, "_build_file_copy_isolated", _bc)
     return seq
 
 
@@ -1363,7 +1368,7 @@ def _fake_bwo_seq(monkeypatch, outputs):
         i = seq["n"]
         seq["n"] += 1
         return True, (outputs[i] if i < len(outputs) else "")
-    monkeypatch.setattr(dedup, "_build_with_output", _bwo)
+    monkeypatch.setattr(cl_common, "_build_with_output", _bwo)
     return seq
 
 
@@ -1372,7 +1377,7 @@ def test_polish_warnings_filters() -> None:
            "warning: F.lean:12:0: This line exceeds the 100 character limit, "
            "please shorten it!\n"
            "warning: F.lean:5:0: `A.A.foo` namespace is duplicated\n")  # not polish's
-    w = dedup._polish_warnings(out)
+    w = cl_polish._polish_warnings(out)
     assert len(w) == 2 and not any("duplicated" in x for x in w)
 
 
@@ -1522,9 +1527,9 @@ def _fake_audit_spawn(monkeypatch, outputs):
 def _fake_audit_types(monkeypatch, type_of):
     """Stub typecheck: every requested fqn gets type_of(fqn)."""
     monkeypatch.setattr(
-        dedup, "_typecheck_capturing_types",
+        cl_common, "_typecheck_capturing_types",
         lambda ws, text, fqns, **k: (True, "", {f: type_of(f) for f in fqns}))
-    monkeypatch.setattr(dedup, "_build_with_output",
+    monkeypatch.setattr(cl_common, "_build_with_output",
                         lambda ws, text, **k: (True, ""))
 
 
@@ -1584,8 +1589,8 @@ def test_audit_type_change_reverts(tmp_path, monkeypatch) -> None:
         calls["n"] += 1
         t = "P" if calls["n"] == 1 else "Q"       # snapshot then drifted
         return True, "", {f: t for f in fqns}
-    monkeypatch.setattr(dedup, "_typecheck_capturing_types", _types)
-    monkeypatch.setattr(dedup, "_build_with_output",
+    monkeypatch.setattr(cl_common, "_typecheck_capturing_types", _types)
+    monkeypatch.setattr(cl_common, "_build_with_output",
                         lambda ws, text, **k: (True, ""))
     d = _vdecl("foo_bar", ": P", module="Library.P.F", rel=rel)
     out = dedup.file_cleanup_audit(tmp_path, "p", rel, [d], scope=[d], pool=[])
