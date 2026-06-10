@@ -1095,15 +1095,64 @@ def test_cleanup_one_file_cross_module_drop_qualifies(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------
-# P4 — rename (naming alignment): parse / validate / mechanical apply
+# P4 — decide (naming alignment + precise imports): parse / validate / apply
 # ---------------------------------------------------------------------
 
-def test_parse_renames_object_and_list() -> None:
-    assert dedup._parse_renames('{"a":"x","b":"y"}') == {"a": "x", "b": "y"}
-    assert dedup._parse_renames('[{"old":"a","new":"x"}]') == {"a": "x"}
-    assert dedup._parse_renames("```json\n{\"a\":\"x\"}\n```") == {"a": "x"}
-    assert dedup._parse_renames("not json") == {}
-    assert dedup._parse_renames('{"a": 3}') == {}            # non-str value
+def test_parse_decide_canonical_and_legacy_shapes() -> None:
+    # canonical {"renames":…, "imports":…}
+    r, i = dedup._parse_decide(
+        '{"renames":{"a":"x"},"imports":["Mathlib.A.B"," Mathlib.C ",3]}')
+    assert r == {"a": "x"} and i == ["Mathlib.A.B", "Mathlib.C"]
+    # either key alone
+    assert dedup._parse_decide('{"imports":["Mathlib.A"]}') == ({}, ["Mathlib.A"])
+    assert dedup._parse_decide('{"renames":[{"old":"a","new":"x"}]}') == (
+        {"a": "x"}, [])
+    # legacy bare str→str object = renames-only
+    assert dedup._parse_decide('{"a":"x","b":"y"}') == ({"a": "x", "b": "y"}, [])
+    assert dedup._parse_decide("```json\n{\"a\":\"x\"}\n```") == ({"a": "x"}, [])
+    assert dedup._parse_decide("not json") == ({}, [])
+    assert dedup._parse_decide('{"a": 3}') == ({}, [])       # non-str value
+    assert dedup._parse_decide('{"renames":{}, "imports":"x"}') == ({}, [])
+
+
+def _mathlib_tree(tmp_path, *modules):
+    """Vendored-mathlib stub: create `<ws>/.lake/packages/mathlib/<mod path>.lean`."""
+    root = tmp_path / ".lake" / "packages" / "mathlib"
+    for m in modules:
+        p = root / (m.replace(".", "/") + ".lean")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("-- stub\n", encoding="utf-8")
+
+
+def test_valid_imports_existence_and_shape(tmp_path) -> None:
+    _mathlib_tree(tmp_path, "Mathlib.LinearAlgebra.Matrix.Block",
+                  "Mathlib.RingTheory.PolynomialAlgebra")
+    proposed = [
+        "Mathlib.RingTheory.PolynomialAlgebra",   # exists → kept
+        "Mathlib.LinearAlgebra.Matrix.Block",     # exists → kept (sorted first)
+        "Mathlib.LinearAlgebra.Matrix.Block",     # dup → once
+        "Mathlib.Totally.Hallucinated",           # no such file → dropped
+        "Mathlib",                                # bare umbrella → dropped
+        "Library.P.F",                            # not Mathlib.* → dropped
+        "Mathlib.Bad-Seg",                        # invalid segment → dropped
+    ]
+    assert dedup._valid_imports(proposed, tmp_path) == [
+        "Mathlib.LinearAlgebra.Matrix.Block",
+        "Mathlib.RingTheory.PolynomialAlgebra"]
+
+
+def test_swap_umbrella_import() -> None:
+    text = ("import Library.P.Sib\nimport Mathlib\n\nopen Foo\n\n"
+            "theorem t : P := by trivial\n")
+    out, changed = dedup._swap_umbrella_import(
+        text, ["Mathlib.A.B", "Mathlib.C"])
+    assert changed
+    assert ("import Library.P.Sib\nimport Mathlib.A.B\nimport Mathlib.C\n\n"
+            "open Foo") in out
+    # umbrella absent / body mention only → no-op (body never touched)
+    body = "import Mathlib.A.B\n\n-- import Mathlib\ntheorem t : P := trivial\n"
+    assert dedup._swap_umbrella_import(body, ["Mathlib.C"]) == (body, False)
+    assert dedup._swap_umbrella_import(text, []) == (text, False)
 
 
 def test_valid_renames_filters() -> None:
@@ -1129,17 +1178,17 @@ def test_valid_renames_no_chain_or_dup_target() -> None:
     assert out == {"b": "z"}                    # 'c':'z' dropped as dup target
 
 
-def _setup_rename(tmp_path, rel, content):
+def _setup_decide(tmp_path, rel, content):
     pd = tmp_path / "Tooling" / "prompts" / "librarian"
     pd.mkdir(parents=True, exist_ok=True)
-    (pd / "rename.md").write_text("x", encoding="utf-8")
+    (pd / "decide.md").write_text("x", encoding="utf-8")
     p = tmp_path / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
 
 
-def _fake_rename_spawn(monkeypatch, outputs):
-    """Patch agent.spawn_llm to write outputs[i] (str|None) as renames.json."""
+def _fake_decide_spawn(monkeypatch, outputs):
+    """Patch agent.spawn_llm to write outputs[i] (str|None) as decide.json."""
     from Tooling import agent
     calls = {"n": 0}
 
@@ -1148,7 +1197,7 @@ def _fake_rename_spawn(monkeypatch, outputs):
         calls["n"] += 1
         o = outputs[i] if i < len(outputs) else None
         if o is not None:
-            (attempts_dir / "renames.json").write_text(o, encoding="utf-8")
+            (attempts_dir / "decide.json").write_text(o, encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", _spawn)
     return calls
@@ -1165,78 +1214,124 @@ def _fake_filecopy(monkeypatch, results):
     return seq
 
 
-def test_file_cleanup_rename_noop_without_prompt(tmp_path) -> None:
+def test_file_cleanup_decide_noop_without_prompt(tmp_path) -> None:
     rel = "Library/P/F.lean"
     p = tmp_path / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("import Mathlib\n", encoding="utf-8")     # no prompt file
     d = _vdecl("lemma_3", "(a : T) : P")
-    assert dedup.file_cleanup_rename(tmp_path, "p", rel, [d],
-                                     scope=[d], pool=[]) == {}
+    assert dedup.file_cleanup_decide(tmp_path, "p", rel, [d],
+                                     scope=[d], pool=[]) == ({}, False)
 
 
-def test_file_cleanup_rename_success_renames_header_and_refs(tmp_path,
+def test_file_cleanup_decide_renames_header_refs_and_imports(tmp_path,
                                                              monkeypatch) -> None:
     rel = "Library/P/F.lean"
     module = "Library.P.F"
-    content = ("import Mathlib\n"
+    content = ("import Library.P.Sib\nimport Mathlib\n"
                "theorem lemma_3 (a : T) : P := by trivial\n"
                "theorem uses_it : P := lemma_3 x\n")   # in-file reference
-    _setup_rename(tmp_path, rel, content)
+    _setup_decide(tmp_path, rel, content)
+    _mathlib_tree(tmp_path, "Mathlib.A.B")
     d3 = _vdecl("lemma_3", "(a : T) : P", module=module, rel=rel)
     du = _vdecl("uses_it", ": P", module=module, rel=rel)
-    _fake_rename_spawn(monkeypatch, ['{"lemma_3":"trivial_P"}'])
+    _fake_decide_spawn(monkeypatch, [
+        '{"renames":{"lemma_3":"trivial_P"},"imports":["Mathlib.A.B"]}'])
     _fake_filecopy(monkeypatch, [(True, "")])
-    out = dedup.file_cleanup_rename(tmp_path, "p", rel, [d3, du],
+    out = dedup.file_cleanup_decide(tmp_path, "p", rel, [d3, du],
                                     scope=[d3, du], pool=[])
-    assert out == {f"{module}.lemma_3": f"{module}.trivial_P"}
+    assert out == ({f"{module}.lemma_3": f"{module}.trivial_P"}, True)
     txt = (tmp_path / rel).read_text(encoding="utf-8")
     assert "theorem trivial_P (a : T)" in txt
     assert "lemma_3" not in txt                  # header + ref both renamed
     assert "trivial_P x" in txt                  # the in-file reference rewired
+    assert "import Mathlib.A.B" in txt           # umbrella swapped
+    assert "import Mathlib\n" not in txt
+    assert "import Library.P.Sib" in txt         # sibling import untouched
 
 
-def test_file_cleanup_rename_reverts_on_build_failure(tmp_path, monkeypatch) -> None:
+def test_file_cleanup_decide_reverts_on_build_failure(tmp_path, monkeypatch) -> None:
     rel = "Library/P/F.lean"
     module = "Library.P.F"
     content = "import Mathlib\ntheorem lemma_3 (a : T) : P := by trivial\n"
-    _setup_rename(tmp_path, rel, content)
+    _setup_decide(tmp_path, rel, content)
     d = _vdecl("lemma_3", "(a : T) : P", module=module, rel=rel)
-    # 1 try + 1 retry, both proposals fail to build → keep original, return {}
-    _fake_rename_spawn(monkeypatch, ['{"lemma_3":"foo"}', '{"lemma_3":"bar"}'])
+    # 1 try + 1 retry, both rename-only proposals fail to build → keep original
+    _fake_decide_spawn(monkeypatch, ['{"renames":{"lemma_3":"foo"}}',
+                                     '{"renames":{"lemma_3":"bar"}}'])
     _fake_filecopy(monkeypatch, [(False, "collision"), (False, "collision")])
-    assert dedup.file_cleanup_rename(tmp_path, "p", rel, [d],
-                                     scope=[d], pool=[]) == {}
+    assert dedup.file_cleanup_decide(tmp_path, "p", rel, [d],
+                                     scope=[d], pool=[]) == ({}, False)
     assert (tmp_path / rel).read_text(encoding="utf-8") == content   # unchanged
 
 
-def test_file_cleanup_rename_renames_keystone_main(tmp_path, monkeypatch) -> None:
+def test_file_cleanup_decide_falls_back_to_renames_only(tmp_path,
+                                                        monkeypatch) -> None:
+    # Degrade ladder: renames+imports red on both tries → rung 3 gates the
+    # renames-only text (umbrella kept) → green → a bad import set never
+    # costs a rename.
+    rel = "Library/P/F.lean"
+    module = "Library.P.F"
+    content = "import Mathlib\ntheorem lemma_3 (a : T) : P := by trivial\n"
+    _setup_decide(tmp_path, rel, content)
+    _mathlib_tree(tmp_path, "Mathlib.Too.Narrow")
+    d = _vdecl("lemma_3", "(a : T) : P", module=module, rel=rel)
+    prop = '{"renames":{"lemma_3":"trivial_P"},"imports":["Mathlib.Too.Narrow"]}'
+    _fake_decide_spawn(monkeypatch, [prop, prop])
+    _fake_filecopy(monkeypatch, [(False, "unknown identifier"),
+                                 (False, "unknown identifier"),
+                                 (True, "")])         # rung 3: renames-only green
+    out = dedup.file_cleanup_decide(tmp_path, "p", rel, [d],
+                                    scope=[d], pool=[])
+    assert out == ({f"{module}.lemma_3": f"{module}.trivial_P"}, False)
+    txt = (tmp_path / rel).read_text(encoding="utf-8")
+    assert "theorem trivial_P" in txt
+    assert "import Mathlib\n" in txt             # umbrella kept
+    assert "Mathlib.Too.Narrow" not in txt
+
+
+def test_file_cleanup_decide_imports_only_proposal(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    content = "import Mathlib\ntheorem add_comm (a : T) : P := by trivial\n"
+    _setup_decide(tmp_path, rel, content)
+    _mathlib_tree(tmp_path, "Mathlib.A.B")
+    d = _vdecl("add_comm", "(a : T) : P", rel=rel)
+    _fake_decide_spawn(monkeypatch, ['{"renames":{},"imports":["Mathlib.A.B"]}'])
+    _fake_filecopy(monkeypatch, [(True, "")])
+    out = dedup.file_cleanup_decide(tmp_path, "p", rel, [d],
+                                    scope=[d], pool=[])
+    assert out == ({}, True)
+    txt = (tmp_path / rel).read_text(encoding="utf-8")
+    assert "import Mathlib.A.B" in txt and "import Mathlib\n" not in txt
+
+
+def test_file_cleanup_decide_renames_keystone_main(tmp_path, monkeypatch) -> None:
     # `main` is the framework keystone placeholder — it renames like any other
     # decl (Gate B / INDEX cite it by DB target_name, updated on rename).
     rel = "Library/P/F.lean"
     module = "Library.P.F"
     content = "import Mathlib\ntheorem main (a : T) : P := by trivial\n"
-    _setup_rename(tmp_path, rel, content)
+    _setup_decide(tmp_path, rel, content)
     d = _vdecl("main", "(a : T) : P", module=module, rel=rel)
-    _fake_rename_spawn(monkeypatch, ['{"main":"svd_decomposition"}'])
+    _fake_decide_spawn(monkeypatch, ['{"renames":{"main":"svd_decomposition"}}'])
     _fake_filecopy(monkeypatch, [(True, "")])
-    out = dedup.file_cleanup_rename(tmp_path, "p", rel, [d],
+    out = dedup.file_cleanup_decide(tmp_path, "p", rel, [d],
                                     scope=[d], pool=[])
-    assert out == {f"{module}.main": f"{module}.svd_decomposition"}
+    assert out == ({f"{module}.main": f"{module}.svd_decomposition"}, False)
     assert "theorem svd_decomposition (a : T)" in (
         tmp_path / rel).read_text(encoding="utf-8")
 
 
-def test_file_cleanup_rename_noop_when_nothing_to_align(tmp_path,
-                                                        monkeypatch) -> None:
+def test_file_cleanup_decide_noop_when_nothing_to_decide(tmp_path,
+                                                         monkeypatch) -> None:
     rel = "Library/P/F.lean"
-    _setup_rename(tmp_path, rel,
+    _setup_decide(tmp_path, rel,
                   "import Mathlib\ntheorem add_comm (a : T) : P := by trivial\n")
     d = _vdecl("add_comm", "(a : T) : P", rel=rel)
-    spy = _fake_rename_spawn(monkeypatch, ['{}'])     # agent: nothing to rename
+    spy = _fake_decide_spawn(monkeypatch, ['{"renames":{},"imports":[]}'])
     bc = _fake_filecopy(monkeypatch, [])
-    assert dedup.file_cleanup_rename(tmp_path, "p", rel, [d],
-                                     scope=[d], pool=[]) == {}
+    assert dedup.file_cleanup_decide(tmp_path, "p", rel, [d],
+                                     scope=[d], pool=[]) == ({}, False)
     assert spy["n"] == 1 and bc["n"] == 0             # spawned once, never built
 
 

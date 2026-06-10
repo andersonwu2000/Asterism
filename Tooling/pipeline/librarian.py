@@ -1409,15 +1409,17 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None):
             workspace, problem, target_file, scope_index=scope_index,
             prior_renames=prior_renames, apply=True,
             simplify=True, unused_args=True,
-            strip_comments=True, polish=True, rename=True)
+            strip_comments=True, polish=True, decide=True)
         rows = [r for r in db.library_decls_for(conn, problem, lifecycle="migrated")
                 if r["target_file"] == target_file]
-        # P4 rename: record {old_fqn → new_fqn} so consumer files self-apply it,
-        # and refresh THIS file's olean (rename is the only stage that changes
-        # exported names — consumers cleaned later typecheck against the new
-        # names, not the stale migrate-time olean). Record before advancing
-        # lifecycle (set_library_renamed only updates target_name/renamed_from).
+        # P4 decide: record {old_fqn → new_fqn} so consumer files self-apply it,
+        # and refresh THIS file's olean whenever decide changed the file (decide
+        # is the only stage that changes exported names OR imports — consumers
+        # cleaned later typecheck against the new shape, not the stale
+        # migrate-time olean). Record before advancing lifecycle
+        # (set_library_renamed only updates target_name/renamed_from).
         renamed = res.get("renamed", {})
+        imports_min = bool(res.get("imports_min"))
         if renamed:
             slug_by_fqn = {r["target_name"]: r["slug"] for r in rows}
             for old_fqn, new_fqn in renamed.items():
@@ -1425,6 +1427,7 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None):
                 if slug:
                     db.set_library_renamed(conn, problem=problem, slug=slug,
                                            old_fqn=old_fqn, new_fqn=new_fqn)
+        if renamed or imports_min:
             from ._lake import lake_build_modules
             # NOT best-effort: this rebuild is load-bearing. `lake_build_modules`
             # returns (ok, out) and does NOT raise on a build failure (only an
@@ -1438,12 +1441,13 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None):
                 return PipelineResult(
                     outcome="failed",
                     failure_reason="librarian_cleaned_build_failed",
-                    failure_detail=(f"rename olean refresh failed for "
+                    failure_detail=(f"decide olean refresh failed for "
                                     f"{target_file}: {out[-400:]}"))
         n_drop = _advance_cleanup_decls(conn, problem, rows, res.get("dropped", {}))
         print(f"[librarian] {problem}: cleanup `{target_file}` — {n_drop} "
               f"dropped, {len(res.get('bridged', {}))} bridged, "
-              f"{len(renamed)} renamed; survivors → cleaned", flush=True)
+              f"{len(renamed)} renamed, imports_min={imports_min}; "
+              f"survivors → cleaned", flush=True)
         return PipelineResult(outcome="success")
 
     migrated = list(db.library_decls_for(conn, problem, lifecycle="migrated"))

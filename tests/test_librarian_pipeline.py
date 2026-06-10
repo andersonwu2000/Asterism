@@ -256,6 +256,25 @@ def test_run_cleanup_per_file_records_rename(conn, tmp_path, monkeypatch):
     assert built == [["Library.P.F"]]            # olean refreshed for this module
 
 
+def test_run_cleanup_per_file_imports_min_refreshes_olean(conn, tmp_path,
+                                                          monkeypatch):
+    # decide's import swap changes the file without renaming anything — the
+    # olean is just as stale (consumers import this module), so imports_min
+    # alone must trigger the refresh.
+    _seed_migrated(conn, "foo", "Library.P.F.foo", target_file="Library/P/F.lean")
+    _patch_engine_file(monkeypatch, {
+        "dropped": {}, "merged": set(), "bridged": {}, "near": [], "failed": [],
+        "renamed": {}, "imports_min": True})
+    built: list = []
+    _patch_olean_refresh(monkeypatch, built)
+    lib._run_cleanup(conn, problem="p", workspace=tmp_path,
+                     target_file="Library/P/F.lean")
+    row = {r["slug"]: r for r in db.library_decls_for(conn, "p")}["foo"]
+    assert row["lifecycle"] == "cleaned"
+    assert row["renamed_from"] is None           # no rename recorded
+    assert built == [["Library.P.F"]]            # but olean still refreshed
+
+
 def test_run_cleanup_per_file_rename_olean_fail_is_loud(conn, tmp_path, monkeypatch):
     # The renamed-file olean rebuild is load-bearing (consumers gate against the
     # new names). `lake_build_modules` returns (False, out) on failure — it does

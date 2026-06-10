@@ -2497,34 +2497,34 @@ def file_cleanup_polish(workspace: Path, problem: str, target_file: str,
 
 
 # ---------------------------------------------------------------------
-# §13 (P4) rename — naming alignment to mathlib conventions
+# §13 (P4) decide — naming alignment + precise imports (supersedes rename)
 # ---------------------------------------------------------------------
-# The LAST per-file stage (after docstring), on the final shape. Propose =
-# pipeline-managed librarian spawn (kind="librarian" + rename.md) emitting
-# {old_leaf: new_leaf}; apply = MECHANICAL whole-token rename of this file's
-# decl header + in-file references, per-file rebuild-gated, reverted on failure.
-# Cross-file consumers self-apply via the SAME deferred-rewire as drops (the
-# caller records {old_fqn → new_fqn} to the DB rename channel). Rename is the
-# only stage that changes a file's EXPORTED names, so the caller refreshes the
-# renamed file's olean on completion (consumers cleaned later typecheck against
-# the new names, not the stale migrate-time olean).
+# The LAST per-file stage (after polish), on the final shape. Propose =
+# pipeline-managed librarian spawn (kind="librarian" + decide.md) emitting
+# decide.json {"renames": {old_leaf: new_leaf}, "imports": ["Mathlib.X.Y", …]};
+# apply = MECHANICAL: whole-token rename of this file's decl header + in-file
+# references, AND swap of the `import Mathlib` umbrella line for the proposed
+# precise (canonical) module list. Per-file rebuild-gated with a degrade
+# ladder — import-min is the risky half (LLM module choice), renames the
+# proven half, so a red build falls back to renames-only (umbrella kept)
+# before reverting everything. Library sibling imports are never touched.
+# Cross-file consumers self-apply renames via the SAME deferred-rewire as
+# drops (the caller records {old_fqn → new_fqn} to the DB rename channel).
+# decide is the only stage that changes a file's EXPORTED names or its
+# imports, so the caller refreshes the file's olean whenever it changed.
 # ---------------------------------------------------------------------
 
-_RENAME_PROMPT = "rename.md"
-_RENAME_OUTPUT = "renames.json"
-_RENAME_MAX_RETRIES = 1
+_DECIDE_PROMPT = "decide.md"
+_DECIDE_OUTPUT = "decide.json"
+_DECIDE_MAX_RETRIES = 1
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_']*$")
+_MATHLIB_IMPORT_RE = re.compile(r"^Mathlib(\.[A-Za-z0-9_'][A-Za-z0-9_']*)+$")
 
 
-def _parse_renames(text: str) -> "dict[str, str]":
-    """Parse the rename agent's output → {old_leaf: new_leaf}. Accepts a JSON
-    object `{"old":"new", …}` or a list `[{"old":..,"new":..}, …]`; ignores
-    malformed entries (the caller re-validates every pair)."""
-    import json
-    try:
-        data = json.loads(_strip_json_fence(text))
-    except Exception:  # noqa: BLE001
-        return {}
+def _coerce_renames(data) -> "dict[str, str]":
+    """Coerce a JSON value into {old_leaf: new_leaf}. Accepts an object
+    `{"old":"new", …}` or a list `[{"old":..,"new":..}, …]`; ignores malformed
+    entries (the caller re-validates every pair)."""
     out: dict[str, str] = {}
     if isinstance(data, dict):
         for k, v in data.items():
@@ -2539,6 +2539,25 @@ def _parse_renames(text: str) -> "dict[str, str]":
                 if o and n:
                     out[o] = n
     return out
+
+
+def _parse_decide(text: str) -> "tuple[dict[str, str], list[str]]":
+    """Parse the decide agent's output → (renames, imports). Canonical shape is
+    `{"renames": {...}, "imports": [...]}`; a bare str→str object (the legacy
+    renames.json shape) is tolerated as renames-only. Missing/empty `imports`
+    = keep the `import Mathlib` umbrella (no-op)."""
+    import json
+    try:
+        data = json.loads(_strip_json_fence(text))
+    except Exception:  # noqa: BLE001
+        return {}, []
+    if isinstance(data, dict) and ("renames" in data or "imports" in data):
+        renames = _coerce_renames(data.get("renames"))
+        raw = data.get("imports")
+        imports = [m.strip() for m in raw
+                   if isinstance(m, str) and m.strip()] if isinstance(raw, list) else []
+        return renames, imports
+    return _coerce_renames(data), []
 
 
 def _valid_renames(proposed: "dict[str, str]", *, own_leaves: "set[str]",
@@ -2560,16 +2579,51 @@ def _valid_renames(proposed: "dict[str, str]", *, own_leaves: "set[str]",
     return out
 
 
-def _rename_context(workspace: Path, problem: str, rel: str,
+def _valid_imports(proposed: "list[str]", workspace: Path) -> "list[str]":
+    """Keep only real Mathlib module paths: shape `Mathlib.A.B` (≥ 1 segment —
+    the bare `Mathlib` umbrella is not a proposal) AND the module file exists in
+    the vendored mathlib. The existence check kills hallucinated paths for free,
+    before the expensive build; the rebuild gate is the real sufficiency check.
+    Returns the surviving set sorted (mathlib import-block convention), deduped."""
+    root = workspace / ".lake" / "packages" / "mathlib"
+    out: set[str] = set()
+    for m in proposed:
+        if not _MATHLIB_IMPORT_RE.match(m):
+            continue
+        if not (root / (m.replace(".", "/") + ".lean")).is_file():
+            continue
+        out.add(m)
+    return sorted(out)
+
+
+def _swap_umbrella_import(text: str, imports: "list[str]") -> "tuple[str, bool]":
+    """Replace the `import Mathlib` umbrella line in the file header with the
+    precise import list (one `import Mathlib.X` per line, caller-sorted).
+    `Library.*` sibling imports are untouched. Scans only the leading
+    import/blank header block; no umbrella there (or no imports) → no-op."""
+    if not imports:
+        return text, False
+    lines = text.split("\n")
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if s == "import Mathlib":
+            lines[i:i + 1] = [f"import {m}" for m in imports]
+            return "\n".join(lines), True
+        if s and not s.startswith("import "):
+            break                       # past the header — no umbrella line
+    return text, False
+
+
+def _decide_context(workspace: Path, problem: str, rel: str,
                     decls_in_file: "list[_Decl]", prev_error: str = "") -> str:
-    """Per-file context for the rename agent: module, the renamable declarations
+    """Per-file context for the decide agent: module, the renamable declarations
     with their statements, the verbatim file, and (on retry) the build error."""
     try:
         body = (workspace / rel).read_text(encoding="utf-8")
     except OSError:
         body = ""
     lines = [
-        f"# Naming alignment — {problem} — `{rel}`", "",
+        f"# Naming + imports — {problem} — `{rel}`", "",
         f"Module: `{_mod_of_rel(rel)}`.",
         "Declarations you may rename (kept survivors in THIS file):", "",
     ]
@@ -2582,23 +2636,26 @@ def _rename_context(workspace: Path, problem: str, rel: str,
     return "\n".join(lines) + "\n"
 
 
-def file_cleanup_rename(workspace: Path, problem: str, target_file: str,
+def file_cleanup_decide(workspace: Path, problem: str, target_file: str,
                         decls_in_file: "list[_Decl]", *,
                         scope: "list[_Decl]", pool: "list[_Decl]",
-                        max_retries: int = _RENAME_MAX_RETRIES
-                        ) -> "dict[str, str]":
-    """§13 (P4) naming-alignment pass for ONE file: propose mathlib-aligned names
-    for this file's kept survivors (pipeline-managed librarian spawn) → validate
-    → apply MECHANICALLY (whole-token rename of the decl header + every in-file
-    reference) → per-file rebuild gate → revert on failure. Writes ONLY
-    `target_file`. Returns `{old_fqn: new_fqn}` of renames actually applied
-    (empty = nothing to align / prompt absent / no green rename). Consumer files
-    in OTHER files self-apply these via deferred-rewire — the caller records them
-    to the DB rename channel and refreshes this file's olean."""
+                        max_retries: int = _DECIDE_MAX_RETRIES
+                        ) -> "tuple[dict[str, str], bool]":
+    """§13 (P4) decide pass for ONE file: propose mathlib-aligned names for this
+    file's kept survivors AND a precise replacement for the `import Mathlib`
+    umbrella (one pipeline-managed librarian spawn) → validate both → apply
+    MECHANICALLY (whole-token rename of the decl header + every in-file
+    reference; umbrella-line swap) → per-file rebuild gate. Degrade ladder on a
+    red build: retry with error feedback → renames-only (umbrella kept) →
+    revert. Writes ONLY `target_file`. Returns `({old_fqn: new_fqn} applied,
+    imports_changed)` — empty/False = nothing to decide / prompt absent / no
+    green candidate. Consumer files self-apply renames via deferred-rewire — the
+    caller records them to the DB rename channel and refreshes this file's olean
+    whenever it changed."""
     from ... import agent
-    prompt_path = workspace / "Tooling" / "prompts" / "librarian" / _RENAME_PROMPT
+    prompt_path = workspace / "Tooling" / "prompts" / "librarian" / _DECIDE_PROMPT
     if not prompt_path.exists() or not decls_in_file:
-        return {}
+        return {}, False
     leaf = target_file.split("/")[-1]
     module = _mod_of_rel(target_file)
     # No cross-problem guard: by design a problem is cleaned BEFORE any other
@@ -2614,49 +2671,71 @@ def file_cleanup_rename(workspace: Path, problem: str, target_file: str,
     try:
         original = (workspace / target_file).read_text(encoding="utf-8")
     except OSError:
-        return {}
+        return {}, False
     problem_dir = workspace.joinpath("Problems", *problem.split("."))
     prev_error = ""
+    # rung-3 candidate: renames-only text of the last red renames+imports try
+    fallback: "tuple[str, dict[str, str]] | None" = None
     for attempt in range(max_retries + 1):
         attempts = agent.attempts_dir_for(workspace, agent.new_pipeline_id())
         (attempts / "Context.md").write_text(
-            _rename_context(workspace, problem, target_file, decls_in_file,
+            _decide_context(workspace, problem, target_file, decls_in_file,
                             prev_error), encoding="utf-8")
         rc = agent.spawn_llm(kind="librarian", prompt_path=prompt_path,
                              problem_dir=problem_dir, attempts_dir=attempts,
                              session_id=agent.new_pipeline_id())
-        out = attempts / _RENAME_OUTPUT
+        out = attempts / _DECIDE_OUTPUT
         if rc != 0 or not out.exists():
-            prev_error = f"no {_RENAME_OUTPUT} was produced"
+            prev_error = f"no {_DECIDE_OUTPUT} was produced"
             continue
-        renames = _valid_renames(
-            _parse_renames(out.read_text(encoding="utf-8")),
-            own_leaves=own_leaves, existing_leaves=existing_leaves)
-        if not renames:
-            print(f"[staged] rename `{leaf}` — nothing to align", flush=True)
-            return {}
-        new_text = original
+        proposed_renames, proposed_imports = _parse_decide(
+            out.read_text(encoding="utf-8"))
+        renames = _valid_renames(proposed_renames, own_leaves=own_leaves,
+                                 existing_leaves=existing_leaves)
+        imports = _valid_imports(proposed_imports, workspace)
+        if not renames and not imports:
+            print(f"[staged] decide `{leaf}` — nothing to decide", flush=True)
+            return {}, False
+        renamed_text = original
         applied: dict[str, str] = {}
         for old, new in renames.items():
-            t, n = replace_token(new_text, old, new)
+            t, n = replace_token(renamed_text, old, new)
             if n:
-                new_text = t
+                renamed_text = t
                 applied[f"{module}.{old}"] = f"{module}.{new}"
-        if not applied or new_text == original:
-            return {}
+        new_text, imports_changed = _swap_umbrella_import(renamed_text, imports)
+        if new_text == original:
+            return {}, False
         ok, detail = _build_file_copy_isolated(workspace, new_text)
         if not ok:
+            if applied and imports_changed:
+                fallback = (renamed_text, applied)
             prev_error = detail
             continue
         (workspace / target_file).write_text(new_text, encoding="utf-8")
-        print(f"[staged] rename `{leaf}` — {len(applied)} renamed "
-              f"(try {attempt + 1}): "
-              + ", ".join(f"{o.rsplit('.', 1)[-1]}→{n.rsplit('.', 1)[-1]}"
-                          for o, n in applied.items()), flush=True)
-        return applied
-    print(f"[staged] rename `{leaf}` — kept original "
-          f"(no green rename in {max_retries + 1} tries)", flush=True)
-    return {}
+        print(f"[staged] decide `{leaf}` — {len(applied)} renamed, "
+              f"{len(imports) if imports_changed else 0} precise imports "
+              f"(try {attempt + 1})"
+              + (": " + ", ".join(
+                  f"{o.rsplit('.', 1)[-1]}→{n.rsplit('.', 1)[-1]}"
+                  for o, n in applied.items()) if applied else ""), flush=True)
+        return applied, imports_changed
+    # Degrade rung: every full candidate was red. The import swap is the risky
+    # half (LLM module choice can be insufficient — missing instance/notation
+    # deps); the renames were the proven half. Gate the last renames-only text
+    # (umbrella kept) before giving up, so a bad import set never costs a rename.
+    if fallback is not None:
+        renamed_text, applied = fallback
+        ok, _detail = _build_file_copy_isolated(workspace, renamed_text)
+        if ok:
+            (workspace / target_file).write_text(renamed_text, encoding="utf-8")
+            print(f"[staged] decide `{leaf}` — {len(applied)} renamed; kept "
+                  "`import Mathlib` (precise import set failed to build)",
+                  flush=True)
+            return applied, False
+    print(f"[staged] decide `{leaf}` — kept original "
+          f"(no green candidate in {max_retries + 1} tries)", flush=True)
+    return {}, False
 
 
 def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
@@ -2666,7 +2745,7 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
                             strip_comments: bool = False,
                             unused_args: bool = False,
                             polish: bool = False,
-                            rename: bool = False,
+                            decide: bool = False,
                             simplify: bool = False) -> "dict":
     """§13 3c-2 per-file cleanup unit (the dispatcher's per-file work item).
     Clean ONE Library file: mark it → classify (with the cross-file chain guard
@@ -2752,34 +2831,38 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
     # (e) polish — ONE type-preserving agentic rewrite: variable extraction +
     # docstrings + module docstring + mathlib style + local warning cleanup,
     # under the #check type-invariant gate. Supersedes the separate variables +
-    # docstring passes. After the mechanical (c) passes, before rename.
+    # docstring passes. After the mechanical (c) passes, before decide.
     polished = False
     if polish and survivor_decls:
         polished = file_cleanup_polish(
             workspace, problem, target_file, survivor_decls)
     _T["polish"] = _t()
-    # (P4) rename — LAST agentic step, on the polished shape: align kept
-    # survivors' names to mathlib conventions. Mechanical apply + per-file rebuild
-    # gate; consumers self-apply via deferred-rewire (caller records {old:new}).
+    # (P4) decide — LAST agentic step, on the polished shape: align kept
+    # survivors' names to mathlib conventions + swap the `import Mathlib`
+    # umbrella for a precise canonical set. Mechanical apply + per-file rebuild
+    # gate (degrade ladder: bad imports never cost a rename); consumers
+    # self-apply renames via deferred-rewire (caller records {old:new}).
     renamed: dict[str, str] = {}
-    if rename and survivor_decls:
-        renamed = file_cleanup_rename(
+    imports_min = False
+    if decide and survivor_decls:
+        renamed, imports_min = file_cleanup_decide(
             workspace, problem, target_file, survivor_decls,
             scope=scope, pool=pool)
-    _T["rename"] = _t()
+    _T["decide"] = _t()
     print(f"[staged-timing] {target_file.split('/')[-1]}: "
           f"mark={_T['mark']-_T['0']:.0f}s dedup={_T['dedup']-_T['mark']:.0f}s "
           f"simplify={_T['simplify']-_T['dedup']:.0f}s "
           f"unused={_T['unused']-_T['simplify']:.0f}s "
           f"polish={_T['polish']-_T['unused']:.0f}s "
-          f"rename={_T['rename']-_T['polish']:.0f}s "
-          f"total={_T['rename']-_T['0']:.0f}s", flush=True)
+          f"decide={_T['decide']-_T['polish']:.0f}s "
+          f"total={_T['decide']-_T['0']:.0f}s", flush=True)
     return {"dropped": {x: Yd.fqn for x, Yd in r["drops"].items()},
             "merged": set(r["merged"]),
             "bridged": {x: Yd.fqn for x, Yd in r["bridged"]},
             "near": r["near"], "failed": r["failed"],
             "simplified": n_simplified, "unused_removed": unused_removed,
-            "polished": polished, "renamed": renamed}
+            "polished": polished, "renamed": renamed,
+            "imports_min": imports_min}
 
 
 def run_file_audit_dedup(workspace: Path, problem: str, *, apply: bool = False,
