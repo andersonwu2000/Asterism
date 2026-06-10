@@ -256,6 +256,24 @@ def test_run_cleanup_per_file_records_rename(conn, tmp_path, monkeypatch):
     assert built == [["Library.P.F"]]            # olean refreshed for this module
 
 
+def test_run_cleanup_per_file_rename_olean_fail_is_loud(conn, tmp_path, monkeypatch):
+    # The renamed-file olean rebuild is load-bearing (consumers gate against the
+    # new names). `lake_build_modules` returns (False, out) on failure — it does
+    # NOT raise — so a failure must be SURFACED, not silently dropped (the old
+    # try/except: pass left a stale olean → downstream silent-stall).
+    _seed_migrated(conn, "foo", "Library.P.F.foo", target_file="Library/P/F.lean")
+    _patch_engine_file(monkeypatch, {
+        "dropped": {}, "merged": set(), "bridged": {}, "near": [], "failed": [],
+        "renamed": {"Library.P.F.foo": "Library.P.F.foo_aligned"}})
+    from Tooling.pipeline import _lake
+    monkeypatch.setattr(_lake, "lake_build_modules",
+                        lambda ws, modules: (False, "error: unknown identifier"))
+    res = lib._run_cleanup(conn, problem="p", workspace=tmp_path,
+                           target_file="Library/P/F.lean")
+    assert res.outcome == "failed"
+    assert res.failure_reason == "librarian_cleaned_build_failed"
+
+
 def test_run_cleanup_per_file_prior_renames_includes_renames(conn, tmp_path,
                                                              monkeypatch):
     # An earlier file renamed `old`→`new` (kept survivor). A later consumer file

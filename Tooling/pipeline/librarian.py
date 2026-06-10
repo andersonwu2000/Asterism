@@ -1424,10 +1424,20 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None):
                     db.set_library_renamed(conn, problem=problem, slug=slug,
                                            old_fqn=old_fqn, new_fqn=new_fqn)
             from ._lake import lake_build_modules
-            try:
-                lake_build_modules(workspace, [_dedup._mod_of_rel(target_file)])
-            except Exception:  # noqa: BLE001 — best-effort olean refresh
-                pass
+            # NOT best-effort: this rebuild is load-bearing. `lake_build_modules`
+            # returns (ok, out) and does NOT raise on a build failure (only an
+            # internal TimeoutExpired is caught) — so the old `try/except: pass`
+            # silently dropped failures, leaving a stale (old-name) olean that
+            # makes every consumer's per-file gate fail with confusing errors and
+            # the chain silent-stall. Surface it loudly instead.
+            ok, out = lake_build_modules(
+                workspace, [_dedup._mod_of_rel(target_file)])
+            if not ok:
+                return PipelineResult(
+                    outcome="failed",
+                    failure_reason="librarian_cleaned_build_failed",
+                    failure_detail=(f"rename olean refresh failed for "
+                                    f"{target_file}: {out[-400:]}"))
         n_drop = _advance_cleanup_decls(conn, problem, rows, res.get("dropped", {}))
         print(f"[librarian] {problem}: cleanup `{target_file}` — {n_drop} "
               f"dropped, {len(res.get('bridged', {}))} bridged, "
