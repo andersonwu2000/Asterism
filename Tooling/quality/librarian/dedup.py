@@ -2985,6 +2985,14 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
     bridged_fqns = {x for x, _ in r["bridged"]}
     survivor_decls = [d for d in decls_in_file
                       if d.fqn not in r["drops"] and d.fqn not in bridged_fqns]
+    # Everything still PRESENT in the file = survivors + bridged aliases. The
+    # whole-file agentic stages (polish/decide/audit) must gate on THIS set, not
+    # `survivor_decls`: a bridged alias is a one-liner a zealous reviewer happily
+    # deletes, and a #check gate that doesn't list it never notices — the alias
+    # vanishes green and every consumer citing it dangles (rcf audit e2e
+    # 2026-06-10: audit deleted the bridged `block_companion`; the keystone file
+    # then failed its own baseline snapshot and the bridge build went red).
+    present_decls = [d for d in decls_in_file if d.fqn not in r["drops"]]
     # (c) decl-cleanup — per-decl proof simplification (marked-only). Sig-
     # preserving → no consumer rewrite. Runs BEFORE docstrings (§13 order).
     n_simplified = 0
@@ -3015,9 +3023,9 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
     # under the #check type-invariant gate. Supersedes the separate variables +
     # docstring passes. After the mechanical (c) passes, before decide.
     polished = False
-    if polish and survivor_decls:
+    if polish and present_decls:
         polished = file_cleanup_polish(
-            workspace, problem, target_file, survivor_decls)
+            workspace, problem, target_file, present_decls)
     _T["polish"] = _t()
     # (P4) decide — LAST agentic step, on the polished shape: align kept
     # survivors' names to mathlib conventions + swap the `import Mathlib`
@@ -3026,9 +3034,9 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
     # self-apply renames via deferred-rewire (caller records {old:new}).
     renamed: dict[str, str] = {}
     imports_min = False
-    if decide and survivor_decls:
+    if decide and present_decls:
         renamed, imports_min = file_cleanup_decide(
-            workspace, problem, target_file, survivor_decls,
+            workspace, problem, target_file, present_decls,
             scope=scope, pool=pool)
     _T["decide"] = _t()
     # (final) audit — free whole-file mathlib review on the decided shape. Its
@@ -3036,11 +3044,11 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
     # to A→C so the caller's slug lookup (keyed by the migrate-time fqn) and the
     # consumers' deferred-rewire both see one hop.
     audited = False
-    if audit and survivor_decls:
+    if audit and present_decls:
         post_decide = [
             d._replace(name=renamed[d.fqn].rsplit(".", 1)[-1],
                        fqn=renamed[d.fqn]) if d.fqn in renamed else d
-            for d in survivor_decls]
+            for d in present_decls]
         audit_renames, audited = file_cleanup_audit(
             workspace, problem, target_file, post_decide,
             scope=scope, pool=pool)

@@ -1601,3 +1601,37 @@ def test_audit_noop_when_unchanged(tmp_path, monkeypatch) -> None:
     d = _vdecl("foo_bar", ": P", module="Library.P.F", rel=rel)
     assert dedup.file_cleanup_audit(tmp_path, "p", rel, [d],
                                     scope=[d], pool=[]) == ({}, False)
+
+
+def test_staged_file_agentic_stages_gate_bridged_decls(tmp_path,
+                                                       monkeypatch) -> None:
+    # A bridged alias stays IN the file → polish/decide/audit must receive it in
+    # their gate set. Gating only `survivor_decls` let audit delete the alias
+    # green (rcf e2e 2026-06-10: bridged `block_companion` vanished → consumer
+    # dangling → bridge red).
+    rel = "Library/P/F.lean"
+    a = _vdecl("keep_me", ": P", module="Library.P.F", rel=rel)
+    b = _vdecl("bridge_alias", ": Q", module="Library.P.F", rel=rel)
+    monkeypatch.setattr(dedup, "_load_decls", lambda ws, p, si: ([a, b], []))
+    monkeypatch.setattr(dedup, "_audit_one_file", lambda *ag, **k: ([], "log"))
+    monkeypatch.setattr(dedup, "_classify_pairs", lambda *ag, **k: ({}, []))
+    monkeypatch.setattr(dedup, "_cleanup_one_file", lambda *ag, **k: {
+        "drops": {}, "merged": set(), "bridged": [(b.fqn, a)],
+        "near": [], "failed": []})
+    seen: dict = {}
+
+    def _cap(stage, ret):
+        def _f(ws, p, tf, decls, **k):
+            seen[stage] = [d.name for d in decls]
+            return ret
+        return _f
+    monkeypatch.setattr(dedup, "file_cleanup_polish", _cap("polish", False))
+    monkeypatch.setattr(dedup, "file_cleanup_decide", _cap("decide", ({}, False)))
+    monkeypatch.setattr(dedup, "file_cleanup_audit", _cap("audit", ({}, False)))
+    res = dedup.run_staged_cleanup_file(
+        tmp_path, "p", rel, bridge=False,
+        polish=True, decide=True, audit=True)
+    assert seen["polish"] == ["keep_me", "bridge_alias"]
+    assert seen["decide"] == ["keep_me", "bridge_alias"]
+    assert seen["audit"] == ["keep_me", "bridge_alias"]
+    assert res["bridged"] == {b.fqn: a.fqn}
