@@ -81,9 +81,12 @@ backward:
 
 strategist:
   provider: claude
-  model: claude-opus-4-8       # meta-level reasoning (InitializeDefs /
-                               # RequestUserAmend / Inject Forward) —
-                               # same tier as Backward.
+  model: claude-fable-5        # Mythos tier (Fable 5, ~2x Opus). Planning is
+                               # the highest-leverage spawn: one decomposition
+                               # shapes the whole proof tree, and it's the
+                               # lowest-volume pipeline, so the 2x cost is
+                               # negligible in absolute terms. (InitializeDefs /
+                               # RequestUserAmend / Inject Forward.)
   interval_min: 120.0          # T1 routine cadence (default 60min)
 #  inject_batch_max: 10        # Phase 2.5 — upper bound on
                                # Inject(briefs=[...]) length. Each
