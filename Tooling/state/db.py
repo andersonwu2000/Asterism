@@ -813,7 +813,7 @@ def _migrate_to_phase2(conn: sqlite3.Connection) -> None:
     statements, so a mid-rebuild failure leaves the DB in an
     inconsistent state. Operator should `cp asterism.db
     asterism.db.pre_phase2_<UTC>` before first daemon start under
-    Phase 2 code (per `docs/internal/phase2_migration_plan.md §E`).
+    Phase 2 code (per `docs/internal/archive/phase2_migration_plan.md §E`).
     """
     # PRAGMA foreign_keys cannot be set inside a transaction.
     # connect() leaves us at autocommit (isolation_level default).
