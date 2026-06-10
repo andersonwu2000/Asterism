@@ -18,9 +18,9 @@ ROOT = Path(__file__).resolve().parents[1]
 _WATERMARKS = {
     "Tooling/quality/librarian/dedup.py": 1900,
     # 2850 → 2900: classify file-size gate; → 3000: Defs section-context
-    # extraction + cross-problem ownership guard (stokes definition-tower,
-    # 2026-06-11) — conscious bumps.
-    "Tooling/pipeline/librarian.py": 3000,
+    # extraction + ownership guard; → 3050: migrate same-path race lock
+    # (stokes definition-tower, 2026-06-11) — conscious bumps.
+    "Tooling/pipeline/librarian.py": 3050,
     "Tooling/core/dispatcher.py": 2750,
     "Tooling/state/db.py": 2450,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,

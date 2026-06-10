@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
@@ -2380,10 +2381,30 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_file,
     # silently CLOBBER the owner's decls while its DB rows keep pointing at
     # vanished content. Loud fail; the layout/merge policy for shared files
     # is a design decision, not something to improvise here.
-    owner = conn.execute(
-        "SELECT DISTINCT problem FROM library_decls WHERE target_file = ? "
-        "AND problem != ? AND lifecycle IN ('migrated', 'cleaned')",
-        (target_file, problem)).fetchone()
+    #
+    # TOCTOU: a check at unit START alone is not enough — the dispatcher runs
+    # units in a ThreadPoolExecutor, and three same-path units dispatched
+    # together all pass the pre-commit check before any commits (observed
+    # live: self and comp both committed, last writer clobbered first). The
+    # in-flight set serializes same-path units within the daemon (cross-
+    # daemon is excluded by the singleton daemon.pid lock); the DB check
+    # inside the lock catches an owner that committed earlier.
+    def _owned_by_other():
+        return conn.execute(
+            "SELECT DISTINCT problem FROM library_decls WHERE target_file = ? "
+            "AND problem != ? AND lifecycle IN ('migrated', 'cleaned')",
+            (target_file, problem)).fetchone()
+    with _MIGRATE_PATHS_LOCK:
+        racing = target_file in _MIGRATE_PATHS_IN_FLIGHT
+        owner = None if racing else _owned_by_other()
+        if not racing and owner is None:
+            _MIGRATE_PATHS_IN_FLIGHT.add(target_file)
+    if racing:
+        return PipelineResult(
+            outcome="failed", failure_reason="librarian_file_owned_by_other",
+            failure_detail=(
+                f"{target_file}: another problem's migrate unit is writing "
+                f"this file right now — same-path units must not race."))
     if owner is not None:
         return PipelineResult(
             outcome="failed", failure_reason="librarian_file_owned_by_other",
@@ -2392,6 +2413,28 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_file,
                 f"{owner['problem']} — committing would clobber them. "
                 f"Re-classify this problem's decls to a different file, or "
                 f"cite the owner's migrated decls instead of re-emitting."))
+    try:
+        return _run_migrate_locked(
+            conn, problem=problem, workspace=workspace,
+            target_file=target_file, target_path=target_path,
+            target_module=target_module, rows=rows,
+            ordered_slugs=ordered_slugs, defs_names=defs_names,
+            whitelist=whitelist)
+    finally:
+        with _MIGRATE_PATHS_LOCK:
+            _MIGRATE_PATHS_IN_FLIGHT.discard(target_file)
+
+
+_MIGRATE_PATHS_LOCK = threading.Lock()
+_MIGRATE_PATHS_IN_FLIGHT: "set[str]" = set()
+
+
+def _run_migrate_locked(conn, *, problem, workspace, target_file, target_path,
+                        target_module, rows, ordered_slugs, defs_names,
+                        whitelist):
+    """The body of `_run_migrate` past the ownership/race guard — runs with
+    `target_file` claimed in `_MIGRATE_PATHS_IN_FLIGHT`."""
+    from . import PipelineResult
 
     # Phase 1 — mechanical relabel pre-pass (librarian_plan §4): best-effort
     # assemble the whole file by pure relabel (no LLM). file↔DB drift raises
