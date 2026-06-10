@@ -2301,6 +2301,21 @@ def cite_drop_aliases(workspace: Path, problem: str,
         if not removed:
             continue
         edits[W.rel] = dropped
+        # A reference the inliner could NOT rewrite (partial application — e.g.
+        # polish un-∀'d the wrapper so consumers' k-arg calls now under-apply;
+        # by design `_inline_wrapper_call` leaves those alone) must VETO the
+        # drop: the gate below only builds touched files, so a survivor
+        # reference in an untouched consumer would dangle and break the whole
+        # problem at the bridge build (primary e2e 2026-06-10). Keep the
+        # wrapper instead — it already cites mathlib, strict improvement.
+        ref = re.compile(r"(?<![\w'.])" + re.escape(W.name) + r"(?![\w'])")
+        leftover = [rel for rel in rels
+                    if ref.search(edits.get(rel, gettext(rel)))]
+        if leftover:
+            print(f"[staged] cite-drop SKIP `{W.name}` (inlined {n_inlined}): "
+                  f"references remain in {', '.join(r.rsplit('/', 1)[-1] for r in leftover)}",
+                  flush=True)
+            continue                              # keep wrapper (bridge stays)
         gate = [_build_file_copy_isolated(workspace, t) for t in edits.values()]
         if not all(ok for ok, _ in gate):
             why = next(d for ok, d in gate if not ok)

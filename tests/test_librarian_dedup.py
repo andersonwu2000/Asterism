@@ -1422,3 +1422,67 @@ def test_file_cleanup_polish_retries_warnings_keeps_best(tmp_path,
     _fake_bwo_seq(monkeypatch, ["warning: x:1:0: unused variable `h`\n", ""])
     assert dedup.file_cleanup_polish(tmp_path, "p", rel, [d]) is True
     assert (tmp_path / rel).read_text(encoding="utf-8") == v2   # kept the clean retry
+
+
+# ---------------------------------------------------------------------
+# bridge cite-drop — residual-reference veto (primary e2e 2026-06-10)
+# ---------------------------------------------------------------------
+
+def _cite_drop_ws(tmp_path, wrapper_sig_args, consumer_call):
+    """Two-file workspace: F.lean holds a pure-mathlib wrapper `w`, G.lean a
+    consumer calling it. Returns the scope decls."""
+    f = tmp_path / "Library/P/F.lean"
+    g = tmp_path / "Library/P/G.lean"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(
+        "import Mathlib\n"
+        f"theorem w {wrapper_sig_args} :\n"
+        "    0 < n :=\n"
+        "  Nat.pos_of_ne_zero h\n"
+        "theorem keep : True := trivial\n", encoding="utf-8")
+    g.write_text(
+        "import Mathlib\n"
+        f"theorem uses : True := by have := {consumer_call}; trivial\n",
+        encoding="utf-8")
+    sig = f"{wrapper_sig_args} : 0 < n"
+    return [dedup._Decl(fqn="Library.P.F.w", rel="Library/P/F.lean",
+                        module="Library.P.F", name="w", sig=sig,
+                        binders=0, concl_tokens=frozenset()),
+            dedup._Decl(fqn="Library.P.G.uses", rel="Library/P/G.lean",
+                        module="Library.P.G", name="uses", sig=": True",
+                        binders=0, concl_tokens=frozenset())]
+
+
+def _patch_cite_drop_env(monkeypatch, build_results=None):
+    from Tooling.pipeline import _lake
+    monkeypatch.setattr(_lake, "lake_build_modules", lambda ws, mods: (True, ""))
+    monkeypatch.setattr(dedup, "_missing_oleans", lambda ws, mods: [])
+    monkeypatch.setattr(dedup, "_build_file_copy_isolated",
+                        lambda ws, t, **k: (True, ""))
+
+
+def test_cite_drop_vetoes_on_partial_application_reference(tmp_path,
+                                                           monkeypatch) -> None:
+    # polish un-∀'d the wrapper → 2 explicit params, but the consumer calls it
+    # with 1 arg (partial application). The inliner skips partials by design —
+    # the drop must then be VETOED (a dangling reference in an untouched
+    # consumer broke the whole problem at the bridge build, primary e2e).
+    scope = _cite_drop_ws(tmp_path, "(n : Nat) (h : n ≠ 0)", "w 3")
+    _patch_cite_drop_env(monkeypatch)
+    out = dedup.cite_drop_aliases(tmp_path, "p", scope)
+    assert out == {}                                          # nothing dropped
+    txt = (tmp_path / "Library/P/F.lean").read_text(encoding="utf-8")
+    assert "theorem w " in txt                                # wrapper kept
+
+
+def test_cite_drop_inlines_and_drops_full_application(tmp_path,
+                                                      monkeypatch) -> None:
+    scope = _cite_drop_ws(tmp_path, "(n : Nat) (h : n ≠ 0)", "w 3 hx")
+    _patch_cite_drop_env(monkeypatch)
+    out = dedup.cite_drop_aliases(tmp_path, "p", scope)
+    assert out == {"Library.P.F.w": "Nat.pos_of_ne_zero"}
+    assert "theorem w " not in (tmp_path / "Library/P/F.lean").read_text(
+        encoding="utf-8")                                     # dropped
+    g = (tmp_path / "Library/P/G.lean").read_text(encoding="utf-8")
+    assert "(Nat.pos_of_ne_zero hx)" in g                     # inlined
+    assert "w 3 hx" not in g
