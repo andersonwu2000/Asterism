@@ -796,3 +796,28 @@ def test_commit_classify_orders_defs_decls_by_source_edges(conn, tmp_path):
     rows = {r["slug"]: r["file_order"]
             for r in db.library_decls_for(conn, "p", lifecycle="classified")}
     assert rows["core"] < rows["user1"]           # dependency precedes user
+
+
+def test_bridge_probe_skips_mathlib_citations(conn, tmp_path):
+    # cite-drop records MATHLIB citations (Set.mem_of_mem_inter_left); the
+    # probe must not turn one into `import Set` (unknown module prefix → the
+    # whole probe is red → false not_mechanical, stokes_pullback 2026-06-12).
+    # A Library citation (cross-problem redirect) still imports + opens.
+    db.upsert_library_decl(conn, problem="p", slug="main", source_goal_id=None)
+    db.set_library_verdict(conn, problem="p", slug="main", verdict="keep")
+    conn.execute("UPDATE library_decls SET lifecycle='migrated', "
+                 "target_file='Library/T/F.lean', "
+                 "target_name='Library.T.F.main' WHERE slug='main'")
+    for slug, citation in (("w1", "Set.mem_of_mem_inter_left"),
+                           ("w2", "Library.Other.Mod.sharedDef")):
+        db.upsert_library_decl(conn, problem="p", slug=slug, source_goal_id=None)
+        db.set_library_verdict(conn, problem="p", slug=slug,
+                               verdict="cite-library", citation=citation)
+    conn.commit()
+    migrated = [r for r in db.library_decls_for(conn, "p")
+                if r["lifecycle"] == "migrated"]
+    text = lib._bridge_probe_text(conn, problem="p", statement="True",
+                                  migrated=migrated)
+    assert "import Set" not in text
+    assert "import Library.Other.Mod" in text
+    assert "open Library.Other.Mod" in text

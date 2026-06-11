@@ -1969,7 +1969,7 @@ def _mechanical_migrate_file(
         if r["lifecycle"] == "migrated" and r["target_file"]:
             defs_imports[r["slug"]] = _library_module_of(r["target_file"])
         elif r["lifecycle"] == "cited" and r["citation"] \
-                and "." in r["citation"]:
+                and r["citation"].startswith("Library."):
             defs_imports[r["slug"]] = r["citation"].rsplit(".", 1)[0]
 
     # local_defs: Defs symbols classify placed in THIS file — they migrate
@@ -3189,9 +3189,15 @@ def _bridge_probe_text(conn, *, problem, statement, migrated,
     # CITED decls (cross-problem redirect): the original statement references
     # them bare, but they live in ANOTHER problem's Library module — the probe
     # must import + open that module too or the statement doesn't elaborate.
+    # ONLY Library citations: cite-drop also records MATHLIB citations
+    # (`Set.mem_of_mem_inter_left`), and naively splitting one yields
+    # `import Set` → unknown module prefix → the whole probe is red and Gate B
+    # reports a false not_mechanical (stokes_pullback 2026-06-12). A mathlib
+    # citation needs nothing here — its consumers were inlined at drop time
+    # and the root statement never references it.
     for r in db.library_decls_for(conn, problem):
         if r["lifecycle"] == "cited" and r["citation"] \
-                and "." in r["citation"]:
+                and r["citation"].startswith("Library."):
             ns = r["citation"].rsplit(".", 1)[0]
             modules.add(ns)
             namespaces.add(ns)
