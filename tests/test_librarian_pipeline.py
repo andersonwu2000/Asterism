@@ -760,3 +760,15 @@ def test_run_no_output_fails(conn, tmp_path, monkeypatch):
     r = lib.run_librarian(conn, problem="p", work_kind="classify",
                           workspace=tmp_path, pipeline_id="pid")
     assert r.outcome == "failed" and r.failure_reason == "agent_no_output"
+
+
+def test_verify_classify_rejects_owned_file():
+    # migrate writes whole files — a plan placing decls into a file another
+    # problem already owns can only clobber (form_coord 2026-06-11).
+    plan = _plan([{"path": "Library/A/Taken.lean", "imports": [],
+                   "decls": ["a"]}])
+    err = lib.verify_classify(plan, {"a"},
+                              owned_files={"Library/A/Taken.lean"})
+    assert "another problem" in err and "Taken.lean" in err
+    assert lib.verify_classify(plan, {"a"}, owned_files=set()) == ""
+    assert lib.verify_classify(plan, {"a"}) == ""             # back-compat

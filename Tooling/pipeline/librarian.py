@@ -127,10 +127,15 @@ def _decl_line_counts(workspace, problem: str,
 
 
 def verify_classify(plan: ClassifyPlan, kept_slugs: set[str],
-                    decl_lines: "dict[str, int] | None" = None) -> str:
+                    decl_lines: "dict[str, int] | None" = None,
+                    owned_files: "set[str] | None" = None) -> str:
     """Reject a layout plan that doesn't cover exactly the kept decls,
-    imports a non-Library module, has an import cycle, or (when `decl_lines`
-    is given) plans a file over the size budget. "" on ok."""
+    imports a non-Library module, has an import cycle, (when `decl_lines` is
+    given) plans a file over the size budget, or (when `owned_files` is given)
+    places decls into a file another problem already owns — migrate writes
+    whole files, so a shared path can only clobber (the topic-natural name is
+    often already taken: form_coord self/cont both replanned into comp's
+    FormCoordChange.lean, 2026-06-11). "" on ok."""
     # Every kept decl placed exactly once; no stray slugs.
     placed: list[str] = [d for f in plan.files for d in f.decls]
     placed_set = set(placed)
@@ -157,6 +162,16 @@ def verify_classify(plan: ClassifyPlan, kept_slugs: set[str],
     })
     if cycle:
         return f"import cycle: {' -> '.join(cycle)}"
+
+    # File ownership: a path another problem already migrated into is taken.
+    if owned_files:
+        for f in plan.files:
+            if f.path.replace("\\", "/") in owned_files:
+                return (f"{f.path}: already holds another problem's migrated "
+                        f"declarations — pick a DIFFERENT file name in the "
+                        f"same directory (e.g. suffix by sub-topic); shared "
+                        f"definitions are cited automatically, your file only "
+                        f"needs your own declarations")
 
     # Size budget (mathlib longFile, see CLASSIFY_FILE_LINE_BUDGET above).
     if decl_lines is not None:
@@ -1010,6 +1025,21 @@ def compile_librarian_context(
             lines.append("")
             lines += [f"- `Library/{d}/`" for d in existing]
             lines.append("")
+        # Files other problems already own — migrate writes whole files, so
+        # these paths are TAKEN: the plan must pick different file names
+        # (the mechanical verify rejects collisions).
+        owned = sorted({r["target_file"].replace("\\", "/")
+                        for r in conn.execute(
+                            "SELECT DISTINCT target_file FROM library_decls "
+                            "WHERE problem != ? AND lifecycle IN "
+                            "('migrated', 'cleaned') AND target_file IS NOT "
+                            "NULL", (problem,))})
+        if owned:
+            lines.append("## Existing Library FILES (taken — your plan must "
+                         "use different file names)")
+            lines.append("")
+            lines += [f"- `{f}`" for f in owned]
+            lines.append("")
         inv = _inv.build_inventory(conn, workspace, problem)
         deps_by_slug = {d.slug: d.deps for d in inv.decls}
         # Source size per decl — the agent budgets file sizes with these
@@ -1560,8 +1590,13 @@ def _run_structured(conn, *, problem, work_kind, workspace,
                               failure_detail=err)
     kept = {r["slug"] for r in db.library_decls_for(conn, problem,
                                                     lifecycle="deduped")}
+    owned = {r["target_file"].replace("\\", "/") for r in conn.execute(
+        "SELECT DISTINCT target_file FROM library_decls WHERE problem != ? "
+        "AND lifecycle IN ('migrated', 'cleaned') AND target_file IS NOT NULL",
+        (problem,))}
     verr = verify_classify(plan, kept,
-                           decl_lines=_decl_line_counts(workspace, problem, kept))
+                           decl_lines=_decl_line_counts(workspace, problem, kept),
+                           owned_files=owned)
     if verr:
         return PipelineResult(outcome="failed",
                               failure_reason="librarian_verify_failed",
