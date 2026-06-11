@@ -2676,7 +2676,13 @@ def _run_migrate_locked(conn, *, problem, workspace, target_file, target_path,
         target_path=target_path, target_module=target_module,
         ordered_slugs=ordered_slugs, defs_names=defs_names,
         whitelist=whitelist)
-    if mech_res.outcome != "success"             and "heartbeats" in (mech_res.failure_detail or ""):
+    _hb_detail = mech_res.failure_detail or ""
+    if mech_res.outcome != "success"             and ("heartbeats" in _hb_detail
+                 or "failed to synthesize" in _hb_detail):
+        # ("failed to synthesize" included: the gateway's validate detail is
+        # truncated BEFORE the `maximum number of heartbeats` tail, so the
+        # timeout flavor is indistinguishable from a missing instance at this
+        # layer — a genuinely-missing instance just fails the one retry too.)
         # Heartbeat-budget rung: every decl built STANDALONE at proof time,
         # but the merged file elaborates in a richer environment — the Defs
         # opens replay (`open scoped Manifold/Bundle` activates scoped
