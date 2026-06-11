@@ -5,6 +5,9 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-10
+The Librarian cleanup pipeline was substantially restructured ??consolidating its stages into unified `decide` and `polish` phases, adding a new mathlib-naming `rename` stage and a final free-form `audit` review, and fixing a series of correctness bugs around citation dropping, alias coverage, keystone renaming, and silently swallowed failures. Dispatcher reliability was improved by persisting Librarian fail-counts across restarts and re-enqueuing batches after infrastructure failures. The project also gained proper packaging and a GitHub Actions CI pipeline (with the Ubuntu leg now blocking), six prompt-code drifts were corrected, and the strategist model was upgraded to Claude Fable 5.
+
 ### 2026-06-09
 Hardened the librarian's deduplication pipeline by fixing same-file recall, requiring cross-file drops to have a surviving declaration in the dropped declaration's import closure, rebuilding stale oleans before correctness gates, and retiring the legacy flat pair-marker path. Advanced the P2/P3 cleanup stages with mechanical removal of unused Decidable arguments, proof simplification and docstring polish that strips framework-process jargon and comments from migrated proofs, and a more robust variable-extraction pass that un-prenexes and hoists shared binders with section grouping and per-stage timing. Also improved orchestration reliability: the dispatcher now re-fires the bridge gate when re-cleaning already-promoted problems, and the watcher correctly labels and retires cleanup sub-agents to fix an active-agent over-count.
 
