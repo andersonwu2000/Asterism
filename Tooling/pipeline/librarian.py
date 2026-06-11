@@ -916,6 +916,19 @@ def ready_cleanup_files(conn, *, problem: str, workspace,
     return work
 
 
+def _inject_heartbeat_options(text: str) -> str:
+    """Insert elaboration-budget options after the import block (migrate's
+    heartbeat rung — see the caller). Idempotent."""
+    if "synthInstance.maxHeartbeats" in text:
+        return text
+    lines = text.splitlines()
+    k = max((i + 1 for i, l in enumerate(lines)
+             if l.startswith("import ")), default=0)
+    lines[k:k] = ["", "set_option maxHeartbeats 800000",
+                  "set_option synthInstance.maxHeartbeats 400000"]
+    return "\n".join(lines)
+
+
 def _harvested_decls(conn, problem: str) -> list:
     """Decls actually placed in the Library — 'migrated' (pre-cleanup) plus
     'cleaned' (Step 4 done). The set bridge re-derives against and INDEX
@@ -2663,6 +2676,28 @@ def _run_migrate_locked(conn, *, problem, workspace, target_file, target_path,
         target_path=target_path, target_module=target_module,
         ordered_slugs=ordered_slugs, defs_names=defs_names,
         whitelist=whitelist)
+    if mech_res.outcome != "success"             and "heartbeats" in (mech_res.failure_detail or ""):
+        # Heartbeat-budget rung: every decl built STANDALONE at proof time,
+        # but the merged file elaborates in a richer environment — the Defs
+        # opens replay (`open scoped Manifold/Bundle` activates scoped
+        # instances the pure-mathlib helpers never had in scope) can push
+        # typeclass synthesis past the 20000 default (stokes form_bundle
+        # AlternatingMapContDiff, 2026-06-11: standalone green, merged
+        # `timeout at typeclass`). Which opens a decl truly needs is not
+        # mechanically decidable; granting the merged file a bigger budget
+        # is — and self-limiting (only files that need it get the option,
+        # and it lands in the Library file where a reviewer can see it).
+        mech_text = _inject_heartbeat_options(mech_text)
+        mech_res = _commit_migrated_file(
+            mech_text, conn=conn, problem=problem, workspace=workspace,
+            target_path=target_path, target_module=target_module,
+            ordered_slugs=ordered_slugs, defs_names=defs_names,
+            whitelist=whitelist)
+        if mech_res.outcome == "success":
+            print(f"[librarian] {target_file}: migrated mechanically with "
+                  f"heartbeat bump ({len(ordered_slugs)} decls, no LLM)",
+                  flush=True)
+            return mech_res
     if mech_res.outcome == "success":
         print(f"[librarian] {target_file}: migrated mechanically "
               f"({len(ordered_slugs)} decls, no LLM)", flush=True)

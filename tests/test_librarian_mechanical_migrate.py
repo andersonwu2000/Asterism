@@ -1100,3 +1100,50 @@ def test_run_migrate_redirects_despite_docstring_diff(conn, tmp_path,
                if r2["slug"] == "sharedDef")
     assert row["lifecycle"] == "cited"            # redirected despite doc diff
     assert captured["slugs"] == ["uses_it"]
+
+
+def test_inject_heartbeat_options_after_imports():
+    t = "import Mathlib\nimport Library.Q.X\n\nopen Foo\n\ntheorem a : True := trivial\n"
+    out = lib._inject_heartbeat_options(t)
+    ls = out.splitlines()
+    assert ls[2] == ""
+    assert ls[3] == "set_option maxHeartbeats 800000"
+    assert ls[4] == "set_option synthInstance.maxHeartbeats 400000"
+    assert lib._inject_heartbeat_options(out) == out      # idempotent
+
+
+def test_run_migrate_heartbeat_rung(conn, tmp_path, monkeypatch):
+    # Standalone-green decls can time out typeclass synthesis in the MERGED
+    # environment (Defs scoped-opens replay; stokes form_bundle 2026-06-11).
+    # A 'heartbeats' build failure must retry once with the budget options
+    # injected — and succeed without burning the unit.
+    tf = "Library/P/Heavy.lean"
+    _seed_classified(conn, "lem_a", "True", tf, 0)
+    _write_proof(tmp_path, "lem_a",
+                 "import Mathlib\nimport Problems.p.Defs\n\n"
+                 "namespace Problems.p\n"
+                 "theorem lem_a : True := by trivial\n"
+                 "end Problems.p\n")
+    (tmp_path / "Problems" / "p" / "Defs.lean").write_text(
+        "import Mathlib\nnamespace Problems.p\nend Problems.p\n",
+        encoding="utf-8")
+    calls = []
+
+    def _fake_commit(text, **kw):
+        calls.append(text)
+        from Tooling.pipeline import PipelineResult
+        if "synthInstance.maxHeartbeats" not in text:
+            return PipelineResult(
+                outcome="failed", failure_reason="librarian_gate_failed",
+                failure_detail="(deterministic) timeout at typeclass, maximum "
+                               "number of heartbeats (20000) has been reached")
+        return PipelineResult(outcome="success")
+    monkeypatch.setattr(lib, "_commit_migrated_file", _fake_commit)
+    r = lib._run_migrate(
+        conn, problem="p", workspace=tmp_path, pipeline_id="pid",
+        target_file=tf, attempts_dir=tmp_path / ".a",
+        problem_dir=tmp_path / "Problems" / "p",
+        prompt_path=tmp_path / "x.md", whitelist=[])
+    assert r.outcome == "success"
+    assert len(calls) == 2                       # plain, then bumped
+    assert "set_option synthInstance.maxHeartbeats 400000" in calls[1]
