@@ -1912,6 +1912,19 @@ def _mechanical_migrate_file(
         defs_text = defs_lean.read_text(encoding="utf-8")
 
     import_set: set[str] = set()
+    # Replay Defs.lean's own `import Library.*` lines. relabel drops every
+    # decl's `import Problems.<p>.Defs` (by design), and the existing
+    # compensation (`defs_imports`) only re-adds modules for symbols DECLARED
+    # in this problem's Defs.lean. Under clean-before-cite a Defs.lean can be
+    # a pure re-export shim — `import Library.X` + `open …`, zero own decls —
+    # so the proofs reached Library symbols transitively through the dropped
+    # import and nothing put the Library imports back: opens survived,
+    # imports vanished → `unknown namespace` (stokes bdry_chart_topo,
+    # 2026-06-11). A redundant import is build-harmless; decide minimizes
+    # the block later.
+    for ln in defs_text.splitlines():
+        if re.match(r"import\s+Library\.", ln.strip()):
+            import_set.add(ln.strip())
     open_set: set[str] = set()
     chunk_by_slug: dict[str, str] = {}
     holes: list[str] = []

@@ -932,3 +932,32 @@ def test_defs_decl_source_docstring_travels_with_decl():
     # a /-! module docstring above a decl is NOT a decl docstring — no extension
     text2 = ("/-! # title -/\n\ndef d : Nat := 0\n")
     assert "title" not in lib._defs_decl_source(text2, "d")
+
+
+def test_mechanical_migrate_replays_defs_library_imports(conn, tmp_path):
+    # clean-before-cite: a problem's Defs.lean can be a pure re-export shim
+    # (import Library.X + open, ZERO own decls). relabel drops every decl's
+    # `import Problems.<p>.Defs`, and defs_imports only covers symbols
+    # DECLARED here (none) — so the Library imports the proofs relied on
+    # transitively must be replayed from Defs.lean itself, else the assembled
+    # header has the opens but not the imports → unknown namespace
+    # (stokes bdry_chart_topo 2026-06-11).
+    tf = "Library/P/User.lean"
+    _seed_classified(conn, "lem_a", "True", tf, 0)
+    _write_proof(tmp_path, "lem_a",
+                 "import Mathlib\nimport Problems.p.Defs\n\n"
+                 "namespace Problems.p\n"
+                 "theorem lem_a : True := by trivial\n"
+                 "end Problems.p\n")
+    pdir = tmp_path / "Problems" / "p"
+    (pdir / "Defs.lean").write_text(
+        "import Mathlib\nimport Library.Q.Shared\n\n"
+        "open Library.Q.Shared\n\n"
+        "namespace Problems.p\nend Problems.p\n", encoding="utf-8")
+    rows = [r for r in db.library_decls_for(conn, "p")
+            if r["target_file"] == tf]
+    text, holes, _asm = lib._mechanical_migrate_file(
+        conn, problem="p", workspace=tmp_path, target_file=tf,
+        target_module="Library.P.User", rows=rows)
+    assert holes == []
+    assert "import Library.Q.Shared" in text     # replayed from Defs.lean
