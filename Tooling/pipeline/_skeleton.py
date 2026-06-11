@@ -12,6 +12,7 @@ import shutil
 from pathlib import Path
 
 from ._lake import lean_path_to_module
+from ..quality.dedupe import leading_decl_attrs
 
 
 # Curry-Howard unified — the prove loop accepts any declaration head
@@ -200,6 +201,7 @@ def promote_to_alias(
         annotation
         + "\n".join(orig_imports) + "\n\n"
         + f"namespace {namespace}\n\n"
+        + f"{leading_decl_attrs(original, slug)}"
         + f"def {slug} := @{namespace}.{sid_token}\n\n"
         + f"end {namespace}\n"
     )

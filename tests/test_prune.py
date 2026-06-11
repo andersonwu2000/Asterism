@@ -650,6 +650,40 @@ def test_reconcile_idempotent_on_f52_def_alias_form(
     assert parent.read_text(encoding="utf-8") == before
 
 
+def test_reconcile_preserves_instance_attr_on_prop_class_root(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """A Prop-class root authored `@[instance] theorem main : T := by sorry`
+    must finalize to `@[instance] def main := @…` so the proved fact stays a
+    findable instance through the def-alias rewrite — and idempotently so.
+    (Plain `theorem main` finalizing WITHOUT an attribute is covered by the
+    other reconcile tests, guarding the non-instance majority from regression.)
+    """
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    sid = _seed_strategy(conn, goal_id=root, sid_label="s1",
+                         status="succeeded")
+    db.update_strategy_scratch_path(
+        conn, sid, f"Problems/p/proofs/_strategy_s{sid}.lean")
+    proofs = tmp_path / "Problems" / "p" / "proofs"
+    proofs.mkdir(parents=True)
+    (proofs / f"_strategy_s{sid}.lean").write_text("-- ok\n")
+    parent = tmp_path / "Problems/p/Root.lean"
+    parent.parent.mkdir(parents=True, exist_ok=True)
+    parent.write_text(
+        f"import Mathlib\nimport Problems.p.proofs._strategy_s{sid}\n\n"
+        f"namespace Problems.p\n\n"
+        f"@[instance] theorem main : T := by sorry\n\n"
+        f"end Problems.p\n",
+        encoding="utf-8",
+    )
+    prune.reconcile_proved_goals(conn, tmp_path, "p")
+    out = parent.read_text(encoding="utf-8")
+    assert f"@[instance]\ndef main := @Problems.p.s{sid}" in out
+    # Idempotent over its own instance-bearing output.
+    assert prune.reconcile_proved_goals(conn, tmp_path, "p") == []
+
+
 # ---------------------------------------------------------------------
 # F42 — winning_chain follows alias_target_id so orphan canonicals stay
 # ---------------------------------------------------------------------

@@ -144,6 +144,20 @@ def test_to_forall_form_skips_colons_inside_groups() -> None:
     assert dedupe._to_forall_form(sig) == "∀ (x : Nat) (y : Nat), x = y"
 
 
+def test_leading_decl_attrs_preserves_instance() -> None:
+    """`leading_decl_attrs` captures `@[instance]` (same-line + own-line, and
+    over an already-aliased `def`) so a Prop-class root's instance attribute
+    survives alias-finalization; returns '' for a plain theorem (no regression
+    for the non-instance majority)."""
+    f = dedupe.leading_decl_attrs
+    assert f("@[instance] theorem main : T := by sorry", "main") == "@[instance]\n"
+    assert f("@[instance]\ntheorem main : T := by sorry", "main") == "@[instance]\n"
+    assert f("@[instance] def main := @X.s1", "main") == "@[instance]\n"
+    assert (f("@[simp, instance] theorem main : T := by sorry", "main")
+            == "@[simp, instance]\n")
+    assert f("theorem main : T := by sorry", "main") == ""
+
+
 # ---------------------------------------------------------------------
 # _eligible_ancestors (DB-driven, no subprocess)
 # ---------------------------------------------------------------------

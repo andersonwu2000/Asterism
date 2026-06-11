@@ -22,6 +22,7 @@ import sqlite3
 from pathlib import Path
 
 from ..state import db
+from .dedupe import leading_decl_attrs
 
 
 def _lean_path_to_module(workspace: Path, lean_path: Path) -> str:
@@ -108,6 +109,7 @@ def _canonical_alias_content(*, problem: str, goal_slug: str,
         annotation
         + "\n".join(keep_imports) + "\n\n"
         f"namespace Problems.{problem}\n\n"
+        f"{leading_decl_attrs(current, goal_slug)}"
         f"def {goal_slug} := @Problems.{problem}.{sid_token}\n\n"
         f"end Problems.{problem}\n"
     )

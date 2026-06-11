@@ -122,18 +122,26 @@ def _retain_recent_logs(log_dir: Path, *, keep: int) -> list[Path]:
 
 
 # Root.lean lifecycle:
-#  initial state — auto-written by `init`: `theorem main : <stmt> := by sorry`
+#  initial state — HAND-authored: `theorem main : <stmt> := by sorry`. An
+#                  optional leading attribute is allowed: a Prop-class root
+#                  may be `@[instance] theorem main : <PropClass> := by sorry`
+#                  so the proved fact registers as a typeclass instance. The
+#                  `theorem` keyword is load-bearing: Lean enforces
+#                  `<stmt> : Prop`, so a Type-valued (data) `@[instance]` is
+#                  rejected at the build gate — the framework only ever proves
+#                  Props, never emits unverifiable data.
 #  during run    — framework writes proofs/_strategy_sNN.lean files;
 #                  Root.lean unchanged.
-#  on root proved — `prune.reconcile_proved_goals` rewrites Root.lean to
-#                   wrap form: `import Problems.X.proofs._strategy_sNN`
-#                   then `theorem main : <stmt> := sNN`.
-#  Manual editing of Root.lean is not expected. The init guard below
-#  rejects anything that doesn't match these two shapes (sorry stub or
-#  wrap form) unless `--force` is given.
+#  on root proved — `prune.reconcile_proved_goals` rewrites Root.lean to the
+#                   def-alias form: `import Problems.X.proofs._strategy_sNN`
+#                   then `def main := @Problems.X.sNN` (any leading
+#                   `@[instance]` is preserved → `@[instance] def main := …`).
+#  Manual editing of Root.lean is not expected.
 
 # Lazy match between `theorem main` and the first `:=` so statements
-# containing colons (`∀ p : ℕ, ...`) don't break the regex.
+# containing colons (`∀ p : ℕ, ...`) don't break the regex. A leading
+# `@[instance]`/attribute sits before `theorem` and is outside the match,
+# so extraction/classification handle attributed roots unchanged.
 _SORRY_BODY_RE = re.compile(
     r"theorem\s+main\b.*?:=\s*by\s+sorry\b", re.DOTALL)
 # Wrap form: bound to a strategy term `s\d+`. The promote-to-Root step

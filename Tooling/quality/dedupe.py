@@ -1112,6 +1112,31 @@ def find_canonicals_batch(
     return result
 
 
+def leading_decl_attrs(text: str, slug: str) -> str:
+    """The `@[...]` attribute block immediately preceding the
+    `theorem/def/instance/abbrev <slug>` declaration in `text`, each
+    attribute normalized onto its own line (trailing newline), or '' if
+    none.
+
+    Lets the alias-finalization writers (`prune._canonical_alias_content`,
+    `_skeleton.promote_to_alias`) carry e.g. `@[instance]` from a
+    Prop-class root's stub (`@[instance] theorem main : T := by sorry`)
+    through the `def <slug> := @…` rewrite. Returns '' for the common
+    plain-`theorem` case, so non-instance roots finalize byte-for-byte
+    as before. Matches both same-line (`@[instance] theorem main`) and
+    own-line (`@[instance]\\ntheorem main`) forms, and is idempotent over
+    an already-aliased `@[instance] def main := …`.
+    """
+    m = re.search(
+        r"((?:@\[[^\]]*\][ \t]*\n?[ \t]*)+)"
+        r"(?:theorem|def|instance|abbrev)\s+" + re.escape(slug) + r"\b",
+        text,
+    )
+    if not m:
+        return ""
+    return "".join(a + "\n" for a in re.findall(r"@\[[^\]]*\]", m.group(1)))
+
+
 def build_alias_content(*, original_content: str,
                         canonical_module: str,
                         canonical_slug: str,
