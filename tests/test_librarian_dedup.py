@@ -39,11 +39,16 @@ def test_replace_full_fqn() -> None:
     assert n == 2
 
 
-def test_fqn_not_matched_when_extended() -> None:
-    # `Library.A.foo.comp` must not be partially rewritten.
-    out, n = dedup.replace_token("Library.A.foo.comp", "Library.A.foo", "Library.B.bar")
-    assert out == "Library.A.foo.comp"
-    assert n == 0
+def test_fqn_projection_rewrites_longer_name_guarded() -> None:
+    # SPEC CHANGE (stokes bdry_manifold 2026-06-11): `Library.A.foo.comp` IS
+    # dot-notation projection on the decl being renamed — it must rewrite to
+    # `Library.B.bar.comp` (the old name ceases to exist; leaving it dangles).
+    out, n = dedup.replace_token("Library.A.foo.comp", "Library.A.foo",
+                                 "Library.B.bar")
+    assert out == "Library.B.bar.comp" and n == 1
+    # what the old test actually guarded — a LONGER identifier — still holds:
+    out, n = dedup.replace_token("Library.A.foox", "Library.A.foo", "B")
+    assert out == "Library.A.foox" and n == 0
 
 
 def test_skips_line_comment() -> None:
@@ -1640,3 +1645,21 @@ def test_staged_file_agentic_stages_gate_bridged_decls(tmp_path,
     assert seen["decide"] == ["keep_me", "bridge_alias"]
     assert seen["audit"] == ["keep_me", "bridge_alias"]
     assert res["bridged"] == {b.fqn: a.fqn}
+
+
+def test_replace_token_rewrites_dot_projection() -> None:
+    # Dot-notation projection on the renamed decl MUST rewrite — the old name
+    # ceases to exist, a left-behind `old.…` is a guaranteed dangle (stokes
+    # bdry_manifold 2026-06-11: `smooth_face_proj.contDiffOn` survived the
+    # deferred rename and broke the bridge build).
+    from Tooling.quality.librarian.cleanup._common import replace_token
+    assert replace_token("h := smooth_face_proj.contDiffOn.comp hmid",
+                         "smooth_face_proj", "contDiff_faceProj") == \
+        ("h := contDiff_faceProj.contDiffOn.comp hmid", 1)
+    # FQN + projection
+    assert replace_token("Library.X.foo.comp y", "Library.X.foo",
+                         "Library.Y.bar") == ("Library.Y.bar.comp y", 1)
+    # boundaries unchanged: FQN tail / longer identifier untouched
+    assert replace_token("A.foo", "foo", "X")[1] == 0
+    assert replace_token("fool x", "foo", "X")[1] == 0
+    assert replace_token("xfoo", "foo", "X")[1] == 0

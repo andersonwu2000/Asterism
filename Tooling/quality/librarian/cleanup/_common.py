@@ -64,16 +64,22 @@ def _code_spans(text: str) -> list[tuple[int, int]]:
 
 
 def replace_token(text: str, old: str, new: str) -> tuple[str, int]:
-    """Replace whole-token occurrences of `old` with `new`, in CODE regions
+    r"""Replace whole-token occurrences of `old` with `new`, in CODE regions
     only. `old` may be a bare name (`col_sum_collapse`) or a dotted FQN
     (`Library.X.col_sum_collapse`). Boundaries treat `[A-Za-z0-9_'.]` as
     identifier chars, so:
-      - a bare `old` does NOT match `A.old` (FQN tail / projection) or
-        `oldx` / `xold`;
-      - an FQN `old` does NOT match when followed by a further `.comp`.
+      - LEADING boundary excludes `[\w'.]`: a bare `old` does not match
+        `A.old` (an FQN tail belongs to the qualified pass) nor `xold`;
+      - TRAILING boundary excludes `[\w']` but ALLOWS a `.`:
+        `old.contDiffOn` is dot-notation PROJECTION on the very decl being
+        renamed — it must rewrite, since the old name ceases to exist and a
+        left-behind `old.…` is a guaranteed dangle (stokes bdry_manifold
+        2026-06-11: `smooth_face_proj.contDiffOn` survived the deferred
+        rename and broke the bridge build). Likewise an FQN followed by
+        `.comp` rewrites.
     Returns `(new_text, n_replacements)`.
     """
-    pat = re.compile(r"(?<![\w'.])" + re.escape(old) + r"(?![\w'.])")
+    pat = re.compile(r"(?<![\w'.])" + re.escape(old) + r"(?![\w'])")
     spans = _code_spans(text)
     out: list[str] = []
     total = 0
