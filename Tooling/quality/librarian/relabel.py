@@ -39,7 +39,8 @@ _NS_RE = re.compile(r"^(\s*)namespace\s+([A-Za-z_][\w.]*)\s*$")
 _END_RE = re.compile(r"^(\s*)end\s+([A-Za-z_][\w.]*)\s*$")
 # An alias decl: `def <name> := @<fq>` (the strategy-indirection form).
 _ALIAS_RE = re.compile(
-    r"^\s*def\s+\w+\s*:=\s*@?(Problems\.[\w.]+)\s*$", re.MULTILINE)
+    r"^\s*(?:@\[[^\]]*\]\s*)*def\s+\w+\s*:=\s*@?(Problems\.[\w.]+)\s*$",
+    re.MULTILINE)
 
 
 def _replace_body_with_sorry(text: str, target_namespace: str) -> "str | None":
@@ -104,6 +105,7 @@ def relabel_self_contained(
     source_text: str, *, problem_namespace: str, target_namespace: str,
     keep_slugs: "set[str] | None" = None,
     rename_decl: "tuple[str, str] | None" = None,
+    prepend_attrs: str = "",
     defs_imports: "dict[str, str] | None" = None,
     all_defs_syms: "set[str] | None" = None,
     local_defs: "set[str] | None" = None,
@@ -365,6 +367,18 @@ def relabel_self_contained(
         # word-boundary so a substring of another identifier is untouched.
         text = re.sub(rf"\b(theorem|lemma|def|abbrev)\s+{re.escape(old)}\b",
                       rf"\1 {new}", text)
+        if prepend_attrs:
+            # Re-attach the alias's attribute block above the renamed decl
+            # (own lines; inline_alias discards the alias TEXT — it
+            # relabels the strategy text — so an @[instance] carried by
+            # the alias would silently vanish without this).
+            text = re.sub(
+                rf"(?m)^([ \t]*)((?:noncomputable\s+|private\s+"
+                rf"|protected\s+|scoped\s+)*(?:theorem|lemma|def|abbrev)"
+                rf"\s+{re.escape(new)}\b)",
+                lambda m: m.group(1) + prepend_attrs.rstrip("\n") + "\n"
+                          + m.group(1) + m.group(2),
+                text, count=1)
     if citation_map:
         # Redirect verbatim-merge sibling references in the body to their
         # canonical name. Word-boundary token rename — safe because a Lean
@@ -442,10 +456,13 @@ def inline_alias(
     strat = _alias_target(alias_text)
     if strat is None:
         return RelabelResult(False, reason="not an alias decl")
+    from ..dedupe import leading_decl_attrs
+    attrs = leading_decl_attrs(alias_text, slug)
     return relabel_self_contained(
         strategy_text, problem_namespace=problem_namespace,
         target_namespace=target_namespace, keep_slugs=keep_slugs,
-        rename_decl=(strat, slug), defs_imports=defs_imports,
+        rename_decl=(strat, slug), prepend_attrs=attrs,
+        defs_imports=defs_imports,
         all_defs_syms=all_defs_syms, local_defs=local_defs,
         citation_map=citation_map,
         sibling_modules=sibling_modules, strategy_aliases=strategy_aliases,

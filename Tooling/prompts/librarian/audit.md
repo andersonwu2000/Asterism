@@ -11,6 +11,7 @@ Read `Context.md` — it shows the file's module, its declarations, and the curr
 3. **Never change what a declaration proves.** Every declaration's elaborated type is snapshotted before and after; any difference reverts your edit. You may restructure a signature only in ways that elaborate identically (e.g. moving a leading `∀` into the binder list is identity; weakening/strengthening/reordering hypotheses is not).
    - **Renames are allowed** — but every rename MUST be declared in a `renames.json` sidecar (`{"old_leaf": "new_leaf"}`). An undeclared rename looks like a deleted declaration and fails the gate. Do not rename for the sake of renaming; earlier stages already aligned names — only fix what they missed.
    - **Never DELETE a declaration** — including a one-line alias that looks redundant: it exists precisely because other files cite it. Every declaration in, every declaration out.
+   - **Keep every declaration's leading `@[...]` attributes verbatim** (e.g. `@[instance]` — dropping it silently unregisters a global typeclass instance; the type gate cannot catch this).
 
 ## The official mathlib conventions
 

@@ -36,7 +36,7 @@ namespace Library.<Topic>
 end Library.<Topic>
 ```
 
-The framework extracts your one declaration and appends it. Keep the seed's imports; add an `import` only if your body needs a mathlib module the umbrella misses.
+The framework extracts your one declaration and appends it. Keep the seed's imports; add an `import` only if your body needs a mathlib module the umbrella misses. If the original declaration carries leading `@[...]` attributes (e.g. `@[instance]`), keep them verbatim on yours.
 
 ## Decline (write only the directive, no declaration)
 

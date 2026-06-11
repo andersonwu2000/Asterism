@@ -1147,3 +1147,56 @@ def test_run_migrate_heartbeat_rung(conn, tmp_path, monkeypatch):
     assert r.outcome == "success"
     assert len(calls) == 2                       # plain, then bumped
     assert "set_option synthInstance.maxHeartbeats 400000" in calls[1]
+
+
+# ---------------------------------------------------------------------
+# @[instance] attribute carry-through (instance-Root feature, 36021a0)
+# ---------------------------------------------------------------------
+
+def test_extract_decls_tolerates_attr_prefix():
+    text = ("namespace Library.P.F\n"
+            "@[instance] theorem foo : True := trivial\n"
+            "@[simp]\n"
+            "theorem bar : True := trivial\n"
+            "end Library.P.F\n")
+    decls = lib.extract_decls(text)
+    assert [d.name for d in decls] == ["foo", "bar"]
+
+
+def test_inline_alias_carries_instance_attr(tmp_path):
+    from Tooling.quality.librarian import relabel
+    alias = ("import Mathlib\n"
+             "import Problems.p.proofs._strategy_s11\n"
+             "namespace Problems.p\n"
+             "@[instance] def main := @Problems.p.proofs.s11\n"
+             "end Problems.p\n")
+    strategy = ("import Mathlib\n"
+                "namespace Problems.p\n"
+                "theorem s11 : Nonempty Nat := ⟨0⟩\n"
+                "end Problems.p\n")
+    res = relabel.inline_alias(
+        alias, strategy, slug="main",
+        problem_namespace="Problems.p",
+        target_namespace="Library.P.F", keep_slugs={"main"})
+    assert res.ok
+    lines = res.text.splitlines()
+    i = next(k for k, l in enumerate(lines) if "theorem main" in l)
+    assert lines[i - 1].strip() == "@[instance]"      # attr re-attached
+    # plain alias (no attr): byte-identical behavior, no spurious attr
+    res2 = relabel.inline_alias(
+        alias.replace("@[instance] ", ""), strategy, slug="main",
+        problem_namespace="Problems.p",
+        target_namespace="Library.P.F", keep_slugs={"main"})
+    assert res2.ok and "@[instance]" not in res2.text
+
+
+def test_defs_decl_source_carries_standalone_attr_line():
+    text = ("namespace Problems.p\n\nvariable {n : Nat}\n\n"
+            "@[instance]\ntheorem instFoo : Nonempty Nat := ⟨n⟩\n\n"
+            "def after : Nat := 0\n\nend Problems.p\n")
+    out = lib._defs_decl_source(text, "instFoo")
+    assert "@[instance]" in out
+    assert out.index("variable") < out.index("@[instance]") \
+        < out.index("theorem instFoo")
+    after = lib._defs_decl_source(text, "after")
+    assert "@[instance]" not in after                 # stays with instFoo

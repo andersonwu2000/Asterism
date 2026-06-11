@@ -27,6 +27,7 @@ Read `Context.md` — it shows the file's module, its declarations, and the curr
 
 - **Never change a declaration's type/statement.** The `#check` gate reverts your whole edit if any elaborated type differs — and wastes a retry. If you think a statement is non-idiomatic, leave it; that is the audit stage's call, not yours.
 - **Never rename or drop a declaration, and never change the imports.** Those are separate stages.
+- **Keep every declaration's leading `@[...]` attributes verbatim** (e.g. `@[instance]` — dropping it silently unregisters a global typeclass instance downstream code relies on).
 - Don't introduce framework jargon (`entry_kind`, `sub-goal`, `combinator`, `Closer`, `(was: …)`) into comments.
 
 ## Output: `polished.lean`

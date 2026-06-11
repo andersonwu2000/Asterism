@@ -385,7 +385,8 @@ class MigrateResult:
 _DECL_KW = ("theorem", "lemma", "def", "abbrev", "structure",
             "class", "instance", "inductive")
 _DECL_RE = re.compile(
-    r"^\s*(?:noncomputable\s+|private\s+|protected\s+|scoped\s+)*"
+    r"^\s*(?:@\[[^\]]*\]\s*)*"
+    r"(?:noncomputable\s+|private\s+|protected\s+|scoped\s+)*"
     r"(?:" + "|".join(_DECL_KW) + r")\s+([A-Za-z_][\w']*)")
 _NS_RE = re.compile(r"^\s*namespace\s+([A-Za-z_][\w.]*)")
 
@@ -394,7 +395,8 @@ _NS_RE = re.compile(r"^\s*namespace\s+([A-Za-z_][\w.]*)")
 # kinds, and per-file migrate maps each decl positionally). Reuses
 # _DECL_KW; captures the keyword rather than the name.
 _DECL_KW_RE = re.compile(
-    r"^\s*(?:noncomputable\s+|private\s+|protected\s+|scoped\s+)*"
+    r"^\s*(?:@\[[^\]]*\]\s*)*"
+    r"(?:noncomputable\s+|private\s+|protected\s+|scoped\s+)*"
     r"(def|abbrev|theorem|lemma|structure|class|inductive|instance)\b")
 
 # Nominal kinds: two separate declarations are never definitionally equal
@@ -1843,6 +1845,17 @@ def _defs_decl_source(defs_text: str, name: str) -> "str | None":
         docstring and its decl -> `unexpected token 'variable'; expected
         'lemma'` (stokes bdry_chart 2026-06-11)."""
         head = defs_text[:pos].rstrip()
+        # standalone attribute line(s) directly above the decl belong to
+        # it (e.g. `@[instance]` on its own line) — pull them in first,
+        # then any docstring above them.
+        while True:
+            nl = head.rfind("\n")
+            last = head[nl + 1:].strip()
+            if last.startswith("@[") and last.endswith("]"):
+                pos = nl + 1 if nl >= 0 else 0
+                head = defs_text[:pos].rstrip()
+                continue
+            break
         if not head.endswith("-/"):
             return pos
         k = head.rfind("/--")
