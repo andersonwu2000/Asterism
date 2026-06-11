@@ -772,3 +772,27 @@ def test_verify_classify_rejects_owned_file():
     assert "another problem" in err and "Taken.lean" in err
     assert lib.verify_classify(plan, {"a"}, owned_files=set()) == ""
     assert lib.verify_classify(plan, {"a"}) == ""             # back-compat
+
+
+def test_commit_classify_orders_defs_decls_by_source_edges(conn, tmp_path):
+    # Defs decls have no L_ files → usage_graph gives them no edges → the
+    # toposort kept the agent's wrong order (DiffForm before formBundleCore,
+    # stokes form_bundle 2026-06-11). Edges must be read from Defs.lean text.
+    pd = tmp_path / "Problems" / "p"
+    pd.mkdir(parents=True)
+    (pd / "Defs.lean").write_text(
+        "import Mathlib\n\nnamespace Problems.p\n\n"
+        "noncomputable def core (k : Nat) : Nat := k\n\n"
+        "/-- mentions core in doc only: should NOT create an edge from doc. -/\n"
+        "abbrev user1 (k : Nat) : Nat := core k\n\n"
+        "end Problems.p\n", encoding="utf-8")
+    for s in ("user1", "core"):
+        db.upsert_library_decl(conn, problem="p", slug=s, source_goal_id=None)
+        db.set_library_verdict(conn, problem="p", slug=s, verdict="keep")
+    # agent emits the USER first (wrong)
+    plan = lib.ClassifyPlan([
+        lib.ClassifyFile("Library/P/F.lean", [], ["user1", "core"])])
+    lib.commit_classify(conn, "p", plan, tmp_path)
+    rows = {r["slug"]: r["file_order"]
+            for r in db.library_decls_for(conn, "p", lifecycle="classified")}
+    assert rows["core"] < rows["user1"]           # dependency precedes user

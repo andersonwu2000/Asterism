@@ -308,6 +308,26 @@ def commit_classify(conn, problem: str, plan: ClassifyPlan,
     usage = _inv.usage_graph(workspace, problem, placed,
                              alias_map=_merge_alias_map(conn, problem),
                              root_source=_root_source(conn, problem, workspace))
+    # Defs decls have no proofs/L_ files, so `usage_graph` records NO edges
+    # among them — the intra-file toposort then can't order them and keeps the
+    # agent's sequence, which may put a user before its dependency (stokes
+    # form_bundle: classify emitted DiffForm (cites formBundleCore) at order 0
+    # → Unknown identifier at migrate, 2026-06-11). Read their edges from
+    # Defs.lean itself: X→Y when Y's name appears (whole token, comments
+    # stripped) in X's slice. Defs.lean compiles, so these edges form a
+    # sub-DAG of the source order — no cycle is possible from code text.
+    defs_placed = [d for d in placed
+                   if d in set(_inv.defs_decls(workspace, problem))]
+    if len(defs_placed) > 1:
+        dl = db.problem_dir(workspace, problem) / "Defs.lean"
+        if dl.exists():
+            dtext = dl.read_text(encoding="utf-8")
+            code = {d: _code_normalized(_defs_decl_source(dtext, d) or "")
+                    for d in defs_placed}
+            for x in defs_placed:
+                for y in defs_placed:
+                    if x != y and re.search(rf"\b{re.escape(y)}\b", code[x]):
+                        usage.setdefault(x, set()).add(y)
     # File-level usage graph: file F depends on file G iff a decl in F cites a
     # decl placed in G. Merge cyclic file groups (circular imports) into one.
     decl_file = {d: f.path for f in plan.files for d in f.decls}
