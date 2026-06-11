@@ -1580,6 +1580,15 @@ def _advance_librarian_chain(
         fail_counts.pop(target_id, None)
         db.clear_librarian_fail_count(conn, target_id=target_id)   # write-through
         return
+    if reason == "librarian_file_busy":
+        # Transient same-path contention (the lock holder needs minutes, the
+        # loser's retries land in seconds) — re-enqueued by the refill, but
+        # NOT a strike against the unit: counting it burned the cap before
+        # the winner finished (2026-06-11).
+        print(f"[librarian] {target_id.split(chr(31))[0]}: unit busy "
+              f"(same-path migrate in flight) — will retry, not counted",
+              flush=True)
+        return
     n = fail_counts.get(target_id, 0) + 1
     fail_counts[target_id] = n
     db.set_librarian_fail_count(conn, target_id=target_id, n=n)    # survives restart

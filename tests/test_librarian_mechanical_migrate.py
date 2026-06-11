@@ -1063,3 +1063,40 @@ def test_run_migrate_no_redirect_for_different_def(conn, tmp_path, monkeypatch):
     assert row["lifecycle"] != "cited"                       # NOT redirected
     assert "sharedDef" in captured["slugs"]                  # emits its OWN copy
     assert "def sharedDef" in captured["text"]
+
+
+def test_code_normalized_strips_comments():
+    a = "/-- doc A. -/\nnoncomputable def f (k : Nat) : Nat := k + 1  -- note"
+    b = "/-- different doc B, extra sentence. -/\nnoncomputable def f (k : Nat) : Nat := k + 1"
+    assert lib._code_normalized(a) == lib._code_normalized(b)
+    c = "noncomputable def f (k : Nat) : Nat := k + 2"
+    assert lib._code_normalized(a) != lib._code_normalized(c)
+
+
+def test_run_migrate_redirects_despite_docstring_diff(conn, tmp_path,
+                                                      monkeypatch):
+    # The 同源 check must compare CODE only — the three form_coord problems'
+    # Defs carry differently-worded docstrings for the byte-same def (self
+    # missed the redirect and emitted a duplicate, live 2026-06-11).
+    _setup_two_problem_shared(
+        conn, tmp_path,
+        other_def_text=("import Mathlib\n\nnamespace {ns}\n\n"
+                        "/-- TOTALLY different wording. -/\n"
+                        "noncomputable def sharedDef (k : Nat) : Nat := k + 1\n\n"
+                        "end {ns}\n"))
+    captured = {}
+
+    def _fake_commit(text, **kw):
+        captured["slugs"] = kw["ordered_slugs"]
+        from Tooling.pipeline import PipelineResult
+        return PipelineResult(outcome="success")
+    monkeypatch.setattr(lib, "_commit_migrated_file", _fake_commit)
+    lib._run_migrate(
+        conn, problem="p", workspace=tmp_path, pipeline_id="pid",
+        target_file="Library/P/Mine.lean", attempts_dir=tmp_path / ".a",
+        problem_dir=tmp_path / "Problems" / "p",
+        prompt_path=tmp_path / "x.md", whitelist=[])
+    row = next(r2 for r2 in db.library_decls_for(conn, "p")
+               if r2["slug"] == "sharedDef")
+    assert row["lifecycle"] == "cited"            # redirected despite doc diff
+    assert captured["slugs"] == ["uses_it"]

@@ -1032,8 +1032,8 @@ def compile_librarian_context(
                         for r in conn.execute(
                             "SELECT DISTINCT target_file FROM library_decls "
                             "WHERE problem != ? AND lifecycle IN "
-                            "('migrated', 'cleaned') AND target_file IS NOT "
-                            "NULL", (problem,))})
+                            "('classified', 'migrated', 'cleaned') "
+                            "AND target_file IS NOT NULL", (problem,))})
         if owned:
             lines.append("## Existing Library FILES (taken — your plan must "
                          "use different file names)")
@@ -1592,8 +1592,8 @@ def _run_structured(conn, *, problem, work_kind, workspace,
                                                     lifecycle="deduped")}
     owned = {r["target_file"].replace("\\", "/") for r in conn.execute(
         "SELECT DISTINCT target_file FROM library_decls WHERE problem != ? "
-        "AND lifecycle IN ('migrated', 'cleaned') AND target_file IS NOT NULL",
-        (problem,))}
+        "AND lifecycle IN ('classified', 'migrated', 'cleaned') "
+        "AND target_file IS NOT NULL", (problem,))}
     verr = verify_classify(plan, kept,
                            decl_lines=_decl_line_counts(workspace, problem, kept),
                            owned_files=owned)
@@ -1741,6 +1741,15 @@ class _MechIntegrityError(Exception):
     file↔DB drift (CLAUDE.md rule 10), not a 'needs the LLM' case. Surfaced
     as a loud, distinct migrate failure rather than masked by a cold
     from-scratch spawn (which would hide the corruption)."""
+
+
+def _code_normalized(s: str) -> str:
+    """Whitespace-normalized CODE of a Lean snippet: block comments and
+    docstrings (`/- … -/`, `/-- … -/`) and line comments (`-- …`) stripped
+    first. Two decls equal here produce the same kernel object."""
+    s = re.sub(r"/-.*?-/", " ", s, flags=re.DOTALL)
+    s = re.sub(r"--[^\n]*", " ", s)
+    return " ".join(s.split())
 
 
 def _variable_block_spans(defs_text: str) -> "list[tuple[int, int, str]]":
@@ -2528,8 +2537,13 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_file,
         mine = _defs_decl_source(my_defs_text, r["slug"])
         theirs = _defs_decl_source(
             theirs_p.read_text(encoding="utf-8"), r["slug"])
+        # CODE-only comparison: each problem's Defs carries its own docstring
+        # wording for the same def (self's lacked one sentence comp/cont had →
+        # the verbatim check missed the redirect and self re-emitted a
+        # duplicate, live run 2026-06-11). Comments never change the kernel
+        # object — strip them before normalizing.
         if not mine or not theirs \
-                or " ".join(mine.split()) != " ".join(theirs.split()):
+                or _code_normalized(mine) != _code_normalized(theirs):
             continue                              # same name, different def
         db.set_library_verdict(conn, problem=problem, slug=r["slug"],
                                verdict="cite-library",
@@ -2571,11 +2585,15 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_file,
         if not racing and owner is None:
             _MIGRATE_PATHS_IN_FLIGHT.add(target_file)
     if racing:
+        # Transient, NOT a verdict on this unit: the lock holder needs minutes
+        # while the loser's retries land in seconds — counting these toward
+        # LIBRARIAN_MAX_CHAIN_RETRIES burned the cap before the winner finished
+        # (live, 2026-06-11). `librarian_file_busy` is exempted from the cap.
         return PipelineResult(
-            outcome="failed", failure_reason="librarian_file_owned_by_other",
+            outcome="failed", failure_reason="librarian_file_busy",
             failure_detail=(
                 f"{target_file}: another problem's migrate unit is writing "
-                f"this file right now — same-path units must not race."))
+                f"this file right now — re-enqueued, not counted."))
     if owner is not None:
         return PipelineResult(
             outcome="failed", failure_reason="librarian_file_owned_by_other",

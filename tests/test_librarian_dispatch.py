@@ -669,3 +669,18 @@ def test_index_has_requires_exact_section(tmp_path: Path):
     # 'p' must not match the 'pp' section.
     assert dispatcher._librarian_index_has(tmp_path, "p") is False
     assert dispatcher._librarian_index_has(tmp_path, "pp") is True
+
+
+def test_advance_chain_file_busy_not_counted(tmp_path: Path):
+    # Same-path migrate contention is transient — the loser's fast retries
+    # must not burn LIBRARIAN_MAX_CHAIN_RETRIES while the winner (minutes)
+    # holds the path (live cap-burn, 2026-06-11).
+    conn = _mem()
+    tid = dispatcher._lib_encode("p", "Library/P/foo.lean")
+    fc: dict = {}
+    for _ in range(5):
+        dispatcher._advance_librarian_chain(
+            conn, tmp_path, tid, outcome="failed",
+            reason="librarian_file_busy", fail_counts=fc)
+    assert tid not in fc                          # never counted
+    assert db.librarian_fail_counts_all(conn) == {}
