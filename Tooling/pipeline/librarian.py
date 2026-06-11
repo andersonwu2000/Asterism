@@ -994,6 +994,22 @@ def compile_librarian_context(
         kept = db.library_decls_for(conn, problem, lifecycle="deduped")
         lines.append(f"_{len(kept)} kept declarations to lay out._")
         lines.append("")
+        # Existing Library tree — naming consistency: a layout that invents
+        # `ManifoldBdry/` next to an existing `ManifoldBoundary/` (same
+        # concept, two area dirs — stokes 2026-06-11) builds fine but is a
+        # PR blocker. The agent should reuse existing directories whenever
+        # the topic matches, and only mint a new one for genuinely new areas.
+        lib_root = workspace / "Library"
+        existing = sorted(
+            str(p.relative_to(lib_root)).replace("\\", "/")
+            for p in lib_root.rglob("*") if p.is_dir()
+            and not p.name.startswith((".", "_"))) if lib_root.exists() else []
+        if existing:
+            lines.append("## Existing Library directories (reuse on topic "
+                         "match; do not mint near-duplicates)")
+            lines.append("")
+            lines += [f"- `Library/{d}/`" for d in existing]
+            lines.append("")
         inv = _inv.build_inventory(conn, workspace, problem)
         deps_by_slug = {d.slug: d.deps for d in inv.decls}
         # Source size per decl — the agent budgets file sizes with these
@@ -1853,19 +1869,30 @@ def _mechanical_migrate_file(
             sibling_modules[r["slug"]] = _library_module_of(r["target_file"])
 
     # defs_imports: a Defs symbol that has been migrated → its Library module.
+    # A CITED Defs symbol (cross-problem redirect: another problem owns the
+    # Library copy) maps to the citation's module instead — same import+open
+    # treatment, the def just lives in someone else's file.
     defs_imports: dict[str, str] = {}
     for r in all_rows:
-        if r["slug"] in all_defs and r["lifecycle"] == "migrated" \
-                and r["target_file"]:
+        if r["slug"] not in all_defs:
+            continue
+        if r["lifecycle"] == "migrated" and r["target_file"]:
             defs_imports[r["slug"]] = _library_module_of(r["target_file"])
+        elif r["lifecycle"] == "cited" and r["citation"] \
+                and "." in r["citation"]:
+            defs_imports[r["slug"]] = r["citation"].rsplit(".", 1)[0]
 
     # local_defs: Defs symbols classify placed in THIS file — they migrate
     # together with their users, so they land in the same module namespace
     # (bare name visible, no import, no "not yet migrated" decline). Without
     # this, a file holding both a Defs decl and a lemma that uses it can't
     # migrate (classify is free to co-locate them; layout is nondeterministic).
+    # `cited` rows are excluded: a redirected (cross-problem) Defs decl still
+    # carries this file as its classified target_file, but it is NOT emitted
+    # here — treating it as local would skip the import it needs.
     local_defs = {r["slug"] for r in all_rows
-                  if r["slug"] in all_defs and r["target_file"] == target_file}
+                  if r["slug"] in all_defs and r["target_file"] == target_file
+                  and r["lifecycle"] != "cited"}
 
     pns = f"Problems.{problem}"
     problem_dir = db.problem_dir(workspace, problem)
@@ -2051,6 +2078,34 @@ def _mechanical_migrate_file(
         for df in file_dependency_graph(
             conn, problem=problem, workspace=workspace).get(target_file, set())}
     import_set |= dep_imports
+    # Dedupe repeated `variable` blocks across chunks: each Defs slice replays
+    # its own in-scope variables (8bffdcb), so N defs from one section emit N
+    # identical blocks. Build-harmless (re-declaring identical variables is a
+    # no-op) but ugly Library text. Keep the FIRST occurrence of each distinct
+    # block; later byte-identical leading blocks are stripped from their chunk.
+    seen_var_blocks: set[str] = set()
+    for r in rows:
+        chunk = chunk_by_slug.get(r["slug"])
+        if chunk is None:
+            continue
+        lines, k, kept = chunk.splitlines(), 0, []
+        while k < len(lines):
+            if not lines[k].strip():
+                kept.append(lines[k]); k += 1
+                continue
+            if re.match(r"variable\b", lines[k].strip()):
+                j = k + 1
+                while j < len(lines) and lines[j][:1] in (" ", "\t"):
+                    j += 1
+                block = "\n".join(lines[k:j])
+                if block not in seen_var_blocks:
+                    seen_var_blocks.add(block)
+                    kept.extend(lines[k:j])
+                k = j
+                continue
+            break                                  # first real content line
+        kept.extend(lines[k:])
+        chunk_by_slug[r["slug"]] = "\n".join(kept).strip("\n")
     header = "\n".join(sorted(import_set))
     if open_set:
         header += "\n\n" + "\n".join(sorted(open_set))
@@ -2401,10 +2456,59 @@ def _run_migrate(conn, *, problem, workspace, pipeline_id, target_file,
             failure_detail=f"{target_file}: no classified decls")
     rows.sort(key=lambda r: (r["file_order"]
                              if r["file_order"] is not None else 0))
-    ordered_slugs = [r["slug"] for r in rows]
     target_path = workspace / target_file
     target_module = _library_module_of(target_file)
     defs_names = _inv.defs_decls(workspace, problem)
+
+    # Cross-problem shared-def REDIRECT (clean-before-cite salvage; user 拍板
+    # 2026-06-11): a Defs decl this problem re-declares VERBATIM, which another
+    # problem already migrated into the Library, must not be re-emitted — a
+    # second copy is a different kernel object, and consumers would split
+    # between two incompatible worlds. Cite the Library copy instead: verdict
+    # cite-library (terminal 'cited' + citation fqn); the emitting lemmas then
+    # import+open its module via the generic defs_imports channel (which reads
+    # cited rows' citation), and the proofs keep working because the copies
+    # are defeq — the build gate is the final arbiter.
+    # 同源 test = whitespace-normalized source equality of the two problems'
+    # Defs.lean slices, AND the Library name is unrenamed (leaf == slug) — a
+    # renamed Library copy would leave the bare reference unresolved, so it
+    # falls through to the ownership guard's loud fail instead.
+    my_defs = db.problem_dir(workspace, problem) / "Defs.lean"
+    my_defs_text = (my_defs.read_text(encoding="utf-8")
+                    if my_defs.exists() else "")
+    redirected: list[str] = []
+    for r in rows:
+        if r["source_goal_id"] is not None:
+            continue                              # only Defs decls redirect
+        other = conn.execute(
+            "SELECT problem, target_name FROM library_decls WHERE slug = ? "
+            "AND problem != ? AND lifecycle IN ('migrated', 'cleaned') "
+            "AND target_name IS NOT NULL LIMIT 1",
+            (r["slug"], problem)).fetchone()
+        if other is None or other["target_name"].rsplit(".", 1)[-1] != r["slug"]:
+            continue
+        theirs_p = db.problem_dir(workspace, other["problem"]) / "Defs.lean"
+        if not (my_defs_text and theirs_p.exists()):
+            continue
+        mine = _defs_decl_source(my_defs_text, r["slug"])
+        theirs = _defs_decl_source(
+            theirs_p.read_text(encoding="utf-8"), r["slug"])
+        if not mine or not theirs \
+                or " ".join(mine.split()) != " ".join(theirs.split()):
+            continue                              # same name, different def
+        db.set_library_verdict(conn, problem=problem, slug=r["slug"],
+                               verdict="cite-library",
+                               citation=other["target_name"])
+        redirected.append(r["slug"])
+        print(f"[librarian] {problem}: `{r['slug']}` already in Library as "
+              f"{other['target_name']} ({other['problem']}) — citing, not "
+              f"re-emitting", flush=True)
+    if redirected:
+        rows = [r for r in rows if r["slug"] not in redirected]
+        if not rows:
+            # the whole file was shared defs — nothing left to emit
+            return PipelineResult(outcome="success")
+    ordered_slugs = [r["slug"] for r in rows]
 
     # Cross-problem ownership guard: migrate WRITES target_path whole — if
     # another problem's decls already live in this file (definition-tower
@@ -2955,6 +3059,15 @@ def _bridge_probe_text(conn, *, problem, statement, migrated,
             modules.add(_library_module_of(r["target_file"]))
         if r["target_name"] and "." in r["target_name"]:
             namespaces.add(r["target_name"].rsplit(".", 1)[0])
+    # CITED decls (cross-problem redirect): the original statement references
+    # them bare, but they live in ANOTHER problem's Library module — the probe
+    # must import + open that module too or the statement doesn't elaborate.
+    for r in db.library_decls_for(conn, problem):
+        if r["lifecycle"] == "cited" and r["citation"] \
+                and "." in r["citation"]:
+            ns = r["citation"].rsplit(".", 1)[0]
+            modules.add(ns)
+            namespaces.add(ns)
     lines = [f"import {m}" for m in sorted(modules)]
     lines += [f"open {ns}" for ns in sorted(namespaces)]
     lines += ["", f"theorem main : {statement} := by exact {main_fq}", ""]

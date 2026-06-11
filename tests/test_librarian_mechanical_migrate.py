@@ -961,3 +961,105 @@ def test_mechanical_migrate_replays_defs_library_imports(conn, tmp_path):
         target_module="Library.P.User", rows=rows)
     assert holes == []
     assert "import Library.Q.Shared" in text     # replayed from Defs.lean
+
+
+# ---------------------------------------------------------------------
+# cross-problem shared-def redirect (clean-before-cite salvage)
+# ---------------------------------------------------------------------
+
+_SHARED_DEF = ("import Mathlib\n\nnamespace {ns}\n\n"
+               "/-- shared. -/\nnoncomputable def sharedDef (k : Nat) : Nat := k + 1\n\n"
+               "end {ns}\n")
+
+
+def _setup_two_problem_shared(conn, tmp_path, other_def_text=None):
+    conn.execute("INSERT INTO problems (name, manifest_path, created_at, "
+                 "bootstrap_done) VALUES ('q','',?,1)", (db.now(),))
+    conn.commit()
+    # q owns the Library copy
+    g = db.insert_goal(conn, problem="q", slug="q_lemma",
+                       lean_path="Problems/q/proofs/L_q_lemma.lean",
+                       statement="True", origin="backward", kind="theorem")
+    conn.execute("UPDATE goals SET status='proved' WHERE id=?", (g,))
+    conn.commit()
+    db.upsert_library_decl(conn, problem="q", slug="sharedDef",
+                           source_goal_id=None)
+    db.set_library_verdict(conn, problem="q", slug="sharedDef", verdict="keep")
+    db.set_library_classification(conn, problem="q", slug="sharedDef",
+                                  target_file="Library/Q/Shared.lean",
+                                  target_name="Library.Q.Shared.sharedDef",
+                                  file_order=0)
+    db.mark_library_migrated(conn, problem="q", slug="sharedDef")
+    for prob, ns in (("p", "Problems.p"), ("q", "Problems.q")):
+        pd = tmp_path / "Problems" / prob
+        pd.mkdir(parents=True, exist_ok=True)
+        text = _SHARED_DEF.format(ns=ns)
+        if prob == "q" and other_def_text:
+            text = other_def_text.format(ns=ns)
+        (pd / "Defs.lean").write_text(text, encoding="utf-8")
+    # p re-declares sharedDef + has one lemma using it
+    db.upsert_library_decl(conn, problem="p", slug="sharedDef",
+                           source_goal_id=None)
+    db.set_library_verdict(conn, problem="p", slug="sharedDef", verdict="keep")
+    db.set_library_classification(conn, problem="p", slug="sharedDef",
+                                  target_file="Library/P/Mine.lean",
+                                  target_name=None, file_order=0)
+    _seed_classified(conn, "uses_it", "True", "Library/P/Mine.lean", 1)
+    _write_proof(tmp_path, "uses_it",
+                 "import Mathlib\nimport Problems.p.Defs\n\n"
+                 "namespace Problems.p\n"
+                 "theorem uses_it : sharedDef 1 = 2 := rfl\n"
+                 "end Problems.p\n")
+
+
+def test_run_migrate_redirects_verbatim_shared_def(conn, tmp_path, monkeypatch):
+    _setup_two_problem_shared(conn, tmp_path)
+    captured = {}
+
+    def _fake_commit(text, **kw):
+        captured["text"] = text
+        captured["slugs"] = kw["ordered_slugs"]
+        from Tooling.pipeline import PipelineResult
+        return PipelineResult(outcome="success")
+    monkeypatch.setattr(lib, "_commit_migrated_file", _fake_commit)
+    r = lib._run_migrate(
+        conn, problem="p", workspace=tmp_path, pipeline_id="pid",
+        target_file="Library/P/Mine.lean", attempts_dir=tmp_path / ".a",
+        problem_dir=tmp_path / "Problems" / "p",
+        prompt_path=tmp_path / "x.md", whitelist=[])
+    assert r.outcome == "success"
+    row = next(r2 for r2 in db.library_decls_for(conn, "p")
+               if r2["slug"] == "sharedDef")
+    assert row["lifecycle"] == "cited"                       # redirected
+    assert row["citation"] == "Library.Q.Shared.sharedDef"
+    assert captured["slugs"] == ["uses_it"]                  # def NOT emitted
+    assert "def sharedDef" not in captured["text"]
+    assert "import Library.Q.Shared" in captured["text"]     # cited module in
+    assert "open Library.Q.Shared" in captured["text"]
+
+
+def test_run_migrate_no_redirect_for_different_def(conn, tmp_path, monkeypatch):
+    # Same leaf name, DIFFERENT definition → must NOT silently redirect.
+    _setup_two_problem_shared(
+        conn, tmp_path,
+        other_def_text=("import Mathlib\n\nnamespace {ns}\n\n"
+                        "noncomputable def sharedDef (k : Nat) : Nat := k + 2\n\n"
+                        "end {ns}\n"))
+    captured = {}
+
+    def _fake_commit(text, **kw):
+        captured["text"] = text
+        captured["slugs"] = kw["ordered_slugs"]
+        from Tooling.pipeline import PipelineResult
+        return PipelineResult(outcome="success")
+    monkeypatch.setattr(lib, "_commit_migrated_file", _fake_commit)
+    lib._run_migrate(
+        conn, problem="p", workspace=tmp_path, pipeline_id="pid",
+        target_file="Library/P/Mine.lean", attempts_dir=tmp_path / ".a",
+        problem_dir=tmp_path / "Problems" / "p",
+        prompt_path=tmp_path / "x.md", whitelist=[])
+    row = next(r2 for r2 in db.library_decls_for(conn, "p")
+               if r2["slug"] == "sharedDef")
+    assert row["lifecycle"] != "cited"                       # NOT redirected
+    assert "sharedDef" in captured["slugs"]                  # emits its OWN copy
+    assert "def sharedDef" in captured["text"]

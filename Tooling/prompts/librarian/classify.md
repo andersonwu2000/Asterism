@@ -9,6 +9,7 @@ Read `Context.md`: the surviving declarations (those marked `keep`), each with i
 Group the declarations into files and order them, mirroring how mathlib organises a topic:
 
 - **Directory + file** per declaration, under `Library/<Topic>/`. `<Topic>` follows mathlib's top-level layout (`Algebra`, `LinearAlgebra`, `Analysis`, `Geometry`, `Topology`, `NumberTheory`, …). Cohesive declarations share a file; a large keystone may stand alone.
+- **Reuse existing directories**: `Context.md` lists the Library's current directory tree. When your declarations belong to a topic that already has a directory, place them THERE — never mint a near-duplicate name (`ManifoldBdry/` next to an existing `ManifoldBoundary/` is a defect). A genuinely new area gets a new directory.
 - **Order within a file** — list each declaration after what it uses; the framework topo-sorts this on commit, so it's a hint, not a hard constraint.
 - **Cross-file dependency** — which Library file imports which. The graph must be acyclic.
 
