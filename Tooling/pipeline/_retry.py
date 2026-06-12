@@ -262,6 +262,9 @@ SpawnFn = Callable[[SpawnCtx], int]
 ParseFn = Callable[[], PipelineResult]
 PostmortemFn = Callable[[str], None]
 ReflectionFn = Callable[[str, "PipelineResult"], None]
+# Death-cause feedback hook: called for an infra death (no resumable
+# session) so the framework can write the cause the agent can't self-report.
+DeathFn = Callable[["PipelineResult"], None]
 
 
 @dataclass
@@ -593,6 +596,7 @@ def run_with_session_retries(
     postmortem_fn: PostmortemFn,
     workspace: Path | None = None,
     reflection_fn: ReflectionFn | None = None,
+    death_fn: "DeathFn | None" = None,
     decision_id: int | None = None,
 ) -> PipelineResult:
     """Run a kind-agnostic in-pipeline retry loop.
@@ -718,14 +722,25 @@ def run_with_session_retries(
         # directives that signal real agent learning. Skip moot (no
         # agent ran), goal_no_longer_open (race-detected, no learning),
         # and infra rcs (spawn_fast_fail / quota_exhausted / missing_dep).
-        if reflection_fn is None:
-            return
         if result.outcome == "moot":
-            return
+            return  # no agent ran — neither feedback nor reflection
+        # Death-cause feedback: an infra death (no resumable session) can't
+        # self-report, so the framework writes its cause. Independent of
+        # reflection (fires even when reflection_fn is None). goal_no_longer_
+        # open is a race, not a death — neither.
         if result.failure_reason in (
             "spawn_fast_fail", "quota_exhausted", "missing_dep",
-            "goal_no_longer_open",
         ):
+            if death_fn is not None:
+                try:
+                    death_fn(result)
+                except Exception as exc:  # noqa: BLE001 — best-effort
+                    print(f"[feedback] death callback raised, swallowed — "
+                          f"{exc}", flush=True)
+            return
+        if result.failure_reason == "goal_no_longer_open":
+            return
+        if reflection_fn is None:
             return
         triggered = (
             result.outcome in ("proved", "success", "exhausted")

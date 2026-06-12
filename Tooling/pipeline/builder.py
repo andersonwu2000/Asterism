@@ -438,7 +438,15 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             attempts_dir=attempts_dir,
             lessons_cap=int(cap),
             prompt_dir=PROMPT_DIR,
+            workspace=workspace,
         )
+
+    def builder_death(result) -> None:
+        from . import _feedback
+        _feedback.record_death(
+            workspace, kind="builder", slug=goal["slug"],
+            problem=problem_dir.name,
+            reason=result.failure_reason or result.outcome)
 
     # No SpawnWorkspace — agent writes are confined to attempts_dir
     # (patch.lean is the MCP apply_edit target), and goal_lean is
@@ -460,6 +468,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             postmortem_fn=builder_postmortem,
             workspace=workspace,
             reflection_fn=builder_reflection,
+            death_fn=builder_death,
             decision_id=decision_id,
         )
     finally:
