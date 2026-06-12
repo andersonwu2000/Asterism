@@ -5,6 +5,9 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-11
+Work focused on hardening the librarian's library-migration pipeline: Defs.lean extraction and migration now faithfully replay imports, opens, section variables, docstrings, and leading attributes, and replace_token correctly rewrites dot-projection use-sites, closing several known correctness gaps. Classification was made safer and more scalable ??declarations can no longer land in another problem's file, cross-problem shared definitions are redirected, dependency sorting accounts for Defs-source edges, and planned file sizes are capped at classify time, with cleanup stages refactored into a subpackage backed by a file-size ratchet. Robustness under concurrency and long-running synthesis also improved, with same-path migrate units serialized to close a TOCTOU race, shared-file clobbering guarded, and new heartbeat rungs handling merged-environment synthesis timeouts and truncated gateway responses; the framework additionally gained support for `@[instance] theorem` roots for Prop-class obligations.
+
 ### 2026-06-10
 The Librarian cleanup pipeline was substantially restructured ??consolidating its stages into unified `decide` and `polish` phases, adding a new mathlib-naming `rename` stage and a final free-form `audit` review, and fixing a series of correctness bugs around citation dropping, alias coverage, keystone renaming, and silently swallowed failures. Dispatcher reliability was improved by persisting Librarian fail-counts across restarts and re-enqueuing batches after infrastructure failures. The project also gained proper packaging and a GitHub Actions CI pipeline (with the Ubuntu leg now blocking), six prompt-code drifts were corrected, and the strategist model was upgraded to Claude Fable 5.
 
