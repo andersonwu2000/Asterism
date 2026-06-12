@@ -53,6 +53,63 @@ from ._cite_gate import _PROBLEM_IMPORT_RE, _resolve_cite_dependencies
 _SLUG_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
+def _normalize_slug(raw: str) -> "str | None":
+    """Mechanically rewrite a slug that fails `_SLUG_RE` *only* because of
+    uppercase letters (camelCase / PascalCase) into snake_case lowercase.
+
+    `termIntegrableOn` → `term_integrable_on`, `HalfSpaceFTC` →
+    `half_space_ftc`. Returns the normalized slug if it then matches
+    `_SLUG_RE`, else None — a leading digit, punctuation, or unicode is not
+    mechanically fixable, so the caller still rejects those as
+    `naming_violation`.
+
+    Why normalize instead of reject (backlog #3, 2026-06-13): the charset
+    gate's hard-reject was a v1 stub (`cab25cc`) whose sibling — slug
+    *collision* — already got the reject→auto-fix treatment (`948f557`).
+    camelCase is just as mechanical; the case constraint (case-insensitive
+    filesystem safety) is *preserved* by normalizing, and the agent
+    demonstrably can't self-correct reliably (the failure message points at
+    'slug' while the fix is a filename rename — P13 stokes burned a full
+    Backward batch on `term_integrableOn`)."""
+    # Insert `_` at lower/digit→upper and acronym→word boundaries.
+    s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", raw)
+    s = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", s)
+    s = re.sub(r"_+", "_", s.lower()).strip("_")
+    return s if _SLUG_RE.match(s) else None
+
+
+def _strict_ancestor_slugs(conn, goal_id: int) -> "dict[str, str]":
+    """`{slug: lean_path}` for every STRICT ancestor of `goal_id` on its
+    live chain (walks up via `strategy_subgoals`; excludes `goal_id`
+    itself). Used to detect a circular decomposition — a sub-goal that
+    restates one of its own ancestors (backlog #4)."""
+    rows = conn.execute(
+        "WITH RECURSIVE ancestors(id) AS ("
+        "  SELECT s.goal_id FROM strategies s"
+        "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        "    WHERE ss.subgoal_id = ?"
+        "  UNION"
+        "  SELECT s.goal_id FROM strategies s"
+        "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        "    JOIN ancestors a ON a.id = ss.subgoal_id"
+        ") "
+        "SELECT g.slug, g.lean_path FROM goals g WHERE g.id IN ancestors",
+        (goal_id,),
+    ).fetchall()
+    return {r["slug"]: r["lean_path"] for r in rows}
+
+
+def _theorem_head(text: str, slug: str) -> "str | None":
+    """The whitespace-normalized `<binders> : <conclusion>` of
+    `theorem <slug> ... :=` in `text`, for cheap structural comparison
+    between a candidate sub-goal and an ancestor it may be restating."""
+    m = re.search(
+        r"\btheorem\s+" + re.escape(slug) + r"\b(.*?):=",
+        text, re.DOTALL,
+    )
+    return " ".join(m.group(1).split()) if m else None
+
+
 def _resolve_slug_collisions(
     sub_meta: list[tuple[str, Path]],
     existing_slugs: set[str],
@@ -761,6 +818,7 @@ def _backward_parse_and_commit(
     # (second write of the same `new_<slug>.lean` overwrites the first
     # in attempts_dir, so only one file reaches the parse stage).
     sub_meta: list[tuple[str, Path]] = []  # (slug, source_in_attempts)
+    norm_renames: dict[str, str] = {}      # raw_slug -> normalized (#3)
     for ns in new_subs:
         slug = _slug_from_filename(ns.name)
         if not slug:
@@ -776,13 +834,75 @@ def _backward_parse_and_commit(
                 leading,
             )
         if not _SLUG_RE.match(slug):
+            # #3 — camelCase / PascalCase is mechanically fixable: normalize
+            # to snake_case in place (rewrite decl + rename file, the same
+            # surgery the `_2` collision path does) instead of rejecting and
+            # burning a retry the agent can't reliably satisfy. Truly
+            # un-normalizable (digit start / punctuation / unicode) still
+            # rejects as naming_violation.
+            norm = _normalize_slug(slug)
+            if norm is None:
+                return _abort(
+                    "naming_violation",
+                    f"sub-goal slug {slug!r} must match [a-z][a-z0-9_]* "
+                    f"(lowercase ascii start, then ascii/digits/underscore) "
+                    f"and is not mechanically normalizable",
+                    leading,
+                )
+            new_ns = ns.parent / f"new_{norm}.lean"
+            content = ns.read_text(encoding="utf-8")
+            content = re.sub(
+                rf"\btheorem\s+{re.escape(slug)}\b",
+                f"theorem {norm}", content, count=1,
+            )
+            new_ns.write_text(content, encoding="utf-8")
+            if new_ns != ns:
+                ns.unlink()
+            norm_renames[slug] = norm
+            slug, ns = norm, new_ns
+        sub_meta.append((slug, ns))
+
+    if norm_renames:
+        # Point patch.lean at the normalized sub-goal names (word-boundary
+        # so substrings of unrelated identifiers stay intact) — the same
+        # rewrite the `_2` collision path applies below.
+        patch_text = patches[0].read_text(encoding="utf-8")
+        for raw, norm in norm_renames.items():
+            patch_text = re.sub(rf"\b{re.escape(raw)}\b", norm, patch_text)
+        patches[0].write_text(patch_text, encoding="utf-8")
+
+    # #4 — reject a sub-goal that restates a STRICT ANCESTOR on its own
+    # chain (circular decomposition: proving X by reducing to X = zero
+    # progress). The agent re-derives an ancestor and gives it the same
+    # descriptive slug; the `_2` auto-suffix below would otherwise mask it
+    # into a fresh goal whose subtree regresses until it hits the retry cap
+    # (P13 stokes 4010 vs 3995, 2026-06-13). Cheap name-collision signal,
+    # confirmed by a verbatim theorem-head match so a coincidental name
+    # reuse for a genuinely different lemma falls through to `_2`. The
+    # deeper isDefEq path (dedupe `no_progress`) should also catch this but
+    # proved unreliable here — backlog #4. Non-terminal: the agent retries
+    # with the corrective hint in retry_context.
+    ancestor_slugs = _strict_ancestor_slugs(conn, goal_id)
+    for slug, ns in sub_meta:
+        anc_path = ancestor_slugs.get(slug)
+        if anc_path is None:
+            continue
+        try:
+            cand_head = _theorem_head(ns.read_text(encoding="utf-8"), slug)
+            anc_head = _theorem_head(
+                (workspace / anc_path).read_text(encoding="utf-8"), slug)
+        except OSError:
+            continue
+        if cand_head is not None and cand_head == anc_head:
             return _abort(
-                "naming_violation",
-                f"sub-goal slug {slug!r} must match [a-z][a-z0-9_]* "
-                f"(lowercase ascii start, then ascii/digits/underscore)",
+                "circular_decomposition",
+                f"sub-goal `{slug}` restates ancestor `{slug}` on its own "
+                f"chain verbatim — proving a goal by reducing to itself makes "
+                f"no progress. Decompose differently: reduce the dimension, "
+                f"strengthen the induction hypothesis, or split off a "
+                f"genuinely smaller lemma.",
                 leading,
             )
-        sub_meta.append((slug, ns))
 
     # Auto-suffix cross-batch collisions. Helper is pure; we apply the
     # filesystem side effects here based on the returned rename_map.

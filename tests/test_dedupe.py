@@ -103,6 +103,41 @@ def test_signature_binder_count_no_theorem() -> None:
 
 
 # ---------------------------------------------------------------------
+# _strict_ancestor_slugs (backward circular-decomposition guard, #4)
+# ---------------------------------------------------------------------
+
+def test_strict_ancestor_slugs_walks_full_chain(conn: sqlite3.Connection) -> None:
+    from Tooling.pipeline.backward import _strict_ancestor_slugs
+    _seed_problem(conn, "p")
+    root = _seed_root(conn, problem="p", slug="main")
+    grand = _seed_sub(conn, problem="p", slug="grand", statement="Tg")
+    parent = _seed_sub(conn, problem="p", slug="parent", statement="Tp")
+    child = _seed_sub(conn, problem="p", slug="child", statement="Tc")
+    _link(conn, root, [grand])
+    _link(conn, grand, [parent])
+    _link(conn, parent, [child])
+    anc = _strict_ancestor_slugs(conn, child)
+    # every strict ancestor, excluding `child` itself
+    assert set(anc) == {"main", "grand", "parent"}
+    assert anc["parent"].endswith("L_parent.lean")
+    # the root has no parent strategy → no strict ancestors
+    assert _strict_ancestor_slugs(conn, root) == {}
+
+
+def test_theorem_head_extracts_and_matches() -> None:
+    from Tooling.pipeline.backward import _theorem_head
+    a = "theorem foo (n : Nat) : ∫ x, f x = 0 := by sorry"
+    # whitespace-insensitive, same head extracted regardless of formatting
+    b = "theorem foo (n : Nat) :\n    ∫ x, f x = 0 :=\n  sorry"
+    assert _theorem_head(a, "foo") == _theorem_head(b, "foo")
+    # a genuinely different conclusion → different head (falls through to _2)
+    c = "theorem foo (n : Nat) : ∫ x, g x = 1 := by sorry"
+    assert _theorem_head(a, "foo") != _theorem_head(c, "foo")
+    # no matching declaration → None
+    assert _theorem_head(a, "bar") is None
+
+
+# ---------------------------------------------------------------------
 # _extract_full_signature
 # ---------------------------------------------------------------------
 

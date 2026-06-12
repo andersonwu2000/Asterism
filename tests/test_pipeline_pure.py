@@ -875,6 +875,34 @@ def test_slug_re_rejects_empty_or_punctuation() -> None:
 
 
 # ---------------------------------------------------------------------
+# camelCase slug normalization (`_normalize_slug`, backlog #3)
+# ---------------------------------------------------------------------
+
+def test_normalize_slug_camelcase_to_snake() -> None:
+    from Tooling.pipeline.backward import _normalize_slug, _SLUG_RE
+    assert _normalize_slug("termIntegrableOn") == "term_integrable_on"
+    assert _normalize_slug("tangentialTermIntegralZero") == \
+        "tangential_term_integral_zero"
+    # PascalCase (leading uppercase)
+    assert _normalize_slug("HalfSpace") == "half_space"
+    # acronym run → split before the final word's capital
+    assert _normalize_slug("HalfSpaceFTCStep") == "half_space_ftc_step"
+    # every normalized result must satisfy the gate
+    for raw in ("termIntegrableOn", "HalfSpace", "HalfSpaceFTCStep"):
+        assert _SLUG_RE.match(_normalize_slug(raw))
+
+
+def test_normalize_slug_passes_through_valid_and_rejects_unfixable() -> None:
+    from Tooling.pipeline.backward import _normalize_slug
+    # already snake_case → unchanged (still a valid normalization)
+    assert _normalize_slug("term_integrable_on") == "term_integrable_on"
+    # not mechanically fixable (uppercase isn't the only problem) → None
+    assert _normalize_slug("1bad") is None          # leading digit survives
+    assert _normalize_slug("foo-bar") is None        # hyphen survives
+    assert _normalize_slug("foo.bar") is None        # punctuation survives
+
+
+# ---------------------------------------------------------------------
 # Slug-collision auto-suffix (`_resolve_slug_collisions`)
 # ---------------------------------------------------------------------
 
