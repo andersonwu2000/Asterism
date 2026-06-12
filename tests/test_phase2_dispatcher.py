@@ -32,13 +32,14 @@ def conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
 
 def _insert_problem(conn: sqlite3.Connection, *, name: str,
                     bootstrap_done: int = 0,
-                    last_strategist_at: str | None = None) -> None:
+                    last_strategist_at: str | None = None,
+                    last_routine_at: str | None = None) -> None:
     conn.execute(
         "INSERT INTO problems (name, manifest_path, created_at,"
-        " bootstrap_done, last_strategist_at)"
-        " VALUES (?, ?, ?, ?, ?)",
+        " bootstrap_done, last_strategist_at, last_routine_at)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
         (name, f"Problems/{name}/Manifest.md", db.now(),
-         bootstrap_done, last_strategist_at),
+         bootstrap_done, last_strategist_at, last_routine_at),
     )
     conn.commit()
 
@@ -94,7 +95,7 @@ def test_t0_enqueues_strategist_for_bootstrap_done_zero(
 
 def test_t0_skips_bootstrapped_problems(conn: sqlite3.Connection) -> None:
     _insert_problem(conn, name="alpha", bootstrap_done=1,
-                    last_strategist_at=db.now())  # T1 also skipped fresh
+                    last_routine_at=db.now())  # T1 also skipped fresh
     _insert_root(conn, "alpha")
 
     strategist_triggers(conn, running=set())
@@ -193,15 +194,14 @@ def test_t0_skips_problem_with_inflight_inject_batch(
 # T1 trigger
 # ---------------------------------------------------------------------
 
-def test_t1_enqueues_when_last_strategist_at_is_stale(
+def test_t1_enqueues_when_last_routine_at_is_stale(
     conn: sqlite3.Connection,
 ) -> None:
-    """Problem with last_strategist_at older than interval_min enqueues
+    """Problem with last_routine_at older than interval_min enqueues
     Strategist via T1."""
-    # Set last_strategist_at to ~2 hours ago
     stale_ts = "2026-01-01T00:00:00+00:00"
     _insert_problem(conn, name="alpha", bootstrap_done=1,
-                    last_strategist_at=stale_ts)
+                    last_routine_at=stale_ts)
     root = _insert_root(conn, "alpha")
 
     strategist_triggers(conn, running=set(), interval_min=60.0)
@@ -213,20 +213,93 @@ def test_t1_enqueues_when_last_strategist_at_is_stale(
     assert int(q[0]["target_id"]) == root
 
 
-def test_t1_skips_when_last_strategist_at_is_recent(
+def test_t1_skips_when_last_routine_at_is_recent(
     conn: sqlite3.Connection,
 ) -> None:
     recent_ts = db.now()
     _insert_problem(conn, name="alpha", bootstrap_done=1,
-                    last_strategist_at=recent_ts)
+                    last_routine_at=recent_ts)
     _insert_root(conn, "alpha")
 
     strategist_triggers(conn, running=set(), interval_min=60.0)
 
-    q = conn.execute(
+    assert conn.execute(
         "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
-    ).fetchone()
-    assert q["n"] == 0
+    ).fetchone()["n"] == 0
+
+
+def test_t1_not_reset_by_event_driven_last_strategist_at(
+    conn: sqlite3.Connection,
+) -> None:
+    """The core of (a): an event-driven commit bumps last_strategist_at but
+    NOT last_routine_at, so a routine that's overdue still fires — its cadence
+    is not reset by pending_review / inject_batch_done activity."""
+    stale_routine = "2026-01-01T00:00:00+00:00"
+    _insert_problem(conn, name="alpha", bootstrap_done=1,
+                    last_strategist_at=db.now(),       # just had an event wake
+                    last_routine_at=stale_routine)     # but routine is overdue
+    root = _insert_root(conn, "alpha")
+
+    strategist_triggers(conn, running=set(), interval_min=60.0)
+
+    q = conn.execute(
+        "SELECT target_id FROM queue WHERE kind='Strategist'").fetchall()
+    assert [int(r["target_id"]) for r in q] == [root]
+
+
+def test_t1_excludes_paused_time_via_daemon_start_baseline(
+    conn: sqlite3.Connection,
+) -> None:
+    """Running-time cadence: a long-overdue routine does NOT fire immediately
+    on restart — the daemon-start baseline excludes paused/down time, so it
+    waits interval_min of running time."""
+    stale_routine = "2026-01-01T00:00:00+00:00"   # ancient (a long pause ago)
+    _insert_problem(conn, name="alpha", bootstrap_done=1,
+                    last_routine_at=stale_routine)
+    _insert_root(conn, "alpha")
+
+    # daemon just started → baseline is ~now → not yet interval_min elapsed
+    strategist_triggers(conn, running=set(), interval_min=60.0,
+                        daemon_start_iso=db.now())
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()["n"] == 0
+
+    # an ancient daemon start (running long enough) → fires
+    conn.execute("DELETE FROM queue")
+    conn.commit()
+    strategist_triggers(conn, running=set(), interval_min=60.0,
+                        daemon_start_iso="2026-01-01T00:00:00+00:00")
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()["n"] == 1
+
+
+def test_t1_not_suppressed_by_inflight_inject_batch(
+    conn: sqlite3.Connection,
+) -> None:
+    """The routine audit is independent of batch resolution — unlike T0/T4,
+    an unacknowledged Inject batch does NOT suppress T1. (Part of (a): the
+    routine clock was being starved both by the shared timestamp reset and by
+    near-continuous batch suppression.)"""
+    stale_routine = "2026-01-01T00:00:00+00:00"
+    _insert_problem(conn, name="alpha", bootstrap_done=1,
+                    last_routine_at=stale_routine)
+    root = _insert_root(conn, "alpha")
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, brief, payload, batch_id, outcome,"
+        " created_at, updated_at) VALUES ('alpha', 0, 'first_launch',"
+        " 'Inject', '## b', '{\"pipeline\":\"Forward\"}', 'b1', NULL, ?, ?)",
+        (db.now(), db.now()),
+    )
+    conn.commit()
+
+    strategist_triggers(conn, running=set(), interval_min=60.0)
+
+    q = conn.execute(
+        "SELECT target_id FROM queue WHERE kind='Strategist'").fetchall()
+    assert [int(r["target_id"]) for r in q] == [root]   # fired despite batch
 
 
 def test_t1_treats_null_last_strategist_as_eligible(
@@ -564,11 +637,10 @@ def test_t4_stall_skipped_when_open_goal_exists(
     conn: sqlite3.Connection,
 ) -> None:
     """If any open goal exists, BFS will dispatch — no stall, T4
-    should not fire (let BFS do its work). Also set
-    last_strategist_at recent to exclude T1 routine firing for this
-    isolation test."""
+    should not fire (let BFS do its work). Also set last_routine_at
+    recent to exclude T1 routine firing for this isolation test."""
     _insert_problem(conn, name="alpha", bootstrap_done=1,
-                    last_strategist_at=db.now())
+                    last_routine_at=db.now())
     _insert_root(conn, "alpha", status="attempting")
     db.insert_goal(
         conn, problem="alpha", slug="open_one",
@@ -590,8 +662,10 @@ def test_t4_stall_skipped_when_inflight_inject_batch(
 ) -> None:
     """Inject batch in flight = Strategist already acting on this
     problem; `inject_batch_done` will re-fire it. T4 must not enqueue
-    redundantly."""
-    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    redundantly. (last_routine_at recent isolates T4 — T1 is now
+    intentionally NOT batch-suppressed; see the dedicated T1 test.)"""
+    _insert_problem(conn, name="alpha", bootstrap_done=1,
+                    last_routine_at=db.now())
     _insert_root(conn, "alpha", status="attempting")
     db.insert_goal(
         conn, problem="alpha", slug="other",

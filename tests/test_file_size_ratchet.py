@@ -31,8 +31,11 @@ _WATERMARKS = {
     # safety net for orphaned pending_review + NULL-outcome Inject wedges
     # (db.problems_with_pending_review / null_inject_redispatch_specs /
     # queue_has_decision) — 2026-06-13 — conscious bumps.
+    # db 2600→2650: routine-only T1 clock (last_routine_at + daemon-start
+    # baseline + drop batch suppression) so the routine audit fires on its own
+    # running-time cadence — 2026-06-13 — conscious bump.
     "Tooling/core/dispatcher.py": 2900,
-    "Tooling/state/db.py": 2600,
+    "Tooling/state/db.py": 2650,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     "Tooling/quality/librarian/cleanup/_common.py": 560,
     "Tooling/quality/librarian/cleanup/audit.py": 200,

@@ -83,9 +83,15 @@ CREATE TABLE IF NOT EXISTS problems (
     -- directive` section by `compile_context` for Backward / Builder /
     -- Forward cold-start. Overwrite-on-write (single text slot, no history).
     strategist_directive TEXT NULL DEFAULT NULL,
-    -- Phase 2 — wall-clock timestamp of last Strategist commit. Drives T1
-    -- trigger (routine ≥ `strategist.interval_min` since this).
-    last_strategist_at TEXT NULL DEFAULT NULL
+    -- Phase 2 — wall-clock timestamp of last Strategist commit (ANY trigger).
+    last_strategist_at TEXT NULL DEFAULT NULL,
+    -- Timestamp of the last ROUTINE Strategist commit specifically. Drives
+    -- T1 independently of event-driven triggers (pending_review /
+    -- inject_batch_done / first_launch): those bump last_strategist_at but
+    -- NOT this, so the routine audit fires on its own fixed cadence instead
+    -- of being starved by a busy event stream (stokes 2026-06-12: 0 routine
+    -- over 5h because 18 event commits kept resetting the shared clock).
+    last_routine_at TEXT NULL DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS goals (
@@ -462,6 +468,13 @@ def init_schema(conn: sqlite3.Connection) -> None:
     # needed to backfill columns added in later versions). Idempotent
     # via "duplicate column name" detection.
     for col, ddl in (
+        # Routine-only Strategist clock (T1 fires on its own cadence; see the
+        # SCHEMA comment on problems.last_routine_at). Additive nullable
+        # column — no user_version bump needed (same pattern as bootstrap_done
+        # / strategist_directive).
+        ("last_routine_at",
+         "ALTER TABLE problems ADD COLUMN last_routine_at TEXT NULL"
+         " DEFAULT NULL"),
         ("alias_target_id",
          "ALTER TABLE goals ADD COLUMN alias_target_id INTEGER NULL"
          " DEFAULT NULL REFERENCES goals(id)"),
@@ -1575,11 +1588,23 @@ def set_problem_strategist_directive(conn: sqlite3.Connection,
 
 def update_problem_last_strategist_at(conn: sqlite3.Connection,
                                       problem: str) -> None:
-    """Touch the timestamp Strategist's T1 trigger reads to compute
-    `wall_clock_age >= interval_min`. Called on every Strategist commit
-    regardless of decision_kind."""
+    """Touch the last-Strategist-commit timestamp. Called on every Strategist
+    commit regardless of decision_kind / trigger_kind. (Event-driven; does
+    NOT drive T1 — that reads `last_routine_at`.)"""
     conn.execute(
         "UPDATE problems SET last_strategist_at = ? WHERE name = ?",
+        (now(), problem),
+    )
+    conn.commit()
+
+
+def update_problem_last_routine_at(conn: sqlite3.Connection,
+                                   problem: str) -> None:
+    """Touch the ROUTINE-only clock that drives T1. Called ONLY on a
+    `trigger_kind='routine'` Strategist commit, so the routine audit fires on
+    its own fixed cadence instead of being reset by event-driven triggers."""
+    conn.execute(
+        "UPDATE problems SET last_routine_at = ? WHERE name = ?",
         (now(), problem),
     )
     conn.commit()
@@ -1670,44 +1695,54 @@ def problems_needing_t0(conn: sqlite3.Connection,
 
 def problems_needing_t1(conn: sqlite3.Connection, *,
                         max_age_sec: float,
-                        scope: str | None = None
+                        scope: str | None = None,
+                        since_iso: str | None = None,
                         ) -> list[tuple[str, int]]:
-    """Return [(problem_name, root_goal_id)] for problems whose
-    `last_strategist_at` is older than `max_age_sec` seconds (or NULL).
-    Excludes problems whose root goal is already terminal (proved /
-    shelved / disproved) since Strategist has nothing to do there.
-    NULL last_strategist_at is treated as "ancient" (never strategist'd,
-    eligible for T1 immediately)."""
-    # SQLite julianday() yields fractional days; convert max_age_sec to
-    # days for arithmetic. NULL last_strategist_at → coalesce to '1970'.
+    """Return [(problem_name, root_goal_id)] for problems whose ROUTINE clock
+    (`last_routine_at`) is older than `max_age_sec`. Excludes problems whose
+    root goal is already terminal (proved / shelved / disproved / frozen).
+
+    Two deliberate departures from the event-driven triggers (T0 / T2), so the
+    routine audit fires on its own fixed running-time cadence — its
+    methodological job (periodic full-tree survey) is distinct from reacting
+    to a shelve or a batch completion, and must not be starved by a busy event
+    stream (stokes 2026-06-12: 0 routine over 5h):
+
+      1. Reads `last_routine_at` (bumped ONLY by a routine commit), not
+         `last_strategist_at` (bumped by every commit). So pending_review /
+         inject_batch_done commits do NOT reset the routine clock.
+      2. NO in-flight-batch suppression (T0 keeps it; routine does not) — the
+         routine audit is independent of batch resolution.
+
+    `since_iso` (daemon start, ISO): the clock baseline is
+    `max(last_routine_at, since_iso)`, so paused/down time does not count
+    toward the interval — a long pause doesn't make routine fire immediately
+    on restart; it waits `max_age_sec` of running time. NULL last_routine_at
+    is "ancient" (never routine'd), so the first routine fires `max_age_sec`
+    after startup."""
+    # SQLite julianday() yields fractional days; convert max_age_sec to days.
     max_age_days = max_age_sec / 86400.0
+    # Clock baseline: later of last_routine_at (or epoch, if never routine'd)
+    # and the daemon start, so paused/down time is excluded.
+    if since_iso is not None:
+        baseline_sql = ("max(julianday(coalesce(p.last_routine_at,"
+                        " '1970-01-01')), julianday(?))")
+        args: list = [since_iso, max_age_days]
+    else:
+        baseline_sql = "julianday(coalesce(p.last_routine_at, '1970-01-01'))"
+        args = [max_age_days]
     sql = (
         "SELECT p.name, g.id AS root_id"
         " FROM problems p"
         " JOIN goals g ON g.problem = p.name AND g.origin = 'root'"
         " WHERE g.status NOT IN ('proved','shelved','disproved','frozen')"
-        "   AND ("
-        "      p.last_strategist_at IS NULL"
-        "      OR julianday('now') - julianday(p.last_strategist_at) > ?"
-        "   )"
-        # In-flight Inject batch dedup — same rationale as T0 (see
-        # `problems_needing_t0`). Routine Strategist firing while a
-        # Forward batch is still resolving is wasted spawn — `inject_
-        # batch_done` will re-fire Strategist when the last outcome
-        # lands.
-        "   AND NOT EXISTS ("
-        "     SELECT 1 FROM strategist_decisions sd"
-        "     WHERE sd.problem = p.name"
-        "       AND sd.batch_id IS NOT NULL"
-        "       AND sd.outcome IS NULL"
-        "   )"
+        f"   AND julianday('now') - {baseline_sql} > ?"
     )
-    args: tuple = (max_age_days,)
     if scope is not None:
         sql += " AND p.name LIKE ?"
-        args = (max_age_days, scope)
+        args.append(scope)
     sql += " ORDER BY p.name"
-    return [(r["name"], int(r["root_id"])) for r in conn.execute(sql, args)]
+    return [(r["name"], int(r["root_id"])) for r in conn.execute(sql, tuple(args))]
 
 
 def problems_with_pending_review(conn: sqlite3.Connection, *,

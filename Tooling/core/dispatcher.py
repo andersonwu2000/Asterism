@@ -1346,14 +1346,17 @@ def strategist_triggers(conn: sqlite3.Connection,
                         *,
                         scope: str | None = None,
                         interval_min: float = 60.0,
+                        daemon_start_iso: str | None = None,
                         ) -> None:
-    """T0 (first-launch) + T1 (wall-clock routine) enqueues for the
-    Strategist pipeline. T2 (pending_review) is handled by
-    `_enqueue_strategist_review` at cascade-time, not here.
+    """T0 (first-launch) + T1 (routine) enqueues for the Strategist pipeline.
+    T2 (pending_review) is handled by `_enqueue_strategist_review` at
+    cascade-time, not here.
 
     T0 condition: `problems.bootstrap_done = 0`.
-    T1 condition: `last_strategist_at` older than `interval_min` minutes
-                   AND root not terminal.
+    T1 condition: `last_routine_at` (the routine-only clock, not reset by
+                   event-driven triggers) older than `interval_min` minutes of
+                   running time (paused/down time excluded via
+                   `daemon_start_iso`), AND root not terminal.
 
     Per-problem dedup: skip enqueue if a Strategist (target=root) is
     already running or already in the queue. The awaiting_human gate
@@ -1378,9 +1381,10 @@ def strategist_triggers(conn: sqlite3.Connection,
         db.enqueue(conn, kind="Strategist", target_id=rid,
                    target_kind="Goal", priority=10)
 
-    # T1 — wall-clock routine
+    # T1 — routine audit (own running-time cadence; see problems_needing_t1)
     for prob, root_id in db.problems_needing_t1(
         conn, scope=scope, max_age_sec=max_age_sec,
+        since_iso=daemon_start_iso,
     ):
         if db.problem_has_awaiting_human(conn, prob):
             continue
@@ -2360,6 +2364,10 @@ def run(workspace: Path, *, once: bool = False,
           f"problems={list(manifests)}{scope_label}",
           flush=True)
     start_time = time.time()
+    # Daemon start as an ISO timestamp — the T1 routine clock baseline, so
+    # paused/down time between runs is excluded from the routine interval.
+    from datetime import datetime as _dt, timezone as _tz
+    daemon_start_iso = _dt.fromtimestamp(start_time, tz=_tz.utc).isoformat()
 
     # Surface problems paused on an unresolved RequestUserAmend up front.
     # bfs_refill silently skips these (awaiting_human gate), so without
@@ -2714,7 +2722,8 @@ def run(workspace: Path, *, once: bool = False,
         # awaiting_human gate per-problem inside `strategist_triggers`.
         # Defaults to 60-min routine (`strategist.interval_min`).
         strategist_triggers(conn, running, scope=scope,
-                            interval_min=strategist_interval_min)
+                            interval_min=strategist_interval_min,
+                            daemon_start_iso=daemon_start_iso)
 
         # Per-tick stuck-state reconciler: the safety net for the two
         # mid-run-reachable stuck states the cascade fast paths can drop —

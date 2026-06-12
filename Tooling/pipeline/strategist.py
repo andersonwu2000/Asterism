@@ -975,8 +975,12 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
                   decision.payload["__final_path__"])
 
     # Touch last_strategist_at; bootstrap_done=1 on every commit (any
-    # decision kind closes the T0 first-launch window).
+    # decision kind closes the T0 first-launch window). The ROUTINE clock
+    # (last_routine_at, which drives T1) is touched ONLY on a routine commit
+    # so event-driven triggers don't reset the routine audit's cadence.
     db.update_problem_last_strategist_at(conn, problem)
+    if trigger_kind == "routine":
+        db.update_problem_last_routine_at(conn, problem)
     db.set_problem_bootstrap_done(conn, problem)
     conn.commit()
 
