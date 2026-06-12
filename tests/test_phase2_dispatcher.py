@@ -316,6 +316,56 @@ def test_awaiting_human_gates_bfs_refill(conn: sqlite3.Connection) -> None:
     assert q["n"] == 0
 
 
+def test_dispatchable_open_goals_excludes_awaiting_human(
+    conn: sqlite3.Connection,
+) -> None:
+    """`dispatchable_open_goals` drops goals whose problem is paused on an
+    unresolved RequestUserAmend. The dispatcher's idle-exit uses it (not
+    raw `open_goals`) so a scoped daemon whose only in-scope problem is
+    paused EXITS instead of livelocking — 2026-06-12 P12 was paused on a
+    Defs amend, but the unscoped `open_goals` saw an unrelated problem's
+    open goal and never exited."""
+    _insert_problem(conn, name="paused", bootstrap_done=1)
+    _insert_root(conn, "paused", status="open")
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, payload, outcome, created_at,"
+        " updated_at)"
+        " VALUES ('paused', 1, 'first_launch', 'RequestUserAmend',"
+        " '{}', 'awaiting_human', ?, ?)", (db.now(), db.now()),
+    )
+    _insert_problem(conn, name="live", bootstrap_done=1)
+    live_root = _insert_root(conn, "live", status="open")
+    conn.commit()
+
+    # Pre-fix livelock signal: unscoped open_goals sees BOTH problems.
+    assert len(db.open_goals(conn)) == 2
+    # Dispatchable excludes the paused problem entirely.
+    assert [int(g["id"]) for g in db.dispatchable_open_goals(conn)] == [live_root]
+    # Scoped to the paused problem → nothing dispatchable → daemon exits.
+    assert db.dispatchable_open_goals(conn, scope="paused") == []
+    # Scoped to the live problem → its open goal is dispatchable.
+    assert [int(g["id"])
+            for g in db.dispatchable_open_goals(conn, scope="live")] == [live_root]
+
+
+def test_strategies_goal_id_indexed(conn: sqlite3.Connection) -> None:
+    """idx_strategies_goal_id backs tree.render's `_walk_goal` and
+    db.open_goals' strategies-by-goal_id filter. Without it the (10k-row)
+    strategies table is full-scanned per goal — measured 8.6s for one
+    periodic tree-write across 281 problems (2026-06-12), down to 0.17s
+    with the index. Guards the perf fix against schema regressions."""
+    names = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index'")}
+    assert "idx_strategies_goal_id" in names
+    assert "idx_dead_attempts_target" in names
+    plan = conn.execute(
+        "EXPLAIN QUERY PLAN SELECT id FROM strategies WHERE goal_id=?",
+        (1,),
+    ).fetchall()
+    assert any("idx_strategies_goal_id" in str(tuple(r)) for r in plan), plan
+
+
 # ---------------------------------------------------------------------
 # bfs_refill: detached / pending_review
 # ---------------------------------------------------------------------

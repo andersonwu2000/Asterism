@@ -2300,6 +2300,26 @@ def run(workspace: Path, *, once: bool = False,
           flush=True)
     start_time = time.time()
 
+    # Surface problems paused on an unresolved RequestUserAmend up front.
+    # bfs_refill silently skips these (awaiting_human gate), so without
+    # this line a scoped daemon whose only in-scope problem is paused is
+    # indistinguishable from a hang — 2026-06-12 a paused P12
+    # (stokes_induced_orient) read as a multi-hour gateway/tree-render
+    # hang across two sessions. Operator must resolve the amend (apply
+    # the proposed Defs.lean/Manifest.md body, clear the decision) then
+    # re-run. Cheap: idx_sd_outcome backs the filter.
+    _paused_q = ("SELECT DISTINCT problem FROM strategist_decisions "
+                 "WHERE outcome = 'awaiting_human'")
+    _paused_params: tuple = ()
+    if scope:
+        _paused_q += " AND problem LIKE ?"
+        _paused_params = (scope,)
+    _paused_startup = sorted(r[0] for r in conn.execute(_paused_q, _paused_params))
+    if _paused_startup:
+        print(f"[dispatcher] {len(_paused_startup)} problem(s) PAUSED on "
+              f"awaiting_human (unresolved RequestUserAmend); dispatch "
+              f"suppressed until resolved: {_paused_startup}", flush=True)
+
     # Phase 1 gateway: launch long-living LSP HTTP MCP server, wait
     # until backend pre-warm completes (mathlib loaded). Per-spawn MCP
     # config will point at this gateway via HTTP; spawns no longer
@@ -2706,10 +2726,28 @@ def run(workspace: Path, *, once: bool = False,
         # Means we'd just spin until budget — exit instead. Distinct from
         # root_proved exit above: this fires when goals have shelved or
         # all reachable goals are dead.
+        #
+        # `open_goals` is SCOPED here. The unscoped form let a `--scope X`
+        # run livelock forever whenever ANY other problem in the workspace
+        # had an open goal (2026-06-12 P12: the only in-scope problem was
+        # paused on awaiting_human, but brouwer's unrelated open goal kept
+        # this check non-zero, so the daemon never exited and just burned
+        # the periodic tree-write each tick). Goals whose problem is paused
+        # on awaiting_human are not dispatchable (bfs_refill skips them), so
+        # they're excluded from the "dispatchable" set too — and reported,
+        # so silence on a paused problem doesn't read as a hang.
+        dispatchable_open = db.dispatchable_open_goals(conn, scope=scope)
         if (not futures
                 and db.queue_size(conn) == 0
-                and len(db.open_goals(conn)) == 0
+                and len(dispatchable_open) == 0
                 and len(db.strategies_ready_for_verify(conn)) == 0):
+            paused_probs = sorted({
+                str(g["problem"]) for g in db.open_goals(conn, scope=scope)
+                if db.problem_has_awaiting_human(conn, str(g["problem"]))})
+            if paused_probs:
+                print(f"[dispatcher] {len(paused_probs)} problem(s) paused on "
+                      f"awaiting_human — resolve the RequestUserAmend then "
+                      f"re-run: {paused_probs}", flush=True)
             scoped_proved = db.root_proved(conn, scope=scope)
             print(f"[dispatcher] no dispatchable work, exiting "
                   f"(roots_proved={scoped_proved})", flush=True)

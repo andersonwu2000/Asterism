@@ -396,6 +396,15 @@ CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue(priority DESC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_sd_problem ON strategist_decisions(problem);
 CREATE INDEX IF NOT EXISTS idx_sd_outcome ON strategist_decisions(outcome);
 CREATE INDEX IF NOT EXISTS idx_libdecls_problem ON library_decls(problem);
+-- Hot path: tree.render's `_walk_goal` and db.open_goals both filter
+-- strategies by goal_id. Without this index the (10k-row and growing)
+-- table is full-scanned once per goal, making the dispatcher's periodic
+-- TREE.md refresh O(goals × strategies) — measured 8.6s/tick across 281
+-- problems (EXPLAIN showed `SCAN strategies`). idx_dead_attempts_target
+-- backs `_strategy_dead_cause`'s per-dead-strategy verify-fault lookup.
+CREATE INDEX IF NOT EXISTS idx_strategies_goal_id ON strategies(goal_id);
+CREATE INDEX IF NOT EXISTS idx_dead_attempts_target
+    ON dead_attempts(target_kind, target_id);
 -- idx_sd_batch_id: created after the batch_id ALTER TABLE migration
 -- in init_schema, not here. Inlining it in SCHEMA would fail on pre-
 -- Phase 2.5 DBs (executescript runs CREATE INDEX before the ALTER
@@ -1825,6 +1834,30 @@ def problem_has_awaiting_human(conn: sqlite3.Connection, problem: str) -> bool:
         # Pre-Phase 2 schema (table missing).
         return False
     return row is not None
+
+
+def dispatchable_open_goals(conn: sqlite3.Connection,
+                            *, scope: str | None = None
+                            ) -> list[sqlite3.Row]:
+    """`open_goals(scope)` minus goals whose problem is paused on an
+    unresolved `RequestUserAmend` (`outcome='awaiting_human'`).
+
+    bfs_refill silently skips awaiting_human problems, so their open
+    goals can make no progress this run. The dispatcher's idle-exit
+    check uses this (not raw `open_goals`) so a scoped daemon whose only
+    in-scope problem is paused EXITS with a report instead of livelocking
+    forever — 2026-06-12 P12 (stokes_induced_orient) was paused on a
+    Defs.lean amend, but the unscoped `open_goals` saw brouwer's unrelated
+    open goal and never exited, burning the periodic tree-write each tick
+    and reading as a multi-hour hang."""
+    goals = open_goals(conn, scope=scope)
+    if not goals:
+        return []
+    problems = {str(g["problem"]) for g in goals}
+    paused = {p for p in problems if problem_has_awaiting_human(conn, p)}
+    if not paused:
+        return goals
+    return [g for g in goals if str(g["problem"]) not in paused]
 
 
 def update_goal_entry_kind(conn: sqlite3.Connection, goal_id: int,

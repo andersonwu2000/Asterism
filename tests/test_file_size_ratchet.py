@@ -23,8 +23,12 @@ _WATERMARKS = {
     # classify Library-tree context (stokes, 2026-06-11) — conscious bumps.
     # This file is OVERDUE a split (librarian work-kinds → submodules).
     "Tooling/pipeline/librarian.py": 3400,
-    "Tooling/core/dispatcher.py": 2750,
-    "Tooling/state/db.py": 2450,
+    # dispatcher 2750→2800 + db 2450→2500: awaiting_human observability
+    # (startup + idle-exit log of paused problems) + scope-aware idle exit
+    # via db.dispatchable_open_goals — a paused P12 read as a multi-hour
+    # hang across two sessions (2026-06-12) — conscious bumps.
+    "Tooling/core/dispatcher.py": 2800,
+    "Tooling/state/db.py": 2500,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     "Tooling/quality/librarian/cleanup/_common.py": 560,
     "Tooling/quality/librarian/cleanup/audit.py": 200,
