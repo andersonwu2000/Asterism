@@ -250,6 +250,80 @@ def _ensure_backend_ready(timeout: float = 240.0) -> str | None:
     return None
 
 
+# ─── Wedge recovery (2026-06-12 gateway-hang fix) ─────────
+# A non-terminating Lean elaborate (runaway typeclass search / loop)
+# pins a worker forever: `wait_for_diagnostics` only stops *waiting*
+# (the 120s/300s timeout returns stale), but the worker keeps burning
+# the slot. With one shared backend that eventually starves every slot
+# and the dispatcher freezes (observed: a ~2h hang). The watchdog spots
+# a slot stuck in-flight past `_BACKEND_WEDGE_SEC` and replaces the
+# backend; `LspClient.shutdown` now tree-kills lake serve's whole
+# `lean --server`/`--worker` subtree so the runaway is actually reaped.
+
+_BACKEND_WEDGE_SEC = 600.0
+_restart_lock = threading.Lock()
+
+
+def _restart_backend(reason: str) -> None:
+    """Tree-kill the wedged backend and re-warm a fresh worker pool.
+    Sessions lose their slot claims (fresh slots are unowned) — their
+    next tool call re-claims or gets a clear error → spawn retry. A
+    last-resort recovery, far cheaper than an indefinite hang."""
+    if not _restart_lock.acquire(blocking=False):
+        return
+    try:
+        old = _state.backend
+        ws = _state.workspace
+        if ws is None:
+            return
+        n = len(_state.workers) or 1
+        print(f"[gateway] backend restart — {reason} ({n} slots)",
+              file=sys.stderr, flush=True)
+        _state.ready_event.clear()
+        if old is not None:
+            try:
+                old.shutdown()
+            except Exception:
+                try:
+                    old._kill_tree()
+                except Exception:
+                    pass
+        _start_workers(ws, n)
+    finally:
+        _restart_lock.release()
+
+
+def _wedge_watchdog_loop() -> None:
+    """Replace the backend if any slot's Lean elaborate has been in-flight
+    past `_BACKEND_WEDGE_SEC` — a non-terminating elaborate, well beyond
+    the 120s per-op / 300s warmup waits."""
+    nonempty_since: dict[str, float] = {}
+    while True:
+        time.sleep(30.0)
+        backend = _state.backend
+        if backend is None or not _state.ready_event.is_set():
+            nonempty_since.clear()
+            continue
+        now = time.monotonic()
+        try:
+            busy = backend.busy_uris()
+        except Exception:
+            continue
+        for uri in list(nonempty_since):
+            if uri not in busy:
+                nonempty_since.pop(uri, None)
+        wedged = None
+        for uri in busy:
+            t0 = nonempty_since.setdefault(uri, now)
+            if now - t0 > _BACKEND_WEDGE_SEC:
+                wedged = uri
+                break
+        if wedged is not None:
+            nonempty_since.clear()
+            _restart_backend(
+                f"elaborate on {wedged} wedged >{int(_BACKEND_WEDGE_SEC)}s")
+
+
 # ─── Slot acquisition (the heart of Phase 2) ─────────────
 
 @contextlib.contextmanager
@@ -1258,6 +1332,10 @@ def main() -> None:
     # AttemptsContext.__exit__, etc.). Cheap when nothing is stale.
     threading.Thread(target=_stale_claim_sweep_loop,
                      daemon=True, name="gateway-stale-claim-sweep").start()
+    # Wedge recovery: replace the backend if a non-terminating elaborate
+    # pins a worker (2026-06-12 hang fix — see `_wedge_watchdog_loop`).
+    threading.Thread(target=_wedge_watchdog_loop,
+                     daemon=True, name="gateway-wedge-watchdog").start()
     err = _ensure_backend_ready(timeout=600.0)
     if err:
         print(f"[gateway] FATAL: {err}", file=sys.stderr, flush=True)
@@ -1283,21 +1361,38 @@ def main() -> None:
     # the policy. `Server.serve()` is an async coroutine — we run it
     # on our pre-built loop directly. This is the only way to keep
     # SelectorEventLoop active across uvicorn's startup.
-    if sys.platform == "win32":
-        import asyncio as _asyncio
-        loop = _asyncio.SelectorEventLoop()
-        _asyncio.set_event_loop(loop)
-        config = uvicorn.Config(app, host="127.0.0.1", port=port,
-                                 log_level="warning", loop="none")
-        server = uvicorn.Server(config)
-        try:
-            loop.run_until_complete(server.serve())
-        finally:
-            loop.close()
-    else:
-        # Non-Windows: stock uvicorn.run is fine; no IOCP race.
-        uvicorn.run(app, host="127.0.0.1", port=port,
-                    log_level="warning")
+    try:
+        if sys.platform == "win32":
+            import asyncio as _asyncio
+            loop = _asyncio.SelectorEventLoop()
+            _asyncio.set_event_loop(loop)
+            config = uvicorn.Config(app, host="127.0.0.1", port=port,
+                                     log_level="warning", loop="none")
+            server = uvicorn.Server(config)
+            try:
+                loop.run_until_complete(server.serve())
+            finally:
+                loop.close()
+        else:
+            # Non-Windows: stock uvicorn.run is fine; no IOCP race.
+            uvicorn.run(app, host="127.0.0.1", port=port,
+                        log_level="warning")
+    finally:
+        # Reap the Lean backend subtree on gateway exit (SIGTERM from the
+        # daemon's atexit, or any shutdown). Without this, `lake serve`'s
+        # `lean --server`/`--worker` children orphan on every gateway
+        # exit/restart and accumulate (rule-8 / 2026-06-12 smoke-test
+        # finding). uvicorn handles SIGTERM gracefully → serve() returns
+        # → this finally runs.
+        _b = _state.backend
+        if _b is not None:
+            try:
+                _b.shutdown()
+            except Exception:
+                try:
+                    _b._kill_tree()
+                except Exception:
+                    pass
 
 
 def _install_windows_event_loop_policy() -> None:

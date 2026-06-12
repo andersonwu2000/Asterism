@@ -828,3 +828,62 @@ def test_sweep_orphan_session_without_matching_slot(
     finally:
         with _state.sessions_lock:
             _state.sessions.pop("orphan-tok", None)
+
+
+# ─── 2026-06-12 gateway-hang fix: tree-kill + wedge restart ───
+
+def test_client_busy_uris_filters_in_flight() -> None:
+    """`busy_uris` reports only URIs whose elaborate is in-flight
+    (non-empty fileProgress) — the wedge-watchdog's input signal."""
+    import threading
+    from Tooling.lsp.client import LspClient
+    c = LspClient.__new__(LspClient)  # skip __init__'s subprocess setup
+    c._file_progress = {"done": [], "busy1": ["x"], "busy2": ["y", "z"]}
+    c._file_progress_lock = threading.Lock()
+    assert c.busy_uris() == {"busy1", "busy2"}
+
+
+def test_client_shutdown_tree_kills_when_proc_wont_exit(monkeypatch) -> None:
+    """A backend that ignores graceful shutdown/exit must be tree-killed
+    (reaping `lean --server`/`--worker` children) — not left to orphan a
+    runaway elaborate (the 2026-06-12 hang root cause)."""
+    import subprocess
+    import threading
+    from Tooling.lsp.client import LspClient
+    c = LspClient.__new__(LspClient)
+    c._send_lock = threading.Lock()
+    c._stopped = threading.Event()
+    killed = {"tree": False}
+
+    class _StuckProc:
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="lake serve", timeout=timeout)
+    c.proc = _StuckProc()
+    monkeypatch.setattr(c, "notify", lambda *a, **k: None)
+    monkeypatch.setattr(c, "_kill_tree",
+                        lambda: killed.__setitem__("tree", True))
+    c.shutdown(timeout=0.01)
+    assert killed["tree"]
+
+
+def test_restart_backend_reaps_old_then_rewarms(monkeypatch) -> None:
+    """`_restart_backend` shuts the wedged backend down (tree-reaped) then
+    re-warms a fresh pool of the same width."""
+    order: list[str] = []
+
+    class _FakeBackend:
+        def shutdown(self) -> None:
+            order.append("shutdown")
+
+    saved = (_state.backend, _state.workspace, list(_state.workers))
+    try:
+        _state.backend = _FakeBackend()
+        _state.workspace = Path(".")
+        _state.workers = [object(), object(), object()]  # width 3
+        monkeypatch.setattr(lsp_gateway, "_start_workers",
+                            lambda ws, n: order.append(f"start:{n}"))
+        lsp_gateway._restart_backend("unit test")
+        assert order == ["shutdown", "start:3"], order
+    finally:
+        _state.backend, _state.workspace, _state.workers = (
+            saved[0], saved[1], saved[2])

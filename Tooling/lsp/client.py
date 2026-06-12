@@ -22,6 +22,7 @@ import json
 import os
 import queue
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -101,6 +102,12 @@ class LspClient:
                 lake_path = shutil.which("lake")
                 if lake_path:
                     env["LAKE"] = lake_path
+        # POSIX: own session/process group so `_kill_tree` can `killpg`
+        # the whole `lake serve → lean --server → lean --worker` tree.
+        # Windows: `taskkill /T` walks the tree by PID, no flag needed.
+        popen_kwargs: dict = {}
+        if os.name != "nt":
+            popen_kwargs["start_new_session"] = True
         self.proc = subprocess.Popen(
             ["lake", "serve"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -108,6 +115,7 @@ class LspClient:
             cwd=str(self.workspace),
             env=env,
             bufsize=0,
+            **popen_kwargs,
         )
         self._reader_thread = threading.Thread(
             target=self._read_loop, daemon=True
@@ -117,6 +125,28 @@ class LspClient:
             target=self._stderr_loop, daemon=True
         )
         self._stderr_thread.start()
+
+    def _kill_tree(self) -> None:
+        """Kill `lake serve` AND its descendants (`lean --server`
+        watchdog + `lean --worker` children). `proc.kill()` alone reaps
+        only `lake serve`, orphaning a wedged worker that keeps burning
+        CPU — a runaway elaboration then survives shutdown (the
+        2026-06-12 gateway-hang root cause: a non-terminating elaborate
+        was never reaped, so a backend restart could not recover it)."""
+        if self.proc is None:
+            return
+        pid = self.proc.pid
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True)
+        else:
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
 
     def shutdown(self, timeout: float = 5.0) -> None:
         if self.proc is None:
@@ -130,7 +160,7 @@ class LspClient:
         try:
             self.proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            self.proc.kill()
+            self._kill_tree()
             try:
                 self.proc.wait(timeout=2.0)
             except subprocess.TimeoutExpired:
@@ -336,6 +366,14 @@ class LspClient:
     def clear_diagnostics(self, uri: str) -> None:
         with self._diag_lock:
             self._latest_diagnostics.pop(uri, None)
+
+    def busy_uris(self) -> set[str]:
+        """URIs whose Lean elaboration is currently in-flight (fileProgress
+        reported non-empty). The gateway wedge-watchdog uses this to spot a
+        worker stuck on a non-terminating elaborate — its 120s/300s wait
+        already returned, but the runaway keeps burning the slot."""
+        with self._file_progress_lock:
+            return {u for u, v in self._file_progress.items() if v}
 
     def clear_file_progress(self, uri: str) -> None:
         """Reset per-URI fileProgress state so a subsequent
