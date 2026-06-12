@@ -478,14 +478,16 @@ def _library_module_of(rel_lean_path: str) -> str:
 
 
 def _nominal_decl_src(text: str, slug: str) -> "str | None":
-    """The SOURCE of nominal declaration `slug` in `text`: its keyword head
-    through to the next top-level command (decl / variable / section / end),
+    """The SOURCE of declaration `slug` in `text`: its keyword head through
+    to the next top-level command (decl / variable / section / end),
     excluding the preceding docstring (comments are stripped by the
-    normalized comparison anyway). None when `slug` isn't declared here."""
+    normalized comparison anyway). None when `slug` isn't declared here.
+    Covers every decl keyword: the verbatim guard serves nominal kinds AND
+    defs whose rfl probe cannot cross a re-declared nominal boundary."""
     head = re.compile(
         rf"(?m)^[ \t]*(?:@\[[^\]]*\][ \t]*)*"
         rf"(?:noncomputable\s+|private\s+|protected\s+|scoped\s+)*"
-        rf"(?:structure|class|inductive)\s+{re.escape(slug)}\b")
+        rf"(?:" + "|".join(_DECL_KW) + rf")\s+{re.escape(slug)}\b")
     m = head.search(text)
     if m is None:
         return None
@@ -586,6 +588,18 @@ def migrate_defeq_gate(
         imports=[f"Problems.{problem}.Defs", target_module],
         verifier=defeq_verifier, workspace=workspace)
     if res.ok:
+        return MigrateResult(True, "")
+    # A def whose SIGNATURE mentions a nominal Defs sibling can never be
+    # rfl-defeq across the migration boundary — the Problems and Library
+    # copies of that class are two distinct declarations, so the two sides
+    # of `@a = @b` don't even share a type (stokes_integral
+    # `DiffForm.integral [OrientedManifold I N]`, 2026-06-12). Verbatim
+    # source equality is a strictly stronger tampering guard than defeq
+    # (identical text ⟹ untampered), so accept it as the fallback; a
+    # genuinely tampered def fails both.
+    if workspace is not None and _verbatim_nominal_ok(
+            patch_text, problem=problem, target_slug=target_slug,
+            target_module=target_module, workspace=workspace):
         return MigrateResult(True, "")
     return MigrateResult(False, "; ".join(res.issues))
 

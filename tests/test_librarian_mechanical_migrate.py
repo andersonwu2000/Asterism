@@ -1246,3 +1246,31 @@ def test_gate_d_nominal_verbatim_special_case(tmp_path):
     # no workspace → still declines (no silent pass)
     kw2 = dict(kw, workspace=None)
     assert not lib.migrate_defeq_gate(patch, **kw2).ok
+
+
+def test_gate_d_def_verbatim_fallback_after_rfl_failure(tmp_path):
+    # A def whose signature mentions a nominal Defs sibling can never be
+    # rfl-defeq across the boundary (Problems vs Library copies of the class
+    # are distinct declarations) — verbatim source equality is the fallback
+    # (stokes_integral DiffForm.integral, 2026-06-12). Tampered body fails both.
+    pd = tmp_path / "Problems" / "p"
+    pd.mkdir(parents=True)
+    (pd / "Defs.lean").write_text(
+        "import Mathlib\nnamespace Problems.p\n"
+        "class Orient (N : Type*) where\n  ref : N\n\n"
+        "noncomputable def total [Orient Nat] : Nat := 7\n"
+        "end Problems.p\n", encoding="utf-8")
+    patch = ("import Mathlib\nnamespace Library.T.F\n"
+             "class Orient (N : Type*) where\n  ref : N\n\n"
+             "noncomputable def total [Orient Nat] : Nat := 7\n"
+             "end Library.T.F\n")
+    failv = lambda probe: (False, "Type mismatch")
+    kw = dict(problem="p", target_slug="total", defs_decls=["Orient", "total"],
+              target_module="Library.T.F", kind="def", workspace=tmp_path,
+              defeq_verifier=failv)
+    assert lib.migrate_defeq_gate(patch, **kw).ok
+    bad = patch.replace(": Nat := 7", ": Nat := 8")
+    assert not lib.migrate_defeq_gate(bad, **kw).ok
+    # rfl success path unchanged (verifier ok → no verbatim needed)
+    okv = lambda probe: (True, "")
+    assert lib.migrate_defeq_gate(bad, **dict(kw, defeq_verifier=okv)).ok
