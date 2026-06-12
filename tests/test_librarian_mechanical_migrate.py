@@ -878,6 +878,37 @@ def test_defs_decl_source_multiline_variable_block():
     assert out.rstrip().endswith("def d : E := 0")
 
 
+def test_defs_decl_source_local_variable_in_travels_with_its_decl():
+    # `variable (n M) in` is a LOCAL re-annotation binding ONLY to the decl
+    # immediately after it. It must travel in THAT decl's slice — not be
+    # collected as a section-level variable (it starts with the keyword),
+    # which left it dangling on the PREVIOUS decl's slice and wrongly
+    # prepended it to LATER decls → "redundant binder annotation update" +
+    # dangling `variable in` at migrate build (stokes_induced_orient POU,
+    # 2026-06-12).
+    text = ("namespace Problems.p\n\n"
+            "variable {n : Nat} {M : Type*}\n\n"
+            "def chartFun (q : M) : Nat := n\n\n"
+            "variable (n M) in\n"
+            "def pou : Nat := n\n\n"
+            "def usePou : Nat := pou n M\n\n"
+            "end Problems.p\n")
+    # 1. travels with `pou`, after the file-level block, before the decl.
+    pou = lib._defs_decl_source(text, "pou")
+    assert pou.index("variable {n : Nat}") \
+        < pou.index("variable (n M) in") \
+        < pou.index("def pou")
+    # 2. the PREVIOUS decl's slice has no dangling `variable ... in` tail.
+    chartfun = lib._defs_decl_source(text, "chartFun")
+    assert "variable (n M) in" not in chartfun
+    assert chartfun.rstrip().endswith("def chartFun (q : M) : Nat := n")
+    # 3. a LATER decl must NOT inherit the local re-annotation (its n/M stay
+    #    implicit) — only the file-level block is replayed.
+    usepou = lib._defs_decl_source(text, "usePou")
+    assert "variable (n M) in" not in usepou
+    assert "variable {n : Nat}" in usepou
+
+
 # ---------------------------------------------------------------------
 # cross-problem target_file ownership guard (stokes definition-tower)
 # ---------------------------------------------------------------------

@@ -1886,7 +1886,13 @@ def _variable_block_spans(defs_text: str) -> "list[tuple[int, int, str]]":
                 block += lines[j]
                 p2 += len(lines[j])
                 j += 1
-            spans.append((start, p2, block.rstrip()))
+            # `variable (..) in` is a LOCAL re-annotation for the next decl, not
+            # a section-level variable — exclude it (it travels in its own decl's
+            # slice via `_head_start`; replaying it elsewhere dangled it on the
+            # previous slice / prepended it to later decls → migrate build broke,
+            # stokes_induced_orient POU 2026-06-12).
+            if not re.search(r"\bin\Z", block.rstrip()):
+                spans.append((start, p2, block.rstrip()))
             pos = p2
             i = j
             continue
@@ -1923,26 +1929,29 @@ def _defs_decl_source(defs_text: str, name: str) -> "str | None":
         verbatim, but the per-slice `variable` replay then lands BETWEEN a
         docstring and its decl -> `unexpected token 'variable'; expected
         'lemma'` (stokes bdry_chart 2026-06-11)."""
-        head = defs_text[:pos].rstrip()
-        # standalone attribute line(s) directly above the decl belong to
-        # it (e.g. `@[instance]` on its own line) — pull them in first,
-        # then any docstring above them.
+        # Pull `@[attr]`, a `variable (..) in`, and the docstring into the slice.
         while True:
+            head = defs_text[:pos].rstrip()
             nl = head.rfind("\n")
             last = head[nl + 1:].strip()
+            # standalone attribute line(s) (e.g. `@[instance]` on its own line)
             if last.startswith("@[") and last.endswith("]"):
                 pos = nl + 1 if nl >= 0 else 0
-                head = defs_text[:pos].rstrip()
                 continue
+            # `variable (..) in` binds ONLY to the next decl (single-line form)
+            if re.match(r"variable\b.*\bin\Z", last):
+                pos = nl + 1 if nl >= 0 else 0
+                continue
+            # an immediately-preceding `/-- ... -/` docstring. The trailing `-/`
+            # must close THIS `/--` (no closer between) — else it ends some
+            # other comment form (`/-!`, `/- ... -/`).
+            if head.endswith("-/"):
+                k = head.rfind("/--")
+                if k != -1 and "-/" not in head[k + 3:-2]:
+                    pos = k
+                    continue
             break
-        if not head.endswith("-/"):
-            return pos
-        k = head.rfind("/--")
-        # the trailing `-/` must close THIS `/--` (no closer in between) --
-        # otherwise it ends some other comment form (`/-!`, `/- ... -/`).
-        if k == -1 or "-/" in head[k + 3:-2]:
-            return pos
-        return k
+        return pos
 
     for i, m in enumerate(matches):
         if m.group(2) != name:
