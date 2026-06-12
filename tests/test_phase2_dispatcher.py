@@ -6,6 +6,7 @@ covered in `tests/test_phase2_cascade.py`.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import time as _time
 from pathlib import Path
@@ -15,6 +16,7 @@ import pytest
 from Tooling.core.dispatcher import (
     _derive_strategist_trigger,
     bfs_refill,
+    reconcile_stuck_states,
     strategist_triggers,
 )
 from Tooling.state import db
@@ -741,3 +743,148 @@ def test_derive_trigger_inject_batch_done_beats_pending_review(
 
     trigger, _ = _derive_strategist_trigger(conn, "alpha")
     assert trigger == "inject_batch_done"
+
+
+# ---------------------------------------------------------------------
+# reconcile_stuck_states — per-tick mid-run stuck-state safety net (#5)
+# ---------------------------------------------------------------------
+
+def _insert_null_inject(conn: sqlite3.Connection, *, problem: str,
+                        pipeline: str, target_id: int | None = None,
+                        produced_goal_id: int | None = None,
+                        produced_strategy_id: int | None = None) -> int:
+    ts = db.now()
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, payload, outcome,"
+        " produced_goal_id, produced_strategy_id, created_at, updated_at)"
+        " VALUES (?, 0, 'inject_batch_done', 'Inject', ?, ?, NULL, ?, ?, ?, ?)",
+        (problem, target_id, json.dumps({"pipeline": pipeline}),
+         produced_goal_id, produced_strategy_id, ts, ts),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def test_problems_with_pending_review_lists_only_pending(
+    conn: sqlite3.Connection,
+) -> None:
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    root = _insert_root(conn, "alpha")
+    sub = _insert_sub(conn, "alpha", "lemma1")
+    assert db.problems_with_pending_review(conn) == []   # none pending yet
+    db.update_goal_status(conn, sub, "pending_strategist_review")
+    assert db.problems_with_pending_review(conn) == [("alpha", root)]
+    assert db.problems_with_pending_review(conn, scope="beta%") == []
+
+
+def test_reconcile_enqueues_strategist_for_orphaned_pending_review(
+    conn: sqlite3.Connection,
+) -> None:
+    # The core fix: a pending_review goal with NO strategist queued/in-flight
+    # gets one enqueued on its root (the spawn then derives a pending_review
+    # wake). Closes the orphan the cascade-time enqueue can drop.
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    root = _insert_root(conn, "alpha")
+    sub = _insert_sub(conn, "alpha", "lemma1")
+    db.update_goal_status(conn, sub, "pending_strategist_review")
+    reconcile_stuck_states(conn, running=set())
+    q = conn.execute(
+        "SELECT target_id FROM queue WHERE kind='Strategist'").fetchall()
+    assert [int(r["target_id"]) for r in q] == [root]
+
+
+def test_reconcile_pending_review_dedups_queue_and_inflight(
+    conn: sqlite3.Connection,
+) -> None:
+    # Serialization invariant: never a second Strategist while one is queued
+    # OR in-flight for the same root.
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    root = _insert_root(conn, "alpha")
+    sub = _insert_sub(conn, "alpha", "lemma1")
+    db.update_goal_status(conn, sub, "pending_strategist_review")
+    # already queued → no second
+    db.enqueue(conn, kind="Strategist", target_id=str(root),
+               target_kind="Goal", priority=20)
+    reconcile_stuck_states(conn, running=set())
+    assert conn.execute(
+        "SELECT count(*) c FROM queue WHERE kind='Strategist'"
+    ).fetchone()["c"] == 1
+    # in-flight (running) → no enqueue at all
+    conn.execute("DELETE FROM queue")
+    conn.commit()
+    reconcile_stuck_states(conn, running={(str(root), "Strategist", None)})
+    assert conn.execute(
+        "SELECT count(*) c FROM queue WHERE kind='Strategist'"
+    ).fetchone()["c"] == 0
+
+
+def test_reconcile_pending_review_skipped_under_awaiting_human(
+    conn: sqlite3.Connection,
+) -> None:
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    _insert_root(conn, "alpha")
+    sub = _insert_sub(conn, "alpha", "lemma1")
+    db.update_goal_status(conn, sub, "pending_strategist_review")
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, payload, outcome, created_at,"
+        " updated_at) VALUES ('alpha', 1, 'first_launch', 'RequestUserAmend',"
+        " '{}', 'awaiting_human', ?, ?)", (db.now(), db.now()),
+    )
+    conn.commit()
+    reconcile_stuck_states(conn, running=set())
+    assert conn.execute(
+        "SELECT count(*) c FROM queue WHERE kind='Strategist'"
+    ).fetchone()["c"] == 0
+
+
+def test_null_inject_redispatch_specs_applies_artifact_guards(
+    conn: sqlite3.Connection,
+) -> None:
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    tgt = _insert_sub(conn, "alpha", "tgt")   # real goal for FK target_id
+    sid = db.insert_strategy(                  # real strategy for FK
+        conn, goal_id=tgt, lean_path="Problems/alpha/Root.lean",
+        scratch_path="Problems/alpha/proofs/_strategy_s1.lean",
+        created_by="pid")
+    d_fwd = _insert_null_inject(conn, problem="alpha", pipeline="Forward")
+    _insert_null_inject(conn, problem="alpha", pipeline="Forward",
+                        produced_goal_id=tgt)                 # skip (lemma)
+    d_bwd = _insert_null_inject(conn, problem="alpha", pipeline="Backward",
+                                target_id=tgt)
+    _insert_null_inject(conn, problem="alpha", pipeline="Backward",
+                        target_id=tgt, produced_strategy_id=sid)  # skip(strat)
+    specs = {s["decision_id"]: s for s in
+             db.null_inject_redispatch_specs(conn)}
+    assert set(specs) == {d_fwd, d_bwd}        # only the no-artifact ones
+    assert specs[d_fwd]["kind"] == "Forward"
+    assert specs[d_fwd]["target_kind"] == "Problem"
+    assert specs[d_bwd]["kind"] == "Backward"
+    assert specs[d_bwd]["target_id"] == str(tgt)
+
+
+def test_reconcile_reenqueues_null_inject_in_flight_gated(
+    conn: sqlite3.Connection,
+) -> None:
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    d1 = _insert_null_inject(conn, problem="alpha", pipeline="Forward")
+    # not in-flight, not queued → re-enqueued
+    reconcile_stuck_states(conn, running=set())
+    q = conn.execute(
+        "SELECT kind, decision_id FROM queue WHERE kind='Forward'").fetchall()
+    assert [(r["kind"], r["decision_id"]) for r in q] == [("Forward", d1)]
+    # in-flight worker for this decision → not re-enqueued
+    conn.execute("DELETE FROM queue")
+    conn.commit()
+    reconcile_stuck_states(conn, running={("alpha", "Forward", d1)})
+    assert conn.execute(
+        "SELECT count(*) c FROM queue WHERE kind='Forward'"
+    ).fetchone()["c"] == 0
+    # already queued → no duplicate
+    db.enqueue(conn, kind="Forward", target_id="alpha",
+               target_kind="Problem", priority=10, decision_id=d1)
+    reconcile_stuck_states(conn, running=set())
+    assert conn.execute(
+        "SELECT count(*) c FROM queue WHERE decision_id=?", (d1,)
+    ).fetchone()["c"] == 1

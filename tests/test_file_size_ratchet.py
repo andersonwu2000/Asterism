@@ -27,8 +27,12 @@ _WATERMARKS = {
     # (startup + idle-exit log of paused problems) + scope-aware idle exit
     # via db.dispatchable_open_goals — a paused P12 read as a multi-hour
     # hang across two sessions (2026-06-12) — conscious bumps.
-    "Tooling/core/dispatcher.py": 2800,
-    "Tooling/state/db.py": 2500,
+    # dispatcher 2800→2900 + db 2500→2600: reconcile_stuck_states — per-tick
+    # safety net for orphaned pending_review + NULL-outcome Inject wedges
+    # (db.problems_with_pending_review / null_inject_redispatch_specs /
+    # queue_has_decision) — 2026-06-13 — conscious bumps.
+    "Tooling/core/dispatcher.py": 2900,
+    "Tooling/state/db.py": 2600,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     "Tooling/quality/librarian/cleanup/_common.py": 560,
     "Tooling/quality/librarian/cleanup/audit.py": 200,

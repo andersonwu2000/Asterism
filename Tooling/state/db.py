@@ -10,6 +10,7 @@ Schema version tracked via `PRAGMA user_version`:
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1707,6 +1708,107 @@ def problems_needing_t1(conn: sqlite3.Connection, *,
         args = (max_age_days, scope)
     sql += " ORDER BY p.name"
     return [(r["name"], int(r["root_id"])) for r in conn.execute(sql, args)]
+
+
+def problems_with_pending_review(conn: sqlite3.Connection, *,
+                                 scope: str | None = None
+                                 ) -> list[tuple[str, int]]:
+    """Return [(problem_name, root_goal_id)] for problems with at least one
+    goal in `pending_strategist_review` whose root is not terminal.
+
+    The per-tick stuck-state reconciler (`reconcile_stuck_states`) enqueues a
+    Strategist for each so a pending review never orphans when the cascade-
+    time fast-path enqueue (`_enqueue_strategist_review`) is deduped / lost /
+    not restored at restart — the lost-wakeup that left P13 goals stuck
+    (2026-06-13) and wedged Banach-Tarski g3246 for 30+ min (2026-05-27). The
+    spawn-time `_derive_strategist_trigger` then sees the pending goal and
+    runs a `pending_review` wake.
+
+    No in-flight-batch suppression (unlike T0/T1): a pending review and an
+    unacknowledged Inject batch are not mutually exclusive — `_derive_
+    strategist_trigger` orders them (batch first), and the caller's per-root
+    Strategist dedup prevents a double-enqueue."""
+    sql = (
+        "SELECT DISTINCT p.name, g_root.id AS root_id"
+        " FROM problems p"
+        " JOIN goals g_root ON g_root.problem = p.name"
+        "   AND g_root.origin = 'root'"
+        " JOIN goals g_pend ON g_pend.problem = p.name"
+        "   AND g_pend.status = 'pending_strategist_review'"
+        " WHERE g_root.status NOT IN ('proved','shelved','disproved')"
+    )
+    args: tuple = ()
+    if scope is not None:
+        sql += " AND p.name LIKE ?"
+        args = (scope,)
+    sql += " ORDER BY p.name"
+    return [(r["name"], int(r["root_id"])) for r in conn.execute(sql, args)]
+
+
+def null_inject_redispatch_specs(conn: sqlite3.Connection, *,
+                                 scope: str | None = None
+                                 ) -> list[dict]:
+    """Queue specs for every NULL-outcome Inject decision that still needs a
+    worker (its produced artifact does not exist yet).
+
+    Shared by startup `recovery` (re-enqueues all — clean slate) and the
+    per-tick `reconcile_stuck_states` (re-enqueues only those with no
+    in-flight worker). Encodes the produced-artifact guards so an Inject is
+    NOT redispatched once its outcome will propagate from the artifact's
+    terminal: a Forward/Builder that already produced a goal, or a Backward
+    that already committed a strategy. A NULL-outcome Inject whose worker died
+    on infra failure (no artifact) wedges the whole problem — the in-flight-
+    batch clause then suppresses T0/T1/T4 — so it must be redispatched.
+
+    Returns dicts: `{decision_id, problem, kind, target_id, target_kind}`."""
+    sql = (
+        "SELECT id, problem, payload, target_id, produced_goal_id,"
+        " produced_strategy_id FROM strategist_decisions"
+        " WHERE decision_kind = 'Inject' AND outcome IS NULL"
+    )
+    args: tuple = ()
+    if scope is not None:
+        sql += " AND problem LIKE ?"
+        args = (scope,)
+    specs: list[dict] = []
+    for r in conn.execute(sql, args):
+        try:
+            payload = json.loads(r["payload"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        pipeline = payload.get("pipeline")
+        if pipeline == "Forward":
+            if r["produced_goal_id"] is not None:
+                continue  # lemma landed; outcome propagates from goal
+            specs.append({
+                "decision_id": int(r["id"]), "problem": str(r["problem"]),
+                "kind": "Forward", "target_id": str(r["problem"]),
+                "target_kind": "Problem",
+            })
+        elif pipeline in ("Backward", "Builder"):
+            if r["target_id"] is None:
+                continue  # malformed — no target_goal_id; skip not dispatch
+            if pipeline == "Backward" and r["produced_strategy_id"] is not None:
+                continue  # strategy committed; outcome from strategy terminal
+            if pipeline == "Builder" and r["produced_goal_id"] is not None:
+                continue  # goal stub written; outcome from goal terminal
+            specs.append({
+                "decision_id": int(r["id"]), "problem": str(r["problem"]),
+                "kind": pipeline, "target_id": str(int(r["target_id"])),
+                "target_kind": "Goal",
+            })
+        # Unknown pipeline (legacy / malformed) — skip silently.
+    return specs
+
+
+def queue_has_decision(conn: sqlite3.Connection, decision_id: int) -> bool:
+    """True iff a queue row carries `decision_id` (Inject-authored dispatch).
+    Used by `reconcile_stuck_states` to avoid re-enqueuing a NULL-outcome
+    Inject whose worker is already queued."""
+    row = conn.execute(
+        "SELECT 1 FROM queue WHERE decision_id = ? LIMIT 1", (decision_id,),
+    ).fetchone()
+    return row is not None
 
 
 def problems_stalled(conn: sqlite3.Connection, *,

@@ -1268,6 +1268,79 @@ def bfs_refill(conn: sqlite3.Connection,
 # Phase 2 — Strategist T0 / T1 triggers
 # ---------------------------------------------------------------------
 
+def _strategist_inflight(conn: sqlite3.Connection, root_id_str: str,
+                         running: "set[tuple]") -> bool:
+    """A Strategist for this root is already running or queued — the
+    per-root serialization invariant (one Strategist per problem at a time;
+    Strategist mutates problem-global state — `strategist_directive`
+    overwrite-on-write, goal/strategy status, cross-decision coherence — so
+    concurrent runs would race). Checks BOTH the in-memory `running` set
+    (in-flight) AND the DB queue (pending); the cascade-time
+    `_enqueue_strategist_review` checked only the queue, which is the gap
+    `reconcile_stuck_states` closes.
+
+    Phase 2.5 — running key is (target_id, kind, decision_id); Strategist
+    rows always have decision_id=None (never spawned from an Inject), so a
+    match by (root, 'Strategist', *) covers the invariant."""
+    in_running = any(
+        r[0] == root_id_str and r[1] == "Strategist" for r in running
+    )
+    return (in_running
+            or db.is_in_queue(conn, target_id=root_id_str, kind="Strategist"))
+
+
+def reconcile_stuck_states(conn: sqlite3.Connection,
+                           running: "set[tuple]",
+                           *, scope: str | None = None) -> None:
+    """Per-tick safety net for mid-run stuck states that no other reconciler
+    re-triggers and that can persist in a LIVE daemon (not only across a
+    crash, which `recover_at_startup` handles).
+
+    Two classes, both confirmed reachable mid-run and unrecoverable without
+    this (investigation 2026-06-13):
+
+      1. `pending_strategist_review` goals whose cascade-time Strategist
+         enqueue was deduped (L355 queue-only race), lost, or dropped — there
+         is no restart recovery for these, so they orphan permanently (P13
+         left 2/3 stuck; BT g3246 waited 30+ min for the accidental 120-min
+         T1). Enqueue a Strategist; the spawn's `_derive_strategist_trigger`
+         sees the pending goal and runs a `pending_review` wake.
+
+      2. NULL-outcome Inject decisions whose worker died on infra failure
+         with no artifact — this wedges the WHOLE problem (the in-flight-
+         batch clause suppresses T0/T1/T4), recoverable otherwise only at
+         restart. Re-enqueue the worker.
+
+    Both are IN-FLIGHT GATED: an item whose worker is live (in `running`) or
+    already queued is skipped, so this never double-dispatches. That gating
+    is the only thing this adds over the startup-recovery logic it shares
+    (`db.null_inject_redispatch_specs`), which runs against a clean slate."""
+    # 1 — pending_review: enqueue Strategist (spawn derives the trigger).
+    for prob, root_id in db.problems_with_pending_review(conn, scope=scope):
+        if db.problem_has_awaiting_human(conn, prob):
+            continue
+        rid = str(root_id)
+        if _strategist_inflight(conn, rid, running):
+            continue
+        db.enqueue(conn, kind="Strategist", target_id=rid,
+                   target_kind="Goal", priority=20)
+
+    # 2 — NULL-outcome Inject: re-enqueue the worker, in-flight gated.
+    for spec in db.null_inject_redispatch_specs(conn, scope=scope):
+        did = spec["decision_id"]
+        if any(len(r) > 2 and r[2] == did for r in running):
+            continue  # a worker for this Inject is live this run
+        if db.queue_has_decision(conn, did):
+            continue  # already queued (e.g. cascade-time L967 re-enqueue)
+        db.enqueue(conn, kind=spec["kind"], target_id=spec["target_id"],
+                   target_kind=spec["target_kind"], priority=10,
+                   decision_id=did)
+
+
+# ---------------------------------------------------------------------
+# Phase 2 — Strategist T0 / T1 triggers
+# ---------------------------------------------------------------------
+
 def strategist_triggers(conn: sqlite3.Connection,
                         running: set[tuple[str, str]],
                         *,
@@ -1291,24 +1364,12 @@ def strategist_triggers(conn: sqlite3.Connection,
     """
     max_age_sec = interval_min * 60.0
 
-    def already_inflight(root_id_str: str) -> bool:
-        # Phase 2.5 — running key is (target_id, kind, decision_id);
-        # Strategist queue rows always have decision_id=None (Strategist
-        # is never spawned from an Inject), so a tuple-match by (root,
-        # Strategist, *) covers the invariant.
-        in_running = any(
-            r[0] == root_id_str and r[1] == "Strategist" for r in running
-        )
-        return (in_running
-                or db.is_in_queue(conn, target_id=root_id_str,
-                                  kind="Strategist"))
-
     # T0 — first launch (highest urgency among Strategist triggers)
     for prob, root_id in db.problems_needing_t0(conn, scope=scope):
         if db.problem_has_awaiting_human(conn, prob):
             continue
         rid = str(root_id)
-        if already_inflight(rid):
+        if _strategist_inflight(conn, rid, running):
             continue
         # Higher priority than Backward (2) / Builder (5)? Phase 2 spec
         # says Strategist > Backward/Builder but < Verify housekeeping.
@@ -1324,7 +1385,7 @@ def strategist_triggers(conn: sqlite3.Connection,
         if db.problem_has_awaiting_human(conn, prob):
             continue
         rid = str(root_id)
-        if already_inflight(rid):
+        if _strategist_inflight(conn, rid, running):
             continue
         db.enqueue(conn, kind="Strategist", target_id=rid,
                    target_kind="Goal", priority=10)
@@ -1349,7 +1410,7 @@ def strategist_triggers(conn: sqlite3.Connection,
         if db.problem_has_awaiting_human(conn, prob):
             continue
         rid = str(root_id)
-        if already_inflight(rid):
+        if _strategist_inflight(conn, rid, running):
             continue
         db.enqueue(conn, kind="Strategist", target_id=rid,
                    target_kind="Goal", priority=10)
@@ -2648,12 +2709,19 @@ def run(workspace: Path, *, once: bool = False,
                    quota_cooldown_kind=quota_cooldown_kind,
                    verified_problems=verified_problems)
 
-        # Phase 2 — Strategist T0/T1 triggers (T2 fires at cascade time
-        # in `cascade_one`, not here). Skipped under awaiting_human gate
-        # per-problem inside `strategist_triggers`. Defaults to 60-min
-        # routine (`strategist.interval_min` in Asterism.yaml).
+        # Phase 2 — Strategist T0/T1 triggers (T2 pending_review fires at
+        # cascade time in `cascade_one` as the fast path). Skipped under
+        # awaiting_human gate per-problem inside `strategist_triggers`.
+        # Defaults to 60-min routine (`strategist.interval_min`).
         strategist_triggers(conn, running, scope=scope,
                             interval_min=strategist_interval_min)
+
+        # Per-tick stuck-state reconciler: the safety net for the two
+        # mid-run-reachable stuck states the cascade fast paths can drop —
+        # orphaned pending_review goals + NULL-outcome Inject wedges. Runs
+        # every tick, in-flight gated, so a dropped wakeup self-heals within
+        # one tick instead of waiting for restart / the 120-min routine.
+        reconcile_stuck_states(conn, running, scope=scope)
 
         # Spawn from queue while pool has slots. Skip if a pipeline of
         # the same (target_id, kind) is already in flight in this

@@ -90,51 +90,21 @@ def recover_at_startup(conn: sqlite3.Connection,
     # produced_strategy_id for Backward) — the worker has committed,
     # so outcome propagation will fire from the artifact's terminal,
     # and a second dispatch would just spawn a duplicate worker.
-    import json as _json
+    #
+    # The "which NULL-inject needs a worker + its queue spec" logic lives
+    # in `db.null_inject_redispatch_specs`, shared with the per-tick
+    # `dispatcher.reconcile_stuck_states` (which adds in-flight gating).
+    # At startup the queue is clean (cleared above) so no gating is needed
+    # here — re-enqueue every spec.
     inject_reenqueued = 0
-    for r in conn.execute(
-        "SELECT id, problem, payload, target_id, produced_goal_id,"
-        " produced_strategy_id FROM strategist_decisions"
-        " WHERE decision_kind = 'Inject' AND outcome IS NULL"
-    ).fetchall():
-        try:
-            payload = _json.loads(r["payload"] or "{}")
-        except (_json.JSONDecodeError, TypeError):
-            payload = {}
-        pipeline = payload.get("pipeline")
-        if pipeline == "Forward":
-            if r["produced_goal_id"] is not None:
-                continue  # Forward already produced a lemma; outcome
-                          # propagates from goal terminal.
-            conn.execute(
-                "INSERT INTO queue (kind, target_id, target_kind, priority,"
-                " decision_id, created_at) VALUES"
-                " ('Forward', ?, 'Problem', 10, ?, ?)",
-                (str(r["problem"]), int(r["id"]), db.now()),
-            )
-            inject_reenqueued += 1
-        elif pipeline in ("Backward", "Builder"):
-            target_id = r["target_id"]
-            if target_id is None:
-                continue  # malformed row — payload says Backward/
-                          # Builder but no target_goal_id. Skip rather
-                          # than dispatch into the void.
-            if pipeline == "Backward" and r["produced_strategy_id"] is not None:
-                continue  # Backward already committed a strategy;
-                          # outcome propagates from strategy terminal.
-            if pipeline == "Builder" and r["produced_goal_id"] is not None:
-                continue  # Builder already wrote the goal stub;
-                          # outcome propagates from goal terminal.
-            conn.execute(
-                "INSERT INTO queue (kind, target_id, target_kind, priority,"
-                " decision_id, created_at) VALUES"
-                " (?, ?, 'Goal', 10, ?, ?)",
-                (pipeline, str(int(target_id)), int(r["id"]), db.now()),
-            )
-            inject_reenqueued += 1
-        # Unknown pipeline (legacy / malformed) — skip silently. The
-        # decision remains outcome=NULL and will surface on the next
-        # Strategist context as a stale-batch indicator.
+    for spec in db.null_inject_redispatch_specs(conn):
+        conn.execute(
+            "INSERT INTO queue (kind, target_id, target_kind, priority,"
+            " decision_id, created_at) VALUES (?, ?, ?, 10, ?, ?)",
+            (spec["kind"], spec["target_id"], spec["target_kind"],
+             spec["decision_id"], db.now()),
+        )
+        inject_reenqueued += 1
 
     strategies_killed = conn.execute(
         "UPDATE strategies SET status = 'dead'"
