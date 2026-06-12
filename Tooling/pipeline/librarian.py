@@ -387,7 +387,12 @@ _DECL_KW = ("theorem", "lemma", "def", "abbrev", "structure",
 _DECL_RE = re.compile(
     r"^\s*(?:@\[[^\]]*\]\s*)*"
     r"(?:noncomputable\s+|private\s+|protected\s+|scoped\s+)*"
-    r"(?:" + "|".join(_DECL_KW) + r")\s+([A-Za-z_][\w']*)")
+    # Dotted declaration names (`def DiffForm.integral`, a namespace
+    # extension) must capture WHOLE — truncating at the dot made the axiom
+    # probe reference a nonexistent constant (`Unknown constant
+    # …StokesIntegralDefs.DiffForm`, stokes_integral 2026-06-12).
+    r"(?:" + "|".join(_DECL_KW)
+    + r")\s+([A-Za-z_][\w']*(?:\.[A-Za-z_][\w']*)*)")
 _NS_RE = re.compile(r"^\s*namespace\s+([A-Za-z_][\w.]*)")
 
 
@@ -1644,10 +1649,13 @@ def _normalize_stmt(s: "str | None") -> str:
     return " ".join((s or "").split())
 
 
-# Decl head up to and including the name — its end is where the binders start.
+# Decl head up to and including the name — its end is where the binders
+# start. Dotted names (`def DiffForm.integral`) must be consumed whole or
+# the signature slice starts mid-name.
 _DECL_HEAD_RE = re.compile(
     r"(?:noncomputable\s+|private\s+|protected\s+|scoped\s+)*"
-    r"(?:def|abbrev|theorem|lemma|instance)\s+[A-Za-z_][\w']*")
+    r"(?:def|abbrev|theorem|lemma|instance)\s+"
+    r"[A-Za-z_][\w']*(?:\.[A-Za-z_][\w']*)*")
 
 
 def _decl_signature(text: str) -> str:

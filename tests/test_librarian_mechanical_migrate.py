@@ -1200,3 +1200,17 @@ def test_defs_decl_source_carries_standalone_attr_line():
         < out.index("theorem instFoo")
     after = lib._defs_decl_source(text, "after")
     assert "@[instance]" not in after                 # stays with instFoo
+
+
+def test_extract_decls_dotted_namespace_extension():
+    # `def DiffForm.integral` (namespace-extension decl) must extract WHOLE —
+    # truncating at the dot made the axiom probe reference the nonexistent
+    # constant `…StokesIntegralDefs.DiffForm` (stokes_integral 2026-06-12).
+    text = ("namespace Library.G.M\n"
+            "noncomputable def DiffForm.integral (x : Nat) : Nat := x\n"
+            "theorem DiffForm.integral_zero : True := trivial\n"
+            "end Library.G.M\n")
+    decls = lib.extract_decls(text)
+    assert [d.name for d in decls] == ["DiffForm.integral",
+                                       "DiffForm.integral_zero"]
+    assert decls[0].fq_name == "Library.G.M.DiffForm.integral"
