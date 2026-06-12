@@ -1836,6 +1836,18 @@ def problem_has_awaiting_human(conn: sqlite3.Connection, problem: str) -> bool:
     return row is not None
 
 
+def scoped_problem_names(conn: sqlite3.Connection, scope: str) -> list[str]:
+    """Distinct problem names that have at least one goal and match the
+    SQL LIKE `scope` pattern. The dispatcher's periodic TREE.md refresh
+    uses this so a `--scope` run only re-renders + atomic-replaces the
+    in-scope trees each tick, instead of churning all ~281 problems'
+    TREE.md — on Windows the rapid replace of unrelated trees raised
+    transient WinError 5 sharing violations (caught, but noise)."""
+    return [str(r[0]) for r in conn.execute(
+        "SELECT DISTINCT problem FROM goals WHERE problem LIKE ?"
+        " ORDER BY problem", (scope,))]
+
+
 def dispatchable_open_goals(conn: sqlite3.Connection,
                             *, scope: str | None = None
                             ) -> list[sqlite3.Row]:

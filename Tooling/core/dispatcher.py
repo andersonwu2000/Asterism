@@ -2330,6 +2330,18 @@ def run(workspace: Path, *, once: bool = False,
     from ..lsp import lifecycle as gateway_lifecycle
     gateway_lifecycle.start_gateway(workspace)
 
+    # Periodic TREE.md refresh targets. A `--scope X` run only mutates
+    # in-scope problems, so refreshing all ~281 problems' trees every tick
+    # is pure churn — and with idx_strategies_goal_id the render dropped to
+    # ~0.17s/tick, so the loop now cycles fast enough that the rapid
+    # atomic-replace of unrelated TREE.md files raised transient WinError 5
+    # sharing violations on Windows (caught below, but noise). Computed once
+    # — the problem set is fixed for a run. Unscoped runs still refresh all.
+    if scope is not None:
+        tree_problems = db.scoped_problem_names(conn, scope)
+    else:
+        tree_problems = list(manifests)
+
     while True:
         # Cascade for any completed pipelines
         if futures:
@@ -2763,10 +2775,11 @@ def run(workspace: Path, *, once: bool = False,
 
         # Periodic TREE.md refresh — cascade-only writes leave the tree
         # frozen during long Builder/Backward spawns (5-15min under LSP).
-        # Cheap render + atomic replace; failures are swallowed inside
+        # Restricted to `tree_problems` (in-scope for a scoped run). Cheap
+        # render + atomic replace; failures are swallowed inside
         # tree.write_for_target's caller pattern but tree.write itself
         # raises, so guard here.
-        for problem_name in manifests:
+        for problem_name in tree_problems:
             try:
                 tree.write(conn, workspace, problem_name)
             except Exception as exc:

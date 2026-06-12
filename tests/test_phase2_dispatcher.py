@@ -349,6 +349,25 @@ def test_dispatchable_open_goals_excludes_awaiting_human(
             for g in db.dispatchable_open_goals(conn, scope="live")] == [live_root]
 
 
+def test_scoped_problem_names_filters_by_scope(
+    conn: sqlite3.Connection,
+) -> None:
+    """`scoped_problem_names` returns only problems (with goals) matching
+    the LIKE scope, sorted. Backs the dispatcher's scoped periodic
+    TREE.md refresh so a `--scope` run stops churning every problem's
+    tree each tick (the WinError 5 noise, 2026-06-12)."""
+    for name in ("Geometry.stokes_x", "Geometry.stokes_y", "Minif2f.algebra_1"):
+        _insert_problem(conn, name=name)
+        _insert_root(conn, name)
+
+    assert db.scoped_problem_names(conn, "Geometry.stokes_x") == ["Geometry.stokes_x"]
+    assert db.scoped_problem_names(conn, "Geometry.%") == [
+        "Geometry.stokes_x", "Geometry.stokes_y"]
+    assert db.scoped_problem_names(conn, "Minif2f.%") == ["Minif2f.algebra_1"]
+    # A scope matching nothing → empty (daemon then writes no tree).
+    assert db.scoped_problem_names(conn, "Topology.%") == []
+
+
 def test_strategies_goal_id_indexed(conn: sqlite3.Connection) -> None:
     """idx_strategies_goal_id backs tree.render's `_walk_goal` and
     db.open_goals' strategies-by-goal_id filter. Without it the (10k-row)
