@@ -26,7 +26,7 @@ _WATERMARKS = {
     "Tooling/core/dispatcher.py": 2750,
     "Tooling/state/db.py": 2450,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
-    "Tooling/quality/librarian/cleanup/_common.py": 500,
+    "Tooling/quality/librarian/cleanup/_common.py": 560,
     "Tooling/quality/librarian/cleanup/audit.py": 200,
     "Tooling/quality/librarian/cleanup/decide.py": 250,
     "Tooling/quality/librarian/cleanup/mechanical.py": 250,

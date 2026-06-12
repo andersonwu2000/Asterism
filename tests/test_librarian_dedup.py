@@ -1663,3 +1663,27 @@ def test_replace_token_rewrites_dot_projection() -> None:
     assert replace_token("A.foo", "foo", "X")[1] == 0
     assert replace_token("fool x", "foo", "X")[1] == 0
     assert replace_token("xfoo", "foo", "X")[1] == 0
+
+
+def test_nominal_ctor_suffixes() -> None:
+    from Tooling.quality.librarian.cleanup._common import nominal_ctor_suffixes
+    t = ("class Orient (N : Type*) where\n  refForm : N\n\n"
+         "structure P where\n  pt ::\n  x : Nat\n\n"
+         "inductive Tri where\n  | a : Tri\n  | b : Tri\n\n"
+         "def plain : Nat := 0\n")
+    assert nominal_ctor_suffixes(t, "Orient") == ["mk"]
+    assert nominal_ctor_suffixes(t, "P") == ["pt"]          # custom ctor
+    assert nominal_ctor_suffixes(t, "Tri") == ["a", "b"]
+    assert nominal_ctor_suffixes(t, "plain") == []          # not nominal
+    assert nominal_ctor_suffixes(t, "missing") == []
+
+
+def test_valid_renames_rejects_dotted_decl() -> None:
+    # `φ.integral` term dot-notation is invisible to token rewrite — a
+    # cross-file consumer would strand red after a deferred rename.
+    from Tooling.quality.librarian.cleanup._common import _valid_renames
+    out = _valid_renames({"DiffForm.integral": "DiffForm.integrate",
+                          "topCoeff": "topCoefficient"},
+                         own_leaves={"DiffForm.integral", "topCoeff"},
+                         existing_leaves=set())
+    assert out == {"topCoeff": "topCoefficient"}

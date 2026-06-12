@@ -77,6 +77,11 @@ def file_cleanup_polish(workspace: Path, problem: str, target_file: str,
     except OSError:
         return False
     fqns = [d.fqn for d in decls_in_file]
+    # Nominal decls: snapshot the constructor too — `@Foo` alone is only the
+    # signature, a field's type would otherwise drift unseen (_common
+    # nominal_ctor_suffixes).
+    fqns += [f"{d.fqn}.{c}" for d in decls_in_file
+             for c in C.nominal_ctor_suffixes(original, d.name)]
     ok0, _d0, base_types = C._typecheck_capturing_types(workspace, original, fqns)
     if not ok0:
         print(f"[staged] polish `{leaf}` — skip (no type snapshot)", flush=True)

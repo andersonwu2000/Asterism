@@ -371,6 +371,37 @@ def _parse_check_output(output: str, fqns: "list[str]"
     return types, errs
 
 
+def nominal_ctor_suffixes(text: str, leaf: str) -> "list[str]":
+    r"""Constructor name(s) of nominal declaration `leaf` in `text`:
+    `['mk']` (or the custom `name ::`) for a structure/class, the `| ctor`
+    list for an inductive, `[]` when `leaf` is not a nominal decl here.
+
+    Why: the type gate #checks `@Foo`, which for a nominal kind is only the
+    SIGNATURE — a whole-file rewriter (polish/audit) could alter a FIELD's
+    type and the gate would stay green. The constructor's type strings every
+    field type together, so snapshotting `@Foo.mk` (or each inductive ctor)
+    extends the gate to fields (desk-check 2026-06-12, first nominal decl
+    through cleanup = stokes_integral OrientedManifold)."""
+    m = re.search(
+        r"(?m)^[ 	]*(?:@\[[^\]]*\][ 	]*)*"
+        r"(?:noncomputable[ 	]+|private[ 	]+|protected[ 	]+)*"
+        r"(structure|class|inductive)[ 	]+" + re.escape(leaf) + r"\b", text)
+    if not m:
+        return []
+    rest = text[m.start():]
+    nxt = re.search(
+        r"(?m)^(?:@\[[^\]]*\]\s*)*"
+        r"(?:noncomputable\s+|private\s+|protected\s+|scoped\s+)*"
+        r"(?:def|abbrev|theorem|lemma|structure|class|inductive|instance)"
+        r"\s+[A-Za-z_]"
+        r"|^variable\b|^section\b|^end\b", rest[1:])
+    span = rest[:nxt.start() + 1] if nxt else rest
+    if m.group(1) == "inductive":
+        return re.findall(r"(?m)^\s*\|\s*([A-Za-z_][\w']*)", span)
+    mm = re.search(r"(?m)^\s*([A-Za-z_][\w']*)\s*::", span)
+    return [mm.group(1) if mm else "mk"]
+
+
 def _typecheck_capturing_types(workspace: Path, file_text: str,
                                fqns: "list[str]", *,
                                timeout: int = _BATCH_TIMEOUT_SEC
@@ -455,6 +486,14 @@ def _valid_renames(proposed: "dict[str, str]", *, own_leaves: "set[str]",
     seen_new: "set[str]" = set()
     out: dict[str, str] = {}
     for old, new in proposed.items():
+        if "." in old:
+            # A namespace-extension decl (`DiffForm.integral`): consumers may
+            # reference it via TERM dot-notation (`φ.integral`), which no
+            # token rewrite can see — a same-file break is caught by the
+            # rebuild gate, but a CROSS-file consumer self-applies the rename
+            # later (deferred-rewire) and strands red. Renaming these is not
+            # mechanically safe; skip.
+            continue
         if (old in own_leaves and _IDENT_RE.match(new) and new != old
                 and new not in olds and new not in seen_new
                 and new not in existing_leaves):

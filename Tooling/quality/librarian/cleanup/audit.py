@@ -90,7 +90,13 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
         original = (workspace / target_file).read_text(encoding="utf-8")
     except OSError:
         return {}, False
-    fqns = [d.fqn for d in decls_in_file]
+    # Nominal decls: snapshot the constructor too — `@Foo` alone is only the
+    # signature, a field's type would otherwise drift unseen
+    # (_common.nominal_ctor_suffixes).
+    ctors = {d.name: C.nominal_ctor_suffixes(original, d.name)
+             for d in decls_in_file}
+    fqns = [d.fqn for d in decls_in_file] \
+        + [f"{d.fqn}.{c}" for d in decls_in_file for c in ctors[d.name]]
     ok0, _d0, base_types = C._typecheck_capturing_types(workspace, original, fqns)
     if not ok0:
         print(f"[staged] audit `{leaf}` — skip (no type snapshot)", flush=True)
@@ -124,21 +130,27 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
                           "stage's job; namespace-mount is out of scope) — "
                           "re-emit with them restored")
             continue
-        # expected post-rename identity + type of every decl
+        # expected post-rename identity + type of every decl (+ nominal ctors:
+        # a renamed class carries its ctor along, `Mod.New.mk`)
         leaf_map = {d.name: renames.get(d.name, d.name) for d in decls_in_file}
-        fqns_after = [f"{module}.{leaf_map[d.name]}" for d in decls_in_file]
+        pairs = [(d.name, d.fqn, f"{module}.{leaf_map[d.name]}")
+                 for d in decls_in_file]
+        pairs += [(f"{d.name}.{c}", f"{d.fqn}.{c}",
+                   f"{module}.{leaf_map[d.name]}.{c}")
+                  for d in decls_in_file for c in ctors[d.name]]
+        fqns_after = [after for _, _, after in pairs]
         ok, detail, new_types = C._typecheck_capturing_types(
             workspace, new_text, fqns_after)
         if not ok:
             prev_error = detail
             continue
         changed = []
-        for d, fqn_after in zip(decls_in_file, fqns_after):
-            expected = base_types.get(d.fqn, "")
+        for label, fqn_base, fqn_after in pairs:
+            expected = base_types.get(fqn_base, "")
             for old, new in renames.items():     # sibling types may cite renamed
                 expected, _ = C.replace_token(expected, old, new)
             if expected != new_types.get(fqn_after):
-                changed.append(d.name)
+                changed.append(label)
         if changed:
             prev_error = ("the elaborated type changed for: "
                           + ", ".join(changed)
