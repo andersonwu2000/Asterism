@@ -477,6 +477,50 @@ def _library_module_of(rel_lean_path: str) -> str:
     return p.replace("/", ".")
 
 
+def _nominal_decl_src(text: str, slug: str) -> "str | None":
+    """The SOURCE of nominal declaration `slug` in `text`: its keyword head
+    through to the next top-level command (decl / variable / section / end),
+    excluding the preceding docstring (comments are stripped by the
+    normalized comparison anyway). None when `slug` isn't declared here."""
+    head = re.compile(
+        rf"(?m)^[ \t]*(?:@\[[^\]]*\][ \t]*)*"
+        rf"(?:noncomputable\s+|private\s+|protected\s+|scoped\s+)*"
+        rf"(?:structure|class|inductive)\s+{re.escape(slug)}\b")
+    m = head.search(text)
+    if m is None:
+        return None
+    rest = text[m.start():]
+    nxt = re.search(
+        r"(?m)^(?:@\[[^\]]*\]\s*)*"
+        r"(?:noncomputable\s+|private\s+|protected\s+|scoped\s+)*"
+        r"(?:def|abbrev|theorem|lemma|structure|class|inductive|instance)"
+        r"\s+[A-Za-z_]"
+        r"|^variable\b|^section\b|^end\b", rest[1:])
+    return rest[:nxt.start() + 1] if nxt else rest
+
+
+def _verbatim_nominal_ok(patch_text: str, *, problem: str, target_slug: str,
+                         target_module: str, workspace: "_Path") -> bool:
+    """Gate D's nominal special-case: True iff the migrated declaration's
+    source equals the Defs.lean source — `_code_normalized` (comments
+    stripped, whitespace collapsed) and modulo namespace qualification
+    (`Problems.<p>.X` / `<target_module>.X` both normalize to bare `X`)."""
+    dl = db.problem_dir(workspace, problem) / "Defs.lean"
+    if not dl.exists():
+        return False
+    src = _nominal_decl_src(dl.read_text(encoding="utf-8"), target_slug)
+    out = _nominal_decl_src(patch_text, target_slug)
+    if src is None or out is None:
+        return False
+
+    def _norm(s: str) -> str:
+        s = s.replace(f"Problems.{problem}.", "")
+        s = s.replace(f"{target_module}.", "")
+        return _code_normalized(s)
+
+    return _norm(src) == _norm(out)
+
+
 def migrate_defeq_gate(
     patch_text: str, *, problem: str, target_slug: str,
     defs_decls: "list[str]", target_module: str,
@@ -511,11 +555,24 @@ def migrate_defeq_gate(
     if kind is None:
         kind = extract_decl_kind(patch_text)
     if kind in _NOMINAL_KINDS:
+        # Verbatim special-case: `rfl` cannot equate two separate nominal
+        # declarations, but the tampering guard holds just as well if the
+        # migrated declaration's SOURCE is the Defs source verbatim
+        # (comments stripped, whitespace-normalized, modulo namespace
+        # qualification) — same field names and types, elaborated under the
+        # same replayed context the assembly carries. The mechanical path
+        # produces exactly that, so this passes by construction and still
+        # catches a corrupted assembly or a future agentic rewrite
+        # (stokes_integral `class OrientedManifold`, 2026-06-12).
+        if workspace is not None and _verbatim_nominal_ok(
+                patch_text, problem=problem, target_slug=target_slug,
+                target_module=target_module, workspace=workspace):
+            return MigrateResult(True, "")
         return MigrateResult(
             False, f"Gate D: Defs decl `{target_slug}` is a {kind} "
                    "(nominal) — `rfl` cannot equate two separate "
-                   "declarations; needs a verbatim special-case "
-                   "(decline-and-flag).")
+                   "declarations, and the migrated source is NOT verbatim-"
+                   "equal to the Defs source (or Defs.lean unavailable).")
     if target_fq is None:
         target_fq = extract_decl_fq_name(patch_text)
     if target_fq is None:

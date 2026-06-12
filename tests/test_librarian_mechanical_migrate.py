@@ -1214,3 +1214,35 @@ def test_extract_decls_dotted_namespace_extension():
     assert [d.name for d in decls] == ["DiffForm.integral",
                                        "DiffForm.integral_zero"]
     assert decls[0].fq_name == "Library.G.M.DiffForm.integral"
+
+
+def test_gate_d_nominal_verbatim_special_case(tmp_path):
+    # A class/structure Defs decl cannot be rfl-equated; Gate D passes it iff
+    # the migrated source is verbatim-equal to the Defs source (normalized,
+    # modulo namespace qualification) — stokes_integral OrientedManifold.
+    pd = tmp_path / "Problems" / "p"
+    pd.mkdir(parents=True)
+    (pd / "Defs.lean").write_text(
+        "import Mathlib\nnamespace Problems.p\n"
+        "/-- doc -/\n"
+        "class Orient (N : Type*) where\n"
+        "  /-- field doc -/\n"
+        "  refForm : N\n"
+        "  refForm_ne : refForm = refForm\n\n"
+        "def other : Nat := 0\n"
+        "end Problems.p\n", encoding="utf-8")
+    patch = ("import Mathlib\nnamespace Library.T.F\n"
+             "class Orient (N : Type*) where\n"
+             "  refForm : N\n"
+             "  refForm_ne : refForm = refForm\n\n"
+             "end Library.T.F\n")
+    kw = dict(problem="p", target_slug="Orient", defs_decls=["Orient"],
+              target_module="Library.T.F", kind="class", workspace=tmp_path)
+    assert lib.migrate_defeq_gate(patch, **kw).ok          # docstring diff ok
+    bad = patch.replace("refForm_ne : refForm = refForm",
+                        "refForm_ne : refForm ≠ refForm")  # tampered field
+    res = lib.migrate_defeq_gate(bad, **kw)
+    assert not res.ok and "verbatim" in res.detail
+    # no workspace → still declines (no silent pass)
+    kw2 = dict(kw, workspace=None)
+    assert not lib.migrate_defeq_gate(patch, **kw2).ok

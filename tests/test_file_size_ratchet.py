@@ -22,7 +22,7 @@ _WATERMARKS = {
     # →3200 cross-problem shared-def redirect + variable-block dedupe +
     # classify Library-tree context (stokes, 2026-06-11) — conscious bumps.
     # This file is OVERDUE a split (librarian work-kinds → submodules).
-    "Tooling/pipeline/librarian.py": 3350,
+    "Tooling/pipeline/librarian.py": 3400,
     "Tooling/core/dispatcher.py": 2750,
     "Tooling/state/db.py": 2450,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
