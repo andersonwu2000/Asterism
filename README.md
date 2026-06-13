@@ -5,6 +5,9 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-12
+Hardened the librarian's library-migration pipeline by closing four known extraction gaps (handling dotted declaration names, skipping Mathlib citations in bridge probes, and adding Gate D verbatim fallbacks for definitions blocked by nominal boundaries) along with slicer and desk-check fixes. Improved framework robustness by scoping the periodic TREE.md refresh and idle-exit logic to in-scope problems, indexing strategies by goal, and making the gateway reap runaway Lean elaborations instead of hanging. Also added a new Geometry benchmark set: a Stokes-theorem definition tower with boundary and form-bundle chains, comprising 15 problems plus supporting library material.
+
 ### 2026-06-11
 Work focused on hardening the librarian's library-migration pipeline: Defs.lean extraction and migration now faithfully replay imports, opens, section variables, docstrings, and leading attributes, and replace_token correctly rewrites dot-projection use-sites, closing several known correctness gaps. Classification was made safer and more scalable ??declarations can no longer land in another problem's file, cross-problem shared definitions are redirected, dependency sorting accounts for Defs-source edges, and planned file sizes are capped at classify time, with cleanup stages refactored into a subpackage backed by a file-size ratchet. Robustness under concurrency and long-running synthesis also improved, with same-path migrate units serialized to close a TOCTOU race, shared-file clobbering guarded, and new heartbeat rungs handling merged-environment synthesis timeouts and truncated gateway responses; the framework additionally gained support for `@[instance] theorem` roots for Prop-class obligations.
 
