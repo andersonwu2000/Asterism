@@ -1325,6 +1325,16 @@ def reconcile_stuck_states(conn: sqlite3.Connection,
         db.enqueue(conn, kind="Strategist", target_id=rid,
                    target_kind="Goal", priority=20)
 
+    # 1.5 — settled NULL-outcome Inject decisions: the produced goal/
+    # strategy already terminated (or a Backward inject's strategy is
+    # 'proposed' but wedged with zero alive subgoals — a soft-shelved
+    # subgoal awaiting a Reopen that this very NULL outcome blocks by
+    # suppressing T4). Resolve the outcome so the batch completes, fires
+    # inject_batch_done, and stops suppressing the stall trigger.
+    # Complements step 2 below (worker died with no artifact → re-dispatch);
+    # the two are disjoint by the produced goal/strategy state.
+    db.reconcile_settled_inject_outcomes(conn, scope=scope)
+
     # 2 — NULL-outcome Inject: re-enqueue the worker, in-flight gated.
     for spec in db.null_inject_redispatch_specs(conn, scope=scope):
         did = spec["decision_id"]

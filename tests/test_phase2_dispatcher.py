@@ -633,21 +633,33 @@ def test_t4_stall_enqueues_when_no_open_goals_and_no_inflight(
     assert q["n"] == 1
 
 
-def test_t4_stall_skipped_when_open_goal_exists(
+def test_t4_stall_skipped_when_dispatchable_open_goal_exists(
     conn: sqlite3.Connection,
 ) -> None:
-    """If any open goal exists, BFS will dispatch — no stall, T4
-    should not fire (let BFS do its work). Also set last_routine_at
-    recent to exclude T1 routine firing for this isolation test."""
+    """If a DISPATCHABLE (alive-reachable) open goal exists, BFS will
+    dispatch it — no stall, T4 must not fire. The open goal is reachable
+    here: a sub-goal of a 'proposed' strategy on the root. (last_routine_at
+    recent excludes T1 routine firing for this isolation test.)"""
     _insert_problem(conn, name="alpha", bootstrap_done=1,
                     last_routine_at=db.now())
-    _insert_root(conn, "alpha", status="attempting")
-    db.insert_goal(
+    root_id = _insert_root(conn, "alpha", status="attempting")
+    open_id = db.insert_goal(
         conn, problem="alpha", slug="open_one",
         lean_path="Problems/alpha/proofs/L_open_one.lean",
         statement="T", origin="backward",
     )
-    # Default insert_goal status is 'open' already.
+    # Make it reachable from root via a live strategy (default status
+    # 'open' already).
+    cur = conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, scratch_path,"
+        " status, proposal_md, created_by, created_at)"
+        " VALUES (?, '', '', 'proposed', '', 'test', ?)",
+        (root_id, db.now()))
+    sid = int(cur.lastrowid)
+    conn.execute(
+        "INSERT INTO strategy_subgoals (strategy_id, subgoal_id, position)"
+        " VALUES (?, ?, 0)", (sid, open_id))
+    conn.commit()
 
     strategist_triggers(conn, running=set())
 
@@ -655,6 +667,43 @@ def test_t4_stall_skipped_when_open_goal_exists(
         "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
     ).fetchone()
     assert q["n"] == 0
+
+
+def test_t4_stall_fires_when_open_goals_all_orphaned(
+    conn: sqlite3.Connection,
+) -> None:
+    """The P13 wedge (2026-06-13): an open goal exists but is ORPHANED
+    (reachable only through a DEAD strategy, never the alive seed), so BFS
+    can never dispatch it — the problem IS stalled and T4 must fire a
+    Strategist. The pre-fix raw `status='open'` probe in `problems_stalled`
+    masked exactly this and left the daemon idle-exiting on a collapsed
+    decomposition."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1,
+                    last_routine_at=db.now())
+    root_id = _insert_root(conn, "alpha", status="attempting")
+    open_id = db.insert_goal(
+        conn, problem="alpha", slug="orphan_open",
+        lean_path="Problems/alpha/proofs/L_orphan_open.lean",
+        statement="T", origin="backward",
+    )
+    # Link only under a DEAD strategy → unreachable from the alive seed.
+    cur = conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, scratch_path,"
+        " status, proposal_md, created_by, created_at)"
+        " VALUES (?, '', '', 'dead', '', 'test', ?)",
+        (root_id, db.now()))
+    sid = int(cur.lastrowid)
+    conn.execute(
+        "INSERT INTO strategy_subgoals (strategy_id, subgoal_id, position)"
+        " VALUES (?, ?, 0)", (sid, open_id))
+    conn.commit()
+
+    strategist_triggers(conn, running=set())
+
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert q["n"] == 1
 
 
 def test_t4_stall_skipped_when_inflight_inject_batch(

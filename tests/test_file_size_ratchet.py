@@ -34,8 +34,12 @@ _WATERMARKS = {
     # db 2600→2650: routine-only T1 clock (last_routine_at + daemon-start
     # baseline + drop batch suppression) so the routine audit fires on its own
     # running-time cadence — 2026-06-13 — conscious bump.
+    # db 2650→2750: reconcile_settled_inject_outcomes — resolve NULL-outcome
+    # Inject decisions whose produced goal/strategy settled (incl. the
+    # soft-shelved-subgoal deadlock that wedged P13) so they stop suppressing
+    # the T4 stall trigger — 2026-06-13 — conscious bump.
     "Tooling/core/dispatcher.py": 2900,
-    "Tooling/state/db.py": 2650,
+    "Tooling/state/db.py": 2750,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     "Tooling/quality/librarian/cleanup/_common.py": 560,
     "Tooling/quality/librarian/cleanup/audit.py": 200,

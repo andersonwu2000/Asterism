@@ -1906,15 +1906,28 @@ def problems_stalled(conn: sqlite3.Connection, *,
     for r in candidates:
         prob = str(r["name"])
         root_id = int(r["root_id"])
-        # 1. any open goal in this problem? Cheap LIMIT 1 probe; uses
-        # the same `status='open'` filter as the canonical `open_goals`
-        # (which adds an alive-CTE walk on top — irrelevant here since
-        # an unreachable open goal still won't get dispatched, so its
-        # presence in the count doesn't change the "stalled" judgment).
+        # 1. any DISPATCHABLE open goal in this problem? Must use the
+        # alive-CTE (reachable from root via 'proposed'/'succeeded'
+        # strategies), NOT a raw `status='open'` probe: an ORPHANED open
+        # goal (its strategy chain died) will never be dispatched, so a
+        # problem whose only open goals are orphaned IS stalled — the raw
+        # probe masked exactly that (P13 stokes 2026-06-13: 4 orphaned
+        # open goals under dead strategies kept T4 from firing while the
+        # decomposition had collapsed). This matches the docstring's
+        # "zero open_goals reachable" intent and the idle-exit check's
+        # `dispatchable_open_goals` notion.
         if conn.execute(
-            "SELECT 1 FROM goals WHERE problem = ?"
-            "  AND status = 'open' LIMIT 1",
-            (prob,),
+            "WITH RECURSIVE alive(id) AS ("
+            "  SELECT id FROM goals WHERE problem = ? AND origin = 'root'"
+            "  UNION"
+            "  SELECT g.id FROM goals g"
+            "  JOIN strategy_subgoals ss ON ss.subgoal_id = g.id"
+            "  JOIN strategies s ON s.id = ss.strategy_id"
+            "  JOIN alive a ON a.id = s.goal_id"
+            "  WHERE s.status IN ('proposed','succeeded')"
+            ") SELECT 1 FROM goals"
+            " WHERE problem = ? AND status = 'open' AND id IN alive LIMIT 1",
+            (prob, prob),
         ).fetchone() is not None:
             continue
         # 2. any in-flight worker on this problem? Check queue + running
@@ -2251,6 +2264,102 @@ def maybe_enqueue_inject_batch_done(conn: sqlite3.Connection,
     # an event-driven follow-up that supersedes routine T1 wall-clock.
     enqueue(conn, kind="Strategist", target_id=root_id,
             target_kind="Goal", priority=20)
+
+
+def reconcile_settled_inject_outcomes(
+    conn: sqlite3.Connection, *, scope: str | None = None,
+) -> int:
+    """Resolve NULL-outcome Inject batch decisions whose produced work has
+    SETTLED, so a permanently-NULL outcome can no longer suppress the T4
+    stall trigger (`problems_stalled`) or block `inject_batch_done`.
+
+    Complements `null_inject_redispatch_specs` (worker DIED with no
+    artifact → re-dispatch): this is the opposite case — the work exists
+    and has settled, only the outcome propagation never fired. Settled,
+    by inject kind:
+
+      * Forward (no `produced_strategy_id`): `produced_goal_id` reached a
+        terminal goal status but goal-side propagation never ran (the
+        transition predated the hook or took a path that bypassed it) →
+        re-run `propagate_inject_outcome_from_goal`.
+      * Backward / Builder: `produced_strategy_id` reached a terminal
+        strategy status → re-run `propagate_inject_outcome_from_strategy`;
+        OR the strategy is still 'proposed' yet has ≥1 subgoal and ZERO
+        alive ones (all proved / shelved / dead — the canonical DEADLOCK:
+        a SOFT-shelved subgoal keeps the strategy 'proposed' awaiting a
+        Reopen, but `produced_goal_id`=target only terminates at problem
+        end, so the NULL outcome suppresses T4 → no Strategist ever fires
+        to perform the Reopen → permanent wedge). In the deadlock case
+        resolve the DECISION only — 'success' iff every subgoal proved
+        (a missed verify), else 'failed:stalled' — WITHOUT touching the
+        strategy or goal (the strategy stays 'proposed', the shelved
+        subgoal stays reopenable); the Strategist that `inject_batch_done`
+        then fires makes the real Reopen / re-decompose call.
+
+    Fires `maybe_enqueue_inject_batch_done` per resolved decision. Returns
+    the count resolved. Idempotent (every fill is `outcome IS NULL`-
+    guarded). In-flight safe: a 'proposed' strategy with any alive subgoal
+    is genuinely in flight and left untouched."""
+    sql = (
+        "SELECT sd.id, sd.produced_goal_id, sd.produced_strategy_id,"
+        "       g.status AS goal_status, s.status AS strat_status"
+        " FROM strategist_decisions sd"
+        " LEFT JOIN goals g ON g.id = sd.produced_goal_id"
+        " LEFT JOIN strategies s ON s.id = sd.produced_strategy_id"
+        " WHERE sd.decision_kind = 'Inject' AND sd.batch_id IS NOT NULL"
+        "   AND sd.outcome IS NULL"
+    )
+    args: tuple = ()
+    if scope is not None:
+        sql += " AND sd.problem LIKE ?"
+        args = (scope,)
+    rows = list(conn.execute(sql, args))
+    resolved = 0
+    for r in rows:
+        did = int(r["id"])
+        sid = r["produced_strategy_id"]
+        filled: int | None = None
+        if sid is not None:
+            sstat = (str(r["strat_status"])
+                     if r["strat_status"] is not None else None)
+            if sstat in ("succeeded", "superseded", "dead"):
+                filled = propagate_inject_outcome_from_strategy(
+                    conn, int(sid))
+            elif sstat == "proposed":
+                sub = conn.execute(
+                    "SELECT g2.status AS st, COUNT(*) AS n"
+                    " FROM strategy_subgoals ss"
+                    " JOIN goals g2 ON g2.id = ss.subgoal_id"
+                    " WHERE ss.strategy_id = ? GROUP BY g2.status",
+                    (int(sid),),
+                ).fetchall()
+                comp = {str(x["st"]): int(x["n"]) for x in sub}
+                total = sum(comp.values())
+                alive = (comp.get("open", 0) + comp.get("attempting", 0)
+                         + comp.get("pending_strategist_review", 0))
+                if total > 0 and alive == 0:
+                    settled = ("success"
+                               if comp.get("proved", 0) == total
+                               else "failed:stalled")
+                    conn.execute(
+                        "UPDATE strategist_decisions SET outcome = ?,"
+                        " updated_at = ? WHERE id = ? AND outcome IS NULL",
+                        (settled, now(), did),
+                    )
+                    conn.commit()
+                    filled = did
+        elif r["produced_goal_id"] is not None and \
+                str(r["goal_status"]) in ("proved", "shelved",
+                                          "disproved", "dead"):
+            filled = propagate_inject_outcome_from_goal(
+                conn, int(r["produced_goal_id"]))
+        if filled is not None:
+            maybe_enqueue_inject_batch_done(conn, filled)
+            resolved += 1
+    if resolved:
+        print(f"[reconcile] resolved {resolved} settled NULL-outcome "
+              f"Inject decision(s)", flush=True)
+    return resolved
 
 
 def delete_strategy(conn: sqlite3.Connection, strategy_id: int) -> None:
