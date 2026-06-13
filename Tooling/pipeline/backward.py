@@ -826,8 +826,19 @@ def _backward_parse_and_commit(
     # Same-slug-twice within a batch is impossible at filesystem level
     # (second write of the same `new_<slug>.lean` overwrites the first
     # in attempts_dir, so only one file reaches the parse stage).
+    # Existing goal slugs for this problem — used both to guard #3
+    # normalization against silently renaming onto an existing goal and by
+    # `_resolve_slug_collisions` below. Computed once (the loop inserts no
+    # goals, so it's stable).
+    existing_slugs = {
+        row["slug"] for row in conn.execute(
+            "SELECT slug FROM goals WHERE problem = ?",
+            (goal["problem"],),
+        ).fetchall()
+    }
     sub_meta: list[tuple[str, Path]] = []  # (slug, source_in_attempts)
     norm_renames: dict[str, str] = {}      # raw_slug -> normalized (#3)
+    batch_slugs: set[str] = set()          # slugs claimed earlier this batch
     for ns in new_subs:
         slug = _slug_from_filename(ns.name)
         if not slug:
@@ -858,6 +869,23 @@ def _backward_parse_and_commit(
                     f"and is not mechanically normalizable",
                     leading,
                 )
+            # Refuse to normalize ONTO an existing goal / sibling batch file:
+            # that is not a cosmetic fix but a collision the agent must
+            # resolve. Silently normalizing + `_2`-suffixing clobbered a real
+            # brick with a stale placeholder and produced a confusing "has no
+            # <slug> declaration" build error (stokes slice_eventually_zero,
+            # agent-feedback 2026-06-13). `_SLUG_RE`-valid originals that
+            # collide still fall through to the `_2` resolver — only a
+            # NORMALIZATION-created collision is rejected here.
+            if norm in existing_slugs or norm in batch_slugs:
+                return _abort(
+                    "naming_violation",
+                    f"sub-goal slug {slug!r} normalizes to {norm!r}, which "
+                    f"already names another sub-goal. If you meant that goal, "
+                    f"cite it instead of creating a new file; otherwise rename "
+                    f"this one to a distinct snake_case slug.",
+                    leading,
+                )
             new_ns = ns.parent / f"new_{norm}.lean"
             content = ns.read_text(encoding="utf-8")
             content = re.sub(
@@ -869,6 +897,7 @@ def _backward_parse_and_commit(
                 ns.unlink()
             norm_renames[slug] = norm
             slug, ns = norm, new_ns
+        batch_slugs.add(slug)
         sub_meta.append((slug, ns))
 
     if norm_renames:
@@ -913,14 +942,9 @@ def _backward_parse_and_commit(
                 leading,
             )
 
-    # Auto-suffix cross-batch collisions. Helper is pure; we apply the
-    # filesystem side effects here based on the returned rename_map.
-    existing_slugs = {
-        row["slug"] for row in conn.execute(
-            "SELECT slug FROM goals WHERE problem = ?",
-            (goal["problem"],),
-        ).fetchall()
-    }
+    # Auto-suffix cross-batch collisions (existing_slugs computed above).
+    # Helper is pure; we apply the filesystem side effects here based on the
+    # returned rename_map.
     resolved, rename_map = _resolve_slug_collisions(
         sub_meta, existing_slugs)
     if rename_map:
