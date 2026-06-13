@@ -8,7 +8,7 @@ Time budget: {timeout_min} minutes.
 
 ## Editing tools — LSP-backed (preferred for proof body)
 
-Three MCP tools talk to a live Lean server holding **`patch.lean`** (in attempts_dir, seeded from the goal file's current content). Use them to iterate on the proof body without spawning lake builds. Edits are sandboxed — they don't touch the workspace `L_*.lean` until the framework commits at the end:
+Three MCP tools talk to a live Lean server holding **`patch.lean`** (in attempts_dir, seeded from the goal file's current content — commented-out tactics in it are a prior attempt's sketch to evaluate, not a discarded dead end). Use them to iterate on the proof body without spawning lake builds. Edits are sandboxed — they don't touch the workspace `L_*.lean` until the framework commits at the end:
 
 - `mcp__lsp__apply_edit(start_line, end_line, new_text)` — replace a 1-indexed inclusive line range. Returns post-edit goal at line=start_line and the file's diagnostics. Persists to `patch.lean` (write-through).
 - `mcp__lsp__goal_at(line, col)` — read the proof goal at any position without editing.

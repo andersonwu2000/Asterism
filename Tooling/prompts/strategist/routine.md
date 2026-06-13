@@ -26,7 +26,7 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
   - `Backward`: decompose into strategy + N sub-goals, each in its own `.lean`.
   - `Builder`: single file inline, one tactic block.
 - `ConfirmShelve` — `target_goal_id`, `reason`. Pairs with `Inject`
-- `EmitDirective` — `scope="problem:<name>"`, `body`, `reason`. Rolling curated doc; diff-update
+- `EmitDirective` — `scope="problem:<name>"`, `body`, `reason`. Rolling problem-wide doc every worker reads (diff-update); keep it general — goal/subtree-specific or transient hints go in an `Inject` brief.
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Manifest.md"}`, `proposed_body`, `question`, `reason`. Only when a user file is wrong
 - `Noop` — `reason`. Only when no valuable option exists.
 

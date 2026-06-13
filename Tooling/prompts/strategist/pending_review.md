@@ -31,7 +31,7 @@ Before committing, `Grep` mathlib briefly for any concept the agent claims is mi
   - `Backward`: decompose into strategy + N sub-goals, each in its own `.lean`.
   - `Builder`: single file inline, one tactic block.
 - `ConfirmShelve` — `target_goal_id`, `reason`. Must pair with `Inject` in same batch
-- `EmitDirective` — `scope="problem:<name>"`, `body`, `reason`. Use when the hint should reach all workers on the problem
+- `EmitDirective` — `scope="problem:<name>"`, `body`, `reason`. A general hint every worker on the problem should see; goal/subtree-specific or transient ones go in an `Inject` brief instead.
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Manifest.md"}`, `proposed_body`, `question`, `reason`. Only when a user file is wrong.
 
 `target_goal_id` accepts integer id or slug.
