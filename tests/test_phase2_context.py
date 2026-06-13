@@ -716,6 +716,49 @@ def test_stall_warning_surfaces_when_no_open_goal_no_inflight(
     assert "Noop` is not appropriate" in body
 
 
+def test_stall_warning_surfaces_when_open_goal_orphaned(
+    conn: sqlite3.Connection,
+) -> None:
+    """Regression (P13 2026-06-13): an open goal reachable ONLY through a
+    DEAD strategy (never the alive seed) is not dispatchable, so the
+    problem IS stalled and the warning MUST surface. The pre-fix raw
+    `status='open'` probe masked this, so T4 fired Strategists that saw no
+    warning and Noop-confirmed into a livelock. Now both T4
+    (`db.problems_stalled`) and this section share `db.is_problem_stalled`
+    (reachable-open), so they agree."""
+    _insert_problem(conn)
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "attempting")
+    orph = db.insert_goal(
+        conn, problem="p", slug="orph",
+        lean_path="P/proofs/L_orph.lean", statement="T", origin="backward",
+    )
+    dead_s = _insert_strategy(conn, root, status="dead")
+    _link_subgoal(conn, strategy_id=dead_s, subgoal_id=orph)
+
+    lines = phase2_context._section_stall_warning(conn, "p")
+    assert "## Framework stalled" in "\n".join(lines)
+
+
+def test_stall_warning_silent_when_reachable_open_goal_exists(
+    conn: sqlite3.Connection,
+) -> None:
+    """A non-root open goal reachable via a 'proposed' strategy IS
+    dispatchable → no stall, no warning (the in-flight/dispatchable
+    counterpart to the orphaned case above)."""
+    _insert_problem(conn)
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "attempting")
+    child = db.insert_goal(
+        conn, problem="p", slug="child",
+        lean_path="P/proofs/L_child.lean", statement="T", origin="backward",
+    )
+    live_s = _insert_strategy(conn, root, status="proposed")
+    _link_subgoal(conn, strategy_id=live_s, subgoal_id=child)
+
+    assert phase2_context._section_stall_warning(conn, "p") == []
+
+
 def test_stall_warning_silent_when_open_goal_exists(
     conn: sqlite3.Connection,
 ) -> None:

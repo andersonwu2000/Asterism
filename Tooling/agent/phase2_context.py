@@ -76,35 +76,15 @@ def _section_stall_warning(conn: sqlite3.Connection,
     compile time (the queue enqueue may pre-date the actual Strategist
     spawn by seconds, during which a parallel goal could land —
     re-checking ensures the warning reflects current state)."""
-    # 1. root not terminal
-    root = conn.execute(
-        "SELECT id, status FROM goals"
-        "  WHERE problem = ? AND origin = 'root' LIMIT 1",
-        (problem,),
-    ).fetchone()
-    if root is None or root["status"] in ("proved", "shelved", "disproved"):
-        return []
-    # 2. zero open goals
-    if conn.execute(
-        "SELECT 1 FROM goals WHERE problem = ?"
-        "  AND status = 'open' LIMIT 1",
-        (problem,),
-    ).fetchone() is not None:
-        return []
-    # 3. no in-flight Backward/Builder/Forward in the queue
-    if conn.execute(
-        "SELECT 1 FROM queue q"
-        " JOIN goals g ON g.id = CAST(q.target_id AS INTEGER)"
-        " WHERE g.problem = ?"
-        "   AND q.kind IN ('Backward','Builder')"
-        " LIMIT 1",
-        (problem,),
-    ).fetchone() is not None:
-        return []
-    if conn.execute(
-        "SELECT 1 FROM queue WHERE target_id = ? AND kind = 'Forward' LIMIT 1",
-        (problem,),
-    ).fetchone() is not None:
+    # Single source of truth for the stall signal — `db.is_problem_stalled`
+    # (also drives T4's `db.problems_stalled`). The two MUST agree: a
+    # divergence (e.g. raw vs reachable open-goal counting) makes T4 fire a
+    # Strategist whose context then shows NO stall warning, so it
+    # Noop-confirms, re-stalls, and T4 re-fires → a Strategist livelock
+    # (P13 2026-06-13). Context-compile owns no in-memory `running` set, so
+    # this is a queue-only in-flight check (a worker mid-spawn briefly
+    # suppresses the warning — harmless; the next compile re-checks).
+    if not db.is_problem_stalled(conn, problem):
         return []
     return [
         "## Framework stalled",

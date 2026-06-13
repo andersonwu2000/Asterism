@@ -1846,6 +1846,80 @@ def queue_has_decision(conn: sqlite3.Connection, decision_id: int) -> bool:
     return row is not None
 
 
+def is_problem_stalled(conn: sqlite3.Connection, problem: str, *,
+                       running: "set[tuple] | None" = None) -> bool:
+    """True iff `problem` is structurally STALLED:
+
+      1. root not terminal (proved / shelved / disproved),
+      2. zero DISPATCHABLE open goals — open goals reachable from root via
+         'proposed' / 'succeeded' strategies. An ORPHANED open goal (its
+         strategy chain died) is NOT dispatchable, so it does NOT count;
+         a raw `status='open'` probe would wrongly mask the stall.
+      3. no in-flight Backward / Builder / Forward worker (queue + the
+         optional in-memory `running` set).
+
+    SINGLE SOURCE OF TRUTH for the stall signal, shared by
+    `problems_stalled` (T4 enqueue) and `_section_stall_warning`
+    (Strategist Context.md). The two MUST agree: if T4 fires a Strategist
+    on a stall whose warning the Strategist's context then fails to
+    surface, the Strategist Noop-confirms, the problem re-stalls, and T4
+    re-fires → a Strategist livelock (P13 2026-06-13: the two had diverged
+    on raw vs reachable open-goal counting — fixing one without the other
+    turned a clean give-up into an EmitDirective spin). `running` is the
+    dispatcher's live set; omit it (context-compile has none) for a
+    queue-only in-flight check (harmless brief false-positive while a
+    worker is mid-spawn)."""
+    root = conn.execute(
+        "SELECT status FROM goals WHERE problem = ? AND origin = 'root' LIMIT 1",
+        (problem,),
+    ).fetchone()
+    if root is None or str(root["status"]) in ("proved", "shelved",
+                                               "disproved"):
+        return False
+    # 2. any DISPATCHABLE (alive-reachable) open goal → not stalled.
+    if conn.execute(
+        "WITH RECURSIVE alive(id) AS ("
+        "  SELECT id FROM goals WHERE problem = ? AND origin = 'root'"
+        "  UNION"
+        "  SELECT g.id FROM goals g"
+        "  JOIN strategy_subgoals ss ON ss.subgoal_id = g.id"
+        "  JOIN strategies s ON s.id = ss.strategy_id"
+        "  JOIN alive a ON a.id = s.goal_id"
+        "  WHERE s.status IN ('proposed','succeeded')"
+        ") SELECT 1 FROM goals"
+        " WHERE problem = ? AND status = 'open' AND id IN alive LIMIT 1",
+        (problem, problem),
+    ).fetchone() is not None:
+        return False
+    # 3. any in-flight Backward / Builder / Forward worker (queue + running).
+    if conn.execute(
+        "SELECT 1 FROM queue q"
+        " JOIN goals g ON g.id = CAST(q.target_id AS INTEGER)"
+        " WHERE g.problem = ? AND q.kind IN ('Backward','Builder') LIMIT 1",
+        (problem,),
+    ).fetchone() is not None:
+        return False
+    if conn.execute(
+        "SELECT 1 FROM queue WHERE target_id = ? AND kind = 'Forward' LIMIT 1",
+        (problem,),
+    ).fetchone() is not None:
+        return False
+    run = running or set()
+    if any(len(t) >= 2 and t[1] == "Forward" and t[0] == problem for t in run):
+        return False
+    bw_bu_ids = {t[0] for t in run
+                 if len(t) >= 2 and t[1] in ("Backward", "Builder")}
+    if bw_bu_ids:
+        placeholders = ",".join("?" * len(bw_bu_ids))
+        if conn.execute(
+            f"SELECT 1 FROM goals WHERE problem = ?"
+            f" AND CAST(id AS TEXT) IN ({placeholders}) LIMIT 1",
+            (problem, *bw_bu_ids),
+        ).fetchone() is not None:
+            return False
+    return True
+
+
 def problems_stalled(conn: sqlite3.Connection, *,
                      scope: str | None = None,
                      running: "set[tuple[str, str]] | None" = None,
@@ -1898,73 +1972,16 @@ def problems_stalled(conn: sqlite3.Connection, *,
     if not candidates:
         return []
 
-    # Filter to those with zero open_goals AND no in-flight worker.
-    # `open_goals(scope=...)` returns rows scoped by SQL LIKE; cheaper
-    # to compute per-problem via the existing helper than to inline.
+    # Per-candidate structural stall test via the shared single-source
+    # predicate (keeps T4 and `_section_stall_warning` in lockstep). The
+    # candidate SQL above already applied the root-not-terminal +
+    # in-flight-Inject-batch suppression pre-filter.
     run = running or set()
     stalled: list[tuple[str, int]] = []
     for r in candidates:
         prob = str(r["name"])
-        root_id = int(r["root_id"])
-        # 1. any DISPATCHABLE open goal in this problem? Must use the
-        # alive-CTE (reachable from root via 'proposed'/'succeeded'
-        # strategies), NOT a raw `status='open'` probe: an ORPHANED open
-        # goal (its strategy chain died) will never be dispatched, so a
-        # problem whose only open goals are orphaned IS stalled — the raw
-        # probe masked exactly that (P13 stokes 2026-06-13: 4 orphaned
-        # open goals under dead strategies kept T4 from firing while the
-        # decomposition had collapsed). This matches the docstring's
-        # "zero open_goals reachable" intent and the idle-exit check's
-        # `dispatchable_open_goals` notion.
-        if conn.execute(
-            "WITH RECURSIVE alive(id) AS ("
-            "  SELECT id FROM goals WHERE problem = ? AND origin = 'root'"
-            "  UNION"
-            "  SELECT g.id FROM goals g"
-            "  JOIN strategy_subgoals ss ON ss.subgoal_id = g.id"
-            "  JOIN strategies s ON s.id = ss.strategy_id"
-            "  JOIN alive a ON a.id = s.goal_id"
-            "  WHERE s.status IN ('proposed','succeeded')"
-            ") SELECT 1 FROM goals"
-            " WHERE problem = ? AND status = 'open' AND id IN alive LIMIT 1",
-            (prob, prob),
-        ).fetchone() is not None:
-            continue
-        # 2. any in-flight worker on this problem? Check queue + running
-        # for Backward / Builder / Forward.
-        q_in_flight = conn.execute(
-            "SELECT 1 FROM queue q"
-            " JOIN goals g ON g.id = CAST(q.target_id AS INTEGER)"
-            " WHERE g.problem = ?"
-            "   AND q.kind IN ('Backward','Builder')"
-            " LIMIT 1",
-            (prob,),
-        ).fetchone() is not None
-        if q_in_flight:
-            continue
-        # Forward targets the problem name directly.
-        q_in_flight_fwd = conn.execute(
-            "SELECT 1 FROM queue WHERE target_id = ? AND kind = 'Forward' LIMIT 1",
-            (prob,),
-        ).fetchone() is not None
-        if q_in_flight_fwd:
-            continue
-        # `running` set: scan for any tuple whose target_id is in this
-        # problem (Forward target_id == problem name; Backward/Builder
-        # target_id is a goal id which we'd need to join).
-        if any(t[1] == "Forward" and t[0] == prob for t in run):
-            continue
-        bw_bu_ids = {t[0] for t in run if t[1] in ("Backward", "Builder")}
-        if bw_bu_ids:
-            placeholders = ",".join("?" * len(bw_bu_ids))
-            row = conn.execute(
-                f"SELECT 1 FROM goals WHERE problem = ?"
-                f" AND CAST(id AS TEXT) IN ({placeholders}) LIMIT 1",
-                (prob, *bw_bu_ids),
-            ).fetchone()
-            if row is not None:
-                continue
-        stalled.append((prob, root_id))
+        if is_problem_stalled(conn, prob, running=run):
+            stalled.append((prob, int(r["root_id"])))
     return stalled
 
 
