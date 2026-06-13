@@ -115,8 +115,24 @@ def build_strategy_skeleton(
                if ln.strip().startswith("import")]
     if not imports:
         imports = ["import Mathlib"]
+    # Carry the goal's own `open` header verbatim. `parent_text` is the
+    # goal's canonical file (proofs/L_<slug>.lean or Root.lean), so its
+    # opens are exactly the namespaces the signature elaborates against
+    # — `open scoped Manifold` for `𝓡∂`, `open MeasureTheory` for
+    # `volume` / `Integrable`, problem `open Library.*` for custom defs.
+    # Omitting them seeded a skeleton that elaborated with misleading
+    # `unexpected token '∂'` / autoImplicit errors, costing every Backward
+    # spawn a round-trip to reconstruct the header from a sibling proof
+    # (agent_feedback T2, ~8 reports). Copying the goal's OWN opens (not a
+    # shared problem template) brings only what this goal needs, so
+    # pure-analysis sub-goals stay cargo-free.
+    opens = [ln for ln in parent_text.splitlines()
+             if ln.strip().startswith("open ")]
+    header = "\n".join(imports)
+    if opens:
+        header += "\n" + "\n".join(opens)
     return (
-        "\n".join(imports) + "\n\n"
+        header + "\n\n"
         f"namespace {namespace}\n\n"
         f"{new_sig} := by sorry\n\n"
         f"end {namespace}\n"

@@ -563,6 +563,51 @@ def test_build_strategy_skeleton_preserves_def_kind() -> None:
     assert ":= by sorry" in sk
 
 
+def test_build_strategy_skeleton_carries_open_header() -> None:
+    """T2: the seeded skeleton carries the goal's own `open` lines, not
+    just imports. `𝓡∂` needs `open scoped Manifold`, `volume`/`Integrable`
+    need `open MeasureTheory`; omitting them elaborated the stub with a
+    misleading `unexpected token '∂'` / autoImplicit error and cost a
+    header-reconstruction round-trip every Backward spawn
+    (agent_feedback T2). Opens are hoisted before the namespace
+    (file-level scope) and sourced from the goal's OWN file, so a
+    pure-analysis sub-goal whose parent has no opens stays cargo-free."""
+    from Tooling.pipeline import _build_strategy_skeleton
+    parent = (
+        "import Mathlib\nimport Problems.p.Defs\n\n"
+        "open scoped Manifold\nopen MeasureTheory\n\n"
+        "namespace Problems.p\n\n"
+        "theorem g (f : ℝ → ℝ) : HasDerivAt f 0 0 := by sorry\n\n"
+        "end Problems.p\n"
+    )
+    sk = _build_strategy_skeleton(
+        parent, parent_slug="g", sid_token="s7", namespace="Problems.p")
+    assert sk is not None
+    assert "open scoped Manifold" in sk
+    assert "open MeasureTheory" in sk
+    # Opens land before the namespace (file-level scope), after imports.
+    assert sk.index("import Mathlib") < sk.index("open scoped Manifold")
+    assert sk.index("open MeasureTheory") < sk.index("namespace Problems.p")
+
+
+def test_build_strategy_skeleton_no_opens_when_parent_has_none() -> None:
+    """A parent with imports only seeds an opens-free skeleton — the
+    fix must not fabricate an empty `open` line or change the
+    no-opens shape."""
+    from Tooling.pipeline import _build_strategy_skeleton
+    parent = (
+        "import Mathlib\n\n"
+        "namespace Problems.p\n\n"
+        "theorem g (n : Nat) : n = n := by sorry\n\n"
+        "end Problems.p\n"
+    )
+    sk = _build_strategy_skeleton(
+        parent, parent_slug="g", sid_token="s3", namespace="Problems.p")
+    assert sk is not None
+    assert "open " not in sk
+    assert sk.startswith("import Mathlib\n\nnamespace Problems.p")
+
+
 def test_build_strategy_skeleton_preserves_structure_kind() -> None:
     """structure parent with a `:= by sorry` body (rare but legal Lean
     when fields are absent and a default term is provided): preserve
