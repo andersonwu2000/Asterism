@@ -645,10 +645,11 @@ def _format_diag(d: dict) -> dict:
     }
 
 
-def _ensure_imports(content: str, problem: str, workspace: Path) -> str:
-    """Mirrors `pipeline.backward._ensure_imports_subgoal`: prepends
-    `import Mathlib` and `import Problems.<problem>.Defs` (if
-    Defs.lean exists) when missing. Idempotent."""
+def _needed_imports(content: str, problem: str, workspace: Path) -> list[str]:
+    """The framework imports (`import Mathlib`, `import Problems.<p>.Defs`)
+    missing from `content`. Shared by `_ensure_imports` (which prepends
+    them) and the sibling-inlining path (which hoists them into the merged
+    import block alongside the siblings' own imports)."""
     needed: list[str] = []
     if not re.search(r"(?m)^import\s+Mathlib\b", content):
         needed.append("import Mathlib")
@@ -658,9 +659,150 @@ def _ensure_imports(content: str, problem: str, workspace: Path) -> str:
         if not re.search(rf"(?m)^import\s+{re.escape(defs_module)}\b",
                          content):
             needed.append(f"import {defs_module}")
+    return needed
+
+
+def _ensure_imports(content: str, problem: str, workspace: Path) -> str:
+    """Mirrors `pipeline.backward._ensure_imports_subgoal`: prepends
+    `import Mathlib` and `import Problems.<problem>.Defs` (if
+    Defs.lean exists) when missing. Idempotent."""
+    needed = _needed_imports(content, problem, workspace)
     if not needed:
         return content
     return "\n".join(needed) + "\n\n" + content
+
+
+def _inline_sibling_stubs(
+    content: str, sibling_texts: "list[str]", extra_imports: "list[str]",
+) -> "tuple[str, list[int | None]]":
+    """Build a single elaboration unit where sibling stub declarations
+    precede `content`, so `<slug>` citations to freshly-declared sibling
+    sub-goals resolve. Those `new_<slug>.lean` stubs live in the spawn's
+    attempts dir — off the lake source path — so they cannot be imported
+    pre-commit (the framework only appends their imports at commit time);
+    an agent assembling the final linked patch.lean therefore can't verify
+    citation arg-order / arity until after submit (agent_feedback T3).
+
+    Lean requires every `import` at the top of the file, so all import
+    lines (the siblings' own, plus `extra_imports` = the Mathlib/Defs the
+    framework would inject) are hoisted and de-duped; the siblings' bodies
+    (`namespace … theorem <slug> … := by sorry … end` — re-opening the
+    same namespace is legal) are placed before `content`'s body.
+
+    Returns `(merged, line_map)` where `line_map[i]` is the 1-indexed line
+    of the ORIGINAL `content` that merged line `i + 1` corresponds to, or
+    `None` for a hoisted-import / sibling-stub line. The caller remaps
+    diagnostics back to the agent's content frame and tags / drops the
+    sibling-region ones, so line numbers stay meaningful (it must NOT
+    reintroduce the very buffer/line desync T1 just fixed)."""
+    all_imports: list[str] = []
+
+    def _add_import(line: str) -> None:
+        if line not in all_imports:
+            all_imports.append(line)
+
+    for imp in extra_imports:
+        _add_import(imp)
+
+    # content: hoist its imports, keep the body with a back-map to the
+    # agent's original 1-indexed line numbers.
+    content_body: list[tuple[str, int]] = []
+    for idx, ln in enumerate(content.split("\n")):
+        if ln.startswith("import "):
+            _add_import(ln)
+        else:
+            content_body.append((ln, idx + 1))
+
+    sib_body: list[str] = []
+    for text in sibling_texts:
+        for ln in text.split("\n"):
+            if ln.startswith("import "):
+                _add_import(ln)
+            else:
+                sib_body.append(ln)
+        sib_body.append("")  # blank line between sibling blocks
+
+    merged: list[str] = []
+    line_map: list[int | None] = []
+    for imp in all_imports:
+        merged.append(imp)
+        line_map.append(None)
+    merged.append("")
+    line_map.append(None)
+    for ln in sib_body:
+        merged.append(ln)
+        line_map.append(None)
+    if sib_body:
+        merged.append("")
+        line_map.append(None)
+    for ln, orig in content_body:
+        merged.append(ln)
+        line_map.append(orig)
+    return "\n".join(merged), line_map
+
+
+# Declaration of `<slug>` in the candidate itself — so validating a
+# standalone `new_<slug>.lean` stub inlines nothing (it declares its own
+# slug), and we never inline a sibling the content already defines.
+_DECL_SLUG_RE_TMPL = (
+    r"(?m)^[ \t]*(?:@\[[^\]]*\][ \t]*)*"
+    r"(?:noncomputable[ \t]+|private[ \t]+|protected[ \t]+|scoped[ \t]+)*"
+    r"(?:theorem|lemma|def|structure|class|abbrev)[ \t]+{slug}\b")
+
+
+def _collect_referenced_sibling_stubs(
+    attempts_dir: Path, content: str,
+) -> "list[tuple[str, str]]":
+    """Sibling `new_<slug>.lean` stubs in `attempts_dir` that `content`
+    REFERENCES (uses `<slug>` as an identifier) but does NOT itself
+    declare. Excludes the stub being validated and any already inlined,
+    so validating a standalone stub (which references no sibling) inlines
+    nothing and the common case stays the plain `_ensure_imports` path."""
+    out: list[tuple[str, str]] = []
+    try:
+        stubs = sorted(attempts_dir.glob("new_*.lean"))
+    except OSError:
+        return out
+    for stub in stubs:
+        slug = stub.stem[len("new_"):]
+        if not slug:
+            continue
+        if re.search(_DECL_SLUG_RE_TMPL.format(slug=re.escape(slug)),
+                     content):
+            continue  # content declares it (the stub itself / inlined)
+        if not re.search(rf"\b{re.escape(slug)}\b", content):
+            continue  # not referenced — nothing to resolve
+        try:
+            out.append((slug, stub.read_text(encoding="utf-8")))
+        except OSError:
+            continue
+    return out
+
+
+def _remap_inlined_diags(
+    formatted: "list[dict]", line_map: "list[int | None]",
+) -> "list[dict]":
+    """Map each diagnostic's line from the merged elaboration unit back to
+    the agent's original content frame via `line_map`. Sibling-region
+    lines (`line_map` is None there): drop non-errors — the inlined
+    `:= by sorry` stubs each emit a 'declaration uses sorry' warning that
+    is pure noise — and tag errors so the agent knows the fault is in a
+    cited sibling stub, not its own patch."""
+    n = len(line_map)
+    out: list[dict] = []
+    for f in formatted:
+        ln = f.get("line")
+        if not isinstance(ln, int) or ln < 1 or ln > n:
+            out.append(f)  # outside the map — leave untouched
+            continue
+        orig = line_map[ln - 1]
+        if orig is not None:
+            out.append({**f, "line": orig})
+        elif f.get("severity") == "error":
+            out.append({**f, "message": "[inlined sibling stub] "
+                        + str(f.get("message", ""))})
+        # else: sibling-region warning/info → drop as noise
+    return out
 
 
 def _summarize_goal(result) -> str:
@@ -709,6 +851,31 @@ def _offload_to_thread(fn):
     return wrapper
 
 
+def _resync_buffer_from_disk(meta: "SessionMetadata") -> None:
+    """Adopt the on-disk `target_path` as the source of truth for the
+    in-memory `file_content` mirror before any tool reads it.
+
+    Agents edit patch.lean through the `Write` / `Edit` tools too, which
+    touch disk directly and bypass apply_edit's mirror update — leaving
+    `meta.file_content` stale. Every swap_in tool then didChanges that
+    STALE mirror into the slot, so `errors_at` / `goal_at` report phantom
+    diagnostics at line numbers that no longer exist on disk, and
+    `apply_edit` computes its line splice against stale text
+    (agent_feedback T1, ~12 reports — the run's highest-frequency
+    friction). Disk is never staler than the mirror (apply_edit, the only
+    mirror writer, writes disk in the same breath at write-through), so
+    unconditionally adopting disk on mismatch is safe and makes disk the
+    single source of truth."""
+    try:
+        disk = meta.target_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if disk != meta.file_content:
+        meta.file_content = disk
+        _log_for(meta, {"event": "buffer_resync_from_disk",
+                        "disk_lines": disk.count("\n") + 1})
+
+
 @mcp.tool()
 @_offload_to_thread
 def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
@@ -737,6 +904,9 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     t0 = time.perf_counter()
 
+    # External Write/Edit may have advanced disk past the mirror; splice
+    # against the current on-disk text, not a stale buffer (T1).
+    _resync_buffer_from_disk(meta)
     lines = meta.file_content.split("\n")
     if start_line < 1 or start_line > len(lines):
         return json.dumps({"error":
@@ -823,6 +993,9 @@ def goal_at(line: int, col: int) -> str:
             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     t0 = time.perf_counter()
     backend = _state.backend
+    # Pick up any external Write/Edit before swap_in didChanges the
+    # mirror into the slot, so the goal query sees current disk (T1).
+    _resync_buffer_from_disk(meta)
     with _acquire_slot(meta, swap_in=True) as (slot, _slot_kind):
         try:
             result = backend.plain_goal(
@@ -862,6 +1035,9 @@ def errors_at(line: int | None = None) -> str:
             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
     t0 = time.perf_counter()
     backend = _state.backend
+    # Pick up any external Write/Edit before swap_in didChanges the
+    # mirror into the slot, so diagnostics track current disk (T1).
+    _resync_buffer_from_disk(meta)
     with _acquire_slot(meta, swap_in=True) as (slot, _slot_kind):
         diags = backend.diagnostics_for(slot.slot_uri)
         formatted = [_format_diag(d) for d in diags]
@@ -882,14 +1058,23 @@ def errors_at(line: int | None = None) -> str:
 @_offload_to_thread
 def validate_file(content: str) -> str:
     """Validate a candidate Lean file (typically a `new_<slug>.lean`
-    sub-goal stub). Auto-prepends Mathlib + the problem's Defs imports,
-    pushes the candidate content onto a borrowed slot, reads diagnostics,
-    leaves the slot dirty (next caller will swap content as needed).
+    sub-goal stub, or the assembled strategy patch). Auto-prepends
+    Mathlib + the problem's Defs imports, pushes the candidate content
+    onto a borrowed slot, reads diagnostics, leaves the slot dirty (next
+    caller will swap content as needed).
+
+    If `content` cites a freshly-declared sibling sub-goal (`new_<slug>.
+    lean` in the attempts dir, referenced but not declared here), that
+    stub's declaration is inlined ahead of `content` so the citation
+    resolves and its arg-order / arity is checked pre-commit — the
+    sibling stubs aren't importable until commit-time (T3). Diagnostics
+    are remapped back to this content's own line numbers; the response's
+    `inlined_siblings` lists which stubs were folded in.
 
     Args:
       content: Full contents of the candidate file.
 
-    Returns: { ok, diagnostics, diagnostic_count }.
+    Returns: { ok, diagnostics, diagnostic_count[, inlined_siblings] }.
     """
     _recv_ts = _ts_now()
     meta = _current_session()
@@ -903,7 +1088,21 @@ def validate_file(content: str) -> str:
     if not meta.problem:
         return json.dumps({"error": "no problem on session metadata",
             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
-    full_content = _ensure_imports(content, meta.problem, meta.workspace)
+    # T3 — make citations to freshly-declared sibling sub-goals
+    # (`new_<slug>.lean` stubs in the attempts dir, not yet importable)
+    # resolve by inlining their declarations ahead of `content`. Only
+    # fires when `content` actually references a sibling it doesn't
+    # declare, so validating a standalone stub keeps the plain path.
+    sibling_stubs = _collect_referenced_sibling_stubs(
+        meta.target_path.parent, content)
+    line_map: "list[int | None] | None" = None
+    if sibling_stubs:
+        full_content, line_map = _inline_sibling_stubs(
+            content, [t for _, t in sibling_stubs],
+            _needed_imports(content, meta.problem, meta.workspace),
+        )
+    else:
+        full_content = _ensure_imports(content, meta.problem, meta.workspace)
 
     t0 = time.perf_counter()
     diags: list = []
@@ -941,6 +1140,8 @@ def validate_file(content: str) -> str:
         diags = []
 
     formatted = [_format_diag(d) for d in diags]
+    if line_map is not None:
+        formatted = _remap_inlined_diags(formatted, line_map)
     has_error = any(f.get("severity") == "error" for f in formatted)
     if elaborate_failed:
         has_error = True
@@ -958,6 +1159,11 @@ def validate_file(content: str) -> str:
         response["timed_out"] = True
         response["error"] = ("validate_file elaboration did not complete "
                              "within 120s; result indeterminate")
+    if sibling_stubs:
+        # Tell the agent which sibling sub-goal stubs were inlined so a
+        # citation could be resolved; diagnostics are already remapped to
+        # this content's own line numbers.
+        response["inlined_siblings"] = [slug for slug, _ in sibling_stubs]
     _log_for(meta, {"event": "tool_call", "name": "validate_file",
                     "args": {"content_lines": full_content.count("\n") + 1},
                     "duration_s": dur,

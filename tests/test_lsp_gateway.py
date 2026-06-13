@@ -240,6 +240,152 @@ def test_acquire_slot_hot_path_no_swap(
     assert fake.calls == []
 
 
+def test_resync_buffer_from_disk_adopts_newer_disk(tmp_path: Path) -> None:
+    """T1: an external Write/Edit advances disk past the in-memory mirror;
+    `_resync_buffer_from_disk` adopts disk so swap_in tools didChange the
+    current content (no phantom stale-line diagnostics)."""
+    target = tmp_path / "patch.lean"
+    target.write_text("theorem t : True := by trivial\n", encoding="utf-8")
+    meta = lsp_gateway.SessionMetadata(
+        pipeline_id="pipe-A", target_path=target,
+        problem="p", workspace=tmp_path, log_path=None,
+        file_content="STALE BUFFER",
+    )
+    lsp_gateway._resync_buffer_from_disk(meta)
+    assert meta.file_content == "theorem t : True := by trivial\n"
+
+
+def test_resync_buffer_from_disk_noop_when_in_sync(tmp_path: Path) -> None:
+    """No mismatch → no mutation (cheap, idempotent — the common case
+    where the agent only ever used apply_edit)."""
+    target = tmp_path / "patch.lean"
+    content = "import Mathlib\n"
+    target.write_text(content, encoding="utf-8")
+    meta = lsp_gateway.SessionMetadata(
+        pipeline_id="pipe-A", target_path=target,
+        problem="p", workspace=tmp_path, log_path=None,
+        file_content=content,
+    )
+    lsp_gateway._resync_buffer_from_disk(meta)
+    assert meta.file_content == content
+
+
+def test_resync_buffer_from_disk_missing_file_is_noop(
+    tmp_path: Path,
+) -> None:
+    """Disk file absent (never written yet) → keep the mirror, never
+    crash on the OSError."""
+    meta = lsp_gateway.SessionMetadata(
+        pipeline_id="pipe-A", target_path=tmp_path / "nope.lean",
+        problem="p", workspace=tmp_path, log_path=None,
+        file_content="in-memory only",
+    )
+    lsp_gateway._resync_buffer_from_disk(meta)
+    assert meta.file_content == "in-memory only"
+
+
+def test_inline_sibling_stubs_hoists_imports_and_maps_lines() -> None:
+    """T3: sibling decls precede content; all imports hoisted+deduped to
+    the top; line_map sends content-body lines back to their original
+    1-indexed positions and import/sibling lines to None."""
+    content = (
+        "import Mathlib\n"            # line 1
+        "import Problems.p.Defs\n"    # line 2
+        "\n"                          # line 3
+        "namespace Problems.p\n"      # line 4
+        "theorem s1 : True := by\n"   # line 5
+        "  have h := helper 3\n"      # line 6
+        "  trivial\n"                 # line 7
+        "end Problems.p\n"            # line 8
+    )
+    sibling = (
+        "import Mathlib\n"
+        "import Problems.p.extra\n"
+        "namespace Problems.p\n"
+        "theorem helper (n : Nat) : True := by sorry\n"
+        "end Problems.p\n"
+    )
+    merged, line_map = lsp_gateway._inline_sibling_stubs(
+        content, [sibling], ["import Mathlib", "import Problems.p.Defs"])
+    lines = merged.split("\n")
+    # imports hoisted + deduped (Mathlib + Defs once, extra once)
+    assert [ln for ln in lines if ln.startswith("import ")] == [
+        "import Mathlib", "import Problems.p.Defs", "import Problems.p.extra"]
+    # no import line appears after the first non-import content line
+    first_body = next(i for i, ln in enumerate(lines)
+                      if ln and not ln.startswith("import "))
+    assert all(not ln.startswith("import ") for ln in lines[first_body:])
+    # sibling decl precedes the content's main theorem (forward ref ok)
+    assert merged.index("theorem helper") < merged.index("theorem s1")
+    # line_map sends the content-body lines back to their originals
+    s1_idx = next(i for i, ln in enumerate(lines)
+                  if ln.startswith("theorem s1"))
+    assert line_map[s1_idx] == 5
+    have_idx = next(i for i, ln in enumerate(lines)
+                    if "have h := helper" in ln)
+    assert line_map[have_idx] == 6
+    # hoisted-import + sibling-region lines map to None
+    assert line_map[0] is None
+    helper_idx = next(i for i, ln in enumerate(lines)
+                      if ln.startswith("theorem helper"))
+    assert line_map[helper_idx] is None
+
+
+def test_collect_sibling_stubs_referenced_not_declared(
+    tmp_path: Path,
+) -> None:
+    """Only stubs the content REFERENCES but does not DECLARE are
+    collected; an unreferenced stub is skipped."""
+    (tmp_path / "new_helper.lean").write_text(
+        "namespace Problems.p\ntheorem helper : True := by sorry\n"
+        "end Problems.p\n", encoding="utf-8")
+    (tmp_path / "new_unused.lean").write_text(
+        "namespace Problems.p\ntheorem unused : True := by sorry\n"
+        "end Problems.p\n", encoding="utf-8")
+    content = ("namespace Problems.p\n"
+               "theorem s1 : True := by have h := helper; trivial\n"
+               "end Problems.p\n")
+    got = lsp_gateway._collect_referenced_sibling_stubs(tmp_path, content)
+    assert [slug for slug, _ in got] == ["helper"]
+
+
+def test_collect_sibling_stubs_skips_self_declared(
+    tmp_path: Path,
+) -> None:
+    """Validating the stub itself: content DECLARES `helper`, so it must
+    not be inlined onto itself (would duplicate the declaration)."""
+    (tmp_path / "new_helper.lean").write_text(
+        "theorem helper : True := by sorry\n", encoding="utf-8")
+    content = ("namespace Problems.p\n"
+               "theorem helper : True := by sorry\nend Problems.p\n")
+    got = lsp_gateway._collect_referenced_sibling_stubs(tmp_path, content)
+    assert got == []
+
+
+def test_remap_inlined_diags_maps_and_filters() -> None:
+    """Patch-region diagnostics remap to original content lines; sibling-
+    region warnings (sorry noise) drop; sibling-region errors are tagged
+    and kept."""
+    # lines 1-3 = import/sibling region (None); 4→10, 5→11
+    line_map = [None, None, None, 10, 11]
+    formatted = [
+        {"line": 4, "col": 0, "severity": "error", "message": "patch err"},
+        {"line": 2, "col": 0, "severity": "warning",
+         "message": "declaration uses 'sorry'"},
+        {"line": 1, "col": 0, "severity": "error",
+         "message": "sibling broke"},
+    ]
+    out = lsp_gateway._remap_inlined_diags(formatted, line_map)
+    assert {"line": 10, "col": 0, "severity": "error",
+            "message": "patch err"} in out
+    # sibling-region sorry warning dropped
+    assert all("sorry" not in f["message"] for f in out)
+    # sibling-region error tagged + kept
+    tagged = [f for f in out if "[inlined sibling stub]" in f["message"]]
+    assert len(tagged) == 1 and "sibling broke" in tagged[0]["message"]
+    assert len(out) == 2
+
+
 def test_acquire_slot_first_tool_call_cold_warmup(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
