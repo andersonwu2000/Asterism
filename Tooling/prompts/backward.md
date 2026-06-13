@@ -129,5 +129,10 @@ Ship as `:= by sorry` with `entry_kind: Builder`. Wrong types compile-fail in se
 - Each sub-goal must be **strictly simpler** and as abstract as possible — re-stating the parent in different notation does not count.
 - Each sub-goal is a stand-alone Lean theorem — re-declare any parent binder its type uses, or that you anticipate its own sub-goals will thread. When unsure, keep — over-keeping is mild bloat, dropping a future-needed binder is a wasted attempt.
 - Do NOT use any name in FORBIDDEN_LEMMAS — anywhere.
-- Cite any sibling goal in this problem freely — proved siblings work directly; open / attempting / pending_review siblings are auto-linked into `strategy_subgoals` (your strategy waits for them to prove). Only terminal-failed siblings (shelved / disproved / dead) are rejected — pick a different angle.
+- **Cite an existing sibling** by writing its import line yourself: `import Problems.<problem>.proofs.L_<slug>` (this is the one import you write — declared `new_*.lean` sub-goals are auto-appended). Then reference `<slug>` in the proof. The framework classifies the cited sibling by status:
+  - **proved** → used directly.
+  - **open / attempting / pending_review** → auto-linked into `strategy_subgoals`; your strategy waits for it to prove.
+  - **shelved / dead** → auto-**revived** (reopened) and linked — a leaf that was only parked because a sibling failed becomes usable again the moment you cite it. (Don't re-declare it as a `new_<slug>.lean`: a verbatim re-declaration of an existing sibling is auto-converted to this citation anyway, but citing directly is clearer.)
+  - **disproved** → rejected (a counterexample exists; the statement is false — pick a different angle).
+- This citation/auto-link/revive machinery is the **decomposition path** only. A leaf-bypass `patch.lean`-alone proof runs the axiom probe at submit and can cite **proved** siblings only.
 - If a sorry-free direct proof builds cleanly, ship `patch.lean` alone (no `new_*.lean`); framework leaf-bypass takes it.

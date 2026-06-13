@@ -5,13 +5,21 @@ Classifies cited siblings:
   - open/attempting/pending_strategist_review:
       - decomp path (allow_auto_link=True) → auto-link as sub-goal
       - leaf-bypass path (allow_auto_link=False) → reject
-  - shelved/disproved/dead → reject (terminal-failed, can't recover
-    even with parallel wait)
+  - shelved/dead (soft/context terminals, dedupe does NOT block them):
+      - decomp path → REVIVE: auto-link + flag for reopen-to-'open'
+        (the citing strategy gives them a fresh live path to root)
+      - leaf-bypass path → reject (can't tolerate transitive sorry)
+  - disproved (hard terminal, counterexample, dedupe BLOCKS) → always
+    reject (the one never-citable status)
+
+Returns a 3-tuple `(auto_link, revive, err)` with `revive` ⊆ `auto_link`.
 
 Auto-link path enables Strategist-orchestrated parallel tool building:
 Backward strategy can cite an in-flight Forward, framework links it
 into `strategy_subgoals`, and `strategies_ready_for_verify` blocks the
-strategy from verifying until the cited goal proves.
+strategy from verifying until the cited goal proves. The revive path
+(agent_feedback T8) additionally unblocks cascade-shelved leaves once a
+later strategy organically needs them.
 """
 from __future__ import annotations
 
@@ -58,12 +66,13 @@ def test_accepts_when_cited_slug_is_declared_subgoal(
     that's the framework-injected sub-goal import. No reject."""
     patch = "import Problems.p.proofs.L_helper\n"
     for allow in (True, False):
-        auto_link, err = _resolve_cite_dependencies(
+        auto_link, revive, err = _resolve_cite_dependencies(
             conn, problem="p", patch_text=patch,
             declared_slugs={"helper"}, allow_auto_link=allow,
         )
         assert err is None
         assert auto_link == set()
+        assert revive == set()
 
 
 def test_accepts_when_cited_slug_is_proved(
@@ -73,12 +82,13 @@ def test_accepts_when_cited_slug_is_proved(
     _insert_goal(conn, "winding_number_int", status="proved")
     patch = "import Problems.p.proofs.L_winding_number_int\n"
     for allow in (True, False):
-        auto_link, err = _resolve_cite_dependencies(
+        auto_link, revive, err = _resolve_cite_dependencies(
             conn, problem="p", patch_text=patch,
             declared_slugs=set(), allow_auto_link=allow,
         )
         assert err is None
         assert auto_link == set()
+        assert revive == set()
 
 
 def test_skips_unknown_slug(conn: sqlite3.Connection) -> None:
@@ -86,12 +96,13 @@ def test_skips_unknown_slug(conn: sqlite3.Connection) -> None:
     will catch it. Citation gate doesn't double-reject."""
     patch = "import Problems.p.proofs.L_nonexistent\n"
     for allow in (True, False):
-        auto_link, err = _resolve_cite_dependencies(
+        auto_link, revive, err = _resolve_cite_dependencies(
             conn, problem="p", patch_text=patch,
             declared_slugs=set(), allow_auto_link=allow,
         )
         assert err is None
         assert auto_link == set()
+        assert revive == set()
 
 
 def test_skips_cross_problem_imports(conn: sqlite3.Connection) -> None:
@@ -100,12 +111,13 @@ def test_skips_cross_problem_imports(conn: sqlite3.Connection) -> None:
     _insert_goal(conn, "foo", status="open")
     patch = "import Problems.other.proofs.L_foo\n"  # different problem
     for allow in (True, False):
-        auto_link, err = _resolve_cite_dependencies(
+        auto_link, revive, err = _resolve_cite_dependencies(
             conn, problem="p", patch_text=patch,
             declared_slugs=set(), allow_auto_link=allow,
         )
         assert err is None
         assert auto_link == set()
+        assert revive == set()
 
 
 def test_skips_aliased_goal_row(conn: sqlite3.Connection) -> None:
@@ -115,12 +127,13 @@ def test_skips_aliased_goal_row(conn: sqlite3.Connection) -> None:
     _insert_goal(conn, "real", status="proved")
     patch = "import Problems.p.proofs.L_real\n"
     for allow in (True, False):
-        auto_link, err = _resolve_cite_dependencies(
+        auto_link, revive, err = _resolve_cite_dependencies(
             conn, problem="p", patch_text=patch,
             declared_slugs=set(), allow_auto_link=allow,
         )
         assert err is None
         assert auto_link == set()
+        assert revive == set()
 
 
 # ---------------------------------------------------------------------
@@ -131,86 +144,112 @@ def test_decomp_auto_links_open_sibling(
     conn: sqlite3.Connection,
 ) -> None:
     """Decomp path: open sibling is auto-linked as a sub-goal so the
-    strategy waits for it to prove. No rejection."""
+    strategy waits for it to prove. No rejection, no revival needed."""
     gid = _insert_goal(conn, "cauchy_simply_connected", status="open")
     patch = "import Problems.p.proofs.L_cauchy_simply_connected\n"
-    auto_link, err = _resolve_cite_dependencies(
+    auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=True,
     )
     assert err is None
     assert auto_link == {gid}
+    assert revive == set()
 
 
 def test_decomp_auto_links_attempting_and_pending_review(
     conn: sqlite3.Connection,
 ) -> None:
     """`attempting` and `pending_strategist_review` are also auto-link-
-    able — they're non-terminal, work-in-progress states."""
+    able — they're non-terminal, work-in-progress states, and need no
+    revival (already dispatchable / under review)."""
     g1 = _insert_goal(conn, "foo", status="attempting")
     g2 = _insert_goal(conn, "bar", status="pending_strategist_review")
     patch = (
         "import Problems.p.proofs.L_foo\n"
         "import Problems.p.proofs.L_bar\n"
     )
-    auto_link, err = _resolve_cite_dependencies(
+    auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=True,
     )
     assert err is None
     assert auto_link == {g1, g2}
+    assert revive == set()
 
 
-def test_decomp_rejects_terminal_failed_siblings(
+def test_decomp_revives_shelved_and_dead_siblings(
     conn: sqlite3.Connection,
 ) -> None:
-    """`shelved` / `disproved` / `dead` siblings will never prove —
-    auto-link is pointless. Reject with a 'pick a different angle'
-    hint so the agent revises the decomposition."""
-    _insert_goal(conn, "sh", status="shelved")
-    _insert_goal(conn, "di", status="disproved")
-    _insert_goal(conn, "de", status="dead")
+    """T8: shelved / dead are soft/context terminals that dedupe does NOT
+    block, so citation revives them rather than rejecting. They land in
+    BOTH auto_link (linked as sub-goals) and revive (caller reopens to
+    'open'). No error — the citing strategy gives them a fresh live path
+    to root."""
+    g_sh = _insert_goal(conn, "sh", status="shelved")
+    g_de = _insert_goal(conn, "de", status="dead")
     patch = (
         "import Problems.p.proofs.L_sh\n"
-        "import Problems.p.proofs.L_di\n"
         "import Problems.p.proofs.L_de\n"
     )
-    auto_link, err = _resolve_cite_dependencies(
+    auto_link, revive, err = _resolve_cite_dependencies(
+        conn, problem="p", patch_text=patch,
+        declared_slugs=set(), allow_auto_link=True,
+    )
+    assert err is None
+    assert auto_link == {g_sh, g_de}
+    assert revive == {g_sh, g_de}
+
+
+def test_decomp_rejects_disproved_sibling(
+    conn: sqlite3.Connection,
+) -> None:
+    """`disproved` is the one hard terminal (a counterexample was found);
+    dedupe BLOCKS it, so does citation. Reject with a 'disproved /
+    different angle' hint — never revived."""
+    _insert_goal(conn, "di", status="disproved")
+    patch = "import Problems.p.proofs.L_di\n"
+    auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=True,
     )
     assert err is not None
-    assert "sh" in err and "di" in err and "de" in err
-    assert "shelved" in err and "disproved" in err and "dead" in err
-    assert "different" in err.lower()
+    assert "di" in err
+    assert "DISPROVED" in err or "disproved" in err
+    assert revive == set()
 
 
-def test_decomp_mixes_proved_open_and_terminal(
+def test_decomp_mixes_proved_open_shelved_and_disproved(
     conn: sqlite3.Connection,
 ) -> None:
-    """Mixed batch: proved skipped, open auto-linked, shelved rejected.
-    A single terminal-failed citation aborts the whole strategy."""
+    """Mixed batch: proved skipped, open auto-linked, shelved revived,
+    disproved rejected. A single disproved citation aborts the whole
+    strategy (statement is false); the revivable ones are still
+    collected (caller ignores on err)."""
     _insert_goal(conn, "good_proved", status="proved")
     g_open = _insert_goal(conn, "open_dep", status="open")
-    _insert_goal(conn, "dead_dep", status="dead")
+    g_sh = _insert_goal(conn, "shelved_dep", status="shelved")
+    _insert_goal(conn, "false_dep", status="disproved")
     patch = (
         "import Problems.p.proofs.L_good_proved\n"
         "import Problems.p.proofs.L_open_dep\n"
-        "import Problems.p.proofs.L_dead_dep\n"
+        "import Problems.p.proofs.L_shelved_dep\n"
+        "import Problems.p.proofs.L_false_dep\n"
     )
-    auto_link, err = _resolve_cite_dependencies(
+    auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=True,
     )
-    assert err is not None  # dead_dep aborts the strategy
-    # auto_link still collected the open one (caller ignores on err)
+    assert err is not None  # false_dep aborts the strategy
+    assert "false_dep" in err
+    # revivable/open ones still collected (caller ignores them on err)
     assert g_open in auto_link
+    assert g_sh in auto_link and g_sh in revive
 
 
 # ---------------------------------------------------------------------
 # Leaf-bypass path (`allow_auto_link=False`) — same surface but rejects
-# open/attempting/pending_review too (axiom probe at submit can't
-# tolerate transitive sorry from cited stub).
+# every non-proved cite (axiom probe at submit can't tolerate transitive
+# sorry from a cited stub; revival is a decomp-path capability).
 # ---------------------------------------------------------------------
 
 def test_leafbypass_rejects_open_sibling(
@@ -222,13 +261,14 @@ def test_leafbypass_rejects_open_sibling(
     decomp path's auto-link mechanism."""
     _insert_goal(conn, "open_dep", status="open")
     patch = "import Problems.p.proofs.L_open_dep\n"
-    auto_link, err = _resolve_cite_dependencies(
+    auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=False,
     )
     assert err is not None
     assert "open_dep" in err
     assert "Leaf-bypass" in err or "decomp" in err.lower()
+    assert revive == set()
 
 
 def test_leafbypass_rejects_attempting_and_pending_review(
@@ -241,9 +281,31 @@ def test_leafbypass_rejects_attempting_and_pending_review(
         "import Problems.p.proofs.L_foo\n"
         "import Problems.p.proofs.L_bar\n"
     )
-    auto_link, err = _resolve_cite_dependencies(
+    auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=False,
     )
     assert err is not None
     assert "foo" in err and "bar" in err
+    assert revive == set()
+
+
+def test_leafbypass_rejects_shelved_and_dead(
+    conn: sqlite3.Connection,
+) -> None:
+    """Leaf-bypass can't revive — shelved/dead reject here even though
+    the decomp path would revive them (no parallel-wait / decomposition
+    to defer verification behind)."""
+    _insert_goal(conn, "sh", status="shelved")
+    _insert_goal(conn, "de", status="dead")
+    patch = (
+        "import Problems.p.proofs.L_sh\n"
+        "import Problems.p.proofs.L_de\n"
+    )
+    auto_link, revive, err = _resolve_cite_dependencies(
+        conn, problem="p", patch_text=patch,
+        declared_slugs=set(), allow_auto_link=False,
+    )
+    assert err is not None
+    assert "sh" in err and "de" in err
+    assert revive == set()

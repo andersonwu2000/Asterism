@@ -314,7 +314,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # and propagate sorryAx silently until root_integrity_gate
         # catches it many cycles later. Mirror of the leaf-bypass call
         # in backward.py around the leaf-bypass commit window.
-        _, cite_err = _resolve_cite_dependencies(
+        _, _, cite_err = _resolve_cite_dependencies(
             conn, problem=goal["problem"], patch_text=patch_text,
             declared_slugs=set(), allow_auto_link=False,
         )

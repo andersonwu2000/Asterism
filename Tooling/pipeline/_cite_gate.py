@@ -17,9 +17,18 @@ lines and classify each cited slug by goal status:
   the caller can attach a `strategy_subgoals` row and have the new
   strategy wait until the cited goal proves; otherwise (leaf-bypass /
   Builder) reject.
-- `shelved` / `disproved` / `dead`: always reject — terminal-failed
-  goals will not be revived in this strategy's lifetime; agent must
-  pick a different angle.
+- `shelved` / `dead`: SOFT/context terminals. The `goals.status`
+  contract (db.py) makes these the statuses dedupe does NOT block —
+  shelved is "reopenable", dead is "same statement may be valid under a
+  different parent strategy". Citability mirrors dedupe-blocking, so on
+  the decomposition path these are REVIVED: reopened to `open` and
+  auto-linked, regaining a live path through the citing strategy's
+  `strategy_subgoals`. (Pre-2026-06-13 they were rejected alongside
+  `disproved`, which contradicted the contract and left cascade-shelved
+  leaves uncitable forever — agent_feedback T8.) Leaf-bypass / Builder
+  still reject (can't tolerate transitive sorry).
+- `disproved`: HARD terminal — a counterexample was found, dedupe
+  BLOCKS it, so does citation. The one status that is never citable.
 - Unknown slug / cross-problem import: pass through (lake's "unknown
   identifier" path will catch genuine typos).
 """
@@ -40,7 +49,7 @@ _PROBLEM_IMPORT_RE = re.compile(
 def _resolve_cite_dependencies(
     conn: sqlite3.Connection, *, problem: str, patch_text: str,
     declared_slugs: set[str], allow_auto_link: bool,
-) -> tuple[set[int], str | None]:
+) -> tuple[set[int], set[int], str | None]:
     """Scan `patch_text` for `import Problems.<problem>.proofs.L_<slug>`
     lines and classify each cited slug:
 
@@ -54,18 +63,30 @@ def _resolve_cite_dependencies(
         - else: reject (caller is a leaf-bypass / Builder that runs
           axiom probe at submit, can't tolerate transitive sorry from
           cited stub)
-      * status ∈ ('shelved', 'disproved', 'dead') → reject (cited goal
-        can't be revived in this strategy's lifetime; agent must pick
-        a different angle)
+      * status ∈ ('shelved', 'dead') — soft/context terminals that dedupe
+        does NOT block (db.py `goals.status` contract):
+        - if `allow_auto_link`: collect goal_id in BOTH the auto-link set
+          (so it links as a `strategy_subgoals` row) AND the revive set
+          (so the caller reopens it to 'open' — the citing strategy gives
+          it a fresh live path back to root, so it re-dispatches). Fixes
+          cascade-shelved leaves being uncitable forever (agent_feedback
+          T8).
+        - else: reject (leaf-bypass / Builder can't tolerate transitive
+          sorry; revival is a decomposition-path capability).
+      * status='disproved' → always reject (counterexample found; dedupe
+        BLOCKS it, so does citation — the one never-citable status)
       * unknown slug / cross-problem import → skip (lake's
         "unknown identifier" catches genuine typos)
 
-    Returns (auto_link_goal_ids, err). Caller commits the strategy
-    with the declared subgoals plus auto-linked goals as
-    additional `strategy_subgoals` rows. On err non-None the strategy
-    must abort (subgoals would be from a doomed dependency).
+    Returns (auto_link_goal_ids, revive_goal_ids, err). `revive` ⊆
+    `auto_link`. Caller commits the strategy with the declared subgoals
+    plus `auto_link` goals as additional `strategy_subgoals` rows, and
+    reopens every `revive` goal (currently shelved/dead) to 'open' first.
+    On err non-None the strategy must abort (subgoals would be from a
+    doomed dependency).
     """
     auto_link: set[int] = set()
+    revive: set[int] = set()
     bad: list[tuple[str, str]] = []
     seen: set[str] = set()
     for m in _PROBLEM_IMPORT_RE.finditer(patch_text):
@@ -96,33 +117,44 @@ def _resolve_cite_dependencies(
             else:
                 bad.append((slug, status))
             continue
-        # ('shelved', 'disproved', 'dead') — terminal-failed, can't
-        # recover even with parallel wait.
+        if status in ("shelved", "dead"):
+            # Soft/context terminal — revivable. dedupe doesn't block it,
+            # so neither does citation: reopen + auto-link on the decomp
+            # path; reject on leaf-bypass/Builder (transitive sorry).
+            if allow_auto_link:
+                auto_link.add(int(row["id"]))
+                revive.add(int(row["id"]))
+            else:
+                bad.append((slug, status))
+            continue
+        # 'disproved' — hard terminal (counterexample); never citable.
         bad.append((slug, status))
     if not bad:
-        return auto_link, None
+        return auto_link, revive, None
     lines = [f"  - `{slug}` (status={status})" for slug, status in bad]
     if allow_auto_link:
-        # Decomp path's only reject reason is terminal-failed cites
-        # — guide the agent toward a different angle.
+        # On the decomp path the only remaining reject is a `disproved`
+        # cite — a statement shown false. shelved/dead are revived above.
         hint = (
-            "\n\nThese goals are terminal-failed in this strategy's "
-            "context — they will not prove. Rewrite the proof to avoid "
-            "the citations, or pick a different decomposition angle."
+            "\n\nThese goals are DISPROVED (a counterexample was found) "
+            "— they are false and cannot be cited. Rewrite the proof to "
+            "avoid them, or pick a different decomposition angle."
         )
     else:
         # Leaf-bypass / Builder path: any non-proved cite is rejected
         # (immediate axiom probe can't tolerate transitive sorry). The
-        # auto-link mechanism is only available via Backward decomp.
+        # auto-link / revive mechanism is only available via Backward
+        # decomp.
         hint = (
             "\n\nFix by declaring each as a sub-goal stub "
-            "(`new_<slug>.lean := by sorry`) — the decomposition path "
-            "auto-links open siblings as `strategy_subgoals` so the "
-            "strategy waits for them to prove. Leaf-bypass strategies "
-            "and Builder (no decomposition) can only cite already-"
-            "proved siblings."
+            "(`new_<slug>.lean := by sorry`), or restructure as a "
+            "Backward decomposition — the decomp path auto-links open "
+            "siblings and revives shelved/dead ones as `strategy_"
+            "subgoals` so the strategy waits for them to prove. Leaf-"
+            "bypass and Builder (no decomposition) can only cite "
+            "already-proved siblings."
         )
-    return auto_link, (
+    return auto_link, revive, (
         "Patch imports sibling goals that cannot be cited:\n"
         + "\n".join(lines) + hint
     )

@@ -144,6 +144,65 @@ def _resolve_slug_collisions(
     return resolved, rename_map
 
 
+def _partition_sibling_reuse(
+    conn, *, problem: str, goal_id: int, workspace: Path,
+    sub_meta: list[tuple[str, Path]], existing_slugs: set[str],
+    ancestor_slugs: "dict[str, str]",
+) -> tuple[list[tuple[str, Path]], list[str], list[Path]]:
+    """Split declared sub-goals into (kept, reuse_imports, dropped).
+
+    A declared `new_<slug>.lean` whose slug names an EXISTING non-ancestor
+    sibling in this problem (excluding the parent `goal_id` itself) with a
+    verbatim-equivalent theorem head is a REUSE, not a new lemma. It is
+    dropped from `kept` and the sibling's
+    `import Problems.<problem>.proofs.L_<slug>` line is returned in
+    `reuse_imports`, so the caller can cite the sibling instead of
+    forking a `_2` duplicate. The citation gate then links / revives /
+    rejects the sibling by its status (open → link, shelved/dead →
+    revive, disproved → reject). `dropped` lists the redundant attempts-
+    dir files for the caller to unlink.
+
+    Stays in `kept` (→ `_resolve_slug_collisions`'s `_2` resolver):
+      * novel slugs (not in `existing_slugs`),
+      * strict ancestors (citing one is an import cycle),
+      * the parent goal's own slug (self-cycle; dedupe `no_progress`
+        handles it),
+      * same-slug-DIFFERENT-statement collisions (genuine name clash).
+
+    Pure decision — no filesystem mutation, so the caller owns the
+    unlink + import injection. agent_feedback T8 / 91-92,110."""
+    kept: list[tuple[str, Path]] = []
+    reuse_imports: list[str] = []
+    dropped: list[Path] = []
+    for slug, ns in sub_meta:
+        if slug not in existing_slugs or slug in ancestor_slugs:
+            kept.append((slug, ns))
+            continue
+        sib = conn.execute(
+            "SELECT id, lean_path FROM goals WHERE problem = ? AND slug = ?"
+            "  AND alias_target_id IS NULL AND id != ? LIMIT 1",
+            (problem, slug, goal_id),
+        ).fetchone()
+        if sib is None:
+            kept.append((slug, ns))
+            continue
+        try:
+            cand_head = _theorem_head(ns.read_text(encoding="utf-8"), slug)
+            sib_head = _theorem_head(
+                (workspace / sib["lean_path"]).read_text(encoding="utf-8"),
+                slug)
+        except OSError:
+            kept.append((slug, ns))
+            continue
+        if cand_head is None or cand_head != sib_head:
+            # Same name, different statement → genuine collision.
+            kept.append((slug, ns))
+            continue
+        reuse_imports.append(f"import Problems.{problem}.proofs.L_{slug}")
+        dropped.append(ns)
+    return kept, reuse_imports, dropped
+
+
 # ---------------------------------------------------------------------
 # Backward-specific helpers (no shared callers as of writing)
 # ---------------------------------------------------------------------
@@ -712,7 +771,7 @@ def _backward_parse_and_commit(
         # Cited open siblings must be handled via the decomp path's
         # auto-link mechanism (which defers verification until cited
         # goal proves).
-        _, cite_err = _resolve_cite_dependencies(
+        _, _, cite_err = _resolve_cite_dependencies(
             conn, problem=goal["problem"], patch_text=main_patch_text,
             declared_slugs=set(), allow_auto_link=False,
         )
@@ -941,6 +1000,40 @@ def _backward_parse_and_commit(
                 f"genuinely smaller lemma.",
                 leading,
             )
+
+    # T8 / agent_feedback 91-92,110 — convert a declared sub-goal that
+    # merely re-states an existing equivalent sibling into a CITATION of
+    # that sibling (drop the redundant file + inject its import) rather
+    # than `_2`-forking a duplicate that proves the same brick twice and,
+    # for a cascade-shelved sibling, could never be re-registered verbatim
+    # (forcing the agent to reshape a provable statement to dodge the
+    # matcher). The citation gate downstream links / revives / rejects the
+    # sibling by status. See `_partition_sibling_reuse` for the rule.
+    kept_sub_meta, reuse_imports, dropped = _partition_sibling_reuse(
+        conn, problem=goal["problem"], goal_id=goal_id, workspace=workspace,
+        sub_meta=sub_meta, existing_slugs=existing_slugs,
+        ancestor_slugs=ancestor_slugs,
+    )
+    if dropped:
+        for ns in dropped:
+            try:
+                ns.unlink()
+            except OSError:
+                pass
+        # Inject the sibling imports into patch.lean (idempotent) so the
+        # citation gate sees them and `<slug>` resolves to the sibling's
+        # decl. Each entry is a full `import` line placed after the last
+        # existing import.
+        lines = patches[0].read_text(encoding="utf-8").splitlines()
+        present = set(lines)
+        add = [ln for ln in reuse_imports if ln not in present]
+        if add:
+            last_imp = max((i for i, ln in enumerate(lines)
+                            if ln.startswith("import ")), default=-1)
+            for off, ln in enumerate(add):
+                lines.insert(last_imp + 1 + off, ln)
+            patches[0].write_text("\n".join(lines) + "\n", encoding="utf-8")
+        sub_meta = kept_sub_meta
 
     # Auto-suffix cross-batch collisions (existing_slugs computed above).
     # Helper is pure; we apply the filesystem side effects here based on the
@@ -1209,7 +1302,7 @@ def _backward_parse_and_commit(
         # Run after `_inject_imports_for_subs` so framework-injected
         # imports for declared sub-goals don't false-trigger.
         declared_slugs = {slug for slug, _ in sub_meta}
-        auto_link_ids, cite_err = _resolve_cite_dependencies(
+        auto_link_ids, revive_ids, cite_err = _resolve_cite_dependencies(
             conn, problem=goal["problem"],
             patch_text=scratch_dest.read_text(encoding="utf-8"),
             declared_slugs=declared_slugs, allow_auto_link=True,
@@ -1356,6 +1449,20 @@ def _backward_parse_and_commit(
         # declared sub-goals so `strategies_ready_for_verify` blocks
         # until they prove — the strategy waits naturally for the
         # parallel-built lemma to land before alias-rewrite proceeds.
+        # Revive cited soft-terminal siblings (shelved / dead) before
+        # linking: the strategy_subgoals link below gives each a fresh
+        # live path to root through THIS strategy, so flip it back to
+        # 'open' for re-dispatch. dedupe does not block these statuses,
+        # so neither does this revival (db.py `goals.status` contract;
+        # agent_feedback T8 — cascade-shelved leaves were otherwise
+        # unreachable forever once cited). Re-check status to skip any
+        # the time-of-check/use race already moved.
+        for rid in sorted(revive_ids):
+            cur = db.get_goal(conn, rid)
+            if cur is not None and str(cur["status"]) in ("shelved", "dead"):
+                db.update_goal_status(conn, rid, "open")
+                print(f"[backward-revive] cited sibling goal {rid} "
+                      f"({cur['slug']}) {cur['status']} → open", flush=True)
         next_pos = len(linked_ids)
         for offset, auto_gid in enumerate(sorted(auto_link_ids)):
             db.link_subgoal(conn, strategy_id=strategy_id,
