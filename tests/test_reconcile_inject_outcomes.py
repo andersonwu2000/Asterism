@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from Tooling.core import dispatcher as disp
 from Tooling.state import db
 
 
@@ -161,9 +162,13 @@ def test_backward_deadlocked_proposed_strategy_resolved_stalled(
     conn: sqlite3.Connection,
 ) -> None:
     """The P13 wedge: strategy 'proposed' but every subgoal terminal (one
-    soft-shelved) → resolve the DECISION 'failed:stalled', leaving the
-    strategy/goal lifecycle untouched (the fired Strategist makes the
-    real Reopen call)."""
+    soft-shelved). Phase 11: PARK the strategy as 'stalled', which fills
+    the producing inject's outcome 'failed:stalled' WITHOUT waking the
+    Strategist. The parked-collapse wake is T4's call (is_problem_stalled),
+    not an unconditional inject_batch_done — an immediate wake here re-plans
+    work a prior run already pivoted on (the duplicate-wake 'stalled' was
+    added to kill). The strategy stays reopenable (a subgoal Reopen flips
+    it back to 'proposed')."""
     _goal(conn, slug="main", origin="root", status="attempting")
     tgt = _goal(conn, slug="target", status="attempting")
     s = _strategy(conn, goal_id=tgt, status="proposed")
@@ -174,12 +179,15 @@ def test_backward_deadlocked_proposed_strategy_resolved_stalled(
                   produced_strategy_id=s)
     assert db.reconcile_settled_inject_outcomes(conn) == 1
     assert _outcome(conn, did) == "failed:stalled"
-    # lifecycle untouched — Strategist owns the Reopen/ConfirmShelve call
-    assert _status(conn, "strategies", s) == "proposed"
+    # strategy PARKED as 'stalled' (consistent + reopenable), not left
+    # 'proposed' (the overloaded state that wedged the outcome at NULL).
+    assert _status(conn, "strategies", s) == "stalled"
     assert _status(conn, "goals", sg_shelved) == "shelved"
     assert _status(conn, "goals", tgt) == "attempting"
-    # batch complete → Strategist woken to act on the wedge
-    assert _n_strategist_queued(conn) == 1
+    # NO Strategist woken: a collapse no longer fires inject_batch_done —
+    # T4 decides whether a wake is owed (it isn't, if sibling injects left
+    # alive alternatives). This is the duplicate-wake fix.
+    assert _n_strategist_queued(conn) == 0
 
 
 def test_backward_all_proved_proposed_strategy_resolved_success(
@@ -261,3 +269,101 @@ def test_idempotent_second_pass_is_noop(conn: sqlite3.Connection) -> None:
     _inject(conn, batch_id="b1", produced_goal_id=g)
     assert db.reconcile_settled_inject_outcomes(conn) == 1
     assert db.reconcile_settled_inject_outcomes(conn) == 0
+
+
+# ---------------------------------------------------------------------
+# Phase 11 — 'stalled' strategy status: the PRIMARY (shelve-time) path
+# that replaces the reconcile band-aid. `_propagate_shelve` parks a
+# parent strategy whose sub-goals all settled, filling the producing
+# inject's outcome WITHOUT an unconditional Strategist wake.
+# ---------------------------------------------------------------------
+
+def test_shelve_parks_parent_strategy_stalled(conn: sqlite3.Connection) -> None:
+    """Soft-shelving the last alive sub-goal of a 'proposed' parent
+    strategy parks it 'stalled' at shelve-time: the producing inject's
+    outcome fills 'failed:stalled' and NO Strategist is woken (the wake is
+    T4's call). This is the primary path; the reconcile is only a backstop.
+    """
+    _goal(conn, slug="main", origin="root", status="attempting")
+    g = _goal(conn, slug="target", status="attempting")
+    s = _strategy(conn, goal_id=g, status="proposed")
+    sg_ok = _goal(conn, slug="sg_ok", status="proved")
+    sg_x = _goal(conn, slug="sg_x", status="open")
+    _link(conn, s, [sg_ok, sg_x])
+    did = _inject(conn, batch_id="b1", produced_goal_id=g,
+                  produced_strategy_id=s)
+
+    # Shelve the last alive sub-goal via the production sequence.
+    db.update_goal_status(conn, sg_x, "shelved")
+    disp._propagate_shelve(conn, sg_x)
+
+    assert _status(conn, "strategies", s) == "stalled"
+    assert _outcome(conn, did) == "failed:stalled"
+    assert _n_strategist_queued(conn) == 0          # no unconditional wake
+
+
+def test_shelve_with_alive_sibling_keeps_parent_proposed(
+    conn: sqlite3.Connection,
+) -> None:
+    """A parent strategy that still has an alive sibling is genuinely in
+    flight → stays 'proposed', inject outcome stays NULL."""
+    _goal(conn, slug="main", origin="root", status="attempting")
+    g = _goal(conn, slug="target", status="attempting")
+    s = _strategy(conn, goal_id=g, status="proposed")
+    sg_alive = _goal(conn, slug="sg_alive", status="open")
+    sg_x = _goal(conn, slug="sg_x", status="open")
+    _link(conn, s, [sg_alive, sg_x])
+    did = _inject(conn, batch_id="b1", produced_goal_id=g,
+                  produced_strategy_id=s)
+
+    db.update_goal_status(conn, sg_x, "shelved")
+    disp._propagate_shelve(conn, sg_x)
+
+    assert _status(conn, "strategies", s) == "proposed"
+    assert _outcome(conn, did) is None
+
+
+def test_shelve_with_dead_sibling_not_parked(conn: sqlite3.Connection) -> None:
+    """A hard-terminal (dead) sibling means the decomposition is wrong, not
+    merely parked — left for `_kill_upward_chain` to mark 'dead'. The soft
+    stall transition skips it (stays 'proposed')."""
+    _goal(conn, slug="main", origin="root", status="attempting")
+    g = _goal(conn, slug="target", status="attempting")
+    s = _strategy(conn, goal_id=g, status="proposed")
+    sg_dead = _goal(conn, slug="sg_dead", status="dead")
+    sg_x = _goal(conn, slug="sg_x", status="open")
+    _link(conn, s, [sg_dead, sg_x])
+
+    db.update_goal_status(conn, sg_x, "shelved")
+    disp._propagate_shelve(conn, sg_x)
+
+    assert _status(conn, "strategies", s) == "proposed"
+
+
+def test_stalled_lifts_t4_suppression(conn: sqlite3.Connection) -> None:
+    """The fix end-to-end: while a root-decompose inject's strategy is in
+    flight (alive sub-goal) the problem is NOT stalled; once its last
+    sub-goal soft-shelves, the parent parks 'stalled' (outcome filled), so
+    `problems_stalled` — no longer suppressed by the NULL outcome and seeing
+    no alive-reachable open goal — flags the collapse for T4."""
+    r = _goal(conn, slug="main", origin="root", status="attempting")
+    sr = _strategy(conn, goal_id=r, status="proposed")
+    g = _goal(conn, slug="target", status="attempting")
+    _link(conn, sr, [g])
+    s = _strategy(conn, goal_id=g, status="proposed")
+    sg_x = _goal(conn, slug="sg_x", status="open")
+    _link(conn, s, [sg_x])
+    did = _inject(conn, batch_id="b1", produced_goal_id=g,
+                  produced_strategy_id=s)
+
+    # In flight: sg_x open and reachable from root → not stalled.
+    assert db.problems_stalled(conn, scope="p") == []
+
+    db.update_goal_status(conn, sg_x, "shelved")
+    disp._propagate_shelve(conn, sg_x)
+
+    # Collapsed: parent parked 'stalled', outcome filled (suppression
+    # lifted), no alive-reachable open goal → flagged for T4.
+    assert _status(conn, "strategies", s) == "stalled"
+    assert _outcome(conn, did) == "failed:stalled"
+    assert [p for p, _ in db.problems_stalled(conn, scope="p")] == ["p"]

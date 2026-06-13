@@ -352,9 +352,15 @@ def test_enqueue_strategist_review_skips_orphan_guard_when_detached(
 def test_propagate_shelve_does_not_kill_upward(
     conn: sqlite3.Connection,
 ) -> None:
-    """Phase 6: `_propagate_shelve` does inward kill only. Upward
-    strategies stay 'proposed' because shelved is reopenable — they
-    can later succeed when the goal is Reopen'd and proved."""
+    """`_propagate_shelve` does inward kill only — it never HARD-kills the
+    upward chain ('dead'), so the chain stays reopenable.
+
+    Phase 11 refinement: when the soft-shelve leaves the parent strategy
+    with zero alive sub-goals, it is PARKED 'stalled' (reopenable, and it
+    resolves the producing inject's outcome) rather than left 'proposed'.
+    'stalled' is still not 'dead': a sub-goal Reopen flips it back to
+    'proposed'. (A parent that retains an alive sibling stays 'proposed' —
+    see test_shelve_with_alive_sibling_keeps_parent_proposed.)"""
     parent_g = _insert_goal(conn, slug="parent_g", status="attempting")
     parent_s = _insert_strategy(conn, goal_id=parent_g, status="proposed")
     target = _insert_goal(conn, slug="target", status="shelved")
@@ -368,11 +374,11 @@ def test_propagate_shelve_does_not_kill_upward(
     assert conn.execute(
         "SELECT status FROM strategies WHERE id=?", (own_s,)
     ).fetchone()["status"] == "dead"
-    # Upward: parent strategy still alive
+    # Upward: parent PARKED 'stalled' (reopenable), not hard-killed 'dead'
     assert conn.execute(
         "SELECT status FROM strategies WHERE id=?", (parent_s,)
-    ).fetchone()["status"] == "proposed"
-    # Parent goal stays attempting
+    ).fetchone()["status"] == "stalled"
+    # Parent goal stays attempting (reopenable via the stalled strategy)
     assert db.get_goal(conn, parent_g)["status"] == "attempting"
 
 

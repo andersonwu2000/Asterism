@@ -726,6 +726,20 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
         db.update_goal_status(conn, target_id, "open")
         if _dispatcher._has_dead_strategy_in_chain(conn, target_id):
             db.set_goal_detached(conn, target_id, True)
+        # Un-stall the upward chain (Phase 11): a parent strategy PARKED
+        # as 'stalled' because this goal was its last settled sub-goal
+        # returns to 'proposed', so the alive-DAG conducts through it again
+        # and BFS can reach the just-reopened goal — otherwise it stays
+        # orphaned. ('proposed' is non-terminal → no inject-outcome
+        # re-propagation; the prior 'failed:stalled' record stands, the
+        # fresh redispatch Inject below tracks the revived attempt.)
+        for s in conn.execute(
+            "SELECT s.id FROM strategies s"
+            " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+            " WHERE ss.subgoal_id = ? AND s.status = 'stalled'",
+            (target_id,),
+        ).fetchall():
+            db.update_strategy_status(conn, int(s["id"]), "proposed")
 
     # Pin entry_kind to the requested pipeline so bfs_refill doesn't
     # enqueue a parallel pipeline of the prior kind. Without this, an

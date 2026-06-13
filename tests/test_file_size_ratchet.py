@@ -38,8 +38,10 @@ _WATERMARKS = {
     # Inject decisions whose produced goal/strategy settled (incl. the
     # soft-shelved-subgoal deadlock that wedged P13) so they stop suppressing
     # the T4 stall trigger — 2026-06-13 — conscious bump.
-    "Tooling/core/dispatcher.py": 2900,
-    "Tooling/state/db.py": 2750,
+    # 2026-06-14: Phase 11 'stalled' strategy status (parent-stall transition +
+    # migration + reconcile backstop rework) — conscious bump.
+    "Tooling/core/dispatcher.py": 2980,
+    "Tooling/state/db.py": 2880,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     "Tooling/quality/librarian/cleanup/_common.py": 560,
     "Tooling/quality/librarian/cleanup/audit.py": 200,

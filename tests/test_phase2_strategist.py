@@ -511,6 +511,50 @@ def test_commit_inject_backward_enqueues_with_directive(
     assert q["decision_id"] == outcome.decision_row_id
 
 
+def test_commit_inject_backward_unstalls_parent_strategy(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Phase 11: force-reopening a shelved sub-goal un-parks a parent
+    strategy that was 'stalled' (this sub-goal was its last settled one)
+    back to 'proposed', so the alive-DAG conducts through it again and BFS
+    can reach the reopened goal — otherwise it stays orphaned."""
+    root = _insert_root(conn)
+    g = db.insert_goal(
+        conn, problem="p", slug="sub",
+        lean_path="Problems/p/proofs/L_sub.lean", statement="T",
+        origin="backward", depth=1, entry_kind="Backward",
+    )
+    db.update_goal_status(conn, g, "shelved")
+    # Parent strategy on root, PARKED 'stalled', whose only sub-goal is g.
+    cur = conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, scratch_path, status,"
+        " proposal_md, created_by, created_at)"
+        " VALUES (?, '', '', 'stalled', '', 'test', ?)",
+        (root, db.now()),
+    )
+    sid = int(cur.lastrowid)
+    conn.execute(
+        "INSERT INTO strategy_subgoals (strategy_id, subgoal_id, position)"
+        " VALUES (?, ?, 0)", (sid, g))
+    conn.commit()
+
+    d, _ = strategist.parse_decision(json.dumps({
+        "kind": "Inject", "pipeline": "Backward", "target_goal_id": g,
+        "brief": "retry sub via a different primitive",
+        "reason": "the prior decomposition stalled",
+    }))
+    assert strategist.verify_decision(d, conn, problem="p") == ""
+    strategist.commit_decision(
+        d, conn, problem="p", tick=1, trigger_kind="inject_batch_done",
+        workspace=workspace,
+    )
+
+    assert db.get_goal(conn, g)["status"] == "open"        # force-reopened
+    parent = conn.execute(
+        "SELECT status FROM strategies WHERE id = ?", (sid,)).fetchone()
+    assert parent["status"] == "proposed"                  # un-stalled
+
+
 def test_commit_inject_builder_works_similarly(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:

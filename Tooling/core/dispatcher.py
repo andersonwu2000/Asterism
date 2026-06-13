@@ -477,14 +477,65 @@ def _inward_kill_strategies(conn: sqlite3.Connection,
         db.update_strategy_status(conn, sid, "dead")
 
 
+def _maybe_stall_parent_strategies(conn: sqlite3.Connection,
+                                   goal_id: int) -> None:
+    """Soft-shelve UPWARD transition — the reopenable counterpart of
+    `_kill_upward_chain` (which is hard-terminal only).
+
+    When `goal_id` soft-shelves, any 'proposed' parent strategy (one that
+    USES it as a sub-goal) whose sub-goals have now ALL settled — zero
+    alive, >=1 soft-shelved, and NO hard-terminal (disproved/dead)
+    sibling — is PARKED as 'stalled' instead of left 'proposed'.
+
+    Why a distinct status (Phase 11): a 'proposed' strategy with no alive
+    sub-goals is the overloaded state that wedged the producing
+    Inject(Backward)'s outcome at NULL — root injects never self-terminate
+    (`produced_goal_id`=root) and a soft-shelved sub-goal kept the strategy
+    'proposed' — so the in-flight-batch clause suppressed T4 forever
+    (the reconcile band-aid filled it out-of-band, then over-woke the
+    Strategist). 'stalled' fills that outcome via the normal propagation
+    (lifting T4 suppression) WITHOUT an unconditional wake, and stays
+    reopenable: `_commit_inject_redispatch`'s force-reopen flips it back
+    to 'proposed'.
+
+    Skipped cases (left for other paths):
+      - a hard-terminal (disproved/dead) sibling → `_kill_upward_chain`
+        marks the parent 'dead' (not reopenable);
+      - all sub-goals proved → 'succeeded' (handled at proof time);
+      - any alive sibling → genuinely in flight, stays 'proposed'.
+    """
+    parents = conn.execute(
+        "SELECT s.id FROM strategies s"
+        " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        " WHERE ss.subgoal_id = ? AND s.status = 'proposed'",
+        (goal_id,),
+    ).fetchall()
+    for p in parents:
+        sid = int(p["id"])
+        comp = {str(r["st"]): int(r["n"]) for r in conn.execute(
+            "SELECT g.status AS st, COUNT(*) AS n FROM strategy_subgoals ss"
+            " JOIN goals g ON g.id = ss.subgoal_id"
+            " WHERE ss.strategy_id = ? GROUP BY g.status",
+            (sid,),
+        ).fetchall()}
+        total = sum(comp.values())
+        alive = (comp.get("open", 0) + comp.get("attempting", 0)
+                 + comp.get("pending_strategist_review", 0))
+        if (total > 0 and alive == 0 and comp.get("shelved", 0) >= 1
+                and comp.get("disproved", 0) == 0
+                and comp.get("dead", 0) == 0):
+            db.update_strategy_status(conn, sid, "stalled")
+
+
 def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
     """Inward strategy kill for a goal that just hit a terminal status.
 
     Phase 6: caller is responsible for the (separate) upward strategy
     kill if the terminal status warrants it (disproved / dead, via
     `_kill_upward_chain`). `shelved` is soft-terminal: parent strategies
-    stay 'proposed' until the goal is Reopen'd, so no upward kill from
-    this function.
+    are not KILLED, but a parent whose sub-goals have all settled is
+    PARKED as 'stalled' (reopenable) via `_maybe_stall_parent_strategies`
+    so the producing Inject's outcome resolves and T4 sees the collapse.
 
     The strategies this function kills (status='proposed' AND
     goal_id == the terminal goal) are the ones trying to PROVE the
@@ -494,6 +545,7 @@ def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
     invariant.
     """
     _inward_kill_strategies(conn, goal_id)
+    _maybe_stall_parent_strategies(conn, goal_id)
 
 
 def _kill_upward_chain(conn: sqlite3.Connection, goal_id: int,

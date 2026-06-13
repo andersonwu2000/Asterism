@@ -216,7 +216,15 @@ CREATE TABLE IF NOT EXISTS strategies (
     lean_path    TEXT    NOT NULL,
     scratch_path TEXT    NOT NULL DEFAULT '',
     status       TEXT    NOT NULL
-                     CHECK(status IN ('proposed','succeeded','dead','superseded')),
+    -- 'stalled' (Phase 11): all subgoals settled, >=1 soft-shelved, zero
+    -- alive — the strategy is PARKED but reopenable (mirrors a goal's
+    -- 'frozen'). Terminal-for-propagation (fills the producing Inject's
+    -- outcome) yet NOT alive-conducting (excluded from the alive-DAG
+    -- `IN('proposed','succeeded')` walk), so T4 sees the collapse. A
+    -- subgoal Reopen flips it back to 'proposed'. Replaces the
+    -- reconcile band-aid that filled the inject outcome out-of-band.
+                     CHECK(status IN ('proposed','succeeded','dead',
+                                      'superseded','stalled')),
     proposal_md  TEXT    NOT NULL DEFAULT '',
     created_by   TEXT    NOT NULL,
     created_at   TEXT NOT NULL
@@ -427,7 +435,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 10
+_CURRENT_USER_VERSION = 11
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -679,6 +687,61 @@ def init_schema(conn: sqlite3.Connection) -> None:
                 "ALTER TABLE library_decls ADD COLUMN renamed_from TEXT")
         conn.execute("PRAGMA user_version = 10")
         conn.commit()
+    if v < 11:
+        # Phase 11 — widen `strategies.status` CHECK to accept 'stalled'
+        # (a parked-but-reopenable strategy whose subgoals all settled with
+        # >=1 soft-shelved). Same rebuild pattern as phase 5/7/8. No
+        # backfill: pre-Phase-11 rows in this state lingered as 'proposed';
+        # the reconcile backstop migrates them to 'stalled' at runtime.
+        _migrate_to_phase11(conn)
+        conn.execute("PRAGMA user_version = 11")
+        conn.commit()
+
+
+def _migrate_to_phase11(conn: sqlite3.Connection) -> None:
+    """Phase 11 — widen `strategies.status` CHECK to accept 'stalled'.
+    SQLite cannot ALTER a CHECK; rebuild the table with the new clause,
+    copy rows, swap. Idempotent: skips when the CHECK is already wide.
+
+    Pre-condition: PRAGMA user_version < 11.
+    Post-condition (caller sets user_version = 11):
+      - strategies.status CHECK accepts 'stalled'
+      - All existing rows preserved unchanged
+    """
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table'"
+        " AND name='strategies'"
+    ).fetchone()
+    # Table absent (fresh DB) → init_schema's CREATE already built the wide
+    # CHECK; nothing to rebuild. Wide already → skip.
+    if not chk or "'stalled'" in (chk["sql"] or ""):
+        return
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_strategies (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                goal_id      INTEGER NOT NULL REFERENCES goals(id),
+                lean_path    TEXT    NOT NULL,
+                scratch_path TEXT    NOT NULL DEFAULT '',
+                status       TEXT    NOT NULL
+                                 CHECK(status IN ('proposed','succeeded',
+                                                  'dead','superseded',
+                                                  'stalled')),
+                proposal_md  TEXT    NOT NULL DEFAULT '',
+                created_by   TEXT    NOT NULL,
+                created_at   TEXT NOT NULL
+            );
+            INSERT INTO _new_strategies SELECT * FROM strategies;
+            DROP TABLE strategies;
+            ALTER TABLE _new_strategies RENAME TO strategies;
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 11 migration left FK violations: {fk_violations[:5]}")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _migrate_to_phase8(conn: sqlite3.Connection) -> None:
@@ -1521,8 +1584,9 @@ def propagate_inject_outcome_from_strategy(
     Mapping: strategy 'succeeded' → 'success'. 'superseded' → 'success'
     (the goal got proved by a sibling — Strategist's intent of "make
     this goal terminal-proved" was met, even though by a different
-    decomposition). 'dead' → 'failed:dead'. Other statuses are not
-    terminal and this function is a no-op for them.
+    decomposition). 'dead' → 'failed:dead'. 'stalled' → 'failed:stalled'
+    (subgoals all settled, >=1 soft-shelved — parked but reopenable).
+    Other statuses are not terminal and this function is a no-op.
 
     Returns the affected decision row id (caller may then fire
     `_maybe_enqueue_inject_batch_done`), or None if nothing was
@@ -1548,6 +1612,8 @@ def propagate_inject_outcome_from_strategy(
         outcome = "success"
     elif status == "dead":
         outcome = "failed:dead"
+    elif status == "stalled":
+        outcome = "failed:stalled"
     else:
         return None  # not terminal; wait
     conn.execute(
@@ -2235,6 +2301,18 @@ def update_strategy_status(conn: sqlite3.Connection, strategy_id: int,
         d = propagate_inject_outcome_from_strategy(conn, strategy_id)
         if d is not None:
             maybe_enqueue_inject_batch_done(conn, d)
+    elif status == "stalled":
+        # 'stalled' is terminal-for-propagation but a PARKED state, not a
+        # completion. Fill the producing Inject's outcome so the in-flight-
+        # batch clause stops suppressing T4 — but do NOT fire
+        # inject_batch_done. Whether a parked collapse warrants a Strategist
+        # wake is T4's call (`is_problem_stalled`): if sibling Injects left
+        # alive alternatives the problem is not stalled and no wake is
+        # owed; if nothing is alive T4 fires. Unconditionally waking here
+        # (as 'dead'/'succeeded' do) re-plans work the prior Strategist run
+        # already pivoted on — the duplicate-wake this status was added to
+        # kill. Reopen of a subgoal flips the strategy back to 'proposed'.
+        propagate_inject_outcome_from_strategy(conn, strategy_id)
 
 
 def maybe_enqueue_inject_batch_done(conn: sqlite3.Connection,
@@ -2302,21 +2380,30 @@ def reconcile_settled_inject_outcomes(
       * Backward / Builder: `produced_strategy_id` reached a terminal
         strategy status → re-run `propagate_inject_outcome_from_strategy`;
         OR the strategy is still 'proposed' yet has ≥1 subgoal and ZERO
-        alive ones (all proved / shelved / dead — the canonical DEADLOCK:
-        a SOFT-shelved subgoal keeps the strategy 'proposed' awaiting a
-        Reopen, but `produced_goal_id`=target only terminates at problem
-        end, so the NULL outcome suppresses T4 → no Strategist ever fires
-        to perform the Reopen → permanent wedge). In the deadlock case
-        resolve the DECISION only — 'success' iff every subgoal proved
-        (a missed verify), else 'failed:stalled' — WITHOUT touching the
-        strategy or goal (the strategy stays 'proposed', the shelved
-        subgoal stays reopenable); the Strategist that `inject_batch_done`
-        then fires makes the real Reopen / re-decompose call.
+        alive ones (all proved / shelved — the canonical DEADLOCK: a
+        SOFT-shelved subgoal kept the strategy 'proposed', but
+        `produced_goal_id`=target only terminates at problem end, so the
+        NULL outcome suppressed T4 → permanent wedge).
 
-    Fires `maybe_enqueue_inject_batch_done` per resolved decision. Returns
-    the count resolved. Idempotent (every fill is `outcome IS NULL`-
-    guarded). In-flight safe: a 'proposed' strategy with any alive subgoal
-    is genuinely in flight and left untouched."""
+        BACKSTOP role (Phase 11): the PRIMARY path now flips such a parent
+        strategy to its terminal status at shelve-time
+        (`_maybe_stall_parent_strategies`), so this branch rarely fires.
+        When it does (a soft-shelve site that bypassed the hook), drive the
+        strategy terminal via `update_strategy_status`: 'succeeded' iff every
+        subgoal proved (a missed verify) → wakes to assemble; else 'stalled'
+        (≥1 soft-shelved, reopenable) → fills the outcome WITHOUT waking.
+        A parked-collapse wake is T4's call (`is_problem_stalled`), NOT an
+        unconditional `inject_batch_done` — waking here re-plans work a prior
+        Strategist run already pivoted on (the duplicate-wake the 'stalled'
+        status was introduced to kill). The strategy stays reopenable: a
+        subgoal Reopen flips 'stalled' → 'proposed'.
+
+    Fires `maybe_enqueue_inject_batch_done` only via `update_strategy_status`
+    for genuine completions ('succeeded'/'superseded'/'dead'); 'stalled'
+    fills the outcome silently. Returns the count resolved. Idempotent
+    (every fill is `outcome IS NULL`-guarded). In-flight safe: a 'proposed'
+    strategy with any alive subgoal is genuinely in flight and left
+    untouched."""
     sql = (
         "SELECT sd.id, sd.produced_goal_id, sd.produced_strategy_id,"
         "       g.status AS goal_status, s.status AS strat_status"
@@ -2355,16 +2442,23 @@ def reconcile_settled_inject_outcomes(
                 alive = (comp.get("open", 0) + comp.get("attempting", 0)
                          + comp.get("pending_strategist_review", 0))
                 if total > 0 and alive == 0:
-                    settled = ("success"
-                               if comp.get("proved", 0) == total
-                               else "failed:stalled")
-                    conn.execute(
-                        "UPDATE strategist_decisions SET outcome = ?,"
-                        " updated_at = ? WHERE id = ? AND outcome IS NULL",
-                        (settled, now(), did),
-                    )
-                    conn.commit()
-                    filled = did
+                    # BACKSTOP only: the primary path flips the parent
+                    # strategy to its terminal status at shelve-time
+                    # (`_maybe_stall_parent_strategies`). If a soft-shelve
+                    # site was missed, drive the strategy terminal here so
+                    # status + inject outcome stay consistent. 'succeeded'
+                    # (all proved — a missed verify) wakes to assemble;
+                    # 'stalled' (>=1 soft-shelved, reopenable) fills the
+                    # outcome WITHOUT waking — the parked-collapse wake is
+                    # T4's call, not an unconditional inject_batch_done.
+                    # update_strategy_status performs both the propagation
+                    # and the (success-only) batch-done enqueue.
+                    new_status = ("succeeded"
+                                  if comp.get("proved", 0) == total
+                                  else "stalled")
+                    update_strategy_status(conn, int(sid), new_status)
+                    resolved += 1
+                    continue
         elif r["produced_goal_id"] is not None and \
                 str(r["goal_status"]) in ("proved", "shelved",
                                           "disproved", "dead"):
