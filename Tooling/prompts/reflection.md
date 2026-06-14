@@ -9,7 +9,7 @@ You just finished `{kind}` on `{slug}` (outcome=`{outcome}`).
 Reflect: did this attempt expose a CROSS-SPAWN learnable signal — something a future agent on a DIFFERENT goal in this problem would benefit from?
 
 Bar — only write if all three:
-  - Concrete (names a lemma / API / namespace / goal shape)
+  - Concrete (names a lemma / API / namespace / goal shape) — never a framework-internals guess
   - Non-obvious (a fresh agent would re-discover otherwise)
   - Generalizable beyond this goal
 
