@@ -117,14 +117,19 @@ def _n_strategist_queued(conn: sqlite3.Connection) -> int:
 # Forward inject — resolved off the produced goal's terminal status
 # ---------------------------------------------------------------------
 
-def test_forward_shelved_goal_resolved_failed(conn: sqlite3.Connection) -> None:
+def test_forward_shelved_goal_not_resolved(conn: sqlite3.Connection) -> None:
+    """A shelved (parked, reopenable) produced goal does NOT settle its
+    inject — outcome stays NULL and NO inject_batch_done fires. Shelved is a
+    soft terminal: settling it re-fired the Strategist on every park (the P13
+    4284 futile spin, 2026-06-15). T4's active-check (`has_active_inflight_
+    inject`), not a settled outcome, governs re-engagement of a parked
+    brick."""
     _goal(conn, slug="main", origin="root", status="attempting")
     g = _goal(conn, slug="lemma", status="shelved")
     did = _inject(conn, batch_id="b1", produced_goal_id=g)
-    assert db.reconcile_settled_inject_outcomes(conn) == 1
-    assert _outcome(conn, did) == "failed:shelved"
-    # single-row batch now complete → one Strategist enqueued
-    assert _n_strategist_queued(conn) == 1
+    assert db.reconcile_settled_inject_outcomes(conn) == 0
+    assert _outcome(conn, did) is None
+    assert _n_strategist_queued(conn) == 0
 
 
 def test_forward_proved_goal_resolved_success(conn: sqlite3.Connection) -> None:
@@ -133,6 +138,38 @@ def test_forward_proved_goal_resolved_success(conn: sqlite3.Connection) -> None:
     did = _inject(conn, batch_id="b1", produced_goal_id=g)
     assert db.reconcile_settled_inject_outcomes(conn) == 1
     assert _outcome(conn, did) == "success"
+    # single-row batch now complete → one Strategist enqueued
+    assert _n_strategist_queued(conn) == 1
+
+
+def test_forward_dead_goal_resolved_failed(conn: sqlite3.Connection) -> None:
+    """A hard-terminal (dead) produced goal still settles its inject — only
+    `shelved` was dropped from the settling set."""
+    _goal(conn, slug="main", origin="root", status="attempting")
+    g = _goal(conn, slug="lemma", status="dead")
+    did = _inject(conn, batch_id="b1", produced_goal_id=g)
+    assert db.reconcile_settled_inject_outcomes(conn) == 1
+    assert _outcome(conn, did) == "failed:dead"
+
+
+def test_propagate_from_goal_status_mapping(conn: sqlite3.Connection) -> None:
+    """Unit: propagate_inject_outcome_from_goal — proved→success,
+    disproved/dead→failed:<status>, shelved/open/attempting→None (not a
+    settling status; shelved is reopenable)."""
+    _goal(conn, slug="main", origin="root", status="attempting")
+    cases = {
+        "proved": "success",
+        "disproved": "failed:disproved",
+        "dead": "failed:dead",
+        "shelved": None,
+        "open": None,
+        "attempting": None,
+    }
+    for status, expected in cases.items():
+        g = _goal(conn, slug=f"g_{status}", status=status)
+        did = _inject(conn, batch_id=f"b_{status}", produced_goal_id=g)
+        db.propagate_inject_outcome_from_goal(conn, g)
+        assert _outcome(conn, did) == expected, status
 
 
 def test_forward_nonterminal_goal_left_alone(conn: sqlite3.Connection) -> None:
@@ -244,10 +281,10 @@ def test_backward_proposed_no_subgoals_left_alone(
 
 def test_null_batch_id_not_touched(conn: sqlite3.Connection) -> None:
     """A solo inject (batch_id NULL) does not suppress T4 in the first
-    place (`problems_stalled` requires batch_id NOT NULL), so reconcile
-    leaves it alone."""
+    place (`reconcile`/active-check require batch_id NOT NULL), so reconcile
+    leaves it alone even when its produced goal is hard-terminal."""
     _goal(conn, slug="main", origin="root", status="attempting")
-    g = _goal(conn, slug="lemma", status="shelved")
+    g = _goal(conn, slug="lemma", status="proved")
     did = _inject(conn, batch_id=None, produced_goal_id=g)
     assert db.reconcile_settled_inject_outcomes(conn) == 0
     assert _outcome(conn, did) is None
@@ -255,17 +292,17 @@ def test_null_batch_id_not_touched(conn: sqlite3.Connection) -> None:
 
 def test_scope_filter(conn: sqlite3.Connection) -> None:
     _goal(conn, slug="main", origin="root", status="attempting")
-    g = _goal(conn, slug="lemma", status="shelved")
+    g = _goal(conn, slug="lemma", status="proved")
     did = _inject(conn, batch_id="b1", produced_goal_id=g)
     assert db.reconcile_settled_inject_outcomes(conn, scope="other%") == 0
     assert _outcome(conn, did) is None
     assert db.reconcile_settled_inject_outcomes(conn, scope="p") == 1
-    assert _outcome(conn, did) == "failed:shelved"
+    assert _outcome(conn, did) == "success"
 
 
 def test_idempotent_second_pass_is_noop(conn: sqlite3.Connection) -> None:
     _goal(conn, slug="main", origin="root", status="attempting")
-    g = _goal(conn, slug="lemma", status="shelved")
+    g = _goal(conn, slug="lemma", status="proved")
     _inject(conn, batch_id="b1", produced_goal_id=g)
     assert db.reconcile_settled_inject_outcomes(conn) == 1
     assert db.reconcile_settled_inject_outcomes(conn) == 0

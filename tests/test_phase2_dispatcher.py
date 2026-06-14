@@ -157,9 +157,12 @@ def test_t0_skips_problem_with_inflight_inject_batch(
     """
     _insert_problem(conn, name="alpha")
     root = _insert_root(conn, "alpha", status="frozen")
-    # Simulate a prior Strategist Inject(briefs=[...]) commit: one or
-    # more strategist_decisions rows with batch_id non-NULL and outcome
-    # still NULL (Forward not terminal yet).
+    # Simulate a prior Strategist Inject(briefs=[...]) commit: a
+    # strategist_decisions row with batch_id non-NULL and outcome still
+    # NULL (Forward not terminal yet) AND the Forward worker it enqueued
+    # at commit (strategist._commit_inject_forward) — the queue row is
+    # what keeps the stall trigger (T4) quiet while the brick is in
+    # flight; T0 sees the live inject via `has_live_inflight_inject`.
     conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, brief, payload, batch_id,"
@@ -168,6 +171,8 @@ def test_t0_skips_problem_with_inflight_inject_batch(
         " '{\"pipeline\": \"Forward\"}', 'batchXYZ', NULL, ?, ?)",
         ("alpha", db.now(), db.now()),
     )
+    db.enqueue(conn, kind="Forward", target_id="alpha",
+               target_kind="Problem", priority=10)
     conn.commit()
 
     strategist_triggers(conn, running=set())
@@ -176,11 +181,13 @@ def test_t0_skips_problem_with_inflight_inject_batch(
         "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
     ).fetchone()
     assert q["n"] == 0
-    # Sanity: once the batch outcome lands, T0 must re-enqueue.
+    # Sanity: once the batch outcome lands (and the worker drains), T0
+    # must re-enqueue.
     conn.execute(
         "UPDATE strategist_decisions SET outcome='success'"
         " WHERE batch_id='batchXYZ'"
     )
+    conn.execute("DELETE FROM queue WHERE kind='Forward'")
     conn.commit()
     strategist_triggers(conn, running=set())
     q = conn.execute(
@@ -709,10 +716,13 @@ def test_t4_stall_fires_when_open_goals_all_orphaned(
 def test_t4_stall_skipped_when_inflight_inject_batch(
     conn: sqlite3.Connection,
 ) -> None:
-    """Inject batch in flight = Strategist already acting on this
-    problem; `inject_batch_done` will re-fire it. T4 must not enqueue
-    redundantly. (last_routine_at recent isolates T4 — T1 is now
-    intentionally NOT batch-suppressed; see the dedicated T1 test.)"""
+    """A committed Forward Inject is a NULL-outcome decision row AND an
+    enqueued Forward worker (strategist._commit_inject_forward enqueues at
+    commit). The enqueued worker (is_problem_stalled condition 3) is what
+    keeps T4 quiet while the brick is in flight; `inject_batch_done` re-fires
+    the Strategist when it lands. T4 must not enqueue redundantly.
+    (last_routine_at recent isolates T4 — T1 is intentionally NOT batch-
+    suppressed; see the dedicated T1 test.)"""
     _insert_problem(conn, name="alpha", bootstrap_done=1,
                     last_routine_at=db.now())
     _insert_root(conn, "alpha", status="attempting")
@@ -722,7 +732,7 @@ def test_t4_stall_skipped_when_inflight_inject_batch(
         statement="T", origin="backward",
     )
     db.update_goal_status(conn, 2, "attempting")  # not 'open'
-    # Outstanding Inject batch (Forward not landed yet).
+    # Outstanding Inject batch (Forward not landed yet) + its enqueued worker.
     conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, brief, payload, batch_id,"
@@ -731,6 +741,8 @@ def test_t4_stall_skipped_when_inflight_inject_batch(
         " '{\"pipeline\":\"Forward\"}', 'b1', NULL, ?, ?)",
         (db.now(), db.now()),
     )
+    db.enqueue(conn, kind="Forward", target_id="alpha",
+               target_kind="Problem", priority=10)
     conn.commit()
 
     strategist_triggers(conn, running=set())
@@ -1004,6 +1016,28 @@ def test_null_inject_redispatch_specs_applies_artifact_guards(
     assert specs[d_fwd]["target_kind"] == "Problem"
     assert specs[d_bwd]["kind"] == "Backward"
     assert specs[d_bwd]["target_id"] == str(tgt)
+
+
+def test_null_inject_redispatch_skips_backward_with_parked_target(
+    conn: sqlite3.Connection,
+) -> None:
+    """A Backward Inject whose TARGET goal is parked (shelved) — e.g. a
+    return_to_parent that committed no strategy — must NOT be redispatched.
+    Its outcome stays NULL now that shelved no longer settles, but the work
+    is parked, not missing; redispatching would re-spin the parked goal
+    forever (the P13 4284 disease via the redispatch path)."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    tgt = _insert_sub(conn, "alpha", "tgt", status="shelved")
+    d = _insert_null_inject(conn, problem="alpha", pipeline="Backward",
+                            target_id=tgt)
+    specs = {s["decision_id"]: s
+             for s in db.null_inject_redispatch_specs(conn)}
+    assert d not in specs
+    # Sanity: the same inject IS redispatched once the target reopens.
+    db.update_goal_status(conn, tgt, "open")
+    specs = {s["decision_id"]: s
+             for s in db.null_inject_redispatch_specs(conn)}
+    assert d in specs
 
 
 def test_reconcile_reenqueues_null_inject_in_flight_gated(

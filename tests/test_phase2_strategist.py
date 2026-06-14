@@ -1125,11 +1125,14 @@ def test_propagate_inject_outcome_proved(
     assert _decision_outcome(conn, decision_id) == "success"
 
 
-def test_propagate_inject_outcome_shelved(
+def test_propagate_inject_outcome_shelved_does_not_settle(
     conn: sqlite3.Connection,
 ) -> None:
-    """Goal flips to 'shelved' → decision.outcome becomes
-    'failed:shelved' (lemma dead, Strategist must know)."""
+    """Goal flips to 'shelved' (parked, reopenable) → decision.outcome
+    stays NULL (NOT settled). Shelved is a soft terminal; settling it
+    re-fired the Strategist on every park (the P13 4284 futile spin,
+    2026-06-15). Re-engaging a parked brick is T4's call (the active-check),
+    not an unconditional inject_batch_done."""
     _insert_root(conn)
     fwd = db.insert_goal(
         conn, problem="p", slug="fwd",
@@ -1144,8 +1147,8 @@ def test_propagate_inject_outcome_shelved(
 
     db.update_goal_status(conn, fwd, "shelved")
     affected = db.propagate_inject_outcome_from_goal(conn, fwd)
-    assert affected == decision_id
-    assert _decision_outcome(conn, decision_id) == "failed:shelved"
+    assert affected is None
+    assert _decision_outcome(conn, decision_id) is None
 
 
 def test_propagate_inject_outcome_noop_on_intermediate_status(
@@ -1724,6 +1727,42 @@ def test_verify_decisions_accepts_noop_when_root_shelved_but_inflight_forward(
         {"kind": "Noop", "reason": "wait for in-flight Forward"},
     ]))
     assert strategist.verify_decisions(ds, conn, problem="p") == ""
+
+
+def test_verify_decisions_rejects_noop_when_inflight_inject_parked_shelved(
+    conn: sqlite3.Connection,
+) -> None:
+    """A NULL-outcome Inject whose produced goal got SHELVED is PARKED, not
+    in flight — its outcome stays NULL forever now that `shelved` no longer
+    settles (db.propagate_inject_outcome_from_goal). The old blanket "any
+    NULL-outcome batch row" check read it as in-flight and ALLOWED a Noop
+    here, while T4 (db.is_problem_stalled) saw the same problem as stalled and
+    re-fired the Strategist → Noop → re-fire LIVELOCK (the P13 4284 spin).
+    `has_live_inflight_inject` excludes the parked inject, so the guard
+    rejects the Noop and forces a real action — agreeing with T4."""
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "shelved")
+    # A prior Inject produced a lemma goal that then SHELVED (parked).
+    lemma = db.insert_goal(
+        conn, problem="p", slug="parked_lemma",
+        lean_path="Problems/p/proofs/L_parked_lemma.lean", statement="T",
+        origin="forward",
+    )
+    db.update_goal_status(conn, lemma, "shelved")
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, brief, reason, payload,"
+        " batch_id, produced_goal_id, outcome, created_at, updated_at)"
+        " VALUES ('p', 0, 'inject_batch_done', 'Inject', NULL, '## b',"
+        " NULL, '{\"pipeline\":\"Forward\"}', 'batch-x', ?, NULL, ?, ?)",
+        (lemma, db.now(), db.now()),
+    )
+    conn.commit()
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "Noop", "reason": "wait for the (parked) brick"},
+    ]))
+    err = strategist.verify_decisions(ds, conn, problem="p")
+    assert "Inject" in err and "shelved" in err.lower()
 
 
 def test_verify_decisions_accepts_inject_root_when_root_shelved(

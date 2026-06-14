@@ -490,11 +490,11 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     # Cross-decision: if the root is in a state only Strategist can
     # unfreeze (`shelved` / `frozen` / `pending_strategist_review`),
     # AND this batch dispatches no fresh work (no Inject),
-    # AND no Forward Inject batch is still in flight from a prior
-    # Strategist call — the daemon will idle-exit after this commit.
-    # BFS cannot dispatch the root's subtree (`db.open_goals`'s alive
-    # seed is `root ∪ detached ∪ alive-strategy descendants`; a non-
-    # actively-dispatchable root contributes no seed). Reject.
+    # AND no LIVE Inject is still in flight from a prior Strategist call
+    # — the daemon will idle-exit after this commit. BFS cannot dispatch
+    # the root's subtree (`db.open_goals`'s alive seed is
+    # `root ∪ detached ∪ alive-strategy descendants`; a non-actively-
+    # dispatchable root contributes no seed). Reject.
     #
     # `pending_strategist_review` is included because that state means
     # "agent declined `shelve`, Strategist must decide" — the framework
@@ -515,14 +515,22 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     if root_row is not None and str(root_row["status"]) in BLOCKED_STATES:
         has_action = any(d.kind == "Inject" for d in decisions)
         if not has_action:
-            has_inflight_forward = conn.execute(
-                "SELECT 1 FROM strategist_decisions"
-                " WHERE problem = ?"
-                "   AND batch_id IS NOT NULL"
-                "   AND outcome IS NULL LIMIT 1",
-                (problem,),
-            ).fetchone() is not None
-            if not has_inflight_forward:
+            # A NULL-outcome Inject counts as in-flight ONLY if it is LIVE
+            # — its produced goal is NOT parked. A `shelved`-produced inject
+            # stays NULL forever (shelved no longer settles — see
+            # db.propagate_inject_outcome_from_goal), so the old blanket
+            # "any NULL-outcome batch row" test wrongly read it as in-flight
+            # and ALLOWED a Noop here, while T4 (db.is_problem_stalled) read
+            # the same problem as stalled and re-fired the Strategist → Noop
+            # → re-fire LIVELOCK (the P13 4284 spin). `has_live_inflight_
+            # inject` excludes shelved-produced injects so the two agree: no
+            # live inject ⇒ reject Noop ⇒ force a real action. It is BROADER
+            # than the stall predicate's active-check on purpose (a Forward
+            # inject whose worker has not yet registered its lemma is LIVE
+            # here — we have no `running`-set visibility — so the Strategist
+            # may Noop and wait instead of injecting overlapping work).
+            has_live_inflight = db.has_live_inflight_inject(conn, problem)
+            if not has_live_inflight:
                 rstat = str(root_row["status"])
                 rid = int(root_row["id"])
                 hint_for_pending = (
@@ -535,7 +543,8 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
                 return (
                     f"Root (goal_id={rid}) is {rstat!r} and nothing in "
                     f"the framework will progress without your action: "
-                    f"no in-flight Forward Inject batch, no Inject "
+                    f"no live in-flight Inject (any prior inject's brick is "
+                    f"parked/shelved, not producing), no Inject "
                     f"in this batch. BFS cannot dispatch from a "
                     f"{rstat!r} root, so a Noop/EmitDirective-only batch "
                     f"leaves the daemon idle.{hint_for_pending}\n"
@@ -952,14 +961,19 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
     # Pre-fix bug: this column wrote NULL for ConfirmShelve+friends.
     # Solo (batch_id=NULL) was harmless. Paired with Inject in same
     # batch (e.g. ConfirmShelve(G) + Inject(Forward, prereq)), the
-    # NULL outcome blocked `WHERE batch_id IS NOT NULL AND outcome IS
-    # NULL` guards in maybe_enqueue_inject_batch_done /
-    # problems_needing_t1 / problems_stalled — Strategist never woke
-    # to fire the promised follow-up Reopen. Observed jordan_normal_
-    # form 2026-05-23: ConfirmShelve(succ_glue) paired with Inject of
-    # the index-layout brick chain; bricks proved, batch_id stayed
-    # "incomplete" forever, all three triggers stayed gated, daemon
-    # idle.
+    # NULL outcome made `maybe_enqueue_inject_batch_done`'s pending
+    # count never reach 0 (the batch stayed "incomplete" forever) and
+    # the in-flight-inject suppression read the batch as live — so
+    # Strategist never woke to fire the promised follow-up Reopen.
+    # Observed jordan_normal_form 2026-05-23: ConfirmShelve(succ_glue)
+    # paired with Inject of the index-layout brick chain; bricks proved,
+    # batch_id stayed "incomplete" forever, the triggers stayed gated,
+    # daemon idle. (As of 2026-06-15 the in-flight suppression is a
+    # precise active-check — `has_active_inflight_inject` for T4,
+    # `has_live_inflight_inject` for T0 / the Noop-guard — not a blanket
+    # NULL-row test; but a NULL ConfirmShelve still stalls the batch
+    # pending count, so synchronous decisions MUST write a non-NULL
+    # outcome here.)
     if outcome == "awaiting_human":
         db_outcome: str | None = "awaiting_human"
     else:

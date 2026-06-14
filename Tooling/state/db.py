@@ -1483,9 +1483,14 @@ def propagate_inject_outcome_from_goal(
     the Inject decision row whose `produced_goal_id` points at it
     (if any, and if its outcome is still NULL).
 
-    Mapping: goal status='proved' → outcome='success'. shelved /
-    disproved / dead → outcome='failed:<status>'. Other statuses are
-    not terminal and this function is a no-op for them.
+    Mapping: goal status='proved' → outcome='success'. disproved /
+    dead → outcome='failed:<status>'. Other statuses are not terminal
+    and this function is a no-op for them — IN PARTICULAR `shelved`,
+    which is a reopenable / parked soft-terminal: a shelved goal is NOT
+    a completed inject, so its outcome stays NULL (the stall predicate's
+    active-check, not a settled outcome, governs whether it suppresses
+    T4). Treating shelved as settling here re-fired `inject_batch_done`
+    every park (P13 4284 futile spin, 2026-06-15).
 
     Returns the affected decision row id (caller may then fire
     `_maybe_enqueue_inject_batch_done`), or None if nothing was
@@ -1509,10 +1514,10 @@ def propagate_inject_outcome_from_goal(
     status = str(g["status"])
     if status == "proved":
         outcome = "success"
-    elif status in ("shelved", "disproved", "dead"):
+    elif status in ("disproved", "dead"):
         outcome = f"failed:{status}"
     else:
-        return None  # not terminal; wait
+        return None  # not terminal (incl. shelved — reopenable); wait
     conn.execute(
         "UPDATE strategist_decisions SET outcome = ?, updated_at = ?"
         " WHERE id = ? AND outcome IS NULL",
@@ -1732,31 +1737,33 @@ def problems_needing_t0(conn: sqlite3.Connection,
     Strategist'd (legacy reset paths) is instead covered by T1's
     NULL-`last_strategist_at` = ancient rule.
     """
-    # In-flight Inject batch dedup: if Strategist's prior commit on this
-    # problem produced Forward decisions still resolving (any batch row
-    # with outcome IS NULL), suppress T0. Strategist will be re-fired by
-    # the cascade-side `inject_batch_done` trigger when the last
-    # outcome lands; T0 firing in the meantime just burns spawns on
-    # Noop ("waiting for Forward"). Mirrors how a normal goal isn't
-    # re-dispatched while its current attempt is in flight.
+    # In-flight Inject suppression: if Strategist's prior commit on this
+    # problem produced work still LIVE (in flight), suppress T0 — Strategist
+    # will be re-fired by the cascade-side `inject_batch_done` trigger when
+    # the last outcome lands; T0 firing meanwhile just burns spawns on Noop
+    # ("waiting for Forward"). Uses `has_live_inflight_inject` (NULL inject
+    # whose produced goal is not parked/shelved), NOT the old blanket "any
+    # NULL-outcome batch row" test: once `shelved` stopped settling, a
+    # shelved-produced inject stays NULL forever and the blanket test would
+    # wedge T0 (the Phase 11 disease). `has_live` (not the stall predicate's
+    # narrower active-check) so a just-committed Forward inject whose worker
+    # has not yet registered its lemma still counts as in-flight here — T0
+    # has no worker-queue check to lean on. (For a `frozen` root this is
+    # near-vacuous — injects only exist after first_launch un-freezes — but
+    # kept correct per the same-class-fix discipline.)
     sql = (
         "SELECT p.name, g.id AS root_id"
         " FROM problems p"
         " JOIN goals g ON g.problem = p.name AND g.origin = 'root'"
         " WHERE g.status = 'frozen'"
-        "   AND NOT EXISTS ("
-        "     SELECT 1 FROM strategist_decisions sd"
-        "     WHERE sd.problem = p.name"
-        "       AND sd.batch_id IS NOT NULL"
-        "       AND sd.outcome IS NULL"
-        "   )"
     )
     args: tuple = ()
     if scope is not None:
         sql += " AND p.name LIKE ?"
         args = (scope,)
     sql += " ORDER BY p.name"
-    return [(r["name"], int(r["root_id"])) for r in conn.execute(sql, args)]
+    return [(r["name"], int(r["root_id"])) for r in conn.execute(sql, args)
+            if not has_live_inflight_inject(conn, str(r["name"]))]
 
 
 def problems_needing_t1(conn: sqlite3.Connection, *,
@@ -1864,9 +1871,15 @@ def null_inject_redispatch_specs(conn: sqlite3.Connection, *,
     in-flight worker). Encodes the produced-artifact guards so an Inject is
     NOT redispatched once its outcome will propagate from the artifact's
     terminal: a Forward/Builder that already produced a goal, or a Backward
-    that already committed a strategy. A NULL-outcome Inject whose worker died
-    on infra failure (no artifact) wedges the whole problem — the in-flight-
-    batch clause then suppresses T0/T1/T4 — so it must be redispatched.
+    that already committed a strategy. ALSO skips a Backward/Builder whose
+    TARGET goal is no longer awaiting a worker (parked/terminal — e.g. a
+    return_to_parent that shelved the target without committing a strategy):
+    its NULL outcome is permanent now that `shelved` no longer settles, but
+    the work is parked, not missing — redispatching would re-spin it forever
+    (P13 4284, 2026-06-15). A NULL-outcome Inject whose worker died on infra
+    failure (no artifact, target still open/attempting) wedges the problem
+    via the in-flight active-check (`has_active_inflight_inject`) — so it must
+    be redispatched.
 
     Returns dicts: `{decision_id, problem, kind, target_id, target_kind}`."""
     sql = (
@@ -1900,6 +1913,21 @@ def null_inject_redispatch_specs(conn: sqlite3.Connection, *,
                 continue  # strategy committed; outcome from strategy terminal
             if pipeline == "Builder" and r["produced_goal_id"] is not None:
                 continue  # goal stub written; outcome from goal terminal
+            # Target no longer awaiting a worker (parked / terminal): the
+            # worker already RAN and parked it (e.g. a Backward
+            # return_to_parent that committed no strategy → target shelved,
+            # or pending_strategist_review awaiting a Strategist verdict).
+            # Its NULL outcome is now permanent (shelved no longer settles —
+            # see propagate_inject_outcome_from_goal), but the work is NOT
+            # missing, so redispatching would re-spin the parked goal forever
+            # (the P13 4284 disease, here via the redispatch path). Only
+            # redispatch a target that genuinely still awaits a worker.
+            tgt = conn.execute(
+                "SELECT status FROM goals WHERE id = ?",
+                (int(r["target_id"]),),
+            ).fetchone()
+            if tgt is None or str(tgt["status"]) not in ("open", "attempting"):
+                continue
             specs.append({
                 "decision_id": int(r["id"]), "problem": str(r["problem"]),
                 "kind": pipeline, "target_id": str(int(r["target_id"])),
@@ -1919,6 +1947,79 @@ def queue_has_decision(conn: sqlite3.Connection, decision_id: int) -> bool:
     return row is not None
 
 
+def has_active_inflight_inject(conn: sqlite3.Connection, problem: str) -> bool:
+    """True iff `problem` has a NULL-outcome Inject decision whose produced
+    work is still genuinely ACTIVE:
+
+      * `produced_goal_id`     → goal status open / attempting, OR
+      * `produced_strategy_id` → strategy 'proposed' with >=1 alive subgoal
+        (open / attempting / pending_strategist_review).
+
+    The precise notion of "an inject batch is still in flight", shared by the
+    stall predicate (`is_problem_stalled` condition 4) and the T0 first_launch
+    suppression (`problems_needing_t0`). REPLACES the old blanket "any
+    NULL-outcome batch row exists" test that both used: once `shelved` stopped
+    settling its inject (it is reopenable / parked — see
+    `propagate_inject_outcome_from_goal`), a shelved-produced inject stays NULL
+    forever, so the blanket test would suppress T0/T4 forever (a permanent
+    wedge — the Phase 11 disease). Only ACTIVE produced work counts as
+    in-flight; a freshly-committed inject is additionally covered by its
+    enqueued worker (queue row) in the stall predicate's condition 3."""
+    if conn.execute(
+        "SELECT 1 FROM strategist_decisions sd"
+        " JOIN goals g ON g.id = sd.produced_goal_id"
+        " WHERE sd.problem = ? AND sd.decision_kind = 'Inject'"
+        "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL"
+        "   AND g.status IN ('open','attempting') LIMIT 1",
+        (problem,),
+    ).fetchone() is not None:
+        return True
+    if conn.execute(
+        "SELECT 1 FROM strategist_decisions sd"
+        " JOIN strategies s ON s.id = sd.produced_strategy_id"
+        " JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        " JOIN goals g ON g.id = ss.subgoal_id"
+        " WHERE sd.problem = ? AND sd.decision_kind = 'Inject'"
+        "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL"
+        "   AND s.status = 'proposed'"
+        "   AND g.status IN ('open','attempting','pending_strategist_review')"
+        " LIMIT 1",
+        (problem,),
+    ).fetchone() is not None:
+        return True
+    return False
+
+
+def has_live_inflight_inject(conn: sqlite3.Connection, problem: str) -> bool:
+    """True iff `problem` has a NULL-outcome Inject decision that is still
+    LIVE — i.e. NOT parked. A NULL inject is parked iff its produced goal is
+    `shelved` (reopenable, but its outcome now stays NULL forever — see
+    `propagate_inject_outcome_from_goal`); every other NULL inject is live:
+    its worker is still producing (a Forward before lemma registration has
+    `produced_goal_id` NULL), or its produced goal / strategy is genuinely in
+    progress.
+
+    BROADER than `has_active_inflight_inject` on purpose. This is for
+    suppression sites with NO in-flight-WORKER visibility — T0
+    (`problems_needing_t0`) and the verify_decision Noop-guard on a blocked
+    root — which must treat a just-committed Forward inject whose worker has
+    not yet registered its lemma (produced_goal_id NULL) as in-flight, so the
+    Strategist waits instead of firing / being forced into redundant work.
+    The stall predicate (`is_problem_stalled`) instead uses the narrower
+    active-check, because its condition 3 separately covers the enqueued-
+    worker window — see that function and `has_active_inflight_inject`."""
+    return conn.execute(
+        "SELECT 1 FROM strategist_decisions sd"
+        " WHERE sd.problem = ? AND sd.decision_kind = 'Inject'"
+        "   AND sd.batch_id IS NOT NULL AND sd.outcome IS NULL"
+        "   AND NOT EXISTS ("
+        "     SELECT 1 FROM goals g"
+        "     WHERE g.id = sd.produced_goal_id AND g.status = 'shelved'"
+        "   ) LIMIT 1",
+        (problem,),
+    ).fetchone() is not None
+
+
 def is_problem_stalled(conn: sqlite3.Connection, problem: str, *,
                        running: "set[tuple] | None" = None) -> bool:
     """True iff `problem` is structurally STALLED:
@@ -1930,6 +2031,15 @@ def is_problem_stalled(conn: sqlite3.Connection, problem: str, *,
          a raw `status='open'` probe would wrongly mask the stall.
       3. no in-flight Backward / Builder / Forward worker (queue + the
          optional in-memory `running` set).
+      4. no NULL-outcome Inject whose produced work is still ACTIVE (an
+         open/attempting produced goal, or a 'proposed' produced strategy
+         with >=1 alive subgoal). This SUBSUMES the old blanket "any
+         NULL-outcome inject batch suppresses" pre-filter that lived in
+         `problems_stalled`. The narrower active-check is what lets a
+         SHELVED-produced NULL inject (outcome stays NULL forever now that
+         shelved no longer settles — see propagate_inject_outcome_from_goal)
+         STOP suppressing T4; the blanket pre-filter would have wedged the
+         problem forever instead (the Phase 11 disease).
 
     SINGLE SOURCE OF TRUTH for the stall signal, shared by
     `problems_stalled` (T4 enqueue) and `_section_stall_warning`
@@ -1990,6 +2100,13 @@ def is_problem_stalled(conn: sqlite3.Connection, problem: str, *,
             (problem, *bw_bu_ids),
         ).fetchone() is not None:
             return False
+    # 4. a NULL-outcome Inject whose produced work is genuinely ACTIVE keeps
+    #    the problem in-flight (the batch is still resolving; inject_batch_done
+    #    will wake Strategist). REPLACES the old blanket batch-suppression
+    #    pre-filter — a NULL inject whose produced goal got SHELVED is parked,
+    #    not in flight, and must NOT suppress T4 (else permanent wedge).
+    if has_active_inflight_inject(conn, problem):
+        return False
     return True
 
 
@@ -2004,8 +2121,12 @@ def problems_stalled(conn: sqlite3.Connection, *,
       2. zero `open_goals` reachable in scope (BFS has nothing to dispatch)
       3. no in-flight Backward / Builder / Forward worker on this problem
          (neither in the dispatcher's `running` set nor in the queue)
+      4. no NULL-outcome Inject whose produced work is still ACTIVE
 
-    When all three hold, the dispatcher can dispatch nothing on this
+    Conditions 2-4 are evaluated by `is_problem_stalled` (the shared
+    single-source predicate); the candidate SQL here only applies
+    condition 1 (root-not-terminal). When all four hold, the dispatcher
+    can dispatch nothing on this
     problem until Strategist intervenes. Routine T1 fires every 60 min
     which is too slow (polar 2026-05-23: 174 min stall before budget
     exhaust). T4 trigger uses this signal to enqueue Strategist
@@ -2019,22 +2140,19 @@ def problems_stalled(conn: sqlite3.Connection, *,
     the queue; the false-positive is harmless: Strategist enqueue is
     idempotent via `is_in_queue` dedup at the call site).
     """
-    # In-flight Inject batch dedup (same rationale as T0/T1): an
-    # outstanding strategist_decisions row with batch_id set and
-    # outcome NULL means Strategist already injected something that
-    # hasn't terminated. Don't flag stall — wait for the batch to
-    # resolve, `inject_batch_done` will fire Strategist naturally.
+    # Candidate pre-filter is root-not-terminal ONLY. In-flight Inject
+    # suppression is NO LONGER a blanket "any NULL-outcome batch row"
+    # pre-filter here — that wedged the problem forever once `shelved`
+    # stopped settling (a shelved-produced inject stays NULL forever).
+    # It now lives in `is_problem_stalled` as a precise ACTIVE-check
+    # (condition 4: suppress only while the inject's produced work is
+    # open/attempting or a proposed strategy with an alive subgoal),
+    # keeping T4 and `_section_stall_warning` in lockstep automatically.
     sql = (
         "SELECT p.name, g.id AS root_id"
         " FROM problems p"
         " JOIN goals g ON g.problem = p.name AND g.origin = 'root'"
         " WHERE g.status NOT IN ('proved','shelved','disproved')"
-        "   AND NOT EXISTS ("
-        "     SELECT 1 FROM strategist_decisions sd"
-        "     WHERE sd.problem = p.name"
-        "       AND sd.batch_id IS NOT NULL"
-        "       AND sd.outcome IS NULL"
-        "   )"
     )
     args: tuple = ()
     if scope is not None:
@@ -2047,8 +2165,8 @@ def problems_stalled(conn: sqlite3.Connection, *,
 
     # Per-candidate structural stall test via the shared single-source
     # predicate (keeps T4 and `_section_stall_warning` in lockstep). The
-    # candidate SQL above already applied the root-not-terminal +
-    # in-flight-Inject-batch suppression pre-filter.
+    # candidate SQL above only applied the root-not-terminal pre-filter;
+    # the in-flight-Inject active-check is condition 4 inside the predicate.
     run = running or set()
     stalled: list[tuple[str, int]] = []
     for r in candidates:
@@ -2381,9 +2499,10 @@ def reconcile_settled_inject_outcomes(
     by inject kind:
 
       * Forward (no `produced_strategy_id`): `produced_goal_id` reached a
-        terminal goal status but goal-side propagation never ran (the
-        transition predated the hook or took a path that bypassed it) →
-        re-run `propagate_inject_outcome_from_goal`.
+        HARD-terminal goal status (proved / disproved / dead — `shelved`
+        is reopenable, does NOT settle) but goal-side propagation never
+        ran (the transition predated the hook or took a path that
+        bypassed it) → re-run `propagate_inject_outcome_from_goal`.
       * Backward / Builder: `produced_strategy_id` reached a terminal
         strategy status → re-run `propagate_inject_outcome_from_strategy`;
         OR the strategy is still 'proposed' yet has ≥1 subgoal and ZERO
@@ -2467,8 +2586,10 @@ def reconcile_settled_inject_outcomes(
                     resolved += 1
                     continue
         elif r["produced_goal_id"] is not None and \
-                str(r["goal_status"]) in ("proved", "shelved",
-                                          "disproved", "dead"):
+                str(r["goal_status"]) in ("proved", "disproved", "dead"):
+            # `shelved` intentionally excluded — reopenable/parked, not a
+            # settled inject (see propagate_inject_outcome_from_goal). The
+            # stall predicate's active-check governs T4 suppression instead.
             filled = propagate_inject_outcome_from_goal(
                 conn, int(r["produced_goal_id"]))
         if filled is not None:

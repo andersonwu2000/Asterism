@@ -929,11 +929,15 @@ def test_batch_done_defers_until_produced_lemma_proved(
     assert int(q[0]["target_id"]) == root
 
 
-def test_batch_done_fires_when_produced_lemma_shelved(
+def test_batch_done_does_not_fire_when_produced_lemma_shelved(
     conn: sqlite3.Connection,
 ) -> None:
-    """If the produced lemma shelves (dead end), outcome is filled
-    with failure marker and batch can still complete."""
+    """If the produced lemma SHELVES (parked, reopenable), the inject's
+    outcome stays NULL and the batch does NOT complete — a shelved brick is
+    not a settled inject (see propagate_inject_outcome_from_goal). Settling it
+    re-fired the Strategist on every park (the P13 4284 futile spin,
+    2026-06-15); re-engaging a parked brick is T4's call (the active-check),
+    not an unconditional inject_batch_done."""
     root = _insert_goal(conn, slug="main", origin="root",
                         status="attempting")
     ids = _seed_inject_batch_rows(conn, batch_id="shelve-batch", count=1)
@@ -943,23 +947,22 @@ def test_batch_done_fires_when_produced_lemma_shelved(
     cascade_one(conn, pipeline_id="p1", kind="Forward",
                 target_id="p", target_kind="Problem",
                 outcome="success", decision_id=ids[0])
-    # Deferred
     assert _seed_inject_batch_rows  # silence import-only lint
+    assert root  # root exists for the problem
 
-    # Lemma shelves
+    # Lemma shelves → outcome stays NULL (not settled), batch incomplete.
     from Tooling.core.dispatcher import _set_goal_terminal_and_propagate
     _set_goal_terminal_and_propagate(conn, fwd, "shelved")
     row = conn.execute(
         "SELECT outcome FROM strategist_decisions WHERE id = ?",
         (ids[0],),
     ).fetchone()
-    assert row["outcome"] == "failed:shelved"
-    # Strategist enqueued (batch completion with shelved lemma — Strategist
-    # needs to decide what to do)
+    assert row["outcome"] is None
+    # No Strategist enqueued — no spurious inject_batch_done on a park.
     q = list(conn.execute(
         "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
     ))
-    assert q[0]["n"] == 1
+    assert q[0]["n"] == 0
 
 
 def test_batch_done_immediate_on_leaf_bypass(
