@@ -5,6 +5,9 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-13
+Stall detection was hardened by consolidating the stuck-problem logic into a single shared predicate, ensuring it fires for collapsed problems, adding per-tick reconciliation of stuck states, and giving the routine Strategist its own running-time cadence. A parallel effort improved handling of cited sibling sub-goals?reating a goal as citable unless disproved, reviving shelved-or-dead cited siblings, inlining their stubs during file validation, and seeding the backward skeleton with the goal's own imports?hile backward decomposition gained camelCase slug normalization and rejection of circular or colliding sub-goals. Supporting changes kept the agent-feedback prompts general and added an off-by-default framework-feedback questionnaire for development use.
+
 ### 2026-06-12
 Hardened the librarian's library-migration pipeline by closing four known extraction gaps (handling dotted declaration names, skipping Mathlib citations in bridge probes, and adding Gate D verbatim fallbacks for definitions blocked by nominal boundaries) along with slicer and desk-check fixes. Improved framework robustness by scoping the periodic TREE.md refresh and idle-exit logic to in-scope problems, indexing strategies by goal, and making the gateway reap runaway Lean elaborations instead of hanging. Also added a new Geometry benchmark set: a Stokes-theorem definition tower with boundary and form-bundle chains, comprising 15 problems plus supporting library material.
 
