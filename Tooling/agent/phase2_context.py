@@ -765,15 +765,27 @@ def compile_forward_context(conn: sqlite3.Connection, *,
       - Strategist brief (load-bearing input)
       - Library inventory
       - Past Forward proposals
-      - TREE.md inline (problem structure)
+      - Active goals (alive open/attempting/pending — so Forward does not
+        restate one and get dedup-rejected)
       - Manifest hints (Mathlib pointers — agent uses loogle Bash for
         type-pattern search)
+
+    NOT the full decomposition tree. Forward writes ONE generic lemma from
+    the (prescriptive) brief and cites proved lemmas from `## Library`; it
+    does not navigate goal structure. On a mature problem the inlined TREE
+    was ~400 lines that were ~99% proved sub-trees (redundant with the
+    `## Library` signatures) plus dead/shelved branches (abandoned-route
+    noise) — pure context bloat that slowed the agent and diluted focus
+    (framework_backlog #3). The one thing Forward uses tree state for —
+    not restating an alive goal — is exactly `_section_active_goals`.
+    (The Strategist context still inlines the full tree; it plans over
+    the whole structure.)
     """
     sections: list[list[str]] = [
         _section_forward_brief(conn, decision_id),
         _section_library_inventory(conn, problem),
         _section_forward_history(conn, problem),
-        _section_tree_inline(workspace, problem),
+        _section_active_goals(conn, problem),
         _section_manifest_meta(mfst, workspace, problem),
     ]
     parts: list[str] = [f"# Forward context — {problem}", ""]

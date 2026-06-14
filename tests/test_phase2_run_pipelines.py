@@ -485,3 +485,11 @@ def test_run_forward_consumes_strategist_brief(
     assert captured_context
     assert "FooLemma" in captured_context[0]
     assert "## Strategist brief" in captured_context[0]
+    # Forward gets the proved-lemma inventory + alive goals (so it does not
+    # restate one and get dedup-rejected), but NOT the full decomposition
+    # tree — Forward writes one generic lemma from the brief + ## Library,
+    # it does not navigate goal structure (framework_backlog #3).
+    assert "## Library" in captured_context[0]
+    assert "## Active goals" in captured_context[0]
+    assert "## TREE" not in captured_context[0]
+    assert "## Forward\n" not in captured_context[0]
