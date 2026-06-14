@@ -901,6 +901,25 @@ def test_problems_with_pending_review_lists_only_pending(
     assert db.problems_with_pending_review(conn, scope="beta%") == []
 
 
+def test_problems_with_pending_review_includes_shelved_root(
+    conn: sqlite3.Connection,
+) -> None:
+    # Regression (2026-06-14): a brick that shelves to pending_review under a
+    # SHELVED (ConfirmShelve+Inject-parked) root must still be listed — the
+    # old `NOT IN (...,'shelved',...)` filter orphaned it, and on a fresh
+    # daemon start with no other work it idle-exited the run. Hard-terminal
+    # roots (proved / disproved) stay excluded.
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    root = _insert_root(conn, "alpha")
+    sub = _insert_sub(conn, "alpha", "brick1")
+    db.update_goal_status(conn, sub, "pending_strategist_review")
+    db.update_goal_status(conn, root, "shelved")
+    assert db.problems_with_pending_review(conn) == [("alpha", root)]
+    # hard-terminal root → still excluded (problem is genuinely done/dead)
+    db.update_goal_status(conn, root, "proved")
+    assert db.problems_with_pending_review(conn) == []
+
+
 def test_reconcile_enqueues_strategist_for_orphaned_pending_review(
     conn: sqlite3.Connection,
 ) -> None:

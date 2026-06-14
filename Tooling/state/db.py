@@ -1815,7 +1815,14 @@ def problems_with_pending_review(conn: sqlite3.Connection, *,
                                  scope: str | None = None
                                  ) -> list[tuple[str, int]]:
     """Return [(problem_name, root_goal_id)] for problems with at least one
-    goal in `pending_strategist_review` whose root is not terminal.
+    goal in `pending_strategist_review` whose root is not HARD-terminal
+    (proved / disproved). A `shelved` root is NOT excluded: the
+    ConfirmShelve+Inject endgame deliberately parks the root `shelved` while
+    the Strategist works bricks, so a brick that shelves to
+    `pending_strategist_review` under a parked root still needs its review
+    enqueued — excluding shelved roots here orphaned exactly that case (P13
+    `per_chart_stokes_generic` under a shelved `main`, 2026-06-14), and on a
+    fresh daemon start (no other in-flight work) idle-exited the run.
 
     The per-tick stuck-state reconciler (`reconcile_stuck_states`) enqueues a
     Strategist for each so a pending review never orphans when the cascade-
@@ -1836,7 +1843,7 @@ def problems_with_pending_review(conn: sqlite3.Connection, *,
         "   AND g_root.origin = 'root'"
         " JOIN goals g_pend ON g_pend.problem = p.name"
         "   AND g_pend.status = 'pending_strategist_review'"
-        " WHERE g_root.status NOT IN ('proved','shelved','disproved')"
+        " WHERE g_root.status NOT IN ('proved','disproved')"
     )
     args: tuple = ()
     if scope is not None:
