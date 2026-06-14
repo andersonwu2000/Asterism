@@ -486,6 +486,7 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
             session_id=ctx.sid,
             is_retry=not ctx.cold,
             retry_context=ctx.retry_context,
+            retry_reason=ctx.retry_reason,
             inline_prompt=ctx.inline_prompt,
             timeout_sec_override=ctx.budget_override,
         )

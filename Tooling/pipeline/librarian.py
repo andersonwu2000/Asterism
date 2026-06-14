@@ -2479,7 +2479,7 @@ def _migrate_file_incremental(
                 kind="librarian", prompt_path=hole_prompt,
                 problem_dir=problem_dir, attempts_dir=ctx.attempts_dir,
                 session_id=ctx.sid, is_retry=not ctx.cold,
-                retry_context=ctx.retry_context,
+                retry_context=ctx.retry_context, retry_reason=ctx.retry_reason,
                 mcp_config_path=mcp_config_path,
                 inline_prompt=ctx.inline_prompt,
                 timeout_sec_override=ctx.budget_override)

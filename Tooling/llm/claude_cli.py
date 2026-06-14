@@ -748,6 +748,22 @@ class ClaudeCliProvider:
                     f"unchanged. Write to "
                     f"{req.attempts_dir}/decision.json."
                 )
+            elif req.retry_reason == "agent_stuck_thinking":
+                # Prior attempt died mid-thinking (watchdog / subprocess-
+                # timeout trap), NOT a lake error — rc=0, no build ran.
+                # Framing it as "failed lake build" with the `combined
+                # rc=0` detail sent agents hunting a phantom error and
+                # burning the next budget re-deriving the plan (P13 4284
+                # spin, 2026-06-15). Frame it honestly and steer toward
+                # shipping a tactic.
+                prompt = (
+                    f"Your previous attempt ran out of time mid-thinking "
+                    f"and shipped no usable patch — there was no lake error "
+                    f"(it never reached a build). Write patch.lean directly "
+                    f"this time; don't re-derive the whole plan. Reuse the "
+                    f"prior PROPOSAL.md. Write outputs into "
+                    f"{req.attempts_dir}/."
+                )
             else:
                 err = (req.retry_context
                        or "(lake error not captured)").strip()

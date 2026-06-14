@@ -529,6 +529,38 @@ def test_claude_spawn_retry_inlines_error_into_prompt(
     assert "RETRY_NOTE" not in cmd[prompt_idx]
 
 
+def test_claude_spawn_retry_thinking_trap_not_framed_as_lake_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retry after a thinking-trap death (retry_reason=agent_stuck_thinking):
+    the prompt must NOT claim "failed lake build" (rc=0, no build ran) nor
+    echo the misleading `combined rc=0` detail; it must steer the agent to
+    write the patch directly (P13 4284 spin fix, 2026-06-15)."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="builder",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+        session_id="abc123",
+        is_retry=True,
+        retry_context="combined rc=0",
+        retry_reason="agent_stuck_thinking",
+    ))
+    prompt_idx = captured[0].index("-p") + 1
+    payload = captured[0][prompt_idx]
+    assert "failed lake build" not in payload
+    assert "combined rc=0" not in payload  # misleading detail dropped
+    assert "mid-thinking" in payload
+    assert "directly" in payload
+
+
 def test_claude_spawn_retry_handles_missing_retry_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

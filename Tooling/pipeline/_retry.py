@@ -206,6 +206,10 @@ class SpawnCtx:
     attempts_dir: Path
     inline_prompt: str | None = None
     budget_override: int | None = None
+    # Prior attempt's failure_reason (e.g. `agent_stuck_thinking`) so the
+    # spawn callback can frame the retry honestly — a thinking-trap death
+    # is rc=0, not a lake error. None on attempt 0 / non-retry spawns.
+    retry_reason: str | None = None
 
 
 def _build_fresh_rescue_stage2_prompt(
@@ -794,6 +798,7 @@ def run_with_session_retries(
         spawn_t0 = time.monotonic()
         rc = spawn_fn(SpawnCtx(sid=sid, cold=cold,
                                retry_context=last_detail or None,
+                               retry_reason=last_reason or None,
                                attempts_dir=attempts_dir))
         spawn_dur = time.monotonic() - spawn_t0
 
@@ -807,6 +812,7 @@ def run_with_session_retries(
             spawn_t0 = time.monotonic()
             rc = spawn_fn(SpawnCtx(sid=sid, cold=True,
                                    retry_context=last_detail or None,
+                                   retry_reason=last_reason or None,
                                    attempts_dir=attempts_dir))
             spawn_dur = time.monotonic() - spawn_t0
 

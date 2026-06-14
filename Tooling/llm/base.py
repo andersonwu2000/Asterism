@@ -82,6 +82,11 @@ class LLMRequest:
                     the provider inlines into the retry prompt. Lets
                     the agent see the error immediately without a
                     Read tool round-trip. Ignored when is_retry=False.
+      retry_reason:  the prior attempt's failure_reason (e.g.
+                    `agent_stuck_thinking`). Lets the provider frame the
+                    retry honestly — a thinking-trap death is not a lake
+                    error (rc=0), so the prompt must not claim "failed
+                    lake build". None for the first attempt / unknown.
       is_postmortem: postmortem call after a main-spawn timeout.
                     Uses --resume so the prior turn's session memory is
                     intact, loads `prompt_path` verbatim (a short prompt
@@ -115,6 +120,7 @@ class LLMRequest:
     session_id: str | None = None
     is_retry: bool = False
     retry_context: str | None = None
+    retry_reason: str | None = None
     is_postmortem: bool = False
     mcp_config_path: Path | None = None
     inline_prompt: str | None = None

@@ -43,16 +43,15 @@ Skeleton has `theorem s<id> ... := by sorry`. Edit only the body; signature chan
 namespace ...
 
 -- <one-line decomposition summary>
--- <how the sub-goals combine; why each is simpler>
+-- reduce to h1 via <slug_1>, then <slug_2> closes the goal from h1
 theorem s<id> ... := by
-  have h1 : <sub_1_type> := <slug_1> args
-  have h2 : <sub_2_type> := <slug_2> args
-  exact <combinator> h1 h2
+  have h1 : <intermediate_type> := <slug_1> args
+  exact <slug_2> h1
 
 end ...
 ```
 
-Body shape varies — `obtain` for ∃-witnesses, `rcases` for case dispatch, `induction` for inductive types — but sub-goals as `have` premises + a closer is the pattern.
+Sub-goals can be parallel (`exact <combinator> h1 h2`) or sequential (one feeds the next, as above). Body shape varies — `obtain` for ∃-witnesses, `rcases` for case dispatch, `induction` for inductive types — but sub-goals as `have` premises + a closer is the pattern.
 
 ### new_<slug>.lean × N
 
@@ -126,7 +125,7 @@ Ship as `:= by sorry` with `entry_kind: Builder`. Wrong types compile-fail in se
 
 ## Rules
 
-- Each sub-goal must be **strictly simpler** and as abstract as possible — re-stating the parent in different notation does not count.
+- Each sub-goal must be **strictly simpler** and as abstract as possible, and do real work — re-stating the parent, or a split one existing lemma closes in a single step, does not count. Bundling adjacent steps into one intermediate lemma is fine.
 - Each sub-goal is a stand-alone Lean theorem — re-declare any parent binder its type uses, or that you anticipate its own sub-goals will thread. When unsure, keep — over-keeping is mild bloat, dropping a future-needed binder is a wasted attempt.
 - Do NOT use any name in FORBIDDEN_LEMMAS — anywhere.
 - **Cite an existing sibling** by writing its import line yourself: `import Problems.<problem>.proofs.L_<slug>` (this is the one import you write — declared `new_*.lean` sub-goals are auto-appended). Then reference `<slug>` in the proof. The framework classifies the cited sibling by status:

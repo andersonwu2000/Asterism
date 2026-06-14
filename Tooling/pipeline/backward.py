@@ -505,6 +505,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             session_id=ctx.sid,
             is_retry=not ctx.cold,
             retry_context=ctx.retry_context,
+            retry_reason=ctx.retry_reason,
             mcp_config_path=mcp_config_path,
             inline_prompt=ctx.inline_prompt,
             timeout_sec_override=ctx.budget_override,
@@ -1165,10 +1166,11 @@ def _backward_parse_and_commit(
         )
         return _abort(
             "no_progress",
-            f"sub-goal(s) make no progress — definitionally equal to the goal "
-            f"you are decomposing or an unproved ancestor: {detail}. Restating "
-            f"the goal as its own sub-goal is circular. Decompose into STRICTLY "
-            f"SMALLER sub-goals, or prove the goal directly in patch.lean.",
+            f"sub-goal(s) restate an UNPROVED ancestor (or this goal itself): "
+            f"{detail}. Can't be cited — that's circular (the ancestor depends "
+            f"on this goal); only PROVED matches auto-cite. Give each sub-goal "
+            f"new content (proof composes ≥2 proved results, not the ancestor "
+            f"re-applied), or prove the goal directly in patch.lean.",
             leading,
         )
 

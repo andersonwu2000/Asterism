@@ -96,7 +96,7 @@ Examples:
 ## Rules
 
 - 1-7 sub-goals; more than 7 is rarely tractable.
-- Each sub-goal must be **strictly simpler** than the parent — restating doesn't count.
+- Each sub-goal must be **strictly simpler** than the parent — restating, or a split one existing lemma closes in a single step, doesn't count. Bundling adjacent steps into one intermediate lemma is fine.
 - Each sub-goal is a stand-alone Lean theorem — re-declare any parent binder its type uses, or that you anticipate its own sub-goals will thread. When unsure, keep — over-keeping is mild bloat, dropping a future-needed binder is a wasted attempt.
 - Theorem name inside each sub-goal file MUST equal its filename slug.
 - No FORBIDDEN_LEMMAS anywhere — not in patch, not in sub-goal docstrings.
