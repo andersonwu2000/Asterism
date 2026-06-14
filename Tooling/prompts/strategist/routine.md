@@ -22,7 +22,7 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
 
 ## Decision kinds
 - `Inject` — `target_goal_id`, `brief`. `pipeline`:
-  - `Forward`: produces one new def/theorem into `proofs/L_<slug>.lean`; no `target_goal_id`. Do not add defs via `Defs.lean`.
+  - `Forward`: produces one new def/theorem into `proofs/L_<slug>.lean`; no `target_goal_id`. Search for an existing lemma first. Do not add defs via `Defs.lean`.
   - `Backward`: decompose into strategy + N sub-goals, each in its own `.lean`.
   - `Builder`: single file inline, one tactic block.
 - `ConfirmShelve` — `target_goal_id`, `reason`. Pairs with `Inject`
