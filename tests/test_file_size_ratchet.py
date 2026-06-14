@@ -40,11 +40,15 @@ _WATERMARKS = {
     # the T4 stall trigger — 2026-06-13 — conscious bump.
     # 2026-06-14: Phase 11 'stalled' strategy status (parent-stall transition +
     # migration + reconcile backstop rework) — conscious bump.
+    # dispatcher 2980→3050: PID-reuse-proof singleton lock (store pid+start_time,
+    # _proc_start_time / _cmdline_is_daemon / _lock_held_by_live_daemon) — a
+    # crashed daemon's reused PID had blocked every restart (2026-06-15) —
+    # conscious bump.
     # db 2880→3000: shelved no longer settles an inject (P13 4284 spin fix) —
     # `has_active_inflight_inject` (stall predicate) + `has_live_inflight_inject`
     # (T0 / verify-guard suppression) + parked-target redispatch guard —
     # 2026-06-15 — conscious bump.
-    "Tooling/core/dispatcher.py": 2980,
+    "Tooling/core/dispatcher.py": 3050,
     "Tooling/state/db.py": 3000,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     "Tooling/quality/librarian/cleanup/_common.py": 560,

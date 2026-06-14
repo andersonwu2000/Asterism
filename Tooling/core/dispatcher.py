@@ -2234,6 +2234,71 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _proc_start_time(pid: int) -> "float | None":
+    """psutil process create-time for `pid` (epoch seconds), or None if the
+    process is gone / its start-time is unreadable. Paired with the PID it
+    forms a reuse-proof process-instance identity for the singleton lock."""
+    try:
+        import psutil
+        return psutil.Process(pid).create_time()
+    except Exception:
+        return None
+
+
+def _cmdline_is_daemon(pid: int) -> "bool | None":
+    """True / False iff the live process at `pid` is / isn't an asterism
+    dispatcher (`python -m Tooling.core.cli run …` or the `asterism run`
+    console script); None if its command line can't be read. The fallback
+    identity signal for a legacy pid-only lock that has no recorded
+    start-time."""
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        argv = psutil.Process(pid).cmdline()
+    except psutil.NoSuchProcess:
+        return False
+    except Exception:
+        return None
+    joined = " ".join(argv)
+    if ("Tooling.core.cli" in joined
+            or "core/cli" in joined or "core\\cli" in joined):
+        return True
+    if argv and "run" in argv:
+        exe = argv[0].lower().replace("\\", "/").rsplit("/", 1)[-1]
+        if exe.startswith("asterism"):
+            return True
+    return False
+
+
+def _lock_held_by_live_daemon(pid: int, stored_start: "float | None") -> bool:
+    """True iff `pid` is the SAME live daemon instance that wrote the lock —
+    NOT merely a live PID. Guards against PID REUSE: after a daemon crashes
+    without releasing its lock, the OS can hand its PID to an unrelated live
+    process (observed 2026-06-15 — a crashed daemon's PID was reused by the
+    editor, so the bare-liveness lock blocked every restart). A (pid,
+    start-time) pair identifies a process instance, so a reused PID — alive
+    but with a different start-time — reads as stale.
+
+    `stored_start` is the start-time recorded in the lock (None for a legacy
+    pid-only lock). When absent or unreadable, fall back to a command-line
+    signature; if neither signal can be read, conservatively treat a live PID
+    as the daemon so two daemons never share one DB (the disaster the lock
+    exists to prevent)."""
+    if not _pid_alive(pid):
+        return False
+    if stored_start is not None:
+        live = _proc_start_time(pid)
+        if live is not None:
+            return abs(live - stored_start) < 1.0
+        # start-time unreadable — fall through to the cmdline signal.
+    sig = _cmdline_is_daemon(pid)
+    if sig is None:
+        return True  # can't introspect a live PID — conservative (block)
+    return sig
+
+
 def _acquire_singleton_lock(workspace: Path) -> Path | None:
     """Refuse to start if another daemon is already running on this
     workspace. Two daemons sharing one DB silently dispatch the same
@@ -2241,10 +2306,16 @@ def _acquire_singleton_lock(workspace: Path) -> Path | None:
     other's verify_strategy state. Caught in the wild when a stray
     `&` background invocation overlapped with a fresh `run`.
 
-    Mechanism: PID file at `.asterism/daemon.pid`. On startup:
+    Mechanism: PID file at `.asterism/daemon.pid` holding `pid\\nstart_time`.
+    On startup:
       - if file missing → create, return path
-      - if file exists + holds a live PID → return None (caller exits)
-      - if file exists + holds a dead PID → stale, overwrite
+      - if it names the SAME live process instance (pid + start-time, or a
+        daemon command line for a legacy pid-only lock) → return None
+        (caller exits)
+      - if it names a dead PID, or a REUSED PID now belonging to a different
+        process → stale, overwrite. (Bare liveness alone is fooled by PID
+        reuse — 2026-06-15: a crashed daemon's PID became the editor's,
+        blocking every restart.)
 
     Returned path should be `.unlink(missing_ok=True)` at shutdown.
     """
@@ -2254,18 +2325,27 @@ def _acquire_singleton_lock(workspace: Path) -> Path | None:
     my_pid = os.getpid()
 
     if pid_file.exists():
+        existing = -1
+        stored_start: "float | None" = None
         try:
-            existing = int(pid_file.read_text(encoding="utf-8").strip())
+            parts = pid_file.read_text(encoding="utf-8").split("\n")
+            existing = int(parts[0].strip())
+            if len(parts) > 1 and parts[1].strip():
+                stored_start = float(parts[1].strip())
         except (OSError, ValueError):
             existing = -1
-        if existing > 0 and existing != my_pid and _pid_alive(existing):
+        if (existing > 0 and existing != my_pid
+                and _lock_held_by_live_daemon(existing, stored_start)):
             print(f"[dispatcher] another daemon (pid={existing}) is "
                   f"already running on this workspace. Kill it or wait "
                   f"for it to exit, then retry. (lock: {pid_file})",
                   file=sys.stderr, flush=True)
             return None
 
-    pid_file.write_text(str(my_pid), encoding="utf-8")
+    my_start = _proc_start_time(my_pid)
+    pid_file.write_text(
+        f"{my_pid}\n{my_start if my_start is not None else ''}",
+        encoding="utf-8")
     return pid_file
 
 

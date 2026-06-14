@@ -2065,3 +2065,100 @@ def test_bfs_refill_enqueues_passed_problem(
         (str(gid),),
     ).fetchone()
     assert rows["c"] == 1
+
+
+# ---------------------------------------------------------------------
+# _acquire_singleton_lock — PID-reuse-proof daemon lock
+# ---------------------------------------------------------------------
+
+def _write_lock(workspace: Path, text: str) -> Path:
+    d = workspace / ".asterism"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / "daemon.pid"
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def test_singleton_lock_acquires_when_no_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No lock → acquire, writing `pid\nstart_time`."""
+    import os
+    monkeypatch.setattr(_dispatcher, "_proc_start_time", lambda pid: 1000.0)
+    p = _dispatcher._acquire_singleton_lock(tmp_path)
+    assert p == tmp_path / ".asterism" / "daemon.pid"
+    lines = p.read_text(encoding="utf-8").split("\n")
+    assert lines[0] == str(os.getpid())
+    assert lines[1] == "1000.0"
+
+
+def test_singleton_lock_blocks_same_live_instance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live PID whose start-time MATCHES the recorded one is the same
+    daemon instance → refuse (return None)."""
+    _write_lock(tmp_path, "99999\n5000.0")
+    monkeypatch.setattr(_dispatcher, "_pid_alive", lambda pid: pid == 99999)
+    monkeypatch.setattr(_dispatcher, "_proc_start_time",
+                        lambda pid: 5000.0 if pid == 99999 else 1.0)
+    assert _dispatcher._acquire_singleton_lock(tmp_path) is None
+
+
+def test_singleton_lock_stale_on_pid_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE BUG FIX: the PID is alive but it's a DIFFERENT process (the OS
+    reused a crashed daemon's PID) — its start-time differs, so the lock is
+    stale and we acquire. Pre-fix this blocked every restart (2026-06-15: a
+    crashed daemon's PID was reused by the editor)."""
+    import os
+    _write_lock(tmp_path, "99999\n5000.0")
+    monkeypatch.setattr(_dispatcher, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(_dispatcher, "_proc_start_time",
+                        lambda pid: 9000.0)   # different instance
+    p = _dispatcher._acquire_singleton_lock(tmp_path)
+    assert p is not None
+    assert p.read_text(encoding="utf-8").split("\n")[0] == str(os.getpid())
+
+
+def test_singleton_lock_stale_on_dead_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dead PID → stale → acquire."""
+    _write_lock(tmp_path, "99999\n5000.0")
+    monkeypatch.setattr(_dispatcher, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(_dispatcher, "_proc_start_time", lambda pid: 1.0)
+    assert _dispatcher._acquire_singleton_lock(tmp_path) is not None
+
+
+def test_singleton_lock_legacy_blocks_live_daemon(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Legacy pid-only lock (no start-time): fall back to the cmdline
+    signature. A live process that IS a daemon → refuse."""
+    _write_lock(tmp_path, "99999")
+    monkeypatch.setattr(_dispatcher, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(_dispatcher, "_cmdline_is_daemon", lambda pid: True)
+    assert _dispatcher._acquire_singleton_lock(tmp_path) is None
+
+
+def test_singleton_lock_legacy_stale_on_reused_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Legacy pid-only lock + a live process that is NOT a daemon (reused
+    PID) → stale → acquire."""
+    _write_lock(tmp_path, "99999")
+    monkeypatch.setattr(_dispatcher, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(_dispatcher, "_cmdline_is_daemon", lambda pid: False)
+    assert _dispatcher._acquire_singleton_lock(tmp_path) is not None
+
+
+def test_singleton_lock_legacy_conservative_when_cmdline_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Legacy lock + live PID whose cmdline can't be read (None) → cannot
+    prove it's a reused PID, so conservatively block (never double-start)."""
+    _write_lock(tmp_path, "99999")
+    monkeypatch.setattr(_dispatcher, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(_dispatcher, "_cmdline_is_daemon", lambda pid: None)
+    assert _dispatcher._acquire_singleton_lock(tmp_path) is None
