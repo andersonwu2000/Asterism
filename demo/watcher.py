@@ -53,6 +53,13 @@ _RE_FORWARD_CTX = re.compile(r"^# Forward context — (\S+)")
 # (compile_librarian_context). Without this the librarian work-kinds fall
 # through to the ("spawning", "?") placeholder.
 _RE_LIBRARIAN_CTX = re.compile(r"^# Librarian — (\w+) — (\S+)")
+# A `.attempts/<uuid>/` path inside a process command line — the daemon spawns
+# one claude subprocess per in-flight pipeline with that spawn dir on its
+# argv (e.g. the Context.md / _mcp_config.json path), so a live process whose
+# argv carries the uuid is ground-truth pool occupancy.
+_RE_ATTEMPTS_UUID = re.compile(
+    r"[\\/]\.attempts[\\/]"
+    r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
 # Migrate Context.md also carries `## Migrate file `<path>`` — surface the
 # file basename in the pipeline label so stats reads "migrate <File>.lean".
 _RE_LIBRARIAN_MIGRATE_FILE = re.compile(r"^## Migrate file `([^`]+)`")
@@ -503,22 +510,60 @@ def _produced_output(pdir: Path) -> bool:
     return False
 
 
-def _active_spawns(limit: int) -> list[Path]:
-    """Return up to `limit` most-recently-active spawn dirs
-    (most recent first). `limit` is the dispatch pool size — at any
-    given moment the daemon can have at most that many spawns in
-    flight, so picking more would just surface stale dirs.
+_PROC_GRACE = 45.0  # seconds: cold-start (dir created before the worker proc
+                    # registers) + finalize (proc exits while the pipeline
+                    # commits) grace, so a just-(dis)appeared spawn isn't
+                    # mis-judged in the gap process-liveness can't yet see.
 
-    A spawn is "active" iff some file inside its dir was touched within
-    ACTIVE_WINDOW seconds AND its gateway session has not been released
-    (`_session_open`). The session check excludes a FINISHED spawn whose dir
-    still lingers (a driver that doesn't rmtree, e.g. the e2e driver) — mtime
-    alone would keep counting it live for up to ACTIVE_WINDOW. Empty / stale
-    dirs are skipped.
+
+def _live_spawn_uuids() -> "set[str] | None":
+    """UUIDs of `.attempts/<uuid>/` dirs a live worker process is driving,
+    read from process command lines (psutil). Ground-truth pool occupancy:
+    the daemon spawns one claude subprocess per in-flight pipeline with the
+    spawn dir on its argv, and that subprocess dies when the pipeline
+    finishes — so this is immune to a thinking agent that has RELEASED its
+    gateway session between gateway calls, which `_session_open` misreads as
+    'finished' (the under-count that rendered a busy pool as `0/N`). Returns
+    `None` if psutil is unavailable (caller falls back to the older
+    session/mtime heuristic). Read-only; tolerates process-teardown races."""
+    try:
+        import psutil
+    except ImportError:
+        return None
+    uuids: set[str] = set()
+    for p in psutil.process_iter(["cmdline"]):
+        try:
+            cl = " ".join(p.info.get("cmdline") or ())
+        except Exception:
+            continue
+        if ".attempts" not in cl:
+            continue
+        m = _RE_ATTEMPTS_UUID.search(cl)
+        if m:
+            uuids.add(m.group(1))
+    return uuids
+
+
+def _active_spawns(limit: int) -> list[Path]:
+    """Return up to `limit` most-recently-active spawn dirs (most recent
+    first). `limit` is the dispatch pool size.
+
+    A spawn is "active" iff its dir was touched within ACTIVE_WINDOW AND it
+    is still in flight. In-flight is decided by PROCESS LIVENESS — a live
+    worker process carries the spawn's `.attempts/<uuid>` on its argv — when
+    psutil is available; that is the ground-truth signal, immune to a
+    thinking agent that released its gateway session between gateway calls
+    (the bug that showed a busy pool as `0/N`). Only when psutil is
+    unavailable do we fall back to the older `_session_open` /
+    `_produced_output` heuristic (which under-counts think-heavy spawns).
+    `_PROC_GRACE` keeps a just-spawned dir whose worker hasn't registered yet
+    and a just-finished dir still being committed.
     """
     if not ATTEMPTS_DIR.exists():
         return []
-    cutoff = time.time() - ACTIVE_WINDOW
+    now = time.time()
+    cutoff = now - ACTIVE_WINDOW
+    live = _live_spawn_uuids()
     scored: list[tuple[float, Path]] = []
     for pdir in ATTEMPTS_DIR.iterdir():
         if not pdir.is_dir():
@@ -530,12 +575,19 @@ def _active_spawns(limit: int) -> list[Path]:
         s = _spawn_score(pdir)
         if s < cutoff:
             continue
-        sess = _session_open(pdir)
-        if sess is False:
-            continue  # gateway session released → finished; skip lingering dir
-        if sess is None and _produced_output(pdir):
-            continue  # cleanup sub-agent (no gateway session) that already wrote
-            #            its deliverable → finished; skip the lingering retry dir
+        if live is not None:
+            # Ground truth: a live worker process drives this dir → in flight,
+            # even mid-thought with the gateway session released. No live
+            # process AND not freshly touched → finished (the production daemon
+            # rmtree's the dir; an e2e lingering dir ages past _PROC_GRACE).
+            if pdir.name not in live and s < now - _PROC_GRACE:
+                continue
+        else:
+            sess = _session_open(pdir)
+            if sess is False:
+                continue  # session released → finished; skip lingering dir
+            if sess is None and _produced_output(pdir):
+                continue  # cleanup sub-agent that already wrote its deliverable
         scored.append((s, pdir))
     scored.sort(reverse=True)
     return [p for _, p in scored[:limit]]
