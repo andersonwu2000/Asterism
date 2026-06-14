@@ -28,6 +28,7 @@ from Tooling.lsp.gateway import (
     _session_ctx,
     _state,
 )
+from Tooling.state import db
 
 
 @pytest.mark.skipif(sys.platform != "win32",
@@ -384,6 +385,95 @@ def test_remap_inlined_diags_maps_and_filters() -> None:
     tagged = [f for f in out if "[inlined sibling stub]" in f["message"]]
     assert len(tagged) == 1 and "sibling broke" in tagged[0]["message"]
     assert len(out) == 2
+
+
+def test_inline_sibling_stubs_emits_opens() -> None:
+    """`opens` are emitted between the hoisted imports and the bodies (so
+    they precede every `namespace`), one `open X` per entry, all mapped to
+    None as framework prefix; content body still maps to its origin."""
+    content = (
+        "import Mathlib\n"             # line 1
+        "namespace Problems.p\n"      # line 2
+        "theorem s1 : True := by trivial\n"  # line 3
+        "end Problems.p\n"            # line 4
+    )
+    merged, line_map = lsp_gateway._inline_sibling_stubs(
+        content, [], ["import Mathlib"],
+        opens=["MeasureTheory", "scoped ContDiff"])
+    lines = merged.split("\n")
+    open_idxs = [i for i, ln in enumerate(lines) if ln.startswith("open ")]
+    assert [lines[i] for i in open_idxs] == [
+        "open MeasureTheory", "open scoped ContDiff"]
+    # opens sit after the last import and before the first namespace
+    last_import = max(i for i, ln in enumerate(lines)
+                      if ln.startswith("import "))
+    first_ns = next(i for i, ln in enumerate(lines)
+                    if ln.startswith("namespace "))
+    assert last_import < min(open_idxs) and max(open_idxs) < first_ns
+    # opens are framework prefix → None; content theorem maps home (line 3)
+    assert all(line_map[i] is None for i in open_idxs)
+    s1_idx = next(i for i, ln in enumerate(lines)
+                  if ln.startswith("theorem s1"))
+    assert line_map[s1_idx] == 3
+
+
+def test_toposort_siblings_orders_referenced_first() -> None:
+    """A stub whose body references another stub's slug is emitted AFTER
+    it (decl-before-use), regardless of input/glob order; a reference cycle
+    drops nobody."""
+    a = "namespace P\ntheorem a_lemma : True := by sorry\nend P\n"
+    b = ("namespace P\ntheorem b_lemma : True := by\n"
+         "  have := a_lemma\n  trivial\nend P\n")
+    # feed reversed (b before a) to prove ordering is by reference, not input
+    ordered = lsp_gateway._toposort_siblings(
+        [("b_lemma", b), ("a_lemma", a)])
+    assert [s for s, _ in ordered] == ["a_lemma", "b_lemma"]
+    # mutual reference (cycle): both retained, neither dropped
+    x = "theorem x_l : True := by have := y_l\n"
+    y = "theorem y_l : True := by have := x_l\n"
+    cyc = lsp_gateway._toposort_siblings([("x_l", x), ("y_l", y)])
+    assert {s for s, _ in cyc} == {"x_l", "y_l"}
+
+
+def test_build_compilation_unit_injects_defs_opens_and_orders(
+    tmp_path: Path,
+) -> None:
+    """End-to-end: the single compilation unit carries Defs.lean's opens,
+    inlines referenced siblings ahead of content, and returns a line_map
+    that sends content-body lines home plus the inlined slug list."""
+    prob = "p"
+    pdir = db.problem_dir(tmp_path, prob)
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "Defs.lean").write_text(
+        "import Mathlib\nopen MeasureTheory\n", encoding="utf-8")
+    attempts = tmp_path / "att"
+    attempts.mkdir()
+    (attempts / "new_helper.lean").write_text(
+        "namespace P\ntheorem helper : True := by sorry\nend P\n",
+        encoding="utf-8")
+    content = ("namespace P\n"                                    # line 1
+               "theorem s1 : True := by have h := helper; trivial\n"  # line 2
+               "end P\n")                                         # line 3
+    merged, line_map, slugs = lsp_gateway._build_compilation_unit(
+        content, prob, tmp_path, attempts)
+    assert slugs == ["helper"]
+    assert "open MeasureTheory" in merged
+    assert merged.index("theorem helper") < merged.index("theorem s1")
+    lines = merged.split("\n")
+    s1_idx = next(i for i, ln in enumerate(lines)
+                  if ln.startswith("theorem s1"))
+    assert line_map[s1_idx] == 2
+
+
+def test_merged_line_for_inverts_line_map() -> None:
+    """Forward map (content line → merged line) is the inverse of line_map;
+    unmapped content lines fall back to themselves; a None map is identity."""
+    # merged lines 1-3 = framework prefix (None); 4→content 10, 5→content 11
+    line_map = [None, None, None, 10, 11]
+    assert lsp_gateway._merged_line_for(line_map, 10) == 4
+    assert lsp_gateway._merged_line_for(line_map, 11) == 5
+    assert lsp_gateway._merged_line_for(line_map, 99) == 99  # not mapped
+    assert lsp_gateway._merged_line_for(None, 7) == 7         # no map
 
 
 def test_acquire_slot_first_tool_call_cold_warmup(

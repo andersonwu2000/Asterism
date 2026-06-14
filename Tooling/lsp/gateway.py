@@ -54,7 +54,7 @@ from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from ..state import db
+from ..state import db, manifest
 from .client import LspClient
 
 
@@ -89,6 +89,11 @@ class WorkerSlot:
     file_version: int = 2
     # Wall-clock time of last release, kept for diagnostics.
     last_used_ts: float = 0.0
+    # line_map of the compilation unit currently didChanged in (merged
+    # line → session-content line, None for framework-prefix / sibling
+    # region). Set whenever content is swapped in; tools translate their
+    # positions / diagnostics through it. None until the first swap.
+    line_map: "list[int | None] | None" = None
 
 
 # ─── Session metadata ────────────────────────────────────────
@@ -439,8 +444,9 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True,
                             _state.n_cold_warmup += 1
                         my_slot.file_version += 1
                         backend.clear_diagnostics(my_slot.slot_uri)
+                        merged, line_map = _compilation_for(meta)
                         backend.did_change_full(
-                            my_slot.slot_path, meta.file_content,
+                            my_slot.slot_path, merged,
                             my_slot.file_version,
                         )
                         try:
@@ -451,6 +457,7 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True,
                         except (TimeoutError, RuntimeError):
                             pass
                         my_slot.content_pipeline_id = meta.pipeline_id
+                        my_slot.line_map = line_map
                 else:
                     kind = "cold_noswap"
                     with _state.counters_lock:
@@ -674,6 +681,7 @@ def _ensure_imports(content: str, problem: str, workspace: Path) -> str:
 
 def _inline_sibling_stubs(
     content: str, sibling_texts: "list[str]", extra_imports: "list[str]",
+    opens: "list[str]" = (),
 ) -> "tuple[str, list[int | None]]":
     """Build a single elaboration unit where sibling stub declarations
     precede `content`, so `<slug>` citations to freshly-declared sibling
@@ -729,6 +737,15 @@ def _inline_sibling_stubs(
         line_map.append(None)
     merged.append("")
     line_map.append(None)
+    # File-level `open`s (from Defs.lean) belong above any `namespace`, so
+    # they sit between the hoisted imports and the sibling/content bodies.
+    # All map to None — they are framework prefix, not the agent's content.
+    for op in opens:
+        merged.append(op if op.startswith("open ") else f"open {op}")
+        line_map.append(None)
+    if opens:
+        merged.append("")
+        line_map.append(None)
     for ln in sib_body:
         merged.append(ln)
         line_map.append(None)
@@ -777,6 +794,95 @@ def _collect_referenced_sibling_stubs(
         except OSError:
             continue
     return out
+
+
+def _toposort_siblings(
+    siblings: "list[tuple[str, str]]",
+) -> "list[tuple[str, str]]":
+    """Order `(slug, text)` sibling stubs so each appears AFTER every other
+    sibling whose slug its body references — Lean needs a declaration before
+    its use, but `_collect_referenced_sibling_stubs` returns glob
+    (alphabetical) order, breaking inter-sibling citations (agent_feedback:
+    "inlining sub-goal stubs ... yields a spurious unknown-identifier
+    forward-reference"). Stable among independents; a dependency cycle
+    (shouldn't occur for sorry-stubs) degrades to input order rather than
+    dropping any stub."""
+    texts = dict(siblings)
+    all_slugs = [s for s, _ in siblings]
+    deps: "dict[str, set]" = {}
+    for slug, text in siblings:
+        deps[slug] = {o for o in all_slugs
+                      if o != slug
+                      and re.search(rf"\b{re.escape(o)}\b", text)}
+    ordered: "list[str]" = []
+    placed: set = set()
+    remaining = list(all_slugs)
+    while remaining:
+        ready = [s for s in remaining if deps[s] <= placed]
+        if not ready:  # cycle — emit the rest in input order, drop nobody
+            ordered.extend(remaining)
+            break
+        for s in ready:
+            ordered.append(s)
+            placed.add(s)
+        remaining = [s for s in remaining if s not in placed]
+    return [(s, texts[s]) for s in ordered]
+
+
+def _build_compilation_unit(
+    content: str, problem: str, workspace: "Path", attempts_dir: "Path",
+) -> "tuple[str, list[int | None], list[str]]":
+    """The SINGLE compilation state every in-spawn LSP tool elaborates:
+    framework imports + `Defs.lean` file-level opens + referenced
+    `new_<slug>.lean` sibling stubs (topologically ordered) + `content`.
+
+    Returns `(merged, line_map, inlined_slugs)`. `line_map[i]` maps merged
+    line `i + 1` back to `content`'s 1-indexed line, or `None` for a
+    framework-prefix / sibling-region line — so callers translate tool
+    inputs (`content` frame → merged frame) and diagnostics (merged frame →
+    `content` frame) through one map, killing the prior split where
+    `apply_edit`/`goal_at`/`errors_at` saw a sibling-less buffer while
+    `validate_file` synthesized a different one. Always returns a real
+    `line_map` (even with no siblings: imports + opens are still prefix), so
+    every tool remaps uniformly."""
+    siblings = _toposort_siblings(
+        _collect_referenced_sibling_stubs(attempts_dir, content))
+    merged, line_map = _inline_sibling_stubs(
+        content,
+        [t for _, t in siblings],
+        _needed_imports(content, problem, workspace),
+        opens=manifest.defs_opens(workspace, problem),
+    )
+    return merged, line_map, [s for s, _ in siblings]
+
+
+def _merged_line_for(
+    line_map: "list[int | None] | None", content_line: int,
+) -> int:
+    """Forward map: a 1-indexed `content_line` (the frame the agent's tool
+    args use) → its 1-indexed line in the merged compilation unit. Inverse
+    of `line_map` (which is merged → content). Falls back to `content_line`
+    unchanged when there is no map or the line isn't a mapped body line
+    (e.g. a hoisted import line — tools only query theorem/tactic body
+    lines, so the fallback is never hit in practice)."""
+    if line_map is None:
+        return content_line
+    for i, orig in enumerate(line_map):
+        if orig == content_line:
+            return i + 1
+    return content_line
+
+
+def _compilation_for(meta: SessionMetadata) -> "tuple[str, list[int | None]]":
+    """`meta`'s single compilation unit (session content + Defs opens +
+    referenced sibling stubs) and its line_map. The one elaboration target
+    every claimed-session tool swaps in, so `goal_at` / `errors_at` /
+    `apply_edit` see exactly what `validate_file` (and, post-commit, lake)
+    do — no more sibling-less live buffer vs synthesized validate world."""
+    merged, line_map, _ = _build_compilation_unit(
+        meta.file_content, meta.problem, meta.workspace,
+        meta.target_path.parent)
+    return merged, line_map
 
 
 def _remap_inlined_diags(
@@ -920,12 +1026,19 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
                  + lines[end_line:])
     new_content = "\n".join(new_lines)
 
+    # Disk + mirror hold the RAW patch (write-through for the framework
+    # cascade); the slot elaborates the MERGED compilation unit (patch +
+    # Defs opens + referenced sibling stubs) so cited siblings resolve and
+    # the goal / diagnostics match validate_file and post-commit lake.
+    # Mirror must be set before building the unit.
+    meta.file_content = new_content
     backend = _state.backend
     # apply_edit overwrites slot content anyway → skip swap-in.
     with _acquire_slot(meta, swap_in=False) as (slot, _slot_kind):
         slot.file_version += 1
         backend.clear_diagnostics(slot.slot_uri)
-        backend.did_change_full(slot.slot_path, new_content,
+        merged, line_map = _compilation_for(meta)
+        backend.did_change_full(slot.slot_path, merged,
                                 slot.file_version)
         # `textDocument/waitForDiagnostics` blocks server-side until
         # the doc reaches our version, the reporter has flushed all
@@ -938,27 +1051,33 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
         except (TimeoutError, RuntimeError):
             pass
         diags = backend.diagnostics_for(slot.slot_uri)
+        q_line = _merged_line_for(line_map, start_line)
         try:
             result = backend.plain_goal(slot.slot_path,
-                                         line=start_line - 1, character=2,
+                                         line=q_line - 1, character=2,
                                          timeout=15)
             goal_text = _summarize_goal(result)
         except Exception as e:
             goal_text = f"<plainGoal failed: {type(e).__name__}: {e}>"
         # Slot now has this pipeline's NEW content didChanged in.
         slot.content_pipeline_id = meta.pipeline_id
+        slot.line_map = line_map
 
-    # Update mirror + write through to disk so framework cascade sees
-    # the agent's edits.
-    meta.file_content = new_content
+    # Write through to disk (RAW patch) so the framework cascade reads the
+    # agent's edits.
     meta.target_path.write_text(new_content, encoding="utf-8")
 
+    # Diagnostics are in the merged frame → remap to the agent's content
+    # frame (drop sibling-region sorry noise, tag sibling-region errors).
+    formatted = [_format_diag(d) for d in diags]
+    if line_map is not None:
+        formatted = _remap_inlined_diags(formatted, line_map)
     response = {
         "edit": (f"replaced lines {start_line}-{end_line}; "
                  f"file is now {len(new_lines)} lines"),
         "goal_at_edit_start": goal_text,
-        "diagnostics": [_format_diag(d) for d in diags],
-        "diagnostic_count": len(diags),
+        "diagnostics": formatted,
+        "diagnostic_count": len(formatted),
         "_server_recv_ts": _recv_ts,
         "_server_send_ts": _ts_now(),
     }
@@ -997,9 +1116,12 @@ def goal_at(line: int, col: int) -> str:
     # mirror into the slot, so the goal query sees current disk (T1).
     _resync_buffer_from_disk(meta)
     with _acquire_slot(meta, swap_in=True) as (slot, _slot_kind):
+        # The slot holds the merged compilation unit; the agent's `line`
+        # is in its own content frame, so translate to the merged frame.
+        q_line = _merged_line_for(slot.line_map, line)
         try:
             result = backend.plain_goal(
-                slot.slot_path, line=line - 1, character=col, timeout=15
+                slot.slot_path, line=q_line - 1, character=col, timeout=15
             )
             goal_text = _summarize_goal(result)
         except Exception as e:
@@ -1041,6 +1163,12 @@ def errors_at(line: int | None = None) -> str:
     with _acquire_slot(meta, swap_in=True) as (slot, _slot_kind):
         diags = backend.diagnostics_for(slot.slot_uri)
         formatted = [_format_diag(d) for d in diags]
+        slot_line_map = slot.line_map
+    # Diagnostics come from the merged compilation unit; remap their lines
+    # back to the agent's content frame (and drop sibling-region sorry
+    # noise / tag sibling-region errors) before any line filter.
+    if slot_line_map is not None:
+        formatted = _remap_inlined_diags(formatted, slot_line_map)
     if line is not None:
         formatted = [f for f in formatted if f["line"] == line]
     dur = time.perf_counter() - t0
@@ -1088,21 +1216,13 @@ def validate_file(content: str) -> str:
     if not meta.problem:
         return json.dumps({"error": "no problem on session metadata",
             "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()})
-    # T3 — make citations to freshly-declared sibling sub-goals
-    # (`new_<slug>.lean` stubs in the attempts dir, not yet importable)
-    # resolve by inlining their declarations ahead of `content`. Only
-    # fires when `content` actually references a sibling it doesn't
-    # declare, so validating a standalone stub keeps the plain path.
-    sibling_stubs = _collect_referenced_sibling_stubs(
-        meta.target_path.parent, content)
-    line_map: "list[int | None] | None" = None
-    if sibling_stubs:
-        full_content, line_map = _inline_sibling_stubs(
-            content, [t for _, t in sibling_stubs],
-            _needed_imports(content, meta.problem, meta.workspace),
-        )
-    else:
-        full_content = _ensure_imports(content, meta.problem, meta.workspace)
+    # Build the SAME single compilation unit the claimed-session tools
+    # elaborate: framework imports + Defs opens + referenced sibling stubs
+    # (`new_<slug>.lean` in the attempts dir, not importable until commit)
+    # + content. `line_map` is always returned (imports/opens are prefix
+    # even with no siblings) so diagnostics remap uniformly.
+    full_content, line_map, inlined_slugs = _build_compilation_unit(
+        content, meta.problem, meta.workspace, meta.target_path.parent)
 
     t0 = time.perf_counter()
     diags: list = []
@@ -1159,11 +1279,11 @@ def validate_file(content: str) -> str:
         response["timed_out"] = True
         response["error"] = ("validate_file elaboration did not complete "
                              "within 120s; result indeterminate")
-    if sibling_stubs:
+    if inlined_slugs:
         # Tell the agent which sibling sub-goal stubs were inlined so a
         # citation could be resolved; diagnostics are already remapped to
         # this content's own line numbers.
-        response["inlined_siblings"] = [slug for slug, _ in sibling_stubs]
+        response["inlined_siblings"] = inlined_slugs
     _log_for(meta, {"event": "tool_call", "name": "validate_file",
                     "args": {"content_lines": full_content.count("\n") + 1},
                     "duration_s": dur,
