@@ -27,6 +27,7 @@ Public surface (framework side; agent stage = TODO):
   - extract_forward_metadata(text) -> ForwardMetadata | (None, err)
   - is_decline(text)            -> bool
   - commit_forward_lemma(...)    -> CommitOutcome
+  - commit_forward_alias(...)    -> CommitOutcome | None (dedupe-hit alias)
   - run_forward(...)            — outer entry (stub awaiting agent stage)
 """
 from __future__ import annotations
@@ -283,6 +284,111 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
                          status=initial_status)
 
 
+def commit_forward_alias(conn: sqlite3.Connection, *,
+                         problem: str, workspace: Path,
+                         metadata: ForwardMetadata,
+                         body: str,
+                         match: "Any",
+                         ) -> CommitOutcome | None:
+    """Forward dedupe hit on a PROVED canonical → register the lemma as a
+    proved alias delegating to that canonical, instead of declining.
+
+    `body`: the candidate's import-prepended source (same text fed to
+    `find_canonicals_batch`). `match`: the `CanonicalMatch` whose kind is
+    `'alias'` (in-DB proved goal) or `'library_alias'` (proved `Library/`
+    decl) — both are proved canonicals.
+
+    Returns a `CommitOutcome` (status='proved') on build-verified success,
+    or `None` when the alias body fails to build — the dedupe probe
+    elaborates in a bare `dedupe_check` namespace WITHOUT the problem's
+    opens, so its verdict can diverge from the real build (BT 2026-05-29
+    g3410: probe OK, real `apply @… <;> assumption` failed to unify). On
+    `None` the caller falls back to committing the original body as a
+    novel goal.
+
+    Mirror of Backward's alias placement (backward.py:1199-1267); kept out
+    of `commit_forward_lemma` to preserve that function's "no dedupe
+    handling" contract.
+    """
+    from ..quality import dedupe
+    from ..lsp import lifecycle as gateway_lifecycle
+    from ._lake import lean_path_to_module
+
+    proofs_dir = db.problem_dir(workspace, problem) / "proofs"
+    proofs_dir.mkdir(parents=True, exist_ok=True)
+    dest = proofs_dir / f"L_{metadata.slug}.lean"
+    if dest.exists():
+        raise FileExistsError(
+            f"forward target {dest} already exists (slug collision)"
+        )
+
+    if match.kind == "library_alias":
+        # Canonical is a committed Library decl (no in-DB goal). Delegate
+        # via the fully-qualified name — its namespace isn't open here.
+        alias_content = dedupe.build_alias_content(
+            original_content=body,
+            canonical_module=match.library_module,
+            canonical_slug=match.library_fqn,
+            apply_expr=f"@{match.library_fqn}",
+        )
+        canonical_label = f"Library {match.library_fqn}"
+        canonical_goal_id: int | None = None
+    else:
+        canonical = db.get_goal(conn, match.goal_id)
+        canonical_module = lean_path_to_module(
+            workspace, workspace / canonical["lean_path"])
+        alias_content = dedupe.build_alias_content(
+            original_content=body,
+            canonical_module=canonical_module,
+            canonical_slug=canonical["slug"],
+        )
+        canonical_label = f"goal {match.goal_id} ({canonical['slug']})"
+        canonical_goal_id = match.goal_id
+
+    dest.write_text(alias_content, encoding="utf-8")
+    # Build-verify the actual alias file before trusting the probe (see
+    # docstring). write_olean=True so downstream citers resolve the .olean.
+    av = gateway_lifecycle.verify_file(
+        dest, write_olean=True, workspace=workspace)
+    if not (av.get("ok") and not av.get("error")):
+        why = av.get("error") or "; ".join(
+            d.get("message", "")
+            for d in (av.get("diagnostics") or [])
+            if d.get("severity") == "error"
+        ) or "alias body failed to build"
+        print(f"[dedupe] forward {metadata.slug} → {canonical_label} "
+              f"REJECTED — build-verify failed ({why[:160]}); treating as "
+              f"novel forward goal", flush=True)
+        try:
+            dest.unlink()
+        except OSError:
+            pass
+        return None
+
+    print(f"[dedupe] forward {metadata.slug} → {canonical_label} "
+          f"[build-verified]", flush=True)
+    rel_lean_path = dest.relative_to(workspace).as_posix()
+    statement = _extract_statement_string(
+        body, metadata.slug, metadata.kind) or ""
+    goal_id = db.insert_goal(
+        conn, problem=problem, slug=metadata.slug,
+        lean_path=rel_lean_path, statement=statement,
+        origin="forward", depth=0, entry_kind=metadata.entry_kind,
+        kind=metadata.kind,
+    )
+    # Same detached + proved bookkeeping as a sorry-free leaf-bypass
+    # Forward (commit_forward_lemma) — the alias body is sorry-free.
+    db.set_goal_detached(conn, goal_id, True)
+    db.update_goal_status(conn, goal_id, "proved")
+    if canonical_goal_id is not None:
+        # Record the alias edge so prune retains the canonical while this
+        # alias is alive (library_alias has no in-DB goal → skip).
+        db.set_alias_target(conn, goal_id, canonical_goal_id)
+    conn.commit()
+    return CommitOutcome(goal_id=goal_id, lean_path=rel_lean_path,
+                         status="proved")
+
+
 def _extract_statement_string(body: str, slug: str,
                               kind: str = "theorem") -> str | None:
     """Pull the declaration signature substring after `<kind> <slug>`.
@@ -479,42 +585,60 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                 failure_detail=f"lake elaborate errors: {err_diag[:3]}",
             )
 
-        # Dedupe: Phase 2 `_eligible_disproved` only blocks on
-        # disproved; alias to a still-alive canonical means the agent's
-        # lemma is redundant with existing library. Retryable — agent
-        # can try a different angle.
+        # Dedupe: a hit on a PROVED canonical (kind 'alias' /
+        # 'library_alias') means the agent's lemma is already in the
+        # library / alive tree.
         from ..quality import dedupe
         hits = dedupe.find_canonicals_batch(
             conn, workspace, problem=problem, parent_goal_id=0,
             candidates=[(metadata.slug, body)],
         )
-        if hits and hits[0] is not None and hits[0].kind in (
-                "alias", "library_alias"):
-            h = hits[0]
-            where = (f"Library decl {h.library_fqn}"
-                     if h.kind == "library_alias"
-                     else f"existing goal {h.goal_id}")
-            return PipelineResult(
-                outcome="failed", failure_reason="forward_no_new_goal",
-                failure_detail=f"dedupe blocked: alias to {where}",
-            )
+        # Point 3 (2026-06-15): a Forward dedupe hit on a PROVED canonical
+        # used to decline as `forward_no_new_goal`. That sent the
+        # Strategist into a reshape→re-inject spin — P13 logged 8 Forwards
+        # over 7h, each re-aliasing to a different alive twin of the same
+        # crossing keystone (4231/4236/4238/4261/4281). Instead, mirror
+        # Backward: delegate the proof to the canonical and register the
+        # lemma as a proved alias (transparent — the inject outcome fills
+        # via the normal proved cascade, no special signal). A build-verify
+        # failure (bare-namespace probe false positive, or a real gap)
+        # falls back to committing the original body as a novel goal.
+        # `disproved` / `no_progress` kinds (the latter never arises for
+        # Forward — parent_goal_id=0 has no ancestor pool) are untouched
+        # and fall through to the normal commit below.
+        outcome: CommitOutcome | None = None
+        h = hits[0] if hits else None
+        if h is not None and h.kind in ("alias", "library_alias"):
+            try:
+                outcome = commit_forward_alias(
+                    conn, problem=problem, workspace=workspace,
+                    metadata=metadata, body=body, match=h,
+                )
+            except FileExistsError as e:
+                return PipelineResult(
+                    outcome="failed", failure_reason="forward_no_new_goal",
+                    failure_detail=f"slug collision: {e}",
+                )
+            # outcome is None → alias body failed to build → fall through
+            # and commit the novel lemma below.
 
-        try:
-            outcome = commit_forward_lemma(
-                conn, problem=problem, workspace=workspace,
-                attempts_dir=attempts_dir, metadata=metadata,
-                source_filename=src.name,
-            )
-        except FileExistsError as e:
-            return PipelineResult(
-                outcome="failed", failure_reason="forward_no_new_goal",
-                failure_detail=f"slug collision: {e}",
-            )
-        except Exception as e:
-            return PipelineResult(
-                outcome="failed", failure_reason="forward_no_new_goal",
-                failure_detail=f"commit raised: {type(e).__name__}: {e}",
-            )
+        if outcome is None:
+            try:
+                outcome = commit_forward_lemma(
+                    conn, problem=problem, workspace=workspace,
+                    attempts_dir=attempts_dir, metadata=metadata,
+                    source_filename=src.name,
+                )
+            except FileExistsError as e:
+                return PipelineResult(
+                    outcome="failed", failure_reason="forward_no_new_goal",
+                    failure_detail=f"slug collision: {e}",
+                )
+            except Exception as e:
+                return PipelineResult(
+                    outcome="failed", failure_reason="forward_no_new_goal",
+                    failure_detail=f"commit raised: {type(e).__name__}: {e}",
+                )
 
         # Phase 2 — when a sorry-bearing Forward lemma comes from an
         # Inject decision, link the goal to the decision row so the

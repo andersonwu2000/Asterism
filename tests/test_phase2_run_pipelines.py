@@ -493,3 +493,185 @@ def test_run_forward_consumes_strategist_brief(
     assert "## Active goals" in captured_context[0]
     assert "## TREE" not in captured_context[0]
     assert "## Forward\n" not in captured_context[0]
+
+
+# ---------------------------------------------------------------------
+# run_forward — Point 3: dedupe hit on a PROVED canonical aliases through
+# (mirror of Backward) instead of declining `forward_no_new_goal`.
+# ---------------------------------------------------------------------
+
+def _insert_proved_canonical(conn: sqlite3.Connection, workspace: Path, *,
+                             slug: str, statement: str = "True") -> int:
+    """A proved Forward-origin canonical with a real lean file, the kind a
+    Point-3 alias delegates to."""
+    rel = f"Problems/p/proofs/L_{slug}.lean"
+    (workspace / rel).write_text(
+        "import Mathlib\nnamespace Problems.p\n"
+        f"theorem {slug} : {statement} := trivial\nend Problems.p\n",
+        encoding="utf-8")
+    gid = db.insert_goal(
+        conn, problem="p", slug=slug, lean_path=rel,
+        statement=statement, origin="forward", depth=0,
+        entry_kind="Backward",
+    )
+    db.update_goal_status(conn, gid, "proved")
+    conn.commit()
+    return gid
+
+
+def test_run_forward_dedupe_alias_registers_proved_alias(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mock_lsp_verify,
+) -> None:
+    """Point 3: a Forward dedupe hit on a PROVED in-DB canonical no longer
+    declines (`forward_no_new_goal`) — it registers the lemma as a proved
+    alias delegating to that canonical (mirror of Backward), breaking the
+    reshape→re-inject spin (P13 4231/4261/...)."""
+    from Tooling.quality import dedupe
+    _insert_root(conn)
+    canon_id = _insert_proved_canonical(conn, workspace, slug="canon")
+
+    def fake_spawn(**kw):
+        (kw["attempts_dir"] / "new_my_alias.lean").write_text(
+            "namespace Problems.p\n"
+            "-- Forward rationale: restates canon.\n"
+            "-- entry_kind: Backward\n"
+            "theorem my_alias : True := by sorry\n"
+            "end Problems.p\n",
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    # Force the dedupe verdict — the real probe needs lake.
+    monkeypatch.setattr(
+        dedupe, "find_canonicals_batch",
+        lambda *a, **k: [dedupe.CanonicalMatch(goal_id=canon_id, kind="alias")],
+    )
+
+    r = forward.run_forward(
+        conn, problem="p", workspace=workspace, mfst=mfst,
+        pipeline_id="test-fwd-alias",
+    )
+    assert r.outcome == "proved"
+    g = conn.execute(
+        "SELECT status, alias_target_id, origin FROM goals"
+        " WHERE problem='p' AND slug='my_alias'"
+    ).fetchone()
+    assert g is not None
+    assert g["status"] == "proved"
+    assert g["alias_target_id"] == canon_id
+    assert g["origin"] == "forward"
+    # The alias file delegates to the canonical via `apply`.
+    alias_file = (workspace / "Problems" / "p" / "proofs"
+                  / "L_my_alias.lean").read_text(encoding="utf-8")
+    assert "apply canon <;> assumption" in alias_file
+    assert "import Problems.p.proofs.L_canon" in alias_file
+
+
+def test_run_forward_dedupe_library_alias_no_alias_target(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mock_lsp_verify,
+) -> None:
+    """Point 3 (library tier): a hit on a proved `Library/` decl registers
+    a proved alias delegating to the fully-qualified name — and records NO
+    `alias_target_id` (no in-DB goal for prune to retain)."""
+    from Tooling.quality import dedupe
+    _insert_root(conn)
+
+    def fake_spawn(**kw):
+        (kw["attempts_dir"] / "new_lib_alias.lean").write_text(
+            "namespace Problems.p\n"
+            "-- Forward rationale: restates a Library decl.\n"
+            "-- entry_kind: Backward\n"
+            "theorem lib_alias : True := by sorry\n"
+            "end Problems.p\n",
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    monkeypatch.setattr(
+        dedupe, "find_canonicals_batch",
+        lambda *a, **k: [dedupe.CanonicalMatch(
+            goal_id=-1, kind="library_alias",
+            library_module="Library.Foo",
+            library_fqn="Library.Foo.bar")],
+    )
+
+    r = forward.run_forward(
+        conn, problem="p", workspace=workspace, mfst=mfst,
+        pipeline_id="test-fwd-libalias",
+    )
+    assert r.outcome == "proved"
+    g = conn.execute(
+        "SELECT status, alias_target_id FROM goals"
+        " WHERE problem='p' AND slug='lib_alias'"
+    ).fetchone()
+    assert g is not None
+    assert g["status"] == "proved"
+    assert g["alias_target_id"] is None
+    alias_file = (workspace / "Problems" / "p" / "proofs"
+                  / "L_lib_alias.lean").read_text(encoding="utf-8")
+    assert "apply @Library.Foo.bar <;> assumption" in alias_file
+    assert "import Library.Foo" in alias_file
+
+
+def test_run_forward_dedupe_alias_build_fails_falls_back_to_novel(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Point 3 fallback: when the alias body fails to build (the
+    bare-namespace dedupe probe was a false positive, or there is a real
+    gap), the Forward commits the original body as a novel open goal —
+    no proved alias is recorded. (Mirror of Backward's build-verify
+    fallback, backward.py:1251-1267.)"""
+    from Tooling.quality import dedupe
+    from Tooling.lsp import lifecycle as gateway_lifecycle
+    _insert_root(conn)
+    canon_id = _insert_proved_canonical(conn, workspace, slug="canon2")
+
+    def fake_spawn(**kw):
+        (kw["attempts_dir"] / "new_my_novel.lean").write_text(
+            "namespace Problems.p\n"
+            "-- Forward rationale: genuinely novel lemma.\n"
+            "-- entry_kind: Backward\n"
+            "theorem my_novel : True := by sorry\n"
+            "end Problems.p\n",
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    monkeypatch.setattr(
+        dedupe, "find_canonicals_batch",
+        lambda *a, **k: [dedupe.CanonicalMatch(goal_id=canon_id, kind="alias")],
+    )
+
+    # self_verify (attempts_dir new_*.lean) passes; the alias build
+    # (under proofs/) fails — the probe was a false positive.
+    def fake_verify(target_path, **kw):
+        in_proofs = "proofs" in Path(target_path).parts
+        if in_proofs:
+            return {"ok": False, "error": None, "diagnostics": [
+                {"severity": "error", "message": "apply failed to unify"}]}
+        return {
+            "ok": True, "diagnostics": [], "diagnostic_count": 0,
+            "olean_written": False, "olean_path": None,
+            "axioms": None, "axiom_error": None,
+        }
+    monkeypatch.setattr(gateway_lifecycle, "verify_file", fake_verify)
+
+    r = forward.run_forward(
+        conn, problem="p", workspace=workspace, mfst=mfst,
+        pipeline_id="test-fwd-fallback",
+    )
+    assert r.outcome == "success"
+    g = conn.execute(
+        "SELECT status, alias_target_id FROM goals"
+        " WHERE problem='p' AND slug='my_novel'"
+    ).fetchone()
+    assert g is not None
+    assert g["status"] == "open"
+    assert g["alias_target_id"] is None
+    # The novel commit wrote the agent's original body, not an alias.
+    novel = (workspace / "Problems" / "p" / "proofs"
+             / "L_my_novel.lean").read_text(encoding="utf-8")
+    assert "sorry" in novel
+    assert "apply canon2" not in novel
