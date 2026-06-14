@@ -61,7 +61,7 @@ Theorem name MUST equal the filename slug.
 Place the directive immediately above the theorem in `patch.lean`, keep `:= by sorry`, write no sub-goal files. Pick one:
 
 - `unprovable` — false in this hypothesis scope. Description must give a counterexample (specific values + arithmetic check).
-- `return_to_parent` — provable after parent strategy is fixed. Description must name the fix concretely (missing hypothesis, wrong substructure).
+- `return_to_parent` — the goal statement you were handed is incomplete/wrong (parent's decomposition omitted a hypothesis or gave the wrong substructure); provable only once the parent re-states it. Name the missing piece.
 - `shelve` — use in either case:
   - Missing vocabulary / theorems / abstractions to proceed. Describe the missing piece (def / structure / class / theorem statement) and how you'd use it.
   - Goal embeds a large concrete data structure (matrix literal, case-lambda, polynomial) that would replicate across every sub-goal. Propose a `def` factoring it out + the signature.

@@ -38,7 +38,7 @@ Framework checks: forbidden-lemma grep + `patch.lean` elaborates clean (framewor
 Place the directive immediately above the theorem, keep `:= by sorry`. Pick one:
 
 - `unprovable` — false in this hypothesis scope. Description must give a counterexample (specific values + arithmetic check).
-- `return_to_parent` — provable after parent strategy is fixed. Description must name the fix concretely (missing hypothesis, wrong substructure).
+- `return_to_parent` — the goal statement you were handed is incomplete/wrong (parent's decomposition omitted a hypothesis or gave the wrong substructure); provable only once the parent re-states it. Name the missing piece.
 - `shelve` — lacks vocabulary (def / structure / class) or a Mathlib lemma
   needed to close the goal. Description must name the missing piece
   (the type / structure / class and how you'd use it, or the lemma statement
