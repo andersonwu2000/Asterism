@@ -1461,10 +1461,14 @@ def _backward_parse_and_commit(
         # the time-of-check/use race already moved.
         for rid in sorted(revive_ids):
             cur = db.get_goal(conn, rid)
-            if cur is not None and str(cur["status"]) in ("shelved", "dead"):
+            # Only 'shelved' is revivable by citation; 'dead' is rejected
+            # at the gate (never reaches revive_ids). Re-check status to
+            # skip any the time-of-check/use race already moved to a
+            # non-revivable terminal.
+            if cur is not None and str(cur["status"]) == "shelved":
                 db.update_goal_status(conn, rid, "open")
                 print(f"[backward-revive] cited sibling goal {rid} "
-                      f"({cur['slug']}) {cur['status']} → open", flush=True)
+                      f"({cur['slug']}) shelved → open", flush=True)
         next_pos = len(linked_ids)
         for offset, auto_gid in enumerate(sorted(auto_link_ids)):
             db.link_subgoal(conn, strategy_id=strategy_id,

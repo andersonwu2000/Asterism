@@ -63,18 +63,23 @@ def _resolve_cite_dependencies(
         - else: reject (caller is a leaf-bypass / Builder that runs
           axiom probe at submit, can't tolerate transitive sorry from
           cited stub)
-      * status ∈ ('shelved', 'dead') — soft/context terminals that dedupe
-        does NOT block (db.py `goals.status` contract):
+      * status='shelved' — soft terminal that dedupe does NOT block:
         - if `allow_auto_link`: collect goal_id in BOTH the auto-link set
-          (so it links as a `strategy_subgoals` row) AND the revive set
-          (so the caller reopens it to 'open' — the citing strategy gives
-          it a fresh live path back to root, so it re-dispatches). Fixes
-          cascade-shelved leaves being uncitable forever (agent_feedback
-          T8).
+          (links as a `strategy_subgoals` row) AND the revive set (caller
+          reopens it to 'open' — the citing strategy gives it a fresh live
+          path back to root, so it re-dispatches). Fixes cascade-shelved
+          leaves being uncitable forever (agent_feedback T8).
         - else: reject (leaf-bypass / Builder can't tolerate transitive
           sorry; revival is a decomposition-path capability).
-      * status='disproved' → always reject (counterexample found; dedupe
-        BLOCKS it, so does citation — the one never-citable status)
+      * status ∈ ('dead', 'disproved') → always reject (never revived):
+        - 'dead' = wrong AS STATED in its parent's decomposition
+          (parent_needs_fix); the db.py `goals.status` contract makes it
+          never-Reopen, so citing it would re-attempt a known-wrong
+          statement. The same statement may be valid in a fresh context —
+          re-declare it as your own `new_<slug>.lean` sub-goal stub (a
+          corrected re-statement under your strategy) instead of citing
+          the dead goal.
+        - 'disproved' = counterexample found; the statement is false.
       * unknown slug / cross-problem import → skip (lake's
         "unknown identifier" catches genuine typos)
 
@@ -117,9 +122,9 @@ def _resolve_cite_dependencies(
             else:
                 bad.append((slug, status))
             continue
-        if status in ("shelved", "dead"):
-            # Soft/context terminal — revivable. dedupe doesn't block it,
-            # so neither does citation: reopen + auto-link on the decomp
+        if status == "shelved":
+            # Soft terminal — revivable. dedupe doesn't block it, so
+            # neither does citation: reopen + auto-link on the decomp
             # path; reject on leaf-bypass/Builder (transitive sorry).
             if allow_auto_link:
                 auto_link.add(int(row["id"]))
@@ -127,18 +132,27 @@ def _resolve_cite_dependencies(
             else:
                 bad.append((slug, status))
             continue
-        # 'disproved' — hard terminal (counterexample); never citable.
+        # 'dead' / 'disproved' — hard terminals, never revived by citation.
+        #  - 'dead' = the statement is wrong AS STATED in its parent's
+        #    decomposition (parent_needs_fix); reviving re-attempts a
+        #    known-wrong statement (db.py goals.status contract: dead is
+        #    never-Reopen). A corrected re-statement under a fresh context
+        #    is fine — re-declare it as a `new_<slug>.lean` stub instead.
+        #  - 'disproved' = counterexample found; the statement is false.
         bad.append((slug, status))
     if not bad:
         return auto_link, revive, None
     lines = [f"  - `{slug}` (status={status})" for slug, status in bad]
     if allow_auto_link:
-        # On the decomp path the only remaining reject is a `disproved`
-        # cite — a statement shown false. shelved/dead are revived above.
+        # On the decomp path `bad` holds disproved (false) and dead
+        # (wrong-as-stated) cites; shelved are revived above.
         hint = (
-            "\n\nThese goals are DISPROVED (a counterexample was found) "
-            "— they are false and cannot be cited. Rewrite the proof to "
-            "avoid them, or pick a different decomposition angle."
+            "\n\nThese goals cannot be cited: DISPROVED = a counterexample "
+            "was found (the statement is false); DEAD = wrong as stated in "
+            "its parent's decomposition, so citing re-attempts a known-wrong "
+            "statement. Re-declare a dead goal's statement as your own "
+            "`new_<slug>.lean` sub-goal stub (a corrected re-statement under "
+            "your strategy), or pick a different decomposition angle."
         )
     else:
         # Leaf-bypass / Builder path: any non-proved cite is rejected

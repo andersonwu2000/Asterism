@@ -177,27 +177,42 @@ def test_decomp_auto_links_attempting_and_pending_review(
     assert revive == set()
 
 
-def test_decomp_revives_shelved_and_dead_siblings(
+def test_decomp_revives_shelved_sibling(
     conn: sqlite3.Connection,
 ) -> None:
-    """T8: shelved / dead are soft/context terminals that dedupe does NOT
-    block, so citation revives them rather than rejecting. They land in
-    BOTH auto_link (linked as sub-goals) and revive (caller reopens to
-    'open'). No error — the citing strategy gives them a fresh live path
-    to root."""
+    """T8: shelved is a soft terminal that dedupe does NOT block, so
+    citation revives it rather than rejecting. It lands in BOTH auto_link
+    (linked as a sub-goal) and revive (caller reopens to 'open'). No error
+    — the citing strategy gives it a fresh live path to root."""
     g_sh = _insert_goal(conn, "sh", status="shelved")
-    g_de = _insert_goal(conn, "de", status="dead")
-    patch = (
-        "import Problems.p.proofs.L_sh\n"
-        "import Problems.p.proofs.L_de\n"
-    )
+    patch = "import Problems.p.proofs.L_sh\n"
     auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=True,
     )
     assert err is None
-    assert auto_link == {g_sh, g_de}
-    assert revive == {g_sh, g_de}
+    assert auto_link == {g_sh}
+    assert revive == {g_sh}
+
+
+def test_decomp_rejects_dead_sibling(
+    conn: sqlite3.Connection,
+) -> None:
+    """'dead' = the statement is wrong AS STATED in its parent's
+    decomposition (parent_needs_fix); the goals.status contract makes it
+    never-Reopen. Citing it would re-attempt a known-wrong statement, so
+    it is REJECTED (not revived) — the agent must re-declare the statement
+    fresh as its own sub-goal stub under a corrected context."""
+    _insert_goal(conn, "de", status="dead")
+    patch = "import Problems.p.proofs.L_de\n"
+    auto_link, revive, err = _resolve_cite_dependencies(
+        conn, problem="p", patch_text=patch,
+        declared_slugs=set(), allow_auto_link=True,
+    )
+    assert err is not None
+    assert "de" in err
+    assert "DEAD" in err or "dead" in err
+    assert revive == set()
 
 
 def test_decomp_rejects_disproved_sibling(
