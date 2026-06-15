@@ -2255,6 +2255,44 @@ def increment_goal_attempts(conn: sqlite3.Connection, goal_id: int) -> int:
     return int(row["attempts"]) if row else 0
 
 
+def goals_reachable_excluding(conn: sqlite3.Connection, *,
+                              problem: str,
+                              exclude_goal_id: int) -> set[int]:
+    """Goal ids in `problem` reachable from a root / detached seed via
+    proposed|succeeded strategies WITHOUT passing through
+    `exclude_goal_id` (it is removed as a node, cutting every path that
+    ran through it — transitively, since the CTE never re-adds it).
+
+    The shelve cascade uses this to spare a descendant of a just-
+    terminated goal that still has an INDEPENDENT live path to root — a
+    cross-branch cited / auto-linked sibling. A shared (multi-parent) DAG
+    node must only be cascade-shelved when it loses its LAST live parent,
+    not merely the one that just died; otherwise a goal another live
+    strategy still needs becomes un-dispatchable and that strategy hangs.
+    Mirrors `open_goals`' alive CTE (root ∪ detached ∪ subgoals-of-live-
+    strategies-of-live-goals), scoped to one problem, minus the excluded
+    node. Maintains the invariant `open ⇒ reachable`."""
+    rows = conn.execute(
+        "WITH RECURSIVE alive(id) AS ("
+        "    SELECT id FROM goals"
+        "      WHERE problem = ? AND origin = 'root' AND id != ?"
+        "    UNION"
+        "    SELECT id FROM goals"
+        "      WHERE problem = ? AND detached = 1 AND id != ?"
+        "    UNION"
+        "    SELECT g.id FROM goals g"
+        "    JOIN strategy_subgoals ss ON ss.subgoal_id = g.id"
+        "    JOIN strategies s ON s.id = ss.strategy_id"
+        "    JOIN alive a ON a.id = s.goal_id"
+        "    WHERE g.problem = ? AND g.id != ?"
+        "      AND s.status IN ('proposed','succeeded')"
+        ") SELECT id FROM alive",
+        (problem, exclude_goal_id, problem, exclude_goal_id,
+         problem, exclude_goal_id),
+    ).fetchall()
+    return {int(r["id"]) for r in rows}
+
+
 def open_goals(conn: sqlite3.Connection,
                *, scope: str | None = None) -> list[sqlite3.Row]:
     """Open goals eligible for dispatch.

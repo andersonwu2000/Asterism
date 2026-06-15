@@ -148,6 +148,22 @@ def _cascade_shelve_descendants(
     string `shelved` regardless of how the goal got there
     (ConfirmShelve, parent_needs_fix, descendant cascade, threshold
     exhaustion). There is no separate `cascade_shelved` state."""
+    # DAG-aware guard: spare any descendant that still has an INDEPENDENT
+    # live path to root (one that does NOT run through `goal_id`) — a
+    # cross-branch cited / auto-linked sibling. Without this, the dying
+    # branch would also shelve a goal another live strategy still needs,
+    # leaving it un-dispatchable (status='shelved' ∉ open_goals) and that
+    # strategy hung. Computed once: saving paths are external to
+    # `goal_id`'s subtree, so this cascade never mutates them — the set
+    # stays valid throughout. Maintains the invariant `open ⇒ reachable`.
+    grow = conn.execute(
+        "SELECT problem FROM goals WHERE id = ?", (goal_id,),
+    ).fetchone()
+    saved = (
+        db.goals_reachable_excluding(
+            conn, problem=str(grow["problem"]), exclude_goal_id=goal_id)
+        if grow is not None else set()
+    )
     transitioned = 0
     frontier = [goal_id]
     seen: set[int] = set()
@@ -166,6 +182,11 @@ def _cascade_shelve_descendants(
             ).fetchall():
                 sub_id = int(r["id"])
                 sub_status = str(r["status"])
+                if sub_id in saved:
+                    # Independent live path exists — not orphaned by this
+                    # death. Leave it (and its subtree, alive via that
+                    # same path) untouched.
+                    continue
                 if sub_status in ("proved", "shelved", "disproved", "dead",
                                   "pending_strategist_review"):
                     # Walk past proved descendants (their own subtrees

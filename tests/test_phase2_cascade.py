@@ -30,6 +30,8 @@ from Tooling.core.dispatcher import (
     _propagate_shelve,
     _propagate_disproved,
     _propagate_dead,
+    _cascade_shelve_descendants,
+    _inward_kill_strategies,
     cascade_one,
 )
 from Tooling.state import db
@@ -85,6 +87,68 @@ def _link(conn: sqlite3.Connection, strategy_id: int,
             (strategy_id, sg, pos),
         )
     conn.commit()
+
+
+# ---------------------------------------------------------------------
+# DAG-aware shelve cascade: a shared (multi-parent) goal is only shelved
+# when it loses its LAST live parent, not when one branch dies.
+# ---------------------------------------------------------------------
+
+def _status(conn: sqlite3.Connection, gid: int) -> str:
+    return str(conn.execute(
+        "SELECT status FROM goals WHERE id = ?", (gid,)).fetchone()["status"])
+
+
+def test_cascade_spares_cross_branch_shared_goal(
+    conn: sqlite3.Connection,
+) -> None:
+    """R → S_R → {A, B}; A → S_A → X and B → S_B → X (X shared, e.g. a
+    cross-branch cited / auto-linked sibling). Shelving branch A must NOT
+    shelve X — B's live path still needs it. Only when B also dies does X
+    lose its last live path and get shelved."""
+    r = _insert_goal(conn, slug="r", origin="root", status="open")
+    s_r = _insert_strategy(conn, goal_id=r)
+    a = _insert_goal(conn, slug="a", status="open")
+    b = _insert_goal(conn, slug="b", status="open")
+    _link(conn, s_r, [a, b])
+    s_a = _insert_strategy(conn, goal_id=a)
+    s_b = _insert_strategy(conn, goal_id=b)
+    x = _insert_goal(conn, slug="x", status="open")
+    _link(conn, s_a, [x])
+    _link(conn, s_b, [x])
+
+    # Shelve branch A (the real flow inward-kills the shelved goal's own
+    # strategies; replicate so the alive CTE cuts the A-path).
+    db.update_goal_status(conn, a, "shelved")
+    _inward_kill_strategies(conn, a)
+    _cascade_shelve_descendants(conn, a)
+    assert _status(conn, a) == "shelved"
+    assert _status(conn, x) == "open"   # spared — B's path still needs it
+
+    # Now branch B dies too → X loses its last live path → shelved.
+    db.update_goal_status(conn, b, "shelved")
+    _inward_kill_strategies(conn, b)
+    _cascade_shelve_descendants(conn, b)
+    assert _status(conn, x) == "shelved"
+
+
+def test_cascade_shelves_single_parent_descendant(
+    conn: sqlite3.Connection,
+) -> None:
+    """Common (tree) case unaffected: a descendant whose only path runs
+    through the dying goal is still cascade-shelved."""
+    r = _insert_goal(conn, slug="r", origin="root", status="open")
+    s_r = _insert_strategy(conn, goal_id=r)
+    a = _insert_goal(conn, slug="a", status="open")
+    _link(conn, s_r, [a])
+    s_a = _insert_strategy(conn, goal_id=a)
+    leaf = _insert_goal(conn, slug="leaf", status="open")
+    _link(conn, s_a, [leaf])
+
+    db.update_goal_status(conn, a, "shelved")
+    _inward_kill_strategies(conn, a)
+    _cascade_shelve_descendants(conn, a)
+    assert _status(conn, leaf) == "shelved"
 
 
 # ---------------------------------------------------------------------
