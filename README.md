@@ -6,138 +6,155 @@
 ## Progress Log
 
 ### 2026-06-14
-Reconciliation logic was hardened by introducing a first-class `stalled` strategy status (Phase 11) to replace an ad-hoc reconcile workaround and by fixing the pending-review reconciler so it no longer drops shelved (parked) roots. The spawn infrastructure was made more robust through a single per-spawn compilation state in which each in-spawn tool elaborates exactly one unit, and by tracking in-flight spawns via actual process liveness rather than gateway sessions. Prompt guidance was also refined to scope `return_to_parent` to genuinely malformed goals and to have the Strategist look for an existing lemma before resorting to `Inject(Forward)`.
+- Overhauled the bookkeeping for concurrent proof attempts, adding an explicit "stalled" status to replace an earlier stopgap, keeping shelved attempts visible for review, and counting active searches by live processes rather than stale connections.
+- Made each proving step elaborate exactly one unit against a single shared Lean compilation state.
+- Refined the prover's instructions to look for an existing lemma before deriving a new intermediate step, and to back out of a subgoal only when its statement is genuinely malformed.
 
 ### 2026-06-13
-Stall detection was hardened by consolidating the stuck-problem logic into a single shared predicate, ensuring it fires for collapsed problems, adding per-tick reconciliation of stuck states, and giving the routine Strategist its own running-time cadence. A parallel effort improved handling of cited sibling sub-goals?reating a goal as citable unless disproved, reviving shelved-or-dead cited siblings, inlining their stubs during file validation, and seeding the backward skeleton with the goal's own imports?hile backward decomposition gained camelCase slug normalization and rejection of circular or colliding sub-goals. Supporting changes kept the agent-feedback prompts general and added an off-by-default framework-feedback questionnaire for development use.
+- Unified how the system detects when a sub-problem has stalled, and extended automatic cleanup to cover sub-problems that had already collapsed into dead ends.
+- A lemma that was shelved but never disproved is now revived whenever another step still cites it, with its statement reinserted so that step can be checked.
+- Tightened how a goal is split into sub-goals: normalizing and de-duplicating their names, rejecting circular decompositions, and seeding each one with the right namespace context.
 
 ### 2026-06-12
-Hardened the librarian's library-migration pipeline by closing four known extraction gaps (handling dotted declaration names, skipping Mathlib citations in bridge probes, and adding Gate D verbatim fallbacks for definitions blocked by nominal boundaries) along with slicer and desk-check fixes. Improved framework robustness by scoping the periodic TREE.md refresh and idle-exit logic to in-scope problems, indexing strategies by goal, and making the gateway reap runaway Lean elaborations instead of hanging. Also added a new Geometry benchmark set: a Stokes-theorem definition tower with boundary and form-bundle chains, comprising 15 problems plus supporting library material.
+- Built out a tower of definitions and 15 new problems leading up to Stokes' theorem, covering manifold boundaries and differential-form bundles.
+- Improved how the system reuses existing library lemmas and definitions, fixing a series of edge cases around qualified names, local variable bindings, and citations.
+- Made the prover more resilient to runaway or stalled Lean elaborations, cutting off stuck jobs instead of leaving them to hang.
 
 ### 2026-06-11
-Work focused on hardening the librarian's library-migration pipeline: Defs.lean extraction and migration now faithfully replay imports, opens, section variables, docstrings, and leading attributes, and replace_token correctly rewrites dot-projection use-sites, closing several known correctness gaps. Classification was made safer and more scalable ??declarations can no longer land in another problem's file, cross-problem shared definitions are redirected, dependency sorting accounts for Defs-source edges, and planned file sizes are capped at classify time, with cleanup stages refactored into a subpackage backed by a file-size ratchet. Robustness under concurrency and long-running synthesis also improved, with same-path migrate units serialized to close a TOCTOU race, shared-file clobbering guarded, and new heartbeat rungs handling merged-environment synthesis timeouts and truncated gateway responses; the framework additionally gained support for `@[instance] theorem` roots for Prop-class obligations.
+- Hardened the machinery that gathers generated definitions into a reusable Lean library, preserving docstrings, section variables, imports, and notation so relocated code still compiles.
+- Improved how declarations are sorted into files, keeping each problem's definitions separate, redirecting shared ones, and capping how large any file can grow.
+- Made concurrent file rewrites safe against race conditions and sharpened detection of stalled or timed-out proof-search attempts.
+- Added framework support for theorems that discharge typeclass (instance) obligations.
 
 ### 2026-06-10
-The Librarian cleanup pipeline was substantially restructured ??consolidating its stages into unified `decide` and `polish` phases, adding a new mathlib-naming `rename` stage and a final free-form `audit` review, and fixing a series of correctness bugs around citation dropping, alias coverage, keystone renaming, and silently swallowed failures. Dispatcher reliability was improved by persisting Librarian fail-counts across restarts and re-enqueuing batches after infrastructure failures. The project also gained proper packaging and a GitHub Actions CI pipeline (with the Ubuntu leg now blocking), six prompt-code drifts were corrected, and the strategist model was upgraded to Claude Fable 5.
+- Streamlined the pass that rewrites a finished proof into mathlib's idiom — aligning lemma names, trimming unused imports, and removing redundant references — folding many small steps into a few and fixing several cases where leftover references or errors were silently dropped.
+- Made the task scheduler more robust to restarts and infrastructure failures, so stalled proof batches are retried rather than left stuck.
+- Added packaging and continuous integration, and switched the proof-planning component to a newer model.
 
 ### 2026-06-09
-Hardened the librarian's deduplication pipeline by fixing same-file recall, requiring cross-file drops to have a surviving declaration in the dropped declaration's import closure, rebuilding stale oleans before correctness gates, and retiring the legacy flat pair-marker path. Advanced the P2/P3 cleanup stages with mechanical removal of unused Decidable arguments, proof simplification and docstring polish that strips framework-process jargon and comments from migrated proofs, and a more robust variable-extraction pass that un-prenexes and hoists shared binders with section grouping and per-stage timing. Also improved orchestration reliability: the dispatcher now re-fires the bridge gate when re-cleaning already-promoted problems, and the watcher correctly labels and retires cleanup sub-agents to fix an active-agent over-count.
+- Refined the step that removes redundant lemmas and definitions from the generated proof library, including dropping thin wrappers that merely re-alias existing Mathlib results.
+- Polished the cleaned-up Lean code by simplifying proofs, improving docstrings, removing unused arguments, and stripping internal framework comments and jargon.
+- Reorganized declarations into sections with shared variables hoisted out, and ensured compiled files were rebuilt before verification checks were re-run.
 
 ### 2026-06-08
-Asterism's deduplication and librarian subsystems received substantial reliability and performance work, including a fix for mis-splitting quantifier-bearing conclusions, repair of a `real_mods` regression that had been crashing bridges, and a corpus-classification optimization that cut runtime from 240s to roughly 1s by reading the cross-problem corpus only once. The librarian's per-file dispatcher was refactored into a staged per-declaration cleanup pipeline with topological file ordering, isolated typecheck helpers, and a gated hierarchy for bridge handling, while a ruff F821 lint gate was added to guard against undefined-name regressions.
+- Built a pipeline that scans its library of already-proven results and removes duplicate and definitionally-equal lemmas, processing declarations in dependency order with isolated type-checking.
+- Fixed a parser that mishandled theorem statements whose conclusions carry quantifiers, and repaired a regression that had been crashing the deduplication pass.
+- Sped that pass up sharply by reading the shared problem corpus only once, cutting one classification step from about 240 to 21 seconds.
 
 ### 2026-06-07
-Per-decl audit markers became the dedup pipeline's backbone, gaining parallel per-file marking with focused context and a marker-recall fix, alongside mechanical thin-wrapper detection. Building on this, an LLM dedup layer (v1b) was added to merge wrappers, bridge equivalent declarations, and cite or drop lemmas already proved at Mathlib tier, advancing the librarian's chain-integration work into its first phase.
+- Began deduplicating the automatically generated lemma library, dropping entries that merely re-prove results already in Mathlib.
+- Added detection of trivial wrapper lemmas alongside an LLM-assisted pass for subtler duplicates, run per file in parallel with a separate verdict for each declaration.
 
 ### 2026-06-06
-Continued Phase 3 library cleanup by mechanically deduplicating redundant declarations in the librarian (the v1a pass), while adding a safety guard to ensure that declarations consumed across multiple problems are never dropped during this process, preserving correctness as the library is trimmed.
+- Cleaned up duplicate entries in the shared library of proven results, adding a safeguard so that a result still relied on by another problem is never removed.
 
 ### 2026-06-05
-Sustained the linear-algebra proving campaign, mechanizing and Library-izing a cluster of spectral and positivity results?ckart?oung low-rank approximation (SVD), the Courant?ischer min-max theorem, and Sylvester's criterion?hile reorganizing the problem set under domain folders and harvesting the campaign's lemmas into a reusable cross-problem Library to enable proof deduplication. Hardened the orchestration runtime with improved crash recovery (sparing live attempt directories, sweeping stale migration and Library probe artifacts at startup), dispatcher fixes that drop redundant Strategist work once a root goal is proved, and watchdog-driven completion reclaim with a wider carry-over budget. Retired dead librarian code from v0.3 and refreshed the design and data-flow documentation against the current implementation.
+- Proved three classical linear-algebra theorems — the Eckart–Young best low-rank approximation theorem, the Courant–Fischer min-max characterization of eigenvalues, and Sylvester's criterion — and added them to its reusable lemma library.
+- A broader linear-algebra campaign produced several further new proofs and re-derived some earlier ones more compactly by reusing shared lemmas.
+- The lemma library was turned into a cross-problem pool, so results established for one problem can now be reused as building blocks for others.
+- Tightened the proof checker so that a verification timeout is reported as indeterminate rather than as a success.
 
 ### 2026-06-04
-The day's work centered on the librarian subsystem, which gained a more robust reference-relabeling and migration pipeline: case-insensitive proof-file and sibling-import resolution, redirection of transitive, nested, and qualified self-references to kept lemmas, batched axiom checking, a comment-aware sorry check to eliminate false positives, and a v0.3 inventory that tracks only main's live dependency closure to drop orphan debris. Alongside this, the proving pipeline was extended so that spawns can cite a reusable Library as input, with the gateway relaunch logic and a no-progress backward guard hardened and the strategist now requesting a user amend when Defs vocabulary collides with mathlib.
+- Made the system's library of already-proved lemmas citable by new proof attempts, and trimmed that library down to only the lemmas the main theorem actually depends on, dropping unused leftovers.
+- Hardened the machinery that renames and relocates those lemmas — redirecting stale references, reading proof files case-insensitively, ignoring `sorry` placeholders that appear only in comments, and checking a proof's axiom dependencies in a single pass.
+- Backward search now discards subgoals that make no progress toward the goal, and a new check flags when a freshly introduced definition collides with an existing mathlib name so it can be renamed before proving continues.
 
 ### 2026-06-03
-Migrated the librarian's v0.3 migrate pipeline to a per-decl, incremental model?etiring the whole-file spawn in favor of per-decl source assembly, build, and gateway sessions?nd restructured it into mechanical-only phases (keep-all dedup, no-LLM migration, and a mechanical Gate B bridge) to eliminate reliance on per-step agents. Alongside this, the file-watcher gained a read-only Librarian pipeline view with clearer, session- and work-kind-aware labelling, and the scheduler was reworked for dynamic DAG-based file parallelism, fixing several daemon lifecycle and session-slot leak bugs (#92).
+- Rebuilt how newly proved results get folded into the reusable library, replacing the language-model step with deterministic rules.
+- Made that integration operate on one definition or lemma at a time, building and checking each incrementally instead of processing whole files at once.
+- Fixed several reliability problems in the background library-maintenance process, including stuck sessions, leaked resources, and the handling of mutually-dependent files.
+- Added a new soundness stress-test problem and improved the live monitoring of library work.
 
 ### 2026-06-02
-Auto-migrated a stale-but-populated database on connect, and hardened the librarian subsystem with a series of correctness and prompting improvements?aking it fail loudly when an upstream dependency targets a non-reshapeable node, correctly folding transitive dependencies through self-merged siblings, and restructuring the cleanup prompt into three explicit reshape steps while teaching the needs-upstream cascade and fixing decline/gate drift.
+- Made the component that reorganizes Asterism's accumulated library of lemmas raise an error instead of silently failing when asked to restructure a result it cannot handle.
+- Improved its dependency tracking, correctly following dependencies through results that have been merged together and propagating requirements when a result rests on something not yet proven.
+- Added automatic upgrading of an outdated but already-populated results database when it is opened.
 
 ### 2026-06-01
-Asterism's Librarian pipeline received the bulk of the day's work, gaining a mechanical-migration pre-pass that mechanically assembles and relabels declarations (with seeded `sorry` holes and fixed citation signatures) and live agentic gates—a `bridge` work-kind that re-gates edited Library files and an upstream-reshape re-open cascade—while the dispatcher learned to re-enqueue failed chain steps and per-step `.olean` maintenance and a new `library_decls` "cleaned" lifecycle closed several cross-file staleness and stall gaps. Alongside this, the dead auto root-promotion path in the old `quality/library` module was retired in favor of the Librarian, and the agent workflow documentation was rewritten with a new overview figure and rebuilt PDF.
+- Built out automatic integration of new results into the shared library, mechanically assembling migrated definitions and inserting `sorry` placeholders where proofs were not yet available.
+- Fixed recurring migration failures by reconciling definition signatures, repairing the usage dependency graph, and redirecting references to definitions that had been merged together.
+- Made the system recompile and re-verify the library files it edits, keeping per-step compiled artifacts current to avoid stale builds.
+- Improved recovery from stalled work by re-queuing failed steps and re-opening an upstream result when a downstream change forced it to be reshaped.
 
 ### 2026-05-31
-Migrated the first Librarian artifact—the Jordan `IsJordanForm` keystone—into the shared Library, validating the new end-to-end migration path. Built out the Librarian agent pipeline (dedup/classify/migrate) with its database schema, dispatcher routing, and Gate B/D safety checks (bridge-statement pinning and rfl def-equivalence verification) to ensure migrated declarations stay faithful to their originals. Hardened supporting infrastructure with per-file axiom checks against the Manifest whitelist and stricter root-statement namespace validation during CLI init.
+- Began building a system that automatically folds individually proven results into a shared, reusable library, de-duplicating and reclassifying each one as it is absorbed.
+- Migrated the first result through this pipeline: a lemma characterizing Jordan normal form.
+- Added safeguards to keep migrated results faithful, checking that each is definitionally equal to its original statement and free of unintended axioms.
 
 ### 2026-05-30
-The day's work advanced the new Librarian pipeline through its first milestones (M0–M2), adding an opt-in Manifest flag, inventory tracking, and an import-closure gate, while on the proving side the framework machine-proved the Banach–Tarski paradox on the closed unit ball as a substantial stress test of its capabilities.
+- Machine-checked a proof of the Banach–Tarski paradox for the closed unit ball in ℝ³.
+- Added optional tooling to catalog the available library results and check their dependencies before use.
 
 ### 2026-05-29
-Hardened the proving pipeline's reliability by forcing UTF-8 console and child-process I/O so Lean's Unicode goals no longer crash the run on cp950 consoles, and by making the dedupe stage build-verify alias bodies rather than trust probe verdicts (also no longer treating lake's rc=0 as success, since it can emit errors with a zero exit code). Tightened the strategist/dispatcher state machine to never downgrade a proved goal back to shelved and to reject contradictory shelve-ancestor/inject-descendant decisions, and corrected a stale reset message that ignored the user-owned status of Root.lean. Separately, upgraded the backward, strategist, and forward roles to claude-opus-4-8 and clarified in the Strategist prompt examples that multiple Forward proposals per batch are allowed.
+- Forced UTF-8 console I/O so that proof goals containing mathematical Unicode symbols no longer crash the run on Windows.
+- Hardened duplicate-goal detection to actually compile and check a candidate proof before accepting it, since the Lean build can report success while still emitting errors.
+- Added safeguards so a goal that has already been proved can never be downgraded and set aside.
+- Upgraded the underlying language models to the latest Opus release.
 
 ### 2026-05-28
-Proved an unpivoted LU factorization in Lean (by induction on n via the Schur complement), adding to the library's linear-algebra results. The bulk of the day consolidated the strategist's reactivation logic by replacing the separate "Reopen" decision with a single unified "Inject" mechanism across the dispatcher, retry, and prompt layers, while hardening pipeline scheduling against races (deferring bfs_refill to in-flight pipelines, pinning entry_kind on injected goals, and adding a lazy verify gate and forensic logging). Supporting changes tightened project initialization with a dual type-check gate on hand-written Root.lean files, adjusted run configuration (pool size and budget), and reoriented the strategist's routine prompts toward methodology.
+- Proved the existence of an unpivoted LU factorization, by induction on the matrix size using the Schur complement.
+- Consolidated the several ways the system could restart or redirect a stalled proof goal into a single reactivation mechanism.
+- Retuned the prover's run settings (longer time budget, smaller worker pool, less frequent replanning) and steered its planning prompts toward higher-level methodology.
 
 ### 2026-05-27
-The watcher's token accounting was substantially reworked to anchor totals to daemon start and accumulate cumulatively (rather than per-tick or per-watcher), with usage now broken down by run kind and model, weighted by Anthropic's per-model pricing, and rendered as a Markdown table in the stats output. Run classification was also refined so watchdog fresh-rescue spawns and stage-3 rescue postmortems are correctly tagged as the 'rescue' kind. Separately, the dispatcher gained more robust failure handling, re-enqueueing the Strategist on infrastructure failures and supporting fast aborts via a shutdown event that kills in-flight subprocesses.
+- Added detailed accounting of language-model token usage and estimated cost—broken down by task type and model, accumulated over the entire run, and presented as a table—including properly categorizing automatic recovery attempts.
+- Made the job scheduler more resilient, automatically retrying runs that fail for infrastructure reasons and shutting down promptly by terminating work already in progress.
 
 ### 2026-05-26
-The day's work spanned correctness hardening and a new proof: a Cholesky factorization was completed for real positive-definite matrices via the LDL route, while several safety and efficiency improvements were made to the proving pipeline—a file-level "sorry" tripwire in strategy verification, a defense-in-depth overhaul of pruning (no auto-fire, backup-move, and an integrity gate), and a Tier 1 slug-pattern short-circuit to skip the kernel probe during deduplication. Supporting these, the strategist-decisions database was extended to allow consistent dual-set Backward injection, and goal context was refined to surface the top three proved sibling goals.
+- Completed a machine-checked proof of the Cholesky factorization for real positive-definite matrices, obtained via the LDL decomposition route.
+- Made proof search more efficient by supplying a handful of closely related, already-proved results as context and by skipping goals that duplicate earlier attempts.
+- Tightened safeguards so that proofs still containing unfinished placeholders are caught, and added protections against accidentally discarding valid results during cleanup.
 
 ### 2026-05-25
-The day's work centered on hardening the verification pipeline's reliability and robustness: the `prune` import-walk expansion was extended to recognize `Domain.slug`-style problem names, `.olean` materialization was moved off the housekeeping critical path in `verify` to avoid blocking, and `ManifestCache.load` was made defensive so that missing or unparseable manifest files are skipped rather than crashing. Together these changes reduce fragility in problem discovery and proof verification, which matters for keeping unattended framework runs from stalling on edge cases.
+- Extended the dependency-pruning step to recognize problem names written with a domain prefix.
+- Improved robustness by skipping missing or unparseable index files when loading, and moved generation of compiled Lean artifacts off the maintenance critical path.
 
 ### 2026-05-24
-On 2026-05-24 the team improved the framework's robustness and reflection mechanics: a startup recovery step now salvages orphaned `patch.lean` content into per-goal drafts, the spawn timeout was raised from 15 to 16 minutes to reduce premature kills, and the backward/reflection pipeline was streamlined by reframing binder labels and emitting per-subgoal HINT blocks directly above the theorem line while dropping a redundant HINT pass. Documentation was also extended with a LaTeX port of the agent-workflow writeup for the DeepMind co-math introduction.
+- Refined how proof hints are supplied, attaching a tailored hint block to each subgoal and dropping a now-redundant earlier hinting pass.
+- Added a startup recovery step that salvages leftover partial proof fragments into per-goal drafts so earlier progress isn't lost.
+- Wrote up the prover's overall workflow as a standalone document and gave each proof attempt slightly more time to run.
 
 ### 2026-05-23
-The framework's orchestration layer received the bulk of the day's attention, with new safeguards across the dispatcher, strategist, cascade, and backward stages (gating first launch on bootstrap completion, splitting strategist prompts per trigger, routing exhausted attempts to pending-review, and rejecting malformed sub-goal stubs), alongside reliability fixes to manifest hot-reloading, build-based lemma materialization for deduplication, and TTL-based reclamation of leaked gateway session slots. On the mathematical content side, four substantial linear-algebra results were proved in Lean—QR factorization (square invertible real case), SVD (rectangular complex), and Schur upper-triangularization—demonstrating the pipeline's growing reach. Together these changes strengthen both the robustness of the automated proving loop and the breadth of theorems it can close.
+- Proved three classical matrix factorizations in Lean: the QR decomposition (square invertible real matrices), the singular value decomposition (rectangular matrices over the reals or complexes), and Schur triangularization.
+- Made the proving pipeline more reliable by caching already-built lemmas to skip duplicate work, reloading the goal list when it changes on disk, and reclaiming worker sessions left behind by stalled attempts.
+- Tightened error handling so that malformed sub-goals missing a theorem statement are rejected and attempts that run out of tries are routed to review instead of being dropped.
 
 ### 2026-05-22
-Asterism advanced both its proving engine and its supporting infrastructure on 2026-05-22: the Forward prover was unified under a single Curry-Howard prove loop spanning all declaration kinds, the Strategist and Backward components gained tighter handling of shelved/pending work (scoping reopens to promised batches, surfacing pending reopen-promises, and extending shelving to cover missing theorems), and the dedupe and citation-gate logic were hardened with shelved-revival linkage and a shared cite-gate module. Alongside this, the team reorganized the problem and documentation layout (domain-prefixed problems, a split design/delivered archive, refreshed architecture and data-flow docs) and added a mathlib gap-depth scoring CLI. As an end-to-end stress test, the framework was pointed at the fundamental group of the circle (π₁(S¹) ≅ ℤ), which it proved as an artifact while exposing and fixing gaps in the relevant covering-space claims and mathlib API surfacing.
+- Proved that the fundamental group of the circle is isomorphic to ℤ, run as a stress-test target for the prover.
+- Unified the main proving loop across all kinds of declarations via the Curry-Howard correspondence.
+- Refined how open subgoals are set aside, revived, and de-duplicated, and added parallel batching of proof attempts.
+- Added a command-line tool that scores gaps in Mathlib by dependency depth.
 
 ### 2026-05-21
-The framework proved and recorded the Cauchy Residue Theorem as a new artifact, while the bulk of the day's work hardened the orchestration layer—improving retry logic (trap-aware forced progress, forced postmortems), goal/strategy recovery and re-enqueueing of in-flight injects, cascade and shelving symmetry, and a Windows-specific fix for a false-positive zombie-process check. Additional refinements tightened the backward-proving path, adding orphan-strategy cleanup on escaped exceptions and automatic linking of cited open siblings as strategy sub-goals.
+- Completed a formal, machine-checked proof of the Cauchy Residue Theorem.
+- Made the automated prover more robust to crashes and interrupted runs, recovering stalled goals and cleaning up abandoned proof attempts.
+- Improved how the system tracks dependencies between goals by following the actual Lean import structure rather than just its own internal records.
 
 ### 2026-05-20
-The day's work centered on a major rewrite of the Strategist to a multi-decision schema with verify-retry and cross-decision consistency rules, hardened by a series of new guards (tighter ConfirmShelve and root-state checks, rejection of no-op-only batches on shelved/frozen roots) and synchronized prompts. In parallel, the Phase 6 lifecycle gained explicit handling for orphaned and dead goals — a new `dead` status for parents needing fixes, a split shelve cascade, extended Reopen safety walks, and race-condition guards in the orphan-sweep and cascade paths — while the Backward strategy was tightened to reject patches that import still-open sibling goals.
+- Rebuilt the planning component to issue several decisions in a single step, with consistency checks across them and an automatic retry when a decision fails verification.
+- Tightened the rules for when the planner may set a problem aside, including a principle that a goal being hard is not by itself grounds to abandon it.
+- Improved automatic cleanup of the goal tree when a branch becomes unreachable, sweeping abandoned sibling goals and dead ancestors and skipping redundant review of dead chains.
+- Stopped accepting partial proofs that depend on sibling subgoals which are themselves still unproved.
 
 ### 2026-05-19
-Refined the framework's goal-lifecycle and decision semantics, narrowing the "shelve" action to genuine vocabulary needs, routing definition requests through InitializeDefs/Forward rather than ad-hoc initialization, and replacing the bootstrap_done gate with an explicit "frozen" pre-launch root state while fixing several first-launch and Inject-batch race conditions. In parallel, the residue-theorem test problem was reworked from an 11-piece dependency chain back to a single problem with framework-initialized definitions, exercising these new flows. Smaller fixes hardened reconciliation against false drift and corrected daemon exit-code and root-integrity-probe timeout reporting.
+- Added a residue-theorem benchmark, switching from a hand-built eleven-lemma decomposition to running it as a single problem with the system generating its own auxiliary definitions.
+- Refined when a subgoal is set aside because it needs a missing definition, and made that decision propagate to dependent subgoals.
+- Fixed several startup race conditions and corrected exit-code and timeout reporting when launching a proof run.
 
 ### 2026-05-18
-Throughout the day the team built out the Phase 2 framework integrating the new Strategist and Forward agents into the proving pipeline—adding dispatcher triggers, schema migrations and cascade rules, a batched multi-Inject flow, and support for Forward producing non-theorem outputs (def/structure/class) that bypass the prove loop—while hardening Forward's reliability with auto-prepended imports, in-pipeline retry, and recovery re-enqueuing. Several correctness fixes addressed goals being invisible to BFS (detached/sorry-bearing outputs and reopen status), disk-versus-DB drift, and timeout-trap takeover, alongside a schema-wide rename of `chain_briefs` to a unified `briefs` list. The demo watcher was reworked to map panes to stable gateway pool slots, resolve labels from context, and clear stale panes, improving visibility into the running daemon.
+- Added a planning stage that, when a proof attempt stalls, reviews the failure and proposes new approaches — including intermediate lemmas and supporting definitions — instead of merely retrying the same goal.
+- Gave the system the ability to author supporting Lean constructs (definitions, structures, and type classes), not just theorems, with the required imports inserted automatically.
+- Fixed several bookkeeping bugs that had hidden partial results and reopened goals from the search, and corrected mismatches between the on-disk and database state.
 
 ### 2026-05-17
-The day's work was documentation-only, finalizing the Phase 2 design covering the Strategist and Forward components; the design was refined through post-review fixes (collapsing the two-step Defs amend, folding together forward failure reasons, and trimming redundancy) and clarified to allow the Strategist's T2 decisions to inject library buildup before reaching a terminal verdict.
+- Published a design for the prover's next stage, pairing a high-level planning component with forward, fact-driven reasoning.
+- Settled that the system may keep introducing auxiliary lemmas and definitions to build up a working library before committing to a final proof verdict.
 
 ### 2026-05-16
-Multiple dedupe fixes landed to make alias and shelved-equivalent detection work correctly on Windows, including corrected name extraction for def-form declarations and per-call logging of alias/shelved hit counts. On the infrastructure side, the dispatcher gained per-kind quota backoff with cleanup of failed strategies, the gateway moved to 1:1 worker-pipeline binding with a borrow-based probe mode for the /verify endpoint, and the framework now propagates Defs.lean imports into agent-authored proof files.
-
-### 2026-05-15
-The day's work split into a documentation/refactor cleanup push and a math pilot. On the framework side, the team split the monolithic `Tooling/` directory into seven subpackages and untangled the root-integrity gate from the dormant library auto-promote path—hardening the integrity gate to fire once per root via a DB marker and to always run its axiom probe with a safe framework default—while dropping a legacy re-export shim and doing a broad documentation cleanup (relocating operator-internal notes, prose-ifying feature IDs, and regenerating briefs). In parallel, they began an `sl2` representation-theory pilot, drafting a proof that the cyclic highest-weight module V_n is irreducible.
-
-### 2026-05-14
-Two themes that day: a small repository-hygiene cleanup that removed a stale `lean_shared_env/` entry from the gitignore, and a maintenance pass on the internal ?7.2 comparison report that added timestamps to the comparison table and reordered its entries chronologically. Both were minor housekeeping changes with no impact on the proving pipeline itself.
-
-### 2026-05-13
-The miniF2F-Valid 244-problem pilot was completed and written up: an internal report was drafted and corrected (with accurate DeepSeek/Seed/HyperTree comparison numbers), STATUS.md was rewritten for the milestone, and a single upstream issue reporting 9 miniF2F-valid bugs was prepared in ready-to-post form after retracting a fabricated PR claim and citing the relevant prior fixes. Several errata corrected over-claims, notably reverting two imo_1990_p3 false alarms traced to stale-olean and shelved-lemma import artifacts rather than real sorryAx regressions. Supporting infrastructure also improved, including a Traditional Chinese parallel translation, archived design docs, a fix to the dispatcher's workspace-AND gate with restored per-problem library promotion, and CLI replay of Defs.lean opens into the Root.lean stub on init/reset.
-
-### 2026-05-12
-Building on the minif2f benchmark work, the team kernel-verified a batch of disproofs exposing source bugs in the dataset—mostly mis-parsed operator precedence and division that trivialize or invalidate the stated problems—and recorded the manual Defs.lean adapter fixes (e.g. adding `open Real`, normalizing signatures) in an errata ledger documenting where human intervention was needed. On the framework side, they resolved a gateway event-loop deadlock by offloading the MCP tool and `/verify` handler bodies to a thread pool, and hardened the backward prover by rejecting strategies containing `sorry` and routing edits through `patch.lean` to eliminate a writer race.
-
-### 2026-05-11
-Integrated a miniF2F benchmark adapter with a new `init-batch`/`--scope` CLI for multi-problem runs, landing a 5/5 pilot on the mathd_algebra set whose proofs were promoted to the shared library. Hardened the proving gateway and dispatcher against Windows IOCP accept races (via a manual SelectorEventLoop), added circuit-breaking and finer transient-vs-permanent failure classification, propagated verify timeouts through the RPC layer, and collapsed the verification cascade to a single root check. Also stood up the spawn-sandbox module for backward/builder isolation, strengthened the dedupe check to provability-via-apply, and closed out an end-to-end Sylvester–Gallai proof.
-
-### 2026-05-10
-Reworked the stuck-session detection pipeline around a streaming Anthropic SSE parser and a redesigned watchdog (v4) that trips on combined trap conditions and timeouts, retiring the old idle-window heuristic, and rebuilt the recovery path as a two-stage fresh-session takeover (rescue plus postmortem) with hardened TIMEOUT salvage and thinking-token caps to break max-token deadlocks. In parallel, the decline-directive system was unified into a single four-token vocabulary shared across the Builder and Backward strategies, and the Backward verifier's build-versus-LSP approach was toggled and ultimately settled. These changes matter because they make long-running proof attempts far more resilient to hangs and give the agents a consistent way to abandon dead ends.
-
-### 2026-05-09
-Consolidated proof verification onto the gateway by standing up a `/verify` endpoint backed by an in-worker olean/axiom RPC, migrating all callsites off the retired `/check_build` path, and hardening the gateway with dedicated crash logging, slot-acquire instrumentation, response timestamps, and tuned diagnostic/timeout handling. In parallel, the dispatcher and Backward pipeline gained correctness and safety fixes—an axiom probe on leaf-bypass acceptance, protection against cascade "success" clobbering verify-set status, a singleton daemon lock, and a once-per-pipeline pristine-goal snapshot—and the `proj_nonexpansive` problem was proved end-to-end at depth 3 with full goal coverage.
-
-### 2026-05-08
-The day's work centered on standing up a shared LSP Gateway (a persistent K=1 backend exposed over HTTP MCP, then a Phase 2 worker pool with content-swap and the new GatewayRpc/lean-asterism-server binary), and on migrating the Builder and Backward provers from slow lake-build feedback to in-session LSP validation routed through that gateway, including a new `validate_file` tool to catch sub-goal stub errors early. In parallel, proof correctness was hardened by making the axiom probe the single gate for marking goals proved (rebuilding the olean before `#print axioms`), and reliability was improved by replacing the thinking-token cap with a watchdog-and-rescue mechanism, fixing warmup race conditions, and tightening retry limits, reset robustness, and several tunable constants. Supporting cleanup removed dead code, plugged a session leak, and added quota-exhaustion detection.
-
-### 2026-05-07
-The day's work centered on a BRIEF/LESSONS documentation landing: the project split per-problem context into separate BRIEF.md and LESSONS.md files, updated the 2026-05-07 status accordingly, and added a reflection step that spawns at successful pipeline terminals to capture lessons automatically. A combined review pass then folded in fixes across all three changes.
-
-### 2026-05-06
-Asterism completed a major refactor toward a unified in-pipeline retry model (Phase 7), splitting the monolithic pipeline into separate builder and backward modules, replacing per-session retry mechanics with a shared in-pipeline helper, and dropping the now-obsolete session_id columns and design docs. The team also overhauled goal naming so that the Backward strategy and Builder annotate descriptive, collision-safe sub-goal slugs flowing through a single patch.lean output (Phases 1–6), retiring the older F22 playbook mechanism and folding goal history into the Context.md rendering. On the validation side, the Sylvester–Gallai and Prime Number problems were proved end-to-end, with SG running on Opus roughly 1.5× faster than the Sonnet baseline.
-
-### 2026-05-05
-Successfully proved the Sylvester–Gallai problem end-to-end (4h 16min, three standard axioms), and hardened the run loop around it by introducing a two-phase spawn (separate body, commit, and postmortem stages) with retuned timeouts and a 1K-token/min thinking-budget cap, plus a Windows-safe glob fix after reverting an earlier two-phase commit attempt. The Backward and Builder strategies gained better feedback handling—surfacing infeasibility counterexamples to the next retry, skipping redundant dispatch when a placement already proves a goal, and routing sub-goals to Builder or Backward via a new Manifest "Entry kind" directive. Prompts and Manifest conventions were standardized (a stay-abstract directive merged into Rules, lemma-hint and statement sections normalized) to make problem files parse cleanly and reduce duplicate goals.
-
-### 2026-05-04
-Migrated the Backward prover to skeleton-driven decomposition and replaced the incremental-save Verify pipeline with a postmortem-spawn design (F55/F56) that persists partial output so timed-out spawns no longer lose work, alongside fixes to make the Mathlib allowlist and lemma-name verification actually effective. Completed a broad P0–P2 hardening pass that fixed several F53/F54 Builder regressions, refactored the monolithic dispatcher and pipeline into typed, testable modules (recovery, context, SpawnRC), and added the first end-to-end integration tests plus operational tooling and refreshed architecture/data-flow documentation.
-
-### 2026-05-03
-The note:
-
-Work centered on improving the Forward and Backward proof-search engines: a batch of features (F48–F54) added a Builder decline channel, cross-strategy sub-goal reuse, library promotion with unified lemma hints, Grep/Loogle lemma-discovery tools for agents, skeleton-driven strategy patches, and same-session retry logic with enriched prompts for unknown-constant errors. Two concurrency fixes (P0-#1 and P0-#2) resolved a promotion race and stopped the goal-reconciliation pass from undoing completed work, while serializing per-goal verification. The day's testbed churn added and then pruned several stress-test problems to exercise these changes.
-
-### 2026-05-02
-The day's work centered on a usability and operations consolidation, replacing ad-hoc per-problem commands with unified `asterism reset`/`status` tooling, a `doctor` pre-flight diagnostic, an `Asterism.yaml` config with a 4-step resolution chain, auto-rendered per-problem TREE.md views, and trimmed operator-facing docs. In parallel, a batch of solver-reliability fixes (F41–F46) hardened the agent pipeline—adding one-shot LLM patch repair on verify failure, anchoring agent working directories to the problem sandbox, inlining past attempts/verifications into context, and defending against `claude.exe` spawn and cold-start failures—while the two-phase Builder experiment (F40) was ablated and reverted. These improvements also enabled the compactness problem to be proved by Opus via a verified four-sub-goal root decomposition.
+- Improved detection of when a newly generated result duplicates or is logically equivalent to one already set aside.
+- Generated proof files now automatically inherit the project's shared definitions and namespace imports.
+- Paired each prover worker one-to-one with a proof-verification pipeline and added a lightweight probe mode for checks.
+- Added per-task-type backoff so the scheduler eases off when a resource quota is reached.
 
 <!-- ASTERISM-PROGRESS:END -->
 
