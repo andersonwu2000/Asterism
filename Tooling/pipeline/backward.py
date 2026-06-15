@@ -712,6 +712,25 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     if result.outcome != "success":
         if result.failure_reason in _INFRA_REASONS:
             db.delete_strategy(conn, strategy_id)
+        elif result.outcome == "moot":
+            # `moot` = the agent NEVER ran (retry pre-loop budget<=0, or a
+            # cascade re-check bailed before any spawn). The reserved row is
+            # an empty shell with no forensic value, exactly like an infra
+            # death — discard it, not mark it `dead`. Leaving moots as `dead`
+            # is what let the P13 4284 wedge moot-spin pile up 5458 empty dead
+            # strategies on ONE goal (2026-06-15): BFS re-dispatched Backward
+            # on the over-budget goal ~thousands of times, each reserving a
+            # row then retry-mooting. Guard emptiness (mirroring the escaped-
+            # exception handler above) so a mid-loop moot that somehow follows
+            # a partial commit keeps its content; an unrun shell is deleted.
+            row = conn.execute(
+                "SELECT proposal_md, scratch_path FROM strategies WHERE id=?",
+                (strategy_id,),
+            ).fetchone()
+            if row and (row["proposal_md"] or row["scratch_path"]):
+                db.update_strategy_status(conn, strategy_id, "dead")
+            else:
+                db.delete_strategy(conn, strategy_id)
         else:
             db.update_strategy_status(conn, strategy_id, "dead")
 

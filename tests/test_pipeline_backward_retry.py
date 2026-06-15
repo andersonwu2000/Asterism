@@ -215,6 +215,46 @@ def test_backward_agent_failure_keeps_strategy_dead(
     )
 
 
+def test_backward_moot_deletes_empty_strategy_row(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`moot` = the agent NEVER ran (retry pre-loop budget<=0 because the
+    goal is already over SHELVE_THRESHOLD). run_backward reserves a strategy
+    row BEFORE the retry helper, so the moot leaves it behind — an empty
+    shell with no forensic value, like an infra death. It must be DELETED,
+    not marked 'dead'. Regression: the P13 4284 wedge moot-spin piled up
+    5458 empty dead strategies on ONE goal because `moot` fell into the
+    mark-dead branch (BFS re-dispatched Backward on the over-budget goal
+    thousands of times, each reserving a row then retry-mooting) (2026-06-15)."""
+    from Tooling.core import dispatcher
+    gid = _seed_root_goal(tmp_path, conn)
+    # Push the goal over SHELVE_THRESHOLD so the retry helper pre-loop moots
+    # (budget = SHELVE_THRESHOLD - attempts <= 0) without ever spawning.
+    conn.execute("UPDATE goals SET attempts=? WHERE id=?",
+                 (dispatcher.SHELVE_THRESHOLD + 2, gid))
+    conn.commit()
+    spawned = {"n": 0}
+
+    def fake_spawn(**kw):
+        spawned["n"] += 1
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    r = pipeline.run_backward(
+        conn, goal_id=gid, workspace=tmp_path,
+        mfst=manifest.Manifest(problem="p", statement="True"),
+        pipeline_id="pid-bw-moot")
+    assert r.outcome == "moot"
+    assert spawned["n"] == 0, "pre-loop moot must not spawn an agent"
+    rows = conn.execute(
+        "SELECT id, status FROM strategies WHERE goal_id=?", (gid,)
+    ).fetchall()
+    assert rows == [], (
+        f"moot (agent never ran) must DELETE the empty reserved strategy, "
+        f"not mark it 'dead'; got {[dict(r) for r in rows]}")
+
+
 def test_each_dispatch_mints_fresh_strategy_id(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
