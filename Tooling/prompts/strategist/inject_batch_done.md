@@ -36,6 +36,7 @@ Output as `decision.json` — JSON array of one or more decisions.
 - Empty array rejected.
 - Inject(Forward) carries no `target_goal_id`; Inject(Backward/Builder) requires one.
 - Don't dig into tactics or Lean syntax. Lemma names, invariant constructions, proof techniques fair game.
+- Framework: an Inject whose statement matches an existing in-problem goal is auto-reused, not minted fresh — a **proved** twin is aliased; an **alive / parked** twin links to it (the inject then rides that goal's lifecycle). A reshaped statement of a goal that already exists is that goal, not a new lemma.
 
 ## Examples
 
