@@ -1951,6 +1951,22 @@ def null_inject_redispatch_specs(conn: sqlite3.Connection, *,
         elif pipeline in ("Backward", "Builder"):
             if r["target_id"] is None:
                 continue  # malformed — no target_goal_id; skip not dispatch
+            # Superseded by a LATER inject on the same target: the Strategist
+            # re-decided this goal (e.g. Builder #924 then Backward #926 on
+            # 4284 — a Builder→Backward routing switch). Only the LATEST inject
+            # per target is the live intent; an older one (ANY kind) is now
+            # obsolete. Redispatching it resurrects a stale, often wrong-kind
+            # attempt carrying a stale brief (P13 4284 2026-06-15: stale Builder
+            # #924 re-launched alongside the new Backward #926 — the better the
+            # Strategist routes, the more this bites). Forward targets the
+            # PROBLEM (target_id NULL, handled above) — each is a distinct
+            # lemma, never superseded this way.
+            if conn.execute(
+                "SELECT 1 FROM strategist_decisions WHERE decision_kind = 'Inject'"
+                " AND target_id = ? AND id > ? LIMIT 1",
+                (int(r["target_id"]), int(r["id"])),
+            ).fetchone() is not None:
+                continue
             if pipeline == "Backward" and r["produced_strategy_id"] is not None:
                 continue  # strategy committed; outcome from strategy terminal
             # NB: NO produced_goal_id guard for Builder — it proves in place,
@@ -1979,31 +1995,15 @@ def null_inject_redispatch_specs(conn: sqlite3.Connection, *,
             })
         # Unknown pipeline (legacy / malformed) — skip silently.
 
-    # Collapse to at most ONE redispatch per (target goal, kind). Recovery /
-    # reconcile must restore at most the single worker that was in-flight at
-    # stop — the bfs dispatch cap is 1 per (target, kind), so a goal never had
-    # two same-kind workers running at once. The Strategist never injects 2+
-    # on one target in a single batch (verified P13 2026-06-15), so multiple
-    # NULL injects on the same (target, kind) are cross-batch RESIDUE: an older
-    # parked attempt the Strategist re-injected OVER (each re-Inject reopens
-    # the goal, resurrecting the prior parked NULL inject). Only the latest is
-    # the live one. Without this, 47dac74's Builder redispatch would re-launch
-    # N racing workers on one goal / proof file (P13 4284: 909/911/920 all on
-    # 4284). Forward specs target the PROBLEM (each a distinct lemma), so they
-    # are never collapsed. Older residue rows stay NULL here, harmlessly —
+    # Per target, the Backward/Builder branch above already kept only the
+    # LATEST inject (older ones — any kind — were skipped as superseded), so
+    # `specs` carries at most one goal-targeted redispatch per goal plus the
+    # per-lemma Forward specs. This subsumes the earlier per-(target,kind)
+    # collapse and additionally handles cross-kind supersession (Builder→
+    # Backward), which that collapse missed (P13 4284 double-dispatch,
+    # 2026-06-15). Superseded NULL rows stay NULL here, harmlessly —
     # reconcile_settled_inject_outcomes settles them once the goal terminates.
-    latest_goal: dict[tuple[str, str], dict] = {}
-    out: list[dict] = []
-    for s in specs:
-        if s["target_kind"] != "Goal":
-            out.append(s)
-            continue
-        key = (s["target_id"], s["kind"])
-        prev = latest_goal.get(key)
-        if prev is None or s["decision_id"] > prev["decision_id"]:
-            latest_goal[key] = s
-    out.extend(latest_goal.values())
-    return out
+    return specs
 
 
 def queue_has_decision(conn: sqlite3.Connection, decision_id: int) -> bool:

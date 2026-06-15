@@ -998,8 +998,11 @@ def test_null_inject_redispatch_specs_applies_artifact_guards(
 ) -> None:
     _insert_problem(conn, name="alpha", bootstrap_done=1)
     tgt = _insert_sub(conn, "alpha", "tgt")   # real goal for FK target_id
+    # Separate target for the produced_strategy case so this test isolates the
+    # artifact GUARDS from latest-per-target supersession (covered separately).
+    tgt2 = _insert_sub(conn, "alpha", "tgt2")
     sid = db.insert_strategy(                  # real strategy for FK
-        conn, goal_id=tgt, lean_path="Problems/alpha/Root.lean",
+        conn, goal_id=tgt2, lean_path="Problems/alpha/Root.lean",
         scratch_path="Problems/alpha/proofs/_strategy_s1.lean",
         created_by="pid")
     d_fwd = _insert_null_inject(conn, problem="alpha", pipeline="Forward")
@@ -1008,7 +1011,7 @@ def test_null_inject_redispatch_specs_applies_artifact_guards(
     d_bwd = _insert_null_inject(conn, problem="alpha", pipeline="Backward",
                                 target_id=tgt)
     _insert_null_inject(conn, problem="alpha", pipeline="Backward",
-                        target_id=tgt, produced_strategy_id=sid)  # skip(strat)
+                        target_id=tgt2, produced_strategy_id=sid)  # skip(strat)
     specs = {s["decision_id"]: s for s in
              db.null_inject_redispatch_specs(conn)}
     assert set(specs) == {d_fwd, d_bwd}        # only the no-artifact ones
@@ -1076,32 +1079,33 @@ def test_null_inject_redispatch_builder_judged_by_target_not_backlink(
                           for s in db.null_inject_redispatch_specs(conn)}
 
 
-def test_null_inject_redispatch_collapses_residue_to_latest_per_target(
+def test_null_inject_redispatch_only_latest_inject_per_target(
     conn: sqlite3.Connection,
 ) -> None:
-    """Regression (P13 4284, 2026-06-15): a thrash loop that re-Injected a
-    Builder on the same goal across batches leaves multiple NULL injects on it
-    (each re-Inject reopens the goal, resurrecting the prior parked NULL).
-    Recovery must restore at most the LATEST (the one in-flight at stop), not
-    re-launch N racing workers on one proof file (the 909/911/920 case, which
-    47dac74's Builder redispatch would otherwise re-launch all three). Forward
-    (problem-targeted = distinct lemmas) is never collapsed; a Builder and a
-    Backward on the same goal are different (target, kind) and both kept."""
+    """Regression (P13 4284, 2026-06-15): per goal-target, ONLY the latest
+    Inject is redispatchable — every earlier one (ANY kind) is superseded. A
+    thrash loop / re-decision across batches reopens the goal and would
+    otherwise resurrect the stale earlier inject. Crucially this covers the
+    CROSS-KIND case (Builder→Backward routing switch): the live bug was a stale
+    Builder #924 re-launched alongside the new Backward #926 on 4284, because
+    the prior same-(target,kind) collapse only deduped within a kind. Forward
+    targets the problem (distinct lemmas, own target) — never superseded."""
     _insert_problem(conn, name="alpha", bootstrap_done=1)
     g = _insert_sub(conn, "alpha", "g")  # open
     d_old = _insert_null_inject(conn, problem="alpha", pipeline="Builder",
                                 target_id=g, produced_goal_id=g)
-    d_new = _insert_null_inject(conn, problem="alpha", pipeline="Builder",
+    d_mid = _insert_null_inject(conn, problem="alpha", pipeline="Builder",
                                 target_id=g, produced_goal_id=g)
     f1 = _insert_null_inject(conn, problem="alpha", pipeline="Forward")
     f2 = _insert_null_inject(conn, problem="alpha", pipeline="Forward")
+    # Strategist switches Builder→Backward on g: this Backward is now latest.
     d_bwd = _insert_null_inject(conn, problem="alpha", pipeline="Backward",
                                 target_id=g)
     ids = {s["decision_id"] for s in db.null_inject_redispatch_specs(conn)}
-    assert d_new in ids        # latest Builder on g kept (the in-flight one)
-    assert d_old not in ids    # older Builder residue on g collapsed away
-    assert d_bwd in ids        # Backward on g: different kind, kept alongside
-    assert {f1, f2} <= ids     # both Forwards kept (distinct lemmas)
+    assert d_bwd in ids        # latest inject on g = the live intent
+    assert d_old not in ids    # superseded (older Builder)
+    assert d_mid not in ids    # superseded — INCL. cross-kind by the Backward
+    assert {f1, f2} <= ids     # both Forwards kept (distinct lemmas, own target)
 
 
 def test_reconcile_reenqueues_null_inject_in_flight_gated(
