@@ -296,7 +296,10 @@ CREATE TABLE IF NOT EXISTS queue (
 -- structured params (pipeline name for Inject, scope/body for
 -- EmitDirective, file/proposed_body for RequestUserAmend, directive for
 -- Reopen). `outcome` is cascade-filled (e.g. 'forward_no_new_goal',
--- 'awaiting_human', 'accepted', 'rejected', 'consumed').
+-- 'awaiting_human', 'accepted', 'rejected', 'consumed'). `outcome_detail`
+-- (Phase, #4) carries the agent's rich terminal-decline reasoning (e.g. a
+-- Forward decline's `## Why` prose) so the Strategist's next wake sees WHY
+-- its brief was rejected, not just the coarse `outcome` enum.
 CREATE TABLE IF NOT EXISTS strategist_decisions (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     problem             TEXT NOT NULL REFERENCES problems(name),
@@ -346,6 +349,7 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
     produced_strategy_id INTEGER NULL DEFAULT NULL
                             REFERENCES strategies(id) ON DELETE SET NULL,
     outcome             TEXT NULL DEFAULT NULL,
+    outcome_detail      TEXT NULL DEFAULT NULL,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
 );
@@ -550,6 +554,12 @@ def init_schema(conn: sqlite3.Connection) -> None:
          "ALTER TABLE strategist_decisions ADD COLUMN produced_strategy_id"
          " INTEGER NULL DEFAULT NULL"
          " REFERENCES strategies(id) ON DELETE SET NULL"),
+        # #4 — rich terminal-decline reasoning (Forward `## Why` etc.) so
+        # the Strategist sees WHY its brief was declined, not just the
+        # coarse `outcome` enum. Additive nullable — no user_version bump.
+        ("outcome_detail",
+         "ALTER TABLE strategist_decisions ADD COLUMN outcome_detail TEXT"
+         " NULL DEFAULT NULL"),
     ):
         try:
             conn.execute(ddl)
@@ -1472,6 +1482,27 @@ def set_inject_decision_produced_goal(
         "UPDATE strategist_decisions SET produced_goal_id = ?,"
         " updated_at = ? WHERE id = ?",
         (goal_id, now(), decision_id),
+    )
+    conn.commit()
+
+
+def set_inject_decision_outcome_detail(
+    conn: sqlite3.Connection, decision_id: int, detail: str | None,
+) -> None:
+    """Stash a pipeline's rich terminal detail (e.g. a Forward decline's
+    `## Why` reasoning) on its Inject decision row's `outcome_detail`
+    column, so the Strategist's next wake sees WHY the brief was declined
+    (#4) — not just the coarse `outcome` enum.
+
+    Only writes while `outcome` is still NULL (pre-cascade): a real
+    settled outcome must not be disturbed. `cascade_one`'s later outcome
+    write preserves this value via COALESCE. No-op on empty detail."""
+    if not detail:
+        return
+    conn.execute(
+        "UPDATE strategist_decisions SET outcome_detail = ?, updated_at = ?"
+        " WHERE id = ? AND outcome IS NULL",
+        (detail, now(), decision_id),
     )
     conn.commit()
 

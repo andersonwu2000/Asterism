@@ -8,6 +8,7 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
 
 2. **Meta-analysis first.** Reflect on your own prior decisions:
    - If the batch has failed decisions (agent disproved a statement, Forward brick was mis-specified, proof direction was wrong, etc.) → change the proof structure or brief writing.
+   - A declined Forward shows its reason as `why:` in `## Completed Inject batches`. If it says your brief was under-specified (e.g. called a step "trivial" but named no lemma), name the specific lemma / state the obligation shape concretely in the re-Inject — don't just rephrase the same vague brief.
    - Cross-check `## Recent decisions` for repeating failure patterns → step back and reassess the math logic and methodology.
 
 3. **Process each reopen-promise** (your prior `ConfirmShelve` rows parked waiting for this batch):

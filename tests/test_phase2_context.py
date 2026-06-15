@@ -404,6 +404,36 @@ def test_inject_batch_done_surfaces_briefs_and_outcomes(
     assert "lake_build_error" in text
 
 
+def test_inject_batch_done_surfaces_outcome_detail_why(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, tmp_path: Path,
+) -> None:
+    """#4 — the completed-batch section shows a decline's `## Why`
+    (`outcome_detail`) so the Strategist sees WHY its brief was declined,
+    not just the coarse `failed:agent_declined` enum."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    ids = _seed_inject_batch_done(
+        conn, batch_id="batch-why",
+        briefs=["land foo_bridge"], outcomes=["failed:agent_declined"])
+    conn.execute(
+        "UPDATE strategist_decisions SET outcome_detail = ? WHERE id = ?",
+        ("agent declined (library_sufficient): Mathlib's "
+         "extDerivWithin_apply already covers it", ids[0]))
+    conn.commit()
+    attempts_dir = tmp_path / "_attempts_strategist"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="inject_batch_done",
+        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        pending_review_id=None,
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "## Completed Inject batches" in text
+    assert "why:" in text
+    assert "extDerivWithin_apply" in text
+
+
 def test_inject_batch_section_omitted_when_no_unack_batch(
     workspace: Path, conn: sqlite3.Connection,
     mfst: manifest.Manifest, tmp_path: Path,

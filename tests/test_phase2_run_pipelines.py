@@ -709,6 +709,42 @@ def _forward_dup_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
 
+def test_run_forward_decline_stashes_why_on_decision(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mock_lsp_verify,
+) -> None:
+    """#4 — a Forward decline's `## Why` reasoning is stashed on the
+    originating Inject decision's `outcome_detail` so the Strategist's
+    next wake sees WHY the brief was declined, not just
+    `failed:agent_declined`."""
+    _insert_root(conn)
+    did = _insert_inject_decision(conn)
+
+    def fake_spawn(**kw):
+        (kw["attempts_dir"] / "new__decline.lean").write_text(
+            "namespace Problems.p\n"
+            "-- decline: library_sufficient\n"
+            "-- ## Why\n"
+            "-- Brief asked for foo_bridge; Mathlib's extDerivWithin_apply\n"
+            "-- already covers it.\n"
+            "theorem _forward_decline : True := by trivial\n"
+            "end Problems.p\n",
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    r = forward.run_forward(
+        conn, problem="p", workspace=workspace, mfst=mfst,
+        pipeline_id="test-fwd-decline-why", decision_id=did)
+    assert r.failure_reason == "agent_declined"
+    assert "extDerivWithin_apply" in r.failure_detail
+    od = conn.execute(
+        "SELECT outcome_detail FROM strategist_decisions WHERE id=?",
+        (did,)).fetchone()["outcome_detail"]
+    assert od is not None and "extDerivWithin_apply" in od
+
+
 def test_run_forward_reuse_repoints_inject_to_open_goal(
     workspace: Path, conn: sqlite3.Connection,
     mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,

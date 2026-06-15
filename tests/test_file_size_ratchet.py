@@ -48,8 +48,11 @@ _WATERMARKS = {
     # `has_active_inflight_inject` (stall predicate) + `has_live_inflight_inject`
     # (T0 / verify-guard suppression) + parked-target redispatch guard —
     # 2026-06-15 — conscious bump.
+    # db 3000→3050: #2 `goals_reachable_excluding` (DAG-aware cascade) + #4
+    # `outcome_detail` column + `set_inject_decision_outcome_detail` (decline
+    # `## Why` → Strategist) — 2026-06-15 — conscious bump.
     "Tooling/core/dispatcher.py": 3050,
-    "Tooling/state/db.py": 3000,
+    "Tooling/state/db.py": 3050,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     "Tooling/quality/librarian/cleanup/_common.py": 560,
     "Tooling/quality/librarian/cleanup/audit.py": 200,

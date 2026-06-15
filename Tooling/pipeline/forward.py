@@ -185,6 +185,29 @@ def is_decline(text: str) -> bool:
     return _DECLINE_RE.search(text) is not None
 
 
+def _extract_decline_why(text: str) -> str:
+    """Pull the agent's `## Why` reasoning out of a decline file's leading
+    comments (the `-- ## Why` block, see forward.md). Returns the joined
+    prose (comment markers stripped), or '' if absent. #4 — this reasoning
+    is surfaced to the Strategist so it sees WHY its brief was declined,
+    not just the coarse enum."""
+    m = re.search(r"--\s*##\s*Why\b(.*)", text, re.IGNORECASE | re.DOTALL)
+    if m is None:
+        return ""
+    lines: list[str] = []
+    for raw in m.group(1).splitlines():
+        s = raw.strip()
+        if s.startswith("--"):
+            s = s[2:].strip()
+            if s and not s.startswith("##"):
+                lines.append(s)
+        elif s == "":
+            continue
+        else:
+            break  # hit a non-comment line (the theorem decl) → stop
+    return " ".join(lines).strip()
+
+
 # ---------------------------------------------------------------------
 # Commit
 # ---------------------------------------------------------------------
@@ -512,9 +535,17 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
         # the agent says the library is sufficient). Mirrors Builder's
         # `needs_decomposition` directive.
         if is_decline(body):
+            # #4 — capture the agent's `## Why` so the Strategist's next
+            # wake sees WHY the brief was declined (run_forward stashes
+            # this onto the Inject decision's `outcome_detail`).
+            m = _DECLINE_RE.search(body)
+            kind = m.group(1) if m else "library_sufficient"
+            why = _extract_decline_why(body)
+            detail = (f"agent declined ({kind}): {why}" if why
+                      else f"agent declined ({kind})")
             return PipelineResult(
                 outcome="failed", failure_reason="agent_declined",
-                failure_detail="agent declined: library_sufficient",
+                failure_detail=detail,
             )
 
         metadata, parse_err = extract_forward_metadata(body)
@@ -713,7 +744,7 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
         # already captures the spawn rc and the parser-state verdict.
         return None
 
-    return run_with_session_retries(
+    result = run_with_session_retries(
         conn=conn,
         goal_id=None,   # Forward targets a problem, not a goal
         pipeline_id=pipeline_id,
@@ -725,6 +756,16 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
         postmortem_fn=forward_postmortem,
         workspace=workspace,
     )
+    # #4 — surface a Forward decline's `## Why` to the originating Inject
+    # decision so its next inject_batch_done wake reads WHY the brief was
+    # declined, not just `failed:agent_declined`. Stashed pre-cascade;
+    # `_record_inject_decision_outcome` preserves it via COALESCE.
+    if (decision_id is not None and result is not None
+            and result.failure_reason == "agent_declined"
+            and result.failure_detail):
+        db.set_inject_decision_outcome_detail(
+            conn, decision_id, result.failure_detail)
+    return result
 
 
 # `_rc_to_reason_fwd` removed: rc classification now lives in

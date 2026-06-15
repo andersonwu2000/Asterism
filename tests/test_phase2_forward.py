@@ -132,6 +132,31 @@ def test_is_decline_not_matched_on_normal_file() -> None:
     assert forward.is_decline(_NEW_LEAN_OK) is False
 
 
+def test_extract_decline_why_pulls_reasoning() -> None:
+    """#4 — the agent's `## Why` block is extracted (comment markers
+    stripped, multi-line joined) so it can be surfaced to the Strategist."""
+    text = (
+        "namespace Problems.p\n"
+        "-- decline: library_sufficient\n"
+        "-- ## Why\n"
+        "-- Brief asked for foo_bridge; Mathlib's `extDerivWithin_apply`\n"
+        "-- already covers it, composed with `Finset.sum_congr`.\n"
+        "theorem _forward_decline : True := by trivial\n"
+        "end Problems.p\n"
+    )
+    why = forward._extract_decline_why(text)
+    assert "extDerivWithin_apply" in why
+    assert "Finset.sum_congr" in why
+    assert "--" not in why          # comment markers stripped
+    assert "theorem" not in why     # stops at the decl
+
+
+def test_extract_decline_why_absent_returns_empty() -> None:
+    assert forward._extract_decline_why(
+        "-- decline: library_sufficient\ntheorem _x : True := by trivial\n"
+    ) == ""
+
+
 # ---------------------------------------------------------------------
 # commit_forward_lemma
 # ---------------------------------------------------------------------

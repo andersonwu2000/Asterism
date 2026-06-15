@@ -152,6 +152,56 @@ def test_cascade_shelves_single_parent_descendant(
 
 
 # ---------------------------------------------------------------------
+# #4: outcome_detail — Forward decline `## Why` stashed pre-cascade is
+# preserved when cascade fills the coarse outcome (COALESCE).
+# ---------------------------------------------------------------------
+
+def _insert_decision(conn: sqlite3.Connection) -> int:
+    ts = db.now()
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, payload, created_at, updated_at)"
+        " VALUES ('p', 1, 'routine', 'Inject', '{}', ?, ?)",
+        (ts, ts),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def test_record_outcome_preserves_prewritten_detail(
+    conn: sqlite3.Connection,
+) -> None:
+    from Tooling.core.dispatcher import _record_inject_decision_outcome
+    did = _insert_decision(conn)
+    # Forward stashed the decline `## Why` pre-cascade (outcome NULL).
+    db.set_inject_decision_outcome_detail(
+        conn, did, "brief under-specified: name the lemma")
+    # cascade later fills the coarse outcome, carrying no detail of its own.
+    _record_inject_decision_outcome(conn, did, "failed", "agent_declined")
+    row = conn.execute(
+        "SELECT outcome, outcome_detail FROM strategist_decisions WHERE id=?",
+        (did,)).fetchone()
+    assert row["outcome"] == "failed:agent_declined"
+    assert row["outcome_detail"] == "brief under-specified: name the lemma"
+
+
+def test_set_outcome_detail_skips_when_outcome_already_settled(
+    conn: sqlite3.Connection,
+) -> None:
+    """Don't disturb a row whose outcome already landed."""
+    did = _insert_decision(conn)
+    conn.execute(
+        "UPDATE strategist_decisions SET outcome = 'proved' WHERE id = ?",
+        (did,))
+    conn.commit()
+    db.set_inject_decision_outcome_detail(conn, did, "late detail")
+    od = conn.execute(
+        "SELECT outcome_detail FROM strategist_decisions WHERE id=?",
+        (did,)).fetchone()["outcome_detail"]
+    assert od is None
+
+
+# ---------------------------------------------------------------------
 # Rule 3: _has_terminal_disproved_ancestor
 # ---------------------------------------------------------------------
 

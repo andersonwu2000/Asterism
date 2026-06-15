@@ -294,22 +294,34 @@ def _set_goal_terminal_and_propagate(
 def _record_inject_decision_outcome(conn: sqlite3.Connection,
                                     decision_id: int,
                                     outcome: str,
-                                    failure_reason: str) -> None:
+                                    failure_reason: str,
+                                    detail: str | None = None) -> None:
     """Write the Forward pipeline's terminal outcome back into the
     strategist_decisions row that emitted it.
 
     Solo + batch Inject both go through this; the row's `outcome` was
     NULL post-commit and gets filled here so failure_replay (Strategist
     self-feedback) shows 'my Inject succeeded / failed because X'.
-    `failure_reason` joins outcome via ':' for compactness — full
-    forensic still lives in dead_attempts.failure_detail keyed by
-    pipeline_id.
+    `failure_reason` joins outcome via ':' for compactness.
+
+    `detail` (#4): the pipeline's rich `failure_detail` — for a Forward
+    decline it carries the agent's `## Why` reasoning. Stored in the
+    separate `outcome_detail` column (the coarse `outcome` enum stays
+    intact for reconcile / NULL-checks) so the Strategist's next wake
+    reads WHY its brief was declined, not just `failed:agent_declined`.
     """
     text = outcome if not failure_reason else f"{outcome}:{failure_reason}"
+    # COALESCE: a pipeline may have already stashed `outcome_detail` while
+    # `outcome` was NULL (e.g. forward.run_forward writes a decline's
+    # `## Why` — see db.set_inject_decision_outcome_detail). Passing
+    # detail=None here must NOT wipe that; only override when this call
+    # carries its own detail.
     conn.execute(
-        "UPDATE strategist_decisions SET outcome = ?, updated_at = ?"
+        "UPDATE strategist_decisions"
+        " SET outcome = ?, outcome_detail = COALESCE(?, outcome_detail),"
+        "     updated_at = ?"
         " WHERE id = ? AND outcome IS NULL",
-        (text, db.now(), decision_id),
+        (text, (detail or None), db.now(), decision_id),
     )
     conn.commit()
 

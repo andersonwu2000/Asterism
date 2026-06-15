@@ -273,7 +273,8 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
     out = ["## Completed Inject batches (newest first)", ""]
     placeholders = ",".join("?" * len(batch_ids))
     rows = list(conn.execute(
-        f"SELECT id, batch_id, brief, payload, outcome, updated_at"
+        f"SELECT id, batch_id, brief, payload, outcome, outcome_detail,"
+        f" updated_at"
         f" FROM strategist_decisions"
         f" WHERE batch_id IN ({placeholders})"
         f" ORDER BY MAX(updated_at) OVER (PARTITION BY batch_id) DESC,"
@@ -303,12 +304,21 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
         out.append("")
         for r in steps:
             idx = _step_idx(r)
+            # This is the batch the wake is ABOUT — show its feedback in
+            # full (generous cap, not the short recap truncation used by
+            # `_section_failure_replay`) so the Strategist can compare what
+            # it briefed against what actually came back (#4).
             brief = (r["brief"] or "").strip()
-            if len(brief) > 300:
-                brief = brief[:300].rstrip() + "…"
+            if len(brief) > 1200:
+                brief = brief[:1200].rstrip() + "…"
             outcome_text = r["outcome"] or "(no outcome)"
             out.append(f"- **step {idx}** outcome=`{outcome_text}`")
             out.append(f"  brief: {brief}")
+            detail = (r["outcome_detail"] or "").strip()
+            if detail:
+                if len(detail) > 1200:
+                    detail = detail[:1200].rstrip() + "…"
+                out.append(f"  why: {detail}")
         out.append("")
     return out
 
