@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from Tooling.pipeline.backward import _partition_sibling_reuse
+from Tooling.pipeline.backward import (
+    _partition_sibling_reuse,
+    _partition_dedupe_reuse,
+    _apply_reuse_rewrites,
+)
+from Tooling.quality.dedupe import CanonicalMatch
 from Tooling.state import db
 
 
@@ -185,7 +190,7 @@ def test_mixed_batch_partitions_correctly(
     """A batch with one reuse + one novel + one different-statement
     collision partitions cleanly."""
     rel = _write_goal_file(tmp_path, "reused", "(n : Nat) : n = n")
-    _insert_goal(conn, "reused", status="dead", lean_path=rel)
+    _insert_goal(conn, "reused", status="shelved", lean_path=rel)
     rel2 = _write_goal_file(tmp_path, "clash", "(n : Nat) : n = n")
     _insert_goal(conn, "clash", status="open", lean_path=rel2)
 
@@ -204,3 +209,84 @@ def test_mixed_batch_partitions_correctly(
     assert ("reused", ns_reuse) not in kept
     assert reuse_imports == ["import Problems.p.proofs.L_reused"]
     assert dropped == [ns_reuse]
+
+
+def test_dead_sibling_redeclaration_is_kept_not_cited(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """A re-declared DEAD sibling (wrong-as-stated) must NOT be cited —
+    the cite-gate rejects dead (6fc6ff4), which would abort the strategy.
+    Keep it for the `_2` resolver so the re-declaration becomes a fresh
+    re-statement under this strategy instead."""
+    rel = _write_goal_file(tmp_path, "wrong", "(n : Nat) : n = n")
+    _insert_goal(conn, "wrong", status="dead", lean_path=rel)
+    ns = _declared(tmp_path, "wrong", "(n : Nat) : n = n")
+    kept, reuse_imports, dropped = _partition_sibling_reuse(
+        conn, problem="p", goal_id=999, workspace=tmp_path,
+        sub_meta=[("wrong", ns)], existing_slugs={"wrong"},
+        ancestor_slugs={},
+    )
+    assert kept == [("wrong", ns)]
+    assert reuse_imports == []
+    assert dropped == []
+
+
+# ---------------------------------------------------------------------
+# #2 dedupe-reuse: a DIFFERENT-named but signature-equivalent twin
+# (dedupe kind="reuse") → extract + patch rewrite (Y → twin theorem name).
+# ---------------------------------------------------------------------
+
+def test_partition_dedupe_reuse_extracts_reuse_match(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """A `reuse` match is dropped from the kept sub-goals and recorded as a
+    (slug, twin_theorem_name, twin_module) rewrite; a None / non-reuse
+    match stays."""
+    rel = _write_goal_file(tmp_path, "twin_x", "(a : Nat) : a = a")
+    x = _insert_goal(conn, "twin_x", status="open", lean_path=rel)
+    s_reuse = _declared(tmp_path, "dup", "(a : Nat) : a = a")
+    s_novel = _declared(tmp_path, "novel", "(b : Nat) : b + 0 = b")
+    kept_meta, kept_canon, rewrites = _partition_dedupe_reuse(
+        conn, problem="p", workspace=tmp_path,
+        sub_meta=[("dup", s_reuse), ("novel", s_novel)],
+        canonical_for=[CanonicalMatch(goal_id=x, kind="reuse"), None],
+    )
+    assert [s for s, _ in kept_meta] == ["novel"]
+    assert kept_canon == [None]
+    assert rewrites == [("dup", "twin_x", "Problems.p.proofs.L_twin_x")]
+
+
+def test_partition_dedupe_reuse_keeps_non_reuse(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """alias / disproved / no_progress matches are NOT extracted here
+    (they're handled by their own code paths) — only `reuse` is."""
+    s = _declared(tmp_path, "a", ": T")
+    kept_meta, kept_canon, rewrites = _partition_dedupe_reuse(
+        conn, problem="p", workspace=tmp_path,
+        sub_meta=[("a", s)],
+        canonical_for=[CanonicalMatch(goal_id=5, kind="alias")],
+    )
+    assert kept_meta == [("a", s)]
+    assert kept_canon == [CanonicalMatch(goal_id=5, kind="alias")]
+    assert rewrites == []
+
+
+def test_apply_reuse_rewrites_renames_value_ref_and_imports() -> None:
+    """The bare slug VALUE reference is swapped for the twin theorem name
+    and the twin module imported; the `h_<slug>` hypothesis name (no word
+    boundary inside) is left intact."""
+    patch = (
+        "import Mathlib\n"
+        "namespace Problems.p\n"
+        "theorem s1 : T := by\n"
+        "  have h_dup := dup arg\n"
+        "  exact c h_dup\n"
+        "end Problems.p\n"
+    )
+    out = _apply_reuse_rewrites(
+        patch, [("dup", "real_twin", "Problems.p.proofs.L_real_twin")])
+    assert "have h_dup := real_twin arg" in out   # value ref rewritten
+    assert "import Problems.p.proofs.L_real_twin" in out
+    assert "exact c h_dup" in out                 # hypothesis name intact
+    assert "dup arg" not in out                   # old bare ref gone

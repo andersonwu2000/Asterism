@@ -157,17 +157,21 @@ def _partition_sibling_reuse(
     dropped from `kept` and the sibling's
     `import Problems.<problem>.proofs.L_<slug>` line is returned in
     `reuse_imports`, so the caller can cite the sibling instead of
-    forking a `_2` duplicate. The citation gate then links / revives /
-    rejects the sibling by its status (open → link, shelved/dead →
-    revive, disproved → reject). `dropped` lists the redundant attempts-
-    dir files for the caller to unlink.
+    forking a `_2` duplicate. The citation gate then links / revives the
+    sibling by its status (open → link, shelved → revive). `dropped`
+    lists the redundant attempts-dir files for the caller to unlink.
 
     Stays in `kept` (→ `_resolve_slug_collisions`'s `_2` resolver):
       * novel slugs (not in `existing_slugs`),
       * strict ancestors (citing one is an import cycle),
       * the parent goal's own slug (self-cycle; dedupe `no_progress`
         handles it),
-      * same-slug-DIFFERENT-statement collisions (genuine name clash).
+      * same-slug-DIFFERENT-statement collisions (genuine name clash),
+      * `dead` / `disproved` siblings — the cite-gate rejects these
+        (dead = wrong-as-stated, disproved = false), so citing would
+        abort the whole strategy; keep for the `_2` resolver instead so
+        the re-declaration becomes a FRESH re-statement under this
+        strategy. (Consistency with the cite-gate's dead-reject, 6fc6ff4.)
 
     Pure decision — no filesystem mutation, so the caller owns the
     unlink + import injection. agent_feedback T8 / 91-92,110."""
@@ -179,11 +183,15 @@ def _partition_sibling_reuse(
             kept.append((slug, ns))
             continue
         sib = conn.execute(
-            "SELECT id, lean_path FROM goals WHERE problem = ? AND slug = ?"
-            "  AND alias_target_id IS NULL AND id != ? LIMIT 1",
+            "SELECT id, lean_path, status FROM goals WHERE problem = ? "
+            "  AND slug = ? AND alias_target_id IS NULL AND id != ? LIMIT 1",
             (problem, slug, goal_id),
         ).fetchone()
         if sib is None:
+            kept.append((slug, ns))
+            continue
+        if str(sib["status"]) in ("dead", "disproved"):
+            # Cite-gate would reject these → keep for a fresh `_2` fork.
             kept.append((slug, ns))
             continue
         try:
@@ -201,6 +209,72 @@ def _partition_sibling_reuse(
         reuse_imports.append(f"import Problems.{problem}.proofs.L_{slug}")
         dropped.append(ns)
     return kept, reuse_imports, dropped
+
+
+def _partition_dedupe_reuse(
+    conn, *, problem: str, workspace: Path,
+    sub_meta: list[tuple[str, Path]], canonical_for: list,
+) -> tuple[list[tuple[str, Path]], list, list[tuple[str, str, str]]]:
+    """Split declared sub-goals by their dedupe verdict, extracting the
+    `reuse` matches (dedupe `kind="reuse"` — a NON-proved in-problem twin
+    found by SIGNATURE: open / attempting / pending_review / shelved) into
+    citations of the twin.
+
+    Unlike `_partition_sibling_reuse` (same-SLUG re-declaration → drop +
+    import, no rename), a reuse match is a DIFFERENT-named but type-
+    equivalent twin, so the caller must also rewrite the patch's slug
+    reference to the twin's on-disk theorem name. Returns
+    (kept_meta, kept_canon, reuse_rewrites) where each reuse_rewrite is
+    (slug, twin_thm, twin_module). Pure decision — the caller applies the
+    patch rewrite (`_apply_reuse_rewrites`); the citation gate then links /
+    revives the twin by status (open → link, shelved → revive + link)."""
+    from ..quality import dedupe as _dedupe
+    from ._lake import lean_path_to_module
+    kept_meta: list[tuple[str, Path]] = []
+    kept_canon: list = []
+    reuse_rewrites: list[tuple[str, str, str]] = []
+    for (slug, src), match in zip(sub_meta, canonical_for):
+        if match is None or getattr(match, "kind", None) != "reuse":
+            kept_meta.append((slug, src))
+            kept_canon.append(match)
+            continue
+        x = db.get_goal(conn, match.goal_id)
+        if x is None:
+            kept_meta.append((slug, src))
+            kept_canon.append(match)
+            continue
+        try:
+            x_text = (workspace / x["lean_path"]).read_text(encoding="utf-8")
+        except OSError:
+            x_text = ""
+        x_thm = _dedupe._extract_theorem_name(x_text) or x["slug"]
+        x_module = lean_path_to_module(
+            workspace, workspace / x["lean_path"])
+        reuse_rewrites.append((slug, x_thm, x_module))
+        print(f"[dedupe] {slug} → reuse goal {match.goal_id} "
+              f"({x['slug']}, status={x['status']}) — citing, no new "
+              f"sub-goal", flush=True)
+    return kept_meta, kept_canon, reuse_rewrites
+
+
+def _apply_reuse_rewrites(text: str,
+                          reuse_rewrites: list[tuple[str, str, str]]) -> str:
+    r"""Rewrite a strategy patch for dedupe-reuse: for each
+    (slug, twin_thm, twin_module), replace the bare `slug` token — the
+    sub-goal value reference; `\bslug\b` skips the `h_<slug>` hypothesis
+    name (no word boundary inside `h_…`) — with the twin's theorem name,
+    and inject `import twin_module` after the last import. The citation
+    gate then sees the import and auto-links / revives the twin."""
+    for y_slug, x_thm, x_module in reuse_rewrites:
+        text = re.sub(rf"\b{re.escape(y_slug)}\b", x_thm, text)
+        if f"import {x_module}" not in text:
+            lines = text.split("\n")
+            last_imp = max(
+                (i for i, ln in enumerate(lines)
+                 if ln.startswith("import ")), default=-1)
+            lines.insert(last_imp + 1, f"import {x_module}")
+            text = "\n".join(lines)
+    return text
 
 
 # ---------------------------------------------------------------------
@@ -1174,6 +1248,18 @@ def _backward_parse_and_commit(
             leading,
         )
 
+    # #2 reuse extraction — a sub-goal that matched a NON-proved in-problem
+    # twin (dedupe kind="reuse") becomes a CITATION of that twin instead of
+    # a new goal: dropped from the sub-goal lists, recorded as a patch
+    # rewrite applied below. The citation gate then auto-links (revives if
+    # shelved) the twin — link-and-wait, exactly as an explicit cite. Done
+    # AFTER the disproved / no_progress aborts so those fire on the full
+    # set.
+    sub_meta, canonical_for, reuse_rewrites = _partition_dedupe_reuse(
+        conn, problem=goal["problem"], workspace=workspace,
+        sub_meta=sub_meta, canonical_for=canonical_for,
+    )
+
     # Compute permanent paths under proofs/. Strategy patch path includes
     # sid_token (framework-locked, collision-free). Sub-goal `L_<slug>.lean`
     # paths use the agent-picked slug, whose problem-local uniqueness was
@@ -1284,6 +1370,17 @@ def _backward_parse_and_commit(
             encoding="utf-8",
         )
         placed.append(scratch_dest)
+
+        # #2 — rewrite reuse sub-goals into citations of their twin (swap
+        # the slug token for the twin's theorem name + inject its import).
+        # The citation gate below then auto-links / revives the twin and
+        # the strategy waits for it.
+        if reuse_rewrites:
+            scratch_dest.write_text(
+                _apply_reuse_rewrites(
+                    scratch_dest.read_text(encoding="utf-8"), reuse_rewrites),
+                encoding="utf-8",
+            )
 
         # Auto-inject `import` lines for sub-goal modules into the
         # strategy patch. Agents reliably forget at least one;

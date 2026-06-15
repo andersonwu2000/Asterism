@@ -530,18 +530,16 @@ def test_find_canonicals_batch_disproved_match_returns_disproved_kind(
     ]
 
 
-def test_find_canonicals_batch_shelved_does_not_block(
+def test_find_canonicals_batch_shelved_is_reused(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Phase 2 — soft-terminal 'shelved' goals (cascade descendants /
-    parent_needs_fix) do NOT block future proposals. Only 'disproved'
-    (counterexample) blocks via dedupe.
-
-    Setup: candidate would unify with the 'soft_dead' shelved goal's
-    statement (fake returns True only for its theorem name). Pre-Phase 2
-    this would emit kind='shelved'; post-Phase 2 the shelved goal is
-    excluded from the dedupe pool → result is None."""
+    """#2 — a soft-terminal 'shelved' twin is now REUSED, not ignored.
+    'shelved' never blocks (only 'disproved' does), and a candidate that
+    unifies with a shelved goal's statement gets kind='reuse' (the caller
+    turns it into a citation + revives the shelved goal) rather than
+    spawning a duplicate. Pre-#2 this returned None (new goal); the parked
+    twin would re-duplicate once reopened."""
     _seed_problem(conn)
     root = _seed_root(conn)
     shelved_g = _seed_sub(conn, slug="soft_dead",
@@ -556,9 +554,7 @@ def test_find_canonicals_batch_shelved_does_not_block(
     _write_lean(tmp_path, "p", "main",
         "import Mathlib\ntheorem main : T := by sorry\n", root=True)
 
-    # Only the shelved canonical's name would unify with the candidate.
-    # Since shelved is excluded from the dedupe pool, pairs list won't
-    # include it, fake never sees it, and no other canonical matches.
+    # Only the shelved canonical's name unifies with the candidate.
     def fake(ws: Path, p: str,
              pairs: list[tuple[str, str, str]]) -> list[bool]:
         return [thm == "Problems.p.soft_dead" for _sig, _mod, thm in pairs]
@@ -569,7 +565,78 @@ def test_find_canonicals_batch_shelved_does_not_block(
         conn, tmp_path, problem="p", parent_goal_id=parent,
         candidates=[("c", cand)],
     )
-    assert canonicals == [None]
+    assert canonicals[0] is not None
+    assert canonicals[0].kind == "reuse"
+    assert canonicals[0].goal_id == shelved_g
+
+
+def test_find_canonicals_batch_open_cross_branch_is_reused(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#2 — an OPEN cross-branch twin (two branches landed on the same
+    statement) is matched as kind='reuse' so the candidate links to it
+    instead of both branches proving it."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    twin = _seed_sub(conn, slug="twin", statement="X", status="open")
+    _link(conn, root, [twin])
+    parent = _seed_sub(conn, slug="parent", statement="Q", depth=2)
+    _link(conn, root, [parent])
+    _write_lean(tmp_path, "p", "twin",
+        "import Mathlib\ntheorem twin (a : T) : X := by sorry\n")
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : Q := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+
+    def fake(ws: Path, p: str,
+             pairs: list[tuple[str, str, str]]) -> list[bool]:
+        return [thm == "Problems.p.twin" for _sig, _mod, thm in pairs]
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake)
+
+    cand = "import Mathlib\ntheorem c (a : T) (b : T) : X := by sorry\n"
+    canonicals = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("c", cand)],
+    )
+    assert canonicals[0] is not None
+    assert canonicals[0].kind == "reuse"
+    assert canonicals[0].goal_id == twin
+
+
+def test_find_canonicals_batch_open_ancestor_is_no_progress_not_reuse(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anti-cycle — an OPEN ANCESTOR of the goal being decomposed must NOT
+    be reused (linking to it is circular: it transitively waits for this
+    candidate). It is classified `no_progress`, never `reuse`."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    mid = _seed_sub(conn, slug="mid", statement="X", status="open", depth=1)
+    _link(conn, root, [mid])
+    parent = _seed_sub(conn, slug="parent", statement="Q", depth=2)
+    _link(conn, mid, [parent])   # parent is BELOW mid → mid is an ancestor
+    _write_lean(tmp_path, "p", "mid",
+        "import Mathlib\ntheorem mid (a : T) : X := by sorry\n")
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : Q := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+
+    def fake(ws: Path, p: str,
+             pairs: list[tuple[str, str, str]]) -> list[bool]:
+        return [thm == "Problems.p.mid" for _sig, _mod, thm in pairs]
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake)
+
+    cand = "import Mathlib\ntheorem c (a : T) (b : T) : X := by sorry\n"
+    canonicals = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("c", cand)],
+    )
+    assert canonicals[0] is not None
+    assert canonicals[0].kind == "no_progress"
 
 
 def test_find_canonicals_batch_alive_shadows_disproved(

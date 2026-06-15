@@ -675,3 +675,109 @@ def test_run_forward_dedupe_alias_build_fails_falls_back_to_novel(
              / "L_my_novel.lean").read_text(encoding="utf-8")
     assert "sorry" in novel
     assert "apply canon2" not in novel
+
+
+# ---------------------------------------------------------------------
+# run_forward — #2 reuse: a dedupe hit on an alive/parked (NON-proved)
+# in-problem twin repoints the inject instead of minting a duplicate.
+# ---------------------------------------------------------------------
+
+def _insert_inject_decision(conn: sqlite3.Connection) -> int:
+    ts = db.now()
+    cur = conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, brief, payload, created_at,"
+        " updated_at)"
+        " VALUES ('p', 1, 'routine', 'Inject', 'b',"
+        " '{\"pipeline\": \"Forward\"}', ?, ?)",
+        (ts, ts),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def _forward_dup_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_spawn(**kw):
+        (kw["attempts_dir"] / "new_dup.lean").write_text(
+            "namespace Problems.p\n"
+            "-- Forward rationale: accidental dup of an existing goal.\n"
+            "-- entry_kind: Backward\n"
+            "theorem dup : True := by sorry\n"
+            "end Problems.p\n",
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+
+def test_run_forward_reuse_repoints_inject_to_open_goal(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mock_lsp_verify,
+) -> None:
+    """#2 — Forward lemma matches an alive OPEN in-problem goal X: don't
+    mint a duplicate; repoint the inject at X (rides X's lifecycle), no
+    new goal created."""
+    from Tooling.quality import dedupe
+    _insert_root(conn)
+    x = db.insert_goal(
+        conn, problem="p", slug="existing_x",
+        lean_path="Problems/p/proofs/L_existing_x.lean", statement="True",
+        origin="backward", depth=1, entry_kind="Builder")
+    did = _insert_inject_decision(conn)
+    _forward_dup_spawn(monkeypatch)
+    monkeypatch.setattr(
+        dedupe, "find_canonicals_batch",
+        lambda *a, **k: [dedupe.CanonicalMatch(goal_id=x, kind="reuse")])
+
+    r = forward.run_forward(
+        conn, problem="p", workspace=workspace, mfst=mfst,
+        pipeline_id="test-fwd-reuse-open", decision_id=did)
+    assert r.outcome == "success"
+    assert r.produced_goal_id == x
+    # No duplicate goal created.
+    n = conn.execute(
+        "SELECT COUNT(*) c FROM goals WHERE problem='p' AND slug='dup'"
+    ).fetchone()["c"]
+    assert n == 0
+    # Inject repointed at X; X untouched (still open, not detached).
+    pg = conn.execute(
+        "SELECT produced_goal_id FROM strategist_decisions WHERE id=?",
+        (did,)).fetchone()["produced_goal_id"]
+    assert pg == x
+    assert db.get_goal(conn, x)["status"] == "open"
+
+
+def test_run_forward_reuse_revives_and_detaches_shelved_goal(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mock_lsp_verify,
+) -> None:
+    """#2 — Forward lemma matches a SHELVED in-problem twin: repoint the
+    inject + revive the twin (shelved→open) and detach it so it dispatches
+    standalone (no host strategy to give it a live path)."""
+    from Tooling.quality import dedupe
+    _insert_root(conn)
+    x = db.insert_goal(
+        conn, problem="p", slug="parked_x",
+        lean_path="Problems/p/proofs/L_parked_x.lean", statement="True",
+        origin="backward", depth=1, entry_kind="Builder")
+    db.update_goal_status(conn, x, "shelved")
+    conn.commit()
+    did = _insert_inject_decision(conn)
+    _forward_dup_spawn(monkeypatch)
+    monkeypatch.setattr(
+        dedupe, "find_canonicals_batch",
+        lambda *a, **k: [dedupe.CanonicalMatch(goal_id=x, kind="reuse")])
+
+    r = forward.run_forward(
+        conn, problem="p", workspace=workspace, mfst=mfst,
+        pipeline_id="test-fwd-reuse-shelved", decision_id=did)
+    assert r.outcome == "success"
+    assert r.produced_goal_id == x
+    gx = db.get_goal(conn, x)
+    assert gx["status"] == "open"        # revived
+    assert gx["detached"] == 1           # dispatch standalone
+    pg = conn.execute(
+        "SELECT produced_goal_id FROM strategist_decisions WHERE id=?",
+        (did,)).fetchone()["produced_goal_id"]
+    assert pg == x

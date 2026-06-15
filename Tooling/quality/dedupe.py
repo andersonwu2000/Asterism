@@ -795,6 +795,69 @@ def _eligible_problem_proved(conn: sqlite3.Connection, workspace: Path, *,
     return eligible
 
 
+def _eligible_problem_reusable(conn: sqlite3.Connection, workspace: Path, *,
+                               problem: str, parent_goal_id: int,
+                               candidate_count: int,
+                               exclude_ids: set[int],
+                               ) -> list[tuple[sqlite3.Row, str]]:
+    """Non-terminal, NON-proved goals in the same Problem that a candidate
+    sub-goal can REUSE instead of duplicating: `open` / `attempting` /
+    `pending_strategist_review` / `shelved`. This is the #2 case — two
+    branches (or a branch + a parked goal) landing on the same statement
+    where the strict-ancestor / orphan / proved-cross-branch pools see
+    nothing (the canonical isn't proved).
+
+    Unlike the proved pool, the canonical is NOT yet proved, so it cannot
+    be immediately aliased. The caller turns the candidate into a CITATION
+    of the canonical and lets the existing cite-gate link-and-wait (and
+    revive, if `shelved`); the canonical proving later satisfies the citer.
+
+    Anti-cycle (critical): excludes `parent_goal_id` AND every ANCESTOR of
+    it. Linking to an ancestor is circular — the ancestor transitively
+    waits for this candidate's proof. (Proved ancestors are safe and
+    handled by the proved pool; here the canonical is unproved.) Also
+    excludes alias goals and `exclude_ids` (already pooled — no
+    double-emit / no status-kind ambiguity).
+    """
+    anc_rows = conn.execute(
+        "WITH RECURSIVE ancestors(id) AS ("
+        "  SELECT s.goal_id FROM strategies s"
+        "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        "    WHERE ss.subgoal_id = ?"
+        "  UNION"
+        "  SELECT s.goal_id FROM strategies s"
+        "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
+        "    JOIN ancestors a ON a.id = ss.subgoal_id"
+        ") SELECT id FROM ancestors",
+        (parent_goal_id,),
+    ).fetchall()
+    block = ({parent_goal_id}
+             | {int(r["id"]) for r in anc_rows}
+             | set(exclude_ids))
+    placeholders = ",".join("?" for _ in block)
+    rows = conn.execute(
+        f"SELECT g.id, g.statement, g.lean_path, g.status FROM goals g "
+        f"WHERE g.problem = ? "
+        f"  AND g.status IN "
+        f"      ('open','attempting','pending_strategist_review','shelved') "
+        f"  AND g.alias_target_id IS NULL "
+        f"  AND g.id NOT IN ({placeholders}) "
+        f"ORDER BY g.id ASC",
+        (problem, *block),
+    ).fetchall()
+    eligible: list[tuple[sqlite3.Row, str]] = []
+    for r in rows:
+        try:
+            canon_text = (workspace / r["lean_path"]).read_text(
+                encoding="utf-8")
+        except OSError:
+            continue
+        if _signature_binder_count(canon_text) > candidate_count:
+            continue
+        eligible.append((r, canon_text))
+    return eligible
+
+
 def _eligible_disproved(conn: sqlite3.Connection, workspace: Path, *,
                         problem: str, parent_goal_id: int,
                         candidate_count: int,
@@ -868,6 +931,12 @@ class CanonicalMatch(NamedTuple):
         alias delegating to `library_fqn` (importing `library_module`)
         and inserts the candidate as `proved`. `goal_id` is -1 (no goal);
         the citation is `library_fqn`.
+      - `"reuse"` (#2 — in-problem NON-proved twin): canonical is an
+        `open`/`attempting`/`pending_strategist_review`/`shelved` goal in
+        the same problem (a cross-branch or parked twin), NOT proved.
+        Cannot be immediately aliased; the caller turns the candidate
+        into a CITATION of `goal_id` and lets the cite-gate link-and-wait
+        (revive if shelved) — the canonical proving later satisfies it.
     """
     goal_id: int
     kind: str  # "alias" | "disproved" | "no_progress" | "library_alias"
@@ -967,15 +1036,22 @@ def find_canonicals_batch(
     KIND_ALIAS = "alias"
     KIND_DISPROVED = "disproved"
     KIND_NO_PROGRESS = "no_progress"
+    KIND_REUSE = "reuse"
     cand_pools: list[list[tuple[sqlite3.Row, str, str]]] = []
+    # Reuse pool kept separate so it can be appended to `pairs` AFTER the
+    # Library tier — lowest priority (a proved alias always beats linking
+    # an unproved twin). Aligned 1:1 with `candidates`.
+    cand_reusable: list[list[tuple[sqlite3.Row, str]]] = []
     for ci, (slug, full_text) in enumerate(candidates):
         # Tier 1 already hit: no need to enumerate kernel-probe pool.
         if result[ci] is not None:
             cand_pools.append([])
+            cand_reusable.append([])
             continue
         sig = _extract_full_signature(full_text)
         if sig is None or not sig.strip():
             cand_pools.append([])
+            cand_reusable.append([])
             continue
         cand_count = _signature_binder_count(full_text)
         anc = _eligible_ancestors(
@@ -1012,6 +1088,18 @@ def find_canonicals_batch(
         for r, t in no_progress:
             pool.append((r, t, KIND_NO_PROGRESS))
         cand_pools.append(pool)
+        # Reuse tier (#2): non-proved alive/parked cross-branch twin.
+        # Exclude everything already pooled so a goal is classified once
+        # (and never as both no_progress and reuse).
+        reuse_exclude = (seen_ids
+                         | {int(r["id"]) for r, _ in cross}
+                         | {int(r["id"]) for r, _ in disproved}
+                         | {int(r["id"]) for r, _ in no_progress})
+        cand_reusable.append(_eligible_problem_reusable(
+            conn, workspace, problem=problem,
+            parent_goal_id=parent_goal_id, candidate_count=cand_count,
+            exclude_ids=reuse_exclude,
+        ))
 
     # Build flat list of pairs to check; track origin (cand_idx, row, kind).
     # Each pair: (cand_signature, canonical_module, canonical_theorem_name).
@@ -1060,6 +1148,20 @@ def find_canonicals_batch(
                 candidate_concl=cand_concl):
             pairs.append((cand_sig, lib_module, lib_fqn))
             pair_origin.append((ci, "library_alias", (lib_module, lib_fqn)))
+        # Reuse tier (#2) — appended LAST (lowest priority): a proved
+        # alias (in-problem or Library) is always preferable to linking
+        # an unproved twin. Same FQN construction as the in-problem pools.
+        for reuse_row, reuse_text in cand_reusable[ci]:
+            reuse_thm = _extract_theorem_name(reuse_text) or ""
+            try:
+                reuse_module = lean_path_to_module(
+                    workspace, workspace / reuse_row["lean_path"])
+            except (ValueError, OSError):
+                continue
+            reuse_fqn = (f"Problems.{problem}.{reuse_thm}"
+                         if reuse_thm else "")
+            pairs.append((cand_sig, reuse_module, reuse_fqn))
+            pair_origin.append((ci, KIND_REUSE, reuse_row))
 
     if not pairs:
         # No kernel work to do (either every candidate was Tier 1-hit
@@ -1106,9 +1208,11 @@ def find_canonicals_batch(
     n_disproved = sum(1 for m in result if m and m.kind == "disproved")
     n_noprog = sum(1 for m in result if m and m.kind == "no_progress")
     n_library = sum(1 for m in result if m and m.kind == "library_alias")
+    n_reuse = sum(1 for m in result if m and m.kind == "reuse")
     print(f"[dedupe] checked {n} candidate(s) against {len(pairs)} "
           f"pair(s); alias={n_alias} disproved={n_disproved} "
-          f"no_progress={n_noprog} library={n_library}", flush=True)
+          f"no_progress={n_noprog} library={n_library} reuse={n_reuse}",
+          flush=True)
     return result
 
 

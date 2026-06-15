@@ -609,6 +609,32 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
         # and fall through to the normal commit below.
         outcome: CommitOutcome | None = None
         h = hits[0] if hits else None
+        if h is not None and h.kind == "reuse" and decision_id is not None:
+            # #2 — the lemma already exists as an alive/parked in-problem
+            # goal (open / attempting / pending_review / shelved twin).
+            # Don't mint a duplicate: repoint this Inject at the existing
+            # goal. It rides that goal's lifecycle — the inject settles
+            # when the goal settles (deferred outcome, same as a sorry-
+            # bearing Forward). A shelved twin is revived + detached so it
+            # dispatches standalone (Forward has no host strategy to give
+            # it a live path, unlike Backward's auto-link).
+            x_id = h.goal_id
+            x = db.get_goal(conn, x_id)
+            x_status = str(x["status"]) if x else "?"
+            if x is not None and x_status == "shelved":
+                db.update_goal_status(conn, x_id, "open")
+                db.set_goal_detached(conn, x_id, True)
+                conn.commit()
+                print(f"[forward-reuse] revived+detached shelved goal "
+                      f"{x_id} ({x['slug']}) for inject reuse", flush=True)
+            db.set_inject_decision_produced_goal(conn, decision_id, x_id)
+            return PipelineResult(
+                outcome="success", failure_reason="",
+                failure_detail=(
+                    f"forward reused existing goal {x_id} (status was "
+                    f"{x_status}); inject repointed, no new goal"),
+                produced_goal_id=x_id,
+            )
         if h is not None and h.kind in ("alias", "library_alias"):
             try:
                 outcome = commit_forward_alias(
