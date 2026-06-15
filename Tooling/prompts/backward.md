@@ -8,10 +8,8 @@ Time budget: {timeout_min} minutes.
 
 You have four MCP tools backed by a live Lean server holding **your `patch.lean`** (pre-seeded with imports + `theorem s<id> ... := by sorry` matching the parent's signature):
 
-- `mcp__lsp__apply_edit(start_line, end_line, new_text)` — replace a 1-indexed inclusive line range of `patch.lean`. Returns the post-edit goal at line=start_line and full-file diagnostics.
-- `mcp__lsp__goal_at(line, col)` — read the proof goal at any position in `patch.lean`.
-- `mcp__lsp__errors_at(line=None)` — list diagnostics (optional line filter).
-- `mcp__lsp__validate_file(content)` — elaborate a *different* candidate file standalone (auto-prepends Mathlib + Defs imports). Returns `{ok, diagnostics}`. Use after writing each `new_<slug>.lean` stub to catch syntax/type errors that the in-`patch` `have` check missed.
+- `mcp__lsp__apply_edit(start_line, end_line, new_text)` / `goal_at(line, col)` / `errors_at(line=None)` — edit `patch.lean` (returns post-edit goal + diagnostics), read a goal, or list diagnostics.
+- `mcp__lsp__validate_file(content)` — elaborate a *standalone* candidate (auto-prepends Mathlib + Defs). Use after each `new_<slug>.lean` stub to catch errors the in-`patch` `have` check missed.
 
 Workflow:
 
@@ -98,13 +96,7 @@ theorem s<id> ... := by sorry
 end ...
 ```
 
-Examples:
-
-```lean
--- decline: unprovable
--- ## Counterexample
--- p=(0,0), q=(1,0), r=(2,0), s=(2,1/2): all hypotheses hold but the conclusion fails.
-```
+Example:
 
 ```lean
 -- decline: return_to_parent
@@ -128,10 +120,10 @@ Ship as `:= by sorry` with `entry_kind: Builder`. Wrong types compile-fail in se
 - Each sub-goal must be **strictly simpler** and as abstract as possible, and do real work — re-stating the parent, or a split one existing lemma closes in a single step, does not count. Bundling adjacent steps into one intermediate lemma is fine.
 - Each sub-goal is a stand-alone Lean theorem — re-declare any parent binder its type uses, or that you anticipate its own sub-goals will thread. When unsure, keep — over-keeping is mild bloat, dropping a future-needed binder is a wasted attempt.
 - Do NOT use any name in FORBIDDEN_LEMMAS — anywhere.
-- **Cite an existing sibling** by writing its import line yourself: `import Problems.<problem>.proofs.L_<slug>` (this is the one import you write — declared `new_*.lean` sub-goals are auto-appended). Then reference `<slug>` in the proof. The framework classifies the cited sibling by status:
+- **Cite an existing sibling** by writing its import line yourself: `import Problems.<problem>.proofs.L_<slug>` (the one import you write — declared `new_*.lean` sub-goals are auto-appended), then reference `<slug>`. The framework classifies by status:
   - **proved** → used directly.
-  - **open / attempting / pending_review** → auto-linked into `strategy_subgoals`; your strategy waits for it to prove.
-  - **shelved / dead** → auto-**revived** (reopened) and linked — a leaf that was only parked because a sibling failed becomes usable again the moment you cite it. (Don't re-declare it as a `new_<slug>.lean`: a verbatim re-declaration of an existing sibling is auto-converted to this citation anyway, but citing directly is clearer.)
-  - **disproved** → rejected (a counterexample exists; the statement is false — pick a different angle).
-- This citation/auto-link/revive machinery is the **decomposition path** only. A leaf-bypass `patch.lean`-alone proof runs the axiom probe at submit and can cite **proved** siblings only.
+  - **open / attempting / pending_review** → auto-linked; your strategy waits for it to prove.
+  - **shelved** → auto-revived (reopened) + linked — a leaf parked because a sibling failed becomes usable again the moment you cite it.
+  - **dead / disproved** → rejected (dead = wrong as stated in its old context; disproved = false). Re-declare the statement fresh as your own `new_<slug>.lean` instead of citing.
+- This machinery is the **decomposition path** only; a leaf-bypass `patch.lean`-alone proof (axiom-probed at submit) can cite **proved** siblings only.
 - If a sorry-free direct proof builds cleanly, ship `patch.lean` alone (no `new_*.lean`); framework leaf-bypass takes it.
