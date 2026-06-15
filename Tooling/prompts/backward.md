@@ -8,7 +8,7 @@ Time budget: {timeout_min} minutes.
 
 You have four MCP tools backed by a live Lean server holding **your `patch.lean`** (pre-seeded with imports + `theorem s<id> ... := by sorry` matching the parent's signature):
 
-- `mcp__lsp__apply_edit(start_line, end_line, new_text)` / `goal_at(line, col)` / `errors_at(line=None)` — edit `patch.lean` (returns post-edit goal + diagnostics), read a goal, or list diagnostics.
+- `mcp__lsp__apply_edit(start_line, end_line, new_text)` / `goal_at(line, col)` / `errors_at(line=None)` — edit a 1-indexed inclusive line range of `patch.lean` (returns post-edit goal + diagnostics), read a goal, or list diagnostics.
 - `mcp__lsp__validate_file(content)` — elaborate a *standalone* candidate (auto-prepends Mathlib + Defs). Use after each `new_<slug>.lean` stub to catch errors the in-`patch` `have` check missed.
 
 Workflow:
