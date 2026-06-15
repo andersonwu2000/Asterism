@@ -5,6 +5,9 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-14
+Reconciliation logic was hardened by introducing a first-class `stalled` strategy status (Phase 11) to replace an ad-hoc reconcile workaround and by fixing the pending-review reconciler so it no longer drops shelved (parked) roots. The spawn infrastructure was made more robust through a single per-spawn compilation state in which each in-spawn tool elaborates exactly one unit, and by tracking in-flight spawns via actual process liveness rather than gateway sessions. Prompt guidance was also refined to scope `return_to_parent` to genuinely malformed goals and to have the Strategist look for an existing lemma before resorting to `Inject(Forward)`.
+
 ### 2026-06-13
 Stall detection was hardened by consolidating the stuck-problem logic into a single shared predicate, ensuring it fires for collapsed problems, adding per-tick reconciliation of stuck states, and giving the routine Strategist its own running-time cadence. A parallel effort improved handling of cited sibling sub-goals?reating a goal as citable unless disproved, reviving shelved-or-dead cited siblings, inlining their stubs during file validation, and seeding the backward skeleton with the goal's own imports?hile backward decomposition gained camelCase slug normalization and rejection of circular or colliding sub-goals. Supporting changes kept the agent-feedback prompts general and added an off-by-default framework-feedback questionnaire for development use.
 
