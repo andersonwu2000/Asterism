@@ -2089,6 +2089,37 @@ def has_live_inflight_inject(conn: sqlite3.Connection, problem: str) -> bool:
     ).fetchone() is not None
 
 
+def is_confirm_shelve_parked(conn: sqlite3.Connection, goal_id: int) -> bool:
+    """True iff `goal_id` is shelved BECAUSE the Strategist ConfirmShelve'd it
+    (a deliberate PARK pending an in-flight prereq batch), as opposed to being
+    cascade-shelved (it lost its last live path when a sibling strategy died).
+
+    The distinction matters for citation/reuse revival: a cascade-shelved goal
+    is safe to reopen the moment something cites it (it just needs a fresh live
+    path — the original agent_feedback T8 motivation). A ConfirmShelve-parked
+    goal is NOT: the framework FORCES every ConfirmShelve to be paired with an
+    Inject (strategist.py — "build the missing tool the shelved goal needed"),
+    so it is parked precisely until its injected prerequisites prove and the
+    Strategist re-engages it via inject_batch_done. Reopening it early (on an
+    unrelated cite) re-dispatches it before its prereqs exist → it re-fails →
+    re-shelves → a mini-spin, and short-circuits the Strategist-owned lifecycle.
+
+    Signal (no extra column needed): ConfirmShelve writes a strategist_decisions
+    row with target_id=goal; a later re-engagement — Inject(Backward/Builder,
+    target=goal) or a legacy Reopen — also writes target_id=goal. So the goal is
+    currently ConfirmShelve-parked iff the MOST-RECENT decision targeting it is a
+    ConfirmShelve (a later targeting Inject/Reopen means it was un-parked; a
+    subsequent cascade-shelve writes no row, leaving that Inject/Reopen as the
+    latest → correctly read as NOT ConfirmShelve-parked). Forward reuse-repoints
+    set produced_goal_id, not target_id, so they never count as un-parking."""
+    row = conn.execute(
+        "SELECT decision_kind FROM strategist_decisions"
+        " WHERE target_id = ? ORDER BY id DESC LIMIT 1",
+        (int(goal_id),),
+    ).fetchone()
+    return row is not None and str(row["decision_kind"]) == "ConfirmShelve"
+
+
 def is_problem_stalled(conn: sqlite3.Connection, problem: str, *,
                        running: "set[tuple] | None" = None) -> bool:
     """True iff `problem` is structurally STALLED:

@@ -177,13 +177,14 @@ def test_decomp_auto_links_attempting_and_pending_review(
     assert revive == set()
 
 
-def test_decomp_revives_shelved_sibling(
+def test_decomp_revives_cascade_shelved_sibling(
     conn: sqlite3.Connection,
 ) -> None:
-    """T8: shelved is a soft terminal that dedupe does NOT block, so
+    """T8: a CASCADE-shelved sibling (lost its last live path, NO ConfirmShelve
+    decision targeting it) is a soft terminal that dedupe does NOT block, so
     citation revives it rather than rejecting. It lands in BOTH auto_link
-    (linked as a sub-goal) and revive (caller reopens to 'open'). No error
-    — the citing strategy gives it a fresh live path to root."""
+    (linked as a sub-goal) and revive (caller reopens to 'open'). No error —
+    the citing strategy gives it a fresh live path to root."""
     g_sh = _insert_goal(conn, "sh", status="shelved")
     patch = "import Problems.p.proofs.L_sh\n"
     auto_link, revive, err = _resolve_cite_dependencies(
@@ -193,6 +194,56 @@ def test_decomp_revives_shelved_sibling(
     assert err is None
     assert auto_link == {g_sh}
     assert revive == {g_sh}
+
+
+def _insert_decision(conn: sqlite3.Connection, kind: str,
+                     target_id: int | None) -> None:
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, created_at, updated_at)"
+        " VALUES ('p', 0, 'pending_review', ?, ?, ?, ?)",
+        (kind, target_id, db.now(), db.now()),
+    )
+    conn.commit()
+
+
+def test_decomp_links_but_does_not_revive_confirmshelve_parked(
+    conn: sqlite3.Connection,
+) -> None:
+    """A ConfirmShelve-PARKED sibling (the latest decision targeting it is a
+    ConfirmShelve) is deliberately held pending its injected prereqs. Citation
+    still auto_links it (the citing strategy WAITS for it to prove via its own
+    inject_batch_done re-engagement), but must NOT revive it — reopening early
+    re-dispatches before prereqs exist → re-fail → re-shelve mini-spin."""
+    g = _insert_goal(conn, "parked", status="shelved")
+    _insert_decision(conn, "ConfirmShelve", g)   # latest action = ConfirmShelve
+    patch = "import Problems.p.proofs.L_parked\n"
+    auto_link, revive, err = _resolve_cite_dependencies(
+        conn, problem="p", patch_text=patch,
+        declared_slugs=set(), allow_auto_link=True,
+    )
+    assert err is None
+    assert auto_link == {g}     # citing strategy still waits for it
+    assert revive == set()      # but NOT reopened early
+
+
+def test_decomp_revives_shelved_after_reengage_inject(
+    conn: sqlite3.Connection,
+) -> None:
+    """ConfirmShelve then a LATER Inject(target=goal) re-engaged it; if it is
+    shelved again now (cascade, no new decision row), the latest targeting
+    decision is that Inject, not the ConfirmShelve → NOT parked → revive."""
+    g = _insert_goal(conn, "reeng", status="shelved")
+    _insert_decision(conn, "ConfirmShelve", g)
+    _insert_decision(conn, "Inject", g)          # later re-engagement
+    patch = "import Problems.p.proofs.L_reeng\n"
+    auto_link, revive, err = _resolve_cite_dependencies(
+        conn, problem="p", patch_text=patch,
+        declared_slugs=set(), allow_auto_link=True,
+    )
+    assert err is None
+    assert auto_link == {g}
+    assert revive == {g}        # un-parked → revivable again
 
 
 def test_decomp_rejects_dead_sibling(

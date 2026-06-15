@@ -646,17 +646,25 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
             # Don't mint a duplicate: repoint this Inject at the existing
             # goal. It rides that goal's lifecycle — the inject settles
             # when the goal settles (deferred outcome, same as a sorry-
-            # bearing Forward). A shelved twin is revived + detached so it
-            # dispatches standalone (Forward has no host strategy to give
-            # it a live path, unlike Backward's auto-link).
+            # bearing Forward). A CASCADE-shelved twin (lost its last live
+            # path) is revived + detached so it dispatches standalone (Forward
+            # has no host strategy to give it a live path, unlike Backward's
+            # auto-link). A ConfirmShelve-PARKED twin is NOT revived: it is
+            # deliberately held pending its injected prereqs, so the repointed
+            # inject just parks alongside it (a shelved-produced inject stays
+            # NULL and suppresses nothing — has_active/live_inflight_inject
+            # both exclude it) and settles when the Strategist re-engages the
+            # goal via inject_batch_done. Reopening it early would re-dispatch
+            # before its prereqs exist → re-fail → re-shelve (a mini-spin).
             x_id = h.goal_id
             x = db.get_goal(conn, x_id)
             x_status = str(x["status"]) if x else "?"
-            if x is not None and x_status == "shelved":
+            if (x is not None and x_status == "shelved"
+                    and not db.is_confirm_shelve_parked(conn, x_id)):
                 db.update_goal_status(conn, x_id, "open")
                 db.set_goal_detached(conn, x_id, True)
                 conn.commit()
-                print(f"[forward-reuse] revived+detached shelved goal "
+                print(f"[forward-reuse] revived+detached cascade-shelved goal "
                       f"{x_id} ({x['slug']}) for inject reuse", flush=True)
             db.set_inject_decision_produced_goal(conn, decision_id, x_id)
             return PipelineResult(

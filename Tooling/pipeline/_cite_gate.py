@@ -37,6 +37,8 @@ from __future__ import annotations
 import re
 import sqlite3
 
+from ..state import db as _db
+
 
 # `import Problems.<problem>.proofs.L_<slug>` line pattern.
 # Captures (problem, slug). Multiline so it matches per-line in patch_text.
@@ -124,11 +126,20 @@ def _resolve_cite_dependencies(
             continue
         if status == "shelved":
             # Soft terminal — revivable. dedupe doesn't block it, so
-            # neither does citation: reopen + auto-link on the decomp
-            # path; reject on leaf-bypass/Builder (transitive sorry).
+            # neither does citation: auto-link on the decomp path; reject on
+            # leaf-bypass/Builder (transitive sorry).
             if allow_auto_link:
-                auto_link.add(int(row["id"]))
-                revive.add(int(row["id"]))
+                gid = int(row["id"])
+                auto_link.add(gid)
+                # Revive ONLY a cascade-shelved goal (lost its last live path)
+                # — the agent_feedback T8 motivation. A ConfirmShelve-PARKED
+                # goal is deliberately held pending its injected prereqs; the
+                # auto_link makes the citing strategy WAIT for it (it proves
+                # when the Strategist re-engages it via inject_batch_done), so
+                # do NOT reopen it early — that would re-dispatch it before its
+                # prereqs exist and re-fail/re-shelve in a mini-spin.
+                if not _db.is_confirm_shelve_parked(conn, gid):
+                    revive.add(gid)
             else:
                 bad.append((slug, status))
             continue

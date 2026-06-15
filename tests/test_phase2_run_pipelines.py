@@ -817,3 +817,47 @@ def test_run_forward_reuse_revives_and_detaches_shelved_goal(
         "SELECT produced_goal_id FROM strategist_decisions WHERE id=?",
         (did,)).fetchone()["produced_goal_id"]
     assert pg == x
+
+
+def test_run_forward_reuse_parks_alongside_confirmshelve_goal(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mock_lsp_verify,
+) -> None:
+    """#2 — Forward lemma matches a ConfirmShelve-PARKED twin: repoint the
+    inject but do NOT revive it. The twin is deliberately held pending its
+    injected prereqs; the repointed inject parks alongside (rides its
+    lifecycle, settles when the Strategist re-engages it). Reopening it early
+    would re-dispatch before prereqs exist → re-fail → re-shelve mini-spin."""
+    from Tooling.quality import dedupe
+    _insert_root(conn)
+    x = db.insert_goal(
+        conn, problem="p", slug="parked_cs",
+        lean_path="Problems/p/proofs/L_parked_cs.lean", statement="True",
+        origin="backward", depth=1, entry_kind="Builder")
+    db.update_goal_status(conn, x, "shelved")
+    # Latest decision targeting x is a ConfirmShelve → parked (not cascade).
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, created_at, updated_at)"
+        " VALUES ('p', 1, 'pending_review', 'ConfirmShelve', ?, ?, ?)",
+        (x, db.now(), db.now()))
+    conn.commit()
+    did = _insert_inject_decision(conn)
+    _forward_dup_spawn(monkeypatch)
+    monkeypatch.setattr(
+        dedupe, "find_canonicals_batch",
+        lambda *a, **k: [dedupe.CanonicalMatch(goal_id=x, kind="reuse")])
+
+    r = forward.run_forward(
+        conn, problem="p", workspace=workspace, mfst=mfst,
+        pipeline_id="test-fwd-reuse-parked", decision_id=did)
+    assert r.outcome == "success"
+    assert r.produced_goal_id == x
+    gx = db.get_goal(conn, x)
+    assert gx["status"] == "shelved"     # NOT revived — stays parked
+    assert gx["detached"] == 0           # not detached either
+    pg = conn.execute(
+        "SELECT produced_goal_id FROM strategist_decisions WHERE id=?",
+        (did,)).fetchone()["produced_goal_id"]
+    assert pg == x                       # inject still repointed (parks alongside)
