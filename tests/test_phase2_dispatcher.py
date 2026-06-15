@@ -1040,6 +1040,42 @@ def test_null_inject_redispatch_skips_backward_with_parked_target(
     assert d in specs
 
 
+def test_null_inject_redispatch_builder_judged_by_target_not_backlink(
+    conn: sqlite3.Connection,
+) -> None:
+    """Regression (P13 4284, 2026-06-15): a killed Builder Inject must be
+    judged by its TARGET'S status, NOT by produced_goal_id. A Builder proves
+    in place, so produced_goal_id is set to =target at commit as an outcome
+    backlink — non-NULL from the start, NOT a work-done signal. The old guard
+    (`Builder and produced_goal_id is not None → skip`) therefore skipped
+    every killed Builder forever, while has_active_inflight_inject counted it
+    active → the Strategist was suppressed and the work was never resumed →
+    permanent deadlock + BFS moot-spin. Builder must now fall through to the
+    parked-target check: open/attempting target → redispatch, terminal/parked
+    → skip."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    tgt = _insert_sub(conn, "alpha", "tgt")   # open by default
+    # Builder with produced_goal_id=target (always set at commit) + open
+    # target → MUST redispatch (the killed-mid-run Builder resumes).
+    d_open = _insert_null_inject(conn, problem="alpha", pipeline="Builder",
+                                 target_id=tgt, produced_goal_id=tgt)
+    specs = {s["decision_id"]: s
+             for s in db.null_inject_redispatch_specs(conn)}
+    assert d_open in specs
+    assert specs[d_open]["kind"] == "Builder"
+    assert specs[d_open]["target_id"] == str(tgt)
+    assert specs[d_open]["target_kind"] == "Goal"
+    # Target proved → work done, outcome propagates from the goal terminal →
+    # skip (the parked-target check handles this, not a produced_goal guard).
+    db.update_goal_status(conn, tgt, "proved")
+    assert d_open not in {s["decision_id"]
+                          for s in db.null_inject_redispatch_specs(conn)}
+    # Target shelved (parked) → skip (redispatch would re-spin it forever).
+    db.update_goal_status(conn, tgt, "shelved")
+    assert d_open not in {s["decision_id"]
+                          for s in db.null_inject_redispatch_specs(conn)}
+
+
 def test_reconcile_reenqueues_null_inject_in_flight_gated(
     conn: sqlite3.Connection,
 ) -> None:

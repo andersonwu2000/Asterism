@@ -86,10 +86,13 @@ def recover_at_startup(conn: sqlite3.Connection,
     #     target_goal_id, 'Goal')
     #
     # Skip the re-enqueue when the decision already has its produced
-    # artifact recorded (produced_goal_id for Forward / Builder,
-    # produced_strategy_id for Backward) — the worker has committed,
-    # so outcome propagation will fire from the artifact's terminal,
-    # and a second dispatch would just spawn a duplicate worker.
+    # WORK ARTIFACT recorded (produced_goal_id for Forward's registered
+    # lemma, produced_strategy_id for Backward's committed strategy) — the
+    # worker reached its product, so outcome propagation fires from the
+    # artifact's terminal and a second dispatch would just spawn a duplicate.
+    # A Builder has no such artifact (it proves in place; produced_goal_id is
+    # a commit-time backlink, not a work-done signal), so it is judged by its
+    # target's status instead — see `db.null_inject_redispatch_specs`.
     #
     # The "which NULL-inject needs a worker + its queue spec" logic lives
     # in `db.null_inject_redispatch_specs`, shared with the per-tick

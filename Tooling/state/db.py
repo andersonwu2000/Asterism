@@ -1901,16 +1901,27 @@ def null_inject_redispatch_specs(conn: sqlite3.Connection, *,
     per-tick `reconcile_stuck_states` (re-enqueues only those with no
     in-flight worker). Encodes the produced-artifact guards so an Inject is
     NOT redispatched once its outcome will propagate from the artifact's
-    terminal: a Forward/Builder that already produced a goal, or a Backward
-    that already committed a strategy. ALSO skips a Backward/Builder whose
-    TARGET goal is no longer awaiting a worker (parked/terminal — e.g. a
-    return_to_parent that shelved the target without committing a strategy):
-    its NULL outcome is permanent now that `shelved` no longer settles, but
-    the work is parked, not missing — redispatching would re-spin it forever
-    (P13 4284, 2026-06-15). A NULL-outcome Inject whose worker died on infra
-    failure (no artifact, target still open/attempting) wedges the problem
-    via the in-flight active-check (`has_active_inflight_inject`) — so it must
-    be redispatched.
+    terminal: a Forward that already registered its lemma (`produced_goal_id`
+    set), or a Backward that already committed a strategy
+    (`produced_strategy_id` set) — both are commit-time WORK ARTIFACTS, so
+    their presence means the worker reached its product and the outcome will
+    propagate from there. A BUILDER HAS NO SUCH ARTIFACT: it proves its
+    target in place, and `produced_goal_id` is set to `=target` at commit as
+    an outcome backlink, NOT a work-done signal — it is non-NULL from the
+    very start. So a killed Builder must be judged by its TARGET'S status,
+    not by `produced_goal_id` (the parked-target check below). Gating Builder
+    on `produced_goal_id` is exactly what wedged P13 4284 (2026-06-15): every
+    killed Builder was skipped forever (backlink set at commit) while
+    `has_active_inflight_inject` counted it active → the Strategist was
+    suppressed and the work was never resumed → permanent deadlock.
+    ALSO skips a Backward/Builder whose TARGET goal is no longer awaiting a
+    worker (parked/terminal — e.g. a return_to_parent that shelved the target
+    without committing a strategy): its NULL outcome is permanent now that
+    `shelved` no longer settles, but the work is parked, not missing —
+    redispatching would re-spin it forever (P13 4284, 2026-06-15). A
+    NULL-outcome Inject whose worker died on infra failure (no artifact,
+    target still open/attempting) wedges the problem via the in-flight
+    active-check (`has_active_inflight_inject`) — so it must be redispatched.
 
     Returns dicts: `{decision_id, problem, kind, target_id, target_kind}`."""
     sql = (
@@ -1942,8 +1953,10 @@ def null_inject_redispatch_specs(conn: sqlite3.Connection, *,
                 continue  # malformed — no target_goal_id; skip not dispatch
             if pipeline == "Backward" and r["produced_strategy_id"] is not None:
                 continue  # strategy committed; outcome from strategy terminal
-            if pipeline == "Builder" and r["produced_goal_id"] is not None:
-                continue  # goal stub written; outcome from goal terminal
+            # NB: NO produced_goal_id guard for Builder — it proves in place,
+            # so produced_goal_id is a commit-time backlink (=target), not a
+            # work-done artifact (see docstring). Builder is judged solely by
+            # its target's status, immediately below.
             # Target no longer awaiting a worker (parked / terminal): the
             # worker already RAN and parked it (e.g. a Backward
             # return_to_parent that committed no strategy → target shelved,
