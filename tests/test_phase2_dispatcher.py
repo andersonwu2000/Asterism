@@ -1076,6 +1076,34 @@ def test_null_inject_redispatch_builder_judged_by_target_not_backlink(
                           for s in db.null_inject_redispatch_specs(conn)}
 
 
+def test_null_inject_redispatch_collapses_residue_to_latest_per_target(
+    conn: sqlite3.Connection,
+) -> None:
+    """Regression (P13 4284, 2026-06-15): a thrash loop that re-Injected a
+    Builder on the same goal across batches leaves multiple NULL injects on it
+    (each re-Inject reopens the goal, resurrecting the prior parked NULL).
+    Recovery must restore at most the LATEST (the one in-flight at stop), not
+    re-launch N racing workers on one proof file (the 909/911/920 case, which
+    47dac74's Builder redispatch would otherwise re-launch all three). Forward
+    (problem-targeted = distinct lemmas) is never collapsed; a Builder and a
+    Backward on the same goal are different (target, kind) and both kept."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    g = _insert_sub(conn, "alpha", "g")  # open
+    d_old = _insert_null_inject(conn, problem="alpha", pipeline="Builder",
+                                target_id=g, produced_goal_id=g)
+    d_new = _insert_null_inject(conn, problem="alpha", pipeline="Builder",
+                                target_id=g, produced_goal_id=g)
+    f1 = _insert_null_inject(conn, problem="alpha", pipeline="Forward")
+    f2 = _insert_null_inject(conn, problem="alpha", pipeline="Forward")
+    d_bwd = _insert_null_inject(conn, problem="alpha", pipeline="Backward",
+                                target_id=g)
+    ids = {s["decision_id"] for s in db.null_inject_redispatch_specs(conn)}
+    assert d_new in ids        # latest Builder on g kept (the in-flight one)
+    assert d_old not in ids    # older Builder residue on g collapsed away
+    assert d_bwd in ids        # Backward on g: different kind, kept alongside
+    assert {f1, f2} <= ids     # both Forwards kept (distinct lemmas)
+
+
 def test_reconcile_reenqueues_null_inject_in_flight_gated(
     conn: sqlite3.Connection,
 ) -> None:
