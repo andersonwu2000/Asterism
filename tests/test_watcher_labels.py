@@ -44,23 +44,27 @@ def test_non_migrate_librarian_label_unchanged(tmp_path):
         "dedup", "LinearAlgebra.jordan_normal_form")
 
 
-def test_cleanup_variables_label(tmp_path):
+def test_cleanup_mapped_stage_label(tmp_path):
+    # A current, mapped cleanup stage → its curated `cleanup:<stage>` label.
     d = _ctx(
         tmp_path,
-        "# Variable extraction — LinearAlgebra.jordan_normal_form — "
+        "# PR-style polish — LinearAlgebra.jordan_normal_form — "
         "`Library/LinearAlgebra/JordanForm/FamilyCoeffs.lean`\n\nbody…\n",
     )
-    assert watcher._lookup_spawn_info(d) == ("cleanup:variables",
+    assert watcher._lookup_spawn_info(d) == ("cleanup:polish",
                                              "FamilyCoeffs.lean")
 
 
-def test_cleanup_docstring_label(tmp_path):
+def test_cleanup_unmapped_title_falls_back(tmp_path):
+    # An unmapped cleanup-shaped header (a renamed/retired stage like the old
+    # "Variable extraction") must NOT degrade to ("spawning","?") — it derives
+    # `cleanup:<first-word>` so a drifted stage still shows informatively.
     d = _ctx(
         tmp_path,
-        "# Docstring polish — LinearAlgebra.jordan_normal_form — "
+        "# Variable extraction — LinearAlgebra.jordan_normal_form — "
         "`Library/LinearAlgebra/JordanForm/BlockEnum.lean`\n\nbody…\n",
     )
-    assert watcher._lookup_spawn_info(d) == ("cleanup:docstring",
+    assert watcher._lookup_spawn_info(d) == ("cleanup:variable",
                                              "BlockEnum.lean")
 
 
