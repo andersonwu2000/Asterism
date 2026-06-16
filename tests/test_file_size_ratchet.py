@@ -54,7 +54,10 @@ _WATERMARKS = {
     # db 3050→3100: null_inject_redispatch_specs collapses NULL Builder/Backward
     # injects to the latest per (target,kind) — restore one in-flight worker per
     # goal on restart, not N racing workers (P13 4284 909/911/920) — 2026-06-15.
-    "Tooling/core/dispatcher.py": 3050,
+    # dispatcher 3050→3080: cascade_one missing_parent_stub → terminal shelve
+    # (stop the instant no-cooldown re-dispatch spin on a goal whose own stub
+    # file vanished — DB↔file drift, P13 g4437) — 2026-06-16 — conscious bump.
+    "Tooling/core/dispatcher.py": 3080,
     "Tooling/state/db.py": 3100,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     "Tooling/quality/librarian/cleanup/_common.py": 560,

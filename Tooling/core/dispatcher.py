@@ -1146,6 +1146,28 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             db.increment_goal_attempts(conn, int(target_id))
             _enqueue_strategist_review(conn, int(target_id))
             return
+        if failure_reason == "missing_parent_stub":
+            # The goal's own stub file (goals.lean_path) is gone from disk
+            # while the row is still dispatchable — a DB↔file drift (e.g. a
+            # sibling slug-collision / stalled OR-branch cleanup removed the
+            # `L_<slug>.lean` but left the goal row alive; P13 g4437
+            # 2026-06-16). `run_backward` reads the stub BEFORE spawning, so
+            # this fails INSTANTLY (no agent, no cooldown) — without a
+            # terminal here the goal tight-loops re-dispatch (~20/s) until
+            # SHELVE_THRESHOLD (g4437: 4 dead_attempts in 167ms). Retrying
+            # re-reads a missing file forever, so park it terminally and log
+            # the drift loudly. `shelved` (not `dead`): the statement is fine,
+            # only its artifact vanished — restoring the stub (a parent
+            # re-decompose) can revive it.
+            db.increment_goal_attempts(conn, int(target_id))
+            print(f"[drift] Backward g{target_id}: own stub file missing "
+                  f"(goals.lean_path absent on disk) — shelving to stop the "
+                  f"instant re-dispatch spin; DB↔file inconsistency, inspect "
+                  f"why the L_<slug>.lean was removed while the row stayed "
+                  f"open", flush=True)
+            _set_goal_terminal_and_propagate(conn, int(target_id), "shelved")
+            _propagate_shelve(conn, int(target_id))
+            return
         n = db.increment_goal_attempts(conn, int(target_id))
         if n >= SHELVE_THRESHOLD:
             _enqueue_strategist_review(conn, int(target_id))

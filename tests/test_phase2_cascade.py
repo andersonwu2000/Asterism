@@ -413,6 +413,30 @@ def test_enqueue_strategist_review_skips_orphan_chain(
     assert root  # silence unused warning
 
 
+def test_cascade_missing_parent_stub_shelves_no_spin(
+    conn: sqlite3.Connection,
+) -> None:
+    """Backward `missing_parent_stub` (the goal's own L_<slug>.lean vanished
+    from disk while the row stays dispatchable — a DB↔file drift) must
+    TERMINALLY shelve the goal on the FIRST occurrence, NOT fall into the
+    generic attempts++/SHELVE_THRESHOLD path. `run_backward` reads the stub
+    BEFORE spawning, so this fails instantly (no agent, no cooldown); without
+    the terminal the dispatcher tight-loops re-dispatch ~20/s until threshold
+    (P13 g4437 2026-06-16: 4 dead_attempts in 167ms). One occurrence →
+    shelved, attempts incremented exactly once (1:1 with its dead_attempt),
+    no spin."""
+    _insert_goal(conn, slug="main", origin="root")
+    g = _insert_goal(conn, slug="orphan_stub", status="attempting")
+    cascade_one(
+        conn, pipeline_id="pid-mps", kind="Backward",
+        target_id=str(g), target_kind="Goal",
+        outcome="failed", failure_reason="missing_parent_stub",
+    )
+    gg = db.get_goal(conn, g)
+    assert gg["status"] == "shelved"   # terminal park, not left dispatchable
+    assert gg["attempts"] == 1         # one increment, NOT spun to threshold
+
+
 def test_enqueue_strategist_review_dedups_in_flight(
     conn: sqlite3.Connection,
 ) -> None:
