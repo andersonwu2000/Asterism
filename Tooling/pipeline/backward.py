@@ -868,6 +868,7 @@ def _backward_parse_and_commit(
         _, _, cite_err = _resolve_cite_dependencies(
             conn, problem=goal["problem"], patch_text=main_patch_text,
             declared_slugs=set(), allow_auto_link=False,
+            workspace=workspace,
         )
         if cite_err:
             return _abort("cite_unproved_sibling", cite_err, leading)
@@ -896,10 +897,9 @@ def _backward_parse_and_commit(
         # parent build (~5-10s) and triggering the cascade-vs-verify
         # race window. Post-(a): caught here with no scratch promotion,
         # no race surface.
-        fq_name = (
-            f"Problems.{goal['problem']}.{sid_token}"
-            if mfst.axioms_whitelist else None
-        )
+        # Always request the axiom set (near-free — computed during
+        # elaboration) for the UNCONDITIONAL sorryAx tripwire below.
+        fq_name = f"Problems.{goal['problem']}.{sid_token}"
         v = gateway_lifecycle.verify_file(
             scratch_dest, write_olean=True,
             axioms_for=fq_name, workspace=workspace,
@@ -924,6 +924,20 @@ def _backward_parse_and_commit(
                 "lake_build_error",
                 diagnostics.annotate_failure_detail(
                     err_lines or "(no error diagnostics returned)"),
+                leading,
+            )
+        # Universal sorryAx tripwire — independent of axioms_whitelist. A
+        # transitive sorry (cited stub/orphan sibling) compiles green
+        # (warning, not error); `#print axioms` is the ground truth.
+        # Reject before promoting the scratch (P13 root sorryAx came in
+        # via exactly this: a leaf citing an orphan stub).
+        if "sorryAx" in (v.get("axioms") or []):
+            scratch_dest.unlink(missing_ok=True)
+            return _abort(
+                "axiom_violation",
+                "leaf-bypass proof term depends on sorryAx — a transitive "
+                "sorry (e.g. a cited stub/orphan sibling), not a complete "
+                "proof",
                 leading,
             )
         if mfst.axioms_whitelist:
@@ -1424,6 +1438,7 @@ def _backward_parse_and_commit(
             conn, problem=goal["problem"],
             patch_text=scratch_dest.read_text(encoding="utf-8"),
             declared_slugs=declared_slugs, allow_auto_link=True,
+            workspace=workspace,
         )
         if cite_err:
             for p in placed:

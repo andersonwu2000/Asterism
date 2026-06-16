@@ -318,6 +318,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         _, _, cite_err = _resolve_cite_dependencies(
             conn, problem=goal["problem"], patch_text=patch_text,
             declared_slugs=set(), allow_auto_link=False,
+            workspace=workspace,
         )
         if cite_err:
             return PipelineResult(
@@ -358,9 +359,13 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # the prior check_build + lake build + lake env lean chain.
         from ..lsp import lifecycle as gateway_lifecycle
         fq_name = f"Problems.{goal['problem']}.{goal['slug']}"
+        # Always request the axiom set — the gateway computes it during
+        # elaboration, so asking for it back is near-free, and we need it
+        # for the UNCONDITIONAL sorryAx tripwire below (independent of any
+        # axioms_whitelist config).
         v = gateway_lifecycle.verify_file(
             goal_lean, write_olean=True,
-            axioms_for=fq_name if mfst.axioms_whitelist else None,
+            axioms_for=fq_name,
             workspace=workspace,
         )
         if "error" in v:
@@ -384,6 +389,26 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                 outcome="failed", failure_reason="lake_build_error",
                 failure_detail=diagnostics.annotate_failure_detail(
                     err_lines or "(no error diagnostics returned)"),
+                proposal_md=leading,
+            )
+        # Universal sorryAx tripwire — independent of axioms_whitelist.
+        # A `sorry` (textual, or transitive via a cited import) compiles
+        # green (warning, not error), so an "ok" build is NOT sorry-free.
+        # `#print axioms` is the ground truth: reject if the proved term
+        # depends on sorryAx. Catches a transitive sorry the textual body
+        # check can't see — e.g. citing a stub/orphan sibling (P13 root
+        # sorryAx via density_form_supp_lhs_slice). Without this, a leaf
+        # with no whitelist configured ships sorry undetected until the
+        # root integrity gate finally probes it.
+        if "sorryAx" in (v.get("axioms") or []):
+            _restore_goal_lean()
+            promote_done = False
+            return PipelineResult(
+                outcome="failed", failure_reason="axiom_violation",
+                failure_detail=(
+                    "proof term depends on sorryAx — a transitive sorry "
+                    "(e.g. a cited stub/orphan sibling), not a complete "
+                    "proof"),
                 proposal_md=leading,
             )
         # Axiom whitelist check on the just-collected axiom set.

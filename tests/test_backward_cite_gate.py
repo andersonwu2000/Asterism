@@ -69,6 +69,7 @@ def test_accepts_when_cited_slug_is_declared_subgoal(
         auto_link, revive, err = _resolve_cite_dependencies(
             conn, problem="p", patch_text=patch,
             declared_slugs={"helper"}, allow_auto_link=allow,
+            workspace=Path.cwd(),
         )
         assert err is None
         assert auto_link == set()
@@ -85,6 +86,7 @@ def test_accepts_when_cited_slug_is_proved(
         auto_link, revive, err = _resolve_cite_dependencies(
             conn, problem="p", patch_text=patch,
             declared_slugs=set(), allow_auto_link=allow,
+            workspace=Path.cwd(),
         )
         assert err is None
         assert auto_link == set()
@@ -92,13 +94,16 @@ def test_accepts_when_cited_slug_is_proved(
 
 
 def test_skips_unknown_slug(conn: sqlite3.Connection) -> None:
-    """Cited slug doesn't match any goal — lake's `unknown identifier`
-    will catch it. Citation gate doesn't double-reject."""
+    """Cited slug matches no goal AND no file on disk — a genuine typo /
+    cross-problem ref. lake's `unknown identifier`/`unknown module` will
+    catch it; the gate passes through (does NOT double-reject). Contrast
+    with `test_rejects_orphan_stub_file` where the file DOES exist."""
     patch = "import Problems.p.proofs.L_nonexistent\n"
     for allow in (True, False):
         auto_link, revive, err = _resolve_cite_dependencies(
             conn, problem="p", patch_text=patch,
             declared_slugs=set(), allow_auto_link=allow,
+            workspace=Path.cwd(),
         )
         assert err is None
         assert auto_link == set()
@@ -114,6 +119,7 @@ def test_skips_cross_problem_imports(conn: sqlite3.Connection) -> None:
         auto_link, revive, err = _resolve_cite_dependencies(
             conn, problem="p", patch_text=patch,
             declared_slugs=set(), allow_auto_link=allow,
+            workspace=Path.cwd(),
         )
         assert err is None
         assert auto_link == set()
@@ -130,6 +136,7 @@ def test_skips_aliased_goal_row(conn: sqlite3.Connection) -> None:
         auto_link, revive, err = _resolve_cite_dependencies(
             conn, problem="p", patch_text=patch,
             declared_slugs=set(), allow_auto_link=allow,
+            workspace=Path.cwd(),
         )
         assert err is None
         assert auto_link == set()
@@ -150,6 +157,7 @@ def test_decomp_auto_links_open_sibling(
     auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=True,
+        workspace=Path.cwd(),
     )
     assert err is None
     assert auto_link == {gid}
@@ -171,6 +179,7 @@ def test_decomp_auto_links_attempting_and_pending_review(
     auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=True,
+        workspace=Path.cwd(),
     )
     assert err is None
     assert auto_link == {g1, g2}
@@ -190,6 +199,7 @@ def test_decomp_revives_cascade_shelved_sibling(
     auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=True,
+        workspace=Path.cwd(),
     )
     assert err is None
     assert auto_link == {g_sh}
@@ -221,6 +231,7 @@ def test_decomp_links_but_does_not_revive_confirmshelve_parked(
     auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=True,
+        workspace=Path.cwd(),
     )
     assert err is None
     assert auto_link == {g}     # citing strategy still waits for it
@@ -240,6 +251,7 @@ def test_decomp_revives_shelved_after_reengage_inject(
     auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=True,
+        workspace=Path.cwd(),
     )
     assert err is None
     assert auto_link == {g}
@@ -259,6 +271,7 @@ def test_decomp_rejects_dead_sibling(
     auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=True,
+        workspace=Path.cwd(),
     )
     assert err is not None
     assert "de" in err
@@ -277,6 +290,7 @@ def test_decomp_rejects_disproved_sibling(
     auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=True,
+        workspace=Path.cwd(),
     )
     assert err is not None
     assert "di" in err
@@ -304,6 +318,7 @@ def test_decomp_mixes_proved_open_shelved_and_disproved(
     auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=True,
+        workspace=Path.cwd(),
     )
     assert err is not None  # false_dep aborts the strategy
     assert "false_dep" in err
@@ -330,6 +345,7 @@ def test_leafbypass_rejects_open_sibling(
     auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=False,
+        workspace=Path.cwd(),
     )
     assert err is not None
     assert "open_dep" in err
@@ -350,6 +366,7 @@ def test_leafbypass_rejects_attempting_and_pending_review(
     auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=False,
+        workspace=Path.cwd(),
     )
     assert err is not None
     assert "foo" in err and "bar" in err
@@ -371,7 +388,60 @@ def test_leafbypass_rejects_shelved_and_dead(
     auto_link, revive, err = _resolve_cite_dependencies(
         conn, problem="p", patch_text=patch,
         declared_slugs=set(), allow_auto_link=False,
+        workspace=Path.cwd(),
     )
     assert err is not None
     assert "sh" in err and "de" in err
     assert revive == set()
+
+
+# ---------------------------------------------------------------------
+# Orphan stub — file on disk, no tracked goal (DB↔file drift). Citing it
+# imports a sorry and silently fake-proves the citer (P13 root sorryAx via
+# density_form_supp_lhs_slice). Reject on BOTH paths.
+# ---------------------------------------------------------------------
+
+def test_rejects_orphan_stub_file(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """`proofs/L_<slug>.lean` exists but no goal row tracks it = orphan
+    stub (a sub-goal whose row never committed — e.g. a Backward killed
+    mid-placement). lake imports it fine and its `sorry` only warns, so
+    citing it would fake-prove the citer. Reject regardless of path."""
+    proofs = tmp_path / "Problems" / "p" / "proofs"
+    proofs.mkdir(parents=True)
+    (proofs / "L_orphan_lemma.lean").write_text(
+        "theorem orphan_lemma : True := by sorry\n", encoding="utf-8")
+    patch = "import Problems.p.proofs.L_orphan_lemma\n"
+    for allow in (True, False):
+        auto_link, revive, err = _resolve_cite_dependencies(
+            conn, problem="p", patch_text=patch,
+            declared_slugs=set(), allow_auto_link=allow,
+            workspace=tmp_path,
+        )
+        assert err is not None
+        assert "orphan_lemma" in err
+        assert "orphan" in err.lower()
+        assert auto_link == set()
+        assert revive == set()
+
+
+def test_declared_orphan_slug_still_skips(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """A slug the agent declares as its OWN `new_<slug>.lean` sub-goal in
+    THIS commit is skipped before the orphan check — declaring it is
+    exactly the prescribed fix, so it must not be rejected even though no
+    goal row exists yet and a stub file is present."""
+    proofs = tmp_path / "Problems" / "p" / "proofs"
+    proofs.mkdir(parents=True)
+    (proofs / "L_freshly_declared.lean").write_text(
+        "theorem freshly_declared : True := by sorry\n", encoding="utf-8")
+    patch = "import Problems.p.proofs.L_freshly_declared\n"
+    auto_link, revive, err = _resolve_cite_dependencies(
+        conn, problem="p", patch_text=patch,
+        declared_slugs={"freshly_declared"}, allow_auto_link=True,
+        workspace=tmp_path,
+    )
+    assert err is None
+    assert auto_link == set() and revive == set()

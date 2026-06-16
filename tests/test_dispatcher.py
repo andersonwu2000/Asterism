@@ -893,6 +893,50 @@ def test_recover_at_startup_sweeps_stale_migrate_probes(
     assert real_lean.exists()    # nested real file untouched
 
 
+def test_recover_at_startup_sweeps_orphan_proof_files(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Orphan proof files (on disk, NO DB row) from a Backward placement
+    that died before its goal-row commit are reconciled at startup:
+    uncited orphans (L_ and _strategy_) deleted; goal-backed files kept;
+    a CITED orphan kept (deleting it would break the importer) — the
+    already-propagated fake-proof case that needs explicit repair."""
+    from Tooling.core.dispatcher import _recover_at_startup
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at,"
+        " bootstrap_done) VALUES ('p', 'Problems/p/Manifest.md', ?, 1)",
+        (db.now(),))
+    db.insert_goal(
+        conn, problem="p", slug="real_lemma",
+        lean_path="Problems/p/proofs/L_real_lemma.lean",
+        statement="T", origin="backward", status="proved")
+    conn.commit()
+
+    proofs = tmp_path / "Problems" / "p" / "proofs"
+    proofs.mkdir(parents=True)
+    real = proofs / "L_real_lemma.lean"
+    cited = proofs / "L_cited_orphan.lean"
+    uncited = proofs / "L_uncited_orphan.lean"
+    orphan_strat = proofs / "_strategy_s99999.lean"
+    # The real (goal-backed) file imports the cited orphan.
+    real.write_text(
+        "import Problems.p.proofs.L_cited_orphan\n"
+        "theorem real_lemma : True := trivial\n", encoding="utf-8")
+    cited.write_text(
+        "theorem cited_orphan : True := by sorry\n", encoding="utf-8")
+    uncited.write_text(
+        "theorem uncited_orphan : True := by sorry\n", encoding="utf-8")
+    orphan_strat.write_text(
+        "theorem s99999 : True := trivial\n", encoding="utf-8")
+
+    _recover_at_startup(conn, tmp_path)
+
+    assert real.exists()             # goal-backed → kept
+    assert not uncited.exists()      # orphan, uncited → swept
+    assert not orphan_strat.exists()  # orphan strategy file → swept
+    assert cited.exists()            # orphan but cited → kept (repair, not delete)
+
+
 def test_strategist_row_is_stale(conn: sqlite3.Connection) -> None:
     """A queued Strategist whose root already proved is dropped at spawn
     (would only Noop). Guards: open root → keep; proved root → drop;

@@ -29,13 +29,17 @@ lines and classify each cited slug by goal status:
   still reject (can't tolerate transitive sorry).
 - `disproved`: HARD terminal — a counterexample was found, dedupe
   BLOCKS it, so does citation. The one status that is never citable.
-- Unknown slug / cross-problem import: pass through (lake's "unknown
-  identifier" path will catch genuine typos).
+- No goal for the slug: if `proofs/L_<slug>.lean` does NOT exist it's a
+  typo / cross-problem ref → pass through (lake's "unknown identifier"
+  catches it). If the file DOES exist it's an ORPHAN stub (sub-goal whose
+  row never committed) → reject: lake imports it fine and its `sorry`
+  only warns, so citing it would silently fake-prove the citer.
 """
 from __future__ import annotations
 
 import re
 import sqlite3
+from pathlib import Path
 
 from ..state import db as _db
 
@@ -51,6 +55,7 @@ _PROBLEM_IMPORT_RE = re.compile(
 def _resolve_cite_dependencies(
     conn: sqlite3.Connection, *, problem: str, patch_text: str,
     declared_slugs: set[str], allow_auto_link: bool,
+    workspace: Path,
 ) -> tuple[set[int], set[int], str | None]:
     """Scan `patch_text` for `import Problems.<problem>.proofs.L_<slug>`
     lines and classify each cited slug:
@@ -82,8 +87,11 @@ def _resolve_cite_dependencies(
           corrected re-statement under your strategy) instead of citing
           the dead goal.
         - 'disproved' = counterexample found; the statement is false.
-      * unknown slug / cross-problem import → skip (lake's
-        "unknown identifier" catches genuine typos)
+      * no goal for the slug:
+        - file `proofs/L_<slug>.lean` absent → skip (typo / cross-problem;
+          lake's "unknown identifier" catches it)
+        - file present but no goal → ORPHAN stub → reject (citing it
+          imports a sorry; re-declare as a `new_<slug>.lean` sub-goal)
 
     Returns (auto_link_goal_ids, revive_goal_ids, err). `revive` ⊆
     `auto_link`. Caller commits the strategy with the declared subgoals
@@ -111,8 +119,24 @@ def _resolve_cite_dependencies(
             (problem, slug),
         ).fetchone()
         if row is None:
-            # No matching goal — lake's "unknown identifier" path will
-            # catch genuinely invalid imports. Don't double-reject here.
+            # No goal for this slug — two sub-cases:
+            #  - proofs/L_<slug>.lean does NOT exist → genuine typo /
+            #    cross-problem ref → pass through (lake's "unknown
+            #    module/identifier" catches it), as before.
+            #  - the file DOES exist but no goal tracks it → ORPHAN STUB.
+            #    A sub-goal whose row never committed (a Backward killed
+            #    mid-placement, or a deleted decomposition) leaves a
+            #    `:= by sorry` file behind. Lake imports it fine (the
+            #    symbol resolves) and the `sorry` only WARNS, so citing it
+            #    silently fake-proves the citer — this is how P13's
+            #    density_form_supp_lhs_slice put sorryAx into the root.
+            #    Reject: an orphan stub is not a citable lemma. Re-declare
+            #    it as a `new_<slug>.lean` sub-goal so it becomes tracked
+            #    and is actually proved (see hint below).
+            orphan = (_db.problem_dir(workspace, problem)
+                      / "proofs" / f"L_{slug}.lean")
+            if orphan.exists():
+                bad.append((slug, "orphan — file on disk, no tracked goal"))
             continue
         status = str(row["status"])
         if status == "proved":
@@ -154,6 +178,14 @@ def _resolve_cite_dependencies(
     if not bad:
         return auto_link, revive, None
     lines = [f"  - `{slug}` (status={status})" for slug, status in bad]
+    orphan_note = (
+        "\n\nAn `orphan` cite is an `import` of a `proofs/L_<slug>.lean` "
+        "that has NO tracked goal — a stale stub left by an interrupted or "
+        "discarded decomposition. It is NOT a proved lemma (typically "
+        "`:= by sorry`); citing it would silently import a sorry. Declare "
+        "what you need as your own `new_<slug>.lean` sub-goal instead."
+        if any("orphan" in status for _, status in bad) else ""
+    )
     if allow_auto_link:
         # On the decomp path `bad` holds disproved (false) and dead
         # (wrong-as-stated) cites; shelved are revived above.
@@ -181,5 +213,5 @@ def _resolve_cite_dependencies(
         )
     return auto_link, revive, (
         "Patch imports sibling goals that cannot be cited:\n"
-        + "\n".join(lines) + hint
+        + "\n".join(lines) + hint + orphan_note
     )

@@ -34,6 +34,7 @@ prune path (`prune.reconcile_proved_goals` / `prune.prune_problem`).
 """
 from __future__ import annotations
 
+import re
 import shutil
 import sqlite3
 from pathlib import Path
@@ -155,6 +156,8 @@ def recover_at_startup(conn: sqlite3.Connection,
     tmps_removed = 0
     patches_salvaged = 0
     probes_removed = 0
+    orphans_swept = 0
+    orphans_kept_cited = 0
     if workspace is not None:
         # Patch salvage FIRST — capture orphan patch.lean bodies
         # before the rmtree pass drops them. Hard-kill of daemon
@@ -206,11 +209,19 @@ def recover_at_startup(conn: sqlite3.Connection,
                 except OSError:
                     pass
 
+        # Orphan proof-file sweep (rule 10 — DB↔file paired): a Backward
+        # placement that died before its goal-row commit leaves a
+        # sorry-bearing stub with no row; uncited ones are deleted, cited
+        # ones (already-propagated fake-proof) are logged for repair.
+        orphans_swept, orphans_kept_cited = sweep_orphan_proof_files(
+            conn, workspace)
+
     if (queue_cleared or inject_reenqueued or strategies_killed
             or goals_reopened or goals_attempting_fixup
             or attempts_cleared or attempts_live_skipped
             or backups_handled or tmps_removed
-            or patches_salvaged or probes_removed):
+            or patches_salvaged or probes_removed
+            or orphans_swept or orphans_kept_cited):
         print(f"[dispatcher] recovery: cleared {queue_cleared} queue rows, "
               f"re-enqueued {inject_reenqueued} in-flight Inject Forwards, "
               f"killed {strategies_killed} half-baked strategies, "
@@ -222,8 +233,93 @@ def recover_at_startup(conn: sqlite3.Connection,
               f"(spared {attempts_live_skipped} live), "
               f"handled {backups_handled} lean backups, "
               f"removed {tmps_removed} stale .tmp files, "
-              f"swept {probes_removed} stale migrate probes",
+              f"swept {probes_removed} stale migrate probes, "
+              f"swept {orphans_swept} orphan proof files "
+              f"(kept {orphans_kept_cited} cited — need repair)",
               flush=True)
+
+
+_PROOF_IMPORT_RE = re.compile(
+    r"^\s*import\s+(Problems\.[\w.]+\.proofs\.[A-Za-z_]\w*)\s*$",
+    re.MULTILINE,
+)
+
+
+def sweep_orphan_proof_files(conn: sqlite3.Connection,
+                             workspace: Path) -> tuple[int, int]:
+    """Delete orphan proof files — `proofs/L_<slug>.lean` /
+    `_strategy_s<id>.lean` present on disk but backed by NO DB row.
+
+    Orphans form when a Backward placement writes a sub-goal stub
+    (backward.py `dest.write_text`) and the worker/daemon dies before the
+    goal-row commit. That window is WIDE — it spans the per-file lake
+    verify — and a hard kill / quota-exit / crash skips the Python
+    failure-cleanup `unlink`, so the stub file survives with no row. The
+    stub is `:= by sorry`; if a later proof cites it the sorry propagates
+    silently to the root (P13 density_form_supp_lhs_slice → root sorryAx,
+    invisible because an orphan has no tree node). Sweeping at startup —
+    before any dispatch, so no live worker's freshly-placed file is at
+    risk — restores the rule-10 DB↔file invariant.
+
+    SAFETY: an orphan still IMPORTED by another proof file is NOT deleted
+    (that would break the importer's build); it is logged loudly instead.
+    A cited orphan means a fake-proof already propagated and needs
+    explicit repair (reopen the importer chain) — never a silent delete.
+    The common case (a fresh, uncited orphan from a killed placement) is
+    deleted. Only problems present in `goals` are swept (never touch a
+    problem the DB doesn't track). Returns (deleted, kept_cited).
+    """
+    deleted = 0
+    kept_cited = 0
+    problems = [r["problem"] for r in conn.execute(
+        "SELECT DISTINCT problem FROM goals")]
+    for problem in problems:
+        proofs_dir = db.problem_dir(workspace, problem) / "proofs"
+        if not proofs_dir.exists():
+            continue
+        known: set[str] = set()
+        for r in conn.execute(
+                "SELECT lean_path AS p FROM goals WHERE problem = ?"
+                " AND lean_path IS NOT NULL", (problem,)):
+            known.add(str(r["p"]))
+        for r in conn.execute(
+                "SELECT s.lean_path AS lp, s.scratch_path AS sp"
+                " FROM strategies s JOIN goals g ON g.id = s.goal_id"
+                " WHERE g.problem = ?", (problem,)):
+            if r["lp"]:
+                known.add(str(r["lp"]))
+            if r["sp"]:
+                known.add(str(r["sp"]))
+        files = (sorted(proofs_dir.glob("L_*.lean"))
+                 + sorted(proofs_dir.glob("_strategy_s*.lean")))
+        # Modules imported by ANY proof file → the "cited" set.
+        imported: set[str] = set()
+        for f in files:
+            try:
+                t = f.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            imported.update(_PROOF_IMPORT_RE.findall(t))
+        for f in files:
+            rel = f.relative_to(workspace).as_posix()
+            if rel in known:
+                continue
+            module = rel.removesuffix(".lean").replace("/", ".")
+            if module in imported:
+                kept_cited += 1
+                print(f"[recovery] ORPHAN PROOF FILE STILL CITED — NOT "
+                      f"deleting {rel}: no DB row but imported by a sibling. "
+                      f"A fake-proof has propagated; needs explicit repair "
+                      f"(reopen the importer chain).", flush=True)
+                continue
+            try:
+                f.unlink()
+                deleted += 1
+                print(f"[recovery] swept orphan proof file (no DB row, "
+                      f"uncited): {rel}", flush=True)
+            except OSError:
+                pass
+    return deleted, kept_cited
 
 
 def sweep_lean_backups(conn: sqlite3.Connection,
