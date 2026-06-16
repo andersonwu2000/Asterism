@@ -1834,23 +1834,34 @@ def _librarian_selfstart_problems(
 ) -> "list[str]":
     """In-scope problems whose Librarian chain should START this run but has
     no durable trigger left (#92 Bug B): opted-in (`Manifest.library`), root
-    proved, no INDEX yet, and no `library_decls` rows (chain never began, or
-    the library was reset). The verify hook (verify.py) only enqueues `dedup`
-    at the instant a root becomes integrity-verified — a historically-proved
-    or library-reset problem never re-fires it, and a manual enqueue is wiped
-    by `recover_at_startup`'s blanket queue clear. So the refill self-seeds
-    `dedup` for these, making the daemon resume Library-ization across a
-    restart instead of stranding it. Gated on the per-problem `library: true`
-    opt-in (default False), so this never auto-Library-izes a problem the
-    operator didn't mark."""
+    proved AND integrity-verified, no INDEX yet, and no `library_decls` rows
+    (chain never began, or the library was reset). The verify hook (verify.py)
+    only enqueues `dedup` at the instant a root becomes integrity-verified — a
+    historically-proved or library-reset problem never re-fires it, and a manual
+    enqueue is wiped by `recover_at_startup`'s blanket queue clear. So the refill
+    self-seeds `dedup` for these, making the daemon resume Library-ization across
+    a restart instead of stranding it.
+
+    `integrity_verified=1` (NOT just status='proved') gates this: a root that is
+    transiently `proved` but not yet integrity-checked — e.g. a sorryAx
+    fake-proof in the window before `root_integrity_gate` rolls it back — would
+    otherwise self-start dedup/classify on INCOMPLETE proofs. classify is
+    one-time and sizes files from the then-current proof line counts; if those
+    stubs are later filled in (B1 repair grew the chain), the file balloons past
+    the classify size budget with no re-gate (P13 PerBumpStokes: classified at a
+    1727→ est ≤budget while proofs were stubs, ended 1957 lines). iv=1 is set by
+    `root_integrity_gate` only after a clean `#print axioms`, so this fires only
+    once the proofs are genuinely final. Gated on the per-problem `library: true`
+    opt-in (default False), so this never auto-Library-izes an unmarked problem."""
     if scope:
         proved = conn.execute(
             "SELECT DISTINCT problem FROM goals WHERE origin='root' "
-            "AND status='proved' AND problem LIKE ?", (scope,)).fetchall()
+            "AND status='proved' AND integrity_verified=1 "
+            "AND problem LIKE ?", (scope,)).fetchall()
     else:
         proved = conn.execute(
             "SELECT DISTINCT problem FROM goals WHERE origin='root' "
-            "AND status='proved'").fetchall()
+            "AND status='proved' AND integrity_verified=1").fetchall()
     out: list[str] = []
     for (problem,) in proved:
         if problem not in manifests:

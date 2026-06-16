@@ -73,13 +73,18 @@ def _manifests(**opt_in):
     return {p: SimpleNamespace(library=v) for p, v in opt_in.items()}
 
 
-def _proved_root(conn, problem="p"):
-    """Insert a proved root goal so `_librarian_selfstart_problems`'
-    `goals WHERE origin='root' AND status='proved'` query sees `problem`."""
+def _proved_root(conn, problem="p", *, integrity_verified=True):
+    """Insert a proved root goal so `_librarian_selfstart_problems` sees
+    `problem`. `integrity_verified` defaults True (a genuinely-proved root that
+    passed `root_integrity_gate`); pass False to simulate a transiently-proved
+    root (e.g. a sorryAx fake-proof in the window before the gate rolls it
+    back), which must NOT self-start library-ization."""
     _seed_problem(conn, problem)
-    db.insert_goal(conn, problem=problem, slug="main",
-                   lean_path=f"Problems/{problem}/Root.lean",
-                   statement="x", origin="root", status="proved")
+    gid = db.insert_goal(conn, problem=problem, slug="main",
+                         lean_path=f"Problems/{problem}/Root.lean",
+                         statement="x", origin="root", status="proved")
+    if integrity_verified:
+        db.set_integrity_verified(conn, gid)
 
 
 # ---------------------------------------------------------------------
@@ -548,6 +553,28 @@ def test_librarian_refill_selfstart_opted_in_proved(tmp_path: Path):
     rows = _queue(conn)
     assert len(rows) == 1
     assert (rows[0]["kind"], rows[0]["target_id"]) == ("Librarian", "p")
+
+
+def test_librarian_refill_no_selfstart_until_integrity_verified(tmp_path: Path):
+    # A transiently-proved-but-not-integrity-verified root (e.g. a sorryAx
+    # fake-proof before root_integrity_gate rolls it back) must NOT self-start
+    # library-ization: classify on still-stubbed proofs sizes files from the
+    # wrong line counts (P13 PerBumpStokes oversize TOCTOU). Fires only at iv=1.
+    conn = _mem()
+    _proved_root(conn, "p", integrity_verified=False)
+    pending = dispatcher._librarian_refill(
+        conn, tmp_path, set(), _manifests(p=True), fail_counts={})
+    assert pending is False
+    assert _queue(conn) == []
+    # once root_integrity_gate sets iv=1 (clean #print axioms) → self-starts
+    gid = conn.execute(
+        "SELECT id FROM goals WHERE problem='p' AND origin='root'").fetchone()[0]
+    db.set_integrity_verified(conn, gid)
+    pending = dispatcher._librarian_refill(
+        conn, tmp_path, set(), _manifests(p=True), fail_counts={})
+    assert pending is True
+    rows = _queue(conn)
+    assert len(rows) == 1 and rows[0]["kind"] == "Librarian"
 
 
 def test_librarian_refill_no_selfstart_when_not_opted_in(tmp_path: Path):
