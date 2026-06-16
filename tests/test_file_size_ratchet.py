@@ -22,7 +22,11 @@ _WATERMARKS = {
     # →3200 cross-problem shared-def redirect + variable-block dedupe +
     # classify Library-tree context (stokes, 2026-06-11) — conscious bumps.
     # This file is OVERDUE a split (librarian work-kinds → submodules).
-    "Tooling/pipeline/librarian.py": 3400,
+    # 3400→3450: _toposort_intra_file Defs-first tie-break — hoist
+    # implicitly-used instances (typeclass, never named → no usage edge)
+    # above their proof users (stokes PerBumpStokes instBdryOriented migrate
+    # build failure) — 2026-06-16 — conscious bump.
+    "Tooling/pipeline/librarian.py": 3450,
     # dispatcher 2750→2800 + db 2450→2500: awaiting_human observability
     # (startup + idle-exit log of paused problems) + scope-aware idle exit
     # via db.dispatchable_open_goals — a paused P12 read as a multi-hour

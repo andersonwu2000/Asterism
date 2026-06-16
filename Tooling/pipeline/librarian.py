@@ -224,15 +224,34 @@ def _find_cycle(graph: dict[str, list[str]]) -> list[str] | None:
 # ---------------------------------------------------------------------
 
 def _toposort_intra_file(decls: list[str],
-                         usage: "dict[str, set[str]]") -> list[str]:
+                         usage: "dict[str, set[str]]",
+                         defs_set: "set[str] | None" = None) -> list[str]:
     """Order one file's decls so each is emitted AFTER every same-file
     sibling it cites (Lean resolves names top-to-bottom). Stable Kahn: where
-    usage doesn't force an order, the agent's original sequence is preserved
-    (tie-break by original position). A cycle (shouldn't arise from a valid
-    proof forest) leaves the offending decls in original order — the build
-    gate then surfaces the unresolved reference honestly."""
+    usage doesn't force an order, Defs decls (defs/instances — `defs_set`)
+    are emitted before proof decls, then the agent's original sequence is
+    preserved (tie-break by `(not-a-Def, original position)`).
+
+    The Defs-first tie-break is load-bearing for INSTANCES: a proof that
+    uses an instance (e.g. `OrientedManifold (Bdry n M)` via `instBdryOriented`)
+    resolves it implicitly by typeclass search — it never NAMES the instance,
+    so `usage_graph` records no proof→instance edge. Without the bias, the
+    instance can land after its users (stokes PerBumpStokes: instBdryOriented
+    at file_order 62 while users sat at 51-61 → `failed to synthesize
+    OrientedManifold (?n) (Bdry n M)` at migrate, 2026-06-16). Biasing the
+    ready-queue so a dependency-free Def is emitted first hoists it above its
+    implicit users; a real edge (a Def that genuinely cites a proof) still
+    overrides via indeg, so it stays sound.
+
+    A cycle (shouldn't arise from a valid proof forest) leaves the offending
+    decls in original order — the build gate then surfaces the unresolved
+    reference honestly."""
+    ds = defs_set or set()
     in_file = set(decls)
     pos = {s: i for i, s in enumerate(decls)}
+    # Ready-queue order: Defs decls first (0), then proofs (1); ties by
+    # original position. Hoists implicitly-used instances above their users.
+    key = lambda s: (0 if s in ds else 1, pos[s])  # noqa: E731
     dep = {s: {u for u in usage.get(s, set()) if u in in_file and u != s}
            for s in decls}
     users: dict[str, list[str]] = {s: [] for s in decls}
@@ -240,7 +259,7 @@ def _toposort_intra_file(decls: list[str],
         for u in dep[s]:
             users[u].append(s)
     indeg = {s: len(dep[s]) for s in decls}
-    ready = sorted((s for s in decls if indeg[s] == 0), key=lambda s: pos[s])
+    ready = sorted((s for s in decls if indeg[s] == 0), key=key)
     result: list[str] = []
     placed: set[str] = set()
     while ready:
@@ -253,7 +272,7 @@ def _toposort_intra_file(decls: list[str],
             if indeg[w] == 0:
                 newly.append(w)
         if newly:
-            ready = sorted(ready + newly, key=lambda s: pos[s])
+            ready = sorted(ready + newly, key=key)
     if len(result) != len(decls):           # cycle fallback
         result += [s for s in decls if s not in placed]
     return result
@@ -350,8 +369,10 @@ def commit_classify(conn, problem: str, plan: ClassifyPlan,
     merged: dict = {}
     for f in plan.files:
         merged.setdefault(canon.get(f.path, f.path), []).extend(f.decls)
+    defs_set = set(defs_placed)
     for cf, decls in merged.items():
-        for order, slug in enumerate(_toposort_intra_file(decls, usage)):
+        for order, slug in enumerate(
+                _toposort_intra_file(decls, usage, defs_set)):
             db.set_library_classification(
                 conn, problem=problem, slug=slug,
                 target_file=cf, target_name=None, file_order=order)

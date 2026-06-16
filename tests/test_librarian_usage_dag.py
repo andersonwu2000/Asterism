@@ -251,6 +251,34 @@ def test_toposort_cycle_falls_back_to_input_order():
     assert set(out) == {"a", "b"} and len(out) == 2
 
 
+def test_toposort_hoists_defs_before_implicit_users():
+    # A proof `user` uses an instance `inst` IMPLICITLY (typeclass search)
+    # → no usage edge is recorded. Input order puts the proofs first. With
+    # `inst` flagged as a Def, the Defs-first tie-break hoists it above its
+    # implicit user — the stokes PerBumpStokes `instBdryOriented` bug
+    # (instance landed after its users → synthesis failure at migrate).
+    out = lib._toposort_intra_file(
+        ["a_proof", "user", "inst"], {}, defs_set={"inst"})
+    assert out.index("inst") < out.index("user")
+    assert out.index("inst") < out.index("a_proof")
+
+
+def test_toposort_real_edge_overrides_defs_priority():
+    # Soundness: a Def that genuinely cites a proof (edge def→proof) must
+    # still come AFTER that proof — the Defs-first bias never violates a
+    # real dependency.
+    out = lib._toposort_intra_file(["d", "p"], {"d": {"p"}}, defs_set={"d"})
+    assert out == ["p", "d"]
+
+
+def test_toposort_defs_priority_among_independent_defs_stable():
+    # Multiple independent Defs keep original relative order (stable), and
+    # still precede an independent proof.
+    out = lib._toposort_intra_file(
+        ["p1", "defB", "defA", "p2"], {}, defs_set={"defA", "defB"})
+    assert out == ["defB", "defA", "p1", "p2"]
+
+
 # --- commit_classify end-to-end: file_order reflects usage ---
 
 @pytest.fixture
