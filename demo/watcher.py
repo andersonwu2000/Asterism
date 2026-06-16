@@ -69,13 +69,20 @@ _RE_STRATEGY_NAMING = re.compile(r"^## Strategy naming\b")
 # (file, operation), each writing its own `# <Title> — <problem>[ — `<file>`]`
 # header. Map the title → a short `cleanup:<stage>` label so stats.md shows which
 # stage each worker is on instead of the ("spawning", "?") placeholder.
+# Titles are defined in Tooling/quality/librarian/{dedup.py, cleanup/*.py}; this
+# map mirrors them. `test_watcher_cleanup_titles` asserts every title written by
+# those modules appears here, so a renamed/added stage is caught at CI rather
+# than silently degrading to "spawning, ?". `_lookup_spawn_info` also derives a
+# best-effort `cleanup:<first-word>` label for any cleanup-shaped header whose
+# title is missing here, so drift never regresses all the way to the placeholder.
 _CLEANUP_TITLES = {
     "dedup audit": "cleanup:dedup",
     "dedup bridge": "cleanup:bridge",
+    "Naming + imports": "cleanup:naming",
     "Proof-simplification triage": "cleanup:simp-mark",
     "Simplify one proof": "cleanup:simplify",
-    "Variable extraction": "cleanup:variables",
-    "Docstring polish": "cleanup:docstring",
+    "PR-style polish": "cleanup:polish",
+    "Final mathlib review": "cleanup:review",
 }
 _RE_CLEANUP_CTX = re.compile(r"^# (.+?) — (\S.*?)(?: — `([^`]+)`)?\s*$")
 _RE_CLEANUP_FILE = re.compile(r"^# file: (\S+)")  # dedup audit's file is line 2
@@ -694,8 +701,17 @@ def _lookup_spawn_info(spawn_dir: Path) -> tuple[str, str] | None:
         # Cleanup sub-agents: `# <Title> — <problem>[ — `<file>`]`. Label by the
         # stage (`cleanup:variables` etc.) + the file/decl it's working on.
         m = _RE_CLEANUP_CTX.match(line)
-        if m and m.group(1) in _CLEANUP_TITLES:
-            kind, label = _CLEANUP_TITLES[m.group(1)], m.group(3)
+        if m:
+            # `# <Title> — <problem>[ — `<file>`]`. Backward/Builder use
+            # `# Context for goal <slug>` (no ` — `) so they never match here;
+            # strategist/forward/migrate are returned above — so a match at this
+            # point is a cleanup sub-agent. Use the mapped stage label, or, for a
+            # title this map hasn't caught up with yet, derive `cleanup:<first
+            # word>` so a drifted/new stage still shows informatively (never the
+            # ("spawning", "?") placeholder).
+            kind = _CLEANUP_TITLES.get(
+                m.group(1), "cleanup:" + (m.group(1).split() or ["?"])[0].lower())
+            label = m.group(3)
             if label is None:           # dedup audit: file is on `# file: <rel>`
                 for ln in head_lines[:4]:
                     fm = _RE_CLEANUP_FILE.match(ln)
@@ -846,6 +862,53 @@ def _librarian_index_has(problem: str) -> bool:
                index.read_text(encoding="utf-8", errors="replace").splitlines())
 
 
+def _lib_dep_layers(target_files: list[str]) -> dict[str, int]:
+    """Kahn dependency layers of `target_files` by their mutual `import
+    Library.…` edges. Layer 0 = imports none of the OTHER listed files
+    (foundational); layer k = every in-set import sits in an earlier layer.
+    Lets stats.md list the library files in build/dependency order instead of
+    alphabetically — the import graph is a dense multi-parent DAG, so a layer
+    number reads the DAG's depth cleanly where an indented tree would drown in
+    repeats.
+
+    Strictly observational: parses on-disk imports (read-only), reuses no
+    pipeline data and writes nothing. `import` lines sit at the top of a Lean
+    file, so we stop at the first non-import/non-comment line. Unreadable files
+    or an (impossible-for-imports) cycle degrade gracefully — the file just
+    sorts into the current layer rather than crashing the watcher tick."""
+    fileset = set(target_files)
+    deps: dict[str, set[str]] = {}
+    for tf in target_files:
+        d: set[str] = set()
+        try:
+            for ln in (WS / tf).read_text(
+                    encoding="utf-8", errors="replace").splitlines():
+                s = ln.strip()
+                if s.startswith("import "):
+                    mod = s[len("import "):].strip().split(" ", 1)[0]
+                    path = mod.replace(".", "/") + ".lean"
+                    if path in fileset and path != tf:
+                        d.add(path)
+                elif s and not s.startswith("--"):
+                    break  # past the import block
+        except OSError:
+            pass
+        deps[tf] = d
+    layer: dict[str, int] = {}
+    remaining = set(target_files)
+    lv = 0
+    while remaining:
+        placed = fileset - remaining
+        ready = [tf for tf in remaining if deps[tf] <= placed]
+        if not ready:                      # cycle / external-only — flush rest
+            ready = list(remaining)
+        for tf in ready:
+            layer[tf] = lv
+        remaining -= set(ready)
+        lv += 1
+    return layer
+
+
 def _librarian_section(conn, problem: str) -> str:
     """Markdown for the Librarian pipeline (dedup→classify→migrate→cleanup→
     bridge), or '' when it isn't running — no `library_decls` rows yet (still
@@ -898,10 +961,15 @@ def _librarian_section(conn, problem: str) -> str:
         f"decls: migrated {migrated}/{keep} · cleaned {cleaned}/{keep}", "",
     ]
     if byf:
-        lines += ["| file | decls | state |", "|---|--:|---|"]
-        for tf in sorted(byf):
+        # Dependency-layer order (foundational first) beats alphabetical for
+        # reading the library's build structure. `dep` = the file's Kahn layer
+        # in the intra-set import DAG.
+        layers = _lib_dep_layers(list(byf))
+        lines += ["| dep | file | decls | state |", "|--:|---|--:|---|"]
+        for tf in sorted(byf, key=lambda t: (layers[t], t.split("/")[-1])):
             st = min(byf[tf], key=_LIB_STAGES.index)
-            lines.append(f"| {tf.split('/')[-1]} | {len(byf[tf])} | {st} |")
+            lines.append(
+                f"| {layers[tf]} | {tf.split('/')[-1]} | {len(byf[tf])} | {st} |")
         lines.append("")
     return "\n".join(lines)
 
