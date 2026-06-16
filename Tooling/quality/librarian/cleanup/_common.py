@@ -522,6 +522,25 @@ def _inject_linter(text: str, *options: str) -> str:
     return "".join(lines[:k]) + inj + "".join(lines[k:])
 
 
+# The project's mathlib-PR lint bar (lakefile.lean `leanOptions`). `lake env
+# lean` on a throwaway file does NOT inherit the package leanOptions, so the
+# cleanup detection/gate builds must force these ON themselves — otherwise they
+# miss the whole mathlib style set (longFile, longLine, cdot, docString,
+# multiGoal, …) and only catch default-on lints (deprecated, core unused). The
+# file imports Mathlib, so the linter definitions are in scope for set_option.
+_MATHLIB_LINT_OPTS = ("linter.mathlibStandardSet", "linter.deprecated")
+
+
+def _build_for_warnings(workspace: Path, content: str, *, prefix: str,
+                        timeout: int = _BATCH_TIMEOUT_SEC) -> "tuple[bool, str]":
+    """Like `_build_with_output` but with the mathlib standard linter set forced
+    on, so the build surfaces the full mathlib-PR warning set. Returns
+    (ok, full_output)."""
+    return _build_with_output(
+        workspace, _inject_linter(content, *_MATHLIB_LINT_OPTS),
+        prefix=prefix, timeout=timeout)
+
+
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_']*$")
 
 

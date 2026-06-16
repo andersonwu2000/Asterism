@@ -74,10 +74,11 @@ _WATERMARKS = {
     "Tooling/core/dispatcher.py": 3150,
     "Tooling/state/db.py": 3100,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
-    # 560→600: _all_warnings (Mathlib-PR zero-warning detector, broader than
+    # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup
-    # variable-block tidy) — 2026-06-17 — conscious bump.
-    "Tooling/quality/librarian/cleanup/_common.py": 600,
+    # variable-block tidy) + _build_for_warnings (force the mathlib standard
+    # linter set on, which `lake env lean` drops) — 2026-06-17 — conscious bump.
+    "Tooling/quality/librarian/cleanup/_common.py": 640,
     "Tooling/quality/librarian/cleanup/audit.py": 200,
     "Tooling/quality/librarian/cleanup/decide.py": 250,
     "Tooling/quality/librarian/cleanup/mechanical.py": 250,

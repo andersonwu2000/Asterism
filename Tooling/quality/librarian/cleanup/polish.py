@@ -113,7 +113,7 @@ def file_cleanup_polish(workspace: Path, problem: str, target_file: str,
                           + " — polish spelling/comments/style, NEVER the type")
             continue
         warns = _polish_warnings(
-            C._build_with_output(workspace, new_text, prefix="_polish_warn")[1])
+            C._build_for_warnings(workspace, new_text, prefix="_polish_warn")[1])
         if best is None or len(warns) < best[0]:
             best = (len(warns), new_text)
         if not warns:

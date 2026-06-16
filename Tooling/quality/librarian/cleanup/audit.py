@@ -163,7 +163,7 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
         # lemmas, dupNamespace, etc. The per-file cleanup gate hard-fails on any
         # residual, so a non-zero "best" here just costs a unit retry.
         warns = C._all_warnings(
-            C._build_with_output(workspace, new_text, prefix="_audit_warn")[1])
+            C._build_for_warnings(workspace, new_text, prefix="_audit_warn")[1])
         if best is None or len(warns) < best[0]:
             best = (len(warns), new_text, applied)
         if not warns:

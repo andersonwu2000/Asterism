@@ -34,6 +34,22 @@ def test_all_warnings_dedups_and_empty_on_clean():
     assert C._all_warnings("Build completed successfully.\n") == []
 
 
+def test_build_for_warnings_forces_mathlib_lint_set(monkeypatch):
+    # `lake env lean` ignores the lakefile leanOptions, so the gate must inject
+    # the mathlib standard linter set itself — else longFile/longLine/style/…
+    # are silently off and the "zero-warning" bar is a fraction of mathlib's.
+    captured = {}
+
+    def fake(ws, content, **kw):
+        captured["content"] = content
+        return True, ""
+    monkeypatch.setattr(C, "_build_with_output", fake)
+    C._build_for_warnings(None, "import Mathlib\n\ntheorem t : True := by trivial\n",
+                          prefix="x")
+    assert "set_option linter.mathlibStandardSet true" in captured["content"]
+    assert "set_option linter.deprecated true" in captured["content"]
+
+
 # ---------------------------------------------------------------------
 # _collapse_redundant_variable_blocks — scope-safe duplicate removal
 # ---------------------------------------------------------------------

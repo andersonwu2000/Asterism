@@ -1694,7 +1694,7 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None):
         except OSError:
             _final = None                            # absent (e.g. unit tests) → skip
         if _final is not None:
-            _wok, _wout = _C._build_with_output(
+            _wok, _wout = _C._build_for_warnings(
                 workspace, _final, prefix="_cleanup_warngate")
             _warns = _C._all_warnings(_wout)
             if not _wok or _warns:
