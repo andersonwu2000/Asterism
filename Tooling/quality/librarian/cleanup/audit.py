@@ -6,7 +6,6 @@ from pathlib import Path
 
 from . import _common as C
 from ._common import _Decl
-from .polish import _polish_warnings
 
 
 # ---------------------------------------------------------------------
@@ -159,14 +158,21 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
                             f"{_AUDIT_RENAMES})")
             continue
         applied = {f"{module}.{o}": f"{module}.{n}" for o, n in renames.items()}
-        warns = _polish_warnings(
+        # ALL warnings (not just polish's type-preserving subset): audit is the
+        # final mathlib reviewer and must drive the file to ZERO — deprecated
+        # lemmas, dupNamespace, etc. The per-file cleanup gate hard-fails on any
+        # residual, so a non-zero "best" here just costs a unit retry.
+        warns = C._all_warnings(
             C._build_with_output(workspace, new_text, prefix="_audit_warn")[1])
         if best is None or len(warns) < best[0]:
             best = (len(warns), new_text, applied)
         if not warns:
             break                                 # clean — done
         prev_error = ("the rewrite is green and type-safe, but these warnings "
-                      "remain — clear them:\n" + "\n".join(warns[:10]))
+                      "remain — clear them (Mathlib PR bar is ZERO; replace "
+                      "deprecated lemmas with the suggested form, or as a last "
+                      "resort `set_option <linter> false in` a single decl with "
+                      "a one-line justification):\n" + "\n".join(warns[:10]))
     if best is None:
         print(f"[staged] audit `{leaf}` — kept original "
               f"(no green audit in {max_retries + 1} tries)", flush=True)

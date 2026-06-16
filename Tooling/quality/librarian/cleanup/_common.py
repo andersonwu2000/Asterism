@@ -441,6 +441,76 @@ def _build_with_output(workspace: Path, content: str, *, prefix: str,
     return run.ok, run.output
 
 
+_WARN_LINE_RE = re.compile(r"\bwarning:[^\n]*")
+
+
+def _all_warnings(build_output: str) -> "list[str]":
+    """Every distinct `warning:` line in a build's full output — the Mathlib-PR
+    zero-warning bar (deprecated, unused variable, linter.style, dupNamespace,
+    unnecessary, longFile, …). Broader than polish's type-preserving subset
+    (`_polish_warnings`, which is only the warnings polish itself can clear): the
+    final per-file cleanup gate and the audit reviewer drive the file to ZERO of
+    these. `deprecated` in particular is core-Lean (always on) yet was missed by
+    the curated subset, so deprecated lemmas (EuclideanSpace.single_apply →
+    PiLp.single_apply) shipped silently."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in _WARN_LINE_RE.finditer(build_output):
+        w = m.group(0).strip()[:200]
+        if w and w not in seen:
+            seen.add(w)
+            out.append(w)
+    return out
+
+
+_VAR_RE = re.compile(r"variable\b")
+_SCOPE_RE = re.compile(r"(section|namespace|end)\b")
+
+
+def _collapse_redundant_variable_blocks(text: str) -> str:
+    """Drop a `variable` block that is byte-identical to the immediately
+    preceding one (only blank lines between, no `section`/`namespace`/`end`
+    in between, so it is the same scope) — a build-harmless no-op re-declaration
+    that the per-decl migrate assembly replays (each Defs slice re-emits its
+    in-scope variables; StokesIntegralDefs:24/29 shipped two identical blocks).
+    Conservative on purpose: only adjacent identical blocks at one scope depth
+    collapse, so a block legitimately re-opened after an `end` is never removed.
+    Runs on the FINAL file regardless of migrate path (the existing dedup in
+    `_mechanical_migrate_file` only covered the mechanical chunk path)."""
+    lines = text.splitlines()
+    out: list[str] = []
+    prev_block: "str | None" = None
+    i, n = 0, len(lines)
+    while i < n:
+        s = lines[i].strip()
+        if _VAR_RE.match(s):
+            j = i + 1
+            while j < n and lines[j][:1] in (" ", "\t") and lines[j].strip():
+                j += 1
+            block = "\n".join(lines[i:j])
+            if block == prev_block:                 # redundant re-declaration
+                while out and out[-1].strip() == "":
+                    out.pop()                        # collapse separating blanks
+                out.append("")
+                i = j
+                continue
+            out.extend(lines[i:j])
+            prev_block = block
+            i = j
+            continue
+        if s == "":
+            out.append(lines[i]); i += 1
+            continue
+        # any non-blank, non-variable line breaks adjacency; a scope keyword
+        # additionally means a later identical block is a real re-open.
+        prev_block = None
+        out.append(lines[i]); i += 1
+    result = "\n".join(out)
+    if text.endswith("\n") and not result.endswith("\n"):
+        result += "\n"                              # splitlines() drops it
+    return result
+
+
 def _inject_linter(text: str, *options: str) -> str:
     """Return `text` with `set_option <opt> true` injected after the import block
     (file-level — these linters don't take `… in <command>`). Used to force a

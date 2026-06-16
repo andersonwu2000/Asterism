@@ -26,7 +26,10 @@ _WATERMARKS = {
     # implicitly-used instances (typeclass, never named → no usage edge)
     # above their proof users (stokes PerBumpStokes instBdryOriented migrate
     # build failure) — 2026-06-16 — conscious bump.
-    "Tooling/pipeline/librarian.py": 3450,
+    # 3450→3500: per-file cleanup hard Mathlib-PR gate (build must be
+    # warning-free → fail unit) + redundant variable-block collapse in
+    # _run_cleanup — 2026-06-17 — conscious bump.
+    "Tooling/pipeline/librarian.py": 3500,
     # dispatcher 2750→2800 + db 2450→2500: awaiting_human observability
     # (startup + idle-exit log of paused problems) + scope-aware idle exit
     # via db.dispatchable_open_goals — a paused P12 read as a multi-hour
@@ -65,10 +68,16 @@ _WATERMARKS = {
     # goal regardless of decision_id (two Builders prove-in-place into one
     # L_<slug>.lean → loser's stub-snapshot restore clobbers winner's proof;
     # P13 3502/4284/4288) — 2026-06-16 — conscious bump.
-    "Tooling/core/dispatcher.py": 3120,
+    # 3120→3150: librarian STALL log surfaces failure_detail by pipeline_id
+    # (df77f05) + self-start gated on integrity_verified (446533a, classify-time
+    # TOCTOU) — 2026-06-17 — conscious bump.
+    "Tooling/core/dispatcher.py": 3150,
     "Tooling/state/db.py": 3100,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
-    "Tooling/quality/librarian/cleanup/_common.py": 560,
+    # 560→600: _all_warnings (Mathlib-PR zero-warning detector, broader than
+    # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup
+    # variable-block tidy) — 2026-06-17 — conscious bump.
+    "Tooling/quality/librarian/cleanup/_common.py": 600,
     "Tooling/quality/librarian/cleanup/audit.py": 200,
     "Tooling/quality/librarian/cleanup/decide.py": 250,
     "Tooling/quality/librarian/cleanup/mechanical.py": 250,

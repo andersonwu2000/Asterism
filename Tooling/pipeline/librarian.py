@@ -1634,6 +1634,20 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None):
             prior_renames=prior_renames, apply=True,
             simplify=True, unused_args=True,
             strip_comments=True, polish=True, decide=True, audit=True)
+        # Mathlib-PR tidy: collapse redundant duplicate `variable` blocks the
+        # per-decl migrate assembly replays (build-harmless, scope-safe; the
+        # mechanical-path dedup missed files assembled via the LLM/Defs path —
+        # StokesIntegralDefs:24/29). Source-only (variables aren't exported →
+        # olean unchanged), so no rebuild needed.
+        from ..quality.librarian.cleanup import _common as _C
+        _fp = workspace / target_file
+        try:
+            _orig = _fp.read_text(encoding="utf-8")
+            _coll = _C._collapse_redundant_variable_blocks(_orig)
+            if _coll != _orig:
+                _fp.write_text(_coll, encoding="utf-8")
+        except OSError:
+            pass
         rows = [r for r in db.library_decls_for(conn, problem, lifecycle="migrated")
                 if r["target_file"] == target_file]
         # P4 decide: record {old_fqn → new_fqn} so consumer files self-apply it,
@@ -1668,6 +1682,31 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None):
                     failure_reason="librarian_cleaned_build_failed",
                     failure_detail=(f"decide olean refresh failed for "
                                     f"{target_file}: {out[-400:]}"))
+        # Hard Mathlib-PR gate: the finalized file must build WARNING-FREE.
+        # Deprecated lemmas, unused variables, style lints etc. are the
+        # "auto-generated" tells that would block a real mathlib PR. On a build
+        # error or any residual warning, FAIL the unit — the chain retries
+        # cleanup (re-spawning audit/polish to clear them); if it cannot, the
+        # STALL line surfaces the blocker (df77f05). audit may justify-suppress a
+        # genuinely unavoidable lint with `set_option … false in`.
+        try:
+            _final = (workspace / target_file).read_text(encoding="utf-8")
+        except OSError:
+            _final = None                            # absent (e.g. unit tests) → skip
+        if _final is not None:
+            _wok, _wout = _C._build_with_output(
+                workspace, _final, prefix="_cleanup_warngate")
+            _warns = _C._all_warnings(_wout)
+            if not _wok or _warns:
+                return PipelineResult(
+                    outcome="failed",
+                    failure_reason=("librarian_cleaned_build_failed" if not _wok
+                                    else "librarian_warnings_remain"),
+                    failure_detail=(
+                        f"{target_file}: "
+                        + (f"build failed:\n{_wout[-400:]}" if not _wok else
+                           f"{len(_warns)} residual warning(s) — Mathlib PR bar "
+                           "is zero:\n" + "\n".join(_warns[:10]))))
         n_drop = _advance_cleanup_decls(conn, problem, rows, res.get("dropped", {}))
         print(f"[librarian] {problem}: cleanup `{target_file}` — {n_drop} "
               f"dropped, {len(res.get('bridged', {}))} bridged, "

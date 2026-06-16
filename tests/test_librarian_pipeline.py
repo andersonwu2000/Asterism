@@ -230,6 +230,47 @@ def test_run_cleanup_per_file_drop_records_citation(conn, tmp_path, monkeypatch)
     assert by_slug["bar"]["lifecycle"] == "cleaned"
 
 
+def _write_lib_file(tmp_path, rel, text="theorem t : True := trivial\n"):
+    p = tmp_path / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+
+
+def _patch_warn_build(monkeypatch, output):
+    from Tooling.quality.librarian.cleanup import _common as _C
+    monkeypatch.setattr(_C, "_build_with_output",
+                        lambda ws, content, **kw: (True, output))
+
+
+def test_run_cleanup_per_file_warning_gate_fails_unit(conn, tmp_path, monkeypatch):
+    # Mathlib-PR hard gate: a finalized file that still builds WITH warnings
+    # fails the cleanup unit, leaving its decls `migrated` so the chain retries
+    # (and ultimately STALLs with the warning surfaced) instead of promoting it.
+    _seed_migrated(conn, "foo", "Library.P.F.foo", target_file="Library/P/F.lean")
+    _write_lib_file(tmp_path, "Library/P/F.lean")
+    _patch_engine_file(monkeypatch, {"dropped": {}, "merged": set(),
+                                     "bridged": {}, "near": [], "failed": []})
+    _patch_warn_build(monkeypatch, "F.lean:1:0: warning: unused variable `x`\n")
+    res = lib._run_cleanup(conn, problem="p", workspace=tmp_path,
+                           target_file="Library/P/F.lean")
+    assert res.outcome == "failed"
+    assert res.failure_reason == "librarian_warnings_remain"
+    assert db.library_decls_for(conn, "p", lifecycle="migrated")   # not promoted
+
+
+def test_run_cleanup_per_file_warning_gate_passes_when_clean(conn, tmp_path,
+                                                             monkeypatch):
+    _seed_migrated(conn, "foo", "Library.P.F.foo", target_file="Library/P/F.lean")
+    _write_lib_file(tmp_path, "Library/P/F.lean")
+    _patch_engine_file(monkeypatch, {"dropped": {}, "merged": set(),
+                                     "bridged": {}, "near": [], "failed": []})
+    _patch_warn_build(monkeypatch, "build ok, no warnings\n")
+    res = lib._run_cleanup(conn, problem="p", workspace=tmp_path,
+                           target_file="Library/P/F.lean")
+    assert res.outcome == "success"
+    assert db.library_decls_for(conn, "p", lifecycle="cleaned")
+
+
 def test_run_cleanup_per_file_reads_prior_renames_from_db(conn, tmp_path,
                                                           monkeypatch):
     # An earlier (dependency) file already dropped `gone`→`keep`; cleaning a
