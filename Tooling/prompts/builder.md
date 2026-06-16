@@ -8,11 +8,12 @@ Time budget: {timeout_min} minutes.
 
 ## Editing tools — LSP-backed (preferred for proof body)
 
-Three MCP tools talk to a live Lean server holding **`patch.lean`** (in attempts_dir, seeded from the goal file's current content — commented-out tactics in it are a prior attempt's sketch to evaluate, not a discarded dead end). Use them to iterate on the proof body without spawning lake builds. Edits are sandboxed — they don't touch the workspace `L_*.lean` until the framework commits at the end:
+Four MCP tools talk to a live Lean server holding **`patch.lean`** (in attempts_dir, seeded from the goal file's current content — commented-out tactics in it are a prior attempt's sketch to evaluate, not a discarded dead end). Use them to iterate on the proof body without spawning lake builds. Edits are sandboxed — they don't touch the workspace `L_*.lean` until the framework commits at the end:
 
 - `mcp__lsp__apply_edit(start_line, end_line, new_text)` — replace a 1-indexed inclusive line range. Returns post-edit goal at line=start_line and the file's diagnostics. Persists to `patch.lean` (write-through).
 - `mcp__lsp__goal_at(line, col)` — read the proof goal at any position without editing.
 - `mcp__lsp__errors_at(line=None)` — list current diagnostics (optional line filter).
+- `mcp__lsp__validate_file(content)` — elaborate a *standalone* candidate (auto-prepends Mathlib + Defs + your patch's `open`s). Beyond Lean `diagnostics` it returns a `submission` block mirroring the commit gates — `submission.citation` (Builder may cite only `proved` siblings; any other `L_<slug>` is rejected) and `submission.annotation` (the final patch needs a leading `--` comment block). Run it before finishing: a `submission` error is a commit blocker even when `ok:true`.
 
 Workflow recommendation:
 1. `mcp__lsp__goal_at` near the `sorry` to see what you're proving.

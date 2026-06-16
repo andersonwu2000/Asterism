@@ -67,6 +67,36 @@ def slug_from_problem_dir(workspace: Path, pdir: Path) -> str:
     return ".".join(rel.parts)
 
 
+def classify_cited_slug(
+    conn: sqlite3.Connection, *, problem: str, slug: str, workspace: Path,
+) -> "tuple[int | None, str | None, bool]":
+    """Shared source-of-truth for citation eligibility (#8 / P2): classify a
+    `import Problems.<problem>.proofs.L_<slug>` reference once, so the
+    commit-time gate (`pipeline._cite_gate`) and the in-spawn `validate_file`
+    submission mirror (`lsp.gateway`) never disagree on whether a cited
+    sibling is citable.
+
+    Returns `(goal_id, status, orphan)`:
+      - `goal_id` / `status`: the cited goal's id + `goals.status` (ignoring
+        aliases), or `(None, None)` when no goal tracks the slug.
+      - `orphan`: True iff no goal tracks the slug AND
+        `proofs/L_<slug>.lean` exists on disk — a stub whose row never
+        committed (lake imports it fine and its `sorry` only warns, so
+        citing it silently fake-proves the citer). When status is None and
+        orphan is False the slug is a typo / cross-problem ref (lake's
+        "unknown identifier" catches it)."""
+    row = conn.execute(
+        "SELECT id, status FROM goals WHERE problem = ? AND slug = ?"
+        " AND alias_target_id IS NULL",
+        (problem, slug),
+    ).fetchone()
+    if row is not None:
+        return int(row["id"]), str(row["status"]), False
+    orphan = (problem_dir(workspace, problem)
+              / "proofs" / f"L_{slug}.lean").exists()
+    return None, None, orphan
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS problems (
     name           TEXT PRIMARY KEY,

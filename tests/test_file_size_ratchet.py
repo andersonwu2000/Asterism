@@ -72,7 +72,10 @@ _WATERMARKS = {
     # (df77f05) + self-start gated on integrity_verified (446533a, classify-time
     # TOCTOU) — 2026-06-17 — conscious bump.
     "Tooling/core/dispatcher.py": 3150,
-    "Tooling/state/db.py": 3100,
+    # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
+    # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
+    # — 2026-06-17 — conscious bump.
+    "Tooling/state/db.py": 3150,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

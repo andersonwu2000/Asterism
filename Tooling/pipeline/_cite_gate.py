@@ -113,38 +113,28 @@ def _resolve_cite_dependencies(
         seen.add(slug)
         if slug in declared_slugs:
             continue
-        row = conn.execute(
-            "SELECT id, status FROM goals WHERE problem = ? AND slug = ?"
-            " AND alias_target_id IS NULL",
-            (problem, slug),
-        ).fetchone()
-        if row is None:
-            # No goal for this slug — two sub-cases:
-            #  - proofs/L_<slug>.lean does NOT exist → genuine typo /
-            #    cross-problem ref → pass through (lake's "unknown
-            #    module/identifier" catches it), as before.
-            #  - the file DOES exist but no goal tracks it → ORPHAN STUB.
-            #    A sub-goal whose row never committed (a Backward killed
-            #    mid-placement, or a deleted decomposition) leaves a
-            #    `:= by sorry` file behind. Lake imports it fine (the
-            #    symbol resolves) and the `sorry` only WARNS, so citing it
-            #    silently fake-proves the citer — this is how P13's
-            #    density_form_supp_lhs_slice put sorryAx into the root.
-            #    Reject: an orphan stub is not a citable lemma. Re-declare
-            #    it as a `new_<slug>.lean` sub-goal so it becomes tracked
-            #    and is actually proved (see hint below).
-            orphan = (_db.problem_dir(workspace, problem)
-                      / "proofs" / f"L_{slug}.lean")
-            if orphan.exists():
+        # Classify the cited slug via the shared source-of-truth so this
+        # gate and validate_file's pre-commit mirror never disagree (#8).
+        #  - no goal + L_<slug>.lean on disk → ORPHAN STUB: a sub-goal whose
+        #    row never committed (a Backward killed mid-placement, or a
+        #    deleted decomposition) leaves a `:= by sorry` file. Lake imports
+        #    it fine and the `sorry` only WARNS, so citing it silently
+        #    fake-proves the citer — how P13's density_form_supp_lhs_slice put
+        #    sorryAx into the root. Reject; re-declare as a `new_<slug>.lean`.
+        #  - no goal + no file → typo / cross-problem ref → pass through
+        #    (lake's "unknown identifier" catches it).
+        gid, status, orphan = _db.classify_cited_slug(
+            conn, problem=problem, slug=slug, workspace=workspace)
+        if status is None:
+            if orphan:
                 bad.append((slug, "orphan — file on disk, no tracked goal"))
             continue
-        status = str(row["status"])
         if status == "proved":
             continue
         if status in ("open", "attempting",
                        "pending_strategist_review"):
             if allow_auto_link:
-                auto_link.add(int(row["id"]))
+                auto_link.add(gid)
             else:
                 bad.append((slug, status))
             continue
@@ -153,7 +143,6 @@ def _resolve_cite_dependencies(
             # neither does citation: auto-link on the decomp path; reject on
             # leaf-bypass/Builder (transitive sorry).
             if allow_auto_link:
-                gid = int(row["id"])
                 auto_link.add(gid)
                 # Revive ONLY a cascade-shelved goal (lost its last live path)
                 # — the agent_feedback T8 motivation. A ConfirmShelve-PARKED

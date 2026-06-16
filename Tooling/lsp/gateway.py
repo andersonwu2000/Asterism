@@ -829,8 +829,42 @@ def _toposort_siblings(
     return [(s, texts[s]) for s in ordered]
 
 
+def _harvest_open_lines(text: str) -> "list[str]":
+    """Every file-scope `open ...` line in `text`, verbatim (excludes the
+    scope-limited `open X in <decl>` form). Carries the agent's working-patch
+    opens into validate_file's compilation unit so a probed sub-goal stub
+    elaborates against the SAME open namespaces the committed file will —
+    `manifest.defs_opens` alone only has Defs.lean's opens, not the goal's
+    own (`open MeasureTheory` / `open scoped Topology` / `open Library.*`),
+    which is the most-reported validate≠commit friction (#8 / P2 gap c)."""
+    out: "list[str]" = []
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s.startswith("open ") and not re.search(r"\bin\b\s*$", s):
+            out.append(s)
+    return out
+
+
+def _merge_opens(content: str, defs_opens: "list[str]",
+                 extra_opens: "list[str]") -> "list[str]":
+    """Prefix opens for the compilation unit: Defs.lean's file-scope opens
+    (raw args, per `manifest.defs_opens`) plus `extra_opens` (the session
+    patch's own `open ...` lines), each normalized to a full `open ...`
+    line, de-duped, and dropping any already present verbatim in `content`
+    (so probing the patch itself never doubles its opens)."""
+    have = set(_harvest_open_lines(content))
+    out: "list[str]" = []
+    for o in list(defs_opens) + list(extra_opens):
+        line = o if o.startswith("open ") else f"open {o}"
+        if line in have or line in out:
+            continue
+        out.append(line)
+    return out
+
+
 def _build_compilation_unit(
     content: str, problem: str, workspace: "Path", attempts_dir: "Path",
+    extra_opens: "list[str]" = (),
 ) -> "tuple[str, list[int | None], list[str]]":
     """The SINGLE compilation state every in-spawn LSP tool elaborates:
     framework imports + `Defs.lean` file-level opens + referenced
@@ -851,7 +885,8 @@ def _build_compilation_unit(
         content,
         [t for _, t in siblings],
         _needed_imports(content, problem, workspace),
-        opens=manifest.defs_opens(workspace, problem),
+        opens=_merge_opens(content, manifest.defs_opens(workspace, problem),
+                           list(extra_opens)),
     )
     return merged, line_map, [s for s, _ in siblings]
 
@@ -1182,6 +1217,102 @@ def errors_at(line: int | None = None) -> str:
                       ensure_ascii=False)
 
 
+# ── validate_file submission mirror (#8 / P2) ────────────────────────
+# The commit-time gates an agent's patch must also pass, surfaced pre-commit
+# so a validate≠commit disagreement no longer costs a whole retry round.
+# Returned in a `submission` block kept SEPARATE from Lean `diagnostics`
+# (elaboration result vs framework policy — the user's separation instinct,
+# in one tool call so the agent's existing validate_file loop catches it).
+
+# Mirror of `pipeline._cite_gate._PROBLEM_IMPORT_RE`. Kept local so the gateway
+# (the LSP server) does not import the heavy `pipeline` package; the citability
+# VERDICT is the shared SoT `db.classify_cited_slug`, so only this line-scan —
+# a fixed `import` syntax — is duplicated.
+_GW_PROBLEM_IMPORT_RE = re.compile(
+    r"^\s*import\s+Problems\.([A-Za-z_][\w.]*)\.proofs\.L_([a-z][a-z0-9_]*)\s*$",
+    re.MULTILINE,
+)
+_GW_THEOREM_RE = re.compile(r"(?m)^\s*theorem\s+\S+")
+_GW_SORRY_STUB_RE = re.compile(r":=[ \t]*by[ \t]+sorry[ \t]*$", re.MULTILINE)
+
+
+def _gw_leading_comments(text: str) -> str:
+    """`--` comment lines before the first `theorem` — presence-mirror of
+    `pipeline._extract_leading_comments` (commit's annotation source)."""
+    m = _GW_THEOREM_RE.search(text)
+    region = text[:m.start()] if m else text
+    return "".join(ln for ln in region.splitlines(keepends=True)
+                   if ln.strip().startswith("--"))
+
+
+def _citation_submission(content: str, problem: str, workspace: "Path",
+                         declared: "set[str]") -> "dict | None":
+    """Classify each `import Problems.<problem>.proofs.L_<slug>` in `content`
+    via the shared `db.classify_cited_slug` SoT so validate_file predicts the
+    commit citation gate. `declared` = sibling stubs inlined this call (legit
+    — skip). Best-effort: any DB failure → None (must never break validate)."""
+    try:
+        conn = db.connect(workspace / "asterism.db")
+    except Exception:
+        return None
+    issues: "list[dict]" = []
+    try:
+        seen: "set[str]" = set()
+        for m in _GW_PROBLEM_IMPORT_RE.finditer(content):
+            if m.group(1) != problem:
+                continue
+            slug = m.group(2)
+            if slug in seen or slug in declared:
+                continue
+            seen.add(slug)
+            try:
+                _gid, status, orphan = db.classify_cited_slug(
+                    conn, problem=problem, slug=slug, workspace=workspace)
+            except Exception:
+                continue
+            if status == "proved":
+                continue
+            if status is None:
+                if orphan:
+                    issues.append({
+                        "slug": slug, "status": "orphan", "severity": "error",
+                        "hint": "stub on disk with no tracked goal — citing it "
+                                "imports a sorry; declare your own "
+                                "new_<slug>.lean sub-goal instead"})
+                # else: typo / cross-problem — lake's unknown-identifier covers it
+                continue
+            if status in ("dead", "disproved"):
+                issues.append({
+                    "slug": slug, "status": status, "severity": "error",
+                    "hint": "hard-terminal; re-declare its statement as your "
+                            "own new_<slug>.lean sub-goal stub"})
+            else:  # open / attempting / pending_strategist_review / shelved
+                issues.append({
+                    "slug": slug, "status": status, "severity": "warn",
+                    "hint": "non-proved: citable only via a Backward "
+                            "decomposition (which auto-links the sibling); "
+                            "leaf-bypass / Builder reject it at commit"})
+    finally:
+        conn.close()
+    return {"ok": not any(i["severity"] == "error" for i in issues),
+            "issues": issues}
+
+
+def _annotation_submission(content: str) -> "dict":
+    """Mirror commit's `agent_no_annotation` gate: a final patch needs a
+    leading `--` comment block. Applies only when `content` is a real
+    submission (declares a theorem with a non-sorry body) — probing a
+    `:= by sorry` stub is not a submission, so skip (`checked: False`)."""
+    if not _GW_THEOREM_RE.search(content) or _GW_SORRY_STUB_RE.search(content):
+        return {"checked": False}
+    ok = bool(_gw_leading_comments(content).strip())
+    return {"checked": True, "ok": ok,
+            "note": "" if ok else
+            "no leading -- comment block; commit rejects with "
+            "agent_no_annotation (strategy rationale required for goal "
+            "annotation propagation)"}
+
+
 @mcp.tool()
 @_offload_to_thread
 def validate_file(content: str) -> str:
@@ -1199,10 +1330,32 @@ def validate_file(content: str) -> str:
     are remapped back to this content's own line numbers; the response's
     `inlined_siblings` lists which stubs were folded in.
 
+    Beyond Lean elaboration, the response carries a `submission` block that
+    mirrors the framework gates the patch must ALSO pass at commit, so a file
+    that elaborates clean but would still be bounced at commit is flagged here
+    (no wasted retry round). `submission` is separate from `diagnostics`
+    (Lean) — `diagnostics` says "it elaborates", `submission` says "commit
+    will accept it":
+      - `submission.citation`: { ok, issues:[{slug,status,severity,hint}] } —
+        each `import Problems.<p>.proofs.L_<slug>` whose cited goal is not
+        `proved`. severity `error` = rejected at commit no matter what
+        (orphan/dead/disproved); `warn` = citable only via a Backward
+        decomposition. Absent if the DB can't be read.
+      - `submission.annotation`: { checked, ok[, note] } — whether a final
+        patch (a real, non-`sorry` theorem) carries the required leading `--`
+        comment block; commit rejects a missing one as `agent_no_annotation`.
+        `checked:false` when `content` is a `:= by sorry` stub (not a
+        submission).
+
+    The candidate also elaborates against the session patch's own `open`
+    lines (not just Defs.lean's), so a stub using `MeasureTheory` / scoped
+    `Topology` / a `Library.*` namespace validates the way it will at commit.
+
     Args:
       content: Full contents of the candidate file.
 
-    Returns: { ok, diagnostics, diagnostic_count[, inlined_siblings] }.
+    Returns: { ok, diagnostics, diagnostic_count[, inlined_siblings],
+               submission }.
     """
     _recv_ts = _ts_now()
     meta = _current_session()
@@ -1222,7 +1375,8 @@ def validate_file(content: str) -> str:
     # + content. `line_map` is always returned (imports/opens are prefix
     # even with no siblings) so diagnostics remap uniformly.
     full_content, line_map, inlined_slugs = _build_compilation_unit(
-        content, meta.problem, meta.workspace, meta.target_path.parent)
+        content, meta.problem, meta.workspace, meta.target_path.parent,
+        extra_opens=_harvest_open_lines(meta.file_content))
 
     t0 = time.perf_counter()
     diags: list = []
@@ -1284,6 +1438,16 @@ def validate_file(content: str) -> str:
         # citation could be resolved; diagnostics are already remapped to
         # this content's own line numbers.
         response["inlined_siblings"] = inlined_slugs
+    # Submission mirror (#8 / P2): the commit-time citation + annotation gates,
+    # surfaced here so a clean Lean elaboration that would still be bounced at
+    # commit is flagged pre-commit. Separate from `diagnostics` (Lean) so the
+    # agent reads "elaborates" and "commit will accept" independently.
+    submission: "dict" = {"annotation": _annotation_submission(content)}
+    cite = _citation_submission(content, meta.problem, meta.workspace,
+                                set(inlined_slugs))
+    if cite is not None:
+        submission["citation"] = cite
+    response["submission"] = submission
     _log_for(meta, {"event": "tool_call", "name": "validate_file",
                     "args": {"content_lines": full_content.count("\n") + 1},
                     "duration_s": dur,
