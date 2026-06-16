@@ -1,5 +1,6 @@
 """CLI: asterism init <p> | asterism run [--once] | asterism reset <p>
-       | asterism status <p> [--json] | asterism prune [<p>] [--dry-run].
+       | asterism status <p> [--json] | asterism prune [<p>] [--dry-run]
+       | asterism library-verify [--no-build].
 
 See architecture.md §9.
 """
@@ -1152,6 +1153,187 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if fails == 0 else 1
 
 
+def _parse_library_index(path: Path) -> "dict[str, set[tuple[str, str]]]":
+    """Parse `Library/INDEX.md` into `{problem: {(decl_name, relpath), ...}}`.
+
+    Section header line is `## <problem>`; each entry line carries exactly two
+    backtick-quoted tokens — `` - `<name>` → `<relpath>` `` (the arrow glyph is
+    not load-bearing, so we read the backtick tokens, not the separator).
+    Returns {} if the file is absent."""
+    out: "dict[str, set[tuple[str, str]]]" = {}
+    if not path.exists():
+        return out
+    cur: "str | None" = None
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if raw.startswith("## "):
+            cur = raw[3:].strip()
+            out.setdefault(cur, set())
+        elif cur is not None and raw.lstrip().startswith("- `"):
+            toks = re.findall(r"`([^`]+)`", raw)
+            if len(toks) >= 2:
+                out[cur].add((toks[0], toks[1]))
+    return out
+
+
+def _library_consistency_findings(conn, workspace: Path
+                                  ) -> "list[tuple[str, str]]":
+    """INDEX <-> disk <-> DB consistency over the *placed* decl set.
+
+    "Placed" = `library_decls.lifecycle IN ('migrated','cleaned')` — exactly
+    the set `_harvested_decls`/INDEX record. 'cited'/'dropped'/'classified'
+    decls are NOT placed (no file contribution), so they never participate.
+    Mirrors the problem-side recovery orphan-sweep, but for `Library/`.
+
+    Printer-free on purpose: returns `[(status, message), ...]` with status in
+    {OK, WARN, FAIL} so the caller prints/exits and tests assert on findings.
+    Severity rationale:
+      - DB row -> missing file / orphan disk file / INDEX -> missing file:
+        hard breaks (a citer is misled, or a file nothing owns lingers) -> FAIL.
+      - INDEX section exists but disagrees with DB placed-set (either way):
+        stale provenance -> FAIL.
+      - DB has placed decls but NO INDEX section: not yet bridged (legit
+        mid-flight) -> WARN."""
+    out: "list[tuple[str, str]]" = []
+    lib = workspace / "Library"
+
+    placed = conn.execute(
+        "SELECT problem, target_name, target_file, slug FROM library_decls "
+        "WHERE lifecycle IN ('migrated','cleaned')"
+    ).fetchall()
+    db_files = {r["target_file"] for r in placed if r["target_file"]}
+    db_by_problem: "dict[str, set[tuple[str, str]]]" = {}
+    for r in placed:
+        name = r["target_name"] or r["slug"]
+        db_by_problem.setdefault(r["problem"], set()).add(
+            (name, r["target_file"] or "?"))
+
+    disk_files = {p.relative_to(workspace).as_posix()
+                  for p in lib.rglob("*.lean")}
+
+    # I1 — every DB-placed file exists on disk.
+    missing = sorted(f for f in db_files if f not in disk_files)
+    for f in missing:
+        out.append(("FAIL", f"DB places a decl in a missing file: {f}"))
+    if not missing:
+        out.append(("OK", f"{len(db_files)} DB-placed file(s) present on disk"))
+
+    # I2 — every on-disk Library file is owned by a placed DB decl (orphan).
+    orphans = sorted(f for f in disk_files if f not in db_files)
+    for f in orphans:
+        out.append(("FAIL", f"orphan Library file (no placed DB decl): {f}"))
+    if not orphans:
+        out.append(("OK", f"{len(disk_files)} on-disk file(s) all DB-owned"))
+
+    # I3 — every INDEX entry's file exists on disk.
+    index_by_problem = _parse_library_index(lib / "INDEX.md")
+    index_relpaths = {rp for s in index_by_problem.values() for (_, rp) in s}
+    idx_missing = sorted(rp for rp in index_relpaths
+                         if rp != "?" and rp not in disk_files)
+    for rp in idx_missing:
+        out.append(("FAIL", f"INDEX entry points to a missing file: {rp}"))
+    if not idx_missing:
+        out.append(("OK", f"{len(index_relpaths)} INDEX file ref(s) present"))
+
+    # I4 — per problem, INDEX section == DB placed-set.
+    for prob in sorted(set(index_by_problem) | set(db_by_problem)):
+        idx = index_by_problem.get(prob, set())
+        dbp = db_by_problem.get(prob, set())
+        if idx == dbp:
+            out.append(("OK", f"{prob}: INDEX matches DB ({len(idx)} decl(s))"))
+        elif dbp and not idx:
+            out.append(("WARN", f"{prob}: {len(dbp)} placed decl(s) but no "
+                                f"INDEX section (not yet bridged?)"))
+        elif idx and not dbp:
+            out.append(("FAIL", f"{prob}: INDEX section present but no placed "
+                                f"DB decls (fully stale INDEX)"))
+        else:
+            out.append(("FAIL", f"{prob}: INDEX/DB placed-set mismatch "
+                                f"(+{len(idx - dbp)} INDEX-only, "
+                                f"+{len(dbp - idx)} DB-only)"))
+    return out
+
+
+def cmd_library_verify(args: argparse.Namespace) -> int:
+    """Whole-Library coherence gate (P1). Two mechanical checks, no agent:
+
+      (B) INDEX <-> disk <-> DB consistency over the placed decl set — orphan
+          files, DB rows pointing at missing files, stale INDEX provenance.
+          Mirrors the problem-side recovery orphan-sweep.
+      (A) `lake build Library` — the whole placed Library compiles together.
+          The per-file / per-problem bridge gates only ever see ONE problem's
+          files, so a cross-problem breakage is invisible to them; this is the
+          missing whole-Library view, and the precondition for any future
+          Library rewrite (cross-problem rewire): you cannot safely edit a
+          cross-cited shared lemma without proving every downstream consumer
+          still builds.
+
+    Output is icon-prefixed `[OK/FAIL/WARN]` lines (same shape as `doctor`).
+    Exit 0 if every check is OK/WARN; 1 if any FAIL. `--no-build` runs the
+    fast consistency-only pass (skips A)."""
+    import shutil
+    import subprocess
+
+    workspace = Path.cwd()
+    fails = 0
+
+    def line(status: str, msg: str) -> None:
+        nonlocal fails
+        if status == "FAIL":
+            fails += 1
+        print(f"  [{status:>4}] {msg}")
+
+    if not (workspace / "Library").exists():
+        print("Library/ absent — nothing to verify")
+        return 0
+
+    print("\n=== Consistency (INDEX <-> disk <-> DB) ===")
+    conn = db.connect()
+    db.init_schema(conn)
+    for status, msg in _library_consistency_findings(conn, workspace):
+        line(status, msg)
+
+    if args.no_build:
+        print("\n=== Whole-Library build: SKIPPED (--no-build) ===")
+    else:
+        print("\n=== Whole-Library build (`lake build Library`) ===")
+        if not shutil.which("lake"):
+            line("FAIL", "lake not on PATH — cannot build Library")
+        else:
+            try:
+                r = subprocess.run(
+                    ["lake", "build", "Library"],
+                    cwd=str(workspace), capture_output=True, text=True,
+                    timeout=args.build_timeout,
+                    encoding="utf-8", errors="replace",
+                )
+                if r.returncode == 0:
+                    line("OK", "lake build Library succeeded")
+                else:
+                    # Surface the REAL Lean errors, not lake's terminal
+                    # "error: build failed" summary: scan both streams for
+                    # `error:` lines (the unresolved-reference / type errors a
+                    # cross-problem breakage shows up as), and only fall back
+                    # to the tail when none are present.
+                    both = ((r.stdout or "") + "\n" + (r.stderr or "")).splitlines()
+                    errs = [ln.strip() for ln in both
+                            if "error:" in ln and "build failed" not in ln]
+                    shown = errs[:5] or [ln.strip() for ln in both
+                                         if ln.strip()][-5:]
+                    snippet = " | ".join(shown)[:800]
+                    line("FAIL", f"lake build Library failed "
+                                 f"(rc={r.returncode}): {snippet or '(no output)'}")
+            except subprocess.TimeoutExpired:
+                line("FAIL", f"lake build Library timed out "
+                             f"(>{args.build_timeout}s)")
+            except OSError as exc:
+                line("FAIL", f"lake build Library errored: {exc}")
+
+    print()
+    print(f"=== Summary: {fails} FAIL ===" if fails else
+          "=== Summary: all checks passed (some WARN OK) ===")
+    return 0 if fails == 0 else 1
+
+
 def cmd_logs(args: argparse.Namespace) -> int:
     """List / tail framework run logs from `.asterism/logs/`.
     Default: list with sizes, mtime, sorted newest first.
@@ -1347,6 +1529,19 @@ def main(argv: list[str] | None = None) -> int:
         help="pre-flight: tools / Asterism.yaml / Manifests / .attempts state",
     )
     p_doctor.set_defaults(func=cmd_doctor)
+
+    p_libverify = sub.add_parser(
+        "library-verify",
+        help="whole-Library coherence gate: INDEX<->disk<->DB consistency "
+             "+ `lake build Library`",
+    )
+    p_libverify.add_argument(
+        "--no-build", action="store_true",
+        help="skip `lake build Library` (fast consistency-only pass)")
+    p_libverify.add_argument(
+        "--build-timeout", type=int, default=1800, metavar="SEC",
+        help="timeout (seconds) for `lake build Library` (default 1800)")
+    p_libverify.set_defaults(func=cmd_library_verify)
 
     p_prune = sub.add_parser(
         "prune",
