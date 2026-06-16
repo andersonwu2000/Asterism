@@ -105,12 +105,18 @@ theorem main : <stmt> := by sorry
 
 **B. 過程中**：框架在 `proofs/` 下產出 `_strategy_s<NN>.lean` + `L_<slug>.lean`，但 `Root.lean` 本身**不動**。
 
-**C. 證完**：root proved 後 `prune.reconcile_proved_goals` 把它改成
+**C. 證完**：root proved 後 `prune.reconcile_proved_goals`（`Tooling/quality/prune.py`，
+`_canonical_alias_content`）把它改成
 ```lean
 import Problems.<p>.proofs._strategy_s<NN>
-theorem main : <stmt> := s<NN>
+
+namespace Problems.<p>
+def main := @Problems.<p>.s<NN>
+end Problems.<p>
 ```
-真正的證明 body 留在 `_strategy_s<NN>.lean`，`Root.lean` 變薄 indirection。
+注意是 **`def`**（非 `theorem`、無型別 ascription——型別由 `s<NN>` 簽名推得）、`@` 全限定指向
+winner strategy。root 若宣告 instance 則保留前綴（`@[instance] def main := …`），Strategist 的
+`--` annotation 註解塊也保留。真正的證明 body 留在 `_strategy_s<NN>.lean`，`Root.lean` 變薄 indirection。
 
 `init` 偵測現有形態：sorry stub → A，OK；alias → C，noop；其它 → reject 要 `--force`。
 
