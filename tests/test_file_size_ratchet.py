@@ -57,7 +57,11 @@ _WATERMARKS = {
     # dispatcher 3050→3080: cascade_one missing_parent_stub → terminal shelve
     # (stop the instant no-cooldown re-dispatch spin on a goal whose own stub
     # file vanished — DB↔file drift, P13 g4437) — 2026-06-16 — conscious bump.
-    "Tooling/core/dispatcher.py": 3080,
+    # dispatcher 3080→3120: _dispatch_is_duplicate caps Builder at ONE per
+    # goal regardless of decision_id (two Builders prove-in-place into one
+    # L_<slug>.lean → loser's stub-snapshot restore clobbers winner's proof;
+    # P13 3502/4284/4288) — 2026-06-16 — conscious bump.
+    "Tooling/core/dispatcher.py": 3120,
     "Tooling/state/db.py": 3100,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     "Tooling/quality/librarian/cleanup/_common.py": 560,

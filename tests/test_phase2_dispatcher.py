@@ -15,6 +15,7 @@ import pytest
 
 from Tooling.core.dispatcher import (
     _derive_strategist_trigger,
+    _dispatch_is_duplicate,
     bfs_refill,
     reconcile_stuck_states,
     strategist_triggers,
@@ -1132,3 +1133,42 @@ def test_reconcile_reenqueues_null_inject_in_flight_gated(
     assert conn.execute(
         "SELECT count(*) c FROM queue WHERE decision_id=?", (d1,)
     ).fetchone()["c"] == 1
+
+
+# ---------------------------------------------------------------------
+# _dispatch_is_duplicate — pop-loop dedup (Builder capped one-per-goal)
+# ---------------------------------------------------------------------
+
+def test_dispatch_dup_exact_triple_match() -> None:
+    """Base case (any kind): an exact (target, kind, decision_id) match
+    in the running set is a duplicate; a different decision_id is not."""
+    running = {("7", "Backward", 3)}
+    assert _dispatch_is_duplicate(running, "7", "Backward", 3)
+    assert not _dispatch_is_duplicate(running, "7", "Backward", 4)
+
+
+def test_dispatch_dup_second_builder_same_goal_diff_decision() -> None:
+    """THE FIX: a goal hosts at most ONE Builder regardless of
+    decision_id. An organic Builder (decision_id=None) in flight blocks a
+    routine/recovery-injected Builder (decision_id set) on the same goal,
+    and vice-versa — they would race the single proofs/L_<slug>.lean and a
+    failing loser could stub-clobber the winner's proof."""
+    assert _dispatch_is_duplicate({("42", "Builder", None)}, "42",
+                                  "Builder", 99)
+    assert _dispatch_is_duplicate({("42", "Builder", 99)}, "42",
+                                  "Builder", None)
+
+
+def test_dispatch_dup_parallel_backward_or_node_allowed() -> None:
+    """Backward is NOT capped per goal: parallel OR-node decompositions
+    (distinct decision_id) each write an isolated _strategy_<sid>.lean and
+    are intentionally allowed to run concurrently."""
+    assert not _dispatch_is_duplicate({("42", "Backward", 1)}, "42",
+                                      "Backward", 2)
+
+
+def test_dispatch_dup_builder_on_other_goal_not_blocked() -> None:
+    """A Builder in flight on one goal must not block a Builder on a
+    different goal."""
+    assert not _dispatch_is_duplicate({("42", "Builder", None)}, "43",
+                                      "Builder", None)

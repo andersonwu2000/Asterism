@@ -1258,6 +1258,34 @@ def _verify_problem(workspace: Path, problem: str) -> bool:
     return ok
 
 
+def _dispatch_is_duplicate(running: "set[tuple]", target_id: str,
+                           kind: str, decision_id: int | None) -> bool:
+    """Dispatch-time dedup at the single pop-loop chokepoint every source
+    funnels through (organic bfs_refill, Strategist Inject, recovery /
+    `null_inject_redispatch_specs`). An exact (target, kind, decision_id)
+    match is always a duplicate.
+
+    Builder additionally caps at ONE per goal regardless of decision_id:
+    it proves IN PLACE, writing the goal's single `proofs/L_<slug>.lean`
+    directly (builder.py commit window) — unlike Backward, whose parallel
+    OR-node decompositions each write an isolated `_strategy_<sid>.lean`
+    and are intentionally allowed to run in parallel (distinct
+    decision_id). Two Builders on one goal race that single file: a loser
+    that fails *after* the winner committed restores its start-of-run
+    sorry-stub snapshot over the winner's proof (`_restore_goal_lean`),
+    leaving DB='proved' but file=stub — the Jordan-5/25 drift class, only
+    caught end-of-run by axiom_probe. The (target, kind, decision_id) key
+    misses this because an organic Builder (decision_id=None) and a
+    routine/recovery-injected Builder (decision_id set) are distinct keys;
+    collapse Builder to (target, 'Builder') so the second never spawns."""
+    if (target_id, kind, decision_id) in running:
+        return True
+    if kind == "Builder" and any(
+            r[0] == target_id and r[1] == "Builder" for r in running):
+        return True
+    return False
+
+
 def bfs_refill(conn: sqlite3.Connection,
                running: set[tuple[str, str]],
                cooldown_until: dict[tuple[str, str], float] | None = None,
@@ -2956,7 +2984,7 @@ def run(workspace: Path, *, once: bool = False,
                 decision_id = int(_did) if _did is not None else None
             except (IndexError, KeyError):
                 decision_id = None
-            if (target_id, kind, decision_id) in running:
+            if _dispatch_is_duplicate(running, target_id, kind, decision_id):
                 continue
             # #103 — defense-in-depth: even after bfs_refill skips
             # cooled kinds, a race (cooldown set between bfs_refill
