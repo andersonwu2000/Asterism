@@ -29,7 +29,12 @@ _WATERMARKS = {
     # 3450→3500: per-file cleanup hard Mathlib-PR gate (build must be
     # warning-free → fail unit) + redundant variable-block collapse in
     # _run_cleanup — 2026-06-17 — conscious bump.
-    "Tooling/pipeline/librarian.py": 3500,
+    # 3500→3550: _reorder_decls_by_intrafile_refs — post-cleanup re-derive
+    # intra-file decl order from the FINAL file's references (dedup/simplify
+    # can rewrite a proof to cite a sibling, introducing a forward ref
+    # file_order, frozen at classify, never reflects — eckart_young whole-
+    # Library build failure) — 2026-06-17 — conscious bump.
+    "Tooling/pipeline/librarian.py": 3550,
     # dispatcher 2750→2800 + db 2450→2500: awaiting_human observability
     # (startup + idle-exit log of paused problems) + scope-aware idle exit
     # via db.dispatchable_open_goals — a paused P12 read as a multi-hour

@@ -278,6 +278,67 @@ def _toposort_intra_file(decls: list[str],
     return result
 
 
+_COMPLEX_DECL_RE = re.compile(
+    r"(?m)^[ \t]*(?:@\[[^\]]*\][ \t]*)*"
+    r"(?:private[ \t]+|protected[ \t]+|noncomputable[ \t]+|scoped[ \t]+"
+    r"|local[ \t]+)*"
+    r"(?:structure|class|instance|inductive|abbrev|axiom)\b")
+_DECL_COMMENT_RE = re.compile(r"--[^\n]*|/-.*?-/", re.DOTALL)
+
+
+def _reorder_decls_by_intrafile_refs(text: str) -> str:
+    """Reorder a cleaned Library file's theorem/lemma/def blocks so each is
+    emitted AFTER every same-file sibling it references.
+
+    Closes the gap where cleanup (dedup/simplify) rewrites a proof to cite a
+    different sibling — introducing a new intra-file dependency — but
+    `file_order` was frozen at classify time from the IMPORT-based usage graph
+    of the PRE-cleanup proofs and never recomputed (eckart_young: dedup rewired
+    `termwise_eigenvalue_bound` to cite `eigen_pointwise_lower_bound` + dropped
+    its two helpers, leaving a forward reference that fails the whole-Library
+    build). Reads the FINAL file's actual references — those refs are same-file
+    FQN/bare names, not imports, so `usage_graph` (import-based) can't see them.
+
+    Conservative + build-gated:
+      - SKIP files with structure/class/instance/inductive/abbrev/axiom heads
+        (`_DECL_NAME_RE` doesn't slice them → mis-slice risk) — return as-is.
+      - SKIP on duplicate decl names (ambiguous slicing).
+      - No-op when the order is already sound.
+      - The subsequent zero-warning build gate is the correctness backstop: a
+        reorder that (mis-parse) broke the build fails the gate, never ships."""
+    from ..quality.librarian.cleanup._common import _DECL_NAME_RE, _block_start
+    if _COMPLEX_DECL_RE.search(text):
+        return text
+    heads = list(_DECL_NAME_RE.finditer(text))
+    if len(heads) < 2:
+        return text
+    names = [h.group(1) for h in heads]
+    if len(set(names)) != len(names):
+        return text
+    spans: "dict[str, tuple[int, int]]" = {}
+    for i, h in enumerate(heads):
+        start = _block_start(text, h.start())
+        if i + 1 < len(heads):
+            end = _block_start(text, heads[i + 1].start())
+        else:
+            m = re.search(r"(?m)^end\b", text[h.start():])
+            end = (h.start() + m.start()) if m else len(text)
+        spans[names[i]] = (start, end)
+    # Edge X→Y: Y's name appears (whole token, comments stripped) in X's block.
+    # `\b<name>\b` matches both a bare ref and the tail of an FQN ref (the `.`
+    # before is a word boundary); mirrors commit_classify's Defs-edge scan.
+    nameset = set(names)
+    code = {n: _DECL_COMMENT_RE.sub(" ", text[s:e]) for n, (s, e) in spans.items()}
+    usage = {n: {y for y in nameset if y != n
+                 and re.search(rf"\b{re.escape(y)}\b", code[n])}
+             for n in names}
+    order = _toposort_intra_file(names, usage, set())
+    if order == names:
+        return text
+    body = "".join(text[spans[n][0]:spans[n][1]] for n in order)
+    return text[:spans[names[0]][0]] + body + text[spans[names[-1]][1]:]
+
+
 def _merge_file_sccs(fgraph: dict, decls_in: dict) -> dict:
     """Collapse each strongly-connected component of the file-usage graph to
     one canonical file. A set of files that (transitively) import each other
@@ -1650,8 +1711,14 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None):
         try:
             _orig = _fp.read_text(encoding="utf-8")
             _coll = _C._collapse_redundant_variable_blocks(_orig)
-            if _coll != _orig:
-                _fp.write_text(_coll, encoding="utf-8")
+            # Re-derive intra-file decl order from the FINAL file's references:
+            # cleanup (dedup/simplify) may have rewired a proof to cite a
+            # sibling, introducing a dependency `file_order` (frozen at classify)
+            # doesn't reflect → a forward reference that fails the build. The
+            # zero-warning gate below is the backstop if a reorder mis-parses.
+            _reord = _reorder_decls_by_intrafile_refs(_coll)
+            if _reord != _orig:
+                _fp.write_text(_reord, encoding="utf-8")
         except OSError:
             pass
         rows = [r for r in db.library_decls_for(conn, problem, lifecycle="migrated")
