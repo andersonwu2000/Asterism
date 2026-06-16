@@ -250,6 +250,104 @@ def test_render_counters_aggregate_all_statuses(conn) -> None:
 
 
 # ---------------------------------------------------------------------
+# render(frontier=True) — Strategist live-frontier view (backlog #2)
+# ---------------------------------------------------------------------
+
+def test_frontier_subtitle_and_default_off(conn) -> None:
+    """frontier=True swaps the subtitle; default (off) keeps the
+    full-tree subtitle — a regression guard that the on-disk TREE.md
+    (which calls render with no kwarg) is unaffected."""
+    root_id = _seed_root(conn)
+    s = _seed_strategy(conn, root_id, status="proposed")
+    _seed_subgoal(conn, s, "leaf_proved", status="proved", position=0)
+    full = tree.render(conn, "p")
+    frontier = tree.render(conn, "p", frontier=True)
+    assert "Auto-updated by dispatcher" in full
+    assert "Auto-updated by dispatcher" not in frontier
+    assert "Live frontier" in frontier
+    # A proved leaf line is present in both (only its CHILDREN are pruned).
+    assert "leaf_proved  (proved)" in full
+    assert "leaf_proved  (proved)" in frontier
+
+
+def test_frontier_collapses_proved_subtree_unconditionally(conn) -> None:
+    """A proved goal is terminal: even a leftover live OR-alternative
+    below it is moot, so frontier collapses the whole subtree to the
+    proved goal's line. Full tree still shows the descendants."""
+    root_id = _seed_root(conn)
+    s = _seed_strategy(conn, root_id, status="proposed")
+    proved_mid = _seed_subgoal(conn, s, "mid_proved", status="proved",
+                               position=0)
+    s_mid = _seed_strategy(conn, proved_mid, status="proposed")
+    _seed_subgoal(conn, s_mid, "deep_child", status="open", position=0)
+    full = tree.render(conn, "p")
+    frontier = tree.render(conn, "p", frontier=True)
+    assert "deep_child" in full
+    assert f"via s{s_mid}" in full
+    assert "mid_proved  (proved)" in frontier
+    assert "deep_child" not in frontier
+    assert f"via s{s_mid}" not in frontier
+
+
+def test_frontier_collapses_dead_strategy_surfacing_live_sibling(
+    conn,
+) -> None:
+    """The motivating case (backlog #2): a dead strategy's subtree buried
+    an in-flight `proposed` sibling. Frontier collapses the dead strategy
+    to its single line so the live sibling stands out; full tree keeps
+    the dead subtree's sub-goals."""
+    root_id = _seed_root(conn)
+    s_dead = _seed_strategy(conn, root_id, status="dead")
+    _seed_subgoal(conn, s_dead, "dead_sub_1", status="shelved",
+                  attempts=8, position=0)
+    _seed_subgoal(conn, s_dead, "dead_sub_2", status="dead", position=1)
+    s_live = _seed_strategy(conn, root_id, status="proposed")
+    _seed_subgoal(conn, s_live, "live_sub", status="open", position=0)
+    full = tree.render(conn, "p")
+    frontier = tree.render(conn, "p", frontier=True)
+    # full: dead subtree expanded
+    assert "dead_sub_1" in full
+    assert "dead_sub_2" in full
+    # frontier: dead strategy line kept, its sub-goals pruned
+    assert f"via s{s_dead}" in frontier
+    assert "dead_sub_1" not in frontier
+    assert "dead_sub_2" not in frontier
+    # frontier: live sibling fully shown
+    assert f"via s{s_live}" in frontier
+    assert "live_sub  (open)" in frontier
+
+
+def test_frontier_keeps_dead_strategy_hiding_live_descendant(conn) -> None:
+    """Conservative guard: a dead strategy whose sub-goal was revived
+    (shelved→open via a citation) still hides live work — frontier must
+    NOT collapse it, so the revived goal stays visible."""
+    root_id = _seed_root(conn)
+    s_dead = _seed_strategy(conn, root_id, status="dead")
+    _seed_subgoal(conn, s_dead, "revived_sub", status="open", position=0)
+    frontier = tree.render(conn, "p", frontier=True)
+    assert f"via s{s_dead}" in frontier
+    assert "revived_sub  (open)" in frontier
+
+
+def test_frontier_collapses_shelved_subgoal_children(conn) -> None:
+    """A shelved sub-goal with no live descendant collapses to its label
+    line (kept, so the Strategist can still spot a Reopen candidate);
+    its children are pruned."""
+    root_id = _seed_root(conn)
+    s = _seed_strategy(conn, root_id, status="proposed")
+    shelved_mid = _seed_subgoal(conn, s, "shelved_mid", status="shelved",
+                                attempts=5, position=0)
+    s_mid = _seed_strategy(conn, shelved_mid, status="dead")
+    _seed_subgoal(conn, s_mid, "shelved_deep", status="shelved", position=0)
+    full = tree.render(conn, "p")
+    frontier = tree.render(conn, "p", frontier=True)
+    assert "shelved_deep" in full
+    assert "shelved_mid  (shelved, attempts=5)" in frontier
+    assert "shelved_deep" not in frontier
+    assert f"via s{s_mid}" not in frontier
+
+
+# ---------------------------------------------------------------------
 # write() — atomic filesystem side-effects
 # ---------------------------------------------------------------------
 

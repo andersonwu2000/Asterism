@@ -8,7 +8,7 @@ Strategist sees:
   - `trigger_kind`
   - Active goal list with statements + status
   - Recent strategist_decisions + their outcomes (self-feedback)
-  - TREE.md inline (precompiled artifact)
+  - Proof tree, FRONTIER view (settled subtrees collapsed; #2)
   - Manifest + Defs.lean (for T0 / T3)
   - Pending review target (for T2)
 
@@ -25,7 +25,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from ..state import db, manifest
+from ..state import db, manifest, tree
 
 
 # ---------------------------------------------------------------------
@@ -587,17 +587,41 @@ def _section_current_directive(conn: sqlite3.Connection,
     ]
 
 
-def _section_tree_inline(workspace: Path, problem: str) -> list[str]:
-    """Inline the problem's TREE.md (precompiled artifact). If absent
-    (fresh problem post-init), return a stub note."""
-    tree_path = db.problem_dir(workspace, problem) / "TREE.md"
-    if not tree_path.exists():
-        return ["## TREE", "", "(TREE.md not yet generated)", ""]
+def _section_tree_inline(conn: sqlite3.Connection,
+                         workspace: Path, problem: str) -> list[str]:
+    """Inline the FRONTIER view of the proof tree for the Strategist
+    (framework_backlog #2). Rendered live from the DB with
+    `tree.render(frontier=True)`: settled (proved / shelved / dead /
+    disproved / frozen) subtrees collapse to a single labelled line so
+    the live frontier (open / attempting / pending + in-flight proposed
+    strategies) is not buried under hundreds of settled nodes on a mature
+    problem. The full, uncollapsed tree stays on disk in TREE.md (written
+    by the dispatcher every cascade) — linked below as an escape hatch
+    for inspecting any collapsed subtree.
+
+    Rendering from the DB (not reading the precompiled TREE.md) also makes
+    the inline view current as of this context build, never one cascade
+    stale. Falls back to a stub note if the problem has no tree yet."""
     try:
-        text = tree_path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ["## TREE", "", "(TREE.md unreadable)", ""]
-    return ["## TREE", "", text, ""]
+        body = tree.render(conn, problem, frontier=True).strip()
+    except Exception:
+        body = ""
+    if not body or "no root goal" in body:
+        return ["## TREE", "", "(TREE.md not yet generated)", ""]
+    tree_path = db.problem_dir(workspace, problem) / "TREE.md"
+    try:
+        rel = tree_path.relative_to(workspace).as_posix()
+    except ValueError:
+        rel = "TREE.md"
+    return [
+        "## TREE",
+        "",
+        body,
+        "",
+        f"_Frontier view (settled subtrees collapsed). Full decomposition "
+        f"tree on disk: `{rel}` — read it to inspect a collapsed subtree._",
+        "",
+    ]
 
 
 def _section_manifest_meta(mfst: manifest.Manifest,
@@ -672,7 +696,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_pending_reopens(conn, problem, trigger_kind),
         _section_active_goals(conn, problem),
         _section_failure_replay(conn, problem),
-        _section_tree_inline(workspace, problem),
+        _section_tree_inline(conn, workspace, problem),
         _section_manifest_meta(mfst, workspace, problem),
     ]
     parts: list[str] = [f"# Strategist context — {problem}", ""]
