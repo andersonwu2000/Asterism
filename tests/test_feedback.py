@@ -89,9 +89,66 @@ def test_records_accumulate_one_header(ws_on):
 
 
 def test_survivor_prompt_section_has_path_placeholder():
-    # The piggyback prompt must carry the scratch-path placeholder so
-    # _reflection can substitute the per-spawn sandbox file.
+    # The standalone feedback prompt must carry the scratch-path placeholder so
+    # attempt_feedback can substitute the per-spawn sandbox file.
     assert "{feedback_path}" in _feedback.SURVIVOR_PROMPT_SECTION
     # framing: asks for friction / suggestion / critique, not satisfaction
     low = _feedback.SURVIVOR_PROMPT_SECTION.lower()
     assert "friction" in low and "suggestion" in low and "critique" in low
+
+
+# ---------------------------------------------------------------------
+# attempt_feedback — the dedicated per-pipeline tail step
+# ---------------------------------------------------------------------
+
+def test_attempt_feedback_disabled_is_noop(tmp_path, monkeypatch):
+    monkeypatch.setenv("ASTERISM_FEEDBACK_ENABLED", "false")
+    from Tooling import agent
+    calls = []
+    monkeypatch.setattr(agent, "spawn_llm", lambda **k: calls.append(k) or 0)
+    att = _attempts(tmp_path)
+    pdir = tmp_path / "Problems" / "p"
+    pdir.mkdir(parents=True)
+    _feedback.attempt_feedback(kind="strategist", sid="s1", slug="inject_done",
+                               outcome="success", problem_dir=pdir,
+                               attempts_dir=att, workspace=tmp_path)
+    assert calls == []                               # no resume spawn when off
+    assert not (tmp_path / _OUT).exists()
+
+
+def test_attempt_feedback_resumes_session_and_records(ws_on, monkeypatch):
+    from Tooling import agent
+    seen: dict = {}
+
+    def fake_spawn(**k):
+        seen.update(k)
+        # simulate the resumed agent writing its one-sentence answer
+        _feedback.scratch_path(k["attempts_dir"]).write_text(
+            "the audit retry prompt did not name the deprecated lemma",
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+    att = _attempts(ws_on)
+    pdir = ws_on / "Problems" / "p"
+    pdir.mkdir(parents=True)
+    _feedback.attempt_feedback(kind="cleanup:audit", sid="sid-9", slug="Foo.lean",
+                               outcome="success", problem_dir=pdir,
+                               attempts_dir=att, workspace=ws_on)
+    # resumed the just-finished session (not a cold spawn)
+    assert seen["is_postmortem"] is True and seen["session_id"] == "sid-9"
+    fb = (ws_on / _OUT).read_text(encoding="utf-8")
+    assert "cleanup:audit" in fb and "p/Foo.lean" in fb
+    assert "deprecated lemma" in fb
+
+
+def test_attempt_feedback_no_sid_is_noop(ws_on, monkeypatch):
+    from Tooling import agent
+    calls = []
+    monkeypatch.setattr(agent, "spawn_llm", lambda **k: calls.append(k) or 0)
+    att = _attempts(ws_on)
+    pdir = ws_on / "Problems" / "p"
+    pdir.mkdir(parents=True)
+    _feedback.attempt_feedback(kind="forward", sid="", slug="f",
+                               outcome="success", problem_dir=pdir,
+                               attempts_dir=att, workspace=ws_on)
+    assert calls == []                               # empty sid → can't resume

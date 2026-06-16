@@ -602,12 +602,14 @@ def spawn_collect(workspace: Path, problem: str, prompt_path: Path,
     FIRST output name — the stage's mandatory artifact — is missing. Optional
     sidecars (later names) are simply absent from the dict."""
     from .... import agent
+    from ....pipeline import _feedback
     attempts = agent.attempts_dir_for(workspace, agent.new_pipeline_id())
     (attempts / "Context.md").write_text(context_text, encoding="utf-8")
+    problem_dir = workspace.joinpath("Problems", *problem.split("."))
+    sid = agent.new_pipeline_id()
     rc = agent.spawn_llm(
         kind="librarian", prompt_path=prompt_path,
-        problem_dir=workspace.joinpath("Problems", *problem.split(".")),
-        attempts_dir=attempts, session_id=agent.new_pipeline_id())
+        problem_dir=problem_dir, attempts_dir=attempts, session_id=sid)
     if rc != 0 or not (attempts / output_names[0]).exists():
         return None
     out: dict[str, str] = {}
@@ -615,4 +617,15 @@ def spawn_collect(workspace: Path, problem: str, prompt_path: Path,
         p = attempts / name
         if p.exists():
             out[name] = p.read_text(encoding="utf-8")
+    # Framework feedback (dedicated tail step). spawn_collect is the single
+    # choke point for EVERY agentic cleanup stage, so this one call covers them
+    # all (the librarian agents were otherwise the only pipeline with no
+    # feedback channel). Tagged by stage (prompt filename) so reports filter by
+    # `cleanup:polish` / `cleanup:audit` / …; no-op unless feedback is enabled.
+    fm = re.search(r"`([^`]+\.lean)`", context_text)
+    _feedback.attempt_feedback(
+        kind=f"cleanup:{prompt_path.stem}", sid=sid,
+        slug=(fm.group(1).rsplit("/", 1)[-1] if fm else prompt_path.stem),
+        outcome="success", problem_dir=problem_dir,
+        attempts_dir=attempts, workspace=workspace)
     return out

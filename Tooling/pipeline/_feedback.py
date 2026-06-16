@@ -36,19 +36,18 @@ from pathlib import Path
 _FEEDBACK_REL = "docs/internal/agent_feedback.md"
 _SCRATCH_FILENAME = "_agent_feedback.md"
 
-# Rendered into the reflection prompt (piggyback) only when feedback is
-# enabled. `{feedback_path}` is substituted with the survivor scratch path.
-# Framing (per the framework developer): NOT a satisfaction survey — ask for
-# the single most useful friction / suggestion / critique, grounded; allow
-# the minimal `(none)` ONLY as a genuine last resort, default to substantive.
-SURVIVOR_PROMPT_SECTION = """
----
+# Standalone framework-feedback questionnaire. Rendered by `attempt_feedback`
+# as its OWN `--resume` turn at every pipeline's tail (no longer piggybacked on
+# reflection — feedback is decoupled so it covers ALL pipelines uniformly, not
+# just the backward/builder reflection). `{feedback_path}` is substituted with
+# the survivor scratch path. Framing (per the framework developer): NOT a
+# satisfaction survey — ask for the single most useful friction / suggestion /
+# critique, grounded; `(none)` only as a genuine last resort.
+SURVIVOR_PROMPT_SECTION = """## Framework feedback — for the framework developer
 
-## Framework feedback — for the framework developer (separate from the lesson above)
-
-The developer building this framework wants your honest read on the FRAMEWORK
-ITSELF — its tools, prompts, dispatch, the retry/verify flow, the workflow you
-just worked inside. NOT the math problem.
+You just finished a task inside this automated proving framework. The developer
+building it wants your honest read on the FRAMEWORK ITSELF — its tools, prompts,
+dispatch, the retry / verify / cleanup flow you just worked inside. NOT the math.
 
 Give the single most useful thing you can, in ONE sentence (+ at most one line
 of evidence). Any one of:
@@ -65,10 +64,7 @@ suggestion, or critique worth a single line.
 Write your answer to `{feedback_path}` using the Write tool:
   - one sentence on the first line,
   - optionally a second line `evidence: <one line>`,
-  - or exactly `(none)`.
-
-This is independent of LESSONS.md above — you may write to BOTH. Writing here
-is NOT gated by the LESSONS bar; even a `skip` lesson can carry feedback."""
+  - or exactly `(none)`."""
 _HEADER = (
     "# Agent framework feedback (dev-only)\n\n"
     "_Survivor self-reports + framework-written death causes. One line each:_\n"
@@ -183,3 +179,42 @@ def record_death(workspace: Path | None, *, kind: str, slug: str,
                   outcome="(dead)", problem=problem, slug=slug)
     _append(workspace, rec + f"DIED: {reason} (no resumable session — "
             f"framework-written, agent could not self-report)")
+
+
+_FEEDBACK_PROMPT_FILENAME = "_feedback_prompt.md"
+_FEEDBACK_TIMEOUT_SEC = 90
+
+
+def attempt_feedback(*, kind: str, sid: str, slug: str, outcome: str,
+                     problem_dir: Path, attempts_dir: Path,
+                     workspace: Path | None) -> None:
+    """Dedicated framework-feedback STEP, run at the tail of every pipeline.
+
+    `--resume <sid>` the just-finished agent session (so the agent answers with
+    full context of what it just did — a clean 'looking back' read) and ask the
+    standalone questionnaire; then record its one-sentence answer. Uniform
+    across pipelines (backward/builder/forward/strategist/librarian-cleanup) so
+    framework feedback is no longer limited to the backward/builder reflection.
+
+    No-op when feedback is disabled (so it is FREE in production — only the
+    developer's opt-in `feedback.enabled` runs) or `sid` is empty. Best-effort
+    throughout: any failure is swallowed — the pipeline outcome already
+    committed, a lost feedback turn costs at most one un-recorded sentence."""
+    from .. import agent
+    if not feedback_enabled(workspace) or not sid:
+        return
+    try:
+        fb_scratch = scratch_path(attempts_dir)
+        prompt = SURVIVOR_PROMPT_SECTION.replace("{feedback_path}", str(fb_scratch))
+        ppath = attempts_dir / _FEEDBACK_PROMPT_FILENAME
+        ppath.write_text(prompt, encoding="utf-8")
+        # is_postmortem=True → provider uses `--resume <sid>` and loads the
+        # prompt verbatim (same path reflection uses for its resume turn).
+        agent.spawn_llm(
+            kind=kind, prompt_path=ppath, problem_dir=problem_dir,
+            attempts_dir=attempts_dir, session_id=sid,
+            is_postmortem=True, timeout_sec=_FEEDBACK_TIMEOUT_SEC)
+        record_survivor(workspace, attempts_dir=attempts_dir, kind=kind,
+                        slug=slug, problem=problem_dir.name, outcome=outcome)
+    except Exception:  # noqa: BLE001 — feedback must never break the pipeline
+        pass

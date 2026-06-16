@@ -600,6 +600,7 @@ def run_with_session_retries(
     postmortem_fn: PostmortemFn,
     workspace: Path | None = None,
     reflection_fn: ReflectionFn | None = None,
+    feedback_fn: "ReflectionFn | None" = None,
     death_fn: "DeathFn | None" = None,
     decision_id: int | None = None,
 ) -> PipelineResult:
@@ -744,8 +745,6 @@ def run_with_session_retries(
             return
         if result.failure_reason == "goal_no_longer_open":
             return
-        if reflection_fn is None:
-            return
         triggered = (
             result.outcome in ("proved", "success", "exhausted")
             or result.failure_reason in (
@@ -757,11 +756,21 @@ def run_with_session_retries(
         )
         if not triggered:
             return
-        try:
-            reflection_fn(sid, result)
-        except Exception as exc:  # noqa: BLE001 — best-effort
-            print(f"[reflection] callback raised, swallowed: {exc}",
-                  flush=True)
+        # Framework feedback runs as its OWN tail step, INDEPENDENT of reflection
+        # — it fires for every pipeline that ran to a real terminal (incl.
+        # Forward, which passes no reflection_fn). Same `--resume <sid>` session.
+        if feedback_fn is not None:
+            try:
+                feedback_fn(sid, result)
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                print(f"[feedback] callback raised, swallowed: {exc}",
+                      flush=True)
+        if reflection_fn is not None:
+            try:
+                reflection_fn(sid, result)
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                print(f"[reflection] callback raised, swallowed: {exc}",
+                      flush=True)
 
     for attempt in range(budget):
         # Dispatcher abort (budget exceeded / gateway permadown):

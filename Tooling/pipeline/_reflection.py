@@ -106,22 +106,9 @@ def attempt_reflection(*,
                 print(f"[reflection] template missing at {template_path}; "
                       f"skipping", flush=True)
                 return
-            # Piggyback the framework-feedback questionnaire (dev-only, off
-            # by default) onto this same --resume spawn — the survivor's
-            # one-sentence answer goes to a scratch file in its own sandbox,
-            # which the framework reads + appends post-spawn (see _feedback).
-            from . import _feedback
-            fb_on = _feedback.feedback_enabled(workspace)
-            if fb_on:
-                fb_scratch = _feedback.scratch_path(attempts_dir)
-                feedback_section = _feedback.SURVIVOR_PROMPT_SECTION.replace(
-                    "{feedback_path}", str(fb_scratch))
-                feedback_also = (" and the framework-feedback file named in "
-                                 "the Framework feedback section below")
-            else:
-                feedback_section = ""
-                feedback_also = ""
-
+            # Framework feedback is DECOUPLED from reflection — it now runs as
+            # its own `--resume` step (`_feedback.attempt_feedback`) at every
+            # pipeline's tail, so reflection here is LESSONS-only.
             rendered = _render_prompt(
                 template_path.read_text(encoding="utf-8"),
                 kind=kind, slug=slug, outcome=outcome,
@@ -129,8 +116,6 @@ def attempt_reflection(*,
                 cap=str(lessons_cap), used=str(used),
                 lessons_content=lessons_before or "(empty)",
                 timeout_min=str(max(1, _REFLECTION_TIMEOUT_SEC // 60)),
-                feedback_section=feedback_section,
-                feedback_also=feedback_also,
             )
             rendered_path = attempts_dir / _REFLECTION_PROMPT_FILENAME
             rendered_path.write_text(rendered, encoding="utf-8")
@@ -151,13 +136,6 @@ def attempt_reflection(*,
             lessons_after = _read_lessons(lessons_path)
             delta = _classify_delta(lessons_before, lessons_after)
             print(f"[reflection] {kind} {slug}: {delta}", flush=True)
-
-            # Survivor framework-feedback writeback (no-op if disabled or the
-            # agent wrote nothing / `(none)`); best-effort, never raises.
-            if fb_on:
-                _feedback.record_survivor(
-                    workspace, attempts_dir=attempts_dir, kind=kind,
-                    slug=slug, problem=problem_dir.name, outcome=outcome)
         except Exception as exc:  # noqa: BLE001
             print(f"[reflection] {kind} {slug}: error swallowed — {exc}",
                   flush=True)

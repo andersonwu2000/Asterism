@@ -16,7 +16,7 @@ Bar — only write if all three:
 Default is skip. Most reflections should be `skip`.
 
 Restrictions:
-  - You may write to `Problems/{problem}/LESSONS.md`{feedback_also}. Do NOT touch any other file.
+  - You may write to `Problems/{problem}/LESSONS.md`. Do NOT touch any other file.
   - Use the Edit tool. LESSONS.md contains a `<!-- LESSONS_BEGIN -->` anchor line; insert new lessons immediately AFTER it.
 
 Action:
@@ -30,4 +30,3 @@ Reply with one of:
   - `replaced N: <lesson>`  (N = 1-indexed bullet index you replaced)
 
 Time budget: {timeout_min} min. Exit promptly after the Edit (or immediately on `skip`).
-{feedback_section}

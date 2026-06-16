@@ -752,6 +752,15 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
         # already captures the spawn rc and the parser-state verdict.
         return None
 
+    def forward_feedback(sid: str, result) -> None:
+        from . import _feedback
+        _feedback.attempt_feedback(
+            kind="forward", sid=sid,
+            slug=(f"inject{decision_id}" if decision_id else "forward"),
+            outcome=(result.failure_reason or result.outcome),
+            problem_dir=problem_dir, attempts_dir=attempts_dir,
+            workspace=workspace)
+
     result = run_with_session_retries(
         conn=conn,
         goal_id=None,   # Forward targets a problem, not a goal
@@ -763,6 +772,7 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
         parse_fn=forward_parse,
         postmortem_fn=forward_postmortem,
         workspace=workspace,
+        feedback_fn=forward_feedback,
     )
     # #4 — surface a Forward decline's `## Why` to the originating Inject
     # decision so its next inject_batch_done wake reads WHY the brief was

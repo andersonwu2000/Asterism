@@ -643,6 +643,14 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             workspace=workspace,
         )
 
+    def backward_feedback(sid: str, result) -> None:
+        from . import _feedback
+        _feedback.attempt_feedback(
+            kind="backward", sid=sid, slug=goal["slug"],
+            outcome=(result.failure_reason or result.outcome),
+            problem_dir=problem_dir, attempts_dir=attempts_dir,
+            workspace=workspace)
+
     def backward_death(result) -> None:
         from . import _feedback
         _feedback.record_death(
@@ -679,6 +687,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             postmortem_fn=backward_postmortem,
             workspace=workspace,
             reflection_fn=backward_reflection,
+            feedback_fn=backward_feedback,
             death_fn=backward_death,
             decision_id=decision_id,
         )

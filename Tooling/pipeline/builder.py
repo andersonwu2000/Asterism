@@ -467,6 +467,14 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             workspace=workspace,
         )
 
+    def builder_feedback(sid: str, result) -> None:
+        from . import _feedback
+        _feedback.attempt_feedback(
+            kind="builder", sid=sid, slug=goal["slug"],
+            outcome=(result.failure_reason or result.outcome),
+            problem_dir=problem_dir, attempts_dir=attempts_dir,
+            workspace=workspace)
+
     def builder_death(result) -> None:
         from . import _feedback
         _feedback.record_death(
@@ -494,6 +502,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             postmortem_fn=builder_postmortem,
             workspace=workspace,
             reflection_fn=builder_reflection,
+            feedback_fn=builder_feedback,
             death_fn=builder_death,
             decision_id=decision_id,
         )
