@@ -225,7 +225,7 @@ def recover_at_startup(conn: sqlite3.Connection,
             or patches_salvaged or probes_removed
             or orphans_swept or orphans_kept_cited):
         print(f"[dispatcher] recovery: cleared {queue_cleared} queue rows, "
-              f"re-enqueued {inject_reenqueued} in-flight Inject Forwards, "
+              f"re-enqueued {inject_reenqueued} in-flight Inject pipelines, "
               f"killed {strategies_killed} half-baked strategies, "
               f"reopened {goals_reopened} stuck goals, "
               f"flipped {goals_attempting_fixup} open->attempting "

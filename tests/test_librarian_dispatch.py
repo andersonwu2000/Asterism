@@ -684,3 +684,40 @@ def test_advance_chain_file_busy_not_counted(tmp_path: Path):
             reason="librarian_file_busy", fail_counts=fc)
     assert tid not in fc                          # never counted
     assert db.librarian_fail_counts_all(conn) == {}
+
+
+def test_advance_chain_stall_surfaces_failure_detail(tmp_path: Path, capsys):
+    # The STALL line must surface the real error (failure_detail), read from
+    # dead_attempts by pipeline_id — Librarian records the detail under
+    # target_id=0, so it can't be found by problem/file (was hand-dig-only).
+    conn = _mem()
+    tid = dispatcher._lib_encode("p", "Library/P/foo.lean")
+    pid = "pl-stall-1"
+    db.record_pipeline(                       # FK: dead_attempts → pipelines(id)
+        conn, pipeline_id=pid, kind="Librarian", target_id="p",
+        target_kind="Problem", status="failed", outcome="failed",
+        started_at=db.now())
+    db.record_dead_attempt(
+        conn, target_id=0, target_kind="Problem", pipeline_id=pid,
+        failure_reason="schema_violation",
+        failure_detail="naming_violation: `Foo.bar` must be snake_case\n2nd line")
+    fc = {tid: dispatcher.LIBRARIAN_MAX_CHAIN_RETRIES}   # next fail → STALL
+    dispatcher._advance_librarian_chain(
+        conn, tmp_path, tid, outcome="failed", reason="schema_violation",
+        fail_counts=fc, pipeline_id=pid)
+    out = capsys.readouterr().out
+    assert "STALLED" in out
+    assert "naming_violation" in out          # detail surfaced inline
+    assert "2nd line" not in out              # only the detail's first line
+
+
+def test_advance_chain_stall_without_pipeline_id_is_safe(tmp_path: Path, capsys):
+    # No pipeline_id (or no matching dead_attempt) → STALL still prints, just
+    # without the detail tail; must never raise.
+    conn = _mem()
+    tid = dispatcher._lib_encode("p", "Library/P/foo.lean")
+    fc = {tid: dispatcher.LIBRARIAN_MAX_CHAIN_RETRIES}
+    dispatcher._advance_librarian_chain(
+        conn, tmp_path, tid, outcome="failed", reason="boom", fail_counts=fc)
+    out = capsys.readouterr().out
+    assert "STALLED" in out and "boom" in out

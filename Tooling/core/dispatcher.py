@@ -1774,7 +1774,7 @@ def _derive_librarian_work(
 
 def _advance_librarian_chain(
     conn: sqlite3.Connection, workspace: Path, target_id: str, *,
-    outcome: str, reason: str, fail_counts: dict,
+    outcome: str, reason: str, fail_counts: dict, pipeline_id: str = "",
 ) -> None:
     """Per-unit fail tracking for the Librarian chain (#92).
 
@@ -1805,8 +1805,23 @@ def _advance_librarian_chain(
     problem, target_file = _lib_decode(target_id)
     unit = target_file or "chain step"
     if n > LIBRARIAN_MAX_CHAIN_RETRIES:
+        # Surface the real error inline. The rich `failure_detail` lives in
+        # dead_attempts keyed by pipeline_id (Librarian records it under
+        # target_id=0, so it can't be found by problem/file) — without this it
+        # was only diggable by hand (hit 5x this session).
+        detail = ""
+        if pipeline_id:
+            try:
+                row = conn.execute(
+                    "SELECT failure_detail FROM dead_attempts "
+                    "WHERE pipeline_id=? ORDER BY id DESC LIMIT 1",
+                    (pipeline_id,)).fetchone()
+                if row and row[0]:
+                    detail = " — " + str(row[0]).strip().splitlines()[0][:200]
+            except sqlite3.Error:
+                pass
         print(f"[librarian] {problem}: unit `{unit}` STALLED after {n} "
-              f"failures ({reason}) — needs operator", flush=True)
+              f"failures ({reason}){detail} — needs operator", flush=True)
     else:
         print(f"[librarian] {problem}: unit `{unit}` failed ({reason}); "
               f"will retry (attempt {n}/{LIBRARIAN_MAX_CHAIN_RETRIES})",
@@ -2662,7 +2677,8 @@ def run(workspace: Path, *, once: bool = False,
                     if kind == "Librarian":
                         _advance_librarian_chain(
                             conn, workspace, tid, outcome=outcome,
-                            reason=reason, fail_counts=librarian_fail_counts)
+                            reason=reason, fail_counts=librarian_fail_counts,
+                            pipeline_id=pid)
                     # Back-off + global counter for spawn fast-fails.
                     # Phase 7 — quota_exhausted (rc=126) / missing_dep (rc=127)
                     # also cooldown but do NOT contribute to CONSEC tracking
