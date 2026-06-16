@@ -37,6 +37,7 @@ from __future__ import annotations
 import re
 import shutil
 import sqlite3
+import subprocess
 from pathlib import Path
 
 from . import db
@@ -65,7 +66,8 @@ def _attempt_owner_alive(attempt_dir: Path) -> bool:
 
 
 def recover_at_startup(conn: sqlite3.Connection,
-                       workspace: Path | None = None) -> None:
+                       workspace: Path | None = None,
+                       scope: str | None = None) -> None:
     queue_cleared = conn.execute("DELETE FROM queue").rowcount
 
     # Phase 2.5 — re-enqueue dispatch rows for any in-flight Inject
@@ -214,7 +216,7 @@ def recover_at_startup(conn: sqlite3.Connection,
         # sorry-bearing stub with no row; uncited ones are deleted, cited
         # ones (already-propagated fake-proof) are logged for repair.
         orphans_swept, orphans_kept_cited = sweep_orphan_proof_files(
-            conn, workspace)
+            conn, workspace, scope=scope)
 
     if (queue_cleared or inject_reenqueued or strategies_killed
             or goals_reopened or goals_attempting_fixup
@@ -245,10 +247,37 @@ _PROOF_IMPORT_RE = re.compile(
 )
 
 
-def sweep_orphan_proof_files(conn: sqlite3.Connection,
-                             workspace: Path) -> tuple[int, int]:
+def _git_untracked_under(workspace: Path, rel_dir: str) -> set[str] | None:
+    """Repo-relative posix paths of git-UNTRACKED (not committed, not
+    ignored) files under `rel_dir`, or None if `workspace` is not a git
+    repo (e.g. a unit-test tmp dir — nothing is committed there, so the
+    caller treats every candidate as untracked).
+
+    The orphan sweep MUST restrict deletion to untracked files: a genuine
+    killed-placement orphan was never committed, whereas a *committed*
+    proof file can also lack a current DB row (its problem's DB was
+    reset / re-migrated while git kept the proofs). Deleting those is
+    destroying committed work — a `git ls-files --others` gate is what
+    separates the two. On a git error inside a real repo, return an empty
+    set (protect everything — delete nothing) rather than risk it."""
+    if not (workspace / ".git").exists():
+        return None
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(workspace), "ls-files", "--others",
+             "--exclude-standard", "--", rel_dir],
+            capture_output=True, text=True, timeout=30, check=True,
+        ).stdout
+        return {ln.strip() for ln in out.splitlines() if ln.strip()}
+    except Exception:  # noqa: BLE001 — repo present but git failed → protect all
+        return set()
+
+
+def sweep_orphan_proof_files(conn: sqlite3.Connection, workspace: Path, *,
+                             scope: str | None = None) -> tuple[int, int]:
     """Delete orphan proof files — `proofs/L_<slug>.lean` /
-    `_strategy_s<id>.lean` present on disk but backed by NO DB row.
+    `_strategy_s<id>.lean` present on disk, git-UNTRACKED, and backed by
+    NO DB row.
 
     Orphans form when a Backward placement writes a sub-goal stub
     (backward.py `dest.write_text`) and the worker/daemon dies before the
@@ -261,22 +290,30 @@ def sweep_orphan_proof_files(conn: sqlite3.Connection,
     before any dispatch, so no live worker's freshly-placed file is at
     risk — restores the rule-10 DB↔file invariant.
 
-    SAFETY: an orphan still IMPORTED by another proof file is NOT deleted
-    (that would break the importer's build); it is logged loudly instead.
-    A cited orphan means a fake-proof already propagated and needs
-    explicit repair (reopen the importer chain) — never a silent delete.
-    The common case (a fresh, uncited orphan from a killed placement) is
-    deleted. Only problems present in `goals` are swept (never touch a
-    problem the DB doesn't track). Returns (deleted, kept_cited).
+    THREE guards keep this safe:
+      - `scope`: only problems matching the daemon's scope are swept (a
+        scoped run must never touch another problem's files).
+      - git-UNTRACKED only (`_git_untracked_under`): a committed proof
+        file can lack a current DB row (reset/migrated problem) — those
+        are tracked, so they're protected; only never-committed
+        placement-orphans are deletable.
+      - cited-import guard: an orphan IMPORTED by another proof is kept
+        and logged loudly (deleting it would break the importer's build —
+        it signals an already-propagated fake-proof needing explicit
+        repair). Returns (deleted, kept_cited).
     """
     deleted = 0
     kept_cited = 0
     problems = [r["problem"] for r in conn.execute(
-        "SELECT DISTINCT problem FROM goals")]
+        "SELECT DISTINCT problem FROM goals"
+        + (" WHERE problem LIKE ?" if scope else ""),
+        ((scope,) if scope else ()))]
     for problem in problems:
         proofs_dir = db.problem_dir(workspace, problem) / "proofs"
         if not proofs_dir.exists():
             continue
+        untracked = _git_untracked_under(
+            workspace, (proofs_dir.relative_to(workspace)).as_posix())
         known: set[str] = set()
         for r in conn.execute(
                 "SELECT lean_path AS p FROM goals WHERE problem = ?"
@@ -303,6 +340,11 @@ def sweep_orphan_proof_files(conn: sqlite3.Connection,
         for f in files:
             rel = f.relative_to(workspace).as_posix()
             if rel in known:
+                continue
+            # Protect committed proofs: only git-untracked files are
+            # genuine placement-orphans. (untracked is None → not a repo,
+            # e.g. tests → treat all as untracked.)
+            if untracked is not None and rel not in untracked:
                 continue
             module = rel.removesuffix(".lean").replace("/", ".")
             if module in imported:

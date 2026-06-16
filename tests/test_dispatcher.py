@@ -937,6 +937,65 @@ def test_recover_at_startup_sweeps_orphan_proof_files(
     assert cited.exists()            # orphan but cited → kept (repair, not delete)
 
 
+def test_sweep_orphan_only_untracked_and_respects_scope(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Safety guards (post-incident): the orphan sweep must (1) only
+    delete git-UNTRACKED files — a committed proof can lack a current DB
+    row (reset/migrated problem) and must NOT be swept — and (2) honor
+    `scope` so a scoped run never touches another problem's files."""
+    import subprocess
+    from Tooling.state.recovery import sweep_orphan_proof_files
+    git = lambda *a: subprocess.run(["git", *a], cwd=tmp_path,
+                                    capture_output=True)
+    if git("init", "-q").returncode != 0:
+        pytest.skip("git unavailable")
+    git("config", "user.email", "t@t"); git("config", "user.name", "t")
+
+    for name in ("p1", "p2"):
+        conn.execute(
+            "INSERT INTO problems (name, manifest_path, created_at,"
+            " bootstrap_done) VALUES (?, ?, ?, 1)",
+            (name, f"Problems/{name}/Manifest.md", db.now()))
+    db.insert_goal(conn, problem="p1", slug="real",
+                   lean_path="Problems/p1/proofs/L_real.lean",
+                   statement="T", origin="backward", status="proved")
+    conn.commit()
+
+    p1 = tmp_path / "Problems" / "p1" / "proofs"; p1.mkdir(parents=True)
+    p2 = tmp_path / "Problems" / "p2" / "proofs"; p2.mkdir(parents=True)
+    (p1 / "L_real.lean").write_text("theorem real : True := trivial\n")
+    # tracked + no DB row → committed proof from a reset problem → PROTECT
+    (p1 / "L_committed_no_row.lean").write_text(
+        "theorem committed_no_row : True := trivial\n")
+    git("add", "-A"); git("commit", "-qm", "init")
+    # untracked + no DB row → genuine placement orphan → DELETE
+    (p1 / "L_untracked_orphan.lean").write_text(
+        "theorem untracked_orphan : True := by sorry\n")
+    # out-of-scope problem's orphan → must be left alone under scope=p1
+    (p2 / "L_p2_orphan.lean").write_text(
+        "theorem p2_orphan : True := by sorry\n")
+
+    deleted, kept = sweep_orphan_proof_files(conn, tmp_path, scope="p1")
+
+    assert (p1 / "L_real.lean").exists()             # goal-backed
+    assert (p1 / "L_committed_no_row.lean").exists()  # tracked → PROTECTED
+    assert not (p1 / "L_untracked_orphan.lean").exists()  # untracked → swept
+    assert (p2 / "L_p2_orphan.lean").exists()        # out of scope → untouched
+    assert deleted == 1
+
+
+def test_cmd_run_refuses_no_scope_without_all_problems() -> None:
+    """Scope safety gate: `asterism run` with no --scope and no
+    --all-problems is refused (rc=2) before any daemon work — a no-scope
+    run is workspace-wide and rarely intended."""
+    import argparse
+    from Tooling.core.cli import cmd_run
+    rc = cmd_run(argparse.Namespace(scope=None, all_problems=False,
+                                    once=False))
+    assert rc == 2
+
+
 def test_strategist_row_is_stale(conn: sqlite3.Connection) -> None:
     """A queued Strategist whose root already proved is dropped at spawn
     (would only Noop). Guards: open root → keep; proved root → drop;

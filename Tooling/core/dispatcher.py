@@ -2562,7 +2562,7 @@ def run(workspace: Path, *, once: bool = False,
     for row in conn.execute("SELECT name, manifest_path FROM problems"):
         manifests.load(row["name"], row["manifest_path"])
 
-    _recover_at_startup(conn, workspace)
+    _recover_at_startup(conn, workspace, scope=scope)
 
     # Spawn-sandbox sweep: clean any orphan sandboxes left by SIGKILL'd
     # spawns from a prior daemon run (per docs/archive/spawn_sandbox.md §3.3).

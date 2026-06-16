@@ -364,6 +364,25 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     workspace = Path.cwd()
+    # Scope safety gate: a no-`--scope` run is workspace-wide — it
+    # dispatches AND runs the recovery orphan-sweep across EVERY problem.
+    # That is rarely intended and high-blast-radius (a stokes-scoped
+    # restart once swept 148 committed proof files from other problems
+    # before `--scope` was honored). The daemon is non-interactive, so the
+    # guard refuses to start rather than prompt: require an explicit
+    # `--all-problems` to confirm the rare workspace-wide intent.
+    if getattr(args, "scope", None) is None and not getattr(
+            args, "all_problems", False):
+        print(
+            "[cli] REFUSING to run without --scope: a no-scope run is "
+            "WORKSPACE-WIDE (dispatch + orphan-sweep across every "
+            "problem) and is rarely intended.\n"
+            "      Re-run with --scope <problem> (e.g. "
+            "--scope Geometry.stokes_theorem),\n"
+            "      or pass --all-problems to confirm a deliberate "
+            "workspace-wide run.",
+            flush=True)
+        return 2
     # Auto-tee daemon stdout/stderr into .asterism/logs/<...>.log so
     # post-run forensics + post-compact handoffs always have a canonical
     # artifact, while the operator still sees real-time output on the
@@ -1281,6 +1300,13 @@ def main(argv: list[str] | None = None) -> int:
         help="restrict dispatch to problems matching this SQL LIKE "
              "pattern (e.g. 'minif2f_%%'). Other problems' goals stay "
              "in their current state but are not dispatched this run.",
+    )
+    p_run.add_argument(
+        "--all-problems", action="store_true",
+        help="explicitly opt into a WORKSPACE-WIDE run (dispatch + "
+             "recovery orphan-sweep across EVERY problem). Required when "
+             "--scope is omitted: a no-scope run is rarely intended and "
+             "touches all problems, so it is refused without this flag.",
     )
     p_run.set_defaults(func=cmd_run)
 
