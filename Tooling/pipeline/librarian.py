@@ -1629,11 +1629,17 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None):
         prior_renames.update({
             r["renamed_from"]: r["target_name"]
             for r in all_rows if r["renamed_from"] and r["target_name"]})
+        # `polish=False`: polish is FOLDED INTO audit. Measured on the P13 run,
+        # audit re-changed only ~7.6% of lines (≈0% on the big files) on top of
+        # polish's ~32% — a second near-no-op whole-file LLM rewrite. So audit
+        # now does the full mathlib-ize in one pass (its prompt + zero-warning
+        # gate already cover polish's scope). `file_cleanup_polish`/`polish.md`
+        # are kept (unused) as a revert safety net until a clean re-run confirms.
         res = _dedup.run_staged_cleanup_file(
             workspace, problem, target_file, scope_index=scope_index,
             prior_renames=prior_renames, apply=True,
             simplify=True, unused_args=True,
-            strip_comments=True, polish=True, decide=True, audit=True)
+            strip_comments=True, polish=False, decide=True, audit=True)
         # Mathlib-PR tidy: collapse redundant duplicate `variable` blocks the
         # per-decl migrate assembly replays (build-harmless, scope-safe; the
         # mechanical-path dedup missed files assembled via the LLM/Defs path —

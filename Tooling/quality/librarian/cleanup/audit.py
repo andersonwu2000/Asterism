@@ -27,7 +27,9 @@ from ._common import _Decl
 _AUDIT_PROMPT = "audit.md"
 _AUDIT_OUTPUT = "audited.lean"
 _AUDIT_RENAMES = "renames.json"
-_AUDIT_MAX_RETRIES = 2
+# 3 (was 2): audit now does the full mathlib-ize in one pass (polish folded in),
+# so it gets one more attempt to converge to a clean, zero-warning rewrite.
+_AUDIT_MAX_RETRIES = 3
 
 
 def _audit_context(workspace: Path, problem: str, rel: str,
