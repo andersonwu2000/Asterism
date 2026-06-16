@@ -5,6 +5,11 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-15
+- Improved reuse of equivalent subgoals, so an already-proved or in-progress goal is shared?r cited as a lemma?ather than re-derived.
+- Hardened the subgoal scheduler to recover interrupted work after restarts and to avoid dropping or duplicating tasks.
+- Refined the prompts and feedback given to the proving agents, giving clearer reasons when a step is declined and keeping self-reflection focused on the mathematics.
+
 ### 2026-06-14
 - Overhauled the bookkeeping for concurrent proof attempts, adding an explicit "stalled" status to replace an earlier stopgap, keeping shelved attempts visible for review, and counting active searches by live processes rather than stale connections.
 - Made each proving step elaborate exactly one unit against a single shared Lean compilation state.
@@ -149,12 +154,6 @@
 ### 2026-05-17
 - Published a design for the prover's next stage, pairing a high-level planning component with forward, fact-driven reasoning.
 - Settled that the system may keep introducing auxiliary lemmas and definitions to build up a working library before committing to a final proof verdict.
-
-### 2026-05-16
-- Improved detection of when a newly generated result duplicates or is logically equivalent to one already set aside.
-- Generated proof files now automatically inherit the project's shared definitions and namespace imports.
-- Paired each prover worker one-to-one with a proof-verification pipeline and added a lightweight probe mode for checks.
-- Added per-task-type backoff so the scheduler eases off when a resource quota is reached.
 
 <!-- ASTERISM-PROGRESS:END -->
 
