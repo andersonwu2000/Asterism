@@ -59,18 +59,19 @@ def _simplify_mark_context(workspace: Path, problem: str, rel: str,
 
 
 def _simplify_decl_context(workspace: Path, problem: str, rel: str, name: str,
-                           sig: str, proof: str, prev_error: str = "") -> str:
-    lines = [
-        f"# Simplify one proof — {problem} — `{name}`", "",
+                           sig: str) -> str:
+    """Cold-spawn Context.md: `patch.lean` holds the declaration as
+    `_cleanup_probe` with its current proof; the agent shortens that proof in
+    place via LSP, keeping the statement. Retry feedback (a build error) flows
+    through `run_with_session_retries`' `retry_context`, not here."""
+    return "\n".join([
+        f"# Shorten one proof — {problem} — `{name}`", "",
         f"Module: `{C._mod_of_rel(rel)}` (its declarations + imports are in scope).",
-        "", "## Statement (keep verbatim)", "", "```lean", sig.strip(), "```",
-        "", "## Current proof (everything after `:=`)", "",
-        "```lean", proof.strip(), "```", "",
-    ]
-    if prev_error:
-        lines += ["## Your previous attempt failed to build — fix and retry", "",
-                  "```", prev_error[-1500:], "```", ""]
-    return "\n".join(lines) + "\n"
+        "", "`patch.lean` holds the declaration as `_cleanup_probe` with its "
+        "current proof. Shorten that proof; keep the statement (everything up "
+        "to `:=`) byte-identical.", "",
+        "## Statement (keep verbatim)", "", "```lean", sig.strip(), "```", "",
+    ]) + "\n"
 
 
 def _mark_simplify_file(workspace: Path, problem: str, rel: str,
@@ -90,36 +91,31 @@ def _mark_simplify_file(workspace: Path, problem: str, rel: str,
     return _parse_simplify_marks(got["simplify.json"]) & set(decl_names)
 
 
-def _propose_simplify(workspace: Path, problem: str, rel: str, name: str,
-                      sig: str, proof: str, problem_dir: Path,
-                      prev_error: str = "") -> "str | None":
-    """One simplify spawn for decl `name`; return the proposed new proof body
-    (text after `:=`), or None on decline / failure."""
+def decl_cleanup_simplify_file(workspace: Path, problem: str, target_file: str,
+                               decls: "list[_Decl]", marked: "set[str]", *,
+                               conn=None, pipeline_id: "str | None" = None,
+                               max_retries: int = _SIMPLIFY_MAX_RETRIES) -> int:
+    """§13 (c) per-decl proof simplification for ONE file. Each `marked`
+    survivor (source order) is shortened through the shared LSP edit loop
+    (`run_lsp_edit_loop`, like migrate-hole-fill): an isolated probe —
+    `theorem _cleanup_probe <sig> := <current proof>` importing + opening the
+    decl's own module so siblings resolve — is seeded into `patch.lean`, and the
+    agent edits the proof against live diagnostics. The extracted proof is
+    re-verified cold (`_build_decl_isolated`, sig-preserving) before it is
+    spliced back via `replace_proof`. A build failure retries within the same
+    session (≤ max_retries); a decline / no-change / exhaustion keeps the
+    original. Writes `target_file` in place if any proof changed. Returns the
+    count simplified. No-op (0) if the prompt is absent or nothing is marked."""
+    if not marked:
+        return 0
+    from .... import agent
+    from ....core import dispatcher
+    from ....pipeline import PipelineResult
+    from ....pipeline._retry import run_lsp_edit_loop
+
     prompt_path = (workspace / "Tooling" / "prompts" / "librarian"
                    / _SIMPLIFY_PROMPT)
     if not prompt_path.exists():
-        return None
-    got = C.spawn_collect(
-        workspace, problem, prompt_path,
-        _simplify_decl_context(workspace, problem, rel, name, sig, proof,
-                               prev_error),
-        ["simplified.txt"])
-    if got is None:
-        return None
-    new_proof = got["simplified.txt"].strip()
-    return new_proof or None
-
-
-def decl_cleanup_simplify_file(workspace: Path, problem: str, target_file: str,
-                               decls: "list[_Decl]", marked: "set[str]", *,
-                               max_retries: int = _SIMPLIFY_MAX_RETRIES) -> int:
-    """§13 (c) per-decl proof simplification for ONE file. For each `marked`
-    survivor (source order): spawn → `_build_decl_isolated` (sig-preserving) →
-    on fail feed the error & retry (≤ max_retries) → decline / no-change /
-    exhaustion keeps the original proof. Writes `target_file` in place if any
-    proof changed. Returns the count simplified. No-op (0) if the prompt is
-    absent or nothing is marked."""
-    if not marked:
         return 0
     problem_dir = workspace.joinpath("Problems", *problem.split("."))
     try:
@@ -133,24 +129,58 @@ def decl_cleanup_simplify_file(workspace: Path, problem: str, target_file: str,
         cur = C.decl_proof_body(text, d.name)
         if cur is None:
             continue
-        prev_error = ""
-        for _attempt in range(max_retries + 1):
-            new_proof = _propose_simplify(
-                workspace, problem, target_file, d.name, d.sig, cur,
-                problem_dir, prev_error)
-            if not new_proof or new_proof.strip() == cur.strip():
-                break                              # decline / no change → keep
+        raw_sig = " ".join(d.sig.split())
+        seed = (f"import Mathlib\nimport {d.module}\n\n"
+                f"open {d.module}\n\n"
+                f"theorem _cleanup_probe {raw_sig} := {cur}\n")
+        dpid = f"{pipeline_id or agent.new_pipeline_id()}-simplify-{d.name}"
+        dattempts = agent.attempts_dir_for(workspace, dpid)
+        patch = dattempts / "patch.lean"
+        cap: dict = {}
+
+        def cold_prep(ctx, _patch=patch, _seed=seed, _d=d) -> None:
+            (ctx.attempts_dir / "Context.md").write_text(
+                _simplify_decl_context(workspace, problem, target_file,
+                                       _d.name, _d.sig), encoding="utf-8")
+            _patch.write_text(_seed, encoding="utf-8")
+
+        def parse(_patch=patch, _cur=cur, _cap=cap, _d=d) -> PipelineResult:
+            if not _patch.exists():
+                return PipelineResult(
+                    outcome="failed", failure_reason="agent_no_output",
+                    failure_detail=f"{_d.name}: no patch.lean")
+            new_proof = C.decl_proof_body(
+                _patch.read_text(encoding="utf-8"), "_cleanup_probe")
+            if not new_proof or new_proof.strip() == _cur.strip():
+                _cap["proof"] = None               # no improvement → keep
+                return PipelineResult(outcome="success")
             ok, detail = C._build_decl_isolated(
-                workspace, sig=d.sig, proof=new_proof,
-                modules=[d.module], namespaces=[d.module])
-            if ok:
-                nt, replaced = C.replace_proof(text, d.name, new_proof)
-                if replaced:
-                    text = nt
-                    n += 1
-                    print(f"[staged] simplified {d.name}", flush=True)
-                break
-            prev_error = detail
+                workspace, sig=_d.sig, proof=new_proof,
+                modules=[_d.module], namespaces=[_d.module])
+            if not ok:                             # retry with the error
+                return PipelineResult(
+                    outcome="failed", failure_reason="librarian_gate_failed",
+                    failure_detail=detail)
+            _cap["proof"] = new_proof
+            return PipelineResult(outcome="success")
+
+        # release_session_after=True: a tight per-decl loop must free the
+        # gateway slot before the next decl registers.
+        run_lsp_edit_loop(
+            conn=conn, goal_id=None, pipeline_id=dpid,
+            budget_threshold=max_retries + 1,
+            shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+            attempts_dir=dattempts, workspace=workspace,
+            problem=problem, problem_dir=problem_dir,
+            kind="librarian", prompt_path=prompt_path, target=patch,
+            cold_prep_fn=cold_prep, parse_fn=parse,
+            release_session_after=True)
+        if cap.get("proof"):
+            nt, replaced = C.replace_proof(text, d.name, cap["proof"])
+            if replaced:
+                text = nt
+                n += 1
+                print(f"[staged] simplified {d.name}", flush=True)
     if n:
         (workspace / target_file).write_text(text, encoding="utf-8")
     return n

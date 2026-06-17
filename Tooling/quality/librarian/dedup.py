@@ -1734,7 +1734,8 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
             [d.name for d in survivor_decls],
             workspace.joinpath("Problems", *problem.split(".")))
         n_simplified = decl_cleanup_simplify_file(
-            workspace, problem, target_file, survivor_decls, marked)
+            workspace, problem, target_file, survivor_decls, marked,
+            conn=conn, pipeline_id=pipeline_id)
     _T["simplify"] = _t()
     # (c) unused-arg removal — drop signature hypotheses unused in the type
     # (mathlib `unusedArguments`). Mechanical, type-CHANGING (rebuild-gated, not

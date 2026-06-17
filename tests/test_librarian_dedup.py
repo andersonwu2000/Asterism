@@ -153,16 +153,20 @@ def _setup_simplify(tmp_path, rel, content, *, prompt="decl_simplify.md"):
 
 
 def _fake_simplify_spawn(monkeypatch, responses):
-    """Patch agent.spawn_llm to write responses[i] (str|None) as simplified.txt."""
+    """Patch agent.spawn_llm to simulate the agent editing `patch.lean`'s
+    `_cleanup_probe` proof to responses[i] (str|None; None = no edit, so the
+    cold-seed proof is kept → parsed as 'no change'). The gateway register /
+    release HTTP is faked by the autouse `_stub_gateway_calls_by_default`."""
     from Tooling import agent
     calls = {"n": 0}
 
-    def _spawn(*, kind, prompt_path, problem_dir, attempts_dir, session_id):
+    def _spawn(*, attempts_dir, **k):
         i = calls["n"]
         calls["n"] += 1
         r = responses[i] if i < len(responses) else None
         if r is not None:
-            (attempts_dir / "simplified.txt").write_text(r, encoding="utf-8")
+            (attempts_dir / "patch.lean").write_text(
+                f"theorem _cleanup_probe : True := {r}\n", encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", _spawn)
     return calls

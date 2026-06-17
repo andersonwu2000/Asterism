@@ -80,7 +80,7 @@ _CLEANUP_TITLES = {
     "dedup bridge": "cleanup:bridge",
     "Naming + imports": "cleanup:naming",
     "Proof-simplification triage": "cleanup:simp-mark",
-    "Simplify one proof": "cleanup:simplify",
+    "Shorten one proof": "cleanup:simplify",
     "PR-style polish": "cleanup:polish",
     "Final mathlib review": "cleanup:review",
 }
