@@ -688,6 +688,27 @@ def test_context_classify_only_kept(conn, tmp_path):
     assert "drop_me" not in text  # dropped decls not in layout surface
 
 
+def test_context_classify_surfaces_prev_error(conn, tmp_path):
+    # classify is one-shot per dispatch; the chain re-dispatches fresh on a
+    # verify rejection, so the prior failure must be carried into the next
+    # attempt's Context.md or the agent re-drops decls until the chain STALLs.
+    db.upsert_library_decl(conn, problem="p", slug="keep_me", source_goal_id=None)
+    db.set_library_verdict(conn, problem="p", slug="keep_me", verdict="keep")
+    ad = tmp_path / "att"; ad.mkdir()
+    ctx = lib.compile_librarian_context(
+        conn, problem="p", work_kind="classify", attempts_dir=ad,
+        workspace=tmp_path,
+        prev_error="kept decls not placed: ['circle_integral_zero']")
+    text = ctx.read_text(encoding="utf-8")
+    assert "REJECTED" in text
+    assert "circle_integral_zero" in text          # the omitted decl, surfaced
+    # migrate ignores prev_error (classify-only feedback)
+    assert "REJECTED" not in lib.compile_librarian_context(
+        conn, problem="p", work_kind="migrate", attempts_dir=ad,
+        workspace=tmp_path, target_file="Library/A/Foo.lean",
+        prev_error="ignored").read_text(encoding="utf-8")
+
+
 def test_context_migrate_lists_decls(conn, tmp_path):
     # Per-file: the migrate context lists each decl with its statement
     # (signature to copy) + a pointer to the proof source, not the whole

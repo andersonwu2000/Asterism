@@ -47,7 +47,10 @@ _WATERMARKS = {
     # _default_regate_build + _snapshot_problem_library + _restore_snapshot +
     # _problem_library_files, superseded by the mechanical bridge Gate B — plus
     # _importers_of + _normalize_stmt) — 2026-06-18 — tighten.
-    "Tooling/pipeline/librarian.py": 3600,
+    # 3600→3650: classify carries its rejection across the one-shot re-dispatch
+    # (_classify_feedback_path + compile_librarian_context prev_error) so the
+    # agent stops re-dropping decls until STALL — 2026-06-18 — conscious bump.
+    "Tooling/pipeline/librarian.py": 3650,
     # dispatcher 2750→2800 + db 2450→2500: awaiting_human observability
     # (startup + idle-exit log of paused problems) + scope-aware idle exit
     # via db.dispatchable_open_goals — a paused P12 read as a multi-hour

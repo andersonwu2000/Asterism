@@ -1268,6 +1268,7 @@ def compile_librarian_context(
     workspace, target_file: str | None = None,
     holes: "list[str] | None" = None,
     solo_hole: "str | None" = None,
+    prev_error: "str | None" = None,
 ) -> "_Path":
     """Write attempts_dir/Context.md for a Librarian work spawn.
 
@@ -1280,12 +1281,25 @@ def compile_librarian_context(
     to finish it, not write it. A non-empty list names the decls left as
     `sorry` holes to fill; an empty list means the draft is complete but
     build-failed (fix it). When None, the agent writes the file from
-    scratch (cold)."""
+    scratch (cold).
+
+    `prev_error` (classify): the verify rejection from the PRIOR attempt —
+    classify is a one-shot per dispatch and the chain re-dispatches a fresh
+    spawn on rejection, so without this the agent never learns it (e.g.)
+    omitted a kept decl and re-drops a different one until the chain STALLs.
+    Surfaced verbatim at the top of the plan task."""
     from ..quality.librarian import inventory as _inv
 
     lines: list[str] = [f"# Librarian — {work_kind} — {problem}", ""]
 
     if work_kind == "classify":
+        if prev_error:
+            lines += [
+                "## Your previous layout was REJECTED — fix exactly this and "
+                "re-emit the full plan", "", "```", prev_error[-1200:], "```",
+                "", "Every kept declaration below MUST appear in exactly one "
+                "file's `decls` — re-check the full list against your plan "
+                "before emitting.", ""]
         kept = db.library_decls_for(conn, problem, lifecycle="deduped")
         lines.append(f"_{len(kept)} kept declarations to lay out._")
         lines.append("")
@@ -1684,6 +1698,14 @@ def _run_keepall(conn, *, problem, workspace):
     from . import PipelineResult
     from ..quality.librarian import inventory as _inv
 
+    # Fresh chain: drop any stale classify-feedback scratch from a prior
+    # ingestion (a reset + re-run), so the new classify starts clean.
+    try:
+        _classify_feedback_path(db.problem_dir(workspace, problem)).unlink(
+            missing_ok=True)
+    except OSError:
+        pass
+
     inv = _inv.build_inventory(conn, workspace, problem)
     proved_slugs = {d.slug for d in inv.decls}
     reachable = _reachable_from_root(conn, problem, workspace, proved_slugs)
@@ -1884,6 +1906,14 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None, pipeline_id=None
     return PipelineResult(outcome="success")
 
 
+def _classify_feedback_path(problem_dir) -> "_Path":
+    """Cross-dispatch scratch carrying the prior classify rejection. classify is
+    a one-shot spawn per dispatch and the chain re-dispatches fresh on failure,
+    so this `.drafts/` file (persists across dispatches, unlike `.attempts/`) is
+    how attempt N+1's Context.md learns what attempt N got wrong."""
+    return problem_dir / ".drafts" / "classify_feedback.txt"
+
+
 def _run_structured(conn, *, problem, work_kind, workspace,
                     attempts_dir, problem_dir, prompt_path):
     """classify: one-shot spawn emitting plan.json, then parse + verify +
@@ -1893,9 +1923,25 @@ def _run_structured(conn, *, problem, work_kind, workspace,
     from . import PipelineResult
     from .. import agent
 
+    fb_path = _classify_feedback_path(problem_dir)
+    prev_error = (fb_path.read_text(encoding="utf-8")
+                  if work_kind == "classify" and fb_path.exists() else None)
+
+    def _reject(reason: str, detail: str) -> "PipelineResult":
+        # Persist the rejection so the next (fresh) classify dispatch surfaces
+        # it to the agent; only classify carries this cross-attempt feedback.
+        if work_kind == "classify":
+            try:
+                fb_path.parent.mkdir(parents=True, exist_ok=True)
+                fb_path.write_text(detail, encoding="utf-8")
+            except OSError:
+                pass
+        return PipelineResult(outcome="failed", failure_reason=reason,
+                              failure_detail=detail)
+
     compile_librarian_context(
         conn, problem=problem, work_kind=work_kind,
-        attempts_dir=attempts_dir, workspace=workspace)
+        attempts_dir=attempts_dir, workspace=workspace, prev_error=prev_error)
 
     sid = str(uuid.uuid4())
     rc = agent.spawn_llm(
@@ -1916,9 +1962,7 @@ def _run_structured(conn, *, problem, work_kind, workspace,
 
     plan, err = parse_classify(text)
     if err:
-        return PipelineResult(outcome="failed",
-                              failure_reason="librarian_schema_invalid",
-                              failure_detail=err)
+        return _reject("librarian_schema_invalid", err)
     kept = {r["slug"] for r in db.library_decls_for(conn, problem,
                                                     lifecycle="deduped")}
     owned = {r["target_file"].replace("\\", "/") for r in conn.execute(
@@ -1928,9 +1972,7 @@ def _run_structured(conn, *, problem, work_kind, workspace,
     decl_lines = _decl_line_counts(workspace, problem, kept)
     verr = verify_classify(plan, kept, decl_lines=decl_lines, owned_files=owned)
     if verr:
-        return PipelineResult(outcome="failed",
-                              failure_reason="librarian_verify_failed",
-                              failure_detail=verr)
+        return _reject("librarian_verify_failed", verr)
     # Post-merge size gate: the per-planned-file check above misses an
     # un-splittable usage SCC (cyclic file group) that merges several files into
     # one over-budget Lean module — which would later STALL forever at the audit
@@ -1941,10 +1983,14 @@ def _run_structured(conn, *, problem, work_kind, workspace,
     usage_canon = _plan_usage_and_canon(conn, problem, plan, workspace)
     merr = verify_merged_file_sizes(plan, usage_canon[1], decl_lines)
     if merr:
-        return PipelineResult(outcome="failed",
-                              failure_reason="librarian_verify_failed",
-                              failure_detail=merr)
+        return _reject("librarian_verify_failed", merr)
     commit_classify(conn, problem, plan, workspace, precomputed=usage_canon)
+    # Plan accepted — drop the cross-attempt feedback scratch so a future
+    # re-classify of this problem starts clean.
+    try:
+        fb_path.unlink(missing_ok=True)
+    except OSError:
+        pass
     return PipelineResult(outcome="success")
 
 
