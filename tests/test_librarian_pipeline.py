@@ -103,6 +103,36 @@ def test_verify_classify_file_size_budget():
     assert lib.verify_classify(plan, {"a", "b"}) == ""   # back-compat
 
 
+def test_verify_merged_file_sizes_rejects_oversize_scc():
+    # The post-merge gate (residue_thm WindingNumberInteger, 2026-06-18): two
+    # files form a usage cycle (canon merges both into one Lean module), and the
+    # merged module is over budget — the per-planned-file check passes (each
+    # half is small) but the merged whole would STALL at the audit longFile
+    # gate. Reject with the cyclic-regroup message naming both files.
+    plan = _plan([
+        {"path": "Library/A/Foo.lean", "imports": [], "decls": ["a"]},
+        {"path": "Library/A/Bar.lean", "imports": [], "decls": ["b"]},
+    ])
+    canon = {"Library/A/Foo.lean": "Library/A/Foo.lean",
+             "Library/A/Bar.lean": "Library/A/Foo.lean"}     # Bar merged into Foo
+    over = {"a": 600, "b": 600}                              # merged 1200 > 1100
+    err = lib.verify_merged_file_sizes(plan, canon, over)
+    assert "usage cycle" in err and "Foo.lean" in err and "Bar.lean" in err
+    under = {"a": 300, "b": 300}                             # merged 600 ≤ budget
+    assert lib.verify_merged_file_sizes(plan, canon, under) == ""
+
+
+def test_verify_merged_file_sizes_no_merge_ok():
+    # No SCC merge (canon empty → each file stands alone): two budget-sized
+    # files that do NOT form a cycle pass, even though their SUM exceeds budget.
+    plan = _plan([
+        {"path": "Library/A/Foo.lean", "imports": [], "decls": ["a"]},
+        {"path": "Library/A/Bar.lean",
+         "imports": ["Library.A.Foo"], "decls": ["b"]},
+    ])
+    assert lib.verify_merged_file_sizes(plan, {}, {"a": 600, "b": 600}) == ""
+
+
 def test_decl_line_counts_reads_proof_files(tmp_path):
     proofs = tmp_path / "Problems" / "p" / "proofs"
     proofs.mkdir(parents=True)

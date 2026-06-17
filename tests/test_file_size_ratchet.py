@@ -38,7 +38,12 @@ _WATERMARKS = {
     # into the decl's slice (don't hoist a scoped-open above `namespace`) +
     # self_namespaces strip (decls declared under a Mathlib-extending
     # namespace like `Complex.windingNumber`) — 2026-06-17 — conscious bump.
-    "Tooling/pipeline/librarian.py": 3600,
+    # 3600→3700: classify size gate accounts for the SCC file merge —
+    # `_plan_usage_and_canon` (extracted from commit_classify, shared) +
+    # `verify_merged_file_sizes` (reject a usage-cycle group that merges over
+    # budget → re-classify, instead of a longFile STALL) — 2026-06-18 —
+    # conscious bump.
+    "Tooling/pipeline/librarian.py": 3700,
     # dispatcher 2750→2800 + db 2450→2500: awaiting_human observability
     # (startup + idle-exit log of paused problems) + scope-aware idle exit
     # via db.dispatchable_open_goals — a paused P12 read as a multi-hour

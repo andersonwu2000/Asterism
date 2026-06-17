@@ -370,39 +370,27 @@ def _merge_file_sccs(fgraph: dict, decls_in: dict) -> dict:
     return canon
 
 
-def commit_classify(conn, problem: str, plan: ClassifyPlan,
-                    workspace) -> None:
-    """Persist the layout plan: per decl, its target file + in-file order.
-    Only `deduped` (kept) decls advance to `classified`.
+def _plan_usage_and_canon(conn, problem: str, plan: ClassifyPlan,
+                          workspace) -> "tuple[dict, dict]":
+    """`(usage, canon)` for a layout plan — the ground-truth pieces both the
+    pre-commit merged-size gate and `commit_classify` need, computed once.
 
-    Two corrections to the agent's layout, both driven by the ground-truth
-    USAGE DAG (proof-term citations, `inventory.usage_graph`), since the
-    agent lays out by meaning but Lean is import-/order-sensitive:
-      - files whose decls form a usage cycle are merged into one file (an SCC
-        is an un-splittable circular import — `_merge_file_sccs`);
-      - within each (possibly merged) file, decls are topologically reordered
-        so a cited sibling precedes its user.
-    """
-    # A fresh classify is a NEW chain attempt: drop any per-file / serial
-    # stall counts left over from a PRIOR ingestion of this problem (a library
-    # reset + re-run), else `_librarian_refill` skips a still-capped file as
-    # "stalled" before the new attempt even runs it — a reverted+re-ingested
-    # problem inherited the pre-fix STALL caps and the migrate chain never
-    # advanced (residue_thm WindingNumber, 2026-06-17).
-    db.clear_librarian_fail_counts_for_problem(conn, problem)
+    `usage` is the decl-level USAGE DAG (proof-term citations,
+    `inventory.usage_graph`, plus Defs-source edges); `canon` is
+    `{file_path: canonical_path}` collapsing each strongly-connected component
+    of the FILE-level usage graph (a cyclic file group is an un-splittable
+    circular import → one file). Pure: no DB writes, no logging — the caller
+    owns the "merging cyclic file" print so it fires only on actual commit."""
     from ..quality.librarian import inventory as _inv
     placed = [d for f in plan.files for d in f.decls]
     usage = _inv.usage_graph(workspace, problem, placed,
                              alias_map=_merge_alias_map(conn, problem),
                              root_source=_root_source(conn, problem, workspace))
     # Defs decls have no proofs/L_ files, so `usage_graph` records NO edges
-    # among them — the intra-file toposort then can't order them and keeps the
-    # agent's sequence, which may put a user before its dependency (stokes
-    # form_bundle: classify emitted DiffForm (cites formBundleCore) at order 0
-    # → Unknown identifier at migrate, 2026-06-11). Read their edges from
-    # Defs.lean itself: X→Y when Y's name appears (whole token, comments
-    # stripped) in X's slice. Defs.lean compiles, so these edges form a
-    # sub-DAG of the source order — no cycle is possible from code text.
+    # among them; read their edges from Defs.lean itself (X->Y when Y's name
+    # appears as a whole token in X's slice) so the intra-file toposort can
+    # order them (stokes form_bundle, 2026-06-11). Defs.lean compiles, so these
+    # edges form a sub-DAG of source order — no cycle possible from code text.
     defs_placed = [d for d in placed
                    if d in set(_inv.defs_decls(workspace, problem))]
     if len(defs_placed) > 1:
@@ -426,7 +414,75 @@ def commit_classify(conn, problem: str, plan: ClassifyPlan,
             fb = decl_file.get(dep)
             if fa and fb and fa != fb:
                 fgraph[fa].add(fb)
-    canon = _merge_file_sccs(fgraph, decls_in)
+    return usage, _merge_file_sccs(fgraph, decls_in)
+
+
+def verify_merged_file_sizes(plan: ClassifyPlan, canon: dict,
+                             decl_lines: dict) -> str:
+    """Reject a plan whose files, AFTER the un-splittable-SCC merge
+    (`_plan_usage_and_canon`), land a single Lean module over the size budget —
+    the per-PLANNED-file check in `verify_classify` misses this because the
+    merge runs later (a usage cycle the agent's declared imports don't show:
+    residue_thm WindingNumberInteger absorbed 8 files -> 3392 lines, which would
+    then STALL forever at the audit zero-warning gate on `longFile`, 2026-06-18).
+    The decl usage graph is a DAG, so a cyclic FILE group is the agent's
+    grouping artifact — a topological re-partition can break it. "" on ok."""
+    merged: dict = {}
+    for f in plan.files:
+        merged.setdefault(canon.get(f.path, f.path), []).extend(f.decls)
+    for cf, decls in merged.items():
+        est = sum(decl_lines.get(d, 0) for d in decls)
+        if est <= CLASSIFY_FILE_LINE_BUDGET:
+            continue
+        members = sorted(f.path for f in plan.files
+                         if canon.get(f.path, f.path) == cf)
+        if len(members) > 1:
+            return (f"files {members} cite each other (a usage cycle) and so "
+                    f"MUST share one Lean module, which then runs ~{est} source "
+                    f"lines (budget {CLASSIFY_FILE_LINE_BUDGET}; mathlib's "
+                    f"longFile caps at 1500). A circular import can't be split, "
+                    f"so regroup to break the cycle: order the files along the "
+                    f"dependency chain so a file only cites declarations in "
+                    f"files it imports (no two files citing into each other), "
+                    f"and keep each under budget.")
+        # Single oversize file — also caught by verify_classify's per-file pass,
+        # repeated here so the post-merge gate is self-contained.
+        return (f"{cf}: ~{est} source lines (budget {CLASSIFY_FILE_LINE_BUDGET}; "
+                f"mathlib's longFile caps files at 1500) — split it into "
+                f"sub-topic files")
+    return ""
+
+
+def commit_classify(conn, problem: str, plan: ClassifyPlan,
+                    workspace, *, precomputed: "tuple[dict, dict] | None" = None
+                    ) -> None:
+    """Persist the layout plan: per decl, its target file + in-file order.
+    Only `deduped` (kept) decls advance to `classified`.
+
+    Two corrections to the agent's layout, both driven by the ground-truth
+    USAGE DAG (proof-term citations, `inventory.usage_graph`), since the
+    agent lays out by meaning but Lean is import-/order-sensitive:
+      - files whose decls form a usage cycle are merged into one file (an SCC
+        is an un-splittable circular import — `_merge_file_sccs`);
+      - within each (possibly merged) file, decls are topologically reordered
+        so a cited sibling precedes its user.
+
+    `precomputed` lets the caller pass the `(usage, canon)` it already built for
+    the pre-commit merged-size gate, so `usage_graph` is computed once.
+    """
+    # A fresh classify is a NEW chain attempt: drop any per-file / serial
+    # stall counts left over from a PRIOR ingestion of this problem (a library
+    # reset + re-run), else `_librarian_refill` skips a still-capped file as
+    # "stalled" before the new attempt even runs it — a reverted+re-ingested
+    # problem inherited the pre-fix STALL caps and the migrate chain never
+    # advanced (residue_thm WindingNumber, 2026-06-17).
+    db.clear_librarian_fail_counts_for_problem(conn, problem)
+    usage, canon = precomputed if precomputed is not None else \
+        _plan_usage_and_canon(conn, problem, plan, workspace)
+    from ..quality.librarian import inventory as _inv
+    placed = [d for f in plan.files for d in f.decls]
+    defs_placed = [d for d in placed
+                   if d in set(_inv.defs_decls(workspace, problem))]
     if canon:
         for orig, rep in sorted(canon.items()):
             if orig != rep:
@@ -1889,14 +1945,26 @@ def _run_structured(conn, *, problem, work_kind, workspace,
         "SELECT DISTINCT target_file FROM library_decls WHERE problem != ? "
         "AND lifecycle IN ('classified', 'migrated', 'cleaned') "
         "AND target_file IS NOT NULL", (problem,))}
-    verr = verify_classify(plan, kept,
-                           decl_lines=_decl_line_counts(workspace, problem, kept),
-                           owned_files=owned)
+    decl_lines = _decl_line_counts(workspace, problem, kept)
+    verr = verify_classify(plan, kept, decl_lines=decl_lines, owned_files=owned)
     if verr:
         return PipelineResult(outcome="failed",
                               failure_reason="librarian_verify_failed",
                               failure_detail=verr)
-    commit_classify(conn, problem, plan, workspace)
+    # Post-merge size gate: the per-planned-file check above misses an
+    # un-splittable usage SCC (cyclic file group) that merges several files into
+    # one over-budget Lean module — which would later STALL forever at the audit
+    # zero-warning gate on `longFile`. Compute the merge NOW and reject so the
+    # agent re-partitions (the decl usage graph is a DAG; the file cycle is its
+    # grouping artifact). Reuse the (usage, canon) for commit so usage_graph
+    # runs once.
+    usage_canon = _plan_usage_and_canon(conn, problem, plan, workspace)
+    merr = verify_merged_file_sizes(plan, usage_canon[1], decl_lines)
+    if merr:
+        return PipelineResult(outcome="failed",
+                              failure_reason="librarian_verify_failed",
+                              failure_detail=merr)
+    commit_classify(conn, problem, plan, workspace, precomputed=usage_canon)
     return PipelineResult(outcome="success")
 
 
