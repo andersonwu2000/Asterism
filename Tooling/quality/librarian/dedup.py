@@ -1,4 +1,4 @@
-"""PHASE 3 cleanup-dedup (v1a, mechanical) — see docs/internal/librarian_cleanup.md §7.
+"""PHASE 3 cleanup-dedup (v1a, mechanical) — see docs/archive/design/librarian_cleanup.md §7.
 
 This module's first, riskiest piece: the **token-aware reference rewrite**.
 When dedup drops a redundant decl X (survivor Y), every reference to X must

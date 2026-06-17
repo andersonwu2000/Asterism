@@ -2,7 +2,7 @@
 
 Multi-work-kind agent (mirrors Strategist's multi-decision shape), with
 the migrate kind borrowing Builder's LSP + commit-retry loop. See
-docs/internal/librarian_plan.md §12.
+docs/archive/design/librarian_plan.md §12.
 
 Work kinds:
   - dedup    — emit per-decl verdicts (keep/cite-*/drop/merge) → library_decls

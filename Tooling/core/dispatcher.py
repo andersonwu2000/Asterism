@@ -964,7 +964,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 # (target,kind) for ~30s before the next dispatch.
                 return
             # Phase 2 — decline directives split by intent (see
-            # `docs/phase2/pipelines.md` §4.2 Rule 1):
+            # `docs/archive/design/phase2/pipelines.md` §4.2 Rule 1):
             #   * agent_infeasible (counterexample shown) → 'disproved'
             #     (hard terminal, dedupe blocks future same-shape proposals).
             #   * parent_needs_fix → 'dead' (parent strategy was wrong;
@@ -2489,7 +2489,7 @@ def run(workspace: Path, *, once: bool = False,
         "dispatch.shelve_threshold", default=8,
         env_var="ASTERISM_SHELVE_THRESHOLD", cast=int, workspace=workspace)
     # Phase 2 — T1 (wall-clock routine) interval in minutes. Default 60
-    # per `docs/phase2/pipelines.md` §5. Picked by `strategist_triggers`
+    # per `docs/archive/design/phase2/pipelines.md` §5. Picked by `strategist_triggers`
     # each tick. Override via env var or Asterism.yaml for calibration.
     strategist_interval_min = config.get(
         "strategist.interval_min", default=60.0,

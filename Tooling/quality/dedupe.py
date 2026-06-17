@@ -870,7 +870,7 @@ def _eligible_disproved(conn: sqlite3.Connection, workspace: Path, *,
     means "decline this candidate", not "alias to canonical".
 
     Phase 2 — previously this looked at `status='shelved'`. The status
-    enum split (see `docs/phase2/pipelines.md` §4.1) moved soft-terminal
+    enum split (see `docs/archive/design/phase2/pipelines.md` §4.1) moved soft-terminal
     goals (parent_needs_fix / ConfirmShelve cascade) to a separate
     'shelved' that dedupe does NOT block. Only 'disproved' (agent
     counterexample) blocks future proposals.

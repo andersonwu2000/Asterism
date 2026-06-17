@@ -85,7 +85,7 @@ _TERMINAL_DECLINE_REASONS = frozenset({
     # fresh-rescue prompt mentioning the disproved collision) has any
     # chance of a different proposal. Phase 2 — renamed from
     # `same_as_shelved` after status enum split (see
-    # `docs/phase2/pipelines.md` §4.1).
+    # `docs/archive/design/phase2/pipelines.md` §4.1).
     "same_as_disproved",
 })
 

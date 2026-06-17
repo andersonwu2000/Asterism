@@ -153,7 +153,7 @@ class PipelineResult:
     # `outcome` until the produced goal reaches a terminal status
     # (proved / shelved / disproved), instead of filling outcome as
     # soon as the agent writes the (possibly sorry-bearing) statement.
-    # See `docs/phase2/pipelines.md` §4.7 for the rationale.
+    # See `docs/archive/design/phase2/pipelines.md` §4.7 for the rationale.
     produced_goal_id: int | None = None
 
 

@@ -11,7 +11,7 @@ proved leaf (Phase 2 leaf-bypass, mirror of Backward's behaviour).
 Otherwise the new goal enters BFS with status='open' for later
 Backward / Builder attack.
 
-Stage order (docs/phase2/pipelines.md §3.4):
+Stage order (docs/archive/design/phase2/pipelines.md §3.4):
   1. failure_replay   (pure)   recent Forward output history
   2. compile_context  (pure)   Strategist brief + Library + Mathlib
                                candidates + TREE.md
@@ -712,7 +712,7 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
         # (proved / shelved / disproved), not when this agent writes
         # the sorry stub. Leaf-bypass (status='proved' immediately) is
         # already terminal — cascade fills outcome the legacy way for
-        # those. See `docs/phase2/pipelines.md` §4.7.
+        # those. See `docs/archive/design/phase2/pipelines.md` §4.7.
         if decision_id is not None and outcome.status != "proved":
             db.set_inject_decision_produced_goal(
                 conn, decision_id, outcome.goal_id,

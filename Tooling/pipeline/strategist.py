@@ -10,7 +10,7 @@ is the next-session piece. The framework-side logic — schema check,
 Reopen ancestor safety walk, atomic side effects, strategist_decisions
 audit row, last_strategist_at touch — is implemented in full.
 
-Stage order (docs/phase2/pipelines.md §2.4):
+Stage order (docs/archive/design/phase2/pipelines.md §2.4):
   1. trigger_context  (pure)   compile input per trigger_kind
   2. failure_replay   (pure)   last 5 strategist_decisions
   3. agent            (agent)  spawn LLM, get decision.json  ← TODO
@@ -65,7 +65,7 @@ USER_AMEND_FILES: frozenset[str] = frozenset({"Defs.lean", "Manifest.md"})
 
 @dataclass
 class Decision:
-    """Parsed Strategist decision. Mirrors `docs/phase2/pipelines.md`
+    """Parsed Strategist decision. Mirrors `docs/archive/design/phase2/pipelines.md`
     §2.3 schema. `brief` and `reason` are mutually-orthogonal (per
     decision kind) text fields; `payload` holds structured params
     (pipeline name / file / lean_body / question / scope / body /
@@ -897,7 +897,7 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
 
     elif k == "RequestUserAmend":
         # Atomic three-step: tmp write -> INSERT row -> rename
-        # (see docs/phase2/pipelines.md §2.5).
+        # (see docs/archive/design/phase2/pipelines.md §2.5).
         file = decision.payload["file"]
         target_path = db.problem_dir(workspace, problem) / f".proposed_{file}"
         body = str(decision.payload["proposed_body"])

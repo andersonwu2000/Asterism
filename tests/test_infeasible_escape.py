@@ -75,7 +75,7 @@ def test_cascade_infeasible_builder_disproves_goal_immediately(
     SHELVE_THRESHOLD attempts on a provably-unprovable type.
 
     Phase 2 — status changed from 'shelved' to 'disproved' (status
-    enum split by decline directive; see docs/phase2/pipelines.md
+    enum split by decline directive; see docs/archive/design/phase2/pipelines.md
     §4.2 Rule 1). attempts increments by exactly 1 to preserve the
     1:1 attempts ↔ dead_attempts invariant."""
     gid = _seed_goal(conn)

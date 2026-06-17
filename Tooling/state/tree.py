@@ -275,7 +275,7 @@ def render(conn: sqlite3.Connection, problem: str, *,
     # `## Forward` header so they're visible alongside the main
     # decomposition. Backward sub-trees attached below a Forward goal
     # are walked through the same `_walk_goal` (each Forward goal is a
-    # local root). See docs/phase2/design.md §3 — Forward lemmas are
+    # local root). See docs/archive/design/phase2/design.md §3 — Forward lemmas are
     # standalone tools the rest of the proof can reach for via dedupe.
     forward_roots = conn.execute(
         "SELECT * FROM goals WHERE problem = ? AND origin = 'forward' "
@@ -341,7 +341,7 @@ def write_for_target(conn: sqlite3.Connection, workspace: Path,
       - 'Goal'     — int(target_id) → goals.id → problem name
       - 'Strategy' — int(target_id) → strategies.id → goal → problem
       - 'Problem'  — target_id IS the problem name (Forward pipelines,
-                      see docs/phase2/pipelines.md §4.1). Don't int()
+                      see docs/archive/design/phase2/pipelines.md §4.1). Don't int()
                       it; Phase 2 introduced this target_kind and the
                       original branch only handled Goal/Strategy.
     """

@@ -6,7 +6,7 @@ Tables (see docs/architecture.md §4):
 
 Schema version tracked via `PRAGMA user_version`:
   0 = pre-Phase 2 (everything before strategist_decisions)
-  2 = Phase 2 (new tables/columns/CHECK extensions; see docs/phase2/)
+  2 = Phase 2 (new tables/columns/CHECK extensions; see docs/archive/design/phase2/)
 """
 from __future__ import annotations
 
@@ -384,7 +384,7 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
     updated_at          TEXT NOT NULL
 );
 
--- Librarian (docs/internal/librarian_plan.md) — per-declaration state
+-- Librarian (docs/archive/design/librarian_plan.md) — per-declaration state
 -- for turning a proved problem into a mathlib-shaped Library. One row
 -- per original Problems declaration. Pure new table (no FK widening on
 -- existing tables), so a plain CREATE TABLE IF NOT EXISTS suffices for
@@ -537,7 +537,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
          "ALTER TABLE goals ADD COLUMN integrity_verified INTEGER NOT NULL"
          " DEFAULT 0"),
         # Phase 2 — problems columns. Pure ADD COLUMN (no CHECK extension
-        # on existing columns); idempotent. See `docs/phase2/pipelines.md`
+        # on existing columns); idempotent. See `docs/archive/design/phase2/pipelines.md`
         # §4.1 for semantics.
         ("bootstrap_done",
          "ALTER TABLE problems ADD COLUMN bootstrap_done INTEGER NOT NULL"

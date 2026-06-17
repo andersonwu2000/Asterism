@@ -6,7 +6,7 @@ read-path the TREE renderer uses: `goals` + `strategies` +
 human/Strategist-facing annotated-TREE markdown view.
 
 This is the *mechanical* base of the Librarian pipeline (see
-docs/internal/librarian_plan.md §5 Step 0). It lists **what exists**;
+docs/archive/design/librarian_plan.md §5 Step 0). It lists **what exists**;
 it makes no judgement (dedup / classify / reshape are later, judging
 steps that annotate the same structure).
 

@@ -44,7 +44,7 @@ class Manifest:
     strategic_notes: str = ""
     # Opt-in: should this Problem's proved decls be Library-ized for
     # cross-problem reuse + mathlib upstreaming (see
-    # docs/internal/librarian_plan.md). Scope flag, NOT a safety gate —
+    # docs/archive/design/librarian_plan.md). Scope flag, NOT a safety gate —
     # default False so a missing/garbled field never auto-promotes.
     library: bool = False
 
