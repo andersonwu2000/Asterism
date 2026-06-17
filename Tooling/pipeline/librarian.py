@@ -1224,26 +1224,6 @@ def _harvested_decls(conn, problem: str) -> list:
             if r["lifecycle"] in ("migrated", "cleaned")]
 
 
-def _problem_library_files(conn, problem: str) -> "set[str]":
-    """Every Library file holding a placed (migrated/cleaned) decl of this
-    problem — the set the cleanup re-gate snapshots and re-verifies."""
-    return {r["target_file"] for r in db.library_decls_for(conn, problem)
-            if r["target_file"]
-            and r["lifecycle"] in ("migrated", "cleaned")}
-
-
-def _importers_of(conn, *, problem, workspace, files: "set[str]") -> "set[str]":
-    """Files that import any file in `files` (reverse of the usage DAG) —
-    cleanup must re-build these too: a signature change in F breaks any G
-    that calls into F."""
-    graph = file_dependency_graph(conn, problem=problem, workspace=workspace)
-    out: set[str] = set()
-    for g, deps in graph.items():
-        if deps & files:
-            out.add(g)
-    return out
-
-
 # ---------------------------------------------------------------------
 # Stage C — Context.md compiler (per work kind)
 # ---------------------------------------------------------------------
@@ -1966,10 +1946,6 @@ def _run_structured(conn, *, problem, work_kind, workspace,
                               failure_detail=merr)
     commit_classify(conn, problem, plan, workspace, precomputed=usage_canon)
     return PipelineResult(outcome="success")
-
-
-def _normalize_stmt(s: "str | None") -> str:
-    return " ".join((s or "").split())
 
 
 # Decl head up to and including the name — its end is where the binders
@@ -3154,26 +3130,6 @@ _INDEX_PREAMBLE = (
 )
 
 
-def _snapshot_problem_library(conn, problem, workspace) -> dict:
-    """{rel_path: content|None} for every problem-Library file — captured
-    before an agent edits files in place, for touched-diff + rollback."""
-    return {f: ((workspace / f).read_text(encoding="utf-8")
-                if (workspace / f).exists() else None)
-            for f in _problem_library_files(conn, problem)}
-
-
-def _restore_snapshot(workspace, snap, files) -> None:
-    """Restore `files` to their `snap` content (None → delete)."""
-    for f in files:
-        p = workspace / f
-        content = snap.get(f)
-        if content is None:
-            if p.exists():
-                p.unlink()
-        else:
-            p.write_text(content, encoding="utf-8")
-
-
 def _affected_cone(graph: dict, touched: set) -> set:
     """`touched` ∪ every file transitively importing one — a signature change
     in F invalidates every G that (transitively) imports F."""
@@ -3213,55 +3169,6 @@ def _topo_files(graph: dict, files: set) -> list:
                 ready = sorted(ready + [u])
     out += [f for f in files if f not in out]   # cycle fallback
     return out
-
-
-def _default_regate_build(whitelist, workspace):
-    """Per-file re-gate build: Gate A import-closure (text) + build the REAL
-    file with write_olean=True (persist a fresh olean for downstream importers,
-    R1b). No per-decl axiom check — cleanup removes hyps / adds docstrings,
-    which can't introduce axioms, and the bridge Gate B axiom-checks the
-    main cone afterwards."""
-    from ..quality.librarian import gates as _gates
-
-    def _build(path, text) -> tuple[bool, str]:
-        clo = _gates.check_import_closure_text(text, label=path.name)
-        if not clo.ok:
-            return False, "; ".join(clo.issues)[:200]
-        return _warm_olean_writer(workspace)(path)
-    return _build
-
-
-def _regate_touched(conn, *, problem, workspace, snap_before, whitelist,
-                    regate=None) -> "tuple[bool, str, list[str]]":
-    """Re-gate the Library files an agent edited in place. Diffs `snap_before`
-    vs disk → touched files, expands to the affected cone (touched + every
-    transitive importer), and rebuilds the cone **in dependency (topological)
-    order with write_olean=True** — so each importer builds against its
-    dependency's freshly-written olean, not a stale one (R1b). Returns
-    `(ok, detail, touched)`; does NOT roll back (caller decides).
-
-    Shared by cleanup (Step 4) and bridge (Gate B): both let an agent edit
-    committed Library files, so both must re-verify the cone rather than
-    trust the agent. `regate` (path, text) -> (ok, detail) is injectable for
-    offline tests (replaces the per-file build; cone + order still apply)."""
-    def _read(rel):
-        p = workspace / rel
-        return p.read_text(encoding="utf-8") if p.exists() else None
-    touched = sorted(f for f in snap_before if _read(f) != snap_before[f])
-    if not touched:
-        return True, "", []
-    graph = file_dependency_graph(conn, problem=problem, workspace=workspace)
-    cone = _affected_cone(graph, set(touched))
-    order = _topo_files(graph, cone)
-    _build = regate or _default_regate_build(whitelist, workspace)
-    for rel in order:
-        p = workspace / rel
-        if not p.exists():
-            return False, f"{rel}: vanished during edit", touched
-        ok, detail = _build(p, p.read_text(encoding="utf-8"))
-        if not ok:
-            return False, f"re-gate {rel}: {detail}"[:400], touched
-    return True, "", touched
 
 
 _NEEDS_UPSTREAM_RE = re.compile(
