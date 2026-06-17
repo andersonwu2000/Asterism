@@ -17,9 +17,9 @@ Strategy  = AND : 所有 sub-Goal 成功 → Strategy 成功
 
 ---
 
-## 2. 四個 worker、一個 housekeeping
+## 2. 五個 worker、一個 housekeeping
 
-**Worker 是 LLM 介入點，純框架操作不佔 worker slot。** 這條原則決定下面五個角色的位置。
+**Worker 是 LLM 介入點，純框架操作不佔 worker slot。** 這條原則決定下面六個角色的位置。
 
 | 角色 | target_kind | 做什麼 | 有 LLM 嗎 |
 |---|---|---|---|
@@ -27,6 +27,7 @@ Strategy  = AND : 所有 sub-Goal 成功 → Strategy 成功
 | **Backward** | Goal | 請 LLM 把這個 Goal 拆成一條 Strategy + N 個 sub-Goal | 有 |
 | **Forward** | Problem | 由 Strategist `Inject(Forward)` 派、產一條新 toolkit lemma (kind ∈ {theorem,def,structure,class})、進 BFS 或 leaf-bypass | 有 |
 | **Strategist** | Goal (root) | 讀 problem state、決定 Inject / ConfirmShelve / EmitDirective / RequestUserAmend / Noop | 有 |
+| **Librarian** | Problem (per-file) | 已證 + Manifest `library:true` 後，把 proof forest 機械搬進 `Library/`（migrate）、分檔（classify）、精修到 mathlib-PR-ready（cleanup）、接索引（bridge） | classify / cleanup 有 |
 | **Verify housekeeping** | Strategy | sub-Goal 全 proved 後，把 Strategy 組裝起來編譯、寫進 parent 的 `.lean` 檔；同時跑 G1 shelved-revival pass | 沒有 |
 
 Verify 早期是第三種 worker_kind；後來砍成 dispatcher 主迴圈末端的步驟，因為它既無 LLM 也不該佔 pool 格子。
@@ -51,7 +52,7 @@ Strategist trigger 種類：`first_launch`（root frozen 第一次喚醒）/ `ro
 
 `.attempts/<pid>/` 是純暫存，pipeline 結束 unconditional rmtree。所有 agent 寫的東西在刪除前先打包進 `dead_attempts.artifacts` JSON，DB 永遠是 SoT。
 
-DB schema 見 `Tooling/state/db.py`（程式碼即文件）；8 張表的意義：
+DB schema 見 `Tooling/state/db.py`（程式碼即文件）；10 張表的意義：
 
 - `problems` — 註冊表，含 `bootstrap_done` / `last_strategist_at` / `strategist_directive`（最近一次 EmitDirective 的 body）
 - `goals` — graph 的 OR 節點。columns：`kind`（theorem/def/structure/class、Curry-Howard 統一前 def 不入 BFS、現在 sorry-bearing 一律 open）、`origin`（root/backward/forward）、`status`（open/attempting/proved/shelved/disproved/dead/frozen/pending_strategist_review）、`entry_kind`（Builder/Backward）、`detached`（Strategist Reopen / Forward output 用、繞過 strategy-chain 邏輯讓 BFS dispatch）、`integrity_verified`（root axiom_probe 通過的 marker）、`alias_target_id`（dedupe + G1 shelved-revival）、`depth` / `attempts`
@@ -61,6 +62,8 @@ DB schema 見 `Tooling/state/db.py`（程式碼即文件）；8 張表的意義�
 - `dead_attempts` — 失敗的 forensic（所有 agent 輸出 artifact 全留在 JSON 欄）
 - `queue` — dispatch ready 的 (kind, target_id, target_kind, decision_id) 排隊
 - `strategist_decisions` — Phase 2 加；每筆 Strategist 決策一行，columns：`decision_kind`（Inject/ConfirmShelve/Reopen/EmitDirective/RequestUserAmend/Noop）、`target_id`、`brief`、`reason`、`payload`、`batch_id`（同 decision array 內所有 row 共享、用於 `inject_batch_done` 觸發）、`produced_goal_id` / `produced_strategy_id`（Inject 產出的 goal/strategy 反向 link）、`outcome`
+- `library_decls` — Phase 4 Librarian：每個搬進 `Library/` 的 declaration 一行，columns：`problem` / `slug` / `target_file` / `target_name` / `file_order` / `lifecycle`（candidate→deduped→classified→migrated→cleaned，或終態 dropped / cited）/ `citation` / `verdict` / `renamed_from`
+- `librarian_fail_counts` — Phase 4：per-unit 連續 stall cap（`LIBRARIAN_MAX_CHAIN_RETRIES`、跨 restart 持久），columns：`target_id` / `n` / `updated_at`
 
 ---
 
@@ -124,18 +127,20 @@ winner strategy。root 若宣告 instance 則保留前綴（`@[instance] def mai
 
 ## 6. Dispatcher 主迴圈（概念骨架）
 
-每個 tick 做五件事、順序固定：
+每個 tick 做這些事、順序固定（`dispatcher.run` 主迴圈）：
 
 ```
-1. cascade               — 收割上一輪完成的 worker、套狀態轉移
-2. verify housekeeping   — 撈 ready strategy 寫 alias 進 parent；同 loop 內跑 G1 revival pass
-                           （遞迴最多 8 圈、深度 4 的題一輪可連帶 4 層）
-3. root proved? exit     — 對 proved 但尚未 integrity_verified 的 root 跑 reconcile + prune
-                           + integrity gate、root_proved 全到位 → 退出
-4. bfs_refill            — open goal 走 alive CTE 過濾、按 entry_kind 排進 queue
-5. spawn                 — pool 有空格 → 從 queue 拉、ThreadPoolExecutor.submit 進 worker
-                           thread；Forward 走 pre-spawn /register + 取 session token
-                           + 跑 LLM
+1. cascade                — 收割上一輪完成的 worker、套狀態轉移
+2. verify housekeeping    — 撈 ready strategy 寫 alias 進 parent；同 loop 內跑 G1 revival pass
+                            （遞迴最多 8 圈、深度 4 的題一輪可連帶 4 層）
+3. root integrity gate    — 對 proved 但未 integrity_verified 的 root 跑 reconcile + prune + axiom_probe
+4. librarian refill       — 已證 + Manifest `library:true` 的 problem → 按 lifecycle 排 Librarian per-file unit 進 queue
+5. root proved? exit      — root_proved 全到位（含 integrity）→ 退出
+6. bfs_refill             — open goal 走 alive CTE 過濾、按 entry_kind 排進 queue
+7. strategist_triggers    — T0 / routine / pending_review / inject_batch_done 條件成立 → 排 Strategist 進 queue
+8. reconcile_stuck_states — per-tick 安全網：孤兒 pending_review / NULL-outcome Inject wedge 修復
+9. spawn                  — pool 有空格 → 從 queue 拉、ThreadPoolExecutor.submit 進 worker
+                            thread；Forward / Strategist 走 pre-spawn /register + 取 session token + 跑 LLM
 ```
 
 **紀律**：cascade 永遠在主線程 sequential（worker thread 只 INSERT finished pipeline row、絕不直接改 goal/strategy 狀態）。這條規則消除了所有 OR-race 災難。
@@ -232,6 +237,7 @@ Tooling/pipeline/
   backward.py    — run_backward + decomposition + sub-goal placement
   forward.py     — run_forward + 新 toolkit lemma 落地 + G1 shelved-link
   strategist.py  — run_strategist + parse_decision + commit_decisions
+  librarian.py   — run_librarian + migrate/classify/cleanup/bridge 鏈（Phase 4；重邏輯在 Tooling/quality/librarian/）
   _retry.py      — kind-agnostic in-pipeline retry helper（Phase 7）
   _assembly.py   — Backward 後段：sub-goal 檔搬遷 + strategy_subgoals 寫入
   _axiom.py      — axiom_probe wrapper + sorryAx bisect
@@ -261,7 +267,7 @@ Goal statement
 Sandbox（讀寫權限邊界 + 框架預寫的檔名約定）
 Strategy naming                   ← Backward 才有；agent 自選 sub-goal 描述性 slug
 Parent goal & strategy            ← origin='backward' 才有
-Forward brief                     ← Forward only：Strategist Inject 的 brief
+Strategist brief                  ← Inject-spawned（decision_id set）：Strategist 的 brief
 Library inventory                 ← Forward only：avoid 重複提案
 Forward history                   ← Forward only：past Forward outputs
 Mathlib hints
@@ -285,7 +291,7 @@ TREE                                     ← problem 樹狀 snapshot
 Manifest meta                            ← first_launch / amend-relevant 時
 ```
 
-`Goal history` umbrella 4 sub-section（`Direct attempts on this goal` / `Sibling decompositions that failed Verify` / `Strategies whose decomposition died` / `Sub-goals reported infeasible`）的 event 投影邏輯在 `Tooling/pipeline/events.py`。`infeasible_sub` 是 cross-goal 投影：sub-goal 的 `agent_infeasible` 反向投到 parent goal 的 next Backward。完整設計見 `docs/archive/goal_history_unified.md`。
+`Goal history` umbrella 4 sub-section（`Direct attempts on this goal` / `Sibling decompositions that failed Verify` / `Strategies whose decomposition died` / `Sub-goals reported infeasible`）的 event 投影邏輯在 `Tooling/pipeline/events.py`。`infeasible_sub` 是 cross-goal 投影：sub-goal 的 `agent_infeasible` 反向投到 parent goal 的 next Backward。完整設計見 `docs/archive/design/goal_history_unified.md`。
 
 `Proved goals on this problem` 是 Phase 4 加的入口指針 — 只給 count + path、不 push candidate list。agent 用 grep + Read 自食其力（同 mathlib 的 grep + loogle 模式）。每個 proved goal 的 `.lean` 檔頂被 Builder / Verify 寫上 `-- <slug>: <summary>` annotation block、grep 時這就是索引。`## Past wins on this problem (playbook)` section Phase 3 退役（commit `5be9a33`）— 被這條取代。
 
