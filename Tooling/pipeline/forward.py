@@ -11,16 +11,17 @@ proved leaf (Phase 2 leaf-bypass, mirror of Backward's behaviour).
 Otherwise the new goal enters BFS with status='open' for later
 Backward / Builder attack.
 
-Stage order (docs/archive/design/phase2/pipelines.md §3.4):
-  1. failure_replay   (pure)   recent Forward output history
-  2. compile_context  (pure)   Strategist brief + Library + Mathlib
-                               candidates + TREE.md
-  3. agent            (agent)  spawn LLM, get new_<slug>.lean ← TODO
-  4. self_verify      (pure)   lake type-check (leading sorry OK)
+Stage order (docs/archive/design/phase2/pipelines.md §3.4; the
+authoritative list is run_forward's own docstring below):
+  1. compile_forward_context (pure)  Context.md: Strategist brief + Forward
+                               history (failure-replay) + Library + Mathlib + TREE
+  2. agent            (agent)  spawn LLM, get new_<slug>.lean or decline
+  3. parse            (pure)   extract_forward_metadata / is_decline
+  4. self_verify      (pure)   LSP verify_file (leading sorry OK)
   5. dedupe           (pure)   find_canonicals_batch
-  6. commit           (pure)   move to proofs/L_<slug>.lean +
-                               INSERT goal (kind=theorem, origin=forward,
-                               entry_kind from leading comment)
+  6. commit           (pure)   move to proofs/L_<slug>.lean + INSERT goal
+                               (kind ∈ {theorem,def,structure,class}, origin=forward)
+  (post-commit: find_shelved_revivals_for_forward — G1, §3.6)
 
 Public surface (framework side; agent stage = TODO):
   - SLUG_RE                     — slug validation regex

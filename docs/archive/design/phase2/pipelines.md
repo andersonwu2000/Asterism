@@ -95,6 +95,8 @@ TREE.md 給結構但缺 statement 文字；sidecar 補 active goals 的 statemen
 | `RequestUserAmend(problem, file, proposed_body, question)` | T3：一次 commit 寫 `.proposed_<file>` 草稿 + emit human input request、等 user 處置（見 §2.5 + §4.3 gate）。`file` ∈ {`'Defs.lean'`, `'Manifest.md'`}——皆是 user-owned 檔、Strategist 不可直接改 | `reason`（含 `question` 給 user） |
 | `Noop` | 顯式不動 | `reason` |
 
+> **Deprecated（2026-05-28、schema-only legacy）**：`Reopen` 與 `InitializeDefs` 已不由 Strategist emit（`strategist.py` `DECISION_KINDS` 不含、parser/verifier/commit 不再認）；DB CHECK 仍接受以容納舊 row。重啟 goal 改用 `Inject(Backward|Builder)`，Defs 初始化走 T0 的 `RequestUserAmend('Defs.lean')`。
+
 **Inject 設計選擇**：
 - 沒 `InjectBackward`：Backward 整路由 BFS structural refill 派、Strategist 不介入
 - 沒 `target_goal_id`：Forward 不 tie 特定 Goal、產的 lemma 通用、Strategist 在 brief 自由描述需求
@@ -219,6 +221,8 @@ leading comment 的 `Forward rationale:` 寫入 goal.evidence 欄位、後續 St
                               housekeeping 的 revival pass 在 X→proved 時 deferred 寫入。
 ```
 
+> **與實作對齊（2026-06-17 re-sync）**：上面是設計時的階段切分；實際 `run_forward`（`forward.py`）的 6 stage 為 `compile_forward_context`（已把 failure-replay / Forward history 併入此步）→ `agent` → `parse`（`extract_forward_metadata` / `is_decline`→`agent_declined`）→ `self_verify` → `dedupe` → `commit`。`shelved_link` 不是獨立 stage，是 commit 後的 G1 後勤（見 §3.6）。
+
 Context.md 跟 Backward / Builder 同模式（既有 `compile_context` 擴出 Forward 變體）、brief 直接成為 Context.md 內一段。`new_<slug>.lean` 落地路徑沿用 backward.py 內既有 helper。
 
 ### 3.5 防亂提兩道防線
@@ -274,7 +278,7 @@ Forward 提的 lemma 可能跟先前已 shelved 的 Backward sub-goal 統計上�
 |---|---|
 | `id` | PK |
 | `triggered_at_tick` | int |
-| `trigger_kind` | enum (`first_launch` / `pending_review` / `routine`) |
+| `trigger_kind` | enum (`first_launch` / `pending_review` / `routine` / `inject_batch_done`) |
 | `decision_kind` | enum (見 §2.3 列表) |
 | `target_id` | int nullable |
 | `brief` | text nullable（Inject 用、其他 decision 為空） |
