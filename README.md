@@ -12,7 +12,7 @@
 - Improved observability by surfacing why a step stalls and keeping the run logs readable.
 
 ### 2026-06-15
-- Improved reuse of equivalent subgoals, so an already-proved or in-progress goal is shared?r cited as a lemma?ather than re-derived.
+- Improved reuse of equivalent subgoals, so an already-proved or in-progress goal is shared—or cited as a lemma—rather than re-derived.
 - Hardened the subgoal scheduler to recover interrupted work after restarts and to avoid dropping or duplicating tasks.
 - Refined the prompts and feedback given to the proving agents, giving clearer reasons when a step is declined and keeping self-reflection focused on the mathematics.
 
