@@ -57,6 +57,7 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 | `cite_unproved_sibling` | Builder + Backward | cite-gate：patch 引用的 sibling `L_<slug>` 尚未 proved（orphan / open / dead / disproved）| buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `patch_body_contains_sorry` | Backward | leaf-bypass patch body 仍含 `sorry`（既非合法 decomposition、也非真 leaf）| buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `same_as_disproved` | Backward | sub-goal verbatim 重述本 problem 內已 `disproved` 的 statement（`_retry.py` `_TERMINAL_DECLINE_REASONS`）| terminal exit（不 retry）| (helper 已 ++)；走 generic failed | `direct_attempt` |
+| `no_progress` | Backward | sub-goal 經 isDefEq 偵測 definitionally 等於正在拆的 goal 本身（零進展；比 `circular_decomposition` 的同名文字比對更深的 dedupe tier）| buffer + retry（換個分解）| (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `agent_no_annotation` | Builder + Backward (Phase 2) | rc=0、build 過但 patch.lean leading comment 空白 | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `agent_no_output` | Builder Phase 2 | rc=0 但 agent 沒寫 `patch*.lean` | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `agent_rc_nonzero` | Builder + Backward | rc≠0、rc≠124/125/126/127、wall-clock ≥ 10s（一般 hard fail）| buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
