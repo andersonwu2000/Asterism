@@ -626,6 +626,19 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
         f"Grep({problem}/**)",
         f"Grep({packages}/**)",
     ]
+    # Library/ is the Librarian (cleanup/migrate) pipeline's working set: it
+    # reads/greps sibling Library files for cross-file alignment + call sites.
+    # `--add-dir Library` (spawn cmd) already grants FS access, but WITHOUT the
+    # matching Grep/Read allow-pattern the agent's Grep/Read on Library are
+    # permission-denied; it falls back to `Bash grep`, which is ALSO blocked
+    # (Bash = loogle only), leaving it no tool to explore Library — so it loops
+    # on denied calls until the spawn times out (residue_thm cleanup spawns each
+    # burned their full 960s × retries this way, 2026-06-17). Proving pipelines
+    # never hit this: their working set is problem_dir + Mathlib, both scoped.
+    library = workspace / "Library"
+    if library.is_dir():
+        lib = library.as_posix()
+        patterns += [f"Read({lib}/**/*.lean)", f"Grep({lib}/**)"]
     # When the request carries an MCP config (Builder pipeline +
     # Phase 1 LSP swap), allow the LSP-backed MCP tools without
     # per-call permission prompts. claude CLI exposes MCP tools as

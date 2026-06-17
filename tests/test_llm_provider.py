@@ -302,6 +302,33 @@ def test_librarian_spawn_adds_library_dir(
     assert str(tmp_path / "Library") in add_dirs, add_dirs
 
 
+def test_librarian_spawn_scopes_grep_read_to_library(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Library/ is the Librarian's working set — Grep/Read must be allow-scoped
+    to it, not just --add-dir'd. Without the allow-pattern the agent's Grep/Read
+    on Library are permission-denied, it falls back to (blocked) `Bash grep`, and
+    loops to the spawn timeout (residue_thm cleanup, 2026-06-17)."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    (tmp_path / "Library").mkdir()
+    pd = tmp_path / "Problems" / "residue_thm"
+    pd.mkdir(parents=True)
+    att = tmp_path / ".attempts" / "x"
+    att.mkdir(parents=True)
+    captured = _capture_cmd(monkeypatch)
+    claude_cli.ClaudeCliProvider().spawn(llm.LLMRequest(
+        kind="librarian", prompt_path=Path("/x/p.md"),
+        problem_dir=pd, attempts_dir=att, timeout_sec=60))
+    cmd = captured[0]
+    allowed = cmd[cmd.index("--allowed-tools") + 1]
+    lib = (tmp_path / "Library").as_posix()
+    assert f"Grep({lib}/**)" in allowed, allowed
+    assert f"Read({lib}/**/*.lean)" in allowed, allowed
+
+
 def test_proving_spawn_adds_library_dir(
     tmp_path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
