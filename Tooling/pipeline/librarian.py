@@ -1513,7 +1513,7 @@ def run_librarian(conn, *, problem: str, work_kind: str,
     # (§13 3c-2); None = whole-problem serial pass.
     if work_kind == "cleanup":
         return _run_cleanup(conn, problem=problem, workspace=workspace,
-                            target_file=target)
+                            target_file=target, pipeline_id=pipeline_id)
 
     # v0.3 mechanical Gate B (plan §2 定海神針): `_run_bridge` is a no-agent,
     # no-prompt probe (its attempts_dir/problem_dir/prompt_path are unused) —
@@ -1660,7 +1660,7 @@ def _advance_cleanup_decls(conn, problem, rows, dropped) -> int:
     return n_drop
 
 
-def _run_cleanup(conn, *, problem, workspace, target_file=None):
+def _run_cleanup(conn, *, problem, workspace, target_file=None, pipeline_id=None):
     """v0.4 cleanup stage (plan §10/§11, §13): run the dedup-audit engine on the
     migrated (staging) Library, then advance lifecycle so the chain proceeds to
     bridge. The engine owns its agent spawns + the per-decl isolate-then-splice
@@ -1707,7 +1707,8 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None):
             workspace, problem, target_file, scope_index=scope_index,
             prior_renames=prior_renames, apply=True,
             simplify=True, unused_args=True,
-            strip_comments=True, polish=False, decide=True, audit=True)
+            strip_comments=True, polish=False, decide=True, audit=True,
+            conn=conn, pipeline_id=pipeline_id)
         # Mathlib-PR tidy: collapse redundant duplicate `variable` blocks the
         # per-decl migrate assembly replays (build-harmless, scope-safe; the
         # mechanical-path dedup missed files assembled via the LLM/Defs path —

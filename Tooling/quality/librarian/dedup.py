@@ -1658,7 +1658,9 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
                             polish: bool = False,
                             decide: bool = False,
                             audit: bool = False,
-                            simplify: bool = False) -> "dict":
+                            simplify: bool = False,
+                            conn=None,
+                            pipeline_id: "str | None" = None) -> "dict":
     """§13 3c-2 per-file cleanup unit (the dispatcher's per-file work item).
     Clean ONE Library file: mark it → classify (with the cross-file chain guard
     from `prior_renames` = earlier files' {dropped_fqn: survivor_fqn}) → propose
@@ -1781,7 +1783,7 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
             for d in present_decls]
         audit_renames, audited = file_cleanup_audit(
             workspace, problem, target_file, post_decide,
-            scope=scope, pool=pool)
+            scope=scope, pool=pool, conn=conn, pipeline_id=pipeline_id)
         inv = {v: k for k, v in renamed.items()}
         for o, n in audit_renames.items():
             renamed[inv.get(o, o)] = n

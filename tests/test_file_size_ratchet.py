@@ -94,13 +94,14 @@ _WATERMARKS = {
     # variable-block tidy) + _build_for_warnings (force the mathlib standard
     # linter set on, which `lake env lean` drops) — 2026-06-17 — conscious bump.
     "Tooling/quality/librarian/cleanup/_common.py": 640,
-    # 200→300: _type_generalizes gate relaxation — admit a safe drop-unused-
-    # hypothesis generalization (identical binders + conclusion, antecedents a
-    # subsequence, no cross-file consumer) through the type-invariance gate, so
-    # cleanup can delete the `unused variable` hypothesis binder instead of
-    # STALLing on it (residue_thm WindingConstancy/CircleIntegralDecay) —
-    # 2026-06-17 — conscious bump.
-    "Tooling/quality/librarian/cleanup/audit.py": 300,
+    # 300→350: audit rewritten onto the shared LSP edit-mode retry loop
+    # (`run_with_session_retries`, like builder / migrate-hole-fill) — cold-seed
+    # `audited.lean` + warm incremental + --resume, `_write_mcp_config` LSP, and
+    # the fence/type-invariance/zero-warning gate split out as the pure
+    # `_audit_gate`. (Replaces the reverted dc30d3e `_type_generalizes`
+    # drop-unused-hypothesis relaxation — an unused binder is now `_`-prefixed,
+    # not deleted, so the type gate stays strictly invariant.) — 2026-06-18.
+    "Tooling/quality/librarian/cleanup/audit.py": 350,
     "Tooling/quality/librarian/cleanup/decide.py": 250,
     "Tooling/quality/librarian/cleanup/mechanical.py": 250,
     "Tooling/quality/librarian/cleanup/polish.py": 150,
