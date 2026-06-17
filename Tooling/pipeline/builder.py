@@ -86,10 +86,10 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         _attempt_postmortem, _extract_decline_reason,
         _extract_leading_comments, _grep_forbidden, _is_sorry_stub,
         _parse_hint_winner, _replace_proof_body,
-        _safe_glob, _write_mcp_config,
+        _safe_glob,
         DECLINE_TO_FAILURE_REASON,
     )
-    from ._retry import SpawnCtx, run_with_session_retries
+    from ._retry import SpawnCtx, run_lsp_edit_loop
     from ..core import dispatcher  # late: BUILDER_THRESHOLD live value
 
     goal = db.get_goal(conn, goal_id)
@@ -228,45 +228,20 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         and the subsequent verify/axiom check rejected the patch."""
         goal_lean.write_text(goal_lean_original, encoding="utf-8")
 
-    def builder_spawn(ctx: SpawnCtx) -> int:
-        # Cold start: re-seed sandbox patch.lean from goal_lean's
-        # pristine content. Agent's --resume session memory carries
-        # warm context; LSP slot state is in the gateway worker.
-        # Warm retry: skip — patch.lean keeps whatever the agent wrote
-        # last iteration so retry_context-driven fixes can be
-        # incremental.
-        if ctx.cold:
-            _seed_patch_from_goal()
-            context.compile_context(conn, goal=goal, mfst=mfst,
-                                  attempts_dir=ctx.attempts_dir,
-                                  kind="builder",
-                                  decision_id=decision_id)
-
-        # Register a gateway session so claude's MCP tools operate on
-        # patch.lean (in attempts_dir/) via the shared worker pool.
-        # apply_edit's write-through stays inside the sandbox; only
-        # builder_parse commits to goal_lean.
-        mcp_config_path = _write_mcp_config(
-            attempts_dir=ctx.attempts_dir,
-            workspace=workspace,
-            target=patch_lean,
-            pipeline_id=pipeline_id,
-            problem=goal["problem"],
-        )
-
-        return agent.spawn_llm(
-            kind="builder",
-            prompt_path=PROMPT_DIR / "builder.md",
-            problem_dir=problem_dir,
-            attempts_dir=ctx.attempts_dir,
-            session_id=ctx.sid,
-            is_retry=not ctx.cold,
-            retry_context=ctx.retry_context,
-            retry_reason=ctx.retry_reason,
-            mcp_config_path=mcp_config_path,
-            inline_prompt=ctx.inline_prompt,
-            timeout_sec_override=ctx.budget_override,
-        )
+    def builder_cold_prep(ctx: SpawnCtx) -> None:
+        # Cold start: re-seed sandbox patch.lean from goal_lean's pristine
+        # content + compile Context.md. Warm retries skip this — patch.lean
+        # keeps whatever the agent wrote last iteration (the agent's --resume
+        # session memory carries the context) so retry_context-driven fixes
+        # stay incremental. The gateway-session registration + spawn itself
+        # are owned by `run_lsp_edit_loop` (target=patch_lean): apply_edit's
+        # write-through stays inside the sandbox; only builder_parse commits
+        # to goal_lean.
+        _seed_patch_from_goal()
+        context.compile_context(conn, goal=goal, mfst=mfst,
+                              attempts_dir=ctx.attempts_dir,
+                              kind="builder",
+                              decision_id=decision_id)
 
     def builder_parse() -> "PipelineResult":  # noqa: F821
         nonlocal promote_done
@@ -490,17 +465,22 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     # outer finally restores goal_lean from snapshot.
     result = None
     try:
-        result = run_with_session_retries(
+        result = run_lsp_edit_loop(
             conn=conn,
             goal_id=goal_id,
             pipeline_id=pipeline_id,
             budget_threshold=dispatcher.BUILDER_THRESHOLD,
             shelve_threshold=dispatcher.SHELVE_THRESHOLD,
             attempts_dir=attempts_dir,
-            spawn_fn=builder_spawn,
+            workspace=workspace,
+            problem=goal["problem"],
+            problem_dir=problem_dir,
+            kind="builder",
+            prompt_path=PROMPT_DIR / "builder.md",
+            target=patch_lean,
+            cold_prep_fn=builder_cold_prep,
             parse_fn=builder_parse,
             postmortem_fn=builder_postmortem,
-            workspace=workspace,
             reflection_fn=builder_reflection,
             feedback_fn=builder_feedback,
             death_fn=builder_death,

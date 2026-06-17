@@ -187,9 +187,8 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
     so `conn` is unused — audit is a per-FILE unit, not a goal-bound pipeline)."""
     from .... import agent
     from ....core import dispatcher
-    from ....pipeline import PipelineResult, _feedback, _write_mcp_config
-    from ....pipeline._retry import SpawnCtx, run_with_session_retries
-    from ....pipeline.librarian import _release_session
+    from ....pipeline import PipelineResult, _feedback
+    from ....pipeline._retry import SpawnCtx, run_lsp_edit_loop
 
     prompt_path = workspace / "Tooling" / "prompts" / "librarian" / _AUDIT_PROMPT
     if not prompt_path.exists() or not decls_in_file:
@@ -223,30 +222,18 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
     best: "tuple[int, str, dict[str, str]] | None" = None  # (warns, text, renames)
     cap: "dict[str, bool]" = {}
 
-    def spawn(ctx: SpawnCtx) -> int:
-        # Cold: seed audited.lean = the original + write Context.md; the agent
-        # EDITS audited.lean in place via LSP (apply_edit write-through). Warm
-        # retry: keep the agent's last audited.lean (incremental) so
+    def cold_prep(ctx: SpawnCtx) -> None:
+        # Seed audited.lean = the original + write Context.md; the agent EDITS
+        # audited.lean in place via LSP (apply_edit write-through). Warm retries
+        # keep the agent's last audited.lean (incremental, --resume) so
         # retry_context-driven warning fixes build on the prior pass, not a
-        # from-scratch whole-file rewrite.
-        if ctx.cold:
-            (ctx.attempts_dir / "Context.md").write_text(
-                _audit_context(workspace, problem, target_file, decl_names),
-                encoding="utf-8")
-            audited.write_text(original, encoding="utf-8")
-            if renames_file.exists():
-                renames_file.unlink()
-        mcp_config_path = _write_mcp_config(
-            attempts_dir=ctx.attempts_dir, workspace=workspace,
-            target=audited, pipeline_id=pid, problem=problem)
-        return agent.spawn_llm(
-            kind="librarian", prompt_path=prompt_path,
-            problem_dir=problem_dir, attempts_dir=ctx.attempts_dir,
-            session_id=ctx.sid, is_retry=not ctx.cold,
-            retry_context=ctx.retry_context, retry_reason=ctx.retry_reason,
-            mcp_config_path=mcp_config_path,
-            inline_prompt=ctx.inline_prompt,
-            timeout_sec_override=ctx.budget_override)
+        # from-scratch whole-file rewrite — so cold_prep runs on cold only.
+        (ctx.attempts_dir / "Context.md").write_text(
+            _audit_context(workspace, problem, target_file, decl_names),
+            encoding="utf-8")
+        audited.write_text(original, encoding="utf-8")
+        if renames_file.exists():
+            renames_file.unlink()
 
     def parse() -> PipelineResult:
         nonlocal best
@@ -284,17 +271,17 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
             outcome=("success" if result.outcome == "success" else "exhausted"),
             problem_dir=problem_dir, attempts_dir=attempts, workspace=workspace)
 
-    try:
-        run_with_session_retries(
-            conn=conn, goal_id=None, pipeline_id=pid,
-            budget_threshold=max_retries + 1,
-            shelve_threshold=dispatcher.SHELVE_THRESHOLD,
-            attempts_dir=attempts, spawn_fn=spawn, parse_fn=parse,
-            postmortem_fn=lambda sid: None, workspace=workspace,
-            feedback_fn=feedback)
-    finally:
-        # Free this audit's gateway worker slot before the next file registers.
-        _release_session(attempts)
+    # `release_session_after=True`: free this audit's gateway slot before the
+    # next file registers (the cleanup chain runs files back-to-back).
+    run_lsp_edit_loop(
+        conn=conn, goal_id=None, pipeline_id=pid,
+        budget_threshold=max_retries + 1,
+        shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+        attempts_dir=attempts, workspace=workspace,
+        problem=problem, problem_dir=problem_dir,
+        kind="librarian", prompt_path=prompt_path, target=audited,
+        cold_prep_fn=cold_prep, parse_fn=parse,
+        feedback_fn=feedback, release_session_after=True)
 
     if best is None:
         if not cap.get("noop"):

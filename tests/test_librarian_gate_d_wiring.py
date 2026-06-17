@@ -121,3 +121,58 @@ def test_defeq_gate_unextractable_name_fails():
         problem="p", target_slug="IsFoo", defs_decls=["IsFoo"],
         target_module="Library.A.Basic", defeq_verifier=_never)
     assert not r.ok
+
+
+# ---------------------------------------------------------------------
+# _defs_decl_fqn — real FQN of a Defs decl (foreign-namespace aware)
+# ---------------------------------------------------------------------
+
+_FOREIGN_DEFS = (
+    "import Mathlib\n\n"
+    "namespace Complex\n\n"
+    "noncomputable def windingNumber (g : ℝ → ℂ) (a : ℂ) : ℤ := 0\n\n"
+    "noncomputable def residue (f : ℂ → ℂ) (z : ℂ) : ℂ := 0\n\n"
+    "end Complex\n")
+
+
+def test_defs_decl_fqn_foreign_namespace():
+    # residue_thm declares windingNumber/residue under `namespace Complex`, so
+    # the real FQN is `Complex.windingNumber`, NOT the naive
+    # `Problems.residue_thm.windingNumber` (an unknown identifier → STALL).
+    assert lib._defs_decl_fqn(_FOREIGN_DEFS, "windingNumber",
+                              problem="residue_thm") == "Complex.windingNumber"
+    assert lib._defs_decl_fqn(_FOREIGN_DEFS, "residue",
+                              problem="residue_thm") == "Complex.residue"
+
+
+def test_defs_decl_fqn_standard_namespace():
+    txt = "namespace Problems.p\n\ndef foo : Nat := 0\n\nend Problems.p\n"
+    assert lib._defs_decl_fqn(txt, "foo", problem="p") == "Problems.p.foo"
+
+
+def test_defs_decl_fqn_fallback_when_absent():
+    # Not found in Defs → historical default (no regression for the common
+    # in-`Problems`-namespace case).
+    assert lib._defs_decl_fqn("-- empty\n", "foo", problem="p") == "Problems.p.foo"
+
+
+def test_defeq_gate_uses_real_fqn_for_foreign_namespace(tmp_path):
+    # End-to-end: with a foreign-namespace Defs decl, the probe must reference
+    # `Complex.windingNumber`, not the naive `Problems.residue_thm.windingNumber`
+    # (the bug that STALLed WindingNumberContinuity). Capture the probe text.
+    pd = tmp_path / "Problems" / "residue_thm"
+    pd.mkdir(parents=True)
+    (pd / "Defs.lean").write_text(_FOREIGN_DEFS, encoding="utf-8")
+    seen = {}
+
+    def _capture(probe):
+        seen["probe"] = probe
+        return True, ""
+    r = lib.migrate_defeq_gate(
+        "namespace Library.A\ndef windingNumber : Nat := 0",
+        problem="residue_thm", target_slug="windingNumber",
+        defs_decls=["windingNumber"], target_module="Library.A.Basic",
+        defeq_verifier=_capture, workspace=tmp_path)
+    assert r.ok, r.detail
+    assert "Complex.windingNumber" in seen["probe"]
+    assert "Problems.residue_thm.windingNumber" not in seen["probe"]

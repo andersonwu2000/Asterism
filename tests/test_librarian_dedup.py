@@ -1624,16 +1624,14 @@ def test_audit_shell_applies_clean_rewrite(tmp_path, monkeypatch) -> None:
     rewritten = _AUDIT_SRC.replace("theorem foo_bar",
                                    "/-- doc -/\ntheorem foo_bar")
     from Tooling import agent
-    from Tooling import pipeline as _pl
-    from Tooling.pipeline import librarian as _lib
 
+    # The gateway register/release HTTP is faked by the autouse
+    # `_stub_gateway_calls_by_default` fixture, so the real run_lsp_edit_loop
+    # plumbing (_write_mcp_config + _release_session) runs gateway-free.
     def _spawn(*, attempts_dir, **k):
         (attempts_dir / "audited.lean").write_text(rewritten, encoding="utf-8")
         return 0
     monkeypatch.setattr(agent, "spawn_llm", _spawn)
-    monkeypatch.setattr(_pl, "_write_mcp_config",
-                        lambda **k: tmp_path / "_mcp_config.json")
-    monkeypatch.setattr(_lib, "_release_session", lambda d: None)
     _fake_audit_types(monkeypatch, lambda f: "T")
     d = _vdecl("foo_bar", ": P", module="Library.P.F", rel=rel)
     applied, changed = dedup.file_cleanup_audit(

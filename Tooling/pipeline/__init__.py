@@ -111,6 +111,26 @@ def _write_mcp_config(attempts_dir: Path, workspace: Path,
     return config_path
 
 
+def _release_session(attempts_dir: Path) -> None:
+    """Release the gateway session registered in `attempts_dir` (best-effort).
+    Pairs with `_write_mcp_config`: each spawn registers a session token in
+    `attempts_dir/_gateway_session.token`; a tight per-decl / per-file loop
+    must release it before the next register or the gateway worker pool
+    exhausts (the Nth /register 500s on slot exhaustion). Builder relies on
+    `_write_mcp_config`'s inline release-of-prior-token across its own warm
+    retries instead, so it is the per-iteration loops (migrate hole-fill,
+    cleanup audit) that call this in a `finally`."""
+    from ..lsp import lifecycle as _gw
+    tok = attempts_dir / "_gateway_session.token"
+    if tok.exists():
+        t = tok.read_text(encoding="utf-8").strip()
+        if t:
+            try:
+                _gw.release_session(t)
+            except Exception:  # noqa: BLE001 — best-effort teardown
+                pass
+
+
 # Regression fix from the pipeline.py → pipeline/ package split: that
 # bumped `__file__` one directory deeper. The prompts/ dir lives at
 # Tooling/prompts/ — go up one level to reach it. Without this, the

@@ -47,7 +47,8 @@ from typing import Callable
 from ..state import db, tree
 from ..llm import claude_cli
 from ..llm.base import SpawnRC
-from . import PipelineResult, _spawn_failure, collect_artifacts
+from . import (PipelineResult, _release_session, _spawn_failure,
+               _write_mcp_config, collect_artifacts)
 
 
 # Outcomes that terminate the retry loop without further attempts.
@@ -1038,3 +1039,83 @@ def run_with_session_retries(
     return attach(PipelineResult(outcome="exhausted",
                                  failure_reason=last_reason,
                                  failure_detail=last_detail))
+
+
+def run_lsp_edit_loop(
+    *,
+    conn: sqlite3.Connection,
+    goal_id: int | None,
+    pipeline_id: str,
+    budget_threshold: int,
+    shelve_threshold: int,
+    attempts_dir: Path,
+    workspace: Path | None,
+    problem: str,
+    problem_dir: Path,
+    kind: str,
+    prompt_path: Path,
+    target: Path,
+    cold_prep_fn: "Callable[[SpawnCtx], None]",
+    parse_fn: ParseFn,
+    postmortem_fn: "PostmortemFn | None" = None,
+    reflection_fn: "ReflectionFn | None" = None,
+    feedback_fn: "ReflectionFn | None" = None,
+    death_fn: "DeathFn | None" = None,
+    decision_id: int | None = None,
+    release_session_after: bool = False,
+) -> PipelineResult:
+    """Shared LSP edit-mode spawn loop — the one place the cold-seed +
+    `_write_mcp_config` + `spawn_llm` + `run_with_session_retries` +
+    `_release_session` ceremony lives. Builder / migrate-hole-fill / cleanup-
+    audit (and any future file-editing librarian stage) call this instead of
+    re-implementing the ~40-line spawn closure each.
+
+    Caller supplies only what VARIES:
+      - `target`: the file the LSP gateway edits (also what `cold_prep_fn`
+        seeds) — `patch.lean` / `audited.lean` / a per-decl scratch.
+      - `cold_prep_fn(ctx)`: on a COLD spawn, seed `target` + write the
+        attempt's `Context.md` (warm retries keep the agent's prior edits and
+        `--resume` the session, so this is NOT called then).
+      - `parse_fn()`: read `target`, run the stage's gate, return a
+        PipelineResult (terminal success/decline → returned verbatim; any
+        other failure → buffered + retried by the inner loop).
+      - `kind` / `prompt_path` / `problem` / `problem_dir`: the spawn identity.
+      - optional `postmortem_fn` / `reflection_fn` / `feedback_fn` / `death_fn`
+        hooks (Builder wires all; migrate-hole-fill none; audit feedback only).
+
+    Everything INVARIANT — cold vs warm session resume, stale-session re-mint,
+    timeout / thinking-trap takeover, pending-failures buffering, budget /
+    cascade re-check — is owned by `run_with_session_retries` underneath.
+
+    `release_session_after` releases the gateway slot in a `finally` once the
+    loop exits (True for the tight per-decl / per-file loops that would
+    otherwise exhaust the worker pool; Builder leaves it False and relies on
+    `_write_mcp_config`'s inline release-of-prior-token across its own retries).
+    """
+    from .. import agent
+
+    def _spawn(ctx: SpawnCtx) -> int:
+        if ctx.cold:
+            cold_prep_fn(ctx)
+        mcp_config_path = _write_mcp_config(
+            attempts_dir=ctx.attempts_dir, workspace=workspace,
+            target=target, pipeline_id=pipeline_id, problem=problem)
+        return agent.spawn_llm(
+            kind=kind, prompt_path=prompt_path, problem_dir=problem_dir,
+            attempts_dir=ctx.attempts_dir, session_id=ctx.sid,
+            is_retry=not ctx.cold, retry_context=ctx.retry_context,
+            retry_reason=ctx.retry_reason, mcp_config_path=mcp_config_path,
+            inline_prompt=ctx.inline_prompt,
+            timeout_sec_override=ctx.budget_override)
+
+    try:
+        return run_with_session_retries(
+            conn=conn, goal_id=goal_id, pipeline_id=pipeline_id,
+            budget_threshold=budget_threshold, shelve_threshold=shelve_threshold,
+            attempts_dir=attempts_dir, spawn_fn=_spawn, parse_fn=parse_fn,
+            postmortem_fn=postmortem_fn or (lambda _sid: None),
+            workspace=workspace, reflection_fn=reflection_fn,
+            feedback_fn=feedback_fn, death_fn=death_fn, decision_id=decision_id)
+    finally:
+        if release_session_after:
+            _release_session(attempts_dir)

@@ -612,6 +612,38 @@ def _verbatim_nominal_ok(patch_text: str, *, problem: str, target_slug: str,
     return _norm(src) == _norm(out)
 
 
+def _defs_decl_fqn(defs_text: str, slug: str, *, problem: str) -> str:
+    """Real fully-qualified name of Defs declaration `slug` as it lives in
+    `Problems.<problem>.Defs`, accounting for a foreign `namespace` the problem
+    declares its OWN decls under (residue_thm puts `windingNumber`/`residue`
+    under `namespace Complex`, so the FQN is `Complex.windingNumber`, NOT
+    `Problems.<problem>.windingNumber` — cf. the relabel-side `self_namespaces`).
+    Walks the namespace stack to the decl header. Falls back to the standard
+    `Problems.<problem>.<slug>` when `slug` is not found (preserves the
+    historical default for the common in-`Problems`-namespace case)."""
+    stack: list[str] = []
+    head = re.compile(
+        r"^[ \t]*(?:@\[[^\]]*\][ \t]*)*"
+        r"(?:private[ \t]+|protected[ \t]+|noncomputable[ \t]+|scoped[ \t]+)*"
+        r"(?:def|abbrev|theorem|lemma|instance|structure|class|inductive)"
+        r"[ \t]+([A-Za-z_][\w'.]*)")
+    for raw in defs_text.splitlines():
+        s = raw.strip()
+        m = re.match(r"^namespace\s+([\w.]+)\s*$", s)
+        if m:
+            stack.append(m.group(1))
+            continue
+        m = re.match(r"^end\s+([\w.]+)\s*$", s)
+        if m:
+            if stack and stack[-1] == m.group(1):
+                stack.pop()
+            continue
+        m = head.match(raw)
+        if m and m.group(1).split(".")[-1] == slug:
+            return ".".join(p for p in (*stack, m.group(1)) if p)
+    return f"Problems.{problem}.{slug}"
+
+
 def migrate_defeq_gate(
     patch_text: str, *, problem: str, target_slug: str,
     defs_decls: "list[str]", target_module: str,
@@ -671,7 +703,19 @@ def migrate_defeq_gate(
             False, "Gate D: could not extract the migrated declaration's "
                    "name (anonymous or malformed decl)")
     from ..quality.librarian import gates
+    # Real FQN of the Defs decl — a decl declared under a foreign namespace
+    # (residue_thm's `windingNumber` lives at `Complex.windingNumber`, not
+    # `Problems.residue_thm.windingNumber`) would otherwise make the probe
+    # reference an unknown identifier and STALL the file (the relabel path was
+    # fixed in 9f095fd; this Gate-D path is its sibling).
     defs_fq = f"Problems.{problem}.{target_slug}"
+    if workspace is not None:
+        try:
+            defs_text = (db.problem_dir(workspace, problem)
+                         / "Defs.lean").read_text(encoding="utf-8")
+            defs_fq = _defs_decl_fqn(defs_text, target_slug, problem=problem)
+        except OSError:
+            pass
     res = gates.check_def_equivalence(
         defs_fq, target_fq,
         imports=[f"Problems.{problem}.Defs", target_module],
@@ -2537,23 +2581,6 @@ def _commit_migrated_file(
     return PipelineResult(outcome="success")
 
 
-def _release_session(attempts_dir) -> None:
-    """Release the gateway session registered in `attempts_dir` (best-effort).
-    Each incremental per-decl spawn registers its own session in its
-    `decl-<slug>/` dir; nothing else releases it, so without this every
-    per-decl spawn leaks a gateway worker slot and the Nth register 500s on
-    slot exhaustion."""
-    from ..lsp import lifecycle as _gw
-    tok = attempts_dir / "_gateway_session.token"
-    if tok.exists():
-        t = tok.read_text(encoding="utf-8").strip()
-        if t:
-            try:
-                _gw.release_session(t)
-            except Exception:  # noqa: BLE001 — best-effort teardown
-                pass
-
-
 def _migrate_file_incremental(
         conn, *, problem, workspace, pipeline_id, target_file,
         target_path, target_module, ordered_slugs, defs_names, whitelist,
@@ -2576,9 +2603,8 @@ def _migrate_file_incremental(
     `-- decline: needs-upstream` routes through the shared cascade. `fill_fn` /
     `olean_writer` are injectable for offline tests.
     """
-    from . import PipelineResult, PROMPT_DIR, _write_mcp_config
-    from ._retry import SpawnCtx, run_with_session_retries
-    from .. import agent
+    from . import PipelineResult
+    from ._retry import SpawnCtx, run_lsp_edit_loop
     from ..core import dispatcher
 
     holes_set = set(holes)
@@ -2633,24 +2659,12 @@ def _migrate_file_incremental(
                 + f"\n\nend {target_module}\n")
         cap: dict = {}
 
-        def spawn(ctx: SpawnCtx) -> int:
-            if ctx.cold:
-                compile_librarian_context(
-                    conn, problem=problem, work_kind="migrate",
-                    attempts_dir=ctx.attempts_dir, workspace=workspace,
-                    target_file=target_file, holes=holes, solo_hole=slug)
-                patch.write_text(seed, encoding="utf-8")
-            mcp_config_path = _write_mcp_config(
+        def cold_prep(ctx: SpawnCtx) -> None:
+            compile_librarian_context(
+                conn, problem=problem, work_kind="migrate",
                 attempts_dir=ctx.attempts_dir, workspace=workspace,
-                target=patch, pipeline_id=dpid, problem=problem)
-            return agent.spawn_llm(
-                kind="librarian", prompt_path=hole_prompt,
-                problem_dir=problem_dir, attempts_dir=ctx.attempts_dir,
-                session_id=ctx.sid, is_retry=not ctx.cold,
-                retry_context=ctx.retry_context, retry_reason=ctx.retry_reason,
-                mcp_config_path=mcp_config_path,
-                inline_prompt=ctx.inline_prompt,
-                timeout_sec_override=ctx.budget_override)
+                target_file=target_file, holes=holes, solo_hole=slug)
+            patch.write_text(seed, encoding="utf-8")
 
         def parse() -> PipelineResult:
             if not patch.exists():
@@ -2689,18 +2703,17 @@ def _migrate_file_incremental(
             cap["imports"] = [im for im in imports if im not in seed_imports]
             return PipelineResult(outcome="success")
 
-        try:
-            res = run_with_session_retries(
-                conn=conn, goal_id=None, pipeline_id=dpid,
-                budget_threshold=dispatcher.BUILDER_THRESHOLD,
-                shelve_threshold=dispatcher.SHELVE_THRESHOLD,
-                attempts_dir=dattempts, spawn_fn=spawn, parse_fn=parse,
-                postmortem_fn=lambda sid: None, workspace=workspace)
-        finally:
-            # Free this decl's gateway worker slot before the next decl
-            # registers — sequential per-decl spawns would otherwise exhaust
-            # the pool (each leaks a slot).
-            _release_session(dattempts)
+        # `release_session_after=True`: a tight per-decl loop must free the
+        # gateway slot before the next decl registers, or the pool exhausts.
+        res = run_lsp_edit_loop(
+            conn=conn, goal_id=None, pipeline_id=dpid,
+            budget_threshold=dispatcher.BUILDER_THRESHOLD,
+            shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+            attempts_dir=dattempts, workspace=workspace,
+            problem=problem, problem_dir=problem_dir,
+            kind="librarian", prompt_path=hole_prompt, target=patch,
+            cold_prep_fn=cold_prep, parse_fn=parse,
+            release_session_after=True)
         if res.outcome == "success":
             return (cap["chunk"], cap["imports"]), None
         return None, cap.get("decline")
