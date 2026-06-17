@@ -94,7 +94,13 @@ _WATERMARKS = {
     # variable-block tidy) + _build_for_warnings (force the mathlib standard
     # linter set on, which `lake env lean` drops) — 2026-06-17 — conscious bump.
     "Tooling/quality/librarian/cleanup/_common.py": 640,
-    "Tooling/quality/librarian/cleanup/audit.py": 200,
+    # 200→300: _type_generalizes gate relaxation — admit a safe drop-unused-
+    # hypothesis generalization (identical binders + conclusion, antecedents a
+    # subsequence, no cross-file consumer) through the type-invariance gate, so
+    # cleanup can delete the `unused variable` hypothesis binder instead of
+    # STALLing on it (residue_thm WindingConstancy/CircleIntegralDecay) —
+    # 2026-06-17 — conscious bump.
+    "Tooling/quality/librarian/cleanup/audit.py": 300,
     "Tooling/quality/librarian/cleanup/decide.py": 250,
     "Tooling/quality/librarian/cleanup/mechanical.py": 250,
     "Tooling/quality/librarian/cleanup/polish.py": 150,

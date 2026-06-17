@@ -117,7 +117,7 @@ Strategist（`Tooling/pipeline/strategist.py`）：
 Librarian（`Tooling/pipeline/librarian.py`，Phase 4）：失敗走 `dispatcher._advance_librarian_chain` 的 **per-unit fail-count**（`librarian_fail_counts`、跨 restart 持久）；連續 `LIBRARIAN_MAX_CHAIN_RETRIES`（=2）次 → 該 unit **STALL**（不再 refill、不動 goal、無 shelve）。`librarian_file_busy` 不計數（另一 worker 正持有該檔）。
 - **migrate**：`librarian_migrate_not_mechanical`（需 LLM、非純機械 relabel）/ `librarian_migrate_hole_unfilled`（relabel 後仍有 sorry 洞）/ `librarian_migrate_build_failed`（搬出的檔 build 不過）
 - **classify**：`librarian_not_classified`（前置 classify 未完成）/ `librarian_schema_invalid`（classify agent 輸出 schema 不合）/ `librarian_bad_work_kind`（dispatch 收到未知 work_kind）/ `librarian_missing_prompt`
-- **cleanup**：`librarian_cleaned_build_failed`（精修後 build 不過）/ `librarian_verify_failed` / `librarian_gate_failed`（per-file Mathlib-PR / 零-warning gate 未過）
+- **cleanup**：`librarian_cleaned_build_failed`（精修後 build 不過）/ `librarian_warnings_remain`（build 過但有殘留 warning、Mathlib-PR 零-warning bar 未達；最常見卡點 = unused hypothesis binder + line-length，cleanup 須機械/agentic 清到零）/ `librarian_verify_failed` / `librarian_gate_failed`（per-file Mathlib-PR gate 未過）
 - **bridge**：`librarian_bridge_not_mechanical` / `librarian_no_root`
 - **跨檔 / upstream**：`librarian_file_busy`（不計數）/ `librarian_file_owned_by_other` / `librarian_integrity_error`（DB↔檔 drift）/ `librarian_needs_upstream_unresolvable` / `librarian_reopened_upstream`
 - **共用**：`agent_error`（Librarian agent spawn rc≠0）/ `agent_no_output` / `agent_declined`（agent 自評該 unit 無法機械化）

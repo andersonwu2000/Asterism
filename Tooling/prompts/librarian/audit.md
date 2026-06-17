@@ -39,8 +39,9 @@ Read `Context.md` — it shows the file's module, its declarations, and the curr
 ### Warnings & deprecations (ZERO — hard-gated)
 The rebuilt file must emit **no warnings**; any residual warning rejects the file (and, unresolved, stalls it for the operator). Drive every warning to zero:
 - **Deprecated lemmas**: replace with the current form the warning names (e.g. `EuclideanSpace.single_apply` → `PiLp.single_apply`).
-- **Unused variables / section variables**: delete them, or narrow the `variable`/`section` scope so they are no longer in scope where unused.
-- **Style lints** (`linter.style.*`, line length, unnecessary arguments, …): fix at the source.
+- **Unused section variables**: delete them, or narrow the `variable`/`section` scope so they are no longer in scope where unused.
+- **Unused hypothesis binders** — a `(h : …)` in a declaration's own signature that neither the proof nor the conclusion uses: **delete the binder** (a leftover hypothesis is a reviewer reject; dropping it only generalises the lemma). This changes the elaborated type, but the gate admits exactly this shape — a dropped hypothesis with nothing else changed. You MUST also remove that argument at **every call site in this file**, or the rebuild fails.
+- **Style lints** (`linter.style.*`, unnecessary arguments, …): fix at the source. **Line length ≤ 100**: break an over-long line at a top-level `→`, `,`, or binder boundary and indent the continuation (operators end a line, never start one).
 - **Last resort only**: a genuinely unavoidable lint may be silenced with `set_option <linter.name> false in` on the SINGLE offending declaration, with a one-line comment justifying why — never a blanket file-level disable.
 
 ### Naming (for the few names earlier stages missed — declare in renames.json)

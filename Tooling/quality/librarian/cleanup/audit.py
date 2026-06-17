@@ -70,6 +70,89 @@ def _json_loads_or_none(text: str):
         return None
 
 
+# --- safe-generalization gate (drop an unused hypothesis) --------------------
+# The type-invariance gate rejects ANY `#check @decl` type change, which blocks
+# the single most common cleanup blocker: an `unused variable` lint on a
+# hypothesis binder the simplified proof no longer uses. Deleting it is the
+# mathlib-PR-correct fix (a leftover hypothesis is a reviewer reject), and it
+# only GENERALIZES the lemma (new ⊢ old). Admit exactly that shape — identical
+# binders + conclusion, antecedents a strict subsequence — and only when the
+# decl has no cross-file consumer (a same-file call site is covered by the green
+# rebuild; a cross-file one would break unseen → defer to a future arity rewire).
+
+def _split_toplevel(s: str, sep: str) -> "list[str]":
+    """Split `s` on single-char `sep` at bracket depth 0, so a `→`/`,` inside
+    `(…)` / `[…]` / `{…}` does not split (e.g. `(∀ t ∈ S, P)`)."""
+    parts, depth, cur = [], 0, []
+    for ch in s:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        if ch == sep and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    parts.append("".join(cur))
+    return parts
+
+
+def _arrow_segments(type_str: str) -> "tuple[str, list[str]]":
+    """`(binder-prefix, [antecedent…, conclusion])` of a `#check @decl` type.
+    The leading `∀ {…} (…),` prefix splits off at the first top-level comma; the
+    body splits on top-level `→`. All pieces stripped."""
+    t = type_str.strip()
+    prefix = ""
+    if t.startswith("∀"):
+        segs = _split_toplevel(t, ",")
+        prefix, t = segs[0].strip(), ",".join(segs[1:]).strip()
+    return prefix, [a.strip() for a in _split_toplevel(t, "→")]
+
+
+def _is_subsequence(small: "list[str]", big: "list[str]") -> bool:
+    it = iter(big)
+    return all(x in it for x in small)
+
+
+def _type_generalizes(old_type: str, new_type: str) -> bool:
+    """True iff `new_type` is `old_type` with one or more non-dependent
+    hypotheses DROPPED: identical binder prefix, identical conclusion, new
+    antecedents a strict subsequence of the old. Any other difference (changed
+    conclusion, added/altered hypothesis, changed binders) → False."""
+    po, ao = _arrow_segments(old_type)
+    pn, an = _arrow_segments(new_type)
+    if po != pn or not ao or not an:
+        return False
+    if ao[-1] != an[-1]:                  # conclusion changed → not generalization
+        return False
+    if len(an) >= len(ao):                # nothing dropped
+        return False
+    return _is_subsequence(an, ao)
+
+
+def _cited_outside_file(workspace: Path, *, fqn: str, module: str, name: str,
+                        target_rel: str) -> bool:
+    """True if any `Library/*.lean` OTHER than `target_rel` references this decl
+    (by full name, or by bare name while importing its module) — a cross-file
+    consumer whose call site a signature change would break unseen."""
+    libdir = workspace / "Library"
+    if not libdir.exists():
+        return False
+    bare = re.compile(rf"(?<![\w.]){re.escape(name)}(?![\w])")
+    for p in libdir.rglob("*.lean"):
+        rel = p.relative_to(workspace).as_posix()
+        if rel == target_rel:
+            continue
+        try:
+            t = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if fqn in t or (f"import {module}" in t and bare.search(t)):
+            return True
+    return False
+
+
 def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
                        decls_in_file: "list[_Decl]", *,
                        scope: "list[_Decl]", pool: "list[_Decl]",
@@ -146,18 +229,36 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
             prev_error = detail
             continue
         changed = []
+        consumer_cache: "dict[str, bool]" = {}    # decl name → has cross-file consumer
         for label, fqn_base, fqn_after in pairs:
             expected = base_types.get(fqn_base, "")
             for old, new in renames.items():     # sibling types may cite renamed
                 expected, _ = C.replace_token(expected, old, new)
-            if expected != new_types.get(fqn_after):
-                changed.append(label)
+            actual = new_types.get(fqn_after) or ""
+            if expected == actual:
+                continue
+            # Type changed: admit ONLY a safe generalization (unused hypotheses
+            # dropped) on a decl with no cross-file consumer; everything else
+            # (changed conclusion, altered/added hypothesis) stays rejected.
+            d = next((x for x in decls_in_file if x.name == label), None)
+            if d is not None and _type_generalizes(expected, actual):
+                if d.name not in consumer_cache:
+                    consumer_cache[d.name] = _cited_outside_file(
+                        workspace, fqn=d.fqn, module=module, name=d.name,
+                        target_rel=target_file)
+                if not consumer_cache[d.name]:
+                    print(f"[staged] audit `{leaf}` — `{d.name}`: dropped unused "
+                          f"hypothes(es), generalized (no cross-file consumer)",
+                          flush=True)
+                    continue
+            changed.append(label)
         if changed:
             prev_error = ("the elaborated type changed for: "
                           + ", ".join(changed)
                           + " — restructure freely, but never what a "
-                            "declaration PROVES (and declare any rename in "
-                            f"{_AUDIT_RENAMES})")
+                            "declaration PROVES. You MAY drop an unused "
+                            "*hypothesis* (it generalizes the lemma); declare any "
+                            f"rename in {_AUDIT_RENAMES}")
             continue
         applied = {f"{module}.{o}": f"{module}.{n}" for o, n in renames.items()}
         # ALL warnings (not just polish's type-preserving subset): audit is the

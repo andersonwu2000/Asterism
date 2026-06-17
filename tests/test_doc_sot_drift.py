@@ -13,6 +13,7 @@ Context.md, so it's worth a gate.
 """
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -32,18 +33,38 @@ def _py_files(*roots: Path) -> list[Path]:
 
 # --- 1. failure_modes.md documents every failure_reason the code emits ------
 
-# `failure_reason="x"` / `failure_reason='x'` (optional f-string prefix) and
-# `_abort("x", ...)` (backward.py's terminal-decline helper, first arg).
-_FR_ASSIGN = re.compile(r"""failure_reason\s*=\s*f?["']([a-z][a-z0-9_]*)["']""")
-_FR_ABORT = re.compile(r"""_abort\(\s*["']([a-z][a-z0-9_]*)["']""")
+# AST, not regex: a `failure_reason=` value can be a ternary / parenthesized /
+# multi-line expression (e.g. librarian.py's `(... if _wok else "x")`), which a
+# `failure_reason=\s*"x"` regex silently skips — that gap shipped a real miss
+# (librarian_warnings_remain). Walk every `failure_reason=<expr>` keyword and
+# every `_abort("x", …)` call (backward.py's terminal-decline helper), and
+# collect every snake_case string literal anywhere inside the value.
+_SNAKE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _str_literals(node: ast.AST) -> "set[str]":
+    return {n.value for n in ast.walk(node)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            and _SNAKE.match(n.value)}
 
 
 def _code_failure_reasons() -> set[str]:
     reasons: set[str] = set()
     for f in _py_files(TOOLING):
-        text = f.read_text(encoding="utf-8")
-        reasons.update(_FR_ASSIGN.findall(text))
-        reasons.update(_FR_ABORT.findall(text))
+        try:
+            tree = ast.parse(f.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.keyword) and node.arg == "failure_reason":
+                reasons |= _str_literals(node.value)
+            elif (isinstance(node, ast.Call) and node.args
+                  and isinstance(node.args[0], ast.Constant)
+                  and isinstance(node.args[0].value, str)):
+                fn = node.func
+                name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+                if name == "_abort" and _SNAKE.match(node.args[0].value):
+                    reasons.add(node.args[0].value)
     return reasons
 
 
