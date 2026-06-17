@@ -5,6 +5,12 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-16
+- Tightened the integrity of generated proofs so an unfilled placeholder can no longer be cited as a proof of the main goal, and supporting definitions are now placed ahead of the results that rely on them.
+- Made the automated search loop more robust against wasted effort, preventing duplicate attempts on the same goal, immediate retries of subgoals that had been set aside, and overly broad sweeps of stray files.
+- Pruned the working proof tree down to its active frontier to keep the search focused.
+- Improved observability by surfacing why a step stalls and keeping the run logs readable.
+
 ### 2026-06-15
 - Improved reuse of equivalent subgoals, so an already-proved or in-progress goal is shared?r cited as a lemma?ather than re-derived.
 - Hardened the subgoal scheduler to recover interrupted work after restarts and to avoid dropping or duplicating tasks.
@@ -150,10 +156,6 @@
 - Added a planning stage that, when a proof attempt stalls, reviews the failure and proposes new approaches — including intermediate lemmas and supporting definitions — instead of merely retrying the same goal.
 - Gave the system the ability to author supporting Lean constructs (definitions, structures, and type classes), not just theorems, with the required imports inserted automatically.
 - Fixed several bookkeeping bugs that had hidden partial results and reopened goals from the search, and corrected mismatches between the on-disk and database state.
-
-### 2026-05-17
-- Published a design for the prover's next stage, pairing a high-level planning component with forward, fact-driven reasoning.
-- Settled that the system may keep introducing auxiliary lemmas and definitions to build up a working library before committing to a final proof verdict.
 
 <!-- ASTERISM-PROGRESS:END -->
 
