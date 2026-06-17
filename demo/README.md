@@ -54,13 +54,13 @@ VS Code panes don't flash to empty between demo takes.
 
 ## Notes
 
-- Spawns whose sandbox hasn't been touched in 60s are considered idle
-  and stop occupying worker panes. The pane keeps its last-seen content
-  rather than clearing.
+- Spawns whose sandbox hasn't been touched within `ACTIVE_WINDOW`
+  (`watcher.py`, 900s / 15 min) are considered idle and stop occupying
+  worker panes. The pane keeps its last-seen content rather than clearing.
 - `_dedupe_check_*.lean` files that live directly under `.attempts/`
   (not in any spawn sandbox) are intentionally skipped.
 - If you want raster-style "matrix rain" feel, increase the daemon's
-  worker pool (`gateway.workers` in `Asterism.yaml`) and use a tighter
+  worker pool (`dispatch.pool` in `Asterism.yaml`) and use a tighter
   watcher interval (`--interval 0.5`).
 - The poll-and-copy approach trades a tiny amount of latency (≤ 1s
   default) for full disk-mediated decoupling: VS Code never reads from
