@@ -712,7 +712,7 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
         # (proved / shelved / disproved), not when this agent writes
         # the sorry stub. Leaf-bypass (status='proved' immediately) is
         # already terminal — cascade fills outcome the legacy way for
-        # those. See `docs/archive/design/phase2/pipelines.md` §4.7.
+        # those. See `docs/archive/design/phase2/pipelines.md` §4.2.
         if decision_id is not None and outcome.status != "proved":
             db.set_inject_decision_produced_goal(
                 conn, decision_id, outcome.goal_id,
