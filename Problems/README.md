@@ -51,5 +51,5 @@ domain dirs are the canonical home for everything created from
 - `docs/CLAUDE.md` Asterism-specific fact section — Problem naming
   convention and the "don't `git mv` a proof-bearing dir without
   fixing namespace + import + DB" warning.
-- `docs/internal/mathlib_gaps.md` — stress-target catalog (drives
+- `docs/internal/strategy/mathlib_gaps.md` — stress-target catalog (drives
   which domain a new problem lands in).
