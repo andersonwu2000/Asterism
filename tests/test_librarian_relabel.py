@@ -37,6 +37,49 @@ def test_self_contained_keep_relabels():
     assert "theorem chain_bottoms_li (M : Nat) : True := by\n  trivial" in r.text
 
 
+def test_self_namespace_qualified_ref_stripped():
+    # residue_thm declares `windingNumber` under `namespace Complex`, so proofs
+    # cite `Complex.windingNumber`. After migration the decl lives in TNS, so
+    # the qualified self-ref must drop to the bare name — while a real
+    # `Complex.exp` (not a problem symbol) is left untouched.
+    src = (
+        "import Mathlib\n"
+        f"namespace {PNS}\n"
+        "theorem foo (z : Nat) : True := by\n"
+        "  have h := Complex.windingNumber z\n"
+        "  have e := Complex.exp z\n"
+        "  trivial\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS,
+        all_defs_syms={"windingNumber"}, local_defs={"windingNumber"},
+        self_namespaces={"Complex"})
+    assert r.ok, r.reason
+    assert "Complex.windingNumber" not in r.text     # stripped to bare
+    assert "windingNumber z" in r.text
+    assert "Complex.exp z" in r.text                 # real Mathlib ref untouched
+
+
+def test_self_namespace_strip_gated_on_declared_set():
+    # Regression guard: without self_namespaces, a Complex.* self-ref is NOT
+    # stripped — the strip fires only for namespaces the problem declared decls
+    # under, so it can never capture an arbitrary Mathlib reference.
+    src = (
+        "import Mathlib\n"
+        f"namespace {PNS}\n"
+        "theorem foo (z : Nat) : True := by\n"
+        "  have h := Complex.windingNumber z\n"
+        "  trivial\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.relabel_self_contained(
+        src, problem_namespace=PNS, target_namespace=TNS,
+        all_defs_syms={"windingNumber"}, local_defs={"windingNumber"})
+    assert r.ok, r.reason
+    assert "Complex.windingNumber" in r.text         # not stripped (no self_ns)
+
+
 def test_alias_declines():
     src = (
         "import Mathlib\n"

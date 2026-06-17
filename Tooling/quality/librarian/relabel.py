@@ -112,6 +112,7 @@ def relabel_self_contained(
     citation_map: "dict[str, str] | None" = None,
     sibling_modules: "dict[str, str] | None" = None,
     strategy_aliases: "dict[str, str] | None" = None,
+    self_namespaces: "set[str] | None" = None,
     body_to_sorry: bool = False,
     best_effort: bool = False,
 ) -> RelabelResult:
@@ -415,10 +416,20 @@ def relabel_self_contained(
     # untouched so the residual check below still catches it cheaply; a
     # `Problems.<other>.…` cross-problem ref is likewise left and caught.
     _known_bare = (keep_slugs or set()) | set(detect_syms)
-    text = re.sub(
-        rf"{re.escape(problem_namespace)}\.(\w+)",
-        lambda m: m.group(1) if m.group(1) in _known_bare else m.group(0),
-        text)
+    # Strip qualified self-references for the problem namespace AND any FOREIGN
+    # namespace the problem declared its own decls under (`self_namespaces`):
+    # residue_thm puts `windingNumber`/`residue` under `namespace Complex`, so
+    # proofs cite `Complex.windingNumber`; after migration that decl lives in
+    # the target namespace, so the qualified ref must drop to the bare name
+    # (which resolves co-located, or via the Defs import+open added above).
+    # Only `\w+` tails that are KNOWN problem symbols are rewritten — a real
+    # `Complex.exp` (exp ∉ known) is left untouched, so this can't capture a
+    # genuine Mathlib reference under the same namespace.
+    for _ns in [problem_namespace, *sorted(self_namespaces or set())]:
+        text = re.sub(
+            rf"{re.escape(_ns)}\.(\w+)",
+            lambda m: m.group(1) if m.group(1) in _known_bare else m.group(0),
+            text)
     if "Problems." in text:
         if best_effort:
             # The unresolved `Problems.` reference is in the signature (the
@@ -441,6 +452,7 @@ def inline_alias(
     citation_map: "dict[str, str] | None" = None,
     sibling_modules: "dict[str, str] | None" = None,
     strategy_aliases: "dict[str, str] | None" = None,
+    self_namespaces: "set[str] | None" = None,
     body_to_sorry: bool = False,
     best_effort: bool = False,
 ) -> RelabelResult:
@@ -466,4 +478,5 @@ def inline_alias(
         all_defs_syms=all_defs_syms, local_defs=local_defs,
         citation_map=citation_map,
         sibling_modules=sibling_modules, strategy_aliases=strategy_aliases,
+        self_namespaces=self_namespaces,
         body_to_sorry=body_to_sorry, best_effort=best_effort)

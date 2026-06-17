@@ -909,6 +909,25 @@ def test_defs_decl_source_local_variable_in_travels_with_its_decl():
     assert "variable {n : Nat}" in usepou
 
 
+def test_defs_decl_source_open_in_travels_with_its_decl():
+    # `open Classical in` is a LOCAL scoped open binding ONLY to the decl after
+    # it. It must travel in THAT decl's slice — hoisting it to the file-level
+    # header dangles a scoped-open above `namespace` → "Missing name after
+    # `end`" parse failure (residue_thm windingNumber, 2026-06-17).
+    text = ("namespace Complex\n\n"
+            "open Classical in\n"
+            "noncomputable def windingNumber (a : Nat) : Nat := a\n\n"
+            "def other : Nat := 0\n\n"
+            "end Complex\n")
+    # 1. `open Classical in` travels INTO windingNumber's slice, before the def.
+    wn = lib._defs_decl_source(text, "windingNumber")
+    assert "open Classical in" in wn
+    assert wn.index("open Classical in") < wn.index("def windingNumber")
+    # 2. a LATER decl does not inherit the scoped open.
+    other = lib._defs_decl_source(text, "other")
+    assert "open Classical in" not in other
+
+
 # ---------------------------------------------------------------------
 # cross-problem target_file ownership guard (stokes definition-tower)
 # ---------------------------------------------------------------------

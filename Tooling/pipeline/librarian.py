@@ -2075,6 +2075,13 @@ def _defs_decl_source(defs_text: str, name: str) -> "str | None":
             if re.match(r"variable\b.*\bin\Z", last):
                 pos = nl + 1 if nl >= 0 else 0
                 continue
+            # `open X in` likewise scopes to the next decl — keep it WITH the
+            # decl in its slice (residue_thm declares defs under `open Classical
+            # in`). Hoisting it file-level dangles a scoped-open above
+            # `namespace` and breaks the parse ("Missing name after `end`").
+            if re.match(r"open\b.*\bin\Z", last):
+                pos = nl + 1 if nl >= 0 else 0
+                continue
             # an immediately-preceding `/-- ... -/` docstring. The trailing `-/`
             # must close THIS `/--` (no closer between) — else it ends some
             # other comment form (`/-!`, `/- ... -/`).
@@ -2249,6 +2256,17 @@ def _mechanical_migrate_file(
     if defs_lean.exists():
         defs_text = defs_lean.read_text(encoding="utf-8")
 
+    # Foreign namespaces the problem declares its OWN decls under — e.g.
+    # residue_thm puts `windingNumber`/`residue` under `namespace Complex`, so
+    # proofs cite `Complex.windingNumber`. After migration that decl lives in
+    # the target namespace, so relabel must strip the `Complex.` prefix to the
+    # bare migrated name. (`Problems.<p>` is the standard self-namespace and is
+    # handled separately by relabel.)
+    self_namespaces = {
+        m.group(1) for m in re.finditer(
+            r"(?m)^namespace\s+([\w.]+)\s*$", defs_text)
+        if m.group(1) != pns and not m.group(1).startswith("Problems.")}
+
     import_set: set[str] = set()
     # Replay Defs.lean's own `import Library.*` lines. relabel drops every
     # decl's `import Problems.<p>.Defs` (by design), and the existing
@@ -2286,8 +2304,13 @@ def _mechanical_migrate_file(
             # Preserve Defs.lean's import/open header so any notation the
             # decl relies on still resolves after migration (relabel drops
             # the Problems imports as usual); ensure the Mathlib umbrella.
-            hdr = "\n".join(ln for ln in defs_text.splitlines()
-                            if ln.startswith(("import ", "open ")))
+            # File-level header only: an `open X in` is decl-scoped and travels
+            # in the decl's own slice (`_defs_decl_source`), so exclude it here
+            # — hoisting it would dangle a scoped-open above `namespace`.
+            hdr = "\n".join(
+                ln for ln in defs_text.splitlines()
+                if ln.startswith("import ")
+                or (ln.startswith("open ") and not re.search(r"\bin\b\s*$", ln)))
             if "import Mathlib" not in hdr:
                 hdr = ("import Mathlib\n" + hdr) if hdr else "import Mathlib"
             src = f"{hdr}\nnamespace {pns}\n{defs_slice}\nend {pns}\n"
@@ -2322,7 +2345,8 @@ def _mechanical_migrate_file(
                   all_defs_syms=all_defs - {slug}, local_defs=local_defs,
                   citation_map=citation_map,
                   sibling_modules=sibling_modules,
-                  strategy_aliases=strategy_aliases)
+                  strategy_aliases=strategy_aliases,
+                  self_namespaces=self_namespaces)
 
         def _relabel_one(body_to_sorry: bool, best_effort: bool = False):
             if strat_text is not None:
@@ -2359,7 +2383,10 @@ def _mechanical_migrate_file(
             if ln.startswith("import "):
                 import_set.add(ln)
                 continue
-            if ln.startswith("open "):
+            # Hoist FILE-LEVEL opens only; an `open X in` is decl-scoped — leave
+            # it in the body (inside the namespace, before the decl it scopes)
+            # rather than dangling it above `namespace`.
+            if ln.startswith("open ") and not re.search(r"\bin\b\s*$", ln):
                 open_set.add(ln)
                 continue
             if ln.startswith(f"namespace {target_module}"):
