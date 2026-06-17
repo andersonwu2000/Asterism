@@ -748,3 +748,40 @@ def test_advance_chain_stall_without_pipeline_id_is_safe(tmp_path: Path, capsys)
         conn, tmp_path, tid, outcome="failed", reason="boom", fail_counts=fc)
     out = capsys.readouterr().out
     assert "STALLED" in out and "boom" in out
+
+
+def test_clear_librarian_fail_counts_for_problem_scopes_to_problem():
+    # A fresh classify clears a problem's stall counts (new attempt). Drops the
+    # plain `problem` serial row + every `problem\x1f<file>` per-file row, and
+    # leaves OTHER problems' counts intact — even a problem whose name shares a
+    # prefix (the match is exact, not a LIKE wildcard).
+    conn = _mem()
+    db.set_librarian_fail_count(conn, target_id="p", n=2)
+    db.set_librarian_fail_count(conn, target_id="p\x1fLibrary/P/A.lean", n=3)
+    db.set_librarian_fail_count(conn, target_id="p\x1fLibrary/P/B.lean", n=1)
+    db.set_librarian_fail_count(conn, target_id="p2\x1fLibrary/Q/C.lean", n=3)
+    n = db.clear_librarian_fail_counts_for_problem(conn, "p")
+    assert n == 3
+    remaining = db.librarian_fail_counts_all(conn)
+    assert remaining == {"p2\x1fLibrary/Q/C.lean": 3}
+
+
+def test_commit_classify_clears_stale_fail_counts(tmp_path, monkeypatch):
+    # End-to-end: a stale per-file stall count from a prior ingestion is
+    # cleared when classify re-lays-out the problem, so a reverted+re-ingested
+    # problem doesn't inherit a STALL that skips the file forever.
+    conn = _mem()
+    _seed_problem(conn, "p")
+    _deduped(conn, "foo")                       # a kept decl awaiting classify
+    db.set_librarian_fail_count(
+        conn, target_id="p\x1fLibrary/P/Foo.lean", n=3)   # stale cap
+    # Minimal ClassifyPlan: one file, one decl. Avoid the usage-graph read by
+    # stubbing it (no proof files on disk in this unit test).
+    monkeypatch.setattr(
+        "Tooling.quality.librarian.inventory.usage_graph",
+        lambda *a, **k: {})
+    from Tooling.pipeline.librarian import ClassifyPlan, ClassifyFile
+    plan = ClassifyPlan(files=[ClassifyFile(
+        path="Library/P/Foo.lean", decls=["foo"])])
+    librarian.commit_classify(conn, "p", plan, tmp_path)
+    assert db.librarian_fail_counts_all(conn) == {}      # stale cap cleared

@@ -383,6 +383,13 @@ def commit_classify(conn, problem: str, plan: ClassifyPlan,
       - within each (possibly merged) file, decls are topologically reordered
         so a cited sibling precedes its user.
     """
+    # A fresh classify is a NEW chain attempt: drop any per-file / serial
+    # stall counts left over from a PRIOR ingestion of this problem (a library
+    # reset + re-run), else `_librarian_refill` skips a still-capped file as
+    # "stalled" before the new attempt even runs it — a reverted+re-ingested
+    # problem inherited the pre-fix STALL caps and the migrate chain never
+    # advanced (residue_thm WindingNumber, 2026-06-17).
+    db.clear_librarian_fail_counts_for_problem(conn, problem)
     from ..quality.librarian import inventory as _inv
     placed = [d for f in plan.files for d in f.decls]
     usage = _inv.usage_graph(workspace, problem, placed,

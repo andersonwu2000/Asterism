@@ -3110,6 +3110,30 @@ def clear_librarian_fail_count(conn: sqlite3.Connection, *,
     conn.commit()
 
 
+def clear_librarian_fail_counts_for_problem(conn: sqlite3.Connection,
+                                            problem: str) -> int:
+    """Drop ALL of a problem's Librarian fail counts — the plain `problem`
+    serial-phase row and every `problem\\x1ffile` per-file row. Called when a
+    fresh `classify` lays the problem out anew (a new chain attempt): the
+    stall-cap is per-attempt, so a count left over from a PRIOR ingestion
+    (e.g. a library reset + re-run) must not make `_librarian_refill` skip a
+    file as already-stalled before the new attempt even runs it. Returns the
+    number of rows dropped.
+
+    Matches in Python (exact `problem` row + `problem\\x1f<file>` rows) rather
+    than SQL LIKE, since a problem slug can contain `_` — a LIKE wildcard —
+    which would over-match a sibling problem."""
+    prefix = problem + "\x1f"
+    victims = [t for (t,) in conn.execute(
+        "SELECT target_id FROM librarian_fail_counts")
+        if t == problem or t.startswith(prefix)]
+    for t in victims:
+        conn.execute("DELETE FROM librarian_fail_counts WHERE target_id = ?",
+                     (t,))
+    conn.commit()
+    return len(victims)
+
+
 def library_decls_for(conn: sqlite3.Connection, problem: str,
                       *, lifecycle: str | None = None) -> list[sqlite3.Row]:
     """All library_decls for a problem, optionally filtered to one

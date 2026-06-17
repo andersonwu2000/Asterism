@@ -84,7 +84,10 @@ _WATERMARKS = {
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.
-    "Tooling/state/db.py": 3150,
+    # 3150→3200: clear_librarian_fail_counts_for_problem — a fresh classify
+    # drops stale per-attempt stall caps so a reverted+re-ingested problem does
+    # not inherit a STALL (residue_thm) — 2026-06-17 — conscious bump.
+    "Tooling/state/db.py": 3200,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup
