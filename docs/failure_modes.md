@@ -53,6 +53,10 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 | `patch_signature_mismatch` | Backward | agent 改了鎖死的 `theorem sX <binders> : <type>` 簽名 | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `naming_violation` | Backward | sub-goal slug 違反 charset / length lint（lowercase `[a-z][a-z0-9_]*`、≤ 60 chars；camelCase framework auto-normalize、衝突 framework auto-suffix，皆不算 violation；只剩 digit-start / punctuation / unicode 等不可機械修者） | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `circular_decomposition` | Backward | sub-goal verbatim 重述其 strict ancestor（同名 + theorem-head 全等）= proving X by reducing to X、零進展;`_2` auto-suffix 會掩蓋成無限退化子樹 | buffer + retry（retry_context 帶「換個分解」提示） | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
+| `axiom_violation` | Builder + Backward | Manifest 有 `axioms_whitelist` 時，confirm-build 報 `axiom_error` 或用到 whitelist 外的 rogue axiom（含 `sorryAx`）→ 還原 backup、reject | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
+| `cite_unproved_sibling` | Builder + Backward | cite-gate：patch 引用的 sibling `L_<slug>` 尚未 proved（orphan / open / dead / disproved）| buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
+| `patch_body_contains_sorry` | Backward | leaf-bypass patch body 仍含 `sorry`（既非合法 decomposition、也非真 leaf）| buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
+| `same_as_disproved` | Backward | sub-goal verbatim 重述本 problem 內已 `disproved` 的 statement（`_retry.py` `_TERMINAL_DECLINE_REASONS`）| terminal exit（不 retry）| (helper 已 ++)；走 generic failed | `direct_attempt` |
 | `agent_no_annotation` | Builder + Backward (Phase 2) | rc=0、build 過但 patch.lean leading comment 空白 | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `agent_no_output` | Builder Phase 2 | rc=0 但 agent 沒寫 `patch*.lean` | buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
 | `agent_rc_nonzero` | Builder + Backward | rc≠0、rc≠124/125/126/127、wall-clock ≥ 10s（一般 hard fail）| buffer + retry | (helper 已 ++)；exhausted → status transition | `direct_attempt` |
@@ -96,9 +100,28 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 
 **Notes**：
 - spawn 失敗的三條 reason（`agent_timeout` / `agent_rc_nonzero` / `agent_no_output`）按 rc + agent 行為精確分類，retry agent / event renderer 可依 reason 直接 dispatch、不需要 parse `failure_detail`。
-- `agent_declined`（`needs_decomposition` directive）**只在 Builder**。Backward 是 decomposer 自己、沒有「需要拆解」的 escape；Backward agent 退出用 `unprovable` / `return_to_parent` / `shelve` 三條。
-- 詳細的 directive 詞彙設計（4 個 directive × 2 pipeline、何時用哪條、description 規範）見 `docs/archive/decline_directives.md`。
+- `agent_declined` 在 Builder 是 `needs_decomposition` directive；Forward（`library_sufficient`）與 Librarian 也用**同一 reason string** 走各自的 decline。Backward 沒有此 escape（decomposer 自己、無「需要拆解」一說；退出用 `unprovable` / `return_to_parent` / `shelve` 三條）。
+- 詳細的 directive 詞彙設計（4 個 directive × 2 pipeline、何時用哪條、description 規範）見 `docs/archive/design/decline_directives.md`。
 - `lake_build_error` 在 Builder 來自 patch 套上去 build 失敗；在 Backward 來自 strategy 組裝（sub-goal sorry stubs + scratch 一起 build batch）失敗。
+
+**Strategist / Librarian failure_reasons（非 Goal-target、不進上面的 master table）**：
+
+這兩個 pipeline 的 target 不是一般 Goal，cascade 與 event 投影都跟 Builder/Backward 不同：失敗**不**動 sub-goal、**不**投影到任何 Context.md（target≠Goal、`events.py` 只看 Goal-target rows）。
+
+Strategist（`Tooling/pipeline/strategist.py`）：
+- `strategist_schema_invalid` — `decision.json` 解析過但 `verify_decisions` 不過（schema / ancestor-safety 違規）；`ASTERISM_STRATEGIST_VERIFY_RETRY` 開時同 session resume 一次
+- `strategist_noop` — Strategist 合法地決定 Noop（當下無事可做）；非錯誤、記錄用
+- 另含共用的 `agent_no_output`
+
+Librarian（`Tooling/pipeline/librarian.py`，Phase 4）：失敗走 `dispatcher._advance_librarian_chain` 的 **per-unit fail-count**（`librarian_fail_counts`、跨 restart 持久）；連續 `LIBRARIAN_MAX_CHAIN_RETRIES`（=2）次 → 該 unit **STALL**（不再 refill、不動 goal、無 shelve）。`librarian_file_busy` 不計數（另一 worker 正持有該檔）。
+- **migrate**：`librarian_migrate_not_mechanical`（需 LLM、非純機械 relabel）/ `librarian_migrate_hole_unfilled`（relabel 後仍有 sorry 洞）/ `librarian_migrate_build_failed`（搬出的檔 build 不過）
+- **classify**：`librarian_not_classified`（前置 classify 未完成）/ `librarian_schema_invalid`（classify agent 輸出 schema 不合）/ `librarian_bad_work_kind`（dispatch 收到未知 work_kind）/ `librarian_missing_prompt`
+- **cleanup**：`librarian_cleaned_build_failed`（精修後 build 不過）/ `librarian_verify_failed` / `librarian_gate_failed`（per-file Mathlib-PR / 零-warning gate 未過）
+- **bridge**：`librarian_bridge_not_mechanical` / `librarian_no_root`
+- **跨檔 / upstream**：`librarian_file_busy`（不計數）/ `librarian_file_owned_by_other` / `librarian_integrity_error`（DB↔檔 drift）/ `librarian_needs_upstream_unresolvable` / `librarian_reopened_upstream`
+- **共用**：`agent_error`（Librarian agent spawn rc≠0）/ `agent_no_output` / `agent_declined`（agent 自評該 unit 無法機械化）
+
+`daemon_shutdown`（`_retry.py`）— daemon 收到關閉訊號時 in-flight retry 的收尾 reason；infra-class、不計 attempts、不投影。
 
 ---
 
@@ -117,7 +140,7 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 
 **`_NON_AGENT_REASONS`** — events.py 統一定義的不投影 reason set、SQL `NOT IN` 引用：
 - `spawn_fast_fail` — infra 故障（claude.exe crash / cwd / quota）
-- `agent_infeasible` — 改投成 `infeasible_sub`、不在自己 goal 出現
+- `agent_infeasible` / `parent_needs_fix` / `agent_shelved` — 三條 cascade-up decline 都改投成 `infeasible_sub`（到 parent context）、不在自己 goal 的 direct_attempts 重複出現
 - `goal_not_found`, `lean_file_missing`, `missing_parent_stub`, `parent_stub_not_decomposable`, `goal_no_longer_open`, `unknown_kind` — framework / DB / FS race、agent 看不到也不能改
 
 **audience 規則的兩個 axis**（不再 kind-gate Builder/Backward）：
@@ -138,7 +161,7 @@ crash 語意）。cascade 對非 terminal-decline 的失敗（lake error、forbi
 ## 4. 跨參考
 
 - 動態 flow（pipeline 完整流程含失敗）：`docs/data-flow.md`
-- goal_history v1 audience 規則 / 實作步驟設計史：`docs/archive/goal_history_unified.md`
-- DB schema CHECK 與 column 定義：`Tooling/db.py`
-- cascade 完整邏輯：`Tooling/dispatcher.py` `cascade_one`
+- goal_history v1 audience 規則 / 實作步驟設計史：`docs/archive/design/goal_history_unified.md`
+- DB schema CHECK 與 column 定義：`Tooling/state/db.py`
+- cascade 完整邏輯：`Tooling/core/dispatcher.py` `cascade_one`
 - session / postmortem 機制：`Tooling/pipeline/builder.py` rc 處理、`pipeline/_drafts.py`
