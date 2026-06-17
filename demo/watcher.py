@@ -81,7 +81,6 @@ _CLEANUP_TITLES = {
     "Naming + imports": "cleanup:naming",
     "Proof-simplification triage": "cleanup:simp-mark",
     "Shorten one proof": "cleanup:simplify",
-    "PR-style polish": "cleanup:polish",
     "Final mathlib review": "cleanup:review",
 }
 _RE_CLEANUP_CTX = re.compile(r"^# (.+?) — (\S.*?)(?: — `([^`]+)`)?\s*$")

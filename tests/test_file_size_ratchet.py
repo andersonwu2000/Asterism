@@ -104,7 +104,6 @@ _WATERMARKS = {
     "Tooling/quality/librarian/cleanup/audit.py": 350,
     "Tooling/quality/librarian/cleanup/decide.py": 250,
     "Tooling/quality/librarian/cleanup/mechanical.py": 250,
-    "Tooling/quality/librarian/cleanup/polish.py": 150,
     "Tooling/quality/librarian/cleanup/simplify.py": 200,
 }
 

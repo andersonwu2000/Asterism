@@ -6,7 +6,6 @@ from Tooling.quality.librarian.cleanup import audit as cl_audit
 from Tooling.quality.librarian.cleanup import _common as cl_common
 from Tooling.quality.librarian.cleanup import decide as cl_decide
 from Tooling.quality.librarian.cleanup import mechanical as cl_mechanical
-from Tooling.quality.librarian.cleanup import polish as cl_polish
 from Tooling.quality.librarian.cleanup import simplify as cl_simplify
 
 
@@ -1351,95 +1350,6 @@ def test_file_cleanup_decide_noop_when_nothing_to_decide(tmp_path,
 
 
 # ---------------------------------------------------------------------
-# (e) polish — merged variable+docstring+style+warning pass (type-preserving)
-# ---------------------------------------------------------------------
-
-def _fake_polish_spawn(monkeypatch, outputs):
-    """Patch agent.spawn_llm to write outputs[i] (str|None) as polished.lean."""
-    from Tooling import agent
-    calls = {"n": 0}
-
-    def _spawn(*, kind, prompt_path, problem_dir, attempts_dir, session_id):
-        i = calls["n"]
-        calls["n"] += 1
-        o = outputs[i] if i < len(outputs) else None
-        if o is not None:
-            (attempts_dir / "polished.lean").write_text(o, encoding="utf-8")
-        return 0
-    monkeypatch.setattr(agent, "spawn_llm", _spawn)
-    return calls
-
-
-def _fake_bwo_seq(monkeypatch, outputs):
-    """Patch _build_with_output to return (True, outputs[i]) — the warning view."""
-    seq = {"n": 0}
-
-    def _bwo(ws, content, *, prefix, timeout=240):
-        i = seq["n"]
-        seq["n"] += 1
-        return True, (outputs[i] if i < len(outputs) else "")
-    monkeypatch.setattr(cl_common, "_build_with_output", _bwo)
-    return seq
-
-
-def test_polish_warnings_filters() -> None:
-    out = ("warning: F.lean:10:3: unused variable `h`\n"
-           "warning: F.lean:12:0: This line exceeds the 100 character limit, "
-           "please shorten it!\n"
-           "warning: F.lean:5:0: `A.A.foo` namespace is duplicated\n")  # not polish's
-    w = cl_polish._polish_warnings(out)
-    assert len(w) == 2 and not any("duplicated" in x for x in w)
-
-
-def test_file_cleanup_polish_noop_without_prompt(tmp_path) -> None:
-    rel = "Library/P/F.lean"
-    _setup_var(tmp_path, rel, "import Mathlib\n", prompt=None)   # no prompt file
-    assert dedup.file_cleanup_polish(tmp_path, "p", rel,
-                                     [_vdecl("foo", "(a : T) : P")]) is False
-
-
-def test_file_cleanup_polish_success_no_warnings(tmp_path, monkeypatch) -> None:
-    rel = "Library/P/F.lean"
-    _setup_var(tmp_path, rel, "import Mathlib\n-- orig\n", prompt="polish.md")
-    d = _vdecl("foo", "(a : T) : P")
-    new = "import Mathlib\n/-- doc -/\ntheorem foo (a : T) : P := by trivial\n"
-    _fake_polish_spawn(monkeypatch, [new])
-    _fake_typecheck(monkeypatch, [(True, "", {d.fqn: "T"}),    # base snapshot
-                                  (True, "", {d.fqn: "T"})])   # attempt: same type
-    _fake_bwo_seq(monkeypatch, [""])                           # no warnings → done
-    assert dedup.file_cleanup_polish(tmp_path, "p", rel, [d]) is True
-    assert (tmp_path / rel).read_text(encoding="utf-8") == new
-
-
-def test_file_cleanup_polish_reverts_on_type_change(tmp_path, monkeypatch) -> None:
-    rel = "Library/P/F.lean"
-    original = "import Mathlib\n-- orig\n"
-    _setup_var(tmp_path, rel, original, prompt="polish.md")
-    d = _vdecl("foo", "(a : T) : P")
-    _fake_polish_spawn(monkeypatch, ["v1\n", "v2\n", "v3\n"])      # 1 + 2 retries
-    _fake_typecheck(monkeypatch, [(True, "", {d.fqn: "T"})]        # base
-                    + [(True, "", {d.fqn: "CHANGED"})] * 3)        # type drifts each try
-    _fake_bwo_seq(monkeypatch, [])                                 # never reached
-    assert dedup.file_cleanup_polish(tmp_path, "p", rel, [d]) is False
-    assert (tmp_path / rel).read_text(encoding="utf-8") == original   # kept
-
-
-def test_file_cleanup_polish_retries_warnings_keeps_best(tmp_path,
-                                                         monkeypatch) -> None:
-    rel = "Library/P/F.lean"
-    _setup_var(tmp_path, rel, "import Mathlib\n-- orig\n", prompt="polish.md")
-    d = _vdecl("foo", "(a : T) : P")
-    v1, v2 = "import Mathlib\n-- v1\n", "import Mathlib\n-- v2 clean\n"
-    _fake_polish_spawn(monkeypatch, [v1, v2])
-    _fake_typecheck(monkeypatch, [(True, "", {d.fqn: "T"}),    # base
-                                  (True, "", {d.fqn: "T"}),    # v1 type ok
-                                  (True, "", {d.fqn: "T"})])   # v2 type ok
-    _fake_bwo_seq(monkeypatch, ["warning: x:1:0: unused variable `h`\n", ""])
-    assert dedup.file_cleanup_polish(tmp_path, "p", rel, [d]) is True
-    assert (tmp_path / rel).read_text(encoding="utf-8") == v2   # kept the clean retry
-
-
-# ---------------------------------------------------------------------
 # bridge cite-drop — residual-reference veto (primary e2e 2026-06-10)
 # ---------------------------------------------------------------------
 
@@ -1646,9 +1556,9 @@ def test_audit_shell_applies_clean_rewrite(tmp_path, monkeypatch) -> None:
 
 def test_staged_file_agentic_stages_gate_bridged_decls(tmp_path,
                                                        monkeypatch) -> None:
-    # A bridged alias stays IN the file → polish/decide/audit must receive it in
-    # their gate set. Gating only `survivor_decls` let audit delete the alias
-    # green (rcf e2e 2026-06-10: bridged `block_companion` vanished → consumer
+    # A bridged alias stays IN the file → decide/audit must receive it in their
+    # gate set. Gating only `survivor_decls` let audit delete the alias green
+    # (rcf e2e 2026-06-10: bridged `block_companion` vanished → consumer
     # dangling → bridge red).
     rel = "Library/P/F.lean"
     a = _vdecl("keep_me", ": P", module="Library.P.F", rel=rel)
@@ -1666,13 +1576,10 @@ def test_staged_file_agentic_stages_gate_bridged_decls(tmp_path,
             seen[stage] = [d.name for d in decls]
             return ret
         return _f
-    monkeypatch.setattr(dedup, "file_cleanup_polish", _cap("polish", False))
     monkeypatch.setattr(dedup, "file_cleanup_decide", _cap("decide", ({}, False)))
     monkeypatch.setattr(dedup, "file_cleanup_audit", _cap("audit", ({}, False)))
     res = dedup.run_staged_cleanup_file(
-        tmp_path, "p", rel, bridge=False,
-        polish=True, decide=True, audit=True)
-    assert seen["polish"] == ["keep_me", "bridge_alias"]
+        tmp_path, "p", rel, bridge=False, decide=True, audit=True)
     assert seen["decide"] == ["keep_me", "bridge_alias"]
     assert seen["audit"] == ["keep_me", "bridge_alias"]
     assert res["bridged"] == {b.fqn: a.fqn}

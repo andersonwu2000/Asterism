@@ -48,10 +48,10 @@ def test_cleanup_mapped_stage_label(tmp_path):
     # A current, mapped cleanup stage → its curated `cleanup:<stage>` label.
     d = _ctx(
         tmp_path,
-        "# PR-style polish — LinearAlgebra.jordan_normal_form — "
+        "# Final mathlib review — LinearAlgebra.jordan_normal_form — "
         "`Library/LinearAlgebra/JordanForm/FamilyCoeffs.lean`\n\nbody…\n",
     )
-    assert watcher._lookup_spawn_info(d) == ("cleanup:polish",
+    assert watcher._lookup_spawn_info(d) == ("cleanup:review",
                                              "FamilyCoeffs.lean")
 
 

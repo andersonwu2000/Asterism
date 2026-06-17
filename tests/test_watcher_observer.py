@@ -59,7 +59,7 @@ def test_every_cleanup_stage_title_is_mapped() -> None:
     src_titles = _source_cleanup_titles()
     # Guard against a broken regex silently passing: the scan must find the
     # known anchor stages.
-    assert {"dedup audit", "PR-style polish"} <= src_titles, (
+    assert {"dedup audit", "Final mathlib review"} <= src_titles, (
         f"title scan looks broken — found only {sorted(src_titles)}")
     missing = sorted(src_titles - set(_watcher._CLEANUP_TITLES))
     assert not missing, (

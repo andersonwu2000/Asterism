@@ -37,7 +37,6 @@ from .cleanup.audit import file_cleanup_audit
 from .cleanup.decide import file_cleanup_decide
 from .cleanup.mechanical import (file_cleanup_strip_framework_comments,
                                  file_cleanup_unused_args)
-from .cleanup.polish import file_cleanup_polish
 from .cleanup.simplify import _mark_simplify_file, decl_cleanup_simplify_file
 
 
@@ -1655,7 +1654,6 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
                             apply: bool = True, bridge: bool = True,
                             strip_comments: bool = False,
                             unused_args: bool = False,
-                            polish: bool = False,
                             decide: bool = False,
                             audit: bool = False,
                             simplify: bool = False,
@@ -1718,7 +1716,7 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
     survivor_decls = [d for d in decls_in_file
                       if d.fqn not in r["drops"] and d.fqn not in bridged_fqns]
     # Everything still PRESENT in the file = survivors + bridged aliases. The
-    # whole-file agentic stages (polish/decide/audit) must gate on THIS set, not
+    # whole-file agentic stages (decide/audit) must gate on THIS set, not
     # `survivor_decls`: a bridged alias is a one-liner a zealous reviewer happily
     # deletes, and a #check gate that doesn't list it never notices — the alias
     # vanishes green and every consumer citing it dangles (rcf audit e2e
@@ -1748,19 +1746,10 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
     _T["unused"] = _t()
     # (e) strip framework-process `--` comments (entry_kind / sub-goal / Closer:
     # / combinator / (was: …)) migrate carried from the proof. Mechanical,
-    # comment-only. Before polish so the agent sees a clean file.
+    # comment-only. Before decide/audit so the agent sees a clean file.
     if strip_comments:
         file_cleanup_strip_framework_comments(workspace, problem, target_file)
-    # (e) polish — ONE type-preserving agentic rewrite: variable extraction +
-    # docstrings + module docstring + mathlib style + local warning cleanup,
-    # under the #check type-invariant gate. Supersedes the separate variables +
-    # docstring passes. After the mechanical (c) passes, before decide.
-    polished = False
-    if polish and present_decls:
-        polished = file_cleanup_polish(
-            workspace, problem, target_file, present_decls)
-    _T["polish"] = _t()
-    # (P4) decide — LAST agentic step, on the polished shape: align kept
+    # (P4) decide — LAST agentic step, on the cleaned shape: align kept
     # survivors' names to mathlib conventions + swap the `import Mathlib`
     # umbrella for a precise canonical set. Mechanical apply + per-file rebuild
     # gate (degrade ladder: bad imports never cost a rename); consumers
@@ -1793,8 +1782,7 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
           f"mark={_T['mark']-_T['0']:.0f}s dedup={_T['dedup']-_T['mark']:.0f}s "
           f"simplify={_T['simplify']-_T['dedup']:.0f}s "
           f"unused={_T['unused']-_T['simplify']:.0f}s "
-          f"polish={_T['polish']-_T['unused']:.0f}s "
-          f"decide={_T['decide']-_T['polish']:.0f}s "
+          f"decide={_T['decide']-_T['unused']:.0f}s "
           f"audit={_T['audit']-_T['decide']:.0f}s "
           f"total={_T['audit']-_T['0']:.0f}s", flush=True)
     return {"dropped": {x: Yd.fqn for x, Yd in r["drops"].items()},
@@ -1802,7 +1790,7 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
             "bridged": {x: Yd.fqn for x, Yd in r["bridged"]},
             "near": r["near"], "failed": r["failed"],
             "simplified": n_simplified, "unused_removed": unused_removed,
-            "polished": polished, "renamed": renamed,
+            "renamed": renamed,
             "imports_min": imports_min, "audited": audited}
 
 

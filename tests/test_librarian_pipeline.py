@@ -273,14 +273,15 @@ def test_run_cleanup_per_file_warning_gate_passes_when_clean(conn, tmp_path,
 
 def test_run_cleanup_per_file_folds_polish_into_audit(conn, tmp_path, monkeypatch):
     # Merge: the orchestrator no longer requests a separate polish stage — audit
-    # does the full mathlib-ize (polish folded in). Pins polish=False, audit=True.
+    # does the full mathlib-ize (polish folded in, then the dead stage removed),
+    # so there is no `polish` kwarg at all and audit is requested.
     _seed_migrated(conn, "foo", "Library.P.F.foo", target_file="Library/P/F.lean")
     cap: dict = {}
     _patch_engine_file(monkeypatch, {"dropped": {}, "merged": set(),
                                      "bridged": {}, "near": [], "failed": []}, cap)
     lib._run_cleanup(conn, problem="p", workspace=tmp_path,
                      target_file="Library/P/F.lean")
-    assert cap["polish"] is False and cap["audit"] is True
+    assert cap["audit"] is True and "polish" not in cap
 
 
 def test_run_cleanup_per_file_reads_prior_renames_from_db(conn, tmp_path,

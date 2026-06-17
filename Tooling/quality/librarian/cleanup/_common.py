@@ -447,12 +447,11 @@ _WARN_LINE_RE = re.compile(r"\bwarning:[^\n]*")
 def _all_warnings(build_output: str) -> "list[str]":
     """Every distinct `warning:` line in a build's full output — the Mathlib-PR
     zero-warning bar (deprecated, unused variable, linter.style, dupNamespace,
-    unnecessary, longFile, …). Broader than polish's type-preserving subset
-    (`_polish_warnings`, which is only the warnings polish itself can clear): the
-    final per-file cleanup gate and the audit reviewer drive the file to ZERO of
-    these. `deprecated` in particular is core-Lean (always on) yet was missed by
-    the curated subset, so deprecated lemmas (EuclideanSpace.single_apply →
-    PiLp.single_apply) shipped silently."""
+    unnecessary, longFile, …). The final per-file cleanup gate and the audit
+    reviewer drive the file to ZERO of these. `deprecated` in particular is
+    core-Lean (always on) yet is easy to miss by eye, so deprecated lemmas
+    (EuclideanSpace.single_apply → PiLp.single_apply) shipped silently before
+    this gate."""
     seen: set[str] = set()
     out: list[str] = []
     for m in _WARN_LINE_RE.finditer(build_output):
