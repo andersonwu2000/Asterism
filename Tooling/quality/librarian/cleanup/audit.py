@@ -37,6 +37,15 @@ _AUDIT_RENAMES = "renames.json"
 # 3 (was 2): audit now does the full mathlib-ize in one pass (polish folded in),
 # so it gets one more attempt to converge to a clean, zero-warning rewrite.
 _AUDIT_MAX_RETRIES = 3
+# Fresh-COLD reconverge passes (beyond the first): the warm `--resume` retries
+# inside ONE run_lsp_edit_loop can wedge on a complex file and return a
+# best-effort version with residual warnings; a fresh cold spawn (new session,
+# re-seeded from the greenest version so far) is what actually drives them to
+# zero. Re-cold this many extra times BEFORE the caller pays a whole-file
+# cleanup retry (mark→decide re-run) just to give audit one fresh spawn
+# (residue 2026-06-18: cleanup re-ran the full ~40min file pipeline only to
+# hand audit a fresh session that then converged).
+_AUDIT_RECONVERGE_PASSES = 2
 
 _FENCE_MSG = ("the import block and the `namespace` lines must stay EXACTLY as "
               "in the original (imports are the decide stage's job; "
@@ -214,79 +223,112 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
     # `:` in a path component). Strip the `.lean` suffix for a clean dir name.
     stem = leaf[:-5] if leaf.endswith(".lean") else leaf
     pid = f"{pipeline_id or agent.new_pipeline_id()}-audit-{stem}"
-    attempts = agent.attempts_dir_for(workspace, pid)
-    audited = attempts / _AUDIT_OUTPUT
-    renames_file = attempts / _AUDIT_RENAMES
     decl_names = [d.name for d in decls_in_file]
 
-    best: "tuple[int, str, dict[str, str]] | None" = None  # (warns, text, renames)
+    # (warns, text, renames-relative-to-`original`) of the greenest version seen
+    # across reconverge passes. `original` + `base_types` stay FIXED — every
+    # pass's type-invariance gate compares against the file's entry contract, no
+    # matter which (improved) seed it built from.
+    best: "tuple[int, str, dict[str, str]] | None" = None
     cap: "dict[str, bool]" = {}
 
-    def cold_prep(ctx: SpawnCtx) -> None:
-        # Seed audited.lean = the original + write Context.md; the agent EDITS
-        # audited.lean in place via LSP (apply_edit write-through). Warm retries
-        # keep the agent's last audited.lean (incremental, --resume) so
-        # retry_context-driven warning fixes build on the prior pass, not a
-        # from-scratch whole-file rewrite — so cold_prep runs on cold only.
-        (ctx.attempts_dir / "Context.md").write_text(
-            _audit_context(workspace, problem, target_file, decl_names),
-            encoding="utf-8")
-        audited.write_text(original, encoding="utf-8")
-        if renames_file.exists():
-            renames_file.unlink()
+    def _chain(prev: "dict[str, str]", new: "dict[str, str]") -> "dict[str, str]":
+        # Collapse a rename chain across passes: prev {orig→cur} then new
+        # {cur→next} → {orig→next} (mirror of run_staged_cleanup_file's
+        # decide∘audit collapse), so the returned renames are relative to the
+        # file as audit first received it, single-hop, for deferred-rewire.
+        inv = {v: k for k, v in prev.items()}
+        out = dict(prev)
+        for o, n in new.items():
+            out[inv.get(o, o)] = n
+        return out
 
-    def parse() -> PipelineResult:
-        nonlocal best
-        if not audited.exists():
+    for _pass in range(_AUDIT_RECONVERGE_PASSES + 1):
+        # Each pass is a FRESH cold session (own pid/attempts) re-seeded from the
+        # greenest version so far — `_pass==0` from `original`, later passes from
+        # `best` (retain prior progress, like the whole-file retry's audit seed).
+        seed_text = best[1] if best is not None else original
+        pass_pid = pid if _pass == 0 else f"{pid}-r{_pass}"
+        attempts = agent.attempts_dir_for(workspace, pass_pid)
+        audited = attempts / _AUDIT_OUTPUT
+        renames_file = attempts / _AUDIT_RENAMES
+        pass_best: "tuple[int, str, dict[str, str]] | None" = None
+
+        def cold_prep(ctx: SpawnCtx, _seed=seed_text, _aud=audited,
+                      _rf=renames_file) -> None:
+            # Seed audited.lean = the pass's seed + write Context.md; the agent
+            # EDITS audited.lean in place via LSP. Warm retries within this pass
+            # keep the agent's last audited.lean (incremental, --resume), so
+            # cold_prep runs on cold only.
+            (ctx.attempts_dir / "Context.md").write_text(
+                _audit_context(workspace, problem, target_file, decl_names),
+                encoding="utf-8")
+            _aud.write_text(_seed, encoding="utf-8")
+            if _rf.exists():
+                _rf.unlink()
+
+        def parse(_aud=audited, _rf=renames_file) -> PipelineResult:
+            nonlocal pass_best
+            if not _aud.exists():
+                return PipelineResult(
+                    outcome="failed", failure_reason="agent_no_output",
+                    failure_detail=f"audit {leaf}: no {_AUDIT_OUTPUT}")
+            new_text = _aud.read_text(encoding="utf-8")
+            renames_raw = (_rf.read_text(encoding="utf-8")
+                           if _rf.exists() else None)
+            status, detail, applied, warns = _audit_gate(
+                workspace, target_file, decls_in_file, original=original,
+                new_text=new_text, renames_raw=renames_raw,
+                base_types=base_types, scope=scope, pool=pool)
+            if status == "noop":
+                cap["noop"] = True
+                return PipelineResult(outcome="success")
+            if status in ("fence", "build", "type"):
+                # Non-terminal: feed the diff back as retry_context and re-spawn.
+                return PipelineResult(
+                    outcome="failed", failure_reason="librarian_gate_failed",
+                    failure_detail=detail)
+            # ok / warn — track the greenest version seen WITHIN this pass.
+            if pass_best is None or len(warns) < pass_best[0]:
+                pass_best = (len(warns), new_text, applied)
+            if status == "ok":
+                return PipelineResult(outcome="success")
             return PipelineResult(
-                outcome="failed", failure_reason="agent_no_output",
-                failure_detail=f"audit {leaf}: no {_AUDIT_OUTPUT}")
-        new_text = audited.read_text(encoding="utf-8")
-        renames_raw = (renames_file.read_text(encoding="utf-8")
-                       if renames_file.exists() else None)
-        status, detail, applied, warns = _audit_gate(
-            workspace, target_file, decls_in_file, original=original,
-            new_text=new_text, renames_raw=renames_raw, base_types=base_types,
-            scope=scope, pool=pool)
-        if status == "noop":
-            cap["noop"] = True
-            return PipelineResult(outcome="success")
-        if status in ("fence", "build", "type"):
-            # Non-terminal: feed the diff back as retry_context and re-spawn.
-            return PipelineResult(
-                outcome="failed", failure_reason="librarian_gate_failed",
-                failure_detail=detail)
-        # ok / warn — track the greenest (fewest-warning) version seen.
-        if best is None or len(warns) < best[0]:
-            best = (len(warns), new_text, applied)
-        if status == "ok":
-            return PipelineResult(outcome="success")
-        return PipelineResult(
-            outcome="failed", failure_reason="librarian_warnings_remain",
-            failure_detail=_WARN_MSG + "\n".join(warns[:10]))
+                outcome="failed", failure_reason="librarian_warnings_remain",
+                failure_detail=_WARN_MSG + "\n".join(warns[:10]))
 
-    def feedback(sid: str, result: "PipelineResult") -> None:
-        _feedback.attempt_feedback(
-            kind="cleanup:audit", sid=sid, slug=leaf,
-            outcome=("success" if result.outcome == "success" else "exhausted"),
-            problem_dir=problem_dir, attempts_dir=attempts, workspace=workspace)
+        def feedback(sid: str, result: "PipelineResult", _att=attempts) -> None:
+            _feedback.attempt_feedback(
+                kind="cleanup:audit", sid=sid, slug=leaf,
+                outcome=("success" if result.outcome == "success"
+                         else "exhausted"),
+                problem_dir=problem_dir, attempts_dir=_att, workspace=workspace)
 
-    # `release_session_after=True`: free this audit's gateway slot before the
-    # next file registers (the cleanup chain runs files back-to-back).
-    run_lsp_edit_loop(
-        conn=conn, goal_id=None, pipeline_id=pid,
-        budget_threshold=max_retries + 1,
-        shelve_threshold=dispatcher.SHELVE_THRESHOLD,
-        attempts_dir=attempts, workspace=workspace,
-        problem=problem, problem_dir=problem_dir,
-        kind="librarian", prompt_path=prompt_path, target=audited,
-        cold_prep_fn=cold_prep, parse_fn=parse,
-        feedback_fn=feedback, release_session_after=True)
+        # `release_session_after=True`: free this audit's gateway slot before the
+        # next file (or next pass) registers (the cleanup chain runs back-to-back).
+        run_lsp_edit_loop(
+            conn=conn, goal_id=None, pipeline_id=pass_pid,
+            budget_threshold=max_retries + 1,
+            shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+            attempts_dir=attempts, workspace=workspace,
+            problem=problem, problem_dir=problem_dir,
+            kind="librarian", prompt_path=prompt_path, target=audited,
+            cold_prep_fn=cold_prep, parse_fn=parse,
+            feedback_fn=feedback, release_session_after=True)
+
+        if pass_best is not None:
+            cum = _chain(best[2] if best is not None else {}, pass_best[2])
+            if best is None or pass_best[0] < best[0]:
+                best = (pass_best[0], pass_best[1], cum)
+        if best is not None and best[0] == 0:
+            break                                  # converged: zero warnings
+        if cap.get("noop") and best is None:
+            break                                  # agent made no change at all
 
     if best is None:
         if not cap.get("noop"):
             print(f"[staged] audit `{leaf}` — kept original (no green audit in "
-                  f"{max_retries + 1} tries)", flush=True)
+                  f"{_AUDIT_RECONVERGE_PASSES + 1} cold pass(es))", flush=True)
         return {}, False                          # noop or no green candidate
     n_warn, text, applied = best
     (workspace / target_file).write_text(text, encoding="utf-8")

@@ -1554,6 +1554,67 @@ def test_audit_shell_applies_clean_rewrite(tmp_path, monkeypatch) -> None:
     assert "/-- doc -/" in (tmp_path / rel).read_text(encoding="utf-8")
 
 
+def test_audit_reconverge_runs_all_cold_passes_when_never_dry(
+    tmp_path, monkeypatch,
+) -> None:
+    """When the warnings never clear, audit runs `_AUDIT_RECONVERGE_PASSES+1`
+    FRESH cold passes (distinct attempts dirs) by itself — instead of returning
+    best-effort after ONE pass and making the caller pay a whole-file cleanup
+    retry just to hand audit a fresh session."""
+    rel = "Library/P/F.lean"
+    _setup_audit(tmp_path, rel, _AUDIT_SRC)
+    from Tooling import agent
+    seen: "set[str]" = set()
+
+    def _spawn(*, attempts_dir, **k):
+        seen.add(str(attempts_dir))                 # one dir per cold pass
+        (attempts_dir / "audited.lean").write_text(_AUDIT_SRC, encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", _spawn)
+    _fake_audit_types(monkeypatch, lambda f: "T")
+    monkeypatch.setattr(cl_audit, "_audit_gate",
+                        lambda *a, **k: ("warn", "", {}, ["linter: x"]))
+    d = _vdecl("foo_bar", ": P", module="Library.P.F", rel=rel)
+    dedup.file_cleanup_audit(tmp_path, "p", rel, [d], scope=[d], pool=[])
+    # Each pass = its own attempts dir (warm --resume retries reuse it); a
+    # never-dry file should exhaust exactly _AUDIT_RECONVERGE_PASSES+1 passes.
+    assert len(seen) == cl_audit._AUDIT_RECONVERGE_PASSES + 1
+
+
+def test_audit_reconverges_on_fresh_cold_pass_and_chains_renames(
+    tmp_path, monkeypatch,
+) -> None:
+    """A first pass that returns best-effort (warnings + a rename) triggers a
+    FRESH cold pass; when that clears the warnings (declaring a further rename),
+    audit returns the zero-warning version with the rename chain COLLAPSED to a
+    single hop relative to the file it first received."""
+    rel = "Library/P/F.lean"
+    _setup_audit(tmp_path, rel, _AUDIT_SRC)
+    from Tooling import agent
+    seen: "set[str]" = set()
+
+    def _spawn(*, attempts_dir, **k):
+        seen.add(str(attempts_dir))
+        (attempts_dir / "audited.lean").write_text(_AUDIT_SRC, encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", _spawn)
+    _fake_audit_types(monkeypatch, lambda f: "T")
+
+    def _gate(*a, **k):
+        # Pass 0 (only one cold dir seen so far): residual warning + rename A→B.
+        # Pass 1 (a 2nd fresh cold dir started): clean, with a further B→C.
+        if len(seen) >= 2:
+            return ("ok", "", {"foo_baz": "foo_qux"}, [])
+        return ("warn", "", {"foo_bar": "foo_baz"}, ["linter: x"])
+    monkeypatch.setattr(cl_audit, "_audit_gate", _gate)
+    d = _vdecl("foo_bar", ": P", module="Library.P.F", rel=rel)
+    applied, changed = dedup.file_cleanup_audit(
+        tmp_path, "p", rel, [d], scope=[d], pool=[])
+    assert changed is True
+    assert len(seen) == 2                            # converged on the 2nd pass
+    assert applied == {"foo_bar": "foo_qux"}         # A→B→C collapsed to A→C
+
+
 def test_staged_file_agentic_stages_gate_bridged_decls(tmp_path,
                                                        monkeypatch) -> None:
     # A bridged alias stays IN the file → decide/audit must receive it in their
