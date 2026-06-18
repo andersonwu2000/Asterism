@@ -1269,6 +1269,7 @@ def compile_librarian_context(
     holes: "list[str] | None" = None,
     solo_hole: "str | None" = None,
     prev_error: "str | None" = None,
+    prior_plan: "str | None" = None,
 ) -> "_Path":
     """Write attempts_dir/Context.md for a Librarian work spawn.
 
@@ -1293,7 +1294,23 @@ def compile_librarian_context(
     lines: list[str] = [f"# Librarian — {work_kind} — {problem}", ""]
 
     if work_kind == "classify":
-        if prev_error:
+        if prev_error and prior_plan:
+            # Incremental retry: re-deriving the whole 200+-decl layout from
+            # scratch reliably re-drops a *different* declaration each time
+            # (whack-a-mole). Hand back the prior plan and ask for the SMALLEST
+            # edit that clears the rejection, keeping every other placement.
+            lines += [
+                "## Your previous plan was REJECTED — EDIT it, do not re-plan",
+                "", "The rejection:", "", "```", prev_error[-1200:], "```", "",
+                "Your previous plan is below. START FROM IT and make the "
+                "SMALLEST change that clears the rejection — add a missing "
+                "declaration to the right file, break the named cycle, split "
+                "the named over-budget file — and KEEP every other placement "
+                "exactly as it is. (Re-deriving the whole layout from scratch "
+                "is what dropped declarations last time.) Output the COMPLETE "
+                "edited plan.", "", "### Your previous plan (edit this)", "",
+                "```json", prior_plan.strip(), "```", ""]
+        elif prev_error:
             lines += [
                 "## Your previous layout was REJECTED — fix exactly this and "
                 "re-emit the full plan", "", "```", prev_error[-1200:], "```",
@@ -1698,11 +1715,12 @@ def _run_keepall(conn, *, problem, workspace):
     from . import PipelineResult
     from ..quality.librarian import inventory as _inv
 
-    # Fresh chain: drop any stale classify-feedback scratch from a prior
-    # ingestion (a reset + re-run), so the new classify starts clean.
+    # Fresh chain: drop any stale classify feedback + prior-plan scratch from a
+    # prior ingestion (a reset + re-run), so the new classify starts clean.
     try:
-        _classify_feedback_path(db.problem_dir(workspace, problem)).unlink(
-            missing_ok=True)
+        _pd = db.problem_dir(workspace, problem)
+        _classify_feedback_path(_pd).unlink(missing_ok=True)
+        _classify_prior_plan_path(_pd).unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -1914,6 +1932,15 @@ def _classify_feedback_path(problem_dir) -> "_Path":
     return problem_dir / ".drafts" / "classify_feedback.txt"
 
 
+def _classify_prior_plan_path(problem_dir) -> "_Path":
+    """Cross-dispatch scratch holding the prior attempt's (parsed) plan.json, so
+    a retry EDITS it incrementally rather than re-deriving the whole layout —
+    which re-drops declarations (whack-a-mole). Saved only when the prior plan
+    parsed (a verify-stage rejection); cleared on a schema-invalid attempt
+    (nothing valid to edit) and on success."""
+    return problem_dir / ".drafts" / "classify_prior_plan.json"
+
+
 def _run_structured(conn, *, problem, work_kind, workspace,
                     attempts_dir, problem_dir, prompt_path):
     """classify: one-shot spawn emitting plan.json, then parse + verify +
@@ -1924,16 +1951,26 @@ def _run_structured(conn, *, problem, work_kind, workspace,
     from .. import agent
 
     fb_path = _classify_feedback_path(problem_dir)
+    plan_path = _classify_prior_plan_path(problem_dir)
+    is_classify = work_kind == "classify"
     prev_error = (fb_path.read_text(encoding="utf-8")
-                  if work_kind == "classify" and fb_path.exists() else None)
+                  if is_classify and fb_path.exists() else None)
+    prior_plan = (plan_path.read_text(encoding="utf-8")
+                  if is_classify and prev_error and plan_path.exists() else None)
 
-    def _reject(reason: str, detail: str) -> "PipelineResult":
-        # Persist the rejection so the next (fresh) classify dispatch surfaces
-        # it to the agent; only classify carries this cross-attempt feedback.
-        if work_kind == "classify":
+    def _reject(reason: str, detail: str,
+                prior: "str | None" = None) -> "PipelineResult":
+        # Persist the rejection + (when the plan parsed) the prior plan, so the
+        # next (fresh) classify dispatch EDITS it incrementally instead of
+        # re-deriving the whole layout. classify-only cross-attempt feedback.
+        if is_classify:
             try:
                 fb_path.parent.mkdir(parents=True, exist_ok=True)
                 fb_path.write_text(detail, encoding="utf-8")
+                if prior is not None:
+                    plan_path.write_text(prior, encoding="utf-8")
+                else:                                  # nothing valid to edit
+                    plan_path.unlink(missing_ok=True)
             except OSError:
                 pass
         return PipelineResult(outcome="failed", failure_reason=reason,
@@ -1941,7 +1978,8 @@ def _run_structured(conn, *, problem, work_kind, workspace,
 
     compile_librarian_context(
         conn, problem=problem, work_kind=work_kind,
-        attempts_dir=attempts_dir, workspace=workspace, prev_error=prev_error)
+        attempts_dir=attempts_dir, workspace=workspace,
+        prev_error=prev_error, prior_plan=prior_plan)
 
     sid = str(uuid.uuid4())
     rc = agent.spawn_llm(
@@ -1972,7 +2010,7 @@ def _run_structured(conn, *, problem, work_kind, workspace,
     decl_lines = _decl_line_counts(workspace, problem, kept)
     verr = verify_classify(plan, kept, decl_lines=decl_lines, owned_files=owned)
     if verr:
-        return _reject("librarian_verify_failed", verr)
+        return _reject("librarian_verify_failed", verr, prior=text)
     # Post-merge size gate: the per-planned-file check above misses an
     # un-splittable usage SCC (cyclic file group) that merges several files into
     # one over-budget Lean module — which would later STALL forever at the audit
@@ -1983,12 +2021,13 @@ def _run_structured(conn, *, problem, work_kind, workspace,
     usage_canon = _plan_usage_and_canon(conn, problem, plan, workspace)
     merr = verify_merged_file_sizes(plan, usage_canon[1], decl_lines)
     if merr:
-        return _reject("librarian_verify_failed", merr)
+        return _reject("librarian_verify_failed", merr, prior=text)
     commit_classify(conn, problem, plan, workspace, precomputed=usage_canon)
-    # Plan accepted — drop the cross-attempt feedback scratch so a future
-    # re-classify of this problem starts clean.
+    # Plan accepted — drop the cross-attempt feedback + prior-plan scratch so a
+    # future re-classify of this problem starts clean.
     try:
         fb_path.unlink(missing_ok=True)
+        plan_path.unlink(missing_ok=True)
     except OSError:
         pass
     return PipelineResult(outcome="success")

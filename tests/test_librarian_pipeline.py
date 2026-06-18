@@ -709,6 +709,31 @@ def test_context_classify_surfaces_prev_error(conn, tmp_path):
         prev_error="ignored").read_text(encoding="utf-8")
 
 
+def test_context_classify_incremental_with_prior_plan(conn, tmp_path):
+    # With a prior plan, the retry must hand it back and ask for the SMALLEST
+    # edit (keep the rest) — re-deriving the whole 200+-decl layout from scratch
+    # re-drops a different decl each time (whack-a-mole). The plain prev_error
+    # path (no prior plan, e.g. a schema-invalid attempt) keeps the re-emit ask.
+    db.upsert_library_decl(conn, problem="p", slug="keep_me", source_goal_id=None)
+    db.set_library_verdict(conn, problem="p", slug="keep_me", verdict="keep")
+    ad = tmp_path / "att"; ad.mkdir()
+    prior = '{"files": [{"path": "Library/A/F.lean", "imports": [], '\
+            '"decls": ["keep_me"]}]}'
+    text = lib.compile_librarian_context(
+        conn, problem="p", work_kind="classify", attempts_dir=ad,
+        workspace=tmp_path,
+        prev_error="kept decls not placed: ['circle_integral_zero']",
+        prior_plan=prior).read_text(encoding="utf-8")
+    assert "EDIT it" in text and "SMALLEST" in text       # incremental ask
+    assert "Library/A/F.lean" in text                     # prior plan embedded
+    assert "circle_integral_zero" in text                 # the rejection
+    # no prior plan → the full re-emit ask (schema-invalid / first rejection)
+    noprior = lib.compile_librarian_context(
+        conn, problem="p", work_kind="classify", attempts_dir=ad,
+        workspace=tmp_path, prev_error="bad json").read_text(encoding="utf-8")
+    assert "re-emit the full plan" in noprior and "EDIT it" not in noprior
+
+
 def test_context_migrate_lists_decls(conn, tmp_path):
     # Per-file: the migrate context lists each decl with its statement
     # (signature to copy) + a pointer to the proof source, not the whole

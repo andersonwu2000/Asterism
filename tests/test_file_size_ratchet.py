@@ -51,9 +51,13 @@ _WATERMARKS = {
     # (_classify_feedback_path + compile_librarian_context prev_error, Phase F)
     # — the 3650 also covered Phase G (classify → run_with_session_retries),
     # since reverted (built on a wrong premise + a builder-retry-framing
-    # regression), so the ceiling tightens back to the Phase-F level
+    # regression), so the ceiling tightened back to the Phase-F level
     # — 2026-06-18.
-    "Tooling/pipeline/librarian.py": 3620,
+    # 3620→3680: classify retry is now INCREMENTAL — `_classify_prior_plan_path`
+    # carries the prior plan.json and compile_librarian_context hands it back
+    # asking for the SMALLEST edit, so a re-emit stops re-dropping a different
+    # decl each time (whack-a-mole) — 2026-06-18 — conscious bump.
+    "Tooling/pipeline/librarian.py": 3680,
     # dispatcher 2750→2800 + db 2450→2500: awaiting_human observability
     # (startup + idle-exit log of paused problems) + scope-aware idle exit
     # via db.dispatchable_open_goals — a paused P12 read as a multi-hour
