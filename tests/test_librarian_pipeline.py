@@ -853,7 +853,10 @@ def test_run_classify_end_to_end(conn, tmp_path, monkeypatch):
 
 
 def test_run_no_output_fails(conn, tmp_path, monkeypatch):
-    # A structured agentic step (classify) whose agent emits no plan.json fails.
+    # A structured agentic step (classify) whose agent emits no plan.json keeps
+    # failing `agent_no_output`; classify now runs through the shared
+    # run_with_session_retries loop, so the budget exhausts to `exhausted`
+    # carrying that reason (vs the old one-shot `failed`).
     # (v0.3: dedup is mechanical, so classify is the structured step to check.)
     _seed_proved(conn, "main", "M", origin="root")
     db.upsert_library_decl(conn, problem="p", slug="main", source_goal_id=None)
@@ -864,7 +867,7 @@ def test_run_no_output_fails(conn, tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "spawn_llm", lambda **kw: 0)
     r = lib.run_librarian(conn, problem="p", work_kind="classify",
                           workspace=tmp_path, pipeline_id="pid")
-    assert r.outcome == "failed" and r.failure_reason == "agent_no_output"
+    assert r.outcome == "exhausted" and r.failure_reason == "agent_no_output"
 
 
 def test_verify_classify_rejects_owned_file():

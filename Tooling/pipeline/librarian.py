@@ -1640,7 +1640,7 @@ def run_librarian(conn, *, problem: str, work_kind: str,
     return _run_structured(
         conn, problem=problem, work_kind=work_kind, workspace=workspace,
         attempts_dir=attempts_dir, problem_dir=problem_dir,
-        prompt_path=prompt_path)
+        prompt_path=prompt_path, pipeline_id=pipeline_id)
 
 
 def _reachable_from_root(conn, problem, workspace, slugs) -> "set[str]":
@@ -1915,21 +1915,30 @@ def _classify_feedback_path(problem_dir) -> "_Path":
 
 
 def _run_structured(conn, *, problem, work_kind, workspace,
-                    attempts_dir, problem_dir, prompt_path):
-    """classify: one-shot spawn emitting plan.json, then parse + verify +
-    commit (all-or-nothing). Mirrors run_strategist. (v0.3: `dedup` no longer
-    routes here — it is the mechanical `_run_keepall`.)"""
-    import uuid
+                    attempts_dir, problem_dir, prompt_path, pipeline_id):
+    """classify: spawn emitting plan.json, then parse + verify + commit
+    (all-or-nothing), through the shared `run_with_session_retries` loop (like
+    Forward — no LSP target). So a heavy 200+-decl layout spawn that thinking-
+    traps is detected + taken over rather than burning the full timeout and
+    eating the chain's retry budget, and a verify rejection (omitted decl,
+    import cycle, over-budget SCC merge) flows back as `retry_context` so the
+    warm `--resume` retry fixes exactly that instead of re-planning blind.
+    (v0.3: `dedup` is the mechanical `_run_keepall`; only classify routes here.)"""
     from . import PipelineResult
     from .. import agent
+    from ._retry import SpawnCtx, run_with_session_retries
+    from ..core import dispatcher
 
     fb_path = _classify_feedback_path(problem_dir)
-    prev_error = (fb_path.read_text(encoding="utf-8")
-                  if work_kind == "classify" and fb_path.exists() else None)
+    cold_feedback = (fb_path.read_text(encoding="utf-8")
+                     if work_kind == "classify" and fb_path.exists() else None)
+    out_path = attempts_dir / "plan.json"
 
-    def _reject(reason: str, detail: str) -> "PipelineResult":
-        # Persist the rejection so the next (fresh) classify dispatch surfaces
-        # it to the agent; only classify carries this cross-attempt feedback.
+    def _persist_reject(reason: str, detail: str) -> "PipelineResult":
+        # Cross-dispatch backstop: if the in-pipeline retries exhaust and the
+        # chain re-dispatches fresh, the next cold spawn reads this. The
+        # in-pipeline warm retry already carries the same detail via
+        # retry_context. classify-only.
         if work_kind == "classify":
             try:
                 fb_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1939,59 +1948,68 @@ def _run_structured(conn, *, problem, work_kind, workspace,
         return PipelineResult(outcome="failed", failure_reason=reason,
                               failure_detail=detail)
 
-    compile_librarian_context(
-        conn, problem=problem, work_kind=work_kind,
-        attempts_dir=attempts_dir, workspace=workspace, prev_error=prev_error)
+    def spawn(ctx: SpawnCtx) -> int:
+        # Recompile Context.md each attempt with the latest rejection (the
+        # in-pipeline `retry_context`, or the cross-dispatch feedback file on a
+        # cold first attempt). Wipe the prior plan.json so a trapped spawn that
+        # writes nothing can't be parsed as a stale success.
+        feedback = ctx.retry_context or (cold_feedback if ctx.cold else None)
+        compile_librarian_context(
+            conn, problem=problem, work_kind=work_kind,
+            attempts_dir=ctx.attempts_dir, workspace=workspace,
+            prev_error=feedback)
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return agent.spawn_llm(
+            kind="librarian", prompt_path=prompt_path,
+            problem_dir=problem_dir, attempts_dir=ctx.attempts_dir,
+            session_id=ctx.sid, is_retry=not ctx.cold,
+            retry_context=ctx.retry_context, retry_reason=ctx.retry_reason,
+            inline_prompt=ctx.inline_prompt,
+            timeout_sec_override=ctx.budget_override)
 
-    sid = str(uuid.uuid4())
-    rc = agent.spawn_llm(
-        kind="librarian", prompt_path=prompt_path,
-        problem_dir=problem_dir, attempts_dir=attempts_dir,
-        session_id=sid)
-    if rc != 0:
-        return PipelineResult(
-            outcome="failed", failure_reason="agent_error",
-            failure_detail=f"agent rc={rc}")
+    def parse() -> "PipelineResult":
+        if not out_path.exists():
+            return PipelineResult(outcome="failed",
+                                  failure_reason="agent_no_output",
+                                  failure_detail="no plan.json")
+        plan, err = parse_classify(out_path.read_text(encoding="utf-8"))
+        if err:
+            return _persist_reject("librarian_schema_invalid", err)
+        kept = {r["slug"] for r in db.library_decls_for(conn, problem,
+                                                        lifecycle="deduped")}
+        owned = {r["target_file"].replace("\\", "/") for r in conn.execute(
+            "SELECT DISTINCT target_file FROM library_decls WHERE problem != ? "
+            "AND lifecycle IN ('classified', 'migrated', 'cleaned') "
+            "AND target_file IS NOT NULL", (problem,))}
+        decl_lines = _decl_line_counts(workspace, problem, kept)
+        verr = verify_classify(plan, kept, decl_lines=decl_lines,
+                               owned_files=owned)
+        if verr:
+            return _persist_reject("librarian_verify_failed", verr)
+        # Post-merge size gate: the per-planned-file check misses an
+        # un-splittable usage SCC that merges several files into one over-budget
+        # Lean module (would later STALL at the audit longFile gate). Reject so
+        # the agent re-partitions; reuse (usage, canon) for commit.
+        usage_canon = _plan_usage_and_canon(conn, problem, plan, workspace)
+        merr = verify_merged_file_sizes(plan, usage_canon[1], decl_lines)
+        if merr:
+            return _persist_reject("librarian_verify_failed", merr)
+        commit_classify(conn, problem, plan, workspace, precomputed=usage_canon)
+        try:                                       # accepted → drop the backstop
+            fb_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return PipelineResult(outcome="success")
 
-    out_path = attempts_dir / "plan.json"
-    if not out_path.exists():
-        return PipelineResult(
-            outcome="failed", failure_reason="agent_no_output",
-            failure_detail="no plan.json")
-    text = out_path.read_text(encoding="utf-8")
-
-    plan, err = parse_classify(text)
-    if err:
-        return _reject("librarian_schema_invalid", err)
-    kept = {r["slug"] for r in db.library_decls_for(conn, problem,
-                                                    lifecycle="deduped")}
-    owned = {r["target_file"].replace("\\", "/") for r in conn.execute(
-        "SELECT DISTINCT target_file FROM library_decls WHERE problem != ? "
-        "AND lifecycle IN ('classified', 'migrated', 'cleaned') "
-        "AND target_file IS NOT NULL", (problem,))}
-    decl_lines = _decl_line_counts(workspace, problem, kept)
-    verr = verify_classify(plan, kept, decl_lines=decl_lines, owned_files=owned)
-    if verr:
-        return _reject("librarian_verify_failed", verr)
-    # Post-merge size gate: the per-planned-file check above misses an
-    # un-splittable usage SCC (cyclic file group) that merges several files into
-    # one over-budget Lean module — which would later STALL forever at the audit
-    # zero-warning gate on `longFile`. Compute the merge NOW and reject so the
-    # agent re-partitions (the decl usage graph is a DAG; the file cycle is its
-    # grouping artifact). Reuse the (usage, canon) for commit so usage_graph
-    # runs once.
-    usage_canon = _plan_usage_and_canon(conn, problem, plan, workspace)
-    merr = verify_merged_file_sizes(plan, usage_canon[1], decl_lines)
-    if merr:
-        return _reject("librarian_verify_failed", merr)
-    commit_classify(conn, problem, plan, workspace, precomputed=usage_canon)
-    # Plan accepted — drop the cross-attempt feedback scratch so a future
-    # re-classify of this problem starts clean.
-    try:
-        fb_path.unlink(missing_ok=True)
-    except OSError:
-        pass
-    return PipelineResult(outcome="success")
+    return run_with_session_retries(
+        conn=conn, goal_id=None, pipeline_id=pipeline_id,
+        budget_threshold=dispatcher.BUILDER_THRESHOLD,
+        shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+        attempts_dir=attempts_dir, spawn_fn=spawn, parse_fn=parse,
+        postmortem_fn=lambda _sid: None, workspace=workspace)
 
 
 # Decl head up to and including the name — its end is where the binders
