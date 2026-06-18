@@ -139,7 +139,10 @@ _WATERMARKS = {
     # `_audit_gate`. (Replaces the reverted dc30d3e `_type_generalizes`
     # drop-unused-hypothesis relaxation — an unused binder is now `_`-prefixed,
     # not deleted, so the type gate stays strictly invariant.) — 2026-06-18.
-    "Tooling/quality/librarian/cleanup/audit.py": 350,
+    # 350→400: parse_fn reads the agent's session token and threads it to the
+    # whole-file warnings gate so it verifies on the agent's warm claimed slot
+    # (#35 stage 3; the #check type gate stays cold) — 2026-06-19 — conscious bump.
+    "Tooling/quality/librarian/cleanup/audit.py": 400,
     "Tooling/quality/librarian/cleanup/decide.py": 250,
     "Tooling/quality/librarian/cleanup/mechanical.py": 250,
     "Tooling/quality/librarian/cleanup/simplify.py": 200,

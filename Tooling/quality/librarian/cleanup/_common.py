@@ -494,11 +494,16 @@ def _typecheck_capturing_types(workspace: Path, file_text: str,
 
 
 def _build_with_output(workspace: Path, content: str, *, prefix: str,
-                       timeout: int = _BATCH_TIMEOUT_SEC) -> "tuple[bool, str]":
-    """Like `_lake_check` but ALWAYS returns the full build output (stdout+stderr),
-    even on success — needed to read linter WARNINGS (rc==0), which `_lake_check`
-    discards. `ok` iff rc==0 and no lake error line."""
-    run = _lp.run_lean_source(workspace, content, prefix=prefix, timeout=timeout)
+                       timeout: int = _BATCH_TIMEOUT_SEC,
+                       session_token: "str | None" = None) -> "tuple[bool, str]":
+    """Like `_lake_check` but ALWAYS returns the full build output, even on
+    success — needed to read linter WARNINGS (rc==0), which `_lake_check`
+    discards. `ok` iff rc==0 and no lean error. WARM via the held session's
+    claimed slot when `session_token` is set (whole-file candidates only); the
+    warning diagnostics come back through `_verify_source` → `_leanrun_from_verify`
+    as `warning:` output lines `_all_warnings` parses exactly as cold stdout."""
+    run = _verify_source(workspace, content, prefix=prefix, timeout=timeout,
+                         session_token=session_token)
     return run.ok, run.output
 
 
@@ -592,13 +597,17 @@ _MATHLIB_LINT_OPTS = ("linter.mathlibStandardSet", "linter.deprecated")
 
 
 def _build_for_warnings(workspace: Path, content: str, *, prefix: str,
-                        timeout: int = _BATCH_TIMEOUT_SEC) -> "tuple[bool, str]":
+                        timeout: int = _BATCH_TIMEOUT_SEC,
+                        session_token: "str | None" = None) -> "tuple[bool, str]":
     """Like `_build_with_output` but with the mathlib standard linter set forced
     on, so the build surfaces the full mathlib-PR warning set. Returns
-    (ok, full_output)."""
+    (ok, full_output). The lint set is driven by the in-content `set_option`
+    (mode-independent), so the warm claimed-slot path emits the SAME warnings as
+    cold `lake env lean` — verified out of band (longLine + unusedVariables both
+    caught), hence whole-file `session_token` is safe for the zero-warning gate."""
     return _build_with_output(
         workspace, _inject_linter(content, *_MATHLIB_LINT_OPTS),
-        prefix=prefix, timeout=timeout)
+        prefix=prefix, timeout=timeout, session_token=session_token)
 
 
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_']*$")

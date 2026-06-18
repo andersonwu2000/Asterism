@@ -219,3 +219,26 @@ def test_build_file_copy_isolated_threads_token_to_warm(monkeypatch):
         None, "FILE TEXT", session_token="tok-Z")
     assert ok is True
     assert seen == {"token": "tok-Z", "content": "FILE TEXT"}
+
+
+def test_build_for_warnings_warm_surfaces_diagnostics(monkeypatch):
+    """Stage 3: with a session token, `_build_for_warnings` verifies on the warm
+    claimed slot (the lint set is driven by the injected in-content set_option,
+    so warm == cold) and its warning diagnostics surface through `_all_warnings`
+    exactly as a cold `lake env lean` stdout `warning:` line would."""
+    def warm(token, content, **k):
+        # the gate must still force the mathlib linter set ON in-content
+        assert "set_option linter.mathlibStandardSet true" in content
+        return {"ok": True, "timed_out": False, "diagnostics": [
+            {"line": 5, "col": 0, "severity": "warning",
+             "message": "This line exceeds the 100 character limit"}]}
+    monkeypatch.setattr(_lifecycle, "verify_in_session", warm)
+    monkeypatch.setattr(
+        C._lp, "run_lean_source",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("token present — warnings gate must run warm")))
+    ok, out = C._build_for_warnings(
+        None, "import Mathlib\n\ntheorem t : True := by trivial\n",
+        prefix="x", session_token="tok")
+    assert ok is True
+    assert any("100 character" in w for w in C._all_warnings(out))

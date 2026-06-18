@@ -113,7 +113,8 @@ def _json_loads_or_none(text: "str | None"):
 def _audit_gate(workspace: Path, target_file: str,
                 decls_in_file: "list[_Decl]", *, original: str, new_text: str,
                 renames_raw: "str | None", base_types: "dict[str, str]",
-                scope: "list[_Decl]", pool: "list[_Decl]"
+                scope: "list[_Decl]", pool: "list[_Decl]",
+                session_token: "str | None" = None
                 ) -> "tuple[str, str, dict[str, str], list[str]]":
     """Validate the agent's `audited.lean` candidate. Returns
     `(status, detail, applied_renames, warns)` where status is one of:
@@ -170,7 +171,8 @@ def _audit_gate(workspace: Path, target_file: str,
     # lemmas, dupNamespace, unused variable, etc. The per-file cleanup gate
     # hard-fails on any residual, so a non-zero best here just costs a retry.
     warns = C._all_warnings(
-        C._build_for_warnings(workspace, new_text, prefix="_audit_warn")[1])
+        C._build_for_warnings(workspace, new_text, prefix="_audit_warn",
+                              session_token=session_token)[1])
     return ("ok" if not warns else "warn"), "", applied, warns
 
 
@@ -267,7 +269,7 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
             if _rf.exists():
                 _rf.unlink()
 
-        def parse(_aud=audited, _rf=renames_file) -> PipelineResult:
+        def parse(_aud=audited, _rf=renames_file, _att=attempts) -> PipelineResult:
             nonlocal pass_best
             if not _aud.exists():
                 return PipelineResult(
@@ -276,10 +278,24 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
             new_text = _aud.read_text(encoding="utf-8")
             renames_raw = (_rf.read_text(encoding="utf-8")
                            if _rf.exists() else None)
+            # Reuse the agent's OWN warm claimed slot for the whole-file warnings
+            # gate: audited.lean's import closure is already loaded there, so the
+            # gate is a ~4-5s body re-elaborate vs a fresh cold lake build. The
+            # session is alive through parse_fn (run_lsp_edit_loop releases it
+            # only after the loop). token absent → the gate runs cold (#35). The
+            # #check type gate stays cold regardless (json stream — _verify_source
+            # only takes the warm path for non-json whole-file content).
+            _tok = None
+            _tokf = _att / "_gateway_session.token"
+            if _tokf.exists():
+                try:
+                    _tok = _tokf.read_text(encoding="utf-8").strip() or None
+                except OSError:
+                    _tok = None
             status, detail, applied, warns = _audit_gate(
                 workspace, target_file, decls_in_file, original=original,
                 new_text=new_text, renames_raw=renames_raw,
-                base_types=base_types, scope=scope, pool=pool)
+                base_types=base_types, scope=scope, pool=pool, session_token=_tok)
             if status == "noop":
                 cap["noop"] = True
                 return PipelineResult(outcome="success")
