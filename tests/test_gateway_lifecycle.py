@@ -263,3 +263,64 @@ def test_start_gateway_relaunches_on_worker_mismatch(
     proc = gateway_lifecycle.start_gateway(tmp_path)
     assert killed["pid"] == 777          # killed the stale gateway by pid
     assert isinstance(proc, _FakeProc)   # relaunched a fresh one
+
+
+# ---------------------------------------------------------------------
+# verify_in_session — claimed-slot verify for framework gates that hold a
+# session (Library cleanup). Same shape/transient semantics as verify_file
+# but NO retries by default (caller falls back to cold lake on transient).
+# ---------------------------------------------------------------------
+
+def test_verify_in_session_posts_token_and_content(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Happy path: POSTs {token, content} to /verify_session and returns the
+    parsed body verbatim."""
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _MockResponse({"ok": True, "diagnostics": [],
+                              "diagnostic_count": 0, "timed_out": False})
+
+    monkeypatch.setattr(
+        gateway_lifecycle.urllib.request, "urlopen", fake_urlopen)
+    out = gateway_lifecycle.verify_in_session(
+        "tok-123", "theorem t : True := trivial\n", workspace=tmp_path)
+    assert out["ok"] is True
+    assert out.get("timed_out") is False
+    assert out.get("transient") is None or "transient" not in out
+    assert captured["url"].endswith("/verify_session")
+    assert captured["body"]["token"] == "tok-123"
+    assert captured["body"]["content"] == "theorem t : True := trivial\n"
+    assert captured["body"]["write_olean"] is False  # gate default
+
+
+def test_verify_in_session_empty_token_non_transient() -> None:
+    """No token → logic error, not retry-eligible."""
+    out = gateway_lifecycle.verify_in_session("", "x")
+    assert out["transient"] is False
+
+
+def test_verify_in_session_unreachable_fails_fast_transient(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Gateway unreachable → ONE attempt (no retry by default), transient=True
+    so the caller falls back to cold lake immediately."""
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout):
+        calls["n"] += 1
+        raise _make_urlerror("connection refused")
+
+    monkeypatch.setattr(
+        gateway_lifecycle.urllib.request, "urlopen", fake_urlopen)
+    # If retries were on, sleep would be hit; assert it's never called.
+    monkeypatch.setattr(gateway_lifecycle.time, "sleep",
+                        lambda s: (_ for _ in ()).throw(
+                            AssertionError("should not retry")))
+    out = gateway_lifecycle.verify_in_session(
+        "tok-x", "x", workspace=tmp_path)
+    assert calls["n"] == 1               # no retry
+    assert out["transient"] is True

@@ -126,15 +126,71 @@ def _missing_oleans(workspace: Path, modules: "list[str]") -> "list[str]":
                    and not _olean_path(workspace, m).exists()})
 
 
+def _leanrun_from_verify(r: dict) -> "_lp.LeanRun":
+    """Adapt a `/verify_session` response dict into a `LeanRun` so the existing
+    text-based gate helpers (`.ok`, `.error_lines`, `_all_warnings(output)`)
+    consume a warm-slot verdict UNCHANGED. Synthesizes one
+    `slot:<line>:<col>: <severity>: <message>` output line per diagnostic so
+    `lake_probe.LAKE_ERR_RE` (errors → `.ok` / `.error_lines`) and `_WARN_LINE_RE`
+    (warnings → `_all_warnings`) match exactly as on cold `lake env lean`
+    stdout. `returncode` is 0 iff no error-severity diagnostic."""
+    diags = r.get("diagnostics", []) or []
+    out_lines: list[str] = []
+    has_error = False
+    for d in diags:
+        sev = d.get("severity", "")
+        if sev == "error":
+            has_error = True
+        ln = d.get("line", 0) or 0
+        col = d.get("col", 0) or 0
+        msg = (d.get("message", "") or "").replace("\n", " ")
+        out_lines.append(f"slot:{ln}:{col}: {sev}: {msg}")
+    return _lp.LeanRun(returncode=(1 if has_error else 0),
+                       output="\n".join(out_lines),
+                       timed_out=bool(r.get("timed_out")))
+
+
+def _verify_source(workspace: Path, content: str, *, prefix: str,
+                   timeout: int = _BATCH_TIMEOUT_SEC,
+                   session_token: "str | None" = None,
+                   json: bool = False) -> "_lp.LeanRun":
+    """Verify `content` WARM — on the claimed slot of a held gateway session —
+    when `session_token` is set and the closure matches (caller's contract:
+    only pass a token for WHOLE-FILE candidates that share the session file's
+    imports; a minimal-import isolate would force a re-warmup and evict the
+    file's closure, #108). Falls back to cold `lake env lean` when: no token,
+    the `lean --json` `#check` stream is requested (`json=True` — warm
+    info-diagnostic parsing is a later stage), the gateway is unreachable, or
+    the warm result is indeterminate (timeout). Returns a `LeanRun` either way
+    so callers are mode-agnostic."""
+    if session_token and not json:
+        try:
+            from ....lsp import lifecycle as _gw
+            r = _gw.verify_in_session(session_token, content,
+                                      write_olean=False, timeout=timeout,
+                                      workspace=workspace)
+            if "error" not in r and not r.get("timed_out"):
+                return _leanrun_from_verify(r)
+            # transient / unreachable / indeterminate → cold fallback below
+        except Exception:  # noqa: BLE001 — any warm-path fault → cold fallback
+            pass
+    return _lp.run_lean_source(workspace, content, prefix=prefix, json=json,
+                               timeout=timeout)
+
+
 def _lake_check(workspace: Path, content: str, *,
                 prefix: str = "_cleanup_probe",
-                timeout: int = _BATCH_TIMEOUT_SEC) -> "tuple[bool, str]":
-    """Write `content` to a throwaway .lean under .attempts and `lake env lean`
-    it (cold; typecheck only, no olean). Returns `(ok, detail)` — ok iff rc==0
-    and no lake error line. Shared isolate-typecheck primitive behind
-    `_build_decl_isolated` (per-decl probe) and `_build_file_copy_isolated`
-    (whole-file copy, §13 (d))."""
-    run = _lp.run_lean_source(workspace, content, prefix=prefix, timeout=timeout)
+                timeout: int = _BATCH_TIMEOUT_SEC,
+                session_token: "str | None" = None) -> "tuple[bool, str]":
+    """Typecheck `content` (no olean) and return `(ok, detail)` — ok iff rc==0
+    and no lean error. WARM via the held session's claimed slot when
+    `session_token` is set (whole-file candidates only — see `_verify_source`);
+    else cold `lake env lean` on a throwaway `.lean`. Shared isolate-typecheck
+    primitive behind `_build_decl_isolated` (per-decl probe — stays COLD, its
+    minimal `import Mathlib` closure differs from any file slot, #108) and
+    `_build_file_copy_isolated` (whole-file copy, §13 (d) — warm-eligible)."""
+    run = _verify_source(workspace, content, prefix=prefix, timeout=timeout,
+                         session_token=session_token)
     return run.ok, ("" if run.ok else run.output[-2000:])
 
 
@@ -176,15 +232,20 @@ def _build_decl_isolated(workspace: Path, *, sig: str, proof: str,
 
 def _build_file_copy_isolated(workspace: Path, new_text: str, *,
                               extra_modules: "list[str]" = (),
-                              timeout: int = _BATCH_TIMEOUT_SEC
+                              timeout: int = _BATCH_TIMEOUT_SEC,
+                              session_token: "str | None" = None
                               ) -> "tuple[bool, str]":
     """Isolate-typecheck a WHOLE Library file's proposed new content (§13 (d)
-    consumer rewire): `lake env lean` a throwaway copy of `new_text`. The copy
-    is NOT registered as its module (no path clash), so this verifies the edit
-    without overwriting the real file or producing an olean — the real file's
-    olean is rebuilt later (its own (e) / Gate B). `extra_modules` (e.g. a
-    survivor's module newly `import`ed by the rewire) are pre-flight built so
-    their oleans exist. Returns `(ok, detail)`."""
+    consumer rewire): verify a copy of `new_text`. The copy is NOT registered as
+    its module (no path clash), so this verifies the edit without overwriting
+    the real file or producing an olean — the real file's olean is rebuilt later
+    (its own (e) / Gate B). `extra_modules` (e.g. a survivor's module newly
+    `import`ed by the rewire) are pre-flight built so their oleans exist.
+
+    WARM-eligible: `new_text` is the SAME file (same import closure) as a held
+    file-level cleanup session, so passing that session's `session_token` runs
+    the check on its already-loaded claimed slot (~4-5s) instead of a fresh cold
+    `lake env lean` (~25s). Returns `(ok, detail)`."""
     missing = _missing_oleans(workspace, [m for m in extra_modules if m])   # O1
     if missing:
         from ....pipeline._lake import lake_build_modules
@@ -193,7 +254,7 @@ def _build_file_copy_isolated(workspace: Path, new_text: str, *,
         except Exception:  # noqa: BLE001 — best-effort pre-flight
             pass
     return _lake_check(workspace, new_text, prefix="_cleanup_filecopy",
-                       timeout=timeout)
+                       timeout=timeout, session_token=session_token)
 
 
 _DECL_NAME_RE = re.compile(

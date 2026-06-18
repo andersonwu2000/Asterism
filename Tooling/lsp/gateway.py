@@ -1716,6 +1716,158 @@ async def verify(request: Request):
     return JSONResponse(result, status_code=status)
 
 
+def _verify_session_sync(token: str, content: str, *, write_olean: bool,
+                         axioms_for: str | None, rpc_timeout: int,
+                         wait_timeout: int) -> dict:
+    """Sync core of /verify_session: verify `content` on the slot CLAIMED by the
+    registered session `token` (claimed mode — NOT a borrow), so the session's
+    OWN warm slot serves the check.
+
+    Why this exists alongside `/verify` (borrow): a borrow evicts the slot's
+    content (forcing the owner a re-warmup) and grabs an arbitrary slot, so it
+    can't reuse a held session's already-loaded import closure. A framework
+    caller that holds a session (the Library cleanup mechanical gates: ONE
+    file-level session per file) wants the OPPOSITE — verify whole-file
+    candidates against the slot whose closure is already that file's. The first
+    didChange pays the import load (~25s); every subsequent whole-file gate on
+    the held slot is a ~4-5s body re-elaborate instead of a fresh ~25s `lake env
+    lean`. Mirrors `_verify_sync` but uses the claimed slot + an explicit
+    didChange of the candidate (no `_compilation_for` swap, no eviction).
+
+    NOTE the warm win only applies to SAME-closure (whole-file) candidates; a
+    minimal-import isolate (e.g. a single decl on `import Mathlib`) is a
+    different closure → re-warmup → no faster (#108), and would evict the file's
+    closure, so those stay on cold `lake env lean`."""
+    backend = _state.backend
+    if backend is None:
+        return {"error": "backend not ready", "_status": 503}
+    with _state.sessions_lock:
+        meta = _state.sessions.get(token)
+    if meta is None:
+        return {"error": f"unknown session token {token[:8]}", "_status": 404}
+
+    olean_path: Path | None = None
+    olean_written = False
+    axioms: list[str] | None = None
+    axiom_error: str | None = None
+    diags: list = []
+    timed_out = False
+    try:
+        # Claimed mode (borrow=False), swap_in=False: locate the session's own
+        # slot, then didChange the candidate ourselves (like validate_file).
+        with _acquire_slot(meta, swap_in=False) as (slot, _slot_kind):
+            slot.file_version += 1
+            backend.clear_diagnostics(slot.slot_uri)
+            backend.did_change_full(slot.slot_path, content, slot.file_version)
+            try:
+                backend.wait_for_diagnostics(slot.slot_uri, slot.file_version,
+                                             timeout=wait_timeout)
+            except (TimeoutError, RuntimeError):
+                timed_out = True
+            diags = backend.diagnostics_for(slot.slot_uri)
+            formatted0 = [_format_diag(d) for d in diags]
+            has_error0 = any(f.get("severity") == "error" for f in formatted0)
+            if not has_error0 and not timed_out and (write_olean or axioms_for):
+                if write_olean:
+                    olean_path = _olean_dest_for(meta.workspace,
+                                                 meta.target_path)
+                    if olean_path is not None:
+                        olean_path.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            r = backend.rpc_call(
+                                slot.slot_uri, "Asterism.writeOlean",
+                                {"destPath": str(olean_path)},
+                                timeout=rpc_timeout)
+                            olean_written = bool(r.get("ok"))
+                            if not olean_written:
+                                axiom_error = f"writeOlean error: {r.get('error')}"
+                        except Exception as e:
+                            axiom_error = (f"writeOlean RPC failed: "
+                                           f"{type(e).__name__}: {e}")
+                if axioms_for:
+                    try:
+                        r = backend.rpc_call(
+                            slot.slot_uri, "Asterism.printAxioms",
+                            {"fqName": axioms_for}, timeout=rpc_timeout)
+                        if r.get("found"):
+                            axioms = list(r.get("axioms") or [])
+                        else:
+                            axiom_error = (f"printAxioms: "
+                                           f"{r.get('error') or 'not found'}")
+                    except Exception as e:
+                        axiom_error = (f"printAxioms RPC failed: "
+                                       f"{type(e).__name__}: {e}")
+            # The candidate is a probe, not the session's committed mirror —
+            # clear so the session's next tool call didChanges its own content
+            # back in (mirror validate_file).
+            slot.content_pipeline_id = None
+    except Exception as e:
+        return {"error": f"claimed slot acquire failed: "
+                f"{type(e).__name__}: {e}", "_status": 500}
+
+    formatted = [_format_diag(d) for d in diags]
+    has_error = any(f.get("severity") == "error" for f in formatted)
+    return {
+        "ok": not has_error and not timed_out,
+        "diagnostic_count": len(formatted),
+        "diagnostics": formatted,
+        "olean_written": olean_written,
+        "olean_path": str(olean_path) if olean_path else None,
+        "axioms": axioms,
+        "axiom_error": axiom_error,
+        "timed_out": timed_out,
+    }
+
+
+@mcp.custom_route("/verify_session", methods=["POST"])
+async def verify_session(request: Request):
+    """Verify candidate `content` on the slot CLAIMED by a registered session
+    (claimed mode, no borrow eviction) — the warm-slot path for framework-side
+    gates that hold a session, notably the Library cleanup mechanical gates
+    (ONE file-level session per file, verifying whole-file candidates against
+    its already-loaded import closure).
+
+    Body: { "token": <session token>, "content": <full Lean source>,
+            "write_olean": false, "axioms_for": null,
+            "rpc_timeout": 30, "wait_timeout": 240 }
+    Returns: same shape as /verify, plus "timed_out"."""
+    import asyncio
+    try:
+        data = await request.json()
+    except Exception as e:
+        return JSONResponse({"error": f"invalid JSON: {e}"}, status_code=400)
+    token = data.get("token")
+    content = data.get("content")
+    if not token:
+        return JSONResponse({"error": "missing token"}, status_code=400)
+    if content is None:
+        return JSONResponse({"error": "missing content"}, status_code=400)
+    write_olean = bool(data.get("write_olean", False))
+    axioms_for = data.get("axioms_for")
+    try:
+        rpc_timeout = int(data.get("rpc_timeout", 30))
+        if rpc_timeout <= 0:
+            rpc_timeout = 30
+    except (TypeError, ValueError):
+        rpc_timeout = 30
+    try:
+        wait_timeout = int(data.get("wait_timeout", 240))
+        if wait_timeout <= 0:
+            wait_timeout = 240
+    except (TypeError, ValueError):
+        wait_timeout = 240
+
+    err = _ensure_backend_ready()
+    if err:
+        return JSONResponse({"error": err}, status_code=503)
+    result = await asyncio.to_thread(
+        _verify_session_sync, str(token), str(content),
+        write_olean=write_olean, axioms_for=axioms_for,
+        rpc_timeout=rpc_timeout, wait_timeout=wait_timeout)
+    status = result.pop("_status", 200)
+    return JSONResponse(result, status_code=status)
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request):
     """Liveness check. Reports worker pool status + active sessions

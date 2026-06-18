@@ -314,6 +314,73 @@ def verify_file(target_path: Path,
                         "transient": True}
 
 
+def verify_in_session(token: str, content: str, *,
+                      write_olean: bool = False,
+                      axioms_for: str | None = None,
+                      timeout: float = 240.0,
+                      workspace: Path | None = None,
+                      _retry_delays: tuple[float, ...] | None = None) -> dict:
+    """POST /verify_session: verify `content` on the slot CLAIMED by the
+    registered session `token` (claimed mode — the session's OWN warm slot,
+    no borrow eviction). For framework-side gates that hold a session and
+    verify WHOLE-FILE candidates against an already-loaded import closure
+    (Library cleanup mechanical gates).
+
+    Same response shape as `verify_file` (`{ok, diagnostics, olean_written,
+    axioms, …}`, plus `timed_out`) and the same transient semantics — but
+    NO retries by default: the caller (cleanup gate) has a reliable cold
+    `lake env lean` fallback, so a transient gateway fault should fail fast to
+    cold rather than burn the verify_file retry budget. On gateway-unreachable
+    returns `{error, transient=True}`."""
+    import json
+    if not token:
+        return {"error": "no session token", "transient": False}
+    # Reserve a slice of the budget for HTTP + slot-acquire before the inner
+    # writeOlean / printAxioms RPC (mirrors verify_file); floor 30s.
+    rpc_share = max(30, int(timeout) - 30)
+    body: dict = {
+        "token": token,
+        "content": content,
+        "write_olean": write_olean,
+        "rpc_timeout": rpc_share,
+        "wait_timeout": max(60, int(timeout)),
+    }
+    if axioms_for:
+        body["axioms_for"] = axioms_for
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{_gateway_port(workspace)}/verify_session",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    # Default: no retry → fail fast to the caller's cold fallback.
+    delays = () if _retry_delays is None else _retry_delays
+    last_err: dict | None = None
+    for attempt in range(len(delays) + 1):
+        if attempt > 0:
+            time.sleep(delays[attempt - 1])
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            try:
+                body_text = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                body_text = ""
+            msg = (f"gateway HTTP {exc.code}: {body_text}"
+                   if body_text else f"gateway HTTP {exc.code}")
+            if 500 <= exc.code < 600:
+                last_err = {"error": msg, "transient": True}
+                continue
+            return {"error": msg, "transient": False}
+        except (urllib.error.URLError, OSError) as exc:
+            last_err = {"error": f"gateway unreachable: {exc}",
+                        "transient": True}
+            continue
+    return last_err or {"error": "gateway unreachable (unknown)",
+                        "transient": True}
+
+
 def release_session(token: str) -> None:
     """POST /release/{token}. Idempotent. Best-effort — failure is
     logged but not raised (the daemon teardown path uses this and

@@ -1123,3 +1123,107 @@ def test_restart_backend_reaps_old_then_rewarms(monkeypatch) -> None:
     finally:
         _state.backend, _state.workspace, _state.workers = (
             saved[0], saved[1], saved[2])
+
+
+# ---------------------------------------------------------------------
+# /verify_session — verify a candidate on the session's OWN claimed slot
+# (claimed mode, no borrow eviction). The warm-slot path for framework gates
+# that hold a session (Library cleanup mechanical gates).
+# ---------------------------------------------------------------------
+
+class _CannedDiagBackend:
+    """Fake backend returning canned LSP diagnostics for any slot URI."""
+
+    def __init__(self, canned):
+        self._canned = canned
+
+    def clear_diagnostics(self, *a):
+        pass
+
+    def did_change_full(self, *a, **kw):
+        pass
+
+    def wait_for_diagnostics(self, *a, **kw):
+        pass
+
+    def diagnostics_for(self, uri):
+        return list(self._canned)
+
+
+def _register_fake_session(monkeypatch, tmp_path, *, pipeline_id, token,
+                           content_pipeline_id=None):
+    """Claim a slot for `pipeline_id` and stash a session under `token`."""
+    slot = _make_fake_slot(1, claimed_by=pipeline_id,
+                           content_pipeline_id=content_pipeline_id)
+    monkeypatch.setattr(lsp_gateway._state, "workers", [slot])
+    meta = lsp_gateway.SessionMetadata(
+        pipeline_id=pipeline_id, target_path=tmp_path / "F.lean",
+        problem="p", workspace=tmp_path, log_path=None, file_content="orig")
+    with lsp_gateway._state.sessions_lock:
+        lsp_gateway._state.sessions[token] = meta
+    return slot
+
+
+def test_verify_session_sync_unknown_token() -> None:
+    """An unregistered token → 404 error verdict (no slot work)."""
+    saved = lsp_gateway._state.backend
+    lsp_gateway._state.backend = object()  # non-None so we pass the ready check
+    try:
+        with lsp_gateway._state.sessions_lock:
+            lsp_gateway._state.sessions.pop("no-such-token", None)
+        r = lsp_gateway._verify_session_sync(
+            "no-such-token", "theorem t : True := trivial\n",
+            write_olean=False, axioms_for=None, rpc_timeout=30, wait_timeout=60)
+    finally:
+        lsp_gateway._state.backend = saved
+    assert r.get("_status") == 404
+    assert "unknown session" in r["error"]
+
+
+def test_verify_session_sync_warning_only_is_ok(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Verify on the CLAIMED slot: a warning-only candidate is `ok` (warnings
+    don't fail elaboration), diagnostics are severity-mapped, and the probe
+    clears content_pipeline_id so the session reloads its own content next."""
+    canned = [{"range": {"start": {"line": 4, "character": 2}}, "severity": 2,
+               "message": "unused variable `h`"}]
+    monkeypatch.setattr(lsp_gateway._state, "backend",
+                        _CannedDiagBackend(canned))
+    slot = _register_fake_session(monkeypatch, tmp_path,
+                                  pipeline_id="pipe-A", token="tok-A",
+                                  content_pipeline_id="pipe-A")
+    try:
+        r = lsp_gateway._verify_session_sync(
+            "tok-A", "theorem t : True := trivial\n",
+            write_olean=False, axioms_for=None, rpc_timeout=30, wait_timeout=60)
+    finally:
+        with lsp_gateway._state.sessions_lock:
+            lsp_gateway._state.sessions.pop("tok-A", None)
+    assert r["ok"] is True
+    assert r["diagnostic_count"] == 1
+    assert r["diagnostics"][0]["severity"] == "warning"
+    assert r["timed_out"] is False
+    assert slot.content_pipeline_id is None  # probe cleared the slot ownership
+
+
+def test_verify_session_sync_error_diag_not_ok(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """An error-severity diagnostic → ok False."""
+    canned = [{"range": {"start": {"line": 0, "character": 0}}, "severity": 1,
+               "message": "type mismatch"}]
+    monkeypatch.setattr(lsp_gateway._state, "backend",
+                        _CannedDiagBackend(canned))
+    _register_fake_session(monkeypatch, tmp_path,
+                           pipeline_id="pipe-B", token="tok-B",
+                           content_pipeline_id="pipe-B")
+    try:
+        r = lsp_gateway._verify_session_sync(
+            "tok-B", "bad\n", write_olean=False, axioms_for=None,
+            rpc_timeout=30, wait_timeout=60)
+    finally:
+        with lsp_gateway._state.sessions_lock:
+            lsp_gateway._state.sessions.pop("tok-B", None)
+    assert r["ok"] is False
+    assert r["diagnostics"][0]["severity"] == "error"

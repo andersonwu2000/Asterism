@@ -123,7 +123,11 @@ _WATERMARKS = {
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup
     # variable-block tidy) + _build_for_warnings (force the mathlib standard
     # linter set on, which `lake env lean` drops) — 2026-06-17 — conscious bump.
-    "Tooling/quality/librarian/cleanup/_common.py": 640,
+    # 640→700: warm-or-cold verify primitive (#35 Stage 1) — _verify_source +
+    # _leanrun_from_verify route whole-file gates onto a held cleanup session's
+    # claimed gateway slot (~4-5s) with cold `lake env lean` fallback; wired
+    # through _lake_check / _build_file_copy_isolated — 2026-06-19 — conscious bump.
+    "Tooling/quality/librarian/cleanup/_common.py": 700,
     # 300→350: audit rewritten onto the shared LSP edit-mode retry loop
     # (`run_with_session_retries`, like builder / migrate-hole-fill) — cold-seed
     # `audited.lean` + warm incremental + --resume, `_write_mcp_config` LSP, and
