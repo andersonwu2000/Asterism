@@ -5,6 +5,11 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-17
+- Expanded the stage that tidies machine-proved lemmas into a clean, reusable library, enforcing Mathlib's submission standards: no compiler warnings, deduplicated variable blocks, consistent namespaces, and no unused hypotheses.
+- Added whole-library consistency checks, including an editor-side validation that mirrors the checks run when results are committed.
+- Carried out a broad documentation cleanup, fixing drift from the current code, garbled text, and scattered design notes, and added an automated guard to keep code-referencing docs in sync.
+
 ### 2026-06-16
 - Tightened the integrity of generated proofs so an unfilled placeholder can no longer be cited as a proof of the main goal, and supporting definitions are now placed ahead of the results that rely on them.
 - Made the automated search loop more robust against wasted effort, preventing duplicate attempts on the same goal, immediate retries of subgoals that had been set aside, and overly broad sweeps of stray files.
@@ -151,11 +156,6 @@
 - Added a residue-theorem benchmark, switching from a hand-built eleven-lemma decomposition to running it as a single problem with the system generating its own auxiliary definitions.
 - Refined when a subgoal is set aside because it needs a missing definition, and made that decision propagate to dependent subgoals.
 - Fixed several startup race conditions and corrected exit-code and timeout reporting when launching a proof run.
-
-### 2026-05-18
-- Added a planning stage that, when a proof attempt stalls, reviews the failure and proposes new approaches — including intermediate lemmas and supporting definitions — instead of merely retrying the same goal.
-- Gave the system the ability to author supporting Lean constructs (definitions, structures, and type classes), not just theorems, with the required imports inserted automatically.
-- Fixed several bookkeeping bugs that had hidden partial results and reopened goals from the search, and corrected mismatches between the on-disk and database state.
 
 <!-- ASTERISM-PROGRESS:END -->
 
