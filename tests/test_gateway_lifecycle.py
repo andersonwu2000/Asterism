@@ -324,3 +324,68 @@ def test_verify_in_session_unreachable_fails_fast_transient(
         "tok-x", "x", workspace=tmp_path)
     assert calls["n"] == 1               # no retry
     assert out["transient"] is True
+
+
+# ---------------------------------------------------------------------
+# register_session — claim a worker slot for a framework-held session
+# (the cleanup mechanical span). None on any failure → caller goes cold.
+# ---------------------------------------------------------------------
+
+def test_register_session_returns_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    target = tmp_path / "f.lean"
+    target.write_text("import Mathlib\n", encoding="utf-8")
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _MockResponse({"session_token": "abc123"})
+
+    monkeypatch.setattr(
+        gateway_lifecycle.urllib.request, "urlopen", fake_urlopen)
+    tok = gateway_lifecycle.register_session(
+        pipeline_id="cleanup-mech:p:F.lean", target_path=target,
+        problem="p", workspace=tmp_path)
+    assert tok == "abc123"
+    assert captured["url"].endswith("/register")
+    assert captured["body"]["pipeline_id"] == "cleanup-mech:p:F.lean"
+
+
+def test_register_session_missing_target_is_none(tmp_path: Path) -> None:
+    tok = gateway_lifecycle.register_session(
+        pipeline_id="x", target_path=tmp_path / "nope.lean",
+        problem="p", workspace=tmp_path)
+    assert tok is None
+
+
+def test_register_session_pool_exhausted_is_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """HTTP 500 (no free slot) → None so the gate runs cold, never blocks."""
+    target = tmp_path / "f.lean"
+    target.write_text("import Mathlib\n", encoding="utf-8")
+
+    def fake_urlopen(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 500, "pool exhausted",
+                                     {}, None)
+
+    monkeypatch.setattr(
+        gateway_lifecycle.urllib.request, "urlopen", fake_urlopen)
+    tok = gateway_lifecycle.register_session(
+        pipeline_id="x", target_path=target, problem="p", workspace=tmp_path)
+    assert tok is None
+
+
+def test_register_session_unreachable_is_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    target = tmp_path / "f.lean"
+    target.write_text("import Mathlib\n", encoding="utf-8")
+    monkeypatch.setattr(
+        gateway_lifecycle.urllib.request, "urlopen",
+        lambda req, timeout: (_ for _ in ()).throw(_make_urlerror("refused")))
+    tok = gateway_lifecycle.register_session(
+        pipeline_id="x", target_path=target, problem="p", workspace=tmp_path)
+    assert tok is None

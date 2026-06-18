@@ -111,7 +111,8 @@ def _decide_context(workspace: Path, problem: str, rel: str,
 def file_cleanup_decide(workspace: Path, problem: str, target_file: str,
                         decls_in_file: "list[_Decl]", *,
                         scope: "list[_Decl]", pool: "list[_Decl]",
-                        max_retries: int = _DECIDE_MAX_RETRIES
+                        max_retries: int = _DECIDE_MAX_RETRIES,
+                        session_token: "str | None" = None
                         ) -> "tuple[dict[str, str], bool]":
     """§13 (P4) decide pass for ONE file: propose mathlib-aligned names for this
     file's kept survivors AND a precise replacement for the `import Mathlib`
@@ -172,7 +173,8 @@ def file_cleanup_decide(workspace: Path, problem: str, target_file: str,
         new_text, imports_changed = _swap_umbrella_import(renamed_text, imports)
         if new_text == original:
             return {}, False
-        ok, detail = C._build_file_copy_isolated(workspace, new_text)
+        ok, detail = C._build_file_copy_isolated(workspace, new_text,
+                                                 session_token=session_token)
         if not ok:
             if applied and imports_changed:
                 fallback = (renamed_text, applied)
@@ -192,7 +194,8 @@ def file_cleanup_decide(workspace: Path, problem: str, target_file: str,
     # (umbrella kept) before giving up, so a bad import set never costs a rename.
     if fallback is not None:
         renamed_text, applied = fallback
-        ok, _detail = C._build_file_copy_isolated(workspace, renamed_text)
+        ok, _detail = C._build_file_copy_isolated(workspace, renamed_text,
+                                                  session_token=session_token)
         if ok:
             (workspace / target_file).write_text(renamed_text, encoding="utf-8")
             print(f"[staged] decide `{leaf}` — {len(applied)} renamed; kept "

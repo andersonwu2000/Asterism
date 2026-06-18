@@ -1747,19 +1747,42 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
     # (e) strip framework-process `--` comments (entry_kind / sub-goal / Closer:
     # / combinator / (was: …)) migrate carried from the proof. Mechanical,
     # comment-only. Before decide/audit so the agent sees a clean file.
-    if strip_comments:
-        file_cleanup_strip_framework_comments(workspace, problem, target_file)
-    # (P4) decide — LAST agentic step, on the cleaned shape: align kept
-    # survivors' names to mathlib conventions + swap the `import Mathlib`
-    # umbrella for a precise canonical set. Mechanical apply + per-file rebuild
-    # gate (degrade ladder: bad imports never cost a rename); consumers
-    # self-apply renames via deferred-rewire (caller records {old:new}).
+    # ONE file-level gateway session spans the mechanical whole-file gates
+    # (strip-comments _lake_check + decide degrade-ladder _build_file_copy_
+    # isolated): both verify whole-file candidates whose import closure is this
+    # file's, so they reuse a single warm CLAIMED slot — the first didChange
+    # loads the closure (~25s), every later gate is a ~4-5s body re-elaborate
+    # instead of a fresh cold `lake env lean` (#35). Held ONLY across this
+    # mechanical span: simplify already released its per-decl agent sessions and
+    # audit registers its own after, so this never holds a 2nd slot at once
+    # (preserves the dispatch.pool == workers invariant). token=None (no gateway
+    # / pool full / standalone CLI / tests) → every gate runs cold, never blocks.
+    from ...lsp import lifecycle as _gw
+    _mech_token = None
+    if strip_comments or (decide and present_decls):
+        _mech_token = _gw.register_session(
+            pipeline_id=f"cleanup-mech:{problem}:{target_file}",
+            target_path=workspace / target_file,
+            problem=problem, workspace=workspace)
     renamed: dict[str, str] = {}
     imports_min = False
-    if decide and present_decls:
-        renamed, imports_min = file_cleanup_decide(
-            workspace, problem, target_file, present_decls,
-            scope=scope, pool=pool)
+    try:
+        if strip_comments:
+            file_cleanup_strip_framework_comments(
+                workspace, problem, target_file, session_token=_mech_token)
+        # (P4) decide — LAST agentic step, on the cleaned shape: align kept
+        # survivors' names to mathlib conventions + swap the `import Mathlib`
+        # umbrella for a precise canonical set. Mechanical apply + per-file
+        # rebuild gate (degrade ladder: bad imports never cost a rename);
+        # consumers self-apply renames via deferred-rewire (caller records
+        # {old:new}).
+        if decide and present_decls:
+            renamed, imports_min = file_cleanup_decide(
+                workspace, problem, target_file, present_decls,
+                scope=scope, pool=pool, session_token=_mech_token)
+    finally:
+        if _mech_token:
+            _gw.release_session(_mech_token)
     _T["decide"] = _t()
     # (final) audit — free whole-file mathlib review on the decided shape. Its
     # declared renames join decide's; a CHAIN (decide A→B, audit B→C) collapses

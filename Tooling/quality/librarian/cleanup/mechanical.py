@@ -152,7 +152,9 @@ _FW_COMMENT_MARKER = re.compile(
 
 
 def file_cleanup_strip_framework_comments(workspace: Path, problem: str,
-                                          target_file: str) -> bool:
+                                          target_file: str, *,
+                                          session_token: "str | None" = None
+                                          ) -> bool:
     """§13 (e) — strip framework-process `--` comment blocks that migrate carries
     from the proof: `entry_kind` tags + proof-search narration (`sub-goal` /
     `combinator` / `Closer:` / `(was: …)`). These describe HOW the proof was found
@@ -193,7 +195,8 @@ def file_cleanup_strip_framework_comments(workspace: Path, problem: str,
             lake_build_modules(workspace, missing)
         except Exception:  # noqa: BLE001
             pass
-    ok, _d = C._lake_check(workspace, new_text, prefix="_fwcomment")
+    ok, _d = C._lake_check(workspace, new_text, prefix="_fwcomment",
+                           session_token=session_token)
     if not ok:
         return False
     (workspace / target_file).write_text(new_text, encoding="utf-8")

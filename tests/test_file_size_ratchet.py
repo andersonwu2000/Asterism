@@ -16,7 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # {relative path: max line count}
 _WATERMARKS = {
-    "Tooling/quality/librarian/dedup.py": 1900,
+    # 1900→1950: run_staged_cleanup_file holds ONE file-level gateway session
+    # across the mechanical whole-file gates (strip-comments + decide), so they
+    # verify on a warm claimed slot instead of cold `lake env lean` (#35 stage
+    # 1b) — 2026-06-19 — conscious bump.
+    "Tooling/quality/librarian/dedup.py": 1950,
     # 2850→2900 classify size gate; →3000 Defs section-context + ownership
     # guard; →3050 same-path race lock; →3100 docstring-aware slicing;
     # →3200 cross-problem shared-def redirect + variable-block dedupe +

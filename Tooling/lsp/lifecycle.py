@@ -381,6 +381,40 @@ def verify_in_session(token: str, content: str, *,
                         "transient": True}
 
 
+def register_session(*, pipeline_id: str, target_path: Path, problem: str,
+                     workspace: Path, log_path: Path | None = None,
+                     timeout: float = 30.0) -> "str | None":
+    """POST /register to claim a worker slot for a FRAMEWORK-held session and
+    return its token (None on ANY failure → caller falls back to cold). Unlike
+    `_write_mcp_config` (which also writes the agent's MCP config), this is for
+    framework-only sessions with no agent attached: the Library cleanup
+    mechanical span holds ONE to verify its whole-file gates on a single warm
+    claimed slot (the file's import closure loaded once) instead of a fresh cold
+    `lake env lean` per gate. Pair with `release_session`. A pool-exhausted
+    register (HTTP 500) or an unreachable gateway both return None — the gate
+    then runs cold, never blocks."""
+    import json
+    if not target_path.exists():
+        return None
+    body: dict = {"pipeline_id": pipeline_id, "target_path": str(target_path),
+                  "problem": problem, "workspace": str(workspace)}
+    if log_path is not None:
+        body["log_path"] = str(log_path)
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{_gateway_port(workspace)}/register",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        tok = data.get("session_token")
+        return tok or None
+    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
 def release_session(token: str) -> None:
     """POST /release/{token}. Idempotent. Best-effort — failure is
     logged but not raised (the daemon teardown path uses this and
