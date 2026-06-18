@@ -133,6 +133,28 @@ def test_verify_merged_file_sizes_no_merge_ok():
     assert lib.verify_merged_file_sizes(plan, {}, {"a": 600, "b": 600}) == ""
 
 
+def test_verify_merged_file_sizes_names_back_edges():
+    # Fix B: when the decl usage graph is supplied, the cyclic-SCC rejection
+    # NAMES the specific cross-file citations so the agent can move a few decls
+    # instead of re-partitioning blind.
+    plan = _plan([
+        {"path": "Library/A/Foo.lean", "imports": [], "decls": ["a"]},
+        {"path": "Library/A/Bar.lean", "imports": [], "decls": ["b"]},
+    ])
+    canon = {"Library/A/Foo.lean": "Library/A/Foo.lean",
+             "Library/A/Bar.lean": "Library/A/Foo.lean"}
+    over = {"a": 600, "b": 600}
+    usage = {"a": {"b"}, "b": {"a"}}            # a@Foo <-> b@Bar (a 2-cycle)
+    err = lib.verify_merged_file_sizes(plan, canon, over, usage=usage)
+    assert "usage cycle" in err
+    assert "cross-file citations" in err
+    assert "`a`" in err and "`b`" in err
+    assert "Foo.lean" in err and "Bar.lean" in err
+    # Backward compatible: no usage → no back-edge hint (older callers).
+    assert "cross-file citations" not in \
+        lib.verify_merged_file_sizes(plan, canon, over)
+
+
 def test_decl_line_counts_reads_proof_files(tmp_path):
     proofs = tmp_path / "Problems" / "p" / "proofs"
     proofs.mkdir(parents=True)
@@ -732,6 +754,58 @@ def test_context_classify_incremental_with_prior_plan(conn, tmp_path):
         conn, problem="p", work_kind="classify", attempts_dir=ad,
         workspace=tmp_path, prev_error="bad json").read_text(encoding="utf-8")
     assert "re-emit the full plan" in noprior and "EDIT it" not in noprior
+
+
+def test_context_classify_retry_regroup_on_cycle(conn, tmp_path):
+    # Fix A: a size/cycle rejection needs a REAL re-partition, so the retry
+    # asks to RE-PARTITION the named files — NOT the "smallest change, keep
+    # every placement" ask, which would obstruct breaking an 11-file SCC.
+    db.upsert_library_decl(conn, problem="p", slug="keep_me", source_goal_id=None)
+    db.set_library_verdict(conn, problem="p", slug="keep_me", verdict="keep")
+    ad = tmp_path / "att"; ad.mkdir()
+    prior = '{"files": [{"path": "Library/A/F.lean", "imports": [], '\
+            '"decls": ["keep_me"]}]}'
+    cyc = ("files ['Library/A/F.lean', 'Library/A/G.lean'] cite each other "
+           "(a usage cycle) and so MUST share one Lean module, which then runs "
+           "~5000 source lines (budget 1100; longFile caps at 1500).")
+    text = lib.compile_librarian_context(
+        conn, problem="p", work_kind="classify", attempts_dir=ad,
+        workspace=tmp_path, prev_error=cyc, prior_plan=prior
+    ).read_text(encoding="utf-8")
+    assert "RE-PARTITION" in text
+    assert "SMALLEST" not in text                # NOT the incremental ask
+    assert "Library/A/F.lean" in text            # prior plan still embedded
+    # A decl-drop rejection still gets the incremental "smallest edit" ask.
+    drop = "kept decls not placed: ['foo']"
+    text2 = lib.compile_librarian_context(
+        conn, problem="p", work_kind="classify", attempts_dir=ad,
+        workspace=tmp_path, prev_error=drop, prior_plan=prior
+    ).read_text(encoding="utf-8")
+    assert "SMALLEST" in text2 and "EDIT it" in text2
+    assert "RE-PARTITION" not in text2
+
+
+def test_context_classify_shows_usage_cites_in_topo_order(
+    conn, tmp_path, monkeypatch,
+):
+    # Fix C0: the layout context feeds the agent the proof-term CITATION graph
+    # (usage) in dependency order + the file-DAG layout rule — NOT the
+    # decomposition deps it used to show (the wrong graph, which let the agent
+    # build file cycles it never saw).
+    for s in ("base", "user"):
+        db.upsert_library_decl(conn, problem="p", slug=s, source_goal_id=None)
+        db.set_library_verdict(conn, problem="p", slug=s, verdict="keep")
+    # user cites base → base must be listed first, surfaced as user's `cites`.
+    monkeypatch.setattr(lib, "_decl_usage",
+                        lambda *a, **k: {"user": {"base"}, "base": set()})
+    ad = tmp_path / "att"; ad.mkdir()
+    text = lib.compile_librarian_context(
+        conn, problem="p", work_kind="classify", attempts_dir=ad,
+        workspace=tmp_path).read_text(encoding="utf-8")
+    assert "File layout rule" in text
+    assert "dependency order" in text
+    assert "cites: `base`" in text                       # usage edge, not deps
+    assert text.index("### base") < text.index("### user")   # topological order
 
 
 def test_context_migrate_lists_decls(conn, tmp_path):

@@ -370,27 +370,24 @@ def _merge_file_sccs(fgraph: dict, decls_in: dict) -> dict:
     return canon
 
 
-def _plan_usage_and_canon(conn, problem: str, plan: ClassifyPlan,
-                          workspace) -> "tuple[dict, dict]":
-    """`(usage, canon)` for a layout plan — the ground-truth pieces both the
-    pre-commit merged-size gate and `commit_classify` need, computed once.
+def _decl_usage(conn, problem: str, placed, workspace) -> "dict":
+    """Decl-level USAGE DAG over `placed` slugs: proof-term citations
+    (`inventory.usage_graph`) PLUS Defs-source edges. This is the SINGLE graph
+    both the classify CONTEXT (so the agent lays files out along the edges it
+    will be judged on) and the pre-commit merged-size GATE are computed from —
+    feeding the agent the decomposition DAG (`InvDecl.deps`) instead, as the
+    context used to, leaves file-level citation cycles the agent never saw.
 
-    `usage` is the decl-level USAGE DAG (proof-term citations,
-    `inventory.usage_graph`, plus Defs-source edges); `canon` is
-    `{file_path: canonical_path}` collapsing each strongly-connected component
-    of the FILE-level usage graph (a cyclic file group is an un-splittable
-    circular import → one file). Pure: no DB writes, no logging — the caller
-    owns the "merging cyclic file" print so it fires only on actual commit."""
+    Defs decls have no proofs/L_ files, so `usage_graph` records NO edges among
+    them; read their edges from Defs.lean itself (X->Y when Y's name appears as
+    a whole token in X's slice) so the toposort can order them (stokes
+    form_bundle, 2026-06-11). Defs.lean compiles, so these edges form a sub-DAG
+    of source order — no cycle possible from code text."""
     from ..quality.librarian import inventory as _inv
-    placed = [d for f in plan.files for d in f.decls]
+    placed = list(placed)
     usage = _inv.usage_graph(workspace, problem, placed,
                              alias_map=_merge_alias_map(conn, problem),
                              root_source=_root_source(conn, problem, workspace))
-    # Defs decls have no proofs/L_ files, so `usage_graph` records NO edges
-    # among them; read their edges from Defs.lean itself (X->Y when Y's name
-    # appears as a whole token in X's slice) so the intra-file toposort can
-    # order them (stokes form_bundle, 2026-06-11). Defs.lean compiles, so these
-    # edges form a sub-DAG of source order — no cycle possible from code text.
     defs_placed = [d for d in placed
                    if d in set(_inv.defs_decls(workspace, problem))]
     if len(defs_placed) > 1:
@@ -403,6 +400,21 @@ def _plan_usage_and_canon(conn, problem: str, plan: ClassifyPlan,
                 for y in defs_placed:
                     if x != y and re.search(rf"\b{re.escape(y)}\b", code[x]):
                         usage.setdefault(x, set()).add(y)
+    return usage
+
+
+def _plan_usage_and_canon(conn, problem: str, plan: ClassifyPlan,
+                          workspace) -> "tuple[dict, dict]":
+    """`(usage, canon)` for a layout plan — the ground-truth pieces both the
+    pre-commit merged-size gate and `commit_classify` need, computed once.
+
+    `usage` is the decl-level USAGE DAG (`_decl_usage`); `canon` is
+    `{file_path: canonical_path}` collapsing each strongly-connected component
+    of the FILE-level usage graph (a cyclic file group is an un-splittable
+    circular import → one file). Pure: no DB writes, no logging — the caller
+    owns the "merging cyclic file" print so it fires only on actual commit."""
+    placed = [d for f in plan.files for d in f.decls]
+    usage = _decl_usage(conn, problem, placed, workspace)
     # File-level usage graph: file F depends on file G iff a decl in F cites a
     # decl placed in G. Merge cyclic file groups (circular imports) into one.
     decl_file = {d: f.path for f in plan.files for d in f.decls}
@@ -417,8 +429,39 @@ def _plan_usage_and_canon(conn, problem: str, plan: ClassifyPlan,
     return usage, _merge_file_sccs(fgraph, decls_in)
 
 
+def _scc_cross_file_edges(plan: ClassifyPlan, members: "list[str]",
+                          usage: "dict | None") -> "list[tuple]":
+    """The cross-file proof-term citations AMONG the SCC member files — the
+    edges whose two-way presence makes the file group cyclic. Returns one
+    example `(decl, file, cited_decl, cited_file)` per directed file-pair,
+    bidirectional pairs (the direct `A<->B` cycles) first, so the agent can
+    target a few specific declarations to move instead of re-partitioning
+    blind."""
+    if not usage:
+        return []
+    member_set = set(members)
+    decl_file = {d: f.path for f in plan.files for d in f.decls
+                 if f.path in member_set}
+    pair_example: dict = {}
+    for x, deps in usage.items():
+        fx = decl_file.get(x)
+        if fx is None:
+            continue
+        for y in deps:
+            fy = decl_file.get(y)
+            if fy is not None and fy != fx:
+                pair_example.setdefault((fx, fy), (x, y))
+    out = []
+    for (fa, fb), (x, y) in pair_example.items():
+        bidir = (fb, fa) in pair_example
+        out.append((bidir, x, fa, y, fb))
+    out.sort(key=lambda e: (not e[0], e[2], e[4]))   # bidirectional first
+    return [(x, fa, y, fb) for _b, x, fa, y, fb in out]
+
+
 def verify_merged_file_sizes(plan: ClassifyPlan, canon: dict,
-                             decl_lines: dict) -> str:
+                             decl_lines: dict,
+                             usage: "dict | None" = None) -> str:
     """Reject a plan whose files, AFTER the un-splittable-SCC merge
     (`_plan_usage_and_canon`), land a single Lean module over the size budget —
     the per-PLANNED-file check in `verify_classify` misses this because the
@@ -426,7 +469,10 @@ def verify_merged_file_sizes(plan: ClassifyPlan, canon: dict,
     residue_thm WindingNumberInteger absorbed 8 files -> 3392 lines, which would
     then STALL forever at the audit zero-warning gate on `longFile`, 2026-06-18).
     The decl usage graph is a DAG, so a cyclic FILE group is the agent's
-    grouping artifact — a topological re-partition can break it. "" on ok."""
+    grouping artifact — a topological re-partition can break it. When `usage`
+    (the decl-level citation graph) is supplied, the message NAMES the specific
+    cross-file back-edges so the agent can move a few decls instead of guessing
+    where the entanglement is. "" on ok."""
     merged: dict = {}
     for f in plan.files:
         merged.setdefault(canon.get(f.path, f.path), []).extend(f.decls)
@@ -437,6 +483,17 @@ def verify_merged_file_sizes(plan: ClassifyPlan, canon: dict,
         members = sorted(f.path for f in plan.files
                          if canon.get(f.path, f.path) == cf)
         if len(members) > 1:
+            edges = _scc_cross_file_edges(plan, members, usage)
+            hint = ""
+            if edges:
+                shown = edges[:12]
+                _leaf = lambda p: p.rsplit("/", 1)[-1]  # noqa: E731
+                hint = (" The cross-file citations entangling them — move one "
+                        "endpoint of each so citations point one way: "
+                        + "; ".join(
+                            f"`{x}` ({_leaf(fa)}) cites `{y}` ({_leaf(fb)})"
+                            for x, fa, y, fb in shown)
+                        + ("; …" if len(edges) > len(shown) else "") + ".")
             return (f"files {members} cite each other (a usage cycle) and so "
                     f"MUST share one Lean module, which then runs ~{est} source "
                     f"lines (budget {CLASSIFY_FILE_LINE_BUDGET}; mathlib's "
@@ -444,7 +501,7 @@ def verify_merged_file_sizes(plan: ClassifyPlan, canon: dict,
                     f"so regroup to break the cycle: order the files along the "
                     f"dependency chain so a file only cites declarations in "
                     f"files it imports (no two files citing into each other), "
-                    f"and keep each under budget.")
+                    f"and keep each under budget." + hint)
         # Single oversize file — also caught by verify_classify's per-file pass,
         # repeated here so the post-merge gate is self-contained.
         return (f"{cf}: ~{est} source lines (budget {CLASSIFY_FILE_LINE_BUDGET}; "
@@ -1295,21 +1352,45 @@ def compile_librarian_context(
 
     if work_kind == "classify":
         if prev_error and prior_plan:
-            # Incremental retry: re-deriving the whole 200+-decl layout from
-            # scratch reliably re-drops a *different* declaration each time
-            # (whack-a-mole). Hand back the prior plan and ask for the SMALLEST
-            # edit that clears the rejection, keeping every other placement.
-            lines += [
-                "## Your previous plan was REJECTED — EDIT it, do not re-plan",
-                "", "The rejection:", "", "```", prev_error[-1200:], "```", "",
-                "Your previous plan is below. START FROM IT and make the "
-                "SMALLEST change that clears the rejection — add a missing "
-                "declaration to the right file, break the named cycle, split "
-                "the named over-budget file — and KEEP every other placement "
-                "exactly as it is. (Re-deriving the whole layout from scratch "
-                "is what dropped declarations last time.) Output the COMPLETE "
-                "edited plan.", "", "### Your previous plan (edit this)", "",
-                "```json", prior_plan.strip(), "```", ""]
+            # The retry instruction depends on WHAT was rejected. A size/cycle
+            # rejection needs a real re-partition (moving many decls across the
+            # named files); a "smallest change, keep every placement" ask
+            # actively obstructs that. A decl-drop / other rejection is the
+            # opposite: re-deriving the whole 200+-decl layout from scratch
+            # re-drops a *different* decl each time (whack-a-mole), so there the
+            # incremental "edit the prior plan" ask is right.
+            _is_regroup = ("usage cycle" in prev_error
+                           or ("source lines" in prev_error
+                               and "budget" in prev_error))
+            if _is_regroup:
+                lines += [
+                    "## Your previous plan was REJECTED (file too big / cyclic) "
+                    "— RE-PARTITION the named files", "",
+                    "The rejection:", "", "```", prev_error[-1500:], "```", "",
+                    "This needs a REAL re-partition, NOT a one-line edit. Using "
+                    "the `cites` graph below (declarations are listed in "
+                    "dependency order), move declarations among the NAMED files "
+                    "so the import graph is a DAG — a file only cites "
+                    "declarations in files it imports, and no two files cite "
+                    "into each other — and keep each file under budget. Expect "
+                    "to change many placements AMONG THE NAMED FILES; KEEP every "
+                    "placement outside them exactly as it is. Output the "
+                    "COMPLETE edited plan.", "",
+                    "### Your previous plan (re-partition this)", "",
+                    "```json", prior_plan.strip(), "```", ""]
+            else:
+                lines += [
+                    "## Your previous plan was REJECTED — EDIT it, do not "
+                    "re-plan", "", "The rejection:", "", "```",
+                    prev_error[-1200:], "```", "",
+                    "Your previous plan is below. START FROM IT and make the "
+                    "SMALLEST change that clears the rejection — add the missing "
+                    "declaration(s) to the right file — and KEEP every other "
+                    "placement exactly as it is. (Re-deriving the whole layout "
+                    "from scratch is what dropped declarations last time.) "
+                    "Output the COMPLETE edited plan.", "",
+                    "### Your previous plan (edit this)", "",
+                    "```json", prior_plan.strip(), "```", ""]
         elif prev_error:
             lines += [
                 "## Your previous layout was REJECTED — fix exactly this and "
@@ -1351,22 +1432,41 @@ def compile_librarian_context(
             lines.append("")
             lines += [f"- `{f}`" for f in owned]
             lines.append("")
-        inv = _inv.build_inventory(conn, workspace, problem)
-        deps_by_slug = {d.slug: d.deps for d in inv.decls}
+        # Show the agent the proof-term CITATION graph (`_decl_usage`) — the
+        # SAME graph verify_merged_file_sizes / commit_classify order the layout
+        # on — NOT build_inventory's decomposition deps. Listed in dependency
+        # (topological) order so the agent can lay files out as contiguous
+        # groups and keep the import graph acyclic; feeding the decomposition
+        # DAG instead is what let the agent build file-level citation cycles it
+        # never saw (residue_thm 11-file SCC -> 5833 lines, 2026-06-18).
+        kept_slugs = [r["slug"] for r in kept]
+        usage = _decl_usage(conn, problem, kept_slugs, workspace)
+        defs_set = set(_inv.defs_decls(workspace, problem)) & set(kept_slugs)
+        ordered = _toposort_intra_file(kept_slugs, usage, defs_set)
         # Source size per decl — the agent budgets file sizes with these
         # (verify_classify enforces CLASSIFY_FILE_LINE_BUDGET per planned file).
-        sizes = _decl_line_counts(workspace, problem,
-                                  [r["slug"] for r in kept])
-        lines.append("## Kept declarations (slug + size + deps + statement)")
+        sizes = _decl_line_counts(workspace, problem, kept_slugs)
+        lines += [
+            "## File layout rule (your plan is graded on this)", "",
+            "Lay out files so the import graph is a **DAG**: a file may only "
+            "cite declarations in files it imports, and **no two files may cite "
+            "into each other** — a cyclic file group is an un-splittable "
+            "circular import, gets merged into one Lean module, and then blows "
+            f"the ~{CLASSIFY_FILE_LINE_BUDGET}-line size budget. The "
+            "declarations below are in dependency (topological) order — each "
+            "`cites` only earlier ones — so laying them into files as roughly "
+            "CONTIGUOUS groups keeps the imports acyclic. Group mutually-related "
+            "declarations together; keep each file under budget.", ""]
+        lines.append("## Kept declarations — dependency order "
+                     "(slug + size + cites + statement)")
         lines.append("")
-        for r in kept:
-            slug = r["slug"]
-            deps = ", ".join(f"`{s}`" for s in deps_by_slug.get(slug, [])) \
-                or "—"
+        for slug in ordered:
+            cites = ", ".join(
+                f"`{s}`" for s in sorted(usage.get(slug, set()))) or "—"
             stmt = " ".join(_read_statement(conn, problem, slug).split())
             lines.append(f"### {slug}")
             lines.append(f"- ~{sizes.get(slug, 0)} source lines")
-            lines.append(f"- deps: {deps}")
+            lines.append(f"- cites: {cites}")
             lines.append(f"- `{stmt}`" if stmt else "- _(no statement)_")
             lines.append("")
 
@@ -2019,7 +2119,8 @@ def _run_structured(conn, *, problem, work_kind, workspace,
     # grouping artifact). Reuse the (usage, canon) for commit so usage_graph
     # runs once.
     usage_canon = _plan_usage_and_canon(conn, problem, plan, workspace)
-    merr = verify_merged_file_sizes(plan, usage_canon[1], decl_lines)
+    merr = verify_merged_file_sizes(plan, usage_canon[1], decl_lines,
+                                    usage=usage_canon[0])
     if merr:
         return _reject("librarian_verify_failed", merr, prior=text)
     commit_classify(conn, problem, plan, workspace, precomputed=usage_canon)

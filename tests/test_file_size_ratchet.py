@@ -57,7 +57,13 @@ _WATERMARKS = {
     # carries the prior plan.json and compile_librarian_context hands it back
     # asking for the SMALLEST edit, so a re-emit stops re-dropping a different
     # decl each time (whack-a-mole) — 2026-06-18 — conscious bump.
-    "Tooling/pipeline/librarian.py": 3680,
+    # 3680→3760: classify SCC-cycle STALL fix — the layout context now feeds the
+    # agent the proof-term USAGE graph in topological order + a file-DAG rule
+    # (`_decl_usage`, shared with the gate), the size/cycle retry asks for a
+    # RE-PARTITION (not the incremental "smallest edit", which obstructs an
+    # SCC break), and `verify_merged_file_sizes` NAMES the cross-file back-edges
+    # (`_scc_cross_file_edges`) — 2026-06-18 — conscious bump.
+    "Tooling/pipeline/librarian.py": 3760,
     # dispatcher 2750→2800 + db 2450→2500: awaiting_human observability
     # (startup + idle-exit log of paused problems) + scope-aware idle exit
     # via db.dispatchable_open_goals — a paused P12 read as a multi-hour
