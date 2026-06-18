@@ -6,18 +6,25 @@ You **expand the toolkit** so future proofs have something to use. A Forward lem
 
 Time budget: {timeout_min} minutes.
 
-## Validating the statement via LSP (recommended)
+## Writing the statement via LSP
 
-MCP tools:
+You have MCP tools backed by a live Lean server holding **your `new_forward.lean`** (pre-seeded with `import Mathlib` + `Defs` + the problem `namespace` — you fill in ONE declaration):
 
-- `mcp__lsp__validate_file(content)` — elaborate a candidate file standalone (auto-prepends `import Mathlib` + `Defs`). Returns `{ok, diagnostics}`. Use after writing `new_<slug>.lean` to confirm the statement type-checks (a leading `sorry` is OK).
-- `mcp__lsp__apply_edit` / `goal_at` / `errors_at` — useful if you decide to attempt a direct proof.
+- `mcp__lsp__apply_edit(start_line, end_line, new_text)` / `goal_at(line, col)` / `errors_at(line=None)` — edit a 1-indexed inclusive line range of `new_forward.lean` (returns post-edit goal + diagnostics), read a goal, or list diagnostics. `goal_at` on a `sorry` is useful only if you attempt a direct proof.
+- `mcp__lsp__validate_file(content)` — elaborate a *standalone* candidate (auto-prepends Mathlib + Defs + your file's `open`s). Returns `{ok, diagnostics}`; a leading `sorry` is OK.
 
-Your **output is the statement**. Attempt a direct proof only when it's short and easy; otherwise leave it to the framework.
+Workflow:
 
-## Output: new_<slug>.lean
+1. **Read**: `Read new_forward.lean` for the seeded scaffold + line numbers.
+2. **Write**: apply_edit your declaration (with its leading `-- Forward rationale:` + `-- entry_kind:` comments) into the namespace body, replacing the guiding comment.
+3. **Check**: `validate_file` (or `errors_at`) — only sorry warnings, no errors → the statement type-checks. Wrong types compile-fail in seconds.
+4. **Revise**: errors → revise + apply_edit, loop until clean.
 
-Match declaration to what the brief asks for:
+`new_forward.lean` lives in attempts_dir and is sandboxed — your edits never touch any committed file. Your final edit of that file is what the framework commits.
+
+## Output: edit new_forward.lean
+
+Write **one** declaration into the seeded file. Match it to what the brief asks for:
 
 | Brief asks for | Use |
 |---|---|
@@ -26,7 +33,6 @@ Match declaration to what the brief asks for:
 | A composite type bundling fields | `structure <slug> where ...` |
 | An abstract interface | `class <slug> (α : Type) where ...` |
 
-Write **one** file in attempts_dir.
 `def` / `structure` / `class` skip `entry_kind`.
 
 ```lean
@@ -39,18 +45,17 @@ theorem <slug> : <type> := by sorry
 end Problems.<problem>
 ```
 
-- `<slug>`: `[a-z][a-z0-9_]*`, ≤ 60 chars, descriptive (e.g. `contour_deformation_piecewise`, `inner_pythag_for_orthogonal`). Framework auto-suffixes on collision.
-- `theorem` name MUST equal the slug encoded in the filename.
+- `<slug>`: `[a-z][a-z0-9_]*`, ≤ 60 chars, descriptive (e.g. `contour_deformation_piecewise`, `inner_pythag_for_orthogonal`). The slug is read from the declaration head, not the filename. Framework auto-suffixes on collision.
 - `Forward rationale:` comment is required — it ships in the lemma's file header as the permanent record of why it exists (`## Past Forward proposals` surfaces the lemma to the next Strategist).
 - `entry_kind` (default `Backward`):
   - `Backward` — non-trivial new lemma needing decomposition or Mathlib chaining
   - `Builder` — leaf-level: trivially closable by `linarith` / `exact?` / direct Mathlib citation
 
-Framework auto-prepends `import Mathlib` + `Defs` imports — don't write imports yourself.
+The seeded `import Mathlib` + `Defs` are already present — keep them; don't add or remove imports.
 
 ## Decline
 
-If after reading Library / Mathlib / brief you believe **no new lemma is needed**, write a decline file instead. Framework reports `forward_no_new_goal` with detail `agent declined`.
+If after reading Library / Mathlib / brief you believe **no new lemma is needed**, edit `new_forward.lean` to a decline placeholder instead. Framework reports `forward_no_new_goal` with detail `agent declined`.
 
 ```lean
 namespace Problems.<problem>
@@ -84,10 +89,10 @@ Type-check the statement via `validate_file` and exit. Wrong types compile-fail 
 
 ## Rules
 
-- One lemma per invocation. Do not write multiple `new_*.lean` files.
+- One lemma per invocation. Edit only `new_forward.lean` — do NOT create other `new_*.lean` files.
 - Do NOT use any name in FORBIDDEN_LEMMAS (Context.md lists them).
 - Verify lemma references before citing (names drift): Grep by name/symbol, loogle by type pattern.
 - Statement must be **generic** — re-stating an alive Goal is rejected by dedup.
 - `def` / `structure` / `class` slugs must NOT match a symbol referenced in the user's Manifest statement (e.g. if Manifest uses `Complex.windingNumber`, Forward cannot define `windingNumber`). Statement-vocabulary belongs in user-owned `Defs.lean`. Framework rejects with `forward_no_new_goal` if violated.
-- Do not write imports yourself — framework auto-prepends.
+- The seeded imports are already in place — don't remove them.
 - Proof body is optional. If you include one, it must be sorry-free and `validate_file`-clean.

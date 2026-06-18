@@ -37,6 +37,40 @@ def conn(workspace: Path) -> sqlite3.Connection:
 
 
 # ---------------------------------------------------------------------
+# _forward_seed_scaffold — cold-seed for the fixed LSP target
+# ---------------------------------------------------------------------
+
+def test_forward_seed_scaffold_is_import_enriched_and_declless(
+    workspace: Path,
+) -> None:
+    """The cold seed is import-enriched (so it elaborates standalone in the
+    LSP slot for apply_edit / goal_at) but carries NO declaration — an
+    un-edited seed must parse as 'no declaration found' (retryable), never a
+    phantom lemma."""
+    seed = forward._forward_seed_scaffold(problem="p", workspace=workspace)
+    assert "import Mathlib" in seed
+    assert seed.lstrip().startswith("import")
+    assert "namespace Problems.p" in seed
+    # No theorem/def/structure/class head → extract returns the no-decl error.
+    md, err = forward.extract_forward_metadata(seed)
+    assert md is None
+    assert "declaration" in err
+    # And the scaffold is not mistaken for a decline.
+    assert forward.is_decline(seed) is False
+
+
+def test_forward_seed_scaffold_adds_defs_import_when_present(
+    workspace: Path,
+) -> None:
+    """When the problem ships a Defs.lean, the seed imports it too (mirrors
+    the commit path's _ensure_imports_subgoal)."""
+    (workspace / "Problems" / "p" / "Defs.lean").write_text(
+        "import Mathlib\n", encoding="utf-8")
+    seed = forward._forward_seed_scaffold(problem="p", workspace=workspace)
+    assert "import Problems.p.Defs" in seed
+
+
+# ---------------------------------------------------------------------
 # extract_forward_metadata
 # ---------------------------------------------------------------------
 

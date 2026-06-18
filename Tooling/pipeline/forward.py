@@ -79,6 +79,33 @@ def _auto_prepend_candidate_imports(
     return enriched
 
 
+def _forward_seed_scaffold(*, problem: str, workspace: Path) -> str:
+    """Cold-seed content for Forward's fixed LSP target (`new_forward.lean`).
+
+    Builder / Backward seed a known `theorem s<sid> := by sorry` skeleton;
+    Forward instead INVENTS its lemma, so the scaffold is just the import
+    header + problem namespace + a guiding comment. The agent edits ONE
+    declaration in via apply_edit — its slug is parsed from the declaration
+    head, not the filename (`extract_forward_metadata`) — and validate_file
+    type-checks it. Imports/opens are seeded via the same helpers the commit
+    path uses (`_auto_prepend_candidate_imports`) so the on-disk file
+    elaborates standalone in the LSP slot (apply_edit / goal_at). Idempotent
+    and safe when the problem ships no `Defs.lean` (only `import Mathlib` is
+    added then).
+    """
+    from .backward import _ensure_imports_subgoal
+    from ..state import manifest as _mfst
+    base = (
+        f"namespace Problems.{problem}\n\n"
+        "-- Write ONE forward lemma here (see forward.md). Edit this file with\n"
+        "-- apply_edit and validate_file to type-check before finishing.\n\n"
+        f"end Problems.{problem}\n"
+    )
+    seeded = _ensure_imports_subgoal(base, problem=problem, workspace=workspace)
+    seeded = _mfst.inject_defs_opens(seeded, problem=problem, workspace=workspace)
+    return seeded
+
+
 # Same slug constraint as Backward sub-goals (Tooling/pipeline/backward.py).
 SLUG_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 SLUG_MAX_LEN = 60
@@ -449,18 +476,20 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
     """Full Forward pipeline (Phase 2 §3.4) with in-pipeline retry.
 
     Stages:
-      1. compile_forward_context  — Context.md with Strategist brief
-                                    (cold-start only)
-      2. agent                    — spawn LLM, drops new_<slug>.lean
-                                    or decline placeholder
+      1. cold_prep                — compile Context.md + seed the fixed
+                                    `new_forward.lean` LSP target (cold only)
+      2. agent                    — LSP edit-mode spawn: agent edits
+                                    new_forward.lean (validate_file / apply_edit
+                                    available, like Builder / Backward) into one
+                                    lemma or a decline placeholder
       3. parse                    — extract_forward_metadata
                                     OR is_decline → agent_declined
-      4. self_verify              — LSP verify_file on the candidate
+      4. self_verify              — framework verify_file on the candidate
       5. dedupe                   — find_canonicals_batch
       6. commit                   — commit_forward_lemma
 
-    Retry semantics (parity with Builder / Backward via
-    `run_with_session_retries`): stages 2-6 run inside the helper's
+    Full parity with Builder / Backward via `run_lsp_edit_loop` (LSP edit-mode
+    on top of `run_with_session_retries`): stages 2-6 run inside the helper's
     loop. Terminal outcomes return immediately:
       - 'proved' / 'success' (committed lemma) — terminal success
       - 'agent_declined' (library_sufficient) — terminal decline,
@@ -481,54 +510,69 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
     """
     from .. import agent
     from . import PipelineResult, PROMPT_DIR
-    from ._retry import SpawnCtx, run_with_session_retries
+    from ._retry import SpawnCtx, run_lsp_edit_loop
     from ..agent.phase2_context import compile_forward_context
     from ..core import dispatcher
 
     attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
     problem_dir = db.problem_dir(workspace, problem)
+    # Fixed LSP edit target. Builder / Backward seed a known signature into
+    # `patch.lean`; Forward INVENTS its lemma, so the cold seed is just an
+    # import + namespace scaffold (see `_forward_seed_scaffold`) the agent
+    # edits ONE declaration into. The slug is still parsed from the
+    # `theorem <slug>` head inside (extract_forward_metadata), not the
+    # filename, and `new_forward.lean` matches the `new_*.lean` glob that
+    # commit_forward_lemma falls back to.
+    target = attempts_dir / "new_forward.lean"
 
-    def forward_spawn(ctx: SpawnCtx) -> int:
-        # Cold start: compile Context.md (first attempt) + wipe any
-        # prior attempt's new_*.lean so glob in parse picks up only the
-        # fresh attempt's output.
-        if ctx.cold:
-            compile_forward_context(
-                conn, problem=problem, decision_id=decision_id,
-                attempts_dir=ctx.attempts_dir, workspace=workspace, mfst=mfst,
-            )
-            for f in ctx.attempts_dir.glob("new_*.lean"):
-                try:
-                    f.unlink()
-                except OSError:
-                    pass
-        return agent.spawn_llm(
-            kind="forward",
-            prompt_path=PROMPT_DIR / "forward.md",
-            problem_dir=problem_dir,
-            attempts_dir=ctx.attempts_dir,
-            session_id=ctx.sid,
-            is_retry=not ctx.cold,
-            retry_context=ctx.retry_context,
-            retry_reason=ctx.retry_reason,
-            inline_prompt=ctx.inline_prompt,
-            timeout_sec_override=ctx.budget_override,
+    def forward_cold_prep(ctx: SpawnCtx) -> None:
+        # COLD only (run_lsp_edit_loop skips this on a warm --resume, so the
+        # agent's prior edit + retry_context drive an incremental fix). Compile
+        # Context.md, wipe any stale new_*.lean, then seed the fixed target so
+        # validate_file / apply_edit / goal_at elaborate it standalone in the
+        # LSP slot — the gateway-session registration + spawn itself are owned
+        # by run_lsp_edit_loop (target=new_forward.lean).
+        compile_forward_context(
+            conn, problem=problem, decision_id=decision_id,
+            attempts_dir=ctx.attempts_dir, workspace=workspace, mfst=mfst,
+        )
+        for f in ctx.attempts_dir.glob("new_*.lean"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        target.write_text(
+            _forward_seed_scaffold(problem=problem, workspace=workspace),
+            encoding="utf-8",
         )
 
     def forward_parse() -> "PipelineResult":  # noqa: F821
-        candidates = list(attempts_dir.glob("new_*.lean"))
-        if not candidates:
+        # Read the agent's lemma. The fixed `new_forward.lean` target (seeded
+        # by cold_prep, edited by the agent in-place) is the normal source;
+        # fall back to any other new_*.lean carrying a real declaration or
+        # decline marker, so a thinking-trap rescue takeover (whose generic
+        # prompt still says `new_<slug>.lean`) or a stray Write isn't silently
+        # lost — mirrors commit_forward_lemma's glob fallback. An un-edited
+        # seed (no decl, no decline) is skipped → forward_no_new_goal below,
+        # which the retry loop treats as retryable.
+        src = None
+        body = ""
+        ordered = [target] + sorted(
+            p for p in attempts_dir.glob("new_*.lean") if p != target)
+        for cand in ordered:
+            if not cand.exists():
+                continue
+            try:
+                text = cand.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if is_decline(text) or _DECL_HEAD_RE.search(text):
+                src, body = cand, text
+                break
+        if src is None:
             return PipelineResult(
                 outcome="failed", failure_reason="forward_no_new_goal",
-                failure_detail="agent produced no new_*.lean file",
-            )
-        src = candidates[0]
-        try:
-            body = src.read_text(encoding="utf-8")
-        except OSError as e:
-            return PipelineResult(
-                outcome="failed", failure_reason="forward_no_new_goal",
-                failure_detail=f"new_*.lean unreadable: {e}",
+                failure_detail="agent produced no lemma in new_forward.lean",
             )
 
         # Agent decline — mapped to `agent_declined` so the retry
@@ -762,18 +806,24 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
             problem_dir=problem_dir, attempts_dir=attempts_dir,
             workspace=workspace)
 
-    result = run_with_session_retries(
+    result = run_lsp_edit_loop(
         conn=conn,
         goal_id=None,   # Forward targets a problem, not a goal
         pipeline_id=pipeline_id,
         budget_threshold=dispatcher.FORWARD_RETRY_BUDGET,
         shelve_threshold=0,   # unused when goal_id=None
         attempts_dir=attempts_dir,
-        spawn_fn=forward_spawn,
+        workspace=workspace,
+        problem=problem,
+        problem_dir=problem_dir,
+        kind="forward",
+        prompt_path=PROMPT_DIR / "forward.md",
+        target=target,
+        cold_prep_fn=forward_cold_prep,
         parse_fn=forward_parse,
         postmortem_fn=forward_postmortem,
-        workspace=workspace,
         feedback_fn=forward_feedback,
+        decision_id=decision_id,
     )
     # #4 — surface a Forward decline's `## Why` to the originating Inject
     # decision so its next inject_batch_done wake reads WHY the brief was

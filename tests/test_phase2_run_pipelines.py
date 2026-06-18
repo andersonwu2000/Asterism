@@ -348,7 +348,7 @@ def test_run_forward_commits_new_lemma(
     pipeline_id = "test-fwd-1"
 
     def fake_spawn(**kw):
-        (kw["attempts_dir"] / "new_my_lemma.lean").write_text(
+        (kw["attempts_dir"] / "new_forward.lean").write_text(
             "namespace Problems.p\n"
             "-- Forward rationale: useful intermediate.\n"
             "-- entry_kind: Backward\n"
@@ -375,6 +375,49 @@ def test_run_forward_commits_new_lemma(
     assert g["slug"] == "my_lemma"
 
 
+def test_run_forward_wires_lsp_session(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mock_lsp_verify,
+) -> None:
+    """Asymmetry fix (Tier 1+2): Forward now spawns through run_lsp_edit_loop
+    with an MCP session (`mcp_config_path` set), so the validate_file /
+    apply_edit tools forward.md documents actually exist — previously Forward
+    spawned blind (mcp_config_path=None) and those instructions were dead.
+    Also asserts the fixed `new_forward.lean` target is cold-seeded with an
+    import-enriched scaffold the agent edits into."""
+    _insert_root(conn)
+    captured: dict = {}
+
+    def fake_spawn(**kw):
+        captured.update(kw)
+        # run_lsp_edit_loop's cold_prep seeded new_forward.lean before spawn.
+        captured["seed"] = (
+            kw["attempts_dir"] / "new_forward.lean"
+        ).read_text(encoding="utf-8")
+        (kw["attempts_dir"] / "new_forward.lean").write_text(
+            "namespace Problems.p\n"
+            "-- Forward rationale: x.\n"
+            "-- entry_kind: Backward\n"
+            "theorem wired : True := by sorry\n"
+            "end Problems.p\n",
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    r = forward.run_forward(
+        conn, problem="p", workspace=workspace, mfst=mfst,
+        pipeline_id="test-fwd-lsp",
+    )
+    assert r.outcome == "success"
+    # The LSP session is wired (the core of the asymmetry fix).
+    assert captured.get("mcp_config_path") is not None
+    # Cold seed: import-enriched scaffold, no premature declaration.
+    assert "import Mathlib" in captured["seed"]
+    assert "namespace Problems.p" in captured["seed"]
+    assert "theorem" not in captured["seed"]
+
+
 def test_run_forward_decline_path(
     workspace: Path, conn: sqlite3.Connection,
     mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
@@ -385,7 +428,7 @@ def test_run_forward_decline_path(
     _insert_root(conn)
 
     def fake_spawn(**kw):
-        (kw["attempts_dir"] / "new__forward_decline.lean").write_text(
+        (kw["attempts_dir"] / "new_forward.lean").write_text(
             "namespace Problems.p\n"
             "-- decline: library_sufficient\n"
             "-- ## Why\n"
@@ -414,6 +457,41 @@ def test_run_forward_decline_path(
         "SELECT COUNT(*) AS n FROM goals WHERE problem='p' AND origin='forward'"
     ).fetchone()
     assert g["n"] == 0
+
+
+def test_run_forward_falls_back_to_stray_new_file(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mock_lsp_verify,
+) -> None:
+    """Robustness: if the agent writes a differently-named new_*.lean (e.g. a
+    thinking-trap rescue takeover whose generic prompt still says
+    `new_<slug>.lean`, or a stray Write) instead of editing the seeded
+    new_forward.lean, parse falls back to it rather than reading the
+    un-edited seed."""
+    _insert_root(conn)
+
+    def fake_spawn(**kw):
+        # Leave the seeded new_forward.lean untouched; write a stray file.
+        (kw["attempts_dir"] / "new_stray.lean").write_text(
+            "namespace Problems.p\n"
+            "-- Forward rationale: stray write.\n"
+            "-- entry_kind: Backward\n"
+            "theorem stray_lemma : True := by sorry\n"
+            "end Problems.p\n",
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    r = forward.run_forward(
+        conn, problem="p", workspace=workspace, mfst=mfst,
+        pipeline_id="test-fwd-stray",
+    )
+    assert r.outcome == "success"
+    g = conn.execute(
+        "SELECT slug FROM goals WHERE problem='p' AND origin='forward'"
+    ).fetchone()
+    assert g is not None and g["slug"] == "stray_lemma"
 
 
 def test_run_forward_no_output(
@@ -470,7 +548,7 @@ def test_run_forward_consumes_strategist_brief(
         ctx_path = kw["attempts_dir"] / "Context.md"
         captured_context.append(ctx_path.read_text(encoding="utf-8"))
         # Agent declines so test isolates context check
-        (kw["attempts_dir"] / "new__decline.lean").write_text(
+        (kw["attempts_dir"] / "new_forward.lean").write_text(
             "namespace Problems.p\n-- decline: library_sufficient\n"
             "theorem _forward_decline : True := by trivial\n"
             "end Problems.p\n",
@@ -533,7 +611,7 @@ def test_run_forward_dedupe_alias_registers_proved_alias(
     canon_id = _insert_proved_canonical(conn, workspace, slug="canon")
 
     def fake_spawn(**kw):
-        (kw["attempts_dir"] / "new_my_alias.lean").write_text(
+        (kw["attempts_dir"] / "new_forward.lean").write_text(
             "namespace Problems.p\n"
             "-- Forward rationale: restates canon.\n"
             "-- entry_kind: Backward\n"
@@ -580,7 +658,7 @@ def test_run_forward_dedupe_library_alias_no_alias_target(
     _insert_root(conn)
 
     def fake_spawn(**kw):
-        (kw["attempts_dir"] / "new_lib_alias.lean").write_text(
+        (kw["attempts_dir"] / "new_forward.lean").write_text(
             "namespace Problems.p\n"
             "-- Forward rationale: restates a Library decl.\n"
             "-- entry_kind: Backward\n"
@@ -630,7 +708,7 @@ def test_run_forward_dedupe_alias_build_fails_falls_back_to_novel(
     canon_id = _insert_proved_canonical(conn, workspace, slug="canon2")
 
     def fake_spawn(**kw):
-        (kw["attempts_dir"] / "new_my_novel.lean").write_text(
+        (kw["attempts_dir"] / "new_forward.lean").write_text(
             "namespace Problems.p\n"
             "-- Forward rationale: genuinely novel lemma.\n"
             "-- entry_kind: Backward\n"
@@ -698,7 +776,7 @@ def _insert_inject_decision(conn: sqlite3.Connection) -> int:
 
 def _forward_dup_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_spawn(**kw):
-        (kw["attempts_dir"] / "new_dup.lean").write_text(
+        (kw["attempts_dir"] / "new_forward.lean").write_text(
             "namespace Problems.p\n"
             "-- Forward rationale: accidental dup of an existing goal.\n"
             "-- entry_kind: Backward\n"
@@ -722,7 +800,7 @@ def test_run_forward_decline_stashes_why_on_decision(
     did = _insert_inject_decision(conn)
 
     def fake_spawn(**kw):
-        (kw["attempts_dir"] / "new__decline.lean").write_text(
+        (kw["attempts_dir"] / "new_forward.lean").write_text(
             "namespace Problems.p\n"
             "-- decline: library_sufficient\n"
             "-- ## Why\n"
