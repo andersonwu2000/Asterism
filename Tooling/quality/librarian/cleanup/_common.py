@@ -406,8 +406,7 @@ def _parse_check_output(output: str, fqns: "list[str]"
     universe-polymorphic (`@foo.{u} : T`) — match all three. The `: ` anchor
     keeps a prefix name (`foo`) from matching a longer one (`foo_bar`)."""
     import json
-    types: "dict[str, str]" = {}
-    errs: "list[str]" = []
+    items: "list[tuple[str, str]]" = []
     for line in output.splitlines():
         s = line.strip()
         if not (s.startswith("{") and s.endswith("}")):
@@ -416,10 +415,26 @@ def _parse_check_output(output: str, fqns: "list[str]"
             msg = json.loads(s)
         except Exception:  # noqa: BLE001
             continue
-        sev, data = msg.get("severity"), msg.get("data", "")
+        items.append((msg.get("severity"), msg.get("data", "")))
+    return _extract_check_types(items, fqns)
+
+
+def _extract_check_types(items: "list[tuple[str, str]]", fqns: "list[str]"
+                         ) -> "tuple[dict[str, str], list[str]]":
+    """Shared `#check` type-snapshot extraction core: cold `lean --json`
+    (`_parse_check_output`) and the warm gateway-diagnostic path
+    (`_typecheck_capturing_types` claimed slot) both feed `(severity, data)`
+    pairs here. `severity` is `error` for a build error, `information` (cold
+    JSON) or `info` (warm formatted diagnostic) for a `#check` line whose `data`
+    is `@foo : T` (or `foo : T` / `@foo.{u} : T`). The warm message carries the
+    byte-identical type string (parity verified out of band), so both paths get
+    the same `_norm_type` result. Returns `({fqn: normalized_type}, [error_data])`."""
+    types: "dict[str, str]" = {}
+    errs: "list[str]" = []
+    for sev, data in items:
         if sev == "error":
             errs.append(data)
-        elif sev == "information":
+        elif sev in ("information", "info"):
             d = data[1:] if data.startswith("@") else data
             for f in fqns:
                 if f in types:
@@ -465,12 +480,41 @@ def nominal_ctor_suffixes(text: str, leaf: str) -> "list[str]":
 
 def _typecheck_capturing_types(workspace: Path, file_text: str,
                                fqns: "list[str]", *,
-                               timeout: int = _BATCH_TIMEOUT_SEC
+                               timeout: int = _BATCH_TIMEOUT_SEC,
+                               session_token: "str | None" = None
                                ) -> "tuple[bool, str, dict[str, str]]":
-    """Isolate-build `file_text` with `#check @<fqn>` appended for each decl
-    (`lean --json`), returning `(ok, detail, {fqn: normalized_type})`. One build
-    serves as both the proof gate (an error → ok False) and the signature
-    snapshot. `@` forces all args explicit so implicit/explicit flips show up."""
+    """Isolate-build `file_text` with `#check @<fqn>` appended for each decl,
+    returning `(ok, detail, {fqn: normalized_type})`. One build serves as both
+    the proof gate (an error → ok False) and the signature snapshot. `@` forces
+    all args explicit so implicit/explicit flips show up.
+
+    WARM via the held session's claimed slot when `session_token` is set
+    (whole-file + #check shares the slot's import closure): the #check elaborated
+    types come back as info-severity diagnostics, parsed by the SAME
+    `_extract_check_types` as the cold `lean --json` path (warm/cold #check-type
+    parity verified out of band, so the type-invariance gate sees identical
+    snapshots). Else (or on a transient / indeterminate warm result) cold
+    `lean --json`."""
+    checks = "\n".join(f"#check @{f}" for f in fqns)
+    content = file_text.rstrip() + "\n\n" + checks + "\n"
+    if session_token:
+        try:
+            from ....lsp import lifecycle as _gw
+            r = _gw.verify_in_session(session_token, content, write_olean=False,
+                                      timeout=timeout, workspace=workspace)
+            if "error" not in r and not r.get("timed_out"):
+                items = [(d.get("severity"), d.get("message", ""))
+                         for d in r.get("diagnostics", [])]
+                types, errs = _extract_check_types(items, fqns)
+                ok = not errs
+                if ok and len(types) != len(fqns):
+                    return (False,
+                            "could not read #check output for every declaration",
+                            types)
+                return ok, ("" if ok else "\n\n".join(errs)[-2000:]), types
+            # transient / timeout / indeterminate → cold fallback below
+        except Exception:  # noqa: BLE001 — any warm-path fault → cold fallback
+            pass
     missing = _missing_oleans(workspace, re.findall(    # O1: imported sibling
         r"^\s*import\s+(Library\.[\w.]+)", file_text, re.M))   # oleans must exist
     if missing:
@@ -479,8 +523,6 @@ def _typecheck_capturing_types(workspace: Path, file_text: str,
             lake_build_modules(workspace, missing)
         except Exception:  # noqa: BLE001 — best-effort pre-flight
             pass
-    checks = "\n".join(f"#check @{f}" for f in fqns)
-    content = file_text.rstrip() + "\n\n" + checks + "\n"
     run = _lp.run_lean_source(workspace, content, prefix="_cleanup_vcheck",
                               json=True, timeout=timeout)
     if run.infra:

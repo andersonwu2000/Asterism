@@ -131,7 +131,10 @@ _WATERMARKS = {
     # _leanrun_from_verify route whole-file gates onto a held cleanup session's
     # claimed gateway slot (~4-5s) with cold `lake env lean` fallback; wired
     # through _lake_check / _build_file_copy_isolated — 2026-06-19 — conscious bump.
-    "Tooling/quality/librarian/cleanup/_common.py": 700,
+    # 700→760: #35 stage 2/3 — _build_with_output warm routing + warm
+    # _typecheck_capturing_types (#check types from info diagnostics, shared
+    # _extract_check_types core) — 2026-06-19 — conscious bump.
+    "Tooling/quality/librarian/cleanup/_common.py": 760,
     # 300→350: audit rewritten onto the shared LSP edit-mode retry loop
     # (`run_with_session_retries`, like builder / migrate-hole-fill) — cold-seed
     # `audited.lean` + warm incremental + --resume, `_write_mcp_config` LSP, and

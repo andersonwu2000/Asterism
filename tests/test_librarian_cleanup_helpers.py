@@ -242,3 +242,90 @@ def test_build_for_warnings_warm_surfaces_diagnostics(monkeypatch):
         prefix="x", session_token="tok")
     assert ok is True
     assert any("100 character" in w for w in C._all_warnings(out))
+
+
+# ---------------------------------------------------------------------
+# #check type-snapshot extraction (#35 stage 2): the shared core consumes both
+# cold `lean --json` severities ("information") and warm formatted-diagnostic
+# severities ("info"); _typecheck_capturing_types goes warm with a token.
+# ---------------------------------------------------------------------
+
+def test_extract_check_types_handles_cold_and_warm_severity():
+    """Same `@foo : T` payload under 'information' (cold json) and 'info' (warm
+    formatted diag) must yield identical normalized types; 'error' collects."""
+    cold = C._extract_check_types(
+        [("information", "@A.foo : Nat → Nat"),
+         ("information", "A.bar : Bool")], ["A.foo", "A.bar"])
+    warm = C._extract_check_types(
+        [("info", "@A.foo : Nat → Nat"),
+         ("info", "A.bar : Bool")], ["A.foo", "A.bar"])
+    assert cold[0] == warm[0]
+    assert cold[0]["A.foo"] and cold[0]["A.bar"]
+    errs = C._extract_check_types([("error", "type mismatch")], ["A.foo"])[1]
+    assert errs == ["type mismatch"]
+
+
+def test_extract_check_types_universe_and_prefix_disambiguation():
+    """Universe annotation `@foo.{u}` is stripped; a prefix name (`foo`) does not
+    capture a longer one (`foo_bar`)."""
+    types, _ = C._extract_check_types(
+        [("info", "@A.foo.{u} : Type u"),
+         ("info", "@A.foo_bar : Nat")], ["A.foo", "A.foo_bar"])
+    assert "A.foo" in types and "A.foo_bar" in types
+    assert types["A.foo"] != types["A.foo_bar"]
+
+
+def test_typecheck_capturing_types_warm_extracts_from_diags(monkeypatch):
+    """With a token, `_typecheck_capturing_types` verifies warm and reads the
+    #check types from info-severity diagnostics (no cold lake build)."""
+    def warm(token, content, **k):
+        assert "#check @A.foo" in content
+        return {"ok": True, "timed_out": False, "diagnostics": [
+            {"line": 9, "col": 0, "severity": "info",
+             "message": "@A.foo : Nat → Nat"}]}
+    monkeypatch.setattr(_lifecycle, "verify_in_session", warm)
+    monkeypatch.setattr(
+        C._lp, "run_lean_source",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("token present — type gate must run warm")))
+    ok, _detail, types = C._typecheck_capturing_types(
+        None, "import Mathlib\nnamespace A\ndef foo : Nat → Nat := id\nend A\n",
+        ["A.foo"], session_token="tok")
+    assert ok is True
+    assert "A.foo" in types
+
+
+def test_typecheck_capturing_types_warm_error_diag_not_ok(monkeypatch):
+    """An error-severity diagnostic from the warm path → ok False with detail."""
+    monkeypatch.setattr(
+        _lifecycle, "verify_in_session",
+        lambda token, content, **k: {"ok": False, "timed_out": False,
+                                     "diagnostics": [
+                                         {"line": 3, "col": 0,
+                                          "severity": "error",
+                                          "message": "type mismatch at foo"}]})
+    monkeypatch.setattr(
+        C._lp, "run_lean_source",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("warm gave a verdict — no cold fallback")))
+    ok, detail, _types = C._typecheck_capturing_types(
+        None, "import Mathlib\n", ["A.foo"], session_token="tok")
+    assert ok is False and "type mismatch" in detail
+
+
+def test_typecheck_capturing_types_warm_transient_falls_back_cold(monkeypatch):
+    """Transient warm result → cold `lean --json` fallback (run_lean_source)."""
+    calls = {"cold": 0}
+    monkeypatch.setattr(
+        _lifecycle, "verify_in_session",
+        lambda token, content, **k: {"error": "unreachable", "transient": True})
+
+    def cold(ws, content, *, prefix, json=False, timeout=0):
+        calls["cold"] += 1
+        return C._lp.LeanRun(returncode=0,
+                             output='{"severity":"information","data":"@A.foo : Nat"}',
+                             timed_out=False)
+    monkeypatch.setattr(C._lp, "run_lean_source", cold)
+    ok, _d, types = C._typecheck_capturing_types(
+        None, "import Mathlib\n", ["A.foo"], session_token="tok")
+    assert calls["cold"] == 1 and ok is True and types.get("A.foo") == "Nat"

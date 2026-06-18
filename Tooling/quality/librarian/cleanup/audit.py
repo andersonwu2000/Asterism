@@ -153,7 +153,7 @@ def _audit_gate(workspace: Path, target_file: str,
               for d in decls_in_file for c in ctors[d.name]]
     fqns_after = [after for _, _, after in pairs]
     ok, detail, new_types = C._typecheck_capturing_types(
-        workspace, new_text, fqns_after)
+        workspace, new_text, fqns_after, session_token=session_token)
     if not ok:
         return "build", detail, {}, []
     changed = []
