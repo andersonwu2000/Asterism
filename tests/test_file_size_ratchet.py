@@ -63,7 +63,12 @@ _WATERMARKS = {
     # RE-PARTITION (not the incremental "smallest edit", which obstructs an
     # SCC break), and `verify_merged_file_sizes` NAMES the cross-file back-edges
     # (`_scc_cross_file_edges`) — 2026-06-18 — conscious bump.
-    "Tooling/pipeline/librarian.py": 3760,
+    # 3760→3800: classify watchdog trap_check now scales with the kept-decl
+    # count (`_classify_trap_budget` + a per-spawn trap_check_sec override
+    # threaded spawn_llm → _watchdog) so a large layout's single long think is
+    # not mistaken for a thinking-trap at the flat 660s (residue 271) —
+    # 2026-06-18 — conscious bump.
+    "Tooling/pipeline/librarian.py": 3800,
     # dispatcher 2750→2800 + db 2450→2500: awaiting_human observability
     # (startup + idle-exit log of paused problems) + scope-aware idle exit
     # via db.dispatchable_open_goals — a paused P12 read as a multi-hour

@@ -135,6 +135,34 @@ def test_watchdog_kills_when_mid_thinking_at_trigger(
     assert proc.term_calls + proc.kill_calls >= 1
 
 
+def test_watchdog_honors_trap_check_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A per-spawn `trap_check_sec_override` wins over the global config: the
+    env says 'never fire in this window' but the override fires fast. This is
+    how classify gets a size-scaled trap budget (librarian._classify_trap_
+    budget) without changing the global value for other kinds."""
+    monkeypatch.setenv("ASTERISM_TRAP_CHECK_SEC", "999")   # global: would never fire
+    monkeypatch.setenv("ASTERISM_SILENCE_THRESHOLD_SEC", "0")
+    monkeypatch.setattr(claude_cli, "_MIN_TRAP_CHECK_SEC", 0)
+    parser = StreamParser()
+    _seed_mid_thinking(parser)
+    proc = _FakeProc()
+    stuck: list[bool] = [False]
+    done: list[bool] = [False]
+    th = threading.Thread(
+        target=claude_cli._watchdog,
+        args=(proc, "ovr12345"),
+        kwargs={"stuck_flag": stuck, "done_flag": done, "timeout_sec": 2,
+                "parser": parser, "trap_check_sec_override": 1},
+        daemon=True,
+    )
+    th.start()
+    th.join(timeout=8.0)
+    assert stuck[0] is True             # the 1s override fired, not the 999s env
+    assert proc.term_calls + proc.kill_calls >= 1
+
+
 def test_watchdog_kills_when_finalized_max_tokens_at_trigger(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

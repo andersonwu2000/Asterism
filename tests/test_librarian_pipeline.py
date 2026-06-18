@@ -951,6 +951,47 @@ def test_run_classify_end_to_end(conn, tmp_path, monkeypatch):
     assert {x["slug"] for x in classified} == {"main", "lemma_a"}
 
 
+def test_classify_trap_budget_scales_and_caps():
+    # classify trap_check = min(cap, base + per_decl*N): base for N=0, scales
+    # linearly with N, capped for a huge layout. (Defaults 660 / 4 / 2400.)
+    assert lib._classify_trap_budget(0) == 660                 # base
+    assert lib._classify_trap_budget(271) == 660 + 4 * 271     # residue → 1744
+    assert lib._classify_trap_budget(10_000) == 2400           # capped
+    assert lib._classify_trap_budget(50) < lib._classify_trap_budget(100)
+
+
+def test_classify_spawn_passes_size_scaled_trap_check(
+    conn, tmp_path, monkeypatch,
+):
+    # classify hands the watchdog a size-scaled trap_check (+ a matching larger
+    # overall timeout) so a long layout think isn't trap-killed at the flat
+    # 660s. Other kinds leave the override None (global value).
+    _seed_proved(conn, "main", "M", origin="root")
+    _seed_proved(conn, "lemma_a", "A")
+    for s in ("main", "lemma_a"):
+        db.upsert_library_decl(conn, problem="p", slug=s, source_goal_id=None)
+        db.set_library_verdict(conn, problem="p", slug=s, verdict="keep")
+    import Tooling.agent as agent
+    ad = agent.attempts_dir_for(tmp_path, "pid")
+    ad.mkdir(parents=True, exist_ok=True)
+    captured: dict = {}
+
+    def fake_spawn(**kw):
+        captured.update(kw)
+        (ad / "plan.json").write_text(json.dumps({"files": [
+            {"path": "Library/A/Main.lean", "imports": [],
+             "decls": ["main", "lemma_a"]}]}), encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    lib.run_librarian(conn, problem="p", work_kind="classify",
+                      workspace=tmp_path, pipeline_id="pid")
+    # 2 kept decls → trap = base + per_decl*2; timeout keeps a post-trap window.
+    assert captured.get("trap_check_sec_override") == lib._classify_trap_budget(2)
+    assert captured.get("timeout_sec_override") is not None
+    assert captured["timeout_sec_override"] > captured["trap_check_sec_override"]
+
+
 def test_run_no_output_fails(conn, tmp_path, monkeypatch):
     # A structured agentic step (classify) whose agent emits no plan.json fails.
     # (v0.3: dedup is mechanical, so classify is the structured step to check.)

@@ -68,6 +68,13 @@ class LLMRequest:
       attempts_dir: .attempts/<pid>/ — sandbox; agent writes outputs here.
                     Must already contain Context.md.
       timeout_sec:  hard wall-clock cap. Provider must enforce.
+      trap_check_sec: optional per-spawn override of the watchdog's
+                    `dispatch.trap_check_sec` (the single-shot mid-thinking
+                    silence check). None = use the global config value. Set
+                    larger for a kind whose thinking time scales with its
+                    input size (classify reasons over N kept-decls in one
+                    block) so a legitimately long think is not mistaken for a
+                    trap. Other kinds leave it None.
       session_id:   claude CLI session UUID. Caller-controlled. First
                     attempt uses --session-id <id> to pin the session
                     id; subsequent in-pipeline retries use --resume
@@ -117,6 +124,7 @@ class LLMRequest:
     problem_dir: Path
     attempts_dir: Path
     timeout_sec: int
+    trap_check_sec: int | None = None
     session_id: str | None = None
     is_retry: bool = False
     retry_context: str | None = None

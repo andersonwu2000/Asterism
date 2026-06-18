@@ -318,7 +318,8 @@ _DEFAULT_COMPLETION_GRACE_SEC = 20
 
 def _watchdog(proc: subprocess.Popen, sid: str, *,
               stuck_flag: list, done_flag: list, timeout_sec: int,
-              parser: StreamParser) -> None:
+              parser: StreamParser,
+              trap_check_sec_override: int | None = None) -> None:
     """Two jobs while the spawn runs:
 
     (1) Completion reclaim (rolling): poll the parser; if a CLEAN finish
@@ -346,11 +347,17 @@ def _watchdog(proc: subprocess.Popen, sid: str, *,
     Runs in a daemon thread.
     """
     from ..core import config as _cfg
-    trap_check_sec = _cfg.get(
-        "dispatch.trap_check_sec",
-        default=_DEFAULT_TRAP_CHECK_SEC,
-        env_var="ASTERISM_TRAP_CHECK_SEC", cast=int,
-    )
+    if trap_check_sec_override is not None:
+        # Per-spawn override (classify: scales with the kept-decl count, see
+        # librarian._classify_trap_budget) — a legitimately long single think
+        # over N decls must not be mistaken for a trap at the global 660s.
+        trap_check_sec = trap_check_sec_override
+    else:
+        trap_check_sec = _cfg.get(
+            "dispatch.trap_check_sec",
+            default=_DEFAULT_TRAP_CHECK_SEC,
+            env_var="ASTERISM_TRAP_CHECK_SEC", cast=int,
+        )
     silence_threshold_sec = _cfg.get(
         "dispatch.silence_threshold_sec",
         default=_DEFAULT_SILENCE_THRESHOLD_SEC,
@@ -982,6 +989,7 @@ class ClaudeCliProvider:
                     "done_flag": done_flag,
                     "timeout_sec": req.timeout_sec,
                     "parser": parser,
+                    "trap_check_sec_override": req.trap_check_sec,
                 },
                 daemon=True,
             )

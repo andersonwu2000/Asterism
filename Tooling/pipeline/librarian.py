@@ -2041,6 +2041,23 @@ def _classify_prior_plan_path(problem_dir) -> "_Path":
     return problem_dir / ".drafts" / "classify_prior_plan.json"
 
 
+def _classify_trap_budget(n_decls: int) -> int:
+    """Watchdog `trap_check_sec` for a classify spawn — it scales with N, the
+    number of decls the agent lays out in ONE thinking block. The global 660s
+    is calibrated for BOUNDED spawns (builder/backward/migrate each work one
+    goal/patch/file); classify's input is unbounded and its think time grows
+    with N (residue 271 decls → ~650s, killed before it emitted the plan), so a
+    cap-bounded `base + per_decl·N` gives a large layout room without a magic
+    flat constant. Other kinds keep the global value (override left None)."""
+    from ..core import config as _cfg
+    base = _cfg.get("dispatch.trap_check_sec", default=660,
+                    env_var="ASTERISM_TRAP_CHECK_SEC", cast=int)
+    per_decl = _cfg.get("dispatch.classify_trap_per_decl_sec",
+                        default=4, cast=int)
+    cap = _cfg.get("dispatch.classify_trap_cap_sec", default=2400, cast=int)
+    return min(cap, base + per_decl * max(0, n_decls))
+
+
 def _run_structured(conn, *, problem, work_kind, workspace,
                     attempts_dir, problem_dir, prompt_path):
     """classify: one-shot spawn emitting plan.json, then parse + verify +
@@ -2082,10 +2099,26 @@ def _run_structured(conn, *, problem, work_kind, workspace,
         prev_error=prev_error, prior_plan=prior_plan)
 
     sid = str(uuid.uuid4())
+    # classify reasons over the whole kept-decl set in one thinking block, so
+    # give the watchdog a size-scaled trap_check (and a matching overall
+    # timeout that keeps the same post-trap window the default config has).
+    trap_override = None
+    timeout_override = None
+    if is_classify:
+        from ..core import config as _cfg
+        n_kept = len(db.library_decls_for(conn, problem, lifecycle="deduped"))
+        trap_override = _classify_trap_budget(n_kept)
+        base = _cfg.get("dispatch.trap_check_sec", default=660,
+                        env_var="ASTERISM_TRAP_CHECK_SEC", cast=int)
+        spawn_to = _cfg.get("dispatch.spawn_timeout_sec", default=960,
+                            env_var="ASTERISM_SPAWN_TIMEOUT_SEC", cast=int)
+        timeout_override = trap_override + max(0, spawn_to - base)
     rc = agent.spawn_llm(
         kind="librarian", prompt_path=prompt_path,
         problem_dir=problem_dir, attempts_dir=attempts_dir,
-        session_id=sid)
+        session_id=sid,
+        trap_check_sec_override=trap_override,
+        timeout_sec_override=timeout_override)
     if rc != 0:
         return PipelineResult(
             outcome="failed", failure_reason="agent_error",
