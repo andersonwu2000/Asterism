@@ -147,6 +147,116 @@ def file_cleanup_unused_args(workspace: Path, problem: str, target_file: str,
     return True
 
 
+_UNUSED_VAR_RE = re.compile(
+    r":(\d+):(\d+): warning: unused variable `([^`]+)`")
+
+
+def _parse_unused_variables(build_output: str) -> "list[tuple[int, int, str]]":
+    """Parse Lean's `linter.unusedVariables` warnings → `[(line_1based,
+    col_0based, name), …]`. Each is `<file>:<L>:<C>: warning: unused variable
+    \\`<name>\\``, where `C` is the 0-based codepoint column of the binder name's
+    first char (verified: `    (hγ` → col 5 = the `h`). Distinct from
+    `unusedArguments` (unused in TYPE, handled by `file_cleanup_unused_args`):
+    this fires for a hypothesis binder unreferenced in the body AND the rest of
+    the signature, so `_`-prefixing it is reference-free and safe."""
+    return [(int(m.group(1)), int(m.group(2)), m.group(3))
+            for m in _UNUSED_VAR_RE.finditer(build_output)]
+
+
+def _underscore_unused_vars(text: str,
+                            occ: "list[tuple[int, int, str]]"
+                            ) -> "tuple[str, int]":
+    """`_`-prefix each flagged unused binder at its exact `(line, col)`:
+    `(hγ : …)` → `(_hγ : …)`. Edits are applied per line right-to-left (largest
+    col first) so an inserted `_` never shifts a not-yet-applied col on the same
+    line (two unused binders can share a line). A location is skipped unless the
+    `name` token sits exactly at `col` and isn't already `_`-prefixed — so a
+    stale/mismatched diagnostic is a no-op, never a corruption. Returns
+    `(new_text, n_prefixed)`."""
+    lines = text.split("\n")
+    by_line: "dict[int, list[tuple[int, str]]]" = {}
+    for ln, col, nm in occ:
+        by_line.setdefault(ln, []).append((col, nm))
+    changed = 0
+    for ln, items in by_line.items():
+        if ln < 1 or ln > len(lines):
+            continue
+        s = lines[ln - 1]
+        for col, nm in sorted(items, key=lambda x: -x[0]):
+            if (0 <= col <= len(s) - len(nm)
+                    and s[col:col + len(nm)] == nm
+                    and not (col > 0 and s[col - 1] == "_")):
+                s = s[:col] + "_" + s[col:]
+                changed += 1
+        lines[ln - 1] = s
+    return "\n".join(lines), changed
+
+
+def file_cleanup_underscore_unused_hyps(workspace: Path, problem: str,
+                                        target_file: str) -> bool:
+    """Mechanically `_`-prefix every binder the `linter.unusedVariables` lint
+    flags as unused — the audit.md-prescribed fix ((h : …) → (_h : …)), done in
+    ONE rebuild instead of N slow audit-agent LSP round-trips.
+
+    Why a mechanical pass (residue 2026-06-19): big files (SimplyConnectedIntegral
+    21-decl, LaurentDecompOuter 26-decl) carry 12+ unused hypothesis binders — a
+    standard hypothesis bundle repeated across sibling lemmas, several unused in
+    each. Left to the audit agent, each `_`-prefix is a ~25-30s re-elaboration
+    round-trip on a 1000+-line file, so it times out (960s cap) before clearing
+    them all → the hard zero-warning gate fails → STALL. `_`-prefixing is
+    type-preserving and reference-free (the lint fires only when the name is
+    unreferenced anywhere), so it is mechanical + rebuild-gated, like
+    `file_cleanup_unused_args` (which handles the orthogonal `unusedArguments`
+    type-unused INSTANCE binders). Runs in the `unused` stage BEFORE decide/audit,
+    so audit's #check baseline already reflects the `_`-prefixed binders.
+
+    Writes on a green rebuild; reverts (no-op) otherwise. Returns whether it
+    changed the file."""
+    leaf = target_file.split("/")[-1]
+    try:
+        original = (workspace / target_file).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    missing = C._missing_oleans(workspace, re.findall(
+        r"^\s*import\s+(Library\.[\w.]+)", original, re.M))
+    if missing:
+        from ....pipeline._lake import lake_build_modules
+        try:
+            lake_build_modules(workspace, missing)
+        except Exception:  # noqa: BLE001 — best-effort pre-flight
+            pass
+    # Detection build: same mathlib standard linter set the zero-warning gate
+    # enforces, so we surface exactly the `unused variable` warnings that gate
+    # would reject (unusedVariables is in the standard set). `_inject_linter`
+    # prepends `set_option` lines, so the warning line numbers are in the INJECTED
+    # text's coordinate space — apply the `_`-prefix there too (same space), then
+    # strip the injected lines back out, or the offset mis-targets every binder.
+    scan = C._inject_linter(original, *C._MATHLIB_LINT_OPTS)
+    ok0, out0 = C._build_with_output(workspace, scan, prefix="_unusedvar_scan")
+    if not ok0:
+        return False                              # file itself doesn't build — bail
+    occ = _parse_unused_variables(out0)
+    if not occ:
+        return False
+    new_scan, n = _underscore_unused_vars(scan, occ)
+    if n == 0 or new_scan == scan:
+        return False
+    new_text = new_scan
+    for opt in C._MATHLIB_LINT_OPTS:              # remove the detection-only lines
+        new_text = new_text.replace(f"set_option {opt} true\n", "", 1)
+    if new_text == original:
+        return False
+    ok, _detail = C._build_with_output(workspace, new_text, prefix="_unusedvar_try")
+    if not ok:
+        print(f"[staged] underscore-unused `{leaf}` — reverted (rebuild failed)",
+              flush=True)
+        return False
+    (workspace / target_file).write_text(new_text, encoding="utf-8")
+    print(f"[staged] underscore-unused `{leaf}` — `_`-prefixed {n} unused "
+          f"hypothesis binder(s)", flush=True)
+    return True
+
+
 _FW_COMMENT_MARKER = re.compile(
     r"entry_kind|sub-goal|\bcombinator\b|Closer:|\(was:|pad_and_place")
 

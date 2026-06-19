@@ -36,6 +36,7 @@ from .cleanup._common import (_BATCH_TIMEOUT_SEC, _DECL_NAME_RE, _Decl,
 from .cleanup.audit import file_cleanup_audit
 from .cleanup.decide import file_cleanup_decide
 from .cleanup.mechanical import (file_cleanup_strip_framework_comments,
+                                 file_cleanup_underscore_unused_hyps,
                                  file_cleanup_unused_args)
 from .cleanup.simplify import _mark_simplify_file, decl_cleanup_simplify_file
 
@@ -1743,6 +1744,13 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
     if unused_args and survivor_decls:
         unused_removed = file_cleanup_unused_args(
             workspace, problem, target_file, survivor_decls)
+        # `_`-prefix hypothesis binders the `unusedVariables` lint flags (unused
+        # in the BODY — orthogonal to unused_args' type-unused instance binders).
+        # Mechanical, in ONE rebuild, BEFORE decide/audit — so the audit agent
+        # doesn't spend its whole 960s budget `_`-prefixing 12+ binders one slow
+        # LSP round-trip at a time on a big file (residue SimplyConnectedIntegral /
+        # LaurentDecompOuter STALL root cause, 2026-06-19).
+        file_cleanup_underscore_unused_hyps(workspace, problem, target_file)
     _T["unused"] = _t()
     # (e) strip framework-process `--` comments (entry_kind / sub-goal / Closer:
     # / combinator / (was: …)) migrate carried from the proof. Mechanical,

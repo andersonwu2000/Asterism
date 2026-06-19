@@ -147,7 +147,11 @@ _WATERMARKS = {
     # (#35 stage 3; the #check type gate stays cold) — 2026-06-19 — conscious bump.
     "Tooling/quality/librarian/cleanup/audit.py": 400,
     "Tooling/quality/librarian/cleanup/decide.py": 250,
-    "Tooling/quality/librarian/cleanup/mechanical.py": 250,
+    # 250→340: file_cleanup_underscore_unused_hyps — mechanical `_`-prefix of
+    # `unusedVariables`-flagged hypothesis binders (#37), so the audit agent
+    # doesn't burn its 960s budget `_`-prefixing 12+ binders one LSP round-trip at
+    # a time on big files — 2026-06-19 — conscious bump.
+    "Tooling/quality/librarian/cleanup/mechanical.py": 340,
     "Tooling/quality/librarian/cleanup/simplify.py": 200,
 }
 

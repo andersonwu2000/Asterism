@@ -7,6 +7,7 @@ re-exports only the six stage entry functions.
 from .audit import file_cleanup_audit
 from .decide import file_cleanup_decide
 from .mechanical import (file_cleanup_strip_framework_comments,
+                         file_cleanup_underscore_unused_hyps,
                          file_cleanup_unused_args)
 from .simplify import decl_cleanup_simplify_file
 
@@ -15,5 +16,6 @@ __all__ = [
     "file_cleanup_audit",
     "file_cleanup_decide",
     "file_cleanup_strip_framework_comments",
+    "file_cleanup_underscore_unused_hyps",
     "file_cleanup_unused_args",
 ]

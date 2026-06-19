@@ -1686,3 +1686,103 @@ def test_valid_renames_rejects_dotted_decl() -> None:
                          own_leaves={"DiffForm.integral", "topCoeff"},
                          existing_leaves=set())
     assert out == {"topCoeff": "topCoefficient"}
+
+
+# ---------------------------------------------------------------------
+# `_`-prefix unused hypothesis binders (#37) — the mechanical fix for the
+# `unusedVariables` lint (unused in BODY), distinct from unused_args
+# (`unusedArguments`, unused in TYPE). Clears the dominant warning class on big
+# files in ONE rebuild instead of N slow audit-agent LSP round-trips.
+# ---------------------------------------------------------------------
+
+_UNUSED_VAR_OUT = (
+    "/abs/_scan_x.lean:514:5: warning: unused variable `hγ`\n"
+    "/abs/_scan_x.lean:515:5: warning: unused variable `hmaps`\n"
+    "/abs/_scan_x.lean:517:78: warning: missing space in the source\n"
+    "/abs/_scan_x.lean:520:14: warning: unused variable `hH0`\n"
+)
+
+
+def test_parse_unused_variables() -> None:
+    occ = cl_mechanical._parse_unused_variables(_UNUSED_VAR_OUT)
+    assert occ == [(514, 5, "hγ"), (515, 5, "hmaps"), (520, 14, "hH0")]
+    # 'missing space' (no backtick name) is not an unused-variable warning
+    assert all(nm for _, _, nm in occ)
+
+
+def test_underscore_unused_vars_prefixes_at_col() -> None:
+    # 1-based line, 0-based codepoint col pointing at the binder name's first char
+    text = ("theorem foo\n"
+            "    (hγ : P)\n"          # line 2, col 5 = 'h' (4 spaces + '(')
+            "    (hmaps : Q) : R := by trivial\n")
+    out, n = cl_mechanical._underscore_unused_vars(
+        text, [(2, 5, "hγ"), (3, 5, "hmaps")])
+    assert n == 2
+    assert "(_hγ : P)" in out and "(_hmaps : Q)" in out
+
+
+def test_underscore_unused_vars_two_on_one_line_right_to_left() -> None:
+    # two unused binders on the same line — right-to-left apply keeps cols valid
+    text = "theorem f (ha : A) (hb : B) : C := by trivial\n"
+    # cols: 'ha' at 11, 'hb' at 20 (0-based)
+    out, n = cl_mechanical._underscore_unused_vars(text, [(1, 11, "ha"), (1, 20, "hb")])
+    assert n == 2
+    assert "(_ha : A)" in out and "(_hb : B)" in out
+
+
+def test_underscore_unused_vars_mismatch_is_noop() -> None:
+    # a stale/wrong (line,col) whose token != name must NOT corrupt the file
+    text = "theorem f (ha : A) : C := by trivial\n"
+    out, n = cl_mechanical._underscore_unused_vars(text, [(1, 11, "hZZZ")])
+    assert n == 0 and out == text
+    # already-prefixed → skipped (idempotent)
+    text2 = "theorem f (_ha : A) : C := by trivial\n"
+    out2, n2 = cl_mechanical._underscore_unused_vars(text2, [(1, 12, "ha")])
+    assert n2 == 0 and out2 == text2
+
+
+def test_underscore_unused_hyps_writes_on_green(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    f = tmp_path / rel
+    f.parent.mkdir(parents=True)
+    src = ("import Mathlib\n\n"
+           "theorem foo\n"
+           "    (hγ : True) : True := by trivial\n")
+    f.write_text(src, encoding="utf-8")
+    monkeypatch.setattr(cl_common, "_missing_oleans", lambda *a, **k: [])
+    # scan build: report the unused var on the INJECTED text's line space.
+    calls = {"n": 0}
+
+    def fake_build(ws, content, *, prefix, timeout=0):
+        calls["n"] += 1
+        if prefix == "_unusedvar_scan":
+            # _inject_linter prepended 2 set_option lines → binder now on line 6
+            # (orig line 4 + 2). col 5 = 'h' after "    (".
+            return True, f"{ws}/x.lean:6:5: warning: unused variable `hγ`\n"
+        return True, ""                            # rebuild green
+    monkeypatch.setattr(cl_common, "_build_with_output", fake_build)
+    changed = cl_mechanical.file_cleanup_underscore_unused_hyps(
+        tmp_path, "P", rel)
+    assert changed
+    out = f.read_text(encoding="utf-8")
+    assert "(_hγ : True)" in out                   # binder _-prefixed
+    assert "set_option" not in out                 # detection-only lines stripped
+
+
+def test_underscore_unused_hyps_reverts_on_red(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    f = tmp_path / rel
+    f.parent.mkdir(parents=True)
+    src = "import Mathlib\n\ntheorem foo\n    (hγ : True) : True := by trivial\n"
+    f.write_text(src, encoding="utf-8")
+    monkeypatch.setattr(cl_common, "_missing_oleans", lambda *a, **k: [])
+
+    def fake_build(ws, content, *, prefix, timeout=0):
+        if prefix == "_unusedvar_scan":
+            return True, f"{ws}/x.lean:6:5: warning: unused variable `hγ`\n"
+        return False, "some build error"           # rebuild RED → revert
+    monkeypatch.setattr(cl_common, "_build_with_output", fake_build)
+    changed = cl_mechanical.file_cleanup_underscore_unused_hyps(
+        tmp_path, "P", rel)
+    assert not changed
+    assert f.read_text(encoding="utf-8") == src     # file untouched on red
