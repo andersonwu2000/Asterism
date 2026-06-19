@@ -152,8 +152,13 @@ def _audit_gate(workspace: Path, target_file: str,
                f"{module}.{leaf_map[d.name]}.{c}")
               for d in decls_in_file for c in ctors[d.name]]
     fqns_after = [after for _, _, after in pairs]
+    # COLD type-capture (no session_token): MUST match the cold baseline
+    # `base_types`. A warm LSP `#check` capture pretty-prints complex types
+    # differently → spurious type-drift on every candidate → infinite reconverge
+    # (#35 stage-2 regression, reverted). The warm WARNINGS gate below is safe
+    # (it counts warnings, not a base-vs-candidate snapshot comparison).
     ok, detail, new_types = C._typecheck_capturing_types(
-        workspace, new_text, fqns_after, session_token=session_token)
+        workspace, new_text, fqns_after)
     if not ok:
         return "build", detail, {}, []
     changed = []

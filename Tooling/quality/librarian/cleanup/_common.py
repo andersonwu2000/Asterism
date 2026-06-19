@@ -480,41 +480,22 @@ def nominal_ctor_suffixes(text: str, leaf: str) -> "list[str]":
 
 def _typecheck_capturing_types(workspace: Path, file_text: str,
                                fqns: "list[str]", *,
-                               timeout: int = _BATCH_TIMEOUT_SEC,
-                               session_token: "str | None" = None
+                               timeout: int = _BATCH_TIMEOUT_SEC
                                ) -> "tuple[bool, str, dict[str, str]]":
-    """Isolate-build `file_text` with `#check @<fqn>` appended for each decl,
-    returning `(ok, detail, {fqn: normalized_type})`. One build serves as both
-    the proof gate (an error → ok False) and the signature snapshot. `@` forces
-    all args explicit so implicit/explicit flips show up.
+    """Isolate-build `file_text` with `#check @<fqn>` appended for each decl
+    (`lean --json`), returning `(ok, detail, {fqn: normalized_type})`. One build
+    serves as both the proof gate (an error → ok False) and the signature
+    snapshot. `@` forces all args explicit so implicit/explicit flips show up.
 
-    WARM via the held session's claimed slot when `session_token` is set
-    (whole-file + #check shares the slot's import closure): the #check elaborated
-    types come back as info-severity diagnostics, parsed by the SAME
-    `_extract_check_types` as the cold `lean --json` path (warm/cold #check-type
-    parity verified out of band, so the type-invariance gate sees identical
-    snapshots). Else (or on a transient / indeterminate warm result) cold
-    `lean --json`."""
-    checks = "\n".join(f"#check @{f}" for f in fqns)
-    content = file_text.rstrip() + "\n\n" + checks + "\n"
-    if session_token:
-        try:
-            from ....lsp import lifecycle as _gw
-            r = _gw.verify_in_session(session_token, content, write_olean=False,
-                                      timeout=timeout, workspace=workspace)
-            if "error" not in r and not r.get("timed_out"):
-                items = [(d.get("severity"), d.get("message", ""))
-                         for d in r.get("diagnostics", [])]
-                types, errs = _extract_check_types(items, fqns)
-                ok = not errs
-                if ok and len(types) != len(fqns):
-                    return (False,
-                            "could not read #check output for every declaration",
-                            types)
-                return ok, ("" if ok else "\n\n".join(errs)[-2000:]), types
-            # transient / timeout / indeterminate → cold fallback below
-        except Exception:  # noqa: BLE001 — any warm-path fault → cold fallback
-            pass
+    COLD-only BY DESIGN — this is a CONSISTENCY check, not just a verify. The
+    audit baseline `base_types` is captured pre-spawn (cold, no session), so the
+    per-candidate snapshot MUST use the same cold `lean --json` capture. A warm
+    LSP-diagnostic `#check` capture pretty-prints complex types (Finset / dite /
+    inner-product) DIFFERENTLY from `lean --json`, so mixing the two read EVERY
+    complex-type candidate as spurious type-drift → infinite reconverge
+    (BasisConstruction 104-min grind in the svd e2e; would hit every residue
+    complex-analysis file). The #35-stage-2 warm path was reverted here for
+    exactly this — the ~20s/candidate saved is not worth breaking convergence."""
     missing = _missing_oleans(workspace, re.findall(    # O1: imported sibling
         r"^\s*import\s+(Library\.[\w.]+)", file_text, re.M))   # oleans must exist
     if missing:
@@ -523,6 +504,8 @@ def _typecheck_capturing_types(workspace: Path, file_text: str,
             lake_build_modules(workspace, missing)
         except Exception:  # noqa: BLE001 — best-effort pre-flight
             pass
+    checks = "\n".join(f"#check @{f}" for f in fqns)
+    content = file_text.rstrip() + "\n\n" + checks + "\n"
     run = _lp.run_lean_source(workspace, content, prefix="_cleanup_vcheck",
                               json=True, timeout=timeout)
     if run.infra:

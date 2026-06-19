@@ -245,9 +245,10 @@ def test_build_for_warnings_warm_surfaces_diagnostics(monkeypatch):
 
 
 # ---------------------------------------------------------------------
-# #check type-snapshot extraction (#35 stage 2): the shared core consumes both
-# cold `lean --json` severities ("information") and warm formatted-diagnostic
-# severities ("info"); _typecheck_capturing_types goes warm with a token.
+# #check type-snapshot extraction: the shared `_extract_check_types` core parses
+# `lean --json` severities (used by the cold `_parse_check_output`). NOTE the
+# type gate `_typecheck_capturing_types` is COLD-ONLY (#35 stage-2 warm path
+# reverted) — its base-vs-candidate snapshot comparison demands one capture mode.
 # ---------------------------------------------------------------------
 
 def test_extract_check_types_handles_cold_and_warm_severity():
@@ -275,57 +276,26 @@ def test_extract_check_types_universe_and_prefix_disambiguation():
     assert types["A.foo"] != types["A.foo_bar"]
 
 
-def test_typecheck_capturing_types_warm_extracts_from_diags(monkeypatch):
-    """With a token, `_typecheck_capturing_types` verifies warm and reads the
-    #check types from info-severity diagnostics (no cold lake build)."""
-    def warm(token, content, **k):
-        assert "#check @A.foo" in content
-        return {"ok": True, "timed_out": False, "diagnostics": [
-            {"line": 9, "col": 0, "severity": "info",
-             "message": "@A.foo : Nat → Nat"}]}
-    monkeypatch.setattr(_lifecycle, "verify_in_session", warm)
-    monkeypatch.setattr(
-        C._lp, "run_lean_source",
-        lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("token present — type gate must run warm")))
-    ok, _detail, types = C._typecheck_capturing_types(
-        None, "import Mathlib\nnamespace A\ndef foo : Nat → Nat := id\nend A\n",
-        ["A.foo"], session_token="tok")
-    assert ok is True
-    assert "A.foo" in types
-
-
-def test_typecheck_capturing_types_warm_error_diag_not_ok(monkeypatch):
-    """An error-severity diagnostic from the warm path → ok False with detail."""
-    monkeypatch.setattr(
-        _lifecycle, "verify_in_session",
-        lambda token, content, **k: {"ok": False, "timed_out": False,
-                                     "diagnostics": [
-                                         {"line": 3, "col": 0,
-                                          "severity": "error",
-                                          "message": "type mismatch at foo"}]})
-    monkeypatch.setattr(
-        C._lp, "run_lean_source",
-        lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("warm gave a verdict — no cold fallback")))
-    ok, detail, _types = C._typecheck_capturing_types(
-        None, "import Mathlib\n", ["A.foo"], session_token="tok")
-    assert ok is False and "type mismatch" in detail
-
-
-def test_typecheck_capturing_types_warm_transient_falls_back_cold(monkeypatch):
-    """Transient warm result → cold `lean --json` fallback (run_lean_source)."""
+def test_typecheck_capturing_types_is_cold_only(monkeypatch):
+    """Regression (#35 stage-2 revert): the type gate MUST be cold-only — no
+    `session_token` / warm path. A warm LSP `#check` capture formats complex
+    types (Finset / dite / inner-product) differently from the cold `lean --json`
+    baseline, so mixing them read every complex-type audit candidate as spurious
+    type-drift → infinite reconverge (BasisConstruction 104-min grind in the svd
+    e2e; would hit every residue complex-analysis file). Asserts the signature is
+    cold-only and that it routes through the `lean --json` probe."""
+    import inspect
+    assert "session_token" not in inspect.signature(
+        C._typecheck_capturing_types).parameters
     calls = {"cold": 0}
-    monkeypatch.setattr(
-        _lifecycle, "verify_in_session",
-        lambda token, content, **k: {"error": "unreachable", "transient": True})
 
     def cold(ws, content, *, prefix, json=False, timeout=0):
         calls["cold"] += 1
-        return C._lp.LeanRun(returncode=0,
-                             output='{"severity":"information","data":"@A.foo : Nat"}',
-                             timed_out=False)
+        assert json is True                      # #check capture uses lean --json
+        return C._lp.LeanRun(
+            returncode=0,
+            output='{"severity":"information","data":"@A.foo : Nat"}',
+            timed_out=False)
     monkeypatch.setattr(C._lp, "run_lean_source", cold)
-    ok, _d, types = C._typecheck_capturing_types(
-        None, "import Mathlib\n", ["A.foo"], session_token="tok")
+    ok, _d, types = C._typecheck_capturing_types(None, "import Mathlib\n", ["A.foo"])
     assert calls["cold"] == 1 and ok is True and types.get("A.foo") == "Nat"
