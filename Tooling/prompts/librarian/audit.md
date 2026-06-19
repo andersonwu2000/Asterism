@@ -20,6 +20,7 @@ Iterate: edit → read errors → fix, until 0 errors and 0 warnings. Edits writ
    - **Renames are allowed** — but every rename MUST be declared in a `renames.json` sidecar (`{"old_leaf": "new_leaf"}`). An undeclared rename looks like a deleted declaration and fails the gate. Do not rename for the sake of renaming; earlier stages already aligned names — only fix what they missed.
    - **Never DELETE a declaration** — including a one-line alias that looks redundant: it exists precisely because other files cite it. Every declaration in, every declaration out.
    - **Keep every declaration's leading `@[...]` attributes verbatim** (e.g. `@[instance]` — dropping it silently unregisters a global typeclass instance; the type gate cannot catch this).
+   - **FROZEN declarations** — a declaration that is the problem's canonical *definition* (its `def`/`structure` from `Defs.lean`) is frozen: reproduce it byte-for-byte. You may add a docstring *above* it, but do not rename, reformat, or rewrite the declaration itself. A gate rejects any change to one and the retry will name it — restore it exactly.
 
 ## The official mathlib conventions
 

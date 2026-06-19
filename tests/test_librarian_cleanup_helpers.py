@@ -299,3 +299,89 @@ def test_typecheck_capturing_types_is_cold_only(monkeypatch):
     monkeypatch.setattr(C._lp, "run_lean_source", cold)
     ok, _d, types = C._typecheck_capturing_types(None, "import Mathlib\n", ["A.foo"])
     assert calls["cold"] == 1 and ok is True and types.get("A.foo") == "Nat"
+
+
+# ---------------------------------------------------------------------
+# Defs-origin freeze: cleanup must not modify a declaration that came from the
+# problem's Defs.lean (its canonical definition). _decl_line_spans drives the
+# underscore-unused skip; _decl_src + the audit frozen gate guard the audit
+# free-form rewrite ("Defs 來的東西禁止任何改動").
+# ---------------------------------------------------------------------
+
+from Tooling.quality.librarian.cleanup import mechanical as M   # noqa: E402
+from Tooling.quality.librarian.cleanup import audit as A        # noqa: E402
+
+_DEFS_FILE = (
+    "import Mathlib\n"
+    "\n"
+    "namespace P\n"
+    "\n"
+    "def windingNumber (n : Nat) : Nat :=\n"
+    "  n + 1\n"
+    "\n"
+    "theorem helper (h : True) : True := by trivial\n"
+    "\n"
+    "end P\n")
+
+
+def test_decl_line_spans_covers_def_body_only():
+    spans = M._decl_line_spans(_DEFS_FILE, {"windingNumber"})
+    # covers the `def` header (line 5) + its body (line 6); stops AT the next
+    # decl `theorem` (line 8 excluded). Trailing blank (7) before it is harmless.
+    assert 5 in spans and 6 in spans
+    assert 8 not in spans and 3 not in spans          # next/prev decls excluded
+    # a name not present → empty
+    assert M._decl_line_spans(_DEFS_FILE, {"nope"}) == set()
+
+
+def test_underscore_unused_skips_frozen(monkeypatch, tmp_path):
+    # a `def` with an unused param inside a FROZEN decl must NOT be `_`-prefixed
+    rel = "Library/P/F.lean"
+    f = tmp_path / rel
+    f.parent.mkdir(parents=True)
+    src = ("import Mathlib\n\ndef windingNumber (n : Nat) : Nat :=\n  0\n")
+    f.write_text(src, encoding="utf-8")
+    monkeypatch.setattr(C, "_missing_oleans", lambda *a, **k: [])
+
+    def fake_build(ws, content, *, prefix, timeout=0):
+        if prefix == "_unusedvar_scan":
+            # injected +2 lines → the def header is on line 5, `n` at col ~17
+            return True, f"{ws}/x.lean:5:17: warning: unused variable `n`\n"
+        return True, ""
+    monkeypatch.setattr(C, "_build_with_output", fake_build)
+    changed = M.file_cleanup_underscore_unused_hyps(
+        tmp_path, "P", rel, frozen={"windingNumber"})
+    assert changed is False                          # frozen → skipped, no write
+    assert f.read_text(encoding="utf-8") == src      # untouched
+
+
+def test_audit_gate_frozen_source_change_rejected():
+    decls = [A._Decl(fqn="P.windingNumber", rel="r", module="P",
+                     name="windingNumber", sig="(n : Nat) : Nat", binders=1,
+                     concl_tokens=frozenset())]
+    new = _DEFS_FILE.replace("  n + 1", "  n + 1 + 0")   # body reformatted
+    status, detail, _ap, _w = A._audit_gate(
+        None, "r", decls, original=_DEFS_FILE, new_text=new, renames_raw=None,
+        base_types={}, scope=[], pool=[], frozen={"windingNumber"})
+    assert status == "frozen"
+    assert "windingNumber" in detail
+
+
+def test_audit_gate_frozen_unchanged_passes_fence(monkeypatch):
+    # frozen decl untouched → no frozen rejection (proceeds to the type gate,
+    # which we stub green so the test stays lake-free)
+    decls = [A._Decl(fqn="P.windingNumber", rel="r", module="P",
+                     name="windingNumber", sig="(n : Nat) : Nat", binders=1,
+                     concl_tokens=frozenset())]
+    # add a docstring ABOVE the frozen def (allowed) — its own span is unchanged
+    new = _DEFS_FILE.replace("def windingNumber",
+                             "/-- the winding number. -/\ndef windingNumber")
+    monkeypatch.setattr(
+        C, "_typecheck_capturing_types",
+        lambda ws, t, fqns, **k: (True, "", {f: "Nat → Nat" for f in fqns}))
+    monkeypatch.setattr(C, "_build_for_warnings", lambda ws, t, **k: (True, ""))
+    status, _d, _ap, _w = A._audit_gate(
+        None, "r", decls, original=_DEFS_FILE, new_text=new, renames_raw=None,
+        base_types={"P.windingNumber": "Nat → Nat"}, scope=[], pool=[],
+        frozen={"windingNumber"})
+    assert status != "frozen"                         # docstring above is fine

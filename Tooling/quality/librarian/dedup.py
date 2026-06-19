@@ -1675,6 +1675,15 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
     scope, pool = _load_decls(workspace, problem, scope_index)
     by_fqn = {d.fqn: d for d in (*pool, *scope)}
     decls_in_file = [d for d in scope if d.rel == target_file]
+    # FREEZE Defs-origin decls: anything declared in Problems/<p>/Defs.lean is
+    # the problem's CANONICAL definition — migrate's Gate D pinned it def-eq, and
+    # cleanup must not undo that. The stages that *act on* their decl list
+    # (dedup-drop/bridge, simplify, decide-rename) skip these names; audit KEEPS
+    # them in its list so its own gate still fails any rename/delete (a missing
+    # decl can't #check), and an audit.md note tells the agent to reproduce them
+    # verbatim. (User: "Defs 來的東西禁止任何改動".)
+    from . import inventory as _inv
+    defs_names = set(_inv.defs_decls(workspace, problem))
     empty = {"dropped": {}, "merged": set(), "bridged": {}, "near": [], "failed": []}
     if not decls_in_file:
         return empty
@@ -1693,6 +1702,10 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
         workspace, problem, sorted(set(pairs)), scope_index=scope_index,
         prior_dropped=set(prior_renames),
         prior_survivors=set(prior_renames.values()))
+    # Never drop/bridge a Defs-origin decl (freeze): a bridge would replace the
+    # canonical definition with a one-liner alias, a drop would delete it.
+    for _x in [x for x in plan if x.rsplit(".", 1)[-1] in defs_names]:
+        plan.pop(_x, None)
     if not apply:
         return {**empty,
                 "dropped": {x: Y.fqn for x, (Y, k) in plan.items() if k == "drop"},
@@ -1714,8 +1727,11 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
     # Survivors of this file's dedup pass: not dropped, not bridged (bridges are
     # already one-liners). The (c) simplify + (e) docstring passes run on these.
     bridged_fqns = {x for x, _ in r["bridged"]}
+    # `survivor_decls` drives simplify (proof-body rewrite): exclude Defs so a
+    # `def` body is never simplified (frozen + #38 cross-decl risk).
     survivor_decls = [d for d in decls_in_file
-                      if d.fqn not in r["drops"] and d.fqn not in bridged_fqns]
+                      if d.fqn not in r["drops"] and d.fqn not in bridged_fqns
+                      and d.name not in defs_names]
     # Everything still PRESENT in the file = survivors + bridged aliases. The
     # whole-file agentic stages (decide/audit) must gate on THIS set, not
     # `survivor_decls`: a bridged alias is a one-liner a zealous reviewer happily
@@ -1750,7 +1766,8 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
         # doesn't spend its whole 960s budget `_`-prefixing 12+ binders one slow
         # LSP round-trip at a time on a big file (residue SimplyConnectedIntegral /
         # LaurentDecompOuter STALL root cause, 2026-06-19).
-        file_cleanup_underscore_unused_hyps(workspace, problem, target_file)
+        file_cleanup_underscore_unused_hyps(workspace, problem, target_file,
+                                            frozen=defs_names)
     _T["unused"] = _t()
     # (e) strip framework-process `--` comments (entry_kind / sub-goal / Closer:
     # / combinator / (was: …)) migrate carried from the proof. Mechanical,
@@ -1784,9 +1801,12 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
         # rebuild gate (degrade ladder: bad imports never cost a rename);
         # consumers self-apply renames via deferred-rewire (caller records
         # {old:new}).
-        if decide and present_decls:
+        # decide renames only the decls in its list → exclude Defs (frozen: a
+        # rename would desync the Library name from the problem's Defs.lean).
+        decide_decls = [d for d in present_decls if d.name not in defs_names]
+        if decide and decide_decls:
             renamed, imports_min = file_cleanup_decide(
-                workspace, problem, target_file, present_decls,
+                workspace, problem, target_file, decide_decls,
                 scope=scope, pool=pool, session_token=_mech_token)
     finally:
         if _mech_token:
@@ -1804,7 +1824,8 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
             for d in present_decls]
         audit_renames, audited = file_cleanup_audit(
             workspace, problem, target_file, post_decide,
-            scope=scope, pool=pool, conn=conn, pipeline_id=pipeline_id)
+            scope=scope, pool=pool, conn=conn, pipeline_id=pipeline_id,
+            frozen=defs_names)
         inv = {v: k for k, v in renamed.items()}
         for o, n in audit_renames.items():
             renamed[inv.get(o, o)] = n

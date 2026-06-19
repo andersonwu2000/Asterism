@@ -192,8 +192,39 @@ def _underscore_unused_vars(text: str,
     return "\n".join(lines), changed
 
 
+def _decl_line_spans(text: str, names: "set[str]") -> "set[int]":
+    """1-based line numbers covered by each declaration in `names` — its header
+    line through the line before the next top-level decl/`variable`/`section`/
+    `end`/`namespace`. Used to skip frozen (Defs-origin) decls in the location-
+    based `_`-prefix pass, which is not decl-list-driven."""
+    if not names:
+        return set()
+    lines = text.split("\n")
+    heads = []
+    for i, ln in enumerate(lines):
+        m = _DECL_NAME_RE.match(ln)
+        if m and m.group(1) in names:
+            heads.append(i)                          # 0-based header line
+    if not heads:
+        return set()
+    boundary = re.compile(
+        r"(?m)^\s*(?:@\[|noncomputable\b|private\b|protected\b|scoped\b|"
+        r"def\b|abbrev\b|theorem\b|lemma\b|structure\b|class\b|inductive\b|"
+        r"instance\b|variable\b|section\b|end\b|namespace\b)")
+    out: "set[int]" = set()
+    for h in heads:
+        j = h + 1
+        while j < len(lines) and not boundary.match(lines[j]):
+            j += 1
+        for k in range(h, j):                        # 0-based → 1-based
+            out.add(k + 1)
+    return out
+
+
 def file_cleanup_underscore_unused_hyps(workspace: Path, problem: str,
-                                        target_file: str) -> bool:
+                                        target_file: str, *,
+                                        frozen: "set[str] | None" = None
+                                        ) -> bool:
     """Mechanically `_`-prefix every binder the `linter.unusedVariables` lint
     flags as unused — the audit.md-prescribed fix ((h : …) → (_h : …)), done in
     ONE rebuild instead of N slow audit-agent LSP round-trips.
@@ -238,6 +269,14 @@ def file_cleanup_underscore_unused_hyps(workspace: Path, problem: str,
     occ = _parse_unused_variables(out0)
     if not occ:
         return False
+    if frozen:
+        # Never `_`-prefix a binder inside a frozen (Defs-origin) decl — that
+        # would edit the canonical definition's source. Occurrences are in the
+        # injected `scan` space, so compute the frozen spans in `scan` too.
+        frozen_lines = _decl_line_spans(scan, frozen)
+        occ = [o for o in occ if o[0] not in frozen_lines]
+        if not occ:
+            return False
     new_scan, n = _underscore_unused_vars(scan, occ)
     if n == 0 or new_scan == scan:
         return False

@@ -151,7 +151,10 @@ _WATERMARKS = {
     # `unusedVariables`-flagged hypothesis binders (#37), so the audit agent
     # doesn't burn its 960s budget `_`-prefixing 12+ binders one LSP round-trip at
     # a time on big files — 2026-06-19 — conscious bump.
-    "Tooling/quality/librarian/cleanup/mechanical.py": 340,
+    # 340→380: _decl_line_spans — Defs-origin freeze skips frozen decls in the
+    # location-based `_`-prefix pass (Defs decls must never be modified by
+    # cleanup) — 2026-06-20 — conscious bump.
+    "Tooling/quality/librarian/cleanup/mechanical.py": 380,
     "Tooling/quality/librarian/cleanup/simplify.py": 200,
 }
 

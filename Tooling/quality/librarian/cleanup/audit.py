@@ -50,6 +50,11 @@ _AUDIT_RECONVERGE_PASSES = 2
 _FENCE_MSG = ("the import block and the `namespace` lines must stay EXACTLY as "
               "in the original (imports are the decide stage's job; "
               "namespace-mount is out of scope) — restore them")
+_FROZEN_MSG = ("`{decl}` is a FROZEN declaration — it is the problem's canonical "
+               "definition (from its Defs.lean) and must be reproduced "
+               "byte-for-byte. You may add a docstring ABOVE it, but do not "
+               "rename, reformat, or rewrite the declaration itself — restore it "
+               "exactly as in the original.")
 _TYPE_MSG = ("the elaborated type changed for: {decls} — restructure freely, "
              "but never what a declaration PROVES. An unused *hypothesis* binder "
              "must be `_`-prefixed (e.g. `hX` → `_hX`) to silence its lint, NOT "
@@ -110,20 +115,33 @@ def _json_loads_or_none(text: "str | None"):
 # binder name → the rename is invisible here), NOT by dropping it (an arity
 # change that a cross-file consumer's call site would silently break).
 
+def _decl_src(text: str, name: str) -> str:
+    """Whitespace-normalized source of decl `name` (its header+body span), for
+    the frozen-Defs equality check. Empty if not found."""
+    from .mechanical import _decl_line_spans
+    spans = _decl_line_spans(text, {name})
+    if not spans:
+        return ""
+    lines = text.split("\n")
+    return " ".join(" ".join(lines[i - 1] for i in sorted(spans)).split())
+
+
 def _audit_gate(workspace: Path, target_file: str,
                 decls_in_file: "list[_Decl]", *, original: str, new_text: str,
                 renames_raw: "str | None", base_types: "dict[str, str]",
                 scope: "list[_Decl]", pool: "list[_Decl]",
-                session_token: "str | None" = None
+                session_token: "str | None" = None,
+                frozen: "set[str] | None" = None
                 ) -> "tuple[str, str, dict[str, str], list[str]]":
     """Validate the agent's `audited.lean` candidate. Returns
     `(status, detail, applied_renames, warns)` where status is one of:
-      - `noop`  — identical to the original (already PR-ready), no renames
-      - `fence` — import / namespace fence violated
-      - `build` — the rewrite does not typecheck
-      - `type`  — a declaration's elaborated type drifted (beyond declared rename)
-      - `ok`    — green, type-safe, ZERO warnings
-      - `warn`  — green, type-safe, but residual warnings remain
+      - `noop`   — identical to the original (already PR-ready), no renames
+      - `fence`  — import / namespace fence violated
+      - `frozen` — a Defs-origin (frozen) decl's source was modified
+      - `build`  — the rewrite does not typecheck
+      - `type`   — a declaration's elaborated type drifted (beyond declared rename)
+      - `ok`     — green, type-safe, ZERO warnings
+      - `warn`   — green, type-safe, but residual warnings remain
     `applied_renames` ({old_fqn: new_fqn}) and `warns` are populated for
     `ok`/`warn` only. `base_types` is the one-shot snapshot of every decl's
     (and nominal ctor's) elaborated type, keyed by BEFORE-fqn."""
@@ -143,6 +161,16 @@ def _audit_gate(workspace: Path, target_file: str,
     new_imports, new_namespaces = _header_fences(new_text)
     if new_imports != base_imports or new_namespaces != base_namespaces:
         return "fence", _FENCE_MSG, {}, []
+    # FREEZE: a Defs-origin decl is the problem's canonical definition (migrate
+    # Gate D pinned it def-eq) — audit may add a docstring ABOVE it but must
+    # reproduce the declaration itself byte-for-byte. The type gate below catches
+    # rename/delete/type-drift, but a `def` BODY reformat keeps the same #check
+    # type, so it needs this source-equality check. (rename/simplify/decide of
+    # Defs decls are already prevented upstream; this guards the audit free-form
+    # rewrite.)
+    for nm in sorted((frozen or set()) & own_leaves):
+        if _decl_src(new_text, nm) != _decl_src(original, nm):
+            return ("frozen", _FROZEN_MSG.format(decl=nm), {}, [])
     # expected post-rename identity + type of every decl (+ nominal ctors:
     # a renamed class carries its ctor along, `Mod.New.mk`)
     leaf_map = {d.name: renames.get(d.name, d.name) for d in decls_in_file}
@@ -185,7 +213,8 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
                        decls_in_file: "list[_Decl]", *,
                        scope: "list[_Decl]", pool: "list[_Decl]",
                        conn=None, pipeline_id: "str | None" = None,
-                       max_retries: int = _AUDIT_MAX_RETRIES
+                       max_retries: int = _AUDIT_MAX_RETRIES,
+                       frozen: "set[str] | None" = None
                        ) -> "tuple[dict[str, str], bool]":
     """§13 final-review audit for ONE file: a free whole-file mathlib rewrite
     under the full official conventions, driven through the shared LSP edit-mode
@@ -300,11 +329,12 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
             status, detail, applied, warns = _audit_gate(
                 workspace, target_file, decls_in_file, original=original,
                 new_text=new_text, renames_raw=renames_raw,
-                base_types=base_types, scope=scope, pool=pool, session_token=_tok)
+                base_types=base_types, scope=scope, pool=pool, session_token=_tok,
+                frozen=frozen)
             if status == "noop":
                 cap["noop"] = True
                 return PipelineResult(outcome="success")
-            if status in ("fence", "build", "type"):
+            if status in ("fence", "frozen", "build", "type"):
                 # Non-terminal: feed the diff back as retry_context and re-spawn.
                 return PipelineResult(
                     outcome="failed", failure_reason="librarian_gate_failed",
