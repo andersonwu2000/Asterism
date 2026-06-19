@@ -5,6 +5,11 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-18
+- Reorganized the generated lemma library to group files by their dependency graph rather than by how problems were split, with sturdier retries and size limits that account for merged mutually-recursive groups.
+- Switched proof generation and library cleanup to edit files incrementally through the Lean language server instead of regenerating them whole, behind a single shared routine.
+- Made the cleanup and audit passes more reliable by rerunning fresh passes instead of retrying entire files and by confining their searches to the library directory.
+
 ### 2026-06-17
 - Expanded the stage that tidies machine-proved lemmas into a clean, reusable library, enforcing Mathlib's submission standards: no compiler warnings, deduplicated variable blocks, consistent namespaces, and no unused hypotheses.
 - Added whole-library consistency checks, including an editor-side validation that mirrors the checks run when results are committed.
@@ -151,11 +156,6 @@
 - Tightened the rules for when the planner may set a problem aside, including a principle that a goal being hard is not by itself grounds to abandon it.
 - Improved automatic cleanup of the goal tree when a branch becomes unreachable, sweeping abandoned sibling goals and dead ancestors and skipping redundant review of dead chains.
 - Stopped accepting partial proofs that depend on sibling subgoals which are themselves still unproved.
-
-### 2026-05-19
-- Added a residue-theorem benchmark, switching from a hand-built eleven-lemma decomposition to running it as a single problem with the system generating its own auxiliary definitions.
-- Refined when a subgoal is set aside because it needs a missing definition, and made that decision propagate to dependent subgoals.
-- Fixed several startup race conditions and corrected exit-code and timeout reporting when launching a proof run.
 
 <!-- ASTERISM-PROGRESS:END -->
 
