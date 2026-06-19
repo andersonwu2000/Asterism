@@ -64,6 +64,29 @@ def test_llm_request_dataclass_fields() -> None:
 
 
 # ---------------------------------------------------------------------
+# _thinking_budget — MAX_THINKING_TOKENS must never dip below the Anthropic
+# API's 1024-token floor, or the spawn dies 400 (silently dropped every
+# short-timeout feedback turn — #33).
+# ---------------------------------------------------------------------
+
+def test_thinking_budget_never_below_api_floor() -> None:
+    from Tooling.llm import claude_cli as cc
+    # short spawns (the regression case): 90s feedback turn used to yield 1000
+    for t in (0, 30, 59, 60, 90, 119):
+        assert cc._thinking_budget(t) >= 1024, t
+    # the specific feedback timeout that regressed
+    from Tooling.pipeline import _feedback
+    assert cc._thinking_budget(_feedback._FEEDBACK_TIMEOUT_SEC) >= 1024
+
+
+def test_thinking_budget_scales_with_timeout_above_floor() -> None:
+    from Tooling.llm import claude_cli as cc
+    assert cc._thinking_budget(120) == 2000       # 2 min → 2000, clears floor
+    assert cc._thinking_budget(600) == 10000      # 10 min worker spawn
+    assert cc._thinking_budget(960) == 16000      # spawn_timeout ceiling
+
+
+# ---------------------------------------------------------------------
 # F22 — complete_text one-shot interface (unit tests; mocks subprocess
 # / urllib so we don't actually call claude or HTTP)
 # ---------------------------------------------------------------------
@@ -1843,11 +1866,14 @@ def test_claude_spawn_sets_thinking_budget_env(
     assert env.get("MAX_THINKING_TOKENS") == "10000"
 
 
-def test_claude_spawn_thinking_budget_floors_at_1000(
+def test_claude_spawn_thinking_budget_floors_at_api_minimum(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Floor of 1000 tokens for short spawns (e.g. 60s probe / 30s
-    auxiliary). Avoids 0-cap which would block thinking entirely."""
+    """Floor of 1024 tokens for short spawns (e.g. 60s probe / 30s auxiliary /
+    90s feedback turn). MUST be the Anthropic API minimum (1024), not 1000 — a
+    sub-1024 thinking.budget_tokens is rejected 400 and fails the spawn rc=1,
+    which silently dropped every short-timeout feedback record (#33). The prior
+    1000 floor was below the API minimum."""
     from pathlib import Path
     from Tooling import llm
     from Tooling.llm import claude_cli
@@ -1862,7 +1888,7 @@ def test_claude_spawn_thinking_budget_floors_at_1000(
         timeout_sec=30,  # below 60s/min baseline
     ))
     env = calls[0]["kwargs"]["env"]
-    assert env.get("MAX_THINKING_TOKENS") == "1000"
+    assert env.get("MAX_THINKING_TOKENS") == "1024"
 
 
 # ---------------------------------------------------------------------

@@ -227,6 +227,24 @@ def _retry_hint_for_patterns(stderr: str) -> str:
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 
+# Anthropic API floor for `thinking.budget_tokens`: a request with a smaller
+# budget is rejected (400 `thinking.enabled.budget_tokens: Input should be
+# greater than or equal to 1024`), which fails the WHOLE spawn rc=1.
+_THINKING_MIN_TOKENS = 1024
+
+
+def _thinking_budget(timeout_sec: int) -> int:
+    """`MAX_THINKING_TOKENS` for one spawn: 1000 tokens per minute of wall-clock
+    budget, floored at the API's `_THINKING_MIN_TOKENS` minimum.
+
+    The floor matters for SHORT spawns: a 90s framework-feedback turn yields
+    `(90 // 60) * 1000 = 1000`, which is BELOW 1024 — so before this floor every
+    short-timeout, thinking-enabled resume (notably the `cleanup:*` feedback
+    questionnaire, which resolves to the sonnet default) died with an API 400 and
+    silently dropped its record (#33 root cause). Long spawns (≥120s) clear 1024
+    on their own."""
+    return max(_THINKING_MIN_TOKENS, (timeout_sec // 60) * 1000)
+
 # Marker substring of claude's "No conversation found with session
 # ID: ..." stderr output, lowercased. spawn returns
 # SpawnRC.STALE_SESSION (= 125) when a warm spawn (`--resume`) hits
@@ -914,11 +932,12 @@ class ClaudeCliProvider:
         # turn gets a fresh thinking budget).
         # MAX_THINKING_TOKENS only takes effect in legacy non-adaptive
         # mode, so we also disable adaptive routing.
-        # Cap formula: 1000 tokens/min of wall-clock budget, with a
-        # 1000-token floor for short rescue/postmortem spawns.
+        # Cap formula: 1000 tokens/min of wall-clock budget, floored at the
+        # Anthropic API's 1024-token minimum (`_thinking_budget`). A sub-1024
+        # budget is rejected 400 and fails the spawn — silently dropping every
+        # short-timeout feedback turn before this floor (#33).
         env["CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING"] = "1"
-        env["MAX_THINKING_TOKENS"] = str(
-            max(1000, (req.timeout_sec // 60) * 1000))
+        env["MAX_THINKING_TOKENS"] = str(_thinking_budget(req.timeout_sec))
         proc = subprocess.Popen(
             cmd, env=env, cwd=str(req.problem_dir),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
