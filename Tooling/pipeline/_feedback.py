@@ -210,11 +210,21 @@ def attempt_feedback(*, kind: str, sid: str, slug: str, outcome: str,
         ppath.write_text(prompt, encoding="utf-8")
         # is_postmortem=True → provider uses `--resume <sid>` and loads the
         # prompt verbatim (same path reflection uses for its resume turn).
-        agent.spawn_llm(
+        rc = agent.spawn_llm(
             kind=kind, prompt_path=ppath, problem_dir=problem_dir,
             attempts_dir=attempts_dir, session_id=sid,
             is_postmortem=True, timeout_sec=_FEEDBACK_TIMEOUT_SEC)
+        wrote = scratch_path(attempts_dir).exists()
+        # Diagnostic: the feedback spawn resumes the agent's session via
+        # `--resume <sid>`; if that sid is gone / the spawn errors, no scratch
+        # is written and the record is silently lost (cleanup:audit / classify
+        # produced ZERO entries this way — feedback was wired but never landed).
+        # Surface the rc + whether a scratch landed so a dry channel is visible.
+        if rc != 0 or not wrote:
+            print(f"[feedback] {kind}/{slug}: spawn rc={rc}, "
+                  f"scratch_written={wrote} (no record landed)", flush=True)
         record_survivor(workspace, attempts_dir=attempts_dir, kind=kind,
                         slug=slug, problem=problem_dir.name, outcome=outcome)
-    except Exception:  # noqa: BLE001 — feedback must never break the pipeline
-        pass
+    except Exception as exc:  # noqa: BLE001 — feedback must never break pipeline
+        print(f"[feedback] {kind}/{slug}: raised {type(exc).__name__}: {exc}",
+              flush=True)

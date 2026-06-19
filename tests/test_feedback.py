@@ -152,3 +152,22 @@ def test_attempt_feedback_no_sid_is_noop(ws_on, monkeypatch):
                                outcome="success", problem_dir=pdir,
                                attempts_dir=att, workspace=ws_on)
     assert calls == []                               # empty sid → can't resume
+
+
+def test_attempt_feedback_logs_diagnostic_on_dry_spawn(ws_on, monkeypatch, capsys):
+    """When the resume spawn errors (rc!=0) and writes no scratch, surface a
+    diagnostic instead of silently dropping the record — this dry-channel is
+    what revealed the #33 1024-floor bug (every short-timeout feedback spawn
+    died rc=1, recording nothing)."""
+    from Tooling import agent
+    monkeypatch.setattr(agent, "spawn_llm", lambda **k: 1)   # rc=1, no scratch
+    att = _attempts(ws_on)
+    pdir = ws_on / "Problems" / "p"
+    pdir.mkdir(parents=True)
+    _feedback.attempt_feedback(kind="cleanup:audit", sid="sid-x", slug="Foo.lean",
+                               outcome="success", problem_dir=pdir,
+                               attempts_dir=att, workspace=ws_on)
+    out = capsys.readouterr().out
+    assert "[feedback] cleanup:audit/Foo.lean: spawn rc=1" in out
+    assert "scratch_written=False" in out
+    assert not (ws_on / _OUT).exists()               # nothing landed (no scratch)

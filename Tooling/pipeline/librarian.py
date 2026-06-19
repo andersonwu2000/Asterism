@@ -2064,7 +2064,7 @@ def _run_structured(conn, *, problem, work_kind, workspace,
     commit (all-or-nothing). Mirrors run_strategist. (v0.3: `dedup` no longer
     routes here — it is the mechanical `_run_keepall`.)"""
     import uuid
-    from . import PipelineResult
+    from . import PipelineResult, _feedback
     from .. import agent
 
     fb_path = _classify_feedback_path(problem_dir)
@@ -2164,6 +2164,17 @@ def _run_structured(conn, *, problem, work_kind, workspace,
         plan_path.unlink(missing_ok=True)
     except OSError:
         pass
+    # Framework-feedback (`agent_feedback.md`, NOT the cross-attempt fb_path
+    # above): classify lays out the whole kept-decl set in one heavy spawn and
+    # had the widest inside view of the layout task, yet — unlike builder /
+    # backward — never recorded a single pain-point because this bespoke spawn
+    # path skipped attempt_feedback entirely. Ask once on a committed plan
+    # (the sid is still resumable here); reject paths already feed prev_error.
+    if is_classify:
+        _feedback.attempt_feedback(
+            kind="classify", sid=sid, slug="layout",
+            outcome="success", problem_dir=problem_dir,
+            attempts_dir=attempts_dir, workspace=workspace)
     return PipelineResult(outcome="success")
 
 
