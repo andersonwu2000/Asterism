@@ -182,5 +182,19 @@ def decl_cleanup_simplify_file(workspace: Path, problem: str, target_file: str,
                 n += 1
                 print(f"[staged] simplified {d.name}", flush=True)
     if n:
+        # Whole-file gate (#38) + batch revert. Each proof above passed only the
+        # PER-DECL isolation gate (`_build_decl_isolated`, against the migrated
+        # olean) — which can't see that simplifying a `def` body breaks a sibling
+        # that unfolds it (`rw`/`rfl`/`ring`). So before committing, build the
+        # WHOLE accumulated file; if it doesn't build, REVERT the entire batch
+        # (don't write — the on-disk file stays at its pre-simplify state).
+        # simplify is optional polish: a reverted file keeps verbose-but-correct
+        # proofs, never a broken file (residue keystone STALL, 2026-06-20).
+        ok, _detail = C._build_file_copy_isolated(workspace, text)
+        if not ok:
+            print(f"[staged] simplify `{target_file.split('/')[-1]}` — reverted "
+                  f"all {n} simplification(s) (whole-file build failed)",
+                  flush=True)
+            return 0
         (workspace / target_file).write_text(text, encoding="utf-8")
     return n

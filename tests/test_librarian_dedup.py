@@ -182,6 +182,8 @@ def test_simplify_success_replaces_only_marked(tmp_path, monkeypatch) -> None:
     _setup_simplify(tmp_path, rel, _FILE2)
     _fake_simplify_spawn(monkeypatch, ["by simp"])
     monkeypatch.setattr(cl_common, "_build_decl_isolated", lambda ws, **k: (True, ""))
+    monkeypatch.setattr(cl_common, "_build_file_copy_isolated",
+                        lambda ws, t, **k: (True, ""))      # whole-file gate (#38)
     n = dedup.decl_cleanup_simplify_file(
         tmp_path, "p", rel, [_decl("foo"), _decl("bar")], {"foo"})
     assert n == 1
@@ -232,10 +234,46 @@ def test_simplify_retry_then_success(tmp_path, monkeypatch) -> None:
     _fake_simplify_spawn(monkeypatch, ["by bad", "by simp"])
     seq = iter([(False, "err"), (True, "")])
     monkeypatch.setattr(cl_common, "_build_decl_isolated", lambda ws, **k: next(seq))
+    monkeypatch.setattr(cl_common, "_build_file_copy_isolated",
+                        lambda ws, t, **k: (True, ""))      # whole-file gate (#38)
     assert dedup.decl_cleanup_simplify_file(
         tmp_path, "p", rel, [_decl("foo")], {"foo"}, max_retries=2) == 1
     assert "theorem foo : True := by simp" in (
         tmp_path / rel).read_text(encoding="utf-8")
+
+
+def test_simplify_whole_file_gate_reverts_batch(tmp_path, monkeypatch) -> None:
+    # #38: every per-decl proof passes its isolation gate, but the WHOLE-FILE
+    # build fails (simplifying a def broke a sibling that unfolds it) → revert
+    # the entire batch: write nothing, return 0, file stays pre-simplify.
+    rel = "Library/P/F.lean"
+    _setup_simplify(tmp_path, rel, _FILE2)
+    _fake_simplify_spawn(monkeypatch, ["by simp", "by simp"])
+    monkeypatch.setattr(cl_common, "_build_decl_isolated", lambda ws, **k: (True, ""))
+    monkeypatch.setattr(cl_common, "_build_file_copy_isolated",
+                        lambda ws, t, **k: (False, "sibling proof broke"))
+    n = dedup.decl_cleanup_simplify_file(
+        tmp_path, "p", rel, [_decl("foo"), _decl("bar")], {"foo", "bar"})
+    assert n == 0                                            # batch reverted
+    assert (tmp_path / rel).read_text(encoding="utf-8") == _FILE2   # untouched
+
+
+def test_simplify_whole_file_gate_commits_on_green(tmp_path, monkeypatch) -> None:
+    rel = "Library/P/F.lean"
+    _setup_simplify(tmp_path, rel, _FILE2)
+    _fake_simplify_spawn(monkeypatch, ["by simp"])
+    monkeypatch.setattr(cl_common, "_build_decl_isolated", lambda ws, **k: (True, ""))
+    seen = {}
+
+    def _wf(ws, t, **k):
+        seen["text"] = t                                    # gets the full file
+        return (True, "")
+    monkeypatch.setattr(cl_common, "_build_file_copy_isolated", _wf)
+    n = dedup.decl_cleanup_simplify_file(
+        tmp_path, "p", rel, [_decl("foo")], {"foo"})
+    assert n == 1
+    assert "by simp" in (tmp_path / rel).read_text(encoding="utf-8")
+    assert "theorem foo" in seen["text"] and "theorem bar" in seen["text"]
 
 
 def test_simplify_noop_when_nothing_marked(tmp_path, monkeypatch) -> None:
