@@ -165,7 +165,10 @@ _WATERMARKS = {
     # leaves the module's olean missing (regression that failed downstream
     # decide/audit) — 2026-06-20 — conscious bump.
     "Tooling/quality/librarian/cleanup/mechanical.py": 560,
-    "Tooling/quality/librarian/cleanup/simplify.py": 200,
+    # 200→220: per-decl gate + agent seed reproduce the file's `open …` lines
+    # (`_opens_in`) so a proof referencing an opened symbol (`residue`) resolves
+    # in the isolation probe instead of failing as an autoImplicit — 2026-06-20.
+    "Tooling/quality/librarian/cleanup/simplify.py": 220,
 }
 
 

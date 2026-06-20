@@ -122,6 +122,12 @@ def decl_cleanup_simplify_file(workspace: Path, problem: str, target_file: str,
         text = (workspace / target_file).read_text(encoding="utf-8")
     except OSError:
         return 0
+    # The file's own `open …` lines (e.g. `open …Defs` exposing `residue`): both
+    # the agent's seed and the per-decl gate must reproduce them, else a proof
+    # referencing an opened symbol fails as an unresolved autoImplicit and the
+    # agent burns its budget reverse-engineering the gate preamble (2026-06-20).
+    file_opens = C._opens_in(text)
+    opens_block = "".join(o + "\n" for o in file_opens)
     n = 0
     for d in decls:                                # source order, marked only
         if d.name not in marked:
@@ -131,7 +137,7 @@ def decl_cleanup_simplify_file(workspace: Path, problem: str, target_file: str,
             continue
         raw_sig = " ".join(d.sig.split())
         seed = (f"import Mathlib\nimport {d.module}\n\n"
-                f"open {d.module}\n\n"
+                f"open {d.module}\n{opens_block}\n"
                 f"theorem _cleanup_probe {raw_sig} := {cur}\n")
         dpid = f"{pipeline_id or agent.new_pipeline_id()}-simplify-{d.name}"
         dattempts = agent.attempts_dir_for(workspace, dpid)
@@ -156,7 +162,7 @@ def decl_cleanup_simplify_file(workspace: Path, problem: str, target_file: str,
                 return PipelineResult(outcome="success")
             ok, detail = C._build_decl_isolated(
                 workspace, sig=_d.sig, proof=new_proof,
-                modules=[_d.module], namespaces=[_d.module])
+                modules=[_d.module], namespaces=[_d.module], opens=file_opens)
             if not ok:                             # retry with the error
                 return PipelineResult(
                     outcome="failed", failure_reason="librarian_gate_failed",

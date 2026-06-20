@@ -30,7 +30,8 @@ from .. import dedupe as _dd
 from .. import lake_probe as _lp
 from .cleanup._common import (_BATCH_TIMEOUT_SEC, _DECL_NAME_RE, _Decl,
                               _build_decl_isolated, _build_file_copy_isolated,
-                              _missing_oleans, _mod_of_rel, _strip_json_fence,
+                              _file_opens, _missing_oleans, _mod_of_rel,
+                              _opens_in, _strip_json_fence,
                               decl_proof_body, decl_span, replace_proof,
                               replace_token)
 from .cleanup.audit import file_cleanup_audit
@@ -433,7 +434,8 @@ def apply_bridge(workspace: Path, scope_rels: "list[str]",
     # namespace == its module, so `open X.module` resolves bare sibling refs).
     mods = [X.module] + ([Y.module] if Y.module else [])
     ok, _detail = _build_decl_isolated(
-        workspace, sig=X.sig, proof=bridge, modules=mods, namespaces=[X.module])
+        workspace, sig=X.sig, proof=bridge, modules=mods, namespaces=[X.module],
+        opens=_file_opens(workspace, X.rel))
     if not ok:
         return False
     # (2) stage: replace X's proof in its own file.
@@ -1283,7 +1285,8 @@ def _cleanup_one_file(workspace: Path, rel: str, decls: "list[_Decl]",
             iso = bool(br) and d.fqn != Y.fqn and Y.fqn not in drops and \
                 _build_decl_isolated(
                     workspace, sig=d.sig, proof=br, namespaces=[d.module],
-                    modules=[d.module] + ([Y.module] if Y.module else []))[0]
+                    modules=[d.module] + ([Y.module] if Y.module else []),
+                    opens=_opens_in(text))[0]
             if not iso:
                 failed.append((d.fqn, Y.fqn))
                 continue

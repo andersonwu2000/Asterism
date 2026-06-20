@@ -194,8 +194,38 @@ def _lake_check(workspace: Path, content: str, *,
     return run.ok, ("" if run.ok else run.output[-2000:])
 
 
+_OPEN_LINE_RE = re.compile(r"^open\b")
+
+
+def _opens_in(text: str) -> "list[str]":
+    """File-level `open …` lines (verbatim, flush-left) that bring symbols into
+    scope for the file's declarations — e.g. `open Library.…Defs` exposing
+    `residue`. Excludes scoped `open … in` (those bind only their own next
+    command). The per-decl isolation probe MUST reproduce these, or a decl whose
+    statement/proof references an opened symbol fails the gate as an unresolved
+    autoImplicit metavar — a confusing error that made a simplify agent burn its
+    whole think budget reverse-engineering the gate preamble (residue
+    PathIntegralWinding, 2026-06-20)."""
+    out: "list[str]" = []
+    for ln in text.split("\n"):
+        if _OPEN_LINE_RE.match(ln) and not re.search(r"\bin\b", ln):
+            out.append(ln.strip())
+    return out
+
+
+def _file_opens(workspace: Path, rel: "str | None") -> "list[str]":
+    """`_opens_in` for a file on disk (best-effort — empty if unreadable)."""
+    if not rel:
+        return []
+    try:
+        return _opens_in((workspace / rel).read_text(encoding="utf-8"))
+    except OSError:
+        return []
+
+
 def _build_decl_isolated(workspace: Path, *, sig: str, proof: str,
                          modules: "list[str]", namespaces: "list[str]",
+                         opens: "list[str]" = (),
                          timeout: int = _BATCH_TIMEOUT_SEC
                          ) -> "tuple[bool, str]":
     """Per-decl isolation gate (option-1 inner gate): does
@@ -203,11 +233,13 @@ def _build_decl_isolated(workspace: Path, *, sig: str, proof: str,
 
     The scratch imports `modules` — the decl's OWN file module (built post-
     migrate, so its same-file siblings + cross-file deps resolve from oleans)
-    plus any module the new `proof` cites — and `open`s `namespaces` so bare
-    same-namespace references in the proof/sig resolve. This is the cheap inner
-    check for a sig-preserving edit (bridge / proof-golf): no whole-file or
-    whole-problem rebuild. Returns `(ok, detail)`. Cold `lake env lean` (a warm
-    gateway is no faster on a fresh Mathlib file — #108).
+    plus any module the new `proof` cites — `open`s `namespaces` so bare
+    same-namespace references in the proof/sig resolve, AND reproduces the source
+    file's `opens` (e.g. `open …Defs`) so a symbol the file brought into scope
+    (like `residue`) resolves here exactly as it does in the file. This is the
+    cheap inner check for a sig-preserving edit (bridge / proof-golf): no whole-
+    file or whole-problem rebuild. Returns `(ok, detail)`. Cold `lake env lean`
+    (a warm gateway is no faster on a fresh Mathlib file — #108).
 
     `sig` is kept in BINDER form (`<binders> : <concl>`), NOT ∀-collapsed: a
     real proof references the binders by name, so they must be theorem
@@ -225,6 +257,7 @@ def _build_decl_isolated(workspace: Path, *, sig: str, proof: str,
     lines += [f"import {m}" for m in real_mods]
     lines.append("")
     lines += [f"open {ns}" for ns in namespaces if ns]
+    lines += [o for o in opens if o]              # reproduce the file's opens
     lines.append(f"theorem _cleanup_probe {raw_sig} := {proof}")
     content = "\n".join(lines)
     return _lake_check(workspace, content, timeout=timeout)

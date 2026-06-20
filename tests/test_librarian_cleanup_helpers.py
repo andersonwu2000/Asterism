@@ -311,6 +311,39 @@ def test_typecheck_capturing_types_is_cold_only(monkeypatch):
 from Tooling.quality.librarian.cleanup import mechanical as M   # noqa: E402
 from Tooling.quality.librarian.cleanup import audit as A        # noqa: E402
 
+
+# ---------------------------------------------------------------------
+# _opens_in — the per-decl isolation gate must reproduce the file's `open` lines
+# (e.g. `open …Defs` exposing `residue`), or a decl referencing an opened symbol
+# fails the gate as an unresolved autoImplicit.
+# ---------------------------------------------------------------------
+
+def test_opens_in_keeps_file_level_excludes_scoped():
+    text = (
+        "import Mathlib\n"
+        "import Library.Analysis.ResidueTheorem.Defs\n"
+        "open Library.Analysis.ResidueTheorem.Defs\n"
+        "open scoped Topology\n"
+        "open Foo in\n"                       # scoped → excluded
+        "namespace Bar\n"
+        "theorem t : True := trivial\n")
+    assert C._opens_in(text) == [
+        "open Library.Analysis.ResidueTheorem.Defs", "open scoped Topology"]
+
+
+def test_build_decl_isolated_emits_opens(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(C, "_missing_oleans", lambda *a, **k: [])
+    monkeypatch.setattr(C, "_lake_check",
+                        lambda ws, content, **k: captured.update(c=content) or (True, ""))
+    C._build_decl_isolated(None, sig="(h : True) : True", proof="trivial",
+                           modules=["Lib.M"], namespaces=["Lib.M"],
+                           opens=["open Lib.Defs", "open scoped X"])
+    body = captured["c"]
+    assert "open Lib.M" in body                       # namespace
+    assert "open Lib.Defs" in body and "open scoped X" in body   # file opens
+    assert body.index("open Lib.Defs") < body.index("theorem _cleanup_probe")
+
 _DEFS_FILE = (
     "import Mathlib\n"
     "\n"
