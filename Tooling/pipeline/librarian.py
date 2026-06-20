@@ -2281,8 +2281,24 @@ def _demote_to_hole(chunk: str, target_module: str) -> "str | None":
     return body or None
 
 
+def _import_sort_key(module: str) -> "tuple[int, str]":
+    """Sort key placing Mathlib (and any other external dep) BEFORE the project's
+    own `Library.*` modules. Lean instance resolution is import-ORDER-sensitive:
+    with `import Mathlib` listed AFTER a `Library.*` sibling, some instances fail
+    to synthesize (`ContinuousSMul ℝ ℂ`, `IsScalarTower ℝ ℝ ℂ`) and the module
+    stops building (residue ResiduePathIntegral, 2026-06-21); Mathlib first fixes
+    it. Alphabetical within each group. `module` is the bare module name (strip
+    the leading `import ` first)."""
+    return (module.startswith("Library."), module)
+
+
+def _sorted_import_lines(lines: "set[str] | list[str]") -> "list[str]":
+    """`import …` lines ordered Mathlib-first (see `_import_sort_key`)."""
+    return sorted(lines, key=lambda l: _import_sort_key(l.split()[-1]))
+
+
 def _merge_header(header: str, extra_imports: "set[str]") -> str:
-    """Fold `extra_imports` into a `_MechAssembly.header` (sorted imports,
+    """Fold `extra_imports` into a `_MechAssembly.header` (imports Mathlib-first,
     then a blank line, then `open`s), de-duplicating."""
     lines = header.splitlines()
     imports = {l for l in lines if l.startswith("import ")}
@@ -2292,7 +2308,7 @@ def _merge_header(header: str, extra_imports: "set[str]") -> str:
             imports.add(e)
         elif e.startswith("open ") and e not in opens:
             opens.append(e)
-    out = "\n".join(sorted(imports))
+    out = "\n".join(_sorted_import_lines(imports))
     if opens:
         out += "\n\n" + "\n".join(sorted(set(opens)))
     return out
@@ -2769,7 +2785,7 @@ def _mechanical_migrate_file(
             break                                  # first real content line
         kept.extend(lines[k:])
         chunk_by_slug[r["slug"]] = "\n".join(kept).strip("\n")
-    header = "\n".join(sorted(import_set))
+    header = "\n".join(_sorted_import_lines(import_set))   # Mathlib-first (#42)
     if open_set:
         header += "\n\n" + "\n".join(sorted(open_set))
     asm = _MechAssembly(header=header, target_module=target_module,
@@ -3674,7 +3690,7 @@ def _bridge_probe_text(conn, *, problem, statement, migrated,
             ns = r["citation"].rsplit(".", 1)[0]
             modules.add(ns)
             namespaces.add(ns)
-    lines = [f"import {m}" for m in sorted(modules)]
+    lines = [f"import {m}" for m in sorted(modules, key=_import_sort_key)]  # #42
     lines += [f"open {ns}" for ns in sorted(namespaces)]
     lines += ["", f"theorem main : {statement} := by exact {main_fq}", ""]
     text = "\n".join(lines)

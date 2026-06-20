@@ -77,7 +77,11 @@ _WATERMARKS = {
     # threaded spawn_llm → _watchdog) so a large layout's single long think is
     # not mistaken for a thinking-trap at the flat 660s (residue 271) —
     # 2026-06-18 — conscious bump.
-    "Tooling/pipeline/librarian.py": 3800,
+    # 3800→3810: _import_sort_key / _sorted_import_lines — order migrated imports
+    # Mathlib-first (before Library.*), because Lean instance resolution is
+    # import-order-sensitive (ContinuousSMul ℝ ℂ / IsScalarTower ℝ ℝ ℂ fail to
+    # synthesize when `import Mathlib` follows a Library sibling) (#42) — 2026-06-21.
+    "Tooling/pipeline/librarian.py": 3810,
     # dispatcher 2750→2800 + db 2450→2500: awaiting_human observability
     # (startup + idle-exit log of paused problems) + scope-aware idle exit
     # via db.dispatchable_open_goals — a paused P12 read as a multi-hour

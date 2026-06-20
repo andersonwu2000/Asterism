@@ -504,6 +504,21 @@ def test_merge_header_folds_new_imports_dedup():
     assert "open Matrix" in merged                        # open preserved
 
 
+def test_imports_ordered_mathlib_before_library():
+    # #42: Lean instance resolution is import-order-sensitive — `import Mathlib`
+    # must precede `import Library.*` or some instances (ContinuousSMul ℝ ℂ) stop
+    # synthesizing. The merge must emit Mathlib-family first, Library last.
+    h = "import Library.P.A\n\nopen Matrix"
+    merged = lib._merge_header(h, {"import Mathlib", "import Mathlib.Order.Basic",
+                                   "import Library.P.B"})
+    imports = [l for l in merged.splitlines() if l.startswith("import ")]
+    assert imports[0] == "import Mathlib"                 # umbrella first
+    assert all("Library" not in l for l in imports[:2])   # all Mathlib before Library
+    assert imports[-1] == "import Library.P.B"            # Library last
+    # the bare-key form (used by the root.lean rebuild)
+    assert lib._import_sort_key("Mathlib") < lib._import_sort_key("Library.X")
+
+
 def test_hole_still_unfilled_detects_sorry_and_noop():
     seed = "theorem b : True := by sorry"
     assert lib._hole_still_unfilled(seed, seed) is True          # untouched
