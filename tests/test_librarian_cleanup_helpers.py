@@ -385,3 +385,93 @@ def test_audit_gate_frozen_unchanged_passes_fence(monkeypatch):
         base_types={"P.windingNumber": "Nat → Nat"}, scope=[], pool=[],
         frozen={"windingNumber"})
     assert status != "frozen"                         # docstring above is fine
+
+
+# ---------------------------------------------------------------------
+# Whitespace / empty-line normalization — the text-based mathlib style linters
+# (linter.style.whitespace / .emptyLine) that fire ONLY on a real module build,
+# so the cold gate misses them but the audit agent's LSP errors_at surfaces them
+# and it burns its 960s budget hand-fixing them. Mechanized in mechanical.py.
+# ---------------------------------------------------------------------
+
+# `lake build` leads each diagnostic with `warning:` (UNLIKE `lake env lean`'s
+# `<loc>: warning: <msg>`); the parser must anchor on the `:L:C: <msg>` tail.
+_WS_BUILD_OUT = (
+    "warning: Library/P/X.lean:91:59: missing space in the source\n"
+    "\n"
+    "This part of the code\n"
+    "  '(0:R) 1'\n"
+    "should be written as\n"
+    "  '(0 : R)'\n"
+    "\n"
+    "Note: This linter can be disabled with `set_option linter.style.whitespace false`\n"
+    "warning: Library/P/X.lean:91:78: missing space in the source\n"
+    "\n"
+    "This part of the code\n"
+    "  '(0:R) 1))'\n"
+    "should be written as\n"
+    "  '(0 : R)'\n"
+    "\n"
+    "warning: Library/P/X.lean:127:0: Please, write a comment here or remove this "
+    "line, but do not place empty lines within commands!\n"
+    "warning: Library/Other/Dep.lean:3:0: missing space in the source\n"   # other file
+)
+
+
+def test_parse_whitespace_warnings_lake_build_format():
+    ws = M._parse_whitespace_warnings(_WS_BUILD_OUT, "X.lean")
+    # both col-59 and col-78 are on line 91, same GOOD; the Dep.lean one filtered
+    assert ws == {91: {"(0 : R)"}}
+
+
+def test_parse_emptyline_warnings_filters_basename():
+    el = M._parse_emptyline_warnings(_WS_BUILD_OUT, "X.lean")
+    assert el == [127]
+
+
+def test_apply_whitespace_fixes_replaces_all_on_line():
+    # GOOD's spaces removed = the cramped core; every occurrence on the line is
+    # the same flagged mistake, so replace-all is correct.
+    text = "a\ntheorem f : (0:R) = (0:R) := rfl\nb"
+    new, n = M._apply_whitespace_fixes(text, {2: {"(0 : R)"}})
+    assert new == "a\ntheorem f : (0 : R) = (0 : R) := rfl\nb"
+    assert n == 1
+
+
+def test_apply_whitespace_fixes_longest_core_first():
+    # two distinct GOODs on one line; the longer must apply first so its core
+    # isn't pre-empted by the shorter.
+    text = "x : ((i:R)/N) := y"
+    new, _ = M._apply_whitespace_fixes(text, {1: {"((i : R)", "R) / N)"}})
+    assert new == "x : ((i : R) / N) := y"
+
+
+def test_apply_emptyline_fixes_descending_and_skip_nonblank():
+    text = "a\n\nb\n\nc"            # blanks at lines 2 and 4
+    new, d = M._apply_emptyline_fixes(text, [2, 4])
+    assert new == "a\nb\nc" and d == 2
+    # a non-blank flagged line is a stale diagnostic → skipped, never corrupts
+    new2, d2 = M._apply_emptyline_fixes("a\nb\nc", [2])
+    assert new2 == "a\nb\nc" and d2 == 0
+
+
+def test_normalize_whitespace_skips_frozen(monkeypatch, tmp_path):
+    rel = "Library/P/F.lean"
+    f = tmp_path / rel
+    f.parent.mkdir(parents=True)
+    # frozen `def` whose body line has a cramped `(0:R)` — must NOT be touched
+    src = ("import Mathlib\n\ndef windingNumber : R :=\n  (0:R)\n")
+    f.write_text(src, encoding="utf-8")
+    monkeypatch.setattr(C, "_missing_oleans", lambda *a, **k: [])
+    monkeypatch.setattr(M, "_force_module_rebuild", lambda *a, **k: None)
+    # build reports the frozen line (4) as the only whitespace warning
+    monkeypatch.setattr(
+        "Tooling.pipeline._lake.lake_build_modules",
+        lambda ws, mods: (True,
+                          f"warning: {rel}:4:2: missing space in the source\n"
+                          "This part of the code\n  '(0:R)'\n"
+                          "should be written as\n  '(0 : R)'\n"))
+    changed = M.file_cleanup_normalize_whitespace(
+        tmp_path, "P", rel, frozen={"windingNumber"})
+    assert changed is False                              # frozen line skipped
+    assert f.read_text(encoding="utf-8") == src          # untouched

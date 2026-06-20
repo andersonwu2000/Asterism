@@ -20,7 +20,9 @@ _WATERMARKS = {
     # across the mechanical whole-file gates (strip-comments + decide), so they
     # verify on a warm claimed slot instead of cold `lake env lean` (#35 stage
     # 1b) — 2026-06-19 — conscious bump.
-    "Tooling/quality/librarian/dedup.py": 1950,
+    # 1950→1960: (c2) normalize-whitespace mechanical stage wired into
+    # run_staged_cleanup_file before decide/audit — 2026-06-20 — conscious bump.
+    "Tooling/quality/librarian/dedup.py": 1960,
     # 2850→2900 classify size gate; →3000 Defs section-context + ownership
     # guard; →3050 same-path race lock; →3100 docstring-aware slicing;
     # →3200 cross-problem shared-def redirect + variable-block dedupe +
@@ -154,7 +156,12 @@ _WATERMARKS = {
     # 340→380: _decl_line_spans — Defs-origin freeze skips frozen decls in the
     # location-based `_`-prefix pass (Defs decls must never be modified by
     # cleanup) — 2026-06-20 — conscious bump.
-    "Tooling/quality/librarian/cleanup/mechanical.py": 380,
+    # 380→540: file_cleanup_normalize_whitespace — mechanical clear of the
+    # text-based mathlib style linters (linter.style.whitespace / .emptyLine)
+    # that only fire on a real module build, so the audit agent otherwise burns
+    # its 960s budget hand-fixing 100+ `(0:ℝ)`→`(0 : ℝ)` spacings (residue
+    # HomotopyIntegral 141+4 → 3 audit timeouts) — 2026-06-20 — conscious bump.
+    "Tooling/quality/librarian/cleanup/mechanical.py": 540,
     "Tooling/quality/librarian/cleanup/simplify.py": 200,
 }
 

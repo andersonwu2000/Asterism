@@ -296,6 +296,178 @@ def file_cleanup_underscore_unused_hyps(workspace: Path, problem: str,
     return True
 
 
+# --- linter.style.whitespace + linter.style.emptyLine (text-based) -----------
+# These two mathlib STYLE linters fire ONLY on a real registered-module
+# `lake build` — a throwaway `lake env lean` (what every other mechanical gate
+# uses) does NOT trigger them, even with `set_option linter.style.whitespace
+# true` forced on (verified 2026-06-20). They are also NOT in
+# `linter.mathlibStandardSet`, so the cold per-file zero-warning gate misses
+# them too. But the audit agent's LSP `errors_at` (real `lake serve`) DOES
+# surface them, and audit.md tells it to drive every warning to zero — so on a
+# machine-dense file it hand-fixes 100+ `(0:ℝ)`→`(0 : ℝ)` spacings one ~25s LSP
+# re-elaboration at a time and times out (residue HomotopyIntegral: 141
+# whitespace + 4 emptyLine → all 3 audit cold passes hit the 960s cap). This
+# pass clears them mechanically in the `unused` stage BEFORE decide/audit, so the
+# agent only ever sees genuine semantic work.
+# `lake build` prints `warning: <file>:<L>:<C>: <message>` (the `warning:` token
+# leads the line — UNLIKE `lake env lean`'s `<file>:<L>:<C>: warning: <message>`),
+# so anchor on the `:<L>:<C>: <message>` tail, which is identical in both.
+_WS_HEAD_RE = re.compile(r":(\d+):\d+: missing space in the source")
+_EMPTYLINE_RE = re.compile(
+    r":(\d+):\d+: Please, write a comment here or remove this line")
+_WS_MAX_PASSES = 4
+
+
+def _parse_whitespace_warnings(build_output: str, basename: str
+                               ) -> "dict[int, set[str]]":
+    """`linter.style.whitespace` → `{line_1based: {GOOD, …}}`. Each warning is a
+    block:
+        <file>:<L>:<C>: warning: missing space in the source
+        <blank> / `This part of the code` / `  '<BAD>'` /
+        `should be written as` / `  '<GOOD>'`
+    The fix is content-anchored — `GOOD` with its spaces removed is exactly the
+    cramped form to replace (`(0 : ℝ)` → `(0:ℝ)`), so the column (byte / UTF-16 /
+    codepoint-ambiguous on a `ℝ` line) is never needed. Filtered to `basename`
+    (deps are cached, but be defensive)."""
+    out: "dict[int, set[str]]" = {}
+    lines = build_output.splitlines()
+    for i, ln in enumerate(lines):
+        m = _WS_HEAD_RE.search(ln)
+        if not m or basename not in ln:
+            continue
+        L = int(m.group(1))
+        for j in range(i + 1, min(i + 7, len(lines))):
+            if lines[j].strip() == "should be written as" and j + 1 < len(lines):
+                g = lines[j + 1].strip()
+                if len(g) >= 3 and g[0] == "'" and g[-1] == "'":
+                    out.setdefault(L, set()).add(g[1:-1])
+                break
+    return out
+
+
+def _parse_emptyline_warnings(build_output: str, basename: str) -> "list[int]":
+    """`linter.style.emptyLine` → the 1-based line numbers flagged (each IS the
+    offending blank line). Filtered to `basename`."""
+    return sorted({int(m.group(1))
+                   for ln in build_output.splitlines()
+                   if basename in ln and (m := _EMPTYLINE_RE.search(ln))})
+
+
+def _apply_whitespace_fixes(text: str,
+                            by_line: "dict[int, set[str]]") -> "tuple[str, int]":
+    """Per flagged line, replace every cramped `GOOD.replace(' ', '')` with
+    `GOOD`. Longest GOOD first (so a core that is a substring of another doesn't
+    pre-empt the wider fix). Per-line scope + acting only on cores the linter
+    emitted keeps the blast radius minimal; the caller rebuild-gates. Returns
+    `(new_text, n_lines_changed)`."""
+    lines = text.split("\n")
+    changed = 0
+    for L, goods in by_line.items():
+        if L < 1 or L > len(lines):
+            continue
+        s = orig = lines[L - 1]
+        for good in sorted(goods, key=lambda g: -len(g)):
+            core = good.replace(" ", "")
+            if core and core != good and core in s:
+                s = s.replace(core, good)
+        if s != orig:
+            lines[L - 1] = s
+            changed += 1
+    return "\n".join(lines), changed
+
+
+def _apply_emptyline_fixes(text: str, occ: "list[int]") -> "tuple[str, int]":
+    """Delete each flagged blank line, highest line number first so earlier
+    line numbers stay valid. A line that is NOT actually blank (stale diagnostic)
+    is skipped — never a corruption. Returns `(new_text, n_deleted)`."""
+    lines = text.split("\n")
+    deleted = 0
+    for L in sorted(occ, reverse=True):
+        if 1 <= L <= len(lines) and lines[L - 1].strip() == "":
+            del lines[L - 1]
+            deleted += 1
+    return "\n".join(lines), deleted
+
+
+def _force_module_rebuild(workspace: Path, target_file: str) -> None:
+    """Remove a module's build artifacts so the next `lake build` re-elaborates
+    it (and re-emits its text-style lints — `lake` caches on a content hash, so
+    touching mtime is NOT enough; verified 2026-06-20). Best-effort."""
+    stem = target_file[:-5] if target_file.endswith(".lean") else target_file
+    for art in (f".lake/build/lib/lean/{stem}.olean",
+                f".lake/build/lib/lean/{stem}.olean.hash",
+                f".lake/build/lib/lean/{stem}.trace"):
+        try:
+            (workspace / art).unlink()
+        except OSError:
+            pass
+
+
+def file_cleanup_normalize_whitespace(workspace: Path, problem: str,
+                                      target_file: str, *,
+                                      frozen: "set[str] | None" = None) -> bool:
+    """Mechanically clear `linter.style.whitespace` + `linter.style.emptyLine` —
+    the text-based mathlib style linters the audit agent otherwise burns its
+    whole spawn budget hand-fixing (see the module note above). Detection needs a
+    REAL module build (these linters don't fire on the throwaway `lake env lean`
+    the other gates use), so we drop the module's olean to force a re-elaboration
+    and parse its warnings. Content-anchored + rebuild-gated; skips frozen
+    (Defs-origin) decl spans. Iterates (a fix can reveal a straggler on a shared
+    line) up to `_WS_MAX_PASSES` — each write is itself a rebuild that re-emits
+    the remaining lints, so it doubles as the gate AND the next detection. Writes
+    on green rebuilds; reverts the last bad batch. Returns whether it changed the
+    file."""
+    leaf = target_file.split("/")[-1]
+    module = C._mod_of_rel(target_file)
+    from ....pipeline._lake import lake_build_modules
+    path = workspace / target_file
+    try:
+        original = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    # Pre-flight: any imported Library oleans the detection build needs.
+    missing = C._missing_oleans(workspace, re.findall(
+        r"^\s*import\s+(Library\.[\w.]+)", original, re.M))
+    if missing:
+        try:
+            lake_build_modules(workspace, missing)
+        except Exception:  # noqa: BLE001 — best-effort pre-flight
+            pass
+    _force_module_rebuild(workspace, target_file)     # force the first detection
+    ok, out = lake_build_modules(workspace, [module])
+    if not ok:
+        return False                                  # file itself doesn't build
+    text = original
+    total_ws = total_el = 0
+    for _it in range(_WS_MAX_PASSES):
+        by_line = _parse_whitespace_warnings(out, leaf)
+        el = _parse_emptyline_warnings(out, leaf)
+        if frozen:                            # never touch a frozen decl's source
+            fr = _decl_line_spans(text, frozen)
+            by_line = {L: g for L, g in by_line.items() if L not in fr}
+            el = [L for L in el if L not in fr]
+        if not by_line and not el:
+            break                             # converged: zero text-style lints
+        cand, nws = _apply_whitespace_fixes(text, by_line)
+        cand, nel = _apply_emptyline_fixes(cand, el)
+        if cand == text:
+            break                             # only stale diagnostics — stop
+        path.write_text(cand, encoding="utf-8")       # a content change → rebuild
+        ok, out = lake_build_modules(workspace, [module])
+        if not ok:
+            path.write_text(text, encoding="utf-8")   # revert to last green batch
+            out = ""
+            print(f"[staged] normalize-whitespace `{leaf}` — reverted last batch "
+                  f"(rebuild failed)", flush=True)
+            break
+        text, total_ws, total_el = cand, total_ws + nws, total_el + nel
+    if text == original:
+        return False
+    print(f"[staged] normalize-whitespace `{leaf}` — fixed {total_ws} whitespace "
+          f"line(s) + removed {total_el} empty line(s)", flush=True)
+    return True
+
+
 _FW_COMMENT_MARKER = re.compile(
     r"entry_kind|sub-goal|\bcombinator\b|Closer:|\(was:|pad_and_place")
 

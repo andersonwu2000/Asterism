@@ -35,7 +35,8 @@ from .cleanup._common import (_BATCH_TIMEOUT_SEC, _DECL_NAME_RE, _Decl,
                               replace_token)
 from .cleanup.audit import file_cleanup_audit
 from .cleanup.decide import file_cleanup_decide
-from .cleanup.mechanical import (file_cleanup_strip_framework_comments,
+from .cleanup.mechanical import (file_cleanup_normalize_whitespace,
+                                 file_cleanup_strip_framework_comments,
                                  file_cleanup_underscore_unused_hyps,
                                  file_cleanup_unused_args)
 from .cleanup.simplify import _mark_simplify_file, decl_cleanup_simplify_file
@@ -1769,6 +1770,18 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
         file_cleanup_underscore_unused_hyps(workspace, problem, target_file,
                                             frozen=defs_names)
     _T["unused"] = _t()
+    # (c2) normalize whitespace + empty lines — the text-based mathlib style
+    # linters (linter.style.whitespace / .emptyLine) that fire ONLY on a real
+    # module build (not the cold gate's throwaway), so the per-file zero-warning
+    # gate misses them but the audit agent's LSP `errors_at` surfaces them and it
+    # burns its whole 960s budget hand-fixing 100+ `(0:ℝ)`→`(0 : ℝ)` spacings one
+    # ~25s round-trip at a time → times out (residue HomotopyIntegral 141+4 → all
+    # 3 audit cold passes hit the cap, 2026-06-20). Mechanical + rebuild-gated,
+    # only when audit will run (its whole purpose is to relieve the agent).
+    if audit:
+        file_cleanup_normalize_whitespace(workspace, problem, target_file,
+                                          frozen=defs_names)
+    _T["whitespace"] = _t()
     # (e) strip framework-process `--` comments (entry_kind / sub-goal / Closer:
     # / combinator / (was: …)) migrate carried from the proof. Mechanical,
     # comment-only. Before decide/audit so the agent sees a clean file.
@@ -1834,7 +1847,8 @@ def run_staged_cleanup_file(workspace: Path, problem: str, target_file: str, *,
           f"mark={_T['mark']-_T['0']:.0f}s dedup={_T['dedup']-_T['mark']:.0f}s "
           f"simplify={_T['simplify']-_T['dedup']:.0f}s "
           f"unused={_T['unused']-_T['simplify']:.0f}s "
-          f"decide={_T['decide']-_T['unused']:.0f}s "
+          f"whitespace={_T['whitespace']-_T['unused']:.0f}s "
+          f"decide={_T['decide']-_T['whitespace']:.0f}s "
           f"audit={_T['audit']-_T['decide']:.0f}s "
           f"total={_T['audit']-_T['0']:.0f}s", flush=True)
     return {"dropped": {x: Yd.fqn for x, Yd in r["drops"].items()},
