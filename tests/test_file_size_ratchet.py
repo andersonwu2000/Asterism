@@ -160,7 +160,11 @@ _WATERMARKS = {
     # whole-file warnings gate so it verifies on the agent's warm claimed slot
     # (#35 stage 3; the #check type gate stays cold) — 2026-06-19 — conscious bump.
     "Tooling/quality/librarian/cleanup/audit.py": 400,
-    "Tooling/quality/librarian/cleanup/decide.py": 250,
+    # 250→290: precise imports computed MECHANICALLY (`_compute_min_imports` /
+    # `_parse_missing_imports` / `_inject_import_bumps`, driving mathlib's
+    # `#import_bumps`) instead of the LLM guessing + retrying — eliminates the
+    # `import Mathlib` umbrella deterministically (#44) — 2026-06-21.
+    "Tooling/quality/librarian/cleanup/decide.py": 290,
     # 250→340: file_cleanup_underscore_unused_hyps — mechanical `_`-prefix of
     # `unusedVariables`-flagged hypothesis binders (#37), so the audit agent
     # doesn't burn its 960s budget `_`-prefixing 12+ binders one LSP round-trip at

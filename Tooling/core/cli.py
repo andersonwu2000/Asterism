@@ -1197,8 +1197,8 @@ def _library_consistency_findings(conn, workspace: Path
     lib = workspace / "Library"
 
     placed = conn.execute(
-        "SELECT problem, target_name, target_file, slug FROM library_decls "
-        "WHERE lifecycle IN ('migrated','cleaned')"
+        "SELECT problem, target_name, target_file, slug, lifecycle "
+        "FROM library_decls WHERE lifecycle IN ('migrated','cleaned')"
     ).fetchall()
     db_files = {r["target_file"] for r in placed if r["target_file"]}
     db_by_problem: "dict[str, set[tuple[str, str]]]" = {}
@@ -1250,6 +1250,29 @@ def _library_consistency_findings(conn, workspace: Path
             out.append(("FAIL", f"{prob}: INDEX/DB placed-set mismatch "
                                 f"(+{len(idx - dbp)} INDEX-only, "
                                 f"+{len(dbp - idx)} DB-only)"))
+
+    # I5 — a CLEANED file should carry no `import Mathlib` umbrella. decide
+    # minimises imports mechanically (`#import_bumps`); a surviving umbrella is
+    # the rare degraded fallback (the linter could not produce a buildable set)
+    # — non-idiomatic and rejected by a mathlib PR. WARN, not FAIL: the file
+    # still builds, so this surfaces the defect without blocking the gate.
+    # 'migrated'-but-not-'cleaned' files legitimately still carry it (mid-flight).
+    cleaned_files = sorted({r["target_file"] for r in placed
+                            if r["target_file"] and r["lifecycle"] == "cleaned"})
+    umbrella = []
+    for f in cleaned_files:
+        try:
+            txt = (workspace / f).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if any(ln.strip() == "import Mathlib" for ln in txt.splitlines()):
+            umbrella.append(f)
+    for f in umbrella:
+        out.append(("WARN", f"cleaned file keeps the `import Mathlib` umbrella "
+                            f"(decide import-min degraded to fallback): {f}"))
+    if cleaned_files and not umbrella:
+        out.append(("OK", f"{len(cleaned_files)} cleaned file(s) carry precise "
+                          f"imports (no `import Mathlib` umbrella)"))
     return out
 
 

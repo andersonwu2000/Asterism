@@ -1147,7 +1147,8 @@ def test_cleanup_one_file_cross_module_drop_qualifies(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------
-# P4 — decide (naming alignment + precise imports): parse / validate / apply
+# P4 — decide: naming alignment (LLM) + precise imports (mechanical
+# #import_bumps): parse / validate / apply
 # ---------------------------------------------------------------------
 
 def test_parse_decide_canonical_and_legacy_shapes() -> None:
@@ -1205,6 +1206,51 @@ def test_swap_umbrella_import() -> None:
     body = "import Mathlib.A.B\n\n-- import Mathlib\ntheorem t : P := trivial\n"
     assert cl_decide._swap_umbrella_import(body, ["Mathlib.C"]) == (body, False)
     assert cl_decide._swap_umbrella_import(text, []) == (text, False)
+
+
+def test_inject_import_bumps_after_import_block() -> None:
+    src = ("import Mathlib\nimport Library.P.Sib\n\n"
+           "namespace Foo\ntheorem t : True := trivial\nend Foo\n")
+    out = cl_decide._inject_import_bumps(src)
+    # `#import_bumps` lands right after the LAST import, before the first decl
+    assert "import Library.P.Sib\n#import_bumps\n" in out
+    assert out.index("#import_bumps") > out.index("import Mathlib")
+    assert out.index("#import_bumps") < out.index("namespace Foo")
+
+
+def test_parse_missing_imports_block() -> None:
+    # the consolidated block `#import_bumps` prints (plain `import`, not public)
+    out = ("f.lean:1:7: warning: unneeded import 'Mathlib'\n"
+           "f.lean:1:0: warning: -- missing imports\n"
+           "import Mathlib.Analysis.Analytic.Basic\n"
+           "import Mathlib.Analysis.Calculus.Deriv.Basic\n"
+           "import Mathlib.Analysis.Analytic.Basic\n")     # dup → once
+    assert cl_decide._parse_missing_imports(out) == [
+        "Mathlib.Analysis.Analytic.Basic",
+        "Mathlib.Analysis.Calculus.Deriv.Basic"]
+    # only Mathlib.* taken; a Library/core line in the block is ignored
+    mixed = ("warning: -- missing imports\nimport Mathlib.A.B\n"
+             "import Library.P.Sib\nimport Lean.Parser.Command\n")
+    assert cl_decide._parse_missing_imports(mixed) == ["Mathlib.A.B"]
+    # no marker → empty (keep the umbrella)
+    assert cl_decide._parse_missing_imports("build ok, no block") == []
+
+
+def test_compute_min_imports_drives_import_bumps(tmp_path, monkeypatch) -> None:
+    _mathlib_tree(tmp_path, "Mathlib.A.B")
+    block = ("x:1:0: warning: -- missing imports\n"
+             "import Mathlib.A.B\nimport Mathlib.Hallucinated\n")   # 2nd dropped
+    seen = {}
+
+    def _bwo(ws, content, **k):
+        seen["content"] = content
+        return True, block
+    monkeypatch.setattr(cl_common, "_build_with_output", _bwo)
+    got = cl_decide._compute_min_imports(tmp_path, "import Mathlib\ntheorem t : True := trivial\n")
+    # `#import_bumps` was injected for the detection build
+    assert "#import_bumps" in seen["content"]
+    # parsed + existence-filtered (Hallucinated has no file → dropped)
+    assert got == ["Mathlib.A.B"]
 
 
 def test_valid_renames_filters() -> None:
@@ -1266,6 +1312,13 @@ def _fake_filecopy(monkeypatch, results):
     return seq
 
 
+def _fake_min_imports(monkeypatch, imports):
+    """Patch the mechanical precise-import computer (`#import_bumps` driver) to
+    return a fixed `Mathlib.*` list — offline, no real lean build."""
+    monkeypatch.setattr(cl_decide, "_compute_min_imports",
+                        lambda ws, content: list(imports))
+
+
 def test_file_cleanup_decide_noop_without_prompt(tmp_path) -> None:
     rel = "Library/P/F.lean"
     p = tmp_path / rel
@@ -1284,11 +1337,11 @@ def test_file_cleanup_decide_renames_header_refs_and_imports(tmp_path,
                "theorem lemma_3 (a : T) : P := by trivial\n"
                "theorem uses_it : P := lemma_3 x\n")   # in-file reference
     _setup_decide(tmp_path, rel, content)
-    _mathlib_tree(tmp_path, "Mathlib.A.B")
     d3 = _vdecl("lemma_3", "(a : T) : P", module=module, rel=rel)
     du = _vdecl("uses_it", ": P", module=module, rel=rel)
-    _fake_decide_spawn(monkeypatch, [
-        '{"renames":{"lemma_3":"trivial_P"},"imports":["Mathlib.A.B"]}'])
+    # agent proposes RENAMES only; imports are computed MECHANICALLY (mocked)
+    _fake_decide_spawn(monkeypatch, ['{"renames":{"lemma_3":"trivial_P"}}'])
+    _fake_min_imports(monkeypatch, ["Mathlib.A.B"])
     _fake_filecopy(monkeypatch, [(True, "")])
     out = dedup.file_cleanup_decide(tmp_path, "p", rel, [d3, du],
                                     scope=[d3, du], pool=[])
@@ -1297,7 +1350,7 @@ def test_file_cleanup_decide_renames_header_refs_and_imports(tmp_path,
     assert "theorem trivial_P (a : T)" in txt
     assert "lemma_3" not in txt                  # header + ref both renamed
     assert "trivial_P x" in txt                  # the in-file reference rewired
-    assert "import Mathlib.A.B" in txt           # umbrella swapped
+    assert "import Mathlib.A.B" in txt           # umbrella swapped (mechanical)
     assert "import Mathlib\n" not in txt
     assert "import Library.P.Sib" in txt         # sibling import untouched
 
@@ -1308,10 +1361,11 @@ def test_file_cleanup_decide_reverts_on_build_failure(tmp_path, monkeypatch) -> 
     content = "import Mathlib\ntheorem lemma_3 (a : T) : P := by trivial\n"
     _setup_decide(tmp_path, rel, content)
     d = _vdecl("lemma_3", "(a : T) : P", module=module, rel=rel)
-    # 1 try + 1 retry, both rename-only proposals fail to build → keep original
-    _fake_decide_spawn(monkeypatch, ['{"renames":{"lemma_3":"foo"}}',
-                                     '{"renames":{"lemma_3":"bar"}}'])
-    _fake_filecopy(monkeypatch, [(False, "collision"), (False, "collision")])
+    # renames-only candidate fails to build (no import swap to blame) → revert,
+    # leaving the file untouched. The renames are the only risky change here.
+    _fake_decide_spawn(monkeypatch, ['{"renames":{"lemma_3":"foo"}}'])
+    _fake_min_imports(monkeypatch, [])
+    _fake_filecopy(monkeypatch, [(False, "collision")])
     assert dedup.file_cleanup_decide(tmp_path, "p", rel, [d],
                                      scope=[d], pool=[]) == ({}, False)
     assert (tmp_path / rel).read_text(encoding="utf-8") == content   # unchanged
@@ -1319,20 +1373,18 @@ def test_file_cleanup_decide_reverts_on_build_failure(tmp_path, monkeypatch) -> 
 
 def test_file_cleanup_decide_falls_back_to_renames_only(tmp_path,
                                                         monkeypatch) -> None:
-    # Degrade ladder: renames+imports red on both tries → rung 3 gates the
-    # renames-only text (umbrella kept) → green → a bad import set never
-    # costs a rename.
+    # Degrade ladder: the mechanical import set is red (linter gap) → gate the
+    # renames-only text (umbrella kept) → green → a bad import set never costs a
+    # rename.
     rel = "Library/P/F.lean"
     module = "Library.P.F"
     content = "import Mathlib\ntheorem lemma_3 (a : T) : P := by trivial\n"
     _setup_decide(tmp_path, rel, content)
-    _mathlib_tree(tmp_path, "Mathlib.Too.Narrow")
     d = _vdecl("lemma_3", "(a : T) : P", module=module, rel=rel)
-    prop = '{"renames":{"lemma_3":"trivial_P"},"imports":["Mathlib.Too.Narrow"]}'
-    _fake_decide_spawn(monkeypatch, [prop, prop])
-    _fake_filecopy(monkeypatch, [(False, "unknown identifier"),
-                                 (False, "unknown identifier"),
-                                 (True, "")])         # rung 3: renames-only green
+    _fake_decide_spawn(monkeypatch, ['{"renames":{"lemma_3":"trivial_P"}}'])
+    _fake_min_imports(monkeypatch, ["Mathlib.Too.Narrow"])
+    _fake_filecopy(monkeypatch, [(False, "unknown identifier"),  # import swap red
+                                 (True, "")])         # degrade: renames-only green
     out = dedup.file_cleanup_decide(tmp_path, "p", rel, [d],
                                     scope=[d], pool=[])
     assert out == ({f"{module}.lemma_3": f"{module}.trivial_P"}, False)
@@ -1342,13 +1394,14 @@ def test_file_cleanup_decide_falls_back_to_renames_only(tmp_path,
     assert "Mathlib.Too.Narrow" not in txt
 
 
-def test_file_cleanup_decide_imports_only_proposal(tmp_path, monkeypatch) -> None:
+def test_file_cleanup_decide_imports_only_no_renames(tmp_path, monkeypatch) -> None:
+    # No renames needed; the umbrella is still minimised MECHANICALLY.
     rel = "Library/P/F.lean"
     content = "import Mathlib\ntheorem add_comm (a : T) : P := by trivial\n"
     _setup_decide(tmp_path, rel, content)
-    _mathlib_tree(tmp_path, "Mathlib.A.B")
     d = _vdecl("add_comm", "(a : T) : P", rel=rel)
-    _fake_decide_spawn(monkeypatch, ['{"renames":{},"imports":["Mathlib.A.B"]}'])
+    _fake_decide_spawn(monkeypatch, ['{"renames":{}}'])
+    _fake_min_imports(monkeypatch, ["Mathlib.A.B"])
     _fake_filecopy(monkeypatch, [(True, "")])
     out = dedup.file_cleanup_decide(tmp_path, "p", rel, [d],
                                     scope=[d], pool=[])
@@ -1366,6 +1419,7 @@ def test_file_cleanup_decide_renames_keystone_main(tmp_path, monkeypatch) -> Non
     _setup_decide(tmp_path, rel, content)
     d = _vdecl("main", "(a : T) : P", module=module, rel=rel)
     _fake_decide_spawn(monkeypatch, ['{"renames":{"main":"svd_decomposition"}}'])
+    _fake_min_imports(monkeypatch, [])
     _fake_filecopy(monkeypatch, [(True, "")])
     out = dedup.file_cleanup_decide(tmp_path, "p", rel, [d],
                                     scope=[d], pool=[])
@@ -1380,7 +1434,8 @@ def test_file_cleanup_decide_noop_when_nothing_to_decide(tmp_path,
     _setup_decide(tmp_path, rel,
                   "import Mathlib\ntheorem add_comm (a : T) : P := by trivial\n")
     d = _vdecl("add_comm", "(a : T) : P", rel=rel)
-    spy = _fake_decide_spawn(monkeypatch, ['{"renames":{},"imports":[]}'])
+    spy = _fake_decide_spawn(monkeypatch, ['{"renames":{}}'])
+    _fake_min_imports(monkeypatch, [])                # already minimal → no swap
     bc = _fake_filecopy(monkeypatch, [])
     assert dedup.file_cleanup_decide(tmp_path, "p", rel, [d],
                                      scope=[d], pool=[]) == ({}, False)

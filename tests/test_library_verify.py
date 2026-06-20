@@ -141,6 +141,45 @@ def test_cited_and_dropped_decls_do_not_participate(tmp_path):
 
 
 # ---------------------------------------------------------------------
+# I5 — a CLEANED file keeping the `import Mathlib` umbrella WARNs (decide
+# import-min mechanically minimises it; a survivor is the rare fallback)
+# ---------------------------------------------------------------------
+
+def test_cleaned_file_with_umbrella_import_warns(tmp_path):
+    conn = _conn(tmp_path)
+    _add(conn, problem="P", slug="foo", name="Library.P.foo",
+         file="Library/P/A.lean", lifecycle="cleaned")
+    _add(conn, problem="P", slug="bar", name="Library.P.bar",
+         file="Library/P/B.lean", lifecycle="cleaned")
+    (tmp_path / "Library/P").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "Library/P/A.lean").write_text(            # umbrella survivor
+        "import Mathlib\ntheorem foo : True := trivial\n", encoding="utf-8")
+    (tmp_path / "Library/P/B.lean").write_text(            # precise imports
+        "import Mathlib.Logic.Basic\ntheorem bar : True := trivial\n",
+        encoding="utf-8")
+    _index(tmp_path, {"P": [("Library.P.foo", "Library/P/A.lean"),
+                            ("Library.P.bar", "Library/P/B.lean")]})
+    findings = cli._library_consistency_findings(conn, tmp_path)
+    assert "FAIL" not in _statuses(findings)              # builds → never a FAIL
+    warns = _warns(findings)
+    assert any("import Mathlib" in w and "A.lean" in w for w in warns)
+    assert not any("B.lean" in w for w in warns)          # precise → no warn
+
+
+def test_migrated_file_with_umbrella_not_warned(tmp_path):
+    # 'migrated'-but-not-'cleaned' files legitimately still carry the umbrella.
+    conn = _conn(tmp_path)
+    _add(conn, problem="P", slug="foo", name="Library.P.foo",
+         file="Library/P/A.lean", lifecycle="migrated")
+    (tmp_path / "Library/P").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "Library/P/A.lean").write_text(
+        "import Mathlib\ntheorem foo : True := trivial\n", encoding="utf-8")
+    _index(tmp_path, {"P": [("Library.P.foo", "Library/P/A.lean")]})
+    warns = _warns(cli._library_consistency_findings(conn, tmp_path))
+    assert not any("import Mathlib" in w for w in warns)
+
+
+# ---------------------------------------------------------------------
 # consistency — each drift class FAILs
 # ---------------------------------------------------------------------
 
