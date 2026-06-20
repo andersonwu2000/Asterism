@@ -389,18 +389,16 @@ def _apply_emptyline_fixes(text: str, occ: "list[int]") -> "tuple[str, int]":
     return "\n".join(lines), deleted
 
 
-def _force_module_rebuild(workspace: Path, target_file: str) -> None:
-    """Remove a module's build artifacts so the next `lake build` re-elaborates
-    it (and re-emits its text-style lints — `lake` caches on a content hash, so
-    touching mtime is NOT enough; verified 2026-06-20). Best-effort."""
-    stem = target_file[:-5] if target_file.endswith(".lean") else target_file
-    for art in (f".lake/build/lib/lean/{stem}.olean",
-                f".lake/build/lib/lean/{stem}.olean.hash",
-                f".lake/build/lib/lean/{stem}.trace"):
-        try:
-            (workspace / art).unlink()
-        except OSError:
-            pass
+# A trailing comment appended to force a content-hash change so `lake build`
+# re-elaborates the module (and re-emits its text-style lints — lake caches on a
+# content hash, so touching mtime is NOT enough). CRITICAL: a content-change
+# rebuild overwrites the olean IN PLACE (like decide's load-bearing rebuild,
+# which never raced), so the olean is never absent — unlike deleting it, which
+# left a ~30-60s window where a concurrent dependent's `lake env lean` def-eq
+# probe failed with "olean does not exist" (the #39 cross-file race). It is a
+# plain comment on its own trailing line: it never shifts a declaration's line
+# number and is stripped before the pass returns.
+_WS_DETECT_MARKER = "\n-- (asterism whitespace-detect rebuild marker)\n"
 
 
 def file_cleanup_normalize_whitespace(workspace: Path, problem: str,
@@ -410,13 +408,13 @@ def file_cleanup_normalize_whitespace(workspace: Path, problem: str,
     the text-based mathlib style linters the audit agent otherwise burns its
     whole spawn budget hand-fixing (see the module note above). Detection needs a
     REAL module build (these linters don't fire on the throwaway `lake env lean`
-    the other gates use), so we drop the module's olean to force a re-elaboration
-    and parse its warnings. Content-anchored + rebuild-gated; skips frozen
-    (Defs-origin) decl spans. Iterates (a fix can reveal a straggler on a shared
-    line) up to `_WS_MAX_PASSES` — each write is itself a rebuild that re-emits
-    the remaining lints, so it doubles as the gate AND the next detection. Writes
-    on green rebuilds; reverts the last bad batch. Returns whether it changed the
-    file."""
+    the other gates use), so we force a re-elaboration by appending a trailing
+    comment marker (a content change → in-place rebuild that NEVER deletes the
+    olean, so it can't race a concurrent dependent's def-eq probe) and parse its
+    warnings. Content-anchored + rebuild-gated; skips frozen (Defs-origin) decl
+    spans. Iterates (a fix can reveal a straggler on a shared line) up to
+    `_WS_MAX_PASSES`. Writes on green rebuilds; reverts the last bad batch; strips
+    the marker before returning. Returns whether it changed the file."""
     leaf = target_file.split("/")[-1]
     module = C._mod_of_rel(target_file)
     from ....pipeline._lake import lake_build_modules
@@ -435,20 +433,17 @@ def file_cleanup_normalize_whitespace(workspace: Path, problem: str,
             pass
     text = original
     total_ws = total_el = 0
-    olean_ok = False                  # invariant tracker: olean matches on-disk?
+    marker_on_disk = False
     try:
-        # Force the first detection build (lake caches on a content hash, so the
-        # already-built migrate olean would otherwise emit nothing). One retry
-        # absorbs a transient failure under concurrent lake load — the file built
-        # through every prior stage, so a hard failure here is unexpected.
-        _force_module_rebuild(workspace, target_file)
-        ok, out = lake_build_modules(workspace, [module])
-        if not ok:
-            ok, out = lake_build_modules(workspace, [module])
-        if not ok:
-            return False                  # can't build → finally restores the olean
-        olean_ok = True                   # built `original` (== on-disk)
         for _it in range(_WS_MAX_PASSES):
+            # Detection: a marker'd rebuild re-emits the text-style lints for the
+            # CURRENT `text`. The marker is a trailing comment, so the warnings'
+            # line numbers still point at `text`'s declarations.
+            path.write_text(text + _WS_DETECT_MARKER, encoding="utf-8")
+            marker_on_disk = True
+            ok, out = lake_build_modules(workspace, [module])
+            if not ok:
+                break                         # build failed → strip marker, bail
             by_line = _parse_whitespace_warnings(out, leaf)
             el = _parse_emptyline_warnings(out, leaf)
             if frozen:                        # never touch a frozen decl's source
@@ -461,23 +456,22 @@ def file_cleanup_normalize_whitespace(workspace: Path, problem: str,
             cand, nel = _apply_emptyline_fixes(cand, el)
             if cand == text:
                 break                         # only stale diagnostics — stop
-            path.write_text(cand, encoding="utf-8")   # content change → rebuild
-            olean_ok = False                  # on-disk now ahead of the olean
-            ok, out = lake_build_modules(workspace, [module])
+            path.write_text(cand, encoding="utf-8")   # no marker → gate build
+            marker_on_disk = False
+            ok, _gate = lake_build_modules(workspace, [module])
             if not ok:
                 path.write_text(text, encoding="utf-8")   # revert to last green
                 print(f"[staged] normalize-whitespace `{leaf}` — reverted last "
                       f"batch (rebuild failed)", flush=True)
                 break
-            text, olean_ok = cand, True       # olean now matches `cand` (== text)
+            text = cand                       # olean now matches `cand` (== text)
             total_ws, total_el = total_ws + nws, total_el + nel
     finally:
-        # NEVER leave the module's olean missing/stale: downstream decide/audit
-        # (and dedup's def-eq probe) need it, and a missing olean fails them all
-        # (the regression this guards against). Rebuild to match the final
-        # on-disk content if the last build didn't already.
-        if not olean_ok:
-            lake_build_modules(workspace, [module])
+        # Strip any leftover detection marker so the shipped file is exactly
+        # `text`. The olean (built from text+marker, a comment) is semantically
+        # identical, so downstream stays correct; it is never left absent.
+        if marker_on_disk:
+            path.write_text(text, encoding="utf-8")
     if text == original:
         return False
     print(f"[staged] normalize-whitespace `{leaf}` — fixed {total_ws} whitespace "

@@ -463,8 +463,9 @@ def test_normalize_whitespace_skips_frozen(monkeypatch, tmp_path):
     src = ("import Mathlib\n\ndef windingNumber : R :=\n  (0:R)\n")
     f.write_text(src, encoding="utf-8")
     monkeypatch.setattr(C, "_missing_oleans", lambda *a, **k: [])
-    monkeypatch.setattr(M, "_force_module_rebuild", lambda *a, **k: None)
-    # build reports the frozen line (4) as the only whitespace warning
+    # build reports the frozen line (4) as the only whitespace warning. The pass
+    # appends a detection marker, builds, finds the only fix is on a frozen line,
+    # skips it, then strips the marker — leaving the file byte-identical.
     monkeypatch.setattr(
         "Tooling.pipeline._lake.lake_build_modules",
         lambda ws, mods: (True,
@@ -474,4 +475,4 @@ def test_normalize_whitespace_skips_frozen(monkeypatch, tmp_path):
     changed = M.file_cleanup_normalize_whitespace(
         tmp_path, "P", rel, frozen={"windingNumber"})
     assert changed is False                              # frozen line skipped
-    assert f.read_text(encoding="utf-8") == src          # untouched
+    assert f.read_text(encoding="utf-8") == src          # marker stripped, untouched
