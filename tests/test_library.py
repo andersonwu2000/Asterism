@@ -6,15 +6,13 @@ gone. What remains:
 
 1. Manifest parser populates lemma_hints / mathlib_hints separately and
    exposes a unified all_hints view.
-2. `topics_from_hints` dedups + preserves order.
-3. `context._section_library_available` renders the right INDEX entries.
+2. `context._section_library_available` renders the right INDEX entries.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 from Tooling.state import manifest
-from Tooling.quality import library
 
 
 # ---------------------------------------------------------------------
@@ -67,20 +65,7 @@ def test_manifest_both_sections_dedup(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------
-# 2. Topic inference
-# ---------------------------------------------------------------------
-
-def test_topics_from_hints_dedups_and_preserves_order() -> None:
-    assert library.topics_from_hints([
-        "Library.NumberTheory.a",
-        "Mathlib.X.Y",
-        "Library.Algebra.b",
-        "Library.NumberTheory.c",  # duplicate topic, drop
-    ]) == ["NumberTheory", "Algebra"]
-
-
-# ---------------------------------------------------------------------
-# 3. Context section — Library available
+# 2. Context section — Library available
 # ---------------------------------------------------------------------
 
 def _write_index(tmp_path: Path) -> None:

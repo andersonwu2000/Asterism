@@ -9,9 +9,13 @@ bypassed the cleanup hook.
 See `docs/archive/spawn_sandbox.md` for the full design rationale,
 failure-mode coverage, and the BUG class this addresses.
 
-Used by `pipeline/backward.py`, `pipeline/builder.py`, `verify.py`,
-`library.py`. Coexists with `Tooling.agent.WorkArea` for now;
-callers migrate in Phase 2-3 (per design §8).
+Status: the `SpawnWorkspace` context manager is RETIRED — no pipeline
+instantiates it anymore (backward.py / builder.py confine agent writes to
+`attempts_dir` and only mention it in retirement comments). What stays LIVE
+is the orphan-sandbox reconciliation: `sweep_orphan_sandboxes` (called at
+daemon startup by `core/dispatcher.py`) plus `MANIFEST_NAME` / `_pid_alive`
+(used by `state/recovery.py`). `SpawnWorkspace` itself is vestigial and
+pending a removal audit — do not assume it is on any live path.
 """
 from __future__ import annotations
 
