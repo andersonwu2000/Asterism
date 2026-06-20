@@ -1824,3 +1824,25 @@ def test_underscore_unused_hyps_reverts_on_red(tmp_path, monkeypatch) -> None:
         tmp_path, "P", rel)
     assert not changed
     assert f.read_text(encoding="utf-8") == src     # file untouched on red
+
+
+# --- #41 cross-file bridge import-cycle guard --------------------------------
+
+def test_imports_reaches_detects_cycle_edge(tmp_path) -> None:
+    # B imports A, C imports B. A bridge whose cited module is reachable back to
+    # the bridging file's module would close an import cycle → must be rejected.
+    (tmp_path / "Library/P").mkdir(parents=True)
+    (tmp_path / "Library/P/A.lean").write_text("import Mathlib\n", encoding="utf-8")
+    (tmp_path / "Library/P/B.lean").write_text(
+        "import Mathlib\nimport Library.P.A\n", encoding="utf-8")
+    (tmp_path / "Library/P/C.lean").write_text(
+        "import Library.P.B\n", encoding="utf-8")
+    assert dedup._lib_imports_on_disk(tmp_path, "Library.P.B") == ["Library.P.A"]
+    # B already imports A → bridging an A-decl to cite a B-decl would cycle
+    assert dedup._imports_reaches(tmp_path, "Library.P.B", "Library.P.A") is True
+    # transitive: C → B → A
+    assert dedup._imports_reaches(tmp_path, "Library.P.C", "Library.P.A") is True
+    # no back-edge A → B (bridging a B-decl to cite an A-decl is safe)
+    assert dedup._imports_reaches(tmp_path, "Library.P.A", "Library.P.B") is False
+    # missing file → no edges, no crash
+    assert dedup._imports_reaches(tmp_path, "Library.P.Z", "Library.P.A") is False

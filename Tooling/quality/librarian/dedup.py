@@ -195,6 +195,50 @@ def batch_defeq(workspace: Path, problem: str,
 # later (P2/P4) concern.
 # ---------------------------------------------------------------------
 
+# ---------------------------------------------------------------------
+# Import-cycle guard for cross-file bridges (#41)
+#
+# classify lays files on an ACYCLIC DAG of the ORIGINAL proof citations
+# (`_merge_file_sccs` merges any usage-cycle into one file). But a dedup BRIDGE
+# rewrites X's proof to `:= <cite Y>` — a NEW cross-file edge classify never saw.
+# If Y's module already (transitively) imports X's module, adding `import
+# Y.module` to X's file closes an import cycle → the module no longer builds. The
+# per-decl isolation gate can't see it (it imports both oleans, no rebuild), so
+# the cycle only surfaces at the later real-module build as a hard failure →
+# retry → STALL (residue OuterHolomorphicPart ↔ InnerPrincipalPart, 2026-06-20).
+# So check reachability on the on-disk import graph BEFORE applying the bridge.
+# ---------------------------------------------------------------------
+_LIB_IMPORT_RE = re.compile(r"^\s*import\s+(Library\.[\w.]+)", re.M)
+
+
+def _lib_imports_on_disk(workspace: Path, module: str) -> "list[str]":
+    """The `Library.*` modules a module's source file imports (best-effort —
+    empty if the file is absent/unreadable)."""
+    rel = module.replace(".", "/") + ".lean"
+    try:
+        return _LIB_IMPORT_RE.findall((workspace / rel).read_text(encoding="utf-8"))
+    except OSError:
+        return []
+
+
+def _imports_reaches(workspace: Path, src: str, dst: str,
+                     _memo: "dict | None" = None) -> bool:
+    """Does module `src` transitively import `dst` (over Library modules)? Used
+    to reject a bridge whose cited module would close an import cycle back to the
+    bridging file. BFS over on-disk imports."""
+    seen: set[str] = set()
+    stack = [src]
+    while stack:
+        m = stack.pop()
+        for imp in _lib_imports_on_disk(workspace, m):
+            if imp == dst:
+                return True
+            if imp not in seen:
+                seen.add(imp)
+                stack.append(imp)
+    return False
+
+
 def drop_decl(text: str, name: str) -> "tuple[str, bool]":
     """Remove decl `name`'s block from `text`. Returns `(new_text, removed)`."""
     span = decl_span(text, name)
@@ -1282,6 +1326,15 @@ def _cleanup_one_file(workspace: Path, rel: str, decls: "list[_Decl]",
             drops[d.fqn] = Y
         else:                                      # bridge (sig-preserving)
             br = bridges.get(d.fqn)
+            # Reject a cross-file bridge that would close an import cycle: citing
+            # Y adds `import Y.module` to this file, but Y.module already
+            # (transitively) imports this file's module — so the module stops
+            # building. The per-decl gate below can't see it (#41).
+            x_mod = _mod_of_rel(rel)
+            if (br and Y.module and Y.module != x_mod
+                    and _imports_reaches(workspace, Y.module, x_mod)):
+                failed.append((d.fqn, Y.fqn))
+                continue
             iso = bool(br) and d.fqn != Y.fqn and Y.fqn not in drops and \
                 _build_decl_isolated(
                     workspace, sig=d.sig, proof=br, namespaces=[d.module],

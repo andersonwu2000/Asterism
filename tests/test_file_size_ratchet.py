@@ -22,7 +22,10 @@ _WATERMARKS = {
     # 1b) — 2026-06-19 — conscious bump.
     # 1950→1960: (c2) normalize-whitespace mechanical stage wired into
     # run_staged_cleanup_file before decide/audit — 2026-06-20 — conscious bump.
-    "Tooling/quality/librarian/dedup.py": 1960,
+    # 1960→2020: cross-file bridge import-cycle guard (`_imports_reaches` /
+    # `_lib_imports_on_disk`) — reject a bridge whose cited module already
+    # transitively imports the bridging file's module (#41) — 2026-06-20.
+    "Tooling/quality/librarian/dedup.py": 2020,
     # 2850→2900 classify size gate; →3000 Defs section-context + ownership
     # guard; →3050 same-path race lock; →3100 docstring-aware slicing;
     # →3200 cross-problem shared-def redirect + variable-block dedupe +
