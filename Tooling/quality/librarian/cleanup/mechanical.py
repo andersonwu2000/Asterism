@@ -433,34 +433,51 @@ def file_cleanup_normalize_whitespace(workspace: Path, problem: str,
             lake_build_modules(workspace, missing)
         except Exception:  # noqa: BLE001 — best-effort pre-flight
             pass
-    _force_module_rebuild(workspace, target_file)     # force the first detection
-    ok, out = lake_build_modules(workspace, [module])
-    if not ok:
-        return False                                  # file itself doesn't build
     text = original
     total_ws = total_el = 0
-    for _it in range(_WS_MAX_PASSES):
-        by_line = _parse_whitespace_warnings(out, leaf)
-        el = _parse_emptyline_warnings(out, leaf)
-        if frozen:                            # never touch a frozen decl's source
-            fr = _decl_line_spans(text, frozen)
-            by_line = {L: g for L, g in by_line.items() if L not in fr}
-            el = [L for L in el if L not in fr]
-        if not by_line and not el:
-            break                             # converged: zero text-style lints
-        cand, nws = _apply_whitespace_fixes(text, by_line)
-        cand, nel = _apply_emptyline_fixes(cand, el)
-        if cand == text:
-            break                             # only stale diagnostics — stop
-        path.write_text(cand, encoding="utf-8")       # a content change → rebuild
+    olean_ok = False                  # invariant tracker: olean matches on-disk?
+    try:
+        # Force the first detection build (lake caches on a content hash, so the
+        # already-built migrate olean would otherwise emit nothing). One retry
+        # absorbs a transient failure under concurrent lake load — the file built
+        # through every prior stage, so a hard failure here is unexpected.
+        _force_module_rebuild(workspace, target_file)
         ok, out = lake_build_modules(workspace, [module])
         if not ok:
-            path.write_text(text, encoding="utf-8")   # revert to last green batch
-            out = ""
-            print(f"[staged] normalize-whitespace `{leaf}` — reverted last batch "
-                  f"(rebuild failed)", flush=True)
-            break
-        text, total_ws, total_el = cand, total_ws + nws, total_el + nel
+            ok, out = lake_build_modules(workspace, [module])
+        if not ok:
+            return False                  # can't build → finally restores the olean
+        olean_ok = True                   # built `original` (== on-disk)
+        for _it in range(_WS_MAX_PASSES):
+            by_line = _parse_whitespace_warnings(out, leaf)
+            el = _parse_emptyline_warnings(out, leaf)
+            if frozen:                        # never touch a frozen decl's source
+                fr = _decl_line_spans(text, frozen)
+                by_line = {L: g for L, g in by_line.items() if L not in fr}
+                el = [L for L in el if L not in fr]
+            if not by_line and not el:
+                break                         # converged: zero text-style lints
+            cand, nws = _apply_whitespace_fixes(text, by_line)
+            cand, nel = _apply_emptyline_fixes(cand, el)
+            if cand == text:
+                break                         # only stale diagnostics — stop
+            path.write_text(cand, encoding="utf-8")   # content change → rebuild
+            olean_ok = False                  # on-disk now ahead of the olean
+            ok, out = lake_build_modules(workspace, [module])
+            if not ok:
+                path.write_text(text, encoding="utf-8")   # revert to last green
+                print(f"[staged] normalize-whitespace `{leaf}` — reverted last "
+                      f"batch (rebuild failed)", flush=True)
+                break
+            text, olean_ok = cand, True       # olean now matches `cand` (== text)
+            total_ws, total_el = total_ws + nws, total_el + nel
+    finally:
+        # NEVER leave the module's olean missing/stale: downstream decide/audit
+        # (and dedup's def-eq probe) need it, and a missing olean fails them all
+        # (the regression this guards against). Rebuild to match the final
+        # on-disk content if the last build didn't already.
+        if not olean_ok:
+            lake_build_modules(workspace, [module])
     if text == original:
         return False
     print(f"[staged] normalize-whitespace `{leaf}` — fixed {total_ws} whitespace "

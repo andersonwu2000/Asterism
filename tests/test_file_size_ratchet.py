@@ -161,7 +161,10 @@ _WATERMARKS = {
     # that only fire on a real module build, so the audit agent otherwise burns
     # its 960s budget hand-fixing 100+ `(0:ℝ)`→`(0 : ℝ)` spacings (residue
     # HomotopyIntegral 141+4 → 3 audit timeouts) — 2026-06-20 — conscious bump.
-    "Tooling/quality/librarian/cleanup/mechanical.py": 540,
+    # 540→560: olean-safe restore (try/finally) so a failed detection build never
+    # leaves the module's olean missing (regression that failed downstream
+    # decide/audit) — 2026-06-20 — conscious bump.
+    "Tooling/quality/librarian/cleanup/mechanical.py": 560,
     "Tooling/quality/librarian/cleanup/simplify.py": 200,
 }
 
