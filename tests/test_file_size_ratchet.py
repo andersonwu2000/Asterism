@@ -81,7 +81,12 @@ _WATERMARKS = {
     # Mathlib-first (before Library.*), because Lean instance resolution is
     # import-order-sensitive (ContinuousSMul ℝ ℂ / IsScalarTower ℝ ℝ ℂ fail to
     # synthesize when `import Mathlib` follows a Library sibling) (#42) — 2026-06-21.
-    "Tooling/pipeline/librarian.py": 3810,
+    # 3810→3895: preserve operator-chosen Defs namespaces (`_defs_decl_namespace`
+    # / `_ns_is_operator_specified` + `chunk_ns` per-namespace reassembly) so a
+    # Defs decl authored under `namespace Complex` keeps `Complex.windingNumber`
+    # instead of being relabelled into the Library namespace — Gate B could no
+    # longer re-derive the root statement otherwise (#43) — 2026-06-21.
+    "Tooling/pipeline/librarian.py": 3895,
     # dispatcher 2750→2800 + db 2450→2500: awaiting_human observability
     # (startup + idle-exit log of paused problems) + scope-aware idle exit
     # via db.dispatchable_open_goals — a paused P12 read as a multi-hour

@@ -37,11 +37,14 @@ def test_self_contained_keep_relabels():
     assert "theorem chain_bottoms_li (M : Nat) : True := by\n  trivial" in r.text
 
 
-def test_self_namespace_qualified_ref_stripped():
+def test_self_namespace_qualified_ref_preserved():
     # residue_thm declares `windingNumber` under `namespace Complex`, so proofs
-    # cite `Complex.windingNumber`. After migration the decl lives in TNS, so
-    # the qualified self-ref must drop to the bare name — while a real
-    # `Complex.exp` (not a problem symbol) is left untouched.
+    # cite `Complex.windingNumber`. That operator namespace is PRESERVED on
+    # migration (the decl keeps its `Complex.windingNumber` qualified name in its
+    # own namespace block, see librarian `chunk_ns`), so a consumer's qualified
+    # reference is KEPT — dropping it to a bare name would resolve in the wrong
+    # (Library file) namespace and break Gate B re-derivation. A real
+    # `Complex.exp` is likewise untouched.
     src = (
         "import Mathlib\n"
         f"namespace {PNS}\n"
@@ -56,15 +59,15 @@ def test_self_namespace_qualified_ref_stripped():
         all_defs_syms={"windingNumber"}, local_defs={"windingNumber"},
         self_namespaces={"Complex"})
     assert r.ok, r.reason
-    assert "Complex.windingNumber" not in r.text     # stripped to bare
-    assert "windingNumber z" in r.text
+    assert "Complex.windingNumber z" in r.text       # preserved (qualified)
     assert "Complex.exp z" in r.text                 # real Mathlib ref untouched
 
 
-def test_self_namespace_strip_gated_on_declared_set():
-    # Regression guard: without self_namespaces, a Complex.* self-ref is NOT
-    # stripped — the strip fires only for namespaces the problem declared decls
-    # under, so it can never capture an arbitrary Mathlib reference.
+def test_foreign_namespace_ref_never_stripped():
+    # Regression guard: a foreign-namespace self-ref (`Complex.*`) is never
+    # dropped to a bare name — whether or not the namespace is passed in
+    # `self_namespaces`. Stripping only ever applies to the problem's own
+    # `Problems.<p>` scaffolding, so a Mathlib reference can never be captured.
     src = (
         "import Mathlib\n"
         f"namespace {PNS}\n"
@@ -77,7 +80,7 @@ def test_self_namespace_strip_gated_on_declared_set():
         src, problem_namespace=PNS, target_namespace=TNS,
         all_defs_syms={"windingNumber"}, local_defs={"windingNumber"})
     assert r.ok, r.reason
-    assert "Complex.windingNumber" in r.text         # not stripped (no self_ns)
+    assert "Complex.windingNumber" in r.text         # never stripped
 
 
 def test_alias_declines():

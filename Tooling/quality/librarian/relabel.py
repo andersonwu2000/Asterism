@@ -416,16 +416,22 @@ def relabel_self_contained(
     # untouched so the residual check below still catches it cheaply; a
     # `Problems.<other>.…` cross-problem ref is likewise left and caught.
     _known_bare = (keep_slugs or set()) | set(detect_syms)
-    # Strip qualified self-references for the problem namespace AND any FOREIGN
-    # namespace the problem declared its own decls under (`self_namespaces`):
-    # residue_thm puts `windingNumber`/`residue` under `namespace Complex`, so
-    # proofs cite `Complex.windingNumber`; after migration that decl lives in
-    # the target namespace, so the qualified ref must drop to the bare name
-    # (which resolves co-located, or via the Defs import+open added above).
+    # Strip qualified self-references for the problem's SCAFFOLDING namespace
+    # only (`Problems.<p>`): a proof citing `Problems.<p>.foo` drops to bare
+    # `foo`, which resolves co-located (or via the sibling import+open above)
+    # after the namespace is relabelled to the Library module.
+    #
+    # A FOREIGN namespace the operator authored decls under (`self_namespaces`,
+    # e.g. residue_thm's `namespace Complex`) is NOT stripped: that namespace is
+    # PRESERVED on migration (the decl keeps its `Complex.windingNumber`
+    # qualified name and lands in its own `namespace Complex` block — see
+    # librarian `chunk_ns`), so consumers must keep citing it qualified. The
+    # qualified ref resolves via the def's module import added above; dropping
+    # to the bare name would instead look in the wrong (Library file) namespace.
     # Only `\w+` tails that are KNOWN problem symbols are rewritten — a real
-    # `Complex.exp` (exp ∉ known) is left untouched, so this can't capture a
-    # genuine Mathlib reference under the same namespace.
-    for _ns in [problem_namespace, *sorted(self_namespaces or set())]:
+    # `Problems.<p>.exp` (exp ∉ known) is left untouched, so this can't capture
+    # an unrelated reference.
+    for _ns in [problem_namespace]:
         text = re.sub(
             rf"{re.escape(_ns)}\.(\w+)",
             lambda m: m.group(1) if m.group(1) in _known_bare else m.group(0),

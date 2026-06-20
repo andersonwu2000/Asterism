@@ -44,6 +44,21 @@ def _write_proof(workspace, slug, body):
     (pdir / f"L_{slug}.lean").write_text(body, encoding="utf-8")
 
 
+def _write_defs(workspace, body):
+    pdir = workspace / "Problems" / "p"
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "Defs.lean").write_text(body, encoding="utf-8")
+
+
+def _seed_defs_classified(conn, slug, target_file, order):
+    """Classify a Defs.lean decl (no source goal) into a target file."""
+    db.upsert_library_decl(conn, problem="p", slug=slug, source_goal_id=None)
+    db.set_library_verdict(conn, problem="p", slug=slug, verdict="keep")
+    db.set_library_classification(conn, problem="p", slug=slug,
+                                  target_file=target_file, target_name=None,
+                                  file_order=order)
+
+
 def test_mechanical_assembles_self_contained_file(conn, tmp_path):
     tf = "Library/P/Foo.lean"
     _seed_classified(conn, "lem_a", "True", tf, 0)
@@ -469,6 +484,84 @@ def test_reassemble_roundtrip_and_override():
     assert "theorem a : True := trivial" in merged
     assert (merged.index("theorem a") < merged.index("theorem b")
             < merged.index("theorem c"))
+
+
+# --- operator-namespace preservation for Defs decls (Gate B self-sufficiency) ---
+
+def test_defs_decl_namespace_and_operator_specified():
+    defs = ("import Mathlib\n\nnamespace Complex\n\n"
+            "open Classical in\nnoncomputable def windingNumber (g : Nat) "
+            ": Nat := 0\n\nnoncomputable def residue (f : Nat) : Nat := 0\n\n"
+            "end Complex\n")
+    assert lib._defs_decl_namespace(defs, "windingNumber") == "Complex"
+    assert lib._defs_decl_namespace(defs, "residue") == "Complex"
+    assert lib._defs_decl_namespace(defs, "absent") is None
+    # top-level decl (no namespace) → None
+    assert lib._defs_decl_namespace("def foo : Nat := 0\n", "foo") is None
+    # operator namespace preserved; scaffolding / none are not
+    assert lib._ns_is_operator_specified("Complex", "p") is True
+    assert lib._ns_is_operator_specified("Problems.p", "p") is False
+    assert lib._ns_is_operator_specified("Problems.q.sub", "p") is False
+    assert lib._ns_is_operator_specified(None, "p") is False
+
+
+def test_reassemble_preserves_foreign_namespace_block():
+    """A Defs decl tagged with an operator namespace emits in its OWN namespace
+    block (keeping its qualified name); other decls stay in target_module. The
+    qualified name is what Gate B re-derivation needs."""
+    asm = lib._MechAssembly(
+        header="import Mathlib",
+        target_module="Library.P.Foo",
+        slugs=["windingNumber", "lem_a"],
+        chunks={"windingNumber": "noncomputable def windingNumber : Nat := 0",
+                "lem_a": "theorem lem_a : True := trivial"},
+        chunk_ns={"windingNumber": "Complex"})
+    text = lib._reassemble(asm)
+    assert "namespace Complex" in text and "end Complex" in text
+    assert "namespace Library.P.Foo" in text
+    # foreign block comes first (a def precedes its users); fq names follow it
+    fqs = [d.fq_name for d in lib.extract_decls(text)]
+    assert fqs == ["Complex.windingNumber", "Library.P.Foo.lem_a"]
+
+
+def test_migrate_preserves_operator_namespace_for_defs(conn, tmp_path):
+    """End-to-end mechanical migrate: a Defs decl under `namespace Complex` is
+    preserved as `Complex.windingNumber` (own block), and a consumer keeps the
+    QUALIFIED reference (not stripped to a bare name that would resolve in the
+    wrong namespace). Mirrors residue_thm's windingNumber/residue."""
+    tf = "Library/P/Foo.lean"
+    _write_defs(tmp_path,
+                "import Mathlib\n\nnamespace Complex\n\n"
+                "noncomputable def windingNumber (g : Nat) : Nat := 0\n\n"
+                "end Complex\n")
+    _seed_defs_classified(conn, "windingNumber", tf, 0)
+    _seed_classified(conn, "uses_wn", "True", tf, 1)
+    _write_proof(tmp_path, "uses_wn",
+                 "import Mathlib\n"
+                 f"import {PNS}.Defs\n"
+                 f"namespace {PNS}\n"
+                 "theorem uses_wn (h : Complex.windingNumber 0 = 0) : True "
+                 ":= by trivial\n"
+                 f"end {PNS}\n")
+    rows = sorted(
+        (r for r in db.library_decls_for(conn, "p")
+         if r["target_file"] == tf and r["lifecycle"] == "classified"),
+        key=lambda r: r["file_order"])
+    text, holes, asm = lib._mechanical_migrate_file(
+        conn, problem="p", workspace=tmp_path, target_file=tf,
+        target_module="Library.P.Foo", rows=rows)
+    assert text is not None and holes == []
+    # the def keeps its operator namespace (its own block)
+    assert "namespace Complex" in text
+    assert asm.chunk_ns.get("windingNumber") == "Complex"
+    # the consumer KEEPS the qualified reference (no strip to bare windingNumber)
+    assert "Complex.windingNumber" in text
+    # no scaffolding namespace leaks into the Library
+    assert "Problems." not in text
+    # fq names: def under Complex, lemma under the Library module
+    fqs = {d.fq_name for d in lib.extract_decls(text)}
+    assert "Complex.windingNumber" in fqs
+    assert "Library.P.Foo.uses_wn" in fqs
 
 
 # --- incremental per-decl migrate: extraction + orchestration (#87) ---

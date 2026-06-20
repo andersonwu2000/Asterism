@@ -2218,26 +2218,55 @@ class _MechAssembly(NamedTuple):
     fills can swap a single decl's chunk and reassemble WITHOUT re-parsing
     Lean decl boundaries (the chunks are already split per decl). `chunks`
     maps slug → that decl's namespace-body text; `slugs` is the emission order;
-    `header` is the hoisted imports (+ opens) block."""
+    `header` is the hoisted imports (+ opens) block. `chunk_ns` maps slug → the
+    namespace block it must be emitted under (default `target_module`); a Defs
+    decl the operator authored under an explicit namespace (e.g. `Complex`)
+    keeps THAT namespace, so it lands in its own `namespace Complex` block
+    rather than the file's Library namespace (see `_defs_decl_namespace`)."""
     header: str
     target_module: str
     slugs: list
     chunks: dict
+    chunk_ns: "dict | None" = None
 
 
 def _reassemble(asm: "_MechAssembly", overrides: "dict | None" = None) -> str:
     """Rebuild the whole-file text from an assembly, optionally replacing some
     slugs' chunks (per-hole fills). `_reassemble(asm)` reproduces the original
     mechanical text exactly — the migrate text and the merge path share this
-    one formatter so they can never drift."""
+    one formatter so they can never drift.
+
+    Chunks emit in `asm.slugs` order, grouped into `namespace … end` blocks by
+    each chunk's namespace (`asm.chunk_ns`, default `target_module`). Almost
+    every chunk uses `target_module` → one block, byte-identical to the old
+    single-namespace format. A Defs decl the operator authored under an
+    explicit namespace (e.g. `Complex`) carries that namespace, so consecutive
+    such chunks form their own `namespace Complex` block — preserving the
+    qualified name the root statement cites. Grouping is run-based (consecutive
+    same-namespace chunks share a block) so the topological emission order is
+    never reordered (a def must precede its users)."""
     chunks = dict(asm.chunks)
     if overrides:
         chunks.update(overrides)
-    body = "\n\n".join(chunks[s] for s in asm.slugs)
-    return (asm.header
-            + f"\n\nnamespace {asm.target_module}\n\n"
-            + body
-            + f"\n\nend {asm.target_module}\n")
+    chunk_ns = asm.chunk_ns or {}
+    parts: list[str] = []
+    run: list[str] = []
+    run_ns: "str | None" = None
+
+    def _flush() -> None:
+        if run:
+            parts.append(f"namespace {run_ns}\n\n" + "\n\n".join(run)
+                         + f"\n\nend {run_ns}")
+
+    for s in asm.slugs:
+        ns = chunk_ns.get(s) or asm.target_module
+        if ns != run_ns:
+            _flush()
+            run.clear()
+            run_ns = ns
+        run.append(chunks[s])
+    _flush()
+    return asm.header + "\n\n" + "\n\n".join(parts) + "\n"
 
 
 def _extract_single_decl(text: str, target_module: str) -> "tuple[str, list]":
@@ -2483,6 +2512,49 @@ def _defs_decl_source(defs_text: str, name: str) -> "str | None":
     return None
 
 
+def _defs_decl_namespace(defs_text: str, name: str) -> "str | None":
+    """The dotted namespace a Defs.lean decl `name` is declared under, or None
+    if it sits at file top level.
+
+    An operator who authors a Defs decl under an explicit namespace (e.g.
+    residue_thm puts `windingNumber`/`residue` under `namespace Complex`) makes
+    that namespace LOAD-BEARING: the root statement cites the decl by the
+    qualified name `Complex.windingNumber`, so the migrated Library copy must
+    keep the SAME qualified name or Gate B can no longer re-derive the original
+    statement. This tells the migrate which namespace to preserve. The
+    framework's own scaffolding namespace (`Problems.<p>`) is NOT operator-
+    specified and is relabelled to the Library namespace as usual — preserving
+    it would leak `Problems.<p>` into the (must-be-self-sufficient) Library."""
+    from ..quality.librarian.inventory import _DEFS_DECL_RE
+    decl_pos = None
+    for m in _DEFS_DECL_RE.finditer(defs_text):
+        if m.group(2) == name:
+            decl_pos = m.start()
+            break
+    if decl_pos is None:
+        return None
+    stack: list[str] = []
+    for line in defs_text[:decl_pos].splitlines():
+        mn = _NS_RE.match(line)
+        if mn:
+            stack.append(mn.group(1))
+            continue
+        me = _END_RE.match(line)
+        if me and stack and stack[-1] == me.group(1):
+            stack.pop()
+    return ".".join(stack) if stack else None
+
+
+def _ns_is_operator_specified(ns: "str | None", problem: str) -> bool:
+    """True iff `ns` is an explicit operator-chosen namespace whose decls must
+    be PRESERVED on migration (vs the framework's `Problems.<p>` scaffolding,
+    which is relabelled to the Library namespace). Self-sufficiency rule: the
+    Library never references `Problems.<p>`, so only non-scaffolding namespaces
+    are preserved."""
+    return bool(ns) and ns != f"Problems.{problem}" \
+        and not ns.startswith("Problems.")
+
+
 def _mechanical_migrate_file(
     conn, *, problem, workspace, target_file, target_module, rows,
 ) -> "tuple[str | None, list[str], _MechAssembly | None]":
@@ -2599,10 +2671,15 @@ def _mechanical_migrate_file(
 
     # Foreign namespaces the problem declares its OWN decls under — e.g.
     # residue_thm puts `windingNumber`/`residue` under `namespace Complex`, so
-    # proofs cite `Complex.windingNumber`. After migration that decl lives in
-    # the target namespace, so relabel must strip the `Complex.` prefix to the
-    # bare migrated name. (`Problems.<p>` is the standard self-namespace and is
-    # handled separately by relabel.)
+    # the root statement cites `Complex.windingNumber`. Such an operator-chosen
+    # namespace is LOAD-BEARING and is PRESERVED on migration: the decl keeps
+    # its `Complex.…` qualified name (its chunk lands in its own `namespace
+    # Complex` block, see `chunk_ns` below) so Gate B can still re-derive the
+    # original statement, and the name stays mathlib-idiomatic. Only the
+    # framework's `Problems.<p>` scaffolding is relabelled to the Library
+    # namespace (it must never leak into the self-sufficient Library). Retained
+    # as a relabel arg for API parity; the preserve decision is per-decl via
+    # `_defs_decl_namespace` + `_ns_is_operator_specified`.
     self_namespaces = {
         m.group(1) for m in re.finditer(
             r"(?m)^namespace\s+([\w.]+)\s*$", defs_text)
@@ -2624,6 +2701,10 @@ def _mechanical_migrate_file(
             import_set.add(ln.strip())
     open_set: set[str] = set()
     chunk_by_slug: dict[str, str] = {}
+    # slug → namespace block it must emit under. Populated only for Defs decls
+    # the operator authored under an explicit (non-scaffolding) namespace, which
+    # is preserved; every other slug defaults to `target_module` in _reassemble.
+    chunk_ns_map: dict[str, str] = {}
     holes: list[str] = []
     for r in rows:
         slug = r["slug"]
@@ -2642,6 +2723,14 @@ def _mechanical_migrate_file(
             if defs_slice is None:
                 raise _MechIntegrityError(
                     f"Defs decl `{slug}` not found in Defs.lean")
+            # An operator-chosen namespace (e.g. `Complex`) is preserved: emit
+            # this decl under its own namespace block so it keeps its qualified
+            # name. The chunk body is namespace-agnostic (relabel still wraps it
+            # in target_module, which the chunk-split strips), so we only need to
+            # tag the destination block.
+            _enc_ns = _defs_decl_namespace(defs_text, slug)
+            if _ns_is_operator_specified(_enc_ns, problem):
+                chunk_ns_map[slug] = _enc_ns
             # Preserve Defs.lean's import/open header so any notation the
             # decl relies on still resolves after migration (relabel drops
             # the Problems imports as usual); ensure the Mathlib umbrella.
@@ -2789,7 +2878,8 @@ def _mechanical_migrate_file(
     if open_set:
         header += "\n\n" + "\n".join(sorted(open_set))
     asm = _MechAssembly(header=header, target_module=target_module,
-                        slugs=[r["slug"] for r in rows], chunks=chunk_by_slug)
+                        slugs=[r["slug"] for r in rows], chunks=chunk_by_slug,
+                        chunk_ns=chunk_ns_map)
     return _reassemble(asm), holes, asm
 
 
