@@ -5,6 +5,10 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-19
+- Expanded the automated cleanup of finished proofs, adding a pass that renames unused hypotheses with a leading underscore and moving the validation checks into an already-loaded Lean environment for speed, though the type-checking check was rolled back after it caused repeated spurious rework.
+- Added a way to categorize the feedback returned during proof attempts alongside a separate diagnostic channel, and fixed a model reasoning-budget setting that had fallen below the API's minimum.
+
 ### 2026-06-18
 - Reorganized the generated lemma library to group files by their dependency graph rather than by how problems were split, with sturdier retries and size limits that account for merged mutually-recursive groups.
 - Switched proof generation and library cleanup to edit files incrementally through the Lean language server instead of regenerating them whole, behind a single shared routine.
@@ -150,12 +154,6 @@
 - Completed a formal, machine-checked proof of the Cauchy Residue Theorem.
 - Made the automated prover more robust to crashes and interrupted runs, recovering stalled goals and cleaning up abandoned proof attempts.
 - Improved how the system tracks dependencies between goals by following the actual Lean import structure rather than just its own internal records.
-
-### 2026-05-20
-- Rebuilt the planning component to issue several decisions in a single step, with consistency checks across them and an automatic retry when a decision fails verification.
-- Tightened the rules for when the planner may set a problem aside, including a principle that a goal being hard is not by itself grounds to abandon it.
-- Improved automatic cleanup of the goal tree when a branch becomes unreachable, sweeping abandoned sibling goals and dead ancestors and skipping redundant review of dead chains.
-- Stopped accepting partial proofs that depend on sibling subgoals which are themselves still unproved.
 
 <!-- ASTERISM-PROGRESS:END -->
 
