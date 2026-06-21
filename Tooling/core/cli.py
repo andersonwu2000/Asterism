@@ -1357,6 +1357,30 @@ def cmd_library_verify(args: argparse.Namespace) -> int:
     return 0 if fails == 0 else 1
 
 
+def cmd_drift_check(args: argparse.Namespace) -> int:
+    """DB<->file consistency gate (`proof_store.inventory`) — the single oracle
+    for the drift class the proof_store chokepoint prevents: orphan proof files
+    (no DB row), missing files (a goal past 'open' whose file is gone), and
+    proved-with-sorry (a `status='proved'` goal whose file carries a `sorry`).
+    Exit 0 if consistent, 1 on any drift. `--scope` limits to a problem (LIKE)."""
+    from ..state import proof_store
+    workspace = Path.cwd()
+    conn = db.connect()
+    try:
+        rep = proof_store.inventory(
+            conn, workspace, scope=getattr(args, "scope", None))
+    finally:
+        conn.close()
+    for rel in rep.orphan_files:
+        print(f"  [FAIL] orphan proof file (no DB row): {rel}")
+    for rel in rep.missing_files:
+        print(f"  [FAIL] missing proof file (row past 'open'): {rel}")
+    for rel in rep.proved_with_sorry:
+        print(f"  [FAIL] proved goal's file carries `sorry`: {rel}")
+    print(f"  [{'  OK' if rep.ok() else 'FAIL'}] {rep.summary()}")
+    return 0 if rep.ok() else 1
+
+
 def cmd_logs(args: argparse.Namespace) -> int:
     """List / tail framework run logs from `.asterism/logs/`.
     Default: list with sizes, mtime, sorted newest first.
@@ -1565,6 +1589,14 @@ def main(argv: list[str] | None = None) -> int:
         "--build-timeout", type=int, default=1800, metavar="SEC",
         help="timeout (seconds) for `lake build Library` (default 1800)")
     p_libverify.set_defaults(func=cmd_library_verify)
+
+    p_drift = sub.add_parser(
+        "drift-check",
+        help="DB<->file consistency gate (orphan / missing / proved-with-sorry)")
+    p_drift.add_argument(
+        "--scope", type=str, default=None, metavar="PROBLEM",
+        help="limit to a problem (LIKE pattern), e.g. residue_thm")
+    p_drift.set_defaults(func=cmd_drift_check)
 
     p_prune = sub.add_parser(
         "prune",
