@@ -120,6 +120,13 @@ def _nominal_decl_src(text: str, slug: str) -> "str | None":
         r"(?:noncomputable\s+|private\s+|protected\s+|scoped\s+)*"
         r"(?:def|abbrev|theorem|lemma|structure|class|inductive|instance)"
         r"\s+[A-Za-z_]"
+        # A scoped `open X in` line introduces the NEXT decl (it is that decl's
+        # prefix), so it bounds the current slice — else `_nominal_decl_src`
+        # over-captures the trailing `open … in` of the following declaration
+        # (residue_thm's `windingNumber` is followed by `open Classical in` +
+        # `residue`), making the verbatim guard's source comparison spuriously
+        # unequal to the migrated copy (which has a different next decl).
+        r"|^open\b[^\n]*\bin\b[ \t]*$"
         r"|^variable\b|^section\b|^end\b", rest[1:])
     return rest[:nxt.start() + 1] if nxt else rest
 

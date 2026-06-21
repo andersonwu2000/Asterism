@@ -103,6 +103,24 @@ def migrate_defeq_gate(
             defs_fq = _defs_decl_fqn(defs_text, target_slug, problem=problem)
         except OSError:
             pass
+    # #43 namespace-preserved Defs decl: a decl the operator authored under a
+    # foreign namespace (e.g. `Complex.windingNumber`) keeps that SAME
+    # fully-qualified name in the Library, so `defs_fq == target_fq`. The
+    # cross-module defeq probe below imports BOTH `Problems.<p>.Defs` and the
+    # Library module — both now define `Complex.windingNumber`, so the probe
+    # dies with "environment already contains 'Complex.windingNumber'". It is
+    # also unnecessary: the migrated copy is the byte-identical original (#43
+    # preserves it verbatim), so verify by SOURCE equality instead — no dual
+    # import, no collision. (relabelled Defs decls keep `defs_fq != target_fq`,
+    # so they still take the defeq path below.)
+    if defs_fq == target_fq:
+        if workspace is not None and _verbatim_nominal_ok(
+                patch_text, problem=problem, target_slug=target_slug,
+                target_module=target_module, workspace=workspace):
+            return MigrateResult(True, "")
+        return MigrateResult(
+            False, f"Gate D: namespace-preserved Defs decl `{target_slug}` "
+                   f"({defs_fq}) is not verbatim-equal to its Defs source")
     res = gates.check_def_equivalence(
         defs_fq, target_fq,
         imports=[f"Problems.{problem}.Defs", target_module],

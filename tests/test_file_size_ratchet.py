@@ -95,7 +95,12 @@ _WATERMARKS = {
     "Tooling/pipeline/librarian/astslice.py": 400,
     "Tooling/pipeline/librarian/classify.py": 545,
     "Tooling/pipeline/librarian/schedule.py": 235,
-    "Tooling/pipeline/librarian/gate.py": 345,
+    # 345→360: Gate D namespace-preserved-Defs branch — a #43-preserved Defs
+    # decl (`Complex.windingNumber`, same FQN in problem Defs + Library copy)
+    # verifies by source equality, NOT the cross-module defeq probe that would
+    # import both and die on "environment already contains" (residue migrate
+    # STALL) — 2026-06-21.
+    "Tooling/pipeline/librarian/gate.py": 360,
     "Tooling/pipeline/librarian/context.py": 430,
     "Tooling/pipeline/librarian/execute.py": 1150,
     "Tooling/pipeline/librarian/bridge.py": 345,

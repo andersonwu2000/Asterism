@@ -113,6 +113,28 @@ def test_defeq_gate_nominal_inductive_declines():
     assert "inductive" in r.detail
 
 
+def test_defeq_gate_preserved_namespace_defs_uses_source_equality(tmp_path):
+    # #43: a Defs decl the operator authored under a foreign namespace
+    # (`Complex.windingNumber`) keeps that FQN in the Library, so
+    # defs_fq == target_fq. The cross-module defeq probe would import BOTH the
+    # problem Defs and the Library copy → "environment already contains
+    # 'Complex.windingNumber'" (the residue migrate STALL). Gate D must verify
+    # by verbatim SOURCE equality instead — the injected defeq verifier must
+    # NEVER run (proving the dual-import probe is skipped).
+    from Tooling.state import db as _db
+    decl = "noncomputable def windingNumber (n : Nat) : Nat :=\n  0"
+    body = f"import Mathlib\n\nnamespace Complex\n\n{decl}\n\nend Complex\n"
+    defs = _db.problem_dir(tmp_path, "residue_thm") / "Defs.lean"
+    defs.parent.mkdir(parents=True, exist_ok=True)
+    defs.write_text(body, encoding="utf-8")
+    r = lib.migrate_defeq_gate(
+        body, problem="residue_thm", target_slug="windingNumber",
+        defs_decls=["windingNumber"],
+        target_module="Library.Analysis.ResidueThm.CircleIntegral",
+        workspace=tmp_path, defeq_verifier=_never)
+    assert r.ok, r.detail            # source-equal → passes without the probe
+
+
 def test_defeq_gate_unextractable_name_fails():
     """A Defs decl whose patch has no parseable declaration name is
     rejected, not silently passed."""
