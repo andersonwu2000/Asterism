@@ -104,8 +104,8 @@ CREATE TABLE IF NOT EXISTS problems (
     created_at     TEXT NOT NULL,
     -- Phase 2 — Strategist first-launch tracking.
     -- `bootstrap_done=0` → T0 trigger fires on next dispatcher tick.
-    -- Set to 1 by Strategist's first commit (InitializeDefs / EmitDirective /
-    -- Noop) so subsequent ticks fall through to T1 (wall-clock routine).
+    -- Set to 1 by Strategist's first commit (EmitDirective / Inject / Noop)
+    -- so subsequent ticks fall through to T1 (wall-clock routine).
     bootstrap_done INTEGER NOT NULL DEFAULT 0
                     CHECK(bootstrap_done IN (0,1)),
     -- Phase 2 — standing directive set by Strategist EmitDirective /
@@ -339,6 +339,10 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
                                   ('first_launch','pending_review','routine',
                                    'inject_batch_done')),
     decision_kind       TEXT NOT NULL
+                            -- 'Reopen'/'InitializeDefs': LEGACY, never emitted now
+                            -- (see strategist.DECISION_KINDS); retained so pre-
+                            -- 2026-05-28 rows stay valid — dropping needs a table
+                            -- rebuild (16 'Reopen' rows would violate), low ROI.
                             CHECK(decision_kind IN
                                   ('Inject','ConfirmShelve','Reopen',
                                    'EmitDirective','InitializeDefs',
@@ -1307,6 +1311,9 @@ def _migrate_to_phase3(conn: sqlite3.Connection) -> None:
                                               ('first_launch','pending_review',
                                                'routine','inject_batch_done')),
                 decision_kind       TEXT NOT NULL
+                                        -- 'Reopen'/'InitializeDefs': LEGACY, never
+                                        -- emitted now (see strategist.DECISION_KINDS);
+                                        -- kept so pre-2026-05-28 rows stay valid.
                                         CHECK(decision_kind IN
                                               ('Inject','ConfirmShelve','Reopen',
                                                'EmitDirective','InitializeDefs',
