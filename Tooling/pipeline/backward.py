@@ -41,7 +41,7 @@ from pathlib import Path
 
 from .. import agent
 from ..agent import context
-from ..state import db, manifest
+from ..state import db, manifest, proof_store
 from ..quality import dedupe, diagnostics
 from . import _axiom
 from ._cite_gate import _PROBLEM_IMPORT_RE, _resolve_cite_dependencies
@@ -884,7 +884,15 @@ def _backward_parse_and_commit(
         proofs_dir = db.problem_dir(workspace, goal["problem"]) / "proofs"
         proofs_dir.mkdir(parents=True, exist_ok=True)
         scratch_dest = proofs_dir / f"_strategy_{sid_token}.lean"
-        shutil.copy2(patches[0], scratch_dest)
+
+        def _rm_scratch() -> None:
+            proof_store.remove_proof(
+                conn, workspace,
+                rel_path=scratch_dest.relative_to(workspace).as_posix(),
+                owner_goal_id=None)
+
+        proof_store.atomic_write(
+            scratch_dest, patches[0].read_text(encoding="utf-8"))
         # Verify-unification: gateway worker pool elaborates the
         # strategy file AND writes its olean to disk in one round trip.
         # The olean is needed downstream by `verify_strategy`, which
@@ -914,7 +922,7 @@ def _backward_parse_and_commit(
             axioms_for=fq_name, workspace=workspace,
         )
         if "error" in v:
-            scratch_dest.unlink(missing_ok=True)
+            _rm_scratch()
             return _abort(
                 "lake_build_error",
                 diagnostics.annotate_failure_detail(
@@ -928,7 +936,7 @@ def _backward_parse_and_commit(
                 for d in (v.get("diagnostics") or [])
                 if d.get("severity") == "error"
             )
-            scratch_dest.unlink(missing_ok=True)
+            _rm_scratch()
             return _abort(
                 "lake_build_error",
                 diagnostics.annotate_failure_detail(
@@ -941,7 +949,7 @@ def _backward_parse_and_commit(
         # Reject before promoting the scratch (P13 root sorryAx came in
         # via exactly this: a leaf citing an orphan stub).
         if "sorryAx" in (v.get("axioms") or []):
-            scratch_dest.unlink(missing_ok=True)
+            _rm_scratch()
             return _abort(
                 "axiom_violation",
                 "leaf-bypass proof term depends on sorryAx — a transitive "
@@ -951,7 +959,7 @@ def _backward_parse_and_commit(
             )
         if mfst.axioms_whitelist:
             if v.get("axiom_error"):
-                scratch_dest.unlink(missing_ok=True)
+                _rm_scratch()
                 return _abort(
                     "axiom_violation",
                     f"leaf-bypass axiom probe error: {v['axiom_error']}",
@@ -960,7 +968,7 @@ def _backward_parse_and_commit(
             used = set(v.get("axioms") or [])
             rogue = used - set(mfst.axioms_whitelist)
             if rogue:
-                scratch_dest.unlink(missing_ok=True)
+                _rm_scratch()
                 return _abort(
                     "axiom_violation",
                     f"leaf-bypass rogue axioms: {sorted(rogue)}",
@@ -969,7 +977,7 @@ def _backward_parse_and_commit(
         # Race guard mirrors the decomp path's check at line ~666.
         fresh = db.get_goal(conn, goal_id)
         if fresh is None or fresh["status"] not in ("open", "attempting"):
-            scratch_dest.unlink(missing_ok=True)
+            _rm_scratch()
             current = fresh["status"] if fresh else "missing"
             return _abort(
                 "goal_no_longer_open",
@@ -1313,7 +1321,37 @@ def _backward_parse_and_commit(
     sub_dests = [(slug, proofs_dir / f"L_{slug}.lean") for slug, _ in sub_meta]
 
     placed: list[Path] = []
+    inserts_began = False
+
+    def _discard_placed() -> None:
+        """Remove the proof files we placed, via the ownership-guarded
+        `proof_store` (so a file owned by ANOTHER goal is never deleted). Valid
+        only BEFORE the INSERT loop — afterwards the rows are committed and
+        files+rows are consistent, so we must NOT unlink (that would create the
+        row-without-file drift)."""
+        for p in placed:
+            try:
+                proof_store.remove_proof(
+                    conn, workspace,
+                    rel_path=p.relative_to(workspace).as_posix(),
+                    owner_goal_id=None)
+            except Exception:  # noqa: BLE001 — best-effort cleanup
+                pass
+
     try:
+        # Ownership guard (structural clobber prevention): every sub-goal dest
+        # must be free — owned by NO existing goal. A slug collision that
+        # `_resolve_slug_collisions` missed (cross-batch / re-decomposition,
+        # backlog #84) would otherwise overwrite a live committed stub here and
+        # the failure-cleanup `unlink` would delete it → orphan (DB↔file drift).
+        # Refuse BEFORE any write so the clobber-then-orphan window cannot open.
+        for _slug, _dest in sub_dests:
+            try:
+                proof_store.assert_writable(
+                    conn, _dest.relative_to(workspace).as_posix(),
+                    owner_goal_id=None)
+            except proof_store.ClobberError as _ce:
+                return _abort("subgoal_slug_collision", str(_ce), leading)
         # Place sub-goal files: alias body for dedupe-hits, original
         # content for novel sub-goals. By this point any disproved-kind
         # and no_progress-kind match has aborted via the early-returns
@@ -1356,7 +1394,7 @@ def _backward_parse_and_commit(
                         canonical_slug=canonical["slug"],
                     )
                     canonical_label = f"goal {canonical_id} ({canonical['slug']})"
-                dest.write_text(alias_content, encoding="utf-8")
+                proof_store.atomic_write(dest, alias_content)
                 # Build-verify the alias before trusting the dedupe probe.
                 # The probe (`_batch_provable_via_apply`) elaborates the
                 # candidate in a `dedupe_check` namespace WITHOUT the
@@ -1394,22 +1432,23 @@ def _backward_parse_and_commit(
                           f"novel sub-goal",
                           flush=True)
                     canonical_for[idx] = None
-                    dest.write_text(_novel_content(raw), encoding="utf-8")
+                    proof_store.atomic_write(dest, _novel_content(raw))
             else:
-                dest.write_text(_novel_content(raw), encoding="utf-8")
+                proof_store.atomic_write(dest, _novel_content(raw))
             placed.append(dest)
-        shutil.copy2(patches[0], scratch_dest)
+        proof_store.atomic_write(
+            scratch_dest, patches[0].read_text(encoding="utf-8"))
         # Inject Defs.lean opens into the strategy patch as well — the
         # patch carries the strategy body (which may reference `π` /
         # `Real.sin` etc. via Defs's shared notation) and must replay
         # opens for the same reason every other agent-authored file
         # does. See state/manifest.py:inject_defs_opens docstring.
-        scratch_dest.write_text(
+        proof_store.atomic_write(
+            scratch_dest,
             manifest.inject_defs_opens(
                 scratch_dest.read_text(encoding="utf-8"),
                 problem=goal["problem"], workspace=workspace,
             ),
-            encoding="utf-8",
         )
         placed.append(scratch_dest)
 
@@ -1418,11 +1457,10 @@ def _backward_parse_and_commit(
         # The citation gate below then auto-links / revives the twin and
         # the strategy waits for it.
         if reuse_rewrites:
-            scratch_dest.write_text(
+            proof_store.atomic_write(
+                scratch_dest,
                 _apply_reuse_rewrites(
-                    scratch_dest.read_text(encoding="utf-8"), reuse_rewrites),
-                encoding="utf-8",
-            )
+                    scratch_dest.read_text(encoding="utf-8"), reuse_rewrites))
 
         # Auto-inject `import` lines for sub-goal modules into the
         # strategy patch. Agents reliably forget at least one;
@@ -1450,12 +1488,7 @@ def _backward_parse_and_commit(
             workspace=workspace,
         )
         if cite_err:
-            for p in placed:
-                try:
-                    if p.exists():
-                        p.unlink()
-                except OSError:
-                    pass
+            _discard_placed()
             return _abort("cite_unproved_sibling", cite_err, leading)
 
         # Assembly gate — strategy body must contain no `sorry` placeholder.
@@ -1470,12 +1503,7 @@ def _backward_parse_and_commit(
         from ._assembly import assembly_gate_check_sorry
         ok, msg = assembly_gate_check_sorry(scratch_dest)
         if not ok:
-            for p in placed:
-                try:
-                    if p.exists():
-                        p.unlink()
-                except OSError:
-                    pass
+            _discard_placed()
             return _abort("patch_body_contains_sorry", msg, leading)
 
         # Verify-unification: sequential per-file verify through the
@@ -1515,12 +1543,7 @@ def _backward_parse_and_commit(
         # sub-goal rows from ever reaching the DB.
         fresh = db.get_goal(conn, goal_id)
         if fresh is None or fresh["status"] not in ("open", "attempting"):
-            for p in placed:
-                try:
-                    if p.exists():
-                        p.unlink()
-                except OSError:
-                    pass
+            _discard_placed()
             current = fresh["status"] if fresh else "missing"
             return _abort(
                 "goal_no_longer_open",
@@ -1536,6 +1559,9 @@ def _backward_parse_and_commit(
         # spares a redundant Backward/Builder spawn that would just
         # `promote_to_alias` over the same content.
         linked_ids: list[int] = []
+        inserts_began = True            # rows now auto-commit per insert_goal;
+        #                                from here a failure must NOT unlink the
+        #                                placed files (would orphan the rows).
         for (slug, dest), match in zip(sub_dests, canonical_for):
             stmt = _extract_statement_from_lean(dest)
             rel = dest.relative_to(workspace).as_posix()
@@ -1548,7 +1574,7 @@ def _backward_parse_and_commit(
             # don't depend on this line.)
             cleaned = _strip_entry_kind(raw)
             if cleaned != raw:
-                dest.write_text(cleaned, encoding="utf-8")
+                proof_store.atomic_write(dest, cleaned)
             new_gid = db.insert_goal(
                 conn, problem=goal["problem"], slug=slug,
                 lean_path=rel, statement=stmt, origin="backward",
@@ -1623,14 +1649,14 @@ def _backward_parse_and_commit(
         return PipelineResult(outcome="success", proposal_md=leading)
 
     except Exception as exc:
-        # Cleanup: remove only this strategy's files (other strategies
-        # untouched). Mark this strategy dead.
-        for p in placed:
-            try:
-                if p.exists():
-                    p.unlink()
-            except OSError:
-                pass
+        # Cleanup: remove only this strategy's placed files (other strategies
+        # untouched), but ONLY if we failed before the INSERT loop began — once
+        # `insert_goal` starts auto-committing rows, the rows reference these
+        # files, so unlinking would create row-without-file drift. A failure
+        # mid-INSERT leaves whatever committed consistent; the rest is an orphan
+        # file the `proof_store.inventory` / recovery sweep reconciles.
+        if not inserts_began:
+            _discard_placed()
         return _abort(
             "lake_build_error",
             diagnostics.annotate_failure_detail(str(exc)),
