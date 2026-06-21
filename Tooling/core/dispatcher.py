@@ -2466,6 +2466,15 @@ def run(workspace: Path, *, once: bool = False,
     import atexit
     atexit.register(lambda: pid_lock.unlink(missing_ok=True))
 
+    # Bind this process + every later spawn (claude / lake / lean / per-spawn
+    # LSP) into a kill-on-close Job Object, so a hard daemon death reaps the
+    # whole tree at the OS level — no manual orphan-cleanup ritual, no broad-kill
+    # footgun (CLAUDE.md rule 8). The reusable LSP gateway breaks away (below) so
+    # it survives. Soft: on failure the orphan-sweep below stays the safety net.
+    from . import process_group
+    if process_group.assign_self_to_kill_on_close_job():
+        print("[daemon] process tree bound to kill-on-close job", flush=True)
+
     global BUILDER_THRESHOLD, SHELVE_THRESHOLD
     pool_size = config.get(
         "dispatch.pool", default=4,

@@ -173,12 +173,20 @@ def start_gateway(workspace: Path,
     gateway_log_fp = open(gateway_log, "ab", buffering=0)
     print(f"[gateway] launching subprocess (port {_gateway_port()}); "
           f"log={gateway_log}", flush=True)
+    # The gateway is reused across daemon restarts (warming Mathlib costs
+    # minutes), so it must OUTLIVE the daemon. When the daemon has bound itself
+    # to a kill-on-close Job Object (`core.process_group`), spawn the gateway
+    # with CREATE_BREAKAWAY_FROM_JOB so it escapes that job; otherwise a daemon
+    # death would drag the gateway down with it. Gated on `should_breakaway()`:
+    # passing the flag when NOT in a breakaway-ok job makes CreateProcess fail.
+    from ..core import process_group
     proc = subprocess.Popen(
         [sys.executable, "-m", "Tooling.lsp.gateway"],
         env=env,
         cwd=str(workspace),
         stdout=gateway_log_fp,
         stderr=subprocess.STDOUT,
+        creationflags=process_group.breakaway_creationflags(),
     )
 
     def _shutdown():
