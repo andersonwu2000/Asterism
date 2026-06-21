@@ -5,6 +5,11 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-20
+- Added automated tidying of code style — normalizing whitespace and blank lines — in the generated proof library, with fixes so that recompiling a file never left its compiled output missing or stale.
+- Strengthened the safety checks that move lemmas between files so they now reject any change that would create a circular dependency among imports.
+- Fixed the per-declaration compilation checks to faithfully reproduce each file's namespace (`open`) context, and protected core definitions from being modified during cleanup.
+
 ### 2026-06-19
 - Expanded the automated cleanup of finished proofs, adding a pass that renames unused hypotheses with a leading underscore and moving the validation checks into an already-loaded Lean environment for speed, though the type-checking check was rolled back after it caused repeated spurious rework.
 - Added a way to categorize the feedback returned during proof attempts alongside a separate diagnostic channel, and fixed a model reasoning-budget setting that had fallen below the API's minimum.
@@ -149,11 +154,6 @@
 - Unified the main proving loop across all kinds of declarations via the Curry-Howard correspondence.
 - Refined how open subgoals are set aside, revived, and de-duplicated, and added parallel batching of proof attempts.
 - Added a command-line tool that scores gaps in Mathlib by dependency depth.
-
-### 2026-05-21
-- Completed a formal, machine-checked proof of the Cauchy Residue Theorem.
-- Made the automated prover more robust to crashes and interrupted runs, recovering stalled goals and cleaning up abandoned proof attempts.
-- Improved how the system tracks dependencies between goals by following the actual Lean import structure rather than just its own internal records.
 
 <!-- ASTERISM-PROGRESS:END -->
 
