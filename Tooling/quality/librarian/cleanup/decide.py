@@ -19,10 +19,14 @@ from ._common import _Decl
 #   • IMPORTS — a deterministic fact (the modules the file actually uses), so
 #     computed MECHANICALLY (`#import_bumps`, see `_compute_min_imports`), NOT
 #     by the LLM. The umbrella `import Mathlib` is swapped for that set.
-# Per-file rebuild-gated: the swapped+renamed file must build. The mechanical
-# import set is complete by construction in the common case; on the rare linter
-# gap the file degrades to renames-only (umbrella kept — never costs a rename),
-# and `library-verify` flags any surviving umbrella so it is never silent.
+# Per-file rebuild-gated via a candidate LADDER (`_import_candidates`): the
+# precise minImports set, then REMOVE (umbrella flagged unneeded), then the
+# broader minImports∪dir-pool — first that builds wins. The detection build runs
+# with a generous budget (`_IMPORT_BUMPS_TIMEOUT_SEC`: `#import_bumps` is cold +
+# async-off, so 240s silently timed out → umbrella). Only when EVERY candidate
+# fails the gate does the file degrade to renames-only (umbrella kept — never
+# costs a rename); `library-verify` flags any surviving umbrella so it is never
+# silent.
 # Library sibling imports are never touched. Cross-file consumers self-apply
 # renames via the SAME deferred-rewire as drops (the caller records {old_fqn →
 # new_fqn} to the DB rename channel). decide is the only stage that changes a
@@ -34,6 +38,20 @@ _DECIDE_PROMPT = "decide.md"
 _DECIDE_OUTPUT = "decide.json"
 _DECIDE_MAX_RETRIES = 1
 _MATHLIB_IMPORT_RE = re.compile(r"^Mathlib(\.[A-Za-z0-9_'][A-Za-z0-9_']*)+$")
+# `#import_bumps` forces `Elab.async false` (the minImports linter needs linear
+# elaboration), making this cold build ~2-4× slower than a normal async one —
+# and it can NEVER reuse a warm slot (its umbrella→minimal closure differs from
+# the file slot, #108), so it is always a fresh `lake env lean`. The 240s
+# `_BATCH_TIMEOUT_SEC` (calibrated for warm/async gates) silently timed out on
+# the heavier residue files under pool load → no `-- missing imports` marker →
+# the file degraded to the `import Mathlib` umbrella. This was the DOMINANT cause
+# of the residue 7-file umbrella debt (2026-06-22): each file's own minimal set
+# was correct, it just never finished computing in 240s. Give the detection build
+# (and the cold rebuild-gate of an import-swapped candidate) their own generous
+# budgets so the result is computed, not abandoned. 1200s ≈ 2× the heaviest
+# residue file's isolated cold async-off build, headroom for concurrent pool load.
+_IMPORT_BUMPS_TIMEOUT_SEC = 1200
+_DECIDE_REBUILD_TIMEOUT_SEC = 480
 
 
 def _parse_decide(text: str) -> "tuple[dict[str, str], list[str]]":
@@ -183,9 +201,75 @@ def _compute_min_imports(workspace: Path,
     incomplete result degrades to umbrella-kept rather than a broken file."""
     _ok, out = C._build_with_output(
         workspace, _inject_import_bumps(content), prefix="importmin",
-        session_token=None)
+        timeout=_IMPORT_BUMPS_TIMEOUT_SEC, session_token=None)
     imports = _valid_imports(_parse_missing_imports(out), workspace)
     return imports, bool(_UNNEEDED_UMBRELLA_RE.search(out))
+
+
+def _dir_precise_imports(workspace: Path, target_file: str) -> "list[str]":
+    """Union of the precise `import Mathlib.*` lines across the SIBLING files in
+    `target_file`'s Library subdirectory (existence-checked, sorted). The
+    empirical 'common instance modules' pool: when a file's OWN minimal set (or
+    the REMOVE verdict) fails the rebuild gate — the minImports linter
+    under-reports an instance/elaboration module it can't see as a constant
+    reference — these are the modules the file's neighbours actually needed, a
+    broader candidate that may cover the gap. Files still on the `import Mathlib`
+    umbrella contribute nothing (no `Mathlib.X` lines), so the pool grows richer
+    as the dependency-ordered cleanup proceeds. Used ONLY as a UNION with the
+    file's own minimal set (never alone): the own set always carries that file's
+    unique deps, which a cross-file pool can lack."""
+    rel = target_file.replace("\\", "/")
+    self_path = workspace / rel
+    pool: set[str] = set()
+    for p in sorted(self_path.parent.glob("*.lean")):
+        if p == self_path:
+            continue
+        try:
+            txt = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for ln in txt.splitlines():
+            m = _MIN_IMPORT_LINE_RE.match(ln)
+            if m:
+                pool.add(m.group(1))
+            elif ln.strip() and not ln.lstrip().startswith("import "):
+                break                       # past the import header
+    return _valid_imports(sorted(pool), workspace)
+
+
+def _import_candidates(workspace: Path, target_file: str, renamed_text: str,
+                       imports: "list[str]", umbrella_unneeded: bool
+                       ) -> "list[tuple[str, str]]":
+    """Ordered umbrella-replacement candidates for the rebuild ladder, cleanest
+    first; the caller rebuild-gates them in order and takes the FIRST that builds.
+    Each entry is `(new_text, human_desc)`. Order:
+      1. SWAP(minImports set)        — the precise, idiomatic target.
+      2. REMOVE                      — when the set is empty but the linter
+                                       flagged the umbrella itself unneeded.
+      3. SWAP(minImports ∪ dir-pool) — broader fallback covering an
+                                       instance/elaboration module the linter
+                                       under-reported (see `_dir_precise_imports`).
+    A no-op or a duplicate of an earlier candidate is dropped, so when the pool
+    adds nothing (1 == 3) the ladder collapses to the single precise candidate."""
+    out: "list[tuple[str, str]]" = []
+    seen: set[str] = set()
+
+    def add(text: str, changed: bool, desc: str) -> None:
+        if changed and text not in seen:
+            seen.add(text)
+            out.append((text, desc))
+
+    if imports:
+        t, ch = _swap_umbrella_import(renamed_text, imports)
+        add(t, ch, f"{len(imports)} precise imports")
+    elif umbrella_unneeded:
+        t, ch = _remove_umbrella_import(renamed_text)
+        add(t, ch, "dropped umbrella (siblings cover)")
+    broad = sorted(set(imports) | set(_dir_precise_imports(workspace, target_file)))
+    if broad:
+        t, ch = _swap_umbrella_import(renamed_text, broad)
+        add(t, ch, f"{len(broad)} imports (dir-pool fallback)")
+    return out
 
 
 def _decide_context(workspace: Path, problem: str, rel: str,
@@ -271,48 +355,53 @@ def file_cleanup_decide(workspace: Path, problem: str, target_file: str,
             renamed_text = t
             applied[f"{module}.{old}"] = f"{module}.{new}"
     # --- 2. imports (MECHANICAL — #import_bumps, no LLM guess/retry) --------
-    # Replace the umbrella with the precise Mathlib.* set; or, when the file's
-    # Mathlib deps are covered transitively by its Library siblings (umbrella
-    # flagged unneeded, no replacement), drop the umbrella entirely.
+    # An ordered candidate ladder (`_import_candidates`, cleanest first): the
+    # precise minImports set, else REMOVE when the umbrella is flagged unneeded,
+    # else the broader minImports∪dir-pool. Each is rebuild-gated COLD (an
+    # import-swapped candidate's closure differs from the warm umbrella slot, so
+    # the warm path would re-warm and evict it, #108) with a generous budget; the
+    # FIRST that builds wins. The linter under-reports instance/elaboration
+    # modules, so the precise primary can fail the gate — the ladder broadens
+    # before resorting to the umbrella (which a mathlib PR forbids).
     imports, umbrella_unneeded = _compute_min_imports(workspace, renamed_text)
-    if imports:
-        new_text, imports_changed = _swap_umbrella_import(renamed_text, imports)
-    elif umbrella_unneeded:
-        new_text, imports_changed = _remove_umbrella_import(renamed_text)
-    else:
-        new_text, imports_changed = renamed_text, False
-    if new_text == original:
-        print(f"[staged] decide `{leaf}` — nothing to decide", flush=True)
-        return {}, False
-    ok, _detail = C._build_file_copy_isolated(workspace, new_text,
-                                              session_token=session_token)
-    if ok:
-        (workspace / target_file).write_text(new_text, encoding="utf-8")
-        imp_desc = (f"{len(imports)} precise imports" if imports
-                    else "dropped umbrella (siblings cover)" if imports_changed
-                    else "0 precise imports")
+    candidates = _import_candidates(workspace, target_file, renamed_text,
+                                    imports, umbrella_unneeded)
+    built_text, imp_desc = None, ""
+    for cand_text, desc in candidates:
+        ok, _detail = C._build_file_copy_isolated(
+            workspace, cand_text, timeout=_DECIDE_REBUILD_TIMEOUT_SEC,
+            session_token=None)
+        if ok:
+            built_text, imp_desc = cand_text, desc
+            break
+    if built_text is not None:                  # an import candidate built
+        (workspace / target_file).write_text(built_text, encoding="utf-8")
         print(f"[staged] decide `{leaf}` — {len(applied)} renamed, "
               f"{imp_desc} (mechanical)"
               + (": " + ", ".join(
                   f"{o.rsplit('.', 1)[-1]}→{n.rsplit('.', 1)[-1]}"
                   for o, n in applied.items()) if applied else ""), flush=True)
-        return applied, imports_changed
-    # --- 3. degrade: the import swap broke the build (mechanical set hit the
-    # linter's attribute gap / a module-system edge). Keep the umbrella so a bad
-    # import set never costs a rename; the umbrella is rare now and
-    # `library-verify` flags any that survive, so it is never silent. Only worth
-    # a retry when the swap is what changed (imports_changed) AND there were
-    # renames to preserve — a renames-only red build is the renames' own fault
-    # and reverting is the right move.
-    if applied and imports_changed:
-        ok2, _ = C._build_file_copy_isolated(workspace, renamed_text,
-                                             session_token=session_token)
-        if ok2:
-            (workspace / target_file).write_text(renamed_text, encoding="utf-8")
-            print(f"[staged] decide `{leaf}` — {len(applied)} renamed; kept "
-                  "`import Mathlib` (mechanical import set failed to build)",
-                  flush=True)
-            return applied, False
+        return applied, True
+    # --- 3. degrade: every import candidate broke the build (the minImports set
+    # hit the linter's attribute gap and even the dir-pool couldn't cover it).
+    # Keep the umbrella so a bad set never costs a rename; the umbrella is rare
+    # now and `library-verify` flags any that survive, so it is never silent.
+    # Preserve renames if they build on the (kept-umbrella) shape — a renames-only
+    # red build is the renames' own fault, so revert those.
+    if renamed_text == original:
+        note = ("kept `import Mathlib` (mechanical import set failed to build)"
+                if candidates else "nothing to decide")
+        print(f"[staged] decide `{leaf}` — {note}", flush=True)
+        return {}, False
+    ok2, _ = C._build_file_copy_isolated(
+        workspace, renamed_text, timeout=_DECIDE_REBUILD_TIMEOUT_SEC,
+        session_token=session_token)
+    if applied and ok2:
+        (workspace / target_file).write_text(renamed_text, encoding="utf-8")
+        print(f"[staged] decide `{leaf}` — {len(applied)} renamed; kept "
+              "`import Mathlib` (mechanical import set failed to build)",
+              flush=True)
+        return applied, False
     print(f"[staged] decide `{leaf}` — kept `import Mathlib` "
           "(mechanical import set failed to build)", flush=True)
     return {}, False

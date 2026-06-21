@@ -1495,6 +1495,75 @@ def test_file_cleanup_decide_noop_when_nothing_to_decide(tmp_path,
     assert spy["n"] == 1 and bc["n"] == 0             # spawned once, never built
 
 
+def test_dir_precise_imports_unions_sibling_mathlib(tmp_path) -> None:
+    # The dir-pool fallback source: union of `import Mathlib.*` across the SIBLING
+    # files in the dir (self excluded, umbrella-only siblings contribute nothing,
+    # existence-checked against the vendored mathlib, sorted).
+    mlroot = tmp_path / ".lake" / "packages" / "mathlib"
+    for m in ("Mathlib/A/B.lean", "Mathlib/C/D.lean", "Mathlib/E.lean"):
+        (mlroot / m).parent.mkdir(parents=True, exist_ok=True)
+        (mlroot / m).write_text("", encoding="utf-8")
+    d = tmp_path / "Library" / "P"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "Self.lean").write_text("import Mathlib\ntheorem t : True := trivial\n",
+                                 encoding="utf-8")
+    (d / "Sib1.lean").write_text(
+        "import Mathlib.A.B\nimport Mathlib.E\ntheorem u : True := trivial\n",
+        encoding="utf-8")
+    (d / "Sib2.lean").write_text("import Mathlib\n", encoding="utf-8")  # umbrella→0
+    (d / "Sib3.lean").write_text(
+        "import Mathlib.C.D\nimport Library.P.Sib1\n", encoding="utf-8")
+    # a hallucinated path (no vendored file) is dropped by the existence check
+    (d / "Sib4.lean").write_text("import Mathlib.Does.Not.Exist\n", encoding="utf-8")
+    got = cl_decide._dir_precise_imports(tmp_path, "Library/P/Self.lean")
+    assert got == ["Mathlib.A.B", "Mathlib.C.D", "Mathlib.E"]
+
+
+def test_import_candidates_ladder_orders_and_dedups(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cl_decide, "_dir_precise_imports",
+                        lambda ws, tf: ["Mathlib.Extra.Inst"])
+    base = "import Mathlib\ntheorem t : True := trivial\n"
+    # (1) precise set present → SWAP(min), then the broader SWAP(min ∪ pool)
+    cands = cl_decide._import_candidates(tmp_path, "Library/P/F.lean", base,
+                                         ["Mathlib.A.B"], False)
+    assert len(cands) == 2
+    assert "import Mathlib.A.B\n" in cands[0][0] and "Extra" not in cands[0][0]
+    assert ("import Mathlib.A.B" in cands[1][0]
+            and "import Mathlib.Extra.Inst" in cands[1][0])
+    # (2) precise empty + unneeded → REMOVE, then the pool fallback
+    cands2 = cl_decide._import_candidates(tmp_path, "Library/P/F.lean", base,
+                                          [], True)
+    assert len(cands2) == 2
+    assert "import Mathlib" not in cands2[0][0]              # REMOVE
+    assert "import Mathlib.Extra.Inst" in cands2[1][0]       # pool fallback
+    # (3) pool adds nothing → ladder collapses to the single precise candidate
+    monkeypatch.setattr(cl_decide, "_dir_precise_imports", lambda ws, tf: [])
+    cands3 = cl_decide._import_candidates(tmp_path, "Library/P/F.lean", base,
+                                          ["Mathlib.A.B"], False)
+    assert len(cands3) == 1
+
+
+def test_file_cleanup_decide_dir_pool_fallback(tmp_path, monkeypatch) -> None:
+    # Degrade ladder rung 3: the precise minImports set fails the gate (the linter
+    # under-reported an instance module), but the broader minImports∪dir-pool
+    # builds → use it, never the umbrella.
+    rel = "Library/P/F.lean"
+    content = "import Mathlib\ntheorem add_comm (a : T) : P := by trivial\n"
+    _setup_decide(tmp_path, rel, content)
+    d = _vdecl("add_comm", "(a : T) : P", rel=rel)
+    _fake_decide_spawn(monkeypatch, ['{"renames":{}}'])
+    _fake_min_imports(monkeypatch, ["Mathlib.A.B"])
+    monkeypatch.setattr(cl_decide, "_dir_precise_imports",
+                        lambda ws, tf: ["Mathlib.Extra.Inst"])
+    _fake_filecopy(monkeypatch, [(False, "synth instance"),   # precise swap red
+                                 (True, "")])                 # broad swap green
+    out = dedup.file_cleanup_decide(tmp_path, "p", rel, [d], scope=[d], pool=[])
+    assert out == ({}, True)
+    txt = (tmp_path / rel).read_text(encoding="utf-8")
+    assert "import Mathlib.A.B" in txt and "import Mathlib.Extra.Inst" in txt
+    assert "import Mathlib\n" not in txt
+
+
 # ---------------------------------------------------------------------
 # bridge cite-drop — residual-reference veto (primary e2e 2026-06-10)
 # ---------------------------------------------------------------------

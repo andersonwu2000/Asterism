@@ -185,7 +185,13 @@ _WATERMARKS = {
     # path (`_remove_umbrella_import`): a file whose Mathlib deps are covered
     # transitively by its Library siblings drops the umbrella outright (#44;
     # BanachTarski caught sibling-importing files keeping it) — 2026-06-21.
-    "Tooling/quality/librarian/cleanup/decide.py": 325,
+    # 325→420: import-min degrade fix — `#import_bumps` runs with its own generous
+    # budget (`_IMPORT_BUMPS_TIMEOUT_SEC`: cold + async-off, 240s silently timed
+    # out → umbrella, the dominant cause of the residue 7-file debt), and a
+    # candidate LADDER (`_import_candidates` / `_dir_precise_imports`: precise →
+    # REMOVE → minImports∪dir-pool) broadens before degrading to the umbrella —
+    # 2026-06-22 — conscious bump.
+    "Tooling/quality/librarian/cleanup/decide.py": 420,
     # 250→340: file_cleanup_underscore_unused_hyps — mechanical `_`-prefix of
     # `unusedVariables`-flagged hypothesis binders (#37), so the audit agent
     # doesn't burn its 960s budget `_`-prefixing 12+ binders one LSP round-trip at
