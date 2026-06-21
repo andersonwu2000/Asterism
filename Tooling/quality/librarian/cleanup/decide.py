@@ -90,6 +90,23 @@ def _swap_umbrella_import(text: str, imports: "list[str]") -> "tuple[str, bool]"
     return text, False
 
 
+def _remove_umbrella_import(text: str) -> "tuple[str, bool]":
+    """Delete the `import Mathlib` umbrella line outright — for a file whose
+    Mathlib dependencies are all covered TRANSITIVELY by its `import Library.*`
+    siblings, so `#import_bumps` flags the umbrella as unneeded with no
+    `Mathlib.X` replacement. `Library.*` sibling imports are untouched. Scans
+    only the leading import/blank header block."""
+    lines = text.split("\n")
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if s == "import Mathlib":
+            del lines[i]
+            return "\n".join(lines), True
+        if s and not s.startswith("import "):
+            break                       # past the header — no umbrella line
+    return text, False
+
+
 # ---------------------------------------------------------------------
 # Mechanical precise-import computation (replaces the LLM import proposal)
 # ---------------------------------------------------------------------
@@ -97,17 +114,24 @@ def _swap_umbrella_import(text: str, imports: "list[str]") -> "tuple[str, bool]"
 # instances, notation and tactics a file uses — not a judgment call. mathlib
 # ships the exact tool: `#import_bumps` drives the `minImports` linter (which,
 # unlike the `#min_imports in` command, accounts for notation + tactic info and
-# handles in-file references), printing a consolidated `-- missing imports`
-# block of plain `import Mathlib.X` lines. We compute that set, swap it for the
-# `import Mathlib` umbrella, and rebuild-verify. Letting an LLM GUESS the set and
-# retrying when it guessed wrong was a stochastic tool for a deterministic job:
-# it left ~1/4 of files on the umbrella (a non-idiomatic artifact that mathlib
-# forbids) and — worse, had we hard-gated it — would have reintroduced the
-# cleanup STALL class (an unbuildable guessed set with no fallback).
+# handles in-file references). Two of its outputs drive the umbrella decision:
+#   • a consolidated `-- missing imports` block of plain `import Mathlib.X`
+#     lines → the precise set to REPLACE the umbrella.
+#   • `unneeded import 'Mathlib'` (with NO Mathlib.X in the missing block) →
+#     the file's Mathlib deps come transitively through its `import Library.*`
+#     siblings, so the umbrella should be REMOVED outright, not replaced.
+# Both then rebuild-verify. Letting an LLM GUESS the set and retrying when it
+# guessed wrong was a stochastic tool for a deterministic job: it left ~1/4 of
+# files on the umbrella (a non-idiomatic artifact that mathlib forbids) and —
+# worse, had we hard-gated it — would have reintroduced the cleanup STALL class
+# (an unbuildable guessed set with no fallback).
 # (`lake exe shake`, the old CI minimiser, is dead under the module system.)
 
 _IMPORT_BUMPS_MARKER = "-- missing imports"
 _MIN_IMPORT_LINE_RE = re.compile(r"^\s*import\s+(Mathlib\.[A-Za-z0-9_.']+)\s*$")
+# `warning: unneeded import 'Mathlib'` — the bare umbrella (the quoted
+# `'Mathlib'` cannot match `'Mathlib.X'`, so this never fires on a precise one).
+_UNNEEDED_UMBRELLA_RE = re.compile(r"unneeded import 'Mathlib'")
 
 
 def _inject_import_bumps(text: str) -> str:
@@ -143,18 +167,25 @@ def _parse_missing_imports(build_output: str) -> "list[str]":
     return out
 
 
-def _compute_min_imports(workspace: Path, content: str) -> "list[str]":
-    """Mechanically compute the minimal `Mathlib.*` imports for `content` (which
-    still carries the `import Mathlib` umbrella) via mathlib's `#import_bumps`.
-    Returns the existence-checked, sorted module list — `[]` to keep the umbrella
-    (linter produced nothing / build did not surface the block). COLD build: the
-    consolidated block is raw `lean` output the warm `/verify` path may reshape.
-    The returned set is a candidate only; the caller rebuild-verifies it (the
-    linter has a documented attribute gap), so an incomplete set is caught."""
+def _compute_min_imports(workspace: Path,
+                         content: str) -> "tuple[list[str], bool]":
+    """Mechanically compute the umbrella replacement for `content` (which still
+    carries `import Mathlib`) via mathlib's `#import_bumps`. Returns
+    `(mathlib_imports, umbrella_unneeded)`:
+      - `mathlib_imports`: existence-checked, sorted `Mathlib.*` set to REPLACE
+        the umbrella (`[]` when the linter surfaced no missing block).
+      - `umbrella_unneeded`: True when `#import_bumps` flags `import Mathlib`
+        itself as unneeded — its deps are covered transitively (via `Library.*`
+        siblings), so with no `Mathlib.*` replacement the umbrella is REMOVED.
+    COLD build: the consolidated block is raw `lean` output the warm `/verify`
+    path may reshape. Both outcomes are candidates only; the caller
+    rebuild-verifies (the linter has a documented attribute gap), so an
+    incomplete result degrades to umbrella-kept rather than a broken file."""
     _ok, out = C._build_with_output(
         workspace, _inject_import_bumps(content), prefix="importmin",
         session_token=None)
-    return _valid_imports(_parse_missing_imports(out), workspace)
+    imports = _valid_imports(_parse_missing_imports(out), workspace)
+    return imports, bool(_UNNEEDED_UMBRELLA_RE.search(out))
 
 
 def _decide_context(workspace: Path, problem: str, rel: str,
@@ -240,8 +271,16 @@ def file_cleanup_decide(workspace: Path, problem: str, target_file: str,
             renamed_text = t
             applied[f"{module}.{old}"] = f"{module}.{new}"
     # --- 2. imports (MECHANICAL — #import_bumps, no LLM guess/retry) --------
-    imports = _compute_min_imports(workspace, renamed_text)
-    new_text, imports_changed = _swap_umbrella_import(renamed_text, imports)
+    # Replace the umbrella with the precise Mathlib.* set; or, when the file's
+    # Mathlib deps are covered transitively by its Library siblings (umbrella
+    # flagged unneeded, no replacement), drop the umbrella entirely.
+    imports, umbrella_unneeded = _compute_min_imports(workspace, renamed_text)
+    if imports:
+        new_text, imports_changed = _swap_umbrella_import(renamed_text, imports)
+    elif umbrella_unneeded:
+        new_text, imports_changed = _remove_umbrella_import(renamed_text)
+    else:
+        new_text, imports_changed = renamed_text, False
     if new_text == original:
         print(f"[staged] decide `{leaf}` — nothing to decide", flush=True)
         return {}, False
@@ -249,9 +288,11 @@ def file_cleanup_decide(workspace: Path, problem: str, target_file: str,
                                               session_token=session_token)
     if ok:
         (workspace / target_file).write_text(new_text, encoding="utf-8")
+        imp_desc = (f"{len(imports)} precise imports" if imports
+                    else "dropped umbrella (siblings cover)" if imports_changed
+                    else "0 precise imports")
         print(f"[staged] decide `{leaf}` — {len(applied)} renamed, "
-              f"{len(imports) if imports_changed else 0} precise imports "
-              "(mechanical)"
+              f"{imp_desc} (mechanical)"
               + (": " + ", ".join(
                   f"{o.rsplit('.', 1)[-1]}→{n.rsplit('.', 1)[-1]}"
                   for o, n in applied.items()) if applied else ""), flush=True)

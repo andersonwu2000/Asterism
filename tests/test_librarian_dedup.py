@@ -1249,8 +1249,39 @@ def test_compute_min_imports_drives_import_bumps(tmp_path, monkeypatch) -> None:
     got = cl_decide._compute_min_imports(tmp_path, "import Mathlib\ntheorem t : True := trivial\n")
     # `#import_bumps` was injected for the detection build
     assert "#import_bumps" in seen["content"]
-    # parsed + existence-filtered (Hallucinated has no file → dropped)
-    assert got == ["Mathlib.A.B"]
+    # parsed + existence-filtered (Hallucinated has no file → dropped); the
+    # umbrella is needed (no `unneeded import 'Mathlib'`) → False
+    assert got == (["Mathlib.A.B"], False)
+
+
+def test_compute_min_imports_detects_unneeded_umbrella(tmp_path, monkeypatch) -> None:
+    # A file whose Mathlib deps are covered transitively by its Library siblings:
+    # #import_bumps flags the umbrella unneeded with NO missing block → the
+    # umbrella should be REMOVED (imports empty, unneeded True).
+    out = ("y:1:0: Counting imports from here.\n"
+           "y:2:7: warning: unneeded import 'Library.P.Sib'\n"
+           "y:1:7: warning: unneeded import 'Mathlib'\n")
+    monkeypatch.setattr(cl_common, "_build_with_output",
+                        lambda ws, content, **k: (True, out))
+    imports, unneeded = cl_decide._compute_min_imports(
+        tmp_path, "import Mathlib\nimport Library.P.Sib\ntheorem t:True:=trivial\n")
+    assert imports == [] and unneeded is True
+    # a precise `unneeded import 'Mathlib.X'` must NOT trip the umbrella check
+    monkeypatch.setattr(cl_common, "_build_with_output",
+                        lambda ws, content, **k: (True, "unneeded import 'Mathlib.A'\n"))
+    assert cl_decide._compute_min_imports(tmp_path, "import Mathlib\n") == ([], False)
+
+
+def test_remove_umbrella_import() -> None:
+    text = ("import Library.P.Sib\nimport Mathlib\nimport Library.P.Dep\n\n"
+            "theorem t : True := trivial\n")
+    out, changed = cl_decide._remove_umbrella_import(text)
+    assert changed
+    assert "import Mathlib\n" not in out
+    assert "import Library.P.Sib" in out and "import Library.P.Dep" in out
+    # no umbrella → no-op
+    body = "import Mathlib.A.B\n\ntheorem t : True := trivial\n"
+    assert cl_decide._remove_umbrella_import(body) == (body, False)
 
 
 def test_valid_renames_filters() -> None:
@@ -1312,11 +1343,13 @@ def _fake_filecopy(monkeypatch, results):
     return seq
 
 
-def _fake_min_imports(monkeypatch, imports):
+def _fake_min_imports(monkeypatch, imports, umbrella_unneeded=False):
     """Patch the mechanical precise-import computer (`#import_bumps` driver) to
-    return a fixed `Mathlib.*` list — offline, no real lean build."""
-    monkeypatch.setattr(cl_decide, "_compute_min_imports",
-                        lambda ws, content: list(imports))
+    return a fixed `(Mathlib.* list, umbrella_unneeded)` — offline, no real
+    lean build."""
+    monkeypatch.setattr(
+        cl_decide, "_compute_min_imports",
+        lambda ws, content: (list(imports), umbrella_unneeded))
 
 
 def test_file_cleanup_decide_noop_without_prompt(tmp_path) -> None:
@@ -1408,6 +1441,26 @@ def test_file_cleanup_decide_imports_only_no_renames(tmp_path, monkeypatch) -> N
     assert out == ({}, True)
     txt = (tmp_path / rel).read_text(encoding="utf-8")
     assert "import Mathlib.A.B" in txt and "import Mathlib\n" not in txt
+
+
+def test_file_cleanup_decide_drops_umbrella_when_siblings_cover(tmp_path,
+                                                                monkeypatch) -> None:
+    # Mathlib deps covered transitively by a Library sibling: #import_bumps flags
+    # the umbrella unneeded with no replacement → drop it (not keep it). This was
+    # the gap BanachTarski caught — sibling-importing files kept the umbrella.
+    rel = "Library/P/F.lean"
+    content = ("import Mathlib\nimport Library.P.Sib\n"
+               "theorem add_comm (a : T) : P := by trivial\n")
+    _setup_decide(tmp_path, rel, content)
+    d = _vdecl("add_comm", "(a : T) : P", rel=rel)
+    _fake_decide_spawn(monkeypatch, ['{"renames":{}}'])
+    _fake_min_imports(monkeypatch, [], umbrella_unneeded=True)
+    _fake_filecopy(monkeypatch, [(True, "")])
+    out = dedup.file_cleanup_decide(tmp_path, "p", rel, [d], scope=[d], pool=[])
+    assert out == ({}, True)
+    txt = (tmp_path / rel).read_text(encoding="utf-8")
+    assert "import Mathlib\n" not in txt           # umbrella dropped
+    assert "import Library.P.Sib" in txt           # sibling kept
 
 
 def test_file_cleanup_decide_renames_keystone_main(tmp_path, monkeypatch) -> None:
