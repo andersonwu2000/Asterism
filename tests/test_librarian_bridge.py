@@ -196,7 +196,7 @@ def test_run_bridge_pass_writes_index(conn, tmp_path, monkeypatch):
     _migrate_existing(conn, "main", "Library.P.Foo.main",
                       "Library/P/Foo.lean", root_g)
     _mock_lake_ok(monkeypatch)
-    monkeypatch.setattr(lib, "_commit_bridge",
+    monkeypatch.setattr(lib.bridge, "_commit_bridge",
                         lambda *a, **k: _PR(outcome="success"))
     r = lib._run_bridge(conn, problem="p", workspace=tmp_path, pipeline_id="pid")
     assert r.outcome == "success"
@@ -208,7 +208,7 @@ def test_run_bridge_fail_is_not_mechanical(conn, tmp_path, monkeypatch):
     _migrate_existing(conn, "main", "Library.P.Foo.main",
                       "Library/P/Foo.lean", root_g)
     _mock_lake_ok(monkeypatch)
-    monkeypatch.setattr(lib, "_commit_bridge", lambda *a, **k: _PR(
+    monkeypatch.setattr(lib.bridge, "_commit_bridge", lambda *a, **k: _PR(
         outcome="failed", failure_reason="librarian_gate_failed",
         failure_detail="type mismatch"))
     r = lib._run_bridge(conn, problem="p", workspace=tmp_path, pipeline_id="pid")
@@ -227,7 +227,7 @@ def test_run_bridge_cleaned_build_failed_is_distinct(conn, tmp_path, monkeypatch
     import Tooling.pipeline._lake as _lake
     monkeypatch.setattr(_lake, "lake_build_modules",
                         lambda ws, mods: (False, "unknown identifier 'dropped_lemma'"))
-    monkeypatch.setattr(lib, "_commit_bridge", lambda *a, **k: pytest.fail(
+    monkeypatch.setattr(lib.bridge, "_commit_bridge", lambda *a, **k: pytest.fail(
         "_commit_bridge must not run when the cleaned Library fails to build"))
     r = lib._run_bridge(conn, problem="p", workspace=tmp_path, pipeline_id="pid")
     assert r.outcome == "failed"
@@ -241,7 +241,7 @@ def test_run_librarian_bridge_dispatches_without_prompt(conn, tmp_path,
     # dispatch it BEFORE the prompt-existence guard, so the deleted bridge.md
     # never trips librarian_missing_prompt.
     sentinel = _PR(outcome="success")
-    monkeypatch.setattr(lib, "_run_bridge", lambda *a, **k: sentinel)
+    monkeypatch.setattr(lib.bridge, "_run_bridge", lambda *a, **k: sentinel)
     r = lib.run_librarian(conn, problem="p", work_kind="bridge",
                           workspace=tmp_path, pipeline_id="x")
     assert r is sentinel

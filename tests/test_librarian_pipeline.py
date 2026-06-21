@@ -796,7 +796,7 @@ def test_context_classify_shows_usage_cites_in_topo_order(
         db.upsert_library_decl(conn, problem="p", slug=s, source_goal_id=None)
         db.set_library_verdict(conn, problem="p", slug=s, verdict="keep")
     # user cites base → base must be listed first, surfaced as user's `cites`.
-    monkeypatch.setattr(lib, "_decl_usage",
+    monkeypatch.setattr(lib.classify, "_decl_usage",
                         lambda *a, **k: {"user": {"base"}, "base": set()})
     ad = tmp_path / "att"; ad.mkdir()
     text = lib.compile_librarian_context(
@@ -911,7 +911,7 @@ def test_run_keepall_keeps_reachable_closure(conn, tmp_path, monkeypatch):
     import Tooling.agent as agent
     monkeypatch.setattr(agent, "spawn_llm", _no_spawn)   # keep is spawn-free
     # main reaches lemma_a; `orphan` is proving debris.
-    monkeypatch.setattr(lib, "_reachable_from_root",
+    monkeypatch.setattr(lib.run, "_reachable_from_root",
                         lambda *a, **k: {"main", "lemma_a"})
 
     r = lib.run_librarian(conn, problem="p", work_kind="dedup",

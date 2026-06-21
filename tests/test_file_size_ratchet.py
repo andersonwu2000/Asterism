@@ -86,7 +86,20 @@ _WATERMARKS = {
     # Defs decl authored under `namespace Complex` keeps `Complex.windingNumber`
     # instead of being relabelled into the Library namespace — Gate B could no
     # longer re-derive the root statement otherwise (#43) — 2026-06-21.
-    "Tooling/pipeline/librarian.py": 3895,
+    # SPLIT 2026-06-21: the 3.9k-line `pipeline/librarian.py` monolith was split
+    # into a `pipeline/librarian/` package (concern submodules) — watermarks are
+    # per-submodule now. `execute.py` is the largest (the migrate executor); a
+    # later quality pass may trim it.
+    "Tooling/pipeline/librarian/__init__.py": 145,
+    "Tooling/pipeline/librarian/_base.py": 150,
+    "Tooling/pipeline/librarian/astslice.py": 400,
+    "Tooling/pipeline/librarian/classify.py": 545,
+    "Tooling/pipeline/librarian/schedule.py": 235,
+    "Tooling/pipeline/librarian/gate.py": 345,
+    "Tooling/pipeline/librarian/context.py": 430,
+    "Tooling/pipeline/librarian/execute.py": 1150,
+    "Tooling/pipeline/librarian/bridge.py": 345,
+    "Tooling/pipeline/librarian/run.py": 515,
     # dispatcher 2750→2800 + db 2450→2500: awaiting_human observability
     # (startup + idle-exit log of paused problems) + scope-aware idle exit
     # via db.dispatchable_open_goals — a paused P12 read as a multi-hour

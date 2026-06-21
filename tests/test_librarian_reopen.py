@@ -58,7 +58,7 @@ def test_reopen_reverses_upstream_and_cone(conn, tmp_path, monkeypatch):
     _placed(conn, "foo_use", foo)         # imports Bar
     # Foo imports Bar; Main imports Foo (transitive importer)
     graph = {bar: set(), foo: {bar}}
-    monkeypatch.setattr(lib, "file_dependency_graph",
+    monkeypatch.setattr(lib.schedule, "file_dependency_graph",
                         lambda conn, *, problem, workspace: graph)
     (tmp_path / bar).parent.mkdir(parents=True, exist_ok=True)
     (tmp_path / bar).write_text("import Mathlib\n", encoding="utf-8")
@@ -90,7 +90,7 @@ def test_reopen_unknown_slug_is_noop(conn, tmp_path):
 
 def test_decline_or_reopen_routes(conn, tmp_path, monkeypatch):
     _placed(conn, "up", "Library/P/Up.lean")
-    monkeypatch.setattr(lib, "file_dependency_graph",
+    monkeypatch.setattr(lib.schedule, "file_dependency_graph",
                         lambda conn, *, problem, workspace: {"Library/P/Up.lean": set()})
     (tmp_path / "Library" / "P").mkdir(parents=True, exist_ok=True)
     (tmp_path / "Library/P/Up.lean").write_text("import Mathlib\n",

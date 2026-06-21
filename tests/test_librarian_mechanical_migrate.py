@@ -99,7 +99,7 @@ def test_mechanical_header_carries_filedep_imports(conn, tmp_path,
                  f"namespace {PNS}\n"
                  "theorem lem_a : True := by trivial\n"
                  f"end {PNS}\n")
-    monkeypatch.setattr(lib, "file_dependency_graph",
+    monkeypatch.setattr(lib.schedule, "file_dependency_graph",
                         lambda *a, **k: {tf: {dep}})
     rows = [r for r in db.library_decls_for(conn, "p")
             if r["target_file"] == tf and r["lifecycle"] == "classified"]
@@ -128,7 +128,7 @@ def test_ready_file_work_dag_scheduling(conn, tmp_path, monkeypatch):
                      "AND slug=?", (lifecycle, slug))
         conn.commit()
     # B depends on A; C is independent.
-    monkeypatch.setattr(lib, "file_dependency_graph",
+    monkeypatch.setattr(lib.schedule, "file_dependency_graph",
                         lambda *a, **k: {"B.lean": {"A.lean"}, "A.lean": set(),
                                          "C.lean": set()})
 
@@ -635,12 +635,12 @@ def test_incremental_mechanical_and_filled_commit(conn, tmp_path, monkeypatch):
     # The final file carries all three in order, no sorry, committed once.
     asm = _asm3("b")
     captured = {}
-    monkeypatch.setattr(lib, "file_dependency_graph", lambda *a, **k: {})
+    monkeypatch.setattr(lib.schedule, "file_dependency_graph", lambda *a, **k: {})
 
     def fake_commit(merged, **kw):
         captured["merged"] = merged
         return PipelineResult(outcome="success")
-    monkeypatch.setattr(lib, "_commit_migrated_file", fake_commit)
+    monkeypatch.setattr(lib.execute, "_commit_migrated_file", fake_commit)
 
     res = lib._migrate_file_incremental(
         **_inc_kwargs(conn, tmp_path, asm, ["b"]),
@@ -663,8 +663,8 @@ def test_incremental_unfilled_is_distinct_no_sorry_failure(
     # a DISTINCT no-sorry failure (escalation hook); commit never runs; the
     # partial staging write is cleaned up.
     asm = _asm3("b")
-    monkeypatch.setattr(lib, "file_dependency_graph", lambda *a, **k: {})
-    monkeypatch.setattr(lib, "_commit_migrated_file",
+    monkeypatch.setattr(lib.schedule, "file_dependency_graph", lambda *a, **k: {})
+    monkeypatch.setattr(lib.execute, "_commit_migrated_file",
                         lambda *a, **k: pytest.fail("commit must not run"))
 
     res = lib._migrate_file_incremental(
@@ -681,14 +681,14 @@ def test_incremental_decline_routes_to_cascade(conn, tmp_path, monkeypatch):
     # the shared cascade on the main conn.
     asm = _asm3("b")
     seen = {}
-    monkeypatch.setattr(lib, "file_dependency_graph", lambda *a, **k: {})
+    monkeypatch.setattr(lib.schedule, "file_dependency_graph", lambda *a, **k: {})
 
     def fake_reopen(conn, **kw):
         seen["patch"] = kw["patch_text"]
         return PipelineResult(outcome="agent_declined",
                               failure_reason="librarian_needs_upstream")
-    monkeypatch.setattr(lib, "_decline_or_reopen", fake_reopen)
-    monkeypatch.setattr(lib, "_commit_migrated_file",
+    monkeypatch.setattr(lib.execute, "_decline_or_reopen", fake_reopen)
+    monkeypatch.setattr(lib.execute, "_commit_migrated_file",
                         lambda *a, **k: pytest.fail("commit must not run"))
 
     decline = "-- decline: needs-upstream foo needs a stronger shape\n"
@@ -703,8 +703,8 @@ def test_incremental_prior_build_fail_is_integrity(conn, tmp_path, monkeypatch):
     # Staging the prior decls fails to build (olean writer says no) before the
     # LLM decl is even spawned → loud integrity failure, fill never runs.
     asm = _asm3("b")
-    monkeypatch.setattr(lib, "file_dependency_graph", lambda *a, **k: {})
-    monkeypatch.setattr(lib, "_commit_migrated_file",
+    monkeypatch.setattr(lib.schedule, "file_dependency_graph", lambda *a, **k: {})
+    monkeypatch.setattr(lib.execute, "_commit_migrated_file",
                         lambda *a, **k: pytest.fail("commit must not run"))
 
     def fill_must_not_run(slug):
@@ -737,13 +737,13 @@ def test_incremental_localize_demotes_breaking_mechanical_decl(
         chunks={"a": "theorem a : True := trivial",
                 "b": "theorem b : True := bad_relabel",   # breaks the build
                 "c": "theorem c : True := trivial"})
-    monkeypatch.setattr(lib, "file_dependency_graph", lambda *a, **k: {})
+    monkeypatch.setattr(lib.schedule, "file_dependency_graph", lambda *a, **k: {})
     captured = {}
 
     def fake_commit(merged, **kw):
         captured["merged"] = merged
         return PipelineResult(outcome="success")
-    monkeypatch.setattr(lib, "_commit_migrated_file", fake_commit)
+    monkeypatch.setattr(lib.execute, "_commit_migrated_file", fake_commit)
 
     # The staging build fails iff the partial file still carries the bad body.
     def olw(p):
@@ -902,7 +902,7 @@ def test_run_migrate_holes_hard_fail_no_llm(conn, tmp_path, monkeypatch):
     _write_proof(tmp_path, "lem_a",
                  "import Mathlib\ntheorem lem_a : True := by trivial\n")
     # Force a hole regardless of the real relabel outcome.
-    monkeypatch.setattr(lib, "_mechanical_migrate_file",
+    monkeypatch.setattr(lib.execute, "_mechanical_migrate_file",
                         lambda *a, **k: ("seed", ["lem_a"], object()))
     import Tooling.agent as agent
 
@@ -1179,7 +1179,7 @@ def test_run_migrate_redirects_verbatim_shared_def(conn, tmp_path, monkeypatch):
         captured["slugs"] = kw["ordered_slugs"]
         from Tooling.pipeline import PipelineResult
         return PipelineResult(outcome="success")
-    monkeypatch.setattr(lib, "_commit_migrated_file", _fake_commit)
+    monkeypatch.setattr(lib.execute, "_commit_migrated_file", _fake_commit)
     r = lib._run_migrate(
         conn, problem="p", workspace=tmp_path, pipeline_id="pid",
         target_file="Library/P/Mine.lean", attempts_dir=tmp_path / ".a",
@@ -1210,7 +1210,7 @@ def test_run_migrate_no_redirect_for_different_def(conn, tmp_path, monkeypatch):
         captured["slugs"] = kw["ordered_slugs"]
         from Tooling.pipeline import PipelineResult
         return PipelineResult(outcome="success")
-    monkeypatch.setattr(lib, "_commit_migrated_file", _fake_commit)
+    monkeypatch.setattr(lib.execute, "_commit_migrated_file", _fake_commit)
     lib._run_migrate(
         conn, problem="p", workspace=tmp_path, pipeline_id="pid",
         target_file="Library/P/Mine.lean", attempts_dir=tmp_path / ".a",
@@ -1248,7 +1248,7 @@ def test_run_migrate_redirects_despite_docstring_diff(conn, tmp_path,
         captured["slugs"] = kw["ordered_slugs"]
         from Tooling.pipeline import PipelineResult
         return PipelineResult(outcome="success")
-    monkeypatch.setattr(lib, "_commit_migrated_file", _fake_commit)
+    monkeypatch.setattr(lib.execute, "_commit_migrated_file", _fake_commit)
     lib._run_migrate(
         conn, problem="p", workspace=tmp_path, pipeline_id="pid",
         target_file="Library/P/Mine.lean", attempts_dir=tmp_path / ".a",
@@ -1296,7 +1296,7 @@ def test_run_migrate_heartbeat_rung(conn, tmp_path, monkeypatch):
                 failure_detail="(deterministic) timeout at typeclass, maximum "
                                "number of heartbeats (20000) has been reached")
         return PipelineResult(outcome="success")
-    monkeypatch.setattr(lib, "_commit_migrated_file", _fake_commit)
+    monkeypatch.setattr(lib.execute, "_commit_migrated_file", _fake_commit)
     r = lib._run_migrate(
         conn, problem="p", workspace=tmp_path, pipeline_id="pid",
         target_file=tf, attempts_dir=tmp_path / ".a",

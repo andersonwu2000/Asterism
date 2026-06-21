@@ -3,9 +3,9 @@ pipeline reads back. A drift here is silent — the agent does real work but
 writes to a filename the framework never reads, surfacing only as a runtime
 `agent_no_output` failure (caught live on the first SG dedup run, 2026-05-31).
 
-The mapping is the contract between `Tooling/pipeline/librarian.py` (which
-reads the file) and `Tooling/prompts/librarian/<kind>.md` (which tells the
-agent where to write it). Both ends are asserted against each other.
+The mapping is the contract between the `Tooling/pipeline/librarian/` package
+(which reads the file) and `Tooling/prompts/librarian/<kind>.md` (which tells
+the agent where to write it). Both ends are asserted against each other.
 """
 from pathlib import Path
 
@@ -13,7 +13,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PROMPTS = ROOT / "Tooling" / "prompts" / "librarian"
-PIPELINE = ROOT / "Tooling" / "pipeline" / "librarian.py"
+PIPELINE_PKG = ROOT / "Tooling" / "pipeline" / "librarian"
 
 # work_kind -> the output filename the agent must produce.
 # (dedup is mechanical keep-all — no prompt/agent; bridge is agentless.)
@@ -38,8 +38,9 @@ def test_prompt_names_its_output_file(work_kind, filename):
 def test_pipeline_reads_the_expected_file(filename):
     """The pipeline source must actually read each filename the prompts name —
     guards the other direction of the contract."""
-    src = PIPELINE.read_text(encoding="utf-8")
+    src = "\n".join(p.read_text(encoding="utf-8")
+                    for p in sorted(PIPELINE_PKG.glob("*.py")))
     assert f'"{filename}"' in src, (
-        f"{PIPELINE.name} does not read {filename!r}; prompt/code filename "
-        f"contract drifted"
+        f"pipeline/librarian/ package does not read {filename!r}; prompt/code "
+        f"filename contract drifted"
     )
