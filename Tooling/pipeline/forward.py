@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any  # noqa: F401 — used in string annotations (mfst/return)
 
-from ..state import db
+from ..state import db, proof_store
 
 
 def _auto_prepend_candidate_imports(
@@ -286,7 +286,7 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
         raise FileExistsError(
             f"forward target {dest} already exists (slug collision)"
         )
-    dest.write_text(body, encoding="utf-8")
+    proof_store.atomic_write(dest, body)
 
     rel_lean_path = dest.relative_to(workspace).as_posix()
     # Pick statement string for goals.statement. Best-effort extract
@@ -368,10 +368,11 @@ def commit_forward_alias(conn: sqlite3.Connection, *,
     proofs_dir = db.problem_dir(workspace, problem) / "proofs"
     proofs_dir.mkdir(parents=True, exist_ok=True)
     dest = proofs_dir / f"L_{metadata.slug}.lean"
-    if dest.exists():
-        raise FileExistsError(
-            f"forward target {dest} already exists (slug collision)"
-        )
+    # Ownership guard (structural clobber prevention): refuse if a DIFFERENT
+    # goal already owns this path. An orphan file with no row is reclaimable
+    # (atomic_write overwrites it); a real DB collision raises ClobberError.
+    proof_store.assert_writable(
+        conn, dest.relative_to(workspace).as_posix(), owner_goal_id=None)
 
     if match.kind == "library_alias":
         # Canonical is a committed Library decl (no in-DB goal). Delegate
@@ -396,7 +397,7 @@ def commit_forward_alias(conn: sqlite3.Connection, *,
         canonical_label = f"goal {match.goal_id} ({canonical['slug']})"
         canonical_goal_id = match.goal_id
 
-    dest.write_text(alias_content, encoding="utf-8")
+    proof_store.atomic_write(dest, alias_content)
     # Build-verify the actual alias file before trusting the probe (see
     # docstring). write_olean=True so downstream citers resolve the .olean.
     av = gateway_lifecycle.verify_file(
@@ -410,10 +411,10 @@ def commit_forward_alias(conn: sqlite3.Connection, *,
         print(f"[dedupe] forward {metadata.slug} → {canonical_label} "
               f"REJECTED — build-verify failed ({why[:160]}); treating as "
               f"novel forward goal", flush=True)
-        try:
-            dest.unlink()
-        except OSError:
-            pass
+        proof_store.remove_proof(
+            conn, workspace,
+            rel_path=dest.relative_to(workspace).as_posix(),
+            owner_goal_id=None)
         return None
 
     print(f"[dedupe] forward {metadata.slug} → {canonical_label} "

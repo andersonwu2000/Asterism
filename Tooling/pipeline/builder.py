@@ -20,13 +20,12 @@ Public entry point: `run_builder`.
 """
 from __future__ import annotations
 
-import shutil
 import sqlite3
 from pathlib import Path
 
 from .. import agent
 from ..agent import context
-from ..state import db, manifest
+from ..state import db, manifest, proof_store
 from ..quality import diagnostics
 from ._cite_gate import _resolve_cite_dependencies
 
@@ -136,7 +135,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # info diagnostics' message text for the marker. write_olean
         # is skipped (probe is throwaway).
         probe_text = _replace_proof_body(source, "hint")
-        goal_lean.write_text(probe_text, encoding="utf-8")
+        proof_store.atomic_write(goal_lean, probe_text)
         v_probe = gateway_lifecycle.verify_file(
             goal_lean, write_olean=False, workspace=workspace,
         )
@@ -151,7 +150,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
 
         if winner is not None:
             final_text = _replace_proof_body(source, winner)
-            goal_lean.write_text(final_text, encoding="utf-8")
+            proof_store.atomic_write(goal_lean, final_text)
             fq_name = f"Problems.{goal['problem']}.{goal['slug']}"
             v_confirm = gateway_lifecycle.verify_file(
                 goal_lean, write_olean=True,
@@ -162,20 +161,20 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             if ok_confirm:
                 forbidden = _grep_forbidden(final_text, mfst.forbidden_lemmas)
                 if forbidden:
-                    goal_lean.write_text(backup_text, encoding="utf-8")
+                    proof_store.atomic_write(goal_lean, backup_text)
                     return PipelineResult(outcome="failed",
                                           failure_reason="forbidden_lemma",
                                           failure_detail=forbidden)
                 if mfst.axioms_whitelist:
                     if v_confirm.get("axiom_error"):
-                        goal_lean.write_text(backup_text, encoding="utf-8")
+                        proof_store.atomic_write(goal_lean, backup_text)
                         return PipelineResult(outcome="failed",
                                               failure_reason="axiom_violation",
                                               failure_detail=v_confirm["axiom_error"])
                     used = set(v_confirm.get("axioms") or [])
                     rogue = used - set(mfst.axioms_whitelist)
                     if rogue:
-                        goal_lean.write_text(backup_text, encoding="utf-8")
+                        proof_store.atomic_write(goal_lean, backup_text)
                         return PipelineResult(outcome="failed",
                                               failure_reason="axiom_violation",
                                               failure_detail=f"rogue axioms: {sorted(rogue)}")
@@ -193,7 +192,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
 
         # Phase 1 didn't close the goal — restore the original sorry-stub
         # and fall through to Phase 2 LLM.
-        goal_lean.write_text(backup_text, encoding="utf-8")
+        proof_store.atomic_write(goal_lean, backup_text)
 
     # Phase 2: tactic_llm via in-pipeline retry helper.
     # Helper owns budget = BUILDER_THRESHOLD - goal.attempts (decision 1),
@@ -223,10 +222,10 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
 
     def _restore_goal_lean() -> None:
         """Undo a commit attempt on goal_lean. Only called after the
-        final post-verify failure paths in `builder_parse` — i.e. once
-        `shutil.copy2(patch, goal_lean)` has already mutated workspace
-        and the subsequent verify/axiom check rejected the patch."""
-        goal_lean.write_text(goal_lean_original, encoding="utf-8")
+        final post-verify failure paths in `builder_parse` — i.e. once the
+        `proof_store.atomic_write` commit has already mutated workspace and
+        the subsequent verify/axiom check rejected the patch."""
+        proof_store.atomic_write(goal_lean, goal_lean_original)
 
     def builder_cold_prep(ctx: SpawnCtx) -> None:
         # Cold start: re-seed sandbox patch.lean from goal_lean's pristine
@@ -318,13 +317,12 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # hundred ms between this copy and the post-verify decision.
         # Inject any Defs.lean opens the agent forgot to replay (see
         # state/manifest.py:inject_defs_opens).
-        shutil.copy2(patch, goal_lean)
-        goal_lean.write_text(
+        proof_store.atomic_write(
+            goal_lean,
             manifest.inject_defs_opens(
-                goal_lean.read_text(encoding="utf-8"),
+                patch.read_text(encoding="utf-8"),
                 problem=goal["problem"], workspace=workspace,
             ),
-            encoding="utf-8",
         )
         promote_done = True
         # Verify-unification (see docs/archive/verify_unification.md):
