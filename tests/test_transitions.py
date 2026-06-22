@@ -184,3 +184,114 @@ def test_apply_strategy_transition_illegal_edge_strict_raises(
         # dead -> proposed is not a declared strategy edge.
         transitions.apply_strategy_transition(conn, s, "proposed", event="t")
     assert _sstatus(conn, s) == "dead"
+
+
+# --------------------------------------------------------------------------- #
+# enum SoT binding (#11 P4) — the canonical state vocabularies and the runtime
+# frozensets scattered across the codebase must all agree with the DB CHECK
+# constraints, so adding/removing a state is a single-point change that a test
+# enforces (rather than a manual sync across schema + tree + strategist).
+# --------------------------------------------------------------------------- #
+
+import re  # noqa: E402
+
+
+def _check_values(conn: sqlite3.Connection, table: str, col: str) -> set[str]:
+    """Extract the value set of a `CHECK(<col> IN (...))` constraint from a
+    table's live CREATE SQL (introspected, not parsed from a copy of the
+    schema string)."""
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?",
+        (table,),
+    ).fetchone()["sql"]
+    m = re.search(rf"CHECK\(\s*{col}\s+IN\s*\(([^)]*)\)", sql)
+    assert m, f"no CHECK({col} IN ...) found on table {table}"
+    return set(re.findall(r"'([^']*)'", m.group(1)))
+
+
+def test_goal_states_match_schema_check(conn: sqlite3.Connection):
+    assert _check_values(conn, "goals", "status") == set(transitions.GOAL_STATES)
+
+
+def test_strategy_states_match_schema_check(conn: sqlite3.Connection):
+    assert (_check_values(conn, "strategies", "status")
+            == set(transitions.STRATEGY_STATES))
+
+
+def test_tree_status_sets_partition_goal_states():
+    from Tooling.state import tree
+    live = tree._LIVE_GOAL_STATUSES
+    settled = tree._SETTLED_GOAL_STATUSES
+    assert live.isdisjoint(settled), "a status cannot be both live and settled"
+    assert live | settled == transitions.GOAL_STATES
+
+
+def test_decision_kinds_runtime_subset_of_schema(conn: sqlite3.Connection):
+    from Tooling.pipeline import strategist
+    schema = _check_values(conn, "strategist_decisions", "decision_kind")
+    runtime = set(strategist.DECISION_KINDS)
+    # Runtime kinds must all be schema-valid; the schema additionally retains
+    # exactly the two legacy kinds (pre-2026-05-28 rows) no longer emitted.
+    assert runtime <= schema, f"runtime decision_kinds not in schema: {runtime - schema}"
+    assert schema - runtime == {"Reopen", "InitializeDefs"}
+
+
+def test_trigger_kinds_match_schema(conn: sqlite3.Connection):
+    from Tooling.pipeline import strategist
+    schema = _check_values(conn, "strategist_decisions", "trigger_kind")
+    assert set(strategist.TRIGGER_KINDS) == schema
+
+
+# --------------------------------------------------------------------------- #
+# Event taxonomy exhaustiveness (#11 P3) — the set of event= labels actually
+# passed to the checked mutators across the codebase must equal transitions.
+# EVENTS, so adding a transition site with a new event forces a single-point
+# registration here (caught by this test rather than discovered in production).
+# --------------------------------------------------------------------------- #
+
+from pathlib import Path as _Path  # noqa: E402
+
+# non-greedy .*? (DOTALL) rather than [^)]*? — args can contain nested parens
+# (e.g. int(target_id)); every apply_* call passes event=, so non-greedy pairs
+# each call with its own (nearest-following) event= label.
+_APPLY_EVENT_RE = re.compile(
+    r"apply_(?:goal|strategy)_transition\(.*?event=[\"']([^\"']+)[\"']",
+    re.DOTALL,
+)
+
+
+def _scan_event_labels() -> set[str]:
+    root = _Path(__file__).resolve().parent.parent / "Tooling"
+    labels: set[str] = set()
+    for py in root.rglob("*.py"):
+        labels |= set(_APPLY_EVENT_RE.findall(py.read_text(encoding="utf-8")))
+    return labels
+
+
+def test_event_labels_are_registered():
+    used = _scan_event_labels()
+    assert used, "scan found no apply_*_transition event labels — regex broke?"
+    unregistered = used - set(transitions.EVENTS)
+    assert not unregistered, (
+        f"event labels used in code but missing from transitions.EVENTS: "
+        f"{sorted(unregistered)}")
+
+
+def test_no_dead_events_registered():
+    # Every registered event must actually be used somewhere (no stale labels).
+    used = _scan_event_labels()
+    dead = set(transitions.EVENTS) - used
+    assert not dead, f"transitions.EVENTS entries never used in code: {sorted(dead)}"
+
+
+def test_has_live_sibling_default_and_widened(conn: sqlite3.Connection):
+    g = _insert_goal(conn, status="attempting")
+    assert not transitions.has_live_sibling(conn, g)
+    s = _insert_strategy(conn, goal_id=g, status="succeeded")
+    # default (proposed-only) does not see a succeeded strategy ...
+    assert not transitions.has_live_sibling(conn, g)
+    # ... but the widened set (Backward-success branch) does.
+    assert transitions.has_live_sibling(
+        conn, g, statuses=("proposed", "succeeded"))
+    _insert_strategy(conn, goal_id=g, status="proposed")
+    assert transitions.has_live_sibling(conn, g)

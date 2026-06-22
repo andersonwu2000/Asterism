@@ -666,12 +666,7 @@ def _kill_upward_chain(conn: sqlite3.Connection, goal_id: int,
         if not row or row["status"] != "attempting":
             continue
         n = db.increment_goal_attempts(conn, gid)
-        has_live = conn.execute(
-            "SELECT 1 FROM strategies WHERE goal_id = ?"
-            " AND status = 'proposed' LIMIT 1",
-            (gid,),
-        ).fetchone()
-        if has_live is not None:
+        if transitions.has_live_sibling(conn, gid):
             # Sibling still in-flight: count the failure but defer the
             # shelve/reopen decision until the sibling resolves.
             continue
@@ -718,12 +713,7 @@ def _reconcile_goal_after_strategy_loss(
     ).fetchone()
     if not row or row["status"] != "attempting":
         return
-    has_live = conn.execute(
-        "SELECT 1 FROM strategies WHERE goal_id = ?"
-        " AND status = 'proposed' LIMIT 1",
-        (goal_id,),
-    ).fetchone()
-    if has_live is not None:
+    if transitions.has_live_sibling(conn, goal_id):
         return
     n = int(row["attempts"])
     if n >= SHELVE_THRESHOLD:
@@ -1113,13 +1103,11 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             # excludes it and the dispatcher idle-exits with budget
             # still available. Mirrors verify.py:218-224's has_live
             # check.
-            has_live = conn.execute(
-                "SELECT 1 FROM strategies WHERE goal_id = ?"
-                " AND status IN ('proposed','succeeded') LIMIT 1",
-                (int(target_id),),
-            ).fetchone()
-            if has_live is not None:
-                db.update_goal_status(conn, int(target_id), "attempting")
+            if transitions.has_live_sibling(
+                    conn, int(target_id), statuses=("proposed", "succeeded")):
+                transitions.apply_goal_transition(
+                    conn, int(target_id), "attempting",
+                    event="backward_decomposed")
             return
         # Phase 7 — `exhausted` outcome: mirrors Builder branch above.
         # Helper buffered N dead_attempts + N attempts++ for the N

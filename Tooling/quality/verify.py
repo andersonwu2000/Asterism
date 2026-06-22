@@ -203,12 +203,7 @@ def verify_housekeeping(
                 transitions.apply_strategy_transition(
                     conn, sid, "dead", event="verify_dead")
                 n = db.increment_goal_attempts(conn, goal_id)
-                has_live = conn.execute(
-                    "SELECT 1 FROM strategies WHERE goal_id = ?"
-                    " AND status = 'proposed' LIMIT 1",
-                    (goal_id,),
-                ).fetchone()
-                if has_live is not None:
+                if transitions.has_live_sibling(conn, goal_id):
                     # Sibling strategy still in flight (e.g. Strategist
                     # parallel inject): defer terminal so we don't kill
                     # working work mid-flight. The deferred shelve

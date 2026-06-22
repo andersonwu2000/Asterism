@@ -146,6 +146,53 @@ STRATEGY_EDGES: frozenset[tuple[str, str]] = frozenset({
 # ---------------------------------------------------------------------------
 
 
+# Event taxonomy — the SoT of the `event=` labels every apply_*_transition
+# call passes. Grouped by the pipeline / mechanism that fires them. A test
+# (test_transitions.py::test_event_labels_are_registered) scans the source and
+# asserts the set of labels actually used equals this set, so introducing a new
+# event is a single-point change here that CI enforces.
+EVENTS: frozenset[str] = frozenset({
+    # cascade_one (worker-result adapter) + propagation cluster
+    "set_terminal", "descendant_cascade", "enqueue_review",
+    "reopen_after_cascade", "reopen_after_strategy_loss",
+    "backward_decomposed", "inward_kill", "parent_stall", "upward_kill",
+    "sibling_won", "parent_shelved_race",
+    # backward pipeline
+    "skeleton_failed", "moot_retain", "agent_failed",
+    "backward_alias_proved", "backward_sorryfree_proved", "backward_revive",
+    # forward pipeline
+    "forward_lemma_proved", "forward_alias_proved", "forward_reuse_revive",
+    # strategist
+    "strategist_reopen", "strategist_unstall",
+    # verify housekeeping + axiom-probe rollback
+    "verify_proved", "verify_dead", "verify_reopen", "assembly_sorry_gate",
+    "rollback_culprit", "rollback_upstream", "rollback_unsupersede",
+})
+
+
+def has_live_sibling(conn: sqlite3.Connection, goal_id: int, *,
+                     statuses: "tuple[str, ...]" = ("proposed",)) -> bool:
+    """True iff `goal_id` has any strategy whose status is in `statuses`
+    (default: a still-'proposed' strategy).
+
+    Single definition of the "is a strategy still in flight for this goal"
+    guard. Previously this exact `SELECT 1 ... LIMIT 1` probe was inlined in
+    four places with subtly different status sets — verify_housekeeping's dead
+    branch, cascade_one's Backward-success branch, `_kill_upward_chain` and
+    `_reconcile_goal_after_strategy_loss` — with cross-referencing comments
+    ("mirrors verify.py:218-224"). Centralising it removes that drift risk:
+    the Backward-success branch passes `("proposed", "succeeded")` (a live OR a
+    just-won strategy); everyone else takes the default.
+    """
+    placeholders = ",".join("?" * len(statuses))
+    row = conn.execute(
+        f"SELECT 1 FROM strategies WHERE goal_id = ?"
+        f" AND status IN ({placeholders}) LIMIT 1",
+        (goal_id, *statuses),
+    ).fetchone()
+    return row is not None
+
+
 class IllegalTransition(RuntimeError):
     """Raised (strict mode only) when a (from, to) edge is not declared in the
     registry. In lenient/production mode the same condition is logged with a
