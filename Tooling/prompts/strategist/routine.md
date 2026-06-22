@@ -13,7 +13,7 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
    - Is the tree reinventing a property mathlib already has?
    - Are there complex or verbose constructs that should have been pre-defined as named abstractions?
 
-4. **Decide.** Multiple decisions in one batch are fine. Output as `decision.json` — JSON array of one or more decisions.
+4. **Decide.** Multiple decisions in one batch are fine. Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
    - Any structural defect → `ConfirmShelve` the defective branch + `Inject` the right direction
    - Tree is sound → `EmitDirective` with a short situation summary + suggestions for the whole team
    - User file is wrong → `RequestUserAmend`

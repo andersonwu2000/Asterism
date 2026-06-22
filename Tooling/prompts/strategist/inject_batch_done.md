@@ -18,7 +18,7 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
 
 4. **Edge case**: if Context.md also has `## Framework stalled` (tree has nothing dispatchable and no in-flight worker) → emit at least one `Inject`, else framework idles until the next routine tick.
 
-Output as `decision.json` — JSON array of one or more decisions.
+Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
 
 **Difficulty alone is not a reason to give up.** Don't shelve just because the brick was harder than expected.
 

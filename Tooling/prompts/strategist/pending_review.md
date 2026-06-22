@@ -15,7 +15,7 @@ Also check `## Recent decisions` for your prior decisions and their outcomes.
    - Ontological — the goal-as-stated is provably false / wrong abstraction; should not exist in this form
    - Missing prereq — needed vocabulary / theorem / abstraction is absent; needs Forward to build
 
-4. **Decide.** Multiple decisions in one batch are fine. Output as `decision.json` — JSON array of one or more decisions.
+4. **Decide.** Multiple decisions in one batch are fine. Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
    - Tactical → `Inject(<pipeline>, brief=...)` back to the original goal pointing at the missed API or correct sub-path
    - Structural → `ConfirmShelve` this goal + `Inject` on ancestor with reframed angle
    - Ontological → `ConfirmShelve` + escalate upward (or `RequestUserAmend` if user file is wrong)
