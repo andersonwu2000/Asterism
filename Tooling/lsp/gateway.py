@@ -1082,6 +1082,20 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
                  + lines[end_line:])
     new_content = "\n".join(new_lines)
 
+    # Echo the post-edit region with CURRENT 1-indexed line numbers (±2 lines
+    # of context) so the agent re-anchors from ground truth after every edit
+    # instead of tracking line positions itself. Stale positions — line
+    # numbers that drifted when a prior edit changed the line count — are what
+    # made a later apply_edit splice at the wrong range (duplicated signature,
+    # dropped `:= by`, clobbered `have`): the recurring corruption in
+    # agent_feedback (C1). Seeing the actual result makes a misfire obvious
+    # immediately rather than via a confusing downstream diagnostic.
+    _nt = new_text.split("\n")
+    _lo = max(1, start_line - 2)
+    _hi = min(len(new_lines), start_line + len(_nt) - 1 + 2)
+    post_edit_region = "\n".join(
+        f"{i}: {new_lines[i - 1]}" for i in range(_lo, _hi + 1))
+
     # Disk + mirror hold the RAW patch (write-through for the framework
     # cascade); the slot elaborates the MERGED compilation unit (patch +
     # Defs opens + referenced sibling stubs) so cited siblings resolve and
@@ -1131,6 +1145,7 @@ def apply_edit(start_line: int, end_line: int, new_text: str) -> str:
     response = {
         "edit": (f"replaced lines {start_line}-{end_line}; "
                  f"file is now {len(new_lines)} lines"),
+        "post_edit_region": post_edit_region,
         "goal_at_edit_start": goal_text,
         "diagnostics": formatted,
         "diagnostic_count": len(formatted),

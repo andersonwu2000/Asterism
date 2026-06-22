@@ -68,11 +68,31 @@ _WARN_MSG = ("the rewrite is green and type-safe, but these warnings remain — 
              "a single decl with a one-line justification):\n")
 
 
+def _library_name_index(workspace: Path,
+                        exclude_rel: str) -> "dict[str, list[str]]":
+    """Leaf decl name -> Library paths declaring it (excluding `exclude_rel`),
+    parsed from `Library/INDEX.md`. Lets the audit agent enforce the
+    no-cross-library-collision rule inline instead of scanning every Library
+    file (agent_feedback C4-B)."""
+    out: "dict[str, list[str]]" = {}
+    try:
+        text = (workspace / "Library" / "INDEX.md").read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for m in re.finditer(r"`([\w.]+)`\s*→\s*`([^`]+)`", text):
+        fqn, path = m.group(1), m.group(2)
+        if path == exclude_rel:
+            continue
+        out.setdefault(fqn.rsplit(".", 1)[-1], []).append(path)
+    return out
+
+
 def _audit_context(workspace: Path, problem: str, rel: str,
                    decl_names: "list[str]") -> str:
     """Per-file context (cold spawn) for the audit agent: module, declarations,
-    and the verbatim file. Retry feedback (gate violation / residual warnings)
-    flows through `run_with_session_retries`' `retry_context`, not here."""
+    a cross-library name-clash check, and the verbatim file. Retry feedback
+    (gate violation / residual warnings) flows through
+    `run_with_session_retries`' `retry_context`, not here."""
     try:
         body = (workspace / rel).read_text(encoding="utf-8")
     except OSError:
@@ -81,8 +101,29 @@ def _audit_context(workspace: Path, problem: str, rel: str,
         f"# Final mathlib review — {problem} — `{rel}`", "",
         f"Module: `{C._mod_of_rel(rel)}`.",
         f"Declarations: {', '.join(decl_names) or '(none)'}", "",
-        "## Current file", "", "```lean", body.rstrip(), "```", "",
     ]
+    # Cross-library name check (agent_feedback C4-B): surface any of this
+    # file's decls whose leaf name is already declared elsewhere in the
+    # Library so the agent can enforce the no-collision rule without scanning
+    # every file. A duplicate FQN fails the build with `environment already
+    # contains` (the residue_thm `Complex.residue` clash); a same-leaf but
+    # distinct-FQN name is fine. Full inventory: `Library/INDEX.md`.
+    name_index = _library_name_index(workspace, rel)
+    clashes = [(d, name_index[d]) for d in decl_names if d in name_index]
+    if clashes:
+        lines.append("## ⚠️ Cross-library leaf-name clashes — verify the full "
+                     "name differs, else rename (a duplicate FQN fails the "
+                     "build with `environment already contains`)")
+        for d, paths in clashes:
+            lines.append(f"- `{d}` also declared in: "
+                         + ", ".join(f"`{p}`" for p in paths))
+        lines.append("")
+    else:
+        lines.append("Cross-library name check: no leaf-name clashes with "
+                     "existing Library decls (full inventory: "
+                     "`Library/INDEX.md`).")
+        lines.append("")
+    lines += ["## Current file", "", "```lean", body.rstrip(), "```", ""]
     return "\n".join(lines) + "\n"
 
 

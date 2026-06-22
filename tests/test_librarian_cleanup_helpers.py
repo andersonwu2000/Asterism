@@ -509,3 +509,47 @@ def test_normalize_whitespace_skips_frozen(monkeypatch, tmp_path):
         tmp_path, "P", rel, frozen={"windingNumber"})
     assert changed is False                              # frozen line skipped
     assert f.read_text(encoding="utf-8") == src          # marker stripped, untouched
+
+
+# ---------------------------------------------------------------------
+# C4-B: audit cross-library name-clash check (Library/INDEX.md → leaf index)
+# ---------------------------------------------------------------------
+
+def test_library_name_index_parses_and_excludes_self(tmp_path):
+    idx = tmp_path / "Library" / "INDEX.md"
+    idx.parent.mkdir(parents=True)
+    idx.write_text(
+        "# Library Index\n\n"
+        "- `Library.A.Foo.residue` → `Library/A/Foo.lean`\n"
+        "- `Complex.residue` → `Library/B/Bar.lean`\n"
+        "- `Library.A.Foo.other` → `Library/A/Foo.lean`\n",
+        encoding="utf-8")
+    ix = A._library_name_index(tmp_path, "Library/A/Foo.lean")
+    assert ix.get("residue") == ["Library/B/Bar.lean"]   # self path excluded
+    assert "other" not in ix                              # only in self file
+    # Missing INDEX → empty, no crash.
+    assert A._library_name_index(tmp_path / "nope", "x") == {}
+
+
+def test_audit_context_surfaces_cross_library_clash(tmp_path):
+    (tmp_path / "Library").mkdir()
+    (tmp_path / "Library" / "INDEX.md").write_text(
+        "- `Complex.residue` → `Library/B/Bar.lean`\n", encoding="utf-8")
+    f = tmp_path / "Library" / "A" / "Foo.lean"
+    f.parent.mkdir(parents=True)
+    f.write_text("namespace Complex\ntheorem residue : True := trivial\n"
+                 "end Complex\n", encoding="utf-8")
+    ctx = A._audit_context(tmp_path, "p", "Library/A/Foo.lean", ["residue"])
+    assert "Cross-library leaf-name clashes" in ctx
+    assert "Library/B/Bar.lean" in ctx
+
+
+def test_audit_context_clean_when_no_clash(tmp_path):
+    (tmp_path / "Library").mkdir()
+    (tmp_path / "Library" / "INDEX.md").write_text(
+        "- `Library.B.Bar.unrelated` → `Library/B/Bar.lean`\n", encoding="utf-8")
+    f = tmp_path / "Library" / "A" / "Foo.lean"
+    f.parent.mkdir(parents=True)
+    f.write_text("theorem foo : True := trivial\n", encoding="utf-8")
+    ctx = A._audit_context(tmp_path, "p", "Library/A/Foo.lean", ["foo"])
+    assert "no leaf-name clashes" in ctx

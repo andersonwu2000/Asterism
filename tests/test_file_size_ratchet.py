@@ -183,7 +183,10 @@ _WATERMARKS = {
     # 350→400: parse_fn reads the agent's session token and threads it to the
     # whole-file warnings gate so it verifies on the agent's warm claimed slot
     # (#35 stage 3; the #check type gate stays cold) — 2026-06-19 — conscious bump.
-    "Tooling/quality/librarian/cleanup/audit.py": 400,
+    # 400→440: C4-B — audit context surfaces cross-library leaf-name clashes
+    # (Library/INDEX.md → _library_name_index) so the agent enforces the
+    # no-collision rule inline — 2026-06-22 — conscious bump.
+    "Tooling/quality/librarian/cleanup/audit.py": 440,
     # 250→325: precise imports computed MECHANICALLY (`_compute_min_imports` /
     # `_parse_missing_imports` / `_inject_import_bumps`, driving mathlib's
     # `#import_bumps`) instead of the LLM guessing + retrying — eliminates the

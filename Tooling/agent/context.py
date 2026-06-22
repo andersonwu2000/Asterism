@@ -402,7 +402,8 @@ def _section_proved_goals_tokens(text: str) -> set[str]:
 
 
 def _section_proved_goals(conn: sqlite3.Connection,
-                          goal: sqlite3.Row) -> list[str]:
+                          goal: sqlite3.Row,
+                          workspace: Path) -> list[str]:
     """Top-K curated proved siblings + grep entrypoint footer.
 
     Pre-2026-05-26: pure grep entrypoint ("N goals — go search proofs/")
@@ -437,7 +438,7 @@ def _section_proved_goals(conn: sqlite3.Connection,
     scored: list[tuple[int, sqlite3.Row]] = []
     if parent_tokens:
         for r in conn.execute(
-            "SELECT id, slug, statement FROM goals "
+            "SELECT id, slug, statement, lean_path FROM goals "
             "WHERE problem = ? AND status = 'proved' "
             "  AND id != ? AND alias_target_id IS NULL",
             (goal["problem"], goal["id"]),
@@ -460,12 +461,23 @@ def _section_proved_goals(conn: sqlite3.Connection,
             "suffix variants regardless; this section surfaces alpha-"
             "equivalent siblings whose names diverge.")
         lines.append("")
+        # Show each sibling's FULL signature (binders + conclusion) so the
+        # agent can judge citability inline. The old 140-char statement
+        # preview cut off mid-binders — the single most-reported reuse
+        # friction (agent_feedback C2, ~35) — forcing a Read of the proof
+        # file. Source the signature from the proof file (ground truth,
+        # incl. explicit args the DB statement may omit); fall back to the
+        # DB statement if the file/header can't be read.
+        from ..pipeline import _signature_prefix
         for score, r in top:
-            stmt = (r["statement"] or "").strip().replace("\n", " ")
-            # Single-line preview; truncate gracefully
-            preview = stmt if len(stmt) <= 140 else stmt[:137] + "…"
-            lines.append(
-                f"- `{r['slug']}` (overlap={score}): `{preview}`")
+            sig = ""
+            try:
+                txt = (workspace / r["lean_path"]).read_text(encoding="utf-8")
+                sig = _signature_prefix(txt, r["slug"]).strip()
+            except OSError:
+                sig = ""
+            shown = " ".join((sig or (r["statement"] or "")).split())
+            lines.append(f"- `{r['slug']}` (overlap={score}): `{shown}`")
         lines.append("")
     lines.append(
         f"For broader search beyond the curated 3, grep "
@@ -933,7 +945,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_strategy_naming(strategy_id, goal),
         _section_parent_strategy(conn, goal),
         _section_mathlib_lemmas_from_deads(direct_events, workspace),
-        _section_proved_goals(conn, goal),
+        _section_proved_goals(conn, goal, workspace),
         _section_prior_partial(kind, problem_dir, int(goal["id"])),
         _section_prior_patch(kind, problem_dir, int(goal["id"])),
         _section_goal_history(
