@@ -5,6 +5,11 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-21
+- Improved how newly proved results are filed into the reusable library, computing each result's precise dependencies and ordering them consistently.
+- Dropped the catch-all Mathlib import when existing library files already supplied what a result needed, and kept definitions' original namespaces intact during the move.
+- Reorganized the archiving code into a cleaner structure and removed dead code.
+
 ### 2026-06-20
 - Added automated tidying of code style — normalizing whitespace and blank lines — in the generated proof library, with fixes so that recompiling a file never left its compiled output missing or stale.
 - Strengthened the safety checks that move lemmas between files so they now reject any change that would create a circular dependency among imports.
@@ -148,12 +153,6 @@
 - Proved three classical matrix factorizations in Lean: the QR decomposition (square invertible real matrices), the singular value decomposition (rectangular matrices over the reals or complexes), and Schur triangularization.
 - Made the proving pipeline more reliable by caching already-built lemmas to skip duplicate work, reloading the goal list when it changes on disk, and reclaiming worker sessions left behind by stalled attempts.
 - Tightened error handling so that malformed sub-goals missing a theorem statement are rejected and attempts that run out of tries are routed to review instead of being dropped.
-
-### 2026-05-22
-- Proved that the fundamental group of the circle is isomorphic to ℤ, run as a stress-test target for the prover.
-- Unified the main proving loop across all kinds of declarations via the Curry-Howard correspondence.
-- Refined how open subgoals are set aside, revived, and de-duplicated, and added parallel batching of proof attempts.
-- Added a command-line tool that scores gaps in Mathlib by dependency depth.
 
 <!-- ASTERISM-PROGRESS:END -->
 
