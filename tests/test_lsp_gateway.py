@@ -285,6 +285,41 @@ def test_resync_buffer_from_disk_missing_file_is_noop(
     assert meta.file_content == "in-memory only"
 
 
+def test_sorry_start_col_finds_first_sorry(tmp_path: Path) -> None:
+    """B#4: goal_at's fallback re-queries at the `sorry` token's start (where
+    the goal is still live; empty inside/after — verified 2026-06-22). The
+    helper returns that 0-indexed column on the agent's 1-indexed line."""
+    target = tmp_path / "patch.lean"
+    target.write_text(
+        "theorem t1 : True := by sorry\n"        # sorry @ col 24
+        "theorem t2 (p : Prop) : p := by\n"
+        "  sorry\n"                               # sorry @ col 2
+        "-- a comment line\n",                    # no sorry
+        encoding="utf-8")
+    meta = lsp_gateway.SessionMetadata(
+        pipeline_id="p", target_path=target, problem="p",
+        workspace=tmp_path, log_path=None, file_content="")
+    assert lsp_gateway._sorry_start_col(meta, 1) == 24
+    assert lsp_gateway._sorry_start_col(meta, 3) == 2
+    assert lsp_gateway._sorry_start_col(meta, 4) is None    # no sorry
+    assert lsp_gateway._sorry_start_col(meta, 99) is None   # out of range
+
+
+def test_sorry_start_col_missing_file_is_none(tmp_path: Path) -> None:
+    meta = lsp_gateway.SessionMetadata(
+        pipeline_id="p", target_path=tmp_path / "nope.lean", problem="p",
+        workspace=tmp_path, log_path=None, file_content="")
+    assert lsp_gateway._sorry_start_col(meta, 1) is None
+
+
+def test_goal_present_distinguishes_live_vs_empty() -> None:
+    assert lsp_gateway._goal_present({"goals": ["⊢ True"]})
+    assert lsp_gateway._goal_present({"rendered": "⊢ True"})
+    assert not lsp_gateway._goal_present({"goals": []})
+    assert not lsp_gateway._goal_present({})
+    assert not lsp_gateway._goal_present(None)
+
+
 def test_inline_sibling_stubs_hoists_imports_and_maps_lines() -> None:
     """T3: sibling decls precede content; all imports hoisted+deduped to
     the top; line_map sends content-body lines back to their original

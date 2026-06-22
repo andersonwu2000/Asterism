@@ -958,6 +958,27 @@ def _summarize_goal(result) -> str:
     return "<no goals — proof complete at this position>"
 
 
+def _goal_present(result) -> bool:
+    """True iff plainGoal returned a live goal (vs an empty/closed state)."""
+    return isinstance(result, dict) and bool(
+        result.get("rendered") or result.get("goals"))
+
+
+def _sorry_start_col(meta, line: int) -> "int | None":
+    """Column (0-indexed) of the first `sorry` token on the agent's 1-indexed
+    `line` (its own content frame), or None. goal_at's B#4 fallback re-queries
+    here: a `sorry` admits its goal, so plainGoal is empty AT/INSIDE/AFTER the
+    token but returns the live goal at its START (verified 2026-06-22)."""
+    try:
+        lines = meta.target_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    if not (1 <= line <= len(lines)):
+        return None
+    m = re.search(r"\bsorry\b", lines[line - 1])
+    return m.start() if m else None
+
+
 # ─── MCP tools ───────────────────────────────────
 
 mcp = FastMCP("lsp")
@@ -1150,6 +1171,7 @@ def goal_at(line: int, col: int) -> str:
     # Pick up any external Write/Edit before swap_in didChanges the
     # mirror into the slot, so the goal query sees current disk (T1).
     _resync_buffer_from_disk(meta)
+    resolved_at_sorry: "int | None" = None
     with _acquire_slot(meta, swap_in=True) as (slot, _slot_kind):
         # The slot holds the merged compilation unit; the agent's `line`
         # is in its own content frame, so translate to the merged frame.
@@ -1158,6 +1180,20 @@ def goal_at(line: int, col: int) -> str:
             result = backend.plain_goal(
                 slot.slot_path, line=q_line - 1, character=col, timeout=15
             )
+            # B#4 fallback: a query at/inside/after a `sorry` token sees the
+            # goal already admitted → "no goals". Retry once at the token's
+            # START (where the goal is still live — verified 2026-06-22) so
+            # peeking at an unedited stub (the documented Builder step 1, and
+            # any mid-proof `sorry`) returns the real goal, not a misleading
+            # "proof complete".
+            if not _goal_present(result):
+                s_col = _sorry_start_col(meta, line)
+                if s_col is not None and s_col != col:
+                    retry = backend.plain_goal(
+                        slot.slot_path, line=q_line - 1, character=s_col,
+                        timeout=15)
+                    if _goal_present(retry):
+                        result, resolved_at_sorry = retry, s_col
             goal_text = _summarize_goal(result)
         except Exception as e:
             goal_text = f"<plainGoal failed: {type(e).__name__}: {e}>"
@@ -1166,10 +1202,13 @@ def goal_at(line: int, col: int) -> str:
                     "args": {"line": line, "col": col},
                     "duration_s": dur,
                     "slot_kind": _slot_kind})
-    return json.dumps({"line": line, "col": col, "goal": goal_text,
-                       "_server_recv_ts": _recv_ts,
-                       "_server_send_ts": _ts_now()},
-                      ensure_ascii=False)
+    resp = {"line": line, "col": col, "goal": goal_text,
+            "_server_recv_ts": _recv_ts, "_server_send_ts": _ts_now()}
+    if resolved_at_sorry is not None:
+        resp["note"] = ("queried position had no goal (a `sorry` admits its "
+                        "goal); showing the goal at the `sorry` token "
+                        f"(col {resolved_at_sorry})")
+    return json.dumps(resp, ensure_ascii=False)
 
 
 @mcp.tool()
