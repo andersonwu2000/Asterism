@@ -1647,6 +1647,31 @@ def test_spawn_passes_allowed_tools_for_loogle(
     assert val.startswith("Bash(")
 
 
+def test_spawn_allowed_tools_include_readonly_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Read-only `python -m json.tool` is whitelisted so an agent (esp. the
+    Strategist) can validate its own decision.json before emitting, instead of
+    blind-sending and burning a cycle on a malformed payload (agent_feedback,
+    strategist 06-21/06-22). `python -c` (arbitrary code) stays blocked."""
+    from pathlib import Path
+    from Tooling import llm
+    from Tooling.llm import claude_cli
+
+    captured = _capture_cmd(monkeypatch)
+    p = claude_cli.ClaudeCliProvider()
+    p.spawn(llm.LLMRequest(
+        kind="strategist",
+        prompt_path=Path("/x/p.md"),
+        problem_dir=Path("/x/prob"),
+        attempts_dir=Path("/x/att"),
+        timeout_sec=60,
+    ))
+    val = captured[0][captured[0].index("--allowed-tools") + 1]
+    assert "python -m json.tool" in val          # read-only JSON validation
+    assert "python -c" not in val                # arbitrary code stays blocked
+
+
 def test_allowed_tools_env_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

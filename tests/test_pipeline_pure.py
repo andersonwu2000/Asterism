@@ -608,6 +608,48 @@ def test_build_strategy_skeleton_no_opens_when_parent_has_none() -> None:
     assert sk.startswith("import Mathlib\n\nnamespace Problems.p")
 
 
+def test_build_strategy_skeleton_carries_variable_block() -> None:
+    """T13: the seeded skeleton carries the goal's file-level `variable {...}`
+    binders, not just imports/opens. A signature copied from a manifold/
+    abstract parent often relies on auto-bound `variable` binders rather than
+    spelling them in the head; omitting them elaborates the stub with
+    `unknown identifier` on the binder names and cost a Backward
+    header-reconstruction round-trip (agent_feedback T13). Variables land
+    inside the namespace, above the decl (mirrors the parent's scoping)."""
+    from Tooling.pipeline import _build_strategy_skeleton
+    parent = (
+        "import Mathlib\nimport Problems.p.Defs\n\n"
+        "open scoped Manifold\n\n"
+        "namespace Problems.p\n\n"
+        "variable {M : Type*} [TopologicalSpace M]\n\n"
+        "theorem g (x : M) : x = x := by sorry\n\n"
+        "end Problems.p\n"
+    )
+    sk = _build_strategy_skeleton(
+        parent, parent_slug="g", sid_token="s9", namespace="Problems.p")
+    assert sk is not None
+    assert "variable {M : Type*} [TopologicalSpace M]" in sk
+    # Inside the namespace, above the renamed decl.
+    assert sk.index("namespace Problems.p") < sk.index("variable {M")
+    assert sk.index("variable {M") < sk.index("s9")
+
+
+def test_build_strategy_skeleton_no_variable_when_parent_has_none() -> None:
+    """A parent without a `variable` block seeds a variable-free skeleton —
+    the fix must not fabricate one."""
+    from Tooling.pipeline import _build_strategy_skeleton
+    parent = (
+        "import Mathlib\n\n"
+        "namespace Problems.p\n\n"
+        "theorem g (n : Nat) : n = n := by sorry\n\n"
+        "end Problems.p\n"
+    )
+    sk = _build_strategy_skeleton(
+        parent, parent_slug="g", sid_token="s3", namespace="Problems.p")
+    assert sk is not None
+    assert "variable " not in sk
+
+
 def test_build_strategy_skeleton_preserves_structure_kind() -> None:
     """structure parent with a `:= by sorry` body (rare but legal Lean
     when fields are absent and a default term is provided): preserve

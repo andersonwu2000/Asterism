@@ -128,12 +128,26 @@ def build_strategy_skeleton(
     # pure-analysis sub-goals stay cargo-free.
     opens = [ln for ln in parent_text.splitlines()
              if ln.strip().startswith("open ")]
+    # Carry the goal's file-level `variable {...}` binders too. A signature
+    # copied from the parent often relies on auto-bound `variable` binders
+    # (`variable {M : Type*} [TopologicalSpace M] …` for a manifold goal)
+    # rather than spelling them in the head; without them the skeleton
+    # elaborates with `unknown identifier` / autoImplicit errors on the binder
+    # names, costing a Backward round-trip to reconstruct the preamble from a
+    # sibling (agent_feedback T13, seed-skeleton defects). `variable` only
+    # attaches binders the decl actually references, so copying all of them is
+    # scope-safe — unused ones are ignored. Placed inside the namespace, just
+    # above the decl (mirrors the parent's own scoping).
+    variables = [ln for ln in parent_text.splitlines()
+                 if ln.strip().startswith("variable ")]
     header = "\n".join(imports)
     if opens:
         header += "\n" + "\n".join(opens)
+    var_block = ("\n".join(variables) + "\n\n") if variables else ""
     return (
         header + "\n\n"
         f"namespace {namespace}\n\n"
+        f"{var_block}"
         f"{new_sig} := by sorry\n\n"
         f"end {namespace}\n"
     )

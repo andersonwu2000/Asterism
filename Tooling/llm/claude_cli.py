@@ -499,7 +499,15 @@ DEFAULT_TOOLS = "Read Write Edit Grep Bash"
 # `_compose_allowed_tools` below.
 #
 # Loogle: Mathlib type-pattern search via HTTPS.
-DEFAULT_BASH_ALLOWED = "Bash(python -m Tooling.knowledge.loogle *)"
+# json.tool: read-only JSON self-validation — lets an agent (esp. the
+# Strategist) check its own decision.json parses before emitting, instead of
+# blind-sending and burning a cycle on a malformed payload (agent_feedback,
+# strategist 06-21/06-22). `python -c` stays BLOCKED (arbitrary code); the
+# `json.tool` module is a structured, side-effect-free validator.
+DEFAULT_BASH_ALLOWED = (
+    "Bash(python -m Tooling.knowledge.loogle *) "
+    "Bash(python -m json.tool *)"
+)
 
 
 def resolve_model(kind: str | None) -> str:
