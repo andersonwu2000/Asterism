@@ -6,6 +6,14 @@ You just finished `{kind}` on `{slug}` (outcome=`{outcome}`).
 {lessons_content}
 ```
 
+Standing Strategist directive for this problem (problem-wide guidance every worker cold-start reads):
+
+```
+{directive}
+```
+
+If — and ONLY if — that directive makes a CONCRETE claim that this `{outcome}` specifically disproved or showed is the wrong approach (e.g. "lemma X exists / is provable" when you just refuted it), you may retract it: write the one-line reason to `{attempts_dir}/_directive_retract.md`. The framework clears the directive; the Strategist re-issues a corrected one on its next wake (an absent directive beats a wrong one). High bar — "it was just hard" is NOT grounds; when unsure, do not retract.
+
 Reflect: did this attempt expose a CROSS-SPAWN learnable signal — something a future agent on a DIFFERENT goal in this problem would benefit from?
 
 Bar — only write if all three:

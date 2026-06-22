@@ -193,3 +193,74 @@ def test_reflection_trigger_gate(
         f"outcome={outcome} reason={reason} expected fire={should_fire}, "
         f"got {len(fired)} call(s)"
     )
+
+
+# ---------------------------------------------------------------------
+# C3-A — reflection retracts a directive its attempt disproved (sentinel)
+# ---------------------------------------------------------------------
+
+def _setup_reflection_ws(tmp_path: Path, directive: str):
+    conn = db.connect()
+    db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at, "
+        "bootstrap_done, strategist_directive) VALUES (?, ?, ?, 1, ?)",
+        ("p", "Problems/p/Manifest.md", db.now(), directive),
+    )
+    conn.commit()
+    conn.close()
+    problem_dir = tmp_path / "Problems" / "p"
+    attempts = tmp_path / ".attempts" / "pid"
+    prompt_dir = tmp_path / "prompts"
+    for d in (problem_dir, attempts, prompt_dir):
+        d.mkdir(parents=True)
+    (problem_dir / "LESSONS.md").write_text(
+        "## Lessons\n<!-- LESSONS_BEGIN -->\n", encoding="utf-8")
+    (prompt_dir / "reflection.md").write_text(
+        "{outcome} :: {directive} :: {attempts_dir}", encoding="utf-8")
+    return problem_dir, attempts, prompt_dir
+
+
+def _read_directive_p() -> "str | None":
+    conn = db.connect()
+    try:
+        return conn.execute(
+            "SELECT strategist_directive FROM problems WHERE name='p'"
+        ).fetchone()["strategist_directive"]
+    finally:
+        conn.close()
+
+
+def test_attempt_reflection_retracts_directive_on_sentinel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    problem_dir, attempts, prompt_dir = _setup_reflection_ws(
+        tmp_path, "cite lemma X (it exists)")
+    from Tooling.pipeline import _reflection
+
+    def fake_spawn(**kw):  # agent retracts mid-spawn
+        (attempts / "_directive_retract.md").write_text(
+            "lemma X was disproved this attempt", encoding="utf-8")
+        return 0
+    monkeypatch.setattr(_reflection.agent, "spawn_llm", fake_spawn)
+
+    _reflection.attempt_reflection(
+        kind="backward", sid="s1", slug="g", outcome="failed",
+        problem_dir=problem_dir, attempts_dir=attempts,
+        lessons_cap=5, prompt_dir=prompt_dir, workspace=tmp_path)
+    assert _read_directive_p() is None          # retracted
+
+
+def test_attempt_reflection_keeps_directive_without_sentinel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    problem_dir, attempts, prompt_dir = _setup_reflection_ws(tmp_path, "keep me")
+    from Tooling.pipeline import _reflection
+    monkeypatch.setattr(_reflection.agent, "spawn_llm", lambda **kw: 0)
+    _reflection.attempt_reflection(
+        kind="backward", sid="s1", slug="g", outcome="failed",
+        problem_dir=problem_dir, attempts_dir=attempts,
+        lessons_cap=5, prompt_dir=prompt_dir, workspace=tmp_path)
+    assert _read_directive_p() == "keep me"     # untouched

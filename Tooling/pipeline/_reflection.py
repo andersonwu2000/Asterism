@@ -24,9 +24,11 @@ import threading
 from pathlib import Path
 
 from .. import agent
+from ..state import db
 
 
 _REFLECTION_PROMPT_FILENAME = "_reflection_prompt.md"
+_RETRACT_SENTINEL_FILENAME = "_directive_retract.md"
 _LESSONS_FILENAME = "LESSONS.md"
 _REFLECTION_TIMEOUT_SEC = 120
 
@@ -72,6 +74,37 @@ def _reflection_enabled(workspace: Path | None) -> bool:
     return str(raw).strip().lower() in ("true", "1", "yes", "on")
 
 
+def _read_directive(problem: str) -> str:
+    """Current `problems.strategist_directive` for the problem ('' if none /
+    on any error — best-effort, never raises)."""
+    try:
+        conn = db.connect()
+        try:
+            row = conn.execute(
+                "SELECT strategist_directive FROM problems WHERE name = ?",
+                (problem,),
+            ).fetchone()
+            return (str(row["strategist_directive"]) if row
+                    and row["strategist_directive"] else "")
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 — best-effort
+        return ""
+
+
+def _clear_directive(problem: str) -> None:
+    """Retract the standing directive (C3-A): the reflection agent flagged it
+    as disproved by this attempt. Clear-only — the Strategist owns the content
+    and re-issues a corrected directive on its next wake; an absent directive
+    beats a wrong one. NO Strategist enqueue (no extra spawn)."""
+    conn = db.connect()
+    try:
+        db.set_problem_strategist_directive(conn, problem, None)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def attempt_reflection(*,
                        kind: str,
                        sid: str,
@@ -101,6 +134,16 @@ def attempt_reflection(*,
             lessons_before = _read_lessons(lessons_path)
             used = _count_lesson_lines(lessons_before)
 
+            # C3-A: surface the standing directive so reflection can retract it
+            # if THIS outcome disproved a concrete claim it makes. Clear any
+            # stale sentinel from a prior spawn before this one runs.
+            directive = _read_directive(problem_dir.name)
+            retract_sentinel = attempts_dir / _RETRACT_SENTINEL_FILENAME
+            try:
+                retract_sentinel.unlink()
+            except OSError:
+                pass
+
             template_path = prompt_dir / "reflection.md"
             if not template_path.exists():
                 print(f"[reflection] template missing at {template_path}; "
@@ -115,6 +158,8 @@ def attempt_reflection(*,
                 problem=problem_dir.name,
                 cap=str(lessons_cap), used=str(used),
                 lessons_content=lessons_before or "(empty)",
+                directive=directive or "(no standing directive)",
+                attempts_dir=str(attempts_dir),
                 timeout_min=str(max(1, _REFLECTION_TIMEOUT_SEC // 60)),
             )
             rendered_path = attempts_dir / _REFLECTION_PROMPT_FILENAME
@@ -132,6 +177,18 @@ def attempt_reflection(*,
                 is_postmortem=True,
                 timeout_sec=_REFLECTION_TIMEOUT_SEC,
             )
+
+            # C3-A: honor a directive-retraction sentinel the agent wrote
+            # (only meaningful when a directive was actually standing).
+            if directive and retract_sentinel.exists():
+                try:
+                    reason = retract_sentinel.read_text(
+                        encoding="utf-8").strip()
+                except OSError:
+                    reason = ""
+                _clear_directive(problem_dir.name)
+                print(f"[reflection] {kind} {slug}: retracted strategist "
+                      f"directive — {reason[:160]}", flush=True)
 
             lessons_after = _read_lessons(lessons_path)
             delta = _classify_delta(lessons_before, lessons_after)
