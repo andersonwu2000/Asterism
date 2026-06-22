@@ -21,6 +21,7 @@ Restrictions:
 
 Action:
   - No signal → exit without editing.
+  - An existing bullet is now FALSE or misleading in light of this `{outcome}` (e.g. a claim this attempt disproved or showed was the wrong approach) → Edit that bullet to correct it, regardless of the cap. Reply `replaced N: <correction>`.
   - Signal + cap not full → Edit the file, replace `<!-- LESSONS_BEGIN -->\n` with `<!-- LESSONS_BEGIN -->\n- <one-sentence lesson>\n` (preserving any existing bullet lines after the anchor).
   - Signal + cap full → compare your candidate vs each existing bullet. If strictly stronger than the weakest, Edit the weakest line in place. Otherwise skip.
 
