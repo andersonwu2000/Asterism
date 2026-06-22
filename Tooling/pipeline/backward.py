@@ -41,7 +41,7 @@ from pathlib import Path
 
 from .. import agent
 from ..agent import context
-from ..state import db, manifest, proof_store
+from ..state import db, manifest, proof_store, transitions
 from ..quality import dedupe, diagnostics
 from . import _axiom
 from ._cite_gate import _PROBLEM_IMPORT_RE, _resolve_cite_dependencies
@@ -506,7 +506,8 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         namespace=namespace,
     )
     if skeleton is None:
-        db.update_strategy_status(conn, strategy_id, "dead")
+        transitions.apply_strategy_transition(
+            conn, strategy_id, "dead", event="skeleton_failed")
         return PipelineResult(
             outcome="failed",
             failure_reason="parent_stub_not_decomposable",
@@ -737,11 +738,13 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                 (strategy_id,),
             ).fetchone()
             if row and (row["proposal_md"] or row["scratch_path"]):
-                db.update_strategy_status(conn, strategy_id, "dead")
+                transitions.apply_strategy_transition(
+                    conn, strategy_id, "dead", event="moot_retain")
             else:
                 db.delete_strategy(conn, strategy_id)
         else:
-            db.update_strategy_status(conn, strategy_id, "dead")
+            transitions.apply_strategy_transition(
+                conn, strategy_id, "dead", event="agent_failed")
 
     return result
 
@@ -1584,7 +1587,8 @@ def _backward_parse_and_commit(
             if match is not None:
                 # Past the same_as_disproved / no_progress early-returns →
                 # kind is "alias" (in-problem) or "library_alias" (A).
-                db.update_goal_status(conn, new_gid, "proved")
+                transitions.apply_goal_transition(
+                    conn, new_gid, "proved", event="backward_alias_proved")
                 if match.kind == "library_alias":
                     # Canonical is a committed Library decl, not an in-DB
                     # goal — no alias_target_id (prune doesn't manage
@@ -1603,7 +1607,9 @@ def _backward_parse_and_commit(
                     axioms_whitelist=mfst.axioms_whitelist,
                 )
                 if ok:
-                    db.update_goal_status(conn, new_gid, "proved")
+                    transitions.apply_goal_transition(
+                        conn, new_gid, "proved",
+                        event="backward_sorryfree_proved")
                     print(f"[skip-dispatch] {slug} → proved ({msg})",
                           flush=True)
             linked_ids.append(new_gid)
@@ -1632,7 +1638,8 @@ def _backward_parse_and_commit(
             # skip any the time-of-check/use race already moved to a
             # non-revivable terminal.
             if cur is not None and str(cur["status"]) == "shelved":
-                db.update_goal_status(conn, rid, "open")
+                transitions.apply_goal_transition(
+                    conn, rid, "open", event="backward_revive")
                 print(f"[backward-revive] cited sibling goal {rid} "
                       f"({cur['slug']}) shelved → open", flush=True)
         next_pos = len(linked_ids)

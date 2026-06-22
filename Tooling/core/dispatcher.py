@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .. import agent, pipeline
 from . import config
-from ..state import db, manifest, tree
+from ..state import db, manifest, transitions, tree
 from ..quality import prune, verify
 
 
@@ -194,7 +194,8 @@ def _cascade_shelve_descendants(
                     if sub_status == "proved":
                         next_frontier.append(sub_id)
                     continue
-                db.update_goal_status(conn, sub_id, "shelved")
+                transitions.apply_goal_transition(
+                    conn, sub_id, "shelved", event="descendant_cascade")
                 # Symmetric with `_propagate_shelve`: a cascade-shelved
                 # descendant must also stop its own proposed strategies
                 # from trying to prove it. Without this, status='shelved'
@@ -283,7 +284,8 @@ def _set_goal_terminal_and_propagate(
         print(f"[goal-terminal] g{goal_id} ({slug}) → {status} "
               f"attempts={n} caller={caller}",
               flush=True)
-    db.update_goal_status(conn, goal_id, status)
+    transitions.apply_goal_transition(
+        conn, goal_id, status, event="set_terminal")
     d = db.propagate_inject_outcome_from_goal(conn, goal_id)
     if d is not None:
         _maybe_enqueue_inject_batch_done(conn, d)
@@ -370,7 +372,8 @@ def _enqueue_strategist_review(conn: sqlite3.Connection,
     # update_goal_status() flips integrity_verified=0 for any
     # non-'proved' transition; we want that for stability since the
     # goal may later be Reopen'd.
-    db.update_goal_status(conn, goal_id, "pending_strategist_review")
+    transitions.apply_goal_transition(
+        conn, goal_id, "pending_strategist_review", event="enqueue_review")
 
     # Find this problem's root goal — Strategist queue target.
     root_row = conn.execute(
@@ -507,7 +510,8 @@ def _inward_kill_strategies(conn: sqlite3.Connection,
         (goal_id,),
     ).fetchall()]
     for sid in sids:
-        db.update_strategy_status(conn, sid, "dead")
+        transitions.apply_strategy_transition(
+            conn, sid, "dead", event="inward_kill")
 
 
 def _maybe_stall_parent_strategies(conn: sqlite3.Connection,
@@ -557,7 +561,8 @@ def _maybe_stall_parent_strategies(conn: sqlite3.Connection,
         if (total > 0 and alive == 0 and comp.get("shelved", 0) >= 1
                 and comp.get("disproved", 0) == 0
                 and comp.get("dead", 0) == 0):
-            db.update_strategy_status(conn, sid, "stalled")
+            transitions.apply_strategy_transition(
+                conn, sid, "stalled", event="parent_stall")
 
 
 def _propagate_shelve(conn: sqlite3.Connection, goal_id: int) -> None:
@@ -606,7 +611,8 @@ def _kill_upward_chain(conn: sqlite3.Connection, goal_id: int,
 
     for s in parent_strategies:
         sid = int(s["id"])
-        db.update_strategy_status(conn, sid, "dead")
+        transitions.apply_strategy_transition(
+            conn, sid, "dead", event="upward_kill")
         # Sibling-orphan sweep: every OTHER subgoal of this just-killed
         # strategy is now an orphan — the strategy whose AND-chain held
         # them together is dead, but the sibling's own status is
@@ -688,7 +694,8 @@ def _kill_upward_chain(conn: sqlite3.Connection, goal_id: int,
                 # Inject. Mirrors the agent_shelved path.
                 _enqueue_strategist_review(conn, gid)
         else:
-            db.update_goal_status(conn, gid, "open")
+            transitions.apply_goal_transition(
+                conn, gid, "open", event="reopen_after_cascade")
 
 
 def _reconcile_goal_after_strategy_loss(
@@ -722,7 +729,8 @@ def _reconcile_goal_after_strategy_loss(
     if n >= SHELVE_THRESHOLD:
         _enqueue_strategist_review(conn, goal_id)
     else:
-        db.update_goal_status(conn, goal_id, "open")
+        transitions.apply_goal_transition(
+            conn, goal_id, "open", event="reopen_after_strategy_loss")
 
 
 def _propagate_disproved(conn: sqlite3.Connection, goal_id: int) -> None:
@@ -883,8 +891,9 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 # Sibling won the OR race; finalize this strategy as
                 # superseded so bfs_refill stops considering it ready.
                 if row["status"] == "proposed":
-                    db.update_strategy_status(conn, int(target_id),
-                                              "superseded")
+                    transitions.apply_strategy_transition(
+                        conn, int(target_id), "superseded",
+                        event="sibling_won")
                 return
             if row["goal_status"] == "shelved":
                 # Cascade race guard: parent goal was shelved while
@@ -892,8 +901,9 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
                 # moot; mark dead so invariant `proposed → parent alive`
                 # holds.
                 if row["status"] == "proposed":
-                    db.update_strategy_status(conn, int(target_id),
-                                              "dead")
+                    transitions.apply_strategy_transition(
+                        conn, int(target_id), "dead",
+                        event="parent_shelved_race")
                 return
     elif target_kind == "Goal":
         row = conn.execute(

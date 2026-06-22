@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any  # noqa: F401 — used in string annotations (mfst/return)
 
-from ..state import db, proof_store
+from ..state import db, proof_store, transitions
 
 
 def _auto_prepend_candidate_imports(
@@ -329,7 +329,8 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
     # class) also benefit defensively even though their status='proved'.
     db.set_goal_detached(conn, goal_id, True)
     if initial_status == "proved":
-        db.update_goal_status(conn, goal_id, "proved")
+        transitions.apply_goal_transition(
+            conn, goal_id, "proved", event="forward_lemma_proved")
     conn.commit()
     return CommitOutcome(goal_id=goal_id, lean_path=rel_lean_path,
                          status=initial_status)
@@ -431,7 +432,8 @@ def commit_forward_alias(conn: sqlite3.Connection, *,
     # Same detached + proved bookkeeping as a sorry-free leaf-bypass
     # Forward (commit_forward_lemma) — the alias body is sorry-free.
     db.set_goal_detached(conn, goal_id, True)
-    db.update_goal_status(conn, goal_id, "proved")
+    transitions.apply_goal_transition(
+        conn, goal_id, "proved", event="forward_alias_proved")
     if canonical_goal_id is not None:
         # Record the alias edge so prune retains the canonical while this
         # alias is alive (library_alias has no in-DB goal → skip).
@@ -707,7 +709,8 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
             x_status = str(x["status"]) if x else "?"
             if (x is not None and x_status == "shelved"
                     and not db.is_confirm_shelve_parked(conn, x_id)):
-                db.update_goal_status(conn, x_id, "open")
+                transitions.apply_goal_transition(
+                    conn, x_id, "open", event="forward_reuse_revive")
                 db.set_goal_detached(conn, x_id, True)
                 conn.commit()
                 print(f"[forward-reuse] revived+detached cascade-shelved goal "

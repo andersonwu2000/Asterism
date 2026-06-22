@@ -37,7 +37,7 @@ import sys
 from pathlib import Path
 from typing import Literal, TYPE_CHECKING
 
-from ..state import db, manifest, tree
+from ..state import db, manifest, transitions, tree
 from ..pipeline._lake import lean_path_to_module
 
 if TYPE_CHECKING:
@@ -93,8 +93,8 @@ def verify_strategy(
     from ..pipeline._assembly import assembly_gate_check_sorry
     ok, msg = assembly_gate_check_sorry(scratch_abs)
     if not ok:
-        conn.execute("UPDATE strategies SET status='dead' WHERE id = ?",
-                     (strategy_id,))
+        transitions.apply_strategy_transition(
+            conn, strategy_id, "dead", event="assembly_sorry_gate")
         conn.commit()
         return "dead"
 
@@ -173,7 +173,8 @@ def verify_housekeeping(
                 _refresh_trees(conn, workspace, touched_goals)
                 return counts
             if outcome == "proved":
-                db.update_strategy_status(conn, sid, "succeeded")
+                transitions.apply_strategy_transition(
+                    conn, sid, "succeeded", event="verify_proved")
                 dispatcher._set_goal_terminal_and_propagate(
                     conn, goal_id, "proved")
                 db.mark_other_strategies_superseded(
@@ -199,7 +200,8 @@ def verify_housekeeping(
                 if olean_warmer is not None:
                     olean_warmer.submit(workspace / s["lean_path"])
             elif outcome == "dead":
-                db.update_strategy_status(conn, sid, "dead")
+                transitions.apply_strategy_transition(
+                    conn, sid, "dead", event="verify_dead")
                 n = db.increment_goal_attempts(conn, goal_id)
                 has_live = conn.execute(
                     "SELECT 1 FROM strategies WHERE goal_id = ?"
@@ -218,7 +220,8 @@ def verify_housekeeping(
                 elif n >= dispatcher.SHELVE_THRESHOLD:
                     dispatcher._enqueue_strategist_review(conn, goal_id)
                 else:
-                    db.update_goal_status(conn, goal_id, "open")
+                    transitions.apply_goal_transition(
+                        conn, goal_id, "open", event="verify_reopen")
                 conn.commit()
                 counts["dead"] += 1
                 touched_goals.add(goal_id)
@@ -465,19 +468,25 @@ def rollback_cascade_chain(
         # ready-for-verify (status='proposed' with sub-goals reverted
         # to attempting/open).
         if is_culprit:
-            db.update_strategy_status(conn, s["id"], "dead")
-            db.update_goal_status(conn, s["g_id"], "open")
+            transitions.apply_strategy_transition(
+                conn, s["id"], "dead", event="rollback_culprit")
+            transitions.apply_goal_transition(
+                conn, s["g_id"], "open", event="rollback_culprit")
         else:
-            db.update_strategy_status(conn, s["id"], "proposed")
-            db.update_goal_status(conn, s["g_id"], "attempting")
+            transitions.apply_strategy_transition(
+                conn, s["id"], "proposed", event="rollback_upstream")
+            transitions.apply_goal_transition(
+                conn, s["g_id"], "attempting", event="rollback_upstream")
         # Un-supersede siblings on this goal (they were sidelined when
         # this strategy claimed the win; with the win revoked, they're
         # back in play).
-        conn.execute(
-            "UPDATE strategies SET status = 'proposed'"
+        for sib in conn.execute(
+            "SELECT id FROM strategies"
             " WHERE goal_id = ? AND status = 'superseded' AND id != ?",
             (s["g_id"], s["id"]),
-        )
+        ).fetchall():
+            transitions.apply_strategy_transition(
+                conn, int(sib["id"]), "proposed", event="rollback_unsupersede")
         rolled += 1
         # Walk upward: find the strategy whose sub-goal is this
         # strategy's goal. There's at most one parent strategy per

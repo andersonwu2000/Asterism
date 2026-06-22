@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..state import db
+from ..state import db, transitions
 from ..core import dispatcher as _dispatcher
 
 
@@ -732,7 +732,8 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
     g = db.get_goal(conn, target_id)
     if g and str(g["status"]) in ("shelved", "pending_strategist_review",
                                    "frozen"):
-        db.update_goal_status(conn, target_id, "open")
+        transitions.apply_goal_transition(
+            conn, target_id, "open", event="strategist_reopen")
         if _dispatcher._has_dead_strategy_in_chain(conn, target_id):
             db.set_goal_detached(conn, target_id, True)
         # Un-stall the upward chain (Phase 11): a parent strategy PARKED
@@ -748,7 +749,8 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
             " WHERE ss.subgoal_id = ? AND s.status = 'stalled'",
             (target_id,),
         ).fetchall():
-            db.update_strategy_status(conn, int(s["id"]), "proposed")
+            transitions.apply_strategy_transition(
+                conn, int(s["id"]), "proposed", event="strategist_unstall")
 
     # Pin entry_kind to the requested pipeline so bfs_refill doesn't
     # enqueue a parallel pipeline of the prior kind. Without this, an
