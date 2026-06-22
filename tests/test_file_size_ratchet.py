@@ -146,7 +146,13 @@ _WATERMARKS = {
     # 3120→3150: librarian STALL log surfaces failure_detail by pipeline_id
     # (df77f05) + self-start gated on integrity_verified (446533a, classify-time
     # TOCTOU) — 2026-06-17 — conscious bump.
-    "Tooling/core/dispatcher.py": 3150,
+    # 3150→2200: #11 P2 — propagation cluster + cascade_one (~960 lines) moved
+    # to state/transitions.py; ratchet down to lock the gain — 2026-06-22.
+    "Tooling/core/dispatcher.py": 2200,
+    # #11 — state-transition machine (canonical states, edge registry, checked
+    # mutators, guard predicates, propagation cluster + cascade_one relocated
+    # here in P2) — 2026-06-22.
+    "Tooling/state/transitions.py": 1300,
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.
