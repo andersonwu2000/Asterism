@@ -5,6 +5,15 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-23
+- Enabled the system to retract or correct its own earlier guidance once a proof attempt shows that guidance to be false.
+- Gave the proving agent more local context, surfacing relevant definitions' signatures, clashing names, and the lines around its most recent edit.
+
+### 2026-06-22
+- Tightened internal bookkeeping so the database and on-disk proof files can no longer drift apart, routing every proof-file change through a single consistency checkpoint and all proof-state changes through one guarded gateway.
+- Improved handling of incomplete proofs, letting the prover read the goal at an unsolved `sorry`, carry variable declarations into generated proof skeletons, and validate its own output.
+- Made the system more resilient by recovering the minimal set of library imports when import-trimming times out and by reliably cleaning up spawned helper processes.
+
 ### 2026-06-21
 - Improved how newly proved results are filed into the reusable library, computing each result's precise dependencies and ordering them consistently.
 - Dropped the catch-all Mathlib import when existing library files already supplied what a result needed, and kept definitions' original namespaces intact during the move.
@@ -143,16 +152,6 @@
 ### 2026-05-25
 - Extended the dependency-pruning step to recognize problem names written with a domain prefix.
 - Improved robustness by skipping missing or unparseable index files when loading, and moved generation of compiled Lean artifacts off the maintenance critical path.
-
-### 2026-05-24
-- Refined how proof hints are supplied, attaching a tailored hint block to each subgoal and dropping a now-redundant earlier hinting pass.
-- Added a startup recovery step that salvages leftover partial proof fragments into per-goal drafts so earlier progress isn't lost.
-- Wrote up the prover's overall workflow as a standalone document and gave each proof attempt slightly more time to run.
-
-### 2026-05-23
-- Proved three classical matrix factorizations in Lean: the QR decomposition (square invertible real matrices), the singular value decomposition (rectangular matrices over the reals or complexes), and Schur triangularization.
-- Made the proving pipeline more reliable by caching already-built lemmas to skip duplicate work, reloading the goal list when it changes on disk, and reclaiming worker sessions left behind by stalled attempts.
-- Tightened error handling so that malformed sub-goals missing a theorem statement are rejected and attempts that run out of tries are routed to review instead of being dropped.
 
 <!-- ASTERISM-PROGRESS:END -->
 
