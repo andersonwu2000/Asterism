@@ -149,10 +149,6 @@
 - Made proof search more efficient by supplying a handful of closely related, already-proved results as context and by skipping goals that duplicate earlier attempts.
 - Tightened safeguards so that proofs still containing unfinished placeholders are caught, and added protections against accidentally discarding valid results during cleanup.
 
-### 2026-05-25
-- Extended the dependency-pruning step to recognize problem names written with a domain prefix.
-- Improved robustness by skipping missing or unparseable index files when loading, and moved generation of compiled Lean artifacts off the maintenance critical path.
-
 <!-- ASTERISM-PROGRESS:END -->
 
 
