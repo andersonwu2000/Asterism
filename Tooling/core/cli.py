@@ -14,7 +14,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..state import brief, db, kb, manifest, tree
+from ..state import brief, db, kb, kb_ingest, manifest, tree
 from . import dispatcher
 from ..quality import prune
 
@@ -1509,19 +1509,21 @@ def _force_utf8_io() -> None:
 
 
 def cmd_kb_migrate(args: argparse.Namespace) -> int:
-    """Bootstrap the knowledge base from existing LESSONS.md files (Phase 12
-    step 3). Idempotent: re-syncs every registered problem's bullets into
-    kb_entries as reflection lessons, so it is safe to re-run."""
+    """Rebuild the knowledge base from existing sources (Phase 12 steps 3 / 1b).
+    Idempotent: re-syncs every problem's LESSONS.md bullets into reflection
+    lessons, then re-ingests `.drafts` blockers + `dead_attempts` rationale into
+    antipattern entries. Safe to re-run."""
     workspace = Path.cwd()
     conn = db.connect()
     db.init_schema(conn)
     try:
-        n = kb.migrate_all_lessons(conn, workspace)
+        lessons = kb.migrate_all_lessons(conn, workspace)
+        antis = kb_ingest.ingest_antipatterns(conn, workspace)
         total = conn.execute("SELECT COUNT(*) FROM kb_entries").fetchone()[0]
     finally:
         conn.close()
-    print(f"OK: kb-migrate — synced {n} problem(s) with lessons; "
-          f"{total} kb_entries total")
+    print(f"OK: kb-migrate — {lessons} problem(s) with lessons, "
+          f"{antis} antipattern(s) ingested; {total} kb_entries total")
     return 0
 
 
