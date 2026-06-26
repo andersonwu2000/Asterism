@@ -74,6 +74,28 @@ def test_query_splits_by_type(conn):
     assert kb.query(conn, problem="Q") == {"lessons": [], "antipatterns": []}
 
 
+def test_query_filters_node_antipatterns_to_own_goal(conn):
+    for gid in (1, 2):
+        conn.execute(
+            "INSERT INTO goals (id, problem, slug, lean_path, statement, origin,"
+            " status, created_at, updated_at)"
+            " VALUES (?, 'P', ?, ?, 'True', 'root', 'open', ?, ?)",
+            (gid, f"s{gid}", f"P/proofs/L_s{gid}.lean", db.now(), db.now()))
+    conn.commit()
+    kb.insert_entry(conn, entry_type="antipattern", title="ap1", problem="P",
+                    node_id=1, scope="node")
+    kb.insert_entry(conn, entry_type="antipattern", title="ap2", problem="P",
+                    node_id=2, scope="node")
+    kb.insert_entry(conn, entry_type="lesson", title="L", problem="P",
+                    scope="problem")
+    # goal 1: its OWN node antipattern + the problem-wide lesson (not ap2)
+    g1 = kb.query(conn, problem="P", goal_id=1)
+    assert [r["title"] for r in g1["antipatterns"]] == ["ap1"]
+    assert [r["title"] for r in g1["lessons"]] == ["L"]
+    # no goal_id → unfiltered (both antipatterns)
+    assert len(kb.query(conn, problem="P")["antipatterns"]) == 2
+
+
 def test_replace_reflection_lessons_resyncs(conn):
     # seed a legacy lesson + an antipattern that must survive a re-sync
     kb.insert_entry(conn, entry_type="lesson", title="legacy-keep",

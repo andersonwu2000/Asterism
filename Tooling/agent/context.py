@@ -353,14 +353,15 @@ def _kb_entry_lines(r: sqlite3.Row) -> list[str]:
     return lines
 
 
-def _section_lessons_inline(conn: sqlite3.Connection, problem: str) -> list[str]:
+def _section_lessons_inline(conn: sqlite3.Connection, problem: str,
+                            goal_id: int | None = None) -> list[str]:
     """Inline this problem's KB knowledge: lessons (confirmed cross-spawn
-    experience, maintained by the reflection spawn) and antipatterns
-    (approaches that already hit a wall here). Sourced from the `kb_entries`
-    store (Phase 12) — the legacy `LESSONS.md` was mirrored in at migration and
-    the reflection write-path keeps the lessons in sync."""
+    experience, problem-wide) and antipatterns (approaches that hit a wall).
+    Sourced from the `kb_entries` store (Phase 12). `goal_id` filters
+    node-scoped antipatterns to this goal — a goal sees the walls hit on
+    ITSELF, not every node's; lessons stay problem-wide."""
     from ..state import kb
-    grouped = kb.query(conn, problem=problem)
+    grouped = kb.query(conn, problem=problem, goal_id=goal_id)
     lessons = grouped["lessons"]
     antis = grouped["antipatterns"]
     if not lessons and not antis:
@@ -955,7 +956,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     # than zero. Per-goal / per-spawn surfaces follow.
     sections: list[list[str]] = [
         _section_brief_inline(problem_dir),
-        _section_lessons_inline(conn, str(goal["problem"])),
+        _section_lessons_inline(conn, str(goal["problem"]), int(goal["id"])),
         # Phase 2 — Strategist injections sit between cross-spawn-stable
         # content (BRIEF / LESSONS) and per-goal sections. Directive is
         # problem-level standing (every cold-start); brief is per-decision

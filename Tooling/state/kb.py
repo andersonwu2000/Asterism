@@ -107,9 +107,17 @@ def query(conn: sqlite3.Connection, *, problem: str,
     the Library tier. `goal_id` is accepted now so callers bind to the stable
     signature before that retrieval grows."""
     rows = entries_for_problem(conn, problem)
+    antis = [r for r in rows if r["type"] == "antipattern"]
+    if goal_id is not None:
+        # A `node`-scoped antipattern is "what failed on THIS goal" — surface it
+        # only to its own goal, not to siblings/descendants (an ancestor's wall
+        # is about a different, broader goal). Broader scopes (subtree/problem/
+        # domain — future, via promotion) keep radiating.
+        antis = [r for r in antis
+                 if r["scope"] != "node" or r["node_id"] == goal_id]
     return {
         "lessons": [r for r in rows if r["type"] == "lesson"],
-        "antipatterns": [r for r in rows if r["type"] == "antipattern"],
+        "antipatterns": antis,
     }
 
 
