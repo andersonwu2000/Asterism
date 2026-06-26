@@ -117,6 +117,25 @@ def test_migrate_all_lessons(conn, tmp_path):
     assert kb.entries_for_problem(conn, "Q") == []
 
 
+def test_context_section_renders_kb(conn):
+    """The read path (_section_lessons_inline) surfaces KB lessons +
+    antipatterns; empty problem → no section."""
+    from Tooling.agent import context
+    kb.insert_entry(conn, entry_type="lesson", title="L1", problem="P",
+                    provenance="reflection")
+    kb.insert_entry(conn, entry_type="antipattern", title="AP",
+                    body="why it failed\nsecond line", problem="P",
+                    provenance="drafts_blocker")
+    text = "\n".join(context._section_lessons_inline(conn, "P"))
+    assert "## Lessons learned on this problem" in text
+    assert "- L1" in text
+    assert "## Antipatterns on this problem" in text
+    assert "- AP" in text
+    assert "  why it failed" in text   # body indented under the bullet
+    assert "  second line" in text
+    assert context._section_lessons_inline(conn, "Q") == []  # no entries
+
+
 def test_node_fk_set_null_on_goal_delete(conn):
     """A vanished node (deleted goal) leaves its entry problem-scoped, not
     dropped — ON DELETE SET NULL on kb_entries.node_id."""

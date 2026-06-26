@@ -344,29 +344,48 @@ def _section_brief_inline(problem_dir: Path) -> list[str]:
     return [content, ""]
 
 
-def _section_lessons_inline(problem_dir: Path) -> list[str]:
-    """Inline `Problems/<p>/LESSONS.md` content. LESSONS is the agent-
-    curated cross-spawn experience surface (Edit'd by the reflection
-    spawn after successful pipelines); the file may be empty (initial
-    state) or missing (legacy)."""
-    p = problem_dir / "LESSONS.md"
-    if not p.exists():
+def _kb_entry_lines(r: sqlite3.Row) -> list[str]:
+    """One KB entry as a bullet (title) plus any body lines indented beneath."""
+    lines = [f"- {(r['title'] or '').strip()}"]
+    body = (r["body"] or "").strip()
+    if body:
+        lines += [f"  {bl}" for bl in body.splitlines()]
+    return lines
+
+
+def _section_lessons_inline(conn: sqlite3.Connection, problem: str) -> list[str]:
+    """Inline this problem's KB knowledge: lessons (confirmed cross-spawn
+    experience, maintained by the reflection spawn) and antipatterns
+    (approaches that already hit a wall here). Sourced from the `kb_entries`
+    store (Phase 12) — the legacy `LESSONS.md` was mirrored in at migration and
+    the reflection write-path keeps the lessons in sync."""
+    from ..state import kb
+    rows = kb.entries_for_problem(conn, problem)
+    if not rows:
         return []
-    try:
-        content = p.read_text(encoding="utf-8").strip()
-    except OSError:
-        return []
-    if not content:
-        return []
-    return [
-        "## Lessons learned on this problem",
-        "_Cross-spawn observations recorded by past agents on this_",
-        "_problem. Sentence-per-line. Edit only via the reflection_",
-        "_spawn invoked at successful pipeline terminals._",
-        "",
-        content,
-        "",
-    ]
+    lessons = [r for r in rows if r["type"] == "lesson"]
+    antis = [r for r in rows if r["type"] == "antipattern"]
+    out: list[str] = []
+    if lessons:
+        out += [
+            "## Lessons learned on this problem",
+            "_Cross-spawn observations recorded by past agents on this_",
+            "_problem. Maintained by the reflection spawn._",
+            "",
+        ]
+        for r in lessons:
+            out += _kb_entry_lines(r)
+        out.append("")
+    if antis:
+        out += [
+            "## Antipatterns on this problem",
+            "_Approaches that already hit a wall here — don't repeat them._",
+            "",
+        ]
+        for r in antis:
+            out += _kb_entry_lines(r)
+        out.append("")
+    return out
 
 
 _PROVED_GOAL_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]+")
@@ -936,7 +955,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     # than zero. Per-goal / per-spawn surfaces follow.
     sections: list[list[str]] = [
         _section_brief_inline(problem_dir),
-        _section_lessons_inline(problem_dir),
+        _section_lessons_inline(conn, str(goal["problem"])),
         # Phase 2 — Strategist injections sit between cross-spawn-stable
         # content (BRIEF / LESSONS) and per-goal sections. Directive is
         # problem-level standing (every cold-start); brief is per-decision
