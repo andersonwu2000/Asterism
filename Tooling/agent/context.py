@@ -481,9 +481,12 @@ def _section_proved_goals(conn: sqlite3.Connection,
         lines.append("")
     lines.append(
         f"For broader search beyond the curated 3, grep "
-        f"`Problems/{goal['problem']}/proofs/L_<slug>.lean` for slugs / "
-        "summary text matching the current goal — each file opens with "
-        "a `-- <slug>: <summary>` comment block.")
+        f"`Problems/{goal['problem']}/proofs/L_<slug>.lean` for the "
+        "current goal's keywords. Every file carries the proved "
+        "`theorem`/`def <slug>` line (always greppable); most also open "
+        "with a leading `--` summary — Builder proofs lead with "
+        "`-- <slug>: <summary>`, decomposition proofs with a `--` "
+        "rationale block.")
     lines.append("")
     return lines
 
