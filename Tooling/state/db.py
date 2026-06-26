@@ -443,6 +443,31 @@ CREATE TABLE IF NOT EXISTS librarian_fail_counts (
     updated_at  TEXT NOT NULL
 );
 
+-- kb_entries — Phase 12 informal knowledge base (the LESSON revamp). One row
+-- per title+body knowledge entry, attached to the goal node it was learned on
+-- (`node_id`) and carrying a `scope` that controls how far it radiates during
+-- retrieval. `type` splits confirmed-positive experience ('lesson') from
+-- confirmed-negative walls ('antipattern'); unverified guesses are NOT stored
+-- (they stay in the prior_partial carry-over). `node_id` NULL = problem-scoped
+-- with no specific node (e.g. migrated legacy LESSONS.md); ON DELETE SET NULL
+-- keeps a vanished node's entry as problem-scoped rather than dropping it. The
+-- enum sets live in `Tooling/state/kb.py`; tests/test_kb.py binds the CHECKs to
+-- them. Pure new table → CREATE TABLE IF NOT EXISTS, no user_version bump
+-- (init_schema re-runs SCHEMA each start).
+CREATE TABLE IF NOT EXISTS kb_entries (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    type        TEXT NOT NULL CHECK(type IN ('lesson','antipattern')),
+    title       TEXT NOT NULL,
+    body        TEXT NOT NULL DEFAULT '',
+    problem     TEXT NULL DEFAULT NULL REFERENCES problems(name),
+    node_id     INTEGER NULL DEFAULT NULL REFERENCES goals(id)
+                    ON DELETE SET NULL,
+    scope       TEXT NOT NULL DEFAULT 'problem'
+                    CHECK(scope IN ('node','subtree','problem','domain')),
+    provenance  TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
 CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(status);
 CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue(priority DESC, id ASC);
@@ -458,6 +483,8 @@ CREATE INDEX IF NOT EXISTS idx_libdecls_problem ON library_decls(problem);
 CREATE INDEX IF NOT EXISTS idx_strategies_goal_id ON strategies(goal_id);
 CREATE INDEX IF NOT EXISTS idx_dead_attempts_target
     ON dead_attempts(target_kind, target_id);
+CREATE INDEX IF NOT EXISTS idx_kb_problem ON kb_entries(problem);
+CREATE INDEX IF NOT EXISTS idx_kb_node ON kb_entries(node_id);
 -- idx_sd_batch_id: created after the batch_id ALTER TABLE migration
 -- in init_schema, not here. Inlining it in SCHEMA would fail on pre-
 -- Phase 2.5 DBs (executescript runs CREATE INDEX before the ALTER
