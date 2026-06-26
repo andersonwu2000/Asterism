@@ -71,7 +71,7 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
         attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
         _drafts.persist_partials(attempts_dir=attempts_dir,
                                  problem_dir=problem_dir,
-                                 kind="builder", goal_id=goal_id)
+                                 kind="builder", goal_id=goal_id, conn=conn)
     return result
 
 

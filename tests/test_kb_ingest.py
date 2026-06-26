@@ -129,11 +129,53 @@ def test_ingest_end_to_end_idempotent(conn, tmp_path):
     assert len(rows) == 2
     assert all(r["node_id"] == 7 and r["scope"] == "node" for r in rows)
 
-    # re-run re-converges (drop ingest:* then re-insert) — not 4
-    assert kb_ingest.ingest_antipatterns(conn, tmp_path) == 2
+    # idempotent + additive (source-keyed): re-run inserts nothing new, stays 2
+    assert kb_ingest.ingest_antipatterns(conn, tmp_path) == 0
     assert conn.execute(
         "SELECT COUNT(*) FROM kb_entries WHERE type = 'antipattern'"
     ).fetchone()[0] == 2
+
+
+def test_capture_dead_attempt_routes_and_dedups(conn):
+    _seed_goal(conn, 5)
+    md = "-- decline: shelve\n-- ## the stated lemma is FALSE for an interior c0"
+    # decline rationale → captured
+    assert kb_ingest.capture_dead_attempt(
+        conn, da_id=42, target_id=5, target_kind="Goal",
+        reason="agent_shelved", proposal_md=md) == 1
+    # same source da_id → deduped
+    assert kb_ingest.capture_dead_attempt(
+        conn, da_id=42, target_id=5, target_kind="Goal",
+        reason="agent_shelved", proposal_md=md) == 0
+    # transient / mechanical reason → no-op
+    assert kb_ingest.capture_dead_attempt(
+        conn, da_id=43, target_id=5, target_kind="Goal",
+        reason="lake_build_error", proposal_md="x") == 0
+    # non-Goal target → no-op
+    assert kb_ingest.capture_dead_attempt(
+        conn, da_id=44, target_id=0, target_kind="Problem",
+        reason="agent_shelved", proposal_md=md) == 0
+    rows = conn.execute(
+        "SELECT provenance FROM kb_entries WHERE type='antipattern'").fetchall()
+    assert [r["provenance"] for r in rows] == ["da:42"]
+
+
+def test_record_dead_attempt_captures_antipattern_live(conn):
+    _seed_goal(conn, 8)
+    conn.execute(
+        "INSERT INTO pipelines (id, kind, target_id, target_kind, status,"
+        " outcome, started_at, finished_at)"
+        " VALUES ('pl9','Builder','8','Goal','failed','agent_shelved', ?, ?)",
+        (db.now(), db.now()))
+    conn.commit()
+    db.record_dead_attempt(
+        conn, target_id=8, target_kind="Goal", pipeline_id="pl9",
+        failure_reason="agent_shelved",
+        proposal_md="-- decline: shelve\n-- ## the keystone is the WRONG statement")
+    rows = conn.execute(
+        "SELECT title FROM kb_entries WHERE type='antipattern'").fetchall()
+    assert len(rows) == 1
+    assert "WRONG statement" in rows[0]["title"]
 
 
 def test_ingest_skips_stale_gid(conn, tmp_path):

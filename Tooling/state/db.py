@@ -2976,7 +2976,7 @@ def record_dead_attempt(conn: sqlite3.Connection, *, target_id: int,
     """Record a failed pipeline. `artifacts` is a JSON dict {filename: text}
     capturing all agent output files for forensic review (since the
     .attempts/<pid>/ filesystem dir is rmtree'd at pipeline end)."""
-    conn.execute(
+    cur = conn.execute(
         "INSERT INTO dead_attempts (target_id, target_kind, pipeline_id,"
         " failure_reason, failure_detail, proposal_md, artifacts, ts)"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -2984,6 +2984,19 @@ def record_dead_attempt(conn: sqlite3.Connection, *, target_id: int,
          failure_detail, proposal_md, artifacts, now()),
     )
     conn.commit()
+    # Live KB antipattern capture from this failure (Phase 12). The single
+    # chokepoint all failure paths flow through, so a new failure site captures
+    # automatically. Best-effort + lazy import (kb_ingest imports db) — a KB
+    # hiccup must never break failure recording.
+    try:
+        from . import kb_ingest
+        if kb_ingest.capture_dead_attempt(
+                conn, da_id=int(cur.lastrowid), target_id=target_id,
+                target_kind=target_kind, reason=failure_reason,
+                detail=failure_detail, proposal_md=proposal_md):
+            conn.commit()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def recent_dead_attempts(conn: sqlite3.Connection, *, target_id: int,

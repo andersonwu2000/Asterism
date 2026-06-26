@@ -426,7 +426,7 @@ def run_backward(conn: sqlite3.Connection, *, goal_id: int,
         attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
         _drafts.persist_partials(attempts_dir=attempts_dir,
                                  problem_dir=problem_dir,
-                                 kind="backward", goal_id=goal_id)
+                                 kind="backward", goal_id=goal_id, conn=conn)
     return result
 
 

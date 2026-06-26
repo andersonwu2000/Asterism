@@ -128,93 +128,108 @@ def _noop_diagnosis(detail: str) -> tuple[str, str] | None:
     return m.group(1).strip()[:_TITLE_CAP], detail.strip()
 
 
-def _insert(conn: sqlite3.Connection, *, title: str, body: str, problem: str,
-            node_id: int | None, provenance: str) -> None:
-    conn.execute(
-        "INSERT INTO kb_entries (type, title, body, problem, node_id, scope,"
-        " provenance, created_at)"
-        " VALUES ('antipattern', ?, ?, ?, ?, 'node', ?, ?)",
-        (title, body, problem, node_id, provenance, db.now()),
+_KNOWLEDGE_REASONS = _DECLINE_REASONS + ("agent_stuck_thinking",
+                                         "strategist_noop")
+
+
+def _insert_antipattern(conn: sqlite3.Connection, *, title: str, body: str,
+                        problem: str, node_id: int | None,
+                        provenance: str) -> int:
+    """Idempotent insert keyed on `provenance` (a stable per-source ref like
+    `da:<id>` / `drafts:g<gid>`), so live capture and the batch rebuild never
+    double-insert the same source. No commit. Returns 1 if inserted, 0 if the
+    source was already captured."""
+    cur = conn.execute(
+        "INSERT INTO kb_entries"
+        " (type, title, body, problem, node_id, scope, provenance, created_at)"
+        " SELECT 'antipattern', ?, ?, ?, ?, 'node', ?, ?"
+        " WHERE NOT EXISTS (SELECT 1 FROM kb_entries WHERE provenance = ?)",
+        (title, body, problem, node_id, provenance, db.now(), provenance),
     )
+    return cur.rowcount
+
+
+def capture_dead_attempt(conn: sqlite3.Connection, *, da_id: int,
+                         target_id: int, target_kind: str, reason: str,
+                         detail: str = "", proposal_md: str = "") -> int:
+    """Capture the antipattern for ONE dead_attempt if its reason is
+    knowledge-bearing (decline rationale / embedded blocker / noop diagnosis).
+    Shared by the live hook (`db.record_dead_attempt`) and the batch rebuild.
+    No-op for non-Goal targets or non-knowledge reasons. No commit."""
+    if target_kind != "Goal":
+        return 0
+    parsed: tuple[str, str] | None = None
+    if reason in _DECLINE_REASONS and (proposal_md or "").strip():
+        parsed = _clean_decline(proposal_md)
+    elif reason == "agent_stuck_thinking":
+        parsed = _stuck_blocker(detail or "")
+    elif reason == "strategist_noop":
+        parsed = _noop_diagnosis(detail or "")
+    if not parsed or not parsed[0]:
+        return 0
+    row = conn.execute(
+        "SELECT problem FROM goals WHERE id = ?", (target_id,)).fetchone()
+    if row is None:
+        return 0  # Forward (target_id=0) / stale gid — no node to mount on
+    return _insert_antipattern(conn, title=parsed[0], body=parsed[1],
+                               problem=row["problem"], node_id=target_id,
+                               provenance=f"da:{da_id}")
+
+
+def capture_drafts(conn: sqlite3.Connection, *, path: Path, gid: int) -> int:
+    """Capture the blocker antipattern from ONE `.drafts` note. Shared by the
+    live hook (`persist_partials`) and the batch rebuild. No commit."""
+    row = conn.execute(
+        "SELECT problem FROM goals WHERE id = ?", (gid,)).fetchone()
+    if row is None:
+        return 0  # stale gid (goal gone) — skip
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    parsed = _drafts_antipattern(text)
+    if parsed is None:
+        return 0
+    # Key on the note FILE (`<kind>_g<gid>`), not the goal — a goal can have
+    # both a builder and a backward note carrying distinct blockers.
+    return _insert_antipattern(conn, title=parsed[0], body=parsed[1],
+                               problem=row["problem"], node_id=gid,
+                               provenance=f"drafts:{Path(path).stem}")
 
 
 def _ingest_drafts(conn: sqlite3.Connection, workspace: Path) -> int:
     n = 0
     for path in sorted((workspace / "Problems").glob("**/.drafts/*.md")):
         m = _DRAFTS_RE.match(path.name)
-        if not m:
-            continue
-        gid = int(m.group(1))
-        row = conn.execute(
-            "SELECT problem FROM goals WHERE id = ?", (gid,)).fetchone()
-        if row is None:
-            continue  # stale gid (goal gone) — skip
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        parsed = _drafts_antipattern(text)
-        if parsed is None:
-            continue
-        _insert(conn, title=parsed[0], body=parsed[1], problem=row["problem"],
-                node_id=gid, provenance="ingest:drafts")
-        n += 1
+        if m:
+            n += capture_drafts(conn, path=path, gid=int(m.group(1)))
     return n
 
 
 def _ingest_dead_attempts(conn: sqlite3.Connection) -> int:
+    ph = ",".join("?" * len(_KNOWLEDGE_REASONS))
     n = 0
     for r in conn.execute(
-        "SELECT da.target_id AS gid, da.failure_reason AS reason,"
-        " da.proposal_md AS md, g.problem AS problem"
-        " FROM dead_attempts da JOIN goals g ON g.id = da.target_id"
-        " WHERE da.target_kind = 'Goal' AND da.failure_reason IN (?,?,?)"
-        " AND TRIM(COALESCE(da.proposal_md,'')) != ''",
-        _DECLINE_REASONS,
+        "SELECT id, target_id, target_kind, failure_reason, failure_detail,"
+        f" proposal_md FROM dead_attempts WHERE failure_reason IN ({ph})",
+        _KNOWLEDGE_REASONS,
     ):
-        title, body = _clean_decline(r["md"])
-        if not title:
-            continue
-        _insert(conn, title=title, body=body, problem=r["problem"],
-                node_id=r["gid"],
-                provenance=f"ingest:dead_attempt:{r['reason']}")
-        n += 1
-    for r in conn.execute(
-        "SELECT da.target_id AS gid, da.failure_detail AS detail, g.problem"
-        " AS problem FROM dead_attempts da JOIN goals g ON g.id = da.target_id"
-        " WHERE da.target_kind = 'Goal'"
-        " AND da.failure_reason = 'agent_stuck_thinking'",
-    ):
-        parsed = _stuck_blocker(r["detail"] or "")
-        if parsed is None:
-            continue
-        _insert(conn, title=parsed[0], body=parsed[1], problem=r["problem"],
-                node_id=r["gid"],
-                provenance="ingest:dead_attempt:agent_stuck_thinking")
-        n += 1
-    for r in conn.execute(
-        "SELECT da.target_id AS gid, da.failure_detail AS detail, g.problem"
-        " AS problem FROM dead_attempts da JOIN goals g ON g.id = da.target_id"
-        " WHERE da.target_kind = 'Goal'"
-        " AND da.failure_reason = 'strategist_noop'",
-    ):
-        parsed = _noop_diagnosis(r["detail"] or "")
-        if parsed is None:
-            continue
-        _insert(conn, title=parsed[0], body=parsed[1], problem=r["problem"],
-                node_id=r["gid"],
-                provenance="ingest:dead_attempt:strategist_noop")
-        n += 1
+        n += capture_dead_attempt(
+            conn, da_id=r["id"], target_id=r["target_id"],
+            target_kind=r["target_kind"], reason=r["failure_reason"],
+            detail=r["failure_detail"], proposal_md=r["proposal_md"])
     return n
 
 
 def ingest_antipatterns(conn: sqlite3.Connection, workspace: Path) -> int:
-    """Rebuild ingested antipattern entries from the failure sources (drop the
-    prior `ingest:*` set first so re-running re-converges). Returns the number
-    of entries written."""
+    """Batch backfill / repair: capture every failure source's antipattern,
+    idempotently (source-keyed). Additive — safe to re-run and to coexist with
+    live capture (`capture_*`, also called from the failure write-paths). The
+    one-time `ingest:%` delete migrates rows from before the source-keyed
+    provenance scheme. Returns the number newly inserted."""
     conn.execute(
         "DELETE FROM kb_entries WHERE type = 'antipattern'"
-        " AND provenance LIKE 'ingest:%'")
+        " AND provenance LIKE 'ingest:%'")  # legacy-scheme migration (one-time)
     n = _ingest_drafts(conn, workspace) + _ingest_dead_attempts(conn)
     conn.commit()
     return n

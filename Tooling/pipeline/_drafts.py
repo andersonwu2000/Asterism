@@ -33,6 +33,7 @@ sandbox + mathlib allowlist — no separate add-dir needed.
 """
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 # kind → filenames in attempts_dir to capture as the partial output.
@@ -67,7 +68,8 @@ def drafts_path(problem_dir: Path, kind: str, goal_id: int) -> Path:
 
 
 def persist_partials(*, attempts_dir: Path, problem_dir: Path,
-                     kind: str, goal_id: int) -> Path | None:
+                     kind: str, goal_id: int,
+                     conn: sqlite3.Connection | None = None) -> Path | None:
     """Capture kind's partial outputs from `attempts_dir` into the
     per-goal drafts file. Idempotent — overwrites any prior draft so the
     most recent attempt's draft is what next spawn sees. Returns the
@@ -103,6 +105,17 @@ def persist_partials(*, attempts_dir: Path, problem_dir: Path,
     out = drafts_path(problem_dir, kind, goal_id)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n\n".join(bodies) + "\n", encoding="utf-8")
+    # Live KB antipattern capture from the just-written postmortem note
+    # (Phase 12), using the caller's connection — only the production pipeline
+    # passes `conn`, so tests that call persist_partials don't touch the KB.
+    # Best-effort; a KB hiccup must never affect draft persistence.
+    if conn is not None:
+        try:
+            from ..state import kb_ingest
+            if kb_ingest.capture_drafts(conn, path=out, gid=goal_id):
+                conn.commit()
+        except Exception:  # noqa: BLE001
+            pass
     return out
 
 
