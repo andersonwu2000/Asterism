@@ -24,7 +24,7 @@ import threading
 from pathlib import Path
 
 from .. import agent
-from ..state import db
+from ..state import db, kb
 
 
 _REFLECTION_PROMPT_FILENAME = "_reflection_prompt.md"
@@ -193,6 +193,16 @@ def attempt_reflection(*,
             lessons_after = _read_lessons(lessons_path)
             delta = _classify_delta(lessons_before, lessons_after)
             print(f"[reflection] {kind} {slug}: {delta}", flush=True)
+
+            # Phase 12 step 2 — mirror the now-current LESSONS bullets into the
+            # KB so the read path can move off the flat file. Full re-sync (not
+            # a diff) so a C3-A correction / removal propagates, not just
+            # appends. Best-effort; a KB hiccup must not lose the telemetry.
+            try:
+                _mirror_lessons_to_kb(problem_dir.name, lessons_after)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[reflection] {kind} {slug}: kb mirror skipped — {exc}",
+                      flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"[reflection] {kind} {slug}: error swallowed — {exc}",
                   flush=True)
@@ -214,6 +224,17 @@ def _count_lesson_lines(content: str) -> int:
         1 for ln in content.splitlines()
         if ln.lstrip().startswith("-")
     )
+
+
+def _mirror_lessons_to_kb(problem: str, lessons_after: str) -> None:
+    """Re-sync this problem's reflection lessons in the KB to the current
+    LESSONS.md bullets. Own connection; caller wraps in best-effort."""
+    titles = kb.lesson_bullets(lessons_after)
+    conn = db.connect()
+    try:
+        kb.replace_reflection_lessons(conn, problem, titles)
+    finally:
+        conn.close()
 
 
 def _render_prompt(template: str, **kwargs: str) -> str:

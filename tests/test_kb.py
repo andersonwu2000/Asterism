@@ -65,6 +65,58 @@ def test_insert_rejects_bad_enum(conn):
                         scope="galaxy")
 
 
+def test_replace_reflection_lessons_resyncs(conn):
+    # seed a legacy lesson + an antipattern that must survive a re-sync
+    kb.insert_entry(conn, entry_type="lesson", title="legacy-keep",
+                    problem="P", provenance="legacy_lessons")
+    kb.insert_entry(conn, entry_type="antipattern", title="ap-keep",
+                    problem="P", provenance="drafts_blocker")
+
+    kb.replace_reflection_lessons(conn, "P", ["a", "b"])
+    titles = {r["title"] for r in kb.entries_for_problem(conn, "P")}
+    assert titles == {"legacy-keep", "ap-keep", "a", "b"}
+
+    # correction (b→b') + removal (a) + append (c): full re-sync, not append-only
+    kb.replace_reflection_lessons(conn, "P", ["b'", "c"])
+    rows = kb.entries_for_problem(conn, "P")
+    refl = {r["title"] for r in rows if r["provenance"] == "reflection"}
+    assert refl == {"b'", "c"}            # a removed, b corrected, c added
+    others = {r["title"] for r in rows if r["provenance"] != "reflection"}
+    assert others == {"legacy-keep", "ap-keep"}  # untouched
+
+
+def test_lesson_bullets_parsing():
+    body = (
+        "<!-- Lessons learned. -->\n"
+        "<!-- LESSONS_BEGIN -->\n"
+        "- first lesson\n"
+        "  - indented still a bullet\n"
+        "\n"
+        "not a bullet\n"
+        "-->\n"          # stray comment close, not a bullet
+        "- second lesson  \n"
+    )
+    assert kb.lesson_bullets(body) == [
+        "first lesson", "indented still a bullet", "second lesson"]
+
+
+def test_migrate_all_lessons(conn, tmp_path):
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at)"
+        " VALUES ('Q', 'Q/Manifest.md', ?)", (db.now(),))
+    conn.commit()
+    pdir = db.problem_dir(tmp_path, "P")
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "LESSONS.md").write_text(
+        "<!-- LESSONS_BEGIN -->\n- alpha\n- beta\n", encoding="utf-8")
+    # Q has no LESSONS.md on disk → skipped.
+    n = kb.migrate_all_lessons(conn, tmp_path)
+    assert n == 1
+    assert {r["title"] for r in kb.entries_for_problem(conn, "P")} == {
+        "alpha", "beta"}
+    assert kb.entries_for_problem(conn, "Q") == []
+
+
 def test_node_fk_set_null_on_goal_delete(conn):
     """A vanished node (deleted goal) leaves its entry problem-scoped, not
     dropped — ON DELETE SET NULL on kb_entries.node_id."""

@@ -14,6 +14,7 @@ and radiates as far as `scope` allows during retrieval.
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 from . import db
 
@@ -60,3 +61,61 @@ def entries_for_problem(conn: sqlite3.Connection,
     return conn.execute(
         "SELECT * FROM kb_entries WHERE problem = ? ORDER BY id", (problem,)
     ).fetchall()
+
+
+def lesson_bullets(content: str) -> list[str]:
+    """The `- <lesson>` bullet texts from a LESSONS.md body. Header / anchor
+    comment lines (`<!-- ... -->`) don't start with `- `, so they fall out.
+    The canonical parser shared by the reflection write-path and the migration."""
+    out: list[str] = []
+    for ln in content.splitlines():
+        s = ln.lstrip()
+        if s.startswith("- "):
+            text = s[2:].strip()
+            if text:
+                out.append(text)
+    return out
+
+
+def migrate_all_lessons(conn: sqlite3.Connection, workspace: Path) -> int:
+    """One-shot bootstrap: re-sync every registered problem's `LESSONS.md`
+    bullets into the KB as reflection lessons. Idempotent (delegates to
+    `replace_reflection_lessons`), so re-running is safe and re-converges the
+    KB to the on-disk files. Returns the number of problems with ≥1 bullet."""
+    migrated = 0
+    for row in conn.execute("SELECT name FROM problems ORDER BY name"):
+        problem = row["name"]
+        path = db.problem_dir(workspace, problem) / "LESSONS.md"
+        if not path.exists():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        bullets = lesson_bullets(content)
+        if bullets:
+            replace_reflection_lessons(conn, problem, bullets)
+            migrated += 1
+    return migrated
+
+
+def replace_reflection_lessons(conn: sqlite3.Connection, problem: str,
+                               titles: list[str]) -> None:
+    """Re-sync a problem's reflection-authored lesson entries to `titles` (the
+    current LESSONS.md bullets). Deletes the prior reflection lessons and
+    re-inserts, so corrections and removals propagate — not just appends.
+    Scoped to `type='lesson' AND provenance='reflection'`, leaving legacy-
+    migrated lessons and antipattern entries untouched."""
+    conn.execute(
+        "DELETE FROM kb_entries WHERE problem = ? AND type = 'lesson'"
+        " AND provenance = 'reflection'",
+        (problem,),
+    )
+    ts = db.now()
+    conn.executemany(
+        "INSERT INTO kb_entries"
+        " (type, title, body, problem, node_id, scope, provenance, created_at)"
+        " VALUES ('lesson', ?, '', ?, NULL, 'problem', 'reflection', ?)",
+        [(t, problem, ts) for t in titles],
+    )
+    conn.commit()
