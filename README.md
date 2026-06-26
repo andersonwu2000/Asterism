@@ -144,11 +144,6 @@
 - Added detailed accounting of language-model token usage and estimated cost—broken down by task type and model, accumulated over the entire run, and presented as a table—including properly categorizing automatic recovery attempts.
 - Made the job scheduler more resilient, automatically retrying runs that fail for infrastructure reasons and shutting down promptly by terminating work already in progress.
 
-### 2026-05-26
-- Completed a machine-checked proof of the Cholesky factorization for real positive-definite matrices, obtained via the LDL decomposition route.
-- Made proof search more efficient by supplying a handful of closely related, already-proved results as context and by skipping goals that duplicate earlier attempts.
-- Tightened safeguards so that proofs still containing unfinished placeholders are caught, and added protections against accidentally discarding valid results during cleanup.
-
 <!-- ASTERISM-PROGRESS:END -->
 
 
