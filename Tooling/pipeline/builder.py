@@ -27,7 +27,8 @@ from .. import agent
 from ..agent import context
 from ..state import db, manifest, proof_store
 from ..quality import diagnostics
-from ._cite_gate import _resolve_cite_dependencies
+from ._cite_gate import (_resolve_cite_dependencies,
+                         inject_missing_sibling_imports)
 
 
 def run_builder(conn: sqlite3.Connection, *, goal_id: int,
@@ -253,6 +254,14 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             )
         patch = patches[0]
         patch_text = patch.read_text(encoding="utf-8")
+        # Forgiving auto-fix: import proved siblings referenced but not imported
+        # (Builder is leaf — no declared subs). Write the patch back so the
+        # cite-gate + the commit copy (which re-reads the file) both see it.
+        patch_text, _added_imp = inject_missing_sibling_imports(
+            conn, problem=goal["problem"], patch_text=patch_text,
+            declared_slugs=set(), workspace=workspace)
+        if _added_imp:
+            patch.write_text(patch_text, encoding="utf-8")
 
         # Phase 6 single-output: agent's metadata lives in patch.lean's
         # leading comment block. The `-- decline: <directive>` directive

@@ -28,7 +28,8 @@ from pathlib import Path
 
 import pytest
 
-from Tooling.pipeline.backward import _resolve_cite_dependencies
+from Tooling.pipeline.backward import (_resolve_cite_dependencies,
+                                       inject_missing_sibling_imports)
 from Tooling.state import db
 
 
@@ -110,20 +111,20 @@ def test_skips_unknown_slug(conn: sqlite3.Connection) -> None:
         assert revive == set()
 
 
-def test_skips_cross_problem_imports(conn: sqlite3.Connection) -> None:
-    """Imports targeting other problems are out of this gate's scope
-    (cross-problem soundness invariants live elsewhere)."""
+def test_rejects_cross_problem_imports(conn: sqlite3.Connection) -> None:
+    """Citing another problem's node is NOT allowed — only same-problem
+    siblings, Library, and Mathlib are citable. (Previously skipped, leaving
+    lake to maybe build it.)"""
     _insert_goal(conn, "foo", status="open")
     patch = "import Problems.other.proofs.L_foo\n"  # different problem
     for allow in (True, False):
-        auto_link, revive, err = _resolve_cite_dependencies(
+        _, _, err = _resolve_cite_dependencies(
             conn, problem="p", patch_text=patch,
             declared_slugs=set(), allow_auto_link=allow,
             workspace=Path.cwd(),
         )
-        assert err is None
-        assert auto_link == set()
-        assert revive == set()
+        assert err is not None
+        assert "cross-problem" in err
 
 
 def test_skips_aliased_goal_row(conn: sqlite3.Connection) -> None:
@@ -445,3 +446,35 @@ def test_declared_orphan_slug_still_skips(
     )
     assert err is None
     assert auto_link == set() and revive == set()
+
+
+# ---------------------------------------------------------------------
+# Auto-inject missing proved-sibling imports + cross-problem reject
+# ---------------------------------------------------------------------
+
+def test_inject_adds_missing_proved_sibling_import(conn, tmp_path):
+    _insert_goal(conn, "half_space_ftc", status="proved")
+    conn.commit()
+    patch = ("import Mathlib\n\nnamespace Problems.p\n"
+             "theorem s1 : T := by exact half_space_ftc\nend Problems.p\n")
+    new, added = inject_missing_sibling_imports(
+        conn, problem="p", patch_text=patch, declared_slugs=set(),
+        workspace=tmp_path)
+    assert added == ["half_space_ftc"]
+    assert "import Problems.p.proofs.L_half_space_ftc" in new
+
+
+def test_inject_skips_unproved_declared_and_already_imported(conn, tmp_path):
+    _insert_goal(conn, "proved_unref", status="proved")   # not referenced
+    _insert_goal(conn, "open_ref", status="open")          # referenced, unproved
+    _insert_goal(conn, "declared_ref", status="proved")    # referenced, declared
+    _insert_goal(conn, "imported_ref", status="proved")    # referenced, imported
+    conn.commit()
+    patch = ("import Mathlib\nimport Problems.p.proofs.L_imported_ref\n\n"
+             "theorem s1 : T := by exact open_ref <;> exact declared_ref "
+             "<;> exact imported_ref\n")
+    new, added = inject_missing_sibling_imports(
+        conn, problem="p", patch_text=patch,
+        declared_slugs={"declared_ref"}, workspace=tmp_path)
+    assert added == []
+    assert new == patch  # untouched

@@ -52,6 +52,41 @@ _PROBLEM_IMPORT_RE = re.compile(
 )
 
 
+def inject_missing_sibling_imports(
+    conn: sqlite3.Connection, *, problem: str, patch_text: str,
+    declared_slugs: set[str], workspace: Path,
+) -> "tuple[str, list[str]]":
+    """Forgiving auto-fix for the common `unknown identifier` death: an agent
+    references a PROVED same-problem sibling's decl name but forgets its
+    `import Problems.<problem>.proofs.L_<slug>` line (backward.md:123). Add the
+    import for every proved sibling whose name appears in `patch_text` but isn't
+    already imported. Same-problem only — cross-problem nodes are not citable, so
+    this never widens the whitelist. Returns (new_text, added_slugs)."""
+    proved = {
+        r["slug"] for r in conn.execute(
+            "SELECT slug FROM goals WHERE problem = ? AND status = 'proved'"
+            " AND alias_target_id IS NULL", (problem,))
+    } - declared_slugs
+    if not proved:
+        return patch_text, []
+    already = set(re.findall(
+        r"(?m)^\s*import\s+Problems\." + re.escape(problem)
+        + r"\.proofs\.L_([a-z][a-z0-9_]*)\s*$", patch_text))
+    add = sorted(
+        s for s in proved
+        if s not in already
+        and re.search(r"\b" + re.escape(s) + r"\b", patch_text))
+    if not add:
+        return patch_text, []
+    lines = patch_text.splitlines()
+    last_imp = max((i for i, ln in enumerate(lines)
+                    if ln.startswith("import ")), default=-1)
+    lines[last_imp + 1:last_imp + 1] = [
+        f"import Problems.{problem}.proofs.L_{s}" for s in add]
+    new_text = "\n".join(lines) + ("\n" if patch_text.endswith("\n") else "")
+    return new_text, add
+
+
 def _resolve_cite_dependencies(
     conn: sqlite3.Connection, *, problem: str, patch_text: str,
     declared_slugs: set[str], allow_auto_link: bool,
@@ -106,6 +141,11 @@ def _resolve_cite_dependencies(
     seen: set[str] = set()
     for m in _PROBLEM_IMPORT_RE.finditer(patch_text):
         if m.group(1) != problem:
+            # Cross-problem node citation is NOT allowed — only same-problem
+            # siblings, Library, and Mathlib are citable. Reject explicitly
+            # (previously skipped, leaving lake to maybe build it).
+            bad.append((f"Problems.{m.group(1)}.proofs.L_{m.group(2)}",
+                        "cross-problem citation (not allowed)"))
             continue
         slug = m.group(2)
         if slug in seen:

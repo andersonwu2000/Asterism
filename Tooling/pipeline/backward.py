@@ -44,7 +44,8 @@ from ..agent import context
 from ..state import db, manifest, proof_store, transitions
 from ..quality import dedupe, diagnostics
 from . import _axiom
-from ._cite_gate import _PROBLEM_IMPORT_RE, _resolve_cite_dependencies
+from ._cite_gate import (_PROBLEM_IMPORT_RE, _resolve_cite_dependencies,
+                         inject_missing_sibling_imports)
 
 
 # Sub-goal slug pattern: lowercase letter start, then lowercase letters,
@@ -1484,9 +1485,20 @@ def _backward_parse_and_commit(
         # Run after `_inject_imports_for_subs` so framework-injected
         # imports for declared sub-goals don't false-trigger.
         declared_slugs = {slug for slug, _ in sub_meta}
+        # Forgiving auto-fix: import proved siblings the agent referenced but
+        # forgot to import (same-problem only, declared subs excluded), so a
+        # forgotten `import` doesn't `unknown identifier`-fail the build. Rewrite
+        # the scratch patch before the cite-gate + build see it.
+        scratch_text = scratch_dest.read_text(encoding="utf-8")
+        scratch_text, _added_imp = inject_missing_sibling_imports(
+            conn, problem=goal["problem"], patch_text=scratch_text,
+            declared_slugs=declared_slugs, workspace=workspace)
+        if _added_imp:
+            proof_store.atomic_write(scratch_dest, scratch_text)
+            print(f"[cite] auto-imported {len(_added_imp)} proved sibling(s): "
+                  f"{', '.join(_added_imp)}", flush=True)
         auto_link_ids, revive_ids, cite_err = _resolve_cite_dependencies(
-            conn, problem=goal["problem"],
-            patch_text=scratch_dest.read_text(encoding="utf-8"),
+            conn, problem=goal["problem"], patch_text=scratch_text,
             declared_slugs=declared_slugs, allow_auto_link=True,
             workspace=workspace,
         )
