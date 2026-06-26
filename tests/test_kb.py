@@ -65,6 +65,15 @@ def test_insert_rejects_bad_enum(conn):
                         scope="galaxy")
 
 
+def test_query_splits_by_type(conn):
+    kb.insert_entry(conn, entry_type="lesson", title="L", problem="P")
+    kb.insert_entry(conn, entry_type="antipattern", title="A", problem="P")
+    g = kb.query(conn, problem="P")
+    assert [r["title"] for r in g["lessons"]] == ["L"]
+    assert [r["title"] for r in g["antipatterns"]] == ["A"]
+    assert kb.query(conn, problem="Q") == {"lessons": [], "antipatterns": []}
+
+
 def test_replace_reflection_lessons_resyncs(conn):
     # seed a legacy lesson + an antipattern that must survive a re-sync
     kb.insert_entry(conn, entry_type="lesson", title="legacy-keep",

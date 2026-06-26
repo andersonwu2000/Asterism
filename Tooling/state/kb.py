@@ -99,6 +99,20 @@ def migrate_all_lessons(conn: sqlite3.Connection, workspace: Path) -> int:
     return migrated
 
 
+def query(conn: sqlite3.Connection, *, problem: str,
+          goal_id: int | None = None) -> dict[str, list[sqlite3.Row]]:
+    """Retrieval seam for the read path and the (future) LLM preprocessing layer:
+    the KB knowledge relevant to a proving context, split by type. Currently
+    problem-scoped; the scope-aware ancestor / Library-tree-path walk lands with
+    the Library tier. `goal_id` is accepted now so callers bind to the stable
+    signature before that retrieval grows."""
+    rows = entries_for_problem(conn, problem)
+    return {
+        "lessons": [r for r in rows if r["type"] == "lesson"],
+        "antipatterns": [r for r in rows if r["type"] == "antipattern"],
+    }
+
+
 def replace_reflection_lessons(conn: sqlite3.Connection, problem: str,
                                titles: list[str]) -> None:
     """Re-sync a problem's reflection-authored lesson entries to `titles` (the

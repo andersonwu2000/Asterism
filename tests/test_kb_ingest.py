@@ -68,6 +68,17 @@ def test_clean_decline_strips_comment_prefix_and_directive():
     assert "FALSE for an interior center" in body
 
 
+def test_noop_diagnosis_prefers_diagnosis_line():
+    detail = ("Batch 00e9 fully resolved with no actionable residue. (1) Meta: "
+              "the generic-c0 keystone is the WRONG statement: bdry_point is "
+              "FALSE for an interior c0.")
+    res = kb_ingest._noop_diagnosis(detail)
+    assert res is not None
+    title, body = res
+    assert "WRONG statement" in title          # diagnosis line, not the meta head
+    assert body == detail.strip()
+
+
 def test_stuck_blocker_extracts_inline_error():
     detail = ("subprocess timeout; stage2 parse: reason=lake_build_error "
               "detail=line 20:15 error: rewrite failed: pattern not found; "

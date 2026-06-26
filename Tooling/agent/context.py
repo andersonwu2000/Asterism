@@ -360,11 +360,11 @@ def _section_lessons_inline(conn: sqlite3.Connection, problem: str) -> list[str]
     store (Phase 12) — the legacy `LESSONS.md` was mirrored in at migration and
     the reflection write-path keeps the lessons in sync."""
     from ..state import kb
-    rows = kb.entries_for_problem(conn, problem)
-    if not rows:
+    grouped = kb.query(conn, problem=problem)
+    lessons = grouped["lessons"]
+    antis = grouped["antipatterns"]
+    if not lessons and not antis:
         return []
-    lessons = [r for r in rows if r["type"] == "lesson"]
-    antis = [r for r in rows if r["type"] == "antipattern"]
     out: list[str] = []
     if lessons:
         out += [

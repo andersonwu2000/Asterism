@@ -28,6 +28,9 @@ _DECLINE_REASONS = ("agent_shelved", "parent_needs_fix", "agent_infeasible")
 _DRAFTS_RE = re.compile(r"(?:builder|backward)_g(\d+)\.md$")
 _HEADER_RE = re.compile(r"^#{1,4}\s+(.+?)\s*$")
 _ERROR_RE = re.compile(r"error:\s*([^;]+)")
+_DIAG_RE = re.compile(
+    r"([^\n]*\b(?:WRONG|FALSE|cannot|can't|blocks?|impossible|unprovable|"
+    r"no existing|missing)\b[^\n]*)", re.I)
 
 
 def _parse_sections(text: str) -> dict[str, str]:
@@ -96,6 +99,15 @@ def _stuck_blocker(detail: str) -> tuple[str, str] | None:
     return m.group(1).strip()[:_TITLE_CAP], detail.strip()
 
 
+def _noop_diagnosis(detail: str) -> tuple[str, str] | None:
+    """(title, body) from a strategist_noop failure_detail. The wall (e.g. "the
+    keystone is the WRONG statement") is buried in meta-prose, so prefer a
+    diagnosis-flavoured line for the title, else the first line."""
+    m = _DIAG_RE.search(detail)
+    title = (m.group(1).strip() if m else _first_line(detail))[:_TITLE_CAP]
+    return (title, detail.strip()) if title else None
+
+
 def _insert(conn: sqlite3.Connection, *, title: str, body: str, problem: str,
             node_id: int | None, provenance: str) -> None:
     conn.execute(
@@ -159,6 +171,19 @@ def _ingest_dead_attempts(conn: sqlite3.Connection) -> int:
         _insert(conn, title=parsed[0], body=parsed[1], problem=r["problem"],
                 node_id=r["gid"],
                 provenance="ingest:dead_attempt:agent_stuck_thinking")
+        n += 1
+    for r in conn.execute(
+        "SELECT da.target_id AS gid, da.failure_detail AS detail, g.problem"
+        " AS problem FROM dead_attempts da JOIN goals g ON g.id = da.target_id"
+        " WHERE da.target_kind = 'Goal'"
+        " AND da.failure_reason = 'strategist_noop'",
+    ):
+        parsed = _noop_diagnosis(r["detail"] or "")
+        if parsed is None:
+            continue
+        _insert(conn, title=parsed[0], body=parsed[1], problem=r["problem"],
+                node_id=r["gid"],
+                provenance="ingest:dead_attempt:strategist_noop")
         n += 1
     return n
 
