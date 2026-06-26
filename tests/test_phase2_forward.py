@@ -283,6 +283,9 @@ def test_commit_writes_lean_file_and_inserts_goal(
     dest = workspace / "Problems" / "p" / "proofs" / \
         "L_contour_deformation_piecewise.lean"
     assert dest.exists()
+    # The consumed `-- entry_kind:` directive (parsed into the DB column below)
+    # must NOT persist into the permanent proof file — the Forward strip gap.
+    assert "-- entry_kind:" not in dest.read_text(encoding="utf-8")
     g = db.get_goal(conn, outcome.goal_id)
     assert g["origin"] == "forward"
     assert g["entry_kind"] == "Backward"

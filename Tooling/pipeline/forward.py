@@ -274,7 +274,12 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
                 f"no new_*.lean in {attempts_dir} for forward commit"
             )
         src = candidates[0]
-    body = src.read_text(encoding="utf-8")
+    # Strip the consumed `-- entry_kind:` routing directive (already parsed into
+    # the DB column) so it doesn't persist into the permanent proof file and
+    # propagate to the Library on migrate. Backward strips in commit_strategy;
+    # the Forward channel was the gap.
+    from .backward import _strip_entry_kind
+    body = _strip_entry_kind(src.read_text(encoding="utf-8"))
 
     proofs_dir = db.problem_dir(workspace, problem) / "proofs"
     proofs_dir.mkdir(parents=True, exist_ok=True)
@@ -365,6 +370,11 @@ def commit_forward_alias(conn: sqlite3.Connection, *,
     from ..quality import dedupe
     from ..lsp import lifecycle as gateway_lifecycle
     from ._lake import lean_path_to_module
+    from .backward import _strip_entry_kind
+
+    # The candidate body still carries its consumed `-- entry_kind:` directive;
+    # strip before it's prepended into the alias content (and the proof file).
+    body = _strip_entry_kind(body)
 
     proofs_dir = db.problem_dir(workspace, problem) / "proofs"
     proofs_dir.mkdir(parents=True, exist_ok=True)
