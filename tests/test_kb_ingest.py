@@ -79,6 +79,18 @@ def test_noop_diagnosis_prefers_diagnosis_line():
     assert body == detail.strip()
 
 
+def test_noop_diagnosis_skips_operational_narration():
+    assert kb_ingest._noop_diagnosis(
+        "Routine tick. Root main (2116) has via s10404 (proposed); all fine.") is None
+
+
+def test_clean_decline_skips_generic_section_label():
+    md = ("-- decline: unprovable\n-- ## Counterexample\n"
+          "-- The map f is not injective at 0, so the stated claim fails.")
+    title, _ = kb_ingest._clean_decline(md)
+    assert title.startswith("The map f is not injective")  # not "Counterexample"
+
+
 def test_stuck_blocker_extracts_inline_error():
     detail = ("subprocess timeout; stage2 parse: reason=lake_build_error "
               "detail=line 20:15 error: rewrite failed: pattern not found; "

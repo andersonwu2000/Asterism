@@ -31,6 +31,13 @@ _ERROR_RE = re.compile(r"error:\s*([^;]+)")
 _DIAG_RE = re.compile(
     r"([^\n]*\b(?:WRONG|FALSE|cannot|can't|blocks?|impossible|unprovable|"
     r"no existing|missing)\b[^\n]*)", re.I)
+# Bare section-header labels from the decline / progress-note templates — never
+# informative as a title (the substance is the prose underneath).
+_GENERIC_LABELS = frozenset({
+    "counterexample", "fix hint", "why unprovable as stated",
+    "missing vocabulary", "missing piece", "what works now",
+    "remaining work", "next dispatch action", "status", "proof approach",
+})
 
 
 def _parse_sections(text: str) -> dict[str, str]:
@@ -53,12 +60,23 @@ def _parse_sections(text: str) -> dict[str, str]:
     return sections
 
 
-def _first_line(text: str, cap: int = _TITLE_CAP) -> str:
+def _first_line(text: str, cap: int = _TITLE_CAP, substantive: int = 20) -> str:
+    """First *substantive* line for a title: skips bare section-header labels
+    (`## Counterexample`, `## Fix hint`) and framework metadata (`entry_kind:`),
+    preferring the first line long enough to carry meaning; falls back to the
+    first non-empty line when none qualifies."""
+    first: str | None = None
     for ln in text.splitlines():
         s = ln.strip().lstrip("#").strip()
-        if s:
+        if not s or s.lower().startswith("entry_kind:"):
+            continue
+        if s.lower().rstrip(":").strip() in _GENERIC_LABELS:
+            continue  # known section label — never a useful title
+        if first is None:
+            first = s
+        if len(s) >= substantive:
             return s[:cap]
-    return ""
+    return first[:cap] if first else ""
 
 
 def _drafts_antipattern(text: str) -> tuple[str, str] | None:
@@ -100,12 +118,14 @@ def _stuck_blocker(detail: str) -> tuple[str, str] | None:
 
 
 def _noop_diagnosis(detail: str) -> tuple[str, str] | None:
-    """(title, body) from a strategist_noop failure_detail. The wall (e.g. "the
-    keystone is the WRONG statement") is buried in meta-prose, so prefer a
-    diagnosis-flavoured line for the title, else the first line."""
+    """(title, body) ONLY when a strategist_noop carries a real diagnosis
+    (WRONG / FALSE / unprovable / …). Most noop rows are operational narration
+    ('routine tick', 'first_launch', 'batch resolved success') — no antipattern,
+    so they are skipped (no first-line fallback)."""
     m = _DIAG_RE.search(detail)
-    title = (m.group(1).strip() if m else _first_line(detail))[:_TITLE_CAP]
-    return (title, detail.strip()) if title else None
+    if not m:
+        return None
+    return m.group(1).strip()[:_TITLE_CAP], detail.strip()
 
 
 def _insert(conn: sqlite3.Connection, *, title: str, body: str, problem: str,

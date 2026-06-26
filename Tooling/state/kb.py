@@ -72,7 +72,7 @@ def lesson_bullets(content: str) -> list[str]:
         s = ln.lstrip()
         if s.startswith("- "):
             text = s[2:].strip()
-            if text:
+            if text and not text.lower().startswith("entry_kind:"):
                 out.append(text)
     return out
 
