@@ -45,25 +45,28 @@ def test_path_owner_and_assert_writable(conn) -> None:
 # atomic write primitive
 # ---------------------------------------------------------------------
 
-def test_atomic_write_new_file_rollback(tmp_path) -> None:
+def test_atomic_write_creates_and_overwrites(tmp_path) -> None:
     p = tmp_path / "proofs" / "L_a.lean"
-    backup = ps.atomic_write(p, "v1")
-    assert backup is None and p.read_text(encoding="utf-8") == "v1"
-    ps.rollback(p, backup)                       # newly created → removed
-    assert not p.exists()
+    ps.atomic_write(p, "v1")
+    assert p.read_text(encoding="utf-8") == "v1"
+    ps.atomic_write(p, "v2")                      # overwrite an existing file
+    assert p.read_text(encoding="utf-8") == "v2"
 
 
-def test_atomic_write_overwrite_rollback_and_commit(tmp_path) -> None:
+def test_atomic_write_leaves_no_backup_or_tmp_straggler(tmp_path) -> None:
+    """Regression: overwriting via `atomic_write` must not orphan a `.psbak`
+    backup or `.pstmp` scratch file. An earlier verify-window API copied the
+    prior content to `<file>.psbak<pid>` and relied on a caller-driven
+    `commit_backup`/`rollback` to reap it — no caller ever did, so the backups
+    leaked (`Root.lean.psbak<pid>` accumulated under every problem dir). The
+    torn-write guarantee is the atomic `os.replace` alone; no copy survives."""
     p = tmp_path / "proofs" / "L_b.lean"
     ps.atomic_write(p, "orig")
-    backup = ps.atomic_write(p, "new")
-    assert backup is not None and p.read_text(encoding="utf-8") == "new"
-    ps.rollback(p, backup)                       # restores prior content
-    assert p.read_text(encoding="utf-8") == "orig" and not backup.exists()
-    # commit_backup drops the backup, keeping the new content
-    backup2 = ps.atomic_write(p, "final")
-    ps.commit_backup(backup2)
-    assert p.read_text(encoding="utf-8") == "final" and not backup2.exists()
+    ps.atomic_write(p, "new")
+    assert p.read_text(encoding="utf-8") == "new"
+    strays = [q.name for q in p.parent.iterdir()
+              if ".psbak" in q.name or ".pstmp" in q.name]
+    assert strays == [], f"atomic_write left straggler files: {strays}"
 
 
 # ---------------------------------------------------------------------

@@ -11,8 +11,8 @@ committed file). CLAUDE.md rule 10 ("recovery scripts must update DB+file in
 pairs") is the human-discipline patch for exactly this.
 
 This module makes the drift class STRUCTURAL, not discipline-enforced:
-  * `atomic_write` / `rollback` / `commit_backup` — torn-write-safe primitive
-    (tmp + os.replace + backup), generalised from the old `promote_to_alias`.
+  * `atomic_write` — torn-write-safe primitive (tmp + os.replace), generalised
+    from the old `promote_to_alias`.
   * `assert_writable` / `place_proof` — OWNERSHIP guard: a proof path may only be
     written by the goal that owns it in the DB (`goals.lean_path` is UNIQUE).
     A placement that would clobber a DIFFERENT goal's file raises `ClobberError`
@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import sqlite3
 import subprocess
 from dataclasses import dataclass, field
@@ -52,35 +51,19 @@ def _norm(rel: "str | Path") -> str:
 # Atomic file primitive (generalised from _skeleton.promote_to_alias)
 # ---------------------------------------------------------------------
 
-def atomic_write(path: Path, content: str) -> "Path | None":
-    """Write `content` to `path` torn-write-safely (tmp + os.replace). Returns a
-    BACKUP path of the prior content for the caller's verify-window — `None` if
-    the file is newly created. Pair with `rollback` (on failed post-write verify)
-    or `commit_backup` (on success)."""
+def atomic_write(path: Path, content: str) -> None:
+    """Write `content` to `path` torn-write-safely (tmp + os.replace): a reader
+    never sees a half-written file, and a crash leaves either the old file fully
+    intact or the new one fully in place. The atomic rename IS the whole
+    guarantee — no persistent `.psbak` copy is kept. (An earlier verify-window
+    API returned a `.psbak` backup for a caller-driven rollback/commit, but no
+    call site ever adopted it: every caller discards the return, and Builder
+    rolls back by re-writing the original text it kept in memory. The unreaped
+    backups just leaked `Root.lean.psbak<pid>` / `L_*.lean.psbak<pid>` files.)"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    backup: "Path | None" = None
-    if path.exists():
-        backup = path.with_suffix(path.suffix + f".psbak{os.getpid()}")
-        shutil.copy2(path, backup)
     tmp = path.with_suffix(path.suffix + f".pstmp{os.getpid()}")
     tmp.write_text(content, encoding="utf-8")
     os.replace(tmp, path)
-    return backup
-
-
-def rollback(path: Path, backup: "Path | None") -> None:
-    """Undo an `atomic_write`: restore prior content from `backup`, or delete the
-    file if it was newly created (`backup is None`)."""
-    if backup is None:
-        path.unlink(missing_ok=True)
-    elif backup.exists():
-        os.replace(backup, path)
-
-
-def commit_backup(backup: "Path | None") -> None:
-    """Drop the `atomic_write` backup after a successful verify."""
-    if backup is not None:
-        backup.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------
@@ -108,12 +91,12 @@ def assert_writable(conn: sqlite3.Connection, rel_path: "str | Path", *,
 
 def place_proof(conn: sqlite3.Connection, workspace: Path, *,
                 goal_id: "int | None", rel_path: "str | Path",
-                content: str) -> "Path | None":
+                content: str) -> None:
     """Ownership-guarded atomic write of a proof file for `goal_id`. Refuses to
-    clobber another goal's file. Returns the backup for the caller's rollback
-    window (see `atomic_write`)."""
+    clobber another goal's file (`assert_writable`), then writes torn-write-safely
+    (`atomic_write`)."""
     assert_writable(conn, rel_path, owner_goal_id=goal_id)
-    return atomic_write(workspace / _norm(rel_path), content)
+    atomic_write(workspace / _norm(rel_path), content)
 
 
 def remove_proof(conn: sqlite3.Connection, workspace: Path, *,
