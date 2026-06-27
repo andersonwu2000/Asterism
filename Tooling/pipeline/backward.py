@@ -54,6 +54,18 @@ from ._cite_gate import (_PROBLEM_IMPORT_RE, _resolve_cite_dependencies,
 _SLUG_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
+def _place_unowned(conn: sqlite3.Connection, workspace: Path,
+                   dst: Path, content: str) -> None:
+    """Ownership-guarded placement of a not-yet-owned proof artifact — a fresh
+    sub-goal stub (`L_<slug>.lean`, its goal row INSERTed afterwards) or the
+    strategy scratch file (`_strategy_s*.lean`, never goal-owned). Routes through
+    the chokepoint so a path some OTHER goal already owns raises ClobberError
+    before the write, instead of clobbering a committed file (DB↔file drift)."""
+    proof_store.place_proof(
+        conn, workspace, goal_id=None,
+        rel_path=dst.relative_to(workspace).as_posix(), content=content)
+
+
 def _normalize_slug(raw: str) -> "str | None":
     """Mechanically rewrite a slug that fails `_SLUG_RE` *only* because of
     uppercase letters (camelCase / PascalCase) into snake_case lowercase.
@@ -891,8 +903,9 @@ def _backward_parse_and_commit(
                 rel_path=scratch_dest.relative_to(workspace).as_posix(),
                 owner_goal_id=None)
 
-        proof_store.atomic_write(
-            scratch_dest, patches[0].read_text(encoding="utf-8"))
+        _place_unowned(
+            conn, workspace, scratch_dest,
+            patches[0].read_text(encoding="utf-8"))
         # Verify-unification: gateway worker pool elaborates the
         # strategy file AND writes its olean to disk in one round trip.
         # The olean is needed downstream by `verify_strategy`, which
@@ -1394,7 +1407,7 @@ def _backward_parse_and_commit(
                         canonical_slug=canonical["slug"],
                     )
                     canonical_label = f"goal {canonical_id} ({canonical['slug']})"
-                proof_store.atomic_write(dest, alias_content)
+                _place_unowned(conn, workspace, dest, alias_content)
                 # Build-verify the alias before trusting the dedupe probe.
                 # The probe (`_batch_provable_via_apply`) elaborates the
                 # candidate in a `dedupe_check` namespace WITHOUT the
@@ -1432,19 +1445,20 @@ def _backward_parse_and_commit(
                           f"novel sub-goal",
                           flush=True)
                     canonical_for[idx] = None
-                    proof_store.atomic_write(dest, _novel_content(raw))
+                    _place_unowned(conn, workspace, dest, _novel_content(raw))
             else:
-                proof_store.atomic_write(dest, _novel_content(raw))
+                _place_unowned(conn, workspace, dest, _novel_content(raw))
             placed.append(dest)
-        proof_store.atomic_write(
-            scratch_dest, patches[0].read_text(encoding="utf-8"))
+        _place_unowned(
+            conn, workspace, scratch_dest,
+            patches[0].read_text(encoding="utf-8"))
         # Inject Defs.lean opens into the strategy patch as well — the
         # patch carries the strategy body (which may reference `π` /
         # `Real.sin` etc. via Defs's shared notation) and must replay
         # opens for the same reason every other agent-authored file
         # does. See state/manifest.py:inject_defs_opens docstring.
-        proof_store.atomic_write(
-            scratch_dest,
+        _place_unowned(
+            conn, workspace, scratch_dest,
             manifest.inject_defs_opens(
                 scratch_dest.read_text(encoding="utf-8"),
                 problem=goal["problem"], workspace=workspace,
@@ -1457,8 +1471,8 @@ def _backward_parse_and_commit(
         # The citation gate below then auto-links / revives the twin and
         # the strategy waits for it.
         if reuse_rewrites:
-            proof_store.atomic_write(
-                scratch_dest,
+            _place_unowned(
+                conn, workspace, scratch_dest,
                 _apply_reuse_rewrites(
                     scratch_dest.read_text(encoding="utf-8"), reuse_rewrites))
 
@@ -1490,7 +1504,7 @@ def _backward_parse_and_commit(
             conn, problem=goal["problem"], patch_text=scratch_text,
             declared_slugs=declared_slugs, workspace=workspace)
         if _added_imp:
-            proof_store.atomic_write(scratch_dest, scratch_text)
+            _place_unowned(conn, workspace, scratch_dest, scratch_text)
             print(f"[cite] auto-imported {len(_added_imp)} proved sibling(s): "
                   f"{', '.join(_added_imp)}", flush=True)
         auto_link_ids, revive_ids, cite_err = _resolve_cite_dependencies(
@@ -1585,7 +1599,7 @@ def _backward_parse_and_commit(
             # don't depend on this line.)
             cleaned = _strip_entry_kind(raw)
             if cleaned != raw:
-                proof_store.atomic_write(dest, cleaned)
+                _place_unowned(conn, workspace, dest, cleaned)
             new_gid = db.insert_goal(
                 conn, problem=goal["problem"], slug=slug,
                 lean_path=rel, statement=stmt, origin="backward",

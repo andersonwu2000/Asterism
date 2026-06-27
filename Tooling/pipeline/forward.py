@@ -291,7 +291,14 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
         raise FileExistsError(
             f"forward target {dest} already exists (slug collision)"
         )
-    proof_store.atomic_write(dest, body)
+    # Ownership-guarded placement (structural clobber prevention): a fresh
+    # forward target must be owned by NO existing goal. The on-disk check above
+    # catches a surviving file; this catches a DB collision whose file was
+    # cleaned (a different goal still owns the path) → ClobberError, not a
+    # silent overwrite. The goal row for this target is INSERTed below.
+    proof_store.place_proof(
+        conn, workspace, goal_id=None,
+        rel_path=dest.relative_to(workspace).as_posix(), content=body)
 
     rel_lean_path = dest.relative_to(workspace).as_posix()
     # Pick statement string for goals.statement. Best-effort extract
@@ -379,11 +386,6 @@ def commit_forward_alias(conn: sqlite3.Connection, *,
     proofs_dir = db.problem_dir(workspace, problem) / "proofs"
     proofs_dir.mkdir(parents=True, exist_ok=True)
     dest = proofs_dir / f"L_{metadata.slug}.lean"
-    # Ownership guard (structural clobber prevention): refuse if a DIFFERENT
-    # goal already owns this path. An orphan file with no row is reclaimable
-    # (atomic_write overwrites it); a real DB collision raises ClobberError.
-    proof_store.assert_writable(
-        conn, dest.relative_to(workspace).as_posix(), owner_goal_id=None)
 
     if match.kind == "library_alias":
         # Canonical is a committed Library decl (no in-DB goal). Delegate
@@ -408,7 +410,13 @@ def commit_forward_alias(conn: sqlite3.Connection, *,
         canonical_label = f"goal {match.goal_id} ({canonical['slug']})"
         canonical_goal_id = match.goal_id
 
-    proof_store.atomic_write(dest, alias_content)
+    # Ownership-guarded placement: refuse if a DIFFERENT goal already owns this
+    # path (orphan file with no row is reclaimable; a real DB collision raises
+    # ClobberError before the write). owner_goal_id=None — this alias target's
+    # own goal row is registered by the caller after commit.
+    proof_store.place_proof(
+        conn, workspace, goal_id=None,
+        rel_path=dest.relative_to(workspace).as_posix(), content=alias_content)
     # Build-verify the actual alias file before trusting the probe (see
     # docstring). write_olean=True so downstream citers resolve the .olean.
     av = gateway_lifecycle.verify_file(

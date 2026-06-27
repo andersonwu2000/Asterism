@@ -104,6 +104,17 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         )
     source = goal_lean.read_text(encoding="utf-8")
 
+    def _commit_goal_lean(content: str) -> None:
+        """Guarded write of this goal's OWN proof file. Routes through the
+        ownership chokepoint (`place_proof`) so a mis-computed `goal_lean`
+        pointing at a DIFFERENT goal's committed file raises ClobberError
+        before touching disk, instead of silently clobbering it (the DB↔file
+        drift class). For this goal's own path the guard always passes — it is
+        defence against a future bug that hands Builder the wrong path."""
+        proof_store.place_proof(
+            conn, workspace, goal_id=goal_id,
+            rel_path=goal["lean_path"], content=content)
+
     attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
     problem_dir = db.problem_dir(workspace, goal["problem"])
 
@@ -136,7 +147,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # info diagnostics' message text for the marker. write_olean
         # is skipped (probe is throwaway).
         probe_text = _replace_proof_body(source, "hint")
-        proof_store.atomic_write(goal_lean, probe_text)
+        _commit_goal_lean(probe_text)
         v_probe = gateway_lifecycle.verify_file(
             goal_lean, write_olean=False, workspace=workspace,
         )
@@ -151,7 +162,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
 
         if winner is not None:
             final_text = _replace_proof_body(source, winner)
-            proof_store.atomic_write(goal_lean, final_text)
+            _commit_goal_lean(final_text)
             fq_name = f"Problems.{goal['problem']}.{goal['slug']}"
             v_confirm = gateway_lifecycle.verify_file(
                 goal_lean, write_olean=True,
@@ -162,20 +173,20 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             if ok_confirm:
                 forbidden = _grep_forbidden(final_text, mfst.forbidden_lemmas)
                 if forbidden:
-                    proof_store.atomic_write(goal_lean, backup_text)
+                    _commit_goal_lean(backup_text)
                     return PipelineResult(outcome="failed",
                                           failure_reason="forbidden_lemma",
                                           failure_detail=forbidden)
                 if mfst.axioms_whitelist:
                     if v_confirm.get("axiom_error"):
-                        proof_store.atomic_write(goal_lean, backup_text)
+                        _commit_goal_lean(backup_text)
                         return PipelineResult(outcome="failed",
                                               failure_reason="axiom_violation",
                                               failure_detail=v_confirm["axiom_error"])
                     used = set(v_confirm.get("axioms") or [])
                     rogue = used - set(mfst.axioms_whitelist)
                     if rogue:
-                        proof_store.atomic_write(goal_lean, backup_text)
+                        _commit_goal_lean(backup_text)
                         return PipelineResult(outcome="failed",
                                               failure_reason="axiom_violation",
                                               failure_detail=f"rogue axioms: {sorted(rogue)}")
@@ -193,7 +204,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
 
         # Phase 1 didn't close the goal — restore the original sorry-stub
         # and fall through to Phase 2 LLM.
-        proof_store.atomic_write(goal_lean, backup_text)
+        _commit_goal_lean(backup_text)
 
     # Phase 2: tactic_llm via in-pipeline retry helper.
     # Helper owns budget = BUILDER_THRESHOLD - goal.attempts (decision 1),
@@ -224,9 +235,9 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
     def _restore_goal_lean() -> None:
         """Undo a commit attempt on goal_lean. Only called after the
         final post-verify failure paths in `builder_parse` — i.e. once the
-        `proof_store.atomic_write` commit has already mutated workspace and
-        the subsequent verify/axiom check rejected the patch."""
-        proof_store.atomic_write(goal_lean, goal_lean_original)
+        `_commit_goal_lean` write has already mutated workspace and the
+        subsequent verify/axiom check rejected the patch."""
+        _commit_goal_lean(goal_lean_original)
 
     def builder_cold_prep(ctx: SpawnCtx) -> None:
         # Cold start: re-seed sandbox patch.lean from goal_lean's pristine
@@ -326,8 +337,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # hundred ms between this copy and the post-verify decision.
         # Inject any Defs.lean opens the agent forgot to replay (see
         # state/manifest.py:inject_defs_opens).
-        proof_store.atomic_write(
-            goal_lean,
+        _commit_goal_lean(
             manifest.inject_defs_opens(
                 patch.read_text(encoding="utf-8"),
                 problem=goal["problem"], workspace=workspace,

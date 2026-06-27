@@ -23,6 +23,11 @@ _PROOF_VARS = ("dest", "scratch_dest", "goal_lean", "parent_abs")
 _RAW_MUT_RE = re.compile(
     r"\b(" + "|".join(_PROOF_VARS) + r")\.(write_text|unlink)\s*\(")
 _SHUTIL_RE = re.compile(r"shutil\.(copy2?|move)\s*\(")
+# Pipeline code must reach `atomic_write` only through the OWNERSHIP-guarded
+# wrappers (`place_proof` / `remove_proof`), never bare — a bare call skips the
+# clobber guard and re-opens the clobber-then-orphan window. `atomic_write` is a
+# proof_store-internal primitive; only proof_store.py may call it directly.
+_BARE_ATOMIC_RE = re.compile(r"\batomic_write\s*\(")
 
 _FILES = ["backward.py", "builder.py", "forward.py"]
 
@@ -37,8 +42,26 @@ def test_no_raw_proof_mutation_in_pipeline(name) -> None:
             offenders.append(f"{name}:{i}: {line.strip()}")
     assert not offenders, (
         "raw proof-file mutation outside proof_store (route it through "
-        "proof_store.atomic_write / place_proof / remove_proof):\n"
+        "proof_store.place_proof / remove_proof):\n"
         + "\n".join(offenders))
+
+
+@pytest.mark.parametrize("name", _FILES)
+def test_no_bare_atomic_write_in_pipeline(name) -> None:
+    """Every proof-file write must carry the ownership guard. `place_proof`
+    bundles `assert_writable` + `atomic_write`; a bare `atomic_write` skips the
+    guard. Forbid it in pipeline code so a future write can't silently clobber a
+    different goal's committed file (the gap that left forward.py's primary
+    placement unguarded before this was wired in)."""
+    text = (_PIPELINE / name).read_text(encoding="utf-8")
+    offenders = []
+    for i, line in enumerate(text.splitlines(), 1):
+        code = line.split("#", 1)[0]                 # ignore comments
+        if _BARE_ATOMIC_RE.search(code):
+            offenders.append(f"{name}:{i}: {line.strip()}")
+    assert not offenders, (
+        "bare atomic_write in pipeline — route through the ownership-guarded "
+        "proof_store.place_proof instead:\n" + "\n".join(offenders))
 
 
 @pytest.mark.parametrize("name", _FILES)
