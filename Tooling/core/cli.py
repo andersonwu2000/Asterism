@@ -343,23 +343,9 @@ def cmd_init(args: argparse.Namespace) -> int:
     # (sandbox / forbidden lemmas / mathlib hints / library / strategic
     # notes). Refreshed at daemon startup if Manifest changes.
     brief.write(workspace, mfst)
-    # Seed LESSONS.md — agent-curated cross-spawn experience surface,
-    # populated by reflection spawns at successful pipeline terminals.
-    # The seed line ensures the Edit tool has an anchor: appending to a
-    # 0-byte file via Edit fails (no `old_string` match). Reflection
-    # prompt instructs the agent to insert new lessons after the seed
-    # divider line.
-    lessons_path = pdir / "LESSONS.md"
-    if not lessons_path.exists():
-        lessons_path.write_text(
-            "<!-- Lessons learned across spawns on this problem.\n"
-            "     One sentence per `- ` bullet. Reflection spawn appends\n"
-            "     below this header; the divider line below is the\n"
-            "     anchor Edit tool relies on. -->\n"
-            "\n"
-            "<!-- LESSONS_BEGIN -->\n",
-            encoding="utf-8",
-        )
+    # No LESSONS.md seed: Phase 12 Model B made the KB the lessons SoT —
+    # reflection writes `kb_entries`, Context reads `kb.query`; the old flat
+    # LESSONS.md mirror (and its Edit-anchor seed) is retired.
     return 0
 
 
@@ -790,10 +776,9 @@ def cmd_reset(args: argparse.Namespace) -> int:
     # Drop per-problem artifacts that aren't in proofs/:
     #   - TREE.md: live tree rendering; goal rows gone → render
     #     would say "no root goal" anyway
-    #   - LESSONS.md: Phase 7 reflection cache (accumulated
-    #     Builder/Backward postmortems). Reset wipes the goal tree,
-    #     so lessons from a structurally-different prior decomposition
-    #     would pre-bias the next agent's reasoning
+    #   - LESSONS.md: legacy Model-A reflection cache. No longer created
+    #     (Phase 12 Model B moved lessons into the KB); swept only to
+    #     clean a pre-Model-B problem dir that still carries one
     #   - Root.lean.backup: spawn-side snapshot from in-pipeline retry
     #     path; only an unclean shutdown leaves it behind
     # BRIEF.md is intentionally NOT swept — it's auto-regenerated at
@@ -1647,8 +1632,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p_kb_migrate = sub.add_parser(
         "kb-migrate",
-        help="bootstrap the knowledge base from existing LESSONS.md files "
-             "(idempotent re-sync of every problem's bullets)",
+        help="re-ingest mechanically-derived KB antipatterns from .drafts "
+             "blockers + dead_attempts rationale (idempotent, source-keyed)",
     )
     p_kb_migrate.set_defaults(func=cmd_kb_migrate)
 
