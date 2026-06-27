@@ -1,24 +1,27 @@
-"""Reflection spawn — agent-curated cross-spawn experience writeback.
+"""Reflection spawn — agent-curated cross-spawn experience writeback (Model B).
 
 After a successful (or terminal-decline) pipeline, the in-pipeline retry
 helper still has its sid in scope. We use that sid to fire a brief
-`--resume`-based agent spawn that:
-  1. reads the current `Problems/<p>/LESSONS.md`,
-  2. judges whether THIS attempt exposed a cross-spawn learnable signal,
-  3. uses the Edit tool to append (or replace, when at cap) a single
-     sentence in LESSONS.md, OR exits silently.
+`--resume`-based agent spawn that picks ONE of:
+  * `skip`         — no cross-spawn-learnable signal (the default),
+  * `node`         — a node-bound experience for THIS goal (type-1),
+  * `global_add`   — a problem-wide insight that helps OTHER nodes (type-2),
+  * `global_edit`  — correct / supersede an existing global insight (C3-A).
 
-Best-effort. Any failure (timeout, provider error, parse miss) is
-swallowed — the primary pipeline outcome already committed; the
+The agent writes its choice to a `_reflection_decision.json` sentinel; the
+framework parses it and writes straight to the KB (`kb_entries`) — the KB is
+the source of truth, the old flat `LESSONS.md` mirror is gone.
+
+Best-effort. Any failure (timeout, provider error, parse miss, no decision
+file) is swallowed — the primary pipeline outcome already committed; the
 reflection's loss is at most one un-saved lesson.
 
 Trigger gating lives in `_retry.py`'s reflection_fn callback wiring;
-this module only knows how to RUN the reflection given an sid +
-problem context. See `docs/archive/agent_brief_lessons.md` (now archived)
-for the design rationale.
+this module only knows how to RUN the reflection given an sid + goal context.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from pathlib import Path
@@ -29,27 +32,26 @@ from ..state import db, kb
 
 _REFLECTION_PROMPT_FILENAME = "_reflection_prompt.md"
 _RETRACT_SENTINEL_FILENAME = "_directive_retract.md"
-_LESSONS_FILENAME = "LESSONS.md"
+_DECISION_FILENAME = "_reflection_decision.json"
 _REFLECTION_TIMEOUT_SEC = 120
 
-# Per-problem mutex on LESSONS.md edits. Multiple workers can reach
-# their pipeline terminals concurrently (different goals, same problem)
-# and each fires its own claude reflection spawn that Edit's the same
-# file — Edit is read-modify-write, not atomic, so concurrent Edits
-# can lose updates or corrupt the file. Serialize per-problem so at
-# most one reflection writes LESSONS.md for a given problem at a time.
-# In-process lock is sufficient because the dispatcher is single-
-# process; multi-process deployments would need an OS-level file lock.
-_LESSONS_LOCKS: dict[str, threading.Lock] = {}
-_LESSONS_LOCKS_GUARD = threading.Lock()
+# Per-problem mutex on the reflection read-globals → decide → write window.
+# Multiple workers can reach their pipeline terminals concurrently (different
+# goals, same problem) and each fires its own reflection spawn. Serializing
+# per-problem keeps each spawn's dedup decision (does an equivalent global
+# already exist?) consistent against a stable picture, and avoids two spawns
+# racing a global edit. In-process lock suffices — the dispatcher is single-
+# process; multi-process deployments would need an OS-level lock.
+_REFLECTION_LOCKS: dict[str, threading.Lock] = {}
+_REFLECTION_LOCKS_GUARD = threading.Lock()
 
 
 def _lock_for_problem(problem: str) -> threading.Lock:
-    with _LESSONS_LOCKS_GUARD:
-        lock = _LESSONS_LOCKS.get(problem)
+    with _REFLECTION_LOCKS_GUARD:
+        lock = _REFLECTION_LOCKS.get(problem)
         if lock is None:
             lock = threading.Lock()
-            _LESSONS_LOCKS[problem] = lock
+            _REFLECTION_LOCKS[problem] = lock
         return lock
 
 
@@ -110,55 +112,61 @@ def attempt_reflection(*,
                        sid: str,
                        slug: str,
                        outcome: str,
+                       goal_id: int,
                        problem_dir: Path,
                        attempts_dir: Path,
-                       lessons_cap: int,
                        prompt_dir: Path,
                        workspace: Path | None = None) -> None:
-    """Render reflection prompt, spawn agent in `--resume <sid>` mode,
-    log a one-line telemetry summary by diffing LESSONS.md before/after.
+    """Render reflection prompt, spawn agent in `--resume <sid>` mode, then
+    apply the agent's `_reflection_decision.json` choice straight to the KB.
 
-    Best-effort throughout: any exception is swallowed — the primary
-    pipeline outcome is already committed; failed reflection costs at
-    most one un-saved lesson, never blocks the dispatcher.
+    Best-effort throughout: any exception is swallowed — the primary pipeline
+    outcome is already committed; failed reflection costs at most one un-saved
+    lesson, never blocks the dispatcher.
     """
-    # Acquire per-problem lock around the entire spawn + diff window.
-    # The lock holds for the LLM call duration (~30-90s). Multiple
-    # workers reflecting on the same problem serialize here; that's a
-    # known cost (the alternative is concurrent Edit which corrupts).
-    # Mutually-different problems do not contend.
+    # Hold the per-problem lock across the whole read-globals → spawn → write
+    # window (~30-90s) so each spawn's dedup sees a stable picture.
     lock = _lock_for_problem(problem_dir.name)
     with lock:
         try:
-            lessons_path = problem_dir / _LESSONS_FILENAME
-            lessons_before = _read_lessons(lessons_path)
-            used = _count_lesson_lines(lessons_before)
+            problem = problem_dir.name
+
+            # Surface the existing GLOBAL lessons (with ids) so the agent can
+            # dedup before a global_add or pick an id for global_edit.
+            conn = db.connect()
+            try:
+                existing_globals = kb.global_lessons(conn, problem)
+            finally:
+                conn.close()
 
             # C3-A: surface the standing directive so reflection can retract it
-            # if THIS outcome disproved a concrete claim it makes. Clear any
-            # stale sentinel from a prior spawn before this one runs.
-            directive = _read_directive(problem_dir.name)
+            # if THIS outcome disproved a concrete claim it makes.
+            directive = _read_directive(problem)
+
+            # Clear any stale sentinels from a prior spawn before this one runs.
+            decision_path = attempts_dir / _DECISION_FILENAME
             retract_sentinel = attempts_dir / _RETRACT_SENTINEL_FILENAME
-            try:
-                retract_sentinel.unlink()
-            except OSError:
-                pass
+            for p in (decision_path, retract_sentinel):
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
 
             template_path = prompt_dir / "reflection.md"
             if not template_path.exists():
                 print(f"[reflection] template missing at {template_path}; "
                       f"skipping", flush=True)
                 return
-            # Framework feedback is DECOUPLED from reflection — it now runs as
-            # its own `--resume` step (`_feedback.attempt_feedback`) at every
-            # pipeline's tail, so reflection here is LESSONS-only.
+            # Framework feedback is DECOUPLED from reflection — it runs as its
+            # own `--resume` step (`_feedback.attempt_feedback`) at every
+            # pipeline's tail, so reflection here is KB-lessons-only.
             rendered = _render_prompt(
                 template_path.read_text(encoding="utf-8"),
-                kind=kind, slug=slug, outcome=outcome,
-                problem=problem_dir.name,
-                cap=str(lessons_cap), used=str(used),
-                lessons_content=lessons_before or "(empty)",
+                kind=kind, slug=slug, outcome=outcome, problem=problem,
+                goal_id=str(goal_id),
+                global_lessons=_render_globals(existing_globals),
                 directive=directive or "(no standing directive)",
+                decision_path=str(decision_path),
                 attempts_dir=str(attempts_dir),
                 timeout_min=str(max(1, _REFLECTION_TIMEOUT_SEC // 60)),
             )
@@ -173,7 +181,6 @@ def attempt_reflection(*,
                 session_id=sid,
                 # is_postmortem=True borrows the existing "resume + use
                 # prompt_path verbatim, no companion file load" path.
-                # claude provider handles --resume <sid> already.
                 is_postmortem=True,
                 timeout_sec=_REFLECTION_TIMEOUT_SEC,
             )
@@ -186,82 +193,93 @@ def attempt_reflection(*,
                         encoding="utf-8").strip()
                 except OSError:
                     reason = ""
-                _clear_directive(problem_dir.name)
+                _clear_directive(problem)
                 print(f"[reflection] {kind} {slug}: retracted strategist "
                       f"directive — {reason[:160]}", flush=True)
 
-            lessons_after = _read_lessons(lessons_path)
-            delta = _classify_delta(lessons_before, lessons_after)
-            print(f"[reflection] {kind} {slug}: {delta}", flush=True)
-
-            # Phase 12 step 2 — mirror the now-current LESSONS bullets into the
-            # KB so the read path can move off the flat file. Full re-sync (not
-            # a diff) so a C3-A correction / removal propagates, not just
-            # appends. Best-effort; a KB hiccup must not lose the telemetry.
+            # Apply the agent's KB decision (skip / node / global_add /
+            # global_edit). Best-effort; a KB hiccup must not lose telemetry.
             try:
-                _mirror_lessons_to_kb(problem_dir.name, lessons_after)
+                delta = _apply_decision(problem, goal_id, sid, decision_path)
             except Exception as exc:  # noqa: BLE001
-                print(f"[reflection] {kind} {slug}: kb mirror skipped — {exc}",
-                      flush=True)
+                delta = f"decision skipped — {exc}"
+            print(f"[reflection] {kind} {slug}: {delta}", flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"[reflection] {kind} {slug}: error swallowed — {exc}",
                   flush=True)
 
 
-def _read_lessons(path: Path) -> str:
-    if not path.exists():
-        return ""
+def _render_globals(rows: list[sqlite3.Row]) -> str:
+    """Render existing global lessons as an id-tagged list for the prompt, so
+    the agent can dedup (global_add only when not already present) and target a
+    global_edit by id."""
+    if not rows:
+        return "(none yet)"
+    out: list[str] = []
+    for r in rows:
+        out.append(f"- [id {r['id']}] {(r['title'] or '').strip()}")
+        body = (r["body"] or "").strip()
+        if body:
+            out += [f"    {bl}" for bl in body.splitlines()]
+    return "\n".join(out)
+
+
+def _apply_decision(problem: str, goal_id: int, sid: str,
+                    decision_path: Path) -> str:
+    """Parse `_reflection_decision.json` and apply it to the KB. Returns a
+    one-line telemetry string. Never raises on a missing / malformed file —
+    that just reads as a skip."""
+    if not decision_path.exists():
+        return "skip (no decision)"
     try:
-        return path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
+        data = json.loads(decision_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return f"skip (unparseable decision: {exc})"
+    if not isinstance(data, dict):
+        return "skip (decision not an object)"
 
+    action = str(data.get("action", "skip")).strip().lower()
+    if action == "skip":
+        return "skip"
+    title = str(data.get("title", "")).strip()
+    body = str(data.get("body", "")).strip()
+    # One write per spawn (the actions are mutually exclusive), so the sid is a
+    # stable idempotency key: a re-fired spawn re-applies without duplicating.
+    provenance = f"reflection:{sid}"
 
-def _count_lesson_lines(content: str) -> int:
-    """Count '- <lesson>' bullet lines. Other content (header / blank)
-    doesn't count toward the cap."""
-    return sum(
-        1 for ln in content.splitlines()
-        if ln.lstrip().startswith("-")
-    )
-
-
-def _mirror_lessons_to_kb(problem: str, lessons_after: str) -> None:
-    """Re-sync this problem's reflection lessons in the KB to the current
-    LESSONS.md bullets. Own connection; caller wraps in best-effort."""
-    titles = kb.lesson_bullets(lessons_after)
     conn = db.connect()
     try:
-        kb.replace_reflection_lessons(conn, problem, titles)
+        if action == "node":
+            if not title:
+                return "skip (node: empty title)"
+            n = kb.add_lesson(conn, problem=problem, title=title, body=body,
+                              node_id=goal_id, provenance=provenance)
+            return f"node lesson ({'wrote' if n else 'dup'})"
+        if action == "global_add":
+            if not title:
+                return "skip (global_add: empty title)"
+            n = kb.add_lesson(conn, problem=problem, title=title, body=body,
+                              node_id=None, provenance=provenance)
+            return f"global add ({'wrote' if n else 'dup'})"
+        if action == "global_edit":
+            try:
+                entry_id = int(data.get("id"))
+            except (TypeError, ValueError):
+                return "skip (global_edit: bad id)"
+            if not title:
+                return "skip (global_edit: empty title)"
+            n = kb.edit_global_lesson(conn, entry_id=entry_id, problem=problem,
+                                      title=title, body=body)
+            return f"global edit id={entry_id} ({'ok' if n else 'no-match'})"
+        return f"skip (unknown action {action!r})"
     finally:
         conn.close()
 
 
 def _render_prompt(template: str, **kwargs: str) -> str:
-    """Simple {field} substitution. Avoids str.format because LESSONS
-    content might contain literal `{` characters (e.g. Lean tactic
-    blocks)."""
+    """Simple {field} substitution. Avoids str.format because lesson content
+    might contain literal `{` characters (e.g. Lean tactic blocks)."""
     out = template
     for k, v in kwargs.items():
         out = out.replace("{" + k + "}", v)
     return out
-
-
-def _classify_delta(before: str, after: str) -> str:
-    """One-line telemetry summary of LESSONS.md change. Returns one of:
-      'skip'                 — no change
-      'wrote (+N lines)'     — agent appended; N lines added
-      'replaced (~N lines)'  — agent replaced; line count unchanged but
-                               content differs
-      'unexpected (B→A)'     — anything else (size shrank without
-                               replacement, etc.)
-    """
-    if before == after:
-        return "skip"
-    bcount = _count_lesson_lines(before)
-    acount = _count_lesson_lines(after)
-    if acount > bcount:
-        return f"wrote (+{acount - bcount} line)"
-    if acount == bcount:
-        return f"replaced (~{bcount} lines unchanged count)"
-    return f"unexpected (cap shrank {bcount}→{acount})"

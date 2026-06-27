@@ -1,41 +1,31 @@
-You just finished `{kind}` on `{slug}` (outcome=`{outcome}`).
+You just finished `{kind}` on `{slug}` (goal id `{goal_id}`, outcome=`{outcome}`) in problem `{problem}`.
 
-`Problems/{problem}/LESSONS.md` (cap={cap}, currently {used}/{cap} bullet lines):
+Reflect: did this attempt expose a signal worth recording for a future agent? **Default to `skip`** — record only what is concrete (names a lemma / API / namespace / goal shape / sibling decl — never a framework-internals guess) and non-obvious (a fresh agent would otherwise re-discover it the hard way).
+
+Two kinds of experience:
+  - **Node** — specific to THIS goal `{slug}`: how it decomposes, which sub-goals / lemmas / sibling proofs worked, which route is a dead end. Helps a later attempt on this same goal. Most recordable signals are node; it is append-only (short-lived, never edited).
+  - **Global** — a cross-cutting insight for OTHER, unrelated goals in this problem: a Mathlib/Library API gotcha, an instance-resolution trap, a tactic that reliably handles a recurring shape.
+
+Existing global experiences for this problem:
 
 ```
-{lessons_content}
+{global_lessons}
 ```
 
-Standing Strategist directive for this problem (problem-wide guidance every worker cold-start reads):
+OUTPUT — write your decision as JSON to `{decision_path}`. Exactly one of:
+  - `{"action": "skip"}` — no signal (the common case).
+  - `{"action": "node", "title": "<one-line lesson>", "body": "<optional: decls, tactic, exact shapes>"}` — a signal for this goal.
+  - `{"action": "global_add", "title": "<one-line insight>", "body": "<optional detail>"}` — ONLY if it helps a DIFFERENT goal AND no entry above already covers it (no duplicates).
+  - `{"action": "global_edit", "id": <id from the list above>, "title": "<corrected one-liner>", "body": "<optional detail>"}` — an entry above is now false or superseded by this `{outcome}`. No count cap; global experience evolves by editing.
+
+`title` is the actionable one-liner; `body` is optional elaboration.
+
+Standing Strategist directive for this problem (separate from the above):
 
 ```
 {directive}
 ```
 
-If — and ONLY if — that directive makes a CONCRETE claim that this `{outcome}` specifically disproved or showed is the wrong approach (e.g. "lemma X exists / is provable" when you just refuted it), you may retract it: write the one-line reason to `{attempts_dir}/_directive_retract.md`. The framework clears the directive; the Strategist re-issues a corrected one on its next wake (an absent directive beats a wrong one). High bar — "it was just hard" is NOT grounds; when unsure, do not retract.
+If — and ONLY if — that directive makes a CONCRETE claim this `{outcome}` specifically disproved (e.g. "lemma X exists / is provable" when you just refuted it), retract it: write the one-line reason to `{attempts_dir}/_directive_retract.md`. High bar — "it was just hard" is NOT grounds; when unsure, do not retract. This is independent of your JSON decision.
 
-Reflect: did this attempt expose a CROSS-SPAWN learnable signal — something a future agent on a DIFFERENT goal in this problem would benefit from?
-
-Bar — only write if all three:
-  - Concrete (names a lemma / API / namespace / goal shape) — never a framework-internals guess
-  - Non-obvious (a fresh agent would re-discover otherwise)
-  - Generalizable beyond this goal
-
-Default is skip. Most reflections should be `skip`.
-
-Restrictions:
-  - You may write to `Problems/{problem}/LESSONS.md`. Do NOT touch any other file.
-  - Use the Edit tool. LESSONS.md contains a `<!-- LESSONS_BEGIN -->` anchor line; insert new lessons immediately AFTER it.
-
-Action:
-  - No signal → exit without editing.
-  - An existing bullet is now FALSE or misleading in light of this `{outcome}` (e.g. a claim this attempt disproved or showed was the wrong approach) → Edit that bullet to correct it, regardless of the cap. Reply `replaced N: <correction>`.
-  - Signal + cap not full → Edit the file, replace `<!-- LESSONS_BEGIN -->\n` with `<!-- LESSONS_BEGIN -->\n- <one-sentence lesson>\n` (preserving any existing bullet lines after the anchor).
-  - Signal + cap full → compare your candidate vs each existing bullet. If strictly stronger than the weakest, Edit the weakest line in place. Otherwise skip.
-
-Reply with one of:
-  - `skip`
-  - `wrote: <lesson>`
-  - `replaced N: <lesson>`  (N = 1-indexed bullet index you replaced)
-
-Time budget: {timeout_min} min. Exit promptly after the Edit (or immediately on `skip`).
+Time budget: {timeout_min} min. Write the JSON promptly and exit.

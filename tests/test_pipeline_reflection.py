@@ -1,43 +1,29 @@
-"""Unit tests for `Tooling/pipeline/_reflection.py` pure helpers.
+"""Unit tests for `Tooling/pipeline/_reflection.py` (Model B).
 
 The agent-spawning side of reflection is best-effort (any exception is
-swallowed; the dispatcher must never block on a failed reflection)
-and is exercised end-to-end by the PN run rather than mocked here.
-This file pins the deterministic helpers: lesson-line counting,
-prompt template substitution, before/after delta classification.
+swallowed; the dispatcher must never block on a failed reflection) and is
+exercised end-to-end by live runs rather than mocked here. This file pins the
+deterministic helpers: prompt template substitution, the existing-globals
+render, and the decision-JSON → KB applier.
 """
 from __future__ import annotations
 
-from Tooling.pipeline._reflection import (
-    _classify_delta,
-    _count_lesson_lines,
-    _render_prompt,
-)
+import json
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from Tooling.state import db, kb
+from Tooling.pipeline import PipelineResult
+from Tooling.pipeline._retry import SpawnCtx, run_with_session_retries
+from Tooling.pipeline import _reflection
+from Tooling.pipeline._reflection import _render_globals, _render_prompt
 
 
-def test_count_lesson_lines_only_counts_bullets() -> None:
-    content = (
-        "## Lessons learned on this problem\n"
-        "_Cross-spawn observations recorded by past agents..._\n"
-        "\n"
-        "- first lesson sentence\n"
-        "- second lesson sentence\n"
-    )
-    assert _count_lesson_lines(content) == 2
-
-
-def test_count_lesson_lines_handles_empty() -> None:
-    assert _count_lesson_lines("") == 0
-    assert _count_lesson_lines("\n\n") == 0
-    # A header-only file (no bullets) is empty for cap purposes.
-    assert _count_lesson_lines("## Lessons\n_blurb_\n") == 0
-
-
-def test_count_lesson_lines_indented_bullet() -> None:
-    # Allow some leading whitespace before the bullet (operator may
-    # hand-edit with indentation).
-    assert _count_lesson_lines("  - foo\n- bar\n") == 2
-
+# ---------------------------------------------------------------------
+# Prompt template substitution
+# ---------------------------------------------------------------------
 
 def test_render_prompt_substitutes_braced_fields() -> None:
     template = "Hello {name}, you are {role}."
@@ -45,77 +31,127 @@ def test_render_prompt_substitutes_braced_fields() -> None:
     assert out == "Hello alice, you are agent."
 
 
-def test_render_prompt_does_not_format_lessons_content_with_braces() -> None:
-    """LESSONS content can contain literal `{` (e.g. set-builder
-    notation, Lean tactic blocks). Plain str.replace dodges
-    str.format's brace-as-spec behavior."""
-    template = "Existing: {lessons_content}"
-    lessons = "- ‖a‖ ≤ ‖b‖ goal: try real_inner_le_norm\n- {x : ℕ // x > 0} doesn't reduce"
-    out = _render_prompt(template, lessons_content=lessons)
+def test_render_prompt_does_not_format_content_with_braces() -> None:
+    """Lesson content can contain literal `{` (set-builder notation, Lean
+    tactic blocks). Plain str.replace dodges str.format's brace-as-spec."""
+    template = "Existing: {global_lessons}"
+    lessons = "- {x : ℕ // x > 0} doesn't reduce\n- ‖a‖ ≤ ‖b‖"
+    out = _render_prompt(template, global_lessons=lessons)
     assert "{x : ℕ // x > 0}" in out
 
 
-def test_classify_delta_skip_when_unchanged() -> None:
-    same = "- existing lesson\n"
-    assert _classify_delta(same, same) == "skip"
+# ---------------------------------------------------------------------
+# _render_globals — the dedup/edit surface shown to the agent
+# ---------------------------------------------------------------------
+
+def test_render_globals_empty() -> None:
+    assert _render_globals([]) == "(none yet)"
 
 
-def test_classify_delta_wrote_when_appended() -> None:
-    before = "- a\n"
-    after = "- a\n- b\n"
-    delta = _classify_delta(before, after)
-    assert "wrote" in delta and "+1 line" in delta
+def test_render_globals_id_tagged_with_body() -> None:
+    rows = [{"id": 3, "title": "prefer X over Y", "body": "line1\nline2"},
+            {"id": 7, "title": "no body here", "body": ""}]
+    out = _render_globals(rows)
+    assert "- [id 3] prefer X over Y" in out
+    assert "    line1" in out and "    line2" in out
+    assert "- [id 7] no body here" in out
 
 
-def test_classify_delta_replaced_when_count_unchanged_but_content_differs() -> None:
-    before = "- a\n- b\n- c\n"
-    after = "- a\n- b\n- c-updated\n"
-    delta = _classify_delta(before, after)
-    assert "replaced" in delta
+# ---------------------------------------------------------------------
+# _apply_decision — decision JSON → KB write
+# ---------------------------------------------------------------------
+
+def test_apply_decision_skip_paths(tmp_path: Path,
+                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    dp = tmp_path / "_reflection_decision.json"
+    # no file → skip (never raises)
+    assert "skip" in _reflection._apply_decision("p", 1, "s1", dp)
+    # explicit skip
+    dp.write_text('{"action": "skip"}', encoding="utf-8")
+    assert _reflection._apply_decision("p", 1, "s1", dp) == "skip"
+    # malformed JSON → skip, no raise
+    dp.write_text("not json at all", encoding="utf-8")
+    assert "skip" in _reflection._apply_decision("p", 1, "s1", dp)
+    # unknown action → skip
+    dp.write_text('{"action": "frobnicate"}', encoding="utf-8")
+    assert "skip" in _reflection._apply_decision("p", 1, "s1", dp)
 
 
-def test_classify_delta_unexpected_when_shrank() -> None:
-    before = "- a\n- b\n"
-    after = "- a\n"
-    delta = _classify_delta(before, after)
-    assert "unexpected" in delta
+def _seed_problem_goal(tmp_path: Path) -> int:
+    conn = db.connect()
+    db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at) "
+        "VALUES ('p', 'Problems/p/Manifest.md', ?)", (db.now(),))
+    gid = db.insert_goal(
+        conn, problem="p", slug="g", lean_path="Problems/p/Root.lean",
+        statement="True", origin="root")
+    conn.commit()
+    conn.close()
+    return gid
+
+
+def test_apply_decision_node_global_add_and_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    gid = _seed_problem_goal(tmp_path)
+    dp = tmp_path / "_reflection_decision.json"
+
+    # node experience → node_id = goal
+    dp.write_text(json.dumps(
+        {"action": "node", "title": "node insight", "body": "b1"}),
+        encoding="utf-8")
+    assert "node lesson" in _reflection._apply_decision("p", gid, "sid1", dp)
+
+    # global add → node_id NULL
+    dp.write_text(json.dumps(
+        {"action": "global_add", "title": "global insight"}),
+        encoding="utf-8")
+    assert "global add" in _reflection._apply_decision("p", gid, "sid2", dp)
+
+    conn = db.connect()
+    rows = {r["title"]: r for r in kb.entries_for_problem(conn, "p")}
+    assert rows["node insight"]["node_id"] == gid
+    assert rows["global insight"]["node_id"] is None
+    gl_id = kb.global_lessons(conn, "p")[0]["id"]
+    conn.close()
+
+    # global edit by id
+    dp.write_text(json.dumps(
+        {"action": "global_edit", "id": gl_id, "title": "fixed", "body": "b2"}),
+        encoding="utf-8")
+    out = _reflection._apply_decision("p", gid, "sid3", dp)
+    assert "global edit" in out and "ok" in out
+    conn = db.connect()
+    g = kb.global_lessons(conn, "p")[0]
+    assert (g["title"], g["body"]) == ("fixed", "b2")
+    conn.close()
+
+
+def test_apply_decision_idempotent_on_sid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    gid = _seed_problem_goal(tmp_path)
+    dp = tmp_path / "_reflection_decision.json"
+    dp.write_text(json.dumps({"action": "global_add", "title": "once"}),
+                  encoding="utf-8")
+    assert "wrote" in _reflection._apply_decision("p", gid, "samesid", dp)
+    # same sid → idempotent, no duplicate
+    assert "dup" in _reflection._apply_decision("p", gid, "samesid", dp)
+    conn = db.connect()
+    assert len(kb.global_lessons(conn, "p")) == 1
+    conn.close()
 
 
 # ---------------------------------------------------------------------
 # Trigger gate (T2 — exercises `_retry._maybe_reflect`)
 # ---------------------------------------------------------------------
 
-import sqlite3
-from pathlib import Path
-
-import pytest
-
-from Tooling.state import db
-from Tooling.pipeline import PipelineResult
-from Tooling.pipeline._retry import (
-    SpawnCtx, run_with_session_retries,
-)
-
-
-def _seed_min_goal(conn: sqlite3.Connection) -> int:
-    """Minimal problem + goal so run_with_session_retries can read DB."""
-    conn.execute(
-        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
-        "VALUES (?, ?, ?, 1)",
-        ("p", "Problems/p/Manifest.md", db.now()),
-    )
-    conn.commit()
-    return db.insert_goal(
-        conn, problem="p", slug="g", lean_path="Problems/p/Root.lean",
-        statement="True", origin="root",
-    )
-
-
 def _make_run(*, parse_outcome: PipelineResult | None = None,
-              spawn_rc: int = 0,
-              extra_iters: int = 0):
-    """Helper: build spawn_fn / parse_fn / postmortem_fn closures that
-    return controlled outcomes."""
+              spawn_rc: int = 0):
     spawn_calls: list[SpawnCtx] = []
     parse_calls: list[int] = []
     pm_calls: list[str] = []
@@ -127,17 +163,35 @@ def _make_run(*, parse_outcome: PipelineResult | None = None,
     def parse_fn() -> PipelineResult:
         parse_calls.append(1)
         if parse_outcome is None:
-            # Force a non-terminal failure so loop continues
             return PipelineResult(
                 outcome="failed", failure_reason="lake_build_error",
-                failure_detail="(stub)",
-            )
+                failure_detail="(stub)")
         return parse_outcome
 
     def postmortem_fn(sid: str) -> None:
         pm_calls.append(sid)
 
     return spawn_fn, parse_fn, postmortem_fn, spawn_calls, parse_calls, pm_calls
+
+
+@pytest.fixture
+def conn():
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(c)
+    return c
+
+
+def _seed_min_goal(conn: sqlite3.Connection) -> int:
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
+        "VALUES (?, ?, ?, 1)",
+        ("p", "Problems/p/Manifest.md", db.now()))
+    conn.commit()
+    return db.insert_goal(
+        conn, problem="p", slug="g", lean_path="Problems/p/Root.lean",
+        statement="True", origin="root")
 
 
 @pytest.mark.parametrize("outcome,reason,should_fire", [
@@ -156,43 +210,31 @@ def test_reflection_trigger_gate(
     conn: sqlite3.Connection, tmp_path: Path,
     outcome: str, reason: str, should_fire: bool,
 ) -> None:
-    """`_maybe_reflect` filters by outcome + failure_reason. The user-
-    locked decision (5) is: trigger on proved / success / exhausted /
-    agent_declined / agent_infeasible; skip moot, race-detected
-    `goal_no_longer_open`, and infra rcs (spawn_fast_fail /
-    quota_exhausted / missing_dep)."""
+    """`_maybe_reflect` filters by outcome + failure_reason: fire on proved /
+    success / exhausted / agent_declined / agent_infeasible; skip moot,
+    race-detected `goal_no_longer_open`, and infra rcs."""
     gid = _seed_min_goal(conn)
     fired: list[tuple[str, PipelineResult]] = []
 
     def reflect(sid: str, result: PipelineResult) -> None:
         fired.append((sid, result))
 
-    # parse_fn returns the parametrized terminal directly so the loop
-    # exits on the first iteration via attach().
     spawn_fn, parse_fn, pm_fn, *_ = _make_run(
-        parse_outcome=PipelineResult(outcome=outcome,
-                                     failure_reason=reason),
-    )
+        parse_outcome=PipelineResult(outcome=outcome, failure_reason=reason))
 
-    # `attach` filters via `_maybe_reflect`. For `moot`, we need a
-    # different path: budget=0 entry returns moot before any spawn.
-    # We construct that case by setting goal.attempts to threshold.
     if outcome == "moot":
         for _ in range(3):
             db.increment_goal_attempts(conn, gid)
 
     run_with_session_retries(
         conn=conn, goal_id=gid, pipeline_id="pid-gate",
-        budget_threshold=3, shelve_threshold=8,
-        attempts_dir=tmp_path,
+        budget_threshold=3, shelve_threshold=8, attempts_dir=tmp_path,
         spawn_fn=spawn_fn, parse_fn=parse_fn, postmortem_fn=pm_fn,
-        reflection_fn=reflect,
-    )
+        reflection_fn=reflect)
 
     assert bool(fired) == should_fire, (
         f"outcome={outcome} reason={reason} expected fire={should_fire}, "
-        f"got {len(fired)} call(s)"
-    )
+        f"got {len(fired)} call(s)")
 
 
 # ---------------------------------------------------------------------
@@ -205,8 +247,7 @@ def _setup_reflection_ws(tmp_path: Path, directive: str):
     conn.execute(
         "INSERT INTO problems (name, manifest_path, created_at, "
         "bootstrap_done, strategist_directive) VALUES (?, ?, ?, 1, ?)",
-        ("p", "Problems/p/Manifest.md", db.now(), directive),
-    )
+        ("p", "Problems/p/Manifest.md", db.now(), directive))
     conn.commit()
     conn.close()
     problem_dir = tmp_path / "Problems" / "p"
@@ -214,10 +255,9 @@ def _setup_reflection_ws(tmp_path: Path, directive: str):
     prompt_dir = tmp_path / "prompts"
     for d in (problem_dir, attempts, prompt_dir):
         d.mkdir(parents=True)
-    (problem_dir / "LESSONS.md").write_text(
-        "## Lessons\n<!-- LESSONS_BEGIN -->\n", encoding="utf-8")
     (prompt_dir / "reflection.md").write_text(
-        "{outcome} :: {directive} :: {attempts_dir}", encoding="utf-8")
+        "{outcome} :: {directive} :: {global_lessons} :: {decision_path}",
+        encoding="utf-8")
     return problem_dir, attempts, prompt_dir
 
 
@@ -237,7 +277,6 @@ def test_attempt_reflection_retracts_directive_on_sentinel(
     monkeypatch.chdir(tmp_path)
     problem_dir, attempts, prompt_dir = _setup_reflection_ws(
         tmp_path, "cite lemma X (it exists)")
-    from Tooling.pipeline import _reflection
 
     def fake_spawn(**kw):  # agent retracts mid-spawn
         (attempts / "_directive_retract.md").write_text(
@@ -246,9 +285,9 @@ def test_attempt_reflection_retracts_directive_on_sentinel(
     monkeypatch.setattr(_reflection.agent, "spawn_llm", fake_spawn)
 
     _reflection.attempt_reflection(
-        kind="backward", sid="s1", slug="g", outcome="failed",
+        kind="backward", sid="s1", slug="g", outcome="failed", goal_id=1,
         problem_dir=problem_dir, attempts_dir=attempts,
-        lessons_cap=5, prompt_dir=prompt_dir, workspace=tmp_path)
+        prompt_dir=prompt_dir, workspace=tmp_path)
     assert _read_directive_p() is None          # retracted
 
 
@@ -257,10 +296,9 @@ def test_attempt_reflection_keeps_directive_without_sentinel(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     problem_dir, attempts, prompt_dir = _setup_reflection_ws(tmp_path, "keep me")
-    from Tooling.pipeline import _reflection
     monkeypatch.setattr(_reflection.agent, "spawn_llm", lambda **kw: 0)
     _reflection.attempt_reflection(
-        kind="backward", sid="s1", slug="g", outcome="failed",
+        kind="backward", sid="s1", slug="g", outcome="failed", goal_id=1,
         problem_dir=problem_dir, attempts_dir=attempts,
-        lessons_cap=5, prompt_dir=prompt_dir, workspace=tmp_path)
+        prompt_dir=prompt_dir, workspace=tmp_path)
     assert _read_directive_p() == "keep me"     # untouched

@@ -141,8 +141,8 @@ def _insert_antipattern(conn: sqlite3.Connection, *, title: str, body: str,
     source was already captured."""
     cur = conn.execute(
         "INSERT INTO kb_entries"
-        " (type, title, body, problem, node_id, scope, provenance, created_at)"
-        " SELECT 'antipattern', ?, ?, ?, ?, 'node', ?, ?"
+        " (type, title, body, problem, node_id, provenance, created_at)"
+        " SELECT 'antipattern', ?, ?, ?, ?, ?, ?"
         " WHERE NOT EXISTS (SELECT 1 FROM kb_entries WHERE provenance = ?)",
         (title, body, problem, node_id, provenance, db.now(), provenance),
     )

@@ -159,7 +159,9 @@ _WATERMARKS = {
     # 3150→3200: clear_librarian_fail_counts_for_problem — a fresh classify
     # drops stale per-attempt stall caps so a reverted+re-ingested problem does
     # not inherit a STALL (residue_thm) — 2026-06-17 — conscious bump.
-    "Tooling/state/db.py": 3200,
+    # 3200→3220: Phase 12 v12 migration block — kb_entries DROP COLUMN scope
+    # (breadth reads off node_id alone) — 2026-06-27 — conscious bump.
+    "Tooling/state/db.py": 3220,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

@@ -444,16 +444,16 @@ CREATE TABLE IF NOT EXISTS librarian_fail_counts (
 );
 
 -- kb_entries — Phase 12 informal knowledge base (the LESSON revamp). One row
--- per title+body knowledge entry, attached to the goal node it was learned on
--- (`node_id`) and carrying a `scope` that controls how far it radiates during
--- retrieval. `type` splits confirmed-positive experience ('lesson') from
--- confirmed-negative walls ('antipattern'); unverified guesses are NOT stored
--- (they stay in the prior_partial carry-over). `node_id` NULL = problem-scoped
--- with no specific node (e.g. migrated legacy LESSONS.md); ON DELETE SET NULL
--- keeps a vanished node's entry as problem-scoped rather than dropping it. The
--- enum sets live in `Tooling/state/kb.py`; tests/test_kb.py binds the CHECKs to
--- them. Pure new table → CREATE TABLE IF NOT EXISTS, no user_version bump
--- (init_schema re-runs SCHEMA each start).
+-- per title+body knowledge entry. Breadth reads off `node_id` alone: NULL =
+-- problem-wide / global (type-2, promotable), set = bound to that goal node
+-- (type-1, discarded when the node vanishes at promotion). `type` splits
+-- confirmed-positive experience ('lesson') from confirmed-negative walls
+-- ('antipattern'); unverified guesses are NOT stored (they stay in the
+-- prior_partial carry-over). ON DELETE SET NULL keeps a vanished node's entry
+-- as problem-wide rather than dropping it. The `scope` column was dropped in
+-- Phase 12 (v12 migration) — it was 100% determined by node_id presence and the
+-- structural-depth model it encoded was abandoned (lesson retrieval is semantic,
+-- not subtree-walk). The type enum lives in `Tooling/state/kb.py`.
 CREATE TABLE IF NOT EXISTS kb_entries (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     type        TEXT NOT NULL CHECK(type IN ('lesson','antipattern')),
@@ -462,8 +462,6 @@ CREATE TABLE IF NOT EXISTS kb_entries (
     problem     TEXT NULL DEFAULT NULL REFERENCES problems(name),
     node_id     INTEGER NULL DEFAULT NULL REFERENCES goals(id)
                     ON DELETE SET NULL,
-    scope       TEXT NOT NULL DEFAULT 'problem'
-                    CHECK(scope IN ('node','subtree','problem','domain')),
     provenance  TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL
 );
@@ -500,7 +498,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 11
+_CURRENT_USER_VERSION = 12
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -766,6 +764,20 @@ def init_schema(conn: sqlite3.Connection) -> None:
         # the reconcile backstop migrates them to 'stalled' at runtime.
         _migrate_to_phase11(conn)
         conn.execute("PRAGMA user_version = 11")
+        conn.commit()
+    if v < 12:
+        # Phase 12 — kb_entries drops `scope`. Breadth now reads off `node_id`
+        # alone (NULL = problem-wide, set = node-bound); the scope enum was
+        # 100% determined by node_id presence and its structural-depth model
+        # was abandoned (lesson retrieval is semantic, not subtree-walk).
+        # Idempotent: only drop when the column is still present (fresh DBs
+        # built from the updated SCHEMA never had it). DROP COLUMN needs
+        # SQLite >= 3.35.0 (Python 3.12 ships >= 3.40).
+        kb_cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(kb_entries)")}
+        if "scope" in kb_cols:
+            conn.execute("ALTER TABLE kb_entries DROP COLUMN scope")
+        conn.execute("PRAGMA user_version = 12")
         conn.commit()
 
 

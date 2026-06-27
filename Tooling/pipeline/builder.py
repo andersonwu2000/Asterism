@@ -429,12 +429,8 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
 
     def builder_reflection(sid: str, result) -> None:
         from ._reflection import attempt_reflection, _reflection_enabled
-        from ..core import config
         if not _reflection_enabled(workspace):
             return
-        cap = config.get(
-            "lessons.cap", default=10, cast=int, workspace=workspace,
-        )
         attempt_reflection(
             kind="builder",
             sid=sid,
@@ -442,9 +438,9 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             outcome=(result.failure_reason
                      if result.failure_reason
                      else result.outcome),
+            goal_id=int(goal["id"]),
             problem_dir=problem_dir,
             attempts_dir=attempts_dir,
-            lessons_cap=int(cap),
             prompt_dir=PROMPT_DIR,
             workspace=workspace,
         )

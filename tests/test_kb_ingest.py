@@ -127,7 +127,7 @@ def test_ingest_end_to_end_idempotent(conn, tmp_path):
     rows = conn.execute(
         "SELECT * FROM kb_entries WHERE type = 'antipattern'").fetchall()
     assert len(rows) == 2
-    assert all(r["node_id"] == 7 and r["scope"] == "node" for r in rows)
+    assert all(r["node_id"] == 7 for r in rows)
 
     # idempotent + additive (source-keyed): re-run inserts nothing new, stays 2
     assert kb_ingest.ingest_antipatterns(conn, tmp_path) == 0

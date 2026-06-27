@@ -1,27 +1,25 @@
 """Phase 12 informal knowledge base — lesson / antipattern entries.
 
-Single source of truth for the KB enum sets + row helpers. The CHECK
-constraints on `kb_entries` (db.py) mirror these frozensets; tests/test_kb.py
-binds them (schema CHECK == runtime set), so adding a type/scope is a
-single-point change.
+Single source of truth for the KB type enum + row helpers. The CHECK
+constraint on `kb_entries.type` (db.py) mirrors `KB_TYPES`; tests/test_kb.py
+binds them (schema CHECK == runtime set), so adding a type is a single-point
+change.
 
 Stores only CONFIRMED informal knowledge: `lesson` (positive experience) and
 `antipattern` (a wall an approach hit). Unverified guesses — a failed attempt's
 "alternative direction" — are NOT stored here; they stay in the prior_partial
-carry-over. Each entry mounts on the goal node it was learned on (`node_id`)
-and radiates as far as `scope` allows during retrieval.
+carry-over. Breadth reads off `node_id` alone: NULL = problem-wide / global,
+set = bound to that goal node (the `scope` column was dropped in Phase 12).
 """
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 
 from . import db
 
-# Canonical enum sets — the kb_entries CHECK constraints in db.py must equal
-# these (tests/test_kb.py enforces the binding).
+# Canonical type enum — the kb_entries.type CHECK constraint in db.py must
+# equal this (tests/test_kb.py enforces the binding).
 KB_TYPES = frozenset({"lesson", "antipattern"})
-KB_SCOPES = frozenset({"node", "subtree", "problem", "domain"})
 
 
 def insert_entry(
@@ -32,25 +30,83 @@ def insert_entry(
     body: str = "",
     problem: str | None = None,
     node_id: int | None = None,
-    scope: str = "problem",
     provenance: str = "",
 ) -> int:
-    """Insert one KB entry; return its id. The enums are validated up front so a
-    bad value fails loudly at the call site, not via a CHECK at commit time."""
+    """Insert one KB entry; return its id. `node_id` NULL = problem-wide /
+    global, set = bound to that goal node. The type enum is validated up front
+    so a bad value fails loudly at the call site, not via a CHECK at commit."""
     if entry_type not in KB_TYPES:
         raise ValueError(
             f"unknown kb entry type {entry_type!r}; expected {sorted(KB_TYPES)}")
-    if scope not in KB_SCOPES:
-        raise ValueError(
-            f"unknown kb scope {scope!r}; expected {sorted(KB_SCOPES)}")
     cur = conn.execute(
         "INSERT INTO kb_entries"
-        " (type, title, body, problem, node_id, scope, provenance, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (entry_type, title, body, problem, node_id, scope, provenance, db.now()),
+        " (type, title, body, problem, node_id, provenance, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (entry_type, title, body, problem, node_id, provenance, db.now()),
     )
     conn.commit()
     return int(cur.lastrowid)
+
+
+def add_lesson(
+    conn: sqlite3.Connection,
+    *,
+    problem: str,
+    title: str,
+    body: str = "",
+    node_id: int | None = None,
+    provenance: str,
+) -> int:
+    """Model B reflection write — append one lesson. `node_id` None = global /
+    problem-wide (type-2, promotable), set = bound to that goal node (type-1,
+    discarded at promotion). Idempotent on `provenance` (a per-reflection-spawn
+    key like `reflection:<sid>`) so a re-fired spawn never double-inserts.
+    Returns 1 if inserted, 0 if the source was already captured. No commit-time
+    surprise: the type is fixed 'lesson'."""
+    cur = conn.execute(
+        "INSERT INTO kb_entries"
+        " (type, title, body, problem, node_id, provenance, created_at)"
+        " SELECT 'lesson', ?, ?, ?, ?, ?, ?"
+        " WHERE NOT EXISTS (SELECT 1 FROM kb_entries WHERE provenance = ?)",
+        (title, body, problem, node_id, provenance, db.now(), provenance),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+def edit_global_lesson(
+    conn: sqlite3.Connection,
+    *,
+    entry_id: int,
+    problem: str,
+    title: str,
+    body: str = "",
+) -> int:
+    """Model B reflection write — correct / supersede an existing GLOBAL lesson
+    in place (the C3-A 'a prior claim is now false' path). Scoped to the
+    problem's global lessons (`node_id IS NULL`), so a stale / wrong id can
+    never touch another problem's entry, a node-bound lesson, or an antipattern.
+    Returns 1 if updated, 0 if the id matched no eligible row."""
+    cur = conn.execute(
+        "UPDATE kb_entries SET title = ?, body = ?"
+        " WHERE id = ? AND problem = ? AND type = 'lesson' AND node_id IS NULL",
+        (title, body, entry_id, problem),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+def global_lessons(conn: sqlite3.Connection,
+                   problem: str) -> list[sqlite3.Row]:
+    """A problem's GLOBAL lessons (id, title, body), oldest first — the surface
+    the reflection prompt shows so the agent can dedup before adding or pick an
+    id to edit. Node-bound lessons + antipatterns are excluded."""
+    return conn.execute(
+        "SELECT id, title, body FROM kb_entries"
+        " WHERE problem = ? AND type = 'lesson' AND node_id IS NULL"
+        " ORDER BY id",
+        (problem,),
+    ).fetchall()
 
 
 def entries_for_problem(conn: sqlite3.Connection,
@@ -63,81 +119,27 @@ def entries_for_problem(conn: sqlite3.Connection,
     ).fetchall()
 
 
-def lesson_bullets(content: str) -> list[str]:
-    """The `- <lesson>` bullet texts from a LESSONS.md body. Header / anchor
-    comment lines (`<!-- ... -->`) don't start with `- `, so they fall out.
-    The canonical parser shared by the reflection write-path and the migration."""
-    out: list[str] = []
-    for ln in content.splitlines():
-        s = ln.lstrip()
-        if s.startswith("- "):
-            text = s[2:].strip()
-            if text and not text.lower().startswith("entry_kind:"):
-                out.append(text)
-    return out
-
-
-def migrate_all_lessons(conn: sqlite3.Connection, workspace: Path) -> int:
-    """One-shot bootstrap: re-sync every registered problem's `LESSONS.md`
-    bullets into the KB as reflection lessons. Idempotent (delegates to
-    `replace_reflection_lessons`), so re-running is safe and re-converges the
-    KB to the on-disk files. Returns the number of problems with ≥1 bullet."""
-    migrated = 0
-    for row in conn.execute("SELECT name FROM problems ORDER BY name"):
-        problem = row["name"]
-        path = db.problem_dir(workspace, problem) / "LESSONS.md"
-        if not path.exists():
-            continue
-        try:
-            content = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        bullets = lesson_bullets(content)
-        if bullets:
-            replace_reflection_lessons(conn, problem, bullets)
-            migrated += 1
-    return migrated
-
-
 def query(conn: sqlite3.Connection, *, problem: str,
           goal_id: int | None = None) -> dict[str, list[sqlite3.Row]]:
     """Retrieval seam for the read path and the (future) LLM preprocessing layer:
-    the KB knowledge relevant to a proving context, split by type. Currently
-    problem-scoped; the scope-aware ancestor / Library-tree-path walk lands with
-    the Library tier. `goal_id` is accepted now so callers bind to the stable
-    signature before that retrieval grows."""
+    the KB knowledge relevant to a proving context, split by type. `goal_id`
+    filters node-bound entries to their own goal (interim mechanical floor); the
+    target-2 semantic-analog layer grows on this signature."""
     rows = entries_for_problem(conn, problem)
-    antis = [r for r in rows if r["type"] == "antipattern"]
-    if goal_id is not None:
-        # A `node`-scoped antipattern is "what failed on THIS goal" — surface it
-        # only to its own goal, not to siblings/descendants (an ancestor's wall
-        # is about a different, broader goal). Broader scopes (subtree/problem/
-        # domain — future, via promotion) keep radiating.
-        antis = [r for r in antis
-                 if r["scope"] != "node" or r["node_id"] == goal_id]
+
+    def _visible(r: sqlite3.Row) -> bool:
+        # Interim read (pre-target-2 semantic retrieval): a node-bound entry
+        # (`node_id` set — a node-experience lesson OR an antipattern) is "what
+        # was learned on THIS goal", surfaced only to its own goal; a
+        # problem-wide entry (`node_id` NULL — global lesson / legacy) radiates
+        # to every goal. Uniform across both types. target-2 later adds semantic
+        # analog reach on top of this floor.
+        return (goal_id is None or r["node_id"] is None
+                or r["node_id"] == goal_id)
+
     return {
-        "lessons": [r for r in rows if r["type"] == "lesson"],
-        "antipatterns": antis,
+        "lessons": [r for r in rows
+                    if r["type"] == "lesson" and _visible(r)],
+        "antipatterns": [r for r in rows
+                         if r["type"] == "antipattern" and _visible(r)],
     }
-
-
-def replace_reflection_lessons(conn: sqlite3.Connection, problem: str,
-                               titles: list[str]) -> None:
-    """Re-sync a problem's reflection-authored lesson entries to `titles` (the
-    current LESSONS.md bullets). Deletes the prior reflection lessons and
-    re-inserts, so corrections and removals propagate — not just appends.
-    Scoped to `type='lesson' AND provenance='reflection'`, leaving legacy-
-    migrated lessons and antipattern entries untouched."""
-    conn.execute(
-        "DELETE FROM kb_entries WHERE problem = ? AND type = 'lesson'"
-        " AND provenance = 'reflection'",
-        (problem,),
-    )
-    ts = db.now()
-    conn.executemany(
-        "INSERT INTO kb_entries"
-        " (type, title, body, problem, node_id, scope, provenance, created_at)"
-        " VALUES ('lesson', ?, '', ?, NULL, 'problem', 'reflection', ?)",
-        [(t, problem, ts) for t in titles],
-    )
-    conn.commit()
