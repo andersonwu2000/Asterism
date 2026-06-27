@@ -109,6 +109,25 @@ def global_lessons(conn: sqlite3.Connection,
     ).fetchall()
 
 
+def lessons_with_node_info(conn: sqlite3.Connection,
+                           problem: str) -> list[sqlite3.Row]:
+    """Every lesson for `problem`, with each node-bound entry's goal slug /
+    statement / status joined in (NULL columns for globals). Globals first,
+    then node experience grouped by node, each block oldest-first. Feeds the
+    grep-able `KB_LESSONS` file: the prover greps it for a goal analogous to
+    its own and the joined slug/statement is the tree-structure context a flat
+    title/body dump would lose."""
+    return conn.execute(
+        "SELECT k.id, k.title, k.body, k.node_id,"
+        "       g.slug AS node_slug, g.statement AS node_statement,"
+        "       g.status AS node_status "
+        "FROM kb_entries k LEFT JOIN goals g ON g.id = k.node_id "
+        "WHERE k.problem = ? AND k.type = 'lesson' "
+        "ORDER BY (k.node_id IS NOT NULL), k.node_id, k.id",
+        (problem,),
+    ).fetchall()
+
+
 def entries_for_problem(conn: sqlite3.Connection,
                         problem: str) -> list[sqlite3.Row]:
     """All KB entries owned by `problem`, oldest first. The scope-aware per-node

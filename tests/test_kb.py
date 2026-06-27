@@ -174,6 +174,34 @@ def test_context_section_renders_kb(conn):
     assert context._section_lessons_inline(conn, "Q") == []  # no entries
 
 
+def test_kb_lessons_grep_file(conn, tmp_path):
+    """target 2 — the full grep-able KB_LESSONS file carries globals + EVERY
+    node's experience (node-annotated with slug/status/statement); the inline
+    section keeps only globals + this goal's own node experience + a pointer."""
+    from Tooling.agent import context
+    _seed_goal(conn, 1)
+    _seed_goal(conn, 2)
+    kb.add_lesson(conn, problem="P", title="glob insight", body="gb",
+                  provenance="r:g")
+    kb.add_lesson(conn, problem="P", title="recipe for s1", node_id=1,
+                  provenance="r:1")
+    kb.add_lesson(conn, problem="P", title="recipe for s2", node_id=2,
+                  provenance="r:2")
+    lines = context._section_lessons_inline(conn, "P", goal_id=1,
+                                            attempts_dir=tmp_path)
+    body = (tmp_path / "KB_LESSONS.md").read_text(encoding="utf-8")
+    # file: global section + BOTH nodes, each with slug/status/statement
+    assert "## Global experience" in body and "glob insight" in body
+    assert "### s1  [open]  ::  True" in body
+    assert "### s2  [open]  ::  True" in body
+    assert "recipe for s1" in body and "recipe for s2" in body
+    # inline: goal 1 sees globals + its OWN node experience, not s2's; + pointer
+    text = "\n".join(lines)
+    assert "glob insight" in text and "recipe for s1" in text
+    assert "recipe for s2" not in text          # other node → file only
+    assert "grep `KB_LESSONS.md`" in text
+
+
 def test_node_fk_set_null_on_goal_delete(conn):
     """A vanished node (deleted goal) leaves its entry problem-scoped, not
     dropped — ON DELETE SET NULL on kb_entries.node_id."""
