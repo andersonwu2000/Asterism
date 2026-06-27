@@ -344,6 +344,7 @@ def test_lookup_batch_partial_cache_only_queries_missing(
 # Integration test: real `lake env lean` against the workspace
 # ---------------------------------------------------------------------
 
+@pytest.mark.real_lake
 @pytest.mark.skipif(
     shutil.which("lake") is None or
     not (Path.cwd() / "lakefile.lean").exists(),

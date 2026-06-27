@@ -52,3 +52,6 @@ select = ["F821"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "real_lake: end-to-end test that spawns a live lake/lean toolchain (slow; only runnable where Mathlib is built). OFF by default — opt in with ASTERISM_REAL_LAKE=1 pytest, or pytest -m real_lake.",
+]

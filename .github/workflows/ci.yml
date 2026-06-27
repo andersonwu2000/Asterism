@@ -7,9 +7,10 @@
 #   locally. Blocking since the win32-only tests gained platform
 #   skipifs (first informational run: 3 failed / 1614 passed, all
 #   three were tests of Windows-only contracts).
-# - No Lean toolchain on runners: lake-dependent tests
-#   (tests/test_dedupe.py, tests/test_lemma_lookup.py) skip themselves
-#   via `skipif(shutil.which("lake") is None)`.
+# - No Lean toolchain on runners. The one real-lake e2e
+#   (tests/test_lemma_lookup.py::test_lookup_batch_real_lake) is marked
+#   `real_lake` and OFF by default — conftest drops it from collection
+#   unless ASTERISM_REAL_LAKE is set — so CI neither runs nor skips it.
 name: CI
 
 on:

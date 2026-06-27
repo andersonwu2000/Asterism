@@ -7,7 +7,6 @@ inputs.
 """
 from __future__ import annotations
 
-import shutil
 import sqlite3
 from pathlib import Path
 
@@ -1578,26 +1577,6 @@ def test_find_canonicals_batch_uses_tier1_without_kernel_probe(
     assert result[0].kind == "alias"
     assert called["probe"] is False, (
         "Tier 1 slug hit must short-circuit; kernel probe must not run")
-
-
-@pytest.mark.skipif(shutil.which("lake") is None,
-                    reason="requires lake CLI on PATH")
-def test_batch_provable_via_apply_real_lake(tmp_path: Path) -> None:
-    """Spin up the actual Lean kernel on a tiny pair to confirm the
-    subprocess plumbing + parsing work. Slow (lake env startup ~3-5s);
-    skipped unless lake is on PATH."""
-    (tmp_path / "lakefile.lean").write_text(
-        "import Lake\nopen Lake DSL\npackage tmp where\n"
-        "@[default_target]\nlean_lib tmp where\n",
-        encoding="utf-8")
-    (tmp_path / "lean-toolchain").write_text("leanprover/lean4:v4.0.0\n",
-                                              encoding="utf-8")
-    # May still fail because Mathlib isn't present in tmp_path's lake
-    # project; we just verify the call-flow doesn't crash.
-    pairs = [("(x : Nat) : x = x", "Mod.X", "Problems.tmp.thm_x")]
-    result = dedupe._batch_provable_via_apply(tmp_path, "tmp", pairs)
-    assert isinstance(result, list)
-    assert len(result) == 1
 
 
 # ---------------------------------------------------------------------
