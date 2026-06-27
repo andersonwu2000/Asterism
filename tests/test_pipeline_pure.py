@@ -902,25 +902,42 @@ def test_safe_glob_returns_pattern_matches(tmp_path: Path) -> None:
     assert {p.name for p in subs} == {"new_s1_sub_1.lean"}
 
 
-def test_safe_glob_skips_invalid_filename_siblings(tmp_path: Path) -> None:
-    """The whole point: a sibling file with a Windows-reserved char in
-    its name (e.g. `?` from an agent confusing `exact?` for an
-    identifier) must not crash the glob. We can't reliably *create*
-    such a file on Windows from Python, but we can simulate it: the
-    glob must remain robust if `os.scandir` returns a name that
-    `Path.is_file()` would crash on. Use a name with a `?` if the
-    filesystem accepts; otherwise skip — the safety logic itself is
-    independently exercised by the happy-path test above."""
-    (tmp_path / "patch.lean").write_text("x", encoding="utf-8")
-    bad = tmp_path / "won_exact?.lean"
-    try:
-        bad.write_text("x", encoding="utf-8")
-    except OSError:
-        pytest.skip("filesystem rejects '?' in filename; cannot reproduce")
-    # If creation succeeded, the glob must still find patch.lean and
-    # not raise on the bad sibling.
+def test_safe_glob_skips_reserved_char_sibling(monkeypatch,
+                                               tmp_path: Path) -> None:
+    """A sibling whose name carries a Windows-reserved char (e.g. `?` from an
+    agent confusing `exact?` for an identifier) must not crash the glob — the
+    scenario `_safe_glob` exists for, and one that only bites on Windows. The
+    previous test created a real `?`-named file, which Windows NTFS rejects, so
+    it skipped on the one platform the bug occurs on. Simulate the scandir entry
+    instead so the reserved-char branch runs everywhere; then, where the
+    filesystem accepts the name (POSIX), repeat the check end-to-end."""
+    import os
+    import contextlib
+    from types import SimpleNamespace
+
+    entries = [
+        SimpleNamespace(name="patch.lean", path=str(tmp_path / "patch.lean")),
+        SimpleNamespace(name="won_exact?.lean",
+                        path=str(tmp_path / "won_exact?.lean")),
+    ]
+
+    @contextlib.contextmanager
+    def _fake_scandir(_directory):
+        yield iter(entries)
+
+    monkeypatch.setattr(os, "scandir", _fake_scandir)
     patches = _safe_glob(tmp_path, "patch*.lean")
     assert {p.name for p in patches} == {"patch.lean"}
+
+    # End-to-end on a filesystem that accepts the name (POSIX). On Windows the
+    # create raises and the simulated branch above is the whole coverage.
+    monkeypatch.undo()
+    (tmp_path / "patch.lean").write_text("x", encoding="utf-8")
+    try:
+        (tmp_path / "won_exact?.lean").write_text("x", encoding="utf-8")
+    except OSError:
+        return
+    assert {p.name for p in _safe_glob(tmp_path, "patch*.lean")} == {"patch.lean"}
 
 
 def test_safe_glob_returns_empty_on_missing_directory(tmp_path: Path) -> None:
