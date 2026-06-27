@@ -286,7 +286,7 @@ def test_attempt_reflection_retracts_directive_on_sentinel(
 
     _reflection.attempt_reflection(
         kind="backward", sid="s1", slug="g", outcome="failed", goal_id=1,
-        problem_dir=problem_dir, attempts_dir=attempts,
+        problem="p", problem_dir=problem_dir, attempts_dir=attempts,
         prompt_dir=prompt_dir, workspace=tmp_path)
     assert _read_directive_p() is None          # retracted
 
@@ -299,6 +299,58 @@ def test_attempt_reflection_keeps_directive_without_sentinel(
     monkeypatch.setattr(_reflection.agent, "spawn_llm", lambda **kw: 0)
     _reflection.attempt_reflection(
         kind="backward", sid="s1", slug="g", outcome="failed", goal_id=1,
-        problem_dir=problem_dir, attempts_dir=attempts,
+        problem="p", problem_dir=problem_dir, attempts_dir=attempts,
         prompt_dir=prompt_dir, workspace=tmp_path)
     assert _read_directive_p() == "keep me"     # untouched
+
+
+def test_attempt_reflection_uses_full_problem_name_for_kb(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (multi-chart stress-test bug): a NAMESPACED problem
+    (`Geometry.foo` → `Problems/Geometry/foo`, leaf `foo`) must write KB lessons
+    under the FULL registered name, not `problem_dir.name` (the leaf) — else the
+    `kb_entries.problem → problems(name)` FK fails and the decision is dropped
+    ('decision skipped — FOREIGN KEY constraint failed')."""
+    monkeypatch.chdir(tmp_path)
+    conn = db.connect()
+    db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at, bootstrap_done) "
+        "VALUES ('Geometry.foo', 'Problems/Geometry/foo/Manifest.md', ?, 1)",
+        (db.now(),))
+    gid = db.insert_goal(
+        conn, problem="Geometry.foo", slug="g",
+        lean_path="Problems/Geometry/foo/Root.lean", statement="True",
+        origin="root")
+    conn.commit()
+    conn.close()
+
+    problem_dir = tmp_path / "Problems" / "Geometry" / "foo"   # .name == 'foo'
+    attempts = tmp_path / ".attempts" / "pid"
+    prompt_dir = tmp_path / "prompts"
+    for d in (problem_dir, attempts, prompt_dir):
+        d.mkdir(parents=True)
+    (prompt_dir / "reflection.md").write_text(
+        "{global_lessons} :: {decision_path}", encoding="utf-8")
+
+    def fake_spawn(**kw):  # agent records a node experience
+        (attempts / "_reflection_decision.json").write_text(
+            json.dumps({"action": "node", "title": "real insight"}),
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(_reflection.agent, "spawn_llm", fake_spawn)
+
+    _reflection.attempt_reflection(
+        kind="backward", sid="sX", slug="g", outcome="proved", goal_id=gid,
+        problem="Geometry.foo", problem_dir=problem_dir, attempts_dir=attempts,
+        prompt_dir=prompt_dir, workspace=tmp_path)
+
+    conn = db.connect()
+    try:
+        full = kb.entries_for_problem(conn, "Geometry.foo")
+        assert [r["title"] for r in full] == ["real insight"]   # landed
+        assert full[0]["node_id"] == gid
+        assert kb.entries_for_problem(conn, "foo") == []         # NOT the leaf
+    finally:
+        conn.close()

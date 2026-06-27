@@ -634,6 +634,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                      if result.failure_reason
                      else result.outcome),
             goal_id=int(goal["id"]),
+            problem=str(goal["problem"]),
             problem_dir=problem_dir,
             attempts_dir=attempts_dir,
             prompt_dir=PROMPT_DIR,

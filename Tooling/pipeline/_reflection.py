@@ -113,6 +113,7 @@ def attempt_reflection(*,
                        slug: str,
                        outcome: str,
                        goal_id: int,
+                       problem: str,
                        problem_dir: Path,
                        attempts_dir: Path,
                        prompt_dir: Path,
@@ -126,11 +127,14 @@ def attempt_reflection(*,
     """
     # Hold the per-problem lock across the whole read-globals → spawn → write
     # window (~30-90s) so each spawn's dedup sees a stable picture.
-    lock = _lock_for_problem(problem_dir.name)
+    #
+    # `problem` is the FULL registered name (e.g. 'Geometry.foo'); never use
+    # `problem_dir.name`, which is the leaf ('foo') for namespaced problems —
+    # the KB / `problems(name)` FK + directive lookups all key on the full
+    # name, so the leaf silently breaks every namespaced problem.
+    lock = _lock_for_problem(problem)
     with lock:
         try:
-            problem = problem_dir.name
-
             # Surface the existing GLOBAL lessons (with ids) so the agent can
             # dedup before a global_add or pick an id for global_edit.
             conn = db.connect()
