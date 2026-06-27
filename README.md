@@ -5,6 +5,10 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-26
+- Added a knowledge base that records lessons and recurring failure patterns from past proof attempts, and started feeding them into the context assembled for new proofs.
+- Fixed the guidance for searching previously proved related results so it matches the actual proof files.
+
 ### 2026-06-23
 - Enabled the system to retract or correct its own earlier guidance once a proof attempt shows that guidance to be false.
 - Gave the proving agent more local context, surfacing relevant definitions' signatures, clashing names, and the lines around its most recent edit.
@@ -139,10 +143,6 @@
 - Proved the existence of an unpivoted LU factorization, by induction on the matrix size using the Schur complement.
 - Consolidated the several ways the system could restart or redirect a stalled proof goal into a single reactivation mechanism.
 - Retuned the prover's run settings (longer time budget, smaller worker pool, less frequent replanning) and steered its planning prompts toward higher-level methodology.
-
-### 2026-05-27
-- Added detailed accounting of language-model token usage and estimated cost—broken down by task type and model, accumulated over the entire run, and presented as a table—including properly categorizing automatic recovery attempts.
-- Made the job scheduler more resilient, automatically retrying runs that fail for infrastructure reasons and shutting down promptly by terminating work already in progress.
 
 <!-- ASTERISM-PROGRESS:END -->
 
