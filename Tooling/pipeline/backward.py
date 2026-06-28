@@ -903,9 +903,19 @@ def _backward_parse_and_commit(
                 rel_path=scratch_dest.relative_to(workspace).as_posix(),
                 owner_goal_id=None)
 
+        # Inject Defs.lean's file-level opens (incl `open Library.*`) — Lean's
+        # `import` doesn't propagate opens, so a leaf-bypass patch that cites a
+        # Library decl by its bare (opened) name builds only if the committed
+        # strategy file replays Defs's opens. validate_file already injects them
+        # (gateway `_merge_opens`), so without this the probe green-lit a bare
+        # Library cite that lake then rejected `Unknown identifier`
+        # (currents_boundary_zero 2026-06-28). The decomposition path below
+        # already does this; the leaf-bypass path was the gap.
         _place_unowned(
             conn, workspace, scratch_dest,
-            patches[0].read_text(encoding="utf-8"))
+            manifest.inject_defs_opens(
+                patches[0].read_text(encoding="utf-8"),
+                problem=goal["problem"], workspace=workspace))
         # Verify-unification: gateway worker pool elaborates the
         # strategy file AND writes its olean to disk in one round trip.
         # The olean is needed downstream by `verify_strategy`, which
