@@ -5,6 +5,11 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-27
+- Built a mechanism for the prover to learn from its own failures, recording which approaches did not work, storing them in a searchable lessons file, and surfacing only those relevant to the goal currently being proved.
+- Enabled proofs to automatically reuse already-proved results from the same problem when they are cited, while blocking citations that reach into unrelated problems.
+- Fixed a crash when recording lessons for problems with qualified names and stripped leftover internal annotations from saved proof files.
+
 ### 2026-06-26
 - Added a knowledge base that records lessons and recurring failure patterns from past proof attempts, and started feeding them into the context assembled for new proofs.
 - Fixed the guidance for searching previously proved related results so it matches the actual proof files.
@@ -138,11 +143,6 @@
 - Hardened duplicate-goal detection to actually compile and check a candidate proof before accepting it, since the Lean build can report success while still emitting errors.
 - Added safeguards so a goal that has already been proved can never be downgraded and set aside.
 - Upgraded the underlying language models to the latest Opus release.
-
-### 2026-05-28
-- Proved the existence of an unpivoted LU factorization, by induction on the matrix size using the Schur complement.
-- Consolidated the several ways the system could restart or redirect a stalled proof goal into a single reactivation mechanism.
-- Retuned the prover's run settings (longer time budget, smaller worker pool, less frequent replanning) and steered its planning prompts toward higher-level methodology.
 
 <!-- ASTERISM-PROGRESS:END -->
 
