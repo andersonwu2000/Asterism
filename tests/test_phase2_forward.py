@@ -117,6 +117,34 @@ def test_extract_metadata_happy_path() -> None:
     assert md.sorry_free is False
 
 
+def test_extract_metadata_accepts_noncomputable_def() -> None:
+    """`noncomputable def` (valid Lean — honest Mathlib data constructions
+    need it) parses as kind='def', NOT rejected as 'no lemma' for the keyword
+    sitting off column 0 (agent_feedback green_theorem #103)."""
+    text = ("-- Forward rationale: build the disk rotation map.\n"
+            "noncomputable def disk_rotation (x : ℝ) : ℝ := x\n")
+    md, err = forward.extract_forward_metadata(text)
+    assert err == ""
+    assert md is not None and md.kind == "def" and md.slug == "disk_rotation"
+
+
+def test_extract_metadata_attribute_before_decl() -> None:
+    """A leading `@[simp]` attribute is tolerated; kind/slug still parse."""
+    text = ("-- Forward rationale: x.\n"
+            "@[simp] theorem foo_bar : True := by sorry\n")
+    md, err = forward.extract_forward_metadata(text)
+    assert err == "" and md is not None and md.slug == "foo_bar"
+
+
+def test_extract_metadata_modifier_does_not_relax_slug() -> None:
+    """Tolerating `noncomputable` must NOT relax the snake_case slug rule —
+    a camelCase def name is still rejected (agent_feedback #69)."""
+    text = ("-- Forward rationale: x.\n"
+            "noncomputable def diskRotation : ℝ := 0\n")
+    md, err = forward.extract_forward_metadata(text)
+    assert md is None and "must match" in err
+
+
 def test_extract_metadata_builder_entry() -> None:
     md, err = forward.extract_forward_metadata(_NEW_LEAN_BUILDER_ENTRY)
     assert err == ""

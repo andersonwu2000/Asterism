@@ -1007,6 +1007,32 @@ def test_normalize_slug_passes_through_valid_and_rejects_unfixable() -> None:
 
 
 # ---------------------------------------------------------------------
+# Strategy skeleton — preserve parent decl modifiers (green #77/#78)
+# ---------------------------------------------------------------------
+
+def test_skeleton_preserves_noncomputable_modifier() -> None:
+    """A `noncomputable def` parent's strategy skeleton keeps `noncomputable`,
+    or the renamed `def s<id> := by sorry` stub compile-fails on 'mark it
+    noncomputable' (agent_feedback green_theorem #77/#78)."""
+    from Tooling.pipeline._skeleton import build_strategy_skeleton
+    parent = ("import Mathlib\n\nnamespace P\n\n"
+              "noncomputable def disk_rot (x : ℝ) : ℝ := by sorry\n\nend P\n")
+    skel = build_strategy_skeleton(parent, parent_slug="disk_rot",
+                                   sid_token="s99", namespace="P")
+    assert skel is not None and "noncomputable def s99" in skel
+
+
+def test_skeleton_plain_theorem_gets_no_modifier() -> None:
+    from Tooling.pipeline._skeleton import build_strategy_skeleton
+    parent = ("import Mathlib\n\nnamespace P\n\n"
+              "theorem foo (n : ℕ) : n = n := by sorry\n\nend P\n")
+    skel = build_strategy_skeleton(parent, parent_slug="foo",
+                                   sid_token="s1", namespace="P")
+    assert skel is not None and "theorem s1" in skel
+    assert "noncomputable" not in skel
+
+
+# ---------------------------------------------------------------------
 # Slug-collision auto-suffix (`_resolve_slug_collisions`)
 # ---------------------------------------------------------------------
 

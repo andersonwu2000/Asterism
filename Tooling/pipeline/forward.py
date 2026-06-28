@@ -129,8 +129,17 @@ _DECLINE_RE = re.compile(
 # {theorem, def, structure, class} (Phase 4). Non-theorem kinds are
 # Library toolkit artifacts that bypass the prove loop; see
 # `NON_THEOREM_KINDS` in dispatcher.py for downstream filtering.
+#
+# Leading modifiers + attributes are tolerated: `noncomputable def`,
+# `@[simp] theorem`, `private def`, etc. are all valid Lean — rejecting them
+# as "no lemma" (because the keyword wasn't at column 0) cost a full retry
+# whenever an honest data construction needed `noncomputable` (agent_feedback
+# green_theorem: #65/#103, the disk-atlas wave). The capture groups stay
+# (kind, name); the commit writes the body verbatim so the modifier survives.
+_DECL_MODIFIERS = r"(?:noncomputable|private|protected|partial|unsafe)"
 _DECL_HEAD_RE = re.compile(
-    r"^\s*(theorem|def|structure|class)\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+    r"^[ \t]*(?:@\[[^\]]*\][ \t]*)*(?:" + _DECL_MODIFIERS + r"[ \t]+)*"
+    r"(theorem|def|structure|class)[ \t]+([A-Za-z_][A-Za-z0-9_]*)\b",
     re.MULTILINE,
 )
 # Kinds that have no proof obligation: status='proved' immediately on

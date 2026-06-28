@@ -21,6 +21,28 @@ from ..quality.dedupe import leading_decl_attrs
 # in the rewritten skeleton; Lean's elaborator picks the same form for
 # the strategy patch as the parent stub.
 _DECL_HEAD_RE = r"\b(theorem|def|structure|class)\s+"
+_DECL_MODIFIERS_RE = r"(?:noncomputable|private|protected|partial|unsafe)"
+
+
+def leading_decl_modifiers(text: str, slug: str) -> str:
+    """Keyword modifiers (`noncomputable` / `private` / …) immediately preceding
+    the `<kind> <slug>` declaration in `text`, normalized to single spaces with
+    a trailing space, or '' if none.
+
+    Distinct from `leading_decl_attrs` (which carries only `@[...]` attribute
+    blocks): a data goal's parent stub is `noncomputable def <slug> …`, and
+    `signature_prefix` starts the copy AT the keyword — dropping the modifier.
+    The renamed skeleton `def s<id> … := by sorry` then compile-fails with
+    "mark it 'noncomputable'" (agent_feedback green_theorem #77/#78). Re-prepend
+    the modifier so a data-valued goal's skeleton keeps the keyword it needs."""
+    m = re.search(
+        r"((?:" + _DECL_MODIFIERS_RE + r"\s+)+)"
+        + r"(?:theorem|def|structure|class)\s+" + re.escape(slug) + r"\b",
+        text,
+    )
+    if not m:
+        return ""
+    return " ".join(m.group(1).split()) + " "
 
 
 def signature_prefix(text: str, name: str) -> str:
@@ -111,6 +133,10 @@ def build_strategy_skeleton(
         _DECL_HEAD_RE + re.escape(parent_slug) + r"\b",
         lambda m: f"{m.group(1)} {sid_token}", sig, count=1,
     )
+    # Re-prepend the parent's keyword modifiers (`noncomputable` …) that
+    # `signature_prefix` dropped — a data-valued `def` goal needs them or the
+    # stub fails to compile (see `leading_decl_modifiers`).
+    mods = leading_decl_modifiers(parent_text, parent_slug)
     imports = [ln for ln in parent_text.splitlines()
                if ln.strip().startswith("import")]
     if not imports:
@@ -148,7 +174,7 @@ def build_strategy_skeleton(
         header + "\n\n"
         f"namespace {namespace}\n\n"
         f"{var_block}"
-        f"{new_sig} := by sorry\n\n"
+        f"{mods}{new_sig} := by sorry\n\n"
         f"end {namespace}\n"
     )
 
