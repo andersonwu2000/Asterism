@@ -353,98 +353,36 @@ def _kb_entry_lines(r: sqlite3.Row) -> list[str]:
     return lines
 
 
-_KB_LESSONS_FILENAME = "KB_LESSONS.md"
-
-
-def _kb_file_entry(r: sqlite3.Row) -> list[str]:
-    """One lesson for the grep-able KB_LESSONS file: id-tagged title + body."""
-    lines = [f"- [#{r['id']}] {(r['title'] or '').strip()}"]
-    body = (r["body"] or "").strip()
-    if body:
-        lines += [f"    {bl}" for bl in body.splitlines()]
-    return lines
-
-
-def _render_kb_lessons_file(problem: str, rows: list[sqlite3.Row]) -> str:
-    """Body of the grep-able `KB_LESSONS` file: global experience first, then
-    node experience grouped by its goal (slug / status / one-line statement).
-    The joined node identity is the tree-structure context a flat title/body
-    dump would lose — the prover greps for a goal analogous to its own and the
-    `###` header says which node each block came from."""
-    out: list[str] = [
-        f"# KB lessons — {problem}",
-        "# Grep this file for experience relevant to your goal. Global entries",
-        "# apply to any goal here; node entries are each tied to one goal —",
-        "# shown with its slug / status / statement; find one like yours.",
-        "",
-    ]
-    globals_ = [r for r in rows if r["node_id"] is None]
-    nodes = [r for r in rows if r["node_id"] is not None]
-    if globals_:
-        out += ["## Global experience (applies to any goal in this problem)", ""]
-        for r in globals_:
-            out += _kb_file_entry(r)
-        out.append("")
-    if nodes:
-        out += ["## Node experience (each tied to one goal — grep for one "
-                "like yours)", ""]
-        cur: int | None = None
-        for r in nodes:
-            if r["node_id"] != cur:
-                cur = r["node_id"]
-                slug = r["node_slug"] or f"goal#{r['node_id']}"
-                status = r["node_status"] or "?"
-                stmt = " ".join((r["node_statement"] or "").split())
-                out.append(f"### {slug}  [{status}]  ::  {stmt}")
-            out += _kb_file_entry(r)
-        out.append("")
-    return "\n".join(out)
-
-
 def _section_lessons_inline(conn: sqlite3.Connection, problem: str,
                             goal_id: int | None = None,
                             attempts_dir: Path | None = None) -> list[str]:
-    """Inline this problem's KB knowledge — lessons (globals + this goal's own
-    node experience) + antipatterns (walls hit on this goal) — AND write the
-    full grep-able `KB_LESSONS` file so the prover can search OTHER goals' node
-    experience for analogs. Sourced from `kb_entries` (Phase 12). The inline
-    set is the cheap proactive push; the file is the on-demand search surface
-    (target 2 — the prover greps it, no preprocessing LLM)."""
+    """Inline this problem's KB knowledge — GLOBAL lessons (cross-goal insights)
+    + antipatterns (walls hit on THIS goal). Sourced from `kb_entries`.
+
+    Global-only (2026-06-28): the grep-able `KB_LESSONS` file + node-experience
+    retrieval were retired. A stress test showed node lessons carry ~zero
+    cross-goal value and the grep-file was used by ~1% of spawns, while the
+    inline global set (read by 94%) is the channel that actually works. So the
+    whole KB read is this cheap proactive inline — no on-demand search surface.
+    `attempts_dir` is retained for call-site compatibility (now unused)."""
+    del attempts_dir  # no grep-file written any more
     from ..state import kb
     grouped = kb.query(conn, problem=problem, goal_id=goal_id)
     lessons = grouped["lessons"]
     antis = grouped["antipatterns"]
 
-    # Write the grep-able full-KB lessons file (all globals + every node's
-    # experience, node-annotated). Best-effort — a write failure just drops
-    # the pointer; the inline push still renders.
-    all_rows = kb.lessons_with_node_info(conn, problem)
-    file_written = False
-    if all_rows and attempts_dir is not None:
-        try:
-            (attempts_dir / _KB_LESSONS_FILENAME).write_text(
-                _render_kb_lessons_file(problem, all_rows), encoding="utf-8")
-            file_written = True
-        except OSError:
-            file_written = False
-
-    if not lessons and not antis and not file_written:
+    if not lessons and not antis:
         return []
     out: list[str] = []
-    if lessons or file_written:
+    if lessons:
         out += [
             "## Lessons learned on this problem",
-            "_Cross-spawn observations recorded by past agents on this_",
-            "_problem. Maintained by the reflection spawn._",
+            "_Cross-cutting insights recorded by past agents on this problem._",
+            "_Maintained by the reflection spawn._",
             "",
         ]
         for r in lessons:
             out += _kb_entry_lines(r)
-        if file_written:
-            out.append(
-                f"_Full set ({len(all_rows)} lesson(s), including other goals' "
-                f"node-specific experience): grep `{_KB_LESSONS_FILENAME}` for "
-                "ones relevant to your goal._")
         out.append("")
     if antis:
         out += [

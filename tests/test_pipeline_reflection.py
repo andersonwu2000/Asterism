@@ -92,18 +92,18 @@ def _seed_problem_goal(tmp_path: Path) -> int:
     return gid
 
 
-def test_apply_decision_node_global_add_and_edit(
+def test_apply_decision_global_add_edit_and_node_skips(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     gid = _seed_problem_goal(tmp_path)
     dp = tmp_path / "_reflection_decision.json"
 
-    # node experience → node_id = goal
+    # node action retired → falls through to skip, writes nothing
     dp.write_text(json.dumps(
         {"action": "node", "title": "node insight", "body": "b1"}),
         encoding="utf-8")
-    assert "node lesson" in _reflection._apply_decision("p", gid, "sid1", dp)
+    assert "skip" in _reflection._apply_decision("p", gid, "sid1", dp)
 
     # global add → node_id NULL
     dp.write_text(json.dumps(
@@ -113,7 +113,7 @@ def test_apply_decision_node_global_add_and_edit(
 
     conn = db.connect()
     rows = {r["title"]: r for r in kb.entries_for_problem(conn, "p")}
-    assert rows["node insight"]["node_id"] == gid
+    assert "node insight" not in rows           # node decision wrote nothing
     assert rows["global insight"]["node_id"] is None
     gl_id = kb.global_lessons(conn, "p")[0]["id"]
     conn.close()
@@ -334,9 +334,9 @@ def test_attempt_reflection_uses_full_problem_name_for_kb(
     (prompt_dir / "reflection.md").write_text(
         "{global_lessons} :: {decision_path}", encoding="utf-8")
 
-    def fake_spawn(**kw):  # agent records a node experience
+    def fake_spawn(**kw):  # agent records a global insight
         (attempts / "_reflection_decision.json").write_text(
-            json.dumps({"action": "node", "title": "real insight"}),
+            json.dumps({"action": "global_add", "title": "real insight"}),
             encoding="utf-8")
         return 0
     monkeypatch.setattr(_reflection.agent, "spawn_llm", fake_spawn)
@@ -350,7 +350,7 @@ def test_attempt_reflection_uses_full_problem_name_for_kb(
     try:
         full = kb.entries_for_problem(conn, "Geometry.foo")
         assert [r["title"] for r in full] == ["real insight"]   # landed
-        assert full[0]["node_id"] == gid
+        assert full[0]["node_id"] is None                       # global
         assert kb.entries_for_problem(conn, "foo") == []         # NOT the leaf
     finally:
         conn.close()

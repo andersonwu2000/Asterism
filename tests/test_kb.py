@@ -118,17 +118,19 @@ def test_add_lesson_anchors_and_idempotent(conn):
     assert rows["nodey"]["node_id"] == 1
 
 
-def test_query_filters_node_lessons_to_own_goal(conn):
+def test_query_lessons_are_global_only(conn):
+    """Global-only (2026-06-28): node-bound lessons were retired. `query` returns
+    GLOBAL lessons (node_id NULL) regardless of goal_id; a legacy node-bound
+    lesson row is excluded from the lesson read."""
     _seed_goal(conn, 1)
     _seed_goal(conn, 2)
     kb.add_lesson(conn, problem="P", title="glob", provenance="r:g")
-    kb.add_lesson(conn, problem="P", title="n1", node_id=1, provenance="r:1")
-    kb.add_lesson(conn, problem="P", title="n2", node_id=2, provenance="r:2")
-    # goal 1 sees global + its own node lesson, NOT goal 2's
-    g1 = kb.query(conn, problem="P", goal_id=1)
-    assert {r["title"] for r in g1["lessons"]} == {"glob", "n1"}
-    # no goal_id → all lessons
-    assert len(kb.query(conn, problem="P")["lessons"]) == 3
+    # a legacy node-bound lesson must NOT surface as a lesson any more
+    kb.add_lesson(conn, problem="P", title="legacy_node", node_id=1,
+                  provenance="r:1")
+    for gid in (1, 2, None):
+        out = kb.query(conn, problem="P", goal_id=gid)
+        assert {r["title"] for r in out["lessons"]} == {"glob"}
 
 
 def test_edit_global_lesson_scoped(conn):
@@ -174,32 +176,22 @@ def test_context_section_renders_kb(conn):
     assert context._section_lessons_inline(conn, "Q") == []  # no entries
 
 
-def test_kb_lessons_grep_file(conn, tmp_path):
-    """target 2 — the full grep-able KB_LESSONS file carries globals + EVERY
-    node's experience (node-annotated with slug/status/statement); the inline
-    section keeps only globals + this goal's own node experience + a pointer."""
+def test_lessons_inline_no_grep_file(conn, tmp_path):
+    """Global-only: the inline section surfaces GLOBAL lessons; no grep-able
+    KB_LESSONS file is written any more, and a legacy node-bound lesson does not
+    surface."""
     from Tooling.agent import context
     _seed_goal(conn, 1)
-    _seed_goal(conn, 2)
     kb.add_lesson(conn, problem="P", title="glob insight", body="gb",
                   provenance="r:g")
     kb.add_lesson(conn, problem="P", title="recipe for s1", node_id=1,
                   provenance="r:1")
-    kb.add_lesson(conn, problem="P", title="recipe for s2", node_id=2,
-                  provenance="r:2")
     lines = context._section_lessons_inline(conn, "P", goal_id=1,
                                             attempts_dir=tmp_path)
-    body = (tmp_path / "KB_LESSONS.md").read_text(encoding="utf-8")
-    # file: global section + BOTH nodes, each with slug/status/statement
-    assert "## Global experience" in body and "glob insight" in body
-    assert "### s1  [open]  ::  True" in body
-    assert "### s2  [open]  ::  True" in body
-    assert "recipe for s1" in body and "recipe for s2" in body
-    # inline: goal 1 sees globals + its OWN node experience, not s2's; + pointer
     text = "\n".join(lines)
-    assert "glob insight" in text and "recipe for s1" in text
-    assert "recipe for s2" not in text          # other node → file only
-    assert "grep `KB_LESSONS.md`" in text
+    assert "glob insight" in text
+    assert "recipe for s1" not in text          # legacy node lesson not shown
+    assert not (tmp_path / "KB_LESSONS.md").exists()   # grep-file retired
 
 
 def test_node_fk_set_null_on_goal_delete(conn):

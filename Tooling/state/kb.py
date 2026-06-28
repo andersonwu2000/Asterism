@@ -109,25 +109,6 @@ def global_lessons(conn: sqlite3.Connection,
     ).fetchall()
 
 
-def lessons_with_node_info(conn: sqlite3.Connection,
-                           problem: str) -> list[sqlite3.Row]:
-    """Every lesson for `problem`, with each node-bound entry's goal slug /
-    statement / status joined in (NULL columns for globals). Globals first,
-    then node experience grouped by node, each block oldest-first. Feeds the
-    grep-able `KB_LESSONS` file: the prover greps it for a goal analogous to
-    its own and the joined slug/statement is the tree-structure context a flat
-    title/body dump would lose."""
-    return conn.execute(
-        "SELECT k.id, k.title, k.body, k.node_id,"
-        "       g.slug AS node_slug, g.statement AS node_statement,"
-        "       g.status AS node_status "
-        "FROM kb_entries k LEFT JOIN goals g ON g.id = k.node_id "
-        "WHERE k.problem = ? AND k.type = 'lesson' "
-        "ORDER BY (k.node_id IS NOT NULL), k.node_id, k.id",
-        (problem,),
-    ).fetchall()
-
-
 def entries_for_problem(conn: sqlite3.Connection,
                         problem: str) -> list[sqlite3.Row]:
     """All KB entries owned by `problem`, oldest first. The scope-aware per-node
@@ -140,25 +121,23 @@ def entries_for_problem(conn: sqlite3.Connection,
 
 def query(conn: sqlite3.Connection, *, problem: str,
           goal_id: int | None = None) -> dict[str, list[sqlite3.Row]]:
-    """Retrieval seam for the read path and the (future) LLM preprocessing layer:
-    the KB knowledge relevant to a proving context, split by type. `goal_id`
-    filters node-bound entries to their own goal (interim mechanical floor); the
-    target-2 semantic-analog layer grows on this signature."""
+    """Retrieval seam for the read path and the (future) LLM preprocessing layer.
+    Returns the KB knowledge relevant to a proving context, split by type:
+
+      * `lessons`     — GLOBAL only (`node_id IS NULL`). Node-bound lessons were
+        retired (2026-06-28): they had ~zero cross-goal value, so reflection no
+        longer writes them; any legacy node-bound lesson row is excluded here.
+        When globals grow large (Stokes-body / residue scale, ~hundreds), a
+        grep / LLM-selection preprocessing layer attaches at THIS seam — the
+        read path stays the single chokepoint.
+      * `antipatterns` — mechanically captured, always node-bound; surfaced only
+        to their own goal (`goal_id`), the wall THIS goal already hit.
+    """
     rows = entries_for_problem(conn, problem)
-
-    def _visible(r: sqlite3.Row) -> bool:
-        # Interim read (pre-target-2 semantic retrieval): a node-bound entry
-        # (`node_id` set — a node-experience lesson OR an antipattern) is "what
-        # was learned on THIS goal", surfaced only to its own goal; a
-        # problem-wide entry (`node_id` NULL — global lesson / legacy) radiates
-        # to every goal. Uniform across both types. target-2 later adds semantic
-        # analog reach on top of this floor.
-        return (goal_id is None or r["node_id"] is None
-                or r["node_id"] == goal_id)
-
     return {
         "lessons": [r for r in rows
-                    if r["type"] == "lesson" and _visible(r)],
+                    if r["type"] == "lesson" and r["node_id"] is None],
         "antipatterns": [r for r in rows
-                         if r["type"] == "antipattern" and _visible(r)],
+                         if r["type"] == "antipattern"
+                         and (goal_id is None or r["node_id"] == goal_id)],
     }

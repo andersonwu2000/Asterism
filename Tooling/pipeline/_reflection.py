@@ -3,10 +3,18 @@
 After a successful (or terminal-decline) pipeline, the in-pipeline retry
 helper still has its sid in scope. We use that sid to fire a brief
 `--resume`-based agent spawn that picks ONE of:
-  * `skip`         — no cross-spawn-learnable signal (the default),
-  * `node`         — a node-bound experience for THIS goal (type-1),
-  * `global_add`   — a problem-wide insight that helps OTHER nodes (type-2),
+  * `skip`         — no cross-goal-transferable signal (the dominant case),
+  * `global_add`   — a problem-wide insight that helps OTHER goals,
   * `global_edit`  — correct / supersede an existing global insight (C3-A).
+
+GLOBAL-ONLY (2026-06-28): node-bound lessons were retired. A stress test
+(green_theorem, 70 goals) showed node lessons have ~zero cross-goal value —
+47/51 were goal-specific decomposition recipes, useless to any other goal —
+and their only cross-goal delivery path (a grep-able file) was exercised by
+~1% of worker spawns. The cross-goal value lives entirely in the small set of
+GLOBAL lessons, which workers DO consume (inlined into Context.md, read by
+94%). So reflection now writes only globals; a goal-specific takeaway is a
+`skip`. (An old-prompt `node` decision falls through to skip harmlessly.)
 
 The agent writes its choice to a `_reflection_decision.json` sentinel; the
 framework parses it and writes straight to the KB (`kb_entries`) — the KB is
@@ -201,8 +209,8 @@ def attempt_reflection(*,
                 print(f"[reflection] {kind} {slug}: retracted strategist "
                       f"directive — {reason[:160]}", flush=True)
 
-            # Apply the agent's KB decision (skip / node / global_add /
-            # global_edit). Best-effort; a KB hiccup must not lose telemetry.
+            # Apply the agent's KB decision (skip / global_add / global_edit).
+            # Best-effort; a KB hiccup must not lose telemetry.
             try:
                 delta = _apply_decision(problem, goal_id, sid, decision_path)
             except Exception as exc:  # noqa: BLE001
@@ -253,12 +261,6 @@ def _apply_decision(problem: str, goal_id: int, sid: str,
 
     conn = db.connect()
     try:
-        if action == "node":
-            if not title:
-                return "skip (node: empty title)"
-            n = kb.add_lesson(conn, problem=problem, title=title, body=body,
-                              node_id=goal_id, provenance=provenance)
-            return f"node lesson ({'wrote' if n else 'dup'})"
         if action == "global_add":
             if not title:
                 return "skip (global_add: empty title)"
