@@ -643,6 +643,20 @@ def cmd_reset(args: argparse.Namespace) -> int:
     db.init_schema(conn)
     conn.execute("PRAGMA foreign_keys = ON")
 
+    # Problem-keyed FK children, cleared FIRST (unconditional). Every table with
+    # a `problem → problems(name)` FK blocks the `DELETE FROM problems` below if
+    # it still has rows; `library_decls` also has a `source_goal_id → goals.id`
+    # FK that blocks the goals DELETE. The FK children of `problems(name)` are:
+    # goals + strategist_decisions (handled below by gid/problem) and these two:
+    #   - `library_decls`: a (partially) library-ized problem's classified decls.
+    #   - `kb_entries`: lessons/antipatterns (KB-as-SoT — the old flat LESSONS.md
+    #     sweep's successor; reflection writes a row per global lesson).
+    # Both observed 2026-06-28: derham_dd_zero reset crashed `FOREIGN KEY
+    # constraint failed` at DELETE FROM problems — first on library_decls (2
+    # classified), then on a kb_entries global lesson the run wrote.
+    conn.execute("DELETE FROM library_decls WHERE problem = ?", (problem,))
+    conn.execute("DELETE FROM kb_entries WHERE problem = ?", (problem,))
+
     gids = [r[0] for r in conn.execute(
         "SELECT id FROM goals WHERE problem = ?", (problem,)).fetchall()]
     sids: list[int] = []
