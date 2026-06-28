@@ -247,6 +247,38 @@ def test_tee_survives_unencodable_char_on_one_stream(tmp_path: Path) -> None:
     assert good.getvalue() == "rotation ∃ R, P R\n"
 
 
+def test_cmd_run_logs_traceback_on_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `dispatcher.run` crash must leave its traceback in the daemon log.
+
+    Regression: cmd_run's `finally` restored `sys.stderr` + closed the log
+    file BEFORE an unhandled exception propagated to the interpreter's default
+    handler — so a daemon crash left `.asterism/logs/multi_*.log` ending
+    mid-tick with NO traceback. The green_theorem stress-test daemon
+    self-terminated and the crash was invisible for exactly this reason
+    (the log stopped cleanly at a `[dispatch] …` line)."""
+    import argparse
+    from Tooling.core import cli
+    monkeypatch.chdir(tmp_path)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("dispatcher exploded mid-tick")
+    monkeypatch.setattr(cli.dispatcher, "run", _boom)
+
+    args = argparse.Namespace(scope="Geometry.green_theorem", once=False,
+                              all_problems=False)
+    with pytest.raises(RuntimeError, match="exploded mid-tick"):
+        cli.cmd_run(args)
+
+    logs = list((tmp_path / LOG_DIR).glob("*.log"))
+    assert logs, "no daemon log written"
+    text = logs[0].read_text(encoding="utf-8")
+    assert "FATAL: unhandled exception" in text
+    assert "RuntimeError: dispatcher exploded mid-tick" in text
+    assert "Traceback (most recent call last)" in text
+
+
 def test_force_utf8_io_idempotent_and_sets_child_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

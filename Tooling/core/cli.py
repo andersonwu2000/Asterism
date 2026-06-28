@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sys
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -388,6 +389,20 @@ def cmd_run(args: argparse.Namespace) -> int:
             scope=getattr(args, "scope", None),
         )
         return rc
+    except Exception:
+        # Log the crash traceback HERE, while `sys.stderr` is still tee'd to
+        # the log file and the file is still open. The `finally` below restores
+        # `sys.stderr` and closes the log BEFORE an unhandled exception would
+        # otherwise reach the interpreter's default handler — so without this
+        # `except`, a `dispatcher.run` crash leaves `.asterism/logs/multi_*.log`
+        # ending mid-tick with no traceback, making the daemon's self-
+        # termination invisible (exactly what hid the green_theorem crash:
+        # the log stopped cleanly at a `[dispatch] …` line). `print_exc`
+        # writes to the tee'd `sys.stderr`, so the traceback lands in the log.
+        print("[dispatcher] FATAL: unhandled exception — daemon exiting:",
+              flush=True)
+        traceback.print_exc()
+        raise
     finally:
         sys.stdout = orig_stdout
         sys.stderr = orig_stderr
