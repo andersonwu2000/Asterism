@@ -73,6 +73,28 @@ def test_annotation_passes_with_leading_comment():
 
 
 # ---------------------------------------------------------------------
+# (a2) decl-head slug — snake_case gate surfaced pre-commit (green #69/#107)
+# ---------------------------------------------------------------------
+
+def test_declhead_flags_camelcase_slug():
+    r = gw._declhead_submission(
+        "noncomputable def diskCompactSpace : True := trivial")
+    assert r["checked"] is True and r["ok"] is False
+    assert "diskCompactSpace" in r["bad_slugs"]
+
+
+def test_declhead_passes_snake_case():
+    r = gw._declhead_submission(
+        "theorem disk_compact_space : True := by trivial")
+    assert r["checked"] is True and r["ok"] is True
+
+
+def test_declhead_unchecked_when_no_decl():
+    r = gw._declhead_submission("import Mathlib\nopen Real\n")
+    assert r["checked"] is False and r["ok"] is True
+
+
+# ---------------------------------------------------------------------
 # (b) citation — shared SoT + gateway submission
 # ---------------------------------------------------------------------
 

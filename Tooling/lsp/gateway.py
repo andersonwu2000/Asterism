@@ -1289,6 +1289,18 @@ _GW_PROBLEM_IMPORT_RE = re.compile(
 _GW_THEOREM_RE = re.compile(r"(?m)^\s*theorem\s+\S+")
 _GW_SORRY_STUB_RE = re.compile(r":=[ \t]*by[ \t]+sorry[ \t]*$", re.MULTILINE)
 
+# Mirror of `pipeline.forward.SLUG_RE` + `_DECL_HEAD_RE` — kept local (the gateway
+# must not import the heavy `pipeline` package); both are stable, simple regexes.
+# The decl-head form tolerates leading modifiers/attributes so it stays in step
+# with the modifier-aware commit parser.
+_GW_SLUG_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+_GW_DECL_HEAD_RE = re.compile(
+    r"^[ \t]*(?:@\[[^\]]*\][ \t]*)*"
+    r"(?:(?:noncomputable|private|protected|partial|unsafe)[ \t]+)*"
+    r"(theorem|def|structure|class)[ \t]+([A-Za-z_][A-Za-z0-9_]*)\b",
+    re.MULTILINE,
+)
+
 
 def _gw_leading_comments(text: str) -> str:
     """`--` comment lines before the first `theorem` — presence-mirror of
@@ -1365,6 +1377,27 @@ def _annotation_submission(content: str) -> "dict":
             "no leading -- comment block; commit rejects with "
             "agent_no_annotation (strategy rationale required for goal "
             "annotation propagation)"}
+
+
+def _declhead_submission(content: str) -> "dict":
+    """Mirror commit's slug gate: every top-level `<kind> <name>` declaration's
+    name must be snake_case (`^[a-z][a-z0-9_]*$`). A camelCase def/theorem name
+    elaborates clean but the Forward/Backward commit parser bounces it AFTER a
+    full lake build — surface it pre-commit so the agent renames in-loop
+    (agent_feedback green_theorem #69/#107). `checked: False` when the content
+    declares nothing to slug (e.g. a pure import/open probe)."""
+    bad: "list[str]" = []
+    for m in _GW_DECL_HEAD_RE.finditer(content):
+        name = m.group(2)
+        if not _GW_SLUG_RE.match(name):
+            bad.append(name)
+    if not bad:
+        return {"checked": _GW_DECL_HEAD_RE.search(content) is not None,
+                "ok": True}
+    return {"checked": True, "ok": False, "bad_slugs": sorted(set(bad)),
+            "note": "declaration name(s) must be snake_case "
+                    "(^[a-z][a-z0-9_]*$); commit rejects a camelCase slug after "
+                    "a full lake build — rename now"}
 
 
 @mcp.tool()
@@ -1496,7 +1529,8 @@ def validate_file(content: str) -> str:
     # surfaced here so a clean Lean elaboration that would still be bounced at
     # commit is flagged pre-commit. Separate from `diagnostics` (Lean) so the
     # agent reads "elaborates" and "commit will accept" independently.
-    submission: "dict" = {"annotation": _annotation_submission(content)}
+    submission: "dict" = {"annotation": _annotation_submission(content),
+                          "decl_head": _declhead_submission(content)}
     cite = _citation_submission(content, meta.problem, meta.workspace,
                                 set(inlined_slugs))
     if cite is not None:
