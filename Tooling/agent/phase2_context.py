@@ -626,15 +626,11 @@ def _section_tree_inline(conn: sqlite3.Connection,
 
 def _section_manifest_meta(mfst: manifest.Manifest,
                            workspace: Path, problem: str) -> list[str]:
-    """For T0 / T3 — surface Manifest statement + hints + Defs.lean
-    preview so Strategist can decide whether RequestUserAmend on Defs.lean
-    is needed (statement-vocabulary missing)."""
+    """For T0 / T3 — surface Manifest statement + Defs.lean preview so
+    Strategist can decide whether RequestUserAmend on Defs.lean is needed
+    (statement-vocabulary missing)."""
     out = ["## Manifest", "", "### Statement", ""]
     out.append(f"```\n{mfst.statement}\n```")
-    if mfst.all_hints:
-        out += ["", "### Lemma hints", ""]
-        for h in mfst.all_hints:
-            out.append(f"- {h}")
     if mfst.strategic_notes:
         out += ["", "### Strategic notes", ""]
         out.append(mfst.strategic_notes)

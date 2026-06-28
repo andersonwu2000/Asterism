@@ -123,56 +123,6 @@ def _section_parent_strategy(conn: sqlite3.Connection,
     return out
 
 
-def _section_mathlib_hints_stable(mfst: manifest.Manifest,
-                                   workspace: Path) -> list[str]:
-    """Cross-spawn-stable Mathlib lemma surface for BRIEF.md.
-
-    Renders Manifest `mathlib_hints` with their `lake env lean #check`
-    resolved signatures. Stable across spawns: only re-rendered when
-    BRIEF re-renders (cli init / daemon startup). Per-spawn lemma
-    names extracted from this goal's lake errors live in
-    `_section_mathlib_lemmas_from_deads` instead.
-    """
-    names = _hint_names(mfst)
-    resolved: dict[str, str] = {}
-    if names:
-        try:
-            infos = lemma_lookup.lookup_batch(names, workspace)
-            resolved = {
-                info.name: info.signature
-                for info in infos.values() if info.found
-            }
-        except Exception as exc:  # never block render
-            print(f"[lemma_lookup] failed, skipping: {exc}", flush=True)
-
-    if not mfst.mathlib_hints:
-        return []
-
-    out = [
-        "## Mathlib lemmas",
-        "Manifest-curated lemma references. Where a signature is "
-        "shown, that's the ground truth from `lake env lean #check` — "
-        "use it for arg order / instance shape. For raw-text entries, "
-        "the hint is the Manifest author's own note.",
-        "",
-    ]
-    rendered: set[str] = set()
-    for hint in mfst.mathlib_hints:
-        m = re.match(r"\s*([A-Z][\w']*(?:\.[\w']+)+)", hint)
-        if m and m.group(1) in resolved:
-            nm = m.group(1)
-            commentary = hint[m.end():].strip().lstrip("-—").strip()
-            if commentary:
-                out.append(f"- **{nm}** : `{resolved[nm]}`  ({commentary})")
-            else:
-                out.append(f"- **{nm}** : `{resolved[nm]}`")
-            rendered.add(nm)
-        else:
-            out.append(f"- {hint}")
-    out.append("")
-    return out
-
-
 def _section_mathlib_lemmas_from_deads(deads: list,
                                        workspace: Path) -> list[str]:
     """Per-spawn surface: lemma names Lean errored on in this goal's
@@ -208,20 +158,6 @@ def _section_mathlib_lemmas_from_deads(deads: list,
     for name, sig in resolved.items():
         out.append(f"- **{name}** : `{sig}`")
     out.append("")
-    return out
-
-
-def _hint_names(mfst: manifest.Manifest) -> list[str]:
-    """Resolvable names extracted from `mfst.mathlib_hints` (in order,
-    de-duped). Hints that don't open with a Lean qualified name are
-    rendered as raw text and skipped here."""
-    out: list[str] = []
-    seen: set[str] = set()
-    for hint in mfst.mathlib_hints:
-        m = re.match(r"\s*([A-Z][\w']*(?:\.[\w']+)+)", hint)
-        if m and m.group(1) not in seen:
-            seen.add(m.group(1))
-            out.append(m.group(1))
     return out
 
 
@@ -526,9 +462,7 @@ def _section_library_available(mfst, workspace) -> list[str]:
     Reads the single `Library/INDEX.md` (the Librarian `finish` marker),
     parses its `## <problem>` sections, and renders a COMPACT menu of the
     Library modules in this problem's own domain (e.g. a `LinearAlgebra.*`
-    problem sees the `LinearAlgebra.*` Library), plus any `Library.*`
-    entries named in the Manifest's `lemma_hints` (highlighted as suggested
-    citations, cross-domain allowed). The agent has read access to
+    problem sees the `LinearAlgebra.*` Library). The agent has read access to
     `Library/` — it greps there for exact signatures; the menu just tells
     it what exists and how to cite. Returns [] when the Library has nothing
     relevant (keeps unrelated problems' Context clean)."""
@@ -562,8 +496,7 @@ def _section_library_available(mfst, workspace) -> list[str]:
     domain = problem.split(".")[0] if "." in problem else problem
     relevant = [(p, d) for p, d in sections
                 if d and (p.split(".")[0] == domain)]
-    hinted = [h for h in mfst.all_hints if h.startswith("Library.")]
-    if not relevant and not hinted:
+    if not relevant:
         return []
 
     out = [
@@ -577,10 +510,6 @@ def _section_library_available(mfst, workspace) -> list[str]:
         "search-before-reconstruct rule covers Library too.",
         "",
     ]
-    if hinted:
-        out.append("Suggested citations (this problem's `lemma_hints`):")
-        out += [f"- `{h}`" for h in hinted]
-        out.append("")
     if relevant:
         out.append(f"Library modules in the `{domain}` domain "
                    "(grep `Library/` for signatures):")
@@ -886,6 +815,21 @@ def _section_strategist_brief(conn: sqlite3.Connection,
 # Orchestration
 # ---------------------------------------------------------------------
 
+def _section_presearch_candidates(problem_dir: Path, goal_id: int) -> list[str]:
+    """target-1 pre-search: inject the cached per-node candidate-lemma
+    section. Pure file-read of `.presearch/g<gid>.md` (written by
+    `_presearch.ensure_presearch` during cold-prep, before this runs);
+    returns [] when absent so the section appears only when pre-search
+    produced verified candidates."""
+    from ..pipeline import _presearch
+    path = _presearch.presearch_path(problem_dir, goal_id)
+    try:
+        text = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+    except OSError:
+        text = ""
+    return [text, ""] if text else []
+
+
 def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
                     mfst: manifest.Manifest, attempts_dir: Path,
                     strategy_id: int | None = None,
@@ -960,6 +904,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     # byte-identical across all spawns of this problem. Putting them first
     # means the cache-able prefix length is the BRIEF + lessons size
     # (~2-10 KB) rather than zero. Per-goal / per-spawn surfaces follow.
+    presearch_lines = _section_presearch_candidates(problem_dir, int(goal["id"]))
     sections: list[list[str]] = [
         _section_brief_inline(problem_dir),
         _section_lessons_inline(conn, str(goal["problem"]), int(goal["id"]),
@@ -975,7 +920,13 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_strategy_naming(strategy_id, goal),
         _section_parent_strategy(conn, goal),
         _section_mathlib_lemmas_from_deads(direct_events, workspace),
-        _section_proved_goals(conn, goal, workspace),
+        # target-1 pre-search candidates (written in cold-prep). When present
+        # it supersedes `_section_proved_goals` — both list this problem's
+        # proved siblings, and the ranked pre-search list is the curated
+        # surface (avoid the duplicate-section noise the design warns of).
+        presearch_lines,
+        ([] if presearch_lines
+         else _section_proved_goals(conn, goal, workspace)),
         _section_prior_partial(kind, problem_dir, int(goal["id"])),
         _section_prior_patch(kind, problem_dir, int(goal["id"])),
         _section_goal_history(

@@ -35,9 +35,8 @@ def render(workspace: Path, mfst: manifest.Manifest) -> str:
     Order:
       1. Sandbox (read scope / output file conventions)
       2. FORBIDDEN_LEMMAS
-      3. Mathlib lemmas (Manifest hints + lake-resolved signatures)
-      4. Strategic notes
-      5. Library available
+      3. Strategic notes
+      4. Library available
     """
     # Late import: context → pipeline → agent → context cycle would
     # break a top-level import here. brief.render is only ever called
@@ -48,7 +47,6 @@ def render(workspace: Path, mfst: manifest.Manifest) -> str:
         _section_brief_header(mfst),
         context._section_sandbox(),
         context._section_manifest_forbidden(mfst),
-        context._section_mathlib_hints_stable(mfst, workspace),
         context._section_manifest_notes(mfst),
         context._section_library_available(mfst, workspace),
     ]

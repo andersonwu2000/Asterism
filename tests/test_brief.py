@@ -55,31 +55,17 @@ def test_render_includes_forbidden_and_strategic_notes(
     assert "Avoid path X" in out
 
 
-def test_render_resolves_manifest_mathlib_hints_via_lookup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Manifest mathlib hints should hit lemma_lookup at render time.
-    The signature, when resolved, lands inline next to the hint name."""
-    from Tooling.knowledge import lemma_lookup
-    fake = type("LI", (), {
-        "name": "Nat.factorial", "signature": "ℕ → ℕ", "found": True,
-    })()
-    captured: list[list[str]] = []
-
-    def _spy(names, ws):
-        captured.append(list(names))
-        return {"Nat.factorial": fake}
-    monkeypatch.setattr(lemma_lookup, "lookup_batch", _spy)
-
+def test_render_no_mathlib_hints_section(tmp_path: Path) -> None:
+    """`## Lemma hints` was retired (target-1 pre-search replaces it): a
+    Manifest with mathlib hints no longer renders a `## Mathlib lemmas`
+    section in BRIEF."""
     mfst = Manifest(
         problem="p", statement="T",
         mathlib_hints=["Nat.factorial — n! is positive"],
     )
     out = brief.render(tmp_path, mfst)
-    assert captured, "lookup_batch should be invoked"
-    assert "Nat.factorial" in captured[0]
-    assert "ℕ → ℕ" in out
-    assert "n! is positive" in out
+    assert "## Mathlib lemmas" not in out
+    assert "Nat.factorial" not in out
 
 
 def test_write_returns_none_when_problem_dir_missing(

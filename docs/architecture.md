@@ -83,10 +83,6 @@ forbidden_lemmas: []
 ## Statement
 <lean expr>
 
-## Lemma hints
-- <hint 1>
-- ...
-
 ## Strategic notes
 <自由 markdown，注入給 agent 看>
 ```

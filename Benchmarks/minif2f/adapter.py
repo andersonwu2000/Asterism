@@ -210,8 +210,6 @@ def _manifest_md(spec: ProblemSpec) -> str:
         f"## Entry kind\n"
         f"Backward\n"
         f"\n"
-        f"## Lemma hints\n"
-        f"\n"
         f"## Strategic notes\n"
         f"Imported via `python -m Tooling.adapters.minif2f`. No\n"
         f"per-problem hints — benchmark integrity (compare against\n"

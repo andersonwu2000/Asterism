@@ -510,7 +510,7 @@ section 順序固定，每個 `_section_*` 不適用時回 `[]`、整段省略�
 
 | # | section | 條件 / 說明 |
 |---|---|---|
-| 1 | BRIEF.md inline | stable mathlib hints / FORBIDDEN_LEMMAS / strategic notes 都折進這裡 |
+| 1 | BRIEF.md inline | FORBIDDEN_LEMMAS / strategic notes 都折進這裡 |
 | 2 | LESSONS.md inline | 1–2 是跨 spawn 不變內容，放最前讓 prompt-cache prefix 命中最大化 |
 | 3 | Strategist directive | problem-level 常駐指令（每次 cold-start） |
 | 4 | Strategist brief | 只在這條 pipeline 由 Inject 認可時 |
@@ -519,7 +519,8 @@ section 順序固定，每個 `_section_*` 不適用時回 `[]`、整段省略�
 | 7 | Strategy naming | Backward only：鎖死的 strategy 檔名/定理名 `s<sid>` + sub-goal slug 規則 |
 | 8 | Parent goal & strategy | `origin='backward'` only |
 | 9 | Mathlib lemmas | 來自過去 lake error |
-| 10 | Proved siblings on this problem | — |
+| 9b | Candidate lemmas（pre-search） | target-1：per-node 預搜的排序候選（Mathlib/Library/in-problem、`#check` 驗過） |
+| 10 | Proved siblings on this problem | pre-search 在場時由它取代（避免重複列同批 siblings） |
 | 11 | Your previous progress note | timeout 留下的 `.drafts` 筆記（§6） |
 | 12 | Your previous patch.lean | Builder only：上次未驗證的 patch |
 | 13 | Goal history（umbrella） | Builder/Backward only，見下 |

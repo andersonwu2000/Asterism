@@ -44,6 +44,7 @@ from ..agent import context
 from ..state import db, manifest, proof_store, transitions
 from ..quality import dedupe, diagnostics
 from . import _axiom
+from . import _presearch
 from ._cite_gate import (_PROBLEM_IMPORT_RE, _resolve_cite_dependencies,
                          inject_missing_sibling_imports)
 
@@ -566,6 +567,11 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         # incremental.
         patch_lean = ctx.attempts_dir / "patch.lean"
         if ctx.cold:
+            # target-1: per-node pre-search (once per node, cached) before the
+            # context is compiled, so its candidate-lemma section is present.
+            _presearch.ensure_presearch(
+                goal=goal, workspace=workspace, problem_dir=problem_dir,
+                attempts_dir=ctx.attempts_dir, prompt_dir=PROMPT_DIR)
             context.compile_context(conn, goal=goal, mfst=mfst,
                                   attempts_dir=ctx.attempts_dir,
                                   strategy_id=strategy_id,

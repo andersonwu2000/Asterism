@@ -530,24 +530,10 @@ def test_context_lemma_lookup_failure_is_swallowed(
     assert "Goal statement" in text
 
 
-def test_brief_includes_manifest_hint_names(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Manifest.mathlib_hints feed the lookup batch when BRIEF.md is
-    rendered — the curated list is itself a query target. Lemma
-    resolution moved out of compile_context (per-spawn) into brief
-    render (cross-spawn cache, paid once at cli init / daemon
-    startup) as part of the BRIEF.md split."""
+def test_brief_omits_retired_mathlib_hints(tmp_path: Path) -> None:
+    """`## Lemma hints` / `## Mathlib lemmas` retired (target-1 pre-search
+    replaces Manifest hints): BRIEF no longer renders mathlib hint names."""
     from Tooling.state import brief
-    from Tooling.knowledge import lemma_lookup
-    captured: list[list[str]] = []
-
-    def _spy(names, ws):
-        captured.append(list(names))
-        return {}
-    monkeypatch.setattr(lemma_lookup, "lookup_batch", _spy)
-
     pdir = tmp_path / "Problems" / "p"
     pdir.mkdir(parents=True, exist_ok=True)
     mfst = Manifest(
@@ -555,11 +541,10 @@ def test_brief_includes_manifest_hint_names(
         mathlib_hints=["Nat.factorial (Data/Nat/Factorial/Basic.lean:50)",
                        "ZMod.val_natCast"],
     )
-    brief.write(tmp_path, mfst)
-
-    assert captured, "lookup_batch should be invoked when hints are present"
-    assert "Nat.factorial" in captured[0]
-    assert "ZMod.val_natCast" in captured[0]
+    out = brief.write(tmp_path, mfst)
+    body = out.read_text(encoding="utf-8")
+    assert "## Mathlib lemmas" not in body
+    assert "Nat.factorial" not in body
 
 
 def test_context_subgoal_includes_parent_strategy(

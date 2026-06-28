@@ -52,14 +52,14 @@ whole-Library coherence (`lake build Library` + INDEX↔disk↔DB consistency).
 
 ## Referencing in a Problem's Manifest
 
-Use the `## Lemma hints` section with fully-qualified `Library.<Topic>…<decl>`
-paths (exactly as listed in `Library/INDEX.md`):
+Relevant Library / Mathlib lemmas are found automatically by the per-node
+**pre-search** (target-1): before each goal is dispatched, a search agent
+surfaces likely-relevant lemmas (Mathlib + Library + in-problem) and injects a
+ranked, `#check`-verified `## Candidate lemmas` section into the prover's
+Context. The dedicated `## Lemma hints` Manifest section was retired in favour
+of this.
 
-```yaml
-## Lemma hints
-- Mathlib.NumberTheory.ZMod.Basic
-- Library.LinearAlgebra.JordanForm.Basic.max_gen_eigenspace_is_internal
-```
-
-Both Mathlib and Library entries flow through the same `lemma_lookup`
-pipeline (`#check`), so the agent sees their signatures inline in Context.md.
+To *force* a specific pointer the pre-search might miss, mention the
+fully-qualified name (`Library.<Topic>…<decl>`, exactly as in
+`Library/INDEX.md`) in the Manifest's **`## Strategic notes`** — the prover
+reads that section directly.

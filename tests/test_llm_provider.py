@@ -847,50 +847,6 @@ def test_sorry_hint_scoped_to_patch_not_substubs() -> None:
         claude_cli._retry_hint_for_patterns(patch_warning))
 
 
-def test_manifest_hint_placeholder_not_appended_when_empty() -> None:
-    """When a Manifest hint is just `Foo.bar` with no commentary, the
-    rendered Mathlib-lemmas bullet must NOT carry a spurious
-    `(manifest hint)` placeholder — was previously a fallback string,
-    now silently omitted."""
-    from Tooling.state.manifest import Manifest
-    # Stub lemma_lookup to "find" the name with a fake signature
-    from unittest.mock import patch as _patch
-    mfst = Manifest(problem="p", statement="T",
-                    mathlib_hints=["Nat.factorial"])
-    fake_info = type("LI", (), {
-        "name": "Nat.factorial", "signature": "ℕ → ℕ", "found": True,
-    })()
-    from Tooling.agent import context as _ctx
-    with _patch.object(_ctx.lemma_lookup, "lookup_batch",
-                       return_value={"Nat.factorial": fake_info}):
-        section = _ctx._section_mathlib_hints_stable(mfst,
-                                             workspace=Path("/tmp"))
-    body = "\n".join(section)
-    assert "Nat.factorial" in body
-    assert "ℕ → ℕ" in body
-    assert "(manifest hint)" not in body  # no placeholder
-
-
-def test_manifest_hint_keeps_real_commentary() -> None:
-    """When a Manifest hint DOES carry author commentary
-    (e.g. `Foo.bar — explanation`), preserve it next to the resolved
-    signature."""
-    from Tooling.state.manifest import Manifest
-    from unittest.mock import patch as _patch
-    mfst = Manifest(problem="p", statement="T",
-                    mathlib_hints=["Nat.factorial — n! is positive"])
-    fake_info = type("LI", (), {
-        "name": "Nat.factorial", "signature": "ℕ → ℕ", "found": True,
-    })()
-    from Tooling.agent import context as _ctx
-    with _patch.object(_ctx.lemma_lookup, "lookup_batch",
-                       return_value={"Nat.factorial": fake_info}):
-        section = _ctx._section_mathlib_hints_stable(mfst,
-                                             workspace=Path("/tmp"))
-    body = "\n".join(section)
-    assert "n! is positive" in body
-
-
 def test_pattern_hints_capped_at_two() -> None:
     """Even when stderr matches 3+ patterns, only the first two are
     emitted to keep prompt growth bounded — matching errors usually

@@ -1,6 +1,6 @@
 You are a Lean 4 proof assistant. Decompose a goal into 1-7 strictly simpler sub-goals + a structural combinator.
 
-Read `Context.md` for the goal, Manifest hints, FORBIDDEN_LEMMAS, prior failures. Companion files (`PAST_*.md`) carry full failure detail — read on demand. If your prior turn timed out, `## Your previous progress note` is your starting sketch.
+Read `Context.md` for the goal, pre-searched candidate lemmas (`## Candidate lemmas`), FORBIDDEN_LEMMAS, prior failures. Companion files (`PAST_*.md`) carry full failure detail — read on demand. If your prior turn timed out, `## Your previous progress note` is your starting sketch.
 
 Time budget: {timeout_min} minutes.
 

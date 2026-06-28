@@ -82,17 +82,14 @@ def _write_index(tmp_path: Path) -> None:
     )
 
 
-def test_library_section_domain_menu_and_hint(tmp_path: Path) -> None:
-    """New single Library/INDEX.md: same-domain problems appear as a compact
-    menu (with keystone tag); lemma_hints Library.* entries are highlighted;
-    other domains are excluded from the menu."""
+def test_library_section_domain_menu(tmp_path: Path) -> None:
+    """Single Library/INDEX.md: same-domain problems appear as a compact menu
+    (with keystone tag); other domains are excluded from the menu. (Manifest
+    `## Lemma hints` highlighting was retired in favour of target-1 pre-search.)"""
     from Tooling.agent import context
     _write_index(tmp_path)
     mfst = manifest.Manifest(
-        problem="LinearAlgebra.normal_diagonalization", statement="T",
-        lemma_hints=[
-            "Library.LinearAlgebra.SchurTriangularization.Triangularization.main"],
-    )
+        problem="LinearAlgebra.normal_diagonalization", statement="T")
     body = "\n".join(context._section_library_available(mfst, tmp_path))
     assert "## Library available" in body
     # same-domain (LinearAlgebra) listed with keystone
@@ -100,23 +97,6 @@ def test_library_section_domain_menu_and_hint(tmp_path: Path) -> None:
     assert "keystone" in body and ".Triangularization.main" in body
     # cross-domain (Geometry) NOT in the domain menu
     assert "banach_tarski" not in body
-    # lemma_hints highlighted
-    assert "Suggested citations" in body
-
-
-def test_library_section_cross_domain_via_hint(tmp_path: Path) -> None:
-    """A Geometry Library entry named in an LA problem's lemma_hints is
-    surfaced (cross-domain explicit citation), even though Geometry is not
-    the problem's domain so it's absent from the domain menu."""
-    from Tooling.agent import context
-    _write_index(tmp_path)
-    mfst = manifest.Manifest(
-        problem="LinearAlgebra.x", statement="T",
-        lemma_hints=["Library.Geometry.BanachTarski.Equidecomp.bar"],
-    )
-    body = "\n".join(context._section_library_available(mfst, tmp_path))
-    assert "Suggested citations" in body
-    assert "Library.Geometry.BanachTarski.Equidecomp.bar" in body
 
 
 def test_library_section_empty_when_no_library_hints(tmp_path: Path) -> None:

@@ -25,6 +25,7 @@ from pathlib import Path
 
 from .. import agent
 from ..agent import context
+from . import _presearch
 from ..state import db, manifest, proof_store
 from ..quality import diagnostics
 from ._cite_gate import (_resolve_cite_dependencies,
@@ -249,6 +250,11 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # write-through stays inside the sandbox; only builder_parse commits
         # to goal_lean.
         _seed_patch_from_goal()
+        # target-1: per-node pre-search (once per node, cached). Writes the
+        # candidate-lemma cache that compile_context's section then reads.
+        _presearch.ensure_presearch(
+            goal=goal, workspace=workspace, problem_dir=problem_dir,
+            attempts_dir=ctx.attempts_dir, prompt_dir=PROMPT_DIR)
         context.compile_context(conn, goal=goal, mfst=mfst,
                               attempts_dir=ctx.attempts_dir,
                               kind="builder",
