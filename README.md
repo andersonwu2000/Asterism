@@ -5,6 +5,12 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-28
+- Improved the generation of Lean proof files so that declaration modifiers like `noncomputable` are preserved and the necessary definition imports are pulled in.
+- Consolidated the system's accumulated "lessons" into a single global store, retiring the older per-step lessons and an obsolete seed file.
+- Hardened proof storage so every saved proof passes an ownership check and writes no longer leave stray backup files behind.
+- Tightened reliability with assorted fixes: crashes now log a full traceback before shutdown, resetting a problem cleans up its dependent records, and the test suite was made cleaner and more portable.
+
 ### 2026-06-27
 - Built a mechanism for the prover to learn from its own failures, recording which approaches did not work, storing them in a searchable lessons file, and surfacing only those relevant to the goal currently being proved.
 - Enabled proofs to automatically reuse already-proved results from the same problem when they are cited, while blocking citations that reach into unrelated problems.
@@ -137,12 +143,6 @@
 ### 2026-05-30
 - Machine-checked a proof of the Banach–Tarski paradox for the closed unit ball in ℝ³.
 - Added optional tooling to catalog the available library results and check their dependencies before use.
-
-### 2026-05-29
-- Forced UTF-8 console I/O so that proof goals containing mathematical Unicode symbols no longer crash the run on Windows.
-- Hardened duplicate-goal detection to actually compile and check a candidate proof before accepting it, since the Lean build can report success while still emitting errors.
-- Added safeguards so a goal that has already been proved can never be downgraded and set aside.
-- Upgraded the underlying language models to the latest Opus release.
 
 <!-- ASTERISM-PROGRESS:END -->
 
