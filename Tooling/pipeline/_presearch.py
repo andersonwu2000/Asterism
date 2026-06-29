@@ -27,7 +27,7 @@ from pathlib import Path
 from ..agent import runtime as agent
 from ..knowledge import lemma_lookup
 
-_PRESEARCH_TIMEOUT_SEC = 150
+_DEFAULT_TIMEOUT_SEC = 240
 _MAX_PER_BLOCK = 10
 _PROMPT_FILENAME = "_presearch_prompt.md"
 _OUT_FILENAME = "_presearch.json"
@@ -53,6 +53,22 @@ def _presearch_enabled(workspace: Path | None) -> bool:
     if isinstance(raw, bool):
         return raw
     return str(raw).strip().lower() in ("true", "1", "yes", "on")
+
+
+def _timeout_sec(workspace: Path | None) -> int:
+    """Pre-search agent budget in seconds (Asterism.yaml `presearch.timeout_sec`
+    / env, default `_DEFAULT_TIMEOUT_SEC`). The 3-source search (in-problem +
+    Library + Mathlib loogle) legitimately takes longer than the old Mathlib-only
+    pass — the budget must cover all three plus writing the output."""
+    from ..core import config
+    raw = config.get(
+        "presearch.timeout_sec", default=_DEFAULT_TIMEOUT_SEC,
+        env_var="ASTERISM_PRESEARCH_TIMEOUT_SEC", workspace=workspace,
+    )
+    try:
+        return max(60, int(raw))
+    except (TypeError, ValueError):
+        return _DEFAULT_TIMEOUT_SEC
 
 
 def _clean(entry) -> tuple:
@@ -185,6 +201,7 @@ def ensure_presearch(*, goal, workspace: Path, problem_dir: Path,
         statement = str(goal["statement"] or "").strip()
         if not statement:
             return None
+        timeout = _timeout_sec(workspace)
         # Own sandbox subdir so the agent's raw search files (_presearch.json,
         # prompt, session stderr) don't collide with the prover's attempts_dir.
         sandbox = attempts_dir / "_presearch"
@@ -201,7 +218,7 @@ def ensure_presearch(*, goal, workspace: Path, problem_dir: Path,
             .replace("__LIBRARY_DIR__", (workspace / "Library").as_posix())
             .replace("__PROBLEM_DIR__", problem_dir.as_posix())
             .replace("__OUT_PATH__", out_path.as_posix())
-            .replace("__TIMEOUT_MIN__", str(max(1, _PRESEARCH_TIMEOUT_SEC // 60)))
+            .replace("__TIMEOUT_MIN__", str(max(1, timeout // 60)))
         )
         prompt_file = sandbox / _PROMPT_FILENAME
         prompt_file.write_text(rendered, encoding="utf-8")
@@ -210,7 +227,7 @@ def ensure_presearch(*, goal, workspace: Path, problem_dir: Path,
             kind="presearch", prompt_path=prompt_file,
             problem_dir=problem_dir, attempts_dir=sandbox,
             session_id=str(uuid.uuid4()),
-            timeout_sec_override=_PRESEARCH_TIMEOUT_SEC,
+            timeout_sec_override=timeout,
         )
 
         if not out_path.is_file():
