@@ -1012,6 +1012,62 @@ def _librarian_refill(
     return pending
 
 
+def _harvest_outstanding(
+    conn: sqlite3.Connection, workspace: Path, manifests, *,
+    scope: str | None, fail_counts: dict,
+) -> bool:
+    """Durable-state 'Library-ization still owed' guard for the workspace-exit
+    gate — a timing-independent backstop for `librarian_pending`.
+
+    `librarian_pending` (from `_librarian_refill`) is derived from the TRANSIENT
+    queue/running/library_decls snapshot. On the proof→harvest handoff tick — the
+    root just became integrity-verified and the mechanical `dedup` is completing
+    in a worker thread — that snapshot can momentarily read "no live work", so the
+    exit gate declares `all roots proved` and `_exit_pool_fast` kills the just-
+    dispatched Librarian, SILENTLY skipping harvest on a cleanly-proved opted-in
+    problem (observed 2026-06-29 on `pullback_flat_form`: root proved, axioms
+    clean, 13 `deduped` decls, yet the daemon exited before `classify`). This guard
+    depends only on DURABLE state — the INDEX done-marker, the committed
+    `library_decls` lifecycle, and the persisted fail-count — so it stays True
+    across that window regardless of in-flight timing.
+
+    Returns True iff some in-scope problem is opted-in (`Manifest.library`), root
+    proved + integrity-verified, has no Library INDEX yet, and its next Librarian
+    step is NOT stalled (fail count past `LIBRARIAN_MAX_CHAIN_RETRIES`). A fully-
+    stalled chain is NOT outstanding, preserving the "stalled chain lets the daemon
+    exit for the operator to inspect" contract (`_librarian_refill` docstring)."""
+    from ..pipeline import librarian
+    if scope:
+        rows = conn.execute(
+            "SELECT DISTINCT problem FROM goals WHERE origin='root' "
+            "AND status='proved' AND integrity_verified=1 AND problem LIKE ?",
+            (scope,)).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT DISTINCT problem FROM goals WHERE origin='root' "
+            "AND status='proved' AND integrity_verified=1").fetchall()
+    for (problem,) in rows:
+        if problem not in manifests or not manifests[problem].library:
+            continue
+        if _librarian_index_has(workspace, problem):
+            continue  # harvest already complete (INDEX = the done-marker)
+        work_kind, _target = _derive_librarian_work(conn, problem, workspace)
+        if work_kind is None:
+            continue  # nothing further derivable
+        if work_kind in ("migrate", "cleanup"):
+            ready = (librarian.ready_file_work if work_kind == "migrate"
+                     else librarian.ready_cleanup_files)
+            for _wk, f in ready(conn, problem=problem, workspace=workspace,
+                                in_flight=set()):
+                if fail_counts.get(
+                        _lib_encode(problem, f), 0
+                ) <= LIBRARIAN_MAX_CHAIN_RETRIES:
+                    return True  # a ready file can still progress
+        elif fail_counts.get(problem, 0) <= LIBRARIAN_MAX_CHAIN_RETRIES:
+            return True  # serial step (dedup/classify/bridge) can still run
+    return False
+
+
 def _run_pipeline(workspace: Path,
                   manifests: "manifest.ManifestCache | dict[str, manifest.Manifest]",
                   task_kind: str, target_id: str, target_kind: str,
@@ -2000,7 +2056,17 @@ def run(workspace: Path, *, once: bool = False,
         # problem (or the last root proving in any run) exits before the
         # Library-ization chain — dedup→classify→migrate→bridge→INDEX —
         # has a chance to run, since that chain spans many ticks (Bug A).
-        if db.root_proved(conn, scope=scope) and not librarian_pending:
+        # `_harvest_outstanding`: durable-state backstop. `librarian_pending` is
+        # a transient queue/running snapshot that can read False on the
+        # proof→harvest handoff tick (root just integrity-verified, mechanical
+        # dedup completing in a worker), letting the gate exit and kill the
+        # in-flight Librarian — silently skipping harvest on a clean opted-in
+        # proof. The INDEX/lifecycle/fail-count check is timing-independent and
+        # holds the daemon until harvest actually finishes (or stalls).
+        if (db.root_proved(conn, scope=scope) and not librarian_pending
+                and not _harvest_outstanding(
+                    conn, workspace, manifests, scope=scope,
+                    fail_counts=librarian_fail_counts)):
             print("[dispatcher] all roots proved", flush=True)
             _exit_pool_fast(pool)
             return 0

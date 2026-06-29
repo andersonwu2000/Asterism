@@ -785,3 +785,85 @@ def test_commit_classify_clears_stale_fail_counts(tmp_path, monkeypatch):
         path="Library/P/Foo.lean", decls=["foo"])])
     librarian.commit_classify(conn, "p", plan, tmp_path)
     assert db.librarian_fail_counts_all(conn) == {}      # stale cap cleared
+
+
+# ---------------------------------------------------------------------
+# _harvest_outstanding — durable-state exit guard (timing-independent
+# backstop for the transient `librarian_pending`). 2026-06-29: on the
+# proof->harvest handoff tick (root just integrity-verified, mechanical
+# dedup completing in a worker) `librarian_pending` could read False, so
+# the gate exited "all roots proved" and killed the in-flight Librarian,
+# silently skipping harvest on a cleanly-proved opted-in problem.
+# ---------------------------------------------------------------------
+
+def test_harvest_outstanding_true_midchain(tmp_path: Path):
+    # The bug scenario: opted-in proved root, decls deduped (classify still
+    # owed), no INDEX, not stalled -> outstanding, daemon must NOT exit.
+    conn = _mem()
+    _proved_root(conn, "p")
+    _deduped(conn, "foo")
+    assert dispatcher._harvest_outstanding(
+        conn, tmp_path, _manifests(p=True), scope=None, fail_counts={}) is True
+
+
+def test_harvest_outstanding_true_in_migrate_phase(tmp_path: Path):
+    # Per-file phase: a classified decl yields a ready migrate file (not
+    # stalled) -> outstanding. Exercises the migrate/cleanup branch.
+    conn = _mem()
+    _proved_root(conn, "p")
+    _classified(conn, "foo", order=0)
+    assert dispatcher._harvest_outstanding(
+        conn, tmp_path, _manifests(p=True), scope=None, fail_counts={}) is True
+
+
+def test_harvest_outstanding_false_when_index_present(tmp_path: Path):
+    # INDEX written = harvest done -> not outstanding, daemon may exit.
+    conn = _mem()
+    _proved_root(conn, "p")
+    _cleaned(conn, "foo")
+    (tmp_path / "Library").mkdir()
+    (tmp_path / "Library" / "INDEX.md").write_text(
+        "# Library Index\n\n## p\n\nx\n", encoding="utf-8")
+    assert dispatcher._harvest_outstanding(
+        conn, tmp_path, _manifests(p=True), scope=None, fail_counts={}) is False
+
+
+def test_harvest_outstanding_false_when_serial_stalled(tmp_path: Path):
+    # Serial chain past the retry cap -> stalled, NOT outstanding: preserves
+    # the "stalled chain lets the daemon exit for the operator" contract.
+    conn = _mem()
+    _proved_root(conn, "p")
+    _deduped(conn, "foo")
+    stalled = {"p": dispatcher.LIBRARIAN_MAX_CHAIN_RETRIES + 1}
+    assert dispatcher._harvest_outstanding(
+        conn, tmp_path, _manifests(p=True), scope=None, fail_counts=stalled) is False
+
+
+def test_harvest_outstanding_false_when_not_opted_in(tmp_path: Path):
+    # Not library:true -> never auto-harvested -> not outstanding.
+    conn = _mem()
+    _proved_root(conn, "p")
+    _deduped(conn, "foo")
+    assert dispatcher._harvest_outstanding(
+        conn, tmp_path, _manifests(p=False), scope=None, fail_counts={}) is False
+
+
+def test_harvest_outstanding_false_when_root_not_integrity_verified(tmp_path: Path):
+    # Transiently-proved (iv=0, e.g. a sorryAx fake-proof before rollback)
+    # must NOT count as outstanding harvest.
+    conn = _mem()
+    _proved_root(conn, "p", integrity_verified=False)
+    _deduped(conn, "foo")
+    assert dispatcher._harvest_outstanding(
+        conn, tmp_path, _manifests(p=True), scope=None, fail_counts={}) is False
+
+
+def test_harvest_outstanding_respects_scope(tmp_path: Path):
+    # A scoped daemon only guards its own scoped problems.
+    conn = _mem()
+    _proved_root(conn, "p")
+    _deduped(conn, "foo")
+    assert dispatcher._harvest_outstanding(
+        conn, tmp_path, _manifests(p=True), scope="other", fail_counts={}) is False
+    assert dispatcher._harvest_outstanding(
+        conn, tmp_path, _manifests(p=True), scope="p", fail_counts={}) is True
