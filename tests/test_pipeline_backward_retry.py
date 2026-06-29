@@ -21,6 +21,25 @@ from Tooling.state import db, manifest
 from Tooling.llm.base import SpawnRC
 
 
+@pytest.fixture(autouse=True)
+def _stub_verify_in_session(monkeypatch: pytest.MonkeyPatch):
+    """Backward's commit verifies freshly-placed files on the pipeline's OWN
+    session slot (`verify_in_session`), not by borrowing. File-scoped clean
+    stub for these unit tests (no gateway running); tests exercising a
+    rejection override it locally. Scoped here (not in the global conftest) so
+    it can't shadow `test_gateway_lifecycle.py`'s real-function tests."""
+    from Tooling.lsp import lifecycle as _gl
+
+    def _stub(token, content, *, write_olean=False, axioms_for=None,
+              timeout=240.0, workspace=None, _retry_delays=None):
+        return {
+            "ok": True, "diagnostic_count": 0, "diagnostics": [],
+            "olean_written": write_olean, "olean_path": None,
+            "axioms": [] if axioms_for else None, "axiom_error": None,
+        }
+    monkeypatch.setattr(_gl, "verify_in_session", _stub)
+
+
 def _seed_root_goal(tmp_path: Path, conn: sqlite3.Connection) -> int:
     problem = "p"
     pdir = tmp_path / "Problems" / problem
@@ -607,16 +626,18 @@ def test_backward_leaf_bypass_axiom_violation_rejects_at_acceptance(
     lake_build_error)."""
     gid = _seed_root_goal(tmp_path, conn)
     from Tooling.lsp import lifecycle as _gl
-    def _stub_verify_with_sorry_ax(target_path, *, write_olean=True,
-                                    axioms_for=None, timeout=120.0,
-                                    workspace=None):
+    # Backward's leaf-bypass verifies on the pipeline's OWN session slot
+    # (verify_in_session); override it to surface a sorryAx-tainted elaborate.
+    def _stub_verify_with_sorry_ax(token, content, *, write_olean=False,
+                                    axioms_for=None, timeout=240.0,
+                                    workspace=None, _retry_delays=None):
         return {
             "ok": True, "diagnostic_count": 0, "diagnostics": [],
-            "olean_written": write_olean, "olean_path": str(target_path),
+            "olean_written": write_olean, "olean_path": None,
             "axioms": ["sorryAx"] if axioms_for else None,
             "axiom_error": None,
         }
-    monkeypatch.setattr(_gl, "verify_file", _stub_verify_with_sorry_ax)
+    monkeypatch.setattr(_gl, "verify_in_session", _stub_verify_with_sorry_ax)
 
     def fake_spawn(**kw):
         attempts = kw["attempts_dir"]

@@ -785,6 +785,40 @@ def _backward_parse_and_commit(
     so warm retries can run against the same row.
     """
     from . import PipelineResult
+    from ..lsp import lifecycle as gateway_lifecycle
+
+    # Verify freshly-placed files on THIS pipeline's OWN claimed slot
+    # (verify_in_session) rather than borrowing a free slot (verify_file).
+    # The pipeline's gateway session is still alive here — it's released only
+    # at WorkArea teardown, after this commit — so the slot it claimed at
+    # register_session is ours to use for the whole lifecycle. Borrowing
+    # instead evicts an actively-claimed slot whose prior elaboration may
+    # still be flushing diagnostics; the (version-blind) diagnostics cache
+    # then surfaces that tenant's stale error against our clean stub — a
+    # spurious `lake_build_error: <stub>:L:C expected token` on a file that
+    # builds clean (root-caused 2026-06-29; only fires on decomposition,
+    # which is exactly when this gate runs). Our own slot has no concurrent
+    # foreign tenant, so no cross-talk. Fall back to the borrow path only if
+    # the session token is absent (defensive: non-agent / failed-register).
+    _session_token = ""
+    try:
+        _tok = attempts_dir / "_gateway_session.token"
+        if _tok.is_file():
+            _session_token = _tok.read_text(encoding="utf-8").strip()
+    except OSError:
+        _session_token = ""
+
+    def _verify_owned(path, *, write_olean=True, axioms_for=None):
+        if _session_token:
+            return gateway_lifecycle.verify_in_session(
+                _session_token, path.read_text(encoding="utf-8"),
+                write_olean=write_olean, axioms_for=axioms_for,
+                workspace=workspace,
+                _retry_delays=gateway_lifecycle._VERIFY_RETRY_DELAYS)
+        return gateway_lifecycle.verify_file(
+            path, write_olean=write_olean, axioms_for=axioms_for,
+            workspace=workspace)
+
     patches = _safe_glob(attempts_dir, "patch*.lean")
     if not patches:
         return _abort("parse_proposal_fail", "no patch.lean")
@@ -929,7 +963,6 @@ def _backward_parse_and_commit(
         # Single-file verify (no cross-module deps within the strategy
         # itself; it imports Mathlib + Defs, both already warm in every
         # slot).
-        from ..lsp import lifecycle as gateway_lifecycle
         # Run axiom probe at acceptance gate (single round trip — gateway
         # already computes axiom info during elaboration; passing
         # axioms_for just asks for it back). Catches the common Sonnet
@@ -946,10 +979,7 @@ def _backward_parse_and_commit(
         # Always request the axiom set (near-free — computed during
         # elaboration) for the UNCONDITIONAL sorryAx tripwire below.
         fq_name = f"Problems.{goal['problem']}.{sid_token}"
-        v = gateway_lifecycle.verify_file(
-            scratch_dest, write_olean=True,
-            axioms_for=fq_name, workspace=workspace,
-        )
+        v = _verify_owned(scratch_dest, write_olean=True, axioms_for=fq_name)
         if "error" in v:
             _rm_scratch()
             return _abort(
@@ -1438,9 +1468,7 @@ def _backward_parse_and_commit(
                 # emits errors with rc=0, fixed separately at b17fec7);
                 # the gateway verify returns structured diagnostics so we
                 # accept the alias only when it genuinely elaborates.
-                from ..lsp import lifecycle as gateway_lifecycle
-                av = gateway_lifecycle.verify_file(
-                    dest, write_olean=True, workspace=workspace)
+                av = _verify_owned(dest, write_olean=True)
                 if av.get("ok") and not av.get("error"):
                     print(f"[dedupe] {slug} → {canonical_label} "
                           f"[build-verified]",
@@ -1553,11 +1581,8 @@ def _backward_parse_and_commit(
         # independent, importing only Mathlib + Defs), strategy file
         # last (imports the sub-goal modules by name, resolves through
         # the .olean files we wrote in earlier iterations).
-        from ..lsp import lifecycle as gateway_lifecycle
         for path in placed:
-            v = gateway_lifecycle.verify_file(
-                path, write_olean=True, workspace=workspace,
-            )
+            v = _verify_owned(path, write_olean=True)
             if "error" in v:
                 raise RuntimeError(
                     f"verify infra error on {path.name}: {v['error']}"
