@@ -28,7 +28,7 @@ from ..agent import runtime as agent
 from ..knowledge import lemma_lookup
 
 _PRESEARCH_TIMEOUT_SEC = 150
-_MAX_CANDIDATES = 15
+_MAX_PER_BLOCK = 10
 _PROMPT_FILENAME = "_presearch_prompt.md"
 _OUT_FILENAME = "_presearch.json"
 
@@ -55,46 +55,90 @@ def _presearch_enabled(workspace: Path | None) -> bool:
     return str(raw).strip().lower() in ("true", "1", "yes", "on")
 
 
-def _verify(candidates: list, workspace: Path) -> list:
-    """Drop hallucinated Mathlib names (framework-side `#check` via
-    `lemma_lookup`); keep Library names present in INDEX.md; trust
-    in-problem names (the agent grep-found them). Preserves the agent's
-    relevance order; caps at `_MAX_CANDIDATES`."""
-    mathlib_names = [c["name"] for c in candidates
-                     if isinstance(c, dict) and c.get("source") == "mathlib"
-                     and c.get("name")]
-    infos: dict = {}
-    if mathlib_names:
-        try:
-            infos = lemma_lookup.lookup_batch(mathlib_names, workspace)
-        except Exception:  # noqa: BLE001 — offline / lake hiccup: keep unverified
-            infos = {}
-    index = workspace / "Library" / "INDEX.md"
-    index_text = index.read_text(encoding="utf-8") if index.is_file() else ""
+def _clean(entry) -> tuple:
+    """`(name, why)` from a candidate entry; `('', '')` if malformed."""
+    if not isinstance(entry, dict):
+        return "", ""
+    return (str(entry.get("name") or "").strip(),
+            str(entry.get("why") or "").strip())
+
+
+def _verify(blocks, workspace: Path, problem_dir: Path) -> list:
+    """Verify a 3-block pre-search result `{in_problem, library, mathlib}`,
+    each a list of `{name, why}`. Per source:
+      - in_problem: keep names whose decl appears in the problem's `proofs/`
+        or `TREE.md` (grep-found siblings; light guard against padded names);
+      - library: keep names present in `Library/INDEX.md`;
+      - mathlib: `#check` via `lemma_lookup`, drop hallucinations, attach
+        signatures; keep unverified if the lookup is unavailable.
+    Each block is capped at `_MAX_PER_BLOCK`. Output is a flat list ordered
+    in_problem → library → mathlib (cleanest cite first), each entry
+    `{name, source, why[, signature]}`."""
+    if not isinstance(blocks, dict):
+        return []
+
+    def _block(key: str) -> list:
+        b = blocks.get(key)
+        return b[:_MAX_PER_BLOCK] if isinstance(b, list) else []
 
     out: list = []
-    for c in candidates:
-        if not isinstance(c, dict):
-            continue
-        name = str(c.get("name") or "").strip()
-        src = str(c.get("source") or "").strip()
+
+    # in_problem — keep only names that actually appear in the problem's proved
+    # files (the agent should have grep-found them; guards padded/invented names).
+    ip = _block("in_problem")
+    if ip:
+        hay = ""
+        try:
+            parts = []
+            proofs = problem_dir / "proofs"
+            if proofs.is_dir():
+                for f in proofs.glob("*.lean"):
+                    parts.append(f.read_text(encoding="utf-8", errors="ignore"))
+            tree = problem_dir / "TREE.md"
+            if tree.is_file():
+                parts.append(tree.read_text(encoding="utf-8", errors="ignore"))
+            hay = "\n".join(parts)
+        except OSError:
+            hay = ""
+        for entry in ip:
+            name, why = _clean(entry)
+            if not name:
+                continue
+            short = name.rsplit(".", 1)[-1]
+            if (not hay) or (short and short in hay):
+                out.append({"name": name, "source": "in_problem", "why": why})
+
+    # library — keep names present in INDEX.md (or all, if no index yet).
+    index = workspace / "Library" / "INDEX.md"
+    index_text = index.read_text(encoding="utf-8") if index.is_file() else ""
+    for entry in _block("library"):
+        name, why = _clean(entry)
         if not name:
             continue
-        if src == "mathlib":
-            info = infos.get(name)
-            if info is not None and getattr(info, "found", False):
-                c["signature"] = (getattr(info, "signature", "") or "").strip()
-                out.append(c)
-            elif not infos:
-                out.append(c)  # verifier unavailable — keep unverified
-            # else: name didn't resolve → hallucination, drop
-        elif src == "library":
-            if (not index_text) or (name in index_text):
-                out.append(c)
-        else:  # in_problem — grep-found, trust
-            out.append(c)
-        if len(out) >= _MAX_CANDIDATES:
-            break
+        if (not index_text) or (name in index_text):
+            out.append({"name": name, "source": "library", "why": why})
+
+    # mathlib — #check; drop hallucinations, attach signatures.
+    mathlib = _block("mathlib")
+    names = [n for n, _ in (_clean(e) for e in mathlib) if n]
+    infos: dict = {}
+    if names:
+        try:
+            infos = lemma_lookup.lookup_batch(names, workspace)
+        except Exception:  # noqa: BLE001 — offline / lake hiccup: keep unverified
+            infos = {}
+    for entry in mathlib:
+        name, why = _clean(entry)
+        if not name:
+            continue
+        info = infos.get(name)
+        if info is not None and getattr(info, "found", False):
+            out.append({"name": name, "source": "mathlib", "why": why,
+                        "signature": (getattr(info, "signature", "")
+                                      or "").strip()})
+        elif not infos:
+            out.append({"name": name, "source": "mathlib", "why": why})
+        # else: name didn't resolve → hallucination, drop
     return out
 
 
@@ -172,9 +216,9 @@ def ensure_presearch(*, goal, workspace: Path, problem_dir: Path,
         if not out_path.is_file():
             return None
         raw = json.loads(out_path.read_text(encoding="utf-8"))
-        if not isinstance(raw, list):
+        if not isinstance(raw, dict):
             return None
-        verified = _verify(raw, workspace)
+        verified = _verify(raw, workspace, problem_dir)
         if not verified:
             return None
         section = _render_section(verified)

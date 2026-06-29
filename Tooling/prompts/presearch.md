@@ -10,27 +10,25 @@ is inline below.
 __GOAL__
 ```
 
-## Search the three sources (you have Grep + loogle via Bash)
-1. **Mathlib** — loogle does shape/type search:
-   `python -m Tooling.knowledge.loogle '<type pattern>'`
-   (e.g. `python -m Tooling.knowledge.loogle 'ContinuousLinearMap.comp _ _ = _'`).
-   Also Grep `__PACKAGES__` for keyword / name search. Find the standard-library
-   lemmas this goal's operations need.
-2. **Project Library** — Grep `__LIBRARY_DIR__` (harvested, reusable theorems).
-   Report names in full (`Library.<…>`).
-3. **In-problem siblings** — Grep `__PROBLEM_DIR__/proofs/` and read
-   `__PROBLEM_DIR__/TREE.md` for already-proved lemmas in THIS problem to cite.
+## Search these sources, IN THIS ORDER (Grep + loogle via Bash)
+Prefer the most local source — a hit there is the cleanest cite. Stop once you have
+the relevant lemmas; do not keep reformulating.
 
-## Output — write `__OUT_PATH__` (a JSON array), then stop
-Each entry: `{"name": "<fully-qualified name>", "source": "mathlib|library|in_problem", "why": "<reason, ≤8 words>"}`
+1. **In-problem** — Grep `__PROBLEM_DIR__/proofs/` + read `__PROBLEM_DIR__/TREE.md`
+   for siblings already proved in THIS problem.
+2. **Library** — Grep `__LIBRARY_DIR__` for the goal's head symbols (harvested,
+   reusable; often the exact lemma). Report names in full (`Library.<…>`).
+3. **Mathlib** — loogle for shape/type, e.g.
+   `python -m Tooling.knowledge.loogle 'ContinuousLinearMap.comp _ _ = _'`; or Grep
+   `__PACKAGES__` by name. Try a few query shapes; if they miss, move on — leave the
+   block thin rather than burning the budget reformulating.
 
-Classify `source` by where the name lives (this drives verification):
-- `mathlib` — any Mathlib / core name (`ContinuousLinearMap.…`, `TestFunction.…`, `MeasureTheory.…`, `Finset.…`, …). These get `#check`ed.
-- `library` — starts with `Library.`.
-- `in_problem` — `Problems.<this problem>.…` or a sibling proved in this problem.
+## Output — write `__OUT_PATH__`, then stop
+A JSON object with three arrays (each ≤10 entries, any may be empty):
+`{"in_problem": [...], "library": [...], "mathlib": [...]}`
+Each entry: `{"name": "<fully-qualified name>", "why": "<reason, ≤8 words>"}`
 
-- **Rank most-relevant first.** ~8–15 entries is plenty — precision over recall.
-- For Mathlib, give the **exact** name as loogle / Grep showed it. The framework
-  `#check`s every Mathlib name; guessed or approximate names are dropped, so do
-  not invent names from memory — only report what a tool actually surfaced.
-- No prose anywhere except inside the JSON file. Time budget: __TIMEOUT_MIN__ min.
+Put only genuinely relevant lemmas in each block — do not pad it; an empty block is
+fine. List most-relevant first. For Mathlib, give the **exact** name loogle / Grep
+showed: the framework `#check`s every Mathlib name and drops guesses, so never
+invent names from memory. No prose outside the JSON. Time budget: __TIMEOUT_MIN__ min.
