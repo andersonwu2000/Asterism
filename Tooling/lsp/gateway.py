@@ -1639,6 +1639,33 @@ def _verify_sync(target: Path, content: str, *, write_olean: bool,
         # registered owner (if any) re-loads its own content on its
         # next acquire (paying one cold_warmup).
         with _acquire_slot(meta, swap_in=True, borrow=True) as (slot, _slot_kind):
+            # Confirm the slot's diagnostics correspond to the content we
+            # just swapped in, BEFORE reading them. `_acquire_slot`'s swap
+            # wait is silently swallowed on a transient (a fresh slot still
+            # flushing warmup diagnostics at startup; a prior borrow's
+            # elaborate still in flight), and `diagnostics_for` is
+            # versionless — it returns the last-published set for the slot
+            # URI. Without this re-wait, an unconfirmed swap leaves
+            # `diagnostics_for` reflecting a prior/concurrent occupant's
+            # stale diagnostics, surfacing a phantom error (e.g. an
+            # "expected token" parse error) against our target even though
+            # it elaborates clean. Re-wait at our version; on failure mark
+            # the probe transient so the caller retries rather than trusts
+            # a stale verdict. (Root-caused 2026-06-29: the Backward
+            # decomposition gate logged spurious `lake_build_error:
+            # <stub>:L:C expected token` on freshly-placed stubs that build
+            # clean cold — 2/2 at gateway startup.) A genuine parse error
+            # still surfaces: the wait succeeds (version applied, reporter
+            # done) and `diagnostics_for` returns the real error.
+            try:
+                backend.wait_for_diagnostics(
+                    slot.slot_uri, slot.file_version, timeout=60)
+            except (TimeoutError, RuntimeError) as _diag_exc:
+                return {
+                    "error": f"diagnostics unconfirmed for swapped-in "
+                             f"content (v{slot.file_version}): {_diag_exc}",
+                    "transient": True,
+                }
             diags = backend.diagnostics_for(slot.slot_uri)
             formatted = [_format_diag(d) for d in diags]
             has_error = any(f.get("severity") == "error" for f in formatted)

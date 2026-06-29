@@ -299,7 +299,18 @@ def verify_file(target_path: Path,
             time.sleep(delays[attempt - 1])
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                result = json.loads(resp.read().decode("utf-8"))
+            # Gateway-flagged transient (e.g. diagnostics unconfirmed on a
+            # slot still settling — gateway `_verify_sync`) — retry
+            # in-process with backoff like an HTTP 5xx, instead of handing
+            # the caller an unreliable verdict it would treat as a build
+            # failure. After the retry budget the transient dict is
+            # returned verbatim (caller still sees `transient=True`).
+            if (isinstance(result, dict) and result.get("transient")
+                    and result.get("error")):
+                last_err = result
+                continue
+            return result
         except urllib.error.HTTPError as exc:
             try:
                 body_text = exc.read().decode('utf-8', errors='replace')

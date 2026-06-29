@@ -856,6 +856,70 @@ def test_validate_file_clean_when_no_diags(
     assert "timed_out" not in out
 
 
+def test_verify_sync_unconfirmed_diags_are_transient(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Root-caused 2026-06-29: `/verify` borrows a slot and swaps content
+    in, but `diagnostics_for` is versionless and `_acquire_slot`'s swap
+    wait is swallowed on a transient (a fresh slot still flushing warmup
+    diagnostics; a prior occupant's elaborate in flight). Without a
+    confirming re-wait, `_verify_sync` would surface the prior occupant's
+    STALE error (e.g. a phantom 'expected token') as a build failure
+    against our target. The fix: re-wait at our version; on failure return
+    `transient=True` so the caller retries rather than trusting stale
+    diagnostics."""
+    slots = [_make_fake_slot(0)]
+    monkeypatch.setattr(lsp_gateway._state, "workers", slots)
+    monkeypatch.setattr(lsp_gateway._state, "workspace", tmp_path)
+    stale = {"severity": 1,
+             "range": {"start": {"line": 8, "character": 14}},
+             "message": "expected token"}
+    backend = _DiagBackend(wait_raises=TimeoutError("warmup in flight"),
+                           diags=[stale])
+    monkeypatch.setattr(lsp_gateway._state, "backend", backend)
+
+    target = tmp_path / "L_stub.lean"
+    target.write_text("import Mathlib\ntheorem t : True := trivial\n",
+                      encoding="utf-8")
+    out = lsp_gateway._verify_sync(
+        target, target.read_text(encoding="utf-8"),
+        write_olean=False, axioms_for=None, rpc_timeout=30)
+    assert out.get("transient") is True
+    assert "error" in out
+    # The stale prior-occupant diagnostic must NOT have become the verdict:
+    # no ok:false build-failure surfaced from the versionless stale read.
+    assert "ok" not in out
+    assert "expected token" not in (out.get("error") or "")
+
+
+def test_verify_sync_confirmed_error_still_surfaces(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Guard: the fix must NOT mask genuine errors. When the diagnostics
+    wait CONFIRMS (no raise), a real error diagnostic is reported as
+    ok:false with the diagnostic intact — proving the confirming re-wait
+    only catches the unconfirmed case, never a legitimate verdict."""
+    slots = [_make_fake_slot(0)]
+    monkeypatch.setattr(lsp_gateway._state, "workers", slots)
+    monkeypatch.setattr(lsp_gateway._state, "workspace", tmp_path)
+    real = {"severity": 1,
+            "range": {"start": {"line": 0, "character": 0}},
+            "message": "unknown identifier 'foo'"}
+    backend = _DiagBackend(wait_raises=None, diags=[real])
+    monkeypatch.setattr(lsp_gateway._state, "backend", backend)
+
+    target = tmp_path / "L_stub.lean"
+    target.write_text("import Mathlib\ntheorem t : True := foo\n",
+                      encoding="utf-8")
+    out = lsp_gateway._verify_sync(
+        target, target.read_text(encoding="utf-8"),
+        write_olean=False, axioms_for=None, rpc_timeout=30)
+    assert out.get("ok") is False
+    assert out.get("transient") is not True
+    assert any("unknown identifier" in d["message"]
+               for d in out.get("diagnostics", []))
+
+
 def test_acquire_slot_borrow_mode_uses_any_free_slot(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
