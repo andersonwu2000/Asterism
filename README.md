@@ -5,6 +5,11 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-29
+- Added an automatic lemma pre-search that, for each step of a proof attempt, looks for useful lemmas first in the problem itself, then a local library, then Mathlib, capping results per source and using a configurable time budget, in place of the old hand-written hints.
+- Fixed two verification flaws so a proof is only accepted after re-checking it against the current compiler diagnostics and on its own workspace, rather than trusting stale or borrowed results.
+- Kept the background worker alive until its finished proofs are collected, so completed work is no longer lost.
+
 ### 2026-06-28
 - Improved the generation of Lean proof files so that declaration modifiers like `noncomputable` are preserved and the necessary definition imports are pulled in.
 - Consolidated the system's accumulated "lessons" into a single global store, retiring the older per-step lessons and an obsolete seed file.
@@ -139,10 +144,6 @@
 - Began building a system that automatically folds individually proven results into a shared, reusable library, de-duplicating and reclassifying each one as it is absorbed.
 - Migrated the first result through this pipeline: a lemma characterizing Jordan normal form.
 - Added safeguards to keep migrated results faithful, checking that each is definitionally equal to its original statement and free of unintended axioms.
-
-### 2026-05-30
-- Machine-checked a proof of the Banach–Tarski paradox for the closed unit ball in ℝ³.
-- Added optional tooling to catalog the available library results and check their dependencies before use.
 
 <!-- ASTERISM-PROGRESS:END -->
 
