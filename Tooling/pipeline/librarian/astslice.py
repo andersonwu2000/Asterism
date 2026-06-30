@@ -52,6 +52,10 @@ def extract_decls(patch_text: str) -> "list[MigratedDecl]":
     axiom check, and drive Gate D. Tracks the open namespace(s) so each
     name is fully qualified; an `end <ns>` matching the innermost open
     namespace pops it, so multi-section files qualify correctly."""
+    # Strip comments first so decl-keyword prose inside a `/-! … -/` docstring or
+    # a `-- …` line (e.g. "the analytic lemma of the bridge") is not mis-read as a
+    # declaration. Same class as the `defs_decls` phantom-`of` bug (2026-06-30).
+    patch_text = _DECL_COMMENT_RE.sub("", patch_text)
     ns_stack: list[str] = []
     out: list[MigratedDecl] = []
     for line in patch_text.splitlines():

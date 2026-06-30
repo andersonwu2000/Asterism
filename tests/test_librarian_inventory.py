@@ -191,6 +191,26 @@ def test_defs_decls_empty_for_comment_only_defs(tmp_path):
     assert inv.defs_decls(tmp_path, "demo") == []
 
 
+def test_defs_decls_ignores_decl_keyword_prose_in_docstring(tmp_path):
+    """A `/-! … -/` docstring whose prose happens to begin a line with a decl
+    keyword ("the one analytic lemma of the bridge") must NOT be mis-read as a
+    declaration. Regression for 2026-06-30: such a docstring produced a phantom
+    `of` decl (a Lean soft keyword) that STALLed the mechanical migrate."""
+    pdir = tmp_path / "Problems" / "demo"
+    pdir.mkdir(parents=True)
+    (pdir / "Defs.lean").write_text(
+        "import Mathlib\n\n"
+        "/-!\nSetup notes. This is the one genuinely-new analytic\n"
+        "lemma of the bridge (no existing bound in Library).\n-/\n\n"
+        "namespace Demo\n\n"
+        "noncomputable def realThing := Nat\n"
+        "end Demo\n",
+        encoding="utf-8",
+    )
+    # Only the genuine decl; no phantom `of` from the docstring prose.
+    assert inv.defs_decls(tmp_path, "demo") == ["realThing"]
+
+
 # ---------------------------------------------------------------------
 # Markdown view
 # ---------------------------------------------------------------------

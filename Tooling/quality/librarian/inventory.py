@@ -123,6 +123,14 @@ _DEFS_DECL_RE = re.compile(
     re.MULTILINE,
 )
 
+# Lean comments — block `/- … -/` (incl. `/-! … -/` docstrings) and line `-- …`.
+# Stripped BEFORE decl-name scanning so prose like "the one analytic lemma of the
+# bridge" in a Defs docstring is not mis-read as a declaration named `of`
+# (2026-06-30: a phantom `of` decl from a Defs docstring broke the mechanical
+# migrate — `of` is a Lean soft keyword, so the relabelled `…PullbackBoundAux.of`
+# failed to parse and STALLed the chain).
+_COMMENT_RE = re.compile(r"/-.*?-/|--[^\n]*", re.DOTALL)
+
 
 def defs_decls(workspace: Path, problem: str) -> list[str]:
     """Names of top-level declarations in Problems/<problem>/Defs.lean.
@@ -131,7 +139,7 @@ def defs_decls(workspace: Path, problem: str) -> list[str]:
     defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
     if not defs_path.exists():
         return []
-    text = defs_path.read_text(encoding="utf-8")
+    text = _COMMENT_RE.sub("", defs_path.read_text(encoding="utf-8"))
     out: list[str] = []
     for m in _DEFS_DECL_RE.finditer(text):
         name = m.group(2)
