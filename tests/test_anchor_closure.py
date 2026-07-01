@@ -155,6 +155,31 @@ def test_mark_and_list_deliverables(conn):
     assert {r["id"] for r in _db.deliverables(conn)} == {g2}
 
 
+def test_mark_deliverable_decision_only_on_forward(conn):
+    from Tooling.pipeline.strategist import Decision, verify_decision
+    fwd = _seed_goal(conn, "P.a", "foo")  # origin='forward'
+    root = _db.insert_goal(
+        conn, problem="P.a", slug="main",
+        lean_path="Problems/P.a/Root.lean", statement="True",
+        origin="root", status="proved")
+    # Forward node → accepted
+    assert verify_decision(
+        Decision(kind="MarkDeliverable", target_id=fwd),
+        conn, problem="P.a") == ""
+    # Root (hand-written, author-vouched) → rejected
+    err = verify_decision(
+        Decision(kind="MarkDeliverable", target_id=root),
+        conn, problem="P.a")
+    assert "origin='forward'" in err
+    # Missing target → rejected
+    assert "requires target" in verify_decision(
+        Decision(kind="MarkDeliverable"), conn, problem="P.a")
+    # Wrong problem → rejected
+    assert "belongs to problem" in verify_decision(
+        Decision(kind="MarkDeliverable", target_id=fwd),
+        conn, problem="P.other")
+
+
 # ---------------------------------------------------------------------------
 # Integration (real_lake): the actual kernel walk over a live gateway
 # ---------------------------------------------------------------------------

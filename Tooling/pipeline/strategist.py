@@ -47,7 +47,7 @@ from ..core import dispatcher as _dispatcher
 # mechanism).
 DECISION_KINDS: frozenset[str] = frozenset({
     "Inject", "ConfirmShelve", "EmitDirective",
-    "RequestUserAmend", "Noop",
+    "RequestUserAmend", "Noop", "MarkDeliverable",
 })
 
 # Trigger kinds (mirrors strategist_decisions.trigger_kind CHECK enum).
@@ -313,6 +313,23 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
                     f"not this Strategist's {problem!r}")
         if not decision.reason or not str(decision.reason).strip():
             return "ConfirmShelve requires non-empty reason"
+        return ""
+
+    if k == "MarkDeliverable":
+        if decision.target_id is None:
+            return "MarkDeliverable requires target_goal_id"
+        g = db.get_goal(conn, decision.target_id)
+        if g is None:
+            return f"target_goal_id={decision.target_id} not found"
+        if str(g["problem"]) != problem:
+            return (f"target goal belongs to problem {g['problem']!r}, "
+                    f"not this Strategist's {problem!r}")
+        # Only framework-GENERATED nodes are deliverables the human must
+        # vouch for; a hand-written root/Defs is already author-vouched.
+        if str(g["origin"]) != "forward":
+            return (f"MarkDeliverable target must be a Forward-produced node "
+                    f"(origin='forward'); goal {decision.target_id} is "
+                    f"origin={g['origin']!r}")
         return ""
 
     if k == "RequestUserAmend":
@@ -896,6 +913,13 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
         # too (see `_section_active_goals`), so the surface area where
         # status drift could mislead Strategist is closed at the view
         # boundary, not the data boundary.
+
+    elif k == "MarkDeliverable":
+        # Synchronous: flag the Forward node top-level. `asterism review`
+        # then computes + presents its anchor closure for human opt-out
+        # review. Falls through to the shared audit-row INSERT (outcome
+        # 'success').
+        db.mark_deliverable(conn, int(decision.target_id))  # type: ignore[arg-type]
 
     elif k == "RequestUserAmend":
         # Atomic three-step: tmp write -> INSERT row -> rename

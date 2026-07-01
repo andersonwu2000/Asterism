@@ -352,10 +352,12 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
                             -- (see strategist.DECISION_KINDS); retained so pre-
                             -- 2026-05-28 rows stay valid — dropping needs a table
                             -- rebuild (16 'Reopen' rows would violate), low ROI.
+                            -- 'MarkDeliverable' (v13, anchor+claim): Strategist
+                            -- flags a Forward node top-level; sets goals.is_deliverable.
                             CHECK(decision_kind IN
                                   ('Inject','ConfirmShelve','Reopen',
                                    'EmitDirective','InitializeDefs',
-                                   'RequestUserAmend','Noop')),
+                                   'RequestUserAmend','Noop','MarkDeliverable')),
     target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),
     brief               TEXT NULL DEFAULT NULL,
     reason              TEXT NULL DEFAULT NULL,
@@ -507,7 +509,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 12
+_CURRENT_USER_VERSION = 13
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -794,6 +796,15 @@ def init_schema(conn: sqlite3.Connection) -> None:
         if "scope" in kb_cols:
             conn.execute("ALTER TABLE kb_entries DROP COLUMN scope")
         conn.execute("PRAGMA user_version = 12")
+        conn.commit()
+    if v < 13:
+        # Phase 13 — strategist_decisions.decision_kind CHECK widens to
+        # accept 'MarkDeliverable' (anchor+claim architecture). SQLite
+        # cannot ALTER a CHECK in place; rebuild required. Idempotent via
+        # the in-DDL probe (fresh DBs built from the widened SCHEMA
+        # short-circuit).
+        _migrate_to_phase13(conn)
+        conn.execute("PRAGMA user_version = 13")
         conn.commit()
 
 
@@ -1403,6 +1414,88 @@ def _migrate_to_phase3(conn: sqlite3.Connection) -> None:
         if fk_violations:
             raise RuntimeError(
                 f"Phase 3 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_phase13(conn: sqlite3.Connection) -> None:
+    """Phase 13 — widen strategist_decisions.decision_kind CHECK to accept
+    'MarkDeliverable' (anchor+claim architecture). SQLite cannot ALTER a
+    CHECK; rebuild the table with the new CHECK, copy every row, swap.
+
+    The DDL below is a point-in-time snapshot of the strategist_decisions
+    SCHEMA at v13 (all columns added through v12's additive ALTERs:
+    produced_goal_id / produced_strategy_id / outcome_detail) — it must
+    stay column-for-column identical to the SCHEMA constant, differing
+    only by the widened CHECK. Idempotent: fresh DBs already carry the
+    widened CHECK, so the probe short-circuits.
+
+    Post-condition (caller sets user_version = 13):
+      - decision_kind CHECK accepts 'MarkDeliverable'
+      - all rows + indexes preserved
+    """
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table'"
+        " AND name = 'strategist_decisions'"
+    ).fetchone()
+    if chk and "MarkDeliverable" in (chk["sql"] or ""):
+        return  # CHECK already wide (fresh DB from SCHEMA, or re-run)
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_strategist_decisions (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem             TEXT NOT NULL REFERENCES problems(name),
+                triggered_at_tick   INTEGER NOT NULL,
+                trigger_kind        TEXT NOT NULL
+                                        CHECK(trigger_kind IN
+                                              ('first_launch','pending_review',
+                                               'routine','inject_batch_done')),
+                decision_kind       TEXT NOT NULL
+                                        CHECK(decision_kind IN
+                                              ('Inject','ConfirmShelve','Reopen',
+                                               'EmitDirective','InitializeDefs',
+                                               'RequestUserAmend','Noop',
+                                               'MarkDeliverable')),
+                target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                brief               TEXT NULL DEFAULT NULL,
+                reason              TEXT NULL DEFAULT NULL,
+                payload             TEXT NOT NULL DEFAULT '{}',
+                batch_id            TEXT NULL DEFAULT NULL,
+                produced_goal_id    INTEGER NULL DEFAULT NULL REFERENCES goals(id)
+                                        ON DELETE SET NULL,
+                produced_strategy_id INTEGER NULL DEFAULT NULL
+                                        REFERENCES strategies(id) ON DELETE SET NULL,
+                outcome             TEXT NULL DEFAULT NULL,
+                outcome_detail      TEXT NULL DEFAULT NULL,
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL
+            );
+            INSERT INTO _new_strategist_decisions
+                (id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                 target_id, brief, reason, payload, batch_id, produced_goal_id,
+                 produced_strategy_id, outcome, outcome_detail,
+                 created_at, updated_at)
+            SELECT id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                   target_id, brief, reason, payload, batch_id, produced_goal_id,
+                   produced_strategy_id, outcome, outcome_detail,
+                   created_at, updated_at
+            FROM strategist_decisions;
+            DROP TABLE strategist_decisions;
+            ALTER TABLE _new_strategist_decisions RENAME TO strategist_decisions;
+            CREATE INDEX IF NOT EXISTS idx_sd_problem
+                ON strategist_decisions(problem);
+            CREATE INDEX IF NOT EXISTS idx_sd_outcome
+                ON strategist_decisions(outcome);
+            CREATE INDEX IF NOT EXISTS idx_sd_batch_id
+                ON strategist_decisions(batch_id);
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 13 migration left FK violations: {fk_violations[:5]}"
             )
     finally:
         conn.execute("PRAGMA foreign_keys = ON")

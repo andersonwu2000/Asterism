@@ -18,6 +18,8 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
 
 4. **Edge case**: if Context.md also has `## Framework stalled` (tree has nothing dispatchable and no in-flight worker) → emit at least one `Inject`, else framework idles until the next routine tick.
 
+5. **Mark deliverables**: if a Forward node in this batch landed and its statement satisfies what the Manifest asked for, `MarkDeliverable` it — the human then reviews it. You don't manage its dependencies; the framework computes those.
+
 Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
 
 **Difficulty alone is not a reason to give up.** Don't shelve just because the brick was harder than expected.
@@ -29,6 +31,7 @@ Output as `decision.json` — JSON array of one or more decisions. Before finish
   - `Builder`: single file inline, one tactic block.
 - `ConfirmShelve` — `target_goal_id`, `reason`. Must pair with `Inject` in same batch
 - `EmitDirective` — `scope="problem:<name>"`, `body`, `reason`. A general hint every worker on the problem should see; goal/subtree-specific or transient ones go in an `Inject` brief instead.
+- `MarkDeliverable` — `target_goal_id`, optional `reason`. Flag a landed node as a top-level *deliverable*. Only a Forward-produced node can be marked, and only once it satisfies what the Manifest asked for. Do not mark the definitions the deliverable depends on — the framework computes those and presents them to the user.
 - `Noop` — `reason`. Only when nothing actionable.
 
 `target_goal_id` accepts integer id or slug.
