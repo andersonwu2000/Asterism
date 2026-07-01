@@ -78,19 +78,28 @@ def run_librarian(conn, *, problem: str, work_kind: str,
 
 
 def _reachable_from_root(conn, problem, workspace, slugs) -> "set[str]":
-    """The slugs in the proved root's LIVE dependency closure — `main` plus
-    every decl it transitively cites through the proof-term usage DAG
-    (`inventory.usage_graph`, root edges read from Root.lean via `_root_source`,
-    fix db00977). A proved goal NOT reachable from `main` is proving DEBRIS:
-    an abandoned re-derivation / duplicate the daemon marked `proved` but the
-    final root proof does not use (Jordan: 54 of 143). Returns the reachable
-    set (always includes the root slug)."""
+    """The slugs to KEEP for harvest: the transitive proof-usage closure of the
+    harvest targets (via `inventory.usage_graph`).
+
+    Legacy flow — the target is the proved root (`main`): keep its LIVE
+    dependency closure; a proved goal NOT reachable from `main` is proving
+    DEBRIS (an abandoned re-derivation / duplicate the final proof doesn't use;
+    Jordan: 54/143) and is dropped.
+
+    anchor+claim flow — when the Strategist has marked DELIVERABLES, THEY (and
+    their closures) are the intended harvest targets, not the root. The root is
+    never itself a deliverable (`origin='root'` can't be `MarkDeliverable`d) and
+    may be vestigial scaffolding (`main : True`), so seeding from it would drop
+    the real deliverables as false debris (cube_e2e 2026-07-02). Seed from the
+    deliverable slugs instead."""
     from ...quality.librarian import inventory as _inv
     rs = _root_source(conn, problem, workspace)
     root_slug = rs[0] if rs else "main"
     usage = _inv.usage_graph(workspace, problem, set(slugs), root_source=rs)
+    dels = db.deliverables(conn, problem=problem)
+    seeds = [str(d["slug"]) for d in dels] if dels else [root_slug]
     reachable: set[str] = set()
-    stack = [root_slug]
+    stack = list(seeds)
     while stack:
         s = stack.pop()
         if s in reachable:

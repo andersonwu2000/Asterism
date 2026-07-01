@@ -299,6 +299,25 @@ def _run_bridge(conn, *, problem, workspace, pipeline_id,
                                 "NOT a non-mechanical statement: "
                                 + (detail or "")[:600]))
 
+    # anchor+claim new flow: the harvest targets are the marked DELIVERABLES,
+    # which are fully migrated and build from the Library (checked just above,
+    # together with their anchor closures — a dropped anchor would fail that
+    # build). There is no root to re-derive: the root is never a deliverable and
+    # may be vestigial scaffolding (`main : True`) that the keep-filter correctly
+    # dropped. So the build check IS Gate B here — write the INDEX and finish,
+    # skipping the root re-derivation probe (which would `librarian_no_root` on
+    # the un-harvested root). cube_e2e 2026-07-02.
+    has_deliverables = conn.execute(
+        "SELECT 1 FROM goals WHERE problem = ? AND is_deliverable = 1 LIMIT 1",
+        (problem,)).fetchone() is not None
+    if has_deliverables:
+        _write_library_index(
+            conn, problem=problem, workspace=workspace,
+            gate_b_line=("Gate B (deliverable build): PASSED — the marked "
+                         "deliverables + their anchor closures build from the "
+                         "Library alone."))
+        return PipelineResult(outcome="success")
+
     probe = _bridge_probe_text(
         conn, problem=problem, statement=statement, migrated=migrated,
         workspace=workspace)
