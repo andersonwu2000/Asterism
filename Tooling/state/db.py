@@ -1645,6 +1645,29 @@ def deliverables(conn: sqlite3.Connection,
     ).fetchall()
 
 
+def goal_by_slug(conn: sqlite3.Connection, problem: str,
+                 slug: str) -> sqlite3.Row | None:
+    """Resolve a (problem, slug) pair to its goal row (UNIQUE)."""
+    return conn.execute(
+        "SELECT * FROM goals WHERE problem = ? AND slug = ?",
+        (problem, slug),
+    ).fetchone()
+
+
+def set_inject_outcome_detail(conn: sqlite3.Connection, goal_id: int,
+                              detail: str) -> None:
+    """Write `detail` into the `outcome_detail` of the Inject decision
+    that produced `goal_id` (single-write invariant → at most one row).
+    Used by `asterism reject` so the human's reject reason surfaces to
+    the Strategist in `## Completed Inject batches` on its next wake."""
+    conn.execute(
+        "UPDATE strategist_decisions SET outcome_detail = ?, updated_at = ?"
+        " WHERE produced_goal_id = ?",
+        (detail, now(), goal_id),
+    )
+    conn.commit()
+
+
 def set_inject_decision_produced_goal(
     conn: sqlite3.Connection, decision_id: int, goal_id: int,
 ) -> None:

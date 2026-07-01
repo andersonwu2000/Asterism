@@ -166,7 +166,9 @@ _WATERMARKS = {
     # 3220→3360: anchor+claim — is_deliverable column + mark_deliverable/
     # deliverables helpers + v13 `_migrate_to_phase13` table rebuild (MarkDeliverable
     # CHECK widening) — 2026-07-02 — conscious bump.
-    "Tooling/state/db.py": 3360,
+    # 3360→3390: anchor+claim Phase 3 — goal_by_slug + set_inject_outcome_detail
+    # (asterism reject reverse cascade) — 2026-07-02 — conscious bump.
+    "Tooling/state/db.py": 3390,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

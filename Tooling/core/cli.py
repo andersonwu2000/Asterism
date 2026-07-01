@@ -1433,6 +1433,125 @@ def cmd_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_reject_target(conn, decl: str, problem: str | None):
+    """Resolve a `<decl>` (bare slug or `Problems.<problem>.<slug>` FQN,
+    as printed by `asterism review`) to its goal row. Returns
+    (goal_row | None, error_msg | None)."""
+    slug = decl
+    if decl.startswith("Problems."):
+        body = decl[len("Problems."):]
+        parts = body.rsplit(".", 1)
+        if len(parts) == 2:
+            problem, slug = parts[0], parts[1]
+    if problem:
+        g = db.goal_by_slug(conn, problem, slug)
+        return g, (None if g else f"no goal {slug!r} in {problem!r}")
+    rows = conn.execute("SELECT * FROM goals WHERE slug = ?", (slug,)).fetchall()
+    if len(rows) > 1:
+        probs = sorted({r["problem"] for r in rows})
+        return None, f"ambiguous slug {slug!r} across {probs}; pass --problem"
+    return (rows[0] if rows else None), (None if rows else f"no goal {slug!r}")
+
+
+def _find_reject_victims(conn, workspace, *, reject_gid, problem, fqn,
+                         closure_fn):
+    """Deliverables (in `problem`) whose statement closure contains the
+    rejected `fqn`. `closure_fn(workspace, dest, problem=, slug=)` →
+    AnchorClosure (injected for testing). Returns (victims, warnings)
+    where victims is [(goal_id, fqn), ...] and warnings is
+    [(slug, error), ...] for deliverables whose closure couldn't be
+    computed (conservatively NOT cascaded through)."""
+    victims: list[tuple[int, str]] = []
+    warnings: list[tuple[str, str]] = []
+    for d in db.deliverables(conn, problem=problem):
+        did = int(d["id"])
+        if did == reject_gid:
+            continue
+        r = closure_fn(workspace, workspace / d["lean_path"],
+                       problem=d["problem"], slug=d["slug"])
+        if not r.ok:
+            warnings.append((str(d["slug"]), str(r.error)))
+            continue
+        if any(c["name"] == fqn for c in r.pending):
+            victims.append((did, f"Problems.{d['problem']}.{d['slug']}"))
+    return victims, warnings
+
+
+def cmd_reject(args: argparse.Namespace) -> int:
+    """anchor+claim reject (docs/internal/anchor_claim_design.md §2.5).
+
+    Kill a rejected framework-generated node AND every deliverable whose
+    STATEMENT's meaning depends on it — computed by inverting the Phase-1
+    kernel anchor closure (a deliverable is a victim iff the rejected decl
+    is in its closure). Only meaning-dependencies cascade: a deliverable
+    that merely cites the node in its PROOF (statement independent) keeps
+    its meaning and is left alone. Re-wakes the Strategist to re-plan
+    (the reject reason rides the producing Inject's outcome_detail).
+
+    Only Forward-produced nodes are rejectable — a hand-written root/Defs
+    is author-vouched. `--dry-run` previews the cascade without mutating.
+    Needs the gateway (reused if warm)."""
+    from ..lsp import lifecycle as gateway_lifecycle
+    from ..pipeline._constants import anchor_closure_goal
+    from ..state import transitions
+
+    workspace = Path.cwd()
+    conn = db.connect()
+    db.init_schema(conn)
+
+    g, err = _resolve_reject_target(conn, args.decl, getattr(args, "problem", None))
+    if err:
+        print(err)
+        return 1
+    if str(g["origin"]) != "forward":
+        print(f"cannot reject {args.decl!r}: origin={g['origin']!r} — only "
+              f"Forward-generated nodes are rejectable (hand-written "
+              f"root/Defs are author-vouched).")
+        return 1
+
+    gid = int(g["id"])
+    gproblem = str(g["problem"])
+    fqn = f"Problems.{gproblem}.{g['slug']}"
+    reason = getattr(args, "reason", None) or "(no reason given)"
+
+    # Reverse cascade: deliverables whose statement closure contains fqn.
+    # Probe against the on-disk files (unchanged by the DB status flips),
+    # so order relative to the kill doesn't matter.
+    gateway_lifecycle.start_gateway(workspace)
+    victims, warnings = _find_reject_victims(
+        conn, workspace, reject_gid=gid, problem=gproblem, fqn=fqn,
+        closure_fn=anchor_closure_goal)
+    for slug, cerr in warnings:
+        print(f"  [WARN] {slug}: closure unavailable ({cerr}); cannot tell "
+              f"if it depends on {fqn} — not cascading through it")
+
+    if getattr(args, "dry_run", False):
+        print(f"[dry-run] would reject {fqn} ({g['kind']}) + cascade-kill "
+              f"{len(victims)} dependent deliverable(s):")
+        for _, vfqn in victims:
+            print(f"    - {vfqn}")
+        conn.close()
+        return 0
+
+    # Kill the rejected node.
+    transitions._set_goal_terminal_and_propagate(conn, gid, "dead")
+    db.mark_deliverable(conn, gid, False)
+    db.set_inject_outcome_detail(conn, gid, f"human rejected: {reason}")
+    # Kill the meaning-dependent deliverables.
+    for did, _vfqn in victims:
+        transitions._set_goal_terminal_and_propagate(conn, did, "dead")
+        db.mark_deliverable(conn, did, False)
+        db.set_inject_outcome_detail(
+            conn, did, f"depends on rejected anchor {fqn}: {reason}")
+
+    print(f"rejected {fqn} + {len(victims)} dependent deliverable(s): "
+          f"{[v for _, v in victims]}")
+    print("Strategist re-plans on its next wake (inject_batch_done); the "
+          "reject reason rides each node's outcome_detail.")
+    conn.close()
+    return 0
+
+
 def cmd_drift_check(args: argparse.Namespace) -> int:
     """DB<->file consistency gate (`proof_store.inventory`) — the single oracle
     for the drift class the proof_store chokepoint prevents: orphan proof files
@@ -1692,6 +1811,20 @@ def main(argv: list[str] | None = None) -> int:
     p_review.add_argument("problem", nargs="?", default=None,
                           help="optional; default = deliverables across all problems")
     p_review.set_defaults(func=cmd_review)
+
+    p_reject = sub.add_parser(
+        "reject",
+        help="anchor+claim reject: kill a Forward node + every deliverable "
+             "whose meaning depends on it (reverse anchor closure)")
+    p_reject.add_argument("decl",
+                          help="slug or Problems.<problem>.<slug> FQN (as `review` prints)")
+    p_reject.add_argument("--problem", default=None,
+                          help="disambiguate a bare slug shared across problems")
+    p_reject.add_argument("--reason", default=None,
+                          help="why (rides the Strategist's next wake); optional")
+    p_reject.add_argument("--dry-run", action="store_true",
+                          help="preview the cascade without mutating")
+    p_reject.set_defaults(func=cmd_reject)
 
     p_drift = sub.add_parser(
         "drift-check",

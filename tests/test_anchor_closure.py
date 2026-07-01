@@ -181,6 +181,81 @@ def test_mark_deliverable_decision_only_on_forward(conn):
 
 
 # ---------------------------------------------------------------------------
+# Phase 3: `asterism reject` — resolution + reverse-closure cascade selection
+# ---------------------------------------------------------------------------
+
+def test_goal_by_slug_and_outcome_detail(conn):
+    g = _seed_goal(conn, "P.a", "foo")
+    assert _db.goal_by_slug(conn, "P.a", "foo")["id"] == g
+    assert _db.goal_by_slug(conn, "P.a", "nope") is None
+    conn.execute(
+        "INSERT INTO strategist_decisions(problem,triggered_at_tick,"
+        "trigger_kind,decision_kind,produced_goal_id,created_at,updated_at)"
+        " VALUES ('P.a',0,'routine','Inject',?,?,?)",
+        (g, _db.now(), _db.now()))
+    conn.commit()
+    _db.set_inject_outcome_detail(conn, g, "human rejected: nope")
+    row = conn.execute(
+        "SELECT outcome_detail FROM strategist_decisions"
+        " WHERE produced_goal_id=?", (g,)).fetchone()
+    assert row["outcome_detail"] == "human rejected: nope"
+
+
+def test_resolve_reject_target(conn):
+    from Tooling.core import cli
+    a = _seed_goal(conn, "Geometry.stokes", "integrationCurrent")
+    _seed_goal(conn, "Geometry.stokes", "other")
+    _seed_goal(conn, "P.b", "integrationCurrent")  # same slug, diff problem
+    # FQN resolves problem-with-dots + slug
+    g, err = cli._resolve_reject_target(
+        conn, "Problems.Geometry.stokes.integrationCurrent", None)
+    assert err is None and g["id"] == a
+    # bare slug shared across problems → ambiguous
+    g, err = cli._resolve_reject_target(conn, "integrationCurrent", None)
+    assert g is None and "ambiguous" in err
+    # bare slug + --problem disambiguates
+    g, err = cli._resolve_reject_target(
+        conn, "integrationCurrent", "Geometry.stokes")
+    assert err is None and g["id"] == a
+    # not found
+    g, err = cli._resolve_reject_target(conn, "nope", "Geometry.stokes")
+    assert g is None and "no goal" in err
+
+
+def test_find_reject_victims(conn):
+    from Tooling.core import cli
+    from Tooling.pipeline._constants import AnchorClosure
+    A = _seed_goal(conn, "P.a", "anchorDef")
+    c1 = _seed_goal(conn, "P.a", "claimUses")
+    _seed_goal(conn, "P.a", "claimIndep")
+    for gid in conn.execute("SELECT id FROM goals WHERE problem='P.a'"):
+        _db.mark_deliverable(conn, gid["id"])
+    fqn = "Problems.P.a.anchorDef"
+
+    def fake_closure(ws, dest, *, problem, slug):
+        if slug == "claimUses":  # meaning depends on the anchor
+            return AnchorClosure(
+                ok=True, pending=[{"name": fqn, "module": "", "kind": "def"}])
+        return AnchorClosure(  # independent statement
+            ok=True, pending=[{"name": "Problems.P.a.other", "kind": "def"}])
+
+    victims, warns = cli._find_reject_victims(
+        conn, Path("/ws"), reject_gid=A, problem="P.a", fqn=fqn,
+        closure_fn=fake_closure)
+    assert {v[0] for v in victims} == {c1}   # only claimUses; A + indep excluded
+    assert warns == []
+
+    # An uncomputable closure → warning, conservatively NOT cascaded through.
+    def fake_err(ws, dest, *, problem, slug):
+        return (AnchorClosure(ok=False, error="boom") if slug == "claimUses"
+                else AnchorClosure(ok=True, pending=[]))
+    victims2, warns2 = cli._find_reject_victims(
+        conn, Path("/ws"), reject_gid=A, problem="P.a", fqn=fqn,
+        closure_fn=fake_err)
+    assert victims2 == [] and warns2 == [("claimUses", "boom")]
+
+
+# ---------------------------------------------------------------------------
 # Integration (real_lake): the actual kernel walk over a live gateway
 # ---------------------------------------------------------------------------
 
