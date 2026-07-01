@@ -48,14 +48,20 @@ def _disable_reflection_by_default(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
-def _stub_gateway_calls_by_default(monkeypatch: pytest.MonkeyPatch):
+def _stub_gateway_calls_by_default(monkeypatch: pytest.MonkeyPatch,
+                                   request: pytest.FixtureRequest):
     """`pipeline._write_mcp_config` POSTs to the long-living gateway
     (`Tooling/lsp_gateway.py`) at /register to obtain a session token,
     and POSTs /release on retry overwrite. Unit tests don't run a real
     gateway, so we stub urllib.request.urlopen to return a fake
     session token + 200 OK release. Production callers (dispatcher
     starts the gateway via gateway_lifecycle.start_gateway) hit the
-    real HTTP endpoint."""
+    real HTTP endpoint.
+
+    `real_lake`-marked tests want the REAL gateway (they opt into a
+    live toolchain), so skip stubbing for them entirely."""
+    if "real_lake" in request.keywords:
+        return
     import io
     import urllib.request
 
@@ -96,7 +102,8 @@ def _stub_gateway_calls_by_default(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
-def _stub_axiom_probe_by_default(monkeypatch: pytest.MonkeyPatch):
+def _stub_axiom_probe_by_default(monkeypatch: pytest.MonkeyPatch,
+                                 request: pytest.FixtureRequest):
     """Builder / verify_strategy / `_try_promote_sorry_free` run a real
     `#print axioms <name>` probe at promote time. After the verify-
     unification migration this goes through `gateway_lifecycle.verify_file`,
@@ -110,7 +117,11 @@ def _stub_axiom_probe_by_default(monkeypatch: pytest.MonkeyPatch):
          shape `verify_file` produces on a clean elaborate.
 
     Tests exercising axiom-violation rejection
-    (`tests/test_axiom_invariant.py`) override locally."""
+    (`tests/test_axiom_invariant.py`) override locally.
+
+    `real_lake`-marked tests want the REAL probe / verify — skip."""
+    if "real_lake" in request.keywords:
+        return
     def _stub_ok(*args, **kwargs):
         return True, "axioms ok: [] (test stub)"
     from Tooling.pipeline import _axiom
@@ -119,8 +130,8 @@ def _stub_axiom_probe_by_default(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(_axiom, "axiom_probe", _stub_ok)
 
     def _stub_verify_file(target_path, *, write_olean=True,
-                          axioms_for=None, timeout=120.0,
-                          workspace=None):
+                          axioms_for=None, constants_for=None,
+                          timeout=120.0, workspace=None):
         return {
             "ok": True,
             "diagnostic_count": 0,
@@ -129,5 +140,10 @@ def _stub_axiom_probe_by_default(monkeypatch: pytest.MonkeyPatch):
             "olean_path": str(target_path),
             "axioms": [] if axioms_for else None,
             "axiom_error": None,
+            "pending_anchors": [] if constants_for else None,
+            "top_kind": None,
+            "top_is_prop": None,
+            "top_module": None,
+            "closure_error": None,
         }
     monkeypatch.setattr(_gl, "verify_file", _stub_verify_file)

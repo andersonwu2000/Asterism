@@ -227,6 +227,7 @@ def verify_file(target_path: Path,
                 *,
                 write_olean: bool = True,
                 axioms_for: str | None = None,
+                constants_for: str | None = None,
                 timeout: float = 120.0,
                 workspace: Path | None = None,
                 _retry_delays: tuple[float, ...] | None = None,
@@ -279,6 +280,8 @@ def verify_file(target_path: Path,
     }
     if axioms_for:
         body["axioms_for"] = axioms_for
+    if constants_for:
+        body["constants_for"] = constants_for
     # Propagate caller's timeout budget into the inner writeOlean /
     # printAxioms RPCs. Reserve a slice for HTTP + slot-acquire +
     # elaborate before the RPC even runs; what remains is the RPC's

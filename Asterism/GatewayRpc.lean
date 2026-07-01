@@ -164,6 +164,181 @@ def printAxiomsImpl (p : PrintAxiomsParams) : RequestM (RequestTask PrintAxiomsR
         | .error e =>
             return { found := false, axioms := #[], error := some (toString e) }
 
+/-! ## anchorClosure
+
+Given a fully-qualified name, walk its **definitional dependency
+closure** and return the constants that are NOT in the trust base
+(Mathlib ∪ Library ∪ core). These are the "pending anchors" — defs the
+framework itself generated that the top statement's meaning rests on,
+which a human must vouch for.
+
+This is the anchor+claim architecture's TCB (`anchor_claim_design.md`
+§4). Correctness = zero-leak: every non-trusted constant reachable
+through the statement's type (and, recursively, through the type + body
+of each non-trusted def it uses) MUST appear. It is a KERNEL walk over
+`Expr.getUsedConstants` + `Environment.getModuleIdxFor?` module
+provenance — NEVER a text/regex scan of source (a regex reading a
+docstring token as a decl name here would silently hand a human an
+incomplete set to sign → a false theorem).
+
+Asymmetry vs the top node's PROOF: we walk only the top node's TYPE
+(the statement), never its proof term. The proof's trust is the kernel
++ the axiom whitelist (`printAxioms`); the statement's trust is this
+closure. The two probes are complementary.
+
+Classification rule (fail-closed): a constant is trusted iff its
+declaring module's root component is one of `trustedRoots`. `none`
+module (a local same-file decl) and every `Problems.*` / unknown
+module → pending. Over-surfacing is safe; under-surfacing is not. -/
+
+structure AnchorEntry where
+  name : String
+  module : String
+  kind : String
+  deriving FromJson, ToJson
+
+instance : RpcEncodable AnchorEntry := inferInstance
+
+structure AnchorClosureParams where
+  fqName : String
+  deriving FromJson, ToJson
+
+instance : RpcEncodable AnchorClosureParams := inferInstance
+
+structure AnchorClosureResp where
+  found : Bool
+  topKind : String := ""
+  topIsProp : Bool := false
+  topModule : String := ""
+  pending : Array AnchorEntry := #[]
+  error : Option String := none
+  deriving FromJson, ToJson
+
+instance : RpcEncodable AnchorClosureResp := inferInstance
+
+/-- Module roots we trust by assumption (the TCB boundary). `Library`
+= the framework's harvested shared library; the rest are Lean/Mathlib
+core. Anything else is a pending anchor. -/
+private def trustedRoots : List Name := [`Mathlib, `Library, `Init, `Std, `Lean]
+
+/-- Module a constant was declared in, or `none` if it is local to the
+current (probed) file. `getModuleIdxFor?` returns `none` precisely for
+non-imported decls. -/
+private def moduleNameFor (env : Environment) (n : Name) : Option Name :=
+  match env.getModuleIdxFor? n with
+  | some idx => env.allImportedModuleNames[idx.toNat]?
+  | none     => none
+
+/-- Fail-closed trust test: trusted iff the declaring module's root
+component is in `trustedRoots`. Local (`none` module) → not trusted. -/
+private def isTrusted (env : Environment) (n : Name) : Bool :=
+  match moduleNameFor env n with
+  | some mod => trustedRoots.contains mod.getRoot
+  | none     => false
+
+private def kindStr : ConstantInfo → String
+  | .axiomInfo _  => "axiom"
+  | .defnInfo _   => "def"
+  | .thmInfo _    => "thm"
+  | .opaqueInfo _ => "opaque"
+  | .quotInfo _   => "quot"
+  | .inductInfo _ => "induct"
+  | .ctorInfo _   => "ctor"
+  | .recInfo _    => "rec"
+
+/-- Constants a decl's MEANING depends on. For a genuine data
+definition we include its body (the construction IS part of the
+meaning); for a theorem / opaque, or for a `def` whose type is a
+`Prop` (a proof-carrying claim wrapper such as the framework's
+`def main := proof`), we take the TYPE only — the proof is irrelevant
+to what the statement means. Predicates (`def P : α → Prop := …`) are
+data: their type is `α → Prop`, not itself a `Prop`, so `isProp` is
+false and their body IS walked. Inductives contribute their ctors.
+Runs in `MetaM` for the `isProp` decision. -/
+private def constDepsM (info : ConstantInfo) : Meta.MetaM (Array Name) := do
+  let tyDeps := info.type.getUsedConstants
+  let bodyDeps : Array Name ← match info with
+    | .defnInfo v =>
+        if ← Meta.isProp info.type then pure #[] else pure v.value.getUsedConstants
+    | _ => pure #[]   -- thm / opaque / quot / inductive / ctor / rec: type only
+  let extra := match info with
+    | .inductInfo v => v.ctors.toArray
+    | _             => #[]
+  return tyDeps ++ bodyDeps ++ extra
+
+/-- Worklist walk in `MetaM` (needed for the body-vs-proof `isProp`
+decision). `visited` prevents revisiting / cycles; trusted constants
+terminate a branch; non-trusted ones are recorded and recursed through
+`constDepsM`. -/
+private partial def anchorWalkM (visited : NameSet) (acc : Array AnchorEntry) :
+    List Name → Meta.MetaM (Array AnchorEntry)
+  | []        => return acc
+  | n :: rest => do
+      if visited.contains n then
+        anchorWalkM visited acc rest
+      else
+        let visited := visited.insert n
+        let env ← getEnv
+        if isTrusted env n then
+          anchorWalkM visited acc rest
+        else
+          match env.find? n with
+          | none =>
+              -- Not in env: fail-closed, surface as an unknown pending.
+              anchorWalkM visited
+                (acc.push { name := n.toString, module := "", kind := "unknown" }) rest
+          | some info =>
+              let entry : AnchorEntry :=
+                { name := n.toString,
+                  module := (moduleNameFor env n).elim "" (·.toString),
+                  kind := kindStr info }
+              let deps ← constDepsM info
+              anchorWalkM visited (acc.push entry) (deps.toList ++ rest)
+
+/-- Pending-anchor closure of `topName` in `MetaM`. Returns whether the
+top node is a claim (its type is a `Prop`) alongside the closure.
+`topName` is pre-visited so it never appears in its own closure; the
+seed reuses `constDepsM`, so a claim (or claim wrapper) seeds from its
+statement only, a data anchor from type + body. -/
+private def anchorClosureM (topName : Name) (topInfo : ConstantInfo) :
+    Meta.MetaM (Bool × Array AnchorEntry) := do
+  let topIsProp ← Meta.isProp topInfo.type
+  let seed ← constDepsM topInfo
+  let pending ← anchorWalkM (({} : NameSet).insert topName) #[] seed.toList
+  return (topIsProp, pending)
+
+/-- Resolve `fqName`, then return its pending-anchor closure + whether
+it is a claim + its module. Runs the `MetaM` walk against the terminal
+elaborated environment via `CoreM.toIO'` (mirrors `printAxiomsImpl`). -/
+def anchorClosureImpl (p : AnchorClosureParams) :
+    RequestM (RequestTask AnchorClosureResp) := do
+  let doc ← RequestM.readDoc
+  RequestM.mapTaskCostly (lastCmdEnv doc) fun walkResult => do
+    match walkResult.env with
+    | none =>
+        return { found := false,
+                 error := some s!"no terminal snapshot: {walkResult.trace}" }
+    | some env =>
+        let n := parseQualifiedName p.fqName
+        match env.find? n with
+        | none =>
+            return { found := false, error := some s!"constant not found: {p.fqName}" }
+        | some info =>
+            let coreCtx : Core.Context := { fileName := "", fileMap := default }
+            let coreState : Core.State := { env }
+            let r ← ((anchorClosureM n info).run').toIO' coreCtx coreState |>.toBaseIO
+            match r with
+            | .ok (topIsProp, pending) =>
+                return {
+                  found := true,
+                  topKind := kindStr info,
+                  topIsProp := topIsProp,
+                  topModule := (moduleNameFor env n).elim "" (·.toString),
+                  pending := pending
+                }
+            | .error e =>
+                return { found := false, error := some s!"anchor walk failed: {e}" }
+
 /-! ## Builtin registration
 
 `builtin_initialize` fires before `main`, in BOTH the watchdog and
@@ -176,6 +351,8 @@ builtin_initialize
     `Asterism.writeOlean WriteOleanParams WriteOleanResp writeOleanImpl
   registerBuiltinRpcProcedure
     `Asterism.printAxioms PrintAxiomsParams PrintAxiomsResp printAxiomsImpl
+  registerBuiltinRpcProcedure
+    `Asterism.anchorClosure AnchorClosureParams AnchorClosureResp anchorClosureImpl
 
 end Asterism
 

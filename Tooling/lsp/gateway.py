@@ -1598,7 +1598,8 @@ def _olean_dest_for(workspace: Path, target_path: Path) -> Path | None:
 
 
 def _verify_sync(target: Path, content: str, *, write_olean: bool,
-                  axioms_for: str | None, rpc_timeout: int) -> dict:
+                  axioms_for: str | None, constants_for: str | None = None,
+                  rpc_timeout: int) -> dict:
     """Sync core of /verify. MUST run off the asyncio event loop —
     `_acquire_slot` does blocking polling on a per-slot lock, which
     starves all other handlers (/register, /release, /health, MCP tool
@@ -1630,6 +1631,11 @@ def _verify_sync(target: Path, content: str, *, write_olean: bool,
     olean_written = False
     axioms: list[str] | None = None
     axiom_error: str | None = None
+    pending_anchors: list[dict] | None = None
+    top_kind: str | None = None
+    top_is_prop: bool | None = None
+    top_module: str | None = None
+    closure_error: str | None = None
     diags: list = []
 
     try:
@@ -1718,6 +1724,29 @@ def _verify_sync(target: Path, content: str, *, write_olean: bool,
                             f"{type(e).__name__}: {e}"
                         )
 
+                if constants_for:
+                    try:
+                        r = backend.rpc_call(
+                            slot.slot_uri,
+                            "Asterism.anchorClosure",
+                            {"fqName": constants_for},
+                            timeout=rpc_timeout,
+                        )
+                        if r.get("found"):
+                            pending_anchors = list(r.get("pending") or [])
+                            top_kind = r.get("topKind")
+                            top_is_prop = bool(r.get("topIsProp"))
+                            top_module = r.get("topModule")
+                        else:
+                            closure_error = (
+                                f"anchorClosure: {r.get('error') or 'not found'}"
+                            )
+                    except Exception as e:
+                        closure_error = (
+                            f"anchorClosure RPC failed: "
+                            f"{type(e).__name__}: {e}"
+                        )
+
             # Probe (verify_file) wrote stand-alone content into the
             # slot; clear so next tool call didChanges the session's
             # actual content back in.
@@ -1738,6 +1767,11 @@ def _verify_sync(target: Path, content: str, *, write_olean: bool,
         "olean_path": str(olean_path) if olean_path else None,
         "axioms": axioms,
         "axiom_error": axiom_error,
+        "pending_anchors": pending_anchors,
+        "top_kind": top_kind,
+        "top_is_prop": top_is_prop,
+        "top_module": top_module,
+        "closure_error": closure_error,
     }
 
 
@@ -1803,6 +1837,7 @@ async def verify(request: Request):
                             status_code=404)
     write_olean: bool = bool(data.get("write_olean", True))
     axioms_for: str | None = data.get("axioms_for")
+    constants_for: str | None = data.get("constants_for")
     try:
         rpc_timeout = int(data.get("rpc_timeout", 30))
         if rpc_timeout <= 0:
@@ -1825,7 +1860,7 @@ async def verify(request: Request):
     result = await asyncio.to_thread(
         _verify_sync, target, content,
         write_olean=write_olean, axioms_for=axioms_for,
-        rpc_timeout=rpc_timeout,
+        constants_for=constants_for, rpc_timeout=rpc_timeout,
     )
     status = result.pop("_status", 200)
     return JSONResponse(result, status_code=status)

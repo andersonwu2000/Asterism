@@ -679,7 +679,7 @@ def test_verify_endpoint_offloads_sync_body_to_thread(
     invoked_in_thread: dict[str, object] = {}
 
     def _stub_verify_sync(target, content, *, write_olean, axioms_for,
-                          rpc_timeout):
+                          rpc_timeout, constants_for=None):
         # Off-thread invocation: in the main test thread our event loop
         # is running; if to_thread was used we land in a *different*
         # thread.
