@@ -148,7 +148,9 @@ _WATERMARKS = {
     # TOCTOU) — 2026-06-17 — conscious bump.
     # 3150→2200: #11 P2 — propagation cluster + cascade_one (~960 lines) moved
     # to state/transitions.py; ratchet down to lock the gain — 2026-06-22.
-    "Tooling/core/dispatcher.py": 2200,
+    # 2200→2240: reconcile pre-existing growth (harvest-fix `_harvest_outstanding`,
+    # 1b2a6b5) that a prior push's ratchet missed — 2026-07-02 — conscious bump.
+    "Tooling/core/dispatcher.py": 2240,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.
@@ -161,7 +163,10 @@ _WATERMARKS = {
     # not inherit a STALL (residue_thm) — 2026-06-17 — conscious bump.
     # 3200→3220: Phase 12 v12 migration block — kb_entries DROP COLUMN scope
     # (breadth reads off node_id alone) — 2026-06-27 — conscious bump.
-    "Tooling/state/db.py": 3220,
+    # 3220→3360: anchor+claim — is_deliverable column + mark_deliverable/
+    # deliverables helpers + v13 `_migrate_to_phase13` table rebuild (MarkDeliverable
+    # CHECK widening) — 2026-07-02 — conscious bump.
+    "Tooling/state/db.py": 3360,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup
