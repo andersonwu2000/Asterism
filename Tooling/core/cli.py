@@ -1371,6 +1371,68 @@ def cmd_library_verify(args: argparse.Namespace) -> int:
     return 0 if fails == 0 else 1
 
 
+def cmd_review(args: argparse.Namespace) -> int:
+    """anchor+claim review surface (docs/internal/anchor_claim_design.md).
+
+    For every goal the Strategist marked `is_deliverable=1` (optionally
+    scoped by `problem`), compute its kernel anchor closure and present
+    the anchors (defs the human must vouch for) + claims (lemmas the
+    closure rests on), partitioned. Reject an entry with
+    `asterism reject <decl>` (Phase 3).
+
+    Read-only. Needs the gateway (reused if already warm; else warmed —
+    slow on a cold Mathlib cache). Exit 0 always (a review, not a gate);
+    deliverables whose closure could not be computed print a WARN."""
+    from ..lsp import lifecycle as gateway_lifecycle
+    from ..pipeline._constants import anchor_closure_goal
+
+    workspace = Path.cwd()
+    conn = db.connect()
+    db.init_schema(conn)
+    scope = getattr(args, "problem", None)
+    dels = db.deliverables(conn, problem=scope)
+    conn.close()
+
+    if not dels:
+        where = f" for '{scope}'" if scope else ""
+        print(f"no deliverables{where} (Strategist marks them via "
+              f"is_deliverable; none set yet)")
+        return 0
+
+    gateway_lifecycle.start_gateway(workspace)
+
+    def render(items: list[dict], head: str) -> None:
+        if not items:
+            return
+        print(f"    {head}")
+        for c in sorted(items, key=lambda x: x["name"]):
+            mod = c.get("module") or "<local>"
+            print(f"      - {c['name']}   ({mod})")
+
+    print(f"\n=== anchor+claim review: {scope or 'all problems'} ===")
+    union: set[str] = set()
+    for g in dels:
+        dest = workspace / g["lean_path"]
+        r = anchor_closure_goal(
+            workspace, dest, problem=g["problem"], slug=g["slug"])
+        fq = f"Problems.{g['problem']}.{g['slug']}"
+        if not r.ok:
+            print(f"\n▸ {fq}  [WARN] closure unavailable: {r.error}")
+            continue
+        kind = "claim" if r.top_is_claim else f"anchor:{r.top_kind}"
+        print(f"\n▸ {fq}  [{kind}]   (module {r.top_module or '<local>'})")
+        if not r.pending:
+            print("    (no pending anchors — statement rests entirely on "
+                  "Mathlib ∪ Library)")
+        render(r.anchors, "anchors (defs you must vouch for):")
+        render(r.claims, "claims (lemmas the closure rests on):")
+        union.update(c["name"] for c in r.pending)
+
+    print(f"\n=== {len(dels)} deliverable(s), {len(union)} distinct "
+          f"pending anchor(s)/claim(s) ===")
+    return 0
+
+
 def cmd_drift_check(args: argparse.Namespace) -> int:
     """DB<->file consistency gate (`proof_store.inventory`) — the single oracle
     for the drift class the proof_store chokepoint prevents: orphan proof files
@@ -1622,6 +1684,14 @@ def main(argv: list[str] | None = None) -> int:
         "--build-timeout", type=int, default=1800, metavar="SEC",
         help="timeout (seconds) for `lake build Library` (default 1800)")
     p_libverify.set_defaults(func=cmd_library_verify)
+
+    p_review = sub.add_parser(
+        "review",
+        help="anchor+claim review: kernel anchor closure of each "
+             "Strategist-marked deliverable (anchors to vouch for)")
+    p_review.add_argument("problem", nargs="?", default=None,
+                          help="optional; default = deliverables across all problems")
+    p_review.set_defaults(func=cmd_review)
 
     p_drift = sub.add_parser(
         "drift-check",

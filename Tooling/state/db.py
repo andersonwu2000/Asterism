@@ -228,6 +228,15 @@ CREATE TABLE IF NOT EXISTS goals (
     -- superseded strategy) survives long enough for the eventual root
     -- lake build to find its file. NULL for non-alias goals.
     alias_target_id INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+    -- anchor+claim architecture (docs/internal/anchor_claim_design.md):
+    -- set to 1 when the Strategist marks this node a top-level
+    -- *deliverable* (a claim or a delivered def). `asterism review`
+    -- computes each deliverable's kernel anchor closure and presents
+    -- anchor+claim for human opt-out review; `asterism reject` kills a
+    -- rejected node. Independent of origin/detached (a deliverable can
+    -- be a Forward lemma, a Backward sub-goal, or the root). Default 0.
+    is_deliverable INTEGER NOT NULL DEFAULT 0
+                    CHECK(is_deliverable IN (0,1)),
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     UNIQUE(problem, slug)
@@ -619,6 +628,13 @@ def init_schema(conn: sqlite3.Connection) -> None:
         ("outcome_detail",
          "ALTER TABLE strategist_decisions ADD COLUMN outcome_detail TEXT"
          " NULL DEFAULT NULL"),
+        # anchor+claim architecture — top-level deliverable marker set by
+        # the Strategist. Additive defaulted (CHECK only enforced for
+        # fresh DBs; `mark_deliverable` is the sole writer and passes
+        # 0/1). No user_version bump (same pattern as bootstrap_done).
+        ("is_deliverable",
+         "ALTER TABLE goals ADD COLUMN is_deliverable INTEGER NOT NULL"
+         " DEFAULT 0"),
     ):
         try:
             conn.execute(ddl)
@@ -1503,6 +1519,37 @@ def set_goal_detached(conn: sqlite3.Connection, goal_id: int,
         (1 if detached else 0, now(), goal_id),
     )
     conn.commit()
+
+
+def mark_deliverable(conn: sqlite3.Connection, goal_id: int,
+                     is_deliverable: bool = True) -> None:
+    """anchor+claim architecture — flag a goal as a top-level
+    *deliverable* (a claim or a delivered def the Strategist deems
+    terminal-worthy). `asterism review` computes each deliverable's
+    kernel anchor closure for human opt-out review. Sole writer of
+    `goals.is_deliverable`; independent of origin/status (any node —
+    Forward lemma, Backward sub-goal, or root — may be marked)."""
+    conn.execute(
+        "UPDATE goals SET is_deliverable = ?, updated_at = ? WHERE id = ?",
+        (1 if is_deliverable else 0, now(), goal_id),
+    )
+    conn.commit()
+
+
+def deliverables(conn: sqlite3.Connection,
+                 problem: str | None = None) -> list[sqlite3.Row]:
+    """Goals flagged `is_deliverable=1`, optionally scoped to one
+    problem, ordered by id. The review surface for the anchor+claim
+    flow."""
+    if problem is None:
+        return conn.execute(
+            "SELECT * FROM goals WHERE is_deliverable = 1 ORDER BY id"
+        ).fetchall()
+    return conn.execute(
+        "SELECT * FROM goals WHERE is_deliverable = 1 AND problem = ?"
+        " ORDER BY id",
+        (problem,),
+    ).fetchall()
 
 
 def set_inject_decision_produced_goal(

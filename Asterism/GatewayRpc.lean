@@ -288,12 +288,20 @@ private partial def anchorWalkM (visited : NameSet) (acc : Array AnchorEntry) :
               anchorWalkM visited
                 (acc.push { name := n.toString, module := "", kind := "unknown" }) rest
           | some info =>
-              let entry : AnchorEntry :=
-                { name := n.toString,
-                  module := (moduleNameFor env n).elim "" (·.toString),
-                  kind := kindStr info }
               let deps ← constDepsM info
-              anchorWalkM visited (acc.push entry) (deps.toList ++ rest)
+              -- Skip compiler-generated auxiliaries (`_proof_N`, `_eq_N`,
+              -- `match_N`, …): `isInternalDetail` is Lean's own authoritative
+              -- flag for these — they are proof-irrelevant side artifacts of a
+              -- def's body, never human-authored, so not anchors/claims. Still
+              -- recurse through their deps so nothing meaningful reachable only
+              -- via them is hidden (fail-closed).
+              let acc :=
+                if n.isInternalDetail then acc
+                else acc.push
+                  { name := n.toString,
+                    module := (moduleNameFor env n).elim "" (·.toString),
+                    kind := kindStr info }
+              anchorWalkM visited acc (deps.toList ++ rest)
 
 /-- Pending-anchor closure of `topName` in `MetaM`. Returns whether the
 top node is a claim (its type is a `Prop`) alongside the closure.

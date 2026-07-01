@@ -118,6 +118,44 @@ def test_empty_closure_ok(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# DB: is_deliverable column + mark_deliverable / deliverables helpers
+# ---------------------------------------------------------------------------
+
+from Tooling.state import db as _db
+
+
+def _seed_goal(conn, problem: str, slug: str) -> int:
+    conn.execute("INSERT OR IGNORE INTO problems(name, manifest_path, created_at)"
+                 " VALUES (?,?,?)", (problem, f"{problem}/Manifest.md", _db.now()))
+    return _db.insert_goal(
+        conn, problem=problem, slug=slug,
+        lean_path=f"Problems/{problem}/proofs/L_{slug}.lean",
+        statement="True", origin="forward", status="proved", kind="theorem")
+
+
+def test_schema_has_is_deliverable(conn):
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
+    assert "is_deliverable" in cols
+
+
+def test_mark_and_list_deliverables(conn):
+    g1 = _seed_goal(conn, "P.a", "foo")
+    g2 = _seed_goal(conn, "P.a", "bar")
+    _seed_goal(conn, "P.b", "baz")
+    assert _db.deliverables(conn) == []            # default 0
+    _db.mark_deliverable(conn, g1)
+    _db.mark_deliverable(conn, g2)
+    got = {(r["problem"], r["slug"]) for r in _db.deliverables(conn)}
+    assert got == {("P.a", "foo"), ("P.a", "bar")}
+    # scope filter
+    assert {r["id"] for r in _db.deliverables(conn, problem="P.a")} == {g1, g2}
+    assert _db.deliverables(conn, problem="P.b") == []
+    # idempotent unmark
+    _db.mark_deliverable(conn, g1, False)
+    assert {r["id"] for r in _db.deliverables(conn)} == {g2}
+
+
+# ---------------------------------------------------------------------------
 # Integration (real_lake): the actual kernel walk over a live gateway
 # ---------------------------------------------------------------------------
 
@@ -139,6 +177,13 @@ theorem myClaim : myOtherAnchor = 7 := by decide
 a proof term (`myClaim`). Must be treated as a claim — statement only —
 so `myClaim` must NOT leak into its closure. -/
 def mainWrapper : myOtherAnchor = 7 := myClaim
+
+/-- A data def whose body carries a proof obligation — Lean emits an
+internal `_proof_N` auxiliary. It is proof-irrelevant and must be
+filtered from any closure via `Name.isInternalDetail`. -/
+def myProofBearing : {n : Nat // 0 < n} := ⟨myOtherAnchor, by decide⟩
+
+theorem claimUsingProofBearing : myProofBearing.val = 7 := by decide
 
 end Problems.AnchorClosureLiveTest.Probe
 """
@@ -182,5 +227,15 @@ def test_anchor_closure_live_kernel_walk():
         phantoms = names(rc) & {"of", "def", "structure", "class",
                                 "theorem", "instance", "abbrev", "lemma"}
         assert not phantoms, f"phantom decls from prose: {phantoms}"
+
+        # Compiler-generated `_proof_N` auxiliaries must be filtered: the
+        # data def `myProofBearing`'s body carries a `by decide` obligation.
+        rp = anchor_closure(workspace, fq_name=f"{mod}.claimUsingProofBearing",
+                            module=mod)
+        assert rp.ok, rp.error
+        pnames = {c["name"] for c in rp.pending}
+        assert any(n.endswith(".myProofBearing") for n in pnames)
+        assert not any("_proof" in n or n.rsplit(".", 1)[-1].startswith("_")
+                       for n in pnames), f"internal-detail leaked: {pnames}"
     finally:
         shutil.rmtree(src.parent, ignore_errors=True)
