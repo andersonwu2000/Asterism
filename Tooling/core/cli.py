@@ -1552,6 +1552,73 @@ def cmd_reject(args: argparse.Namespace) -> int:
     return 0
 
 
+def _rewake_strategist(conn, problem: str) -> None:
+    """Enqueue a Strategist wake on the problem's root (dedup), so a
+    paused/idle problem gets re-planned on the next dispatcher tick."""
+    root = conn.execute(
+        "SELECT id FROM goals WHERE problem = ? AND origin = 'root'",
+        (problem,)).fetchone()
+    if root is None:
+        return
+    rid = str(root["id"])
+    if not db.is_in_queue(conn, target_id=rid, kind="Strategist"):
+        db.enqueue(conn, kind="Strategist", target_id=rid,
+                   target_kind="Goal", priority=20)
+
+
+def cmd_approve_ingest(args: argparse.Namespace) -> int:
+    """anchor+claim: approve a paused ingest → harvest to Library.
+
+    The single resume action of the sign-off gate (not a per-anchor
+    checklist): clears the pause and enqueues the Librarian. Reject
+    specific anchors/claims BEFORE approving via `asterism reject`."""
+    conn = db.connect()
+    db.init_schema(conn)
+    problem = args.problem
+    if not db.problem_ingest_signoff_pending(conn, problem):
+        print(f"{problem!r} is not awaiting ingest sign-off "
+              f"(nothing paused).")
+        return 1
+    db.set_ingest_signoff_pending(conn, problem, False)
+    db.enqueue(conn, kind="Librarian", target_id=problem,
+               target_kind="Problem", priority=0)
+    print(f"approved ingest for {problem} — enqueued Librarian; harvest "
+          f"runs on the next dispatcher tick.")
+    conn.close()
+    return 0
+
+
+def cmd_reject_ingest(args: argparse.Namespace) -> int:
+    """anchor+claim: reject a paused ingest → back to proving.
+
+    Use when the deliverables aren't actually complete yet (no specific
+    anchor/claim is wrong — the work just isn't done). Clears the pause,
+    records the reason as a Strategist directive, and re-wakes the
+    Strategist to keep proving. No harvest."""
+    conn = db.connect()
+    db.init_schema(conn)
+    problem = args.problem
+    reason = getattr(args, "reason", None) or "(no reason given)"
+    if not db.problem_ingest_signoff_pending(conn, problem):
+        print(f"{problem!r} is not awaiting ingest sign-off "
+              f"(nothing paused).")
+        return 1
+    db.set_ingest_signoff_pending(conn, problem, False)
+    row = conn.execute(
+        "SELECT strategist_directive FROM problems WHERE name = ?",
+        (problem,)).fetchone()
+    existing = (row["strategist_directive"] or "").strip() if row else ""
+    note = (f"[user rejected ingest — not yet complete] {reason} "
+            f"Keep proving toward the missing pieces before the next Ingest.")
+    db.set_problem_strategist_directive(
+        conn, problem, f"{note}\n\n{existing}".strip() if existing else note)
+    _rewake_strategist(conn, problem)
+    print(f"rejected ingest for {problem} — back to proving; the Strategist "
+          f"re-plans on its next wake with your reason.")
+    conn.close()
+    return 0
+
+
 def cmd_drift_check(args: argparse.Namespace) -> int:
     """DB<->file consistency gate (`proof_store.inventory`) — the single oracle
     for the drift class the proof_store chokepoint prevents: orphan proof files
@@ -1825,6 +1892,20 @@ def main(argv: list[str] | None = None) -> int:
     p_reject.add_argument("--dry-run", action="store_true",
                           help="preview the cascade without mutating")
     p_reject.set_defaults(func=cmd_reject)
+
+    p_approve = sub.add_parser(
+        "approve-ingest",
+        help="approve a paused ingest → harvest deliverables to Library")
+    p_approve.add_argument("problem", help="problem name")
+    p_approve.set_defaults(func=cmd_approve_ingest)
+
+    p_reject_ingest = sub.add_parser(
+        "reject-ingest",
+        help="reject a paused ingest (not done yet) → back to proving")
+    p_reject_ingest.add_argument("problem", help="problem name")
+    p_reject_ingest.add_argument("--reason", default=None,
+                                 help="what's still missing (guides the Strategist)")
+    p_reject_ingest.set_defaults(func=cmd_reject_ingest)
 
     p_drift = sub.add_parser(
         "drift-check",

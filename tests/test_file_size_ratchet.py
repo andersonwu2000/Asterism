@@ -168,7 +168,9 @@ _WATERMARKS = {
     # CHECK widening) — 2026-07-02 — conscious bump.
     # 3360→3390: anchor+claim Phase 3 — goal_by_slug + set_inject_outcome_detail
     # (asterism reject reverse cascade) — 2026-07-02 — conscious bump.
-    "Tooling/state/db.py": 3390,
+    # 3390→3510: anchor+claim Phase 4 — v14 `_migrate_to_phase14` (Ingest CHECK
+    # widening) + ingest_signoff_pending helpers — 2026-07-02 — conscious bump.
+    "Tooling/state/db.py": 3510,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

@@ -256,6 +256,64 @@ def test_find_reject_victims(conn):
 
 
 # ---------------------------------------------------------------------------
+# Phase 4: Ingest decision + sign-off gate
+# ---------------------------------------------------------------------------
+
+def test_ingest_verify_requires_deliverable(conn):
+    from Tooling.pipeline.strategist import Decision, verify_decision
+    _seed_goal(conn, "P.a", "foo")   # exists but not marked
+    assert "at least one" in verify_decision(
+        Decision(kind="Ingest"), conn, problem="P.a")
+    g = _seed_goal(conn, "P.a", "bar")
+    _db.mark_deliverable(conn, g)
+    assert verify_decision(Decision(kind="Ingest"), conn, problem="P.a") == ""
+
+
+def test_ingest_commit_library_gate_and_signoff(conn, tmp_path):
+    from Tooling.pipeline.strategist import _commit_ingest
+    from Tooling.core import config
+    conn.execute("INSERT INTO problems(name,manifest_path,created_at)"
+                 " VALUES ('P.a','P.a/Manifest.md',?)", (_db.now(),))
+    conn.commit()
+    pdir = _db.problem_dir(tmp_path, "P.a")
+    pdir.mkdir(parents=True)
+
+    def write_manifest(lib: str):
+        (pdir / "Manifest.md").write_text(
+            f"---\nproblem: P.a\nlibrary: {lib}\n---\n# P.a\n", encoding="utf-8")
+
+    def n_librarian():
+        return conn.execute(
+            "SELECT count(*) FROM queue WHERE kind='Librarian'").fetchone()[0]
+
+    try:
+        # library:false → opted out: no pause, no enqueue
+        write_manifest("false")
+        config._reset_cache()
+        _commit_ingest(conn, problem="P.a", workspace=tmp_path)
+        assert not _db.problem_ingest_signoff_pending(conn, "P.a")
+        assert n_librarian() == 0
+
+        # library:true + default require_signoff (True) → PAUSE, no enqueue
+        write_manifest("true")
+        config._reset_cache()
+        _commit_ingest(conn, problem="P.a", workspace=tmp_path)
+        assert _db.problem_ingest_signoff_pending(conn, "P.a")
+        assert n_librarian() == 0
+
+        # direct mode (yaml require_signoff:false) → enqueue, no pause
+        _db.set_ingest_signoff_pending(conn, "P.a", False)
+        (tmp_path / "Asterism.yaml").write_text(
+            "library:\n  require_signoff: false\n", encoding="utf-8")
+        config._reset_cache()
+        _commit_ingest(conn, problem="P.a", workspace=tmp_path)
+        assert not _db.problem_ingest_signoff_pending(conn, "P.a")
+        assert n_librarian() == 1
+    finally:
+        config._reset_cache()
+
+
+# ---------------------------------------------------------------------------
 # Integration (real_lake): the actual kernel walk over a live gateway
 # ---------------------------------------------------------------------------
 

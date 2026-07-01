@@ -646,7 +646,14 @@ def root_integrity_gate(
         # otherwise idle. The Librarian pipeline derives its own work-kind
         # (dedup→classify→migrate) from library_decls state and
         # re-enqueues itself until every kept decl is migrated.
-        if mfst.library:
+        # anchor+claim Phase 4 coexistence: the root-proved-auto harvest
+        # governs the OLD flow only. When the problem uses the new flow
+        # (the Strategist has marked deliverables), defer entirely to the
+        # Strategist `Ingest` decision path (which is sign-off-gated) —
+        # otherwise this would auto-harvest before the human review. Old
+        # problems (no deliverables) keep their existing behavior. Phase 6
+        # removes this auto trigger when Root/Defs dissolve.
+        if mfst.library and not db.deliverables(conn, problem):
             db.enqueue(conn, kind="Librarian", target_id=problem,
                        target_kind="Problem", priority=0)
             print(f"[integrity] {problem}: library opt-in — "

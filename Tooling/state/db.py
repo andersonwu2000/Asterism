@@ -121,7 +121,13 @@ CREATE TABLE IF NOT EXISTS problems (
     -- NOT this, so the routine audit fires on its own fixed cadence instead
     -- of being starved by a busy event stream (stokes 2026-06-12: 0 routine
     -- over 5h because 18 event commits kept resetting the shared clock).
-    last_routine_at TEXT NULL DEFAULT NULL
+    last_routine_at TEXT NULL DEFAULT NULL,
+    -- anchor+claim (v14) — set to 1 by a Strategist `Ingest` decision when
+    -- `library.require_signoff` is on: harvest PAUSES here until the human
+    -- runs `asterism approve-ingest` (→ enqueue Librarian) or
+    -- `asterism reject-ingest` (→ back to proving). Default 0.
+    ingest_signoff_pending INTEGER NOT NULL DEFAULT 0
+                    CHECK(ingest_signoff_pending IN (0,1))
 );
 
 CREATE TABLE IF NOT EXISTS goals (
@@ -354,10 +360,13 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
                             -- rebuild (16 'Reopen' rows would violate), low ROI.
                             -- 'MarkDeliverable' (v13, anchor+claim): Strategist
                             -- flags a Forward node top-level; sets goals.is_deliverable.
+                            -- 'Ingest' (v14, anchor+claim): Strategist judges the
+                            -- problem terminal → harvest deliverables to Library.
                             CHECK(decision_kind IN
                                   ('Inject','ConfirmShelve','Reopen',
                                    'EmitDirective','InitializeDefs',
-                                   'RequestUserAmend','Noop','MarkDeliverable')),
+                                   'RequestUserAmend','Noop','MarkDeliverable',
+                                   'Ingest')),
     target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),
     brief               TEXT NULL DEFAULT NULL,
     reason              TEXT NULL DEFAULT NULL,
@@ -509,7 +518,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 13
+_CURRENT_USER_VERSION = 14
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -637,6 +646,12 @@ def init_schema(conn: sqlite3.Connection) -> None:
         ("is_deliverable",
          "ALTER TABLE goals ADD COLUMN is_deliverable INTEGER NOT NULL"
          " DEFAULT 0"),
+        # anchor+claim (v14) — per-problem ingest sign-off pause flag. Additive
+        # defaulted; sole writers are the Strategist `Ingest` commit (set) and
+        # `asterism approve-ingest` / `reject-ingest` (clear). No version bump.
+        ("ingest_signoff_pending",
+         "ALTER TABLE problems ADD COLUMN ingest_signoff_pending INTEGER NOT"
+         " NULL DEFAULT 0"),
     ):
         try:
             conn.execute(ddl)
@@ -805,6 +820,15 @@ def init_schema(conn: sqlite3.Connection) -> None:
         # short-circuit).
         _migrate_to_phase13(conn)
         conn.execute("PRAGMA user_version = 13")
+        conn.commit()
+    if v < 14:
+        # Phase 14 — strategist_decisions.decision_kind CHECK widens again to
+        # accept 'Ingest' (anchor+claim harvest trigger). Same table-rebuild
+        # pattern as v13; idempotent via the in-DDL probe. (The additive
+        # `problems.ingest_signoff_pending` column is handled by the ALTER
+        # block above — no rebuild needed for it.)
+        _migrate_to_phase14(conn)
+        conn.execute("PRAGMA user_version = 14")
         conn.commit()
 
 
@@ -1501,6 +1525,78 @@ def _migrate_to_phase13(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA foreign_keys = ON")
 
 
+def _migrate_to_phase14(conn: sqlite3.Connection) -> None:
+    """Phase 14 — widen strategist_decisions.decision_kind CHECK to also
+    accept 'Ingest' (anchor+claim harvest trigger). Same point-in-time
+    table-rebuild snapshot as v13 (all columns through v12's additive
+    ALTERs), CHECK now carrying both 'MarkDeliverable' and 'Ingest'.
+    Idempotent via the probe. Post: caller sets user_version = 14."""
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table'"
+        " AND name = 'strategist_decisions'"
+    ).fetchone()
+    if chk and "'Ingest'" in (chk["sql"] or ""):
+        return  # CHECK already carries 'Ingest'
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_strategist_decisions (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem             TEXT NOT NULL REFERENCES problems(name),
+                triggered_at_tick   INTEGER NOT NULL,
+                trigger_kind        TEXT NOT NULL
+                                        CHECK(trigger_kind IN
+                                              ('first_launch','pending_review',
+                                               'routine','inject_batch_done')),
+                decision_kind       TEXT NOT NULL
+                                        CHECK(decision_kind IN
+                                              ('Inject','ConfirmShelve','Reopen',
+                                               'EmitDirective','InitializeDefs',
+                                               'RequestUserAmend','Noop',
+                                               'MarkDeliverable','Ingest')),
+                target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                brief               TEXT NULL DEFAULT NULL,
+                reason              TEXT NULL DEFAULT NULL,
+                payload             TEXT NOT NULL DEFAULT '{}',
+                batch_id            TEXT NULL DEFAULT NULL,
+                produced_goal_id    INTEGER NULL DEFAULT NULL REFERENCES goals(id)
+                                        ON DELETE SET NULL,
+                produced_strategy_id INTEGER NULL DEFAULT NULL
+                                        REFERENCES strategies(id) ON DELETE SET NULL,
+                outcome             TEXT NULL DEFAULT NULL,
+                outcome_detail      TEXT NULL DEFAULT NULL,
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL
+            );
+            INSERT INTO _new_strategist_decisions
+                (id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                 target_id, brief, reason, payload, batch_id, produced_goal_id,
+                 produced_strategy_id, outcome, outcome_detail,
+                 created_at, updated_at)
+            SELECT id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                   target_id, brief, reason, payload, batch_id, produced_goal_id,
+                   produced_strategy_id, outcome, outcome_detail,
+                   created_at, updated_at
+            FROM strategist_decisions;
+            DROP TABLE strategist_decisions;
+            ALTER TABLE _new_strategist_decisions RENAME TO strategist_decisions;
+            CREATE INDEX IF NOT EXISTS idx_sd_problem
+                ON strategist_decisions(problem);
+            CREATE INDEX IF NOT EXISTS idx_sd_outcome
+                ON strategist_decisions(outcome);
+            CREATE INDEX IF NOT EXISTS idx_sd_batch_id
+                ON strategist_decisions(batch_id);
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 14 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
 # ---------------------------------------------------------------------
 # Goal helpers
 # ---------------------------------------------------------------------
@@ -1643,6 +1739,29 @@ def deliverables(conn: sqlite3.Connection,
         " ORDER BY id",
         (problem,),
     ).fetchall()
+
+
+def set_ingest_signoff_pending(conn: sqlite3.Connection, problem: str,
+                               pending: bool = True) -> None:
+    """anchor+claim (v14) — set/clear the per-problem ingest sign-off
+    pause. Set by a Strategist `Ingest` under `library.require_signoff`;
+    cleared by `asterism approve-ingest` (→ enqueue Librarian) or
+    `asterism reject-ingest` (→ back to proving)."""
+    conn.execute(
+        "UPDATE problems SET ingest_signoff_pending = ? WHERE name = ?",
+        (1 if pending else 0, problem),
+    )
+    conn.commit()
+
+
+def problem_ingest_signoff_pending(conn: sqlite3.Connection,
+                                   problem: str) -> bool:
+    """True iff `problem` is paused awaiting human ingest sign-off."""
+    row = conn.execute(
+        "SELECT ingest_signoff_pending FROM problems WHERE name = ?",
+        (problem,),
+    ).fetchone()
+    return bool(row and row["ingest_signoff_pending"])
 
 
 def goal_by_slug(conn: sqlite3.Connection, problem: str,

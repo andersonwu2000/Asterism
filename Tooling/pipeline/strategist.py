@@ -47,8 +47,14 @@ from ..core import dispatcher as _dispatcher
 # mechanism).
 DECISION_KINDS: frozenset[str] = frozenset({
     "Inject", "ConfirmShelve", "EmitDirective",
-    "RequestUserAmend", "Noop", "MarkDeliverable",
+    "RequestUserAmend", "Noop", "MarkDeliverable", "Ingest",
 })
+
+
+def _as_bool(v: Any) -> bool:
+    """Coerce a config value (yaml bool or string) to bool."""
+    return v if isinstance(v, bool) else \
+        str(v).strip().lower() in ("1", "true", "yes", "on")
 
 # Trigger kinds (mirrors strategist_decisions.trigger_kind CHECK enum).
 TRIGGER_KINDS: frozenset[str] = frozenset({
@@ -330,6 +336,12 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
             return (f"MarkDeliverable target must be a Forward-produced node "
                     f"(origin='forward'); goal {decision.target_id} is "
                     f"origin={g['origin']!r}")
+        return ""
+
+    if k == "Ingest":
+        if not db.deliverables(conn, problem=problem):
+            return ("Ingest requires at least one marked deliverable "
+                    "(MarkDeliverable) in the problem before harvest")
         return ""
 
     if k == "RequestUserAmend":
@@ -842,6 +854,49 @@ def commit_decision(decision: Decision, conn: sqlite3.Connection,
     )[0]
 
 
+def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
+                   workspace: Path) -> None:
+    """Execute a Strategist `Ingest` decision's side effect (anchor+claim
+    Phase 4).
+
+    Manifest `library:` gates whether harvest happens at all (false =
+    opted out — the deliverables are the run's product, not Library
+    material). When on, `library.require_signoff` (default True) decides
+    pause-vs-direct: a paused problem sets `ingest_signoff_pending` and
+    waits for `asterism approve-ingest` (→ enqueue Librarian) or
+    `reject-ingest` (→ back to proving); direct enqueues immediately.
+
+    Coexists with `verify.root_integrity_gate`'s root-proved-auto trigger
+    (the Librarian pipeline is INDEX-idempotent, so a double enqueue is a
+    harmless no-op). Phase 6 removes the auto trigger."""
+    from ..core import config as _config
+    from ..state import manifest as _manifest
+    mfst_path = db.problem_dir(workspace, problem) / "Manifest.md"
+    try:
+        mfst = _manifest.parse(mfst_path)
+    except Exception as e:
+        print(f"[strategist] Ingest({problem}): Manifest unreadable ({e}); "
+              f"no harvest", flush=True)
+        return
+    if not mfst.library:
+        print(f"[strategist] Ingest({problem}): Manifest library:false — "
+              f"opted out of Library; no harvest", flush=True)
+        return
+    require_signoff = _as_bool(_config.get(
+        "library.require_signoff", default=True, workspace=workspace))
+    if require_signoff:
+        db.set_ingest_signoff_pending(conn, problem, True)
+        print(f"[strategist] Ingest({problem}): paused for human sign-off — "
+              f"`asterism approve-ingest {problem}` to harvest, "
+              f"`asterism reject-ingest {problem} --reason ...` to keep "
+              f"proving", flush=True)
+    else:
+        db.enqueue(conn, kind="Librarian", target_id=problem,
+                   target_kind="Problem", priority=0)
+        print(f"[strategist] Ingest({problem}): direct ingest — enqueued "
+              f"Librarian", flush=True)
+
+
 def _commit_one(decision: Decision, conn: sqlite3.Connection,
                 *, problem: str, tick: int, trigger_kind: str,
                 workspace: Path,
@@ -920,6 +975,12 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
         # review. Falls through to the shared audit-row INSERT (outcome
         # 'success').
         db.mark_deliverable(conn, int(decision.target_id))  # type: ignore[arg-type]
+
+    elif k == "Ingest":
+        # Terminal judgment → harvest to Library (gated by Manifest
+        # `library:` and paused for human sign-off unless config opts
+        # into direct ingest). Falls through to the audit INSERT.
+        _commit_ingest(conn, problem=problem, workspace=workspace)
 
     elif k == "RequestUserAmend":
         # Atomic three-step: tmp write -> INSERT row -> rename
