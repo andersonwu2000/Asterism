@@ -5,6 +5,9 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-06-30
+- Fixed the component that catalogs Lean definitions so it now strips comments before reading declaration names, preventing commented-out code from being mistaken for real definitions.
+
 ### 2026-06-29
 - Added an automatic lemma pre-search that, for each step of a proof attempt, looks for useful lemmas first in the problem itself, then a local library, then Mathlib, capping results per source and using a configurable time budget, in place of the old hand-written hints.
 - Fixed two verification flaws so a proof is only accepted after re-checking it against the current compiler diagnostics and on its own workspace, rather than trusting stale or borrowed results.
@@ -139,11 +142,6 @@
 - Fixed recurring migration failures by reconciling definition signatures, repairing the usage dependency graph, and redirecting references to definitions that had been merged together.
 - Made the system recompile and re-verify the library files it edits, keeping per-step compiled artifacts current to avoid stale builds.
 - Improved recovery from stalled work by re-queuing failed steps and re-opening an upstream result when a downstream change forced it to be reshaped.
-
-### 2026-05-31
-- Began building a system that automatically folds individually proven results into a shared, reusable library, de-duplicating and reclassifying each one as it is absorbed.
-- Migrated the first result through this pipeline: a lemma characterizing Jordan normal form.
-- Added safeguards to keep migrated results faithful, checking that each is definitionally equal to its original statement and free of unintended axioms.
 
 <!-- ASTERISM-PROGRESS:END -->
 
