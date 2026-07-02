@@ -137,12 +137,6 @@
 - Improved its dependency tracking, correctly following dependencies through results that have been merged together and propagating requirements when a result rests on something not yet proven.
 - Added automatic upgrading of an outdated but already-populated results database when it is opened.
 
-### 2026-06-01
-- Built out automatic integration of new results into the shared library, mechanically assembling migrated definitions and inserting `sorry` placeholders where proofs were not yet available.
-- Fixed recurring migration failures by reconciling definition signatures, repairing the usage dependency graph, and redirecting references to definitions that had been merged together.
-- Made the system recompile and re-verify the library files it edits, keeping per-step compiled artifacts current to avoid stale builds.
-- Improved recovery from stalled work by re-queuing failed steps and re-opening an upstream result when a downstream change forced it to be reshaped.
-
 <!-- ASTERISM-PROGRESS:END -->
 
 
