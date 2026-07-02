@@ -1427,6 +1427,20 @@ def _backward_parse_and_commit(
             sub_meta, sub_dests, canonical_for,
         )):
             raw = src.read_text(encoding="utf-8")
+            if match is not None and not dedupe._SORRY_BODY_RE.search(raw):
+                # Defense-in-depth (mv_delta 2026-07-03): only a SORRY-BEARING
+                # sub-goal is aliasable. `build_alias_content` rewrites
+                # `:= by sorry` → the delegation, and the build-verify below
+                # then tests THAT delegation. A complete sub-goal has nothing
+                # to delegate → the build-verify would validate its own proof,
+                # rubber-stamping a spurious probe match. Decline → keep its
+                # own content as a novel sub-goal. Mirrors the build-verify-
+                # fail fallback + verify.promote_to_alias's guard (verify.py:306).
+                print(f"[dedupe] {slug}: sub-goal is already a complete proof "
+                      f"(no `:= by sorry`) — not aliasing; keeping as novel",
+                      flush=True)
+                match = None
+                canonical_for[idx] = None
             if match is not None:
                 # Build the alias body on top of import/opens-injected
                 # content so the file elaborates standalone (agent

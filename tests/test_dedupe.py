@@ -155,6 +155,51 @@ def test_extract_full_signature_no_theorem() -> None:
 
 
 # ---------------------------------------------------------------------
+# BUG1 regression (2026-07-03 mv_delta): the signature extractor must be
+# def-blind AND comment-unaware, so a `def` candidate never seeds a probe
+# via a stray theorem/lemma token in a comment.
+# ---------------------------------------------------------------------
+
+def test_extract_signature_ignores_comment_lemma_token_for_def() -> None:
+    """A `def` candidate whose ONLY `lemma`/`theorem` token is in a comment
+    (the Forward seed's `-- Write ONE forward lemma here`) must yield no
+    signature — else its garbage 'signature' seeds a false-positive alias
+    (the real mv_delta δ was false-aliased to an unrelated support lemma)."""
+    def_cand = (
+        "import Mathlib\n"
+        "-- Write ONE forward lemma here\n"
+        "noncomputable def mv_delta {R : Type} [Ring R] : SomeHom := realTerm\n"
+    )
+    assert dedupe._extract_full_signature(def_cand) is None
+    assert dedupe._signature_binder_count(def_cand) == 0
+
+
+def test_extract_signature_matches_real_head_past_comment_token() -> None:
+    """A real theorem preceded by a comment mentioning `lemma` must still
+    extract the REAL head's signature, not the comment."""
+    thm = (
+        "-- this lemma proves foo\n"
+        "theorem realfoo (x : Nat) : P x := by sorry\n"
+    )
+    assert dedupe._extract_full_signature(thm) == "(x : Nat) : P x"
+    assert dedupe._signature_binder_count(thm) == 1
+
+
+def test_extract_signature_matches_modifier_prefixed_head() -> None:
+    assert dedupe._extract_full_signature(
+        "private theorem bar (a : A) : Q := by sorry") == "(a : A) : Q"
+
+
+def test_build_alias_content_rewrites_sorry_stub() -> None:
+    """build_alias_content delegates a `:= by sorry` stub to the canonical."""
+    out = dedupe.build_alias_content(
+        original_content="import Mathlib\ntheorem foo : P := by sorry\n",
+        canonical_module="Problems.p.proofs.L_canon", canonical_slug="canon")
+    assert "apply canon" in out and "by sorry" not in out
+    assert "import Problems.p.proofs.L_canon" in out
+
+
+# ---------------------------------------------------------------------
 # _to_forall_form
 # ---------------------------------------------------------------------
 

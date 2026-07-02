@@ -93,13 +93,29 @@ from typing import NamedTuple
 from ..state import db
 
 
-# Signature extractor: matches declarations that always carry an
-# explicit type signature, i.e. `theorem` / `lemma` (lemma is just an
-# alias for theorem in Lean 4). NOT extended to `def` — definitional
-# entries may be of the form `def foo := value` with no signature, and
-# `_extract_full_signature` walks the text expecting `<binders> : ...
-# := ...` shape. The name extractor below is what needs to see `def`.
-_THM_HEAD_RE = re.compile(r"\b(?:theorem|lemma)\s+\S+")
+# Signature extractor: matches ONLY a real `theorem` / `lemma` DECL HEAD
+# (lemma is just an alias for theorem in Lean 4). Signature-based aliasing
+# is theorem-only by design: aliasing rewrites the body to a Prop tactic
+# `apply <canonical> <;> assumption` (proof-irrelevance makes same-type ⇒
+# aliasable). It is deliberately NOT extended to `def`/`structure`/`class`/
+# `abbrev`/`instance`: those are DATA, where same-type ≠ same-value, so
+# `def A := B` would silently redefine A as a different construction.
+#
+# The regex is LINE-ANCHORED (`re.MULTILINE`, `^` + optional attrs/modifiers)
+# and callers strip comments first, so a stray `theorem`/`lemma` token in a
+# comment can never seed a probe. Root-cause of the 2026-07-03 mv_delta
+# incident: the old `\b(?:theorem|lemma)\s+\S+` searched raw text and, for a
+# `def` candidate, matched the Forward seed's comment `-- Write ONE forward
+# lemma here` → `lemma here` → a garbage signature was probed against 163
+# canonicals and (via a second build_alias_content defect) false-aliased δ
+# to an unrelated support-membership lemma. A `def` candidate now yields
+# no signature → `find_canonicals_batch` forms no alias pair.
+_THM_HEAD_RE = re.compile(
+    r"^[ \t]*(?:@\[[^\]]*\][ \t]*)*"
+    r"(?:(?:private|protected|scoped|local|nonrec)[ \t]+)*"
+    r"(?:theorem|lemma)[ \t]+\S+",
+    re.MULTILINE,
+)
 _SORRY_BODY_RE = re.compile(r":=\s*by\s+sorry")
 # Lake/Lean error line: `<path>:<line>:<col>: error: ...`. Lazy `.+?` for
 # the path part so a Windows drive-letter colon (`D:\...`) doesn't abort
@@ -108,11 +124,22 @@ _LAKE_ERR_RE = re.compile(r"^.+?:(\d+):\d+:\s*error", re.MULTILINE)
 _BATCH_TIMEOUT_SEC = 240
 
 
+def _strip_comments(text: str) -> str:
+    """Remove Lean line (`-- …`) and block (`/- … -/`) comments so the
+    signature extractor anchors on a real decl head, never comment prose.
+    Mirrors `proof_store._strip_comments`."""
+    text = re.sub(r"/-.*?-/", "", text, flags=re.S)
+    return re.sub(r"--[^\n]*", "", text)
+
+
 def _signature_binder_count(text: str) -> int:
     """Count top-level binder groups before the type colon.
 
     `theorem foo (x : Nat) {α} [Inhabited α] : T := ...` → 3.
+    Returns 0 for a non-theorem/lemma decl (e.g. a `def` candidate), whose
+    head the extractor deliberately does not match.
     """
+    text = _strip_comments(text)
     m = _THM_HEAD_RE.search(text)
     if not m:
         return 0
@@ -148,8 +175,10 @@ def _extract_full_signature(text: str) -> str | None:
 
     Given `theorem foo (M : T) (h : U) : Sat M := proof`, returns
     `(M : T) (h : U) : Sat M`. The result is suitable for converting
-    into `∀`-form via `_to_forall_form`.
+    into `∀`-form via `_to_forall_form`. Returns None for a non-theorem/
+    lemma decl (a `def` candidate) — signature-aliasing is theorem-only.
     """
+    text = _strip_comments(text)
     m = _THM_HEAD_RE.search(text)
     if not m:
         return None

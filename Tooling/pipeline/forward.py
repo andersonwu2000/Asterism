@@ -392,6 +392,22 @@ def commit_forward_alias(conn: sqlite3.Connection, *,
     # strip before it's prepended into the alias content (and the proof file).
     body = _strip_entry_kind(body)
 
+    # Defense-in-depth (2026-07-03 mv_delta): only a SORRY-BEARING candidate
+    # is aliasable. `build_alias_content` rewrites `:= by sorry` → the
+    # delegation `apply <canonical>`, and the subsequent build-verify then
+    # tests THAT delegation (a real kernel type-check against the canonical).
+    # A candidate that is already a COMPLETE proof has no `:= by sorry` to
+    # rewrite → build_alias_content would leave its own proof in place → the
+    # build-verify would validate the candidate's OWN proof, not the
+    # delegation, silently rubber-stamping a spurious probe match. It is also
+    # pointless to alias an already-proved candidate. Decline → the caller
+    # commits it as its own novel proved goal (its proof is valid regardless).
+    if not dedupe._SORRY_BODY_RE.search(body):
+        print(f"[dedupe] forward {metadata.slug}: candidate is already a "
+              f"complete proof (no `:= by sorry`) — not aliasing; committing "
+              f"its own proof as a novel goal", flush=True)
+        return None
+
     proofs_dir = db.problem_dir(workspace, problem) / "proofs"
     proofs_dir.mkdir(parents=True, exist_ok=True)
     dest = proofs_dir / f"L_{metadata.slug}.lean"
