@@ -94,6 +94,54 @@ def test_accepts_when_cited_slug_is_proved(
         assert revive == set()
 
 
+def test_accepts_when_cited_slug_is_proved_alias(
+    conn: sqlite3.Connection,
+) -> None:
+    """Citing a PROVED ALIAS sibling — the alias's `L_<slug>.lean` delegates
+    to a byte-identical canonical (`apply <canonical>`, sorry-free), so it is
+    exactly as citable as the canonical. Regression for the mayer_vietoris
+    `mv_delta` block (2026-07-03): the cite gate misclassified a proved alias
+    as an orphan stub because `classify_cited_slug` filtered out aliases."""
+    canonical = _insert_goal(conn, "mv_delta_canonical", status="proved")
+    alias = _insert_goal(conn, "mv_delta", status="proved")
+    conn.execute("UPDATE goals SET alias_target_id = ? WHERE id = ?",
+                 (canonical, alias))
+    conn.commit()
+
+    # Direct classify: alias resolves through to the canonical, reported citable.
+    gid, status, orphan = db.classify_cited_slug(
+        conn, problem="p", slug="mv_delta", workspace=Path.cwd())
+    assert (gid, status, orphan) == (canonical, "proved", False)
+
+    # End-to-end: citing the alias passes (no auto_link needed, no error).
+    patch = "import Problems.p.proofs.L_mv_delta\n"
+    for allow in (True, False):
+        auto_link, revive, err = _resolve_cite_dependencies(
+            conn, problem="p", patch_text=patch,
+            declared_slugs=set(), allow_auto_link=allow,
+            workspace=Path.cwd(),
+        )
+        assert err is None
+        assert auto_link == set()
+        assert revive == set()
+
+
+def test_alias_to_open_canonical_inherits_status(
+    conn: sqlite3.Connection,
+) -> None:
+    """An alias to an OPEN canonical inherits the canonical's status (not a
+    free pass): auto-link on the decomp path, reject on leaf-bypass — the
+    same handling the open canonical itself would get."""
+    canonical = _insert_goal(conn, "open_canonical", status="open")
+    alias = _insert_goal(conn, "open_alias", status="proved")
+    conn.execute("UPDATE goals SET alias_target_id = ? WHERE id = ?",
+                 (canonical, alias))
+    conn.commit()
+    gid, status, orphan = db.classify_cited_slug(
+        conn, problem="p", slug="open_alias", workspace=Path.cwd())
+    assert (gid, status, orphan) == (canonical, "open", False)
+
+
 def test_skips_unknown_slug(conn: sqlite3.Connection) -> None:
     """Cited slug matches no goal AND no file on disk — a genuine typo /
     cross-problem ref. lake's `unknown identifier`/`unknown module` will
