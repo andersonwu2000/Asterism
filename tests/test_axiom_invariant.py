@@ -29,6 +29,7 @@ it locally to a False stub to exercise the rejection path.
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -38,6 +39,29 @@ from Tooling import agent, pipeline
 from Tooling.state import db, manifest
 from Tooling.quality import verify
 from Tooling.pipeline import _axiom
+
+
+# ---------------------------------------------------------------------
+# Structural gate (2026-07-03) — every proved-producing pipeline must route
+# its proved decision through the SHARED `_axiom.axiom_gate`. This is the
+# achievable form of "unify the proved standard": Forward (commit_forward_
+# lemma), Builder (leaf-bypass promote), and Backward (leaf-bypass) all call
+# the one gate — a regression that adds a proved-flip without it, or removes
+# the gate from one, trips here. (A runtime assert in apply_goal_transition is
+# impractical: the gate runs in-pipeline on its own warm slot while some
+# proved-flips fire dispatcher-side, and Forward's gate runs before insert_goal
+# — so there is no goal_id-keyed flag to check at the transition.)
+# ---------------------------------------------------------------------
+
+_PIPELINE = Path(__file__).resolve().parents[1] / "Tooling" / "pipeline"
+
+
+@pytest.mark.parametrize("name", ["forward.py", "builder.py", "backward.py"])
+def test_proved_pipeline_uses_shared_axiom_gate(name) -> None:
+    text = (_PIPELINE / name).read_text(encoding="utf-8")
+    assert re.search(r"\baxiom_gate\s*\(", text), (
+        f"{name} must route its proved decision through the shared "
+        f"_axiom.axiom_gate (the single soundness gate for 'proved')")
 
 
 # ---------------------------------------------------------------------
@@ -80,6 +104,8 @@ def _reject_probe(monkeypatch: pytest.MonkeyPatch):
             "axiom_error": None,
         }
     monkeypatch.setattr(_gl, "verify_file", _stub_verify_with_rogue)
+    # The conftest autouse stubs verify_in_session to DELEGATE to verify_file
+    # (call-time), so this override also drives the own-slot gate path.
     return _stub_reject
 
 

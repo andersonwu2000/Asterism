@@ -19,20 +19,23 @@ import pytest
 
 from Tooling.lsp import lifecycle as gateway_lifecycle
 
-# Capture the REAL verify_file before any test's conftest autouse
-# replaces it with a stub. Each test below restores this via the
-# module-local autouse `_restore_real_verify_file` so we exercise the
-# actual retry-with-backoff path, not the conftest happy-path stub.
+# Capture the REAL verify_file / verify_in_session before any test's conftest
+# autouse replaces them with stubs. Each test below restores these via the
+# module-local autouse `_restore_real_verify_fns` so we exercise the actual
+# retry-with-backoff / token-post path, not the conftest happy-path stub.
 _REAL_VERIFY_FILE = gateway_lifecycle.verify_file
+_REAL_VERIFY_IN_SESSION = gateway_lifecycle.verify_in_session
 
 
 @pytest.fixture(autouse=True)
-def _restore_real_verify_file(monkeypatch: pytest.MonkeyPatch):
+def _restore_real_verify_fns(monkeypatch: pytest.MonkeyPatch):
     """Override conftest's `_stub_axiom_probe_by_default` for this file
-    only — we need the real verify_file body to test its retry / error
-    classification logic. Applied after conftest's autouse, so this
-    monkeypatch wins."""
+    only — we need the real verify_file / verify_in_session bodies to test
+    their retry / error classification / token-post logic. Applied after
+    conftest's autouse, so this monkeypatch wins."""
     monkeypatch.setattr(gateway_lifecycle, "verify_file", _REAL_VERIFY_FILE)
+    monkeypatch.setattr(
+        gateway_lifecycle, "verify_in_session", _REAL_VERIFY_IN_SESSION)
 
 
 class _MockResponse:

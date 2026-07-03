@@ -976,63 +976,25 @@ def _backward_parse_and_commit(
         # parent build (~5-10s) and triggering the cascade-vs-verify
         # race window. Post-(a): caught here with no scratch promotion,
         # no race surface.
-        # Always request the axiom set (near-free — computed during
-        # elaboration) for the UNCONDITIONAL sorryAx tripwire below.
+        # The single soundness gate (shared with Forward + Builder,
+        # `_axiom.axiom_gate`): elaborate the promoted scratch on THIS
+        # pipeline's own warm slot (via its session token), request the axiom
+        # set, and apply the unconditional sorryAx tripwire + whitelist check
+        # — before the leaf-bypass promotes the goal proved. (P13 root sorryAx
+        # came in via a leaf citing an orphan stub; a `\bsorry\b` scan can't
+        # see that, `collectAxioms` can.)
+        from ._axiom import axiom_gate
         fq_name = f"Problems.{goal['problem']}.{sid_token}"
-        v = _verify_owned(scratch_dest, write_olean=True, axioms_for=fq_name)
-        if "error" in v:
+        gate = axiom_gate(
+            scratch_dest, fq_name=fq_name,
+            whitelist=list(mfst.axioms_whitelist or []),
+            workspace=workspace, attempts_dir=attempts_dir, write_olean=True)
+        if not gate.ok:
             _rm_scratch()
-            return _abort(
-                "lake_build_error",
-                diagnostics.annotate_failure_detail(
-                    f"verify infra error: {v['error']}"),
-                leading,
-            )
-        if not v.get("ok"):
-            err_lines = "\n".join(
-                f"line {d.get('line','?')}:{d.get('col','?')}  "
-                f"{d.get('severity','?')}: {d.get('message','')}"
-                for d in (v.get("diagnostics") or [])
-                if d.get("severity") == "error"
-            )
-            _rm_scratch()
-            return _abort(
-                "lake_build_error",
-                diagnostics.annotate_failure_detail(
-                    err_lines or "(no error diagnostics returned)"),
-                leading,
-            )
-        # Universal sorryAx tripwire — independent of axioms_whitelist. A
-        # transitive sorry (cited stub/orphan sibling) compiles green
-        # (warning, not error); `#print axioms` is the ground truth.
-        # Reject before promoting the scratch (P13 root sorryAx came in
-        # via exactly this: a leaf citing an orphan stub).
-        if "sorryAx" in (v.get("axioms") or []):
-            _rm_scratch()
-            return _abort(
-                "axiom_violation",
-                "leaf-bypass proof term depends on sorryAx — a transitive "
-                "sorry (e.g. a cited stub/orphan sibling), not a complete "
-                "proof",
-                leading,
-            )
-        if mfst.axioms_whitelist:
-            if v.get("axiom_error"):
-                _rm_scratch()
-                return _abort(
-                    "axiom_violation",
-                    f"leaf-bypass axiom probe error: {v['axiom_error']}",
-                    leading,
-                )
-            used = set(v.get("axioms") or [])
-            rogue = used - set(mfst.axioms_whitelist)
-            if rogue:
-                _rm_scratch()
-                return _abort(
-                    "axiom_violation",
-                    f"leaf-bypass rogue axioms: {sorted(rogue)}",
-                    leading,
-                )
+            detail = gate.detail or ""
+            if gate.failure_reason == "lake_build_error":
+                detail = diagnostics.annotate_failure_detail(detail)
+            return _abort(gate.failure_reason, detail, leading)
         # Race guard mirrors the decomp path's check at line ~666.
         fresh = db.get_goal(conn, goal_id)
         if fresh is None or fresh["status"] not in ("open", "attempting"):
