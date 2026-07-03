@@ -13,6 +13,12 @@ import pytest
 
 from Tooling.quality import lean_contracts as lc
 
+# Captured at import time — the conftest autouse gate-skip stub replaces
+# lc.check_on_startup for every test (so dispatcher e2es don't run real
+# contracts against verify stubs); tests of the REAL function restore it
+# (same pattern as test_gateway_lifecycle's real-fn restore).
+_REAL_CHECK_ON_STARTUP = lc.check_on_startup
+
 
 def _ws(tmp_path: Path, toolchain="leanprover/lean4:v9.9.9",
         manifest='{"packages": []}') -> Path:
@@ -35,6 +41,7 @@ def test_fingerprint_changes_with_toolchain(tmp_path):
 
 
 def test_check_on_startup_skips_when_stamped(tmp_path, monkeypatch):
+    monkeypatch.setattr(lc, "check_on_startup", _REAL_CHECK_ON_STARTUP)
     ws = _ws(tmp_path)
     calls = {"n": 0}
 
@@ -53,6 +60,7 @@ def test_check_on_startup_skips_when_stamped(tmp_path, monkeypatch):
 
 
 def test_check_on_startup_refuses_on_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(lc, "check_on_startup", _REAL_CHECK_ON_STARTUP)
     ws = _ws(tmp_path)
     monkeypatch.setattr(lc, "run_all",
                         lambda w: [("good", True, ""),

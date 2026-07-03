@@ -37,6 +37,18 @@ def conn() -> sqlite3.Connection:
 
 
 @pytest.fixture(autouse=True)
+def _skip_lean_contract_gate(monkeypatch: pytest.MonkeyPatch):
+    """The daemon-startup framework⇄Lean contract gate (task #12) would run
+    its real-toolchain contracts against this conftest's verify stubs and
+    fail honestly (stubbed axiom sets are empty) — wedging every e2e that
+    drives dispatcher.run(). Unit tests exercise scheduling, not the
+    toolchain; the gate has its own Lean-free unit tests
+    (test_lean_contracts.py) + real_lake wrappers for the real thing."""
+    from Tooling.quality import lean_contracts
+    monkeypatch.setattr(lean_contracts, "check_on_startup", lambda ws: True)
+
+
+@pytest.fixture(autouse=True)
 def _disable_reflection_by_default(monkeypatch: pytest.MonkeyPatch):
     """Most tests stub `agent.spawn_llm` and assert the exact number of
     spawn invocations (cold + warm retries + F55 postmortem). The
