@@ -107,7 +107,7 @@ _WATERMARKS = {
     # builds-only), and hard-fail any `axiom` declaration — conscious bumps.
     "Tooling/pipeline/librarian/gate.py": 385,
     "Tooling/pipeline/librarian/context.py": 430,
-    "Tooling/pipeline/librarian/execute.py": 1150,
+    "Tooling/pipeline/librarian/execute.py": 1170,  # +universe hoist/dedup (#72)
     "Tooling/pipeline/librarian/bridge.py": 390,
     "Tooling/pipeline/librarian/run.py": 560,
     # dispatcher 2750→2800 + db 2450→2500: awaiting_human observability
