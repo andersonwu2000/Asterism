@@ -684,6 +684,27 @@ def test_reconcile_preserves_instance_attr_on_prop_class_root(
     assert prune.reconcile_proved_goals(conn, tmp_path, "p") == []
 
 
+def test_canonical_alias_content_carries_noncomputable() -> None:
+    """A `noncomputable def` data goal must finalize to `noncomputable def
+    <slug> := @…` — dropping the modifier (carrying only `@[attrs]`) makes
+    the re-export cold-build-fail with "mark it 'noncomputable'" (BUG4). A
+    plain theorem stays a bare `def`, guarding the non-data majority."""
+    nc = ("import Mathlib\nnamespace Problems.p\n\n"
+          "noncomputable def iso : C.Iso A B := by sorry\n\nend Problems.p\n")
+    out = prune._canonical_alias_content(
+        problem="p", goal_slug="iso", sid_token="s7",
+        scratch_module="Problems.p.proofs._strategy_s7", current=nc)
+    assert "noncomputable def iso := @Problems.p.s7" in out
+
+    plain = ("import Mathlib\nnamespace Problems.p\n\n"
+             "theorem g : True := by sorry\n\nend Problems.p\n")
+    out2 = prune._canonical_alias_content(
+        problem="p", goal_slug="g", sid_token="s8",
+        scratch_module="Problems.p.proofs._strategy_s8", current=plain)
+    assert "def g := @Problems.p.s8" in out2
+    assert "noncomputable" not in out2
+
+
 # ---------------------------------------------------------------------
 # F42 — winning_chain follows alias_target_id so orphan canonicals stay
 # ---------------------------------------------------------------------

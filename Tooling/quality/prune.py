@@ -23,6 +23,7 @@ from pathlib import Path
 
 from ..state import db
 from .dedupe import leading_decl_attrs
+from ..pipeline._skeleton import leading_decl_modifiers
 
 
 def _lean_path_to_module(workspace: Path, lean_path: Path) -> str:
@@ -75,7 +76,7 @@ def _canonical_alias_content(*, problem: str, goal_slug: str,
       <annotation>     ← `--` comment block from Strategist proposal_md
       <imports>        ← Mathlib/Defs + winner strategy module
       namespace ...
-      def <slug> := @<problem>.<sid>
+      <modifiers?> def <slug> := @<problem>.<sid>   ← e.g. `noncomputable`
       end ...
 
     Reconcile-specific repair (vs Verify-time promote):
@@ -110,6 +111,10 @@ def _canonical_alias_content(*, problem: str, goal_slug: str,
         + "\n".join(keep_imports) + "\n\n"
         f"namespace Problems.{problem}\n\n"
         f"{leading_decl_attrs(current, goal_slug)}"
+        # Carry keyword modifiers (`noncomputable` …) too — a data goal's
+        # re-export drops `noncomputable` and cold-build-fails without this
+        # (mirrors the same fix in `_skeleton.promote_to_alias`).
+        f"{leading_decl_modifiers(current, goal_slug)}"
         f"def {goal_slug} := @Problems.{problem}.{sid_token}\n\n"
         f"end Problems.{problem}\n"
     )

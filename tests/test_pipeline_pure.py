@@ -737,6 +737,50 @@ def test_promote_to_alias_writes_def_re_export(tmp_path: Path) -> None:
     assert backup is not None and "by sorry" in backup.read_text(encoding="utf-8")
 
 
+def test_promote_to_alias_carries_noncomputable_modifier(tmp_path: Path) -> None:
+    """A `noncomputable def` data-goal parent must re-export as
+    `noncomputable def <slug> := @<sid>`. Dropping the modifier (carrying
+    only `@[attrs]`) compile-fails on cold `lake build` — "mark it
+    'noncomputable'" — because the strategy `sN` IS noncomputable. This
+    slips past verify-collapse (mechanical promote, no cold build) and a
+    trivial `main : True` root (never imports the closure), staying latent
+    until harvest / review cold-builds it (BUG4, MV ingest stress test)."""
+    from Tooling.pipeline import _promote_to_alias
+    parent = tmp_path / "L_iso.lean"
+    parent.write_text(
+        "import Mathlib\n\nnamespace Problems.p\n\n"
+        "noncomputable def iso : SomeCat.Iso A B := by sorry\n\n"
+        "end Problems.p\n",
+        encoding="utf-8")
+    _promote_to_alias(
+        parent,
+        namespace="Problems.p", slug="iso", sid_token="s77",
+        scratch_module="Problems.p.proofs._strategy_s77",
+    )
+    new = parent.read_text(encoding="utf-8")
+    assert "noncomputable def iso := @Problems.p.s77" in new
+
+
+def test_promote_to_alias_plain_theorem_stays_bare(tmp_path: Path) -> None:
+    """A plain `theorem` parent (Prop goal) has no keyword modifier, so the
+    re-export stays a bare `def <slug> := @<sid>` — the modifier carry must
+    not spuriously prepend anything (guards the common case)."""
+    from Tooling.pipeline import _promote_to_alias
+    parent = tmp_path / "L_g.lean"
+    parent.write_text(
+        "import Mathlib\n\nnamespace Problems.p\n\n"
+        "theorem g : True := by sorry\n\nend Problems.p\n",
+        encoding="utf-8")
+    _promote_to_alias(
+        parent,
+        namespace="Problems.p", slug="g", sid_token="s5",
+        scratch_module="Problems.p.proofs._strategy_s5",
+    )
+    new = parent.read_text(encoding="utf-8")
+    assert "def g := @Problems.p.s5" in new
+    assert "noncomputable" not in new
+
+
 def test_promote_to_alias_no_backup_when_parent_absent(tmp_path: Path) -> None:
     from Tooling.pipeline import _promote_to_alias
     parent = tmp_path / "L_new.lean"

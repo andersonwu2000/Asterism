@@ -258,6 +258,16 @@ def promote_to_alias(
         + "\n".join(orig_imports) + "\n\n"
         + f"namespace {namespace}\n\n"
         + f"{leading_decl_attrs(original, slug)}"
+        # Carry the parent's keyword modifiers (`noncomputable` …) too, not
+        # just its `@[...]` attrs. A data goal's stub is `noncomputable def
+        # <slug> : <DataType> := by sorry`; without re-prepending the modifier
+        # the re-export `def <slug> := @<sid>` compile-fails on cold `lake
+        # build` with "mark it 'noncomputable'" (the sid IS noncomputable).
+        # verify-collapse promotes this mechanically (no cold build) and a
+        # trivial `main : True` root never imports the closure, so the broken
+        # alias stays latent until harvest / review / a downstream import cold-
+        # builds it. Attr-order: `@[attr]` precede `noncomputable` in Lean 4.
+        + f"{leading_decl_modifiers(original, slug)}"
         + f"def {slug} := @{namespace}.{sid_token}\n\n"
         + f"end {namespace}\n"
     )
