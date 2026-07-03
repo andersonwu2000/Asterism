@@ -392,3 +392,34 @@ def test_register_session_unreachable_is_none(
     tok = gateway_lifecycle.register_session(
         pipeline_id="x", target_path=target, problem="p", workspace=tmp_path)
     assert tok is None
+
+
+# ---------------------------------------------------------------------
+# _borrow_order — the pipeline=slot rule's borrow-side half (2026-07-03):
+# a borrow probe must prefer UNCLAIMED slots (LRU within each group) and
+# reach a registered session's slot only as the last resort. Before this
+# ordering existed, plain LRU actively preferred the slot of the pipeline
+# that had been thinking longest — the 2026-06-29 slot-thrash shape.
+# ---------------------------------------------------------------------
+
+def test_borrow_order_prefers_unclaimed_then_lru() -> None:
+    from types import SimpleNamespace as S
+    from Tooling.lsp.gateway import _borrow_order
+    claimed_old = S(claimed_by="pipe-a", last_used_ts=1.0, name="claimed_old")
+    claimed_new = S(claimed_by="pipe-b", last_used_ts=9.0, name="claimed_new")
+    free_old = S(claimed_by=None, last_used_ts=2.0, name="free_old")
+    free_new = S(claimed_by=None, last_used_ts=8.0, name="free_new")
+    order = _borrow_order([claimed_old, free_new, claimed_new, free_old])
+    assert [s.name for s in order] == [
+        "free_old", "free_new",          # unclaimed first, LRU inside
+        "claimed_old", "claimed_new",    # claimed only as fallback
+    ]
+
+
+def test_borrow_order_all_claimed_falls_back_to_lru() -> None:
+    from types import SimpleNamespace as S
+    from Tooling.lsp.gateway import _borrow_order
+    a = S(claimed_by="p1", last_used_ts=5.0)
+    b = S(claimed_by="p2", last_used_ts=3.0)
+    order = _borrow_order([a, b])
+    assert order == [b, a]     # liveness: claimed slots still reachable

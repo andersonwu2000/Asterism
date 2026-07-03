@@ -335,6 +335,7 @@ _SORRY_RE = re.compile(r"\b(?:sorry|sorryAx)\b")
 def _try_promote_sorry_free(
     *, dest: Path, problem: str, slug: str, workspace: Path,
     axioms_whitelist: list[str],
+    attempts_dir: "Path | None" = None,
 ) -> tuple[bool, str]:
     """If `dest` is sorry-free AND its `#print axioms` set ⊆ whitelist,
     return (True, msg). Otherwise (False, reason).
@@ -342,6 +343,9 @@ def _try_promote_sorry_free(
     The strategy's batch lake build at the caller's site already
     confirmed the file compiles, so the literal `\\bsorry\\b` substring
     check is the cheap pre-filter; the real authority is `axiom_probe`.
+    `attempts_dir` routes the probe to the pipeline's OWN slot
+    (pipeline=slot rule) — this runs inside Backward's commit loop while
+    the session is still held; a borrow would evict another tenant.
     """
     try:
         content = dest.read_text(encoding="utf-8")
@@ -351,7 +355,7 @@ def _try_promote_sorry_free(
         return False, "body contains sorry"
     return _axiom.axiom_probe_file(
         workspace, dest, problem=problem, slug=slug,
-        whitelist=axioms_whitelist,
+        whitelist=axioms_whitelist, attempts_dir=attempts_dir,
     )
 
 
@@ -785,7 +789,6 @@ def _backward_parse_and_commit(
     so warm retries can run against the same row.
     """
     from . import PipelineResult
-    from ..lsp import lifecycle as gateway_lifecycle
 
     # Verify freshly-placed files on THIS pipeline's OWN claimed slot
     # (verify_in_session) rather than borrowing a free slot (verify_file).
@@ -798,26 +801,14 @@ def _backward_parse_and_commit(
     # spurious `lake_build_error: <stub>:L:C expected token` on a file that
     # builds clean (root-caused 2026-06-29; only fires on decomposition,
     # which is exactly when this gate runs). Our own slot has no concurrent
-    # foreign tenant, so no cross-talk. Fall back to the borrow path only if
-    # the session token is absent (defensive: non-agent / failed-register).
-    _session_token = ""
-    try:
-        _tok = attempts_dir / "_gateway_session.token"
-        if _tok.is_file():
-            _session_token = _tok.read_text(encoding="utf-8").strip()
-    except OSError:
-        _session_token = ""
-
+    # foreign tenant, so no cross-talk.
     def _verify_owned(path, *, write_olean=True, axioms_for=None):
-        if _session_token:
-            return gateway_lifecycle.verify_in_session(
-                _session_token, path.read_text(encoding="utf-8"),
-                write_olean=write_olean, axioms_for=axioms_for,
-                workspace=workspace,
-                _retry_delays=gateway_lifecycle._VERIFY_RETRY_DELAYS)
-        return gateway_lifecycle.verify_file(
-            path, write_olean=write_olean, axioms_for=axioms_for,
-            workspace=workspace)
+        # Delegates to the shared pipeline=slot dispatch (single impl of
+        # "own slot when the session token is present, borrow only as
+        # defensive fallback").
+        return _axiom.verify_on_own_slot(
+            path, workspace=workspace, attempts_dir=attempts_dir,
+            write_olean=write_olean, axioms_for=axioms_for)
 
     patches = _safe_glob(attempts_dir, "patch*.lean")
     if not patches:
@@ -1644,6 +1635,7 @@ def _backward_parse_and_commit(
                     dest=dest, problem=goal["problem"], slug=slug,
                     workspace=workspace,
                     axioms_whitelist=mfst.axioms_whitelist,
+                    attempts_dir=attempts_dir,
                 )
                 if ok:
                     transitions.apply_goal_transition(

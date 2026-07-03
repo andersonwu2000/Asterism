@@ -59,6 +59,35 @@ def _read_session_token(attempts_dir: "Path | None") -> str:
     return ""
 
 
+def verify_on_own_slot(
+    path: Path, *, workspace: Path, attempts_dir: "Path | None" = None,
+    write_olean: bool = True, axioms_for: "str | None" = None,
+    timeout: "float | None" = None,
+) -> dict:
+    """Verify `path` on the pipeline's OWN gateway slot when a session token
+    is present (attempts_dir), else fall back to a borrowed slot.
+
+    THE dispatch for the pipeline=slot rule (#118): a pipeline holds one
+    claimed warm slot for its whole lifecycle; every in-pipeline elaboration
+    must hit that slot (`verify_in_session`, ~50-200ms warm, no eviction).
+    A borrow evicts some slot's warm content — before the unclaimed-first
+    fix it could evict another in-flight pipeline's slot (2026-06-29
+    slot-thrash). The borrow fallback here is defensive only (no register /
+    token file missing); in-pipeline callers should always have a token."""
+    from ..lsp import lifecycle as gateway_lifecycle
+    kwargs = {} if timeout is None else {"timeout": float(timeout)}
+    token = _read_session_token(attempts_dir)
+    if token:
+        return gateway_lifecycle.verify_in_session(
+            token, path.read_text(encoding="utf-8"),
+            write_olean=write_olean, axioms_for=axioms_for,
+            workspace=workspace,
+            _retry_delays=gateway_lifecycle._VERIFY_RETRY_DELAYS, **kwargs)
+    return gateway_lifecycle.verify_file(
+        path, write_olean=write_olean, axioms_for=axioms_for,
+        workspace=workspace, **kwargs)
+
+
 def axiom_gate(
     path: Path, *, fq_name: str, whitelist: "list[str]",
     workspace: Path, attempts_dir: "Path | None" = None,
@@ -83,17 +112,9 @@ def axiom_gate(
     tenant, the 2026-06-29 slot-thrash bug). `write_olean=True` also publishes
     the .olean so downstream cold imports (cite-gate, harvest, root probe)
     don't rebuild it."""
-    from ..lsp import lifecycle as gateway_lifecycle
-    token = _read_session_token(attempts_dir)
-    if token:
-        v = gateway_lifecycle.verify_in_session(
-            token, path.read_text(encoding="utf-8"),
-            write_olean=write_olean, axioms_for=fq_name, workspace=workspace,
-            _retry_delays=gateway_lifecycle._VERIFY_RETRY_DELAYS)
-    else:
-        v = gateway_lifecycle.verify_file(
-            path, write_olean=write_olean, axioms_for=fq_name,
-            workspace=workspace)
+    v = verify_on_own_slot(
+        path, workspace=workspace, attempts_dir=attempts_dir,
+        write_olean=write_olean, axioms_for=fq_name)
     if "error" in v:
         return AxiomGateResult(False, "lake_build_error",
                                f"verify infra error: {v['error']}", v)
@@ -128,6 +149,7 @@ def axiom_probe(
     module: str,
     whitelist: list[str],
     timeout: int = 180,
+    attempts_dir: "Path | None" = None,
 ) -> tuple[bool, str]:
     """Verify `fq_name`'s transitive axiom set ⊆ `whitelist`.
 
@@ -149,13 +171,11 @@ def axiom_probe(
     if not source.exists():
         return False, f"axiom probe failed: source not found: {source}"
 
-    # Lazy import to avoid circular deps (gateway_lifecycle imports
-    # nothing from pipeline, but pipeline package init shouldn't
-    # depend on the daemon-side gateway module unconditionally).
-    from ..lsp import lifecycle as gateway_lifecycle
-    result = gateway_lifecycle.verify_file(
-        source, write_olean=True, axioms_for=fq_name,
-        timeout=float(timeout), workspace=workspace,
+    # Own-slot when the caller's pipeline still holds a session
+    # (attempts_dir); borrowed slot otherwise (housekeeping / root gate).
+    result = verify_on_own_slot(
+        source, workspace=workspace, attempts_dir=attempts_dir,
+        write_olean=True, axioms_for=fq_name, timeout=float(timeout),
     )
 
     if "error" in result:
@@ -179,11 +199,14 @@ def axiom_probe(
 def axiom_probe_file(
     workspace: Path, dest: Path, *,
     problem: str, slug: str, whitelist: list[str],
+    attempts_dir: "Path | None" = None,
 ) -> tuple[bool, str]:
     """Convenience wrapper: derive (fq_name, module) from a goal lean
     file + slug, then call `axiom_probe`. The standard call shape for
-    Builder / verify_strategy / sub-goal-stub promotion."""
+    Builder / verify_strategy / sub-goal-stub promotion. Pass
+    `attempts_dir` whenever the caller is inside a pipeline that holds a
+    session — the probe then runs on the pipeline's own slot."""
     fq_name = f"Problems.{problem}.{slug}"
     module = lean_path_to_module(workspace, dest)
     return axiom_probe(workspace, fq_name=fq_name, module=module,
-                       whitelist=whitelist)
+                       whitelist=whitelist, attempts_dir=attempts_dir)

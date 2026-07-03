@@ -722,19 +722,31 @@ def test_run_forward_dedupe_alias_build_fails_falls_back_to_novel(
         lambda *a, **k: [dedupe.CanonicalMatch(goal_id=canon_id, kind="alias")],
     )
 
-    # self_verify (attempts_dir new_*.lean) passes; the alias build
-    # (under proofs/) fails — the probe was a false positive.
+    # self_verify (the agent's original sorry body) passes; the alias
+    # build (delegation body `apply canon2 <;> assumption`) fails — the
+    # probe was a false positive. Both verifies run on the pipeline's OWN
+    # slot (verify_in_session; unit tests always hold the conftest
+    # /register stub token), whose contract is CONTENT-based — there is
+    # no target path to discriminate on, so discriminate on the body.
+    _OK = {
+        "ok": True, "diagnostics": [], "diagnostic_count": 0,
+        "olean_written": False, "olean_path": None,
+        "axioms": None, "axiom_error": None,
+    }
+    _APPLY_FAIL = {"ok": False, "error": None, "diagnostics": [
+        {"severity": "error", "message": "apply failed to unify"}]}
+
     def fake_verify(target_path, **kw):
+        # borrow fallback (token absent) — same discrimination by path.
         in_proofs = "proofs" in Path(target_path).parts
-        if in_proofs:
-            return {"ok": False, "error": None, "diagnostics": [
-                {"severity": "error", "message": "apply failed to unify"}]}
-        return {
-            "ok": True, "diagnostics": [], "diagnostic_count": 0,
-            "olean_written": False, "olean_path": None,
-            "axioms": None, "axiom_error": None,
-        }
+        return dict(_APPLY_FAIL) if in_proofs else dict(_OK)
     monkeypatch.setattr(gateway_lifecycle, "verify_file", fake_verify)
+
+    def fake_verify_session(token, content, **kw):
+        return (dict(_APPLY_FAIL) if "apply canon2" in content
+                else dict(_OK))
+    monkeypatch.setattr(
+        gateway_lifecycle, "verify_in_session", fake_verify_session)
 
     r = forward.run_forward(
         conn, problem="p", workspace=workspace, mfst=mfst,

@@ -148,11 +148,16 @@ def _stub_axiom_probe_by_default(monkeypatch: pytest.MonkeyPatch,
         }
     monkeypatch.setattr(_gl, "verify_file", _stub_verify_file)
 
-    # The own-slot probe path (`_axiom.axiom_gate` uses verify_in_session when
-    # the pipeline holds a session token). DELEGATE to whatever verify_file is
+    # The own-slot probe path (`_axiom.axiom_gate` / `verify_on_own_slot` when
+    # the pipeline holds a session token — which unit tests ALWAYS do, via the
+    # /register urlopen stub above). DELEGATE to whatever verify_file is
     # currently stubbed to (resolved at CALL time), so a test that overrides
     # verify_file — to fail a build, inject sorryAx, etc. — also controls the
-    # own-slot gate path without having to stub both.
+    # own-slot gate path without having to stub both. CAVEAT: the delegation
+    # passes CONTENT where verify_file expects a path — a test stub that
+    # discriminates by target_path will misfire on the own-slot path; such
+    # tests must stub verify_in_session themselves and discriminate by
+    # content (see test_run_forward_dedupe_alias_build_fails_falls_back_…).
     def _stub_verify_in_session(token, content, *, write_olean=False,
                                 axioms_for=None, timeout=240.0,
                                 workspace=None, _retry_delays=None):

@@ -505,3 +505,73 @@ def test_builder_phase2_axiom_violation_returns_failed(
         encoding="utf-8") == original
 
 
+
+
+# ---------------------------------------------------------------------
+# verify_on_own_slot — the pipeline=slot dispatch (2026-07-03): a session
+# token in attempts_dir routes to verify_in_session (the pipeline's own
+# claimed slot); no token falls back to the borrowed verify_file path.
+# The three former in-pipeline borrows (forward self_verify, forward alias
+# build-verify, backward sorry-free promotion) all route through this now.
+# ---------------------------------------------------------------------
+
+def test_verify_on_own_slot_dispatches_by_token(tmp_path, monkeypatch):
+    from Tooling.pipeline import _axiom
+    from Tooling.lsp import lifecycle as gl
+    src = tmp_path / "f.lean"
+    src.write_text("theorem t : True := trivial\n", encoding="utf-8")
+    calls: list[str] = []
+    monkeypatch.setattr(gl, "verify_in_session",
+                        lambda *a, **k: calls.append("session") or {"ok": True})
+    monkeypatch.setattr(gl, "verify_file",
+                        lambda *a, **k: calls.append("borrow") or {"ok": True})
+
+    # no attempts_dir / no token file → borrow fallback
+    _axiom.verify_on_own_slot(src, workspace=tmp_path)
+    assert calls == ["borrow"]
+
+    # token present → own slot, never borrow
+    calls.clear()
+    adir = tmp_path / ".attempts" / "p1"
+    adir.mkdir(parents=True)
+    (adir / "_gateway_session.token").write_text("tok123", encoding="utf-8")
+    _axiom.verify_on_own_slot(src, workspace=tmp_path, attempts_dir=adir)
+    assert calls == ["session"]
+
+
+# Captured at import time (= collection), BEFORE the conftest autouse stub
+# replaces them — same pattern as test_gateway_lifecycle's real-fn restore.
+from Tooling.pipeline import _axiom as _axiom_mod  # noqa: E402
+_REAL_AXIOM_PROBE = _axiom_mod.axiom_probe
+_REAL_AXIOM_PROBE_FILE = _axiom_mod.axiom_probe_file
+
+
+def test_axiom_probe_file_threads_attempts_dir(tmp_path, monkeypatch):
+    from Tooling.pipeline import _axiom
+    from Tooling.lsp import lifecycle as gl
+    # conftest autouse stubs axiom_probe_file/axiom_probe wholesale; this test
+    # exercises the REAL functions' own-slot dispatch — restore them.
+    monkeypatch.setattr(_axiom, "axiom_probe", _REAL_AXIOM_PROBE)
+    monkeypatch.setattr(_axiom, "axiom_probe_file", _REAL_AXIOM_PROBE_FILE)
+    proofs = tmp_path / "Problems" / "p" / "proofs"
+    proofs.mkdir(parents=True)
+    dest = proofs / "L_foo.lean"
+    dest.write_text("theorem foo : True := trivial\n", encoding="utf-8")
+    adir = tmp_path / ".attempts" / "p2"
+    adir.mkdir(parents=True)
+    (adir / "_gateway_session.token").write_text("tok456", encoding="utf-8")
+    seen: dict = {}
+
+    def fake_session(token, content, **k):
+        seen["token"] = token
+        return {"ok": True, "axioms": []}
+    monkeypatch.setattr(gl, "verify_in_session", fake_session)
+    monkeypatch.setattr(
+        gl, "verify_file",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("must not borrow when a token is present")))
+    ok, msg = _axiom.axiom_probe_file(
+        tmp_path, dest, problem="p", slug="foo",
+        whitelist=["propext"], attempts_dir=adir)
+    assert ok, msg
+    assert seen["token"] == "tok456"

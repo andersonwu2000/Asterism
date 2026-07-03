@@ -331,6 +331,17 @@ def _wedge_watchdog_loop() -> None:
 
 # ─── Slot acquisition (the heart of Phase 2) ─────────────
 
+def _borrow_order(workers):
+    """Slot preference for a borrow probe: UNCLAIMED slots first (evicting a
+    registered session's warm content costs its owner a cold_warmup and can
+    block it behind our lock — the 2026-06-29 slot-thrash shape), LRU within
+    each group. A claimed slot is reachable only when every unclaimed slot is
+    lock-busy — liveness for housekeeping probes when the whole pool is
+    registered. Extracted for direct unit-testing of the ordering invariant."""
+    return sorted(workers,
+                  key=lambda s: (s.claimed_by is not None, s.last_used_ts))
+
+
 @contextlib.contextmanager
 def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True,
                   borrow: bool = False):
@@ -365,13 +376,19 @@ def _acquire_slot(meta: SessionMetadata, *, swap_in: bool = True,
         raise RuntimeError("no workers in pool")
 
     if borrow:
-        # Probe mode: find any unlocked slot. Prefer slots that are
-        # unclaimed or whose owner is between RPCs (lock not held)
-        # over forcing eviction on an actively-used slot.
-        sorted_slots = sorted(_state.workers, key=lambda s: s.last_used_ts)
+        # Probe mode: find an unlocked slot via _borrow_order. The docstring
+        # always promised "prefer unclaimed" but the code only implemented
+        # "lock not held": a borrow could land on (and evict the warm content
+        # of) a registered session's slot even while free slots sat idle —
+        # and the plain-LRU order actively PREFERRED the slot of a pipeline
+        # in a long think (oldest last_used_ts), the 2026-06-29 slot-thrash
+        # shape. Claimed slots are now the fallback only when every unclaimed
+        # slot is lock-busy (liveness: a housekeeping probe must still get a
+        # slot when the whole pool is registered). Re-sort each poll so
+        # claims/releases during the 120s window are observed.
         deadline = time.monotonic() + 120.0
         while time.monotonic() < deadline:
-            for slot in sorted_slots:
+            for slot in _borrow_order(_state.workers):
                 if slot.lock.acquire(blocking=False):
                     try:
                         if swap_in:

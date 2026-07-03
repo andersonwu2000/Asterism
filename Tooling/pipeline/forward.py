@@ -397,6 +397,7 @@ def commit_forward_alias(conn: sqlite3.Connection, *,
                          metadata: ForwardMetadata,
                          body: str,
                          match: "Any",
+                         attempts_dir: "Path | None" = None,
                          ) -> CommitOutcome | None:
     """Forward dedupe hit on a PROVED canonical → register the lemma as a
     proved alias delegating to that canonical, instead of declining.
@@ -419,7 +420,6 @@ def commit_forward_alias(conn: sqlite3.Connection, *,
     handling" contract.
     """
     from ..quality import dedupe
-    from ..lsp import lifecycle as gateway_lifecycle
     from ._lake import lean_path_to_module
     from .backward import _strip_entry_kind
 
@@ -479,8 +479,12 @@ def commit_forward_alias(conn: sqlite3.Connection, *,
         rel_path=dest.relative_to(workspace).as_posix(), content=alias_content)
     # Build-verify the actual alias file before trusting the probe (see
     # docstring). write_olean=True so downstream citers resolve the .olean.
-    av = gateway_lifecycle.verify_file(
-        dest, write_olean=True, workspace=workspace)
+    # Own-slot (pipeline=slot rule) — mirror of Backward's alias placement,
+    # which already verifies on its own slot.
+    from ._axiom import verify_on_own_slot
+    av = verify_on_own_slot(
+        dest, workspace=workspace, attempts_dir=attempts_dir,
+        write_olean=True)
     if not (av.get("ok") and not av.get("error")):
         why = av.get("error") or "; ".join(
             d.get("message", "")
@@ -717,10 +721,13 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
         # and only if Lean elaborates the statement successfully (sorry
         # warning is OK). Sorry-free body must elaborate clean — no
         # errors. write_olean=False (probe-mode): no olean side effect.
-        from ..lsp import lifecycle as gateway_lifecycle
+        # Own-slot (pipeline=slot rule): the Forward session still holds
+        # its claimed slot here — a borrow would evict another tenant.
+        from ._axiom import verify_on_own_slot
         try:
-            v = gateway_lifecycle.verify_file(
-                src, write_olean=False, workspace=workspace,
+            v = verify_on_own_slot(
+                src, workspace=workspace, attempts_dir=attempts_dir,
+                write_olean=False,
             )
         except Exception as e:
             return PipelineResult(
@@ -806,6 +813,7 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                 outcome = commit_forward_alias(
                     conn, problem=problem, workspace=workspace,
                     metadata=metadata, body=body, match=h,
+                    attempts_dir=attempts_dir,
                 )
             except FileExistsError as e:
                 return PipelineResult(
