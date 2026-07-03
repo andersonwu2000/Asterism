@@ -1,14 +1,20 @@
 """Asterism.yaml — project-level config with env override.
 
-Each tunable field has a 4-step resolution chain:
+Each tunable field resolves through:
 
-    1. env var (ASTERISM_X)            — one-off override (CI / debug)
-    2. Asterism.yaml at workspace root — project default
-    3. legacy env var(s)               — backwards compat for setups
-                                         predating Asterism.yaml
-    4. built-in default                — used when none of the above set
+    1. env var (ASTERISM_X)            — process env first, then the
+                                         workspace `.env` file (gitignored;
+                                         KEY=VALUE lines — machine-local /
+                                         temporary tuning lives there, so
+                                         the committed Asterism.yaml stays
+                                         canonical)
+    2. Asterism.yaml at workspace root — project canonical (committed)
+    3. legacy env var(s)               — backwards compat (same .env
+                                         fallback)
+    4. built-in default
 
-env always wins so testing can override without touching the file.
+A real process env var always beats a .env entry, so one-off
+`ASTERISM_X=… command` overrides keep working.
 Asterism.yaml is optional; the file's absence is identical to writing
 an empty `{}`.
 
@@ -31,7 +37,6 @@ from typing import Any, Callable, Sequence
 
 
 _CONFIG_FILENAME = "Asterism.yaml"
-_LOCAL_CONFIG_FILENAME = "Asterism.local.yaml"
 
 # ── CONFIG_SPEC — the key registry (task #10) ──────────────────────────
 # key → one-line doc "(env fallback; default)". `<kind>` is the dynamic
@@ -75,9 +80,11 @@ _cache_workspace: Path | None = None
 def _reset_cache() -> None:
     """Test helper — invalidate the in-process cache so the next
     `load()` re-reads the file. Safe to call between test cases."""
-    global _cache, _cache_workspace
+    global _cache, _cache_workspace, _dotenv, _dotenv_workspace
     _cache = None
     _cache_workspace = None
+    _dotenv = None
+    _dotenv_workspace = None
 
 
 def load(workspace: Path | None = None) -> dict[str, Any]:
@@ -105,24 +112,49 @@ def load(workspace: Path | None = None) -> dict[str, Any]:
                   f"skipping it", flush=True)
             return {}
 
-    def _deep_merge(base: "dict", over: "dict") -> "dict":
-        out = dict(base)
-        for k, v in over.items():
-            if (isinstance(v, dict) and isinstance(out.get(k), dict)):
-                out[k] = _deep_merge(out[k], v)
-            else:
-                out[k] = v
-        return out
-
-    # task #13 — local overlay: `Asterism.local.yaml` (gitignored) deep-
-    # merges OVER the committed `Asterism.yaml`, so machine-local /
-    # temporary tuning (quota model-swaps, experiments) never dirties the
-    # canonical file — which is therefore commit-able again. Resolution:
-    # env var > local overlay > Asterism.yaml > legacy env > default.
-    _cache = _deep_merge(_read_one(workspace / _CONFIG_FILENAME),
-                         _read_one(workspace / _LOCAL_CONFIG_FILENAME))
+    _cache = _read_one(workspace / _CONFIG_FILENAME)
     _cache_workspace = workspace
     return _cache
+
+
+# ── .env — file-form env vars (task #13; user design call: no extra
+# precedence tier — a .env entry IS an env var, just persisted) ──
+# Simple KEY=VALUE lines at the workspace root, gitignored. A real
+# process env var always beats the .env entry (standard dotenv
+# semantics, keeps one-off `ASTERISM_X=… command` overrides working).
+# Deliberately NOT injected into os.environ: kept in a module dict so
+# test monkeypatching of the environment stays isolated.
+_dotenv: "dict[str, str] | None" = None
+_dotenv_workspace: Path | None = None
+
+
+def _load_dotenv(workspace: Path) -> "dict[str, str]":
+    global _dotenv, _dotenv_workspace
+    if _dotenv is not None and _dotenv_workspace == workspace:
+        return _dotenv
+    out: "dict[str, str]" = {}
+    path = workspace / ".env"
+    try:
+        for ln in path.read_text(encoding="utf-8").splitlines():
+            s = ln.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                continue
+            k, _, v = s.partition("=")
+            out[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    _dotenv = out
+    _dotenv_workspace = workspace
+    return out
+
+
+def _env(name: str, workspace: "Path | None") -> "str | None":
+    """Process env var, falling back to the workspace .env file."""
+    v = os.environ.get(name)
+    if v is not None and v != "":
+        return v
+    v = _load_dotenv(workspace or Path.cwd()).get(name)
+    return v if v else None
 
 
 def get(
@@ -142,10 +174,10 @@ def get(
     `legacy_env`: ordered list of additional env vars consulted after
                   yaml but before default; first non-empty wins.
     """
-    # 1. primary env var
+    # 1. primary env var (process env, then the workspace .env file)
     if env_var:
-        v = os.environ.get(env_var)
-        if v is not None and v != "":
+        v = _env(env_var, workspace)
+        if v is not None:
             return cast(v) if cast else v
 
     # 2. yaml path
@@ -160,10 +192,10 @@ def get(
     if cur is not None:
         return cast(cur) if cast else cur
 
-    # 3. legacy env(s)
+    # 3. legacy env(s) (same .env fallback)
     for legacy in legacy_env:
-        v = os.environ.get(legacy)
-        if v is not None and v != "":
+        v = _env(legacy, workspace)
+        if v is not None:
             return cast(v) if cast else v
 
     # 4. default

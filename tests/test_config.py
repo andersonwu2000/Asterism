@@ -394,26 +394,20 @@ def test_yaml_overrides_gateway_port(
 
 
 # ---------------------------------------------------------------------
-# task #13 — Asterism.local.yaml overlay
+# task #13 — .env file (file-form env vars; user design: no extra
+# precedence tier — real env > .env > yaml > legacy > default)
 # ---------------------------------------------------------------------
 
-def test_local_overlay_deep_merges_over_canonical(tmp_path, monkeypatch):
+def test_dotenv_beats_yaml_loses_to_real_env(tmp_path, monkeypatch):
     monkeypatch.delenv("ASTERISM_POOL", raising=False)
     (tmp_path / "Asterism.yaml").write_text(
-        "dispatch:\n  pool: 4\n  budget_sec: 1800\nbuilder:\n"
-        "  model: claude-sonnet-5\n", encoding="utf-8")
-    (tmp_path / "Asterism.local.yaml").write_text(
-        "dispatch:\n  pool: 2\n", encoding="utf-8")
+        "dispatch:\n  pool: 4\n", encoding="utf-8")
+    (tmp_path / ".env").write_text(
+        "# local tuning\nASTERISM_POOL=2\n", encoding="utf-8")
     config._reset_cache()
-    # overlay wins where set
     assert config.get("dispatch.pool", default=99, cast=int,
-                      workspace=tmp_path) == 2
-    # canonical survives where overlay silent (deep merge, not replace)
-    assert config.get("dispatch.budget_sec", default=0, cast=int,
-                      workspace=tmp_path) == 1800
-    assert config.get("builder.model", default="x",
-                      workspace=tmp_path) == "claude-sonnet-5"
-    # env var still beats the overlay
+                      env_var="ASTERISM_POOL", workspace=tmp_path) == 2
+    # real process env still wins over the file
     monkeypatch.setenv("ASTERISM_POOL", "7")
     config._reset_cache()
     assert config.get("dispatch.pool", default=99, cast=int,
@@ -421,10 +415,20 @@ def test_local_overlay_deep_merges_over_canonical(tmp_path, monkeypatch):
     config._reset_cache()
 
 
-def test_local_overlay_absent_is_noop(tmp_path):
+def test_dotenv_parsing_and_absence(tmp_path, monkeypatch):
+    monkeypatch.delenv("ASTERISM_X_TEST", raising=False)
+    monkeypatch.delenv("ASTERISM_POOL", raising=False)
+    # absent .env → yaml/default chain untouched
     (tmp_path / "Asterism.yaml").write_text(
         "dispatch:\n  pool: 3\n", encoding="utf-8")
     config._reset_cache()
     assert config.get("dispatch.pool", default=99, cast=int,
-                      workspace=tmp_path) == 3
+                      env_var="ASTERISM_POOL", workspace=tmp_path) == 3
+    # quotes stripped, comments/blank/malformed lines ignored
+    (tmp_path / ".env").write_text(
+        '\n# comment\nnot a pair\nASTERISM_X_TEST="hello"\n',
+        encoding="utf-8")
+    config._reset_cache()
+    assert config.get("x.test", default="d",
+                      env_var="ASTERISM_X_TEST", workspace=tmp_path) == "hello"
     config._reset_cache()
