@@ -38,8 +38,16 @@ _PROBLEMS_IMPORT_RE = re.compile(
 _NS_RE = re.compile(r"^(\s*)namespace\s+([A-Za-z_][\w.]*)\s*$")
 _END_RE = re.compile(r"^(\s*)end\s+([A-Za-z_][\w.]*)\s*$")
 # An alias decl: `def <name> := @<fq>` (the strategy-indirection form).
+# Keyword modifiers (`noncomputable` …) may sit between the `@[attrs]` and
+# `def` — a data-goal alias is `noncomputable def <slug> := @<sN>` (its target
+# is noncomputable). Omitting the modifier alternation made `_alias_target`
+# return None for such aliases → migrate stalled "not an alias decl" (the
+# read-side twin of BUG4, exposed once BUG4's writer fix started emitting the
+# modifier). Mirrors astslice `_DECL_RE` / inventory's decl regex.
 _ALIAS_RE = re.compile(
-    r"^\s*(?:@\[[^\]]*\]\s*)*def\s+\w+\s*:=\s*@?(Problems\.[\w.]+)\s*$",
+    r"^\s*(?:@\[[^\]]*\]\s*)*"
+    r"(?:noncomputable\s+|private\s+|protected\s+|scoped\s+)*"
+    r"def\s+\w+\s*:=\s*@?(Problems\.[\w.]+)\s*$",
     re.MULTILINE)
 
 

@@ -244,6 +244,48 @@ def test_inline_alias_renames_strategy_to_slug():
     assert f"namespace {TNS}" in r.text
 
 
+def test_alias_target_accepts_keyword_modifiers():
+    """A data-goal alias is `noncomputable def <slug> := @<sN>` (its target is
+    noncomputable). `_alias_target` must recognize it despite the modifier —
+    the read-side twin of BUG4: once the writer fix started emitting
+    `noncomputable`, a modifier-blind `_ALIAS_RE` returned None → migrate
+    stalled `not an alias decl`. Bare `def` and `@[attr] def` still work; a
+    plain theorem is (correctly) not an alias."""
+    nc = f"namespace {PNS}\nnoncomputable def foo := @{PNS}.s17862\nend {PNS}\n"
+    bare = f"namespace {PNS}\ndef foo := @{PNS}.s99\nend {PNS}\n"
+    attr = f"namespace {PNS}\n@[simp] def foo := @{PNS}.s88\nend {PNS}\n"
+    thm = f"namespace {PNS}\ntheorem t : True := by trivial\nend {PNS}\n"
+    assert relabel._alias_target(nc) == "s17862"
+    assert relabel._alias_target(bare) == "s99"
+    assert relabel._alias_target(attr) == "s88"
+    assert relabel._alias_target(thm) is None
+
+
+def test_inline_alias_noncomputable_data_alias():
+    """End-to-end: a `noncomputable def` alias inlines its strategy (which is
+    itself `noncomputable def sN`) and renames sN → slug, preserving the
+    modifier. Guards the BUG4 read-side regression at the inline_alias level."""
+    alias = (
+        f"import Mathlib\nimport {PNS}.proofs._strategy_s11001\n"
+        f"namespace {PNS}\n"
+        f"noncomputable def data_iso := @{PNS}.s11001\n"
+        f"end {PNS}\n"
+    )
+    strategy = (
+        f"import Mathlib\nnamespace {PNS}\n"
+        "noncomputable def s11001 : Nat → Nat := id\n"
+        f"end {PNS}\n"
+    )
+    r = relabel.inline_alias(
+        alias, strategy, slug="data_iso",
+        problem_namespace=PNS, target_namespace=TNS,
+        keep_slugs={"data_iso"})
+    assert r.ok, r.reason
+    assert "noncomputable def data_iso" in r.text
+    assert "s11001" not in r.text
+    assert "Problems." not in r.text
+
+
 def test_defs_symbol_readds_library_import():
     src = (
         "import Mathlib\n"
