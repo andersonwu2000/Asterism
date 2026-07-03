@@ -24,9 +24,101 @@ verify in the same slot). See `docs/archive/verify_unification.md`.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from ._lake import lean_path_to_module
+
+
+@dataclass
+class AxiomGateResult:
+    """Outcome of `axiom_gate`. `ok` is True iff the file elaborates clean
+    AND its proof term is axiom-clean (no `sorryAx`, no rogue axioms).
+    `failure_reason` / `detail` classify a failure for the caller's abort:
+      - 'lake_build_error' — infra error / error diagnostics
+      - 'axiom_violation'  — sorryAx tripwire or rogue axioms
+    `verify` is the raw gateway result (carries `olean_written`, `axioms`)."""
+    ok: bool
+    failure_reason: str | None = None
+    detail: str | None = None
+    verify: dict | None = None
+
+
+def _read_session_token(attempts_dir: "Path | None") -> str:
+    """The pipeline's own gateway session token, if it still holds one
+    (written at register_session, removed at WorkArea teardown). Empty
+    string ⇒ run the gate on a borrowed slot (defensive fallback)."""
+    if attempts_dir is None:
+        return ""
+    try:
+        tok = attempts_dir / "_gateway_session.token"
+        if tok.is_file():
+            return tok.read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    return ""
+
+
+def axiom_gate(
+    path: Path, *, fq_name: str, whitelist: "list[str]",
+    workspace: Path, attempts_dir: "Path | None" = None,
+    write_olean: bool = True,
+) -> AxiomGateResult:
+    """The single soundness gate for flipping a goal 'proved' — elaborate
+    `path` on the pipeline's OWN warm slot (via its session token; else
+    borrow) and check the proof term's axioms.
+
+    Two checks, mirroring Backward's leaf-bypass gate (backward.py:1005-1035):
+      1. UNCONDITIONAL `sorryAx` tripwire — a transitive sorry (a cited stub /
+         orphan sibling) compiles green (warning, not error); `collectAxioms`
+         is ground truth. Catches what a literal `\\bsorry\\b` scan cannot
+         (`admit`, imported sorry, macro-hidden sorry).
+      2. Rogue-axiom check — only when `whitelist` is non-empty (matches the
+         Backward gate; the root integrity gate applies FRAMEWORK_DEFAULT_AXIOMS
+         separately as the whole-tree backstop).
+
+    Runs on the OWN slot (`verify_in_session`) when a session token is present
+    — the pipeline still holds its slot at commit time, so this is a warm
+    ~50-200ms probe with no eviction (vs a cold borrow that evicts a random
+    tenant, the 2026-06-29 slot-thrash bug). `write_olean=True` also publishes
+    the .olean so downstream cold imports (cite-gate, harvest, root probe)
+    don't rebuild it."""
+    from ..lsp import lifecycle as gateway_lifecycle
+    token = _read_session_token(attempts_dir)
+    if token:
+        v = gateway_lifecycle.verify_in_session(
+            token, path.read_text(encoding="utf-8"),
+            write_olean=write_olean, axioms_for=fq_name, workspace=workspace,
+            _retry_delays=gateway_lifecycle._VERIFY_RETRY_DELAYS)
+    else:
+        v = gateway_lifecycle.verify_file(
+            path, write_olean=write_olean, axioms_for=fq_name,
+            workspace=workspace)
+    if "error" in v:
+        return AxiomGateResult(False, "lake_build_error",
+                               f"verify infra error: {v['error']}", v)
+    if not v.get("ok"):
+        err = "\n".join(
+            f"line {d.get('line','?')}:{d.get('col','?')}  "
+            f"{d.get('severity','?')}: {d.get('message','')}"
+            for d in (v.get("diagnostics") or [])
+            if d.get("severity") == "error")
+        return AxiomGateResult(False, "lake_build_error",
+                               err or "(no error diagnostics returned)", v)
+    if "sorryAx" in (v.get("axioms") or []):
+        return AxiomGateResult(
+            False, "axiom_violation",
+            "proof term depends on sorryAx — a transitive sorry (e.g. a cited "
+            "stub / orphan sibling), not a complete proof", v)
+    if whitelist:
+        if v.get("axiom_error"):
+            return AxiomGateResult(False, "axiom_violation",
+                                   f"axiom probe error: {v['axiom_error']}", v)
+        rogue = set(v.get("axioms") or []) - set(whitelist)
+        if rogue:
+            return AxiomGateResult(False, "axiom_violation",
+                                   f"rogue axioms: {sorted(rogue)}", v)
+    return AxiomGateResult(True, verify=v)
 
 
 def axiom_probe(

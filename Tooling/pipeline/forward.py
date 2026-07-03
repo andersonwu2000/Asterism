@@ -257,10 +257,22 @@ class CommitOutcome:
     status: str  # 'open' or 'proved' (sorry-free leaf-bypass)
 
 
+class ForwardAxiomViolation(Exception):
+    """A sorry-free Forward decl failed the axiom gate at commit — its proof
+    term transitively depends on `sorryAx` (a cited stub / imported sorry) or
+    a rogue axiom. Carries `failure_reason` / `detail` for the caller's
+    PipelineResult (run_forward maps it to a failed outcome)."""
+    def __init__(self, failure_reason: str, detail: str) -> None:
+        super().__init__(detail)
+        self.failure_reason = failure_reason
+        self.detail = detail
+
+
 def commit_forward_lemma(conn: sqlite3.Connection, *,
                          problem: str, workspace: Path,
                          attempts_dir: Path,
                          metadata: ForwardMetadata,
+                         whitelist: "list[str] | None" = None,
                          source_filename: str = "new_<slug>.lean",
                          ) -> CommitOutcome:
     """Move the validated `new_<slug>.lean` from attempts_dir into
@@ -332,6 +344,29 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
     # boundary` shipped as `def := sorry`, framework marked them
     # proved, downstream g2771 stuck unprovable until Strategist
     # spotted the stubs via direct file read.
+    # Soundness gate (2026-07-03): a literally-sorry-free body is only a
+    # CANDIDATE for 'proved'. Confirm on the pipeline's own warm slot that the
+    # decl's proof term is axiom-clean — a `\bsorry\b` scan misses `admit`, a
+    # transitive/imported sorry (a cited stub), and macro-hidden sorry, all of
+    # which `collectAxioms` catches. Closes Forward's fake-proof gap (the only
+    # proved path with no axiom check) and, via write_olean=True, its olean gap
+    # (Forward's self_verify runs write_olean=False, so a proved Forward decl
+    # otherwise shipped no .olean — every downstream cold import rebuilt it).
+    if metadata.sorry_free:
+        from ._axiom import axiom_gate
+        gate = axiom_gate(
+            dest, fq_name=f"Problems.{problem}.{metadata.slug}",
+            whitelist=list(whitelist or []), workspace=workspace,
+            attempts_dir=attempts_dir, write_olean=True)
+        if not gate.ok:
+            proof_store.remove_proof(
+                conn, workspace,
+                rel_path=dest.relative_to(workspace).as_posix(),
+                owner_goal_id=None)
+            raise ForwardAxiomViolation(
+                gate.failure_reason or "axiom_violation",
+                f"forward `{metadata.slug}` looked sorry-free but failed the "
+                f"axiom gate: {gate.detail}")
     initial_status = "proved" if metadata.sorry_free else "open"
     goal_id = db.insert_goal(
         conn, problem=problem, slug=metadata.slug,
@@ -785,12 +820,18 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                 outcome = commit_forward_lemma(
                     conn, problem=problem, workspace=workspace,
                     attempts_dir=attempts_dir, metadata=metadata,
+                    whitelist=list(getattr(mfst, "axioms_whitelist", None) or []),
                     source_filename=src.name,
                 )
             except FileExistsError as e:
                 return PipelineResult(
                     outcome="failed", failure_reason="forward_no_new_goal",
                     failure_detail=f"slug collision: {e}",
+                )
+            except ForwardAxiomViolation as e:
+                return PipelineResult(
+                    outcome="failed", failure_reason=e.failure_reason,
+                    failure_detail=e.detail,
                 )
             except Exception as e:
                 return PipelineResult(

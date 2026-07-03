@@ -338,6 +338,37 @@ def test_commit_sorry_free_marks_goal_proved(
     assert g["status"] == "proved"
 
 
+def test_commit_sorry_free_fails_axiom_gate(
+    workspace: Path, conn: sqlite3.Connection,
+    monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    """A literally-sorry-free Forward decl whose PROOF TERM depends on
+    `sorryAx` (a transitive/cited sorry a `\\bsorry\\b` scan can't see) must
+    NOT be marked proved — the axiom gate fails the commit, removes the
+    placed file, and raises ForwardAxiomViolation (run_forward → failed)."""
+    from Tooling.pipeline import _axiom
+    attempts = workspace / ".attempts" / "fwd-gate"
+    attempts.mkdir(parents=True)
+    (attempts / "new_trivial_lemma.lean").write_text(
+        _NEW_LEAN_SORRY_FREE, encoding="utf-8")
+    md, _ = forward.extract_forward_metadata(_NEW_LEAN_SORRY_FREE)
+
+    monkeypatch.setattr(_axiom, "axiom_gate", lambda *a, **k: _axiom.AxiomGateResult(
+        False, "axiom_violation", "proof term depends on sorryAx"))
+
+    with pytest.raises(forward.ForwardAxiomViolation) as ei:
+        forward.commit_forward_lemma(
+            conn, problem="p", workspace=workspace,
+            attempts_dir=attempts, metadata=md,
+            source_filename="new_<slug>.lean",
+        )
+    assert ei.value.failure_reason == "axiom_violation"
+    # No goal created, placed file removed (no fake-proved artifact left).
+    assert db.goal_by_slug(conn, "p", md.slug) is None
+    assert not (workspace / "Problems" / "p" / "proofs"
+                / f"L_{md.slug}.lean").exists()
+
+
 def test_commit_collision_raises(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:
