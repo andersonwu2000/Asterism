@@ -31,6 +31,7 @@ from typing import Any, Callable, Sequence
 
 
 _CONFIG_FILENAME = "Asterism.yaml"
+_LOCAL_CONFIG_FILENAME = "Asterism.local.yaml"
 
 # ── CONFIG_SPEC — the key registry (task #10) ──────────────────────────
 # key → one-line doc "(env fallback; default)". `<kind>` is the dynamic
@@ -89,23 +90,37 @@ def load(workspace: Path | None = None) -> dict[str, Any]:
     if _cache is not None and _cache_workspace == workspace:
         return _cache
 
-    cfg_path = workspace / _CONFIG_FILENAME
-    if not cfg_path.exists():
-        _cache = {}
-        _cache_workspace = workspace
-        return _cache
+    def _read_one(path: Path) -> "dict[str, Any]":
+        if not path.exists():
+            return {}
+        try:
+            import yaml  # PyYAML already a dep (Manifest frontmatter)
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            # Don't crash the daemon over a malformed config — warn and
+            # fall back to env+default. This matches manifest.parse's
+            # lenient-parse policy.
+            print(f"[config] WARNING: {path} unparseable ({exc}); "
+                  f"skipping it", flush=True)
+            return {}
 
-    try:
-        import yaml  # PyYAML already a dep (Manifest frontmatter)
-        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-        _cache = data if isinstance(data, dict) else {}
-    except Exception as exc:
-        # Don't crash the daemon over a malformed config — warn and
-        # fall back to env+default. This matches manifest.parse's
-        # lenient-parse policy.
-        print(f"[config] WARNING: {cfg_path} unparseable ({exc}); "
-              f"falling back to env+defaults", flush=True)
-        _cache = {}
+    def _deep_merge(base: "dict", over: "dict") -> "dict":
+        out = dict(base)
+        for k, v in over.items():
+            if (isinstance(v, dict) and isinstance(out.get(k), dict)):
+                out[k] = _deep_merge(out[k], v)
+            else:
+                out[k] = v
+        return out
+
+    # task #13 — local overlay: `Asterism.local.yaml` (gitignored) deep-
+    # merges OVER the committed `Asterism.yaml`, so machine-local /
+    # temporary tuning (quota model-swaps, experiments) never dirties the
+    # canonical file — which is therefore commit-able again. Resolution:
+    # env var > local overlay > Asterism.yaml > legacy env > default.
+    _cache = _deep_merge(_read_one(workspace / _CONFIG_FILENAME),
+                         _read_one(workspace / _LOCAL_CONFIG_FILENAME))
     _cache_workspace = workspace
     return _cache
 

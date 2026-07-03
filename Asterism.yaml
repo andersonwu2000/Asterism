@@ -66,11 +66,27 @@ dispatch:
                               # and catches agents that have been
                               # silent through the entire window
                               # [trap_check - 300, trap_check].
+  # classify is the ONE kind whose input is unbounded: it lays out the whole
+  # kept-decl set (N) in a single thinking block, so its think time scales with
+  # N. The flat trap_check_sec (calibrated for bounded builder/backward/migrate
+  # spawns) killed residue's 271-decl classify mid-think (~650s > 660). For
+  # classify ONLY, the watchdog trap_check = min(cap, trap_check_sec +
+  # per_decl*N), and the overall spawn timeout keeps the same post-trap window
+  # (spawn_timeout_sec - trap_check_sec). Other kinds are unaffected.
+  # (librarian._classify_trap_budget; code defaults 4 / 2400 are the SoT.)
+  classify_trap_per_decl_sec: 4    # +seconds of think budget per kept decl
+  classify_trap_cap_sec: 2400      # ceiling (~435 decls; beyond this a one-shot
+                                   # layout is the wrong shape, not a time issue)
 
 
 builder:
   provider: claude
-  model: claude-sonnet-4-6
+  model: claude-sonnet-5      # next-gen sonnet upgrade of the bulk proving
+                              # worker (2026-07-02, CLI + stream-json verified).
+                              # Was claude-sonnet-4-6. HIGHEST-volume pipeline —
+                              # WATCH cost/latency; sonnet-5 pricing not yet
+                              # benchmarked here. Revert to sonnet-4-6 if it
+                              # regresses.
   threshold: 2                # builder→backward escalation at 2 attempts
                               # (was 3; tighter with the 900s spawn timeout
                               # below)
@@ -81,12 +97,15 @@ backward:
 
 strategist:
   provider: claude
-  model: claude-fable-5        # Mythos tier (Fable 5, ~2x Opus). Planning is
-                               # the highest-leverage spawn: one decomposition
-                               # shapes the whole proof tree, and it's the
-                               # lowest-volume pipeline, so the 2x cost is
-                               # negligible in absolute terms. (InitializeDefs /
-                               # RequestUserAmend / Inject Forward.)
+  model: claude-fable-5        # Planning is the highest-leverage spawn: one
+                               # decomposition shapes the whole proof tree, so
+                               # it gets the strongest available model. Fable 5
+                               # (Mythos, ~2x Opus) was the intended planner;
+                               # dropped to Opus 4.8 while that tier was down
+                               # (2026-06-13) and RESTORED here on its return
+                               # (2026-07-02, CLI-verified). Lowest-volume
+                               # pipeline, so cost is negligible regardless.
+                               # (InitializeDefs / RequestUserAmend / Inject.)
   interval_min: 120.0          # T1 routine cadence (default 60min)
 #  inject_batch_max: 10        # Phase 2.5 — upper bound on
                                # Inject(briefs=[...]) length. Each
@@ -100,3 +119,49 @@ forward:
   model: claude-opus-4-8       # writes one Mathlib-style lemma per
                                # spawn; needs strong typing + library
                                # knowledge.
+
+# target-1 per-node pre-search: before each goal is dispatched, a lightweight
+# agent searches Mathlib (loogle) + Library + in-problem siblings for relevant
+# lemmas, the framework #check-verifies them, and a ranked `## Candidate lemmas`
+# section is injected into the prover's Context. One EXTRA spawn per node — a
+# light "search + propose names" task, so a cheaper model is usually enough.
+presearch:
+  enabled: true                # off → skip pre-search (provers grep on their own)
+  provider: claude
+  model: claude-haiku-4-5      # A/B 2026-06-29: sonnet TIMED OUT at the 150s presearch
+                               # budget (27 searches, still missed the Library lemma at the
+                               # root) → strictly worse than haiku here. Reverted. The
+                               # root-level Library miss is a coverage problem a bigger model
+                               # did not fix; prover-variance dominated the run outcome.
+                               # haiku tested 2026-06-29 (proj_nonexpansive): ~141s/node.
+  timeout_sec: 240             # per-node pre-search budget (was 150). The 3-source search
+                               # (in-problem + Library + Mathlib loogle) takes longer than the
+                               # old Mathlib-only pass; 150s killed haiku mid-Mathlib before it
+                               # wrote output (3-block run 2026-06-29). Blocks prover dispatch,
+                               # so raising it adds per-node latency — tune to taste.
+
+# Library-ization cleanup spawns (mark / simplify / decide / audit / migrate
+# hole-fill — all dispatch with kind="librarian"). Was implicit: with no entry
+# here, resolve_model("librarian") fell through to DEFAULT_MODEL (sonnet). Made
+# explicit so the model is yaml-controlled like every other pipeline. (classify
+# is a separate kind="classify"; it shares this default unless given its own
+# entry.)
+librarian:
+  provider: claude
+  model: claude-sonnet-5       # bulk, mechanical-ish per-file polish; the
+                               # highest-volume librarian spawns. Upgraded from
+                               # claude-sonnet-4-6 to next-gen sonnet-5
+                               # (2026-07-02, CLI-verified). WATCH cost/latency
+                               # (sonnet-5 pricing not yet benchmarked); revert
+                               # to sonnet-4-6 if the bulk cost regresses.
+
+# Developer-only agent framework-feedback questionnaire. Off by default.
+# When on: survivor agents append one sentence (friction / suggestion /
+# critique) to docs/internal/agent_feedback.md (piggybacks the reflection
+# spawn — no extra spawn), and the framework writes a death-cause line for
+# agents that died without a resumable session. The output file is under the
+# gitignored docs/internal/, so a shared checkout neither has it nor triggers
+# it. Survivor reports require reflection on (lessons.reflection_enabled,
+# default on); death-cause writes are independent.
+feedback:
+  enabled: true                # set true in dev to collect framework feedback

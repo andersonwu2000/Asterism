@@ -391,3 +391,40 @@ def test_yaml_overrides_gateway_port(
         env_var="ASTERISM_GATEWAY_PORT", cast=int,
         workspace=tmp_path,
     ) == 9090
+
+
+# ---------------------------------------------------------------------
+# task #13 — Asterism.local.yaml overlay
+# ---------------------------------------------------------------------
+
+def test_local_overlay_deep_merges_over_canonical(tmp_path, monkeypatch):
+    monkeypatch.delenv("ASTERISM_POOL", raising=False)
+    (tmp_path / "Asterism.yaml").write_text(
+        "dispatch:\n  pool: 4\n  budget_sec: 1800\nbuilder:\n"
+        "  model: claude-sonnet-5\n", encoding="utf-8")
+    (tmp_path / "Asterism.local.yaml").write_text(
+        "dispatch:\n  pool: 2\n", encoding="utf-8")
+    config._reset_cache()
+    # overlay wins where set
+    assert config.get("dispatch.pool", default=99, cast=int,
+                      workspace=tmp_path) == 2
+    # canonical survives where overlay silent (deep merge, not replace)
+    assert config.get("dispatch.budget_sec", default=0, cast=int,
+                      workspace=tmp_path) == 1800
+    assert config.get("builder.model", default="x",
+                      workspace=tmp_path) == "claude-sonnet-5"
+    # env var still beats the overlay
+    monkeypatch.setenv("ASTERISM_POOL", "7")
+    config._reset_cache()
+    assert config.get("dispatch.pool", default=99, cast=int,
+                      env_var="ASTERISM_POOL", workspace=tmp_path) == 7
+    config._reset_cache()
+
+
+def test_local_overlay_absent_is_noop(tmp_path):
+    (tmp_path / "Asterism.yaml").write_text(
+        "dispatch:\n  pool: 3\n", encoding="utf-8")
+    config._reset_cache()
+    assert config.get("dispatch.pool", default=99, cast=int,
+                      workspace=tmp_path) == 3
+    config._reset_cache()
