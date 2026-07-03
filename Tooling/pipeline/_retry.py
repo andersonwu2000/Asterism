@@ -877,10 +877,20 @@ def run_with_session_retries(
             #     where they left off and a 180s budget is enough for
             #     a recap-style _progress.md.
             #
-            # Pre-existing risk note: parse_fn can mutate DB / disk
-            # mid-execution and raise without rollback. This risk
-            # exists on the rc=0 path too; salvage doesn't introduce
-            # new risk, only exposes it to one more rc.
+            # Compensation asymmetry (task #8 — the old "salvage doesn't
+            # introduce new risk" note was subtly wrong): parse_fn can
+            # mutate DB / disk mid-execution and raise. On the rc=0 path
+            # that exception ESCAPES — the pipeline's own cleanup runs
+            # (backward deletes its placeholder strategy row) and the
+            # dispatcher's worker-exception handler reconciles. HERE the
+            # exception is SWALLOWED (best-effort salvage), so those
+            # escape-path compensations are bypassed; a half-placed batch
+            # is caught only by the standing nets — proof_store's
+            # ownership/orphan sweeps at startup and reconcile_stuck_states
+            # per tick. Accepted: a mid-parse raise at timeout is rare, the
+            # nets are the same ones that cover a daemon crash at the same
+            # instant, and rolling back an opaque parse_fn would need a
+            # transactional contract change across all four pipelines.
             salvage_note = ""
             timeout_result: PipelineResult | None = None
             try:
@@ -942,7 +952,12 @@ def run_with_session_retries(
                 buffer_failure("agent_stuck_thinking",
                                "; ".join(outcome.detail_parts))
                 last_reason = "agent_stuck_thinking"
-                last_detail = f"combined rc={outcome.stage2_rc}"
+                # Task #8: carry the takeover's real failure details into
+                # the next spawn's retry_context — the old
+                # `combined rc=N` gave the retrying agent zero information
+                # about what the 4-7min rescue actually found.
+                last_detail = ("; ".join(outcome.detail_parts)[:800]
+                               or f"combined rc={outcome.stage2_rc}")
                 continue
 
             # Active spawn at subprocess timeout — keep legacy
@@ -1007,7 +1022,10 @@ def run_with_session_retries(
             buffer_failure("agent_stuck_thinking",
                            "; ".join(outcome.detail_parts))
             last_reason = "agent_stuck_thinking"
-            last_detail = f"combined rc={outcome.stage2_rc}"
+            # Task #8: same retry_context enrichment as the timeout-trap
+            # branch above.
+            last_detail = ("; ".join(outcome.detail_parts)[:800]
+                           or f"combined rc={outcome.stage2_rc}")
             continue
 
         if rc != SpawnRC.OK:
