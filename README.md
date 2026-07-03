@@ -5,6 +5,11 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-02
+- Added a check that reads directly from the Lean kernel to record exactly which axioms and assumptions each proved result relies on.
+- Built a workflow to designate the intended theorems and then accept them behind a required human sign-off, or reject them so that everything built on a discarded result is automatically invalidated.
+- Fixed the archiving step to store only the approved theorems rather than everything reachable from the starting goal.
+
 ### 2026-06-30
 - Fixed the component that catalogs Lean definitions so it now strips comments before reading declaration names, preventing commented-out code from being mistaken for real definitions.
 
@@ -131,11 +136,6 @@
 - Made that integration operate on one definition or lemma at a time, building and checking each incrementally instead of processing whole files at once.
 - Fixed several reliability problems in the background library-maintenance process, including stuck sessions, leaked resources, and the handling of mutually-dependent files.
 - Added a new soundness stress-test problem and improved the live monitoring of library work.
-
-### 2026-06-02
-- Made the component that reorganizes Asterism's accumulated library of lemmas raise an error instead of silently failing when asked to restructure a result it cannot handle.
-- Improved its dependency tracking, correctly following dependencies through results that have been merged together and propagating requirements when a result rests on something not yet proven.
-- Added automatic upgrading of an outdated but already-populated results database when it is opened.
 
 <!-- ASTERISM-PROGRESS:END -->
 
