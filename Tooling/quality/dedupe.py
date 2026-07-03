@@ -237,14 +237,41 @@ def _to_forall_form(signature: str) -> str:
 
 
 # Match `theorem`, `lemma`, or `def` to cover framework-promoted ancestors
-# (see _THM_HEAD_RE for the case background).
-_THM_NAME_RE = re.compile(r"\b(?:theorem|lemma|def)\s+(\S+)")
+# (see _THM_HEAD_RE for the case background). Same hardening as
+# _THM_HEAD_RE (cbe5bc3's bug FAMILY, second instance — task #6): line-
+# anchored + comment-stripped by the extractor. Canonical files ALWAYS
+# open with the Strategist's prose annotation block, and prose containing
+# `theorem X` / `def Y` used to seed the probe with a garbage name — the
+# probe then failed against the WRONG fqn and a legitimate dedupe hit was
+# silently missed (false negative: the sub-goal gets re-proved from
+# scratch instead of aliased).
+_THM_NAME_RE = re.compile(
+    r"^[ \t]*(?:@\[[^\]]*\][ \t]*)*"
+    r"(?:(?:noncomputable|private|protected|scoped|local|nonrec)[ \t]+)*"
+    r"(?:theorem|lemma|def)[ \t]+(\S+)",
+    re.MULTILINE,
+)
+
+
+def _sig_shape(sig: str) -> str:
+    """`<binders> : <type>` of a full signature with the decl kind + name
+    dropped and whitespace collapsed — the statement-shape key the REUSE
+    tier compares (task #6). The apply-probe stays deliberately loose
+    (2026-05-11: rfl → apply, hypothesis-extension tolerance — right for
+    the alias tiers whose written body literally IS the apply); the reuse
+    REWRITE however assumes statement identity (the citation keeps the
+    candidate's arg list), so it gets this stricter syntactic gate on top."""
+    s = re.sub(r"\s+", " ", sig).strip()
+    m = re.match(r"(?:theorem|lemma|def)\s+\S+\s*(.*)$", s)
+    return m.group(1).strip() if m else s
 
 
 def _extract_theorem_name(text: str) -> str | None:
-    """Extract the declared name from the first `theorem|lemma|def
-    <name>` in the file. Returns None if none found."""
-    m = _THM_NAME_RE.search(text)
+    """Extract the declared name from the first line-anchored
+    `theorem|lemma|def <name>` DECL HEAD in the file (comments stripped
+    first — a mention in the annotation block is not a declaration).
+    Returns None if none found."""
+    m = _THM_NAME_RE.search(_strip_comments(text))
     return m.group(1) if m else None
 
 
@@ -351,7 +378,8 @@ def _library_canonicals(workspace: Path, domain: str) -> "list[_LibCanon]":
             continue
         fqn, rel = m.group(1), m.group(2).strip()
         parts = rel.replace("\\", "/").split("/")
-        if len(parts) >= 2 and parts[0] == "Library" and parts[1] == domain:
+        if len(parts) >= 2 and parts[0] == "Library" and (
+                domain == "*" or parts[1] == domain):
             by_file.setdefault(rel, []).append(fqn)
     out: list[_LibCanon] = []
     for rel, fqns in by_file.items():
@@ -1045,17 +1073,30 @@ def find_canonicals_batch(
     if n == 0:
         return []
 
-    # Initialize result with Tier 1 slug-pattern hits (cheap; no lake).
-    # Per-candidate kernel-probe (Tier 2) below skips any candidate whose
-    # slot is already filled here.
+    # Tier 1 slug-pattern hits (cheap; no lake) — since task #6 these are
+    # PROBE-CONFIRMED like every other alias, not blind: the slug
+    # convention ("collision → rename `_2`, keep the statement
+    # byte-identical") is exactly when the statement is SUPPOSED to match,
+    # but nothing enforced it — a `_2` whose statement had drifted got
+    # blind-aliased and exploded far downstream at the parent strategy's
+    # lake build. The hit now seeds the TOP of the candidate's probe pool
+    # (keeps its historical first priority, rides the existing batch call
+    # for ~zero cost); a probe miss falls through to the other tiers
+    # instead of forcing a bogus alias. Side effect: a `def` candidate has
+    # no theorem signature → forms no pair → can no longer be blind-
+    # aliased by name (closing Tier 1's copy of the def-blind hole
+    # cbe5bc3 closed for Tier 2 — data defs are never alias-safe).
     result: list[CanonicalMatch | None] = [None] * n
+    tier1_rows: "list[sqlite3.Row | None]" = [None] * n
     for ci, (slug, _) in enumerate(candidates):
         hit_id = _slug_match_proved(
             conn, problem=problem, candidate_slug=slug,
             parent_goal_id=parent_goal_id,
         )
         if hit_id is not None:
-            result[ci] = CanonicalMatch(goal_id=hit_id, kind="alias")
+            tier1_rows[ci] = conn.execute(
+                "SELECT id, lean_path FROM goals WHERE id = ?",
+                (hit_id,)).fetchone()
 
     # Per-candidate eligible canonicals. Alive/proved tiers come first
     # so they take precedence on first-hit. The disproved tier is appended
@@ -1072,13 +1113,11 @@ def find_canonicals_batch(
     # an unproved twin). Aligned 1:1 with `candidates`.
     cand_reusable: list[list[tuple[sqlite3.Row, str]]] = []
     for ci, (slug, full_text) in enumerate(candidates):
-        # Tier 1 already hit: no need to enumerate kernel-probe pool.
-        if result[ci] is not None:
-            cand_pools.append([])
-            cand_reusable.append([])
-            continue
         sig = _extract_full_signature(full_text)
         if sig is None or not sig.strip():
+            # No theorem signature (e.g. a `def` candidate) → no probe
+            # pool at all; a Tier 1 slug hit is dropped here too (data
+            # defs are never alias-safe — see tier1_rows comment).
             cand_pools.append([])
             cand_reusable.append([])
             continue
@@ -1116,6 +1155,16 @@ def find_canonicals_batch(
             pool.append((r, t, KIND_DISPROVED))
         for r, t in no_progress:
             pool.append((r, t, KIND_NO_PROGRESS))
+        # Tier 1 slug hit seeds the FRONT of the pool (first-hit priority
+        # preserved) — probe-confirmed, see the comment at tier1_rows.
+        t1 = tier1_rows[ci]
+        if t1 is not None:
+            try:
+                t1_text = (workspace / t1["lean_path"]).read_text(
+                    encoding="utf-8")
+                pool.insert(0, (t1, t1_text, KIND_ALIAS))
+            except OSError:
+                pass
         cand_pools.append(pool)
         # Reuse tier (#2): non-proved alive/parked cross-branch twin.
         # Exclude everything already pooled so a goal is classified once
@@ -1142,10 +1191,15 @@ def find_canonicals_batch(
     # tier (A). Kept uniform so the result loop dispatches on `kind`.
     pair_origin: list[tuple[int, str, object]] = []
     from ..pipeline._lake import lean_path_to_module
-    domain = problem.split(".")[0] if "." in problem else problem
+    # Task #6: the Library pool spans ALL domains — the old hard filter
+    # (problem's first dotted segment) structurally blocked cross-domain
+    # reuse (a Geometry problem could never see a LinearAlgebra keystone;
+    # de Rham currents-style work spans analysis+geometry+algebra). Cost
+    # stays bounded: the IDF-weighted token-overlap prefilter now ranks
+    # over the whole corpus (rarity weighting improves with it) and the
+    # per-candidate pair cap is unchanged.
+    domain = "*"
     for ci, (slug, full_text) in enumerate(candidates):
-        if result[ci] is not None:
-            continue  # Tier 1 slug hit already filled this slot
         cand_sig = _extract_full_signature(full_text)
         if cand_sig is None:
             continue
@@ -1181,6 +1235,17 @@ def find_canonicals_batch(
         # alias (in-problem or Library) is always preferable to linking
         # an unproved twin. Same FQN construction as the in-problem pools.
         for reuse_row, reuse_text in cand_reusable[ci]:
+            # Task #6: reuse pairs are additionally gated on statement
+            # SHAPE equality — the rewrite assumes more than the (kept-
+            # deliberately-loose) apply-probe grants; two recorded
+            # incidents of apply-hit-on-mismatched-twin → citation
+            # rewrite → commit lake `Function expected`. Conservative:
+            # a binder-name difference forgoes the reuse (the sub-goal
+            # just commits as novel — safe direction). See _sig_shape.
+            twin_sig = _extract_full_signature(reuse_text)
+            if twin_sig is None or _sig_shape(cand_sig) != _sig_shape(
+                    twin_sig):
+                continue
             reuse_thm = _extract_theorem_name(reuse_text) or ""
             try:
                 reuse_module = lean_path_to_module(

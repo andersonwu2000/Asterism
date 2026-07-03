@@ -604,7 +604,10 @@ def test_find_canonicals_batch_shelved_is_reused(
         return [thm == "Problems.p.soft_dead" for _sig, _mod, thm in pairs]
     monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake)
 
-    cand = "import Mathlib\ntheorem c (a : T) (b : T) : X := by sorry\n"
+    # Same statement SHAPE as the twin (task #6: the reuse tier requires
+    # it — the citation rewrite keeps the arg list, so shape identity is
+    # what makes the rewrite sound).
+    cand = "import Mathlib\ntheorem c (a : T) : X := by sorry\n"
     canonicals = dedupe.find_canonicals_batch(
         conn, tmp_path, problem="p", parent_goal_id=parent,
         candidates=[("c", cand)],
@@ -639,7 +642,9 @@ def test_find_canonicals_batch_open_cross_branch_is_reused(
         return [thm == "Problems.p.twin" for _sig, _mod, thm in pairs]
     monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake)
 
-    cand = "import Mathlib\ntheorem c (a : T) (b : T) : X := by sorry\n"
+    # Same statement SHAPE as the twin (task #6 reuse gate; see the
+    # shelved-reuse test above for the rationale).
+    cand = "import Mathlib\ntheorem c (a : T) : X := by sorry\n"
     canonicals = dedupe.find_canonicals_batch(
         conn, tmp_path, problem="p", parent_goal_id=parent,
         candidates=[("c", cand)],
@@ -1596,32 +1601,33 @@ def test_slug_match_excludes_parent_goal(conn: sqlite3.Connection) -> None:
     assert hit is None
 
 
-def test_find_canonicals_batch_uses_tier1_without_kernel_probe(
+def test_find_canonicals_batch_tier1_hit_rides_the_probe(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When Tier 1 hits, kernel probe should NOT be invoked. Tier 1
-    short-circuits to save the lake-env startup cost when the answer
-    is already clear from the slug."""
+    """CONTRACT REVERSED by task #6 (was: "Tier 1 short-circuits; kernel
+    probe must not run"). A slug hit is a strong PRIOR, not a verdict —
+    the blind alias exploded far downstream whenever the `_2`'s statement
+    had drifted from its base. The hit now seeds the probe pool's front
+    and rides the existing batch call; no probe confirmation → no alias."""
     _seed_problem(conn)
     root = _seed_root(conn, status="proved")
     base = _seed_sub(conn, slug="lem_x", statement="T", status="proved")
-    # Tripwire: any kernel probe call is a failure of the short-circuit
-    called = {"probe": False}
-    def _fail_probe(*a, **kw):
-        called["probe"] = True
-        return []
-    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", _fail_probe)
+    _write_lean(tmp_path, "p", "lem_x",
+        "import Mathlib\ntheorem lem_x : T := by trivial\n")
+    calls = {"pairs": []}
+
+    def _probe(ws, p, pairs):
+        calls["pairs"].extend(pairs)
+        return [True] * len(pairs)
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", _probe)
     result = dedupe.find_canonicals_batch(
         conn, tmp_path, problem="p", parent_goal_id=root,
         candidates=[("lem_x_alias", "theorem lem_x_alias : T := by sorry")],
     )
-    assert len(result) == 1
-    assert result[0] is not None
-    assert result[0].goal_id == base
-    assert result[0].kind == "alias"
-    assert called["probe"] is False, (
-        "Tier 1 slug hit must short-circuit; kernel probe must not run")
+    assert result == [dedupe.CanonicalMatch(goal_id=base, kind="alias")]
+    assert calls["pairs"], "tier-1 hit must be probe-confirmed now"
+    assert calls["pairs"][0][2] == "Problems.p.lem_x"   # front of the pool
 
 
 # ---------------------------------------------------------------------
@@ -1836,3 +1842,132 @@ def test_build_alias_with_apply_expr_uses_full_fqn() -> None:
     assert (":= by apply @Library.LinearAlgebra.A.match_decl <;> assumption"
             in out)
     assert ":= by sorry" not in out
+
+
+# ---------------------------------------------------------------------
+# task #6 — probe-perimeter hardening
+# ---------------------------------------------------------------------
+
+def test_extract_theorem_name_skips_annotation_prose() -> None:
+    """cbe5bc3's bug family, second instance: the Strategist annotation
+    block opening every canonical file may mention `theorem X` in prose —
+    that must not seed the probe with a garbage name."""
+    text = ("-- Strategy: apply theorem foo_helper to close the gap,\n"
+            "-- then the def bar_aux trick from the notes.\n"
+            "theorem real_name (a : T) : X := by sorry\n")
+    assert dedupe._extract_theorem_name(text) == "real_name"
+    # prose only, no real declaration → None (old code returned 'foo_helper')
+    prose = "-- consider theorem foo_helper here\n"
+    assert dedupe._extract_theorem_name(prose) is None
+    # framework-promoted alias body (def) still extracts
+    alias_body = ("-- annotation\n"
+                  "def promoted := @Problems.p.s99\n")
+    assert dedupe._extract_theorem_name(alias_body) == "promoted"
+
+
+def test_tier1_slug_hit_is_probe_confirmed(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """task #6: a `_2` slug collision with a proved base no longer blind-
+    aliases — the hit seeds the probe pool (first priority) and only a
+    kernel confirmation aliases. Probe says no → NO alias (the old code
+    aliased on the name alone; a drifted statement then exploded at the
+    parent strategy's lake build, far from the cause)."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    base = _seed_sub(conn, slug="foo", statement="X", status="proved")
+    _link(conn, root, [base])
+    parent = _seed_sub(conn, slug="parent", statement="Q", depth=2)
+    _link(conn, root, [parent])
+    _write_lean(tmp_path, "p", "foo",
+        "import Mathlib\ntheorem foo (a : T) : X := by trivial\n")
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : Q := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+    cand = "import Mathlib\ntheorem foo_2 (a : T) : X := by sorry\n"
+
+    # probe confirms → alias, and the tier-1 pair was probed FIRST
+    seen_pairs: list = []
+
+    def fake_yes(ws, p, pairs):
+        seen_pairs.extend(pairs)
+        return [True] * len(pairs)
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply", fake_yes)
+    got = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("foo_2", cand)])
+    assert got == [dedupe.CanonicalMatch(goal_id=base, kind="alias")]
+    assert seen_pairs and seen_pairs[0][2] == "Problems.p.foo"
+
+    # probe refutes → NO alias (old behavior: blind alias)
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply",
+                        lambda ws, p, pairs: [False] * len(pairs))
+    got = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("foo_2", cand)])
+    assert got == [None]
+
+
+def test_sig_shape_drops_kind_and_name() -> None:
+    a = dedupe._sig_shape("theorem foo  (a : T)\n  : X")
+    b = dedupe._sig_shape("lemma bar (a : T) : X")
+    assert a == b == "(a : T) : X"
+    assert dedupe._sig_shape("theorem z (a : T) (b : T) : X") != a
+
+
+def test_reuse_gate_rejects_shape_mismatch(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """task #6: the reuse REWRITE keeps the candidate's arg list, so an
+    apply-hit on a shape-mismatched twin (the probe is deliberately loose
+    since 2026-05-11 — right for the alias tiers) must NOT become a reuse
+    link: two recorded incidents ended in commit lake `Function expected`.
+    Conservative: shape mismatch → novel sub-goal (None)."""
+    _seed_problem(conn)
+    root = _seed_root(conn)
+    twin = _seed_sub(conn, slug="twin", statement="X", status="open")
+    _link(conn, root, [twin])
+    parent = _seed_sub(conn, slug="parent", statement="Q", depth=2)
+    _link(conn, root, [parent])
+    _write_lean(tmp_path, "p", "twin",
+        "import Mathlib\ntheorem twin (a : T) : X := by sorry\n")
+    _write_lean(tmp_path, "p", "parent",
+        "import Mathlib\ntheorem parent : Q := by sorry\n")
+    _write_lean(tmp_path, "p", "main",
+        "import Mathlib\ntheorem main : T := by sorry\n", root=True)
+    monkeypatch.setattr(
+        dedupe, "_batch_provable_via_apply",
+        lambda ws, p, pairs: [thm == "Problems.p.twin"
+                              for _sig, _mod, thm in pairs])
+    # candidate has an EXTRA binder — apply would discharge it, but the
+    # citation rewrite would emit `twin a b` → Function expected
+    cand = "import Mathlib\ntheorem c (a : T) (b : T) : X := by sorry\n"
+    got = dedupe.find_canonicals_batch(
+        conn, tmp_path, problem="p", parent_goal_id=parent,
+        candidates=[("c", cand)])
+    assert got == [None]
+
+
+def test_library_canonicals_star_domain(tmp_path: Path) -> None:
+    """task #6: domain='*' spans the whole Library corpus (cross-domain
+    reuse unblocked); a concrete domain still filters."""
+    lib = tmp_path / "Library"
+    (lib / "Geometry").mkdir(parents=True)
+    (lib / "LinearAlgebra").mkdir(parents=True)
+    (lib / "Geometry" / "A.lean").write_text(
+        "theorem geo_thm (a : T) : GX := by trivial\n", encoding="utf-8")
+    (lib / "LinearAlgebra" / "B.lean").write_text(
+        "theorem la_thm (a : T) : LX := by trivial\n", encoding="utf-8")
+    (lib / "INDEX.md").write_text(
+        "- `Library.Geometry.A.geo_thm` -> `Library/Geometry/A.lean`\n"
+        "- `Library.LinearAlgebra.B.la_thm` -> `Library/LinearAlgebra/B.lean`\n",
+        encoding="utf-8")
+    star = {c.fqn for c in dedupe._library_canonicals(tmp_path, "*")}
+    geo = {c.fqn for c in dedupe._library_canonicals(tmp_path, "Geometry")}
+    assert "Library.Geometry.A.geo_thm" in geo
+    assert "Library.LinearAlgebra.B.la_thm" not in geo
+    assert {"Library.Geometry.A.geo_thm",
+            "Library.LinearAlgebra.B.la_thm"} <= star
