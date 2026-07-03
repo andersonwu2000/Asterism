@@ -43,13 +43,10 @@ from pathlib import Path
 
 from ..state import db as _db
 
-
-# `import Problems.<problem>.proofs.L_<slug>` line pattern.
-# Captures (problem, slug). Multiline so it matches per-line in patch_text.
-_PROBLEM_IMPORT_RE = re.compile(
-    r"^\s*import\s+Problems\.([A-Za-z_][\w.]*)\.proofs\.L_([a-z][a-z0-9_]*)\s*$",
-    re.MULTILINE,
-)
+# `import Problems.<problem>.proofs.L_<slug>` line pattern, captures
+# (problem, slug). Shared SoT (state.assemble) — the gateway's citation-
+# submission mirror imports the same object (task #5 Step A).
+from ..state.assemble import PROBLEM_IMPORT_RE as _PROBLEM_IMPORT_RE
 
 
 def inject_missing_sibling_imports(

@@ -329,7 +329,9 @@ def _parse_hint_winner(output: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
-_SORRY_STUB_RE = re.compile(r":=[ \t]*by[ \t]+sorry[ \t]*$", re.MULTILINE)
+# Shared SoT (state.assemble) — the gateway mirrors the same object
+# (task #5 Step A).
+from ..state.assemble import SORRY_STUB_RE as _SORRY_STUB_RE  # noqa: E402
 
 
 def _is_sorry_stub(content: str) -> bool:

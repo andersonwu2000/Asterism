@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any  # noqa: F401 — used in string annotations (mfst/return)
 
-from ..state import db, proof_store, transitions
+from ..state import assemble, db, proof_store, transitions
 
 
 def _auto_prepend_candidate_imports(
@@ -107,8 +107,10 @@ def _forward_seed_scaffold(*, problem: str, workspace: Path) -> str:
 
 
 # Same slug constraint as Backward sub-goals (Tooling/pipeline/backward.py).
-SLUG_RE = re.compile(r"^[a-z][a-z0-9_]*$")
-SLUG_MAX_LEN = 60
+# Shared SoT (state.assemble) — the gateway's submission mirror imports the
+# same objects, so the two sides cannot drift (task #5 Step A).
+SLUG_RE = assemble.SLUG_RE
+SLUG_MAX_LEN = assemble.SLUG_MAX_LEN
 
 # Leading-comment directives Forward agent writes:
 #   `-- Forward rationale: <prose>`   required, 2-3 sentences
@@ -136,12 +138,8 @@ _DECLINE_RE = re.compile(
 # whenever an honest data construction needed `noncomputable` (agent_feedback
 # green_theorem: #65/#103, the disk-atlas wave). The capture groups stay
 # (kind, name); the commit writes the body verbatim so the modifier survives.
-_DECL_MODIFIERS = r"(?:noncomputable|private|protected|partial|unsafe)"
-_DECL_HEAD_RE = re.compile(
-    r"^[ \t]*(?:@\[[^\]]*\][ \t]*)*(?:" + _DECL_MODIFIERS + r"[ \t]+)*"
-    r"(theorem|def|structure|class)[ \t]+([A-Za-z_][A-Za-z0-9_]*)\b",
-    re.MULTILINE,
-)
+_DECL_MODIFIERS = assemble.DECL_MODIFIERS
+_DECL_HEAD_RE = assemble.DECL_HEAD_RE
 # Kinds that have no proof obligation: status='proved' immediately on
 # commit, BFS never dispatches Backward/Builder, Library promotes
 # without axiom_probe. Theorem is the prove-loop default.

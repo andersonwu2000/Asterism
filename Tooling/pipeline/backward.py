@@ -298,28 +298,13 @@ def _apply_reuse_rewrites(text: str,
 def _ensure_imports_subgoal(
     content: str, *, problem: str, workspace: Path,
 ) -> str:
-    """Prepend `import Mathlib` and `import Problems.<problem>.Defs`
-    (when the problem ships a `Defs.lean`) if missing. Idempotent —
-    skips any line already present.
-
-    Without `Defs`, problem-level custom symbols (e.g. SG's `Collinear`)
-    are unresolved; a strict agent following the prompt's "framework
-    auto-injects imports" instruction writes none, and Lean falls back
-    to whatever `import Mathlib` exposes (e.g. Mathlib's universe-poly
-    `Collinear (k : Type*) ...`), breaking elaboration.
-    """
-    needed: list[str] = []
-    if not re.search(r"(?m)^import\s+Mathlib\b", content):
-        needed.append("import Mathlib")
-    defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
-    if defs_path.exists():
-        defs_module = f"Problems.{problem}.Defs"
-        if not re.search(rf"(?m)^import\s+{re.escape(defs_module)}\b",
-                         content):
-            needed.append(f"import {defs_module}")
-    if not needed:
-        return content
-    return "\n".join(needed) + "\n\n" + content
+    """Single impl lives in `state.assemble.ensure_framework_imports` (task
+    #5 Step A — the gateway's validate path runs the SAME function, so the
+    two sides can no longer drift). Kept under the historical name for the
+    existing call sites and tests."""
+    from ..state import assemble
+    return assemble.ensure_framework_imports(
+        content, problem=problem, workspace=workspace)
 
 
 # Backward-placement convention: each `new_<sub_slug>.lean` should land

@@ -54,7 +54,7 @@ from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from ..state import db, manifest
+from ..state import assemble, db, manifest
 from .client import LspClient
 
 
@@ -670,30 +670,18 @@ def _format_diag(d: dict) -> dict:
 
 
 def _needed_imports(content: str, problem: str, workspace: Path) -> list[str]:
-    """The framework imports (`import Mathlib`, `import Problems.<p>.Defs`)
-    missing from `content`. Shared by `_ensure_imports` (which prepends
-    them) and the sibling-inlining path (which hoists them into the merged
-    import block alongside the siblings' own imports)."""
-    needed: list[str] = []
-    if not re.search(r"(?m)^import\s+Mathlib\b", content):
-        needed.append("import Mathlib")
-    defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
-    if defs_path.exists():
-        defs_module = f"Problems.{problem}.Defs"
-        if not re.search(rf"(?m)^import\s+{re.escape(defs_module)}\b",
-                         content):
-            needed.append(f"import {defs_module}")
-    return needed
+    """Single impl in `state.assemble` — the SAME function the commit paths
+    run (task #5 Step A: no more hand-mirroring of the pipeline's injection
+    rules). Used by `_ensure_imports` and the sibling-inlining path (which
+    hoists these into the merged import block)."""
+    return assemble.needed_framework_imports(
+        content, problem=problem, workspace=workspace)
 
 
 def _ensure_imports(content: str, problem: str, workspace: Path) -> str:
-    """Mirrors `pipeline.backward._ensure_imports_subgoal`: prepends
-    `import Mathlib` and `import Problems.<problem>.Defs` (if
-    Defs.lean exists) when missing. Idempotent."""
-    needed = _needed_imports(content, problem, workspace)
-    if not needed:
-        return content
-    return "\n".join(needed) + "\n\n" + content
+    """Single impl in `state.assemble` (= commit's `_ensure_imports_subgoal`)."""
+    return assemble.ensure_framework_imports(
+        content, problem=problem, workspace=workspace)
 
 
 def _inline_sibling_stubs(
@@ -1295,28 +1283,17 @@ def errors_at(line: int | None = None) -> str:
 # (elaboration result vs framework policy — the user's separation instinct,
 # in one tool call so the agent's existing validate_file loop catches it).
 
-# Mirror of `pipeline._cite_gate._PROBLEM_IMPORT_RE`. Kept local so the gateway
-# (the LSP server) does not import the heavy `pipeline` package; the citability
-# VERDICT is the shared SoT `db.classify_cited_slug`, so only this line-scan —
-# a fixed `import` syntax — is duplicated.
-_GW_PROBLEM_IMPORT_RE = re.compile(
-    r"^\s*import\s+Problems\.([A-Za-z_][\w.]*)\.proofs\.L_([a-z][a-z0-9_]*)\s*$",
-    re.MULTILINE,
-)
-_GW_THEOREM_RE = re.compile(r"(?m)^\s*theorem\s+\S+")
-_GW_SORRY_STUB_RE = re.compile(r":=[ \t]*by[ \t]+sorry[ \t]*$", re.MULTILINE)
-
-# Mirror of `pipeline.forward.SLUG_RE` + `_DECL_HEAD_RE` — kept local (the gateway
-# must not import the heavy `pipeline` package); both are stable, simple regexes.
-# The decl-head form tolerates leading modifiers/attributes so it stays in step
-# with the modifier-aware commit parser.
-_GW_SLUG_RE = re.compile(r"^[a-z][a-z0-9_]*$")
-_GW_DECL_HEAD_RE = re.compile(
-    r"^[ \t]*(?:@\[[^\]]*\][ \t]*)*"
-    r"(?:(?:noncomputable|private|protected|partial|unsafe)[ \t]+)*"
-    r"(theorem|def|structure|class)[ \t]+([A-Za-z_][A-Za-z0-9_]*)\b",
-    re.MULTILINE,
-)
+# Formerly hand-maintained `_GW_*` copies of the pipeline regexes ("kept
+# local so the gateway does not import the heavy pipeline package") — now
+# the SAME objects via the state-layer leaf `state.assemble` (task #5 Step
+# A): the pipeline re-exports these under its historical names, so the two
+# sides structurally cannot drift. The citability VERDICT stays with the
+# shared SoT `db.classify_cited_slug`.
+_GW_PROBLEM_IMPORT_RE = assemble.PROBLEM_IMPORT_RE
+_GW_THEOREM_RE = assemble.THEOREM_LINE_RE
+_GW_SORRY_STUB_RE = assemble.SORRY_STUB_RE
+_GW_SLUG_RE = assemble.SLUG_RE
+_GW_DECL_HEAD_RE = assemble.DECL_HEAD_RE
 
 
 def _gw_leading_comments(text: str) -> str:
