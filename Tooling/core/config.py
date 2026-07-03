@@ -12,35 +12,12 @@ env always wins so testing can override without touching the file.
 Asterism.yaml is optional; the file's absence is identical to writing
 an empty `{}`.
 
-Field map (Asterism.yaml → env var fallback → built-in default):
-
-    dispatch.pool                  ASTERISM_POOL                4
-    dispatch.budget_sec            ASTERISM_BUDGET_SEC          1800
-    dispatch.shelve_threshold      ASTERISM_SHELVE_THRESHOLD    8
-    dispatch.spawn_timeout_sec     ASTERISM_SPAWN_TIMEOUT_SEC   900
-    dispatch.postmortem_timeout_sec  ASTERISM_POSTMORTEM_TIMEOUT_SEC  180
-    dispatch.trap_check_sec        ASTERISM_TRAP_CHECK_SEC      660
-    dispatch.silence_threshold_sec ASTERISM_SILENCE_THRESHOLD_SEC  300
-    gateway.port                   ASTERISM_GATEWAY_PORT        8765
-                                                                (worker count
-                                                                is derived from
-                                                                dispatch.pool —
-                                                                1:1 binding,
-                                                                see #118)
-    builder.threshold              ASTERISM_BUILDER_THRESHOLD   3
-                                                                (legacy yaml
-                                                                key:
-                                                                dispatch.builder_threshold)
-    builder.provider               ASTERISM_BUILDER_PROVIDER →
-                                   ASTERISM_LLM_PROVIDER        'claude'
-    builder.model                  ASTERISM_BUILDER_MODEL →
-                                   ASTERISM_AGENT_MODEL         provider-default
-    backward.provider              ASTERISM_BACKWARD_PROVIDER →
-                                   ASTERISM_LLM_PROVIDER        'claude'
-    backward.model                 ASTERISM_BACKWARD_MODEL →
-                                   ASTERISM_AGENT_MODEL         provider-default
-    strategist.interval_min        ASTERISM_STRATEGIST_INTERVAL_MIN  60.0
-    strategist.inject_batch_max    ASTERISM_INJECT_BATCH_MAX    10
+The key registry is CONFIG_SPEC below — the single source of truth for
+every dotted key the codebase reads (the prose field map that used to sit
+here had drifted: six live keys missing, one dead key listed). A typo'd
+key silently returns the default, so the registry is bound to the code by
+tests/test_config_spec_drift.py in BOTH directions: an unregistered
+`config.get` key fails CI, and a registered key nobody reads fails too.
 
 Provider-specific knobs (gemini model / openai base url / claude
 tools) stay env-only — they're cross-cutting toggles that don't
@@ -54,6 +31,38 @@ from typing import Any, Callable, Sequence
 
 
 _CONFIG_FILENAME = "Asterism.yaml"
+
+# ── CONFIG_SPEC — the key registry (task #10) ──────────────────────────
+# key → one-line doc "(env fallback; default)". `<kind>` is the dynamic
+# per-pipeline placeholder (builder/backward/forward/strategist/…).
+# Adding a `config.get` call with a new key? Register it here — the drift
+# test fails otherwise (typo → silent-default is the bug class this
+# kills). Removing a call? Delete the entry (reverse direction fails too).
+CONFIG_SPEC: "dict[str, str]" = {
+    "dispatch.pool": "worker pool == gateway workers, 1:1 #118 (ASTERISM_POOL; 4)",
+    "dispatch.budget_sec": "daemon wall budget (ASTERISM_BUDGET_SEC; 1800)",
+    "dispatch.builder_threshold": "attempts before Builder→Backward — legacy yaml key (3)",
+    "builder.threshold": "modern alias of dispatch.builder_threshold (ASTERISM_BUILDER_THRESHOLD; falls back to legacy key)",
+    "dispatch.shelve_threshold": "attempts before shelve (ASTERISM_SHELVE_THRESHOLD; 8)",
+    "dispatch.spawn_timeout_sec": "main spawn SIGKILL cap (ASTERISM_SPAWN_TIMEOUT_SEC; 900)",
+    "dispatch.postmortem_timeout_sec": "postmortem spawn cap (ASTERISM_POSTMORTEM_TIMEOUT_SEC; 180)",
+    "dispatch.trap_check_sec": "watchdog thinking-trap check point (ASTERISM_TRAP_CHECK_SEC; 660)",
+    "dispatch.silence_threshold_sec": "watchdog silence AND-condition (ASTERISM_SILENCE_THRESHOLD_SEC; 300)",
+    "dispatch.completion_grace_sec": "watchdog completion-reclaim grace (ASTERISM_COMPLETION_GRACE_SEC; 120)",
+    "dispatch.classify_trap_cap_sec": "librarian classify trap cap ceiling (3600)",
+    "dispatch.classify_trap_per_decl_sec": "classify trap budget per kept decl (12)",
+    "gateway.port": "LSP gateway HTTP port (ASTERISM_GATEWAY_PORT; 8765)",
+    "strategist.interval_min": "T1 routine wake cadence (ASTERISM_STRATEGIST_INTERVAL_MIN; 60.0)",
+    "strategist.verify_retry": "strategist in-pipeline verify retry toggle (True)",
+    "verify.olean_warm": "background olean warmer kill switch #103 (ASTERISM_OLEAN_WARM; True)",
+    "lessons.reflection_enabled": "reflection spawn kill switch (ASTERISM_LESSONS_REFLECTION_ENABLED; True)",
+    "feedback.enabled": "dev-mode agent feedback questionnaire (ASTERISM_FEEDBACK_ENABLED; False)",
+    "presearch.enabled": "target-1 per-node pre-search toggle (True)",
+    "presearch.timeout_sec": "pre-search agent budget (ASTERISM_PRESEARCH_TIMEOUT_SEC)",
+    "library.require_signoff": "Ingest pauses for approve-ingest (True)",
+    "<kind>.model": "per-pipeline model override (ASTERISM_<KIND>_MODEL → ASTERISM_AGENT_MODEL)",
+    "<kind>.provider": "per-pipeline LLM provider (ASTERISM_<KIND>_PROVIDER → ASTERISM_LLM_PROVIDER; 'claude')",
+}
 
 # Module-level cache so reading the file once per daemon-run avoids
 # repeated yaml.safe_load() on hot paths (every spawn_llm reads model;

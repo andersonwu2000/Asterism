@@ -20,7 +20,7 @@ def _fresh(tmp_path):
 
 def test_fresh_db_is_latest(tmp_path):
     c = _fresh(tmp_path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 14
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 15
 
 
 def test_queue_accepts_librarian(tmp_path):
@@ -71,7 +71,7 @@ def test_v6_upgrades_preserving_rows(tmp_path):
 
     db.init_schema(c)  # re-run migrations → phase7 + phase8 fire
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 14
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 15
     assert c.execute("SELECT count(*) FROM queue").fetchone()[0] == 1
     assert c.execute("SELECT count(*) FROM pipelines").fetchone()[0] == 1
     c.execute("INSERT INTO queue (kind, target_id, target_kind, priority,"
@@ -84,7 +84,7 @@ def test_reinit_is_idempotent(tmp_path):
     c = _fresh(tmp_path)
     db.init_schema(c)
     db.init_schema(c)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 14
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 15
 
 
 # --- Phase 8: library_decls.lifecycle accepts 'cleaned' ---
@@ -121,7 +121,7 @@ def test_v7_library_decls_upgrades_to_cleaned(tmp_path):
 
     db.init_schema(c)  # phase8 fires → rebuild library_decls
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 14
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 15
     assert c.execute("SELECT lifecycle FROM library_decls WHERE slug='keep'"
                      ).fetchone()[0] == "migrated"     # row preserved
     db.mark_library_cleaned(c, problem="p", slug="keep")
@@ -150,7 +150,7 @@ def test_v9_db_gains_renamed_from(tmp_path):
 
     db.init_schema(c)  # phase10 fires → ADD COLUMN
 
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 14
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 15
     assert "renamed_from" in {
         r[1] for r in c.execute("PRAGMA table_info(library_decls)")}
     assert c.execute("SELECT lifecycle FROM library_decls WHERE slug='keep'"
@@ -178,3 +178,23 @@ def test_set_library_renamed_records_old_and_new(tmp_path):
                     " WHERE slug='foo'").fetchone()
     assert row["target_name"] == "Library.M.newer_name"
     assert row["renamed_from"] == "Library.M.old_name"   # earliest preserved
+
+
+def test_additive_alter_block_is_frozen():
+    """v15 policy (task #10): the unversioned blind-ALTER block is FROZEN.
+    Versions ≤14 grew columns through it with "no user_version bump needed"
+    notes, making user_version an incomplete description of a DB. From v15
+    every new column ships as a versioned migration step — growing this
+    block trips here; shrinking it (a column folded into a rebuild) means
+    lowering the pin consciously."""
+    import inspect
+    src = inspect.getsource(db.init_schema)
+    start = src.index("for col, ddl in (")
+    end = src.index("):", start)
+    # count DDL strings, not the words (comments inside the block
+    # legitimately say "ADD COLUMN")
+    n = src[start:end].count('"ALTER TABLE ')
+    assert n == 13, (
+        f"legacy additive ALTER block has {n} entries (pin: 13) — new "
+        "columns must ship as a VERSIONED migration step (see the v15 "
+        "stamp comment), not by growing this block")

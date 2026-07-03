@@ -179,7 +179,11 @@ _WATERMARKS = {
     # widening) + ingest_signoff_pending helpers — 2026-07-02 — conscious bump.
     # 3510→3530: classify_cited_slug alias-chain resolution (bea22b4, cite-gate
     # resolves a proved alias to its canonical) — 2026-07-03 — conscious bump.
-    "Tooling/state/db.py": 3530,
+    # db 3530→3550: v15 additive-collapse migration stamp + policy comment
+    # (task #10 — user_version made a complete schema description again;
+    # the legacy blind-ALTER block frozen by its own ratchet) — conscious
+    # bump.
+    "Tooling/state/db.py": 3550,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

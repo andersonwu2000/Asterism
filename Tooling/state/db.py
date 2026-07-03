@@ -544,7 +544,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 14
+_CURRENT_USER_VERSION = 15
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -855,6 +855,21 @@ def init_schema(conn: sqlite3.Connection) -> None:
         # block above — no rebuild needed for it.)
         _migrate_to_phase14(conn)
         conn.execute("PRAGMA user_version = 14")
+        conn.commit()
+    if v < 15:
+        # v15 — the additive-column COLLAPSE (task #10). Versions ≤14 grew a
+        # second, UNVERSIONED migration channel: the blind-ALTER block above
+        # (12 columns added over months with "no user_version bump needed"
+        # notes), which made `user_version` an incomplete description of a
+        # DB — two v14 DBs could differ by several columns depending on
+        # which code revision last opened them (a live hazard for restores
+        # from the .bak fleet and cross-revision reads). The ALTER block
+        # runs earlier in THIS SAME init_schema pass, so stamping 15 here
+        # certifies: v15 ⟹ the full additive set is present. POLICY from
+        # v15 on: every new column ships as a versioned migration step —
+        # the legacy ALTER block is FROZEN at 13 entries (ratchet-pinned by
+        # test_db_phase7.py::test_additive_alter_block_is_frozen).
+        conn.execute("PRAGMA user_version = 15")
         conn.commit()
 
 
