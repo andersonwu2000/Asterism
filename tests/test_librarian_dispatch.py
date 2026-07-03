@@ -555,6 +555,37 @@ def test_librarian_refill_selfstart_opted_in_proved(tmp_path: Path):
     assert (rows[0]["kind"], rows[0]["target_id"]) == ("Librarian", "p")
 
 
+def test_librarian_paths_respect_ingest_signoff_pause(tmp_path: Path):
+    """BUG3 (2026-07-03): a Strategist `Ingest` under require_signoff sets
+    `ingest_signoff_pending` to PAUSE harvest until `asterism approve-ingest`.
+    The dispatcher's auto-librarian paths (selfstart / refill / harvest_
+    outstanding) must respect that pause — else a proved root (e.g. a trivial
+    `main:True`) auto-starts harvest, bypassing the human sign-off (the MV run
+    incident). Once the pause clears, they resume."""
+    conn = _mem()
+    _proved_root(conn, "p")            # proved + integrity-verified, library:true
+    db.set_ingest_signoff_pending(conn, "p", True)
+    mf = _manifests(p=True)
+
+    # selfstart: paused problem is NOT started
+    assert dispatcher._librarian_selfstart_problems(
+        conn, tmp_path, mf, scope=None) == []
+    # refill: nothing enqueued, not pending
+    assert dispatcher._librarian_refill(
+        conn, tmp_path, set(), mf, fail_counts={}) is False
+    assert _queue(conn) == []
+    # harvest_outstanding: paused is HUMAN-outstanding, not daemon-outstanding
+    assert dispatcher._harvest_outstanding(
+        conn, tmp_path, mf, scope=None, fail_counts={}) is False
+
+    # approve-ingest clears the pause → the paths resume (selfstart fires)
+    db.set_ingest_signoff_pending(conn, "p", False)
+    assert dispatcher._librarian_selfstart_problems(
+        conn, tmp_path, mf, scope=None) == ["p"]
+    assert dispatcher._librarian_refill(
+        conn, tmp_path, set(), mf, fail_counts={}) is True
+
+
 def test_librarian_refill_no_selfstart_until_integrity_verified(tmp_path: Path):
     # A transiently-proved-but-not-integrity-verified root (e.g. a sorryAx
     # fake-proof before root_integrity_gate rolls it back) must NOT self-start

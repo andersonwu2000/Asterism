@@ -150,7 +150,9 @@ _WATERMARKS = {
     # to state/transitions.py; ratchet down to lock the gain — 2026-06-22.
     # 2200→2240: reconcile pre-existing growth (harvest-fix `_harvest_outstanding`,
     # 1b2a6b5) that a prior push's ratchet missed — 2026-07-02 — conscious bump.
-    "Tooling/core/dispatcher.py": 2240,
+    # 2240→2270: BUG3 — sign-off pause checks in the 3 librarian dispatch paths
+    # (selfstart / refill / harvest_outstanding) — 2026-07-03 — conscious bump.
+    "Tooling/core/dispatcher.py": 2270,
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.

@@ -903,6 +903,14 @@ def _librarian_selfstart_problems(
             continue
         if not manifests[problem].library:
             continue
+        # anchor+claim sign-off pause (2026-07-03): a Strategist `Ingest`
+        # under `library.require_signoff` set `ingest_signoff_pending` and is
+        # waiting for `asterism approve-ingest`. Do NOT auto-start the chain —
+        # else this dispatcher path bypasses the human gate (MV run: the
+        # trivial `main:True` root proving auto-started harvest while the
+        # Ingest was paused). `approve-ingest` clears the flag + enqueues.
+        if db.problem_ingest_signoff_pending(conn, problem):
+            continue
         if _librarian_index_has(workspace, problem):
             continue
         if db.library_decls_for(conn, problem):
@@ -955,6 +963,12 @@ def _librarian_refill(
 
     pending = False
     for problem in problems:
+        # Paused awaiting human ingest sign-off — don't drive the chain (belt
+        # to selfstart's brace: a problem may already hold library_decls rows,
+        # so skip it here too). Not counted as `pending`: the outstanding work
+        # is the HUMAN's approve-ingest, not the daemon's — it may idle/exit.
+        if db.problem_ingest_signoff_pending(conn, problem):
+            continue
         work_kind, _ = _derive_librarian_work(conn, problem, workspace)
         if work_kind is None:
             continue
@@ -1048,6 +1062,11 @@ def _harvest_outstanding(
             "AND status='proved' AND integrity_verified=1").fetchall()
     for (problem,) in rows:
         if problem not in manifests or not manifests[problem].library:
+            continue
+        # Paused awaiting human ingest sign-off — this is HUMAN-outstanding, not
+        # daemon-outstanding, so it must NOT hold the daemon alive. The human's
+        # approve-ingest re-enqueues + clears the flag when they're ready.
+        if db.problem_ingest_signoff_pending(conn, problem):
             continue
         if _librarian_index_has(workspace, problem):
             continue  # harvest already complete (INDEX = the done-marker)
