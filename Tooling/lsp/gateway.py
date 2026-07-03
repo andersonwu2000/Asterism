@@ -860,13 +860,56 @@ def _merge_opens(content: str, defs_opens: "list[str]",
     return out
 
 
+def _proved_sibling_import_lines(
+    texts: "list[str]", problem: str, workspace: "Path",
+    declared: "set[str]",
+) -> "list[str]":
+    """The `import Problems.<p>.proofs.L_<slug>` lines the commit-side
+    `assemble_for_commit` will auto-inject (proved-sibling auto-fix) for any
+    of `texts` — hoisted into the unit's import block instead of mutated
+    into the content, so the agent's line numbers (line_map) are untouched
+    (task #5 Step C: the probe resolves the same modules commit will,
+    killing the false-RED where validate said `unknown identifier` on a
+    reference commit would have auto-imported). Best-effort mirror of the
+    commit behavior: no DB on disk / any failure → [] (validate must never
+    break on this)."""
+    db_path = workspace / "asterism.db"
+    if not db_path.exists():
+        return []
+    try:
+        conn = db.connect(db_path)
+    except Exception:
+        return []
+    try:
+        out: "list[str]" = []
+        for t in texts:
+            _, added = assemble.inject_sibling_imports(
+                conn, t, problem=problem, declared_slugs=declared)
+            for s in added:
+                line = f"import Problems.{problem}.proofs.L_{s}"
+                if line not in out:
+                    out.append(line)
+        return out
+    except Exception:
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def _build_compilation_unit(
     content: str, problem: str, workspace: "Path", attempts_dir: "Path",
     extra_opens: "list[str]" = (),
 ) -> "tuple[str, list[int | None], list[str]]":
     """The SINGLE compilation state every in-spawn LSP tool elaborates:
-    framework imports + `Defs.lean` file-level opens + referenced
-    `new_<slug>.lean` sibling stubs (topologically ordered) + `content`.
+    framework imports + commit's proved-sibling auto-imports + `Defs.lean`
+    file-level opens + referenced `new_<slug>.lean` sibling stubs
+    (topologically ordered) + `content`. Since task #5 Step C the unit is
+    derived from the SAME `state.assemble` primitives the commit paths run,
+    so what the probe elaborates is what commit will land (modulo the
+    single-unit fold itself).
 
     Returns `(merged, line_map, inlined_slugs)`. `line_map[i]` maps merged
     line `i + 1` back to `content`'s 1-indexed line, or `None` for a
@@ -879,10 +922,14 @@ def _build_compilation_unit(
     every tool remaps uniformly."""
     siblings = _toposort_siblings(
         _collect_referenced_sibling_stubs(attempts_dir, content))
+    sib_texts = [t for _, t in siblings]
+    declared = {s for s, _ in siblings}
     merged, line_map = _inline_sibling_stubs(
         content,
-        [t for _, t in siblings],
-        _needed_imports(content, problem, workspace),
+        sib_texts,
+        _needed_imports(content, problem, workspace)
+        + _proved_sibling_import_lines(
+            [content] + sib_texts, problem, workspace, declared),
         opens=_merge_opens(content, manifest.defs_opens(workspace, problem),
                            list(extra_opens)),
     )

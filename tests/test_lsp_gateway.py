@@ -1326,3 +1326,58 @@ def test_verify_session_sync_error_diag_not_ok(
             lsp_gateway._state.sessions.pop("tok-B", None)
     assert r["ok"] is False
     assert r["diagnostics"][0]["severity"] == "error"
+
+
+def test_build_compilation_unit_hoists_proved_sibling_imports(
+    tmp_path: Path,
+) -> None:
+    """Task #5 Step C: the unit is derived from the same assemble primitives
+    commit runs — a reference to a PROVED sibling the agent forgot to import
+    gets the SAME auto-import commit will inject, hoisted into the import
+    block (line_map untouched), so validate stops false-REDing what commit
+    auto-fixes."""
+    import sqlite3
+    prob = "p"
+    pdir = db.problem_dir(tmp_path, prob)
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "Defs.lean").write_text("import Mathlib\n", encoding="utf-8")
+    attempts = tmp_path / "att"
+    attempts.mkdir()
+    # a proved sibling in the workspace DB
+    conn = sqlite3.connect(tmp_path / "asterism.db")
+    conn.row_factory = sqlite3.Row
+    db.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, manifest_path, created_at) "
+                 "VALUES ('p','',datetime('now'))")
+    g = db.insert_goal(conn, problem=prob, slug="helper_lemma",
+                       lean_path="Problems/p/proofs/L_helper_lemma.lean",
+                       statement="True", origin="backward", kind="theorem")
+    conn.execute("UPDATE goals SET status='proved' WHERE id=?", (g,))
+    conn.commit()
+    conn.close()
+    content = ("namespace P\n"                                      # line 1
+               "theorem s1 : True := helper_lemma trivial\n"        # line 2
+               "end P\n")                                           # line 3
+    merged, line_map, slugs = lsp_gateway._build_compilation_unit(
+        content, prob, tmp_path, attempts)
+    assert "import Problems.p.proofs.L_helper_lemma" in merged
+    lines = merged.split("\n")
+    imp_idx = next(i for i, ln in enumerate(lines)
+                   if "L_helper_lemma" in ln)
+    assert line_map[imp_idx] is None          # hoisted prefix, not content
+    s1_idx = next(i for i, ln in enumerate(lines)
+                  if ln.startswith("theorem s1"))
+    assert line_map[s1_idx] == 2              # agent's line numbers intact
+
+
+def test_build_compilation_unit_no_db_is_noop(tmp_path: Path) -> None:
+    """No asterism.db in the workspace (pure unit-test setups) → the
+    proved-sibling lookup silently contributes nothing."""
+    prob = "p"
+    pdir = db.problem_dir(tmp_path, prob)
+    pdir.mkdir(parents=True, exist_ok=True)
+    attempts = tmp_path / "att"
+    attempts.mkdir()
+    merged, _, _ = lsp_gateway._build_compilation_unit(
+        "theorem t : True := trivial\n", prob, tmp_path, attempts)
+    assert "proofs.L_" not in merged
