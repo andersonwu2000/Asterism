@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import shutil
 import sqlite3
+from dataclasses import dataclass, field
 import sys
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, FIRST_COMPLETED, wait
@@ -50,7 +51,20 @@ SHELVE_THRESHOLD = 8
 # (the next tick re-derives the same step), then the chain stalls and is left
 # for the operator — bounds a genuinely-stuck step from looping forever while
 # still surviving a transient gateway/harness failure.
-LIBRARIAN_MAX_CHAIN_RETRIES = 2
+# LIBRARIAN_MAX_CHAIN_RETRIES moved to librarian_sched (re-exported below).
+from .librarian_sched import (  # noqa: E402 — historical names, tests + runbooks use them
+    LIBRARIAN_MAX_CHAIN_RETRIES,
+    _LIB_SEP,
+    _advance_librarian_chain,
+    _derive_librarian_work,
+    _harvest_outstanding,
+    _lib_decode,
+    _lib_encode,
+    _librarian_index_has,
+    _librarian_invalidate_index,
+    _librarian_refill,
+    _librarian_selfstart_problems,
+)
 
 
 def _exit_pool_fast(pool: ThreadPoolExecutor) -> None:
@@ -692,398 +706,74 @@ def _strategist_row_is_stale(conn: sqlite3.Connection,
     return g is not None and str(g["status"]) == "proved"
 
 
-def _librarian_index_has(workspace: Path, problem: str) -> bool:
-    """True iff `Library/INDEX.md` already records `problem` — the
-    idempotent 'finish done' marker. Reading the file (rather than a DB
-    column) keeps the lifecycle state machine at four states
-    (candidate→deduped→classified→migrated); INDEX presence is the only
-    thing distinguishing 'all migrated, finish pending' from 'finished'."""
-    index = workspace / "Library" / "INDEX.md"
-    if not index.exists():
-        return False
-    text = index.read_text(encoding="utf-8", errors="replace")
-    # Line-exact match on the section header — a substring test would let
-    # problem `p` falsely match section `## pp`. Mirrors the header
-    # comparison in librarian._upsert_index_section.
-    header = f"## {problem}"
-    return any(ln.strip() == header for ln in text.splitlines())
+# ── run()-loop scheduling constants (hoisted from function locals, task #9) ──
+SPAWN_COOLDOWN_SEC = 30.0
+CONSEC_SPAWN_FAIL_LIMIT = 10
+CONSEC_GATEWAY_UNREACHABLE_LIMIT = 8
+QUOTA_BACKOFF_BASE_SEC = 30.0
+QUOTA_BACKOFF_CAP_SEC = 600.0
 
 
-def _librarian_invalidate_index(workspace: Path, problem: str) -> None:
-    """Drop `problem`'s stale INDEX section when it is being RE-cleaned (already
-    promoted, but its Library is now being rewritten). Without this the stale
-    entry reads as 'finished' (`_derive_librarian_work`'s INDEX done-marker) and
-    the terminal bridge/Gate B is skipped — the re-cleaned Library would be
-    re-exposed without re-verifying it re-derives the root. Clearing it makes
-    bridge re-fire + re-promote. Called from the single-threaded tick (no
-    concurrent INDEX writer during a problem's cleanup phase — bridge runs only
-    once all its decls are cleaned)."""
-    from ..pipeline import librarian
-    index = workspace / "Library" / "INDEX.md"
-    try:
-        text = index.read_text(encoding="utf-8")
-    except OSError:
-        return
-    new = librarian._drop_index_section(text, problem)
-    if new != text:
-        index.write_text(new, encoding="utf-8")
-        print(f"[librarian] {problem}: re-clean detected → cleared stale INDEX "
-              f"entry (bridge/Gate B will re-verify + re-promote)", flush=True)
+@dataclass
+class SchedulerState:
+    """The dispatcher run-loop's mutable scheduling state in ONE place
+    (task #9 — formerly seven loose locals whose persistence policy lived
+    only in scattered comments).
+
+    Persistence policy per field — decide + document here when adding one:
+      - `librarian_fail_counts` — DB WRITE-THROUGH (`librarian_fail_counts`
+        table, loaded at startup): a stuck unit's count must survive a
+        restart so it STALLs at LIBRARIAN_MAX_CHAIN_RETRIES instead of
+        looping forever.
+      - everything else — deliberately in-memory; crash ⇒ clean slate IS
+        the policy: cooldowns lapse (they were timed anyway), the consec
+        circuit breakers re-arm (a restart is exactly the operator action
+        they exist to force), quota backoff re-probes the provider, and
+        `verified_problems` re-pays one lake pre-flight per problem
+        (correct after any on-disk change).
+    """
+    # (tid, kind) → wall time before which bfs_refill/pop skip the pair.
+    cooldown_until: "dict[tuple[str, str], float]" = field(default_factory=dict)
+    # Per-kind provider-quota backoff (#103): kind → resume time / consec.
+    quota_cooldown_kind: "dict[str, float]" = field(default_factory=dict)
+    consec_quota_per_kind: "dict[str, int]" = field(default_factory=dict)
+    # Global consecutive spawn_fast_fail counter; breaker exits the daemon
+    # at CONSEC_SPAWN_FAIL_LIMIT (claude.exe persistently broken).
+    consec_fast_fails: int = 0
+    # Independent gateway_unreachable breaker (run #17: 48 strategies piled
+    # up busy-looping against a dead gateway before this existed).
+    consec_gateway_unreachable: int = 0
+    # DB write-through — see class docstring.
+    librarian_fail_counts: "dict[str, int]" = field(default_factory=dict)
+    # Lazy verify cache: problem → Defs/Root built clean (False =
+    # quarantined for this daemon run).
+    verified_problems: "dict[str, bool]" = field(default_factory=dict)
 
 
-# #92 — a Librarian queue row for the parallel phases (migrate/cleanup) encodes
-# its target FILE in the target_id as `problem\x1ffile`, so the generic pop /
-# running-dedup / submit machinery treats each file as a distinct unit (the
-# running key (target_id, kind, decision_id) is naturally per-file) with NO
-# change to that machinery. Phase steps (dedup/classify/bridge) stay a plain
-# `problem` target_id. Only Librarian-aware code decodes; proving target_ids are
-# goal ints and never contain the separator, so they are unaffected.
-_LIB_SEP = "\x1f"
-
-
-def _lib_encode(problem: str, target_file: str) -> str:
-    return f"{problem}{_LIB_SEP}{target_file}"
-
-
-def _lib_decode(target_id: str) -> "tuple[str, str | None]":
-    """`problem\\x1ffile` → (problem, file); a plain `problem` → (problem, None)."""
-    if _LIB_SEP in target_id:
-        problem, target_file = target_id.split(_LIB_SEP, 1)
-        return problem, target_file
-    return target_id, None
-
-
-def _derive_librarian_work(
-    conn: sqlite3.Connection, problem: str, workspace: Path,
-) -> tuple[str | None, str | None]:
-    """Derive the next Librarian work_kind from library_decls state
-    (plan §5). Pure read. Returns (work_kind, target):
-
-      - no rows                        → ('dedup', None)   [mechanical keep-all]
-      - any 'candidate' (un-verdicted) → ('dedup', None)   [defensive]
-      - any 'deduped' (kept, unplaced) → ('classify', None)
-      - any 'classified'               → ('migrate', <next ready file>)
-      - any 'migrated', no INDEX yet   → ('bridge', None)  [v0.3: no cleanup]
-      - otherwise (terminal + done)    → (None, None)
-
-    v0.3 (plan §3): `dedup` is the mechanical keep-all (`_run_keepall`, no
-    agent); cleanup is removed — `migrated` goes straight to the bridge Gate B
-    probe. The `cleaned` lifecycle is no longer produced.
-
-    bridge (Gate B, plan §2) is the terminal step: once every file is
-    'migrated' it re-derives the original root from the Library and, on
-    success, writes INDEX — so INDEX presence remains the single done-marker
-    and a Library that fails to re-derive correctly never 'finishes'.
-
-    migrate's target is a Library FILE, not a slug — the parallel unit is
-    the whole file (plan §5 Step 3). `next_migrate_file` picks a file whose
-    dependency files are all already migrated (topological order over the
-    reconstructed file DAG); the re-enqueue chain advances the rest. bridge
-    is gated on the INDEX marker so it fires once, not in a loop."""
-    rows = db.library_decls_for(conn, problem)
-    if not rows:
-        return ("dedup", None)
-    by_state: dict[str, list] = {}
-    for r in rows:
-        by_state.setdefault(str(r["lifecycle"]), []).append(r)
-    if by_state.get("candidate"):
-        return ("dedup", None)
-    if by_state.get("deduped"):
-        return ("classify", None)
-    if by_state.get("classified"):
-        from ..pipeline import librarian
-        return ("migrate", librarian.next_migrate_file(
-            conn, problem=problem, workspace=workspace))
-    # v0.4 (plan §10/§11, §13 3c-2): once all files are migrated, the cleanup-
-    # dedup stage runs PER FILE (advances migrated → cleaned/dropped) BEFORE the
-    # bridge Gate B probe. Like migrate it is a per-file phase — `_librarian_
-    # refill` enqueues ready files (`ready_cleanup_files`) and the plain `problem`
-    # row is a no-op; the `None` target signals "per-file phase" here. Bridge
-    # then writes INDEX (= promote / done-marker).
-    if by_state.get("migrated"):
-        return ("cleanup", None)
-    if by_state.get("cleaned") and not _librarian_index_has(workspace, problem):
-        return ("bridge", None)
-    return (None, None)
-
-
-def _advance_librarian_chain(
-    conn: sqlite3.Connection, workspace: Path, target_id: str, *,
-    outcome: str, reason: str, fail_counts: dict, pipeline_id: str = "",
-) -> None:
-    """Per-unit fail tracking for the Librarian chain (#92).
-
-    Re-enqueue is owned by the tick-level `_librarian_refill` (the DAG
-    scheduler) — here we only COUNT failures so a unit that keeps failing is
-    skipped (stalled) by the refill instead of looping forever. `target_id` is
-    the finished row's queue id: a plain `problem` (serial phase step) or
-    `problem\\x1ffile` (per-file migrate/cleanup unit). Mutates `fail_counts`,
-    keyed by `target_id` so each file/phase stalls independently. Surviving a
-    transient gateway/harness failure: the refill re-enqueues the same unit
-    next tick until the count crosses `LIBRARIAN_MAX_CHAIN_RETRIES`."""
-    if outcome in ("success", "proved"):
-        fail_counts.pop(target_id, None)
-        db.clear_librarian_fail_count(conn, target_id=target_id)   # write-through
-        return
-    if reason == "librarian_file_busy":
-        # Transient same-path contention (the lock holder needs minutes, the
-        # loser's retries land in seconds) — re-enqueued by the refill, but
-        # NOT a strike against the unit: counting it burned the cap before
-        # the winner finished (2026-06-11).
-        print(f"[librarian] {target_id.split(chr(31))[0]}: unit busy "
-              f"(same-path migrate in flight) — will retry, not counted",
-              flush=True)
-        return
-    n = fail_counts.get(target_id, 0) + 1
-    fail_counts[target_id] = n
-    db.set_librarian_fail_count(conn, target_id=target_id, n=n)    # survives restart
-    problem, target_file = _lib_decode(target_id)
-    unit = target_file or "chain step"
-    if n > LIBRARIAN_MAX_CHAIN_RETRIES:
-        # Surface the real error inline. The rich `failure_detail` lives in
-        # dead_attempts keyed by pipeline_id (Librarian records it under
-        # target_id=0, so it can't be found by problem/file) — without this it
-        # was only diggable by hand (hit 5x this session).
-        detail = ""
-        if pipeline_id:
-            try:
-                row = conn.execute(
-                    "SELECT failure_detail FROM dead_attempts "
-                    "WHERE pipeline_id=? ORDER BY id DESC LIMIT 1",
-                    (pipeline_id,)).fetchone()
-                if row and row[0]:
-                    detail = " — " + str(row[0]).strip().splitlines()[0][:200]
-            except sqlite3.Error:
-                pass
-        print(f"[librarian] {problem}: unit `{unit}` STALLED after {n} "
-              f"failures ({reason}){detail} — needs operator", flush=True)
-    else:
-        print(f"[librarian] {problem}: unit `{unit}` failed ({reason}); "
-              f"will retry (attempt {n}/{LIBRARIAN_MAX_CHAIN_RETRIES})",
-              flush=True)
-
-
-def _librarian_selfstart_problems(
-    conn: sqlite3.Connection, workspace: Path,
-    manifests, *, scope: str | None,
-) -> "list[str]":
-    """In-scope problems whose Librarian chain should START this run but has
-    no durable trigger left (#92 Bug B): opted-in (`Manifest.library`), root
-    proved AND integrity-verified, no INDEX yet, and no `library_decls` rows
-    (chain never began, or the library was reset). The verify hook (verify.py)
-    only enqueues `dedup` at the instant a root becomes integrity-verified — a
-    historically-proved or library-reset problem never re-fires it, and a manual
-    enqueue is wiped by `recover_at_startup`'s blanket queue clear. So the refill
-    self-seeds `dedup` for these, making the daemon resume Library-ization across
-    a restart instead of stranding it.
-
-    `integrity_verified=1` (NOT just status='proved') gates this: a root that is
-    transiently `proved` but not yet integrity-checked — e.g. a sorryAx
-    fake-proof in the window before `root_integrity_gate` rolls it back — would
-    otherwise self-start dedup/classify on INCOMPLETE proofs. classify is
-    one-time and sizes files from the then-current proof line counts; if those
-    stubs are later filled in (B1 repair grew the chain), the file balloons past
-    the classify size budget with no re-gate (P13 PerBumpStokes: classified at a
-    1727→ est ≤budget while proofs were stubs, ended 1957 lines). iv=1 is set by
-    `root_integrity_gate` only after a clean `#print axioms`, so this fires only
-    once the proofs are genuinely final. Gated on the per-problem `library: true`
-    opt-in (default False), so this never auto-Library-izes an unmarked problem."""
-    if scope:
-        proved = conn.execute(
-            "SELECT DISTINCT problem FROM goals WHERE origin='root' "
-            "AND status='proved' AND integrity_verified=1 "
-            "AND problem LIKE ?", (scope,)).fetchall()
-    else:
-        proved = conn.execute(
-            "SELECT DISTINCT problem FROM goals WHERE origin='root' "
-            "AND status='proved' AND integrity_verified=1").fetchall()
-    out: list[str] = []
-    for (problem,) in proved:
-        if problem not in manifests:
-            continue
-        if not manifests[problem].library:
-            continue
-        # anchor+claim sign-off pause (2026-07-03): a Strategist `Ingest`
-        # under `library.require_signoff` set `ingest_signoff_pending` and is
-        # waiting for `asterism approve-ingest`. Do NOT auto-start the chain —
-        # else this dispatcher path bypasses the human gate (MV run: the
-        # trivial `main:True` root proving auto-started harvest while the
-        # Ingest was paused). `approve-ingest` clears the flag + enqueues.
-        if db.problem_ingest_signoff_pending(conn, problem):
-            continue
-        if _librarian_index_has(workspace, problem):
-            continue
-        if db.library_decls_for(conn, problem):
-            continue  # already has rows — driven by the library_decls path
-        out.append(problem)
-    return out
-
-
-def _librarian_refill(
-    conn: sqlite3.Connection, workspace: Path,
-    running: "set[tuple]", manifests, *, scope: str | None = None,
-    fail_counts: dict,
-) -> bool:
-    """Tick-level DAG scheduler for the Librarian chain (#92) — the analogue of
-    `bfs_refill` for proving. For every problem whose chain is active:
-
-      - serial phase (dedup/classify/bridge): ensure ONE plain `problem`
-        Librarian row is queued.
-      - per-file phase (migrate/cleanup): enqueue one `problem\\x1ffile` row per
-        READY file (its dep-files are all done, and it is neither in-flight nor
-        already queued) so independent files run concurrently in the pool.
-
-    Drives problems that already have `library_decls` rows PLUS opted-in
-    proved problems with no chain yet (`_librarian_selfstart_problems`, Bug B)
-    — so the daemon (re)starts and resumes Library-ization on its own, not just
-    when the verify hook fires at proof time.
-
-    Returns whether any LIVE Librarian work remains in scope (something was
-    enqueued this tick, or a unit is in-flight / already queued). The
-    workspace-exit gate uses this so the daemon does NOT quit with Library-ization
-    pending — proof work alone no longer keeps it alive (Bug A). Units whose
-    fail count crossed `LIBRARIAN_MAX_CHAIN_RETRIES` are skipped (stalled — they
-    do NOT count as pending, so a fully-stalled chain lets the daemon exit for
-    the operator to inspect)."""
-    from ..pipeline import librarian
-    if scope:
-        prob_rows = conn.execute(
-            "SELECT DISTINCT problem FROM library_decls WHERE problem LIKE ?",
-            (scope,)).fetchall()
-    else:
-        prob_rows = conn.execute(
-            "SELECT DISTINCT problem FROM library_decls").fetchall()
-    problems = [p for (p,) in prob_rows]
-    seen = set(problems)
-    for p in _librarian_selfstart_problems(
-            conn, workspace, manifests, scope=scope):
-        if p not in seen:
-            problems.append(p)
-            seen.add(p)
-
-    pending = False
-    for problem in problems:
-        # Paused awaiting human ingest sign-off — don't drive the chain (belt
-        # to selfstart's brace: a problem may already hold library_decls rows,
-        # so skip it here too). Not counted as `pending`: the outstanding work
-        # is the HUMAN's approve-ingest, not the daemon's — it may idle/exit.
-        if db.problem_ingest_signoff_pending(conn, problem):
-            continue
-        work_kind, _ = _derive_librarian_work(conn, problem, workspace)
-        if work_kind is None:
-            continue
-        # Re-cleaning an already-promoted problem: its INDEX entry is stale, and
-        # `_derive_librarian_work` would read it as "done" after cleanup, skipping
-        # the terminal bridge/Gate B. Invalidate it now (single-threaded tick) so
-        # bridge re-fires once the rewritten Library is all cleaned.
-        if work_kind == "cleanup" and _librarian_index_has(workspace, problem):
-            _librarian_invalidate_index(workspace, problem)
-        if work_kind in ("migrate", "cleanup"):
-            # Both are per-file phases (#92 migrate, §13 3c-2 cleanup): enqueue
-            # one `problem\x1ffile` row per READY file so independent files run
-            # concurrently. The per-file row's step is resolved at run time by
-            # `file_work_kind` (migrate while classified, cleanup once migrated),
-            # so the two phases share the same encode/in-flight machinery.
-            inflight: set[str] = set()
-            for r in running:
-                if r[1] != "Librarian":
-                    continue
-                rp, rf = _lib_decode(r[0])
-                if rp == problem and rf is not None:
-                    inflight.add(rf)
-            queued = set()
-            for (qtid,) in conn.execute(
-                    "SELECT target_id FROM queue WHERE kind='Librarian'"):
-                qp, qf = _lib_decode(str(qtid))
-                if qp == problem and qf is not None:
-                    queued.add(qf)
-            skip = inflight | queued
-            if skip:
-                pending = True  # a file is mid-flight or already queued
-            ready = (librarian.ready_file_work if work_kind == "migrate"
-                     else librarian.ready_cleanup_files)
-            for _wk, f in ready(
-                    conn, problem=problem, workspace=workspace, in_flight=skip):
-                tid = _lib_encode(problem, f)
-                if fail_counts.get(tid, 0) > LIBRARIAN_MAX_CHAIN_RETRIES:
-                    continue  # stalled file — operator
-                db.enqueue(conn, kind="Librarian", target_id=tid,
-                           target_kind="Problem", priority=0)
-                pending = True
-        else:
-            # Serial phase — a single plain `problem` row.
-            if fail_counts.get(problem, 0) > LIBRARIAN_MAX_CHAIN_RETRIES:
-                continue  # stalled — not pending, daemon may exit
-            if (problem, "Librarian", None) in running:
-                pending = True
-                continue
-            if db.queue_contains(conn, kind="Librarian", target_id=problem):
-                pending = True
-                continue
-            db.enqueue(conn, kind="Librarian", target_id=problem,
-                       target_kind="Problem", priority=0)
-            pending = True
-    return pending
-
-
-def _harvest_outstanding(
-    conn: sqlite3.Connection, workspace: Path, manifests, *,
-    scope: str | None, fail_counts: dict,
-) -> bool:
-    """Durable-state 'Library-ization still owed' guard for the workspace-exit
-    gate — a timing-independent backstop for `librarian_pending`.
-
-    `librarian_pending` (from `_librarian_refill`) is derived from the TRANSIENT
-    queue/running/library_decls snapshot. On the proof→harvest handoff tick — the
-    root just became integrity-verified and the mechanical `dedup` is completing
-    in a worker thread — that snapshot can momentarily read "no live work", so the
-    exit gate declares `all roots proved` and `_exit_pool_fast` kills the just-
-    dispatched Librarian, SILENTLY skipping harvest on a cleanly-proved opted-in
-    problem (observed 2026-06-29 on `pullback_flat_form`: root proved, axioms
-    clean, 13 `deduped` decls, yet the daemon exited before `classify`). This guard
-    depends only on DURABLE state — the INDEX done-marker, the committed
-    `library_decls` lifecycle, and the persisted fail-count — so it stays True
-    across that window regardless of in-flight timing.
-
-    Returns True iff some in-scope problem is opted-in (`Manifest.library`), root
-    proved + integrity-verified, has no Library INDEX yet, and its next Librarian
-    step is NOT stalled (fail count past `LIBRARIAN_MAX_CHAIN_RETRIES`). A fully-
-    stalled chain is NOT outstanding, preserving the "stalled chain lets the daemon
-    exit for the operator to inspect" contract (`_librarian_refill` docstring)."""
-    from ..pipeline import librarian
-    if scope:
-        rows = conn.execute(
-            "SELECT DISTINCT problem FROM goals WHERE origin='root' "
-            "AND status='proved' AND integrity_verified=1 AND problem LIKE ?",
-            (scope,)).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT DISTINCT problem FROM goals WHERE origin='root' "
-            "AND status='proved' AND integrity_verified=1").fetchall()
-    for (problem,) in rows:
-        if problem not in manifests or not manifests[problem].library:
-            continue
-        # Paused awaiting human ingest sign-off — this is HUMAN-outstanding, not
-        # daemon-outstanding, so it must NOT hold the daemon alive. The human's
-        # approve-ingest re-enqueues + clears the flag when they're ready.
-        if db.problem_ingest_signoff_pending(conn, problem):
-            continue
-        if _librarian_index_has(workspace, problem):
-            continue  # harvest already complete (INDEX = the done-marker)
-        work_kind, _target = _derive_librarian_work(conn, problem, workspace)
-        if work_kind is None:
-            continue  # nothing further derivable
-        if work_kind in ("migrate", "cleanup"):
-            ready = (librarian.ready_file_work if work_kind == "migrate"
-                     else librarian.ready_cleanup_files)
-            for _wk, f in ready(conn, problem=problem, workspace=workspace,
-                                in_flight=set()):
-                if fail_counts.get(
-                        _lib_encode(problem, f), 0
-                ) <= LIBRARIAN_MAX_CHAIN_RETRIES:
-                    return True  # a ready file can still progress
-        elif fail_counts.get(problem, 0) <= LIBRARIAN_MAX_CHAIN_RETRIES:
-            return True  # serial step (dedup/classify/bridge) can still run
+def _gateway_unreachable_backoff(st: "SchedulerState", pool, *,
+                                 kind: str, tk: str, tid: str) -> bool:
+    """Shared gateway-unreachable back-off + circuit breaker (task #9 —
+    formerly two verbatim copies in the normal-result and worker-exception
+    cascade paths; editing the breaker rule meant editing both). Returns
+    True when the breaker trips (caller exits the daemon with rc=2)."""
+    st.cooldown_until[(tid, kind)] = time.time() + SPAWN_COOLDOWN_SEC
+    st.consec_gateway_unreachable += 1
+    print(f"[cooldown] {kind} {tk}={tid} cooled "
+          f"{SPAWN_COOLDOWN_SEC:.0f}s after "
+          f"gateway_unreachable "
+          f"(consec={st.consec_gateway_unreachable})",
+          flush=True)
+    if st.consec_gateway_unreachable >= CONSEC_GATEWAY_UNREACHABLE_LIMIT:
+        print(f"[dispatcher] "
+              f"{st.consec_gateway_unreachable} "
+              f"consecutive gateway_unreachable — "
+              f"gateway appears permanently dead; "
+              f"exiting. Restart daemon (gateway "
+              f"will be re-launched) and inspect "
+              f".asterism/logs/gateway.log for the "
+              f"underlying crash.", flush=True)
+        _exit_pool_fast(pool)
+        return True
     return False
 
 
@@ -1644,49 +1334,9 @@ def run(workspace: Path, *, once: bool = False,
     # target, so the pair is a unique key. Daemon crash → set vanishes →
     # restart sees clean slate.
     running: set[tuple[str, str]] = set()
-    # Per-(target_id, kind) cooldown until epoch seconds. Set after
-    # a spawn_fast_fail cascade; bfs_refill skips cooled pairs so the
-    # daemon doesn't burst-retry a broken claude.exe at 2s/call.
-    cooldown_until: dict[tuple[str, str], float] = {}
-    # Per-unit consecutive Librarian chain failures (#92 cap). In-memory hot
-    # read path, but LOADED from `librarian_fail_counts` after init_schema +
-    # write-through on every mutation, so a stuck unit's count survives a daemon
-    # restart and STALLs at LIBRARIAN_MAX_CHAIN_RETRIES instead of looping forever.
-    librarian_fail_counts: dict[str, int] = {}
-    # Lazy verify cache: problem → True (Defs.lean + Root.lean built
-    # cleanly) | False (build error; problem is quarantined for this
-    # daemon run; restart re-verifies). Filled at first dispatch for
-    # the problem; bfs_refill and the pop loop both consult it so a
-    # quarantined problem never burns worker spawns.
-    verified_problems: dict[str, bool] = {}
-    # Global counter of consecutive spawn_fast_fail outcomes (across
-    # all targets). Reset by any non-fast-fail cascade. If it crosses
-    # CONSEC_SPAWN_FAIL_LIMIT the daemon exits with a clear message —
-    # claude.exe is persistently broken and human attention is required.
-    consec_fast_fails = 0
-    SPAWN_COOLDOWN_SEC = 30.0
-    CONSEC_SPAWN_FAIL_LIMIT = 10
-    # Independent counter for gateway_unreachable. d2dd861 prevents
-    # transient gateway hiccups from charging goal attempts (good),
-    # but a PERMANENT gateway death (e.g. accept loop crashed) means
-    # every dispatch instantly hits WinError 10061 → 30s cooldown →
-    # re-dispatch → new strategy row → infinite loop. Run #17 cut at
-    # +52min after 48 strategies piled up on 2 hard goals. The
-    # circuit breaker exits when consecutive gateway-unreachable
-    # crosses CONSEC_GATEWAY_UNREACHABLE_LIMIT — daemon refuses to
-    # busy-loop against a dead gateway and forces operator attention.
-    consec_gateway_unreachable = 0
-    CONSEC_GATEWAY_UNREACHABLE_LIMIT = 8
-    # Per-kind quota backoff (#103). quota_exhausted is provider-level,
-    # not target-level — gating one (tid, kind) leaves all other targets
-    # of the same kind free to keep hammering. Backoff doubles on each
-    # consecutive quota_exhausted for that kind, capped at 600s; any
-    # non-quota outcome (success or agent-side failure) resets the
-    # counter and clears the per-kind cooldown so dispatch resumes.
-    consec_quota_per_kind: dict[str, int] = {}
-    quota_cooldown_kind: dict[str, float] = {}
-    QUOTA_BACKOFF_BASE_SEC = 30.0
-    QUOTA_BACKOFF_CAP_SEC = 600.0
+    # All mutable scheduling state — persistence policy documented on
+    # SchedulerState (task #9). Constants hoisted to module level.
+    st = SchedulerState()
 
     conn = db.connect()
     # Idempotent — picks up additive migrations on an existing DB
@@ -1698,7 +1348,7 @@ def run(workspace: Path, *, once: bool = False,
     db.init_schema(conn)
     # Restore the Librarian chain fail cap across restarts (#92 B#3): a stuck
     # unit's tally persists so it STALLs instead of looping forever.
-    librarian_fail_counts.update(db.librarian_fail_counts_all(conn))
+    st.librarian_fail_counts.update(db.librarian_fail_counts_all(conn))
     # ManifestCache hot-reloads on Manifest.md mtime change at each
     # spawn-time access — daemon previously locked in the startup-time
     # parse, so user edits mid-run were invisible until restart. Cache
@@ -1807,7 +1457,7 @@ def run(workspace: Path, *, once: bool = False,
                     if kind == "Librarian":
                         _advance_librarian_chain(
                             conn, workspace, tid, outcome=outcome,
-                            reason=reason, fail_counts=librarian_fail_counts,
+                            reason=reason, fail_counts=st.librarian_fail_counts,
                             pipeline_id=pid)
                     # Back-off + global counter for spawn fast-fails.
                     # Phase 7 — quota_exhausted (rc=126) / missing_dep (rc=127)
@@ -1819,13 +1469,13 @@ def run(workspace: Path, *, once: bool = False,
                     # cooldown alone leaves 200+ siblings of the same kind
                     # free to drain the queue and burn the cap.
                     if outcome == "failed" and reason == "quota_exhausted":
-                        n = consec_quota_per_kind.get(kind, 0) + 1
-                        consec_quota_per_kind[kind] = n
+                        n = st.consec_quota_per_kind.get(kind, 0) + 1
+                        st.consec_quota_per_kind[kind] = n
                         backoff = min(
                             QUOTA_BACKOFF_BASE_SEC * (2 ** (n - 1)),
                             QUOTA_BACKOFF_CAP_SEC,
                         )
-                        quota_cooldown_kind[kind] = time.time() + backoff
+                        st.quota_cooldown_kind[kind] = time.time() + backoff
                         # Flush queued entries of this kind so the
                         # pop loop doesn't keep draining the backlog
                         # against an exhausted provider (each pop
@@ -1839,16 +1489,16 @@ def run(workspace: Path, *, once: bool = False,
                         "spawn_fast_fail", "missing_dep",
                         "gateway_unreachable", "transient_timeout",
                     ):
-                        cooldown_until[(tid, kind)] = (
+                        st.cooldown_until[(tid, kind)] = (
                             time.time() + SPAWN_COOLDOWN_SEC)
                         if reason == "spawn_fast_fail":
-                            consec_fast_fails += 1
+                            st.consec_fast_fails += 1
                             print(f"[cooldown] {kind} {tk}={tid} cooled "
                                   f"{SPAWN_COOLDOWN_SEC:.0f}s after "
                                   f"spawn_fast_fail "
-                                  f"(consec={consec_fast_fails})", flush=True)
-                            if consec_fast_fails >= CONSEC_SPAWN_FAIL_LIMIT:
-                                print(f"[dispatcher] {consec_fast_fails} "
+                                  f"(consec={st.consec_fast_fails})", flush=True)
+                            if st.consec_fast_fails >= CONSEC_SPAWN_FAIL_LIMIT:
+                                print(f"[dispatcher] {st.consec_fast_fails} "
                                       f"consecutive spawn_fast_fails — "
                                       f"claude.exe or provider appears broken; "
                                       f"exiting. Inspect "
@@ -1857,40 +1507,28 @@ def run(workspace: Path, *, once: bool = False,
                                 _exit_pool_fast(pool)
                                 return 2
                         elif reason == "gateway_unreachable":
-                            consec_gateway_unreachable += 1
-                            print(f"[cooldown] {kind} {tk}={tid} cooled "
-                                  f"{SPAWN_COOLDOWN_SEC:.0f}s after "
-                                  f"gateway_unreachable "
-                                  f"(consec={consec_gateway_unreachable})",
-                                  flush=True)
-                            if (consec_gateway_unreachable
-                                    >= CONSEC_GATEWAY_UNREACHABLE_LIMIT):
-                                print(f"[dispatcher] "
-                                      f"{consec_gateway_unreachable} "
-                                      f"consecutive gateway_unreachable — "
-                                      f"gateway appears permanently dead; "
-                                      f"exiting. Restart daemon (gateway "
-                                      f"will be re-launched) and inspect "
-                                      f".asterism/logs/gateway.log for the "
-                                      f"underlying crash.", flush=True)
-                                _exit_pool_fast(pool)
+                            # (cooldown already set by the generic infra
+                            # branch above; the helper re-sets the same key
+                            # — idempotent.)
+                            if _gateway_unreachable_backoff(
+                                    st, pool, kind=kind, tk=tk, tid=tid):
                                 return 2
                         else:
                             print(f"[cooldown] {kind} {tk}={tid} cooled "
                                   f"{SPAWN_COOLDOWN_SEC:.0f}s after {reason}",
                                   flush=True)
                     else:
-                        consec_fast_fails = 0
-                        consec_gateway_unreachable = 0
+                        st.consec_fast_fails = 0
+                        st.consec_gateway_unreachable = 0
                         # #103 — any non-quota, non-infra outcome on this
                         # kind proves the provider responded: clear the
                         # per-kind quota backoff so dispatch resumes
                         # fresh. (Other infra reasons above are orthogonal
                         # to quota — handled in their own branch and don't
                         # touch quota state.)
-                        if kind in consec_quota_per_kind:
-                            consec_quota_per_kind.pop(kind, None)
-                            quota_cooldown_kind.pop(kind, None)
+                        if kind in st.consec_quota_per_kind:
+                            st.consec_quota_per_kind.pop(kind, None)
+                            st.quota_cooldown_kind.pop(kind, None)
                             print(f"[cooldown] {kind} quota state reset "
                                   f"(non-quota outcome confirms provider "
                                   f"responsive)", flush=True)
@@ -1959,7 +1597,7 @@ def run(workspace: Path, *, once: bool = False,
                         # Backward gets re-dispatched on the next tick
                         # and re-fails.
                         if infra_reason == "transient_timeout":
-                            cooldown_until[(tid, kind)] = (
+                            st.cooldown_until[(tid, kind)] = (
                                 time.time() + SPAWN_COOLDOWN_SEC)
                             print(f"[cooldown] {kind} {tk}={tid} cooled "
                                   f"{SPAWN_COOLDOWN_SEC:.0f}s after "
@@ -1969,25 +1607,8 @@ def run(workspace: Path, *, once: bool = False,
                                   f"for true gateway death)",
                                   flush=True)
                         elif infra_reason == "gateway_unreachable":
-                            cooldown_until[(tid, kind)] = (
-                                time.time() + SPAWN_COOLDOWN_SEC)
-                            consec_gateway_unreachable += 1
-                            print(f"[cooldown] {kind} {tk}={tid} cooled "
-                                  f"{SPAWN_COOLDOWN_SEC:.0f}s after "
-                                  f"gateway_unreachable "
-                                  f"(consec={consec_gateway_unreachable})",
-                                  flush=True)
-                            if (consec_gateway_unreachable
-                                    >= CONSEC_GATEWAY_UNREACHABLE_LIMIT):
-                                print(f"[dispatcher] "
-                                      f"{consec_gateway_unreachable} "
-                                      f"consecutive gateway_unreachable — "
-                                      f"gateway appears permanently dead; "
-                                      f"exiting. Restart daemon (gateway "
-                                      f"will be re-launched) and inspect "
-                                      f".asterism/logs/gateway.log for the "
-                                      f"underlying crash.", flush=True)
-                                _exit_pool_fast(pool)
+                            if _gateway_unreachable_backoff(
+                                    st, pool, kind=kind, tk=tk, tid=tid):
                                 return 2
                     except Exception as exc2:
                         # Cascade itself bombing is a deeper bug; log
@@ -2061,7 +1682,7 @@ def run(workspace: Path, *, once: bool = False,
         # keeps the daemon up once every root is proved).
         librarian_pending = _librarian_refill(
             conn, workspace, running, manifests, scope=scope,
-            fail_counts=librarian_fail_counts)
+            fail_counts=st.librarian_fail_counts)
 
         # Workspace-wide exit: every problem's root is proved AND no Librarian
         # work remains. `verify.root_integrity_gate` above may have called
@@ -2085,18 +1706,18 @@ def run(workspace: Path, *, once: bool = False,
         if (db.root_proved(conn, scope=scope) and not librarian_pending
                 and not _harvest_outstanding(
                     conn, workspace, manifests, scope=scope,
-                    fail_counts=librarian_fail_counts)):
+                    fail_counts=st.librarian_fail_counts)):
             print("[dispatcher] all roots proved", flush=True)
             _exit_pool_fast(pool)
             return 0
 
-        # Refill queue (uses in-memory `running` for dedup; cooldown_until
-        # holds spawn_fast_fail back-offs; quota_cooldown_kind holds the
+        # Refill queue (uses in-memory `running` for dedup; st.cooldown_until
+        # holds spawn_fast_fail back-offs; st.quota_cooldown_kind holds the
         # per-kind quota backoff (#103); scope restricts to a benchmark
         # subset like `minif2f_%`).
-        bfs_refill(conn, running, cooldown_until, scope=scope,
-                   quota_cooldown_kind=quota_cooldown_kind,
-                   verified_problems=verified_problems)
+        bfs_refill(conn, running, st.cooldown_until, scope=scope,
+                   quota_cooldown_kind=st.quota_cooldown_kind,
+                   verified_problems=st.verified_problems)
 
         # Phase 2 — Strategist T0/T1 triggers (T2 pending_review fires at
         # cascade time in `cascade_one` as the fast path). Skipped under
@@ -2146,7 +1767,7 @@ def run(workspace: Path, *, once: bool = False,
             # cooled kinds, a race (cooldown set between bfs_refill
             # and pop) could leave a queued row for a now-cooled
             # kind. Drop it; bfs_refill will repopulate post-cooldown.
-            if quota_cooldown_kind.get(kind, 0.0) > time.time():
+            if st.quota_cooldown_kind.get(kind, 0.0) > time.time():
                 continue
             # Drop a queued Strategist whose root already proved (e.g. an
             # inject_batch_done that landed just before the proof, or a
@@ -2159,17 +1780,17 @@ def run(workspace: Path, *, once: bool = False,
             # Lazy verify gate — must hold before any worker spawn.
             # First dispatch for a problem this daemon run pays a one-
             # time `lake build Defs.lean + Root.lean` (~5-15s). Failure
-            # quarantines the problem in `verified_problems` so neither
+            # quarantines the problem in `st.verified_problems` so neither
             # the pop loop nor bfs_refill dispatches further on it.
             problem_name = _problem_of_target(conn, target_id, target_kind)
             if problem_name is None:
                 # Defensive: unknown target shape (DB drift?). Skip
                 # rather than wedge the pop loop.
                 continue
-            if problem_name not in verified_problems:
-                verified_problems[problem_name] = _verify_problem(
+            if problem_name not in st.verified_problems:
+                st.verified_problems[problem_name] = _verify_problem(
                     workspace, problem_name)
-            if not verified_problems[problem_name]:
+            if not st.verified_problems[problem_name]:
                 continue
             pipeline_id = agent.new_pipeline_id()
             running.add((target_id, kind, decision_id))

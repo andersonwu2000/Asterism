@@ -197,7 +197,8 @@ elaborate；root gate 的 rollback 是 false-proved 溜過機械驗證時的修�
 
 ```
 Tooling/
-  core/       dispatcher.py（主迴圈+排程）、cli.py、config.py、lifecycle
+  core/       dispatcher.py（主迴圈+排程）、librarian_sched.py（五階段 DAG 排程）、
+              cli.py、config.py、lifecycle
   state/      db.py（schema+migration+query）、transitions.py（狀態機）、
               proof_store.py（proofs/ chokepoint）、recovery.py（startup 修復+orphan sweep）、
               kb.py / kb_ingest.py（lessons、Model B）
