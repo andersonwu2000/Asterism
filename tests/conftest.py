@@ -48,6 +48,22 @@ def _disable_reflection_by_default(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def _disable_presearch_by_default(monkeypatch: pytest.MonkeyPatch):
+    """target-1 pre-search (`_presearch.ensure_presearch`) spawns a per-node
+    candidate-lemma agent BEFORE the prover. In unit tests it is irrelevant
+    noise, and worse: its spawn reference (`from ..agent import runtime as
+    agent`) escaped the pipeline tests' `monkeypatch.setattr(agent,
+    "spawn_llm", …)` stub, so it spawned a REAL claude subprocess that blocked
+    on subprocess.wait for the full timeout ×3 retry stages — 270s on ONE test,
+    ~18 of the 20-min suite. (The import is now unified so it IS stubbable, but
+    a running pre-search would still add an extra spawn to exact-count
+    assertions.) Disable by default — same rationale as reflection above.
+    `test_presearch` tests `_verify`/`presearch_path` directly, not
+    `ensure_presearch`, so it is unaffected."""
+    monkeypatch.setenv("ASTERISM_PRESEARCH_ENABLED", "false")
+
+
+@pytest.fixture(autouse=True)
 def _stub_gateway_calls_by_default(monkeypatch: pytest.MonkeyPatch,
                                    request: pytest.FixtureRequest):
     """`pipeline._write_mcp_config` POSTs to the long-living gateway

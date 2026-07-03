@@ -24,7 +24,13 @@ import json
 import uuid
 from pathlib import Path
 
-from ..agent import runtime as agent
+# Import the `agent` PACKAGE (not the `runtime` module) so `agent.spawn_llm`
+# is the same object the rest of the pipeline (backward/builder) references and
+# tests stub via `monkeypatch.setattr(agent, "spawn_llm", …)`. Aliasing
+# `runtime as agent` bound a DIFFERENT name that escaped the stub → pre-search
+# spawned a REAL claude subprocess in unit tests, blocking on subprocess.wait
+# for the full timeout ×3 retry stages (270s on one test; ~18 of 20 suite min).
+from .. import agent
 from ..knowledge import lemma_lookup
 
 _DEFAULT_TIMEOUT_SEC = 240
