@@ -135,3 +135,52 @@ def anchor_closure_goal(
     module = lean_path_to_module(workspace, dest)
     return anchor_closure(workspace, fq_name=fq_name, module=module,
                           timeout=timeout)
+
+
+def canonicalize_anchor_pending(conn, workspace: Path, problem: str,
+                                pending: "list[dict]") -> "list[dict]":
+    """Rewrite framework-internal strategy names (`Problems.<problem>.s<N>`)
+    in a pending-anchor list to their public goal slug, then dedup by name.
+
+    `s<N>` is strategy id N; its goal's slug is the human-facing public name
+    (the `L_<slug>.lean` re-export `def <slug> := @s<N>`). The kernel walk
+    surfaces whatever a statement literally cites — often the internal `s<N>`
+    (a proof cited the strategy term directly), sometimes BOTH the public
+    alias AND `s<N>`. Leaving `s<N>` raw (a) leaks framework internals into the
+    human sign-off surface and (b) BREAKS `asterism reject`: reject resolves a
+    decl via its GOAL slug and `_find_reject_victims` matches `c["name"]`
+    against the goal's fqn — never `s<N>` — so a lone-`s<N>` anchor is
+    un-rejectable and its dependent deliverables silently escape the cascade.
+    Canonicalizing to the public slug fixes display + reject together.
+
+    The kernel walk (TCB) is untouched — this is a faithful RENAME of already-
+    computed entries. Unmappable `s<N>` (no strategy row / goal) stay as-is.
+    Returns a new list; the input is not mutated."""
+    import re
+    sre = re.compile(rf"^Problems\.{re.escape(problem)}\.s(\d+)$")
+    out: list[dict] = []
+    seen: set[str] = set()
+    for c in pending:
+        name = c.get("name", "")
+        m = sre.match(name)
+        if m:
+            row = conn.execute(
+                "SELECT g.slug AS slug, g.lean_path AS lean_path FROM goals g "
+                "JOIN strategies st ON st.goal_id = g.id "
+                "WHERE st.id = ? AND g.problem = ?",
+                (int(m.group(1)), problem)).fetchone()
+            if row and row["slug"]:
+                mod = c.get("module")
+                try:
+                    mod = lean_path_to_module(
+                        workspace, workspace / row["lean_path"])
+                except (ValueError, OSError):
+                    pass
+                c = {**c, "name": f"Problems.{problem}.{row['slug']}",
+                     "module": mod}
+                name = c["name"]
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(c)
+    return out

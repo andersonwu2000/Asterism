@@ -255,6 +255,61 @@ def test_find_reject_victims(conn):
     assert victims2 == [] and warns2 == [("claimUses", "boom")]
 
 
+def test_canonicalize_anchor_pending_maps_sname_to_public_slug(conn):
+    """`s<N>` (strategy id N) → its goal's public slug, then dedup. A
+    redundant public+s<N> pair collapses to one; a non-`s` name is untouched;
+    an unmappable `s<N>` (no strategy row) stays raw. #71."""
+    from Tooling.pipeline._constants import canonicalize_anchor_pending
+    gid = _seed_goal(conn, "P.a", "publicName")
+    sid = _db.insert_strategy(
+        conn, goal_id=gid,
+        lean_path="Problems/P.a/proofs/L_publicName.lean",
+        created_by="forward")
+    raw = [
+        {"name": f"Problems.P.a.s{sid}", "module": "m", "kind": "def"},
+        {"name": "Problems.P.a.publicName", "module": "m", "kind": "def"},
+        {"name": "Problems.P.a.other", "module": "m", "kind": "def"},
+        {"name": "Problems.P.a.s999999", "module": "m", "kind": "def"},
+    ]
+    out = canonicalize_anchor_pending(conn, Path("/ws"), "P.a", raw)
+    names = [c["name"] for c in out]
+    assert f"Problems.P.a.s{sid}" not in names            # canonicalized away
+    assert names.count("Problems.P.a.publicName") == 1     # deduped with pair
+    assert "Problems.P.a.other" in names                   # non-s untouched
+    assert "Problems.P.a.s999999" in names                 # unmappable stays raw
+    assert len(out) == 3
+
+
+def test_find_reject_victims_matches_canonicalized_sname(conn):
+    """A deliverable whose closure cites the INTERNAL `s<N>` (not the public
+    slug) — the lone-`s<N>` case — must still be caught by the reject cascade.
+    Raw `c["name"]` (`…s<N>`) never equals the rejected goal's public fqn;
+    canonicalization rewrites it to the slug so the victim is found. #71."""
+    from Tooling.core import cli
+    from Tooling.pipeline._constants import AnchorClosure
+    A = _seed_goal(conn, "P.a", "anchorDef")
+    sid = _db.insert_strategy(
+        conn, goal_id=A,
+        lean_path="Problems/P.a/proofs/L_anchorDef.lean",
+        created_by="forward")
+    dep = _seed_goal(conn, "P.a", "claimUses")
+    for g in (A, dep):
+        _db.mark_deliverable(conn, g)
+    fqn = "Problems.P.a.anchorDef"
+
+    def fake_closure(ws, dest, *, problem, slug):
+        if slug == "claimUses":  # cites the strategy term directly
+            return AnchorClosure(ok=True, pending=[
+                {"name": f"Problems.P.a.s{sid}", "module": "", "kind": "def"}])
+        return AnchorClosure(ok=True, pending=[])
+
+    victims, warns = cli._find_reject_victims(
+        conn, Path("/ws"), reject_gid=A, problem="P.a", fqn=fqn,
+        closure_fn=fake_closure)
+    assert {v[0] for v in victims} == {dep}   # canonicalized s<sid> == anchorDef
+    assert warns == []
+
+
 # ---------------------------------------------------------------------------
 # Phase 4: Ingest decision + sign-off gate
 # ---------------------------------------------------------------------------

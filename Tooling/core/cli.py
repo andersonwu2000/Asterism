@@ -2,7 +2,7 @@
        | asterism status <p> [--json] | asterism prune [<p>] [--dry-run]
        | asterism library-verify [--no-build].
 
-See architecture.md §9.
+See docs/architecture.md.
 """
 from __future__ import annotations
 
@@ -1089,7 +1089,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     cfg_path = workspace / "Asterism.yaml"
     if not cfg_path.exists():
         line("WARN", f"{cfg_path.name} absent — using built-in defaults "
-                     f"(see docs/architecture.md §10 for schema)")
+                     f"(see Tooling/core/config.py for keys)")
     else:
         try:
             from . import config as _config
@@ -1384,16 +1384,19 @@ def cmd_review(args: argparse.Namespace) -> int:
     slow on a cold Mathlib cache). Exit 0 always (a review, not a gate);
     deliverables whose closure could not be computed print a WARN."""
     from ..lsp import lifecycle as gateway_lifecycle
-    from ..pipeline._constants import anchor_closure_goal
+    from ..pipeline._constants import (anchor_closure_goal,
+                                       canonicalize_anchor_pending)
 
     workspace = Path.cwd()
     conn = db.connect()
     db.init_schema(conn)
     scope = getattr(args, "problem", None)
     dels = db.deliverables(conn, problem=scope)
-    conn.close()
+    # conn stays open: canonicalize_anchor_pending needs it to map internal
+    # strategy names to public goal slugs (below).
 
     if not dels:
+        conn.close()
         where = f" for '{scope}'" if scope else ""
         print(f"no deliverables{where} (Strategist marks them via "
               f"is_deliverable; none set yet)")
@@ -1419,6 +1422,11 @@ def cmd_review(args: argparse.Namespace) -> int:
         if not r.ok:
             print(f"\n▸ {fq}  [WARN] closure unavailable: {r.error}")
             continue
+        # Canonicalize internal strategy names (`s<N>`) → public goal slugs so
+        # the sign-off surface shows only human-meaningful names (and each
+        # stays rejectable). #71.
+        r.pending = canonicalize_anchor_pending(
+            conn, workspace, g["problem"], r.pending)
         kind = "claim" if r.top_is_claim else f"anchor:{r.top_kind}"
         print(f"\n▸ {fq}  [{kind}]   (module {r.top_module or '<local>'})")
         if not r.pending:
@@ -1428,6 +1436,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         render(r.claims, "claims (lemmas the closure rests on):")
         union.update(c["name"] for c in r.pending)
 
+    conn.close()
     print(f"\n=== {len(dels)} deliverable(s), {len(union)} distinct "
           f"pending anchor(s)/claim(s) ===")
     return 0
@@ -1461,6 +1470,7 @@ def _find_reject_victims(conn, workspace, *, reject_gid, problem, fqn,
     where victims is [(goal_id, fqn), ...] and warnings is
     [(slug, error), ...] for deliverables whose closure couldn't be
     computed (conservatively NOT cascaded through)."""
+    from ..pipeline._constants import canonicalize_anchor_pending
     victims: list[tuple[int, str]] = []
     warnings: list[tuple[str, str]] = []
     for d in db.deliverables(conn, problem=problem):
@@ -1472,7 +1482,13 @@ def _find_reject_victims(conn, workspace, *, reject_gid, problem, fqn,
         if not r.ok:
             warnings.append((str(d["slug"]), str(r.error)))
             continue
-        if any(c["name"] == fqn for c in r.pending):
+        # Canonicalize internal strategy names → public goal slugs BEFORE the
+        # match: a lone-`s<N>` anchor in the closure would never equal the
+        # rejected goal's public `fqn`, silently dropping a true victim from
+        # the cascade. Same rename the review surface applies. #71.
+        pending = canonicalize_anchor_pending(
+            conn, workspace, d["problem"], r.pending)
+        if any(c["name"] == fqn for c in pending):
             victims.append((did, f"Problems.{d['problem']}.{d['slug']}"))
     return victims, warnings
 
