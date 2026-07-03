@@ -102,6 +102,18 @@ class StreamParser:
         # now - spawn_start_ts when no tool_use has been seen.
         self._last_tool_use_ts: float | None = None
         self._spawn_start_ts = now
+        # Token accounting (task #7): the CLI stream carries the API's
+        # usage numbers on every turn — message_start has the input side
+        # (fresh + cache split), message_delta carries the cumulative
+        # output count for the turn (last one before message_stop is
+        # final). Summed per spawn; surfaced via usage() and persisted by
+        # the spawn wrapper. Until now the parser read these events and
+        # nobody kept the books — the system had wall-clock and attempts
+        # as its only cost proxies.
+        self._usage = {"input_tokens": 0, "output_tokens": 0,
+                       "cache_read_input_tokens": 0,
+                       "cache_creation_input_tokens": 0, "turns": 0}
+        self._turn_output = 0
 
     def _set_state(self, new_state: ParserState) -> None:
         # Caller already holds _lock.
@@ -135,6 +147,13 @@ class StreamParser:
                 # longer indicates current trap risk.
                 self._last_stop_reason = None
                 self._set_state(ParserState.IN_MESSAGE)
+                u = ((event.get("message") or {}).get("usage") or {})
+                for k in ("input_tokens", "cache_read_input_tokens",
+                          "cache_creation_input_tokens"):
+                    v = u.get(k)
+                    if isinstance(v, int):
+                        self._usage[k] += v
+                self._turn_output = 0
             elif etype == "content_block_start":
                 cb = event.get("content_block") or {}
                 cb_type = cb.get("type")
@@ -169,11 +188,26 @@ class StreamParser:
                 sr = delta.get("stop_reason")
                 if isinstance(sr, str):
                     self._last_stop_reason = sr
+                v = (event.get("usage") or {}).get("output_tokens")
+                if isinstance(v, int):
+                    self._turn_output = v     # cumulative within the turn
             elif etype == "message_stop":
                 self._messages_seen += 1
+                self._usage["output_tokens"] += self._turn_output
+                self._usage["turns"] += 1
+                self._turn_output = 0
                 self._set_state(ParserState.FINALIZED)
             # Other event types (e.g. content_block_delta) don't change
             # state — they confirm activity but don't transition.
+
+    def usage(self) -> "dict[str, int]":
+        """Per-spawn token totals accumulated so far (task #7). An
+        in-flight turn's output is included so a TIMEOUT kill still
+        reports what was spent."""
+        with self._lock:
+            u = dict(self._usage)
+            u["output_tokens"] += self._turn_output
+            return u
 
     def snapshot(self) -> StateSnapshot:
         """Return the current state without blocking the parser."""

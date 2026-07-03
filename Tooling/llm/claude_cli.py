@@ -579,15 +579,28 @@ def _persist_parser_state(attempts_dir: Path,
     legacy `--resume` postmortem path)."""
     try:
         snap = parser.snapshot()
+        usage = parser.usage()
         body = json.dumps({
             "state": snap.state.value,
             "last_stop_reason": snap.last_stop_reason,
             "messages_seen": snap.messages_seen,
             "is_thinking_trap": parser.is_thinking_trap(),
+            # Token accounting (task #7) — rides this existing forensic
+            # artifact (WorkArea packs attempts_dir into
+            # dead_attempts.artifacts, so per-spawn spend stays queryable
+            # with no schema change).
+            "usage": usage,
         })
         (attempts_dir / "_parser_state.json").write_text(
             body, encoding="utf-8")
-    except (OSError, ValueError):
+        if usage.get("turns") or usage.get("output_tokens"):
+            print(f"[usage] {attempts_dir.name}: "
+                  f"in={usage['input_tokens']} "
+                  f"out={usage['output_tokens']} "
+                  f"cache_read={usage['cache_read_input_tokens']} "
+                  f"cache_new={usage['cache_creation_input_tokens']} "
+                  f"turns={usage['turns']}", flush=True)
+    except (OSError, ValueError, KeyError):
         pass
 
 

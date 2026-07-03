@@ -652,3 +652,52 @@ def test_render_prompt_template_noop_on_unknown_placeholder() -> None:
     from Tooling.agent.runtime import render_prompt_template
     text = render_prompt_template("keep {unknown_var} as-is")
     assert text == "keep {unknown_var} as-is"
+
+
+# ---------------------------------------------------------------------
+# task #7 — context/token telemetry
+# ---------------------------------------------------------------------
+
+def test_write_context_stats(tmp_path, capsys):
+    import json
+    from Tooling.agent import context as ctx
+    ctx.write_context_stats(
+        tmp_path, label="builder g7",
+        names=["brief", "empty", "history"],
+        sections=[["## Brief", "line"], [], ["## H", "a", "b", "c"]])
+    data = json.loads((tmp_path / "_context_stats.json").read_text(
+        encoding="utf-8"))
+    assert data["label"] == "builder g7"
+    names = {s["section"] for s in data["sections"]}
+    assert names == {"brief", "history"}          # empty section omitted
+    assert data["total_bytes"] == sum(s["bytes"] for s in data["sections"])
+    out = capsys.readouterr().out
+    assert "[context] builder g7" in out
+
+
+def test_stream_parser_accumulates_usage():
+    import json
+    from Tooling.llm.stream_parser import StreamParser
+    p = StreamParser()
+
+    def ev(event):
+        p.feed_line(json.dumps({"type": "stream_event", "event": event}))
+    ev({"type": "message_start",
+        "message": {"usage": {"input_tokens": 100,
+                              "cache_read_input_tokens": 500,
+                              "cache_creation_input_tokens": 20}}})
+    ev({"type": "message_delta", "delta": {"stop_reason": None},
+        "usage": {"output_tokens": 40}})
+    ev({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+        "usage": {"output_tokens": 90}})          # cumulative within turn
+    ev({"type": "message_stop"})
+    ev({"type": "message_start",
+        "message": {"usage": {"input_tokens": 10}}})
+    ev({"type": "message_delta", "delta": {},
+        "usage": {"output_tokens": 5}})           # turn still in flight
+    u = p.usage()
+    assert u["input_tokens"] == 110
+    assert u["cache_read_input_tokens"] == 500
+    assert u["cache_creation_input_tokens"] == 20
+    assert u["output_tokens"] == 95               # 90 final + 5 in-flight
+    assert u["turns"] == 1

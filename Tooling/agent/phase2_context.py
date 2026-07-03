@@ -26,6 +26,7 @@ import sqlite3
 from pathlib import Path
 
 from ..state import db, manifest, tree
+from . import context
 
 
 # ---------------------------------------------------------------------
@@ -664,6 +665,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
       - TREE
       - Manifest (T0 / T3 — when bootstrap_done=false or amend-relevant)
     """
+    section_names = ["trigger"]
     sections: list[list[str]] = [
         _section_trigger(trigger_kind, pending_review_id, conn),
     ]
@@ -671,6 +673,8 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     # strategies + ancestor chain. Only emitted for pending_review trigger
     # with a real target; T0 / T1 / first_launch skip these sections.
     if trigger_kind == "pending_review" and pending_review_id is not None:
+        section_names += ["review_failure", "review_strategies",
+                          "review_ancestors"]
         sections += [
             _section_pending_review_failure(conn, pending_review_id),
             _section_pending_review_strategies(conn, pending_review_id),
@@ -685,6 +689,9 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     # the loop "ConfirmShelve promises retry → Forward lands → Strategist
     # never Reopens" was never closed by the agent on its own; surfacing
     # the cross-reference gives it a structured cue.
+    section_names += ["stall_warning", "directive", "inject_batches",
+                      "pending_reopens", "active_goals", "failure_replay",
+                      "tree", "manifest_meta"]
     sections += [
         _section_stall_warning(conn, problem),
         _section_current_directive(conn, problem),
@@ -700,6 +707,9 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         parts.extend(sect)
     out = attempts_dir / "Context.md"
     out.write_text("\n".join(parts), encoding="utf-8")
+    context.write_context_stats(
+        attempts_dir, label=f"strategist {problem}",
+        names=section_names, sections=sections)
     return out
 
 
@@ -811,6 +821,8 @@ def compile_forward_context(conn: sqlite3.Connection, *,
     (The Strategist context still inlines the full tree; it plans over
     the whole structure.)
     """
+    section_names = ["forward_brief", "library_inventory",
+                     "forward_history", "active_goals", "manifest_meta"]
     sections: list[list[str]] = [
         _section_forward_brief(conn, decision_id),
         _section_library_inventory(conn, problem),
@@ -823,4 +835,7 @@ def compile_forward_context(conn: sqlite3.Connection, *,
         parts.extend(sect)
     out = attempts_dir / "Context.md"
     out.write_text("\n".join(parts), encoding="utf-8")
+    context.write_context_stats(
+        attempts_dir, label=f"forward {problem}",
+        names=section_names, sections=sections)
     return out

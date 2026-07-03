@@ -22,6 +22,37 @@ from ..knowledge import lemma_lookup
 from ..pipeline import events
 
 
+def write_context_stats(attempts_dir: Path, *, label: str,
+                        names: "list[str]",
+                        sections: "list[list[str]]") -> None:
+    """Context telemetry (task #7): per-section weights — one compact log
+    line for live monitoring + `_context_stats.json` in the attempts dir,
+    which WorkArea packs into dead_attempts.artifacts, so the numbers ride
+    the existing forensic channel with no schema change. Every past
+    context diet (the Forward-TREE 400-line cut, the 76%-noise failure
+    digest) was post-hoc archaeology; this makes section weight a standing
+    metric. Best-effort: never fails the compile."""
+    import json as _json
+    try:
+        stats = []
+        for name, lines in zip(names, sections):
+            if not lines:
+                continue
+            nbytes = sum(len(ln) + 1 for ln in lines)
+            stats.append({"section": name, "lines": len(lines),
+                          "bytes": nbytes})
+        total = sum(s["bytes"] for s in stats)
+        (attempts_dir / "_context_stats.json").write_text(
+            _json.dumps({"label": label, "total_bytes": total,
+                         "sections": stats}), encoding="utf-8")
+        top = sorted(stats, key=lambda s: s["bytes"], reverse=True)[:4]
+        print(f"[context] {label}: {total}B total; top: "
+              + ", ".join(f"{s['section']}={s['bytes']}B" for s in top),
+              flush=True)
+    except (OSError, ValueError):
+        pass
+
+
 # ---------------------------------------------------------------------
 # Sections
 # ---------------------------------------------------------------------
@@ -905,6 +936,12 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     # means the cache-able prefix length is the BRIEF + lessons size
     # (~2-10 KB) rather than zero. Per-goal / per-spawn surfaces follow.
     presearch_lines = _section_presearch_candidates(problem_dir, int(goal["id"]))
+    section_names = [
+        "brief", "kb_lessons", "directive", "inject_brief", "goal",
+        "library_available", "strategy_naming", "parent_strategy",
+        "mathlib_lemmas", "presearch", "proved_goals", "prior_partial",
+        "prior_patch", "goal_history",
+    ]
     sections: list[list[str]] = [
         _section_brief_inline(problem_dir),
         _section_lessons_inline(conn, str(goal["problem"]), int(goal["id"]),
@@ -944,6 +981,8 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
 
     out = attempts_dir / "Context.md"
     out.write_text("\n".join(parts), encoding="utf-8")
+    write_context_stats(attempts_dir, label=f"{kind or 'goal'} g{goal['id']}",
+                        names=section_names, sections=sections)
 
     # Write companion reference files for the bulky / lazy-load
     # content (Context.md only carries digests + pointers). The
