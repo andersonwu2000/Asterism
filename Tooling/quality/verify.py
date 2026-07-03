@@ -148,6 +148,7 @@ def verify_housekeeping(
     already proved, contributing to a daemon idle-exit.
     """
     from ..core import dispatcher
+    transitions.assert_main_thread("verify_housekeeping")
     counts = {"proved": 0, "dead": 0, "superseded": 0, "retry": 0,
               "revived": 0}
     touched_goals: set[int] = set()

@@ -1,6 +1,6 @@
 """Manifest.md parser. Best-effort: missing fields → defaults + warning.
 
-Format (see docs/architecture.md §3):
+Format (see docs/architecture.md §4):
   ---
   problem: <name>
   axioms_whitelist: [...]

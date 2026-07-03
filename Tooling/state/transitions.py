@@ -203,6 +203,27 @@ def _strict() -> bool:
     return os.environ.get("ASTERISM_STRICT_TRANSITIONS") == "1"
 
 
+def assert_main_thread(caller: str) -> None:
+    """Cascade PROPAGATION is main-thread-only — the concurrency discipline
+    that kills the OR-race class. Worker threads legitimately apply commit-
+    time transitions on their OWN target through the checked mutators
+    (forward's lemma landing, backward's sub-goal placement, …); what they
+    must never do is run the PROPAGATION entrypoints (`cascade_one`,
+    `verify_housekeeping`), which walk and mutate OTHER goals/strategies.
+    Until 2026-07-03 this was a convention held by code review; this guard
+    makes it a mechanism. Strict (CI) raises; lenient (production) logs
+    loudly and proceeds — same split, same rationale as the edge check."""
+    import threading
+    if threading.current_thread() is threading.main_thread():
+        return
+    msg = (f"[transition-violation] {caller} called from worker thread "
+           f"'{threading.current_thread().name}' — cascade propagation is "
+           "main-thread-only (architecture.md invariants)")
+    if _strict():
+        raise IllegalTransition(msg)
+    print(msg, flush=True)
+
+
 def _check(entity: str, frm: str | None, to: str,
            edges: "frozenset[tuple[str, str]]", event: str) -> None:
     if frm is None or frm == to:
@@ -920,6 +941,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
     after the goal has been won by a (possibly sequential) sibling
     strategy or after the goal cascade-shelved.
     """
+    assert_main_thread("cascade_one")
     if target_kind == "Strategy":
         row = conn.execute(
             "SELECT s.status, g.status AS goal_status FROM strategies s"

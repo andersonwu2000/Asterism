@@ -13,12 +13,21 @@
 
 **編譯驗證走 LSP gateway，不是 cold `lake build`。**
 證明 pipeline（Builder / Backward / Forward / Librarian）所有的 elaborate / build 驗證，
-都打到常駐的 LSP gateway warm worker（`lake serve`），框架統一封裝成 `verify_file(...)`。
-好處是省掉每次 5–15s 的 cold 啟動。少數例外仍走 cold lake：dedupe 的 isDefEq probe
-（`lake env lean`）、以及每個 problem 首次 dispatch 前的 Defs/Root pre-flight（`lake build`）。
+都打到常駐的 LSP gateway warm worker（`lake serve`），省掉每次 5–15s 的 cold 啟動。
+少數例外**刻意** cold（`lake env lean` / `lake build`）：dedupe 的 apply/isDefEq probe、
+每個 problem 首次 dispatch 前的 Defs/Root pre-flight、以及 #35 記載的異閉包 decl gate /
+最終 warn-gate / import-swap 後 rebuild-gate（warm slot 只服務同閉包整檔 gate）。
 
-**`dispatch.pool == gateway workers`，1:1 綁定（#118）。**
-worker 池大小等於 gateway 後端數，兩者一起伸縮。
+**`dispatch.pool == gateway workers`，1:1 綁定 + own-slot 紀律（#118）。**
+worker 池大小等於 gateway 後端數、一起伸縮——但 1:1 的實質是 **pipeline = slot**：
+pipeline 入場 `/register` 即 claim 一格、終身持有到 `/release`；生命週期內所有驗證都
+應打**自己這格**（`verify_in_session` 帶 session token；共用分派在
+`_axiom.verify_on_own_slot`，warm ~50-200ms、無 eviction）。`verify_file` 是 **borrow**
+入口（gateway 挑格、會踢掉該格 warm 內容）——只限**非-pipeline** context 用：
+主線程 housekeeping（G1 revival、root integrity gate）、operator CLI、Builder Phase 1
+（spawn 前、尚未 register）。borrow 挑格 unclaimed 優先、只在全 pool 都被 claim 時才碰
+別人的格。框架自持 session（librarian cleanup mechanical span）合法：它同時佔一個 pool
+thread、額度守恆。
 
 ---
 
@@ -50,6 +59,7 @@ agent 寫進 `.attempts/<pid>/` 的所有東西（不論成敗），在目錄被
 | 5 | **exit check** | `root_proved && 無 Librarian 待辦` → daemon 退出 | — |
 | 6 | **bfs refill** | 把 open goal 排進 queue（每 goal 最多一條 pipeline） | 本節 |
 | 7 | **strategist triggers** | 排 first_launch / routine 喚醒 | §3.4 |
+| 7b | **reconcile_stuck_states** | per-tick 安全網：孤兒 pending_review / NULL-outcome Inject wedge 修復 | — |
 | 8 | **spawn** | 有空格就 pop queue、派 pipeline 進 worker thread | 本節 |
 
 > 注意 step 3–5 在 bfs/spawn **之前**：root 一旦證完，先把完整性驗證和 Library 化排掉，再決定要不要繼續排證明工作。
@@ -304,7 +314,7 @@ lemma 的 `kind ∈ {theorem, def, structure, class}`。
 3. `extract_forward_metadata`：slug / rationale / entry_kind / kind / sorry_free。缺 rationale / slug regex 不符 / kind 不認得 → `parse_rejected`
 4. auto-prepend imports（Mathlib + Defs + opens；agent 漏 import 不算錯）
 5. self_verify：`verify_file`（probe；leading sorry OK；偵 sorry_free）。有 build error → `forward_no_new_goal` + retry_context 帶 error
-6. dedupe：`find_canonicals_batch`（同 problem alive/proved + disproved）；命中 alive → `forward_no_new_goal`
+6. dedupe：`find_canonicals_batch`（同 problem alive/proved + disproved）；命中 alive → `forward_no_new_goal`；命中 **proved** → `commit_forward_alias`（提案自動變 alias 落地、不算失敗）
 7. `commit_forward_lemma`：搬到 `proofs/L_<slug>.lean` + INSERT goal
    - sorry_free → `proved`，否則 `open`
    - 永遠 `detached=1`（無 strategy 上游）
@@ -341,7 +351,7 @@ lemma 的 `kind ∈ {theorem, def, structure, class}`。
 1. glob `decision.json` → 缺檔 `agent_no_output`
 2. `parse_decisions`：JSON array，每 row schema 驗證
 3. `verify_decisions`：cross-decision invariant（任一不過 → `strategist_schema_invalid`，infra-reason、不 ++）
-   - ConfirmShelve 不能單獨送（必和 Inject 同 array pair）
+   - ConfirmShelve 不得與 Inject(Backward|Builder) 指向同一 target 或其 descendant（單獨送合法）
    - target_id 在 active goal list（normalize int / slug）
    - Inject(Backward|Builder) 的 target ancestor 不在 disproved/dead
    - Inject pipeline ∈ {Forward, Backward, Builder}
@@ -373,20 +383,20 @@ hook 偵測「同 batch_id 所有 row outcome 非 NULL」時 fire。
 
 把一個**已證的 problem** 收成 mathlib 形狀的 `Library/`。只對 Manifest 標 `library: true` 的 problem 自動啟動。
 
-鏈式 `dedup → classify → migrate → bridge`。每步的 work-kind 由 `library_decls` 的 lifecycle 狀態推出
+鏈式 `dedup → classify → migrate → cleanup → bridge`。每步的 work-kind 由 `library_decls` 的 lifecycle 狀態推出
 （dispatcher `_derive_librarian_work`，純讀），chain 每次成功後由 tick 層 `_librarian_refill` 重新 derive、
-直到狀態機排空。`migrate` 以**整個檔**為平行單位，多個無依賴關係的檔可同時在 pool 裡跑。
+直到狀態機排空。`migrate` / `cleanup` 以**整個檔**為平行單位，多個無依賴關係的檔可同時在 pool 裡跑。
 
 | 步驟 | 形式 | 做什麼 |
 |---|---|---|
-| **dedup** | 無 agent、純機械 | 盤點已證 decl，限縮到「proved root 的 live 使用閉包」（`_reachable_from_root`，丟掉證明殘骸），全部標 `keep → deduped` |
+| **dedup** | 無 agent、純機械 | 盤點已證 decl，限縮到 harvest 目標的 live 使用閉包（classic = proved root；anchor+claim = deliverables，`_reachable_from_root`），全部標 `keep → deduped` |
 | **classify** | one-shot JSON spawn | agent 給檔案佈局 + 檔內順序；framework 再做 SCC-merge + 用量 toposort 修正 → `target_file` / `file_order` |
 | **migrate** | LSP + commit-retry | 一次寫**整個檔**的 decls（照 `file_order`）→ 過 commit gate → `migrated` |
-| **bridge** | 無 agent | Gate B 整體意義驗證（見下），PASS 就寫 `Library/INDEX.md`、終止 chain |
+| **cleanup** | LLM 多段 + 機械收尾 | per-file 精修（drop/merge/near-dup bridge、simplify、audit 整檔 mathlib-ize、decide rename + import-min）；收尾零-warning 硬閘 + **post-rewrite 公理閘**（§3.5 末） → `cleaned` / `dropped` |
+| **bridge** | 無 agent | cite_drop 後 Gate B 整體意義驗證（見下），PASS 就寫 `Library/INDEX.md`、終止 chain；純 mathlib 引用的 wrapper 轉 `cited` |
 
-**lifecycle 狀態**：`candidate → deduped → classified → migrated`。keep-all 只走這條主線。
-`cleaned`/`dropped`/`cited` 仍是合法 schema 終態（由 `set_library_verdict` 的非-`keep` verdict 寫入），
-但機械 dedup 只發 `keep`，所以現行 chain 不會產生它們。
+**lifecycle 狀態**：`candidate → deduped → classified → migrated → cleaned`；
+終態另有 `dropped`（cleanup 併掉）與 `cited`（bridge 轉純 mathlib 引用）。
 
 **migrate 單位 = 一個檔**：`next_migrate_file` 挑「依賴檔都已 migrated」的下一個 classified 檔
 （file DAG 的拓樸序）。DAG 由 `file_dependency_graph` 從 per-decl 用量圖 + classify 的 `target_file` map 即時重建，
@@ -526,7 +536,7 @@ section 順序固定，每個 `_section_*` 不適用時回 `[]`、整段省略�
 | # | section | 條件 / 說明 |
 |---|---|---|
 | 1 | BRIEF.md inline | FORBIDDEN_LEMMAS / strategic notes 都折進這裡 |
-| 2 | LESSONS.md inline | 1–2 是跨 spawn 不變內容，放最前讓 prompt-cache prefix 命中最大化 |
+| 2 | KB lessons/antipatterns inline | 來源是 DB `kb_entries`（Model B、global-only、reflection 寫入）；1–2 是跨 spawn 不變內容，放最前讓 prompt-cache prefix 命中最大化 |
 | 3 | Strategist directive | problem-level 常駐指令（每次 cold-start） |
 | 4 | Strategist brief | 只在這條 pipeline 由 Inject 認可時 |
 | 5 | Goal statement | — |

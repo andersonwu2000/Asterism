@@ -1,6 +1,6 @@
 """DB schema + connection. Single source of truth.
 
-Tables (see docs/architecture.md §4):
+Tables (see docs/architecture.md §3):
   problems, goals, strategies, strategy_subgoals,
   pipelines, dead_attempts, queue, strategist_decisions (Phase 2)
 
@@ -163,7 +163,7 @@ CREATE TABLE IF NOT EXISTS goals (
     lean_path   TEXT    NOT NULL UNIQUE,
     statement   TEXT    NOT NULL,
     -- kind / origin enums kept minimal; extend when implementing
-    -- generalizer / refuter / construction (architecture.md §12).
+    -- generalizer / refuter / construction (architecture.md §13).
     -- Phase 2 added 'forward' to origin (Forward pipeline-produced lemmas).
     kind        TEXT    NOT NULL DEFAULT 'theorem'
                     -- Phase 4 — non-theorem kinds bypass the prove

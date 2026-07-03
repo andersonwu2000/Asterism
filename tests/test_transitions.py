@@ -151,6 +151,50 @@ def test_apply_goal_transition_illegal_edge_lenient_logs_and_writes(
     assert _gstatus(conn, g) == "attempting"
 
 
+# ---------------------------------------------------------------------------
+# assert_main_thread — cascade PROPAGATION is main-thread-only (the OR-race
+# concurrency discipline, a review-held convention until 2026-07-03). Worker
+# threads may run commit-time transitions on their own target; the propagation
+# entrypoints (cascade_one / verify_housekeeping) call this guard.
+# ---------------------------------------------------------------------------
+
+def test_assert_main_thread_passes_on_main_thread(
+        monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ASTERISM_STRICT_TRANSITIONS", "1")
+    transitions.assert_main_thread("cascade_one")     # must not raise
+
+
+def test_assert_main_thread_strict_raises_from_worker_thread(
+        monkeypatch: pytest.MonkeyPatch):
+    import threading
+    monkeypatch.setenv("ASTERISM_STRICT_TRANSITIONS", "1")
+    caught: list = []
+
+    def _run():
+        try:
+            transitions.assert_main_thread("cascade_one")
+        except transitions.IllegalTransition as e:
+            caught.append(e)
+    t = threading.Thread(target=_run, name="worker-probe")
+    t.start()
+    t.join()
+    assert caught and "main-thread-only" in str(caught[0])
+
+
+def test_assert_main_thread_lenient_logs_from_worker_thread(
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture):
+    import threading
+    monkeypatch.delenv("ASTERISM_STRICT_TRANSITIONS", raising=False)
+    t = threading.Thread(
+        target=lambda: transitions.assert_main_thread("verify_housekeeping"),
+        name="worker-probe")
+    t.start()
+    t.join()
+    out = capsys.readouterr().out
+    assert "[transition-violation]" in out
+    assert "verify_housekeeping" in out
+
+
 def test_apply_goal_transition_unknown_state_asserts(conn: sqlite3.Connection):
     g = _insert_goal(conn, status="open")
     with pytest.raises(AssertionError):
