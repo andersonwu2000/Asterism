@@ -311,11 +311,44 @@ def _run_bridge(conn, *, problem, workspace, pipeline_id,
         "SELECT 1 FROM goals WHERE problem = ? AND is_deliverable = 1 LIMIT 1",
         (problem,)).fetchone() is not None
     if has_deliverables:
+        # Per-decl axiom re-verification at the topological END of the chain,
+        # after cite_drop (the last rewrite). "builds" alone never inspects
+        # the kernel's axiom graph — a `sorry`/`native_decide` introduced by a
+        # post-migrate rewrite builds green. classic problems get this from
+        # the root re-derivation probe below (its whitelist check walks the
+        # root's transitive closure); deliverable problems have no root to
+        # re-derive, so gate every harvested file's FINAL on-disk text
+        # instead. The oleans are warm (rebuilt just above), so each file is
+        # one warm elaboration. `whitelist=None` (unit tests) skips, matching
+        # the migrate gate's contract; the dispatcher always passes one.
+        if whitelist:
+            from .gate import migrate_commit_gate
+            for _tf in sorted({r["target_file"] for r in migrated
+                               if r["target_file"]}):
+                _fp = workspace / _tf
+                try:
+                    _txt = _fp.read_text(encoding="utf-8")
+                except OSError as e:
+                    return PipelineResult(
+                        outcome="failed",
+                        failure_reason="librarian_axiom_violation",
+                        failure_detail=(f"deliverable axiom gate: cannot read "
+                                        f"{_tf}: {e}"))
+                gres = migrate_commit_gate(
+                    _txt, _fp, whitelist=whitelist, workspace=workspace)
+                if not gres.ok:
+                    return PipelineResult(
+                        outcome="failed",
+                        failure_reason="librarian_axiom_violation",
+                        failure_detail=(f"deliverable axiom gate: {_tf}: "
+                                        f"{gres.detail}"))
         _write_library_index(
             conn, problem=problem, workspace=workspace,
-            gate_b_line=("Gate B (deliverable build): PASSED — the marked "
-                         "deliverables + their anchor closures build from the "
-                         "Library alone."))
+            gate_b_line=("Gate B (deliverable build + per-decl axiom check): "
+                         "PASSED — the marked deliverables + their anchor "
+                         "closures build from the Library alone, and every "
+                         "harvested decl's transitive axiom set is within "
+                         "the authorized whitelist."))
         return PipelineResult(outcome="success")
 
     probe = _bridge_probe_text(

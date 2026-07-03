@@ -403,11 +403,26 @@ hook 偵測「同 batch_id 所有 row outcome 非 NULL」時 fire。
 任一不過 → 把暫存檔 rollback，該檔 decls 留在 `classified`，chain 卡在這個檔。會重試到
 `LIBRARIAN_MAX_CHAIN_RETRIES`（2）次，仍失敗就標 STALLED。
 
+另外 commit gate 對任何 `axiom` **宣告**一律 hard-fail（Library 永不引入公理）——這條連同下面的
+post-rewrite 公理閘一起走 `migrate_commit_gate`，migrate / cleanup 收尾 / deliverable bridge 三處共用。
+
+**post-rewrite 公理閘（cleanup 收尾，2026-07-03）**：原則 =「每次高風險改寫後都要重驗公理」。
+cleanup 的 LLM 段（simplify / near-dup bridge one-liner / audit 整檔重寫）跑在 migrate 公理閘**之後**、
+是整條 chain 唯一能改變 decl 公理集的後段改寫（`by native_decide` build 綠、零 warning、卻拉進
+`Lean.ofReduceBool`）。per-file cleanup 在零-warning 閘之後、對**最終文本**重跑同一套 per-decl
+`#print axioms ⊆ whitelist`（decl 名從最終文本抽、rename / audit 偷加的宣告都涵蓋）。
+不過 → `librarian_axiom_violation`、該檔留 `migrated`、chain 重試。
+
 **Gate B（`bridge` 步驟，俗稱「秒殺」/定海神針）**：對整批收成做意義檢查 —— 從 Library 重新推導出原始 root
 （Defs-free），跑 statement-pin + import 閉包 + build + axiom whitelist。這是 chain 的終止步，PASS 才寫 INDEX，
 所以 INDEX 存在 = 整個 Library 真的能重證原題。
 
+**deliverable 題的 bridge**（anchor+claim、無 root 可重推）：builds-only 之外，對每個 harvested 檔的
+最終 on-disk 文本（在 cite_drop —— chain 拓撲末端的最後一次改寫 —— 之後）跑同一套 per-decl 公理閘，
+PASS 才寫 INDEX。classic 題不需要：Gate B 的 root 重推 probe 本身就帶 axiom whitelist、覆蓋 root 閉包。
+
 > 三道 Gate：**A** import 閉包、**B** root 重推、**D** Defs def-equivalence。**沒有 Gate C。**
+> 公理面另有兩道 re-gate：cleanup 收尾（逐檔歸因）+ deliverable bridge 末端（終局保證）。
 
 ---
 

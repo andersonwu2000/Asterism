@@ -323,6 +323,91 @@ def test_run_cleanup_per_file_warning_gate_passes_when_clean(conn, tmp_path,
     assert db.library_decls_for(conn, "p", lifecycle="cleaned")
 
 
+def _patch_axiom_gate(monkeypatch, ok, detail="", calls=None):
+    from Tooling.pipeline.librarian import gate as _g
+
+    def _fake(text, path, *, whitelist=None, probe_verifier=None,
+              workspace=None):
+        if calls is not None:
+            calls.append({"text": text, "whitelist": whitelist})
+        return _g.MigrateResult(ok, detail)
+    monkeypatch.setattr(_g, "migrate_commit_gate", _fake)
+
+
+def test_run_cleanup_per_file_axiom_gate_fails_unit(conn, tmp_path, monkeypatch):
+    # Post-rewrite axiom gate: cleanup's LLM stages run AFTER migrate's axiom
+    # check, so the finalized text must re-pass the per-decl whitelist probe —
+    # a rogue axiom (e.g. `native_decide` → Lean.ofReduceBool) fails the unit
+    # and leaves the decls `migrated` (not promoted).
+    _seed_migrated(conn, "foo", "Library.P.F.foo", target_file="Library/P/F.lean")
+    _write_lib_file(tmp_path, "Library/P/F.lean")
+    _patch_engine_file(monkeypatch, {"dropped": {}, "merged": set(),
+                                     "bridged": {}, "near": [], "failed": []})
+    _patch_warn_build(monkeypatch, "build ok, no warnings\n")
+    _patch_axiom_gate(monkeypatch, False,
+                      "axiom check failed for `Library.P.F.foo`: rogue axioms: "
+                      "['Lean.ofReduceBool']")
+    res = lib._run_cleanup(conn, problem="p", workspace=tmp_path,
+                           target_file="Library/P/F.lean",
+                           whitelist=["propext"])
+    assert res.outcome == "failed"
+    assert res.failure_reason == "librarian_axiom_violation"
+    assert "rogue axioms" in res.failure_detail
+    assert db.library_decls_for(conn, "p", lifecycle="migrated")   # not promoted
+
+
+def test_run_cleanup_per_file_axiom_gate_passes(conn, tmp_path, monkeypatch):
+    # Gate receives the FINAL on-disk text and the caller's whitelist.
+    _seed_migrated(conn, "foo", "Library.P.F.foo", target_file="Library/P/F.lean")
+    _write_lib_file(tmp_path, "Library/P/F.lean")
+    _patch_engine_file(monkeypatch, {"dropped": {}, "merged": set(),
+                                     "bridged": {}, "near": [], "failed": []})
+    _patch_warn_build(monkeypatch, "build ok, no warnings\n")
+    calls: list = []
+    _patch_axiom_gate(monkeypatch, True, calls=calls)
+    res = lib._run_cleanup(conn, problem="p", workspace=tmp_path,
+                           target_file="Library/P/F.lean",
+                           whitelist=["propext"])
+    assert res.outcome == "success"
+    assert db.library_decls_for(conn, "p", lifecycle="cleaned")
+    assert calls and calls[0]["whitelist"] == ["propext"]
+    assert "theorem t" in calls[0]["text"]           # the final file text
+
+
+def test_run_cleanup_per_file_axiom_gate_skipped_without_whitelist(
+        conn, tmp_path, monkeypatch):
+    # Contract pin: `whitelist=None` (unit tests / legacy callers) skips the
+    # gate — matching migrate_commit_gate's own whitelist=None semantics. The
+    # dispatcher always passes a whitelist in production.
+    _seed_migrated(conn, "foo", "Library.P.F.foo", target_file="Library/P/F.lean")
+    _write_lib_file(tmp_path, "Library/P/F.lean")
+    _patch_engine_file(monkeypatch, {"dropped": {}, "merged": set(),
+                                     "bridged": {}, "near": [], "failed": []})
+    _patch_warn_build(monkeypatch, "build ok, no warnings\n")
+    from Tooling.pipeline.librarian import gate as _g
+    monkeypatch.setattr(_g, "migrate_commit_gate",
+                        lambda *a, **k: pytest.fail(
+                            "axiom gate must not run without a whitelist"))
+    res = lib._run_cleanup(conn, problem="p", workspace=tmp_path,
+                           target_file="Library/P/F.lean")
+    assert res.outcome == "success"
+
+
+def test_run_cleanup_serial_axiom_gate_fails(conn, tmp_path, monkeypatch):
+    # The whole-problem serial path (CLI / tests) applies the same gate to
+    # every touched file.
+    _seed_migrated(conn, "foo", "Library.P.F.foo", target_file="Library/P/F.lean")
+    _write_lib_file(tmp_path, "Library/P/F.lean")
+    _patch_engine(monkeypatch, {"dropped": {}, "merged": set(), "near": [],
+                                "skipped": [], "bridged": {}})
+    _patch_axiom_gate(monkeypatch, False, "rogue axioms: ['sorryAx']")
+    res = lib._run_cleanup(conn, problem="p", workspace=tmp_path,
+                           whitelist=["propext"])
+    assert res.outcome == "failed"
+    assert res.failure_reason == "librarian_axiom_violation"
+    assert db.library_decls_for(conn, "p", lifecycle="migrated")   # not promoted
+
+
 def test_run_cleanup_per_file_folds_polish_into_audit(conn, tmp_path, monkeypatch):
     # Merge: the orchestrator no longer requests a separate polish stage — audit
     # does the full mathlib-ize (polish folded in, then the dead stage removed),
@@ -493,6 +578,31 @@ def test_migrate_gate_rejects_sorry():
     r = lib.migrate_commit_gate(patch, _P("Library/A/Bar.lean"),
                                 probe_verifier=_ok_probe)
     assert not r.ok and "sorry" in r.detail
+
+
+def test_migrate_gate_rejects_axiom_declaration():
+    # The Library must never introduce axioms. audit's whole-file rewrite is
+    # the live vector: its gate pins only listed decls' types and does not
+    # forbid ADDING declarations — an unreferenced `axiom` would otherwise
+    # build green, warning-free.
+    for decl in ("axiom bad : True",
+                 "private axiom bad : True",
+                 "@[simp] axiom bad : True",
+                 "set_option pp.all true in axiom bad : True"):
+        patch = f"import Mathlib\n{decl}\ntheorem t : True := trivial\n"
+        r = lib.migrate_commit_gate(patch, _P("Library/A/Bar.lean"),
+                                    probe_verifier=_ok_probe)
+        assert not r.ok and "axiom" in r.detail, decl
+
+
+def test_migrate_gate_axiom_in_comment_or_identifier_ok():
+    patch = ("import Mathlib\n"
+             "/-- Cites no axiom beyond propext; see `Classical.axiomOfChoice`. -/\n"
+             "-- axiom audit: clean\n"
+             "theorem axiom_free_t : True := trivial\n")
+    r = lib.migrate_commit_gate(patch, _P("Library/A/Bar.lean"),
+                                probe_verifier=_ok_probe)
+    assert r.ok, r.detail
 
 
 def test_migrate_gate_rejects_build_failure():

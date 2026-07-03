@@ -100,11 +100,16 @@ _WATERMARKS = {
     # verifies by source equality, NOT the cross-module defeq probe that would
     # import both and die on "environment already contains" (residue migrate
     # STALL) — 2026-06-21.
-    "Tooling/pipeline/librarian/gate.py": 360,
+    # gate 360→385 + bridge 345→390 + run 515→560: post-rewrite axiom gate
+    # (2026-07-03) — cleanup's LLM stages (simplify / near-dup bridge / audit
+    # whole-file rewrite) run AFTER migrate's per-decl axiom check; re-gate
+    # the FINAL text at cleanup exit + the deliverable bridge end (which was
+    # builds-only), and hard-fail any `axiom` declaration — conscious bumps.
+    "Tooling/pipeline/librarian/gate.py": 385,
     "Tooling/pipeline/librarian/context.py": 430,
     "Tooling/pipeline/librarian/execute.py": 1150,
-    "Tooling/pipeline/librarian/bridge.py": 345,
-    "Tooling/pipeline/librarian/run.py": 515,
+    "Tooling/pipeline/librarian/bridge.py": 390,
+    "Tooling/pipeline/librarian/run.py": 560,
     # dispatcher 2750→2800 + db 2450→2500: awaiting_human observability
     # (startup + idle-exit log of paused problems) + scope-aware idle exit
     # via db.dispatchable_open_goals — a paused P12 read as a multi-hour

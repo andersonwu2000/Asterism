@@ -235,6 +235,76 @@ def test_run_bridge_cleaned_build_failed_is_distinct(conn, tmp_path, monkeypatch
     assert "unknown identifier 'dropped_lemma'" in r.failure_detail
 
 
+def _deliverable_setup(conn, tmp_path):
+    """A proved root + one migrated decl marked deliverable, its Library file
+    on disk (the deliverable gate reads the FINAL on-disk text)."""
+    _root(conn, "True")
+    _migrated(conn, "foo", "Library.P.Foo.foo", "Library/P/Foo.lean")
+    conn.execute("UPDATE goals SET is_deliverable=1 "
+                 "WHERE problem='p' AND slug='foo'")
+    conn.commit()
+    fp = tmp_path / "Library" / "P" / "Foo.lean"
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    fp.write_text("import Mathlib\ntheorem foo : True := trivial\n",
+                  encoding="utf-8")
+
+
+def test_run_bridge_deliverable_axiom_gate_blocks_index(conn, tmp_path,
+                                                        monkeypatch):
+    # deliverable branch: "builds" alone never inspects the kernel axiom
+    # graph — the per-file axiom gate (post cite_drop, the chain's last
+    # rewrite) must block the INDEX on a rogue axiom.
+    from Tooling.pipeline.librarian import gate as _g
+    _deliverable_setup(conn, tmp_path)
+    _mock_lake_ok(monkeypatch)
+    monkeypatch.setattr(_g, "migrate_commit_gate",
+                        lambda *a, **k: _g.MigrateResult(
+                            False, "rogue axioms: ['Lean.ofReduceBool']"))
+    r = lib._run_bridge(conn, problem="p", workspace=tmp_path,
+                        pipeline_id="pid", whitelist=["propext"])
+    assert r.outcome == "failed"
+    assert r.failure_reason == "librarian_axiom_violation"
+    assert "rogue axioms" in r.failure_detail
+    assert not (tmp_path / "Library" / "INDEX.md").exists()
+
+
+def test_run_bridge_deliverable_axiom_gate_passes_writes_index(conn, tmp_path,
+                                                               monkeypatch):
+    from Tooling.pipeline.librarian import gate as _g
+    _deliverable_setup(conn, tmp_path)
+    _mock_lake_ok(monkeypatch)
+    calls: list = []
+
+    def _fake(text, path, *, whitelist=None, probe_verifier=None,
+              workspace=None):
+        calls.append({"text": text, "whitelist": whitelist})
+        return _g.MigrateResult(True, "")
+    monkeypatch.setattr(_g, "migrate_commit_gate", _fake)
+    r = lib._run_bridge(conn, problem="p", workspace=tmp_path,
+                        pipeline_id="pid", whitelist=["propext"])
+    assert r.outcome == "success"
+    assert calls and calls[0]["whitelist"] == ["propext"]
+    assert "theorem foo" in calls[0]["text"]         # final on-disk text
+    idx = (tmp_path / "Library" / "INDEX.md").read_text(encoding="utf-8")
+    assert "per-decl axiom check" in idx
+
+
+def test_run_bridge_deliverable_no_whitelist_skips_gate(conn, tmp_path,
+                                                        monkeypatch):
+    # Contract pin: whitelist=None (unit tests / legacy callers) keeps the old
+    # builds-only behavior; the dispatcher always passes a whitelist.
+    from Tooling.pipeline.librarian import gate as _g
+    _deliverable_setup(conn, tmp_path)
+    _mock_lake_ok(monkeypatch)
+    monkeypatch.setattr(_g, "migrate_commit_gate",
+                        lambda *a, **k: pytest.fail(
+                            "deliverable axiom gate must not run without "
+                            "a whitelist"))
+    r = lib._run_bridge(conn, problem="p", workspace=tmp_path,
+                        pipeline_id="pid")
+    assert r.outcome == "success"
+
+
 def test_run_librarian_bridge_dispatches_without_prompt(conn, tmp_path,
                                                         monkeypatch) -> None:
     # bridge is a mechanical (no-agent, no-prompt) probe — run_librarian must

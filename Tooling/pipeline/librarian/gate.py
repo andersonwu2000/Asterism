@@ -157,6 +157,27 @@ def _uses_sorry(text: str) -> bool:
     return bool(_r.search(r"\bsorry\b", no_line))
 
 
+_AXIOM_DECL_RE = re.compile(
+    # line-anchored declaration head (optional attrs / visibility modifiers),
+    # plus the `set_option … in axiom` same-line form.
+    r"(?:^\s*(?:@\[[^\]]*\]\s*)*(?:private\s+|protected\s+)?|\bin\s+)axiom\s",
+    re.MULTILINE)
+
+
+def _declares_axiom(text: str) -> bool:
+    """True iff `text` DECLARES an `axiom` — ignoring comments (a doc comment
+    may legitimately discuss axioms). The Library must never introduce axioms:
+    a REFERENCED rogue axiom is caught by the per-decl `#print axioms` probe
+    (it appears in the referrer's transitive set), and a top-level named axiom
+    self-reports under its own probe line — but this cheap text scan fails
+    fast with a clear message and also covers forms the decl extractor might
+    not surface. Audit's whole-file rewrite is the live vector: its gate pins
+    only the LISTED decls' types and does not forbid ADDING declarations."""
+    no_block = re.sub(r"/-.*?-/", " ", text, flags=re.DOTALL)
+    no_line = re.sub(r"--[^\n]*", " ", no_block)
+    return bool(_AXIOM_DECL_RE.search(no_line))
+
+
 def migrate_commit_gate(
     patch_text: str, target_path: "_Path", *,
     whitelist: "list[str] | None" = None,
@@ -198,6 +219,11 @@ def migrate_commit_gate(
         # authoritative sorryAx detector). A clear message here beats a generic
         # "declaration uses sorry" diagnostic.
         return MigrateResult(False, "patch still contains `sorry`")
+
+    if _declares_axiom(patch_text):
+        return MigrateResult(
+            False, "patch declares an `axiom` — the Library must never "
+                   "introduce axioms (prove it or cite Mathlib)")
 
     # Per-file axiom invariant needs a named decl for every declaration. Only
     # extracted when a whitelist is set (the axiom probe needs the fq names);

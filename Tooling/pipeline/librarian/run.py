@@ -41,7 +41,8 @@ def run_librarian(conn, *, problem: str, work_kind: str,
     # (§13 3c-2); None = whole-problem serial pass.
     if work_kind == "cleanup":
         return _run_cleanup(conn, problem=problem, workspace=workspace,
-                            target_file=target, pipeline_id=pipeline_id)
+                            target_file=target, pipeline_id=pipeline_id,
+                            whitelist=whitelist)
 
     # v0.3 mechanical Gate B (plan §2 定海神針): `_run_bridge` is a no-agent,
     # no-prompt probe (its attempts_dir/problem_dir/prompt_path are unused) —
@@ -206,7 +207,8 @@ def _advance_cleanup_decls(conn, problem, rows, dropped) -> int:
     return n_drop
 
 
-def _run_cleanup(conn, *, problem, workspace, target_file=None, pipeline_id=None):
+def _run_cleanup(conn, *, problem, workspace, target_file=None, pipeline_id=None,
+                 whitelist=None):
     """v0.4 cleanup stage (plan §10/§11, §13): run the dedup-audit engine on the
     migrated (staging) Library, then advance lifecycle so the chain proceeds to
     bridge. The engine owns its agent spawns + the per-decl isolate-then-splice
@@ -333,6 +335,29 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None, pipeline_id=None
                         + (f"build failed:\n{_wout[-400:]}" if not _wok else
                            f"{len(_warns)} residual warning(s) — Mathlib PR bar "
                            "is zero:\n" + "\n".join(_warns[:10]))))
+        # Post-rewrite axiom gate (principle: every high-risk rewrite must
+        # re-pass the axiom gate). cleanup's LLM stages — simplify, near-dup
+        # bridge one-liners, audit's whole-file rewrite — run AFTER migrate's
+        # per-decl axiom check and are the only post-migrate stages that can
+        # change a decl's transitive axiom set (`by native_decide` builds
+        # green and warning-free but pulls in `Lean.ofReduceBool`). Re-run the
+        # SAME per-decl `#print axioms ⊆ whitelist` probe on the FINAL text:
+        # decl names are extracted from it post-rename, so decide/audit
+        # renames and any audit-ADDED declaration are covered. One extra warm
+        # elaboration per file. `whitelist=None` (unit tests / legacy callers)
+        # skips, matching the migrate gate's contract; the dispatcher always
+        # passes the Manifest whitelist (or the framework default).
+        if _final is not None and whitelist is not None:
+            from . import gate as _gate
+            gres = _gate.migrate_commit_gate(
+                _final, workspace / target_file,
+                whitelist=whitelist, workspace=workspace)
+            if not gres.ok:
+                return PipelineResult(
+                    outcome="failed",
+                    failure_reason="librarian_axiom_violation",
+                    failure_detail=(f"post-cleanup axiom gate: {target_file}: "
+                                    f"{gres.detail}"))
         n_drop = _advance_cleanup_decls(conn, problem, rows, res.get("dropped", {}))
         print(f"[librarian] {problem}: cleanup `{target_file}` — {n_drop} "
               f"dropped, {len(res.get('bridged', {}))} bridged, "
@@ -343,6 +368,26 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None, pipeline_id=None
     migrated = list(db.library_decls_for(conn, problem, lifecycle="migrated"))
     res = _dedup.run_staged_cleanup(
         workspace, problem, apply=True, scope_index=scope_index)
+    # Same post-rewrite axiom gate as the per-file path above, applied to every
+    # file this serial pass touched (CLI / whole-problem mode). A file the
+    # engine dropped entirely no longer exists → skip it.
+    if whitelist is not None:
+        from . import gate as _gate
+        for _tf in sorted({r["target_file"] for r in migrated
+                           if r["target_file"]}):
+            try:
+                _txt = (workspace / _tf).read_text(encoding="utf-8")
+            except OSError:
+                continue
+            gres = _gate.migrate_commit_gate(
+                _txt, workspace / _tf, whitelist=whitelist,
+                workspace=workspace)
+            if not gres.ok:
+                return PipelineResult(
+                    outcome="failed",
+                    failure_reason="librarian_axiom_violation",
+                    failure_detail=(f"post-cleanup axiom gate: {_tf}: "
+                                    f"{gres.detail}"))
     n_drop = _advance_cleanup_decls(conn, problem, migrated, res.get("dropped", {}))
     print(f"[librarian] {problem}: cleanup — {n_drop} dropped, "
           f"{len(res.get('bridged', {}))} bridged; survivors → cleaned",
