@@ -160,7 +160,36 @@ Librarian（`Tooling/pipeline/librarian.py`，Phase 4）：失敗走 `dispatcher
 
 ---
 
-## 4. 跨參考
+## 4. Crash-window 補償對照表（task #11、2026-07-04 盤點）
+
+狀態傳播非交易性（每個 db helper 自帶 commit；§13 拒絕兩段式）。本表 = 「daemon 死在
+commit 邊界之間會留下什麼 × 誰救」的窮舉結論；完整逐窗口證據見盤點記錄（session task #11）。
+補償層：**R**=startup `recovery.recover_at_startup`、**T**=per-tick `reconcile_stuck_states`、
+**B**=`db.reconcile_settled_inject_outcomes`、**S**=`consistency.consistency_sweep`
+（`asterism drift-check` 第二層；`repair_unambiguous` 在 R 內自動修無歧義子集）、
+**G**=root integrity gate + `proof_store.inventory`。
+
+| 窗口類 | 半套狀態 | 處置 |
+|---|---|---|
+| A1/A4 verify promote 檔先行 | alias 檔寫了、strategy 未 succeeded / backup 未清 | R（backup 還原/清理）+ 重新 ready_for_verify ✅ |
+| A2 succeeded↔proved 之間 | succeeded strategy + 未 proved goal | R 重開重解（dedupe 收斂）；**S 謂詞** `succeeded_strategy_unproved_goal` 使其可見 |
+| A3/F3/F4 sibling sweep / cascade 半途 | terminal goal 下殘留 live strategy、殘活/殭屍子樹 | **R+S**：`repair_unambiguous` 補完 cascade 欠的那一步（proved→superseded、killed→dead、走 checked mutator）；`stalled` 無合法邊、report-only；殭屍樹由 `unreachable_alive_goal` 謂詞可見 |
+| B1 revival 檔寫了未 flip | shelved goal 檔=alias 非 stub | **已根治**：`_revive_shelved_alias` 冪等化（只認自己筆跡：本 canonical 的 import+apply 委派）→ 續跑 build-verify+flip；S 謂詞 `revival_pending` 監測 |
+| C1 rollback 半途 | 部分還原 | gate 重跑收斂；bisect 可能多殺一條上游良民（明文接受、代價=一次 re-Backward）|
+| D1-D6 backward 放置各窗口 | 有檔無 row / 半 INSERT / 佔位 strategy | R（half-baked 清理+orphan sweep+redispatch）✅；D2 殭屍 row 由 S 可見；D6 bulk-dead 的 inject outcome 由 B 補 |
+| E1-E5 forward 放置各窗口 | 有檔無 row / 未 detached / 無 backlink | R sweep+redispatch 收斂（可能重複鑄造、slug 撞則失敗回填）；E2 殭屍由 S `unreachable_alive_goal` 可見 |
+| F1/F2 inject outcome/batch-wake 遺失 | terminal 但 decision NULL / wake 丟失 | B 補 outcome ✅；wake 由 routine interval 兜底 ♻️ |
+| F5/F6 enqueue 遺失 | pending_review / Forward 重排無 queue row | T 每 tick 補 ✅（T 的設計目的）|
+| G1-G3 收割/queue 窗口 | worker commit 完成未 cascade / queue row 丟 | R 全套；queue 內容全部可自 durable state 重導出（架構性保證）✅ |
+| G2 attempts>dead_attempts | 帳面 drift | **明文接受**：attempts 是 threshold SoT 且該 LLM call 真發生過；dead_attempts 純 forensic |
+
+維護規則：**新增傳播路徑（新的多 commit 序列）必須在本表加一行**、並三選一：指認既有救援層 /
+新增 S 謂詞 / 明文接受＋理由。deferred：commit-fault-injection harness（對每條傳播入口掃
+「第 N 次 commit 後 crash」、跑三層 reconcile 斷言 sweep 全綠）——等 S 上線觀察殘餘再決定。
+
+---
+
+## 5. 跨參考
 
 - 動態 flow（pipeline 完整流程含失敗）：`docs/data-flow.md`
 - goal_history v1 audience 規則 / 實作步驟設計史：`docs/archive/design/goal_history_unified.md`

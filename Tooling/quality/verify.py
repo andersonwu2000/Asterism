@@ -305,18 +305,39 @@ def _revive_shelved_alias(
     except (ValueError, OSError):
         return False
     if not _dedupe._SORRY_BODY_RE.search(s_text):
-        # S's body isn't a fresh `:= by sorry` stub (manual edit, partial
-        # proof, or already promoted). Refuse to overwrite arbitrary
-        # content; the link stays so an operator can inspect / a later
-        # prune / rewrite path can pick it up if S's file gets reset.
-        return False
-    new_text = _dedupe.build_alias_content(
-        original_content=s_text,
-        canonical_module=x_module,
-        canonical_slug=x_thm,
-    )
-    if new_text == s_text:
-        return False
+        # S's body isn't a fresh `:= by sorry` stub. Two cases (task #11
+        # crash-window audit, B1):
+        #   1. The file already IS this revival's own alias — the exact
+        #      delegation + import `build_alias_content` emits for THIS
+        #      canonical. That is our own half-write: a prior revival
+        #      crashed between the file write and the proved flip, and the
+        #      old blanket refusal turned the crash window into a PERMANENT
+        #      wedge (goal stuck shelved, parent strategy never ready, the
+        #      revival re-scanned and re-refused every tick). Resume
+        #      idempotently: skip the (identical) rewrite and fall through
+        #      to the same build-verify + flip every fresh revival runs —
+        #      the soundness gates are unchanged.
+        #   2. Anything else (manual edit, partial proof, already
+        #      promoted): refuse to overwrite arbitrary content; the link
+        #      stays so an operator can inspect.
+        is_own_alias = (
+            f"import {x_module}" in s_text
+            and f":= by apply {x_thm} <;> assumption" in s_text
+        )
+        if not is_own_alias:
+            return False
+        print(f"[verify] shelved-revival g{shelved_id} ← g{canonical_id}: "
+              f"file already carries this revival's alias (crashed prior "
+              f"attempt) — resuming build-verify + flip", flush=True)
+        new_text = s_text
+    else:
+        new_text = _dedupe.build_alias_content(
+            original_content=s_text,
+            canonical_module=x_module,
+            canonical_slug=x_thm,
+        )
+        if new_text == s_text:
+            return False
     try:
         # Through the chokepoint: atomic (torn-write-safe) + ownership-guarded.
         # S owns its own lean_path so the guard passes by construction; a

@@ -1636,17 +1636,24 @@ def cmd_reject_ingest(args: argparse.Namespace) -> int:
 
 
 def cmd_drift_check(args: argparse.Namespace) -> int:
-    """DB<->file consistency gate (`proof_store.inventory`) — the single oracle
-    for the drift class the proof_store chokepoint prevents: orphan proof files
-    (no DB row), missing files (a goal past 'open' whose file is gone), and
-    proved-with-sorry (a `status='proved'` goal whose file carries a `sorry`).
-    Exit 0 if consistent, 1 on any drift. `--scope` limits to a problem (LIKE)."""
-    from ..state import proof_store
+    """Consistency gate, two layers (run with the daemon STOPPED — a
+    mid-tick snapshot can transiently trip the tree predicates):
+      1. DB<->file (`proof_store.inventory`): orphan proof files, missing
+         files, proved-with-sorry.
+      2. Tree-level DB (`consistency.consistency_sweep`, task #11): the
+         crash-window audit's predicates — interrupted-cascade leftovers
+         no single-row reconciler sees (succeeded strategy under an
+         unproved goal, live strategy under a terminal goal, unreachable
+         alive goals, pending revivals).
+    Exit 0 if consistent, 1 on any finding. `--scope` limits (LIKE)."""
+    from ..state import consistency, proof_store
     workspace = Path.cwd()
     conn = db.connect()
     try:
         rep = proof_store.inventory(
             conn, workspace, scope=getattr(args, "scope", None))
+        sweep = consistency.consistency_sweep(
+            conn, scope=getattr(args, "scope", None))
     finally:
         conn.close()
     for rel in rep.orphan_files:
@@ -1655,8 +1662,16 @@ def cmd_drift_check(args: argparse.Namespace) -> int:
         print(f"  [FAIL] missing proof file (row past 'open'): {rel}")
     for rel in rep.proved_with_sorry:
         print(f"  [FAIL] proved goal's file carries `sorry`: {rel}")
-    print(f"  [{'  OK' if rep.ok() else 'FAIL'}] {rep.summary()}")
-    return 0 if rep.ok() else 1
+    sweep_bad = 0
+    for cat, rows in sweep.items():
+        for r in rows:
+            sweep_bad += 1
+            print(f"  [FAIL] {cat}: {r}")
+    ok = rep.ok() and sweep_bad == 0
+    print(f"  [{'  OK' if ok else 'FAIL'}] {rep.summary()}"
+          + (f"; tree sweep: {sweep_bad} finding(s)" if sweep_bad
+             else "; tree sweep clean"))
+    return 0 if ok else 1
 
 
 def cmd_logs(args: argparse.Namespace) -> int:

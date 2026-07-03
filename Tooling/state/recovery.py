@@ -219,6 +219,15 @@ def recover_at_startup(conn: sqlite3.Connection,
         orphans_swept, orphans_kept_cited = sweep_orphan_proof_files(
             conn, workspace, scope=scope)
 
+    # Interrupted-cascade repair (task #11 crash-window audit): a live
+    # `proposed` strategy under a hard-terminal goal is a cascade that died
+    # between the goal flip and the sibling sweep (windows A3/F3/F4) — the
+    # completed-cascade outcome is unambiguous (proved parent → superseded;
+    # killed parent → dead), so finish the walk here. Per-row through the
+    # checked mutator so the inject-outcome hook fires (D6 lesson).
+    from . import consistency as _consistency
+    _consistency.repair_unambiguous(conn)
+
     if (queue_cleared or inject_reenqueued or strategies_killed
             or goals_reopened or goals_attempting_fixup
             or attempts_cleared or attempts_live_skipped
