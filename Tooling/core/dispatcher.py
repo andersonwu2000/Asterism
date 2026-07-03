@@ -1419,6 +1419,18 @@ def run(workspace: Path, *, once: bool = False,
     from ..lsp import lifecycle as gateway_lifecycle
     gateway_lifecycle.start_gateway(workspace)
 
+    # Framework⇄Lean contract gate (task #12): when the toolchain
+    # fingerprint (lean-toolchain + lake-manifest) changed since the last
+    # recorded pass, run the interface-contract suite once on the freshly
+    # warmed gateway — a red contract means every proving spawn would be
+    # burning budget against a broken probe/parser, so refuse to start.
+    # Unchanged fingerprint = zero cost. Mechanism, not discipline: the
+    # toolchain cannot change without the suite running once.
+    from ..quality import lean_contracts
+    if not lean_contracts.check_on_startup(workspace):
+        _exit_pool_fast(pool)
+        return 2
+
     # Periodic TREE.md refresh targets. A `--scope X` run only mutates
     # in-scope problems, so refreshing all ~281 problems' trees every tick
     # is pure churn — and with idx_strategies_goal_id the render dropped to
