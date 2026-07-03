@@ -41,6 +41,7 @@ import subprocess
 from pathlib import Path
 
 from . import db
+from . import proof_store
 
 
 def _attempt_owner_alive(attempt_dir: Path) -> bool:
@@ -354,11 +355,24 @@ def sweep_orphan_proof_files(conn: sqlite3.Connection, workspace: Path, *,
                       f"A fake-proof has propagated; needs explicit repair "
                       f"(reopen the importer chain).", flush=True)
                 continue
+            # Route through the proof_store chokepoint (not a raw `f.unlink`)
+            # so EVERY proofs/ deletion is centralized + ownership-guarded +
+            # lint-visible (2026-07-03). owner_goal_id=None: this is an orphan
+            # (no DB row per the `known` filter above). `assert_writable`
+            # double-checks no goal owns it — if the `known` set was stale and
+            # the file IS owned, `ClobberError` fires and we SKIP the delete
+            # rather than sweep a committed proof (the failed-cleanup-deletes-
+            # a-committed-stub drift this chokepoint exists to prevent).
             try:
-                f.unlink()
+                proof_store.remove_proof(
+                    conn, workspace, rel_path=rel, owner_goal_id=None)
                 deleted += 1
                 print(f"[recovery] swept orphan proof file (no DB row, "
                       f"uncited): {rel}", flush=True)
+            except proof_store.ClobberError:
+                print(f"[recovery] orphan-sweep SKIPPED {rel}: a goal owns it "
+                      f"after all (stale known-set) — not deleting a committed "
+                      f"proof", flush=True)
             except OSError:
                 pass
     return deleted, kept_cited
