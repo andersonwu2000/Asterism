@@ -126,9 +126,14 @@ def _demote_to_hole(chunk: str, target_module: str) -> "str | None":
 
 def _merge_header(header: str, extra_imports: "set[str]") -> str:
     """Fold `extra_imports` into a `_MechAssembly.header` (imports Mathlib-first,
-    then a blank line, then `open`s), de-duplicating."""
+    a blank line, any hoisted `universe`s, a blank line, then `open`s),
+    de-duplicating. `universe` lines MUST be carried through — dropping them
+    reintroduces the `unknown universe`/`already declared` breakage the merge's
+    hoist fixed (they'd survive the 0-hole `_reassemble` path but vanish on the
+    seed/stage paths that route through here)."""
     lines = header.splitlines()
     imports = {l for l in lines if l.startswith("import ")}
+    universes = [l for l in lines if l.startswith("universe ")]
     opens = [l for l in lines if l.startswith("open ")]
     for e in extra_imports:
         if e.startswith("import "):
@@ -136,6 +141,8 @@ def _merge_header(header: str, extra_imports: "set[str]") -> str:
         elif e.startswith("open ") and e not in opens:
             opens.append(e)
     out = "\n".join(_sorted_import_lines(imports))
+    if universes:
+        out += "\n\n" + "\n".join(sorted(set(universes)))
     if opens:
         out += "\n\n" + "\n".join(sorted(set(opens)))
     return out
@@ -296,6 +303,15 @@ def _mechanical_migrate_file(
         if re.match(r"import\s+Library\.", ln.strip()):
             import_set.add(ln.strip())
     open_set: set[str] = set()
+    # `universe u` declarations, hoisted + dedup'd like imports/opens. A
+    # universe-polymorphic def's source declares `universe u`; merging N such
+    # decls into one file replays N identical `universe u` lines → `a universe
+    # level named 'u' has already been declared` (librarian_migrate_build_
+    # failed, mayer_vietoris 2026-07-03). Unlike set_option/attribute (re-
+    # declaring is a harmless no-op), a repeated `universe` is a hard build
+    # error, so it MUST be deduped. Hoisted to the header (before namespace)
+    # since a universe must be declared before use.
+    universe_set: set[str] = set()
     chunk_by_slug: dict[str, str] = {}
     # slug → namespace block it must emit under. Populated only for Defs decls
     # the operator authored under an explicit (non-scaffolding) namespace, which
@@ -409,6 +425,12 @@ def _mechanical_migrate_file(
             if ln.startswith("import "):
                 import_set.add(ln)
                 continue
+            # Hoist `universe` wherever it sits (file-level OR pulled inside the
+            # namespace by relabel) — checked before the `inside` gate so it is
+            # deduped into the header, not replayed per-chunk inside a body.
+            if ln.startswith("universe "):
+                universe_set.add(ln.strip())
+                continue
             # Hoist FILE-LEVEL opens only; an `open X in` is decl-scoped — leave
             # it in the body (inside the namespace, before the decl it scopes)
             # rather than dangling it above `namespace`.
@@ -471,6 +493,8 @@ def _mechanical_migrate_file(
         kept.extend(lines[k:])
         chunk_by_slug[r["slug"]] = "\n".join(kept).strip("\n")
     header = "\n".join(_sorted_import_lines(import_set))   # Mathlib-first (#42)
+    if universe_set:                                       # after imports, before opens/decls
+        header += "\n\n" + "\n".join(sorted(universe_set))
     if open_set:
         header += "\n\n" + "\n".join(sorted(open_set))
     asm = _MechAssembly(header=header, target_module=target_module,

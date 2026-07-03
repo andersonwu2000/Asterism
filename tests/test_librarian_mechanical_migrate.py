@@ -80,6 +80,31 @@ def test_mechanical_assembles_self_contained_file(conn, tmp_path):
     assert "Problems." not in text
 
 
+def test_mechanical_dedups_universe_declarations(conn, tmp_path):
+    """Two universe-polymorphic decls merged into one file must yield a SINGLE
+    hoisted `universe u`. Each source declares its own `universe u`; replaying
+    both is `a universe level named 'u' has already been declared`
+    (librarian_migrate_build_failed, mayer_vietoris 2026-07-03). #72."""
+    tf = "Library/P/Univ.lean"
+    _seed_classified(conn, "u_a", "True", tf, 0)
+    _seed_classified(conn, "u_b", "True", tf, 1)
+    for slug in ("u_a", "u_b"):
+        _write_proof(tmp_path, slug,
+                     "import Mathlib\n"
+                     "universe u\n"
+                     f"namespace {PNS}\n"
+                     f"def {slug} : Type u := PUnit\n"
+                     f"end {PNS}\n")
+    rows = [r for r in db.library_decls_for(conn, "p")
+            if r["target_file"] == tf and r["lifecycle"] == "classified"]
+    text, holes, _asm = lib._mechanical_migrate_file(
+        conn, problem="p", workspace=tmp_path, target_file=tf,
+        target_module="Library.P.Univ", rows=rows)
+    assert text is not None
+    assert text.count("universe u") == 1                     # deduped, not 2
+    assert text.index("universe u") < text.index("namespace Library.P.Univ")
+
+
 def test_mechanical_header_carries_filedep_imports(conn, tmp_path,
                                                    monkeypatch):
     # A decl can cite a cross-file sibling transitively (no explicit
