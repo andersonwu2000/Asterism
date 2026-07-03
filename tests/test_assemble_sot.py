@@ -50,3 +50,65 @@ def test_import_injection_identical_both_sides(tmp_path: Path) -> None:
         assert via_commit == via_validate
         assert via_commit == assemble.ensure_framework_imports(
             content, problem="p", workspace=tmp_path)
+
+
+# ---------------------------------------------------------------------
+# assemble_for_commit (Step B) — one normalization rule for every commit
+# path: framework imports + Defs opens + carried patch opens + proved-
+# sibling imports, all idempotent.
+# ---------------------------------------------------------------------
+
+def _mk_problem(tmp_path: Path, defs: str = "def marker : Nat := 0\n"):
+    (tmp_path / "Problems" / "p").mkdir(parents=True)
+    (tmp_path / "Problems" / "p" / "Defs.lean").write_text(
+        defs, encoding="utf-8")
+
+
+def test_assemble_for_commit_carries_patch_opens(tmp_path: Path) -> None:
+    _mk_problem(tmp_path)
+    patch = ("import Mathlib\nopen scoped Topology\nopen MeasureTheory\n"
+             "theorem s1 : True := by sorry\n")
+    opens = assemble.harvest_open_lines(patch)
+    assert opens == ["open scoped Topology", "open MeasureTheory"]
+    stub = "theorem sub : True := by sorry\n"
+    a = assemble.assemble_for_commit(
+        stub, problem="p", workspace=tmp_path, carry_opens=opens)
+    assert "open scoped Topology" in a.text
+    assert "open MeasureTheory" in a.text
+    assert a.text.index("import Mathlib") < a.text.index("open scoped")
+    # idempotent: re-assembling the output is a no-op
+    again = assemble.assemble_for_commit(
+        a.text, problem="p", workspace=tmp_path, carry_opens=opens)
+    assert again.text == a.text
+
+
+def test_assemble_for_commit_injects_proved_sibling_import(tmp_path) -> None:
+    import sqlite3
+    from Tooling.state import db
+    _mk_problem(tmp_path)
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, manifest_path, created_at) "
+                 "VALUES ('p','',datetime('now'))")
+    g = db.insert_goal(conn, problem="p", slug="helper_lemma",
+                       lean_path="Problems/p/proofs/L_helper_lemma.lean",
+                       statement="True", origin="backward", kind="theorem")
+    conn.execute("UPDATE goals SET status='proved' WHERE id=?", (g,))
+    conn.commit()
+    body = "theorem t : True := helper_lemma trivial\n"
+    a = assemble.assemble_for_commit(
+        body, problem="p", workspace=tmp_path, conn=conn)
+    assert "import Problems.p.proofs.L_helper_lemma" in a.text
+    assert a.injected_sibling_imports == ["helper_lemma"]
+    # declared slugs excluded (a batch's own new sub-goals)
+    b = assemble.assemble_for_commit(
+        body, problem="p", workspace=tmp_path, conn=conn,
+        declared_slugs={"helper_lemma"})
+    assert "import Problems.p.proofs.L_helper_lemma" not in b.text
+
+
+def test_harvest_open_lines_skips_scoped_in_form() -> None:
+    text = "open Foo in\ntheorem t : True := trivial\nopen Bar\n"
+    assert assemble.harvest_open_lines(text) == ["open Bar"]

@@ -44,39 +44,36 @@ from ..state import assemble, db, proof_store, transitions
 
 def _auto_prepend_candidate_imports(
     src: Path, *, problem: str, workspace: Path,
+    conn: "sqlite3.Connection | None" = None,
 ) -> str:
-    """Mutate the agent's `new_*.lean` candidate on disk to add
-    `import Mathlib` + `import Problems.<problem>.Defs` + any Defs-level
-    `open ...` clauses if missing, then return the enriched content.
+    """Mutate the agent's `new_*.lean` candidate on disk through the
+    unified commit normalization (`assemble_for_commit` — framework
+    imports + Defs opens + proved-sibling imports), then return the
+    enriched content.
 
     `forward.md` tells the agent NOT to write imports ("Framework
     auto-prepends..."), because the MCP `validate_file` tool the agent
-    uses during candidate work auto-prepends via `_ensure_imports`.
-    But the framework's commit-side `verify_file` (lifecycle.py) and
-    `commit_forward_lemma` (this module) both read the file from disk
-    as-is. Without this mutation, agents who follow the prompt
-    literally write bare statements like `theorem foo (a b : ℝ) :
-    a - b = ...`, verify_file sees no Mathlib, and Lean fails with
-    `HSub ℝ ℝ ?m.34` instance-resolution errors — observed SG
-    2026-05-18, 9/9 Forward attempts dead on the same error, Strategist
-    ConfirmShelve'd root after reading three batches of
-    `forward_no_new_goal`.
+    uses during candidate work auto-prepends the same way. Without this
+    mutation, agents who follow the prompt literally write bare
+    statements, verify sees no Mathlib, and Lean fails with instance-
+    resolution errors — observed SG 2026-05-18, 9/9 Forward attempts
+    dead on the same error.
 
-    Mirrors `Tooling.pipeline.backward._ensure_imports_subgoal` +
-    `Tooling.state.manifest.inject_defs_opens`. Idempotent.
+    Step B behavior change: Forward now also gets proved-sibling import
+    injection (`conn` given) — previously Builder/Backward-only, so a
+    Forward brick citing a proved sibling by name died `unknown
+    identifier` where the other pipelines auto-fixed it. Idempotent.
     """
-    from .backward import _ensure_imports_subgoal
-    from ..state import manifest as _mfst
     body = src.read_text(encoding="utf-8")
-    enriched = _ensure_imports_subgoal(
-        body, problem=problem, workspace=workspace,
-    )
-    enriched = _mfst.inject_defs_opens(
-        enriched, problem=problem, workspace=workspace,
-    )
-    if enriched != body:
-        src.write_text(enriched, encoding="utf-8")
-    return enriched
+    a = assemble.assemble_for_commit(
+        body, problem=problem, workspace=workspace, conn=conn)
+    if a.injected_sibling_imports:
+        print(f"[cite] forward auto-imported "
+              f"{len(a.injected_sibling_imports)} proved sibling(s): "
+              f"{', '.join(a.injected_sibling_imports)}", flush=True)
+    if a.text != body:
+        src.write_text(a.text, encoding="utf-8")
+    return a.text
 
 
 def _forward_seed_scaffold(*, problem: str, workspace: Path) -> str:
@@ -712,7 +709,7 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
         # `_auto_prepend_candidate_imports` for the SG 2026-05-18
         # incident detail.
         body = _auto_prepend_candidate_imports(
-            src, problem=problem, workspace=workspace,
+            src, problem=problem, workspace=workspace, conn=conn,
         )
 
         # LSP type-check the candidate. A sorry-bearing body passes if

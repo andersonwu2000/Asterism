@@ -26,10 +26,9 @@ from pathlib import Path
 from .. import agent
 from ..agent import context
 from . import _presearch
-from ..state import db, manifest, proof_store
+from ..state import assemble, db, manifest, proof_store
 from ..quality import diagnostics
-from ._cite_gate import (_resolve_cite_dependencies,
-                         inject_missing_sibling_imports)
+from ._cite_gate import _resolve_cite_dependencies
 
 
 def run_builder(conn: sqlite3.Connection, *, goal_id: int,
@@ -271,14 +270,22 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             )
         patch = patches[0]
         patch_text = patch.read_text(encoding="utf-8")
-        # Forgiving auto-fix: import proved siblings referenced but not imported
-        # (Builder is leaf — no declared subs). Write the patch back so the
-        # cite-gate + the commit copy (which re-reads the file) both see it.
-        patch_text, _added_imp = inject_missing_sibling_imports(
-            conn, problem=goal["problem"], patch_text=patch_text,
-            declared_slugs=set(), workspace=workspace)
-        if _added_imp:
+        # Unified commit normalization (task #5 Step B): framework imports
+        # (no-op on the seeded skeleton) + Defs opens + proved-sibling
+        # imports, in ONE place — the same `assemble_for_commit` every
+        # commit path runs, so validate and commit can't disagree on the
+        # transforms. Write the patch back so the cite-gate + the commit
+        # copy (which re-reads the file) both see it.
+        _asm = assemble.assemble_for_commit(
+            patch_text, problem=goal["problem"], workspace=workspace,
+            conn=conn)
+        if _asm.text != patch_text:
+            patch_text = _asm.text
             patch.write_text(patch_text, encoding="utf-8")
+        if _asm.injected_sibling_imports:
+            print(f"[cite] auto-imported "
+                  f"{len(_asm.injected_sibling_imports)} proved sibling(s): "
+                  f"{', '.join(_asm.injected_sibling_imports)}", flush=True)
 
         # Phase 6 single-output: agent's metadata lives in patch.lean's
         # leading comment block. The `-- decline: <directive>` directive
@@ -341,14 +348,10 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # goal_lean and verify; on any failure below, restore goal_lean
         # from `goal_lean_original`. The commit window is the few
         # hundred ms between this copy and the post-verify decision.
-        # Inject any Defs.lean opens the agent forgot to replay (see
-        # state/manifest.py:inject_defs_opens).
-        _commit_goal_lean(
-            manifest.inject_defs_opens(
-                patch.read_text(encoding="utf-8"),
-                problem=goal["problem"], workspace=workspace,
-            ),
-        )
+        # Defs opens were already injected by the assemble_for_commit
+        # normalization above (written back into the patch), so the commit
+        # copy is byte-identical to what the gates saw.
+        _commit_goal_lean(patch.read_text(encoding="utf-8"))
         promote_done = True
         # Verify-unification (see docs/archive/verify_unification.md):
         # one /verify round trip elaborates the patch in a warm worker,

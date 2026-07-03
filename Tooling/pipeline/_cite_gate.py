@@ -53,35 +53,13 @@ def inject_missing_sibling_imports(
     conn: sqlite3.Connection, *, problem: str, patch_text: str,
     declared_slugs: set[str], workspace: Path,
 ) -> "tuple[str, list[str]]":
-    """Forgiving auto-fix for the common `unknown identifier` death: an agent
-    references a PROVED same-problem sibling's decl name but forgets its
-    `import Problems.<problem>.proofs.L_<slug>` line (backward.md:123). Add the
-    import for every proved sibling whose name appears in `patch_text` but isn't
-    already imported. Same-problem only — cross-problem nodes are not citable, so
-    this never widens the whitelist. Returns (new_text, added_slugs)."""
-    proved = {
-        r["slug"] for r in conn.execute(
-            "SELECT slug FROM goals WHERE problem = ? AND status = 'proved'"
-            " AND alias_target_id IS NULL", (problem,))
-    } - declared_slugs
-    if not proved:
-        return patch_text, []
-    already = set(re.findall(
-        r"(?m)^\s*import\s+Problems\." + re.escape(problem)
-        + r"\.proofs\.L_([a-z][a-z0-9_]*)\s*$", patch_text))
-    add = sorted(
-        s for s in proved
-        if s not in already
-        and re.search(r"\b" + re.escape(s) + r"\b", patch_text))
-    if not add:
-        return patch_text, []
-    lines = patch_text.splitlines()
-    last_imp = max((i for i, ln in enumerate(lines)
-                    if ln.startswith("import ")), default=-1)
-    lines[last_imp + 1:last_imp + 1] = [
-        f"import Problems.{problem}.proofs.L_{s}" for s in add]
-    new_text = "\n".join(lines) + ("\n" if patch_text.endswith("\n") else "")
-    return new_text, add
+    """Single impl in `state.assemble.inject_sibling_imports` (task #5 Step
+    B — one normalization rule for every commit path). Kept under the
+    historical name/signature for existing call sites and tests;
+    `workspace` was never used by the logic."""
+    from ..state import assemble
+    return assemble.inject_sibling_imports(
+        conn, patch_text, problem=problem, declared_slugs=declared_slugs)
 
 
 def _resolve_cite_dependencies(

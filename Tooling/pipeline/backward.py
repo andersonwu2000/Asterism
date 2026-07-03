@@ -41,12 +41,12 @@ from pathlib import Path
 
 from .. import agent
 from ..agent import context
-from ..state import db, manifest, proof_store, transitions
+from ..state import assemble, db, manifest, proof_store, transitions
 from ..quality import dedupe, diagnostics
 from . import _axiom
 from . import _presearch
 from ._cite_gate import (_PROBLEM_IMPORT_RE, _resolve_cite_dependencies,
-                         inject_missing_sibling_imports)
+                         inject_missing_sibling_imports)  # noqa: F401 — re-export (tests)
 
 
 # Sub-goal slug pattern: lowercase letter start, then lowercase letters,
@@ -1353,13 +1353,26 @@ def _backward_parse_and_commit(
         # content for novel sub-goals. By this point any disproved-kind
         # and no_progress-kind match has aborted via the early-returns
         # above, so a non-None `match` is guaranteed kind="alias".
+        # Sub-goal stub normalization (unified assemble, task #5 Step B).
+        # carry_opens: the strategy patch's own file-scope opens — validate's
+        # compilation unit ALWAYS elaborated the stubs under these, but the
+        # committed files never carried them, so a statement using the
+        # patch's `open scoped …` notation was validate-green / lake-red
+        # (the backward_subgoal_needs_own_open_scoped trap class). conn +
+        # declared_slugs: proved-sibling imports for stub STATEMENTS that
+        # reference a harvested def / proved sibling (the framework only
+        # auto-imported those into the strategy file, another commit-only
+        # asymmetry — backward_subgoal_stmt_needs_harvested_def_imports).
+        _batch_slugs = {slug for slug, _ in sub_meta}
+        _patch_opens = assemble.harvest_open_lines(main_patch_text)
+
         def _novel_content(raw: str) -> str:
-            """Sub-goal placed for normal dispatch: base imports + Defs
-            opens injected so it elaborates standalone."""
-            c = _ensure_imports_subgoal(
-                raw, problem=goal["problem"], workspace=workspace)
-            return manifest.inject_defs_opens(
-                c, problem=goal["problem"], workspace=workspace)
+            """Sub-goal placed for normal dispatch — elaborates standalone
+            under the SAME imports/opens validate's unit gave it."""
+            return assemble.assemble_for_commit(
+                raw, problem=goal["problem"], workspace=workspace,
+                conn=conn, declared_slugs=_batch_slugs,
+                carry_opens=_patch_opens).text
 
         for idx, ((slug, src), (_, dest), match) in enumerate(zip(
             sub_meta, sub_dests, canonical_for,
@@ -1448,18 +1461,6 @@ def _backward_parse_and_commit(
         _place_unowned(
             conn, workspace, scratch_dest,
             patches[0].read_text(encoding="utf-8"))
-        # Inject Defs.lean opens into the strategy patch as well — the
-        # patch carries the strategy body (which may reference `π` /
-        # `Real.sin` etc. via Defs's shared notation) and must replay
-        # opens for the same reason every other agent-authored file
-        # does. See state/manifest.py:inject_defs_opens docstring.
-        _place_unowned(
-            conn, workspace, scratch_dest,
-            manifest.inject_defs_opens(
-                scratch_dest.read_text(encoding="utf-8"),
-                problem=goal["problem"], workspace=workspace,
-            ),
-        )
         placed.append(scratch_dest)
 
         # #2 — rewrite reuse sub-goals into citations of their twin (swap
@@ -1491,18 +1492,24 @@ def _backward_parse_and_commit(
         # Run after `_inject_imports_for_subs` so framework-injected
         # imports for declared sub-goals don't false-trigger.
         declared_slugs = {slug for slug, _ in sub_meta}
-        # Forgiving auto-fix: import proved siblings the agent referenced but
-        # forgot to import (same-problem only, declared subs excluded), so a
-        # forgotten `import` doesn't `unknown identifier`-fail the build. Rewrite
-        # the scratch patch before the cite-gate + build see it.
-        scratch_text = scratch_dest.read_text(encoding="utf-8")
-        scratch_text, _added_imp = inject_missing_sibling_imports(
-            conn, problem=goal["problem"], patch_text=scratch_text,
-            declared_slugs=declared_slugs, workspace=workspace)
-        if _added_imp:
+        # Unified commit normalization for the strategy scratch (task #5
+        # Step B): Defs opens (formerly injected right at placement — every
+        # transform is idempotent and content-independent, so running once
+        # here, AFTER the reuse rewrites + sub-goal imports, is equivalent)
+        # + proved-sibling imports, via the same assemble_for_commit every
+        # other commit path runs. Rewrite the scratch before the cite-gate
+        # + build see it.
+        _asm = assemble.assemble_for_commit(
+            scratch_dest.read_text(encoding="utf-8"),
+            problem=goal["problem"], workspace=workspace,
+            conn=conn, declared_slugs=declared_slugs)
+        scratch_text = _asm.text
+        if _asm.injected_sibling_imports:
+            print(f"[cite] auto-imported "
+                  f"{len(_asm.injected_sibling_imports)} proved sibling(s): "
+                  f"{', '.join(_asm.injected_sibling_imports)}", flush=True)
+        if scratch_text != scratch_dest.read_text(encoding="utf-8"):
             _place_unowned(conn, workspace, scratch_dest, scratch_text)
-            print(f"[cite] auto-imported {len(_added_imp)} proved sibling(s): "
-                  f"{', '.join(_added_imp)}", flush=True)
         auto_link_ids, revive_ids, cite_err = _resolve_cite_dependencies(
             conn, problem=goal["problem"], patch_text=scratch_text,
             declared_slugs=declared_slugs, allow_auto_link=True,

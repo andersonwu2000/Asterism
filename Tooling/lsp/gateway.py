@@ -835,19 +835,12 @@ def _toposort_siblings(
 
 
 def _harvest_open_lines(text: str) -> "list[str]":
-    """Every file-scope `open ...` line in `text`, verbatim (excludes the
-    scope-limited `open X in <decl>` form). Carries the agent's working-patch
-    opens into validate_file's compilation unit so a probed sub-goal stub
-    elaborates against the SAME open namespaces the committed file will —
-    `manifest.defs_opens` alone only has Defs.lean's opens, not the goal's
-    own (`open MeasureTheory` / `open scoped Topology` / `open Library.*`),
-    which is the most-reported validate≠commit friction (#8 / P2 gap c)."""
-    out: "list[str]" = []
-    for ln in text.splitlines():
-        s = ln.strip()
-        if s.startswith("open ") and not re.search(r"\bin\b\s*$", s):
-            out.append(s)
-    return out
+    """Single impl in `state.assemble.harvest_open_lines` (task #5 Step B).
+    Carries the agent's working-patch opens into validate_file's compilation
+    unit so a probed sub-goal stub elaborates against the SAME open
+    namespaces the committed file will — and since Step B the commit side
+    carries them too (`assemble_for_commit(carry_opens=…)`)."""
+    return assemble.harvest_open_lines(text)
 
 
 def _merge_opens(content: str, defs_opens: "list[str]",
