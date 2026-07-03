@@ -83,7 +83,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                        ) -> "PipelineResult":  # noqa: F821
     from . import (
         PipelineResult, PROMPT_DIR,
-        _attempt_postmortem, _extract_decline_reason,
+        _extract_decline_reason,
         _extract_leading_comments, _grep_forbidden, _is_sorry_stub,
         _parse_hint_winner, _replace_proof_body,
         _safe_glob,
@@ -386,48 +386,13 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # separately.
         return PipelineResult(outcome="proved", proposal_md=leading)
 
-    def builder_postmortem(sid: str) -> None:
-        _attempt_postmortem(
-            kind="builder",
-            prompt_path=PROMPT_DIR / "builder_postmortem.md",
-            problem_dir=problem_dir,
-            attempts_dir=attempts_dir,
-            session_id=sid,
-        )
-
-    def builder_reflection(sid: str, result) -> None:
-        from ._reflection import attempt_reflection, _reflection_enabled
-        if not _reflection_enabled(workspace):
-            return
-        attempt_reflection(
-            kind="builder",
-            sid=sid,
-            slug=goal["slug"],
-            outcome=(result.failure_reason
-                     if result.failure_reason
-                     else result.outcome),
-            goal_id=int(goal["id"]),
-            problem=str(goal["problem"]),
-            problem_dir=problem_dir,
-            attempts_dir=attempts_dir,
-            prompt_dir=PROMPT_DIR,
-            workspace=workspace,
-        )
-
-    def builder_feedback(sid: str, result) -> None:
-        from . import _feedback
-        _feedback.attempt_feedback(
-            kind="builder", sid=sid, slug=goal["slug"],
-            outcome=(result.failure_reason or result.outcome),
-            problem_dir=problem_dir, attempts_dir=attempts_dir,
-            workspace=workspace)
-
-    def builder_death(result) -> None:
-        from . import _feedback
-        _feedback.record_death(
-            workspace, kind="builder", slug=goal["slug"],
-            problem=problem_dir.name,
-            reason=result.failure_reason or result.outcome)
+    from ._hooks import make_goal_hooks
+    (builder_postmortem, builder_reflection,
+     builder_feedback, builder_death) = make_goal_hooks(
+        kind="builder", goal=goal, problem_dir=problem_dir,
+        attempts_dir=attempts_dir, prompt_dir=PROMPT_DIR,
+        workspace=workspace,
+        postmortem_prompt=PROMPT_DIR / "builder_postmortem.md")
 
     # No SpawnWorkspace — agent writes are confined to attempts_dir
     # (patch.lean is the MCP apply_edit target), and goal_lean is

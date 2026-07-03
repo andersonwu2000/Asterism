@@ -455,16 +455,15 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     """
     from . import (
         PipelineResult, PROMPT_DIR,
-        _attempt_postmortem, _build_strategy_skeleton,
+        _build_strategy_skeleton,
         _extract_decline_reason, _extract_leading_comments,
         _extract_statement_from_lean, _grep_forbidden,
         _inject_imports_for_subs, _is_sorry_stub,
         _lean_path_to_module, _normalize_signature,
         _safe_glob, _signature_prefix, _slug_from_filename,
-        _write_mcp_config,
         DECLINE_TO_FAILURE_REASON,
     )
-    from ._retry import SpawnCtx, run_with_session_retries
+    from ._retry import SpawnCtx, run_lsp_edit_loop
     from ..core import dispatcher  # late: SHELVE_THRESHOLD live value
 
     goal = db.get_goal(conn, goal_id)
@@ -551,7 +550,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     # with apply_edit no longer targeting goal_lean, neither snapshot
     # nor restore is needed.
 
-    def backward_spawn(ctx: SpawnCtx) -> int:
+    def backward_cold_prep(ctx: SpawnCtx) -> None:
         # Cold start (and fresh-rescue, which is also cold-with-fresh-
         # sid): agent has no session memory to resume. Compile
         # Context.md fresh and write the strategy skeleton so the agent's
@@ -560,49 +559,22 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         # already written `_prior_analysis.md` to attempts_dir; the
         # cold prompt's `is_fresh_rescue` flag injects a Read directive
         # so the agent consumes it before any other action.
-        # Warm: skip both — agent's --resume picks up Context from
-        # prior turn, and patch.lean keeps whatever the agent wrote
-        # last iteration so retry_context-driven fixes can be
-        # incremental.
-        patch_lean = ctx.attempts_dir / "patch.lean"
-        if ctx.cold:
-            # target-1: per-node pre-search (once per node, cached) before the
-            # context is compiled, so its candidate-lemma section is present.
-            _presearch.ensure_presearch(
-                goal=goal, workspace=workspace, problem_dir=problem_dir,
-                attempts_dir=ctx.attempts_dir, prompt_dir=PROMPT_DIR)
-            context.compile_context(conn, goal=goal, mfst=mfst,
-                                  attempts_dir=ctx.attempts_dir,
-                                  strategy_id=strategy_id,
-                                  kind="backward",
-                                  decision_id=decision_id)
-            patch_lean.write_text(skeleton, encoding="utf-8")
-
-        # Register a gateway session so claude's MCP tools operate on
-        # patch.lean (in attempts_dir/) via the shared worker pool.
-        # The skeleton already includes `import Mathlib` etc., so LSP
-        # elaborates it standalone in the worker slot.
-        mcp_config_path = _write_mcp_config(
-            attempts_dir=ctx.attempts_dir,
-            workspace=workspace,
-            target=patch_lean,
-            pipeline_id=pipeline_id,
-            problem=goal["problem"],
-        )
-
-        return agent.spawn_llm(
-            kind="backward",
-            prompt_path=PROMPT_DIR / "backward.md",
-            problem_dir=problem_dir,
-            attempts_dir=ctx.attempts_dir,
-            session_id=ctx.sid,
-            is_retry=not ctx.cold,
-            retry_context=ctx.retry_context,
-            retry_reason=ctx.retry_reason,
-            mcp_config_path=mcp_config_path,
-            inline_prompt=ctx.inline_prompt,
-            timeout_sec_override=ctx.budget_override,
-        )
+        # Warm retries skip this (run_lsp_edit_loop calls it cold-only) —
+        # agent's --resume picks up Context from the prior turn, and
+        # patch.lean keeps whatever the agent wrote last iteration so
+        # retry_context-driven fixes can be incremental.
+        # target-1: per-node pre-search (once per node, cached) before the
+        # context is compiled, so its candidate-lemma section is present.
+        _presearch.ensure_presearch(
+            goal=goal, workspace=workspace, problem_dir=problem_dir,
+            attempts_dir=ctx.attempts_dir, prompt_dir=PROMPT_DIR)
+        context.compile_context(conn, goal=goal, mfst=mfst,
+                              attempts_dir=ctx.attempts_dir,
+                              strategy_id=strategy_id,
+                              kind="backward",
+                              decision_id=decision_id)
+        (ctx.attempts_dir / "patch.lean").write_text(
+            skeleton, encoding="utf-8")
 
     def backward_parse() -> "PipelineResult":  # noqa: F821
         # No goal_lean restore needed — agent's apply_edit targets
@@ -615,63 +587,15 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             workspace=workspace, attempts_dir=attempts_dir,
             strategy_id=strategy_id, sid_token=sid_token,
             skeleton_signature=skeleton_signature,
-            _abort=_abort,
-            _safe_glob=_safe_glob,
-            _extract_leading_comments=_extract_leading_comments,
-            _extract_decline_reason=_extract_decline_reason,
-            DECLINE_TO_FAILURE_REASON=DECLINE_TO_FAILURE_REASON,
-            _normalize_signature=_normalize_signature,
-            _signature_prefix=_signature_prefix,
-            _is_sorry_stub=_is_sorry_stub,
-            _grep_forbidden=_grep_forbidden,
-            _slug_from_filename=_slug_from_filename,
-            _inject_imports_for_subs=_inject_imports_for_subs,
-            _lean_path_to_module=_lean_path_to_module,
-            _extract_statement_from_lean=_extract_statement_from_lean,
         )
 
-    def backward_postmortem(sid: str) -> None:
-        _attempt_postmortem(
-            kind="backward",
-            prompt_path=PROMPT_DIR / "backward_postmortem.md",
-            problem_dir=problem_dir,
-            attempts_dir=attempts_dir,
-            session_id=sid,
-        )
-
-    def backward_reflection(sid: str, result) -> None:
-        from ._reflection import attempt_reflection, _reflection_enabled
-        if not _reflection_enabled(workspace):
-            return
-        attempt_reflection(
-            kind="backward",
-            sid=sid,
-            slug=goal["slug"],
-            outcome=(result.failure_reason
-                     if result.failure_reason
-                     else result.outcome),
-            goal_id=int(goal["id"]),
-            problem=str(goal["problem"]),
-            problem_dir=problem_dir,
-            attempts_dir=attempts_dir,
-            prompt_dir=PROMPT_DIR,
-            workspace=workspace,
-        )
-
-    def backward_feedback(sid: str, result) -> None:
-        from . import _feedback
-        _feedback.attempt_feedback(
-            kind="backward", sid=sid, slug=goal["slug"],
-            outcome=(result.failure_reason or result.outcome),
-            problem_dir=problem_dir, attempts_dir=attempts_dir,
-            workspace=workspace)
-
-    def backward_death(result) -> None:
-        from . import _feedback
-        _feedback.record_death(
-            workspace, kind="backward", slug=goal["slug"],
-            problem=problem_dir.name,
-            reason=result.failure_reason or result.outcome)
+    from ._hooks import make_goal_hooks
+    (backward_postmortem, backward_reflection,
+     backward_feedback, backward_death) = make_goal_hooks(
+        kind="backward", goal=goal, problem_dir=problem_dir,
+        attempts_dir=attempts_dir, prompt_dir=PROMPT_DIR,
+        workspace=workspace,
+        postmortem_prompt=PROMPT_DIR / "backward_postmortem.md")
 
     # No SpawnWorkspace — agent writes are confined to attempts_dir
     # (patch.lean, new_*.lean), which WorkArea manages via the
@@ -690,17 +614,26 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         "gateway_unreachable", "transient_timeout",
     }
     try:
-        result = run_with_session_retries(
+        # Task #8: Backward was the last pipeline hand-rolling the spawn
+        # ceremony (register + mcp-config + spawn_llm closure) that
+        # run_lsp_edit_loop exists to own. Same semantics: cold spawns run
+        # backward_cold_prep, the loop targets attempts_dir/patch.lean.
+        result = run_lsp_edit_loop(
             conn=conn,
             goal_id=goal_id,
             pipeline_id=pipeline_id,
             budget_threshold=dispatcher.SHELVE_THRESHOLD,
             shelve_threshold=dispatcher.SHELVE_THRESHOLD,
             attempts_dir=attempts_dir,
-            spawn_fn=backward_spawn,
+            workspace=workspace,
+            problem=str(goal["problem"]),
+            problem_dir=problem_dir,
+            kind="backward",
+            prompt_path=PROMPT_DIR / "backward.md",
+            target=attempts_dir / "patch.lean",
+            cold_prep_fn=backward_cold_prep,
             parse_fn=backward_parse,
             postmortem_fn=backward_postmortem,
-            workspace=workspace,
             reflection_fn=backward_reflection,
             feedback_fn=backward_feedback,
             death_fn=backward_death,
@@ -765,13 +698,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
 
 def _backward_parse_and_commit(
     *, conn, goal, goal_id, mfst, workspace, attempts_dir,
-    strategy_id, sid_token, skeleton_signature, _abort,
-    _safe_glob, _extract_leading_comments, _extract_decline_reason,
-    DECLINE_TO_FAILURE_REASON,
-    _normalize_signature, _signature_prefix, _is_sorry_stub,
-    _grep_forbidden, _slug_from_filename,
-    _inject_imports_for_subs, _lean_path_to_module,
-    _extract_statement_from_lean,
+    strategy_id, sid_token, skeleton_signature,
 ) -> "PipelineResult":  # noqa: F821
     """Parse + dedupe + place + build + commit pass for one Backward
     spawn. Called by the in-pipeline retry helper after a successful
@@ -782,8 +709,27 @@ def _backward_parse_and_commit(
     Strategy mark-dead cleanup is the OUTER caller's responsibility —
     this function leaves the strategy at 'proposed' even on failure
     so warm retries can run against the same row.
+
+    (Task #8: the former 13-helper dependency-injection signature —
+    an import-avoidance workaround — is gone; the helpers are ordinary
+    package imports below, same objects the caller passed.)
     """
-    from . import PipelineResult
+    from . import (
+        PipelineResult,
+        _extract_decline_reason, _extract_leading_comments,
+        _extract_statement_from_lean, _grep_forbidden,
+        _inject_imports_for_subs, _is_sorry_stub,
+        _lean_path_to_module, _normalize_signature,
+        _safe_glob, _signature_prefix, _slug_from_filename,
+        DECLINE_TO_FAILURE_REASON,
+    )
+
+    def _abort(reason: str, detail: str = "",
+               proposal_md: str = "") -> "PipelineResult":
+        return PipelineResult(
+            outcome="failed", failure_reason=reason,
+            failure_detail=detail, proposal_md=proposal_md,
+        )
 
     # Verify freshly-placed files on THIS pipeline's OWN claimed slot
     # (verify_in_session) rather than borrowing a free slot (verify_file).
