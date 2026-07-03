@@ -19,7 +19,9 @@ _PIPELINE = _REPO / "Tooling" / "pipeline"
 # go through proof_store instead. NOT listed: `new_path` / `new_ns` / `path` /
 # `src` / `target` — those are attempts_dir scratch (`new_*.lean` slug-rename,
 # the agent's working files), which are not DB-tracked proof artifacts.
-_PROOF_VARS = ("dest", "scratch_dest", "goal_lean", "parent_abs")
+# `s_abs` (2026-07-03, task #2): verify.py's G1 revival target — a DB
+# `lean_path`-derived path both heuristics in this file were blind to.
+_PROOF_VARS = ("dest", "scratch_dest", "goal_lean", "parent_abs", "s_abs")
 _RAW_MUT_RE = re.compile(
     r"\b(" + "|".join(_PROOF_VARS) + r")\.(write_text|unlink)\s*\(")
 _SHUTIL_RE = re.compile(r"shutil\.(copy2?|move)\s*\(")
@@ -29,45 +31,58 @@ _SHUTIL_RE = re.compile(r"shutil\.(copy2?|move)\s*\(")
 # proof_store-internal primitive; only proof_store.py may call it directly.
 _BARE_ATOMIC_RE = re.compile(r"\batomic_write\s*\(")
 
-_FILES = ["backward.py", "builder.py", "forward.py"]
+_QUALITY = _REPO / "Tooling" / "quality"
+_FILES = [_PIPELINE / "backward.py", _PIPELINE / "builder.py",
+          _PIPELINE / "forward.py"]
+# 2026-07-03 (task #2): verify.py's G1 revival + prune.py's reconcile wrote
+# DB-owned lean_paths raw (`s_abs`/`parent_abs`.write_text) — invisible to the
+# variable lint (files weren't listed) AND the glob lint below (the paths come
+# from DB rows, not a glob). Both are now routed through place_proof; keeping
+# the files in this list is what makes a regression trip.
+_CHOKEPOINT_FILES = _FILES + [_QUALITY / "verify.py", _QUALITY / "prune.py"]
+# prune.py's loser-archival `_shutil.move` (reversible, operator-invoked
+# `asterism prune`, restore hint printed) is the one documented non-chokepoint
+# move; the write_text/unlink lint still applies to prune.py in full.
+_SHUTIL_EXEMPT = {"prune.py"}
 
 
-@pytest.mark.parametrize("name", _FILES)
-def test_no_raw_proof_mutation_in_pipeline(name) -> None:
-    text = (_PIPELINE / name).read_text(encoding="utf-8")
+@pytest.mark.parametrize("path", _CHOKEPOINT_FILES, ids=lambda p: p.name)
+def test_no_raw_proof_mutation(path) -> None:
+    text = path.read_text(encoding="utf-8")
     offenders = []
     for i, line in enumerate(text.splitlines(), 1):
         code = line.split("#", 1)[0]                 # ignore comments
-        if _RAW_MUT_RE.search(code) or _SHUTIL_RE.search(code):
-            offenders.append(f"{name}:{i}: {line.strip()}")
+        if _RAW_MUT_RE.search(code) or (
+                path.name not in _SHUTIL_EXEMPT and _SHUTIL_RE.search(code)):
+            offenders.append(f"{path.name}:{i}: {line.strip()}")
     assert not offenders, (
         "raw proof-file mutation outside proof_store (route it through "
         "proof_store.place_proof / remove_proof):\n"
         + "\n".join(offenders))
 
 
-@pytest.mark.parametrize("name", _FILES)
-def test_no_bare_atomic_write_in_pipeline(name) -> None:
+@pytest.mark.parametrize("path", _CHOKEPOINT_FILES, ids=lambda p: p.name)
+def test_no_bare_atomic_write(path) -> None:
     """Every proof-file write must carry the ownership guard. `place_proof`
     bundles `assert_writable` + `atomic_write`; a bare `atomic_write` skips the
-    guard. Forbid it in pipeline code so a future write can't silently clobber a
-    different goal's committed file (the gap that left forward.py's primary
-    placement unguarded before this was wired in)."""
-    text = (_PIPELINE / name).read_text(encoding="utf-8")
+    guard. Forbid it in chokepoint-covered code so a future write can't silently
+    clobber a different goal's committed file (the gap that left forward.py's
+    primary placement unguarded before this was wired in)."""
+    text = path.read_text(encoding="utf-8")
     offenders = []
     for i, line in enumerate(text.splitlines(), 1):
         code = line.split("#", 1)[0]                 # ignore comments
         if _BARE_ATOMIC_RE.search(code):
-            offenders.append(f"{name}:{i}: {line.strip()}")
+            offenders.append(f"{path.name}:{i}: {line.strip()}")
     assert not offenders, (
-        "bare atomic_write in pipeline — route through the ownership-guarded "
+        "bare atomic_write — route through the ownership-guarded "
         "proof_store.place_proof instead:\n" + "\n".join(offenders))
 
 
-@pytest.mark.parametrize("name", _FILES)
-def test_pipeline_imports_proof_store(name) -> None:
-    text = (_PIPELINE / name).read_text(encoding="utf-8")
-    assert "proof_store" in text, f"{name} should use state.proof_store"
+@pytest.mark.parametrize("path", _CHOKEPOINT_FILES, ids=lambda p: p.name)
+def test_chokepoint_files_import_proof_store(path) -> None:
+    text = path.read_text(encoding="utf-8")
+    assert "proof_store" in text, f"{path.name} should use state.proof_store"
 
 
 # ---------------------------------------------------------------------

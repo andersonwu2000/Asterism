@@ -37,7 +37,7 @@ import sys
 from pathlib import Path
 from typing import Literal, TYPE_CHECKING
 
-from ..state import db, manifest, transitions, tree
+from ..state import db, manifest, proof_store, transitions, tree
 from ..pipeline._lake import lean_path_to_module
 
 if TYPE_CHECKING:
@@ -317,8 +317,14 @@ def _revive_shelved_alias(
     if new_text == s_text:
         return False
     try:
-        s_abs.write_text(new_text, encoding="utf-8")
-    except OSError:
+        # Through the chokepoint: atomic (torn-write-safe) + ownership-guarded.
+        # S owns its own lean_path so the guard passes by construction; a
+        # ClobberError here means the DB says otherwise — real drift, refuse.
+        proof_store.place_proof(conn, workspace, goal_id=shelved_id,
+                                rel_path=s_row["lean_path"], content=new_text)
+    except (OSError, proof_store.ClobberError) as e:
+        print(f"[verify] shelved-revival g{shelved_id} ← g{canonical_id} "
+              f"write refused: {e}", flush=True)
         return False
     # Build-verify the revived alias before flipping S to 'proved'. Same
     # rationale as the Backward alias-placement site: the dedupe probe
@@ -341,8 +347,10 @@ def _revive_shelved_alias(
               f"REJECTED — build-verify failed ({why[:160]}); "
               f"restoring stub, staying shelved", flush=True)
         try:
-            s_abs.write_text(s_text, encoding="utf-8")
-        except OSError:
+            proof_store.place_proof(conn, workspace, goal_id=shelved_id,
+                                    rel_path=s_row["lean_path"],
+                                    content=s_text)
+        except (OSError, proof_store.ClobberError):
             pass
         return False
     dispatcher._set_goal_terminal_and_propagate(conn, shelved_id, "proved")

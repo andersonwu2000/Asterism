@@ -21,7 +21,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-from ..state import db
+from ..state import db, proof_store
 from .dedupe import leading_decl_attrs
 from ..pipeline._skeleton import leading_decl_modifiers
 
@@ -170,7 +170,17 @@ def reconcile_proved_goals(conn: sqlite3.Connection, workspace: Path,
         )
         if current == expected:
             continue
-        parent_abs.write_text(expected, encoding="utf-8")
+        try:
+            # Through the chokepoint: atomic + ownership-guarded. The goal owns
+            # its own lean_path so the guard passes by construction; a
+            # ClobberError means the DB disagrees — real drift, skip loudly
+            # (the drift inventory will flag it) rather than overwrite.
+            proof_store.place_proof(conn, workspace, goal_id=int(r["gid"]),
+                                    rel_path=r["lean_path"], content=expected)
+        except proof_store.ClobberError as e:
+            print(f"[prune] reconcile refused for {r['lean_path']}: {e}",
+                  flush=True)
+            continue
         repaired.append(parent_abs)
 
     return repaired
