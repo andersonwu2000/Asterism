@@ -44,6 +44,12 @@ PROBLEM_IMPORT_RE = re.compile(
 SLUG_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 SLUG_MAX_LEN = 60
 
+# Bare decl-kind prefix (no anchors/modifiers) — the historical
+# `_skeleton._DECL_HEAD_RE` building block for name-targeted searches
+# (`signature_prefix`, skeleton construction). Distinct from DECL_HEAD_RE
+# below, which is the full anchored head matcher.
+DECL_KIND_RE_SRC = r"\b(theorem|def|structure|class)\s+"
+
 # Declaration head with leading attributes / keyword modifiers. The kind and
 # name groups feed the commit parser AND the gateway's submission mirror.
 DECL_MODIFIERS = r"(?:noncomputable|private|protected|partial|unsafe)"
@@ -92,6 +98,95 @@ def ensure_framework_imports(content: str, *, problem: str,
     if not needed:
         return content
     return "\n".join(needed) + "\n\n" + content
+
+
+# ── locked-signature vocabulary (formerly pipeline/_skeleton.py-only;
+#    moved here so the gateway's submission mirror can run the SAME
+#    comparison the Backward commit gate runs — task #5 D-lite) ──
+
+def signature_prefix(text: str, name: str) -> str:
+    """Return the substring `<kind> <name> <binders> : <type>` (up to
+    but not including `:=`). `<kind>` ∈ {theorem, def, structure,
+    class}. Returns "" if no matching declaration head found.
+
+    Walks balanced paren/brace/bracket depth so a top-level `:=` is
+    distinguished from `:=` inside a binder default value or anonymous
+    constructor literal."""
+    m = re.search(DECL_KIND_RE_SRC + re.escape(name) + r"\b", text)
+    if not m:
+        return ""
+    pos = m.end()
+    n = len(text)
+    depth = 0
+    while pos < n - 1:
+        ch = text[pos]
+        if ch in "({[":
+            depth += 1
+        elif ch in ")}]":
+            depth = max(0, depth - 1)
+        elif depth == 0 and ch == ":" and text[pos + 1] == "=":
+            return text[m.start():pos]
+        pos += 1
+    return text[m.start():]
+
+
+def normalize_signature(s: str) -> str:
+    """Collapse all whitespace runs to single spaces. Lets agents reformat
+    indentation freely without tripping the diff check; only meaningful
+    edits (binder names, types, theorem name) remain detectable."""
+    return re.sub(r"\s+", " ", s).strip()
+
+
+# ── comment stripping + split-visibility prediction (task #5 D-lite) ──
+
+_LINE_COMMENT_RE = re.compile(r"--[^\n]*")
+_BLOCK_COMMENT_RE = re.compile(r"/-.*?-/", re.DOTALL)
+
+
+def strip_comments(text: str) -> str:
+    return _LINE_COMMENT_RE.sub(" ", _BLOCK_COMMENT_RE.sub(" ", text))
+
+
+def split_visibility_issues(
+    stub_texts: "dict[str, str]", *, problem: str,
+) -> "list[dict]":
+    """Predict the post-commit SPLIT failures the single-unit probe cannot
+    see: in the compilation unit every batch stub is inlined into one file,
+    so stub A referencing stub B's name always resolves — but at commit each
+    stub lands as its own module, and the framework only auto-imports PROVED
+    siblings into stubs (never same-batch open stubs; those imports are
+    auto-appended into the STRATEGY file only). So `A references B, A has no
+    hand-written import for B` builds green here and dies `unknown
+    identifier` at lake build — the validate_file_inlines_def_siblings /
+    subgoal_stmt_needs_harvested_def_imports trap class. Pure text
+    prediction: the rule is deterministic, no elaboration needed. The fix
+    the hint prescribes (hand-writing the import) is honored by the
+    framework at commit."""
+    issues: "list[dict]" = []
+    for a_slug, a_text in stub_texts.items():
+        body = strip_comments(a_text)
+        for b_slug in stub_texts:
+            if b_slug == a_slug:
+                continue
+            if not re.search(rf"\b{re.escape(b_slug)}\b", body):
+                continue
+            imp = rf"(?m)^\s*import\s+Problems\.{re.escape(problem)}" \
+                  rf"\.proofs\.L_{re.escape(b_slug)}\s*$"
+            if re.search(imp, a_text):
+                continue                      # agent already wrote the edge
+            issues.append({
+                "file": f"new_{a_slug}.lean",
+                "references": b_slug,
+                "severity": "error",
+                "hint": (f"resolves in this single-unit probe, but after the "
+                         f"commit split `L_{a_slug}.lean` will NOT import "
+                         f"`L_{b_slug}.lean` (the framework only auto-imports "
+                         f"PROVED siblings into stubs) — hand-write `import "
+                         f"Problems.{problem}.proofs.L_{b_slug}` in "
+                         f"new_{a_slug}.lean, or move the reference into the "
+                         f"strategy patch"),
+            })
+    return issues
 
 
 # ── open-line carry (formerly gateway-only `_harvest_open_lines`) ──

@@ -199,3 +199,98 @@ def test_citation_untracked_typo_passes_through(ws: Path):
     # no goal, no file → lake's unknown-identifier covers it, no submission issue
     r = gw._citation_submission(_cite("ghost"), "p", ws, declared=set())
     assert r == {"ok": True, "issues": []}
+
+
+# ---------------------------------------------------------------------
+# D-lite (task #5): deterministic commit-policy predictions the single-
+# unit elaboration structurally cannot surface.
+# ---------------------------------------------------------------------
+
+def test_split_visibility_flags_stub_to_stub_reference(tmp_path):
+    from Tooling.state import assemble
+    stubs = {
+        "iso_inf": "namespace P\ntheorem iso_inf : True := by sorry\nend P\n",
+        "comm_left": ("namespace P\n"
+                      "theorem comm_left : True := iso_inf.elim\n"
+                      "end P\n"),
+    }
+    issues = assemble.split_visibility_issues(stubs, problem="p")
+    assert len(issues) == 1
+    assert issues[0]["file"] == "new_comm_left.lean"
+    assert issues[0]["references"] == "iso_inf"
+    # hand-written import silences it (the framework honors it at commit)
+    stubs["comm_left"] = ("import Problems.p.proofs.L_iso_inf\n"
+                          + stubs["comm_left"])
+    assert assemble.split_visibility_issues(stubs, problem="p") == []
+    # a mention in a comment is not a reference
+    stubs["comm_left"] = ("namespace P\n-- see iso_inf for the idea\n"
+                          "theorem comm_left : True := trivial\nend P\n")
+    assert assemble.split_visibility_issues(stubs, problem="p") == []
+
+
+def test_locked_signature_submission(tmp_path):
+    from Tooling.lsp import gateway
+    att = tmp_path / "att"
+    att.mkdir()
+    locked = "theorem s42 (n : Nat) : n = n"
+    (att / "_locked_signature.txt").write_text(locked, encoding="utf-8")
+    # untouched signature → ok
+    good = "theorem s42 (n : Nat) : n = n := by rfl\n"
+    r = gateway._locked_signature_submission(good, att)
+    assert r == {"checked": True, "ok": True}
+    # edited binder → not ok, carries locked + current
+    bad = "theorem s42 (m : Nat) : m = m := by rfl\n"
+    r = gateway._locked_signature_submission(bad, att)
+    assert r["checked"] and not r["ok"]
+    assert r["locked"] == locked
+    # content that never mentions s42 (a sub-goal stub probe) → None
+    assert gateway._locked_signature_submission(
+        "theorem sub : True := by sorry\n", att) is None
+    # no seed file (non-Backward session) → None
+    (att / "_locked_signature.txt").unlink()
+    assert gateway._locked_signature_submission(good, att) is None
+
+
+def test_stale_olean_submission(tmp_path):
+    import os
+    import time
+    from Tooling.lsp import gateway
+    proofs = tmp_path / "Problems" / "p" / "proofs"
+    proofs.mkdir(parents=True)
+    src = proofs / "L_helper.lean"
+    src.write_text("theorem helper : True := trivial\n", encoding="utf-8")
+    olean = (tmp_path / ".lake" / "build" / "lib" / "lean"
+             / "Problems" / "p" / "proofs" / "L_helper.olean")
+    olean.parent.mkdir(parents=True)
+    content = "import Problems.p.proofs.L_helper\n"
+    # olean missing → stale
+    r = gateway._stale_olean_submission(content, "p", tmp_path)
+    assert not r["ok"] and r["issues"][0]["slug"] == "helper"
+    # olean fresh (newer than source) → ok
+    olean.write_bytes(b"x")
+    now = time.time()
+    os.utime(src, (now - 100, now - 100))
+    os.utime(olean, (now, now))
+    r = gateway._stale_olean_submission(content, "p", tmp_path)
+    assert r["ok"] and r["issues"] == []
+    # olean older than source → stale again
+    os.utime(olean, (now - 200, now - 200))
+    r = gateway._stale_olean_submission(content, "p", tmp_path)
+    assert not r["ok"]
+    # no citations at all → None
+    assert gateway._stale_olean_submission("theorem t : True := trivial\n",
+                                           "p", tmp_path) is None
+
+
+def test_collect_sibling_stubs_transitive(tmp_path):
+    from Tooling.lsp import gateway
+    att = tmp_path / "att"
+    att.mkdir()
+    # content references only `a`; `a` references `b` — fixpoint pulls both
+    (att / "new_a.lean").write_text(
+        "theorem a : True := b.elim\n", encoding="utf-8")
+    (att / "new_b.lean").write_text(
+        "theorem b : True := by sorry\n", encoding="utf-8")
+    content = "theorem s1 : True := a.elim\n"
+    got = gateway._collect_referenced_sibling_stubs(att, content)
+    assert {s for s, _ in got} == {"a", "b"}

@@ -19,8 +19,14 @@ from ..quality.dedupe import leading_decl_attrs
 # whose body is `:= by sorry`-shaped (theorem / def / structure / class).
 # The keyword is captured so `build_strategy_skeleton` can preserve it
 # in the rewritten skeleton; Lean's elaborator picks the same form for
-# the strategy patch as the parent stub.
-_DECL_HEAD_RE = r"\b(theorem|def|structure|class)\s+"
+# the strategy patch as the parent stub. Shared SoT: state.assemble
+# (the gateway's locked-signature submission mirror runs the same
+# comparison — task #5 D-lite).
+from ..state.assemble import (  # noqa: E402
+    DECL_KIND_RE_SRC as _DECL_HEAD_RE,
+    normalize_signature,
+    signature_prefix,
+)
 _DECL_MODIFIERS_RE = r"(?:noncomputable|private|protected|partial|unsafe)"
 
 
@@ -43,33 +49,6 @@ def leading_decl_modifiers(text: str, slug: str) -> str:
     if not m:
         return ""
     return " ".join(m.group(1).split()) + " "
-
-
-def signature_prefix(text: str, name: str) -> str:
-    """Return the substring `<kind> <name> <binders> : <type>` (up to
-    but not including `:=`). `<kind>` ∈ {theorem, def, structure,
-    class}. Returns "" if no matching declaration head found.
-
-    Walks balanced paren/brace/bracket depth so a top-level `:=` is
-    distinguished from `:=` inside a binder default value or anonymous
-    constructor literal.
-    """
-    m = re.search(_DECL_HEAD_RE + re.escape(name) + r"\b", text)
-    if not m:
-        return ""
-    pos = m.end()
-    n = len(text)
-    depth = 0
-    while pos < n - 1:
-        ch = text[pos]
-        if ch in "({[":
-            depth += 1
-        elif ch in ")}]":
-            depth = max(0, depth - 1)
-        elif depth == 0 and ch == ":" and text[pos + 1] == "=":
-            return text[m.start():pos]
-        pos += 1
-    return text[m.start():]
 
 
 def _has_top_level_type_colon(sig: str, name: str) -> bool:
@@ -96,13 +75,6 @@ def _has_top_level_type_colon(sig: str, name: str) -> bool:
             return True
         pos += 1
     return False
-
-
-def normalize_signature(s: str) -> str:
-    """Collapse all whitespace runs to single spaces. Lets agents reformat
-    indentation freely without tripping the diff check; only meaningful
-    edits (binder names, types, theorem name) remain detectable."""
-    return re.sub(r"\s+", " ", s).strip()
 
 
 def build_strategy_skeleton(

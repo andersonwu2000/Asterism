@@ -777,28 +777,43 @@ def _collect_referenced_sibling_stubs(
 ) -> "list[tuple[str, str]]":
     """Sibling `new_<slug>.lean` stubs in `attempts_dir` that `content`
     REFERENCES (uses `<slug>` as an identifier) but does NOT itself
-    declare. Excludes the stub being validated and any already inlined,
-    so validating a standalone stub (which references no sibling) inlines
-    nothing and the common case stays the plain `_ensure_imports` path."""
+    declare — computed to a FIXPOINT: a collected stub's own references
+    pull further stubs in (D-lite: a stub B referenced only by stub A used
+    to be absent from the unit, so A's citation of B silently vanished
+    from the probe instead of resolving or erroring). Excludes the stub
+    being validated and any already inlined, so validating a standalone
+    stub (which references no sibling) inlines nothing and the common case
+    stays the plain `_ensure_imports` path."""
     out: list[tuple[str, str]] = []
     try:
         stubs = sorted(attempts_dir.glob("new_*.lean"))
     except OSError:
         return out
+    texts: "dict[str, str]" = {}
     for stub in stubs:
         slug = stub.stem[len("new_"):]
         if not slug:
             continue
-        if re.search(_DECL_SLUG_RE_TMPL.format(slug=re.escape(slug)),
-                     content):
-            continue  # content declares it (the stub itself / inlined)
-        if not re.search(rf"\b{re.escape(slug)}\b", content):
-            continue  # not referenced — nothing to resolve
         try:
-            out.append((slug, stub.read_text(encoding="utf-8")))
+            texts[slug] = stub.read_text(encoding="utf-8")
         except OSError:
             continue
-    return out
+    collected: "dict[str, str]" = {}
+    frontier = [content]
+    while frontier:
+        scan = frontier.pop()
+        for slug, text in texts.items():
+            if slug in collected:
+                continue
+            if re.search(_DECL_SLUG_RE_TMPL.format(slug=re.escape(slug)),
+                         content):
+                continue  # content declares it (the stub itself / inlined)
+            if not re.search(rf"\b{re.escape(slug)}\b", scan):
+                continue  # not referenced by this text
+            collected[slug] = text
+            frontier.append(text)
+    # deterministic order (glob order) for stable units
+    return [(s, texts[s]) for s in texts if s in collected]
 
 
 def _toposort_siblings(
@@ -1413,6 +1428,80 @@ def _annotation_submission(content: str) -> "dict":
             "annotation propagation)"}
 
 
+def _locked_signature_submission(content: str,
+                                 attempts_dir: "Path") -> "dict | None":
+    """D-lite mirror of the Backward commit signature gate: the strategy
+    skeleton's `<kind> s<sid> <binders> : <type>` is LOCKED — commit
+    byte-compares it (whitespace-normalized) and rejects any edit, even a
+    mathematically equivalent rewrite that elaborates fine. Backward seeds
+    the normalized signature into `_locked_signature.txt`; compare the
+    content's current signature against it via the SAME shared helpers.
+    None when there is no seed file (non-Backward session) or `content`
+    doesn't mention the locked name (probing a sub-goal stub, not the
+    patch)."""
+    f = attempts_dir / "_locked_signature.txt"
+    try:
+        if not f.is_file():
+            return None
+        locked = f.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    parts = locked.split()
+    name = parts[1] if len(parts) >= 2 else ""
+    if not name or not re.search(rf"\b{re.escape(name)}\b", content):
+        return None
+    agent_sig = assemble.normalize_signature(
+        assemble.signature_prefix(content, name))
+    if agent_sig == locked:
+        return {"checked": True, "ok": True}
+    return {
+        "checked": True, "ok": False,
+        "hint": (f"the `{name}` signature is LOCKED — commit rejects ANY "
+                 "edit to it (even an equivalent rewrite that elaborates "
+                 "fine); restore it exactly and make changes after `:= by` "
+                 "only"),
+        "locked": locked,
+        "current": agent_sig or "(declaration head not parseable)",
+    }
+
+
+def _stale_olean_submission(content: str, problem: str,
+                            workspace: "Path") -> "dict | None":
+    """D-lite staleness warning: this probe resolves committed siblings via
+    their on-disk build products; if a cited `L_<slug>`'s source is newer
+    than its .olean (or the .olean is missing), the probe's verdict for
+    that citation is based on a stale world — commit's real build will
+    recompile. Detection only (whether the recompile changes the verdict
+    needs the real build); None when content cites nothing."""
+    cites = [m.group(2) for m in _GW_PROBLEM_IMPORT_RE.finditer(content)
+             if m.group(1) == problem]
+    if not cites:
+        return None
+    prel = Path(*problem.split(".")) if "." in problem else Path(problem)
+    issues: "list[dict]" = []
+    for slug in cites:
+        src = (workspace / "Problems" / prel / "proofs" / f"L_{slug}.lean")
+        if not src.exists():
+            continue                    # citation gate reports missing goals
+        rel = Path("Problems") / prel / "proofs" / f"L_{slug}.olean"
+        oleans = [workspace / ".lake" / "build" / "lib" / "lean" / rel,
+                  workspace / ".lake" / "build" / "lib" / rel]
+        try:
+            fresh = any(o.exists() and o.stat().st_mtime >= src.stat().st_mtime
+                        for o in oleans)
+        except OSError:
+            continue
+        if not fresh:
+            issues.append({
+                "slug": slug,
+                "note": (f"L_{slug}.lean is newer than its .olean (or the "
+                         ".olean is missing) — this probe's verdict for the "
+                         "citation is based on a stale build; commit will "
+                         "recompile it"),
+            })
+    return {"ok": not issues, "issues": issues}
+
+
 def _declhead_submission(content: str) -> "dict":
     """Mirror commit's slug gate: every top-level `<kind> <name>` declaration's
     name must be snake_case (`^[a-z][a-z0-9_]*$`). A camelCase def/theorem name
@@ -1569,6 +1658,27 @@ def validate_file(content: str) -> str:
                                 set(inlined_slugs))
     if cite is not None:
         submission["citation"] = cite
+    # D-lite (task #5): predict the SPLIT — the deterministic commit-policy
+    # verdicts the single-unit elaboration structurally cannot surface.
+    attempts_dir = meta.target_path.parent
+    stub_map: "dict[str, str]" = {}
+    for _slug, _text in _collect_referenced_sibling_stubs(
+            attempts_dir, content):
+        stub_map[_slug] = _text
+    # content itself may BE one of the batch stubs (agent validates
+    # new_<slug>.lean directly) — include it under its own slug.
+    _own = _GW_DECL_HEAD_RE.search(content)
+    if _own and (attempts_dir / f"new_{_own.group(2)}.lean").is_file():
+        stub_map.setdefault(_own.group(2), content)
+    if stub_map:
+        sv = assemble.split_visibility_issues(stub_map, problem=meta.problem)
+        submission["split_visibility"] = {"ok": not sv, "issues": sv}
+    ls = _locked_signature_submission(content, attempts_dir)
+    if ls is not None:
+        submission["locked_signature"] = ls
+    so = _stale_olean_submission(content, meta.problem, meta.workspace)
+    if so is not None:
+        submission["stale_oleans"] = so
     response["submission"] = submission
     _log_for(meta, {"event": "tool_call", "name": "validate_file",
                     "args": {"content_lines": full_content.count("\n") + 1},

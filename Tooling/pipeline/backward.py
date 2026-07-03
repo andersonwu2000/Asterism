@@ -521,6 +521,16 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         )
     skeleton_signature = _normalize_signature(
         _signature_prefix(skeleton, sid_token))
+    # D-lite (task #5): persist the locked signature so the gateway's
+    # validate_file can pre-announce the commit-time signature gate — the
+    # agent otherwise only learns "you edited the locked signature" at
+    # commit (validate elaborates an equivalent rewrite just fine). The
+    # attempts dir survives warm retries and is rmtree'd by WorkArea.
+    try:
+        (attempts_dir / "_locked_signature.txt").write_text(
+            skeleton_signature, encoding="utf-8")
+    except OSError:
+        pass                                  # best-effort — probe-side only
 
     # In-loop _abort: returns failure WITHOUT marking strategy dead.
     # The outer cleanup at the bottom of this function marks it dead
