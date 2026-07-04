@@ -922,7 +922,8 @@ def _backward_parse_and_commit(
         fq_name = f"Problems.{goal['problem']}.{sid_token}"
         gate = axiom_gate(
             scratch_dest, fq_name=fq_name,
-            whitelist=list(mfst.axioms_whitelist or []),
+            whitelist=manifest.effective_axioms(
+                mfst, problem=goal["problem"]),
             workspace=workspace, attempts_dir=attempts_dir, write_olean=True)
         if not gate.ok:
             _rm_scratch()
@@ -1586,10 +1587,17 @@ def _backward_parse_and_commit(
                     # strategy) for as long as this alias is alive.
                     db.set_alias_target(conn, new_gid, match.goal_id)
             else:
+                # effective_axioms: an unset Manifest field used to hit
+                # axiom_probe's fail-closed branch (promotion refused
+                # outright); the goal then re-proved through the normal
+                # path against the SAME default whitelist. Deriving it
+                # here makes the sub-goal promote behave like every other
+                # gate (finding-3 unification; net verdicts unchanged).
                 ok, msg = _try_promote_sorry_free(
                     dest=dest, problem=goal["problem"], slug=slug,
                     workspace=workspace,
-                    axioms_whitelist=mfst.axioms_whitelist,
+                    axioms_whitelist=manifest.effective_axioms(
+                        mfst, problem=goal["problem"]),
                     attempts_dir=attempts_dir,
                 )
                 if ok:

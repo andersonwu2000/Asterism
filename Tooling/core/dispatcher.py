@@ -906,6 +906,27 @@ def _run_pipeline(workspace: Path,
                     )
                     return (pipeline_id, task_kind, target_id, target_kind,
                             "failed", "problem_not_found")
+                if db.problem_ingest_signoff_pending(conn, problem):
+                    # CONSUMER-side hard gate: while a problem awaits human
+                    # sign-off, NO Librarian work runs — regardless of which
+                    # path enqueued the row. The three scheduler-side checks
+                    # (librarian_sched selfstart / refill / outstanding) are
+                    # enqueue-suppression hints; this is the boundary. BUG3
+                    # (149aec6) was exactly a dispatch path that forgot the
+                    # check and drove harvest during sign-off — enforcing at
+                    # the single consumption point closes the class, not the
+                    # instance (2026-07-04 convention audit, finding 1).
+                    print(f"[librarian] {problem}: dispatch blocked — "
+                          f"ingest_signoff_pending (awaiting human sign-off)",
+                          flush=True)
+                    db.record_pipeline(
+                        conn, pipeline_id=pipeline_id, kind=task_kind,
+                        target_id=target_id, target_kind=target_kind,
+                        status="succeeded", outcome="success",
+                        started_at=started_at,
+                    )
+                    return (pipeline_id, task_kind, target_id, target_kind,
+                            "success", "")
                 from ..pipeline import librarian
                 if target_file is not None:
                     # Per-file unit: run THIS file's current step.
@@ -932,13 +953,13 @@ def _run_pipeline(workspace: Path,
                     return (pipeline_id, task_kind, target_id, target_kind,
                             "success", "")
                 # Per-file axiom check uses the operator's authorized
-                # axioms (Manifest `axioms_whitelist`), falling back to
-                # the 3 standard axioms — same source + fallback as
-                # root_integrity_gate. Only migrate consumes it.
+                # axioms via the ONE whitelist derivation
+                # (`manifest.effective_axioms` — empty field falls back to
+                # the framework default, never skips). Only migrate
+                # consumes it.
                 mfst = manifests[problem]
-                whitelist = (list(mfst.axioms_whitelist)
-                             if mfst.axioms_whitelist
-                             else list(verify.FRAMEWORK_DEFAULT_AXIOMS))
+                whitelist = manifest.effective_axioms(
+                    mfst, problem=problem)
                 r = librarian.run_librarian(
                     conn, problem=problem, work_kind=work_kind,
                     workspace=workspace, pipeline_id=pipeline_id,

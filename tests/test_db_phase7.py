@@ -278,3 +278,25 @@ def test_additive_alter_block_is_frozen():
         f"legacy additive ALTER block has {n} entries (pin: 13) — new "
         "columns must ship as a VERSIONED migration step (see the v15 "
         "stamp comment), not by growing this block")
+
+
+# ---------------------------------------------------------------------
+# insert_goal writes `detached` in the same INSERT (2026-07-04 convention
+# audit, finding 2: the follow-up set_goal_detached pairing was
+# duplicated-by-discipline across every Forward commit path; a forgotten
+# pairing is a silent stuck goal only offline drift-check catches).
+# ---------------------------------------------------------------------
+
+def test_insert_goal_forward_origin_is_detached() -> None:
+    conn = db.connect(":memory:")
+    db.init_schema(conn)
+    conn.execute("INSERT INTO problems (name, manifest_path, created_at,"
+                 " bootstrap_done) VALUES ('p', 'm', '', 1)")
+    fwd = db.insert_goal(conn, problem="p", slug="f", lean_path="a.lean",
+                         statement="s", origin="forward")
+    bwd = db.insert_goal(conn, problem="p", slug="b", lean_path="b.lean",
+                         statement="s", origin="backward")
+    assert conn.execute("SELECT detached FROM goals WHERE id=?",
+                        (fwd,)).fetchone()[0] == 1
+    assert conn.execute("SELECT detached FROM goals WHERE id=?",
+                        (bwd,)).fetchone()[0] == 0

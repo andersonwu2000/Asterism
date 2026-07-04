@@ -405,3 +405,35 @@ library: True
 True
 """))
     assert mfst.library is True
+
+
+# ---------------------------------------------------------------------
+# effective_axioms — THE whitelist derivation every gate consumes
+# (2026-07-04 convention audit, finding 3: the empty-field semantics were
+# re-decided at ≥6 call sites with three different meanings).
+# ---------------------------------------------------------------------
+
+def test_effective_axioms_set_field_passes_through() -> None:
+    m = manifest.Manifest(problem="p", statement="s",
+                          axioms_whitelist=["propext", "Custom.ax"])
+    assert manifest.effective_axioms(m) == ["propext", "Custom.ax"]
+
+
+def test_effective_axioms_empty_falls_back_to_framework_default(
+        capsys) -> None:
+    """Absent field NEVER weakens a gate: framework default, warned once
+    per problem (not once per gate call)."""
+    manifest._default_axioms_warned.clear()
+    m = manifest.Manifest(problem="p_eff", statement="s")
+    wl = manifest.effective_axioms(m)
+    assert wl == list(manifest.FRAMEWORK_DEFAULT_AXIOMS)
+    assert "sorryAx" not in wl
+    out = capsys.readouterr().out
+    assert "framework default" in out
+    manifest.effective_axioms(m)                     # second call: silent
+    assert "framework default" not in capsys.readouterr().out
+
+
+def test_effective_axioms_verify_reexport_is_same_object() -> None:
+    from Tooling.quality import verify
+    assert verify.FRAMEWORK_DEFAULT_AXIOMS is manifest.FRAMEWORK_DEFAULT_AXIOMS

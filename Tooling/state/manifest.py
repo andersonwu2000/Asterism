@@ -63,6 +63,43 @@ class Manifest:
         return out
 
 
+FRAMEWORK_DEFAULT_AXIOMS: tuple[str, ...] = (
+    "Classical.choice", "propext", "Quot.sound",
+)
+"""The three Lean kernel axioms accepted by default when a Manifest
+does not set `axioms_whitelist`. sorryAx is deliberately excluded —
+catching it is the entire reason the axiom gates exist. Operators who
+need additional axioms (e.g. `native_decide`, `Lean.ofReduceBool`)
+must add them explicitly in the Manifest. (SoT moved here from
+quality/verify.py — the Manifest owns whitelist semantics; verify
+re-exports for back-compat.)"""
+
+_default_axioms_warned: set[str] = set()
+
+
+def effective_axioms(mfst: "Manifest", *, problem: str = "") -> list[str]:
+    """THE derivation of the axiom whitelist every gate consumes.
+
+    An absent/empty Manifest `axioms_whitelist` NEVER weakens a gate —
+    it falls back to `FRAMEWORK_DEFAULT_AXIOMS` (with a once-per-problem
+    warning so the implicit fallback stays operator-visible). Before
+    this helper the empty-field semantics were re-decided at ≥6 call
+    sites with THREE different meanings (root gate/harvest: fallback;
+    pipeline gates: skip the rogue check entirely; axiom_probe:
+    fail-closed) — every new gate author had to pick the right one
+    (2026-07-04 convention audit, finding 3)."""
+    wl = list(mfst.axioms_whitelist or [])
+    if wl:
+        return wl
+    key = problem or getattr(mfst, "problem", "") or "?"
+    if key not in _default_axioms_warned:
+        _default_axioms_warned.add(key)
+        print(f"[axioms] {key}: Manifest didn't set axioms_whitelist; "
+              f"gates use the framework default "
+              f"{list(FRAMEWORK_DEFAULT_AXIOMS)}", flush=True)
+    return list(FRAMEWORK_DEFAULT_AXIOMS)
+
+
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 
 

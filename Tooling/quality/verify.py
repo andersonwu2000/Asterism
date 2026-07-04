@@ -582,14 +582,9 @@ def cleanup_cascade_backups(
     return n
 
 
-FRAMEWORK_DEFAULT_AXIOMS: tuple[str, ...] = (
-    "Classical.choice", "propext", "Quot.sound",
-)
-"""The three Lean kernel axioms accepted by default when a Manifest
-does not set `axioms_whitelist`. sorryAx is deliberately excluded —
-catching it is the entire reason this gate exists. Operators who
-need additional axioms (e.g. `native_decide`, `Lean.ofReduceBool`)
-must add them explicitly in the Manifest."""
+# SoT moved to state/manifest.py (the Manifest owns whitelist semantics);
+# re-exported here for the existing importers (dispatcher, tests).
+FRAMEWORK_DEFAULT_AXIOMS = manifest.FRAMEWORK_DEFAULT_AXIOMS
 
 
 def root_integrity_gate(
@@ -626,14 +621,7 @@ def root_integrity_gate(
     ).fetchone()
     if row is None:
         return
-    if mfst.axioms_whitelist:
-        whitelist = list(mfst.axioms_whitelist)
-    else:
-        whitelist = list(FRAMEWORK_DEFAULT_AXIOMS)
-        print(f"[integrity] {problem}: Manifest didn't set "
-              f"axioms_whitelist; using framework default "
-              f"{list(FRAMEWORK_DEFAULT_AXIOMS)}",
-              flush=True)
+    whitelist = manifest.effective_axioms(mfst, problem=problem)
     try:
         # 900s (15min) budget. Root.lean's transitive import chain can
         # be deep (SG: 23 sub-proofs, cold `lake env lean Root.lean`

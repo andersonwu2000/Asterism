@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any  # noqa: F401 — used in string annotations (mfst/return)
 
 from ..state import assemble, db, proof_store, transitions
+from ..state import manifest as _manifest_mod
 
 
 def _auto_prepend_candidate_imports(
@@ -370,15 +371,10 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
         kind=metadata.kind,
     )
     # Forward-output goals have no parent strategy edge (Forward is a
-    # Library-toolkit producer, not part of any Backward decomposition).
-    # `db.open_goals` walks alive = root ∪ detached ∪ strategy descendants;
-    # without `detached=1` a sorry-bearing Forward goal (status='open')
-    # would never be picked up by BFS — silent stuck. Set unconditionally
-    # so Backward-on-Forward subtrees inherit aliveness via their own
-    # strategy_subgoals chain. Harmless for status='proved' (open_goals
-    # filters by status anyway). Non-theorem kinds (def / structure /
-    # class) also benefit defensively even though their status='proved'.
-    db.set_goal_detached(conn, goal_id, True)
+    # Library-toolkit producer, not part of any Backward decomposition);
+    # `insert_goal` writes `detached=1` for origin='forward' in the same
+    # INSERT (finding-2 mechanization — the follow-up set_goal_detached
+    # pairing this comment used to justify is retired).
     if initial_status == "proved":
         transitions.apply_goal_transition(
             conn, goal_id, "proved", event="forward_lemma_proved",
@@ -508,9 +504,9 @@ def commit_forward_alias(conn: sqlite3.Connection, *,
         origin="forward", depth=0, entry_kind=metadata.entry_kind,
         kind=metadata.kind,
     )
-    # Same detached + proved bookkeeping as a sorry-free leaf-bypass
-    # Forward (commit_forward_lemma) — the alias body is sorry-free.
-    db.set_goal_detached(conn, goal_id, True)
+    # Same proved bookkeeping as a sorry-free leaf-bypass Forward
+    # (commit_forward_lemma); detached=1 is written by insert_goal
+    # (origin='forward'). The alias body is sorry-free.
     transitions.apply_goal_transition(
         conn, goal_id, "proved", event="forward_alias_proved",
         receipt=transitions.ProvedReceipt(
@@ -859,7 +855,8 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                 outcome = commit_forward_lemma(
                     conn, problem=problem, workspace=workspace,
                     attempts_dir=attempts_dir, metadata=metadata,
-                    whitelist=list(getattr(mfst, "axioms_whitelist", None) or []),
+                    whitelist=_manifest_mod.effective_axioms(
+                        mfst, problem=problem),
                     source_filename=src.name,
                 )
             except FileExistsError as e:

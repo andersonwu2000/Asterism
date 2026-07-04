@@ -183,7 +183,8 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             from ._axiom import axiom_gate
             gate = axiom_gate(
                 goal_lean, fq_name=fq_name,
-                whitelist=list(mfst.axioms_whitelist or []),
+                whitelist=manifest.effective_axioms(
+                    mfst, problem=goal["problem"]),
                 workspace=workspace, attempts_dir=attempts_dir,
                 write_olean=True)
             if gate.ok:
@@ -373,7 +374,8 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         fq_name = f"Problems.{goal['problem']}.{goal['slug']}"
         gate = axiom_gate(
             goal_lean, fq_name=fq_name,
-            whitelist=list(mfst.axioms_whitelist or []),
+            whitelist=manifest.effective_axioms(
+                mfst, problem=goal["problem"]),
             workspace=workspace, attempts_dir=attempts_dir, write_olean=True)
         if not gate.ok:
             _restore_goal_lean()

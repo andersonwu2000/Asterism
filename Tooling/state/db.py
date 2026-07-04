@@ -1678,13 +1678,22 @@ def insert_goal(conn: sqlite3.Connection, *, problem: str, slug: str,
                 entry_kind: str = 'Builder',
                 status: str = 'open') -> int:
     ts = now()
+    # origin='forward' goals have no parent strategy edge; they are alive
+    # only through the `detached` flag (alive-CTE seed = root ∪ detached ∪
+    # strategy descendants). Written in the SAME INSERT — previously every
+    # Forward commit path had to remember a follow-up `set_goal_detached`
+    # (duplicated-by-discipline; a forgotten pairing is a SILENT stuck goal
+    # only the offline drift-check predicate catches — 2026-07-04
+    # convention audit, finding 2). `set_goal_detached` remains for
+    # revive/reopen of EXISTING goals.
+    detached = 1 if origin == "forward" else 0
     cur = conn.execute(
         "INSERT INTO goals (problem, slug, lean_path, statement,"
-        " kind, origin, status, depth, attempts, entry_kind,"
+        " kind, origin, status, depth, attempts, entry_kind, detached,"
         " created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)",
         (problem, slug, lean_path, statement,
-         kind, origin, status, depth, entry_kind, ts, ts),
+         kind, origin, status, depth, entry_kind, detached, ts, ts),
     )
     conn.commit()
     return int(cur.lastrowid)

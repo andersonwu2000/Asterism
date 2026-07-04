@@ -592,6 +592,46 @@ def test_librarian_paths_respect_ingest_signoff_pause(tmp_path: Path):
         conn, tmp_path, set(), mf, fail_counts={}) is True
 
 
+def test_dispatch_consumer_blocks_ingest_signoff(tmp_path: Path, monkeypatch):
+    """Finding-1 mechanization (2026-07-04 convention audit): the CONSUMER —
+    dispatcher's Librarian branch in `_run_pipeline` — hard-gates
+    `ingest_signoff_pending` regardless of which path enqueued the row.
+    The three scheduler-side checks are enqueue-suppression hints; this is
+    the boundary (BUG3 was a dispatch path that forgot the check)."""
+    from types import SimpleNamespace
+    dbfile = tmp_path / "asterism.db"
+    orig_connect = db.connect
+    seed = orig_connect(dbfile)
+    db.init_schema(seed)
+    _seed_problem(seed, "p")
+    db.set_ingest_signoff_pending(seed, "p", True)
+    seed.close()
+    monkeypatch.setattr(db, "connect",
+                        lambda path=None: orig_connect(dbfile))
+
+    calls: list = []
+    monkeypatch.setattr(
+        librarian, "run_librarian",
+        lambda *a, **kw: calls.append(kw) or SimpleNamespace(
+            outcome="success", failure_reason="", failure_detail=""))
+    manifests = {"p": SimpleNamespace(library=True, axioms_whitelist=[])}
+
+    out = dispatcher._run_pipeline(
+        tmp_path, manifests, "Librarian", "p", "Problem", "pid-signoff-t")
+    assert out[4] == "success"          # clean no-op, not a failure
+    assert calls == []                  # librarian NEVER ran
+
+    # pause cleared → the same dispatch actually runs librarian work
+    c = orig_connect(dbfile)
+    db.set_ingest_signoff_pending(c, "p", False)
+    # give it one derivable unit so work_kind is not None
+    _candidate(c, "s1", "p")
+    c.close()
+    out = dispatcher._run_pipeline(
+        tmp_path, manifests, "Librarian", "p", "Problem", "pid-signoff-t2")
+    assert calls, "librarian should run once the sign-off pause clears"
+
+
 def test_librarian_refill_no_selfstart_until_ingested(tmp_path: Path):
     # Phase 6 — a proved (even integrity-verified) root with NO committed
     # Ingest must NOT self-start library-ization: harvest is strictly
