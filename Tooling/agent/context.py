@@ -88,7 +88,8 @@ def _section_sandbox(strategy_id: int | None = None,
         "Mathlib source.",
         "- Reads NOT allowed: other `Problems/<...>/` dirs — irrelevant "
         "to this goal. Use Loogle / Grep on Mathlib instead.",
-        "- `Context.md` + `PAST_*.md` companion files: read-only.",
+        "- `Context.md` + `PAST_*.md` / `LESSONS.md` companion files: "
+        "read-only.",
         "- `patch.lean` is your single output. Lead with `--` annotation "
         "comments, then edit the body (Builder fills in the proof; "
         "Backward edits the strategy skeleton's body — signature locked). "
@@ -326,13 +327,22 @@ def _section_lessons_inline(conn: sqlite3.Connection, problem: str,
     """Inline this problem's KB knowledge — GLOBAL lessons (cross-goal insights)
     + antipatterns (walls hit on THIS goal). Sourced from `kb_entries`.
 
-    Global-only (2026-06-28): the grep-able `KB_LESSONS` file + node-experience
-    retrieval were retired. A stress test showed node lessons carry ~zero
-    cross-goal value and the grep-file was used by ~1% of spawns, while the
-    inline global set (read by 94%) is the channel that actually works. So the
-    whole KB read is this cheap proactive inline — no on-demand search surface.
-    `attempts_dir` is retained for call-site compatibility (now unused)."""
-    del attempts_dir  # no grep-file written any more
+    Titles-index + on-demand bodies (2026-07-05, user design call): lessons
+    inline as ONE title line each (`[id-N]` cue); full bodies go to the
+    `LESSONS.md` companion in attempts_dir, read on demand — the same
+    pattern as `PAST_*.md`. Global lessons are problem-wide while relevance
+    is per-goal: a multi-front problem (sphere_homology: 21 lessons / 27KB,
+    ~2 relevant per goal) made full inline the largest context section and
+    a thinking-trap risk (stokes 4284 class). This differs from the RETIRED
+    `KB_LESSONS` grep-file (~1% usage): that had no inline cue at all —
+    here every title stays in context as the cue, only the body moves.
+
+    Antipatterns stay full-inline: node-bound, surfaced only to their own
+    goal (`kb.query` filters), so they are already relevance-scoped.
+
+    Fallback: no `attempts_dir` (legacy/odd caller) → full inline as before.
+    Global-only (2026-06-28): node-bound lessons retired; legacy node rows
+    are excluded by `kb.query`."""
     from ..state import kb
     grouped = kb.query(conn, problem=problem, goal_id=goal_id)
     lessons = grouped["lessons"]
@@ -345,11 +355,32 @@ def _section_lessons_inline(conn: sqlite3.Connection, problem: str,
         out += [
             "## Lessons learned on this problem",
             "_Cross-cutting insights recorded by past agents on this problem._",
-            "_Maintained by the reflection spawn._",
-            "",
         ]
-        for r in lessons:
-            out += _kb_entry_lines(r)
+        if attempts_dir is not None:
+            out += [
+                "_Titles only — the full recipes (exact lemma names, gotchas)"
+                " live in `LESSONS.md` (read-only companion). Read an entry's"
+                " body BEFORE using or re-deriving its technique._",
+                "",
+            ]
+            body_lines = [f"# Lessons — full recipes ({problem})", ""]
+            for r in lessons:
+                out.append(f"- [id-{r['id']}] {(r['title'] or '').strip()}")
+                body_lines += [f"## [id-{r['id']}] "
+                               f"{(r['title'] or '').strip()}", ""]
+                body = (r["body"] or "").strip()
+                if body:
+                    body_lines += [body, ""]
+            try:
+                (attempts_dir / "LESSONS.md").write_text(
+                    "\n".join(body_lines) + "\n", encoding="utf-8")
+            except OSError:
+                pass  # index still useful without the companion
+        else:
+            out.append("_Maintained by the reflection spawn._")
+            out.append("")
+            for r in lessons:
+                out += _kb_entry_lines(r)
         out.append("")
     if antis:
         out += [

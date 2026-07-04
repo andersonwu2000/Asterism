@@ -159,7 +159,8 @@ def test_edit_global_lesson_scoped(conn):
 
 def test_context_section_renders_kb(conn):
     """The read path (_section_lessons_inline) surfaces KB lessons +
-    antipatterns; empty problem → no section."""
+    antipatterns; empty problem → no section. No attempts_dir (legacy
+    caller) → full inline fallback (bodies under the bullet)."""
     from Tooling.agent import context
     kb.insert_entry(conn, entry_type="lesson", title="L1", problem="P",
                     provenance="reflection")
@@ -192,6 +193,35 @@ def test_lessons_inline_no_grep_file(conn, tmp_path):
     assert "glob insight" in text
     assert "recipe for s1" not in text          # legacy node lesson not shown
     assert not (tmp_path / "KB_LESSONS.md").exists()   # grep-file retired
+
+
+def test_lessons_titles_index_bodies_in_companion(conn, tmp_path):
+    """Titles-index design (2026-07-05): with attempts_dir, the inline
+    section carries ONE `[id-N] title` line per lesson (no body); the full
+    bodies land in the LESSONS.md companion under the same `[id-N]` cue.
+    Antipatterns stay full-inline (already goal-scoped)."""
+    from Tooling.agent import context
+    _seed_goal(conn, 1)
+    lid = kb.add_lesson(conn, problem="P", title="use apply not rw",
+                        body="long recipe body\nwith exact lemma names",
+                        provenance="r:g")
+    kb.insert_entry(conn, entry_type="antipattern", title="wall",
+                    body="anti body", problem="P", node_id=1,
+                    provenance="drafts_blocker")
+    lines = context._section_lessons_inline(conn, "P", goal_id=1,
+                                            attempts_dir=tmp_path)
+    text = "\n".join(lines)
+    # index line present, body NOT inline
+    assert f"- [id-{lid}] use apply not rw" in text
+    assert "long recipe body" not in text
+    assert "LESSONS.md" in text                       # pointer in the header
+    # companion carries the body under the same cue
+    comp = (tmp_path / "LESSONS.md").read_text(encoding="utf-8")
+    assert f"## [id-{lid}] use apply not rw" in comp
+    assert "long recipe body" in comp
+    assert "with exact lemma names" in comp
+    # antipattern body still inline (goal-scoped)
+    assert "anti body" in text
 
 
 def test_node_fk_set_null_on_goal_delete(conn):
