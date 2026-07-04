@@ -38,13 +38,16 @@ sqlite（`goals` × `strategies` × `strategy_subgoals`），**DB 是單一真�
 | **Builder** | Goal | 先 deterministic tactic（`by hint`）、不行請 LLM 寫 patch 收尾 |
 | **Backward** | Goal | 請 LLM 拆成一條 Strategy + N 個 sub-Goal |
 | **Forward** | Problem | Strategist 派、產一條新 toolkit lemma（theorem/def/structure/class）、進 BFS 或 leaf-bypass |
-| **Strategist** | Goal (root) | 讀 problem state、下決策（七種、見下） |
+| **Strategist** | Problem | 讀 problem state、下決策（七種、見下）；Phase 6 起 problem-keyed（曾 key 在 root goal） |
 | **Librarian** | Problem (per-file) | 已證 + opt-in 後走五階段鏈：dedup → classify → migrate → cleanup → bridge |
 | **Verify housekeeping** | — | 非 worker：dispatcher tick 內 sequential 跑，組裝全 proved 的 strategy、寫 alias 進 parent、跑 G1 revival |
 
 Strategist 決策七種：`Inject` / `ConfirmShelve` / `EmitDirective` / `RequestUserAmend` /
-`MarkDeliverable` / `Ingest` / `Noop`。觸發四種：`first_launch` / `routine` /
-`pending_review` / `inject_batch_done`。
+`MarkDeliverable` / `Ingest` / `Noop`。觸發三種（Phase 6 起）：`routine` /
+`pending_review` / `inject_batch_done`（structural stall 的喚醒歸類為
+inject_batch_done——「empty batch done」語意；`first_launch` 已退役，fresh 題本身
+即 stalled）。`Ingest` 是唯一終態（Done 已融入）：root 在場時未 proved 前框架硬性
+拒絕；`ingested_at` 驅動 T1/T4 活性、Librarian selfstart 與 daemon 退出。
 
 並發紀律：每個 Goal 同時最多一條 pipeline（passive OR、cap=1）；Forward / Strategist 同
 problem 各最多一條 in-flight；Librarian 以檔為平行單位。`ingest_signoff_pending` 的

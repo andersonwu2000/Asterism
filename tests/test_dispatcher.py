@@ -997,9 +997,12 @@ def test_cmd_run_refuses_no_scope_without_all_problems() -> None:
 
 
 def test_strategist_row_is_stale(conn: sqlite3.Connection) -> None:
-    """A queued Strategist whose root already proved is dropped at spawn
-    (would only Noop). Guards: open root → keep; proved root → drop;
-    non-Strategist kind → never stale; bad/unknown target → not stale."""
+    """Phase 6 — a queued Strategist row (target_id=<problem name>) is
+    dropped at spawn iff its problem has committed the terminal Ingest
+    (nothing left to decide). A PROVED-but-not-ingested root keeps the
+    row: that wake is what commits the Ingest. Guards: live problem →
+    keep; ingested → drop; non-Strategist kind → never stale; unknown
+    problem → not stale."""
     from Tooling.core.dispatcher import _strategist_row_is_stale
     conn.execute(
         "INSERT INTO problems (name, manifest_path, created_at, "
@@ -1010,14 +1013,19 @@ def test_strategist_row_is_stale(conn: sqlite3.Connection) -> None:
         conn, problem="p", slug="main", lean_path="Problems/p/Root.lean",
         statement="T", origin="root",
     )
-    assert _strategist_row_is_stale(conn, str(gid), "Strategist") is False
+    assert _strategist_row_is_stale(conn, "p", "Strategist") is False
+    # Proved root alone does NOT make the row stale (the Strategist must
+    # still wake to judge the Manifest and commit Ingest).
     db.update_goal_status(conn, gid, "proved")
-    assert _strategist_row_is_stale(conn, str(gid), "Strategist") is True
+    assert _strategist_row_is_stale(conn, "p", "Strategist") is False
+    # Committed Ingest → terminal → stale.
+    db.set_problem_ingested(conn, "p")
+    assert _strategist_row_is_stale(conn, "p", "Strategist") is True
     # A non-Strategist row is never gated by this rule.
-    assert _strategist_row_is_stale(conn, str(gid), "Backward") is False
-    # Defensive: unknown / non-integer target → not stale (don't wedge).
-    assert _strategist_row_is_stale(conn, "999999", "Strategist") is False
-    assert _strategist_row_is_stale(conn, "not-an-int", "Strategist") is False
+    assert _strategist_row_is_stale(conn, "p", "Backward") is False
+    # Defensive: unknown problem → not stale (don't wedge).
+    assert _strategist_row_is_stale(conn, "no-such-problem",
+                                    "Strategist") is False
 
 
 def test_attempt_owner_alive(tmp_path: Path) -> None:

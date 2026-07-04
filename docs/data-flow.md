@@ -55,10 +55,10 @@ agent 寫進 `.attempts/<pid>/` 的所有東西（不論成敗），在目錄被
 | 1 | **cascade** | 收割上一輪完成的 pipeline outcome，套 goal/strategy 狀態轉移 | 本節 + §3 各 pipeline |
 | 2 | **verify housekeeping** | 撈 sub-goal 全 proved 的 strategy，組裝寫 alias 進 parent；同迴圈跑 shelved-revival | §4 |
 | 3 | **post-proved gate** | 對「root 剛 flip proved」的 problem：修 drift → root 完整性驗證 → 刷 TREE | §4 末段 |
-| 4 | **librarian refill** | 對 opt-in 的已證 problem，把 Library 化工作排進 queue | §3.5 |
-| 5 | **exit check** | `root_proved && 無 Librarian 待辦` → daemon 退出 | — |
+| 4 | **librarian refill** | 對 opt-in 且已 Ingest 的 problem，把 Library 化工作排進 queue | §3.5 |
+| 5 | **exit check** | `all_problems_ingested && 無 Librarian 待辦` → daemon 退出 | — |
 | 6 | **bfs refill** | 把 open goal 排進 queue（每 goal 最多一條 pipeline） | 本節 |
-| 7 | **strategist triggers** | 排 first_launch / routine 喚醒 | §3.4 |
+| 7 | **strategist triggers** | 排 routine（T1）/ stall（T4）喚醒 | §3.4 |
 | 7b | **reconcile_stuck_states** | per-tick 安全網：孤兒 pending_review / NULL-outcome Inject wedge 修復 | — |
 | 8 | **spawn** | 有空格就 pop queue、派 pipeline 進 worker thread | 本節 |
 
@@ -331,18 +331,21 @@ lemma 的 `kind ∈ {theorem, def, structure, class}`。
 
 ### 3.4 Strategist
 
-`target_kind='Goal'`（root）。無 retry helper（Strategist 不 retry；只有一次 in-pipeline verify 重試）。
+`target_kind='Problem'`（Phase 6 起 problem-keyed；曾 key 在 root goal id）。無 retry
+helper（Strategist 不 retry；只有一次 in-pipeline verify 重試）。
 
-**四種 trigger**（`TRIGGER_KINDS`）：
+**trigger**（`_derive_strategist_trigger` 於 spawn 時判定）：
 
 | trigger | 何時 | 排在哪 |
 |---|---|---|
-| `first_launch` | root frozen、第一次喚醒 | step 7 strategist_triggers |
-| `routine` | 離上次 ≥ interval（預設 **60 min**，`strategist.interval_min`） | step 7 strategist_triggers |
+| `inject_batch_done` | 某條 Inject batch 全部 row outcome 落地；**或 spawn 時題為 structural stall**（「empty batch done」語意——fresh 題 / deadlock / root 已證待 Ingest 都算） | cascade 時 enqueue / T4 stall trigger，同 problem in-queue 去重 |
 | `pending_review` | goal 轉 `pending_strategist_review`（agent 自己 shelve 後等審） | cascade 時 enqueue，payload 帶 target_goal_id |
-| `inject_batch_done` | 某條 Inject batch 全部 row outcome 落地 | cascade 時 enqueue，同 root in-queue 去重 |
+| `routine` | 離上次 ≥ interval（預設 **60 min**，`strategist.interval_min`）、`ingested_at IS NULL` | step 7 strategist_triggers |
 
-`first_launch` 必須選 `RequestUserAmend` / `Inject(Forward)` / `Inject(Backward, target=root)` 三者之一。
+（Phase 6：`first_launch` / T0 退役——fresh 題無 dispatchable 工作 + 未 Ingest = 本身
+即 stalled，由 T4 立刻喚醒並套 inject_batch_done 的 mandatory-advance 規則逼出第一個
+Inject。喚醒的 stale-drop 判準 = `problem_ingested`；daemon 退出 =
+`all_problems_ingested` + 無 Librarian 工作。）
 
 **入場**：`/register` + `_mcp_config.json` + 編 Context.md → `spawn --session-id <sid>`
 
@@ -368,10 +371,13 @@ lemma 的 `kind ∈ {theorem, def, structure, class}`。
 | `RequestUserAmend` | 寫 `.proposed_<file>` + INSERT row `outcome='awaiting_human'` |
 | `Noop` | 只 INSERT audit row |
 
-收尾：`update_problem_last_strategist_at` + `set_problem_bootstrap_done`。
+收尾：`update_problem_last_strategist_at`（routine 另 touch `last_routine_at`；
+`bootstrap_done` 已 vestigial、Phase 6 起不再寫）。
 
-> **decision kinds 共五種**：`Inject` / `ConfirmShelve` / `EmitDirective` / `RequestUserAmend` / `Noop`。
-> 舊的 `Reopen` 已移除 —— 重新啟用一律走 `Inject(Backward|Builder)`。
+> **decision kinds 共七種**：`Inject` / `ConfirmShelve` / `EmitDirective` / `RequestUserAmend` /
+> `MarkDeliverable` / `Ingest` / `Noop`。舊的 `Reopen` 已移除 —— 重新啟用一律走
+> `Inject(Backward|Builder)`。`Ingest` commit 先蓋 `problems.ingested_at`（唯一終態），
+> library:true 再走 sign-off/harvest；rollback 或 `reject-ingest` 會撤銷。
 
 **cascade 對 Strategist**：committed decision 的副作用已在 commit 內套好；cascade 只設 pipeline outcome。
 `inject_batch_done` 不在這裡 enqueue，而在 `propagate_inject_outcome_from_goal` / `update_strategy_status` 等
@@ -490,16 +496,16 @@ lake serve worker 走完整 alias 鏈、缺 olean 的檔 on-demand elaborate（�
 **happy path**
 
 - `set_integrity_verified(1)`
-- 若 Manifest `library: true` → enqueue Librarian
-- `cleanup_cascade_backups`
+- `cleanup_cascade_backups`（Phase 6：root-proved 自動 enqueue Librarian 已退役——harvest
+  一律由 Strategist `Ingest` 驅動）
 
 > 這裡**不**寫 Library 檔、**不**退出 daemon —— Library 化交給 §3.5 的 async chain；退出由 §2 step 5
-> （`root_proved && 無 Librarian 待辦`）判斷。
+> （`all_problems_ingested && 無 Librarian 待辦`）判斷。
 
 **rogue sorryAx**
 
 1. `bisect_sorryax_source`：對每個 `succeeded` strategy 跑 `#print axioms`（depth 深的先），找第一個 scratch 含 sorryAx 的元凶
-2. `rollback_cascade_chain`：從元凶往 root 走，逐層 `rollback_promote` 還原 sorry-stub —— culprit strategy `dead`/goal `open`、上游 strategy `proposed`/goal `attempting`。root 因此退出 proved（`integrity_verified` 清掉），下個 tick 重新 Backward 元凶 goal
+2. `rollback_cascade_chain`：從元凶往 root 走，逐層 `rollback_promote` 還原 sorry-stub —— culprit strategy `dead`/goal `open`、上游 strategy `proposed`/goal `attempting`。root 因此退出 proved（`integrity_verified` 清掉），下個 tick 重新 Backward 元凶 goal。**Phase 6**：若該題已 `Ingest` → 自動撤銷（清 `ingested_at`+sign-off）並 `librarian.un_harvest` 全自動下架（刪 Library 檔、退 INDEX section、清 lifecycle rows/fail counts、loud-list 跨題 dependents）
 
 > empirical：41+ 次 cascade verify，0 次攔到 sorry / drift。唯一 caught sorryAx 案例（SG s378）發生在
 > Backward leaf-bypass 的 submit time，不在 cascade。Mechanical-only 把零收益的 verify 全省掉，

@@ -1,5 +1,11 @@
-"""Phase 2 — dispatcher T0/T1 triggers + bfs_refill detached/pending
-review handling + awaiting_human gate + queue.decision_id plumbing.
+"""Phase 2/6 — dispatcher Strategist triggers (T1 routine + T4 stall;
+problem-keyed rows) + bfs_refill detached/pending review handling +
+awaiting_human gate + queue.decision_id plumbing.
+
+Phase 6: T0/first_launch is retired — a fresh problem is structurally
+STALLED, so the T4 trigger wakes the Strategist; Strategist queue rows
+are target_id=<problem name>, target_kind='Problem'; problem liveness
+is `problems.ingested_at IS NULL` (not root status).
 
 Covers Step 3 acceptance. T2 (cascade enqueue on agent_shelved) is
 covered in `tests/test_phase2_cascade.py`.
@@ -76,25 +82,58 @@ def _insert_sub(conn: sqlite3.Connection, problem: str, slug: str,
 
 
 # ---------------------------------------------------------------------
-# T0 trigger
+# Fresh-problem wake (Phase 6 — T0/first_launch retired; a fresh problem
+# is structurally STALLED, so the T4 stall trigger wakes the Strategist)
 # ---------------------------------------------------------------------
 
-def test_t0_enqueues_strategist_for_bootstrap_done_zero(
+def test_fresh_problem_stalls_and_wakes_strategist(
     conn: sqlite3.Connection,
 ) -> None:
-    _insert_problem(conn, name="alpha", bootstrap_done=0)
-    root = _insert_root(conn, "alpha")
+    """A fresh problem (frozen root, nothing dispatchable, no committed
+    Ingest) is structurally stalled → T4 wakes the Strategist with a
+    problem-keyed row (target_id=<problem name>, target_kind='Problem').
+    Replaces the retired T0/first_launch trigger. (last_routine_at
+    recent isolates T4 from T1.)"""
+    _insert_problem(conn, name="alpha", bootstrap_done=0,
+                    last_routine_at=db.now())
+    _insert_root(conn, "alpha", status="frozen")
 
     strategist_triggers(conn, running=set())
 
     q = conn.execute(
-        "SELECT kind, target_id FROM queue WHERE kind='Strategist'"
+        "SELECT kind, target_id, target_kind, priority FROM queue"
+        " WHERE kind='Strategist'"
     ).fetchall()
     assert len(q) == 1
-    assert int(q[0]["target_id"]) == root
+    assert q[0]["target_id"] == "alpha"
+    assert q[0]["target_kind"] == "Problem"
+    assert q[0]["priority"] == 10
 
 
-def test_t0_skips_bootstrapped_problems(conn: sqlite3.Connection) -> None:
+def test_fresh_pure_nl_problem_stalls_and_wakes_strategist(
+    conn: sqlite3.Connection,
+) -> None:
+    """Pure-NL mode (Root/Defs optional): a problem with NO root goal at
+    all still gets the T4 stall wake — the problem-keyed trigger no
+    longer JOINs on an origin='root' goal."""
+    _insert_problem(conn, name="alpha", bootstrap_done=0,
+                    last_routine_at=db.now())
+
+    strategist_triggers(conn, running=set())
+
+    q = conn.execute(
+        "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
+    ).fetchall()
+    assert len(q) == 1
+    assert q[0]["target_id"] == "alpha"
+    assert q[0]["target_kind"] == "Problem"
+
+
+def test_no_wake_when_dispatchable_goal_and_recent_routine(
+    conn: sqlite3.Connection,
+) -> None:
+    """An actively-progressing problem (dispatchable open root, routine
+    clock fresh) gets no Strategist wake."""
     _insert_problem(conn, name="alpha", bootstrap_done=1,
                     last_routine_at=db.now())  # T1 also skipped fresh
     _insert_root(conn, "alpha")
@@ -107,17 +146,15 @@ def test_t0_skips_bootstrapped_problems(conn: sqlite3.Connection) -> None:
     assert q["n"] == 0
 
 
-def test_t0_skips_proved_root(conn: sqlite3.Connection) -> None:
-    """T0 must not enqueue Strategist for a problem whose root is
-    already proved/shelved/disproved, even when bootstrap_done=0.
-    Regression: Phase-2-activated workspaces inherit pre-Phase-2
-    proved problems with bootstrap_done=0; without the root-status
-    gate, every fresh daemon start would burn one Strategist spawn
-    per such problem on Noop decisions.
-    """
+def test_ingested_problem_gets_no_wake(conn: sqlite3.Connection) -> None:
+    """No pointless wake for a FINISHED problem: `ingested_at` set (the
+    Phase 6 terminal state) suppresses every trigger, regardless of the
+    root's status. Replaces the old root-terminal suppression."""
     for terminal in ("proved", "shelved", "disproved"):
-        _insert_problem(conn, name=f"p_{terminal}", bootstrap_done=0)
-        _insert_root(conn, f"p_{terminal}", status=terminal)
+        name = f"p_{terminal}"
+        _insert_problem(conn, name=name, bootstrap_done=0)
+        _insert_root(conn, name, status=terminal)
+        db.set_problem_ingested(conn, name)
 
     strategist_triggers(conn, running=set())
 
@@ -127,14 +164,44 @@ def test_t0_skips_proved_root(conn: sqlite3.Connection) -> None:
     assert q["n"] == 0
 
 
-def test_t0_dedups_inflight_strategist(conn: sqlite3.Connection) -> None:
-    """T0 won't enqueue a second Strategist if one is already running
-    (in-memory running set) or already in queue."""
-    _insert_problem(conn, name="alpha", bootstrap_done=0)
-    root = _insert_root(conn, "alpha")
-    # Simulate already in queue
-    db.enqueue(conn, kind="Strategist", target_id=str(root),
-               target_kind="Goal", priority=10)
+def test_terminal_root_without_ingest_still_wakes(
+    conn: sqlite3.Connection,
+) -> None:
+    """Load-bearing Phase 6 behavior: a PROVED root with no committed
+    Ingest IS stalled when idle — this is the engine that wakes the
+    Strategist to judge the Manifest and commit Ingest (the only exit
+    trigger). Shelved/disproved roots no longer suppress the stall
+    either."""
+    for terminal in ("proved", "shelved", "disproved"):
+        name = f"p_{terminal}"
+        _insert_problem(conn, name=name, bootstrap_done=1,
+                        last_routine_at=db.now())
+        _insert_root(conn, name, status=terminal)
+
+    strategist_triggers(conn, running=set())
+
+    q = conn.execute(
+        "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
+        " ORDER BY target_id"
+    ).fetchall()
+    assert [(r["target_id"], r["target_kind"]) for r in q] == [
+        ("p_disproved", "Problem"),
+        ("p_proved", "Problem"),
+        ("p_shelved", "Problem"),
+    ]
+
+
+def test_stall_wake_dedups_inflight_strategist(
+    conn: sqlite3.Connection,
+) -> None:
+    """The stall wake won't enqueue a second Strategist if one is
+    already running (in-memory running set) or already in queue."""
+    _insert_problem(conn, name="alpha", bootstrap_done=0,
+                    last_routine_at=db.now())
+    _insert_root(conn, "alpha", status="frozen")
+    # Simulate already in queue (problem-keyed row).
+    db.enqueue(conn, kind="Strategist", target_id="alpha",
+               target_kind="Problem", priority=10)
 
     strategist_triggers(conn, running=set())
 
@@ -143,32 +210,42 @@ def test_t0_dedups_inflight_strategist(conn: sqlite3.Connection) -> None:
     ).fetchone()
     assert q["n"] == 1  # not 2
 
+    # In-flight (running set) → no enqueue at all.
+    conn.execute("DELETE FROM queue")
+    conn.commit()
+    strategist_triggers(conn, running={("alpha", "Strategist", None)})
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert q["n"] == 0
 
-def test_t0_skips_problem_with_inflight_inject_batch(
+
+def test_fresh_problem_wake_deferred_while_inject_batch_in_flight(
     conn: sqlite3.Connection,
 ) -> None:
-    """T0 must not enqueue Strategist while a Forward Inject batch
-    started by the previous Strategist run is still resolving (any
-    strategist_decisions row with batch_id set and outcome NULL). The
+    """The stall wake must not fire while a Forward Inject batch started
+    by the previous Strategist run is still resolving: the enqueued
+    Forward worker (is_problem_stalled condition 3) keeps T4 quiet. The
     cascade-side `inject_batch_done` trigger fires Strategist when the
-    last outcome lands; T0 firing in the meantime burns spawns on Noop
+    last outcome lands; T4 firing in the meantime burns spawns on Noop
     decisions ("waiting for Forward"). Mirrors the principle that a
     normal goal isn't re-dispatched while its current attempt is in
-    flight.
+    flight. (last_routine_at recent isolates T4 — T1 is intentionally
+    NOT batch-suppressed.)
     """
-    _insert_problem(conn, name="alpha")
+    _insert_problem(conn, name="alpha", last_routine_at=db.now())
     root = _insert_root(conn, "alpha", status="frozen")
     # Simulate a prior Strategist Inject(briefs=[...]) commit: a
     # strategist_decisions row with batch_id non-NULL and outcome still
     # NULL (Forward not terminal yet) AND the Forward worker it enqueued
     # at commit (strategist._commit_inject_forward) — the queue row is
     # what keeps the stall trigger (T4) quiet while the brick is in
-    # flight; T0 sees the live inject via `has_live_inflight_inject`.
+    # flight.
     conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, brief, payload, batch_id,"
         " outcome, created_at, updated_at)"
-        " VALUES (?, 0, 'first_launch', 'Inject', '## brief\n...',"
+        " VALUES (?, 0, 'inject_batch_done', 'Inject', '## brief\n...',"
         " '{\"pipeline\": \"Forward\"}', 'batchXYZ', NULL, ?, ?)",
         ("alpha", db.now(), db.now()),
     )
@@ -182,8 +259,8 @@ def test_t0_skips_problem_with_inflight_inject_batch(
         "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
     ).fetchone()
     assert q["n"] == 0
-    # Sanity: once the batch outcome lands (and the worker drains), T0
-    # must re-enqueue.
+    # Sanity: once the batch outcome lands (and the worker drains), T4
+    # must re-enqueue — problem-keyed.
     conn.execute(
         "UPDATE strategist_decisions SET outcome='success'"
         " WHERE batch_id='batchXYZ'"
@@ -192,9 +269,11 @@ def test_t0_skips_problem_with_inflight_inject_batch(
     conn.commit()
     strategist_triggers(conn, running=set())
     q = conn.execute(
-        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
-    ).fetchone()
-    assert q["n"] == 1
+        "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
+    ).fetchall()
+    assert len(q) == 1
+    assert q[0]["target_id"] == "alpha"
+    assert q[0]["target_kind"] == "Problem"
     assert root  # silence unused warning
 
 
@@ -210,15 +289,16 @@ def test_t1_enqueues_when_last_routine_at_is_stale(
     stale_ts = "2026-01-01T00:00:00+00:00"
     _insert_problem(conn, name="alpha", bootstrap_done=1,
                     last_routine_at=stale_ts)
-    root = _insert_root(conn, "alpha")
+    _insert_root(conn, "alpha")
 
     strategist_triggers(conn, running=set(), interval_min=60.0)
 
     q = conn.execute(
-        "SELECT target_id FROM queue WHERE kind='Strategist'"
+        "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
     ).fetchall()
     assert len(q) == 1
-    assert int(q[0]["target_id"]) == root
+    assert q[0]["target_id"] == "alpha"
+    assert q[0]["target_kind"] == "Problem"
 
 
 def test_t1_skips_when_last_routine_at_is_recent(
@@ -246,13 +326,13 @@ def test_t1_not_reset_by_event_driven_last_strategist_at(
     _insert_problem(conn, name="alpha", bootstrap_done=1,
                     last_strategist_at=db.now(),       # just had an event wake
                     last_routine_at=stale_routine)     # but routine is overdue
-    root = _insert_root(conn, "alpha")
+    _insert_root(conn, "alpha")
 
     strategist_triggers(conn, running=set(), interval_min=60.0)
 
     q = conn.execute(
         "SELECT target_id FROM queue WHERE kind='Strategist'").fetchall()
-    assert [int(r["target_id"]) for r in q] == [root]
+    assert [r["target_id"] for r in q] == ["alpha"]
 
 
 def test_t1_excludes_paused_time_via_daemon_start_baseline(
@@ -293,11 +373,11 @@ def test_t1_not_suppressed_by_inflight_inject_batch(
     stale_routine = "2026-01-01T00:00:00+00:00"
     _insert_problem(conn, name="alpha", bootstrap_done=1,
                     last_routine_at=stale_routine)
-    root = _insert_root(conn, "alpha")
+    _insert_root(conn, "alpha")
     conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, brief, payload, batch_id, outcome,"
-        " created_at, updated_at) VALUES ('alpha', 0, 'first_launch',"
+        " created_at, updated_at) VALUES ('alpha', 0, 'inject_batch_done',"
         " 'Inject', '## b', '{\"pipeline\":\"Forward\"}', 'b1', NULL, ?, ?)",
         (db.now(), db.now()),
     )
@@ -307,7 +387,7 @@ def test_t1_not_suppressed_by_inflight_inject_batch(
 
     q = conn.execute(
         "SELECT target_id FROM queue WHERE kind='Strategist'").fetchall()
-    assert [int(r["target_id"]) for r in q] == [root]   # fired despite batch
+    assert [r["target_id"] for r in q] == ["alpha"]   # fired despite batch
 
 
 def test_t1_treats_null_last_strategist_as_eligible(
@@ -328,9 +408,11 @@ def test_t1_treats_null_last_strategist_as_eligible(
     assert q["n"] == 1
 
 
-def test_t1_skips_terminal_root(conn: sqlite3.Connection) -> None:
-    """If root is already proved/shelved/disproved, no point running
-    Strategist (nothing to direct)."""
+def test_t1_skips_ingested_problems(conn: sqlite3.Connection) -> None:
+    """Phase 6 — T1 filters on the problem terminal state (`ingested_at`
+    set), NOT root status: an ingested problem is never routine-audited;
+    a proved-root problem WITHOUT a committed Ingest still is (the
+    Strategist must still judge the Manifest and commit Ingest)."""
     stale_ts = "2026-01-01T00:00:00+00:00"
     for prob, root_status in [
         ("alpha", "proved"),
@@ -338,8 +420,9 @@ def test_t1_skips_terminal_root(conn: sqlite3.Connection) -> None:
         ("gamma", "disproved"),
     ]:
         _insert_problem(conn, name=prob, bootstrap_done=1,
-                        last_strategist_at=stale_ts)
+                        last_routine_at=stale_ts)
         _insert_root(conn, prob, status=root_status)
+        db.set_problem_ingested(conn, prob)
 
     strategist_triggers(conn, running=set(), interval_min=60.0)
 
@@ -348,21 +431,32 @@ def test_t1_skips_terminal_root(conn: sqlite3.Connection) -> None:
     ).fetchone()
     assert q["n"] == 0
 
+    # Complement: not-yet-ingested proved-root problem IS T1-audited.
+    db.set_problem_ingested(conn, "alpha", ingested=False)
+    strategist_triggers(conn, running=set(), interval_min=60.0)
+    q = conn.execute(
+        "SELECT target_id FROM queue WHERE kind='Strategist'").fetchall()
+    assert [r["target_id"] for r in q] == ["alpha"]
+
 
 # ---------------------------------------------------------------------
 # awaiting_human gate
 # ---------------------------------------------------------------------
 
-def test_awaiting_human_gates_t0(conn: sqlite3.Connection) -> None:
-    """A problem with an outstanding RequestUserAmend doesn't fire T0."""
+def test_awaiting_human_gates_strategist_triggers(
+    conn: sqlite3.Connection,
+) -> None:
+    """A problem with an outstanding RequestUserAmend fires neither the
+    T4 stall wake (frozen root → stalled) nor T1 (NULL last_routine_at
+    → ancient)."""
     _insert_problem(conn, name="alpha", bootstrap_done=0)
-    _insert_root(conn, "alpha")
+    _insert_root(conn, "alpha", status="frozen")
     # Simulate an awaiting_human strategist_decisions row
     conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, payload, outcome, created_at,"
         " updated_at)"
-        " VALUES ('alpha', 1, 'first_launch', 'RequestUserAmend',"
+        " VALUES ('alpha', 1, 'routine', 'RequestUserAmend',"
         " '{}', 'awaiting_human', ?, ?)", (db.now(), db.now()),
     )
     conn.commit()
@@ -738,7 +832,7 @@ def test_t4_stall_skipped_when_inflight_inject_batch(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
         " trigger_kind, decision_kind, brief, payload, batch_id,"
         " outcome, created_at, updated_at)"
-        " VALUES ('alpha', 0, 'first_launch', 'Inject', '## brief',"
+        " VALUES ('alpha', 0, 'inject_batch_done', 'Inject', '## brief',"
         " '{\"pipeline\":\"Forward\"}', 'b1', NULL, ?, ?)",
         (db.now(), db.now()),
     )
@@ -754,12 +848,65 @@ def test_t4_stall_skipped_when_inflight_inject_batch(
     assert q["n"] == 0
 
 
-def test_t4_stall_skipped_when_root_terminal(
+def test_t4_wakes_on_proved_root_until_ingested(
     conn: sqlite3.Connection,
 ) -> None:
-    """If root already proved, stall trigger is moot."""
-    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    """Phase 6 — a PROVED root with no committed Ingest IS stalled when
+    idle: T4 wakes the Strategist to judge the Manifest and commit the
+    terminal Ingest. Once `ingested_at` is set the problem is never
+    stalled again."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1,
+                    last_routine_at=db.now())
     _insert_root(conn, "alpha", status="proved")
+
+    strategist_triggers(conn, running=set())
+
+    q = conn.execute(
+        "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
+    ).fetchall()
+    assert len(q) == 1
+    assert q[0]["target_id"] == "alpha"
+    assert q[0]["target_kind"] == "Problem"
+
+    # Ingest committed → terminal → no further wake.
+    conn.execute("DELETE FROM queue")
+    conn.commit()
+    db.set_problem_ingested(conn, "alpha")
+    strategist_triggers(conn, running=set())
+    q = conn.execute(
+        "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
+    ).fetchone()
+    assert q["n"] == 0
+
+
+def test_t4_stall_wakes_pure_nl_problem_without_root(
+    conn: sqlite3.Connection,
+) -> None:
+    """Pure-NL problem (no root goal at all), one shelved brick, nothing
+    dispatchable → stalled → T4 wake, problem-keyed."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1,
+                    last_routine_at=db.now())
+    _insert_sub(conn, "alpha", "brick", status="shelved")
+
+    strategist_triggers(conn, running=set())
+
+    q = conn.execute(
+        "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
+    ).fetchall()
+    assert [(r["target_id"], r["target_kind"]) for r in q] == [
+        ("alpha", "Problem")]
+
+
+def test_t4_stall_not_masked_by_dispatchable_detached_goal(
+    conn: sqlite3.Connection,
+) -> None:
+    """Phase 6 — the stall predicate's alive CTE seeds root UNION
+    detached: a dispatchable DETACHED open Forward goal is real pending
+    work, so the problem is NOT stalled (pre-fix the root-only seed
+    read it as stalled while BFS happily dispatched it)."""
+    _insert_problem(conn, name="alpha", bootstrap_done=1,
+                    last_routine_at=db.now())
+    _insert_sub(conn, "alpha", "fwd_brick", status="open", detached=1)
 
     strategist_triggers(conn, running=set())
 
@@ -772,12 +919,12 @@ def test_t4_stall_skipped_when_root_terminal(
 def test_t4_stall_dedup_with_existing_strategist_queue_entry(
     conn: sqlite3.Connection,
 ) -> None:
-    """If a Strategist task is already queued for this root, T4 must
+    """If a Strategist task is already queued for this problem, T4 must
     not add a duplicate."""
     _insert_problem(conn, name="alpha", bootstrap_done=1)
-    root = _insert_root(conn, "alpha", status="attempting")
-    db.enqueue(conn, kind="Strategist", target_id=str(root),
-               target_kind="Goal", priority=10)
+    _insert_root(conn, "alpha", status="attempting")
+    db.enqueue(conn, kind="Strategist", target_id="alpha",
+               target_kind="Problem", priority=10)
 
     strategist_triggers(conn, running=set())
 
@@ -791,34 +938,44 @@ def test_t4_stall_dedup_with_existing_strategist_queue_entry(
 # _derive_strategist_trigger — trigger_kind selection from DB state
 # ---------------------------------------------------------------------
 
-def test_derive_trigger_first_launch_only_when_bootstrap_done_zero(
+def test_derive_trigger_batch_done_on_stall(
     conn: sqlite3.Connection,
 ) -> None:
-    """`first_launch` fires only when bootstrap_done=0 (truly first
-    Strategist wake on this problem). Pre-fix the dispatcher picked
-    first_launch whenever root.status='frozen', regardless of how
-    many decisions had landed — jordan_normal_form 2026-05-23:
-    200+ decisions committed but root still frozen because Strategist
-    had been injecting prereq bricks rather than Reopen(root); pre-
-    fix a manually-injected routine wake repeatedly hit
-    first_launch.md instead of routine.md.
-    """
+    """Phase 6 — `first_launch` is retired. A fresh problem (frozen
+    root, nothing dispatchable, no committed Ingest) is structurally
+    STALLED and derives `inject_batch_done` (the "empty batch done"
+    reading) — the only prompt carrying the mandatory-advance rule, so
+    the wake bootstraps the first Inject instead of Noop'ing."""
     _insert_problem(conn, name="alpha", bootstrap_done=0)
     _insert_root(conn, "alpha", status="frozen")
 
     trigger, pending = _derive_strategist_trigger(conn, "alpha")
-    assert trigger == "first_launch"
+    assert trigger == "inject_batch_done"
     assert pending is None
 
 
-def test_derive_trigger_routine_when_frozen_root_but_bootstrap_done(
+def test_derive_trigger_batch_done_on_pure_nl_fresh_problem(
     conn: sqlite3.Connection,
 ) -> None:
-    """Root frozen + bootstrap_done=1 → routine (Strategist has acted
-    before; subsequent wakes should run the active-audit checklist,
-    not the bootstrap survey)."""
+    """Pure-NL fresh problem (no root goal at all) is stalled too and
+    derives the same `inject_batch_done` wake."""
+    _insert_problem(conn, name="alpha", bootstrap_done=0)
+
+    trigger, pending = _derive_strategist_trigger(conn, "alpha")
+    assert trigger == "inject_batch_done"
+    assert pending is None
+
+
+def test_derive_trigger_routine_when_worker_in_flight(
+    conn: sqlite3.Connection,
+) -> None:
+    """A frozen-root problem with an in-flight Forward worker (queued)
+    is NOT stalled (is_problem_stalled condition 3) → the wake is a
+    plain routine check-in, not the mandatory-advance batch-done."""
     _insert_problem(conn, name="alpha", bootstrap_done=1)
     _insert_root(conn, "alpha", status="frozen")
+    db.enqueue(conn, kind="Forward", target_id="alpha",
+               target_kind="Problem", priority=10)
 
     trigger, pending = _derive_strategist_trigger(conn, "alpha")
     assert trigger == "routine"
@@ -906,30 +1063,33 @@ def test_problems_with_pending_review_lists_only_pending(
     conn: sqlite3.Connection,
 ) -> None:
     _insert_problem(conn, name="alpha", bootstrap_done=1)
-    root = _insert_root(conn, "alpha")
+    _insert_root(conn, "alpha")
     sub = _insert_sub(conn, "alpha", "lemma1")
     assert db.problems_with_pending_review(conn) == []   # none pending yet
     db.update_goal_status(conn, sub, "pending_strategist_review")
-    assert db.problems_with_pending_review(conn) == [("alpha", root)]
+    assert db.problems_with_pending_review(conn) == ["alpha"]
     assert db.problems_with_pending_review(conn, scope="beta%") == []
 
 
-def test_problems_with_pending_review_includes_shelved_root(
+def test_problems_with_pending_review_root_status_irrelevant(
     conn: sqlite3.Connection,
 ) -> None:
     # Regression (2026-06-14): a brick that shelves to pending_review under a
-    # SHELVED (ConfirmShelve+Inject-parked) root must still be listed — the
-    # old `NOT IN (...,'shelved',...)` filter orphaned it, and on a fresh
-    # daemon start with no other work it idle-exited the run. Hard-terminal
-    # roots (proved / disproved) stay excluded.
+    # SHELVED (ConfirmShelve+Inject-parked) root must still be listed.
+    # Phase 6: the exclusion is the problem terminal state (`ingested_at`),
+    # not root status — even a PROVED root still needs review wakes (the
+    # Strategist has to judge the review AND eventually commit Ingest).
     _insert_problem(conn, name="alpha", bootstrap_done=1)
     root = _insert_root(conn, "alpha")
     sub = _insert_sub(conn, "alpha", "brick1")
     db.update_goal_status(conn, sub, "pending_strategist_review")
     db.update_goal_status(conn, root, "shelved")
-    assert db.problems_with_pending_review(conn) == [("alpha", root)]
-    # hard-terminal root → still excluded (problem is genuinely done/dead)
+    assert db.problems_with_pending_review(conn) == ["alpha"]
+    # proved root → STILL listed (Phase 6: only Ingest is terminal)
     db.update_goal_status(conn, root, "proved")
+    assert db.problems_with_pending_review(conn) == ["alpha"]
+    # committed Ingest → excluded (problem is genuinely done)
+    db.set_problem_ingested(conn, "alpha")
     assert db.problems_with_pending_review(conn) == []
 
 
@@ -937,30 +1097,49 @@ def test_reconcile_enqueues_strategist_for_orphaned_pending_review(
     conn: sqlite3.Connection,
 ) -> None:
     # The core fix: a pending_review goal with NO strategist queued/in-flight
-    # gets one enqueued on its root (the spawn then derives a pending_review
-    # wake). Closes the orphan the cascade-time enqueue can drop.
+    # gets one enqueued on its problem (the spawn then derives a
+    # pending_review wake). Closes the orphan the cascade-time enqueue can
+    # drop.
     _insert_problem(conn, name="alpha", bootstrap_done=1)
-    root = _insert_root(conn, "alpha")
+    _insert_root(conn, "alpha")
     sub = _insert_sub(conn, "alpha", "lemma1")
     db.update_goal_status(conn, sub, "pending_strategist_review")
     reconcile_stuck_states(conn, running=set())
     q = conn.execute(
-        "SELECT target_id FROM queue WHERE kind='Strategist'").fetchall()
-    assert [int(r["target_id"]) for r in q] == [root]
+        "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
+    ).fetchall()
+    assert [(r["target_id"], r["target_kind"]) for r in q] == [
+        ("alpha", "Problem")]
+
+
+def test_reconcile_pending_review_pure_nl_problem_without_root(
+    conn: sqlite3.Connection,
+) -> None:
+    # Pure-NL mode: the reconcile wake works with NO root goal at all —
+    # the problem-keyed enqueue does not depend on an origin='root' row.
+    _insert_problem(conn, name="alpha", bootstrap_done=1)
+    sub = _insert_sub(conn, "alpha", "lemma1")
+    db.update_goal_status(conn, sub, "pending_strategist_review")
+    reconcile_stuck_states(conn, running=set())
+    q = conn.execute(
+        "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
+    ).fetchall()
+    assert [(r["target_id"], r["target_kind"]) for r in q] == [
+        ("alpha", "Problem")]
 
 
 def test_reconcile_pending_review_dedups_queue_and_inflight(
     conn: sqlite3.Connection,
 ) -> None:
     # Serialization invariant: never a second Strategist while one is queued
-    # OR in-flight for the same root.
+    # OR in-flight for the same problem.
     _insert_problem(conn, name="alpha", bootstrap_done=1)
-    root = _insert_root(conn, "alpha")
+    _insert_root(conn, "alpha")
     sub = _insert_sub(conn, "alpha", "lemma1")
     db.update_goal_status(conn, sub, "pending_strategist_review")
     # already queued → no second
-    db.enqueue(conn, kind="Strategist", target_id=str(root),
-               target_kind="Goal", priority=20)
+    db.enqueue(conn, kind="Strategist", target_id="alpha",
+               target_kind="Problem", priority=20)
     reconcile_stuck_states(conn, running=set())
     assert conn.execute(
         "SELECT count(*) c FROM queue WHERE kind='Strategist'"
@@ -968,7 +1147,7 @@ def test_reconcile_pending_review_dedups_queue_and_inflight(
     # in-flight (running) → no enqueue at all
     conn.execute("DELETE FROM queue")
     conn.commit()
-    reconcile_stuck_states(conn, running={(str(root), "Strategist", None)})
+    reconcile_stuck_states(conn, running={("alpha", "Strategist", None)})
     assert conn.execute(
         "SELECT count(*) c FROM queue WHERE kind='Strategist'"
     ).fetchone()["c"] == 0

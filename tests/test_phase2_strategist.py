@@ -636,12 +636,11 @@ def test_commit_noop_inserts_audit_row(
     ).fetchall()
     assert len(rows) == 1
     assert rows[0]["decision_kind"] == "Noop"
-    # bootstrap_done set
+    # last_strategist_at bumped (bootstrap_done is vestigial in Phase 6 —
+    # commits no longer touch it)
     p = conn.execute(
-        "SELECT bootstrap_done, last_strategist_at FROM problems"
-        " WHERE name='p'"
+        "SELECT last_strategist_at FROM problems WHERE name='p'"
     ).fetchone()
-    assert p["bootstrap_done"] == 1
     assert p["last_strategist_at"] is not None
 
 
@@ -1507,13 +1506,15 @@ def test_propagate_inject_outcome_from_strategy_dead_fires_batch_done(
 
     db.update_strategy_status(conn, sid, "dead")
     assert _decision_outcome(conn, decision_id) == "failed:dead"
-    # And inject_batch_done fired: a Strategist queue row appeared on
-    # the root.
+    # And inject_batch_done fired: a problem-keyed Strategist queue row
+    # appeared (Phase 6: target_id=<problem name>, target_kind='Problem').
     q = conn.execute(
         "SELECT COUNT(*) AS n FROM queue"
-        " WHERE kind = 'Strategist' AND target_id = ?", (str(root),),
+        " WHERE kind = 'Strategist' AND target_id = 'p'"
+        "   AND target_kind = 'Problem'",
     ).fetchone()
     assert int(q["n"]) == 1
+    assert root  # root exists but the wake is problem-keyed
 
 
 def test_inject_batch_done_waits_for_last_kind_in_mixed_batch(
@@ -1559,20 +1560,23 @@ def test_inject_batch_done_waits_for_last_kind_in_mixed_batch(
     assert _decision_outcome(conn, d_fwd) is None
     q1 = conn.execute(
         "SELECT COUNT(*) AS n FROM queue"
-        " WHERE kind = 'Strategist' AND target_id = ?", (str(root),),
+        " WHERE kind = 'Strategist' AND target_id = 'p'",
     ).fetchone()
     assert int(q1["n"]) == 0
 
-    # Forward now terminates → batch fully resolved → wake fires.
+    # Forward now terminates → batch fully resolved → wake fires
+    # (problem-keyed, Phase 6).
     db.update_goal_status(conn, fwd_goal, "proved")
     affected = db.propagate_inject_outcome_from_goal(conn, fwd_goal)
     assert affected == d_fwd
     db.maybe_enqueue_inject_batch_done(conn, d_fwd)
     q2 = conn.execute(
         "SELECT COUNT(*) AS n FROM queue"
-        " WHERE kind = 'Strategist' AND target_id = ?", (str(root),),
+        " WHERE kind = 'Strategist' AND target_id = 'p'"
+        "   AND target_kind = 'Problem'",
     ).fetchone()
     assert int(q2["n"]) == 1
+    assert root  # root exists but the wake is problem-keyed
 
 
 def _insert_inject_decision(conn: sqlite3.Connection, *, problem: str,

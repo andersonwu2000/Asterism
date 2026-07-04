@@ -824,13 +824,28 @@ def test_stall_warning_silent_when_backward_in_queue(
     assert phase2_context._section_stall_warning(conn, "p") == []
 
 
-def test_stall_warning_silent_when_root_proved(
+def test_stall_warning_shown_when_root_proved_but_not_ingested(
     conn: sqlite3.Connection,
 ) -> None:
-    """Root already proved — problem is done, no stall."""
+    """Phase 6 — a proved root with no committed Ingest IS stalled when
+    idle (the wake that commits Ingest), so the warning must surface;
+    the shared predicate keeps this section in lockstep with T4."""
     _insert_problem(conn)
     root = _insert_root(conn)
     db.update_goal_status(conn, root, "proved")
+
+    assert phase2_context._section_stall_warning(conn, "p") != []
+
+
+def test_stall_warning_silent_when_ingested(
+    conn: sqlite3.Connection,
+) -> None:
+    """Committed Ingest (`ingested_at` set) is the problem terminal
+    state — never stalled, no warning."""
+    _insert_problem(conn)
+    root = _insert_root(conn)
+    db.update_goal_status(conn, root, "proved")
+    db.set_problem_ingested(conn, "p")
 
     assert phase2_context._section_stall_warning(conn, "p") == []
 

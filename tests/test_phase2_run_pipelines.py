@@ -64,7 +64,7 @@ def test_run_strategist_commits_noop(
     mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Strategist Noop: agent ships decision.json with kind=Noop;
-    commit records audit row + sets bootstrap_done; run returns
+    commit records audit row + bumps last_strategist_at; run returns
     failed/strategist_noop (infra-reason)."""
     _insert_root(conn)
     pipeline_id = "test-strat-1"
@@ -77,7 +77,7 @@ def test_run_strategist_commits_noop(
     monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
 
     r = strategist.run_strategist(
-        conn, problem="p", trigger_kind="first_launch", tick=1,
+        conn, problem="p", trigger_kind="routine", tick=1,
         workspace=workspace, mfst=mfst, pipeline_id=pipeline_id,
     )
     assert r.outcome == "failed"
@@ -87,11 +87,11 @@ def test_run_strategist_commits_noop(
         "SELECT decision_kind FROM strategist_decisions WHERE problem='p'"
     ).fetchone()
     assert row["decision_kind"] == "Noop"
-    # bootstrap_done flipped
+    # last_strategist_at bumped by the commit
     p = conn.execute(
-        "SELECT bootstrap_done FROM problems WHERE name='p'"
+        "SELECT last_strategist_at FROM problems WHERE name='p'"
     ).fetchone()
-    assert p["bootstrap_done"] == 1
+    assert p["last_strategist_at"] is not None
 
 
 def test_run_strategist_inject_enqueues_forward(

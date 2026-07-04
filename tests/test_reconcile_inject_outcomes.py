@@ -403,4 +403,4 @@ def test_stalled_lifts_t4_suppression(conn: sqlite3.Connection) -> None:
     # lifted), no alive-reachable open goal → flagged for T4.
     assert _status(conn, "strategies", s) == "stalled"
     assert _outcome(conn, did) == "failed:stalled"
-    assert [p for p, _ in db.problems_stalled(conn, scope="p")] == ["p"]
+    assert db.problems_stalled(conn, scope="p") == ["p"]

@@ -338,22 +338,23 @@ def _queue_rows(conn):
         "SELECT kind, target_id, target_kind, priority FROM queue"))
 
 
-def test_gate_enqueues_librarian_when_library_optin(
+def test_gate_does_not_enqueue_librarian_even_when_library_optin(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
-    """A clean, fully-proved root with `library: true` opt-in enqueues
-    one Librarian job at the queue floor (priority 0). The autouse
-    conftest stub returns an axiom-clean probe → happy path."""
-    _seed_proved_root(conn)
+    """Phase 6 — the root-proved auto-Librarian trigger is RETIRED:
+    harvest is strictly Ingest-driven (strategist._commit_ingest owns
+    the enqueue, behind the sign-off gate). A clean, fully-proved root
+    with `library: true` opt-in passes the gate (integrity_verified
+    set) but enqueues NOTHING. The autouse conftest stub returns an
+    axiom-clean probe → happy path."""
+    gid = _seed_proved_root(conn)
     mfst = manifest.Manifest(problem="p", statement="True", library=True)
     verify.root_integrity_gate(conn, tmp_path, "p", mfst)
-    rows = _queue_rows(conn)
-    assert len(rows) == 1
-    r = rows[0]
-    assert (r["kind"], r["target_id"], r["target_kind"]) == (
-        "Librarian", "p", "Problem")
-    # priority 0 = queue floor: never preempts proof work (2-20).
-    assert r["priority"] == 0
+    assert _queue_rows(conn) == []
+    row = conn.execute(
+        "SELECT integrity_verified FROM goals WHERE id = ?", (gid,),
+    ).fetchone()
+    assert row["integrity_verified"] == 1
 
 
 def test_gate_no_librarian_when_library_optout(

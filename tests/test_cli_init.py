@@ -1,10 +1,11 @@
-"""cli.cmd_init — hand-written Root.lean + dual type-check gate.
+"""cli.cmd_init — hand-written Root.lean + type-check gate.
 
 Statement source-of-truth moved from Manifest's `## Statement` section to
-the user-authored Root.lean theorem signature. init refuses to proceed
-unless both Defs.lean AND Root.lean exist and `lake build` cleanly, then
-extracts the statement from Root.lean for the DB. Manifest's `## Statement`
-section is now optional (description only) and not consumed by init.
+the user-authored Root.lean theorem signature. Phase 6 made Root.lean and
+Defs.lean OPTIONAL, user-pinned inputs (pure-NL mode when both absent);
+every file that IS present must `lake build` cleanly, and a present
+Root.lean's statement is extracted for the DB. Manifest's `## Statement`
+section is optional (description only) and not consumed by init.
 """
 from __future__ import annotations
 
@@ -160,28 +161,39 @@ def _mock_lake_pass(monkeypatch: pytest.MonkeyPatch):
 # cmd_init — failure modes
 # ---------------------------------------------------------------------
 
-def test_init_fails_when_root_missing(
+def test_init_pure_nl_when_root_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str], _mock_lake_pass,
 ) -> None:
-    """init no longer auto-creates Root.lean. Missing file is hard fail."""
+    """Phase 6 — Root.lean is OPTIONAL: missing Root means pure-NL mode.
+    init succeeds, inserts the problem row but NO root goal (the fresh
+    problem is structurally stalled; the T4 wake bootstraps the
+    Strategist's first Inject from the Manifest alone)."""
     _setup_problem(tmp_path, root_body=None)
     monkeypatch.chdir(tmp_path)
     rc = cmd_init(_init_args())
-    assert rc == 1
-    assert "Root.lean not found" in capsys.readouterr().err
+    assert rc == 0
+    assert "pure-NL" in capsys.readouterr().out
+    from Tooling.state import db
+    conn = db.connect()
+    assert conn.execute(
+        "SELECT 1 FROM problems WHERE name='wilson'").fetchone() is not None
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM goals WHERE problem='wilson'"
+    ).fetchone()["n"] == 0
 
 
-def test_init_fails_when_defs_missing(
+def test_init_succeeds_when_defs_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str], _mock_lake_pass,
 ) -> None:
-    """Defs.lean is required even if minimal — frames namespace + opens."""
+    """Phase 6 — Defs.lean is OPTIONAL (author-vouched anchor vocabulary
+    when present). Root-only init succeeds and creates the root goal."""
     _setup_problem(tmp_path, defs_body=None)
     monkeypatch.chdir(tmp_path)
     rc = cmd_init(_init_args())
-    assert rc == 1
-    assert "Defs.lean not found" in capsys.readouterr().err
+    assert rc == 0
+    assert "root goal id=" in capsys.readouterr().out
 
 
 def test_init_fails_when_root_lake_build_errors(

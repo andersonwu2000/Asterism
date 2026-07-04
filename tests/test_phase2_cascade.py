@@ -359,20 +359,23 @@ def test_dead_at_depth_2(conn: sqlite3.Connection) -> None:
 def test_enqueue_strategist_review_sets_status_and_queues(
     conn: sqlite3.Connection,
 ) -> None:
-    """_enqueue_strategist_review marks goal pending and enqueues
-    Strategist on this problem's root."""
-    root = _insert_goal(conn, slug="main", origin="root")
+    """_enqueue_strategist_review marks goal pending and enqueues a
+    problem-keyed Strategist row (Phase 6: target_id=<problem name>,
+    target_kind='Problem')."""
+    _insert_goal(conn, slug="main", origin="root")
     sub = _insert_goal(conn, slug="sub", status="attempting")
 
     _enqueue_strategist_review(conn, sub)
 
     assert db.get_goal(conn, sub)["status"] == "pending_strategist_review"
     q = conn.execute(
-        "SELECT kind, target_id, priority FROM queue WHERE kind='Strategist'"
+        "SELECT kind, target_id, target_kind, priority FROM queue"
+        " WHERE kind='Strategist'"
     ).fetchall()
     assert len(q) == 1
-    assert int(q[0]["target_id"]) == root
-    # Priority 20 per pipelines.md §2.1 (T2 > T0/T1=10); regression guard
+    assert q[0]["target_id"] == "p"
+    assert q[0]["target_kind"] == "Problem"
+    # Priority 20 per pipelines.md §2.1 (T2 > T1/T4=10); regression guard
     # against db.enqueue default=0 putting T2 below Backward / Builder.
     assert q[0]["priority"] == 20
 
@@ -722,8 +725,9 @@ def test_forward_cascade_with_batch_decision_fires_strategist(
 ) -> None:
     """Forward terminal outcome (success or failure) on a batch
     decision_id advances the batch and, when the last sibling finishes,
-    enqueues Strategist. Mirrors the new single trigger path."""
-    root = _insert_goal(conn, slug="main", origin="root", status="attempting")
+    enqueues Strategist (problem-keyed). Mirrors the new single trigger
+    path."""
+    _insert_goal(conn, slug="main", origin="root", status="attempting")
     [rid] = _seed_inject_batch_rows(conn, batch_id="batch-A", count=1)
     cascade_one(
         conn, pipeline_id="pid-fwd", kind="Forward",
@@ -732,10 +736,11 @@ def test_forward_cascade_with_batch_decision_fires_strategist(
         decision_id=rid,
     )
     q = conn.execute(
-        "SELECT target_id FROM queue WHERE kind='Strategist'"
+        "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
     ).fetchall()
     assert len(q) == 1
-    assert int(q[0]["target_id"]) == root
+    assert q[0]["target_id"] == "p"
+    assert q[0]["target_kind"] == "Problem"
 
 
 def test_t2_pops_before_bfs(
@@ -747,11 +752,11 @@ def test_t2_pops_before_bfs(
     kwarg and inherited db.enqueue default=0, putting T2 below
     Backward (=2) and Builder (=5) — inverting pipelines.md §2.1
     'T2 > T0 > T1' (and the §4.3 implied 'Strategist > Backward /
-    Builder for pending review'). T2-vs-T0/T1 ordering is moot at
+    Builder for pending review'). T2-vs-T1/T4 ordering is moot at
     runtime because per-problem Strategist dedup in
-    `_enqueue_strategist_review` prevents simultaneous T0/T1+T2 rows
-    for the same root."""
-    root = _insert_goal(conn, slug="main", origin="root")
+    `_enqueue_strategist_review` prevents simultaneous T1/T4+T2 rows
+    for the same problem."""
+    _insert_goal(conn, slug="main", origin="root")
     sub = _insert_goal(conn, slug="sub", status="attempting")
 
     db.enqueue(conn, kind="Backward", target_id="999", priority=2)
@@ -762,7 +767,7 @@ def test_t2_pops_before_bfs(
     assert first is not None
     assert first["kind"] == "Strategist"
     assert first["priority"] == 20
-    assert int(first["target_id"]) == root
+    assert first["target_id"] == "p"
 
 
 # ---------------------------------------------------------------------
@@ -971,10 +976,10 @@ def test_batch_partial_completion_does_not_enqueue_strategist(
 def test_batch_full_completion_enqueues_one_strategist(
     conn: sqlite3.Connection,
 ) -> None:
-    """All 3 Forwards done → exactly one Strategist enqueue with
-    priority=20. Idempotent: a second cascade for the same batch must
-    not double-enqueue (dedup via is_in_queue)."""
-    root = _insert_goal(conn, slug="main", origin="root", status="attempting")
+    """All 3 Forwards done → exactly one problem-keyed Strategist
+    enqueue with priority=20. Idempotent: a second cascade for the same
+    batch must not double-enqueue (dedup via is_in_queue)."""
+    _insert_goal(conn, slug="main", origin="root", status="attempting")
     ids = _seed_inject_batch_rows(conn, batch_id="batch-z", count=3)
 
     for pid, rid in zip(["p1", "p2", "p3"], ids):
@@ -983,11 +988,12 @@ def test_batch_full_completion_enqueues_one_strategist(
                     outcome="success", decision_id=rid)
 
     q = list(conn.execute(
-        "SELECT kind, target_id, priority FROM queue"
+        "SELECT kind, target_id, target_kind, priority FROM queue"
         " WHERE kind='Strategist'"
     ))
     assert len(q) == 1
-    assert int(q[0]["target_id"]) == root
+    assert q[0]["target_id"] == "p"
+    assert q[0]["target_kind"] == "Problem"
     assert q[0]["priority"] == 20
 
     # Re-fire cascade on the same last row (idempotent path); no second
@@ -999,6 +1005,23 @@ def test_batch_full_completion_enqueues_one_strategist(
         "SELECT COUNT(*) AS n FROM queue WHERE kind='Strategist'"
     ))
     assert q2[0]["n"] == 1
+
+
+def test_batch_done_fires_for_pure_nl_problem_without_root(
+    conn: sqlite3.Connection,
+) -> None:
+    """Pure-NL mode (no root goal at all): batch completion still wakes
+    the Strategist — Phase 6 made the wake problem-keyed, so it no
+    longer depends on an origin='root' goal existing."""
+    ids = _seed_inject_batch_rows(conn, batch_id="batch-nl", count=1)
+    cascade_one(conn, pipeline_id="pnl", kind="Forward",
+                target_id="p", target_kind="Problem",
+                outcome="success", decision_id=ids[0])
+    q = list(conn.execute(
+        "SELECT target_id, target_kind FROM queue WHERE kind='Strategist'"
+    ))
+    assert [(r["target_id"], r["target_kind"]) for r in q] == [
+        ("p", "Problem")]
 
 
 def test_batch_done_defers_until_produced_lemma_proved(
@@ -1061,10 +1084,13 @@ def test_batch_done_defers_until_produced_lemma_proved(
     ))
     assert all(r["outcome"] == "success" for r in rows)
     q = list(conn.execute(
-        "SELECT kind, target_id FROM queue WHERE kind='Strategist'"
+        "SELECT kind, target_id, target_kind FROM queue"
+        " WHERE kind='Strategist'"
     ))
     assert len(q) == 1
-    assert int(q[0]["target_id"]) == root
+    assert q[0]["target_id"] == "p"
+    assert q[0]["target_kind"] == "Problem"
+    assert root  # root exists but the wake is problem-keyed
 
 
 def test_batch_done_does_not_fire_when_produced_lemma_shelved(

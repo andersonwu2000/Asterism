@@ -209,7 +209,7 @@ def test_cascade_agent_shelved_routes_to_strategist_review(
 ) -> None:
     """Phase 2 — `shelve` directive routes goal to
     'pending_strategist_review' (transitional, not terminal) and
-    enqueues a Strategist run on the problem's root. No
+    enqueues a problem-keyed Strategist run (Phase 6). No
     _propagate_shelve; upstream strategy chain stays alive until
     Strategist commits ConfirmShelve / Reopen / Inject."""
     gid = _seed_goal(conn)
@@ -222,15 +222,14 @@ def test_cascade_agent_shelved_routes_to_strategist_review(
     row = db.get_goal(conn, gid)
     assert row["status"] == "pending_strategist_review"
     assert row["attempts"] == 1
-    # Strategist enqueued on this problem's root
-    root_id = conn.execute(
-        "SELECT id FROM goals WHERE problem='p' AND origin='root'"
-    ).fetchone()[0]
+    # Strategist enqueued problem-keyed (target_id=<problem name>)
     q = conn.execute(
-        "SELECT kind, target_id FROM queue WHERE kind='Strategist'"
+        "SELECT kind, target_id, target_kind FROM queue"
+        " WHERE kind='Strategist'"
     ).fetchall()
     assert len(q) == 1
-    assert int(q[0]["target_id"]) == root_id
+    assert q[0]["target_id"] == "p"
+    assert q[0]["target_kind"] == "Problem"
 
 
 # ---------------------------------------------------------------------

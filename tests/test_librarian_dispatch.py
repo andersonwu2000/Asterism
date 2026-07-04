@@ -73,18 +73,23 @@ def _manifests(**opt_in):
     return {p: SimpleNamespace(library=v) for p, v in opt_in.items()}
 
 
-def _proved_root(conn, problem="p", *, integrity_verified=True):
-    """Insert a proved root goal so `_librarian_selfstart_problems` sees
-    `problem`. `integrity_verified` defaults True (a genuinely-proved root that
-    passed `root_integrity_gate`); pass False to simulate a transiently-proved
-    root (e.g. a sorryAx fake-proof in the window before the gate rolls it
-    back), which must NOT self-start library-ization."""
+def _proved_root(conn, problem="p", *, integrity_verified=True,
+                 ingested=True):
+    """Seed a proved root AND (by default) the committed `Ingest` terminal
+    state so `_librarian_selfstart_problems` sees `problem`. Phase 6 —
+    harvest is strictly Ingest-driven: eligibility keys on
+    `problems.ingested_at`, not root status/iv (the Ingest verify gate
+    upstream already requires a present root to be proved). Pass
+    `ingested=False` to simulate a proved-but-not-yet-Ingested problem,
+    which must NOT self-start library-ization."""
     _seed_problem(conn, problem)
     gid = db.insert_goal(conn, problem=problem, slug="main",
                          lean_path=f"Problems/{problem}/Root.lean",
                          statement="x", origin="root", status="proved")
     if integrity_verified:
         db.set_integrity_verified(conn, gid)
+    if ingested:
+        db.set_problem_ingested(conn, problem)
 
 
 # ---------------------------------------------------------------------
@@ -542,9 +547,10 @@ def test_librarian_refill_not_pending_when_fully_stalled(tmp_path: Path):
     assert pending is False
 
 
-def test_librarian_refill_selfstart_opted_in_proved(tmp_path: Path):
-    # Bug B — opted-in (library:true) proved problem with NO library_decls and
-    # no INDEX self-starts dedup (no verify-hook / manual seed needed).
+def test_librarian_refill_selfstart_opted_in_ingested(tmp_path: Path):
+    # Bug B — opted-in (library:true) Ingest-committed problem with NO
+    # library_decls and no INDEX self-starts dedup (no one-shot enqueue /
+    # manual seed needed).
     conn = _mem()
     _proved_root(conn, "p")
     pending = dispatcher._librarian_refill(
@@ -563,7 +569,7 @@ def test_librarian_paths_respect_ingest_signoff_pause(tmp_path: Path):
     `main:True`) auto-starts harvest, bypassing the human sign-off (the MV run
     incident). Once the pause clears, they resume."""
     conn = _mem()
-    _proved_root(conn, "p")            # proved + integrity-verified, library:true
+    _proved_root(conn, "p")   # proved + ingested (signoff pause pending)
     db.set_ingest_signoff_pending(conn, "p", True)
     mf = _manifests(p=True)
 
@@ -586,21 +592,19 @@ def test_librarian_paths_respect_ingest_signoff_pause(tmp_path: Path):
         conn, tmp_path, set(), mf, fail_counts={}) is True
 
 
-def test_librarian_refill_no_selfstart_until_integrity_verified(tmp_path: Path):
-    # A transiently-proved-but-not-integrity-verified root (e.g. a sorryAx
-    # fake-proof before root_integrity_gate rolls it back) must NOT self-start
-    # library-ization: classify on still-stubbed proofs sizes files from the
-    # wrong line counts (P13 PerBumpStokes oversize TOCTOU). Fires only at iv=1.
+def test_librarian_refill_no_selfstart_until_ingested(tmp_path: Path):
+    # Phase 6 — a proved (even integrity-verified) root with NO committed
+    # Ingest must NOT self-start library-ization: harvest is strictly
+    # Ingest-driven (the Strategist's terminal judgment gates it, replacing
+    # the old proved+iv selector). Fires only once `ingested_at` is set.
     conn = _mem()
-    _proved_root(conn, "p", integrity_verified=False)
+    _proved_root(conn, "p", ingested=False)
     pending = dispatcher._librarian_refill(
         conn, tmp_path, set(), _manifests(p=True), fail_counts={})
     assert pending is False
     assert _queue(conn) == []
-    # once root_integrity_gate sets iv=1 (clean #print axioms) → self-starts
-    gid = conn.execute(
-        "SELECT id FROM goals WHERE problem='p' AND origin='root'").fetchone()[0]
-    db.set_integrity_verified(conn, gid)
+    # once the Strategist commits Ingest → self-starts
+    db.set_problem_ingested(conn, "p")
     pending = dispatcher._librarian_refill(
         conn, tmp_path, set(), _manifests(p=True), fail_counts={})
     assert pending is True
@@ -879,11 +883,11 @@ def test_harvest_outstanding_false_when_not_opted_in(tmp_path: Path):
         conn, tmp_path, _manifests(p=False), scope=None, fail_counts={}) is False
 
 
-def test_harvest_outstanding_false_when_root_not_integrity_verified(tmp_path: Path):
-    # Transiently-proved (iv=0, e.g. a sorryAx fake-proof before rollback)
-    # must NOT count as outstanding harvest.
+def test_harvest_outstanding_false_when_not_ingested(tmp_path: Path):
+    # Phase 6 — proved but no committed Ingest must NOT count as
+    # outstanding harvest (harvest is strictly Ingest-driven).
     conn = _mem()
-    _proved_root(conn, "p", integrity_verified=False)
+    _proved_root(conn, "p", ingested=False)
     _deduped(conn, "foo")
     assert dispatcher._harvest_outstanding(
         conn, tmp_path, _manifests(p=True), scope=None, fail_counts={}) is False
