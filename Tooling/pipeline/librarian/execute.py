@@ -318,6 +318,12 @@ def _mechanical_migrate_file(
     # is preserved; every other slug defaults to `target_module` in _reassemble.
     chunk_ns_map: dict[str, str] = {}
     holes: list[str] = []
+    # Syntactic oracle over Defs.lean (declInfo RPC): built LAZILY on the
+    # first Defs-decl row — one warm elaborate per migrated file that
+    # actually slices Defs, none for pure proof files. None (gateway down /
+    # stale binary) → the astslice regex fallback, i.e. today's behavior.
+    defs_oracle = None
+    defs_oracle_tried = False
     for r in rows:
         slug = r["slug"]
         # Resolve this decl's per-decl source uniformly by kind, so Defs
@@ -331,7 +337,14 @@ def _mechanical_migrate_file(
         # raised loud, never masked by from-scratch (CLAUDE.md rule 10).
         strat_text = None
         if r["source_goal_id"] is None:
-            defs_slice = _defs_decl_source(defs_text, slug)
+            if not defs_oracle_tried:
+                defs_oracle_tried = True
+                from ...lsp.decl_oracle import DeclOracle
+                defs_oracle = (DeclOracle.for_file(defs_lean,
+                                                   workspace=workspace)
+                               if defs_lean.exists() else None)
+            defs_slice = _defs_decl_source(defs_text, slug,
+                                           oracle=defs_oracle)
             if defs_slice is None:
                 raise _MechIntegrityError(
                     f"Defs decl `{slug}` not found in Defs.lean")
@@ -340,7 +353,8 @@ def _mechanical_migrate_file(
             # name. The chunk body is namespace-agnostic (relabel still wraps it
             # in target_module, which the chunk-split strips), so we only need to
             # tag the destination block.
-            _enc_ns = _defs_decl_namespace(defs_text, slug)
+            _enc_ns = _defs_decl_namespace(defs_text, slug,
+                                           oracle=defs_oracle)
             if _ns_is_operator_specified(_enc_ns, problem):
                 chunk_ns_map[slug] = _enc_ns
             # Preserve Defs.lean's import/open header so any notation the

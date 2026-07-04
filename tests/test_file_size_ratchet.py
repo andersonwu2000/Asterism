@@ -92,7 +92,11 @@ _WATERMARKS = {
     # later quality pass may trim it.
     "Tooling/pipeline/librarian/__init__.py": 145,
     "Tooling/pipeline/librarian/_base.py": 150,
-    "Tooling/pipeline/librarian/astslice.py": 400,
+    # 400→430 (2026-07-04): declInfo-oracle seams (`oracle=` params +
+    # fallback plumbing) in `_defs_decl_source`/`_defs_decl_namespace`;
+    # expected to drop back under 400 when the regex paths retire to
+    # cold-fallback-only (task: declInfo syntactic oracle).
+    "Tooling/pipeline/librarian/astslice.py": 430,
     "Tooling/pipeline/librarian/classify.py": 545,
     "Tooling/pipeline/librarian/schedule.py": 235,
     # 345→360: Gate D namespace-preserved-Defs branch — a #43-preserved Defs

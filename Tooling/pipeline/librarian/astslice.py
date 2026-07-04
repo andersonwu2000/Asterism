@@ -237,10 +237,19 @@ def _variable_block_spans(defs_text: str) -> "list[tuple[int, int, str]]":
     return spans
 
 
-def _defs_decl_source(defs_text: str, name: str) -> "str | None":
+def _defs_decl_source(defs_text: str, name: str,
+                      oracle=None) -> "str | None":
     """A SELF-CONTAINED slice of `Defs.lean` declaring `name`: the decl's
     keyword head through to the next top-level declaration / enclosing `end`,
     PREPENDED with every `variable` command in scope at the decl's position.
+
+    `oracle` (a `Tooling.lsp.decl_oracle.DeclOracle` bound to the same text)
+    answers first when provided: spans/scope/modifiers then come from the
+    parsed syntax tree + env — which fixes the class this regex path can't
+    represent (a data def under `noncomputable section` loses its modifier;
+    the slice boundary heuristics below are each a patched incident). The
+    regex walk below is the cold fallback (no gateway / stale binary /
+    oracle text drift) and the unit-test default.
 
     A Defs decl authored inside `section X / variable {E …} [inst …] / end X`
     references its binders through the section context — slicing the decl
@@ -254,6 +263,14 @@ def _defs_decl_source(defs_text: str, name: str) -> "str | None":
     Defs decls have no `proofs/L_<slug>.lean`; this gives them the same
     per-decl source every other migratable decl has, so they relabel through
     the one mechanical path instead of forcing a cold from-scratch spawn."""
+    if oracle is not None and oracle.text == defs_text:
+        src = oracle.decl_source(name)
+        if src is not None:
+            return src
+        # Oracle bound but decl unseen there (renamed? non-primary?) — the
+        # regex walk may still find it; note the divergence signal.
+        print(f"[decl-oracle] `{name}` not in oracle view — regex fallback",
+              flush=True)
     from ...quality.librarian.inventory import _DEFS_DECL_RE
     matches = list(_DEFS_DECL_RE.finditer(defs_text))
 
@@ -345,9 +362,11 @@ def _defs_decl_source(defs_text: str, name: str) -> "str | None":
     return None
 
 
-def _defs_decl_namespace(defs_text: str, name: str) -> "str | None":
+def _defs_decl_namespace(defs_text: str, name: str,
+                         oracle=None) -> "str | None":
     """The dotted namespace a Defs.lean decl `name` is declared under, or None
-    if it sits at file top level.
+    if it sits at file top level. With `oracle` (same-text `DeclOracle`) the
+    stack comes from syntax kinds; the regex line walk is the fallback.
 
     An operator who authors a Defs decl under an explicit namespace (e.g.
     residue_thm puts `windingNumber`/`residue` under `namespace Complex`) makes
@@ -358,6 +377,13 @@ def _defs_decl_namespace(defs_text: str, name: str) -> "str | None":
     framework's own scaffolding namespace (`Problems.<p>`) is NOT operator-
     specified and is relabelled to the Library namespace as usual — preserving
     it would leak `Problems.<p>` into the (must-be-self-sufficient) Library."""
+    if oracle is not None and oracle.text == defs_text:
+        d = oracle.find(name)
+        if d is not None:
+            stack = oracle.namespace_stack(d)
+            return ".".join(stack) if stack else None
+        print(f"[decl-oracle] `{name}` not in oracle view — regex fallback",
+              flush=True)
     from ...quality.librarian.inventory import _DEFS_DECL_RE
     decl_pos = None
     for m in _DEFS_DECL_RE.finditer(defs_text):
