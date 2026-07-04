@@ -163,33 +163,30 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         if winner is not None:
             final_text = _replace_proof_body(source, winner)
             _commit_goal_lean(final_text)
+            forbidden = _grep_forbidden(final_text, mfst.forbidden_lemmas)
+            if forbidden:
+                _commit_goal_lean(backup_text)
+                return PipelineResult(outcome="failed",
+                                      failure_reason="forbidden_lemma",
+                                      failure_detail=forbidden)
+            # Confirm through the SHARED soundness gate. The previous
+            # inline confirm only checked axioms when a whitelist was set
+            # — with the Manifest field absent, a hint winner flipped
+            # 'proved' with NO sorryAx tripwire at all (a winner citing a
+            # sorry-bearing sibling through the skeleton's imports slips
+            # through; 2026-07-04 convention audit, finding 5). axiom_gate
+            # runs the tripwire UNCONDITIONALLY, same as Phase 2 /
+            # Backward / Forward. Pre-register moment: no session token
+            # yet, so this rides a borrowed slot like the probe above
+            # (backlog: Phase 1 pre-registration).
             fq_name = f"Problems.{goal['problem']}.{goal['slug']}"
-            v_confirm = gateway_lifecycle.verify_file(
-                goal_lean, write_olean=True,
-                axioms_for=fq_name if mfst.axioms_whitelist else None,
-                workspace=workspace,
-            )
-            ok_confirm = "error" not in v_confirm and v_confirm.get("ok")
-            if ok_confirm:
-                forbidden = _grep_forbidden(final_text, mfst.forbidden_lemmas)
-                if forbidden:
-                    _commit_goal_lean(backup_text)
-                    return PipelineResult(outcome="failed",
-                                          failure_reason="forbidden_lemma",
-                                          failure_detail=forbidden)
-                if mfst.axioms_whitelist:
-                    if v_confirm.get("axiom_error"):
-                        _commit_goal_lean(backup_text)
-                        return PipelineResult(outcome="failed",
-                                              failure_reason="axiom_violation",
-                                              failure_detail=v_confirm["axiom_error"])
-                    used = set(v_confirm.get("axioms") or [])
-                    rogue = used - set(mfst.axioms_whitelist)
-                    if rogue:
-                        _commit_goal_lean(backup_text)
-                        return PipelineResult(outcome="failed",
-                                              failure_reason="axiom_violation",
-                                              failure_detail=f"rogue axioms: {sorted(rogue)}")
+            from ._axiom import axiom_gate
+            gate = axiom_gate(
+                goal_lean, fq_name=fq_name,
+                whitelist=list(mfst.axioms_whitelist or []),
+                workspace=workspace, attempts_dir=attempts_dir,
+                write_olean=True)
+            if gate.ok:
                 # Forensic snapshot. Filename is fixed (`won_hint.lean`)
                 # since the winning tactic may contain spaces / quotes /
                 # unicode unfit for filenames; the file body has the
@@ -201,6 +198,13 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                     final_text, encoding="utf-8"
                 )
                 return PipelineResult(outcome="proved")
+            if gate.failure_reason == "axiom_violation":
+                _commit_goal_lean(backup_text)
+                return PipelineResult(outcome="failed",
+                                      failure_reason="axiom_violation",
+                                      failure_detail=gate.detail or "")
+            # Confirm elaborate failed (infra / diagnostics) — not a
+            # winner after all; fall through to the Phase 2 restore.
 
         # Phase 1 didn't close the goal — restore the original sorry-stub
         # and fall through to Phase 2 LLM.

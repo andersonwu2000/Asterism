@@ -893,12 +893,15 @@ def test_cascade_shelve_inward_kills_descendant_strategies(
 
 def test_proved_does_not_cascade(conn: sqlite3.Connection) -> None:
     from Tooling.core.dispatcher import _set_goal_terminal_and_propagate
+    from Tooling.state import transitions
     parent = _insert_goal(conn, slug="parent", origin="root")
     sid = _insert_strategy(conn, goal_id=parent)
     child = _insert_goal(conn, slug="child", status="open")
     _link(conn, sid, [child])
 
-    _set_goal_terminal_and_propagate(conn, parent, "proved")
+    _set_goal_terminal_and_propagate(
+        conn, parent, "proved",
+        receipt=transitions.ProvedReceipt("verify_collapse", "test"))
     # No shelve cascade on the proved path.
     assert db.get_goal(conn, child)["status"] == "open"
 
@@ -1064,7 +1067,10 @@ def test_batch_done_defers_until_produced_lemma_proved(
 
     # First lemma proved → propagate → still one pending → no enqueue
     from Tooling.core.dispatcher import _set_goal_terminal_and_propagate
-    _set_goal_terminal_and_propagate(conn, fwd_a, "proved")
+    from Tooling.state import transitions
+    _receipt = transitions.ProvedReceipt("axiom_gate", "test")
+    _set_goal_terminal_and_propagate(conn, fwd_a, "proved",
+                                     receipt=_receipt)
     rows = list(conn.execute(
         "SELECT outcome FROM strategist_decisions"
         " WHERE batch_id='defer-batch' ORDER BY id"
@@ -1077,7 +1083,8 @@ def test_batch_done_defers_until_produced_lemma_proved(
     assert q[0]["n"] == 0
 
     # Second lemma proved → batch complete → Strategist enqueued exactly once
-    _set_goal_terminal_and_propagate(conn, fwd_b, "proved")
+    _set_goal_terminal_and_propagate(conn, fwd_b, "proved",
+                                     receipt=_receipt)
     rows = list(conn.execute(
         "SELECT outcome FROM strategist_decisions"
         " WHERE batch_id='defer-batch' ORDER BY id"

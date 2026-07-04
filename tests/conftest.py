@@ -37,6 +37,18 @@ def conn() -> sqlite3.Connection:
 
 
 @pytest.fixture(autouse=True)
+def _strict_transitions_by_default(monkeypatch: pytest.MonkeyPatch):
+    """The transition registry / proved-receipt / main-thread checks run
+    STRICT across the whole suite, so CI actually proves what
+    transitions.py's module docstring claims it proves: every exercised
+    code path stays inside the declared edge set AND every proved-flip
+    carries a ProvedReceipt. (Before 2026-07-04 strict was opt-in per
+    test and the docstring's 'Tests / CI set …=1' was aspirational.)
+    Tests that exercise LENIENT production behavior delenv locally."""
+    monkeypatch.setenv("ASTERISM_STRICT_TRANSITIONS", "1")
+
+
+@pytest.fixture(autouse=True)
 def _skip_lean_contract_gate(monkeypatch: pytest.MonkeyPatch):
     """The daemon-startup framework⇄Lean contract gate (task #12) would run
     its real-toolchain contracts against this conftest's verify stubs and

@@ -203,6 +203,82 @@ class IllegalTransition(RuntimeError):
     `[transition-violation]` marker and the write proceeds."""
 
 
+# ---------------------------------------------------------------------------
+# Proved-flip receipts — the soundness boundary lives HERE, not in pipeline
+# discipline.
+#
+# "status='proved' iff the proof passed the axiom gate" is THE soundness
+# invariant. Before receipts it was a calling CONVENTION (each pipeline
+# remembers to run `_axiom.axiom_gate` before flipping) guarded by one
+# structural test over the known paths — the exact shape under which Forward
+# once shipped ungated. A transition INTO 'proved' now must carry a receipt
+# naming which of the three sanctioned soundness arguments applies; a new
+# code path that flips 'proved' without one trips strict mode (CI) or logs
+# `[receipt-violation]` loudly in production — same dial, same rationale as
+# the edge registry above.
+# ---------------------------------------------------------------------------
+
+PROVED_RECEIPT_KINDS: frozenset[str] = frozenset({
+    # This goal's OWN proof was elaborated and its transitive axiom set
+    # checked (sorryAx tripwire + whitelist) — `_axiom.axiom_gate` /
+    # `axiom_probe` returned ok.
+    "axiom_gate",
+    # This goal is an alias (dedupe / Forward proved-alias / G1 revival) to
+    # a canonical that carried its own receipt when IT flipped proved; the
+    # alias body itself is build-verified. Soundness by induction on the
+    # canonical — this receipt makes that induction step auditable.
+    "alias_induction",
+    # Mechanical verify-collapse promote: every sub-goal of the winning
+    # strategy is proved (each with its own receipt); assembly is a pure
+    # alias rewrite guarded by the assembly sorry gate, and the root
+    # integrity gate re-elaborates the whole chain at the top. Deliberately
+    # NOT re-probed per level (verify-collapse design, architecture.md §10).
+    "verify_collapse",
+})
+
+
+class ProvedReceipt:
+    """Evidence tag for a transition into 'proved'. `kind` names the
+    sanctioned soundness argument (PROVED_RECEIPT_KINDS); `source` is a
+    short forensic string (gate fq_name / canonical goal id / strategy id)
+    for the violation log and post-mortems. Frozen tuple-style value."""
+    __slots__ = ("kind", "source")
+
+    def __init__(self, kind: str, source: str = "") -> None:
+        object.__setattr__(self, "kind", kind)
+        object.__setattr__(self, "source", source)
+
+    def __setattr__(self, *_a):  # pragma: no cover - immutability guard
+        raise AttributeError("ProvedReceipt is immutable")
+
+    def __repr__(self) -> str:
+        return f"ProvedReceipt({self.kind!r}, {self.source!r})"
+
+
+def _check_receipt(goal_id: int, frm: "str | None",
+                   receipt: "ProvedReceipt | None", event: str) -> None:
+    """Enforce the receipt requirement for a non-idempotent flip INTO
+    'proved'. Missing or unregistered-kind receipts violate; row-absent and
+    proved→proved self-edges are exempt (mirrors `_check`)."""
+    if frm is None or frm == "proved":
+        return
+    if receipt is None:
+        msg = (f"[receipt-violation] goal {goal_id} -> 'proved' "
+               f"(event={event or '?'}) carries NO ProvedReceipt — every "
+               "proved-flip must name its soundness argument "
+               "(transitions.PROVED_RECEIPT_KINDS)")
+    elif receipt.kind not in PROVED_RECEIPT_KINDS:
+        msg = (f"[receipt-violation] goal {goal_id} -> 'proved' "
+               f"(event={event or '?'}) carries unregistered receipt kind "
+               f"{receipt.kind!r} — register it in PROVED_RECEIPT_KINDS "
+               "with its soundness argument")
+    else:
+        return
+    if _strict():
+        raise IllegalTransition(msg)
+    print(msg, flush=True)
+
+
 def _strict() -> bool:
     return os.environ.get("ASTERISM_STRICT_TRANSITIONS") == "1"
 
@@ -244,7 +320,8 @@ def _check(entity: str, frm: str | None, to: str,
 
 
 def apply_goal_transition(conn: sqlite3.Connection, goal_id: int, to_state: str,
-                          *, event: str = "", reason: str = "") -> None:
+                          *, event: str = "", reason: str = "",
+                          receipt: "ProvedReceipt | None" = None) -> None:
     """The single sanctioned mutator of `goals.status`.
 
     Reads the current status, validates `(current -> to_state)` against
@@ -255,6 +332,11 @@ def apply_goal_transition(conn: sqlite3.Connection, goal_id: int, to_state: str,
     'builder_proved', 'strategist_reopen'); it is used in violation logs and,
     later (#11 Phase 3), as the key of the (state, event) exhaustiveness table.
     `reason` carries an optional failure_reason for richer logging.
+
+    `receipt` is REQUIRED for a transition into 'proved' (see the
+    ProvedReceipt block above): the soundness boundary is enforced at this
+    chokepoint, not by pipeline calling discipline. Non-'proved' targets
+    ignore it.
     """
     assert to_state in GOAL_STATES, f"unknown goal state {to_state!r}"
     row = conn.execute(
@@ -262,6 +344,8 @@ def apply_goal_transition(conn: sqlite3.Connection, goal_id: int, to_state: str,
     ).fetchone()
     frm = str(row["status"]) if row is not None else None
     _check("goal", frm, to_state, GOAL_EDGES, event)
+    if to_state == "proved":
+        _check_receipt(goal_id, frm, receipt, event)
     db.update_goal_status(conn, goal_id, to_state)
 
 
@@ -401,6 +485,7 @@ def _cascade_shelve_descendants(
 
 def _set_goal_terminal_and_propagate(
     conn: sqlite3.Connection, goal_id: int, status: str,
+    receipt: "ProvedReceipt | None" = None,
 ) -> None:
     """Flip a goal to a terminal status and:
 
@@ -471,7 +556,7 @@ def _set_goal_terminal_and_propagate(
               f"attempts={n} caller={caller}",
               flush=True)
     apply_goal_transition(
-        conn, goal_id, status, event="set_terminal")
+        conn, goal_id, status, event="set_terminal", receipt=receipt)
     d = db.propagate_inject_outcome_from_goal(conn, goal_id)
     if d is not None:
         _maybe_enqueue_inject_batch_done(conn, d)
@@ -1015,8 +1100,15 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
 
     if kind == "Builder":
         if outcome == "proved":
+            # Builder returns outcome='proved' only after its in-pipeline
+            # axiom gate (builder.py Phase 1 + Phase 2, structurally
+            # asserted by test_axiom_invariant). The receipt is
+            # reconstructed here because only strings cross the
+            # worker→cascade boundary (finished-pipeline row).
             _set_goal_terminal_and_propagate(
-                conn, int(target_id), "proved")
+                conn, int(target_id), "proved",
+                receipt=ProvedReceipt(
+                    "axiom_gate", f"builder pipeline={pipeline_id}"))
             return
         # Phase 7 — `exhausted` outcome: in-pipeline retry helper
         # consumed its budget without a terminal outcome. Helper has

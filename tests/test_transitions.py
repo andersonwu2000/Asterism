@@ -152,6 +152,82 @@ def test_apply_goal_transition_illegal_edge_lenient_logs_and_writes(
 
 
 # ---------------------------------------------------------------------------
+# ProvedReceipt — the soundness boundary at the proved-flip chokepoint.
+# "proved iff axiom-gated" was a pipeline calling convention guarded by one
+# structural test; a transition INTO 'proved' must now carry a receipt
+# naming its sanctioned soundness argument (PROVED_RECEIPT_KINDS).
+# ---------------------------------------------------------------------------
+
+def test_proved_flip_without_receipt_strict_raises(
+        conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ASTERISM_STRICT_TRANSITIONS", "1")
+    g = _insert_goal(conn, status="attempting")
+    with pytest.raises(transitions.IllegalTransition, match="receipt"):
+        transitions.apply_goal_transition(conn, g, "proved", event="t")
+    assert _gstatus(conn, g) == "attempting"      # raised before the write
+
+
+def test_proved_flip_unregistered_receipt_kind_strict_raises(
+        conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ASTERISM_STRICT_TRANSITIONS", "1")
+    g = _insert_goal(conn, status="attempting")
+    with pytest.raises(transitions.IllegalTransition, match="unregistered"):
+        transitions.apply_goal_transition(
+            conn, g, "proved", event="t",
+            receipt=transitions.ProvedReceipt("trust_me", "nope"))
+    assert _gstatus(conn, g) == "attempting"
+
+
+def test_proved_flip_each_registered_kind_passes(
+        conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ASTERISM_STRICT_TRANSITIONS", "1")
+    for kind in sorted(transitions.PROVED_RECEIPT_KINDS):
+        g = _insert_goal(conn, status="attempting", slug=f"g_{kind}")
+        transitions.apply_goal_transition(
+            conn, g, "proved", event="t",
+            receipt=transitions.ProvedReceipt(kind, "test"))
+        assert _gstatus(conn, g) == "proved"
+
+
+def test_proved_self_edge_needs_no_receipt(
+        conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch):
+    """Idempotent proved→proved re-assert stays receipt-free (mirrors the
+    edge check's self-edge exemption)."""
+    monkeypatch.setenv("ASTERISM_STRICT_TRANSITIONS", "1")
+    g = _insert_goal(conn, status="proved")
+    transitions.apply_goal_transition(conn, g, "proved", event="t")
+    assert _gstatus(conn, g) == "proved"
+
+
+def test_proved_flip_without_receipt_lenient_logs_and_writes(
+        conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture):
+    """Production stays lenient: loud `[receipt-violation]` marker, write
+    proceeds (same rationale as the edge check — CI proves completeness,
+    a live daemon shouldn't crash mid-cascade)."""
+    monkeypatch.delenv("ASTERISM_STRICT_TRANSITIONS", raising=False)
+    g = _insert_goal(conn, status="attempting")
+    transitions.apply_goal_transition(conn, g, "proved", event="probe")
+    out = capsys.readouterr().out
+    assert "[receipt-violation]" in out
+    assert _gstatus(conn, g) == "proved"
+
+
+def test_non_proved_transitions_ignore_receipt(
+        conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ASTERISM_STRICT_TRANSITIONS", "1")
+    g = _insert_goal(conn, status="open")
+    transitions.apply_goal_transition(conn, g, "attempting", event="t")
+    assert _gstatus(conn, g) == "attempting"
+
+
+def test_proved_receipt_is_immutable():
+    r = transitions.ProvedReceipt("axiom_gate", "x")
+    with pytest.raises(AttributeError):
+        r.kind = "verify_collapse"
+
+
+# ---------------------------------------------------------------------------
 # assert_main_thread — cascade PROPAGATION is main-thread-only (the OR-race
 # concurrency discipline, a review-held convention until 2026-07-03). Worker
 # threads may run commit-time transitions on their own target; the propagation

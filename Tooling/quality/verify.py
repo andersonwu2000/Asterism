@@ -177,7 +177,9 @@ def verify_housekeeping(
                 transitions.apply_strategy_transition(
                     conn, sid, "succeeded", event="verify_proved")
                 dispatcher._set_goal_terminal_and_propagate(
-                    conn, goal_id, "proved")
+                    conn, goal_id, "proved",
+                    receipt=transitions.ProvedReceipt(
+                        "verify_collapse", f"strategy s{sid} all-subs-proved"))
                 db.mark_other_strategies_superseded(
                     conn, goal_id=goal_id, winner_id=sid,
                 )
@@ -375,7 +377,12 @@ def _revive_shelved_alias(
         except (OSError, proof_store.ClobberError):
             pass
         return False
-    dispatcher._set_goal_terminal_and_propagate(conn, shelved_id, "proved")
+    dispatcher._set_goal_terminal_and_propagate(
+        conn, shelved_id, "proved",
+        receipt=transitions.ProvedReceipt(
+            "alias_induction",
+            f"G1 revival: canonical g{canonical_id} proved+receipted; "
+            f"alias body build-verified"))
     conn.commit()
     # .olean materialization deferred to dedupe site (see strategy-pass
     # comment above for rationale).

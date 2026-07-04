@@ -169,7 +169,10 @@ _WATERMARKS = {
     # #11 — state-transition machine (canonical states, edge registry, checked
     # mutators, guard predicates, propagation cluster + cascade_one relocated
     # here in P2) — 2026-06-22.
-    "Tooling/state/transitions.py": 1300,
+    # 1300→1380 (2026-07-04): ProvedReceipt — the proved-flip soundness
+    # boundary (receipt requirement + sanctioned-kind registry) enforced at
+    # the transition chokepoint (arch-review task #2).
+    "Tooling/state/transitions.py": 1380,
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.
