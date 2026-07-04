@@ -215,7 +215,13 @@ def contract_decl_info_oracle(workspace: Path) -> "tuple[bool, str]":
                 "private def c_di_priv : Nat := 3\n"
                 "noncomputable section\n"
                 "variable (n : Nat)\n"
-                "def c_di_data : Nat := n + Nat.zero\n"
+                # Body must be GENUINELY noncomputable (Real.pi): Lean tags
+                # `noncomputableExt` only for decls that actually fail to
+                # compile — a compilable def under `noncomputable section`
+                # is compiled and NOT tagged (verified live 2026-07-04).
+                # That is exactly the right reconstruction semantics: the
+                # modifier is re-emitted iff the decl needs it.
+                "def c_di_data : Real := n + Real.pi\n"
                 "end\n"
                 "open Nat in\n"
                 "theorem c_di_open : 2 = 2 := rfl\n"
@@ -236,7 +242,7 @@ def contract_decl_info_oracle(workspace: Path) -> "tuple[bool, str]":
     if not data or not data.get("isNoncomputable"):
         return False, (f"noncomputable-section def not reported "
                        f"noncomputable: {data}")
-    if "(n : Nat)" not in (data.get("signature") or ""):
+    if "(n : ℕ)" not in (data.get("signature") or ""):
         return False, (f"section variable missing from signature: "
                        f"{data.get('signature')!r}")
     thm = by_user.get("CDi.c_di_thm")

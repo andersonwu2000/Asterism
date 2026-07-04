@@ -525,7 +525,14 @@ private def declEntriesM (p : DeclInfoParams) (commands : Array CmdEntry) :
   let env ← getEnv
   let mut out : Array DeclEntry := #[]
   for (n, info) in env.constants.map₂.toList do
-    if n.isInternalDetail then
+    -- Internal-detail filter runs on the PRIVATE-NORMALIZED name: the
+    -- `_private.<mod>.0.…` mangling starts with `_`, so testing the raw
+    -- kernel name would swallow every `private def` (found live
+    -- 2026-07-04). A private decl's compiler auxiliary
+    -- (`_private….foo._proof_1`) normalizes to `foo._proof_1` — still
+    -- internal, still filtered.
+    let userName := (privateToUserName? n).getD n
+    if userName.isInternalDetail then
       continue
     let some rs ← Lean.findDeclarationRanges? n
       | continue
@@ -543,7 +550,7 @@ private def declEntriesM (p : DeclInfoParams) (commands : Array CmdEntry) :
     let selection := declRangeToSrc rs.selectionRange
     out := out.push {
       fqName := n.toString,
-      userName := (privateToUserName? n).getD n |>.toString,
+      userName := userName.toString,
       kind := kindStr info,
       isProp,
       isNoncomputable := Lean.isNoncomputable env n,
