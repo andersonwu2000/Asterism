@@ -56,12 +56,53 @@ def _section_trigger(trigger_kind: str, pending_review_id: int | None,
     return lines
 
 
+def _section_ingest_gate(conn: sqlite3.Connection,
+                         problem: str) -> list[str]:
+    """Phase 6 — context-conditional Ingest availability note (design ④):
+
+      - root exists, NOT proved → surface "Ingest is unavailable" (the
+        HARD gate would reject it), so the Strategist doesn't burn a
+        decision on it.
+      - root still `frozen` (never injected) → additionally steer the
+        opening moves: Forward prerequisite lemmas first; don't Inject
+        Backward on the root in the same batch as its prerequisites.
+      - root proved, or no root (pure-NL) → say nothing; the prompt's
+        standing instruction ("commit Ingest once the Manifest's
+        requirements are met") is the only voice — these notes would be
+        pure noise once they stop being true.
+    """
+    root = conn.execute(
+        "SELECT status FROM goals WHERE problem = ? AND origin = 'root'"
+        " LIMIT 1", (problem,)).fetchone()
+    if root is None or str(root["status"]) == "proved":
+        return []
+    lines = [
+        "## Ingest availability",
+        "",
+        f"`Ingest` is UNAVAILABLE: the root goal is not yet proved "
+        f"(status: `{root['status']}`). The root is a hard exit "
+        "requirement — the framework rejects a terminal judgment while "
+        "it is unproved. Advance toward proving the root.",
+        "",
+    ]
+    if str(root["status"]) == "frozen":
+        lines += [
+            "The root has not been launched yet. Build its prerequisite "
+            "vocabulary/lemmas with `Inject(Forward)` FIRST; do not "
+            "`Inject(Backward)` on the root in the same batch as its "
+            "prerequisites (the decomposition would race the toolkit it "
+            "needs).",
+            "",
+        ]
+    return lines
+
+
 def _section_stall_warning(conn: sqlite3.Connection,
                            problem: str) -> list[str]:
     """Structural stall detection (B-2 fix).
 
     Surfaces a header when:
-      - root not yet terminal AND
+      - `Ingest` not yet committed AND
       - zero open goals reachable AND
       - no in-flight Backward/Builder/Forward worker.
 
@@ -90,13 +131,17 @@ def _section_stall_warning(conn: sqlite3.Connection,
     return [
         "## Framework stalled",
         "",
-        "Structural deadlock detected: root is not yet proved, no `open`"
-        " goal is reachable for BFS dispatch, and no Backward/Builder/"
-        "Forward worker is in flight. The framework cannot dispatch"
-        " any worker on this problem until you intervene.",
+        "Structural deadlock detected: this problem has not been"
+        " `Ingest`ed, no `open` goal is reachable for BFS dispatch, and"
+        " no Backward/Builder/Forward worker is in flight. The framework"
+        " cannot dispatch any worker on this problem until you intervene.",
         "",
         "Typical causes:",
         "",
+        "- The problem is FRESH — nothing has been injected yet; your"
+        " job is to commit the first Inject batch from the Manifest.",
+        "- Everything you planned is proved and the Manifest's"
+        " requirements are met — commit `Ingest` to close the problem.",
         "- A parent strategy has a `shelved` sub-goal — the strategy"
         " stays `proposed` waiting for the sub-goal to be re-dispatched"
         " but no automatic trigger fires.",
@@ -109,9 +154,10 @@ def _section_stall_warning(conn: sqlite3.Connection,
         " Choose one of: `Inject(Backward|Builder, target_goal_id=...)`"
         " (revive a `shelved` / `pending_strategist_review` goal with"
         " an explicit pipeline + brief), `Inject(Forward)` (build the"
-        " missing prerequisite), `ConfirmShelve` (truly cannot proceed"
-        " — followed by an Inject that pivots), or `RequestUserAmend`"
-        " (Manifest scope decision needed).",
+        " missing prerequisite), `Ingest` (every Manifest requirement is"
+        " satisfied — the terminal judgment), `ConfirmShelve` (truly"
+        " cannot proceed — followed by an Inject that pivots), or"
+        " `RequestUserAmend` (Manifest scope decision needed).",
         "",
     ]
 
@@ -689,11 +735,12 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     # the loop "ConfirmShelve promises retry → Forward lands → Strategist
     # never Reopens" was never closed by the agent on its own; surfacing
     # the cross-reference gives it a structured cue.
-    section_names += ["stall_warning", "directive", "inject_batches",
-                      "pending_reopens", "active_goals", "failure_replay",
-                      "tree", "manifest_meta"]
+    section_names += ["stall_warning", "ingest_gate", "directive",
+                      "inject_batches", "pending_reopens", "active_goals",
+                      "failure_replay", "tree", "manifest_meta"]
     sections += [
         _section_stall_warning(conn, problem),
+        _section_ingest_gate(conn, problem),
         _section_current_directive(conn, problem),
         _section_inject_batch_outcomes(conn, problem),
         _section_pending_reopens(conn, problem, trigger_kind),

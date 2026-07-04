@@ -236,8 +236,6 @@ def render(conn: sqlite3.Connection, problem: str, *,
         "SELECT * FROM goals WHERE problem = ? AND origin = 'root'",
         (problem,),
     ).fetchone()
-    if root is None:
-        return f"# {problem} — TREE\n\n(no root goal — run `asterism init {problem}`)\n"
 
     counts: dict[str, int] = {}
     for r in conn.execute(
@@ -261,14 +259,20 @@ def render(conn: sqlite3.Connection, problem: str, *,
         "",
         subtitle,
         "",
-        "```",
-        _goal_label(root),
     ]
     visited: set[int] = set()
     live_memo: dict[int, bool] = {}
-    _walk_goal(conn, int(root["id"]), visited, lines, "",
-               frontier=frontier, live_memo=live_memo)
-    lines.append("```")
+    if root is not None:
+        lines += ["```", _goal_label(root)]
+        _walk_goal(conn, int(root["id"]), visited, lines, "",
+                   frontier=frontier, live_memo=live_memo)
+        lines.append("```")
+    else:
+        # Phase 6 pure-NL: no root goal — the problem is a forest of
+        # Forward-origin trees (rendered below). A brand-new problem has
+        # no goals at all yet; say so instead of implying a broken init.
+        lines.append("_(pure-NL problem — no root goal; deliverable "
+                     "forest below)_")
 
     # Forward-origin goals are independent lemmas (no parent strategy
     # edge to root). Render each as its own sub-tree under a separate

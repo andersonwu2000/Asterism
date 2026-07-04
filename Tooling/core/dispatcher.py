@@ -275,9 +275,13 @@ def _problem_of_target(conn: sqlite3.Connection, target_id: str,
 
 
 def _verify_problem(workspace: Path, problem: str) -> bool:
-    """Lake-build the problem's Defs.lean + Root.lean. Both must
-    type-check cleanly. Lazy verification gate: run on first dispatch
-    for the problem this daemon run; cached in-memory thereafter.
+    """Lake-build the problem's Defs.lean + Root.lean — whichever exist.
+    Present files must type-check cleanly. Phase 6: both files are
+    OPTIONAL (pure-NL problems ship neither; Root-only and Defs-only
+    are valid shapes), so a missing file is simply skipped and a
+    problem with neither passes vacuously. Lazy verification gate: run
+    on first dispatch for the problem this daemon run; cached in-memory
+    thereafter.
 
     Why lazy (vs at-startup): wide-scope daemons (e.g. miniF2F=244
     problems) would pay 30-60min upfront. Lazy pays only for problems
@@ -288,16 +292,13 @@ def _verify_problem(workspace: Path, problem: str) -> bool:
     pdir = db.problem_dir(workspace, problem)
     defs_path = pdir / "Defs.lean"
     root_path = pdir / "Root.lean"
-    missing = [p.name for p in (defs_path, root_path) if not p.exists()]
-    if missing:
-        print(f"[verify] {problem}: FAILED — missing {missing}",
+    present = [p for p in (defs_path, root_path) if p.exists()]
+    if not present:
+        print(f"[verify] {problem}: OK (pure-NL — no Defs/Root)",
               flush=True)
-        return False
+        return True
     from ..pipeline._lake import lake_build_modules, lean_path_to_module
-    modules = [
-        lean_path_to_module(workspace, defs_path),
-        lean_path_to_module(workspace, root_path),
-    ]
+    modules = [lean_path_to_module(workspace, p) for p in present]
     ok, msg = lake_build_modules(workspace, modules)
     if not ok:
         snippet = (msg or "")[:500]
@@ -452,25 +453,29 @@ def bfs_refill(conn: sqlite3.Connection,
 # Phase 2 — Strategist T0 / T1 triggers
 # ---------------------------------------------------------------------
 
-def _strategist_inflight(conn: sqlite3.Connection, root_id_str: str,
+def _strategist_inflight(conn: sqlite3.Connection, problem: str,
                          running: "set[tuple]") -> bool:
-    """A Strategist for this root is already running or queued — the
-    per-root serialization invariant (one Strategist per problem at a time;
-    Strategist mutates problem-global state — `strategist_directive`
+    """A Strategist for this problem is already running or queued — the
+    per-problem serialization invariant (one Strategist per problem at a
+    time; Strategist mutates problem-global state — `strategist_directive`
     overwrite-on-write, goal/strategy status, cross-decision coherence — so
     concurrent runs would race). Checks BOTH the in-memory `running` set
     (in-flight) AND the DB queue (pending); the cascade-time
     `_enqueue_strategist_review` checked only the queue, which is the gap
     `reconcile_stuck_states` closes.
 
-    Phase 2.5 — running key is (target_id, kind, decision_id); Strategist
-    rows always have decision_id=None (never spawned from an Inject), so a
-    match by (root, 'Strategist', *) covers the invariant."""
+    Phase 6 — Strategist rows are problem-keyed (target_id=problem name,
+    target_kind='Problem', mirroring Forward): the old root-goal key made
+    every trigger JOIN on origin='root', so a pure-NL problem (no root)
+    could never wake a Strategist. Running key is (target_id, kind,
+    decision_id); Strategist rows always have decision_id=None (never
+    spawned from an Inject), so a match by (problem, 'Strategist', *)
+    covers the invariant."""
     in_running = any(
-        r[0] == root_id_str and r[1] == "Strategist" for r in running
+        r[0] == problem and r[1] == "Strategist" for r in running
     )
     return (in_running
-            or db.is_in_queue(conn, target_id=root_id_str, kind="Strategist"))
+            or db.is_in_queue(conn, target_id=problem, kind="Strategist"))
 
 
 def reconcile_stuck_states(conn: sqlite3.Connection,
@@ -500,14 +505,13 @@ def reconcile_stuck_states(conn: sqlite3.Connection,
     is the only thing this adds over the startup-recovery logic it shares
     (`db.null_inject_redispatch_specs`), which runs against a clean slate."""
     # 1 — pending_review: enqueue Strategist (spawn derives the trigger).
-    for prob, root_id in db.problems_with_pending_review(conn, scope=scope):
+    for prob in db.problems_with_pending_review(conn, scope=scope):
         if db.problem_has_awaiting_human(conn, prob):
             continue
-        rid = str(root_id)
-        if _strategist_inflight(conn, rid, running):
+        if _strategist_inflight(conn, prob, running):
             continue
-        db.enqueue(conn, kind="Strategist", target_id=rid,
-                   target_kind="Goal", priority=20)
+        db.enqueue(conn, kind="Strategist", target_id=prob,
+                   target_kind="Problem", priority=20)
 
     # 1.5 — settled NULL-outcome Inject decisions: the produced goal/
     # strategy already terminated (or a Backward inject's strategy is
@@ -542,17 +546,23 @@ def strategist_triggers(conn: sqlite3.Connection,
                         interval_min: float = 60.0,
                         daemon_start_iso: str | None = None,
                         ) -> None:
-    """T0 (first-launch) + T1 (routine) enqueues for the Strategist pipeline.
+    """T1 (routine) + T4 (stall) enqueues for the Strategist pipeline.
     T2 (pending_review) is handled by `_enqueue_strategist_review` at
     cascade-time, not here.
 
-    T0 condition: `problems.bootstrap_done = 0`.
+    Phase 6 — T0 (first_launch) is RETIRED: a fresh problem has no
+    dispatchable work and no committed Ingest, so it is structurally
+    STALLED and T4 wakes the Strategist immediately (the wake runs under
+    the `inject_batch_done` prompt, whose mandatory-advance rule forces
+    the first Inject). Priority stays: queue.priority just needs to put
+    Strategist ahead of Backward (2) / Builder (5).
+
     T1 condition: `last_routine_at` (the routine-only clock, not reset by
                    event-driven triggers) older than `interval_min` minutes of
                    running time (paused/down time excluded via
-                   `daemon_start_iso`), AND root not terminal.
+                   `daemon_start_iso`), AND no committed Ingest.
 
-    Per-problem dedup: skip enqueue if a Strategist (target=root) is
+    Per-problem dedup: skip enqueue if a Strategist (target=problem) is
     already running or already in the queue. The awaiting_human gate
     skips Strategist enqueue for problems whose human-input request
     hasn't been resolved.
@@ -561,32 +571,17 @@ def strategist_triggers(conn: sqlite3.Connection,
     """
     max_age_sec = interval_min * 60.0
 
-    # T0 — first launch (highest urgency among Strategist triggers)
-    for prob, root_id in db.problems_needing_t0(conn, scope=scope):
-        if db.problem_has_awaiting_human(conn, prob):
-            continue
-        rid = str(root_id)
-        if _strategist_inflight(conn, rid, running):
-            continue
-        # Higher priority than Backward (2) / Builder (5)? Phase 2 spec
-        # says Strategist > Backward/Builder but < Verify housekeeping.
-        # Verify is inline (not queued), so queue.priority just needs
-        # to put Strategist ahead of Backward/Builder.
-        db.enqueue(conn, kind="Strategist", target_id=rid,
-                   target_kind="Goal", priority=10)
-
     # T1 — routine audit (own running-time cadence; see problems_needing_t1)
-    for prob, root_id in db.problems_needing_t1(
+    for prob in db.problems_needing_t1(
         conn, scope=scope, max_age_sec=max_age_sec,
         since_iso=daemon_start_iso,
     ):
         if db.problem_has_awaiting_human(conn, prob):
             continue
-        rid = str(root_id)
-        if _strategist_inflight(conn, rid, running):
+        if _strategist_inflight(conn, prob, running):
             continue
-        db.enqueue(conn, kind="Strategist", target_id=rid,
-                   target_kind="Goal", priority=10)
+        db.enqueue(conn, kind="Strategist", target_id=prob,
+                   target_kind="Problem", priority=10)
 
     # T4 — structural stall trigger.
     # Fires when a problem has no open goals (BFS has nothing to
@@ -603,15 +598,13 @@ def strategist_triggers(conn: sqlite3.Connection,
     # `_section_stall_warning` in phase2_context). Strategist prompt
     # has the corresponding rule: don't Noop when stall section is
     # present.
-    for prob, root_id in db.problems_stalled(conn, scope=scope,
-                                              running=running):
+    for prob in db.problems_stalled(conn, scope=scope, running=running):
         if db.problem_has_awaiting_human(conn, prob):
             continue
-        rid = str(root_id)
-        if _strategist_inflight(conn, rid, running):
+        if _strategist_inflight(conn, prob, running):
             continue
-        db.enqueue(conn, kind="Strategist", target_id=rid,
-                   target_kind="Goal", priority=10)
+        db.enqueue(conn, kind="Strategist", target_id=prob,
+                   target_kind="Problem", priority=10)
 
 
 # ---------------------------------------------------------------------
@@ -624,7 +617,7 @@ def _derive_strategist_trigger(conn: sqlite3.Connection,
     `(trigger, pending_review_id)` where pending_review_id is non-None
     iff trigger is 'pending_review'.
 
-    Priority order (Phase 2 §2.1 + 2.5 + 5):
+    Priority order (Phase 2 §2.1 + 2.5 + 5; Phase 6 retires first_launch):
 
       1. `inject_batch_done` — unacknowledged Inject batch resolved.
          A batch completion is the freshest event; Strategist must
@@ -632,21 +625,16 @@ def _derive_strategist_trigger(conn: sqlite3.Connection,
          reasoning, even if root happens to be frozen meanwhile.
       2. `pending_review` — at least one goal in pending_strategist_
          review status. A goal explicitly waiting on a verdict is more
-         focused than a generic root-status check.
-      3. `first_launch` — root is `frozen` AND bootstrap_done=0.
-         "Strategist has never committed any decision yet on this
-         problem". Once any decision lands, bootstrap_done flips
-         (`_commit_one` calls `set_problem_bootstrap_done` on every
-         commit), and subsequent wakes on a still-frozen root become
-         routine check-ins.
-
-         Pre-fix this branch fired whenever root.status='frozen'
-         regardless of bootstrap_done. Observed jordan_normal_form
-         2026-05-23: 200+ decisions had landed but root was still
-         frozen because Strategist had been injecting prereq bricks
-         rather than Reopen(root); manually-injected routine wake-
-         ups repeatedly hit first_launch.md ("no decisions recorded
-         yet") instead of routine.md's active-audit checklist.
+         focused than a generic status check.
+      3. `inject_batch_done` again, on a structural STALL — the "empty
+         batch done" reading (Phase 6, first_launch's replacement): a
+         fresh problem (nothing dispatchable yet) and a deadlocked one
+         are the same situation as a resolved batch with everything
+         settled — the Strategist must advance the plan, and only
+         inject_batch_done.md carries the mandatory-advance rule
+         ("stalled → commit at least one Inject"). routine.md does not,
+         so classifying these wakes as routine invites a Noop →
+         re-stall → re-wake livelock (P13 2026-06-13 shape).
       4. `routine` — default; wall-clock check-in.
     """
     pending_row = conn.execute(
@@ -661,49 +649,33 @@ def _derive_strategist_trigger(conn: sqlite3.Connection,
         return ("inject_batch_done", pending_id)
     if pending_id is not None:
         return ("pending_review", pending_id)
-    root_row = conn.execute(
-        "SELECT status FROM goals "
-        " WHERE problem = ? AND origin = 'root'",
-        (problem,),
-    ).fetchone()
-    root_frozen = (root_row is not None
-                   and str(root_row["status"]) == 'frozen')
-    bootstrap_row = conn.execute(
-        "SELECT bootstrap_done FROM problems WHERE name = ?",
-        (problem,),
-    ).fetchone()
-    bootstrap_done = bool(bootstrap_row
-                          and int(bootstrap_row["bootstrap_done"]))
-    if root_frozen and not bootstrap_done:
-        return ("first_launch", pending_id)
+    # No running-set here (worker thread) — queue-only in-flight check;
+    # a brief false-stall just classifies this wake as batch-done, which
+    # is benign (same context, stricter advance rule).
+    if db.is_problem_stalled(conn, problem):
+        return ("inject_batch_done", pending_id)
     return ("routine", pending_id)
 
 
 def _strategist_row_is_stale(conn: sqlite3.Connection,
                              target_id: str, kind: str) -> bool:
-    """A queued Strategist whose root goal is already `proved` has nothing
-    left to decide — it would only spawn, Noop, and advance
+    """A queued Strategist whose problem has already committed `Ingest`
+    has nothing left to decide — it would only spawn, Noop, and advance
     `last_strategist_at`. The dispatcher drops such a popped row.
 
-    Safe by construction (see inject_batch_done ack lifecycle): the
-    Strategist enqueue is event-driven (`maybe_enqueue_inject_batch_done`
-    at cascade + T0/T1 in `strategist_triggers`), never a per-tick poll on
-    un-acknowledged batches, so dropping the row doesn't busy-loop. The
-    daemon exit check (`root_proved && no librarian`) is independent of
-    un-acked batches, so a lingering un-acked batch doesn't block exit.
-    And if root later un-proves (rogue-sorryAx rollback), it re-enters the
-    queue via the normal triggers — the `last_strategist_at` ratchet still
-    sees the batch as unacknowledged.
+    Phase 6 — the old drop condition (root goal `proved`) is exactly
+    wrong now: a root-proved problem is where the Strategist must wake to
+    judge the Manifest and commit `Ingest` (the only exit trigger), so
+    the drop keys off the problem terminal state instead. If a rollback
+    later revokes the Ingest (post-Ingest un-prove), the problem re-enters
+    the live path and the normal triggers re-fire.
 
-    `target_id` of a Strategist row is always the root goal id.
+    `target_id` of a Strategist row is the problem name
+    (target_kind='Problem').
     """
     if kind != "Strategist":
         return False
-    try:
-        g = db.get_goal(conn, int(target_id))
-    except (ValueError, TypeError):
-        return False
-    return g is not None and str(g["status"]) == "proved"
+    return db.problem_ingested(conn, str(target_id))
 
 
 # ── run()-loop scheduling constants (hoisted from function locals, task #9) ──
@@ -806,16 +778,16 @@ def _run_pipeline(workspace: Path,
             attempts_dir = wa.attempts
 
             # Phase 2 — Strategist + Forward dispatch.
-            #   Strategist: target_kind='Goal', target_id=problem.root.id;
-            #     pipeline operates problem-level via root's `problem`
-            #     column. decision_id is unused (Strategist EMITS decisions).
+            #   Strategist: target_kind='Problem', target_id=problem_name
+            #     (Phase 6 — problem-keyed like Forward; the old root-goal
+            #     key made pure-NL problems unwakeable). decision_id is
+            #     unused (Strategist EMITS decisions).
             #   Forward:    target_kind='Problem', target_id=problem_name;
             #     decision_id is the Strategist Inject row that spawned
             #     this Forward.
             if task_kind == "Strategist":
-                goal_id = int(target_id)
-                goal = db.get_goal(conn, goal_id)
-                if goal is None:
+                problem = target_id
+                if problem not in manifests:
                     db.record_pipeline(
                         conn, pipeline_id=pipeline_id, kind=task_kind,
                         target_id=target_id, target_kind=target_kind,
@@ -823,8 +795,7 @@ def _run_pipeline(workspace: Path,
                         started_at=started_at,
                     )
                     return (pipeline_id, task_kind, target_id, target_kind,
-                            "failed", "goal_not_found")
-                problem = str(goal["problem"])
+                            "failed", "problem_not_found")
                 mfst = manifests[problem]
                 trigger, pending_id = _derive_strategist_trigger(
                     conn, problem)
@@ -846,8 +817,10 @@ def _run_pipeline(workspace: Path,
                     started_at=started_at,
                 )
                 if status == "failed":
+                    # Problem-targeted forensic uses target_id=0 (INTEGER
+                    # column; same convention as Forward below).
                     db.record_dead_attempt(
-                        conn, target_id=goal_id, target_kind=target_kind,
+                        conn, target_id=0, target_kind=target_kind,
                         pipeline_id=pipeline_id,
                         failure_reason=str(r.failure_reason or "failed"),
                         failure_detail=str(r.failure_detail or ""),
@@ -1696,14 +1669,15 @@ def run(workspace: Path, *, once: bool = False,
             conn, workspace, running, manifests, scope=scope,
             fail_counts=st.librarian_fail_counts)
 
-        # Workspace-wide exit: every problem's root is proved AND no Librarian
-        # work remains. `verify.root_integrity_gate` above may have called
-        # `rollback_cascade_chain` on sorryAx detection, reverting a root to
-        # 'attempting'; in that case this check fails and the dispatcher loop
-        # continues for re-Backward.
+        # Workspace-wide exit (Phase 6): every problem has committed its
+        # `Ingest` terminal (the Strategist's Manifest-satisfied judgment —
+        # root_proved is its HARD prerequisite when a root exists, enforced
+        # at the Ingest verify gate) AND no Librarian work remains. A
+        # rollback (`verify.root_integrity_gate` → sorryAx cascade) revokes
+        # the Ingest stamp, so this check fails and the loop continues.
         # `scope` filter: a `--scope sylvester_gallai` daemon must gate on its
-        # scoped problems only — without this filter, unrelated miniF2F roots
-        # sitting in the same workspace keep `root_proved` False forever.
+        # scoped problems only — without this filter, unrelated miniF2F
+        # problems sitting in the same workspace hold the gate forever.
         # `librarian_pending`: without it a scoped run over an already-proved
         # problem (or the last root proving in any run) exits before the
         # Library-ization chain — dedup→classify→migrate→bridge→INDEX —
@@ -1715,11 +1689,12 @@ def run(workspace: Path, *, once: bool = False,
         # in-flight Librarian — silently skipping harvest on a clean opted-in
         # proof. The INDEX/lifecycle/fail-count check is timing-independent and
         # holds the daemon until harvest actually finishes (or stalls).
-        if (db.root_proved(conn, scope=scope) and not librarian_pending
+        if (db.all_problems_ingested(conn, scope=scope)
+                and not librarian_pending
                 and not _harvest_outstanding(
                     conn, workspace, manifests, scope=scope,
                     fail_counts=st.librarian_fail_counts)):
-            print("[dispatcher] all roots proved", flush=True)
+            print("[dispatcher] all problems ingested", flush=True)
             _exit_pool_fast(pool)
             return 0
 
@@ -1781,13 +1756,12 @@ def run(workspace: Path, *, once: bool = False,
             # kind. Drop it; bfs_refill will repopulate post-cooldown.
             if st.quota_cooldown_kind.get(kind, 0.0) > time.time():
                 continue
-            # Drop a queued Strategist whose root already proved (e.g. an
-            # inject_batch_done that landed just before the proof, or a
-            # routine T1 that raced the promotion). It would only spawn +
-            # Noop. See `_strategist_row_is_stale` for the safety argument.
+            # Drop a queued Strategist whose problem already committed
+            # Ingest (e.g. a wake that raced the terminal commit). It
+            # would only spawn + Noop. See `_strategist_row_is_stale`.
             if _strategist_row_is_stale(conn, target_id, kind):
-                print(f"[dispatch] skip Strategist Goal={target_id} "
-                      f"— root already proved", flush=True)
+                print(f"[dispatch] skip Strategist Problem={target_id} "
+                      f"— already ingested", flush=True)
                 continue
             # Lazy verify gate — must hold before any worker spawn.
             # First dispatch for a problem this daemon run pays a one-
@@ -1851,11 +1825,11 @@ def run(workspace: Path, *, once: bool = False,
                 print(f"[dispatcher] {len(paused_probs)} problem(s) paused on "
                       f"awaiting_human — resolve the RequestUserAmend then "
                       f"re-run: {paused_probs}", flush=True)
-            scoped_proved = db.root_proved(conn, scope=scope)
+            scoped_done = db.all_problems_ingested(conn, scope=scope)
             print(f"[dispatcher] no dispatchable work, exiting "
-                  f"(roots_proved={scoped_proved})", flush=True)
+                  f"(all_ingested={scoped_done})", flush=True)
             pool.shutdown(wait=True)
-            return 0 if scoped_proved else 1
+            return 0 if scoped_done else 1
 
         # Wait for any completion or tick
         if futures:

@@ -231,9 +231,14 @@ def winning_chain(conn: sqlite3.Connection, problem: str) -> set[str]:
         ):
             walk(int(sub["subgoal_id"]))
 
+    # Phase 6 — the keep-set is anchored on BOTH the proved root (classic)
+    # and the proved deliverables (anchor+claim / pure-NL): a deliverable's
+    # winning chain is published content exactly like the root's, and a
+    # pure-NL problem has no root at all to seed from.
     for row in conn.execute(
         "SELECT id FROM goals"
-        " WHERE problem = ? AND origin = 'root' AND status = 'proved'",
+        " WHERE problem = ? AND status = 'proved'"
+        "   AND (origin = 'root' OR is_deliverable = 1)",
         (problem,),
     ):
         walk(int(row["id"]))
@@ -340,36 +345,37 @@ def prune_problem(conn: sqlite3.Connection, workspace: Path,
     or DB drift) and means the import-walk seeded from that missing file
     failed silently, potentially under-counting the keep set.
     """
-    has_proved_root = conn.execute(
-        "SELECT 1 FROM goals"
-        " WHERE problem = ? AND origin = 'root' AND status = 'proved' LIMIT 1",
+    # Phase 6 — a present root keeps its classic gates (proved +
+    # integrity_verified); a pure-NL problem (no root) gates on the
+    # committed Ingest instead (the Strategist's terminal judgment, whose
+    # own verify gate required the deliverables; per-goal proofs passed
+    # the universal axiom gate at prove-time).
+    root = conn.execute(
+        "SELECT status, integrity_verified FROM goals"
+        " WHERE problem = ? AND origin = 'root'"
+        " ORDER BY id LIMIT 1",
         (problem,),
     ).fetchone()
-    if has_proved_root is None:
-        return []
-
-    # Integrity gate (2026-05-26, post-Jordan): refuse to prune unless
-    # the root has passed `axiom_probe` (integrity_verified=1). Without
-    # this guard, a mechanically-promoted "proved" root that actually
-    # contains sorry in its transitive closure can trigger prune, which
-    # then deletes "orphan" files that may include the very alternatives
-    # needed to bisect the sorry chain (Jordan 2026-05-25). Operator
-    # opts out via `force=True` (CLI: `asterism prune --force`) for
-    # emergency situations where the integrity gate is known broken.
-    if not force:
-        ig = conn.execute(
-            "SELECT integrity_verified FROM goals"
-            " WHERE problem = ? AND origin = 'root' AND status = 'proved'"
-            " ORDER BY id LIMIT 1",
-            (problem,),
-        ).fetchone()
-        if ig is None or int(ig["integrity_verified"]) != 1:
+    if root is not None:
+        if str(root["status"]) != "proved":
+            return []
+        # Integrity gate (2026-05-26, post-Jordan): refuse to prune unless
+        # the root has passed `axiom_probe` (integrity_verified=1). Without
+        # this guard, a mechanically-promoted "proved" root that actually
+        # contains sorry in its transitive closure can trigger prune, which
+        # then deletes "orphan" files that may include the very alternatives
+        # needed to bisect the sorry chain (Jordan 2026-05-25). Operator
+        # opts out via `force=True` (CLI: `asterism prune --force`) for
+        # emergency situations where the integrity gate is known broken.
+        if not force and int(root["integrity_verified"]) != 1:
             raise RuntimeError(
                 f"prune refused for {problem!r}: root's "
                 f"integrity_verified != 1 (axiom_probe has not passed). "
                 f"Run the dispatcher to completion (which triggers "
                 f"root_integrity_gate) or pass force=True to override."
             )
+    elif not db.problem_ingested(conn, problem):
+        return []
 
     keep_rel = winning_chain(conn, problem)
     # Expand keep set by following actual .lean import statements so

@@ -116,6 +116,9 @@ from .bridge import (  # noqa: F401
     _bridge_probe_text,
     _run_bridge,
 )
+from .unharvest import (  # noqa: F401
+    un_harvest,
+)
 from .run import (  # noqa: F401
     run_librarian,
     _reachable_from_root,

@@ -194,37 +194,35 @@ def _librarian_selfstart_problems(
     manifests, *, scope: str | None,
 ) -> "list[str]":
     """In-scope problems whose Librarian chain should START this run but has
-    no durable trigger left (#92 Bug B): opted-in (`Manifest.library`), root
-    proved AND integrity-verified, no INDEX yet, and no `library_decls` rows
-    (chain never began, or the library was reset). The verify hook (verify.py)
-    only enqueues `dedup` at the instant a root becomes integrity-verified — a
-    historically-proved or library-reset problem never re-fires it, and a manual
-    enqueue is wiped by `recover_at_startup`'s blanket queue clear. So the refill
-    self-seeds `dedup` for these, making the daemon resume Library-ization across
-    a restart instead of stranding it.
+    no durable trigger left (#92 Bug B): opted-in (`Manifest.library`),
+    Ingest committed, no INDEX yet, and no `library_decls` rows (chain never
+    began, or the library was reset). The one-shot enqueue (approve-ingest,
+    or `_commit_ingest` under direct-ingest config) is wiped by
+    `recover_at_startup`'s blanket queue clear, so the refill self-seeds
+    `dedup` for these, making the daemon resume Library-ization across a
+    restart instead of stranding it.
 
-    `integrity_verified=1` (NOT just status='proved') gates this: a root that is
-    transiently `proved` but not yet integrity-checked — e.g. a sorryAx
-    fake-proof in the window before `root_integrity_gate` rolls it back — would
-    otherwise self-start dedup/classify on INCOMPLETE proofs. classify is
-    one-time and sizes files from the then-current proof line counts; if those
-    stubs are later filled in (B1 repair grew the chain), the file balloons past
-    the classify size budget with no re-gate (P13 PerBumpStokes: classified at a
-    1727→ est ≤budget while proofs were stubs, ended 1957 lines). iv=1 is set by
-    `root_integrity_gate` only after a clean `#print axioms`, so this fires only
-    once the proofs are genuinely final. Gated on the per-problem `library: true`
-    opt-in (default False), so this never auto-Library-izes an unmarked problem."""
+    Phase 6 — eligibility is `problems.ingested_at` (the Strategist's
+    committed terminal judgment), replacing the old root-proved+integrity
+    selector: harvest is strictly Ingest-driven and pure-NL problems have
+    no root to key on. Soundness ordering is preserved — the Ingest verify
+    gate already requires a present root to be `proved` (and
+    `root_integrity_gate` still runs its axiom probe on proving), and the
+    harvest-side per-decl axiom re-gates (6cb7d48) cover the deliverable
+    closure independently of the root. Gated on the per-problem
+    `library: true` opt-in (default False), so this never
+    auto-Library-izes an unmarked problem."""
     if scope:
-        proved = conn.execute(
-            "SELECT DISTINCT problem FROM goals WHERE origin='root' "
-            "AND status='proved' AND integrity_verified=1 "
-            "AND problem LIKE ?", (scope,)).fetchall()
+        ingested = conn.execute(
+            "SELECT name AS problem FROM problems"
+            " WHERE ingested_at IS NOT NULL AND name LIKE ?",
+            (scope,)).fetchall()
     else:
-        proved = conn.execute(
-            "SELECT DISTINCT problem FROM goals WHERE origin='root' "
-            "AND status='proved' AND integrity_verified=1").fetchall()
+        ingested = conn.execute(
+            "SELECT name AS problem FROM problems"
+            " WHERE ingested_at IS NOT NULL").fetchall()
     out: list[str] = []
-    for (problem,) in proved:
+    for (problem,) in ingested:
         if problem not in manifests:
             continue
         if not manifests[problem].library:
@@ -371,21 +369,23 @@ def _harvest_outstanding(
     `library_decls` lifecycle, and the persisted fail-count — so it stays True
     across that window regardless of in-flight timing.
 
-    Returns True iff some in-scope problem is opted-in (`Manifest.library`), root
-    proved + integrity-verified, has no Library INDEX yet, and its next Librarian
-    step is NOT stalled (fail count past `LIBRARIAN_MAX_CHAIN_RETRIES`). A fully-
-    stalled chain is NOT outstanding, preserving the "stalled chain lets the daemon
-    exit for the operator to inspect" contract (`_librarian_refill` docstring)."""
+    Returns True iff some in-scope problem is opted-in (`Manifest.library`),
+    Ingest-committed (Phase 6 — same eligibility as
+    `_librarian_selfstart_problems`; harvest is strictly Ingest-driven), has
+    no Library INDEX yet, and its next Librarian step is NOT stalled (fail
+    count past `LIBRARIAN_MAX_CHAIN_RETRIES`). A fully-stalled chain is NOT
+    outstanding, preserving the "stalled chain lets the daemon exit for the
+    operator to inspect" contract (`_librarian_refill` docstring)."""
     from ..pipeline import librarian
     if scope:
         rows = conn.execute(
-            "SELECT DISTINCT problem FROM goals WHERE origin='root' "
-            "AND status='proved' AND integrity_verified=1 AND problem LIKE ?",
+            "SELECT name AS problem FROM problems"
+            " WHERE ingested_at IS NOT NULL AND name LIKE ?",
             (scope,)).fetchall()
     else:
         rows = conn.execute(
-            "SELECT DISTINCT problem FROM goals WHERE origin='root' "
-            "AND status='proved' AND integrity_verified=1").fetchall()
+            "SELECT name AS problem FROM problems"
+            " WHERE ingested_at IS NOT NULL").fetchall()
     for (problem,) in rows:
         if problem not in manifests or not manifests[problem].library:
             continue

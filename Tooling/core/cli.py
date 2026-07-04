@@ -184,28 +184,6 @@ def _classify_root_body(text: str) -> str:
     return "unknown"
 
 
-def _render_root_stub(
-    problem: str, statement: str, pdir: Path, workspace: Path,
-) -> str:
-    """Render Root.lean sorry-stub content. Replays `open` clauses from
-    Defs.lean via `manifest.inject_defs_opens` so Root.lean's theorem
-    statement and any downstream proof can use Defs.lean's shorthand
-    notation (e.g. `π` rather than `Real.pi`).
-    """
-    defs_import = (
-        f"import Problems.{problem}.Defs\n"
-        if (pdir / "Defs.lean").exists() else ""
-    )
-    stub = (
-        f"import Mathlib\n{defs_import}\n"
-        f"namespace Problems.{problem}\n\n"
-        f"theorem main : {statement} := by sorry\n\n"
-        f"end Problems.{problem}\n"
-    )
-    return manifest.inject_defs_opens(stub, problem=problem,
-                                      workspace=workspace)
-
-
 def cmd_init(args: argparse.Namespace) -> int:
     workspace = Path.cwd()
     problem = args.problem
@@ -217,38 +195,30 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     mfst = manifest.parse(mfst_path)  # Statement section now optional
 
-    # Require hand-written Defs.lean + Root.lean. The framework no longer
-    # auto-generates Root.lean from the Manifest — the canonical statement
-    # lives in the Lean signature so type errors / vocab bugs surface at
-    # init time instead of after dispatching dozens of sub-goals against
-    # a malformed spec (Polar 2026-05-23 lost ~50 goals to a typo'd
-    # statement before agent RequestUserAmend caught it).
+    # Phase 6 — Root.lean and Defs.lean are OPTIONAL, user-pinned inputs:
+    #   Root present  = must-prove-this-exact-statement-to-exit (a HARD,
+    #                   machine-checked Ingest prerequisite). The canonical
+    #                   statement lives in the Lean signature so type
+    #                   errors / vocab bugs surface at init time instead
+    #                   of after dispatching dozens of sub-goals against a
+    #                   malformed spec (Polar 2026-05-23 lost ~50 goals).
+    #   Defs present  = author-vouched anchor vocabulary (pre-vouched in
+    #                   review; the framework must cite, not re-derive).
+    #   Neither       = pure-NL mode: the Strategist derives everything
+    #                   from the Manifest (Forward defs/claims +
+    #                   MarkDeliverable), and the exit is its Ingest
+    #                   judgment alone.
     defs_lean = pdir / "Defs.lean"
     root_lean = pdir / "Root.lean"
-    if not defs_lean.exists():
-        print(f"FAIL: {defs_lean} not found — author it manually",
-              file=sys.stderr)
-        return 1
-    if not root_lean.exists():
-        print(
-            f"FAIL: {root_lean} not found. Author it manually with the\n"
-            f"  canonical shape:\n"
-            f"    import Mathlib\n"
-            f"    import Problems.{problem}.Defs\n"
-            f"    namespace Problems.{problem}\n"
-            f"    theorem main : <your statement> := by sorry\n"
-            f"    end Problems.{problem}",
-            file=sys.stderr,
-        )
-        return 1
+    present = [p for p in (defs_lean, root_lean) if p.exists()]
 
-    # Dual type-check gate: both files must build cleanly before the
+    # Type-check gate: every present file must build cleanly before the
     # framework wires up the problem in the DB. --force bypasses the
     # gate for transitional situations only (e.g. operator knows the
     # error is in an unrelated downstream module).
     if not args.force:
         from ..pipeline._lake import lake_build
-        for path in (defs_lean, root_lean):
+        for path in present:
             ok, msg = lake_build(workspace, path)
             if not ok:
                 rel = path.relative_to(workspace).as_posix()
@@ -258,47 +228,50 @@ def cmd_init(args: argparse.Namespace) -> int:
                 )
                 return 1
 
-    # Extract `goals.statement` from Root.lean's theorem signature.
-    statement = _extract_root_statement(
-        root_lean.read_text(encoding="utf-8"))
-    if statement is None:
-        print(
-            f"FAIL: could not parse `theorem main : <stmt> := by sorry`\n"
-            f"  from {root_lean.relative_to(workspace).as_posix()}.\n"
-            f"  Use the canonical shape so init can extract the statement\n"
-            f"  for the goals.statement DB column.",
-            file=sys.stderr,
-        )
-        return 1
+    statement: str | None = None
+    if root_lean.exists():
+        # Extract `goals.statement` from Root.lean's theorem signature.
+        statement = _extract_root_statement(
+            root_lean.read_text(encoding="utf-8"))
+        if statement is None:
+            print(
+                f"FAIL: could not parse `theorem main : <stmt> := by sorry`\n"
+                f"  from {root_lean.relative_to(workspace).as_posix()}.\n"
+                f"  Use the canonical shape so init can extract the "
+                f"statement\n"
+                f"  for the goals.statement DB column.",
+                file=sys.stderr,
+            )
+            return 1
 
-    # Statement-hygiene gate: the root statement must not hard-code its
-    # own `Problems.<problem>.` namespace prefix. The theorem already
-    # lives inside `namespace Problems.<problem>` (+ `import …Defs`), so
-    # every self-namespace name resolves bare — writing the fully-
-    # qualified form is a style slip, not a necessity. It matters
-    # downstream: the Librarian re-derives this exact statement from a
-    # Defs-free Library bridge (Gate B 秒殺). A bare `IsJordanForm`
-    # re-resolves to the migrated `Library.…` version by swapping the
-    # import/open; a hard-coded `Problems.<problem>.IsJordanForm` would
-    # have to be string-rewritten — fragile, and the whole reason to
-    # catch it at the source. (Cross-problem `Problems.<other>.` refs are
-    # out of scope: 0 exist today, and a real one should be a Library
-    # citation, not a raw Problems reference.)
-    self_prefix = f"Problems.{problem}."
-    if self_prefix in statement:
-        print(
-            f"FAIL: root statement hard-codes its own namespace "
-            f"`{self_prefix}`.\n"
-            f"  Drop the prefix and use the bare name — the theorem is "
-            f"already inside\n"
-            f"  `namespace Problems.{problem}` with `import "
-            f"Problems.{problem}.Defs`,\n"
-            f"  so e.g. `{self_prefix}Foo` should be written `Foo`.\n"
-            f"  (Keeps the statement Library-portable for the Librarian's "
-            f"re-derivation gate.)",
-            file=sys.stderr,
-        )
-        return 1
+        # Statement-hygiene gate: the root statement must not hard-code its
+        # own `Problems.<problem>.` namespace prefix. The theorem already
+        # lives inside `namespace Problems.<problem>` (+ `import …Defs`), so
+        # every self-namespace name resolves bare — writing the fully-
+        # qualified form is a style slip, not a necessity. It matters
+        # downstream: the Librarian re-derives this exact statement from a
+        # Defs-free Library bridge (Gate B 秒殺). A bare `IsJordanForm`
+        # re-resolves to the migrated `Library.…` version by swapping the
+        # import/open; a hard-coded `Problems.<problem>.IsJordanForm` would
+        # have to be string-rewritten — fragile, and the whole reason to
+        # catch it at the source. (Cross-problem `Problems.<other>.` refs
+        # are out of scope: 0 exist today, and a real one should be a
+        # Library citation, not a raw Problems reference.)
+        self_prefix = f"Problems.{problem}."
+        if self_prefix in statement:
+            print(
+                f"FAIL: root statement hard-codes its own namespace "
+                f"`{self_prefix}`.\n"
+                f"  Drop the prefix and use the bare name — the theorem is "
+                f"already inside\n"
+                f"  `namespace Problems.{problem}` with `import "
+                f"Problems.{problem}.Defs`,\n"
+                f"  so e.g. `{self_prefix}Foo` should be written `Foo`.\n"
+                f"  (Keeps the statement Library-portable for the "
+                f"Librarian's re-derivation gate.)",
+                file=sys.stderr,
+            )
+            return 1
 
     proofs_dir = pdir / "proofs"
     proofs_dir.mkdir(parents=True, exist_ok=True)
@@ -315,28 +288,33 @@ def cmd_init(args: argparse.Namespace) -> int:
             (problem, str(mfst_path.relative_to(workspace).as_posix()), db.now()),
         )
 
-    existing_goal = conn.execute(
-        "SELECT id FROM goals WHERE problem = ? AND slug = 'main'",
-        (problem,),
-    ).fetchone()
-    if existing_goal is None:
-        rel_root = (pdir / "Root.lean").relative_to(workspace).as_posix()
-        # Phase 5: root starts as `frozen`. Strategist's first_launch
-        # trigger fires on frozen roots and may chain RequestUserAmend
-        # (for missing statement-vocabulary in Defs.lean) / Inject(Forward)
-        # (for missing prerequisite lemmas) before issuing Reopen(root) to
-        # flip root frozen→open and release BFS. Replaces the earlier
-        # `problems.bootstrap_done` gate; the column persists for
-        # backwards-compat but is no longer read for dispatch decisions.
-        gid = db.insert_goal(
-            conn, problem=problem, slug="main",
-            lean_path=rel_root, statement=statement,
-            origin="root", depth=0, entry_kind="Backward",
-            status="frozen",
-        )
-        print(f"OK: init {problem}, root goal id={gid}")
+    if statement is None:
+        # Pure-NL: no root goal row. The problem starts with zero goals —
+        # structurally stalled — so the T4 stall wake bootstraps the
+        # Strategist's first Inject from the Manifest alone.
+        print(f"OK: init {problem} (pure-NL — no Root.lean; the Strategist "
+              f"bootstraps from the Manifest)")
     else:
-        print(f"OK: {problem} already initialized (goal id={existing_goal['id']})")
+        existing_goal = conn.execute(
+            "SELECT id FROM goals WHERE problem = ? AND slug = 'main'",
+            (problem,),
+        ).fetchone()
+        if existing_goal is None:
+            rel_root = (pdir / "Root.lean").relative_to(workspace).as_posix()
+            # Phase 5: root starts as `frozen` — invisible to BFS until
+            # the Strategist Injects Backward on it (auto-reopen). Phase 6
+            # retired the first_launch trigger; the initial wake now comes
+            # from the T4 stall (a fresh problem has nothing dispatchable).
+            gid = db.insert_goal(
+                conn, problem=problem, slug="main",
+                lean_path=rel_root, statement=statement,
+                origin="root", depth=0, entry_kind="Backward",
+                status="frozen",
+            )
+            print(f"OK: init {problem}, root goal id={gid}")
+        else:
+            print(f"OK: {problem} already initialized "
+                  f"(goal id={existing_goal['id']})")
     conn.commit()
     # Initial TREE.md so readers see structure right after init.
     tree.write(conn, workspace, problem)
@@ -1569,17 +1547,13 @@ def cmd_reject(args: argparse.Namespace) -> int:
 
 
 def _rewake_strategist(conn, problem: str) -> None:
-    """Enqueue a Strategist wake on the problem's root (dedup), so a
-    paused/idle problem gets re-planned on the next dispatcher tick."""
-    root = conn.execute(
-        "SELECT id FROM goals WHERE problem = ? AND origin = 'root'",
-        (problem,)).fetchone()
-    if root is None:
-        return
-    rid = str(root["id"])
-    if not db.is_in_queue(conn, target_id=rid, kind="Strategist"):
-        db.enqueue(conn, kind="Strategist", target_id=rid,
-                   target_kind="Goal", priority=20)
+    """Enqueue a Strategist wake on the problem (dedup), so a paused/idle
+    problem gets re-planned on the next dispatcher tick. Phase 6 —
+    problem-keyed (the old root-goal key made pure-NL problems
+    unwakeable)."""
+    if not db.is_in_queue(conn, target_id=problem, kind="Strategist"):
+        db.enqueue(conn, kind="Strategist", target_id=problem,
+                   target_kind="Problem", priority=20)
 
 
 def cmd_approve_ingest(args: argparse.Namespace) -> int:
@@ -1620,6 +1594,9 @@ def cmd_reject_ingest(args: argparse.Namespace) -> int:
               f"(nothing paused).")
         return 1
     db.set_ingest_signoff_pending(conn, problem, False)
+    # Phase 6 — rejecting the sign-off revokes the terminal judgment: the
+    # problem returns to the live path (T1/T4/exit all key off the stamp).
+    db.set_problem_ingested(conn, problem, ingested=False)
     row = conn.execute(
         "SELECT strategist_directive FROM problems WHERE name = ?",
         (problem,)).fetchone()

@@ -2224,60 +2224,26 @@ def unacknowledged_inject_batches(conn: sqlite3.Connection,
             if str(r["last_update"]) > lsa]
 
 
-def problems_needing_t0(conn: sqlite3.Connection,
-                        scope: str | None = None
-                        ) -> list[tuple[str, int]]:
-    """Return [(problem_name, root_goal_id)] for problems whose root
-    goal is `frozen` — the pre-first_launch state cli init writes
-    (Phase 5). Caller is responsible for the awaiting_human gate +
-    in-flight Strategist dedup. Root goal id is computed via the
-    standard `origin='root'` join.
-
-    Filtering on `status='frozen'` (NOT on `bootstrap_done`) naturally
-    excludes terminal roots: pre-Phase-2 already-proved problems keep
-    `bootstrap_done=0` forever (never Strategist'd), and gating on that
-    column would burn one Strategist spawn per such problem on every
-    fresh daemon start. A root that is `open` without ever being
-    Strategist'd (legacy reset paths) is instead covered by T1's
-    NULL-`last_strategist_at` = ancient rule.
-    """
-    # In-flight Inject suppression: if Strategist's prior commit on this
-    # problem produced work still LIVE (in flight), suppress T0 — Strategist
-    # will be re-fired by the cascade-side `inject_batch_done` trigger when
-    # the last outcome lands; T0 firing meanwhile just burns spawns on Noop
-    # ("waiting for Forward"). Uses `has_live_inflight_inject` (NULL inject
-    # whose produced goal is not parked/shelved), NOT the old blanket "any
-    # NULL-outcome batch row" test: once `shelved` stopped settling, a
-    # shelved-produced inject stays NULL forever and the blanket test would
-    # wedge T0 (the Phase 11 disease). `has_live` (not the stall predicate's
-    # narrower active-check) so a just-committed Forward inject whose worker
-    # has not yet registered its lemma still counts as in-flight here — T0
-    # has no worker-queue check to lean on. (For a `frozen` root this is
-    # near-vacuous — injects only exist after first_launch un-freezes — but
-    # kept correct per the same-class-fix discipline.)
-    sql = (
-        "SELECT p.name, g.id AS root_id"
-        " FROM problems p"
-        " JOIN goals g ON g.problem = p.name AND g.origin = 'root'"
-        " WHERE g.status = 'frozen'"
-    )
-    args: tuple = ()
-    if scope is not None:
-        sql += " AND p.name LIKE ?"
-        args = (scope,)
-    sql += " ORDER BY p.name"
-    return [(r["name"], int(r["root_id"])) for r in conn.execute(sql, args)
-            if not has_live_inflight_inject(conn, str(r["name"]))]
+# Phase 6 — `problems_needing_t0` (root `frozen` → first_launch wake) is
+# RETIRED along with the T0 trigger and the first_launch prompt. A fresh
+# problem (frozen root, or no goals at all in pure-NL mode) has no
+# dispatchable work and no committed Ingest, so it IS structurally stalled:
+# the T4 stall trigger wakes the Strategist immediately and the wake runs
+# under the `inject_batch_done` prompt (the "empty batch done" reading),
+# whose mandatory-advance rule forces the first Inject. T1's
+# NULL-`last_routine_at` = ancient rule remains the slow-path backstop.
 
 
 def problems_needing_t1(conn: sqlite3.Connection, *,
                         max_age_sec: float,
                         scope: str | None = None,
                         since_iso: str | None = None,
-                        ) -> list[tuple[str, int]]:
-    """Return [(problem_name, root_goal_id)] for problems whose ROUTINE clock
-    (`last_routine_at`) is older than `max_age_sec`. Excludes problems whose
-    root goal is already terminal (proved / shelved / disproved / frozen).
+                        ) -> list[str]:
+    """Return problem names whose ROUTINE clock (`last_routine_at`) is older
+    than `max_age_sec`. Excludes problems already at the `Ingest` terminal
+    state (`ingested_at` set — Phase 6: problem liveness is the Strategist's
+    terminal judgment, not the root goal's status; a proved-root problem
+    whose Ingest hasn't been committed is still LIVE and still audited).
 
     Two deliberate departures from the event-driven triggers (T0 / T2), so the
     routine audit fires on its own fixed running-time cadence — its
@@ -2309,31 +2275,29 @@ def problems_needing_t1(conn: sqlite3.Connection, *,
         baseline_sql = "julianday(coalesce(p.last_routine_at, '1970-01-01'))"
         args = [max_age_days]
     sql = (
-        "SELECT p.name, g.id AS root_id"
+        "SELECT p.name"
         " FROM problems p"
-        " JOIN goals g ON g.problem = p.name AND g.origin = 'root'"
-        " WHERE g.status NOT IN ('proved','shelved','disproved','frozen')"
+        " WHERE p.ingested_at IS NULL"
         f"   AND julianday('now') - {baseline_sql} > ?"
     )
     if scope is not None:
         sql += " AND p.name LIKE ?"
         args.append(scope)
     sql += " ORDER BY p.name"
-    return [(r["name"], int(r["root_id"])) for r in conn.execute(sql, tuple(args))]
+    return [str(r["name"]) for r in conn.execute(sql, tuple(args))]
 
 
 def problems_with_pending_review(conn: sqlite3.Connection, *,
                                  scope: str | None = None
-                                 ) -> list[tuple[str, int]]:
-    """Return [(problem_name, root_goal_id)] for problems with at least one
-    goal in `pending_strategist_review` whose root is not HARD-terminal
-    (proved / disproved). A `shelved` root is NOT excluded: the
-    ConfirmShelve+Inject endgame deliberately parks the root `shelved` while
-    the Strategist works bricks, so a brick that shelves to
-    `pending_strategist_review` under a parked root still needs its review
-    enqueued — excluding shelved roots here orphaned exactly that case (P13
-    `per_chart_stokes_generic` under a shelved `main`, 2026-06-14), and on a
-    fresh daemon start (no other in-flight work) idle-exited the run.
+                                 ) -> list[str]:
+    """Return problem names with at least one goal in
+    `pending_strategist_review` and no committed Ingest. Phase 6: the old
+    root-status exclusion (proved / disproved roots dropped) is replaced by
+    the problem terminal state — a proved-root problem still needs review
+    wakes (the Strategist has to judge the review AND eventually commit
+    Ingest); a `shelved` root never suppressed reviews (the ConfirmShelve+
+    Inject endgame parks the root while bricks shelve to review — excluding
+    it orphaned P13 `per_chart_stokes_generic` 2026-06-14).
 
     The per-tick stuck-state reconciler (`reconcile_stuck_states`) enqueues a
     Strategist for each so a pending review never orphans when the cascade-
@@ -2348,20 +2312,18 @@ def problems_with_pending_review(conn: sqlite3.Connection, *,
     strategist_trigger` orders them (batch first), and the caller's per-root
     Strategist dedup prevents a double-enqueue."""
     sql = (
-        "SELECT DISTINCT p.name, g_root.id AS root_id"
+        "SELECT DISTINCT p.name"
         " FROM problems p"
-        " JOIN goals g_root ON g_root.problem = p.name"
-        "   AND g_root.origin = 'root'"
         " JOIN goals g_pend ON g_pend.problem = p.name"
         "   AND g_pend.status = 'pending_strategist_review'"
-        " WHERE g_root.status NOT IN ('proved','disproved')"
+        " WHERE p.ingested_at IS NULL"
     )
     args: tuple = ()
     if scope is not None:
         sql += " AND p.name LIKE ?"
         args = (scope,)
     sql += " ORDER BY p.name"
-    return [(r["name"], int(r["root_id"])) for r in conn.execute(sql, args)]
+    return [str(r["name"]) for r in conn.execute(sql, args)]
 
 
 def null_inject_redispatch_specs(conn: sqlite3.Connection, *,
@@ -2597,11 +2559,17 @@ def is_problem_stalled(conn: sqlite3.Connection, problem: str, *,
                        running: "set[tuple] | None" = None) -> bool:
     """True iff `problem` is structurally STALLED:
 
-      1. root not terminal (proved / shelved / disproved),
-      2. zero DISPATCHABLE open goals — open goals reachable from root via
-         'proposed' / 'succeeded' strategies. An ORPHANED open goal (its
-         strategy chain died) is NOT dispatchable, so it does NOT count;
-         a raw `status='open'` probe would wrongly mask the stall.
+      1. no committed `Ingest` (Phase 6: the terminal judgment is the
+         Strategist's Ingest, not the root's status — a proved-root
+         problem whose Ingest hasn't been committed is stalled-when-idle
+         precisely so the Strategist wakes to commit it; a FRESH problem
+         with nothing dispatchable yet is stalled precisely so the wake
+         bootstraps the first Inject — first_launch's replacement),
+      2. zero DISPATCHABLE open goals — open goals reachable from the
+         root ∪ detached seed via 'proposed' / 'succeeded' strategies.
+         An ORPHANED open goal (its strategy chain died) is NOT
+         dispatchable, so it does NOT count; a raw `status='open'` probe
+         would wrongly mask the stall.
       3. no in-flight Backward / Builder / Forward worker (queue + the
          optional in-memory `running` set).
       4. no NULL-outcome Inject whose produced work is still ACTIVE (an
@@ -2625,12 +2593,12 @@ def is_problem_stalled(conn: sqlite3.Connection, problem: str, *,
     dispatcher's live set; omit it (context-compile has none) for a
     queue-only in-flight check (harmless brief false-positive while a
     worker is mid-spawn)."""
-    root = conn.execute(
-        "SELECT status FROM goals WHERE problem = ? AND origin = 'root' LIMIT 1",
-        (problem,),
-    ).fetchone()
-    if root is None or str(root["status"]) in ("proved", "shelved",
-                                               "disproved"):
+    # 1. committed Ingest → terminal, never stalled. (This also covers the
+    #    sign-off pause: `_commit_ingest` stamps `ingested_at` before the
+    #    human approves, so T4 doesn't re-wake the Strategist into
+    #    re-Ingesting while the pause is pending. `reject-ingest` clears
+    #    the stamp, putting the problem back on the live path.)
+    if problem_ingested(conn, problem):
         return False
     # 2. any DISPATCHABLE (alive-reachable) open goal → not stalled.
     # Phase 6 — shared seed (root ∪ detached): the old root-only copy
@@ -2684,11 +2652,10 @@ def is_problem_stalled(conn: sqlite3.Connection, problem: str, *,
 def problems_stalled(conn: sqlite3.Connection, *,
                      scope: str | None = None,
                      running: "set[tuple[str, str]] | None" = None,
-                     ) -> list[tuple[str, int]]:
-    """Return [(problem_name, root_goal_id)] for problems matching the
-    structural stall signal:
+                     ) -> list[str]:
+    """Return problem names matching the structural stall signal:
 
-      1. root not yet terminal (proved/shelved/disproved)
+      1. no committed Ingest (Phase 6 — the problem terminal state)
       2. zero `open_goals` reachable in scope (BFS has nothing to dispatch)
       3. no in-flight Backward / Builder / Forward worker on this problem
          (neither in the dispatcher's `running` set nor in the queue)
@@ -2696,14 +2663,16 @@ def problems_stalled(conn: sqlite3.Connection, *,
 
     Conditions 2-4 are evaluated by `is_problem_stalled` (the shared
     single-source predicate); the candidate SQL here only applies
-    condition 1 (root-not-terminal). When all four hold, the dispatcher
+    condition 1 (not-yet-ingested). When all four hold, the dispatcher
     can dispatch nothing on this
     problem until Strategist intervenes. Routine T1 fires every 60 min
     which is too slow (polar 2026-05-23: 174 min stall before budget
     exhaust). T4 trigger uses this signal to enqueue Strategist
     immediately. Pairs with `_section_stall_warning` in Strategist
     Context.md which re-checks the signal and surfaces a header so
-    Strategist knows not to Noop.
+    Strategist knows not to Noop. A FRESH problem (no dispatchable work
+    yet) is deliberately stalled — the resulting wake bootstraps the
+    first Inject (first_launch's Phase 6 replacement).
 
     `running`: caller's live in-memory set of (target_id, kind) tuples.
     Optional — when omitted the check uses queue rows only (may
@@ -2711,7 +2680,7 @@ def problems_stalled(conn: sqlite3.Connection, *,
     the queue; the false-positive is harmless: Strategist enqueue is
     idempotent via `is_in_queue` dedup at the call site).
     """
-    # Candidate pre-filter is root-not-terminal ONLY. In-flight Inject
+    # Candidate pre-filter is not-yet-ingested ONLY. In-flight Inject
     # suppression is NO LONGER a blanket "any NULL-outcome batch row"
     # pre-filter here — that wedged the problem forever once `shelved`
     # stopped settling (a shelved-produced inject stays NULL forever).
@@ -2720,10 +2689,9 @@ def problems_stalled(conn: sqlite3.Connection, *,
     # open/attempting or a proposed strategy with an alive subgoal),
     # keeping T4 and `_section_stall_warning` in lockstep automatically.
     sql = (
-        "SELECT p.name, g.id AS root_id"
+        "SELECT p.name"
         " FROM problems p"
-        " JOIN goals g ON g.problem = p.name AND g.origin = 'root'"
-        " WHERE g.status NOT IN ('proved','shelved','disproved')"
+        " WHERE p.ingested_at IS NULL"
     )
     args: tuple = ()
     if scope is not None:
@@ -2736,15 +2704,11 @@ def problems_stalled(conn: sqlite3.Connection, *,
 
     # Per-candidate structural stall test via the shared single-source
     # predicate (keeps T4 and `_section_stall_warning` in lockstep). The
-    # candidate SQL above only applied the root-not-terminal pre-filter;
+    # candidate SQL above only applied the not-yet-ingested pre-filter;
     # the in-flight-Inject active-check is condition 4 inside the predicate.
     run = running or set()
-    stalled: list[tuple[str, int]] = []
-    for r in candidates:
-        prob = str(r["name"])
-        if is_problem_stalled(conn, prob, running=run):
-            stalled.append((prob, int(r["root_id"])))
-    return stalled
+    return [str(r["name"]) for r in candidates
+            if is_problem_stalled(conn, str(r["name"]), running=run)]
 
 
 def problem_has_awaiting_human(conn: sqlite3.Connection, problem: str) -> bool:
@@ -3090,7 +3054,7 @@ def maybe_enqueue_inject_batch_done(conn: sqlite3.Connection,
     a single 'inject_batch_done' Strategist trigger on this problem.
 
     Idempotent via the queue dedup inside the helper: a duplicate
-    Strategist trigger for the same root is silently dropped. Solo
+    Strategist trigger for the same problem is silently dropped. Solo
     Inject (batch_id NULL) is a no-op.
 
     Lives in db.py (not dispatcher.py) so that
@@ -3114,19 +3078,14 @@ def maybe_enqueue_inject_batch_done(conn: sqlite3.Connection,
     ).fetchone()
     if int(pending["n"]) > 0:
         return
-    root_row = conn.execute(
-        "SELECT id FROM goals WHERE problem = ? AND origin = 'root'",
-        (problem,),
-    ).fetchone()
-    if root_row is None:
-        return
-    root_id = str(root_row["id"])
-    if is_in_queue(conn, target_id=root_id, kind="Strategist"):
+    # Phase 6 — Strategist rows are problem-keyed (target_kind='Problem');
+    # the old root-goal lookup made pure-NL problems (no root) unwakeable.
+    if is_in_queue(conn, target_id=problem, kind="Strategist"):
         return
     # Priority 20 — same band as T2 pending_review; batch completion is
     # an event-driven follow-up that supersedes routine T1 wall-clock.
-    enqueue(conn, kind="Strategist", target_id=root_id,
-            target_kind="Goal", priority=20)
+    enqueue(conn, kind="Strategist", target_id=problem,
+            target_kind="Problem", priority=20)
 
 
 def reconcile_settled_inject_outcomes(

@@ -525,6 +525,21 @@ def rollback_cascade_chain(
         cursor_strategy_id = int(parent_row["strategy_id"])
         is_culprit = False
     conn.commit()
+    # Phase 6 — post-Ingest un-prove invalidates the Strategist's terminal
+    # judgment: auto-revoke the Ingest stamp (+ any pending sign-off) so
+    # the problem re-enters the live path (stall wakes the Strategist,
+    # the exit gate stops seeing it as done). Without this, a rollback
+    # after Ingest would leave `ingested_at` set and the daemon could
+    # exit on an unproved root. Library un-harvest (decision ①: full
+    # auto) is triggered alongside when a harvest already landed.
+    if (touched_problem is not None
+            and db.problem_ingested(conn, touched_problem)):
+        db.set_problem_ingested(conn, touched_problem, ingested=False)
+        db.set_ingest_signoff_pending(conn, touched_problem, False)
+        print(f"[rollback] {touched_problem}: Ingest auto-revoked "
+              f"(post-Ingest un-prove)", flush=True)
+        from ..pipeline.librarian import un_harvest as _un_harvest
+        _un_harvest(conn, workspace, touched_problem)
     # TREE refresh — rollback walked one parent chain (all in the same
     # problem), so one write covers every touched goal. Caller's
     # subsequent re-Backward dispatch will overwrite this if it
@@ -665,29 +680,11 @@ def root_integrity_gate(
     ).fetchone()
     if root_id is not None:
         db.set_integrity_verified(conn, int(root_id["id"]))
-        # Library opt-in (plan §6): a clean, fully-proved root is the
-        # Librarian's entry trigger. Enqueue once here — this gate body
-        # runs exactly once per root becoming integrity-verified (the
-        # dispatcher's `unverified_proved_roots` loop skips already-marked
-        # roots; the marker only clears on cascade rollback, which re-runs
-        # the gate after re-proof, the correct re-trigger). priority=0 is
-        # the queue floor (proof work runs at 2-20), so library harvest
-        # never preempts proof search — it drains only when the daemon is
-        # otherwise idle. The Librarian pipeline derives its own work-kind
-        # (dedup→classify→migrate) from library_decls state and
-        # re-enqueues itself until every kept decl is migrated.
-        # anchor+claim Phase 4 coexistence: the root-proved-auto harvest
-        # governs the OLD flow only. When the problem uses the new flow
-        # (the Strategist has marked deliverables), defer entirely to the
-        # Strategist `Ingest` decision path (which is sign-off-gated) —
-        # otherwise this would auto-harvest before the human review. Old
-        # problems (no deliverables) keep their existing behavior. Phase 6
-        # removes this auto trigger when Root/Defs dissolve.
-        if mfst.library and not db.deliverables(conn, problem):
-            db.enqueue(conn, kind="Librarian", target_id=problem,
-                       target_kind="Problem", priority=0)
-            print(f"[integrity] {problem}: library opt-in — "
-                  f"enqueued Librarian", flush=True)
+        # Phase 6 — the root-proved-auto Librarian trigger that lived here
+        # is RETIRED: harvest is strictly Ingest-driven now (the Strategist
+        # commits the terminal judgment; sign-off gates the enqueue). A
+        # proved root merely makes the problem stall-when-idle, which wakes
+        # the Strategist to judge the Manifest and commit Ingest.
     print(f"[integrity] {problem}: root axioms ok {axiom_msg}", flush=True)
     n = cleanup_cascade_backups(conn, workspace, problem)
     if n:

@@ -339,9 +339,26 @@ def verify_decision(decision: Decision, conn: sqlite3.Connection,
         return ""
 
     if k == "Ingest":
-        if not db.deliverables(conn, problem=problem):
+        # Phase 6 — Ingest is the ONLY terminal (Done fused into it).
+        # HARD gate: a present root is a user-pinned must-prove-exactly-
+        # this requirement, machine-checkable; the framework rejects the
+        # terminal judgment outright while it is unproved. (Manifest's
+        # other requirements are SOFT — NL, only the Strategist can judge
+        # them — so they are prompt-governed, not gated here.)
+        root = conn.execute(
+            "SELECT status FROM goals WHERE problem = ? AND"
+            " origin = 'root' LIMIT 1", (problem,)).fetchone()
+        root_proved = root is not None and str(root["status"]) == "proved"
+        if root is not None and not root_proved:
+            return ("Ingest is blocked: this problem has a root goal "
+                    f"(status={root['status']!r}) that must be proved "
+                    "before the terminal judgment is valid")
+        # A proved root counts toward the >=1-deliverable requirement:
+        # a pure-root problem (no Forward deliverables, e.g. a classic
+        # single-theorem Manifest) must still be able to exit.
+        if not db.deliverables(conn, problem=problem) and not root_proved:
             return ("Ingest requires at least one marked deliverable "
-                    "(MarkDeliverable) in the problem before harvest")
+                    "(MarkDeliverable) or a proved root goal")
         return ""
 
     if k == "RequestUserAmend":
@@ -695,7 +712,6 @@ def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
         decision_id=row_id,
     )
     db.update_problem_last_strategist_at(conn, problem)
-    db.set_problem_bootstrap_done(conn, problem)
     conn.commit()
     return CommitOutcome(
         decision_row_id=row_id,
@@ -797,7 +813,6 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
         decision_id=row_id,
     )
     db.update_problem_last_strategist_at(conn, problem)
-    db.set_problem_bootstrap_done(conn, problem)
     conn.commit()
     return CommitOutcome(
         decision_row_id=row_id,
@@ -866,11 +881,19 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
     waits for `asterism approve-ingest` (→ enqueue Librarian) or
     `reject-ingest` (→ back to proving); direct enqueues immediately.
 
-    Coexists with `verify.root_integrity_gate`'s root-proved-auto trigger
-    (the Librarian pipeline is INDEX-idempotent, so a double enqueue is a
-    harmless no-op). Phase 6 removes the auto trigger."""
+    Phase 6 — Ingest is the problem's ONLY terminal: this commit stamps
+    `problems.ingested_at`, which drives the T1/T4 liveness predicates,
+    the stale-row drop, the Librarian selfstart eligibility and the
+    daemon exit check. `reject-ingest` and the rollback auto-revoke
+    clear the stamp (back to the live path). The old root-proved-auto
+    Librarian trigger in `verify.root_integrity_gate` is retired —
+    harvest is strictly Ingest-driven now."""
     from ..core import config as _config
     from ..state import manifest as _manifest
+    # Terminal stamp FIRST — even when the Manifest opts out of harvest
+    # (library:false = pure exit) or turns out unreadable, the Strategist's
+    # terminal judgment stands; only the harvest side-effects vary.
+    db.set_problem_ingested(conn, problem)
     mfst_path = db.problem_dir(workspace, problem) / "Manifest.md"
     try:
         mfst = _manifest.parse(mfst_path)
@@ -910,13 +933,6 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
     decision in the same `commit_decisions` call shares one batch
     UUID (Forward / Backward / Builder mixed; see `commit_decisions`).
     """
-    # Resolve root id for enqueues.
-    root_id_row = conn.execute(
-        "SELECT id FROM goals WHERE problem = ? AND origin = 'root'",
-        (problem,),
-    ).fetchone()
-    root_id = int(root_id_row["id"]) if root_id_row else None
-
     k = decision.kind
     outcome = "committed"
     enqueued_forward = False
@@ -1089,14 +1105,14 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
         os.rename(decision.payload["__tmp_path__"],
                   decision.payload["__final_path__"])
 
-    # Touch last_strategist_at; bootstrap_done=1 on every commit (any
-    # decision kind closes the T0 first-launch window). The ROUTINE clock
-    # (last_routine_at, which drives T1) is touched ONLY on a routine commit
-    # so event-driven triggers don't reset the routine audit's cadence.
+    # Touch last_strategist_at. (Phase 6: bootstrap_done is vestigial —
+    # T0/first_launch retired; the column stays, nothing reads it.) The
+    # ROUTINE clock (last_routine_at, which drives T1) is touched ONLY on
+    # a routine commit so event-driven triggers don't reset the routine
+    # audit's cadence.
     db.update_problem_last_strategist_at(conn, problem)
     if trigger_kind == "routine":
         db.update_problem_last_routine_at(conn, problem)
-    db.set_problem_bootstrap_done(conn, problem)
     conn.commit()
 
     return CommitOutcome(
