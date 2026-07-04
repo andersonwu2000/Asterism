@@ -65,6 +65,13 @@ def _cleaned(conn, slug, problem="p", order=0):
     db.mark_library_cleaned(conn, problem=problem, slug=slug)
 
 
+def _qfile(row):
+    """payload.file of a queue row (v17 per-file unit), or None."""
+    import json as _j
+    return (_j.loads(row["payload"]).get("file")
+            if row["payload"] else None)
+
+
 def _manifests(**opt_in):
     """ManifestCache stand-in: `problem -> obj with .library`. `dict` supports
     the `in` / `[]` access `_librarian_selfstart_problems` uses. Pass
@@ -394,7 +401,7 @@ def test_queue_contains(tmp_path: Path):
     conn = _mem()
     assert db.queue_contains(conn, kind="Librarian", target_id="p") is False
     db.enqueue(conn, kind="Librarian", target_id="p",
-               target_kind="Problem", priority=0)
+               target_kind="Problem", priority=0, problem="p")
     assert db.queue_contains(conn, kind="Librarian", target_id="p") is True
     # Distinct kind / target are not matched.
     assert db.queue_contains(conn, kind="Builder", target_id="p") is False
@@ -403,7 +410,7 @@ def test_queue_contains(tmp_path: Path):
 
 def _queue(conn):
     return list(conn.execute(
-        "SELECT kind, target_id, target_kind, priority FROM queue"))
+        "SELECT kind, target_id, target_kind, priority, payload FROM queue"))
 
 
 def test_librarian_refill_serial_phase_enqueues_one(tmp_path: Path):
@@ -437,15 +444,15 @@ def test_librarian_refill_stops_when_chain_done(tmp_path: Path):
 
 def test_librarian_refill_migrate_phase_parallel_per_file(tmp_path: Path):
     # #92 — two INDEPENDENT classified files both enqueue as per-file migrate
-    # units (parallel), each target_id = `problem\x1ffile`.
+    # units (parallel). v17: target_id is the plain problem; the file rides
+    # `payload` JSON (the \x1f smuggle is retired from persisted rows).
     conn = _mem()
     _classified(conn, "foo", order=0)   # Library/P/foo.lean
     _classified(conn, "bar", order=1)   # Library/P/bar.lean
     dispatcher._librarian_refill(conn, tmp_path, set(), _manifests(), fail_counts={})
-    tids = sorted(r["target_id"] for r in _queue(conn))
-    assert tids == sorted([
-        dispatcher._lib_encode("p", "Library/P/bar.lean"),
-        dispatcher._lib_encode("p", "Library/P/foo.lean")])
+    units = sorted((r["target_id"], _qfile(r)) for r in _queue(conn))
+    assert units == [("p", "Library/P/bar.lean"),
+                     ("p", "Library/P/foo.lean")]
 
 
 def test_librarian_refill_skips_inflight_and_queued(tmp_path: Path):
@@ -455,8 +462,8 @@ def test_librarian_refill_skips_inflight_and_queued(tmp_path: Path):
     foo_tid = dispatcher._lib_encode("p", "Library/P/foo.lean")
     running = {(foo_tid, "Librarian", None)}    # foo already in flight
     dispatcher._librarian_refill(conn, tmp_path, running, _manifests(), fail_counts={})
-    assert [r["target_id"] for r in _queue(conn)] == [
-        dispatcher._lib_encode("p", "Library/P/bar.lean")]
+    assert [(_r["target_id"], _qfile(_r)) for _r in _queue(conn)] == [
+        ("p", "Library/P/bar.lean")]
     # second refill: bar now queued → no duplicate, foo still in-flight
     dispatcher._librarian_refill(conn, tmp_path, running, _manifests(), fail_counts={})
     assert len(_queue(conn)) == 1
@@ -464,16 +471,15 @@ def test_librarian_refill_skips_inflight_and_queued(tmp_path: Path):
 
 def test_librarian_refill_migrated_enqueues_cleanup_per_file(tmp_path: Path):
     # §13 3c-2: a wholly-migrated problem (no classified left) → cleanup, a
-    # PER-FILE phase → one `problem\x1ffile` row per ready file (not a serial
+    # PER-FILE phase → one payload-file row per ready file (not a serial
     # plain `problem` row). Two independent files enqueue in parallel.
     conn = _mem()
     _migrated(conn, "foo", order=0)   # Library/P/foo.lean
     _migrated(conn, "bar", order=1)   # Library/P/bar.lean
     dispatcher._librarian_refill(conn, tmp_path, set(), _manifests(), fail_counts={})
-    tids = sorted(r["target_id"] for r in _queue(conn))
-    assert tids == sorted([
-        dispatcher._lib_encode("p", "Library/P/bar.lean"),
-        dispatcher._lib_encode("p", "Library/P/foo.lean")])
+    units = sorted((r["target_id"], _qfile(r)) for r in _queue(conn))
+    assert units == [("p", "Library/P/bar.lean"),
+                     ("p", "Library/P/foo.lean")]
 
 
 def test_librarian_refill_cleanup_skips_inflight_file(tmp_path: Path):
@@ -485,8 +491,8 @@ def test_librarian_refill_cleanup_skips_inflight_file(tmp_path: Path):
     foo_tid = dispatcher._lib_encode("p", "Library/P/foo.lean")
     running = {(foo_tid, "Librarian", None)}
     dispatcher._librarian_refill(conn, tmp_path, running, _manifests(), fail_counts={})
-    assert [r["target_id"] for r in _queue(conn)] == [
-        dispatcher._lib_encode("p", "Library/P/bar.lean")]
+    assert [(_r["target_id"], _qfile(_r)) for _r in _queue(conn)] == [
+        ("p", "Library/P/bar.lean")]
 
 
 def test_librarian_refill_cleaned_enqueues_bridge_serial(tmp_path: Path):

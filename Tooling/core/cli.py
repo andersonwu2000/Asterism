@@ -1553,7 +1553,7 @@ def _rewake_strategist(conn, problem: str) -> None:
     unwakeable)."""
     if not db.is_in_queue(conn, target_id=problem, kind="Strategist"):
         db.enqueue(conn, kind="Strategist", target_id=problem,
-                   target_kind="Problem", priority=20)
+                   target_kind="Problem", priority=20, problem=problem)
 
 
 def cmd_approve_ingest(args: argparse.Namespace) -> int:
@@ -1571,7 +1571,7 @@ def cmd_approve_ingest(args: argparse.Namespace) -> int:
         return 1
     db.set_ingest_signoff_pending(conn, problem, False)
     db.enqueue(conn, kind="Librarian", target_id=problem,
-               target_kind="Problem", priority=0)
+               target_kind="Problem", priority=0, problem=problem)
     print(f"approved ingest for {problem} — enqueued Librarian; harvest "
           f"runs on the next dispatcher tick.")
     conn.close()

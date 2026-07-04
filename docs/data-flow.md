@@ -93,7 +93,14 @@ cascade 也是兩個 Strategist 喚醒的觸發點（見 §3.4）：goal 轉 `pe
 
 ### Step 8 — spawn
 
-pool 有空格就 pop 一筆 queue row，派一條 pipeline：
+pool 有空格就 pop 一筆 queue row，派一條 pipeline。**v17 起 pop = lease claim**：
+row 標 `owner_pid`+`leased_at` 而非刪除（跨行程 in-flight 可見——並發 dispatcher 搶不到
+同一 row；lease row 對所有 in-queue 去重查詢照樣算「在 queue」），pipeline 結束或 pop 端
+skip 時才 `complete_queue_row` 刪除；死 owner／逾 TTL 的 lease 由 per-tick sweep 釋放
+（PID 死**或** TTL 過期雙判準——Windows 會重用 PID）。pop／flush／startup 清理全部按
+daemon 的 `--scope` 過濾（`queue.problem` 欄），scoped daemon 互不干擾（舊 #74 類）。
+Librarian per-file 單位的檔名走 `queue.payload` JSON；`problem\x1ffile` 組合字串只作
+行程內派工身分 + `librarian_fail_counts` key（STATUS reset 規則不變）：
 
 1. 3-tuple `(target_id, kind, decision_id)` 去重（同 batch 的 Inject siblings 共用 target+kind、靠 decision_id 區分）
 2. 跳過 quota cooldown 中的 kind

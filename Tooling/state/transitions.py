@@ -606,6 +606,23 @@ def _record_inject_decision_outcome(conn: sqlite3.Connection,
 _maybe_enqueue_inject_batch_done = db.maybe_enqueue_inject_batch_done
 
 
+def _queue_problem_of(conn: sqlite3.Connection, target_id,
+                      target_kind: str) -> str:
+    """The `problem` a queue row belongs to (v17 scope column). Problem-
+    keyed targets carry it verbatim; Goal targets resolve via their row.
+    Empty string on unresolvable ids — such a row is scope-orphaned and
+    swept by the next startup like any stale row (never a crash here:
+    enqueue happens mid-cascade)."""
+    if target_kind == "Problem":
+        return str(target_id)
+    try:
+        row = conn.execute("SELECT problem FROM goals WHERE id = ?",
+                           (int(target_id),)).fetchone()
+    except (TypeError, ValueError):
+        return ""
+    return str(row["problem"]) if row else ""
+
+
 def _enqueue_strategist_review(conn: sqlite3.Connection,
                                goal_id: int) -> None:
     """Phase 2 Rule 1 — agent_shelved branch.
@@ -663,7 +680,7 @@ def _enqueue_strategist_review(conn: sqlite3.Connection,
     # would put T2 below Backward (=2) and Builder (=5), inverting the
     # spec.
     db.enqueue(conn, kind="Strategist", target_id=problem,
-               target_kind="Problem", priority=20)
+               target_kind="Problem", priority=20, problem=problem)
 
 
 def _has_hard_terminal_ancestor(conn: sqlite3.Connection,
@@ -1218,7 +1235,9 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
             if row is not None and row["produced_goal_id"] is None:
                 db.enqueue(conn, kind="Forward", target_id=target_id,
                            target_kind=target_kind, priority=20,
-                           decision_id=decision_id)
+                           decision_id=decision_id,
+                           problem=_queue_problem_of(
+                               conn, target_id, target_kind))
                 print(f"[forward-retry] re-queued {target_kind}="
                       f"{target_id} decision_id={decision_id} after "
                       f"{failure_reason}", flush=True)
@@ -1359,7 +1378,9 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
         # for 30+ min until the next T1 wake.
         if outcome == "failed" and is_infra:
             db.enqueue(conn, kind="Strategist", target_id=target_id,
-                       target_kind=target_kind, priority=20)
+                       target_kind=target_kind, priority=20,
+                       problem=_queue_problem_of(
+                           conn, target_id, target_kind))
             print(f"[strategist-retry] re-queued {target_kind}={target_id}"
                   f" after {failure_reason}", flush=True)
         return

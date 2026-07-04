@@ -316,11 +316,18 @@ def _librarian_refill(
                 if rp == problem and rf is not None:
                     inflight.add(rf)
             queued = set()
-            for (qtid,) in conn.execute(
-                    "SELECT target_id FROM queue WHERE kind='Librarian'"):
-                qp, qf = _lib_decode(str(qtid))
-                if qp == problem and qf is not None:
-                    queued.add(qf)
+            # v17: per-file units carry the file in `payload` JSON
+            # (target_id is the plain problem) — the \x1f smuggle is
+            # retired from the persisted rows. The composed
+            # `problem\x1ffile` string remains the IN-PROCESS dispatch
+            # identity (running keys, fail_counts — STATUS reset rule 2
+            # unchanged), assembled by the dispatcher's pop loop.
+            for (qf,) in conn.execute(
+                    "SELECT json_extract(payload, '$.file') FROM queue"
+                    " WHERE kind='Librarian' AND target_id = ?"
+                    " AND payload IS NOT NULL", (problem,)):
+                if qf:
+                    queued.add(str(qf))
             skip = inflight | queued
             if skip:
                 pending = True  # a file is mid-flight or already queued
@@ -331,8 +338,9 @@ def _librarian_refill(
                 tid = _lib_encode(problem, f)
                 if fail_counts.get(tid, 0) > LIBRARIAN_MAX_CHAIN_RETRIES:
                     continue  # stalled file — operator
-                db.enqueue(conn, kind="Librarian", target_id=tid,
-                           target_kind="Problem", priority=0)
+                db.enqueue(conn, kind="Librarian", target_id=problem,
+                           target_kind="Problem", priority=0,
+                           problem=problem, payload={"file": f})
                 pending = True
         else:
             # Serial phase — a single plain `problem` row.
@@ -341,11 +349,15 @@ def _librarian_refill(
             if (problem, "Librarian", None) in running:
                 pending = True
                 continue
-            if db.queue_contains(conn, kind="Librarian", target_id=problem):
+            # no_payload: since v17 per-file rows share target_id=problem
+            # (file rides payload) — this serial-phase dedup must only see
+            # PLAIN rows or a queued file unit masks the serial step.
+            if db.queue_contains(conn, kind="Librarian", target_id=problem,
+                                 no_payload=True):
                 pending = True
                 continue
             db.enqueue(conn, kind="Librarian", target_id=problem,
-                       target_kind="Problem", priority=0)
+                       target_kind="Problem", priority=0, problem=problem)
             pending = True
     return pending
 

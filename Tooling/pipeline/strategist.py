@@ -711,7 +711,7 @@ def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
     db.enqueue(
         conn, kind="Forward", target_id=problem,
         target_kind="Problem", priority=10,
-        decision_id=row_id,
+        decision_id=row_id, problem=problem,
     )
     db.update_problem_last_strategist_at(conn, problem)
     conn.commit()
@@ -812,7 +812,7 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
     db.enqueue(
         conn, kind=pipeline, target_id=str(target_id),
         target_kind="Goal", priority=10,
-        decision_id=row_id,
+        decision_id=row_id, problem=problem,
     )
     db.update_problem_last_strategist_at(conn, problem)
     conn.commit()
@@ -917,7 +917,7 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
               f"proving", flush=True)
     else:
         db.enqueue(conn, kind="Librarian", target_id=problem,
-                   target_kind="Problem", priority=0)
+                   target_kind="Problem", priority=0, problem=problem)
         print(f"[strategist] Ingest({problem}): direct ingest — enqueued "
               f"Librarian", flush=True)
 

@@ -11,6 +11,7 @@ Schema version tracked via `PRAGMA user_version`:
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -368,6 +369,20 @@ CREATE TABLE IF NOT EXISTS queue (
                     CHECK(target_kind IN ('Goal','Strategy','Problem')),
     priority    INTEGER NOT NULL DEFAULT 0,
     decision_id INTEGER NULL DEFAULT NULL REFERENCES strategist_decisions(id),
+    -- v17 queue contract (task #3): `problem` scopes every row (scope-safe
+    -- pop/flush/recovery — the #74 class); `payload` carries structured
+    -- per-row data as JSON (librarian per-file units: {"file": ...} — the
+    -- \x1f target_id smuggle is retired from the PERSISTED contract; the
+    -- encoding survives only as the in-process dispatch identity + the
+    -- librarian_fail_counts key, composed at pop). `owner_pid`+`leased_at`
+    -- are the lease: pop CLAIMS a row (visible to concurrent dispatchers
+    -- as in-flight), completion deletes it; expired leases (dead owner OR
+    -- TTL — Windows reuses PIDs, so liveness alone is not enough) are
+    -- released for re-claim.
+    problem     TEXT NOT NULL DEFAULT '',
+    payload     TEXT,
+    owner_pid   INTEGER,
+    leased_at   TEXT,
     created_at  TEXT NOT NULL
 );
 
@@ -553,7 +568,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 16
+_CURRENT_USER_VERSION = 17
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -899,6 +914,27 @@ def init_schema(conn: sqlite3.Connection) -> None:
             (now(),),
         )
         conn.execute("PRAGMA user_version = 16")
+        conn.commit()
+    if v < 17:
+        # v17 — queue contract upgrade (arch-review task #3): `problem`
+        # (scope-safe recovery/pop — #74's structural fix), `payload` (JSON;
+        # librarian per-file units stop smuggling `problem\x1ffile` through
+        # target_id), `owner_pid`/`leased_at` (lease semantics — cross-
+        # process in-flight visibility for concurrent dispatchers). The
+        # queue is transient (cleared per-scope at startup, refill
+        # re-derives), so no backfill: pre-v17 rows carry problem='' and
+        # are swept by the next startup like any stale row.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(queue)")}
+        for name, ddl in (
+            ("problem", "ALTER TABLE queue ADD COLUMN problem TEXT NOT NULL"
+                        " DEFAULT ''"),
+            ("payload", "ALTER TABLE queue ADD COLUMN payload TEXT"),
+            ("owner_pid", "ALTER TABLE queue ADD COLUMN owner_pid INTEGER"),
+            ("leased_at", "ALTER TABLE queue ADD COLUMN leased_at TEXT"),
+        ):
+            if name not in cols:
+                conn.execute(ddl)
+        conn.execute("PRAGMA user_version = 17")
         conn.commit()
 
 
@@ -3093,7 +3129,7 @@ def maybe_enqueue_inject_batch_done(conn: sqlite3.Connection,
         return
     # Priority 20 — same band as T2 pending_review; batch completion is
     # an event-driven follow-up that supersedes routine T1 wall-clock.
-    enqueue(conn, kind="Strategist", target_id=problem,
+    enqueue(conn, kind="Strategist", target_id=problem, problem=problem,
             target_kind="Problem", priority=20)
 
 
@@ -3285,8 +3321,11 @@ def record_pipeline(conn: sqlite3.Connection, *, pipeline_id: str, kind: str,
 
 def is_in_queue(conn: sqlite3.Connection, *, target_id: str,
                 kind: str) -> bool:
-    """True if a (target_id, kind) row exists in queue. Live-pipeline check
-    lives in dispatcher's in-memory _running set, not DB."""
+    """True if a (target_id, kind) row exists in queue — LEASED ROWS COUNT
+    (v17): a claimed-but-unfinished unit must still read as "in queue" or
+    every refill-side dedup re-enqueues a duplicate while it runs. Same-
+    process live-pipeline check additionally lives in dispatcher's
+    in-memory _running set."""
     row = conn.execute(
         "SELECT 1 FROM queue WHERE target_id = ? AND kind = ? LIMIT 1",
         (target_id, kind),
@@ -3304,9 +3343,22 @@ def queue_count(conn: sqlite3.Connection, *, target_id: str, kind: str) -> int:
     return int(row["n"])
 
 
-def queue_size(conn: sqlite3.Connection) -> int:
-    """Total queue rows. Non-destructive (unlike pop_queue)."""
-    row = conn.execute("SELECT count(*) AS n FROM queue").fetchone()
+def queue_size(conn: sqlite3.Connection, *,
+               scope: "str | None" = None,
+               claimable_only: bool = False) -> int:
+    """Queue row count, optionally scoped / restricted to unleased rows.
+    Non-destructive — the dispatcher's `--once` empty check uses
+    `claimable_only=True` instead of a probing pop (the old
+    pop-to-test-emptiness silently discarded a row when every popped row
+    had been skipped)."""
+    q = "SELECT count(*) AS n FROM queue WHERE 1=1"
+    args: list = []
+    if scope is not None:
+        q += " AND problem LIKE ?"           # scope is a LIKE pattern
+        args.append(scope)
+    if claimable_only:
+        q += " AND owner_pid IS NULL"
+    row = conn.execute(q, args).fetchone()
     return int(row["n"])
 
 
@@ -3315,8 +3367,10 @@ def queue_size(conn: sqlite3.Connection) -> int:
 # ---------------------------------------------------------------------
 
 def enqueue(conn: sqlite3.Connection, *, kind: str, target_id: str,
+            problem: str,
             priority: int = 0, target_kind: str = "Goal",
-            decision_id: int | None = None) -> None:
+            decision_id: int | None = None,
+            payload: "dict | None" = None) -> None:
     """Insert a dispatch queue entry.
 
     Phase 2 — `target_kind` defaults to 'Goal' (matches every pre-Phase 2
@@ -3325,51 +3379,163 @@ def enqueue(conn: sqlite3.Connection, *, kind: str, target_id: str,
     queue entry was emitted by a Strategist Inject decision — the
     spawned pipeline pulls the brief from `strategist_decisions.brief`
     via this FK at cold-start (see `compile_context`).
+
+    v17 — `problem` is REQUIRED (scope-safe pop/flush/recovery keys on
+    it); `payload` is optional structured per-row data (JSON-encoded
+    here): librarian per-file units pass `{"file": <rel path>}` with a
+    plain `target_id=problem` instead of the retired \\x1f smuggle.
     """
+    import json as _json
     conn.execute(
         "INSERT INTO queue (kind, target_id, target_kind, priority,"
-        " decision_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (kind, target_id, target_kind, priority, decision_id, now()),
+        " decision_id, problem, payload, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (kind, target_id, target_kind, priority, decision_id, problem,
+         _json.dumps(payload) if payload else None, now()),
     )
     conn.commit()
 
 
-def pop_queue(conn: sqlite3.Connection) -> sqlite3.Row | None:
-    row = conn.execute(
-        "SELECT * FROM queue ORDER BY priority DESC, id ASC LIMIT 1"
-    ).fetchone()
-    if row is None:
-        return None
-    conn.execute("DELETE FROM queue WHERE id = ?", (row["id"],))
-    conn.commit()
+def pop_queue(conn: sqlite3.Connection, *, scope: "str | None" = None,
+              lease_owner: "int | None" = None) -> sqlite3.Row | None:
+    """CLAIM the highest-priority unleased row (v17 lease semantics).
+
+    The row is NOT deleted: it gets `owner_pid`+`leased_at` stamped and
+    stays visible to every in-queue check (`is_in_queue`/`queue_contains`
+    count leased rows — a claimed-but-unfinished unit must still read as
+    "in queue" or refill re-enqueues a duplicate). The dispatcher deletes
+    it via `complete_queue_row` when the pipeline finishes (or when a
+    pop-loop skip discards it); a crashed owner's lease is released by
+    `release_expired_leases` (dead PID or TTL).
+
+    `scope` filters to one problem's rows (None = all rows — an unscoped
+    daemon still pops everything; concurrent double-dispatch is prevented
+    by the lease, not by scope). BEGIN IMMEDIATE makes the select+claim
+    atomic across processes (WAL single-writer)."""
+    owner = lease_owner if lease_owner is not None else os.getpid()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if scope is None:
+            row = conn.execute(
+                "SELECT * FROM queue WHERE owner_pid IS NULL"
+                " ORDER BY priority DESC, id ASC LIMIT 1").fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM queue WHERE owner_pid IS NULL"
+                " AND problem LIKE ?"        # scope is a LIKE pattern
+                " ORDER BY priority DESC, id ASC LIMIT 1",
+                (scope,)).fetchone()
+        if row is None:
+            conn.commit()
+            return None
+        conn.execute(
+            "UPDATE queue SET owner_pid = ?, leased_at = ? WHERE id = ?",
+            (owner, now(), row["id"]))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
     return row
 
 
-def flush_queue_kind(conn: sqlite3.Connection, *, kind: str) -> int:
-    """Drop every queued entry of `kind`. Returns rows deleted.
+def complete_queue_row(conn: sqlite3.Connection, row_id: int) -> None:
+    """Release a claimed queue row for good — the unit finished (any
+    outcome; refill re-derives retries) or the pop loop discarded it."""
+    conn.execute("DELETE FROM queue WHERE id = ?", (row_id,))
+    conn.commit()
+
+
+def release_expired_leases(conn: sqlite3.Connection, *,
+                           scope: "str | None" = None,
+                           ttl_sec: float,
+                           pid_alive) -> int:
+    """Un-claim leased rows whose owner is provably gone: the owner PID is
+    dead OR the lease is older than `ttl_sec` (double guard — Windows
+    reuses PIDs, so liveness alone can false-positive a recycled PID as
+    'still ours'). Released rows become claimable again; returns count."""
+    released = 0
+    rows = list(conn.execute(
+        "SELECT id, owner_pid, leased_at FROM queue"
+        " WHERE owner_pid IS NOT NULL"
+        + ("" if scope is None else " AND problem LIKE ?"),
+        () if scope is None else (scope,)))
+    for r in rows:
+        expired = False
+        try:
+            stamp = datetime.fromisoformat(str(r["leased_at"]))
+            if stamp.tzinfo is None:      # defensive: naive stamp -> UTC
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - stamp).total_seconds()
+            expired = age > ttl_sec
+        except (TypeError, ValueError):
+            expired = True         # unparseable lease stamp -> reclaim
+        if expired or not pid_alive(r["owner_pid"]):
+            conn.execute(
+                "UPDATE queue SET owner_pid = NULL, leased_at = NULL"
+                " WHERE id = ?", (r["id"],))
+            released += 1
+    if released:
+        conn.commit()
+    return released
+
+
+def flush_queue_kind(conn: sqlite3.Connection, *, kind: str,
+                     scope: "str | None" = None) -> int:
+    """Drop every UNLEASED queued entry of `kind` (leased rows are
+    in-flight in some dispatcher — yanking them would orphan the lease
+    bookkeeping; their pipelines are already running regardless).
+    Returns rows deleted.
 
     Used when a per-kind cooldown engages (e.g. quota_exhausted) so
     the dispatcher's pop loop doesn't drain the pre-cooldown backlog
     against an exhausted provider. bfs_refill repopulates after the
-    cooldown clears."""
-    cur = conn.execute("DELETE FROM queue WHERE kind = ?", (kind,))
+    cooldown clears. `scope` keeps a scoped daemon's cooldown from
+    flushing a concurrent daemon's backlog (the #74 class)."""
+    if scope is None:
+        cur = conn.execute(
+            "DELETE FROM queue WHERE kind = ? AND owner_pid IS NULL",
+            (kind,))
+    else:
+        cur = conn.execute(
+            "DELETE FROM queue WHERE kind = ? AND owner_pid IS NULL"
+            " AND problem LIKE ?", (kind, scope))
     conn.commit()
     return cur.rowcount or 0
 
 
 def queue_contains(conn: sqlite3.Connection, *, kind: str,
-                   target_id: str) -> bool:
-    """True iff a queue entry of `kind` for `target_id` is pending.
+                   target_id: str,
+                   payload_file: "str | None" = None,
+                   no_payload: bool = False) -> bool:
+    """True iff a queue entry of `kind` for `target_id` is pending — leased
+    rows count (see `is_in_queue`).
 
     The dispatcher's pop loop dedups only against the in-flight `running`
     set; it does NOT dedup two queued rows against each other (and a row
     popped while a same-key job runs is silently dropped). The Librarian
     re-enqueue path calls this before enqueueing so a chain step is never
-    queued twice for one problem."""
-    row = conn.execute(
-        "SELECT 1 FROM queue WHERE kind = ? AND target_id = ? LIMIT 1",
-        (kind, target_id),
-    ).fetchone()
+    queued twice for one problem. `payload_file` narrows the match to a
+    per-file unit (v17: the file rides `payload` JSON, not target_id);
+    `no_payload=True` matches only PLAIN rows — the serial-phase dedup
+    must not mistake a queued per-file unit (same target_id since v17)
+    for its own serial row."""
+    if payload_file is not None:
+        row = conn.execute(
+            "SELECT 1 FROM queue WHERE kind = ? AND target_id = ?"
+            " AND json_extract(payload, '$.file') = ? LIMIT 1",
+            (kind, target_id, payload_file),
+        ).fetchone()
+    elif no_payload:
+        row = conn.execute(
+            "SELECT 1 FROM queue WHERE kind = ? AND target_id = ?"
+            " AND payload IS NULL LIMIT 1",
+            (kind, target_id),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT 1 FROM queue WHERE kind = ? AND target_id = ? LIMIT 1",
+            (kind, target_id),
+        ).fetchone()
     return row is not None
 
 

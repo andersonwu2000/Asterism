@@ -4,6 +4,7 @@ See architecture.md §7-§8.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sqlite3
@@ -447,7 +448,8 @@ def bfs_refill(conn: sqlite3.Connection,
             continue
         if in_flight(gid, kind) == 0 and not cooled(gid, kind):
             priority = 5 if kind == "Builder" else 2
-            db.enqueue(conn, kind=kind, target_id=gid, priority=priority)
+            db.enqueue(conn, kind=kind, target_id=gid, priority=priority,
+                       problem=str(g["problem"]))
 
 
 # ---------------------------------------------------------------------
@@ -512,7 +514,7 @@ def reconcile_stuck_states(conn: sqlite3.Connection,
         if _strategist_inflight(conn, prob, running):
             continue
         db.enqueue(conn, kind="Strategist", target_id=prob,
-                   target_kind="Problem", priority=20)
+                   target_kind="Problem", priority=20, problem=prob)
 
     # 1.5 — settled NULL-outcome Inject decisions: the produced goal/
     # strategy already terminated (or a Backward inject's strategy is
@@ -533,7 +535,7 @@ def reconcile_stuck_states(conn: sqlite3.Connection,
             continue  # already queued (e.g. cascade-time L967 re-enqueue)
         db.enqueue(conn, kind=spec["kind"], target_id=spec["target_id"],
                    target_kind=spec["target_kind"], priority=10,
-                   decision_id=did)
+                   decision_id=did, problem=spec["problem"])
 
 
 # ---------------------------------------------------------------------
@@ -582,7 +584,7 @@ def strategist_triggers(conn: sqlite3.Connection,
         if _strategist_inflight(conn, prob, running):
             continue
         db.enqueue(conn, kind="Strategist", target_id=prob,
-                   target_kind="Problem", priority=10)
+                   target_kind="Problem", priority=10, problem=prob)
 
     # T4 — structural stall trigger.
     # Fires when a problem has no open goals (BFS has nothing to
@@ -605,7 +607,7 @@ def strategist_triggers(conn: sqlite3.Connection,
         if _strategist_inflight(conn, prob, running):
             continue
         db.enqueue(conn, kind="Strategist", target_id=prob,
-                   target_kind="Problem", priority=10)
+                   target_kind="Problem", priority=10, problem=prob)
 
 
 # ---------------------------------------------------------------------
@@ -681,6 +683,11 @@ def _strategist_row_is_stale(conn: sqlite3.Connection,
 
 # ── run()-loop scheduling constants (hoisted from function locals, task #9) ──
 SPAWN_COOLDOWN_SEC = 30.0
+
+# v17 queue lease TTL: a lease older than this whose owner PID is dead OR
+# recycled is reclaimable. Must exceed the longest legitimate pipeline wall
+# (librarian audit / backward retry chains run for hours under load).
+LEASE_TTL_SEC = 6 * 3600.0
 CONSEC_SPAWN_FAIL_LIMIT = 10
 CONSEC_GATEWAY_UNREACHABLE_LIMIT = 8
 QUOTA_BACKOFF_BASE_SEC = 30.0
@@ -1445,11 +1452,15 @@ def run(workspace: Path, *, once: bool = False,
             for fut in done:
                 meta = futures.pop(fut)
                 # meta = (pipeline_id, kind, target_id, target_kind,
-                #        decision_id). Phase 2.5 — running key includes
-                # decision_id so batch Inject siblings (same target+kind,
-                # different decision_id) don't share a slot.
+                #        decision_id, queue_row_id). Phase 2.5 — running
+                # key includes decision_id so batch Inject siblings (same
+                # target+kind, different decision_id) don't share a slot.
                 running.discard((meta[2], meta[1], meta[4]))
                 meta_decision_id = meta[4]
+                # v17 lease completion: the pipeline finished (any
+                # outcome — refill re-derives retries), release the
+                # claimed queue row for good.
+                db.complete_queue_row(conn, int(meta[5]))
                 try:
                     pid, kind, tid, tk, outcome, reason = fut.result()
                     cascade_one(conn, pipeline_id=pid, kind=kind,
@@ -1487,7 +1498,8 @@ def run(workspace: Path, *, once: bool = False,
                         # pop loop doesn't keep draining the backlog
                         # against an exhausted provider (each pop
                         # would re-fire and bump consec further).
-                        flushed = db.flush_queue_kind(conn, kind=kind)
+                        flushed = db.flush_queue_kind(conn, kind=kind,
+                                                      scope=scope)
                         print(f"[cooldown] {kind} quota_exhausted "
                               f"(consec={n}, backoff={backoff:.0f}s, "
                               f"flushed={flushed} queued; all {kind} "
@@ -1743,16 +1755,46 @@ def run(workspace: Path, *, once: bool = False,
         # one tick instead of waiting for restart / the 120-min routine.
         reconcile_stuck_states(conn, running, scope=scope)
 
+        # v17 lease sweep: un-claim rows whose owner is provably gone —
+        # dead PID OR lease older than the TTL (double guard: Windows
+        # reuses PIDs). Covers a CONCURRENT dispatcher that crashed
+        # mid-run (its startup recovery isn't coming); our own crashed
+        # leases are handled by startup recovery. TTL must exceed the
+        # longest legitimate pipeline wall (librarian audit / backward
+        # retry chains run hours under load).
+        from ..agent.sandbox import _pid_alive
+        released = db.release_expired_leases(
+            conn, scope=scope, ttl_sec=LEASE_TTL_SEC, pid_alive=_pid_alive)
+        if released:
+            print(f"[queue] released {released} expired lease(s) "
+                  f"(dead owner or >{LEASE_TTL_SEC / 3600:.0f}h)",
+                  flush=True)
+
         # Spawn from queue while pool has slots. Skip if a pipeline of
         # the same (target_id, kind) is already in flight in this
         # daemon — bfs_refill caps at 1 but daemon recovery + race
         # corners mean defense-in-depth here is cheap.
         while len(futures) < pool_size:
-            row = db.pop_queue(conn)
+            row = db.pop_queue(conn, scope=scope)
             if row is None:
                 break
+            qid = int(row["id"])
             target_id = str(row["target_id"])
             kind = str(row["kind"])
+            # v17 — librarian per-file units carry the file in `payload`
+            # JSON; the IN-PROCESS dispatch identity (running key,
+            # _run_pipeline target, fail_counts key, logs) stays the
+            # composed `problem\x1ffile` string, so everything downstream
+            # of this point is unchanged. The \x1f encoding is retired
+            # from the PERSISTED queue contract only.
+            try:
+                _payload = json.loads(row["payload"]) if row["payload"] \
+                    else {}
+            except (TypeError, ValueError):
+                _payload = {}
+            if kind == "Librarian" and _payload.get("file"):
+                target_id = _lib_encode(str(row["problem"]),
+                                        str(_payload["file"]))
             # Phase 2 — queue.target_kind defaults to 'Goal' (post-
             # migration column), and queue.decision_id is non-NULL when
             # this row was emitted by a Strategist Inject decision.
@@ -1770,13 +1812,19 @@ def run(workspace: Path, *, once: bool = False,
                 decision_id = int(_did) if _did is not None else None
             except (IndexError, KeyError):
                 decision_id = None
+            # Every skip below DISCARDS the claimed row (v17: pop leases,
+            # it no longer deletes — an abandoned lease would sit until
+            # TTL expiry and block refill dedup meanwhile). Matches the
+            # old pop-deletes semantics exactly.
             if _dispatch_is_duplicate(running, target_id, kind, decision_id):
+                db.complete_queue_row(conn, qid)
                 continue
             # #103 — defense-in-depth: even after bfs_refill skips
             # cooled kinds, a race (cooldown set between bfs_refill
             # and pop) could leave a queued row for a now-cooled
             # kind. Drop it; bfs_refill will repopulate post-cooldown.
             if st.quota_cooldown_kind.get(kind, 0.0) > time.time():
+                db.complete_queue_row(conn, qid)
                 continue
             # Drop a queued Strategist whose problem already committed
             # Ingest (e.g. a wake that raced the terminal commit). It
@@ -1784,6 +1832,7 @@ def run(workspace: Path, *, once: bool = False,
             if _strategist_row_is_stale(conn, target_id, kind):
                 print(f"[dispatch] skip Strategist Problem={target_id} "
                       f"— already ingested", flush=True)
+                db.complete_queue_row(conn, qid)
                 continue
             # Lazy verify gate — must hold before any worker spawn.
             # First dispatch for a problem this daemon run pays a one-
@@ -1794,11 +1843,13 @@ def run(workspace: Path, *, once: bool = False,
             if problem_name is None:
                 # Defensive: unknown target shape (DB drift?). Skip
                 # rather than wedge the pop loop.
+                db.complete_queue_row(conn, qid)
                 continue
             if problem_name not in st.verified_problems:
                 st.verified_problems[problem_name] = _verify_problem(
                     workspace, problem_name)
             if not st.verified_problems[problem_name]:
+                db.complete_queue_row(conn, qid)
                 continue
             pipeline_id = agent.new_pipeline_id()
             running.add((target_id, kind, decision_id))
@@ -1806,7 +1857,7 @@ def run(workspace: Path, *, once: bool = False,
                               kind, target_id, target_kind, pipeline_id,
                               decision_id)
             futures[fut] = (pipeline_id, kind, target_id, target_kind,
-                            decision_id)
+                            decision_id, qid)
             # Librarian per-file rows encode `problem\x1ffile` (#92); the
             # \x1f is non-printing, so render it readably in the log.
             _disp_prob, _disp_file = _lib_decode(target_id)
@@ -1815,7 +1866,12 @@ def run(workspace: Path, *, once: bool = False,
             print(f"[dispatch] {kind} {target_kind}={_disp_tid} "
                   f"pid={pipeline_id[:8]}", flush=True)
 
-        if once and not futures and db.pop_queue(conn) is None:
+        # Non-destructive emptiness check (v17): the old probing pop
+        # silently DISCARDED a row whenever every popped row above had
+        # been skipped (all-skips leaves `futures` empty with rows still
+        # queued).
+        if once and not futures and db.queue_size(
+                conn, scope=scope, claimable_only=True) == 0:
             print("[dispatcher] --once and queue empty, exit")
             pool.shutdown(wait=True)
             return 0

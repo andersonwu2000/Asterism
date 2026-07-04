@@ -69,7 +69,24 @@ def _attempt_owner_alive(attempt_dir: Path) -> bool:
 def recover_at_startup(conn: sqlite3.Connection,
                        workspace: Path | None = None,
                        scope: str | None = None) -> None:
-    queue_cleared = conn.execute("DELETE FROM queue").rowcount
+    # Scope-safe queue clean-slate (v17 — the #74 fix): clear THIS scope's
+    # unleased rows (refill re-derives them) plus this scope's rows whose
+    # lease owner is provably dead (crashed prior run). Rows leased by a
+    # LIVE owner belong to a concurrently-running dispatcher — leave them.
+    # Unscoped (scope=None) still means "the whole workspace is mine", but
+    # live leases are respected even then.
+    from ..agent.sandbox import _pid_alive
+    _scope_sql = "" if scope is None else " AND problem LIKE ?"
+    _scope_args: tuple = () if scope is None else (scope,)
+    queue_cleared = conn.execute(
+        "DELETE FROM queue WHERE owner_pid IS NULL" + _scope_sql,
+        _scope_args).rowcount
+    for r in list(conn.execute(
+            "SELECT id, owner_pid FROM queue WHERE owner_pid IS NOT NULL"
+            + _scope_sql, _scope_args)):
+        if not _pid_alive(r["owner_pid"]):
+            conn.execute("DELETE FROM queue WHERE id = ?", (r["id"],))
+            queue_cleared += 1
 
     # Phase 2.5 — re-enqueue dispatch rows for any in-flight Inject
     # decisions whose outcome is still NULL. Forward queue rows in
@@ -103,14 +120,15 @@ def recover_at_startup(conn: sqlite3.Connection,
     # `dispatcher.reconcile_stuck_states` (which adds in-flight gating).
     # At startup the queue is clean (cleared above) so no gating is needed
     # here — re-enqueue every spec.
+    # v17: scope-filtered (the unscoped form was #74's second half — a
+    # scoped daemon's startup re-enqueued EVERY problem's NULL injects),
+    # and routed through db.enqueue so the row carries its problem.
     inject_reenqueued = 0
-    for spec in db.null_inject_redispatch_specs(conn):
-        conn.execute(
-            "INSERT INTO queue (kind, target_id, target_kind, priority,"
-            " decision_id, created_at) VALUES (?, ?, ?, 10, ?, ?)",
-            (spec["kind"], spec["target_id"], spec["target_kind"],
-             spec["decision_id"], db.now()),
-        )
+    for spec in db.null_inject_redispatch_specs(conn, scope=scope):
+        db.enqueue(conn, kind=spec["kind"], target_id=spec["target_id"],
+                   target_kind=spec["target_kind"], priority=10,
+                   decision_id=spec["decision_id"],
+                   problem=spec["problem"])
         inject_reenqueued += 1
 
     strategies_killed = conn.execute(

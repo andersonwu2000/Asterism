@@ -172,7 +172,9 @@ _WATERMARKS = {
     # 1300→1380 (2026-07-04): ProvedReceipt — the proved-flip soundness
     # boundary (receipt requirement + sanctioned-kind registry) enforced at
     # the transition chokepoint (arch-review task #2).
-    "Tooling/state/transitions.py": 1380,
+    # 1380→1400 (2026-07-04): v17 queue scope plumbing (_queue_problem_of)
+    # rides the same file as the enqueue-adjacent cascade helpers.
+    "Tooling/state/transitions.py": 1400,
     # 3100→3150: classify_cited_slug — shared citation-eligibility SoT for the
     # commit gate (_cite_gate) AND validate_file's pre-commit mirror (#8 / P2)
     # — 2026-06-17 — conscious bump.
@@ -197,7 +199,9 @@ _WATERMARKS = {
     # db 3550→3700: Phase 6 — v16 `ingested_at` migration + problem terminal
     # helpers (set/get/all_problems_ingested) + shared alive-CTE fragments
     # (single-source root ∪ detached seed) — 2026-07-04 — conscious bump.
-    "Tooling/state/db.py": 3700,
+    # →3800 (2026-07-04): v17 queue contract — lease claim/complete/expire
+    # + scoped pop/flush + payload-aware contains (arch-review task #3).
+    "Tooling/state/db.py": 3800,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

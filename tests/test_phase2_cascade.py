@@ -759,8 +759,10 @@ def test_t2_pops_before_bfs(
     _insert_goal(conn, slug="main", origin="root")
     sub = _insert_goal(conn, slug="sub", status="attempting")
 
-    db.enqueue(conn, kind="Backward", target_id="999", priority=2)
-    db.enqueue(conn, kind="Builder",  target_id="998", priority=5)
+    db.enqueue(conn, kind="Backward", target_id="999", priority=2,
+               problem="p")
+    db.enqueue(conn, kind="Builder",  target_id="998", priority=5,
+               problem="p")
     _enqueue_strategist_review(conn, sub)
 
     first = db.pop_queue(conn)

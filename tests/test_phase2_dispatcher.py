@@ -201,7 +201,7 @@ def test_stall_wake_dedups_inflight_strategist(
     _insert_root(conn, "alpha", status="frozen")
     # Simulate already in queue (problem-keyed row).
     db.enqueue(conn, kind="Strategist", target_id="alpha",
-               target_kind="Problem", priority=10)
+               target_kind="Problem", priority=10, problem="alpha")
 
     strategist_triggers(conn, running=set())
 
@@ -250,7 +250,7 @@ def test_fresh_problem_wake_deferred_while_inject_batch_in_flight(
         ("alpha", db.now(), db.now()),
     )
     db.enqueue(conn, kind="Forward", target_id="alpha",
-               target_kind="Problem", priority=10)
+               target_kind="Problem", priority=10, problem="alpha")
     conn.commit()
 
     strategist_triggers(conn, running=set())
@@ -837,7 +837,7 @@ def test_t4_stall_skipped_when_inflight_inject_batch(
         (db.now(), db.now()),
     )
     db.enqueue(conn, kind="Forward", target_id="alpha",
-               target_kind="Problem", priority=10)
+               target_kind="Problem", priority=10, problem="alpha")
     conn.commit()
 
     strategist_triggers(conn, running=set())
@@ -924,7 +924,7 @@ def test_t4_stall_dedup_with_existing_strategist_queue_entry(
     _insert_problem(conn, name="alpha", bootstrap_done=1)
     _insert_root(conn, "alpha", status="attempting")
     db.enqueue(conn, kind="Strategist", target_id="alpha",
-               target_kind="Problem", priority=10)
+               target_kind="Problem", priority=10, problem="alpha")
 
     strategist_triggers(conn, running=set())
 
@@ -975,7 +975,7 @@ def test_derive_trigger_routine_when_worker_in_flight(
     _insert_problem(conn, name="alpha", bootstrap_done=1)
     _insert_root(conn, "alpha", status="frozen")
     db.enqueue(conn, kind="Forward", target_id="alpha",
-               target_kind="Problem", priority=10)
+               target_kind="Problem", priority=10, problem="alpha")
 
     trigger, pending = _derive_strategist_trigger(conn, "alpha")
     assert trigger == "routine"
@@ -1139,7 +1139,7 @@ def test_reconcile_pending_review_dedups_queue_and_inflight(
     db.update_goal_status(conn, sub, "pending_strategist_review")
     # already queued → no second
     db.enqueue(conn, kind="Strategist", target_id="alpha",
-               target_kind="Problem", priority=20)
+               target_kind="Problem", priority=20, problem="alpha")
     reconcile_stuck_states(conn, running=set())
     assert conn.execute(
         "SELECT count(*) c FROM queue WHERE kind='Strategist'"
@@ -1307,7 +1307,8 @@ def test_reconcile_reenqueues_null_inject_in_flight_gated(
     ).fetchone()["c"] == 0
     # already queued → no duplicate
     db.enqueue(conn, kind="Forward", target_id="alpha",
-               target_kind="Problem", priority=10, decision_id=d1)
+               target_kind="Problem", priority=10, decision_id=d1,
+               problem="alpha")
     reconcile_stuck_states(conn, running=set())
     assert conn.execute(
         "SELECT count(*) c FROM queue WHERE decision_id=?", (d1,)

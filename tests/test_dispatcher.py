@@ -860,8 +860,8 @@ def test_open_goals_filters_orphan_subgoals(conn: sqlite3.Connection) -> None:
 
 def test_recover_at_startup_clears_queue(conn: sqlite3.Connection) -> None:
     from Tooling.core.dispatcher import _recover_at_startup
-    db.enqueue(conn, kind="Backward", target_id="42")
-    db.enqueue(conn, kind="Verify", target_id="9")
+    db.enqueue(conn, kind="Backward", target_id="42", problem="p")
+    db.enqueue(conn, kind="Verify", target_id="9", problem="p")
     _recover_at_startup(conn)
     assert db.queue_count(conn, target_id="42", kind="Backward") == 0
     assert db.queue_count(conn, target_id="9", kind="Verify") == 0
@@ -1318,8 +1318,8 @@ def test_recover_at_startup_kills_half_baked_strategies(
 
 def test_queue_size_helper(conn: sqlite3.Connection) -> None:
     assert db.queue_size(conn) == 0
-    db.enqueue(conn, kind="Backward", target_id="1")
-    db.enqueue(conn, kind="Builder", target_id="2")
+    db.enqueue(conn, kind="Backward", target_id="1", problem="p")
+    db.enqueue(conn, kind="Builder", target_id="2", problem="p")
     assert db.queue_size(conn) == 2
 
 
@@ -1573,9 +1573,9 @@ def test_open_goals_recursive_orphan_filter(conn: sqlite3.Connection) -> None:
 
 
 def test_queue_count_helper(conn: sqlite3.Connection) -> None:
-    db.enqueue(conn, kind="Backward", target_id="42")
-    db.enqueue(conn, kind="Backward", target_id="42")
-    db.enqueue(conn, kind="Builder", target_id="42")
+    db.enqueue(conn, kind="Backward", target_id="42", problem="p")
+    db.enqueue(conn, kind="Backward", target_id="42", problem="p")
+    db.enqueue(conn, kind="Builder", target_id="42", problem="p")
     assert db.queue_count(conn, target_id="42", kind="Backward") == 2
     assert db.queue_count(conn, target_id="42", kind="Builder") == 1
     assert db.queue_count(conn, target_id="99", kind="Backward") == 0
@@ -1627,7 +1627,7 @@ def test_bfs_refill_skips_goal_with_any_kind_in_flight(
     db.update_goal_entry_kind(conn, gid, "Backward")
     # Simulate Strategist Inject(Builder) sitting in queue.
     db.enqueue(conn, kind="Builder", target_id=str(gid), priority=10,
-               decision_id=None)
+               decision_id=None, problem="p")
     bfs_refill(conn, running=set())
     # No additional Backward should be enqueued.
     assert db.queue_count(conn, target_id=str(gid), kind="Backward") == 0

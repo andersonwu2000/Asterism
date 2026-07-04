@@ -820,7 +820,7 @@ def test_stall_warning_silent_when_backward_in_queue(
     )
     db.update_goal_status(conn, other, "attempting")
     db.enqueue(conn, kind="Backward", target_id=str(other),
-               target_kind="Goal", priority=2)
+               target_kind="Goal", priority=2, problem="p")
 
     assert phase2_context._section_stall_warning(conn, "p") == []
 
