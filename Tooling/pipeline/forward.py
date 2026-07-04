@@ -381,7 +381,9 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
     db.set_goal_detached(conn, goal_id, True)
     if initial_status == "proved":
         transitions.apply_goal_transition(
-            conn, goal_id, "proved", event="forward_lemma_proved")
+            conn, goal_id, "proved", event="forward_lemma_proved",
+            receipt=transitions.ProvedReceipt(
+                "axiom_gate", f"Problems.{problem}.{metadata.slug}"))
     conn.commit()
     return CommitOutcome(goal_id=goal_id, lean_path=rel_lean_path,
                          status=initial_status)
@@ -510,7 +512,10 @@ def commit_forward_alias(conn: sqlite3.Connection, *,
     # Forward (commit_forward_lemma) — the alias body is sorry-free.
     db.set_goal_detached(conn, goal_id, True)
     transitions.apply_goal_transition(
-        conn, goal_id, "proved", event="forward_alias_proved")
+        conn, goal_id, "proved", event="forward_alias_proved",
+        receipt=transitions.ProvedReceipt(
+            "alias_induction",
+            f"forward alias → {canonical_label} (build-verified)"))
     if canonical_goal_id is not None:
         # Record the alias edge so prune retains the canonical while this
         # alias is alive (library_alias has no in-DB goal → skip).
@@ -706,6 +711,31 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                         f"Manifest statement; statement-vocabulary must "
                         f"live in Defs.lean — use "
                         f"`RequestUserAmend(file=\"Defs.lean\")` instead"
+                    ),
+                )
+
+        # Bug-B mirror (sphere_homology 2026-07-04): a SORRY-BEARING decl
+        # enters BFS, and Backward's `build_strategy_skeleton` requires a
+        # top-level type colon to lock the signature — a sorry-bearing
+        # `def` whose return type is INFERRED (`def f (x : A) := body`)
+        # is un-decomposable by construction and burns every attempt on
+        # `parent_stub_not_decomposable` until it shelves (goal 4946:
+        # 5/5 wasted). Validate at commit time with the SAME check
+        # decomp runs, so the agent gets actionable feedback and retries
+        # with an explicit ascription. Sorry-free decls are exempt: they
+        # prove immediately and never dispatch.
+        if not metadata.sorry_free:
+            from ._skeleton import _has_top_level_type_colon, signature_prefix
+            _sig = signature_prefix(body, metadata.slug)
+            if not _sig or not _has_top_level_type_colon(_sig, metadata.slug):
+                return PipelineResult(
+                    outcome="failed", failure_reason="forward_no_new_goal",
+                    failure_detail=(
+                        f"sorry-bearing `{metadata.kind}` '{metadata.slug}' "
+                        f"has no explicit top-level type ascription — the "
+                        f"prover cannot decompose an inferred-type hole. "
+                        f"Write `... : <Type> := ...` (state the type "
+                        f"explicitly) and retry."
                     ),
                 )
 

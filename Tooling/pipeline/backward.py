@@ -514,8 +514,11 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             outcome="failed",
             failure_reason="parent_stub_not_decomposable",
             failure_detail=(
-                f"theorem {goal['slug']} not found in {goal['lean_path']} "
-                f"(may have been promoted by a sibling already)"
+                f"no decomposable `<kind> {goal['slug']} ... : <type>` head "
+                f"in {goal['lean_path']} — either the declaration is absent "
+                f"(may have been promoted by a sibling already) or it has "
+                f"no top-level type colon (inferred-type def / promoted "
+                f"alias), which the signature lock cannot decompose"
             ),
         )
     skeleton_signature = _normalize_signature(
@@ -1566,7 +1569,11 @@ def _backward_parse_and_commit(
                 # Past the same_as_disproved / no_progress early-returns →
                 # kind is "alias" (in-problem) or "library_alias" (A).
                 transitions.apply_goal_transition(
-                    conn, new_gid, "proved", event="backward_alias_proved")
+                    conn, new_gid, "proved", event="backward_alias_proved",
+                    receipt=transitions.ProvedReceipt(
+                        "alias_induction",
+                        f"dedupe {match.kind} → g{match.goal_id} "
+                        f"(build-verified)"))
                 if match.kind == "library_alias":
                     # Canonical is a committed Library decl, not an in-DB
                     # goal — no alias_target_id (prune doesn't manage
@@ -1588,7 +1595,9 @@ def _backward_parse_and_commit(
                 if ok:
                     transitions.apply_goal_transition(
                         conn, new_gid, "proved",
-                        event="backward_sorryfree_proved")
+                        event="backward_sorryfree_proved",
+                        receipt=transitions.ProvedReceipt(
+                            "axiom_gate", msg))
                     print(f"[skip-dispatch] {slug} → proved ({msg})",
                           flush=True)
             linked_ids.append(new_gid)

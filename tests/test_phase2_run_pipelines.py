@@ -537,6 +537,43 @@ def test_run_forward_vocab_guard_is_defs_conditional(
     assert "Manifest statement" in (r2.failure_detail or "")
 
 
+def test_run_forward_rejects_sorry_bearing_inferred_type_def(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mock_lsp_verify,
+) -> None:
+    """Bug-B mirror (sphere_homology 2026-07-04): a sorry-bearing def with
+    an INFERRED return type is un-decomposable (Backward's signature lock
+    needs a top-level type colon) — it must be rejected at Forward commit
+    with actionable feedback, not persisted to burn 5 attempts on
+    `parent_stub_not_decomposable`."""
+    _insert_root(conn)
+
+    def fake_spawn(**kw):
+        (kw["attempts_dir"] / "new_forward.lean").write_text(
+            "namespace Problems.p\n"
+            "-- Forward rationale: assemble the iso.\n"
+            "-- entry_kind: Backward\n"
+            "noncomputable def bad_iso {R : Type} (A : Set R) :=\n"
+            "  Iso.refl (by sorry)\n"
+            "end Problems.p\n",
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    r = forward.run_forward(
+        conn, problem="p", workspace=workspace, mfst=mfst,
+        pipeline_id="test-fwd-inferred",
+    )
+    assert r.outcome in ("failed", "exhausted")
+    assert r.failure_reason == "forward_no_new_goal"
+    assert "type ascription" in (r.failure_detail or "")
+    # Nothing persisted.
+    assert conn.execute(
+        "SELECT count(*) FROM goals WHERE problem='p' AND origin='forward'"
+    ).fetchone()[0] == 0
+
+
 def test_run_forward_no_output(
     workspace: Path, conn: sqlite3.Connection,
     mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
