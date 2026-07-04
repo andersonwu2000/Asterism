@@ -5,6 +5,12 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-03
+- Extended the axiom-soundness check to run at more decision points, including after every rewrite that follows a library merge, so no proof is accepted that silently depends on extra axioms.
+- Funneled all remaining proof and status writes through single checked entry points, adding a lint rule to keep unaudited writes from creeping back in.
+- Fixed several bugs in merging finished proofs into the shared library, including mishandled universe declarations, false duplicate detection, and aliases that lost modifiers or could not be cited.
+- Rewrote the architecture documentation to match actual system behavior and tightened rules around how pipelines claim and use work slots.
+
 ### 2026-07-02
 - Added a check that reads directly from the Lean kernel to record exactly which axioms and assumptions each proved result relies on.
 - Built a workflow to designate the intended theorems and then accept them behind a required human sign-off, or reject them so that everything built on a discarded result is automatically invalidated.
@@ -130,12 +136,6 @@
 - Made the system's library of already-proved lemmas citable by new proof attempts, and trimmed that library down to only the lemmas the main theorem actually depends on, dropping unused leftovers.
 - Hardened the machinery that renames and relocates those lemmas — redirecting stale references, reading proof files case-insensitively, ignoring `sorry` placeholders that appear only in comments, and checking a proof's axiom dependencies in a single pass.
 - Backward search now discards subgoals that make no progress toward the goal, and a new check flags when a freshly introduced definition collides with an existing mathlib name so it can be renamed before proving continues.
-
-### 2026-06-03
-- Rebuilt how newly proved results get folded into the reusable library, replacing the language-model step with deterministic rules.
-- Made that integration operate on one definition or lemma at a time, building and checking each incrementally instead of processing whole files at once.
-- Fixed several reliability problems in the background library-maintenance process, including stuck sessions, leaked resources, and the handling of mutually-dependent files.
-- Added a new soundness stress-test problem and improved the live monitoring of library work.
 
 <!-- ASTERISM-PROGRESS:END -->
 
