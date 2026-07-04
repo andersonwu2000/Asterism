@@ -406,7 +406,7 @@ hook 偵測「同 batch_id 所有 row outcome 非 NULL」時 fire。
 | **classify** | one-shot JSON spawn | agent 給檔案佈局 + 檔內順序；framework 再做 SCC-merge + 用量 toposort 修正 → `target_file` / `file_order` |
 | **migrate** | LSP + commit-retry | 一次寫**整個檔**的 decls（照 `file_order`）→ 過 commit gate → `migrated` |
 | **cleanup** | LLM 多段 + 機械收尾 | per-file 精修（drop/merge/near-dup bridge、simplify、audit 整檔 mathlib-ize、decide rename + import-min）；收尾零-warning 硬閘 + **post-rewrite 公理閘**（§3.5 末） → `cleaned` / `dropped` |
-| **bridge** | 無 agent | cite_drop 後 Gate B 整體意義驗證（見下），PASS 就寫 `Library/INDEX.md`、終止 chain；純 mathlib 引用的 wrapper 轉 `cited` |
+| **bridge** | 無 agent | cite_drop 後 Gate B 整體意義驗證（見下），PASS 就回填 decl 簽名（declInfo oracle）+ 標 `problems.library_bridged_at`（v18 done-marker）、終止 chain；純 mathlib 引用的 wrapper 轉 `cited` |
 
 **lifecycle 狀態**：`candidate → deduped → classified → migrated → cleaned`；
 終態另有 `dropped`（cleanup 併掉）與 `cited`（bridge 轉純 mathlib 引用）。
@@ -437,12 +437,12 @@ cleanup 的 LLM 段（simplify / near-dup bridge one-liner / audit 整檔重寫�
 不過 → `librarian_axiom_violation`、該檔留 `migrated`、chain 重試。
 
 **Gate B（`bridge` 步驟，俗稱「秒殺」/定海神針）**：對整批收成做意義檢查 —— 從 Library 重新推導出原始 root
-（Defs-free），跑 statement-pin + import 閉包 + build + axiom whitelist。這是 chain 的終止步，PASS 才寫 INDEX，
-所以 INDEX 存在 = 整個 Library 真的能重證原題。
+（Defs-free），跑 statement-pin + import 閉包 + build + axiom whitelist。這是 chain 的終止步，PASS 才標
+`library_bridged_at`（v18 done-marker），所以 marker 存在 = 整個 Library 真的能重證原題。
 
 **deliverable 題的 bridge**（anchor+claim、無 root 可重推）：builds-only 之外，對每個 harvested 檔的
 最終 on-disk 文本（在 cite_drop —— chain 拓撲末端的最後一次改寫 —— 之後）跑同一套 per-decl 公理閘，
-PASS 才寫 INDEX。classic 題不需要：Gate B 的 root 重推 probe 本身就帶 axiom whitelist、覆蓋 root 閉包。
+PASS 才標 bridge 完成。classic 題不需要：Gate B 的 root 重推 probe 本身就帶 axiom whitelist、覆蓋 root 閉包。
 
 > 三道 Gate：**A** import 閉包、**B** root 重推、**D** Defs def-equivalence。**沒有 Gate C。**
 > 公理面另有兩道 re-gate：cleanup 收尾（逐檔歸因）+ deliverable bridge 末端（終局保證）。
@@ -512,7 +512,7 @@ lake serve worker 走完整 alias 鏈、缺 olean 的檔 on-demand elaborate（�
 **rogue sorryAx**
 
 1. `bisect_sorryax_source`：對每個 `succeeded` strategy 跑 `#print axioms`（depth 深的先），找第一個 scratch 含 sorryAx 的元凶
-2. `rollback_cascade_chain`：從元凶往 root 走，逐層 `rollback_promote` 還原 sorry-stub —— culprit strategy `dead`/goal `open`、上游 strategy `proposed`/goal `attempting`。root 因此退出 proved（`integrity_verified` 清掉），下個 tick 重新 Backward 元凶 goal。**Phase 6**：若該題已 `Ingest` → 自動撤銷（清 `ingested_at`+sign-off）並 `librarian.un_harvest` 全自動下架（刪 Library 檔、退 INDEX section、清 lifecycle rows/fail counts、loud-list 跨題 dependents）
+2. `rollback_cascade_chain`：從元凶往 root 走，逐層 `rollback_promote` 還原 sorry-stub —— culprit strategy `dead`/goal `open`、上游 strategy `proposed`/goal `attempting`。root 因此退出 proved（`integrity_verified` 清掉），下個 tick 重新 Backward 元凶 goal。**Phase 6**：若該題已 `Ingest` → 自動撤銷（清 `ingested_at`+sign-off）並 `librarian.un_harvest` 全自動下架（刪 Library 檔、清 bridge marker、清 lifecycle rows/fail counts、loud-list 跨題 dependents）
 
 > empirical：41+ 次 cascade verify，0 次攔到 sorry / drift。唯一 caught sorryAx 案例（SG s378）發生在
 > Backward leaf-bypass 的 submit time，不在 cascade。Mechanical-only 把零收益的 verify 全省掉，

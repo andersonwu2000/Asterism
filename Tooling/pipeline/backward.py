@@ -573,7 +573,8 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         # context is compiled, so its candidate-lemma section is present.
         _presearch.ensure_presearch(
             goal=goal, workspace=workspace, problem_dir=problem_dir,
-            attempts_dir=ctx.attempts_dir, prompt_dir=PROMPT_DIR)
+            attempts_dir=ctx.attempts_dir, prompt_dir=PROMPT_DIR,
+            conn=conn)
         context.compile_context(conn, goal=goal, mfst=mfst,
                               attempts_dir=ctx.attempts_dir,
                               strategy_id=strategy_id,

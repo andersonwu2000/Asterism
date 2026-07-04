@@ -515,41 +515,54 @@ def test_normalize_whitespace_skips_frozen(monkeypatch, tmp_path):
 # C4-B: audit cross-library name-clash check (Library/INDEX.md → leaf index)
 # ---------------------------------------------------------------------
 
-def test_library_name_index_parses_and_excludes_self(tmp_path):
-    idx = tmp_path / "Library" / "INDEX.md"
-    idx.parent.mkdir(parents=True)
-    idx.write_text(
-        "# Library Index\n\n"
-        "- `Library.A.Foo.residue` → `Library/A/Foo.lean`\n"
-        "- `Complex.residue` → `Library/B/Bar.lean`\n"
-        "- `Library.A.Foo.other` → `Library/A/Foo.lean`\n",
-        encoding="utf-8")
-    ix = A._library_name_index(tmp_path, "Library/A/Foo.lean")
+def _name_index_conn():
+    """In-memory DB with placed decls (v18: _library_name_index reads
+    library_decls, not INDEX.md)."""
+    from Tooling.state import db
+    conn = db.connect(":memory:")
+    db.init_schema(conn)
+    conn.execute("PRAGMA foreign_keys = OFF")
+    rows = [
+        ("pa", "residue", "Library.A.Foo.residue", "Library/A/Foo.lean"),
+        ("pb", "residue2", "Complex.residue", "Library/B/Bar.lean"),
+        ("pa", "other", "Library.A.Foo.other", "Library/A/Foo.lean"),
+    ]
+    for prob, slug, name, rel in rows:
+        conn.execute(
+            "INSERT INTO library_decls (problem, slug, target_name,"
+            " target_file, lifecycle, created_at, updated_at)"
+            " VALUES (?,?,?,?, 'migrated', 't', 't')",
+            (prob, slug, name, rel))
+    conn.commit()
+    return conn
+
+
+def test_library_name_index_from_db_excludes_self(tmp_path):
+    conn = _name_index_conn()
+    ix = A._library_name_index(conn, "Library/A/Foo.lean")
     assert ix.get("residue") == ["Library/B/Bar.lean"]   # self path excluded
     assert "other" not in ix                              # only in self file
-    # Missing INDEX → empty, no crash.
-    assert A._library_name_index(tmp_path / "nope", "x") == {}
+    # conn=None (unit tests without a DB) -> empty, no crash.
+    assert A._library_name_index(None, "x") == {}
 
 
 def test_audit_context_surfaces_cross_library_clash(tmp_path):
-    (tmp_path / "Library").mkdir()
-    (tmp_path / "Library" / "INDEX.md").write_text(
-        "- `Complex.residue` → `Library/B/Bar.lean`\n", encoding="utf-8")
+    conn = _name_index_conn()
     f = tmp_path / "Library" / "A" / "Foo.lean"
     f.parent.mkdir(parents=True)
     f.write_text("namespace Complex\ntheorem residue : True := trivial\n"
                  "end Complex\n", encoding="utf-8")
-    ctx = A._audit_context(tmp_path, "p", "Library/A/Foo.lean", ["residue"])
+    ctx = A._audit_context(tmp_path, "p", "Library/A/Foo.lean", ["residue"],
+                           conn=conn)
     assert "Cross-library leaf-name clashes" in ctx
     assert "Library/B/Bar.lean" in ctx
 
 
 def test_audit_context_clean_when_no_clash(tmp_path):
-    (tmp_path / "Library").mkdir()
-    (tmp_path / "Library" / "INDEX.md").write_text(
-        "- `Library.B.Bar.unrelated` → `Library/B/Bar.lean`\n", encoding="utf-8")
+    conn = _name_index_conn()
     f = tmp_path / "Library" / "A" / "Foo.lean"
     f.parent.mkdir(parents=True)
     f.write_text("theorem foo : True := trivial\n", encoding="utf-8")
-    ctx = A._audit_context(tmp_path, "p", "Library/A/Foo.lean", ["foo"])
+    ctx = A._audit_context(tmp_path, "p", "Library/A/Foo.lean", ["foo"],
+                           conn=conn)
     assert "no leaf-name clashes" in ctx

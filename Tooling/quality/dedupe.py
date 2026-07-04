@@ -286,11 +286,11 @@ def _extract_theorem_name(text: str) -> str | None:
 # (module, fqn) rather than a goal row. Domain-scoped; pre-filtered by
 # binder count + distinctive-token overlap so the probe never imports the
 # whole domain Library (import-closure cost, not pair count, dominates).
-# Source of truth = `Library/INDEX.md` (the Librarian done-marker): each
-# line is `- `<fqn>` → `<rel path>``; module = fqn minus last segment.
+# Source of truth = the DB (v18): bridged problems' placed decls via
+# `db.bridged_library_index`; module = fqn minus last segment.
 # ---------------------------------------------------------------------
 
-_LIB_INDEX_ENTRY_RE = re.compile(r"^-\s+`([\w.]+)`\s*(?:→|->)\s*`([^`]+)`")
+
 _LIB_DECL_HEAD_RE = re.compile(
     r"(?m)^[ \t]*(?:@\[[^\]]*\][ \t]*)*"
     r"(?:private[ \t]+|protected[ \t]+|noncomputable[ \t]+|scoped[ \t]+)*"
@@ -349,55 +349,87 @@ class _LibCanon(NamedTuple):
     concl_tokens: "frozenset[str]"
 
 
-# Per-process cache keyed by (workspace, domain, INDEX mtime) — Library is
-# static during a problem run; mtime in the key invalidates on edit.
-_LIBRARY_INDEX_CACHE: "dict[tuple[str, str, float], list[_LibCanon]]" = {}
+# Per-(file, mtime) signature-parse cache for the NULL-signature fallback:
+# a file whose decls lack a DB signature is parsed once per content version.
+# The DB read itself is cheap and uncached (v18 — was: a whole-pool cache
+# keyed on INDEX.md mtime, invalidated wholesale by every bridge rewrite).
+_LIB_SIG_FILE_CACHE: "dict[tuple[str, float], dict]" = {}
 
 
-def _library_canonicals(workspace: Path, domain: str) -> "list[_LibCanon]":
+def _library_canonicals(conn, workspace: Path,
+                        domain: str) -> "list[_LibCanon]":
     """All theorem/lemma Library decls in `domain`, with binder count +
-    conclusion tokens, parsed from `Library/INDEX.md` + the referenced
-    files. Cached per (workspace, domain, INDEX mtime)."""
-    index = workspace / "Library" / "INDEX.md"
-    try:
-        mtime = index.stat().st_mtime
-    except OSError:
-        return []
-    key = (str(workspace), domain, mtime)
-    cached = _LIBRARY_INDEX_CACHE.get(key)
-    if cached is not None:
-        return cached
-    try:
-        text = index.read_text(encoding="utf-8")
-    except OSError:
-        return []
-    by_file: dict[str, list[str]] = {}
-    for ln in text.splitlines():
-        m = _LIB_INDEX_ENTRY_RE.match(ln.strip())
-        if not m:
-            continue
-        fqn, rel = m.group(1), m.group(2).strip()
-        parts = rel.replace("\\", "/").split("/")
-        if len(parts) >= 2 and parts[0] == "Library" and (
-                domain == "*" or parts[1] == domain):
-            by_file.setdefault(rel, []).append(fqn)
+    conclusion tokens. v18: rows come from the DB (bridged problems'
+    placed decls — `db.bridged_library_index`); binder/conclusion come
+    from the kernel-true `signature` column when backfilled, else from
+    parsing the .lean file (per-file mtime cache) — today's behavior as
+    the fallback."""
+    from ..state import db as _db
+    by_file: "dict[str, list]" = {}
+    for rows in _db.bridged_library_index(conn).values():
+        for r in rows:
+            rel = str(r["target_file"] or "")
+            fqn = str(r["target_name"] or "")
+            if not rel or not fqn:
+                continue
+            parts = rel.replace("\\", "/").split("/")
+            if len(parts) >= 2 and parts[0] == "Library" and (
+                    domain == "*" or parts[1] == domain):
+                by_file.setdefault(rel, []).append(r)
     out: list[_LibCanon] = []
-    for rel, fqns in by_file.items():
-        try:
-            sigs = _parse_library_decl_sigs(
-                (workspace / rel).read_text(encoding="utf-8"))
-        except OSError:
-            continue
-        for fqn in fqns:
+    for rel, rows in by_file.items():
+        file_sigs: "dict | None" = None
+        for r in rows:
+            fqn = str(r["target_name"])
             decl = fqn.rsplit(".", 1)[-1]
-            sc = sigs.get(decl)
+            sig = r["signature"] if "signature" in r.keys() else None
+            kind = (str(r["decl_kind"]) if "decl_kind" in r.keys()
+                    and r["decl_kind"] else "")
+            if sig:
+                if kind and kind not in ("thm",):
+                    continue  # data decl → not an apply-canonical
+                # ppSignature shape: `<name> <binders> : <conclusion>` —
+                # strip the leading name, reuse the existing sig parsers.
+                body = str(sig)
+                if body.startswith(fqn):
+                    body = body[len(fqn):].strip()
+                else:
+                    body = body.split(" ", 1)[1] if " " in body else body
+                bc = _signature_binder_count(f"theorem x {body} := sorry")
+                concl = _conclusion_of_signature(body)
+                if not kind and not concl:
+                    continue  # unparsable + kind unknown → skip like before
+                out.append(_LibCanon(
+                    fqn=fqn, module=fqn.rsplit(".", 1)[0],
+                    binder_count=bc,
+                    concl_tokens=_distinctive_tokens(concl)))
+                continue
+            # NULL signature → parse the file once (mtime-cached).
+            if file_sigs is None:
+                fp = workspace / rel
+                try:
+                    key = (str(fp), fp.stat().st_mtime)
+                except OSError:
+                    file_sigs = {}
+                else:
+                    hit = _LIB_SIG_FILE_CACHE.get(key)
+                    if hit is None:
+                        try:
+                            hit = _parse_library_decl_sigs(
+                                fp.read_text(encoding="utf-8"))
+                        except OSError:
+                            hit = {}
+                        if len(_LIB_SIG_FILE_CACHE) > 512:
+                            _LIB_SIG_FILE_CACHE.clear()
+                        _LIB_SIG_FILE_CACHE[key] = hit
+                    file_sigs = hit
+            sc = file_sigs.get(decl)
             if sc is None:
                 continue  # def / unparsed → not an apply-canonical
             bc, concl = sc
             out.append(_LibCanon(
                 fqn=fqn, module=fqn.rsplit(".", 1)[0],
                 binder_count=bc, concl_tokens=_distinctive_tokens(concl)))
-    _LIBRARY_INDEX_CACHE[key] = out
     return out
 
 
@@ -409,7 +441,7 @@ def _library_canonicals(workspace: Path, domain: str) -> "list[_LibCanon]":
 _LIBRARY_MAX_PAIRS_PER_CAND = 25
 
 
-def _eligible_library(workspace: Path, *, domain: str,
+def _eligible_library(conn, workspace: Path, *, domain: str,
                       candidate_count: int, candidate_concl: str,
                       ) -> "list[tuple[str, str]]":
     """Library decls in `domain` that plausibly close a candidate with
@@ -419,7 +451,7 @@ def _eligible_library(workspace: Path, *, domain: str,
     the probe imports only matched modules, not the whole domain). Ranked
     by overlap, capped at `_LIBRARY_MAX_PAIRS_PER_CAND`. Returns
     (module, fqn)."""
-    canons = _library_canonicals(workspace, domain)
+    canons = _library_canonicals(conn, workspace, domain)
     if not canons:
         return []
     cand_tokens = _distinctive_tokens(candidate_concl)
@@ -1216,7 +1248,7 @@ def find_canonicals_batch(
         cand_count = _signature_binder_count(full_text)
         cand_concl = _conclusion_of_signature(cand_sig)
         for lib_module, lib_fqn in _eligible_library(
-                workspace, domain=domain, candidate_count=cand_count,
+                conn, workspace, domain=domain, candidate_count=cand_count,
                 candidate_concl=cand_concl):
             pairs.append((cand_sig, lib_module, lib_fqn))
             pair_origin.append((ci, "library_alias", (lib_module, lib_fqn)))

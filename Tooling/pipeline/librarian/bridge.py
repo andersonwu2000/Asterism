@@ -13,87 +13,47 @@ from .schedule import _harvested_decls
 # Stage E — finish (terminal, agentless): provenance + chain termination
 # ---------------------------------------------------------------------
 
-def _upsert_index_section(index_text: str, problem: str,
-                          section_body: str) -> str:
-    """Idempotently replace (or append) the `## <problem>` section in
-    INDEX.md. A re-run of finish for the same problem rewrites its
-    section in place rather than duplicating it. Sections are delimited
-    by `## ` headers; the replaced span runs to the next `## ` (or EOF)."""
-    header = f"## {problem}"
-    lines = index_text.splitlines()
-    start = None
-    for i, ln in enumerate(lines):
-        if ln.strip() == header:
-            start = i
-            break
-    new_section = f"{header}\n\n{section_body.rstrip()}\n"
-    if start is None:
-        base = index_text.rstrip()
-        prefix = (base + "\n\n") if base else _INDEX_PREAMBLE
-        return prefix + new_section
-    # Find end of this section (next top-level `## ` or EOF).
-    end = len(lines)
-    for j in range(start + 1, len(lines)):
-        if lines[j].startswith("## "):
-            end = j
-            break
-    before = "\n".join(lines[:start]).rstrip()
-    after = "\n".join(lines[end:]).strip()
-    out = (before + "\n\n" if before else _INDEX_PREAMBLE) + new_section
-    if after:
-        out += "\n" + after + "\n"
-    return out
+def _backfill_decl_signatures(conn, *, problem, workspace) -> None:
+    """Fill `library_decls.{signature, decl_kind}` for every placed decl from
+    the declInfo oracle (one warm elaborate per harvested file — oleans are
+    warm at bridge end). BEST-EFFORT: on any miss the columns stay NULL and
+    consumers (dedupe pool) fall back to parsing the .lean file, i.e. today's
+    behavior; the bridge outcome is never blocked by this."""
+    from ...lsp import lifecycle as gw
+    by_file: "dict[str, list]" = {}
+    for r in _harvested_decls(conn, problem):
+        if r["target_file"] and r["target_name"]:
+            by_file.setdefault(str(r["target_file"]), []).append(r)
+    for rel, rows in sorted(by_file.items()):
+        try:
+            v = gw.verify_file(workspace / rel, write_olean=False,
+                               decl_info=True, workspace=workspace,
+                               _retry_delays=())
+        except Exception as e:  # noqa: BLE001 — best-effort by contract
+            print(f"[librarian] {problem}: signature backfill skipped "
+                  f"({rel}: {type(e).__name__}: {e})", flush=True)
+            continue
+        info = v.get("decl_info") if isinstance(v, dict) else None
+        if not info or not info.get("decls"):
+            continue
+        by_name = {d["userName"]: d for d in info["decls"]}
+        for r in rows:
+            d = by_name.get(str(r["target_name"]))
+            if d and d.get("signature"):
+                db.set_library_signature(
+                    conn, problem=problem, slug=str(r["slug"]),
+                    signature=str(d["signature"]),
+                    decl_kind=str(d.get("kind") or ""))
 
 
-def _drop_index_section(index_text: str, problem: str) -> str:
-    """Remove the `## <problem>` section from INDEX.md (inverse of
-    `_upsert_index_section`) — returns the text unchanged if the section is
-    absent. Used to invalidate a stale INDEX entry when an already-promoted
-    problem is re-cleaned, so the terminal bridge/Gate B re-fires + re-promotes
-    on the rewritten Library (the section span runs to the next `## ` or EOF,
-    same delimiting as the upsert)."""
-    header = f"## {problem}"
-    lines = index_text.splitlines()
-    start = next((i for i, ln in enumerate(lines) if ln.strip() == header), None)
-    if start is None:
-        return index_text
-    end = len(lines)
-    for j in range(start + 1, len(lines)):
-        if lines[j].startswith("## "):
-            end = j
-            break
-    before = "\n".join(lines[:start]).rstrip()
-    after = "\n".join(lines[end:]).strip()
-    parts = [p for p in (before, after) if p]
-    return ("\n\n".join(parts) + "\n") if parts else ""
-
-
-_INDEX_PREAMBLE = (
-    "# Library Index\n\n"
-    "Provenance of declarations harvested from proved Problems, by "
-    "source problem. Written by the Librarian `bridge` step.\n\n"
-)
-
-
-def _write_library_index(conn, *, problem, workspace, gate_b_line: str):
-    """Write/refresh the `## <problem>` section of `Library/INDEX.md`:
-    migrated-decl provenance + the Gate B status line. INDEX presence is the
-    chain's idempotent done-marker (`_derive_librarian_work`). Written by the
-    bridge step on Gate B PASS."""
-    migrated = _harvested_decls(conn, problem)
-    lines = [f"_Harvested {db.now()} — {len(migrated)} declaration(s)._", ""]
-    for r in migrated:
-        name = r["target_name"] or r["slug"]
-        lines.append(f"- `{name}` → `{r['target_file'] or '?'}`")
-    lines.append("")
-    lines.append(gate_b_line)
-    index = workspace / "Library" / "INDEX.md"
-    index.parent.mkdir(parents=True, exist_ok=True)
-    existing = (index.read_text(encoding="utf-8", errors="replace")
-                if index.exists() else "")
-    index.write_text(
-        _upsert_index_section(existing, problem, "\n".join(lines)),
-        encoding="utf-8")
+def _finish_bridge(conn, *, problem, workspace, note: str) -> None:
+    """Terminal bookkeeping on Gate B PASS: backfill kernel-true signatures,
+    then set the DB done-marker (`problems.library_bridged_at` — the v18
+    successor of the INDEX.md section). Marker LAST: a crash mid-backfill
+    re-runs the (idempotent) bridge rather than leaving a marked problem
+    with silently missing signatures."""
+    _backfill_decl_signatures(conn, problem=problem, workspace=workspace)
+    db.mark_library_bridged(conn, problem, note)
 
 
 def _rederivation_prober(bridge_path):
@@ -156,11 +116,11 @@ def _commit_bridge(patch_text, *, conn, problem, workspace, statement,
                 outcome="failed", failure_reason="librarian_gate_failed",
                 failure_detail="; ".join(gate.issues)[:400],
                 proposal_md=patch_text)
-        _write_library_index(
+        _finish_bridge(
             conn, problem=problem, workspace=workspace,
-            gate_b_line="Gate B (root re-derivation): PASSED — original "
-                        "`main` re-derived from the Library alone; axioms "
-                        "within whitelist.")
+            note="Gate B (root re-derivation): PASSED — original "
+                 "`main` re-derived from the Library alone; axioms "
+                 "within whitelist.")
         return PipelineResult(outcome="success", proposal_md=patch_text)
     finally:
         try:
@@ -333,13 +293,13 @@ def _run_bridge(conn, *, problem, workspace, pipeline_id,
                         failure_reason="librarian_axiom_violation",
                         failure_detail=(f"deliverable axiom gate: {_tf}: "
                                         f"{gres.detail}"))
-        _write_library_index(
+        _finish_bridge(
             conn, problem=problem, workspace=workspace,
-            gate_b_line=("Gate B (deliverable build + per-decl axiom check): "
-                         "PASSED — the marked deliverables + their anchor "
-                         "closures build from the Library alone, and every "
-                         "harvested decl's transitive axiom set is within "
-                         "the authorized whitelist."))
+            note=("Gate B (deliverable build + per-decl axiom check): "
+                  "PASSED — the marked deliverables + their anchor "
+                  "closures build from the Library alone, and every "
+                  "harvested decl's transitive axiom set is within "
+                  "the authorized whitelist."))
         return PipelineResult(outcome="success")
 
     # Classic path only from here — the root statement is what Gate B

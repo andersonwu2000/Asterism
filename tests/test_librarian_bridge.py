@@ -56,11 +56,14 @@ def test_commit_bridge_passes_writes_index(conn, tmp_path):
     r = lib._commit_bridge(patch, conn=conn, problem="p", workspace=tmp_path,
                            statement="True", whitelist=["a"], prober=_PASS)
     assert r.outcome == "success", r.failure_detail
-    index = tmp_path / "Library" / "INDEX.md"
-    assert index.exists()
-    text = index.read_text(encoding="utf-8")
-    assert "Gate B" in text and "PASSED" in text
-    assert "`Library.P.Foo.keystone`" in text
+    # v18: the done-marker + Gate B note live in the DB, not INDEX.md.
+    from Tooling.state import db as _db
+    assert _db.problem_library_bridged(conn, "p") is True
+    note = conn.execute("SELECT library_bridge_note FROM problems"
+                        " WHERE name='p'").fetchone()[0]
+    assert "Gate B" in note and "PASSED" in note
+    assert [r2["slug"] for r2 in _db.bridged_library_index(conn)["p"]] == [
+        "keystone"]
     # The bridge probe file itself is NOT left behind.
     leftover = list((tmp_path / "Library").glob("_bridge_probe_*.lean"))
     assert leftover == []
@@ -74,7 +77,8 @@ def test_commit_bridge_axiom_fail_no_index(conn, tmp_path):
                            statement="True", whitelist=["a"], prober=_FAIL)
     assert r.outcome == "failed"
     assert "rogue" in (r.failure_detail or "")
-    assert not (tmp_path / "Library" / "INDEX.md").exists()
+    from Tooling.state import db as _db
+    assert _db.problem_library_bridged(conn, "p") is False
 
 
 def test_commit_bridge_statement_pin_rejects_weakened(conn, tmp_path):
@@ -86,7 +90,8 @@ def test_commit_bridge_statement_pin_rejects_weakened(conn, tmp_path):
     r = lib._commit_bridge(patch, conn=conn, problem="p", workspace=tmp_path,
                            statement="True", whitelist=["a"], prober=_PASS)
     assert r.outcome == "failed"
-    assert not (tmp_path / "Library" / "INDEX.md").exists()
+    from Tooling.state import db as _db
+    assert _db.problem_library_bridged(conn, "p") is False
 
 
 def test_commit_bridge_rejects_problems_import(conn, tmp_path):
@@ -98,7 +103,8 @@ def test_commit_bridge_rejects_problems_import(conn, tmp_path):
     r = lib._commit_bridge(patch, conn=conn, problem="p", workspace=tmp_path,
                            statement="True", whitelist=["a"], prober=_PASS)
     assert r.outcome == "failed"
-    assert not (tmp_path / "Library" / "INDEX.md").exists()
+    from Tooling.state import db as _db
+    assert _db.problem_library_bridged(conn, "p") is False
 
 
 # --- bridge Context.md branch ---
@@ -285,8 +291,11 @@ def test_run_bridge_deliverable_axiom_gate_passes_writes_index(conn, tmp_path,
     assert r.outcome == "success"
     assert calls and calls[0]["whitelist"] == ["propext"]
     assert "theorem foo" in calls[0]["text"]         # final on-disk text
-    idx = (tmp_path / "Library" / "INDEX.md").read_text(encoding="utf-8")
-    assert "per-decl axiom check" in idx
+    from Tooling.state import db as _db
+    assert _db.problem_library_bridged(conn, "p") is True
+    note = conn.execute("SELECT library_bridge_note FROM problems"
+                        " WHERE name='p'").fetchone()[0]
+    assert "per-decl axiom check" in note
 
 
 def test_run_bridge_pure_nl_no_root_takes_deliverable_branch(conn, tmp_path,
@@ -312,7 +321,8 @@ def test_run_bridge_pure_nl_no_root_takes_deliverable_branch(conn, tmp_path,
     r = lib._run_bridge(conn, problem="p", workspace=tmp_path,
                         pipeline_id="pid", whitelist=["propext"])
     assert r.outcome == "success", r.failure_detail
-    assert (tmp_path / "Library" / "INDEX.md").exists()
+    from Tooling.state import db as _db
+    assert _db.problem_library_bridged(conn, "p") is True
 
 
 def test_run_bridge_deliverable_no_whitelist_skips_gate(conn, tmp_path,

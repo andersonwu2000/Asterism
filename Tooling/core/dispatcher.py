@@ -1722,14 +1722,14 @@ def run(workspace: Path, *, once: bool = False,
         # problems sitting in the same workspace hold the gate forever.
         # `librarian_pending`: without it a scoped run over an already-proved
         # problem (or the last root proving in any run) exits before the
-        # Library-ization chain — dedup→classify→migrate→bridge→INDEX —
+        # Library-ization chain — dedup→classify→migrate→bridge→marker —
         # has a chance to run, since that chain spans many ticks (Bug A).
         # `_harvest_outstanding`: durable-state backstop. `librarian_pending` is
         # a transient queue/running snapshot that can read False on the
         # proof→harvest handoff tick (root just integrity-verified, mechanical
         # dedup completing in a worker), letting the gate exit and kill the
         # in-flight Librarian — silently skipping harvest on a clean opted-in
-        # proof. The INDEX/lifecycle/fail-count check is timing-independent and
+        # proof. The marker/lifecycle/fail-count check is timing-independent and
         # holds the daemon until harvest actually finishes (or stalls).
         if (db.all_problems_ingested(conn, scope=scope)
                 and not librarian_pending

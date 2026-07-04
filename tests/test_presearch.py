@@ -35,16 +35,33 @@ def test_verify_keeps_when_lookup_unavailable(monkeypatch, tmp_path):
         {"mathlib": [{"name": "Real.add_comm"}]}, tmp_path, tmp_path)
 
 
-def test_verify_library_against_index(tmp_path):
-    """Library candidates are kept only when present in `Library/INDEX.md`."""
-    (tmp_path / "Library").mkdir()
-    (tmp_path / "Library" / "INDEX.md").write_text(
-        "- `Library.X.real_thing`\n", encoding="utf-8")
+def test_verify_library_against_db_index(tmp_path):
+    """Library candidates are kept only when among the DB's placed+bridged
+    decl names (v18 — exact FQN or leaf match; was an INDEX.md substring
+    probe). conn=None keeps all (defensive fallback)."""
+    from Tooling.state import db as _dbm
+    conn = _dbm.connect(":memory:")
+    _dbm.init_schema(conn)
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("INSERT INTO problems (name, manifest_path, created_at,"
+                 " bootstrap_done) VALUES ('p','m','t',1)")
+    conn.execute("INSERT INTO library_decls (problem, slug, target_name,"
+                 " target_file, lifecycle, created_at, updated_at)"
+                 " VALUES ('p','real_thing','Library.X.real_thing',"
+                 "'Library/X.lean','migrated','t','t')")
+    _dbm.mark_library_bridged(conn, "p")
     blocks = {"library": [{"name": "Library.X.real_thing"},
                           {"name": "Library.X.ghost"}]}
-    names = [c["name"] for c in _presearch._verify(blocks, tmp_path, tmp_path)]
+    names = [c["name"] for c in _presearch._verify(blocks, tmp_path, tmp_path,
+                                                   conn=conn)]
     assert "Library.X.real_thing" in names
     assert "Library.X.ghost" not in names
+    # module-qualified report with matching LEAF also passes
+    blocks = {"library": [{"name": "Library.Other.Path.real_thing"}]}
+    assert _presearch._verify(blocks, tmp_path, tmp_path, conn=conn)
+    # conn=None -> keep all (no filter available)
+    blocks = {"library": [{"name": "Library.X.ghost"}]}
+    assert _presearch._verify(blocks, tmp_path, tmp_path)
 
 
 def test_verify_in_problem_existence_guard(tmp_path):

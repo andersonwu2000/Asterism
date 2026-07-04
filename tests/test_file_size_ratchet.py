@@ -201,7 +201,10 @@ _WATERMARKS = {
     # (single-source root ∪ detached seed) — 2026-07-04 — conscious bump.
     # →3800 (2026-07-04): v17 queue contract — lease claim/complete/expire
     # + scoped pop/flush + payload-aware contains (arch-review task #3).
-    "Tooling/state/db.py": 3800,
+    # 3800→3950 (2026-07-05): v18 Library index in the DB — migration step
+    # (INDEX.md backfill) + the bridge-marker / bridged-index / signature
+    # helper family (task #4). db.py split is on the opportunistic list.
+    "Tooling/state/db.py": 3950,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

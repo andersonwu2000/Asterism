@@ -28,23 +28,22 @@ def _seed(tmp_path, problem="Topology.demo"):
     conn.execute("INSERT INTO librarian_fail_counts (target_id, n,"
                  " updated_at) VALUES (?, 1, ?)",
                  (f"{problem}\x1fMain.lean", db.now()))
-    index = tmp_path / "Library" / "INDEX.md"
-    index.write_text(
-        f"# Library Index\n\n## {problem}\n\n- `demo_main`\n\n"
-        f"## Other.problem\n\n- `keep_me`\n", encoding="utf-8")
-    conn.commit()
-    return conn, f1, index
+    conn.execute("INSERT INTO problems (name, manifest_path, created_at)"
+                 " VALUES ('Other.problem','',?)", (db.now(),))
+    db.mark_library_bridged(conn, problem)
+    db.mark_library_bridged(conn, "Other.problem")
+    return conn, f1
 
 
-def test_un_harvest_removes_files_index_and_rows(tmp_path, capsys):
+def test_un_harvest_removes_files_marker_and_rows(tmp_path, capsys):
     problem = "Topology.demo"
-    conn, f1, index = _seed(tmp_path, problem)
+    conn, f1 = _seed(tmp_path, problem)
     removed = un_harvest(conn, tmp_path, problem)
     assert removed == 1
     assert not f1.exists()
-    text = index.read_text(encoding="utf-8")
-    assert f"## {problem}" not in text
-    assert "## Other.problem" in text          # unrelated section survives
+    # v18: the bridge marker is cleared; the unrelated problem's survives.
+    assert db.problem_library_bridged(conn, problem) is False
+    assert db.problem_library_bridged(conn, "Other.problem") is True
     assert conn.execute("SELECT count(*) FROM library_decls WHERE"
                         " problem=?", (problem,)).fetchone()[0] == 0
     assert conn.execute("SELECT count(*) FROM librarian_fail_counts"
@@ -62,7 +61,7 @@ def test_un_harvest_noop_when_never_harvested(tmp_path):
 
 def test_un_harvest_surfaces_cross_problem_dependents(tmp_path, capsys):
     problem = "Topology.demo"
-    conn, f1, index = _seed(tmp_path, problem)
+    conn, f1 = _seed(tmp_path, problem)
     other = tmp_path / "Library" / "Other" / "User.lean"
     other.parent.mkdir(parents=True)
     other.write_text("import Library.Topology.Demo.Main\n"

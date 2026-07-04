@@ -485,41 +485,24 @@ def _section_proved_goals(conn: sqlite3.Connection,
     return lines
 
 
-def _section_library_available(mfst, workspace) -> list[str]:
+def _section_library_available(conn, mfst) -> list[str]:
     """Surface the reusable Library — theorems Asterism already proved and
     harvested from prior Problems — to the PROVING agent, so it can cite
     them instead of re-deriving (Library-as-input).
 
-    Reads the single `Library/INDEX.md` (the Librarian `finish` marker),
-    parses its `## <problem>` sections, and renders a COMPACT menu of the
-    Library modules in this problem's own domain (e.g. a `LinearAlgebra.*`
-    problem sees the `LinearAlgebra.*` Library). The agent has read access to
-    `Library/` — it greps there for exact signatures; the menu just tells
-    it what exists and how to cite. Returns [] when the Library has nothing
-    relevant (keeps unrelated problems' Context clean)."""
-    import re as _re
-    index = workspace / "Library" / "INDEX.md"
-    if not index.exists():
-        return []
-    try:
-        text = index.read_text(encoding="utf-8")
-    except OSError:
-        return []
-    sections: list[tuple[str, list[str]]] = []
-    cur: str | None = None
-    decls: list[str] = []
-    for ln in text.splitlines():
-        m = _re.match(r"^##\s+(.+?)\s*$", ln)
-        if m:
-            if cur is not None:
-                sections.append((cur, decls))
-            cur, decls = m.group(1), []
-            continue
-        m = _re.match(r"^-\s+`([\w.]+)`", ln)
-        if m and cur is not None:
-            decls.append(m.group(1))
-    if cur is not None:
-        sections.append((cur, decls))
+    v18: rendered from the DB (`db.bridged_library_index` — bridged
+    problems' placed decls; was: parsing INDEX.md sections). Same COMPACT
+    menu, domain-filtered (a `LinearAlgebra.*` problem sees the
+    `LinearAlgebra.*` Library). The agent has read access to `Library/` —
+    it greps there for exact signatures (its real discovery interface,
+    unchanged; agents grep the whole tree, wider than this menu); the menu
+    just tells it what exists and how to cite. Returns [] when the Library
+    has nothing relevant (keeps unrelated problems' Context clean)."""
+    if conn is None:
+        return []          # conn-less render (brief in bare tests)
+    sections = [
+        (prob, [str(r["target_name"] or r["slug"]) for r in rows])
+        for prob, rows in db.bridged_library_index(conn).items()]
     if not sections:
         return []
 
@@ -953,7 +936,7 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_strategist_directive(conn, str(goal["problem"])),
         _section_strategist_brief(conn, decision_id),
         _section_header(goal),
-        _section_library_available(mfst, workspace),
+        _section_library_available(conn, mfst),
         _section_strategy_naming(strategy_id, goal),
         _section_parent_strategy(conn, goal),
         _section_mathlib_lemmas_from_deads(direct_events, workspace),

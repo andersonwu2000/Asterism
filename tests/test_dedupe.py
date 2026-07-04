@@ -1634,20 +1634,35 @@ def test_find_canonicals_batch_tier1_hit_rides_the_probe(
 # A — Library-as-dedupe-pool (cross-problem reuse)
 # ---------------------------------------------------------------------
 
-def _write_library(workspace: Path, *,
-                   index_entries: list[tuple[str, str]],
-                   files: dict[str, str]) -> None:
-    """Stage a Library/ with an INDEX.md + decl files for reuse tests."""
-    lib = workspace / "Library"
-    lib.mkdir(parents=True, exist_ok=True)
-    lines = ["# Library Index", ""]
-    for fqn, rel in index_entries:
-        lines.append(f"- `{fqn}` → `{rel}`")
-    (lib / "INDEX.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+def _write_library(workspace, *,
+                   index_entries,
+                   files,
+                   conn=None,
+                   problem="libsrc"):
+    """Stage a Library/ for reuse tests: decl files on disk + the v18 DB
+    index (placed library_decls rows under a BRIDGED source problem -
+    was: an INDEX.md file). Returns the conn (fresh in-memory one when
+    not given) so callers query the same index the code under test sees."""
+    if conn is None:
+        conn = db.connect(":memory:")
+        db.init_schema(conn)
+    _seed_problem(conn, problem)
+    for i, (fqn, rel) in enumerate(index_entries):
+        slug = fqn.rsplit(".", 1)[-1]
+        db.upsert_library_decl(conn, problem=problem, slug=slug,
+                               source_goal_id=None)
+        db.set_library_verdict(conn, problem=problem, slug=slug,
+                               verdict="keep")
+        db.set_library_classification(
+            conn, problem=problem, slug=slug, target_file=rel,
+            target_name=fqn, file_order=i)
+        db.mark_library_migrated(conn, problem=problem, slug=slug)
+    db.mark_library_bridged(conn, problem)
     for rel, content in files.items():
-        p = workspace / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
+        fp = workspace / rel
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        fp.write_text(content, encoding="utf-8")
+    return conn
 
 
 def test_conclusion_of_signature() -> None:
@@ -1701,7 +1716,7 @@ def test_parse_library_decl_sigs_multidecl_skips_def() -> None:
 
 
 def test_library_canonicals_domain_filtered(tmp_path: Path) -> None:
-    _write_library(
+    lconn = _write_library(
         tmp_path,
         index_entries=[
             ("Library.LinearAlgebra.SVD.Basic.alpha",
@@ -1715,7 +1730,7 @@ def test_library_canonicals_domain_filtered(tmp_path: Path) -> None:
                 "import Mathlib\ntheorem beta : True := by trivial\n",
         },
     )
-    canons = dedupe._library_canonicals(tmp_path, "LinearAlgebra")
+    canons = dedupe._library_canonicals(lconn, tmp_path, "LinearAlgebra")
     assert {c.fqn for c in canons} == {"Library.LinearAlgebra.SVD.Basic.alpha"}
     c = canons[0]
     assert c.module == "Library.LinearAlgebra.SVD.Basic"
@@ -1723,7 +1738,7 @@ def test_library_canonicals_domain_filtered(tmp_path: Path) -> None:
 
 
 def test_eligible_library_filters_by_token_and_binder(tmp_path: Path) -> None:
-    _write_library(
+    lconn = _write_library(
         tmp_path,
         index_entries=[
             ("Library.LinearAlgebra.A.match_decl", "Library/LinearAlgebra/A.lean"),
@@ -1742,7 +1757,7 @@ def test_eligible_library_filters_by_token_and_binder(tmp_path: Path) -> None:
         },
     )
     out = dedupe._eligible_library(
-        tmp_path, domain="LinearAlgebra", candidate_count=1,
+        lconn, tmp_path, domain="LinearAlgebra", candidate_count=1,
         candidate_concl="Submodule.finrank T > 0")
     fqns = {fqn for _, fqn in out}
     assert "Library.LinearAlgebra.A.match_decl" in fqns       # token + binder ok
@@ -1764,7 +1779,7 @@ def test_find_canonicals_batch_library_hit(
     # No in-problem lean files on disk → the in-problem pools skip (OSError),
     # so only the Library tier produces pairs.
     _write_library(
-        tmp_path,
+        tmp_path, conn=conn,
         index_entries=[("Library.LinearAlgebra.A.match_decl",
                         "Library/LinearAlgebra/A.lean")],
         files={"Library/LinearAlgebra/A.lean":
@@ -1811,7 +1826,7 @@ def test_find_canonicals_batch_inproblem_shadows_library(
     _write_lean(tmp_path, "LinearAlgebra.t", "parent",
         "import Mathlib\ntheorem parent : OTHER := by sorry\n")
     _write_library(
-        tmp_path,
+        tmp_path, conn=conn,
         index_entries=[("Library.LinearAlgebra.A.match_decl",
                         "Library/LinearAlgebra/A.lean")],
         files={"Library/LinearAlgebra/A.lean":
@@ -1951,6 +1966,36 @@ def test_reuse_gate_rejects_shape_mismatch(
     assert got == [None]
 
 
+def test_library_canonicals_signature_column_no_file_read(
+        tmp_path: Path) -> None:
+    """v18 signature path: a decl whose kernel-true `signature`/`decl_kind`
+    columns are backfilled is served straight from the DB — the .lean file
+    is NEVER read (it does not even exist here). A backfilled data decl
+    (kind != 'thm') is excluded from the apply-canonical pool."""
+    from Tooling.state import db as _dbm
+    lconn = _write_library(
+        tmp_path,
+        index_entries=[
+            ("Library.LinearAlgebra.S.sig_thm", "Library/LinearAlgebra/S.lean"),
+            ("Library.LinearAlgebra.S.sig_def", "Library/LinearAlgebra/S.lean"),
+        ],
+        files={})    # no files on disk — DB signatures must suffice
+    _dbm.set_library_signature(
+        lconn, problem="libsrc", slug="sig_thm",
+        signature="Library.LinearAlgebra.S.sig_thm (S : Submodule) :"
+                  " Submodule.finrank S > 0",
+        decl_kind="thm")
+    _dbm.set_library_signature(
+        lconn, problem="libsrc", slug="sig_def",
+        signature="Library.LinearAlgebra.S.sig_def : Nat", decl_kind="def")
+    canons = dedupe._library_canonicals(lconn, tmp_path, "LinearAlgebra")
+    assert {c.fqn for c in canons} == {"Library.LinearAlgebra.S.sig_thm"}
+    c = canons[0]
+    assert c.binder_count == 1
+    assert "finrank" in c.concl_tokens or "Submodule.finrank" in " ".join(
+        c.concl_tokens)
+
+
 def test_library_canonicals_star_domain(tmp_path: Path) -> None:
     """task #6: domain='*' spans the whole Library corpus (cross-domain
     reuse unblocked); a concrete domain still filters."""
@@ -1961,12 +2006,17 @@ def test_library_canonicals_star_domain(tmp_path: Path) -> None:
         "theorem geo_thm (a : T) : GX := by trivial\n", encoding="utf-8")
     (lib / "LinearAlgebra" / "B.lean").write_text(
         "theorem la_thm (a : T) : LX := by trivial\n", encoding="utf-8")
-    (lib / "INDEX.md").write_text(
-        "- `Library.Geometry.A.geo_thm` -> `Library/Geometry/A.lean`\n"
-        "- `Library.LinearAlgebra.B.la_thm` -> `Library/LinearAlgebra/B.lean`\n",
-        encoding="utf-8")
-    star = {c.fqn for c in dedupe._library_canonicals(tmp_path, "*")}
-    geo = {c.fqn for c in dedupe._library_canonicals(tmp_path, "Geometry")}
+    lconn = _write_library(
+        tmp_path,
+        index_entries=[
+            ("Library.Geometry.A.geo_thm", "Library/Geometry/A.lean"),
+            ("Library.LinearAlgebra.B.la_thm",
+             "Library/LinearAlgebra/B.lean"),
+        ],
+        files={})
+    star = {c.fqn for c in dedupe._library_canonicals(lconn, tmp_path, "*")}
+    geo = {c.fqn
+           for c in dedupe._library_canonicals(lconn, tmp_path, "Geometry")}
     assert "Library.Geometry.A.geo_thm" in geo
     assert "Library.LinearAlgebra.B.la_thm" not in geo
     assert {"Library.Geometry.A.geo_thm",

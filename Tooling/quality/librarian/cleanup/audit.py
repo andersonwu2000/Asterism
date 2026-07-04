@@ -68,27 +68,32 @@ _WARN_MSG = ("the rewrite is green and type-safe, but these warnings remain — 
              "a single decl with a one-line justification):\n")
 
 
-def _library_name_index(workspace: Path,
-                        exclude_rel: str) -> "dict[str, list[str]]":
-    """Leaf decl name -> Library paths declaring it (excluding `exclude_rel`),
-    parsed from `Library/INDEX.md`. Lets the audit agent enforce the
-    no-cross-library-collision rule inline instead of scanning every Library
-    file (agent_feedback C4-B)."""
+def _library_name_index(conn, exclude_rel: str) -> "dict[str, list[str]]":
+    """Leaf decl name -> Library paths declaring it (excluding `exclude_rel`).
+    Lets the audit agent enforce the no-cross-library-collision rule inline
+    instead of scanning every Library file (agent_feedback C4-B). v18: from
+    `library_decls` placed rows (ALL problems, bridged or mid-harvest —
+    wider than the old INDEX.md parse, which went silently EMPTY when the
+    file was missing and reported "no clashes" on a real duplicate).
+    conn=None (unit tests without a DB) → empty, the old missing-file
+    behavior."""
     out: "dict[str, list[str]]" = {}
-    try:
-        text = (workspace / "Library" / "INDEX.md").read_text(encoding="utf-8")
-    except OSError:
+    if conn is None:
         return out
-    for m in re.finditer(r"`([\w.]+)`\s*→\s*`([^`]+)`", text):
-        fqn, path = m.group(1), m.group(2)
+    for r in conn.execute(
+            "SELECT target_name, slug, target_file FROM library_decls"
+            " WHERE lifecycle IN ('migrated','cleaned')"
+            " AND target_file IS NOT NULL"):
+        path = str(r["target_file"])
         if path == exclude_rel:
             continue
+        fqn = str(r["target_name"] or r["slug"])
         out.setdefault(fqn.rsplit(".", 1)[-1], []).append(path)
     return out
 
 
 def _audit_context(workspace: Path, problem: str, rel: str,
-                   decl_names: "list[str]") -> str:
+                   decl_names: "list[str]", conn=None) -> str:
     """Per-file context (cold spawn) for the audit agent: module, declarations,
     a cross-library name-clash check, and the verbatim file. Retry feedback
     (gate violation / residual warnings) flows through
@@ -107,8 +112,8 @@ def _audit_context(workspace: Path, problem: str, rel: str,
     # Library so the agent can enforce the no-collision rule without scanning
     # every file. A duplicate FQN fails the build with `environment already
     # contains` (the residue_thm `Complex.residue` clash); a same-leaf but
-    # distinct-FQN name is fine. Full inventory: `Library/INDEX.md`.
-    name_index = _library_name_index(workspace, rel)
+    # distinct-FQN name is fine.
+    name_index = _library_name_index(conn, rel)
     clashes = [(d, name_index[d]) for d in decl_names if d in name_index]
     if clashes:
         lines.append("## ⚠️ Cross-library leaf-name clashes — verify the full "
@@ -120,8 +125,8 @@ def _audit_context(workspace: Path, problem: str, rel: str,
         lines.append("")
     else:
         lines.append("Cross-library name check: no leaf-name clashes with "
-                     "existing Library decls (full inventory: "
-                     "`Library/INDEX.md`).")
+                     "existing Library decls (grep `Library/` to confirm "
+                     "when renaming).")
         lines.append("")
     lines += ["## Current file", "", "```lean", body.rstrip(), "```", ""]
     return "\n".join(lines) + "\n"
@@ -338,7 +343,8 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
             # keep the agent's last audited.lean (incremental, --resume), so
             # cold_prep runs on cold only.
             (ctx.attempts_dir / "Context.md").write_text(
-                _audit_context(workspace, problem, target_file, decl_names),
+                _audit_context(workspace, problem, target_file, decl_names,
+                               conn=conn),
                 encoding="utf-8")
             _aud.write_text(_seed, encoding="utf-8")
             if _rf.exists():

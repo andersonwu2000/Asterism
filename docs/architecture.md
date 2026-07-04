@@ -188,7 +188,7 @@ Backward 拆出新 sub-goal 時，框架用 Lean kernel probe（`apply @<canonic
 | **root integrity gate** | root 翻 proved 時（`integrity_verified` marker 守、翻離 proved 自動清） | 整條 alias 鏈的唯一一次完整 elaboration；抓 drift + 漏網 sorryAx，元凶 bisect + rollback 重拆 |
 | **Librarian migrate gate** | 每檔搬進 Library 時 | per-decl `#print axioms` ⊆ whitelist + import 閉包 + Gate D def-equivalence；`axiom` 宣告一律 hard-fail |
 | **cleanup 收尾 re-gate** | cleanup 改寫證明體之後 | 同 per-decl 檢查對**最終文本**重跑——LLM 改寫段（simplify / near-dup bridge / audit 整檔重寫）是 migrate 之後唯一能改公理集的地方 |
-| **bridge 終局閘** | chain 末端 | classic：Gate B 從 Library 重推 root（statement-pin + axiom probe）；deliverable：cite_drop 後逐檔 per-decl 公理閘、PASS 才寫 INDEX |
+| **bridge 終局閘** | chain 末端 | classic：Gate B 從 Library 重推 root（statement-pin + axiom probe）；deliverable：cite_drop 後逐檔 per-decl 公理閘、PASS 才標 bridge 完成（`problems.library_bridged_at`，v18） |
 
 verify-collapse 設計不變：per-level `verify_strategy` 是純機械 alias rewrite、不逐層
 elaborate；root gate 的 rollback 是 false-proved 溜過機械驗證時的修正網（實務極少 fire、
@@ -282,4 +282,4 @@ Tooling/
 ---
 
 已證題目清單不再維護於本檔——看 DB（`origin='root' AND status='proved'`）、README 進度
-log、或 `Library/INDEX.md`。
+log、或 DB（`problems.library_bridged_at` + `library_decls`；v18 起 INDEX.md 退役、DB 即索引）。

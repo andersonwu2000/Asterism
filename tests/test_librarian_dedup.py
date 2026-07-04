@@ -442,18 +442,36 @@ def test_strip_json_fence_fenced() -> None:
     assert cl_common._strip_json_fence('```\n[]\n```') == '[]'
 
 
-_INDEX = (
-    "## LinearAlgebra.p1\n"
-    "- `Library.LinearAlgebra.P1.F.foo` → `Library/LinearAlgebra/P1/F.lean`\n"
-    "## LinearAlgebra.p2\n"
-    "- `Library.LinearAlgebra.P2.G.bar` → `Library/LinearAlgebra/P2/G.lean`\n"
-)
+def _index_conn():
+    """v18 DB fixture: the two-problem pool the old _INDEX markdown seeded
+    (p1.foo + p2.bar, both bridged)."""
+    from Tooling.state import db as _dbm
+    conn = _dbm.connect(":memory:")
+    _dbm.init_schema(conn)
+    conn.execute("PRAGMA foreign_keys = OFF")
+    rows = [
+        ("LinearAlgebra.p1", "foo", "Library.LinearAlgebra.P1.F.foo",
+         "Library/LinearAlgebra/P1/F.lean"),
+        ("LinearAlgebra.p2", "bar", "Library.LinearAlgebra.P2.G.bar",
+         "Library/LinearAlgebra/P2/G.lean"),
+    ]
+    for prob, slug, name, rel in rows:
+        conn.execute(
+            "INSERT INTO problems (name, manifest_path, created_at,"
+            " bootstrap_done) VALUES (?, 'm', 't', 1)", (prob,))
+        conn.execute(
+            "INSERT INTO library_decls (problem, slug, target_name,"
+            " target_file, lifecycle, created_at, updated_at)"
+            " VALUES (?,?,?,?, 'migrated', 't', 't')",
+            (prob, slug, name, rel))
+        _dbm.mark_library_bridged(conn, prob)
+    conn.commit()
+    return conn
 
 
 def test_apply_llm_pairs_skips_invalid_without_lake(tmp_path) -> None:
     # x not in SCOPE → skipped; no valid probe pair → lake is never touched.
     _mk_lib(tmp_path, {
-        "Library/INDEX.md": _INDEX,
         "Library/LinearAlgebra/P1/F.lean":
             "import Mathlib\ntheorem foo (n : Nat) : n = n := by rfl\n",
         "Library/LinearAlgebra/P2/G.lean":
@@ -463,7 +481,7 @@ def test_apply_llm_pairs_skips_invalid_without_lake(tmp_path) -> None:
     res = dedup.apply_llm_pairs(tmp_path, "LinearAlgebra.p1", [
         ("Library.LinearAlgebra.P1.F.nope", "Library.LinearAlgebra.P2.G.bar"),
         ("Library.LinearAlgebra.P2.G.bar", "Library.LinearAlgebra.P1.F.foo"),
-    ], apply=True)
+    ], apply=True, conn=_index_conn())
     assert res["dropped"] == {} and res["near"] == []
     assert len(res["skipped"]) == 2
 
@@ -562,22 +580,34 @@ def test_resolve_y_library_pool_decl() -> None:
 
 
 def test_load_decls_scope_index_overrides_index(tmp_path) -> None:
-    # in-chain: the problem's own decls aren't in INDEX yet (bridge writes it
-    # later); scope comes from the supplied list, pool still from INDEX.
+    # in-chain: the problem's own decls aren't in the pool index yet
+    # (bridge marker set later); scope comes from the supplied list,
+    # pool still from the DB index (v18).
+    from Tooling.state import db as _dbm
     _mk_lib(tmp_path, {
-        "Library/INDEX.md":
-            "## LinearAlgebra.other\n"
-            "- `Library.LinearAlgebra.O.G.bar` → `Library/LinearAlgebra/O/G.lean`\n",
         "Library/LinearAlgebra/P1/F.lean":
             "import Mathlib\ntheorem foo (n : Nat) : n = n := by rfl\n",
         "Library/LinearAlgebra/O/G.lean":
             "import Mathlib\ntheorem bar (m : Nat) : m = m := by rfl\n",
     })
+    conn = _dbm.connect(":memory:")
+    _dbm.init_schema(conn)
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("INSERT INTO problems (name, manifest_path, created_at,"
+                 " bootstrap_done) VALUES ('LinearAlgebra.other','m','t',1)")
+    conn.execute("INSERT INTO library_decls (problem, slug, target_name,"
+                 " target_file, lifecycle, created_at, updated_at)"
+                 " VALUES ('LinearAlgebra.other','bar',"
+                 "'Library.LinearAlgebra.O.G.bar',"
+                 "'Library/LinearAlgebra/O/G.lean','migrated','t','t')")
+    _dbm.mark_library_bridged(conn, "LinearAlgebra.other")
     scope, pool = dedup._load_decls(
         tmp_path, "LinearAlgebra.p1",
-        [("Library.LinearAlgebra.P1.F.foo", "Library/LinearAlgebra/P1/F.lean")])
-    assert [d.name for d in scope] == ["foo"]                 # from scope_index
-    assert "Library.LinearAlgebra.O.G.bar" in {d.fqn for d in pool}  # from INDEX
+        [("Library.LinearAlgebra.P1.F.foo",
+          "Library/LinearAlgebra/P1/F.lean")],
+        conn=conn)
+    assert [d.name for d in scope] == ["foo"]           # from scope_index
+    assert "Library.LinearAlgebra.O.G.bar" in {d.fqn for d in pool}
 
 
 def test_resolve_y_mathlib_when_not_in_pool() -> None:
@@ -612,23 +642,35 @@ def test_cited_lemma_automation_is_none() -> None:
 
 
 def test_find_thin_wrappers(tmp_path) -> None:
-    idx = ("## LinearAlgebra.p1\n"
-           "- `Library.LinearAlgebra.P1.F.thin_deleg` → `Library/LinearAlgebra/P1/F.lean`\n"
-           "- `Library.LinearAlgebra.P1.F.thin_auto` → `Library/LinearAlgebra/P1/F.lean`\n"
-           "- `Library.LinearAlgebra.P1.F.fat` → `Library/LinearAlgebra/P1/F.lean`\n")
+    from Tooling.state import db as _dbm
+    conn = _dbm.connect(":memory:")
+    _dbm.init_schema(conn)
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("INSERT INTO problems (name, manifest_path, created_at,"
+                 " bootstrap_done) VALUES ('LinearAlgebra.p1','m','t',1)")
+    for slug in ("thin_deleg", "thin_auto", "fat"):
+        conn.execute(
+            "INSERT INTO library_decls (problem, slug, target_name,"
+            " target_file, lifecycle, created_at, updated_at)"
+            " VALUES ('LinearAlgebra.p1', ?,"
+            " 'Library.LinearAlgebra.P1.F.' || ?,"
+            " 'Library/LinearAlgebra/P1/F.lean','migrated','t','t')",
+            (slug, slug))
+    _dbm.mark_library_bridged(conn, "LinearAlgebra.p1")
     _mk_lib(tmp_path, {
-        "Library/INDEX.md": idx,
         "Library/LinearAlgebra/P1/F.lean":
             "import Mathlib\n"
             "theorem thin_deleg (n : Nat) : n = n := by exact Nat.refl_dummy n\n\n"
             "theorem thin_auto (n : Nat) : n = n := by norm_num\n\n"
             "theorem fat (n : Nat) : n = n := by\n  have h := 1\n  have k := 2\n  rfl\n",
     })
-    rows = dedup.find_thin_wrappers(tmp_path, "LinearAlgebra.p1")
+    rows = dedup.find_thin_wrappers(tmp_path, "LinearAlgebra.p1",
+                                    conn=conn)
     by_name = {f.rsplit(".", 1)[-1]: (p, c) for f, p, c in rows}
-    assert "thin_deleg" in by_name and by_name["thin_deleg"][1] == "Nat.refl_dummy"
+    assert "thin_deleg" in by_name \
+        and by_name["thin_deleg"][1] == "Nat.refl_dummy"
     assert "thin_auto" in by_name and by_name["thin_auto"][1] is None
-    assert "fat" not in by_name        # multi-line proof → not thin
+    assert "fat" not in by_name      # multi-line proof -> not thin
 
 
 # ---------------------------------------------------------------------
@@ -1839,7 +1881,8 @@ def test_staged_file_agentic_stages_gate_bridged_decls(tmp_path,
     rel = "Library/P/F.lean"
     a = _vdecl("keep_me", ": P", module="Library.P.F", rel=rel)
     b = _vdecl("bridge_alias", ": Q", module="Library.P.F", rel=rel)
-    monkeypatch.setattr(dedup, "_load_decls", lambda ws, p, si: ([a, b], []))
+    monkeypatch.setattr(dedup, "_load_decls",
+                        lambda ws, p, si, conn=None: ([a, b], []))
     monkeypatch.setattr(dedup, "_audit_one_file", lambda *ag, **k: ([], "log"))
     monkeypatch.setattr(dedup, "_classify_pairs", lambda *ag, **k: ({}, []))
     monkeypatch.setattr(dedup, "_cleanup_one_file", lambda *ag, **k: {

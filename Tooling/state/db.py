@@ -568,7 +568,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 17
+_CURRENT_USER_VERSION = 18
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -935,6 +935,56 @@ def init_schema(conn: sqlite3.Connection) -> None:
             if name not in cols:
                 conn.execute(ddl)
         conn.execute("PRAGMA user_version = 17")
+        conn.commit()
+    if v < 18:
+        # v18 — Library index moves into the DB (arch-review task #4, user
+        # design call: SoT=DB, INDEX.md deleted).
+        #   * library_decls.{signature, decl_kind}: kernel-true facts filled
+        #     at bridge time from the declInfo oracle (NULL = not yet
+        #     backfilled; consumers fall back to reading the .lean file).
+        #   * problems.{library_bridged_at, library_bridge_note}: the chain's
+        #     terminal done-marker (was: the `## <problem>` section existing
+        #     in Library/INDEX.md — the ONE librarian checkpoint living
+        #     outside the DB, string-matched four ways by consumers).
+        # One-time backfill: parse the still-on-disk INDEX.md (workspace =
+        # the DB file's parent) and mark its sections' problems bridged, so
+        # already-harvested problems don't re-bridge after the cut-over.
+        # :memory: / fresh DBs have no file and skip.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(library_decls)")}
+        if "signature" not in cols:
+            conn.execute("ALTER TABLE library_decls ADD COLUMN signature TEXT")
+        if "decl_kind" not in cols:
+            conn.execute("ALTER TABLE library_decls ADD COLUMN decl_kind TEXT")
+        pcols = {r[1] for r in conn.execute("PRAGMA table_info(problems)")}
+        if "library_bridged_at" not in pcols:
+            conn.execute(
+                "ALTER TABLE problems ADD COLUMN library_bridged_at TEXT")
+        if "library_bridge_note" not in pcols:
+            conn.execute(
+                "ALTER TABLE problems ADD COLUMN library_bridge_note TEXT")
+        db_file = ""
+        for _seq, _name, _file in conn.execute("PRAGMA database_list"):
+            if _name == "main":
+                db_file = _file or ""
+        if db_file:
+            legacy_index = Path(db_file).resolve().parent / "Library" / "INDEX.md"
+            if legacy_index.is_file():
+                try:
+                    sections = [
+                        ln[3:].strip()
+                        for ln in legacy_index.read_text(
+                            encoding="utf-8", errors="replace").splitlines()
+                        if ln.startswith("## ")]
+                except OSError:
+                    sections = []
+                for prob in sections:
+                    conn.execute(
+                        "UPDATE problems SET library_bridged_at = ?,"
+                        " library_bridge_note = 'backfilled from legacy"
+                        " INDEX.md (v18 migration)'"
+                        " WHERE name = ? AND library_bridged_at IS NULL",
+                        (now(), prob))
+        conn.execute("PRAGMA user_version = 18")
         conn.commit()
 
 
@@ -3695,6 +3745,79 @@ def set_library_renamed(conn: sqlite3.Connection, *, problem: str,
         " WHERE problem = ? AND slug = ?",
         (new_fqn, old_fqn, now(), problem, slug),
     )
+    conn.commit()
+
+
+# ---------------------------------------------------------------------
+# Library index (v18) — the DB IS the index (task #4; INDEX.md retired).
+# ---------------------------------------------------------------------
+
+def mark_library_bridged(conn: sqlite3.Connection, problem: str,
+                         note: str = "") -> None:
+    """Bridge/Gate B PASSED for `problem` — the librarian chain's terminal
+    done-marker (was: the `## <problem>` section existing in INDEX.md).
+    `note` records the gate flavor (classic root re-derivation vs
+    deliverable per-decl gate) for provenance."""
+    conn.execute(
+        "UPDATE problems SET library_bridged_at = ?,"
+        " library_bridge_note = ? WHERE name = ?",
+        (now(), note, problem))
+    conn.commit()
+
+
+def clear_library_bridged(conn: sqlite3.Connection, problem: str) -> None:
+    """Invalidate the done-marker (re-clean / reject-driven un-harvest) so
+    the terminal bridge re-fires on the rewritten Library — the DB successor
+    of `_drop_index_section` (STATUS reset rule 2's manual step retired)."""
+    conn.execute(
+        "UPDATE problems SET library_bridged_at = NULL,"
+        " library_bridge_note = NULL WHERE name = ?", (problem,))
+    conn.commit()
+
+
+def problem_library_bridged(conn: sqlite3.Connection, problem: str) -> bool:
+    row = conn.execute(
+        "SELECT library_bridged_at FROM problems WHERE name = ?",
+        (problem,)).fetchone()
+    return bool(row and row["library_bridged_at"])
+
+
+def bridged_library_index(conn: sqlite3.Connection
+                          ) -> "dict[str, list[sqlite3.Row]]":
+    """{problem: [placed decl rows]} for every BRIDGED problem — the query
+    behind every former INDEX.md read (prover context menu, dedupe pool,
+    pre-search verification). Placed = lifecycle IN ('migrated','cleaned'),
+    the exact set the old INDEX sections recorded."""
+    out: "dict[str, list[sqlite3.Row]]" = {}
+    for r in conn.execute(
+            "SELECT ld.* FROM library_decls ld"
+            " JOIN problems p ON p.name = ld.problem"
+            " WHERE p.library_bridged_at IS NOT NULL"
+            " AND ld.lifecycle IN ('migrated','cleaned')"
+            " ORDER BY ld.problem, ld.id"):
+        out.setdefault(str(r["problem"]), []).append(r)
+    return out
+
+
+def library_decl_names(conn: sqlite3.Connection) -> "set[str]":
+    """Fully-qualified names of every placed decl in every BRIDGED problem —
+    the pre-search library-block verification set (replaces the INDEX.md
+    substring probe; exact membership, no short-name false positives)."""
+    return {
+        str(r["target_name"] or r["slug"])
+        for rows in bridged_library_index(conn).values() for r in rows}
+
+
+def set_library_signature(conn: sqlite3.Connection, *, problem: str,
+                          slug: str, signature: str,
+                          decl_kind: str = "") -> None:
+    """Backfill kernel-true facts from the declInfo oracle at bridge time.
+    Best-effort: a decl whose signature stays NULL falls back to file
+    parsing at the consumer (dedupe pool)."""
+    conn.execute(
+        "UPDATE library_decls SET signature = ?, decl_kind = ?,"
+        " updated_at = ? WHERE problem = ? AND slug = ?",
+        (signature, decl_kind, now(), problem, slug))
     conn.commit()
 
 

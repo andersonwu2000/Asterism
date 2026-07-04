@@ -18,43 +18,27 @@ from ..state import db, manifest
 LIBRARIAN_MAX_CHAIN_RETRIES = 2
 
 
-def _librarian_index_has(workspace: Path, problem: str) -> bool:
-    """True iff `Library/INDEX.md` already records `problem` — the
-    idempotent 'finish done' marker. Reading the file (rather than a DB
-    column) keeps the lifecycle state machine at four states
-    (candidate→deduped→classified→migrated); INDEX presence is the only
-    thing distinguishing 'all migrated, finish pending' from 'finished'."""
-    index = workspace / "Library" / "INDEX.md"
-    if not index.exists():
-        return False
-    text = index.read_text(encoding="utf-8", errors="replace")
-    # Line-exact match on the section header — a substring test would let
-    # problem `p` falsely match section `## pp`. Mirrors the header
-    # comparison in librarian._upsert_index_section.
-    header = f"## {problem}"
-    return any(ln.strip() == header for ln in text.splitlines())
+def _librarian_index_has(conn, problem: str) -> bool:
+    """True iff `problem`'s bridge/Gate B already PASSED — the idempotent
+    'finish done' marker, distinguishing 'all cleaned, bridge pending' from
+    'finished'. v18: the marker is `problems.library_bridged_at` (was: a
+    `## <problem>` section string-matched in Library/INDEX.md — the one
+    librarian checkpoint that lived outside the DB; task #4)."""
+    return db.problem_library_bridged(conn, problem)
 
 
-def _librarian_invalidate_index(workspace: Path, problem: str) -> None:
-    """Drop `problem`'s stale INDEX section when it is being RE-cleaned (already
-    promoted, but its Library is now being rewritten). Without this the stale
-    entry reads as 'finished' (`_derive_librarian_work`'s INDEX done-marker) and
-    the terminal bridge/Gate B is skipped — the re-cleaned Library would be
-    re-exposed without re-verifying it re-derives the root. Clearing it makes
-    bridge re-fire + re-promote. Called from the single-threaded tick (no
-    concurrent INDEX writer during a problem's cleanup phase — bridge runs only
-    once all its decls are cleaned)."""
-    from ..pipeline import librarian
-    index = workspace / "Library" / "INDEX.md"
-    try:
-        text = index.read_text(encoding="utf-8")
-    except OSError:
-        return
-    new = librarian._drop_index_section(text, problem)
-    if new != text:
-        index.write_text(new, encoding="utf-8")
-        print(f"[librarian] {problem}: re-clean detected → cleared stale INDEX "
-              f"entry (bridge/Gate B will re-verify + re-promote)", flush=True)
+def _librarian_invalidate_index(conn, problem: str) -> None:
+    """Clear `problem`'s stale done-marker when it is being RE-cleaned
+    (already promoted, but its Library is now being rewritten). Without this
+    the stale marker reads as 'finished' (`_derive_librarian_work`) and the
+    terminal bridge/Gate B is skipped — the re-cleaned Library would be
+    re-exposed without re-verifying. Clearing it makes bridge re-fire +
+    re-promote."""
+    if db.problem_library_bridged(conn, problem):
+        db.clear_library_bridged(conn, problem)
+        print(f"[librarian] {problem}: re-clean detected → cleared stale "
+              f"bridge marker (bridge/Gate B will re-verify + re-promote)",
+              flush=True)
 
 
 # #92 — a Librarian queue row for the parallel phases (migrate/cleanup) encodes
@@ -89,7 +73,7 @@ def _derive_librarian_work(
       - any 'candidate' (un-verdicted) → ('dedup', None)   [defensive]
       - any 'deduped' (kept, unplaced) → ('classify', None)
       - any 'classified'               → ('migrate', <next ready file>)
-      - any 'migrated', no INDEX yet   → ('bridge', None)  [v0.3: no cleanup]
+      - any 'migrated', not bridged    → ('bridge', None)  [v0.3: no cleanup]
       - otherwise (terminal + done)    → (None, None)
 
     v0.3 (plan §3): `dedup` is the mechanical keep-all (`_run_keepall`, no
@@ -98,14 +82,14 @@ def _derive_librarian_work(
 
     bridge (Gate B, plan §2) is the terminal step: once every file is
     'migrated' it re-derives the original root from the Library and, on
-    success, writes INDEX — so INDEX presence remains the single done-marker
-    and a Library that fails to re-derive correctly never 'finishes'.
+    success, sets the bridge marker (`problems.library_bridged_at`) — the
+    single done-marker; a Library that fails to re-derive never 'finishes'.
 
     migrate's target is a Library FILE, not a slug — the parallel unit is
     the whole file (plan §5 Step 3). `next_migrate_file` picks a file whose
     dependency files are all already migrated (topological order over the
     reconstructed file DAG); the re-enqueue chain advances the rest. bridge
-    is gated on the INDEX marker so it fires once, not in a loop."""
+    is gated on the bridge marker so it fires once, not in a loop."""
     rows = db.library_decls_for(conn, problem)
     if not rows:
         return ("dedup", None)
@@ -125,10 +109,10 @@ def _derive_librarian_work(
     # bridge Gate B probe. Like migrate it is a per-file phase — `_librarian_
     # refill` enqueues ready files (`ready_cleanup_files`) and the plain `problem`
     # row is a no-op; the `None` target signals "per-file phase" here. Bridge
-    # then writes INDEX (= promote / done-marker).
+    # then sets the bridge marker (= promote / done-marker).
     if by_state.get("migrated"):
         return ("cleanup", None)
-    if by_state.get("cleaned") and not _librarian_index_has(workspace, problem):
+    if by_state.get("cleaned") and not _librarian_index_has(conn, problem):
         return ("bridge", None)
     return (None, None)
 
@@ -235,7 +219,7 @@ def _librarian_selfstart_problems(
         # Ingest was paused). `approve-ingest` clears the flag + enqueues.
         if db.problem_ingest_signoff_pending(conn, problem):
             continue
-        if _librarian_index_has(workspace, problem):
+        if _librarian_index_has(conn, problem):
             continue
         if db.library_decls_for(conn, problem):
             continue  # already has rows — driven by the library_decls path
@@ -300,8 +284,8 @@ def _librarian_refill(
         # `_derive_librarian_work` would read it as "done" after cleanup, skipping
         # the terminal bridge/Gate B. Invalidate it now (single-threaded tick) so
         # bridge re-fires once the rewritten Library is all cleaned.
-        if work_kind == "cleanup" and _librarian_index_has(workspace, problem):
-            _librarian_invalidate_index(workspace, problem)
+        if work_kind == "cleanup" and _librarian_index_has(conn, problem):
+            _librarian_invalidate_index(conn, problem)
         if work_kind in ("migrate", "cleanup"):
             # Both are per-file phases (#92 migrate, §13 3c-2 cleanup): enqueue
             # one `problem\x1ffile` row per READY file so independent files run
@@ -406,7 +390,7 @@ def _harvest_outstanding(
         # approve-ingest re-enqueues + clears the flag when they're ready.
         if db.problem_ingest_signoff_pending(conn, problem):
             continue
-        if _librarian_index_has(workspace, problem):
+        if _librarian_index_has(conn, problem):
             continue  # harvest already complete (INDEX = the done-marker)
         work_kind, _target = _derive_librarian_work(conn, problem, workspace)
         if work_kind is None:

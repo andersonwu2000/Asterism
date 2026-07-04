@@ -321,7 +321,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     # Initial BRIEF.md — framework-rendered cross-spawn stable context
     # (sandbox / forbidden lemmas / mathlib hints / library / strategic
     # notes). Refreshed at daemon startup if Manifest changes.
-    brief.write(workspace, mfst)
+    brief.write(workspace, mfst, conn=conn)
     # No LESSONS.md seed: Phase 12 Model B made the KB the lessons SoT —
     # reflection writes `kb_entries`, Context reads `kb.query`; the old flat
     # LESSONS.md mirror (and its Edit-anchor seed) is retired.
@@ -634,6 +634,11 @@ def cmd_reset(args: argparse.Namespace) -> int:
     # classified), then on a kb_entries global lesson the run wrote.
     conn.execute("DELETE FROM library_decls WHERE problem = ?", (problem,))
     conn.execute("DELETE FROM kb_entries WHERE problem = ?", (problem,))
+    # v18: the bridge done-marker lives on the problems row — clear it with
+    # the library_decls rows, or selfstart reads a bridged problem with zero
+    # placed decls (the stale-marker FAIL library-verify flags). Retires the
+    # manual `_drop_index_section` step from the reset recipe (STATUS rule 2).
+    db.clear_library_bridged(conn, problem)
 
     gids = [r[0] for r in conn.execute(
         "SELECT id FROM goals WHERE problem = ?", (problem,)).fetchall()]
@@ -1145,46 +1150,24 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if fails == 0 else 1
 
 
-def _parse_library_index(path: Path) -> "dict[str, set[tuple[str, str]]]":
-    """Parse `Library/INDEX.md` into `{problem: {(decl_name, relpath), ...}}`.
-
-    Section header line is `## <problem>`; each entry line carries exactly two
-    backtick-quoted tokens — `` - `<name>` → `<relpath>` `` (the arrow glyph is
-    not load-bearing, so we read the backtick tokens, not the separator).
-    Returns {} if the file is absent."""
-    out: "dict[str, set[tuple[str, str]]]" = {}
-    if not path.exists():
-        return out
-    cur: "str | None" = None
-    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if raw.startswith("## "):
-            cur = raw[3:].strip()
-            out.setdefault(cur, set())
-        elif cur is not None and raw.lstrip().startswith("- `"):
-            toks = re.findall(r"`([^`]+)`", raw)
-            if len(toks) >= 2:
-                out[cur].add((toks[0], toks[1]))
-    return out
-
-
 def _library_consistency_findings(conn, workspace: Path
                                   ) -> "list[tuple[str, str]]":
-    """INDEX <-> disk <-> DB consistency over the *placed* decl set.
+    """DB <-> disk consistency over the *placed* decl set (v18: the DB IS
+    the index — the former INDEX.md three-way checks I3/I4 are structurally
+    impossible and retired).
 
     "Placed" = `library_decls.lifecycle IN ('migrated','cleaned')` — exactly
-    the set `_harvested_decls`/INDEX record. 'cited'/'dropped'/'classified'
-    decls are NOT placed (no file contribution), so they never participate.
-    Mirrors the problem-side recovery orphan-sweep, but for `Library/`.
+    the harvested set. 'cited'/'dropped'/'classified' decls are NOT placed
+    (no file contribution), so they never participate. Mirrors the
+    problem-side recovery orphan-sweep, but for `Library/`.
 
     Printer-free on purpose: returns `[(status, message), ...]` with status in
     {OK, WARN, FAIL} so the caller prints/exits and tests assert on findings.
     Severity rationale:
-      - DB row -> missing file / orphan disk file / INDEX -> missing file:
-        hard breaks (a citer is misled, or a file nothing owns lingers) -> FAIL.
-      - INDEX section exists but disagrees with DB placed-set (either way):
-        stale provenance -> FAIL.
-      - DB has placed decls but NO INDEX section: not yet bridged (legit
-        mid-flight) -> WARN."""
+      - DB row -> missing file / orphan disk file: hard breaks (a citer is
+        misled, or a file nothing owns lingers) -> FAIL.
+      - bridged marker set but no placed decls: stale marker -> FAIL.
+      - placed decls but not yet bridged: legit mid-flight -> WARN."""
     out: "list[tuple[str, str]]" = []
     lib = workspace / "Library"
 
@@ -1216,32 +1199,20 @@ def _library_consistency_findings(conn, workspace: Path
     if not orphans:
         out.append(("OK", f"{len(disk_files)} on-disk file(s) all DB-owned"))
 
-    # I3 — every INDEX entry's file exists on disk.
-    index_by_problem = _parse_library_index(lib / "INDEX.md")
-    index_relpaths = {rp for s in index_by_problem.values() for (_, rp) in s}
-    idx_missing = sorted(rp for rp in index_relpaths
-                         if rp != "?" and rp not in disk_files)
-    for rp in idx_missing:
-        out.append(("FAIL", f"INDEX entry points to a missing file: {rp}"))
-    if not idx_missing:
-        out.append(("OK", f"{len(index_relpaths)} INDEX file ref(s) present"))
-
-    # I4 — per problem, INDEX section == DB placed-set.
-    for prob in sorted(set(index_by_problem) | set(db_by_problem)):
-        idx = index_by_problem.get(prob, set())
-        dbp = db_by_problem.get(prob, set())
-        if idx == dbp:
-            out.append(("OK", f"{prob}: INDEX matches DB ({len(idx)} decl(s))"))
-        elif dbp and not idx:
-            out.append(("WARN", f"{prob}: {len(dbp)} placed decl(s) but no "
-                                f"INDEX section (not yet bridged?)"))
-        elif idx and not dbp:
-            out.append(("FAIL", f"{prob}: INDEX section present but no placed "
-                                f"DB decls (fully stale INDEX)"))
+    # I3 — bridged marker <-> placed-set agreement (was: INDEX section vs
+    # DB; the marker is now `problems.library_bridged_at`).
+    bridged = {str(r["name"]) for r in conn.execute(
+        "SELECT name FROM problems WHERE library_bridged_at IS NOT NULL")}
+    for prob in sorted(bridged | set(db_by_problem)):
+        if prob in bridged and prob not in db_by_problem:
+            out.append(("FAIL", f"{prob}: bridge marker set but no placed "
+                                f"DB decls (stale marker)"))
+        elif prob not in bridged:
+            out.append(("WARN", f"{prob}: {len(db_by_problem[prob])} placed "
+                                f"decl(s) but not bridged yet (mid-flight?)"))
         else:
-            out.append(("FAIL", f"{prob}: INDEX/DB placed-set mismatch "
-                                f"(+{len(idx - dbp)} INDEX-only, "
-                                f"+{len(dbp - idx)} DB-only)"))
+            out.append(("OK", f"{prob}: bridged, {len(db_by_problem[prob])} "
+                              f"placed decl(s)"))
 
     # I5 — a CLEANED file should carry no `import Mathlib` umbrella. decide
     # minimises imports mechanically (`#import_bumps`); a surviving umbrella is
@@ -1271,8 +1242,8 @@ def _library_consistency_findings(conn, workspace: Path
 def cmd_library_verify(args: argparse.Namespace) -> int:
     """Whole-Library coherence gate (P1). Two mechanical checks, no agent:
 
-      (B) INDEX <-> disk <-> DB consistency over the placed decl set — orphan
-          files, DB rows pointing at missing files, stale INDEX provenance.
+      (B) DB <-> disk consistency over the placed decl set — orphan
+          files, DB rows pointing at missing files, stale bridge markers.
           Mirrors the problem-side recovery orphan-sweep.
       (A) `lake build Library` — the whole placed Library compiles together.
           The per-file / per-problem bridge gates only ever see ONE problem's
@@ -1301,7 +1272,7 @@ def cmd_library_verify(args: argparse.Namespace) -> int:
         print("Library/ absent — nothing to verify")
         return 0
 
-    print("\n=== Consistency (INDEX <-> disk <-> DB) ===")
+    print("\n=== Consistency (DB <-> disk) ===")
     conn = db.connect()
     db.init_schema(conn)
     for status, msg in _library_consistency_findings(conn, workspace):
@@ -1868,7 +1839,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_libverify = sub.add_parser(
         "library-verify",
-        help="whole-Library coherence gate: INDEX<->disk<->DB consistency "
+        help="whole-Library coherence gate: DB<->disk consistency "
              "+ `lake build Library`",
     )
     p_libverify.add_argument(

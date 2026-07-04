@@ -107,10 +107,6 @@ from .execute import (  # noqa: F401
     _decline_or_reopen,
 )
 from .bridge import (  # noqa: F401
-    _upsert_index_section,
-    _drop_index_section,
-    _INDEX_PREAMBLE,
-    _write_library_index,
     _rederivation_prober,
     _commit_bridge,
     _bridge_probe_text,

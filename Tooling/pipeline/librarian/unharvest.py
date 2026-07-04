@@ -53,13 +53,13 @@ def un_harvest(conn: sqlite3.Connection, workspace: Path,
     """Remove `problem`'s harvested artifacts from the Library. Returns
     the number of Library files removed (0 = nothing was harvested).
 
-    Steps: delete migrated Library files → drop the `## <problem>` INDEX
-    section → DELETE library_decls rows → clear librarian_fail_counts
-    (TEXT keys: the serial phase uses the bare problem name, per-file
-    units use `problem\\x1ffile`). DB rows go last so a crash mid-way
-    leaves the rows pointing at missing files — which `drift-check` and
-    the selfstart re-harvest path both surface — rather than orphaned
-    files that nothing tracks."""
+    Steps: delete migrated Library files → clear the bridge done-marker
+    (v18: `problems.library_bridged_at`) → DELETE library_decls rows →
+    clear librarian_fail_counts (TEXT keys: the serial phase uses the bare
+    problem name, per-file units use `problem\\x1ffile`). DB rows go last
+    so a crash mid-way leaves the rows pointing at missing files — which
+    `drift-check` and the selfstart re-harvest path both surface — rather
+    than orphaned files that nothing tracks."""
     rows = conn.execute(
         "SELECT DISTINCT target_file FROM library_decls"
         " WHERE problem = ? AND target_file IS NOT NULL",
@@ -93,13 +93,7 @@ def un_harvest(conn: sqlite3.Connection, workspace: Path,
             print(f"[un-harvest] {problem}: could not remove {f}: {e}",
                   flush=True)
 
-    index = workspace / "Library" / "INDEX.md"
-    if index.exists():
-        from .bridge import _drop_index_section
-        text = index.read_text(encoding="utf-8", errors="replace")
-        new = _drop_index_section(text, problem)
-        if new != text:
-            index.write_text(new, encoding="utf-8")
+    db.clear_library_bridged(conn, problem)
 
     conn.execute("DELETE FROM library_decls WHERE problem = ?", (problem,))
     conn.execute(
@@ -110,5 +104,5 @@ def un_harvest(conn: sqlite3.Connection, workspace: Path,
     conn.commit()
     if removed or rows:
         print(f"[un-harvest] {problem}: removed {removed} Library file(s), "
-              f"INDEX section dropped, lifecycle rows cleared", flush=True)
+              f"bridge marker cleared, lifecycle rows cleared", flush=True)
     return removed

@@ -367,7 +367,7 @@ def _run_cleanup(conn, *, problem, workspace, target_file=None, pipeline_id=None
 
     migrated = list(db.library_decls_for(conn, problem, lifecycle="migrated"))
     res = _dedup.run_staged_cleanup(
-        workspace, problem, apply=True, scope_index=scope_index)
+        workspace, problem, apply=True, scope_index=scope_index, conn=conn)
     # Same post-rewrite axiom gate as the per-file path above, applied to every
     # file this serial pass touched (CLI / whole-problem mode). A file the
     # engine dropped entirely no longer exists → skip it.

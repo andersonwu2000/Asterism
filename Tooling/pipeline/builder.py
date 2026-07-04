@@ -258,7 +258,8 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # candidate-lemma cache that compile_context's section then reads.
         _presearch.ensure_presearch(
             goal=goal, workspace=workspace, problem_dir=problem_dir,
-            attempts_dir=ctx.attempts_dir, prompt_dir=PROMPT_DIR)
+            attempts_dir=ctx.attempts_dir, prompt_dir=PROMPT_DIR,
+            conn=conn)
         context.compile_context(conn, goal=goal, mfst=mfst,
                               attempts_dir=ctx.attempts_dir,
                               kind="builder",

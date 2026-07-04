@@ -1,8 +1,8 @@
 """Librarian dispatcher wiring — P0 phases 3 + 4.
 
 Covers the derive-from-state routing, the race-safe re-enqueue chain,
-and INDEX provenance writing (`_write_library_index`, shared by the
-terminal bridge step). These are the glue between the verify-hook enqueue
+and the bridge done-marker bookkeeping (v18: DB marker, was INDEX.md).
+These are the glue between the verify-hook enqueue
 (phase 2) and the already-tested librarian work-kind cores.
 """
 from __future__ import annotations
@@ -151,23 +151,29 @@ def test_derive_cleaned_no_index_is_bridge(tmp_path: Path):
 
 
 def test_derive_cleaned_with_index_is_none(tmp_path: Path):
-    # INDEX present (bridge promoted) = done-marker → no further work.
+    # Bridge marker set (bridge promoted) = done-marker → no further work.
     conn = _mem()
     _cleaned(conn, "foo")
-    (tmp_path / "Library").mkdir()
-    (tmp_path / "Library" / "INDEX.md").write_text(
-        "# Library Index\n\n## p\n\nx\n", encoding="utf-8")
+    db.mark_library_bridged(conn, "p")
     assert dispatcher._derive_librarian_work(conn, "p", tmp_path) == (
         None, None)
 
 
-def test_drop_index_section_removes_only_that_problem(tmp_path: Path):
-    from Tooling.pipeline import librarian
-    text = "# Library Index\n\n## p\n\nx\n\n## q\n\ny\n"
-    out = librarian._drop_index_section(text, "p")
-    assert "## p" not in out and "## q\n\ny" in out and "# Library Index" in out
-    # absent → unchanged; line-exact (won't match `## pp`)
-    assert librarian._drop_index_section(text, "pp") == text
+def test_clear_bridge_marker_only_that_problem(tmp_path: Path):
+    # v18: the done-marker is per-problem DB state — clearing `p` must not
+    # touch neighbor `q` (successor of the old "drop only that INDEX
+    # section" test; exact keying also retires the `p` vs `pp` string-match
+    # hazard by construction).
+    conn = _mem()
+    _seed_problem(conn, "p")
+    _seed_problem(conn, "q")
+    db.mark_library_bridged(conn, "p", "note-p")
+    db.mark_library_bridged(conn, "q", "note-q")
+    db.clear_library_bridged(conn, "p")
+    assert db.problem_library_bridged(conn, "p") is False
+    assert db.problem_library_bridged(conn, "q") is True
+    # clearing an absent problem is a no-op
+    db.clear_library_bridged(conn, "nope")
 
 
 def test_reclean_invalidates_stale_index_so_bridge_refires(tmp_path: Path):
@@ -175,15 +181,13 @@ def test_reclean_invalidates_stale_index_so_bridge_refires(tmp_path: Path):
     # leftover INDEX) would skip the terminal bridge/Gate B.
     conn = _mem()
     _migrated(conn, "foo")
-    (tmp_path / "Library").mkdir()
-    idx = tmp_path / "Library" / "INDEX.md"
-    idx.write_text("# Library Index\n\n## p\n\nfoo\n", encoding="utf-8")
-    # cleanup still runs (migrated present), but INDEX is stale.
+    db.mark_library_bridged(conn, "p")
+    # cleanup still runs (migrated present), but the marker is stale.
     assert dispatcher._derive_librarian_work(conn, "p", tmp_path)[0] == "cleanup"
-    dispatcher._librarian_invalidate_index(tmp_path, "p")
-    assert "## p" not in idx.read_text(encoding="utf-8")
-    # once cleanup finishes (decls cleaned) the now-absent INDEX → bridge re-fires
-    # (was wrongly (None, None) before the fix).
+    dispatcher._librarian_invalidate_index(conn, "p")
+    assert db.problem_library_bridged(conn, "p") is False
+    # once cleanup finishes (decls cleaned) the now-cleared marker → bridge
+    # re-fires (was wrongly (None, None) before the fix).
     conn.execute("UPDATE library_decls SET lifecycle='cleaned' WHERE problem='p'")
     assert dispatcher._derive_librarian_work(conn, "p", tmp_path) == ("bridge", None)
 
@@ -435,9 +439,7 @@ def test_librarian_refill_serial_no_duplicate(tmp_path: Path):
 def test_librarian_refill_stops_when_chain_done(tmp_path: Path):
     conn = _mem()
     _cleaned(conn, "foo")
-    (tmp_path / "Library").mkdir()
-    (tmp_path / "Library" / "INDEX.md").write_text(
-        "# Library Index\n\n## p\n\nx\n", encoding="utf-8")
+    db.mark_library_bridged(conn, "p")
     dispatcher._librarian_refill(conn, tmp_path, set(), _manifests(), fail_counts={})
     assert _queue(conn) == []
 
@@ -529,12 +531,10 @@ def test_librarian_refill_returns_pending_when_work(tmp_path: Path):
 
 
 def test_librarian_refill_not_pending_when_drained(tmp_path: Path):
-    # Chain done (cleaned + INDEX) → no work → not pending → daemon may exit.
+    # Chain done (cleaned + bridged) → no work → not pending → daemon may exit.
     conn = _mem()
     _cleaned(conn, "foo")
-    (tmp_path / "Library").mkdir()
-    (tmp_path / "Library" / "INDEX.md").write_text(
-        "# Library Index\n\n## p\n\nx\n", encoding="utf-8")
+    db.mark_library_bridged(conn, "p")
     pending = dispatcher._librarian_refill(
         conn, tmp_path, set(), _manifests(), fail_counts={})
     assert pending is False
@@ -668,13 +668,11 @@ def test_librarian_refill_no_selfstart_when_not_opted_in(tmp_path: Path):
     assert _queue(conn) == []
 
 
-def test_librarian_refill_no_selfstart_when_index_present(tmp_path: Path):
-    # Opted-in + proved but INDEX already written (chain done) → no self-start.
+def test_librarian_refill_no_selfstart_when_bridged(tmp_path: Path):
+    # Opted-in + proved but already bridged (chain done) → no self-start.
     conn = _mem()
     _proved_root(conn, "p")
-    (tmp_path / "Library").mkdir()
-    (tmp_path / "Library" / "INDEX.md").write_text(
-        "# Library Index\n\n## p\n\nx\n", encoding="utf-8")
+    db.mark_library_bridged(conn, "p")
     pending = dispatcher._librarian_refill(
         conn, tmp_path, set(), _manifests(p=True), fail_counts={})
     assert pending is False
@@ -722,61 +720,64 @@ def test_advance_chain_fail_count_persists_across_restart(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------
-# INDEX provenance — _write_library_index (live; shared by the bridge step)
+# Bridge done-marker (v18) — _finish_bridge successor of the INDEX writes
 # ---------------------------------------------------------------------
 
 _GATE_B_PASS = "Gate B (root re-derivation): PASSED."
 
 
-def test_index_write_then_derive_terminates(tmp_path: Path):
+def test_bridge_marker_then_derive_terminates(tmp_path: Path, monkeypatch):
     conn = _mem()
-    _cleaned(conn, "foo", order=0)        # post-cleanup state (bridge writes INDEX)
+    _cleaned(conn, "foo", order=0)        # post-cleanup state
     _cleaned(conn, "bar", order=1)
-    librarian._write_library_index(
-        conn, problem="p", workspace=tmp_path, gate_b_line=_GATE_B_PASS)
-    index = tmp_path / "Library" / "INDEX.md"
-    assert index.exists()
-    text = index.read_text(encoding="utf-8")
-    assert "## p" in text
-    assert "`foo`" in text and "`bar`" in text
-    # The INDEX marker must make derive terminate the chain.
-    assert dispatcher._librarian_index_has(tmp_path, "p") is True
+    from Tooling.pipeline.librarian import bridge as _bridge
+    # signature backfill is best-effort and gateway-bound — stub it here
+    monkeypatch.setattr(_bridge, "_backfill_decl_signatures",
+                        lambda conn, *, problem, workspace: None)
+    _bridge._finish_bridge(conn, problem="p", workspace=tmp_path,
+                           note=_GATE_B_PASS)
+    assert db.problem_library_bridged(conn, "p") is True
+    row = conn.execute(
+        "SELECT library_bridge_note FROM problems WHERE name='p'").fetchone()
+    assert row["library_bridge_note"] == _GATE_B_PASS
+    # The marker must make derive terminate the chain.
+    assert dispatcher._librarian_index_has(conn, "p") is True
     assert dispatcher._derive_librarian_work(conn, "p", tmp_path) == (
         None, None)
 
 
-def test_index_write_idempotent(tmp_path: Path):
+def test_bridge_marker_idempotent(tmp_path: Path):
     conn = _mem()
     _migrated(conn, "foo")
     for _ in range(2):
-        librarian._write_library_index(
-            conn, problem="p", workspace=tmp_path, gate_b_line=_GATE_B_PASS)
-    text = (tmp_path / "Library" / "INDEX.md").read_text(encoding="utf-8")
-    # Section appears exactly once (no duplicate ## p).
-    assert text.count("## p") == 1
+        db.mark_library_bridged(conn, "p", _GATE_B_PASS)
+    assert db.problem_library_bridged(conn, "p") is True
 
 
-def test_index_two_problems_coexist(tmp_path: Path):
+def test_bridge_marker_two_problems_coexist(tmp_path: Path):
     conn = _mem()
     _migrated(conn, "foo", problem="p")
     _migrated(conn, "baz", problem="q")
     for prob in ("p", "q"):
-        librarian._write_library_index(
-            conn, problem=prob, workspace=tmp_path, gate_b_line=_GATE_B_PASS)
-    text = (tmp_path / "Library" / "INDEX.md").read_text(encoding="utf-8")
-    assert "## p" in text and "## q" in text
-    assert "`foo`" in text and "`baz`" in text
-    # Preamble written once.
-    assert text.count("# Library Index") == 1
+        db.mark_library_bridged(conn, prob, _GATE_B_PASS)
+    idx = db.bridged_library_index(conn)
+    assert set(idx) == {"p", "q"}
+    assert [r["slug"] for r in idx["p"]] == ["foo"]
+    assert [r["slug"] for r in idx["q"]] == ["baz"]
 
 
-def test_index_has_requires_exact_section(tmp_path: Path):
-    (tmp_path / "Library").mkdir()
-    (tmp_path / "Library" / "INDEX.md").write_text(
-        "# Library Index\n\n## pp\n\nx\n", encoding="utf-8")
-    # 'p' must not match the 'pp' section.
-    assert dispatcher._librarian_index_has(tmp_path, "p") is False
-    assert dispatcher._librarian_index_has(tmp_path, "pp") is True
+def test_bridged_index_excludes_unbridged_and_unplaced(tmp_path: Path):
+    # Successor of the exact-section-match test: keying is exact by
+    # construction; what still needs pinning is the placed+bridged filter.
+    conn = _mem()
+    _migrated(conn, "keep", problem="p")
+    _candidate(conn, "unplaced", problem="p")     # candidate → not placed
+    db.mark_library_bridged(conn, "p")
+    _migrated(conn, "hidden", problem="q")        # q NOT bridged
+    idx = db.bridged_library_index(conn)
+    assert set(idx) == {"p"}
+    assert [r["slug"] for r in idx["p"]] == ["keep"]
+    assert db.problem_library_bridged(conn, "pp") is False   # absent problem
 
 
 def test_advance_chain_file_busy_not_counted(tmp_path: Path):
@@ -897,14 +898,12 @@ def test_harvest_outstanding_true_in_migrate_phase(tmp_path: Path):
         conn, tmp_path, _manifests(p=True), scope=None, fail_counts={}) is True
 
 
-def test_harvest_outstanding_false_when_index_present(tmp_path: Path):
-    # INDEX written = harvest done -> not outstanding, daemon may exit.
+def test_harvest_outstanding_false_when_bridged(tmp_path: Path):
+    # Bridged = harvest done -> not outstanding, daemon may exit.
     conn = _mem()
     _proved_root(conn, "p")
     _cleaned(conn, "foo")
-    (tmp_path / "Library").mkdir()
-    (tmp_path / "Library" / "INDEX.md").write_text(
-        "# Library Index\n\n## p\n\nx\n", encoding="utf-8")
+    db.mark_library_bridged(conn, "p")
     assert dispatcher._harvest_outstanding(
         conn, tmp_path, _manifests(p=True), scope=None, fail_counts={}) is False
 

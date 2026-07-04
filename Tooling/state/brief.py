@@ -29,7 +29,7 @@ from . import db, manifest
 _BRIEF_FILENAME = "BRIEF.md"
 
 
-def render(workspace: Path, mfst: manifest.Manifest) -> str:
+def render(workspace: Path, mfst: manifest.Manifest, conn=None) -> str:
     """Assemble the stable sections into a single markdown string.
 
     Order:
@@ -48,7 +48,7 @@ def render(workspace: Path, mfst: manifest.Manifest) -> str:
         context._section_sandbox(),
         context._section_manifest_forbidden(mfst),
         context._section_manifest_notes(mfst),
-        context._section_library_available(mfst, workspace),
+        context._section_library_available(conn, mfst),
     ]
     parts: list[str] = []
     for s in sections:
@@ -56,7 +56,8 @@ def render(workspace: Path, mfst: manifest.Manifest) -> str:
     return "\n".join(parts)
 
 
-def write(workspace: Path, mfst: manifest.Manifest) -> Path | None:
+def write(workspace: Path, mfst: manifest.Manifest,
+          conn=None) -> Path | None:
     """Write the rendered BRIEF to `Problems/<problem>/BRIEF.md`. Atomic
     via tmp-file + os.replace. Returns the path written, or None if the
     Problem dir does not exist (test fixtures, mid-reset races)."""
@@ -64,7 +65,7 @@ def write(workspace: Path, mfst: manifest.Manifest) -> Path | None:
     if not pdir.exists():
         return None
     target = pdir / _BRIEF_FILENAME
-    content = render(workspace, mfst)
+    content = render(workspace, mfst, conn=conn)
     fd, tmp_path_str = tempfile.mkstemp(
         suffix=".tmp", prefix="BRIEF.", dir=str(pdir),
     )

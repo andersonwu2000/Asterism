@@ -1,10 +1,12 @@
 """`asterism library-verify` — whole-Library coherence gate (P1).
 
-Covers the printer-free `_library_consistency_findings` (INDEX <-> disk <-> DB
-over the placed decl set) + the INDEX parser. The placed set is
+Covers the printer-free `_library_consistency_findings` (v18: DB <-> disk
+over the placed decl set + bridge-marker agreement; the INDEX.md three-way
+checks are structurally impossible and retired). The placed set is
 `library_decls.lifecycle IN ('migrated','cleaned')`; 'cited'/'dropped' decls
 are not placed and must never participate (the regression that motivated the
-gate: a dedup-dropped decl left lingering in INDEX).
+gate: a dedup-dropped decl left exposed after harvest — now impossible by
+construction, exposure derives from the DB).
 """
 from __future__ import annotations
 
@@ -44,19 +46,17 @@ def _disk(tmp: Path, *rels: str):
         p.write_text("-- lib file\n", encoding="utf-8")
 
 
-def _index(tmp: Path, sections: "dict[str, list[tuple[str, str]]]"):
-    lines = ["# Library Index", ""]
-    for prob, entries in sections.items():
-        lines.append(f"## {prob}")
-        lines.append("")
-        lines.append("_Harvested … — n declaration(s)._")
-        lines.append("")
-        for name, rel in entries:
-            lines.append(f"- `{name}` → `{rel}`")
-        lines.append("")
-    lib = tmp / "Library"
-    lib.mkdir(parents=True, exist_ok=True)
-    (lib / "INDEX.md").write_text("\n".join(lines), encoding="utf-8")
+def _bridge(conn, *problems: str):
+    """Mark problems bridged (v18 done-marker; problems row seeded on
+    demand — FK is OFF in these fixtures but the marker UPDATE needs the
+    row to exist)."""
+    for prob in problems:
+        if conn.execute("SELECT 1 FROM problems WHERE name=?",
+                        (prob,)).fetchone() is None:
+            conn.execute(
+                "INSERT INTO problems (name, manifest_path, created_at,"
+                " bootstrap_done) VALUES (?, 'm', 't', 1)", (prob,))
+        db.mark_library_bridged(conn, prob)
 
 
 def _statuses(findings):
@@ -72,40 +72,6 @@ def _warns(findings):
 
 
 # ---------------------------------------------------------------------
-# INDEX parser
-# ---------------------------------------------------------------------
-
-def test_parse_index_sections_and_entries(tmp_path):
-    _index(tmp_path, {
-        "Geometry.x": [("Library.G.X.foo", "Library/G/X.lean"),
-                       ("Library.G.X.bar", "Library/G/X.lean")],
-        "Algebra.y": [("Library.A.Y.baz", "Library/A/Y.lean")],
-    })
-    parsed = cli._parse_library_index(tmp_path / "Library" / "INDEX.md")
-    assert parsed["Geometry.x"] == {
-        ("Library.G.X.foo", "Library/G/X.lean"),
-        ("Library.G.X.bar", "Library/G/X.lean")}
-    assert parsed["Algebra.y"] == {("Library.A.Y.baz", "Library/A/Y.lean")}
-
-
-def test_parse_index_absent_is_empty(tmp_path):
-    assert cli._parse_library_index(tmp_path / "nope" / "INDEX.md") == {}
-
-
-def test_parse_index_ignores_non_entry_lines(tmp_path):
-    # Preamble / harvest line / gate-B status line carry no 2-backtick entry.
-    (tmp_path).mkdir(exist_ok=True)
-    (tmp_path / "INDEX.md").write_text(
-        "# Library Index\n\n## P\n\n_Harvested … — 1 declaration(s)._\n\n"
-        "- `Library.P.f` → `Library/P.lean`\n\n"
-        "Gate B (root re-derivation): PASSED — original `theorem main`.\n",
-        encoding="utf-8")
-    parsed = cli._parse_library_index(tmp_path / "INDEX.md")
-    # only the real entry, not the gate-B line's backticked `theorem main`
-    assert parsed["P"] == {("Library.P.f", "Library/P.lean")}
-
-
-# ---------------------------------------------------------------------
 # consistency — clean
 # ---------------------------------------------------------------------
 
@@ -116,8 +82,7 @@ def test_clean_library_all_ok(tmp_path):
     _add(conn, problem="P", slug="bar", name="Library.P.bar",
          file="Library/P/B.lean", lifecycle="migrated")
     _disk(tmp_path, "Library/P/A.lean", "Library/P/B.lean")
-    _index(tmp_path, {"P": [("Library.P.foo", "Library/P/A.lean"),
-                            ("Library.P.bar", "Library/P/B.lean")]})
+    _bridge(conn, "P")
     findings = cli._library_consistency_findings(conn, tmp_path)
     assert "FAIL" not in _statuses(findings)
     assert "WARN" not in _statuses(findings)
@@ -135,7 +100,7 @@ def test_cited_and_dropped_decls_do_not_participate(tmp_path):
     _add(conn, problem="P", slug="ext", name="Library.P.ext",
          file="Library/P/A.lean", lifecycle="cited")
     _disk(tmp_path, "Library/P/A.lean")
-    _index(tmp_path, {"P": [("Library.P.foo", "Library/P/A.lean")]})
+    _bridge(conn, "P")
     findings = cli._library_consistency_findings(conn, tmp_path)
     assert "FAIL" not in _statuses(findings)
 
@@ -157,8 +122,7 @@ def test_cleaned_file_with_umbrella_import_warns(tmp_path):
     (tmp_path / "Library/P/B.lean").write_text(            # precise imports
         "import Mathlib.Logic.Basic\ntheorem bar : True := trivial\n",
         encoding="utf-8")
-    _index(tmp_path, {"P": [("Library.P.foo", "Library/P/A.lean"),
-                            ("Library.P.bar", "Library/P/B.lean")]})
+    _bridge(conn, "P")
     findings = cli._library_consistency_findings(conn, tmp_path)
     assert "FAIL" not in _statuses(findings)              # builds → never a FAIL
     warns = _warns(findings)
@@ -174,7 +138,7 @@ def test_migrated_file_with_umbrella_not_warned(tmp_path):
     (tmp_path / "Library/P").mkdir(parents=True, exist_ok=True)
     (tmp_path / "Library/P/A.lean").write_text(
         "import Mathlib\ntheorem foo : True := trivial\n", encoding="utf-8")
-    _index(tmp_path, {"P": [("Library.P.foo", "Library/P/A.lean")]})
+    _bridge(conn, "P")
     warns = _warns(cli._library_consistency_findings(conn, tmp_path))
     assert not any("import Mathlib" in w for w in warns)
 
@@ -188,7 +152,7 @@ def test_orphan_disk_file_fails(tmp_path):
     _add(conn, problem="P", slug="foo", name="Library.P.foo",
          file="Library/P/A.lean", lifecycle="cleaned")
     _disk(tmp_path, "Library/P/A.lean", "Library/P/Orphan.lean")  # extra file
-    _index(tmp_path, {"P": [("Library.P.foo", "Library/P/A.lean")]})
+    _bridge(conn, "P")
     fails = _fails(cli._library_consistency_findings(conn, tmp_path))
     assert any("orphan" in m and "Orphan.lean" in m for m in fails)
 
@@ -198,59 +162,33 @@ def test_db_row_pointing_at_missing_file_fails(tmp_path):
     _add(conn, problem="P", slug="foo", name="Library.P.foo",
          file="Library/P/Gone.lean", lifecycle="cleaned")
     _disk(tmp_path, "Library/P/A.lean")        # Gone.lean never written
-    _index(tmp_path, {})
+    _bridge(conn, "P")
     fails = _fails(cli._library_consistency_findings(conn, tmp_path))
     assert any("missing file" in m and "Gone.lean" in m for m in fails)
 
 
-def test_index_entry_missing_file_fails(tmp_path):
+def test_stale_bridge_marker_fails(tmp_path):
+    # v18 successor of the "fully stale INDEX section" class: a problem
+    # marked bridged with ZERO placed decls (un-harvested / rows deleted
+    # behind the marker) is stale provenance -> FAIL.
     conn = _conn(tmp_path)
     _add(conn, problem="P", slug="foo", name="Library.P.foo",
          file="Library/P/A.lean", lifecycle="cleaned")
     _disk(tmp_path, "Library/P/A.lean")
-    # INDEX claims a second file that is not on disk and has no DB row.
-    _index(tmp_path, {"P": [("Library.P.foo", "Library/P/A.lean"),
-                            ("Library.P.ghost", "Library/P/Ghost.lean")]})
+    _bridge(conn, "P", "Q")                    # Q bridged, nothing placed
     fails = _fails(cli._library_consistency_findings(conn, tmp_path))
-    assert any("INDEX entry points to a missing file" in m
-               and "Ghost.lean" in m for m in fails)
+    assert any(m.startswith("Q:") and "stale marker" in m for m in fails)
+    # P (bridged + placed) reports OK, not FAIL
+    assert not any(m.startswith("P:") for m in fails)
 
 
-def test_stale_index_overclaim_fails(tmp_path):
-    # The eckart_young scenario: a decl present in INDEX but only 'dropped' in
-    # DB (its file still exists for other decls) -> INDEX/DB set mismatch FAIL.
-    conn = _conn(tmp_path)
-    _add(conn, problem="P", slug="foo", name="Library.P.foo",
-         file="Library/P/A.lean", lifecycle="cleaned")
-    _add(conn, problem="P", slug="dup", name="Library.P.dup",
-         file="Library/P/A.lean", lifecycle="dropped")
-    _disk(tmp_path, "Library/P/A.lean")
-    _index(tmp_path, {"P": [("Library.P.foo", "Library/P/A.lean"),
-                            ("Library.P.dup", "Library/P/A.lean")]})
-    fails = _fails(cli._library_consistency_findings(conn, tmp_path))
-    assert any("INDEX/DB placed-set mismatch" in m and "INDEX-only" in m
-               for m in fails)
-
-
-def test_db_placed_but_no_index_section_warns_not_fails(tmp_path):
-    # migrated decls with no INDEX section = not yet bridged (legit mid-flight).
+def test_db_placed_but_not_bridged_warns_not_fails(tmp_path):
+    # migrated decls, marker not yet set = not yet bridged (legit
+    # mid-flight) -> WARN only.
     conn = _conn(tmp_path)
     _add(conn, problem="P", slug="foo", name="Library.P.foo",
          file="Library/P/A.lean", lifecycle="migrated")
     _disk(tmp_path, "Library/P/A.lean")
-    _index(tmp_path, {})                       # no section for P
     findings = cli._library_consistency_findings(conn, tmp_path)
     assert "FAIL" not in _statuses(findings)
-    assert any("no INDEX section" in m for m in _warns(findings))
-
-
-def test_index_section_for_unplaced_problem_fails(tmp_path):
-    # INDEX has a section but DB has zero placed decls for it -> fully stale.
-    conn = _conn(tmp_path)
-    _disk(tmp_path, "Library/P/A.lean")
-    _add(conn, problem="P", slug="foo", name="Library.P.foo",
-         file="Library/P/A.lean", lifecycle="cleaned")
-    _index(tmp_path, {"P": [("Library.P.foo", "Library/P/A.lean")],
-                      "Q": [("Library.Q.bar", "Library/P/A.lean")]})
-    fails = _fails(cli._library_consistency_findings(conn, tmp_path))
-    assert any(m.startswith("Q:") and "no placed" in m for m in fails)
+    assert any("not bridged yet" in m for m in _warns(findings))

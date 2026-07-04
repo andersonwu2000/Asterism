@@ -85,12 +85,16 @@ def _clean(entry) -> tuple:
             str(entry.get("why") or "").strip())
 
 
-def _verify(blocks, workspace: Path, problem_dir: Path) -> list:
+def _verify(blocks, workspace: Path, problem_dir: Path,
+            conn=None) -> list:
     """Verify a 3-block pre-search result `{in_problem, library, mathlib}`,
     each a list of `{name, why}`. Per source:
       - in_problem: keep names whose decl appears in the problem's `proofs/`
         or `TREE.md` (grep-found siblings; light guard against padded names);
-      - library: keep names present in `Library/INDEX.md`;
+      - library: keep names among the DB's placed+bridged decls
+        (`db.library_decl_names` — exact membership; was: an INDEX.md
+        substring probe with short-name false positives, whose missing-file
+        fallback silently kept EVERYTHING);
       - mathlib: `#check` via `lemma_lookup`, drop hallucinations, attach
         signatures; keep unverified if the lookup is unavailable.
     Each block is capped at `_MAX_PER_BLOCK`. Output is a flat list ordered
@@ -130,14 +134,26 @@ def _verify(blocks, workspace: Path, problem_dir: Path) -> list:
             if (not hay) or (short and short in hay):
                 out.append({"name": name, "source": "in_problem", "why": why})
 
-    # library — keep names present in INDEX.md (or all, if no index yet).
-    index = workspace / "Library" / "INDEX.md"
-    index_text = index.read_text(encoding="utf-8") if index.is_file() else ""
+    # library — keep names among the DB-indexed placed decls. Match on the
+    # full FQN or its leaf (agents report `Library.<Domain>.<File>.<decl>`
+    # module-qualified names while the DB stores the declared FQN — leaf
+    # equality bridges the two). conn=None (defensive) keeps all, the old
+    # missing-INDEX fallback.
+    known: "set[str] | None" = None
+    if conn is not None:
+        try:
+            from ..state import db as _db
+            known = _db.library_decl_names(conn)
+        except Exception:  # noqa: BLE001 — filter is best-effort
+            known = None
+    known_leaves = ({n.rsplit(".", 1)[-1] for n in known}
+                    if known is not None else None)
     for entry in _block("library"):
         name, why = _clean(entry)
         if not name:
             continue
-        if (not index_text) or (name in index_text):
+        if (known is None or name in known
+                or name.rsplit(".", 1)[-1] in known_leaves):
             out.append({"name": name, "source": "library", "why": why})
 
     # mathlib — #check; drop hallucinations, attach signatures.
@@ -184,7 +200,8 @@ def _render_section(candidates: list) -> str:
 
 
 def ensure_presearch(*, goal, workspace: Path, problem_dir: Path,
-                     attempts_dir: Path, prompt_dir: Path) -> Path | None:
+                     attempts_dir: Path, prompt_dir: Path,
+                     conn=None) -> Path | None:
     """Once-per-node: return the cached candidate section, spawning a
     pre-search agent on the first call for this goal. Best-effort — None
     on any failure (prover proceeds without the section)."""
@@ -241,7 +258,7 @@ def ensure_presearch(*, goal, workspace: Path, problem_dir: Path,
         raw = json.loads(out_path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             return None
-        verified = _verify(raw, workspace, problem_dir)
+        verified = _verify(raw, workspace, problem_dir, conn=conn)
         if not verified:
             return None
         section = _render_section(verified)
