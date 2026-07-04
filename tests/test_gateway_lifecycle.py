@@ -76,6 +76,29 @@ def test_verify_file_returns_response_on_success(
     assert "transient" not in out
 
 
+def test_verify_file_decl_info_flag_in_body(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """`decl_info=True` puts the flag in the POST body (so the gateway
+    runs the `Asterism.declInfo` RPC); default omits it entirely."""
+    target = tmp_path / "f.lean"
+    target.write_text("-- stub", encoding="utf-8")
+    bodies: list[dict] = []
+
+    def fake_urlopen(req, timeout):
+        bodies.append(json.loads(req.data.decode("utf-8")))
+        return _MockResponse({"ok": True})
+
+    monkeypatch.setattr(
+        gateway_lifecycle.urllib.request, "urlopen", fake_urlopen)
+
+    gateway_lifecycle.verify_file(target, workspace=tmp_path)
+    gateway_lifecycle.verify_file(target, decl_info=True,
+                                  workspace=tmp_path)
+    assert "decl_info" not in bodies[0]
+    assert bodies[1]["decl_info"] is True
+
+
 def test_verify_file_missing_target_marks_non_transient(
     tmp_path: Path,
 ) -> None:

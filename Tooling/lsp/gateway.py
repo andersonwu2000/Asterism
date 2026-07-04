@@ -1743,6 +1743,7 @@ def _olean_dest_for(workspace: Path, target_path: Path) -> Path | None:
 
 def _verify_sync(target: Path, content: str, *, write_olean: bool,
                   axioms_for: str | None, constants_for: str | None = None,
+                  decl_info: bool = False,
                   rpc_timeout: int) -> dict:
     """Sync core of /verify. MUST run off the asyncio event loop —
     `_acquire_slot` does blocking polling on a per-slot lock, which
@@ -1780,6 +1781,8 @@ def _verify_sync(target: Path, content: str, *, write_olean: bool,
     top_is_prop: bool | None = None
     top_module: str | None = None
     closure_error: str | None = None
+    decl_info_result: dict | None = None
+    decl_info_error: str | None = None
     diags: list = []
 
     try:
@@ -1891,6 +1894,29 @@ def _verify_sync(target: Path, content: str, *, write_olean: bool,
                             f"{type(e).__name__}: {e}"
                         )
 
+                if decl_info:
+                    try:
+                        r = backend.rpc_call(
+                            slot.slot_uri,
+                            "Asterism.declInfo",
+                            {"includeSignatures": True},
+                            timeout=rpc_timeout,
+                        )
+                        if r.get("ok"):
+                            decl_info_result = {
+                                "commands": list(r.get("commands") or []),
+                                "decls": list(r.get("decls") or []),
+                            }
+                        else:
+                            decl_info_error = (
+                                f"declInfo: {r.get('error') or 'not ok'}"
+                            )
+                    except Exception as e:
+                        decl_info_error = (
+                            f"declInfo RPC failed: "
+                            f"{type(e).__name__}: {e}"
+                        )
+
             # Probe (verify_file) wrote stand-alone content into the
             # slot; clear so next tool call didChanges the session's
             # actual content back in.
@@ -1916,6 +1942,8 @@ def _verify_sync(target: Path, content: str, *, write_olean: bool,
         "top_is_prop": top_is_prop,
         "top_module": top_module,
         "closure_error": closure_error,
+        "decl_info": decl_info_result,
+        "decl_info_error": decl_info_error,
     }
 
 
@@ -1929,6 +1957,11 @@ async def verify(request: Request):
       "target_path":  "/abs/path.lean",        # required
       "write_olean":  true,                    # default: true
       "axioms_for":   "Problems.foo.main",     # optional fq name
+      "decl_info":    false,                   # per-decl structured facts
+                                               #   via Asterism.declInfo —
+                                               #   the syntactic oracle that
+                                               #   replaces regex extraction
+                                               #   (task: declInfo RPC)
       "rpc_timeout":  60,                      # default: 30 — applied to
                                                #   writeOlean + printAxioms
                                                #   RPCs. Caller-driven so
@@ -1945,6 +1978,8 @@ async def verify(request: Request):
       "olean_path":       str | null,
       "axioms":           [str, ...] | null,
       "axiom_error":      str | null,
+      "decl_info":        {commands: [...], decls: [...]} | null,
+      "decl_info_error":  str | null,
     }
 
     Replaces the prior `lake build` + `lake env lean #print axioms`
@@ -1982,6 +2017,7 @@ async def verify(request: Request):
     write_olean: bool = bool(data.get("write_olean", True))
     axioms_for: str | None = data.get("axioms_for")
     constants_for: str | None = data.get("constants_for")
+    decl_info: bool = bool(data.get("decl_info", False))
     try:
         rpc_timeout = int(data.get("rpc_timeout", 30))
         if rpc_timeout <= 0:
@@ -2004,7 +2040,8 @@ async def verify(request: Request):
     result = await asyncio.to_thread(
         _verify_sync, target, content,
         write_olean=write_olean, axioms_for=axioms_for,
-        constants_for=constants_for, rpc_timeout=rpc_timeout,
+        constants_for=constants_for, decl_info=decl_info,
+        rpc_timeout=rpc_timeout,
     )
     status = result.pop("_status", 200)
     return JSONResponse(result, status_code=status)

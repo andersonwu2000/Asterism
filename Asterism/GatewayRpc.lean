@@ -347,6 +347,240 @@ def anchorClosureImpl (p : AnchorClosureParams) :
             | .error e =>
                 return { found := false, error := some s!"anchor walk failed: {e}" }
 
+/-! ## declInfo
+
+Structured per-declaration facts for the whole open file, straight
+from the parsed syntax tree + the elaborated environment. This is the
+framework's *syntactic oracle*: every consumer that previously
+re-derived declaration structure from source text with regexes
+(librarian astslice / inventory / relabel, pipeline signature
+extraction) becomes a client of this RPC instead. The recorded bug
+family it retires: modifier loss (`noncomputable` under
+`noncomputable section` — env truth, not surface text), decl-keyword
+prose in comments parsed as declarations (ranges come from the
+elaborator, comments have none), and docstring/attr spans drifting
+from hand-maintained regex approximations (`DeclarationRanges.range`
+covers the full declaration incl. doc comment and attributes).
+
+Two complementary views, joined by position:
+
+  * `commands` — every top-level command in source order with its
+    syntax kind and range. Scope reconstruction (namespace stack,
+    `variable` blocks in force at a decl, `open X in` prefixes — the
+    whole astslice replay engine) is a walk over these kinds, never
+    over text. An `open X in <decl>` composite is ONE command
+    (kind `Lean.Parser.Command.in`) whose range covers prefix + decl.
+
+  * `decls` — every non-internal constant added by this file, with
+    kernel/env facts (kind, `isProp`, `isNoncomputable`, visibility,
+    instance status), the pretty-printed signature (section variables
+    already incorporated by the elaborator), the docstring, and its
+    declaration/selection ranges. `cmdIdx` links each constant to the
+    command that declared it (mutual blocks: many decls, one command;
+    structures: the inductive plus its projections share a command —
+    the primary decl is the one with the earliest selection range).
+
+Positions are `Lean.Position`: 1-based line, 0-based codepoint
+column (Python `str` indexing is codepoint-based, so line/col convert
+to offsets without UTF-16 mangling). -/
+
+structure DeclInfoParams where
+  /-- Pretty-printing signatures costs a `MetaM` pp per decl; callers
+  that only need names/ranges/flags can skip it. -/
+  includeSignatures : Bool := true
+  deriving FromJson, ToJson
+
+instance : RpcEncodable DeclInfoParams := inferInstance
+
+structure SrcRange where
+  startLine : Nat
+  startCol : Nat
+  endLine : Nat
+  endCol : Nat
+  deriving FromJson, ToJson
+
+structure CmdEntry where
+  /-- Full syntax kind, e.g. `Lean.Parser.Command.declaration`. -/
+  kind : String
+  range : SrcRange
+  /-- Label for `namespace` / `end` / `section` commands (first
+  identifier argument), else none. -/
+  name : Option String := none
+  deriving FromJson, ToJson
+
+structure DeclEntry where
+  /-- Kernel name as it lives in the env (private decls keep their
+  `_private…` mangled form here). -/
+  fqName : String
+  /-- Private-name-normalized form (what the user wrote, qualified). -/
+  userName : String
+  kind : String
+  isProp : Bool
+  isNoncomputable : Bool
+  isProtected : Bool
+  isPrivate : Bool
+  isInstance : Bool
+  /-- `ppSignature` output (`<name> <binders> : <type>`), "" when
+  skipped or pp failed. Section variables appear as ordinary binders. -/
+  signature : String
+  docstring : Option String := none
+  /-- Index into `commands` of the declaring command. -/
+  cmdIdx : Nat
+  range : SrcRange
+  selection : SrcRange
+  deriving FromJson, ToJson
+
+structure DeclInfoResp where
+  ok : Bool
+  commands : Array CmdEntry := #[]
+  decls : Array DeclEntry := #[]
+  error : Option String := none
+  deriving FromJson, ToJson
+
+instance : RpcEncodable DeclInfoResp := inferInstance
+
+/-- Like `lastCmdEnv`, but accumulates every command's syntax along
+the walk. Same snapshot-tree caveats (see the module docstring on the
+walker above). -/
+structure CmdsWalkResult where
+  stxs : Array Syntax := #[]
+  env : Option Environment := none
+  trace : String
+
+instance : Inhabited CmdsWalkResult := ⟨{ trace := "" }⟩
+
+open Language.Lean in
+partial def allCmdsEnv (doc : Server.FileWorker.EditableDocument) :
+    ServerTask CmdsWalkResult := Id.run do
+  let some headerParsed := doc.initSnap.result?
+    | .pure { trace := "initSnap.result? is none (header parse failed)" }
+  headerParsed.processedSnap.task.asServerTask.bindCheap fun headerProcessed =>
+    Id.run do
+      let some headerSuccess := headerProcessed.result?
+        | .pure { trace := "headerProcessed.result? is none (import failed)" }
+      headerSuccess.firstCmdSnap.task.asServerTask.bindCheap (walk #[])
+where
+  walk (acc : Array Syntax) (cmd : CommandParsedSnapshot) :
+      ServerTask CmdsWalkResult := Id.run do
+    let acc := acc.push cmd.stx
+    match cmd.nextCmdSnap? with
+    | none =>
+        cmd.elabSnap.resultSnap.task.asServerTask.bindCheap fun result =>
+          .pure { stxs := acc, env := some result.cmdState.env,
+                  trace := s!"ok ({acc.size} commands)" }
+    | some next =>
+        next.task.asServerTask.bindCheap (walk acc)
+
+private def toSrcRange (text : FileMap) (r : Syntax.Range) : SrcRange :=
+  let s := text.toPosition r.start
+  let e := text.toPosition r.stop
+  { startLine := s.line, startCol := s.column,
+    endLine := e.line, endCol := e.column }
+
+private def declRangeToSrc (r : DeclarationRange) : SrcRange :=
+  { startLine := r.pos.line, startCol := r.pos.column,
+    endLine := r.endPos.line, endCol := r.endPos.column }
+
+/-- First identifier among a node's (possibly optional-wrapped) args —
+the label of `namespace Foo` / `end Foo` / `section Foo`. One nesting
+level is enough for these fixed grammars. -/
+private def firstIdent? (stx : Syntax) : Option Name :=
+  stx.getArgs.findSome? fun a =>
+    if a.isIdent then some a.getId
+    else a.getArgs.findSome? fun b =>
+      if b.isIdent then some b.getId else none
+
+private def mkCmdEntry (text : FileMap) (stx : Syntax) : CmdEntry :=
+  let range := match stx.getRange? with
+    | some r => toSrcRange text r
+    | none => { startLine := 0, startCol := 0, endLine := 0, endCol := 0 }
+  let kind := stx.getKind
+  let name :=
+    if kind ∈ [``Lean.Parser.Command.namespace, ``Lean.Parser.Command.end,
+               ``Lean.Parser.Command.section] then
+      (firstIdent? stx).map (·.toString)
+    else none
+  { kind := kind.toString, range, name }
+
+private def posLE (l₁ c₁ l₂ c₂ : Nat) : Bool :=
+  l₁ < l₂ || (l₁ == l₂ && c₁ ≤ c₂)
+
+/-- Index of the command whose range contains `sel`'s start, else the
+command count (sentinel; consumers treat out-of-range as "no command",
+which cannot happen for decls that came from this file's elaboration). -/
+private def findCmdIdx (commands : Array CmdEntry) (sel : SrcRange) : Nat := Id.run do
+  for h : i in [0:commands.size] do
+    let c := commands[i]
+    if posLE c.range.startLine c.range.startCol sel.startLine sel.startCol &&
+       posLE sel.startLine sel.startCol c.range.endLine c.range.endCol then
+      return i
+  return commands.size
+
+/-- Assemble `DeclEntry`s for every non-internal local constant.
+`MetaM` for `isProp` / `ppSignature`; per-decl failures degrade that
+field rather than failing the whole response (a decl whose pp throws
+still reports its ranges and flags). -/
+private def declEntriesM (p : DeclInfoParams) (commands : Array CmdEntry) :
+    Meta.MetaM (Array DeclEntry) := do
+  let env ← getEnv
+  let mut out : Array DeclEntry := #[]
+  for (n, info) in env.constants.map₂.toList do
+    if n.isInternalDetail then
+      continue
+    let some rs ← Lean.findDeclarationRanges? n
+      | continue
+    let sig ←
+      if p.includeSignatures then
+        try
+          let f ← PrettyPrinter.ppSignature n
+          pure f.fmt.pretty
+        catch _ => pure ""
+      else pure ""
+    let isProp ← try Meta.isProp info.type catch _ => pure false
+    let isInst ← try Meta.isInstance n catch _ => pure false
+    let doc ← findDocString? env n
+    let range := declRangeToSrc rs.range
+    let selection := declRangeToSrc rs.selectionRange
+    out := out.push {
+      fqName := n.toString,
+      userName := (privateToUserName? n).getD n |>.toString,
+      kind := kindStr info,
+      isProp,
+      isNoncomputable := Lean.isNoncomputable env n,
+      isProtected := Lean.isProtected env n,
+      isPrivate := Lean.isPrivateName n,
+      isInstance := isInst,
+      signature := sig,
+      docstring := doc,
+      cmdIdx := findCmdIdx commands selection,
+      range, selection,
+    }
+  return out.qsort fun a b =>
+    posLE a.range.startLine a.range.startCol b.range.startLine b.range.startCol
+      && !(a.range.startLine == b.range.startLine
+           && a.range.startCol == b.range.startCol
+           && !posLE a.selection.startLine a.selection.startCol
+                     b.selection.startLine b.selection.startCol)
+
+def declInfoImpl (p : DeclInfoParams) : RequestM (RequestTask DeclInfoResp) := do
+  let doc ← RequestM.readDoc
+  let text := doc.meta.text
+  RequestM.mapTaskCostly (allCmdsEnv doc) fun walkResult => do
+    match walkResult.env with
+    | none =>
+        return { ok := false,
+                 error := some s!"no terminal snapshot: {walkResult.trace}" }
+    | some env =>
+        let commands := walkResult.stxs.map (mkCmdEntry text)
+        let coreCtx : Core.Context := { fileName := "", fileMap := default }
+        let coreState : Core.State := { env }
+        let r ← ((declEntriesM p commands).run').toIO' coreCtx coreState |>.toBaseIO
+        match r with
+        | .ok decls => return { ok := true, commands, decls }
+        | .error e =>
+            return { ok := false, commands,
+                     error := some s!"decl walk failed: {e}" }
+
 /-! ## Builtin registration
 
 `builtin_initialize` fires before `main`, in BOTH the watchdog and
@@ -361,6 +595,8 @@ builtin_initialize
     `Asterism.printAxioms PrintAxiomsParams PrintAxiomsResp printAxiomsImpl
   registerBuiltinRpcProcedure
     `Asterism.anchorClosure AnchorClosureParams AnchorClosureResp anchorClosureImpl
+  registerBuiltinRpcProcedure
+    `Asterism.declInfo DeclInfoParams DeclInfoResp declInfoImpl
 
 end Asterism
 

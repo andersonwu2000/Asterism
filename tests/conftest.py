@@ -159,6 +159,7 @@ def _stub_axiom_probe_by_default(monkeypatch: pytest.MonkeyPatch,
 
     def _stub_verify_file(target_path, *, write_olean=True,
                           axioms_for=None, constants_for=None,
+                          decl_info=False,
                           timeout=120.0, workspace=None):
         return {
             "ok": True,
@@ -173,6 +174,11 @@ def _stub_axiom_probe_by_default(monkeypatch: pytest.MonkeyPatch,
             "top_is_prop": None,
             "top_module": None,
             "closure_error": None,
+            # declInfo oracle: the clean-elaborate stub has no decl facts;
+            # consumer tests that need them override verify_file locally.
+            "decl_info": ({"commands": [], "decls": []} if decl_info
+                          else None),
+            "decl_info_error": None,
         }
     monkeypatch.setattr(_gl, "verify_file", _stub_verify_file)
 

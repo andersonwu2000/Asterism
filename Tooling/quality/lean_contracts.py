@@ -75,7 +75,8 @@ def _write_stamp(workspace: Path, fingerprint: str,
 # ---------------------------------------------------------------------
 
 def _verify(workspace: Path, name: str, content: str, *,
-            axioms_for: "str | None" = None) -> dict:
+            axioms_for: "str | None" = None,
+            decl_info: bool = False) -> dict:
     from ..lsp import lifecycle as gateway_lifecycle
     d = workspace / _PROBE_DIR_REL
     d.mkdir(parents=True, exist_ok=True)
@@ -84,7 +85,7 @@ def _verify(workspace: Path, name: str, content: str, *,
     try:
         return gateway_lifecycle.verify_file(
             f, write_olean=False, axioms_for=axioms_for,
-            workspace=workspace)
+            decl_info=decl_info, workspace=workspace)
     finally:
         try:
             f.unlink()
@@ -187,6 +188,81 @@ def contract_hint_probe_emits_winner(workspace: Path) -> "tuple[bool, str]":
     return True, ""
 
 
+def contract_decl_info_oracle(workspace: Path) -> "tuple[bool, str]":
+    """The `Asterism.declInfo` RPC reports the per-decl facts the regex
+    retirement rests on (task: declInfo syntactic oracle). Pins exactly the
+    behaviors consumers consume:
+
+      * a def under `noncomputable section` is `isNoncomputable` (env truth
+        — the BUG4 / astslice-section-gap class);
+      * `range` covers the docstring + `@[attr]` modifiers (slicing by range
+        never orphans a docstring);
+      * `ppSignature` incorporates section variables as ordinary binders;
+      * a private decl is visible with its user-facing name normalized;
+      * `open X in <decl>` is ONE command whose span covers the prefix
+        (kind `Lean.Parser.Command.in`);
+      * decls arrive in source order.
+
+    NOTE: needs a `lean-asterism-server` binary built from a GatewayRpc.lean
+    that registers `Asterism.declInfo` — a stale binary fails here with an
+    RPC-method error, which is the correct loud signal to rebuild
+    (`lake build lean-asterism-server`)."""
+    r = _verify(workspace, "c_declinfo",
+                "import Mathlib\n"
+                "namespace CDi\n"
+                "/-- thm doc -/\n"
+                "@[simp] theorem c_di_thm : 1 + 1 = 2 := rfl\n"
+                "private def c_di_priv : Nat := 3\n"
+                "noncomputable section\n"
+                "variable (n : Nat)\n"
+                "def c_di_data : Nat := n + Nat.zero\n"
+                "end\n"
+                "open Nat in\n"
+                "theorem c_di_open : 2 = 2 := rfl\n"
+                "end CDi\n",
+                decl_info=True)
+    if r.get("error") or not r.get("ok"):
+        return False, f"probe elaborate failed: {r}"
+    if r.get("decl_info_error") or not r.get("decl_info"):
+        return False, (f"declInfo RPC unavailable/failed: "
+                       f"{r.get('decl_info_error')} — stale "
+                       "lean-asterism-server binary? (rebuild: lake build "
+                       "lean-asterism-server)")
+    info = r["decl_info"]
+    commands = info.get("commands") or []
+    decls = info.get("decls") or []
+    by_user = {d["userName"]: d for d in decls}
+    data = by_user.get("CDi.c_di_data")
+    if not data or not data.get("isNoncomputable"):
+        return False, (f"noncomputable-section def not reported "
+                       f"noncomputable: {data}")
+    if "(n : Nat)" not in (data.get("signature") or ""):
+        return False, (f"section variable missing from signature: "
+                       f"{data.get('signature')!r}")
+    thm = by_user.get("CDi.c_di_thm")
+    if not thm or not thm.get("docstring"):
+        return False, f"docstring not reported: {thm}"
+    if thm["range"]["startLine"] >= thm["selection"]["startLine"]:
+        return False, (f"decl range does not cover docstring/attr lines: "
+                       f"{thm['range']} vs selection {thm['selection']}")
+    priv = by_user.get("CDi.c_di_priv")
+    if not priv or not priv.get("isPrivate"):
+        return False, f"private decl missing/unflagged: {priv}"
+    opn = by_user.get("CDi.c_di_open")
+    if not opn:
+        return False, "open-in decl missing"
+    opn_cmd = (commands[opn["cmdIdx"]]
+               if opn["cmdIdx"] < len(commands) else None)
+    if not opn_cmd or opn_cmd["kind"] != "Lean.Parser.Command.in":
+        return False, (f"open-in composite not one command: {opn_cmd}")
+    order = [d["userName"] for d in decls
+             if d["userName"].startswith("CDi.c_di_")]
+    if order != ["CDi.c_di_thm", "CDi.c_di_priv", "CDi.c_di_data",
+                 "CDi.c_di_open"]:
+        return False, f"decls not in source order: {order}"
+    return True, ""
+
+
 CONTRACTS = [
     ("clean_theorem_elaborates", contract_clean_theorem_elaborates),
     ("axiom_probe_reports_whitelist", contract_axiom_probe_reports_whitelist),
@@ -194,6 +270,7 @@ CONTRACTS = [
     ("assembled_text_elaborates", contract_assembled_text_elaborates),
     ("alias_forms_compile", contract_alias_forms_compile),
     ("hint_probe_emits_winner", contract_hint_probe_emits_winner),
+    ("decl_info_oracle", contract_decl_info_oracle),
 ]
 
 

@@ -679,7 +679,8 @@ def test_verify_endpoint_offloads_sync_body_to_thread(
     invoked_in_thread: dict[str, object] = {}
 
     def _stub_verify_sync(target, content, *, write_olean, axioms_for,
-                          rpc_timeout, constants_for=None):
+                          rpc_timeout, constants_for=None,
+                          decl_info=False):
         # Off-thread invocation: in the main test thread our event loop
         # is running; if to_thread was used we land in a *different*
         # thread.
@@ -918,6 +919,84 @@ def test_verify_sync_confirmed_error_still_surfaces(
     assert out.get("transient") is not True
     assert any("unknown identifier" in d["message"]
                for d in out.get("diagnostics", []))
+
+
+class _RpcBackend(_DiagBackend):
+    """_DiagBackend + a recording `rpc_call` with per-method canned
+    responses (the declInfo/printAxioms RPC surface)."""
+    def __init__(self, *, responses=None, **kw):
+        super().__init__(**kw)
+        self.rpc_calls: list[tuple[str, dict]] = []
+        self._responses = responses or {}
+
+    def rpc_call(self, uri, method, params, timeout=None):
+        self.rpc_calls.append((method, params))
+        resp = self._responses.get(method)
+        if isinstance(resp, Exception):
+            raise resp
+        return resp or {}
+
+
+def test_verify_sync_decl_info_rpc_surfaces_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """`decl_info=True` calls the `Asterism.declInfo` RPC on a clean
+    elaborate and surfaces `{commands, decls}` in the response;
+    `decl_info=False` (default) never touches the RPC."""
+    slots = [_make_fake_slot(0)]
+    monkeypatch.setattr(lsp_gateway._state, "workers", slots)
+    monkeypatch.setattr(lsp_gateway._state, "workspace", tmp_path)
+    canned = {"ok": True,
+              "commands": [{"kind": "Lean.Parser.Command.declaration",
+                            "range": {"startLine": 1, "startCol": 0,
+                                      "endLine": 1, "endCol": 30}}],
+              "decls": [{"fqName": "t", "userName": "t", "kind": "thm",
+                         "cmdIdx": 0}]}
+    backend = _RpcBackend(responses={"Asterism.declInfo": canned})
+    monkeypatch.setattr(lsp_gateway._state, "backend", backend)
+
+    target = tmp_path / "L_stub.lean"
+    target.write_text("import Mathlib\ntheorem t : True := trivial\n",
+                      encoding="utf-8")
+    out = lsp_gateway._verify_sync(
+        target, target.read_text(encoding="utf-8"),
+        write_olean=False, axioms_for=None, decl_info=True, rpc_timeout=30)
+    assert out["ok"] is True
+    assert [m for m, _ in backend.rpc_calls] == ["Asterism.declInfo"]
+    assert out["decl_info"] == {"commands": canned["commands"],
+                                "decls": canned["decls"]}
+    assert out["decl_info_error"] is None
+
+    backend.rpc_calls.clear()
+    out2 = lsp_gateway._verify_sync(
+        target, target.read_text(encoding="utf-8"),
+        write_olean=False, axioms_for=None, rpc_timeout=30)
+    assert backend.rpc_calls == []
+    assert out2["decl_info"] is None
+
+
+def test_verify_sync_decl_info_rpc_failure_degrades(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A declInfo RPC failure (e.g. stale lean-asterism-server binary
+    without the method) degrades to `decl_info_error` — the elaborate
+    verdict itself stays intact, mirroring axiom_error semantics."""
+    slots = [_make_fake_slot(0)]
+    monkeypatch.setattr(lsp_gateway._state, "workers", slots)
+    monkeypatch.setattr(lsp_gateway._state, "workspace", tmp_path)
+    backend = _RpcBackend(
+        responses={"Asterism.declInfo": RuntimeError("unknown method")})
+    monkeypatch.setattr(lsp_gateway._state, "backend", backend)
+
+    target = tmp_path / "L_stub.lean"
+    target.write_text("import Mathlib\ntheorem t : True := trivial\n",
+                      encoding="utf-8")
+    out = lsp_gateway._verify_sync(
+        target, target.read_text(encoding="utf-8"),
+        write_olean=False, axioms_for=None, decl_info=True, rpc_timeout=30)
+    assert out["ok"] is True
+    assert out["decl_info"] is None
+    assert "declInfo RPC failed" in out["decl_info_error"]
 
 
 def test_acquire_slot_borrow_mode_uses_any_free_slot(
