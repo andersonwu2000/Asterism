@@ -289,6 +289,32 @@ def test_run_bridge_deliverable_axiom_gate_passes_writes_index(conn, tmp_path,
     assert "per-decl axiom check" in idx
 
 
+def test_run_bridge_pure_nl_no_root_takes_deliverable_branch(conn, tmp_path,
+                                                             monkeypatch):
+    """Phase 6 regression (Analysis.metric_projection 2026-07-04): the
+    `librarian_no_root` early-exit used to sit ABOVE the deliverable
+    branch, so a pure-NL problem (no root goal at all) STALLED the bridge
+    before its deliverables could take over. The root fetch now lives in
+    the classic path only."""
+    from Tooling.pipeline.librarian import gate as _g
+    # deliverable setup WITHOUT any root goal
+    _migrated(conn, "foo", "Library.P.Foo.foo", "Library/P/Foo.lean")
+    conn.execute("UPDATE goals SET is_deliverable=1 "
+                 "WHERE problem='p' AND slug='foo'")
+    conn.commit()
+    fp = tmp_path / "Library" / "P" / "Foo.lean"
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    fp.write_text("import Mathlib\ntheorem foo : True := trivial\n",
+                  encoding="utf-8")
+    _mock_lake_ok(monkeypatch)
+    monkeypatch.setattr(_g, "migrate_commit_gate",
+                        lambda *a, **k: _g.MigrateResult(True, ""))
+    r = lib._run_bridge(conn, problem="p", workspace=tmp_path,
+                        pipeline_id="pid", whitelist=["propext"])
+    assert r.outcome == "success", r.failure_detail
+    assert (tmp_path / "Library" / "INDEX.md").exists()
+
+
 def test_run_bridge_deliverable_no_whitelist_skips_gate(conn, tmp_path,
                                                         monkeypatch):
     # Contract pin: whitelist=None (unit tests / legacy callers) keeps the old

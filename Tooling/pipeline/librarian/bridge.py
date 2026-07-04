@@ -269,15 +269,6 @@ def _run_bridge(conn, *, problem, workspace, pipeline_id,
         conn.commit()
         migrated = _harvested_decls(conn, problem)   # cited rows drop out
 
-    root = conn.execute(
-        "SELECT statement FROM goals WHERE problem = ? AND origin = 'root' "
-        "AND status = 'proved' ORDER BY id LIMIT 1", (problem,)).fetchone()
-    if not root or not (root["statement"] or "").strip():
-        return PipelineResult(
-            outcome="failed", failure_reason="librarian_no_root",
-            failure_detail="no proved root statement for the bridge")
-    statement = " ".join(root["statement"].split())
-
     # Gate B re-derives the root from the CLEANED Library, so its modules' oleans
     # must be current first. Cleanup edited the sources, leaving the migrate-time
     # oleans stale, and the gateway prober imports the on-disk olean as-is — it
@@ -350,6 +341,22 @@ def _run_bridge(conn, *, problem, workspace, pipeline_id,
                          "harvested decl's transitive axiom set is within "
                          "the authorized whitelist."))
         return PipelineResult(outcome="success")
+
+    # Classic path only from here — the root statement is what Gate B
+    # re-derives. Phase 6: this fetch (and its `librarian_no_root` failure)
+    # must sit BELOW the deliverable branch: a pure-NL problem has no root
+    # at all, and the old order failed it here before the deliverable
+    # branch could take over (Analysis.metric_projection 2026-07-04; the
+    # order was latent until pure-NL — every earlier deliverable problem
+    # still had a trivial proved root that satisfied this query).
+    root = conn.execute(
+        "SELECT statement FROM goals WHERE problem = ? AND origin = 'root' "
+        "AND status = 'proved' ORDER BY id LIMIT 1", (problem,)).fetchone()
+    if not root or not (root["statement"] or "").strip():
+        return PipelineResult(
+            outcome="failed", failure_reason="librarian_no_root",
+            failure_detail="no proved root statement for the bridge")
+    statement = " ".join(root["statement"].split())
 
     probe = _bridge_probe_text(
         conn, problem=problem, statement=statement, migrated=migrated,
