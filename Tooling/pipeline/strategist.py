@@ -58,7 +58,9 @@ def _as_bool(v: Any) -> bool:
 
 # Trigger kinds (mirrors strategist_decisions.trigger_kind CHECK enum).
 TRIGGER_KINDS: frozenset[str] = frozenset({
-    "first_launch", "pending_review", "routine",
+    # Phase 6: "first_launch" retired (fresh problem = initial stall →
+    # inject_batch_done wake); the DB CHECK keeps the value for old rows.
+    "pending_review", "routine",
     "inject_batch_done",
 })
 
@@ -1167,7 +1169,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
     problem_dir = db.problem_dir(workspace, problem)
     # Per-trigger prompt: each trigger has its own focused prompt so
     # the agent sees only the guidance relevant to this wake's kind
-    # (first_launch / routine / pending_review / inject_batch_done).
+    # (routine / pending_review / inject_batch_done).
     # Loader validates that every TRIGGER_KIND has a corresponding
     # file at startup via test_strategist_prompts_cover_all_triggers.
     prompt_path = PROMPT_DIR / "strategist" / f"{trigger_kind}.md"

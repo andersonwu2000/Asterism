@@ -251,17 +251,18 @@ def test_routine_trigger_omits_review_sections(
     assert "should not appear in routine context" not in text
 
 
-def test_first_launch_trigger_omits_review_sections(
+def test_fresh_problem_routine_context_omits_review_sections(
     workspace: Path, conn: sqlite3.Connection,
     mfst: manifest.Manifest, tmp_path: Path,
 ) -> None:
-    """T0 first_launch: bootstrap context, no review target."""
+    """A fresh problem's non-review wake: bootstrap context, no review
+    target. (Phase 6: first_launch retired; routine stands in.)"""
     _insert_problem(conn)
     _insert_root(conn)
     attempts_dir = tmp_path / "_attempts_strategist"
     attempts_dir.mkdir()
     out = phase2_context.compile_strategist_context(
-        conn, problem="p", trigger_kind="first_launch",
+        conn, problem="p", trigger_kind="routine",
         attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
         pending_review_id=None,
     )
@@ -716,7 +717,7 @@ def test_pending_reopens_skipped_on_non_inject_batch_done_trigger(
         conn, goal_id=g, batch_id="batch-X",
         inject_outcomes=["success"],
     )
-    for trig in ("routine", "pending_review", "first_launch"):
+    for trig in ("routine", "pending_review"):
         assert phase2_context._section_pending_reopens(conn, "p", trig) == []
 
 

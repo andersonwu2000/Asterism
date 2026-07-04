@@ -974,7 +974,6 @@ def test_strategist_prompts_share_decision_kind_vocabulary() -> None:
     # The Reopen decision kind still exists in the framework schema for backward
     # compat with old DB rows + tests; just no longer emitted by the prompts.
     expected_kinds = {
-        "first_launch": {"Inject", "EmitDirective", "RequestUserAmend"},
         "routine": {"Inject", "ConfirmShelve", "EmitDirective",
                     "RequestUserAmend", "Noop"},
         "pending_review": {"Inject", "ConfirmShelve"},

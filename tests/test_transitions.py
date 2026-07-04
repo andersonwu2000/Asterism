@@ -281,9 +281,14 @@ def test_decision_kinds_runtime_subset_of_schema(conn: sqlite3.Connection):
 
 
 def test_trigger_kinds_match_schema(conn: sqlite3.Connection):
+    # Phase 6: 'first_launch' retired at runtime (fresh problem = initial
+    # stall → inject_batch_done wake); the CHECK keeps it for old rows —
+    # same pattern as the legacy decision kinds above.
     from Tooling.pipeline import strategist
     schema = _check_values(conn, "strategist_decisions", "trigger_kind")
-    assert set(strategist.TRIGGER_KINDS) == schema
+    runtime = set(strategist.TRIGGER_KINDS)
+    assert runtime <= schema, f"runtime trigger_kinds not in schema: {runtime - schema}"
+    assert schema - runtime == {"first_launch"}
 
 
 # --------------------------------------------------------------------------- #

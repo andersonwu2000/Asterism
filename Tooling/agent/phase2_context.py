@@ -79,19 +79,14 @@ def _section_ingest_gate(conn: sqlite3.Connection,
     lines = [
         "## Ingest availability",
         "",
-        f"`Ingest` is UNAVAILABLE: the root goal is not yet proved "
-        f"(status: `{root['status']}`). The root is a hard exit "
-        "requirement — the framework rejects a terminal judgment while "
-        "it is unproved. Advance toward proving the root.",
+        f"`Ingest` is unavailable — the root goal is not yet proved "
+        f"(status: `{root['status']}`; hard exit gate).",
         "",
     ]
     if str(root["status"]) == "frozen":
         lines += [
-            "The root has not been launched yet. Build its prerequisite "
-            "vocabulary/lemmas with `Inject(Forward)` FIRST; do not "
-            "`Inject(Backward)` on the root in the same batch as its "
-            "prerequisites (the decomposition would race the toolkit it "
-            "needs).",
+            "Forward the root's prerequisites first; don't "
+            "`Inject(Backward)` on the root in the same batch.",
             "",
         ]
     return lines
