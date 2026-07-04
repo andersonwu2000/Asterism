@@ -183,7 +183,10 @@ _WATERMARKS = {
     # (task #10 — user_version made a complete schema description again;
     # the legacy blind-ALTER block frozen by its own ratchet) — conscious
     # bump.
-    "Tooling/state/db.py": 3550,
+    # db 3550→3700: Phase 6 — v16 `ingested_at` migration + problem terminal
+    # helpers (set/get/all_problems_ingested) + shared alive-CTE fragments
+    # (single-source root ∪ detached seed) — 2026-07-04 — conscious bump.
+    "Tooling/state/db.py": 3700,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

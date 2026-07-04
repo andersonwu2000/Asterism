@@ -20,24 +20,16 @@ from __future__ import annotations
 
 import sqlite3
 
+from . import db as _db
+
 # Hard-terminal goal statuses: a completed cascade never leaves a live
 # strategy under one of these (proved → siblings superseded; the rest →
 # inward-killed dead).
 _TERMINAL_GOAL = ("proved", "disproved", "dead", "shelved")
 
-_ALIVE_CTE = (
-    "WITH RECURSIVE alive(id) AS ("
-    "    SELECT id FROM goals WHERE origin = 'root'"
-    "    UNION"
-    "    SELECT id FROM goals WHERE detached = 1"
-    "    UNION"
-    "    SELECT g.id FROM goals g"
-    "    JOIN strategy_subgoals ss ON ss.subgoal_id = g.id"
-    "    JOIN strategies s ON s.id = ss.strategy_id"
-    "    JOIN alive a ON a.id = s.goal_id"
-    "    WHERE s.status IN ('proposed','succeeded')"
-    ") "
-)
+# Phase 6 — single-source alive seed (root ∪ detached) lives in db.py;
+# this copy already had the correct shape, now it can't drift.
+_ALIVE_CTE = f"WITH RECURSIVE {_db.ALIVE_CTE_GLOBAL} "
 
 
 def consistency_sweep(conn: sqlite3.Connection, *,

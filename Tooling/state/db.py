@@ -153,7 +153,16 @@ CREATE TABLE IF NOT EXISTS problems (
     -- runs `asterism approve-ingest` (→ enqueue Librarian) or
     -- `asterism reject-ingest` (→ back to proving). Default 0.
     ingest_signoff_pending INTEGER NOT NULL DEFAULT 0
-                    CHECK(ingest_signoff_pending IN (0,1))
+                    CHECK(ingest_signoff_pending IN (0,1)),
+    -- Phase 6 (v16) — the problem's TERMINAL state: ISO timestamp of the
+    -- Strategist `Ingest` commit (the ONLY exit trigger; Done was fused
+    -- into it). NULL = still live. Drives T1 liveness, the T4 stall
+    -- predicate's cond-1 ("Ingest not yet emitted"), `_strategist_row_is_
+    -- stale`, and the daemon exit check. Cleared by the rollback
+    -- auto-revoke when a post-Ingest un-prove invalidates the terminal
+    -- judgment. Backfilled once for legacy root-proved problems (v16
+    -- migration) so they are not re-triggered as stalled.
+    ingested_at    TEXT NULL DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS goals (
@@ -544,7 +553,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 15
+_CURRENT_USER_VERSION = 16
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -870,6 +879,26 @@ def init_schema(conn: sqlite3.Connection) -> None:
         # the legacy ALTER block is FROZEN at 13 entries (ratchet-pinned by
         # test_db_phase7.py::test_additive_alter_block_is_frozen).
         conn.execute("PRAGMA user_version = 15")
+        conn.commit()
+    if v < 16:
+        # v16 — Phase 6 (Root/Defs optional): `problems.ingested_at` is the
+        # problem-level terminal state (Ingest = the only exit trigger).
+        # Post-v15 discipline: a versioned step, NOT the frozen ALTER block.
+        # Backfill: legacy problems whose root is proved+integrity_verified
+        # are marked ingested ONCE so the new stall predicate ("Ingest not
+        # yet emitted") does not re-trigger a Strategist on completed runs
+        # (Phase 6 decision ②, 2026-07-04).
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(problems)")}
+        if "ingested_at" not in cols:
+            conn.execute("ALTER TABLE problems ADD COLUMN ingested_at TEXT")
+        conn.execute(
+            "UPDATE problems SET ingested_at = ?"
+            " WHERE ingested_at IS NULL AND name IN ("
+            "   SELECT problem FROM goals WHERE origin = 'root'"
+            "   AND status = 'proved' AND integrity_verified = 1)",
+            (now(),),
+        )
+        conn.execute("PRAGMA user_version = 16")
         conn.commit()
 
 
@@ -2074,6 +2103,51 @@ def set_problem_bootstrap_done(conn: sqlite3.Connection, problem: str) -> None:
     conn.commit()
 
 
+def set_problem_ingested(conn: sqlite3.Connection, problem: str,
+                         ingested: bool = True) -> None:
+    """Phase 6 (v16) — set/clear the problem's TERMINAL state.
+
+    Set (timestamped) by `_commit_ingest` when the Strategist commits the
+    `Ingest` decision — the only exit trigger. Cleared by the rollback
+    auto-revoke when a post-Ingest un-prove (rogue-sorryAx cascade)
+    invalidates the terminal judgment, which puts the problem back on the
+    live path (T1 / T4 / exit check all key off this column)."""
+    conn.execute(
+        "UPDATE problems SET ingested_at = ? WHERE name = ?",
+        (now() if ingested else None, problem),
+    )
+    conn.commit()
+
+
+def problem_ingested(conn: sqlite3.Connection, problem: str) -> bool:
+    """Phase 6 — True iff the Strategist has committed the terminal
+    `Ingest` on this problem (see `set_problem_ingested`)."""
+    row = conn.execute(
+        "SELECT ingested_at FROM problems WHERE name = ?",
+        (problem,),
+    ).fetchone()
+    return row is not None and row["ingested_at"] is not None
+
+
+def all_problems_ingested(conn: sqlite3.Connection,
+                          scope: str | None = None) -> bool:
+    """Phase 6 — True iff every problem in scope has reached the `Ingest`
+    terminal state (and there is at least one problem in scope). The
+    daemon exit check's replacement for `root_proved`: root-proved is a
+    HARD prerequisite of Ingest when a root exists, but the terminal
+    judgment itself (Manifest fully satisfied) is the Strategist's."""
+    sql = "SELECT count(*) AS c FROM problems WHERE ingested_at IS NULL"
+    tot = "SELECT count(*) AS t FROM problems"
+    args: tuple = ()
+    if scope is not None:
+        sql += " AND name LIKE ?"
+        tot += " WHERE name LIKE ?"
+        args = (scope,)
+    remaining = int(conn.execute(sql, args).fetchone()["c"])
+    total = int(conn.execute(tot, args).fetchone()["t"])
+    return total > 0 and remaining == 0
+
+
 def set_problem_strategist_directive(conn: sqlite3.Connection,
                                      problem: str,
                                      directive: str | None) -> None:
@@ -2559,18 +2633,16 @@ def is_problem_stalled(conn: sqlite3.Connection, problem: str, *,
                                                "disproved"):
         return False
     # 2. any DISPATCHABLE (alive-reachable) open goal → not stalled.
+    # Phase 6 — shared seed (root ∪ detached): the old root-only copy
+    # silently dropped detached Forward goals, so a problem whose only
+    # open work was a sorry-bearing Forward goal read as stalled here
+    # while `open_goals` happily dispatched it (latent divergence; root
+    # always existed so it never fired — pure-NL makes it load-bearing).
     if conn.execute(
-        "WITH RECURSIVE alive(id) AS ("
-        "  SELECT id FROM goals WHERE problem = ? AND origin = 'root'"
-        "  UNION"
-        "  SELECT g.id FROM goals g"
-        "  JOIN strategy_subgoals ss ON ss.subgoal_id = g.id"
-        "  JOIN strategies s ON s.id = ss.strategy_id"
-        "  JOIN alive a ON a.id = s.goal_id"
-        "  WHERE s.status IN ('proposed','succeeded')"
-        ") SELECT 1 FROM goals"
+        f"WITH RECURSIVE {ALIVE_CTE_PER_PROBLEM}"
+        " SELECT 1 FROM goals"
         " WHERE problem = ? AND status = 'open' AND id IN alive LIMIT 1",
-        (problem, problem),
+        (problem, problem, problem),
     ).fetchone() is not None:
         return False
     # 3. any in-flight Backward / Builder / Forward worker (queue + running).
@@ -2754,6 +2826,50 @@ def increment_goal_attempts(conn: sqlite3.Connection, goal_id: int) -> int:
     return int(row["attempts"]) if row else 0
 
 
+# ---------------------------------------------------------------------
+# Phase 6 — shared alive-reachability CTE (single source of truth)
+# ---------------------------------------------------------------------
+# Seed = root ∪ detached, then walk subgoals of live ('proposed' /
+# 'succeeded') strategies of alive goals. Forward-injected goals are
+# `detached=1` at insert (forward.py), so this ONE unconditional shape
+# covers both classic (root present) and pure-NL (no root) problems — no
+# root?-conditional seed needed. Historical divergence: per-problem copies
+# with a root-only seed silently dropped detached Forward goals
+# (`is_problem_stalled` cond-2, dedupe's alive walks) — every consumer of
+# alive-reachability must build on these fragments.
+# `goals_reachable_excluding` below keeps its own copy: its node-exclusion
+# params thread through every branch and don't fit the shared shape.
+
+ALIVE_CTE_GLOBAL = (
+    "alive(id) AS ("
+    "    SELECT id FROM goals WHERE origin = 'root'"
+    "    UNION"
+    "    SELECT id FROM goals WHERE detached = 1"
+    "    UNION"
+    "    SELECT g.id FROM goals g"
+    "    JOIN strategy_subgoals ss ON ss.subgoal_id = g.id"
+    "    JOIN strategies s ON s.id = ss.strategy_id"
+    "    JOIN alive a ON a.id = s.goal_id"
+    "    WHERE s.status IN ('proposed','succeeded')"
+    ")"
+)
+
+# Binds TWO positional params: (problem, problem).
+ALIVE_CTE_PER_PROBLEM = (
+    "alive(id) AS ("
+    "    SELECT id FROM goals WHERE problem = ? AND origin = 'root'"
+    "    UNION"
+    "    SELECT id FROM goals WHERE problem = ? AND detached = 1"
+    "    UNION"
+    "    SELECT g.id FROM goals g"
+    "    JOIN strategy_subgoals ss ON ss.subgoal_id = g.id"
+    "    JOIN strategies s ON s.id = ss.strategy_id"
+    "    JOIN alive a ON a.id = s.goal_id"
+    "    WHERE s.status IN ('proposed','succeeded')"
+    ")"
+)
+
+
 def goals_reachable_excluding(conn: sqlite3.Connection, *,
                               problem: str,
                               exclude_goal_id: int) -> set[int]:
@@ -2816,17 +2932,7 @@ def open_goals(conn: sqlite3.Connection,
     # parent strategy). UNION'd into the alive seed set so descendants
     # via their own live strategies also propagate.
     sql = (
-        "WITH RECURSIVE alive(id) AS ("
-        "    SELECT id FROM goals WHERE origin = 'root'"
-        "    UNION"
-        "    SELECT id FROM goals WHERE detached = 1"
-        "    UNION"
-        "    SELECT g.id FROM goals g"
-        "    JOIN strategy_subgoals ss ON ss.subgoal_id = g.id"
-        "    JOIN strategies s ON s.id = ss.strategy_id"
-        "    JOIN alive a ON a.id = s.goal_id"
-        "    WHERE s.status IN ('proposed','succeeded')"
-        ") "
+        f"WITH RECURSIVE {ALIVE_CTE_GLOBAL} "
         "SELECT g.* FROM goals g "
         "JOIN problems p ON p.name = g.problem "
         "WHERE g.status = 'open' AND g.id IN alive "

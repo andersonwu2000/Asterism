@@ -657,16 +657,11 @@ def _eligible_ancestors(conn: sqlite3.Connection, workspace: Path, *,
     sub-goal). Unproved ancestors — and `parent_goal_id` itself — are
     instead handled by `_eligible_self_and_unproved_ancestors` as the
     `no_progress` tier (decline-and-retry, never alias)."""
+    # Phase 6 — alive seed is the shared root ∪ detached fragment (the old
+    # root-only copy dropped detached Forward goals from the alive filter).
     rows = conn.execute(
-        "WITH RECURSIVE alive(id) AS ("
-        "  SELECT id FROM goals WHERE problem = ? AND origin = 'root'"
-        "  UNION"
-        "  SELECT g.id FROM goals g"
-        "  JOIN strategy_subgoals ss ON ss.subgoal_id = g.id"
-        "  JOIN strategies s ON s.id = ss.strategy_id"
-        "  JOIN alive a ON a.id = s.goal_id"
-        "  WHERE s.status IN ('proposed','succeeded')"
-        "), ancestors(id) AS ("
+        f"WITH RECURSIVE {db.ALIVE_CTE_PER_PROBLEM}"
+        ", ancestors(id) AS ("
         "  SELECT s.goal_id FROM strategies s"
         "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
         "    WHERE ss.subgoal_id = ?"
@@ -680,7 +675,7 @@ def _eligible_ancestors(conn: sqlite3.Connection, workspace: Path, *,
         "  AND g.problem = ? "
         "  AND g.status = 'proved' "
         "ORDER BY g.id ASC",
-        (problem, parent_goal_id, problem),
+        (problem, problem, parent_goal_id, problem),
     ).fetchall()
 
     eligible = []
@@ -712,16 +707,10 @@ def _eligible_self_and_unproved_ancestors(
     included because the dominant case is decomposing a goal into a
     sub-goal identical to that very goal — invisible to the ancestor walk,
     which starts ABOVE the parent."""
+    # Phase 6 — shared root ∪ detached alive seed (see _eligible_ancestors).
     rows = conn.execute(
-        "WITH RECURSIVE alive(id) AS ("
-        "  SELECT id FROM goals WHERE problem = ? AND origin = 'root'"
-        "  UNION"
-        "  SELECT g.id FROM goals g"
-        "  JOIN strategy_subgoals ss ON ss.subgoal_id = g.id"
-        "  JOIN strategies s ON s.id = ss.strategy_id"
-        "  JOIN alive a ON a.id = s.goal_id"
-        "  WHERE s.status IN ('proposed','succeeded')"
-        "), ancestors(id) AS ("
+        f"WITH RECURSIVE {db.ALIVE_CTE_PER_PROBLEM}"
+        ", ancestors(id) AS ("
         "  SELECT s.goal_id FROM strategies s"
         "    JOIN strategy_subgoals ss ON ss.strategy_id = s.id"
         "    WHERE ss.subgoal_id = ?"
@@ -735,7 +724,7 @@ def _eligible_self_and_unproved_ancestors(
         "  AND (g.id = ? OR (g.id IN alive AND g.id IN ancestors)) "
         "  AND g.status IN ('open','attempting') "
         "ORDER BY g.id ASC",
-        (problem, parent_goal_id, problem, parent_goal_id),
+        (problem, problem, parent_goal_id, problem, parent_goal_id),
     ).fetchall()
 
     eligible: list[tuple[sqlite3.Row, str]] = []
