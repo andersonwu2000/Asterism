@@ -98,9 +98,13 @@ def migrate_defeq_gate(
     defs_fq = f"Problems.{problem}.{target_slug}"
     if workspace is not None:
         try:
-            defs_text = (db.problem_dir(workspace, problem)
-                         / "Defs.lean").read_text(encoding="utf-8")
-            defs_fq = _defs_decl_fqn(defs_text, target_slug, problem=problem)
+            defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
+            defs_text = defs_path.read_text(encoding="utf-8")
+            from ...lsp.decl_oracle import DeclOracle
+            defs_fq = _defs_decl_fqn(
+                defs_text, target_slug, problem=problem,
+                oracle=DeclOracle.cached_for_file(defs_path,
+                                                  workspace=workspace))
         except OSError:
             pass
     # #43 namespace-preserved Defs decl: a decl the operator authored under a

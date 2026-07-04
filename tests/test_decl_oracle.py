@@ -317,6 +317,26 @@ def test_primary_user_names_from_raw_info():
     assert do.primary_user_names(info) == ["t1", "instInhabitedNat"]
 
 
+def test_defs_decl_fqn_oracle_gives_kernel_name():
+    """Gate D's FQN resolution: the oracle answer IS the env userName —
+    a foreign-namespace decl (`Complex.windingNumber`) resolves without
+    any stack walk; regex fallback preserved on oracle miss."""
+    from Tooling.pipeline.librarian.astslice import _defs_decl_fqn
+    b = _Builder()
+    r_ns = b.add("namespace Complex")
+    r_def = b.add("def windingNumber : Nat := 0")
+    r_end = b.add("end Complex")
+    cmds = [_cmd(_NS, r_ns, "Complex"), _cmd(_DECL, r_def),
+            _cmd(_END, r_end, "Complex")]
+    decls = [_decl("Complex.windingNumber", r_def,
+                   (r_def[0], 4, r_def[0], 17), cmd_idx=1)]
+    oracle = do.DeclOracle(b.text, cmds, decls)
+    assert _defs_decl_fqn(b.text, "windingNumber", problem="p",
+                          oracle=oracle) == "Complex.windingNumber"
+    assert _defs_decl_fqn(b.text, "nope", problem="p",
+                          oracle=oracle) == "Problems.p.nope"   # fallback
+
+
 def test_for_file_degrades_to_none(monkeypatch, tmp_path):
     """Every failure shape → None (callers regex-fallback): elaborate error,
     missing decl_info (old gateway), empty decl set (unit-test stub shape),

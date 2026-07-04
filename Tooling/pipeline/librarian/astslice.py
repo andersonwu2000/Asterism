@@ -135,7 +135,8 @@ def _nominal_decl_src(text: str, slug: str) -> "str | None":
     return rest[:nxt.start() + 1] if nxt else rest
 
 
-def _defs_decl_fqn(defs_text: str, slug: str, *, problem: str) -> str:
+def _defs_decl_fqn(defs_text: str, slug: str, *, problem: str,
+                   oracle=None) -> str:
     """Real fully-qualified name of Defs declaration `slug` as it lives in
     `Problems.<problem>.Defs`, accounting for a foreign `namespace` the problem
     declares its OWN decls under (residue_thm puts `windingNumber`/`residue`
@@ -143,7 +144,14 @@ def _defs_decl_fqn(defs_text: str, slug: str, *, problem: str) -> str:
     `Problems.<problem>.windingNumber` — cf. the relabel-side `self_namespaces`).
     Walks the namespace stack to the decl header. Falls back to the standard
     `Problems.<problem>.<slug>` when `slug` is not found (preserves the
-    historical default for the common in-`Problems`-namespace case)."""
+    historical default for the common in-`Problems`-namespace case).
+
+    With `oracle` (same-text `DeclOracle`) the FQN is the env's own
+    `userName` — kernel truth, no stack walk at all."""
+    if oracle is not None and oracle.text == defs_text:
+        d = oracle.find(slug)
+        if d is not None:
+            return d.user_name
     stack: list[str] = []
     head = re.compile(
         r"^[ \t]*(?:@\[[^\]]*\][ \t]*)*"
