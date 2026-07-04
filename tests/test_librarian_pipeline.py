@@ -749,6 +749,90 @@ def test_migrate_gate_axiom_unextractable_name_rejected():
     assert not r.ok
 
 
+def _kernel_info(*names_with_pos):
+    """Minimal decl_info dict: one declaration command per name, in order.
+    `names_with_pos` = user names; positions synthesized by index."""
+    commands, decls = [], []
+    for i, name in enumerate(names_with_pos):
+        line = i + 1
+        rng = {"startLine": line, "startCol": 0,
+               "endLine": line, "endCol": 40}
+        sel = {"startLine": line, "startCol": 8,
+               "endLine": line, "endCol": 9}
+        commands.append({"kind": "Lean.Parser.Command.declaration",
+                         "range": rng, "declNames": []})
+        decls.append({"fqName": name, "userName": name, "kind": "def",
+                      "isProp": False, "isNoncomputable": False,
+                      "isProtected": False, "isPrivate": False,
+                      "isInstance": False, "signature": "",
+                      "docstring": None, "cmdIdx": i,
+                      "range": rng, "selection": sel})
+    return {"commands": commands, "decls": decls}
+
+
+def test_migrate_gate_coverage_gap_self_heals():
+    """The probe's own elaboration reports a kernel decl the text extractor
+    missed (anonymous instance → synthesized name). The gate must re-probe
+    with the kernel-true list — an unprobed decl is a silent NARROWING of
+    the axiom gate, the exact hole the declInfo cross-check closes."""
+    patch = ("import Mathlib\nnamespace Library.A\n"
+             "theorem t : True := trivial\nend Library.A\n")
+    info = _kernel_info("Library.A.t", "Library.A.instFoo")
+    texts = []
+
+    def _probe(text):
+        texts.append(text)
+        if len(texts) == 1:
+            # first probe: only the extracted decl was #print-ed
+            return (True, "", {"Library.A.t": {"propext"}}, info)
+        return (True, "", {"Library.A.t": {"propext"},
+                           "Library.A.instFoo": set()}, info)
+
+    r = lib.migrate_commit_gate(
+        patch, _P("Library/A/Bar.lean"), whitelist=["propext"],
+        probe_verifier=_probe)
+    assert r.ok, r.detail
+    assert len(texts) == 2
+    assert "#print axioms Library.A.instFoo" in texts[1]
+
+
+def test_migrate_gate_coverage_heal_still_enforces_whitelist():
+    """A healed-in decl's axioms go through the same whitelist check —
+    the re-probe is coverage repair, not a bypass."""
+    patch = ("import Mathlib\nnamespace Library.A\n"
+             "theorem t : True := trivial\nend Library.A\n")
+    info = _kernel_info("Library.A.t", "Library.A.instFoo")
+
+    def _probe(text):
+        return (True, "", {"Library.A.t": {"propext"},
+                           "Library.A.instFoo": {"sorryAx"}}, info)
+
+    r = lib.migrate_commit_gate(
+        patch, _P("Library/A/Bar.lean"), whitelist=["propext"],
+        probe_verifier=_probe)
+    assert not r.ok
+    assert "Library.A.instFoo" in r.detail and "sorryAx" in r.detail
+
+
+def test_migrate_gate_full_coverage_single_probe():
+    """kernel decls ⊆ extracted names → no re-probe (one elaboration, the
+    cost contract the batched probe was built for)."""
+    patch = ("import Mathlib\nnamespace Library.A\n"
+             "theorem t : True := trivial\nend Library.A\n")
+    info = _kernel_info("Library.A.t")
+    calls = {"n": 0}
+
+    def _probe(text):
+        calls["n"] += 1
+        return (True, "", {"Library.A.t": {"propext"}}, info)
+
+    r = lib.migrate_commit_gate(
+        patch, _P("Library/A/Bar.lean"), whitelist=["propext"],
+        probe_verifier=_probe)
+    assert r.ok, r.detail
+    assert calls["n"] == 1
+
+
 # ---------------------------------------------------------------------
 # batched axiom probe helpers (_axiom_probe_text / _parse_axiom_diags)
 # ---------------------------------------------------------------------

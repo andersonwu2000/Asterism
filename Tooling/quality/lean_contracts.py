@@ -225,6 +225,7 @@ def contract_decl_info_oracle(workspace: Path) -> "tuple[bool, str]":
                 "end\n"
                 "open Nat in\n"
                 "theorem c_di_open : 2 = 2 := rfl\n"
+                "instance : Inhabited Unit := ⟨()⟩\n"
                 "end CDi\n",
                 decl_info=True)
     if r.get("error") or not r.get("ok"):
@@ -266,6 +267,22 @@ def contract_decl_info_oracle(workspace: Path) -> "tuple[bool, str]":
     if order != ["CDi.c_di_thm", "CDi.c_di_priv", "CDi.c_di_data",
                  "CDi.c_di_open"]:
         return False, f"decls not in source order: {order}"
+    # declNames = names AS WRITTEN: present for named decls, EMPTY for an
+    # anonymous instance (whose synthesized constant still appears in
+    # `decls`) — the named-only semantics inventory.defs_decls consumes.
+    thm_cmd = commands[thm["cmdIdx"]]
+    if thm_cmd.get("declNames") != ["c_di_thm"]:
+        return False, (f"declNames drift for a named decl: "
+                       f"{thm_cmd.get('declNames')}")
+    anon = next((d for d in decls if d.get("isInstance")
+                 and "c_di" not in d["userName"]), None)
+    if not anon:
+        return False, "anonymous instance constant missing from decls"
+    anon_cmd = (commands[anon["cmdIdx"]]
+                if anon["cmdIdx"] < len(commands) else {})
+    if anon_cmd.get("declNames"):
+        return False, (f"anonymous instance carries written declNames: "
+                       f"{anon_cmd.get('declNames')}")
     return True, ""
 
 

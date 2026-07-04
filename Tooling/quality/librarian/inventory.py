@@ -135,10 +135,20 @@ _COMMENT_RE = re.compile(r"/-.*?-/|--[^\n]*", re.DOTALL)
 def defs_decls(workspace: Path, problem: str) -> list[str]:
     """Names of top-level declarations in Problems/<problem>/Defs.lean.
     Empty if Defs.lean is absent or declares nothing (e.g. SVD, whose
-    Defs.lean is namespace + comment only)."""
+    Defs.lean is namespace + comment only).
+
+    Oracle-first: names come from the parsed syntax tree's `declId` nodes
+    (declInfo RPC, `(path, mtime)`-cached) — comment prose can never be
+    read as a declaration there (the phantom-`of` class, 2026-06-30). The
+    comment-stripped regex scan below is the cold fallback (gateway down /
+    stale binary) and the unit-test default."""
     defs_path = db.problem_dir(workspace, problem) / "Defs.lean"
     if not defs_path.exists():
         return []
+    from ...lsp.decl_oracle import DeclOracle
+    oracle = DeclOracle.cached_for_file(defs_path, workspace=workspace)
+    if oracle is not None:
+        return oracle.surface_decl_names()
     text = _COMMENT_RE.sub("", defs_path.read_text(encoding="utf-8"))
     out: list[str] = []
     for m in _DEFS_DECL_RE.finditer(text):

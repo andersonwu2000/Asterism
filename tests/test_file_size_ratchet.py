@@ -109,7 +109,11 @@ _WATERMARKS = {
     # whole-file rewrite) run AFTER migrate's per-decl axiom check; re-gate
     # the FINAL text at cleanup exit + the deliverable bridge end (which was
     # builds-only), and hard-fail any `axiom` declaration — conscious bumps.
-    "Tooling/pipeline/librarian/gate.py": 385,
+    # 385→415 (2026-07-04): axiom-probe COVERAGE cross-check + one-shot
+    # self-heal — the probe elaboration's decl_info (kernel-true decl list)
+    # must all carry `#print axioms` lines; a text-extraction miss used to
+    # silently narrow the axiom gate (task: declInfo syntactic oracle).
+    "Tooling/pipeline/librarian/gate.py": 415,
     "Tooling/pipeline/librarian/context.py": 430,
     "Tooling/pipeline/librarian/execute.py": 1170,  # +universe hoist/dedup (#72)
     "Tooling/pipeline/librarian/bridge.py": 390,

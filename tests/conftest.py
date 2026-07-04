@@ -160,7 +160,8 @@ def _stub_axiom_probe_by_default(monkeypatch: pytest.MonkeyPatch,
     def _stub_verify_file(target_path, *, write_olean=True,
                           axioms_for=None, constants_for=None,
                           decl_info=False,
-                          timeout=120.0, workspace=None):
+                          timeout=120.0, workspace=None,
+                          _retry_delays=None):
         return {
             "ok": True,
             "diagnostic_count": 0,

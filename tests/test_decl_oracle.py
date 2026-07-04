@@ -216,6 +216,107 @@ def test_primary_decl_selection_within_command_group():
     assert oracle.find("Pt").kind == "induct"
 
 
+def test_surface_decl_names_named_only_source_order():
+    """defs_decls' oracle contract: names AS WRITTEN, source order, deduped;
+    an anonymous instance (no declId → empty declNames) is excluded even
+    though its synthesized constant appears in `decls`."""
+    b = _Builder()
+    r1 = b.add("def alpha : Nat := 1")
+    r2 = b.add("instance : Inhabited Nat := ⟨0⟩")
+    r3 = b.add("def DiffForm.integral : Nat := 2")
+    cmds = [
+        {**_cmd(_DECL, r1), "declNames": ["alpha"]},
+        {**_cmd(_DECL, r2), "declNames": []},
+        {**_cmd(_DECL, r3), "declNames": ["DiffForm.integral"]},
+    ]
+    decls = [
+        _decl("alpha", r1, (r1[0], 4, r1[0], 9), cmd_idx=0),
+        _decl("instInhabitedNat", r2, (r2[0], 0, r2[0], 8), cmd_idx=1),
+        _decl("DiffForm.integral", r3, (r3[0], 4, r3[0], 21), cmd_idx=2),
+    ]
+    oracle = do.DeclOracle(b.text, cmds, decls)
+    assert oracle.surface_decl_names() == ["alpha", "DiffForm.integral"]
+
+
+def test_inventory_defs_decls_oracle_first(monkeypatch, tmp_path):
+    """inventory.defs_decls consults the cached oracle; regex is the
+    fallback when the oracle is unavailable."""
+    from Tooling.quality.librarian import inventory as inv
+    from Tooling.state import db as _db
+    pdir = _db.problem_dir(tmp_path, "p1")
+    pdir.mkdir(parents=True)
+    # Prose in the docstring would regex-match a phantom decl without the
+    # comment strip; the oracle never sees comments at all.
+    (pdir / "Defs.lean").write_text(
+        "/-- the analytic lemma of the bridge -/\n"
+        "def realOne : Nat := 1\n", encoding="utf-8")
+
+    fake = do.DeclOracle(
+        "x", [{**_cmd(_DECL, (1, 0, 2, 22)), "declNames": ["realOne"]}],
+        [_decl("realOne", (1, 0, 2, 22), (2, 4, 2, 11), cmd_idx=0)])
+    monkeypatch.setattr(do.DeclOracle, "cached_for_file",
+                        classmethod(lambda cls, path, workspace=None: fake))
+    assert inv.defs_decls(tmp_path, "p1") == ["realOne"]
+
+    monkeypatch.setattr(do.DeclOracle, "cached_for_file",
+                        classmethod(lambda cls, path, workspace=None: None))
+    assert inv.defs_decls(tmp_path, "p1") == ["realOne"]   # regex fallback
+
+
+def test_cached_for_file_mtime_key_and_negative_ttl(monkeypatch, tmp_path):
+    """Successes cache per (path, mtime); failures expire after the TTL so
+    gateway recovery is picked up without a file change."""
+    from Tooling.lsp import lifecycle as gl
+    f = tmp_path / "Defs.lean"
+    f.write_text("def z : Nat := 1\n", encoding="utf-8")
+    calls = {"n": 0}
+    payload = {
+        "ok": True,
+        "decl_info": {
+            "commands": [{**_cmd(_DECL, (1, 0, 1, 16)),
+                          "declNames": ["z"]}],
+            "decls": [_decl("z", (1, 0, 1, 16), (1, 4, 1, 5), cmd_idx=0)],
+        },
+    }
+
+    def fake_verify(*a, **kw):
+        calls["n"] += 1
+        return payload
+    monkeypatch.setattr(gl, "verify_file", fake_verify)
+    do._CACHE.clear()
+    o1 = do.DeclOracle.cached_for_file(f, workspace=tmp_path)
+    o2 = do.DeclOracle.cached_for_file(f, workspace=tmp_path)
+    assert o1 is o2 and calls["n"] == 1
+
+    # failure: cached under TTL, re-probed after expiry
+    monkeypatch.setattr(gl, "verify_file",
+                        lambda *a, **kw: {"error": "down",
+                                          "transient": True})
+    f.write_text("def z : Nat := 2\n", encoding="utf-8")   # new mtime key
+    do._CACHE.clear()
+    assert do.DeclOracle.cached_for_file(f, workspace=tmp_path) is None
+    key = next(iter(do._CACHE))
+    assert do.DeclOracle.cached_for_file(f, workspace=tmp_path) is None
+    # age the negative entry past the TTL → next call re-probes
+    do._CACHE[key] = (None, do.time.monotonic() - do._NEG_TTL_SEC - 1)
+    monkeypatch.setattr(gl, "verify_file", fake_verify)
+    assert do.DeclOracle.cached_for_file(f, workspace=tmp_path) is not None
+
+
+def test_primary_user_names_from_raw_info():
+    b = _Builder()
+    r1 = b.add("theorem t1 : True := trivial")
+    r2 = b.add("instance : Inhabited Nat := ⟨0⟩")
+    info = {
+        "commands": [_cmd(_DECL, r1), _cmd(_DECL, r2)],
+        "decls": [
+            _decl("t1", r1, (r1[0], 8, r1[0], 10), cmd_idx=0, kind="thm"),
+            _decl("instInhabitedNat", r2, (r2[0], 0, r2[0], 8), cmd_idx=1),
+        ],
+    }
+    assert do.primary_user_names(info) == ["t1", "instInhabitedNat"]
+
+
 def test_for_file_degrades_to_none(monkeypatch, tmp_path):
     """Every failure shape → None (callers regex-fallback): elaborate error,
     missing decl_info (old gateway), empty decl set (unit-test stub shape),

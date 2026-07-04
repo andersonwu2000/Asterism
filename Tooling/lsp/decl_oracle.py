@@ -22,8 +22,16 @@ conversion here is exact, no UTF-16 mangling.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
+
+# cached_for_file: (resolved path, mtime_ns, size) → (oracle | None, born).
+# Successes live as long as the key (mtime-invalidated); failures expire
+# after _NEG_TTL_SEC so gateway recovery is picked up.
+_CACHE: "dict[tuple, tuple[object, float]]" = {}
+_CACHE_MAX = 256
+_NEG_TTL_SEC = 60.0
 
 _NS_KIND = "Lean.Parser.Command.namespace"
 _SECTION_KIND = "Lean.Parser.Command.section"
@@ -61,6 +69,16 @@ class OracleDecl:
 
 def _rng(d: dict) -> "tuple[int, int, int, int]":
     return (d["startLine"], d["startCol"], d["endLine"], d["endCol"])
+
+
+def primary_user_names(info: dict) -> "list[str]":
+    """Primary decls' user-facing names straight from a raw `decl_info`
+    response dict — for consumers holding a response of their own (the
+    migrate gate's probe elaboration) rather than a file-bound oracle.
+    Position-only computation; no text needed."""
+    o = DeclOracle("", list(info.get("commands") or []),
+                   list(info.get("decls") or []))
+    return [d.user_name for d in o.primary_decls()]
 
 
 class DeclOracle:
@@ -109,8 +127,12 @@ class DeclOracle:
             print(f"[decl-oracle] {path}: unreadable ({e}) — regex fallback",
                   flush=True)
             return None
+        # No retries: the oracle is best-effort with an instant regex
+        # fallback — burning verify_file's ~50s retry budget on a downed
+        # gateway would turn every oracle miss into a stall.
         r = lifecycle.verify_file(Path(path), write_olean=False,
-                                  decl_info=True, workspace=workspace)
+                                  decl_info=True, workspace=workspace,
+                                  _retry_delays=())
         if r.get("error") or not r.get("ok"):
             print(f"[decl-oracle] {path}: elaborate failed "
                   f"({r.get('error') or 'diagnostics'}) — regex fallback",
@@ -134,6 +156,38 @@ class DeclOracle:
         return cls(text, list(info.get("commands") or []),
                    list(info.get("decls") or []))
 
+    # ---- cached construction -------------------------------------------
+
+    @classmethod
+    def cached_for_file(cls, path: Path, *,
+                        workspace: "Path | None" = None
+                        ) -> "DeclOracle | None":
+        """`for_file` behind an (path, mtime, size)-keyed cache — hot
+        callers (inventory.defs_decls has ~10 call sites per librarian
+        run) must not pay one elaborate each. Failures are cached under
+        the same key with a short TTL so a downed gateway costs one
+        fast probe per file per minute, not one per call — and recovery
+        is picked up without waiting for the file to change."""
+        key = None
+        try:
+            st = Path(path).stat()
+            key = (str(Path(path).resolve()), st.st_mtime_ns, st.st_size)
+        except OSError:
+            pass
+        if key is not None:
+            hit = _CACHE.get(key)
+            if hit is not None:
+                oracle, born = hit
+                if oracle is not None or (time.monotonic() - born
+                                          < _NEG_TTL_SEC):
+                    return oracle
+        oracle = cls.for_file(Path(path), workspace=workspace)
+        if key is not None:
+            if len(_CACHE) > _CACHE_MAX:
+                _CACHE.clear()
+            _CACHE[key] = (oracle, time.monotonic())
+        return oracle
+
     # ---- positional plumbing ------------------------------------------
 
     def _offset(self, line: int, col: int) -> int:
@@ -146,6 +200,20 @@ class DeclOracle:
                          self._offset(rng[2], rng[3])]
 
     # ---- queries -------------------------------------------------------
+
+    def surface_decl_names(self) -> "list[str]":
+        """Names AS WRITTEN of every named top-level declaration, in source
+        order, deduped — the oracle-path contract of
+        `inventory.defs_decls`. Anonymous instances / `example`s have no
+        `declId` and are excluded, matching the regex scan's named-only
+        semantics (env-side synthesized names like `instFooBar` must NOT
+        surface as migratable slugs)."""
+        out: "list[str]" = []
+        for cmd in self.commands:
+            for n in cmd.get("declNames") or []:
+                if n not in out:
+                    out.append(n)
+        return out
 
     def primary_decls(self) -> "list[OracleDecl]":
         """One decl per declaration command: the earliest selection in each

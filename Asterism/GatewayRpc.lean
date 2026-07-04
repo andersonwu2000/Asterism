@@ -406,6 +406,12 @@ structure CmdEntry where
   /-- Label for `namespace` / `end` / `section` commands (first
   identifier argument), else none. -/
   name : Option String := none
+  /-- Names AS WRITTEN (`declId` idents, dotted, un-qualified) of the
+  declarations this command declares — one for a plain decl, several
+  for a `mutual` block, EMPTY for an anonymous `instance` / `example`
+  (no `declId`). This is how a consumer distinguishes "the operator
+  wrote this name" from env-side synthesized names. -/
+  declNames : Array String := #[]
   deriving FromJson, ToJson
 
 structure DeclEntry where
@@ -490,6 +496,19 @@ private def firstIdent? (stx : Syntax) : Option Name :=
     else a.getArgs.findSome? fun b =>
       if b.isIdent then some b.getId else none
 
+/-- Written declaration names under `stx`: the first ident of every
+`declId` node. Descends through composites (`open X in <decl>` /
+`set_option … in <decl>` are `Command.in` nodes; `mutual` holds several
+declarations) but NOT into terms — `declId` only occurs in declaration
+signatures, so a plain recursive walk is exact. -/
+private partial def collectDeclNames (stx : Syntax) : Array Name :=
+  if stx.getKind == ``Lean.Parser.Command.declId then
+    match stx.getArgs.find? (·.isIdent) with
+    | some id => #[id.getId]
+    | none => #[]
+  else
+    stx.getArgs.foldl (fun acc a => acc ++ collectDeclNames a) #[]
+
 private def mkCmdEntry (text : FileMap) (stx : Syntax) : CmdEntry :=
   let range := match stx.getRange? with
     | some r => toSrcRange text r
@@ -500,7 +519,8 @@ private def mkCmdEntry (text : FileMap) (stx : Syntax) : CmdEntry :=
                ``Lean.Parser.Command.section] then
       (firstIdent? stx).map (·.toString)
     else none
-  { kind := kind.toString, range, name }
+  { kind := kind.toString, range, name,
+    declNames := (collectDeclNames stx).map (·.toString) }
 
 private def posLE (l₁ c₁ l₂ c₂ : Nat) : Bool :=
   l₁ < l₂ || (l₁ == l₂ && c₁ ≤ c₂)

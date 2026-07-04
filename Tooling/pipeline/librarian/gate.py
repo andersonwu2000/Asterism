@@ -197,9 +197,12 @@ def migrate_commit_gate(
          `sorry`; only `#print axioms` walks the kernel graph.
 
          Injectable as `probe_verifier(probe_text) -> (build_ok, build_detail,
-         axioms_map)` so tests run without a gateway; defaults to the real warm
-         probe. `whitelist=None` skips the axiom check (and the `#print axioms`
-         lines) — unit tests that only exercise closure/build don't pass one.
+         axioms_map[, decl_info])` so tests run without a gateway; defaults to
+         the real warm probe (which appends the elaboration's decl_info — the
+         kernel-true decl list backing the probe-coverage cross-check; a
+         3-tuple skips that check). `whitelist=None` skips the axiom check
+         (and the `#print axioms` lines) — unit tests that only exercise
+         closure/build don't pass one.
 
          This replaces the old build + per-decl axiom re-elaboration loop: a
          147-decl file went from ~148 full elaborations to 1.
@@ -237,26 +240,53 @@ def migrate_commit_gate(
 
     if probe_verifier is None:
         probe_verifier = _warm_probe_verifier(workspace)
+    check_names = [d.fq_name for d in decls if d.fq_name]
     probe_text = (patch_text if whitelist is None
-                  else _axiom_probe_text(patch_text,
-                                         [d.fq_name for d in decls]))
-    build_ok, build_detail, axioms_map = probe_verifier(probe_text)
+                  else _axiom_probe_text(patch_text, check_names))
+    # Injectable test verifiers return the historical 3-tuple; the real
+    # warm verifier appends the elaboration's decl_info (4th slot).
+    probe_out = probe_verifier(probe_text)
+    build_ok, build_detail, axioms_map = probe_out[:3]
+    kernel_info = probe_out[3] if len(probe_out) > 3 else None
     if not build_ok:
         return MigrateResult(False, f"build failed: {build_detail}")
 
+    if whitelist is not None and kernel_info:
+        # Probe-COVERAGE cross-check (declInfo oracle): every top-level
+        # declaration the kernel actually saw must have a `#print axioms`
+        # line. The text extractor under-extracting (anonymous instance,
+        # a decl shape its regex doesn't know) used to mean that decl's
+        # axioms were silently never checked — a narrowing of the axiom
+        # gate, not a failure. Self-heal ONCE: re-probe with the union
+        # list (kernel-true names resolve at top level by construction).
+        from ...lsp.decl_oracle import primary_user_names
+        kernel_names = [n for n in primary_user_names(kernel_info)]
+        missing = [n for n in kernel_names if n not in set(check_names)]
+        if missing:
+            print(f"[librarian] axiom-probe coverage gap: extractor "
+                  f"missed {missing} — re-probing with the kernel-true "
+                  f"decl list", flush=True)
+            check_names = check_names + missing
+            probe_out = probe_verifier(
+                _axiom_probe_text(patch_text, check_names))
+            build_ok, build_detail, axioms_map = probe_out[:3]
+            if not build_ok:
+                return MigrateResult(
+                    False, f"coverage re-probe build failed: {build_detail}")
+
     if whitelist is not None:
         wl = set(whitelist)
-        for d in decls:
-            used = axioms_map.get(d.fq_name)
+        for fq in check_names:
+            used = axioms_map.get(fq)
             if used is None:
                 return MigrateResult(
-                    False, f"axiom check failed for `{d.fq_name}`: no "
+                    False, f"axiom check failed for `{fq}`: no "
                            "`#print axioms` report in the build output "
                            "(probe omitted or name unresolved)")
             rogue = used - wl
             if rogue:
                 return MigrateResult(
-                    False, f"axiom check failed for `{d.fq_name}`: "
+                    False, f"axiom check failed for `{fq}`: "
                            f"rogue axioms: {sorted(rogue)}")
     return MigrateResult(True, "")
 
@@ -305,7 +335,7 @@ def _parse_axiom_diags(diagnostics) -> "dict[str, set[str]]":
 def _warm_probe_verifier(workspace):
     """Default probe_verifier: write the probe text (the file + `#print axioms`
     commands) to a temp file under `Library/`, run ONE warm-gateway build, and
-    return `(build_ok, build_detail, axioms_map)`. The single elaboration
+    return `(build_ok, build_detail, axioms_map, decl_info)`. The single elaboration
     yields both the build result (error diagnostics) and every decl's
     transitive axiom set (info diagnostics) — replacing the old separate build
     + per-decl axiom re-elaboration. The temp file lives under `Library/` so
@@ -324,19 +354,27 @@ def _warm_probe_verifier(workspace):
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(probe_text)
+            # decl_info rides the SAME elaboration: the kernel-true decl
+            # list backs the probe-coverage cross-check in
+            # migrate_commit_gate (a decl the text scan missed = a decl
+            # whose axioms were never probed). Best-effort — an old
+            # gateway/binary yields decl_info=None and the gate skips
+            # the cross-check, i.e. pre-oracle behavior.
             r = gateway_lifecycle.verify_file(
-                tmp_path, write_olean=False, workspace=ws)
+                tmp_path, write_olean=False, decl_info=True, workspace=ws)
             if "error" in r and r.get("error"):
-                return (False, f"verify infra error: {r['error']}", {})
+                return (False, f"verify infra error: {r['error']}", {}, None)
             axioms_map = _parse_axiom_diags(r.get("diagnostics"))
+            decl_info = r.get("decl_info")
             if not r.get("ok"):
                 errs = "; ".join(
                     d.get("message", "")[:120]
                     for d in (r.get("diagnostics") or [])
                     if d.get("severity") == "error"
                 )[:300]
-                return (False, errs or "(no error diagnostics)", axioms_map)
-            return (True, "", axioms_map)
+                return (False, errs or "(no error diagnostics)", axioms_map,
+                        decl_info)
+            return (True, "", axioms_map, decl_info)
         finally:
             try:
                 tmp_path.unlink()
