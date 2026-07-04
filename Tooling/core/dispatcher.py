@@ -606,6 +606,14 @@ def strategist_triggers(conn: sqlite3.Connection,
             continue
         if _strategist_inflight(conn, prob, running):
             continue
+        # Observability (user-requested 2026-07-04): the stall wake's
+        # trigger_kind is deliberately conflated with inject_batch_done
+        # at spawn, so this line is the ONLY record distinguishing a T4
+        # rescue from the cascade batch-done relay (which dedups this
+        # enqueue away whenever it got there first). grep '[stall-wake]'
+        # to measure the accidental-stall rate.
+        print(f"[stall-wake] T4 enqueued Strategist for {prob} "
+              f"(no batch-done relay covered this stall)", flush=True)
         db.enqueue(conn, kind="Strategist", target_id=prob,
                    target_kind="Problem", priority=10, problem=prob)
 
