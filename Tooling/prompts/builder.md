@@ -21,7 +21,7 @@ Workflow recommendation:
 3. Iterate: when stuck, query goal again before guessing another tactic.
 4. When 0 errors and 0 sorry, you are done. LSP edits already persisted to `patch.lean` — just exit. Warnings don't block — handle at annotation step.
 
-You may also use Read/Write/Edit/Grep/Bash as before — they're not blocked. But LSP gives the proof feedback that a `lake build` cycle would, in <1s instead of multiple seconds and within the same session.
+Read/Write/Edit/Grep/Bash also available.
 
 ## Output: patch.lean
 

@@ -494,6 +494,49 @@ def test_run_forward_falls_back_to_stray_new_file(
     assert g is not None and g["slug"] == "stray_lemma"
 
 
+def test_run_forward_vocab_guard_is_defs_conditional(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mock_lsp_verify,
+) -> None:
+    """Phase 6 — the Manifest-vocabulary guard on non-theorem kinds only
+    applies when the problem ships Defs.lean (statement-vocabulary is
+    user-owned there). A pure-NL Manifest NAMES the very defs it asks
+    Forward to produce; rejecting them made pure-NL dead-on-arrival."""
+    _insert_root(conn)
+    mfst_nl = manifest.Manifest(
+        problem="p", statement="define cube_boundary and prove its shape")
+
+    def fake_spawn(**kw):
+        (kw["attempts_dir"] / "new_forward.lean").write_text(
+            "namespace Problems.p\n"
+            "-- Forward rationale: deliverable def named by the Manifest.\n"
+            "def cube_boundary : Nat := 0\n"
+            "end Problems.p\n",
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    # No Defs.lean → guard skipped; the Manifest-named def commits
+    # (sorry-free def → immediate 'proved').
+    r = forward.run_forward(
+        conn, problem="p", workspace=workspace, mfst=mfst_nl,
+        pipeline_id="test-fwd-vocab-1",
+    )
+    assert r.outcome == "proved"
+
+    # Defs.lean present → same def is user-owned vocabulary; rejected.
+    (workspace / "Problems" / "p" / "Defs.lean").write_text(
+        "namespace Problems.p\nend Problems.p\n", encoding="utf-8")
+    r2 = forward.run_forward(
+        conn, problem="p", workspace=workspace, mfst=mfst_nl,
+        pipeline_id="test-fwd-vocab-2",
+    )
+    assert r2.outcome in ("failed", "exhausted")
+    assert r2.failure_reason == "forward_no_new_goal"
+    assert "Manifest statement" in (r2.failure_detail or "")
+
+
 def test_run_forward_no_output(
     workspace: Path, conn: sqlite3.Connection,
     mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,

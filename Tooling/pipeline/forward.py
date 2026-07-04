@@ -690,7 +690,13 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
         # Word-boundary match catches both bare slugs and qualified forms
         # (e.g. slug=`windingNumber` matches `Complex.windingNumber`
         # because `.` is a word boundary).
-        if metadata.kind in NON_THEOREM_KINDS:
+        # Phase 6 — the guard is conditional on Defs.lean existing: a
+        # pure-NL Manifest NAMES the very defs it asks the framework to
+        # produce (they are the deliverables), and the trivial-definition
+        # risk is carried by the anchor+claim human review instead.
+        defs_exists = (db.problem_dir(workspace, problem)
+                       / "Defs.lean").exists()
+        if metadata.kind in NON_THEOREM_KINDS and defs_exists:
             stmt = getattr(mfst, "statement", "") or ""
             if re.search(rf"\b{re.escape(metadata.slug)}\b", stmt):
                 return PipelineResult(
