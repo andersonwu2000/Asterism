@@ -52,7 +52,10 @@ from ._cite_gate import (_PROBLEM_IMPORT_RE, _resolve_cite_dependencies,
 # Sub-goal slug pattern: lowercase letter start, then lowercase letters,
 # digits, underscore. Length is bounded separately (≤ 60) so the regex
 # stays simple. Picked at agent time per `prompts/backward.md` "Write".
-_SLUG_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+# Shared SoT (task #5 Step A) — forward.py and the gateway submission
+# mirror import the same object; this was the last literal copy
+# (2026-07-04 convention audit, finding 8).
+_SLUG_RE = assemble.SLUG_RE
 
 
 def _place_unowned(conn: sqlite3.Connection, workspace: Path,

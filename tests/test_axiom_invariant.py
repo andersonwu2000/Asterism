@@ -64,6 +64,29 @@ def test_proved_pipeline_uses_shared_axiom_gate(name) -> None:
         f"_axiom.axiom_gate (the single soundness gate for 'proved')")
 
 
+# Cite-gate mirror of the structural test above (2026-07-04 convention
+# audit, finding 4): every commit path that can write a
+# `import Problems.<p>.proofs.L_<slug>` sibling citation must resolve it
+# through the shared cite gate first (orphan-stub / dead / disproved
+# citations rejected, auto-link / revive applied). Builder has one commit
+# path; Backward has TWO (decomposition + leaf-bypass) — the count pins
+# per-PATH coverage, not just per-file presence (the per-file grep above
+# was blind to Builder P1's missing tripwire, finding 5). Forward doesn't
+# cite via proofs-imports (its commit axiom gate's sorryAx tripwire is the
+# backstop) — deliberately absent here.
+@pytest.mark.parametrize("name,min_calls", [
+    ("builder.py", 1),
+    ("backward.py", 2),
+])
+def test_citing_commit_paths_use_shared_cite_gate(name, min_calls) -> None:
+    text = (_PIPELINE / name).read_text(encoding="utf-8")
+    n = len(re.findall(r"\b_resolve_cite_dependencies\s*\(", text))
+    assert n >= min_calls, (
+        f"{name}: expected ≥{min_calls} `_resolve_cite_dependencies(` call(s) "
+        f"(one per citing commit path), found {n} — a commit path lost its "
+        "cite gate, or a new one shipped without it")
+
+
 # ---------------------------------------------------------------------
 # Local fixture — point the probe to a False-returning stub for these
 # tests, regardless of the global True stub from conftest.
