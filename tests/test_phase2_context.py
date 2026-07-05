@@ -891,3 +891,52 @@ def test_current_directive_section_silent_when_only_whitespace(
     _insert_problem(conn)
     db.set_problem_strategist_directive(conn, "p", "   \n\n  ")
     assert phase2_context._section_current_directive(conn, "p") == []
+
+
+# ---------------------------------------------------------------------
+# Plan note — the Strategist's private cross-wake section (2026-07-05)
+# ---------------------------------------------------------------------
+
+def test_plan_note_section_absent_when_no_note(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    assert phase2_context._section_plan_note(workspace, "p") == []
+
+
+def test_plan_note_section_renders_and_warns_over_cap(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, tmp_path: Path,
+) -> None:
+    """Present note → private section in the STRATEGIST context; a note
+    past the soft cap gets exactly one warning line (nothing harder —
+    the rewrite discipline lives in the prompt, user call 2026-07-05).
+    Worker contexts never render this section (they read .drafts only
+    via their own progress-note slots)."""
+    from Tooling.pipeline import _drafts
+    _insert_problem(conn)
+    _insert_root(conn)
+    pdir = workspace / "Problems" / "p"
+    (pdir / ".drafts").mkdir(parents=True, exist_ok=True)
+    _drafts.plan_note_path(pdir).write_text("serial plan: (i) x (ii) y",
+                                            encoding="utf-8")
+    lines = phase2_context._section_plan_note(workspace, "p")
+    text = "\n".join(lines)
+    assert "## Your plan note (private, cross-wake)" in text
+    assert "serial plan: (i) x (ii) y" in text
+    assert "past the useful size" not in text
+    # over the soft cap → one warning line
+    _drafts.plan_note_path(pdir).write_text(
+        "x" * (_drafts.PLAN_NOTE_SOFT_CAP + 1), encoding="utf-8")
+    text2 = "\n".join(phase2_context._section_plan_note(workspace, "p"))
+    assert "past the useful size" in text2
+
+    # integration: the strategist compile carries the section
+    attempts_dir = tmp_path / "_att_strat"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="routine",
+        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        pending_review_id=None,
+    )
+    assert "## Your plan note (private, cross-wake)" in out.read_text(
+        encoding="utf-8")

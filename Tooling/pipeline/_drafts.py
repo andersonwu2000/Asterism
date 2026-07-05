@@ -167,6 +167,58 @@ _PATCH_THM_NAME_RE = _re.compile(r"\b(?:theorem|lemma|def)\s+(\S+)")
 _SORRY_ONLY_RE = _re.compile(r":=\s*by\s+sorry\s*$", _re.MULTILINE)
 
 
+# ── Strategist plan note (2026-07-05) ────────────────────────────────
+# The Strategist's PRIVATE cross-wake memory — the third channel next to
+# the two worker-facing ones (standing `EmitDirective` broadcast, one-shot
+# Inject `brief`). Its curated world-model (plan, progress ledger,
+# composition recipes) previously had no home and leaked into the
+# directive, taxing every worker spawn (sphere_homology: 9.8KB directive,
+# 20 rewrites, monotone growth). Same agent-writes-sandbox /
+# framework-persists split as the postmortem progress notes above:
+# the agent Writes `_plan.md` in attempts_dir; the framework moves it to
+# `.drafts/strategist_plan.md`; the next wake's context inlines it —
+# for the Strategist ONLY, never for workers.
+
+PLAN_NOTE_FILENAME = "_plan.md"
+# Soft cap (chars): above this the context section carries ONE warning
+# line — nothing harder (user call 2026-07-05: the prompt asks for the
+# rewrite-don't-hoard spirit; over-constraining beats the purpose).
+PLAN_NOTE_SOFT_CAP = 5_000
+
+
+def plan_note_path(problem_dir: Path) -> Path:
+    return problem_dir / ".drafts" / "strategist_plan.md"
+
+
+def persist_plan_note(*, problem_dir: Path, attempts_dir: Path) -> int | None:
+    """Move a freshly-written `_plan.md` from the spawn sandbox into the
+    cross-wake drafts slot (full overwrite — the note is a REWRITE by
+    contract). Absent file = no update, the prior note stands. Returns
+    the persisted size for the telemetry line, None when nothing was
+    written. Best-effort: an IO error just keeps the prior note."""
+    src = attempts_dir / PLAN_NOTE_FILENAME
+    if not src.exists():
+        return None
+    try:
+        text = src.read_text(encoding="utf-8")
+        dst = plan_note_path(problem_dir)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(text, encoding="utf-8")
+    except OSError:
+        return None
+    return len(text)
+
+
+def read_plan_note(problem_dir: Path) -> str | None:
+    p = plan_note_path(problem_dir)
+    if not p.exists():
+        return None
+    try:
+        return p.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
 def patch_drafts_path(problem_dir: Path, kind: str, goal_id: int) -> Path:
     """Drafts slot for salvaged patch.lean — distinct from progress
     note slot (`drafts_path`) so the two surfaces don't clobber each

@@ -1199,6 +1199,10 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
         problem_dir=problem_dir, attempts_dir=attempts_dir,
         session_id=sid,
     )
+    # Persist the plan note BEFORE any outcome branching: the note is the
+    # agent's memory of its own thinking — worth keeping even when the
+    # spawn then fails parse/verify (and on rc!=0, if it got that far).
+    _persist_plan(problem_dir, attempts_dir)
     if rc != 0:
         return PipelineResult(
             outcome="failed",
@@ -1260,6 +1264,7 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             problem_dir=problem_dir, attempts_dir=attempts_dir,
             session_id=sid, is_retry=True, retry_context=verify_err,
         )
+        _persist_plan(problem_dir, attempts_dir)  # retry may rewrite it
         if rc2 != 0:
             return PipelineResult(
                 outcome="failed",
@@ -1361,6 +1366,19 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
             f"(decision_rows=[{row_ids}])"
         ),
     )
+
+
+def _persist_plan(problem_dir: Path, attempts_dir: Path) -> None:
+    """Persist the Strategist's `_plan.md` (private cross-wake note, see
+    `_drafts.persist_plan_note`) + one telemetry line. Best-effort."""
+    from . import _drafts
+    n = _drafts.persist_plan_note(problem_dir=problem_dir,
+                                  attempts_dir=attempts_dir)
+    if n is not None:
+        over = (" (over soft cap)"
+                if n > _drafts.PLAN_NOTE_SOFT_CAP else "")
+        print(f"[strategist] plan note updated: {n} chars{over}",
+              flush=True)
 
 
 def _rc_to_reason(rc: int) -> str:

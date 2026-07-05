@@ -587,6 +587,26 @@ def _section_failure_replay(conn: sqlite3.Connection,
     return out
 
 
+def _section_plan_note(workspace: Path, problem: str) -> list[str]:
+    """The Strategist's PRIVATE cross-wake plan note
+    (`.drafts/strategist_plan.md`) — rendered here ONLY, never into worker
+    contexts. The third channel next to the two worker-facing ones
+    (standing directive broadcast / one-shot Inject brief): its curated
+    world-model previously leaked into the directive and taxed every
+    worker spawn. Soft cap = one warning line, nothing harder."""
+    from ..pipeline import _drafts
+    problem_dir = db.problem_dir(workspace, problem)
+    text = _drafts.read_plan_note(problem_dir)
+    if not text or not text.strip():
+        return []
+    out = ["## Your plan note (private, cross-wake)", ""]
+    if len(text) > _drafts.PLAN_NOTE_SOFT_CAP:
+        out += [f"_⚠ {len(text)} chars — past the useful size; rewrite it "
+                f"down to what still matters._", ""]
+    out += [text.strip(), ""]
+    return out
+
+
 def _section_current_directive(conn: sqlite3.Connection,
                                problem: str) -> list[str]:
     """Surface the current `problems.strategist_directive` so Strategist
@@ -731,12 +751,14 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     # never Reopens" was never closed by the agent on its own; surfacing
     # the cross-reference gives it a structured cue.
     section_names += ["stall_warning", "ingest_gate", "directive",
-                      "inject_batches", "pending_reopens", "active_goals",
-                      "failure_replay", "tree", "manifest_meta"]
+                      "plan_note", "inject_batches", "pending_reopens",
+                      "active_goals", "failure_replay", "tree",
+                      "manifest_meta"]
     sections += [
         _section_stall_warning(conn, problem),
         _section_ingest_gate(conn, problem),
         _section_current_directive(conn, problem),
+        _section_plan_note(workspace, problem),
         _section_inject_batch_outcomes(conn, problem),
         _section_pending_reopens(conn, problem, trigger_kind),
         _section_active_goals(conn, problem),

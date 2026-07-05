@@ -337,3 +337,37 @@ def test_clear_partial_patch_drops_drafts(
                                 goal_id=gid)
     assert _drafts.read_partial_patch(
         problem_dir=pdir, kind="builder", goal_id=gid) is None
+
+
+# ---------------------------------------------------------------------
+# Strategist plan note — private cross-wake memory (2026-07-05)
+# ---------------------------------------------------------------------
+
+def test_plan_note_persist_and_read_roundtrip(tmp_path):
+    from Tooling.pipeline import _drafts
+    problem_dir = tmp_path / "Problems" / "p"
+    attempts = tmp_path / ".attempts" / "x"
+    attempts.mkdir(parents=True)
+    problem_dir.mkdir(parents=True)
+    (attempts / "_plan.md").write_text("plan v1", encoding="utf-8")
+    n = _drafts.persist_plan_note(problem_dir=problem_dir,
+                                  attempts_dir=attempts)
+    assert n == len("plan v1")
+    assert _drafts.read_plan_note(problem_dir) == "plan v1"
+    # REWRITE contract: a later persist fully replaces the note.
+    (attempts / "_plan.md").write_text("v2", encoding="utf-8")
+    _drafts.persist_plan_note(problem_dir=problem_dir, attempts_dir=attempts)
+    assert _drafts.read_plan_note(problem_dir) == "v2"
+
+
+def test_plan_note_absent_means_no_update(tmp_path):
+    from Tooling.pipeline import _drafts
+    problem_dir = tmp_path / "Problems" / "p"
+    (problem_dir / ".drafts").mkdir(parents=True)
+    _drafts.plan_note_path(problem_dir).write_text("keep me",
+                                                   encoding="utf-8")
+    attempts = tmp_path / ".attempts" / "y"
+    attempts.mkdir(parents=True)
+    assert _drafts.persist_plan_note(problem_dir=problem_dir,
+                                     attempts_dir=attempts) is None
+    assert _drafts.read_plan_note(problem_dir) == "keep me"
