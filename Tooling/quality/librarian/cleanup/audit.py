@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ....state import thresholds
 from . import _common as C
 from ._common import _Decl
 
@@ -407,7 +408,7 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
         run_lsp_edit_loop(
             conn=conn, goal_id=None, pipeline_id=pass_pid,
             budget_threshold=max_retries + 1,
-            shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+            shelve_threshold=thresholds.SHELVE_THRESHOLD,
             attempts_dir=attempts, workspace=workspace,
             problem=problem, problem_dir=problem_dir,
             kind="librarian", prompt_path=prompt_path, target=audited,

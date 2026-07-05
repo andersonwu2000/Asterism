@@ -37,7 +37,7 @@ import sys
 from pathlib import Path
 from typing import Literal, TYPE_CHECKING
 
-from ..state import db, manifest, proof_store, transitions, tree
+from ..state import db, manifest, proof_store, thresholds, transitions, tree
 from ..pipeline._lake import lean_path_to_module
 
 if TYPE_CHECKING:
@@ -223,7 +223,7 @@ def verify_housekeeping(
                     # — mirrors `_kill_upward_chain`'s deferred-terminal
                     # branch.
                     pass
-                elif n >= dispatcher.SHELVE_THRESHOLD:
+                elif n >= thresholds.SHELVE_THRESHOLD:
                     dispatcher._enqueue_strategist_review(conn, goal_id)
                 else:
                     transitions.apply_goal_transition(

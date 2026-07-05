@@ -549,6 +549,12 @@ CREATE INDEX IF NOT EXISTS idx_libdecls_problem ON library_decls(problem);
 -- problems (EXPLAIN showed `SCAN strategies`). idx_dead_attempts_target
 -- backs `_strategy_dead_cause`'s per-dead-strategy verify-fault lookup.
 CREATE INDEX IF NOT EXISTS idx_strategies_goal_id ON strategies(goal_id);
+-- Upward cascade walks (_kill_upward_chain / _maybe_stall_parent_strategies /
+-- _has_hard_terminal_ancestor) all filter strategy_subgoals.subgoal_id; the
+-- PK is (strategy_id, subgoal_id) so each step was a full link-table scan —
+-- the exact latent-O(N) class idx_strategies_goal_id fixed for tree.render
+-- (8.6s/tick across 281 problems). Task #10(a).
+CREATE INDEX IF NOT EXISTS idx_ssg_subgoal ON strategy_subgoals(subgoal_id);
 CREATE INDEX IF NOT EXISTS idx_dead_attempts_target
     ON dead_attempts(target_kind, target_id);
 CREATE INDEX IF NOT EXISTS idx_kb_problem ON kb_entries(problem);

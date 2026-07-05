@@ -61,10 +61,11 @@ def test_next_worker_kind_boundary_at_builder_threshold() -> None:
 def test_next_worker_kind_respects_runtime_threshold(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F18: BUILDER_THRESHOLD is module-level mutable so env override
-    in `run` takes effect without re-import. Direct assignment is the
-    same channel."""
-    monkeypatch.setattr(_dispatcher, "BUILDER_THRESHOLD", 3)
+    """F18 (task #10(d) home move): the live threshold now lives in
+    `state.thresholds` (leaf) — runtime override lands there; the
+    dispatcher exposes read-only aliases via module __getattr__."""
+    from Tooling.state import thresholds as _thr
+    monkeypatch.setattr(_thr, "BUILDER_THRESHOLD", 3)
     assert next_worker_kind(
         _fake_goal(attempts=2)) == "Builder"
     assert next_worker_kind(

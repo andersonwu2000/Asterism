@@ -4,8 +4,10 @@ See architecture.md §7-§8.
 """
 from __future__ import annotations
 
+import dataclasses as _dc
 import json
 import os
+import typing as _typing
 import shutil
 import sqlite3
 from dataclasses import dataclass, field
@@ -16,7 +18,7 @@ from pathlib import Path
 
 from .. import agent, pipeline
 from . import config
-from ..state import db, manifest, transitions, tree
+from ..state import db, manifest, thresholds, transitions, tree
 from ..state import failures as _failures
 from ..quality import prune, verify
 
@@ -45,8 +47,12 @@ from ..quality import prune, verify
 # → built-in (3, 8) tuned for Sonnet/Opus baseline. Weak-tier models
 # (haiku/flash) want roughly (5, 10) — set explicitly in Asterism.yaml.
 # Real values resolved in `run()` below per-process.
-BUILDER_THRESHOLD = 3
-SHELVE_THRESHOLD = 8
+# Task #10(d): the LIVE values moved to `state.thresholds` (leaf) — ten
+# modules used to lazy-import THIS module upward just to read them (the
+# repo's only dependency cycle). `run()` writes them there; the module
+# __getattr__ below keeps `dispatcher.BUILDER_THRESHOLD` reads working
+# for historical call sites (read-only aliases — tune via
+# `state.thresholds`, tests monkeypatch that module).
 
 # A Librarian chain step (dedup/classify/migrate/bridge) that fails
 # after its own internal session-retries is re-enqueued up to this many times
@@ -169,10 +175,10 @@ def next_worker_kind(goal: sqlite3.Row) -> str:
     directive is now the only routing signal — `difficulty` was removed
     from both Manifest and the goals table.
 
-    `BUILDER_THRESHOLD` is module-level so test/env overrides are visible
-    without re-importing.
+    `thresholds.BUILDER_THRESHOLD` is read at call time so test/env
+    overrides are visible without re-importing.
     """
-    if int(goal["attempts"]) >= BUILDER_THRESHOLD:
+    if int(goal["attempts"]) >= thresholds.BUILDER_THRESHOLD:
         return "Backward"
     if str(goal["entry_kind"]) == "Backward":
         return "Backward"
@@ -697,6 +703,31 @@ SPAWN_COOLDOWN_SEC = 30.0
 # recycled is reclaimable. Must exceed the longest legitimate pipeline wall
 # (librarian audit / backward retry chains run for hours under load).
 LEASE_TTL_SEC = 6 * 3600.0
+
+
+class WorkerDone(_typing.NamedTuple):
+    """`_run_pipeline`'s result — NAMED so a new field can never silently
+    outrun a positional unpack again (fc7445b: v17 grew the old 6-tuple,
+    the worker-exception branch still destructured 5, and the daemon
+    FATAL'd on the first worker exception; task #10(b))."""
+    pipeline_id: str
+    kind: str
+    target_id: str
+    target_kind: str
+    outcome: str
+    failure_reason: str
+
+
+@_dc.dataclass(frozen=True)
+class FutureMeta:
+    """Per-future dispatch metadata (was a positional 6-tuple consumed by
+    index — the annotated type had already drifted from reality once)."""
+    pipeline_id: str
+    kind: str
+    target_id: str
+    target_kind: str
+    decision_id: "int | None"
+    queue_row_id: int
 CONSEC_SPAWN_FAIL_LIMIT = 10
 CONSEC_GATEWAY_UNREACHABLE_LIMIT = 8
 QUOTA_BACKOFF_BASE_SEC = 30.0
@@ -811,7 +842,7 @@ def _run_pipeline(workspace: Path,
                         status="failed", outcome="failed",
                         started_at=started_at,
                     )
-                    return (pipeline_id, task_kind, target_id, target_kind,
+                    return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                             "failed", "problem_not_found")
                 mfst = manifests[problem]
                 trigger, pending_id = _derive_strategist_trigger(
@@ -849,7 +880,7 @@ def _run_pipeline(workspace: Path,
                         failure_detail=str(r.failure_detail or ""),
                         artifacts=(_json.dumps(_arts) if _arts else ""),
                     )
-                return (pipeline_id, task_kind, target_id, target_kind,
+                return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                         r.outcome, str(r.failure_reason or ""))
 
             if task_kind == "Forward":
@@ -862,7 +893,7 @@ def _run_pipeline(workspace: Path,
                         status="failed", outcome="failed",
                         started_at=started_at,
                     )
-                    return (pipeline_id, task_kind, target_id, target_kind,
+                    return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                             "failed", "problem_not_found")
                 mfst = manifests[problem]
                 from ..pipeline import forward
@@ -909,7 +940,7 @@ def _run_pipeline(workspace: Path,
                         failure_detail=str(r.failure_detail or ""),
                         artifacts=(_json.dumps(_arts) if _arts else ""),
                     )
-                return (pipeline_id, task_kind, target_id, target_kind,
+                return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                         r.outcome, str(r.failure_reason or ""))
 
             if task_kind == "Librarian":
@@ -929,7 +960,7 @@ def _run_pipeline(workspace: Path,
                         status="failed", outcome="failed",
                         started_at=started_at,
                     )
-                    return (pipeline_id, task_kind, target_id, target_kind,
+                    return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                             "failed", "problem_not_found")
                 if db.problem_ingest_signoff_pending(conn, problem):
                     # CONSUMER-side hard gate: while a problem awaits human
@@ -950,7 +981,7 @@ def _run_pipeline(workspace: Path,
                         status="succeeded", outcome="success",
                         started_at=started_at,
                     )
-                    return (pipeline_id, task_kind, target_id, target_kind,
+                    return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                             "success", "")
                 from ..pipeline import librarian
                 if target_file is not None:
@@ -975,7 +1006,7 @@ def _run_pipeline(workspace: Path,
                         status="succeeded", outcome="success",
                         started_at=started_at,
                     )
-                    return (pipeline_id, task_kind, target_id, target_kind,
+                    return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                             "success", "")
                 # Per-file axiom check uses the operator's authorized
                 # axioms via the ONE whitelist derivation
@@ -1014,7 +1045,7 @@ def _run_pipeline(workspace: Path,
                         artifacts=(_json.dumps(artifacts) if artifacts
                                    else ""),
                     )
-                return (pipeline_id, task_kind, target_id, target_kind,
+                return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                         r.outcome, str(r.failure_reason or ""))
 
             # Builder / Backward — Goal-targeted.
@@ -1027,7 +1058,7 @@ def _run_pipeline(workspace: Path,
                     status="failed", outcome="failed",
                     started_at=started_at,
                 )
-                return (pipeline_id, task_kind, target_id, target_kind,
+                return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                         "failed", "goal_not_found")
 
             mfst = manifests[goal["problem"]]
@@ -1115,7 +1146,7 @@ def _run_pipeline(workspace: Path,
                     artifacts=_json.dumps(artifacts) if artifacts else "",
                 )
 
-            return (pipeline_id, task_kind, target_id, target_kind,
+            return WorkerDone(pipeline_id, task_kind, target_id, target_kind,
                     r.outcome, r.failure_reason)
     finally:
         conn.close()
@@ -1295,7 +1326,6 @@ def run(workspace: Path, *, once: bool = False,
     if process_group.assign_self_to_kill_on_close_job():
         print("[daemon] process tree bound to kill-on-close job", flush=True)
 
-    global BUILDER_THRESHOLD, SHELVE_THRESHOLD
     pool_size = config.get(
         "dispatch.pool", default=4,
         env_var="ASTERISM_POOL", cast=int, workspace=workspace)
@@ -1307,16 +1337,19 @@ def run(workspace: Path, *, once: bool = False,
     # strength). Canonical key: `builder.threshold`. Old
     # `dispatch.builder_threshold` is honored as a back-compat fallback
     # so existing Asterism.yaml files keep working unchanged.
-    BUILDER_THRESHOLD = config.get(
+    _builder_thr = config.get(
         "builder.threshold", default=None,
         env_var="ASTERISM_BUILDER_THRESHOLD", cast=int, workspace=workspace)
-    if BUILDER_THRESHOLD is None:
-        BUILDER_THRESHOLD = config.get(
+    if _builder_thr is None:
+        _builder_thr = config.get(
             "dispatch.builder_threshold", default=3,
             cast=int, workspace=workspace)
-    SHELVE_THRESHOLD = config.get(
-        "dispatch.shelve_threshold", default=8,
-        env_var="ASTERISM_SHELVE_THRESHOLD", cast=int, workspace=workspace)
+    thresholds.set_thresholds(
+        builder=_builder_thr,
+        shelve=config.get(
+            "dispatch.shelve_threshold", default=8,
+            env_var="ASTERISM_SHELVE_THRESHOLD", cast=int,
+            workspace=workspace))
     # Phase 2 — T1 (wall-clock routine) interval in minutes. Default 60
     # per `docs/archive/design/phase2/pipelines.md` §5. Picked by `strategist_triggers`
     # each tick. Override via env var or Asterism.yaml for calibration.
@@ -1325,12 +1358,12 @@ def run(workspace: Path, *, once: bool = False,
         env_var="ASTERISM_STRATEGIST_INTERVAL_MIN", cast=float,
         workspace=workspace,
     )
-    if SHELVE_THRESHOLD <= BUILDER_THRESHOLD:
+    if thresholds.SHELVE_THRESHOLD <= thresholds.BUILDER_THRESHOLD:
         # An invalid combo would mean Backward never gets a chance —
         # fail loudly rather than silently degrade behavior.
         raise ValueError(
-            f"shelve_threshold ({SHELVE_THRESHOLD}) must exceed "
-            f"builder_threshold ({BUILDER_THRESHOLD}); otherwise "
+            f"shelve_threshold ({thresholds.SHELVE_THRESHOLD}) must exceed "
+            f"builder_threshold ({thresholds.BUILDER_THRESHOLD}); otherwise "
             f"the goal shelves before any Backward attempt fires.")
     pool = ThreadPoolExecutor(max_workers=pool_size)
     # Background .olean warmer (#103): after verify_housekeeping promotes
@@ -1469,18 +1502,19 @@ def run(workspace: Path, *, once: bool = False,
             done, _ = wait(list(futures), timeout=0, return_when=FIRST_COMPLETED)
             for fut in done:
                 meta = futures.pop(fut)
-                # meta = (pipeline_id, kind, target_id, target_kind,
-                #        decision_id, queue_row_id). Phase 2.5 — running
-                # key includes decision_id so batch Inject siblings (same
-                # target+kind, different decision_id) don't share a slot.
-                running.discard((meta[2], meta[1], meta[4]))
-                meta_decision_id = meta[4]
+                # Phase 2.5 — running key includes decision_id so batch
+                # Inject siblings (same target+kind, different
+                # decision_id) don't share a slot.
+                running.discard((meta.target_id, meta.kind,
+                                 meta.decision_id))
+                meta_decision_id = meta.decision_id
                 # v17 lease completion: the pipeline finished (any
                 # outcome — refill re-derives retries), release the
                 # claimed queue row for good.
-                db.complete_queue_row(conn, int(meta[5]))
+                db.complete_queue_row(conn, meta.queue_row_id)
                 try:
-                    pid, kind, tid, tk, outcome, reason = fut.result()
+                    done: WorkerDone = fut.result()
+                    pid, kind, tid, tk, outcome, reason = done
                     cascade_one(conn, pipeline_id=pid, kind=kind,
                                 target_id=tid, target_kind=tk,
                                 outcome=outcome, failure_reason=reason,
@@ -1593,11 +1627,10 @@ def run(workspace: Path, *, once: bool = False,
                     # Route through the _INFRA_REASONS short-circuit so
                     # attempts stay unchanged AND the per-target cooldown
                     # below kicks in.
-                    # v17 grew meta to 6 fields (trailing queue-row id);
-                    # unpack by prefix so this exception path can't lag the
-                    # tuple again (it did exactly that on the v17 merge —
-                    # daemon FATAL'd on the first worker exception).
-                    pid, kind, tid, tk, _did = meta[:5]
+                    # fc7445b's class fix: named fields — this branch can
+                    # never lag a growing record again (task #10(b)).
+                    pid, kind, tid, tk = (meta.pipeline_id, meta.kind,
+                                          meta.target_id, meta.target_kind)
                     infra_reason = _classify_worker_exception(exc)
                     label = (f"{infra_reason} (no attempts++)"
                              if infra_reason else "treating as failed")
@@ -1609,7 +1642,7 @@ def run(workspace: Path, *, once: bool = False,
                                     target_id=tid, target_kind=tk,
                                     outcome="failed",
                                     failure_reason=infra_reason,
-                                    decision_id=_did)
+                                    decision_id=meta.decision_id)
                         # Backward's BaseException handler in
                         # `backward.py` deletes the placeholder
                         # strategy when the worker crashed before
@@ -1876,8 +1909,10 @@ def run(workspace: Path, *, once: bool = False,
             fut = pool.submit(_run_pipeline, workspace, manifests,
                               kind, target_id, target_kind, pipeline_id,
                               decision_id)
-            futures[fut] = (pipeline_id, kind, target_id, target_kind,
-                            decision_id, qid)
+            futures[fut] = FutureMeta(
+                pipeline_id=pipeline_id, kind=kind, target_id=target_id,
+                target_kind=target_kind, decision_id=decision_id,
+                queue_row_id=qid)
             # Librarian per-file rows encode `problem\x1ffile` (#92); the
             # \x1f is non-printing, so render it readably in the log.
             _disp_prob, _disp_file = _lib_decode(target_id)
@@ -1956,3 +1991,13 @@ def run(workspace: Path, *, once: bool = False,
             return 1
 
 
+
+
+def __getattr__(name):
+    """Read-only aliases of the live thresholds (task #10(d)): historical
+    call sites read `dispatcher.BUILDER_THRESHOLD`; the values live in
+    `state.thresholds` (tune/monkeypatch THERE — setting an attribute on
+    this module would shadow the live value)."""
+    if name in ("BUILDER_THRESHOLD", "SHELVE_THRESHOLD"):
+        return getattr(thresholds, name)
+    raise AttributeError(name)

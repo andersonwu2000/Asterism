@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import threading
 from typing import NamedTuple
-from ...state import db
+from ...state import db, thresholds
 
 from ._base import _MechIntegrityError, _code_normalized, _sorted_import_lines
 from .astslice import _decl_signature, _defs_decl_namespace, _defs_decl_source, _library_module_of, _ns_is_operator_specified, extract_decls
@@ -720,8 +720,8 @@ def _migrate_file_incremental(
         # gateway slot before the next decl registers, or the pool exhausts.
         res = run_lsp_edit_loop(
             conn=conn, goal_id=None, pipeline_id=dpid,
-            budget_threshold=dispatcher.BUILDER_THRESHOLD,
-            shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+            budget_threshold=thresholds.BUILDER_THRESHOLD,
+            shelve_threshold=thresholds.SHELVE_THRESHOLD,
             attempts_dir=dattempts, workspace=workspace,
             problem=problem, problem_dir=problem_dir,
             kind="librarian", prompt_path=hole_prompt, target=patch,

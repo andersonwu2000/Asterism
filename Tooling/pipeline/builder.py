@@ -26,7 +26,7 @@ from pathlib import Path
 from .. import agent
 from ..agent import context
 from . import _presearch
-from ..state import assemble, db, manifest, proof_store
+from ..state import assemble, db, manifest, proof_store, thresholds
 from ..quality import diagnostics
 from ._cite_gate import _resolve_cite_dependencies
 
@@ -472,8 +472,8 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             conn=conn,
             goal_id=goal_id,
             pipeline_id=pipeline_id,
-            budget_threshold=dispatcher.BUILDER_THRESHOLD,
-            shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+            budget_threshold=thresholds.BUILDER_THRESHOLD,
+            shelve_threshold=thresholds.SHELVE_THRESHOLD,
             attempts_dir=attempts_dir,
             workspace=workspace,
             problem=goal["problem"],

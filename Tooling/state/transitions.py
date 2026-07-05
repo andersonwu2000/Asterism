@@ -367,12 +367,11 @@ def apply_strategy_transition(conn: sqlite3.Connection, strategy_id: int,
 
 
 def _shelve_threshold() -> int:
-    """Live SHELVE_THRESHOLD value. Thresholds remain owned by the
-    dispatcher (config-overridden in `dispatcher.run`); the relocated
-    cascade/propagation code reads the live value via this lazy proxy so
-    transitions.py keeps no module-load dependency on core.dispatcher."""
-    from ..core import dispatcher
-    return dispatcher.SHELVE_THRESHOLD
+    """Live SHELVE_THRESHOLD (task #10(d): read from the leaf
+    `state.thresholds` — the old lazy core.dispatcher proxy was the
+    state→core arm of the repo's only dependency cycle)."""
+    from . import thresholds
+    return thresholds.SHELVE_THRESHOLD
 
 
 # Phase 2 — pending_strategist_review + reopen_with_detach (used by

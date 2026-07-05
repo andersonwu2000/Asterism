@@ -47,7 +47,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -168,7 +168,7 @@ def _log_for(meta: SessionMetadata | None, event: dict) -> None:
     or any write failure — never crash a tool call over a log hiccup."""
     if meta is None or meta.log_path is None:
         return
-    event = {"ts": datetime.utcnow().isoformat() + "Z", **event}
+    event = {"ts": datetime.now(timezone.utc).isoformat(), **event}
     try:
         meta.log_path.parent.mkdir(parents=True, exist_ok=True)
         with meta.log_path.open("a", encoding="utf-8") as f:
@@ -665,7 +665,7 @@ def _ts_now() -> str:
     tool responses. Pairs with claude.exe's session jsonl message
     timestamps to localize MCP transport / claude-internal latency
     versus actual gateway processing time. Cheap (<1µs)."""
-    return datetime.utcnow().isoformat() + "Z"
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _format_diag(d: dict) -> dict:

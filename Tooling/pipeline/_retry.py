@@ -213,26 +213,21 @@ def _build_fresh_rescue_stage2_prompt(
             "The previous session's log was not recoverable. Work "
             f"from `{attempts_dir}/Context.md` alone."
         )
-    return (
-        f"The previous session was killed mid-think after exceeding the "
-        f"wall-clock budget. {log_note}\n\n"
-        f"All output files must be written into `{attempts_dir}/` — "
-        f"use absolute paths in your Write calls. The framework only "
-        f"reads files from there.\n\n"
-        f"Then ship ONE of the following — use what's already in the "
-        f"log:\n"
-        f"(a) `{attempts_dir}/patch.lean` + "
-        f"`{attempts_dir}/new_<slug>.lean` stubs (`:= by sorry` ok)\n"
-        f"(b) `{attempts_dir}/patch.lean` alone with a sorry-free "
-        f"direct proof (leaf-bypass)\n"
-        f"(c) `{attempts_dir}/patch.lean` with `-- decline: unprovable` "
-        f"+ counterexample\n"
-        f"(d) bail — write `{attempts_dir}/_progress.md` only, exit. "
-        f"No `patch.lean`. Capture in ≤200 words: shape converging to, "
-        f"sub-pieces with clear name+statement, the specific blocker, "
-        f"alternative direction (≤60 words).\n\n"
-        f"Act now. {rescue_min} minutes left."
-    )
+    return _render_prompt("fresh_rescue_stage2.md",
+                          LOG_NOTE=log_note,
+                          ATTEMPTS_DIR=str(attempts_dir),
+                          RESCUE_MIN=str(rescue_min))
+
+def _render_prompt(name: str, **subs: str) -> str:
+    """Render a Tooling/prompts template with __KEY__ substitution — the
+    same placeholder discipline as presearch.md. Inline prompt strings in
+    Python were the SG-run-#10 drift class (task #10(c)); the templates
+    are byte-identical extractions, pinned by tests/test_retry_prompts.py."""
+    from . import PROMPT_DIR
+    text = (PROMPT_DIR / name).read_text(encoding="utf-8")
+    for k, v in subs.items():
+        text = text.replace(f"__{k}__", str(v))
+    return text.rstrip("\n")
 
 
 SpawnFn = Callable[[SpawnCtx], int]
@@ -312,22 +307,9 @@ def _build_force_progress_prompt(attempts_dir: Path,
             f"and its conversation log could not be recovered. Work "
             f"from `{attempts_dir}/Context.md` alone."
         )
-    return (
-        f"You are a fresh session brought in only to write a "
-        f"checkpoint note. {log_note}\n\n"
-        f"Constraints:\n"
-        f"  - Do NOT modify `{attempts_dir}/patch.lean`.\n"
-        f"  - Do NOT call MCP / Bash / Edit / Write on any file other "
-        f"than `{attempts_dir}/_progress.md`.\n"
-        f"  - Single Write: `{attempts_dir}/_progress.md` then exit.\n\n"
-        f"In ≤200 words capture: (1) the shape of decomposition / "
-        f"proof the trapped agent was converging to, (2) the specific "
-        f"blocker that prevented shipping, (3) the most promising "
-        f"alternative direction (≤60 words). This file is the only "
-        f"thing the next dispatch on this goal will see from the "
-        f"current attempt — make it concrete, name the Mathlib "
-        f"lemmas or sub-shapes you'd try next."
-    )
+    return _render_prompt("force_progress.md",
+                          LOG_NOTE=log_note,
+                          ATTEMPTS_DIR=str(attempts_dir))
 
 
 def _force_progress_fresh_cold(

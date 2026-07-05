@@ -43,28 +43,18 @@ _SCRATCH_FILENAME = "_agent_feedback.md"
 # the survivor scratch path. Framing (per the framework developer): NOT a
 # satisfaction survey — ask for the single most useful friction / suggestion /
 # critique, grounded; `(none)` only as a genuine last resort.
-SURVIVOR_PROMPT_SECTION = """## Framework feedback — for the framework developer
+# Task #10(c): the questionnaire text lives in
+# Tooling/prompts/feedback_survivor.md (placeholder __FEEDBACK_PATH__);
+# this constant keeps the historical `{feedback_path}` .format contract
+# for the render site below.
+def _survivor_section() -> str:
+    from . import PROMPT_DIR
+    return ((PROMPT_DIR / "feedback_survivor.md")
+            .read_text(encoding="utf-8").rstrip("\n")
+            .replace("__FEEDBACK_PATH__", "{feedback_path}"))
 
-You just finished a task inside this automated proving framework. The developer
-building it wants your honest read on the FRAMEWORK ITSELF — its tools, prompts,
-dispatch, the retry / verify / cleanup flow you just worked inside. NOT the math.
 
-Give the single most useful thing you can, in ONE sentence (+ at most one line
-of evidence). Any one of:
-  - friction — a tool whose output misled you, a prompt instruction you
-    misread, something you had to work around;
-  - suggestion — how the framework could have helped you more / done something
-    for you;
-  - critique — a design choice you noticed that seems wrong or costly.
-
-You have a rare inside view the developer cannot get otherwise — default to
-saying something. Reply `(none)` ONLY if you genuinely have no friction,
-suggestion, or critique worth a single line.
-
-Write your answer to `{feedback_path}` using the Write tool:
-  - one sentence on the first line,
-  - optionally a second line `evidence: <one line>`,
-  - or exactly `(none)`."""
+SURVIVOR_PROMPT_SECTION = _survivor_section()
 _HEADER = (
     "# Agent framework feedback (dev-only)\n\n"
     "_Survivor self-reports + framework-written death causes. One line each:_\n"

@@ -561,7 +561,7 @@ def _soft_reset(problem: str) -> int:
             new_status = cur["status"]
             # If we're freeing a shelve cascaded from spurious failures,
             # revive the goal so the next dispatch can resume.
-            from .dispatcher import SHELVE_THRESHOLD as _ST
+            from ..state.thresholds import SHELVE_THRESHOLD as _ST
             if cur["status"] == "shelved" and n < _ST:
                 new_status = "open"
             conn.execute(

@@ -41,7 +41,7 @@ from pathlib import Path
 
 from .. import agent
 from ..agent import context
-from ..state import assemble, db, manifest, proof_store, transitions
+from ..state import assemble, db, manifest, proof_store, thresholds, transitions
 from ..quality import dedupe, diagnostics
 from . import _axiom
 from . import _presearch
@@ -629,8 +629,8 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             conn=conn,
             goal_id=goal_id,
             pipeline_id=pipeline_id,
-            budget_threshold=dispatcher.SHELVE_THRESHOLD,
-            shelve_threshold=dispatcher.SHELVE_THRESHOLD,
+            budget_threshold=thresholds.SHELVE_THRESHOLD,
+            shelve_threshold=thresholds.SHELVE_THRESHOLD,
             attempts_dir=attempts_dir,
             workspace=workspace,
             problem=str(goal["problem"]),
