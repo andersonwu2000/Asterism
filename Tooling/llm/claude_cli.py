@@ -531,6 +531,27 @@ def resolve_model(kind: str | None) -> str:
     return os.environ.get("ASTERISM_AGENT_MODEL", DEFAULT_MODEL)
 
 
+# Windows CreateProcess caps the WHOLE command line at 32,767 chars;
+# exceeding it fails the spawn with WinError 206 (ERROR_FILENAME_EXCED_RANGE,
+# rendered as "檔名或副檔名太長"). The reflection prompt hit this live once
+# its dynamic {global_lessons} block grew past ~30KB (sphere_homology
+# 2026-07-05) — the error was best-effort-swallowed, silently losing every
+# lesson writeback. Any prompt near the cap now travels via stdin instead
+# (`claude -p` with no prompt argument reads stdin — probed live in
+# stream-json mode). Threshold leaves headroom for the other flags/paths
+# that share the command line.
+_ARGV_PROMPT_MAX = 25_000
+
+
+def _prompt_transport(prompt: str) -> "tuple[list[str], str | None]":
+    """How this prompt travels to the CLI: `(argv_fragment, stdin_payload)`.
+    Small prompts stay on argv (the exercised-everywhere path); oversized
+    ones switch to bare `-p` + stdin."""
+    if len(prompt) <= _ARGV_PROMPT_MAX:
+        return (["-p", prompt], None)
+    return (["-p"], prompt)
+
+
 def _load_prompt(req: LLMRequest) -> str:
     """Read the prompt template file. Inlined into `-p` instead of
     pointed-to so the agent never needs read access to the workspace
@@ -925,10 +946,11 @@ class ClaudeCliProvider:
             ]
         else:
             output_flags = ["--output-format", "text"]
+        prompt_argv, stdin_payload = _prompt_transport(prompt)
         cmd = [
             "claude",
             "--model", model,
-            "-p", prompt,
+            *prompt_argv,
             "--permission-mode", "acceptEdits",
             "--add-dir", str(req.problem_dir),
             "--add-dir", str(req.attempts_dir),
@@ -961,9 +983,22 @@ class ClaudeCliProvider:
         env["MAX_THINKING_TOKENS"] = str(_thinking_budget(req.timeout_sec))
         proc = subprocess.Popen(
             cmd, env=env, cwd=str(req.problem_dir),
+            stdin=(subprocess.PIPE if stdin_payload is not None else None),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace",
         )
+        if stdin_payload is not None:
+            # Writer thread: the pipe buffer (~4-8KB on Windows) is smaller
+            # than an oversized prompt, so an inline write could deadlock
+            # against the un-drained stdout pipe. claude reads stdin to EOF
+            # at startup; the thread ends promptly.
+            def _feed_stdin(p=proc, payload=stdin_payload):
+                try:
+                    p.stdin.write(payload)
+                    p.stdin.close()
+                except OSError:
+                    pass  # child died early — surfaces via rc as usual
+            threading.Thread(target=_feed_stdin, daemon=True).start()
         # Register so dispatcher's request_shutdown can kill us on
         # budget-exceeded / gateway-permadown exit paths. Without this
         # the proc.wait below blocks for up to req.timeout_sec (~960s)
@@ -1148,17 +1183,18 @@ class ClaudeCliProvider:
         if not shutil.which("claude"):
             return None
         model = resolve_model("builder")
+        prompt_argv, stdin_payload = _prompt_transport(prompt)
         cmd = [
             "claude",
             "--model", model,
-            "-p", prompt,
+            *prompt_argv,
             "--no-session-persistence",
             "--output-format", "text",
             *_trim_flags(),
         ]
         try:
             r = subprocess.run(
-                cmd, timeout=timeout_sec,
+                cmd, timeout=timeout_sec, input=stdin_payload,
                 capture_output=True, text=True,
                 encoding="utf-8", errors="replace",
             )

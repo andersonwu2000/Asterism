@@ -48,13 +48,16 @@ def test_render_globals_empty() -> None:
     assert _render_globals([]) == "(none yet)"
 
 
-def test_render_globals_id_tagged_with_body() -> None:
+def test_render_globals_id_tagged_titles_only() -> None:
+    """Titles-only (2026-07-05): a 30KB full-body render blew the Windows
+    32,767-char command-line cap (WinError 206) and silently killed every
+    reflection spawn — bodies must NOT be rendered."""
     rows = [{"id": 3, "title": "prefer X over Y", "body": "line1\nline2"},
             {"id": 7, "title": "no body here", "body": ""}]
     out = _render_globals(rows)
     assert "- [id 3] prefer X over Y" in out
-    assert "    line1" in out and "    line2" in out
     assert "- [id 7] no body here" in out
+    assert "line1" not in out and "line2" not in out
 
 
 # ---------------------------------------------------------------------

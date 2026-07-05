@@ -1987,3 +1987,51 @@ def test_claude_spawn_short_circuits_when_shutdown_requested(
     ))
     assert rc == SpawnRC.SHUTDOWN
     assert popen_called == []  # subprocess never launched
+
+
+# ---------------------------------------------------------------------
+# _prompt_transport — the Windows 32K command-line cap guard (WinError 206)
+# ---------------------------------------------------------------------
+
+def test_prompt_transport_small_stays_on_argv() -> None:
+    from Tooling.llm.claude_cli import _prompt_transport
+    argv, stdin = _prompt_transport("short prompt")
+    assert argv == ["-p", "short prompt"]
+    assert stdin is None
+
+
+def test_prompt_transport_oversized_switches_to_stdin() -> None:
+    """A prompt near the Windows CreateProcess 32,767-char cap must travel
+    via stdin (bare `-p`), not argv — argv fails the spawn with WinError
+    206 (reflection prompt at 30KB lessons, sphere_homology 2026-07-05)."""
+    from Tooling.llm.claude_cli import _prompt_transport, _ARGV_PROMPT_MAX
+    big = "x" * (_ARGV_PROMPT_MAX + 1)
+    argv, stdin = _prompt_transport(big)
+    assert argv == ["-p"]
+    assert stdin == big
+
+
+def test_claude_complete_text_oversized_prompt_uses_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """complete_text wires the transport through subprocess.run(input=...)."""
+    from Tooling.llm import claude_cli
+
+    captured: dict = {}
+
+    def fake_run(cmd, **kw):
+        captured["cmd"] = cmd
+        captured["input"] = kw.get("input")
+
+        class R:
+            returncode = 0
+            stdout = "ok"
+        return R()
+
+    monkeypatch.setattr(claude_cli.shutil, "which", lambda _: "claude")
+    monkeypatch.setattr(claude_cli.subprocess, "run", fake_run)
+    big = "y" * (claude_cli._ARGV_PROMPT_MAX + 10)
+    out = claude_cli.ClaudeCliProvider().complete_text(prompt=big)
+    assert out == "ok"
+    assert big not in captured["cmd"]          # not on argv
+    assert captured["input"] == big            # travels via stdin

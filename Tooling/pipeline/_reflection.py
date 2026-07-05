@@ -222,18 +222,20 @@ def attempt_reflection(*,
 
 
 def _render_globals(rows: list[sqlite3.Row]) -> str:
-    """Render existing global lessons as an id-tagged list for the prompt, so
-    the agent can dedup (global_add only when not already present) and target a
-    global_edit by id."""
+    """Render existing global lessons as an id-tagged TITLES-ONLY list for
+    the prompt, so the agent can dedup (global_add only when not already
+    present) and target a global_edit by id.
+
+    Titles-only (2026-07-05, twin of the worker-context titles index): the
+    full-body render grew past 30KB on sphere_homology and — inlined into
+    the `-p` command line — blew the Windows 32,767-char CreateProcess cap
+    (WinError 206), silently killing every reflection. Titles are the
+    actionable one-liners by this prompt's own design; dedup/edit judgment
+    reads them, not the elaboration."""
     if not rows:
         return "(none yet)"
-    out: list[str] = []
-    for r in rows:
-        out.append(f"- [id {r['id']}] {(r['title'] or '').strip()}")
-        body = (r["body"] or "").strip()
-        if body:
-            out += [f"    {bl}" for bl in body.splitlines()]
-    return "\n".join(out)
+    return "\n".join(f"- [id {r['id']}] {(r['title'] or '').strip()}"
+                     for r in rows)
 
 
 def _apply_decision(problem: str, goal_id: int, sid: str,
