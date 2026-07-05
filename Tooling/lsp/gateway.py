@@ -145,6 +145,17 @@ class GatewayState:
 
 
 _state = GatewayState()
+
+# Source-tree fingerprint at THIS process's import time (version-skew
+# guard). The gateway deliberately outlives daemons; a reusing daemon
+# compares this /health field against the CURRENT tree (lifecycle.
+# code_fingerprint) and relaunches the gateway on any drift — a stale
+# process answers /health 200 while its tool calls 500 on new-code
+# requests (sphere daemon #5, 2026-07-05). Computed once: it must
+# describe the code THIS process loaded, not the disk's later state.
+from .lifecycle import code_fingerprint as _code_fp
+_CODE_FINGERPRINT = _code_fp()
+del _code_fp
 _session_ctx: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "asterism_session", default=None
 )
@@ -2232,6 +2243,9 @@ async def health(request: Request):
         # PID so a reusing daemon can detect a stale worker-count (≠
         # dispatch.pool) and kill+relaunch this gateway to match the yaml.
         "pid": os.getpid(),
+        # Source fingerprint at THIS process's start — the reuse gate
+        # relaunches on drift (version-skew guard).
+        "code_fingerprint": _CODE_FINGERPRINT,
     })
 
 

@@ -244,11 +244,12 @@ class _FakeProc:
 def test_start_gateway_reuses_when_workers_match(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """Healthy gateway whose workers_total == dispatch.pool → reused (no
-    relaunch, no kill)."""
+    """Healthy gateway whose workers_total == dispatch.pool AND whose code
+    fingerprint matches the current tree → reused (no relaunch, no kill)."""
+    monkeypatch.setattr(gateway_lifecycle, "code_fingerprint", lambda: "fp1")
     monkeypatch.setattr(gateway_lifecycle, "_ping_health",
         lambda timeout=1.0: {"backend_ready": True, "workers_total": 4,
-                             "pid": 999})
+                             "pid": 999, "code_fingerprint": "fp1"})
     monkeypatch.setattr(gateway_lifecycle, "_desired_pool", lambda ws: 4)
     killed = {"n": 0}
     monkeypatch.setattr(gateway_lifecycle, "_kill_stale_gateway",
@@ -275,8 +276,11 @@ def test_start_gateway_relaunches_on_worker_mismatch(
         # 1st: the reuse check sees the stale 2-worker gateway.
         # later: the post-launch readiness poll sees the fresh 4-worker one.
         if calls["n"] == 1:
-            return {"backend_ready": True, "workers_total": 2, "pid": 777}
-        return {"backend_ready": True, "workers_total": 4, "pid": 888}
+            return {"backend_ready": True, "workers_total": 2, "pid": 777,
+                    "code_fingerprint": "fp1"}
+        return {"backend_ready": True, "workers_total": 4, "pid": 888,
+                "code_fingerprint": "fp1"}
+    monkeypatch.setattr(gateway_lifecycle, "code_fingerprint", lambda: "fp1")
     monkeypatch.setattr(gateway_lifecycle, "_ping_health", ping)
     monkeypatch.setattr(gateway_lifecycle, "_desired_pool", lambda ws: 4)
     killed = {"pid": None}
@@ -289,6 +293,42 @@ def test_start_gateway_relaunches_on_worker_mismatch(
     proc = gateway_lifecycle.start_gateway(tmp_path)
     assert killed["pid"] == 777          # killed the stale gateway by pid
     assert isinstance(proc, _FakeProc)   # relaunched a fresh one
+
+
+def test_start_gateway_relaunches_on_version_skew(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Healthy, pool-matched gateway whose code_fingerprint differs from
+    the current tree (or is absent — pre-fingerprint build) → kill +
+    relaunch. The gateway outlives daemons by design; after a code change
+    the old process answers /health 200 while tool calls 500 (sphere
+    daemon #5, 2026-07-05)."""
+    for stale_fp in ("OLD", None):
+        calls = {"n": 0}
+
+        def ping(timeout=1.0, _fp=stale_fp):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                h = {"backend_ready": True, "workers_total": 4, "pid": 777}
+                if _fp is not None:
+                    h["code_fingerprint"] = _fp
+                return h
+            return {"backend_ready": True, "workers_total": 4, "pid": 888,
+                    "code_fingerprint": "CURRENT"}
+        monkeypatch.setattr(gateway_lifecycle, "code_fingerprint",
+                            lambda: "CURRENT")
+        monkeypatch.setattr(gateway_lifecycle, "_ping_health", ping)
+        monkeypatch.setattr(gateway_lifecycle, "_desired_pool", lambda ws: 4)
+        killed = {"pid": None}
+        monkeypatch.setattr(gateway_lifecycle, "_kill_stale_gateway",
+                            lambda pid: killed.__setitem__("pid", pid))
+        monkeypatch.setattr(gateway_lifecycle.subprocess, "Popen",
+                            lambda *a, **k: _FakeProc())
+        monkeypatch.setattr(gateway_lifecycle.time, "sleep", lambda s: None)
+
+        proc = gateway_lifecycle.start_gateway(tmp_path)
+        assert killed["pid"] == 777, f"stale_fp={stale_fp!r}"
+        assert isinstance(proc, _FakeProc)
 
 
 # ---------------------------------------------------------------------

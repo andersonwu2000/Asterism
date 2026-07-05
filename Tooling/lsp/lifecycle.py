@@ -46,6 +46,30 @@ def _health_url() -> str:
     return f"http://127.0.0.1:{_gateway_port()}/health"
 
 
+def code_fingerprint() -> str:
+    """Fingerprint of the Tooling source tree: SHA1 over every .py file's
+    (relpath, mtime_ns, size), sorted. The gateway snapshots this at ITS
+    start and reports it via /health; a reusing daemon compares against
+    the CURRENT tree — any drift means the long-lived gateway process is
+    serving stale code (version skew: /health 200 but tool calls 500,
+    sphere daemon #5 2026-07-05) and must be relaunched. mtime-based, so
+    a plain edit (no commit needed) already flips it; a needless restart
+    costs a re-warm, a missed stale gateway costs a broken run."""
+    import hashlib
+    tooling = Path(__file__).resolve().parents[1]
+    h = hashlib.sha1()
+    for p in sorted(tooling.rglob("*.py")):
+        if "__pycache__" in p.parts:
+            continue
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        h.update(f"{p.relative_to(tooling)}|{st.st_mtime_ns}|{st.st_size}\n"
+                 .encode("utf-8"))
+    return h.hexdigest()
+
+
 def _ping_health(timeout: float = 2.0) -> dict | None:
     """Single /health probe. Returns parsed JSON dict on success,
     None on any error (port not yet listening, JSON garbage, etc.)."""
@@ -135,7 +159,21 @@ def start_gateway(workspace: Path,
         if pre.get("backend_ready"):
             want = _desired_pool(workspace)
             have = pre.get("workers_total")
-            if want is not None and have is not None and int(have) != int(want):
+            gw_fp = pre.get("code_fingerprint")
+            cur_fp = code_fingerprint()
+            if gw_fp != cur_fp:
+                # Version skew: the gateway outlives daemons by design, but
+                # a code change since ITS start means it serves stale
+                # modules (health 200 / tool calls 500). Missing field =
+                # pre-fingerprint build, equally stale.
+                print(f"[gateway] existing gateway is version-stale "
+                      f"(fingerprint {str(gw_fp)[:12]!r} != current "
+                      f"{cur_fp[:12]!r}) — killing it and relaunching on "
+                      f"current code", flush=True)
+                _kill_stale_gateway(pre.get("pid"))
+                # fall through to launch a fresh gateway below
+            elif want is not None and have is not None \
+                    and int(have) != int(want):
                 print(f"[gateway] existing gateway has workers={have} but "
                       f"dispatch.pool={want} — killing it and relaunching to "
                       f"match the yaml", flush=True)
