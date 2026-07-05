@@ -85,3 +85,28 @@ docs/*.synctex.gz
 Problems/*_2[0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
 # machine-local config: file-form env vars (task #13)
 .env
+
+# --- Problems/ artifact lifecycle (task #9, user call 2026-07-05) ---
+# Tracked = the three HUMAN INPUT files (Manifest.md / Defs.lean /
+# Root.lean). Everything generated is runtime state: proofs/ pairs with
+# DB rows (resets/relabels churn it — was 571 modified + 17 deleted
+# noise), TREE/BRIEF are regenerated views, LESSONS' knowledge lives in
+# kb_entries, .drafts/.presearch are cross-spawn scratch. Proved
+# EVIDENCE lives in Library/ (curated harvest) + Benchmarks/
+# proved_manifest.jsonl; externally-valuable raw solutions should be
+# harvested (library:true), not incidentally versioned.
+# Enforced by tests/test_problems_tracking_hygiene.py.
+Problems/**/proofs/
+Problems/**/TREE.md
+Problems/**/BRIEF.md
+Problems/**/LESSONS.md
+Problems/**/.drafts/
+Problems/**/.presearch/
+
+# Undecided subproject — may be deleted; do not track for now (user
+# call 2026-07-05).
+blueprint/
+
+# e2e session logs (the *_run.log pattern above missed the _err twin).
+*_err.log
+.proposed_Manifest.md
