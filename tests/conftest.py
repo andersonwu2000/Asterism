@@ -71,6 +71,7 @@ def _side_effect_fence(request, monkeypatch: pytest.MonkeyPatch):
         return
 
     def _exe_name(args) -> str:
+        import re as _re
         if isinstance(args, (str, bytes)):
             first = args.split()[0] if args else ""
         elif isinstance(args, (list, tuple)) and args:
@@ -79,7 +80,10 @@ def _side_effect_fence(request, monkeypatch: pytest.MonkeyPatch):
             first = ""
         if isinstance(first, bytes):
             first = first.decode(errors="replace")
-        return os.path.basename(str(first)).lower()
+        # Split on BOTH separators: POSIX basename doesn't cut a
+        # Windows-style path (CI ubuntu leg would let `C:\...\claude.exe`
+        # through to a real — failing — Popen).
+        return _re.split(r"[\\/]", str(first))[-1].lower()
 
     def _fenced_popen(args, *a, **kw):
         name = _exe_name(args)
@@ -121,9 +125,16 @@ def _stub_cold_lake_by_default(request, monkeypatch: pytest.MonkeyPatch):
     monkeypatch applies after this autouse one and wins)."""
     if "real_lake" in request.keywords:
         return
+    from Tooling.knowledge import lemma_lookup
     from Tooling.pipeline import _lake
     from Tooling.quality import dedupe as _dd
     from Tooling.quality import lake_probe
+    # Third member of the class, caught by the fence ON CI (2026-07-05):
+    # compile_context #checks lemma names mined from dead attempts via
+    # lookup_batch — a cold `lake env lean` whose on-disk JSON cache made
+    # it a silent no-op locally and a real spawn on cache-less CI.
+    monkeypatch.setattr(lemma_lookup, "lookup_batch",
+                        lambda names, workspace, **kw: {})
     monkeypatch.setattr(_lake, "lake_build_modules",
                         lambda workspace, modules: (True, ""))
     # Clean "probe says no" verdict (rc=1, no output): dedupe defeq → not
