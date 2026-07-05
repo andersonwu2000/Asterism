@@ -110,3 +110,10 @@ blueprint/
 # e2e session logs (the *_run.log pattern above missed the _err twin).
 *_err.log
 .proposed_Manifest.md
+
+# Paper pipeline bookshelf (docs/internal/paper_pipeline_design.md):
+# originals + full-text extraction stay local (license + size); only
+# the navigation map + meta are commit-eligible.
+Papers/*/paper.*
+Papers/*/text.md
+Papers/*/.index_attempt/

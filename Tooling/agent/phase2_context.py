@@ -781,7 +781,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
     section_names += ["stall_warning", "ingest_gate", "directive",
                       "plan_note", "inject_batches", "pending_reopens",
                       "active_goals", "failure_replay", "tree",
-                      "manifest_meta"]
+                      "manifest_meta", "paper_index"]
     sections += [
         _section_stall_warning(conn, problem),
         _section_ingest_gate(conn, problem),
@@ -793,6 +793,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_failure_replay(conn, problem),
         _section_tree_inline(conn, workspace, problem),
         _section_manifest_meta(mfst, workspace, problem),
+        context._section_paper_index(mfst, workspace),
     ]
     parts: list[str] = [f"# Strategist context — {problem}", ""]
     for sect in sections:
@@ -914,13 +915,17 @@ def compile_forward_context(conn: sqlite3.Connection, *,
     the whole structure.)
     """
     section_names = ["forward_brief", "library_inventory",
-                     "forward_history", "active_goals", "manifest_meta"]
+                     "forward_history", "active_goals", "manifest_meta",
+                     "paper_index"]
     sections: list[list[str]] = [
         _section_forward_brief(conn, decision_id),
         _section_library_inventory(conn, problem),
         _section_forward_history(conn, problem),
         _section_active_goals(conn, problem),
         _section_manifest_meta(mfst, workspace, problem),
+        # Paper navigation — Forward mints the vocabulary; exact
+        # hypotheses/definitions come from the paper (design D1).
+        context._section_paper_index(mfst, workspace),
     ]
     parts: list[str] = [f"# Forward context — {problem}", ""]
     for sect in sections:

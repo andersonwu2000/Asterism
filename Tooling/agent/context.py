@@ -869,6 +869,56 @@ def _section_strategist_brief(conn: sqlite3.Connection,
 # Orchestration
 # ---------------------------------------------------------------------
 
+# Hard presentation cap for the paper-index section. Shares the Context
+# budget pool with the presearch candidates section (design note
+# 2026-07-06): both are conditional surfaces; an over-cap map is a
+# producer design problem (regenerate tighter), so truncation is LOUD.
+PAPER_INDEX_MAX_CHARS = 8_000
+
+
+def _section_paper_index(mfst: manifest.Manifest,
+                         workspace: Path) -> list[str]:
+    """Paper navigation section — rendered only when the Manifest binds
+    a shelved paper (`paper: <id>`). Map present → inline (capped);
+    small doc (no map) → pointer to text.md. Original text is the
+    content authority; this section only navigates (design D1)."""
+    pid = getattr(mfst, "paper", "") or ""
+    if not pid:
+        return []
+    from ..papers import shelf
+    meta = shelf.load_meta(workspace, pid)
+    if meta is None:
+        return [f"## Paper", f"(Manifest binds paper `{pid}` but "
+                f"Papers/{pid}/ is missing — tell the operator via "
+                f"feedback; proceed without it.)", ""]
+    tpath = shelf.text_path(workspace, pid).as_posix()
+    lines = [
+        "## Paper",
+        f"Source: `{meta.source_name}` (Papers/{pid}). The paper is the "
+        f"authority for exact hypotheses/definitions — Read "
+        f"`{tpath}` slices on demand (`## p.N` headings are page "
+        f"anchors).",
+    ]
+    mpath = shelf.map_path(workspace, pid)
+    try:
+        body = mpath.read_text(encoding="utf-8").strip()
+    except OSError:
+        body = ""
+    if body:
+        if shelf.map_is_stale(workspace, pid):
+            lines.append("(WARNING: map below was built from an older "
+                         "extraction — trust text.md over it.)")
+        if len(body) > PAPER_INDEX_MAX_CHARS:
+            body = (body[:PAPER_INDEX_MAX_CHARS]
+                    + "\n\n[TRUNCATED at Context cap — map.md exceeds "
+                      "budget; the full map is on disk]")
+        lines += ["", body]
+    else:
+        lines.append(f"(No navigation map — paper is short; read "
+                     f"`{tpath}` directly.)")
+    return lines + [""]
+
+
 def _section_presearch_candidates(problem_dir: Path, goal_id: int) -> list[str]:
     """target-1 pre-search: inject the cached per-node candidate-lemma
     section. Pure file-read of `.presearch/g<gid>.md` (written by
@@ -960,8 +1010,8 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
     # (~2-10 KB) rather than zero. Per-goal / per-spawn surfaces follow.
     presearch_lines = _section_presearch_candidates(problem_dir, int(goal["id"]))
     section_names = [
-        "brief", "kb_lessons", "directive", "inject_brief", "goal",
-        "library_available", "strategy_naming", "parent_strategy",
+        "brief", "kb_lessons", "paper_index", "directive", "inject_brief",
+        "goal", "library_available", "strategy_naming", "parent_strategy",
         "mathlib_lemmas", "presearch", "proved_goals", "prior_partial",
         "prior_patch", "goal_history",
     ]
@@ -969,6 +1019,9 @@ def compile_context(conn: sqlite3.Connection, *, goal: sqlite3.Row,
         _section_brief_inline(problem_dir),
         _section_lessons_inline(conn, str(goal["problem"]), int(goal["id"]),
                                 attempts_dir),
+        # Paper navigation — cross-spawn-stable (map.md changes only on
+        # regeneration), so it sits in the cacheable prefix with BRIEF.
+        _section_paper_index(mfst, workspace),
         # Phase 2 — Strategist injections sit between cross-spawn-stable
         # content (BRIEF / LESSONS) and per-goal sections. Directive is
         # problem-level standing (every cold-start); brief is per-decision

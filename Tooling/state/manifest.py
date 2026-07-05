@@ -47,6 +47,10 @@ class Manifest:
     # docs/archive/design/librarian_plan.md). Scope flag, NOT a safety gate —
     # default False so a missing/garbled field never auto-promotes.
     library: bool = False
+    # Paper pipeline (docs/internal/paper_pipeline_design.md): shelf id
+    # of the source paper (`Papers/<id>/`). Empty = no paper. Drives the
+    # Context paper-index section + provenance; never consumed by gates.
+    paper: str = ""
 
     @property
     def all_hints(self) -> list[str]:
@@ -333,6 +337,7 @@ def parse(path: Path) -> Manifest:
         mathlib_hints=mathlib_hints,
         strategic_notes=notes,
         library=_coerce_bool(fm.get('library')),
+        paper=str(fm.get('paper') or "").strip(),
     )
 
 

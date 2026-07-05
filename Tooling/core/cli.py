@@ -1825,6 +1825,41 @@ def _force_utf8_io() -> None:
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 
+def cmd_paper_add(args: argparse.Namespace) -> int:
+    """Shelve a paper: content-hash identity, PDF → page-anchored
+    normalized text (paper_pipeline_design.md D7/D8). Idempotent."""
+    from ..papers import shelf
+    src = Path(args.file)
+    if not src.is_file():
+        print(f"ERROR: no such file: {src}")
+        return 1
+    try:
+        meta = shelf.add_paper(Path.cwd(), src)
+    except (shelf.ScannedPdfError, ValueError) as e:
+        print(f"ERROR: {e}")
+        return 1
+    print(f"OK: paper {meta.id} — bind with `paper: {meta.id}` in the "
+          f"Manifest frontmatter; build the map with "
+          f"`asterism paper-index {meta.id}`")
+    return 0
+
+
+def cmd_paper_index(args: argparse.Namespace) -> int:
+    """Build/rebuild a shelved paper's navigation map (one-shot LLM
+    spawn; small docs are exempt — see paper_pipeline_design.md D9)."""
+    from ..papers import index as paper_index
+    from ..pipeline import PROMPT_DIR
+    try:
+        out = paper_index.generate_index(
+            Path.cwd(), args.id, prompt_dir=PROMPT_DIR,
+            force=bool(args.force))
+    except (FileNotFoundError, RuntimeError) as e:
+        print(f"ERROR: {e}")
+        return 1
+    print(f"OK: {out}" if out else "OK: exempt (no index needed)")
+    return 0
+
+
 def cmd_kb_migrate(args: argparse.Namespace) -> int:
     """Rebuild the mechanically-derivable KB entries (antipatterns) from
     `.drafts` blockers + `dead_attempts` rationale. Idempotent (source-keyed),
@@ -2010,6 +2045,24 @@ def main(argv: list[str] | None = None) -> int:
              "blockers + dead_attempts rationale (idempotent, source-keyed)",
     )
     p_kb_migrate.set_defaults(func=cmd_kb_migrate)
+
+    p_paper_add = sub.add_parser(
+        "paper-add",
+        help="shelve a paper under Papers/<content-hash>/ (PDF extracted "
+             "to page-anchored text; .md/.txt/.tex pass through)",
+    )
+    p_paper_add.add_argument("file", help="path to the paper file")
+    p_paper_add.set_defaults(func=cmd_paper_add)
+
+    p_paper_index = sub.add_parser(
+        "paper-index",
+        help="build a shelved paper's navigation map (one-shot LLM; "
+             "small docs exempt)",
+    )
+    p_paper_index.add_argument("id", help="shelf id (from paper-add)")
+    p_paper_index.add_argument("--force", action="store_true",
+                               help="index even below the small-doc bar")
+    p_paper_index.set_defaults(func=cmd_paper_index)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

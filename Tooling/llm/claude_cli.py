@@ -713,6 +713,16 @@ def _compose_allowed_tools(req: LLMRequest) -> str:
     if library.is_dir():
         lib = library.as_posix()
         patterns += [f"Read({lib}/**/*.lean)", f"Grep({lib}/**)"]
+    # Papers/ (paper pipeline bookshelf): agents Read normalized text /
+    # maps on demand; the original .pdf is the extraction-failure
+    # fallback (Read renders PDF pages). Whole-shelf grant mirrors
+    # Library — steering to THIS problem's paper is the Context
+    # section's job, enforcement stays coarse.
+    papers = workspace / "Papers"
+    if papers.is_dir():
+        pp = papers.as_posix()
+        patterns += [f"Read({pp}/**/*.md)", f"Read({pp}/**/*.pdf)",
+                     f"Grep({pp}/**)"]
     # When the request carries an MCP config (Builder pipeline +
     # Phase 1 LSP swap), allow the LSP-backed MCP tools without
     # per-call permission prompts. claude CLI exposes MCP tools as
@@ -911,6 +921,12 @@ class ClaudeCliProvider:
         library_dir = _workspace_from_problem_dir(req.problem_dir) / "Library"
         add_dir_library: list[str] = (
             ["--add-dir", str(library_dir)] if library_dir.is_dir() else [])
+        # Papers/ bookshelf — same trust-boundary reasoning as Library:
+        # the allowlist patterns above only take effect inside
+        # `cwd ∪ --add-dir`.
+        papers_dir = _workspace_from_problem_dir(req.problem_dir) / "Papers"
+        add_dir_papers: list[str] = (
+            ["--add-dir", str(papers_dir)] if papers_dir.is_dir() else [])
         # MCP config — Builder pipeline (Phase 1 LSP swap) sets
         # mcp_config_path to a JSON file describing the LSP MCP
         # server. claude spawns the server itself as a child process
@@ -963,6 +979,7 @@ class ClaudeCliProvider:
             "--add-dir", str(req.attempts_dir),
             *add_dir_packages,
             *add_dir_library,
+            *add_dir_papers,
             *mcp_flags,
             *output_flags,
             *session_flags,
