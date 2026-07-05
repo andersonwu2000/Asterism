@@ -21,6 +21,8 @@ Also check `## Recent decisions` for your prior decisions and their outcomes.
    - Ontological → `ConfirmShelve` + escalate upward (or `RequestUserAmend` if user file is wrong)
    - Missing prereq → `Inject(Forward)` to build the brick + `ConfirmShelve` to park
 
+5. **Rewrite `_plan.md`** (your private note, shown only to you next wake): REWRITE it to the current state — drop what's done or stale. Plans and progress belong here, not in EmitDirective.
+
 Before committing, `Grep` mathlib briefly for any concept the agent claims is missing.
 
 **Difficulty alone is not a reason to give up.** "Hard problem" / "Mathlib lacks X" describe work, not stop signs.
@@ -31,7 +33,7 @@ Before committing, `Grep` mathlib briefly for any concept the agent claims is mi
   - `Backward`: decompose into strategy + N sub-goals, each in its own `.lean`.
   - `Builder`: single file inline, one tactic block.
 - `ConfirmShelve` — `target_goal_id`, `reason`. Must pair with `Inject` in same batch
-- `EmitDirective` — `scope="problem:<name>"`, `body`, `reason`. A general hint every worker on the problem should see; goal/subtree-specific or transient ones go in an `Inject` brief instead.
+- `EmitDirective` — `scope="problem:<name>"`, `body`, `reason`. Standing hints EVERY worker reads on EVERY spawn; keep it short and general (conventions, footguns). Your plans/progress go in `_plan.md`; goal-specific hints in an Inject brief.
 - `RequestUserAmend` — `problem`, `file ∈ {"Defs.lean", "Manifest.md"}`, `proposed_body`, `question`, `reason`. Only when a user file is wrong.
 
 `target_goal_id` accepts integer id or slug.

@@ -20,6 +20,8 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
 
 5. **Mark deliverables**: if a Forward node in this batch landed and its statement satisfies what the Manifest asked for, `MarkDeliverable` it — the human then reviews it. You don't manage its dependencies; the framework computes those. Once every deliverable the Manifest asked for has landed and been marked, `Ingest` to close the problem.
 
+6. **Rewrite `_plan.md`** (your private note, shown only to you next wake): REWRITE it to the current state — drop what's done or stale. Plans and progress belong here, not in EmitDirective.
+
 Output as `decision.json` — JSON array of one or more decisions. Before finishing, run `python -m json.tool decision.json` to confirm it parses.
 
 **Difficulty alone is not a reason to give up.** Don't shelve just because the brick was harder than expected.
@@ -30,7 +32,7 @@ Output as `decision.json` — JSON array of one or more decisions. Before finish
   - `Backward`: decompose into strategy + N sub-goals, each in its own `.lean`.
   - `Builder`: single file inline, one tactic block.
 - `ConfirmShelve` — `target_goal_id`, `reason`. Must pair with `Inject` in same batch
-- `EmitDirective` — `scope="problem:<name>"`, `body`, `reason`. A general hint every worker on the problem should see; goal/subtree-specific or transient ones go in an `Inject` brief instead.
+- `EmitDirective` — `scope="problem:<name>"`, `body`, `reason`. Standing hints EVERY worker reads on EVERY spawn; keep it short and general (conventions, footguns). Your plans/progress go in `_plan.md`; goal-specific hints in an Inject brief.
 - `MarkDeliverable` — `target_goal_id`, optional `reason`. Flag a landed node as a top-level *deliverable*. Only a Forward-produced node can be marked, and only once it satisfies what the Manifest asked for. Do not mark the definitions the deliverable depends on — the framework computes those and presents them to the user.
 - `Ingest` — optional `reason`. The problem's only exit: emit once the Manifest is fully satisfied. Requires a proved root when one exists (a proved root also counts as the deliverable).
 - `Noop` — `reason`. Only when nothing actionable.
