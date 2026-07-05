@@ -1936,6 +1936,56 @@ def test_verify_decisions_accepts_confirmshelve_paired_with_inject(
     assert strategist.verify_decisions(ds, conn, problem="p") == ""
 
 
+def test_verify_decisions_allows_standalone_reconfirm_of_shelved_goal(
+    conn: sqlite3.Connection,
+) -> None:
+    """ConfirmShelve 終態 (2026-07-06): a ConfirmShelve RE-CONFIRMING an
+    already-shelved goal may stand alone. Pairing it with an Inject gives
+    the new ConfirmShelve the batch's shared batch_id — a fresh
+    reopen-promise — so the "still dead" verdict itself re-armed the loop
+    it was answering. A standalone re-confirm acks the old promise (the
+    reopen query's later-decision NOT EXISTS) and mints none (no Inject
+    sibling = no promise). First-time shelves keep the pairing rule."""
+    root = _insert_root(conn)          # root open → root-blocked gate idle
+    assert root
+    sub = db.insert_goal(
+        conn, problem="p", slug="parked",
+        lean_path="Problems/p/proofs/L_parked.lean", statement="T",
+        origin="backward",
+    )
+    conn.execute("UPDATE goals SET status='shelved' WHERE id=?", (sub,))
+    conn.commit()
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "ConfirmShelve", "target_goal_id": sub,
+         "reason": "still dead: superseded by the reframed joint invariant"},
+    ]))
+    assert strategist.verify_decisions(ds, conn, problem="p") == ""
+
+
+def test_verify_decisions_standalone_reconfirm_still_blocked_when_stalled(
+    conn: sqlite3.Connection,
+) -> None:
+    """The forcing backstop the exemption leans on: with the ROOT itself
+    blocked (shelved) and no live in-flight Inject, a no-Inject batch —
+    including a standalone re-confirm — is still hard-rejected by the
+    root-blocked gate. The exemption can never idle a stalled problem."""
+    root = _insert_root(conn)
+    sub = db.insert_goal(
+        conn, problem="p", slug="parked2",
+        lean_path="Problems/p/proofs/L_parked2.lean", statement="T",
+        origin="backward",
+    )
+    conn.execute("UPDATE goals SET status='shelved' WHERE id IN (?, ?)",
+                 (root, sub))
+    conn.commit()
+    ds, _ = strategist.parse_decisions(json.dumps([
+        {"kind": "ConfirmShelve", "target_goal_id": sub,
+         "reason": "still dead"},
+    ]))
+    err = strategist.verify_decisions(ds, conn, problem="p")
+    assert "will progress without your action" in err
+
+
 def test_verify_decisions_rejects_confirmshelve_paired_only_with_request_user_amend(
     conn: sqlite3.Connection,
 ) -> None:

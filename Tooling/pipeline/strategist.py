@@ -509,7 +509,27 @@ def verify_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     # reserved for Defs.lean / Manifest.md errors. Forces Strategist to
     # keep trying — articulating defeat without dispatching a fresh
     # attempt or redirecting focus is the lazy pattern this rule catches.
-    if any(d.kind == "ConfirmShelve" for d in decisions):
+    #
+    # SCOPE (2026-07-06, ConfirmShelve 終態): the pairing obligation
+    # applies to FIRST-TIME shelves only (target not already 'shelved').
+    # A ConfirmShelve re-confirming an already-shelved goal is the
+    # "still dead" verdict — forcing an Inject onto it mints a fresh
+    # reopen-promise (the shared batch_id), so the confirmation itself
+    # re-armed the loop it was answering (feedback ×2: a superseded goal
+    # re-fired after every batch, forever). A standalone re-confirm acks
+    # the old promise and carries none (no Inject sibling = no promise),
+    # permanently silencing the goal. Forcing is NOT weakened where it
+    # matters: the root-blocked gate below still rejects ANY no-Inject
+    # batch when nothing live is in flight, and an explicit
+    # Inject(target=...) / G1 dedupe revival can always bring the goal
+    # back.
+    def _is_first_shelve(d) -> bool:
+        g = db.get_goal(conn, d.target_id) if d.target_id is not None \
+            else None
+        return g is None or str(g["status"]) != "shelved"
+
+    if any(d.kind == "ConfirmShelve" and _is_first_shelve(d)
+           for d in decisions):
         action = sum(1 for d in decisions if d.kind == "Inject")
         if action == 0:
             return (

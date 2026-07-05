@@ -229,7 +229,9 @@ _WATERMARKS = {
     # 700→760: #35 stage 2/3 — _build_with_output warm routing + warm
     # _typecheck_capturing_types (#check types from info diagnostics, shared
     # _extract_check_types core) — 2026-06-19 — conscious bump.
-    "Tooling/quality/librarian/cleanup/_common.py": 760,
+    # 760→790: diff_magnitude (cleanup-throughput observability, 09736b8)
+    # — 2026-07-06 — conscious bump.
+    "Tooling/quality/librarian/cleanup/_common.py": 790,
     # 300→350: audit rewritten onto the shared LSP edit-mode retry loop
     # (`run_with_session_retries`, like builder / migrate-hole-fill) — cold-seed
     # `audited.lean` + warm incremental + --resume, `_write_mcp_config` LSP, and
