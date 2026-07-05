@@ -196,6 +196,62 @@ def test_section_paper_index_gating_and_shapes(tmp_path: Path) -> None:
     assert len(joined) < ctx.PAPER_INDEX_MAX_CHARS + 600
 
 
+def test_strategist_paper_section_carries_paper_ref_instruction(
+        tmp_path: Path) -> None:
+    """Phase 2: the MarkDeliverable provenance instruction is a
+    CONDITIONAL Context line (paper-bound only), never a static-prompt
+    edit (prompt-editing principle)."""
+    from Tooling.agent import phase2_context as p2
+    assert p2._section_paper_index_strategist(_mfst(""), tmp_path) == []
+    meta = _add_text_paper(tmp_path, "short paper\n")
+    joined = "\n".join(
+        p2._section_paper_index_strategist(_mfst(meta.id), tmp_path))
+    assert "paper_ref" in joined and "MarkDeliverable" in joined
+
+
+def test_review_paper_line_ref_and_missing(tmp_path: Path) -> None:
+    """Phase 2 review render: recorded paper_ref → shown; paper-bound
+    without a ref → loud locate-yourself placeholder; unbound → ''."""
+    import json
+    import sqlite3
+    from Tooling.core.cli import _deliverable_paper_line
+    from Tooling.state import db as _db
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    _db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at) VALUES "
+        "('Test.px', 'Problems/Test/px/Manifest.md',"
+        " '2026-07-06T00:00:00+00:00')")
+    pdir = _db.problem_dir(tmp_path, "Test.px")
+    pdir.mkdir(parents=True)
+    (pdir / "Manifest.md").write_text(
+        "---\nproblem: Test.px\npaper: abc123\n---\n\n# t\n",
+        encoding="utf-8")
+    gid = _db.insert_goal(
+        conn, problem="Test.px", slug="claim_a",
+        lean_path="Problems/Test/px/proofs/L_claim_a.lean",
+        statement="S", origin="forward", depth=0)
+    g = conn.execute("SELECT * FROM goals WHERE id=?", (gid,)).fetchone()
+    # No MarkDeliverable row yet → loud placeholder.
+    line = _deliverable_paper_line(conn, tmp_path, g, papers_cache={})
+    assert "no paper_ref recorded" in line
+    # Recorded ref → rendered.
+    conn.execute(
+        "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
+        " trigger_kind, decision_kind, target_id, payload, created_at,"
+        " updated_at) VALUES ('Test.px', 0, 'routine', 'MarkDeliverable',"
+        " ?, ?, '2026-07-06T00:00:00+00:00', '2026-07-06T00:00:00+00:00')",
+        (gid, json.dumps({"paper_ref": "p.19 trace trichotomy"})))
+    line = _deliverable_paper_line(conn, tmp_path, g, papers_cache={})
+    assert "p.19 trace trichotomy" in line and "abc123" in line
+    # Unbound problem → ''.
+    (pdir / "Manifest.md").write_text(
+        "---\nproblem: Test.px\n---\n\n# t\n", encoding="utf-8")
+    line = _deliverable_paper_line(conn, tmp_path, g, papers_cache={})
+    assert line == ""
+
+
 def test_section_paper_index_stale_map_warns(tmp_path: Path) -> None:
     from Tooling.agent import context as ctx
     meta = _add_text_paper(tmp_path, "short paper\n")

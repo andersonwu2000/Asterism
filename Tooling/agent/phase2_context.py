@@ -738,6 +738,23 @@ def _section_manifest_meta(mfst: manifest.Manifest,
     return out
 
 
+def _section_paper_index_strategist(mfst: manifest.Manifest,
+                                    workspace: Path) -> list[str]:
+    """Strategist view of the paper section: the shared navigation
+    block + the provenance-recording instruction (conditional — only a
+    paper-bound problem renders it; prompt stays static per the
+    prompt-editing principle)."""
+    lines = context._section_paper_index(mfst, workspace)
+    if not lines:
+        return lines
+    return lines + [
+        "When a deliverable's statement was pinned from the paper, "
+        "include `paper_ref: \"p.N <label>\"` in the MarkDeliverable "
+        "payload — it is shown to the human at sign-off.",
+        "",
+    ]
+
+
 def compile_strategist_context(conn: sqlite3.Connection, *,
                                problem: str, trigger_kind: str,
                                attempts_dir: Path,
@@ -793,7 +810,7 @@ def compile_strategist_context(conn: sqlite3.Connection, *,
         _section_failure_replay(conn, problem),
         _section_tree_inline(conn, workspace, problem),
         _section_manifest_meta(mfst, workspace, problem),
-        context._section_paper_index(mfst, workspace),
+        _section_paper_index_strategist(mfst, workspace),
     ]
     parts: list[str] = [f"# Strategist context — {problem}", ""]
     for sect in sections:
