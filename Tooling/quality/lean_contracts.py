@@ -198,6 +198,10 @@ def contract_decl_info_oracle(workspace: Path) -> "tuple[bool, str]":
       * `range` covers the docstring + `@[attr]` modifiers (slicing by range
         never orphans a docstring);
       * `ppSignature` incorporates section variables as ordinary binders;
+      * `ppSignature` spells the type EXPLICITLY for an inferred-type def
+        (`def f (x) := body` → `… : <type>`) and the client-side
+        `sig_conclusion` splits it — the round-trip decl-#1/#2 rest on
+        (statement mint + skeleton reconstruction);
       * a private decl is visible with its user-facing name normalized;
       * `open X in <decl>` is ONE command whose span covers the prefix
         (kind `Lean.Parser.Command.in`);
@@ -225,6 +229,9 @@ def contract_decl_info_oracle(workspace: Path) -> "tuple[bool, str]":
                 "end\n"
                 "open Nat in\n"
                 "theorem c_di_open : 2 = 2 := rfl\n"
+                # NO type ascription — the decl-#1/#2 case: pp must spell
+                # the inferred type.
+                "def c_di_inferred (x : Nat) := x + 1\n"
                 "instance : Inhabited Unit := ⟨()⟩\n"
                 "end CDi\n",
                 decl_info=True)
@@ -262,10 +269,19 @@ def contract_decl_info_oracle(workspace: Path) -> "tuple[bool, str]":
                if opn["cmdIdx"] < len(commands) else None)
     if not opn_cmd or opn_cmd["kind"] != "Lean.Parser.Command.in":
         return False, (f"open-in composite not one command: {opn_cmd}")
+    inferred = by_user.get("CDi.c_di_inferred")
+    if not inferred:
+        return False, "inferred-type def missing from decls"
+    from ..lsp.decl_oracle import sig_conclusion
+    concl = sig_conclusion(inferred.get("signature") or "")
+    if concl != "ℕ":
+        return False, (f"inferred-type def signature did not split to the "
+                       f"explicit type (want 'ℕ'): "
+                       f"sig={inferred.get('signature')!r} → {concl!r}")
     order = [d["userName"] for d in decls
              if d["userName"].startswith("CDi.c_di_")]
     if order != ["CDi.c_di_thm", "CDi.c_di_priv", "CDi.c_di_data",
-                 "CDi.c_di_open"]:
+                 "CDi.c_di_open", "CDi.c_di_inferred"]:
         return False, f"decls not in source order: {order}"
     # declNames = names AS WRITTEN: present for named decls, EMPTY for an
     # anonymous instance (whose synthesized constant still appears in

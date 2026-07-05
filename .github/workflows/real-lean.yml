@@ -32,6 +32,11 @@ on:
       - "lean-toolchain"
       - "lake-manifest.json"
       - "lakefile.lean"
+      # The contract definitions and the RPC they probe pin the Lean
+      # world just as much as the toolchain files — a push editing them
+      # must validate itself (e.g. a new probe decl in a contract).
+      - "Tooling/quality/lean_contracts.py"
+      - "Asterism/GatewayRpc.lean"
       # Self-validating: editing this workflow runs it — the landing
       # push IS the first clean-room run, no manual dispatch needed.
       - ".github/workflows/real-lean.yml"
