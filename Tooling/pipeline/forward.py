@@ -352,15 +352,19 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
     # form; exists even for an inferred-type def). Text extraction stays
     # as the cold fallback. If both fail, store empty string (lean_path
     # is the canonical artifact).
-    # Nominal kinds (structure / class / inductive) skip the oracle
-    # conclusion: `sig_conclusion` collapses every type former to its
-    # universe (`Type`), de-discriminating the statement key the dedupe
-    # pre-filters compare (the 5065/5026 blindness, inverted). The text
-    # extraction keeps `<binders> : <conclusion>` up to `where`.
+    # Nominal kinds (structure / class / inductive) prefer the TEXT
+    # extraction over the oracle conclusion: `sig_conclusion` collapses
+    # every type former to its universe (`Type`), de-discriminating the
+    # statement key the dedupe pre-filters compare (the 5065/5026
+    # blindness, inverted). The text extraction keeps
+    # `<binders> : <conclusion>` up to `where`. A BARE head
+    # (`structure foo where`) has no signature text at all — there the
+    # weak oracle conclusion beats an empty key.
     from ..lsp.decl_oracle import statement_from_decl_info
     if metadata.kind in ("structure", "class", "inductive"):
-        statement = _extract_statement_string(
-            body, metadata.slug, metadata.kind) or ""
+        statement = (_extract_statement_string(
+            body, metadata.slug, metadata.kind)
+            or statement_from_decl_info(decl_info, metadata.slug) or "")
     else:
         statement = (statement_from_decl_info(decl_info, metadata.slug)
                      or _extract_statement_string(body, metadata.slug,
@@ -580,13 +584,21 @@ def _extract_statement_string(body: str, slug: str,
         terminator = r"(?::=|\bwhere\b|$)"
     else:
         terminator = r"(?::=|$)"
+    # `(.*?)` not `(.+?)`: a bare nominal head (`structure foo where`)
+    # has NOTHING between name and `where` — a one-char-minimum lazy
+    # group can't match there and instead swallows the whole fields
+    # block up to end-of-string (toy_pair 2026-07-05: statement =
+    # "where\n a : ℕ…end …"). Empty capture → None; the commit mint
+    # falls back to the oracle conclusion.
     m = re.search(
-        rf"{kind}\s+{re.escape(slug)}\b\s*(.+?){terminator}",
+        rf"{kind}\s+{re.escape(slug)}\b[ \t]*(.*?){terminator}",
         body, re.DOTALL,
     )
     if m is None:
         return None
     s = m.group(1).strip()
+    if not s:
+        return None
     # Strip leading `:` (type signature starts after the colon) — only
     # applies when the slug is followed by `:` (theorem / def).
     if s.startswith(":"):

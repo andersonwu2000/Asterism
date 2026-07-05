@@ -609,6 +609,20 @@ def test_extract_metadata_anonymous_instance_targeted_error() -> None:
     assert "anonymous" in err and "instance <slug>" in err
 
 
+def test_extract_statement_string_bare_nominal_head_returns_none() -> None:
+    """`structure foo where` has nothing between name and `where`; the
+    old one-char-minimum lazy group swallowed the fields block up to
+    end-of-string (toy_pair 2026-07-05). Bare head → None; the commit
+    mint then falls back to the oracle conclusion."""
+    src = "structure toy_pair where\n  a : ℕ\n  b : ℕ\n\nend P\n"
+    assert forward._extract_statement_string(
+        src, "toy_pair", "structure") is None
+    # A signed head still extracts as before.
+    assert forward._extract_statement_string(
+        "structure toy_model : Type 1 where\n  val : ℕ → Prop\n",
+        "toy_model", "structure") == "Type 1"
+
+
 def test_extract_statement_string_instance_both_body_forms() -> None:
     """Instance statements stop at `:=` OR `where` — the where-block's
     inner `:= …` must not swallow the class-application type."""
