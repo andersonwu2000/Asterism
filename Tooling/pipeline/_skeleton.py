@@ -193,6 +193,7 @@ def promote_to_alias(
     namespace: str, slug: str, sid_token: str,
     scratch_module: str,
     annotation: str = "",
+    scratch_text: str = "",
 ) -> Path | None:
     """Rewrite parent stub as a re-export alias of the strategy:
         <annotation comment lines, if any>
@@ -225,6 +226,18 @@ def promote_to_alias(
                     if ln.strip().startswith("import")]
     if f"import {scratch_module}" not in orig_imports:
         orig_imports.append(f"import {scratch_module}")
+    # BUG4 residual (sphere_homology 2026-07-04, recurred twice): the
+    # modifier carry below reads the PARENT STUB — but when the stub was
+    # never marked `noncomputable` and the winning strategy decl IS, the
+    # alias still compile-fails cold ("mark it 'noncomputable'") with no
+    # cold backstop. `noncomputable` is a property of the PROOF TERM, so
+    # the strategy decl (`scratch_text`, when given) is the authority:
+    # union it in. Visibility modifiers stay the stub's choice — the
+    # public decl's author owns those.
+    mods = leading_decl_modifiers(original, slug)
+    if scratch_text and "noncomputable" not in mods:
+        if "noncomputable" in leading_decl_modifiers(scratch_text, sid_token):
+            mods = "noncomputable " + mods
     new_content = (
         annotation
         + "\n".join(orig_imports) + "\n\n"
@@ -239,7 +252,7 @@ def promote_to_alias(
         # trivial `main : True` root never imports the closure, so the broken
         # alias stays latent until harvest / review / a downstream import cold-
         # builds it. Attr-order: `@[attr]` precede `noncomputable` in Lean 4.
-        + f"{leading_decl_modifiers(original, slug)}"
+        + mods
         + f"def {slug} := @{namespace}.{sid_token}\n\n"
         + f"end {namespace}\n"
     )

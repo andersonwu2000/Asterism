@@ -110,6 +110,10 @@ def verify_strategy(
     annotation = (s["proposal_md"] or "")
     if annotation and not annotation.endswith("\n"):
         annotation += "\n"
+    try:
+        scratch_text = scratch_abs.read_text(encoding="utf-8")
+    except OSError:
+        scratch_text = ""
     promote_to_alias(
         parent_abs,
         namespace=f"Problems.{s['goal_problem']}",
@@ -117,6 +121,10 @@ def verify_strategy(
         sid_token=sid_token,
         scratch_module=scratch_module,
         annotation=annotation,
+        # BUG4 residual: the strategy decl is the `noncomputable`
+        # authority — a stub the agent forgot to mark must not produce
+        # a cold-broken alias (sphere suspension iso, 2026-07-04).
+        scratch_text=scratch_text,
     )
     return "proved"
 

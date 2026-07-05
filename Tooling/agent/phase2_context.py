@@ -668,7 +668,14 @@ def _section_tree_inline(conn: sqlite3.Connection,
         body = tree.render(conn, problem, frontier=True).strip()
     except Exception:
         body = ""
-    if not body or "no root goal" in body:
+    # Phase 7 regression fix (sphere_homology, ~8 agent reports): the old
+    # substring test `"no root goal" in body` also matched tree.py's
+    # pure-NL header `_(pure-NL problem — no root goal; deliverable forest
+    # below)_`, silently DISCARDING the entire deliverable-forest render
+    # on every strategist wake of a pure-NL problem. The placeholder it
+    # guarded against ("run `asterism init`") no longer exists — Phase 6
+    # made the rootless render a real forest — so only emptiness remains.
+    if not body:
         return ["## TREE", "", "(TREE.md not yet generated)", ""]
     tree_path = db.problem_dir(workspace, problem) / "TREE.md"
     try:

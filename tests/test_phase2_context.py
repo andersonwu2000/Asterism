@@ -940,3 +940,21 @@ def test_plan_note_section_renders_and_warns_over_cap(
     )
     assert "## Your plan note (private, cross-wake)" in out.read_text(
         encoding="utf-8")
+
+
+def test_tree_inline_keeps_pure_nl_forest(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """Phase 7 regression (~8 strategist reports): the fallback test
+    `"no root goal" in body` also matched tree.py's pure-NL forest header,
+    DISCARDING the whole deliverable-forest render on every wake. A
+    pure-NL problem with goals must surface its forest, not the
+    '(TREE.md not yet generated)' stub."""
+    _insert_problem(conn)
+    db.insert_goal(conn, problem="p", slug="brick_a",
+                   lean_path="P/L_brick_a.lean", statement="A",
+                   origin="forward", depth=0)
+    lines = phase2_context._section_tree_inline(conn, workspace, "p")
+    text = "\n".join(lines)
+    assert "(TREE.md not yet generated)" not in text
+    assert "brick_a" in text

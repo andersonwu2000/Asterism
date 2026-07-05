@@ -775,6 +775,34 @@ def test_promote_to_alias_carries_noncomputable_modifier(tmp_path: Path) -> None
     assert "noncomputable def iso := @Problems.p.s77" in new
 
 
+def test_promote_to_alias_noncomputable_from_strategy_decl(tmp_path: Path) -> None:
+    """BUG4 residual (sphere_homology 2026-07-04, bit twice): the parent
+    STUB was never marked `noncomputable` but the winning strategy decl
+    IS — carrying only the stub's modifiers still writes a cold-broken
+    alias with no cold backstop. The strategy decl is the authority for
+    `noncomputable` (it is a property of the proof term); visibility
+    modifiers remain the stub's choice."""
+    from Tooling.pipeline import _promote_to_alias
+    parent = tmp_path / "L_iso.lean"
+    parent.write_text(
+        "import Mathlib\n\nnamespace Problems.p\n\n"
+        "def iso : SomeCat.Iso A B := by sorry\n\n"      # stub NOT marked
+        "end Problems.p\n",
+        encoding="utf-8")
+    scratch_text = (
+        "import Mathlib\nnamespace Problems.p\n"
+        "noncomputable def s77 : SomeCat.Iso A B := someConstruction\n"
+        "end Problems.p\n")
+    _promote_to_alias(
+        parent,
+        namespace="Problems.p", slug="iso", sid_token="s77",
+        scratch_module="Problems.p.proofs._strategy_s77",
+        scratch_text=scratch_text,
+    )
+    new = parent.read_text(encoding="utf-8")
+    assert "noncomputable def iso := @Problems.p.s77" in new
+
+
 def test_promote_to_alias_plain_theorem_stays_bare(tmp_path: Path) -> None:
     """A plain `theorem` parent (Prop goal) has no keyword modifier, so the
     re-export stays a bare `def <slug> := @<sid>` — the modifier carry must

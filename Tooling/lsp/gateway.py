@@ -1105,6 +1105,19 @@ def _resync_buffer_from_disk(meta: "SessionMetadata") -> None:
         return
     if disk != meta.file_content:
         meta.file_content = disk
+        # Invalidate the claimed slot's content ownership: the hot path in
+        # `_acquire_slot` keys "slot already has our content" on PIPELINE
+        # identity, so after an external Write/Edit the refreshed mirror
+        # was never didChange'd in and `errors_at`/`goal_at` reported the
+        # PREVIOUS elaboration until some no-op apply_edit (~8 agent
+        # reports, sphere_homology 2026-07-04/05). Clearing the marker
+        # forces the next swap_in acquire through the cold_warmup
+        # didChange + wait_for_diagnostics. Safe lock-free: a session's
+        # tool calls are serial, so no concurrent op holds this slot.
+        for _slot in _state.workers:
+            if _slot.claimed_by == meta.pipeline_id:
+                _slot.content_pipeline_id = None
+                break
         _log_for(meta, {"event": "buffer_resync_from_disk",
                         "disk_lines": disk.count("\n") + 1})
 

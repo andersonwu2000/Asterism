@@ -69,7 +69,7 @@ def _extract_leading_annotation(current: str) -> str:
 
 def _canonical_alias_content(*, problem: str, goal_slug: str,
                              sid_token: str, scratch_module: str,
-                             current: str) -> str:
+                             current: str, scratch_text: str = "") -> str:
     """Canonical end-of-run content for a proved goal's lean_path.
 
     Mirrors what Verify Step 2's `promote_to_alias` writes:
@@ -106,15 +106,22 @@ def _canonical_alias_content(*, problem: str, goal_slug: str,
     winner = f"import {scratch_module}"
     if winner not in seen:
         keep_imports.append(winner)
+    # Carry keyword modifiers (`noncomputable` …) too — a data goal's
+    # re-export drops `noncomputable` and cold-build-fails without this
+    # (mirrors the same fix in `_skeleton.promote_to_alias`). BUG4
+    # residual twin: the strategy decl is the `noncomputable` authority
+    # when the goal's own file never carried it (stub the agent forgot
+    # to mark — sphere_homology 2026-07-04).
+    mods = leading_decl_modifiers(current, goal_slug)
+    if scratch_text and "noncomputable" not in mods:
+        if "noncomputable" in leading_decl_modifiers(scratch_text, sid_token):
+            mods = "noncomputable " + mods
     return (
         annotation
         + "\n".join(keep_imports) + "\n\n"
         f"namespace Problems.{problem}\n\n"
         f"{leading_decl_attrs(current, goal_slug)}"
-        # Carry keyword modifiers (`noncomputable` …) too — a data goal's
-        # re-export drops `noncomputable` and cold-build-fails without this
-        # (mirrors the same fix in `_skeleton.promote_to_alias`).
-        f"{leading_decl_modifiers(current, goal_slug)}"
+        f"{mods}"
         f"def {goal_slug} := @Problems.{problem}.{sid_token}\n\n"
         f"end Problems.{problem}\n"
     )
@@ -163,10 +170,14 @@ def reconcile_proved_goals(conn: sqlite3.Connection, workspace: Path,
             current = parent_abs.read_text(encoding="utf-8") if parent_abs.exists() else ""
         except OSError:
             continue
+        try:
+            _scratch_text = scratch_abs.read_text(encoding="utf-8")
+        except OSError:
+            _scratch_text = ""
         expected = _canonical_alias_content(
             problem=problem, goal_slug=r["slug"],
             sid_token=sid_token, scratch_module=scratch_module,
-            current=current,
+            current=current, scratch_text=_scratch_text,
         )
         if current == expected:
             continue
