@@ -53,9 +53,14 @@ DECL_KIND_RE_SRC = r"\b(theorem|def|structure|class)\s+"
 # Declaration head with leading attributes / keyword modifiers. The kind and
 # name groups feed the commit parser AND the gateway's submission mirror.
 DECL_MODIFIERS = r"(?:noncomputable|private|protected|partial|unsafe)"
+# Name group is `\w` (unicode) + Lean's trailing `'`/`!`/`?`: an ASCII-only
+# class truncated `td_gen_maps_to_sigma_ι` at the ι, so the gateway mirror
+# validated the ASCII PREFIX (which passes SLUG_RE) while commit rejected
+# the real name only after a full build (2026-07-05 audit). Capturing the
+# full identifier lets SLUG_RE fail it in the mirror, pre-commit.
 DECL_HEAD_RE = re.compile(
     r"^[ \t]*(?:@\[[^\]]*\][ \t]*)*(?:" + DECL_MODIFIERS + r"[ \t]+)*"
-    r"(theorem|def|structure|class)[ \t]+([A-Za-z_][A-Za-z0-9_]*)\b",
+    r"(theorem|def|structure|class)[ \t]+([A-Za-z_][\w'!?]*)",
     re.MULTILINE,
 )
 

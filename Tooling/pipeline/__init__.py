@@ -522,17 +522,29 @@ def _extract_decline_reason(comment_block: str) -> str | None:
     return m.group(1) if m else None
 
 
-_THM_HEAD_RE = re.compile(r"\btheorem\s+\S+")
+# def/abbrev included (2026-07-05, feedback audit): the theorem-only head
+# left every data sub-goal with statement='' — blank Context and, worse, a
+# BLIND statement-keyed dedupe (byte-identical twins 5065/5026 ground 6+
+# attempts before a strategist caught them by hand). A def's "statement" is
+# its explicit type ascription — guaranteed present on sorry-bearing defs
+# by the 8fb8291 Forward gate. Comments stripped before the search
+# (cbe5bc3 extractor-family discipline: `def`/`theorem` appear in rationale
+# prose far more often than a decl head).
+_THM_HEAD_RE = re.compile(r"\b(?:theorem|lemma|def|abbrev)\s+\S+")
+_COMMENT_RE = re.compile(r"/-.*?-/|--[^\n]*", re.DOTALL)
 
 
 def _extract_statement(text: str) -> str:
-    """Extract the type expression of the first `theorem` declaration.
+    """Extract the type expression of the first declaration head
+    (`theorem` / `lemma` / `def` / `abbrev`).
 
     Handles explicit args `(x : T)`, implicit args `{α : Type*}`,
     instance args `[Inhabited α]`, and arbitrary depth of paren/brace/bracket
-    nesting in the type itself. Returns the substring between the theorem's
-    top-level `:` and the top-level `:=`.
+    nesting in the type itself. Returns the substring between the decl's
+    top-level `:` and the top-level `:=` — '' when there is no top-level
+    type colon (inferred-type def) or no declaration at all.
     """
+    text = _COMMENT_RE.sub(" ", text)
     m = _THM_HEAD_RE.search(text)
     if not m:
         return ""

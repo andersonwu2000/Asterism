@@ -112,8 +112,11 @@ def test_extract_statement(src: str, want: str) -> None:
     assert _extract_statement(src) == want
 
 
-def test_extract_statement_no_theorem() -> None:
-    assert _extract_statement("def foo : Nat := 1") == ""
+def test_extract_statement_no_decl() -> None:
+    # def now extracts (2026-07-05 — dedupe was blind on data goals);
+    # no declaration at all still yields ''.
+    assert _extract_statement("def foo : Nat := 1") == "Nat"
+    assert _extract_statement("open Foo -- no decl here") == ""
 
 
 # ---------------------------------------------------------------------
@@ -1312,3 +1315,31 @@ def test_extract_decline_returns_none_for_empty() -> None:
 def test_extract_decline_tolerates_whitespace_around_directive() -> None:
     block = "--   decline:  too_hard  \n"
     assert _extract_decline_reason(block) == "too_hard"
+
+
+def test_extract_statement_def_with_explicit_type() -> None:
+    """2026-07-05 audit: theorem-only extraction left every data sub-goal
+    with statement='' — blank Context + statement-keyed dedupe blind on
+    def goals (byte-identical twins 5065/5026). A def's statement is its
+    explicit type ascription; comments are stripped first so rationale
+    prose mentioning `def`/`theorem` can't hijack the head."""
+    t = ("-- rationale: def the transported iso here\n"
+         "noncomputable def foo {R : Type} (A : Set R) : SomeIso A R "
+         ":= by sorry")
+    assert _extract_statement(t) == "SomeIso A R"
+    assert _extract_statement("def baz := 42") == ""          # inferred type
+    assert _extract_statement(
+        "/- block comment: theorem fake : X := -/\n"
+        "theorem real : True := by trivial") == "True"
+
+
+def test_decl_head_re_captures_unicode_identifier() -> None:
+    """2026-07-05 audit: the ASCII-only name class truncated
+    `td_gen_maps_to_sigma_ι` at the ι — the mirror validated the passing
+    ASCII prefix while commit rejected the real name after a full build.
+    The full identifier must be captured so SLUG_RE fails it pre-commit."""
+    from Tooling.state.assemble import DECL_HEAD_RE
+    m = DECL_HEAD_RE.search("theorem td_gen_maps_to_sigma_ι : True := t")
+    assert m is not None and m.group(2) == "td_gen_maps_to_sigma_ι"
+    m2 = DECL_HEAD_RE.search("noncomputable def foo' : Nat := 1")
+    assert m2 is not None and m2.group(2) == "foo'"

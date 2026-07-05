@@ -86,7 +86,7 @@ def _clean(entry) -> tuple:
 
 
 def _verify(blocks, workspace: Path, problem_dir: Path,
-            conn=None) -> list:
+            conn=None, exclude_slug: str = "") -> list:
     """Verify a 3-block pre-search result `{in_problem, library, mathlib}`,
     each a list of `{name, why}`. Per source:
       - in_problem: keep names whose decl appears in the problem's `proofs/`
@@ -129,6 +129,11 @@ def _verify(blocks, workspace: Path, problem_dir: Path,
         for entry in ip:
             name, why = _clean(entry)
             if not name:
+                continue
+            # Self-exclusion (2026-07-05 audit): the goal's OWN sorry stub
+            # sits in proofs/, so the hay check below "verifies" it and the
+            # candidate list then invites citing an open goal as if proved.
+            if exclude_slug and name.rsplit(".", 1)[-1] == exclude_slug:
                 continue
             short = name.rsplit(".", 1)[-1]
             if (not hay) or (short and short in hay):
@@ -258,7 +263,8 @@ def ensure_presearch(*, goal, workspace: Path, problem_dir: Path,
         raw = json.loads(out_path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             return None
-        verified = _verify(raw, workspace, problem_dir, conn=conn)
+        verified = _verify(raw, workspace, problem_dir, conn=conn,
+                           exclude_slug=str(goal["slug"]))
         if not verified:
             return None
         section = _render_section(verified)

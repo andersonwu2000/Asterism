@@ -115,3 +115,23 @@ def test_section_present_when_cache_exists(tmp_path):
     out = context._section_presearch_candidates(pdir, 7)
     assert out and "Candidate lemmas" in "\n".join(out)
     assert context._section_presearch_candidates(pdir, 999) == []
+
+
+def test_verify_excludes_goal_own_slug(tmp_path):
+    """2026-07-05 audit: the goal's OWN sorry stub sits in proofs/, so the
+    in_problem hay check 'verified' it and the candidate list invited
+    citing an open goal as if proved."""
+    from Tooling.pipeline import _presearch
+    pdir = tmp_path / "Problems" / "p"
+    (pdir / "proofs").mkdir(parents=True)
+    (pdir / "proofs" / "L_my_goal.lean").write_text(
+        "theorem my_goal : True := by sorry\n"
+        "theorem sibling_done : True := trivial\n", encoding="utf-8")
+    blocks = {"in_problem": [
+        {"name": "my_goal", "why": "matches"},
+        {"name": "sibling_done", "why": "proved sibling"},
+    ], "library": [], "mathlib": []}
+    out = _presearch._verify(blocks, tmp_path, pdir, exclude_slug="my_goal")
+    names = [e["name"] for e in out]
+    assert "my_goal" not in names
+    assert "sibling_done" in names
