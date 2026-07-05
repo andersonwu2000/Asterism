@@ -280,6 +280,30 @@ def test_canonicalize_anchor_pending_maps_sname_to_public_slug(conn):
     assert len(out) == 3
 
 
+def test_fold_generated_companions_folds_into_parent_inductive():
+    """Compiler companions (`X.rec`, `X.casesOn`, `X.brecOn.go`, …) of an
+    in-list inductive fold away from the presentation; constructors, plain
+    members, and orphan companions (parent absent → fail-closed) stay."""
+    from Tooling.pipeline._constants import fold_generated_companions
+    P = "Problems.P.a"
+    raw = [
+        {"name": f"{P}.tree", "module": "m", "kind": "induct"},
+        {"name": f"{P}.tree.leaf", "module": "m", "kind": "ctor"},
+        {"name": f"{P}.tree.rec", "module": "m", "kind": "rec"},
+        {"name": f"{P}.tree.casesOn", "module": "m", "kind": "def"},
+        {"name": f"{P}.tree.brecOn.go", "module": "m", "kind": "def"},
+        {"name": f"{P}.tree.depth", "module": "m", "kind": "def"},
+        # orphan: parent inductive NOT in the list → kept (fail-closed)
+        {"name": f"{P}.ghost.rec", "module": "m", "kind": "rec"},
+    ]
+    out, dropped = fold_generated_companions(raw)
+    names = {c["name"] for c in out}
+    assert dropped == 3
+    assert names == {f"{P}.tree", f"{P}.tree.leaf", f"{P}.tree.depth",
+                     f"{P}.ghost.rec"}
+    assert raw[2]["name"] == f"{P}.tree.rec"  # input not mutated
+
+
 def test_find_reject_victims_matches_canonicalized_sname(conn):
     """A deliverable whose closure cites the INTERNAL `s<N>` (not the public
     slug) — the lone-`s<N>` case — must still be caught by the reject cascade.

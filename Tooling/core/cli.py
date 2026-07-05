@@ -1367,7 +1367,8 @@ def cmd_review(args: argparse.Namespace) -> int:
     deliverables whose closure could not be computed print a WARN."""
     from ..lsp import lifecycle as gateway_lifecycle
     from ..pipeline._constants import (anchor_closure_goal,
-                                       canonicalize_anchor_pending)
+                                       canonicalize_anchor_pending,
+                                       fold_generated_companions)
 
     workspace = Path.cwd()
     conn = db.connect()
@@ -1409,6 +1410,8 @@ def cmd_review(args: argparse.Namespace) -> int:
         # stays rejectable). #71.
         r.pending = canonicalize_anchor_pending(
             conn, workspace, g["problem"], r.pending)
+        # Presentation only — reject/harvest consume the raw closure.
+        r.pending, folded = fold_generated_companions(r.pending)
         kind = "claim" if r.top_is_claim else f"anchor:{r.top_kind}"
         print(f"\n▸ {fq}  [{kind}]   (module {r.top_module or '<local>'})")
         if not r.pending:
@@ -1416,6 +1419,9 @@ def cmd_review(args: argparse.Namespace) -> int:
                   "Mathlib ∪ Library)")
         render(r.anchors, "anchors (defs you must vouch for):")
         render(r.claims, "claims (lemmas the closure rests on):")
+        if folded:
+            print(f"      (+{folded} compiler-generated companions "
+                  f"folded into their parent inductive)")
         union.update(c["name"] for c in r.pending)
 
     conn.close()

@@ -184,3 +184,49 @@ def canonicalize_anchor_pending(conn, workspace: Path, problem: str,
         seen.add(name)
         out.append(c)
     return out
+
+
+# Compiler-manufactured companion suffixes of an inductive/structure
+# declaration. Their content is kernel-derived from the parent decl —
+# vouching the parent vouches them — so the review PRESENTATION folds
+# them into the parent. Constructor names are NOT here: constructors
+# ARE the content under review (Lean rejects user constructors that
+# shadow these names, so the set is unambiguous).
+_GENERATED_COMPANIONS = frozenset({
+    "rec", "recOn", "casesOn", "brecOn", "binductionOn",
+    "below", "ibelow", "noConfusion", "noConfusionType",
+})
+
+
+def fold_generated_companions(
+        pending: "list[dict]") -> "tuple[list[dict], int]":
+    """Presentation-layer fold (#71-class noise, inductive edition): drop
+    a pending entry when it is a compiler-generated companion (`X.rec`,
+    `X.casesOn`, `X.brecOn.go`, ...) of an inductive/structure `X` that
+    is ITSELF a pending entry — the kernel derives the companion's
+    meaning entirely from `X`'s constructors, so the human vouches it by
+    vouching `X`.
+
+    Fail-closed: an entry whose parent is not in the list as an
+    `induct` (or that is itself a `ctor`) is kept. The kernel walk,
+    `asterism reject` cascade, and harvest all consume the RAW closure —
+    this reshapes the human-facing list only.
+
+    Returns (folded_list, dropped_count); the input is not mutated."""
+    inducts = {c.get("name", "") for c in pending
+               if c.get("kind") == "induct"}
+    out: list[dict] = []
+    dropped = 0
+    for c in pending:
+        parts = c.get("name", "").split(".")
+        # Parent prefix + a companion component right after it (deeper
+        # components — `brecOn.go` — ride along with their companion).
+        fold = c.get("kind") != "ctor" and any(
+            ".".join(parts[:i]) in inducts
+            and parts[i] in _GENERATED_COMPANIONS
+            for i in range(1, len(parts)))
+        if fold:
+            dropped += 1
+        else:
+            out.append(c)
+    return out, dropped
