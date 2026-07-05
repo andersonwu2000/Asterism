@@ -761,9 +761,12 @@ def _section_prior_patch(kind: str | None, problem_dir: Path,
     Unlike `_section_prior_partial`'s narrative note, this surfaces
     the actual proof code the previous spawn was working on. The
     next Builder reads it as an unverified starting point — may copy
-    intact, refactor, or discard.
+    intact, refactor, or discard. Backward (2026-07-06, timeout-fallback
+    salvage) gets it too, with a caveat: its patch declares the PRIOR
+    strategy's `s<id>` token, which the fresh skeleton has re-minted —
+    the material is a clue, never a verbatim copy source.
     """
-    if kind != "builder":
+    if kind not in ("builder", "backward"):
         return []
     try:
         from ..pipeline import _drafts
@@ -773,6 +776,11 @@ def _section_prior_patch(kind: str | None, problem_dir: Path,
         problem_dir=problem_dir, kind=kind, goal_id=goal_id)
     if not body:
         return []
+    caveat = (
+        [] if kind == "builder" else
+        ["NOTE: it declares the previous strategy's `s<id>` name — your "
+         "skeleton has a NEW one. Reuse ideas/lemmas, not the header.",
+         ""])
     return [
         "## Your previous patch.lean attempt (unverified)",
         "",
@@ -782,6 +790,7 @@ def _section_prior_patch(kind: str | None, problem_dir: Path,
         "proof, a partial sketch, or a wrong direction — treat as a "
         "starting point, validate via the LSP before relying on it.",
         "",
+        *caveat,
         "```lean",
         body.rstrip(),
         "```",

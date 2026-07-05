@@ -70,9 +70,17 @@ def run_builder(conn: sqlite3.Connection, *, goal_id: int,
                                     kind="builder", goal_id=goal_id)
     else:
         attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
-        _drafts.persist_partials(attempts_dir=attempts_dir,
-                                 problem_dir=problem_dir,
-                                 kind="builder", goal_id=goal_id, conn=conn)
+        note = _drafts.persist_partials(attempts_dir=attempts_dir,
+                                        problem_dir=problem_dir,
+                                        kind="builder", goal_id=goal_id,
+                                        conn=conn)
+        if note is None:
+            # Even the postmortem left nothing — save the half-finished
+            # patch as the only remaining clue (user ruling: note is
+            # preferred, patch is the no-note fallback).
+            _drafts.salvage_patch_fallback(
+                attempts_dir=attempts_dir, problem_dir=problem_dir,
+                kind="builder", goal_id=goal_id)
     return result
 
 

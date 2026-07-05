@@ -371,3 +371,83 @@ def test_plan_note_absent_means_no_update(tmp_path):
     assert _drafts.persist_plan_note(problem_dir=problem_dir,
                                      attempts_dir=attempts) is None
     assert _drafts.read_plan_note(problem_dir) == "keep me"
+
+
+# ---------------------------------------------------------------------
+# salvage_patch_fallback — in-daemon timeout last resort (2026-07-06,
+# user ruling): the postmortem note is the preferred carry-over (it
+# demands an ALTER plan, steering the next spawn away from the dead
+# end); the half-finished patch is saved ONLY when even the postmortem
+# left nothing.
+# ---------------------------------------------------------------------
+
+def _mk_dirs(tmp_path):
+    attempts = tmp_path / ".attempts" / "x"
+    problem_dir = tmp_path / "Problems" / "p"
+    attempts.mkdir(parents=True)
+    problem_dir.mkdir(parents=True)
+    return attempts, problem_dir
+
+
+def test_salvage_patch_fallback_saves_substantive_patch(tmp_path):
+    from Tooling.pipeline import _drafts
+    attempts, problem_dir = _mk_dirs(tmp_path)
+    (attempts / "patch.lean").write_text(
+        "import Mathlib\n"
+        "theorem s9 : True := by\n"
+        "  have h1 : 1 + 1 = 2 := rfl\n"
+        "  exact trivial\n", encoding="utf-8")
+    out = _drafts.salvage_patch_fallback(
+        attempts_dir=attempts, problem_dir=problem_dir,
+        kind="builder", goal_id=7)
+    assert out is not None and out.exists()
+    assert out == _drafts.patch_drafts_path(problem_dir, "builder", 7)
+    assert "have h1" in out.read_text(encoding="utf-8")
+
+
+def test_salvage_patch_fallback_skips_bare_sorry_stub(tmp_path):
+    """A pristine skeleton is not a clue - surfacing it as a previous
+    attempt would mislead (same guard as the startup orphan salvage)."""
+    from Tooling.pipeline import _drafts
+    attempts, problem_dir = _mk_dirs(tmp_path)
+    (attempts / "patch.lean").write_text(
+        "import Mathlib\nnamespace P\n"
+        "theorem s9 : True := by sorry\nend P\n", encoding="utf-8")
+    assert _drafts.salvage_patch_fallback(
+        attempts_dir=attempts, problem_dir=problem_dir,
+        kind="builder", goal_id=7) is None
+    assert not _drafts.patch_drafts_path(problem_dir, "builder", 7).exists()
+
+
+def test_salvage_patch_fallback_missing_patch_or_kind(tmp_path):
+    from Tooling.pipeline import _drafts
+    attempts, problem_dir = _mk_dirs(tmp_path)
+    assert _drafts.salvage_patch_fallback(
+        attempts_dir=attempts, problem_dir=problem_dir,
+        kind="builder", goal_id=7) is None
+    (attempts / "patch.lean").write_text(
+        "theorem s9 : True := trivial\n", encoding="utf-8")
+    assert _drafts.salvage_patch_fallback(
+        attempts_dir=attempts, problem_dir=problem_dir,
+        kind="strategist", goal_id=7) is None
+
+
+def test_prior_patch_section_surfaces_for_backward_with_caveat(tmp_path):
+    """The salvaged-patch Context section now renders for Backward too;
+    its patch declares the PRIOR strategy s<id>, so the section carries
+    the do-not-copy-the-header caveat."""
+    from Tooling.pipeline import _drafts
+    from Tooling.agent import context as ctx
+    problem_dir = tmp_path / "Problems" / "p"
+    (problem_dir / ".drafts").mkdir(parents=True)
+    _drafts.patch_drafts_path(problem_dir, "backward", 5).write_text(
+        "theorem s4 : True := by\n  exact trivial\n", encoding="utf-8")
+    lines = ctx._section_prior_patch("backward", problem_dir, 5)
+    text = "\n".join(lines)
+    assert "previous patch.lean attempt" in text
+    assert "NEW one" in text                       # the s<id> caveat
+    # Builder rendering unchanged: no caveat line.
+    _drafts.patch_drafts_path(problem_dir, "builder", 5).write_text(
+        "theorem b : True := by\n  exact trivial\n", encoding="utf-8")
+    btext = "\n".join(ctx._section_prior_patch("builder", problem_dir, 5))
+    assert "NEW one" not in btext

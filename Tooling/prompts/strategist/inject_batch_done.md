@@ -15,6 +15,7 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
    - Brick landed, gap closed → `Inject(<pipeline>, brief=...)` back to the original goal naming which brick to cite
    - Brick landed but gap remains → `Inject` a new brick + `ConfirmShelve` to keep parked
    - Brick didn't land / proof direction was wrong → `ConfirmShelve` this goal + `Inject` a reframed angle on its upper goal
+   - Permanently superseded → standalone `ConfirmShelve` (no paired Inject)
 
 4. **Edge case**: if Context.md also has `## Framework stalled` (tree has nothing dispatchable and no in-flight worker) → emit at least one `Inject`, else framework idles until the next routine tick.
 
@@ -31,7 +32,7 @@ Output as `decision.json` — JSON array of one or more decisions. Before finish
   - `Forward`: produces one new def/theorem into `proofs/L_<slug>.lean`; no `target_goal_id`. Search for an existing lemma first. Do not add defs via `Defs.lean`.
   - `Backward`: decompose into strategy + N sub-goals, each in its own `.lean`.
   - `Builder`: single file inline, one tactic block.
-- `ConfirmShelve` — `target_goal_id`, `reason`. Must pair with `Inject` in same batch
+- `ConfirmShelve` — `target_goal_id`, `reason`. First shelve pairs with an `Inject`; re-confirming an already-shelved goal stands alone.
 - `EmitDirective` — `scope="problem:<name>"`, `body`, `reason`. Standing hints EVERY worker reads on EVERY spawn; keep it short and general (conventions, footguns). Your plans/progress go in `_plan.md`; goal-specific hints in an Inject brief.
 - `MarkDeliverable` — `target_goal_id`, optional `reason`. Flag a landed node as a top-level *deliverable*. Only a Forward-produced node can be marked, and only once it satisfies what the Manifest asked for. Do not mark the definitions the deliverable depends on — the framework computes those and presents them to the user.
 - `Ingest` — optional `reason`. The problem's only exit: emit once the Manifest is fully satisfied. Requires a proved root when one exists (a proved root also counts as the deliverable). Never in the same batch as its `MarkDeliverable`s — mark first; the framework re-wakes you immediately and you Ingest then.

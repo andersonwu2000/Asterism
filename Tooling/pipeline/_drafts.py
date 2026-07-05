@@ -272,6 +272,47 @@ def _patch_is_substantive(text: str) -> bool:
     return True
 
 
+def salvage_patch_fallback(*, attempts_dir: Path, problem_dir: Path,
+                           kind: str, goal_id: int) -> Path | None:
+    """LAST-RESORT patch salvage for the in-daemon timeout path.
+
+    Design (user ruling 2026-07-06): the postmortem note is the PREFERRED
+    carry-over — it demands an alternative plan, deliberately steering the
+    next spawn away from the dead end the killed one was circling. A
+    leftover half-proof would invite re-treading it, so it is NOT saved
+    when a note exists. But when even the postmortem died (nothing in
+    `_progress.md` — the caller checks `persist_partials() is None`), a
+    half-finished patch is the only clue left; persist it to the same
+    `.drafts/<kind>_g<gid>_patch.lean` slot the startup orphan salvage
+    uses, so `context._section_prior_patch` surfaces it for free.
+
+    Returns the drafts path on write, None when there is nothing
+    substantive to save."""
+    if kind not in PARTIAL_PERSIST:
+        return None
+    src = attempts_dir / _PATCH_FILENAME
+    if not src.exists():
+        return None
+    try:
+        text = src.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not _patch_is_substantive(text):
+        return None
+    if len(text) > _PATCH_DRAFTS_BUDGET:
+        text = (text[:_PATCH_DRAFTS_BUDGET]
+                + f"\n\n-- (truncated; full patch was {len(text)} chars)")
+    out = patch_drafts_path(problem_dir, kind, goal_id)
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text, encoding="utf-8")
+    except OSError:
+        return None
+    print(f"[patch-salvage] timeout fallback (no postmortem note) → "
+          f"{out.name} (g{goal_id})", flush=True)
+    return out
+
+
 def _resolve_goal_for_slug(conn: "_sqlite3.Connection",
                            slug: str) -> tuple[int, str, str] | None:
     """Look up the goal id + problem + kind hint for a slug. patch.lean
