@@ -5,6 +5,12 @@
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
+### 2026-07-04
+- Replaced fragile text-pattern extraction of Lean declarations with direct queries to the Lean compiler and language server, so theorem names and definitions are now read from ground truth.
+- Centralized the check that marks a theorem as proved at a single chokepoint and closed a gap where declarations containing incomplete proofs could slip past validation.
+- Reworked task scheduling so each problem is tracked through to one well-defined terminal state, with the database schema and tests updated to match.
+- Hardened the infrastructure with startup checks of the framework's assumptions about Lean's interface, a crash-consistency audit, unified configuration handling, and refactored scheduling, retry, and proof-assembly plumbing.
+
 ### 2026-07-03
 - Extended the axiom-soundness check to run at more decision points, including after every rewrite that follows a library merge, so no proof is accepted that silently depends on extra axioms.
 - Funneled all remaining proof and status writes through single checked entry points, adding a lint rule to keep unaudited writes from creeping back in.
@@ -131,11 +137,6 @@
 - A broader linear-algebra campaign produced several further new proofs and re-derived some earlier ones more compactly by reusing shared lemmas.
 - The lemma library was turned into a cross-problem pool, so results established for one problem can now be reused as building blocks for others.
 - Tightened the proof checker so that a verification timeout is reported as indeterminate rather than as a success.
-
-### 2026-06-04
-- Made the system's library of already-proved lemmas citable by new proof attempts, and trimmed that library down to only the lemmas the main theorem actually depends on, dropping unused leftovers.
-- Hardened the machinery that renames and relocates those lemmas — redirecting stale references, reading proof files case-insensitively, ignoring `sorry` placeholders that appear only in comments, and checking a proof's axiom dependencies in a single pass.
-- Backward search now discards subgoals that make no progress toward the goal, and a new check flags when a freshly introduced definition collides with an existing mathlib name so it can be renamed before proving continues.
 
 <!-- ASTERISM-PROGRESS:END -->
 
