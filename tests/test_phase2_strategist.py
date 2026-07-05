@@ -2124,13 +2124,20 @@ def test_commit_decisions_multi_forward_share_one_batch_id(
     assert len(outcomes) == 2
     assert outcomes[0].batch_id is not None
     assert outcomes[0].batch_id == outcomes[1].batch_id
-    # Both decision rows persist with the same batch_id.
+    # Both decision rows persist with the same batch_id, and the audit
+    # payload carries REAL per-step indices + the batch size (was
+    # hardcoded step_index=0 for every row — Context labelled every
+    # step "step 0" and the Strategist couldn't line outcomes up with
+    # its briefs).
     rows = list(conn.execute(
-        "SELECT batch_id FROM strategist_decisions"
+        "SELECT batch_id, payload FROM strategist_decisions"
         " WHERE id IN (?, ?) ORDER BY id",
         (outcomes[0].decision_row_id, outcomes[1].decision_row_id),
     ))
     assert rows[0]["batch_id"] == rows[1]["batch_id"] == outcomes[0].batch_id
+    payloads = [json.loads(r["payload"]) for r in rows]
+    assert [p["step_index"] for p in payloads] == [0, 1]
+    assert [p["batch_size"] for p in payloads] == [2, 2]
 
 
 def test_commit_decisions_mixed_forward_and_backward_share_batch_id(

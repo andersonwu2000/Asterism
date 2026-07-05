@@ -41,6 +41,7 @@ Before committing, `Grep` mathlib briefly for any concept the agent claims is mi
 ## Rules
 - Empty array rejected.
 - Inject(Forward) carries no `target_goal_id`; Inject(Backward/Builder) requires one.
+- Same-batch Forward bricks must be independent (concurrent dispatch); a dependent brick goes in the next batch.
 - Don't dig into tactics or Lean syntax. Lemma names, invariant constructions, proof techniques fair game.
 
 ## Examples

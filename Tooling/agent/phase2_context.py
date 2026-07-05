@@ -193,8 +193,12 @@ def _section_pending_review_failure(
             out.append(f"  detail: {detail}")
         proposal = (r["proposal_md"] or "").strip()
         if proposal:
-            if len(proposal) > 1500:
-                proposal = proposal[:1500].rstrip() + "\n…(truncated)"
+            # 1500→4000 (2026-07-05): the shelve brief IS the review's
+            # primary evidence, and 1500 chars truncated real proposals
+            # mid-signature at the exact payload the verdict hinges on
+            # (feedback: Strategist reconstructed it by source-grepping).
+            if len(proposal) > 4000:
+                proposal = proposal[:4000].rstrip() + "\n…(truncated)"
             out += ["", "  agent brief:", "  ```", proposal, "  ```"]
         out.append("")
     return out
@@ -303,11 +307,13 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
     runs first sees the batch and gets a chance to act on it. Acking
     via the ratchet still prevents double-processing across calls.
 
-    Per-step "produced lemma" lookup intentionally omitted: goals don't
-    carry decision_id, so attribution would have to match by
-    problem + created_at which can't disambiguate steps of the same
-    batch. Strategist reads `## Library` + `## TREE` for what actually
-    landed.
+    Per-step "landed" line: `produced_goal_id` (backfilled by the
+    Forward commit / redispatch target) resolves each step to the decl
+    that actually exists — kernel truth, not the Strategist's past
+    intent. The Strategist repeatedly reported having to guess which
+    decl a `success` step landed as (feedback 2026-07-04, 30+ entries);
+    an earlier docstring claimed attribution was impossible, which
+    predates the `produced_goal_id` column.
     """
     batch_ids = db.unacknowledged_inject_batches(conn, problem)
     if not batch_ids:
@@ -315,12 +321,15 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
     out = ["## Completed Inject batches (newest first)", ""]
     placeholders = ",".join("?" * len(batch_ids))
     rows = list(conn.execute(
-        f"SELECT id, batch_id, brief, payload, outcome, outcome_detail,"
-        f" updated_at"
-        f" FROM strategist_decisions"
-        f" WHERE batch_id IN ({placeholders})"
-        f" ORDER BY MAX(updated_at) OVER (PARTITION BY batch_id) DESC,"
-        f"          batch_id, id",
+        f"SELECT d.id, d.batch_id, d.brief, d.payload, d.outcome,"
+        f" d.outcome_detail, d.updated_at,"
+        f" g.slug AS landed_slug, g.status AS landed_status,"
+        f" g.statement AS landed_statement"
+        f" FROM strategist_decisions d"
+        f" LEFT JOIN goals g ON g.id = d.produced_goal_id"
+        f" WHERE d.batch_id IN ({placeholders})"
+        f" ORDER BY MAX(d.updated_at) OVER (PARTITION BY d.batch_id) DESC,"
+        f"          d.batch_id, d.id",
         batch_ids,
     ))
     grouped: dict[str, list[sqlite3.Row]] = {}
@@ -355,6 +364,14 @@ def _section_inject_batch_outcomes(conn: sqlite3.Connection,
                 brief = brief[:1200].rstrip() + "…"
             outcome_text = r["outcome"] or "(no outcome)"
             out.append(f"- **step {idx}** outcome=`{outcome_text}`")
+            if r["landed_slug"]:
+                stmt = " ".join(str(r["landed_statement"] or "").split())
+                if len(stmt) > 300:
+                    stmt = stmt[:300].rstrip() + "…"
+                out.append(
+                    f"  landed: `{r['landed_slug']}` "
+                    f"(status={r['landed_status']})"
+                    + (f" — `{stmt}`" if stmt else ""))
             out.append(f"  brief: {brief}")
             detail = (r["outcome_detail"] or "").strip()
             if detail:
@@ -533,9 +550,13 @@ def _section_active_goals(conn: sqlite3.Connection,
         return []
     out = ["## Active goals", ""]
     for r in rows:
+        # 200→400 (2026-07-05): statements are now pp-canonical
+        # conclusions (decl-#1) and 200 cut many real ones mid-term —
+        # the Strategist fell back to reading stub files to compare
+        # goals (feedback: twin-goal hunt done by hand).
         st = str(r["statement"])
-        if len(st) > 200:
-            st = st[:200].rstrip() + "…"
+        if len(st) > 400:
+            st = st[:400].rstrip() + "…"
         out.append(
             f"- [{r['id']}] depth={r['depth']} "
             f"{r['status']:25s} attempts={r['attempts']}"

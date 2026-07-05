@@ -38,6 +38,7 @@ Time budget: {timeout_min} min. Tools: Read / Write / Edit / Grep / Bash(`python
 ## Rules
 - Defs.lean / Manifest.md are user-owned; don't write directly.
 - Empty array rejected.
+- Same-batch Forward bricks must be independent (concurrent dispatch); a dependent brick goes in the next batch.
 - Don't dig into tactics / Lean syntax — that's worker's job. Lemma names, invariant constructions, proof techniques fair game.
 
 ## Examples

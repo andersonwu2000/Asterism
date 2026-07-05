@@ -644,7 +644,9 @@ class CommitOutcome:
 def _commit_inject_batch(decision: Decision, conn: sqlite3.Connection,
                          *, problem: str, tick: int,
                          trigger_kind: str,
-                         inject_batch_id: str | None = None) -> CommitOutcome:
+                         inject_batch_id: str | None = None,
+                         step_index: int = 0,
+                         batch_size: int = 1) -> CommitOutcome:
     """Commit one Strategist Inject decision. Dispatches to the
     pipeline-specific helper.
 
@@ -668,12 +670,14 @@ def _commit_inject_batch(decision: Decision, conn: sqlite3.Connection,
     if pipeline == "Forward":
         return _commit_inject_forward(
             decision, conn, problem=problem, tick=tick,
-            trigger_kind=trigger_kind, batch_id_override=inject_batch_id)
+            trigger_kind=trigger_kind, batch_id_override=inject_batch_id,
+            step_index=step_index, batch_size=batch_size)
     if pipeline in ("Backward", "Builder"):
         return _commit_inject_redispatch(
             decision, conn, problem=problem, tick=tick,
             trigger_kind=trigger_kind, pipeline=pipeline,
-            batch_id_override=inject_batch_id)
+            batch_id_override=inject_batch_id,
+            step_index=step_index, batch_size=batch_size)
     raise RuntimeError(
         f"_commit_inject_batch: unhandled pipeline {pipeline!r} "
         f"(verify_decision should have caught this)")
@@ -682,7 +686,9 @@ def _commit_inject_batch(decision: Decision, conn: sqlite3.Connection,
 def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
                            *, problem: str, tick: int,
                            trigger_kind: str,
-                           batch_id_override: str | None = None) -> CommitOutcome:
+                           batch_id_override: str | None = None,
+                           step_index: int = 0,
+                           batch_size: int = 1) -> CommitOutcome:
     """Forward variant — 1 brief → 1 row + 1 Forward enqueue.
 
     `batch_id_override` lets a multi-decision call share one batch_id
@@ -695,8 +701,8 @@ def _commit_inject_forward(decision: Decision, conn: sqlite3.Connection,
     ts = db.now()
     row_payload = {
         "pipeline": "Forward",
-        "step_index": 0,
-        "batch_size": 1,
+        "step_index": step_index,
+        "batch_size": batch_size,
     }
     cur = conn.execute(
         "INSERT INTO strategist_decisions (problem, triggered_at_tick,"
@@ -729,6 +735,8 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
                               trigger_kind: str,
                               pipeline: str,
                               batch_id_override: str | None = None,
+                              step_index: int = 0,
+                              batch_size: int = 1,
                               ) -> CommitOutcome:
     """Backward / Builder variant — 1 row + 1 enqueue on target goal.
 
@@ -756,8 +764,8 @@ def _commit_inject_redispatch(decision: Decision, conn: sqlite3.Connection,
     ts = db.now()
     row_payload = {
         "pipeline": pipeline,
-        "step_index": 0,
-        "batch_size": 1,
+        "step_index": step_index,
+        "batch_size": batch_size,
         "target_goal_id": target_id,
     }
     cur = conn.execute(
@@ -848,14 +856,25 @@ def commit_decisions(decisions: list[Decision], conn: sqlite3.Connection,
     Returns one CommitOutcome per decision (same order).
     """
     inject_batch_id: str | None = None
-    if any(d.kind == "Inject" for d in decisions):
+    n_inject = sum(1 for d in decisions if d.kind == "Inject")
+    if n_inject:
         inject_batch_id = uuid.uuid4().hex
-    return [
-        _commit_one(d, conn, problem=problem, tick=tick,
-                    trigger_kind=trigger_kind, workspace=workspace,
-                    inject_batch_id=inject_batch_id)
-        for d in decisions
-    ]
+    # Real per-step indices: the audit payload's step_index was hardcoded
+    # 0 for every row, so `## Completed Inject batches` labelled all
+    # steps "step 0" and the Strategist couldn't line outcomes up with
+    # its briefs (feedback 2026-07-04, repeated).
+    out: list[CommitOutcome] = []
+    step = 0
+    for d in decisions:
+        idx = step
+        if d.kind == "Inject":
+            step += 1
+        out.append(_commit_one(
+            d, conn, problem=problem, tick=tick,
+            trigger_kind=trigger_kind, workspace=workspace,
+            inject_batch_id=inject_batch_id,
+            inject_step_index=idx, inject_batch_size=n_inject))
+    return out
 
 
 def commit_decision(decision: Decision, conn: sqlite3.Connection,
@@ -931,7 +950,9 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
 def _commit_one(decision: Decision, conn: sqlite3.Connection,
                 *, problem: str, tick: int, trigger_kind: str,
                 workspace: Path,
-                inject_batch_id: str | None) -> CommitOutcome:
+                inject_batch_id: str | None,
+                inject_step_index: int = 0,
+                inject_batch_size: int = 1) -> CommitOutcome:
     """Execute one decision's side effects + INSERT audit row.
 
     Caller must have already passed `verify_decision`. This is the
@@ -950,6 +971,8 @@ def _commit_one(decision: Decision, conn: sqlite3.Connection,
             decision, conn, problem=problem, tick=tick,
             trigger_kind=trigger_kind,
             inject_batch_id=inject_batch_id,
+            step_index=inject_step_index,
+            batch_size=inject_batch_size,
         )
 
     if k == "Noop":

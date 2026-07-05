@@ -435,6 +435,40 @@ def test_inject_batch_done_surfaces_outcome_detail_why(
     assert "extDerivWithin_apply" in text
 
 
+def test_inject_batch_done_surfaces_landed_decl(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, tmp_path: Path,
+) -> None:
+    """Each completed step with a `produced_goal_id` shows the decl that
+    actually landed (slug + status + statement) — kernel truth, so the
+    Strategist stops guessing which decl a `success` step became
+    (feedback 2026-07-04, the section's biggest complaint)."""
+    _insert_problem(conn)
+    _insert_root(conn)
+    ids = _seed_inject_batch_done(
+        conn, batch_id="batch-landed",
+        briefs=["land the band augmentation bridge"], outcomes=["success"])
+    gid = db.insert_goal(
+        conn, problem="p", slug="band_aug_bridge",
+        lean_path="Problems/p/proofs/L_band_aug_bridge.lean",
+        statement="aug_band = aug_sphere ∘ band_iso", origin="forward",
+        status="proved")
+    conn.execute(
+        "UPDATE strategist_decisions SET produced_goal_id=? WHERE id=?",
+        (gid, ids[0]))
+    conn.commit()
+    attempts_dir = tmp_path / "_attempts_strategist"
+    attempts_dir.mkdir()
+    out = phase2_context.compile_strategist_context(
+        conn, problem="p", trigger_kind="inject_batch_done",
+        attempts_dir=attempts_dir, workspace=workspace, mfst=mfst,
+        pending_review_id=None,
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "landed: `band_aug_bridge` (status=proved)" in text
+    assert "aug_band = aug_sphere ∘ band_iso" in text
+
+
 def test_inject_batch_section_omitted_when_no_unack_batch(
     workspace: Path, conn: sqlite3.Connection,
     mfst: manifest.Manifest, tmp_path: Path,
