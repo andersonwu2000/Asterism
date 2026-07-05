@@ -748,9 +748,9 @@ def _section_paper_index_strategist(mfst: manifest.Manifest,
     if not lines:
         return lines
     return lines + [
-        "When a deliverable's statement was pinned from the paper, "
-        "include `paper_ref: \"p.N <label>\"` in the MarkDeliverable "
-        "payload — it is shown to the human at sign-off.",
+        "Every `MarkDeliverable` on this problem MUST include "
+        "`paper_ref: \"p.N <label>\"` in its payload (where the paper "
+        "states the claim) — it is shown to the human at sign-off.",
         "",
     ]
 
