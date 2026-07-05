@@ -54,6 +54,13 @@ def _finish_bridge(conn, *, problem, workspace, note: str) -> None:
     with silently missing signatures."""
     _backfill_decl_signatures(conn, problem=problem, workspace=workspace)
     db.mark_library_bridged(conn, problem, note)
+    # Regression manifest (task #8): auto-record the harvest milestone.
+    from ...state import regress as _regress
+    _regress.record_terminal(
+        workspace, problem=problem, terminal="bridged",
+        harvest_files=len({r["target_file"]
+                           for r in _harvested_decls(conn, problem)
+                           if r["target_file"]}))
 
 
 def _rederivation_prober(bridge_path):

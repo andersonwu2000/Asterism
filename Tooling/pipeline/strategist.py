@@ -896,6 +896,12 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
     # (library:false = pure exit) or turns out unreadable, the Strategist's
     # terminal judgment stands; only the harvest side-effects vary.
     db.set_problem_ingested(conn, problem)
+    # Regression manifest (task #8): the milestone auto-records itself —
+    # tracked JSONL, best-effort, never blocks the Ingest.
+    from ..state import regress as _regress
+    _regress.record_terminal(
+        workspace, problem=problem, terminal="ingested",
+        deliverables=len(db.deliverables(conn, problem)))
     mfst_path = db.problem_dir(workspace, problem) / "Manifest.md"
     try:
         mfst = _manifest.parse(mfst_path)

@@ -1616,6 +1616,32 @@ def cmd_reject_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_regress(args: argparse.Namespace) -> int:
+    """Regression-manifest report (task #8): compare the tracked
+    `Benchmarks/proved_manifest.jsonl` against the CURRENT workspace.
+    RESET/PARTIAL lines are re-verification CANDIDATES (resets are a
+    normal workflow), DRIFT = not re-verified since a toolchain bump.
+    Always exits 0 — this is a report, not a gate."""
+    from ..state import regress
+    workspace = Path.cwd()
+    conn = db.connect()
+    try:
+        findings = regress.report(conn, workspace)
+    finally:
+        conn.close()
+    if not findings:
+        print("regress: manifest empty — nothing recorded yet")
+        return 0
+    icons = {"OK": "[OK]  ", "RESET": "[RESET]", "PARTIAL": "[PART] ",
+             "DRIFT": "[DRIFT]"}
+    for status, msg in findings:
+        print(f"{icons.get(status, status)} {msg}")
+    n = sum(1 for s, _ in findings if s != "OK")
+    print(f"regress: {len(findings)} recorded problem(s), "
+          f"{n} re-verification candidate(s)")
+    return 0
+
+
 def cmd_drift_check(args: argparse.Namespace) -> int:
     """Consistency gate, two layers (run with the daemon STOPPED — a
     mid-tick snapshot can transiently trip the tree predicates):
@@ -1918,6 +1944,12 @@ def main(argv: list[str] | None = None) -> int:
     p_reject_ingest.add_argument("--reason", default=None,
                                  help="what's still missing (guides the Strategist)")
     p_reject_ingest.set_defaults(func=cmd_reject_ingest)
+
+    p_regress = sub.add_parser(
+        "regress",
+        help="regression-manifest report: recorded proved/harvested "
+             "problems vs the current workspace (re-verify candidates)")
+    p_regress.set_defaults(func=cmd_regress)
 
     p_drift = sub.add_parser(
         "drift-check",
