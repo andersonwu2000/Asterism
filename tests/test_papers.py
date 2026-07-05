@@ -60,6 +60,28 @@ def test_pdf_extraction_page_anchors(tmp_path: Path) -> None:
     assert "Page 2 body line 0." in text
 
 
+def test_pdf_extraction_strips_nul_bytes(tmp_path: Path) -> None:
+    """PyMuPDF can emit NULs; one NUL makes Grep classify text.md as
+    binary and refuse to match (live, first paper-bound run). The
+    extractor strips them; `--force` re-extracts an existing slot."""
+    fitz = pytest.importorskip("fitz")
+    src = tmp_path / "nul.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    for row in range(25):
+        page.insert_text((72, 72 + 14 * row), "clean text line. " * 4)
+    doc.save(str(src))
+    doc.close()
+    meta = shelf.add_paper(tmp_path, src)
+    tp = shelf.text_path(tmp_path, meta.id)
+    assert b"\x00" not in tp.read_bytes()
+    # Simulate a legacy NUL-bearing extraction; --force re-extracts.
+    tp.write_bytes(tp.read_bytes() + b"\x00tail")
+    meta2 = shelf.add_paper(tmp_path, src, force=True)
+    assert meta2.id == meta.id
+    assert b"\x00" not in tp.read_bytes()
+
+
 def test_scanned_pdf_fails_loud(tmp_path: Path) -> None:
     fitz = pytest.importorskip("fitz")
     src = tmp_path / "scanned.pdf"

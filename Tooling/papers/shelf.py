@@ -87,7 +87,11 @@ def _extract_pdf(src: Path) -> tuple[str, int]:
     with fitz.open(str(src)) as doc:
         n_pages = doc.page_count
         for i in range(n_pages):
-            text = doc[i].get_text("text").strip()
+            # PyMuPDF can emit NUL bytes (font quirks); a single one
+            # makes ripgrep/Grep classify text.md as binary and refuse
+            # to match — agents lose their main navigation tool
+            # (observed live, first paper-bound run 2026-07-06).
+            text = doc[i].get_text("text").replace("\x00", "").strip()
             total += len(text)
             parts.append(f"## p.{i + 1}\n\n{text}\n")
     if n_pages and total / n_pages < MIN_CHARS_PER_PAGE:
@@ -99,14 +103,17 @@ def _extract_pdf(src: Path) -> tuple[str, int]:
     return "\n".join(parts), n_pages
 
 
-def add_paper(workspace: Path, src: Path) -> PaperMeta:
+def add_paper(workspace: Path, src: Path, *,
+              force: bool = False) -> PaperMeta:
     """Add `src` to the shelf (idempotent by content hash). PDF →
-    extracted page-anchored text; .md/.txt/.tex → passthrough."""
+    extracted page-anchored text; .md/.txt/.tex → passthrough.
+    `force` re-runs extraction over an existing slot (extractor
+    improved); the map's text_sha binding then flags itself stale."""
     data = src.read_bytes()
     pid = _sha12(data)
     pdir = paper_dir(workspace, pid)
     existing = load_meta(workspace, pid)
-    if existing is not None:
+    if existing is not None and not force:
         print(f"[papers] {src.name} already shelved as {pid} "
               f"(content-hash match)", flush=True)
         return existing

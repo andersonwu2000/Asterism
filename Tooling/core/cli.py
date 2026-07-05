@@ -1834,7 +1834,8 @@ def cmd_paper_add(args: argparse.Namespace) -> int:
         print(f"ERROR: no such file: {src}")
         return 1
     try:
-        meta = shelf.add_paper(Path.cwd(), src)
+        meta = shelf.add_paper(Path.cwd(), src,
+                               force=bool(getattr(args, "force", False)))
     except (shelf.ScannedPdfError, ValueError) as e:
         print(f"ERROR: {e}")
         return 1
@@ -2052,6 +2053,8 @@ def main(argv: list[str] | None = None) -> int:
              "to page-anchored text; .md/.txt/.tex pass through)",
     )
     p_paper_add.add_argument("file", help="path to the paper file")
+    p_paper_add.add_argument("--force", action="store_true",
+                             help="re-extract over an existing slot")
     p_paper_add.set_defaults(func=cmd_paper_add)
 
     p_paper_index = sub.add_parser(
