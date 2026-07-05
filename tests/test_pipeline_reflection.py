@@ -256,9 +256,9 @@ def _setup_reflection_ws(tmp_path: Path, directive: str):
     problem_dir = tmp_path / "Problems" / "p"
     attempts = tmp_path / ".attempts" / "pid"
     prompt_dir = tmp_path / "prompts"
-    for d in (problem_dir, attempts, prompt_dir):
+    for d in (problem_dir, attempts, prompt_dir / "_shared"):
         d.mkdir(parents=True)
-    (prompt_dir / "reflection.md").write_text(
+    (prompt_dir / "_shared" / "reflection.md").write_text(
         "{outcome} :: {directive} :: {global_lessons} :: {decision_path}",
         encoding="utf-8")
     return problem_dir, attempts, prompt_dir
@@ -332,9 +332,9 @@ def test_attempt_reflection_uses_full_problem_name_for_kb(
     problem_dir = tmp_path / "Problems" / "Geometry" / "foo"   # .name == 'foo'
     attempts = tmp_path / ".attempts" / "pid"
     prompt_dir = tmp_path / "prompts"
-    for d in (problem_dir, attempts, prompt_dir):
+    for d in (problem_dir, attempts, prompt_dir / "_shared"):
         d.mkdir(parents=True)
-    (prompt_dir / "reflection.md").write_text(
+    (prompt_dir / "_shared" / "reflection.md").write_text(
         "{global_lessons} :: {decision_path}", encoding="utf-8")
 
     def fake_spawn(**kw):  # agent records a global insight

@@ -640,7 +640,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         kind="backward", goal=goal, problem_dir=problem_dir,
         attempts_dir=attempts_dir, prompt_dir=PROMPT_DIR,
         workspace=workspace,
-        postmortem_prompt=PROMPT_DIR / "backward_postmortem.md")
+        postmortem_prompt=PROMPT_DIR / "backward" / "backward_postmortem.md")
 
     # No SpawnWorkspace — agent writes are confined to attempts_dir
     # (patch.lean, new_*.lean), which WorkArea manages via the
@@ -674,7 +674,7 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
             problem=str(goal["problem"]),
             problem_dir=problem_dir,
             kind="backward",
-            prompt_path=PROMPT_DIR / "backward.md",
+            prompt_path=PROMPT_DIR / "backward" / "backward.md",
             target=attempts_dir / "patch.lean",
             cold_prep_fn=backward_cold_prep,
             parse_fn=backward_parse,

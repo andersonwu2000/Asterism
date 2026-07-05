@@ -213,7 +213,7 @@ def _build_fresh_rescue_stage2_prompt(
             "The previous session's log was not recoverable. Work "
             f"from `{attempts_dir}/Context.md` alone."
         )
-    return _render_prompt("fresh_rescue_stage2.md",
+    return _render_prompt("_shared/fresh_rescue_stage2.md",
                           LOG_NOTE=log_note,
                           ATTEMPTS_DIR=str(attempts_dir),
                           RESCUE_MIN=str(rescue_min))
@@ -307,7 +307,7 @@ def _build_force_progress_prompt(attempts_dir: Path,
             f"and its conversation log could not be recovered. Work "
             f"from `{attempts_dir}/Context.md` alone."
         )
-    return _render_prompt("force_progress.md",
+    return _render_prompt("_shared/force_progress.md",
                           LOG_NOTE=log_note,
                           ATTEMPTS_DIR=str(attempts_dir))
 

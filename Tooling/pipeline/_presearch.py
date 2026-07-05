@@ -222,7 +222,7 @@ def ensure_presearch(*, goal, workspace: Path, problem_dir: Path,
         pass
     if not _presearch_enabled(workspace):
         return None
-    template = prompt_dir / "presearch.md"
+    template = prompt_dir / "_shared" / "presearch.md"
     if not template.exists():
         return None
     try:

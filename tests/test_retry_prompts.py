@@ -41,7 +41,7 @@ def test_fresh_rescue_stage2_unrecoverable_log_branch(tmp_path):
 def test_force_progress_template_renders(tmp_path):
     from Tooling.pipeline import _retry
     out = _retry._render_prompt(
-        "force_progress.md",
+        "_shared/force_progress.md",
         LOG_NOTE="NOTE.", ATTEMPTS_DIR=str(tmp_path))
     assert out.startswith(
         "You are a fresh session brought in only to write a checkpoint "
@@ -65,4 +65,4 @@ def test_templates_exist_in_prompts_dir():
     from Tooling.pipeline import PROMPT_DIR
     for name in ("fresh_rescue_stage2.md", "force_progress.md",
                  "feedback_survivor.md"):
-        assert (Path(PROMPT_DIR) / name).is_file(), name
+        assert (Path(PROMPT_DIR) / "_shared" / name).is_file(), name

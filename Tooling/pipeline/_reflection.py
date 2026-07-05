@@ -164,7 +164,7 @@ def attempt_reflection(*,
                 except OSError:
                     pass
 
-            template_path = prompt_dir / "reflection.md"
+            template_path = prompt_dir / "_shared" / "reflection.md"
             if not template_path.exists():
                 print(f"[reflection] template missing at {template_path}; "
                       f"skipping", flush=True)

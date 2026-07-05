@@ -458,7 +458,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         kind="builder", goal=goal, problem_dir=problem_dir,
         attempts_dir=attempts_dir, prompt_dir=PROMPT_DIR,
         workspace=workspace,
-        postmortem_prompt=PROMPT_DIR / "builder_postmortem.md")
+        postmortem_prompt=PROMPT_DIR / "builder" / "builder_postmortem.md")
 
     # No SpawnWorkspace — agent writes are confined to attempts_dir
     # (patch.lean is the MCP apply_edit target), and goal_lean is
@@ -479,7 +479,7 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
             problem=goal["problem"],
             problem_dir=problem_dir,
             kind="builder",
-            prompt_path=PROMPT_DIR / "builder.md",
+            prompt_path=PROMPT_DIR / "builder" / "builder.md",
             target=patch_lean,
             cold_prep_fn=builder_cold_prep,
             parse_fn=builder_parse,

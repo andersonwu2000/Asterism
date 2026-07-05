@@ -49,7 +49,7 @@ _SCRATCH_FILENAME = "_agent_feedback.md"
 # for the render site below.
 def _survivor_section() -> str:
     from . import PROMPT_DIR
-    return ((PROMPT_DIR / "feedback_survivor.md")
+    return ((PROMPT_DIR / "_shared" / "feedback_survivor.md")
             .read_text(encoding="utf-8").rstrip("\n")
             .replace("__FEEDBACK_PATH__", "{feedback_path}"))
 
