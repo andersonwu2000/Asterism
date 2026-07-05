@@ -1585,7 +1585,11 @@ def run(workspace: Path, *, once: bool = False,
                     # Route through the _INFRA_REASONS short-circuit so
                     # attempts stay unchanged AND the per-target cooldown
                     # below kicks in.
-                    pid, kind, tid, tk, _did = meta
+                    # v17 grew meta to 6 fields (trailing queue-row id);
+                    # unpack by prefix so this exception path can't lag the
+                    # tuple again (it did exactly that on the v17 merge —
+                    # daemon FATAL'd on the first worker exception).
+                    pid, kind, tid, tk, _did = meta[:5]
                     infra_reason = _classify_worker_exception(exc)
                     label = (f"{infra_reason} (no attempts++)"
                              if infra_reason else "treating as failed")
