@@ -1,0 +1,128 @@
+# Real-Lean contract tier (arch-review task #7).
+#
+# Every soundness claim ultimately rests on the real kernel's
+# `collectAxioms`, but the push CI has no Lean — the only automated
+# environment running the framework⇄Lean contracts used to be the dev
+# workstation's daemon-startup fingerprint gate (a single point). This
+# job is the second, fully-hosted consumer of the same contract
+# functions (Tooling/quality/lean_contracts.py): nothing here depends
+# on, or trusts, any local machine.
+#
+# Triggers (user design call 2026-07-05 — zero manual steps):
+#   * monthly cron heartbeat — "the pinned toolchain still passes on a
+#     clean machine". NOTE: GitHub auto-disables cron workflows after
+#     60 days without repo activity; this repo commits daily, so moot.
+#   * push touching the files that PIN the Lean world — the contracts
+#     guard toolchain-interface drift, and that drift only ever arrives
+#     through these files, so the very push that bumps them validates
+#     itself.
+#   * workflow_dispatch — debug back door only; never required.
+#
+# On failure the job files a GitHub issue (durable — scheduled-run
+# failure emails get lost; an issue is visible to the next session that
+# opens the repo).
+name: Real-Lean contracts
+
+on:
+  schedule:
+    - cron: "17 3 3 * *"        # 03:17 UTC on the 3rd, monthly
+  push:
+    branches: [main]
+    paths:
+      - "lean-toolchain"
+      - "lake-manifest.json"
+      - "lakefile.lean"
+      # Self-validating: editing this workflow runs it — the landing
+      # push IS the first clean-room run, no manual dispatch needed.
+      - ".github/workflows/real-lean.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  real-lean:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      ASTERISM_REAL_LAKE: "1"
+      # One warm worker: each gateway worker holds a full Mathlib env
+      # (multi-GB); the contract suite is serial anyway and the 16 GB
+      # runner cannot afford the workstation's pool of 4.
+      ASTERISM_POOL: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install python deps
+        run: pip install -e ".[dev]"
+
+      - name: Install elan (toolchain pinned by lean-toolchain)
+        run: |
+          curl -sSf https://elan.lean-lang.org/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      # Mathlib olean cache: `lake exe cache get` pulls mathlib's own
+      # cloud-prebuilt oleans (minutes, no compile). The actions/cache
+      # layer on top makes the SECOND run of the same manifest cheap.
+      - name: Cache .lake (mathlib oleans)
+        uses: actions/cache@v4
+        with:
+          path: |
+            .lake
+            ~/.elan
+          key: real-lean-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+
+      - name: Fetch mathlib build cache
+        run: lake exe cache get
+
+      - name: Build lean-asterism-server (custom RPC worker)
+        # Without this binary the gateway silently falls back to stock
+        # workers — printAxioms/anchorClosure/declInfo RPCs vanish and
+        # the axiom contracts would fail for the wrong reason. Also a
+        # free clean-room check that the binary builds at all.
+        run: lake build lean-asterism-server
+
+      - name: Start warm gateway
+        # start_gateway blocks until /health backend_ready; os._exit
+        # skips its atexit-terminate so the gateway survives this step
+        # (job steps share the VM; the process persists).
+        run: |
+          python -c "
+          from pathlib import Path
+          import os
+          from Tooling.lsp import lifecycle
+          lifecycle.start_gateway(Path('.'))
+          os._exit(0)
+          "
+
+      - name: Run real_lake suite
+        run: python -m pytest tests -m real_lake -v
+
+      - name: Upload gateway log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gateway-log
+          path: .asterism/logs/gateway.log
+          if-no-files-found: ignore
+
+      - name: File failure issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --title "real-lean contracts FAILED — $(date -u +%Y-%m-%d) (${{ github.event_name }})" \
+            --body "Scheduled/toolchain-triggered real-Lean contract run failed.
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Trigger: ${{ github.event_name }} @ ${{ github.sha }}
+
+          The framework⇄Lean interface contracts (lean_contracts.py) or a real_lake e2e no longer pass on a clean machine with the pinned toolchain. Gateway log attached to the run artifacts."
