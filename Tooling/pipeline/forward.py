@@ -270,6 +270,7 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
                          metadata: ForwardMetadata,
                          whitelist: "list[str] | None" = None,
                          source_filename: str = "new_<slug>.lean",
+                         decl_info: "dict | None" = None,
                          ) -> CommitOutcome:
     """Move the validated `new_<slug>.lean` from attempts_dir into
     `proofs/L_<slug>.lean`, INSERT a goal row with origin='forward',
@@ -318,12 +319,15 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
         rel_path=dest.relative_to(workspace).as_posix(), content=body)
 
     rel_lean_path = dest.relative_to(workspace).as_posix()
-    # Pick statement string for goals.statement. Best-effort extract
-    # the signature (text after the slug, before the body separator).
-    # If extraction fails, store empty string (lean_path is the
-    # canonical artifact).
-    statement = _extract_statement_string(body, metadata.slug,
-                                          metadata.kind) or ""
+    # Pick statement string for goals.statement. Oracle-first (decl-#1):
+    # the pp conclusion off the caller's candidate elaboration (canonical
+    # form; exists even for an inferred-type def). Text extraction stays
+    # as the cold fallback. If both fail, store empty string (lean_path
+    # is the canonical artifact).
+    from ..lsp.decl_oracle import statement_from_decl_info
+    statement = (statement_from_decl_info(decl_info, metadata.slug)
+                 or _extract_statement_string(body, metadata.slug,
+                                              metadata.kind) or "")
 
     # Curry-Howard unified — every kind is a request for an inhabitant
     # of some type (theorem = inhabitant of a Prop, def/structure/class
@@ -712,28 +716,25 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
 
         # Bug-B mirror (sphere_homology 2026-07-04): a SORRY-BEARING decl
         # enters BFS, and Backward's `build_strategy_skeleton` requires a
-        # top-level type colon to lock the signature — a sorry-bearing
-        # `def` whose return type is INFERRED (`def f (x : A) := body`)
-        # is un-decomposable by construction and burns every attempt on
-        # `parent_stub_not_decomposable` until it shelves (goal 4946:
-        # 5/5 wasted). Validate at commit time with the SAME check
-        # decomp runs, so the agent gets actionable feedback and retries
-        # with an explicit ascription. Sorry-free decls are exempt: they
-        # prove immediately and never dispatch.
-        if not metadata.sorry_free:
-            from ._skeleton import _has_top_level_type_colon, signature_prefix
-            _sig = signature_prefix(body, metadata.slug)
-            if not _sig or not _has_top_level_type_colon(_sig, metadata.slug):
-                return PipelineResult(
-                    outcome="failed", failure_reason="forward_no_new_goal",
-                    failure_detail=(
-                        f"sorry-bearing `{metadata.kind}` '{metadata.slug}' "
-                        f"has no explicit top-level type ascription — the "
-                        f"prover cannot decompose an inferred-type hole. "
-                        f"Write `... : <Type> := ...` (state the type "
-                        f"explicitly) and retry."
-                    ),
-                )
+        # typed signature to lock — a sorry-bearing `def` whose return
+        # type is INFERRED (`def f (x : A) := body`) used to be
+        # un-decomposable and burned every attempt on
+        # `parent_stub_not_decomposable` until it shelved (goal 4946:
+        # 5/5 wasted). decl-#2 dissolved the hard limit: the declInfo
+        # oracle's ppSignature makes the inferred type explicit, so both
+        # the statement mint and the decompose-time skeleton can proceed
+        # without a source ascription. The commit gate therefore only
+        # rejects when the oracle CAN'T supply the signature either
+        # (checked post-verify below, off the same elaboration) — that
+        # residual case is exactly the old un-decomposable trap.
+        # Sorry-free decls are exempt: they prove immediately and never
+        # dispatch.
+        from ._skeleton import _has_top_level_type_colon, signature_prefix
+        _sig = signature_prefix(body, metadata.slug)
+        needs_oracle_sig = (
+            not metadata.sorry_free
+            and (not _sig
+                 or not _has_top_level_type_colon(_sig, metadata.slug)))
 
         # Auto-prepend `import Mathlib` + `Problems.<p>.Defs` + opens —
         # the prompt promises this, the MCP `validate_file` tool does
@@ -754,7 +755,7 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
         try:
             v = verify_on_own_slot(
                 src, workspace=workspace, attempts_dir=attempts_dir,
-                write_olean=False,
+                write_olean=False, decl_info=True,
             )
         except Exception as e:
             return PipelineResult(
@@ -776,6 +777,26 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                 outcome="failed", failure_reason="forward_no_new_goal",
                 failure_detail=f"lake elaborate errors: {err_diag[:3]}",
             )
+        fwd_decl_info = v.get("decl_info") if isinstance(v, dict) else None
+        if needs_oracle_sig:
+            from ..lsp.decl_oracle import statement_from_decl_info
+            if statement_from_decl_info(fwd_decl_info,
+                                        metadata.slug) is None:
+                # Old gateway / declInfo miss — without a kernel-true
+                # signature the goal would re-enter the un-decomposable
+                # trap, so keep the historical rejection (actionable:
+                # the agent states the type and retries).
+                return PipelineResult(
+                    outcome="failed", failure_reason="forward_no_new_goal",
+                    failure_detail=(
+                        f"sorry-bearing `{metadata.kind}` "
+                        f"'{metadata.slug}' has no explicit top-level "
+                        f"type ascription and the declInfo oracle could "
+                        f"not supply one — the prover cannot decompose "
+                        f"an inferred-type hole. Write `... : <Type> := "
+                        f"...` (state the type explicitly) and retry."
+                    ),
+                )
 
         # Dedupe: a hit on a PROVED canonical (kind 'alias' /
         # 'library_alias') means the agent's lemma is already in the
@@ -858,6 +879,7 @@ def run_forward(conn: sqlite3.Connection, *, problem: str,
                     whitelist=_manifest_mod.effective_axioms(
                         mfst, problem=problem),
                     source_filename=src.name,
+                    decl_info=fwd_decl_info,
                 )
             except FileExistsError as e:
                 return PipelineResult(

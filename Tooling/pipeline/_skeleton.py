@@ -79,7 +79,7 @@ def _has_top_level_type_colon(sig: str, name: str) -> bool:
 
 def build_strategy_skeleton(
     parent_text: str, *, parent_slug: str, sid_token: str,
-    namespace: str,
+    namespace: str, oracle_sig: str | None = None,
 ) -> str | None:
     """Construct a strategy patch skeleton by copying the parent stub's
     `<kind> <parent_slug> ...` declaration verbatim, then renaming the
@@ -90,17 +90,23 @@ def build_strategy_skeleton(
     (a `def`-parent's strategy patch stays a `def`, not a `theorem`).
 
     Returns None if no matching declaration head is found, or if the
-    matched head has no top-level type colon. The latter case catches
-    promoted-alias parents (`def g := @ns.sN`, no `:` between name
-    and `:=`) and bare-value defs (`def g := 42`): Backward's
-    signature lock requires a typed signature to be meaningful, so
-    skip these cleanly rather than producing a typeless `def s := by
-    sorry` skeleton that would fail at lake build with an unhelpful
-    elaboration error.
+    matched head has no top-level type colon AND no `oracle_sig` was
+    supplied. The colon-less case catches promoted-alias parents
+    (`def g := @ns.sN`, no `:` between name and `:=`) and inferred-type
+    defs (`def g (x : A) := body`): Backward's signature lock requires
+    a typed signature to be meaningful. For the LATTER, `oracle_sig`
+    (the decl's ppSignature — the elaborator's rendering, type always
+    explicit) reconstructs the head the source doesn't spell (decl-#2,
+    sphere g4946: 5/5 attempts burned on `parent_stub_not_decomposable`).
+    The caller decides when to pass it (sorry-bearing stubs only —
+    a promoted-alias parent means the goal is proved and must keep
+    aborting cleanly).
     """
     sig = signature_prefix(parent_text, parent_slug)
     if not sig or not _has_top_level_type_colon(sig, parent_slug):
-        return None
+        return _skeleton_from_oracle_sig(
+            parent_text, parent_slug=parent_slug, sid_token=sid_token,
+            namespace=namespace, oracle_sig=oracle_sig)
     new_sig = re.sub(
         _DECL_HEAD_RE + re.escape(parent_slug) + r"\b",
         lambda m: f"{m.group(1)} {sid_token}", sig, count=1,
@@ -147,6 +153,58 @@ def build_strategy_skeleton(
         f"namespace {namespace}\n\n"
         f"{var_block}"
         f"{mods}{new_sig} := by sorry\n\n"
+        f"end {namespace}\n"
+    )
+
+
+def _skeleton_from_oracle_sig(
+    parent_text: str, *, parent_slug: str, sid_token: str,
+    namespace: str, oracle_sig: str | None,
+) -> str | None:
+    """The oracle-reconstruction arm of `build_strategy_skeleton` (decl-#2):
+    the source spells no top-level type colon, but the decl's ppSignature
+    makes the elaborator's inferred type explicit. Build the skeleton head
+    from that instead of the source verbatim.
+
+    Two deliberate differences from the verbatim path:
+      - NO `variable` lines are carried: a ppSignature already incorporates
+        the section variables the decl uses as its own binders — carrying
+        the lines too would shadow them (noisy at best, instance-binder
+        confusion at worst).
+      - `noncomputable` comes from BOTH the source modifiers and the
+        keyword the pp form implies nothing about — the caller's oracle
+        decl carries env truth, but source modifiers are kept as the
+        cheap union (mirrors `promote_to_alias`'s BUG4 fix direction).
+    """
+    if not oracle_sig:
+        return None
+    from ..lsp.decl_oracle import split_signature
+    parts = split_signature(oracle_sig)
+    if parts is None:
+        return None
+    _name, universes, binders_and_type = parts
+    km = re.search(_DECL_HEAD_RE + re.escape(parent_slug) + r"\b",
+                   parent_text)
+    if km is None:
+        return None                    # decl head absent — same as verbatim
+    kind = km.group(1)
+    mods = leading_decl_modifiers(parent_text, parent_slug)
+    imports = [ln for ln in parent_text.splitlines()
+               if ln.strip().startswith("import")]
+    if not imports:
+        imports = ["import Mathlib"]
+    # Opens still matter on this path: ppSignature renders names fully
+    # qualified, but SCOPED NOTATION (`𝓡∂` …) needs its `open scoped`.
+    opens = [ln for ln in parent_text.splitlines()
+             if ln.strip().startswith("open ")]
+    header = "\n".join(imports)
+    if opens:
+        header += "\n" + "\n".join(opens)
+    return (
+        header + "\n\n"
+        f"namespace {namespace}\n\n"
+        f"{mods}{kind} {sid_token}{universes} {binders_and_type} "
+        f":= by sorry\n\n"
         f"end {namespace}\n"
     )
 

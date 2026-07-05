@@ -510,6 +510,43 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
         sid_token=sid_token,
         namespace=namespace,
     )
+    if skeleton is None and re.search(r"\bsorry\b", parent_text):
+        # decl-#2 — inferred-type def stub: the source spells no type
+        # colon, but the declInfo oracle's ppSignature makes the
+        # elaborator's type explicit. Reconstruct the skeleton from it,
+        # then BUILD-VALIDATE before trusting: a pp form that doesn't
+        # re-elaborate would become a locked signature the agent can
+        # neither satisfy nor change (a whole-spawn burn, the exact
+        # class this dissolves). The sorry guard keeps promoted-alias
+        # parents (`def g := @ns.sN`, sorry-free) on the clean abort
+        # path — that goal is proved; a sibling raced us.
+        from ..lsp.decl_oracle import DeclOracle
+        oracle = DeclOracle.cached_for_file(
+            parent_abs_for_skeleton, workspace=workspace)
+        d = oracle.find(goal["slug"]) if oracle is not None else None
+        if d is not None:
+            candidate = _build_strategy_skeleton(
+                parent_text, parent_slug=goal["slug"],
+                sid_token=sid_token, namespace=namespace,
+                oracle_sig=d.signature)
+            if candidate is not None:
+                probe = attempts_dir / "_skeleton_probe.lean"
+                probe.parent.mkdir(parents=True, exist_ok=True)
+                probe.write_text(candidate, encoding="utf-8")
+                pv = _axiom.verify_on_own_slot(
+                    probe, workspace=workspace, attempts_dir=attempts_dir,
+                    write_olean=False)
+                if pv.get("ok") and not pv.get("error"):
+                    skeleton = candidate
+                    print(f"[backward] g{goal_id} {goal['slug']}: skeleton "
+                          f"reconstructed from ppSignature (source has no "
+                          f"type ascription)", flush=True)
+                else:
+                    print(f"[backward] g{goal_id} {goal['slug']}: "
+                          f"ppSignature skeleton failed to elaborate — "
+                          f"falling back to not-decomposable "
+                          f"({str(pv.get('error') or 'diagnostics')[:120]})",
+                          flush=True)
     if skeleton is None:
         transitions.apply_strategy_transition(
             conn, strategy_id, "dead", event="skeleton_failed")
@@ -521,7 +558,8 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
                 f"in {goal['lean_path']} — either the declaration is absent "
                 f"(may have been promoted by a sibling already) or it has "
                 f"no top-level type colon (inferred-type def / promoted "
-                f"alias), which the signature lock cannot decompose"
+                f"alias) and the declInfo oracle could not reconstruct a "
+                f"buildable signature"
             ),
         )
     skeleton_signature = _normalize_signature(
@@ -750,13 +788,15 @@ def _backward_parse_and_commit(
     # builds clean (root-caused 2026-06-29; only fires on decomposition,
     # which is exactly when this gate runs). Our own slot has no concurrent
     # foreign tenant, so no cross-talk.
-    def _verify_owned(path, *, write_olean=True, axioms_for=None):
+    def _verify_owned(path, *, write_olean=True, axioms_for=None,
+                      decl_info=False):
         # Delegates to the shared pipeline=slot dispatch (single impl of
         # "own slot when the session token is present, borrow only as
         # defensive fallback").
         return _axiom.verify_on_own_slot(
             path, workspace=workspace, attempts_dir=attempts_dir,
-            write_olean=write_olean, axioms_for=axioms_for)
+            write_olean=write_olean, axioms_for=axioms_for,
+            decl_info=decl_info)
 
     patches = _safe_glob(attempts_dir, "patch*.lean")
     if not patches:
@@ -1504,8 +1544,19 @@ def _backward_parse_and_commit(
         # independent, importing only Mathlib + Defs), strategy file
         # last (imports the sub-goal modules by name, resolves through
         # the .olean files we wrote in earlier iterations).
+        # Sub-goal stubs additionally ask for decl_info — the statement
+        # mint below reads each stub's kernel-true ppSignature off the
+        # elaboration this loop already pays for (decl-#1: the text
+        # extractor's conclusion is origin- and author-format-dependent;
+        # the pp conclusion is canonical, and exists even for an
+        # inferred-type def).
+        sub_dest_set = {dest for _, dest in sub_dests}
+        decl_info_by_path: dict = {}
         for path in placed:
-            v = _verify_owned(path, write_olean=True)
+            want_info = path in sub_dest_set
+            v = _verify_owned(path, write_olean=True, decl_info=want_info)
+            if want_info and isinstance(v, dict) and v.get("decl_info"):
+                decl_info_by_path[path] = v["decl_info"]
             if "error" in v:
                 raise RuntimeError(
                     f"verify infra error on {path.name}: {v['error']}"
@@ -1552,7 +1603,13 @@ def _backward_parse_and_commit(
         #                                from here a failure must NOT unlink the
         #                                placed files (would orphan the rows).
         for (slug, dest), match in zip(sub_dests, canonical_for):
-            stmt = _extract_statement_from_lean(dest)
+            # Oracle-first statement mint (decl-#1): the pp conclusion off
+            # the verify loop's decl_info piggyback; text extraction stays
+            # as the cold fallback (stub verifiers / old gateway).
+            from ..lsp.decl_oracle import statement_from_decl_info
+            stmt = (statement_from_decl_info(decl_info_by_path.get(dest),
+                                             slug)
+                    or _extract_statement_from_lean(dest))
             rel = dest.relative_to(workspace).as_posix()
             raw = dest.read_text(encoding="utf-8")
             entry_kind = _parse_entry_kind(raw)

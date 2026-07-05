@@ -382,3 +382,95 @@ def test_for_file_builds_from_gateway_payload(monkeypatch, tmp_path):
     assert seen["decl_info"] is True
     assert oracle is not None
     assert oracle.decl_source("y") == "def y : Nat := 2"
+
+
+# ---------------------------------------------------------------------
+# ppSignature parsing (decl-#1 / decl-#2): split_signature /
+# sig_conclusion / statement_from_decl_info. Samples mirror real
+# ppSignature output (fully-qualified names, render-width wrapping,
+# universe suffixes) captured from the sphere_homology harvest.
+# ---------------------------------------------------------------------
+
+_PP_MULTILINE = (
+    "Library.A.B.contractible_zero {R : Type} [Ring R]\n"
+    "  {X : TopCat} [ContractibleSpace X] (k : N) (hk : k != 0) :\n"
+    "  CategoryTheory.Limits.IsZero\n"
+    "    (((AlgebraicTopology.singularHomologyFunctor (ModuleCat R) k).obj\n"
+    "      (ModuleCat.of R R)).obj X)")
+
+_PP_UNIVERSE = (
+    "Library.A.sphere_path_connected.{u_1} (n : N)\n"
+    "  (hn : 1 <= n) : PathConnectedSpace (TopCat.sphere n)")
+
+
+def test_split_signature_multiline_collapses_to_one_line():
+    name, univ, rest = do.split_signature(_PP_MULTILINE)
+    assert name == "Library.A.B.contractible_zero"
+    assert univ == ""
+    assert "\n" not in rest
+    assert rest.startswith("{R : Type} [Ring R]")
+
+
+def test_split_signature_universe_suffix():
+    name, univ, rest = do.split_signature(_PP_UNIVERSE)
+    assert name == "Library.A.sphere_path_connected"
+    assert univ == ".{u_1}"
+    assert rest.startswith("(n : N)")
+
+
+def test_split_signature_no_binders():
+    name, univ, rest = do.split_signature("Foo.bar : Nat")
+    assert (name, univ, rest) == ("Foo.bar", "", ": Nat")
+
+
+def test_split_signature_rejects_malformed():
+    assert do.split_signature("") is None
+    assert do.split_signature("bare_name_only") is None
+    # colon only inside a binder group -> no top-level type colon
+    assert do.split_signature("Foo.f (x : Nat)") is None
+
+
+def test_sig_conclusion_strips_binders():
+    assert (do.sig_conclusion(_PP_UNIVERSE)
+            == "PathConnectedSpace (TopCat.sphere n)")
+    out = do.sig_conclusion(_PP_MULTILINE)
+    assert out.startswith("CategoryTheory.Limits.IsZero")
+    assert "{R : Type}" not in out
+
+
+def test_sig_conclusion_strict_implicit_binders():
+    # Strict-implicit binder brackets must count as groups too.
+    sig = "F.g ⦃x : A⦄ (y : B) : C x y"
+    assert do.sig_conclusion(sig) == "C x y"
+
+
+def test_sig_conclusion_inferred_type_def():
+    # The decl-#1 payoff: pp always spells the type, even when the
+    # source `def f (x : Nat) := x + 1` does not.
+    assert do.sig_conclusion("Problems.p.f (x : Nat) : Nat") == "Nat"
+
+
+def _sig_info(user_name, signature, *, cmd_idx=0):
+    r = (1, 0, 1, 40)
+    return {
+        "commands": [_cmd(_DECL, r)],
+        "decls": [dict(_decl(user_name, r, (1, 4, 1, 5), cmd_idx=cmd_idx),
+                       signature=signature)],
+    }
+
+
+def test_statement_from_decl_info_finds_slug():
+    info = _sig_info("Problems.p.my_lemma",
+                     "Problems.p.my_lemma (n : Nat) : 0 < n + 1")
+    assert do.statement_from_decl_info(info, "my_lemma") == "0 < n + 1"
+
+
+def test_statement_from_decl_info_misses_return_none():
+    info = _sig_info("Problems.p.my_lemma",
+                     "Problems.p.my_lemma (n : Nat) : 0 < n + 1")
+    assert do.statement_from_decl_info(None, "my_lemma") is None
+    assert do.statement_from_decl_info({}, "my_lemma") is None
+    assert do.statement_from_decl_info(info, "other_slug") is None
+    # unsplittable signature -> None (caller text-fallback)
+    bad = _sig_info("Problems.p.g", "")
+    assert do.statement_from_decl_info(bad, "g") is None

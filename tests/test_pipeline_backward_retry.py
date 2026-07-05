@@ -31,11 +31,13 @@ def _stub_verify_in_session(monkeypatch: pytest.MonkeyPatch):
     from Tooling.lsp import lifecycle as _gl
 
     def _stub(token, content, *, write_olean=False, axioms_for=None,
-              timeout=240.0, workspace=None, _retry_delays=None):
+              decl_info=False, timeout=240.0, workspace=None,
+              _retry_delays=None):
         return {
             "ok": True, "diagnostic_count": 0, "diagnostics": [],
             "olean_written": write_olean, "olean_path": None,
             "axioms": [] if axioms_for else None, "axiom_error": None,
+            "decl_info": None, "decl_info_error": None,
         }
     monkeypatch.setattr(_gl, "verify_in_session", _stub)
 
@@ -629,13 +631,15 @@ def test_backward_leaf_bypass_axiom_violation_rejects_at_acceptance(
     # Backward's leaf-bypass verifies on the pipeline's OWN session slot
     # (verify_in_session); override it to surface a sorryAx-tainted elaborate.
     def _stub_verify_with_sorry_ax(token, content, *, write_olean=False,
-                                    axioms_for=None, timeout=240.0,
+                                    axioms_for=None, decl_info=False,
+                                    timeout=240.0,
                                     workspace=None, _retry_delays=None):
         return {
             "ok": True, "diagnostic_count": 0, "diagnostics": [],
             "olean_written": write_olean, "olean_path": None,
             "axioms": ["sorryAx"] if axioms_for else None,
             "axiom_error": None,
+            "decl_info": None, "decl_info_error": None,
         }
     monkeypatch.setattr(_gl, "verify_in_session", _stub_verify_with_sorry_ax)
 

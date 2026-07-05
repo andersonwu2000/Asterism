@@ -383,6 +383,7 @@ def verify_file(target_path: Path,
 def verify_in_session(token: str, content: str, *,
                       write_olean: bool = False,
                       axioms_for: str | None = None,
+                      decl_info: bool = False,
                       timeout: float = 240.0,
                       workspace: Path | None = None,
                       _retry_delays: tuple[float, ...] | None = None) -> dict:
@@ -413,6 +414,8 @@ def verify_in_session(token: str, content: str, *,
     }
     if axioms_for:
         body["axioms_for"] = axioms_for
+    if decl_info:
+        body["decl_info"] = True
     req = urllib.request.Request(
         f"http://127.0.0.1:{_gateway_port(workspace)}/verify_session",
         data=json.dumps(body).encode("utf-8"),

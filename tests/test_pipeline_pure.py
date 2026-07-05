@@ -541,6 +541,65 @@ def test_build_strategy_skeleton_renames_and_stubs() -> None:
     assert "end Problems.p" in sk
 
 
+def test_build_strategy_skeleton_oracle_sig_reconstructs_inferred_def() -> None:
+    """decl-#2: an inferred-type def stub has no top-level colon in SOURCE,
+    but the ppSignature (oracle_sig) spells the elaborator's type — the
+    skeleton head is reconstructed from it. Section `variable` lines are
+    NOT carried (pp incorporates them as the decl's own binders; carrying
+    both would shadow), opens/imports/modifiers are."""
+    from Tooling.pipeline import _build_strategy_skeleton
+    parent = (
+        "import Mathlib\nimport Problems.p.Defs\n\n"
+        "open scoped Manifold\n\n"
+        "namespace Problems.p\n\n"
+        "variable {R : Type}\n\n"
+        "noncomputable def g (x : Nat) := by sorry\n\n"
+        "end Problems.p\n"
+    )
+    # No oracle_sig → still None (the historical un-decomposable case).
+    assert _build_strategy_skeleton(
+        parent, parent_slug="g", sid_token="s7",
+        namespace="Problems.p") is None
+    sk = _build_strategy_skeleton(
+        parent, parent_slug="g", sid_token="s7", namespace="Problems.p",
+        oracle_sig="Problems.p.g {R : Type} (x : Nat) : Nat")
+    assert sk is not None
+    assert "noncomputable def s7 {R : Type} (x : Nat) : Nat := by sorry" in sk
+    assert "import Mathlib" in sk and "import Problems.p.Defs" in sk
+    assert "open scoped Manifold" in sk
+    assert "variable {R : Type}" not in sk          # pp already binds R
+    assert "namespace Problems.p" in sk and "end Problems.p" in sk
+
+
+def test_build_strategy_skeleton_oracle_sig_universe_suffix() -> None:
+    """A universe-polymorphic decl's pp name carries `.{u_1}`; the
+    reconstructed head re-attaches it to the sid token (explicit universe
+    binder syntax)."""
+    from Tooling.pipeline import _build_strategy_skeleton
+    parent = (
+        "import Mathlib\nnamespace Problems.p\n\n"
+        "def g (n : Nat) := by sorry\n\nend Problems.p\n"
+    )
+    sk = _build_strategy_skeleton(
+        parent, parent_slug="g", sid_token="s9", namespace="Problems.p",
+        oracle_sig="Problems.p.g.{u_1} (n : Nat) : Sort u_1")
+    assert sk is not None
+    assert "def s9.{u_1} (n : Nat) : Sort u_1 := by sorry" in sk
+
+
+def test_build_strategy_skeleton_oracle_sig_malformed_still_none() -> None:
+    """An unsplittable oracle_sig (no top-level colon) must not produce a
+    typeless skeleton — same clean None as no oracle at all."""
+    from Tooling.pipeline import _build_strategy_skeleton
+    parent = (
+        "import Mathlib\nnamespace Problems.p\n\n"
+        "def g (n : Nat) := by sorry\n\nend Problems.p\n"
+    )
+    assert _build_strategy_skeleton(
+        parent, parent_slug="g", sid_token="s9", namespace="Problems.p",
+        oracle_sig="Problems.p.g") is None
+
+
 def test_build_strategy_skeleton_returns_none_when_parent_already_promoted() -> None:
     """Race-safe: if a sibling Verify already replaced parent stub with
     `def g := @ns.s5`, the resulting decl has no top-level type colon.

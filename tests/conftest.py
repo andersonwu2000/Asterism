@@ -330,9 +330,10 @@ def _stub_axiom_probe_by_default(monkeypatch: pytest.MonkeyPatch,
     # tests must stub verify_in_session themselves and discriminate by
     # content (see test_run_forward_dedupe_alias_build_fails_falls_back_…).
     def _stub_verify_in_session(token, content, *, write_olean=False,
-                                axioms_for=None, timeout=240.0,
+                                axioms_for=None, decl_info=False,
+                                timeout=240.0,
                                 workspace=None, _retry_delays=None):
         return _gl.verify_file(
             content, write_olean=write_olean, axioms_for=axioms_for,
-            workspace=workspace)
+            decl_info=decl_info, workspace=workspace)
     monkeypatch.setattr(_gl, "verify_in_session", _stub_verify_in_session)

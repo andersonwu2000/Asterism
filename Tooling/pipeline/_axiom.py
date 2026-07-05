@@ -62,6 +62,7 @@ def _read_session_token(attempts_dir: "Path | None") -> str:
 def verify_on_own_slot(
     path: Path, *, workspace: Path, attempts_dir: "Path | None" = None,
     write_olean: bool = True, axioms_for: "str | None" = None,
+    decl_info: bool = False,
     timeout: "float | None" = None,
 ) -> dict:
     """Verify `path` on the pipeline's OWN gateway slot when a session token
@@ -81,11 +82,11 @@ def verify_on_own_slot(
         return gateway_lifecycle.verify_in_session(
             token, path.read_text(encoding="utf-8"),
             write_olean=write_olean, axioms_for=axioms_for,
-            workspace=workspace,
+            decl_info=decl_info, workspace=workspace,
             _retry_delays=gateway_lifecycle._VERIFY_RETRY_DELAYS, **kwargs)
     return gateway_lifecycle.verify_file(
         path, write_olean=write_olean, axioms_for=axioms_for,
-        workspace=workspace, **kwargs)
+        decl_info=decl_info, workspace=workspace, **kwargs)
 
 
 def axiom_gate(

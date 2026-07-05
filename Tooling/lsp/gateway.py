@@ -2073,7 +2073,8 @@ async def verify(request: Request):
 
 def _verify_session_sync(token: str, content: str, *, write_olean: bool,
                          axioms_for: str | None, rpc_timeout: int,
-                         wait_timeout: int) -> dict:
+                         wait_timeout: int,
+                         decl_info: bool = False) -> dict:
     """Sync core of /verify_session: verify `content` on the slot CLAIMED by the
     registered session `token` (claimed mode — NOT a borrow), so the session's
     OWN warm slot serves the check.
@@ -2105,6 +2106,8 @@ def _verify_session_sync(token: str, content: str, *, write_olean: bool,
     olean_written = False
     axioms: list[str] | None = None
     axiom_error: str | None = None
+    decl_info_result: dict | None = None
+    decl_info_error: str | None = None
     diags: list = []
     timed_out = False
     try:
@@ -2122,6 +2125,26 @@ def _verify_session_sync(token: str, content: str, *, write_olean: bool,
             diags = backend.diagnostics_for(slot.slot_uri)
             formatted0 = [_format_diag(d) for d in diags]
             has_error0 = any(f.get("severity") == "error" for f in formatted0)
+            if not has_error0 and not timed_out and decl_info:
+                # Mirrors /verify's declInfo block: per-decl structured
+                # facts off the elaboration just paid for (statement mint
+                # piggyback — backward's placed-file verify runs here when
+                # the pipeline holds its own session slot).
+                try:
+                    r = backend.rpc_call(
+                        slot.slot_uri, "Asterism.declInfo",
+                        {"includeSignatures": True}, timeout=rpc_timeout)
+                    if r.get("ok"):
+                        decl_info_result = {
+                            "commands": list(r.get("commands") or []),
+                            "decls": list(r.get("decls") or []),
+                        }
+                    else:
+                        decl_info_error = (
+                            f"declInfo: {r.get('error') or 'not ok'}")
+                except Exception as e:
+                    decl_info_error = (f"declInfo RPC failed: "
+                                       f"{type(e).__name__}: {e}")
             if not has_error0 and not timed_out and (write_olean or axioms_for):
                 if write_olean:
                     olean_path = _olean_dest_for(meta.workspace,
@@ -2170,6 +2193,8 @@ def _verify_session_sync(token: str, content: str, *, write_olean: bool,
         "olean_path": str(olean_path) if olean_path else None,
         "axioms": axioms,
         "axiom_error": axiom_error,
+        "decl_info": decl_info_result,
+        "decl_info_error": decl_info_error,
         "timed_out": timed_out,
     }
 
@@ -2183,7 +2208,7 @@ async def verify_session(request: Request):
     its already-loaded import closure).
 
     Body: { "token": <session token>, "content": <full Lean source>,
-            "write_olean": false, "axioms_for": null,
+            "write_olean": false, "axioms_for": null, "decl_info": false,
             "rpc_timeout": 30, "wait_timeout": 240 }
     Returns: same shape as /verify, plus "timed_out"."""
     import asyncio
@@ -2199,6 +2224,7 @@ async def verify_session(request: Request):
         return JSONResponse({"error": "missing content"}, status_code=400)
     write_olean = bool(data.get("write_olean", False))
     axioms_for = data.get("axioms_for")
+    decl_info = bool(data.get("decl_info", False))
     try:
         rpc_timeout = int(data.get("rpc_timeout", 30))
         if rpc_timeout <= 0:
@@ -2218,7 +2244,8 @@ async def verify_session(request: Request):
     result = await asyncio.to_thread(
         _verify_session_sync, str(token), str(content),
         write_olean=write_olean, axioms_for=axioms_for,
-        rpc_timeout=rpc_timeout, wait_timeout=wait_timeout)
+        rpc_timeout=rpc_timeout, wait_timeout=wait_timeout,
+        decl_info=decl_info)
     status = result.pop("_status", 200)
     return JSONResponse(result, status_code=status)
 

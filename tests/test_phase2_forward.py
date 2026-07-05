@@ -320,6 +320,62 @@ def test_commit_writes_lean_file_and_inserts_goal(
     assert g["status"] == "open"
 
 
+def test_commit_statement_prefers_oracle_conclusion(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """decl-#1: when the caller threads the candidate elaboration's
+    decl_info, goals.statement is the kernel-true pp conclusion (canonical
+    form), not the text extraction."""
+    attempts = workspace / ".attempts" / "fwd-oracle"
+    attempts.mkdir(parents=True)
+    (attempts / "new_contour_deformation_piecewise.lean").write_text(
+        _NEW_LEAN_OK, encoding="utf-8")
+    r = {"startLine": 1, "startCol": 0, "endLine": 1, "endCol": 40}
+    sel = {"startLine": 1, "startCol": 8, "endLine": 1, "endCol": 9}
+    info = {
+        "commands": [{"kind": "Lean.Parser.Command.declaration",
+                      "range": r, "declNames": []}],
+        "decls": [{
+            "fqName": "Problems.p.contour_deformation_piecewise",
+            "userName": "Problems.p.contour_deformation_piecewise",
+            "kind": "thm", "isProp": True, "isNoncomputable": False,
+            "isProtected": False, "isPrivate": False, "isInstance": False,
+            "signature": ("Problems.p.contour_deformation_piecewise "
+                          "(γ : ℝ → ℂ) : True"),
+            "docstring": None, "cmdIdx": 0, "range": r, "selection": sel,
+        }],
+    }
+
+    md, _ = forward.extract_forward_metadata(_NEW_LEAN_OK)
+    outcome = forward.commit_forward_lemma(
+        conn, problem="p", workspace=workspace,
+        attempts_dir=attempts, metadata=md,
+        source_filename="new_<slug>.lean", decl_info=info,
+    )
+    g = db.get_goal(conn, outcome.goal_id)
+    assert g["statement"] == "True"
+
+
+def test_commit_statement_text_fallback_without_decl_info(
+    workspace: Path, conn: sqlite3.Connection,
+) -> None:
+    """No decl_info (old gateway / stub verifier) → the historical text
+    extraction still mints the statement."""
+    attempts = workspace / ".attempts" / "fwd-fallback"
+    attempts.mkdir(parents=True)
+    (attempts / "new_contour_deformation_piecewise.lean").write_text(
+        _NEW_LEAN_OK, encoding="utf-8")
+    md, _ = forward.extract_forward_metadata(_NEW_LEAN_OK)
+    outcome = forward.commit_forward_lemma(
+        conn, problem="p", workspace=workspace,
+        attempts_dir=attempts, metadata=md,
+        source_filename="new_<slug>.lean",
+    )
+    g = db.get_goal(conn, outcome.goal_id)
+    assert "True" in g["statement"]        # text form keeps binders too
+    assert "γ" in g["statement"]
+
+
 def test_commit_sorry_free_marks_goal_proved(
     workspace: Path, conn: sqlite3.Connection,
 ) -> None:

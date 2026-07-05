@@ -113,7 +113,8 @@ def _reject_probe(monkeypatch: pytest.MonkeyPatch):
 
     from Tooling.lsp import lifecycle as _gl
     def _stub_verify_with_rogue(target_path, *, write_olean=True,
-                                  axioms_for=None, timeout=120.0,
+                                  axioms_for=None, decl_info=False,
+                                  timeout=120.0,
                                   workspace=None):
         return {
             "ok": True,
@@ -125,6 +126,8 @@ def _reject_probe(monkeypatch: pytest.MonkeyPatch):
             # check rejects regardless of which whitelist tests pass.
             "axioms": ["sorryAx"] if axioms_for else None,
             "axiom_error": None,
+            "decl_info": None,
+            "decl_info_error": None,
         }
     monkeypatch.setattr(_gl, "verify_file", _stub_verify_with_rogue)
     # The conftest autouse stubs verify_in_session to DELEGATE to verify_file

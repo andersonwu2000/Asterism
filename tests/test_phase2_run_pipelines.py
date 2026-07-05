@@ -574,6 +574,68 @@ def test_run_forward_rejects_sorry_bearing_inferred_type_def(
     ).fetchone()[0] == 0
 
 
+def test_run_forward_inferred_type_def_passes_with_oracle_signature(
+    workspace: Path, conn: sqlite3.Connection,
+    mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,
+    mock_lsp_verify,
+) -> None:
+    """decl-#2 dissolution: the same inferred-type sorry-bearing def is
+    ACCEPTED when the candidate elaboration's decl_info supplies a
+    splittable ppSignature — the goal enters BFS and its statement is the
+    kernel-true pp conclusion (Backward's skeleton reconstructs from the
+    same signature at decompose time)."""
+    _insert_root(conn)
+
+    def fake_spawn(**kw):
+        (kw["attempts_dir"] / "new_forward.lean").write_text(
+            "namespace Problems.p\n"
+            "-- Forward rationale: assemble the iso.\n"
+            "-- entry_kind: Backward\n"
+            "noncomputable def good_iso {R : Type} (A : Set R) :=\n"
+            "  (by sorry : A = A)\n"
+            "end Problems.p\n",
+            encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    r = {"startLine": 1, "startCol": 0, "endLine": 1, "endCol": 40}
+    sel = {"startLine": 1, "startCol": 8, "endLine": 1, "endCol": 9}
+    info = {
+        "commands": [{"kind": "Lean.Parser.Command.declaration",
+                      "range": r, "declNames": []}],
+        "decls": [{
+            "fqName": "Problems.p.good_iso",
+            "userName": "Problems.p.good_iso",
+            "kind": "def", "isProp": False, "isNoncomputable": True,
+            "isProtected": False, "isPrivate": False, "isInstance": False,
+            "signature": "Problems.p.good_iso {R : Type} (A : Set R) : A = A",
+            "docstring": None, "cmdIdx": 0, "range": r, "selection": sel,
+        }],
+    }
+
+    def fake_verify(target_path, **kw):
+        return {
+            "ok": True, "diagnostic_count": 0, "diagnostics": [],
+            "olean_written": False, "olean_path": None,
+            "axioms": None, "axiom_error": None,
+            "decl_info": info if kw.get("decl_info") else None,
+            "decl_info_error": None,
+        }
+    from Tooling.lsp import lifecycle as gateway_lifecycle
+    monkeypatch.setattr(gateway_lifecycle, "verify_file", fake_verify)
+
+    res = forward.run_forward(
+        conn, problem="p", workspace=workspace, mfst=mfst,
+        pipeline_id="test-fwd-inferred-ok",
+    )
+    assert res.outcome == "success", res.failure_detail
+    g = conn.execute(
+        "SELECT * FROM goals WHERE problem='p' AND origin='forward'"
+    ).fetchone()
+    assert g is not None
+    assert g["statement"] == "A = A"
+
+
 def test_run_forward_no_output(
     workspace: Path, conn: sqlite3.Connection,
     mfst: manifest.Manifest, monkeypatch: pytest.MonkeyPatch,

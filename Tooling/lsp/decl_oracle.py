@@ -71,6 +71,99 @@ def _rng(d: dict) -> "tuple[int, int, int, int]":
     return (d["startLine"], d["startCol"], d["endLine"], d["endCol"])
 
 
+# ---- ppSignature parsing ---------------------------------------------
+#
+# A ppSignature is `<fqName>[.{u, v}] <binders…> : <type>` — the
+# elaborator's own rendering, so the type is ALWAYS explicit (an
+# inferred-type `def f (x : A) := body` still prints `f (x : A) : B`),
+# names are fully qualified, and section variables are incorporated.
+# Splitting it needs the same top-level walk the text extractors do, but
+# against pp-normal form instead of hand-written source — that is the
+# entire point (statement mint / skeleton reconstruction, tasks decl-#1
+# and decl-#2).
+
+_UNIVERSE_SUFFIX_RE = re.compile(r"\.\{[^}]*\}$")
+_BINDER_OPEN = {"(": ")", "{": "}", "[": "]", "⦃": "⦄"}
+_BINDER_CLOSE = {v: k for k, v in _BINDER_OPEN.items()}
+
+
+def split_signature(sig: str) -> "tuple[str, str, str] | None":
+    """Split a ppSignature into `(name, universes, rest)`:
+
+      name       — the fully-qualified constant name (no universe suffix)
+      universes  — the literal `.{u_1, u_2}` suffix or ''
+      rest       — everything after the head token, whitespace-collapsed
+                   to ONE line (`<binders…> : <type>`; pp wraps at render
+                   width, which is presentation, not content)
+
+    None when `sig` is empty or has no top-level `:` after the head — a
+    malformed / truncated signature the caller must not trust."""
+    sig = (sig or "").strip()
+    if not sig:
+        return None
+    parts_ws = sig.split(None, 1)      # any whitespace — pp may wrap
+    if len(parts_ws) != 2:             # right after a long name
+        # A bare name with no binders and no colon — nothing to split.
+        return None
+    head, rest = parts_ws
+    m = _UNIVERSE_SUFFIX_RE.search(head)
+    universes = m.group(0) if m else ""
+    name = head[: m.start()] if m else head
+    rest = " ".join(rest.split())
+    if _top_level_colon_pos(rest) is None:
+        return None
+    return name, universes, rest
+
+
+def _top_level_colon_pos(rest: str) -> "int | None":
+    """Offset of the first `:` outside binder groups `()` `{}` `[]` `⦃⦄`
+    in `rest`, or None. The type colon of a pp signature is the only
+    top-level `:` — binder ascriptions all sit inside their groups."""
+    depth = 0
+    for i, ch in enumerate(rest):
+        if ch in _BINDER_OPEN:
+            depth += 1
+        elif ch in _BINDER_CLOSE:
+            depth = max(0, depth - 1)
+        elif ch == ":" and depth == 0:
+            # `:=` never appears in a ppSignature (no body), so a bare
+            # top-level `:` is the type colon.
+            return i
+    return None
+
+
+def sig_conclusion(sig: str) -> "str | None":
+    """The conclusion (type after the top-level `:`) of a ppSignature,
+    single-line — the kernel-true counterpart of the text extractors'
+    `goal.statement` (binders stripped, conclusion only). None when the
+    signature doesn't split."""
+    parts = split_signature(sig)
+    if parts is None:
+        return None
+    _name, _univ, rest = parts
+    pos = _top_level_colon_pos(rest)
+    if pos is None:
+        return None
+    out = rest[pos + 1:].strip()
+    return out or None
+
+
+def statement_from_decl_info(info: "dict | None", slug: str) -> "str | None":
+    """`sig_conclusion` for the decl named `slug` (exact or `.slug`-suffixed)
+    in a raw `decl_info` response dict — the piggyback path for callers that
+    already paid the elaboration (backward's placed-file verify, forward's
+    candidate verify). None on any miss: no info, ambiguous slug, decl
+    without a splittable signature — callers keep their text fallback."""
+    if not info:
+        return None
+    o = DeclOracle("", list(info.get("commands") or []),
+                   list(info.get("decls") or []))
+    d = o.find(slug)
+    if d is None:
+        return None
+    return sig_conclusion(d.signature)
+
+
 def primary_user_names(info: dict) -> "list[str]":
     """Primary decls' user-facing names straight from a raw `decl_info`
     response dict — for consumers holding a response of their own (the
