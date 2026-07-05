@@ -607,3 +607,27 @@ def test_external_library_import_preserved():
     assert f"import {LIB}" in r.text            # external Library import kept
     assert f"{LIB}.main" in r.text              # cross-Library reference kept
     assert f"import {PNS}.Defs" not in r.text   # own Defs still dropped
+
+
+# ---------------------------------------------------------------------
+# _collapse_renamed_pair — alias-collapse vs tactic id-lists (2026-07-05)
+# ---------------------------------------------------------------------
+
+def test_collapse_renamed_pair_unfold_and_rw():
+    """`unfold A sN` / `rw [A, sN, rest]` must not become `[A, A]` after
+    the sN→A rename — the Library collapses the alias indirection into
+    one def, and per-token-progress tactics die on the duplicate (both
+    sphere_homology migrate STALLs; deduped candidates build clean)."""
+    from Tooling.quality.librarian.relabel import _collapse_renamed_pair
+    t = "  unfold sphere_zero_coprod_prod_iso s18134\n"
+    out = _collapse_renamed_pair(t, "s18134", "sphere_zero_coprod_prod_iso")
+    assert out == "  unfold sphere_zero_coprod_prod_iso\n"
+    t2 = "rw [subspace_supported_finsupp_equiv, s18038, ← Foo.bar]"
+    out2 = _collapse_renamed_pair(
+        t2, "s18038", "subspace_supported_finsupp_equiv")
+    assert out2 == "rw [subspace_supported_finsupp_equiv, ← Foo.bar]"
+    # reverse order + no-adjacency untouched
+    t3 = "unfold s9 alias_x\nexact s9 rfl"
+    out3 = _collapse_renamed_pair(t3, "s9", "alias_x")
+    assert "unfold alias_x\n" in out3
+    assert "exact s9 rfl" in out3          # non-adjacent occurrence kept

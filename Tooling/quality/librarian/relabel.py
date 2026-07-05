@@ -99,6 +99,23 @@ _PROOF_IMPORT_RE = re.compile(
     r"^\s*import\s+(Problems\.[\w.]+)\.proofs\.([A-Za-z_]\w*)\s*$")
 
 
+def _collapse_renamed_pair(text: str, old: str, new: str) -> str:
+    """Collapse a `new, old` / `new old` adjacency to `new` BEFORE the
+    generic `old → new` token rename. In tactic id-lists (`unfold A sN`,
+    `rw [A, sN, …]`) the source is FORCED into the two-token chain — the
+    goal names the alias `A`, the body sits behind the framework's
+    `def A := @sN` indirection — but the migrated Library collapses that
+    indirection into ONE def, so the renamed list becomes `[A, A]` and
+    per-token-progress tactics die on the duplicate (both sphere_homology
+    migrate STALLs, 2026-07-05; deduped candidates build clean). The
+    adjacency is unambiguous: as a TERM, `A sN` would apply the alias to
+    its own strategy proof — type-impossible for `def A := @sN`."""
+    text = re.sub(rf"\b{re.escape(new)}(\s*,\s*|\s+){re.escape(old)}\b",
+                  new, text)
+    return re.sub(rf"\b{re.escape(old)}(\s*,\s*|\s+){re.escape(new)}\b",
+                  new, text)
+
+
 def _alias_target(source_text: str) -> "str | None":
     """If the file is an alias `def <name> := @<PNS>.<strategy>`, return the
     bare strategy decl name (`s11000`); else None."""
@@ -395,12 +412,14 @@ def relabel_self_contained(
         # a larger name. Only slugs the caller vetted as verbatim-equal are
         # here; everything else already declined above.
         for src_slug, dst in citation_map.items():
+            text = _collapse_renamed_pair(text, src_slug, dst)
             text = re.sub(rf"\b{re.escape(src_slug)}\b", dst, text)
     if strategy_renames:
         # Redirect nested strategy-term references (`sN`) to the kept sibling
         # lemma that strategy proves — its module is import+open'd above, so the
         # bare lemma name resolves. Word-boundary like citation_map.
         for sN, sib in strategy_renames.items():
+            text = _collapse_renamed_pair(text, sN, sib)
             text = re.sub(rf"\b{re.escape(sN)}\b", sib, text)
     if body_to_sorry:
         # Seed-a-hole: drop the proof body, keep the signature. Done before
