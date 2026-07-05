@@ -134,6 +134,28 @@ def test_reset_clears_db_rows_for_problem(
     ).fetchone()[0] == 0
 
 
+def test_reset_sweeps_drafts_and_presearch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reset wipes the per-problem scratch caches. `.drafts/` (progress
+    notes) would pre-bias a clean baseline; `.presearch/` is worse —
+    it is keyed by goal id, so after a reset that recreates the DB a
+    surviving `g<id>.md` is silently served as the candidate-lemma cache
+    for an UNRELATED new goal with the same id."""
+    pdir = _setup_problem(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    _seed_via_init(tmp_path)
+    (pdir / ".drafts").mkdir()
+    (pdir / ".drafts" / "builder_g7.md").write_text("note", encoding="utf-8")
+    (pdir / ".presearch").mkdir()
+    (pdir / ".presearch" / "g7.md").write_text("- `Foo.bar`", encoding="utf-8")
+
+    rc = cmd_reset(argparse.Namespace(problem="wilson"))
+    assert rc == 0
+    assert not (pdir / ".drafts").exists()
+    assert not (pdir / ".presearch").exists()
+
+
 def test_reset_clears_pipelines_for_problem_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

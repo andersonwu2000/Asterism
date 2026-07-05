@@ -845,6 +845,17 @@ def cmd_reset(args: argparse.Namespace) -> int:
         if not _robust_rmtree(drafts_dir):
             failed_files.append(".drafts/")
 
+    # Drop .presearch/ (per-goal candidate-lemma cache, keyed by goal id).
+    # Same clean-baseline rationale as .drafts — plus a real hazard the
+    # drafts don't have: after a reset that recreates the DB, goal ids
+    # restart, and a surviving `.presearch/g<id>.md` from the old world is
+    # silently served as the pre-search cache for an UNRELATED new goal
+    # with the same id (stale candidate lemmas injected into its Context).
+    presearch_dir = pdir / ".presearch"
+    if presearch_dir.exists():
+        if not _robust_rmtree(presearch_dir):
+            failed_files.append(".presearch/")
+
     if failed_files:
         print(f"FAIL: reset {problem}: could not remove "
               f"{len(failed_files)} file(s) after retries:",
