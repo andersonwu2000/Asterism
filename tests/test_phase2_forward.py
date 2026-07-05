@@ -510,10 +510,62 @@ def test_extract_metadata_class_kind() -> None:
     assert md.slug == "collinear_oracle"
 
 
+_NEW_LEAN_INDUCTIVE = """\
+namespace Problems.p
+
+-- Forward rationale: derivation trees for the toy proof system so the
+-- soundness claim can recurse over constructors.
+inductive derivation (α : Type) : ℕ → Type where
+  | ax : α → derivation α 0
+  | mp : derivation α 0 → derivation α 1
+
+end Problems.p
+"""
+
+_NEW_LEAN_INDUCTIVE_SORRY = """\
+namespace Problems.p
+
+-- Forward rationale: placeholder constructor type left open.
+inductive bad_tree where
+  | leaf : sorry → bad_tree
+
+end Problems.p
+"""
+
+
+def test_extract_metadata_inductive_kind() -> None:
+    md, err = forward.extract_forward_metadata(_NEW_LEAN_INDUCTIVE)
+    assert err == ""
+    assert md.kind == "inductive"
+    assert md.slug == "derivation"
+    assert md.sorry_free
+
+
+def test_extract_metadata_inductive_rejects_sorry() -> None:
+    """v19: an inductive has no proof body to fill later — a sorry can
+    only sit inside a constructor type, which no dispatch path repairs.
+    Parse-level reject → fast agent retry."""
+    md, err = forward.extract_forward_metadata(_NEW_LEAN_INDUCTIVE_SORRY)
+    assert md is None
+    assert "inductive" in err and "sorry" in err
+
+
+def test_extract_statement_string_inductive_keeps_binders() -> None:
+    """Nominal kinds mint `<binders> : <conclusion>` (up to `where`), not
+    the bare universe — a `Type`-only key would de-discriminate the
+    statement dedupe pre-filter (5065/5026, inverted)."""
+    s = forward._extract_statement_string(
+        _NEW_LEAN_INDUCTIVE, "derivation", "inductive")
+    assert s is not None
+    assert "(α : Type)" in s and "ℕ → Type" in s
+    assert "where" not in s and "| ax" not in s
+
+
 def test_non_theorem_kinds_in_NON_THEOREM_KINDS_constant() -> None:
     """Constant must list every non-theorem kind the parser accepts so
     dispatch / library / verify share a single source of truth."""
-    assert forward.NON_THEOREM_KINDS == frozenset({"def", "structure", "class"})
+    assert forward.NON_THEOREM_KINDS == frozenset(
+        {"def", "structure", "class", "inductive"})
 
 
 def test_commit_def_marks_goal_proved_immediately(

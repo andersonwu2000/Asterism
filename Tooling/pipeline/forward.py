@@ -20,7 +20,8 @@ authoritative list is run_forward's own docstring below):
   4. self_verify      (pure)   LSP verify_file (leading sorry OK)
   5. dedupe           (pure)   find_canonicals_batch
   6. commit           (pure)   move to proofs/L_<slug>.lean + INSERT goal
-                               (kind ∈ {theorem,def,structure,class}, origin=forward)
+                               (kind ∈ {theorem,def,structure,class,inductive},
+                               origin=forward)
   (post-commit: find_shelved_revivals_for_forward — G1, §3.6)
 
 Public surface (framework side; agent stage = TODO):
@@ -126,9 +127,9 @@ _DECLINE_RE = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 # `<kind> <slug>` declaration head — captures kind + slug. kind ∈
-# {theorem, def, structure, class} (Phase 4). Non-theorem kinds are
-# Library toolkit artifacts that bypass the prove loop; see
-# `NON_THEOREM_KINDS` in dispatcher.py for downstream filtering.
+# {theorem, def, structure, class} (Phase 4) + {inductive} (v19).
+# Non-theorem kinds are Library toolkit artifacts that bypass the prove
+# loop; see `NON_THEOREM_KINDS` below for downstream filtering.
 #
 # Leading modifiers + attributes are tolerated: `noncomputable def`,
 # `@[simp] theorem`, `private def`, etc. are all valid Lean — rejecting them
@@ -141,7 +142,8 @@ _DECL_HEAD_RE = assemble.DECL_HEAD_RE
 # Kinds that have no proof obligation: status='proved' immediately on
 # commit, BFS never dispatches Backward/Builder, Library promotes
 # without axiom_probe. Theorem is the prove-loop default.
-NON_THEOREM_KINDS: frozenset[str] = frozenset({"def", "structure", "class"})
+NON_THEOREM_KINDS: frozenset[str] = frozenset(
+    {"def", "structure", "class", "inductive"})
 
 
 # ---------------------------------------------------------------------
@@ -156,7 +158,7 @@ class ForwardMetadata:
     rationale: str
     entry_kind: str  # 'Builder' or 'Backward' (only meaningful when kind=='theorem')
     sorry_free: bool  # True iff body has no `sorry` token
-    kind: str = "theorem"  # 'theorem' | 'def' | 'structure' | 'class'
+    kind: str = "theorem"  # 'theorem' | 'def' | 'structure' | 'class' | 'inductive'
 
 
 def extract_forward_metadata(text: str) -> tuple[ForwardMetadata | None, str]:
@@ -169,8 +171,8 @@ def extract_forward_metadata(text: str) -> tuple[ForwardMetadata | None, str]:
     """
     decl_m = _DECL_HEAD_RE.search(text)
     if decl_m is None:
-        return None, ("no `theorem <slug>`, `def <slug>`, `structure <slug>` "
-                      "or `class <slug>` declaration found")
+        return None, ("no `theorem <slug>`, `def <slug>`, `structure <slug>`, "
+                      "`class <slug>` or `inductive <slug>` declaration found")
     kind = decl_m.group(1)
     slug = decl_m.group(2)
     if not SLUG_RE.match(slug):
@@ -204,6 +206,14 @@ def extract_forward_metadata(text: str) -> tuple[ForwardMetadata | None, str]:
     # commit uses kind alone to decide initial status (`sorry_free`
     # is irrelevant when there's no proof to chase).
     sorry_free = re.search(r"\bsorry\b", text) is None
+    if kind == "inductive" and not sorry_free:
+        # An inductive has no proof body to fill later — a `sorry` can only
+        # sit inside a constructor TYPE, and no dispatch path repairs that
+        # (Builder/Backward patch `:= by sorry` bodies). Reject at parse so
+        # the agent retries with a complete type instead of minting an
+        # un-dispatchable open goal.
+        return None, ("`inductive` must be complete (no `sorry`): "
+                      "emit the full constructor list or decline")
     return ForwardMetadata(
         slug=slug, rationale=rationale, entry_kind=entry_kind,
         sorry_free=sorry_free, kind=kind,
@@ -324,16 +334,26 @@ def commit_forward_lemma(conn: sqlite3.Connection, *,
     # form; exists even for an inferred-type def). Text extraction stays
     # as the cold fallback. If both fail, store empty string (lean_path
     # is the canonical artifact).
+    # Nominal kinds (structure / class / inductive) skip the oracle
+    # conclusion: `sig_conclusion` collapses every type former to its
+    # universe (`Type`), de-discriminating the statement key the dedupe
+    # pre-filters compare (the 5065/5026 blindness, inverted). The text
+    # extraction keeps `<binders> : <conclusion>` up to `where`.
     from ..lsp.decl_oracle import statement_from_decl_info
-    statement = (statement_from_decl_info(decl_info, metadata.slug)
-                 or _extract_statement_string(body, metadata.slug,
-                                              metadata.kind) or "")
+    if metadata.kind in ("structure", "class", "inductive"):
+        statement = _extract_statement_string(
+            body, metadata.slug, metadata.kind) or ""
+    else:
+        statement = (statement_from_decl_info(decl_info, metadata.slug)
+                     or _extract_statement_string(body, metadata.slug,
+                                                  metadata.kind) or "")
 
     # Curry-Howard unified — every kind is a request for an inhabitant
     # of some type (theorem = inhabitant of a Prop, def/structure/class
     # = inhabitant of a Type). A sorry-bearing body is a deferred
     # obligation regardless of kind; a sorry-free body is a concrete
-    # artifact.
+    # artifact. (`inductive` never reaches here sorry-bearing — the
+    # parse gate rejects it: there is no body to fill later.)
     #
     # Pre-unification, non-theorem kinds were unconditionally marked
     # proved on the assumption that they "carry no proof obligation".
@@ -529,11 +549,12 @@ def _extract_statement_string(body: str, slug: str,
                               kind: str = "theorem") -> str | None:
     """Pull the declaration signature substring after `<kind> <slug>`.
     For theorem / def: up to `:=` or end of line (the type or value
-    signature without the proof body). For structure / class: up to
-    `where` or `extends` keyword (the fields block is the body).
+    signature without the proof body). For structure / class /
+    inductive: up to `where` or `extends` keyword (the fields /
+    constructors block is the body).
     Best-effort; returns None if pattern doesn't match.
     """
-    if kind in ("structure", "class"):
+    if kind in ("structure", "class", "inductive"):
         terminator = r"(?:\bwhere\b|$)"
     else:
         terminator = r"(?::=|$)"
