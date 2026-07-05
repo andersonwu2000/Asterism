@@ -55,40 +55,12 @@ from . import (PipelineResult, _release_session, _spawn_failure,
 # `proved` (Builder success), `success` (Backward strategy commit).
 _TERMINAL_SUCCESS_OUTCOMES = frozenset({"proved", "success"})
 
-# Failure reasons that must NOT be retried inside the loop:
-#   * `agent_declined` (Builder) — agent intentionally declined; cascade
-#     routes to Backward.
-#   * `agent_infeasible` (Builder/Backward) — agent supplied a counter-
-#     example; cascade shelves the goal and propagates upward.
-#   * `goal_no_longer_open` (Backward) — race-detected mid-parse moot
-#     (sibling proved or shelve propagated while this pipeline was
-#     building). Retrying the same session against a terminated goal
-#     accomplishes nothing.
-_TERMINAL_DECLINE_REASONS = frozenset({
-    # Decline directives that the in-pipeline retry helper must NOT
-    # silently retry — the agent has emitted a structured signal that
-    # this goal is done at this level. cascade_one routes each by
-    # failure_reason; helper just stops the loop.
-    "agent_declined",       # needs_decomposition → entry_kind switch to Backward
-    "agent_infeasible",     # unprovable → shelve + cascade up
-    "parent_needs_fix",     # return_to_parent → shelve + cascade up + fix hint
-    "agent_shelved",        # shelve → shelve + cascade up
-    # Backward rescue option (d) — agent wrote `_progress.md` instead
-    # of committing a split when not confident. Terminal in this
-    # pipeline so the loop exits and `run_backward` outer wrapper
-    # persists the note into .drafts/ for the next cold dispatch.
-    "agent_bailed",
-    # Race-detected mid-parse: a sibling already terminated this goal.
-    "goal_no_longer_open",
-    # #112(a) — agent's decomposition recapitulates a previously-disproved
-    # statement (agent counterexample, status='disproved'). Same-sid retry
-    # would re-emit the same split; only a fresh dispatch (and ideally a
-    # fresh-rescue prompt mentioning the disproved collision) has any
-    # chance of a different proposal. Phase 2 — renamed from
-    # `same_as_shelved` after status enum split (see
-    # `docs/archive/design/phase2/pipelines.md` §4.1).
-    "same_as_disproved",
-})
+# Failure reasons that must NOT be retried inside the loop — the agent
+# emitted a structured decline (or a race settled the goal); cascade_one
+# routes each by failure_reason, the helper just stops. Derived from the
+# failure registry (`terminal_in_loop` trait); per-reason rationale lives
+# on the registry entries + failure_modes.md §2.
+from ..state.failures import TERMINAL_DECLINE_REASONS as _TERMINAL_DECLINE_REASONS  # noqa: E402,E501
 
 
 def goal_still_active(conn: sqlite3.Connection, goal_id: int,
@@ -734,9 +706,8 @@ def run_with_session_retries(
         # self-report, so the framework writes its cause. Independent of
         # reflection (fires even when reflection_fn is None). goal_no_longer_
         # open is a race, not a death — neither.
-        if result.failure_reason in (
-            "spawn_fast_fail", "quota_exhausted", "missing_dep",
-        ):
+        from ..state.failures import DEATH_NOTE_REASONS
+        if result.failure_reason in DEATH_NOTE_REASONS:
             if death_fn is not None:
                 try:
                     death_fn(result)

@@ -17,6 +17,7 @@ from pathlib import Path
 from .. import agent, pipeline
 from . import config
 from ..state import db, manifest, transitions, tree
+from ..state import failures as _failures
 from ..quality import prune, verify
 
 
@@ -834,12 +835,19 @@ def _run_pipeline(workspace: Path,
                 )
                 if status == "failed":
                     # Problem-targeted forensic uses target_id=0 (INTEGER
-                    # column; same convention as Forward below).
+                    # column; same convention as Forward below). Artifacts
+                    # packed like every other branch (task #5 audit item h:
+                    # this and Forward's final-failure record were the two
+                    # that dropped them — a schema_invalid's decision.json
+                    # IS the evidence, and the context/usage telemetry
+                    # rides the same column).
+                    _arts = pipeline.collect_artifacts(attempts_dir)
                     db.record_dead_attempt(
                         conn, target_id=0, target_kind=target_kind,
                         pipeline_id=pipeline_id,
                         failure_reason=str(r.failure_reason or "failed"),
                         failure_detail=str(r.failure_detail or ""),
+                        artifacts=(_json.dumps(_arts) if _arts else ""),
                     )
                 return (pipeline_id, task_kind, target_id, target_kind,
                         r.outcome, str(r.failure_reason or ""))
@@ -893,11 +901,13 @@ def _run_pipeline(workspace: Path,
                 # above); duplicating here would over-count.
                 if (status == "failed"
                         and r.outcome != "exhausted"):
+                    _arts = pipeline.collect_artifacts(attempts_dir)
                     db.record_dead_attempt(
                         conn, target_id=0, target_kind=target_kind,
                         pipeline_id=pipeline_id,
                         failure_reason=str(r.failure_reason or "failed"),
                         failure_detail=str(r.failure_detail or ""),
+                        artifacts=(_json.dumps(_arts) if _arts else ""),
                     )
                 return (pipeline_id, task_kind, target_id, target_kind,
                         r.outcome, str(r.failure_reason or ""))
@@ -1512,10 +1522,8 @@ def run(workspace: Path, *, once: bool = False,
                               f"(consec={n}, backoff={backoff:.0f}s, "
                               f"flushed={flushed} queued; all {kind} "
                               f"dispatch suspended)", flush=True)
-                    elif outcome == "failed" and reason in (
-                        "spawn_fast_fail", "missing_dep",
-                        "gateway_unreachable", "transient_timeout",
-                    ):
+                    elif (outcome == "failed"
+                          and reason in _failures.TARGET_COOLDOWN_REASONS):
                         st.cooldown_until[(tid, kind)] = (
                             time.time() + SPAWN_COOLDOWN_SEC)
                         if reason == "spawn_fast_fail":

@@ -1364,13 +1364,11 @@ def run_strategist(conn: sqlite3.Connection, *, problem: str,
 
 
 def _rc_to_reason(rc: int) -> str:
-    """Map agent.spawn_llm rc to failure_reason for Strategist / Forward.
-    Mirrors backward.py / builder.py rc handling but consolidated here
-    so the new pipelines share the same channel-failure taxonomy."""
-    if rc == 124:
-        return "transient_timeout"
-    if rc == 125:
-        return "spawn_fast_fail"
+    """Channel failure_reason for an agent rc — thin alias of the registry's
+    `failures.rc_to_reason` (task #5: the last per-pipeline mirror of the rc
+    taxonomy; kept as a module-local name for the two call sites + tests)."""
+    from ..state.failures import rc_to_reason
+    return rc_to_reason(rc)
     if rc == 126:
         return "quota_exhausted"
     if rc == 127:

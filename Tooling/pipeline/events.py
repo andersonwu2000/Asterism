@@ -61,22 +61,7 @@ from typing import Any
 # Rows for these reasons still exist in dead_attempts (forensic + cooldown
 # / race-tracking signals), they just don't surface in the agent's
 # Context.md.
-_NON_AGENT_REASONS: frozenset[str] = frozenset({
-    "spawn_fast_fail",
-    # All three decline directives that cascade up are cross-projected
-    # via `infeasible_subs` to the parent's context.md. They must NOT
-    # also appear in the goal's own direct_attempts projection (would
-    # be a duplicate signal).
-    "agent_infeasible",
-    "parent_needs_fix",
-    "agent_shelved",
-    "goal_not_found",
-    "lean_file_missing",
-    "missing_parent_stub",
-    "parent_stub_not_decomposable",
-    "goal_no_longer_open",
-    "unknown_kind",
-})
+from ..state.failures import NON_AGENT_REASONS as _NON_AGENT_REASONS  # noqa: E402
 
 
 # ---------------------------------------------------------------------

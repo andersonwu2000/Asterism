@@ -1104,8 +1104,7 @@ def cascade_one(conn: sqlite3.Connection, *, pipeline_id: str,
     #                            #14 2026-05-11 IOCP accept-loop death
     #                            shelved root goal by counting infra
     #                            refusals against attempts)
-    _INFRA_REASONS = ("spawn_fast_fail", "quota_exhausted", "missing_dep",
-                      "gateway_unreachable", "transient_timeout")
+    from .failures import PROVIDER_INFRA_REASONS as _INFRA_REASONS
     is_infra = (outcome == "failed" and failure_reason in _INFRA_REASONS)
 
     # Phase 7 — `moot` outcome: pipeline detected the goal already

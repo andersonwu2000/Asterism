@@ -616,10 +616,10 @@ def _run_backward_inner(conn: sqlite3.Connection, *, goal_id: int,
     # at status='proposed' with empty proposal_md/scratch_path/no
     # sub-goals; recovery's startup sweep eventually cleans it but
     # mid-lifecycle accumulation goes unbounded.
-    _INFRA_REASONS = {
-        "quota_exhausted", "spawn_fast_fail", "missing_dep",
-        "gateway_unreachable", "transient_timeout",
-    }
+    # Provider-level infra set from the one registry (task #5 — this was
+    # the byte-identical private copy that outlived _infra.py's
+    # centralization).
+    from ..state.failures import PROVIDER_INFRA_REASONS as _INFRA_REASONS
     try:
         # Task #8: Backward was the last pipeline hand-rolling the spawn
         # ceremony (register + mcp-config + spawn_llm closure) that
