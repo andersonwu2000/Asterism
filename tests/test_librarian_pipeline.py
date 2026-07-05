@@ -856,6 +856,47 @@ def test_migrate_gate_alias_covered_first_probe():
     assert "#print axioms Library.A.t_alias" in texts[0]
 
 
+def test_migrate_gate_inductive_companion_no_reprobe():
+    """A covered inductive's compiler-generated companion (`X.casesOn`)
+    in the kernel decl list must NOT trigger the coverage-gap re-probe —
+    companions are minted from the parent declaration alone, so probing
+    the parent covers them (toy_tree_mirror 2026-07-06: 3 re-probes per
+    harvest on `toy_tree.casesOn`)."""
+    patch = ("import Mathlib\nnamespace Library.A\n"
+             "inductive t : Type\n"
+             "theorem u : True := trivial\nend Library.A\n")
+    info = _kernel_info("Library.A.t", "Library.A.t.casesOn", "Library.A.u")
+    calls = {"n": 0}
+
+    def _probe(text):
+        calls["n"] += 1
+        return (True, "", {"Library.A.t": set(),
+                           "Library.A.u": {"propext"}}, info)
+
+    r = lib.migrate_commit_gate(
+        patch, _P("Library/A/Bar.lean"), whitelist=["propext"],
+        probe_verifier=_probe)
+    assert r.ok, r.detail
+    assert calls["n"] == 1
+    # An UNCOVERED companion (parent absent from the probe list) still
+    # counts as missing — the exemption is parent-scoped, not blanket.
+    info2 = _kernel_info("Library.A.u", "Library.A.t.casesOn")
+    texts = []
+
+    def _probe2(text):
+        texts.append(text)
+        return (True, "", {"Library.A.u": {"propext"},
+                           "Library.A.t.casesOn": set()}, info2)
+
+    patch2 = ("import Mathlib\nnamespace Library.A\n"
+              "theorem u : True := trivial\nend Library.A\n")
+    r2 = lib.migrate_commit_gate(
+        patch2, _P("Library/A/Bar.lean"), whitelist=["propext"],
+        probe_verifier=_probe2)
+    assert r2.ok, r2.detail
+    assert len(texts) == 2                     # re-probe DID fire
+
+
 def test_migrate_gate_full_coverage_single_probe():
     """kernel decls ⊆ extracted names → no re-probe (one elaboration, the
     cost contract the batched probe was built for)."""

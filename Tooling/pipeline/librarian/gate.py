@@ -269,7 +269,24 @@ def migrate_commit_gate(
         # list (kernel-true names resolve at top level by construction).
         from ...lsp.decl_oracle import primary_user_names
         kernel_names = [n for n in primary_user_names(kernel_info)]
-        missing = [n for n in kernel_names if n not in set(check_names)]
+        covered = set(check_names)
+
+        def _companion_of_covered(n: str) -> bool:
+            # Compiler-generated companions of an inductive (casesOn/rec/…)
+            # are minted from the parent declaration alone — probing the
+            # parent's axioms covers them. Without this, every
+            # inductive-bearing file paid the coverage-gap re-probe on
+            # `X.casesOn`, 3× per harvest (toy_tree_mirror 2026-07-06 —
+            # the same systematic-double-probe class as the dedupe-bridge
+            # alias fix).
+            head, _, tail = n.rpartition(".")
+            return (head in covered and tail in (
+                "casesOn", "rec", "recOn", "brecOn", "binductionOn",
+                "below", "ibelow", "ndrec", "ndrecOn",
+                "noConfusion", "noConfusionType"))
+
+        missing = [n for n in kernel_names
+                   if n not in covered and not _companion_of_covered(n)]
         if missing:
             print(f"[librarian] axiom-probe coverage gap: extractor "
                   f"missed {missing} — re-probing with the kernel-true "
