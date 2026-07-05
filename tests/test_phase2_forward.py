@@ -561,11 +561,68 @@ def test_extract_statement_string_inductive_keeps_binders() -> None:
     assert "where" not in s and "| ax" not in s
 
 
+_NEW_LEAN_INSTANCE = """\
+namespace Problems.p
+
+-- Forward rationale: register the toy depth interface for formulas so
+-- downstream claims can use typeclass resolution.
+instance formula_depth : has_toy_depth prop_formula where
+  depth := fun _ => 1
+
+end Problems.p
+"""
+
+_NEW_LEAN_INSTANCE_TERM = """\
+namespace Problems.p
+
+-- Forward rationale: same instance, term-mode body.
+noncomputable instance formula_depth : has_toy_depth prop_formula :=
+  ⟨fun _ => 1⟩
+
+end Problems.p
+"""
+
+_NEW_LEAN_INSTANCE_ANON = """\
+namespace Problems.p
+
+-- Forward rationale: idiomatic anonymous instance (must be rejected).
+instance : has_toy_depth prop_formula where
+  depth := fun _ => 1
+
+end Problems.p
+"""
+
+
+def test_extract_metadata_instance_kind() -> None:
+    for src in (_NEW_LEAN_INSTANCE, _NEW_LEAN_INSTANCE_TERM):
+        md, err = forward.extract_forward_metadata(src)
+        assert err == ""
+        assert md.kind == "instance"
+        assert md.slug == "formula_depth"
+
+
+def test_extract_metadata_anonymous_instance_targeted_error() -> None:
+    """v20: the chain is name-keyed — an anonymous `instance` gets a
+    targeted retry message, not the generic no-declaration error."""
+    md, err = forward.extract_forward_metadata(_NEW_LEAN_INSTANCE_ANON)
+    assert md is None
+    assert "anonymous" in err and "instance <slug>" in err
+
+
+def test_extract_statement_string_instance_both_body_forms() -> None:
+    """Instance statements stop at `:=` OR `where` — the where-block's
+    inner `:= …` must not swallow the class-application type."""
+    for src in (_NEW_LEAN_INSTANCE, _NEW_LEAN_INSTANCE_TERM):
+        s = forward._extract_statement_string(src, "formula_depth",
+                                              "instance")
+        assert s == "has_toy_depth prop_formula"
+
+
 def test_non_theorem_kinds_in_NON_THEOREM_KINDS_constant() -> None:
     """Constant must list every non-theorem kind the parser accepts so
     dispatch / library / verify share a single source of truth."""
     assert forward.NON_THEOREM_KINDS == frozenset(
-        {"def", "structure", "class", "inductive"})
+        {"def", "structure", "class", "inductive", "instance"})
 
 
 def test_commit_def_marks_goal_proved_immediately(

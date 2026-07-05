@@ -41,9 +41,11 @@ def leading_decl_modifiers(text: str, slug: str) -> str:
     The renamed skeleton `def s<id> … := by sorry` then compile-fails with
     "mark it 'noncomputable'" (agent_feedback green_theorem #77/#78). Re-prepend
     the modifier so a data-valued goal's skeleton keeps the keyword it needs."""
+    # Kind alternation = the shared SoT (a hand-copied list here missed
+    # 'inductive'/'instance' when the vocabulary grew — v20 audit).
     m = re.search(
         r"((?:" + _DECL_MODIFIERS_RE + r"\s+)+)"
-        + r"(?:theorem|def|structure|class)\s+" + re.escape(slug) + r"\b",
+        + _DECL_HEAD_RE + re.escape(slug) + r"\b",
         text,
     )
     if not m:

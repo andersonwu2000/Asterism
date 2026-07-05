@@ -20,8 +20,8 @@ authoritative list is run_forward's own docstring below):
   4. self_verify      (pure)   LSP verify_file (leading sorry OK)
   5. dedupe           (pure)   find_canonicals_batch
   6. commit           (pure)   move to proofs/L_<slug>.lean + INSERT goal
-                               (kind ∈ {theorem,def,structure,class,inductive},
-                               origin=forward)
+                               (kind ∈ {theorem,def,structure,class,
+                               inductive,instance}, origin=forward)
   (post-commit: find_shelved_revivals_for_forward — G1, §3.6)
 
 Public surface (framework side; agent stage = TODO):
@@ -143,7 +143,19 @@ _DECL_HEAD_RE = assemble.DECL_HEAD_RE
 # commit, BFS never dispatches Backward/Builder, Library promotes
 # without axiom_probe. Theorem is the prove-loop default.
 NON_THEOREM_KINDS: frozenset[str] = frozenset(
-    {"def", "structure", "class", "inductive"})
+    {"def", "structure", "class", "inductive", "instance"})
+
+# An `instance` head with no name — Lean's idiomatic anonymous form
+# (`instance : Foo bar where …`) or the priority group (`instance
+# (priority := …) …`). The framework's whole chain (slug, file name, DB
+# key, anchor review, reject) is name-keyed, so Forward instances MUST
+# be named; this pattern turns the generic "no declaration found" into
+# a targeted retry message.
+_ANON_INSTANCE_RE = re.compile(
+    r"^[ \t]*(?:@\[[^\]]*\][ \t]*)*(?:" + assemble.DECL_MODIFIERS
+    + r"[ \t]+)*instance[ \t]*[:(]",
+    re.MULTILINE,
+)
 
 
 # ---------------------------------------------------------------------
@@ -158,7 +170,7 @@ class ForwardMetadata:
     rationale: str
     entry_kind: str  # 'Builder' or 'Backward' (only meaningful when kind=='theorem')
     sorry_free: bool  # True iff body has no `sorry` token
-    kind: str = "theorem"  # 'theorem' | 'def' | 'structure' | 'class' | 'inductive'
+    kind: str = "theorem"  # 'theorem'|'def'|'structure'|'class'|'inductive'|'instance'
 
 
 def extract_forward_metadata(text: str) -> tuple[ForwardMetadata | None, str]:
@@ -171,8 +183,14 @@ def extract_forward_metadata(text: str) -> tuple[ForwardMetadata | None, str]:
     """
     decl_m = _DECL_HEAD_RE.search(text)
     if decl_m is None:
+        if _ANON_INSTANCE_RE.search(text):
+            return None, (
+                "anonymous `instance` — the framework is name-keyed: "
+                "write `instance <slug> : <Class> ...` (snake_case name, "
+                "no priority group)")
         return None, ("no `theorem <slug>`, `def <slug>`, `structure <slug>`, "
-                      "`class <slug>` or `inductive <slug>` declaration found")
+                      "`class <slug>`, `inductive <slug>` or "
+                      "`instance <slug>` declaration found")
     kind = decl_m.group(1)
     slug = decl_m.group(2)
     if not SLUG_RE.match(slug):
@@ -551,11 +569,15 @@ def _extract_statement_string(body: str, slug: str,
     For theorem / def: up to `:=` or end of line (the type or value
     signature without the proof body). For structure / class /
     inductive: up to `where` or `extends` keyword (the fields /
-    constructors block is the body).
+    constructors block is the body). For instance: up to `:=` OR
+    `where` — both body forms are idiomatic, and the field block's
+    inner `:= …` must not swallow the class-application type.
     Best-effort; returns None if pattern doesn't match.
     """
     if kind in ("structure", "class", "inductive"):
         terminator = r"(?:\bwhere\b|$)"
+    elif kind == "instance":
+        terminator = r"(?::=|\bwhere\b|$)"
     else:
         terminator = r"(?::=|$)"
     m = re.search(

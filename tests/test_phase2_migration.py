@@ -227,7 +227,7 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     db.init_schema(conn)
 
     # Post: PRAGMA user_version at latest (bumped to 11 in phase 11).
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 19
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 20
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -366,7 +366,7 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version at latest; idempotent re-run leaves it unchanged.
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 19
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 20
     conn.close()
 
 
@@ -426,6 +426,34 @@ def test_v19_widens_goals_kind_to_inductive(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_v20_widens_goals_kind_to_instance(tmp_path: Path) -> None:
+    """v20: goals.kind CHECK gains 'instance' (same generalized rebuild
+    as v19 — the pre-Phase-2 fixture exercises it for real)."""
+    db_path = _make_pre_phase2_db(tmp_path)
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(conn)
+
+    goals_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='goals'"
+    ).fetchone()[0]
+    assert "'instance'" in goals_sql
+
+    conn.execute(
+        "INSERT INTO goals (problem, slug, lean_path, statement,"
+        " kind, origin, status, depth, attempts, entry_kind,"
+        " integrity_verified, created_at, updated_at)"
+        " VALUES ('alpha', 'fwd_inst',"
+        " 'Problems/alpha/proofs/L_fwd_inst.lean', 'Monoid Bar',"
+        " 'instance', 'forward', 'proved', 0, 0, 'Backward', 0,"
+        " '2026-07-05T00:00:00+00:00', '2026-07-05T00:00:00+00:00')")
+    conn.commit()
+    fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+    assert fk_violations == [], f"FK violations: {fk_violations}"
+    conn.close()
+
+
 def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     """Fresh DB (created via current SCHEMA) skips _migrate_to_phase2
     (detected via 'detached' column already present) but still bumps
@@ -440,7 +468,7 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 19
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 20
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"

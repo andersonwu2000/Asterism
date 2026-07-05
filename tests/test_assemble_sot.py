@@ -33,6 +33,14 @@ def test_decl_head_matches_inductive() -> None:
     m = assemble.DECL_HEAD_RE.search(
         "@[simp] private inductive step_rel : Nat → Nat → Prop where")
     assert m is not None and m.group(1) == "inductive"
+    # v20 — named instances (anonymous heads deliberately don't match;
+    # forward's parse gate turns those into a targeted error).
+    m = assemble.DECL_HEAD_RE.search(
+        "noncomputable instance formula_depth : has_depth prop_formula where")
+    assert m is not None
+    assert m.group(1) == "instance" and m.group(2) == "formula_depth"
+    assert assemble.DECL_HEAD_RE.search(
+        "instance : has_depth prop_formula where") is None
     # Bare-prefix building block too (signature_prefix / skeleton path).
     import re
     assert re.search(assemble.DECL_KIND_RE_SRC + "foo",

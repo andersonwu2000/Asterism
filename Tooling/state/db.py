@@ -185,8 +185,10 @@ CREATE TABLE IF NOT EXISTS goals (
                     -- dispatch / axiom probe / Library promotion gate.
                     -- v19 adds 'inductive' (Forward may mint new
                     -- inductive types; sorry-free-only at commit).
+                    -- v20 adds 'instance' (named data instances; the
+                    -- parse gate rejects anonymous ones).
                     CHECK(kind IN ('theorem','def','structure','class',
-                                   'inductive')),
+                                   'inductive','instance')),
     origin      TEXT    NOT NULL
                     CHECK(origin IN ('root','backward','forward')),
     -- Phase 2 status additions:
@@ -577,7 +579,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 19
+_CURRENT_USER_VERSION = 20
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -1003,6 +1005,14 @@ def init_schema(conn: sqlite3.Connection) -> None:
         _migrate_to_v19(conn)
         conn.execute("PRAGMA user_version = 19")
         conn.commit()
+    if v < 20:
+        # v20 — goals.kind CHECK widens to accept 'instance' (named data
+        # instances from Forward; anonymous rejected at parse). Same
+        # live-column rebuild as v19, generalized.
+        _widen_goals_kind_check(conn, ("theorem", "def", "structure",
+                                       "class", "inductive", "instance"))
+        conn.execute("PRAGMA user_version = 20")
+        conn.commit()
 
 
 def _migrate_to_v19(conn: sqlite3.Connection) -> None:
@@ -1086,6 +1096,83 @@ def _migrate_to_v19(conn: sqlite3.Connection) -> None:
         if fk_violations:
             raise RuntimeError(
                 f"v19 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _widen_goals_kind_check(conn: sqlite3.Connection,
+                            kinds: "tuple[str, ...]") -> None:
+    """The v19 live-column goals rebuild, generalized: rebuild `goals`
+    with `kind CHECK(kind IN kinds)`. Probes on the NEWEST kind (last
+    element) — present in the live DDL means the CHECK is already wide
+    (fresh DB from SCHEMA, or re-run). All v19 caveats apply (see
+    `_migrate_to_v19`): INSERT column list computed from the live table
+    because phase-2/4 rebuild snapshots predate late additive columns.
+
+    Callers are versioned steps; each passes the full kind tuple as of
+    its version, so this function has no per-version state of its own."""
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='goals'"
+    ).fetchone()
+    probe = f"'{kinds[-1]}'"
+    if chk and probe in (chk["sql"] or ""):
+        return
+    kinds_sql = ",".join(f"'{k}'" for k in kinds)
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute(f"""
+            CREATE TABLE _new_goals (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem     TEXT    NOT NULL REFERENCES problems(name),
+                slug        TEXT    NOT NULL,
+                lean_path   TEXT    NOT NULL UNIQUE,
+                statement   TEXT    NOT NULL,
+                kind        TEXT    NOT NULL DEFAULT 'theorem'
+                                CHECK(kind IN ({kinds_sql})),
+                origin      TEXT    NOT NULL
+                                CHECK(origin IN ('root','backward','forward')),
+                status      TEXT    NOT NULL
+                                CHECK(status IN ('open','attempting','proved',
+                                                 'shelved',
+                                                 'pending_strategist_review',
+                                                 'disproved','frozen','dead')),
+                depth       INTEGER NOT NULL DEFAULT 0,
+                attempts    INTEGER NOT NULL DEFAULT 0,
+                entry_kind  TEXT    NOT NULL DEFAULT 'Builder'
+                                CHECK(entry_kind IN ('Builder','Backward')),
+                integrity_verified INTEGER NOT NULL DEFAULT 0
+                                CHECK(integrity_verified IN (0,1)),
+                detached    INTEGER NOT NULL DEFAULT 0
+                                CHECK(detached IN (0,1)),
+                alias_target_id INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                is_deliverable INTEGER NOT NULL DEFAULT 0
+                                CHECK(is_deliverable IN (0,1)),
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                UNIQUE(problem, slug)
+            )""")
+        new_cols = ["id", "problem", "slug", "lean_path", "statement",
+                    "kind", "origin", "status", "depth", "attempts",
+                    "entry_kind", "integrity_verified", "detached",
+                    "alias_target_id", "is_deliverable",
+                    "created_at", "updated_at"]
+        live_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
+        copy_cols = ", ".join(c for c in new_cols if c in live_cols)
+        conn.execute(
+            f"INSERT INTO _new_goals ({copy_cols})"
+            f" SELECT {copy_cols} FROM goals")
+        conn.executescript("""
+            DROP TABLE goals;
+            ALTER TABLE _new_goals RENAME TO goals;
+            CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"goals kind-CHECK widen left FK violations: "
+                f"{fk_violations[:5]}"
             )
     finally:
         conn.execute("PRAGMA foreign_keys = ON")

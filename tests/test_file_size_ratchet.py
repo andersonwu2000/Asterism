@@ -213,7 +213,10 @@ _WATERMARKS = {
     # 3950→4010 (2026-07-05): v19 goals.kind CHECK widen ('inductive') —
     # `_migrate_to_v19` table rebuild with live-column INSERT (Forward
     # inductive support) — conscious bump.
-    "Tooling/state/db.py": 4010,
+    # 4010→4090 (2026-07-05): v20 'instance' + `_widen_goals_kind_check`
+    # (the v19 rebuild generalized for future kind additions) — conscious
+    # bump.
+    "Tooling/state/db.py": 4090,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

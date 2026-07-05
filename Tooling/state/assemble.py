@@ -48,7 +48,7 @@ SLUG_MAX_LEN = 60
 # `_skeleton._DECL_HEAD_RE` building block for name-targeted searches
 # (`signature_prefix`, skeleton construction). Distinct from DECL_HEAD_RE
 # below, which is the full anchored head matcher.
-DECL_KIND_RE_SRC = r"\b(theorem|def|structure|class|inductive)\s+"
+DECL_KIND_RE_SRC = r"\b(theorem|def|structure|class|inductive|instance)\s+"
 
 # Declaration head with leading attributes / keyword modifiers. The kind and
 # name groups feed the commit parser AND the gateway's submission mirror.
@@ -60,7 +60,7 @@ DECL_MODIFIERS = r"(?:noncomputable|private|protected|partial|unsafe)"
 # full identifier lets SLUG_RE fail it in the mirror, pre-commit.
 DECL_HEAD_RE = re.compile(
     r"^[ \t]*(?:@\[[^\]]*\][ \t]*)*(?:" + DECL_MODIFIERS + r"[ \t]+)*"
-    r"(theorem|def|structure|class|inductive)[ \t]+([A-Za-z_][\w'!?]*)",
+    r"(theorem|def|structure|class|inductive|instance)[ \t]+([A-Za-z_][\w'!?]*)",
     re.MULTILINE,
 )
 
@@ -112,7 +112,8 @@ def ensure_framework_imports(content: str, *, problem: str,
 def signature_prefix(text: str, name: str) -> str:
     """Return the substring `<kind> <name> <binders> : <type>` (up to
     but not including `:=`). `<kind>` ∈ {theorem, def, structure,
-    class, inductive}. Returns "" if no matching declaration head found.
+    class, inductive, instance}. Returns "" if no matching declaration
+    head found.
 
     Walks balanced paren/brace/bracket depth so a top-level `:=` is
     distinguished from `:=` inside a binder default value or anonymous
