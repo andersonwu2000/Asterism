@@ -3,7 +3,7 @@
 本檔講**動態**：dispatcher 一輪 tick 怎麼跑、每條 pipeline 的完整流程與失敗模式、跨 pipeline 共用的機制。
 靜態形狀（角色、不變量、DB schema、cascade 規則完整版）見 `docs/architecture.md`。
 
-> 原寫於 2026-05-06，2026-06-05 對照代碼全面校正並重寫。
+> 原寫於 2026-05-06，2026-06-05 對照代碼全面校正並重寫；2026-07-06 漂移審計校正（lease sweep、plan note、Forward sections）。
 
 ---
 
@@ -60,7 +60,8 @@ agent 寫進 `.attempts/<pid>/` 的所有東西（不論成敗），在目錄被
 | 6 | **bfs refill** | 把 open goal 排進 queue（每 goal 最多一條 pipeline） | 本節 |
 | 7 | **strategist triggers** | 排 routine（T1）/ stall（T4）喚醒 | §3.4 |
 | 7b | **reconcile_stuck_states** | per-tick 安全網：孤兒 pending_review / NULL-outcome Inject wedge 修復 | — |
-| 8 | **spawn** | 有空格就 pop queue、派 pipeline 進 worker thread | 本節 |
+| 7c | **lease sweep** | queue v17 租賃制：釋放 owner 已死或逾 TTL（6h）的 leased row，回到可 pop 狀態 | — |
+| 8 | **spawn** | 有空格就 pop queue（pop=lease claim，完成才刪 row）、派 pipeline 進 worker thread | 本節 |
 
 > 注意 step 3–5 在 bfs/spawn **之前**：root 一旦證完，先把完整性驗證和 Library 化排掉，再決定要不要繼續排證明工作。
 
@@ -564,29 +565,30 @@ section 順序固定，每個 `_section_*` 不適用時回 `[]`、整段省略�
 | 13 | Goal history（umbrella） | Builder/Backward only，見下 |
 
 **`compile_forward_context`（Forward）**：Strategist brief → Library inventory（同 problem 已證 lemma）→
-Past Forward proposals → TREE inline → Manifest meta。
+Past Forward proposals → Active goals → Manifest meta（無 TREE section）。
 
 **`compile_strategist_context`（Strategist）**，由上而下：
 
 1. Trigger
 2. *(pending_review only)* Recent failed attempts ／ Existing strategies ／ Ancestor chain
-3. Framework stalled（stall warning）
+3. Framework stalled（stall warning）＋ Ingest availability（root gate）
 4. Current standing directive
-5. Completed Inject batches
-6. Pending reopen-promises — G2：只列「該 batch 已全部 outcome 落地、且 Strategist 還沒處理過」的 promise
-7. Active goals
-8. Recent decisions（failure replay）
-9. TREE
-10. Manifest meta
+5. Your plan note（`.drafts/strategist_plan.md`，跨 wake 私人筆記、只有 Strategist 看得到）
+6. Completed Inject batches（per-step 帶 `landed:` 落地 decl 名）
+7. Pending reopen-promises — G2：只列「該 batch 已全部 outcome 落地、且 Strategist 還沒處理過」的 promise；*inject_batch_done wake only*
+8. Active goals
+9. Recent decisions（failure replay）
+10. TREE
+11. Manifest meta
 
 **Goal history umbrella**（`compile_context` 第 13 段，4 個 sub-section）：
 
 | 標題 | 受眾閘 | 內容 |
 |---|---|---|
 | `### Direct attempts on this goal` | kind-agnostic | 本 goal 的直接嘗試（含 agent_declined） |
-| `### Sibling decompositions that failed Verify` | Backward/None | sibling 拆解組裝失敗 |
+| `### Sibling decompositions that failed Verify` | kind ∈ {backward, None} | sibling 拆解組裝失敗 |
 | `### Strategies whose decomposition died` | kind-agnostic | 拆解死掉的 strategy |
-| `### Sub-goals declined` | Backward/None | sub-goal 回報 infeasible / parent_needs_fix / shelved |
+| `### Sub-goals declined` | kind ∈ {backward, None} | sub-goal 回報 infeasible / parent_needs_fix / shelved |
 
 event 投影邏輯在 `Tooling/pipeline/events.py`（4 個函數 + `_NON_AGENT_REASONS` filter）。
 空 bucket 整段省略；空 umbrella 連 `## Goal history` header 都不寫。設計史見 `docs/archive/goal_history_unified.md`。

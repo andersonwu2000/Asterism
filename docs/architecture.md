@@ -37,7 +37,7 @@ sqlite（`goals` × `strategies` × `strategy_subgoals`），**DB 是單一真�
 |---|---|---|
 | **Builder** | Goal | 先 deterministic tactic（`by hint`）、不行請 LLM 寫 patch 收尾 |
 | **Backward** | Goal | 請 LLM 拆成一條 Strategy + N 個 sub-Goal |
-| **Forward** | Problem | Strategist 派、產一條新 toolkit lemma（theorem/def/structure/class）、進 BFS 或 leaf-bypass |
+| **Forward** | Problem | Strategist 派、產一條新 toolkit lemma（theorem/def/structure/class；v19+ inductive、v20+ named instance）、進 BFS 或 leaf-bypass |
 | **Strategist** | Problem | 讀 problem state、下決策（七種、見下）；Phase 6 起 problem-keyed（曾 key 在 root goal） |
 | **Librarian** | Problem (per-file) | 已證 + opt-in 後走五階段鏈：dedup → classify → migrate → cleanup → bridge |
 | **Verify housekeeping** | — | 非 worker：dispatcher tick 內 sequential 跑，組裝全 proved 的 strategy、寫 alias 進 parent、跑 G1 revival |
@@ -59,7 +59,7 @@ problem 一切 Librarian 自動路徑暫停（等人 sign-off）。
 
 | 形式 | 內容 |
 |---|---|
-| **DB**（`asterism.db`、sqlite WAL、schema v14、11 張表） | 整棵 graph、pipeline 歷史、dead attempt forensics、Strategist 決策、Librarian lifecycle、KB lessons |
+| **DB**（`asterism.db`、sqlite WAL、schema v20、11 張表；v16 ingested_at 終態、v17 queue lease、v18 Library 索引入 DB、v19/v20 kind 擴張） | 整棵 graph、pipeline 歷史、dead attempt forensics、Strategist 決策、Librarian lifecycle、KB lessons |
 | **`Manifest.md`** | 唯一人手檔（§4） |
 | **`Defs.lean` / `Root.lean`** | problem 自訂定義 / 框架管的 root（§5） |
 | **`proofs/L_<slug>.lean`、`_strategy_s<sid>.lean`** | 每 sub-Goal 一檔、每 Strategy 一份組裝 patch |
@@ -202,11 +202,12 @@ elaborate；root gate 的 rollback 是 false-proved 溜過機械驗證時的修�
 Tooling/
   core/       dispatcher.py（主迴圈+排程）、librarian_sched.py（五階段 DAG 排程）、
               cli.py、config.py、lifecycle
-  state/      db.py（schema+migration+query）、transitions.py（狀態機）、
+  state/      db.py（schema+migration+query）、transitions.py（狀態機+ProvedReceipt）、
               proof_store.py（proofs/ chokepoint）、recovery.py（startup 修復+orphan sweep）、
-              kb.py / kb_ingest.py（lessons、Model B）
+              failures.py（failure-reason registry）、thresholds.py（運行閾值 leaf）、
+              regress.py（proved manifest）、kb.py / kb_ingest.py（lessons、Model B）
   pipeline/   builder.py / backward.py / forward.py / strategist.py
-              librarian/（_base/astslice/bridge/classify/context/execute/gate/run/schedule）
+              librarian/（_base/astslice/bridge/classify/context/execute/gate/run/schedule/unharvest）
               _retry.py（session retry helper）、_assembly.py、_axiom.py（共用公理閘）、
               _cite_gate.py、_constants.py（含 anchor_closure RPC wrapper）、_drafts.py、
               _feedback.py、_infra.py、_lake.py、_olean_warm.py、_presearch.py、

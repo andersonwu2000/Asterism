@@ -102,6 +102,13 @@ REGISTRY: "dict[str, FailureTraits]" = {
     "agent_error": _T(),
     "agent_no_annotation": _T(),
     "agent_no_output": _T(),
+    # Emitted via _spawn_failure()'s RETURN VALUE (pipeline/__init__.py),
+    # not a failure_reason= literal — the registry drift test's AST scan
+    # cannot see that path, so these two were silently missing
+    # (2026-07-06 doc audit). Default traits ARE their historical
+    # behavior: agent-visible, retryable, no cooldown.
+    "agent_timeout": _T(),
+    "agent_rc_nonzero": _T(),
     "axiom_violation": _T(),
     "circular_decomposition": _T(),
     "cite_unproved_sibling": _T(),
@@ -131,6 +138,8 @@ REGISTRY: "dict[str, FailureTraits]" = {
     "librarian_no_root": _T("librarian"),
     "librarian_not_classified": _T("librarian"),
     "librarian_reopened_upstream": _T("librarian"),
+    "librarian_schema_invalid": _T("librarian"),
+    "librarian_verify_failed": _T("librarian"),
     "librarian_warnings_remain": _T("librarian"),
 }
 

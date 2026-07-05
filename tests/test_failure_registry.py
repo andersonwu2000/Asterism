@@ -124,6 +124,21 @@ def test_every_emitted_reason_is_registered():
         "register each with its traits (and its failure_modes.md row)")
 
 
+def test_return_value_emitted_reasons_registered():
+    """Blind-spot pin (2026-07-06 doc audit): `_emitted_reasons()`'s AST
+    scan only sees `failure_reason="x"` keyword literals. Reasons that
+    travel via a RETURN VALUE (`_spawn_failure()` → agent_timeout /
+    agent_rc_nonzero) or a positional helper arg (librarian
+    `_reject("librarian_schema_invalid", …)`) were invisible, and all
+    four were silently missing from the REGISTRY while doc + emitters
+    agreed they exist. Pin them explicitly."""
+    for r in ("agent_timeout", "agent_rc_nonzero",
+              "librarian_schema_invalid", "librarian_verify_failed"):
+        assert r in failures.REGISTRY, (
+            f"{r} is emitted via a non-keyword path and must stay "
+            f"registered")
+
+
 def test_every_registered_reason_is_produced():
     """Reverse: no dead vocabulary. A registered reason must appear as a
     string literal somewhere in Tooling/ (emitted, mapped, or classified)."""
