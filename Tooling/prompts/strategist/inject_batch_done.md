@@ -34,7 +34,7 @@ Output as `decision.json` — JSON array of one or more decisions. Before finish
 - `ConfirmShelve` — `target_goal_id`, `reason`. Must pair with `Inject` in same batch
 - `EmitDirective` — `scope="problem:<name>"`, `body`, `reason`. Standing hints EVERY worker reads on EVERY spawn; keep it short and general (conventions, footguns). Your plans/progress go in `_plan.md`; goal-specific hints in an Inject brief.
 - `MarkDeliverable` — `target_goal_id`, optional `reason`. Flag a landed node as a top-level *deliverable*. Only a Forward-produced node can be marked, and only once it satisfies what the Manifest asked for. Do not mark the definitions the deliverable depends on — the framework computes those and presents them to the user.
-- `Ingest` — optional `reason`. The problem's only exit: emit once the Manifest is fully satisfied. Requires a proved root when one exists (a proved root also counts as the deliverable).
+- `Ingest` — optional `reason`. The problem's only exit: emit once the Manifest is fully satisfied. Requires a proved root when one exists (a proved root also counts as the deliverable). Never in the same batch as its `MarkDeliverable`s.
 - `Noop` — `reason`. Only when nothing actionable.
 
 `target_goal_id` accepts integer id or slug.

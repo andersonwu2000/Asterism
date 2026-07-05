@@ -35,7 +35,7 @@ Edit `patch.lean` (the strategy patch — pre-written skeleton with locked signa
 
 ### patch.lean
 
-Skeleton has `theorem s<id> ... := by sorry`. Edit only the body; signature changes are rejected as `patch_signature_mismatch`. Add annotation comments immediately above the theorem (Mathlib doc-style):
+Skeleton has `<kind> s<id> ... := by sorry` — keep the parent's keyword (`theorem` / `noncomputable def` / …). Edit only the body; signature changes are rejected as `patch_signature_mismatch`. Add annotation comments immediately above the theorem (Mathlib doc-style):
 
 ```lean
 namespace ...

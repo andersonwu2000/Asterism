@@ -29,7 +29,7 @@ Write **one** declaration into the seeded file. Match it to what the brief asks 
 | Brief asks for | Use |
 |---|---|
 | A proposition to prove (equality, inequality, ↔, ∃, ∀, any Prop) | `theorem <slug> : <type> := by sorry` |
-| A value, function, or construction | `def <slug> (...) : <return type> := <body>` |
+| A value, function, or construction | `def <slug> (...) : <return type> := <body>`; unfinished → `noncomputable def <slug> : <Type> := sorry` (explicit type required) |
 | A composite type bundling fields | `structure <slug> where ...` |
 | An abstract interface | `class <slug> (α : Type) where ...` |
 
@@ -51,7 +51,7 @@ end Problems.<problem>
   - `Backward` — non-trivial new lemma needing decomposition or Mathlib chaining
   - `Builder` — leaf-level: trivially closable by `linarith` / `exact?` / direct Mathlib citation
 
-The seeded `import Mathlib` + `Defs` are already present — keep them; don't add or remove imports.
+The seeded imports are already present — keep them; add `import` lines only to cite proved siblings or Library modules.
 
 ## Decline
 
