@@ -119,7 +119,9 @@ _WATERMARKS = {
     # silently narrow the axiom gate (task: declInfo syntactic oracle).
     # 415→425 (2026-07-05): include_aliases at the probe's extract_decls
     # call (same alias-coverage fix).
-    "Tooling/pipeline/librarian/gate.py": 425,
+    # 425→440 (2026-07-06): inductive-companion exemption in the coverage
+    # cross-check (casesOn re-probe class) — conscious bump.
+    "Tooling/pipeline/librarian/gate.py": 440,
     "Tooling/pipeline/librarian/context.py": 430,
     "Tooling/pipeline/librarian/execute.py": 1170,  # +universe hoist/dedup (#72)
     "Tooling/pipeline/librarian/bridge.py": 390,
