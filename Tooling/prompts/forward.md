@@ -32,8 +32,9 @@ Write **one** declaration into the seeded file. Match it to what the brief asks 
 | A value, function, or construction | `def <slug> (...) : <return type> := <body>`; unfinished → `noncomputable def <slug> : <Type> := sorry` (explicit type required) |
 | A composite type bundling fields | `structure <slug> where ...` |
 | An abstract interface | `class <slug> (α : Type) where ...` |
+| A new inductive type | `inductive <slug> : <Type> where ...` — complete, no `sorry` |
 
-`def` / `structure` / `class` skip `entry_kind`.
+`def` / `structure` / `class` / `inductive` skip `entry_kind`.
 
 ```lean
 namespace Problems.<problem>
