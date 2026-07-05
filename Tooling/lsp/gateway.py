@@ -119,6 +119,12 @@ class SessionMetadata:
     log_path: Path | None = None
     file_content: str = ""
     last_active: float = field(default_factory=time.monotonic)
+    # Pipeline kind ('Backward' / 'Builder' / 'Forward' / …) — lets the
+    # submission mirror give pipeline-ACCURATE verdicts (a non-proved
+    # citation is a warn for a Backward decomposition but a hard commit
+    # reject for Builder). Optional: an old client that doesn't send it
+    # gets the kind-agnostic mirror, never an error.
+    kind: str | None = None
 
 
 # ─── Gateway global state ─────────────────────────────────
@@ -511,6 +517,7 @@ def _register_session_internal(
     pipeline_id: str, target_path: Path,
     problem: str, workspace: Path,
     log_path: Path | None,
+    kind: str | None = None,
 ) -> tuple[str, str | None]:
     """Stash session metadata AND eagerly claim a worker slot
     (#118, 1:1 binding). The claim is registered by setting
@@ -533,6 +540,7 @@ def _register_session_internal(
         workspace=workspace.resolve(),
         log_path=log_path.resolve() if log_path else None,
         file_content=content,
+        kind=kind,
     )
     # Claim a free worker slot for this session's lifetime. With
     # dispatch.pool == workers, there is always one free slot when a
@@ -1376,20 +1384,30 @@ _GW_DECL_HEAD_RE = assemble.DECL_HEAD_RE
 
 
 def _gw_leading_comments(text: str) -> str:
-    """`--` comment lines before the first `theorem` — presence-mirror of
+    """`--` comment lines before the first declaration head (ANY kind — a
+    data goal's patch is a `def`) — presence-mirror of
     `pipeline._extract_leading_comments` (commit's annotation source)."""
-    m = _GW_THEOREM_RE.search(text)
+    m = _GW_DECL_HEAD_RE.search(text)
     region = text[:m.start()] if m else text
     return "".join(ln for ln in region.splitlines(keepends=True)
                    if ln.strip().startswith("--"))
 
 
 def _citation_submission(content: str, problem: str, workspace: "Path",
-                         declared: "set[str]") -> "dict | None":
+                         declared: "set[str]",
+                         kind: "str | None" = None) -> "dict | None":
     """Classify each `import Problems.<problem>.proofs.L_<slug>` in `content`
     via the shared `db.classify_cited_slug` SoT so validate_file predicts the
     commit citation gate. `declared` = sibling stubs inlined this call (legit
-    — skip). Best-effort: any DB failure → None (must never break validate)."""
+    — skip). Best-effort: any DB failure → None (must never break validate).
+
+    `kind` (the session's pipeline) sharpens the non-proved verdict: only a
+    Backward decomposition can legally cite an open sibling (commit
+    auto-links it as a strategy sub-goal); Builder/Forward commits have no
+    auto-link — the citation dies at their axiom gate (transitive sorryAx),
+    so for those pipelines the mirror reports it as the ERROR it is instead
+    of the historical one-size warn (feedback family: agents trusted the
+    warn, burned the round trip)."""
     try:
         conn = db.connect(workspace / "asterism.db")
     except Exception:
@@ -1426,11 +1444,21 @@ def _citation_submission(content: str, problem: str, workspace: "Path",
                     "hint": "hard-terminal; re-declare its statement as your "
                             "own new_<slug>.lean sub-goal stub"})
             else:  # open / attempting / pending_strategist_review / shelved
-                issues.append({
-                    "slug": slug, "status": status, "severity": "warn",
-                    "hint": "non-proved: citable only via a Backward "
-                            "decomposition (which auto-links the sibling); "
-                            "leaf-bypass / Builder reject it at commit"})
+                if (kind or "").lower() in ("builder", "forward"):
+                    issues.append({
+                        "slug": slug, "status": status, "severity": "error",
+                        "hint": f"non-proved: a {kind} commit has no "
+                                "auto-link — the citation imports a sorry "
+                                "and dies at the axiom gate; cite proved "
+                                "siblings only, or (forward) declare the "
+                                "fact as your own lemma"})
+                else:
+                    issues.append({
+                        "slug": slug, "status": status, "severity": "warn",
+                        "hint": "non-proved: citable only via a Backward "
+                                "decomposition (which auto-links the "
+                                "sibling); a sorry-free leaf-bypass proof "
+                                "citing it is rejected at commit"})
     finally:
         conn.close()
     return {"ok": not any(i["severity"] == "error" for i in issues),
@@ -1440,9 +1468,14 @@ def _citation_submission(content: str, problem: str, workspace: "Path",
 def _annotation_submission(content: str) -> "dict":
     """Mirror commit's `agent_no_annotation` gate: a final patch needs a
     leading `--` comment block. Applies only when `content` is a real
-    submission (declares a theorem with a non-sorry body) — probing a
-    `:= by sorry` stub is not a submission, so skip (`checked: False`)."""
-    if not _GW_THEOREM_RE.search(content) or _GW_SORRY_STUB_RE.search(content):
+    submission (declares SOMETHING — any decl kind, a data goal's patch
+    is a `def`/`structure` — with a non-sorry body); probing a
+    `:= by sorry` stub is not a submission, so skip (`checked: False`).
+    Historically theorem-only, so a def patch validated with
+    `checked: false` and no explanation (feedback family: the agent
+    couldn't tell whether the gate applied)."""
+    if (not _GW_DECL_HEAD_RE.search(content)
+            or _GW_SORRY_STUB_RE.search(content)):
         return {"checked": False}
     ok = bool(_gw_leading_comments(content).strip())
     return {"checked": True, "ok": ok,
@@ -1679,7 +1712,7 @@ def validate_file(content: str) -> str:
     submission: "dict" = {"annotation": _annotation_submission(content),
                           "decl_head": _declhead_submission(content)}
     cite = _citation_submission(content, meta.problem, meta.workspace,
-                                set(inlined_slugs))
+                                set(inlined_slugs), kind=meta.kind)
     if cite is not None:
         submission["citation"] = cite
     # D-lite (task #5): predict the SPLIT — the deterministic commit-policy
@@ -1731,12 +1764,14 @@ async def register(request: Request):
         return JSONResponse({"error": f"missing keys: {missing}"},
                             status_code=400)
     log_path = data.get("log_path")
+    kind = data.get("kind")
     token, err = _register_session_internal(
         pipeline_id=str(data["pipeline_id"]),
         target_path=Path(data["target_path"]),
         problem=str(data["problem"]),
         workspace=Path(data["workspace"]),
         log_path=Path(log_path) if log_path else None,
+        kind=str(kind) if kind else None,
     )
     if err:
         return JSONResponse({"error": err}, status_code=500)

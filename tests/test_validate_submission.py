@@ -57,8 +57,21 @@ def test_annotation_skips_sorry_stub():
         "theorem foo : True := by sorry")["checked"] is False
 
 
-def test_annotation_skips_non_theorem():
-    assert gw._annotation_submission("def foo := 1")["checked"] is False
+def test_annotation_checks_def_patch():
+    """A data goal's final patch is a `def` — commit's annotation gate
+    applies to it exactly like a theorem, and the mirror used to skip it
+    with an unexplained `checked: false` (feedback family). Now checked:
+    a bare def flags, an annotated one passes."""
+    r = gw._annotation_submission("noncomputable def foo : Nat := 1")
+    assert r["checked"] is True and r["ok"] is False and r["note"]
+    r2 = gw._annotation_submission(
+        "-- strategy: literal value\nnoncomputable def foo : Nat := 1")
+    assert r2["checked"] is True and r2["ok"] is True
+
+
+def test_annotation_skips_declless_probe():
+    assert gw._annotation_submission(
+        "import Mathlib\nopen Real\n")["checked"] is False
 
 
 def test_annotation_flags_missing_comment_on_real_patch():
@@ -167,6 +180,62 @@ def test_citation_open_is_warn_not_error(ws: Path):
     assert r["ok"] is True                       # warn does not fail ok
     assert r["issues"][0]["severity"] == "warn"
     assert r["issues"][0]["status"] == "open"
+
+
+def test_citation_open_kind_aware_severity(ws: Path):
+    """Pipeline-accurate mirror: only a Backward decomposition can legally
+    cite an open sibling (commit auto-links it). For Builder/Forward the
+    citation dies at their axiom gate, so the mirror reports the ERROR it
+    is — the historical one-size warn taught agents to ignore it and burn
+    the commit round (feedback family)."""
+    _goal("wip", status="open")
+    for k in ("builder", "forward"):
+        r = gw._citation_submission(_cite("wip"), "p", ws,
+                                    declared=set(), kind=k)
+        assert r["ok"] is False, k
+        assert r["issues"][0]["severity"] == "error", k
+    # Backward (and a kind-less legacy client) keep the warn.
+    for k in ("backward", None):
+        r = gw._citation_submission(_cite("wip"), "p", ws,
+                                    declared=set(), kind=k)
+        assert r["ok"] is True, k
+        assert r["issues"][0]["severity"] == "warn", k
+
+
+def test_citation_hard_terminal_error_regardless_of_kind(ws: Path):
+    _goal("bad2", status="disproved")
+    r = gw._citation_submission(_cite("bad2"), "p", ws,
+                                declared=set(), kind="backward")
+    assert r["ok"] is False and r["issues"][0]["severity"] == "error"
+
+
+def test_register_body_carries_pipeline_kind(tmp_path, monkeypatch):
+    """The client side of the kind-aware mirror: `_write_mcp_config`'s
+    /register body includes the pipeline kind so SessionMetadata.kind is
+    populated (validate_file passes it to the citation mirror)."""
+    import json as _json
+    import urllib.request as _u
+    from Tooling import pipeline as pl
+    seen: dict = {}
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b'{"session_token": "tok-kind"}'
+
+    def fake_urlopen(req, timeout=None):
+        url = getattr(req, "full_url", str(req))
+        if url.endswith("/register"):
+            seen.update(_json.loads(req.data.decode("utf-8")))
+        return _Resp()
+    monkeypatch.setattr(_u, "urlopen", fake_urlopen)
+    adir = tmp_path / ".attempts" / "x"
+    adir.mkdir(parents=True)
+    target = tmp_path / "t.lean"
+    target.write_text("-- t\n", encoding="utf-8")
+    pl._write_mcp_config(adir, tmp_path, target,
+                         pipeline_id="pid-1", problem="p", kind="builder")
+    assert seen.get("kind") == "builder"
 
 
 def test_citation_dead_is_error(ws: Path):

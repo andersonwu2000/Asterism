@@ -1070,7 +1070,8 @@ def run_lsp_edit_loop(
             cold_prep_fn(ctx)
         mcp_config_path = _write_mcp_config(
             attempts_dir=ctx.attempts_dir, workspace=workspace,
-            target=target, pipeline_id=pipeline_id, problem=problem)
+            target=target, pipeline_id=pipeline_id, problem=problem,
+            kind=kind)
         return agent.spawn_llm(
             kind=kind, prompt_path=prompt_path, problem_dir=problem_dir,
             attempts_dir=ctx.attempts_dir, session_id=ctx.sid,

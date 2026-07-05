@@ -36,11 +36,13 @@ from pathlib import Path
 
 from .. import agent
 from ..quality import diagnostics
+from ..state import assemble
 
 
 def _write_mcp_config(attempts_dir: Path, workspace: Path,
                       target: Path, *,
-                      pipeline_id: str, problem: str) -> Path:
+                      pipeline_id: str, problem: str,
+                      kind: "str | None" = None) -> Path:
     """Generate the MCP config JSON claude CLI uses to connect to the
     long-living gateway. One HTTP MCP server per daemon; spawns
     connect over HTTP with a session token in the
@@ -81,6 +83,9 @@ def _write_mcp_config(attempts_dir: Path, workspace: Path,
         "problem": problem,
         "workspace": str(workspace),
         "log_path": str(log_path),
+        # Pipeline kind — lets the gateway's submission mirror give
+        # pipeline-accurate verdicts (e.g. non-proved citation severity).
+        "kind": kind,
     }).encode("utf-8")
     req = _u.Request(base + "/register", data=register_body,
                      headers={"Content-Type": "application/json"},
@@ -462,7 +467,14 @@ def _slug_from_filename(name: str) -> str:
     return base.removeprefix("new_") if base.startswith("new_") else base
 
 
-_THEOREM_DECL_RE = re.compile(r"^\s*theorem\s+\S+", re.MULTILINE)
+# First declaration head of ANY kind (attrs/modifiers tolerated) — the
+# leading-comment region ends at the first declaration. Historically
+# theorem-only, which made a data goal's `def` patch bound at nothing:
+# ALL its comment lines (even ones after the decl) counted as
+# "annotation", so the commit gate was vacuous for def patches and the
+# harvested annotation could be tactic-comment garbage (validate/commit
+# 預審 family, 2026-07-05). Shared SoT with the gateway mirror.
+_FIRST_DECL_RE = assemble.DECL_HEAD_RE
 
 
 def _extract_leading_comments(text: str) -> str:
@@ -486,7 +498,7 @@ def _extract_leading_comments(text: str) -> str:
     source (Builder success summary / Backward strategy rationale /
     `-- decline: <reason>` directive).
     """
-    m = _THEOREM_DECL_RE.search(text)
+    m = _FIRST_DECL_RE.search(text)
     upper_bound = m.start() if m else len(text)
     region = text[:upper_bound]
     out: list[str] = []
