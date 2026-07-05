@@ -1990,48 +1990,38 @@ def test_claude_spawn_short_circuits_when_shutdown_requested(
 
 
 # ---------------------------------------------------------------------
-# _prompt_transport — the Windows 32K command-line cap guard (WinError 206)
+# _assert_prompt_fits — the Windows 32K command-line cap guard (WinError 206)
 # ---------------------------------------------------------------------
 
-def test_prompt_transport_small_stays_on_argv() -> None:
-    from Tooling.llm.claude_cli import _prompt_transport
-    argv, stdin = _prompt_transport("short prompt")
-    assert argv == ["-p", "short prompt"]
-    assert stdin is None
+def test_prompt_fits_small_passes() -> None:
+    from Tooling.llm.claude_cli import _assert_prompt_fits
+    _assert_prompt_fits("short prompt")   # no raise
 
 
-def test_prompt_transport_oversized_switches_to_stdin() -> None:
-    """A prompt near the Windows CreateProcess 32,767-char cap must travel
-    via stdin (bare `-p`), not argv — argv fails the spawn with WinError
-    206 (reflection prompt at 30KB lessons, sphere_homology 2026-07-05)."""
-    from Tooling.llm.claude_cli import _prompt_transport, _ARGV_PROMPT_MAX
+def test_prompt_oversized_fails_loudly() -> None:
+    """A prompt near the Windows CreateProcess 32,767-char cap means an
+    UNBOUNDED dynamic section in its producer (reflection {global_lessons}
+    at 30KB, sphere_homology 2026-07-05) — the guard fails the spawn with
+    a diagnostic naming the size, instead of silently transporting it
+    (a briefly-shipped stdin fallback hid exactly this signal; reverted
+    by user call)."""
+    from Tooling.llm.claude_cli import (
+        _assert_prompt_fits, _ARGV_PROMPT_MAX, PromptTooLarge,
+    )
     big = "x" * (_ARGV_PROMPT_MAX + 1)
-    argv, stdin = _prompt_transport(big)
-    assert argv == ["-p"]
-    assert stdin == big
+    with pytest.raises(PromptTooLarge, match="UNBOUNDED dynamic section"):
+        _assert_prompt_fits(big)
 
 
-def test_claude_complete_text_oversized_prompt_uses_stdin(
+def test_claude_complete_text_oversized_prompt_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """complete_text wires the transport through subprocess.run(input=...)."""
     from Tooling.llm import claude_cli
 
-    captured: dict = {}
-
-    def fake_run(cmd, **kw):
-        captured["cmd"] = cmd
-        captured["input"] = kw.get("input")
-
-        class R:
-            returncode = 0
-            stdout = "ok"
-        return R()
-
     monkeypatch.setattr(claude_cli.shutil, "which", lambda _: "claude")
-    monkeypatch.setattr(claude_cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        claude_cli.subprocess, "run",
+        lambda *a, **k: pytest.fail("must not spawn an oversized prompt"))
     big = "y" * (claude_cli._ARGV_PROMPT_MAX + 10)
-    out = claude_cli.ClaudeCliProvider().complete_text(prompt=big)
-    assert out == "ok"
-    assert big not in captured["cmd"]          # not on argv
-    assert captured["input"] == big            # travels via stdin
+    with pytest.raises(claude_cli.PromptTooLarge):
+        claude_cli.ClaudeCliProvider().complete_text(prompt=big)

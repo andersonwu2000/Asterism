@@ -536,20 +536,27 @@ def resolve_model(kind: str | None) -> str:
 # rendered as "檔名或副檔名太長"). The reflection prompt hit this live once
 # its dynamic {global_lessons} block grew past ~30KB (sphere_homology
 # 2026-07-05) — the error was best-effort-swallowed, silently losing every
-# lesson writeback. Any prompt near the cap now travels via stdin instead
-# (`claude -p` with no prompt argument reads stdin — probed live in
-# stream-json mode). Threshold leaves headroom for the other flags/paths
-# that share the command line.
+# lesson writeback. A prompt this large is a DESIGN BUG in its producer
+# (an unbounded dynamic section); transporting it anyway (a briefly-shipped
+# stdin fallback) would hide exactly that signal, so the guard fails the
+# spawn LOUDLY instead (user call, 2026-07-05). Threshold leaves headroom
+# for the other flags/paths that share the command line.
 _ARGV_PROMPT_MAX = 25_000
 
 
-def _prompt_transport(prompt: str) -> "tuple[list[str], str | None]":
-    """How this prompt travels to the CLI: `(argv_fragment, stdin_payload)`.
-    Small prompts stay on argv (the exercised-everywhere path); oversized
-    ones switch to bare `-p` + stdin."""
-    if len(prompt) <= _ARGV_PROMPT_MAX:
-        return (["-p", prompt], None)
-    return (["-p"], prompt)
+class PromptTooLarge(RuntimeError):
+    """Prompt exceeds the safe argv budget — fix the PRODUCER, don't raise
+    the cap: every dynamic prompt section must be bounded by design."""
+
+
+def _assert_prompt_fits(prompt: str) -> None:
+    if len(prompt) > _ARGV_PROMPT_MAX:
+        raise PromptTooLarge(
+            f"prompt is {len(prompt)} chars > {_ARGV_PROMPT_MAX} argv budget "
+            f"(Windows CreateProcess caps the command line at 32767). A "
+            f"prompt this large means an UNBOUNDED dynamic section in its "
+            f"producer — fix that, don't transport it. Head: "
+            f"{prompt[:160]!r}")
 
 
 def _load_prompt(req: LLMRequest) -> str:
@@ -946,11 +953,11 @@ class ClaudeCliProvider:
             ]
         else:
             output_flags = ["--output-format", "text"]
-        prompt_argv, stdin_payload = _prompt_transport(prompt)
+        _assert_prompt_fits(prompt)
         cmd = [
             "claude",
             "--model", model,
-            *prompt_argv,
+            "-p", prompt,
             "--permission-mode", "acceptEdits",
             "--add-dir", str(req.problem_dir),
             "--add-dir", str(req.attempts_dir),
@@ -983,22 +990,9 @@ class ClaudeCliProvider:
         env["MAX_THINKING_TOKENS"] = str(_thinking_budget(req.timeout_sec))
         proc = subprocess.Popen(
             cmd, env=env, cwd=str(req.problem_dir),
-            stdin=(subprocess.PIPE if stdin_payload is not None else None),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace",
         )
-        if stdin_payload is not None:
-            # Writer thread: the pipe buffer (~4-8KB on Windows) is smaller
-            # than an oversized prompt, so an inline write could deadlock
-            # against the un-drained stdout pipe. claude reads stdin to EOF
-            # at startup; the thread ends promptly.
-            def _feed_stdin(p=proc, payload=stdin_payload):
-                try:
-                    p.stdin.write(payload)
-                    p.stdin.close()
-                except OSError:
-                    pass  # child died early — surfaces via rc as usual
-            threading.Thread(target=_feed_stdin, daemon=True).start()
         # Register so dispatcher's request_shutdown can kill us on
         # budget-exceeded / gateway-permadown exit paths. Without this
         # the proc.wait below blocks for up to req.timeout_sec (~960s)
@@ -1183,18 +1177,18 @@ class ClaudeCliProvider:
         if not shutil.which("claude"):
             return None
         model = resolve_model("builder")
-        prompt_argv, stdin_payload = _prompt_transport(prompt)
+        _assert_prompt_fits(prompt)
         cmd = [
             "claude",
             "--model", model,
-            *prompt_argv,
+            "-p", prompt,
             "--no-session-persistence",
             "--output-format", "text",
             *_trim_flags(),
         ]
         try:
             r = subprocess.run(
-                cmd, timeout=timeout_sec, input=stdin_payload,
+                cmd, timeout=timeout_sec,
                 capture_output=True, text=True,
                 encoding="utf-8", errors="replace",
             )
