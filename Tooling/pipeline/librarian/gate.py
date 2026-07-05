@@ -236,7 +236,11 @@ def migrate_commit_gate(
     # extracted when a whitelist is set (the axiom probe needs the fq names);
     # an anonymous/malformed patch then fails honestly rather than silently
     # skipping the check.
-    decls = extract_decls(patch_text) if whitelist is not None else []
+    # include_aliases: dedupe-bridge `alias` one-liners are kernel constants
+    # the probe must cover; without them every alias-bearing file pays the
+    # coverage-gap re-probe (a second full elaboration).
+    decls = (extract_decls(patch_text, include_aliases=True)
+             if whitelist is not None else [])
     if whitelist is not None and not decls:
         return MigrateResult(
             False, "axiom check: no named declaration found "

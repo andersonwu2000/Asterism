@@ -43,15 +43,31 @@ _NOMINAL_KINDS = ("structure", "class", "inductive")
 # `end <ns>` closes a namespace opened by `namespace <ns>`.
 _END_RE = re.compile(r"^\s*end\s+([A-Za-z_][\w.]*)")
 
+# `alias new := old` mints a real kernel constant, but it is NOT a migrate
+# decl shape (cleanup's dedupe-bridge writes these post-migrate), so it is
+# excluded from positional slug pairing by default. The axiom probe must
+# still see it — a missed alias means a coverage-gap re-probe (double
+# elaboration) on every alias-bearing file (sphere_homology 2026-07-05,
+# `band_aug_coord_sum`). The `⟨mp, mpr⟩` destructuring form stays with the
+# kernel cross-check (it mints two names; no single-name extraction fits).
+_ALIAS_CMD_RE = re.compile(
+    r"^\s*(?:@\[[^\]]*\]\s*)*(?:protected\s+)?"
+    r"alias\s+([A-Za-z_][\w']*(?:\.[A-Za-z_][\w']*)*)\s*:=")
 
-def extract_decls(patch_text: str) -> "list[MigratedDecl]":
+
+def extract_decls(patch_text: str, *,
+                  include_aliases: bool = False) -> "list[MigratedDecl]":
     """Every named top-level declaration in a patch, in source order.
 
     Per-file migrate pairs these positionally with the file's classified
     slugs (file_order) to backfill each `target_name`, run the per-decl
     axiom check, and drive Gate D. Tracks the open namespace(s) so each
     name is fully qualified; an `end <ns>` matching the innermost open
-    namespace pops it, so multi-section files qualify correctly."""
+    namespace pops it, so multi-section files qualify correctly.
+
+    `include_aliases=True` additionally yields `alias new := old` commands
+    (kind="alias") — for callers that need the kernel-true constant list
+    (the per-file axiom probe), not the migrate pairing contract."""
     # Strip comments first so decl-keyword prose inside a `/-! … -/` docstring or
     # a `-- …` line (e.g. "the analytic lemma of the bridge") is not mis-read as a
     # declaration. Same class as the `defs_decls` phantom-`of` bug (2026-06-30).
@@ -74,6 +90,14 @@ def extract_decls(patch_text: str) -> "list[MigratedDecl]":
             out.append(MigratedDecl(
                 kind=mk.group(1) if mk else None, name=m.group(1),
                 fq_name=f"{ns}.{m.group(1)}" if ns else m.group(1)))
+            continue
+        if include_aliases:
+            ma = _ALIAS_CMD_RE.match(line)
+            if ma:
+                ns = ".".join(ns_stack)
+                out.append(MigratedDecl(
+                    kind="alias", name=ma.group(1),
+                    fq_name=f"{ns}.{ma.group(1)}" if ns else ma.group(1)))
     return out
 
 

@@ -96,7 +96,11 @@ _WATERMARKS = {
     # fallback plumbing) in `_defs_decl_source`/`_defs_decl_namespace`;
     # expected to drop back under 400 when the regex paths retire to
     # cold-fallback-only (task: declInfo syntactic oracle).
-    "Tooling/pipeline/librarian/astslice.py": 430,
+    # 430→455 (2026-07-05): `alias` command extraction (opt-in
+    # include_aliases) — dedupe-bridge one-liners are kernel constants the
+    # axiom probe must cover up front (sphere_homology coverage-gap
+    # re-probes on `band_aug_coord_sum`).
+    "Tooling/pipeline/librarian/astslice.py": 455,
     "Tooling/pipeline/librarian/classify.py": 545,
     "Tooling/pipeline/librarian/schedule.py": 235,
     # 345→360: Gate D namespace-preserved-Defs branch — a #43-preserved Defs
@@ -113,7 +117,9 @@ _WATERMARKS = {
     # self-heal — the probe elaboration's decl_info (kernel-true decl list)
     # must all carry `#print axioms` lines; a text-extraction miss used to
     # silently narrow the axiom gate (task: declInfo syntactic oracle).
-    "Tooling/pipeline/librarian/gate.py": 415,
+    # 415→425 (2026-07-05): include_aliases at the probe's extract_decls
+    # call (same alias-coverage fix).
+    "Tooling/pipeline/librarian/gate.py": 425,
     "Tooling/pipeline/librarian/context.py": 430,
     "Tooling/pipeline/librarian/execute.py": 1170,  # +universe hoist/dedup (#72)
     "Tooling/pipeline/librarian/bridge.py": 390,

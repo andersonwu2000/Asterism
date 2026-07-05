@@ -673,6 +673,24 @@ def test_extract_decls_namespace_pop():
     assert [d.fq_name for d in lib.extract_decls(patch)] == ["A.x", "B.y"]
 
 
+def test_extract_decls_alias_opt_in():
+    """`alias new := old` (dedupe-bridge one-liner) is a real kernel
+    constant. Default extraction skips it — the migrate positional-pairing
+    contract counts only the classified decl shapes — but the axiom probe
+    opts in so an alias-bearing file is covered by the FIRST probe (no
+    coverage-gap re-probe; sphere_homology `band_aug_coord_sum` 2026-07-05)."""
+    patch = ("import Mathlib\nnamespace Library.A\n"
+             "theorem t1 : True := trivial\n"
+             "alias t1' := t1\n"
+             "@[deprecated (since := \"2026-07-05\")] alias old_t := t1\n"
+             "end Library.A\n")
+    assert [d.fq_name for d in lib.extract_decls(patch)] == ["Library.A.t1"]
+    decls = lib.extract_decls(patch, include_aliases=True)
+    assert [(d.kind, d.fq_name) for d in decls] == [
+        ("theorem", "Library.A.t1"), ("alias", "Library.A.t1'"),
+        ("alias", "Library.A.old_t")]
+
+
 def test_migrate_gate_axiom_clean_passes():
     patch = ("import Mathlib\nnamespace Library.A\n"
              "theorem t : True := trivial\nend Library.A\n")
@@ -812,6 +830,30 @@ def test_migrate_gate_coverage_heal_still_enforces_whitelist():
         probe_verifier=_probe)
     assert not r.ok
     assert "Library.A.instFoo" in r.detail and "sorryAx" in r.detail
+
+
+def test_migrate_gate_alias_covered_first_probe():
+    """A dedupe-bridge `alias` is extracted up front, so an alias-bearing
+    file stays on the single-elaboration path AND the alias's axioms are
+    whitelist-checked in that first probe (not only via self-heal)."""
+    patch = ("import Mathlib\nnamespace Library.A\n"
+             "theorem t : True := trivial\n"
+             "alias t_alias := t\n"
+             "end Library.A\n")
+    info = _kernel_info("Library.A.t", "Library.A.t_alias")
+    texts = []
+
+    def _probe(text):
+        texts.append(text)
+        return (True, "", {"Library.A.t": {"propext"},
+                           "Library.A.t_alias": {"propext"}}, info)
+
+    r = lib.migrate_commit_gate(
+        patch, _P("Library/A/Bar.lean"), whitelist=["propext"],
+        probe_verifier=_probe)
+    assert r.ok, r.detail
+    assert len(texts) == 1
+    assert "#print axioms Library.A.t_alias" in texts[0]
 
 
 def test_migrate_gate_full_coverage_single_probe():
