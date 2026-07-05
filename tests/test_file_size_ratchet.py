@@ -210,7 +210,10 @@ _WATERMARKS = {
     # 3800→3950 (2026-07-05): v18 Library index in the DB — migration step
     # (INDEX.md backfill) + the bridge-marker / bridged-index / signature
     # helper family (task #4). db.py split is on the opportunistic list.
-    "Tooling/state/db.py": 3950,
+    # 3950→4010 (2026-07-05): v19 goals.kind CHECK widen ('inductive') —
+    # `_migrate_to_v19` table rebuild with live-column INSERT (Forward
+    # inductive support) — conscious bump.
+    "Tooling/state/db.py": 4010,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

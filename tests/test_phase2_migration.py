@@ -227,7 +227,7 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     db.init_schema(conn)
 
     # Post: PRAGMA user_version at latest (bumped to 11 in phase 11).
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 18
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 19
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -366,7 +366,63 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version at latest; idempotent re-run leaves it unchanged.
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 18
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 19
+    conn.close()
+
+
+def test_v19_widens_goals_kind_to_inductive(tmp_path: Path) -> None:
+    """v19: goals.kind CHECK gains 'inductive'. The pre-Phase-2 fixture
+    exercises the real rebuild: the phase-4 step rebuilds goals with the
+    OLD kind CHECK, so the v19 probe does not short-circuit and the
+    table-rebuild path runs — rows preserved, new kind accepted, CHECK
+    still enforced for unknown kinds."""
+    db_path = _make_pre_phase2_db(tmp_path)
+
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+
+    slugs_before = {
+        r[0] for r in conn.execute("SELECT slug FROM goals")
+    }
+    db.init_schema(conn)
+
+    # Rebuild preserved every row.
+    slugs_after = {
+        r[0] for r in conn.execute("SELECT slug FROM goals")
+    }
+    assert slugs_before <= slugs_after
+
+    # CHECK now carries 'inductive'.
+    goals_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='goals'"
+    ).fetchone()[0]
+    assert "'inductive'" in goals_sql
+
+    # New kind accepted end-to-end.
+    conn.execute(
+        "INSERT INTO goals (problem, slug, lean_path, statement,"
+        " kind, origin, status, depth, attempts, entry_kind,"
+        " integrity_verified, created_at, updated_at)"
+        " VALUES ('alpha', 'fwd_ind',"
+        " 'Problems/alpha/proofs/L_fwd_ind.lean', 'Type',"
+        " 'inductive', 'forward', 'proved', 0, 0, 'Backward', 0,"
+        " '2026-07-05T00:00:00+00:00', '2026-07-05T00:00:00+00:00')")
+    conn.commit()
+
+    # CHECK still rejects unknown kinds (widen, not drop).
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO goals (problem, slug, lean_path, statement,"
+            " kind, origin, status, depth, attempts, entry_kind,"
+            " integrity_verified, created_at, updated_at)"
+            " VALUES ('alpha', 'fwd_bogus',"
+            " 'Problems/alpha/proofs/L_fwd_bogus.lean', 'T',"
+            " 'axiom', 'forward', 'open', 0, 0, 'Backward', 0,"
+            " '2026-07-05T00:00:00+00:00', '2026-07-05T00:00:00+00:00')")
+
+    fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+    assert fk_violations == [], f"FK violations: {fk_violations}"
     conn.close()
 
 
@@ -384,7 +440,7 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 18
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 19
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"

@@ -21,6 +21,24 @@ def test_pipeline_names_are_assemble_objects() -> None:
     assert pipeline._SORRY_STUB_RE is assemble.SORRY_STUB_RE
 
 
+def test_decl_head_matches_inductive() -> None:
+    """v19 (Forward inductive support): both sides of the shared head
+    matcher accept `inductive`, with the same modifier/attribute
+    tolerance as the other kinds."""
+    m = assemble.DECL_HEAD_RE.search(
+        "inductive provable_formula where\n  | ax : provable_formula")
+    assert m is not None
+    assert m.group(1) == "inductive"
+    assert m.group(2) == "provable_formula"
+    m = assemble.DECL_HEAD_RE.search(
+        "@[simp] private inductive step_rel : Nat → Nat → Prop where")
+    assert m is not None and m.group(1) == "inductive"
+    # Bare-prefix building block too (signature_prefix / skeleton path).
+    import re
+    assert re.search(assemble.DECL_KIND_RE_SRC + "foo",
+                     "inductive foo : Type where") is not None
+
+
 def test_gateway_names_are_assemble_objects() -> None:
     from Tooling.lsp import gateway
     assert gateway._GW_PROBLEM_IMPORT_RE is assemble.PROBLEM_IMPORT_RE

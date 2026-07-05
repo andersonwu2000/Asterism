@@ -180,10 +180,13 @@ CREATE TABLE IF NOT EXISTS goals (
                     -- loop: Forward writes them, framework type-checks
                     -- once, status='proved' immediately, BFS never
                     -- dispatches Backward / Builder on them. See
-                    -- `NON_THEOREM_KINDS` in dispatcher.py for the
-                    -- single source of truth on which kinds skip
+                    -- `NON_THEOREM_KINDS` in pipeline/forward.py for
+                    -- the single source of truth on which kinds skip
                     -- dispatch / axiom probe / Library promotion gate.
-                    CHECK(kind IN ('theorem','def','structure','class')),
+                    -- v19 adds 'inductive' (Forward may mint new
+                    -- inductive types; sorry-free-only at commit).
+                    CHECK(kind IN ('theorem','def','structure','class',
+                                   'inductive')),
     origin      TEXT    NOT NULL
                     CHECK(origin IN ('root','backward','forward')),
     -- Phase 2 status additions:
@@ -574,7 +577,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 18
+_CURRENT_USER_VERSION = 19
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -992,6 +995,100 @@ def init_schema(conn: sqlite3.Connection) -> None:
                         (now(), prob))
         conn.execute("PRAGMA user_version = 18")
         conn.commit()
+    if v < 19:
+        # v19 — goals.kind CHECK widens to accept 'inductive' (Forward may
+        # mint new inductive types; the anchor+claim review carries the
+        # trust surface — kernel anchorClosure already walks ctors). Same
+        # rebuild pattern as phase 4; idempotent via the in-DDL probe.
+        _migrate_to_v19(conn)
+        conn.execute("PRAGMA user_version = 19")
+        conn.commit()
+
+
+def _migrate_to_v19(conn: sqlite3.Connection) -> None:
+    """v19 — widen `goals.kind` CHECK to also accept 'inductive'.
+    SQLite cannot ALTER a CHECK; rebuild the table with the new clause,
+    copy every row, swap (same pattern as phase 4 / 13 / 14).
+
+    The DDL below is a point-in-time snapshot of the goals SCHEMA at
+    v18 (all columns through the additive ALTER block: entry_kind /
+    integrity_verified / alias_target_id / is_deliverable) — it must
+    stay column-for-column identical to the SCHEMA constant, differing
+    only by the widened CHECK. The INSERT column list is computed from
+    the LIVE table: older DBs reach this step through the phase-2/4
+    rebuilds, whose point-in-time snapshots predate late additive
+    columns (`is_deliverable`) — those columns are re-added by the
+    blind ALTER block only on the NEXT init_schema pass, so within this
+    pass the live table may lack them. Missing columns take the new
+    DDL's defaults (is_deliverable → 0), which is the correct backfill.
+
+    Pre-condition: PRAGMA user_version < 19.
+    Post-condition (caller sets user_version = 19):
+      - goals.kind CHECK accepts 'inductive'
+      - all rows + idx_goals_status preserved
+    """
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='goals'"
+    ).fetchone()
+    if chk and "'inductive'" in (chk["sql"] or ""):
+        return  # CHECK already wide (fresh DB from SCHEMA, or re-run)
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("""
+            CREATE TABLE _new_goals (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem     TEXT    NOT NULL REFERENCES problems(name),
+                slug        TEXT    NOT NULL,
+                lean_path   TEXT    NOT NULL UNIQUE,
+                statement   TEXT    NOT NULL,
+                kind        TEXT    NOT NULL DEFAULT 'theorem'
+                                CHECK(kind IN ('theorem','def','structure',
+                                               'class','inductive')),
+                origin      TEXT    NOT NULL
+                                CHECK(origin IN ('root','backward','forward')),
+                status      TEXT    NOT NULL
+                                CHECK(status IN ('open','attempting','proved',
+                                                 'shelved',
+                                                 'pending_strategist_review',
+                                                 'disproved','frozen','dead')),
+                depth       INTEGER NOT NULL DEFAULT 0,
+                attempts    INTEGER NOT NULL DEFAULT 0,
+                entry_kind  TEXT    NOT NULL DEFAULT 'Builder'
+                                CHECK(entry_kind IN ('Builder','Backward')),
+                integrity_verified INTEGER NOT NULL DEFAULT 0
+                                CHECK(integrity_verified IN (0,1)),
+                detached    INTEGER NOT NULL DEFAULT 0
+                                CHECK(detached IN (0,1)),
+                alias_target_id INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                is_deliverable INTEGER NOT NULL DEFAULT 0
+                                CHECK(is_deliverable IN (0,1)),
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                UNIQUE(problem, slug)
+            )""")
+        new_cols = ["id", "problem", "slug", "lean_path", "statement",
+                    "kind", "origin", "status", "depth", "attempts",
+                    "entry_kind", "integrity_verified", "detached",
+                    "alias_target_id", "is_deliverable",
+                    "created_at", "updated_at"]
+        live_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
+        copy_cols = ", ".join(c for c in new_cols if c in live_cols)
+        conn.execute(
+            f"INSERT INTO _new_goals ({copy_cols})"
+            f" SELECT {copy_cols} FROM goals")
+        conn.executescript("""
+            DROP TABLE goals;
+            ALTER TABLE _new_goals RENAME TO goals;
+            CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"v19 migration left FK violations: {fk_violations[:5]}"
+            )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _migrate_to_phase11(conn: sqlite3.Connection) -> None:
