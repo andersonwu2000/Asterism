@@ -15,6 +15,18 @@ import pytest
 from Tooling.state import db
 from Tooling.quality import dedupe
 
+# Captured at import time — BEFORE conftest's autouse cold-lake stubs
+# replace them per-test. This file tests the real implementations (with
+# subprocess mocked locally), so restore them; the side-effect fence
+# still backstops any un-mocked toolchain spawn.
+_REAL_BATCH_PROVABLE = dedupe._batch_provable_via_apply
+
+
+@pytest.fixture(autouse=True)
+def _use_real_batch_provable(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(dedupe, "_batch_provable_via_apply",
+                        _REAL_BATCH_PROVABLE)
+
 
 # ---------------------------------------------------------------------
 # helpers

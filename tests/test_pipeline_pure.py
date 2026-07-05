@@ -5,6 +5,20 @@ from pathlib import Path
 
 import pytest
 
+from Tooling.pipeline import _lake as _lake_mod
+
+# Real lake_build_modules, captured before conftest's autouse cold-lake
+# stub — the two lake-build tests here exercise the real path-resolution
+# logic with subprocess mocked locally.
+_REAL_LAKE_BUILD_MODULES = _lake_mod.lake_build_modules
+
+
+@pytest.fixture(autouse=True)
+def _use_real_lake_build(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(_lake_mod, "lake_build_modules",
+                        _REAL_LAKE_BUILD_MODULES)
+
+
 from Tooling.pipeline import (
     _is_sorry_stub,
     _replace_proof_body,

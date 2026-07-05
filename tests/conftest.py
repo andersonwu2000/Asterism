@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import os
+import socket
 import sqlite3
+import subprocess
 import pytest
 
 from Tooling.state import db
@@ -23,6 +25,117 @@ def pytest_collection_modifyitems(config, items):
     ):
         return
     items[:] = [it for it in items if "real_lake" not in it.keywords]
+
+
+# ---------------------------------------------------------------------
+# Side-effect fence (task #6) — "unit tests never spawn the toolchain or
+# touch the real network" was fixture DISCIPLINE until 2026-07-05, and it
+# failed silently once: an inconsistent import let `_presearch` reach an
+# unstubbed `agent.spawn_llm`, a REAL claude subprocess idled 270s per
+# test, and the suite ran 20min instead of 65s — green the whole time
+# (fixed twice as convention: import unification + env kill switch;
+# 1488da4). The fence turns that silent degradation into an instant,
+# named failure — the same discipline→mechanism upgrade as the raw-UPDATE
+# ratchet and the proof_store lint.
+# ---------------------------------------------------------------------
+
+# Executable basenames whose spawn means "the toolchain escaped a stub".
+# git / python / py-spy etc. stay allowed — the fence targets the
+# expensive, quota-burning, minutes-long escapes, not all subprocesses.
+_FENCED_EXES = frozenset({
+    "claude", "claude.exe", "claude.cmd",
+    "lake", "lake.exe", "lean", "lean.exe",
+    "lean-asterism-server", "lean-asterism-server.exe",
+    "loogle", "loogle.exe",
+})
+
+_REAL_POPEN = subprocess.Popen
+_REAL_CONNECT = socket.socket.connect
+
+
+@pytest.fixture(autouse=True)
+def _side_effect_fence(request, monkeypatch: pytest.MonkeyPatch):
+    """Fail fast (with the offending test named by pytest itself) when a
+    non-`real_lake` test tries to spawn the Lean/LLM toolchain or open a
+    non-loopback network connection.
+
+    Loopback connects stay ALLOWED: asyncio event loops create localhost
+    socketpairs internally (the gateway endpoint tests would trip a
+    blanket ban), and in a unit-test run nothing listens on the gateway
+    port anyway — an escaped localhost call fails as ECONNREFUSED, which
+    the transient-retry paths already surface. The expensive silent
+    escapes (claude/lake spawns, loogle web calls) are what this fence
+    exists to catch."""
+    if "real_lake" in request.keywords:
+        yield
+        return
+
+    def _exe_name(args) -> str:
+        if isinstance(args, (str, bytes)):
+            first = args.split()[0] if args else ""
+        elif isinstance(args, (list, tuple)) and args:
+            first = args[0]
+        else:
+            first = ""
+        if isinstance(first, bytes):
+            first = first.decode(errors="replace")
+        return os.path.basename(str(first)).lower()
+
+    def _fenced_popen(args, *a, **kw):
+        name = _exe_name(args)
+        if name in _FENCED_EXES:
+            pytest.fail(
+                f"side-effect fence: this test tried to spawn {name!r} "
+                f"(argv[0]={args if isinstance(args, str) else args[0]!r}). "
+                "A toolchain/LLM stub was bypassed — stub `agent.spawn_llm` "
+                "/ `gateway_lifecycle.verify_file` (or the layer this call "
+                "escaped from), or mark the test `real_lake`.",
+                pytrace=True)
+        return _REAL_POPEN(args, *a, **kw)
+
+    def _fenced_connect(self, address):
+        host = address[0] if isinstance(address, tuple) else address
+        if isinstance(host, str) and host not in (
+                "127.0.0.1", "localhost", "::1"):
+            pytest.fail(
+                f"side-effect fence: this test tried a real network "
+                f"connection to {address!r}. Stub the HTTP/web layer "
+                "(urlopen / loogle), or mark the test `real_lake`.",
+                pytrace=True)
+        return _REAL_CONNECT(self, address)
+
+    monkeypatch.setattr(subprocess, "Popen", _fenced_popen)
+    monkeypatch.setattr(socket.socket, "connect", _fenced_connect)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _stub_cold_lake_by_default(request, monkeypatch: pytest.MonkeyPatch):
+    """Stub the two COLD-lake seams (`_lake.lake_build_modules` olean
+    pre-flight, `lake_probe.run_lean_source` one-shot probes) the way the
+    warm-gateway seams already are. The side-effect fence's first live
+    catch (2026-07-05) was exactly this class: a backward-commit test's
+    dedupe pre-flight ran a REAL `lake build` every run — silently slow
+    on the workstation, silently FileNotFoundError-swallowed on CI.
+    Tests exercising cold-lake behavior override locally (their
+    monkeypatch applies after this autouse one and wins)."""
+    if "real_lake" in request.keywords:
+        return
+    from Tooling.pipeline import _lake
+    from Tooling.quality import dedupe as _dd
+    from Tooling.quality import lake_probe
+    monkeypatch.setattr(_lake, "lake_build_modules",
+                        lambda workspace, modules: (True, ""))
+    # Clean "probe says no" verdict (rc=1, no output): dedupe defeq → not
+    # equal → no drop; conservative in every consumer's failure direction.
+    monkeypatch.setattr(
+        lake_probe, "run_lean_source",
+        lambda workspace, content, **kw: lake_probe.LeanRun(1, "", False))
+    # The apply probe shells `lake env lean` directly (not via
+    # run_lean_source): stub to all-no-hit (dedupe's fail-open shape).
+    monkeypatch.setattr(
+        _dd, "_batch_provable_via_apply",
+        lambda workspace, problem, pairs: [False] * len(pairs))
 
 
 @pytest.fixture
