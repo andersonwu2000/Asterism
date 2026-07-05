@@ -18,6 +18,26 @@ from ... import lake_probe as _lp
 _BATCH_TIMEOUT_SEC = 240
 
 
+def diff_magnitude(before: str, after: str) -> str:
+    """One-token observability of an applied LLM-stage rewrite: exact
+    `no-change` or `+A/-B lines`. Motivated by the 2026-07-05 throughput
+    investigation: audit reported "applied (0 residual, 0 renamed)" on
+    21/21 sphere files, but nothing recorded whether the rewrite carried
+    a real diff (docstrings/polish) or was byte-identical — the datum
+    the green-file single-shot decision needs."""
+    if before == after:
+        return "no-change"
+    import difflib
+    added = removed = 0
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
+            None, before.splitlines(), after.splitlines()).get_opcodes():
+        if tag in ("replace", "delete"):
+            removed += i2 - i1
+        if tag in ("replace", "insert"):
+            added += j2 - j1
+    return f"+{added}/-{removed} lines"
+
+
 class _Decl(NamedTuple):
     fqn: str
     rel: str

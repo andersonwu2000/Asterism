@@ -377,7 +377,8 @@ def file_cleanup_decide(workspace: Path, problem: str, target_file: str,
     if built_text is not None:                  # an import candidate built
         (workspace / target_file).write_text(built_text, encoding="utf-8")
         print(f"[staged] decide `{leaf}` — {len(applied)} renamed, "
-              f"{imp_desc} (mechanical)"
+              f"{imp_desc} (mechanical), "
+              f"{C.diff_magnitude(original, built_text)}"
               + (": " + ", ".join(
                   f"{o.rsplit('.', 1)[-1]}→{n.rsplit('.', 1)[-1]}"
                   for o, n in applied.items()) if applied else ""), flush=True)

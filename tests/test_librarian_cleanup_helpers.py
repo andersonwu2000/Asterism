@@ -566,3 +566,23 @@ def test_audit_context_clean_when_no_clash(tmp_path):
     ctx = A._audit_context(tmp_path, "p", "Library/A/Foo.lean", ["foo"],
                            conn=conn)
     assert "no leaf-name clashes" in ctx
+
+
+# ---------------------------------------------------------------------
+# diff_magnitude — LLM-stage rewrite observability (throughput
+# investigation 2026-07-05: audit/decide apply lines must record whether
+# the rewrite carried a real diff; the green-file single-shot decision
+# consumes this datum from the next harvest logs).
+# ---------------------------------------------------------------------
+
+def test_diff_magnitude_no_change():
+    from Tooling.quality.librarian.cleanup import _common as C
+    t = "def a : Nat := 1\ndef b : Nat := 2\n"
+    assert C.diff_magnitude(t, t) == "no-change"
+
+
+def test_diff_magnitude_counts_lines():
+    from Tooling.quality.librarian.cleanup import _common as C
+    before = "line1\nline2\nline3\n"
+    after = "line1\nline2 changed\nline3\nline4\n"
+    assert C.diff_magnitude(before, after) == "+2/-1 lines"

@@ -435,5 +435,5 @@ def file_cleanup_audit(workspace: Path, problem: str, target_file: str,
           f"{len(applied)} renamed"
           + (": " + ", ".join(f"{o.rsplit('.', 1)[-1]}→{n.rsplit('.', 1)[-1]}"
                               for o, n in applied.items()) if applied else "")
-          + ")", flush=True)
+          + f", {C.diff_magnitude(original, text)})", flush=True)
     return applied, True
