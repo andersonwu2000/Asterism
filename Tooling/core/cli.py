@@ -328,6 +328,16 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _hard_exit_after_fatal(rc: int) -> None:
+    """ZOMBIE-LOCK seam: after a dispatcher FATAL, `os._exit` is the only
+    way to actually die — the pool's non-daemon worker threads (blocked on
+    claude subprocesses) otherwise keep the process alive holding the
+    daemon.pid lock, with no main loop left to cascade their results
+    (sphere daemon #3, 2026-07-05). Module-level so tests can stub it and
+    observe the re-raise instead of losing the test runner."""
+    os._exit(rc)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     workspace = Path.cwd()
     # Scope safety gate: a no-`--scope` run is workspace-wide — it
@@ -380,7 +390,30 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("[dispatcher] FATAL: unhandled exception — daemon exiting:",
               flush=True)
         traceback.print_exc()
-        raise
+        # ZOMBIE-LOCK guard (`_hard_exit_after_fatal` seam below;
+        # sphere daemon #3, 2026-07-05): re-raising kills
+        # only the MAIN thread — the pool's non-daemon worker threads (each
+        # blocked on a claude subprocess for up to ~16min) keep the PROCESS
+        # alive, still holding the daemon.pid lock and blocking every
+        # restart, while no main loop exists to cascade their results. Kill
+        # the registered in-flight subprocesses (same machinery as the
+        # breaker exits) and hard-exit: the work is unrecoverable either
+        # way, and the v17 lease sweep + startup recovery reclaim it.
+        try:
+            from ..llm import claude_cli as _ccli
+            n = _ccli.request_shutdown()
+            if n:
+                print(f"[dispatcher] killed {n} in-flight claude "
+                      f"subprocess(es) before FATAL exit", flush=True)
+        except Exception:  # noqa: BLE001 — never mask the original crash
+            pass
+        sys.stdout, sys.stderr = orig_stdout, orig_stderr
+        try:
+            log_file.close()
+        except OSError:
+            pass
+        _hard_exit_after_fatal(2)   # production: never returns
+        raise                       # tests stub the seam → crash propagates
     finally:
         sys.stdout = orig_stdout
         sys.stderr = orig_stderr

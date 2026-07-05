@@ -265,11 +265,20 @@ def test_cmd_run_logs_traceback_on_crash(
     def _boom(*_a, **_k):
         raise RuntimeError("dispatcher exploded mid-tick")
     monkeypatch.setattr(cli.dispatcher, "run", _boom)
+    # Stub the zombie-lock hard-exit seam (production os._exit would take
+    # the test runner with it); record that it fired with rc=2.
+    exited = {"rc": None}
+    monkeypatch.setattr(cli, "_hard_exit_after_fatal",
+                        lambda rc: exited.__setitem__("rc", rc))
 
     args = argparse.Namespace(scope="Geometry.green_theorem", once=False,
                               all_problems=False)
     with pytest.raises(RuntimeError, match="exploded mid-tick"):
         cli.cmd_run(args)
+
+    # The FATAL path must request a hard process exit (zombie-lock guard:
+    # non-daemon pool threads otherwise keep holding daemon.pid).
+    assert exited["rc"] == 2
 
     logs = list((tmp_path / LOG_DIR).glob("*.log"))
     assert logs, "no daemon log written"
