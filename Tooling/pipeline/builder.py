@@ -104,16 +104,52 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         )
     source = goal_lean.read_text(encoding="utf-8")
 
-    def _commit_goal_lean(content: str) -> None:
+    # Concurrent-writer fence (g5065 sphere_homology 2026-07-05): Builder
+    # snapshots `source` at pipeline start and, on failure paths, restores
+    # it — but a Backward strategy on the SAME goal can win via verify
+    # housekeeping's `promote_to_alias` while this Builder is mid-flight
+    # (Builder and Backward are legitimately parallel on one goal; the
+    # dispatch fence `_dispatch_is_duplicate` only collapses Builder-vs-
+    # Builder, the Jordan-5/25 class). Observed: the old unconditional
+    # restore stomped the freshly-promoted alias with the stale sorry-stub
+    # snapshot 36 ms before the goal's 'proved' flip committed →
+    # DB='proved', file=stub, sorryAx latent in every citing sibling.
+    # `_expected_on_disk` tracks the content THIS pipeline believes
+    # goal_lean holds (its own last write, seeded from the start-of-run
+    # read); every write first re-reads the file and REFUSES to touch it
+    # when someone else's bytes are there. The residual read→replace
+    # TOCTOU is microseconds vs the minutes-wide stale window it closes;
+    # end-of-run `reconcile_proved_goals` remains the backstop for that
+    # sliver.
+    _expected_on_disk = {"text": source}
+
+    def _commit_goal_lean(content: str) -> bool:
         """Guarded write of this goal's OWN proof file. Routes through the
         ownership chokepoint (`place_proof`) so a mis-computed `goal_lean`
         pointing at a DIFFERENT goal's committed file raises ClobberError
         before touching disk, instead of silently clobbering it (the DB↔file
         drift class). For this goal's own path the guard always passes — it is
-        defence against a future bug that hands Builder the wrong path."""
+        defence against a future bug that hands Builder the wrong path.
+
+        Returns False WITHOUT writing when goal_lean's on-disk content no
+        longer matches this pipeline's last write — a concurrent writer
+        (verify promote of a sibling Backward win) owns the file now; see
+        the `_expected_on_disk` fence comment above."""
+        try:
+            current = goal_lean.read_text(encoding="utf-8")
+        except OSError:
+            current = None
+        if current is not None and current != _expected_on_disk["text"]:
+            print(f"[builder] g{goal_id} goal-file write SKIPPED — "
+                  f"{goal['lean_path']} changed under this pipeline "
+                  f"(concurrent verify promote?); on-disk content kept",
+                  flush=True)
+            return False
         proof_store.place_proof(
             conn, workspace, goal_id=goal_id,
             rel_path=goal["lean_path"], content=content)
+        _expected_on_disk["text"] = content
+        return True
 
     attempts_dir = agent.attempts_dir_for(workspace, pipeline_id)
     problem_dir = db.problem_dir(workspace, goal["problem"])
@@ -160,9 +196,15 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
                         winner = w
                         break
 
+        if winner is not None and not _commit_goal_lean(
+                _replace_proof_body(source, winner)):
+            # Concurrent writer claimed goal_lean mid-probe — drop the
+            # hint winner; the retry loop's goal_still_active check will
+            # moot this pipeline on its next iteration.
+            winner = None
+
         if winner is not None:
             final_text = _replace_proof_body(source, winner)
-            _commit_goal_lean(final_text)
             forbidden = _grep_forbidden(final_text, mfst.forbidden_lemmas)
             if forbidden:
                 _commit_goal_lean(backup_text)
@@ -241,7 +283,13 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         """Undo a commit attempt on goal_lean. Only called after the
         final post-verify failure paths in `builder_parse` — i.e. once the
         `_commit_goal_lean` write has already mutated workspace and the
-        subsequent verify/axiom check rejected the patch."""
+        subsequent verify/axiom check rejected the patch.
+
+        Inherits the concurrent-writer fence: when goal_lean was rewritten
+        by someone else since our commit (verify promoted a sibling
+        Backward strategy over it), the restore is a no-op — restoring the
+        stale pre-run stub over the promoted alias is exactly the g5065
+        2026-07-05 DB='proved'/file=stub drift."""
         _commit_goal_lean(goal_lean_original)
 
     def builder_cold_prep(ctx: SpawnCtx) -> None:
@@ -357,7 +405,18 @@ def _run_builder_inner(conn: sqlite3.Connection, *, goal_id: int,
         # Defs opens were already injected by the assemble_for_commit
         # normalization above (written back into the patch), so the commit
         # copy is byte-identical to what the gates saw.
-        _commit_goal_lean(patch.read_text(encoding="utf-8"))
+        if not _commit_goal_lean(patch.read_text(encoding="utf-8")):
+            # Concurrent writer (verify promote of a sibling Backward win)
+            # claimed goal_lean while this Builder's agent ran — its
+            # content is a promoted alias, not ours to overwrite. Bail as
+            # a race, not an agent failure; the retry loop's
+            # goal_still_active check confirms the terminal next iteration.
+            return PipelineResult(
+                outcome="failed", failure_reason="goal_no_longer_open",
+                failure_detail="goal file changed under Builder "
+                               "(concurrent verify promote)",
+                proposal_md=leading,
+            )
         promote_done = True
         # Verify-unification (see docs/archive/verify_unification.md):
         # one /verify round trip elaborates the patch in a warm worker,

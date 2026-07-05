@@ -256,6 +256,75 @@ def test_run_builder_lake_fail_restores_backup(
     assert not goal_lean.with_suffix(goal_lean.suffix + ".backup").exists()
 
 
+def test_run_builder_restore_never_stomps_concurrent_promote(
+    conn: sqlite3.Connection, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent-writer fence — regression for the g5065 sphere_homology
+    DB='proved'/file=stub drift (2026-07-05).
+
+    Builder and a Backward strategy legitimately run in parallel on one
+    goal. While the Builder's axiom gate elaborated its own (failing)
+    patch, main-thread verify housekeeping promoted the sibling Backward
+    win: `promote_to_alias` rewrote goal_lean as the canonical alias, and
+    the goal flipped 'proved' 36 ms later. The Builder's failure path then
+    restored its STALE start-of-run sorry-stub snapshot over the alias —
+    leaving DB='proved' with `:= by sorry` on disk, a latent sorryAx for
+    every citing sibling (the Jordan-5/25 drift class; the dispatch-level
+    fence only collapses Builder-vs-Builder, not Builder-vs-Backward).
+
+    The fence: every Builder write to goal_lean first re-reads the file
+    and REFUSES to touch it when the content is no longer the Builder's
+    own last write. Covered here:
+      - iteration 1: gate fails after a concurrent promote → the restore
+        is skipped, the alias survives;
+      - iteration 2: the commit window itself is refused → terminal
+        'goal_no_longer_open' (race), not another clobber.
+    """
+    gid = _seed_problem(conn, tmp_path)
+    db.increment_goal_attempts(conn, gid)  # bypass Phase 1
+    goal_lean = tmp_path / db.get_goal(conn, gid)["lean_path"]
+
+    alias_text = (
+        "import Mathlib\nimport Problems.p.proofs._strategy_s1\n\n"
+        "namespace Problems.p\n\ndef main := @Problems.p.s1\n\n"
+        "end Problems.p\n"
+    )
+
+    def fake_spawn(**kw):
+        (kw["attempts_dir"] / "patch.lean").write_text(
+            "-- annotation\ngarbage that won't build", encoding="utf-8")
+        return 0
+    monkeypatch.setattr(agent, "spawn_llm", fake_spawn)
+
+    from Tooling.lsp import lifecycle as gateway_lifecycle
+
+    def failing_verify_with_concurrent_promote(path, **kw):
+        # Simulate verify housekeeping winning the race mid-gate: the
+        # goal file is promoted to the sibling strategy's alias while
+        # this Builder's own elaborate is in flight.
+        goal_lean.write_text(alias_text, encoding="utf-8")
+        return {
+            "ok": False,
+            "diagnostics": [{"line": 1, "col": 0, "severity": "error",
+                             "message": "error: garbage"}],
+            "diagnostic_count": 1,
+            "olean_written": False, "olean_path": None,
+            "axioms": None, "axiom_error": None,
+        }
+    monkeypatch.setattr(gateway_lifecycle, "verify_file",
+                        failing_verify_with_concurrent_promote)
+
+    r = pipeline.run_builder(
+        conn, goal_id=gid, workspace=tmp_path, mfst=_mfst(),
+        pipeline_id="pid-race")
+    # The promoted alias must survive every Builder failure/restore path.
+    assert goal_lean.read_text(encoding="utf-8") == alias_text
+    # Iteration 2's commit window detected the foreign content and bailed
+    # as a race (terminal in the retry loop), not an agent failure.
+    assert r.failure_reason == "goal_no_longer_open"
+
+
 def test_run_builder_forbidden_lemma_blocked(
     conn: sqlite3.Connection, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
