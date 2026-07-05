@@ -33,8 +33,9 @@ Write **one** declaration into the seeded file. Match it to what the brief asks 
 | A composite type bundling fields | `structure <slug> where ...` |
 | An abstract interface | `class <slug> (α : Type) where ...` |
 | A new inductive type | `inductive <slug> : <Type> where ...` — complete, no `sorry` |
+| A typeclass instance | `instance <slug> : <Class> where ...` — named, no priority group |
 
-`def` / `structure` / `class` / `inductive` skip `entry_kind`.
+`def` / `structure` / `class` / `inductive` / `instance` skip `entry_kind`.
 
 ```lean
 namespace Problems.<problem>
