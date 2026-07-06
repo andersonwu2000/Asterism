@@ -93,6 +93,7 @@ export default function Problem({ name }: { name: string }) {
     `/api/problems/${encodeURIComponent(name)}`,
   )
   const [tab, setTab] = useState<Tab>('stars')
+  const [directiveOpen, setDirectiveOpen] = useState(false)
   const [selectedGoal, setSelectedGoal] = useState<number | null>(null)
   const [selectedStrategy, setSelectedStrategy] = useState<number | null>(null)
   const [fileToOpen, setFileToOpen] = useState<string | null>(null)
@@ -146,6 +147,24 @@ export default function Problem({ name }: { name: string }) {
             </div>
           </div>
         </div>
+        {data.strategist_directive && (
+          <button
+            className="mt-2 block w-full max-w-4xl text-left"
+            onClick={() => setDirectiveOpen((v) => !v)}
+            title={directiveOpen ? 'collapse' : 'show the full standing directive'}
+          >
+            <span
+              className={`text-xs leading-relaxed text-ink-faint transition-colors hover:text-ink-dim ${
+                directiveOpen ? 'whitespace-pre-wrap' : 'line-clamp-1'
+              }`}
+            >
+              <span className="mr-1.5 font-medium tracking-widest text-ink-faint/70 uppercase">
+                directive
+              </span>
+              {data.strategist_directive}
+            </span>
+          </button>
+        )}
         {(data.status === 'awaiting_human' || data.status === 'signoff_pending') && (
           <div className="mt-2 rounded-md border border-danger/40 bg-danger/10 px-3 py-1.5 text-xs text-danger">
             This problem is paused on a human decision —{' '}

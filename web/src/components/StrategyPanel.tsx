@@ -24,7 +24,7 @@ interface StrategyDetail {
 }
 
 const STRAT_STATUS_CLS: Record<string, string> = {
-  succeeded: 'text-star',
+  succeeded: 'text-starlight',
   proposed: 'text-accent',
   dead: 'text-danger',
   superseded: 'text-ink-faint',
@@ -32,7 +32,7 @@ const STRAT_STATUS_CLS: Record<string, string> = {
 }
 
 const GOAL_STATUS_CLS: Record<string, string> = {
-  proved: 'text-star',
+  proved: 'text-starlight',
   attempting: 'text-accent',
   open: 'text-accent',
   shelved: 'text-ink-faint',
@@ -59,7 +59,7 @@ export default function StrategyPanel({
   )
 
   return (
-    <div className="flex h-full w-96 shrink-0 flex-col border-l border-edge bg-surface">
+    <div className="rise-in flex h-full w-96 shrink-0 flex-col border-l border-edge bg-surface">
       <div className="flex items-center justify-between border-b border-edge px-4 py-2.5">
         <span className="truncate font-mono text-sm text-ink">
           strategy s{strategyId}

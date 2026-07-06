@@ -85,6 +85,22 @@ body {
   scrollbar-color: var(--color-edge-strong) transparent;
 }
 
+/* Panels and cards surface with a small rise — enough to feel placed,
+   not enough to feel animated. Killed globally by reduced-motion. */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.rise-in {
+  animation: rise-in 0.22s ease-out both;
+}
+
 /* Constellation: stars light up gently when a poll flips a status
    (proved = the map literally brightens as the proof advances). */
 .constellation circle,

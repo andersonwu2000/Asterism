@@ -429,7 +429,12 @@ export default function Board() {
                       title={p.name}
                     >
                       <span className="font-mono">
-                        {p.name.length > 30 ? `…${p.name.slice(-29)}` : p.name}
+                        {(() => {
+                          const leaf = p.name.includes('.')
+                            ? p.name.slice(p.name.indexOf('.') + 1)
+                            : p.name
+                          return leaf.length > 30 ? `${leaf.slice(0, 29)}…` : leaf
+                        })()}
                       </span>
                       {p.goals.proved > 0 && (
                         <span className="text-ink-faint/70">{p.goals.proved}✓</span>
