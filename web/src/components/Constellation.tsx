@@ -21,6 +21,8 @@ interface Props {
   onSelectStrategy?: (id: number) => void
   /** attempts heat-ring denominator (engine's shelve threshold) */
   shelveThreshold?: number
+  /** proof-file import citations — the DAG's cross-links */
+  citationEdges?: { from: number; to: number }[]
   /** liveness gate: pulses are claims that work is happening NOW —
    * without a live daemon on this problem they must not render */
   engineWorking?: boolean
@@ -66,10 +68,14 @@ function nodeStyle(g: Goal): { fill: string; stroke: string; glow: boolean; opac
   }
 }
 
+/** Size hierarchy = what the human must know (owner: anchor + claim
+ * are the only nodes the user NEEDS): root and claims largest, def
+ * anchors next, supporting Props recede. */
 function radius(g: Goal): number {
   if (g.origin === 'root') return 9
-  if (g.is_deliverable) return 7
-  return 5
+  if (g.is_deliverable) return 8.5
+  if (DEF_KINDS.has(g.kind)) return 6.5
+  return 4.5
 }
 
 /** def-like kinds — the vouchable meaning-bearers (anchor+claim §4) */
@@ -89,8 +95,12 @@ const STATUS_LABEL: Record<string, string> = {
   dead: 'dead',
 }
 
-function edgeStroke(status: Strategy['status'], kind: 'strategy' | 'alias' | 'anchor'): string {
+function edgeStroke(
+  status: Strategy['status'],
+  kind: 'strategy' | 'alias' | 'anchor' | 'citation',
+): string {
   if (kind === 'alias') return 'var(--color-accent)'
+  if (kind === 'citation') return 'var(--color-starlight)'
   if (kind === 'anchor' || status === 'succeeded') return 'var(--color-starlight)'
   if (status === 'dead' || status === 'superseded') return 'var(--color-edge)'
   return 'var(--color-edge-strong)'
@@ -101,6 +111,7 @@ export default function Constellation({
   strategies,
   strategyEdges,
   anchorEdges = [],
+  citationEdges = [],
   selectedId,
   onSelect,
   onSelectStrategy,
@@ -110,6 +121,13 @@ export default function Constellation({
   // Frontier focus: on for big live graphs by default (attention +
   // charter §7 perf bar); terminal problems always show everything.
   const [focusFrontier, setFocusFrontier] = useState<boolean | null>(null)
+  const [legendOpen, setLegendOpen] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('cst-legend') !== 'closed'
+    } catch {
+      return true
+    }
+  })
   const frontier = useMemo(
     () => frontierView(goals, strategies, strategyEdges),
     [goals, strategies, strategyEdges],
@@ -119,8 +137,9 @@ export default function Constellation({
   const shownGoals = focused ? frontier.goals : goals
 
   const layout = useMemo(
-    () => layoutConstellation(shownGoals, strategies, strategyEdges, anchorEdges),
-    [shownGoals, strategies, strategyEdges, anchorEdges],
+    () =>
+      layoutConstellation(shownGoals, strategies, strategyEdges, anchorEdges, citationEdges),
+    [shownGoals, strategies, strategyEdges, anchorEdges, citationEdges],
   )
   const byId = useMemo(
     () => new Map(layout.nodes.map((n) => [n.goal.id, n])),
@@ -369,11 +388,13 @@ export default function Constellation({
                     ? 0.35
                     : e.kind === 'alias'
                       ? 0.5
-                      : e.kind === 'anchor'
-                        ? 0.3
-                        : e.strategyStatus === 'succeeded'
-                          ? 0.38
-                          : 0.55
+                      : e.kind === 'citation'
+                        ? 0.2
+                        : e.kind === 'anchor'
+                          ? 0.3
+                          : e.strategyStatus === 'succeeded'
+                            ? 0.38
+                            : 0.55
                 }
                 strokeDasharray={e.kind === 'alias' ? '4 4' : undefined}
                 vectorEffect="non-scaling-stroke"
@@ -456,6 +477,34 @@ export default function Constellation({
               vectorEffect="non-scaling-stroke"
             />
           ))}
+          {/* the horizon: above it, what grew from the root (or was
+              marked a claim); below, other forward work — citation
+              threads cross it where that work is actually used */}
+          {layout.horizonY !== null && (
+            <g className="pointer-events-none select-none">
+              <line
+                x1={0}
+                y1={layout.horizonY}
+                x2={layout.width}
+                y2={layout.horizonY}
+                stroke="var(--color-edge-strong)"
+                strokeWidth={1}
+                strokeDasharray="1 6"
+                vectorEffect="non-scaling-stroke"
+              />
+              <text
+                x={layout.width}
+                y={layout.horizonY + 16 / k}
+                textAnchor="end"
+                fill="var(--color-ink-faint)"
+                fontSize={10 / k}
+                fontFamily="var(--font-sans)"
+                letterSpacing="0.12em"
+              >
+                OTHER FORWARD WORK
+              </text>
+            </g>
+          )}
           {layout.singlesBlock && (
             <text
               x={layout.singlesBlock.x}
@@ -465,7 +514,7 @@ export default function Constellation({
               fontFamily="var(--font-sans)"
               className="pointer-events-none select-none"
             >
-              unlinked bricks · {layout.singlesBlock.count}
+              unlinked · {layout.singlesBlock.count}
             </text>
           )}
           {layout.nodes.map((n) => {
@@ -710,13 +759,29 @@ export default function Constellation({
         </div>
       )}
 
-      {/* legend on demand — the owner knows the encoding; a permanent
-          key is seven items of noise on every visit */}
-      <div className="group absolute top-3 left-3">
-        <span className="cursor-default rounded-md bg-surface/80 px-2 py-1 text-[11px] text-ink-faint transition-colors group-hover:text-ink-dim">
-          legend
-        </span>
-        <div className="pointer-events-none mt-1 hidden items-center gap-3 rounded-md bg-surface/90 px-2.5 py-1 text-[11px] text-ink-faint group-hover:flex">
+      {/* legend open by default (owner call — the encoding is for
+          strangers, not the author); one click folds it away, and the
+          choice sticks */}
+      <div className="absolute top-3 left-3">
+        <button
+          className="cursor-pointer rounded-md bg-surface/80 px-2 py-1 text-[11px] text-ink-faint transition-colors hover:text-ink-dim"
+          onClick={() =>
+            setLegendOpen((v) => {
+              try {
+                localStorage.setItem('cst-legend', v ? 'closed' : 'open')
+              } catch {
+                /* private mode */
+              }
+              return !v
+            })
+          }
+          title={legendOpen ? 'hide the legend' : 'show the legend'}
+        >
+          legend {legendOpen ? '▾' : '▸'}
+        </button>
+        <div
+          className={`pointer-events-none mt-1 ${legendOpen ? 'flex' : 'hidden'} flex-wrap items-center gap-3 rounded-md bg-surface/90 px-2.5 py-1 text-[11px] text-ink-faint`}
+        >
         <span className="flex items-center gap-1">
           <svg width="10" height="10" viewBox="-5 -5 10 10">
             <circle r="3" fill="var(--color-starlight)" />
@@ -748,6 +813,12 @@ export default function Constellation({
             <line x1="1" y1="5" x2="13" y2="5" stroke="var(--color-accent)" strokeWidth="1" strokeDasharray="3 2.5" opacity="0.7" />
           </svg>
           alias
+        </span>
+        <span className="flex items-center gap-1" title="one proof imports another — the lemma is used there">
+          <svg width="14" height="10" viewBox="0 0 14 10">
+            <line x1="1" y1="8" x2="13" y2="2" stroke="var(--color-starlight)" strokeWidth="1" opacity="0.45" />
+          </svg>
+          cites
         </span>
         <span className="flex items-center gap-1">
           <svg width="10" height="10" viewBox="-5 -5 10 10">

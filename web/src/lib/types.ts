@@ -98,6 +98,9 @@ export interface ProblemDetail {
   strategies: Strategy[]
   strategy_edges: StrategyEdge[]
   anchor_edges: { from: number; to: number }[]
+  /** proof-file import citations (from: cited, to: citer) — the DAG's
+   * cross-links; what makes 'linked forward' work visibly linked */
+  citation_edges: { from: number; to: number }[]
   decisions: Decision[]
   proof_files: string[]
 }

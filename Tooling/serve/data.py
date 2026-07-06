@@ -9,6 +9,7 @@ when a state-layer predicate exists (charter §1-3): stalled =
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -170,6 +171,63 @@ def board(conn: sqlite3.Connection, *, daemon: "dict | None" = None) -> dict:
             "created_at": str(p["created_at"]),
         })
     return {"problems": rows}
+
+
+# ---------------------------------------------------------------------
+# Citation edges (constellation truth): a proof file citing a sibling
+# does it with `import Problems.<p>.proofs.L_<slug>` — the exact
+# dependency lake sees. Read-side extraction for VISUALIZATION only
+# (soundness citation checks live in db.classify_cited_slug /
+# pipeline._cite_gate; this regex never gates anything). Per-file
+# mtime cache: the board polls every 2s and a problem can have
+# hundreds of proof files — stat everything, re-read only changes.
+# ---------------------------------------------------------------------
+
+_CITE_RE = re.compile(
+    r"^import\s+Problems\.([\w.]+)\.proofs\.L_([A-Za-z0-9_']+)",
+    re.MULTILINE)
+
+#: path str -> (mtime_ns, [(problem, slug), ...])
+_cite_file_cache: "dict[str, tuple[int, list[tuple[str, str]]]]" = {}
+
+
+def _citation_edges(workspace: Path, problem: str,
+                    goals: "list[dict]") -> "list[dict]":
+    """[{from: cited goal id, to: citing goal id}] within `problem`,
+    from proof-file import lines. Missing files / read errors are
+    skipped — presentation must never fail the page."""
+    slug_to_id = {g["slug"]: g["id"] for g in goals}
+    out: list[dict] = []
+    seen: set[tuple[int, int]] = set()
+    for g in goals:
+        fp = workspace / str(g["lean_path"])
+        key = str(fp)
+        try:
+            mtime = fp.stat().st_mtime_ns
+        except OSError:
+            _cite_file_cache.pop(key, None)
+            continue
+        cached = _cite_file_cache.get(key)
+        if cached is None or cached[0] != mtime:
+            try:
+                text = fp.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            cites = [(m.group(1), m.group(2))
+                     for m in _CITE_RE.finditer(text)]
+            _cite_file_cache[key] = (mtime, cites)
+        for prob, slug in _cite_file_cache[key][1]:
+            if prob != problem:
+                continue  # cross-problem import — not this sky's edge
+            tid = slug_to_id.get(slug)
+            if tid is None or tid == g["id"]:
+                continue
+            pair = (int(tid), int(g["id"]))
+            if pair in seen:
+                continue
+            seen.add(pair)
+            out.append({"from": pair[0], "to": pair[1]})
+    return out
 
 
 def problem_detail(conn: sqlite3.Connection, workspace: Path,
@@ -385,6 +443,10 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
         "strategies": strategies,
         "strategy_edges": edges,
         "anchor_edges": anchor_edges,
+        # proof-file import citations (the DAG's cross-links): what the
+        # tree views under-report — a Forward product cited by two
+        # nodes has real structure
+        "citation_edges": _citation_edges(workspace, problem, goals),
         "decisions": decisions,
         "proof_files": proof_files,
     }

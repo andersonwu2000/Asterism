@@ -481,6 +481,7 @@ export default function Problem({ name }: { name: string }) {
                 strategies={data.strategies}
                 strategyEdges={data.strategy_edges}
                 anchorEdges={data.anchor_edges}
+                citationEdges={data.citation_edges}
                 selectedId={selectedGoal}
                 onSelect={(id) => {
                   setSelectedGoal(id)

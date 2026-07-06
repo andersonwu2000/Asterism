@@ -710,6 +710,34 @@ def test_paper_section_page_anchor(workspace: Path) -> None:
 # daemon status (read-only surface; start/stop covered at CLI level)
 # ---------------------------------------------------------------------
 
+def test_problem_detail_citation_edges(workspace: Path) -> None:
+    """Proof-file `import Problems.<p>.proofs.L_<slug>` lines surface
+    as citation_edges (visualization truth: what the tree views under-
+    report — a forward lemma cited by a node has real structure)."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    a = db.insert_goal(conn, problem="p", slug="lemma_a",
+                       lean_path="Problems/p/proofs/L_lemma_a.lean",
+                       statement="True", origin="forward")
+    b = db.insert_goal(conn, problem="p", slug="main_thm",
+                       lean_path="Problems/p/proofs/L_main_thm.lean",
+                       statement="True", origin="backward")
+    conn.commit()
+    conn.close()
+    pdir = workspace / "Problems" / "p" / "proofs"
+    pdir.mkdir(parents=True)
+    (pdir / "L_lemma_a.lean").write_text(
+        "import Mathlib\ntheorem lemma_a : True := trivial\n",
+        encoding="utf-8")
+    (pdir / "L_main_thm.lean").write_text(
+        "import Mathlib\nimport Problems.p.proofs.L_lemma_a\n"
+        "theorem main_thm : True := trivial\n", encoding="utf-8")
+    d = _client(workspace).get("/api/problems/p").json()
+    assert {"from": a, "to": b} in d["citation_edges"]
+    # self-imports / unknown slugs never edge
+    assert all(e["from"] != e["to"] for e in d["citation_edges"])
+
+
 def test_papers_bookshelf_flow(workspace: Path) -> None:
     """Top-level bookshelf: add by path (content-hash idempotent),
     list with bindings, read text + original, delete guarded by

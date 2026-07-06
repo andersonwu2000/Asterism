@@ -1,16 +1,24 @@
 import type { Goal, Strategy, StrategyEdge } from './types'
 
 /*
- * Constellation layout — layered (Sugiyama-style), never force-directed
- * (charter appendix guardrail 1: nodes must not move between polls).
- * Deterministic: longest-path layering from the DAG roots, then a few
- * barycenter ordering passes with goal-id tie-breaks, then even
- * horizontal spacing per layer.
+ * Constellation layout — a two-region sky (owner's sketch, 2026-07-07):
+ *
+ *   region 0  what grew from the ROOT, plus anything marked a
+ *             top-level claim — the proof's main body
+ *   ── horizon ──
+ *   region 1  other forward work. Components a CITATION edge ties to
+ *             the main sky rise first (they have real structure — a
+ *             lemma cited by two nodes is the DAG's true shape, drawn
+ *             as cross-links); only the truly unlinked sit apart.
+ *
+ * Deterministic tidy-tree per component (layering by longest path,
+ * children grouped under parents). Positions may change between polls
+ * when the structure changes — readability outranks stillness (owner
+ * call); the renderer animates the transition so stars keep identity.
  *
  * Graph shape: goal → strategy (a decomposition attempt, an AND-group
- * of subgoals) → subgoal. Strategies are collapsed into parent→child
- * edges carrying the strategy id + status; alternative strategies of
- * one goal are distinguishable by edge grouping.
+ * of subgoals) → subgoal; competing strategies of one goal are the OR
+ * fan. Citation/alias edges are cross-links, never hierarchy.
  */
 
 export interface LayoutNode {
@@ -27,10 +35,15 @@ export interface LayoutEdge {
   to: number // subgoal id
   strategyId: number
   strategyStatus: Strategy['status']
-  kind: 'strategy' | 'alias' | 'anchor'
+  kind: 'strategy' | 'alias' | 'anchor' | 'citation'
 }
 
 export interface AnchorEdge {
+  from: number
+  to: number
+}
+
+export interface CitationEdge {
   from: number
   to: number
 }
@@ -56,7 +69,10 @@ export interface ConstellationLayout {
    * independent trees, so a cross-band y comparison means nothing;
    * hairlines make that legible. */
   bandTops: number[]
-  /** caption anchor for the unlinked forward-brick block */
+  /** y (px) of the horizon rule between the root-grown sky and the
+   * other forward work; null when everything grew from the root */
+  horizonY: number | null
+  /** caption anchor for the unlinked forward block */
   singlesBlock: { x: number; y: number; count: number } | null
 }
 
@@ -143,6 +159,7 @@ export function layoutConstellation(
   strategies: Strategy[],
   strategyEdges: StrategyEdge[],
   anchorEdges: AnchorEdge[] = [],
+  citationEdges: CitationEdge[] = [],
 ): ConstellationLayout {
   const byId = new Map(goals.map((g) => [g.id, g]))
   const stratById = new Map(strategies.map((s) => [s.id, s]))
@@ -161,14 +178,17 @@ export function layoutConstellation(
   }
   // Kernel-dependency edges from the review snapshot — the structural
   // truth for Forward-built problems, which have no strategy edges.
+  // FLIPPED for hierarchy: the top-level claim is the parent and its
+  // anchors hang beneath it (the sketch's mental model — claims on
+  // top, vocabulary supporting from below).
   const seenPairs = new Set(edges.map((e) => `${e.from}>${e.to}`))
   for (const e of anchorEdges) {
     if (!byId.has(e.from) || !byId.has(e.to)) continue
-    if (seenPairs.has(`${e.from}>${e.to}`)) continue
-    seenPairs.add(`${e.from}>${e.to}`)
+    if (seenPairs.has(`${e.to}>${e.from}`)) continue
+    seenPairs.add(`${e.to}>${e.from}`)
     edges.push({
-      from: e.from,
-      to: e.to,
+      from: e.to,
+      to: e.from,
       strategyId: -2,
       strategyStatus: 'succeeded',
       kind: 'anchor',
@@ -185,15 +205,31 @@ export function layoutConstellation(
       })
     }
   }
+  // Proof-file citations: the DAG's cross-links (a lemma two nodes
+  // cite is drawn once, with two lines). Never hierarchy — a heavily
+  // cited def would otherwise drag half the sky under itself.
+  for (const e of citationEdges) {
+    if (!byId.has(e.from) || !byId.has(e.to)) continue
+    const k = `${e.from}>${e.to}`
+    if (seenPairs.has(k)) continue
+    seenPairs.add(k)
+    edges.push({
+      from: e.from,
+      to: e.to,
+      strategyId: -3,
+      strategyStatus: 'succeeded',
+      kind: 'citation',
+    })
+  }
 
-  // Longest-path layering over strategy + anchor edges (alias edges
-  // are cross-links, not hierarchy). Cycles can't occur (the engine's
-  // circularity gate; anchor closures are kernel-acyclic), but guard
-  // with a visit cap anyway.
+  // Longest-path layering over strategy + anchor edges (alias and
+  // citation edges are cross-links, not hierarchy). Cycles can't occur
+  // (the engine's circularity gate; anchor closures are kernel-
+  // acyclic), but guard with a visit cap anyway.
   const children = new Map<number, number[]>()
   const parents = new Map<number, number[]>()
   for (const e of edges) {
-    if (e.kind === 'alias') continue
+    if (e.kind === 'alias' || e.kind === 'citation') continue
     children.set(e.from, [...(children.get(e.from) ?? []), e.to])
     parents.set(e.to, [...(parents.get(e.to) ?? []), e.from])
   }
@@ -236,7 +272,13 @@ export function layoutConstellation(
 
   const xSlot = new Map<number, number>()
   let slot = 0
-  const treeInfos: { members: number[]; start: number; end: number; depth: number }[] = []
+  interface Comp {
+    members: number[]
+    start: number
+    end: number
+    depth: number
+  }
+  const treeInfos: Comp[] = []
   const assign = (id: number, guard: number, members: number[]): void => {
     if (guard > goals.length + 1 || xSlot.has(id)) return
     members.push(id)
@@ -264,10 +306,71 @@ export function layoutConstellation(
     slot += 0.6 // breathing room between families
   }
 
-  // Band the independent families: a 200-goal shallow forest laid out
-  // in one strip is a ribbon (aspect 20:1); fold trees into horizontal
-  // bands sized for a roughly 16:9 canvas. Trees are independent, so
-  // banding costs nothing but the few cross-tree DAG edges.
+  // A singleton a citation ties to something is a 1-node component in
+  // the normal flow (it HAS structure); only the truly unlinked
+  // grid-pack into the final block.
+  const citPartner = new Map<number, number[]>()
+  for (const e of edges) {
+    if (e.kind !== 'citation') continue
+    citPartner.set(e.from, [...(citPartner.get(e.from) ?? []), e.to])
+    citPartner.set(e.to, [...(citPartner.get(e.to) ?? []), e.from])
+  }
+  // Main-ness mirrors the engine's alive CTE (root ∪ detached ∪ …):
+  // the root, top-level claims, and strategist-injected spines
+  // (detached) are the proof's main body even before they connect.
+  const mainish = (id: number) => {
+    const g = byId.get(id)
+    return g !== undefined && (g.origin === 'root' || g.is_deliverable || g.detached)
+  }
+  const singletonIds = goals.filter((g) => isSingleton(g.id)).map((g) => g.id)
+  for (const id of singletonIds) {
+    if (!citPartner.has(id) && !mainish(id)) continue
+    xSlot.set(id, slot)
+    treeInfos.push({ members: [id], start: slot, end: slot, depth: 0 })
+    slot += 1.6
+  }
+  const unlinkedSingles = singletonIds.filter(
+    (id) => !citPartner.has(id) && !mainish(id),
+  )
+
+  // ---- Two-region sky ------------------------------------------------
+  // Region 0: components holding the root, a top-level claim, or an
+  // injected spine. Region 1 (below the horizon): other forward work —
+  // citation-linked components first, ordered under their citers.
+  const isMain = (c: Comp) => c.members.some(mainish)
+  const memberComp = new Map<number, Comp>()
+  for (const c of treeInfos) for (const m of c.members) memberComp.set(m, c)
+  const mains = treeInfos.filter(isMain)
+  // the root's own component leads the sky
+  mains.sort((a, b) => {
+    const ra = a.members.some((id) => byId.get(id)?.origin === 'root') ? 0 : 1
+    const rb = b.members.some((id) => byId.get(id)?.origin === 'root') ? 0 : 1
+    return ra - rb || a.start - b.start
+  })
+  const mainSet = new Set(mains)
+  const rest = treeInfos.filter((c) => !mainSet.has(c))
+  const touchesMain = (c: Comp) =>
+    c.members.some((id) =>
+      (citPartner.get(id) ?? []).some((p) => {
+        const pc = memberComp.get(p)
+        return pc !== undefined && mainSet.has(pc)
+      }),
+    )
+  const linked = rest.filter(touchesMain)
+  const linkedSet = new Set(linked)
+  const unlinkedTrees = rest.filter((c) => !linkedSet.has(c))
+  const meanPartnerSlot = (c: Comp) => {
+    const xs: number[] = []
+    for (const id of c.members)
+      for (const p of citPartner.get(id) ?? []) {
+        const pc = memberComp.get(p)
+        if (pc && mainSet.has(pc)) xs.push(xSlot.get(p) ?? 0)
+      }
+    return xs.length > 0 ? xs.reduce((a, b) => a + b, 0) / xs.length : Infinity
+  }
+  linked.sort((a, b) => meanPartnerSlot(a) - meanPartnerSlot(b) || a.start - b.start)
+
+  // ---- Band packing (the region break forces a new band) -------------
   const maxDepthAll = Math.max(...treeInfos.map((t) => t.depth), 0)
   const targetBand = Math.max(
     16,
@@ -278,25 +381,39 @@ export function layoutConstellation(
   const bandDepth: number[] = []
   let band = 0
   let bandUsed = 0
-  for (const t of treeInfos) {
-    const w = t.end - t.start + 1
-    if (bandUsed > 0 && bandUsed + w > targetBand) {
+  let horizonBand: number | null = null
+  const pack = (list: Comp[]) => {
+    for (const t of list) {
+      const w = t.end - t.start + 1
+      if (bandUsed > 0 && bandUsed + w > targetBand) {
+        band += 1
+        bandUsed = 0
+      }
+      for (const m of t.members) {
+        bandOfNode.set(m, band)
+        localSlot.set(m, xSlot.get(m)! - t.start + bandUsed)
+      }
+      bandDepth[band] = Math.max(bandDepth[band] ?? 0, t.depth)
+      bandUsed += w + 0.6
+    }
+  }
+  pack(mains)
+  if (linked.length > 0 || unlinkedTrees.length > 0) {
+    if (bandUsed > 0) {
       band += 1
       bandUsed = 0
     }
-    for (const m of t.members) {
-      bandOfNode.set(m, band)
-      localSlot.set(m, xSlot.get(m)! - t.start + bandUsed)
-    }
-    bandDepth[band] = Math.max(bandDepth[band] ?? 0, t.depth)
-    bandUsed += w + 0.6
+    horizonBand = band
+    pack(linked)
+    pack(unlinkedTrees)
   }
 
-  // Parentless, childless forward bricks: their own compact block band.
-  const singles = goals.filter((g) => isSingleton(g.id)).map((g) => g.id)
+  // Truly unlinked forward work: a compact grid block, last.
+  const singles = unlinkedSingles
   if (singles.length > 0) {
     const perRow = Math.max(4, Math.ceil(Math.sqrt(singles.length * 2.6)))
-    const sBand = bandUsed > 0 || band > 0 ? band + 1 : band
+    const sBand = bandUsed > 0 ? band + 1 : band
+    if (horizonBand === null) horizonBand = sBand
     singles.forEach((id, i) => {
       bandOfNode.set(id, sBand)
       localSlot.set(id, i % perRow)
@@ -308,11 +425,13 @@ export function layoutConstellation(
     )
   }
 
-  // Vertical base of each band = cumulative depth of the bands above.
+  // Vertical base of each band = cumulative depth of the bands above;
+  // the horizon band gets extra air so the rule reads as a boundary.
   const bandYBase: number[] = []
   {
     let y = 0
     for (let b = 0; b < bandDepth.length; b++) {
+      if (horizonBand !== null && b === horizonBand) y += 0.6
       bandYBase[b] = y
       y += (bandDepth[b] ?? 0) + 1.7
     }
@@ -404,8 +523,13 @@ export function layoutConstellation(
   }
   const bandTops: number[] = []
   for (let b = 1; b < bandDepth.length; b++) {
+    if (b === horizonBand) continue // the horizon rule replaces this hairline
     bandTops.push(PAD + ((bandYBase[b] ?? 0) - 0.85) * Y_GAP)
   }
+  const horizonY =
+    horizonBand !== null && horizonBand < bandDepth.length
+      ? PAD + ((bandYBase[horizonBand] ?? 0) - 0.95) * Y_GAP
+      : null
   const singlesBlock =
     singles.length > 0
       ? {
@@ -415,5 +539,14 @@ export function layoutConstellation(
         }
       : null
 
-  return { nodes, edges: plainEdges, bundles, width, height, bandTops, singlesBlock }
+  return {
+    nodes,
+    edges: plainEdges,
+    bundles,
+    width,
+    height,
+    bandTops,
+    horizonY,
+    singlesBlock,
+  }
 }
