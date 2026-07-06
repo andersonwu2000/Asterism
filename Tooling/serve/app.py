@@ -194,30 +194,35 @@ def create_app(workspace: Path) -> FastAPI:
         pending (manual edits are locked then — the two writes would
         race on the same file)."""
         from ..state import manifest as _mfst
+        from ..state import settings as _settings
         path = db.problem_dir(workspace, problem) / "Manifest.md"
         if not path.exists():
             raise HTTPException(status_code=404, detail="no Manifest.md")
-        fm, body = _mfst.split_raw(path.read_text(encoding="utf-8"))
+        _, body = _mfst.split_raw(path.read_text(encoding="utf-8"))
+        # Dual-read (frontmatter dissolve): file parse gives the legacy
+        # fallback (frontmatter + `## Lemma hints` body section), DB
+        # rows win where present. Read-only — GET never migrates.
+        mfst = _mfst.parse(path)
+        merged = {
+            "axioms_whitelist": list(mfst.axioms_whitelist),
+            "forbidden_lemmas": list(mfst.forbidden_lemmas),
+            "lemma_hints": list(mfst.lemma_hints),
+            "library": bool(mfst.library),
+        }
         pending = False
         if (workspace / "asterism.db").exists():
             with _ro(workspace) as conn:
+                merged.update(_settings.read(conn, problem))
                 row = conn.execute(
                     "SELECT 1 FROM strategist_decisions WHERE problem = ?"
                     "   AND decision_kind = 'RequestUserAmend'"
                     "   AND outcome = 'awaiting_human' LIMIT 1",
                     (problem,)).fetchone()
                 pending = row is not None
-        def _as_list(v: object) -> list:
-            return v if isinstance(v, list) else []
         return {
             "problem": problem,
             "body": body,
-            "settings": {
-                "axioms_whitelist": _as_list(fm.get("axioms_whitelist")),
-                "forbidden_lemmas": _as_list(fm.get("forbidden_lemmas")),
-                "lemma_hints": _as_list(fm.get("lemma_hints")),
-                "library": str(fm.get("library", "false")).lower() == "true",
-            },
+            "settings": merged,
             "pending_amend": pending,
         }
 
@@ -236,11 +241,35 @@ def create_app(workspace: Path) -> FastAPI:
                     status_code=409,
                     detail="a strategist amend is pending on this Manifest"
                            " — resolve it in the Inbox first")
-        rc, msg = _mfst.update_manifest(
-            workspace, problem, body=body.body, settings=body.settings)
-        if rc != 0:
-            raise HTTPException(status_code=422, detail=msg)
-        return {"problem": problem, "message": msg}
+        # Body (human prose) still lives in Manifest.md; settings go to
+        # the DB chokepoint (frontmatter dissolve) — the yaml lines stop
+        # changing and stay as legacy fallback for unmigrated problems.
+        if body.body is not None:
+            rc, msg = _mfst.update_manifest(
+                workspace, problem, body=body.body, settings=None)
+            if rc != 0:
+                raise HTTPException(status_code=422, detail=msg)
+        if body.settings:
+            from ..state import settings as _settings
+            conn = db.connect(workspace / "asterism.db")
+            try:
+                known = conn.execute(
+                    "SELECT 1 FROM problems WHERE name = ?",
+                    (problem,)).fetchone()
+                if known is None:
+                    raise HTTPException(status_code=404,
+                                        detail=f"unknown problem {problem!r}")
+                for key, value in body.settings.items():
+                    try:
+                        _settings.write(conn, problem, key, value)
+                    except ValueError as e:
+                        raise HTTPException(status_code=422,
+                                            detail=str(e)) from e
+            finally:
+                conn.close()
+        return {"problem": problem,
+                "message": "OK: saved — the engine picks changes up on"
+                           " its next tick"}
 
     @app.get("/api/problems/{problem}/review")
     def review(problem: str) -> dict:

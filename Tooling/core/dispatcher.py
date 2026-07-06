@@ -1473,8 +1473,23 @@ def run(workspace: Path, *, once: bool = False,
     # parse, so user edits mid-run were invisible until restart. Cache
     # quacks like dict[str, Manifest] for downstream callers.
     manifests = manifest.ManifestCache(workspace)
-    for row in conn.execute("SELECT name, manifest_path FROM problems"):
-        manifests.load(row["name"], row["manifest_path"])
+    from ..state import settings as _settings
+    _prob_rows = conn.execute(
+        "SELECT name, manifest_path FROM problems").fetchall()
+    for row in _prob_rows:
+        mfst = manifests.load(row["name"], row["manifest_path"])
+        if mfst is None:
+            continue
+        # Lazy settings migration (frontmatter dissolve): copy the
+        # file's machine settings into problem_settings for keys with
+        # no DB row yet. Idempotent — a UI edit is never clobbered by
+        # a stale file; the daemon is the write side, so one run
+        # migrates every problem it can load.
+        try:
+            _settings.migrate_from_manifest(conn, row["name"], mfst)
+        except Exception as e:  # noqa: BLE001 — never blocks startup
+            print(f"[settings-migrate] {row['name']}: "
+                  f"{type(e).__name__}: {e}", flush=True)
 
     _recover_at_startup(conn, workspace, scope=scope)
 

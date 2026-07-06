@@ -227,7 +227,9 @@ _WATERMARKS = {
     # release_own_leases (graceful-exit sweep) — conscious bump;
     # migrations-out-of-db.py split is the natural cut at the next
     # schema rework (#11).
-    "Tooling/state/db.py": 4400,
+    # 4400→4410 (2026-07-07): problem_settings DDL (frontmatter
+    # dissolve) — table only; accessors live in state/settings.py.
+    "Tooling/state/db.py": 4410,
     "Tooling/quality/librarian/cleanup/__init__.py": 50,
     # 560→640: _all_warnings (Mathlib-PR zero-warning detector, broader than
     # polish's subset) + _collapse_redundant_variable_blocks (scope-safe dup

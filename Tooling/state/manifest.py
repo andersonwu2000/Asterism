@@ -50,6 +50,11 @@ class Manifest:
     # Paper pipeline (docs/internal/paper_pipeline_design.md): shelf id
     # of the source paper (`Papers/<id>/`). Empty = no paper. Drives the
     # Context paper-index section + provenance; never consumed by gates.
+    # DEPRECATED as a frontmatter field (2026-07-07): bindings live in
+    # the problem_papers table (init migrates this pointer, Scholar/UI
+    # bind directly). The slot stays for the legacy dual-read
+    # (`context._paper_ids_for` primary derivation) — coordinate before
+    # removing.
     paper: str = ""
 
     @property
@@ -215,6 +220,30 @@ class ManifestCache:
         # problem -> (manifest_path_str, last_mtime, manifest)
         self._entries: dict[str, tuple[str, float, Manifest]] = {}
 
+    def _overlay_db(self, problem: str, mfst: Manifest) -> Manifest:
+        """Dual-read (frontmatter dissolve): stamp `problem_settings`
+        rows over the freshly-parsed file — state/settings.py owns the
+        semantics (present key wins, absent key = file value stands).
+        This is the single point where every runtime consumer (gates
+        via effective_axioms, prompt assembly, harvest opt-in) gets DB
+        values without changing a call site. No DB / no table / any
+        read error → the file values stand; a read must never take
+        the daemon down or weaken a gate."""
+        try:
+            from . import db as _db
+            from . import settings as _settings
+            path = self._workspace / "asterism.db"
+            if not path.exists():
+                return mfst
+            conn = _db.connect_readonly(path)
+            try:
+                _settings.overlay(mfst, _settings.read(conn, problem))
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 — fallback is the file itself
+            pass
+        return mfst
+
     def load(self, problem: str, manifest_path: str) -> Manifest | None:
         """Initial parse. Caller (dispatcher.run startup loop +
         post-init registration paths) supplies the manifest_path
@@ -241,6 +270,7 @@ class ManifestCache:
             print(f"[manifest-load] {problem} skipped (parse failed): "
                   f"{type(e).__name__}: {e}", flush=True)
             return None
+        mfst = self._overlay_db(problem, mfst)
         self._entries[problem] = (manifest_path, mtime, mfst)
         return mfst
 
@@ -252,7 +282,11 @@ class ManifestCache:
         full = self._workspace / manifest_path
         cur_mtime = _stat_mtime(full)
         if cur_mtime == last_mtime:
-            return mfst
+            # settings edits arrive via the DB with NO file-mtime
+            # signal — re-overlay so a UI change hot-reloads exactly
+            # like a body edit does (one read-only connect per access;
+            # spawn-cadence, not hot-loop)
+            return self._overlay_db(problem, mfst)
         try:
             new_mfst = parse(full)
         except Exception as e:
@@ -262,6 +296,7 @@ class ManifestCache:
             # Advance mtime so we don't retry-fail every spawn.
             self._entries[problem] = (manifest_path, cur_mtime, mfst)
             return mfst
+        new_mfst = self._overlay_db(problem, new_mfst)
         self._entries[problem] = (manifest_path, cur_mtime, new_mfst)
         print(f"[manifest-reload] {problem} (mtime changed)", flush=True)
         return new_mfst

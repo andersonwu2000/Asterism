@@ -52,9 +52,13 @@ def _git_head(workspace: Path) -> str:
 
 def record_terminal(workspace: Path, *, problem: str, terminal: str,
                     deliverables: int = 0, harvest_files: int = 0,
-                    note: str = "") -> None:
+                    note: str = "",
+                    settings: "dict | None" = None) -> None:
     """Append one milestone line. Best-effort by contract — any failure
-    prints loudly and returns (the milestone itself already committed)."""
+    prints loudly and returns (the milestone itself already committed).
+    `settings` (frontmatter dissolve): the EFFECTIVE machine settings
+    at the milestone — the git-auditable record of the axiom whitelist
+    now that the yaml lines no longer change."""
     try:
         from ..quality.lean_contracts import toolchain_fingerprint
         from .db import now
@@ -70,6 +74,8 @@ def record_terminal(workspace: Path, *, problem: str, terminal: str,
         }
         if note:
             entry["note"] = note
+        if settings:
+            entry["settings"] = settings
         path = workspace / MANIFEST_REL
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:

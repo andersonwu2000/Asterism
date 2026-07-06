@@ -411,6 +411,19 @@ CREATE TABLE IF NOT EXISTS problem_papers (
     PRIMARY KEY (problem, paper_id)
 );
 
+-- Per-problem machine settings (frontmatter dissolve, 2026-07-07):
+-- value is JSON. ALL access via state/settings.py (chokepoint owns
+-- dual-read: DB key wins, absent key falls back to the Manifest;
+-- effective_axioms semantics untouched). No version bump needed
+-- (problem_papers precedent).
+CREATE TABLE IF NOT EXISTS problem_settings (
+    problem    TEXT NOT NULL REFERENCES problems(name),
+    key        TEXT NOT NULL,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (problem, key)
+);
+
 -- Phase 2 — Strategist decision audit log + awaiting_human gate.
 -- One row per Strategist commit. `payload` JSON stores non-text-content
 -- structured params (pipeline name for Inject, scope/body for

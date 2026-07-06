@@ -1002,6 +1002,11 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
     mfst_path = db.problem_dir(workspace, problem) / "Manifest.md"
     try:
         mfst = _manifest.parse(mfst_path)
+        # Dual-read (frontmatter dissolve): this direct parse bypasses
+        # the ManifestCache overlay — stamp DB settings here too, or a
+        # UI library-toggle would be invisible to the harvest decision.
+        from ..state import settings as _settings
+        _settings.overlay(mfst, _settings.read(conn, problem))
     except Exception as e:
         harvest = False
         harvest_skip_msg = (f"[strategist] Ingest({problem}): Manifest "
@@ -1026,9 +1031,25 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
     # Regression manifest (task #8): the milestone auto-records itself —
     # tracked JSONL, best-effort, never blocks the Ingest.
     from ..state import regress as _regress
+    # Auditability (frontmatter dissolve): the effective machine
+    # settings ride the milestone line — the axiom-whitelist history
+    # stays reconstructible from git even though the yaml stopped
+    # changing. Best-effort like the rest of the record.
+    settings_snapshot = None
+    try:
+        settings_snapshot = {
+            "axioms_whitelist": _manifest.effective_axioms(
+                mfst, problem=problem),
+            "forbidden_lemmas": list(mfst.forbidden_lemmas),
+            "lemma_hints": list(mfst.lemma_hints),
+            "library": bool(mfst.library),
+        }
+    except Exception:  # noqa: BLE001 — unreadable Manifest path above
+        pass
     _regress.record_terminal(
         workspace, problem=problem, terminal="ingested",
-        deliverables=len(db.deliverables(conn, problem)))
+        deliverables=len(db.deliverables(conn, problem)),
+        settings=settings_snapshot)
     # Review snapshot (frontend charter §5-4): compute the anchor+claim
     # closure NOW, while the gateway is warm from the proving run — the
     # sign-off surfaces (CLI default, serve API) then read the stored

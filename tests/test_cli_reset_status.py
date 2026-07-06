@@ -134,6 +134,38 @@ def test_reset_clears_db_rows_for_problem(
     ).fetchone()[0] == 0
 
 
+def test_reset_clears_problem_settings_and_paper_bindings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Problem-keyed satellite tables (problem_settings, problem_papers)
+    REFERENCE problems(name): reset must clear them or the problems
+    DELETE dies on the FK — problem_papers carried this latent gap
+    since v23 (reset tests never bound a paper)."""
+    from Tooling.state import settings as _settings
+    _setup_problem(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    _seed_via_init(tmp_path)
+    conn = db.connect()
+    _settings.write(conn, "wilson", "library", True)
+    db.bind_paper(conn, problem="wilson", paper_id="abc123",
+                  origin="user")
+    conn.commit()
+    conn.close()
+
+    rc = cmd_reset(argparse.Namespace(problem="wilson"))
+    assert rc == 0
+    conn = db.connect()
+    assert conn.execute(
+        "SELECT count(*) FROM problem_settings WHERE problem='wilson'"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT count(*) FROM problem_papers WHERE problem='wilson'"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT count(*) FROM problems WHERE name='wilson'"
+    ).fetchone()[0] == 0
+
+
 def test_reset_sweeps_drafts_and_presearch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

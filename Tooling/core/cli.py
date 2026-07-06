@@ -329,6 +329,12 @@ def init_problem(workspace: Path, problem: str, *,
     if getattr(mfst, "paper", ""):
         db.bind_paper(conn, problem=problem, paper_id=mfst.paper,
                       origin="manifest")
+    # Frontmatter dissolve: seed problem_settings from the authored
+    # Manifest (idempotent — keys already in the DB are never
+    # clobbered; from here on the DB is the settings SoT and the
+    # frontmatter lines are legacy fallback).
+    from ..state import settings as _settings
+    _settings.migrate_from_manifest(conn, problem, mfst)
     # Initial TREE.md so readers see structure right after init.
     tree.write(conn, workspace, problem)
     # Initial BRIEF.md — framework-rendered cross-spawn stable context
@@ -786,6 +792,13 @@ def cmd_reset(args: argparse.Namespace) -> int:
     conn.execute(
         "DELETE FROM strategist_decisions WHERE problem = ?", (problem,),
     )
+    # Problem-keyed satellite tables (both REFERENCE problems(name), so
+    # they must go before the problems row or the FK blocks the reset —
+    # problem_papers had the same latent gap since v23):
+    conn.execute("DELETE FROM problem_settings WHERE problem = ?",
+                 (problem,))
+    conn.execute("DELETE FROM problem_papers WHERE problem = ?",
+                 (problem,))
     conn.execute("DELETE FROM problems WHERE name = ?", (problem,))
     conn.commit()
 
