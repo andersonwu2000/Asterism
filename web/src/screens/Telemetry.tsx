@@ -78,6 +78,8 @@ function DaemonPanel() {
             ? `pid ${d.pid} — draining ${d.in_flight_leases} in-flight lease${d.in_flight_leases === 1 ? '' : 's'}; if this hangs on a stale lease, Force stop is safe`
             : d?.running
               ? `working on ${d.scope ?? 'all problems'}${
+                  d.gateway === 'warming' ? ' · warming the Lean toolchain' : ''
+                }${
                   d.started_at ? ` · for ${runElapsed(d.started_at)}` : ''
                 } · pid ${d.pid}${d.in_flight_leases > 0 ? ` · ${d.in_flight_leases} in flight` : ''}`
               : lastExitLine(d?.last_exit ?? null)}

@@ -224,6 +224,26 @@ def test_board_proving_requires_live_daemon_on_scope(
     assert other["engine_working"] is False
 
 
+def test_board_fresh_scoped_problem_reads_proving(
+        workspace: Path, monkeypatch) -> None:
+    """A freshly-Run problem has zero goals for minutes (Lean warm-up +
+    bootstrap) — with a live daemon scoped to it, it must read proving,
+    not idle (Test.Test3: the user pressed Run and the board showed
+    nothing at all)."""
+    conn = _open_db(workspace)
+    _add_problem(conn, "fresh")
+    conn.close()
+    c = _client(workspace)
+    rows = {p["name"]: p for p in
+            c.get("/api/problems").json()["problems"]}
+    assert rows["fresh"]["status"] == "idle"
+    _fake_daemon(monkeypatch, scope="fresh")
+    rows2 = {p["name"]: p for p in
+             c.get("/api/problems").json()["problems"]}
+    assert rows2["fresh"]["status"] == "proving"
+    assert c.get("/api/problems/fresh").json()["status"] == "proving"
+
+
 def test_board_in_flight_counts_only_live_daemon_leases(
         workspace: Path, monkeypatch) -> None:
     """A lease owned by a dead pid must not render as a running agent

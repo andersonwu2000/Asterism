@@ -2387,6 +2387,34 @@ def main() -> None:
           f"workers={w_count}",
           file=sys.stderr, flush=True)
 
+    # Claim the port BEFORE warming, and hold the socket for uvicorn.
+    # A collision must fail in seconds — the 2026-07-07 Test.Test3 run
+    # warmed 7 minutes and then died on bind (Errno 10048) because an
+    # earlier gateway held the port. bind-only (no listen): probes get
+    # instant refusals during warm; asyncio listens when serving starts.
+    import socket as _socket
+    try:
+        http_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        http_sock.bind(("127.0.0.1", port))
+    except OSError as e:
+        print(f"[gateway] FATAL: port {port} is already taken ({e}) — "
+              f"another gateway is running or warming; refusing to race it",
+              file=sys.stderr, flush=True)
+        sys.exit(4)
+
+    # Presence signal for the warm window (HTTP opens only after the
+    # pool warms, so /health can't see us yet): daemon-side
+    # `start_gateway` waits on this marker instead of spawning a rival.
+    from .lifecycle import gateway_starting_marker
+    _marker = gateway_starting_marker(workspace)
+    try:
+        _marker.parent.mkdir(parents=True, exist_ok=True)
+        _marker.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        pass
+    import atexit as _atexit
+    _atexit.register(lambda: _marker.unlink(missing_ok=True))
+
     threading.Thread(target=_start_workers, args=(workspace, w_count),
                      daemon=True).start()
     # Stale-claim sweep: reclaims gateway slots whose /release was
@@ -2405,6 +2433,8 @@ def main() -> None:
 
     print(f"[gateway] worker pool warm, opening HTTP",
           file=sys.stderr, flush=True)
+    # HTTP is about to open: /health takes over as the presence signal.
+    _marker.unlink(missing_ok=True)
 
     app = mcp.streamable_http_app()
     app = SessionHeaderMiddleware(app)
@@ -2423,6 +2453,8 @@ def main() -> None:
     # the policy. `Server.serve()` is an async coroutine — we run it
     # on our pre-built loop directly. This is the only way to keep
     # SelectorEventLoop active across uvicorn's startup.
+    # Serve on the socket bound at startup (asyncio listens on it) —
+    # the port was ours for the whole warm, so no bind can fail here.
     try:
         if sys.platform == "win32":
             import asyncio as _asyncio
@@ -2432,13 +2464,14 @@ def main() -> None:
                                      log_level="warning", loop="none")
             server = uvicorn.Server(config)
             try:
-                loop.run_until_complete(server.serve())
+                loop.run_until_complete(server.serve(sockets=[http_sock]))
             finally:
                 loop.close()
         else:
-            # Non-Windows: stock uvicorn.run is fine; no IOCP race.
-            uvicorn.run(app, host="127.0.0.1", port=port,
-                        log_level="warning")
+            # Non-Windows: manual Server so the pre-bound socket is used.
+            config = uvicorn.Config(app, host="127.0.0.1", port=port,
+                                    log_level="warning")
+            uvicorn.Server(config).run(sockets=[http_sock])
     finally:
         # Reap the Lean backend subtree on gateway exit (SIGTERM from the
         # daemon's atexit, or any shutdown). Without this, `lake serve`'s

@@ -81,6 +81,71 @@ def _ping_health(timeout: float = 2.0) -> dict | None:
         return None
 
 
+def gateway_starting_marker(workspace: Path) -> Path:
+    """A warming gateway is invisible to `_ping_health` (HTTP opens only
+    after the worker pool warms, minutes later) — this marker is its
+    presence signal. The gateway writes it (pid) at process start and
+    removes it when HTTP opens or it dies; `start_gateway` waits on it
+    instead of spawning a rival that loses the port-bind race after
+    warming for seven minutes (Test.Test3 run, 2026-07-07)."""
+    return workspace / ".asterism" / "gateway-starting.txt"
+
+
+def gateway_phase(workspace: Path) -> str | None:
+    """Coarse gateway phase for status surfaces: 'ready' (health OK),
+    'warming' (starting marker names a live pid), else None. Cheap —
+    one short-timeout local probe + a stat."""
+    h = _ping_health(timeout=0.5)
+    if h is not None and h.get("backend_ready"):
+        return "ready"
+    marker = gateway_starting_marker(workspace)
+    try:
+        pid = int(marker.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    try:
+        import psutil
+        return "warming" if psutil.pid_exists(pid) else None
+    except Exception:  # noqa: BLE001 — status must not crash
+        return "warming"
+
+
+def _wait_for_starting_gateway(workspace: Path,
+                               budget: float) -> dict | None:
+    """If a gateway is mid-warm (starting marker + live pid), wait for
+    its HTTP to open and return its /health dict — reuse/skew checks
+    then apply to it like any pre-existing gateway. Returns None when
+    no one is warming (or the warmer died): caller spawns fresh."""
+    marker = gateway_starting_marker(workspace)
+    deadline = time.monotonic() + budget
+    announced = False
+    while time.monotonic() < deadline:
+        try:
+            pid = int(marker.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return _ping_health(timeout=1.0)   # marker gone: warm or dead
+        try:
+            import psutil
+            if not psutil.pid_exists(pid):
+                # died mid-warm without cleanup — stale marker
+                marker.unlink(missing_ok=True)
+                return None
+        except ImportError:
+            pass
+        if not announced:
+            print(f"[gateway] another gateway (pid {pid}) is warming on "
+                  f"port {_gateway_port()} — waiting for it instead of "
+                  f"racing it", flush=True)
+            announced = True
+        h = _ping_health(timeout=1.0)
+        if h is not None:
+            return h
+        time.sleep(2.0)
+    raise RuntimeError(
+        f"gateway pid from {marker} still warming after {budget:.0f}s — "
+        f"kill it (or remove the marker) and retry")
+
+
 def _desired_pool(workspace: Path) -> int | None:
     """The worker count a fresh gateway would launch with — i.e. the
     current `dispatch.pool` (gateway.py sizes its pool from this). Returns
@@ -155,6 +220,12 @@ def start_gateway(workspace: Path,
     # count must track the yaml, so on a mismatch we kill the stale
     # gateway and relaunch with the right size.
     pre = _ping_health(timeout=1.0)
+    if pre is None:
+        # Nothing listening — but someone may be mid-warm (HTTP opens
+        # only after the pool warms). Wait for them rather than spawn a
+        # rival: two gateways racing one port means the loser discovers
+        # the collision only AFTER its own multi-minute warm.
+        pre = _wait_for_starting_gateway(workspace, budget=ready_timeout)
     if pre is not None:
         if pre.get("backend_ready"):
             want = _desired_pool(workspace)

@@ -47,7 +47,13 @@ export default function RunControl({ problem }: { problem: string }) {
         <>
           <span className="flex items-center gap-1.5 text-[11px] text-accent">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
-            engine running{d.stopping ? ' — stopping' : ''}
+            {/* the first minutes of a cold run are Lean warm-up — name
+                the phase or it reads as dead air */}
+            {d.stopping
+              ? 'engine running — stopping'
+              : d.gateway === 'warming'
+                ? 'warming the Lean toolchain — a few minutes on a cold start'
+                : 'engine running'}
           </span>
           <button
             className="rounded-md border border-edge px-3 py-1.5 text-xs text-ink-dim transition-colors hover:border-edge-strong hover:text-ink disabled:pointer-events-none disabled:opacity-45"
@@ -65,14 +71,30 @@ export default function RunControl({ problem }: { problem: string }) {
           </Link>
         </span>
       ) : (
-        <button
-          className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-starlight disabled:pointer-events-none disabled:opacity-45"
-          disabled={busy}
-          title="run the engine on this problem only"
-          onClick={() => void act('/api/daemon/start', { scope: problem }, 'start')}
-        >
-          {busy ? 'Starting…' : 'Run'}
-        </button>
+        <>
+          {/* the last run on THIS problem crashed — say so where the
+              user will retry, in words they can act on */}
+          {err === null &&
+            d.last_exit !== null &&
+            d.last_exit.rc !== null &&
+            d.last_exit.rc !== 0 &&
+            d.last_exit.scope === problem && (
+              <span className="max-w-96 text-[11px] leading-snug text-danger">
+                the last run crashed
+                {d.last_exit.error?.includes('gateway')
+                  ? ' while starting the Lean toolchain — Run again usually clears it; if it repeats, see the developer log on the Engine page'
+                  : ` (${d.last_exit.error ?? 'unknown error'}) — see the developer log on the Engine page`}
+              </span>
+            )}
+          <button
+            className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-starlight disabled:pointer-events-none disabled:opacity-45"
+            disabled={busy}
+            title="run the engine on this problem only"
+            onClick={() => void act('/api/daemon/start', { scope: problem }, 'start')}
+          >
+            {busy ? 'Starting…' : 'Run'}
+          </button>
+        </>
       )}
     </span>
   )

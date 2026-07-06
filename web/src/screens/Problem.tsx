@@ -144,9 +144,11 @@ function GoalsList({
 function RunStrip({
   workers,
   startedAt,
+  gateway,
 }: {
   workers: ProblemDetail['workers']
   startedAt: string | null
+  gateway: DaemonStatus['gateway']
 }) {
   const [, tick] = useState(0)
   useEffect(() => {
@@ -175,6 +177,11 @@ function RunStrip({
             <span className="font-mono text-[11px] text-ink-dim">{w.slug}</span>
           </span>
         ))
+      ) : gateway === 'warming' ? (
+        <span className="text-ink-faint">
+          warming the Lean toolchain — proving starts once it's hot (a few minutes on a cold
+          start)
+        </span>
       ) : (
         <span className="text-ink-faint">between batches — planning the next moves</span>
       )}
@@ -252,7 +259,11 @@ export default function Problem({ name }: { name: string }) {
           </div>
         </div>
         {data.engine_working && (
-          <RunStrip workers={data.workers} startedAt={daemon?.started_at ?? null} />
+          <RunStrip
+            workers={data.workers}
+            startedAt={daemon?.started_at ?? null}
+            gateway={daemon?.gateway ?? null}
+          />
         )}
         {(() => {
           // health line for live problems: when did the engine last make

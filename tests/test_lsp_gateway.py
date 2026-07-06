@@ -1244,6 +1244,52 @@ def test_sweep_orphan_session_without_matching_slot(
             _state.sessions.pop("orphan-tok", None)
 
 
+# ─── 2026-07-07 warm-race fix: starting marker + wait-not-race ───
+
+def test_wait_for_starting_gateway_reaps_dead_warmer(tmp_path) -> None:
+    """A marker whose pid is dead is residue from a crashed warm — it
+    must be cleaned and the caller told to spawn fresh (None)."""
+    from Tooling.lsp import lifecycle as lc
+    m = lc.gateway_starting_marker(tmp_path)
+    m.parent.mkdir(parents=True, exist_ok=True)
+    m.write_text("999999999", encoding="utf-8")
+    assert lc._wait_for_starting_gateway(tmp_path, budget=5.0) is None
+    assert not m.exists()
+
+
+def test_wait_for_starting_gateway_waits_on_live_warmer(
+        tmp_path, monkeypatch) -> None:
+    """A live pid mid-warm means WAIT (never spawn a rival that loses
+    the port-bind race after its own multi-minute warm); past the
+    budget it fails loudly with the pid on record."""
+    import os as _os
+
+    import pytest as _pytest
+
+    from Tooling.lsp import lifecycle as lc
+    monkeypatch.setattr(lc, "_ping_health", lambda timeout=1.0: None)
+    m = lc.gateway_starting_marker(tmp_path)
+    m.parent.mkdir(parents=True, exist_ok=True)
+    m.write_text(str(_os.getpid()), encoding="utf-8")
+    with _pytest.raises(RuntimeError, match="still warming"):
+        lc._wait_for_starting_gateway(tmp_path, budget=0.1)
+
+
+def test_gateway_phase_reads_marker(tmp_path, monkeypatch) -> None:
+    import os as _os
+
+    from Tooling.lsp import lifecycle as lc
+    monkeypatch.setattr(lc, "_ping_health", lambda timeout=0.5: None)
+    assert lc.gateway_phase(tmp_path) is None
+    m = lc.gateway_starting_marker(tmp_path)
+    m.parent.mkdir(parents=True, exist_ok=True)
+    m.write_text(str(_os.getpid()), encoding="utf-8")
+    assert lc.gateway_phase(tmp_path) == "warming"
+    monkeypatch.setattr(
+        lc, "_ping_health", lambda timeout=0.5: {"backend_ready": True})
+    assert lc.gateway_phase(tmp_path) == "ready"
+
+
 # ─── 2026-06-12 gateway-hang fix: tree-kill + wedge restart ───
 
 def test_client_busy_uris_filters_in_flight() -> None:

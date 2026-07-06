@@ -55,8 +55,8 @@ def _working(conn: sqlite3.Connection, daemon: "dict | None",
     return bool(row and row[0])
 
 
-def _refine_chip(chip: str, *, working: bool, progressed: bool,
-                 queued: int) -> str:
+def _refine_chip(chip: str, *, working: bool, scoped: bool,
+                 progressed: bool, queued: int) -> str:
     """Presentation refinements shared by board() and problem_detail()
     — the two surfaces must agree.
 
@@ -68,6 +68,11 @@ def _refine_chip(chip: str, *, working: bool, progressed: bool,
     flicker red in the gap; a never-launched stalled problem (frozen
     root / zero goals) is idle, not stuck.
     """
+    if chip in ("stalled", "proving") and working and scoped:
+        # A live daemon scoped to THIS problem IS the work signal, even
+        # before the first goal exists — a freshly-Run problem read
+        # "idle" through the whole gateway warm-up (Test.Test3).
+        return "proving"
     if chip == "stalled":
         if queued > 0:
             chip = "proving"
@@ -147,6 +152,7 @@ def board(conn: sqlite3.Connection, *, daemon: "dict | None" = None) -> dict:
                           "pending_strategist_review"))
         chip = _refine_chip(
             chip, working=_working(conn, daemon, name),
+            scoped=bool(daemon and daemon.get("scope")),
             progressed=progressed, queued=queued.get(name, 0))
         rows.append({
             "name": name,
@@ -348,6 +354,7 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
     working = _working(conn, daemon, problem)
     chip = _refine_chip(
         chip, working=working,
+        scoped=bool(daemon and daemon.get("scope")),
         progressed=progressed, queued=int(queued_n))
     # Same config source the dispatcher reads at startup — the serve
     # process isn't the daemon, so read it fresh (heat-ring denominator).

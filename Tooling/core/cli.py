@@ -398,12 +398,14 @@ def cmd_run(args: argparse.Namespace) -> int:
             once=getattr(args, "once", False),
             scope=getattr(args, "scope", None),
         )
-        _write_exit_summary(workspace, rc=rc, error=None)
+        _write_exit_summary(workspace, rc=rc, error=None,
+                            scope=getattr(args, "scope", None))
         return rc
     except Exception as exc:
         _write_exit_summary(
             workspace, rc=2,
-            error=f"{type(exc).__name__}: {exc}"[:400])
+            error=f"{type(exc).__name__}: {exc}"[:400],
+            scope=getattr(args, "scope", None))
         # Log the crash traceback HERE, while `sys.stderr` is still tee'd to
         # the log file and the file is still open. The `finally` below restores
         # `sys.stderr` and closes the log BEFORE an unhandled exception would
@@ -1472,15 +1474,18 @@ def cmd_review(args: argparse.Namespace) -> int:
 
 
 def _write_exit_summary(workspace: Path, *, rc: "int | None",
-                        error: "str | None") -> None:
+                        error: "str | None",
+                        scope: "str | None" = None) -> None:
     """Record how the last run ended (read by `daemon_status` when
     idle) — a crashed run must not be indistinguishable from a finished
-    one (both used to read 'Idle')."""
+    one (both used to read 'Idle'). `scope` pins the ending to the
+    problem it happened on, so its cockpit can surface the crash."""
     try:
         p = workspace / LOG_DIR / "daemon-exit.txt"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(
-            {"at": db.now(), "rc": rc, "error": error}), encoding="utf-8")
+            {"at": db.now(), "rc": rc, "error": error, "scope": scope}),
+            encoding="utf-8")
     except OSError:
         pass
 
@@ -1566,11 +1571,23 @@ def daemon_status(workspace: Path) -> dict:
         "stopping": pid is not None
         and _disp.stop_file_path(workspace).exists(),
         "in_flight_leases": _daemon_in_flight(workspace),
-        # how the LAST run ended ({at, rc, error}) — only meaningful
-        # while idle; lets the UI tell "finished" from "crashed"
+        # gateway phase ('warming'/'ready'/None): the first minutes of
+        # a cold run are Lean warm-up — without this the user stares
+        # at dead air (Test.Test3 run, 2026-07-07)
+        "gateway": _gateway_phase_safe(workspace),
+        # how the LAST run ended ({at, rc, error, scope}) — only
+        # meaningful while idle; tells "finished" from "crashed"
         "last_exit": None if pid is not None
         else _read_exit_summary(workspace),
     }
+
+
+def _gateway_phase_safe(workspace: Path) -> "str | None":
+    try:
+        from ..lsp.lifecycle import gateway_phase
+        return gateway_phase(workspace)
+    except Exception:  # noqa: BLE001 — status must not crash
+        return None
 
 
 def daemon_start(workspace: Path, *, scope: "str | None" = None,
@@ -1691,8 +1708,14 @@ def daemon_stop(workspace: Path, *, force: bool = False) -> "tuple[int, str]":
                 conn.close()
             except Exception:  # noqa: BLE001 — hygiene must not fail the stop
                 released = 0
+        try:
+            _sc = (workspace / ".asterism" / "logs" /
+                   "daemon-scope.txt").read_text(
+                encoding="utf-8").strip() or None
+        except OSError:
+            _sc = None
         _write_exit_summary(workspace, rc=None,
-                            error="force-stopped by the user")
+                            error="force-stopped by the user", scope=_sc)
         return 0, (f"force-stopped pid {pid}; released {released} of "
                    f"{n} in-flight lease(s)")
     stop_file.write_text(db.now(), encoding="utf-8")

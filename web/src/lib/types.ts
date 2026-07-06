@@ -214,9 +214,17 @@ export interface DaemonStatus {
   /** only ever true while running (a stale stop-file is not a state) */
   stopping: boolean
   in_flight_leases: number
+  /** Lean toolchain phase: 'warming' (cold start, minutes), 'ready',
+   * or null (no gateway) — names the dead-air minutes after Run */
+  gateway: 'warming' | 'ready' | null
   /** how the LAST run ended; null while running or before any run.
    * rc=0 clean finish · rc>0 crash (error says why) · rc=null forced */
-  last_exit: { at: string; rc: number | null; error: string | null } | null
+  last_exit: {
+    at: string
+    rc: number | null
+    error: string | null
+    scope: string | null
+  } | null
 }
 
 export interface ManifestData {
