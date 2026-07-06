@@ -61,23 +61,33 @@ export function usePoll<T>(path: string | null, intervalMs = 2000): PollState<T>
   const [error, setError] = useState<ApiError | Error | null>(null)
   const [loading, setLoading] = useState(true)
   const [tick, setTick] = useState(0)
-  const alive = useRef(true)
+  const lastPath = useRef(path)
 
   useEffect(() => {
-    alive.current = true
     if (path === null) return
+    // Navigating to a different resource must not show the previous one's
+    // data while the first response is in flight (refreshes of the same
+    // path keep old data so the UI doesn't flicker).
+    if (lastPath.current !== path) {
+      lastPath.current = path
+      setData(null)
+      setError(null)
+    }
+    // Cancellation is per effect run — a shared ref would be resurrected
+    // by the next run, leaving the old poll loop alive and racing.
+    let cancelled = false
     let timer: ReturnType<typeof setTimeout> | undefined
     const run = async () => {
       try {
         const d = await apiGet<T>(path)
-        if (!alive.current) return
+        if (cancelled) return
         setData(d)
         setError(null)
       } catch (e) {
-        if (!alive.current) return
+        if (cancelled) return
         setError(e as Error)
       } finally {
-        if (alive.current) {
+        if (!cancelled) {
           setLoading(false)
           timer = setTimeout(run, intervalMs)
         }
@@ -86,7 +96,7 @@ export function usePoll<T>(path: string | null, intervalMs = 2000): PollState<T>
     setLoading(true)
     void run()
     return () => {
-      alive.current = false
+      cancelled = true
       if (timer !== undefined) clearTimeout(timer)
     }
   }, [path, intervalMs, tick])

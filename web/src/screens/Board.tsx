@@ -6,61 +6,91 @@ import { EmptyState, ErrorState, StatusBadge } from '../components/ui'
 import GalaxyCard from '../components/GalaxyCard'
 import type { BoardProblem, BoardResponse } from '../lib/types'
 
+/*
+ * Board = the observatory's survey sheet. The eye should land on, in
+ * order: what needs the human, what the engine is doing right now,
+ * what settled recently — and only then the archive, which folds into
+ * namespace clusters so 250 finished benchmarks read as one quiet row
+ * instead of 250 identical pills.
+ */
+
 function GoalCounts({ p }: { p: BoardProblem }) {
-  // Zero-progress rows render as quiet dashes — nine "0 open 0 proved"
-  // rows in a row is pure noise (design review). Numbers are UI, not
-  // code: sans + tabular numerals, aligned sub-columns.
   if (p.goals.total === 0 || (p.goals.open === 0 && p.goals.proved === 0))
     return <span className="text-xs text-ink-faint">—</span>
   return (
     <span className="tnum flex items-center text-xs">
       <span className={`w-14 ${p.goals.open > 0 ? 'text-accent' : 'text-ink-faint'}`}>
-        {p.goals.open} open
+        {p.goals.open > 0 ? `${p.goals.open} open` : ''}
       </span>
       <span className={`w-18 ${p.goals.proved > 0 ? 'text-ink-dim' : 'text-ink-faint'}`}>
         {p.goals.proved} proved
       </span>
-      {p.goals.shelved > 0 && <span className="text-ink-faint">{p.goals.shelved} shelved</span>}
+      {p.goals.shelved > 0 && (
+        <span className="whitespace-nowrap text-ink-faint">{p.goals.shelved} shelved</span>
+      )}
     </span>
   )
 }
 
-/** Progress: proved fill on a visible track, with the open fraction as
- * a second (accent) segment — complete vs in-progress reads at a
- * glance instead of two identical full bars. */
-function Progress({ p }: { p: BoardProblem }) {
-  if (p.goals.total === 0 || (p.goals.proved === 0 && p.goals.open === 0)) return null
-  const proved = (p.goals.proved / p.goals.total) * 100
-  const open = (p.goals.open / p.goals.total) * 100
+function ProgressBar({
+  proved,
+  open,
+  total,
+  width = 'w-24',
+}: {
+  proved: number
+  open: number
+  total: number
+  width?: string
+}) {
+  if (total === 0 || (proved === 0 && open === 0)) return null
   return (
-    <div className="flex h-[3px] w-24 overflow-hidden rounded-full bg-surface-3">
+    <div className={`flex h-1 ${width} overflow-hidden rounded-full bg-surface-3`}>
       <div
         className="h-full bg-starlight/80 transition-[width] duration-700"
-        style={{ width: `${proved}%` }}
+        style={{ width: `${(proved / total) * 100}%` }}
       />
       <div
         className="h-full bg-accent/50 transition-[width] duration-700"
-        style={{ width: `${open}%` }}
+        style={{ width: `${(open / total) * 100}%` }}
       />
     </div>
   )
 }
 
-function Row({ p }: { p: BoardProblem }) {
+/** Quiet text status for settled rows — the pill treatment is reserved
+ * for states that ask something of the reader. */
+const SETTLED_LABEL: Record<string, string> = {
+  ingested: 'ingested',
+  bridged: 'bridged ◆',
+  idle: 'not started',
+}
+
+function Row({ p, dense }: { p: BoardProblem; dense?: boolean }) {
   const needsAction = p.status === 'awaiting_human' || p.status === 'signoff_pending'
+  const settled = p.status === 'ingested' || p.status === 'bridged' || p.status === 'idle'
   return (
     <tr
-      className="h-9 cursor-pointer border-b border-edge/60 transition-colors duration-150 hover:bg-surface"
+      data-kind="problem"
+      className={`cursor-pointer border-b border-edge/60 transition-colors duration-150 hover:bg-surface ${
+        dense ? 'h-8' : 'h-9'
+      }`}
       onClick={() => navigate(`/problems/${encodeURIComponent(p.name)}`)}
     >
-      <td className="pr-4 pl-3">
-        <span className="font-mono text-[13px] text-ink">{p.name}</span>
+      <td className={dense ? 'pr-4 pl-7' : 'pr-4 pl-3'}>
+        <span className={`font-mono text-[13px] ${dense ? 'text-ink-dim' : 'text-ink'}`}>
+          {p.name}
+        </span>
       </td>
       <td className="pr-4">
         {needsAction ? (
           <Link to="/inbox" onClick={(e) => e.stopPropagation()} title="Open in inbox">
             <StatusBadge status={p.status} />
           </Link>
+        ) : settled ? (
+          <span className={`text-[11px] ${p.status === 'bridged' ? 'text-star/70' : 'text-ink-faint'}`}>
+            {SETTLED_LABEL[p.status]}
+          </span>
         ) : (
           <StatusBadge status={p.status} />
         )}
@@ -69,7 +99,7 @@ function Row({ p }: { p: BoardProblem }) {
         <GoalCounts p={p} />
       </td>
       <td className="pr-4">
-        <Progress p={p} />
+        <ProgressBar proved={p.goals.proved} open={p.goals.open} total={p.goals.total} />
       </td>
       <td className="pr-4 text-xs whitespace-nowrap text-ink-dim">
         {p.in_flight > 0 && (
@@ -86,7 +116,110 @@ function Row({ p }: { p: BoardProblem }) {
   )
 }
 
-/* attention → live → settled → dormant (idle reads last, not mid-list) */
+function SectionRow({ label, count }: { label: string; count?: number }) {
+  return (
+    <tr>
+      <td colSpan={6} className="pt-5 pb-1.5 pl-3">
+        <span className="text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
+          {label}
+        </span>
+        {count !== undefined && (
+          <span className="tnum ml-2 text-[11px] text-ink-faint/70">{count}</span>
+        )}
+      </td>
+    </tr>
+  )
+}
+
+interface Cluster {
+  prefix: string
+  items: BoardProblem[]
+  proved: number
+  total: number
+  open: number
+  bridged: number
+  lastEvent: string | null
+}
+
+function clusterize(items: BoardProblem[]): Cluster[] {
+  const map = new Map<string, BoardProblem[]>()
+  for (const p of items) {
+    const prefix = p.name.includes('.') ? p.name.split('.')[0] : 'ungrouped'
+    const arr = map.get(prefix)
+    if (arr) arr.push(p)
+    else map.set(prefix, [p])
+  }
+  const clusters: Cluster[] = []
+  for (const [prefix, arr] of map) {
+    arr.sort((a, b) => a.name.localeCompare(b.name))
+    clusters.push({
+      prefix,
+      items: arr,
+      proved: arr.reduce((s, p) => s + p.goals.proved, 0),
+      total: arr.reduce((s, p) => s + p.goals.total, 0),
+      open: arr.reduce((s, p) => s + p.goals.open, 0),
+      bridged: arr.filter((p) => p.status === 'bridged').length,
+      lastEvent: arr.reduce<string | null>(
+        (m, p) => (p.last_event && (!m || p.last_event > m) ? p.last_event : m),
+        null,
+      ),
+    })
+  }
+  clusters.sort((a, b) => b.items.length - a.items.length || a.prefix.localeCompare(b.prefix))
+  return clusters
+}
+
+function ClusterRow({
+  c,
+  expanded,
+  onToggle,
+}: {
+  c: Cluster
+  expanded: boolean
+  onToggle: () => void
+}) {
+  return (
+    <tr
+      className="h-9 cursor-pointer border-b border-edge/60 transition-colors duration-150 hover:bg-surface"
+      onClick={onToggle}
+    >
+      <td className="pr-4 pl-3">
+        <span className="flex items-center gap-2">
+          <svg
+            width="9"
+            height="9"
+            viewBox="0 0 10 10"
+            className={`shrink-0 text-ink-faint transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
+            aria-hidden
+          >
+            <path d="M3 1.5L7.5 5 3 8.5" stroke="currentColor" strokeWidth="1.4" fill="none" strokeLinecap="round" />
+          </svg>
+          <span className="font-mono text-[13px] text-ink">{c.prefix}</span>
+          <span className="tnum text-[11px] text-ink-faint">{c.items.length} problems</span>
+        </span>
+      </td>
+      <td className="pr-4">
+        {c.bridged > 0 && (
+          <span className="tnum text-[11px] text-star/70">{c.bridged} bridged ◆</span>
+        )}
+      </td>
+      <td className="pr-4">
+        <span className="tnum text-xs text-ink-faint">
+          {c.proved > 0 && `${c.proved} proved`}
+        </span>
+      </td>
+      <td className="pr-4">
+        <ProgressBar proved={c.proved} open={c.open} total={c.total} />
+      </td>
+      <td className="pr-4" />
+      <td className="tnum pr-3 text-right text-xs whitespace-nowrap text-ink-faint">
+        {relTime(c.lastEvent)}
+      </td>
+    </tr>
+  )
+}
+
+/* attention → live → settled → dormant */
 const STATUS_ORDER = [
   'awaiting_human',
   'signoff_pending',
@@ -104,8 +237,10 @@ const STATUS_FILTER_LABEL: Record<string, string> = {
   proving: 'proving',
   ingested: 'ingested',
   bridged: 'bridged',
-  idle: 'idle',
+  idle: 'not started',
 }
+
+const WEEK_MS = 7 * 86400_000
 
 export default function Board() {
   const { data, error, loading } = usePoll<BoardResponse>('/api/problems')
@@ -118,13 +253,17 @@ export default function Board() {
   }
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const filterRef = useRef<HTMLInputElement>(null)
 
   // "/" focuses the filter from anywhere on the board
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === '/' && !(e.target instanceof HTMLInputElement) &&
-          !(e.target instanceof HTMLTextAreaElement)) {
+      if (
+        e.key === '/' &&
+        !(e.target instanceof HTMLInputElement) &&
+        !(e.target instanceof HTMLTextAreaElement)
+      ) {
         e.preventDefault()
         filterRef.current?.focus()
       }
@@ -135,7 +274,7 @@ export default function Board() {
 
   if (loading)
     return (
-      <div className="mx-auto max-w-5xl px-6 py-10">
+      <div className="mx-auto max-w-6xl px-6 py-10">
         {Array.from({ length: 7 }, (_, i) => (
           <div
             key={i}
@@ -158,6 +297,7 @@ export default function Board() {
   }
 
   const q = query.trim().toLowerCase()
+  const filtering = q !== '' || statusFilter !== null
   const filtered = problems.filter(
     (p) =>
       (q === '' || p.name.toLowerCase().includes(q)) &&
@@ -173,6 +313,30 @@ export default function Board() {
   ).length
   const statusCounts = new Map<string, number>()
   for (const p of problems) statusCounts.set(p.status, (statusCounts.get(p.status) ?? 0) + 1)
+
+  // ---- attention / motion / recent / archive partition (list view) ----
+  const now = Date.now()
+  const isRecent = (p: BoardProblem) =>
+    p.last_event !== null && now - Date.parse(p.last_event) < WEEK_MS
+  const needsYou = sorted.filter(
+    (p) => p.status === 'awaiting_human' || p.status === 'signoff_pending' || p.status === 'stalled',
+  )
+  const inMotion = sorted.filter(
+    (p) => !needsYou.includes(p) && (p.status === 'proving' || p.in_flight > 0 || p.queued > 0),
+  )
+  const hot = new Set([...needsYou, ...inMotion].map((p) => p.name))
+  const recent = sorted.filter((p) => !hot.has(p.name) && isRecent(p))
+  for (const p of recent) hot.add(p.name)
+  const archive = sorted.filter((p) => !hot.has(p.name))
+  const clusters = clusterize(archive)
+
+  const toggleCluster = (prefix: string) =>
+    setExpanded((old) => {
+      const next = new Set(old)
+      if (next.has(prefix)) next.delete(prefix)
+      else next.add(prefix)
+      return next
+    })
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-6">
@@ -236,26 +400,16 @@ export default function Board() {
             </button>
           ))}
         </div>
-        {(q !== '' || statusFilter !== null) && (
-          <span className="text-xs text-ink-faint">{sorted.length} shown</span>
-        )}
+        {filtering && <span className="text-xs text-ink-faint">{sorted.length} shown</span>}
       </div>
       {view === 'galaxy' ? (
         (() => {
-          // Cards only for problems that carry live state (attention /
-          // proving / stalled) or settled within the last week; stale
-          // completed work and never-started stubs collapse into
-          // compact strips — a wall of identical cards drowned the one
-          // problem that needs a human.
-          const weekAgo = Date.now() - 7 * 86400_000
-          const isRecent = (p: BoardProblem) =>
-            p.last_event !== null && Date.parse(p.last_event) > weekAgo
           const live = new Set(['awaiting_human', 'signoff_pending', 'stalled', 'proving'])
-          const cards = sorted.filter((p) => live.has(p.status) || (p.status !== 'idle' && isRecent(p)))
-          const cardSet = new Set(cards.map((p) => p.name))
-          const completed = sorted.filter(
-            (p) => !cardSet.has(p.name) && p.status !== 'idle',
+          const cards = sorted.filter(
+            (p) => live.has(p.status) || (p.status !== 'idle' && isRecent(p)),
           )
+          const cardSet = new Set(cards.map((p) => p.name))
+          const completed = sorted.filter((p) => !cardSet.has(p.name) && p.status !== 'idle')
           const dormant = sorted.filter((p) => p.status === 'idle' && !cardSet.has(p.name))
           const strip = (title: string, items: BoardProblem[]) =>
             items.length > 0 && (
@@ -306,7 +460,7 @@ export default function Board() {
             <tr className="border-b border-edge text-xs text-ink-faint">
               <th className="py-2 pr-4 pl-3 font-medium">problem</th>
               <th className="w-[120px] py-2 pr-4 font-medium">status</th>
-              <th className="w-[150px] py-2 pr-4 font-medium">goals</th>
+              <th className="w-[170px] py-2 pr-4 font-medium">goals</th>
               <th className="w-[130px] py-2 pr-4 font-medium">progress</th>
               <th className="w-[100px] py-2 pr-4 font-medium">activity</th>
               <th className="w-[80px] py-2 pr-3 text-right font-medium whitespace-nowrap">
@@ -314,13 +468,81 @@ export default function Board() {
               </th>
             </tr>
           </thead>
-          <tbody>
-            {sorted.map((p) => (
-              <Row key={p.name} p={p} />
-            ))}
-          </tbody>
+          {filtering ? (
+            /* Filtering flattens the survey — results are what you asked
+               for, not the attention hierarchy. */
+            <tbody>
+              {sorted.map((p) => (
+                <Row key={p.name} p={p} />
+              ))}
+            </tbody>
+          ) : (
+            <tbody>
+              {needsYou.length > 0 && (
+                <>
+                  <SectionRow label="Needs you" count={needsYou.length} />
+                  {needsYou.map((p) => (
+                    <Row key={p.name} p={p} />
+                  ))}
+                </>
+              )}
+              {inMotion.length > 0 && (
+                <>
+                  <SectionRow label="In motion" count={inMotion.length} />
+                  {inMotion.map((p) => (
+                    <Row key={p.name} p={p} />
+                  ))}
+                </>
+              )}
+              {recent.length > 0 && (
+                <>
+                  <SectionRow label="Recent" count={recent.length} />
+                  {recent.map((p) => (
+                    <Row key={p.name} p={p} />
+                  ))}
+                </>
+              )}
+              {clusters.length > 0 && (
+                <>
+                  <SectionRow
+                    label="Archive"
+                    count={archive.length}
+                  />
+                  {clusters.map((c) =>
+                    c.items.length === 1 ? (
+                      <Row key={c.items[0].name} p={c.items[0]} />
+                    ) : (
+                      <PerCluster
+                        key={c.prefix}
+                        c={c}
+                        expanded={expanded.has(c.prefix)}
+                        onToggle={() => toggleCluster(c.prefix)}
+                      />
+                    ),
+                  )}
+                </>
+              )}
+            </tbody>
+          )}
         </table>
       )}
     </div>
+  )
+}
+
+function PerCluster({
+  c,
+  expanded,
+  onToggle,
+}: {
+  c: Cluster
+  expanded: boolean
+  onToggle: () => void
+}) {
+  return (
+    <>
+      <ClusterRow c={c} expanded={expanded} onToggle={onToggle} />
+      {expanded && c.items.map((p) => <Row key={p.name} p={p} dense />)}
+    </>
   )
 }

@@ -83,7 +83,7 @@ export function EmptyState({ title, children }: { title: string; children?: Reac
         <circle cx="10.5" cy="5" r="1.9" fill="currentColor" opacity="0.6" />
         <circle cx="15.5" cy="11.5" r="1.2" fill="currentColor" opacity="0.6" />
       </svg>
-      <div className="text-base text-ink-dim">{title}</div>
+      <div className="font-display text-[19px] text-ink-dim">{title}</div>
       {children && <div className="mt-2 max-w-md text-sm text-ink-faint">{children}</div>}
     </div>
   )

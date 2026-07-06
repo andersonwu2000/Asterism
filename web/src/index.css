@@ -31,6 +31,20 @@
   --font-sans:
     "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  /* Display voice — a serif with star-atlas lineage. Titles, hero
+     numerals and the wordmark speak in it; UI chrome stays sans. */
+  --font-display: "Fraunces Variable", Georgia, serif;
+}
+
+/* Fraunces axes: keep the sharp modern cut (low SOFT, no WONK) so it
+   reads observatory-engraving, not bakery-sign. */
+.font-display {
+  font-family: var(--font-display);
+  font-variation-settings:
+    "SOFT" 0,
+    "WONK" 0,
+    "opsz" 32;
+  letter-spacing: 0.005em;
 }
 
 html,

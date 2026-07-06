@@ -60,7 +60,7 @@ function AmendCard({ a, onDone }: { a: Amend; onDone: () => void }) {
         <span className="text-[11px] text-ink-faint">{relTime(a.created_at)}</span>
       </div>
 
-      <p className="mb-3 max-w-[70ch] text-[15px] leading-relaxed font-medium text-ink">
+      <p className="font-display mb-3 max-w-[62ch] text-[19px] leading-snug font-medium text-ink">
         {headline}
       </p>
 

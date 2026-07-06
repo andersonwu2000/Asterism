@@ -136,8 +136,11 @@ export default function Constellation({
     const { width: cw, height: ch } = el.getBoundingClientRect()
     // Fill the canvas: fit the content bounding box, allowing generous
     // magnification for small graphs (10 stars in a void read as a
-    // failed page load — design review).
-    const k = Math.min((cw - 48) / layout.width, (ch - 48) / layout.height, 2.0)
+    // failed page load — design review). Tiny plates may magnify
+    // further still: four stars at atlas scale is a composition,
+    // at survey scale it's dust.
+    const kMax = layout.nodes.length <= 10 ? 2.6 : 2.0
+    const k = Math.min((cw - 48) / layout.width, (ch - 48) / layout.height, kMax)
     setView({
       k,
       tx: (cw - layout.width * k) / 2,
@@ -255,7 +258,19 @@ export default function Constellation({
               <feMergeNode in="SourceGraphic" />
             </feMerge>
           </filter>
+          {/* atmosphere: two faint nebulae + a vignette, screen-space so
+              they sit behind the sky rather than inside it */}
+          <radialGradient id="nebula-a" cx="30%" cy="24%" r="55%">
+            <stop offset="0%" stopColor="var(--color-accent)" stopOpacity="0.05" />
+            <stop offset="100%" stopColor="var(--color-accent)" stopOpacity="0" />
+          </radialGradient>
+          <radialGradient id="nebula-b" cx="76%" cy="72%" r="50%">
+            <stop offset="0%" stopColor="var(--color-star)" stopOpacity="0.035" />
+            <stop offset="100%" stopColor="var(--color-star)" stopOpacity="0" />
+          </radialGradient>
         </defs>
+        <rect width="100%" height="100%" fill="url(#nebula-a)" />
+        <rect width="100%" height="100%" fill="url(#nebula-b)" />
         <g transform={`translate(${tx},${ty}) scale(${k})`}>
           {dust.map((d, i) => (
             <circle

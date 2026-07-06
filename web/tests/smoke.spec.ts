@@ -17,7 +17,7 @@ test('board renders problems with status chips', async ({ page }) => {
 
 test('board filter narrows the list', async ({ page }) => {
   await page.goto('/')
-  const rows = page.locator('tbody tr')
+  const rows = page.locator('tbody tr[data-kind="problem"]')
   const populated = await rows
     .first()
     .waitFor({ timeout: 5000 })
@@ -36,13 +36,15 @@ test('board filter narrows the list', async ({ page }) => {
 
 test('problem detail: four tabs, constellation svg has stars', async ({ page }) => {
   await page.goto('/')
-  const firstRow = page.locator('tbody tr').first()
+  const firstRow = page.locator('tbody tr[data-kind="problem"]').first()
   const populated = await firstRow
     .waitFor({ timeout: 5000 })
     .then(() => true)
     .catch(() => false)
   test.skip(!populated, 'empty workspace')
-  await firstRow.click()
+  // click the name cell — the row's center can land on the status
+  // badge, which is its own link (needs-input → inbox)
+  await firstRow.locator('td').first().click()
   await expect(page.getByRole('button', { name: 'Constellation' })).toBeVisible()
   for (const tab of ['Goals', 'Timeline', 'Files']) {
     await expect(page.getByRole('button', { name: new RegExp(tab) })).toBeVisible()

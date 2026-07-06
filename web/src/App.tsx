@@ -126,7 +126,7 @@ function Shell() {
             <circle cx="10.5" cy="5" r="2.1" fill="currentColor" />
             <circle cx="15.5" cy="11.5" r="1.4" fill="currentColor" />
           </svg>
-          <span className="text-[15px] font-semibold tracking-wide">Asterism</span>
+          <span className="font-display text-[17px] font-medium">Asterism</span>
         </Link>
         {/* workspace label only when it differs from the product name —
             otherwise "Asterism" would render three times in one column */}

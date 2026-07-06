@@ -143,7 +143,7 @@ function LogTail() {
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border border-edge bg-surface px-4 py-3">
-      <div className="tnum text-xl font-semibold text-ink">{value}</div>
+      <div className="font-display tnum text-[26px] font-medium text-ink">{value}</div>
       <div className="mt-0.5 text-[11px] text-ink-faint">{label}</div>
     </div>
   )
