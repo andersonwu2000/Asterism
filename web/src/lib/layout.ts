@@ -288,6 +288,26 @@ export function layoutConstellation(
       slot += 1
       return
     }
+    // Wide leaf fans wrap into a grid: a claim resting on thirty
+    // anchors must not become a thirty-slot clothesline (sphere's
+    // full-width rows).
+    const leafKs = ks.filter((k) => (treeKids.get(k)?.length ?? 0) === 0)
+    const branchKs = ks.filter((k) => (treeKids.get(k)?.length ?? 0) > 0)
+    if (leafKs.length > 8) {
+      const perRow = Math.ceil(Math.sqrt(leafKs.length * 2.2))
+      const start = slot
+      const base = layer.get(id) ?? 0
+      leafKs.forEach((k, i) => {
+        if (xSlot.has(k)) return
+        members.push(k)
+        xSlot.set(k, start + (i % perRow))
+        layer.set(k, base + 1 + Math.floor(i / perRow))
+      })
+      slot = start + Math.min(leafKs.length, perRow)
+      for (const k of branchKs) assign(k, guard + 1, members)
+      xSlot.set(id, (start + slot - 1) / 2)
+      return
+    }
     for (const k of ks) assign(k, guard + 1, members)
     const first = xSlot.get(ks[0])
     const last = xSlot.get(ks[ks.length - 1])
@@ -323,12 +343,40 @@ export function layoutConstellation(
     return g !== undefined && (g.origin === 'root' || g.is_deliverable || g.detached)
   }
   const singletonIds = goals.filter((g) => isSingleton(g.id)).map((g) => g.id)
-  for (const id of singletonIds) {
-    if (!citPartner.has(id) && !mainish(id)) continue
-    xSlot.set(id, slot)
-    treeInfos.push({ members: [id], start: slot, end: slot, depth: 0 })
-    slot += 1.6
+  // Singleton beds: a run of lone stars in one row reads as a
+  // clothesline — grid them into compact beds instead. Main-ish ones
+  // (detached seeds, bare claims) bed in region 0; citation-linked
+  // ones bed in region 1 ordered under their citers.
+  const gridComp = (ids: number[]) => {
+    if (ids.length === 0) return
+    const perRow = Math.max(3, Math.ceil(Math.sqrt(ids.length * 2.2)))
+    const start = slot
+    ids.forEach((id, i) => {
+      xSlot.set(id, start + (i % perRow))
+      layer.set(id, Math.floor(i / perRow))
+    })
+    slot = start + Math.min(ids.length, perRow)
+    treeInfos.push({
+      members: ids,
+      start,
+      end: slot - 1,
+      depth: Math.floor((ids.length - 1) / perRow),
+    })
+    slot += 0.6
   }
+  const mainSingles = singletonIds.filter(mainish)
+  const linkedSingles = singletonIds.filter(
+    (id) => !mainish(id) && citPartner.has(id),
+  )
+  const partnerMean = (id: number) => {
+    const xs = (citPartner.get(id) ?? [])
+      .map((p) => xSlot.get(p))
+      .filter((v): v is number => v !== undefined)
+    return xs.length > 0 ? xs.reduce((a, b) => a + b, 0) / xs.length : Infinity
+  }
+  linkedSingles.sort((a, b) => partnerMean(a) - partnerMean(b) || a - b)
+  gridComp(mainSingles)
+  gridComp(linkedSingles)
   const unlinkedSingles = singletonIds.filter(
     (id) => !citPartner.has(id) && !mainish(id),
   )

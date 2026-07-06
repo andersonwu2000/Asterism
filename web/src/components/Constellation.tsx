@@ -294,6 +294,10 @@ export default function Constellation({
   const visibleEdges = layout.edges.filter(
     (e) => showDead || e.kind === 'alias' || !isDead(e.strategyStatus),
   )
+  // density-stepped: a handful of citations read at 0.22; a hundred
+  // would wash the sky at that weight
+  const citeCount = visibleEdges.filter((e) => e.kind === 'citation').length
+  const citeOpacity = citeCount > 80 ? 0.08 : citeCount > 30 ? 0.13 : 0.22
   const visibleBundles = layout.bundles.filter((b) => showDead || !isDead(b.status))
   const deadEdgeCount =
     layout.edges.length -
@@ -374,6 +378,32 @@ export default function Constellation({
             const b = byId.get(e.to)
             if (!a || !b) return null
             const dead = isDead(e.strategyStatus)
+            if (e.kind === 'citation') {
+              // Citations bow sideways as quiet threads: parallel long
+              // straights merge into fog on cite-heavy skies (sphere:
+              // 100+ edges); a bow separates neighbours, and opacity
+              // steps down with density so the trees stay in front.
+              const dx = b.x - a.x
+              const dy = b.y - a.y
+              const len = Math.hypot(dx, dy) || 1
+              // bow grows with span (a 46px cap flattened long
+              // horizontals back into wires); parity mixes directions
+              const bow =
+                Math.min(150, len * 0.18) * ((e.from + e.to) % 2 === 0 ? 1 : -1)
+              const mx = (a.x + b.x) / 2 + (-dy / len) * bow
+              const my = (a.y + b.y) / 2 + (dx / len) * bow
+              return (
+                <path
+                  key={i}
+                  d={`M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`}
+                  fill="none"
+                  stroke={edgeStroke(e.strategyStatus, e.kind)}
+                  strokeWidth={1}
+                  strokeOpacity={citeOpacity}
+                  vectorEffect="non-scaling-stroke"
+                />
+              )
+            }
             return (
               <line
                 key={i}
@@ -388,13 +418,11 @@ export default function Constellation({
                     ? 0.35
                     : e.kind === 'alias'
                       ? 0.5
-                      : e.kind === 'citation'
-                        ? 0.2
-                        : e.kind === 'anchor'
-                          ? 0.3
-                          : e.strategyStatus === 'succeeded'
-                            ? 0.38
-                            : 0.55
+                      : e.kind === 'anchor'
+                        ? 0.3
+                        : e.strategyStatus === 'succeeded'
+                          ? 0.38
+                          : 0.55
                 }
                 strokeDasharray={e.kind === 'alias' ? '4 4' : undefined}
                 vectorEffect="non-scaling-stroke"
@@ -696,12 +724,16 @@ export default function Constellation({
                     +{frontier.folded.get(n.goal.id)}
                   </text>
                 )}
-                {showLabels && (
+                {(showLabels ||
+                  n.goal.origin === 'root' ||
+                  n.goal.is_deliverable) && (
                   <text
                     // Stagger label rows by in-layer parity so long
                     // slugs on adjacent stars don't collide; offsets are
                     // screen-constant like the font. Truncation is
                     // width-aware: never truncate into empty space.
+                    // Root + claims stay labelled at ANY zoom — the
+                    // survey view needs its landmarks named.
                     y={
                       r +
                       ((layerCounts.get(n.layer) ?? 0) > 8 && n.col % 2 === 1 ? 26 : 14) / k
