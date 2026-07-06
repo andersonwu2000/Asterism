@@ -164,7 +164,7 @@ export default function Board() {
   for (const p of problems) statusCounts.set(p.status, (statusCounts.get(p.status) ?? 0) + 1)
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-6">
+    <div className="mx-auto max-w-6xl px-6 py-6">
       <div className="mb-3 flex items-center justify-between">
         <div className="tnum text-xs text-ink-dim">
           {problems.length} problems
