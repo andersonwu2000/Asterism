@@ -85,14 +85,25 @@ function Row({ p, dense, stripPrefix }: { p: BoardProblem; dense?: boolean; stri
     >
       <td className={dense ? 'pr-4 pl-7' : 'pr-4 pl-3'}>
         {/* a real link: keyboard reachable (the row onClick is mouse sugar) */}
-        <Link
-          to={`/problems/${encodeURIComponent(p.name)}`}
-          className={`block truncate font-mono text-[13px] ${dense ? 'text-ink-dim' : 'text-ink'}`}
-          title={p.name}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {shown}
-        </Link>
+        <span className="flex min-w-0 items-center gap-2">
+          <Link
+            to={`/problems/${encodeURIComponent(p.name)}`}
+            className={`truncate font-mono text-[13px] ${dense ? 'text-ink-dim' : 'text-ink'}`}
+            title={p.name}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {shown}
+          </Link>
+          {p.in_flight > 0 && (
+            <span
+              className="tnum flex shrink-0 items-center gap-1.5 text-[11px] text-accent"
+              title={`${p.in_flight} agent(s) running now`}
+            >
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+              {p.in_flight}
+            </span>
+          )}
+        </span>
       </td>
       <td className="pr-4">
         {needsAction ? (
@@ -113,14 +124,6 @@ function Row({ p, dense, stripPrefix }: { p: BoardProblem; dense?: boolean; stri
       <td className="pr-4">
         <ProgressBar proved={p.goals.proved} open={p.goals.open} total={p.goals.total} />
       </td>
-      <td className="pr-4 text-xs whitespace-nowrap text-ink-dim">
-        {p.in_flight > 0 && (
-          <span className="flex items-center gap-1.5 text-accent">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
-            <span className="tnum">{p.in_flight} running</span>
-          </span>
-        )}
-      </td>
       <td className="tnum pr-3 text-right text-xs whitespace-nowrap text-ink-faint">
         {relTime(p.last_event)}
       </td>
@@ -131,7 +134,7 @@ function Row({ p, dense, stripPrefix }: { p: BoardProblem; dense?: boolean; stri
 function SectionRow({ label, count }: { label: string; count?: number }) {
   return (
     <tr>
-      <td colSpan={6} className="pt-5 pb-1.5 pl-3">
+      <td colSpan={5} className="pt-5 pb-1.5 pl-3">
         <span className="text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
           {label}
         </span>
@@ -230,7 +233,6 @@ function ClusterRow({
       <td className="pr-4">
         <ProgressBar proved={c.proved} open={c.open} total={c.total} />
       </td>
-      <td className="pr-4" />
       <td className="tnum pr-3 text-right text-xs whitespace-nowrap text-ink-faint">
         {relTime(c.lastEvent)}
       </td>
@@ -507,7 +509,6 @@ export default function Board() {
               <th className="w-[120px] py-2 pr-4 font-medium">status</th>
               <th className="w-[170px] py-2 pr-4 font-medium">goals</th>
               <th className="w-[130px] py-2 pr-4 font-medium">progress</th>
-              <th className="w-[100px] py-2 pr-4 font-medium">activity</th>
               <th className="w-[80px] py-2 pr-3 text-right font-medium whitespace-nowrap">
                 last event
               </th>
