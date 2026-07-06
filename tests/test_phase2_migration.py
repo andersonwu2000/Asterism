@@ -227,7 +227,7 @@ def test_migration_runs_on_pre_phase2_db(tmp_path: Path) -> None:
     db.init_schema(conn)
 
     # Post: PRAGMA user_version at latest (bumped to 11 in phase 11).
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 22
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 23
 
     # New columns present
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
@@ -366,7 +366,7 @@ def test_migration_idempotent(tmp_path: Path) -> None:
     assert counts1 == counts2
 
     # Schema version at latest; idempotent re-run leaves it unchanged.
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 22
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 23
     conn.close()
 
 
@@ -454,6 +454,44 @@ def test_v20_widens_goals_kind_to_instance(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_v23_scholar_and_fetchpaper_widens(tmp_path: Path) -> None:
+    """v23 (paper v2): pipelines/queue kind CHECK gain 'Scholar';
+    strategist_decisions gains 'FetchPaper'; problem_papers exists.
+    The pre-Phase-2 fixture exercises the real rebuild chain."""
+    db_path = _make_pre_phase2_db(tmp_path)
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db.init_schema(conn)
+
+    for table in ("pipelines", "queue"):
+        sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name=?", (table,)
+        ).fetchone()[0]
+        assert "'Scholar'" in sql, table
+    sd_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='strategist_decisions'"
+    ).fetchone()[0]
+    assert "'FetchPaper'" in sd_sql
+    # History preserved through the rebuild (fixture seeds pipelines).
+    assert conn.execute("SELECT COUNT(*) FROM pipelines").fetchone()[0] > 0
+
+    # problem_papers + binding helpers round-trip.
+    assert db.bind_paper(conn, problem="alpha", paper_id="abc123",
+                         origin="manifest") is True
+    assert db.bind_paper(conn, problem="alpha", paper_id="abc123",
+                         origin="scholar") is False  # idempotent, first wins
+    assert db.bind_paper(conn, problem="alpha", paper_id="def456",
+                         origin="scholar", reason="cited [X]") is True
+    rows = db.paper_bindings(conn, "alpha")
+    assert [r["paper_id"] for r in rows] == ["abc123", "def456"]
+    assert rows[0]["origin"] == "manifest"
+    assert db.scholar_fetch_count(conn, "alpha") == 1
+    fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+    assert fk_violations == [], f"FK violations: {fk_violations}"
+    conn.close()
+
+
 def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     """Fresh DB (created via current SCHEMA) skips _migrate_to_phase2
     (detected via 'detached' column already present) but still bumps
@@ -468,7 +506,7 @@ def test_fresh_db_skips_rebuild_and_sets_version(tmp_path: Path) -> None:
     goals_cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
     assert "detached" in goals_cols
     # Version set
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 22
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 23
     # strategist_decisions table created
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"

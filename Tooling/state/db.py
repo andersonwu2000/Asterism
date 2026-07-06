@@ -329,11 +329,14 @@ CREATE TABLE IF NOT EXISTS strategy_subgoals (
 -- Phase 2 — `kind` adds 'Strategist' / 'Forward'; `target_kind` adds 'Problem'.
 -- Forward target_id = problem_name (TEXT NOT NULL preserved; see
 -- migration_plan §C option 1). Strategist target = problem.root.id (Goal).
+-- v23 — `kind` adds 'Scholar' (paper pipeline v2: citation resolution +
+-- fetch worker; docs/internal/paper_pipeline_design.md D11).
 CREATE TABLE IF NOT EXISTS pipelines (
     id          TEXT PRIMARY KEY,
     kind        TEXT NOT NULL
                     CHECK(kind IN ('Builder','Backward','Verify',
-                                   'Strategist','Forward','Librarian')),
+                                   'Strategist','Forward','Librarian',
+                                   'Scholar')),
     target_id   TEXT NOT NULL,
     target_kind TEXT NOT NULL
                     CHECK(target_kind IN ('Goal','Strategy','Problem')),
@@ -368,7 +371,8 @@ CREATE TABLE IF NOT EXISTS queue (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     kind        TEXT NOT NULL
                     CHECK(kind IN ('Builder','Backward','Verify',
-                                   'Strategist','Forward','Librarian')),
+                                   'Strategist','Forward','Librarian',
+                                   'Scholar')),
     target_id   TEXT NOT NULL,
     target_kind TEXT NOT NULL DEFAULT 'Goal'
                     CHECK(target_kind IN ('Goal','Strategy','Problem')),
@@ -389,6 +393,22 @@ CREATE TABLE IF NOT EXISTS queue (
     owner_pid   INTEGER,
     leased_at   TEXT,
     created_at  TEXT NOT NULL
+);
+
+-- Paper pipeline v2 (D13): problem ↔ shelved-paper bindings — the
+-- backend of the frontend's checkbox model. origin: 'manifest' =
+-- migrated from the legacy Manifest `paper:` pointer at init/parse;
+-- 'scholar' = fetched by a Scholar pipeline (reason records why);
+-- 'user' = bound via CLI/UI. Bindings are framework-owned — agents
+-- never edit the hand-written Manifest. CREATE TABLE IF NOT EXISTS
+-- suffices for fresh + existing DBs (no user_version bump needed).
+CREATE TABLE IF NOT EXISTS problem_papers (
+    problem    TEXT NOT NULL REFERENCES problems(name),
+    paper_id   TEXT NOT NULL,
+    origin     TEXT NOT NULL CHECK(origin IN ('manifest','scholar','user')),
+    reason     TEXT NULL DEFAULT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (problem, paper_id)
 );
 
 -- Phase 2 — Strategist decision audit log + awaiting_human gate.
@@ -417,11 +437,14 @@ CREATE TABLE IF NOT EXISTS strategist_decisions (
                             -- flags a Forward node top-level; sets goals.is_deliverable.
                             -- 'Ingest' (v14, anchor+claim): Strategist judges the
                             -- problem terminal → harvest deliverables to Library.
+                            -- 'FetchPaper' (v23, paper pipeline v2): Strategist
+                            -- requests a cited paper; a Scholar pipeline
+                            -- resolves + fetches it (D11).
                             CHECK(decision_kind IN
                                   ('Inject','ConfirmShelve','Reopen',
                                    'EmitDirective','InitializeDefs',
                                    'RequestUserAmend','Noop','MarkDeliverable',
-                                   'Ingest')),
+                                   'Ingest','FetchPaper')),
     target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),
     brief               TEXT NULL DEFAULT NULL,
     reason              TEXT NULL DEFAULT NULL,
@@ -579,7 +602,7 @@ def now() -> str:
 # phase bumps PRAGMA user_version up to this; `connect` uses it to detect a
 # stale on-disk DB. Keep in lockstep with the final `PRAGMA user_version = N`
 # in init_schema (an invariant test asserts they match).
-_CURRENT_USER_VERSION = 22
+_CURRENT_USER_VERSION = 23
 
 # v21 (frontend charter §5-2) — per-spawn token/turn accounting. Created
 # in the migration chain (fresh DBs start at user_version 0 and run the
@@ -1113,6 +1136,14 @@ def init_schema(conn: sqlite3.Connection) -> None:
                 "ALTER TABLE problems ADD COLUMN review_snapshot_at TEXT")
         conn.execute("PRAGMA user_version = 22")
         conn.commit()
+    if v < 23:
+        # v23 — paper pipeline v2 (D11): pipelines.kind + queue.kind
+        # CHECK widen to 'Scholar'; strategist_decisions.decision_kind
+        # widens to 'FetchPaper'. problem_papers itself needs no step
+        # (CREATE TABLE IF NOT EXISTS in SCHEMA).
+        _migrate_to_v23(conn)
+        conn.execute("PRAGMA user_version = 23")
+        conn.commit()
 
 
 def _migrate_to_v19(conn: sqlite3.Connection) -> None:
@@ -1197,6 +1228,129 @@ def _migrate_to_v19(conn: sqlite3.Connection) -> None:
             raise RuntimeError(
                 f"v19 migration left FK violations: {fk_violations[:5]}"
             )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_to_v23(conn: sqlite3.Connection) -> None:
+    """v23 — three CHECK widens for the Scholar pipeline (paper v2):
+    pipelines.kind / queue.kind gain 'Scholar'; strategist_decisions.
+    decision_kind gains 'FetchPaper'. SQLite cannot ALTER a CHECK.
+
+    * queue is TRANSIENT (swept per-scope at startup, refill re-derives)
+      → dropped and recreated from the updated SCHEMA, no row copy.
+      Migrations run before any daemon, so no live lease is lost.
+    * pipelines / strategist_decisions are history → rebuild-and-copy
+      (point-in-time snapshots of their v22 shapes, explicit column
+      lists — physical order differs on ALTER-grown DBs).
+    Idempotent via the in-DDL probes."""
+    chk = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table'"
+        " AND name='pipelines'").fetchone()
+    if chk and "'Scholar'" in (chk["sql"] or ""):
+        return  # fresh DB from SCHEMA, or re-run
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE _new_pipelines (
+                id          TEXT PRIMARY KEY,
+                kind        TEXT NOT NULL
+                                CHECK(kind IN ('Builder','Backward','Verify',
+                                               'Strategist','Forward',
+                                               'Librarian','Scholar')),
+                target_id   TEXT NOT NULL,
+                target_kind TEXT NOT NULL
+                                CHECK(target_kind IN ('Goal','Strategy',
+                                                      'Problem')),
+                status      TEXT NOT NULL
+                                CHECK(status IN ('succeeded','failed')),
+                outcome     TEXT NOT NULL,
+                started_at  TEXT NOT NULL,
+                finished_at TEXT NOT NULL
+            );
+            INSERT INTO _new_pipelines
+                (id, kind, target_id, target_kind, status, outcome,
+                 started_at, finished_at)
+            SELECT id, kind, target_id, target_kind, status, outcome,
+                   started_at, finished_at
+            FROM pipelines;
+            DROP TABLE pipelines;
+            ALTER TABLE _new_pipelines RENAME TO pipelines;
+
+            DROP TABLE queue;
+            CREATE TABLE queue (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind        TEXT NOT NULL
+                                CHECK(kind IN ('Builder','Backward','Verify',
+                                               'Strategist','Forward',
+                                               'Librarian','Scholar')),
+                target_id   TEXT NOT NULL,
+                target_kind TEXT NOT NULL DEFAULT 'Goal'
+                                CHECK(target_kind IN ('Goal','Strategy',
+                                                      'Problem')),
+                priority    INTEGER NOT NULL DEFAULT 0,
+                decision_id INTEGER NULL DEFAULT NULL
+                                REFERENCES strategist_decisions(id),
+                problem     TEXT NOT NULL DEFAULT '',
+                payload     TEXT,
+                owner_pid   INTEGER,
+                leased_at   TEXT,
+                created_at  TEXT NOT NULL
+            );
+
+            CREATE TABLE _new_strategist_decisions (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem             TEXT NOT NULL REFERENCES problems(name),
+                triggered_at_tick   INTEGER NOT NULL,
+                trigger_kind        TEXT NOT NULL
+                                        CHECK(trigger_kind IN
+                                              ('first_launch','pending_review',
+                                               'routine','inject_batch_done')),
+                decision_kind       TEXT NOT NULL
+                                        CHECK(decision_kind IN
+                                              ('Inject','ConfirmShelve','Reopen',
+                                               'EmitDirective','InitializeDefs',
+                                               'RequestUserAmend','Noop',
+                                               'MarkDeliverable','Ingest',
+                                               'FetchPaper')),
+                target_id           INTEGER NULL DEFAULT NULL REFERENCES goals(id),
+                brief               TEXT NULL DEFAULT NULL,
+                reason              TEXT NULL DEFAULT NULL,
+                payload             TEXT NOT NULL DEFAULT '{}',
+                batch_id            TEXT NULL DEFAULT NULL,
+                produced_goal_id    INTEGER NULL DEFAULT NULL REFERENCES goals(id)
+                                        ON DELETE SET NULL,
+                produced_strategy_id INTEGER NULL DEFAULT NULL
+                                        REFERENCES strategies(id) ON DELETE SET NULL,
+                outcome             TEXT NULL DEFAULT NULL,
+                outcome_detail      TEXT NULL DEFAULT NULL,
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL
+            );
+            INSERT INTO _new_strategist_decisions
+                (id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                 target_id, brief, reason, payload, batch_id, produced_goal_id,
+                 produced_strategy_id, outcome, outcome_detail,
+                 created_at, updated_at)
+            SELECT id, problem, triggered_at_tick, trigger_kind, decision_kind,
+                   target_id, brief, reason, payload, batch_id, produced_goal_id,
+                   produced_strategy_id, outcome, outcome_detail,
+                   created_at, updated_at
+            FROM strategist_decisions;
+            DROP TABLE strategist_decisions;
+            ALTER TABLE _new_strategist_decisions RENAME TO strategist_decisions;
+            CREATE INDEX IF NOT EXISTS idx_sd_problem
+                ON strategist_decisions(problem);
+            CREATE INDEX IF NOT EXISTS idx_sd_outcome
+                ON strategist_decisions(outcome);
+            CREATE INDEX IF NOT EXISTS idx_sd_batch_id
+                ON strategist_decisions(batch_id);
+        """)
+        fk_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if fk_violations:
+            raise RuntimeError(
+                f"v23 migration left FK violations: {fk_violations[:5]}")
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
 
@@ -2178,6 +2332,41 @@ def mark_deliverable(conn: sqlite3.Connection, goal_id: int,
         (1 if is_deliverable else 0, now(), goal_id),
     )
     conn.commit()
+
+
+def bind_paper(conn: sqlite3.Connection, *, problem: str, paper_id: str,
+               origin: str, reason: str | None = None) -> bool:
+    """Bind a shelved paper to a problem (paper pipeline v2, D13).
+    Idempotent: an existing (problem, paper_id) binding is left as-is
+    (first origin wins — a manifest binding is not demoted by a later
+    scholar fetch). Returns True iff a new binding was inserted."""
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO problem_papers"
+        " (problem, paper_id, origin, reason, created_at)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (problem, paper_id, origin, reason, now()))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def paper_bindings(conn: sqlite3.Connection,
+                   problem: str) -> list[sqlite3.Row]:
+    """A problem's paper bindings, manifest-origin first then by age —
+    the Context section treats the first row as the primary paper."""
+    return conn.execute(
+        "SELECT * FROM problem_papers WHERE problem = ?"
+        " ORDER BY CASE origin WHEN 'manifest' THEN 0"
+        " WHEN 'user' THEN 1 ELSE 2 END, created_at, paper_id",
+        (problem,)).fetchall()
+
+
+def scholar_fetch_count(conn: sqlite3.Connection, problem: str) -> int:
+    """Scholar-origin bindings for `problem` — the D15 per-problem
+    fetch-cap counter."""
+    return int(conn.execute(
+        "SELECT COUNT(*) FROM problem_papers"
+        " WHERE problem = ? AND origin = 'scholar'",
+        (problem,)).fetchone()[0])
 
 
 def deliverables(conn: sqlite3.Connection,
