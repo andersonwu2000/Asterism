@@ -130,6 +130,30 @@ export default function Constellation({
     return m
   }, [layout])
 
+  // newborn stars (ids that appear after the first load) get a brief
+  // halo so a live run reads as growth, not as a diff you must spot
+  const birthsRef = useRef<{ seen: Set<number>; born: Map<number, number>; primed: boolean }>({
+    seen: new Set(),
+    born: new Map(),
+    primed: false,
+  })
+  useEffect(() => {
+    const b = birthsRef.current
+    const now = Date.now()
+    if (!b.primed) {
+      for (const g of goals) b.seen.add(g.id)
+      if (goals.length > 0) b.primed = true
+      return
+    }
+    for (const g of goals) {
+      if (!b.seen.has(g.id)) {
+        b.seen.add(g.id)
+        b.born.set(g.id, now)
+      }
+    }
+    for (const [id, t] of b.born) if (now - t > 12000) b.born.delete(id)
+  }, [goals])
+
   const containerRef = useRef<HTMLDivElement>(null)
   const [view, setView] = useState<{ k: number; tx: number; ty: number } | null>(null)
   const [hovered, setHovered] = useState<LayoutNode | null>(null)
@@ -541,6 +565,22 @@ export default function Constellation({
                     transform="rotate(-90)"
                     vectorEffect="non-scaling-stroke"
                   />
+                )}
+                {birthsRef.current.born.has(n.goal.id) && (
+                  <circle
+                    r={r + 12}
+                    fill="none"
+                    stroke="var(--color-starlight)"
+                    strokeWidth={1}
+                    vectorEffect="non-scaling-stroke"
+                  >
+                    <animate
+                      attributeName="stroke-opacity"
+                      values="0.8;0.1;0.8"
+                      dur="1.8s"
+                      repeatCount="indefinite"
+                    />
+                  </circle>
                 )}
                 {n.goal.in_flight && (
                   <circle

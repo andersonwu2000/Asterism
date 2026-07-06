@@ -10,7 +10,7 @@ import DecisionTimeline from '../components/DecisionTimeline'
 import FileViewer from '../components/FileViewer'
 import ManifestEditor from '../components/ManifestEditor'
 import RunControl from '../components/RunControl'
-import type { Goal, ProblemDetail } from '../lib/types'
+import type { DaemonStatus, Goal, ProblemDetail } from '../lib/types'
 
 type Tab = 'stars' | 'manifest' | 'goals' | 'timeline' | 'files'
 
@@ -106,6 +106,7 @@ export default function Problem({ name }: { name: string }) {
   const { data, error, loading } = usePoll<ProblemDetail>(
     `/api/problems/${encodeURIComponent(name)}`,
   )
+  const { data: daemon } = usePoll<DaemonStatus>('/api/daemon', 3000)
   const [tab, setTab] = useState<Tab>('stars')
   const [directiveOpen, setDirectiveOpen] = useState(false)
   const [selectedGoal, setSelectedGoal] = useState<number | null>(null)
@@ -260,11 +261,26 @@ export default function Problem({ name }: { name: string }) {
         <div className="min-w-0 flex-1 overflow-y-auto">
           {tab === 'stars' && data.goals.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-ink-faint">
-              <div>No goals yet — the Strategist bootstraps from the Manifest once the engine runs.</div>
-              <div className="text-xs text-ink-faint">
-                press <span className="font-semibold text-ink-dim">Run</span> in the header —
-                the engine works this problem only
-              </div>
+              {daemon?.running && daemon.scope === data.name ? (
+                <>
+                  <span className="flex items-center gap-2 text-ink-dim">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-accent" />
+                    the engine is working
+                  </span>
+                  <div className="text-xs text-ink-faint">
+                    the first stars appear when the Strategist plants its first goals —
+                    usually within a couple of minutes
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>No goals yet — the Strategist bootstraps from the Manifest once the engine runs.</div>
+                  <div className="text-xs text-ink-faint">
+                    press <span className="font-semibold text-ink-dim">Run</span> in the header —
+                    the engine works this problem only
+                  </div>
+                </>
+              )}
             </div>
           ) : tab === 'stars' && (
             <div className="h-full">

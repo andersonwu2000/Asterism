@@ -48,8 +48,22 @@ function clusterSize(n: number): { w: number; h: number } {
   return { w, h: w * 0.52 }
 }
 
+function citationImport(d: LibraryDecl): string {
+  return d.file ? `import ${d.file.replace(/\.lean$/, '').split('/').join('.')}` : ''
+}
+
 function Cluster({ p, query }: { p: LibraryProblem; query: string }) {
   const [hover, setHover] = useState<StarPt | null>(null)
+  const [copied, setCopied] = useState(false)
+  const copy = (s2: StarPt, withImport: boolean) => {
+    const name = s2.decl.name ?? s2.decl.slug
+    const text = withImport ? `${citationImport(s2.decl)}
+-- ${name}` : name
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
   const { w, h } = clusterSize(p.decls.length)
   const match = (d: LibraryDecl) =>
     query !== '' && (d.name ?? d.slug).toLowerCase().includes(query)
@@ -82,8 +96,10 @@ function Cluster({ p, query }: { p: LibraryProblem; query: string }) {
             cy={s.y}
             r={Math.max(s.r + 4, 5)}
             fill="transparent"
+            className="cursor-pointer"
             onMouseEnter={() => setHover(s)}
             onMouseLeave={() => setHover(null)}
+            onClick={(e) => copy(s, e.shiftKey)}
           />
         ))}
         {stars.map((s, i) => {
@@ -146,6 +162,9 @@ function Cluster({ p, query }: { p: LibraryProblem; query: string }) {
               {hover.decl.signature}
             </div>
           )}
+          <div className="mt-1 text-[10px] text-ink-faint">
+            {copied ? 'copied' : 'click: copy name · shift-click: copy with import'}
+          </div>
         </div>
       )}
     </div>
