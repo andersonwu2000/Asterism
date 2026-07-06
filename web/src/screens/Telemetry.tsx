@@ -28,24 +28,24 @@ function DaemonPanel() {
 
   return (
     <div className="rounded-lg border border-edge bg-surface p-4">
-      <div className="mb-3 flex items-center gap-3">
-        <span
-          className={`h-2.5 w-2.5 rounded-full ${
-            d?.stopping ? 'bg-warn' : d?.running ? 'bg-ok' : 'bg-ink-faint'
-          }`}
-        />
-        <span className="text-sm text-ink">
-          {d?.stopping
-            ? `stopping (pid ${d.pid}) — draining in-flight work`
-            : d?.running
-              ? `running (pid ${d.pid})`
-              : 'not running'}
-        </span>
-        {d && d.running && d.in_flight_leases > 0 && (
-          <span className="tnum text-xs text-ink-dim">
-            {d.in_flight_leases} in-flight lease(s)
+      <div className="mb-3 flex items-baseline gap-3">
+        <span className="flex items-center gap-2.5">
+          <span
+            className={`h-2.5 w-2.5 rounded-full ${
+              d?.stopping ? 'bg-warn' : d?.running ? 'bg-ok animate-pulse' : 'bg-ink-faint'
+            }`}
+          />
+          <span className="font-display text-[22px] font-medium text-ink">
+            {d?.stopping ? 'Stopping' : d?.running ? 'Running' : 'Idle'}
           </span>
-        )}
+        </span>
+        <span className="text-xs text-ink-faint">
+          {d?.stopping
+            ? `pid ${d.pid} — draining in-flight work`
+            : d?.running
+              ? `pid ${d.pid}${d.in_flight_leases > 0 ? ` · ${d.in_flight_leases} in flight` : ''}`
+              : 'the daemon is not running'}
+        </span>
       </div>
       {d && !d.running && d.in_flight_leases > 0 && (
         <div className="mb-3 rounded-md border border-warn/40 bg-warn/10 px-3 py-1.5 text-xs text-warn">
