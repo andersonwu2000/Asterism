@@ -275,7 +275,14 @@ export default function Problem({ name }: { name: string }) {
             data.status === 'stalled' ||
             data.goals.some((g) => g.status === 'open' || g.status === 'attempting')
           if (!live) return null
-          const OK = new Set(['success', 'accepted', 'live_subgoal', 'closed_subgoal'])
+          const OK = new Set([
+            'success',
+            'accepted',
+            'live_subgoal',
+            'closed_subgoal',
+            'proved',
+            'paper_fetched',
+          ])
           const lastOk = data.decisions.find((d) => d.outcome !== null && OK.has(d.outcome))
           const blocker = [...data.goals]
             .filter((g) => g.status !== 'proved' && g.dead_attempts > 0)

@@ -17,12 +17,27 @@ const KIND_CLS: Record<string, string> = {
   ConfirmShelve: 'text-ink-dim',
   RequestUserAmend: 'text-warn',
   EmitDirective: 'text-ink-dim',
+  FetchPaper: 'text-ink-dim',
   Noop: 'text-ink-faint',
 }
 
 /* positive outcomes are the norm — they collapse to a quiet check so
  * the timeline's color budget goes to failures and pauses */
-const OK_OUTCOMES = new Set(['success', 'accepted', 'live_subgoal', 'closed_subgoal'])
+const OK_OUTCOMES = new Set([
+  'success',
+  'accepted',
+  'live_subgoal',
+  'closed_subgoal',
+  'proved',
+  'paper_fetched',
+])
+
+/* failure is a CLOSED set of explicit shapes; an outcome this build
+ * hasn't met renders neutrally instead of being branded a failure
+ * ("not in the OK list" once counted the brand-new paper_fetched as
+ * the run's only failure) */
+const isFailureOutcome = (o: string) =>
+  o === 'aborted' || o.startsWith('failed') || o.startsWith('exhausted') || o === 'rejected'
 
 /* outcome enums get human labels */
 const OUTCOME_LABEL: Record<string, string> = {
@@ -110,7 +125,7 @@ export default function DecisionTimeline({ decisions }: { decisions: Decision[] 
     return <div className="px-4 py-8 text-center text-xs text-ink-faint">No decisions yet.</div>
   }
   const dayOf = (iso: string) => DAY_FMT.format(new Date(iso))
-  const isFailure = (d: Decision) => d.outcome !== null && !OK_OUTCOMES.has(d.outcome)
+  const isFailure = (d: Decision) => d.outcome !== null && isFailureOutcome(d.outcome)
   const kinds = [...new Set(decisions.map((d) => d.decision_kind))].sort()
   const filtered =
     filter === null
