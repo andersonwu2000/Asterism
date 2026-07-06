@@ -59,6 +59,9 @@ function radius(g: Goal): number {
   return 5
 }
 
+/** def-like kinds — the vouchable meaning-bearers (anchor+claim §4) */
+const DEF_KINDS = new Set(['def', 'structure', 'class', 'instance', 'abbrev', 'inductive'])
+
 /* Root goals are just the brightest star: larger radius + a soft halo
  * ring. No glyph shapes (owner's call — spikes and sparks both out). */
 
@@ -420,23 +423,50 @@ export default function Constellation({
                     opacity={s.opacity * 0.45}
                   />
                 )}
-                <circle
-                  r={r}
-                  fill={s.fill}
-                  stroke={s.stroke}
-                  strokeWidth={1.4}
-                  opacity={s.opacity}
-                  filter={s.glow ? 'url(#star-glow)' : undefined}
-                >
-                  {n.goal.status === 'attempting' && (
-                    <animate
-                      attributeName="opacity"
-                      values="1;0.45;1"
-                      dur="1.6s"
-                      repeatCount="indefinite"
-                    />
-                  )}
-                </circle>
+                {/* defs are the meaning-bearers (the anchor surface a
+                    human vouches for) — they render as fixed diamonds;
+                    Props are the light and stay round */}
+                {DEF_KINDS.has(n.goal.kind) ? (
+                  <rect
+                    x={-r * 0.92}
+                    y={-r * 0.92}
+                    width={r * 1.84}
+                    height={r * 1.84}
+                    transform="rotate(45)"
+                    fill={s.fill}
+                    stroke={s.stroke}
+                    strokeWidth={1.4}
+                    opacity={s.opacity}
+                    filter={s.glow ? 'url(#star-glow)' : undefined}
+                  >
+                    {n.goal.status === 'attempting' && (
+                      <animate
+                        attributeName="opacity"
+                        values="1;0.45;1"
+                        dur="1.6s"
+                        repeatCount="indefinite"
+                      />
+                    )}
+                  </rect>
+                ) : (
+                  <circle
+                    r={r}
+                    fill={s.fill}
+                    stroke={s.stroke}
+                    strokeWidth={1.4}
+                    opacity={s.opacity}
+                    filter={s.glow ? 'url(#star-glow)' : undefined}
+                  >
+                    {n.goal.status === 'attempting' && (
+                      <animate
+                        attributeName="opacity"
+                        values="1;0.45;1"
+                        dur="1.6s"
+                        repeatCount="indefinite"
+                      />
+                    )}
+                  </circle>
+                )}
                 {n.goal.is_deliverable && (
                   <circle
                     r={r + 3}
@@ -580,6 +610,12 @@ export default function Constellation({
             <circle r="4.6" fill="none" stroke="var(--color-starlight)" strokeWidth="0.7" opacity="0.6" />
           </svg>
           deliverable
+        </span>
+        <span className="flex items-center gap-1">
+          <svg width="10" height="10" viewBox="-5 -5 10 10">
+            <rect x="-2.6" y="-2.6" width="5.2" height="5.2" transform="rotate(45)" fill="var(--color-starlight)" />
+          </svg>
+          def
         </span>
         <span className="flex items-center gap-1">
           <svg width="12" height="12" viewBox="-6 -6 12 12">

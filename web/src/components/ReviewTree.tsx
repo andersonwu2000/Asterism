@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { apiGet, apiPost, usePoll } from '../lib/api'
 import { SectionLabel } from './ui'
-import type { ReviewDeliverable, ReviewResponse } from '../lib/types'
+import type { Goal, ProblemDetail, ReviewDeliverable, ReviewResponse } from '../lib/types'
 import { relTime } from '../lib/format'
 
 /** Ingest sign-off review: the anchor closure of each deliverable,
@@ -31,11 +31,37 @@ function PaperPane({ pid, anchor }: { pid: string; anchor: string }) {
   )
 }
 
+/** One vouchable decl with its actual mathematics — signing off means
+ * reading the statement, not recognizing a name (anchor+claim §1). */
+function VouchRow({ name, goal, claim }: { name: string; goal: Goal | null; claim?: boolean }) {
+  return (
+    <div className="mb-1.5">
+      <div className="flex items-baseline gap-2">
+        <span
+          className={`rounded px-1.5 py-0.5 font-mono text-[11px] ${
+            claim ? 'bg-star/10 text-star' : 'bg-surface-2 text-ink-dim'
+          }`}
+        >
+          {name}
+        </span>
+        {goal && <span className="text-[10px] text-ink-faint">{goal.kind}</span>}
+      </div>
+      {goal && (
+        <pre className="mt-1 ml-1 line-clamp-3 border-l border-edge pl-2 font-mono text-[11px] leading-snug break-words whitespace-pre-wrap text-ink-dim">
+          {goal.statement}
+        </pre>
+      )}
+    </div>
+  )
+}
+
 function Deliverable({
   d,
+  resolve,
   onRejected,
 }: {
   d: ReviewDeliverable
+  resolve: (name: string) => Goal | null
   onRejected?: () => void
 }) {
   const [open, setOpen] = useState(false)
@@ -119,26 +145,22 @@ function Deliverable({
               )}
             </div>
           )}
-          {d.anchors.length > 0 && (
+          {d.claims.length > 0 && (
             <>
-              <SectionLabel>anchors vouched for</SectionLabel>
-              <div className="mb-2 flex flex-wrap gap-1.5">
-                {d.anchors.map((a) => (
-                  <span key={a} className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-ink-dim">
-                    {a}
-                  </span>
+              <SectionLabel>claims — what is asserted</SectionLabel>
+              <div className="mb-2">
+                {d.claims.map((c) => (
+                  <VouchRow key={c} name={c} goal={resolve(c)} claim />
                 ))}
               </div>
             </>
           )}
-          {d.claims.length > 0 && (
+          {d.anchors.length > 0 && (
             <>
-              <SectionLabel>claims</SectionLabel>
-              <div className="flex flex-wrap gap-1.5">
-                {d.claims.map((c) => (
-                  <span key={c} className="rounded bg-star/10 px-1.5 py-0.5 font-mono text-[11px] text-star">
-                    {c}
-                  </span>
+              <SectionLabel>anchors — what the statement stands on</SectionLabel>
+              <div>
+                {d.anchors.map((a) => (
+                  <VouchRow key={a} name={a} goal={resolve(a)} />
                 ))}
               </div>
             </>
@@ -188,6 +210,17 @@ export default function ReviewTree({ problem }: { problem: string }) {
     `/api/problems/${encodeURIComponent(problem)}/review`,
     30000,
   )
+  // statements for the vouch sheet — anchors/claims are named in the
+  // snapshot, but reading the mathematics is the whole point of review
+  const { data: detail } = usePoll<ProblemDetail>(
+    `/api/problems/${encodeURIComponent(problem)}`,
+    30000,
+  )
+  const bySlug = useMemo(
+    () => new Map((detail?.goals ?? []).map((g) => [g.slug, g])),
+    [detail],
+  )
+  const resolve = (name: string) => bySlug.get(name.split('.').pop() ?? name) ?? null
   if (loading) return <div className="text-xs text-ink-faint">Loading review…</div>
   if (error && !data)
     return (
@@ -204,7 +237,7 @@ export default function ReviewTree({ problem }: { problem: string }) {
         <RefreshButton problem={problem} onDone={refresh} />
       </div>
       {data.deliverables.map((d) => (
-        <Deliverable key={d.fq} d={d} onRejected={refresh} />
+        <Deliverable key={d.fq} d={d} resolve={resolve} onRejected={refresh} />
       ))}
     </div>
   )
