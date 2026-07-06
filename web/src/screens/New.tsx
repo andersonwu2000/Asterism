@@ -4,45 +4,18 @@ import { navigate } from '../lib/router'
 import { Button } from '../components/ui'
 
 /*
- * Problem authoring — the missing half of the loop. The Manifest is
- * the human's primary input to the engine; this form writes it and
- * runs the same init chokepoint as `asterism init`. Pure-NL creation
- * is instant; pinned Defs/Root type-check first (lake build).
+ * Problem authoring, mathematician-first: a name, a natural-language
+ * description, and sensible defaults. The frontmatter is controls, not
+ * yaml; pinned Lean files stay behind an "advanced" fold. Everything
+ * here can be changed later on the problem's Manifest tab.
  */
-
-const TEMPLATE = (name: string) => `---
-problem: ${name || '<Namespace.leaf_name>'}
-axioms_whitelist:
-  - propext
-  - Quot.sound
-  - Classical.choice
-forbidden_lemmas: []
-library: true
----
-
-# ${name || '<Namespace.leaf_name>'} — <one-line title>
-
-## Statement
-
-Describe what you want in natural language: the objects to define and
-the claims to prove. The Strategist derives everything from this
-Manifest unless you pin Defs/Root below.
-
-### Deliverables
-
-- \`my_top_level_claim\` — the top-level statement you will vouch for.
-
-## Strategic notes
-
-Optional: constraints, preferred routes, forbidden angles.
-`
 
 const NAME_RE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)*$/
 
 export default function New() {
   const [name, setName] = useState('')
-  const [manifest, setManifest] = useState('')
-  const [touched, setTouched] = useState(false)
+  const [desc, setDesc] = useState('')
+  const [library, setLibrary] = useState(true)
   const [showLean, setShowLean] = useState(false)
   const [defs, setDefs] = useState('')
   const [root, setRoot] = useState('')
@@ -50,21 +23,20 @@ export default function New() {
   const [error, setError] = useState<string | null>(null)
 
   const nameOk = NAME_RE.test(name)
-  const body = touched ? manifest : TEMPLATE(name)
   const hasLean = defs.trim() !== '' || root.trim() !== ''
 
   const create = async () => {
     setBusy(true)
     setError(null)
+    const body = `# ${name}\n\n## Statement\n\n${desc.trim()}\n`
     try {
       await apiPost<{ problem: string }>('/api/problems/create', {
         name,
-        manifest: body,
+        body,
+        settings: { library },
         defs: defs.trim() === '' ? null : defs,
         root: root.trim() === '' ? null : root,
       })
-      // suggest the scope on the Engine page so "start it" is one click
-      localStorage.setItem('engine_scope_suggest', name)
       navigate(`/problems/${encodeURIComponent(name)}`)
     } catch (e) {
       setError(String((e as Error).message))
@@ -77,10 +49,8 @@ export default function New() {
     <div className="mx-auto max-w-3xl px-6 py-6">
       <h1 className="font-display mb-1 text-[22px] font-medium text-ink">New problem</h1>
       <p className="mb-5 max-w-[70ch] text-xs text-ink-faint">
-        The Manifest is your instruction to the engine. Name the problem, say what you want
-        in natural language, and the Strategist takes it from there. Pinning Lean files is
-        optional: Defs.lean pre-vouches your vocabulary, Root.lean pins the exact exit
-        statement.
+        Say what you want proved, in your own words. The engine plans, defines, and proves
+        from this description; you review its statements before anything is kept.
       </p>
 
       <label className="mb-1 block text-[11px] font-medium tracking-widest text-ink-faint uppercase">
@@ -88,7 +58,7 @@ export default function New() {
       </label>
       <input
         className="mb-1 w-96 rounded-md border border-edge bg-surface px-2.5 py-1.5 font-mono text-sm text-ink placeholder:font-sans placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
-        placeholder="Namespace.leaf_name"
+        placeholder="Topology.my_theorem"
         value={name}
         onChange={(e) => setName(e.target.value.trim())}
         spellCheck={false}
@@ -97,35 +67,40 @@ export default function New() {
       <div className="mb-4 text-[11px] text-ink-faint">
         {name !== '' && !nameOk
           ? 'dot-separated identifiers, e.g. Topology.my_theorem'
-          : name !== ''
-            ? `→ Problems/${name.split('.').join('/')}/Manifest.md`
-            : ' '}
+          : ' '}
       </div>
 
       <label className="mb-1 block text-[11px] font-medium tracking-widest text-ink-faint uppercase">
-        manifest
+        what should be proved?
       </label>
       <textarea
-        className="h-96 w-full resize-y rounded-md border border-edge bg-surface p-3 font-mono text-xs leading-relaxed text-ink focus:border-ink-faint focus:outline-none"
-        value={body}
-        onChange={(e) => {
-          setTouched(true)
-          setManifest(e.target.value)
-        }}
-        spellCheck={false}
+        className="h-64 w-full resize-y rounded-md border border-edge bg-surface p-3 text-[13px] leading-relaxed text-ink placeholder:text-ink-faint focus:border-ink-faint focus:outline-none"
+        placeholder={
+          'Describe the mathematics in natural language: the objects involved, the ' +
+          'statements you want, any routes to prefer or avoid.\n\nExample: Compute the ' +
+          'singular homology of the n-sphere with coefficients in an arbitrary ring R. ' +
+          'The Mayer–Vietoris machinery is already in the Library — cite it, do not rebuild it.'
+        }
+        value={desc}
+        onChange={(e) => setDesc(e.target.value)}
       />
 
+      <label className="mt-4 flex items-center gap-2 text-xs text-ink-dim">
+        <input type="checkbox" checked={library} onChange={(e) => setLibrary(e.target.checked)} />
+        keep finished work in the Library for reuse
+      </label>
+
       <button
-        className="mt-3 mb-2 block text-xs text-ink-dim transition-colors hover:text-ink"
+        className="mt-4 mb-2 block text-xs text-ink-dim transition-colors hover:text-ink"
         onClick={() => setShowLean((v) => !v)}
       >
-        {showLean ? '▾' : '▸'} pin Lean files (optional — Defs.lean / Root.lean)
+        {showLean ? '▾' : '▸'} advanced — pin exact Lean (Defs.lean / Root.lean)
       </button>
       {showLean && (
         <div className="mb-3 flex flex-col gap-3">
           <div>
             <div className="mb-1 text-[11px] text-ink-faint">
-              Defs.lean — author-vouched vocabulary the engine must cite, never re-derive.
+              Defs.lean — your own definitions; the engine must use these, never re-derive them.
             </div>
             <textarea
               className="h-40 w-full resize-y rounded-md border border-edge bg-surface p-3 font-mono text-xs leading-relaxed text-ink focus:border-ink-faint focus:outline-none"
@@ -138,7 +113,7 @@ export default function New() {
           <div>
             <div className="mb-1 text-[11px] text-ink-faint">
               Root.lean — pins the exact statement that must be proved before the problem can
-              exit (canonical shape: <span className="font-mono">theorem main : &lt;stmt&gt; := by sorry</span>).
+              finish (shape: <span className="font-mono">theorem main : &lt;stmt&gt; := by sorry</span>).
             </div>
             <textarea
               className="h-40 w-full resize-y rounded-md border border-edge bg-surface p-3 font-mono text-xs leading-relaxed text-ink focus:border-ink-faint focus:outline-none"
@@ -157,8 +132,12 @@ export default function New() {
         </pre>
       )}
 
-      <div className="flex items-center gap-3">
-        <Button variant="primary" disabled={busy || !nameOk || body.trim() === ''} onClick={() => void create()}>
+      <div className="mt-2 flex items-center gap-3">
+        <Button
+          variant="primary"
+          disabled={busy || !nameOk || desc.trim() === ''}
+          onClick={() => void create()}
+        >
           {busy ? (hasLean ? 'Type-checking Lean files…' : 'Creating…') : 'Create problem'}
         </Button>
         {busy && hasLean && (

@@ -2,19 +2,12 @@ import { Fragment, useEffect, useRef, useState } from 'react'
 import { apiPost, usePoll } from '../lib/api'
 import { compactNumber, duration } from '../lib/format'
 import { Button, SectionLabel } from '../components/ui'
-import type { DaemonStatus, UsageProblem } from '../lib/types'
+import type { ConfigSetting, DaemonStatus, UsageProblem } from '../lib/types'
 
 /** Engine panel + usage telemetry (charter §3.4); the Library browses at #/library. */
 
 function DaemonPanel() {
   const { data: d, refresh } = usePoll<DaemonStatus>('/api/daemon', 2000)
-  // problem creation leaves a one-shot scope suggestion so "start the
-  // engine on my new problem" is a single click
-  const [scope, setScope] = useState(() => {
-    const suggest = localStorage.getItem('engine_scope_suggest') ?? ''
-    localStorage.removeItem('engine_scope_suggest')
-    return suggest
-  })
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
 
@@ -49,7 +42,7 @@ function DaemonPanel() {
           {d?.running && d.stopping
             ? `pid ${d.pid} — draining ${d.in_flight_leases} in-flight lease${d.in_flight_leases === 1 ? '' : 's'}; if this hangs on a stale lease, Force stop is safe`
             : d?.running
-              ? `pid ${d.pid}${d.in_flight_leases > 0 ? ` · ${d.in_flight_leases} in flight` : ''}`
+              ? `working on ${d.scope ?? 'all problems'} · pid ${d.pid}${d.in_flight_leases > 0 ? ` · ${d.in_flight_leases} in flight` : ''}`
               : 'the engine is not running'}
         </span>
       </div>
@@ -61,21 +54,9 @@ function DaemonPanel() {
       )}
       <div className="flex items-center gap-2">
         {!d?.running ? (
-          <>
-            <input
-              className="w-64 rounded-md border border-edge bg-bg px-2 py-1.5 font-mono text-xs text-ink focus:border-accent focus:outline-none"
-              placeholder="scope (optional, e.g. Logic.%)"
-              value={scope}
-              onChange={(e) => setScope(e.target.value)}
-            />
-            <Button
-              variant="primary"
-              disabled={busy}
-              onClick={() => void act('/api/daemon/start', { scope: scope || null })}
-            >
-              Start engine
-            </Button>
-          </>
+          <span className="text-xs text-ink-faint">
+            to run a problem, press Run on its page — the engine works one problem at a time
+          </span>
         ) : (
           <>
             <Button
@@ -99,6 +80,69 @@ function DaemonPanel() {
     </div>
   )
 }
+
+function ConfigPanel() {
+  const { data, refresh } = usePoll<{ settings: ConfigSetting[] }>('/api/config', 60000)
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [msg, setMsg] = useState<string | null>(null)
+  if (!data) return null
+  const save = async (key: string) => {
+    setMsg(null)
+    try {
+      const r = await apiPost<{ message: string }>('/api/config', {
+        key,
+        value: drafts[key],
+      })
+      setMsg(r.message)
+      setDrafts((d) => {
+        const next = { ...d }
+        delete next[key]
+        return next
+      })
+      refresh()
+    } catch (e) {
+      setMsg(String((e as Error).message))
+    }
+  }
+  const models = data.settings.filter((s) => s.key.endsWith('.model'))
+  const knobs = data.settings.filter((s) => !s.key.endsWith('.model'))
+  const row = (s: ConfigSetting) => {
+    const draft = drafts[s.key]
+    const current = String(s.resolved ?? '')
+    return (
+      <div key={s.key} className="flex items-center gap-3 py-1">
+        <span className="w-44 shrink-0 font-mono text-xs text-ink-dim">{s.key}</span>
+        <input
+          className="w-56 rounded border border-edge bg-bg px-2 py-1 font-mono text-xs text-ink focus:border-ink-faint focus:outline-none"
+          value={draft ?? current}
+          onChange={(e) => setDrafts((d) => ({ ...d, [s.key]: e.target.value }))}
+        />
+        {draft !== undefined && draft !== current && (
+          <button
+            className="rounded-md bg-ink px-2 py-1 text-[11px] font-semibold text-bg transition-colors hover:bg-starlight"
+            onClick={() => void save(s.key)}
+          >
+            Save
+          </button>
+        )}
+        <span className="min-w-0 truncate text-[11px] text-ink-faint">{s.description}</span>
+      </div>
+    )
+  }
+  return (
+    <div className="rounded-lg border border-edge bg-surface px-4 py-3">
+      <div className="mb-1 text-[11px] text-ink-faint">
+        which model does each job — changes apply from the next run (an .env override, if
+        you have one, still wins)
+      </div>
+      {models.map(row)}
+      <div className="mt-3 mb-1 text-[11px] text-ink-faint">engine knobs</div>
+      {knobs.map(row)}
+      {msg && <div className="mt-2 font-mono text-[11px] text-ink-dim">{msg}</div>}
+    </div>
+  )
+}
+
 
 function LogTail() {
   const [lines, setLines] = useState<string[]>([])
@@ -266,8 +310,19 @@ export default function Telemetry() {
           <DaemonPanel />
         </section>
         <section>
-          <SectionLabel>run log</SectionLabel>
-          <LogTail />
+          <SectionLabel>settings</SectionLabel>
+          <ConfigPanel />
+        </section>
+        <section>
+          <details className="group">
+            <summary className="cursor-pointer list-none text-[11px] font-medium tracking-widest text-ink-faint/70 uppercase transition-colors hover:text-ink-dim">
+              <span className="mr-1 inline-block text-[9px] transition-transform duration-150 group-open:rotate-90">▸</span>
+              developer log
+            </summary>
+            <div className="mt-2">
+              <LogTail />
+            </div>
+          </details>
         </section>
         <section>
           <SectionLabel>usage — this run</SectionLabel>

@@ -1488,9 +1488,18 @@ def daemon_status(workspace: Path) -> dict:
     and the serve API — one implementation, two surfaces)."""
     from . import dispatcher as _disp
     pid = _daemon_live_pid(workspace)
+    scope: str | None = None
+    if pid is not None:
+        # written by daemon_start; "" = workspace-wide (--all-problems)
+        scope_file = workspace / ".asterism" / "logs" / "daemon-scope.txt"
+        try:
+            scope = scope_file.read_text(encoding="utf-8").strip() or None
+        except OSError:
+            scope = None
     return {
         "running": pid is not None,
         "pid": pid,
+        "scope": scope,
         "stopping": _disp.stop_file_path(workspace).exists(),
         "in_flight_leases": _daemon_in_flight(workspace),
     }
@@ -1538,6 +1547,9 @@ def daemon_start(workspace: Path, *, scope: "str | None" = None,
     # a stable "latest log" resolution point.
     (logs / "daemon-current.txt").write_text(
         str(log_path), encoding="utf-8")
+    # scope pointer: lets status (and the UI's per-problem Run controls)
+    # answer "what is the engine working on?"
+    (logs / "daemon-scope.txt").write_text(scope or "", encoding="utf-8")
     return 0, f"started daemon pid {proc.pid}; log: {log_path}"
 
 

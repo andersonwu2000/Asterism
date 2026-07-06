@@ -78,9 +78,11 @@ test('library atlas renders constellations or empty state', async ({ page }) => 
 test('telemetry: daemon panel + log + usage + library sections', async ({ page }) => {
   await page.goto('/#/telemetry')
   await expect(page.getByRole('heading', { name: 'Engine' })).toBeVisible()
-  for (const label of ['run log', 'usage — this run']) {
+  for (const label of ['settings', 'usage — this run']) {
     await expect(page.getByText(label, { exact: true })).toBeVisible()
   }
+  // the summary row nests the label beside its chevron — substring match
+  await expect(page.getByText('developer log')).toBeVisible()
 })
 
 test('api meta reachable and shaped', async ({ request }) => {
@@ -95,6 +97,6 @@ test('api meta reachable and shaped', async ({ request }) => {
 test('new-problem form renders (read-only: no submit)', async ({ page }) => {
   await page.goto('/#/new')
   await expect(page.getByRole('heading', { name: 'New problem' })).toBeVisible()
-  await expect(page.getByPlaceholder('Namespace.leaf_name')).toBeVisible()
+  await expect(page.getByPlaceholder('Topology.my_theorem')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Create problem' })).toBeDisabled()
 })

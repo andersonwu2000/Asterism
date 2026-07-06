@@ -199,8 +199,30 @@ export interface LibraryProblem {
 export interface DaemonStatus {
   running: boolean
   pid: number | null
+  /** exact problem name or LIKE pattern; null = workspace-wide */
+  scope: string | null
   stopping: boolean
   in_flight_leases: number
+}
+
+export interface ManifestData {
+  problem: string
+  body: string
+  settings: {
+    axioms_whitelist: string[]
+    forbidden_lemmas: string[]
+    lemma_hints: string[]
+    library: boolean
+  }
+  pending_amend: boolean
+}
+
+export interface ConfigSetting {
+  key: string
+  yaml: string | number | null
+  resolved: string | number | null
+  type: 'str' | 'int'
+  description: string
 }
 
 export interface Meta {

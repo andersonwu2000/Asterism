@@ -248,3 +248,133 @@ def resolve_workspace(explicit: "Path | str | None" = None) -> Path:
         "no Asterism workspace found: pass --workspace, set "
         "ASTERISM_WORKSPACE, or run from a directory containing "
         "Asterism.yaml / Problems/")
+
+
+# ---------------------------------------------------------------------
+# UI settings chokepoint (curated Asterism.yaml keys)
+# ---------------------------------------------------------------------
+#
+# The web UI exposes a small allowlist of yaml keys (per-pipeline model
+# + the dispatch knobs a mathematician actually tunes). Edits are
+# targeted text substitutions on Asterism.yaml so the file's extensive
+# comments survive; the result must re-parse and resolve to the value
+# written. Everything else stays operator territory (editor + .env).
+# Values apply from the NEXT engine start (the daemon caches config
+# per run).
+
+#: dotted key -> (python type, human description)
+UI_EDITABLE_KEYS: "dict[str, tuple[type, str]]" = {
+    "builder.model": (str, "model that writes proofs (bulk work)"),
+    "backward.model": (str, "model that decomposes goals"),
+    "strategist.model": (str, "model that plans the campaign"),
+    "forward.model": (str, "model that builds vocabulary and claims"),
+    "presearch.model": (str, "model that scouts Mathlib before proving"),
+    "librarian.model": (str, "model that curates the Library"),
+    "dispatch.pool": (int, "max agents working at once"),
+    "dispatch.budget_sec": (int, "wall-clock budget per engine run (seconds)"),
+    "dispatch.shelve_threshold": (int, "failed attempts before a goal is shelved"),
+}
+
+_INT_BOUNDS = {
+    "dispatch.pool": (1, 32),
+    "dispatch.budget_sec": (60, 604800),
+    "dispatch.shelve_threshold": (1, 50),
+}
+
+
+def ui_settings(workspace: Path) -> "list[dict[str, object]]":
+    """Snapshot of every UI-editable key: yaml value (None = unset) +
+    resolved value (env > yaml > default chain, i.e. what a run would
+    actually use)."""
+    _reset_cache()
+    data = load(workspace)
+    out: list[dict[str, object]] = []
+    for key, (typ, desc) in UI_EDITABLE_KEYS.items():
+        cur: object = data
+        for part in key.split("."):
+            cur = cur.get(part) if isinstance(cur, dict) else None
+        resolved = get(key, workspace=workspace,
+                       cast=int if typ is int else None)
+        out.append({
+            "key": key, "yaml": cur, "resolved": resolved,
+            "type": typ.__name__, "description": desc,
+        })
+    return out
+
+
+def set_ui_setting(workspace: Path, key: str,
+                   value: "str | int") -> "tuple[int, str]":
+    """Write one allowlisted key into Asterism.yaml, preserving the
+    file's comments (targeted line substitution, then re-parse)."""
+    import re as _re
+    if key not in UI_EDITABLE_KEYS:
+        return 1, f"FAIL: {key!r} is not UI-editable"
+    typ, _ = UI_EDITABLE_KEYS[key]
+    if typ is int:
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return 1, f"FAIL: {key} expects an integer"
+        lo, hi = _INT_BOUNDS[key]
+        if not (lo <= value <= hi):
+            return 1, f"FAIL: {key} must be in [{lo}, {hi}]"
+    else:
+        value = str(value).strip()
+        if not _re.fullmatch(r"[A-Za-z0-9._-]+", value):
+            return 1, f"FAIL: {key} value looks malformed"
+
+    section, leaf = key.split(".", 1)
+    path = workspace / _CONFIG_FILENAME
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    lines = text.split("\n")
+
+    sec_idx = None
+    for i, line in enumerate(lines):
+        if _re.match(rf"^{_re.escape(section)}\s*:\s*(#.*)?$", line):
+            sec_idx = i
+            break
+    if sec_idx is None:
+        # section absent: append a minimal one at the end
+        if lines and lines[-1].strip() != "":
+            lines.append("")
+        lines += [f"{section}:", f"  {leaf}: {value}"]
+    else:
+        # section extent: until the next top-level key
+        end = len(lines)
+        for j in range(sec_idx + 1, len(lines)):
+            if _re.match(r"^[A-Za-z_]+\s*:", lines[j]):
+                end = j
+                break
+        hit = None
+        for j in range(sec_idx + 1, end):
+            if _re.match(rf"^\s{{2}}{_re.escape(leaf)}\s*:", lines[j]):
+                hit = j
+                break
+        if hit is not None:
+            m = _re.match(
+                rf"^(\s{{2}}{_re.escape(leaf)}\s*:\s*)([^#]*?)(\s*#.*)?$",
+                lines[hit])
+            assert m is not None
+            lines[hit] = f"{m.group(1)}{value}{m.group(3) or ''}"
+        else:
+            lines.insert(sec_idx + 1, f"  {leaf}: {value}")
+
+    new_text = "\n".join(lines)
+    # validation: must parse, and the key must resolve to what we wrote
+    try:
+        import yaml
+        parsed = yaml.safe_load(new_text)
+        cur: object = parsed
+        for part in key.split("."):
+            cur = cur.get(part) if isinstance(cur, dict) else None
+        if typ is int:
+            assert int(str(cur)) == value
+        else:
+            assert str(cur) == str(value)
+    except Exception as e:  # noqa: BLE001
+        return 1, f"FAIL: edit would corrupt Asterism.yaml ({e}) — not written"
+    tmp = path.with_suffix(".yaml.tmp")
+    tmp.write_text(new_text, encoding="utf-8", newline="\n")
+    tmp.replace(path)
+    _reset_cache()
+    return 0, f"OK: {key} = {value} (applies from the next engine run)"

@@ -674,3 +674,84 @@ def test_create_problem_init_failure_rolls_back(
     assert "stubbed" in r.json()["detail"]
     # the created directory is rolled back so a retry can succeed
     assert not (workspace / "Problems" / "Test" / "rollback").exists()
+
+
+# ---------------------------------------------------------------------
+# manifest read/update + structured create + config
+# ---------------------------------------------------------------------
+
+def test_create_problem_structured(workspace: Path) -> None:
+    c = _client(workspace)
+    r = c.post("/api/problems/create", json={
+        "name": "Test.structured",
+        "body": "# Test.structured\n\n## Statement\n\nProve it.\n",
+        "settings": {"forbidden_lemmas": ["sperner*"], "library": True},
+    })
+    assert r.status_code == 200, r.text
+    text = (workspace / "Problems" / "Test" / "structured" /
+            "Manifest.md").read_text(encoding="utf-8")
+    assert text.startswith("---\n")
+    assert "problem: Test.structured" in text
+    assert "- propext" in text            # default whitelist filled in
+    assert "- sperner*" in text
+    assert "library: true" in text
+    assert "## Statement" in text
+
+
+def test_manifest_get_and_update(workspace: Path) -> None:
+    c = _client(workspace)
+    c.post("/api/problems/create", json={
+        "name": "Test.editme",
+        "body": "# Test.editme\n\nOld body.\n",
+        "settings": {"library": False},
+    })
+    got = c.get("/api/problems/Test.editme/manifest").json()
+    assert got["settings"]["library"] is False
+    assert "Old body." in got["body"]
+    assert got["pending_amend"] is False
+    r = c.post("/api/problems/Test.editme/manifest", json={
+        "body": "\n# Test.editme\n\nNew body.\n",
+        "settings": {"library": True, "forbidden_lemmas": ["kuhn*"]},
+    })
+    assert r.status_code == 200, r.text
+    got2 = c.get("/api/problems/Test.editme/manifest").json()
+    assert got2["settings"]["library"] is True
+    assert got2["settings"]["forbidden_lemmas"] == ["kuhn*"]
+    assert "New body." in got2["body"]
+    # unknown frontmatter keys survive: problem: still present
+    text = (workspace / "Problems" / "Test" / "editme" /
+            "Manifest.md").read_text(encoding="utf-8")
+    assert "problem: Test.editme" in text
+
+
+def test_manifest_update_blocked_by_pending_amend(workspace: Path) -> None:
+    c = _client(workspace)
+    c.post("/api/problems/create", json={
+        "name": "Test.locked", "body": "# Test.locked\n"})
+    conn = _open_db(workspace)
+    _add_decision(conn, "Test.locked", kind="RequestUserAmend",
+                  outcome="awaiting_human",
+                  payload={"file": "Manifest.md"})
+    conn.close()
+    r = c.post("/api/problems/Test.locked/manifest",
+               json={"body": "\n# clobber\n"})
+    assert r.status_code == 409
+    assert "Inbox" in r.json()["detail"]
+
+
+def test_config_get_and_set(workspace: Path) -> None:
+    c = _client(workspace)
+    got = c.get("/api/config").json()["settings"]
+    keys = {row["key"] for row in got}
+    assert "strategist.model" in keys and "dispatch.pool" in keys
+    r = c.post("/api/config",
+               json={"key": "strategist.model", "value": "claude-fable-5"})
+    assert r.status_code == 200
+    got2 = {row["key"]: row for row in
+            c.get("/api/config").json()["settings"]}
+    assert got2["strategist.model"]["yaml"] == "claude-fable-5"
+    # bounds + allowlist enforced
+    assert c.post("/api/config", json={
+        "key": "dispatch.pool", "value": 999}).status_code == 422
+    assert c.post("/api/config", json={
+        "key": "gateway.port", "value": 1}).status_code == 422

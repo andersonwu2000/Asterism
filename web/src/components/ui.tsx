@@ -51,9 +51,9 @@ const STATUS_CHIP: Record<ProblemStatus, { label: string; cls: string; dot: stri
   stalled: { label: 'stalled', cls: 'text-danger bg-danger/10', dot: 'bg-danger' },
   idle: { label: 'idle', cls: 'text-ink-faint', dot: 'bg-ink-faint/60' },
   signoff_pending: { label: 'sign-off', cls: 'text-warn bg-warn/15', dot: 'bg-warn' },
-  ingested: { label: 'ingested', cls: 'text-ok bg-ok/10', dot: 'bg-ok' },
+  ingested: { label: 'complete', cls: 'text-ok bg-ok/10', dot: 'bg-ok' },
   bridged: {
-    label: 'bridged',
+    label: 'in Library',
     cls: 'text-ink-dim border border-edge-strong',
     dot: 'bg-starlight',
   },
@@ -65,8 +65,8 @@ const STATUS_HINT: Record<ProblemStatus, string> = {
   stalled: 'no path forward found — needs direction',
   idle: 'not started yet',
   signoff_pending: 'finished — waiting for your sign-off in the inbox',
-  ingested: 'proof complete and accepted',
-  bridged: 'merged into the Library',
+  ingested: 'proof complete and accepted (engine term: ingested)',
+  bridged: 'merged into the Library (engine term: bridged)',
 }
 
 export function StatusBadge({ status }: { status: ProblemStatus }) {

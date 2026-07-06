@@ -79,9 +79,22 @@ class RejectDeclBody(BaseModel):
 
 class ProblemCreateBody(BaseModel):
     name: str
-    manifest: str
+    # either a raw manifest, or the structured halves the UI works in
+    manifest: str | None = None
+    body: str | None = None
+    settings: dict | None = None
     defs: str | None = None
     root: str | None = None
+
+
+class ManifestUpdateBody(BaseModel):
+    body: str | None = None
+    settings: dict | None = None
+
+
+class ConfigSetBody(BaseModel):
+    key: str
+    value: str | int
 
 
 class DaemonStartBody(BaseModel):
@@ -168,6 +181,61 @@ def create_app(workspace: Path) -> FastAPI:
         if text is None:
             raise HTTPException(status_code=404, detail="no such file")
         return {"path": path, "content": text}
+
+    @app.get("/api/problems/{problem}/manifest")
+    def manifest_get(problem: str) -> dict:
+        """The Manifest as the UI works with it: structured settings +
+        the natural-language body, plus whether a strategist amend is
+        pending (manual edits are locked then — the two writes would
+        race on the same file)."""
+        from ..state import manifest as _mfst
+        path = db.problem_dir(workspace, problem) / "Manifest.md"
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="no Manifest.md")
+        fm, body = _mfst.split_raw(path.read_text(encoding="utf-8"))
+        pending = False
+        if (workspace / "asterism.db").exists():
+            with _ro(workspace) as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM strategist_decisions WHERE problem = ?"
+                    "   AND decision_kind = 'RequestUserAmend'"
+                    "   AND outcome = 'awaiting_human' LIMIT 1",
+                    (problem,)).fetchone()
+                pending = row is not None
+        def _as_list(v: object) -> list:
+            return v if isinstance(v, list) else []
+        return {
+            "problem": problem,
+            "body": body,
+            "settings": {
+                "axioms_whitelist": _as_list(fm.get("axioms_whitelist")),
+                "forbidden_lemmas": _as_list(fm.get("forbidden_lemmas")),
+                "lemma_hints": _as_list(fm.get("lemma_hints")),
+                "library": str(fm.get("library", "false")).lower() == "true",
+            },
+            "pending_amend": pending,
+        }
+
+    @app.post("/api/problems/{problem}/manifest")
+    def manifest_update(problem: str, body: ManifestUpdateBody) -> dict:
+        from ..state import manifest as _mfst
+        if (workspace / "asterism.db").exists():
+            with _ro(workspace) as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM strategist_decisions WHERE problem = ?"
+                    "   AND decision_kind = 'RequestUserAmend'"
+                    "   AND outcome = 'awaiting_human' LIMIT 1",
+                    (problem,)).fetchone()
+            if row is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="a strategist amend is pending on this Manifest"
+                           " — resolve it in the Inbox first")
+        rc, msg = _mfst.update_manifest(
+            workspace, problem, body=body.body, settings=body.settings)
+        if rc != 0:
+            raise HTTPException(status_code=422, detail=msg)
+        return {"problem": problem, "message": msg}
 
     @app.get("/api/problems/{problem}/review")
     def review(problem: str) -> dict:
@@ -326,7 +394,24 @@ def create_app(workspace: Path) -> FastAPI:
                 status_code=422,
                 detail="problem name must be dot-separated identifiers, "
                        "e.g. Topology.my_theorem")
-        if not body.manifest.strip():
+        from ..state import manifest as _mfst
+        raw = body.manifest
+        if raw is None and body.body is not None:
+            st = body.settings or {}
+            def _as_list(v: object) -> list:
+                return v if isinstance(v, list) else []
+            fm: dict[str, object] = {
+                "problem": name,
+                "axioms_whitelist": _as_list(st.get("axioms_whitelist")) or [
+                    "propext", "Quot.sound", "Classical.choice"],
+                "forbidden_lemmas": _as_list(st.get("forbidden_lemmas")),
+                "library": bool(st.get("library", True)),
+            }
+            if _as_list(st.get("lemma_hints")):
+                fm["lemma_hints"] = _as_list(st.get("lemma_hints"))
+            nl = body.body if body.body.startswith("\n") else "\n" + body.body
+            raw = _mfst.compose(fm, nl)
+        if raw is None or not raw.strip():
             raise HTTPException(status_code=422,
                                 detail="Manifest must not be empty")
         pdir = db.problem_dir(workspace, name)
@@ -339,7 +424,7 @@ def create_app(workspace: Path) -> FastAPI:
             pdir.mkdir(parents=True)
             created = True
             (pdir / "Manifest.md").write_text(
-                body.manifest, encoding="utf-8", newline="\n")
+                raw, encoding="utf-8", newline="\n")
             if body.defs and body.defs.strip():
                 (pdir / "Defs.lean").write_text(
                     body.defs, encoding="utf-8", newline="\n")
@@ -358,6 +443,19 @@ def create_app(workspace: Path) -> FastAPI:
                 _shutil.rmtree(pdir, ignore_errors=True)
             raise HTTPException(status_code=500,
                                 detail=f"create failed: {e}")
+
+    @app.get("/api/config")
+    def config_get() -> dict:
+        from ..core import config as _cfg
+        return {"settings": _cfg.ui_settings(workspace)}
+
+    @app.post("/api/config")
+    def config_set(body: ConfigSetBody) -> dict:
+        from ..core import config as _cfg
+        rc, msg = _cfg.set_ui_setting(workspace, body.key, body.value)
+        if rc != 0:
+            raise HTTPException(status_code=422, detail=msg)
+        return {"message": msg}
 
     # -- daemon control --------------------------------------------------
 

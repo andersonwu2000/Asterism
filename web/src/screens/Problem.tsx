@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { usePoll } from '../lib/api'
-import { Link, navigate } from '../lib/router'
+import { Link } from '../lib/router'
 import { relTime } from '../lib/format'
 import { ErrorState, StatusBadge } from '../components/ui'
 import Constellation from '../components/Constellation'
@@ -8,9 +8,11 @@ import GoalPanel from '../components/GoalPanel'
 import StrategyPanel from '../components/StrategyPanel'
 import DecisionTimeline from '../components/DecisionTimeline'
 import FileViewer from '../components/FileViewer'
+import ManifestEditor from '../components/ManifestEditor'
+import RunControl from '../components/RunControl'
 import type { Goal, ProblemDetail } from '../lib/types'
 
-type Tab = 'stars' | 'goals' | 'timeline' | 'files'
+type Tab = 'stars' | 'manifest' | 'goals' | 'timeline' | 'files'
 
 /* proved is the settled majority — it reads quiet; color is spent on
  * the live minority (open/attempting) and exceptions. */
@@ -118,6 +120,7 @@ export default function Problem({ name }: { name: string }) {
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'stars', label: 'Constellation' },
+    { id: 'manifest', label: 'Manifest' },
     { id: 'goals', label: `Goals (${data.goals.length})` },
     { id: 'timeline', label: 'Timeline' },
     { id: 'files', label: 'Files' },
@@ -137,7 +140,8 @@ export default function Problem({ name }: { name: string }) {
             <h1 className="font-mono text-base font-semibold">{data.name}</h1>
             <StatusBadge status={data.status} />
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4">
+            <RunControl problem={data.name} />
             {data.goals.length > 0 && (
               <div className="flex h-[3px] w-28 overflow-hidden rounded-full bg-surface-3">
                 <div
@@ -257,15 +261,10 @@ export default function Problem({ name }: { name: string }) {
           {tab === 'stars' && data.goals.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-ink-faint">
               <div>No goals yet — the Strategist bootstraps from the Manifest once the engine runs.</div>
-              <button
-                className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-starlight"
-                onClick={() => {
-                  localStorage.setItem('engine_scope_suggest', data.name)
-                  navigate('/telemetry')
-                }}
-              >
-                Start the engine on this problem
-              </button>
+              <div className="text-xs text-ink-faint">
+                press <span className="font-semibold text-ink-dim">Run</span> in the header —
+                the engine works this problem only
+              </div>
             </div>
           ) : tab === 'stars' && (
             <div className="h-full">
@@ -287,6 +286,7 @@ export default function Problem({ name }: { name: string }) {
               />
             </div>
           )}
+          {tab === 'manifest' && <ManifestEditor problem={data.name} />}
           {tab === 'goals' && <GoalsList goals={data.goals} onSelect={setSelectedGoal} />}
           {tab === 'timeline' && (
             <div className="mx-auto max-w-4xl px-4 py-3">
@@ -303,7 +303,7 @@ export default function Problem({ name }: { name: string }) {
             </div>
           )}
         </div>
-        {selectedGoal !== null && tab !== 'files' && tab !== 'timeline' && (
+        {selectedGoal !== null && tab !== 'files' && tab !== 'timeline' && tab !== 'manifest' && (
           <GoalPanel
             problem={data.name}
             goalId={selectedGoal}
@@ -321,7 +321,8 @@ export default function Problem({ name }: { name: string }) {
         {selectedGoal === null &&
           selectedStrategy !== null &&
           tab !== 'files' &&
-          tab !== 'timeline' && (
+          tab !== 'timeline' &&
+          tab !== 'manifest' && (
             <StrategyPanel
               problem={data.name}
               strategyId={selectedStrategy}

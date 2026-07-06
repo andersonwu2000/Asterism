@@ -1,0 +1,77 @@
+import { useState } from 'react'
+import { apiPost, usePoll } from '../lib/api'
+import { Link } from '../lib/router'
+import type { DaemonStatus } from '../lib/types'
+
+/*
+ * Per-problem engine control — the default way to run Asterism is one
+ * problem at a time, from that problem's page. Honesty constraint: the
+ * engine is ONE process per workspace with a scope filter, so when it
+ * is busy on another scope this control says so instead of pretending
+ * per-problem runs are independent. Pattern/global runs live on the
+ * Engine page as the advanced path.
+ */
+
+export default function RunControl({ problem }: { problem: string }) {
+  const { data: d, refresh } = usePoll<DaemonStatus>('/api/daemon', 2000)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const act = async (path: string, body: Record<string, unknown>) => {
+    setBusy(true)
+    setErr(null)
+    try {
+      await apiPost(path, body)
+    } catch (e) {
+      setErr(String((e as Error).message))
+    } finally {
+      setBusy(false)
+      refresh()
+    }
+  }
+
+  if (!d) return null
+  const mine = d.running && d.scope === problem
+  const busyElsewhere = d.running && d.scope !== problem
+
+  return (
+    <span className="flex items-center gap-2">
+      {err && (
+        <span className="max-w-64 truncate text-[11px] text-ink-dim" title={err}>
+          {err}
+        </span>
+      )}
+      {mine ? (
+        <>
+          <span className="flex items-center gap-1.5 text-[11px] text-accent">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+            engine running{d.stopping ? ' — stopping' : ''}
+          </span>
+          <button
+            className="rounded-md border border-edge px-3 py-1.5 text-xs text-ink-dim transition-colors hover:border-edge-strong hover:text-ink disabled:pointer-events-none disabled:opacity-45"
+            disabled={busy || d.stopping}
+            onClick={() => void act('/api/daemon/stop', { force: false })}
+          >
+            Stop
+          </button>
+        </>
+      ) : busyElsewhere ? (
+        <span className="text-[11px] text-ink-faint">
+          engine busy — <span className="font-mono">{d.scope ?? 'all problems'}</span> ·{' '}
+          <Link to="/telemetry" className="underline decoration-ink-faint underline-offset-2 hover:text-ink">
+            Engine
+          </Link>
+        </span>
+      ) : (
+        <button
+          className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-starlight disabled:pointer-events-none disabled:opacity-45"
+          disabled={busy}
+          title="run the engine on this problem only"
+          onClick={() => void act('/api/daemon/start', { scope: problem })}
+        >
+          Run
+        </button>
+      )}
+    </span>
+  )
+}

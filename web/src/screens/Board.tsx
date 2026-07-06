@@ -67,8 +67,8 @@ function ProgressBar({
 /** Quiet text status for settled rows — the pill treatment is reserved
  * for states that ask something of the reader. */
 const SETTLED_LABEL: Record<string, string> = {
-  ingested: 'ingested',
-  bridged: 'bridged ◆',
+  ingested: 'complete',
+  bridged: 'in Library ◆',
   idle: 'not started',
 }
 
@@ -121,9 +121,9 @@ function Row({ p, dense, stripPrefix }: { p: BoardProblem; dense?: boolean; stri
             className={`text-[11px] ${p.status === 'bridged' ? 'text-star/70' : 'text-ink-faint'}`}
             title={
               p.status === 'bridged'
-                ? 'merged into the Library'
+                ? 'merged into the Library (engine term: bridged)'
                 : p.status === 'ingested'
-                  ? 'proof complete and accepted'
+                  ? 'proof complete and accepted (engine term: ingested)'
                   : 'not started yet'
             }
           >
@@ -257,7 +257,7 @@ function ClusterRow({
       </td>
       <td className="pr-4">
         {c.bridged > 0 && (
-          <span className="tnum text-[11px] text-star/70">{c.bridged} bridged ◆</span>
+          <span className="tnum text-[11px] text-star/70">{c.bridged} in Library ◆</span>
         )}
       </td>
       <td className="pr-4">

@@ -88,6 +88,11 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Native form controls join the achromatic scheme */
+input[type='checkbox'] {
+  accent-color: var(--color-ink-dim);
+}
+
 /* Thin dark scrollbars */
 * {
   scrollbar-width: thin;

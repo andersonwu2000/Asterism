@@ -446,3 +446,77 @@ def inject_defs_opens(
         + "\n".join(block_lines) + "\n\n"
         + "\n".join(after)
     )
+
+
+# ---------------------------------------------------------------------
+# Manifest authoring chokepoint (UI settings-vs-NL split)
+# ---------------------------------------------------------------------
+#
+# The UI presents the Manifest as structured settings (frontmatter) +
+# a natural-language body. These helpers keep the file the single
+# source of truth while letting either half be replaced independently:
+# unknown frontmatter keys survive a settings update untouched, and
+# the hot-reload ManifestCache picks the write up on the next tick.
+
+#: frontmatter keys the UI owns; anything else round-trips verbatim.
+UI_SETTING_KEYS = (
+    "axioms_whitelist", "forbidden_lemmas", "lemma_hints", "library",
+)
+
+
+def split_raw(text: str) -> "tuple[dict[str, object], str]":
+    """(frontmatter dict, body text) — inverse-ish of `compose`."""
+    fm = _parse_frontmatter(text)
+    m = _FRONTMATTER_RE.match(text)
+    body = text[m.end():] if m else text
+    return fm, body
+
+
+def compose(fm: "dict[str, object]", body: str) -> str:
+    """Serialize frontmatter + body in the same shape
+    `_parse_frontmatter` reads (scalars, string lists, booleans)."""
+    lines: list[str] = ["---"]
+    for key, val in fm.items():
+        if isinstance(val, bool):
+            lines.append(f"{key}: {'true' if val else 'false'}")
+        elif isinstance(val, list):
+            if len(val) == 0:
+                lines.append(f"{key}: []")
+            else:
+                lines.append(f"{key}:")
+                for item in val:
+                    lines.append(f"  - {item}")
+        else:
+            lines.append(f"{key}: {val}")
+    lines.append("---")
+    return "\n".join(lines) + "\n" + body
+
+
+def update_manifest(workspace: Path, problem: str, *,
+                    body: "str | None" = None,
+                    settings: "dict[str, object] | None" = None,
+                    ) -> "tuple[int, str]":
+    """Rewrite Manifest.md replacing the NL body and/or the UI-owned
+    settings keys. Preserves every frontmatter key the UI does not own
+    (problem:, paper:, future keys). Returns (0, ok) / (1, why)."""
+    from . import db as _db
+    pdir = _db.problem_dir(workspace, problem)
+    path = pdir / "Manifest.md"
+    if not path.exists():
+        return 1, f"FAIL: {path} not found"
+    fm, old_body = split_raw(path.read_text(encoding="utf-8"))
+    if settings is not None:
+        for key in UI_SETTING_KEYS:
+            if key in settings:
+                fm[key] = settings[key]
+    fm.setdefault("problem", problem)
+    new_text = compose(fm, body if body is not None else old_body)
+    # sanity: the result must still parse before it replaces the file
+    try:
+        _parse_frontmatter(new_text)
+    except Exception as e:  # noqa: BLE001
+        return 1, f"FAIL: rewritten Manifest would not parse: {e}"
+    tmp = path.with_suffix(".md.tmp")
+    tmp.write_text(new_text, encoding="utf-8", newline="\n")
+    tmp.replace(path)
+    return 0, "OK: Manifest updated (hot-reload picks it up on the next tick)"
