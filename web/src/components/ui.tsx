@@ -49,7 +49,11 @@ const STATUS_CHIP: Record<ProblemStatus, { label: string; cls: string; dot: stri
   idle: { label: 'idle', cls: 'text-ink-faint', dot: 'bg-ink-faint/60' },
   signoff_pending: { label: 'sign-off', cls: 'text-warn bg-warn/15', dot: 'bg-warn' },
   ingested: { label: 'ingested', cls: 'text-ok bg-ok/10', dot: 'bg-ok' },
-  bridged: { label: 'bridged', cls: 'text-star bg-star/10', dot: 'bg-star' },
+  bridged: {
+    label: 'bridged',
+    cls: 'text-ink-dim border border-edge-strong',
+    dot: 'bg-starlight',
+  },
 }
 
 export function StatusBadge({ status }: { status: ProblemStatus }) {
@@ -108,7 +112,7 @@ export function ErrorState({ error }: { error: Error }) {
 
 export function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <div className="mb-2 text-xs font-medium tracking-widest text-ink-faint uppercase">
+    <div className="mb-2 text-[11px] font-medium tracking-widest text-ink-faint/70 uppercase">
       {children}
     </div>
   )

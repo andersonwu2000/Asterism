@@ -130,6 +130,13 @@ export default function Constellation({
     () => new Map(layout.nodes.map((n) => [n.goal.id, n])),
     [layout],
   )
+  // Label stagger is collision-avoidance for dense layers; in sparse
+  // layers it reads as jitter, so apply it only where needed.
+  const layerCounts = useMemo(() => {
+    const m = new Map<number, number>()
+    for (const n of layout.nodes) m.set(n.layer, (m.get(n.layer) ?? 0) + 1)
+    return m
+  }, [layout])
 
   const containerRef = useRef<HTMLDivElement>(null)
   const [view, setView] = useState<{ k: number; tx: number; ty: number } | null>(null)
@@ -148,7 +155,10 @@ export default function Constellation({
     const el = containerRef.current
     if (!el || layout.nodes.length === 0) return
     const { width: cw, height: ch } = el.getBoundingClientRect()
-    const k = Math.min(cw / layout.width, ch / layout.height, 1.3)
+    // Fill the canvas: fit the content bounding box, allowing generous
+    // magnification for small graphs (10 stars in a void read as a
+    // failed page load — design review).
+    const k = Math.min(cw / layout.width, ch / layout.height, 2.0)
     setView({
       k,
       tx: (cw - layout.width * k) / 2,
@@ -427,7 +437,13 @@ export default function Constellation({
                   </circle>
                 )}
                 {n.goal.is_deliverable && (
-                  <circle r={r + 3} fill="none" stroke={s.stroke} strokeWidth={0.7} opacity={0.6} />
+                  <circle
+                    r={r + 3}
+                    fill="none"
+                    stroke={s.stroke}
+                    strokeWidth={1.1}
+                    opacity={0.85}
+                  />
                 )}
                 {heatFrac > 0 && (
                   <circle
@@ -479,7 +495,10 @@ export default function Constellation({
                     // slugs on adjacent stars don't collide; offsets are
                     // screen-constant like the font. Truncation is
                     // width-aware: never truncate into empty space.
-                    y={r + (n.col % 2 === 0 ? 14 : 26) / k}
+                    y={
+                      r +
+                      ((layerCounts.get(n.layer) ?? 0) > 8 && n.col % 2 === 1 ? 26 : 14) / k
+                    }
                     textAnchor="middle"
                     className="pointer-events-none select-none"
                     fill={selected ? 'var(--color-ink)' : 'var(--color-ink-dim)'}

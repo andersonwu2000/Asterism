@@ -35,7 +35,7 @@ function Progress({ p }: { p: BoardProblem }) {
   return (
     <div className="flex h-[3px] w-24 overflow-hidden rounded-full bg-surface-3">
       <div
-        className="h-full bg-star/80 transition-[width] duration-700"
+        className="h-full bg-starlight/80 transition-[width] duration-700"
         style={{ width: `${proved}%` }}
       />
       <div
@@ -86,15 +86,26 @@ function Row({ p }: { p: BoardProblem }) {
   )
 }
 
+/* attention → live → settled → dormant (idle reads last, not mid-list) */
 const STATUS_ORDER = [
   'awaiting_human',
   'signoff_pending',
   'stalled',
   'proving',
-  'idle',
   'ingested',
   'bridged',
+  'idle',
 ]
+
+const STATUS_FILTER_LABEL: Record<string, string> = {
+  awaiting_human: 'needs input',
+  signoff_pending: 'sign-off',
+  stalled: 'stalled',
+  proving: 'proving',
+  ingested: 'ingested',
+  bridged: 'bridged',
+  idle: 'idle',
+}
 
 export default function Board() {
   const { data, error, loading } = usePoll<BoardResponse>('/api/problems')
@@ -168,7 +179,9 @@ export default function Board() {
       <div className="mb-3 flex items-center justify-between">
         <div className="tnum text-xs text-ink-dim">
           {problems.length} problems
-          {attention > 0 && <span className="ml-2 text-danger">{attention} need attention</span>}
+          {attention > 0 && (
+            <span className="ml-2 font-medium text-warn">{attention} need input</span>
+          )}
         </div>
         <div className="flex overflow-hidden rounded-md border border-edge text-xs">
           {(['list', 'galaxy'] as const).map((v) => (
@@ -219,7 +232,7 @@ export default function Board() {
               }`}
               onClick={() => setStatusFilter(statusFilter === s ? null : s)}
             >
-              {s.replace('_', ' ')} {statusCounts.get(s)}
+              {STATUS_FILTER_LABEL[s] ?? s} {statusCounts.get(s)}
             </button>
           ))}
         </div>
@@ -229,36 +242,61 @@ export default function Board() {
       </div>
       {view === 'galaxy' ? (
         (() => {
-          // Dormant problems (idle, zero progress) demote to a compact
-          // strip — a wall of dark stub cards drowned the live sky.
-          const active = sorted.filter((p) => p.status !== 'idle')
-          const dormant = sorted.filter((p) => p.status === 'idle')
+          // Cards only for problems that carry live state (attention /
+          // proving / stalled) or settled within the last week; stale
+          // completed work and never-started stubs collapse into
+          // compact strips — a wall of identical cards drowned the one
+          // problem that needs a human.
+          const weekAgo = Date.now() - 7 * 86400_000
+          const isRecent = (p: BoardProblem) =>
+            p.last_event !== null && Date.parse(p.last_event) > weekAgo
+          const live = new Set(['awaiting_human', 'signoff_pending', 'stalled', 'proving'])
+          const cards = sorted.filter((p) => live.has(p.status) || (p.status !== 'idle' && isRecent(p)))
+          const cardSet = new Set(cards.map((p) => p.name))
+          const completed = sorted.filter(
+            (p) => !cardSet.has(p.name) && p.status !== 'idle',
+          )
+          const dormant = sorted.filter((p) => p.status === 'idle' && !cardSet.has(p.name))
+          const strip = (title: string, items: BoardProblem[]) =>
+            items.length > 0 && (
+              <div className="mt-6">
+                <div className="mb-2 text-xs font-medium tracking-widest text-ink-faint uppercase">
+                  {title} ({items.length})
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {items.map((p) => (
+                    <button
+                      key={p.name}
+                      className="tnum flex items-center gap-2 rounded-md border border-edge px-2 py-1 text-[11px] text-ink-faint transition-colors hover:border-edge-strong hover:text-ink"
+                      onClick={() => navigate(`/problems/${encodeURIComponent(p.name)}`)}
+                      title={p.name}
+                    >
+                      <span className="font-mono">
+                        {p.name.length > 30 ? `…${p.name.slice(-29)}` : p.name}
+                      </span>
+                      {p.goals.proved > 0 && (
+                        <span className="text-ink-faint/70">{p.goals.proved}✓</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )
           return (
             <>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-                {active.map((p) => (
-                  <GalaxyCard key={p.name} p={p} />
-                ))}
-              </div>
-              {dormant.length > 0 && (
-                <div className="mt-6">
-                  <div className="mb-2 text-xs font-medium tracking-widest text-ink-faint uppercase">
-                    not started ({dormant.length})
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {dormant.map((p) => (
-                      <button
-                        key={p.name}
-                        className="rounded-md border border-edge px-2 py-1 font-mono text-[11px] text-ink-faint transition-colors hover:border-edge-strong hover:text-ink"
-                        onClick={() => navigate(`/problems/${encodeURIComponent(p.name)}`)}
-                        title={p.name}
-                      >
-                        {p.name.length > 30 ? `…${p.name.slice(-29)}` : p.name}
-                      </button>
-                    ))}
-                  </div>
+              {cards.length > 0 ? (
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+                  {cards.map((p) => (
+                    <GalaxyCard key={p.name} p={p} />
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-md border border-edge bg-surface px-4 py-6 text-center text-xs text-ink-faint">
+                  Nothing live right now — completed and dormant problems are below.
                 </div>
               )}
+              {strip('completed', completed)}
+              {strip('not started', dormant)}
             </>
           )
         })()
@@ -266,12 +304,14 @@ export default function Board() {
         <table className="w-full border-collapse text-left">
           <thead className="sticky top-0 z-10 bg-bg">
             <tr className="border-b border-edge text-xs text-ink-faint">
-              <th className="py-2 pr-4 pl-4 font-medium">problem</th>
-              <th className="py-2 pr-4 font-medium">status</th>
-              <th className="py-2 pr-4 font-medium">goals</th>
-              <th className="py-2 pr-4 font-medium">progress</th>
-              <th className="py-2 pr-4 font-medium">activity</th>
-              <th className="py-2 pr-4 text-right font-medium whitespace-nowrap">last event</th>
+              <th className="py-2 pr-4 pl-3 font-medium">problem</th>
+              <th className="w-[120px] py-2 pr-4 font-medium">status</th>
+              <th className="w-[150px] py-2 pr-4 font-medium">goals</th>
+              <th className="w-[130px] py-2 pr-4 font-medium">progress</th>
+              <th className="w-[100px] py-2 pr-4 font-medium">activity</th>
+              <th className="w-[80px] py-2 pr-3 text-right font-medium whitespace-nowrap">
+                last event
+              </th>
             </tr>
           </thead>
           <tbody>

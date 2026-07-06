@@ -105,7 +105,7 @@ export default function Problem({ name }: { name: string }) {
             {data.goals.length > 0 && (
               <div className="flex h-[3px] w-28 overflow-hidden rounded-full bg-surface-3">
                 <div
-                  className="h-full bg-star/80 transition-[width] duration-700"
+                  className="h-full bg-starlight/80 transition-[width] duration-700"
                   style={{ width: `${(proved / data.goals.length) * 100}%` }}
                 />
                 <div

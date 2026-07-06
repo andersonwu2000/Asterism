@@ -86,7 +86,10 @@ export default function GalaxyCard({ p }: { p: BoardProblem }) {
           <StatusBadge status={p.status} />
         </div>
       )}
-      <svg viewBox="0 0 140 80" className="w-full">
+      <svg
+        viewBox="0 0 140 80"
+        className={`w-full ${p.goals.total > 0 && p.goals.proved === p.goals.total ? 'opacity-60' : ''}`}
+      >
         {stars.slice(0, -1).map((s, i) => {
           const t = stars[i + 1]
           return (

@@ -35,38 +35,46 @@ function chunkRows(rows: DiffRow[]): Chunk[] {
   return chunks
 }
 
-function Row({ r }: { r: DiffRow }) {
+/* Unified rendering: full-measure lines survive Lean statements; the
+ * old side-by-side gave each pane ~400px and wrapped every math line
+ * 2–4 times (design review). change → del line + add line stacked. */
+function Line({
+  no,
+  text,
+  tone,
+  sign,
+}: {
+  no: number | null
+  text: string
+  tone: 'same' | 'del' | 'add'
+  sign: string
+}) {
   return (
-    <div className="grid grid-cols-2">
-      <div
-        className={`flex min-w-0 border-r border-edge px-2 whitespace-pre-wrap ${
-          r.type === 'del' || r.type === 'change'
-            ? 'bg-danger/10 text-ink'
-            : r.type === 'add'
-              ? 'bg-surface'
-              : 'text-ink-dim'
-        }`}
-      >
-        <span className="tnum mr-2 w-7 shrink-0 text-right text-ink-faint select-none">
-          {r.leftNo ?? ''}
-        </span>
-        <span className="min-w-0 break-words">{r.left ?? ''}</span>
-      </div>
-      <div
-        className={`flex min-w-0 px-2 whitespace-pre-wrap ${
-          r.type === 'add' || r.type === 'change'
-            ? 'bg-ok/10 text-ink'
-            : r.type === 'del'
-              ? 'bg-surface'
-              : 'text-ink-dim'
-        }`}
-      >
-        <span className="tnum mr-2 w-7 shrink-0 text-right text-ink-faint select-none">
-          {r.rightNo ?? ''}
-        </span>
-        <span className="min-w-0 break-words">{r.right ?? ''}</span>
-      </div>
+    <div
+      className={`flex min-w-0 px-2 whitespace-pre-wrap ${
+        tone === 'del' ? 'bg-danger/10 text-ink' : tone === 'add' ? 'bg-ok/10 text-ink' : 'text-ink-dim'
+      }`}
+    >
+      <span className="tnum mr-1 w-8 shrink-0 text-right text-ink-faint select-none">
+        {no ?? ''}
+      </span>
+      <span className="mr-2 w-3 shrink-0 text-ink-faint select-none">{sign}</span>
+      <span className="min-w-0 break-words">{text}</span>
     </div>
+  )
+}
+
+function Row({ r }: { r: DiffRow }) {
+  if (r.type === 'same') return <Line no={r.rightNo} text={r.right ?? ''} tone="same" sign=" " />
+  return (
+    <>
+      {(r.type === 'del' || r.type === 'change') && (
+        <Line no={r.leftNo} text={r.left ?? ''} tone="del" sign="−" />
+      )}
+      {(r.type === 'add' || r.type === 'change') && (
+        <Line no={r.rightNo} text={r.right ?? ''} tone="add" sign="+" />
+      )}
+    </>
   )
 }
 
@@ -97,12 +105,9 @@ export default function DiffView({ left, right }: { left: string; right: string 
   const changed = rows.filter((r) => r.type !== 'same').length
   return (
     <div className="overflow-hidden rounded-md border border-edge">
-      <div className="grid grid-cols-2 border-b border-edge bg-surface-2 text-[11px] text-ink-faint">
-        <div className="px-3 py-1">current</div>
-        <div className="border-l border-edge px-3 py-1">
-          proposed{' '}
-          {changed > 0 && <span className="tnum text-warn">· {changed} changed lines</span>}
-        </div>
+      <div className="flex items-center gap-2 border-b border-edge bg-surface-2 px-3 py-1 text-[11px] text-ink-faint">
+        <span>current → proposed</span>
+        {changed > 0 && <span className="tnum">· {changed} changed lines</span>}
       </div>
       <div className="max-h-96 overflow-auto font-mono text-[11px] leading-relaxed">
         {chunks.map((c, i) =>
