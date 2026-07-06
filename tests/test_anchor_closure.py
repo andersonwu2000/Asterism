@@ -392,6 +392,42 @@ def test_ingest_commit_library_gate_and_signoff(conn, tmp_path):
         config._reset_cache()
 
 
+def test_ingest_gate_closes_before_slow_snapshot(conn, tmp_path, monkeypatch):
+    """TOCTOU pin (2026-07-06, Logic.toy_list_reverse): the Librarian
+    selfstart path reads `ingested_at set + signoff flag clear` as
+    "approved, go". store_review_snapshot can block 30s+ warming a
+    cold/stale gateway, so the flag must be COMMITTED atomically with
+    the terminal stamp BEFORE the snapshot runs — the pre-fix order
+    (stamp → snapshot → flag) let a dispatcher tick inside the warm-up
+    window auto-start the harvest chain past the human gate."""
+    from Tooling.pipeline.strategist import _commit_ingest
+    from Tooling.core import config
+    from Tooling.quality import review as _review
+    conn.execute("INSERT INTO problems(name,manifest_path,created_at)"
+                 " VALUES ('P.a','P.a/Manifest.md',?)", (_db.now(),))
+    conn.commit()
+    pdir = _db.problem_dir(tmp_path, "P.a")
+    pdir.mkdir(parents=True)
+    (pdir / "Manifest.md").write_text(
+        "---\nproblem: P.a\nlibrary: true\n---\n# P.a\n", encoding="utf-8")
+
+    seen: dict = {}
+
+    def probe_snapshot(c, ws, problem):
+        # What a concurrent dispatcher tick would observe mid-snapshot.
+        seen["ingested"] = _db.problem_ingested(conn, problem)
+        seen["signoff"] = _db.problem_ingest_signoff_pending(conn, problem)
+        return True
+
+    monkeypatch.setattr(_review, "store_review_snapshot", probe_snapshot)
+    try:
+        config._reset_cache()
+        _commit_ingest(conn, problem="P.a", workspace=tmp_path)
+    finally:
+        config._reset_cache()
+    assert seen == {"ingested": True, "signoff": True}
+
+
 # ---------------------------------------------------------------------------
 # Integration (real_lake): the actual kernel walk over a live gateway
 # ---------------------------------------------------------------------------

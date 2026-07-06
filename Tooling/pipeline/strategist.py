@@ -931,10 +931,41 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
     harvest is strictly Ingest-driven now."""
     from ..core import config as _config
     from ..state import manifest as _manifest
-    # Terminal stamp FIRST — even when the Manifest opts out of harvest
-    # (library:false = pure exit) or turns out unreadable, the Strategist's
-    # terminal judgment stands; only the harvest side-effects vary.
+    # Decide the sign-off gate BEFORE publishing the terminal stamp.
+    # `ingested_at` + a clear flag is what the Librarian selfstart path
+    # reads as "approved, go" — so the flag must land in the same
+    # transaction as the stamp. The pre-fix order stamped first and set
+    # the flag AFTER store_review_snapshot, whose gateway warm-up is a
+    # 30s+ window on a cold/stale gateway; the dispatcher tick inside
+    # that window auto-started the harvest chain past the human gate
+    # (observed 2026-07-06, Logic.toy_list_reverse: dedupe→migrate ran
+    # before "paused for human sign-off" printed).
+    harvest = True
+    harvest_skip_msg = ""
+    mfst_path = db.problem_dir(workspace, problem) / "Manifest.md"
+    try:
+        mfst = _manifest.parse(mfst_path)
+    except Exception as e:
+        harvest = False
+        harvest_skip_msg = (f"[strategist] Ingest({problem}): Manifest "
+                            f"unreadable ({e}); no harvest")
+    if harvest and not mfst.library:
+        harvest = False
+        harvest_skip_msg = (f"[strategist] Ingest({problem}): Manifest "
+                            f"library:false — opted out of Library; "
+                            f"no harvest")
+    require_signoff = harvest and _as_bool(_config.get(
+        "library.require_signoff", default=True, workspace=workspace))
+
+    # Terminal stamp + gate flag: one atomic publication. Even when the
+    # Manifest opts out of harvest the Strategist's terminal judgment
+    # stands; only the harvest side-effects vary.
     db.set_problem_ingested(conn, problem)
+    if require_signoff:
+        db.set_ingest_signoff_pending(conn, problem, True)
+    conn.commit()
+
+    # Slow best-effort work AFTER the gate is closed.
     # Regression manifest (task #8): the milestone auto-records itself —
     # tracked JSONL, best-effort, never blocks the Ingest.
     from ..state import regress as _regress
@@ -948,21 +979,11 @@ def _commit_ingest(conn: sqlite3.Connection, *, problem: str,
     # a failure degrades readers to live compute, never blocks Ingest.
     from ..quality import review as _review
     _review.store_review_snapshot(conn, workspace, problem)
-    mfst_path = db.problem_dir(workspace, problem) / "Manifest.md"
-    try:
-        mfst = _manifest.parse(mfst_path)
-    except Exception as e:
-        print(f"[strategist] Ingest({problem}): Manifest unreadable ({e}); "
-              f"no harvest", flush=True)
+
+    if not harvest:
+        print(harvest_skip_msg, flush=True)
         return
-    if not mfst.library:
-        print(f"[strategist] Ingest({problem}): Manifest library:false — "
-              f"opted out of Library; no harvest", flush=True)
-        return
-    require_signoff = _as_bool(_config.get(
-        "library.require_signoff", default=True, workspace=workspace))
     if require_signoff:
-        db.set_ingest_signoff_pending(conn, problem, True)
         print(f"[strategist] Ingest({problem}): paused for human sign-off — "
               f"`asterism approve-ingest {problem}` to harvest, "
               f"`asterism reject-ingest {problem} --reason ...` to keep "
