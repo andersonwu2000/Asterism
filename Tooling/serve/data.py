@@ -92,14 +92,18 @@ def board(conn: sqlite3.Connection) -> dict:
             ingested=p["ingested_at"] is not None,
             stalled=name in stalled,
         )
-        # Presentation refinement: the engine's stall signal also covers
-        # problems that were never launched (frozen root / zero goals,
-        # e.g. a benchmark batch). Red "stalled" is an attention chip;
-        # a problem with zero progress and nothing alive is just idle.
+        # Presentation refinements on the stall signal (red = attention):
+        # (a) queued work (e.g. the pending Strategist wake between
+        #     batches) means the engine is on it — show proving, don't
+        #     flicker red in the gap;
+        # (b) never-launched problems (frozen root / zero goals, e.g. a
+        #     benchmark batch) are idle, not stuck.
         progressed = any(counts.get(s, 0) for s in
                          ("open", "attempting", "proved", "shelved",
                           "pending_strategist_review"))
-        if chip == "stalled" and not progressed:
+        if chip == "stalled" and queued.get(name, 0) > 0:
+            chip = "proving"
+        elif chip == "stalled" and not progressed:
             chip = "idle"
         rows.append({
             "name": name,
@@ -226,13 +230,19 @@ def problem_detail(conn: sqlite3.Connection, workspace: Path,
         ingested=prow["ingested_at"] is not None,
         stalled=stalled,
     )
-    # Same idle refinement as board() — the two surfaces must agree.
-    progressed = any(g["status"] in ("open", "attempting", "proved",
-                                     "shelved",
-                                     "pending_strategist_review")
-                     for g in goals)
-    if chip == "stalled" and not progressed:
-        chip = "idle"
+    # Same refinements as board() — the two surfaces must agree.
+    if chip == "stalled":
+        queued_n = conn.execute(
+            "SELECT COUNT(*) FROM queue WHERE problem = ?",
+            (problem,)).fetchone()[0]
+        progressed = any(g["status"] in ("open", "attempting", "proved",
+                                         "shelved",
+                                         "pending_strategist_review")
+                         for g in goals)
+        if int(queued_n) > 0:
+            chip = "proving"
+        elif not progressed:
+            chip = "idle"
     return {
         "name": str(prow["name"]),
         "status": chip,

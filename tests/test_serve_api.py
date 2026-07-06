@@ -160,6 +160,17 @@ def test_board_status_chips(workspace: Path) -> None:
     c = _client(workspace)
     assert c.get("/api/problems/idle_p").json()["status"] == "idle"
     assert c.get("/api/problems/stalled_p").json()["status"] == "stalled"
+    # queued work (the between-batches Strategist wake) suppresses the
+    # red flicker: stalled + queue row → proving, on both surfaces
+    conn = db.connect(workspace / "asterism.db")
+    db.enqueue(conn, kind="Strategist", target_id="stalled_p",
+               target_kind="Problem", problem="stalled_p")
+    conn.commit()
+    conn.close()
+    rows2 = {p["name"]: p for p in
+             c.get("/api/problems").json()["problems"]}
+    assert rows2["stalled_p"]["status"] == "proving"
+    assert c.get("/api/problems/stalled_p").json()["status"] == "proving"
     assert rows["amend_p"]["status"] == "awaiting_human"
     assert rows["signoff_p"]["status"] == "signoff_pending"
     assert rows["ingested_p"]["status"] == "ingested"
