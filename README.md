@@ -10,12 +10,17 @@ cd web && npm install && npm run build && cd ..
 asterism serve            # http://127.0.0.1:8642
 ```
 
-One serve process per workspace. The board lists every problem with its
-live status; each problem opens as a constellation — goals are stars
-that light up as they're proved, strategies are the lines that bind
-them. The inbox collects everything that needs a human (amend requests
-with a side-by-side diff, ingest sign-offs with the anchor closure and
-paper provenance), and the engine page starts/stops the daemon and
+One serve process per workspace. The board is the survey sheet — every
+problem in attention order (needs you / in motion / recent / archive,
+big namespaces folded into clusters). Each problem opens as a
+constellation: goals are stars that light up as they're proved, defs
+render as diamonds (the meaning-bearers a human vouches for),
+strategies are the lines that bind them. The Library page draws the
+harvested corpus as one sky — each bridged problem a constellation of
+its real declarations, searchable (a query lights the matching stars).
+The inbox collects everything that needs a human (amend requests with
+a word-level diff, ingest sign-offs that resolve each anchor/claim to
+its actual statement), and the engine page starts/stops the daemon and
 tails its log. The UI is read-only against the engine database; every
 action goes through the same chokepoints as the CLI.
 

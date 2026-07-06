@@ -1,32 +1,38 @@
-# React + TypeScript + Vite
+# Asterism web UI
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The browser face of the proving engine: a night-sky reading of the
+workspace. Vite + React + TypeScript + Tailwind, self-hosted fonts
+(Inter for UI, JetBrains Mono for identifiers, Fraunces for the
+display voice). No router/state libraries — a hand-rolled hash router
+and one polling hook.
 
-Currently, two official plugins are available:
+## Screens
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- **Board** (`#/`) — the survey sheet. Problems in attention order:
+  needs you / in motion / recent / archive; archive namespaces fold
+  into cluster rows. `/` focuses the filter.
+- **Problem** (`#/problems/<name>`) — the constellation. Goals as
+  stars (defs are diamonds, Props circles; proved lights up starlight,
+  the live frontier glows accent), strategies as edge bundles,
+  frontier focus for big graphs; tabs for Goals / Timeline / Files
+  (Manifest renders as a typeset document).
+- **Library** (`#/library`) — the atlas. The harvested corpus as one
+  sky: each bridged problem a constellation of its real declarations,
+  line-art joins only the brightest; search lights matching stars.
+- **Inbox** (`#/inbox`) — decisions. Amend requests with word-level
+  diffs; ingest sign-offs resolve each anchor/claim to its statement
+  (vouching means reading the mathematics).
+- **Engine** (`#/telemetry`) — daemon control, live log, usage.
 
-## React Compiler
+## Development
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```
+npm install
+npm run dev        # http://localhost:5173, proxies /api to :8642
+npm run build      # tsc + vite; production is served by FastAPI
+npm run lint       # oxlint
+npm run smoke      # Playwright suite against a live `asterism serve`
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+The UI is read-only against the engine database; every mutation goes
+through the same HTTP chokepoints as the CLI.
