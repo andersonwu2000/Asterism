@@ -252,6 +252,123 @@ def test_review_paper_line_ref_and_missing(tmp_path: Path) -> None:
     assert line == ""
 
 
+# ---------------------------------------------------------------------
+# v2: curated network commands (search / fetch) — network stubbed
+# ---------------------------------------------------------------------
+
+def _mk_pdf_bytes() -> bytes:
+    fitz = pytest.importorskip("fitz")
+    doc = fitz.open()
+    page = doc.new_page()
+    for row in range(25):
+        page.insert_text((72, 72 + 14 * row), "fetched text line. " * 4)
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+def test_fetch_refuses_non_whitelisted_host(tmp_path: Path) -> None:
+    from Tooling.papers import fetch
+    with pytest.raises(ValueError, match="not fetch-whitelisted"):
+        fetch.fetch_and_shelve(tmp_path, "https://www.ams.org/x.pdf",
+                               problem=None, reason=None)
+
+
+def test_fetch_refuses_non_pdf_response(tmp_path: Path,
+                                        monkeypatch) -> None:
+    from Tooling.papers import fetch
+    import io
+
+    class _R(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    monkeypatch.setattr(fetch.urllib.request, "urlopen",
+                        lambda *a, **k: _R(b"<html>interstitial</html>"))
+    with pytest.raises(RuntimeError, match="not a PDF"):
+        fetch.fetch_and_shelve(tmp_path, "2605.23679",
+                               problem=None, reason=None)
+
+
+def test_fetch_shelves_and_binds(tmp_path: Path, monkeypatch) -> None:
+    """arXiv id → resolved URL → shelved via content hash → bound with
+    origin='scholar'. Uses a real (tiny) PDF so extraction runs."""
+    import io
+    import sqlite3
+    from Tooling.papers import fetch, shelf
+    from Tooling.state import db as _db
+    pdf = _mk_pdf_bytes()
+
+    class _R(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    monkeypatch.setattr(fetch.urllib.request, "urlopen",
+                        lambda *a, **k: _R(pdf))
+    conn = sqlite3.connect(str(tmp_path / "asterism.db"))
+    conn.row_factory = sqlite3.Row
+    _db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at) VALUES"
+        " ('Test.px', 'Problems/Test/px/Manifest.md', 'ts')")
+    conn.commit()
+    conn.close()
+
+    pid = fetch.fetch_and_shelve(tmp_path, "2605.23679",
+                                 problem="Test.px", reason="cited [X]")
+    assert shelf.text_path(tmp_path, pid).is_file()
+    conn = sqlite3.connect(str(tmp_path / "asterism.db"))
+    conn.row_factory = sqlite3.Row
+    rows = _db.paper_bindings(conn, "Test.px")
+    assert [(r["paper_id"], r["origin"]) for r in rows] \
+        == [(pid, "scholar")]
+    conn.close()
+
+
+def test_fetch_cap_enforced(tmp_path: Path, monkeypatch) -> None:
+    import sqlite3
+    from Tooling.papers import fetch
+    from Tooling.state import db as _db
+    conn = sqlite3.connect(str(tmp_path / "asterism.db"))
+    conn.row_factory = sqlite3.Row
+    _db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO problems (name, manifest_path, created_at) VALUES"
+        " ('Test.px', 'Problems/Test/px/Manifest.md', 'ts')")
+    for i in range(fetch.MAX_SCHOLAR_FETCHES_PER_PROBLEM):
+        _db.bind_paper(conn, problem="Test.px", paper_id=f"p{i}",
+                       origin="scholar")
+    conn.close()
+    with pytest.raises(RuntimeError, match="fetch cap"):
+        fetch.fetch_and_shelve(tmp_path, "2605.23679",
+                               problem="Test.px", reason=None)
+
+
+def test_search_aggregates_sources(monkeypatch) -> None:
+    from Tooling.papers import search
+    monkeypatch.setattr(search, "_get_json", lambda url: {
+        "results": [{"title": "T", "publication_year": 1982,
+                     "doi": "https://doi.org/10.1/x",
+                     "open_access": {"oa_status": "diamond"},
+                     "best_oa_location": {"pdf_url": "https://a/x.pdf"}}]
+    } if "openalex" in url else {
+        "message": {"items": [{"title": ["T2"], "DOI": "10.2/y",
+                               "issued": {"date-parts": [[1990]]}}]}})
+    monkeypatch.setattr(search, "_get_text", lambda url: (
+        "<entry><id>http://arxiv.org/abs/2605.23679v1</id>"
+        "<title>Geo</title><published>2026-05-22</published></entry>"))
+    hits = (search._openalex("q") + search._arxiv("q")
+            + search._crossref("q"))
+    srcs = [h["source"] for h in hits]
+    assert srcs == ["openalex", "arxiv", "crossref"]
+    assert hits[1]["arxiv_id"] == "2605.23679v1"
+    assert hits[1]["pdf_url"].endswith("/pdf/2605.23679v1")
+
+
 def test_section_paper_index_stale_map_warns(tmp_path: Path) -> None:
     from Tooling.agent import context as ctx
     meta = _add_text_paper(tmp_path, "short paper\n")
