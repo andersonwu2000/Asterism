@@ -469,24 +469,42 @@ export default function Constellation({
                 <circle
                   cx={b.junction.x}
                   cy={b.junction.y}
-                  r={1.6}
+                  r={2.1}
                   fill={stroke}
                   opacity={opacity}
                 />
                 {onSelectStrategy && (
-                  <circle
-                    cx={b.junction.x}
-                    cy={b.junction.y}
-                    r={6}
-                    fill="transparent"
-                    className="cursor-pointer"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onSelectStrategy(b.strategyId)
-                    }}
-                  >
-                    <title>strategy s{b.strategyId} — {b.status}</title>
-                  </circle>
+                  <>
+                    {/* a faint ring says "this fork is a thing you can
+                        open" — the bare hit area was undiscoverable */}
+                    <circle
+                      cx={b.junction.x}
+                      cy={b.junction.y}
+                      r={5}
+                      fill="none"
+                      stroke={stroke}
+                      strokeWidth={0.8}
+                      opacity={opacity * 0.35}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                    <circle
+                      cx={b.junction.x}
+                      cy={b.junction.y}
+                      r={9}
+                      fill="transparent"
+                      className="cursor-pointer"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onSelectStrategy(b.strategyId)
+                      }}
+                    >
+                      <title>
+                        one route: this fork needs ALL its branches; a second
+                        fork on the same star is a competing route — click for
+                        details (s{b.strategyId}, {b.status})
+                      </title>
+                    </circle>
+                  </>
                 )}
               </g>
             )
@@ -851,6 +869,18 @@ export default function Constellation({
             <line x1="1" y1="8" x2="13" y2="2" stroke="var(--color-starlight)" strokeWidth="1" opacity="0.45" />
           </svg>
           cites
+        </span>
+        <span
+          className="flex items-center gap-1"
+          title="a fork needs ALL its branches (one route); two forks on one star are competing routes — click a fork for details"
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12">
+            <line x1="6" y1="1" x2="6" y2="5" stroke="var(--color-starlight)" strokeWidth="1" opacity="0.6" />
+            <line x1="6" y1="5" x2="2" y2="11" stroke="var(--color-starlight)" strokeWidth="1" opacity="0.6" />
+            <line x1="6" y1="5" x2="10" y2="11" stroke="var(--color-starlight)" strokeWidth="1" opacity="0.6" />
+            <circle cx="6" cy="5" r="1.6" fill="var(--color-starlight)" opacity="0.8" />
+          </svg>
+          route
         </span>
         <span className="flex items-center gap-1">
           <svg width="10" height="10" viewBox="-5 -5 10 10">
