@@ -17,16 +17,16 @@ import type { BoardProblem, BoardResponse } from '../lib/types'
 function GoalCounts({ p }: { p: BoardProblem }) {
   if (p.goals.total === 0 || (p.goals.open === 0 && p.goals.proved === 0))
     return <span className="text-xs text-ink-faint">—</span>
+  // one nowrap line that truncates — a mid-word wrap inside a table
+  // cell is worse than losing the (tertiary) shelved count
   return (
-    <span className="tnum flex items-center text-xs">
-      <span className={`w-14 ${p.goals.open > 0 ? 'text-accent' : 'text-ink-faint'}`}>
-        {p.goals.open > 0 ? `${p.goals.open} open` : ''}
-      </span>
-      <span className={`w-18 ${p.goals.proved > 0 ? 'text-ink-dim' : 'text-ink-faint'}`}>
+    <span className="tnum block truncate text-xs whitespace-nowrap">
+      {p.goals.open > 0 && <span className="text-accent">{p.goals.open} open · </span>}
+      <span className={p.goals.proved > 0 ? 'text-ink-dim' : 'text-ink-faint'}>
         {p.goals.proved} proved
       </span>
       {p.goals.shelved > 0 && (
-        <span className="whitespace-nowrap text-ink-faint">{p.goals.shelved} shelved</span>
+        <span className="text-ink-faint"> · {p.goals.shelved} shelved</span>
       )}
     </span>
   )
@@ -78,7 +78,10 @@ function Row({ p, dense }: { p: BoardProblem; dense?: boolean }) {
       onClick={() => navigate(`/problems/${encodeURIComponent(p.name)}`)}
     >
       <td className={dense ? 'pr-4 pl-7' : 'pr-4 pl-3'}>
-        <span className={`font-mono text-[13px] ${dense ? 'text-ink-dim' : 'text-ink'}`}>
+        <span
+          className={`block truncate font-mono text-[13px] ${dense ? 'text-ink-dim' : 'text-ink'}`}
+          title={p.name}
+        >
           {p.name}
         </span>
       </td>
@@ -479,7 +482,9 @@ export default function Board() {
           )
         })()
       ) : (
-        <table className="w-full border-collapse text-left">
+        /* table-fixed + truncating name cell: long mono names must not
+           push "last event" off a laptop screen (main clips overflow) */
+        <table className="w-full table-fixed border-collapse text-left">
           <thead className="sticky top-0 z-10 bg-bg">
             <tr className="border-b border-edge text-xs text-ink-faint">
               <th className="py-2 pr-4 pl-3 font-medium">problem</th>
