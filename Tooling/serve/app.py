@@ -299,7 +299,11 @@ def create_app(workspace: Path) -> FastAPI:
 
         @app.get("/", include_in_schema=False)
         def index() -> FileResponse:
-            return FileResponse(WEB_DIST / "index.html")
+            # index.html must never be cached: it names the hashed asset
+            # bundles, and a stale copy pins users to a dead JS build.
+            return FileResponse(
+                WEB_DIST / "index.html",
+                headers={"Cache-Control": "no-cache"})
     else:
         @app.get("/", include_in_schema=False)
         def index_missing() -> PlainTextResponse:
