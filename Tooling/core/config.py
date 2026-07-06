@@ -201,3 +201,50 @@ def get(
 
     # 4. default
     return default
+
+
+def resolve_workspace(explicit: "Path | str | None" = None) -> Path:
+    """The single workspace-resolution entrypoint (frontend charter §5-1).
+
+    Historically every caller assumed cwd == repo root, which holds for
+    the operator but not for a `asterism serve` launched from anywhere,
+    nor for the product's managed workspace (`~/Asterism`). Resolution
+    order:
+
+      1. `explicit` (a `--workspace` flag) — verbatim, must exist;
+      2. `ASTERISM_WORKSPACE` env var (process env only — the .env file
+         cannot answer this: finding .env REQUIRES the workspace, which
+         is exactly the chicken-and-egg this function exists to break);
+      3. cwd, when it looks like a workspace (has Asterism.yaml or
+         Problems/) — the operator's historical behavior, unchanged;
+      4. `~/Asterism`, when it looks like a workspace (the managed
+         workspace the Phase-2 first-run wizard creates).
+
+    Raises FileNotFoundError with actionable guidance otherwise —
+    launching against a half-guessed workspace corrupts nothing but
+    confuses everything."""
+    def _looks_like(p: Path) -> bool:
+        return (p / _CONFIG_FILENAME).exists() or (p / "Problems").is_dir()
+
+    if explicit is not None:
+        p = Path(explicit).resolve()
+        if not p.is_dir():
+            raise FileNotFoundError(f"workspace {p} does not exist")
+        return p
+    env = os.environ.get("ASTERISM_WORKSPACE")
+    if env:
+        p = Path(env).resolve()
+        if not p.is_dir():
+            raise FileNotFoundError(
+                f"ASTERISM_WORKSPACE={env} does not exist")
+        return p
+    cwd = Path.cwd()
+    if _looks_like(cwd):
+        return cwd
+    home_ws = Path.home() / "Asterism"
+    if _looks_like(home_ws):
+        return home_ws
+    raise FileNotFoundError(
+        "no Asterism workspace found: pass --workspace, set "
+        "ASTERISM_WORKSPACE, or run from a directory containing "
+        "Asterism.yaml / Problems/")

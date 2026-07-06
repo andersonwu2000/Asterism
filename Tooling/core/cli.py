@@ -1376,27 +1376,18 @@ def cmd_review(args: argparse.Namespace) -> int:
     Read-only. Needs the gateway (reused if already warm; else warmed —
     slow on a cold Mathlib cache). Exit 0 always (a review, not a gate);
     deliverables whose closure could not be computed print a WARN."""
-    from ..lsp import lifecycle as gateway_lifecycle
-    from ..pipeline._constants import (anchor_closure_goal,
-                                       canonicalize_anchor_pending,
-                                       fold_generated_companions)
-
     workspace = Path.cwd()
     conn = db.connect()
     db.init_schema(conn)
     scope = getattr(args, "problem", None)
-    dels = db.deliverables(conn, problem=scope)
-    # conn stays open: canonicalize_anchor_pending needs it to map internal
-    # strategy names to public goal slugs (below).
+    data = review_data(conn, workspace, problem=scope)
+    conn.close()
 
-    if not dels:
-        conn.close()
+    if not data["deliverables"]:
         where = f" for '{scope}'" if scope else ""
         print(f"no deliverables{where} (Strategist marks them via "
               f"is_deliverable; none set yet)")
         return 0
-
-    gateway_lifecycle.start_gateway(workspace)
 
     def render(items: list[dict], head: str) -> None:
         if not items:
@@ -1407,43 +1398,77 @@ def cmd_review(args: argparse.Namespace) -> int:
             print(f"      - {c['name']}   ({mod})")
 
     print(f"\n=== anchor+claim review: {scope or 'all problems'} ===")
+    for d in data["deliverables"]:
+        if not d["ok"]:
+            print(f"\n▸ {d['fq']}  [WARN] closure unavailable: {d['error']}")
+            continue
+        print(f"\n▸ {d['fq']}  [{d['kind']}]   "
+              f"(module {d['module'] or '<local>'})")
+        if d["paper"]:
+            print(f"    {d['paper']}")
+        if not d["anchors"] and not d["claims"]:
+            print("    (no pending anchors — statement rests entirely on "
+                  "Mathlib ∪ Library)")
+        render(d["anchors"], "anchors (defs you must vouch for):")
+        render(d["claims"], "claims (lemmas the closure rests on):")
+        if d["folded"]:
+            print(f"      (+{d['folded']} compiler-generated companions "
+                  f"folded into their parent inductive)")
+
+    print(f"\n=== {len(data['deliverables'])} deliverable(s), "
+          f"{data['union_count']} distinct pending anchor(s)/claim(s) ===")
+    return 0
+
+
+def review_data(conn, workspace: Path, *,
+                problem: "str | None" = None) -> dict:
+    """Structured anchor+claim review (frontend charter §5-4): the data
+    `cmd_review` renders, reusable by the serve API. Per deliverable:
+    {fq, problem, slug, ok, error, kind, module, paper, anchors, claims,
+    folded}; plus the distinct pending-name union count. Warms the
+    gateway iff there are deliverables to compute (same behavior the CLI
+    had)."""
+    from ..lsp import lifecycle as gateway_lifecycle
+    from ..pipeline._constants import (anchor_closure_goal,
+                                       canonicalize_anchor_pending,
+                                       fold_generated_companions)
+    dels = db.deliverables(conn, problem=problem)
+    out: "list[dict]" = []
     union: set[str] = set()
+    if not dels:
+        return {"deliverables": out, "union_count": 0}
+    gateway_lifecycle.start_gateway(workspace)
     _papers: dict[str, str] = {}  # problem → paper id ('' = unbound)
     for g in dels:
         dest = workspace / g["lean_path"]
         r = anchor_closure_goal(
             workspace, dest, problem=g["problem"], slug=g["slug"])
         fq = f"Problems.{g['problem']}.{g['slug']}"
-        if not r.ok:
-            print(f"\n▸ {fq}  [WARN] closure unavailable: {r.error}")
-            continue
-        paper_line = _deliverable_paper_line(
-            conn, workspace, g, papers_cache=_papers)
-        # Canonicalize internal strategy names (`s<N>`) → public goal slugs so
-        # the sign-off surface shows only human-meaningful names (and each
-        # stays rejectable). #71.
-        r.pending = canonicalize_anchor_pending(
-            conn, workspace, g["problem"], r.pending)
-        # Presentation only — reject/harvest consume the raw closure.
-        r.pending, folded = fold_generated_companions(r.pending)
-        kind = "claim" if r.top_is_claim else f"anchor:{r.top_kind}"
-        print(f"\n▸ {fq}  [{kind}]   (module {r.top_module or '<local>'})")
-        if paper_line:
-            print(f"    {paper_line}")
-        if not r.pending:
-            print("    (no pending anchors — statement rests entirely on "
-                  "Mathlib ∪ Library)")
-        render(r.anchors, "anchors (defs you must vouch for):")
-        render(r.claims, "claims (lemmas the closure rests on):")
-        if folded:
-            print(f"      (+{folded} compiler-generated companions "
-                  f"folded into their parent inductive)")
-        union.update(c["name"] for c in r.pending)
-
-    conn.close()
-    print(f"\n=== {len(dels)} deliverable(s), {len(union)} distinct "
-          f"pending anchor(s)/claim(s) ===")
-    return 0
+        entry = {"fq": fq, "problem": str(g["problem"]),
+                 "slug": str(g["slug"]), "ok": bool(r.ok),
+                 "error": None if r.ok else str(r.error),
+                 "kind": None, "module": None, "paper": "",
+                 "anchors": [], "claims": [], "folded": 0}
+        if r.ok:
+            # Canonicalize internal strategy names (`s<N>`) → public goal
+            # slugs so the sign-off surface shows only human-meaningful
+            # names (and each stays rejectable). #71.
+            r.pending = canonicalize_anchor_pending(
+                conn, workspace, g["problem"], r.pending)
+            # Presentation only — reject/harvest consume the raw closure.
+            r.pending, folded = fold_generated_companions(r.pending)
+            entry.update({
+                "kind": ("claim" if r.top_is_claim
+                         else f"anchor:{r.top_kind}"),
+                "module": r.top_module or None,
+                "paper": _deliverable_paper_line(
+                    conn, workspace, g, papers_cache=_papers),
+                "anchors": r.anchors, "claims": r.claims,
+                "folded": folded,
+            })
+            union.update(c["name"] for c in r.pending)
+        out.append(entry)
+    return {"deliverables": out, "union_count": len(union)}
 
 
 def _deliverable_paper_line(conn, workspace: Path, g,

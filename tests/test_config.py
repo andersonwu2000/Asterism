@@ -432,3 +432,45 @@ def test_dotenv_parsing_and_absence(tmp_path, monkeypatch):
     assert config.get("x.test", default="d",
                       env_var="ASTERISM_X_TEST", workspace=tmp_path) == "hello"
     config._reset_cache()
+
+
+# ---------------------------------------------------------------------
+# resolve_workspace — the single workspace-resolution entrypoint
+# (frontend charter §5-1): breaks the chicken-and-egg of "reading config
+# requires the workspace" for serve / managed-workspace launches.
+# ---------------------------------------------------------------------
+
+def test_resolve_workspace_explicit_wins(tmp_path, monkeypatch):
+    from Tooling.core import config
+    ws = tmp_path / "w"
+    ws.mkdir()
+    monkeypatch.setenv("ASTERISM_WORKSPACE", str(tmp_path / "other"))
+    assert config.resolve_workspace(ws) == ws.resolve()
+
+
+def test_resolve_workspace_env_then_cwd(tmp_path, monkeypatch):
+    from Tooling.core import config
+    env_ws = tmp_path / "envws"
+    env_ws.mkdir()
+    monkeypatch.setenv("ASTERISM_WORKSPACE", str(env_ws))
+    assert config.resolve_workspace() == env_ws.resolve()
+    # env unset + cwd looks like a workspace -> cwd (historical behavior)
+    monkeypatch.delenv("ASTERISM_WORKSPACE")
+    cwd_ws = tmp_path / "cwdws"
+    (cwd_ws / "Problems").mkdir(parents=True)
+    monkeypatch.chdir(cwd_ws)
+    assert config.resolve_workspace() == cwd_ws
+
+
+def test_resolve_workspace_errors_are_actionable(tmp_path, monkeypatch):
+    from Tooling.core import config
+    import pytest
+    monkeypatch.delenv("ASTERISM_WORKSPACE", raising=False)
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    monkeypatch.chdir(bare)
+    monkeypatch.setattr(config.Path, "home", lambda: bare)  # no ~/Asterism
+    with pytest.raises(FileNotFoundError, match="ASTERISM_WORKSPACE"):
+        config.resolve_workspace()
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        config.resolve_workspace(tmp_path / "nope")
