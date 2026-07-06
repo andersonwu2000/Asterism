@@ -16,6 +16,8 @@ interface Props {
   strategyEdges: StrategyEdge[]
   selectedId: number | null
   onSelect: (id: number | null) => void
+  /** junction click → strategy drill-down (optional) */
+  onSelectStrategy?: (id: number) => void
   /** attempts heat-ring denominator (engine's shelve threshold) */
   shelveThreshold?: number
 }
@@ -73,6 +75,7 @@ export default function Constellation({
   strategyEdges,
   selectedId,
   onSelect,
+  onSelectStrategy,
   shelveThreshold = 8,
 }: Props) {
   // Frontier focus: on for big live graphs by default (attention +
@@ -277,6 +280,21 @@ export default function Constellation({
                   fill={stroke}
                   opacity={opacity}
                 />
+                {onSelectStrategy && (
+                  <circle
+                    cx={b.junction.x}
+                    cy={b.junction.y}
+                    r={6}
+                    fill="transparent"
+                    className="cursor-pointer"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onSelectStrategy(b.strategyId)
+                    }}
+                  >
+                    <title>strategy s{b.strategyId} — {b.status}</title>
+                  </circle>
+                )}
               </g>
             )
           })}

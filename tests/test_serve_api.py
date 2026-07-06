@@ -233,6 +233,37 @@ def test_problem_detail_shape(workspace: Path) -> None:
     assert c.get("/api/problems/p/goals/99999").status_code == 404
 
 
+def test_strategy_detail_endpoint(workspace: Path) -> None:
+    conn = _open_db(workspace)
+    _add_problem(conn, "p")
+    gid = db.insert_goal(conn, problem="p", slug="main",
+                         lean_path="Problems/p/proofs/main.lean",
+                         statement="True", origin="root")
+    sub = db.insert_goal(conn, problem="p", slug="lemma_a",
+                         lean_path="Problems/p/proofs/lemma_a.lean",
+                         statement="1 = 1", origin="backward")
+    ts = db.now()
+    cur = conn.execute(
+        "INSERT INTO strategies (goal_id, lean_path, status, proposal_md,"
+        " created_by, created_at) VALUES (?, 'x', 'dead',"
+        " '## Plan\ninduction on n', 'backward', ?)", (gid, ts))
+    sid = int(cur.lastrowid)
+    conn.execute(
+        "INSERT INTO strategy_subgoals (strategy_id, subgoal_id, position)"
+        " VALUES (?, ?, 0)", (sid, sub))
+    conn.commit()
+    conn.close()
+    c = _client(workspace)
+    d = c.get(f"/api/problems/p/strategies/{sid}").json()
+    assert d["goal_slug"] == "main"
+    assert d["status"] == "dead"
+    assert "induction on n" in d["proposal_md"]
+    assert d["subgoals"][0]["slug"] == "lemma_a"
+    assert c.get("/api/problems/p/strategies/9999").status_code == 404
+    # cross-problem access refused
+    assert c.get(f"/api/problems/other/strategies/{sid}").status_code == 404
+
+
 def test_problem_file_read_sandboxed(workspace: Path) -> None:
     conn = _open_db(workspace)
     _add_problem(conn, "p")

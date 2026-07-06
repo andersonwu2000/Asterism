@@ -140,6 +140,16 @@ def create_app(workspace: Path) -> FastAPI:
                                 detail=f"no goal {goal_id} in {problem!r}")
         return d
 
+    @app.get("/api/problems/{problem}/strategies/{strategy_id}")
+    def strategy(problem: str, strategy_id: int) -> dict:
+        with _ro(workspace) as conn:
+            d = _data.strategy_detail(conn, problem, strategy_id)
+        if d is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"no strategy {strategy_id} in {problem!r}")
+        return d
+
     @app.get("/api/problems/{problem}/file")
     def problem_file(problem: str, path: str) -> dict:
         text = _data.read_problem_file(workspace, problem, path)

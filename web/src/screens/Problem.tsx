@@ -5,6 +5,7 @@ import { relTime } from '../lib/format'
 import { ErrorState, StatusBadge } from '../components/ui'
 import Constellation from '../components/Constellation'
 import GoalPanel from '../components/GoalPanel'
+import StrategyPanel from '../components/StrategyPanel'
 import DecisionTimeline from '../components/DecisionTimeline'
 import FileViewer from '../components/FileViewer'
 import type { Goal, ProblemDetail } from '../lib/types'
@@ -76,6 +77,7 @@ export default function Problem({ name }: { name: string }) {
   )
   const [tab, setTab] = useState<Tab>('stars')
   const [selectedGoal, setSelectedGoal] = useState<number | null>(null)
+  const [selectedStrategy, setSelectedStrategy] = useState<number | null>(null)
 
   if (loading) return <div className="p-8 text-sm text-ink-faint">Loading…</div>
   if (error && !data) return <ErrorState error={error} />
@@ -144,7 +146,14 @@ export default function Problem({ name }: { name: string }) {
                 strategies={data.strategies}
                 strategyEdges={data.strategy_edges}
                 selectedId={selectedGoal}
-                onSelect={setSelectedGoal}
+                onSelect={(id) => {
+                  setSelectedGoal(id)
+                  if (id !== null) setSelectedStrategy(null)
+                }}
+                onSelectStrategy={(id) => {
+                  setSelectedStrategy(id)
+                  setSelectedGoal(null)
+                }}
                 shelveThreshold={data.shelve_threshold}
               />
             </div>
@@ -168,6 +177,20 @@ export default function Problem({ name }: { name: string }) {
             onClose={() => setSelectedGoal(null)}
           />
         )}
+        {selectedGoal === null &&
+          selectedStrategy !== null &&
+          tab !== 'files' &&
+          tab !== 'timeline' && (
+            <StrategyPanel
+              problem={data.name}
+              strategyId={selectedStrategy}
+              onClose={() => setSelectedStrategy(null)}
+              onSelectGoal={(id) => {
+                setSelectedGoal(id)
+                setSelectedStrategy(null)
+              }}
+            />
+          )}
       </div>
     </div>
   )

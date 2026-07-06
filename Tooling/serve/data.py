@@ -322,6 +322,54 @@ def goal_detail(conn: sqlite3.Connection, problem: str,
     }
 
 
+def strategy_detail(conn: sqlite3.Connection, problem: str,
+                    strategy_id: int) -> dict | None:
+    """Strategy drill-down: the decomposition's own record —
+    proposal_md (the agent's reasoning), status, subgoals."""
+    s = conn.execute(
+        "SELECT s.id, s.goal_id, s.status, s.proposal_md, s.created_by,"
+        " s.created_at, g.problem, g.slug AS goal_slug"
+        " FROM strategies s JOIN goals g ON g.id = s.goal_id"
+        " WHERE s.id = ? AND g.problem = ?",
+        (strategy_id, problem)).fetchone()
+    if s is None:
+        return None
+    subgoals = [{
+        "id": int(r["id"]),
+        "slug": str(r["slug"]),
+        "status": str(r["status"]),
+        "position": int(r["position"]),
+    } for r in conn.execute(
+        "SELECT g.id, g.slug, g.status, ss.position"
+        " FROM strategy_subgoals ss JOIN goals g ON g.id = ss.subgoal_id"
+        " WHERE ss.strategy_id = ? ORDER BY ss.position",
+        (strategy_id,))]
+    dead = []
+    for r in conn.execute(
+            "SELECT id, pipeline_id, failure_reason, failure_detail, ts"
+            " FROM dead_attempts"
+            " WHERE target_kind = 'Strategy' AND target_id = ?"
+            " ORDER BY id DESC LIMIT 20", (strategy_id,)):
+        dead.append({
+            "id": int(r["id"]),
+            "pipeline_id": str(r["pipeline_id"]),
+            "failure_reason": str(r["failure_reason"]),
+            "failure_detail": r["failure_detail"],
+            "ts": str(r["ts"]),
+        })
+    return {
+        "id": int(s["id"]),
+        "goal_id": int(s["goal_id"]),
+        "goal_slug": str(s["goal_slug"]),
+        "status": str(s["status"]),
+        "proposal_md": str(s["proposal_md"] or ""),
+        "created_by": str(s["created_by"]),
+        "created_at": str(s["created_at"]),
+        "subgoals": subgoals,
+        "dead_attempts": dead,
+    }
+
+
 def inbox(conn: sqlite3.Connection, workspace: Path) -> dict:
     """Everything awaiting a human decision: unresolved amends (with the
     current on-disk file for the side-by-side diff) + paused ingest
