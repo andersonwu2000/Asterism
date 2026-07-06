@@ -175,6 +175,10 @@ export default function Problem({ name }: { name: string }) {
             problem={data.name}
             goalId={selectedGoal}
             onClose={() => setSelectedGoal(null)}
+            onSelectStrategy={(id) => {
+              setSelectedStrategy(id)
+              setSelectedGoal(null)
+            }}
           />
         )}
         {selectedGoal === null &&

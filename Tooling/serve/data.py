@@ -305,6 +305,17 @@ def goal_detail(conn: sqlite3.Connection, problem: str,
             "proposal_md": r["proposal_md"],
             "ts": str(r["ts"]),
         })
+    strategies = [{
+        "id": int(r["id"]),
+        "status": str(r["status"]),
+        "created_by": str(r["created_by"]),
+        "subgoal_count": int(r["n"]),
+    } for r in conn.execute(
+        "SELECT s.id, s.status, s.created_by,"
+        " (SELECT COUNT(*) FROM strategy_subgoals ss"
+        "  WHERE ss.strategy_id = s.id) AS n"
+        " FROM strategies s WHERE s.goal_id = ? ORDER BY s.id DESC",
+        (goal_id,))]
     return {
         "id": int(g["id"]),
         "slug": str(g["slug"]),
@@ -319,6 +330,7 @@ def goal_detail(conn: sqlite3.Connection, problem: str,
         "is_deliverable": bool(g["is_deliverable"]),
         "created_at": str(g["created_at"]),
         "dead_attempts": dead,
+        "strategies": strategies,
     }
 
 

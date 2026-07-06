@@ -58,10 +58,12 @@ export default function GoalPanel({
   problem,
   goalId,
   onClose,
+  onSelectStrategy,
 }: {
   problem: string
   goalId: number
   onClose: () => void
+  onSelectStrategy?: (id: number) => void
 }) {
   const { data, error, loading } = usePoll<GoalDetail>(
     `/api/problems/${encodeURIComponent(problem)}/goals/${goalId}`,
@@ -99,6 +101,41 @@ export default function GoalPanel({
             <div className="mb-4 text-[11px] break-all text-ink-faint">
               {data.lean_path} · created {relTime(data.created_at)}
             </div>
+            {data.strategies.length > 0 && (
+              <>
+                <SectionLabel>decompositions ({data.strategies.length})</SectionLabel>
+                <div className="mb-4 flex flex-col gap-0.5">
+                  {data.strategies.map((s) => (
+                    <button
+                      key={s.id}
+                      className="flex items-baseline justify-between rounded px-2 py-1 text-left hover:bg-surface-2 disabled:cursor-default"
+                      disabled={!onSelectStrategy}
+                      onClick={() => onSelectStrategy?.(s.id)}
+                    >
+                      <span className="font-mono text-xs text-ink">
+                        s{s.id}
+                        <span className="ml-2 text-ink-faint">
+                          {s.subgoal_count} subgoal{s.subgoal_count === 1 ? '' : 's'}
+                        </span>
+                      </span>
+                      <span
+                        className={`text-[11px] ${
+                          s.status === 'succeeded'
+                            ? 'text-star'
+                            : s.status === 'proposed'
+                              ? 'text-accent'
+                              : s.status === 'dead'
+                                ? 'text-danger'
+                                : 'text-ink-faint'
+                        }`}
+                      >
+                        {s.status}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
             <SectionLabel>
               failed attempts {data.dead_attempts.length > 0 && `(${data.dead_attempts.length})`}
             </SectionLabel>

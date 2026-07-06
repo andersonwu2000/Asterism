@@ -106,6 +106,12 @@ export interface DeadAttempt {
 
 export interface GoalDetail extends Omit<Goal, 'dead_attempts'> {
   dead_attempts: DeadAttempt[]
+  strategies: {
+    id: number
+    status: string
+    created_by: string
+    subgoal_count: number
+  }[]
 }
 
 export interface Amend {
