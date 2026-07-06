@@ -88,6 +88,18 @@ function Cluster({ p, query }: { p: LibraryProblem; query: string }) {
             strokeOpacity={0.28}
           />
         ))}
+        {/* generous invisible hit areas — 1.5px stars are not targets */}
+        {stars.map((s, i) => (
+          <circle
+            key={`hit${i}`}
+            cx={s.x}
+            cy={s.y}
+            r={Math.max(s.r + 4, 5)}
+            fill="transparent"
+            onMouseEnter={() => setHover(s)}
+            onMouseLeave={() => setHover(null)}
+          />
+        ))}
         {stars.map((s, i) => {
           const hit = match(s.decl)
           const fill = hit ? 'var(--color-star)' : 'var(--color-starlight)'
