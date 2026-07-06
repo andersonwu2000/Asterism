@@ -201,7 +201,7 @@ export default function Constellation({
       className="relative h-full w-full cursor-grab overflow-hidden active:cursor-grabbing"
     >
       <svg
-        className="h-full w-full"
+        className="constellation h-full w-full"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}

@@ -59,11 +59,13 @@ export default function GoalPanel({
   goalId,
   onClose,
   onSelectStrategy,
+  onOpenFile,
 }: {
   problem: string
   goalId: number
   onClose: () => void
   onSelectStrategy?: (id: number) => void
+  onOpenFile?: (relPath: string) => void
 }) {
   const { data, error, loading } = usePoll<GoalDetail>(
     `/api/problems/${encodeURIComponent(problem)}/goals/${goalId}`,
@@ -99,7 +101,20 @@ export default function GoalPanel({
               {data.statement}
             </pre>
             <div className="mb-4 text-[11px] break-all text-ink-faint">
-              {data.lean_path} · created {relTime(data.created_at)}
+              {onOpenFile && data.lean_path.includes('proofs/') ? (
+                <button
+                  className="text-left break-all underline decoration-edge-strong hover:text-ink"
+                  onClick={() =>
+                    onOpenFile(`proofs/${data.lean_path.split('proofs/').pop()}`)
+                  }
+                  title="Open in the Files tab"
+                >
+                  {data.lean_path}
+                </button>
+              ) : (
+                data.lean_path
+              )}{' '}
+              · created {relTime(data.created_at)}
             </div>
             {data.strategies.length > 0 && (
               <>

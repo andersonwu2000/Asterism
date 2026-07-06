@@ -78,6 +78,7 @@ export default function Problem({ name }: { name: string }) {
   const [tab, setTab] = useState<Tab>('stars')
   const [selectedGoal, setSelectedGoal] = useState<number | null>(null)
   const [selectedStrategy, setSelectedStrategy] = useState<number | null>(null)
+  const [fileToOpen, setFileToOpen] = useState<string | null>(null)
 
   if (loading) return <div className="p-8 text-sm text-ink-faint">Loading…</div>
   if (error && !data) return <ErrorState error={error} />
@@ -166,7 +167,11 @@ export default function Problem({ name }: { name: string }) {
           )}
           {tab === 'files' && (
             <div className="flex h-full">
-              <FileViewer problem={data.name} proofFiles={data.proof_files} />
+              <FileViewer
+                problem={data.name}
+                proofFiles={data.proof_files}
+                initialFile={fileToOpen}
+              />
             </div>
           )}
         </div>
@@ -178,6 +183,10 @@ export default function Problem({ name }: { name: string }) {
             onSelectStrategy={(id) => {
               setSelectedStrategy(id)
               setSelectedGoal(null)
+            }}
+            onOpenFile={(rel) => {
+              setFileToOpen(rel)
+              setTab('files')
             }}
           />
         )}

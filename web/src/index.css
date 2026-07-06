@@ -48,3 +48,14 @@ body {
   scrollbar-width: thin;
   scrollbar-color: var(--color-edge-strong) transparent;
 }
+
+/* Constellation: stars light up gently when a poll flips a status
+   (proved = the map literally brightens as the proof advances). */
+.constellation circle,
+.constellation line {
+  transition:
+    fill 0.9s ease,
+    stroke 0.9s ease,
+    opacity 0.9s ease,
+    stroke-opacity 0.9s ease;
+}

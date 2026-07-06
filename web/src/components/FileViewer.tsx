@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { usePoll } from '../lib/api'
 
 /** Read-only proofs/ + input-file viewer. Minimal hand-rolled Lean
@@ -20,12 +20,20 @@ function highlightLean(src: string): string {
 export default function FileViewer({
   problem,
   proofFiles,
+  initialFile,
 }: {
   problem: string
   proofFiles: string[]
+  initialFile?: string | null
 }) {
   const files = ['Manifest.md', 'Defs.lean', ...proofFiles.map((f) => `proofs/${f}`)]
-  const [selected, setSelected] = useState(files[0])
+  const [selected, setSelected] = useState(
+    initialFile && files.includes(initialFile) ? initialFile : files[0],
+  )
+  useEffect(() => {
+    if (initialFile && files.includes(initialFile)) setSelected(initialFile)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialFile])
   const { data, error } = usePoll<{ path: string; content: string }>(
     `/api/problems/${encodeURIComponent(problem)}/file?path=${encodeURIComponent(selected)}`,
     10000,

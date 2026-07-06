@@ -2,6 +2,26 @@
 
 <!-- Add your project overview here. -->
 
+## Web UI
+
+```
+pip install -e .
+cd web && npm install && npm run build && cd ..
+asterism serve            # http://127.0.0.1:8642
+```
+
+One serve process per workspace. The board lists every problem with its
+live status; each problem opens as a constellation — goals are stars
+that light up as they're proved, strategies are the lines that bind
+them. The inbox collects everything that needs a human (amend requests
+with a side-by-side diff, ingest sign-offs with the anchor closure and
+paper provenance), and the engine page starts/stops the daemon and
+tails its log. The UI is read-only against the engine database; every
+action goes through the same chokepoints as the CLI.
+
+`cd web && npm run smoke` runs the Playwright smoke suite against a
+live serve.
+
 <!-- ASTERISM-PROGRESS:BEGIN -->
 ## Progress Log
 
